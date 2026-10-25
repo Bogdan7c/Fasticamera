@@ -1,0 +1,22 @@
+# Пути привязаны к корню (ведущий `/`): шаблон без привязки, например `target/`, глотал бы
+# любые каталоги с таким именем в исходниках (урок fastiplayer). У tools/device-probe свой .gitignore.
+
+# Сборка Rust (корневой Cargo workspace)
+/target/
+
+# Gradle и Android-сборка
+/android/.gradle/
+/android/.kotlin/
+/android/build/
+/android/app/build/
+/android/local.properties
+
+# Артефакты, которые не попадают в git нигде
+*.apk
+*.aab
+*.log
+__pycache__/
+
+# Локальные дампы и снимки с телефона (сырые данные живут вне репозитория, см. README плана)
+/captures/
+/dumps/

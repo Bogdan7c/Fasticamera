@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:allowBackup="false"
+        android:hasFragileUserData="false"
+        android:label="${appLabel}"
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+        <!--
+            exported: smoke-сценарии запускаются с ПК (am start -n ... -e scenario <имя>).
+            showWhenLocked/turnScreenOn: за блокировкой процесс фоновый и Oplus его замораживает
+            (дефект 2 сессии 00), поэтому экран камеры, как у системной, работает поверх блокировки.
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

@@ -1,0 +1,11 @@
+[package]
+name = "camera-contract"
+description = "Нейтральный словарь камеры Fasticamera: роли камер, возможности, паспорт RAW-кадра, намерения управления"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

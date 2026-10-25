@@ -1,0 +1,33 @@
+[package]
+name = "fasticamera-app"
+description = "Composition root Fasticamera: нативная библиотека приложения, точка входа JNI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+# Имя .so: libfasticamera.so, Kotlin грузит его через System.loadLibrary("fasticamera").
+name = "fasticamera"
+# cdylib — для APK; rlib — чтобы host-тесты линковались с библиотекой.
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Отладочные сценарии (например, намеренная паника). Включает только debug-вариант APK
+# (android/gradle.properties: fasticamera.cargoFeatures.debug), в release их нет физически.
+debug-scenarios = []
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni.workspace = true
+android_log-sys.workspace = true
+
+[lints]
+workspace = true

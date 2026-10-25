@@ -3,28 +3,34 @@
 Короткая карта текущего состояния (граф ссылок, не журнал).
 
 ## Проект
-- Личная камера для OnePlus 11 (CPH2447, salami), Rust + Vulkan (ash), в магазин не публикуется. Приватный репозиторий GitHub `Bogdan7c/Fasticamera`, ветка `main`. Имя пакета приложения — `dev.fasticamera` (решение 20).
-- Цель: сырой поток с сенсора без копий в Vulkan, вся обработка своя, снаружи — клон камеры iOS 26 (Liquid Glass).
-- **Конечная цель владельца — паритет с iPhone по видео** (решение 16); затем фото «как iPhone» (решение 17). Костяк обязан выполнять задел V1–V10 (README плана).
-- Действующий план — `user/foundation/` (README: решения владельца 1–24, архитектура, владельцы состояния, инварианты, задел V1–V10, порядок сессий 00–17, общие правила, бэклог).
-- **Сессия 00 завершена (2026-10-25): GO** — 60 к/с RAW без root, импорт в Vulkan без копий, Vulkan → HEVC-кодер. Отчёт: `user/foundation/results/00.md`. Дневной набор C7 доснимается 26.10 (решение 24).
-- Кода продукта пока нет. Есть только зонд разведки `tools/device-probe` (Kotlin + Rust `probe-native` + `pc/probe.py`; сборка: `ANDROID_HOME=$HOME/Android/Sdk JAVA_HOME=/usr/lib/jvm/java-21-openjdk ./gradlew assembleDebug test`, `cd native && cargo test`).
+- Личная камера для OnePlus 11 (CPH2447, salami), Rust + Vulkan (ash), в магазин не публикуется. Приватный репозиторий GitHub `Bogdan7c/Fasticamera`, ветка `main`. Пакет `dev.fasticamera` (debug: `dev.fasticamera.debug`).
+- Цель: сырой поток с сенсора без копий в Vulkan, вся обработка своя, снаружи — клон камеры iOS 26 (Liquid Glass). Конечная цель владельца — паритет с iPhone по видео (решение 16), затем фото «как iPhone» (17); костяк обязан выполнять задел V1–V10.
+- Действующий план — `user/foundation/` (README: решения 1–24, архитектура, владельцы состояния, инварианты, V1–V10, порядок сессий 00–17, общие правила, бэклог). Отчёты — `user/foundation/results/NN.md`.
+- Сделано: 00 (GO: 60 к/с RAW без root, импорт в Vulkan без копий, Vulkan → HEVC), 01 (скелет: workspace, Gradle + cargo-ndk, линты, CI-скрипт, guardrail, ratchet, деплой, smoke, логи в logcat). Следующая по маршруту — 02 (android-shell, JNI-шов, surface).
 - Факты о телефоне: `mem:device/oneplus11-camera-facts`.
 
-## Ключевые решения (детали — README плана)
-- Без root. Хак имени пакета не нужен (решение 20).
-- Управление камерой — Camera2 NDK; первая задача 04 — подтвердить 60 к/с через NDK, иначе стоп-вопрос (решение 22).
-- RAW-поток: RAW10 по умолчанию, RAW16 через конфиг (решение 21).
-- Фото-видоискатель основной: 4:3@60 через ключи CamX за `VendorCapabilities` с откатом на 4:3@30; ширик 4:3@60 и видео 16:9@60 — штатно (решение 23).
-- UI гибрид: экран камеры — свой Rust/Vulkan UI-движок со стеклом; настройки — Compose.
-- Видоискатель только из RAW через наш ISP; AF/AE вендорские, AWB и цвет наши. Вендорская коррекция виньетирования в RAW неотключаема — учитывается в паспорте кадра.
-- Тексты UI английские; документация и комментарии русские.
+## Карта кода (сейчас)
+- `crates/camera-contract` — пустой каркас словаря (наполняется в 04).
+- `crates/fasticamera-app` — composition root, `libfasticamera.so`: `jni_exports` (android) → `jni_boundary::run_guarded`; `runtime` (конфиг на процесс), `runtime_config`, `logging/` (tracing → свой слой → logcat/stderr), `panic_report` (хук → FATAL в logcat + отчёт), `scenario/` (smoke `hello`, `panic` за фичей), `result_line` (`FASTICAMERA_RESULT {json}`).
+- `android/` — тонкая `MainActivity` + `NativeBridge` (`initialize(configJson)`, `runScenario(name)`) + `NativeConfig`.
+- `scripts/` — CI, guardrail, ratchet, deploy/smoke, тесты в `scripts/tests/`.
+- `tools/device-probe` — зонд сессии 00, отдельный проект.
 
-## Тулчейн (установлен в 00)
-- SDK `~/Android/Sdk` (platform 36, build-tools 36.1.0, NDK 30.0.16248370), JDK 21, Gradle 9.8.2 wrapper, AGP 9.4.1 (встроенный Kotlin), Rust таргет `aarch64-linux-android`, cargo-ndk 4.1.2, jadx `~/.local/share/jadx`.
+## Где что
+- Версии, профили сборки, варианты APK: `mem:tech_stack`.
+- Команды (CI, тесты, деплой, smoke, коды выхода): `mem:suggested_commands`.
+- Правила кода, границы JNI, логирование, конфиг, стиль скриптов: `mem:conventions`.
+- Чеклист завершения задачи: `mem:task_completion`.
+
+## Ключевые решения (детали — README плана)
+- Без root; хак имени пакета не нужен (20). Камера — Camera2 NDK (22). RAW10 по умолчанию, RAW16 через конфиг (21). Фото-видоискатель основной 4:3@60 через ключи CamX за `VendorCapabilities` (23).
+- UI гибрид: экран камеры — свой Rust/Vulkan UI со стеклом; настройки — Compose. Видоискатель только из RAW через наш ISP; AF/AE вендорские, AWB и цвет наши. Вендорская коррекция виньетирования в RAW неотключаема — в паспорт кадра.
+- Сессия 01: паника ловится на границе JNI (не abort); debug и release стоят рядом; мост логов в logcat — свой.
+
+## Ловушки окружения
+- Буфер logcat `main` на телефоне 256 КиБ: при активном использовании телефона записи вытесняются за секунды. Читать logcat потоком с `-T <epoch>`, не `-d` постфактум; `logcat -c`/`-G` не трогать (изменение системы).
+- Телефон — личный и в использовании: запускать только свои APK, скриншоты не снимать без нужды (видны чужие уведомления).
 
 ## Процесс
-- Правила `AGENTS.md`; Context7 перед кодом; широкий поиск — read-only субагентом Sonnet.
-- Коммиты только по команде владельца, без веток; push — по поручению. В `user/` только `.md`, без дампов/логов/личных путей; сырые данные — `~/fasticamera-captures/`.
-- Отчёты сессий — `user/foundation/results/NN.md`; межплановый бэклог — `user/general_problems/general_backlog.md`.
-- Serena onboarding и memories `conventions`, `task_completion`, `suggested_commands`, `tech_stack` — создаются в сессии 01.
+- Правила `AGENTS.md`; Context7 перед кодом; широкий поиск — read-only субагентом Sonnet. Serena: языковых серверов в `.serena/project.yml` нет — символьные инструменты по коду пока не работают.
+- Коммиты только по команде владельца, без веток; push — по поручению. В `user/` только `.md`; сырые данные — `~/fasticamera-captures/`. Межплановый бэклог — `user/general_problems/general_backlog.md`.

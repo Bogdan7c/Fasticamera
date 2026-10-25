@@ -39,13 +39,13 @@ If an important decision needs to be made during the work, stop, ask the user, a
 
 The project is no longer a prototype. Implement new features so the system can be extended, tested, and repaired in specific areas without rewriting neighboring modules.
 
-These rules apply to every part of the project: player-core, render, decoder, worker, session/tick, media opening, diagnostics, config, and future modules. `PlaybackPipeline` is an example of this approach, not an exception.
+These rules apply to every part of the project: camera-core, camera backend (Camera2 NDK), RAW frame stream, GPU/Vulkan, ISP, UI core and rendering, camera screen, photo output, Android shell, diagnostics, config, and future modules. The RAW frame lease (`RawFrameLease`, planned in `user/foundation/README.md`) is an example of this approach, not an exception.
 
 1. A module owns its data and invariants. External code must not read or modify its internal fields directly when the operation can be expressed through a meaningful internal API.
 
-2. Internal APIs must describe intent, not storage layout. Good examples: `can_send_video_decode_packets()`, `release_frame_to_video_decoder()`, `drain_completed_*()`. Bad example: inspecting a specific field in another module for convenience.
+2. Internal APIs must describe intent, not storage layout. Good examples: `can_accept_raw_frame()`, `release_frame_after_gpu_fence()`, `drain_completed_*()`. Bad example: inspecting a specific field in another module for convenience.
 
-3. Do not couple modules through knowledge of a particular implementation. `session`, `tick`, scheduler, decoder, render, and pipeline must depend on contracts and boundary methods, not on whichever thread, queue, backend, or field happens to be inside.
+3. Do not couple modules through knowledge of a particular implementation. Camera session, render loop, ISP, UI, and capture pipeline must depend on contracts and boundary methods, not on whichever thread, queue, backend, or field happens to be inside.
 
 4. Keep ownership and lifecycle responsibilities at the correct layer. Do not hide important decisions about ownership, release, generation, scheduler semantics, or accounting inside a "convenience" method if that changes a layer's responsibility.
 
@@ -61,7 +61,7 @@ These rules apply to every part of the project: player-core, render, decoder, wo
 
 ## Module size and Rust API design rules
 
-1. Do not bloat central modules or crates. For Fastiplayer, this is especially important for `app-egui`, `player-core`, `render-wgpu-video`, `video-frame-contract`, and `video-backend-api`: new logic must go into the module that owns the relevant state and invariants, not the largest or most convenient file.
+1. Do not bloat central modules or crates. For Fasticamera, this is especially important for `camera-core`, `camera-android`, `isp-vulkan`, `ui-render-vulkan`, `camera-screen`, and `fasticamera-app`: new logic must go into the module that owns the relevant state and invariants, not the largest or most convenient file.
 
 2. If a file is already approaching 700–800 lines, put a new feature in a separate module by default. An exception is acceptable only for a small, local change; in that case, explicitly explain why a new module would reduce readability or fragment one coherent invariant.
 

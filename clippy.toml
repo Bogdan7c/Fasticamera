@@ -1,0 +1,5 @@
+# unwrap/expect/panic запрещены в продуктовом коде (workspace.lints), но в тестах
+# падение и есть способ сообщить о провале.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

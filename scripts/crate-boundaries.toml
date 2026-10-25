@@ -1,0 +1,84 @@
+# Правила границ между crate-ами Fasticamera.
+# Читает scripts/check-crate-boundaries.py. Источник правил: user/foundation/README.md,
+# разделы «Карта модулей», «Владельцы состояния», «Инварианты».
+schema_version = 1
+
+# Допустимые роли. Роль, которой нет в этом списке, — ошибка конфигурации (код 2).
+roles = ["platform_neutral", "android_platform", "gpu", "output", "composition_root"]
+
+# Роль каждого crate-а workspace. Будущие crate-ы из плана перечислены заранее:
+# пока их нет в workspace, скрипт лишь сообщает о них информационной строкой.
+# Новый crate в workspace без записи здесь — ошибка (код 1).
+[crates]
+"camera-contract" = "platform_neutral"
+"camera-core" = "platform_neutral"
+"isp-model" = "platform_neutral"
+"ui-core" = "platform_neutral"
+"camera-screen" = "platform_neutral"
+"camera-ndk-sys" = "android_platform"
+"camera-android" = "android_platform"
+"android-shell" = "android_platform"
+"gpu-vulkan" = "gpu"
+"isp-vulkan" = "gpu"
+"ui-render-vulkan" = "gpu"
+"photo-output" = "output"
+"fasticamera-app" = "composition_root"
+
+# Поля правила:
+#   applies_to          — роли, к которым правило применяется;
+#   applies_to_crates   — конкретные crate-ы (можно вместе с applies_to);
+#   forbid              — имена пакетов, которых не должно быть в транзитивных
+#                         зависимостях (normal + build; dev не учитываются);
+#   forbid_other_crates — true: дополнительно запрещены все остальные crate-ы из [crates];
+#   reason              — объяснение, которое попадает в сообщение о нарушении.
+
+[[rules]]
+id = "neutral-no-platform"
+applies_to = ["platform_neutral"]
+forbid = [
+  "ndk", "ndk-sys", "ndk-context", "jni", "jni-sys", "android_log-sys", "android_logger",
+  "android-activity", "ash", "ash-window", "wgpu", "vulkano", "gpu-allocator",
+  "camera-ndk-sys", "camera-android", "android-shell", "gpu-vulkan", "isp-vulkan",
+  "ui-render-vulkan", "photo-output", "fasticamera-app",
+]
+reason = "платформенно-нейтральные ядра собираются и тестируются без телефона, README инвариант 5"
+
+[[rules]]
+id = "contract-is-leaf"
+applies_to_crates = ["camera-contract"]
+forbid = []
+forbid_other_crates = true
+reason = "camera-contract — общий словарь и не зависит от других crate-ов проекта, README «Карта модулей»"
+
+[[rules]]
+id = "ui-render-not-camera"
+applies_to_crates = ["ui-render-vulkan"]
+forbid = ["camera-core", "camera-android", "camera-ndk-sys", "camera-screen", "isp-vulkan", "isp-model"]
+reason = "отрисовка UI не знает про камеру, фон стекла — нейтральный BackdropSource, README «Владельцы состояния»"
+
+[[rules]]
+id = "screen-no-camera2-no-draw"
+applies_to_crates = ["camera-screen"]
+forbid = ["camera-android", "camera-ndk-sys", "gpu-vulkan", "ui-render-vulkan", "isp-vulkan"]
+reason = "экран камеры не вызывает Camera2 и не рисует сам, а отправляет намерения, README «Владельцы состояния»"
+
+[[rules]]
+id = "gpu-not-camera"
+applies_to_crates = ["gpu-vulkan"]
+forbid = [
+  "camera-core", "camera-android", "camera-ndk-sys", "isp-model", "isp-vulkan",
+  "ui-core", "ui-render-vulkan", "camera-screen",
+]
+reason = "gpu-vulkan не знает про камеру и алгоритмы, README «Владельцы состояния»"
+
+[[rules]]
+id = "camera-android-isolated"
+applies_to_crates = ["camera-android"]
+forbid = ["ash", "gpu-vulkan", "isp-model", "isp-vulkan", "ui-core", "ui-render-vulkan", "camera-screen"]
+reason = "camera-android не знает про UI, Vulkan и ISP, README «Владельцы состояния»"
+
+[[rules]]
+id = "app-is-graph-leaf"
+applies_to = ["platform_neutral", "android_platform", "gpu", "output", "composition_root"]
+forbid = ["fasticamera-app"]
+reason = "fasticamera-app — composition root и лист графа: от него никто не зависит, README «Карта модулей»"

@@ -1,0 +1,3 @@
+[workspace]
+members = ["camera-contract", "isp-model"]
+resolver = "3"

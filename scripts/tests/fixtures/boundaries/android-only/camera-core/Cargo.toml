@@ -1,0 +1,10 @@
+[package]
+name = "camera-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+camera-contract = { path = "../camera-contract" }
+
+[target.'cfg(target_os = "android")'.dependencies]
+ndk = { path = "../vendor/ndk" }

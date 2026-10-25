@@ -1,0 +1,13 @@
+# Маленький набор правил для фикстур end-to-end тестов.
+schema_version = 1
+roles = ["platform_neutral", "composition_root"]
+
+[crates]
+"camera-contract" = "platform_neutral"
+"camera-core" = "platform_neutral"
+
+[[rules]]
+id = "neutral-no-platform"
+applies_to = ["platform_neutral"]
+forbid = ["jni", "ndk"]
+reason = "платформенно-нейтральные ядра собираются и тестируются без телефона, README инвариант 5"

@@ -1,0 +1,52 @@
+# Cargo workspace Fasticamera. Карта crate-ов и владельцы состояния — user/foundation/README.md.
+# Зонд tools/device-probe/native — отдельный проект со своим Cargo.lock, в workspace не входит.
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Версии внешних зависимостей — в одном месте, crate-ы ссылаются через `workspace = true`.
+[workspace.dependencies]
+camera-contract = { path = "crates/camera-contract" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1.44"
+# Только реестр и фильтр по целям: форматтеры fmt и regex-фильтр EnvFilter не нужны.
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["std", "registry"] }
+jni = "0.22.4"
+android_log-sys = "0.3.2"
+
+[workspace.lints.rust]
+# Каждая unsafe-операция внутри unsafe fn обязана стоять в явном unsafe-блоке с `// SAFETY:`.
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+# warn локально, ошибка в scripts/ci-checks.sh (-D warnings). В тестах разрешены через clippy.toml.
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+
+# Профиль отладочного APK: быстрая сборка, полные символы, debug-assertions включены.
+[profile.android-debug]
+inherits = "dev"
+opt-level = 1
+debug = "full"
+panic = "unwind"
+
+# Профиль релизного APK. Символы (строки) остаются в .so: AGP вырезает их из APK
+# и кладёт неурезанную копию рядом для ndk-stack (debugSymbolLevel = FULL в android/app).
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+debug = "line-tables-only"
+strip = "none"
+# unwind, а не abort: паника ловится на границе JNI и превращается в отчёт (решение владельца, сессия 01).
+panic = "unwind"
