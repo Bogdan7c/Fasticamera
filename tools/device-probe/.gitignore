@@ -1,0 +1,8 @@
+.gradle/
+.kotlin/
+build/
+local.properties
+native/target/
+*.apk
+*.log
+__pycache__/

@@ -1,0 +1,37 @@
+#version 450
+// Сумма всех 16-битных текселей RAW-кадра (путь "VkImage R16_UINT").
+// Результат: сумма по модулю 2^32 (u32 wraparound) — то же, что считает CPU в checksum.rs.
+// Каждая нить обходит текселы "решёткой" (grid-stride), поэтому размер dispatch
+// не зависит от разрешения кадра. Внутри группы частичные суммы сворачиваются в shared-памяти,
+// и в глобальный счётчик уходит один atomicAdd на группу.
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0, r16ui) uniform readonly uimage2D frame;
+layout(set = 0, binding = 1, std430) buffer Result { uint total; } result;
+layout(push_constant) uniform Params { uint width; uint height; } params;
+
+shared uint group_partials[256];
+
+void main() {
+    uint texel_count = params.width * params.height;
+    uint grid_stride = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+
+    uint partial = 0u;
+    for (uint i = gl_GlobalInvocationID.x; i < texel_count; i += grid_stride) {
+        ivec2 coord = ivec2(int(i % params.width), int(i / params.width));
+        partial += imageLoad(frame, coord).r;
+    }
+
+    group_partials[gl_LocalInvocationID.x] = partial;
+    barrier();
+    for (uint half_size = 128u; half_size > 0u; half_size >>= 1) {
+        if (gl_LocalInvocationID.x < half_size) {
+            group_partials[gl_LocalInvocationID.x] += group_partials[gl_LocalInvocationID.x + half_size];
+        }
+        barrier();
+    }
+    if (gl_LocalInvocationID.x == 0u) {
+        atomicAdd(result.total, group_partials[0]);
+    }
+}

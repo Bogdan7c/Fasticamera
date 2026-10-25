@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-feature android:name="android.hardware.camera.any" android:required="true" />
+
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Гироскоп чаще 200 Гц (C8: проверка 400 Гц) требует этого разрешения. -->
+    <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <application
+        android:allowBackup="false"
+        android:label="Fasticamera probe"
+        android:hasFragileUserData="false">
+        <!-- exported: сценарии запускаются с ПК через am start -n ... -e scenario <name>. -->
+        <activity
+            android:name=".ProbeActivity"
+            android:exported="true"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

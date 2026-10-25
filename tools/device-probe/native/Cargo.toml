@@ -1,0 +1,36 @@
+[package]
+name = "probe-native"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Нативная часть device-probe: разведка Camera2 NDK / AImageReader / Vulkan AHardwareBuffer на телефоне"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "probe_native"
+# cdylib грузится из Kotlin (System.loadLibrary), rlib нужен чтобы работали host-тесты.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+jni = "0.22.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+thiserror = "2"
+
+# Всё платформенное живёт только под Android: на хосте собирается лишь чистая логика.
+[target.'cfg(target_os = "android")'.dependencies]
+ndk-sys = { version = "0.6", features = ["media", "nativewindow"] }
+ash = { version = "0.38", default-features = false, features = ["loaded", "std", "debug"] }
+android_logger = "0.15"
+libc = "0.2"
+
+[profile.release]
+opt-level = 2
+lto = "thin"
+panic = "unwind" # catch_unwind на границе JNI требует unwind, не abort
+strip = "debuginfo"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

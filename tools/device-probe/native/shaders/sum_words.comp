@@ -1,0 +1,41 @@
+#version 450
+// Сумма 32-битных слов буфера с учётом stride строк (путь "VkBuffer на память AHB").
+// В каждой из `rows` строк суммируются первые `row_words` слов, затем пропускается паддинг
+// до `stride_words`. Результат — сумма по модулю 2^32, как в checksum::sum_strided_words.
+// Подходит и для упакованного RAW10: считаем байты как слова, а не пиксели.
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer Frame { uint words[]; } frame;
+layout(set = 0, binding = 1, std430) buffer Result { uint total; } result;
+layout(push_constant) uniform Params {
+    uint row_words;    // полезных слов в строке
+    uint stride_words; // шаг строки в словах
+    uint rows;         // число строк
+} params;
+
+shared uint group_partials[256];
+
+void main() {
+    uint word_count = params.row_words * params.rows;
+    uint grid_stride = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+
+    uint partial = 0u;
+    for (uint i = gl_GlobalInvocationID.x; i < word_count; i += grid_stride) {
+        uint row = i / params.row_words;
+        uint column = i % params.row_words;
+        partial += frame.words[row * params.stride_words + column];
+    }
+
+    group_partials[gl_LocalInvocationID.x] = partial;
+    barrier();
+    for (uint half_size = 128u; half_size > 0u; half_size >>= 1) {
+        if (gl_LocalInvocationID.x < half_size) {
+            group_partials[gl_LocalInvocationID.x] += group_partials[gl_LocalInvocationID.x + half_size];
+        }
+        barrier();
+    }
+    if (gl_LocalInvocationID.x == 0u) {
+        atomicAdd(result.total, group_partials[0]);
+    }
+}

@@ -1,13 +1,35 @@
-# OnePlus 11 (CPH2447) — факты камеры и GPU (снимок 2026-10-25, сессия планирования)
+# OnePlus 11 (CPH2447) — факты камеры и GPU (сессия 00, 2026-10-25)
 
-Источник: `getprop`, `dumpsys media.camera`, `cmd gpu vkjson`, `dumpsys display` по беспроводному adb, только чтение. Сессия 00 плана `user/foundation/` перепроверяет и дополняет экспериментами — после неё сверять с `user/foundation/results/00.md`.
+Источник истины с доказательствами: `user/foundation/results/00.md`. Зонд для перепроверки после обновлений прошивки: `tools/device-probe` (README там же).
 
-- Система: OxygenOS 16.0.5.1301(EX01), Android 16 / SDK 36, загрузчик заблокирован, `user`-сборка, HAL Qualcomm CamX/CHI (`vendor_qti`), `ro.hardware.camera=oemlayer`.
-- Белый список: `persist.camera.privapp.list=com.oneplus.camera,com.oppo.camera,com.oplus.engineercamera,com.oplus.camera`; установлены только `com.oplus.camera` и `com.oplus.engineercamera` (system).
-- Камеры: 0 логическая (2+3); 1 фронт S5K3P9 (fixed focus); 2 основная IMX890; 3 ширик IMX581; 4 телевик IMX709 — `SYSTEM_CAMERA`; 5 логическая (2+3+4) — `SYSTEM_CAMERA`. Обычному приложению видны 0–3.
-- Публичный RAW только биннинговый, 10 бит (white 1023, black 64), ≤30 к/с; RAW12 нет; один RAW-поток на сессию; `lensShadingApplied=TRUE`; OIS-управления нет; UHR-capability нет.
-- Режимы сенсора (вендорская таблица `org.quic.camera2.sensormode.info.SensorModeTable`): IMX890 4096×2304@60/@120, 2048×1152@240, 8192×6144@24; IMX581 4000×3000@60; IMX709 3136×1760@60.
-- Рычаги для 60 к/с и чистого RAW (не проверены): `org.quic.camera.manualExposure.disableFPSLimits`/`overrideSensorFrameDuration`, `StreamBasedFPS`, `customhfrfps`, `com.oplus.sensor.mode`, `org.codeaurora.qcamera3.sessionParameters.EnableIdealRAW`/`enableShadingCorrection`.
-- GPU: Adreno 740, Vulkan 1.3.128; есть AHB external memory, external semaphore/fence fd, ycbcr, timeline, sync2, dynamic rendering, fp16/int8, 16bit storage, display_timing, swapchain_maintenance1, QCOM image processing; нет present_wait, cooperative_matrix.
-- Экран 1440×3216 / 1080×2412, 60/90/120 Гц.
-- Видео: `c2.qti.hevc.encoder` (4K@120 perf point, ≤160 Мбит/с), `c2.qti.hevc.encoder.hdr` (≤4096×2176, 4K@60, hdr-editing), `c2.qti.avc.encoder`; Dolby Vision `c2.qti.dv.encoder` закомментирован в `/vendor/etc/media_codecs_kalama_vendor.xml` (выключен). Гироскоп Bosch BMI26x до 400 Гц. Теги HDR в сенсоре: `inSensorSHDRMode`, `EnableSHDR`, `EnableMFHDR`, `com.oplus.DolExposureInfo` (не проверены).
+## Система
+- OxygenOS 16.0.5.1301(EX01), Android 16 / SDK 36, загрузчик заблокирован, HAL Qualcomm CamX/CHI, `ro.hardware.camera=oemlayer`.
+- Logcat main-буфер 256 КиБ — CamX вытесняет записи за секунды; данные зонда идут JSONL-файлом через `run-as`.
+- Фоновый процесс Oplus замораживает (`isFrozen`) — Activity с камерой должна быть на переднем плане (`setShowWhenLocked`/`setTurnScreenOn` при запуске с ПК).
+
+## Камеры и доступ
+- Видны 0–3 (0 логическая 2+3, 1 фронт S5K3P9, 2 основная IMX890, 3 ширик IMX581). 4 (телевик) и 5 закрыты фреймворком: `SYSTEM_CAMERA` = `signature|privileged|role`; без root недоступны. Имя пакета на это не влияет.
+- `com.oneplus.camera` ставится, но ничего не меняет; `com.oppo.camera` — `INSTALL_FAILED_SHARED_USER_INCOMPATIBLE: oplus named app is not match signature`. Решение владельца 20: имя `dev.fasticamera`.
+- Публичный RAW: основная 4096×3072 (RAW16/RAW10/RAW_PRIVATE), ширик 4000×3000, фронт 2304×1728/1296; min frame 33 мс (объявлено 30 к/с). Max-resolution карты нет.
+
+## 60 к/с RAW (без root)
+- Основная 16:9@60: `CONTROL_AE_TARGET_FPS_RANGE=[60,60]` → режим сенсора 4 (4096×2304@60); буфер 4096×3072, данные в строках 0–2303, ниже нули (центральная вырезка 4:3). 5 мин = 18 000 кадров, 5 пропусков.
+- Основная 4:3@60: CamX `org.quic.camera.manualExposure.disableFPSLimits` (byte, 0x804a0000)=1 + `overrideSensorFrameDuration` (int64, 0x804a0001)=16666667, без AE fps range (иначе режим 4); работает и с вендорским AE; `SENSOR_FRAME_DURATION` в результате ложный (33,3 мс) — темп только по SENSOR_TIMESTAMP.
+- Ширик 4:3@60: AE `[60,60]` → режим 2 (4000×3000@60). Ключи CamX на ширике ломают поток (0 кадров, похоже перезапуск HAL).
+- Вендорские режимы сессии (0x8021 и т.д.) для 60 к/с не нужны; constrained high-speed с RAW отвергнут; 50 Мп публично недоступен.
+- Индекс режима сенсора в результате: `org.codeaurora.qcamera3.sensor_meta_data.current_mode` (int32).
+
+## Вендорская обработка RAW
+- Коррекция виньетирования уже в RAW (`lensShadingApplied=true`, карта 17×13, угол ×4,33) и НЕ отключается (`SHADING_MODE_OFF`, `enableShadingCorrection`, `EnableIdealRAW`, `RawCbSourceType` не меняют пиксели).
+- Шумодава в RAW нет (NR OFF = HQ). Black 64 статический, white 1023, `dynamicBlackLevel` не отдаётся. CFA BGGR (3).
+- OIS: характеристики объявляют только OFF, но основная по умолчанию отвечает ois_mode=1; явный OFF принимается.
+
+## Vulkan / кодер
+- Импорт без копий: `AImageReader` usage `GPU_SAMPLED_IMAGE` (0x100); `GPU_DATA_BUFFER` для RAW gralloc не выделяет (камера молча без кадров). RAW16 → `VkImage R16_UINT` storage; RAW10 → `VkBuffer` (AHB stride в байтах, 5120 для 4096). AHB props: format UNDEFINED, externalFormat 0. Acquire-fence приходит сигнальным; release через `AImage_deleteAsync` + sync_fd. Сумма GPU = CPU.
+- Adreno 740, Vulkan 1.3.128; нет present_wait, cooperative_matrix.
+- Vulkan swapchain прямо на входную surface `c2.qti.hevc.encoder.hdr`: 3840×2160, A2B10G10R10, цветовые пространства HDR10 PQ/HLG; 300/300 кадров, PTS через VK_GOOGLE_display_timing.
+- Системная камера: 4K60 = op mode 0x8021, HEVC Main 8 бит SDR ~68 Мбит/с; HDR-видео только 30 к/с (0x80A7); Pro RAW = 0x8009 + SuperRAW на DSP.
+
+## Платформа
+- Гироскоп BMI26x 402 Гц, шкала BOOTTIME (как SENSOR_TIMESTAMP REALTIME). Rolling shutter skew: основная 4:3 13,66 мс, 16:9@60 15,97, ширик@60 16,28.
+- Хаптика: примитивы TICK/LOW_TICK/CLICK/THUD не поддерживаются. Sustained performance mode не поддерживается. Флеш ~1,8 ГиБ/с последовательно. 4 физических микрофона. Экран 60/90/120 Гц.
