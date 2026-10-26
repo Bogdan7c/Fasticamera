@@ -24,6 +24,7 @@ use shell_contract::thermal::ThermalSource;
 use shell_contract::thermal_policy::ThermalPolicy;
 use shell_contract::vsync::VsyncSource;
 
+use crate::camera_service::CameraServices;
 use crate::gpu_services::GpuServices;
 
 use super::{ScenarioConfig, ScenarioOutcome, ScenarioReport};
@@ -75,6 +76,11 @@ pub struct DisplayState {
 }
 
 impl DisplayState {
+    /// Приложение на переднем плане (получено `Resumed` и не получено `Paused`).
+    pub fn is_resumed(&self) -> bool {
+        self.resumed
+    }
+
     /// Приложение на переднем плане и у него есть surface — на экране можно рисовать.
     pub fn is_presenting(&self) -> bool {
         self.resumed && self.surface_generation.is_some()
@@ -180,6 +186,8 @@ pub struct ScenarioContext<'call> {
     pub config: &'call ScenarioConfig,
     /// Состояние потока рендера и разовые GPU-диагностики.
     pub gpu: &'call GpuServices,
+    /// Движок камеры, диагностика бэкенда и политика жизненного цикла камеры.
+    pub camera: &'call CameraServices,
     pub gyro_request: GyroRequest,
     pub now: Instant,
     output: &'call mut dyn ScenarioOutput,
@@ -197,6 +205,7 @@ impl<'call> ScenarioContext<'call> {
         thermal_policy: &'call ThermalPolicy,
         config: &'call ScenarioConfig,
         gpu: &'call GpuServices,
+        camera: &'call CameraServices,
         gyro_request: GyroRequest,
         now: Instant,
         output: &'call mut dyn ScenarioOutput,
@@ -208,6 +217,7 @@ impl<'call> ScenarioContext<'call> {
             thermal_policy,
             config,
             gpu,
+            camera,
             gyro_request,
             now,
             output,

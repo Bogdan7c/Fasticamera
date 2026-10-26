@@ -1,0 +1,194 @@
+//! Почтовый ящик потока камеры: сюда пишут все, а читает один поток `fasticamera-camera`.
+//!
+//! Три полосы с явными приоритетами (читаются в этом порядке):
+//! 1. **редкие события бэкенда** (отключение, ошибка устройства, закрытие сессии, свобода
+//!    камеры) — без лимита и никогда не теряются: их мало, а потеря превращается в зависшую
+//!    камеру;
+//! 2. **команды** — не больше `queues.command_capacity`; переполнение — отказ отправителю
+//!    ([`CommandRejected::QueueFull`]), команда не теряется молча;
+//! 3. **частые события** (результаты кадров) — не больше `queues.capture_event_capacity`;
+//!    при переполнении вытесняется **старейшее** со счётчиком: свежий кадр важнее старого.
+//!
+//! Отправители (колбэки NDK на потоках binder, UI-поток) **никогда не ждут**: они берут замок
+//! на микросекунды, кладут запись и будят поток. Остановка и просроченный таймер движка
+//! тоже приходят через ящик: [`CameraInbox::wait_next`].
+
+use std::collections::VecDeque;
+use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
+use std::time::Instant;
+
+use crate::backend::{BackendEvent, BackendEventListener};
+use crate::command::{CameraCommand, CommandId, CommandRejected};
+use crate::config::QueueConfig;
+
+/// Что поток камеры получил из ящика.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InboxItem {
+    /// Просят остановиться.
+    Stop,
+    BackendEvent(BackendEvent),
+    Command {
+        id: CommandId,
+        command: CameraCommand,
+    },
+    /// Наступил срок таймера движка, а другого содержимого нет.
+    Timeout,
+}
+
+#[derive(Default)]
+struct InboxState {
+    rare_events: VecDeque<BackendEvent>,
+    commands: VecDeque<(CommandId, CameraCommand)>,
+    capture_events: VecDeque<BackendEvent>,
+    dropped_capture_events: u64,
+    /// Сколько принятых, но не выполненных команд сброшено при остановке потока
+    /// ([`CameraInbox::mark_stopped`]). Их отправители ответа не получат — это явный учёт.
+    commands_discarded_at_stop: u64,
+    next_command_id: u64,
+    stop_requested: bool,
+    /// Поток завершился: команды больше не принимаются, события отбрасываются.
+    stopped: bool,
+}
+
+/// Ящик потока камеры.
+pub struct CameraInbox {
+    queues: QueueConfig,
+    state: Mutex<InboxState>,
+    wake: Condvar,
+}
+
+impl CameraInbox {
+    pub fn new(queues: QueueConfig) -> Self {
+        Self {
+            queues,
+            state: Mutex::new(InboxState::default()),
+            wake: Condvar::new(),
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, InboxState> {
+        // Паника держателя замка не должна ронять колбэки NDK: данные ящика всегда целы.
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Положить команду. Номер выдаётся здесь, по нему итог находится в событиях.
+    pub fn submit_command(&self, command: CameraCommand) -> Result<CommandId, CommandRejected> {
+        let mut state = self.lock();
+        // Команда, принятая после `request_stop`, не получила бы ответа: поток уже не читает
+        // команды. Поэтому отказ `EngineStopped` начинается с просьбы об остановке, а не с
+        // её завершения (иначе между `request_stop` и `mark_stopped` — окно «принято без ответа»).
+        if state.stop_requested || state.stopped {
+            return Err(CommandRejected::EngineStopped);
+        }
+        if state.commands.len() >= self.queues.command_capacity {
+            return Err(CommandRejected::QueueFull);
+        }
+        state.next_command_id += 1;
+        let id = CommandId(state.next_command_id);
+        state.commands.push_back((id, command));
+        drop(state);
+        self.wake.notify_one();
+        Ok(id)
+    }
+
+    /// Попросить поток остановиться (идемпотентно).
+    pub fn request_stop(&self) {
+        self.lock().stop_requested = true;
+        self.wake.notify_one();
+    }
+
+    /// Пометить поток завершённым: после этого команды получают `EngineStopped`.
+    ///
+    /// Команды, которые успели лечь в очередь до `request_stop`, но поток их уже не разберёт,
+    /// ответа не получают (поток остановлен, события наружу некому публиковать). Это решение
+    /// не молчаливое: число таких команд пишется в журнал и доступно через
+    /// [`CameraInbox::commands_discarded_at_stop`].
+    pub fn mark_stopped(&self) {
+        let mut state = self.lock();
+        state.stopped = true;
+        let discarded = state.commands.len() as u64;
+        state.commands_discarded_at_stop += discarded;
+        if discarded > 0 {
+            tracing::warn!(
+                target: "fasticamera::camera::inbox",
+                discarded,
+                "при остановке потока камеры сброшены принятые, но не выполненные команды"
+            );
+        }
+        state.commands.clear();
+        state.rare_events.clear();
+        state.capture_events.clear();
+    }
+
+    /// Сколько частых событий вытеснено за всё время.
+    pub fn dropped_capture_events(&self) -> u64 {
+        self.lock().dropped_capture_events
+    }
+
+    /// Сколько принятых команд сброшено без ответа при остановке потока.
+    pub fn commands_discarded_at_stop(&self) -> u64 {
+        self.lock().commands_discarded_at_stop
+    }
+
+    /// Сколько команд ждёт (для тестов и диагностики).
+    pub fn pending_commands(&self) -> usize {
+        self.lock().commands.len()
+    }
+
+    /// Подождать следующее содержимое, но не позже `deadline`. Вызывает только поток камеры.
+    pub fn wait_next(&self, deadline: Option<Instant>) -> InboxItem {
+        let mut state = self.lock();
+        loop {
+            if state.stop_requested {
+                return InboxItem::Stop;
+            }
+            if let Some(event) = state.rare_events.pop_front() {
+                return InboxItem::BackendEvent(event);
+            }
+            if let Some((id, command)) = state.commands.pop_front() {
+                return InboxItem::Command { id, command };
+            }
+            // Срок таймера проверяется до частых событий: поток кадров не должен его заглушить.
+            let now = Instant::now();
+            if deadline.is_some_and(|due| now >= due) {
+                return InboxItem::Timeout;
+            }
+            if let Some(event) = state.capture_events.pop_front() {
+                return InboxItem::BackendEvent(event);
+            }
+            state = match deadline {
+                Some(due) => {
+                    self.wake
+                        .wait_timeout(state, due.saturating_duration_since(now))
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .0
+                }
+                None => self.wake.wait(state).unwrap_or_else(PoisonError::into_inner),
+            };
+        }
+    }
+}
+
+impl BackendEventListener for CameraInbox {
+    fn deliver(&self, event: BackendEvent) {
+        let mut state = self.lock();
+        if state.stopped {
+            return;
+        }
+        if event.is_capture_stream_event() {
+            if state.capture_events.len() >= self.queues.capture_event_capacity {
+                state.capture_events.pop_front();
+                state.dropped_capture_events += 1;
+            }
+            state.capture_events.push_back(event);
+        } else {
+            state.rare_events.push_back(event);
+        }
+        drop(state);
+        self.wake.notify_one();
+    }
+}
+
+#[cfg(test)]
+#[path = "inbox_tests.rs"]
+mod tests;

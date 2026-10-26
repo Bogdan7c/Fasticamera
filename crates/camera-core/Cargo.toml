@@ -1,0 +1,25 @@
+[package]
+name = "camera-core"
+description = "Движок камеры Fasticamera без Android: машина состояний, желаемое состояние и восстановление, трейт CameraBackend и fake"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+camera-contract.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+camera-contract = { workspace = true, features = ["fixtures"] }
+serde_json.workspace = true
+
+[features]
+# Fake-бэкенд с программируемыми отказами — для тестов соседних crate-ов (приложение, сценарии).
+fake-backend = ["camera-contract/fixtures"]
+
+[lints]
+workspace = true

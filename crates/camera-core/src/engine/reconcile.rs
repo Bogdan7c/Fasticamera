@@ -1,0 +1,309 @@
+//! Доведение реального состояния до желаемого.
+//!
+//! [`CameraEngine::reconcile`] вызывается после каждой команды, события или таймера.
+//! Он сравнивает [`Desired`] с тем, что реально открыто, и делает недостающие шаги
+//! синхронными вызовами бэкенда по порядку: открыть устройство → сконфигурировать сессию →
+//! поставить повторяющийся запрос (или снять его). Шаг, который не удался, записывает
+//! состояние ошибки и возвращает [`Halt`] — дальше не идём.
+//!
+//! Идемпотентность: когда всё уже сделано, `reconcile` ничего не вызывает и не пишет событий.
+//! Поэтому повторный `open` и `apply_controls` без изменений не трогают бэкенд.
+
+use std::time::Instant;
+
+use camera_contract::availability::CameraUnavailableReason;
+use camera_contract::ids::CameraId;
+use camera_contract::stream::{ResolvedStream, StreamMode};
+
+use super::{CameraEngine, Halt, LOG_TARGET, LiveSession, OpenDevice, RepeatingRequest};
+use crate::backend::{ConfigureFailure, DeviceGeneration, OpenFailure, RequestFailure, SessionGeneration};
+use crate::event::CameraEvent;
+use crate::state::{CameraState, ClosedReason};
+use crate::status::AppPresence;
+
+/// Что должно быть открыто сейчас: камера, поток под неё и запрос.
+struct Plan {
+    camera: CameraId,
+    stream: Option<ResolvedStream>,
+}
+
+impl CameraEngine {
+    /// Доведение заперто: окончательная ошибка, фон, ожидание повода повтора, нет каталога.
+    fn reconcile_is_blocked(&self) -> bool {
+        self.poisoned
+            || self.is_fatal()
+            || self.presence == AppPresence::Background
+            || self.recovery.waiting
+            || !self.catalog_loaded
+    }
+
+    /// Разрешить желаемое состояние в план для текущего каталога.
+    fn current_plan(&self) -> Option<Plan> {
+        let target = self.desired.target.as_ref()?;
+        let descriptor = match self.catalog.resolve(target) {
+            Ok(descriptor) => descriptor,
+            Err(unavailable) => {
+                tracing::warn!(target: LOG_TARGET, %unavailable, "желаемая камера пропала из каталога");
+                return None;
+            }
+        };
+        let stream = self.desired.mode.and_then(|mode| {
+            let option = descriptor.capabilities.largest_raw_stream(mode.raw_format)?;
+            Some(resolved_stream(&descriptor.id, &mode, option.size))
+        });
+        Some(Plan {
+            camera: descriptor.id.clone(),
+            stream,
+        })
+    }
+
+    /// Довести реальное состояние до желаемого.
+    pub(super) fn reconcile(&mut self, now: Instant) {
+        if self.reconcile_is_blocked() {
+            return;
+        }
+        let Some(plan) = self.current_plan() else {
+            self.release_unwanted_camera();
+            return;
+        };
+        if self.drive_to_plan(&plan, now).is_ok() {
+            self.complete_recovery_if_pending();
+        }
+    }
+
+    /// Ничего не желаем: устройство закрыть, состояние — «закрыто».
+    fn release_unwanted_camera(&mut self) {
+        self.release_platform();
+        self.reconfiguring = false;
+        self.transition(CameraState::Closed {
+            reason: ClosedReason::NotRequested,
+        });
+    }
+
+    fn drive_to_plan(&mut self, plan: &Plan, now: Instant) -> Result<(), Halt> {
+        self.step_release_wrong_device(plan);
+        self.step_open_device(plan, now)?;
+        self.step_session(plan, now)?;
+        self.step_repeating_request(now)
+    }
+
+    /// Открыта другая камера — отпустить; шёл поток — это перестройка.
+    fn step_release_wrong_device(&mut self, plan: &Plan) {
+        let is_wrong = self.device.as_ref().is_some_and(|device| device.camera != plan.camera);
+        if !is_wrong {
+            return;
+        }
+        let was_streaming = self.session.as_ref().is_some_and(|session| session.repeating.is_some());
+        self.release_platform();
+        self.begin_reconfiguring_if(was_streaming, plan);
+    }
+
+    /// Поток шёл и перестраивается: показать `Reconfiguring` один раз, без промежуточных шагов.
+    fn begin_reconfiguring_if(&mut self, was_streaming: bool, plan: &Plan) {
+        if !was_streaming {
+            return;
+        }
+        if let Some(target) = &plan.stream {
+            self.reconfiguring = true;
+            self.transition(CameraState::Reconfiguring { target: target.clone() });
+        }
+    }
+
+    /// Промежуточное состояние, которое во время перестройки не показывается.
+    fn transition_unless_reconfiguring(&mut self, state: CameraState) {
+        if !self.reconfiguring {
+            self.transition(state);
+        }
+    }
+
+    fn step_open_device(&mut self, plan: &Plan, now: Instant) -> Result<(), Halt> {
+        if self.device.is_some() {
+            return Ok(());
+        }
+        self.transition_unless_reconfiguring(CameraState::Opening {
+            camera: plan.camera.clone(),
+        });
+        self.counters.devices_opened += 1;
+        self.availability.note_open_attempt();
+        let generation = DeviceGeneration(self.counters.devices_opened);
+        match self.backend.open_device(&plan.camera, generation) {
+            Ok(()) => {
+                self.device = Some(OpenDevice {
+                    camera: plan.camera.clone(),
+                    generation,
+                });
+                self.transition_unless_reconfiguring(CameraState::Opened {
+                    camera: plan.camera.clone(),
+                });
+                Ok(())
+            }
+            Err(OpenFailure::Unavailable { reason }) => Err(self.fail_recoverable(reason, now)),
+            Err(OpenFailure::Backend(failure)) => Err(self.fail_with_backend_failure(&failure, now)),
+        }
+    }
+
+    /// Сессия должна совпадать с желаемым потоком: лишнюю закрыть, недостающую создать.
+    fn step_session(&mut self, plan: &Plan, now: Instant) -> Result<(), Halt> {
+        self.close_session_if_outdated(plan);
+        let Some(stream) = &plan.stream else {
+            return Ok(());
+        };
+        if self.session.is_some() {
+            return Ok(());
+        }
+        let Some(mode) = self.desired.mode else {
+            return Ok(());
+        };
+        self.configure_session(stream, mode, now)
+    }
+
+    fn close_session_if_outdated(&mut self, plan: &Plan) {
+        let outdated = match (&self.session, &plan.stream) {
+            (Some(session), Some(stream)) => &session.configured.stream != stream,
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        if !outdated {
+            return;
+        }
+        let was_streaming = self.session.as_ref().is_some_and(|session| session.repeating.is_some());
+        self.backend.close_session();
+        self.session = None;
+        self.begin_reconfiguring_if(was_streaming, plan);
+    }
+
+    fn configure_session(&mut self, stream: &ResolvedStream, mode: StreamMode, now: Instant) -> Result<(), Halt> {
+        self.transition_unless_reconfiguring(CameraState::Configuring { stream: stream.clone() });
+        self.counters.sessions_configured += 1;
+        let generation = SessionGeneration(self.counters.sessions_configured);
+        match self.backend.configure_session(stream, generation) {
+            Ok(configured) => {
+                self.cadence.begin_session(generation, mode.frame_rate.frame_duration());
+                self.events.push(CameraEvent::StreamConfigured {
+                    stream: configured.clone(),
+                });
+                self.session = Some(LiveSession {
+                    generation,
+                    configured,
+                    repeating: None,
+                });
+                Ok(())
+            }
+            Err(ConfigureFailure::DeviceDisconnected) => {
+                Err(self.fail_recoverable(CameraUnavailableReason::Evicted, now))
+            }
+            Err(ConfigureFailure::Backend(failure)) => Err(self.fail_with_backend_failure(&failure, now)),
+            Err(rejection @ (ConfigureFailure::Unsupported(_) | ConfigureFailure::RejectedByHal { .. })) => {
+                Err(self.reject_stream_mode(mode, rejection))
+            }
+        }
+    }
+
+    /// Режим невозможен на этой камере: не недоступность, повторять не нужно. Желаемые режим
+    /// и поток сбрасываются, устройство остаётся открытым.
+    fn reject_stream_mode(&mut self, mode: StreamMode, failure: ConfigureFailure) -> Halt {
+        tracing::warn!(target: LOG_TARGET, %failure, "режим потока не сконфигурировался");
+        self.desired.mode = None;
+        self.desired.streaming = None;
+        self.reconfiguring = false;
+        self.events
+            .push(CameraEvent::StreamConfigurationFailed { mode, failure });
+        if let Some(device) = &self.device {
+            let camera = device.camera.clone();
+            self.transition(CameraState::Opened { camera });
+        }
+        // Дальше идти нечего: желаемое выполнено в том смысле, что требований к потоку больше нет.
+        self.complete_recovery_if_pending();
+        Halt
+    }
+
+    /// Повторяющийся запрос должен совпадать с желаемым (поток и параметры).
+    fn step_repeating_request(&mut self, now: Instant) -> Result<(), Halt> {
+        let wanted = self.desired.streaming.map(|intent| RepeatingRequest {
+            intent,
+            controls: self.desired.controls,
+        });
+        let Some(session) = &self.session else {
+            return self.settle_opened();
+        };
+        let current = session.repeating;
+        match (wanted, current) {
+            (Some(request), current) if current != Some(request) => self.start_repeating(request, now),
+            (Some(_), _) => Ok(()),
+            (None, Some(_)) => self.stop_repeating(now),
+            (None, None) => self.settle_opened(),
+        }
+    }
+
+    /// Повторяющегося запроса нет: состояние «устройство открыто».
+    fn settle_opened(&mut self) -> Result<(), Halt> {
+        self.reconfiguring = false;
+        if let Some(device) = &self.device {
+            let camera = device.camera.clone();
+            self.transition(CameraState::Opened { camera });
+        }
+        Ok(())
+    }
+
+    fn start_repeating(&mut self, request: RepeatingRequest, now: Instant) -> Result<(), Halt> {
+        match self.backend.set_repeating_request(request.intent, &request.controls) {
+            Ok(()) => {
+                let Some(session) = &mut self.session else {
+                    return Ok(());
+                };
+                session.repeating = Some(request);
+                let stream = session.configured.clone();
+                self.reconfiguring = false;
+                self.transition(CameraState::Streaming { stream });
+                Ok(())
+            }
+            Err(failure) => Err(self.fail_from_request_failure(failure, now)),
+        }
+    }
+
+    fn stop_repeating(&mut self, now: Instant) -> Result<(), Halt> {
+        match self.backend.stop_repeating() {
+            Ok(()) => {
+                if let Some(session) = &mut self.session {
+                    session.repeating = None;
+                }
+                self.settle_opened()
+            }
+            Err(failure) => Err(self.fail_from_request_failure(failure, now)),
+        }
+    }
+
+    /// Отказ повторяющегося запроса: отключение — вытеснение, остальное — сбой устройства.
+    fn fail_from_request_failure(&mut self, failure: RequestFailure, now: Instant) -> Halt {
+        match failure {
+            RequestFailure::DeviceDisconnected => self.fail_recoverable(CameraUnavailableReason::Evicted, now),
+            RequestFailure::NoSession => {
+                // Бэкенд говорит «сессии нет», а движок считал, что есть: рассинхрон, лечится переоткрытием.
+                tracing::error!(target: LOG_TARGET, "рассинхрон движка и бэкенда: нет активной сессии");
+                self.fail_recoverable(CameraUnavailableReason::DeviceFailure, now)
+            }
+            RequestFailure::Backend(failure) => self.fail_with_backend_failure(&failure, now),
+        }
+    }
+
+    /// Недоступность по ошибке устройства (код HAL → причина).
+    pub(super) fn fail_from_device_error(&mut self, error: crate::backend::DeviceErrorKind, now: Instant) {
+        let reason = Self::unavailable_reason_for(error);
+        let _ = self.fail_recoverable(reason, now);
+    }
+}
+
+/// Режим, разрешённый для камеры: размер буфера — самый большой публичный RAW этого формата.
+fn resolved_stream(
+    camera: &CameraId,
+    mode: &StreamMode,
+    buffer_size: camera_contract::geometry::PixelSize,
+) -> ResolvedStream {
+    ResolvedStream {
+        camera: camera.clone(),
+        raw_format: mode.raw_format,
+        buffer_size,
+        readout: mode.readout,
+        frame_rate: mode.frame_rate,
+    }
+}

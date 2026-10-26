@@ -19,6 +19,13 @@
 - Вендорские режимы сессии (0x8021 и т.д.) для 60 к/с не нужны; constrained high-speed с RAW отвергнут; 50 Мп публично недоступен.
 - Индекс режима сенсора в результате: `org.codeaurora.qcamera3.sensor_meta_data.current_mode` (int32).
 
+## Camera2 NDK (сессия 04)
+- 60 к/с через NDK подтверждены: основная 16:9@60 (AE [60,60] в параметрах сессии и запросе) 58,6 к/с в комнате (AE растягивает кадр до 17 мс), 4:3@60 (CamX-ключи только в запросе) 59,8 к/с, ширик 4:3@60 58,9, RAW16 16:9@60 58,4; фронт 30,0.
+- Вендорские теги ищутся по имени `ACameraMetadata_getTagFromName` (API 35): disableFPSLimits 0x804a0000, overrideSensorFrameDuration 0x804a0001, is_qcfa_sensor 0x80330000 (на всех камерах). `ACameraManager_getTagFromName` в публичном NDK закрыт (`__ANDROID_VNDK__`).
+- Углы обзора по длинной стороне: основная 72,5°, фронт 71,0°, ширик 102,0° (порог роли ширика 90°).
+- **Логическая камера 0 не отдаёт финальных результатов запросов**: только частичные (`onCaptureProgressed`), `onCaptureCompleted` = 0; RAW-кадры идут ~30 к/с. Java-зонд даёт то же (`res_fps null`) — поведение HAL, не NDK. Важно для сессии 13 (переключение через логическую камеру).
+- RAW-размеры в карте HAL шире, чем знала 00: логическая 0 ещё `raw10 4000×3000`, фронт ещё 2304×1296.
+
 ## Вендорская обработка RAW
 - Коррекция виньетирования уже в RAW (`lensShadingApplied=true`, карта 17×13, угол ×4,33) и НЕ отключается (`SHADING_MODE_OFF`, `enableShadingCorrection`, `EnableIdealRAW`, `RawCbSourceType` не меняют пиксели).
 - Шумодава в RAW нет (NR OFF = HQ). Black 64 статический, white 1023, `dynamicBlackLevel` не отдаётся. CFA BGGR (3).

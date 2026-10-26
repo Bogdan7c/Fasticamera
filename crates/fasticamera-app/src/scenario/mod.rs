@@ -20,6 +20,7 @@ pub mod platform;
 
 mod ahb_import;
 mod background_job;
+mod camera;
 mod gpu_fence;
 mod render;
 mod render_lifecycle;
@@ -57,6 +58,7 @@ pub enum Scenario {
     AhbImport,
     /// Порядок GPU-работ через `sync_fd`: B не стартует раньше конца A.
     GpuFence,
+    Camera(camera::CameraScenario),
 }
 
 /// Как сценарий выполняется.
@@ -69,7 +71,7 @@ pub enum ScenarioMode {
 }
 
 /// Имена сценариев, которые парсер знает вообще (включая отладочные).
-const DEBUG_ONLY_SCENARIO_NAMES: &[&str] = &["panic"];
+const DEBUG_ONLY_SCENARIO_NAMES: &[&str] = &["panic", "camera-evict"];
 
 impl Scenario {
     /// Все сценарии этой сборки.
@@ -86,6 +88,10 @@ impl Scenario {
             Scenario::RenderLifecycle,
             Scenario::AhbImport,
             Scenario::GpuFence,
+            Scenario::Camera(camera::CameraScenario::Catalog),
+            Scenario::Camera(camera::CameraScenario::Stream),
+            #[cfg(feature = "debug-scenarios")]
+            Scenario::Camera(camera::CameraScenario::Evict),
         ]
     }
 
@@ -102,6 +108,7 @@ impl Scenario {
             Scenario::RenderLifecycle => "render-lifecycle",
             Scenario::AhbImport => "ahb-import",
             Scenario::GpuFence => "gpu-fence",
+            Scenario::Camera(kind) => kind.name(),
         }
     }
 
@@ -117,7 +124,8 @@ impl Scenario {
             | Scenario::Render
             | Scenario::RenderLifecycle
             | Scenario::AhbImport
-            | Scenario::GpuFence => ScenarioMode::Observing,
+            | Scenario::GpuFence
+            | Scenario::Camera(_) => ScenarioMode::Observing,
         }
     }
 
@@ -135,6 +143,7 @@ impl Scenario {
             Scenario::RenderLifecycle => Some(Box::new(render_lifecycle::RenderLifecycleScenario::new())),
             Scenario::AhbImport => Some(Box::new(ahb_import::AhbImportScenario::new())),
             Scenario::GpuFence => Some(Box::new(gpu_fence::GpuFenceScenario::new())),
+            Scenario::Camera(kind) => Some(kind.observing()),
         }
     }
 
@@ -410,7 +419,8 @@ fn run_named(name: &str, runtime: Option<&RuntimeConfig>) -> Result<serde_json::
         | Scenario::Render
         | Scenario::RenderLifecycle
         | Scenario::AhbImport
-        | Scenario::GpuFence => Err(ScenarioError::NotImmediate { name: scenario.name() }),
+        | Scenario::GpuFence
+        | Scenario::Camera(_) => Err(ScenarioError::NotImmediate { name: scenario.name() }),
     }
 }
 

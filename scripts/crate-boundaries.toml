@@ -119,3 +119,31 @@ crate = "gpu-vulkan"
 pattern = "#[link("
 allowed_files = ["src/android/hardware_buffer_ffi.rs"]
 reason = "линковка нативных библиотек — только в одном safety-модуле, решение 32 сессии 03"
+
+[[source_rules]]
+id = "camera-android-no-link-attribute"
+crate = "camera-android"
+pattern = "#[link("
+allowed_files = []
+reason = "линковка libcamera2ndk и libmediandk — только в camera-ndk-sys (build.rs), решение 37 сессии 04"
+
+[[source_rules]]
+id = "camera-android-callbacks-only-in-safety-modules"
+crate = "camera-android"
+pattern = 'extern "C"'
+allowed_files = ["src/android/callbacks.rs", "src/android/reader_callback.rs"]
+reason = "колбэки NDK объявляются только в двух safety-модулях (catch_unwind, без блокировок, события с поколением), сессия 04"
+
+[[source_rules]]
+id = "camera-ndk-sys-no-link-attribute"
+crate = "camera-ndk-sys"
+pattern = "#[link("
+allowed_files = []
+reason = "линковка объявляется в build.rs (cargo:rustc-link-lib) и только под Android; в исходниках атрибутов link нет, решение 37 сессии 04"
+
+[[source_rules]]
+id = "camera-ndk-sys-no-handwritten-extern"
+crate = "camera-ndk-sys"
+pattern = 'extern "C"'
+allowed_files = []
+reason = "объявления NDK генерирует bindgen при сборке; ручной extern в этом crate не нужен, решение 37 сессии 04"

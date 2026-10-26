@@ -1,0 +1,55 @@
+//! События движка наружу.
+
+use camera_contract::availability::CameraUnavailableReason;
+use camera_contract::stream::{ConfiguredStream, StreamMode};
+use serde::Serialize;
+
+use crate::backend::ConfigureFailure;
+use crate::command::{CommandId, CommandOutcome};
+use crate::state::CameraState;
+
+/// Событие движка. Поток событий ограничен: при переполнении старые вытесняются со счётчиком
+/// ([`crate::CameraCounters::dropped_outward_events`]), а актуальное состояние всегда есть
+/// в снимке [`crate::CameraStatus`] — потеря события не теряет правду о камере.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum CameraEvent {
+    /// Итог команды с номером `command`.
+    CommandHandled {
+        command: CommandId,
+        name: &'static str,
+        outcome: CommandOutcome,
+    },
+    StateChanged {
+        state: CameraState,
+    },
+    /// Камера пропала у приложения (вытеснение, сбой, разрешение…).
+    Unavailable {
+        reason: CameraUnavailableReason,
+    },
+    /// После недоступности поток снова идёт.
+    Recovered {
+        reason: CameraUnavailableReason,
+        attempts: u32,
+    },
+    /// Сессия сконфигурирована: какой поток и каким рычагом частоты.
+    StreamConfigured {
+        stream: ConfiguredStream,
+    },
+    /// Режим не сконфигурировался на этой камере; желаемый режим и поток сброшены,
+    /// устройство остаётся открытым.
+    StreamConfigurationFailed {
+        mode: StreamMode,
+        failure: ConfigureFailure,
+    },
+}
+
+impl CameraEvent {
+    /// Итог команды, если это он (для поиска по номеру).
+    pub fn command_outcome(&self, id: CommandId) -> Option<&CommandOutcome> {
+        match self {
+            CameraEvent::CommandHandled { command, outcome, .. } if *command == id => Some(outcome),
+            _ => None,
+        }
+    }
+}

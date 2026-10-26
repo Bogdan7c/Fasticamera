@@ -20,6 +20,7 @@ use shell_contract::thermal_policy::ThermalPolicy;
 
 use render_loop::mailbox::InboxDelivery;
 
+use crate::camera_service::{AppVisibility, CameraDispatch, CameraServices};
 use crate::gpu_services::GpuServices;
 use crate::jni_boundary::run_guarded;
 use crate::render_route::RenderRoute;
@@ -74,6 +75,8 @@ pub struct RouterParts {
     pub route: Box<dyn RenderRoute>,
     /// Что сценарии видят о GPU и рендере.
     pub gpu: GpuServices,
+    /// Движок камеры и политика его жизненного цикла.
+    pub camera: CameraServices,
 }
 
 /// Итог одного шага маршрутизатора.
@@ -94,6 +97,7 @@ pub struct EventRouter {
     output: Box<dyn ScenarioOutput + Send>,
     route: Box<dyn RenderRoute>,
     gpu: GpuServices,
+    camera: CameraServices,
     display: DisplayState,
     arrivals: Receiver<Box<dyn ObservingScenario>>,
     active: Option<Box<dyn ObservingScenario>>,
@@ -111,6 +115,7 @@ impl EventRouter {
             output: parts.output,
             route: parts.route,
             gpu: parts.gpu,
+            camera: parts.camera,
             display: DisplayState::default(),
             arrivals,
             active: None,
@@ -171,11 +176,13 @@ impl EventRouter {
                 self.display.set_resumed(true);
                 let delivery = self.route.resumed();
                 log_undelivered(delivery, "resumed");
+                log_camera_dispatch(self.camera.app_resumed(), "resumed");
             }
             ShellEvent::Paused => {
                 self.display.set_resumed(false);
                 let delivery = self.route.paused();
                 log_undelivered(delivery, "paused");
+                log_camera_dispatch(self.camera.app_paused(), "paused");
             }
             ShellEvent::ThermalStatus(reading) => self.thermal_policy.observe(reading),
             ShellEvent::DeviceOrientation(orientation) => self.display.set_orientation(orientation),
@@ -222,6 +229,7 @@ impl EventRouter {
             &self.thermal_policy,
             &self.scenario_config,
             &self.gpu,
+            &self.camera,
             self.gyro_request,
             Instant::now(),
             self.output.as_mut(),
@@ -240,7 +248,22 @@ impl EventRouter {
         }
     }
 
+    /// Любой конец сценария (успех, провал, вытеснение другим, паника, дедлайн) проходит здесь, поэтому
+    /// именно здесь политика камеры возвращается к умолчанию, а камера, которую открывал сценарий,
+    /// закрывается. Делается ДО строки результата: скрипт, увидев результат, застаёт камеру в штатном состоянии.
     fn finish(&mut self, name: &'static str, outcome: ScenarioOutcome) {
+        let visibility = if self.display.is_resumed() {
+            AppVisibility::Foreground
+        } else {
+            AppVisibility::Background
+        };
+        let effects = self.camera.scenario_ended(visibility);
+        if let Some(dispatch) = effects.close_claimed_camera {
+            log_camera_dispatch(dispatch, "scenario_ended_close");
+        }
+        if let Some(dispatch) = effects.release_after_hold {
+            log_camera_dispatch(dispatch, "scenario_ended_release_after_hold");
+        }
         self.output.result(ScenarioReport {
             scenario: name.to_owned(),
             outcome,
@@ -253,6 +276,20 @@ impl EventRouter {
 fn log_undelivered(delivery: InboxDelivery, event: &'static str) {
     if delivery == InboxDelivery::ReceiverGone {
         tracing::error!(target: "fasticamera::router", event, "поток рендера не принимает события");
+    }
+}
+
+/// Команда жизненного цикла не дошла до движка камеры: громко, но маршрутизатор живёт дальше.
+/// Счётчики отказов ведёт сам сервис камеры.
+fn log_camera_dispatch(dispatch: CameraDispatch, event: &'static str) {
+    match dispatch {
+        CameraDispatch::Sent(_) | CameraDispatch::KeptOpenByPolicy => {}
+        CameraDispatch::EngineUnavailable => {
+            tracing::debug!(target: "fasticamera::router", event, "движка камеры нет: команда не отправлена");
+        }
+        CameraDispatch::Rejected(rejected) => {
+            tracing::error!(target: "fasticamera::router", event, %rejected, "движок камеры не принял команду");
+        }
     }
 }
 

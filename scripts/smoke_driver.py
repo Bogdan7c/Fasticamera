@@ -51,6 +51,20 @@ DIALOG_TIMEOUT_SECONDS = 10.0
 DIALOG_POLL_INTERVAL_SECONDS = 0.5
 """Период опроса дампа иерархии окна."""
 
+SYSTEM_CAMERA_ACTION = "android.media.action.STILL_IMAGE_CAMERA"
+"""Интент системной камеры: решение владельца 38 разрешает запускать её для smoke ``camera-evict``
+(системные настройки при этом не меняются)."""
+
+SYSTEM_CAMERA_PACKAGE = "com.oplus.camera"
+"""Пакет системной камеры OnePlus 11. Интент без пакета на этом телефоне открывает диалог выбора
+(``ResolverActivity``): его обрабатывают и системная камера, и стороннее приложение — тогда камеру
+никто не открывает и вытеснения нет (найдено на smoke сессии 04). Поэтому интент адресуется пакету."""
+
+SYSTEM_CAMERA_HOLD_SECONDS = 4.0
+"""Сколько системная камера остаётся на экране перед возвратом нашего приложения: ей нужно открыть
+камеру (старт HAL ~1 с), система — отнять её у нас, а колбэку ``onDisconnected`` — дойти до движка.
+Дольше — лишний простой, короче — риск вернуться раньше вытеснения."""
+
 ADB_COMMAND_TIMEOUT_SECONDS = 30.0
 """Потолок одной команды adb: зависший adb не должен вешать драйвер навсегда."""
 
@@ -69,6 +83,7 @@ class StepKind(Enum):
     SCREEN_OFF = "screen_off"
     SCREEN_ON = "screen_on"
     TAP_SCREEN = "tap_screen"
+    LAUNCH_SYSTEM_CAMERA = "launch_system_camera"
 
 
 @dataclass(frozen=True)
@@ -104,6 +119,16 @@ SCENARIO_STEPS: dict[str, dict[str, tuple[Step, ...]]] = {
     },
     # Rust ведёт счёт циклов и на каждом возобновлении показа пишет стадию ``presenting_*``;
     # после подтверждённого освобождения surface — ``backgrounded_*``.
+    # camera-evict: Rust держит камеру открытой в фоне и пишет ``streaming``. Скрипт открывает системную
+    # камеру (она отнимает камеру у нашего приложения), держит её на экране и возвращает приложение:
+    # после ``Resumed`` движок обязан сам восстановить поток.
+    "camera-evict": {
+        "streaming": (
+            Step(StepKind.LAUNCH_SYSTEM_CAMERA),
+            Step(StepKind.PAUSE, SYSTEM_CAMERA_HOLD_SECONDS),
+            Step(StepKind.RETURN_TO_APP),
+        ),
+    },
     "render-lifecycle": {
         "presenting_home": (Step(StepKind.PRESS_HOME),),
         "backgrounded_home": (Step(StepKind.PAUSE, BACKGROUND_PAUSE_SECONDS), Step(StepKind.RETURN_TO_APP)),
@@ -130,6 +155,8 @@ class DeviceActions(Protocol):
     def screen_on(self) -> None: ...
 
     def tap_screen(self) -> None: ...
+
+    def launch_system_camera(self) -> None: ...
 
 
 def parse_wakefulness(output: str) -> str:
@@ -162,6 +189,15 @@ def run_adb_subprocess(command: list[str]) -> AdbResult:
     except subprocess.TimeoutExpired as error:
         raise DriverError(f"команда зависла (> {ADB_COMMAND_TIMEOUT_SECONDS:g} с): {' '.join(command)}") from error
     return AdbResult(completed.returncode, completed.stdout, completed.stderr)
+
+
+def launched_activity(am_start_wait_output: str) -> str | None:
+    """Компонент, который реально открыл ``am start -W`` (строка ``Activity: пакет/класс``), или ``None``."""
+    for line in am_start_wait_output.splitlines():
+        name, separator, value = line.strip().partition(":")
+        if separator and name == "Activity" and value.strip():
+            return value.strip()
+    return None
 
 
 def parse_wm_size(output: str) -> tuple[int, int]:
@@ -272,6 +308,26 @@ class AdbDeviceActions:
         width_px, height_px = parse_wm_size(result.stdout)
         self._tap(TapPoint(width_px // 2, height_px // 2))
 
+    def launch_system_camera(self) -> None:
+        """Открывает системную камеру интентом ``STILL_IMAGE_CAMERA`` (решение владельца 38).
+
+        Системное приложение камеры открывает камеру, и Android отнимает её у нашего процесса, если тот
+        держит её в фоне, — ровно то, что проверяет ``camera-evict``. Никаких настроек системы это не меняет.
+        ``am start`` пишет ошибки в stdout при нулевом коде возврата, поэтому stdout проверяется отдельно.
+        """
+        result = self._run_adb(
+            self.adb_command("shell", "am", "start", "-W", "-a", SYSTEM_CAMERA_ACTION, "-p", SYSTEM_CAMERA_PACKAGE)
+        )
+        self._require_success(result, "запуск системной камеры (am start)")
+        if any(line.startswith(("Error", "Exception")) for line in result.stdout.splitlines()):
+            raise DriverError(f"am start не открыл системную камеру: {result.stdout.strip()}")
+        launched = launched_activity(result.stdout)
+        if launched is None or not launched.startswith(f"{SYSTEM_CAMERA_PACKAGE}/"):
+            raise DriverError(
+                f"вместо системной камеры ({SYSTEM_CAMERA_PACKAGE}) открылось {launched or 'неизвестно что'}: "
+                "камеру никто не откроет, вытеснения не будет"
+            )
+
     def return_to_app(self) -> None:
         """Возвращает приложение лаунчер-интентом БЕЗ ``-S``: поднимается существующая задача,
         ``onCreate`` не повторяется (это и проверяет сценарий через ``activity_recreated``)."""
@@ -369,5 +425,7 @@ class StageDriver:
             self._actions.screen_on()
         elif step.kind is StepKind.TAP_SCREEN:
             self._actions.tap_screen()
+        elif step.kind is StepKind.LAUNCH_SYSTEM_CAMERA:
+            self._actions.launch_system_camera()
         else:  # pragma: no cover - новый StepKind без ветки должен падать громко
             raise DriverError(f"неизвестный шаг {step.kind!r}")

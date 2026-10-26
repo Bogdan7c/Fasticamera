@@ -1,0 +1,24 @@
+[package]
+name = "camera-android"
+description = "Бэкенд камеры Fasticamera на Camera2 NDK: каталог, сессия, повторяющийся запрос, реестр вендорских тегов, колбэки NDK в события бэкенда"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+camera-contract.workspace = true
+camera-core.workspace = true
+# Пустой на хосте; на Android — биндинги Camera2 NDK. Нейтральная логика crate-а его не использует.
+camera-ndk-sys.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+camera-contract = { workspace = true, features = ["fixtures"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true

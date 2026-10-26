@@ -1,5 +1,5 @@
-"""Ожидания smoke-сценариев сессий 02 и 03: lifecycle, permission, motion, platform,
-render, render-lifecycle, ahb-import, gpu-fence.
+"""Ожидания smoke-сценариев сессий 02, 03 и 04: lifecycle, permission, motion, platform,
+render, render-lifecycle, ahb-import, gpu-fence, camera-catalog, camera-stream, camera-evict.
 
 Каждая проверка — чистая функция «JSON результата → список проблем» (пустой список — прошёл).
 Контракт полей отчёта фиксирован планом сессии 02 и реализуется в Rust
@@ -7,6 +7,8 @@ render, render-lifecycle, ahb-import, gpu-fence.
 """
 
 from __future__ import annotations
+
+import re
 
 MIN_GYRO_RATE_HZ = 380.0
 """Порог частоты гироскопа из плана: просили 400 Гц, меньше 380 Гц — сенсор не тянет требование."""
@@ -369,4 +371,182 @@ def check_gpu_fence(result: dict) -> list[str]:
     if report.get("already_signaled_result_value") != expected:
         problems.append(f"фаза «уже сигнален»: итог {report.get('already_signaled_result_value')!r}, ожидалось {expected!r}")
     problems.extend(_validation_problems({"mode": report.get("validation"), "errors": report.get("validation_errors")}))
+    return problems
+
+
+# ---- Сессия 04: камера ----
+
+HIDDEN_CAMERA_IDS = frozenset({"4", "5"})
+"""Камеры OnePlus 11 с ``SYSTEM_CAMERA`` (телевик 4 и логическая 5): обычным приложениям закрыты, в
+каталоге их быть не должно (инвариант 6 плана, факты 00 C1). Полную сверку делает ``smoke_dumpsys.py``,
+здесь — дешёвая страховка, работающая и без ``adb``."""
+
+REQUIRED_CATALOG_ROLES = ("wide", "ultra_wide", "front")
+"""Роли, которые обязан найти движок на OnePlus 11 (телевика без ``SYSTEM_CAMERA`` нет)."""
+
+ACCEPTED_EVICTION_REASONS = frozenset({"evicted", "in_use_by_another_client", "too_many_cameras_open"})
+"""Причины недоступности, допустимые при запуске системной камеры (зеркало ``ACCEPTED_EVICTION_REASONS`` в Rust)."""
+
+MIN_FRACTION_OF_TARGET_FPS = 0.9
+"""Грубый независимый порог `camera-stream`: измеренная частота не ниже 90 % цели шага. Точные пороги
+(57 из 60, 28 из 30) судит Rust по конфигу сценария; скрипт ловит только грубые расхождения."""
+
+TARGET_RATE_PATTERN = re.compile(r"@(\d+)$")
+"""Цель шага в подписи `2/raw10/16x9@60`: частота после `@`."""
+
+CAPTURE_RESULTS_REQUIRED = "required"
+CAPTURE_RESULTS_NOT_SENT = "not_sent_by_hal"
+"""Режимы ожиданий результатов шага (зеркало `CaptureResultsExpectation` в Rust): `required` — обычный и в сводке
+не пишется; `not_sent_by_hal` — логическая камера 0, HAL которой шлёт только частичные результаты."""
+
+STREAMING_STATE = "streaming"
+"""Имя состояния движка, в котором идёт поток."""
+
+
+def _report_problem(result: dict) -> tuple[list[str], dict]:
+    """Общий вход проверок камеры: сценарий обязан дойти до ``passed`` и принести объект ``report``.
+
+    Провал сценария с отчётом (``failed`` + ``report``) разбирается отдельно: нарушения лежат в ``error``,
+    их печатает сама строка результата, а здесь возвращается только статус. Проверки не гадают по
+    частичному отчёту.
+    """
+    problems = _status_problem(result)
+    if problems:
+        return problems, {}
+    report = result.get("report")
+    if not isinstance(report, dict):
+        return ["нет report в результате"], {}
+    return [], report
+
+
+def check_camera_catalog(result: dict) -> list[str]:
+    """``camera-catalog``: видимые камеры с RAW-потоками, роли привязаны, скрытых камер нет, колбэки не паниковали.
+
+    Строка результата вмещает 4000 байт, поэтому здесь краткая запись камеры (``id``, ``facing``, топология,
+    роль, уровень, RAW-потоки, угол обзора); полные характеристики идут строками стадий ``detail_cameras``.
+    """
+    problems, report = _report_problem(result)
+    if problems:
+        return problems
+    cameras = report.get("cameras")
+    if not isinstance(cameras, list) or not cameras:
+        return ["каталог пуст или отсутствует (report.cameras)"]
+    ids = [str(camera.get("id")) for camera in cameras if isinstance(camera, dict)]
+    for hidden in sorted(HIDDEN_CAMERA_IDS.intersection(ids)):
+        problems.append(f"скрытая камера {hidden} (SYSTEM_CAMERA) попала в каталог: инвариант 6 нарушен")
+    for camera in cameras:
+        if not isinstance(camera, dict):
+            problems.append(f"запись камеры не объект: {camera!r}")
+            continue
+        for field in ("id", "facing", "topology", "hardware_level", "raw_streams"):
+            if camera.get(field) is None:
+                problems.append(f"камера {camera.get('id')!r}: нет поля {field}")
+        if not camera.get("raw_streams"):
+            problems.append(f"камера {camera.get('id')!r}: нет ни одного RAW-потока")
+    roles = {entry.get("role"): entry.get("camera") for entry in report.get("roles", []) if isinstance(entry, dict)}
+    for role in REQUIRED_CATALOG_ROLES:
+        if role not in roles:
+            problems.append(f"роль {role} не привязана ни к одной камере (привязаны: {sorted(roles)})")
+    backend = report.get("backend")
+    if not isinstance(backend, dict):
+        problems.append("нет сводки диагностики бэкенда (report.backend)")
+    elif backend.get("callback_panics") != 0:
+        problems.append(f"паники колбэков NDK: {backend.get('callback_panics')!r}, ожидалось 0")
+    return problems
+
+
+def _rate_floor_problems(label: str, source: str, measured: float, rate_match: re.Match[str] | None) -> list[str]:
+    """Частота ``measured`` (оценка ``source``) не ниже доли цели шага; цель берётся из подписи ``@N``."""
+    if rate_match is None:
+        return [f"{label}: в подписи цели нет частоты (@N)"]
+    if measured < MIN_FRACTION_OF_TARGET_FPS * int(rate_match.group(1)):
+        return [f"{label}: частота {source} {measured:.2f} к/с меньше {MIN_FRACTION_OF_TARGET_FPS:.0%} цели"]
+    return []
+
+
+def _partial_only_rate_problems(label: str, step: dict, rate_match: re.Match[str] | None) -> list[str]:
+    """Шаг без финальных результатов (логическая камера 0): частота по RAW-кадрам и сторож факта."""
+    problems: list[str] = []
+    raw_fps = step.get("raw_fps")
+    if not _is_number(raw_fps):
+        problems.append(f"{label}: частота по RAW-кадрам не измерена ({raw_fps!r})")
+    else:
+        problems.extend(_rate_floor_problems(label, "по RAW-кадрам", raw_fps, rate_match))
+    results = step.get("results_completed")
+    if _is_number(results) and results != 0:
+        problems.append(
+            f"{label}: факт изменился (прошивка?) — пересмотреть ожидание и отчёт 04: "
+            f"финальных результатов {results}, ожидалось 0"
+        )
+    return problems
+
+
+def _stream_step_problems(index: int, step: object) -> list[str]:
+    """Проверка одного шага ``camera-stream`` по его сводке (грубая перепроверка независимо от вердикта Rust)."""
+    if not isinstance(step, dict):
+        return [f"шаг {index + 1}: запись не объект"]
+    label = f"шаг {index + 1} ({step.get('target')})"
+    problems: list[str] = []
+    if step.get("failure") is not None:
+        problems.append(f"{label}: {step.get('failure')!r}")
+    rate_match = TARGET_RATE_PATTERN.search(str(step.get("target")))
+    if step.get("capture_results", CAPTURE_RESULTS_REQUIRED) == CAPTURE_RESULTS_NOT_SENT:
+        problems.extend(_partial_only_rate_problems(label, step, rate_match))
+    else:
+        measured = step.get("measured_fps")
+        if not _is_number(measured):
+            problems.append(f"{label}: частота не измерена ({measured!r})")
+        else:
+            problems.extend(_rate_floor_problems(label, "по меткам сенсора", measured, rate_match))
+    raw_sink = step.get("raw_sink") if isinstance(step.get("raw_sink"), dict) else {}
+    acquired = raw_sink.get("frames_acquired")
+    if not _is_number(acquired) or acquired <= 0:
+        problems.append(f"{label}: RAW-приёмник не получил кадров ({acquired!r})")
+    if step.get("state_at_end") != STREAMING_STATE:
+        problems.append(f"{label}: к концу замера состояние {step.get('state_at_end')!r}, ожидалось {STREAMING_STATE!r}")
+    return problems
+
+
+def check_camera_stream(result: dict) -> list[str]:
+    """``camera-stream``: каждый шаг дошёл до ``Streaming``, частота выше порога, рычаг тот, RAW-кадры идут.
+
+    Подробные отчёты шагов (статистика целиком, журнал событий) идут строками стадий ``detail_steps``.
+    """
+    problems, report = _report_problem(result)
+    if problems:
+        return problems
+    steps = report.get("steps")
+    if not isinstance(steps, list) or not steps:
+        return ["нет шагов в отчёте (report.steps)"]
+    for index, step in enumerate(steps):
+        problems.extend(_stream_step_problems(index, step))
+    backend = report.get("backend")
+    if not isinstance(backend, dict):
+        problems.append("нет сводки диагностики бэкенда (report.backend)")
+    elif backend.get("callback_panics") != 0:
+        problems.append(f"паники колбэков NDK: {backend.get('callback_panics')!r}, ожидалось 0")
+    return problems
+
+
+def check_camera_evict(result: dict) -> list[str]:
+    """``camera-evict``: вытеснение замечено с допустимой причиной, движок сам вернул поток."""
+    problems, report = _report_problem(result)
+    if problems:
+        return problems
+    unavailable = report.get("unavailable")
+    reason = unavailable.get("reason") if isinstance(unavailable, dict) else None
+    if reason not in ACCEPTED_EVICTION_REASONS:
+        problems.append(f"причина недоступности {reason!r}, допустимо {sorted(ACCEPTED_EVICTION_REASONS)}")
+    recovered = report.get("recovered")
+    if not isinstance(recovered, dict):
+        problems.append("нет события Recovered (report.recovered): самовосстановления не было")
+    elif not _is_number(recovered.get("recovery_ms")):
+        problems.append(f"нет времени восстановления ({recovered.get('recovery_ms')!r})")
+    if report.get("final_state") != STREAMING_STATE:
+        problems.append(f"final_state={report.get('final_state')!r}, ожидалось {STREAMING_STATE!r}")
+    counters = report.get("counters") if isinstance(report.get("counters"), dict) else {}
+    if not _is_number(counters.get("recoveries")) or counters.get("recoveries") < 1:
+        problems.append(f"counters.recoveries={counters.get('recoveries')!r}, ожидалось не меньше 1")
+    if report.get("failure") is not None:
+        problems.append(f"сценарий записал отказ: {report.get('failure')!r}")
     return problems

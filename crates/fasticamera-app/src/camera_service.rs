@@ -1,0 +1,285 @@
+//! Сервис камеры для маршрутизатора и сценариев: ручка движка, диагностика бэкенда, политика фона.
+//!
+//! Composition root держит здесь всё, что приложению нужно знать о камере, но сам решений о камере
+//! не принимает: желаемое состояние ведёт движок (`camera-core`), платформа — бэкенд
+//! (`camera-android`). Сервис даёт два узких входа.
+//! * Для **маршрутизатора** — события жизненного цикла приложения: [`CameraServices::app_resumed`],
+//!   [`CameraServices::app_paused`] (с учётом [`CameraLifecyclePolicy`]) и [`CameraServices::scenario_ended`]
+//!   (возврат политики по умолчанию и закрытие камеры, которую открывал сценарий).
+//! * Для **сценариев** — доступ к ручке движка и снимку диагностики ([`CameraServices::running`]),
+//!   запрос удержания камеры в фоне.
+//!
+//! Ничего здесь не блокируется: команды уходят в ограниченную очередь движка, а отказ очереди
+//! (`QueueFull`, `EngineStopped`) — это значение [`CameraDispatch`] и счётчик, не паника и не ожидание.
+//!
+//! Если движок не поднялся (нет разрешения на поток, неверный конфиг), приложение живёт дальше:
+//! сервис хранит причину ([`CameraEngineAccess::Unavailable`]), а сценарии честно сообщают её в отчёте.
+
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+use camera_android::{BackendDiagnostics, DiagnosticsSnapshot};
+use camera_core::{CameraHandle, CameraRuntime, CommandId, CommandRejected};
+use serde::Serialize;
+
+use crate::camera_lifecycle::{CameraLifecyclePolicy, CameraLifecycleState, PolicyRestore};
+use crate::camera_scenario_config::CameraScenarioConfig;
+
+const LOG_TARGET: &str = "fasticamera::camera::service";
+
+/// Источник снимков диагностики бэкенда. Узкий контракт: сценарии не знают, что за ним стоит
+/// (на телефоне — `Arc<BackendDiagnostics>` Camera2, в тестах — тот же тип, заполняемый вручную).
+pub trait BackendDiagnosticsSource: Send + Sync {
+    fn snapshot(&self) -> DiagnosticsSnapshot;
+}
+
+impl BackendDiagnosticsSource for BackendDiagnostics {
+    fn snapshot(&self) -> DiagnosticsSnapshot {
+        BackendDiagnostics::snapshot(self)
+    }
+}
+
+/// Запущенный движок камеры. Владеет потоком `fasticamera-camera` через [`CameraRuntime`]: пока жив
+/// сервис, жив поток; уничтожение сервиса останавливает поток (с таймаутом из конфига движка).
+pub struct RunningCamera {
+    handle: CameraHandle,
+    diagnostics: Arc<dyn BackendDiagnosticsSource>,
+    /// Сколько кадров максимум держит RAW-приёмник бэкенда (`camera.android.raw_reader_max_images`):
+    /// допуск «кадров в полёте» при сверке принятых и отпущенных.
+    raw_reader_max_images: u32,
+    /// Только держим поток живым. `Mutex` нужен лишь ради `Sync`: `CameraRuntime` отправляется между
+    /// потоками, но не разделяется (внутри приёмник канала), а сервис разделяется маршрутизатором и сценариями.
+    _runtime: Mutex<CameraRuntime>,
+}
+
+impl RunningCamera {
+    pub fn new(
+        runtime: CameraRuntime,
+        handle: CameraHandle,
+        diagnostics: Arc<dyn BackendDiagnosticsSource>,
+        raw_reader_max_images: u32,
+    ) -> Self {
+        Self {
+            handle,
+            diagnostics,
+            raw_reader_max_images,
+            _runtime: Mutex::new(runtime),
+        }
+    }
+
+    /// Ручка движка (команды, снимок состояния, события).
+    pub fn handle(&self) -> &CameraHandle {
+        &self.handle
+    }
+
+    /// Свежий снимок диагностики бэкенда.
+    pub fn diagnostics_snapshot(&self) -> DiagnosticsSnapshot {
+        self.diagnostics.snapshot()
+    }
+
+    pub fn raw_reader_max_images(&self) -> u32 {
+        self.raw_reader_max_images
+    }
+}
+
+/// Есть ли у приложения движок камеры.
+#[derive(Clone)]
+pub enum CameraEngineAccess {
+    Running(Arc<RunningCamera>),
+    /// Движок не поднялся; приложение живёт без камеры, причина видна сценариям и логу.
+    Unavailable {
+        reason: String,
+    },
+}
+
+/// Движка камеры нет: причина, с которой он не поднялся.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("камера недоступна: {reason}")]
+pub struct CameraUnavailable {
+    pub reason: String,
+}
+
+/// Куда делась команда жизненного цикла. Не `bool`: «отправлено», «политика оставила камеру»,
+/// «движка нет» и отказ очереди — разные ответы.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CameraDispatch {
+    /// Команда принята очередью движка под этим номером.
+    Sent(CommandId),
+    /// Политика `HoldInBackgroundForDiagnostics`: команду «уйти в фон» не отправляли.
+    KeptOpenByPolicy,
+    /// Движка камеры нет (не поднялся): слать некому.
+    EngineUnavailable,
+    /// Очередь отказала.
+    Rejected(CommandRejected),
+}
+
+/// Счётчики отправки команд жизненного цикла (накопительные за процесс).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub struct CameraDispatchCounters {
+    pub sent: u64,
+    pub kept_open_by_policy: u64,
+    pub engine_unavailable: u64,
+    pub rejected_queue_full: u64,
+    pub rejected_engine_stopped: u64,
+}
+
+#[derive(Debug, Default)]
+struct DispatchCounterCells {
+    sent: AtomicU64,
+    kept_open_by_policy: AtomicU64,
+    engine_unavailable: AtomicU64,
+    rejected_queue_full: AtomicU64,
+    rejected_engine_stopped: AtomicU64,
+}
+
+impl DispatchCounterCells {
+    fn record(&self, dispatch: CameraDispatch) {
+        let cell = match dispatch {
+            CameraDispatch::Sent(_) => &self.sent,
+            CameraDispatch::KeptOpenByPolicy => &self.kept_open_by_policy,
+            CameraDispatch::EngineUnavailable => &self.engine_unavailable,
+            CameraDispatch::Rejected(CommandRejected::QueueFull) => &self.rejected_queue_full,
+            CameraDispatch::Rejected(CommandRejected::EngineStopped) => &self.rejected_engine_stopped,
+        };
+        cell.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn snapshot(&self) -> CameraDispatchCounters {
+        CameraDispatchCounters {
+            sent: self.sent.load(Ordering::Relaxed),
+            kept_open_by_policy: self.kept_open_by_policy.load(Ordering::Relaxed),
+            engine_unavailable: self.engine_unavailable.load(Ordering::Relaxed),
+            rejected_queue_full: self.rejected_queue_full.load(Ordering::Relaxed),
+            rejected_engine_stopped: self.rejected_engine_stopped.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// Приложение на переднем плане или нет — вход для решения «отпускать ли камеру».
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppVisibility {
+    Foreground,
+    Background,
+}
+
+/// Что сделал сервис, когда сценарий закончился.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScenarioEndEffects {
+    pub policy: PolicyRestore,
+    /// `Some` — сценарий заявлял права на камеру, и она закрывалась этой командой.
+    pub close_claimed_camera: Option<CameraDispatch>,
+    /// `Some` — политика вернулась из удержания, а приложение в фоне: камера отпускалась этой командой.
+    pub release_after_hold: Option<CameraDispatch>,
+}
+
+/// Всё о камере для маршрутизатора и сценариев. Дёшево клонируется.
+#[derive(Clone)]
+pub struct CameraServices {
+    engine: CameraEngineAccess,
+    lifecycle: Arc<CameraLifecycleState>,
+    counters: Arc<DispatchCounterCells>,
+    scenarios: Arc<CameraScenarioConfig>,
+}
+
+impl CameraServices {
+    pub fn new(engine: CameraEngineAccess, scenarios: CameraScenarioConfig) -> Self {
+        Self {
+            engine,
+            lifecycle: Arc::default(),
+            counters: Arc::default(),
+            scenarios: Arc::new(scenarios),
+        }
+    }
+
+    /// Сервис без движка: камера недоступна по причине `reason`.
+    pub fn unavailable(reason: impl Into<String>, scenarios: CameraScenarioConfig) -> Self {
+        let reason = reason.into();
+        tracing::error!(target: LOG_TARGET, reason = %reason, "камера недоступна, приложение работает без неё");
+        Self::new(CameraEngineAccess::Unavailable { reason }, scenarios)
+    }
+
+    /// Запущенный движок или причина, по которой его нет.
+    pub fn running(&self) -> Result<&RunningCamera, CameraUnavailable> {
+        match &self.engine {
+            CameraEngineAccess::Running(running) => Ok(running),
+            CameraEngineAccess::Unavailable { reason } => Err(CameraUnavailable { reason: reason.clone() }),
+        }
+    }
+
+    /// Параметры сценариев камеры.
+    pub fn scenarios(&self) -> &CameraScenarioConfig {
+        &self.scenarios
+    }
+
+    pub fn lifecycle_policy(&self) -> CameraLifecyclePolicy {
+        self.lifecycle.policy()
+    }
+
+    pub fn dispatch_counters(&self) -> CameraDispatchCounters {
+        self.counters.snapshot()
+    }
+
+    /// Сценарий начал пользоваться камерой: по его концу маршрутизатор камеру закроет.
+    pub fn claim_camera_for_scenario(&self) {
+        self.lifecycle.claim_for_scenario();
+    }
+
+    /// Только отладочный сценарий на время своей работы: приложение в фоне камеру не отпускает.
+    /// Возвращает политику по умолчанию маршрутизатор ([`CameraServices::scenario_ended`]).
+    pub fn hold_in_background_for_diagnostics(&self) {
+        self.lifecycle.hold_in_background_for_diagnostics();
+    }
+
+    /// Приложение вернулось на передний план: движок восстанавливает желаемое состояние.
+    /// Отправляется при любой политике (политика касается только ухода в фон).
+    pub fn app_resumed(&self) -> CameraDispatch {
+        self.dispatch(CameraHandle::enter_foreground)
+    }
+
+    /// Приложение ушло в фон: камера отпускается, если политика не велит держать.
+    pub fn app_paused(&self) -> CameraDispatch {
+        match self.lifecycle.policy() {
+            CameraLifecyclePolicy::ReleaseInBackground => self.dispatch(CameraHandle::enter_background),
+            CameraLifecyclePolicy::HoldInBackgroundForDiagnostics => {
+                self.counters.record(CameraDispatch::KeptOpenByPolicy);
+                CameraDispatch::KeptOpenByPolicy
+            }
+        }
+    }
+
+    /// Сценарий закончился любым путём: вернуть политику по умолчанию, закрыть камеру, которую
+    /// он открывал, и отпустить её, если политика держала камеру в фоне, а приложение в фоне сейчас.
+    pub fn scenario_ended(&self, visibility: AppVisibility) -> ScenarioEndEffects {
+        let policy = self.lifecycle.restore_default();
+        let close_claimed_camera = self
+            .lifecycle
+            .take_scenario_claim()
+            .then(|| self.dispatch(CameraHandle::close));
+        let release_after_hold = (policy == PolicyRestore::RestoredFromHold && visibility == AppVisibility::Background)
+            .then(|| self.app_paused());
+        ScenarioEndEffects {
+            policy,
+            close_claimed_camera,
+            release_after_hold,
+        }
+    }
+
+    fn dispatch(&self, send: impl FnOnce(&CameraHandle) -> Result<CommandId, CommandRejected>) -> CameraDispatch {
+        let dispatch = match &self.engine {
+            CameraEngineAccess::Running(running) => match send(running.handle()) {
+                Ok(command) => CameraDispatch::Sent(command),
+                Err(rejected) => CameraDispatch::Rejected(rejected),
+            },
+            CameraEngineAccess::Unavailable { .. } => CameraDispatch::EngineUnavailable,
+        };
+        self.counters.record(dispatch);
+        if let CameraDispatch::Rejected(rejected) = dispatch {
+            tracing::warn!(target: LOG_TARGET, %rejected, "команда жизненного цикла камеры отвергнута движком");
+        }
+        dispatch
+    }
+}
+
+#[cfg(test)]
+#[path = "camera_service_tests.rs"]
+mod tests;

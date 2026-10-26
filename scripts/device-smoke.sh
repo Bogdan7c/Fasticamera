@@ -4,13 +4,16 @@
 #   scripts/device-smoke.sh [--variant debug|release] [--no-build] [--timeout SEC] <сценарий>
 #
 # Сценарии: hello, lifecycle, permission, motion, platform, render, render-lifecycle, ahb-import,
-# gpu-fence (обе сборки), panic (только debug).
+# gpu-fence, camera-catalog, camera-stream (обе сборки), panic и camera-evict (только debug).
 # lifecycle сворачивает и возвращает приложение, permission сбрасывает и затем возвращает
 # разрешение камеры нашего пакета; шаги на телефоне — scripts/smoke_driver.py,
 # ожидания — scripts/smoke_wait.py и scripts/smoke_checks.py.
 # render наблюдает 10 с показа (нужен --timeout 60); render-lifecycle сворачивает приложение
 # 20 раз кнопкой HOME и 3 раза гасит экран (экран без блокировки; нужен --timeout 300);
 # ahb-import и gpu-fence гоняют GPU-проверки на отдельном контексте (--timeout 60).
+# camera-catalog читает каталог камер и сверяет его с `dumpsys media.camera` (--timeout 30);
+# camera-stream проходит шаги открыть-поток-замер и подтверждает 60 к/с через NDK (--timeout 120);
+# camera-evict сам запускает системную камеру, чтобы она отняла камеру у нас (--timeout 90).
 # Validation-слой есть только в debug-сборке: в release отчёт пишет validation.mode=disabled.
 # Коды выхода: 0 — сценарий прошёл, 1 — сценарий упал, 2 — устройство не найдено,
 # 3 — нет строки результата за таймаут, 4 — не собралось/не встало/не запустилось, 64 — неверный вызов.
@@ -20,7 +23,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
 usage() {
-    sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
 }
 
 variant="debug"

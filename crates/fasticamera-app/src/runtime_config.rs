@@ -4,9 +4,9 @@
 //! `log_filter` (переопределение на один запуск). В Rust ничего не хардкодится: здесь только
 //! разбор и проверка.
 //!
-//! Секции `shell`, `thermal_policy`, `scenarios`, `render` и `gpu` необязательны: Kotlin их пока
+//! Секции `shell`, `thermal_policy`, `scenarios`, `render`, `gpu` и `camera` необязательны: Kotlin их пока
 //! не присылает, и действуют документированные значения по умолчанию владельцев (`ShellConfig`,
-//! `ThermalPolicyConfig`, `ScenarioConfig`, `RenderLoopConfig`, `GpuConfig`). Прислать можно частично — опечатка в имени поля
+//! `ThermalPolicyConfig`, `ScenarioConfig`, `RenderLoopConfig`, `GpuConfig`, `CameraConfig`). Прислать можно частично — опечатка в имени поля
 //! всё равно ошибка.
 
 use android_shell::config::{ShellConfig, ShellConfigError, ValidatedShellConfig};
@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use shell_contract::thermal_policy::{ThermalPolicy, ThermalPolicyConfig, ThermalPolicyConfigError};
 use tracing_subscriber::filter::Targets;
 
+use crate::camera_config::{CameraConfig, CameraConfigError};
 use crate::gpu_config::GpuConfig;
 use crate::scenario::ScenarioConfig;
 
@@ -96,6 +97,8 @@ struct RuntimeConfigJson {
     render: RenderLoopConfig,
     #[serde(default)]
     gpu: GpuConfig,
+    #[serde(default)]
+    camera: CameraConfig,
 }
 
 /// Проверенный конфиг нативной части.
@@ -109,6 +112,7 @@ pub struct RuntimeConfig {
     scenarios: ScenarioConfig,
     render: RenderLoopConfig,
     gpu: GpuConfig,
+    camera: CameraConfig,
 }
 
 impl RuntimeConfig {
@@ -121,6 +125,7 @@ impl RuntimeConfig {
         ThermalPolicy::new(parsed.thermal_policy)?;
         parsed.scenarios.validate()?;
         parsed.render.validate()?;
+        parsed.camera.validate()?;
         // Бюджет ожиданий GPU потока рендера обязан быть меньше ожидания квитанции оболочкой:
         // иначе `surfaceDestroyed` отпустит главный поток по таймауту раньше подтверждения.
         // Конфиги разных crate-ов, поэтому согласованность проверяется здесь, на стыке.
@@ -139,6 +144,7 @@ impl RuntimeConfig {
             scenarios: parsed.scenarios,
             render: parsed.render,
             gpu: parsed.gpu,
+            camera: parsed.camera,
         })
     }
 
@@ -177,6 +183,11 @@ impl RuntimeConfig {
         &self.gpu
     }
 
+    /// Настройки камеры: движок, бэкенд Camera2 и параметры сценариев.
+    pub fn camera(&self) -> &CameraConfig {
+        &self.camera
+    }
+
     /// Режим validation слоя Vulkan: секция `gpu` с учётом типа сборки.
     pub fn validation_mode(&self) -> gpu_vulkan::validation::ValidationMode {
         self.gpu.validation_mode(self.build_type)
@@ -200,6 +211,8 @@ pub enum ConfigError {
     Scenarios(#[from] crate::scenario::ScenarioConfigError),
     #[error("неверные настройки потока рендера: {0}")]
     Render(#[from] RenderConfigError),
+    #[error("неверные настройки камеры: {0}")]
+    Camera(#[from] CameraConfigError),
     #[error(
         "render.release_receipt_budget_ms ({render_budget_ms}) должен быть меньше shell.surface_release_timeout_ms ({shell_timeout_ms})"
     )]

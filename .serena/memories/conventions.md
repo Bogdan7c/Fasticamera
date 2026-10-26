@@ -25,6 +25,15 @@
 - Шейдеры: GLSL в `crates/gpu-vulkan/shaders/`, `glslc` NDK (`--target-env=vulkan1.3 -Werror -O`, затем `spirv-val`), путь — `FASTICAMERA_GLSLC` → `ANDROID_NDK_HOME` → `~/Android/Sdk/ndk/<fasticamera.ndkVersion>`; compute с `LocalSizeId` требует `maintenance4` (включена).
 - GpuContext не пересоздаётся без нужды; instance, работавший с AHardwareBuffer, не уничтожается до конца процесса (бэклог п. 2).
 
+## Камера (с сессии 04)
+- Граница движка — `camera-core/src/{backend,command,event,state,status,config}.rs` + `camera-contract`; её держит главный агент. Команды меняют только желаемое состояние; итог каждой — ровно одно `CommandHandled` (`Accepted`/`AlreadyInState`/`Unsupported`/`InvalidState`), отказ отправки — `CommandRejected::{QueueFull, EngineStopped}`.
+- Бэкенд живёт только на потоке `fasticamera-camera`; колбэки NDK никогда не блокируют, только шлют `BackendEvent` с поколением; события чужого поколения отбрасываются со счётчиком `stale_backend_events`.
+- Восстановление (решение 39): Evicted/InUse → ждать `Available` (движок помнит последнюю доступность); DeviceFailure/ServiceFailure/TooManyCamerasOpen/неожиданное SessionClosed → повтор по `retry_backoff_ms`; PermissionDenied/DisabledByPolicy → только `EnterForeground`. Счётчик подряд идущих попыток обнуляется лишь после `recovery.stable_frames_before_reset` кадров.
+- Темп потока — только по `SENSOR_TIMESTAMP` (`SENSOR_FRAME_DURATION` в режиме CamX ложный).
+- Вендорские ключи — только через `VendorCapabilities` (поиск по имени + список разрешённых камер `vendor_frame_duration_override_cameras`); наружу — только `FrameRateMechanism`.
+- FFI-время жизни: контексты устройства/результатов освобождаются после `ACameraDevice_close` (looper остановлен); контексты состояния сессии и availability намеренно утекают со счётчиком; слушатель AImageReader — за «воротами» `CallbackGate` (иначе `AImageReader_delete` взаимоблокируется с колбэком, `NdkImageReader.cpp close()`).
+- Строка `FASTICAMERA_RESULT` ≤ 4000 байт: большие отчёты — сводка + строки стадий `detail_*`, `smoke_wait.py` печатает их как `FASTICAMERA_DETAIL {json}`.
+
 ## Рендер (с сессии 03)
 - Маршрутизатор не держит surface: события → `RenderInbox`; квитанция освобождения — только поток рендера ПОСЛЕ detach. Бюджет: `max(acquire, teardown) + teardown ≤ render.release_receipt_budget_ms (450) < shell.surface_release_timeout_ms (500)` — проверяется конфигом.
 - Сценарии, которые долго работают с GPU, — на рабочем потоке (`scenario/background_job.rs`) с дедлайном `scenarios.gpu_job_timeout_ms`; маршрутизатор только опрашивает.

@@ -7,5 +7,17 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
 [lints]
 workspace = true
+
+[features]
+# Образцы камер OnePlus 11 по фактам сессии 00 — только для тестов соседних crate-ов
+# (подключаются через dev-dependencies с этой фичей).
+fixtures = []

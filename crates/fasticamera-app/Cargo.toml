@@ -20,6 +20,9 @@ debug-scenarios = []
 
 [dependencies]
 android-shell.workspace = true
+camera-android.workspace = true
+camera-contract.workspace = true
+camera-core.workspace = true
 gpu-vulkan.workspace = true
 render-loop.workspace = true
 shell-contract.workspace = true
@@ -28,6 +31,11 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+# Fake-бэкенд движка и образцы камер OnePlus 11: функциональные тесты сервиса камеры и сценариев.
+camera-contract = { workspace = true, features = ["fixtures"] }
+camera-core = { workspace = true, features = ["fake-backend"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni.workspace = true

@@ -1,11 +1,12 @@
 //! Сборка оболочки и маршрутизатора (только Android).
 //!
 //! Composition root: ставит `android-shell`, раздаёт его сервисы через нейтральные трейты
-//! запускает поток рендера (решение 31: маршрутизатор отдаёт ему surface) и поток маршрутизатора.
+//! запускает поток рендера (решение 31: маршрутизатор отдаёт ему surface), поток камеры и поток маршрутизатора.
 //! Решений фич здесь нет.
 //!
 //! Если GPU или vsync не поднялись, приложение не падает и не зависает: рендер помечается
 //! недоступным (причина видна сценариям), а маршрутизатор подтверждает освобождение surface сразу.
+//! Если не поднялась камера, приложение тоже живёт: сервис камеры хранит причину (`CameraServices::unavailable`).
 
 use std::sync::{Arc, OnceLock};
 use std::thread;
@@ -18,6 +19,9 @@ use render_loop::vulkan_backend::{VulkanBackendConfig, VulkanDisplayBackend};
 use shell_contract::thermal_policy::{ThermalPolicy, ThermalPolicyConfigError};
 use shell_contract::vsync::VsyncSource;
 
+use crate::camera_config::CameraConfig;
+use crate::camera_service::CameraServices;
+use crate::camera_wiring::{CameraBackendParts, start_camera};
 use crate::event_router::{EventRouter, LogcatScenarioOutput, RouterParts, ScenarioStarter};
 use crate::gpu_services::{GpuServices, ValidationState};
 use crate::jni_boundary::run_guarded;
@@ -59,6 +63,7 @@ pub fn ensure_installed(config: &RuntimeConfig) -> Result<(), ShellWiringError> 
         diagnostics: Arc::new(VulkanGpuDiagnostics::new(validation)),
         render_config: config.render().clone(),
     };
+    let camera = start_android_camera(config.camera());
     let (router, starter) = EventRouter::new(RouterParts {
         events: handles.events,
         services: shell_services(&services),
@@ -68,6 +73,7 @@ pub fn ensure_installed(config: &RuntimeConfig) -> Result<(), ShellWiringError> 
         output: Box::new(LogcatScenarioOutput),
         route: render.route,
         gpu,
+        camera,
     });
     thread::Builder::new()
         .name("fasticamera-router".to_owned())
@@ -124,6 +130,19 @@ fn try_start_render(
     };
     RenderRuntime::spawn(parts, ValidationState::of(&validation))
         .map_err(|error| format!("поток рендера не запущен: {error}"))
+}
+
+/// Поднимает поток камеры на бэкенде Camera2 NDK. Менеджер Camera2 создаётся уже на потоке камеры;
+/// отказ запуска — сервис «камера недоступна: причина» (приложение живёт дальше).
+fn start_android_camera(config: &CameraConfig) -> CameraServices {
+    let parts = camera_android::backend_factory(config.android.clone());
+    start_camera(
+        config,
+        CameraBackendParts {
+            factory: parts.factory,
+            diagnostics: parts.diagnostics,
+        },
+    )
 }
 
 /// Передаёт наблюдающий сценарий маршрутизатору.

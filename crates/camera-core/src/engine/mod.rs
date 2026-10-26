@@ -1,0 +1,393 @@
+//! Движок камеры: детерминированная машина состояний без потоков.
+//!
+//! Движок владеет бэкендом, **желаемым** состоянием ([`Desired`]: какая камера, режим, идёт
+//! ли поток, параметры), **реальным** состоянием ([`CameraState`], открытое устройство
+//! и сессия), каталогом, статистикой темпа, счётчиками и исходящими событиями. Команды
+//! меняют только желаемое; [`CameraEngine::reconcile`] доводит до него реальное синхронными
+//! вызовами бэкенда: `open → configure → set_repeating` (решение 39). После вытеснения или
+//! сбоя то же доведение выполняется снова — по сигналу «камера свободна», по таймеру или при
+//! возврате на передний план.
+//!
+//! Время — параметр (`now: Instant`): внутри нет `Instant::now()`, поэтому тесты управляют
+//! часами. Потоки, очереди и паники — забота [`crate::runtime`]; движок тестируется напрямую.
+//!
+//! Раскладка:
+//! * `commands` — желаемое состояние и валидация команд;
+//! * `reconcile` — доведение реального состояния до желаемого;
+//! * `recovery` — ошибки, планы восстановления, попытки, таймер;
+//! * `backend_events` — события бэкенда (поколения, stale, темп).
+//!
+//! Решения, не заданные заданием:
+//! * `EnterForeground` выводит из `Fatal` только `RecoveryExhausted` (свежая попытка пользователя)
+//!   и `CatalogUnavailable` (повторное чтение каталога); `BackendUnavailable` и `EnginePanicked`
+//!   окончательны;
+//! * повторный `open` той же камеры в `Error::Recoverable` — `AlreadyInState`: повтор запускают
+//!   сигнал свободы камеры, таймер или `EnterForeground`, а не команда;
+//! * `Opened` значит «устройство открыто, повторяющегося запроса нет»; настроена ли сессия —
+//!   видно в [`CameraStatus::configured`];
+//! * неожиданное `SessionClosed` текущей сессии — признак проблемы устройства: идёт тем же путём,
+//!   что сбой устройства (`DeviceFailure`, повтор по таймеру с нарастающей задержкой);
+//! * счётчик подряд идущих попыток обнуляется не при возврате в целевое состояние, а после
+//!   `recovery.stable_frames_before_reset` результатов кадров подряд (иначе платформа, закрывающая
+//!   сессию сразу после каждой настройки, держала бы движок в бесконечном цикле).
+
+mod availability_memory;
+mod backend_events;
+mod commands;
+mod reconcile;
+mod recovery;
+
+use std::sync::Arc;
+use std::time::Instant;
+
+use camera_contract::availability::CameraUnavailableReason;
+use camera_contract::catalog::CameraCatalog;
+use camera_contract::control::{CaptureIntent, ManualControl};
+use camera_contract::ids::CameraId;
+use camera_contract::stream::ConfiguredStream;
+
+use crate::backend::{BackendEvent, BackendFailure, CameraBackend, DeviceGeneration, SessionGeneration};
+use crate::cadence::CadenceTracker;
+use crate::command::{CameraCommand, CommandId};
+use crate::config::CameraEngineConfig;
+use crate::event::CameraEvent;
+use crate::role_classifier::{RoleDiagnostic, classify_catalog};
+use crate::state::{CameraError, CameraState, ClosedReason, FatalCause};
+use crate::status::{AppPresence, CameraCounters, CameraStatus};
+use availability_memory::AvailabilityMemory;
+pub(crate) use commands::Desired;
+use recovery::RecoveryTracker;
+
+pub(crate) const LOG_TARGET: &str = "fasticamera::camera::engine";
+
+/// Открытое устройство: какая камера и под каким поколением.
+#[derive(Debug, Clone)]
+struct OpenDevice {
+    camera: CameraId,
+    generation: DeviceGeneration,
+}
+
+/// Параметры идущего повторяющегося запроса.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RepeatingRequest {
+    intent: CaptureIntent,
+    controls: ManualControl,
+}
+
+/// Сконфигурированная сессия.
+#[derive(Debug, Clone)]
+struct LiveSession {
+    generation: SessionGeneration,
+    configured: ConfiguredStream,
+    repeating: Option<RepeatingRequest>,
+}
+
+/// Шаг доведения остановлен (ошибка или ожидание): дальше идти нельзя. Состояние ошибки
+/// к этому моменту уже записано.
+#[derive(Debug, Clone, Copy)]
+struct Halt;
+
+/// Бэкенд-пустышка для движка, у которого настоящий бэкенд не создался. Не вызывается:
+/// `Fatal` закрывает все пути к бэкенду.
+struct DeadBackend;
+
+impl DeadBackend {
+    fn failure(operation: &'static str) -> BackendFailure {
+        BackendFailure {
+            operation,
+            code: -1,
+            detail: "бэкенд камеры не создан".to_owned(),
+        }
+    }
+}
+
+impl CameraBackend for DeadBackend {
+    fn load_catalog(&mut self) -> Result<Vec<camera_contract::capabilities::CameraDescriptor>, BackendFailure> {
+        Err(Self::failure("load_catalog"))
+    }
+
+    fn open_device(
+        &mut self,
+        _camera: &CameraId,
+        _generation: DeviceGeneration,
+    ) -> Result<(), crate::backend::OpenFailure> {
+        Err(crate::backend::OpenFailure::Backend(Self::failure("open_device")))
+    }
+
+    fn configure_session(
+        &mut self,
+        _stream: &camera_contract::stream::ResolvedStream,
+        _generation: SessionGeneration,
+    ) -> Result<ConfiguredStream, crate::backend::ConfigureFailure> {
+        Err(crate::backend::ConfigureFailure::Backend(Self::failure(
+            "configure_session",
+        )))
+    }
+
+    fn set_repeating_request(
+        &mut self,
+        _intent: CaptureIntent,
+        _controls: &ManualControl,
+    ) -> Result<(), crate::backend::RequestFailure> {
+        Err(crate::backend::RequestFailure::Backend(Self::failure(
+            "set_repeating_request",
+        )))
+    }
+
+    fn stop_repeating(&mut self) -> Result<(), crate::backend::RequestFailure> {
+        Ok(())
+    }
+
+    fn close_session(&mut self) {}
+
+    fn close_device(&mut self) {}
+}
+
+/// Движок камеры. Все входы — методы `&mut self` с явным `now`.
+pub struct CameraEngine {
+    backend: Box<dyn CameraBackend>,
+    config: CameraEngineConfig,
+    desired: Desired,
+    presence: AppPresence,
+    catalog: Arc<CameraCatalog>,
+    catalog_loaded: bool,
+    role_diagnostics: Vec<RoleDiagnostic>,
+    state: CameraState,
+    device: Option<OpenDevice>,
+    session: Option<LiveSession>,
+    /// Идёт перестройка работавшего потока: промежуточные `Opening/Opened/Configuring`
+    /// не показываются, пока состояние `Reconfiguring`.
+    reconfiguring: bool,
+    recovery: RecoveryTracker,
+    /// Последняя известная доступность камер (см. `availability_memory`).
+    availability: AvailabilityMemory,
+    cadence: CadenceTracker,
+    counters: CameraCounters,
+    last_unavailable: Option<CameraUnavailableReason>,
+    events: Vec<CameraEvent>,
+    /// После паники внутри итерации бэкенд и внутренности в неизвестном состоянии:
+    /// движок только отвечает на команды `EngineFailed`.
+    poisoned: bool,
+}
+
+impl CameraEngine {
+    /// Движок с рабочим бэкендом; каталог читается отдельно ([`CameraEngine::load_catalog`]).
+    pub fn new(config: CameraEngineConfig, presence: AppPresence, backend: Box<dyn CameraBackend>) -> Self {
+        let state = CameraState::Closed {
+            reason: match presence {
+                AppPresence::Foreground => ClosedReason::NotRequested,
+                AppPresence::Background => ClosedReason::AppInBackground,
+            },
+        };
+        Self {
+            cadence: CadenceTracker::new(config.cadence),
+            backend,
+            config,
+            desired: Desired::default(),
+            presence,
+            catalog: Arc::new(CameraCatalog::empty()),
+            catalog_loaded: false,
+            role_diagnostics: Vec::new(),
+            state,
+            device: None,
+            session: None,
+            reconfiguring: false,
+            recovery: RecoveryTracker::default(),
+            availability: AvailabilityMemory::default(),
+            counters: CameraCounters::default(),
+            last_unavailable: None,
+            events: Vec::new(),
+            poisoned: false,
+        }
+    }
+
+    /// Движок, у которого бэкенд не создался на потоке камеры: сразу `Fatal::BackendUnavailable`,
+    /// команды отвечают `EngineFailed`.
+    pub fn failed_backend(config: CameraEngineConfig, presence: AppPresence, failure: BackendFailure) -> Self {
+        let mut engine = Self::new(config, presence, Box::new(DeadBackend));
+        tracing::error!(target: LOG_TARGET, %failure, "бэкенд камеры не создан");
+        engine.enter_fatal(FatalCause::BackendUnavailable { failure });
+        engine
+    }
+
+    /// Читает каталог камер и назначает роли. Сбой — `Fatal::CatalogUnavailable`.
+    pub fn load_catalog(&mut self, _now: Instant) {
+        let failure = match self.backend.load_catalog() {
+            Err(failure) => failure,
+            Ok(cameras) => match classify_catalog(cameras, &self.config.roles) {
+                Ok(classified) => {
+                    for diagnostic in &classified.diagnostics {
+                        tracing::warn!(target: LOG_TARGET, ?diagnostic, "роль камеры назначена не полностью");
+                    }
+                    self.role_diagnostics = classified.diagnostics;
+                    self.catalog = Arc::new(classified.catalog);
+                    self.catalog_loaded = true;
+                    return;
+                }
+                Err(error) => BackendFailure {
+                    operation: "classify_catalog",
+                    code: 0,
+                    detail: error.to_string(),
+                },
+            },
+        };
+        tracing::error!(target: LOG_TARGET, %failure, "каталог камер не прочитан");
+        self.enter_fatal(FatalCause::CatalogUnavailable { failure });
+    }
+
+    /// Команда снаружи. Всегда ровно одно событие [`CameraEvent::CommandHandled`], причём
+    /// до событий, которые команда вызвала.
+    pub fn handle_command(&mut self, id: CommandId, command: CameraCommand, now: Instant) {
+        self.counters.commands_handled += 1;
+        let name = command.name();
+        let outcome = self.decide_command(&command);
+        self.events.push(CameraEvent::CommandHandled {
+            command: id,
+            name,
+            outcome: outcome.clone(),
+        });
+        if self.poisoned {
+            return;
+        }
+        self.apply_command_effects(&command, &outcome, now);
+    }
+
+    /// Асинхронное событие бэкенда.
+    pub fn handle_backend_event(&mut self, event: BackendEvent, now: Instant) {
+        if self.poisoned {
+            return;
+        }
+        self.route_backend_event(event, now);
+    }
+
+    /// Сработал таймер: пора ли повторять попытку восстановления.
+    pub fn on_timer(&mut self, now: Instant) {
+        if self.poisoned {
+            return;
+        }
+        self.fire_retry_timer_if_due(now);
+    }
+
+    /// Когда движку нужно проснуться без внешних событий.
+    pub fn next_deadline(&self) -> Option<Instant> {
+        if self.poisoned {
+            return None;
+        }
+        self.pending_retry_deadline()
+    }
+
+    /// Снимок состояния.
+    pub fn status(&self) -> CameraStatus {
+        CameraStatus {
+            state: self.state.clone(),
+            presence: self.presence,
+            catalog: Arc::clone(&self.catalog),
+            configured: self.session.as_ref().map(|session| session.configured.clone()),
+            stream: self.cadence.stats().clone(),
+            last_unavailable: self.last_unavailable,
+            counters: self.counters,
+        }
+    }
+
+    /// Забрать накопленные события (в порядке появления).
+    pub fn drain_events(&mut self) -> Vec<CameraEvent> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// Диагностика назначения ролей последнего прочитанного каталога.
+    pub fn role_diagnostics(&self) -> &[RoleDiagnostic] {
+        &self.role_diagnostics
+    }
+
+    /// Итерация запаниковала: движок окончательно в `Fatal::EnginePanicked`, устройство
+    /// закрывается (сама попытка закрытия тоже под перехватом паники).
+    pub fn fail_after_panic(&mut self, message: String) {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        tracing::error!(target: LOG_TARGET, %message, "паника в итерации движка камеры");
+        self.poisoned = true;
+        if catch_unwind(AssertUnwindSafe(|| self.backend.close_device())).is_err() {
+            tracing::error!(target: LOG_TARGET, "паника и при закрытии устройства после паники движка");
+        }
+        self.device = None;
+        self.session = None;
+        self.reconfiguring = false;
+        self.recovery.stop_waiting();
+        self.transition(CameraState::Error {
+            error: CameraError::Fatal {
+                cause: FatalCause::EnginePanicked { message },
+            },
+        });
+    }
+
+    /// Если после паники в итерации команда осталась без итога — ответить `EngineFailed`.
+    /// Так «ровно одно `CommandHandled` на команду» держится и при панике до публикации итога.
+    pub fn answer_if_unanswered(&mut self, id: CommandId, name: &'static str) {
+        let answered = self
+            .events
+            .iter()
+            .any(|event| matches!(event, CameraEvent::CommandHandled { command, .. } if *command == id));
+        if !answered {
+            self.events.push(CameraEvent::CommandHandled {
+                command: id,
+                name,
+                outcome: crate::command::CommandOutcome::InvalidState(crate::command::InvalidStateReason::EngineFailed),
+            });
+        }
+    }
+
+    /// Остановка потока: отпустить устройство. Состояние `Fatal` остаётся как есть.
+    pub fn shutdown(&mut self) {
+        if !self.poisoned {
+            self.release_platform();
+        }
+        self.recovery.stop_waiting();
+        if !self.is_fatal() {
+            self.transition(CameraState::Closed {
+                reason: ClosedReason::NotRequested,
+            });
+        }
+    }
+
+    // ---- Общие помощники для подмодулей ----
+
+    pub(crate) fn is_fatal(&self) -> bool {
+        matches!(
+            self.state,
+            CameraState::Error {
+                error: CameraError::Fatal { .. }
+            }
+        )
+    }
+
+    /// Сменить состояние; одинаковое состояние события не порождает.
+    fn transition(&mut self, new_state: CameraState) {
+        if self.state == new_state {
+            return;
+        }
+        tracing::debug!(target: LOG_TARGET, from = self.state.name(), to = new_state.name(), "смена состояния");
+        self.state = new_state.clone();
+        self.events.push(CameraEvent::StateChanged { state: new_state });
+    }
+
+    /// Закрыть устройство на бэкенде, если оно у нас записано открытым.
+    fn release_platform(&mut self) {
+        if self.device.is_some() || self.session.is_some() {
+            self.backend.close_device();
+        }
+        self.device = None;
+        self.session = None;
+    }
+
+    /// Окончательная ошибка: устройство отпущено, ожиданий нет.
+    fn enter_fatal(&mut self, cause: FatalCause) {
+        self.release_platform();
+        self.reconfiguring = false;
+        self.recovery.stop_waiting();
+        self.transition(CameraState::Error {
+            error: CameraError::Fatal { cause },
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests;

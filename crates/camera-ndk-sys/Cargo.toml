@@ -1,0 +1,19 @@
+[package]
+name = "camera-ndk-sys"
+description = "Сырые FFI-биндинги Camera2 NDK и AImageReader: bindgen при сборке по заголовкам закреплённого NDK (решение 37)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+# bindgen запускается в build.rs только под Android; на хосте crate пустой.
+build = "build.rs"
+
+[build-dependencies]
+# Cargo не позволяет ограничить build-dependency целью сборки: `[target.'cfg(..)'.build-dependencies]`
+# сверяется с платформой ХОСТА, где работает build.rs, а не с целью. Поэтому bindgen компилируется
+# и на хосте (с `runtime` это чистый Rust без libclang), но вызывается только при target_os = "android".
+bindgen.workspace = true
+
+[lints]
+workspace = true

@@ -8,12 +8,21 @@
 //! * платформенно-нейтральная часть (собирается и тестируется на ПК): `runtime_config`,
 //!   `build_info`, `logging` (кроме приёмника logcat), `panic_report`, `jni_boundary`,
 //!   `scenario`, `result_line`, `runtime`, `event_router` (маршрутизатор событий оболочки),
-//!   `render_route`/`render_wiring` (передача surface потоку рендера), `gpu_services`, `gpu_config`;
+//!   `render_route`/`render_wiring` (передача surface потоку рендера), `gpu_services`, `gpu_config`,
+//!   `camera_config`/`camera_wiring`/`camera_service`/`camera_lifecycle` (движок камеры, его политика
+//!   жизненного цикла и сервис для сценариев);
 //! * только Android: `jni_exports` (`JNI_OnLoad`, `RegisterNatives`), `shell_wiring`
-//!   (установка `android-shell`, запуск потока рендера и поток маршрутизатора), `vulkan_diagnostics`
+//!   (установка `android-shell`, запуск потоков рендера и камеры и поток маршрутизатора), `vulkan_diagnostics`
 //!   (разовые GPU-проверки на `gpu-vulkan`) и приёмник `logging::logcat_sink`.
 
 pub mod build_info;
+pub mod camera_config;
+pub mod camera_lifecycle;
+pub mod camera_scenario_config;
+pub mod camera_service;
+#[cfg(test)]
+mod camera_test_support;
+pub mod camera_wiring;
 pub mod event_router;
 pub mod gpu_config;
 pub mod gpu_services;

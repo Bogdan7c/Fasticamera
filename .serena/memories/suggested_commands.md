@@ -15,4 +15,6 @@
   - Validation layer для debug APK: `scripts/fetch-validation-layer.sh` (кэш `~/.cache/fasticamera/vulkan-validation-layers/<ver>/`, офлайн при кэше; вызывается из `apk`-стадии CI и `build_apk debug`).
   - Сырые времена показа: запуск с `-e log_filter "info,fasticamera::gpu::display_timing=trace"`; шаги создания GPU-контекста — `fasticamera::gpu::init=debug`.
   - Переопределить фильтр логов на один запуск: `adb shell am start -S -n dev.fasticamera.debug/dev.fasticamera.MainActivity -e log_filter "info,fasticamera::scenario=trace"`.
+  - Сценарии сессии 04 (нужно выданное разрешение камеры и разблокированный экран): `camera-catalog` (`--timeout 30`; после результата скрипт сверяет каталог с `dumpsys media.camera`), `camera-stream` (`--timeout 120`; 6 шагов из `camera.scenarios.stream_steps`: 60 к/с основной 16:9/4:3, ширик 4:3@60, фронт, логическая 0, RAW16), `camera-evict` (только debug, `--timeout 90`; драйвер запускает системную камеру `am start -a android.media.action.STILL_IMAGE_CAMERA` — решение 38). Подробности отчёта — `grep FASTICAMERA_DETAIL`.
+  - Зонд 00 для сверки с Java: `cd tools/device-probe && python3 pc/probe.py run control stream camera=0 size=4096x3072 format=0x25 ae_fps=30 frames=150` (flavor `control` = `dev.fasticamera.probe`).
 - Устройство выбирается по модели `CPH2447`; несколько — задать `ANDROID_SERIAL`.

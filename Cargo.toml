@@ -14,6 +14,9 @@ publish = false
 # Версии внешних зависимостей — в одном месте, crate-ы ссылаются через `workspace = true`.
 [workspace.dependencies]
 camera-contract = { path = "crates/camera-contract" }
+camera-core = { path = "crates/camera-core" }
+camera-ndk-sys = { path = "crates/camera-ndk-sys" }
+camera-android = { path = "crates/camera-android" }
 shell-contract = { path = "crates/shell-contract" }
 android-shell = { path = "crates/android-shell" }
 gpu-vulkan = { path = "crates/gpu-vulkan" }
@@ -32,6 +35,11 @@ ndk-sys = { version = "0.6.0", default-features = false, features = ["nativewind
 # Vulkan (решение 7). `loaded` — libvulkan открывается в рантайме (Entry::load): нет линковки
 # с libvulkan при сборке и честная ошибка, если Vulkan недоступен. `debug` — Debug для типов vk.
 ash = { version = "0.38.0", default-features = false, features = ["loaded", "std", "debug"] }
+# Генератор FFI-биндингов Camera2 NDK (решение 37). Только build-dependency crate-а camera-ndk-sys
+# и только под Android: на хосте build.rs выходит сразу. `runtime` — libclang открывается в рантайме
+# по пути из NDK (build-машине не нужен системный libclang); `logging` и `prettyplease` отключены:
+# форматирование сгенерированного кода не нужно, а лишние зависимости — это лишняя поверхность.
+bindgen = { version = "0.73.2", default-features = false, features = ["runtime"] }
 
 [workspace.lints.rust]
 # Каждая unsafe-операция внутри unsafe fn обязана стоять в явном unsafe-блоке с `// SAFETY:`.

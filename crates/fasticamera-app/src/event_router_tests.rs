@@ -31,6 +31,8 @@ use render_loop::config::RenderLoopConfig;
 use shell_contract::vsync::{VsyncSource, VsyncSourceError, VsyncSubscription};
 
 use super::*;
+use crate::camera_service::CameraServices;
+use crate::camera_test_support::FakeCameraRig;
 use crate::gpu_services::{GpuDiagnostics, GpuServices, RenderStatusSource, ValidationState};
 use crate::gpu_test_support::{
     FakeGpuDiagnostics, FakeRenderStatus, ReceiptPolicy, RecordingRoute, RoutedEvent, presenting_status,
@@ -38,6 +40,10 @@ use crate::gpu_test_support::{
 use crate::scenario::observing::{PlatformFacts, ThermalListenerReport};
 use crate::scenario::{Scenario, ScenarioConfig};
 
+#[path = "event_router_camera_tests.rs"]
+mod camera;
+#[path = "event_router_camera_scenario_tests.rs"]
+mod camera_scenarios;
 #[path = "event_router_render_tests.rs"]
 mod render;
 
@@ -184,10 +190,41 @@ struct Harness {
     /// Surface, которые сейчас держит получатель (не маршрутизатор).
     route_surfaces: Arc<Mutex<Vec<NativeSurface>>>,
     render: Arc<FakeRenderStatus>,
+    /// Сервис камеры, который видит маршрутизатор.
+    camera: CameraServices,
+    /// Движок камеры на fake-бэкенде (настоящий поток, подменена платформа); `None`, если сервис задан снаружи.
+    rig: Option<FakeCameraRig>,
+}
+
+impl Harness {
+    /// Fake-бэкенд камеры и диагностика (в тестах с настоящим движком).
+    fn rig(&self) -> &FakeCameraRig {
+        self.rig.as_ref().expect("в этом тесте движок камеры fake")
+    }
 }
 
 fn harness(config: ScenarioConfig) -> Harness {
     harness_with_render(config, RenderLoopConfig::default(), ReceiptPolicy::Confirm)
+}
+
+/// Маршрутизатор с движком камеры на fake-бэкенде (настройки сценариев камеры — у `rig`).
+fn harness_for_rig(rig: FakeCameraRig) -> Harness {
+    let camera = rig.services.clone();
+    let mut harness = harness_for_services(camera);
+    harness.rig = Some(rig);
+    harness
+}
+
+/// Маршрутизатор с заданным сервисом камеры (например, `CameraServices::unavailable`).
+fn harness_for_services(camera: CameraServices) -> Harness {
+    build_harness_with_camera(
+        ScenarioConfig::default(),
+        Box::new(RecordingRoute::new(ReceiptPolicy::Confirm)),
+        FakeRenderStatus::live(presenting_status(), ValidationState::Enabled),
+        FakeGpuDiagnostics::new(Vec::new(), None),
+        RenderLoopConfig::default(),
+        camera,
+    )
 }
 
 /// Маршрутизатор с подставными рендером и GPU-диагностиками.
@@ -210,6 +247,22 @@ fn build_harness(
     render: Arc<FakeRenderStatus>,
     diagnostics: Arc<FakeGpuDiagnostics>,
     render_config: RenderLoopConfig,
+) -> Harness {
+    let rig = FakeCameraRig::new();
+    let camera = rig.services.clone();
+    let mut harness = build_harness_with_camera(config, route, render, diagnostics, render_config, camera);
+    harness.rig = Some(rig);
+    harness
+}
+
+/// Сборка с готовым маршрутом, GPU-сервисами и движком камеры.
+fn build_harness_with_camera(
+    config: ScenarioConfig,
+    route: Box<dyn RenderRoute>,
+    render: Arc<FakeRenderStatus>,
+    diagnostics: Arc<FakeGpuDiagnostics>,
+    render_config: RenderLoopConfig,
+    camera: CameraServices,
 ) -> Harness {
     let (sender, events) = shell_event_channel(ShellQueueConfig::default()).expect("очередь");
     let shell = Arc::new(FakeShell::default());
@@ -239,6 +292,7 @@ fn build_harness(
             diagnostics: Arc::clone(&diagnostics) as Arc<dyn GpuDiagnostics>,
             render_config,
         },
+        camera: camera.clone(),
     });
     Harness {
         router,
@@ -250,6 +304,8 @@ fn build_harness(
         route_log: Arc::default(),
         route_surfaces: Arc::default(),
         render,
+        camera,
+        rig: None,
     }
 }
 

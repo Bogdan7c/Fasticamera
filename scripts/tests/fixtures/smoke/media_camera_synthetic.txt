@@ -1,0 +1,77 @@
+== Service global info: ==
+
+Number of camera devices: 4
+Number of normal camera devices: 3
+    Device 0 maps to "0"
+    Device 1 maps to "1"
+    Device 2 maps to "2"
+Active Camera Clients:
+[]
+
+== Camera device 0 dynamic info: ==
+  Device 0 is closed, no client instance
+== Camera Provider HAL provider/synthetic/0-0 (v2.0, remote) static info: 4 devices: ==
+== Camera HAL device device@1.1/synthetic/0 (v1.1) static information: ==
+  Resource cost: 100
+  API1 info:
+    Facing: Back
+  API2 camera characteristics:
+    Dumping camera metadata array: 6 / 6 entries.
+      android.lens.facing (80005): byte[1]
+        [BACK ]
+      android.request.availableCapabilities (c000c): byte[3]
+        [BACKWARD_COMPATIBLE RAW LOGICAL_MULTI_CAMERA ]
+      android.scaler.availableStreamConfigurations (d000a): int32[40]
+        [54 4096 3072 INPUT ]
+        [37 4096 3072 OUTPUT ]
+        [36 4096 3072 OUTPUT ]
+        [35 4096 3072 OUTPUT ]
+        [32 4096 3072 OUTPUT ]
+        [33 4096 3072 OUTPUT ]
+        [37 4000 3000 OUTPUT ]
+      android.scaler.availableMinFrameDurations (d000b): int64[8]
+        [32 4096 ]
+      android.scaler.availableStreamConfigurationsMaximumResolution (d0011): int32[8]
+        [37 8192 6144 OUTPUT ]
+== Camera HAL device device@1.1/synthetic/0 (v1.1) dumpState: ==
+== Camera HAL device device@1.1/synthetic/1 (v1.1) static information: ==
+  API1 info:
+    Facing: Front
+  API2 camera characteristics:
+      android.lens.facing (80005): byte[1]
+        [FRONT ]
+      android.request.availableCapabilities (c000c): byte[2]
+        [BACKWARD_COMPATIBLE RAW ]
+      android.scaler.availableStreamConfigurations (d000a): int32[24]
+        [37 2304 1728 OUTPUT ]
+        [32 2304 1728 OUTPUT ]
+        [37 2304 1296 OUTPUT ]
+        [32 2304 1296 OUTPUT ]
+        [35 2304 1728 OUTPUT ]
+== Camera HAL device device@1.1/synthetic/2 (v1.1) static information: ==
+  API1 info:
+    Facing: Back
+  API2 camera characteristics:
+      android.lens.facing (80005): byte[1]
+        [BACK ]
+      android.request.availableCapabilities (c000c): byte[2]
+        [BACKWARD_COMPATIBLE RAW ]
+      android.scaler.availableStreamConfigurations (d000a): int32[12]
+        [37 4096 3072 OUTPUT ]
+        [32 4096 3072 OUTPUT ]
+== Camera HAL device device@1.1/synthetic/4 (v1.1) static information: ==
+  API1 info:
+    Facing: Back
+  API2 camera characteristics:
+      android.lens.facing (80005): byte[1]
+        [BACK ]
+      android.request.availableCapabilities (c000c): byte[3]
+        [BACKWARD_COMPATIBLE RAW SYSTEM_CAMERA ]
+      android.scaler.availableStreamConfigurations (d000a): int32[12]
+        [37 3280 2464 OUTPUT ]
+        [32 3280 2464 OUTPUT ]
+== Camera HAL device device@1.1/synthetic/4 (v1.1) dumpState: ==
+== Vendor tags: ==
+      android.lens.facing (80005): byte[1]
+        [FRONT ]
+== Camera error traces (0): ==

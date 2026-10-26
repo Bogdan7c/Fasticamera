@@ -26,10 +26,11 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import smoke_checks
 from smoke_driver import STAGE_MARKER, AdbDeviceActions, DriverError, StageDriver
+from smoke_dumpsys import CheckOutcome, PostCheck, dumpsys_post_check
 
 EXIT_OK = 0
 EXIT_SCENARIO_FAILED = 1
@@ -55,12 +56,22 @@ CRASH_PROCESS_LOOKAHEAD_LINES = 3
 EXPECTED_ABI = "arm64-v8a"
 
 
+DETAIL_LINE_MARKER = "FASTICAMERA_DETAIL"
+"""Префикс строк подробностей в выводе скрипта (чтобы их можно было отфильтровать `grep`)."""
+
+DETAIL_STAGE_PREFIX = "detail_"
+"""Стадии с таким префиксом несут подробности отчёта, не поместившиеся в строку результата (4000 байт
+записи logcat): их не исполняет драйвер, а печатает `main` после вердикта."""
+
+
 @dataclass(frozen=True)
 class SmokeVerdict:
-    """Итог проверки: код выхода и объяснение для человека."""
+    """Итог проверки: код выхода, объяснение для человека и подробности отчёта (строки ``detail_*``)."""
 
     exit_code: int
     message: str
+    details: tuple[dict, ...] = ()
+    notes: tuple[str, ...] = ()
 
 
 @dataclass
@@ -164,6 +175,9 @@ CHECKS: dict[str, ScenarioCheck] = {
     "render-lifecycle": ignoring_observations(smoke_checks.check_render_lifecycle),
     "ahb-import": ignoring_observations(smoke_checks.check_ahb_import),
     "gpu-fence": ignoring_observations(smoke_checks.check_gpu_fence),
+    "camera-catalog": ignoring_observations(smoke_checks.check_camera_catalog),
+    "camera-stream": ignoring_observations(smoke_checks.check_camera_stream),
+    "camera-evict": ignoring_observations(smoke_checks.check_camera_evict),
 }
 
 StageHandler = Callable[[dict], None]
@@ -191,6 +205,37 @@ def evaluate_stream(
     scenario: str,
     stage_handler: StageHandler | None = None,
     package: str | None = None,
+    post_check: PostCheck | None = None,
+) -> SmokeVerdict:
+    """Как ``_evaluate_stream``, но вердикт несёт собранные подробности отчёта (стадии ``detail_*``)."""
+    details: list[dict] = []
+    notes: list[str] = []
+    verdict = _evaluate_stream(lines, scenario, stage_handler, package, post_check, details, notes)
+    return replace(verdict, details=tuple(details), notes=tuple(notes))
+
+
+def _collect_detail(stage_payload: str, scenario: str, details: list[dict]) -> None:
+    """Запоминает стадию ``detail_*`` нужного сценария; битую строку пропускает (её разберёт обработчик стадий)."""
+    try:
+        stage_event = json.loads(stage_payload)
+    except json.JSONDecodeError:
+        return
+    if (
+        isinstance(stage_event, dict)
+        and stage_event.get("scenario") == scenario
+        and str(stage_event.get("stage", "")).startswith(DETAIL_STAGE_PREFIX)
+    ):
+        details.append(stage_event)
+
+
+def _evaluate_stream(
+    lines: Iterable[str],
+    scenario: str,
+    stage_handler: StageHandler | None,
+    package: str | None,
+    post_check: PostCheck | None,
+    details: list[dict],
+    notes: list[str],
 ) -> SmokeVerdict:
     """Читает строки до результата нужного сценария (или падения процесса) и выносит вердикт.
 
@@ -199,6 +244,8 @@ def evaluate_stream(
     обработчик занят (пауза, опрос диалога), строки копятся в очереди чтения и не теряются.
     Сбой шага (``DriverError``) — провал сценария с объяснением. Падение процесса считается
     только для ``package`` (см. ``CrashAttribution``); падения чужих приложений игнорируются.
+    ``post_check`` (если задан) вызывается над JSON результата, когда основная проверка прошла: так
+    ``camera-catalog`` сверяется с ``dumpsys media.camera`` уже после результата. Её проблемы — провал.
     Кончились строки без результата — ``EXIT_NO_RESULT`` (таймаут или обрыв logcat).
     """
     check = CHECKS.get(scenario)
@@ -214,6 +261,7 @@ def evaluate_stream(
             observed.panic_lines.append(line)
         stage_payload = extract_stage_payload(line)
         if stage_payload is not None:
+            _collect_detail(stage_payload, scenario, details)
             stage_failure = _handle_stage_line(stage_payload, scenario, stage_handler)
             if stage_failure is not None:
                 return stage_failure
@@ -230,6 +278,10 @@ def evaluate_stream(
         if result.get("scenario") != scenario:
             continue
         problems = check(result, observed)
+        if not problems and post_check is not None:
+            outcome = post_check(result)
+            problems = outcome.problems
+            notes.extend(outcome.notes)
         if problems:
             return SmokeVerdict(EXIT_SCENARIO_FAILED, f"сценарий {scenario} не прошёл: {'; '.join(problems)}\n{payload}")
         return SmokeVerdict(EXIT_OK, f"сценарий {scenario} прошёл: {payload}")
@@ -332,6 +384,13 @@ def parse_arguments(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def post_check_for(scenario: str, serial: str) -> PostCheck | None:
+    """Проверка после результата, если сценарию она нужна: ``camera-catalog`` сверяется с dumpsys."""
+    if scenario == "camera-catalog":
+        return dumpsys_post_check(serial)
+    return None
+
+
 def main(argv: list[str]) -> int:
     arguments = parse_arguments(argv)
     driver = StageDriver(arguments.scenario, AdbDeviceActions(arguments.serial, arguments.package))
@@ -340,11 +399,16 @@ def main(argv: list[str]) -> int:
         arguments.scenario,
         driver.handle_stage,
         arguments.package,
+        post_check_for(arguments.scenario, arguments.serial),
     )
     if verdict.exit_code == EXIT_NO_RESULT:
         verdict = SmokeVerdict(verdict.exit_code, f"{verdict.message} за {arguments.timeout:g} с")
     stream = sys.stdout if verdict.exit_code == EXIT_OK else sys.stderr
     print(verdict.message, file=stream)
+    for note in verdict.notes:
+        print(note, file=stream)
+    for detail in verdict.details:
+        print(f"{DETAIL_LINE_MARKER} {json.dumps(detail, ensure_ascii=False)}", file=stream)
     return verdict.exit_code
 
 
