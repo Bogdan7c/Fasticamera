@@ -1,0 +1,6 @@
+<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="dev.fasticamera.debug" bounds="[0,0][1080,2400]">
+    <node index="0" text="Allow" resource-id="com.android.permissioncontroller:id/permission_allow_button" class="android.widget.Button" package="com.android.permissioncontroller" bounds="[100,1200][980,1320]" />
+  </node>
+</hierarchy>

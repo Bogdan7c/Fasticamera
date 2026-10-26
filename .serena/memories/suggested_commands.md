@@ -10,6 +10,6 @@
 - APK: `cd android && ./gradlew assembleDebug assembleRelease` (нужны `ANDROID_HOME`, `JAVA_HOME`; скрипты выставляют дефолты сами через `scripts/lib/common.sh`).
 - Телефон:
   - `scripts/device-deploy.sh [--variant debug|release] [--no-build] [--log-seconds N]` — сборка, установка, запуск, logcat тега `Fasticamera`.
-  - `scripts/device-smoke.sh [--variant ...] [--no-build] [--timeout S] <hello|panic>` — коды выхода: 0 прошёл, 1 упал, 2 нет устройства, 3 нет строки результата, 4 сборка/установка/запуск, 64 неверный вызов.
+  - `scripts/device-smoke.sh [--variant ...] [--no-build] [--timeout S] <сценарий>` (`--no-build` ставит последний собранный APK). Сценарии: `hello`, `panic` (только debug), `lifecycle` (скрипт сам жмёт HOME и возвращает), `permission` (`--timeout 60`; сбрасывает и возвращает разрешение камеры только нашего пакета, сам жмёт «Don't allow»; экран разблокирован, телефон не трогать; нужна опция разработчика OxygenOS), `motion` (гироскоп ≥ 380 Гц; ориентация `unknown`, если телефон лежит), `platform` (тепло, 120 Гц, проигрывает 9 вибраций) — коды выхода: 0 прошёл, 1 упал, 2 нет устройства, 3 нет строки результата, 4 сборка/установка/запуск, 64 неверный вызов.
   - Переопределить фильтр логов на один запуск: `adb shell am start -S -n dev.fasticamera.debug/dev.fasticamera.MainActivity -e log_filter "info,fasticamera::scenario=trace"`.
 - Устройство выбирается по модели `CPH2447`; несколько — задать `ANDROID_SERIAL`.

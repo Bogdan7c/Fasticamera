@@ -1,6 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Камера — runtime-разрешение, запрашивается командой Rust (ShellPlatform.requestCameraPermission). -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Хаптика через Vibrator (обычное разрешение, решение владельца 02). -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Гироскоп 400 Гц (V3): без этого разрешения частота датчиков ограничена 200 Гц. -->
+    <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
+
     <application
         android:allowBackup="false"
         android:hasFragileUserData="false"
@@ -10,10 +17,15 @@
             exported: smoke-сценарии запускаются с ПК (am start -n ... -e scenario <имя>).
             showWhenLocked/turnScreenOn: за блокировкой процесс фоновый и Oplus его замораживает
             (дефект 2 сессии 00), поэтому экран камеры, как у системной, работает поверх блокировки.
+            screenOrientation=portrait: раскладка как у камеры iOS не поворачивается, поворачиваются
+            иконки по физической ориентации с датчика (android-shell).
+            configChanges: смена размера/режима не пересоздаёт Activity (и не рвёт сессию камеры).
         -->
         <activity
             android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
             android:exported="true"
+            android:screenOrientation="portrait"
             android:showWhenLocked="true"
             android:turnScreenOn="true">
             <intent-filter>

@@ -3,7 +3,10 @@
 #
 #   scripts/device-smoke.sh [--variant debug|release] [--no-build] [--timeout SEC] <сценарий>
 #
-# Сценарии: hello (обе сборки), panic (только debug). Ожидания — в scripts/smoke_wait.py.
+# Сценарии: hello, lifecycle, permission, motion, platform (обе сборки), panic (только debug).
+# lifecycle сворачивает и возвращает приложение, permission сбрасывает и затем возвращает
+# разрешение камеры нашего пакета; шаги на телефоне — scripts/smoke_driver.py,
+# ожидания — scripts/smoke_wait.py и scripts/smoke_checks.py.
 # Коды выхода: 0 — сценарий прошёл, 1 — сценарий упал, 2 — устройство не найдено,
 # 3 — нет строки результата за таймаут, 4 — не собралось/не встало/не запустилось, 64 — неверный вызов.
 set -euo pipefail
@@ -12,7 +15,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
 usage() {
-    sed -n '2,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
 }
 
 variant="debug"
@@ -57,12 +60,35 @@ if [[ "$should_build" == true ]]; then
 fi
 install_apk "$serial" "$variant" || exit "$EXIT_BUILD_OR_INSTALL_FAILED"
 
+# Разрешение камеры возвращаем в любом исходе (в том числе по Ctrl+C). Ловушка ставится ДО сброса:
+# частично выполненный сброс тоже надо откатить. Код выхода скрипта ловушка не меняет.
+restore_permission_on_exit() {
+    restore_camera_permission "$serial" "$package" ||
+        log_error "не удалось вернуть разрешение камеры $package: выдайте вручную (adb -s $serial shell pm grant $package $CAMERA_PERMISSION)"
+}
+if scenario_resets_camera_permission "$scenario"; then
+    trap restore_permission_on_exit EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    reset_camera_permission "$serial" "$package" || {
+        log_error "не удалось сбросить разрешение камеры $package"
+        exit "$EXIT_BUILD_OR_INSTALL_FAILED"
+    }
+fi
+
 since_epoch="$(device_epoch_seconds "$serial")"
 start_activity "$serial" "$package" -e scenario "$scenario" || exit "$EXIT_BUILD_OR_INSTALL_FAILED"
 
 log_step "ожидание FASTICAMERA_RESULT сценария $scenario (до $timeout_seconds с)"
-exec python3 "$FASTICAMERA_ROOT/scripts/smoke_wait.py" \
+# Без exec: после проверки надо отработать ловушку восстановления разрешения.
+if python3 "$FASTICAMERA_ROOT/scripts/smoke_wait.py" \
     --serial "$serial" \
     --since-epoch "$since_epoch" \
+    --package "$package" \
     --scenario "$scenario" \
-    --timeout "$timeout_seconds"
+    --timeout "$timeout_seconds"; then
+    smoke_exit_code=0
+else
+    smoke_exit_code=$?
+fi
+exit "$smoke_exit_code"

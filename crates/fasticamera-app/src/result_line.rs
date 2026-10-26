@@ -3,13 +3,35 @@
 //! Это контракт с `scripts/device-smoke.sh`: строка не режется на куски, поэтому её длина
 //! ограничена одной записью logcat. Слишком длинный отчёт заменяется отчётом об ошибке —
 //! тоже валидной строкой, чтобы скрипт получил ясный провал, а не обрывок JSON.
+//!
+//! Там же — строка стадии наблюдающего сценария `FASTICAMERA_STAGE {json}`
+//! (контракт с `scripts/smoke_driver.py`: на стадию скрипт отвечает действием на телефоне).
 
 use crate::logging::record::LOGCAT_MAX_TEXT_BYTES;
 use crate::logging::{LogPriority, emit_unfiltered};
+use crate::scenario::observing::StageLine;
 use crate::scenario::{ScenarioOutcome, ScenarioReport};
 
 /// Префикс строки результата в logcat.
 pub const RESULT_LINE_PREFIX: &str = "FASTICAMERA_RESULT ";
+
+/// Префикс строки стадии в logcat.
+pub const STAGE_LINE_PREFIX: &str = "FASTICAMERA_STAGE ";
+
+/// Собирает строку стадии. Стадия — несколько коротких полей, поэтому всегда помещается
+/// в запись logcat; сбой сериализации даёт разбираемую строку с ошибкой.
+pub fn format_stage_line(stage: &StageLine) -> String {
+    let json = serde_json::to_string(stage).unwrap_or_else(|error| {
+        serde_json::json!({"scenario": stage.scenario, "stage": "stage_serialization_failed", "error": error.to_string()})
+            .to_string()
+    });
+    format!("{STAGE_LINE_PREFIX}{json}")
+}
+
+/// Пишет строку стадии в logcat мимо фильтра (как строку результата).
+pub fn emit_stage_line(stage: &StageLine) {
+    emit_unfiltered(LogPriority::Info, format_stage_line(stage));
+}
 
 /// Собирает строку результата и JSON отчёта (его же Kotlin показывает на экране).
 pub fn format_result_line(report: &ScenarioReport) -> (String, String) {
@@ -63,6 +85,22 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(payload).expect("json");
         assert_eq!(parsed["status"], "passed");
         assert_eq!(parsed["report"]["abi"], "arm64-v8a");
+    }
+
+    #[test]
+    fn stage_line_has_prefix_and_flat_fields() {
+        let stage = StageLine {
+            scenario: "permission",
+            stage: "dialog_expected",
+            fields: crate::scenario::observing::stage_fields([("attempt", 2.into())]),
+        };
+        let line = format_stage_line(&stage);
+        let payload = line.strip_prefix(STAGE_LINE_PREFIX).expect("префикс");
+        let parsed: serde_json::Value = serde_json::from_str(payload).expect("json");
+        assert_eq!(
+            parsed,
+            serde_json::json!({"scenario": "permission", "stage": "dialog_expected", "attempt": 2})
+        );
     }
 
     #[test]

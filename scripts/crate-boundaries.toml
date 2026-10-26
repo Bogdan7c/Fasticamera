@@ -11,6 +11,7 @@ roles = ["platform_neutral", "android_platform", "gpu", "output", "composition_r
 # Новый crate в workspace без записи здесь — ошибка (код 1).
 [crates]
 "camera-contract" = "platform_neutral"
+"shell-contract" = "platform_neutral"
 "camera-core" = "platform_neutral"
 "isp-model" = "platform_neutral"
 "ui-core" = "platform_neutral"
@@ -33,6 +34,13 @@ roles = ["platform_neutral", "android_platform", "gpu", "output", "composition_r
 #   reason              — объяснение, которое попадает в сообщение о нарушении.
 
 [[rules]]
+id = "jni-ndk-only-in-shell"
+applies_to = ["platform_neutral", "gpu", "output"]
+applies_to_crates = ["camera-ndk-sys", "camera-android"]
+forbid = ["jni", "jni-sys", "ndk", "ndk-sys", "ndk-context"]
+reason = "jni и ndk знают только android-shell и fasticamera-app, критерий выхода сессии 02 (шов Android ↔ Rust)"
+
+[[rules]]
 id = "neutral-no-platform"
 applies_to = ["platform_neutral"]
 forbid = [
@@ -45,10 +53,10 @@ reason = "платформенно-нейтральные ядра собира�
 
 [[rules]]
 id = "contract-is-leaf"
-applies_to_crates = ["camera-contract"]
+applies_to_crates = ["camera-contract", "shell-contract"]
 forbid = []
 forbid_other_crates = true
-reason = "camera-contract — общий словарь и не зависит от других crate-ов проекта, README «Карта модулей»"
+reason = "camera-contract и shell-contract — общие словари и не зависят от других crate-ов проекта, README «Карта модулей»"
 
 [[rules]]
 id = "ui-render-not-camera"

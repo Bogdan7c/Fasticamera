@@ -1,0 +1,24 @@
+[package]
+name = "android-shell"
+description = "Шов Android ↔ Rust: единственный crate, который знает jni и NDK (жизненный цикл, surface, касания, разрешения, хаптика, тепло, датчики)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+shell-contract.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni.workspace = true
+ndk-sys.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -41,6 +41,11 @@ package_for_variant() {
 
 # Путь к APK варианта после `gradlew assemble<Variant>`.
 apk_path_for_variant() {
+    # FASTICAMERA_APK_PATH позволяет подставить готовый APK (используется тестами скриптов).
+    if [[ -n "${FASTICAMERA_APK_PATH:-}" ]]; then
+        printf '%s\n' "$FASTICAMERA_APK_PATH"
+        return 0
+    fi
     printf '%s/android/app/build/outputs/apk/%s/app-%s.apk\n' "$FASTICAMERA_ROOT" "$1" "$1"
 }
 
@@ -108,14 +113,53 @@ device_epoch_seconds() {
 
 # Перезапускает Activity (-S: остановить старый процесс, чтобы конфиг процесса был свежим).
 # Остальные аргументы — intent-параметры для `am start` (например, -e scenario hello).
+# Интент — как у иконки лаунчера (MAIN + LAUNCHER): тогда возврат из фона лаунчер-интентом
+# поднимает ту же задачу, а не создаёт новую Activity поверх (факт сессии 02, сценарий lifecycle).
 start_activity() {
     local serial="$1" package="$2"
     shift 2
     log_step "запуск $package/$MAIN_ACTIVITY $*"
     local start_output
-    start_output="$(adb -s "$serial" shell am start -S -W -n "$package/$MAIN_ACTIVITY" "$@" 2>&1)"
+    start_output="$(adb -s "$serial" shell am start -S -W \
+        -a android.intent.action.MAIN -c android.intent.category.LAUNCHER \
+        -n "$package/$MAIN_ACTIVITY" "$@" 2>&1)"
     if grep -q -E '^(Error|Exception)' <<<"$start_output"; then
         log_error "am start: $start_output"
         return 1
     fi
+}
+
+# Разрешение, которое сбрасывает сценарий permission, и его флаги «решено пользователем».
+readonly CAMERA_PERMISSION="android.permission.CAMERA"
+readonly CAMERA_PERMISSION_USER_FLAGS=(user-set user-fixed)
+
+# Сценарии, которым перед запуском нужен сброшенный доступ к камере (данные, не if по имени).
+readonly SCENARIOS_RESETTING_CAMERA_PERMISSION=(permission)
+
+# Успех (0), если сценарию нужен сброс разрешения камеры.
+scenario_resets_camera_permission() {
+    local candidate
+    for candidate in "${SCENARIOS_RESETTING_CAMERA_PERMISSION[@]}"; do
+        [[ "$candidate" == "$1" ]] && return 0
+    done
+    return 1
+}
+
+# Сбрасывает разрешение камеры ТОЛЬКО у пакета приложения: отзыв и снятие флагов
+# «пользователь решил», чтобы система снова показала диалог.
+reset_camera_permission() {
+    local serial="$1" package="$2"
+    log_step "сброс разрешения камеры у $package"
+    adb -s "$serial" shell pm revoke "$package" "$CAMERA_PERMISSION" >/dev/null &&
+        adb -s "$serial" shell pm clear-permission-flags "$package" "$CAMERA_PERMISSION" \
+            "${CAMERA_PERMISSION_USER_FLAGS[@]}" >/dev/null
+}
+
+# Возвращает разрешение камеры пакету приложения (после сценария, в любом исходе).
+restore_camera_permission() {
+    local serial="$1" package="$2"
+    log_step "возврат разрешения камеры $package"
+    adb -s "$serial" shell pm grant "$package" "$CAMERA_PERMISSION" >/dev/null &&
+        adb -s "$serial" shell pm clear-permission-flags "$package" "$CAMERA_PERMISSION" \
+            "${CAMERA_PERMISSION_USER_FLAGS[@]}" >/dev/null
 }

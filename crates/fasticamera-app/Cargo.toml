@@ -19,6 +19,8 @@ crate-type = ["cdylib", "rlib"]
 debug-scenarios = []
 
 [dependencies]
+android-shell.workspace = true
+shell-contract.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

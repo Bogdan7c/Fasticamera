@@ -7,10 +7,12 @@
 //! Раскладка:
 //! * платформенно-нейтральная часть (собирается и тестируется на ПК): `runtime_config`,
 //!   `build_info`, `logging` (кроме приёмника logcat), `panic_report`, `jni_boundary`,
-//!   `scenario`, `result_line`, `runtime`;
-//! * только Android: `jni_exports` и приёмник `logging::logcat_sink`.
+//!   `scenario`, `result_line`, `runtime`, `event_router` (маршрутизатор событий оболочки);
+//! * только Android: `jni_exports` (`JNI_OnLoad`, `RegisterNatives`), `shell_wiring`
+//!   (установка `android-shell` и поток маршрутизатора) и приёмник `logging::logcat_sink`.
 
 pub mod build_info;
+pub mod event_router;
 pub mod jni_boundary;
 pub mod logging;
 pub mod panic_report;
@@ -21,3 +23,5 @@ pub mod scenario;
 
 #[cfg(target_os = "android")]
 mod jni_exports;
+#[cfg(target_os = "android")]
+mod shell_wiring;

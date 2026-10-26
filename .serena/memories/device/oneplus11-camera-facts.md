@@ -32,4 +32,7 @@
 
 ## Платформа
 - Гироскоп BMI26x 402 Гц, шкала BOOTTIME (как SENSOR_TIMESTAMP REALTIME). Rolling shutter skew: основная 4:3 13,66 мс, 16:9@60 15,97, ширик@60 16,28.
-- Хаптика: примитивы TICK/LOW_TICK/CLICK/THUD не поддерживаются. Sustained performance mode не поддерживается. Флеш ~1,8 ГиБ/с последовательно. 4 физических микрофона. Экран 60/90/120 Гц.
+- Хаптика: примитивы TICK/LOW_TICK/CLICK/THUD не поддерживаются; готовые эффекты TICK/CLICK/HEAVY_CLICK/DOUBLE_CLICK — `YES` (сессия 02); амплитуда управляется. Sustained performance mode не поддерживается. Флеш ~1,8 ГиБ/с последовательно. 4 физических микрофона. Экран 60/90/120 Гц.
+- Жизненный цикл (сессия 02): HOME → `onPause` → `surfaceDestroyed`; возврат интентом лаунчера → `onResume` **раньше** `surfaceCreated` → `surfaceChanged`. Возврат интентом, отличным от корневого, создаёт новую Activity поверх.
+- Гироскоп через NDK `ASensorEventQueue` 400 Гц → 402 Гц, без пропусков; акселерометр 50 Гц → ~47 Гц. Тепло NDK `AThermal_*`: статус 0, запас ~0,5 в покое, подписка регистрируется.
+- `adb shell pm revoke/grant` → `SecurityException` без опции разработчика «отключить мониторинг разрешений». Диалог разрешения — пакет `com.google.android.permissioncontroller`, id кнопок `com.android.permissioncontroller:id/permission_deny_button` и т.д.

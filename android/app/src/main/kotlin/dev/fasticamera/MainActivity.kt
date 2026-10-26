@@ -1,40 +1,100 @@
 package dev.fasticamera
 
+import android.Manifest
 import android.app.Activity
 import android.os.Bundle
 import android.util.Log
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import android.view.WindowInsets
+import android.view.WindowInsetsController
+import android.view.WindowManager
+import android.widget.FrameLayout
 import android.widget.TextView
 import org.json.JSONObject
 
 /**
- * Каркас экрана (сессия 01): инициализирует нативную часть и, если в intent есть `scenario`,
- * запускает smoke-сценарий. Итог показывается на экране; строку `FASTICAMERA_RESULT` в logcat
- * пишет Rust. Логики здесь нет — только маршрутизация (README плана, «Владельцы состояния»).
+ * Единственный экран: полноэкранный `SurfaceView` (на нём будет рисовать Rust/Vulkan, сессия 03)
+ * и текстовая строка статуса для smoke-сценариев. Логики здесь нет — только маршрутизация
+ * событий Android в Rust (`ShellBridge`) и вызовов Rust в Android (`ShellPlatform`).
+ * Портрет зафиксирован в манифесте: как в камере iOS, поворачиваются иконки, а не раскладка.
  */
 class MainActivity : Activity() {
+    private lateinit var platform: ShellPlatform
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val surfaceView = SurfaceView(this)
         val statusView = TextView(this)
-        // targetSdk 36 рисует окно под системными панелями (edge-to-edge обязателен),
-        // поэтому отступ текста = панели + поле, иначе текст уезжает под статус-бар.
         statusView.setOnApplyWindowInsetsListener { view, insets ->
-            val bars = insets.getInsets(WindowInsets.Type.systemBars())
+            // Панели скрыты, но вырез камеры остаётся: текст статуса не должен под него уезжать.
+            val safe = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
             view.setPadding(
-                bars.left + STATUS_PADDING_PX,
-                bars.top + STATUS_PADDING_PX,
-                bars.right + STATUS_PADDING_PX,
-                bars.bottom + STATUS_PADDING_PX,
+                safe.left + STATUS_PADDING_PX,
+                safe.top + STATUS_PADDING_PX,
+                safe.right + STATUS_PADDING_PX,
+                safe.bottom + STATUS_PADDING_PX,
             )
             insets
         }
-        setContentView(statusView)
+        setContentView(FrameLayout(this).apply {
+            addView(surfaceView)
+            addView(statusView)
+        })
+        // После setContentView: контроллер панелей живёт у DecorView, а её создаёт setContentView.
+        enterFullscreen()
 
         val initReport = NativeBridge.initialize(NativeConfig.fromIntent(intent).toJson())
         logIfInitFailed(initReport)
 
+        platform = ShellPlatform(this)
+        ShellBridge.nativeAttach(platform, packageName)
+        surfaceView.holder.addCallback(SurfaceCallbacks)
+        surfaceView.setOnTouchListener { _, event ->
+            ShellBridge.nativeTouch(event)
+            true
+        }
+
         val scenario = intent.getStringExtra(EXTRA_SCENARIO)
         statusView.text = if (scenario != null) NativeBridge.runScenario(scenario) else initReport
+    }
+
+    override fun onResume() {
+        super.onResume()
+        ShellBridge.nativeResumed()
+    }
+
+    override fun onPause() {
+        ShellBridge.nativePaused()
+        super.onPause()
+    }
+
+    override fun onDestroy() {
+        // onCreate мог упасть раньше, чем создал платформу: тогда отключать нечего.
+        if (::platform.isInitialized) {
+            ShellBridge.nativeDetach(platform)
+        }
+        super.onDestroy()
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == ShellPlatform.CAMERA_PERMISSION_REQUEST) {
+            // Значение rationale — после ответа: по нему Rust отличает первый отказ от постоянного.
+            val showRationale = shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)
+            ShellBridge.nativeCameraPermissionResult(grantResults, showRationale)
+        }
+    }
+
+    /** Окно под вырезом камеры, системные панели скрыты и появляются свайпом от края. */
+    private fun enterFullscreen() {
+        window.attributes = window.attributes.apply {
+            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+        }
+        window.insetsController?.let { controller ->
+            controller.hide(WindowInsets.Type.systemBars())
+            controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
     }
 
     /**
@@ -48,6 +108,16 @@ class MainActivity : Activity() {
         } else {
             Log.i(LOG_TAG, "native initialize: $initReport")
         }
+    }
+
+    /** Колбэки surface → Rust без обработки. */
+    private object SurfaceCallbacks : SurfaceHolder.Callback {
+        override fun surfaceCreated(holder: SurfaceHolder) = ShellBridge.nativeSurfaceCreated(holder.surface)
+
+        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) =
+            ShellBridge.nativeSurfaceChanged(width, height)
+
+        override fun surfaceDestroyed(holder: SurfaceHolder) = ShellBridge.nativeSurfaceDestroyed()
     }
 
     companion object {

@@ -3,9 +3,18 @@
 //! Источник значений — `android/gradle.properties` (дефолты по типу сборки) и intent-параметр
 //! `log_filter` (переопределение на один запуск). В Rust ничего не хардкодится: здесь только
 //! разбор и проверка.
+//!
+//! Секции `shell`, `thermal_policy` и `scenarios` необязательны: Kotlin их пока не присылает,
+//! и действуют документированные значения по умолчанию владельцев (`ShellConfig`,
+//! `ThermalPolicyConfig`, `ScenarioConfig`). Прислать можно частично — опечатка в имени поля
+//! всё равно ошибка.
 
+use android_shell::config::{ShellConfig, ShellConfigError, ValidatedShellConfig};
 use serde::{Deserialize, Serialize};
+use shell_contract::thermal_policy::{ThermalPolicy, ThermalPolicyConfig, ThermalPolicyConfigError};
 use tracing_subscriber::filter::Targets;
+
+use crate::scenario::ScenarioConfig;
 
 /// Тип сборки APK (`BuildConfig.BUILD_TYPE` на стороне Kotlin).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +84,12 @@ impl PartialEq for LogFilter {
 struct RuntimeConfigJson {
     build_type: BuildType,
     log_filter: String,
+    #[serde(default)]
+    shell: ShellConfig,
+    #[serde(default)]
+    thermal_policy: ThermalPolicyConfig,
+    #[serde(default)]
+    scenarios: ScenarioConfig,
 }
 
 /// Проверенный конфиг нативной части.
@@ -82,15 +97,28 @@ struct RuntimeConfigJson {
 pub struct RuntimeConfig {
     build_type: BuildType,
     log_filter: LogFilter,
+    shell: ShellConfig,
+    validated_shell: ValidatedShellConfig,
+    thermal_policy: ThermalPolicyConfig,
+    scenarios: ScenarioConfig,
 }
 
 impl RuntimeConfig {
     /// Разбирает JSON вида `{"build_type":"debug","log_filter":"debug"}`.
     pub fn from_json(config_json: &str) -> Result<Self, ConfigError> {
         let parsed: RuntimeConfigJson = serde_json::from_str(config_json)?;
+        let validated_shell = parsed.shell.validate()?;
+        // Пороги политики проверяет её конструктор; здесь — та же проверка заранее, чтобы
+        // неверный конфиг отвергался целиком при initialize, а не позже при установке.
+        ThermalPolicy::new(parsed.thermal_policy)?;
+        parsed.scenarios.validate()?;
         Ok(Self {
             build_type: parsed.build_type,
             log_filter: LogFilter::parse(&parsed.log_filter)?,
+            shell: parsed.shell,
+            validated_shell,
+            thermal_policy: parsed.thermal_policy,
+            scenarios: parsed.scenarios,
         })
     }
 
@@ -100,6 +128,24 @@ impl RuntimeConfig {
 
     pub fn log_filter(&self) -> &LogFilter {
         &self.log_filter
+    }
+
+    /// Настройки оболочки в исходном виде (для `android_shell::android::install`).
+    pub fn shell(&self) -> &ShellConfig {
+        &self.shell
+    }
+
+    /// Те же настройки, проверенные (частоты, таймауты как `Duration`).
+    pub fn validated_shell(&self) -> &ValidatedShellConfig {
+        &self.validated_shell
+    }
+
+    pub fn thermal_policy(&self) -> ThermalPolicyConfig {
+        self.thermal_policy
+    }
+
+    pub fn scenarios(&self) -> &ScenarioConfig {
+        &self.scenarios
     }
 }
 
@@ -112,6 +158,12 @@ pub enum ConfigError {
     EmptyLogFilter,
     #[error("неверный фильтр логов {directives:?}: {reason}")]
     InvalidLogFilter { directives: String, reason: String },
+    #[error("неверные настройки оболочки: {0}")]
+    Shell(#[from] ShellConfigError),
+    #[error("неверные пороги тепловой политики: {0}")]
+    ThermalPolicy(#[from] ThermalPolicyConfigError),
+    #[error("неверные настройки сценариев: {0}")]
+    Scenarios(#[from] crate::scenario::ScenarioConfigError),
 }
 
 #[cfg(test)]
@@ -136,6 +188,38 @@ mod tests {
             .expect_err("лишнее поле");
         assert!(matches!(error, ConfigError::Malformed(_)), "{error}");
         assert!(error.to_string().contains("extra"), "{error}");
+    }
+
+    #[test]
+    fn optional_sections_take_defaults_and_accept_partial_override() {
+        let config = RuntimeConfig::from_json(
+            r#"{"build_type":"debug","log_filter":"info","shell":{"gyro_rate_hz":200},"scenarios":{"motion_duration_ms":1000}}"#,
+        )
+        .expect("конфиг с частичными секциями");
+        assert_eq!(config.shell().gyro_rate_hz, 200);
+        assert_eq!(config.validated_shell().default_gyro_request.rate.hertz(), 200);
+        assert_eq!(
+            config.shell().surface_release_timeout_ms,
+            ShellConfig::default().surface_release_timeout_ms
+        );
+        assert_eq!(config.thermal_policy(), ThermalPolicyConfig::default());
+        assert_eq!(config.scenarios().motion_duration_ms, 1000);
+    }
+
+    #[test]
+    fn invalid_optional_sections_reject_whole_config() {
+        let shell =
+            RuntimeConfig::from_json(r#"{"build_type":"debug","log_filter":"info","shell":{"gyro_rate_hz":0}}"#)
+                .expect_err("нулевая частота");
+        assert!(matches!(shell, ConfigError::Shell(_)), "{shell}");
+        let policy = RuntimeConfig::from_json(
+            r#"{"build_type":"debug","log_filter":"info","thermal_policy":{"elevated_from_headroom":2.0}}"#,
+        )
+        .expect_err("порог выше критического");
+        assert!(matches!(policy, ConfigError::ThermalPolicy(_)), "{policy}");
+        let typo = RuntimeConfig::from_json(r#"{"build_type":"debug","log_filter":"info","shell":{"gyro":1}}"#)
+            .expect_err("опечатка в секции");
+        assert!(matches!(typo, ConfigError::Malformed(_)), "{typo}");
     }
 
     #[test]

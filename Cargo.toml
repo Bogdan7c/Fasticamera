@@ -14,6 +14,8 @@ publish = false
 # Версии внешних зависимостей — в одном месте, crate-ы ссылаются через `workspace = true`.
 [workspace.dependencies]
 camera-contract = { path = "crates/camera-contract" }
+shell-contract = { path = "crates/shell-contract" }
+android-shell = { path = "crates/android-shell" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -22,6 +24,9 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["std", "registry"] }
 jni = "0.22.4"
 android_log-sys = "0.3.2"
+# Сырые биндинги NDK (rust-mobile). Только в android-shell; nativewindow — линковка libnativewindow
+# (ANativeWindow_setFrameRate*). Тепловых функций в 0.6 нет — объявлены в android-shell сами.
+ndk-sys = { version = "0.6.0", default-features = false, features = ["nativewindow"] }
 
 [workspace.lints.rust]
 # Каждая unsafe-операция внутри unsafe fn обязана стоять в явном unsafe-блоке с `// SAFETY:`.

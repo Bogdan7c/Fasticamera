@@ -69,6 +69,15 @@ fn current_thread_name() -> String {
 
 thread_local! {
     /// Последняя паника этого потока, ещё не забранная границей.
+    // Инициализатор уже `const`; clippy 1.97 ложно ругается только для aarch64-linux-android
+    // (минимальный пример — отчёт сессии 02). `expect` сам станет ошибкой, когда это починят.
+    #[cfg_attr(
+        target_os = "android",
+        expect(
+            clippy::missing_const_for_thread_local,
+            reason = "ложное срабатывание clippy 1.97 на aarch64-linux-android: инициализатор уже const"
+        )
+    )]
     static LAST_PANIC: RefCell<Option<PanicReport>> = const { RefCell::new(None) };
 }
 
