@@ -1,0 +1,24 @@
+#version 450
+// Диагностика порядка fence: «работа B». Читает итог работы A и копирует его в буфер
+// результата. Если B стартовала до конца A, она прочитает ещё не записанное значение —
+// так ошибка порядка видна и по данным, и по меткам времени.
+
+layout(local_size_x = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer CopyInput {
+    uint value;
+} copy_input;
+
+layout(set = 0, binding = 1, std430) buffer CopyOutput {
+    uint value;
+} copy_output;
+
+// Раскладка push-констант общая с fence_busy.comp (один pipeline layout); здесь не используется.
+layout(push_constant) uniform UnusedParams {
+    uint iterations;
+    uint seed;
+} unused_params;
+
+void main() {
+    copy_output.value = copy_input.value;
+}

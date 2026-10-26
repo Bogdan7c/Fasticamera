@@ -19,9 +19,12 @@ use shell_contract::haptics::HapticsService;
 use shell_contract::motion::{GyroRequest, MotionSource};
 use shell_contract::orientation::DeviceOrientation;
 use shell_contract::permission::CameraPermission;
-use shell_contract::surface::{NativeSurface, SurfaceSize};
+use shell_contract::surface::{SurfaceGeneration, SurfaceSize};
 use shell_contract::thermal::ThermalSource;
 use shell_contract::thermal_policy::ThermalPolicy;
+use shell_contract::vsync::VsyncSource;
+
+use crate::gpu_services::GpuServices;
 
 use super::{ScenarioConfig, ScenarioOutcome, ScenarioReport};
 
@@ -56,15 +59,17 @@ pub struct ShellServices {
     pub motion: Arc<dyn MotionSource>,
     pub thermal: Arc<dyn ThermalSource>,
     pub diagnostics: Arc<dyn ShellDiagnostics>,
+    /// Источник тиков vsync (его запускает composition root для потока рендера).
+    pub vsync: Arc<dyn VsyncSource>,
     pub facts: Arc<dyn PlatformFacts>,
 }
 
-/// Что маршрутизатор знает об экране. В сессии 02 он же — временный владелец surface
-/// (рендера ещё нет): держит её и подтверждает освобождение.
+/// Что маршрутизатор знает об экране: только ФАКТЫ. Сама surface принадлежит получателю событий
+/// экрана (`RenderRoute`, решение 31): поток рендера или запасной маршрут.
 #[derive(Debug, Default)]
 pub struct DisplayState {
     resumed: bool,
-    surface: Option<NativeSurface>,
+    surface_generation: Option<SurfaceGeneration>,
     surface_size: Option<SurfaceSize>,
     orientation: Option<DeviceOrientation>,
 }
@@ -72,12 +77,17 @@ pub struct DisplayState {
 impl DisplayState {
     /// Приложение на переднем плане и у него есть surface — на экране можно рисовать.
     pub fn is_presenting(&self) -> bool {
-        self.resumed && self.surface.is_some()
+        self.resumed && self.surface_generation.is_some()
     }
 
     /// На экране, и размер surface уже известен (`surfaceChanged`) — рендеру есть куда рисовать.
     pub fn is_ready_to_draw(&self) -> bool {
         self.is_presenting() && self.surface_size.is_some()
+    }
+
+    /// Поколение текущей surface (`None` — surface нет).
+    pub fn surface_generation(&self) -> Option<SurfaceGeneration> {
+        self.surface_generation
     }
 
     pub fn orientation(&self) -> Option<DeviceOrientation> {
@@ -93,39 +103,27 @@ impl DisplayState {
     }
 
     /// Новая surface; прежняя (если Android не прислал destroyed) вытесняется с предупреждением.
-    pub(crate) fn surface_created(&mut self, surface: NativeSurface) {
-        if let Some(previous) = self.surface.replace(surface) {
+    pub(crate) fn surface_created(&mut self, generation: SurfaceGeneration) {
+        if let Some(previous) = self.surface_generation.replace(generation) {
             tracing::warn!(
                 target: "fasticamera::router",
-                previous = previous.generation().value(),
+                previous = previous.value(),
                 "новая surface без уничтожения прежней"
             );
         }
         self.surface_size = None;
     }
 
-    pub(crate) fn surface_changed(
-        &mut self,
-        generation: shell_contract::surface::SurfaceGeneration,
-        size: SurfaceSize,
-    ) {
-        if self
-            .surface
-            .as_ref()
-            .is_some_and(|surface| surface.generation() == generation)
-        {
+    pub(crate) fn surface_changed(&mut self, generation: SurfaceGeneration, size: SurfaceSize) {
+        if self.surface_generation == Some(generation) {
             self.surface_size = Some(size);
         }
     }
 
-    /// Отпускает surface указанного поколения (если она текущая).
-    pub(crate) fn release_surface(&mut self, generation: shell_contract::surface::SurfaceGeneration) {
-        if self
-            .surface
-            .as_ref()
-            .is_some_and(|surface| surface.generation() == generation)
-        {
-            self.surface = None;
+    /// Забывает surface указанного поколения (если она текущая).
+    pub(crate) fn release_surface(&mut self, generation: SurfaceGeneration) {
+        if self.surface_generation == Some(generation) {
+            self.surface_generation = None;
             self.surface_size = None;
         }
     }
@@ -180,6 +178,8 @@ pub struct ScenarioContext<'call> {
     pub display: &'call DisplayState,
     pub thermal_policy: &'call ThermalPolicy,
     pub config: &'call ScenarioConfig,
+    /// Состояние потока рендера и разовые GPU-диагностики.
+    pub gpu: &'call GpuServices,
     pub gyro_request: GyroRequest,
     pub now: Instant,
     output: &'call mut dyn ScenarioOutput,
@@ -196,6 +196,7 @@ impl<'call> ScenarioContext<'call> {
         display: &'call DisplayState,
         thermal_policy: &'call ThermalPolicy,
         config: &'call ScenarioConfig,
+        gpu: &'call GpuServices,
         gyro_request: GyroRequest,
         now: Instant,
         output: &'call mut dyn ScenarioOutput,
@@ -206,6 +207,7 @@ impl<'call> ScenarioContext<'call> {
             display,
             thermal_policy,
             config,
+            gpu,
             gyro_request,
             now,
             output,
@@ -262,6 +264,23 @@ pub fn passed(report: impl Serialize) -> ScenarioOutcome {
         Err(error) => ScenarioOutcome::Failed {
             error: format!("отчёт сценария не сериализован: {error}"),
         },
+    }
+}
+
+/// Итог по правилам сценария: список нарушений пуст — «прошёл», иначе «упал» с перечислением
+/// нарушений и тем же отчётом (по нему видно, какое число подвело).
+pub fn judged(report: impl Serialize, violations: Vec<String>) -> ScenarioOutcome {
+    let report = match serde_json::to_value(report) {
+        Ok(report) => report,
+        Err(error) => return failed(format!("отчёт сценария не сериализован: {error}")),
+    };
+    if violations.is_empty() {
+        ScenarioOutcome::Passed { report }
+    } else {
+        ScenarioOutcome::FailedWithReport {
+            error: violations.join("; "),
+            report,
+        }
     }
 }
 

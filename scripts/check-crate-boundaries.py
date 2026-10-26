@@ -16,6 +16,12 @@
 crate-а, включая внешние крейты (например, внешний крейт, который тянет `jni`).
 Имена сравниваются по имени пакета (`name`).
 
+Вторая проверка — правила по исходникам (`[[source_rules]]`, решение 32 сессии 03):
+в `.rs`-файлах crate-а запрещённый шаблон (например, `extern "C"`) разрешён только
+в перечисленных файлах (пути относительно каталога crate-а). Совпадения внутри
+строчных комментариев (`// ...`) не считаются. Блочные комментарии `/* */` не
+распознаются: упоминание шаблона в них даст ложное срабатывание (это безопасная сторона).
+
 Коды выхода: 0 — чисто, 1 — нарушения, 2 — ошибка конфигурации или запуска.
 """
 
@@ -59,12 +65,24 @@ class Rule:
 
 
 @dataclass(frozen=True)
+class SourceRule:
+    """Правило по исходникам: шаблон разрешён только в `allowed_files` crate-а."""
+
+    rule_id: str
+    crate_name: str
+    pattern: str  # обычная подстрока, не регулярное выражение
+    allowed_files: frozenset[str]  # пути с «/», относительно каталога crate-а
+    reason: str
+
+
+@dataclass(frozen=True)
 class BoundaryConfig:
     """Разобранный и проверенный файл правил."""
 
     roles: frozenset[str]
     crate_roles: dict[str, str]
     rules: tuple[Rule, ...]
+    source_rules: tuple[SourceRule, ...] = ()
 
 
 @dataclass
@@ -74,6 +92,7 @@ class DependencyGraph:
     names: dict[str, str] = field(default_factory=dict)  # id пакета -> имя
     edges: dict[str, list[str]] = field(default_factory=dict)  # id -> id зависимостей
     workspace_member_ids: list[str] = field(default_factory=list)
+    crate_dirs: dict[str, Path] = field(default_factory=dict)  # имя пакета workspace -> каталог
 
     def workspace_names(self) -> list[str]:
         return [self.names[member_id] for member_id in self.workspace_member_ids]
@@ -157,7 +176,12 @@ def parse_config(text: str) -> BoundaryConfig:
     if not isinstance(raw_rules, list):
         raise ToolError("rules должен быть массивом таблиц [[rules]]")
     rules = tuple(_parse_rule(raw, index, roles, crate_roles) for index, raw in enumerate(raw_rules))
-    return BoundaryConfig(roles, crate_roles, rules)
+    raw_source_rules = document.get("source_rules", [])
+    if not isinstance(raw_source_rules, list):
+        raise ToolError("source_rules должен быть массивом таблиц [[source_rules]]")
+    source_rules = tuple(_parse_source_rule(raw, index, crate_roles)
+                         for index, raw in enumerate(raw_source_rules))
+    return BoundaryConfig(roles, crate_roles, rules, source_rules)
 
 
 def load_config(path: Path) -> BoundaryConfig:
@@ -166,6 +190,33 @@ def load_config(path: Path) -> BoundaryConfig:
     except OSError as error:
         raise ToolError(f"не удалось прочитать файл правил {path}: {error}") from error
     return parse_config(text)
+
+
+SOURCE_RULE_KEYS = frozenset({"id", "crate", "pattern", "allowed_files", "reason"})
+
+
+def _parse_source_rule(raw_rule: object, index: int, crate_roles: dict[str, str]) -> SourceRule:
+    where = f"[[source_rules]] #{index + 1}"
+    if not isinstance(raw_rule, dict):
+        raise ToolError(f"{where}: ожидается таблица")
+    unknown_keys = sorted(set(raw_rule) - SOURCE_RULE_KEYS)
+    if unknown_keys:
+        raise ToolError(f"{where}: неизвестные ключи {unknown_keys} "
+                        f"(допустимы: {sorted(SOURCE_RULE_KEYS)})")
+    for key in ("id", "crate", "pattern", "reason"):
+        value = raw_rule.get(key)
+        if not isinstance(value, str) or not value:
+            raise ToolError(f"{where}: нет непустого строкового поля {key}")
+    where = f"правило по исходникам {raw_rule['id']!r}"
+    if raw_rule["crate"] not in crate_roles:
+        raise ToolError(f"{where}: crate {raw_rule['crate']!r} не описан в [crates]")
+    allowed_files = _require_string_list(raw_rule.get("allowed_files", []), f"{where}, allowed_files")
+    for allowed in allowed_files:
+        if allowed.startswith("/") or ".." in Path(allowed).parts or "\\" in allowed:
+            raise ToolError(f"{where}: путь {allowed!r} в allowed_files должен быть "
+                            f"относительным (с «/») и без «..»")
+    return SourceRule(raw_rule["id"], raw_rule["crate"], raw_rule["pattern"],
+                      frozenset(allowed_files), raw_rule["reason"])
 
 
 # --------------------------------------------------------------------------
@@ -178,6 +229,10 @@ def build_graph(metadata: dict) -> DependencyGraph:
         graph = DependencyGraph()
         graph.names = {package["id"]: package["name"] for package in metadata["packages"]}
         graph.workspace_member_ids = list(metadata["workspace_members"])
+        graph.crate_dirs = {
+            package["name"]: Path(package["manifest_path"]).parent
+            for package in metadata["packages"] if package["id"] in set(graph.workspace_member_ids)
+        }
         for node in metadata["resolve"]["nodes"]:
             graph.edges[node["id"]] = [
                 dep["pkg"] for dep in node["deps"]
@@ -270,6 +325,55 @@ def find_future_crates(graph: DependencyGraph, config: BoundaryConfig) -> list[s
     return sorted(name for name in config.crate_roles if name not in present)
 
 
+@dataclass(frozen=True)
+class SourceViolation:
+    """Шаблон найден в файле, где он не разрешён."""
+
+    rule: SourceRule
+    relative_path: str
+    line_number: int
+    line_text: str
+
+
+def code_part_of_line(line: str) -> str:
+    """Часть строки до `//`-комментария. Строковые литералы учитываются: `//` внутри
+    "..." комментарием не считается. Экранирование `\\"` учитывается."""
+    inside_string = False
+    index = 0
+    while index < len(line):
+        char = line[index]
+        if inside_string and char == "\\":
+            index += 2
+            continue
+        if char == '"':
+            inside_string = not inside_string
+        elif not inside_string and line.startswith("//", index):
+            return line[:index]
+        index += 1
+    return line
+
+
+def find_source_violations(graph: DependencyGraph, config: BoundaryConfig) -> list[SourceViolation]:
+    """Ищет запрещённые шаблоны в `.rs`-файлах crate-ов. Чистое чтение файлов."""
+    violations: list[SourceViolation] = []
+    for rule in config.source_rules:
+        crate_dir = graph.crate_dirs.get(rule.crate_name)
+        if crate_dir is None:
+            continue  # будущий crate: его ещё нет в workspace
+        for source_path in sorted(crate_dir.rglob("*.rs")):
+            relative_path = source_path.relative_to(crate_dir).as_posix()
+            if relative_path.startswith("target/") or relative_path in rule.allowed_files:
+                continue
+            try:
+                text = source_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as error:
+                raise ToolError(f"не удалось прочитать {source_path}: {error}") from error
+            for line_number, line in enumerate(text.splitlines(), start=1):
+                if rule.pattern in code_part_of_line(line):
+                    violations.append(SourceViolation(rule, relative_path, line_number, line.strip()))
+    return violations
+
+
 # --------------------------------------------------------------------------
 # Форматирование сообщений
 # --------------------------------------------------------------------------
@@ -278,6 +382,14 @@ def format_violation(violation: Violation) -> str:
     chain_text = " → ".join(violation.chain)
     return (f"{chain_text}: запрещено правилом {violation.rule.rule_id} "
             f"({violation.rule.reason})")
+
+
+def format_source_violation(violation: SourceViolation) -> str:
+    rule = violation.rule
+    allowed = ", ".join(sorted(rule.allowed_files)) or "нигде"
+    return (f"{rule.crate_name}/{violation.relative_path}:{violation.line_number}: "
+            f"шаблон {rule.pattern!r} запрещён правилом {rule.rule_id} "
+            f"(разрешён только в: {allowed}; {rule.reason}); строка: {violation.line_text}")
 
 
 def format_unclassified(crate_name: str, rules_path: Path, roles: frozenset[str]) -> str:
@@ -325,6 +437,8 @@ def run(args: argparse.Namespace) -> int:
     problems: list[str] = [format_unclassified(name, args.rules, config.roles)
                            for name in find_unclassified(graph, config)]
     problems += [format_violation(violation) for violation in find_violations(graph, config)]
+    problems += [format_source_violation(violation)
+                 for violation in find_source_violations(graph, config)]
     future_crates = find_future_crates(graph, config)
 
     for problem in problems:

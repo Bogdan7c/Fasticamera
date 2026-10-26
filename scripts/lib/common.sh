@@ -88,6 +88,10 @@ find_device_serial() {
 build_apk() {
     local variant="$1"
     local gradle_task="assemble${variant^}"
+    # В debug-APK кладётся validation layer (решение 34): без него Gradle не соберёт debug.
+    if [[ "$variant" == "debug" ]]; then
+        "$FASTICAMERA_ROOT/scripts/fetch-validation-layer.sh" || return $?
+    fi
     log_step "сборка $gradle_task"
     (cd "$FASTICAMERA_ROOT/android" && ./gradlew --console=plain --quiet "$gradle_task")
 }
@@ -105,10 +109,15 @@ install_apk() {
     adb -s "$serial" install -r "$apk_path" >/dev/null
 }
 
-# Время устройства в секундах эпохи: точка отсчёта для `logcat -T`, чтобы не читать
+# Время устройства «секунды.миллисекунды» эпохи: точка отсчёта для `logcat -T`, чтобы не читать
 # старые записи и не очищать буфер logcat (очистка — изменение состояния системы).
-device_epoch_seconds() {
-    adb -s "$1" shell date +%s | tr -d '\r'
+# Миллисекунды обязательны: с точностью до секунды прогон, начатый в ту же секунду, в которую
+# предыдущий напечатал FASTICAMERA_RESULT, читал чужую строку результата (дефект сессии 03).
+# toybox `date` отдаёт %N — 9 цифр наносекунд; последние 6 отбрасываем.
+device_epoch_timestamp() {
+    local nanos_timestamp
+    nanos_timestamp="$(adb -s "$1" shell date +%s.%N | tr -d '\r')"
+    printf '%s\n' "${nanos_timestamp%??????}"
 }
 
 # Перезапускает Activity (-S: остановить старый процесс, чтобы конфиг процесса был свежим).

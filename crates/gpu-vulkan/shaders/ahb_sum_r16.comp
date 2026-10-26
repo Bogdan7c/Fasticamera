@@ -1,0 +1,66 @@
+#version 450
+#extension GL_EXT_samplerless_texture_functions : require
+// Контрольные суммы всех 16-битных текселей кадра RAW16 (путь «VkImage R16_UINT» поверх AHardwareBuffer, читается как SAMPLED image через texelFetch:
+// камера отдаёт AHB только с usage GPU_SAMPLED_IMAGE, STORAGE-usage дал бы VUID-VkMemoryAllocateInfo-pNext-02390).
+// Считаются ДВЕ независимые суммы по модулю 2^32 (обе совпадают с CPU-эталоном
+// `hardware_buffer_cache::raw_reference`):
+//   sum — обычная сумма значений;
+//   mix — XOR членов rotl(значение, индекс & 31) ^ (индекс * 0x9E3779B1). Зависит от позиции
+//         текселя, поэтому ловит перестановки/сдвиги строк, которых сумма не заметит.
+// Индекс = row * width + column (логический, без учёта паддинга строки). XOR коммутативен,
+// поэтому порядок обхода нитями не влияет на результат.
+// Каждая нить обходит тексели «решёткой» (grid-stride): размер dispatch не зависит от разрешения.
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) uniform utexture2D frame; // без сэмплера: samplerless texelFetch
+layout(set = 0, binding = 1, std430) buffer Result {
+    uint sum;
+    uint mix;
+} result;
+layout(push_constant) uniform Params {
+    uint width;
+    uint height;
+} params;
+
+shared uint group_sums[256];
+shared uint group_mixes[256];
+
+uint rotate_left(uint value, uint amount) {
+    uint shift = amount & 31u;
+    // Сдвиг на 32 в GLSL не определён, поэтому ноль обрабатываем отдельно.
+    return shift == 0u ? value : ((value << shift) | (value >> (32u - shift)));
+}
+
+uint position_mix(uint value, uint index) {
+    return rotate_left(value, index) ^ (index * 0x9E3779B1u);
+}
+
+void main() {
+    uint texel_count = params.width * params.height;
+    uint grid_stride = gl_NumWorkGroups.x * 256u; // 256 = local_size_x (литерал: gl_WorkGroupSize в SPIR-V 1.6 даёт LocalSizeId, ему нужна maintenance4)
+
+    uint partial_sum = 0u;
+    uint partial_mix = 0u;
+    for (uint index = gl_GlobalInvocationID.x; index < texel_count; index += grid_stride) {
+        ivec2 coord = ivec2(int(index % params.width), int(index / params.width));
+        uint value = texelFetch(frame, coord, 0).r;
+        partial_sum += value;
+        partial_mix ^= position_mix(value, index);
+    }
+
+    group_sums[gl_LocalInvocationID.x] = partial_sum;
+    group_mixes[gl_LocalInvocationID.x] = partial_mix;
+    barrier();
+    for (uint half_size = 128u; half_size > 0u; half_size >>= 1) {
+        if (gl_LocalInvocationID.x < half_size) {
+            group_sums[gl_LocalInvocationID.x] += group_sums[gl_LocalInvocationID.x + half_size];
+            group_mixes[gl_LocalInvocationID.x] ^= group_mixes[gl_LocalInvocationID.x + half_size];
+        }
+        barrier();
+    }
+    if (gl_LocalInvocationID.x == 0u) {
+        atomicAdd(result.sum, group_sums[0]);
+        atomicXor(result.mix, group_mixes[0]);
+    }
+}

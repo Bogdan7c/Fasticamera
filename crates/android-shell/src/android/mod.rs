@@ -1,9 +1,10 @@
 //! Android-часть оболочки: JNI, NDK и потоки платформы.
 //!
 //! Весь `unsafe` crate-а — в safety-модулях с `// SAFETY:`: [`native_window`],
-//! `motion_event`, `sensor_thread`, `thermal_ffi`. Остальные модули безопасны.
+//! `motion_event`, `sensor_thread`, `choreographer_thread`, `thermal_ffi`. Остальные модули безопасны.
 
 mod callback_policy;
+mod choreographer_thread;
 mod haptic_query;
 mod motion_event;
 mod native_window;

@@ -94,6 +94,47 @@ class EvaluateStreamTest(unittest.TestCase):
         self.assertEqual(verdict.exit_code, smoke_wait.EXIT_SCENARIO_FAILED)
         self.assertIn("упал", verdict.message)
 
+    def test_crash_of_our_package_fails_and_crash_of_another_app_is_ignored(self) -> None:
+        package = "dev.example.fasticamera"
+        other_crash = [
+            "  1792957061.000  900  900 E AndroidRuntime: FATAL EXCEPTION: main\n",
+            "  1792957061.001  900  900 E AndroidRuntime: Process: com.other.app, PID: 900\n",
+            "  1792957061.002  900  900 E AndroidRuntime: java.lang.IllegalStateException: boom\n",
+        ]
+        verdict = smoke_wait.evaluate_stream(
+            [*other_crash, result_line(hello_payload())], "hello", package=package
+        )
+        self.assertEqual(verdict.exit_code, smoke_wait.EXIT_OK, "чужое падение не ломает наш прогон")
+
+        our_crash = [
+            "  1792957061.000  4242  4242 E AndroidRuntime: FATAL EXCEPTION: main\n",
+            f"  1792957061.001  4242  4242 E AndroidRuntime: Process: {package}, PID: 4242\n",
+        ]
+        verdict = smoke_wait.evaluate_stream([*our_crash, result_line(hello_payload())], "hello", package=package)
+        self.assertEqual(verdict.exit_code, smoke_wait.EXIT_SCENARIO_FAILED)
+        self.assertIn("упал", verdict.message)
+
+        # Дополнительный процесс приложения (пакет:суффикс) тоже наш; похожее имя — нет.
+        for process, ours in ((f"{package}:remote", True), (f"{package}x", False)):
+            lines = [
+                "E AndroidRuntime: FATAL EXCEPTION: Thread-2\n",
+                f"E AndroidRuntime: Process: {process}, PID: 7\n",
+                result_line(hello_payload()),
+            ]
+            exit_code = smoke_wait.evaluate_stream(lines, "hello", package=package).exit_code
+            self.assertEqual(exit_code, smoke_wait.EXIT_SCENARIO_FAILED if ours else smoke_wait.EXIT_OK, process)
+
+    def test_crash_without_process_line_is_not_attributed_to_us(self) -> None:
+        lines = [
+            "E AndroidRuntime: FATAL EXCEPTION IN SYSTEM PROCESS: android.ui\n",
+            "E AndroidRuntime: java.lang.RuntimeException: x\n",
+            "E AndroidRuntime: at a.b.C.d(C.java:1)\n",
+            "E AndroidRuntime: at a.b.C.e(C.java:2)\n",
+            result_line(hello_payload()),
+        ]
+        verdict = smoke_wait.evaluate_stream(lines, "hello", package="dev.example.fasticamera")
+        self.assertEqual(verdict.exit_code, smoke_wait.EXIT_OK, verdict.message)
+
     def test_panic_passes_when_hook_logged_same_location(self) -> None:
         verdict = smoke_wait.evaluate_stream([PANIC_LOG_LINE, result_line(panic_payload())], "panic")
         self.assertEqual(verdict.exit_code, smoke_wait.EXIT_OK, verdict.message)
@@ -119,6 +160,20 @@ class EvaluateStreamTest(unittest.TestCase):
     def test_unknown_scenario_is_usage_error(self) -> None:
         verdict = smoke_wait.evaluate_stream([], "nope")
         self.assertEqual(verdict.exit_code, smoke_wait.EXIT_USAGE)
+
+
+class SinceEpochArgumentTest(unittest.TestCase):
+    def test_seconds_with_milliseconds_are_accepted(self) -> None:
+        self.assertEqual(smoke_wait.parse_since_epoch("1792999217.756"), "1792999217.756")
+
+    def test_whole_seconds_are_rejected(self) -> None:
+        with self.assertRaises(smoke_wait.argparse.ArgumentTypeError):
+            smoke_wait.parse_since_epoch("1792999217")
+
+    def test_other_precisions_are_rejected(self) -> None:
+        for text in ("1792999217.75", "1792999217.756579809", "", "abc.123"):
+            with self.subTest(text=text), self.assertRaises(smoke_wait.argparse.ArgumentTypeError):
+                smoke_wait.parse_since_epoch(text)
 
 
 class LineReaderTest(unittest.TestCase):

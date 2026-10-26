@@ -44,11 +44,11 @@ if [[ "$should_build" == true ]]; then
 fi
 install_apk "$serial" "$variant" || exit "$EXIT_BUILD_OR_INSTALL_FAILED"
 
-since_epoch="$(device_epoch_seconds "$serial")"
+since_epoch="$(device_epoch_timestamp "$serial")"
 start_activity "$serial" "$package" || exit "$EXIT_BUILD_OR_INSTALL_FAILED"
 
 # Только наши записи и падения рантайма; чужой шум (CamX и др.) отрезан фильтром.
-logcat_command=(adb -s "$serial" logcat -v time -T "${since_epoch}.000" -s Fasticamera:V AndroidRuntime:E)
+logcat_command=(adb -s "$serial" logcat -v time -T "$since_epoch" -s Fasticamera:V AndroidRuntime:E)
 if [[ -n "$log_seconds" ]]; then
     log_step "logcat приложения, $log_seconds с"
     timeout "$log_seconds" "${logcat_command[@]}" || true

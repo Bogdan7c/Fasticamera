@@ -15,7 +15,9 @@
 //! * [`thermal`] и [`thermal_policy`] — показания тепла и единственный владелец тепловых решений;
 //! * [`haptics`], [`commands`] — намерения к платформе (вибрация, разрешение, частота кадров…);
 //! * [`motion`] — гироскоп (кольцо последних секунд) и акселерометр для ориентации;
-//! * [`diagnostics`] — счётчики шва для smoke-проверок.
+//! * [`vsync`] — тики vsync и линии кадра платформы (пейсинг рендера);
+//! * [`diagnostics`] — счётчики шва для smoke-проверок;
+//! * [`sync_fence`] — владение sync_fd: fence ожидания перед GPU и fence освобождения после GPU.
 
 pub mod clock;
 pub mod commands;
@@ -27,6 +29,8 @@ pub mod motion;
 pub mod orientation;
 pub mod permission;
 pub mod surface;
+pub mod sync_fence;
 pub mod thermal;
 pub mod thermal_policy;
 pub mod touch;
+pub mod vsync;

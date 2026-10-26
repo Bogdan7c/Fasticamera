@@ -47,7 +47,9 @@ stage_module_size() {
     python3 "$FASTICAMERA_ROOT/scripts/module-size-check.py"
 }
 
+# Debug-APK включает validation layer (решение 34): сначала убеждаемся, что он скачан и проверен.
 stage_apk() {
+    "$FASTICAMERA_ROOT/scripts/fetch-validation-layer.sh" || return $?
     (cd "$FASTICAMERA_ROOT/android" && ./gradlew --console=plain --quiet assembleDebug assembleRelease)
 }
 

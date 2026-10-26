@@ -29,7 +29,7 @@ case "${1:-}" in
     exec-out) cat "$FAKE_DUMP_FILE" ;;
     shell)
         case "${2:-}" in
-            date) echo 1000 ;;
+            date) echo 1000.123456789 ;;
             pm)
                 if [[ "${3:-}" == "$FAKE_FAILING_PM_COMMAND" ]]; then echo "pm: сбой" >&2; exit 1; fi ;;
         esac ;;
@@ -119,6 +119,16 @@ class DeviceSmokeScenariosTest(unittest.TestCase):
             if fragment in call:
                 return position
         self.fail(f"в журнале adb нет вызова с {fragment!r}: {calls}")
+
+    # --- точка отсчёта logcat ---
+
+    def test_logcat_starts_from_device_time_with_milliseconds(self) -> None:
+        """С целыми секундами прогон, начатый в ту же секунду, что и конец прошлого, читал его
+        строку результата (дефект сессии 03): отсчёт обязан быть с миллисекундами."""
+        completed = self.run_smoke("lifecycle", [result_line(LIFECYCLE_OK)])
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        logcat = self.adb_calls()[self.index_of(self.adb_calls(), "logcat -v epoch")]
+        self.assertIn("-T 1000.123 ", logcat)
 
     # --- permission ---
 

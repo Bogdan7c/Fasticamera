@@ -14,3 +14,17 @@
 - Smoke-сценарий: логика в Rust (`crates/fasticamera-app/src/scenario/`). Мгновенные (hello, panic) отвечают в `runScenario`; наблюдающие (`ObservingScenario`: lifecycle, permission, motion, platform) живут в маршрутизаторе, пишут стадии `FASTICAMERA_STAGE {json}` и итог позже. Ожидания — `CHECKS` в `scripts/smoke_wait.py` + `scripts/smoke_checks.py`; действия на стадии — таблица `SCENARIO_STEPS` в `scripts/smoke_driver.py`. Отладочные сценарии — за фичей `debug-scenarios`. Функциональные тесты сценариев — через настоящую очередь и маршрутизатор на fake-оболочке (`event_router_tests.rs`).
 - Python-скрипты: stdlib, dataclass + чистые функции, отдельный `main`, коды выхода константами, конфиг в TOML рядом; тесты unittest end-to-end через subprocess и временные каталоги (фикстуры копируются, в репо не пишем).
 - Bash: общие функции и коды выхода — `scripts/lib/common.sh`; `set -euo pipefail`; проверка `bash -n` в CI (shellcheck не установлен).
+
+## GPU (с сессии 03)
+- Каждый объект Vulkan — RAII `Owned*` из `gpu-vulkan::live_objects` (счётчик по видам); сырой `destroy_*` у вызывающих запрещён. Порядок уничтожения — порядком полей/владением; при таймауте GPU объекты намеренно утекают (лучше утечка, чем use-after-free), это видно в `live_objects()` и `detach_failures`.
+- Пайплайн нельзя уничтожать раньше цели, чьи кадры на него ссылаются (`VUID-vkDestroyPipeline-00765`): `DisplayChain` держит цель и паттерн вместе.
+- Ни одного бесконечного ожидания: таймауты насыщаются в `i64::MAX` нс (`frame_ring::timeout_nanos`), не `u64::MAX`; `vkDeviceWaitIdle` — только запасной путь без maintenance1.
+- `extern "C"`/`#[link(` в `gpu-vulkan` — только `src/android/hardware_buffer_ffi.rs` (guardrail `[[source_rules]]` в `scripts/crate-boundaries.toml`).
+- Validation: `ValidationMode::FULL` (с sync-валидацией через `VK_EXT_layer_settings`) в тестах и debug; любая ошибка = провал. Известные отступления — только списком VUID с причиной (`gpu.known_validation_deviations`, по умолчанию 02387 и 02384, решение 35), точное совпадение `pMessageIdName`.
+- GPU-тесты на ПК — на реальном RADV; нет GPU → тест падает с понятным текстом, `FASTICAMERA_SKIP_GPU_TESTS=1` → явный пропуск; `FASTICAMERA_EXPECT_RADV=1` — проверить имя драйвера.
+- Шейдеры: GLSL в `crates/gpu-vulkan/shaders/`, `glslc` NDK (`--target-env=vulkan1.3 -Werror -O`, затем `spirv-val`), путь — `FASTICAMERA_GLSLC` → `ANDROID_NDK_HOME` → `~/Android/Sdk/ndk/<fasticamera.ndkVersion>`; compute с `LocalSizeId` требует `maintenance4` (включена).
+- GpuContext не пересоздаётся без нужды; instance, работавший с AHardwareBuffer, не уничтожается до конца процесса (бэклог п. 2).
+
+## Рендер (с сессии 03)
+- Маршрутизатор не держит surface: события → `RenderInbox`; квитанция освобождения — только поток рендера ПОСЛЕ detach. Бюджет: `max(acquire, teardown) + teardown ≤ render.release_receipt_budget_ms (450) < shell.surface_release_timeout_ms (500)` — проверяется конфигом.
+- Сценарии, которые долго работают с GPU, — на рабочем потоке (`scenario/background_job.rs`) с дедлайном `scenarios.gpu_job_timeout_ms`; маршрутизатор только опрашивает.

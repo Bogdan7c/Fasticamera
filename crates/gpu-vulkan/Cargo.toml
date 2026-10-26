@@ -1,0 +1,28 @@
+[package]
+name = "gpu-vulkan"
+description = "Vulkan-ядро Fasticamera на ash: устройство, очередь, validation, swapchain, импорт AHardwareBuffer, sync_fd, шейдеры, headless-стенд"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+# Шейдеры (GLSL) компилируются в build.rs через glslc из NDK (решение 33).
+build = "build.rs"
+
+[dependencies]
+ash.workspace = true
+shell-contract.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[features]
+# Тестовые «швы» отказов (см. `swapchain::fault_injection`): позволяют детерминированно проверить
+# пути ошибок, которые на настоящем драйвере не вызвать. В боевые сборки НЕ включается.
+fault-injection = []
+
+[dev-dependencies]
+# Интеграционные тесты crate включают швы отказов через самого себя.
+gpu-vulkan = { path = ".", features = ["fault-injection"] }
+
+[lints]
+workspace = true

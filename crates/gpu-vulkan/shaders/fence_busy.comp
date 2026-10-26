@@ -1,0 +1,25 @@
+#version 450
+// Диагностика порядка fence: «работа A». Один поток крутит зависимый цикл (линейный
+// конгруэнтный генератор), длина цикла задаётся push-константой, и пишет итоговое значение
+// в буфер. Результат зависит от всех итераций, поэтому компилятор не может выбросить цикл,
+// а CPU проверяет значение той же формулой (`busy_loop_expected_value` в Rust).
+// 64-битных атомиков нет (Adreno), поэтому всё в 32-битных целых.
+
+layout(local_size_x = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer BusyOutput {
+    uint final_value;
+} busy_output;
+
+layout(push_constant) uniform BusyParams {
+    uint iterations;
+    uint seed;
+} params;
+
+void main() {
+    uint state = params.seed;
+    for (uint step = 0u; step < params.iterations; ++step) {
+        state = state * 1664525u + 1013904223u;
+    }
+    busy_output.final_value = state;
+}

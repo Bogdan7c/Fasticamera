@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -44,6 +45,13 @@ PANIC_MARKER = "panic at "
 CRASH_MARKER = "FATAL EXCEPTION"
 """Так AndroidRuntime начинает отчёт о падении процесса."""
 
+CRASH_PROCESS_PATTERN = re.compile(r"Process: (?P<process>[^,\s]+)")
+"""Строка AndroidRuntime после заголовка: ``Process: <пакет>, PID: <pid>``."""
+
+CRASH_PROCESS_LOOKAHEAD_LINES = 3
+"""Сколько строк AndroidRuntime после заголовка ищем ``Process:``. Не нашли — чьё это падение,
+неизвестно (например, ``FATAL EXCEPTION IN SYSTEM PROCESS``), и чужим процессам приложение не мешает."""
+
 EXPECTED_ABI = "arm64-v8a"
 
 
@@ -60,6 +68,45 @@ class ObservedLog:
     """Что увидели в logcat до строки результата — нужно проверкам, которым мало JSON."""
 
     panic_lines: list[str] = field(default_factory=list)
+
+
+class CrashAttribution:
+    """Отличает падение НАШЕГО процесса от падения любого другого приложения на телефоне.
+
+    ``AndroidRuntime:E`` — общий тег: туда пишут падения всех приложений. Формат отчёта:
+    ``FATAL EXCEPTION: main`` и на следующей строке ``Process: <пакет>, PID: <pid>``. Заголовок
+    запоминается, а решение принимает строка ``Process:``. ``package=None`` (пакет не известен)
+    — старое консервативное поведение: считаем падением любой заголовок.
+    """
+
+    def __init__(self, package: str | None) -> None:
+        self._package = package
+        self._pending_header: str | None = None
+        self._lookahead_left = 0
+
+    def feed(self, line: str) -> str | None:
+        """Подаёт очередную строку. Возвращает заголовок падения, если упал наш процесс."""
+        if CRASH_MARKER in line:
+            if self._package is None:
+                return line.strip()
+            self._pending_header = line.strip()
+            self._lookahead_left = CRASH_PROCESS_LOOKAHEAD_LINES
+            return None
+        if self._pending_header is None or "AndroidRuntime" not in line:
+            return None
+        header = self._pending_header
+        process_match = CRASH_PROCESS_PATTERN.search(line)
+        if process_match is not None:
+            self._pending_header = None
+            return header if self._is_our_process(process_match.group("process")) else None
+        self._lookahead_left -= 1
+        if self._lookahead_left <= 0:
+            self._pending_header = None
+        return None
+
+    def _is_our_process(self, process: str) -> bool:
+        """Процесс приложения называется как пакет или ``пакет:суффикс`` (дополнительные процессы)."""
+        return process == self._package or process.startswith(f"{self._package}:")
 
 
 ScenarioCheck = Callable[[dict, ObservedLog], list[str]]
@@ -113,6 +160,10 @@ CHECKS: dict[str, ScenarioCheck] = {
     "permission": ignoring_observations(smoke_checks.check_permission),
     "motion": ignoring_observations(smoke_checks.check_motion),
     "platform": ignoring_observations(smoke_checks.check_platform),
+    "render": ignoring_observations(smoke_checks.check_render),
+    "render-lifecycle": ignoring_observations(smoke_checks.check_render_lifecycle),
+    "ahb-import": ignoring_observations(smoke_checks.check_ahb_import),
+    "gpu-fence": ignoring_observations(smoke_checks.check_gpu_fence),
 }
 
 StageHandler = Callable[[dict], None]
@@ -135,22 +186,30 @@ def extract_stage_payload(line: str) -> str | None:
     return line[marker_position + len(STAGE_MARKER) :].strip()
 
 
-def evaluate_stream(lines: Iterable[str], scenario: str, stage_handler: StageHandler | None = None) -> SmokeVerdict:
+def evaluate_stream(
+    lines: Iterable[str],
+    scenario: str,
+    stage_handler: StageHandler | None = None,
+    package: str | None = None,
+) -> SmokeVerdict:
     """Читает строки до результата нужного сценария (или падения процесса) и выносит вердикт.
 
     Строки результата и стадии других сценариев пропускаются: это хвост прошлого запуска.
     Стадии нужного сценария передаются ``stage_handler`` (если задан) по мере прихода; пока
     обработчик занят (пауза, опрос диалога), строки копятся в очереди чтения и не теряются.
-    Сбой шага (``DriverError``) — провал сценария с объяснением.
+    Сбой шага (``DriverError``) — провал сценария с объяснением. Падение процесса считается
+    только для ``package`` (см. ``CrashAttribution``); падения чужих приложений игнорируются.
     Кончились строки без результата — ``EXIT_NO_RESULT`` (таймаут или обрыв logcat).
     """
     check = CHECKS.get(scenario)
     if check is None:
         return SmokeVerdict(EXIT_USAGE, f"нет ожиданий для сценария {scenario!r}; известны: {sorted(CHECKS)}")
     observed = ObservedLog()
+    crashes = CrashAttribution(package)
     for line in lines:
-        if CRASH_MARKER in line:
-            return SmokeVerdict(EXIT_SCENARIO_FAILED, f"процесс упал до строки результата: {line.strip()}")
+        crash_header = crashes.feed(line)
+        if crash_header is not None:
+            return SmokeVerdict(EXIT_SCENARIO_FAILED, f"процесс упал до строки результата: {crash_header}")
         if PANIC_MARKER in line:
             observed.panic_lines.append(line)
         stage_payload = extract_stage_payload(line)
@@ -194,7 +253,7 @@ def _handle_stage_line(payload: str, scenario: str, stage_handler: StageHandler 
     return None
 
 
-def read_logcat_lines(serial: str, since_epoch: int, timeout_seconds: float) -> Iterator[str]:
+def read_logcat_lines(serial: str, since_epoch: str, timeout_seconds: float) -> Iterator[str]:
     """Строки logcat телефона с момента ``since_epoch``, пока не истечёт ``timeout_seconds``.
 
     ``-T`` вместо очистки буфера: ``logcat -c`` меняло бы состояние системы.
@@ -206,7 +265,7 @@ def read_logcat_lines(serial: str, since_epoch: int, timeout_seconds: float) -> 
     Подпроцесс гарантированно завершается при выходе из генератора.
     """
     command = [
-        "adb", "-s", serial, "logcat", "-v", "epoch", "-T", f"{since_epoch}.000",
+        "adb", "-s", serial, "logcat", "-v", "epoch", "-T", since_epoch,
         "-s", "Fasticamera:V", "AndroidRuntime:E",
     ]
     process = subprocess.Popen(command, stdout=subprocess.PIPE, text=True, errors="replace")
@@ -243,10 +302,30 @@ def _lines_until_deadline(process: subprocess.Popen[str], deadline: float) -> It
         yield line
 
 
+SINCE_EPOCH_PATTERN = re.compile(r"^[0-9]+\.[0-9]{3}$")
+"""Формат ``logcat -T``: секунды эпохи и ровно три цифры миллисекунд."""
+
+
+def parse_since_epoch(text: str) -> str:
+    """Точка отсчёта logcat с миллисекундами; секунды без дробной части — ошибка вызова.
+
+    Целые секунды недопустимы: прогон, начатый в ту же секунду, что и конец предыдущего,
+    прочитал бы его строку результата (дефект сессии 03).
+    """
+    if not SINCE_EPOCH_PATTERN.match(text):
+        raise argparse.ArgumentTypeError(f"ожидалось «секунды.миллисекунды», получено {text!r}")
+    return text
+
+
 def parse_arguments(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--serial", required=True, help="serial устройства adb")
-    parser.add_argument("--since-epoch", type=int, required=True, help="время устройства до запуска, секунды эпохи")
+    parser.add_argument(
+        "--since-epoch",
+        type=parse_since_epoch,
+        required=True,
+        help="время устройства до запуска, «секунды.миллисекунды» эпохи",
+    )
     parser.add_argument("--package", required=True, help="имя пакета приложения (нужно шагам драйвера)")
     parser.add_argument("--scenario", required=True, help="имя сценария")
     parser.add_argument("--timeout", type=float, required=True, help="сколько секунд ждать результата")
@@ -260,6 +339,7 @@ def main(argv: list[str]) -> int:
         read_logcat_lines(arguments.serial, arguments.since_epoch, arguments.timeout),
         arguments.scenario,
         driver.handle_stage,
+        arguments.package,
     )
     if verdict.exit_code == EXIT_NO_RESULT:
         verdict = SmokeVerdict(verdict.exit_code, f"{verdict.message} за {arguments.timeout:g} с")

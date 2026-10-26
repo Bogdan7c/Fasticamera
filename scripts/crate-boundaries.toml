@@ -20,6 +20,7 @@ roles = ["platform_neutral", "android_platform", "gpu", "output", "composition_r
 "camera-android" = "android_platform"
 "android-shell" = "android_platform"
 "gpu-vulkan" = "gpu"
+"render-loop" = "gpu"
 "isp-vulkan" = "gpu"
 "ui-render-vulkan" = "gpu"
 "photo-output" = "output"
@@ -32,6 +33,14 @@ roles = ["platform_neutral", "android_platform", "gpu", "output", "composition_r
 #                         зависимостях (normal + build; dev не учитываются);
 #   forbid_other_crates — true: дополнительно запрещены все остальные crate-ы из [crates];
 #   reason              — объяснение, которое попадает в сообщение о нарушении.
+#
+# Правила по исходникам `[[source_rules]]` (проверяют .rs-файлы crate-а, а не граф зависимостей):
+#   id            — имя правила;
+#   crate         — crate из [crates]; (нет в workspace — правило пропускается);
+#   pattern       — запрещённая подстрока (не regex); `//`-комментарии не считаются;
+#   allowed_files — файлы относительно каталога crate-а (с «/»), где шаблон разрешён;
+#   reason        — объяснение для сообщения.
+# Неизвестный ключ в таблице — ошибка конфигурации (код 2).
 
 [[rules]]
 id = "jni-ndk-only-in-shell"
@@ -80,6 +89,12 @@ forbid = [
 reason = "gpu-vulkan не знает про камеру и алгоритмы, README «Владельцы состояния»"
 
 [[rules]]
+id = "render-loop-via-contracts"
+applies_to_crates = ["render-loop"]
+forbid = ["android-shell", "camera-android", "camera-ndk-sys", "camera-core", "camera-screen"]
+reason = "поток рендера видит оболочку только через трейты shell-contract и не управляет камерой, решение 31"
+
+[[rules]]
 id = "camera-android-isolated"
 applies_to_crates = ["camera-android"]
 forbid = ["ash", "gpu-vulkan", "isp-model", "isp-vulkan", "ui-core", "ui-render-vulkan", "camera-screen"]
@@ -90,3 +105,17 @@ id = "app-is-graph-leaf"
 applies_to = ["platform_neutral", "android_platform", "gpu", "output", "composition_root"]
 forbid = ["fasticamera-app"]
 reason = "fasticamera-app — composition root и лист графа: от него никто не зависит, README «Карта модулей»"
+
+[[source_rules]]
+id = "gpu-ffi-only-in-safety-module"
+crate = "gpu-vulkan"
+pattern = 'extern "C"'
+allowed_files = ["src/android/hardware_buffer_ffi.rs"]
+reason = "функции NDK для AHardwareBuffer объявляются в одном safety-модуле, решение 32 сессии 03"
+
+[[source_rules]]
+id = "gpu-link-only-in-safety-module"
+crate = "gpu-vulkan"
+pattern = "#[link("
+allowed_files = ["src/android/hardware_buffer_ffi.rs"]
+reason = "линковка нативных библиотек — только в одном safety-модуле, решение 32 сессии 03"

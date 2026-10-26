@@ -66,12 +66,28 @@ class FindDenyButtonTest(unittest.TestCase):
 
 
 class FakeAdb:
-    """Фейковый adb: записывает команды, на dump отдаёт заготовленные ответы по очереди (последний повторяется)."""
+    """Фейковый adb: записывает команды, на dump отдаёт заготовленные ответы по очереди (последний повторяется).
 
-    def __init__(self, dump_outputs: list[str] | None = None, failing_prefix: list[str] | None = None) -> None:
+    Питание моделируется по факту OnePlus 11 / OxygenOS: ``KEYCODE_POWER`` переключает Awake <-> Dozing,
+    ``KEYCODE_WAKEUP`` включает, ``KEYCODE_SLEEP`` игнорируется; ``dumpsys power`` печатает ``mWakefulness``.
+    """
+
+    def __init__(
+        self,
+        dump_outputs: list[str] | None = None,
+        failing_prefix: list[str] | None = None,
+        wakefulness: str = "Awake",
+        power_key_works: bool = True,
+    ) -> None:
         self.commands: list[list[str]] = []
         self._dump_outputs = list(dump_outputs or [])
         self._failing_prefix = failing_prefix
+        self.wakefulness = wakefulness
+        self._power_key_works = power_key_works
+
+    def keycodes(self) -> list[str]:
+        """Все нажатые ``input keyevent`` по порядку."""
+        return [command[-1] for command in self.commands if "keyevent" in command]
 
     def __call__(self, command: list[str]) -> smoke_driver.AdbResult:
         self.commands.append(command)
@@ -80,6 +96,13 @@ class FakeAdb:
         if command == DUMP_COMMAND:
             output = self._dump_outputs.pop(0) if len(self._dump_outputs) > 1 else (self._dump_outputs or [""])[0]
             return smoke_driver.AdbResult(0, output, "")
+        if command == [*ADB, "shell", "dumpsys", "power"]:
+            return smoke_driver.AdbResult(0, f"Power Manager State:\n  mWakefulness={self.wakefulness}\n", "")
+        if "keyevent" in command and self._power_key_works:
+            if command[-1] == "KEYCODE_POWER":
+                self.wakefulness = "Dozing" if self.wakefulness == "Awake" else "Awake"
+            elif command[-1] == "KEYCODE_WAKEUP":
+                self.wakefulness = "Awake"
         return smoke_driver.AdbResult(0, "", "")
 
 

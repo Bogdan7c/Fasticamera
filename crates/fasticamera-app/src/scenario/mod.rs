@@ -18,6 +18,13 @@ pub mod observing;
 pub mod permission;
 pub mod platform;
 
+mod ahb_import;
+mod background_job;
+mod gpu_fence;
+mod render;
+mod render_lifecycle;
+mod render_metrics;
+
 use serde::{Deserialize, Serialize};
 
 use crate::jni_boundary::run_guarded;
@@ -42,6 +49,14 @@ pub enum Scenario {
     Motion,
     /// Тепло, частота кадров surface, все паттерны хаптики.
     Platform,
+    /// Показ тестовой картинки: ритм 120 Гц, пейсинг, параметры swapchain.
+    Render,
+    /// Показ переживает сворачивания и блокировки экрана без утечек GPU-объектов.
+    RenderLifecycle,
+    /// Импорт RAW `AHardwareBuffer` в Vulkan без копий (RAW16 и RAW10).
+    AhbImport,
+    /// Порядок GPU-работ через `sync_fd`: B не стартует раньше конца A.
+    GpuFence,
 }
 
 /// Как сценарий выполняется.
@@ -67,6 +82,10 @@ impl Scenario {
             Scenario::Permission,
             Scenario::Motion,
             Scenario::Platform,
+            Scenario::Render,
+            Scenario::RenderLifecycle,
+            Scenario::AhbImport,
+            Scenario::GpuFence,
         ]
     }
 
@@ -79,6 +98,10 @@ impl Scenario {
             Scenario::Permission => "permission",
             Scenario::Motion => "motion",
             Scenario::Platform => "platform",
+            Scenario::Render => "render",
+            Scenario::RenderLifecycle => "render-lifecycle",
+            Scenario::AhbImport => "ahb-import",
+            Scenario::GpuFence => "gpu-fence",
         }
     }
 
@@ -87,9 +110,14 @@ impl Scenario {
             Scenario::Hello => ScenarioMode::Immediate,
             #[cfg(feature = "debug-scenarios")]
             Scenario::Panic => ScenarioMode::Immediate,
-            Scenario::Lifecycle | Scenario::Permission | Scenario::Motion | Scenario::Platform => {
-                ScenarioMode::Observing
-            }
+            Scenario::Lifecycle
+            | Scenario::Permission
+            | Scenario::Motion
+            | Scenario::Platform
+            | Scenario::Render
+            | Scenario::RenderLifecycle
+            | Scenario::AhbImport
+            | Scenario::GpuFence => ScenarioMode::Observing,
         }
     }
 
@@ -103,6 +131,10 @@ impl Scenario {
             Scenario::Permission => Some(Box::new(permission::PermissionScenario::new())),
             Scenario::Motion => Some(Box::new(motion::MotionScenario::new())),
             Scenario::Platform => Some(Box::new(platform::PlatformScenario::new())),
+            Scenario::Render => Some(Box::new(render::RenderScenario::new())),
+            Scenario::RenderLifecycle => Some(Box::new(render_lifecycle::RenderLifecycleScenario::new())),
+            Scenario::AhbImport => Some(Box::new(ahb_import::AhbImportScenario::new())),
+            Scenario::GpuFence => Some(Box::new(gpu_fence::GpuFenceScenario::new())),
         }
     }
 
@@ -130,8 +162,45 @@ pub struct ScenarioConfig {
     pub motion_duration_ms: u64,
     /// Пауза между паттернами хаптики в `platform`, мс: 700 — чтобы различить их на ощупь.
     pub haptic_interval_ms: u64,
-    /// Какую частоту `platform` просит у surface, Гц: 120 — максимум экрана (сессия 00).
+    /// Какую частоту `platform` просит у surface, Гц: 60 — частота показа по умолчанию
+    /// (решение владельца 36, как `render.preferred_frame_rate_hz`).
     pub preferred_frame_rate_hz: f32,
+    /// Насколько реальный период обновления экрана может отличаться от периода желаемой частоты
+    /// (`render.preferred_frame_rate_hz`), доля: 0,05 = ±5 %. Шире — экран не на той частоте
+    /// (платформа не приняла просьбу о 120 Гц).
+    pub render_refresh_tolerance_ratio: f64,
+    /// Сколько `render` и `render-lifecycle` ждут нужного состояния рендера (показ, освобождение
+    /// surface), мс. 15000: с запасом на анимации системы и разблокировку экрана.
+    pub render_stage_timeout_ms: u64,
+    /// Сколько `render` после начала показа ждёт, пока реальный период обновления экрана
+    /// сойдётся с желаемой частотой (до начала окна пейсинга), мс. OxygenOS держит 60 Гц
+    /// до первого касания и лишь потом поднимает 120 Гц; смок шлёт синтетическое касание
+    /// на стадии `awaiting_refresh`. 10000: с запасом на переходное значение при подключении, колпак и
+    /// реакцию системы на касание. Не сошлось — сценарий падает.
+    pub render_refresh_settle_timeout_ms: u64,
+    /// Сколько период экрана (и пейсинга) обязан непрерывно держаться в допуске, чтобы `render`
+    /// считал частоту сошедшейся, мс. 1500: переходное значение при подключении живёт ~250 мс,
+    /// колпак OxygenOS применяется примерно за то же время; полторы секунды их перекрывают.
+    pub render_refresh_stable_ms: u64,
+    /// Как часто `render`, пока частота не сошлась, пишет стадию `awaiting_refresh`, мс.
+    /// 2000: достаточно, чтобы касание успело подействовать, и достаточно часто для повтора.
+    pub render_refresh_retry_ms: u64,
+    /// Сколько раз `render-lifecycle` сворачивает приложение кнопкой HOME и возвращает.
+    pub render_lifecycle_cycles: u32,
+    /// Сколько раз `render-lifecycle` гасит и включает экран. 0 — только HOME-циклы.
+    pub render_lifecycle_screen_cycles: u32,
+    /// Пауза после возобновления показа перед замером живых объектов, мс. 600 — больше двух
+    /// периодов опроса диагностики рендера (250 мс): замер видит значения уже нового показа.
+    pub render_settle_ms: u64,
+    /// Размеры RAW-буфера `ahb-import`, пиксели: 4096×3072 — кадр основной камеры OnePlus 11 (сессия 00).
+    pub ahb_width: u32,
+    pub ahb_height: u32,
+    /// Сколько `ahb-import` и `gpu-fence` ждут завершения GPU-работы, мс. 30000: заведомо больше
+    /// любой штатной работы (импорт 4096×3072 и busy-цикл занимают миллисекунды), но конечно —
+    /// зависшая работа даёт вердикт «не завершилась за N мс», а не вечное ожидание.
+    pub gpu_job_timeout_ms: u64,
+    /// Длина цикла работы A в `gpu-fence` (чем больше, тем дольше A и надёжнее проверка порядка).
+    pub fence_busy_iterations: u32,
 }
 
 impl Default for ScenarioConfig {
@@ -139,7 +208,19 @@ impl Default for ScenarioConfig {
         Self {
             motion_duration_ms: 3000,
             haptic_interval_ms: 700,
-            preferred_frame_rate_hz: 120.0,
+            preferred_frame_rate_hz: 60.0,
+            render_refresh_tolerance_ratio: 0.05,
+            render_stage_timeout_ms: 15_000,
+            render_refresh_settle_timeout_ms: 10_000,
+            render_refresh_stable_ms: 1_500,
+            render_refresh_retry_ms: 2_000,
+            render_lifecycle_cycles: 20,
+            render_lifecycle_screen_cycles: 3,
+            render_settle_ms: 600,
+            ahb_width: 4096,
+            ahb_height: 3072,
+            gpu_job_timeout_ms: 30_000,
+            fence_busy_iterations: gpu_vulkan::sync::diagnostics::DEFAULT_BUSY_ITERATIONS,
         }
     }
 }
@@ -151,6 +232,13 @@ pub enum ScenarioConfigError {
     Zero { field: &'static str },
     #[error("preferred_frame_rate_hz должно быть конечным и больше нуля, а не {0}")]
     InvalidFrameRate(f32),
+    #[error("render_refresh_tolerance_ratio должно лежать в (0, 1), а не {0}")]
+    InvalidTolerance(f64),
+    /// Устойчивость должна быть короче окна ожидания: иначе частота не успеет «сойтись» никогда.
+    #[error(
+        "render_refresh_stable_ms ({stable_ms}) должно быть меньше render_refresh_settle_timeout_ms ({settle_timeout_ms})"
+    )]
+    StableNotBelowSettleTimeout { stable_ms: u64, settle_timeout_ms: u64 },
 }
 
 impl ScenarioConfig {
@@ -167,6 +255,40 @@ impl ScenarioConfig {
         }
         if !(self.preferred_frame_rate_hz.is_finite() && self.preferred_frame_rate_hz > 0.0) {
             return Err(ScenarioConfigError::InvalidFrameRate(self.preferred_frame_rate_hz));
+        }
+        if !(self.render_refresh_tolerance_ratio > 0.0 && self.render_refresh_tolerance_ratio < 1.0) {
+            return Err(ScenarioConfigError::InvalidTolerance(
+                self.render_refresh_tolerance_ratio,
+            ));
+        }
+        for (field, value) in [
+            ("render_stage_timeout_ms", self.render_stage_timeout_ms),
+            (
+                "render_refresh_settle_timeout_ms",
+                self.render_refresh_settle_timeout_ms,
+            ),
+            ("render_refresh_stable_ms", self.render_refresh_stable_ms),
+            ("render_refresh_retry_ms", self.render_refresh_retry_ms),
+            ("render_settle_ms", self.render_settle_ms),
+            ("gpu_job_timeout_ms", self.gpu_job_timeout_ms),
+            ("ahb_width", u64::from(self.ahb_width)),
+            ("ahb_height", u64::from(self.ahb_height)),
+            ("fence_busy_iterations", u64::from(self.fence_busy_iterations)),
+        ] {
+            if value == 0 {
+                return Err(ScenarioConfigError::Zero { field });
+            }
+        }
+        if self.render_refresh_stable_ms >= self.render_refresh_settle_timeout_ms {
+            return Err(ScenarioConfigError::StableNotBelowSettleTimeout {
+                stable_ms: self.render_refresh_stable_ms,
+                settle_timeout_ms: self.render_refresh_settle_timeout_ms,
+            });
+        }
+        if self.render_lifecycle_cycles == 0 {
+            return Err(ScenarioConfigError::Zero {
+                field: "render_lifecycle_cycles",
+            });
         }
         Ok(())
     }
@@ -231,9 +353,22 @@ pub fn dispatch(
 #[derive(Debug, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ScenarioOutcome {
-    Passed { report: serde_json::Value },
-    Failed { error: String },
-    Panicked { panic: PanicReport },
+    Passed {
+        report: serde_json::Value,
+    },
+    Failed {
+        error: String,
+    },
+    /// Сценарий провален, но собрал отчёт (его нужно видеть, чтобы понять, почему провал).
+    /// В JSON выглядит как обычный `failed` с дополнительным полем `report`.
+    #[serde(rename = "failed")]
+    FailedWithReport {
+        error: String,
+        report: serde_json::Value,
+    },
+    Panicked {
+        panic: PanicReport,
+    },
 }
 
 /// Отчёт сценария — то, что уходит в строку `FASTICAMERA_RESULT`.
@@ -268,9 +403,14 @@ fn run_named(name: &str, runtime: Option<&RuntimeConfig>) -> Result<serde_json::
         Scenario::Hello => Ok(serde_json::to_value(HelloReport::collect(runtime))?),
         #[cfg(feature = "debug-scenarios")]
         Scenario::Panic => intentional_panic::run(),
-        Scenario::Lifecycle | Scenario::Permission | Scenario::Motion | Scenario::Platform => {
-            Err(ScenarioError::NotImmediate { name: scenario.name() })
-        }
+        Scenario::Lifecycle
+        | Scenario::Permission
+        | Scenario::Motion
+        | Scenario::Platform
+        | Scenario::Render
+        | Scenario::RenderLifecycle
+        | Scenario::AhbImport
+        | Scenario::GpuFence => Err(ScenarioError::NotImmediate { name: scenario.name() }),
     }
 }
 
@@ -393,6 +533,153 @@ mod tests {
             ..ScenarioConfig::default()
         };
         assert!(matches!(rate.validate(), Err(ScenarioConfigError::InvalidFrameRate(_))));
+    }
+
+    #[test]
+    fn gpu_scenarios_are_registered_observing_and_product_diagnostics() {
+        for name in ["render", "render-lifecycle", "ahb-import", "gpu-fence"] {
+            let scenario = Scenario::parse(name).expect("сценарий зарегистрирован");
+            assert_eq!(scenario.name(), name);
+            assert_eq!(scenario.mode(), ScenarioMode::Observing);
+            let observing = scenario.observing().expect("наблюдающий сценарий");
+            assert_eq!(observing.name(), name, "имя сценария и его реализации совпадают");
+        }
+        // Не только debug-scenarios: доступны и в сборке без этой фичи.
+        assert!(!DEBUG_ONLY_SCENARIO_NAMES.contains(&"render"));
+        let json = serde_json::to_value(execute("gpu-fence", Some(&debug_runtime()))).expect("json");
+        assert!(json["error"].as_str().expect("error").contains("маршрутизатор"));
+    }
+
+    #[test]
+    fn gpu_scenario_config_defaults_and_validation() {
+        let defaults = ScenarioConfig::default();
+        assert_eq!(defaults.render_lifecycle_cycles, 20);
+        assert_eq!(defaults.render_lifecycle_screen_cycles, 3);
+        assert_eq!((defaults.ahb_width, defaults.ahb_height), (4096, 3072));
+        assert_eq!(defaults.render_refresh_settle_timeout_ms, 10_000);
+        assert_eq!(defaults.render_refresh_stable_ms, 1_500);
+        assert_eq!(defaults.render_refresh_retry_ms, 2_000);
+        assert!(defaults.validate().is_ok());
+        for broken in [
+            ScenarioConfig {
+                render_refresh_tolerance_ratio: 0.0,
+                ..defaults
+            },
+            ScenarioConfig {
+                render_refresh_tolerance_ratio: 1.5,
+                ..defaults
+            },
+            ScenarioConfig {
+                render_refresh_tolerance_ratio: f64::NAN,
+                ..defaults
+            },
+        ] {
+            assert!(
+                matches!(broken.validate(), Err(ScenarioConfigError::InvalidTolerance(_))),
+                "{broken:?}"
+            );
+        }
+        for (broken, field) in [
+            (
+                ScenarioConfig {
+                    render_lifecycle_cycles: 0,
+                    ..defaults
+                },
+                "render_lifecycle_cycles",
+            ),
+            (
+                ScenarioConfig {
+                    render_stage_timeout_ms: 0,
+                    ..defaults
+                },
+                "render_stage_timeout_ms",
+            ),
+            (
+                ScenarioConfig {
+                    render_refresh_settle_timeout_ms: 0,
+                    ..defaults
+                },
+                "render_refresh_settle_timeout_ms",
+            ),
+            (
+                ScenarioConfig {
+                    render_refresh_stable_ms: 0,
+                    ..defaults
+                },
+                "render_refresh_stable_ms",
+            ),
+            (
+                ScenarioConfig {
+                    render_refresh_retry_ms: 0,
+                    ..defaults
+                },
+                "render_refresh_retry_ms",
+            ),
+            (
+                ScenarioConfig {
+                    ahb_width: 0,
+                    ..defaults
+                },
+                "ahb_width",
+            ),
+            (
+                ScenarioConfig {
+                    fence_busy_iterations: 0,
+                    ..defaults
+                },
+                "fence_busy_iterations",
+            ),
+        ] {
+            assert_eq!(broken.validate(), Err(ScenarioConfigError::Zero { field }));
+        }
+        // Ноль экранных циклов разрешён: только HOME.
+        assert!(
+            ScenarioConfig {
+                render_lifecycle_screen_cycles: 0,
+                ..defaults
+            }
+            .validate()
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn refresh_stable_time_must_be_shorter_than_settle_timeout() {
+        let defaults = ScenarioConfig::default();
+        // Равенство тоже отвергается: за всё окно ожидания устойчивость набрать не успеть.
+        for stable_ms in [defaults.render_refresh_settle_timeout_ms, 20_000] {
+            let broken = ScenarioConfig {
+                render_refresh_stable_ms: stable_ms,
+                ..defaults
+            };
+            assert_eq!(
+                broken.validate(),
+                Err(ScenarioConfigError::StableNotBelowSettleTimeout {
+                    stable_ms,
+                    settle_timeout_ms: defaults.render_refresh_settle_timeout_ms,
+                })
+            );
+        }
+        let just_below = ScenarioConfig {
+            render_refresh_stable_ms: defaults.render_refresh_settle_timeout_ms - 1,
+            ..defaults
+        };
+        assert!(just_below.validate().is_ok());
+    }
+
+    #[test]
+    fn gpu_job_timeout_has_default_and_rejects_zero() {
+        assert_eq!(ScenarioConfig::default().gpu_job_timeout_ms, 30_000);
+        let zero = ScenarioConfig {
+            gpu_job_timeout_ms: 0,
+            ..ScenarioConfig::default()
+        };
+        assert_eq!(
+            zero.validate(),
+            Err(ScenarioConfigError::Zero {
+                field: "gpu_job_timeout_ms"
+            })
+        );
     }
 
     #[test]

@@ -4,16 +4,18 @@
 //! `log_filter` (переопределение на один запуск). В Rust ничего не хардкодится: здесь только
 //! разбор и проверка.
 //!
-//! Секции `shell`, `thermal_policy` и `scenarios` необязательны: Kotlin их пока не присылает,
-//! и действуют документированные значения по умолчанию владельцев (`ShellConfig`,
-//! `ThermalPolicyConfig`, `ScenarioConfig`). Прислать можно частично — опечатка в имени поля
+//! Секции `shell`, `thermal_policy`, `scenarios`, `render` и `gpu` необязательны: Kotlin их пока
+//! не присылает, и действуют документированные значения по умолчанию владельцев (`ShellConfig`,
+//! `ThermalPolicyConfig`, `ScenarioConfig`, `RenderLoopConfig`, `GpuConfig`). Прислать можно частично — опечатка в имени поля
 //! всё равно ошибка.
 
 use android_shell::config::{ShellConfig, ShellConfigError, ValidatedShellConfig};
+use render_loop::config::{ConfigError as RenderConfigError, RenderLoopConfig};
 use serde::{Deserialize, Serialize};
 use shell_contract::thermal_policy::{ThermalPolicy, ThermalPolicyConfig, ThermalPolicyConfigError};
 use tracing_subscriber::filter::Targets;
 
+use crate::gpu_config::GpuConfig;
 use crate::scenario::ScenarioConfig;
 
 /// Тип сборки APK (`BuildConfig.BUILD_TYPE` на стороне Kotlin).
@@ -90,6 +92,10 @@ struct RuntimeConfigJson {
     thermal_policy: ThermalPolicyConfig,
     #[serde(default)]
     scenarios: ScenarioConfig,
+    #[serde(default)]
+    render: RenderLoopConfig,
+    #[serde(default)]
+    gpu: GpuConfig,
 }
 
 /// Проверенный конфиг нативной части.
@@ -101,6 +107,8 @@ pub struct RuntimeConfig {
     validated_shell: ValidatedShellConfig,
     thermal_policy: ThermalPolicyConfig,
     scenarios: ScenarioConfig,
+    render: RenderLoopConfig,
+    gpu: GpuConfig,
 }
 
 impl RuntimeConfig {
@@ -112,6 +120,16 @@ impl RuntimeConfig {
         // неверный конфиг отвергался целиком при initialize, а не позже при установке.
         ThermalPolicy::new(parsed.thermal_policy)?;
         parsed.scenarios.validate()?;
+        parsed.render.validate()?;
+        // Бюджет ожиданий GPU потока рендера обязан быть меньше ожидания квитанции оболочкой:
+        // иначе `surfaceDestroyed` отпустит главный поток по таймауту раньше подтверждения.
+        // Конфиги разных crate-ов, поэтому согласованность проверяется здесь, на стыке.
+        if parsed.render.release_receipt_budget_ms >= parsed.shell.surface_release_timeout_ms {
+            return Err(ConfigError::ReleaseBudgetNotBelowShellTimeout {
+                render_budget_ms: parsed.render.release_receipt_budget_ms,
+                shell_timeout_ms: parsed.shell.surface_release_timeout_ms,
+            });
+        }
         Ok(Self {
             build_type: parsed.build_type,
             log_filter: LogFilter::parse(&parsed.log_filter)?,
@@ -119,6 +137,8 @@ impl RuntimeConfig {
             validated_shell,
             thermal_policy: parsed.thermal_policy,
             scenarios: parsed.scenarios,
+            render: parsed.render,
+            gpu: parsed.gpu,
         })
     }
 
@@ -147,6 +167,20 @@ impl RuntimeConfig {
     pub fn scenarios(&self) -> &ScenarioConfig {
         &self.scenarios
     }
+
+    /// Настройки потока рендера (пейсинг, таймауты, число кадров в полёте).
+    pub fn render(&self) -> &RenderLoopConfig {
+        &self.render
+    }
+
+    pub fn gpu(&self) -> &GpuConfig {
+        &self.gpu
+    }
+
+    /// Режим validation слоя Vulkan: секция `gpu` с учётом типа сборки.
+    pub fn validation_mode(&self) -> gpu_vulkan::validation::ValidationMode {
+        self.gpu.validation_mode(self.build_type)
+    }
 }
 
 /// Почему конфиг не принят.
@@ -164,10 +198,21 @@ pub enum ConfigError {
     ThermalPolicy(#[from] ThermalPolicyConfigError),
     #[error("неверные настройки сценариев: {0}")]
     Scenarios(#[from] crate::scenario::ScenarioConfigError),
+    #[error("неверные настройки потока рендера: {0}")]
+    Render(#[from] RenderConfigError),
+    #[error(
+        "render.release_receipt_budget_ms ({render_budget_ms}) должен быть меньше shell.surface_release_timeout_ms ({shell_timeout_ms})"
+    )]
+    ReleaseBudgetNotBelowShellTimeout {
+        render_budget_ms: u64,
+        shell_timeout_ms: u64,
+    },
 }
 
 #[cfg(test)]
 mod tests {
+    use gpu_vulkan::validation::ValidationMode;
+
     use super::*;
 
     #[test]
@@ -220,6 +265,87 @@ mod tests {
         let typo = RuntimeConfig::from_json(r#"{"build_type":"debug","log_filter":"info","shell":{"gyro":1}}"#)
             .expect_err("опечатка в секции");
         assert!(matches!(typo, ConfigError::Malformed(_)), "{typo}");
+    }
+
+    #[test]
+    fn render_and_gpu_sections_default_and_override() {
+        let defaults = RuntimeConfig::from_json(r#"{"build_type":"release","log_filter":"info"}"#).expect("конфиг");
+        assert_eq!(*defaults.render(), RenderLoopConfig::default());
+        assert_eq!(*defaults.gpu(), GpuConfig::default());
+        assert_eq!(defaults.validation_mode(), ValidationMode::Disabled, "release + auto");
+
+        let debug_defaults = RuntimeConfig::from_json(r#"{"build_type":"debug","log_filter":"info"}"#).expect("конфиг");
+        assert_eq!(
+            debug_defaults.validation_mode(),
+            ValidationMode::full_with_known_deviations(GpuConfig::default().known_deviations()),
+            "debug + auto: полная проверка с известными отступлениями по умолчанию"
+        );
+
+        let overridden = RuntimeConfig::from_json(
+            r#"{"build_type":"release","log_filter":"info","render":{"pacing_window_s":4.0,"frames_in_flight":3},"gpu":{"validation":"enabled"}}"#,
+        )
+        .expect("конфиг с секциями render и gpu");
+        assert_eq!(overridden.render().pacing_window_s, 4.0);
+        assert_eq!(overridden.render().frames_in_flight, 3);
+        assert_eq!(
+            overridden.render().acquire_timeout_ms,
+            RenderLoopConfig::default().acquire_timeout_ms,
+            "непереопределённые поля берут значения по умолчанию"
+        );
+        assert!(overridden.validation_mode().wants_synchronization());
+    }
+
+    #[test]
+    fn render_and_gpu_sections_reject_typos_and_bad_values() {
+        let render_typo =
+            RuntimeConfig::from_json(r#"{"build_type":"debug","log_filter":"info","render":{"pacing_windo_s":1}}"#)
+                .expect_err("опечатка в render");
+        assert!(matches!(render_typo, ConfigError::Malformed(_)), "{render_typo}");
+        let gpu_typo =
+            RuntimeConfig::from_json(r#"{"build_type":"debug","log_filter":"info","gpu":{"validaton":"auto"}}"#)
+                .expect_err("опечатка в gpu");
+        assert!(matches!(gpu_typo, ConfigError::Malformed(_)), "{gpu_typo}");
+        let gpu_value =
+            RuntimeConfig::from_json(r#"{"build_type":"debug","log_filter":"info","gpu":{"validation":"maybe"}}"#)
+                .expect_err("неизвестный режим");
+        assert!(matches!(gpu_value, ConfigError::Malformed(_)), "{gpu_value}");
+        let render_value =
+            RuntimeConfig::from_json(r#"{"build_type":"debug","log_filter":"info","render":{"frames_in_flight":0}}"#)
+                .expect_err("ноль кадров в полёте");
+        assert!(matches!(render_value, ConfigError::Render(_)), "{render_value}");
+    }
+
+    #[test]
+    fn render_release_budget_must_stay_below_the_shell_receipt_timeout() {
+        // По умолчанию 450 < 500: можно.
+        RuntimeConfig::from_json(r#"{"build_type":"debug","log_filter":"info"}"#).expect("дефолты согласованы");
+        // Бюджет рендера поднят выше ожидания оболочки: отвергается целиком.
+        let render_too_slow = RuntimeConfig::from_json(
+            r#"{"build_type":"debug","log_filter":"info","render":{"release_receipt_budget_ms":600,"teardown_timeout_ms":250}}"#,
+        )
+        .expect_err("бюджет выше ожидания оболочки");
+        assert!(
+            matches!(
+                render_too_slow,
+                ConfigError::ReleaseBudgetNotBelowShellTimeout {
+                    render_budget_ms: 600,
+                    shell_timeout_ms: 500
+                }
+            ),
+            "{render_too_slow}"
+        );
+        // Оболочка, ждущая меньше бюджета рендера, — та же ошибка.
+        let shell_too_impatient = RuntimeConfig::from_json(
+            r#"{"build_type":"debug","log_filter":"info","shell":{"surface_release_timeout_ms":400}}"#,
+        )
+        .expect_err("оболочка нетерпеливее бюджета рендера");
+        assert!(
+            matches!(
+                shell_too_impatient,
+                ConfigError::ReleaseBudgetNotBelowShellTimeout { .. }
+            ),
+            "{shell_too_impatient}"
+        );
     }
 
     #[test]

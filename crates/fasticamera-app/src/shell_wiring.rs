@@ -1,18 +1,30 @@
 //! Сборка оболочки и маршрутизатора (только Android).
 //!
 //! Composition root: ставит `android-shell`, раздаёт его сервисы через нейтральные трейты
-//! и запускает поток маршрутизатора. Решений фич здесь нет.
+//! запускает поток рендера (решение 31: маршрутизатор отдаёт ему surface) и поток маршрутизатора.
+//! Решений фич здесь нет.
+//!
+//! Если GPU или vsync не поднялись, приложение не падает и не зависает: рендер помечается
+//! недоступным (причина видна сценариям), а маршрутизатор подтверждает освобождение surface сразу.
 
 use std::sync::{Arc, OnceLock};
 use std::thread;
 
 use android_shell::android::{AndroidShellServices, ShellInstallError, ThermalListenerState};
+use gpu_vulkan::validation::ValidationMode;
+use render_loop::config::RenderLoopConfig;
+use render_loop::thread::{RenderLoopParts, VsyncFrameClock};
+use render_loop::vulkan_backend::{VulkanBackendConfig, VulkanDisplayBackend};
 use shell_contract::thermal_policy::{ThermalPolicy, ThermalPolicyConfigError};
+use shell_contract::vsync::VsyncSource;
 
 use crate::event_router::{EventRouter, LogcatScenarioOutput, RouterParts, ScenarioStarter};
+use crate::gpu_services::{GpuServices, ValidationState};
 use crate::jni_boundary::run_guarded;
+use crate::render_wiring::RenderRuntime;
 use crate::runtime_config::RuntimeConfig;
 use crate::scenario::observing::{ObservingScenario, PlatformFacts, ShellServices, ThermalListenerReport};
+use crate::vulkan_diagnostics::VulkanGpuDiagnostics;
 
 /// Что остаётся у composition root после сборки: вход для наблюдающих сценариев.
 struct ShellWiring {
@@ -40,6 +52,13 @@ pub fn ensure_installed(config: &RuntimeConfig) -> Result<(), ShellWiringError> 
     let thermal_policy = Arc::new(ThermalPolicy::new(config.thermal_policy())?);
     let handles = android_shell::android::install(config.shell())?;
     let services = handles.services;
+    let validation = config.validation_mode();
+    let render = start_render(config.render(), validation.clone(), &services);
+    let gpu = GpuServices {
+        render: render.status,
+        diagnostics: Arc::new(VulkanGpuDiagnostics::new(validation)),
+        render_config: config.render().clone(),
+    };
     let (router, starter) = EventRouter::new(RouterParts {
         events: handles.events,
         services: shell_services(&services),
@@ -47,6 +66,8 @@ pub fn ensure_installed(config: &RuntimeConfig) -> Result<(), ShellWiringError> 
         scenario_config: *config.scenarios(),
         gyro_request: services.default_gyro_request(),
         output: Box::new(LogcatScenarioOutput),
+        route: render.route,
+        gpu,
     });
     thread::Builder::new()
         .name("fasticamera-router".to_owned())
@@ -59,8 +80,50 @@ pub fn ensure_installed(config: &RuntimeConfig) -> Result<(), ShellWiringError> 
         })
         .map_err(ShellWiringError::RouterThread)?;
     // Гонки нет: initialize вызывается на главном потоке Android.
-    let _ = SHELL_WIRING.set(ShellWiring { starter });
+    // Второй `set` означает, что два вызова прошли проверку `get()` одновременно: оболочка и поток
+    // маршрутизатора созданы дважды. Молча отбрасывать лишнюю обвязку нельзя — это нарушение
+    // инварианта «один раз на процесс», о нём громко сообщаем.
+    if SHELL_WIRING.set(ShellWiring { starter }).is_err() {
+        tracing::error!(
+            target: "fasticamera::shell_wiring",
+            "оболочка уже установлена: повторная обвязка отброшена (initialize вызван параллельно?)"
+        );
+    }
     Ok(())
+}
+
+/// Поднимает GPU, vsync и поток рендера. Любой отказ — `RenderRuntime::unavailable` с причиной.
+fn start_render(
+    render_config: &RenderLoopConfig,
+    validation: ValidationMode,
+    services: &Arc<AndroidShellServices>,
+) -> RenderRuntime {
+    match try_start_render(render_config, validation, services) {
+        Ok(runtime) => runtime,
+        Err(reason) => RenderRuntime::unavailable(reason),
+    }
+}
+
+fn try_start_render(
+    render_config: &RenderLoopConfig,
+    validation: ValidationMode,
+    services: &Arc<AndroidShellServices>,
+) -> Result<RenderRuntime, String> {
+    let backend_config = VulkanBackendConfig::from_render_config(render_config, validation.clone())
+        .map_err(|error| format!("настройки бэкенда рендера: {error}"))?;
+    let backend =
+        VulkanDisplayBackend::new_android(backend_config).map_err(|error| format!("GPU не поднялся: {error}"))?;
+    let subscription = services
+        .start_vsync()
+        .map_err(|error| format!("vsync не запущен: {error}"))?;
+    let parts = RenderLoopParts {
+        config: render_config.clone(),
+        backend,
+        clock: VsyncFrameClock::new(subscription),
+        commands: services.clone(),
+    };
+    RenderRuntime::spawn(parts, ValidationState::of(&validation))
+        .map_err(|error| format!("поток рендера не запущен: {error}"))
 }
 
 /// Передаёт наблюдающий сценарий маршрутизатору.
@@ -79,6 +142,7 @@ fn shell_services(services: &Arc<AndroidShellServices>) -> ShellServices {
         motion: services.clone(),
         thermal: services.clone(),
         diagnostics: services.clone(),
+        vsync: services.clone(),
         facts: Arc::new(AndroidFacts(Arc::clone(services))),
     }
 }

@@ -1,0 +1,62 @@
+#version 450
+// Контрольные суммы 32-битных слов буфера с учётом шага строк (путь «VkBuffer на память AHardwareBuffer»,
+// упакованный RAW10: байты считаются словами, а не пикселями). В каждой из `rows` строк берутся первые
+// `row_words` слов, затем пропускается паддинг до `stride_words`.
+// Две независимые суммы по модулю 2^32 (см. ahb_sum_r16.comp): sum и mix. Индекс для mix —
+// логический номер слова row * row_words + column (без паддинга). Совпадает с CPU-эталоном
+// `hardware_buffer_cache::raw_reference`.
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer Frame { uint words[]; } frame;
+layout(set = 0, binding = 1, std430) buffer Result {
+    uint sum;
+    uint mix;
+} result;
+layout(push_constant) uniform Params {
+    uint row_words;    // полезных слов в строке
+    uint stride_words; // шаг строки в словах
+    uint rows;         // число строк
+} params;
+
+shared uint group_sums[256];
+shared uint group_mixes[256];
+
+uint rotate_left(uint value, uint amount) {
+    uint shift = amount & 31u;
+    return shift == 0u ? value : ((value << shift) | (value >> (32u - shift)));
+}
+
+uint position_mix(uint value, uint index) {
+    return rotate_left(value, index) ^ (index * 0x9E3779B1u);
+}
+
+void main() {
+    uint word_count = params.row_words * params.rows;
+    uint grid_stride = gl_NumWorkGroups.x * 256u; // 256 = local_size_x (литерал: gl_WorkGroupSize в SPIR-V 1.6 даёт LocalSizeId, ему нужна maintenance4)
+
+    uint partial_sum = 0u;
+    uint partial_mix = 0u;
+    for (uint index = gl_GlobalInvocationID.x; index < word_count; index += grid_stride) {
+        uint row = index / params.row_words;
+        uint column = index % params.row_words;
+        uint value = frame.words[row * params.stride_words + column];
+        partial_sum += value;
+        partial_mix ^= position_mix(value, index);
+    }
+
+    group_sums[gl_LocalInvocationID.x] = partial_sum;
+    group_mixes[gl_LocalInvocationID.x] = partial_mix;
+    barrier();
+    for (uint half_size = 128u; half_size > 0u; half_size >>= 1) {
+        if (gl_LocalInvocationID.x < half_size) {
+            group_sums[gl_LocalInvocationID.x] += group_sums[gl_LocalInvocationID.x + half_size];
+            group_mixes[gl_LocalInvocationID.x] ^= group_mixes[gl_LocalInvocationID.x + half_size];
+        }
+        barrier();
+    }
+    if (gl_LocalInvocationID.x == 0u) {
+        atomicAdd(result.sum, group_sums[0]);
+        atomicXor(result.mix, group_mixes[0]);
+    }
+}

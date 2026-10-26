@@ -30,6 +30,16 @@
 - Vulkan swapchain прямо на входную surface `c2.qti.hevc.encoder.hdr`: 3840×2160, A2B10G10R10, цветовые пространства HDR10 PQ/HLG; 300/300 кадров, PTS через VK_GOOGLE_display_timing.
 - Системная камера: 4K60 = op mode 0x8021, HEVC Main 8 бит SDR ~68 Мбит/с; HDR-видео только 30 к/с (0x80A7); Pro RAW = 0x8009 + SuperRAW на DSP.
 
+## Показ и Vulkan (сессия 03)
+- Swapchain на SurfaceView: `A2B10G10R10_UNORM_PACK32` + `SRGB_NONLINEAR`, 1080×2412, `currentTransform=Identity` (портрет), 5 картинок FIFO; есть `VK_EXT_swapchain_maintenance1` (present-fence-ы) и `VK_GOOGLE_display_timing`.
+- OxygenOS держит uid приложения на 60 Гц до первого касания (`dumpsys display` → `frameRateOverride`), потом разрешает 120; при цели 60 Гц (решение 36) не мешает.
+- `vkGetRefreshCycleDurationGOOGLE`: при attach 8,33 мс, через ~250 мс реальный период; шум в единицы мкс. Android хранит 10 последних записей времени показа (`MAX_TIMING_INFOS`) — забирать каждый кадр.
+- desiredPresentTime ровно на vsync → 4–5 % кадров по 2 периода; с упреждением 0,5 периода — 1133/1133 ровных.
+- Освобождение surface рендером: медиана 7–8 мс, максимум ≤ 56 мс (debug + validation).
+- AHB RAW16/RAW10 4096×3072 выделяются `AHardwareBuffer_allocate` с `GPU_SAMPLED_IMAGE|CPU_WRITE_OFTEN`; импорт без копии работает, VUID 02387/02384 неизбежны (решение 35).
+- Порядок «GPU ждёт sync_fd» наблюдается на Adreno (зазор 3–6 мс); работа fence_busy 500k итераций ≈ 60 мс.
+- Под validation layer уничтожение instance, работавшего с AHB, иногда убивает поток (драйвер: деструктор `BsQtiMapperExtensions`) — бэклог п. 2.
+
 ## Платформа
 - Гироскоп BMI26x 402 Гц, шкала BOOTTIME (как SENSOR_TIMESTAMP REALTIME). Rolling shutter skew: основная 4:3 13,66 мс, 16:9@60 15,97, ширик@60 16,28.
 - Хаптика: примитивы TICK/LOW_TICK/CLICK/THUD не поддерживаются; готовые эффекты TICK/CLICK/HEAVY_CLICK/DOUBLE_CLICK — `YES` (сессия 02); амплитуда управляется. Sustained performance mode не поддерживается. Флеш ~1,8 ГиБ/с последовательно. 4 физических микрофона. Экран 60/90/120 Гц.

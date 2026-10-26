@@ -17,7 +17,9 @@ use shell_contract::motion::{
     SensorSourceError,
 };
 use shell_contract::thermal::{HeadroomForecast, ThermalHeadroom, ThermalSource, ThermalSourceError, ThermalStatus};
+use shell_contract::vsync::{VsyncSlot, VsyncSource, VsyncSourceError, VsyncSubscription};
 
+use super::choreographer_thread::start_choreographer_thread;
 use super::platform_calls::PlatformCall;
 use super::runtime::{ClaimedSensor, ShellRuntime};
 use super::sensor_thread::{SensorThread, SensorThreadSpec, event_vector, start_sensor_thread};
@@ -217,6 +219,21 @@ impl MotionSource for AndroidShellServices {
             })
         })?;
         Ok(OrientationSubscription::new(samples_seen, Box::new(lease)))
+    }
+}
+
+impl VsyncSource for AndroidShellServices {
+    /// Каждая подписка — свой поток с looper и Choreographer (см. `choreographer_thread`).
+    /// Уничтожение подписки будит ожидающих, останавливает и join-ит поток.
+    fn start_vsync(&self) -> Result<VsyncSubscription, VsyncSourceError> {
+        let slot = Arc::new(VsyncSlot::new());
+        let accounting = Arc::clone(self.runtime.accounting());
+        // Сбой колбэка vsync учитывается тем же счётчиком, что и сбои JNI-колбэков оболочки.
+        let thread = start_choreographer_thread(
+            Arc::clone(&slot),
+            Box::new(move || accounting.record_native_callback_failure()),
+        )?;
+        Ok(VsyncSubscription::new(slot, Box::new(thread)))
     }
 }
 

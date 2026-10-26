@@ -3,10 +3,15 @@
 #
 #   scripts/device-smoke.sh [--variant debug|release] [--no-build] [--timeout SEC] <сценарий>
 #
-# Сценарии: hello, lifecycle, permission, motion, platform (обе сборки), panic (только debug).
+# Сценарии: hello, lifecycle, permission, motion, platform, render, render-lifecycle, ahb-import,
+# gpu-fence (обе сборки), panic (только debug).
 # lifecycle сворачивает и возвращает приложение, permission сбрасывает и затем возвращает
 # разрешение камеры нашего пакета; шаги на телефоне — scripts/smoke_driver.py,
 # ожидания — scripts/smoke_wait.py и scripts/smoke_checks.py.
+# render наблюдает 10 с показа (нужен --timeout 60); render-lifecycle сворачивает приложение
+# 20 раз кнопкой HOME и 3 раза гасит экран (экран без блокировки; нужен --timeout 300);
+# ahb-import и gpu-fence гоняют GPU-проверки на отдельном контексте (--timeout 60).
+# Validation-слой есть только в debug-сборке: в release отчёт пишет validation.mode=disabled.
 # Коды выхода: 0 — сценарий прошёл, 1 — сценарий упал, 2 — устройство не найдено,
 # 3 — нет строки результата за таймаут, 4 — не собралось/не встало/не запустилось, 64 — неверный вызов.
 set -euo pipefail
@@ -15,7 +20,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
 usage() {
-    sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
 }
 
 variant="debug"
@@ -76,7 +81,7 @@ if scenario_resets_camera_permission "$scenario"; then
     }
 fi
 
-since_epoch="$(device_epoch_seconds "$serial")"
+since_epoch="$(device_epoch_timestamp "$serial")"
 start_activity "$serial" "$package" -e scenario "$scenario" || exit "$EXIT_BUILD_OR_INSTALL_FAILED"
 
 log_step "ожидание FASTICAMERA_RESULT сценария $scenario (до $timeout_seconds с)"

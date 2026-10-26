@@ -1,0 +1,20 @@
+# Закреплённый validation layer Vulkan для debug APK (решение владельца 34, сессия 03).
+#
+# Откуда: официальные бинарники Khronos, релиз репозитория KhronosGroup/Vulkan-ValidationLayers.
+# Архив скачивается скриптом scripts/fetch-validation-layer.sh в кэш ВНЕ репозитория
+# (${XDG_CACHE_HOME:-~/.cache}/fasticamera/vulkan-validation-layers/<version>/), проверяется
+# по SHA-256 из этого файла, из него достаётся только arm64-v8a/libVkLayer_khronos_validation.so.
+# Gradle подкладывает эту .so ТОЛЬКО в debug APK (android/app/build.gradle.kts); в release её нет.
+#
+# Как получен sha256: значение asset.digest из GitHub API
+#   https://api.github.com/repos/KhronosGroup/Vulkan-ValidationLayers/releases/tags/vulkan-sdk-1.4.363.0
+# и независимо проверено `sha256sum` на скачанном файле (совпало).
+#
+# Формат намеренно примитивный (`ключ = "значение"`, одна строка на ключ): файл читают и bash-скрипт,
+# и Gradle без TOML-библиотек. Менять версию — одновременно version, url и sha256.
+
+version = "1.4.363.0"
+url = "https://github.com/KhronosGroup/Vulkan-ValidationLayers/releases/download/vulkan-sdk-1.4.363.0/android-binaries-1.4.363.0.zip"
+sha256 = "9a3b8e32cb3330406dd4f3651594201635baee4528da8e2a5300e4f55e1a9cc7"
+# Путь нужной библиотеки внутри архива (корневой каталог архива не фиксируем: берём по суффиксу).
+archive_member = "arm64-v8a/libVkLayer_khronos_validation.so"

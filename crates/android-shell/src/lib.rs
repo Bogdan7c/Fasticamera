@@ -7,7 +7,7 @@
 //! Раскладка:
 //! * нейтральная часть (собирается и тестируется на ПК): [`config`], [`touch_decode`],
 //!   [`haptic_plan`], [`permission_answer`], [`orientation_classifier`], [`surface_registry`],
-//!   [`accounting`], [`thermal_codes`], [`command_codes`];
+//!   [`accounting`], [`thermal_codes`], [`command_codes`], [`vsync_timeline`];
 //! * только Android: модуль `android` — регистрация JNI-методов, safety-модули FFI
 //!   (`ANativeWindow`, `AMotionEvent`, датчики, тепло) и поток команд к Kotlin.
 //!
@@ -24,6 +24,7 @@ pub mod permission_answer;
 pub mod surface_registry;
 pub mod thermal_codes;
 pub mod touch_decode;
+pub mod vsync_timeline;
 
 #[cfg(target_os = "android")]
 pub mod android;

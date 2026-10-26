@@ -1,0 +1,16 @@
+//! `render-loop` — поток рендера Fasticamera (решение владельца 31, сессия 03).
+//!
+//! Владеет surface экрана после маршрутизатора событий: принимает её через почтовый ящик,
+//! поднимает swapchain-цель, рисует кадр на каждый тик vsync и отпускает surface (с квитанцией)
+//! только после того, как GPU закончил работу и swapchain уничтожен.
+//!
+//! Чего НЕ делает: не читает очередь событий оболочки (это маршрутизатор `fasticamera-app`)
+//! и не решает, что показывать на экране камеры (будущий `camera-screen`).
+
+pub mod backend;
+pub mod config;
+pub mod mailbox;
+pub mod pacing;
+pub mod surface_state;
+pub mod thread;
+pub mod vulkan_backend;

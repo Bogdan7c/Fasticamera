@@ -49,11 +49,27 @@ pub struct SensorThreadSpec {
 }
 
 /// Указатель на looper, который можно передать в другой поток для `ALooper_wake`.
-struct LooperHandle(NonNull<ALooper>);
+pub(super) struct LooperHandle(NonNull<ALooper>);
 
 // SAFETY: ALooper — объект со счётчиком ссылок; ALooper_wake и ALooper_release документированы
 // как вызываемые с любого потока. Ручка держит собственную ссылку (acquire) до своего Drop.
 unsafe impl Send for LooperHandle {}
+
+impl LooperHandle {
+    /// Берёт собственную ссылку на looper потока (`ALooper_acquire`); отпустится в `Drop`.
+    /// Общий для потоков датчиков и vsync: оба будятся снаружи через [`Self::wake`].
+    pub(super) fn acquire(looper: NonNull<ALooper>) -> Self {
+        // SAFETY: looper получен от ALooper_prepare/forThread и действителен; ссылка парная к release в Drop.
+        unsafe { ALooper_acquire(looper.as_ptr()) };
+        Self(looper)
+    }
+
+    /// Будит looper (`ALooper_wake`): `pollOnce` вернётся, поток проверит флаг остановки.
+    pub(super) fn wake(&self) {
+        // SAFETY: ручка держит ссылку на looper, объект жив.
+        unsafe { ALooper_wake(self.0.as_ptr()) };
+    }
+}
 
 impl Drop for LooperHandle {
     fn drop(&mut self) {

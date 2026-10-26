@@ -166,6 +166,47 @@ val gitRevisionProvider: Provider<String> =
         }
     }
 
+/**
+ * Validation layer Vulkan только для debug (решение владельца 34).
+ *
+ * Версия и ключ архива берутся из android/validation-layer.toml; сам файл скачивает и проверяет
+ * scripts/fetch-validation-layer.sh в кэш вне репозитория. Gradle сеть не трогает: если слоя
+ * в кэше нет, debug-сборка падает с подсказкой. Путь кэша обязан совпадать со скриптом:
+ * (XDG_CACHE_HOME или ~/.cache)/fasticamera/vulkan-validation-layers/<версия>/jniLibs.
+ */
+fun validationLayerMetadataValue(key: String): String {
+    val metadataFile = rootProject.layout.projectDirectory.file("validation-layer.toml").asFile
+    val pattern = Regex("""^$key\s*=\s*"([^"]*)"""", RegexOption.MULTILINE)
+    return pattern.find(metadataFile.readText())?.groupValues?.get(1)
+        ?: error("в $metadataFile нет ключа $key")
+}
+
+val validationLayerJniLibsDirectory: File = run {
+    val cacheRoot = System.getenv("XDG_CACHE_HOME")?.takeIf { it.isNotEmpty() }
+        ?: "${System.getProperty("user.home")}/.cache"
+    File("$cacheRoot/fasticamera/vulkan-validation-layers/${validationLayerMetadataValue("version")}/jniLibs")
+}
+val validationLayerLibrary: File =
+    File(validationLayerJniLibsDirectory, validationLayerMetadataValue("archive_member"))
+
+/** Падает с понятным текстом, если слой не скачан (запускается только для debug-сборки). */
+val verifyValidationLayer = tasks.register("verifyValidationLayerDebug") {
+    group = "verification"
+    description = "Проверяет, что validation layer скачан в кэш (scripts/fetch-validation-layer.sh)."
+    val libraryPath = validationLayerLibrary
+    doLast {
+        if (!libraryPath.isFile) {
+            throw GradleException(
+                "Нет validation layer для debug APK: $libraryPath\n" +
+                    "Запустите scripts/fetch-validation-layer.sh (скачает и проверит SHA-256; Gradle сеть не использует).",
+            )
+        }
+    }
+}
+
+// Слой попадает в APK через сборку jniLibs; проверка идёт до неё и только у debug.
+tasks.matching { it.name == "mergeDebugJniLibFolders" }.configureEach { dependsOn(verifyValidationLayer) }
+
 androidComponents {
     onVariants { variant ->
         val buildTypeName = variant.buildType ?: error("у варианта ${variant.name} нет buildType")
@@ -189,5 +230,9 @@ androidComponents {
             outputDirectory.set(layout.buildDirectory.dir("rust/${variant.name}/jniLibs"))
         }
         variant.sources.jniLibs?.addGeneratedSourceDirectory(cargoTask, CargoNdkBuildTask::outputDirectory)
+        // Слой валидации — только debug; release-APK его не содержит (проверяется unzip -l в отчёте сессии 03).
+        if (buildTypeName == "debug") {
+            variant.sources.jniLibs?.addStaticSourceDirectory(validationLayerJniLibsDirectory.absolutePath)
+        }
     }
 }

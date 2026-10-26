@@ -18,7 +18,11 @@ use shell_contract::event_queue::{ReceiveError, ShellEventReceiver};
 use shell_contract::motion::GyroRequest;
 use shell_contract::thermal_policy::ThermalPolicy;
 
+use render_loop::mailbox::InboxDelivery;
+
+use crate::gpu_services::GpuServices;
 use crate::jni_boundary::run_guarded;
+use crate::render_route::RenderRoute;
 use crate::result_line::{emit_result_line, emit_stage_line};
 use crate::scenario::observing::{
     DisplayState, ObservedEvent, ObservingScenario, ScenarioContext, ScenarioOutput, ScenarioStep, ShellServices,
@@ -66,6 +70,10 @@ pub struct RouterParts {
     pub scenario_config: ScenarioConfig,
     pub gyro_request: GyroRequest,
     pub output: Box<dyn ScenarioOutput + Send>,
+    /// Получатель surface и событий жизненного цикла.
+    pub route: Box<dyn RenderRoute>,
+    /// Что сценарии видят о GPU и рендере.
+    pub gpu: GpuServices,
 }
 
 /// Итог одного шага маршрутизатора.
@@ -84,6 +92,8 @@ pub struct EventRouter {
     scenario_config: ScenarioConfig,
     gyro_request: GyroRequest,
     output: Box<dyn ScenarioOutput + Send>,
+    route: Box<dyn RenderRoute>,
+    gpu: GpuServices,
     display: DisplayState,
     arrivals: Receiver<Box<dyn ObservingScenario>>,
     active: Option<Box<dyn ObservingScenario>>,
@@ -99,6 +109,8 @@ impl EventRouter {
             scenario_config: parts.scenario_config,
             gyro_request: parts.gyro_request,
             output: parts.output,
+            route: parts.route,
+            gpu: parts.gpu,
             display: DisplayState::default(),
             arrivals,
             active: None,
@@ -139,15 +151,32 @@ impl EventRouter {
         let observed = ObservedEvent::of(&event);
         log_event(&event);
         match event {
-            ShellEvent::SurfaceCreated(surface) => self.display.surface_created(surface),
-            ShellEvent::SurfaceChanged { generation, size } => self.display.surface_changed(generation, size),
-            ShellEvent::SurfaceDestroyed(request) => {
-                // Временный владелец surface: отпускаем её и подтверждаем (в 03 — рендер).
-                self.display.release_surface(request.generation());
-                request.confirm_released();
+            ShellEvent::SurfaceCreated(surface) => {
+                self.display.surface_created(surface.generation());
+                let delivery = self.route.surface_created(surface);
+                log_undelivered(delivery, "surface_created");
             }
-            ShellEvent::Resumed => self.display.set_resumed(true),
-            ShellEvent::Paused => self.display.set_resumed(false),
+            ShellEvent::SurfaceChanged { generation, size } => {
+                self.display.surface_changed(generation, size);
+                let delivery = self.route.surface_changed(generation, size);
+                log_undelivered(delivery, "surface_changed");
+            }
+            ShellEvent::SurfaceDestroyed(request) => {
+                self.display.release_surface(request.generation());
+                // Квитанцию подтвердит получатель после того, как реально отпустит surface.
+                let delivery = self.route.surface_destroyed(request);
+                log_undelivered(delivery, "surface_destroyed");
+            }
+            ShellEvent::Resumed => {
+                self.display.set_resumed(true);
+                let delivery = self.route.resumed();
+                log_undelivered(delivery, "resumed");
+            }
+            ShellEvent::Paused => {
+                self.display.set_resumed(false);
+                let delivery = self.route.paused();
+                log_undelivered(delivery, "paused");
+            }
             ShellEvent::ThermalStatus(reading) => self.thermal_policy.observe(reading),
             ShellEvent::DeviceOrientation(orientation) => self.display.set_orientation(orientation),
             // Касаниям, разрешению и отказам платформы потребителей в 02 нет: только лог.
@@ -192,6 +221,7 @@ impl EventRouter {
             &self.display,
             &self.thermal_policy,
             &self.scenario_config,
+            &self.gpu,
             self.gyro_request,
             Instant::now(),
             self.output.as_mut(),
@@ -215,6 +245,14 @@ impl EventRouter {
             scenario: name.to_owned(),
             outcome,
         });
+    }
+}
+
+/// Поток рендера уже завершён: событие потеряно (для `surface_destroyed` квитанция уничтожена,
+/// и оболочка сразу увидит `DroppedWithoutConfirmation`). Громко, но маршрутизатор живёт дальше.
+fn log_undelivered(delivery: InboxDelivery, event: &'static str) {
+    if delivery == InboxDelivery::ReceiverGone {
+        tracing::error!(target: "fasticamera::router", event, "поток рендера не принимает события");
     }
 }
 

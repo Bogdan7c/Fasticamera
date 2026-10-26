@@ -13,7 +13,9 @@ Rust-часть сценария пишет строки ``FASTICAMERA_STAGE {js
 
 from __future__ import annotations
 
+import re
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -30,6 +32,18 @@ MAIN_ACTIVITY = "dev.fasticamera.MainActivity"
 
 BACKGROUND_PAUSE_SECONDS = 1.5
 """Сколько приложение остаётся свёрнутым перед возвратом: дать системе довести Paused/SurfaceDestroyed."""
+
+SCREEN_TRANSITION_PAUSE_SECONDS = 1.0
+"""Пауза после гашения и включения экрана: дать системе довести экран до нового состояния (это ввод, не смена настроек)."""
+
+WAKEFULNESS_TIMEOUT_SECONDS = 3.0
+"""Сколько ждать смены состояния питания после нажатия (по факту телефона surface отпускается за секунды)."""
+
+WAKEFULNESS_POLL_INTERVAL_SECONDS = 0.2
+"""Период опроса ``dumpsys power`` при ожидании смены состояния питания."""
+
+WAKEFULNESS_AWAKE = "Awake"
+"""Значение ``mWakefulness`` у включённого экрана; остальные (Asleep, Dozing, Dreaming) — не «бодрствует»."""
 
 DIALOG_TIMEOUT_SECONDS = 10.0
 """Сколько ждать появления системного диалога разрешения."""
@@ -52,23 +66,49 @@ class StepKind(Enum):
     PAUSE = "pause"
     RETURN_TO_APP = "return_to_app"
     DENY_PERMISSION_DIALOG = "deny_permission_dialog"
+    SCREEN_OFF = "screen_off"
+    SCREEN_ON = "screen_on"
+    TAP_SCREEN = "tap_screen"
 
 
 @dataclass(frozen=True)
 class Step:
-    """Один шаг; ``seconds`` нужен только шагу ``PAUSE``."""
+    """Один шаг; ``seconds`` нужен только шагу ``PAUSE``.
+
+    ``only_if_true`` — имя булева поля стадии: шаг выполняется, только если поле есть и равно
+    ``true`` (иначе пропускается). Так стадия, общая для разных ситуаций, управляет шагом данными.
+    """
 
     kind: StepKind
     seconds: float = 0.0
+    only_if_true: str | None = None
 
 
 SCENARIO_STEPS: dict[str, dict[str, tuple[Step, ...]]] = {
+    # При подключении частота экрана нестабильна: OxygenOS держит для приложения 60 Гц ДО ПЕРВОГО
+    # касания (проверено dumpsys на OnePlus 11), и если цель выше (120 Гц), экран «медленнее цели».
+    # Пока частота не сошлась, Rust раз в ``render_refresh_retry_ms`` пишет стадию ``awaiting_refresh``;
+    # касание в центр экрана делается ТОЛЬКО когда ``observed_slower_than_expected`` истинно
+    # (при цели 60 Гц и в случае «экран быстрее цели» касание ничего не даст и не шлётся).
+    # Каждая повторная стадия отрабатывается заново: касание, не снявшее колпак, повторяется.
+    # Rust не видит, было ли касание: оно записано здесь и в отчёте (``refresh.synthetic_touch_requested``).
+    "render": {
+        "awaiting_refresh": (Step(StepKind.TAP_SCREEN, only_if_true="observed_slower_than_expected"),),
+    },
     "lifecycle": {
         "ready": (Step(StepKind.PRESS_HOME),),
         "backgrounded": (Step(StepKind.PAUSE, BACKGROUND_PAUSE_SECONDS), Step(StepKind.RETURN_TO_APP)),
     },
     "permission": {
         "dialog_expected": (Step(StepKind.DENY_PERMISSION_DIALOG),),
+    },
+    # Rust ведёт счёт циклов и на каждом возобновлении показа пишет стадию ``presenting_*``;
+    # после подтверждённого освобождения surface — ``backgrounded_*``.
+    "render-lifecycle": {
+        "presenting_home": (Step(StepKind.PRESS_HOME),),
+        "backgrounded_home": (Step(StepKind.PAUSE, BACKGROUND_PAUSE_SECONDS), Step(StepKind.RETURN_TO_APP)),
+        "presenting_screen": (Step(StepKind.SCREEN_OFF),),
+        "backgrounded_screen": (Step(StepKind.PAUSE, BACKGROUND_PAUSE_SECONDS), Step(StepKind.SCREEN_ON)),
     },
 }
 """Сценарий → стадия → шаги. Стадии вне таблицы (например ``no_dialog_expected``) ничего не вызывают."""
@@ -84,6 +124,20 @@ class DeviceActions(Protocol):
     def return_to_app(self) -> None: ...
 
     def deny_permission_dialog(self) -> None: ...
+
+    def screen_off(self) -> None: ...
+
+    def screen_on(self) -> None: ...
+
+    def tap_screen(self) -> None: ...
+
+
+def parse_wakefulness(output: str) -> str:
+    """Значение ``mWakefulness=`` из вывода ``dumpsys power`` (Awake / Asleep / Dozing / Dreaming)."""
+    match = re.search(r"mWakefulness=(\w+)", output)
+    if match is None:
+        raise DriverError("не удалось разобрать mWakefulness из вывода dumpsys power")
+    return match.group(1)
 
 
 @dataclass(frozen=True)
@@ -108,6 +162,19 @@ def run_adb_subprocess(command: list[str]) -> AdbResult:
     except subprocess.TimeoutExpired as error:
         raise DriverError(f"команда зависла (> {ADB_COMMAND_TIMEOUT_SECONDS:g} с): {' '.join(command)}") from error
     return AdbResult(completed.returncode, completed.stdout, completed.stderr)
+
+
+def parse_wm_size(output: str) -> tuple[int, int]:
+    """Размер экрана из вывода ``wm size``: ``Override size`` важнее ``Physical size``."""
+    sizes: dict[str, tuple[int, int]] = {}
+    for line in output.splitlines():
+        match = re.fullmatch(r"\s*(Physical|Override) size:\s*(\d+)x(\d+)\s*", line)
+        if match:
+            sizes[match.group(1)] = (int(match.group(2)), int(match.group(3)))
+    size = sizes.get("Override") or sizes.get("Physical")
+    if size is None or size[0] <= 0 or size[1] <= 0:
+        raise DriverError(f"не удалось разобрать размер экрана из вывода wm size: {output.strip()!r}")
+    return size
 
 
 class AdbDeviceActions:
@@ -138,6 +205,72 @@ class AdbDeviceActions:
 
     def pause(self, seconds: float) -> None:
         self._sleep(seconds)
+
+    def screen_off(self) -> None:
+        """Гасит экран кнопкой питания (``KEYCODE_POWER``): приложение остаётся в задаче.
+
+        Факт OnePlus 11 / OxygenOS: ``KEYCODE_SLEEP`` через ``input keyevent`` молча игнорируется
+        (``mWakefulness`` остаётся ``Awake``, surface не уничтожается), а ``KEYCODE_POWER`` работает.
+        Но POWER — переключатель: на уже погасшем экране он его ВКЛЮЧИТ, поэтому нажимаем только
+        когда устройство бодрствует. Сценарий просит погасить экран в момент, когда он обязан быть
+        включён; если это не так (Asleep/Dozing), это сбой стенда, а не «уже готово»: тихий возврат
+        дал бы вводящий в заблуждение таймаут Rust-сценария позже. Поэтому — ``DriverError`` и без
+        нажатия. После нажатия ждём, пока состояние реально перестанет быть Awake, иначе
+        ``DriverError``.
+        """
+        wakefulness = self._read_wakefulness()
+        if wakefulness != WAKEFULNESS_AWAKE:
+            raise DriverError(
+                f"экран нельзя погасить: он уже не включён (mWakefulness={wakefulness}); "
+                "KEYCODE_POWER не нажат, чтобы не включить его обратно"
+            )
+        result = self._run_adb(self.adb_command("shell", "input", "keyevent", "KEYCODE_POWER"))
+        self._require_success(result, "KEYCODE_POWER")
+        self._wait_for_wakefulness(awake=False)
+        self._sleep(SCREEN_TRANSITION_PAUSE_SECONDS)
+
+    def screen_on(self) -> None:
+        """Включает экран (``KEYCODE_WAKEUP``, идемпотентна) и ждёт ``mWakefulness=Awake``.
+
+        При блокировке экрана приложение (showWhenLocked) заново получает surface поверх keyguard.
+        """
+        result = self._run_adb(self.adb_command("shell", "input", "keyevent", "KEYCODE_WAKEUP"))
+        self._require_success(result, "KEYCODE_WAKEUP")
+        self._wait_for_wakefulness(awake=True)
+        self._sleep(SCREEN_TRANSITION_PAUSE_SECONDS)
+
+    def _read_wakefulness(self) -> str:
+        """Состояние питания из ``dumpsys power``; не нашли строку — ``DriverError`` (гадать нельзя: POWER переключает)."""
+        result = self._run_adb(self.adb_command("shell", "dumpsys", "power"))
+        self._require_success(result, "dumpsys power")
+        return parse_wakefulness(result.stdout)
+
+    def _wait_for_wakefulness(self, awake: bool) -> None:
+        """Опрашивает состояние питания, пока оно не станет нужным (``awake``) или не выйдет срок."""
+        deadline = self._clock() + WAKEFULNESS_TIMEOUT_SECONDS
+        while True:
+            wakefulness = self._read_wakefulness()
+            if (wakefulness == WAKEFULNESS_AWAKE) == awake:
+                return
+            if self._clock() >= deadline:
+                wanted = "Awake" if awake else "не Awake"
+                raise DriverError(
+                    f"за {WAKEFULNESS_TIMEOUT_SECONDS:g} с состояние питания не стало {wanted} (mWakefulness={wakefulness})"
+                )
+            self._sleep(WAKEFULNESS_POLL_INTERVAL_SECONDS)
+
+    def tap_screen(self) -> None:
+        """Касание в центр экрана (``input tap``), размер берётся из ``wm size``.
+
+        Центр безопасен: приложение на весь экран не имеет кнопок, касание попадает в нашу
+        surface и нужно только системе (первое касание снимает ограничение 60 Гц). Если задан
+        ``Override size`` (``wm size WxH``), он важнее физического размера. Не разобрали вывод —
+        ``DriverError``, а не касание «наугад».
+        """
+        result = self._run_adb(self.adb_command("shell", "wm", "size"))
+        self._require_success(result, "wm size")
+        width_px, height_px = parse_wm_size(result.stdout)
+        self._tap(TapPoint(width_px // 2, height_px // 2))
 
     def return_to_app(self) -> None:
         """Возвращает приложение лаунчер-интентом БЕЗ ``-S``: поднимается существующая задача,
@@ -217,6 +350,8 @@ class StageDriver:
         if stage_event.get("scenario") != self._scenario:
             return
         for step in self._steps_by_stage.get(str(stage_event.get("stage")), ()):
+            if step.only_if_true is not None and stage_event.get(step.only_if_true) is not True:
+                continue
             self._run_step(step)
 
     def _run_step(self, step: Step) -> None:
@@ -228,5 +363,11 @@ class StageDriver:
             self._actions.return_to_app()
         elif step.kind is StepKind.DENY_PERMISSION_DIALOG:
             self._actions.deny_permission_dialog()
+        elif step.kind is StepKind.SCREEN_OFF:
+            self._actions.screen_off()
+        elif step.kind is StepKind.SCREEN_ON:
+            self._actions.screen_on()
+        elif step.kind is StepKind.TAP_SCREEN:
+            self._actions.tap_screen()
         else:  # pragma: no cover - новый StepKind без ветки должен падать громко
             raise DriverError(f"неизвестный шаг {step.kind!r}")

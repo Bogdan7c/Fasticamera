@@ -20,6 +20,8 @@ debug-scenarios = []
 
 [dependencies]
 android-shell.workspace = true
+gpu-vulkan.workspace = true
+render-loop.workspace = true
 shell-contract.workspace = true
 serde.workspace = true
 serde_json.workspace = true

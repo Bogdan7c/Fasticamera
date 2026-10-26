@@ -138,6 +138,109 @@ class ConfigurationErrorTests(FixtureWorkspaceTestCase):
         self.assertIn("cargo metadata завершился", result.stderr)
 
 
+class SourceRuleTests(unittest.TestCase):
+    """Правила по исходникам: `extern "C"` разрешён только в одном файле crate-а."""
+
+    FFI_FILE = "src/android/hardware_buffer_ffi.rs"
+    RULES = (
+        'schema_version = 1\nroles = ["gpu"]\n[crates]\n"gpu-vulkan" = "gpu"\n'
+        '[[source_rules]]\nid = "ffi-only-in-safety-module"\ncrate = "gpu-vulkan"\n'
+        'pattern = \'extern "C"\'\nallowed_files = ["src/android/hardware_buffer_ffi.rs"]\n'
+        'reason = "один safety-модуль"\n'
+    )
+
+    def setUp(self) -> None:
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temp_dir.cleanup)
+        self.root = Path(self._temp_dir.name)
+        (self.root / "Cargo.toml").write_text(
+            '[workspace]\nmembers = ["gpu-vulkan"]\nresolver = "3"\n', encoding="utf-8")
+        crate = self.root / "gpu-vulkan"
+        (crate / "src" / "android").mkdir(parents=True)
+        (crate / "Cargo.toml").write_text(
+            '[package]\nname = "gpu-vulkan"\nversion = "0.1.0"\nedition = "2024"\n', encoding="utf-8")
+        (crate / "src" / "lib.rs").write_text("pub fn clean() {}\n", encoding="utf-8")
+        self.rules_path = self.root / "rules.toml"
+        self.rules_path.write_text(self.RULES, encoding="utf-8")
+
+    def write_source(self, relative_path: str, text: str) -> None:
+        path = self.root / "gpu-vulkan" / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    def check(self) -> subprocess.CompletedProcess[str]:
+        return run_guardrail("--manifest-path", str(self.root / "Cargo.toml"),
+                             "--rules", str(self.rules_path), "--offline")
+
+    def test_pattern_outside_allowed_file_is_reported_with_file_and_line(self) -> None:
+        self.write_source("src/sneaky.rs", 'fn a() {}\n\nunsafe extern "C" {\n    fn bad();\n}\n')
+        result = self.check()
+        self.assertEqual(result.returncode, EXIT_VIOLATIONS, result.stdout + result.stderr)
+        self.assertIn("gpu-vulkan/src/sneaky.rs:3:", result.stdout)
+        self.assertIn("ffi-only-in-safety-module", result.stdout)
+
+    def test_pattern_in_allowed_file_passes(self) -> None:
+        self.write_source(self.FFI_FILE, 'unsafe extern "C" {\n    fn good();\n}\n')
+        result = self.check()
+        self.assertEqual(result.returncode, EXIT_OK, result.stdout + result.stderr)
+        self.assertIn("нарушений: 0", result.stdout)
+
+    def test_pattern_in_line_comment_is_ignored_but_in_code_before_comment_is_not(self) -> None:
+        self.write_source("src/docs.rs", '// extern "C" упомянут в комментарии\n/// extern "C" в доке\n')
+        self.assertEqual(self.check().returncode, EXIT_OK)
+        self.write_source("src/trailing.rs", 'unsafe extern "C" {} // хвостовой комментарий\n')
+        result = self.check()
+        self.assertEqual(result.returncode, EXIT_VIOLATIONS, result.stdout)
+        self.assertIn("gpu-vulkan/src/trailing.rs:1:", result.stdout)
+
+    def test_pattern_in_tests_dir_is_also_scanned(self) -> None:
+        self.write_source("tests/ffi.rs", 'extern "C" fn callback() {}\n')
+        result = self.check()
+        self.assertEqual(result.returncode, EXIT_VIOLATIONS, result.stdout + result.stderr)
+        self.assertIn("gpu-vulkan/tests/ffi.rs:1:", result.stdout)
+
+    def test_other_abi_strings_are_not_matched(self) -> None:
+        self.write_source("src/callback.rs", 'unsafe extern "system" fn callback() {}\n')
+        self.assertEqual(self.check().returncode, EXIT_OK)
+
+    def rules_with(self, extra: str) -> None:
+        self.rules_path.write_text(
+            'schema_version = 1\nroles = ["gpu"]\n[crates]\n"gpu-vulkan" = "gpu"\n' + extra,
+            encoding="utf-8")
+
+    def test_unknown_key_in_source_rule_is_config_error(self) -> None:
+        self.rules_with('[[source_rules]]\nid = "r"\ncrate = "gpu-vulkan"\npattern = "x"\n'
+                        'reason = "y"\nallow_files = ["a.rs"]\n')
+        result = self.check()
+        self.assertEqual(result.returncode, EXIT_USAGE_ERROR, result.stdout)
+        self.assertIn("allow_files", result.stderr)
+
+    def test_unknown_crate_in_source_rule_is_config_error(self) -> None:
+        self.rules_with('[[source_rules]]\nid = "r"\ncrate = "ghost"\npattern = "x"\nreason = "y"\n')
+        result = self.check()
+        self.assertEqual(result.returncode, EXIT_USAGE_ERROR, result.stdout)
+        self.assertIn("'ghost'", result.stderr)
+
+    def test_missing_pattern_and_escaping_allowed_path_are_config_errors(self) -> None:
+        self.rules_with('[[source_rules]]\nid = "r"\ncrate = "gpu-vulkan"\nreason = "y"\n')
+        result = self.check()
+        self.assertEqual(result.returncode, EXIT_USAGE_ERROR)
+        self.assertIn("pattern", result.stderr)
+        self.rules_with('[[source_rules]]\nid = "r"\ncrate = "gpu-vulkan"\npattern = "x"\n'
+                        'reason = "y"\nallowed_files = ["../outside.rs"]\n')
+        result = self.check()
+        self.assertEqual(result.returncode, EXIT_USAGE_ERROR)
+        self.assertIn("allowed_files", result.stderr)
+
+    def test_real_rules_file_forbids_extern_c_everywhere_but_ffi_module(self) -> None:
+        document = tomllib.loads(REAL_RULES_PATH.read_text(encoding="utf-8"))
+        rules = {rule["id"]: rule for rule in document["source_rules"]}
+        rule = rules["gpu-ffi-only-in-safety-module"]
+        self.assertEqual(rule["crate"], "gpu-vulkan")
+        self.assertEqual(rule["pattern"], 'extern "C"')
+        self.assertEqual(rule["allowed_files"], [self.FFI_FILE])
+
+
 class RealRulesFileTests(unittest.TestCase):
     def setUp(self) -> None:
         self.document = tomllib.loads(REAL_RULES_PATH.read_text(encoding="utf-8"))

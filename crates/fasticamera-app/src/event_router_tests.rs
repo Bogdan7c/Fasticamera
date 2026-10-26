@@ -27,9 +27,19 @@ use shell_contract::thermal::{
 };
 use shell_contract::thermal_policy::{ThermalPolicyConfig, ThermalPressure};
 
+use render_loop::config::RenderLoopConfig;
+use shell_contract::vsync::{VsyncSource, VsyncSourceError, VsyncSubscription};
+
 use super::*;
+use crate::gpu_services::{GpuDiagnostics, GpuServices, RenderStatusSource, ValidationState};
+use crate::gpu_test_support::{
+    FakeGpuDiagnostics, FakeRenderStatus, ReceiptPolicy, RecordingRoute, RoutedEvent, presenting_status,
+};
 use crate::scenario::observing::{PlatformFacts, ThermalListenerReport};
 use crate::scenario::{Scenario, ScenarioConfig};
+
+#[path = "event_router_render_tests.rs"]
+mod render;
 
 /// Fake всей оболочки: записывает команды и отдаёт заранее заданные ответы.
 #[derive(Default)]
@@ -98,6 +108,12 @@ impl ShellDiagnostics for FakeShell {
     }
 }
 
+impl VsyncSource for FakeShell {
+    fn start_vsync(&self) -> Result<VsyncSubscription, VsyncSourceError> {
+        Err(VsyncSourceError::NoLooper)
+    }
+}
+
 impl PlatformFacts for FakeShell {
     fn thermal_listener(&self) -> ThermalListenerReport {
         ThermalListenerReport::Registered
@@ -163,9 +179,38 @@ struct Harness {
     shell: Arc<FakeShell>,
     output: CollectedOutput,
     policy: Arc<ThermalPolicy>,
+    /// Что получил маршрут событий экрана.
+    route_log: Arc<Mutex<Vec<RoutedEvent>>>,
+    /// Surface, которые сейчас держит получатель (не маршрутизатор).
+    route_surfaces: Arc<Mutex<Vec<NativeSurface>>>,
+    render: Arc<FakeRenderStatus>,
 }
 
 fn harness(config: ScenarioConfig) -> Harness {
+    harness_with_render(config, RenderLoopConfig::default(), ReceiptPolicy::Confirm)
+}
+
+/// Маршрутизатор с подставными рендером и GPU-диагностиками.
+fn harness_with_render(config: ScenarioConfig, render_config: RenderLoopConfig, receipts: ReceiptPolicy) -> Harness {
+    let route = RecordingRoute::new(receipts);
+    let route_log = Arc::clone(&route.log);
+    let route_surfaces = Arc::clone(&route.held_surfaces);
+    let render = FakeRenderStatus::live(presenting_status(), ValidationState::Enabled);
+    let diagnostics = FakeGpuDiagnostics::new(Vec::new(), None);
+    let mut harness = build_harness(config, Box::new(route), render, diagnostics, render_config);
+    harness.route_log = route_log;
+    harness.route_surfaces = route_surfaces;
+    harness
+}
+
+/// Сборка с готовым маршрутом и GPU-сервисами.
+fn build_harness(
+    config: ScenarioConfig,
+    route: Box<dyn RenderRoute>,
+    render: Arc<FakeRenderStatus>,
+    diagnostics: Arc<FakeGpuDiagnostics>,
+    render_config: RenderLoopConfig,
+) -> Harness {
     let (sender, events) = shell_event_channel(ShellQueueConfig::default()).expect("очередь");
     let shell = Arc::new(FakeShell::default());
     let output = CollectedOutput::default();
@@ -178,6 +223,7 @@ fn harness(config: ScenarioConfig) -> Harness {
             motion: shell.clone(),
             thermal: shell.clone(),
             diagnostics: shell.clone(),
+            vsync: shell.clone(),
             facts: shell.clone(),
         },
         thermal_policy: Arc::clone(&policy),
@@ -187,6 +233,12 @@ fn harness(config: ScenarioConfig) -> Harness {
             retained: Duration::from_secs(5),
         },
         output: Box::new(output.clone()),
+        route,
+        gpu: GpuServices {
+            render: Arc::clone(&render) as Arc<dyn RenderStatusSource>,
+            diagnostics: Arc::clone(&diagnostics) as Arc<dyn GpuDiagnostics>,
+            render_config,
+        },
     });
     Harness {
         router,
@@ -195,6 +247,9 @@ fn harness(config: ScenarioConfig) -> Harness {
         shell,
         output,
         policy,
+        route_log: Arc::default(),
+        route_surfaces: Arc::default(),
+        render,
     }
 }
 
@@ -428,7 +483,7 @@ fn platform_scenario_waits_for_surface_then_plays_all_patterns_in_order() {
     harness.surface_created(1);
     harness.deliver(ShellEvent::Resumed);
     harness.run_until_result();
-    assert_eq!(*harness.shell.frame_rates.lock().expect("замок"), vec![120.0]);
+    assert_eq!(*harness.shell.frame_rates.lock().expect("замок"), vec![60.0]);
     assert_eq!(
         *harness.shell.haptics_played.lock().expect("замок"),
         HapticPattern::ALL.to_vec()
@@ -438,7 +493,7 @@ fn platform_scenario_waits_for_surface_then_plays_all_patterns_in_order() {
     let report = &result["report"];
     assert_eq!(
         report["frame_rate"],
-        serde_json::json!({"requested_hz": 120.0, "result": "applied"})
+        serde_json::json!({"requested_hz": 60.0, "result": "applied"})
     );
     assert_eq!(report["thermal"]["status"], "light");
     assert_eq!(report["thermal"]["listener"], "registered");

@@ -1,0 +1,27 @@
+[package]
+name = "render-loop"
+description = "Поток рендера Fasticamera: владеет surface после маршрутизатора, тик по vsync, показ кадра (решение 31)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+gpu-vulkan.workspace = true
+shell-contract.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[features]
+# Швы отказов бэкенда для тестов (пробрасывается в gpu-vulkan). В боевые сборки НЕ включается.
+fault-injection = ["gpu-vulkan/fault-injection"]
+
+[dev-dependencies]
+serde_json.workspace = true
+# Интеграционные тесты потока включают швы отказов через самого себя.
+render-loop = { path = ".", features = ["fault-injection"] }
+
+[lints]
+workspace = true
