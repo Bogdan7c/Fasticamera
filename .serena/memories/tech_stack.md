@@ -9,6 +9,7 @@
 - Манифест: `CAMERA`, `VIBRATE`, `HIGH_SAMPLING_RATE_SENSORS` (гироскоп > 200 Гц); Activity `screenOrientation=portrait`, `configChanges`.
 - clippy 1.97 даёт ложный `missing_const_for_thread_local` только для `aarch64-linux-android` — подавлен точечным `cfg_attr(android, expect(...))` в `panic_report.rs`. Мост tracing → logcat свой (решение владельца: готовые мосты молодые).
 - С 03: ash 0.38.0+1.3.281 (`default-features=false`, `loaded`+`std`+`debug`; Entry::load, без линковки libvulkan) + транзитивно libloading 0.8.9; Vulkan API 1.3. Khronos Vulkan-ValidationLayers 1.4.363.0 (`android/validation-layer.toml`: URL + SHA-256) только в debug APK. Шейдеры — glslc из NDK (shaderc v2022.3). На ПК: RADV (Mesa 26.2), слой 1.4.363, `VK_EXT_headless_surface` для стенда swapchain.
+- С 05: libc 0.2 (только `clock_gettime` BOOTTIME/MONOTONIC в `fasticamera-app` и `camera-android`), libsync из NDK (`sync_merge`, линкуется в `camera-ndk-sys/build.rs` вместе с nativewindow).
 - С 04: bindgen 0.73.2 (build-dependency только `camera-ndk-sys`, `default-features=false` + `runtime`; ограничить целью Android нельзя — cfg build-зависимостей сверяется с хостом), libclang и sysroot — из NDK 30 (`FASTICAMERA_LIBCLANG_PATH` → `ANDROID_NDK_HOME` → `<SDK>/ndk/<версия>`), API для clang — `fasticamera.rustPlatformApi`.
 - Python 3.14 stdlib (tomllib) для скриптов проверок; без pip-пакетов.
 - Зонд `tools/device-probe` — отдельный Gradle+Cargo проект со своим lock-файлом, вне workspace (ash 0.38, ndk-sys 0.6).

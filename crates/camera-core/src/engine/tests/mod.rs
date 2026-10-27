@@ -2,6 +2,7 @@
 //! который гоняет события fake в движок и ведёт журнал событий движка.
 
 mod commands;
+mod frame_rate_fallback;
 mod lifecycle;
 mod recovery;
 mod recovery_limits;
@@ -210,4 +211,13 @@ pub(super) fn call_names(calls: &[BackendCall]) -> Vec<&'static str> {
             BackendCall::CloseDevice => "close_device",
         })
         .collect()
+}
+
+/// Основная камера, 4:3, заданная частота — режим фото-видоискателя (решение 23).
+pub(super) fn mode_raw10_4x3_at(fps: u32) -> StreamMode {
+    StreamMode {
+        raw_format: RawFormat::Raw10,
+        readout: ReadoutAspect::FourByThree,
+        frame_rate: TargetFrameRate::new(fps).expect("валидная частота"),
+    }
 }

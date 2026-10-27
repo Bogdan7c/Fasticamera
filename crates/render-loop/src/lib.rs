@@ -8,6 +8,7 @@
 //! и не решает, что показывать на экране камеры (будущий `camera-screen`).
 
 pub mod backend;
+pub mod camera_diagnostics;
 pub mod config;
 pub mod mailbox;
 pub mod pacing;

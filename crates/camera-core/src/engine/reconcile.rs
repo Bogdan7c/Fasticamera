@@ -15,6 +15,7 @@ use camera_contract::availability::CameraUnavailableReason;
 use camera_contract::ids::CameraId;
 use camera_contract::stream::{ResolvedStream, StreamMode};
 
+use super::frame_rate_fallback::fallback_for;
 use super::{CameraEngine, Halt, LOG_TARGET, LiveSession, OpenDevice, RepeatingRequest};
 use crate::backend::{ConfigureFailure, DeviceGeneration, OpenFailure, RequestFailure, SessionGeneration};
 use crate::event::CameraEvent;
@@ -194,9 +195,45 @@ impl CameraEngine {
             }
             Err(ConfigureFailure::Backend(failure)) => Err(self.fail_with_backend_failure(&failure, now)),
             Err(rejection @ (ConfigureFailure::Unsupported(_) | ConfigureFailure::RejectedByHal { .. })) => {
-                Err(self.reject_stream_mode(mode, rejection))
+                match fallback_for(mode, &rejection, self.config.stream.frame_rate_fallback) {
+                    Some(fallback) => self.retry_with_fallback(stream, mode, fallback, rejection, now),
+                    None => Err(self.reject_stream_mode(mode, rejection)),
+                }
             }
         }
+    }
+
+    /// Откат на запасную частоту (решение 23): желаемый режим заменяется на `fallback`,
+    /// наружу уходит `StreamDegraded` и в лог — предупреждение, затем одна повторная настройка.
+    /// Цикла нет: `fallback_for` откатывает только строго вниз, а у запасного режима частота
+    /// уже не выше запасной. Если и запасной режим не прошёл — обычный отказ по нему.
+    fn retry_with_fallback(
+        &mut self,
+        stream: &ResolvedStream,
+        requested: StreamMode,
+        fallback: StreamMode,
+        failure: ConfigureFailure,
+        now: Instant,
+    ) -> Result<(), Halt> {
+        tracing::warn!(
+            target: LOG_TARGET,
+            %failure,
+            requested_fps = requested.frame_rate.frames_per_second(),
+            fallback_fps = fallback.frame_rate.frames_per_second(),
+            "частота недостижима, откат на запасную"
+        );
+        // Желаемое запоминает запасной режим: status, темп и пересборка плана видят его же.
+        self.desired.mode = Some(fallback);
+        self.events.push(CameraEvent::StreamDegraded {
+            requested,
+            fallback,
+            failure,
+        });
+        let degraded_stream = ResolvedStream {
+            frame_rate: fallback.frame_rate,
+            ..stream.clone()
+        };
+        self.configure_session(&degraded_stream, fallback, now)
     }
 
     /// Режим невозможен на этой камере: не недоступность, повторять не нужно. Желаемые режим

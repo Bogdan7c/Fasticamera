@@ -4,12 +4,12 @@
 //! `FakeBackendControl` из `camera-core` плюс обёртка, которая отдаёт рычаг частоты так, как это
 //! делает Camera2-бэкенд на телефоне (fake сам всегда отвечает `HalDefault`).
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use camera_android::BackendDiagnostics;
+use camera_android::{BackendDiagnostics, CpuAccessProbe};
 use camera_contract::capabilities::{CameraDescriptor, FpsRange};
 use camera_contract::control::{CaptureIntent, ManualControl};
 use camera_contract::ids::CameraId;
@@ -20,11 +20,14 @@ use camera_core::backend::{
 };
 use camera_core::fake::FakeBackendControl;
 use camera_core::{CameraHandle, CameraState, CameraStatus};
+use raw_frame_stream::RawStreamCounters;
 
 use crate::camera_config::CameraConfig;
 use crate::camera_scenario_config::CameraScenarioConfig;
 use crate::camera_service::{BackendDiagnosticsSource, CameraServices};
 use crate::camera_wiring::{CameraBackendParts, start_camera};
+use crate::clock_offset::SystemClocks;
+use crate::raw_stream_services::{RawStreamCounterSource, RawStreamServices};
 
 /// Сколько ждём в тестах состояния движка: запас на загруженную машину, ничего не висит вечно.
 pub const WAIT: Duration = Duration::from_secs(10);
@@ -54,6 +57,9 @@ struct LeverReportingBackend {
     /// Пауза внутри `close_device`, мс: поток движка «занят» закрытием, а опубликованный снимок ещё
     /// показывает прежнее состояние (так выглядит медленное закрытие камеры на телефоне).
     close_device_delay_ms: Arc<AtomicU64>,
+    /// Рубильник пробы CPU и журнал «была ли проба взведена в момент каждой конфигурации сессии».
+    cpu_probe: CpuAccessProbe,
+    probe_at_configure: Arc<Mutex<Vec<bool>>>,
 }
 
 impl CameraBackend for LeverReportingBackend {
@@ -70,6 +76,10 @@ impl CameraBackend for LeverReportingBackend {
         stream: &ResolvedStream,
         generation: SessionGeneration,
     ) -> Result<ConfiguredStream, ConfigureFailure> {
+        self.probe_at_configure
+            .lock()
+            .expect("замок")
+            .push(self.cpu_probe.is_armed());
         let configured = self.inner.configure_session(stream, generation)?;
         Ok(ConfiguredStream {
             frame_rate_mechanism: phone_like_mechanism(&configured.stream),
@@ -98,15 +108,39 @@ impl CameraBackend for LeverReportingBackend {
     }
 }
 
-fn lever_reporting_factory(control: &Arc<FakeBackendControl>, close_device_delay_ms: Arc<AtomicU64>) -> BackendFactory {
+fn lever_reporting_factory(
+    control: &Arc<FakeBackendControl>,
+    close_device_delay_ms: Arc<AtomicU64>,
+    cpu_probe: CpuAccessProbe,
+    probe_at_configure: Arc<Mutex<Vec<bool>>>,
+) -> BackendFactory {
     let inner_factory = control.factory();
     Box::new(move |sink: BackendEventSink| {
         let inner = inner_factory(sink)?;
         Ok(Box::new(LeverReportingBackend {
             inner,
             close_device_delay_ms,
+            cpu_probe,
+            probe_at_configure,
         }) as Box<dyn CameraBackend>)
     })
+}
+
+/// Счётчики потока кадров, которые тест выставляет вручную («поток» в тестах не настоящий).
+#[derive(Default)]
+pub struct ScriptedStreamCounters(Mutex<RawStreamCounters>);
+
+impl ScriptedStreamCounters {
+    /// Меняет счётчики под замком.
+    pub fn update(&self, change: impl FnOnce(&mut RawStreamCounters)) {
+        change(&mut self.0.lock().expect("замок"));
+    }
+}
+
+impl RawStreamCounterSource for ScriptedStreamCounters {
+    fn counters(&self) -> RawStreamCounters {
+        *self.0.lock().expect("замок")
+    }
 }
 
 /// Движок камеры на fake-бэкенде вместе со всем, чем тест им управляет.
@@ -115,6 +149,12 @@ pub struct FakeCameraRig {
     /// Диагностика «бэкенда»: тест сам заполняет счётчики RAW-приёмника.
     pub diagnostics: Arc<BackendDiagnostics>,
     pub services: CameraServices,
+    /// Счётчики потока кадров «бэкенда»: тест заполняет их сам.
+    pub stream_counters: Arc<ScriptedStreamCounters>,
+    /// Рубильник пробы CPU-доступа, общий с сервисом (как у настоящего бэкенда).
+    pub cpu_probe: CpuAccessProbe,
+    /// Была ли проба взведена в момент каждой конфигурации сессии (читатель выбирает usage при создании).
+    pub probe_at_configure: Arc<Mutex<Vec<bool>>>,
     /// Пауза внутри закрытия устройства, мс (0 — без паузы); тест меняет её на ходу.
     pub close_device_delay_ms: Arc<AtomicU64>,
 }
@@ -137,17 +177,34 @@ impl FakeCameraRig {
         let control = FakeBackendControl::new();
         let diagnostics = Arc::new(BackendDiagnostics::new(config.android.failure_history_capacity));
         let close_device_delay_ms = Arc::new(AtomicU64::new(0));
+        let stream_counters = Arc::new(ScriptedStreamCounters::default());
+        let cpu_probe = CpuAccessProbe::disarmed();
+        let probe_at_configure = Arc::new(Mutex::new(Vec::new()));
         let services = start_camera(
             &config,
             CameraBackendParts {
-                factory: lever_reporting_factory(&control, Arc::clone(&close_device_delay_ms)),
+                factory: lever_reporting_factory(
+                    &control,
+                    Arc::clone(&close_device_delay_ms),
+                    cpu_probe.clone(),
+                    Arc::clone(&probe_at_configure),
+                ),
                 diagnostics: Arc::clone(&diagnostics) as Arc<dyn BackendDiagnosticsSource>,
+                raw_stream: RawStreamServices::new(
+                    Arc::clone(&stream_counters) as Arc<dyn RawStreamCounterSource>,
+                    cpu_probe.clone(),
+                    Arc::new(SystemClocks),
+                    config.raw_stream.clone(),
+                ),
             },
         );
         Self {
             control,
             diagnostics,
             services,
+            stream_counters,
+            cpu_probe,
+            probe_at_configure,
             close_device_delay_ms,
         }
     }
@@ -234,9 +291,9 @@ impl FrameFeeder {
                     if let Some(interval) = sensor_interval {
                         control.complete_frames(1, interval);
                     }
-                    diagnostics.raw_sink().record_frame_acquired();
+                    diagnostics.reader().record_frame_acquired();
                     if release == FramesAreReleased::Yes {
-                        diagnostics.raw_sink().record_frame_released();
+                        diagnostics.reader().record_image_returned();
                     }
                 }
                 thread::sleep(real_pause);

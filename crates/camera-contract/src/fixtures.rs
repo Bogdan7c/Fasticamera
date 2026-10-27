@@ -11,7 +11,7 @@ use crate::capabilities::{
     PhysicalSizeMm, Rational, RawSensorInfo, RawStreamOption, RawSupport, ReferenceIlluminant, RequestCapability,
     SensorLevels, VendorProcessingFlags,
 };
-use crate::geometry::{PixelRect, PixelSize};
+use crate::geometry::{PixelRect, PixelSize, SensorOrientation};
 use crate::ids::{CameraId, CameraTopology, LensFacing};
 use crate::raw_format::{CfaLayout, MosaicKind, MosaicPattern, NativeMosaic, RawFormat};
 
@@ -113,6 +113,12 @@ fn capabilities(
             left: 0,
             top: 0,
             size: raw_size,
+        },
+        // Типичная ориентация для Android: задние сенсоры 90°, фронт 270°. Сверяется со
+        // smoke `camera-catalog` (dumpsys `android.sensor.orientation`).
+        sensor_orientation: match facing {
+            LensFacing::Front => SensorOrientation::Degrees270,
+            LensFacing::Back | LensFacing::External => SensorOrientation::Degrees90,
         },
         raw_streams: raw_streams(raw_size),
         ae_fps_ranges: vec![FpsRange { min: 15, max: 30 }, FpsRange { min: 30, max: 30 }],

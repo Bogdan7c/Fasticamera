@@ -154,6 +154,18 @@ scenario_resets_camera_permission() {
     return 1
 }
 
+# Сценарии, которые делают скриншоты и потому нуждаются в каталоге артефактов (данные, не if по имени).
+readonly SCENARIOS_TAKING_SCREENSHOTS=(raw-stream raw-stream-endurance)
+
+# Успех (0), если сценарий делает скриншоты.
+scenario_takes_screenshots() {
+    local candidate
+    for candidate in "${SCENARIOS_TAKING_SCREENSHOTS[@]}"; do
+        [[ "$candidate" == "$1" ]] && return 0
+    done
+    return 1
+}
+
 # Сбрасывает разрешение камеры ТОЛЬКО у пакета приложения: отзыв и снятие флагов
 # «пользователь решил», чтобы система снова показала диалог.
 reset_camera_permission() {

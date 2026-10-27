@@ -449,6 +449,8 @@ impl<B: DisplayBackend, C: FrameClock> RenderWorker<B, C> {
             return;
         };
         for presentation in presentations {
+            self.status
+                .note_presentation(presentation, self.config.recent_presentations_capacity);
             self.pacing
                 .record_present(presentation.present_id, presentation.actual_present);
         }
@@ -456,14 +458,7 @@ impl<B: DisplayBackend, C: FrameClock> RenderWorker<B, C> {
 
     /// Переносит счётчики бэкенда (объекты GPU, validation, неудачные detach) в статус.
     fn adopt_backend_health(&mut self, diagnostics: &BackendDiagnostics) {
-        self.status.backend = BackendHealth {
-            live_objects: diagnostics.live_objects,
-            live_objects_by_kind: diagnostics.live_objects_by_kind.clone(),
-            validation_errors: diagnostics.validation_errors,
-            validation_warnings: diagnostics.validation_warnings,
-            detach_failures: diagnostics.detach_failures,
-            known_deviations: diagnostics.known_deviations.clone(),
-        };
+        self.status.backend = BackendHealth::from_diagnostics(diagnostics);
     }
 
     /// Громко сообщает о новых неудачных detach: окно уже возвращено и квитанция подтверждается

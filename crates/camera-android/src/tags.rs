@@ -84,6 +84,7 @@ ndk_tags! {
     PHYSICAL_SIZE = 0x000f_0005 => ACAMERA_SENSOR_INFO_PHYSICAL_SIZE;
     LENS_SHADING_APPLIED = 0x000f_0009 => ACAMERA_SENSOR_INFO_LENS_SHADING_APPLIED;
     LOGICAL_PHYSICAL_IDS = 0x001a_0000 => ACAMERA_LOGICAL_MULTI_CAMERA_PHYSICAL_IDS;
+    SENSOR_ORIENTATION = 0x000e_000e => ACAMERA_SENSOR_ORIENTATION;
 
     // --- Результат запроса (capture result) ---
     SENSOR_TIMESTAMP = 0x000e_0010 => ACAMERA_SENSOR_TIMESTAMP;
@@ -91,6 +92,10 @@ ndk_tags! {
     SENSOR_SENSITIVITY = 0x000e_0002 => ACAMERA_SENSOR_SENSITIVITY;
     SENSOR_FRAME_DURATION = 0x000e_0001 => ACAMERA_SENSOR_FRAME_DURATION;
     ROLLING_SHUTTER_SKEW = 0x000e_001a => ACAMERA_SENSOR_ROLLING_SHUTTER_SKEW;
+    DYNAMIC_BLACK_LEVEL = 0x000e_001c => ACAMERA_SENSOR_DYNAMIC_BLACK_LEVEL;
+    DYNAMIC_WHITE_LEVEL = 0x000e_001d => ACAMERA_SENSOR_DYNAMIC_WHITE_LEVEL;
+    COLOR_CORRECTION_GAINS = 0x0000_0002 => ACAMERA_COLOR_CORRECTION_GAINS;
+    NEUTRAL_COLOR_POINT = 0x000e_0012 => ACAMERA_SENSOR_NEUTRAL_COLOR_POINT;
 
     // --- Запрос (capture request); экспозиция и длительность кадра читаются и в результате ---
     AE_TARGET_FPS_RANGE = 0x0001_0005 => ACAMERA_CONTROL_AE_TARGET_FPS_RANGE;
@@ -190,6 +195,9 @@ ndk_values! {
 
     // --- Коды AImageReader (media_status_t) ---
     MEDIA_STATUS_OK: i32 = 0 => AMEDIA_OK;
+    /// Общий отказ медиа-слоя: им помечаются сбои, у которых NDK не дал своего кода (например,
+    /// `AImage_getHardwareBuffer` вернул null при статусе OK).
+    MEDIA_STATUS_UNKNOWN_ERROR: i32 = -10000 => AMEDIA_ERROR_UNKNOWN;
     MEDIA_STATUS_NO_BUFFER_AVAILABLE: i32 = -30001 => AMEDIA_IMGREADER_NO_BUFFER_AVAILABLE;
     MEDIA_STATUS_MAX_IMAGES_ACQUIRED: i32 = -30002 => AMEDIA_IMGREADER_MAX_IMAGES_ACQUIRED;
 }
@@ -202,4 +210,14 @@ pub const USAGE_GPU_SAMPLED_IMAGE: u64 = 1 << 8;
 const _: () = assert!(
     USAGE_GPU_SAMPLED_IMAGE == camera_ndk_sys::AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE,
     "usage GPU_SAMPLED_IMAGE разошёлся с заголовком NDK"
+);
+
+/// `AHARDWAREBUFFER_USAGE_CPU_READ_RARELY`: CPU изредка читает буфер. Нужен только отладочной пробе
+/// «0 копий» (`cpu_access_probe`): с ним gralloc выделяет буфер, который можно `lock`-нуть.
+pub const USAGE_CPU_READ_RARELY: u64 = 1 << 1;
+
+#[cfg(target_os = "android")]
+const _: () = assert!(
+    USAGE_CPU_READ_RARELY == camera_ndk_sys::AHARDWAREBUFFER_USAGE_CPU_READ_RARELY,
+    "usage CPU_READ_RARELY разошёлся с заголовком NDK"
 );

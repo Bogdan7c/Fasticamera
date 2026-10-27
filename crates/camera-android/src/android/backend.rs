@@ -17,13 +17,18 @@ use camera_core::backend::{
     SessionGeneration, UnsupportedStream,
 };
 
+use raw_frame_stream::RawFrameProducer;
+
 use crate::characteristics::{CharacteristicsError, parse_characteristics};
 use crate::config::AndroidCameraConfig;
 use crate::context_leak::leak_contexts_for_process_lifetime;
+use crate::cpu_access_probe::CpuAccessProbe;
 use crate::diagnostics::BackendDiagnostics;
 use crate::entry::{EntryLookup, EntryValue, MetadataSource};
 use crate::frame_rate_plan::plan_frame_rate;
 use crate::request_plan::{RequestInputs, plan_repeating_request, plan_session_parameters};
+use crate::retired_readers::RetiredReaders;
+use crate::stream_passport::build_stream_passport;
 use crate::tags::Tag;
 use crate::vendor::{VendorCapabilities, VendorKey};
 
@@ -31,7 +36,7 @@ use super::availability::AvailabilityRegistration;
 use super::callbacks::SessionStateContext;
 use super::device::OpenedDevice;
 use super::manager::CameraManager;
-use super::raw_sink::TemporaryRawSink;
+use super::raw_reader::{RawReader, ReaderSpec, RetiredNdkReaders};
 use super::session::{ActiveSession, SessionSpec};
 
 const LOG_TARGET: &str = "fasticamera::camera::backend";
@@ -47,12 +52,19 @@ pub struct AndroidCameraBackend {
     config: AndroidCameraConfig,
     diagnostics: Arc<BackendDiagnostics>,
     events: BackendEventSink,
+    /// Вход потока кадров: сюда уходят кадры и результаты запросов (лизинг, сессия 05).
+    producer: RawFrameProducer,
+    /// Рубильник отладочной пробы CPU-доступа (читается при создании reader-а и на каждый кадр).
+    cpu_probe: CpuAccessProbe,
+    /// Reader-ы закрытых сессий, ждущие возврата кадров перед удалением.
+    retired_readers: Arc<RetiredNdkReaders>,
     catalog: HashMap<CameraId, CameraRecord>,
     // Порядок полей ниже — порядок разрушения как запасной (основной — `Drop`): сессия, приёмник
     // после сессии, затем устройство, затем менеджер.
     session: Option<ActiveSession>,
-    /// Приёмник закрытой сессии: живёт, пока устройство не отпустило окно (см. `session`).
-    parked_sink: Option<TemporaryRawSink>,
+    /// Reader закрытой сессии: живёт, пока устройство не отпустило окно (см. `session`); затем
+    /// отправляется в `retired_readers`.
+    parked_reader: Option<RawReader>,
     device: Option<OpenedDevice>,
     /// Контексты состояния сессий: не освобождаются до конца бэкенда, а при его разрушении
     /// намеренно утекают (`Drop`, см. доку `callbacks` и `context_leak`).
@@ -67,6 +79,8 @@ impl AndroidCameraBackend {
         config: AndroidCameraConfig,
         events: BackendEventSink,
         diagnostics: Arc<BackendDiagnostics>,
+        producer: RawFrameProducer,
+        cpu_probe: CpuAccessProbe,
     ) -> Result<Self, BackendFailure> {
         config.validate().map_err(|error| BackendFailure {
             operation: "validate_config",
@@ -87,11 +101,14 @@ impl AndroidCameraBackend {
         };
         Ok(Self {
             config,
+            retired_readers: Arc::new(RetiredReaders::new(Arc::clone(&diagnostics))),
             diagnostics,
             events,
+            producer,
+            cpu_probe,
             catalog: HashMap::new(),
             session: None,
-            parked_sink: None,
+            parked_reader: None,
             device: None,
             retained_state_contexts: Vec::new(),
             availability,
@@ -119,6 +136,15 @@ impl AndroidCameraBackend {
             },
             vendor,
         })
+    }
+
+    /// Удаляет reader-ы закрытых сессий, чьи кадры уже вернулись. Зовётся на каждом вызове бэкенда
+    /// (поток камеры, без ожидания): так reader уходит вскоре после возврата последнего кадра.
+    fn reap_retired_readers(&self) {
+        let report = self.retired_readers.reap();
+        if report.deleted > 0 {
+            tracing::debug!(target: LOG_TARGET, deleted = report.deleted, waiting = report.still_waiting, "reader-ы закрытых сессий удалены");
+        }
     }
 
     /// Отказ платформы: в диагностику и дальше без изменений.
@@ -160,12 +186,24 @@ impl AndroidCameraBackend {
                 ConfigureFailure::Unsupported(unsupported)
             })?;
 
-        let sink = TemporaryRawSink::create(
-            stream.buffer_size,
-            stream.raw_format,
-            self.config.raw_reader_max_images,
-            Arc::clone(&self.diagnostics),
-        )
+        // Паспорт постоянной части: без него поток кадров не стартует (RAW не поддержан / полоса 16:9
+        // не помещается — это отказ режима, а не сбой платформы).
+        let passport = build_stream_passport(stream, &record.descriptor.capabilities, mechanism).map_err(|error| {
+            ConfigureFailure::Backend(BackendFailure {
+                operation: "build_stream_passport",
+                code: 0,
+                detail: error.to_string(),
+            })
+        })?;
+        let reader = RawReader::create(ReaderSpec {
+            size: stream.buffer_size,
+            format: stream.raw_format,
+            passport: Arc::new(passport),
+            producer: self.producer.clone(),
+            probe: self.cpu_probe.clone(),
+            diagnostics: Arc::clone(&self.diagnostics),
+            retirement: Arc::clone(&self.retired_readers),
+        })
         .map_err(ConfigureFailure::Backend)?;
         // Шаблон параметров сессии — PREVIEW: единственный их ключ (диапазон AE) от шаблона не зависит.
         let session_parameters = plan_session_parameters(CaptureIntent::Preview, mechanism);
@@ -176,8 +214,9 @@ impl AndroidCameraBackend {
             session_parameters: session_parameters.as_ref(),
             vendor: &record.vendor,
             frame_number_window: self.config.frame_number_window,
+            producer: &self.producer,
         };
-        let (session, state_context) = ActiveSession::create(device, sink, &spec, &self.events, &self.diagnostics)?;
+        let (session, state_context) = ActiveSession::create(device, reader, &spec, &self.events, &self.diagnostics)?;
         self.diagnostics.record_retained_session_context();
         self.retained_state_contexts.push(state_context);
         self.session = Some(session);
@@ -210,6 +249,7 @@ fn read_native_mosaic(source: &dyn MetadataSource, vendor: &VendorCapabilities) 
 
 impl CameraBackend for AndroidCameraBackend {
     fn load_catalog(&mut self) -> Result<Vec<CameraDescriptor>, BackendFailure> {
+        self.reap_retired_readers();
         self.diagnostics.reset_catalog();
         let ids = self
             .manager
@@ -234,6 +274,7 @@ impl CameraBackend for AndroidCameraBackend {
     }
 
     fn open_device(&mut self, camera: &CameraId, generation: DeviceGeneration) -> Result<(), OpenFailure> {
+        self.reap_retired_readers();
         // Контракт: открытое устройство сначала закрывается (движок так не делает, но не течём).
         self.close_device();
         match OpenedDevice::open(
@@ -262,12 +303,14 @@ impl CameraBackend for AndroidCameraBackend {
         stream: &ResolvedStream,
         generation: SessionGeneration,
     ) -> Result<ConfiguredStream, ConfigureFailure> {
-        // Предыдущую сессию закрываем до создания новой; её приёмник держим, пока устройство не
-        // перешло на новую сессию (удалять reader под работающим потоком нельзя).
-        let previous_sink = self.session.take().map(ActiveSession::into_parked_sink);
+        self.reap_retired_readers();
+        // Предыдущую сессию закрываем до создания новой (при этом её поток кадров уже остановлен); её
+        // reader держим, пока устройство не перешло на новую сессию (отложить reader под работающим
+        // потоком нельзя). Прежний припаркованный reader при замене уходит в отсрочку.
+        let previous_reader = self.session.take().map(ActiveSession::into_parked_reader);
         let outcome = self.create_session(stream, generation);
-        if let Some(sink) = previous_sink {
-            self.parked_sink = Some(sink);
+        if let Some(reader) = previous_reader {
+            self.parked_reader = Some(reader);
         }
         if let Err(failure) = &outcome {
             self.diagnostics
@@ -277,6 +320,7 @@ impl CameraBackend for AndroidCameraBackend {
     }
 
     fn set_repeating_request(&mut self, intent: CaptureIntent, controls: &ManualControl) -> Result<(), RequestFailure> {
+        self.reap_retired_readers();
         let (Some(device), Some(session)) = (self.device.as_ref(), self.session.as_mut()) else {
             return Err(RequestFailure::NoSession);
         };
@@ -300,6 +344,7 @@ impl CameraBackend for AndroidCameraBackend {
     }
 
     fn stop_repeating(&mut self) -> Result<(), RequestFailure> {
+        self.reap_retired_readers();
         let Some(session) = self.session.as_mut() else {
             return Err(RequestFailure::NoSession);
         };
@@ -307,23 +352,35 @@ impl CameraBackend for AndroidCameraBackend {
     }
 
     fn close_session(&mut self) {
+        self.reap_retired_readers();
         if let Some(session) = self.session.take() {
             tracing::debug!(target: LOG_TARGET, session = session.generation().0, "закрытие сессии");
-            self.parked_sink = Some(session.into_parked_sink());
+            self.parked_reader = Some(session.into_parked_reader());
         }
     }
 
     fn close_device(&mut self) {
-        // Порядок: стоп повтора и закрытие сессии → закрытие устройства → удаление reader-а.
+        // Порядок: стоп повтора и закрытие сессии → закрытие устройства → отсрочка reader-а (он
+        // удалится, когда вернутся все его кадры; поток камеры при этом ничего не ждёт).
         self.close_session();
         self.device = None;
-        self.parked_sink = None;
+        self.parked_reader = None;
+        self.reap_retired_readers();
     }
 }
 
 impl Drop for AndroidCameraBackend {
     fn drop(&mut self) {
         self.close_device();
+        // Единственное место, где поток камеры ждёт возврата кадров от других потоков, и ожидание
+        // ограничено: reader нельзя удалять, пока GPU может читать его кадры; не вернулись — утекает.
+        let report = self.retired_readers.shutdown(
+            self.config.retired_reader_drain_timeout(),
+            self.config.retired_reader_poll_interval(),
+        );
+        if report.leaked > 0 {
+            tracing::error!(target: LOG_TARGET, leaked = report.leaked, "при остановке бэкенда reader-ы оставлены: кадры не вернулись");
+        }
         if let Some(registration) = self.availability.take() {
             registration.unregister(&self.manager, &self.diagnostics);
         }

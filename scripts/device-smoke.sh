@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Smoke-сценарий на телефоне: запуск по intent-параметру и проверка строки результата.
 #
-#   scripts/device-smoke.sh [--variant debug|release] [--no-build] [--timeout SEC] <сценарий>
+#   scripts/device-smoke.sh [--variant debug|release] [--no-build] [--timeout SEC] [--artifacts-dir DIR] <сценарий>
 #
 # Сценарии: hello, lifecycle, permission, motion, platform, render, render-lifecycle, ahb-import,
-# gpu-fence, camera-catalog, camera-stream (обе сборки), panic и camera-evict (только debug).
+# gpu-fence, camera-catalog, camera-stream, raw-stream, raw-stream-endurance (обе сборки),
+# panic, camera-evict и raw-stream-cpu-probe (только debug).
 # lifecycle сворачивает и возвращает приложение, permission сбрасывает и затем возвращает
 # разрешение камеры нашего пакета; шаги на телефоне — scripts/smoke_driver.py,
 # ожидания — scripts/smoke_wait.py и scripts/smoke_checks.py.
@@ -14,6 +15,12 @@
 # camera-catalog читает каталог камер и сверяет его с `dumpsys media.camera` (--timeout 30);
 # camera-stream проходит шаги открыть-поток-замер и подтверждает 60 к/с через NDK (--timeout 120);
 # camera-evict сам запускает системную камеру, чтобы она отняла камеру у нас (--timeout 90).
+# raw-stream (сессия 05) гонит минуту всю цепочку «камера -> лизинг кадров -> рендер -> экран» и судит
+# частоту по меткам сенсора, ноль CPU-копий, утечки, показ и метаданные кадров (--timeout 120);
+# raw-stream-endurance то же на 5 минут (--timeout 420); raw-stream-cpu-probe (debug) ~5 с доказывает, что
+# счётчик CPU-копий живой (--timeout 60). raw-stream* делают два скриншота экрана на стадии viewfinder_live
+# и сохраняют их (сырой вывод screencap и PNG) в каталог артефактов ВНЕ репозитория: --artifacts-dir DIR
+# либо свежий `mktemp -d` (путь печатается). Скриншоты в репозиторий не кладём.
 # Validation-слой есть только в debug-сборке: в release отчёт пишет validation.mode=disabled.
 # Коды выхода: 0 — сценарий прошёл, 1 — сценарий упал, 2 — устройство не найдено,
 # 3 — нет строки результата за таймаут, 4 — не собралось/не встало/не запустилось, 64 — неверный вызов.
@@ -23,12 +30,13 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
 usage() {
-    sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
 }
 
 variant="debug"
 should_build=true
 timeout_seconds=30
+artifacts_dir=""
 scenario=""
 
 while [[ $# -gt 0 ]]; do
@@ -36,6 +44,7 @@ while [[ $# -gt 0 ]]; do
         --variant) variant="${2:-}"; shift 2 ;;
         --no-build) should_build=false; shift ;;
         --timeout) timeout_seconds="${2:-}"; shift 2 ;;
+        --artifacts-dir) artifacts_dir="${2:-}"; shift 2 ;;
         -h|--help) usage; exit "$EXIT_OK" ;;
         -*) log_error "неизвестный аргумент: $1"; usage; exit "$EXIT_USAGE" ;;
         *)
@@ -59,6 +68,21 @@ fi
 if [[ ! "$timeout_seconds" =~ ^[0-9]+$ ]]; then
     log_error "--timeout ждёт целое число секунд, а не '$timeout_seconds'"
     exit "$EXIT_USAGE"
+fi
+
+# Сценариям со скриншотами нужен каталог артефактов: без явного — свежий временный (вне репозитория).
+if [[ -z "$artifacts_dir" ]] && scenario_takes_screenshots "$scenario"; then
+    artifacts_dir="$(mktemp -d -t fasticamera-smoke-XXXXXX)" || {
+        log_error "не удалось создать временный каталог артефактов"
+        exit "$EXIT_USAGE"
+    }
+fi
+if [[ -n "$artifacts_dir" ]]; then
+    mkdir -p "$artifacts_dir" || {
+        log_error "не удалось создать каталог артефактов '$artifacts_dir'"
+        exit "$EXIT_USAGE"
+    }
+    log_step "каталог артефактов (скриншоты): $artifacts_dir"
 fi
 
 serial="$(find_device_serial)" || exit "$EXIT_NO_DEVICE"
@@ -94,7 +118,8 @@ if python3 "$FASTICAMERA_ROOT/scripts/smoke_wait.py" \
     --since-epoch "$since_epoch" \
     --package "$package" \
     --scenario "$scenario" \
-    --timeout "$timeout_seconds"; then
+    --timeout "$timeout_seconds" \
+    ${artifacts_dir:+--artifacts-dir "$artifacts_dir"}; then
     smoke_exit_code=0
 else
     smoke_exit_code=$?

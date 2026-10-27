@@ -27,8 +27,10 @@ import threading
 import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 
 import smoke_checks
+import smoke_screen
 from smoke_driver import STAGE_MARKER, AdbDeviceActions, DriverError, StageDriver
 from smoke_dumpsys import CheckOutcome, PostCheck, dumpsys_post_check
 
@@ -178,6 +180,9 @@ CHECKS: dict[str, ScenarioCheck] = {
     "camera-catalog": ignoring_observations(smoke_checks.check_camera_catalog),
     "camera-stream": ignoring_observations(smoke_checks.check_camera_stream),
     "camera-evict": ignoring_observations(smoke_checks.check_camera_evict),
+    "raw-stream": ignoring_observations(smoke_checks.check_raw_stream),
+    "raw-stream-endurance": ignoring_observations(smoke_checks.check_raw_stream),
+    "raw-stream-cpu-probe": ignoring_observations(smoke_checks.check_raw_stream_cpu_probe),
 }
 
 StageHandler = Callable[[dict], None]
@@ -381,25 +386,53 @@ def parse_arguments(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--package", required=True, help="имя пакета приложения (нужно шагам драйвера)")
     parser.add_argument("--scenario", required=True, help="имя сценария")
     parser.add_argument("--timeout", type=float, required=True, help="сколько секунд ждать результата")
+    parser.add_argument(
+        "--artifacts-dir",
+        type=Path,
+        default=None,
+        help="каталог для скриншотов (вне репозитория); нужен сценариям raw-stream*",
+    )
     return parser.parse_args(argv)
 
 
-def post_check_for(scenario: str, serial: str) -> PostCheck | None:
-    """Проверка после результата, если сценарию она нужна: ``camera-catalog`` сверяется с dumpsys."""
+SCREENSHOT_SCENARIOS = frozenset({"raw-stream", "raw-stream-endurance"})
+"""Сценарии, на стадии ``viewfinder_live`` которых драйвер делает скриншоты и после результата их анализирует."""
+
+
+def screen_post_check(artifacts_dir: Path) -> PostCheck:
+    """Пост-проверка скриншотов видоискателя: «не чёрный» и «меняется»; числа идут пояснением при любом исходе."""
+
+    def check(_result: dict) -> CheckOutcome:
+        analysis = smoke_screen.screen_post_check(artifacts_dir)
+        return CheckOutcome(analysis.problems, analysis.notes)
+
+    return check
+
+
+def post_check_for(scenario: str, serial: str, artifacts_dir: Path | None = None) -> PostCheck | None:
+    """Проверка после результата, если сценарию она нужна: ``camera-catalog`` сверяется с dumpsys,
+    ``raw-stream*`` — со скриншотами в каталоге артефактов."""
     if scenario == "camera-catalog":
         return dumpsys_post_check(serial)
+    if scenario in SCREENSHOT_SCENARIOS:
+        if artifacts_dir is None:
+            return lambda _result: CheckOutcome(["каталог артефактов не задан (--artifacts-dir): скриншоты проверить нечем"])
+        return screen_post_check(artifacts_dir)
     return None
 
 
 def main(argv: list[str]) -> int:
     arguments = parse_arguments(argv)
-    driver = StageDriver(arguments.scenario, AdbDeviceActions(arguments.serial, arguments.package))
+    driver = StageDriver(
+        arguments.scenario,
+        AdbDeviceActions(arguments.serial, arguments.package, artifacts_dir=arguments.artifacts_dir),
+    )
     verdict = evaluate_stream(
         read_logcat_lines(arguments.serial, arguments.since_epoch, arguments.timeout),
         arguments.scenario,
         driver.handle_stage,
         arguments.package,
-        post_check_for(arguments.scenario, arguments.serial),
+        post_check_for(arguments.scenario, arguments.serial, arguments.artifacts_dir),
     )
     if verdict.exit_code == EXIT_NO_RESULT:
         verdict = SmokeVerdict(verdict.exit_code, f"{verdict.message} за {arguments.timeout:g} с")

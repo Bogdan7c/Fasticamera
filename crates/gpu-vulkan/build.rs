@@ -123,6 +123,9 @@ fn build_shaders() -> Result<(), String> {
             .arg(format!("--target-env={TARGET_ENVIRONMENT}"))
             .arg("-Werror")
             .arg("-O")
+            // Общие части шейдеров (`#include "*.glsl"`) лежат рядом с исходниками.
+            .arg("-I")
+            .arg(&shaders_directory)
             .arg("-o")
             .arg(&spirv_path)
             .arg(&source);

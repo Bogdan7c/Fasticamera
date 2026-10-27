@@ -39,17 +39,22 @@
 //!   `AImageReader::close()` держит внутренний замок `mLock` (строки ~380–397), пока ждёт остановки
 //!   looper-а, а колбэк внутри `acquireNextImage` ждёт тот же замок: без «ворот»
 //!   (`callback_gate`) закрытие reader-а повисло бы навсегда. Поэтому `delete` вызывается только
-//!   после `CallbackGate::close`.
+//!   после `CallbackGate::close`. Кроме того, `delete` освобождает все выданные образы, а кадр у
+//!   потока рендера GPU может ещё читать, поэтому reader закрытой сессии откладывается и удаляется
+//!   только когда все его кадры возвращены (`raw_reader`, `retired_readers`).
 
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Instant;
 
 use camera_contract::capture_result::FrameNumber;
+use camera_contract::frame_passport::FrameCaptureDetails;
 use camera_contract::ids::CameraId;
 use camera_core::backend::{BackendEvent, BackendEventSink, CameraAvailability, DeviceGeneration, SessionGeneration};
 use camera_ndk_sys as ndk;
+use raw_frame_stream::{RawFrameProducer, StreamEpoch};
 
 use crate::diagnostics::BackendDiagnostics;
 use crate::frame_numbers::{FrameNumberMatcher, FrameNumberSource};
@@ -228,23 +233,34 @@ pub(super) struct CaptureContext {
     sink: BackendEventSink,
     generation: SessionGeneration,
     diagnostics: Arc<BackendDiagnostics>,
+    /// Поток кадров и эпоха reader-а **этой же сессии**: результат запроса уходит в поток с эпохой
+    /// своей сессии, поэтому результат прошлой сессии не спарится с кадром новой.
+    producer: RawFrameProducer,
+    epoch: StreamEpoch,
     closed: AtomicBool,
     matcher: Mutex<FrameNumberMatcher>,
 }
 
+/// Из чего собирается контекст результатов сессии.
+pub(super) struct CaptureContextSpec {
+    pub sink: BackendEventSink,
+    pub generation: SessionGeneration,
+    pub diagnostics: Arc<BackendDiagnostics>,
+    pub producer: RawFrameProducer,
+    pub epoch: StreamEpoch,
+    pub frame_number_window: usize,
+}
+
 impl CaptureContext {
-    pub(super) fn new(
-        sink: BackendEventSink,
-        generation: SessionGeneration,
-        diagnostics: Arc<BackendDiagnostics>,
-        frame_number_window: usize,
-    ) -> Self {
+    pub(super) fn new(spec: CaptureContextSpec) -> Self {
         Self {
-            sink,
-            generation,
-            diagnostics,
+            sink: spec.sink,
+            generation: spec.generation,
+            diagnostics: spec.diagnostics,
+            producer: spec.producer,
+            epoch: spec.epoch,
             closed: AtomicBool::new(false),
-            matcher: Mutex::new(FrameNumberMatcher::new(frame_number_window)),
+            matcher: Mutex::new(FrameNumberMatcher::new(spec.frame_number_window)),
         }
     }
 
@@ -311,6 +327,16 @@ pub(super) unsafe extern "C" fn capture_on_completed(
             session: context.generation,
             result: parsed.meta,
         });
+        // Тот же результат с цветовыми подсказками — потоку кадров: он спарит его с буфером по
+        // `SENSOR_TIMESTAMP`. Исход (спарен / ждёт / без метки / прошлая эпоха) поток считает сам.
+        let _outcome = context.producer.offer_capture_result(
+            context.epoch,
+            FrameCaptureDetails {
+                result: parsed.meta,
+                color: parsed.color,
+            },
+            Instant::now(),
+        );
     });
 }
 

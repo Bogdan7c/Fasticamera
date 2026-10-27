@@ -80,3 +80,27 @@ fn backoff_schedule_repeats_its_last_element() {
     // Номер попытки 0 трактуется как первая, а не как выход за массив.
     assert_eq!(config.backoff_for_attempt(0), 200);
 }
+
+#[test]
+fn fallback_defaults_to_30_and_validates_its_rate() {
+    assert_eq!(
+        CameraEngineConfig::default().stream.frame_rate_fallback,
+        FrameRateFallback::To { fps: 30 }
+    );
+    let mut config = CameraEngineConfig::default();
+    config.stream.frame_rate_fallback = FrameRateFallback::Disabled;
+    assert_eq!(config.validate(), Ok(()));
+    for broken in [0, TargetFrameRate::MAX + 1] {
+        config.stream.frame_rate_fallback = FrameRateFallback::To { fps: broken };
+        assert_eq!(
+            config.validate(),
+            Err(CameraEngineConfigError::InvalidFrameRateFallback(broken))
+        );
+    }
+    let parsed: CameraEngineConfig =
+        serde_json::from_str(r#"{"stream":{"frame_rate_fallback":"disabled"}}"#).expect("отключённый откат");
+    assert_eq!(parsed.stream.frame_rate_fallback, FrameRateFallback::Disabled);
+    let parsed: CameraEngineConfig =
+        serde_json::from_str(r#"{"stream":{"frame_rate_fallback":{"to":{"fps":24}}}}"#).expect("откат на 24");
+    assert_eq!(parsed.stream.frame_rate_fallback, FrameRateFallback::To { fps: 24 });
+}

@@ -6,39 +6,25 @@ use crate::characteristics::CharacteristicIssue;
 #[test]
 fn fresh_diagnostics_are_all_zero_and_have_no_last_error() {
     let snapshot = BackendDiagnostics::new(4).snapshot();
-    assert_eq!(
-        snapshot.raw_sink,
-        RawSinkSnapshot {
-            frames_acquired: 0,
-            frames_released: 0,
-            acquire_errors: 0,
-            last_acquire_error: None
-        }
-    );
+    assert_eq!(snapshot.reader.frames_acquired, 0);
+    assert_eq!(snapshot.reader.last_acquire_error, None);
     assert_eq!(snapshot.callback_panics, 0);
     assert!(snapshot.cameras.is_empty() && snapshot.recent_failures.is_empty());
 }
 
 #[test]
-fn raw_sink_counters_count_each_event_and_keep_the_last_error_code() {
+fn reader_counters_are_visible_through_the_backend_snapshot() {
     let diagnostics = BackendDiagnostics::new(4);
-    let sink = diagnostics.raw_sink();
-    for _ in 0..3 {
-        sink.record_frame_acquired();
-    }
-    sink.record_frame_released();
-    sink.record_frame_released();
-    sink.record_acquire_error(-30002);
-    sink.record_acquire_error(-10000);
-    assert_eq!(
-        diagnostics.snapshot().raw_sink,
-        RawSinkSnapshot {
-            frames_acquired: 3,
-            frames_released: 2,
-            acquire_errors: 2,
-            last_acquire_error: Some(-10000)
-        }
-    );
+    let reader = diagnostics.reader();
+    reader.record_frame_acquired();
+    reader.record_frame_acquired();
+    reader.record_pool_exhausted();
+    reader.record_acquire_error(-10000);
+    let snapshot = diagnostics.snapshot().reader;
+    assert_eq!(snapshot.frames_acquired, 2);
+    assert_eq!(snapshot.pool_exhausted, 1);
+    assert_eq!(snapshot.last_acquire_error, Some(-10000));
+    assert_eq!(snapshot.images_leaked, 0, "чужие счётчики не задеты");
 }
 
 #[test]
@@ -117,10 +103,10 @@ fn catalog_records_replace_older_ones_for_the_same_camera_and_reset_clears_them(
 #[test]
 fn snapshot_serializes_to_json_the_app_can_log() {
     let diagnostics = BackendDiagnostics::new(4);
-    diagnostics.raw_sink().record_frame_acquired();
+    diagnostics.reader().record_frame_acquired();
     let json = serde_json::to_value(diagnostics.snapshot()).unwrap();
-    assert_eq!(json["raw_sink"]["frames_acquired"], 1);
-    assert_eq!(json["raw_sink"]["last_acquire_error"], serde_json::Value::Null);
+    assert_eq!(json["reader"]["frames_acquired"], 1);
+    assert_eq!(json["reader"]["last_acquire_error"], serde_json::Value::Null);
 }
 
 #[test]
@@ -131,7 +117,7 @@ fn diagnostics_can_be_updated_from_other_threads_through_the_shared_handle() {
             let shared = std::sync::Arc::clone(&diagnostics);
             std::thread::spawn(move || {
                 for _ in 0..250 {
-                    shared.raw_sink().record_frame_acquired();
+                    shared.reader().record_frame_acquired();
                 }
             })
         })
@@ -139,5 +125,5 @@ fn diagnostics_can_be_updated_from_other_threads_through_the_shared_handle() {
     for writer in writers {
         writer.join().unwrap();
     }
-    assert_eq!(diagnostics.snapshot().raw_sink.frames_acquired, 1000);
+    assert_eq!(diagnostics.snapshot().reader.frames_acquired, 1000);
 }

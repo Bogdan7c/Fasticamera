@@ -155,6 +155,13 @@ fn missing_or_broken_required_keys_give_distinct_errors() {
             value: 9
         }
     );
+    // Ориентация сенсора обязательна.
+    assert_eq!(
+        parse_main(&main_camera_characteristics().without(tags::SENSOR_ORIENTATION)).unwrap_err(),
+        CharacteristicsError::MissingRequired {
+            tag: tags::SENSOR_ORIENTATION
+        }
+    );
     // Тип записи не тот: размер массива пришёл как float.
     assert_eq!(
         parse_main(&main_camera_characteristics().floats(tags::PIXEL_ARRAY_SIZE, &[4096.0, 3072.0])).unwrap_err(),
@@ -316,4 +323,38 @@ fn camera_id_helper_matches_physical_id_chunks() {
         vec![camera_id("2"), camera_id("3")]
     );
     assert_eq!(split_physical_ids(b""), Vec::<CameraId>::new());
+}
+
+#[test]
+fn sensor_orientation_takes_each_quarter_turn_from_the_hal() {
+    for (degrees, expected) in [
+        (0, SensorOrientation::Degrees0),
+        (90, SensorOrientation::Degrees90),
+        (180, SensorOrientation::Degrees180),
+        (270, SensorOrientation::Degrees270),
+    ] {
+        let source = main_camera_characteristics().int32s(tags::SENSOR_ORIENTATION, &[degrees]);
+        assert_eq!(parse_main(&source).unwrap().capabilities.sensor_orientation, expected);
+    }
+}
+
+#[test]
+fn sensor_orientation_that_is_not_a_quarter_turn_is_an_error_not_a_rounded_value() {
+    let source = main_camera_characteristics().int32s(tags::SENSOR_ORIENTATION, &[45]);
+    assert_eq!(
+        parse_main(&source).unwrap_err(),
+        CharacteristicsError::UnknownValue {
+            tag: tags::SENSOR_ORIENTATION,
+            value: 45
+        }
+    );
+    // Неверный тип записи тоже не превращается в ориентацию.
+    let wrong_type = main_camera_characteristics().floats(tags::SENSOR_ORIENTATION, &[90.0]);
+    assert!(matches!(
+        parse_main(&wrong_type).unwrap_err(),
+        CharacteristicsError::Malformed {
+            tag: tags::SENSOR_ORIENTATION,
+            ..
+        }
+    ));
 }

@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use shell_contract::clock::MonotonicNanos;
+
+use crate::camera_diagnostics::CameraStreamDiagnostics;
 use shell_contract::surface::{NativeSurface, SurfaceSize};
 
 /// Что известно потоку о кадре, который нужно нарисовать.
@@ -120,6 +122,8 @@ pub struct BackendDiagnostics {
     /// Сколько раз сработал каждый ЗАДОКУМЕНТИРОВАННЫЙ известный отход validation (ключ — VUID,
     /// 0 — не срабатывал). Справочные числа: ошибкой не считаются.
     pub known_deviations: BTreeMap<String, u64>,
+    /// Показ кадров камеры; `None` — бэкенд показывает тестовый паттерн.
+    pub camera: Option<CameraStreamDiagnostics>,
 }
 
 /// Бэкенд показа. Все методы вызываются из одного потока рендера (но сам объект может быть

@@ -6,7 +6,8 @@ use std::time::Duration;
 use shell_contract::commands::{CommandOutcome, FrameRateOutcome, ScreenWake};
 use shell_contract::surface::SurfaceGeneration;
 
-use crate::backend::DisplayInfo;
+use crate::backend::{BackendDiagnostics, DisplayInfo, PastPresentation};
+use crate::camera_diagnostics::CameraStreamDiagnostics;
 use crate::pacing::PacingSnapshot;
 
 /// Общее состояние потока.
@@ -59,6 +60,23 @@ pub struct BackendHealth {
     pub detach_failures: u64,
     /// Срабатывания известных отходов validation по VUID (справочно, не ошибки).
     pub known_deviations: BTreeMap<String, u64>,
+    /// Показ кадров камеры; `None` — показывается тестовый паттерн.
+    pub camera: Option<CameraStreamDiagnostics>,
+}
+
+impl BackendHealth {
+    /// Показатели здоровья из диагностики бэкенда.
+    pub(super) fn from_diagnostics(diagnostics: &BackendDiagnostics) -> Self {
+        Self {
+            live_objects: diagnostics.live_objects,
+            live_objects_by_kind: diagnostics.live_objects_by_kind.clone(),
+            validation_errors: diagnostics.validation_errors,
+            validation_warnings: diagnostics.validation_warnings,
+            detach_failures: diagnostics.detach_failures,
+            known_deviations: diagnostics.known_deviations.clone(),
+            camera: diagnostics.camera.clone(),
+        }
+    }
 }
 
 /// Учёт управления «не гасить экран» (поток шлёт команду только при смене желаемого режима).
@@ -109,6 +127,10 @@ pub struct RenderStatus {
     /// Управление блокировкой гашения экрана на время показа.
     pub screen_wake: ScreenWakeStatus,
     pub fault: Option<FaultInfo>,
+    /// Последние реальные времена показа (старые первыми, не больше
+    /// `RenderLoopConfig::recent_presentations_capacity`). Часы `MONOTONIC`: сопоставлять с меткой
+    /// сенсора (`BOOTTIME`) можно только через измеренное смещение часов — это делает приложение.
+    pub recent_presentations: Vec<PastPresentation>,
 }
 
 impl RenderStatus {
@@ -136,6 +158,16 @@ impl RenderStatus {
                 commands_sent: 0,
             },
             fault: None,
+            recent_presentations: Vec::new(),
+        }
+    }
+
+    /// Запоминает реальное время показа, вытесняя самые старые записи сверх `capacity`.
+    pub(super) fn note_presentation(&mut self, presentation: PastPresentation, capacity: usize) {
+        self.recent_presentations.push(presentation);
+        if self.recent_presentations.len() > capacity {
+            let excess = self.recent_presentations.len() - capacity;
+            self.recent_presentations.drain(..excess);
         }
     }
 }

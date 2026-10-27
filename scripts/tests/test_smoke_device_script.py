@@ -10,11 +10,15 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(SCRIPTS_DIR))
+from test_smoke_raw_stream import healthy_report  # noqa: E402  (общая фикстура здорового отчёта raw-stream)
+
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "smoke"
 SERIAL = "FAKE123"
 PACKAGE = "dev.fasticamera.debug"
@@ -89,7 +93,13 @@ class DeviceSmokeScenariosTest(unittest.TestCase):
         self.dump_file = self.work_dir / "dump.xml"
         self.dump_file.write_text((FIXTURES / "dialog_aosp.xml").read_text(encoding="utf-8"), encoding="utf-8")
 
-    def run_smoke(self, scenario: str, logcat_lines: list[str], failing_pm_command: str = "") -> subprocess.CompletedProcess[str]:
+    def run_smoke(
+        self,
+        scenario: str,
+        logcat_lines: list[str],
+        failing_pm_command: str = "",
+        extra_arguments: tuple[str, ...] = (),
+    ) -> subprocess.CompletedProcess[str]:
         self.logcat_file.write_text("".join(logcat_lines), encoding="utf-8")
         environment = dict(os.environ)
         environment.update(
@@ -102,7 +112,7 @@ class DeviceSmokeScenariosTest(unittest.TestCase):
             FAKE_FAILING_PM_COMMAND=failing_pm_command,
         )
         return subprocess.run(
-            ["bash", str(SCRIPTS_DIR / "device-smoke.sh"), "--no-build", "--timeout", "20", scenario],
+            ["bash", str(SCRIPTS_DIR / "device-smoke.sh"), "--no-build", "--timeout", "20", *extra_arguments, scenario],
             capture_output=True, text=True, env=environment, timeout=60,
         )
 
@@ -218,6 +228,56 @@ class DeviceSmokeScenariosTest(unittest.TestCase):
     def test_unknown_scenario_is_usage_error(self) -> None:
         completed = self.run_smoke("nope", [])
         self.assertEqual(completed.returncode, 64, completed.stderr)
+
+    # --- raw-stream: скриншоты и каталог артефактов ---
+
+    RAW_STREAM_RESULT = healthy_report()
+
+    def frozen_screen(self) -> None:
+        """``adb exec-out`` отдаёт один и тот же кадр: картинка заведомо не меняется между двумя снимками."""
+        import struct
+
+        width, height = 8, 10
+        pixels = bytes((90, 120, 60, 255)) * (width * height)
+        self.dump_file.write_bytes(struct.pack("<IIII", width, height, 1, 0) + pixels)
+
+    def test_raw_stream_takes_two_raw_screenshots_into_the_given_directory_and_judges_them(self) -> None:
+        self.frozen_screen()
+        artifacts = self.work_dir / "shots"
+        completed = self.run_smoke(
+            "raw-stream",
+            [stage_line("raw-stream", "viewfinder_live"), result_line(self.RAW_STREAM_RESULT)],
+            extra_arguments=("--artifacts-dir", str(artifacts)),
+        )
+        calls = self.adb_calls()
+        screencaps = [call for call in calls if call == "exec-out screencap"]
+        self.assertEqual(len(screencaps), 2, calls)
+        self.assertEqual(
+            sorted(path.name for path in artifacts.iterdir()),
+            ["viewfinder_a.png", "viewfinder_a.screencap", "viewfinder_b.png", "viewfinder_b.screencap"],
+        )
+        # Отчёт Rust здоровый, провал даёт только пост-проверка скриншотов: кадр замер.
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        self.assertIn("не меняется", completed.stderr)
+        self.assertIn(f"каталог артефактов (скриншоты): {artifacts}", completed.stderr)
+
+    def test_raw_stream_without_artifacts_dir_makes_a_fresh_temp_directory_outside_the_repo(self) -> None:
+        self.frozen_screen()
+        completed = self.run_smoke(
+            "raw-stream", [stage_line("raw-stream", "viewfinder_live"), result_line(self.RAW_STREAM_RESULT)]
+        )
+        marker = "каталог артефактов (скриншоты): "
+        line = next((text for text in completed.stderr.splitlines() if marker in text), None)
+        self.assertIsNotNone(line, completed.stderr)
+        directory = Path(line.split(marker, 1)[1])
+        self.addCleanup(lambda: __import__("shutil").rmtree(directory, ignore_errors=True))
+        self.assertTrue((directory / "viewfinder_a.screencap").is_file())
+        self.assertNotIn(str(SCRIPTS_DIR.parent), str(directory), "скриншоты не должны попадать в репозиторий")
+
+    def test_scenario_without_screenshots_makes_no_artifacts_directory(self) -> None:
+        completed = self.run_smoke("lifecycle", [result_line(LIFECYCLE_OK)])
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertNotIn("каталог артефактов", completed.stderr)
 
 
 if __name__ == "__main__":

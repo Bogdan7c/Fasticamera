@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::geometry::{PixelRect, PixelSize};
+use crate::geometry::{PixelRect, PixelSize, SensorOrientation};
 use crate::ids::{CameraId, CameraTopology, LensFacing};
 use crate::raw_format::{CfaLayout, MosaicPattern, NativeMosaic, RawFormat};
 
@@ -310,6 +310,8 @@ pub struct CameraCapabilities {
     pub pixel_array: PixelSize,
     /// Активная область (`ACAMERA_SENSOR_INFO_ACTIVE_ARRAY_SIZE`).
     pub active_array: PixelRect,
+    /// Поворот кадра сенсора к естественной ориентации телефона (`ACAMERA_SENSOR_ORIENTATION`).
+    pub sensor_orientation: SensorOrientation,
     /// Публичные RAW-потоки RAW10/RAW16 (без `RAW_PRIVATE`).
     pub raw_streams: Vec<RawStreamOption>,
     pub ae_fps_ranges: Vec<FpsRange>,

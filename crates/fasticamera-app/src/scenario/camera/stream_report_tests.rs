@@ -10,6 +10,18 @@ use crate::camera_scenario_config::{CaptureResultsExpectation, ExpectedLever, Ra
 
 const LIMIT: u32 = 4;
 
+/// Приращение счётчиков читателей без «плохих» счётчиков (пул, утечки, fence).
+fn reader(frames_acquired: u64, images_returned: u64, acquire_errors: u64) -> ReaderDelta {
+    ReaderDelta {
+        frames_acquired,
+        images_returned,
+        images_leaked: 0,
+        acquire_errors,
+        pool_exhausted: 0,
+        fence_merge_failures: 0,
+    }
+}
+
 fn step_config(expected_lever: ExpectedLever) -> StreamStepConfig {
     StreamStepConfig {
         camera_id: "2".to_owned(),
@@ -51,11 +63,7 @@ fn healthy() -> StepObservation {
         time_to_streaming_ms: Some(850),
         stats: Some(healthy_stats()),
         state_at_end: Some("streaming"),
-        raw_sink: Some(RawSinkDelta {
-            frames_acquired: 300,
-            frames_released: 299,
-            acquire_errors: 0,
-        }),
+        reader: Some(reader(300, 299, 0)),
         window_ms: Some(5_000),
         raw_fps: Some(59.8),
         callback_panics: 0,
@@ -207,55 +215,52 @@ fn stream_that_stopped_or_lost_the_camera_fails() {
 }
 
 #[test]
-fn raw_sink_rules_zero_frames_leak_beyond_allowance_and_errors() {
-    let none = only(|o| {
-        o.raw_sink = Some(RawSinkDelta {
-            frames_acquired: 0,
-            frames_released: 0,
-            acquire_errors: 0,
-        })
-    });
+fn reader_rules_zero_frames_leak_beyond_allowance_and_errors() {
+    let none = only(|o| o.reader = Some(reader(0, 0, 0)));
     assert!(none.iter().any(|text| text.contains("ни одного кадра")), "{none:?}");
 
-    let at_limit = only(|o| {
-        o.raw_sink = Some(RawSinkDelta {
-            frames_acquired: 300,
-            frames_released: 296,
-            acquire_errors: 0,
-        })
-    });
+    let at_limit = only(|o| o.reader = Some(reader(300, 296, 0)));
     assert_eq!(at_limit, Vec::<String>::new(), "в полёте ровно допуск — можно");
-    let leak = only(|o| {
-        o.raw_sink = Some(RawSinkDelta {
-            frames_acquired: 300,
-            frames_released: 295,
-            acquire_errors: 0,
-        })
-    });
+    let leak = only(|o| o.reader = Some(reader(300, 295, 0)));
     assert!(leak.iter().any(|text| text.contains("утечка")), "{leak:?}");
-    let over_release = only(|o| {
-        o.raw_sink = Some(RawSinkDelta {
-            frames_acquired: 300,
-            frames_released: 305,
-            acquire_errors: 0,
-        })
-    });
+    let over_release = only(|o| o.reader = Some(reader(300, 305, 0)));
     assert!(
         over_release.iter().any(|text| text.contains("утечка")),
         "{over_release:?}"
     );
-    let errors = only(|o| {
-        o.raw_sink = Some(RawSinkDelta {
-            frames_acquired: 300,
-            frames_released: 300,
-            acquire_errors: 1,
-        })
-    });
+    let errors = only(|o| o.reader = Some(reader(300, 300, 1)));
     assert!(errors.iter().any(|text| text.contains("acquire")), "{errors:?}");
-    let absent = only(|o| o.raw_sink = None);
+    let absent = only(|o| o.reader = None);
     assert!(absent.iter().any(|text| text.contains("счётчиков RAW")), "{absent:?}");
 }
 
+#[test]
+fn reader_pool_exhaustion_leaked_images_and_fence_failures_each_fail_by_name() {
+    let exhausted = only(|o| {
+        o.reader = Some(ReaderDelta {
+            pool_exhausted: 2,
+            ..reader(300, 300, 0)
+        })
+    });
+    assert!(
+        exhausted.iter().any(|text| text.contains("исчерпаний пула")),
+        "{exhausted:?}"
+    );
+    let leaked = only(|o| {
+        o.reader = Some(ReaderDelta {
+            images_leaked: 1,
+            ..reader(300, 300, 0)
+        })
+    });
+    assert!(leaked.iter().any(|text| text.contains("утекших кадров")), "{leaked:?}");
+    let fence = only(|o| {
+        o.reader = Some(ReaderDelta {
+            fence_merge_failures: 3,
+            ..reader(300, 300, 0)
+        })
+    });
+    assert!(fence.iter().any(|text| text.contains("слияния fence")), "{fence:?}");
+}
 #[test]
 fn callback_panics_fail() {
     let violations = only(|o| o.callback_panics = 1);
@@ -264,34 +269,33 @@ fn callback_panics_fail() {
 }
 
 #[test]
-fn raw_sink_delta_is_the_difference_of_snapshots_and_saturates() {
+fn reader_delta_is_the_difference_of_snapshots_and_saturates() {
     let before = BackendDiagnostics::new(2);
-    before.raw_sink().record_frame_acquired();
-    before.raw_sink().record_frame_released();
+    before.reader().record_frame_acquired();
+    before.reader().record_image_returned();
     let snapshot_before = before.snapshot();
     let after = BackendDiagnostics::new(2);
     for _ in 0..5 {
-        after.raw_sink().record_frame_acquired();
+        after.reader().record_frame_acquired();
     }
-    after.raw_sink().record_frame_released();
-    after.raw_sink().record_acquire_error(-9);
+    after.reader().record_image_returned();
+    after.reader().record_acquire_error(-9);
+    after.reader().record_pool_exhausted();
     let snapshot_after = after.snapshot();
 
     assert_eq!(
-        RawSinkDelta::between(&snapshot_before, &snapshot_after),
-        RawSinkDelta {
-            frames_acquired: 4,
-            frames_released: 0,
-            acquire_errors: 1
+        ReaderDelta::between(&snapshot_before, &snapshot_after),
+        ReaderDelta {
+            pool_exhausted: 1,
+            ..reader(4, 0, 1)
         }
     );
     assert_eq!(
-        RawSinkDelta::between(&snapshot_after, &snapshot_before).frames_acquired,
+        ReaderDelta::between(&snapshot_after, &snapshot_before).frames_acquired,
         0,
         "откат счётчика насыщается нулём"
     );
 }
-
 #[test]
 fn report_prefixes_violations_with_the_step_number_and_target() {
     let good = StepReport::judge(0, step_config(ExpectedLever::Any), healthy(), LIMIT);
@@ -300,13 +304,35 @@ fn report_prefixes_violations_with_the_step_number_and_target() {
     let bad = StepReport::judge(1, step_config(ExpectedLever::Any), bad_observation, LIMIT);
     let report = StreamReport {
         measure_ms: 5000,
-        raw_in_flight_limit: LIMIT,
+        reader_in_flight_limit: LIMIT,
         steps: vec![good, bad],
         backend: BackendDiagnostics::new(2).snapshot(),
     };
     let violations = report.violations();
     assert_eq!(violations.len(), 1, "{violations:?}");
     assert!(violations[0].starts_with("шаг 2 (камера 2"), "{violations:?}");
+}
+
+#[test]
+fn leaked_reader_of_a_closed_step_session_fails_the_whole_run() {
+    // Между шагами сессия закрывается, пока рендер держит показанный кадр; reader обязан
+    // удалиться после возврата кадров, а не утечь.
+    let diagnostics = BackendDiagnostics::new(2);
+    diagnostics.reader().record_reader_retired();
+    diagnostics.reader().record_reader_leaked();
+    let step = StepReport::judge(0, step_config(ExpectedLever::Any), healthy(), LIMIT);
+    let report = StreamReport {
+        measure_ms: 5000,
+        reader_in_flight_limit: LIMIT,
+        steps: vec![step],
+        backend: diagnostics.snapshot(),
+    };
+    let violations = report.violations();
+    assert_eq!(violations.len(), 1, "{violations:?}");
+    assert!(
+        violations[0].starts_with("reader-ы: утекло reader-ов: 1"),
+        "{violations:?}"
+    );
 }
 
 fn two_step_report() -> StreamReport {
@@ -327,7 +353,7 @@ fn two_step_report() -> StreamReport {
     second.callback_panics = 2;
     StreamReport {
         measure_ms: 5000,
-        raw_in_flight_limit: LIMIT,
+        reader_in_flight_limit: LIMIT,
         steps: vec![
             StepReport::judge(0, step_config(ExpectedLever::Any), first, LIMIT),
             StepReport::judge(1, step_config(ExpectedLever::Any), second, LIMIT),
@@ -359,8 +385,8 @@ fn summary_carries_the_key_numbers_the_owner_reads_after_the_run() {
         "факт «CamX врёт» виден в сводке"
     );
     assert_eq!(first["missing_keys"][0]["key"], "frame_duration");
-    assert_eq!(first["raw_sink"]["frames_acquired"], 300);
-    assert_eq!(first["raw_sink"]["frames_released"], 299);
+    assert_eq!(first["reader"]["frames_acquired"], 300);
+    assert_eq!(first["reader"]["images_returned"], 299);
     assert_eq!(first["target"], "2/raw10/16x9@60");
     assert_eq!(first["state_at_end"], "streaming");
     assert!(
@@ -407,11 +433,7 @@ fn worst_case_summary_of_six_busy_steps_leaves_room_in_the_logcat_line() {
         observation.time_to_streaming_ms = Some(12_345);
         observation.unmatched_frame_numbers = 12_345;
         observation.unavailable = vec![CameraUnavailableReason::TooManyCamerasOpen];
-        observation.raw_sink = Some(RawSinkDelta {
-            frames_acquired: 123_456,
-            frames_released: 123_455,
-            acquire_errors: 1_234,
-        });
+        observation.reader = Some(reader(123_456, 123_455, 1_234));
         let mut config = step_config(ExpectedLever::VendorSensorFrameDurationOverride);
         config.camera_id = "3".to_owned();
         observation.configured = observation.configured.map(|mut configured| {
@@ -429,7 +451,7 @@ fn worst_case_summary_of_six_busy_steps_leaves_room_in_the_logcat_line() {
     diagnostics.record_skipped_camera("9", "нет характеристик".to_owned());
     let report = StreamReport {
         measure_ms: 5_000,
-        raw_in_flight_limit: LIMIT,
+        reader_in_flight_limit: LIMIT,
         steps,
         backend: diagnostics.snapshot(),
     };
@@ -447,7 +469,7 @@ fn worst_case_summary_of_six_busy_steps_leaves_room_in_the_logcat_line() {
     let json = serde_json::to_value(report.summary_within(3_000)).expect("json");
     assert_eq!(json["degraded"], true);
     assert_eq!(
-        json["steps"][0]["raw_sink"]["frames_acquired"], 123_456,
+        json["steps"][0]["reader"]["frames_acquired"], 123_456,
         "по счётчикам RAW скрипт судит и урезанную сводку"
     );
     assert_eq!(json["steps"][0]["lever"], "vendor_sensor_frame_duration_override");
@@ -468,12 +490,12 @@ fn summary_of_a_step_that_never_streamed_has_nulls_instead_of_invented_numbers()
     observation.failure = Some(RunFailure::NeverStreaming { last_state: "opening" });
     observation.configured = None;
     observation.stats = None;
-    observation.raw_sink = None;
+    observation.reader = None;
     observation.state_at_end = None;
     let report = StepReport::judge(0, step_config(ExpectedLever::Any), observation, LIMIT);
     let json = serde_json::to_value(StepSummary::of(&report)).expect("json");
     assert_eq!(json["failure"]["kind"], "never_streaming");
-    for field in ["lever", "measured_fps", "results_completed", "raw_sink", "state_at_end"] {
+    for field in ["lever", "measured_fps", "results_completed", "reader", "state_at_end"] {
         assert_eq!(json[field], serde_json::Value::Null, "{field}");
     }
 }
@@ -598,11 +620,7 @@ fn final_results_appearing_is_a_changed_fact_not_a_silent_pass() {
 #[test]
 fn other_rules_still_apply_in_partial_mode() {
     let leak = partial_violations(|o| {
-        o.raw_sink = Some(RawSinkDelta {
-            frames_acquired: 300,
-            frames_released: 100,
-            acquire_errors: 0,
-        });
+        o.reader = Some(reader(300, 100, 0));
     });
     assert!(leak.iter().any(|text| text.contains("утечка")), "{leak:?}");
     assert!(

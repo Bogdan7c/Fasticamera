@@ -34,6 +34,7 @@
 mod availability_memory;
 mod backend_events;
 mod commands;
+mod frame_rate_fallback;
 mod reconcile;
 mod recovery;
 

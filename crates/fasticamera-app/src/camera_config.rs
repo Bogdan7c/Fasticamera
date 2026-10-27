@@ -7,6 +7,7 @@
 use camera_android::AndroidCameraConfig;
 use camera_core::CameraEngineConfig;
 use camera_core::config::CameraEngineConfigError;
+use raw_frame_stream::{RawFrameStreamConfig, RawFrameStreamConfigError};
 use serde::Deserialize;
 
 use crate::camera_scenario_config::{CameraScenarioConfig, CameraScenarioConfigError};
@@ -19,6 +20,9 @@ pub struct CameraConfig {
     pub engine: CameraEngineConfig,
     /// Бэкенд на Camera2 NDK (`camera-android`).
     pub android: AndroidCameraConfig,
+    /// Поток RAW-кадров между камерой и рендером: спаривание кадра с метаданными, размер пула
+    /// буферов, кольцо снимков (`raw-frame-stream`, решения 40–43 сессии 05).
+    pub raw_stream: RawFrameStreamConfig,
     /// Параметры smoke-сценариев камеры.
     pub scenarios: CameraScenarioConfig,
 }
@@ -30,15 +34,18 @@ pub enum CameraConfigError {
     Engine(#[from] CameraEngineConfigError),
     #[error("camera.android: {0}")]
     Android(#[from] camera_android::ConfigError),
+    #[error("{0}")]
+    RawStream(#[from] RawFrameStreamConfigError),
     #[error("camera.scenarios: {0}")]
     Scenarios(#[from] CameraScenarioConfigError),
 }
 
 impl CameraConfig {
-    /// Проверяет все три части; первая найденная ошибка — в результате.
+    /// Проверяет все части; первая найденная ошибка — в результате.
     pub fn validate(&self) -> Result<(), CameraConfigError> {
         self.engine.validate()?;
         self.android.validate()?;
+        self.raw_stream.validate()?;
         self.scenarios.validate()?;
         Ok(())
     }

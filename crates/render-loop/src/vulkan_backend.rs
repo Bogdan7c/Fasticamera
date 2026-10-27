@@ -5,6 +5,8 @@
 //!   только этот трейт и нейтральные типы `backend`, а типы Vulkan переводятся здесь (`mapping`);
 //! * `session::AttachedDisplay` владеет живым показом (цель, паттерн, окно ПК-стенда) и
 //!   порядком уничтожения; бэкенд держит `Option` такого показа;
+//! * `camera` — показ кадров камеры (сессия 05): предпросмотр RAW-мозаики вместо тестового паттерна,
+//!   импорт буферов, учёт лизингов и fence (`new_android_camera_preview` / `new_headless_camera_preview`);
 //! * `config` — настройки; `present_history` — мост «id показа Vulkan -> кадр потока».
 //!
 //! Режимы показа: [`VulkanDisplayBackend::new_android`] — боевой (Android, окно оболочки);
@@ -12,6 +14,7 @@
 //! Настоящее окно там не используется, но `NativeSurface` из вызова `attach` бэкенд удерживает
 //! и возвращает в `detach`, чтобы протокол «окно отпущено -> квитанция» проверялся одинаково.
 
+mod camera;
 mod census;
 mod config;
 mod mapping;
@@ -19,6 +22,9 @@ mod present_history;
 mod present_time;
 mod session;
 
+#[cfg(target_os = "android")]
+pub use camera::AndroidCameraImporter;
+pub use camera::{CameraFeed, CameraFrameImporter, CameraImportError, CameraImporterFactory, SubmissionSerial};
 pub use config::VulkanBackendConfig;
 
 use gpu_vulkan::context::{GpuContext, GpuContextConfig};
@@ -30,6 +36,7 @@ use shell_contract::surface::{NativeSurface, SurfaceSize};
 use crate::backend::{
     AttachError, BackendDiagnostics, BackendError, DisplayBackend, FrameTiming, PastPresentation, PresentOutcome,
 };
+use crate::camera_diagnostics::CameraStreamDiagnostics;
 use census::census_by_kind;
 use session::AttachedDisplay;
 
@@ -67,6 +74,10 @@ pub struct VulkanDisplayBackend {
     attached: Option<AttachedDisplay>,
     /// Сколько раз `detach` завершился ошибкой (в диагностику).
     detach_failures: u64,
+    /// Источник кадров камеры; `None` — показывается тестовый паттерн.
+    camera_feed: Option<CameraFeed>,
+    /// Счётчики показа камеры по уже закрытым surface (текущая добавляется при опросе диагностики).
+    camera_finished: CameraStreamDiagnostics,
 }
 
 impl VulkanDisplayBackend {
@@ -89,6 +100,41 @@ impl VulkanDisplayBackend {
         )
     }
 
+    /// Боевой конструктор Android с показом кадров камеры: предпросмотр RAW-мозаики вместо тестового
+    /// паттерна. Буферы камеры импортируются в Vulkan без копий (`AndroidCameraImporter`).
+    #[cfg(target_os = "android")]
+    pub fn new_android_camera_preview(
+        config: VulkanBackendConfig,
+        frames: raw_frame_stream::ViewfinderFrames,
+    ) -> Result<Self, GpuInitError> {
+        let cache_capacity = config.camera_import_cache_capacity;
+        let feed = CameraFeed::new(
+            frames,
+            Box::new(move |context| Ok(Box::new(AndroidCameraImporter::new(context, cache_capacity)))),
+        );
+        let mut backend = Self::with_profile(config, DeviceProfile::AndroidDisplay, PresentationMode::AndroidWindow)?;
+        backend.camera_feed = Some(feed);
+        Ok(backend)
+    }
+
+    /// Конструктор СТЕНДА ПК с показом кадров камеры: импорт буферов — через `make_importer` (на ПК нет
+    /// `AHardwareBuffer`, тест подставляет синтетические источники). Остальное — боевой путь:
+    /// опрос видоискателя, сабмит с ожиданием/экспортом fence, учёт лизингов.
+    #[cfg(not(target_os = "android"))]
+    pub fn new_headless_camera_preview(
+        config: VulkanBackendConfig,
+        frames: raw_frame_stream::ViewfinderFrames,
+        make_importer: CameraImporterFactory,
+    ) -> Result<Self, GpuInitError> {
+        let mut backend = Self::with_profile(
+            config,
+            DeviceProfile::HeadlessPresentation,
+            PresentationMode::HeadlessBench,
+        )?;
+        backend.camera_feed = Some(CameraFeed::new(frames, make_importer));
+        Ok(backend)
+    }
+
     fn with_profile(
         config: VulkanBackendConfig,
         profile: DeviceProfile,
@@ -101,6 +147,8 @@ impl VulkanDisplayBackend {
             mode,
             attached: None,
             detach_failures: 0,
+            camera_feed: None,
+            camera_finished: CameraStreamDiagnostics::default(),
         })
     }
 
@@ -141,7 +189,14 @@ impl DisplayBackend for VulkanDisplayBackend {
             }));
         }
         let (presentation, held_surface) = self.mode.wrap_window(surface);
-        let display = AttachedDisplay::attach(&self.context, &self.config, presentation, held_surface, size)?;
+        let display = AttachedDisplay::attach(
+            &self.context,
+            &self.config,
+            presentation,
+            held_surface,
+            size,
+            self.camera_feed.as_ref(),
+        )?;
         self.attached = Some(display);
         Ok(())
     }
@@ -169,6 +224,11 @@ impl DisplayBackend for VulkanDisplayBackend {
     fn detach(&mut self) -> Option<NativeSurface> {
         let display = self.attached.take()?;
         let report = display.release();
+        if let Some(camera) = &report.camera {
+            self.camera_finished = self
+                .camera_finished
+                .combined_with(camera, self.config.camera_present_history_capacity);
+        }
         if let Some(error) = &report.error {
             // Окно возвращаем всё равно (иначе оболочка ждала бы таймаут), но ошибку не прячем.
             self.detach_failures += 1;
@@ -187,7 +247,17 @@ impl DisplayBackend for VulkanDisplayBackend {
         let live_objects = u64::try_from(snapshot.total()).unwrap_or(u64::MAX);
         let live_objects_by_kind = census_by_kind(&snapshot);
         let display = self.attached.as_ref().and_then(AttachedDisplay::display_info);
+        let camera = self.camera_feed.as_ref().map(|_| {
+            let live = self.attached.as_ref().and_then(AttachedDisplay::camera_diagnostics);
+            match live {
+                Some(live) => self
+                    .camera_finished
+                    .combined_with(&live, self.config.camera_present_history_capacity),
+                None => self.camera_finished.clone(),
+            }
+        });
         BackendDiagnostics {
+            camera,
             live_objects,
             live_objects_by_kind,
             validation_errors: validation.errors,

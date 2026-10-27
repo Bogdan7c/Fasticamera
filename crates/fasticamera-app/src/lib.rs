@@ -18,11 +18,13 @@
 pub mod build_info;
 pub mod camera_config;
 pub mod camera_lifecycle;
+pub mod camera_presentation;
 pub mod camera_scenario_config;
 pub mod camera_service;
 #[cfg(test)]
 mod camera_test_support;
 pub mod camera_wiring;
+pub mod clock_offset;
 pub mod event_router;
 pub mod gpu_config;
 pub mod gpu_services;
@@ -31,6 +33,11 @@ mod gpu_test_support;
 pub mod jni_boundary;
 pub mod logging;
 pub mod panic_report;
+pub mod raw_stream_scenario_config;
+pub mod raw_stream_services;
+#[cfg(test)]
+mod raw_stream_test_support;
+pub mod raw_stream_wiring;
 pub mod render_route;
 pub mod render_wiring;
 pub mod result_line;

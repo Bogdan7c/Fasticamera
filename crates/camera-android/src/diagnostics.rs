@@ -6,59 +6,15 @@
 //! Тип нейтральный и сериализуемый, поэтому проверяется на ПК.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use camera_contract::ids::CameraId;
 use serde::Serialize;
 
 use crate::characteristics::CharacteristicNote;
+use crate::reader_counters::{ReaderCounters, ReaderSnapshot};
 use crate::vendor::VendorTagReport;
-
-/// Счётчики временного RAW-приёмника (до сессии 05: заменяется лизингом `RawFrameLease`).
-#[derive(Debug, Default)]
-pub struct RawSinkCounters {
-    frames_acquired: AtomicU64,
-    frames_released: AtomicU64,
-    acquire_errors: AtomicU64,
-    last_acquire_error: AtomicI32,
-}
-
-impl RawSinkCounters {
-    pub fn record_frame_acquired(&self) {
-        self.frames_acquired.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn record_frame_released(&self) {
-        self.frames_released.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Сбой `acquire*` (кроме штатного «буферов больше нет»). Сохраняется последний код.
-    pub fn record_acquire_error(&self, status: i32) {
-        self.acquire_errors.fetch_add(1, Ordering::Relaxed);
-        self.last_acquire_error.store(status, Ordering::Relaxed);
-    }
-
-    fn snapshot(&self) -> RawSinkSnapshot {
-        let errors = self.acquire_errors.load(Ordering::Relaxed);
-        RawSinkSnapshot {
-            frames_acquired: self.frames_acquired.load(Ordering::Relaxed),
-            frames_released: self.frames_released.load(Ordering::Relaxed),
-            acquire_errors: errors,
-            last_acquire_error: (errors > 0).then(|| self.last_acquire_error.load(Ordering::Relaxed)),
-        }
-    }
-}
-
-/// Снимок счётчиков RAW-приёмника.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct RawSinkSnapshot {
-    pub frames_acquired: u64,
-    pub frames_released: u64,
-    pub acquire_errors: u64,
-    /// Код последнего сбоя `acquire*`, если сбои были.
-    pub last_acquire_error: Option<i32>,
-}
 
 /// Камера, не попавшая в каталог, и причина.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -95,7 +51,7 @@ struct SlowState {
 #[derive(Debug)]
 pub struct BackendDiagnostics {
     failure_capacity: usize,
-    raw_sink: RawSinkCounters,
+    reader: ReaderCounters,
     callback_panics: AtomicU64,
     callbacks_after_close: AtomicU64,
     unmatched_frame_numbers: AtomicU64,
@@ -108,7 +64,8 @@ pub struct BackendDiagnostics {
 /// Снимок диагностики для приложения (сериализуется в JSON).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DiagnosticsSnapshot {
-    pub raw_sink: RawSinkSnapshot,
+    /// Счётчики reader-ов: кадры, возвраты, утечки, пробы CPU-доступа.
+    pub reader: ReaderSnapshot,
     /// Паники в колбэках NDK, пойманные на границе C (должно быть 0).
     pub callback_panics: u64,
     /// Колбэки, пришедшие после закрытия устройства или сессии и проигнорированные.
@@ -135,7 +92,7 @@ impl BackendDiagnostics {
     pub fn new(failure_history_capacity: usize) -> Self {
         Self {
             failure_capacity: failure_history_capacity.max(1),
-            raw_sink: RawSinkCounters::default(),
+            reader: ReaderCounters::default(),
             callback_panics: AtomicU64::new(0),
             callbacks_after_close: AtomicU64::new(0),
             unmatched_frame_numbers: AtomicU64::new(0),
@@ -156,9 +113,9 @@ impl BackendDiagnostics {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Счётчики RAW-приёмника (пишет слушатель `AImageReader`).
-    pub fn raw_sink(&self) -> &RawSinkCounters {
-        &self.raw_sink
+    /// Счётчики reader-ов (пишут слушатель `AImageReader`, возврат кадров и закрытие reader-ов).
+    pub fn reader(&self) -> &ReaderCounters {
+        &self.reader
     }
 
     pub fn record_callback_panic(&self) {
@@ -232,7 +189,7 @@ impl BackendDiagnostics {
     pub fn snapshot(&self) -> DiagnosticsSnapshot {
         let state = self.slow_state();
         DiagnosticsSnapshot {
-            raw_sink: self.raw_sink.snapshot(),
+            reader: self.reader.snapshot(),
             callback_panics: self.callback_panics.load(Ordering::Relaxed),
             callbacks_after_close: self.callbacks_after_close.load(Ordering::Relaxed),
             unmatched_frame_numbers: self.unmatched_frame_numbers.load(Ordering::Relaxed),

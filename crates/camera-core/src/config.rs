@@ -1,5 +1,6 @@
 //! Конфиг движка камеры (секция `camera.engine` конфига приложения).
 
+use camera_contract::stream::TargetFrameRate;
 use serde::{Deserialize, Serialize};
 
 /// Восстановление после недоступности (решение 39).
@@ -108,6 +109,35 @@ impl Default for RuntimeThreadConfig {
     }
 }
 
+/// Запасная частота кадров, если запрошенная недостижима (решение 23).
+///
+/// Это enum, а не голое число: «откат выключен» — осознанное значение, а не `0` или `None`
+/// с неочевидным смыслом. Видоискатель основной камеры просит 4:3@60 через вендорские ключи;
+/// без них движок один раз откатывается на `To { fps }` с честным событием `StreamDegraded`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FrameRateFallback {
+    /// Отката нет: недостижимая частота — обычный `StreamConfigurationFailed`.
+    Disabled,
+    /// Откатиться на эту частоту, к/с (должна быть валидной `TargetFrameRate`).
+    To { fps: u32 },
+}
+
+impl Default for FrameRateFallback {
+    /// 30 к/с — частота, которую основная камера отдаёт без вендорских ключей.
+    fn default() -> Self {
+        Self::To { fps: 30 }
+    }
+}
+
+/// Поведение при недостижимом режиме потока.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct StreamConfig {
+    /// Запасная частота кадров (решение 23).
+    pub frame_rate_fallback: FrameRateFallback,
+}
+
 /// Конфиг движка целиком.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -117,6 +147,7 @@ pub struct CameraEngineConfig {
     pub cadence: CadenceConfig,
     pub queues: QueueConfig,
     pub runtime: RuntimeThreadConfig,
+    pub stream: StreamConfig,
 }
 
 /// Конфиг движка некорректен.
@@ -136,6 +167,8 @@ pub enum CameraEngineConfigError {
     InvalidGapRatio(f64),
     #[error("runtime.drop_shutdown_timeout_ms должен быть от 1 до {max} мс, а не {value}")]
     InvalidDropShutdownTimeout { value: u64, max: u64 },
+    #[error("stream.frame_rate_fallback: запасная частота {0} к/с вне допустимых границ")]
+    InvalidFrameRateFallback(u32),
     #[error("queues: ёмкости должны быть от 1 до {max}")]
     InvalidQueueCapacity { max: usize },
 }
@@ -198,6 +231,9 @@ impl CameraEngineConfig {
                 value: drop_timeout,
                 max: Self::MAX_DROP_SHUTDOWN_TIMEOUT_MS,
             });
+        }
+        if let FrameRateFallback::To { fps } = self.stream.frame_rate_fallback {
+            TargetFrameRate::new(fps).map_err(|_| CameraEngineConfigError::InvalidFrameRateFallback(fps))?;
         }
         Ok(())
     }

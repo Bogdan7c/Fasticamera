@@ -85,6 +85,8 @@ pub fn main_camera_characteristics() -> FakeMetadata {
         )
         .int32s(tags::PIXEL_ARRAY_SIZE, &[width, height])
         .int32s(tags::ACTIVE_ARRAY_SIZE, &[0, 0, width, height])
+        // Задняя камера: сенсор повёрнут на 90° к естественной ориентации телефона.
+        .int32s(tags::SENSOR_ORIENTATION, &[90])
         .int32s(
             tags::STREAM_CONFIGURATIONS,
             &[

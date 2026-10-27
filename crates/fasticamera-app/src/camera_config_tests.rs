@@ -22,7 +22,7 @@ fn absent_section_gives_the_documented_defaults_of_every_owner() {
 #[test]
 fn partial_section_overrides_only_named_fields() {
     let config = config_with_camera(
-        r#"{"engine":{"recovery":{"max_consecutive_attempts":7}},"android":{"raw_reader_max_images":6},"scenarios":{"measure_ms":2000}}"#,
+        r#"{"engine":{"recovery":{"max_consecutive_attempts":7}},"android":{"frame_number_window":6},"raw_stream":{"pairing_timeout_ms":80},"scenarios":{"measure_ms":2000}}"#,
     )
     .expect("частичная секция");
     let camera = config.camera();
@@ -32,7 +32,13 @@ fn partial_section_overrides_only_named_fields() {
         CameraEngineConfig::default().recovery.retry_backoff_ms,
         "несказанное берёт значение по умолчанию"
     );
-    assert_eq!(camera.android.raw_reader_max_images, 6);
+    assert_eq!(camera.android.frame_number_window, 6);
+    assert_eq!(camera.raw_stream.pairing_timeout_ms, 80);
+    assert_eq!(
+        camera.raw_stream.max_pending_frames,
+        RawFrameStreamConfig::default().max_pending_frames,
+        "несказанное в raw_stream берёт значение по умолчанию"
+    );
     assert_eq!(camera.scenarios.measure_ms, 2000);
     assert_eq!(
         camera.scenarios.catalog_timeout_ms,
@@ -45,7 +51,8 @@ fn typos_at_every_level_are_rejected() {
     for typo in [
         r#"{"engin":{}}"#,
         r#"{"engine":{"recovry":{}}}"#,
-        r#"{"android":{"raw_reader_max_image":4}}"#,
+        r#"{"android":{"frame_number_windo":4}}"#,
+        r#"{"raw_stream":{"pairing_timeout":50}}"#,
         r#"{"scenarios":{"measure_sec":5}}"#,
         r#"{"scenarios":{"evict":{"rol":"wide"}}}"#,
     ] {
@@ -61,10 +68,19 @@ fn bad_values_are_reported_by_the_part_that_owns_them() {
         matches!(engine, ConfigError::Camera(CameraConfigError::Engine(_))),
         "{engine}"
     );
-    let android = config_with_camera(r#"{"android":{"raw_reader_max_images":1}}"#).expect_err("android");
+    let android = config_with_camera(r#"{"android":{"frame_number_window":0}}"#).expect_err("android");
     assert!(
         matches!(android, ConfigError::Camera(CameraConfigError::Android(_))),
         "{android}"
+    );
+    let raw_stream = config_with_camera(r#"{"raw_stream":{"max_pending_frames":0}}"#).expect_err("raw_stream");
+    assert!(
+        matches!(raw_stream, ConfigError::Camera(CameraConfigError::RawStream(_))),
+        "{raw_stream}"
+    );
+    assert!(
+        raw_stream.to_string().contains("camera.raw_stream.max_pending_frames"),
+        "ошибка называет поле: {raw_stream}"
     );
     let scenarios = config_with_camera(r#"{"scenarios":{"stream_steps":[]}}"#).expect_err("scenarios");
     assert!(

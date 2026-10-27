@@ -18,6 +18,7 @@
 //! * [`stream`] — режим потока (формат, вырезка, частота) и то, как частота была достигнута;
 //! * [`control`] — намерения управления: шаблон запроса, ручная экспозиция и фокус;
 //! * [`capture_result`] — метаданные результата запроса, нужные движку и smoke;
+//! * [`frame_passport`] — паспорт RAW-кадра: постоянная часть потока и покадровые метаданные;
 //! * [`availability`] — почему камера недоступна (вытеснение, ошибка HAL, разрешение…);
 //! * `fixtures` (фича `fixtures`, только тесты) — образцы камер OnePlus 11 по фактам 00.
 
@@ -28,6 +29,7 @@ pub mod catalog;
 pub mod control;
 #[cfg(any(test, feature = "fixtures"))]
 pub mod fixtures;
+pub mod frame_passport;
 pub mod geometry;
 pub mod ids;
 pub mod raw_format;

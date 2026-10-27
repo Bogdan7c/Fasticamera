@@ -8,7 +8,9 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+camera-contract.workspace = true
 gpu-vulkan.workspace = true
+raw-frame-stream.workspace = true
 shell-contract.workspace = true
 serde.workspace = true
 thiserror.workspace = true
@@ -19,6 +21,9 @@ tracing.workspace = true
 fault-injection = ["gpu-vulkan/fault-injection"]
 
 [dev-dependencies]
+camera-contract = { workspace = true, features = ["fixtures"] }
+# Синтетические RAW-источники на обычной памяти Vulkan для функционального теста показа кадров камеры на ПК.
+gpu-vulkan = { workspace = true, features = ["test-support"] }
 serde_json.workspace = true
 # Интеграционные тесты потока включают швы отказов через самого себя.
 render-loop = { path = ".", features = ["fault-injection"] }

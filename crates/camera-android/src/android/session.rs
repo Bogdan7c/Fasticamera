@@ -3,12 +3,13 @@
 //!
 //! # Порядок разрушения
 //!
-//! Стоп повтора → закрыть сессию → (снаружи) закрыть устройство → удалить reader. Окно
+//! Стоп повтора → закрыть сессию → остановить приём кадров reader-а → (снаружи) закрыть устройство →
+//! отложить reader (удаляется, когда все кадры вернулись, см. `raw_reader`). Окно
 //! `AImageReader` не должно умереть раньше сессии, которая в него пишет. Поэтому поля
 //! [`ActiveSession`] объявлены в порядке разрушения (Rust освобождает поля по порядку объявления):
-//! сначала `handle` (стоп + закрытие сессии), затем `target`, затем `sink`. А при закрытии отдельно
-//! от устройства reader не удаляется сразу, а возвращается вызывающему ([`ActiveSession::into_parked_sink`])
-//! — удалять его можно только когда устройство отсоединилось от окна.
+//! сначала `handle` (стоп + закрытие сессии), затем `target`, затем `reader`. А при закрытии отдельно
+//! от устройства reader не отбрасывается сразу, а возвращается вызывающему ([`ActiveSession::into_parked_reader`])
+//! — отложить его можно только когда устройство отсоединилось от окна.
 
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
@@ -16,6 +17,7 @@ use std::sync::Arc;
 use camera_contract::stream::{FrameRateMechanism, ResolvedStream};
 use camera_core::backend::{BackendEventSink, BackendFailure, ConfigureFailure, RequestFailure, SessionGeneration};
 use camera_ndk_sys as ndk;
+use raw_frame_stream::RawFrameProducer;
 
 use crate::diagnostics::BackendDiagnostics;
 use crate::request_plan::{RequestPlan, apply_entries};
@@ -24,11 +26,11 @@ use crate::tags;
 use crate::vendor::VendorCapabilities;
 
 use super::callbacks::{
-    CaptureContext, SessionStateContext, capture_on_completed, capture_on_failed, capture_on_started,
-    session_on_closed, session_on_idle_transition,
+    CaptureContext, CaptureContextSpec, SessionStateContext, capture_on_completed, capture_on_failed,
+    capture_on_started, session_on_closed, session_on_idle_transition,
 };
 use super::device::OpenedDevice;
-use super::raw_sink::TemporaryRawSink;
+use super::raw_reader::RawReader;
 use super::request::CaptureRequestHandle;
 
 /// Цель запроса (`ACameraOutputTarget`) на окно приёмника.
@@ -129,11 +131,11 @@ impl Drop for SessionHandle {
 
 /// Активная сессия с приёмником и целью.
 ///
-/// Порядок полей = порядок разрушения (см. доку модуля): `handle` → `target` → `sink`.
+/// Порядок полей = порядок разрушения (см. доку модуля): `handle` → `target` → `reader`.
 pub(super) struct ActiveSession {
     handle: SessionHandle,
     target: OutputTarget,
-    sink: TemporaryRawSink,
+    reader: RawReader,
     generation: SessionGeneration,
     stream: ResolvedStream,
     mechanism: FrameRateMechanism,
@@ -148,6 +150,8 @@ pub(super) struct SessionSpec<'a> {
     pub session_parameters: Option<&'a RequestPlan>,
     pub vendor: &'a VendorCapabilities,
     pub frame_number_window: usize,
+    /// Поток кадров: результаты запросов этой сессии уходят в него с эпохой её reader-а.
+    pub producer: &'a RawFrameProducer,
 }
 
 impl ActiveSession {
@@ -155,12 +159,12 @@ impl ActiveSession {
     /// вспомогательные объекты освобождаются RAII.
     pub(super) fn create(
         device: &mut OpenedDevice,
-        sink: TemporaryRawSink,
+        reader: RawReader,
         spec: &SessionSpec<'_>,
         event_sink: &BackendEventSink,
         diagnostics: &Arc<BackendDiagnostics>,
     ) -> Result<(Self, Arc<SessionStateContext>), ConfigureFailure> {
-        let window = sink.window();
+        let window = reader.window();
         let backend_failure = |failure: BackendFailure| ConfigureFailure::Backend(failure);
         let outputs = OutputContainer::with_window(window).map_err(backend_failure)?;
         let target = OutputTarget::create(window).map_err(backend_failure)?;
@@ -170,12 +174,14 @@ impl ActiveSession {
             spec.generation,
             Arc::clone(diagnostics),
         ));
-        let capture_context = Arc::new(CaptureContext::new(
-            event_sink.clone(),
-            spec.generation,
-            Arc::clone(diagnostics),
-            spec.frame_number_window,
-        ));
+        let capture_context = Arc::new(CaptureContext::new(CaptureContextSpec {
+            sink: event_sink.clone(),
+            generation: spec.generation,
+            diagnostics: Arc::clone(diagnostics),
+            producer: spec.producer.clone(),
+            epoch: reader.epoch(),
+            frame_number_window: spec.frame_number_window,
+        }));
         let state_callbacks = ndk::ACameraCaptureSession_stateCallbacks {
             context: state_context.as_callback_context(),
             onClosed: Some(session_on_closed),
@@ -220,7 +226,7 @@ impl ActiveSession {
                 capture_context,
             },
             target,
-            sink,
+            reader,
             generation: spec.generation,
             stream: spec.stream.clone(),
             mechanism: spec.mechanism,
@@ -290,15 +296,20 @@ impl ActiveSession {
         }
     }
 
-    /// Закрывает сессию, но приёмник не удаляет, а отдаёт вызывающему: удалять его можно только
-    /// после того, как устройство отпустило окно (следующая сессия или закрытие устройства).
-    pub(super) fn into_parked_sink(self) -> TemporaryRawSink {
+    /// Закрывает сессию и останавливает приём кадров, но reader не отбрасывает, а отдаёт вызывающему:
+    /// отложить его (а потом удалить) можно только после того, как устройство отпустило окно
+    /// (следующая сессия или закрытие устройства).
+    ///
+    /// Порядок: сессия закрыта (камера больше не пишет в окно по этой сессии) → `stop_offering`
+    /// (поток отпускает свои кадры, ворота слушателя закрыты).
+    pub(super) fn into_parked_reader(self) -> RawReader {
         let Self {
-            handle, target, sink, ..
+            handle, target, reader, ..
         } = self;
         drop(handle);
         drop(target);
-        sink
+        reader.stop_offering();
+        reader
     }
 }
 

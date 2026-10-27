@@ -13,10 +13,12 @@
 //!   (не всего устройства).
 
 use std::cell::Cell;
+use std::sync::Arc;
 use std::time::Duration;
 
 use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::error::GpuError;
+use gpu_vulkan::raw_mosaic_preview::RawMosaicPreview;
 use gpu_vulkan::swapchain::{
     AcquireOutcome, DetachError, DisplayTarget, PresentOutcome as GpuPresentOutcome, PresentRequest,
     PresentationSurface, RecreateOutcome, SwapchainError,
@@ -24,11 +26,13 @@ use gpu_vulkan::swapchain::{
 use gpu_vulkan::test_pattern::TestPattern;
 use shell_contract::surface::{NativeSurface, SurfaceSize};
 
+use super::camera::{CameraDrawError, CameraFeed, CameraSession};
 use super::config::VulkanBackendConfig;
 use super::mapping::{FailureKind, classify_swapchain_error, display_info, gpu_backend_error};
 use super::present_history::PresentHistory;
 use super::present_time::PresentTimePolicy;
 use crate::backend::{AttachError, BackendError, DisplayInfo, FrameTiming, PastPresentation, PresentOutcome};
+use crate::camera_diagnostics::CameraStreamDiagnostics;
 
 const LOG_TARGET: &str = "fasticamera::render::vulkan";
 
@@ -39,13 +43,27 @@ pub(super) struct ReleaseReport {
     pub(super) surface: Option<NativeSurface>,
     /// Ошибка уничтожения цепочки: окно всё равно возвращено, но объекты GPU могли остаться.
     pub(super) error: Option<BackendError>,
+    /// Итоговые счётчики показа кадров камеры этой surface (`None` — показывался тестовый паттерн).
+    pub(super) camera: Option<CameraStreamDiagnostics>,
 }
 
-/// Цель показа вместе с пайплайном, записанным в её кадры. Единственный способ их уничтожить —
+/// Чем рисуется содержимое кадра. Пайплайн всегда записан в кадры цели, поэтому уничтожается только
+/// после того, как цель освободила GPU (см. [`DisplayChain::release`]).
+enum Painter {
+    /// Тестовый паттерн (градиент + метка кадра).
+    TestPattern(TestPattern),
+    /// Кадры камеры: предпросмотр RAW-мозаики и состояние их показа (лизинги, серии сабмитов).
+    Camera {
+        preview: Box<RawMosaicPreview>,
+        session: Box<CameraSession>,
+    },
+}
+
+/// Цель показа вместе с рисовальщиком, записанным в её кадры. Единственный способ их уничтожить —
 /// [`DisplayChain::release`]: он знает, что пайплайн нельзя трогать, пока цель не освободила GPU.
 struct DisplayChain {
     target: DisplayTarget,
-    pattern: TestPattern,
+    painter: Painter,
 }
 
 /// Чем закончилось освобождение цепочки.
@@ -54,32 +72,48 @@ struct ChainRelease {
     surface: PresentationSurface,
     /// Ошибка `detach` цели, если GPU не освободился.
     detach_error: Option<GpuError>,
+    /// Итоговые счётчики показа камеры.
+    camera: Option<CameraStreamDiagnostics>,
 }
 
 impl DisplayChain {
     /// Отсоединяет цель и решает судьбу пайплайна: уничтожить (GPU свободен) или намеренно оставить
     /// в утечке (`detach` не удался — кадры в полёте могут исполняться, VUID-vkDestroyPipeline-00765).
+    ///
+    /// Для камеры сначала освобождается сессия показа: дождаться своих сабмитов, вернуть лизинги камере
+    /// (или выбросить, если GPU завис), и только потом отсоединять цель.
     fn release(self) -> ChainRelease {
-        let Self { target, pattern } = self;
+        let Self { target, painter } = self;
+        // Пайплайн хранится как «владелец, которого надо дожить до конца работы цели»: уничтожается
+        // обычным drop после успешного detach или забывается (утечка) при зависшем GPU.
+        let (pipeline_owner, camera): (Box<dyn std::any::Any>, _) = match painter {
+            Painter::TestPattern(pattern) => (Box::new(pattern), None),
+            Painter::Camera { preview, session } => {
+                let shutdown = session.shutdown(&target);
+                (Box::new(preview), Some(shutdown.diagnostics))
+            }
+        };
         match target.detach() {
             Ok(surface) => {
                 // Только ПОСЛЕ detach: GPU больше не исполняет кадры с этим пайплайном.
-                drop(pattern);
+                drop(pipeline_owner);
                 ChainRelease {
                     surface,
                     detach_error: None,
+                    camera,
                 }
             }
             Err(DetachError { error, surface }) => {
                 tracing::error!(
                     target: LOG_TARGET,
                     %error,
-                    "detach не удался: пайплайн тестового паттерна намеренно НЕ уничтожается (утечка), кадры в полёте могут его исполнять"
+                    "detach не удался: пайплайн показа намеренно НЕ уничтожается (утечка), кадры в полёте могут его исполнять"
                 );
-                std::mem::forget(pattern);
+                std::mem::forget(pipeline_owner);
                 ChainRelease {
                     surface,
                     detach_error: Some(error),
+                    camera,
                 }
             }
         }
@@ -117,6 +151,7 @@ impl AttachedDisplay {
         presentation: PresentationSurface,
         held_surface: Option<NativeSurface>,
         size: SurfaceSize,
+        camera: Option<&CameraFeed>,
     ) -> Result<Self, AttachError> {
         let target = match DisplayTarget::attach(context, presentation, config.display_target_config(size)) {
             Ok(target) => target,
@@ -129,19 +164,44 @@ impl AttachedDisplay {
                 });
             }
         };
-        let format = match target.info() {
-            Ok(info) => info.format,
+        let info = match target.info() {
+            Ok(info) => info,
             Err(error) => {
                 return Err(AttachError::SwapchainFailed(
                     classify_swapchain_error("display_target_info", &error).1,
                 ));
             }
         };
-        // Ошибка здесь: `target` уничтожится Drop-ом (с ожиданием GPU), паттерна ещё нет.
-        let pattern = TestPattern::new(context, format)
-            .map_err(|error| AttachError::SwapchainFailed(gpu_backend_error("create_test_pattern", &error)))?;
+        // Ошибка здесь: `target` уничтожится Drop-ом (с ожиданием GPU), рисовальщика ещё нет.
+        let painter = match camera {
+            None => Painter::TestPattern(
+                TestPattern::new(context, info.format)
+                    .map_err(|error| AttachError::SwapchainFailed(gpu_backend_error("create_test_pattern", &error)))?,
+            ),
+            Some(feed) => Painter::Camera {
+                preview: Box::new(
+                    RawMosaicPreview::new(context, info.format, info.frames_in_flight).map_err(|error| {
+                        AttachError::SwapchainFailed(gpu_backend_error("create_raw_mosaic_preview", &error))
+                    })?,
+                ),
+                session: Box::new(
+                    CameraSession::new(
+                        context,
+                        Arc::clone(&feed.frames),
+                        &feed.make_importer,
+                        config.camera_present_history_capacity,
+                    )
+                    .map_err(|error| {
+                        AttachError::SwapchainFailed(BackendError {
+                            operation: "create_camera_session".to_owned(),
+                            reason: error.to_string(),
+                        })
+                    })?,
+                ),
+            },
+        };
         Ok(Self {
-            chain: Some(DisplayChain { target, pattern }),
+            chain: Some(DisplayChain { target, painter }),
             held_surface,
             context: context.clone(),
             size,
@@ -177,20 +237,6 @@ impl AttachedDisplay {
             Ok(AcquireOutcome::NeedsRecreate) => return PresentOutcome::NeedsRecreate,
             Err(error) => return failure_outcome("acquire_frame", &error),
         };
-        // Паттерн показывает младшие 32 бита номера кадра: счётчик в метке циклический.
-        let pattern_frame = u32::try_from(timing.frame_index & u64::from(u32::MAX)).unwrap_or(u32::MAX);
-        if let Err(error) = chain.pattern.record(
-            frame.command_buffer(),
-            frame.pattern_target(),
-            pattern_frame,
-            frame.transform(),
-        ) {
-            // Кадр нельзя бросить: возвращаем картинку цели, иначе она потеряет слот.
-            if let Err(abandon_error) = chain.target.abandon_frame(frame) {
-                tracing::warn!(target: LOG_TARGET, %abandon_error, "не удалось вернуть неотрисованный кадр");
-            }
-            return PresentOutcome::Failed(gpu_backend_error("record_test_pattern", &error));
-        }
         // Время показа: чуть раньше ожидаемого vsync, чтобы дрожание метки не переносило
         // кадр на следующий vsync (см. `present_time`).
         let request = PresentRequest {
@@ -199,7 +245,35 @@ impl AttachedDisplay {
                     .desired_present_time(timing.expected_present, self.measured_refresh_period.get()),
             ),
         };
-        match chain.target.present(frame, request) {
+        let presented = match &mut chain.painter {
+            Painter::TestPattern(pattern) => {
+                // Паттерн показывает младшие 32 бита номера кадра: счётчик в метке циклический.
+                let pattern_frame = u32::try_from(timing.frame_index & u64::from(u32::MAX)).unwrap_or(u32::MAX);
+                if let Err(error) = pattern.record(
+                    frame.command_buffer(),
+                    frame.pattern_target(),
+                    pattern_frame,
+                    frame.transform(),
+                ) {
+                    // Кадр нельзя бросить: возвращаем картинку цели, иначе она потеряет слот.
+                    if let Err(abandon_error) = chain.target.abandon_frame(frame) {
+                        tracing::warn!(target: LOG_TARGET, %abandon_error, "не удалось вернуть неотрисованный кадр");
+                    }
+                    return PresentOutcome::Failed(gpu_backend_error("record_test_pattern", &error));
+                }
+                chain.target.present(frame, request)
+            }
+            Painter::Camera { preview, session } => {
+                match session.draw_and_present(&mut chain.target, preview, frame, request) {
+                    Ok(outcome) => Ok(outcome),
+                    Err(CameraDrawError::Swapchain(error)) => Err(error),
+                    Err(CameraDrawError::Record(error)) => {
+                        return PresentOutcome::Failed(gpu_backend_error("record_camera_preview", &error));
+                    }
+                }
+            }
+        };
+        match presented {
             Ok(GpuPresentOutcome::Presented { present_id }) => {
                 self.present_history.record(present_id, timing.frame_index);
                 PresentOutcome::Presented
@@ -225,7 +299,7 @@ impl AttachedDisplay {
                 // Показы старой цепочки отчитаться уже не смогут: поток вычерпал их до resize.
                 self.present_history.clear();
                 if format_changed {
-                    self.rebuild_pattern()?;
+                    self.rebuild_painter()?;
                 }
                 Ok(())
             }
@@ -245,23 +319,38 @@ impl AttachedDisplay {
         self.present_history.len()
     }
 
-    /// Новый пайплайн под новый формат. Старый уничтожается, когда цель дождалась СВОИХ сабмитов
+    /// Новый пайплайн под новый формат (для камеры пересоздаётся только предпросмотр, сессия живёт дальше). Старый уничтожается, когда цель дождалась СВОИХ сабмитов
     /// (fence'ы кольца, с таймаутом): `vkDeviceWaitIdle` на весь GPU не нужен и не ограничен по
     /// времени. Показы на пайплайн не ссылаются, поэтому их ждать не требуется.
-    fn rebuild_pattern(&mut self) -> Result<(), BackendError> {
-        let chain = self.chain.as_mut().ok_or_else(|| chain_missing("rebuild_pattern"))?;
-        let format = chain
+    fn rebuild_painter(&mut self) -> Result<(), BackendError> {
+        let chain = self.chain.as_mut().ok_or_else(|| chain_missing("rebuild_painter"))?;
+        let info = chain
             .target
             .info()
-            .map_err(|error| classify_swapchain_error("display_target_info", &error).1)?
-            .format;
+            .map_err(|error| classify_swapchain_error("display_target_info", &error).1)?;
         chain
             .target
             .wait_for_submitted_frames()
             .map_err(|error| classify_swapchain_error("wait_for_submitted_frames_before_pattern_rebuild", &error).1)?;
-        chain.pattern = TestPattern::new(&self.context, format)
-            .map_err(|error| gpu_backend_error("rebuild_test_pattern", &error))?;
+        match &mut chain.painter {
+            Painter::TestPattern(pattern) => {
+                *pattern = TestPattern::new(&self.context, info.format)
+                    .map_err(|error| gpu_backend_error("rebuild_test_pattern", &error))?;
+            }
+            Painter::Camera { preview, .. } => {
+                **preview = RawMosaicPreview::new(&self.context, info.format, info.frames_in_flight)
+                    .map_err(|error| gpu_backend_error("rebuild_raw_mosaic_preview", &error))?;
+            }
+        }
         Ok(())
+    }
+
+    /// Счётчики показа кадров камеры (`None` — показывается тестовый паттерн).
+    pub(super) fn camera_diagnostics(&self) -> Option<CameraStreamDiagnostics> {
+        match &self.chain.as_ref()?.painter {
+            Painter::Camera { session, .. } => Some(session.diagnostics()),
+            Painter::TestPattern(_) => None,
+        }
     }
 
     /// Параметры цепочки в нейтральном виде; ошибка запроса логируется, а не глотается.
@@ -313,12 +402,18 @@ impl AttachedDisplay {
             return ReleaseReport {
                 surface: held_surface,
                 error: Some(chain_missing("release")),
+                camera: None,
             };
         };
-        let ChainRelease { surface, detach_error } = chain.release();
+        let ChainRelease {
+            surface,
+            detach_error,
+            camera,
+        } = chain.release();
         ReleaseReport {
             surface: reclaim_window(surface, held_surface),
             error: detach_error.map(|error| gpu_backend_error("detach_display_target", &error)),
+            camera,
         }
     }
 }

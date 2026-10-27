@@ -163,6 +163,17 @@ impl GpuWaitFence {
     pub fn as_sync_fd(&self) -> Option<BorrowedFd<'_>> {
         self.state.as_sync_fd()
     }
+
+    /// Независимая копия fence (`dup` дескриптора): нужна, когда один кадр камеры читают
+    /// несколько потребителей и каждый ждёт acquire-fence сам. Сигналенный копируется без
+    /// системного вызова. Ошибка `dup` (кончились дескрипторы) возвращается, а не прячется.
+    #[cfg(unix)]
+    pub fn try_clone(&self) -> std::io::Result<Self> {
+        match self.state.as_sync_fd() {
+            None => Ok(Self::already_signaled()),
+            Some(fd) => fd.try_clone_to_owned().map(Self::from_sync_fd),
+        }
+    }
 }
 
 /// Fence, который сигналит, когда GPU закончил работу с буфером (для `AImage_deleteAsync`).

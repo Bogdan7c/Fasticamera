@@ -19,6 +19,7 @@ pub mod hardware_buffer_cache;
 pub mod instance;
 pub mod live_objects;
 pub mod offscreen;
+pub mod raw_mosaic_preview;
 pub mod shaders;
 pub mod swapchain;
 pub mod sync;

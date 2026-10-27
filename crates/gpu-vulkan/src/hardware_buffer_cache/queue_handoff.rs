@@ -45,6 +45,24 @@ pub enum ReleaseTarget {
     KeepOwned,
 }
 
+/// Какая стадия конвейера читает ресурс после acquire (и до release): от неё зависят маски барьеров.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsumerStage {
+    /// Compute-шейдер (контрольные суммы).
+    Compute,
+    /// Фрагментный шейдер (предпросмотр кадра камеры на экране).
+    Fragment,
+}
+
+impl ConsumerStage {
+    fn pipeline_stage(self) -> vk::PipelineStageFlags2 {
+        match self {
+            Self::Compute => vk::PipelineStageFlags2::COMPUTE_SHADER,
+            Self::Fragment => vk::PipelineStageFlags2::FRAGMENT_SHADER,
+        }
+    }
+}
+
 fn color_subresource_range() -> vk::ImageSubresourceRange {
     vk::ImageSubresourceRange {
         aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -66,6 +84,25 @@ pub fn record_image_acquire(
     acquire: ImageAcquire,
     queue_family_index: u32,
 ) {
+    record_image_acquire_for_stage(
+        device,
+        command_buffer,
+        image,
+        acquire,
+        queue_family_index,
+        ConsumerStage::Compute,
+    );
+}
+
+/// То же, что [`record_image_acquire`], но читать картинку будет стадия `stage`.
+pub fn record_image_acquire_for_stage(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    image: vk::Image,
+    acquire: ImageAcquire,
+    queue_family_index: u32,
+    stage: ConsumerStage,
+) {
     let barrier = match acquire {
         ImageAcquire::FromForeignQueue => vk::ImageMemoryBarrier2::default()
             // Предыдущие записи сделал внешний владелец; их видимость обеспечивает сам acquire.
@@ -82,7 +119,7 @@ pub fn record_image_acquire(
             .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED),
     }
-    .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+    .dst_stage_mask(stage.pipeline_stage())
     .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
     .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
     .image(image)
@@ -102,11 +139,30 @@ pub fn record_image_release(
     target: ReleaseTarget,
     queue_family_index: u32,
 ) {
+    record_image_release_for_stage(
+        device,
+        command_buffer,
+        image,
+        target,
+        queue_family_index,
+        ConsumerStage::Compute,
+    );
+}
+
+/// То же, что [`record_image_release`], но картинку читала стадия `stage`.
+pub fn record_image_release_for_stage(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    image: vk::Image,
+    target: ReleaseTarget,
+    queue_family_index: u32,
+    stage: ConsumerStage,
+) {
     if target == ReleaseTarget::KeepOwned {
         return;
     }
     let barrier = vk::ImageMemoryBarrier2::default()
-        .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+        .src_stage_mask(stage.pipeline_stage())
         .src_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
         .dst_stage_mask(vk::PipelineStageFlags2::NONE)
         .dst_access_mask(vk::AccessFlags2::NONE)
@@ -130,13 +186,32 @@ pub fn record_buffer_acquire(
     acquire: BufferAcquire,
     queue_family_index: u32,
 ) {
+    record_buffer_acquire_for_stage(
+        device,
+        command_buffer,
+        buffer,
+        acquire,
+        queue_family_index,
+        ConsumerStage::Compute,
+    );
+}
+
+/// То же, что [`record_buffer_acquire`], но читать буфер будет стадия `stage`.
+pub fn record_buffer_acquire_for_stage(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    buffer: vk::Buffer,
+    acquire: BufferAcquire,
+    queue_family_index: u32,
+    stage: ConsumerStage,
+) {
     if acquire == BufferAcquire::AlreadyOwned {
         return;
     }
     let barrier = vk::BufferMemoryBarrier2::default()
         .src_stage_mask(vk::PipelineStageFlags2::NONE)
         .src_access_mask(vk::AccessFlags2::NONE)
-        .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+        .dst_stage_mask(stage.pipeline_stage())
         .dst_access_mask(vk::AccessFlags2::SHADER_STORAGE_READ)
         .src_queue_family_index(vk::QUEUE_FAMILY_FOREIGN_EXT)
         .dst_queue_family_index(queue_family_index)
@@ -157,11 +232,30 @@ pub fn record_buffer_release(
     target: ReleaseTarget,
     queue_family_index: u32,
 ) {
+    record_buffer_release_for_stage(
+        device,
+        command_buffer,
+        buffer,
+        target,
+        queue_family_index,
+        ConsumerStage::Compute,
+    );
+}
+
+/// То же, что [`record_buffer_release`], но буфер читала стадия `stage`.
+pub fn record_buffer_release_for_stage(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    buffer: vk::Buffer,
+    target: ReleaseTarget,
+    queue_family_index: u32,
+    stage: ConsumerStage,
+) {
     if target == ReleaseTarget::KeepOwned {
         return;
     }
     let barrier = vk::BufferMemoryBarrier2::default()
-        .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+        .src_stage_mask(stage.pipeline_stage())
         .src_access_mask(vk::AccessFlags2::SHADER_STORAGE_READ)
         .dst_stage_mask(vk::PipelineStageFlags2::NONE)
         .dst_access_mask(vk::AccessFlags2::NONE)

@@ -21,6 +21,7 @@ shell-contract = { path = "crates/shell-contract" }
 android-shell = { path = "crates/android-shell" }
 gpu-vulkan = { path = "crates/gpu-vulkan" }
 render-loop = { path = "crates/render-loop" }
+raw-frame-stream = { path = "crates/raw-frame-stream" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -29,6 +30,8 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["std", "registry"] }
 jni = "0.22.4"
 android_log-sys = "0.3.2"
+# Чтение часов BOOTTIME/MONOTONIC для замера задержки «сенсор -> дисплей» (fasticamera-app).
+libc = "0.2"
 # Сырые биндинги NDK (rust-mobile). Только в android-shell; nativewindow — линковка libnativewindow
 # (ANativeWindow_setFrameRate*). Тепловых функций в 0.6 нет — объявлены в android-shell сами.
 ndk-sys = { version = "0.6.0", default-features = false, features = ["nativewindow"] }

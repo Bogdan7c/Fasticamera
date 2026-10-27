@@ -12,6 +12,7 @@ use super::*;
 use crate::camera_config::CameraConfig;
 use crate::camera_test_support::{FakeCameraRig, WAIT};
 use crate::camera_wiring::{CameraBackendParts, start_camera};
+use crate::raw_stream_services::RawStreamServices;
 
 fn mode_30() -> StreamMode {
     StreamMode {
@@ -238,6 +239,7 @@ fn full_command_queue_is_counted_and_does_not_panic_or_block() {
         CameraBackendParts {
             factory: gated,
             diagnostics,
+            raw_stream: RawStreamServices::detached(),
         },
     );
 
@@ -275,4 +277,24 @@ fn every_dispatch_kind_lands_in_its_own_counter() {
             rejected_engine_stopped: 2,
         }
     );
+}
+
+#[test]
+fn scenario_end_disarms_an_armed_cpu_probe_and_reports_it() {
+    let rig = FakeCameraRig::new();
+    rig.services.raw_stream().arm_cpu_probe();
+    assert!(rig.cpu_probe.is_armed(), "рубильник общий с бэкендом");
+
+    let effects = rig.services.scenario_ended(AppVisibility::Foreground);
+
+    assert!(effects.cpu_probe_disarmed);
+    assert!(!rig.cpu_probe.is_armed(), "проба не переживает сценарий");
+}
+
+#[test]
+fn scenario_end_with_a_quiet_probe_reports_nothing_to_disarm() {
+    let rig = FakeCameraRig::new();
+    let effects = rig.services.scenario_ended(AppVisibility::Foreground);
+    assert!(!effects.cpu_probe_disarmed);
+    assert!(!rig.cpu_probe.is_armed());
 }

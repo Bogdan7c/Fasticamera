@@ -25,7 +25,8 @@ use ash::vk;
 use crate::context::GpuContext;
 use crate::error::{GpuError, run_step};
 use crate::live_objects::{OwnedCommandPool, OwnedFence, OwnedSemaphore};
-use crate::swapchain::FramesInFlight;
+use crate::swapchain::{FramesInFlight, PresentSync};
+use crate::sync::{ExportableSemaphore, PendingReleaseSignal};
 
 /// Максимальное ожидание, передаваемое Vulkan, в наносекундах. Это `i64::MAX`, а не «вечность»
 /// (`u64::MAX` у Vulkan означает бесконечное ожидание, чего в crate быть не должно): 292 года.
@@ -39,6 +40,13 @@ pub(crate) fn timeout_nanos(timeout: Duration) -> u64 {
 /// Номер слота кольца (непрозрачный: снаружи кольца его не придумать).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SlotIndex(usize);
+
+impl SlotIndex {
+    /// Номер слота (для наборов дескрипторов по слотам: слот свободен, когда его fence сигнален).
+    pub(crate) fn get(self) -> usize {
+        self.0
+    }
+}
 
 /// Итог ожидания очередного слота.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,14 +223,54 @@ impl FrameRing {
         Ok(command_buffer)
     }
 
-    /// Заканчивает запись и отправляет слот: ждёт «картинка получена», сигналит «рендер готов»
-    /// картинки `image_index` и fence слота. После успеха слот занят, `next_slot` двигается.
+    /// Заканчивает запись и отправляет слот без дополнительной синхронизации (см.
+    /// [`Self::end_and_submit_with_sync`]). Боевой путь всегда идёт через `_with_sync`; эта форма нужна тестам кольца.
+    #[cfg(test)]
+    pub(crate) fn end_and_submit(&mut self, slot: SlotIndex, image_index: u32) -> Result<(), GpuError> {
+        self.end_and_submit_with_sync(slot, image_index, &PresentSync::none())
+            .map(|_| ())
+    }
+
+    /// Заканчивает запись и отправляет слот: ждёт «картинка получена» (и acquire-fence камеры, если
+    /// задан в `sync`), сигналит «рендер готов» картинки `image_index`, fence слота (и экспортируемый
+    /// семафор, если задан). После успеха слот занят, `next_slot` двигается.
+    ///
+    /// Возвращает токен экспорта release-fence, если `sync` просил экспорт. Токен можно превратить
+    /// в fence только после этого успешного сабмита (проверяется типами).
     ///
     /// Если сам сабмит вернул ошибку (потеря устройства, нехватка памяти), fence слота остаётся
     /// несигнальным: следующее ожидание слота упрётся в таймаут — это фатальное состояние,
-    /// вызывающий должен пересоздать контекст.
-    pub(crate) fn end_and_submit(&mut self, slot: SlotIndex, image_index: u32) -> Result<(), GpuError> {
+    /// вызывающий должен пересоздать контекст. Резерв экспортируемого семафора при этом снимается.
+    pub(crate) fn end_and_submit_with_sync<'sync>(
+        &mut self,
+        slot: SlotIndex,
+        image_index: u32,
+        sync: &PresentSync<'sync>,
+    ) -> Result<Option<PendingReleaseSignal<'sync>>, GpuError> {
         let render_finished = self.render_finished_semaphore(image_index)?;
+        let release_export = sync.release_export();
+        if let Some(export) = release_export {
+            // Занимаем семафор ДО любых необратимых шагов (сброс fence слота): занятый семафор —
+            // ошибка вызывающего, и она не должна оставить слот с несигнальным fence.
+            export.reserve_for_signal()?;
+        }
+        if let Err(error) = self.submit_slot(slot, render_finished, sync) {
+            if let Some(export) = release_export {
+                export.cancel_reservation();
+            }
+            return Err(error);
+        }
+        self.next_slot = (self.next_slot + 1) % self.slots.len();
+        Ok(release_export.map(ExportableSemaphore::pending_signal))
+    }
+
+    /// Заканчивает запись и отправляет сабмит слота (ожидания и сигналы — по `sync`).
+    fn submit_slot(
+        &self,
+        slot: SlotIndex,
+        render_finished: vk::Semaphore,
+        sync: &PresentSync<'_>,
+    ) -> Result<(), GpuError> {
         let device = self.context.device();
         let frame = &self.slots[slot.0];
         // SAFETY: буфер в состоянии записи (begin_recording), запись идёт из этого потока.
@@ -236,22 +284,38 @@ impl FrameRing {
             "vkResetFences",
         )?;
 
-        let waits = [vk::SemaphoreSubmitInfo::default()
-            .semaphore(frame.image_acquired.handle())
-            // Картинка нужна только с момента записи в цветовое вложение.
-            .stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)];
-        let signals = [vk::SemaphoreSubmitInfo::default()
-            .semaphore(render_finished)
-            .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)];
+        let mut waits = vec![
+            vk::SemaphoreSubmitInfo::default()
+                .semaphore(frame.image_acquired.handle())
+                // Картинка нужна только с момента записи в цветовое вложение.
+                .stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT),
+        ];
+        if let Some(camera_acquire) = sync.camera_acquire_semaphore() {
+            // Буфер камеры читает фрагментный шейдер: раньше этой стадии ждать fence не нужно.
+            waits.push(
+                vk::SemaphoreSubmitInfo::default()
+                    .semaphore(camera_acquire)
+                    .stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER),
+            );
+        }
+        let mut signals = vec![
+            vk::SemaphoreSubmitInfo::default()
+                .semaphore(render_finished)
+                .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS),
+        ];
+        if let Some(export) = sync.release_export() {
+            signals.push(
+                vk::SemaphoreSubmitInfo::default()
+                    .semaphore(export.handle())
+                    .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS),
+            );
+        }
         let command_buffers = [vk::CommandBufferSubmitInfo::default().command_buffer(frame.command_buffer)];
         let submit = vk::SubmitInfo2::default()
             .wait_semaphore_infos(&waits)
             .command_buffer_infos(&command_buffers)
             .signal_semaphore_infos(&signals);
-        self.context.submit(&[submit], frame.in_flight.handle())?;
-
-        self.next_slot = (self.next_slot + 1) % self.slots.len();
-        Ok(())
+        self.context.submit(&[submit], frame.in_flight.handle())
     }
 
     /// Ждёт, пока GPU закончит работу ВСЕХ слотов, но не дольше `timeout` (общий бюджет).

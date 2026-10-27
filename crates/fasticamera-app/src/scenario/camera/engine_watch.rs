@@ -27,6 +27,10 @@ pub enum RunFailure {
     NeverStreaming { last_state: &'static str },
     /// Предыдущая камера не закрылась за срок, шаг не начинался.
     PreviousCameraDidNotClose { last_state: &'static str },
+    /// `raw-stream`: рендер не поднялся, показывать кадры камеры некому.
+    RenderUnavailable { reason: String },
+    /// `raw-stream`: камера пошла, а рендер так и не показал её кадр за срок.
+    RenderNeverShowedCamera { last_seen: &'static str },
     /// `camera-evict`: вытеснения не случилось за срок.
     #[cfg(any(test, feature = "debug-scenarios"))]
     NeverEvicted { last_state: &'static str },
@@ -52,6 +56,12 @@ impl RunFailure {
             }
             RunFailure::PreviousCameraDidNotClose { last_state } => {
                 format!("предыдущая камера не закрылась (состояние: {last_state}), шаг не выполнялся")
+            }
+            RunFailure::RenderUnavailable { reason } => {
+                format!("рендер недоступен, кадры камеры показывать некому: {reason}")
+            }
+            RunFailure::RenderNeverShowedCamera { last_seen } => {
+                format!("рендер не показал ни одного кадра камеры за отведённое время ({last_seen})")
             }
             #[cfg(any(test, feature = "debug-scenarios"))]
             RunFailure::NeverEvicted { last_state } => {
@@ -86,7 +96,10 @@ pub fn failure_of_event(event: &CameraEvent) -> Option<RunFailure> {
         CameraEvent::StreamConfigurationFailed { failure, .. } => Some(RunFailure::ConfigurationFailed {
             failure: failure.to_string(),
         }),
+        // Откат частоты — честная деградация, а не отказ: движок продолжает с запасной частотой
+        // (решение 23). Сценарии пишут её в отчёт и судят по фактической частоте, а не молчат.
         CameraEvent::StateChanged { .. }
+        | CameraEvent::StreamDegraded { .. }
         | CameraEvent::Unavailable { .. }
         | CameraEvent::Recovered { .. }
         | CameraEvent::StreamConfigured { .. } => None,

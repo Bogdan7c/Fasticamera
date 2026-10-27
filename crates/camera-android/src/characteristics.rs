@@ -14,7 +14,7 @@ use camera_contract::capabilities::{
     Rational, RawSensorInfo, RawStreamOption, RawSupport, ReferenceIlluminant, RequestCapability, SensorLevels,
     VendorProcessingFlags,
 };
-use camera_contract::geometry::{PixelRect, PixelSize};
+use camera_contract::geometry::{PixelRect, PixelSize, SensorOrientation};
 use camera_contract::ids::{CameraId, CameraTopology, LensFacing};
 use camera_contract::raw_format::{CfaLayout, MosaicKind, MosaicPattern, NativeMosaic, RawFormat};
 use serde::Serialize;
@@ -129,6 +129,7 @@ pub fn parse_characteristics(
     let topology = parse_topology(source, &request_capabilities, &mut notes);
     let pixel_array = parse_size(source, tags::PIXEL_ARRAY_SIZE)?;
     let active_array = parse_active_array(source)?;
+    let sensor_orientation = parse_sensor_orientation(source)?;
     let optics = parse_optics(source, &mut notes)?;
     let has_raw = request_capabilities.contains(&RequestCapability::Raw);
     let has_manual_sensor = request_capabilities.contains(&RequestCapability::ManualSensor);
@@ -153,6 +154,7 @@ pub fn parse_characteristics(
         request_capabilities,
         pixel_array,
         active_array,
+        sensor_orientation,
         raw_streams,
         ae_fps_ranges: parse_ae_fps_ranges(source, &mut notes),
         manual_sensor: parse_manual_sensor(source, has_manual_sensor, &mut notes),
@@ -268,6 +270,17 @@ fn parse_active_array(source: &dyn MetadataSource) -> Result<PixelRect, Characte
         left: to_pixels(tag, values[0])?,
         top: to_pixels(tag, values[1])?,
         size: PixelSize::new(to_pixels(tag, values[2])?, to_pixels(tag, values[3])?),
+    })
+}
+
+/// `ACAMERA_SENSOR_ORIENTATION`: обязателен (без него кадр нельзя повернуть к экрану). Camera2
+/// допускает только 0/90/180/270; другое число — `UnknownValue`, а не округление.
+fn parse_sensor_orientation(source: &dyn MetadataSource) -> Result<SensorOrientation, CharacteristicsError> {
+    let tag = tags::SENSOR_ORIENTATION;
+    let degrees = required(tag, read_int32(source, tag))?;
+    SensorOrientation::from_degrees(degrees).ok_or(CharacteristicsError::UnknownValue {
+        tag,
+        value: i64::from(degrees),
     })
 }
 

@@ -18,6 +18,7 @@ use super::SwapchainError;
 use super::config::DisplayTargetConfig;
 use super::display_timing::PastPresentation;
 use super::frame::{AcquireOutcome, DisplayFrame, PresentOutcome, PresentRequest};
+use super::present_sync::{PresentSync, SyncedPresent};
 use super::state::TargetState;
 use super::surface::PresentationSurface;
 use crate::context::GpuContext;
@@ -155,13 +156,31 @@ impl DisplayTarget {
 
     /// Показывает кадр.
     pub fn present(&mut self, frame: DisplayFrame, request: PresentRequest) -> Result<PresentOutcome, SwapchainError> {
-        self.state_mut()?.present(frame, request)
+        self.present_with_sync(frame, request, &PresentSync::none()).outcome
+    }
+
+    /// Показывает кадр, добавляя к сабмиту ожидание acquire-fence камеры и/или экспорт release-fence
+    /// (см. [`PresentSync`]). Без дополнительной синхронизации ведёт себя в точности как [`Self::present`].
+    ///
+    /// Возвращает исход показа вместе с токеном экспорта и фактом принятия сабмита: даже если показ
+    /// вернул ошибку, принятый сабмит уже запущен на GPU, и вызывающий обязан это учесть.
+    pub fn present_with_sync<'sync>(
+        &mut self,
+        frame: DisplayFrame,
+        request: PresentRequest,
+        sync: &PresentSync<'sync>,
+    ) -> SyncedPresent<'sync> {
+        match self.state_mut() {
+            Ok(state) => state.present(frame, request, sync),
+            Err(error) => SyncedPresent::failed_before_submit(error),
+        }
     }
 
     /// Завершает кадр, который не удалось дорисовать: картинка с неопределённым содержимым всё равно
     /// показывается (иначе семафор слота остался бы сигнальным). Вызывайте вместо `present` при ошибке рисования.
     pub fn abandon_frame(&mut self, frame: DisplayFrame) -> Result<PresentOutcome, SwapchainError> {
-        self.state_mut()?.present(frame, PresentRequest::default())
+        self.present_with_sync(frame, PresentRequest::default(), &PresentSync::none())
+            .outcome
     }
 
     /// Пересоздаёт swapchain; `size` — новый размер из `surfaceChanged` (`None` — оставить прежний).

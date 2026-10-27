@@ -64,6 +64,12 @@ pub enum EventNote {
     StreamConfigurationFailed {
         failure: String,
     },
+    /// Честная деградация (не отказ): запрошенную частоту не достичь, движок откатился на запасную.
+    StreamDegraded {
+        requested_fps: u32,
+        fallback_fps: u32,
+        failure: String,
+    },
 }
 
 impl EventNote {
@@ -85,6 +91,15 @@ impl EventNote {
                 lever: lever_name(&stream.frame_rate_mechanism),
             },
             CameraEvent::StreamConfigurationFailed { failure, .. } => EventNote::StreamConfigurationFailed {
+                failure: failure.to_string(),
+            },
+            CameraEvent::StreamDegraded {
+                requested,
+                fallback,
+                failure,
+            } => EventNote::StreamDegraded {
+                requested_fps: requested.frame_rate.frames_per_second(),
+                fallback_fps: fallback.frame_rate.frames_per_second(),
                 failure: failure.to_string(),
             },
         }

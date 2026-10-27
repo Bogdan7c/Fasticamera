@@ -12,6 +12,9 @@ camera-contract.workspace = true
 camera-core.workspace = true
 # Пустой на хосте; на Android — биндинги Camera2 NDK. Нейтральная логика crate-а его не использует.
 camera-ndk-sys.workspace = true
+raw-frame-stream.workspace = true
+shell-contract.workspace = true
+libc.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

@@ -63,6 +63,7 @@ pub fn presenting_status() -> RenderStatus {
             validation_warnings: 0,
             detach_failures: 0,
             known_deviations: Default::default(),
+            camera: None,
         },
         frame_rate_request: Some(shell_contract::commands::FrameRateOutcome::Applied),
         screen_wake: render_loop::thread::ScreenWakeStatus {
@@ -71,6 +72,7 @@ pub fn presenting_status() -> RenderStatus {
             commands_sent: 1,
         },
         fault: None,
+        recent_presentations: Vec::new(),
     }
 }
 

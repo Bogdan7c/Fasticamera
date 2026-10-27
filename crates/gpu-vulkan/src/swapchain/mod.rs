@@ -26,6 +26,7 @@ pub mod target;
 
 mod fault_injection;
 mod present_fences;
+pub mod present_sync;
 mod resources;
 mod state;
 
@@ -35,6 +36,7 @@ pub use self::display_timing::PastPresentation;
 pub use self::fault_injection::InjectedFault;
 pub use self::frame::{AcquireOutcome, DisplayFrame, PresentOutcome, PresentRequest};
 pub use self::policy::{PlanOutcome, SurfaceSupport, SwapchainPlan};
+pub use self::present_sync::{PresentSync, SubmitProgress, SyncedPresent};
 pub use self::surface::PresentationSurface;
 pub use self::target::{AttachError, DetachError, DisplayTarget, DisplayTargetInfo, RecreateOutcome};
 

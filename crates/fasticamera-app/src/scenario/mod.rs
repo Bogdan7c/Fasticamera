@@ -24,7 +24,7 @@ mod camera;
 mod gpu_fence;
 mod render;
 mod render_lifecycle;
-mod render_metrics;
+pub(crate) mod render_metrics;
 
 use serde::{Deserialize, Serialize};
 
@@ -71,12 +71,12 @@ pub enum ScenarioMode {
 }
 
 /// Имена сценариев, которые парсер знает вообще (включая отладочные).
-const DEBUG_ONLY_SCENARIO_NAMES: &[&str] = &["panic", "camera-evict"];
+const DEBUG_ONLY_SCENARIO_NAMES: &[&str] = &["panic", "camera-evict", "raw-stream-cpu-probe"];
 
 impl Scenario {
     /// Все сценарии этой сборки.
-    pub fn available() -> &'static [Scenario] {
-        &[
+    pub fn available() -> Vec<Scenario> {
+        let own = [
             Scenario::Hello,
             #[cfg(feature = "debug-scenarios")]
             Scenario::Panic,
@@ -88,11 +88,9 @@ impl Scenario {
             Scenario::RenderLifecycle,
             Scenario::AhbImport,
             Scenario::GpuFence,
-            Scenario::Camera(camera::CameraScenario::Catalog),
-            Scenario::Camera(camera::CameraScenario::Stream),
-            #[cfg(feature = "debug-scenarios")]
-            Scenario::Camera(camera::CameraScenario::Evict),
-        ]
+        ];
+        let cameras = camera::CameraScenario::scenarios();
+        own.into_iter().chain(cameras).collect()
     }
 
     pub fn name(self) -> &'static str {

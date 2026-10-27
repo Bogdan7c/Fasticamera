@@ -19,7 +19,7 @@ use camera_core::{CameraEvent, CameraHandle, CameraState, CameraStatus, CommandI
 use super::detail::emit_details;
 use super::engine_watch::{RunFailure, failure_of_event, fatal_failure, rejected_failure, unavailable_reasons};
 use super::progress::{Deadline, EventLog};
-use super::stream_report::{ConfiguredEntry, RawSinkDelta, StepObservation, StepReport, StreamReport};
+use super::stream_report::{ConfiguredEntry, ReaderDelta, StepObservation, StepReport, StreamReport};
 use crate::camera_scenario_config::{ResolvedStep, SCENARIO_CAPTURE_INTENT, StreamStepConfig};
 use crate::camera_service::RunningCamera;
 use crate::scenario::observing::{
@@ -87,6 +87,8 @@ enum Phase {
 struct Run {
     plan: Vec<PlannedStep>,
     timeouts: Timeouts,
+    /// Сколько кадров читатели вправе держать «в полёте» (потолок плана пула).
+    reader_in_flight_limit: u32,
     phase: Phase,
     completed: Vec<StepReport>,
 }
@@ -153,10 +155,17 @@ fn streaming_of_step(status: &CameraStatus, planned: &PlannedStep) -> Option<Con
 }
 
 impl Run {
-    fn new(plan: Vec<PlannedStep>, timeouts: Timeouts, first_close: Deadline, close_command: CommandId) -> Self {
+    fn new(
+        plan: Vec<PlannedStep>,
+        timeouts: Timeouts,
+        reader_in_flight_limit: u32,
+        first_close: Deadline,
+        close_command: CommandId,
+    ) -> Self {
         Self {
             plan,
             timeouts,
+            reader_in_flight_limit,
             phase: Phase::Closing(ClosingWait {
                 next_index: 0,
                 deadline: first_close,
@@ -336,7 +345,7 @@ impl Run {
             time_to_streaming_ms: None,
             stats: None,
             state_at_end: None,
-            raw_sink: None,
+            reader: None,
             window_ms: None,
             raw_fps: None,
             callback_panics: running.diagnostics_snapshot().callback_panics,
@@ -345,7 +354,7 @@ impl Run {
             events: Vec::new(),
             events_dropped: 0,
         };
-        self.push_report(running, index, observation);
+        self.push_report(index, observation);
     }
 
     /// Завершает шаг с наблюдениями на этот момент (`reached` есть, если поток доходил до `Streaming`).
@@ -363,10 +372,10 @@ impl Run {
         // Вторая независимая оценка частоты: RAW-кадры с момента `Streaming` за фактическую длительность замера.
         let raw_rate = reached.as_ref().map(|reached| {
             let window = now.saturating_duration_since(reached.at);
-            let frames = RawSinkDelta::between(&reached.diagnostics_at_streaming, &after).frames_acquired;
+            let frames = ReaderDelta::between(&reached.diagnostics_at_streaming, &after).frames_acquired;
             (
                 u64::try_from(window.as_millis()).unwrap_or(u64::MAX),
-                RawSinkDelta::frames_per_second(frames, window),
+                ReaderDelta::frames_per_second(frames, window),
             )
         });
         let observation = StepObservation {
@@ -375,7 +384,7 @@ impl Run {
             configured: reached.map(|reached| reached.configured),
             stats: Some(status.stream.clone()),
             state_at_end: Some(status.state.name()),
-            raw_sink: Some(RawSinkDelta::between(&step.diagnostics_before, &after)),
+            reader: Some(ReaderDelta::between(&step.diagnostics_before, &after)),
             window_ms: raw_rate.map(|(window_ms, _)| window_ms),
             raw_fps: raw_rate.and_then(|(_, fps)| fps),
             callback_panics: after.callback_panics,
@@ -386,16 +395,16 @@ impl Run {
             events,
             events_dropped,
         };
-        self.push_report(running, step.index, observation);
+        self.push_report(step.index, observation);
     }
 
-    fn push_report(&mut self, running: &RunningCamera, index: usize, observation: StepObservation) {
+    fn push_report(&mut self, index: usize, observation: StepObservation) {
         let target = self.plan[index].config.clone();
         self.completed.push(StepReport::judge(
             index,
             target,
             observation,
-            running.raw_reader_max_images(),
+            self.reader_in_flight_limit,
         ));
     }
 
@@ -465,7 +474,14 @@ impl ObservingScenario for CameraStreamScenario {
             }
         };
         let first_close = Deadline::after_millis(context.now, timeouts.close_ms);
-        self.run = Some(Run::new(plan, timeouts, first_close, close_command));
+        let reader_in_flight_limit = context.camera.raw_stream().pool_plan_upper_bound().reader_max_images();
+        self.run = Some(Run::new(
+            plan,
+            timeouts,
+            reader_in_flight_limit,
+            first_close,
+            close_command,
+        ));
         ScenarioStep::Continue
     }
 
@@ -491,7 +507,7 @@ impl ObservingScenario for CameraStreamScenario {
         };
         let report = StreamReport {
             measure_ms: finished.timeouts.measure_ms,
-            raw_in_flight_limit: running.raw_reader_max_images(),
+            reader_in_flight_limit: finished.reader_in_flight_limit,
             steps: finished.completed,
             backend: running.diagnostics_snapshot(),
         };

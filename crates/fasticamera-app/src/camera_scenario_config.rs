@@ -15,6 +15,8 @@ use camera_contract::raw_format::RawFormat;
 use camera_contract::stream::{InvalidFrameRate, ReadoutAspect, StreamMode, TargetFrameRate};
 use serde::{Deserialize, Serialize};
 
+use crate::raw_stream_scenario_config::{RawStreamScenarioConfig, RawStreamScenarioConfigError};
+
 /// Формат RAW в конфиге.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -258,6 +260,8 @@ pub struct CameraScenarioConfig {
     /// Шаги `camera-stream` (по умолчанию — матрица решения 21 и фактов 00).
     pub stream_steps: Vec<StreamStepConfig>,
     pub evict: EvictScenarioConfig,
+    /// Сценарии потока кадров `raw-stream*` (сессия 05).
+    pub raw_stream: RawStreamScenarioConfig,
 }
 
 fn step(
@@ -308,6 +312,7 @@ impl Default for CameraScenarioConfig {
                 step("2", Raw16, SixteenByNine, 60, PublicAeTargetRange, 57.0),
             ],
             evict: EvictScenarioConfig::default(),
+            raw_stream: RawStreamScenarioConfig::default(),
         }
     }
 }
@@ -323,6 +328,8 @@ pub enum CameraScenarioConfigError {
     EmptyCameraId { index: usize },
     #[error("частота: {0}")]
     InvalidFrameRate(#[from] InvalidFrameRate),
+    #[error("raw_stream: {0}")]
+    RawStream(#[from] RawStreamScenarioConfigError),
     #[error("ID камеры: {0}")]
     InvalidCameraId(#[from] EmptyCameraId),
     #[error(
@@ -370,6 +377,7 @@ impl CameraScenarioConfig {
             }
         }
         self.evict.resolve()?;
+        self.raw_stream.validate()?;
         Ok(())
     }
 }

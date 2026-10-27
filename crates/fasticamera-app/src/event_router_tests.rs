@@ -44,6 +44,8 @@ use crate::scenario::{Scenario, ScenarioConfig};
 mod camera;
 #[path = "event_router_camera_scenario_tests.rs"]
 mod camera_scenarios;
+#[path = "event_router_raw_stream_tests.rs"]
+mod raw_stream;
 #[path = "event_router_render_tests.rs"]
 mod render;
 

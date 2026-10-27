@@ -30,7 +30,7 @@ const WATCHED_VARIABLES: [&str; 6] = [
 ];
 
 /// Разрешённые функции: только то, что нужно бэкенду камеры (по префиксам имён NDK).
-const ALLOWED_FUNCTIONS: [&str; 9] = [
+const ALLOWED_FUNCTIONS: [&str; 13] = [
     "ACameraManager_.*",
     "ACameraDevice_.*",
     "ACameraCaptureSession_.*",
@@ -42,10 +42,16 @@ const ALLOWED_FUNCTIONS: [&str; 9] = [
     "ACameraMetadata_(getConstEntry|getAllTags|getTagFromName|copy|free|isLogicalMultiCamera)",
     "AImageReader_.*",
     "AImage_.*",
+    // Слияние fence-ов освобождения кадра (libsync, `<android/sync.h>`) и доступ CPU к буферу для
+    // отладочной пробы «0 копий» (`AHardwareBuffer_lock/unlock/describe`).
+    "sync_merge",
+    "AHardwareBuffer_lock",
+    "AHardwareBuffer_unlock",
+    "AHardwareBuffer_describe",
 ];
 
 /// Разрешённые типы (структуры колбэков, непрозрачные хэндлы, коды статусов).
-const ALLOWED_TYPES: [&str; 12] = [
+const ALLOWED_TYPES: [&str; 14] = [
     "ACamera.*",
     "ACapture.*",
     "ALogicalCamera.*",
@@ -57,6 +63,8 @@ const ALLOWED_TYPES: [&str; 12] = [
     "ANativeWindow",
     "AHardwareBuffer",
     "AHardwareBuffer_UsageFlags",
+    "AHardwareBuffer_Desc",
+    "ARect",
     "ACameraWindowType",
 ];
 
@@ -139,6 +147,10 @@ fn generate_bindings() -> Result<(), String> {
 
     println!("cargo:rustc-link-lib=camera2ndk");
     println!("cargo:rustc-link-lib=mediandk");
+    // `sync_merge` живёт в libsync (API 26+), отдельно от camera2ndk/mediandk.
+    println!("cargo:rustc-link-lib=sync");
+    // `AHardwareBuffer_*` — в libnativewindow.
+    println!("cargo:rustc-link-lib=nativewindow");
     Ok(())
 }
 

@@ -9,9 +9,23 @@ use std::time::Duration;
 
 use camera_contract::capabilities::FrameDuration;
 use camera_contract::capture_result::{CaptureResultMeta, FrameNumber, ResultKey, SensorTimestamp};
+use camera_contract::frame_passport::{CaptureColorHints, ColorCorrectionGains};
+use serde::Serialize;
 
-use crate::entry::{MetadataSource, Read, read_int32, read_int64};
+use crate::entry::{MetadataSource, Read, read_floats, read_int32, read_int64, read_rationals};
 use crate::tags;
+
+/// Цветовые ключи результата (`CaptureColorHints`), по которым ведётся учёт непригодных записей.
+/// Отдельно от [`ResultKey`]: тот принадлежит контракту движка, а цветовые подсказки идут только
+/// в паспорт кадра.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColorHintKey {
+    DynamicBlackLevel,
+    DynamicWhiteLevel,
+    ColorCorrectionGains,
+    NeutralColorPoint,
+}
 
 /// Результат разбора: сводка и ключи, которые были, но не прочитались.
 #[derive(Debug, Clone, PartialEq)]
@@ -19,6 +33,10 @@ pub struct ParsedCaptureResult {
     pub meta: CaptureResultMeta,
     /// Ключи, присутствующие в результате, но непригодные (в порядке [`ResultKey`]).
     pub unreadable_keys: Vec<ResultKey>,
+    /// Цветовые подсказки для паспорта кадра; ключ, которого HAL не отдал, — `None`.
+    pub color: CaptureColorHints,
+    /// Цветовые ключи, присутствующие в результате, но непригодные (в порядке [`ColorHintKey`]).
+    pub unreadable_color_keys: Vec<ColorHintKey>,
 }
 
 /// Время начала экспозиции кадра — по нему результат сопоставляется с номером кадра.
@@ -71,6 +89,7 @@ pub fn parse_capture_result(source: &dyn MetadataSource, frame_number: FrameNumb
 
     unreadable_keys.sort_by_key(|key| result_key_order(*key));
     unreadable_keys.dedup();
+    let (color, unreadable_color_keys) = parse_color_hints(source);
     ParsedCaptureResult {
         meta: CaptureResultMeta {
             frame_number,
@@ -81,7 +100,67 @@ pub fn parse_capture_result(source: &dyn MetadataSource, frame_number: FrameNumb
             rolling_shutter_skew,
         },
         unreadable_keys,
+        color,
+        unreadable_color_keys,
     }
+}
+
+/// Значение цветового ключа: непригодная запись превращается в `None` и попадает в `unreadable`.
+fn take_color_hint<T>(unreadable: &mut Vec<ColorHintKey>, key: ColorHintKey, read: Read<T>) -> Option<T> {
+    read.unwrap_or_else(|_| {
+        unreadable.push(key);
+        None
+    })
+}
+
+/// Разбирает цветовые подсказки. Отсутствующий ключ — `None` без заметки; ключ неверного типа,
+/// короткий или с недопустимым числом — `None` **и** запись в списке непригодных.
+fn parse_color_hints(source: &dyn MetadataSource) -> (CaptureColorHints, Vec<ColorHintKey>) {
+    let mut unreadable = Vec::new();
+    let dynamic_black_level = take_color_hint(
+        &mut unreadable,
+        ColorHintKey::DynamicBlackLevel,
+        read_floats(source, tags::DYNAMIC_BLACK_LEVEL, 4),
+    )
+    .and_then(|values| <[f32; 4]>::try_from(&values[..4]).ok());
+    let dynamic_white_level = take_color_hint(
+        &mut unreadable,
+        ColorHintKey::DynamicWhiteLevel,
+        read_int32(source, tags::DYNAMIC_WHITE_LEVEL),
+    );
+    let color_gains = take_color_hint(
+        &mut unreadable,
+        ColorHintKey::ColorCorrectionGains,
+        read_floats(source, tags::COLOR_CORRECTION_GAINS, 4),
+    )
+    .and_then(|values| <[f32; 4]>::try_from(&values[..4]).ok())
+    .map(ColorCorrectionGains);
+    let neutral_color_point = take_color_hint(
+        &mut unreadable,
+        ColorHintKey::NeutralColorPoint,
+        read_rationals(source, tags::NEUTRAL_COLOR_POINT, 3),
+    )
+    .and_then(|values| <[_; 3]>::try_from(&values[..3]).ok());
+
+    // Отрицательный белый уровень бессмыслен: это непригодная запись, а не «ноль».
+    let dynamic_white_level = dynamic_white_level.and_then(|level| match u32::try_from(level) {
+        Ok(level) => Some(level),
+        Err(_) => {
+            unreadable.push(ColorHintKey::DynamicWhiteLevel);
+            None
+        }
+    });
+    unreadable.sort_by_key(|key| *key as u8);
+    unreadable.dedup();
+    (
+        CaptureColorHints {
+            dynamic_black_level,
+            dynamic_white_level,
+            color_gains,
+            neutral_color_point,
+        },
+        unreadable,
+    )
 }
 
 fn read_sensitivity(source: &dyn MetadataSource, unreadable_keys: &mut Vec<ResultKey>) -> Option<u32> {

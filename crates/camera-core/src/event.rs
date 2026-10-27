@@ -42,6 +42,14 @@ pub enum CameraEvent {
         mode: StreamMode,
         failure: ConfigureFailure,
     },
+    /// Запрошенную частоту не достичь (например, на камере нет вендорских ключей 4:3@60),
+    /// и движок честно откатился на запасную частоту из конфига (решение 23). Желаемый режим
+    /// запоминает именно `fallback`; `requested` и причина — для UI и отчётов.
+    StreamDegraded {
+        requested: StreamMode,
+        fallback: StreamMode,
+        failure: ConfigureFailure,
+    },
 }
 
 impl CameraEvent {

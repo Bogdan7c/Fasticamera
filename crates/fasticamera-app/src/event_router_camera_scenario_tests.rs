@@ -13,6 +13,7 @@ use crate::camera_scenario_config::CameraScenarioConfig;
 use crate::camera_service::BackendDiagnosticsSource;
 use crate::camera_test_support::FakeCameraRig;
 use crate::camera_wiring::{CameraBackendParts, start_camera};
+use crate::raw_stream_services::RawStreamServices;
 
 fn services_over(control: &Arc<FakeBackendControl>, config: &CameraConfig) -> CameraServices {
     start_camera(
@@ -20,6 +21,7 @@ fn services_over(control: &Arc<FakeBackendControl>, config: &CameraConfig) -> Ca
         CameraBackendParts {
             factory: control.factory(),
             diagnostics: Arc::new(BackendDiagnostics::new(4)) as Arc<dyn BackendDiagnosticsSource>,
+            raw_stream: RawStreamServices::detached(),
         },
     )
 }
@@ -261,7 +263,7 @@ fn every_step_is_opened_streamed_measured_and_judged_and_the_camera_ends_closed(
         let fps = step["measured_fps"].as_f64().expect("fps");
         assert!((59.0..=61.0).contains(&fps), "измеренная частота {fps}");
         assert!(
-            step["raw_sink"]["frames_acquired"].as_u64().expect("кадры") > 0,
+            step["reader"]["frames_acquired"].as_u64().expect("кадры") > 0,
             "кадры дошли до RAW-приёмника"
         );
         assert!(step.get("failure").is_none(), "{step}");
@@ -407,7 +409,7 @@ fn logical_camera_without_final_results_passes_by_raw_frame_rate() {
         (20.0..=60.0).contains(&raw_fps),
         "RAW-кадры идут примерно 50 к/с, получено {raw_fps}"
     );
-    assert!(step["raw_sink"]["frames_acquired"].as_u64().expect("кадры") >= 5);
+    assert!(step["reader"]["frames_acquired"].as_u64().expect("кадры") >= 5);
     assert_fits_logcat(&harness, &result);
 }
 
@@ -470,7 +472,7 @@ fn leaking_raw_buffers_fail_the_step() {
     assert_eq!(result["status"], "failed", "{result}");
     let error = result["error"].as_str().expect("error");
     assert!(error.contains("утечка буферов"), "{error}");
-    assert_eq!(step_reports(&result)[0]["raw_sink"]["frames_released"], 0);
+    assert_eq!(step_reports(&result)[0]["reader"]["images_returned"], 0);
 }
 
 #[test]
@@ -571,6 +573,7 @@ fn next_step_waits_for_the_close_acknowledgement_and_not_for_a_stale_closed_snap
         CameraBackendParts {
             factory,
             diagnostics: Arc::new(BackendDiagnostics::new(4)) as Arc<dyn BackendDiagnosticsSource>,
+            raw_stream: RawStreamServices::detached(),
         },
     );
     let mut harness = harness_for_services(services);

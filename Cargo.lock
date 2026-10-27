@@ -75,8 +75,11 @@ dependencies = [
  "camera-contract",
  "camera-core",
  "camera-ndk-sys",
+ "libc",
+ "raw-frame-stream",
  "serde",
  "serde_json",
+ "shell-contract",
  "thiserror",
  "tracing",
 ]
@@ -155,6 +158,8 @@ dependencies = [
  "camera-core",
  "gpu-vulkan",
  "jni",
+ "libc",
+ "raw-frame-stream",
  "render-loop",
  "serde",
  "serde_json",
@@ -335,6 +340,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "raw-frame-stream"
+version = "0.1.0"
+dependencies = [
+ "camera-contract",
+ "serde",
+ "serde_json",
+ "shell-contract",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "regex"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -367,7 +384,9 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 name = "render-loop"
 version = "0.1.0"
 dependencies = [
+ "camera-contract",
  "gpu-vulkan",
+ "raw-frame-stream",
  "render-loop",
  "serde",
  "serde_json",

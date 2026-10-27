@@ -58,6 +58,8 @@ mod tests {
     fn embedded_shaders_are_valid_spirv_blobs() {
         assert!(starts_with_spirv_magic(blobs::FULLSCREEN_TRIANGLE_VERT));
         assert!(starts_with_spirv_magic(blobs::TEST_PATTERN_FRAG));
+        assert!(starts_with_spirv_magic(blobs::RAW_MOSAIC_PREVIEW_RAW16_FRAG));
+        assert!(starts_with_spirv_magic(blobs::RAW_MOSAIC_PREVIEW_RAW10_FRAG));
     }
 
     #[test]

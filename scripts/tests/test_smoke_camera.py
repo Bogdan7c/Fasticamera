@@ -95,7 +95,7 @@ def step_payload(**overrides: object) -> dict:
         "last_reported_frame_duration_ns": 33_333_333,
         "missing_keys": [],
         "capture_failures": 0,
-        "raw_sink": {"frames_acquired": 300, "frames_released": 299, "acquire_errors": 0},
+        "reader": {"frames_acquired": 300, "images_returned": 299, "acquire_errors": 0},
         "state_at_end": "streaming",
     }
     step.update(overrides)
@@ -108,7 +108,7 @@ def stream_payload(*steps: dict) -> dict:
         "status": "passed",
         "report": {
             "measure_ms": 5000,
-            "raw_in_flight_limit": 4,
+            "reader_in_flight_limit": 6,
             "steps": list(steps) or [step_payload()],
             "backend": {"callback_panics": 0},
         },
@@ -297,7 +297,7 @@ class DescribeMatchTest(unittest.TestCase):
 
         original_logcat, original_post = smoke_wait.read_logcat_lines, smoke_wait.post_check_for
         smoke_wait.read_logcat_lines = lambda *_args: iter([result_line(catalog_payload())])  # type: ignore[assignment]
-        smoke_wait.post_check_for = lambda scenario, serial: smoke_dumpsys.dumpsys_post_check(  # type: ignore[assignment]
+        smoke_wait.post_check_for = lambda scenario, serial, _artifacts_dir=None: smoke_dumpsys.dumpsys_post_check(  # type: ignore[assignment]
             serial, lambda command: smoke_driver.AdbResult(0, fixture("media_camera_synthetic.txt"), "")
         )
         output = io.StringIO()
@@ -437,10 +437,10 @@ class CameraStreamCheckTest(unittest.TestCase):
         payload["report"]["degraded"] = True
         self.assertEqual(smoke_checks.check_camera_stream(payload), [])
 
-    def test_raw_sink_without_frames_and_wrong_final_state_fail(self) -> None:
-        no_frames = self.problems(raw_sink={"frames_acquired": 0})
+    def test_reader_without_frames_and_wrong_final_state_fail(self) -> None:
+        no_frames = self.problems(reader={"frames_acquired": 0})
         self.assertTrue(any("не получил кадров" in text for text in no_frames), no_frames)
-        absent = self.problems(raw_sink=None)
+        absent = self.problems(reader=None)
         self.assertTrue(any("не получил кадров" in text for text in absent), absent)
         stopped = self.problems(state_at_end="error")
         self.assertTrue(any("'error'" in text for text in stopped), stopped)

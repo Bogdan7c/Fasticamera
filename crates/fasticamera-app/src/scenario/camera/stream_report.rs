@@ -11,21 +11,28 @@ use camera_contract::stream::ConfiguredStream;
 use camera_core::StreamStats;
 use serde::Serialize;
 
-use super::backend_summary::BackendSummary;
+use super::backend_summary::{BackendSummary, ReaderLifecycleSummary};
 use super::detail::{EVENTS_IN_REPORT_LIMIT, to_value};
 use super::engine_watch::RunFailure;
 use super::progress::{TimedNote, lever_name};
 use crate::camera_scenario_config::{CaptureResultsExpectation, ExpectedLever, StreamStepConfig};
 
-/// Приращение счётчиков RAW-приёмника бэкенда за шаг.
+/// Приращение счётчиков читателей RAW-кадров (`AImageReader`) бэкенда за шаг.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct RawSinkDelta {
+pub struct ReaderDelta {
+    /// Кадров забрано у читателя и предложено потоку.
     pub frames_acquired: u64,
-    pub frames_released: u64,
+    /// Кадров возвращено камере.
+    pub images_returned: u64,
+    /// Кадров, которые не вернутся (слияние fence не удалось или объект потерян): должно быть 0.
+    pub images_leaked: u64,
     pub acquire_errors: u64,
+    /// Читатель ответил «все буферы на руках»: ошибка расчёта пула, должно быть 0.
+    pub pool_exhausted: u64,
+    pub fence_merge_failures: u64,
 }
 
-impl RawSinkDelta {
+impl ReaderDelta {
     /// Кадров в секунду за окно; `None`, если окно нулевое.
     pub fn frames_per_second(frames: u64, window: std::time::Duration) -> Option<f64> {
         let seconds = window.as_secs_f64();
@@ -35,19 +42,14 @@ impl RawSinkDelta {
     /// Разница снимков диагностики. Счётчики только растут; «меньше, чем было» (чужой сброс)
     /// насыщается нулём, а не оборачивается.
     pub fn between(before: &DiagnosticsSnapshot, after: &DiagnosticsSnapshot) -> Self {
+        let (before, after) = (&before.reader, &after.reader);
         Self {
-            frames_acquired: after
-                .raw_sink
-                .frames_acquired
-                .saturating_sub(before.raw_sink.frames_acquired),
-            frames_released: after
-                .raw_sink
-                .frames_released
-                .saturating_sub(before.raw_sink.frames_released),
-            acquire_errors: after
-                .raw_sink
-                .acquire_errors
-                .saturating_sub(before.raw_sink.acquire_errors),
+            frames_acquired: after.frames_acquired.saturating_sub(before.frames_acquired),
+            images_returned: after.images_returned.saturating_sub(before.images_returned),
+            images_leaked: after.images_leaked.saturating_sub(before.images_leaked),
+            acquire_errors: after.acquire_errors.saturating_sub(before.acquire_errors),
+            pool_exhausted: after.pool_exhausted.saturating_sub(before.pool_exhausted),
+            fence_merge_failures: after.fence_merge_failures.saturating_sub(before.fence_merge_failures),
         }
     }
 }
@@ -94,8 +96,9 @@ pub struct StepObservation {
     /// Состояние движка на конец замера.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state_at_end: Option<&'static str>,
+    /// Счётчики читателей RAW-кадров бэкенда за шаг.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub raw_sink: Option<RawSinkDelta>,
+    pub reader: Option<ReaderDelta>,
     /// Длительность замера (от `Streaming` до снимка), мс.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window_ms: Option<u64>,
@@ -130,12 +133,13 @@ const REQUIRED_RESULT_KEYS: [ResultKey; 3] = [
     ResultKey::Sensitivity,
 ];
 
-/// Судит шаг. `raw_in_flight_limit` — сколько кадров RAW-приёмник вправе держать «в полёте»
-/// (`raw_reader_max_images`): разница принятых и отпущенных не должна его превышать.
+/// Судит шаг. `reader_in_flight_limit` — сколько кадров читатели вправе держать «в полёте»
+/// (потолок плана пула `RawStreamServices::pool_plan_upper_bound`): разница принятых у читателя и
+/// возвращённых камере не должна его превышать, иначе буферы утекают.
 pub fn evaluate_step(
     config: &StreamStepConfig,
     observation: &StepObservation,
-    raw_in_flight_limit: u32,
+    reader_in_flight_limit: u32,
 ) -> Vec<String> {
     let mut violations = Vec::new();
     if let Some(failure) = &observation.failure {
@@ -166,8 +170,8 @@ pub fn evaluate_step(
             observation.unavailable
         ));
     }
-    match observation.raw_sink {
-        Some(sink) => check_raw_sink(sink, raw_in_flight_limit, &mut violations),
+    match observation.reader {
+        Some(reader) => check_reader(reader, reader_in_flight_limit, &mut violations),
         None => violations.push("нет счётчиков RAW-приёмника".to_owned()),
     }
     if observation.callback_panics != 0 {
@@ -239,19 +243,27 @@ fn check_stats(config: &StreamStepConfig, stats: &StreamStats, violations: &mut 
     }
 }
 
-fn check_raw_sink(sink: RawSinkDelta, in_flight_limit: u32, violations: &mut Vec<String>) {
-    if sink.frames_acquired == 0 {
-        violations.push("RAW-приёмник не получил ни одного кадра".to_owned());
+fn check_reader(reader: ReaderDelta, in_flight_limit: u32, violations: &mut Vec<String>) {
+    if reader.frames_acquired == 0 {
+        violations.push("читатель RAW-кадров не получил ни одного кадра".to_owned());
     }
-    let in_flight = sink.frames_acquired.abs_diff(sink.frames_released);
+    // Возврат может отставать на кадры у рендера и в паре; больше потолка плана — это утечка.
+    let in_flight = reader.frames_acquired.abs_diff(reader.images_returned);
     if in_flight > u64::from(in_flight_limit) {
         violations.push(format!(
-            "принято кадров {}, отпущено {}: разница {in_flight} больше допуска {in_flight_limit} (утечка буферов)",
-            sink.frames_acquired, sink.frames_released
+            "принято кадров {}, возвращено камере {}: разница {in_flight} больше плана пула {in_flight_limit} (утечка буферов)",
+            reader.frames_acquired, reader.images_returned
         ));
     }
-    if sink.acquire_errors != 0 {
-        violations.push(format!("ошибок acquire у RAW-приёмника: {}", sink.acquire_errors));
+    for (name, value) in [
+        ("ошибок acquire у читателя", reader.acquire_errors),
+        ("исчерпаний пула буферов (ошибка расчёта плана)", reader.pool_exhausted),
+        ("утекших кадров", reader.images_leaked),
+        ("сбоев слияния fence", reader.fence_merge_failures),
+    ] {
+        if value != 0 {
+            violations.push(format!("{name}: {value}"));
+        }
     }
 }
 
@@ -270,9 +282,9 @@ impl StepReport {
         index: usize,
         target: StreamStepConfig,
         observation: StepObservation,
-        raw_in_flight_limit: u32,
+        reader_in_flight_limit: u32,
     ) -> Self {
-        let violations = evaluate_step(&target, &observation, raw_in_flight_limit);
+        let violations = evaluate_step(&target, &observation, reader_in_flight_limit);
         Self {
             index,
             target,
@@ -327,7 +339,7 @@ pub struct StepSummary<'report> {
     pub missing_keys: &'report [camera_core::status::MissingKeyCount],
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capture_failures: Option<u64>,
-    pub raw_sink: Option<RawSinkDelta>,
+    pub reader: Option<ReaderDelta>,
     #[serde(skip_serializing_if = "is_zero")]
     pub unmatched_frame_numbers: u64,
     pub state_at_end: Option<&'static str>,
@@ -362,7 +374,7 @@ impl<'report> StepSummary<'report> {
             last_reported_frame_duration_ns: None,
             missing_keys: &[],
             capture_failures: None,
-            raw_sink: full.raw_sink,
+            reader: full.reader,
             unmatched_frame_numbers: 0,
             state_at_end: full.state_at_end,
             unavailable: &[],
@@ -394,7 +406,7 @@ impl<'report> StepSummary<'report> {
                 .map(|duration| duration.as_nanos()),
             missing_keys: stats.map_or(&[], |stats| stats.missing_keys.as_slice()),
             capture_failures: stats.map(|stats| stats.capture_failures),
-            raw_sink: observation.raw_sink,
+            reader: observation.reader,
             unmatched_frame_numbers: observation.unmatched_frame_numbers,
             state_at_end: observation.state_at_end,
             unavailable: &observation.unavailable,
@@ -409,8 +421,8 @@ pub struct StreamSummary<'report> {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub degraded: bool,
     pub measure_ms: u64,
-    /// Допуск «кадров в полёте» RAW-приёмника (`camera.android.raw_reader_max_images`).
-    pub raw_in_flight_limit: u32,
+    /// Допуск «кадров в полёте» reader-а: `maxImages` из плана пула потока кадров (сессия 05).
+    pub reader_in_flight_limit: u32,
     pub steps: Vec<StepSummary<'report>>,
     pub backend: BackendSummary<'report>,
 }
@@ -419,22 +431,25 @@ pub struct StreamSummary<'report> {
 #[derive(Debug)]
 pub struct StreamReport {
     pub measure_ms: u64,
-    pub raw_in_flight_limit: u32,
+    pub reader_in_flight_limit: u32,
     pub steps: Vec<StepReport>,
     pub backend: DiagnosticsSnapshot,
 }
 
 impl StreamReport {
-    /// Нарушения всех шагов с подписью шага.
+    /// Нарушения всех шагов с подписью шага и нарушения жизни reader-ов за весь прогон
+    /// (между шагами сессия закрывается, пока рендер держит показанный кадр).
     pub fn violations(&self) -> Vec<String> {
-        self.steps
-            .iter()
-            .flat_map(|step| {
-                step.violations
-                    .iter()
-                    .map(move |violation| format!("шаг {} ({}): {violation}", step.index + 1, step.target.label()))
-            })
-            .collect()
+        let step_violations = self.steps.iter().flat_map(|step| {
+            step.violations
+                .iter()
+                .map(move |violation| format!("шаг {} ({}): {violation}", step.index + 1, step.target.label()))
+        });
+        let reader_violations = ReaderLifecycleSummary::of(&self.backend.reader)
+            .violations()
+            .into_iter()
+            .map(|violation| format!("reader-ы: {violation}"));
+        step_violations.chain(reader_violations).collect()
     }
 
     /// Сводка для строки результата, не длиннее `budget_bytes` в JSON: полная, а если она не помещается
@@ -449,7 +464,7 @@ impl StreamReport {
         StreamSummary {
             degraded,
             measure_ms: self.measure_ms,
-            raw_in_flight_limit: self.raw_in_flight_limit,
+            reader_in_flight_limit: self.reader_in_flight_limit,
             steps: self
                 .steps
                 .iter()

@@ -117,3 +117,24 @@ fn signaled_release_fence_gives_minus_one_to_ndk() {
     assert!(fence.is_already_signaled());
     assert_eq!(fence.into_raw_ndk_fd(), -1);
 }
+
+#[test]
+fn wait_fence_clone_owns_a_separate_descriptor() {
+    let (fd, mut observer) = fd_with_observer();
+    let original = GpuWaitFence::from_sync_fd(fd);
+    let copy = original.try_clone().expect("dup дескриптора");
+    assert!(!copy.is_already_signaled());
+    drop(original);
+    // Копия держит свой дескриптор: «канал» ещё открыт.
+    assert_peer_open(&mut observer);
+    drop(copy);
+    assert_peer_closed(&mut observer);
+}
+
+#[test]
+fn signaled_wait_fence_clones_as_signaled() {
+    let copy = GpuWaitFence::already_signaled()
+        .try_clone()
+        .expect("без системного вызова");
+    assert!(copy.is_already_signaled());
+}

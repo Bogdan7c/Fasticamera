@@ -13,6 +13,7 @@ use super::hardware_buffer_ffi::{
     USAGE_CPU_WRITE_OFTEN,
 };
 use crate::hardware_buffer_cache::HardwareBufferId;
+use shell_contract::hardware_buffer::BorrowedHardwareBuffer;
 
 /// Ошибки работы с `AHardwareBuffer`. Статус NDK — это errno-подобный код (`0` — успех).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -71,6 +72,18 @@ impl HardwareBufferRef {
         // SAFETY: по контракту функции указатель валиден; acquire даёт нам собственную ссылку.
         unsafe { AHardwareBuffer_acquire(pointer.as_ptr()) };
         Ok(Self { pointer })
+    }
+
+    /// Безопасный вариант [`Self::from_borrowed`] для буфера, заимствованного у лизинга кадра камеры.
+    ///
+    /// [`BorrowedHardwareBuffer`] уже доказывает, что `AHardwareBuffer*` жив (владелец-лизинг держит
+    /// его, пока заимствование существует), поэтому `unsafe` для вызывающего не нужен. Обёртка берёт
+    /// СВОЮ ссылку NDK, так что буфер переживёт и лизинг, и заимствование: импорт в Vulkan держит его,
+    /// пока GPU читает кадр.
+    pub fn from_borrowed_buffer(buffer: BorrowedHardwareBuffer<'_>) -> Result<Self, HardwareBufferError> {
+        // SAFETY: `BorrowedHardwareBuffer` гарантирует живой `AHardwareBuffer*` на время заимствования,
+        // а `from_borrowed` делает собственный acquire внутри этого вызова — до того, как заимствование кончится.
+        unsafe { Self::from_borrowed(buffer.as_ptr().as_ptr().cast::<AHardwareBuffer>()) }
     }
 
     /// Выделяет новый буфер. Начальная ссылка (счётчик = 1) принадлежит возвращённому значению.

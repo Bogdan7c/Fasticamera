@@ -18,12 +18,13 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use camera_android::{BackendDiagnostics, DiagnosticsSnapshot};
+use camera_android::{BackendDiagnostics, CpuProbeMode, DiagnosticsSnapshot};
 use camera_core::{CameraHandle, CameraRuntime, CommandId, CommandRejected};
 use serde::Serialize;
 
 use crate::camera_lifecycle::{CameraLifecyclePolicy, CameraLifecycleState, PolicyRestore};
 use crate::camera_scenario_config::CameraScenarioConfig;
+use crate::raw_stream_services::RawStreamServices;
 
 const LOG_TARGET: &str = "fasticamera::camera::service";
 
@@ -44,25 +45,16 @@ impl BackendDiagnosticsSource for BackendDiagnostics {
 pub struct RunningCamera {
     handle: CameraHandle,
     diagnostics: Arc<dyn BackendDiagnosticsSource>,
-    /// Сколько кадров максимум держит RAW-приёмник бэкенда (`camera.android.raw_reader_max_images`):
-    /// допуск «кадров в полёте» при сверке принятых и отпущенных.
-    raw_reader_max_images: u32,
     /// Только держим поток живым. `Mutex` нужен лишь ради `Sync`: `CameraRuntime` отправляется между
     /// потоками, но не разделяется (внутри приёмник канала), а сервис разделяется маршрутизатором и сценариями.
     _runtime: Mutex<CameraRuntime>,
 }
 
 impl RunningCamera {
-    pub fn new(
-        runtime: CameraRuntime,
-        handle: CameraHandle,
-        diagnostics: Arc<dyn BackendDiagnosticsSource>,
-        raw_reader_max_images: u32,
-    ) -> Self {
+    pub fn new(runtime: CameraRuntime, handle: CameraHandle, diagnostics: Arc<dyn BackendDiagnosticsSource>) -> Self {
         Self {
             handle,
             diagnostics,
-            raw_reader_max_images,
             _runtime: Mutex::new(runtime),
         }
     }
@@ -75,10 +67,6 @@ impl RunningCamera {
     /// Свежий снимок диагностики бэкенда.
     pub fn diagnostics_snapshot(&self) -> DiagnosticsSnapshot {
         self.diagnostics.snapshot()
-    }
-
-    pub fn raw_reader_max_images(&self) -> u32 {
-        self.raw_reader_max_images
     }
 }
 
@@ -170,6 +158,9 @@ pub struct ScenarioEndEffects {
     pub close_claimed_camera: Option<CameraDispatch>,
     /// `Some` — политика вернулась из удержания, а приложение в фоне: камера отпускалась этой командой.
     pub release_after_hold: Option<CameraDispatch>,
+    /// Отладочная проба CPU-доступа была взведена сценарием и сейчас выключена. Проба не должна
+    /// пережить сценарий ни при каком его конце: иначе она копировала бы кадры в рабочем режиме.
+    pub cpu_probe_disarmed: bool,
 }
 
 /// Всё о камере для маршрутизатора и сценариев. Дёшево клонируется.
@@ -179,16 +170,30 @@ pub struct CameraServices {
     lifecycle: Arc<CameraLifecycleState>,
     counters: Arc<DispatchCounterCells>,
     scenarios: Arc<CameraScenarioConfig>,
+    raw_stream: RawStreamServices,
 }
 
 impl CameraServices {
+    /// Сервис с отсоединённым потоком кадров (см. [`CameraServices::with_raw_stream`]).
     pub fn new(engine: CameraEngineAccess, scenarios: CameraScenarioConfig) -> Self {
         Self {
             engine,
             lifecycle: Arc::default(),
             counters: Arc::default(),
             scenarios: Arc::new(scenarios),
+            raw_stream: RawStreamServices::detached(),
         }
+    }
+
+    /// Подключает наблюдательные сервисы потока кадров (счётчики, проба CPU, часы).
+    pub fn with_raw_stream(mut self, raw_stream: RawStreamServices) -> Self {
+        self.raw_stream = raw_stream;
+        self
+    }
+
+    /// Наблюдательные сервисы потока RAW-кадров.
+    pub fn raw_stream(&self) -> &RawStreamServices {
+        &self.raw_stream
     }
 
     /// Сервис без движка: камера недоступна по причине `reason`.
@@ -251,6 +256,8 @@ impl CameraServices {
     /// он открывал, и отпустить её, если политика держала камеру в фоне, а приложение в фоне сейчас.
     pub fn scenario_ended(&self, visibility: AppVisibility) -> ScenarioEndEffects {
         let policy = self.lifecycle.restore_default();
+        let cpu_probe_disarmed = self.raw_stream.cpu_probe_mode() != CpuProbeMode::Disarmed;
+        self.raw_stream.disarm_cpu_probe();
         let close_claimed_camera = self
             .lifecycle
             .take_scenario_claim()
@@ -261,6 +268,7 @@ impl CameraServices {
             policy,
             close_claimed_camera,
             release_after_hold,
+            cpu_probe_disarmed,
         }
     }
 

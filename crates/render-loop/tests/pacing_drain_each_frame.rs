@@ -288,3 +288,27 @@ fn refresh_period_change_at_runtime_switches_pacing_and_restarts_window() {
     );
     handle.stop();
 }
+
+#[test]
+fn status_exposes_the_recent_real_present_times_in_order_and_within_capacity() {
+    let status = run_with_drain_period(1);
+    let recent = &status.recent_presentations;
+
+    assert!(!recent.is_empty(), "наблюдатель получил времена показа");
+    assert!(
+        recent.len() <= RenderLoopConfig::default().recent_presentations_capacity,
+        "буфер не растёт сверх ёмкости: {}",
+        recent.len()
+    );
+    // Старые первыми: номера показа и моменты на экране строго растут, шаг равен периоду экрана.
+    for pair in recent.windows(2) {
+        assert_eq!(pair[1].present_id, pair[0].present_id + 1);
+        assert_eq!(
+            pair[1].actual_present.as_nanos() - pair[0].actual_present.as_nanos(),
+            PERIOD_NANOS
+        );
+    }
+    // Хвост буфера — самые свежие показы, а не первые: за 200+ кадров номер далеко ушёл от нуля.
+    let last = recent.last().expect("не пусто");
+    assert!(last.present_id >= 199, "последняя запись свежая: {last:?}");
+}

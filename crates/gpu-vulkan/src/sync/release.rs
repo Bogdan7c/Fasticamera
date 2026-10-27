@@ -87,7 +87,7 @@ impl ExportableSemaphore {
     }
 
     /// Помечает семафор занятым перед сабмитом сигнала. Ошибка — он уже занят.
-    pub(super) fn reserve_for_signal(&self) -> Result<(), GpuError> {
+    pub(crate) fn reserve_for_signal(&self) -> Result<(), GpuError> {
         self.signal_pending_export
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map(|_| ())
@@ -97,12 +97,12 @@ impl ExportableSemaphore {
     }
 
     /// Снимает пометку, если сабмит не состоялся (сигнал не отправлен).
-    pub(super) fn cancel_reservation(&self) {
+    pub(crate) fn cancel_reservation(&self) {
         self.signal_pending_export.store(false, Ordering::Release);
     }
 
     /// Выдаёт токен «сигнал отправлен» (только `QueueSubmission::submit` после успеха).
-    pub(super) fn pending_signal(&self) -> PendingReleaseSignal<'_> {
+    pub(crate) fn pending_signal(&self) -> PendingReleaseSignal<'_> {
         PendingReleaseSignal { semaphore: self }
     }
 }

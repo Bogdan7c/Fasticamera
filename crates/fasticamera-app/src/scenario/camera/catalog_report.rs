@@ -128,7 +128,7 @@ impl CatalogDetails {
             .map(|descriptor| to_value(&camera_entry(catalog, descriptor)))
             .collect();
         let mut backend_items = vec![serde_json::json!({
-            "raw_sink": backend.raw_sink,
+            "reader": backend.reader,
             "callback_panics": backend.callback_panics,
             "callbacks_after_close": backend.callbacks_after_close,
             "unmatched_frame_numbers": backend.unmatched_frame_numbers,

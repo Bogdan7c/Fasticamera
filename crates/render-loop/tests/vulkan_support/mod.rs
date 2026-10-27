@@ -19,9 +19,10 @@ use std::time::{Duration, Instant};
 
 use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::validation::ValidationMode;
+use raw_frame_stream::ViewfinderFrames;
 use render_loop::config::RenderLoopConfig;
 use render_loop::thread::VsyncFrameClock;
-use render_loop::vulkan_backend::{VulkanBackendConfig, VulkanDisplayBackend};
+use render_loop::vulkan_backend::{CameraImporterFactory, VulkanBackendConfig, VulkanDisplayBackend};
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::surface::SurfaceSize;
 use shell_contract::vsync::{VsyncSlot, VsyncSubscription, VsyncTick};
@@ -46,6 +47,28 @@ pub fn headless_backend_or_skip(render_config: &RenderLoopConfig) -> Option<Vulk
     let config = VulkanBackendConfig::from_render_config(render_config, ValidationMode::FULL)
         .expect("конфиг бэкенда из конфига потока");
     match VulkanDisplayBackend::new_headless_presentation(config) {
+        Ok(backend) => Some(backend),
+        Err(error) => {
+            if std::env::var(SKIP_ENV).as_deref() == Ok("1") {
+                eprintln!("ПРОПУСК GPU-теста: {error} ({SKIP_ENV}=1)");
+                None
+            } else {
+                panic!("GPU недоступен: {error}. Установите {SKIP_ENV}=1, чтобы пропустить GPU-тесты осознанно");
+            }
+        }
+    }
+}
+
+/// Бэкенд ПК-стенда, показывающий кадры камеры (импорт — через `make_importer`), с полной validation
+/// или `None` при осознанном пропуске.
+pub fn headless_camera_backend_or_skip(
+    render_config: &RenderLoopConfig,
+    frames: ViewfinderFrames,
+    make_importer: CameraImporterFactory,
+) -> Option<VulkanDisplayBackend> {
+    let config = VulkanBackendConfig::from_render_config(render_config, ValidationMode::FULL)
+        .expect("конфиг бэкенда из конфига потока");
+    match VulkanDisplayBackend::new_headless_camera_preview(config, frames, make_importer) {
         Ok(backend) => Some(backend),
         Err(error) => {
             if std::env::var(SKIP_ENV).as_deref() == Ok("1") {

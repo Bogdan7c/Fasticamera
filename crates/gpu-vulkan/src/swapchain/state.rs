@@ -19,6 +19,7 @@ use super::fault_injection::{FaultPlan, InjectedFault};
 use super::frame::{AcquireOutcome, DisplayFrame, LayoutTransition, PresentOutcome, PresentRequest};
 use super::policy::{PlanOutcome, PlanRequest, SwapchainPlan, plan_swapchain};
 use super::present_fences::{PresentTracking, PresentsDone};
+use super::present_sync::{PresentSync, SubmitProgress, SyncedPresent};
 use super::resources::SwapchainResources;
 use super::surface::{PresentationSurface, query_surface};
 use super::target::{DisplayTargetInfo, RecreateOutcome, ZeroExtentReason};
@@ -303,39 +304,52 @@ impl TargetState {
         self.acquire_semaphores_tainted = true;
     }
 
-    /// Завершает кадр: переводит картинку в раскладку показа, отправляет команды и ставит картинку в очередь показа.
-    pub(super) fn present(
+    /// Завершает кадр: переводит картинку в раскладку показа, отправляет команды (с дополнительной
+    /// синхронизацией `sync`) и ставит картинку в очередь показа.
+    ///
+    /// Возвращает не только исход показа, но и токен экспорта release-fence и факт принятия сабмита:
+    /// ошибка показа после принятого сабмита не должна терять ни то, ни другое.
+    pub(super) fn present<'sync>(
         &mut self,
         mut frame: DisplayFrame,
         request: PresentRequest,
-    ) -> Result<PresentOutcome, SwapchainError> {
+        sync: &PresentSync<'sync>,
+    ) -> SyncedPresent<'sync> {
         // Кадр считается завершённым в любом случае: дальше ответственность — у состояния цели.
         frame.finished = true;
         if frame.swapchain_generation != self.generation || self.outstanding_frame != Some(frame.frame_index) {
-            return Err(GpuError::InvalidState {
+            return SyncedPresent::failed_before_submit(GpuError::InvalidState {
                 what: format!(
                     "кадр {} не принадлежит текущему поколению swapchain или уже завершён",
                     frame.frame_index
                 ),
-            }
-            .into());
+            });
         }
 
         LayoutTransition::ColorAttachmentToPresent.record(self.context.device(), frame.command_buffer, frame.image);
-        self.ring.end_and_submit(frame.slot, frame.image_index)?;
+        let release_signal = match self.ring.end_and_submit_with_sync(frame.slot, frame.image_index, sync) {
+            Ok(release_signal) => release_signal,
+            Err(error) => return SyncedPresent::failed_before_submit(error),
+        };
         // Сабмит принят: кадр больше не «висит», даже если сам показ ниже вернёт ошибку.
         self.outstanding_frame = None;
 
-        let outcome = self.queue_present(&frame, request)?;
-        if frame.acquired_suboptimal {
-            self.needs_recreate = true;
-        }
-        Ok(match outcome {
-            PresentOutcome::Presented { present_id } if frame.acquired_suboptimal => {
-                PresentOutcome::Suboptimal { present_id }
+        let outcome = self.queue_present(&frame, request).map(|outcome| {
+            if frame.acquired_suboptimal {
+                self.needs_recreate = true;
             }
-            other => other,
-        })
+            match outcome {
+                PresentOutcome::Presented { present_id } if frame.acquired_suboptimal => {
+                    PresentOutcome::Suboptimal { present_id }
+                }
+                other => other,
+            }
+        });
+        SyncedPresent {
+            submit: SubmitProgress::Submitted,
+            release_signal,
+            outcome,
+        }
     }
 
     /// `vkQueuePresentKHR` с данными display timing (если расширение включено).

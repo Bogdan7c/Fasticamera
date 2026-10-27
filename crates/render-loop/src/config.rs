@@ -22,6 +22,9 @@ pub enum ConfigError {
     /// Таймаут, равный нулю, превращает ожидание в busy-loop.
     #[error("{field} должен быть больше нуля миллисекунд")]
     ZeroTimeout { field: &'static str },
+    /// Размер буфера без места не хранит ничего: наблюдатель остался бы без данных.
+    #[error("{field} должен быть больше нуля")]
+    ZeroCapacity { field: &'static str },
     /// Допустимая доля пропусков — вероятность, то есть число от 0 до 1.
     #[error("pacing_max_miss_ratio должен лежать в [0, 1], а не {0}")]
     MissRatioOutOfRange(f64),
@@ -128,6 +131,12 @@ pub struct RenderLoopConfig {
     /// на OnePlus 11 было 4–5 % кадров по 2 периода и столько же выброшенных (сессия 03,
     /// `vulkan_backend::present_time`). Допустимо [0, 1).
     pub present_time_lead_ratio: f64,
+    /// Сколько последних реальных времён показа (`present_id` -> момент на экране) поток рендера
+    /// держит в статусе для наблюдателей. По ним приложение считает задержку «сенсор -> дисплей»
+    /// (сопоставляет `present_id` с меткой сенсора из диагностики камеры). Наблюдатель опрашивает
+    /// статус раз в десятки мс, а показов 60-120 в секунду: 256 записей (2-4 с) переживают любой
+    /// разумный интервал опроса. Должно быть больше нуля.
+    pub recent_presentations_capacity: usize,
 }
 
 impl Default for RenderLoopConfig {
@@ -147,6 +156,7 @@ impl Default for RenderLoopConfig {
             refresh_period_change_ratio: 0.02,
             keep_screen_on_while_presenting: true,
             present_time_lead_ratio: 0.5,
+            recent_presentations_capacity: 256,
         }
     }
 }
@@ -197,6 +207,11 @@ impl RenderLoopConfig {
         }
         if !(0.0..1.0).contains(&self.present_time_lead_ratio) {
             return Err(ConfigError::PresentLeadRatioOutOfRange(self.present_time_lead_ratio));
+        }
+        if self.recent_presentations_capacity == 0 {
+            return Err(ConfigError::ZeroCapacity {
+                field: "recent_presentations_capacity",
+            });
         }
         Ok(())
     }
@@ -329,6 +344,20 @@ mod tests {
             assert_eq!(config.validate(), Ok(()), "{good} допустим");
         }
         assert_eq!(RenderLoopConfig::default().present_time_lead_ratio, 0.5);
+    }
+
+    #[test]
+    fn zero_recent_presentations_capacity_is_rejected_by_name() {
+        let config = RenderLoopConfig {
+            recent_presentations_capacity: 0,
+            ..RenderLoopConfig::default()
+        };
+        assert_eq!(
+            config.validate(),
+            Err(ConfigError::ZeroCapacity {
+                field: "recent_presentations_capacity"
+            })
+        );
     }
 
     #[test]

@@ -1,0 +1,22 @@
+[package]
+name = "raw-frame-stream"
+description = "Лизинг RAW-кадров камеры: пул, спаривание кадра с метаданными по SENSOR_TIMESTAMP, политики потребителей"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+camera-contract.workspace = true
+shell-contract.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+camera-contract = { workspace = true, features = ["fixtures"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -17,7 +17,8 @@
 //! * [`motion`] — гироскоп (кольцо последних секунд) и акселерометр для ориентации;
 //! * [`vsync`] — тики vsync и линии кадра платформы (пейсинг рендера);
 //! * [`diagnostics`] — счётчики шва для smoke-проверок;
-//! * [`sync_fence`] — владение sync_fd: fence ожидания перед GPU и fence освобождения после GPU.
+//! * [`sync_fence`] — владение sync_fd: fence ожидания перед GPU и fence освобождения после GPU;
+//! * [`hardware_buffer`] — заимствованный `AHardwareBuffer` кадра камеры для импорта в GPU без копии.
 
 pub mod clock;
 pub mod commands;
@@ -25,6 +26,7 @@ pub mod diagnostics;
 pub mod event;
 pub mod event_queue;
 pub mod haptics;
+pub mod hardware_buffer;
 pub mod motion;
 pub mod orientation;
 pub mod permission;

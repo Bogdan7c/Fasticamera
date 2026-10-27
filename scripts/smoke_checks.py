@@ -498,10 +498,10 @@ def _stream_step_problems(index: int, step: object) -> list[str]:
             problems.append(f"{label}: частота не измерена ({measured!r})")
         else:
             problems.extend(_rate_floor_problems(label, "по меткам сенсора", measured, rate_match))
-    raw_sink = step.get("raw_sink") if isinstance(step.get("raw_sink"), dict) else {}
-    acquired = raw_sink.get("frames_acquired")
+    reader = step.get("reader") if isinstance(step.get("reader"), dict) else {}
+    acquired = reader.get("frames_acquired")
     if not _is_number(acquired) or acquired <= 0:
-        problems.append(f"{label}: RAW-приёмник не получил кадров ({acquired!r})")
+        problems.append(f"{label}: читатель RAW-кадров не получил кадров ({acquired!r})")
     if step.get("state_at_end") != STREAMING_STATE:
         problems.append(f"{label}: к концу замера состояние {step.get('state_at_end')!r}, ожидалось {STREAMING_STATE!r}")
     return problems
@@ -549,4 +549,75 @@ def check_camera_evict(result: dict) -> list[str]:
         problems.append(f"counters.recoveries={counters.get('recoveries')!r}, ожидалось не меньше 1")
     if report.get("failure") is not None:
         problems.append(f"сценарий записал отказ: {report.get('failure')!r}")
+    return problems
+
+
+MIN_PRESENTED_FRAMES = 1
+"""Грубый порог `raw-stream`: хотя бы столько кадров дошло до экрана. Долю от достижимого судит Rust."""
+
+
+def _zero_counter_problems(report: dict) -> list[str]:
+    """Счётчики, которые обязаны быть нулём, если они вообще есть в сводке (при урезанной сводке их нет)."""
+    problems: list[str] = []
+    stream = report.get("stream") if isinstance(report.get("stream"), dict) else {}
+    reader = report.get("reader") if isinstance(report.get("reader"), dict) else {}
+    render = report.get("render") if isinstance(report.get("render"), dict) else {}
+    must_be_zero = (
+        ("stream", stream, ("cpu_copies", "dropped_pool_exhausted", "leaked_leases", "frames_leaked")),
+        ("reader", reader, ("pool_exhausted", "images_leaked", "fence_merge_failures", "acquire_errors")),
+        ("render", render, ("release_export_failures", "camera_frame_failures", "leases_leaked_on_teardown")),
+    )
+    for section, counters, names in must_be_zero:
+        for name in names:
+            value = counters.get(name)
+            if _is_number(value) and value != 0:
+                problems.append(f"{section}.{name}={value}, ожидалось 0")
+    return problems
+
+
+def check_raw_stream(result: dict) -> list[str]:
+    """``raw-stream`` и ``raw-stream-endurance``: независимая грубая перепроверка вердикта Rust по сводке.
+
+    Точные пороги судит Rust (конфиг сценария); здесь — частота не ниже 90 % цели (при откате частоты цель —
+    запасная, она в ``target_fps``), ноль копий, ноль утечек и исчерпаний пула, владение метаданными, кадры
+    дошли до экрана. Откат частоты (``stream_degraded``) не провал, но обязан быть в отчёте. Полные данные —
+    строки стадий ``detail_stream``.
+    """
+    problems, report = _report_problem(result)
+    if problems:
+        return problems
+    target = report.get("target_fps")
+    fps = report.get("sensor_fps")
+    if not _is_number(target) or target <= 0:
+        problems.append(f"нет целевой частоты (target_fps={target!r})")
+    elif not _is_number(fps):
+        problems.append(f"частота по меткам сенсора не измерена ({fps!r})")
+    elif fps < MIN_FRACTION_OF_TARGET_FPS * target:
+        problems.append(f"частота по меткам сенсора {fps:.2f} к/с меньше {MIN_FRACTION_OF_TARGET_FPS:.0%} цели {target}")
+    copies = report.get("cpu_copies_per_frame")
+    if copies != 0:
+        problems.append(f"cpu_copies_per_frame={copies!r}, ожидалось ровно 0")
+    ownership = report.get("ownership") if isinstance(report.get("ownership"), dict) else {}
+    if ownership.get("violations") != 0:
+        problems.append(f"нарушений владения метаданными: {ownership.get('violations')!r}, ожидалось 0")
+    presented = report.get("presented_since_live")
+    if not _is_number(presented) or presented < MIN_PRESENTED_FRAMES:
+        problems.append(f"на экран не поставлено кадров камеры ({presented!r})")
+    if report.get("state_at_end") != STREAMING_STATE:
+        problems.append(f"к концу замера состояние {report.get('state_at_end')!r}, ожидалось {STREAMING_STATE!r}")
+    validation = report.get("validation") if isinstance(report.get("validation"), dict) else {}
+    if validation.get("mode") == "enabled" and validation.get("errors") != 0:
+        problems.append(f"ошибки validation: {validation.get('errors')!r}, ожидалось 0")
+    problems.extend(_zero_counter_problems(report))
+    return problems
+
+
+def check_raw_stream_cpu_probe(result: dict) -> list[str]:
+    """``raw-stream-cpu-probe``: проба доказала, что счётчик CPU-копий живой (копии были)."""
+    problems, report = _report_problem(result)
+    if problems:
+        return problems
+    copies = report.get("cpu_copies_per_frame")
+    if not _is_number(copies) or copies <= 0:
+        problems.append(f"cpu_copies_per_frame={copies!r}: проба ничего не насчитала, счётчик «0 копий» не доказан")
     return problems

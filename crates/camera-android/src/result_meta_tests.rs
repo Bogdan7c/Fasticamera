@@ -1,5 +1,6 @@
 use super::*;
 use crate::fake_metadata::FakeMetadata;
+use camera_contract::capabilities::Rational;
 
 /// Результат кадра основной камеры в режиме CamX 4:3@60 (00 C2): метка сенсора, 8 мс, ISO 800,
 /// ЛОЖНАЯ длительность кадра 33,3 мс, rolling shutter skew 13,66 мс.
@@ -75,4 +76,79 @@ fn sensor_timestamp_reader_distinguishes_absent_from_present() {
         Some(SensorTimestamp::from_nanos(1_234_567_890_123))
     );
     assert_eq!(read_sensor_timestamp(&FakeMetadata::default()), None);
+}
+
+fn full_color_result() -> FakeMetadata {
+    camx_frame_result()
+        .floats(tags::DYNAMIC_BLACK_LEVEL, &[64.0, 64.5, 65.0, 64.25])
+        .int32s(tags::DYNAMIC_WHITE_LEVEL, &[1023])
+        .floats(tags::COLOR_CORRECTION_GAINS, &[2.0, 1.0, 1.0, 1.5])
+        .with(
+            tags::NEUTRAL_COLOR_POINT,
+            crate::entry::EntryValue::Rationals(vec![
+                Rational {
+                    numerator: 1,
+                    denominator: 2,
+                },
+                Rational {
+                    numerator: 1,
+                    denominator: 1,
+                },
+                Rational {
+                    numerator: 3,
+                    denominator: 4,
+                },
+            ]),
+        )
+}
+
+#[test]
+fn color_hints_are_read_key_by_key_into_the_passport_shape() {
+    let parsed = parse_capture_result(&full_color_result(), FrameNumber(1));
+    assert_eq!(parsed.unreadable_color_keys, Vec::new());
+    assert_eq!(parsed.color.dynamic_black_level, Some([64.0, 64.5, 65.0, 64.25]));
+    assert_eq!(parsed.color.dynamic_white_level, Some(1023));
+    assert_eq!(
+        parsed.color.color_gains,
+        Some(ColorCorrectionGains([2.0, 1.0, 1.0, 1.5]))
+    );
+    let neutral = parsed.color.neutral_color_point.expect("нейтральная точка");
+    assert_eq!((neutral[0].numerator, neutral[0].denominator), (1, 2));
+    assert_eq!((neutral[2].numerator, neutral[2].denominator), (3, 4));
+}
+
+#[test]
+fn color_keys_hal_did_not_send_are_none_and_not_unreadable() {
+    // OnePlus 11 не отдаёт динамический black level (00 C3): отсутствие — не сбой чтения.
+    let source = full_color_result().without(tags::DYNAMIC_BLACK_LEVEL);
+    let parsed = parse_capture_result(&source, FrameNumber(1));
+    assert_eq!(parsed.color.dynamic_black_level, None);
+    assert!(parsed.color.color_gains.is_some(), "соседние ключи не страдают");
+    assert_eq!(parsed.unreadable_color_keys, Vec::new());
+    let bare = parse_capture_result(&camx_frame_result(), FrameNumber(1));
+    assert_eq!(bare.color, CaptureColorHints::default());
+}
+
+#[test]
+fn malformed_color_keys_become_none_and_are_listed_in_order() {
+    let source = full_color_result()
+        // слишком короткий массив усилений
+        .floats(tags::COLOR_CORRECTION_GAINS, &[2.0, 1.0])
+        // не тот тип
+        .int32s(tags::DYNAMIC_BLACK_LEVEL, &[64])
+        // отрицательный белый уровень
+        .int32s(tags::DYNAMIC_WHITE_LEVEL, &[-1])
+        .unreadable(tags::NEUTRAL_COLOR_POINT, -10000);
+    let parsed = parse_capture_result(&source, FrameNumber(1));
+    assert_eq!(parsed.color, CaptureColorHints::default());
+    assert_eq!(
+        parsed.unreadable_color_keys,
+        vec![
+            ColorHintKey::DynamicBlackLevel,
+            ColorHintKey::DynamicWhiteLevel,
+            ColorHintKey::ColorCorrectionGains,
+            ColorHintKey::NeutralColorPoint
+        ]
+    );
+    assert_eq!(parsed.unreadable_keys, Vec::new(), "основные ключи результата целы");
 }

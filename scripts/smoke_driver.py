@@ -20,8 +20,10 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Protocol
 
+import smoke_screen
 from smoke_ui import TapPoint, UiDumpParseError, find_deny_button
 
 STAGE_MARKER = "FASTICAMERA_STAGE "
@@ -68,6 +70,10 @@ SYSTEM_CAMERA_HOLD_SECONDS = 4.0
 ADB_COMMAND_TIMEOUT_SECONDS = 30.0
 """Потолок одной команды adb: зависший adb не должен вешать драйвер навсегда."""
 
+VIEWFINDER_SHOTS_PAUSE_SECONDS = 1.5
+"""Пауза между двумя скриншотами видоискателя: за это время живая сцена меняется (шум сенсора, движение),
+а замершая картинка остаётся ровно той же — на этом различии стоит проверка «меняется»."""
+
 
 class DriverError(Exception):
     """Шаг не удалось выполнить; сообщение уходит в вердикт сценария (код выхода 1)."""
@@ -84,11 +90,13 @@ class StepKind(Enum):
     SCREEN_ON = "screen_on"
     TAP_SCREEN = "tap_screen"
     LAUNCH_SYSTEM_CAMERA = "launch_system_camera"
+    SCREENCAP = "screencap"
 
 
 @dataclass(frozen=True)
 class Step:
-    """Один шаг; ``seconds`` нужен только шагу ``PAUSE``.
+    """Один шаг; ``seconds`` нужен только шагу ``PAUSE``, ``label`` — только шагу ``SCREENCAP``
+    (имя файла скриншота в каталоге артефактов).
 
     ``only_if_true`` — имя булева поля стадии: шаг выполняется, только если поле есть и равно
     ``true`` (иначе пропускается). Так стадия, общая для разных ситуаций, управляет шагом данными.
@@ -97,7 +105,15 @@ class Step:
     kind: StepKind
     seconds: float = 0.0
     only_if_true: str | None = None
+    label: str = ""
 
+
+VIEWFINDER_SHOT_STEPS = (
+    Step(StepKind.SCREENCAP, label=smoke_screen.VIEWFINDER_LABELS[0]),
+    Step(StepKind.PAUSE, VIEWFINDER_SHOTS_PAUSE_SECONDS),
+    Step(StepKind.SCREENCAP, label=smoke_screen.VIEWFINDER_LABELS[1]),
+)
+"""Два скриншота видоискателя с паузой между ними (общие для ``raw-stream`` и ``raw-stream-endurance``)."""
 
 SCENARIO_STEPS: dict[str, dict[str, tuple[Step, ...]]] = {
     # При подключении частота экрана нестабильна: OxygenOS держит для приложения 60 Гц ДО ПЕРВОГО
@@ -129,6 +145,11 @@ SCENARIO_STEPS: dict[str, dict[str, tuple[Step, ...]]] = {
             Step(StepKind.RETURN_TO_APP),
         ),
     },
+    # raw-stream: Rust пишет ``viewfinder_live``, когда рендер показал первый кадр камеры. Скрипт снимает
+    # два скриншота с паузой; после результата пост-проверка (smoke_screen) судит «не чёрный» и «меняется».
+    # Измерение продолжается, пока скрипт снимает: скриншоты не нагружают приложение заметно.
+    "raw-stream": {"viewfinder_live": VIEWFINDER_SHOT_STEPS},
+    "raw-stream-endurance": {"viewfinder_live": VIEWFINDER_SHOT_STEPS},
     "render-lifecycle": {
         "presenting_home": (Step(StepKind.PRESS_HOME),),
         "backgrounded_home": (Step(StepKind.PAUSE, BACKGROUND_PAUSE_SECONDS), Step(StepKind.RETURN_TO_APP)),
@@ -158,6 +179,8 @@ class DeviceActions(Protocol):
 
     def launch_system_camera(self) -> None: ...
 
+    def screencap(self, label: str) -> None: ...
+
 
 def parse_wakefulness(output: str) -> str:
     """Значение ``mWakefulness=`` из вывода ``dumpsys power`` (Awake / Asleep / Dozing / Dreaming)."""
@@ -180,6 +203,19 @@ AdbRunner = Callable[[list[str]], AdbResult]
 """Выполнитель команд: полная командная строка (с ``adb``) → результат."""
 
 
+@dataclass(frozen=True)
+class AdbBytesResult:
+    """Итог команды adb с бинарным выводом (скриншот)."""
+
+    returncode: int
+    stdout: bytes
+    stderr: str
+
+
+AdbBytesRunner = Callable[[list[str]], AdbBytesResult]
+"""Выполнитель команд с бинарным stdout (``screencap`` без ``-p``: текстовый режим испортил бы пиксели)."""
+
+
 def run_adb_subprocess(command: list[str]) -> AdbResult:
     """Настоящий выполнитель: подпроцесс с потолком времени."""
     try:
@@ -189,6 +225,15 @@ def run_adb_subprocess(command: list[str]) -> AdbResult:
     except subprocess.TimeoutExpired as error:
         raise DriverError(f"команда зависла (> {ADB_COMMAND_TIMEOUT_SECONDS:g} с): {' '.join(command)}") from error
     return AdbResult(completed.returncode, completed.stdout, completed.stderr)
+
+
+def run_adb_subprocess_bytes(command: list[str]) -> AdbBytesResult:
+    """Настоящий выполнитель для бинарного вывода: подпроцесс с потолком времени."""
+    try:
+        completed = subprocess.run(command, capture_output=True, timeout=ADB_COMMAND_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as error:
+        raise DriverError(f"команда зависла (> {ADB_COMMAND_TIMEOUT_SECONDS:g} с): {' '.join(command)}") from error
+    return AdbBytesResult(completed.returncode, completed.stdout, completed.stderr.decode("utf-8", errors="replace"))
 
 
 def launched_activity(am_start_wait_output: str) -> str | None:
@@ -223,10 +268,14 @@ class AdbDeviceActions:
         run_adb: AdbRunner = run_adb_subprocess,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
+        run_adb_bytes: AdbBytesRunner = run_adb_subprocess_bytes,
+        artifacts_dir: Path | None = None,
     ) -> None:
         self._serial = serial
         self._package = package
         self._run_adb = run_adb
+        self._run_adb_bytes = run_adb_bytes
+        self._artifacts_dir = artifacts_dir
         self._sleep = sleep
         self._clock = clock
 
@@ -328,6 +377,26 @@ class AdbDeviceActions:
                 "камеру никто не откроет, вытеснения не будет"
             )
 
+    def screencap(self, label: str) -> None:
+        """Снимает экран (``adb exec-out screencap``, СЫРОЙ формат, не ``-p``) и сохраняет в каталог артефактов.
+
+        Сохраняются сырой вывод (``<label>.screencap``, из него пост-проверка заново разбирает кадр) и PNG
+        (``<label>.png``) для глаз владельца. Каталог артефактов лежит вне репозитория. Вывод разбирается
+        сразу: обрезанный или неузнаваемый снимок — ``DriverError`` на месте, а не загадка в конце прогона.
+        """
+        if self._artifacts_dir is None:
+            raise DriverError("каталог артефактов не задан (--artifacts-dir): скриншот сохранить некуда")
+        result = self._run_adb_bytes(self.adb_command("exec-out", "screencap"))
+        if result.returncode != 0:
+            raise DriverError(f"screencap: adb завершился с кодом {result.returncode}: {result.stderr.strip()}")
+        try:
+            screenshot = smoke_screen.parse_screencap(result.stdout)
+            self._artifacts_dir.mkdir(parents=True, exist_ok=True)
+            smoke_screen.capture_path(self._artifacts_dir, label).write_bytes(result.stdout)
+            smoke_screen.write_png(self._artifacts_dir / f"{label}.png", screenshot)
+        except (smoke_screen.ScreenError, OSError) as error:
+            raise DriverError(f"скриншот {label!r} не сохранён: {error}") from error
+
     def return_to_app(self) -> None:
         """Возвращает приложение лаунчер-интентом БЕЗ ``-S``: поднимается существующая задача,
         ``onCreate`` не повторяется (это и проверяет сценарий через ``activity_recreated``)."""
@@ -427,5 +496,7 @@ class StageDriver:
             self._actions.tap_screen()
         elif step.kind is StepKind.LAUNCH_SYSTEM_CAMERA:
             self._actions.launch_system_camera()
+        elif step.kind is StepKind.SCREENCAP:
+            self._actions.screencap(step.label)
         else:  # pragma: no cover - новый StepKind без ветки должен падать громко
             raise DriverError(f"неизвестный шаг {step.kind!r}")

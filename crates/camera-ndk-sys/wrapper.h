@@ -1,6 +1,7 @@
 // Единственная точка входа bindgen: заголовки NDK, из которых camera-android берёт API.
 // Что именно попадёт в биндинги, ограничивает список разрешённых имён в build.rs.
 #include <android/hardware_buffer.h>
+#include <android/sync.h>
 #include <camera/NdkCameraDevice.h>
 #include <camera/NdkCameraError.h>
 #include <camera/NdkCameraManager.h>

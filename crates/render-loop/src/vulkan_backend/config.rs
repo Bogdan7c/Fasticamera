@@ -1,5 +1,6 @@
 //! Настройки Vulkan-бэкенда показа. Всё, что можно подкрутить, — поле, а не константа в логике.
 
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use gpu_vulkan::error::GpuError;
@@ -31,12 +32,28 @@ pub struct VulkanBackendConfig {
     pub present_time_lead_ratio: f64,
     /// Период обновления, пока драйвер не сообщил реальный (из `RenderLoopConfig::expected_refresh_period`).
     pub fallback_refresh_period: Duration,
+    /// Сколько записей «показ — метка сенсора» хранить для расчёта задержки «сенсор -> дисплей»
+    /// (только показ кадров камеры). Должно покрывать интервал опроса диагностики.
+    pub camera_present_history_capacity: usize,
+    /// Сколько импортов буферов камеры держать живыми (только Android). Не меньше пула буферов
+    /// `AImageReader`, иначе каждый кадр будет импортироваться заново.
+    pub camera_import_cache_capacity: NonZeroUsize,
 }
 
 impl VulkanBackendConfig {
     /// Запас таблицы показов по умолчанию: при 120 Гц это ~2 секунды, с избытком больше
     /// интервала опроса диагностики (250 мс).
     pub const DEFAULT_PRESENTATION_HISTORY_CAPACITY: usize = 256;
+
+    /// История показов кадров камеры по умолчанию: ~2 секунды при 60 к/с, с запасом над опросом диагностики.
+    pub const DEFAULT_CAMERA_PRESENT_HISTORY_CAPACITY: usize = 128;
+
+    /// Кэш импортов буферов камеры по умолчанию: с запасом над пулом `AImageReader` (рендер держит 2 кадра,
+    /// остальное — очередь и ожидание пары).
+    pub const DEFAULT_CAMERA_IMPORT_CACHE_CAPACITY: NonZeroUsize = match NonZeroUsize::new(12) {
+        Some(capacity) => capacity,
+        None => NonZeroUsize::MIN,
+    };
 
     /// Собирает настройки бэкенда из конфигурации потока рендера.
     /// Неверное `frames_in_flight` (0 или больше предела gpu-vulkan) — `InvalidArgument`.
@@ -51,6 +68,8 @@ impl VulkanBackendConfig {
             presentation_history_capacity: Self::DEFAULT_PRESENTATION_HISTORY_CAPACITY,
             present_time_lead_ratio: config.present_time_lead_ratio,
             fallback_refresh_period: config.expected_refresh_period(),
+            camera_present_history_capacity: Self::DEFAULT_CAMERA_PRESENT_HISTORY_CAPACITY,
+            camera_import_cache_capacity: Self::DEFAULT_CAMERA_IMPORT_CACHE_CAPACITY,
         })
     }
 
