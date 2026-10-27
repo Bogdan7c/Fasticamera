@@ -1,0 +1,43 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Menon 2007, проход 2а: модули цветовых разностей для классификатора (часть directional_classifier
+// эталона), отдельно — чтобы проход решения не пересчитывал каждую разность 8 раз:
+//   C = CFA − G_dir в красных/синих узлах, 0 в зелёных;
+//   D(p) = |C(p) − C(p + 2·шаг)| (сосед за краем — зеркально, np.pad(mode="reflect")).
+
+#include "quality_common.glsl"
+
+layout(set = 0, binding = 0, std430) readonly buffer MosaicPlane { float values[]; } mosaic;
+layout(set = 0, binding = 1, std430) readonly buffer GreenHorizontal { float values[]; } green_horizontal;
+layout(set = 0, binding = 2, std430) readonly buffer GreenVertical { float values[]; } green_vertical;
+layout(set = 0, binding = 3, std430) writeonly buffer DifferenceHorizontal { float values[]; } difference_horizontal;
+layout(set = 0, binding = 4, std430) writeonly buffer DifferenceVertical { float values[]; } difference_vertical;
+
+// Цветовая разность C в пикселе (px, py) для оценки зелёного своего направления.
+float chroma_minus_green(uint px, uint py, bool horizontal) {
+    if (channel_at(px, py) == CHANNEL_GREEN) {
+        return 0.0;
+    }
+    uint index = py * geometry.width + px;
+    float estimate = horizontal ? green_horizontal.values[index] : green_vertical.values[index];
+    precise float difference = mosaic.values[index] - estimate;
+    return difference;
+}
+
+float forward_difference(uint x, uint y, bool horizontal) {
+    uint next_x = horizontal ? mirror_index(int(x) + 2, geometry.width) : x;
+    uint next_y = horizontal ? y : mirror_index(int(y) + 2, geometry.height);
+    precise float difference = abs(chroma_minus_green(x, y, horizontal) - chroma_minus_green(next_x, next_y, horizontal));
+    return difference;
+}
+
+void main() {
+    uint x;
+    uint y;
+    if (!pixel_coordinates(x, y)) {
+        return;
+    }
+    uint index = y * geometry.width + x;
+    difference_horizontal.values[index] = forward_difference(x, y, true);
+    difference_vertical.values[index] = forward_difference(x, y, false);
+}

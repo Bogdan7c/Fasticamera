@@ -14,4 +14,5 @@ pub mod mailbox;
 pub mod pacing;
 pub mod surface_state;
 pub mod thread;
+pub mod viewfinder;
 pub mod vulkan_backend;

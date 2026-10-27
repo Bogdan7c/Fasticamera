@@ -3,27 +3,30 @@
 use camera_contract::capture_result::{CaptureResultMeta, FrameNumber, SensorTimestamp};
 use camera_contract::frame_passport::{CaptureColorHints, FrameCaptureDetails, FrameSequence, MissingCaptureMeta};
 
-use super::support::{Rig, frame_number_for};
+use super::support::{Rig, frame_number_for, latest_wins_config};
 use crate::config::RawFrameStreamConfig;
 use crate::stream::{OfferOutcome, ResultOutcome, ViewfinderPoll};
 
 fn config_with_room() -> RawFrameStreamConfig {
     RawFrameStreamConfig {
         max_pending_frames: 8,
-        ..RawFrameStreamConfig::default()
+        ..latest_wins_config()
     }
 }
 
 #[test]
 fn frame_then_result_publishes_the_frame_with_its_own_metadata_and_records_the_wait() {
-    let rig = Rig::new(RawFrameStreamConfig::default());
+    let rig = Rig::new(latest_wins_config());
     let viewfinder = rig.stream.viewfinder();
 
     assert_eq!(rig.offer_frame(5_000, 0), OfferOutcome::AwaitingResult);
-    assert!(matches!(viewfinder.poll_latest(rig.at(1)), ViewfinderPoll::NoNewFrame));
+    assert!(matches!(
+        viewfinder.poll_for_vsync(rig.at(1)),
+        ViewfinderPoll::NoNewFrame
+    ));
     assert_eq!(rig.offer_result(5_000, 5), ResultOutcome::PairedWithFrame);
 
-    let ViewfinderPoll::NewFrame(lease) = viewfinder.poll_latest(rig.at(6)) else {
+    let ViewfinderPoll::NewFrame(lease) = viewfinder.poll_for_vsync(rig.at(6)) else {
         panic!("после пары кадр должен быть в ячейке");
     };
     let passport = lease.passport();
@@ -37,13 +40,13 @@ fn frame_then_result_publishes_the_frame_with_its_own_metadata_and_records_the_w
 
 #[test]
 fn result_then_frame_publishes_immediately_with_zero_wait() {
-    let rig = Rig::new(RawFrameStreamConfig::default());
+    let rig = Rig::new(latest_wins_config());
     let viewfinder = rig.stream.viewfinder();
 
     assert_eq!(rig.offer_result(7_000, 0), ResultOutcome::Buffered);
     assert_eq!(rig.offer_frame(7_000, 30), OfferOutcome::PublishedPaired);
 
-    let ViewfinderPoll::NewFrame(lease) = viewfinder.poll_latest(rig.at(30)) else {
+    let ViewfinderPoll::NewFrame(lease) = viewfinder.poll_for_vsync(rig.at(30)) else {
         panic!("кадр должен быть в ячейке");
     };
     let details = lease.passport().capture.details().expect("кадр спарен");
@@ -101,7 +104,7 @@ fn shuffled_frames_and_results_each_get_exactly_their_own_metadata() {
 
 #[test]
 fn timestamps_that_differ_by_one_nanosecond_never_pair() {
-    let rig = Rig::new(RawFrameStreamConfig::default());
+    let rig = Rig::new(latest_wins_config());
     assert_eq!(rig.offer_frame(10_000, 0), OfferOutcome::AwaitingResult);
     assert_eq!(rig.offer_result(10_001, 1), ResultOutcome::Buffered);
     assert_eq!(rig.stream.counters().frames_paired, 0);
@@ -109,14 +112,17 @@ fn timestamps_that_differ_by_one_nanosecond_never_pair() {
 
 #[test]
 fn lost_result_publishes_missing_exactly_at_the_timeout_and_not_before() {
-    let rig = Rig::new(RawFrameStreamConfig::default());
+    let rig = Rig::new(latest_wins_config());
     let viewfinder = rig.stream.viewfinder();
     rig.offer_frame(9_000, 0);
 
-    assert!(matches!(viewfinder.poll_latest(rig.at(49)), ViewfinderPoll::NoNewFrame));
+    assert!(matches!(
+        viewfinder.poll_for_vsync(rig.at(49)),
+        ViewfinderPoll::NoNewFrame
+    ));
     assert_eq!(rig.stream.counters().frames_missing_meta_timeout, 0);
 
-    let ViewfinderPoll::NewFrame(lease) = viewfinder.poll_latest(rig.at(50)) else {
+    let ViewfinderPoll::NewFrame(lease) = viewfinder.poll_for_vsync(rig.at(50)) else {
         panic!("по таймауту кадр должен уйти без метаданных");
     };
     assert_eq!(
@@ -138,7 +144,7 @@ fn lost_result_publishes_missing_exactly_at_the_timeout_and_not_before() {
 fn lost_frame_leaves_its_result_unpaired_once_the_buffer_evicts_it() {
     let rig = Rig::new(RawFrameStreamConfig {
         max_buffered_results: 2,
-        ..RawFrameStreamConfig::default()
+        ..latest_wins_config()
     });
     for timestamp in [1_000, 2_000, 3_000] {
         assert_eq!(rig.offer_result(timestamp, 0), ResultOutcome::Buffered);
@@ -152,7 +158,7 @@ fn lost_frame_leaves_its_result_unpaired_once_the_buffer_evicts_it() {
 
 #[test]
 fn result_without_timestamp_is_counted_and_never_buffered() {
-    let rig = Rig::new(RawFrameStreamConfig::default());
+    let rig = Rig::new(latest_wins_config());
     let nameless = FrameCaptureDetails {
         result: CaptureResultMeta {
             frame_number: FrameNumber(1),
@@ -171,7 +177,7 @@ fn result_without_timestamp_is_counted_and_never_buffered() {
 
 #[test]
 fn pending_overflow_publishes_the_oldest_frame_early_without_metadata() {
-    let rig = Rig::new(RawFrameStreamConfig::default()); // max_pending_frames = 2
+    let rig = Rig::new(latest_wins_config()); // max_pending_frames = 2
     let viewfinder = rig.stream.viewfinder();
     rig.offer_frame(1_000, 0);
     rig.offer_frame(2_000, 1);
@@ -181,7 +187,7 @@ fn pending_overflow_publishes_the_oldest_frame_early_without_metadata() {
     assert_eq!(rig.stream.counters().frames_published, 1);
     assert_eq!(rig.stream.counters().frames_missing_meta_timeout, 1);
 
-    let ViewfinderPoll::NewFrame(lease) = viewfinder.poll_latest(rig.at(2)) else {
+    let ViewfinderPoll::NewFrame(lease) = viewfinder.poll_for_vsync(rig.at(2)) else {
         panic!("вытесненный из ожидания кадр должен быть в ячейке");
     };
     assert_eq!(lease.passport().sensor_timestamp, SensorTimestamp::from_nanos(1_000));

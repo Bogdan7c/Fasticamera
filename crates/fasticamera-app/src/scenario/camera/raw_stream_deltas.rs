@@ -34,6 +34,16 @@ pub fn stream_delta(before: &RawStreamCounters, after: &RawStreamCounters) -> Ra
         frames_published: grew(before.frames_published, after.frames_published),
         viewfinder_delivered: grew(before.viewfinder_delivered, after.viewfinder_delivered),
         dropped_superseded: grew(before.dropped_superseded, after.dropped_superseded),
+        dropped_jitter_overflow: grew(before.dropped_jitter_overflow, after.dropped_jitter_overflow),
+        viewfinder_polls_while_priming: grew(
+            before.viewfinder_polls_while_priming,
+            after.viewfinder_polls_while_priming,
+        ),
+        viewfinder_underruns: grew(before.viewfinder_underruns, after.viewfinder_underruns),
+        viewfinder_flushed: grew(before.viewfinder_flushed, after.viewfinder_flushed),
+        // Измерение «сейчас» (кадров в очереди), а не накопление: берётся из снимка «после».
+        viewfinder_queued: after.viewfinder_queued,
+        viewfinder_pacing_switches: grew(before.viewfinder_pacing_switches, after.viewfinder_pacing_switches),
         ring_evicted: grew(before.ring_evicted, after.ring_evicted),
         lossless_defects: grew(before.lossless_defects, after.lossless_defects),
         released_after_fence: grew(before.released_after_fence, after.released_after_fence),

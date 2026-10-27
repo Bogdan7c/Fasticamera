@@ -19,6 +19,7 @@ use shell_contract::haptics::HapticsService;
 use shell_contract::motion::{GyroRequest, MotionSource};
 use shell_contract::orientation::DeviceOrientation;
 use shell_contract::permission::CameraPermission;
+use shell_contract::power::PowerSource;
 use shell_contract::surface::{SurfaceGeneration, SurfaceSize};
 use shell_contract::thermal::ThermalSource;
 use shell_contract::thermal_policy::ThermalPolicy;
@@ -63,6 +64,8 @@ pub struct ShellServices {
     /// Источник тиков vsync (его запускает composition root для потока рендера).
     pub vsync: Arc<dyn VsyncSource>,
     pub facts: Arc<dyn PlatformFacts>,
+    /// Показания батареи (ток, заряд, температура) для замера цены стадий ISP (сессия 07).
+    pub power: Arc<dyn PowerSource>,
 }
 
 /// Что маршрутизатор знает об экране: только ФАКТЫ. Сама surface принадлежит получателю событий

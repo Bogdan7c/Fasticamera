@@ -4,6 +4,8 @@ use ash::vk;
 
 use crate::context::GpuContext;
 use crate::error::{GpuError, run_step};
+use crate::gpu_timing::math::{elapsed_ticks, ticks_to_nanoseconds};
+use crate::live_objects::OwnedQueryPool;
 
 /// Четыре метки диагностики: начало и конец работы A, начало и конец работы B.
 pub(super) const TIMESTAMP_COUNT: u32 = 4;
@@ -16,12 +18,9 @@ pub(super) mod slot {
     pub(in crate::sync::diagnostics) const WORK_B_END: u32 = 3;
 }
 
-/// RAII-пул запросов меток времени.
-///
-/// Вид `VkQueryPool` пока не входит в `LiveObjectKind` (он принадлежит ядру A1), поэтому пул
-/// в счётчике не виден; обёртка гарантирует уничтожение в `Drop` на том же уровне владения.
+/// RAII-пул запросов меток времени (учтён в `live_objects()` как `QueryPool`).
 pub(super) struct TimestampPool {
-    pool: vk::QueryPool,
+    pool: OwnedQueryPool,
     context: GpuContext,
 }
 
@@ -36,13 +35,13 @@ impl TimestampPool {
             "vkCreateQueryPool",
         )?;
         Ok(Self {
-            pool,
+            pool: OwnedQueryPool::from_raw(context, pool),
             context: context.clone(),
         })
     }
 
     pub(super) fn handle(&self) -> vk::QueryPool {
-        self.pool
+        self.pool.handle()
     }
 
     /// Читает все метки (в тиках). Вызывать после завершения обеих работ (fence).
@@ -51,20 +50,16 @@ impl TimestampPool {
         // SAFETY: пул создан этим устройством; все 4 запроса записаны работами, завершёнными fence'ом.
         run_step(
             unsafe {
-                self.context
-                    .device()
-                    .get_query_pool_results(self.pool, 0, &mut ticks, vk::QueryResultFlags::TYPE_64)
+                self.context.device().get_query_pool_results(
+                    self.pool.handle(),
+                    0,
+                    &mut ticks,
+                    vk::QueryResultFlags::TYPE_64,
+                )
             },
             "vkGetQueryPoolResults",
         )?;
         Ok(ticks)
-    }
-}
-
-impl Drop for TimestampPool {
-    fn drop(&mut self) {
-        // SAFETY: пул принадлежит обёртке, GPU закончил с ним (инвариант владельца).
-        unsafe { self.context.device().destroy_query_pool(self.pool, None) };
     }
 }
 
@@ -83,24 +78,16 @@ pub struct TimestampAnalysis {
     pub b_started_after_a_finished: bool,
 }
 
-/// Маска значимых бит метки (`valid_bits` до 64).
-fn valid_bits_mask(valid_bits: u32) -> u64 {
-    if valid_bits >= 64 {
-        u64::MAX
-    } else {
-        (1_u64 << valid_bits) - 1
-    }
-}
-
 /// Разбор меток: тики → наносекунды от начала A с учётом переполнения счётчика `valid_bits`.
 ///
 /// Счётчик меток может быть короче 64 бит и переходить через ноль, поэтому разности берутся
 /// по модулю `2^valid_bits`: `(tick - a_begin) & mask`. Предполагается, что вся диагностика
 /// короче половины периода счётчика (на практике — секунды при периоде в минуты).
 pub(super) fn analyze_timestamps(ticks: [u64; 4], valid_bits: u32, period_ns: f32) -> TimestampAnalysis {
-    let mask = valid_bits_mask(valid_bits);
-    let relative_ticks = |index: u32| ticks[index as usize].wrapping_sub(ticks[slot::WORK_A_BEGIN as usize]) & mask;
-    let to_ns = |relative: u64| (relative as f64 * f64::from(period_ns)).round() as u64;
+    // Арифметика общая с `gpu_timing::GpuTimestamps` (маска valid_bits, разность по модулю, период).
+    let relative_ticks =
+        |index: u32| elapsed_ticks(ticks[slot::WORK_A_BEGIN as usize], ticks[index as usize], valid_bits);
+    let to_ns = |relative: u64| ticks_to_nanoseconds(relative, period_ns);
     let a_end = relative_ticks(slot::WORK_A_END);
     let b_begin = relative_ticks(slot::WORK_B_BEGIN);
     let b_end = relative_ticks(slot::WORK_B_END);

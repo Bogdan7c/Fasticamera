@@ -1,0 +1,43 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Menon 2007, проход 1: оценки зелёного по строке (G_H) и по столбцу (G_V) — directional_green_estimate
+// эталона. В красных и синих узлах G = h0 * CFA + h1 * CFA:
+//   h0 = [0, 0.5, 0, 0.5, 0]       — среднее двух зелёных соседей по линии;
+//   h1 = [-0.25, 0, 0.5, 0, -0.25] — лапласианная поправка цветом центра.
+// В зелёных узлах — сам отсчёт. Суммы в порядке отводов эталона (свёртка: отвод j берёт сдвиг 2 − j);
+// умножения на 0,5 и 0,25 точны, нулевые отводы ничего не меняют.
+
+#include "quality_common.glsl"
+
+layout(set = 0, binding = 0, std430) readonly buffer MosaicPlane { float values[]; } mosaic;
+layout(set = 0, binding = 1, std430) writeonly buffer GreenHorizontal { float values[]; } green_horizontal;
+layout(set = 0, binding = 2, std430) writeonly buffer GreenVertical { float values[]; } green_vertical;
+
+float directional_green(uint x, uint y, ivec2 step) {
+    float next = mosaic.values[mirrored_index(x, y, step.x, step.y)];
+    float previous = mosaic.values[mirrored_index(x, y, -step.x, -step.y)];
+    float next2 = mosaic.values[mirrored_index(x, y, 2 * step.x, 2 * step.y)];
+    float previous2 = mosaic.values[mirrored_index(x, y, -2 * step.x, -2 * step.y)];
+    float centre = mosaic.values[y * geometry.width + x];
+    precise float neighbour_average = 0.5 * next + 0.5 * previous;
+    precise float laplacian_correction = (-0.25 * next2 + 0.5 * centre) + -0.25 * previous2;
+    precise float estimate = neighbour_average + laplacian_correction;
+    return estimate;
+}
+
+void main() {
+    uint x;
+    uint y;
+    if (!pixel_coordinates(x, y)) {
+        return;
+    }
+    uint index = y * geometry.width + x;
+    if (channel_at(x, y) == CHANNEL_GREEN) {
+        float sample_value = mosaic.values[index];
+        green_horizontal.values[index] = sample_value;
+        green_vertical.values[index] = sample_value;
+        return;
+    }
+    green_horizontal.values[index] = directional_green(x, y, ivec2(1, 0));
+    green_vertical.values[index] = directional_green(x, y, ivec2(0, 1));
+}

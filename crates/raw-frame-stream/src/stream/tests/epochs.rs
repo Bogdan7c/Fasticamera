@@ -1,6 +1,6 @@
 //! Эпохи: чужие кадры и результаты, смена и остановка сессии.
 
-use super::support::{Rig, result_for};
+use super::support::{Rig, latest_wins_config, result_for};
 use crate::config::RawFrameStreamConfig;
 use crate::stream::{OfferOutcome, RawFrameStream, ResultOutcome, ViewfinderPoll};
 
@@ -8,13 +8,13 @@ use crate::stream::{OfferOutcome, RawFrameStream, ResultOutcome, ViewfinderPoll}
 fn config_with_ring() -> RawFrameStreamConfig {
     RawFrameStreamConfig {
         snapshot_ring_budget_bytes: 3 * 15_728_640,
-        ..RawFrameStreamConfig::default()
+        ..latest_wins_config()
     }
 }
 
 #[test]
 fn frame_and_result_of_an_old_epoch_are_rejected_and_the_frame_goes_straight_back() {
-    let mut rig = Rig::new(RawFrameStreamConfig::default());
+    let mut rig = Rig::new(latest_wins_config());
     let old_epoch = rig.epoch;
     rig.restart();
     assert_ne!(rig.epoch, old_epoch);
@@ -60,7 +60,7 @@ fn begin_stream_releases_everything_the_old_epoch_held() {
     assert_eq!(counters.results_unpaired, 1);
     assert_eq!(counters.frames_outstanding, 0);
     assert!(matches!(
-        rig.stream.viewfinder().poll_latest(rig.at(1)),
+        rig.stream.viewfinder().poll_for_vsync(rig.at(1)),
         ViewfinderPoll::NoNewFrame
     ));
     assert!(rig.stream.snapshot_ring().take_all().is_empty());
@@ -79,7 +79,7 @@ fn end_stream_empties_consumers_and_makes_the_viewfinder_inactive() {
     assert!(rig.log.is_returned(2_000));
     assert_eq!(rig.stream.counters().frames_missing_meta_stopped, 1);
     assert!(matches!(
-        rig.stream.viewfinder().poll_latest(rig.at(1)),
+        rig.stream.viewfinder().poll_for_vsync(rig.at(1)),
         ViewfinderPoll::StreamInactive
     ));
     assert_eq!(rig.stream.snapshot_ring().capacity(), 0);
@@ -93,7 +93,7 @@ fn end_stream_empties_consumers_and_makes_the_viewfinder_inactive() {
 
 #[test]
 fn end_stream_of_a_previous_epoch_does_not_stop_the_current_one() {
-    let mut rig = Rig::new(RawFrameStreamConfig::default());
+    let mut rig = Rig::new(latest_wins_config());
     let old_epoch = rig.epoch;
     rig.restart();
     rig.producer.end_stream(old_epoch);
@@ -102,17 +102,17 @@ fn end_stream_of_a_previous_epoch_does_not_stop_the_current_one() {
 
 #[test]
 fn stream_that_never_began_is_inactive_and_rejects_frames() {
-    let stream = RawFrameStream::new(RawFrameStreamConfig::default());
+    let stream = RawFrameStream::new(latest_wins_config());
     let now = std::time::Instant::now();
     assert!(matches!(
-        stream.viewfinder().poll_latest(now),
+        stream.viewfinder().poll_for_vsync(now),
         ViewfinderPoll::StreamInactive
     ));
 }
 
 #[test]
 fn pool_exhaustion_is_counted_for_the_current_epoch_only() {
-    let mut rig = Rig::new(RawFrameStreamConfig::default());
+    let mut rig = Rig::new(latest_wins_config());
     let old_epoch = rig.epoch;
     rig.restart();
     rig.producer.note_pool_exhausted(old_epoch);

@@ -16,6 +16,8 @@ use render_loop::config::RenderLoopConfig;
 use render_loop::thread::RenderStatus;
 use serde::Serialize;
 
+use crate::viewfinder_control::{RenderControl, RenderScenarioClaim};
+
 /// Включён ли validation layer: в release его нет, и «0 ошибок» там ничего не доказывает.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -218,4 +220,26 @@ pub struct GpuServices {
     pub diagnostics: Arc<dyn GpuDiagnostics>,
     /// Конфиг потока рендера: сценариям нужны окно пейсинга и желаемая частота.
     pub render_config: RenderLoopConfig,
+    /// Куда идут регулировки рендера сценариев (`viewfinder_control`).
+    pub(crate) control: Arc<dyn RenderControl>,
+    /// Что из рендера тронул текущий сценарий: это вернёт `render_scenario_ended`.
+    pub(crate) scenario_claim: Arc<RenderScenarioClaim>,
+}
+
+impl GpuServices {
+    /// Сервисы с пустым учётом регулировок (ни один сценарий рендер ещё не трогал).
+    pub fn new(
+        render: Arc<dyn RenderStatusSource>,
+        diagnostics: Arc<dyn GpuDiagnostics>,
+        render_config: RenderLoopConfig,
+        control: Arc<dyn RenderControl>,
+    ) -> Self {
+        Self {
+            render,
+            diagnostics,
+            render_config,
+            control,
+            scenario_claim: Arc::default(),
+        }
+    }
 }

@@ -1,0 +1,53 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Menon 2007, проход 3: красный и синий в зелёных узлах (fill_chroma_at_green эталона):
+//   C = G + (C_sparse ⊛ k_b) − (G ⊛ k_b),  k_b = [0.5, 0, 0.5] вдоль направления, где лежит нужный цвет.
+// В остальных узлах — разреженный канал: отсчёт мозаики, если фильтр этого цвета, иначе 0.
+// Зеркало без повтора края сохраняет чётность индекса, поэтому цвет фильтра соседа «за краем» тот же,
+// что у отражённого пикселя, и разреженный канал можно читать прямо из мозаики.
+
+#include "quality_common.glsl"
+
+layout(set = 0, binding = 0, std430) readonly buffer MosaicPlane { float values[]; } mosaic;
+layout(set = 0, binding = 1, std430) readonly buffer Green { float values[]; } green;
+layout(set = 0, binding = 2, std430) writeonly buffer RedAtGreen { float values[]; } red_at_green;
+layout(set = 0, binding = 3, std430) writeonly buffer BlueAtGreen { float values[]; } blue_at_green;
+
+// Разреженный канал `channel` в пикселе (px, py) после зеркала.
+float sparse_sample(uint index, uint px, uint py, uint channel) {
+    return channel_at(px, py) == channel ? mosaic.values[index] : 0.0;
+}
+
+// Значение разреженного канала у соседа со сдвигом offset (зеркально).
+float sparse_neighbour(uint x, uint y, ivec2 offset, uint channel) {
+    uint source_x = mirror_index(int(x) + offset.x, geometry.width);
+    uint source_y = mirror_index(int(y) + offset.y, geometry.height);
+    return sparse_sample(source_y * geometry.width + source_x, source_x, source_y, channel);
+}
+
+// R или B в зелёном узле (x, y).
+float chroma_at_green(uint x, uint y, uint channel) {
+    ivec2 step = direction_step(chroma_direction_at_green(y, channel));
+    precise float chroma_average = 0.5 * sparse_neighbour(x, y, step, channel) + 0.5 * sparse_neighbour(x, y, -step, channel);
+    float green_next = green.values[mirrored_index(x, y, step.x, step.y)];
+    float green_previous = green.values[mirrored_index(x, y, -step.x, -step.y)];
+    precise float green_average = 0.5 * green_next + 0.5 * green_previous;
+    precise float value = (green.values[y * geometry.width + x] + chroma_average) - green_average;
+    return value;
+}
+
+void main() {
+    uint x;
+    uint y;
+    if (!pixel_coordinates(x, y)) {
+        return;
+    }
+    uint index = y * geometry.width + x;
+    if (channel_at(x, y) == CHANNEL_GREEN) {
+        red_at_green.values[index] = chroma_at_green(x, y, CHANNEL_RED);
+        blue_at_green.values[index] = chroma_at_green(x, y, CHANNEL_BLUE);
+    } else {
+        red_at_green.values[index] = sparse_sample(index, x, y, CHANNEL_RED);
+        blue_at_green.values[index] = sparse_sample(index, x, y, CHANNEL_BLUE);
+    }
+}

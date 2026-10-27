@@ -2,45 +2,66 @@
 //!
 //! Один кадр показа (`draw_and_present`):
 //! 1. слот кольца выдан ⇒ сабмиты до прошлого сабмита слота завершены ([`SubmissionTracker`]) —
-//!    отпускаем ставшие ненужными импорты и семафоры ожидания;
-//! 2. опрос видоискателя: новый кадр (импорт + acquire-fence), перерисовка прежнего или чёрный;
-//! 3. запись предпросмотра в командный буфер кадра, сабмит через `present_with_sync`: ждём
-//!    acquire-fence нового кадра, при необходимости сигналим экспортируемый семафор;
-//! 4. по итогу сабмита [`LeaseLedger`] фиксирует смену показанного кадра, fence отдаётся ПРЕДЫДУЩИМ
-//!    кадрам (никогда тому, что GPU только что прочитал).
+//!    отпускаем ставшие ненужными импорты, семафоры ожидания и лизинги, собираем итоги слота
+//!    (время GPU, статистика AWB → [`AwbStatisticsFeed`]);
+//! 2. решение о содержимом (`prepare`): рисовальщик ISP — новый кадр через ISP, перекомпоновка
+//!    прежнего изображения видоискателя или чёрный; отладочная мозаика — как в сессии 05;
+//! 3. запись команд (`record`) по плану владения ([`OwnershipPlan`]);
+//! 4. сабмит через `present_with_sync`: ждём acquire-fence нового кадра (стадия `ALL_COMMANDS`,
+//!    см. `PresentSync`), при необходимости экспортируем release-fence;
+//! 5. по итогу сабмита [`LeaseLedger`] решает, кому отдать fence. Кадр ISP поглощается своим же
+//!    сабмитом (приём, проход, возврат) — его fence и отдаётся камере; кадр мозаики ждёт сабмита,
+//!    который его заменит.
+//!
+//! Стенд V4 (`headroom_bench`, выключен по умолчанию) живёт здесь же: его кадр записывается в
+//! сабмит нового кадра ISP, его итоги собираются со слота, а объекты освобождаются по тем же
+//! завершённым сериям, что импорты.
 //!
 //! Ошибки разведены: сабмит не принят (GPU кадр не читал — лизинг нового кадра возвращается как
 //! нетронутый) и ошибка показа после принятого сабмита (GPU читал — возврат только по fence).
 
-use std::time::Instant;
+mod prepare;
+mod record;
+
+use std::sync::Arc;
+use std::time::Duration;
 
 use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::error::GpuError;
-use gpu_vulkan::raw_mosaic_preview::{
-    FrameHandoff, MosaicPreviewParams, MosaicSource, PreviewFrame, RawMosaicPreview, SourceAcquire,
-};
+use gpu_vulkan::gpu_timing::TimestampCollect;
+use gpu_vulkan::raw_mosaic_preview::{MosaicPreviewParams, MosaicSource, RawMosaicPreview};
 use gpu_vulkan::swapchain::{
     DisplayFrame, DisplayTarget, PresentOutcome as GpuPresentOutcome, PresentRequest, PresentSync, SubmitProgress,
     SwapchainError, SyncedPresent,
 };
-use gpu_vulkan::sync::{ExportableSemaphore, GpuReleaseFence, WaitSemaphore, import_wait_fence};
-use raw_frame_stream::{RawFrameLease, ViewfinderFrames, ViewfinderPoll};
-use std::sync::Arc;
+use gpu_vulkan::sync::{ExportableSemaphore, GpuReleaseFence, WaitSemaphore};
+use isp_vulkan::viewfinder::ViewfinderGeometry;
+use raw_frame_stream::{RawFrameLease, ViewfinderFrames};
 
 use super::export_recovery::{ExportRecovery, RecoveryStep};
+use super::headroom_bench::{BenchSubmit, HeadroomBenchParts, HeadroomBenchRunner, HeadroomFrame};
+use super::isp_params::IspParamsCache;
 use super::lease::{FrameChange, LeaseLedger};
-use super::ownership::{AcquireNew, OwnershipPlan, ReleaseDisplayed};
-use super::passport::preview_params;
+use super::ownership::OwnershipPlan;
+use super::pipelines::CameraPipelines;
+use super::settings::ViewfinderSettings;
 use super::submissions::SubmissionTracker;
+use super::viewfinder_stats::ViewfinderStats;
 use super::{CameraFrameImporter, CameraImportError, CameraImporterFactory, SubmissionSerial};
+use crate::backend::FrameGpuTiming;
 use crate::camera_diagnostics::{CameraStreamDiagnostics, PresentedCameraFrame};
+use crate::viewfinder::{AwbFrameIdentity, AwbStatisticsFeed, ViewfinderDiagnostics};
 
 const LOG_TARGET: &str = "fasticamera::render::camera";
+
+/// Сколько времён кадра на GPU держать до вычерпывания потоком. Поток забирает их каждый кадр
+/// (обычно 0–1 штука), так что 64 — заведомый запас; дальше — вытеснение со счётчиком.
+const MAX_PENDING_GPU_TIMINGS: usize = 64;
 
 /// Почему кадр камеры не нарисован.
 #[derive(Debug)]
 pub enum CameraDrawError {
-    /// Не удалось записать предпросмотр (параметры отвергнуты до записи команд).
+    /// Не удалось записать отладочную мозаику или чёрный кадр (проверка до записи команд).
     Record(GpuError),
     /// Ошибка показа/сабмита цели.
     Swapchain(SwapchainError),
@@ -48,11 +69,21 @@ pub enum CameraDrawError {
 
 /// Что рисуем в этом кадре.
 enum Content {
-    /// Кадр камеры.
-    Camera {
+    /// Отладочная мозаика кадра камеры (05).
+    Mosaic {
         source: MosaicSource,
         params: MosaicPreviewParams,
     },
+    /// Новый кадр через ISP видоискателя.
+    IspNew {
+        source: MosaicSource,
+        geometry: ViewfinderGeometry,
+        identity: AwbFrameIdentity,
+        /// Тот же кадр через стенд V4 (`None` — стенд выключен или кадр мимо него).
+        headroom: Option<HeadroomFrame>,
+    },
+    /// Прежнее изображение видоискателя без ISP и без импорта.
+    Recompose,
     /// Чёрный кадр (потока нет или показывать нечего).
     Black,
 }
@@ -61,7 +92,7 @@ enum Content {
 struct Prepared {
     content: Content,
     change: FrameChange,
-    /// Новый кадр, которому предстоит стать показанным (`Some` только при `Replace`).
+    /// Новый кадр, который читает этот сабмит (`Some` только при `Replace` и `Consume`).
     new_lease: Option<RawFrameLease>,
     /// Ожидание acquire-fence нового кадра (должно жить до конца сабмита на GPU).
     camera_wait: Option<WaitSemaphore>,
@@ -69,10 +100,43 @@ struct Prepared {
     stream_inactive: bool,
 }
 
+/// Что записано в командный буфер (для счётчиков после сабмита).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Recorded {
+    /// Отладочная мозаика.
+    Mosaic,
+    /// Новый кадр: `processed` — ISP записан, `shown` — изображение скомпоновано на экран.
+    IspNew { processed: bool, shown: bool },
+    /// Перекомпоновка: `shown` — изображение скомпоновано (иначе чёрный).
+    Recompose { shown: bool },
+    /// Чёрный.
+    Black,
+}
+
 /// Итог освобождения сессии.
 pub struct CameraShutdown {
     /// Счётчики сессии (в них же — сколько лизингов возвращено после простоя и сколько утекло).
     pub diagnostics: CameraStreamDiagnostics,
+    /// Статистика видоискателя возвращается владельцу (бэкенду) — она копится за его жизнь.
+    pub viewfinder: ViewfinderStats,
+}
+
+/// Что сессия получает от бэкенда при создании.
+pub struct CameraSessionParts<'a> {
+    /// Видоискатель потока кадров.
+    pub frames: Arc<ViewfinderFrames>,
+    /// Фабрика импортёра.
+    pub make_importer: &'a CameraImporterFactory,
+    /// Ёмкость истории показов.
+    pub history_capacity: usize,
+    /// Действующие настройки видоискателя.
+    pub settings: ViewfinderSettings,
+    /// Статистика видоискателя (вернётся в `CameraShutdown`).
+    pub viewfinder: ViewfinderStats,
+    /// Лента статистики AWB.
+    pub awb_feed: AwbStatisticsFeed,
+    /// Стенд V4: настройки конвейера, слоты кольца, включён ли.
+    pub headroom: HeadroomBenchParts,
 }
 
 /// Показ кадров камеры для одной surface.
@@ -83,26 +147,63 @@ pub struct CameraSession {
     tracker: SubmissionTracker,
     export: ExportableSemaphore,
     recovery: ExportRecovery,
-    /// Источник показанного кадра: его нужно вернуть камере в сабмите, который заменит кадр. Живёт в кэше
-    /// импортов (ёмкость кэша заведомо больше числа кадров на руках у показа).
+    /// Источник кадра отладочной мозаики на экране: его нужно вернуть камере в сабмите, который заменит
+    /// кадр. Живёт в кэше импортов (ёмкость кэша заведомо больше числа кадров на руках у показа).
     displayed_source: Option<MosaicSource>,
     /// Семафоры ожидания acquire-fence: живут, пока GPU не закончит сабмит, который их ждёт.
     waits_in_flight: Vec<(SubmissionSerial, WaitSemaphore)>,
     stats: CameraStreamDiagnostics,
     history_capacity: usize,
+    settings: ViewfinderSettings,
+    params: IspParamsCache,
+    viewfinder: ViewfinderStats,
+    awb_feed: AwbStatisticsFeed,
+    /// В изображении видоискателя лежит актуальный кадр, его можно перекомпоновать. Сбрасывается
+    /// чёрным кадром, остановкой потока, сменой рисовальщика и неудачей ISP.
+    isp_image_shown: bool,
+    /// Чей кадр ISP записал в слот (для привязки статистики AWB); `None` — кадр слота не дошёл до GPU.
+    slot_frames: Vec<Option<AwbFrameIdentity>>,
+    /// Номер кадра потока, чьи команды записаны в слот (`None` — сабмита не было): по нему время
+    /// кадра на GPU привязывается к кадру, когда метки слота собраны.
+    slot_frame_indices: Vec<Option<u64>>,
+    /// Собранные времена кадров на GPU, ждущие потока рендера (`drain_frame_gpu_timings`).
+    completed_gpu_timings: Vec<FrameGpuTiming>,
+    /// Стенд «запас под видео» (V4).
+    bench: HeadroomBenchRunner,
     context: GpuContext,
 }
 
 impl CameraSession {
     /// Создаёт сессию: импортёр (по фабрике бэкенда) и экспортируемый семафор.
-    pub fn new(
-        context: &GpuContext,
-        frames: Arc<ViewfinderFrames>,
-        make_importer: &CameraImporterFactory,
-        history_capacity: usize,
-    ) -> Result<Self, CameraSessionError> {
-        let importer = make_importer(context).map_err(CameraSessionError::Importer)?;
-        let export = ExportableSemaphore::new(context).map_err(CameraSessionError::ExportSemaphore)?;
+    /// Ошибка возвращает статистику видоискателя владельцу.
+    pub fn new(context: &GpuContext, parts: CameraSessionParts<'_>) -> Result<Self, Box<CameraSessionFailure>> {
+        let CameraSessionParts {
+            frames,
+            make_importer,
+            history_capacity,
+            settings,
+            viewfinder,
+            awb_feed,
+            headroom,
+        } = parts;
+        let importer = match make_importer(context) {
+            Ok(importer) => importer,
+            Err(error) => {
+                return Err(Box::new(CameraSessionFailure {
+                    error: CameraSessionError::Importer(error),
+                    viewfinder,
+                }));
+            }
+        };
+        let export = match ExportableSemaphore::new(context) {
+            Ok(export) => export,
+            Err(error) => {
+                return Err(Box::new(CameraSessionFailure {
+                    error: CameraSessionError::ExportSemaphore(error),
+                    viewfinder,
+                }));
+            }
+        };
         Ok(Self {
             frames,
             importer,
@@ -114,6 +215,15 @@ impl CameraSession {
             waits_in_flight: Vec::new(),
             stats: CameraStreamDiagnostics::default(),
             history_capacity,
+            settings,
+            params: IspParamsCache::default(),
+            viewfinder,
+            awb_feed,
+            isp_image_shown: false,
+            slot_frames: Vec::new(),
+            slot_frame_indices: Vec::new(),
+            completed_gpu_timings: Vec::new(),
+            bench: HeadroomBenchRunner::new(context, headroom),
             context: context.clone(),
         })
     }
@@ -129,24 +239,43 @@ impl CameraSession {
         }
     }
 
+    /// Снимок диагностики видоискателя.
+    pub fn viewfinder_diagnostics(&mut self) -> ViewfinderDiagnostics {
+        self.viewfinder.snapshot(&self.settings, self.bench.live_state())
+    }
+
+    /// Новые настройки (после команды). Смена рисовальщика сбрасывает «изображение актуально»:
+    /// после мозаики изображение видоискателя устарело, до нового кадра — чёрный.
+    pub fn apply_settings(&mut self, settings: ViewfinderSettings) {
+        if settings.painter != self.settings.painter {
+            self.isp_image_shown = false;
+        }
+        if settings.headroom != self.settings.headroom {
+            self.bench.set_mode(settings.headroom, self.viewfinder.headroom_mut());
+        }
+        self.settings = settings;
+    }
+
     /// Рисует и показывает один кадр. `frame` уже выдан целью и будет показан в любом случае
-    /// (при ошибке записи — через сброс неотрисованного кадра).
+    /// (при ошибке записи — через сброс неотрисованного кадра). `frame_index` — номер кадра потока
+    /// рендера: с ним позже выдаётся время кадра на GPU.
     pub fn draw_and_present(
         &mut self,
         display: &mut DisplayTarget,
-        preview: &mut RawMosaicPreview,
+        pipelines: &mut CameraPipelines,
         frame: DisplayFrame,
         request: PresentRequest,
+        frame_index: u64,
     ) -> Result<GpuPresentOutcome, CameraDrawError> {
         let slot = frame.ring_slot();
         // 1. Слот свободен: GPU закончил его прошлый сабмит и все до него.
         let completed = self.tracker.note_slot_acquired(slot);
-        self.importer.retire_completed(completed);
-        self.waits_in_flight.retain(|(serial, _)| *serial > completed);
-        // Без ожиданий GPU: лизинги, чья серия возврата уже завершена, уходят камере сразу.
-        self.stats.leases_released_by_completion += self.ledger.release_retiring_completed(completed) as u64;
-        self.maintain_export_semaphore(completed);
+        self.retire_completed_work(completed);
+        self.collect_slot(pipelines, slot);
+        // Метки слота собраны: следующий сабмит в слот (если будет) назначит ему новый кадр.
+        self.note_slot_frame_index(slot, None);
         let serial = self.tracker.next_serial();
+        self.viewfinder.note_display_color_space(frame.display_color_space());
 
         // 2. Что показывать.
         let Prepared {
@@ -155,52 +284,28 @@ impl CameraSession {
             new_lease,
             camera_wait,
             stream_inactive,
-        } = self.prepare_content(serial);
+        } = self.prepare_content(serial, frame.display_color_space());
         if stream_inactive {
             self.release_imports_when_gpu_is_done();
         }
 
-        // 3. Запись команд. План владения: приём нового кадра — только в первом сабмите, читающем его;
-        //    возврат прежнего — в сабмите, который его заменяет; перерисовка владения не трогает.
+        // 3. Запись команд.
         let plan = OwnershipPlan::for_change(change, self.displayed_source.is_some());
-        let release_previous = match plan.release_displayed {
-            ReleaseDisplayed::Yes => self.displayed_source,
-            ReleaseDisplayed::No => None,
+        let recorded = match self.record_content(pipelines, &frame, &content, plan) {
+            Ok(recorded) => recorded,
+            Err(error) => {
+                // Мозаика и чёрный проверяют всё до записи команд: новый кадр GPU не касался.
+                if let Some(lease) = new_lease {
+                    lease.release_unused();
+                }
+                let abandoned = display.present_with_sync(frame, PresentRequest::default(), &PresentSync::none());
+                if abandoned.submit == SubmitProgress::Submitted {
+                    // Время такого сабмита — не время кадра видоискателя: к кадру не привязываем.
+                    self.tracker.note_submitted(slot, serial);
+                }
+                return Err(CameraDrawError::Record(error));
+            }
         };
-        let recorded = match &content {
-            Content::Camera { source, params } => {
-                let handoff = FrameHandoff {
-                    acquire_source: match plan.acquire_new {
-                        AcquireNew::Yes => SourceAcquire::BeforeRead,
-                        AcquireNew::No => SourceAcquire::AlreadyAcquired,
-                    },
-                    release_previous,
-                };
-                preview.record(
-                    frame.command_buffer(),
-                    frame.pattern_target(),
-                    &PreviewFrame {
-                        source,
-                        params,
-                        transform: frame.transform(),
-                        frame_slot: slot,
-                        handoff,
-                    },
-                )
-            }
-            Content::Black => preview.record_black(frame.command_buffer(), frame.pattern_target(), release_previous),
-        };
-        if let Err(error) = recorded {
-            // Команды камеры не записаны (проверка идёт до записи): новый кадр GPU не касался.
-            if let Some(lease) = new_lease {
-                lease.release_unused();
-            }
-            let abandoned = display.present_with_sync(frame, PresentRequest::default(), &PresentSync::none());
-            if abandoned.submit == SubmitProgress::Submitted {
-                self.tracker.note_submitted(slot, serial);
-            }
-            return Err(CameraDrawError::Record(error));
-        }
 
         // 4. Сабмит и показ.
         let wants_release_fence = self.ledger.needs_release_fence(change) && self.recovery.can_export();
@@ -220,6 +325,7 @@ impl CameraSession {
         // Токен экспорта потребляем сразу: так заимствование `self.export` кончается до правки полей.
         let exported = release_signal.map(gpu_vulkan::sync::PendingReleaseSignal::export);
 
+        // 5. Итог сабмита.
         match submit {
             SubmitProgress::NotSubmitted => {
                 // GPU кадра не читал: новый лизинг возвращается нетронутым, семафор ожидания не нужен.
@@ -227,17 +333,25 @@ impl CameraSession {
                     lease.release_unused();
                 }
                 drop(camera_wait);
+                self.bench
+                    .finish_frame(slot, BenchSubmit::NotSubmitted, self.viewfinder.headroom_mut());
+                self.note_slot_frame(slot, None);
+                self.isp_image_shown = false;
                 outcome.map_err(CameraDrawError::Swapchain)
             }
             SubmitProgress::Submitted => {
                 self.tracker.note_submitted(slot, serial);
+                self.note_slot_frame_index(slot, Some(frame_index));
                 if let Some(wait) = camera_wait {
                     self.waits_in_flight.push((serial, wait));
                 }
-                self.note_submitted_content(&content, change, new_lease.as_ref(), &outcome);
+                self.note_submitted_content(&content, recorded, change, new_lease.as_ref(), &outcome);
+                self.note_submitted_viewfinder(slot, &content, recorded);
+                self.bench
+                    .finish_frame(slot, BenchSubmit::Submitted(serial), self.viewfinder.headroom_mut());
                 self.displayed_source = match (change, &content) {
-                    (FrameChange::Replace, Content::Camera { source, .. }) => Some(*source),
-                    (FrameChange::Clear, _) => None,
+                    (FrameChange::Replace, Content::Mosaic { source, .. }) => Some(*source),
+                    (FrameChange::Clear | FrameChange::Consume, _) => None,
                     _ => self.displayed_source,
                 };
                 self.ledger.commit_submitted(change, new_lease, serial);
@@ -259,7 +373,7 @@ impl CameraSession {
         match &gpu_wait {
             Ok(()) => {
                 self.tracker.note_gpu_idle();
-                // Кадр на экране ещё у нас: отдельным возвратом владения передаём его камере до возврата лизинга.
+                // Кадр мозаики на экране ещё у нас: отдельным возвратом владения передаём его камере.
                 if let Some(source) = self.displayed_source.take()
                     && let Err(error) = RawMosaicPreview::release_source_blocking(&self.context, &source)
                 {
@@ -269,6 +383,7 @@ impl CameraSession {
                 self.stats.leases_released_after_idle += released as u64;
                 self.importer.release_all_imports_gpu_idle();
                 self.waits_in_flight.clear();
+                self.bench.release_all_gpu_idle(self.viewfinder.headroom_mut());
             }
             Err(error) => {
                 let leaked = self.ledger.leak_all();
@@ -282,102 +397,143 @@ impl CameraSession {
             }
         }
         let diagnostics = self.diagnostics();
+        let Self {
+            importer,
+            export,
+            waits_in_flight,
+            viewfinder,
+            bench,
+            ..
+        } = self;
         if gpu_wait.is_err() {
-            // Импортёр, семафор экспорта и семафоры ожидания может ещё использовать GPU: не уничтожаем.
-            let Self {
-                importer,
-                export,
-                waits_in_flight,
-                ..
-            } = self;
+            // Импортёр, семафор экспорта, семафоры ожидания и объекты стенда V4 может ещё использовать
+            // GPU: не уничтожаем.
             std::mem::forget(importer);
             std::mem::forget(export);
             std::mem::forget(waits_in_flight);
+            std::mem::forget(bench);
         }
-        CameraShutdown { diagnostics }
+        CameraShutdown {
+            diagnostics,
+            viewfinder,
+        }
     }
 
-    /// Решает, что рисовать в этом кадре (опрос видоискателя, импорт, fence).
-    fn prepare_content(&mut self, serial: SubmissionSerial) -> Prepared {
-        match self.frames.poll_latest(Instant::now()) {
-            ViewfinderPoll::NewFrame(lease) => match self.prepare_new_frame(&lease, serial) {
-                Ok((source, params, wait)) => {
-                    self.stats.camera_frames_imported += 1;
-                    Prepared {
-                        content: Content::Camera { source, params },
-                        change: FrameChange::Replace,
-                        new_lease: Some(lease),
-                        camera_wait: Some(wait),
-                        stream_inactive: false,
+    /// Завершены сабмиты до `completed`: импорты, семафоры ожидания и лизинги, ждущие завершения своей
+    /// серии, освобождаются (без ожиданий GPU); залипший семафор экспорта заменяется, если пора.
+    fn retire_completed_work(&mut self, completed: SubmissionSerial) {
+        self.importer.retire_completed(completed);
+        self.waits_in_flight.retain(|(serial, _)| *serial > completed);
+        self.stats.leases_released_by_completion += self.ledger.release_retiring_completed(completed) as u64;
+        self.bench.retire_completed(completed, self.viewfinder.headroom_mut());
+        self.maintain_export_semaphore(completed);
+    }
+
+    /// Итоги слота после его fence: время GPU и статистика AWB (публикуется с кадром, который её дал).
+    fn collect_slot(&mut self, pipelines: &mut CameraPipelines, slot: usize) {
+        let collected = pipelines.collect_slot(slot);
+        self.bench.collect_slot(slot, self.viewfinder.headroom_mut());
+        let slot_frame = self.slot_frames.get_mut(slot).and_then(Option::take);
+        match collected.isp {
+            Ok(report) => {
+                self.viewfinder.note_isp_dispatch_time(&report.isp_gpu_time);
+                if let Some(statistics) = report.awb_statistics {
+                    match slot_frame {
+                        Some(frame) => {
+                            self.awb_feed.publish(frame, statistics);
+                            self.viewfinder.counters_mut().statistics_published += 1;
+                        }
+                        None => self.viewfinder.counters_mut().statistics_discarded += 1,
                     }
                 }
-                Err(error) => {
-                    self.stats.camera_frame_failures += 1;
-                    tracing::warn!(target: LOG_TARGET, %error, "кадр камеры не подготовлен: возвращён нетронутым");
-                    lease.release_unused();
-                    self.prepare_redraw(serial)
+            }
+            Err(error) => {
+                self.viewfinder.counters_mut().gpu_timing_failures += 1;
+                tracing::warn!(target: LOG_TARGET, %error, slot, "итоги слота ISP не собраны");
+            }
+        }
+        if let Err(error) = collected.compositor {
+            tracing::warn!(target: LOG_TARGET, %error, slot, "набор дескрипторов компоновщика не освобождён");
+        }
+        let slot_frame_index = self.slot_frame_indices.get(slot).copied().flatten();
+        match collected.frame {
+            Ok(frame_time) => {
+                self.viewfinder.note_frame_time(&frame_time);
+                if let (Some(frame_index), TimestampCollect::Ready(spans)) = (slot_frame_index, &frame_time) {
+                    self.push_gpu_timing(FrameGpuTiming {
+                        frame_index,
+                        gpu_duration: Duration::from_nanos(spans.total_ns),
+                    });
                 }
-            },
-            ViewfinderPoll::NoNewFrame => self.prepare_redraw(serial),
-            ViewfinderPoll::StreamInactive => Prepared {
-                content: Content::Black,
-                change: FrameChange::Clear,
-                new_lease: None,
-                camera_wait: None,
-                stream_inactive: true,
-            },
+            }
+            Err(error) => {
+                self.viewfinder.counters_mut().gpu_timing_failures += 1;
+                tracing::warn!(target: LOG_TARGET, %error, slot, "метки кадра видоискателя не собраны");
+            }
         }
     }
 
-    /// Перерисовка показанного кадра (или чёрный, если показывать нечего).
-    fn prepare_redraw(&mut self, serial: SubmissionSerial) -> Prepared {
-        let content = match self.ledger.displayed() {
-            Some(lease) => match preview_params(lease.passport())
-                .map_err(|error| error.to_string())
-                .and_then(|params| {
-                    self.importer
-                        .import_frame(lease, serial)
-                        .map(|source| Content::Camera { source, params })
-                        .map_err(|error| error.to_string())
-                }) {
-                Ok(content) => content,
-                Err(error) => {
-                    self.stats.camera_frame_failures += 1;
-                    tracing::warn!(target: LOG_TARGET, %error, "перерисовать показанный кадр не удалось: чёрный кадр");
-                    Content::Black
-                }
-            },
-            None => Content::Black,
+    /// Запоминает номер кадра потока, чьи команды записаны в слот.
+    fn note_slot_frame_index(&mut self, slot: usize, frame_index: Option<u64>) {
+        if self.slot_frame_indices.len() <= slot {
+            self.slot_frame_indices.resize(slot + 1, None);
+        }
+        self.slot_frame_indices[slot] = frame_index;
+    }
+
+    /// Кладёт время кадра на GPU в очередь для потока. Поток вычерпывает её каждый кадр; если
+    /// он почему-то не вычерпывает, самые старые замеры вытесняются (очередь ограничена).
+    fn push_gpu_timing(&mut self, timing: FrameGpuTiming) {
+        if self.completed_gpu_timings.len() >= MAX_PENDING_GPU_TIMINGS {
+            self.completed_gpu_timings.remove(0);
+            self.viewfinder.counters_mut().gpu_timings_overflowed += 1;
+        }
+        self.completed_gpu_timings.push(timing);
+    }
+
+    /// Вычерпывает собранные времена кадров на GPU (по возрастанию номера кадра).
+    pub fn drain_frame_gpu_timings(&mut self) -> Vec<FrameGpuTiming> {
+        std::mem::take(&mut self.completed_gpu_timings)
+    }
+
+    /// Запоминает, чей кадр ISP записал в слот (`None` — статистику слота публиковать нельзя).
+    fn note_slot_frame(&mut self, slot: usize, frame: Option<AwbFrameIdentity>) {
+        if self.slot_frames.len() <= slot {
+            self.slot_frames.resize(slot + 1, None);
+        }
+        self.slot_frames[slot] = frame;
+    }
+
+    /// Счётчики видоискателя и «изображение актуально» по итогу принятого сабмита.
+    fn note_submitted_viewfinder(&mut self, slot: usize, content: &Content, recorded: Recorded) {
+        let slot_frame = match (content, recorded) {
+            (Content::IspNew { identity, .. }, Recorded::IspNew { processed: true, .. }) => Some(*identity),
+            _ => None,
         };
-        Prepared {
-            content,
-            change: FrameChange::Keep,
-            new_lease: None,
-            camera_wait: None,
-            stream_inactive: false,
+        self.note_slot_frame(slot, slot_frame);
+        let counters = self.viewfinder.counters_mut();
+        match recorded {
+            Recorded::IspNew { processed, shown } => {
+                if processed {
+                    counters.frames_processed += 1;
+                }
+                self.isp_image_shown = processed && shown;
+            }
+            Recorded::Recompose { shown } => {
+                if shown {
+                    counters.recomposed += 1;
+                }
+                self.isp_image_shown = shown;
+            }
+            Recorded::Mosaic | Recorded::Black => self.isp_image_shown = false,
         }
-    }
-
-    /// Параметры, источник и семафор ожидания для НОВОГО кадра.
-    fn prepare_new_frame(
-        &mut self,
-        lease: &RawFrameLease,
-        serial: SubmissionSerial,
-    ) -> Result<(MosaicSource, MosaicPreviewParams, WaitSemaphore), NewFrameError> {
-        let params = preview_params(lease.passport()).map_err(|error| NewFrameError(error.to_string()))?;
-        let source = self.importer.import_frame(lease, serial).map_err(NewFrameError::from)?;
-        let fence = lease
-            .acquire_fence()
-            .map_err(|error| NewFrameError(format!("acquire-fence кадра: {error}")))?;
-        let wait = import_wait_fence(&self.context, fence)
-            .map_err(|error| NewFrameError(format!("импорт acquire-fence в семафор: {}", error.reason)))?;
-        Ok((source, params, wait))
     }
 
     /// Счётчики и «последний показанный» по итогу принятого сабмита.
     fn note_submitted_content(
         &mut self,
         content: &Content,
+        recorded: Recorded,
         change: FrameChange,
         new_lease: Option<&RawFrameLease>,
         outcome: &Result<GpuPresentOutcome, SwapchainError>,
@@ -388,8 +544,19 @@ impl CameraSession {
             }
             Ok(GpuPresentOutcome::NeedsRecreate) | Err(_) => None,
         };
-        match (change, new_lease, present_id) {
-            (FrameChange::Replace, Some(lease), Some(present_id)) => {
+        let Some(present_id) = present_id else { return };
+        let new_frame_shown = match recorded {
+            Recorded::Mosaic => change == FrameChange::Replace,
+            Recorded::IspNew { processed, shown } => processed && shown,
+            Recorded::Recompose { .. } | Recorded::Black => false,
+        };
+        let redrawn = match recorded {
+            Recorded::Mosaic => change == FrameChange::Keep && matches!(content, Content::Mosaic { .. }),
+            Recorded::Recompose { shown } => shown,
+            Recorded::IspNew { .. } | Recorded::Black => false,
+        };
+        match new_lease {
+            Some(lease) if new_frame_shown => {
                 let passport = lease.passport();
                 self.stats.note_new_frame_presented(
                     PresentedCameraFrame {
@@ -401,14 +568,12 @@ impl CameraSession {
                     self.history_capacity,
                 );
             }
-            (FrameChange::Keep, _, Some(_)) if matches!(content, Content::Camera { .. }) => {
-                self.stats.camera_frame_redraws += 1;
-            }
+            _ if redrawn => self.stats.camera_frame_redraws += 1,
             _ => {}
         }
     }
 
-    /// Итог экспорта fence: отдаём уходящие кадры или переходим в режим «ждать простоя».
+    /// Итог экспорта fence: отдаём уходящие кадры или переходим в режим «ждать завершения серии».
     fn finish_release_export(&mut self, exported: Result<GpuReleaseFence, GpuError>, serial: SubmissionSerial) {
         match exported {
             Ok(fence) => {
@@ -466,6 +631,14 @@ impl From<CameraImportError> for NewFrameError {
     fn from(error: CameraImportError) -> Self {
         Self(error.to_string())
     }
+}
+
+/// Отказ создания сессии: причина и статистика видоискателя, которую надо вернуть владельцу.
+pub struct CameraSessionFailure {
+    /// Почему сессия не создана.
+    pub error: CameraSessionError,
+    /// Статистика видоискателя (владелец — бэкенд).
+    pub viewfinder: ViewfinderStats,
 }
 
 /// Не удалось создать сессию показа камеры.

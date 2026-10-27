@@ -25,7 +25,7 @@ use render_loop::thread::VsyncFrameClock;
 use render_loop::vulkan_backend::{CameraImporterFactory, VulkanBackendConfig, VulkanDisplayBackend};
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::surface::SurfaceSize;
-use shell_contract::vsync::{VsyncSlot, VsyncSubscription, VsyncTick};
+use shell_contract::vsync::{FrameTimelines, VsyncSlot, VsyncSubscription, VsyncTick, VsyncTimeline};
 
 const SKIP_ENV: &str = "FASTICAMERA_SKIP_GPU_TESTS";
 
@@ -110,13 +110,15 @@ pub fn vsync_clock_at_120_hz() -> VsyncFrameClock {
             while !producer_stop.load(Ordering::SeqCst) {
                 let frame_time = i64::try_from(started.elapsed().as_nanos()).unwrap_or(i64::MAX);
                 let period = i64::try_from(VSYNC_PERIOD.as_nanos()).unwrap_or(i64::MAX);
-                producer_slot.publish(VsyncTick {
+                producer_slot.publish(VsyncTick::from_timelines(
                     sequence,
-                    frame_time: MonotonicNanos::from_nanos(frame_time),
-                    expected_present: MonotonicNanos::from_nanos(frame_time + 2 * period),
-                    deadline: MonotonicNanos::from_nanos(frame_time + period),
-                    vsync_id: i64::try_from(sequence).unwrap_or(0),
-                });
+                    MonotonicNanos::from_nanos(frame_time),
+                    FrameTimelines::only(VsyncTimeline {
+                        vsync_id: i64::try_from(sequence).unwrap_or(0),
+                        expected_present: MonotonicNanos::from_nanos(frame_time + 2 * period),
+                        deadline: MonotonicNanos::from_nanos(frame_time + period),
+                    }),
+                ));
                 sequence += 1;
                 thread::sleep(VSYNC_PERIOD);
             }

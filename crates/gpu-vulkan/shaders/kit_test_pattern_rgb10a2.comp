@@ -1,0 +1,4 @@
+#version 450
+// Тестовый узор compute-набора для storage-картинки A2B10G10R10_UNORM (см. kit_test_pattern.glsl).
+layout(set = 0, binding = 0, rgb10_a2) uniform writeonly image2D target_image;
+#include "kit_test_pattern.glsl"

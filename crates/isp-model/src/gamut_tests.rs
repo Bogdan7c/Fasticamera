@@ -110,3 +110,59 @@ fn invalid_settings_are_rejected() {
 fn nan_pixel_is_black() {
     assert_eq!(default_compression().compress_pixel([f32::NAN, 0.2, 0.1]), [0.0; 3]);
 }
+
+/// Формула модуля, вычисленная заново ТОЛЬКО из экспортированных чисел — так, как её считает шейдер.
+fn compress_from_parameters(parameters: &super::GamutCompressionParameters, pixel: [f32; 3]) -> [f32; 3] {
+    let achromatic = pixel[0].max(pixel[1]).max(pixel[2]);
+    if achromatic <= 0.0 {
+        return [0.0; 3];
+    }
+    let mut output = [0.0; 3];
+    for channel in 0..3 {
+        let distance = (achromatic - pixel[channel]) / achromatic;
+        let threshold = parameters.threshold[channel];
+        let compressed = if distance < threshold {
+            distance
+        } else {
+            let scale = parameters.scale[channel];
+            let normalized = (distance - threshold) / scale;
+            threshold + scale * normalized / (1.0 + normalized.powf(parameters.power)).powf(1.0 / parameters.power)
+        };
+        output[channel] = (achromatic - compressed * achromatic).max(0.0);
+    }
+    output
+}
+
+#[test]
+fn exported_parameters_reproduce_compression_bit_for_bit() {
+    // Разные пороги, пределы и степень по каналам: перепутанные поля или каналы экспорта
+    // дали бы другой результат хотя бы на одном пикселе.
+    let settings = GamutCompressionSettings {
+        threshold: [0.7, 0.8, 0.9],
+        distance_limit: [1.1, 1.3, 1.5],
+        power: 1.5,
+    };
+    let compression = GamutCompression::resolve(&settings).unwrap();
+    let parameters = compression.parameters();
+    assert_eq!(parameters.threshold, settings.threshold);
+    assert_eq!(parameters.power, settings.power);
+    // Пиксели и внутри порога, и в колене, и за пределом — по каждому каналу.
+    let pixels = [
+        [0.5, 0.45, 0.48],
+        [-0.05, 0.6, 0.6],
+        [0.6, -0.1, 0.6],
+        [0.6, 0.6, -0.2],
+        [0.9, 0.12, -0.3],
+        [-0.4, 0.3, 1.2],
+        [0.05, 0.9, 0.02],
+    ];
+    let mut compressed_pixels = 0;
+    for pixel in pixels {
+        let expected = compression.compress_pixel(pixel);
+        let reproduced = compress_from_parameters(&parameters, pixel);
+        assert_eq!(expected.map(f32::to_bits), reproduced.map(f32::to_bits), "{pixel:?}");
+        compressed_pixels += usize::from(expected != pixel);
+    }
+    // Все, кроме первого (внутри порога), реально проходят колено — иначе масштаб не проверен.
+    assert_eq!(compressed_pixels, pixels.len() - 1);
+}

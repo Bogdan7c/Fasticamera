@@ -170,7 +170,7 @@ fn play_haptic(env: &mut Env<'_>, platform: &JObject<'_>, realization: &HapticRe
 
 /// Текст отказа: для исключения Java — его описание (исключение при этом снимается),
 /// иначе — текст ошибки JNI.
-fn describe_failure(env: &mut Env<'_>, error: &jni::errors::Error) -> String {
+pub(super) fn describe_failure(env: &mut Env<'_>, error: &jni::errors::Error) -> String {
     if env.exception_check() {
         // exception_catch снимает исключение и превращает его в ошибку с текстом.
         return match env.exception_catch() {

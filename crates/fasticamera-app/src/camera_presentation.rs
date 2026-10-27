@@ -7,7 +7,13 @@
 
 use render_loop::backend::PastPresentation;
 use render_loop::camera_diagnostics::CameraStreamDiagnostics;
-use render_loop::thread::RenderState;
+use std::time::Duration;
+
+use render_loop::pacing::PacingSnapshot;
+use render_loop::thread::{
+    AdpfCommandLog, AdpfDiagnostics, PresentTargetCommandLog, PresentTargetDiagnostics, RenderState,
+};
+use render_loop::viewfinder::{ViewfinderCommandLog, ViewfinderDiagnostics};
 
 use crate::gpu_services::{GpuServices, RenderObservation};
 use crate::scenario::render_metrics::ValidationReportPart;
@@ -25,6 +31,21 @@ pub struct CameraPresentation {
     pub display_refresh_hz: f64,
     /// Validation слоя Vulkan: режим и счётчики.
     pub validation: ValidationReportPart,
+    /// Видоискатель (ISP, компоновка, время GPU, стенд запаса); `None` — бэкенд без видоискателя.
+    pub viewfinder: Option<ViewfinderDiagnostics>,
+    /// Выбор линии кадра: опоздания, откаты, действующая политика (сессия 07).
+    pub present_target: PresentTargetDiagnostics,
+    /// Итоги команд видоискателя и команд линии кадра — чтобы сценарий видел, что регулировка применена.
+    pub viewfinder_commands: ViewfinderCommandLog,
+    pub present_target_commands: PresentTargetCommandLog,
+    /// Подсказки производительности системе (ADPF): режим, состояние сессии, счётчики отчётов.
+    pub adpf: AdpfDiagnostics,
+    /// Итоги команд ADPF — чтобы сценарий видел, что режим применён.
+    pub adpf_commands: AdpfCommandLog,
+    /// Ритм показа (окно пейсинга потока рендера).
+    pub pacing: PacingSnapshot,
+    /// Период обновления экрана по данным драйвера (`VK_GOOGLE_display_timing`); `None` — неизвестен.
+    pub display_refresh_cycle: Option<Duration>,
 }
 
 /// Что показывает рендер от камеры.
@@ -60,6 +81,14 @@ impl GpuServices {
                         recent_presentations: status.recent_presentations,
                         display_refresh_hz,
                         validation,
+                        viewfinder: status.backend.viewfinder,
+                        present_target: status.present_target,
+                        viewfinder_commands: status.viewfinder_commands,
+                        present_target_commands: status.present_target_commands,
+                        adpf: status.adpf,
+                        adpf_commands: status.adpf_commands,
+                        pacing: status.pacing,
+                        display_refresh_cycle: status.display.and_then(|display| display.refresh_cycle),
                     })),
                 }
             }

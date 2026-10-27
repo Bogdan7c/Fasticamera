@@ -64,6 +64,7 @@ pub fn presenting_status() -> RenderStatus {
             detach_failures: 0,
             known_deviations: Default::default(),
             camera: None,
+            viewfinder: None,
         },
         frame_rate_request: Some(shell_contract::commands::FrameRateOutcome::Applied),
         screen_wake: render_loop::thread::ScreenWakeStatus {
@@ -73,6 +74,11 @@ pub fn presenting_status() -> RenderStatus {
         },
         fault: None,
         recent_presentations: Vec::new(),
+        present_target: render_loop::thread::PresentTargetDiagnostics::default(),
+        present_target_commands: render_loop::thread::PresentTargetCommandLog::default(),
+        viewfinder_commands: render_loop::viewfinder::ViewfinderCommandLog::default(),
+        adpf: render_loop::thread::AdpfDiagnostics::default(),
+        adpf_commands: render_loop::thread::AdpfCommandLog::default(),
     }
 }
 
@@ -282,5 +288,32 @@ impl GpuDiagnostics for FakeGpuDiagnostics {
             .unwrap_or(FenceCheckResult::Failed {
                 reason: "ответ не задан".to_owned(),
             })
+    }
+}
+
+/// Регулировки рендера, которые записывают каждый запрос и отвечают «доставлено».
+#[derive(Default)]
+pub struct RecordingRenderControl {
+    pub adjustments: Mutex<Vec<crate::viewfinder_control::RenderAdjustment>>,
+}
+
+impl RecordingRenderControl {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// Все запросы по порядку.
+    pub fn recorded(&self) -> Vec<crate::viewfinder_control::RenderAdjustment> {
+        self.adjustments.lock().expect("замок").clone()
+    }
+}
+
+impl crate::viewfinder_control::RenderControl for RecordingRenderControl {
+    fn adjust(
+        &self,
+        adjustment: crate::viewfinder_control::RenderAdjustment,
+    ) -> crate::viewfinder_control::ControlDelivery {
+        self.adjustments.lock().expect("замок").push(adjustment);
+        crate::viewfinder_control::ControlDelivery::Delivered
     }
 }

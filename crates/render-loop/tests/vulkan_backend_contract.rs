@@ -15,7 +15,7 @@ mod vulkan_support;
 
 use std::sync::Arc;
 
-use render_loop::backend::{AttachError, DisplayBackend, FrameTiming, PresentOutcome};
+use render_loop::backend::{AttachError, DisplayBackend, FrameTiming, PresentOutcome, PresentTarget};
 use render_loop::config::RenderLoopConfig;
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::surface::SurfaceSize;
@@ -23,11 +23,12 @@ use support::{Journal, fake_surface};
 use vulkan_support::{RESIZED, START_SIZE, assert_no_validation_errors, headless_backend_or_skip};
 
 fn timing(frame_index: u64) -> FrameTiming {
+    let expected_present = MonotonicNanos::from_nanos(1_000_000 * i64::try_from(frame_index).expect("кадр"));
     FrameTiming {
         frame_index,
         vsync_sequence: frame_index + 1,
-        expected_present: MonotonicNanos::from_nanos(1_000_000 * i64::try_from(frame_index).expect("кадр")),
         skipped_vsyncs: 0,
+        target: PresentTarget::latch_immediately(expected_present, expected_present),
     }
 }
 
@@ -195,5 +196,37 @@ fn diagnostics_report_live_objects_by_kind_and_return_to_the_idle_census_after_d
         idle.live_objects_by_kind,
         "в покое перепись по видам такая же, как до attach"
     );
+    assert_no_validation_errors(backend.context());
+}
+
+/// Сессия 07: настоящий бэкенд меряет CPU кадра (время в acquire и путь захват → сабмит) и
+/// выдаёт замер ровно один раз; без цепочки замера нет.
+#[test]
+fn real_backend_reports_frame_cpu_timing_once_per_frame() {
+    let Some(mut backend) = headless_backend_or_skip(&RenderLoopConfig::default()) else {
+        return;
+    };
+    let journal = Arc::new(Journal::default());
+    assert!(matches!(
+        backend.render_and_present(timing(0)),
+        PresentOutcome::Failed(_)
+    ));
+    assert_eq!(backend.take_frame_cpu_timing(), None, "без цепочки кадра не было");
+
+    backend.attach(fake_surface(&journal, 3), START_SIZE).expect("attach");
+    assert_eq!(backend.render_and_present(timing(1)), PresentOutcome::Presented);
+    let cpu = backend.take_frame_cpu_timing().expect("кадр показан — замер есть");
+    let latch_to_submit = cpu.latch_to_submit.expect("кадр дошёл до показа");
+    assert!(
+        latch_to_submit > std::time::Duration::ZERO,
+        "запись и сабмит не бесплатны"
+    );
+    assert!(
+        latch_to_submit < std::time::Duration::from_secs(1),
+        "замер правдоподобен: {latch_to_submit:?}"
+    );
+    assert_eq!(backend.take_frame_cpu_timing(), None, "замер выдаётся один раз");
+
+    drop(backend.detach());
     assert_no_validation_errors(backend.context());
 }

@@ -52,6 +52,9 @@ fn start_rig(configure: impl FnOnce(&Probe)) -> Rig {
         backend: FakeBackend::new(Arc::clone(&probe)),
         clock,
         commands: commands.clone(),
+        performance_hints: std::sync::Arc::new(shell_contract::performance_hint::NoPerformanceHints::new(
+            "тест без ADPF",
+        )),
     })
     .expect("поток запускается");
     Rig {
@@ -318,7 +321,9 @@ fn surface_lost_detaches_and_destroy_still_confirms() {
 
     let (outcome, _) = rig.destroy_surface(1);
     assert_eq!(outcome, SurfaceReleaseOutcome::Confirmed);
-    assert_eq!(rig.handle.status().state, RenderState::WaitingForSurface);
+    // Квитанция уходит сразу после detach, а статус поток публикует следом: читать его мгновенно —
+    // гонка теста (падал ~1 из 10 прогонов), а не дефект. Ждём публикации с тем же дедлайном.
+    assert!(wait_until(DEADLINE, || rig.handle.status().state == RenderState::WaitingForSurface));
 }
 
 #[test]
@@ -511,6 +516,9 @@ fn invalid_config_is_rejected_before_thread_starts() {
         backend: FakeBackend::new(Probe::new(journal)),
         clock,
         commands: Arc::new(FakeCommands::default()),
+        performance_hints: std::sync::Arc::new(shell_contract::performance_hint::NoPerformanceHints::new(
+            "тест без ADPF",
+        )),
     });
     assert!(matches!(result, Err(SpawnError::InvalidConfig(_))));
 }

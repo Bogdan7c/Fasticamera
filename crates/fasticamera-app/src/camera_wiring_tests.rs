@@ -24,7 +24,10 @@ fn started_engine_reads_the_catalog_and_begins_in_background() {
             .contains(&camera_core::fake::BackendCall::LoadCatalog),
         "каталог прочитан бэкендом"
     );
-    assert!(!rig.control.is_device_open(), "продукт камеру сам не открывает");
+    assert!(
+        !rig.control.is_device_open(),
+        "без автозапуска видоискателя движок камеру сам не открывает"
+    );
 }
 
 #[test]

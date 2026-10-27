@@ -1,0 +1,52 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Menon 2007, проход 7 (шаг уточнения, часть 3): красный в синих узлах и синий в красных по разности R − B,
+// сглаженной вдоль направления решения (refine_chroma_at_opposite_chroma эталона):
+//   R(синий узел) = B + smooth(R − B),  B(красный узел) = R − smooth(R − B),
+// smooth = ((d[+1] + d[0]) + d[−1]) / 3. Обе формулы берут одну и ту же разность по плоскостям прохода 6.
+
+#include "quality_common.glsl"
+
+layout(set = 0, binding = 0, std430) readonly buffer RefinedRed { float values[]; } refined_red;
+layout(set = 0, binding = 1, std430) readonly buffer RefinedBlue { float values[]; } refined_blue;
+layout(set = 0, binding = 2, std430) readonly buffer Direction { float values[]; } direction;
+layout(set = 0, binding = 3, std430) writeonly buffer FinalRed { float values[]; } final_red;
+layout(set = 0, binding = 4, std430) writeonly buffer FinalBlue { float values[]; } final_blue;
+
+const float REFINEMENT_WINDOW = 3.0;
+
+float red_minus_blue(uint index) {
+    precise float difference = refined_red.values[index] - refined_blue.values[index];
+    return difference;
+}
+
+void main() {
+    uint x;
+    uint y;
+    if (!pixel_coordinates(x, y)) {
+        return;
+    }
+    uint index = y * geometry.width + x;
+    float red_here = refined_red.values[index];
+    float blue_here = refined_blue.values[index];
+    uint channel = channel_at(x, y);
+    if (channel == CHANNEL_GREEN) {
+        final_red.values[index] = red_here;
+        final_blue.values[index] = blue_here;
+        return;
+    }
+    ivec2 step = direction_step(direction.values[index]);
+    uint next = mirrored_index(x, y, step.x, step.y);
+    uint previous = mirrored_index(x, y, -step.x, -step.y);
+    precise float window_sum = (red_minus_blue(next) + red_minus_blue(index)) + red_minus_blue(previous);
+    precise float smoothed = divide_correctly_rounded(window_sum, REFINEMENT_WINDOW);
+    if (channel == CHANNEL_BLUE) {
+        precise float red_value = blue_here + smoothed;
+        final_red.values[index] = red_value;
+        final_blue.values[index] = blue_here;
+    } else {
+        precise float blue_value = red_here - smoothed;
+        final_red.values[index] = red_here;
+        final_blue.values[index] = blue_value;
+    }
+}

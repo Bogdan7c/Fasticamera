@@ -1,0 +1,49 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Menon 2007, проход 4: красный в синих узлах и синий в красных (fill_chroma_at_opposite_chroma эталона),
+// вдоль направления решения классификатора:
+//   R(синий узел)   = B + (R ⊛ k_b) − (B ⊛ k_b)
+//   B(красный узел) = R + (B ⊛ k_b) − (R ⊛ k_b),  k_b = [0.5, 0, 0.5].
+// Соседи узла по строке и столбцу — зелёные узлы (и за краем тоже: зеркало сохраняет чётность), где R и B
+// уже восстановлены проходом 3; в самом узле якорный канал — отсчёт мозаики (он же в плоскости прохода 3).
+// Эталон считает синий по плоскости красного ПОСЛЕ первого шага, но первый шаг меняет только синие узлы,
+// а синий в красном узле читает красный лишь в зелёных соседях и в самом красном узле — те не менялись.
+
+#include "quality_common.glsl"
+
+layout(set = 0, binding = 0, std430) readonly buffer RedAtGreen { float values[]; } red_at_green;
+layout(set = 0, binding = 1, std430) readonly buffer BlueAtGreen { float values[]; } blue_at_green;
+layout(set = 0, binding = 2, std430) readonly buffer Direction { float values[]; } direction;
+layout(set = 0, binding = 3, std430) writeonly buffer Red { float values[]; } red;
+layout(set = 0, binding = 4, std430) writeonly buffer Blue { float values[]; } blue;
+
+void main() {
+    uint x;
+    uint y;
+    if (!pixel_coordinates(x, y)) {
+        return;
+    }
+    uint index = y * geometry.width + x;
+    float red_here = red_at_green.values[index];
+    float blue_here = blue_at_green.values[index];
+    uint channel = channel_at(x, y);
+    if (channel == CHANNEL_GREEN) {
+        red.values[index] = red_here;
+        blue.values[index] = blue_here;
+        return;
+    }
+    ivec2 step = direction_step(direction.values[index]);
+    uint next = mirrored_index(x, y, step.x, step.y);
+    uint previous = mirrored_index(x, y, -step.x, -step.y);
+    precise float red_average = 0.5 * red_at_green.values[next] + 0.5 * red_at_green.values[previous];
+    precise float blue_average = 0.5 * blue_at_green.values[next] + 0.5 * blue_at_green.values[previous];
+    if (channel == CHANNEL_BLUE) {
+        precise float red_value = (blue_here + red_average) - blue_average;
+        red.values[index] = red_value;
+        blue.values[index] = blue_here;
+    } else {
+        precise float blue_value = (red_here + blue_average) - red_average;
+        red.values[index] = red_here;
+        blue.values[index] = blue_value;
+    }
+}

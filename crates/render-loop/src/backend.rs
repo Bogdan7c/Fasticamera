@@ -11,6 +11,9 @@ use std::time::Duration;
 use shell_contract::clock::MonotonicNanos;
 
 use crate::camera_diagnostics::CameraStreamDiagnostics;
+use crate::config::LateLatchMode;
+use crate::thread::{SleepUntil, SleepUntilOutcome, SystemMonotonicTimer, sleep_until};
+use crate::viewfinder::{ViewfinderCommand, ViewfinderCommandOutcome, ViewfinderDiagnostics};
 use shell_contract::surface::{NativeSurface, SurfaceSize};
 
 /// Что известно потоку о кадре, который нужно нарисовать.
@@ -20,10 +23,143 @@ pub struct FrameTiming {
     pub frame_index: u64,
     /// Номер тика vsync, по которому рисуется кадр.
     pub vsync_sequence: u64,
-    /// Когда ожидается показ кадра (`desiredPresentTime` для `VK_GOOGLE_display_timing`).
-    pub expected_present: MonotonicNanos,
     /// Сколько тиков vsync пропущено между предыдущим кадром и этим.
     pub skipped_vsyncs: u64,
+    /// Выбранная линия кадра и план позднего захвата (сессия 07).
+    pub target: PresentTarget,
+}
+
+impl FrameTiming {
+    /// Когда ожидается показ кадра (основа `desiredPresentTime` для `VK_GOOGLE_display_timing`):
+    /// момент показа ВЫБРАННОЙ линии кадра.
+    pub fn expected_present(&self) -> MonotonicNanos {
+        self.target.expected_present
+    }
+}
+
+/// Как выбрана линия кадра (см. `config::PresentTimelinePolicy`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetChoice {
+    /// Политика `Preferred`: линия, которую предложила платформа.
+    PlatformPreferred,
+    /// Политика `NearestFeasible`: самая ранняя линия, к сроку которой успеваем.
+    NearestFeasible,
+    /// Политика `NearestFeasible`, но ни одна линия не выполнима: взята предпочитаемая.
+    FallbackToPreferred,
+}
+
+/// Линия кадра, на которую метит этот кадр, и план позднего захвата кадра камеры.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PresentTarget {
+    /// Индекс линии в `timelines.as_slice()` тика vsync.
+    pub timeline_index: usize,
+    /// Индекс предпочитаемой платформой линии в том же списке (для сравнения в диагностике).
+    pub preferred_index: usize,
+    pub choice: TargetChoice,
+    /// Идентификатор линии в SurfaceFlinger.
+    pub vsync_id: i64,
+    /// Когда кадр этой линии появится на экране.
+    pub expected_present: MonotonicNanos,
+    /// К какому моменту кадр должен быть готов, чтобы попасть в `expected_present`.
+    pub deadline: MonotonicNanos,
+    /// Когда брать кадр камеры (самый поздний безопасный момент).
+    pub latch: FrameLatchPlan,
+}
+
+impl PresentTarget {
+    /// План, при котором кадр камеры берётся сразу (без позднего захвата): срок захвата —
+    /// начало эпохи часов, то есть «уже прошёл». Для источников и тестов без линий кадра.
+    pub fn latch_immediately(expected_present: MonotonicNanos, deadline: MonotonicNanos) -> Self {
+        Self {
+            timeline_index: 0,
+            preferred_index: 0,
+            choice: TargetChoice::PlatformPreferred,
+            vsync_id: 0,
+            expected_present,
+            deadline,
+            latch: FrameLatchPlan {
+                latch_at: MonotonicNanos::from_nanos(0),
+                spin_window: Duration::ZERO,
+                max_wait: Duration::ZERO,
+                mode: LateLatchMode::Disabled,
+            },
+        }
+    }
+}
+
+/// План позднего захвата: самый поздний момент взять кадр камеры, чтобы успеть к сроку
+/// выбранной линии (`latch_at = deadline − оценка стоимости кадра − запас`).
+///
+/// При `mode == BeforeCameraPoll` бэкенд ждёт до `latch_at` через
+/// [`FrameLatchPlan::wait_until_latch`] и только потом опрашивает камеру (Vulkan-бэкенд делает
+/// это сам перед вызовом сессии камеры). Ждать на GPU нельзя: это ожидание только CPU-потока
+/// рендера. Повторный вызов после `latch_at` возвращается сразу — двойное ожидание безвредно.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameLatchPlan {
+    /// Самый поздний момент опроса камеры (`CLOCK_MONOTONIC`).
+    pub latch_at: MonotonicNanos,
+    /// Последние столько ожидания — активно, без сна (`present_target.latch_spin_us`).
+    pub spin_window: Duration,
+    /// Дольше этого не ждать никогда (`present_target.latch_max_wait_us`).
+    pub max_wait: Duration,
+    /// Ждать ли `latch_at` (`present_target.late_latch`).
+    pub mode: LateLatchMode,
+}
+
+impl FrameLatchPlan {
+    /// Ждёт до `latch_at` по системным монотонным часам (сон, затем активное ожидание).
+    pub fn wait_until_latch(&self) -> SleepUntilOutcome {
+        sleep_until(
+            SleepUntil {
+                target: self.latch_at,
+                spin_window: self.spin_window,
+                max_wait: self.max_wait,
+            },
+            &SystemMonotonicTimer,
+        )
+    }
+}
+
+/// Замер CPU одного кадра бэкендом: на нём поток строит оценку стоимости кадра и диагностику.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameCpuTiming {
+    /// Время внутри `acquire_frame` (ожидание fence слота кольца + `vkAcquireNextImageKHR`).
+    pub acquire_wait: Duration,
+    /// Сколько поток ждал момента позднего захвата после acquire (ноль — не ждал).
+    pub latch_wait: Duration,
+    /// Чем кончилось ожидание позднего захвата (отказы ждать считаются в диагностике).
+    pub latch_result: LatchWaitResult,
+    /// CPU от захвата кадра камеры (конец ожидания `latch_at`, а без ожидания — конец acquire) до
+    /// возврата из сабмита и показа. Ожидание в стоимость не входит: иначе оценка росла бы от
+    /// собственного ожидания. `None` — кадр до показа не дошёл (acquire не удался).
+    pub latch_to_submit: Option<Duration>,
+}
+
+/// Время кадра на GPU (метки начала и конца команд кадра), выдаётся бэкендом ПОЗЖЕ самого кадра:
+/// метки слота читаются только после его fence (без ожиданий GPU), то есть через 1–3 кадра.
+/// Поток рендера кладёт его в оценку стоимости кадра и в отчёт ADPF.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameGpuTiming {
+    /// Номер кадра потока (`FrameTiming::frame_index`), чьи команды измерены.
+    pub frame_index: u64,
+    /// Длительность команд кадра на GPU (от первой до последней метки кадра).
+    pub gpu_duration: Duration,
+}
+
+/// Чем кончилось ожидание позднего захвата в кадре. Варианты различимы: «не просили»,
+/// «дождались», «отказались ждать» и «часы сломаны» считаются по-разному.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LatchWaitResult {
+    /// Ожидание не требовалось: поздний захват выключен, камера не рисуется или кадр не дошёл до
+    /// захвата (acquire не удался).
+    #[default]
+    NotRequested,
+    /// Дождались момента захвата (или он уже прошёл к началу ожидания).
+    Waited,
+    /// Срок захвата дальше предела ожидания (`FrameLatchPlan::max_wait`): камера опрошена сразу.
+    RefusedBeyondBudget,
+    /// Часы не прочитались: камера опрошена сразу.
+    ClockFailed,
 }
 
 /// Результат попытки нарисовать и показать кадр.
@@ -124,6 +260,8 @@ pub struct BackendDiagnostics {
     pub known_deviations: BTreeMap<String, u64>,
     /// Показ кадров камеры; `None` — бэкенд показывает тестовый паттерн.
     pub camera: Option<CameraStreamDiagnostics>,
+    /// Видоискатель (ISP, компоновка, параметры); `None` — бэкенд не показывает камеру.
+    pub viewfinder: Option<ViewfinderDiagnostics>,
 }
 
 /// Бэкенд показа. Все методы вызываются из одного потока рендера (но сам объект может быть
@@ -151,4 +289,25 @@ pub trait DisplayBackend: Send + 'static {
     /// времён показа, и редкий опрос теряет записи. Пустой список — новых записей нет
     /// (или цепочки нет / расширения нет).
     fn drain_past_presentations(&mut self) -> Vec<PastPresentation>;
+
+    /// Забирает замер CPU последнего `render_and_present` (каждый выдаётся один раз).
+    /// `None` — бэкенд не меряет (fake, тестовый паттерн без камеры) или кадра не было.
+    fn take_frame_cpu_timing(&mut self) -> Option<FrameCpuTiming> {
+        None
+    }
+
+    /// Вычерпывает времена кадров на GPU, собранные с прошлого вызова (каждое выдаётся один раз,
+    /// по возрастанию `frame_index`). Вызывается потоком на каждом кадре. Пустой список — новых
+    /// замеров нет или бэкенд GPU не меряет (fake, тестовый паттерн): тогда планировщик берёт
+    /// оценку GPU из конфига, а ADPF получает только CPU.
+    fn drain_frame_gpu_timings(&mut self) -> Vec<FrameGpuTiming> {
+        Vec::new()
+    }
+
+    /// Применяет команду видоискателю (между кадрами). По умолчанию видоискателя нет —
+    /// `Unsupported` (тестовый паттерн, fake-бэкенды).
+    fn apply_viewfinder_command(&mut self, command: ViewfinderCommand) -> ViewfinderCommandOutcome {
+        let _ = command;
+        ViewfinderCommandOutcome::Unsupported
+    }
 }

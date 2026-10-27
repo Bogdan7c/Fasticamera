@@ -9,6 +9,23 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+mod adpf;
+mod present_target;
+mod viewfinder;
+
+pub use adpf::{AdpfConfig, AdpfConfigError, AdpfMode, MAX_ADPF_GPU_WAIT_FRAMES, MIN_ADPF_TARGET_FRACTION};
+
+pub use viewfinder::{
+    CropAspectConfig, DisplayColorConfig, MAX_VIEWFINDER_GPU_TIME_WINDOW_FRAMES, ViewfinderConfig,
+    ViewfinderConfigError, ViewfinderCropConfig, ViewfinderPlacement,
+};
+
+pub use present_target::{
+    DEFAULT_NEAREST_FEASIBLE_MARGIN_US, DepthReductionMode, LateLatchMode, MAX_DEPTH_REDUCTION_STREAK_FRAMES,
+    MAX_PRESENT_TARGET_DURATION_US, MAX_PRESENT_TARGET_WINDOW_FRAMES, PresentTargetConfig, PresentTargetConfigError,
+    PresentTimelinePolicy,
+};
+
 /// Что не так с конфигурацией (находится в [`RenderLoopConfig::validate`]).
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum ConfigError {
@@ -52,6 +69,15 @@ pub enum ConfigError {
     /// кадр на vsync раньше задуманного.
     #[error("present_time_lead_ratio должен лежать в [0, 1), а не {0}")]
     PresentLeadRatioOutOfRange(f64),
+    /// Ошибка в секции выбора линии кадра и позднего захвата.
+    #[error(transparent)]
+    PresentTarget(#[from] PresentTargetConfigError),
+    /// Ошибка в секции видоискателя.
+    #[error(transparent)]
+    Viewfinder(#[from] ViewfinderConfigError),
+    /// Ошибка в секции подсказок производительности (ADPF).
+    #[error(transparent)]
+    Adpf(#[from] AdpfConfigError),
 }
 
 /// Наименьшая допустимая `preferred_frame_rate_hz`, Гц. Реальные режимы экрана — 24..=240.
@@ -137,6 +163,16 @@ pub struct RenderLoopConfig {
     /// статус раз в десятки мс, а показов 60-120 в секунду: 256 записей (2-4 с) переживают любой
     /// разумный интервал опроса. Должно быть больше нуля.
     pub recent_presentations_capacity: usize,
+    /// Выбор линии кадра Choreographer и момент позднего захвата кадра камеры (сессия 07).
+    /// По умолчанию — предпочитаемая платформой линия, как раньше.
+    pub present_target: PresentTargetConfig,
+    /// Какое цветовое пространство просить у цепочки показа (сессия 07). По умолчанию Display P3,
+    /// если экран его предлагает: ISP видоискателя кодирует выход под выбранное пространство.
+    pub display_color: DisplayColorConfig,
+    /// Видоискатель камеры: рисовальщик, ISP, кадрирование, положение, окна времени GPU (сессия 07).
+    pub viewfinder: ViewfinderConfig,
+    /// Подсказки производительности системе (ADPF, P13 сессии 07). По умолчанию выключены.
+    pub adpf: AdpfConfig,
 }
 
 impl Default for RenderLoopConfig {
@@ -157,6 +193,10 @@ impl Default for RenderLoopConfig {
             keep_screen_on_while_presenting: true,
             present_time_lead_ratio: 0.5,
             recent_presentations_capacity: 256,
+            present_target: PresentTargetConfig::default(),
+            display_color: DisplayColorConfig::default(),
+            viewfinder: ViewfinderConfig::default(),
+            adpf: AdpfConfig::default(),
         }
     }
 }
@@ -213,6 +253,9 @@ impl RenderLoopConfig {
                 field: "recent_presentations_capacity",
             });
         }
+        self.present_target.validate()?;
+        self.viewfinder.validate()?;
+        self.adpf.validate()?;
         Ok(())
     }
 
@@ -531,5 +574,48 @@ mod tests {
             ..RenderLoopConfig::default()
         };
         assert!((config.expected_refresh_period().as_secs_f64() - 1.0 / 120.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn invalid_present_target_section_fails_the_whole_config() {
+        let config = RenderLoopConfig {
+            present_target: PresentTargetConfig {
+                cost_window_frames: 0,
+                ..PresentTargetConfig::default()
+            },
+            ..RenderLoopConfig::default()
+        };
+        assert_eq!(
+            config.validate(),
+            Err(ConfigError::PresentTarget(PresentTargetConfigError::WindowOutOfRange {
+                field: "cost_window_frames",
+                value: 0
+            }))
+        );
+    }
+
+    #[test]
+    fn invalid_viewfinder_section_fails_the_whole_config() {
+        let config = RenderLoopConfig {
+            viewfinder: ViewfinderConfig {
+                gpu_time_window_frames: 0,
+                ..ViewfinderConfig::default()
+            },
+            ..RenderLoopConfig::default()
+        };
+        assert_eq!(
+            config.validate(),
+            Err(ConfigError::Viewfinder(ViewfinderConfigError::GpuTimeWindowOutOfRange(
+                0
+            )))
+        );
+        let parsed: RenderLoopConfig =
+            serde_json::from_str(r#"{"display_color":"srgb_only","viewfinder":{"painter":"debug_mosaic"}}"#)
+                .expect("секции читаются");
+        assert_eq!(parsed.display_color, DisplayColorConfig::SrgbOnly);
+        assert_eq!(
+            parsed.viewfinder.painter,
+            crate::viewfinder::ViewfinderPainter::DebugMosaic
+        );
     }
 }

@@ -81,6 +81,19 @@ pub struct TimestampSupport {
     pub period_ns: f32,
 }
 
+/// Необязательные 16-битные возможности шейдеров (сессия 07). Включаются, только если устройство их
+/// поддерживает; ни одна не обязательна — ISP выбирает вариант шейдера по этому отчёту.
+///
+/// На телефоне (Adreno 740) есть обе; `uniformAndStorageBuffer16BitAccess` и `storagePushConstant16`
+/// там НЕТ, поэтому они здесь не запрашиваются вовсе.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ShaderSixteenBitSupport {
+    /// `shaderFloat16` (Vulkan 1.2) включена: арифметика `float16_t` в шейдерах.
+    pub float16_arithmetic: bool,
+    /// `storageBuffer16BitAccess` (Vulkan 1.1) включена: 16-битные типы в storage-буферах.
+    pub storage_buffer_16bit_access: bool,
+}
+
 /// Отчёт о возможностях созданного контекста (для диагностики и smoke-сценариев).
 #[derive(Debug, Clone)]
 pub struct GpuCapabilities {
@@ -102,8 +115,16 @@ pub struct GpuCapabilities {
     pub storage_image_extended_formats: bool,
     /// Метки времени GPU; `None` — очередь их не поддерживает.
     pub timestamps: Option<TimestampSupport>,
+    /// Какие необязательные 16-битные возможности шейдеров включены.
+    pub shader_16bit: ShaderSixteenBitSupport,
+    /// Включена ли `hostQueryReset` (Vulkan 1.2): метки времени сбрасываются с CPU (`GpuTimestamps`).
+    pub host_query_reset: bool,
     /// Размер subgroup.
     pub subgroup_size: u32,
+    /// Доступна ли арифметика subgroup (`GL_KHR_shader_subgroup_arithmetic`) в compute-шейдерах
+    /// (`subgroupSupportedOperations` ∋ ARITHMETIC и `subgroupSupportedStages` ∋ COMPUTE). Без неё
+    /// SPIR-V с такими операциями создавать нельзя — потребитель выбирает запасной вариант шейдера.
+    pub subgroup_arithmetic_in_compute: bool,
     /// Семейство очередей.
     pub queue_family_index: u32,
     /// Режим validation, с которым создан контекст.
@@ -241,7 +262,14 @@ impl GpuContext {
         let enable_maintenance1 = selection
             .enabled_extensions
             .contains(&ash::ext::swapchain_maintenance1::NAME);
-        let mut features_12 = vk::PhysicalDeviceVulkan12Features::default().timeline_semaphore(true);
+        // 16-битные возможности необязательны (сессия 07): включаем ровно то, что устройство поддерживает.
+        let mut features_11 = vk::PhysicalDeviceVulkan11Features::default()
+            .storage_buffer16_bit_access(candidate.features.storage_buffer_16bit_access);
+        let mut features_12 = vk::PhysicalDeviceVulkan12Features::default()
+            .timeline_semaphore(true)
+            .shader_float16(candidate.features.shader_float16)
+            // Сброс меток времени с CPU (`GpuTimestamps`): включаем, только если устройство умеет.
+            .host_query_reset(candidate.features.host_query_reset);
         let mut features_13 = vk::PhysicalDeviceVulkan13Features::default()
             .dynamic_rendering(true)
             .synchronization2(true)
@@ -254,6 +282,7 @@ impl GpuContext {
             .shader_storage_image_extended_formats(candidate.features.storage_image_extended_formats);
         let mut features2 = vk::PhysicalDeviceFeatures2::default()
             .features(base_features)
+            .push_next(&mut features_11)
             .push_next(&mut features_12)
             .push_next(&mut features_13);
         if enable_maintenance1 {
@@ -305,7 +334,13 @@ impl GpuContext {
                 valid_bits: family.timestamp_valid_bits,
                 period_ns: chosen.details.timestamp_period_ns,
             }),
+            shader_16bit: ShaderSixteenBitSupport {
+                float16_arithmetic: chosen.candidate.features.shader_float16,
+                storage_buffer_16bit_access: chosen.candidate.features.storage_buffer_16bit_access,
+            },
+            host_query_reset: chosen.candidate.features.host_query_reset,
             subgroup_size: chosen.details.subgroup_size,
+            subgroup_arithmetic_in_compute: chosen.details.subgroup_arithmetic_in_compute,
             queue_family_index: selection.queue_family_index,
             validation: config.validation.clone(),
             sync_validation,
@@ -369,6 +404,47 @@ impl GpuContext {
     /// Максимальный размер 2D-картинки устройства.
     pub(crate) fn max_image_dimension_2d(&self) -> u32 {
         self.inner.details.max_image_dimension_2d
+    }
+
+    /// Возможности формата при `OPTIMAL`-тайлинге (выбор формата storage image).
+    pub(crate) fn optimal_tiling_features(&self, format: vk::Format) -> vk::FormatFeatureFlags {
+        // SAFETY: физическое устройство получено из этого instance; вызов только читает свойства.
+        let properties = unsafe {
+            self.instance()
+                .get_physical_device_format_properties(self.physical_device(), format)
+        };
+        properties.optimal_tiling_features
+    }
+
+    /// Максимальный размер push-констант устройства, байт.
+    pub(crate) fn max_push_constants_size(&self) -> u32 {
+        self.inner.details.max_push_constants_size
+    }
+
+    /// Максимальное число рабочих групп одного dispatch по осям X, Y, Z.
+    pub(crate) fn max_compute_work_group_count(&self) -> [u32; 3] {
+        self.inner.details.max_compute_work_group_count
+    }
+
+    /// Лимиты размера рабочей группы устройства (`maxComputeWorkGroupInvocations`, `maxComputeWorkGroupSize`).
+    pub(crate) fn compute_work_group_limits(&self) -> crate::compute::WorkgroupSizeLimits {
+        crate::compute::WorkgroupSizeLimits {
+            max_invocations: self.inner.details.max_compute_work_group_invocations,
+            max_size: self.inner.details.max_compute_work_group_size,
+        }
+    }
+
+    /// Лимиты диапазонов буферов в дескрипторах (`maxStorageBufferRange`, `maxUniformBufferRange`).
+    pub(crate) fn descriptor_range_limits(&self) -> crate::compute::DescriptorRangeLimits {
+        crate::compute::DescriptorRangeLimits {
+            max_storage_buffer_range: u64::from(self.inner.details.max_storage_buffer_range),
+            max_uniform_buffer_range: u64::from(self.inner.details.max_uniform_buffer_range),
+        }
+    }
+
+    /// Включена ли `hostQueryReset` (сброс запросов с CPU, `vkResetQueryPool`).
+    pub(crate) fn host_query_reset_enabled(&self) -> bool {
+        self.inner.capabilities.host_query_reset
     }
 
     /// Таймаут ожидания разовых задач GPU из конфигурации.

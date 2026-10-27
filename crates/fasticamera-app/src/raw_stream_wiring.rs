@@ -59,6 +59,7 @@ pub fn observe_stream(creation: &RawStreamCreation, probe: CpuAccessProbe) -> Ra
         Arc::new(SystemClocks),
         creation.effective_config.clone(),
     )
+    .with_pacing_control(Arc::new(creation.stream.clone()))
 }
 
 #[cfg(test)]

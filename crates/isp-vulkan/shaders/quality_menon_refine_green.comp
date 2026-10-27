@@ -1,0 +1,45 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Menon 2007, проход 5 (шаг уточнения, часть 1): уточнённый зелёный в красных и синих узлах
+// (refine_green эталона): G' = C − smooth(C − G), где smooth — среднее трёх отсчётов вдоль направления
+// решения в этом пикселе: ((d[+1] + d[0]) + d[−1]) / 3 — порядок и деление как у эталона.
+
+#include "quality_common.glsl"
+
+layout(set = 0, binding = 0, std430) readonly buffer Red { float values[]; } red;
+layout(set = 0, binding = 1, std430) readonly buffer Green { float values[]; } green;
+layout(set = 0, binding = 2, std430) readonly buffer Blue { float values[]; } blue;
+layout(set = 0, binding = 3, std430) readonly buffer Direction { float values[]; } direction;
+layout(set = 0, binding = 4, std430) writeonly buffer RefinedGreen { float values[]; } refined_green;
+
+const float REFINEMENT_WINDOW = 3.0;
+
+// Разность «цвет − зелёный» в пикселе с индексом index для канала channel (красный или синий).
+float chroma_minus_green(uint index, uint channel) {
+    float chroma = channel == CHANNEL_RED ? red.values[index] : blue.values[index];
+    precise float difference = chroma - green.values[index];
+    return difference;
+}
+
+void main() {
+    uint x;
+    uint y;
+    if (!pixel_coordinates(x, y)) {
+        return;
+    }
+    uint index = y * geometry.width + x;
+    uint channel = channel_at(x, y);
+    if (channel == CHANNEL_GREEN) {
+        refined_green.values[index] = green.values[index];
+        return;
+    }
+    ivec2 step = direction_step(direction.values[index]);
+    uint next = mirrored_index(x, y, step.x, step.y);
+    uint previous = mirrored_index(x, y, -step.x, -step.y);
+    precise float window_sum =
+        (chroma_minus_green(next, channel) + chroma_minus_green(index, channel)) + chroma_minus_green(previous, channel);
+    precise float smoothed = divide_correctly_rounded(window_sum, REFINEMENT_WINDOW);
+    float chroma = channel == CHANNEL_RED ? red.values[index] : blue.values[index];
+    precise float value = chroma - smoothed;
+    refined_green.values[index] = value;
+}

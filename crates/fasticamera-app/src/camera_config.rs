@@ -11,6 +11,7 @@ use raw_frame_stream::{RawFrameStreamConfig, RawFrameStreamConfigError};
 use serde::Deserialize;
 
 use crate::camera_scenario_config::{CameraScenarioConfig, CameraScenarioConfigError};
+use crate::viewfinder_autostart::{ViewfinderAutostartConfig, ViewfinderAutostartConfigError};
 
 /// Настройки камеры целиком.
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
@@ -25,6 +26,8 @@ pub struct CameraConfig {
     pub raw_stream: RawFrameStreamConfig,
     /// Параметры smoke-сценариев камеры.
     pub scenarios: CameraScenarioConfig,
+    /// Временная (до сессии 12) политика: открыть живой видоискатель при старте приложения.
+    pub viewfinder_autostart: ViewfinderAutostartConfig,
 }
 
 /// Какая часть секции `camera` неверна.
@@ -38,6 +41,8 @@ pub enum CameraConfigError {
     RawStream(#[from] RawFrameStreamConfigError),
     #[error("camera.scenarios: {0}")]
     Scenarios(#[from] CameraScenarioConfigError),
+    #[error("{0}")]
+    ViewfinderAutostart(#[from] ViewfinderAutostartConfigError),
 }
 
 impl CameraConfig {
@@ -47,6 +52,7 @@ impl CameraConfig {
         self.android.validate()?;
         self.raw_stream.validate()?;
         self.scenarios.validate()?;
+        self.viewfinder_autostart.validate()?;
         Ok(())
     }
 }

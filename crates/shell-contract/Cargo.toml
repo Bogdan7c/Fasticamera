@@ -7,6 +7,12 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# Подставной источник питания (`power::fake::FakePowerSource`) для тестов других crate-ов.
+fake-power-source = []
+# Подделка службы подсказок производительности (`performance_hint::fake::FakePerformanceHints`).
+fake-performance-hints = []
+
 [dependencies]
 serde.workspace = true
 thiserror.workspace = true

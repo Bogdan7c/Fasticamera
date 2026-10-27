@@ -6,9 +6,13 @@ use std::time::Duration;
 use shell_contract::commands::{CommandOutcome, FrameRateOutcome, ScreenWake};
 use shell_contract::surface::SurfaceGeneration;
 
+use super::adpf::{AdpfCommandLog, AdpfDiagnostics};
+use super::present_target_control::PresentTargetCommandLog;
+use super::present_target_stats::PresentTargetDiagnostics;
 use crate::backend::{BackendDiagnostics, DisplayInfo, PastPresentation};
 use crate::camera_diagnostics::CameraStreamDiagnostics;
 use crate::pacing::PacingSnapshot;
+use crate::viewfinder::{ViewfinderCommandLog, ViewfinderDiagnostics};
 
 /// Общее состояние потока.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +66,8 @@ pub struct BackendHealth {
     pub known_deviations: BTreeMap<String, u64>,
     /// Показ кадров камеры; `None` — показывается тестовый паттерн.
     pub camera: Option<CameraStreamDiagnostics>,
+    /// Видоискатель (рисовальщик, стадии ISP, время GPU, счётчики); `None` — камеры нет.
+    pub viewfinder: Option<ViewfinderDiagnostics>,
 }
 
 impl BackendHealth {
@@ -75,6 +81,7 @@ impl BackendHealth {
             detach_failures: diagnostics.detach_failures,
             known_deviations: diagnostics.known_deviations.clone(),
             camera: diagnostics.camera.clone(),
+            viewfinder: diagnostics.viewfinder.clone(),
         }
     }
 }
@@ -131,6 +138,17 @@ pub struct RenderStatus {
     /// `RenderLoopConfig::recent_presentations_capacity`). Часы `MONOTONIC`: сопоставлять с меткой
     /// сенсора (`BOOTTIME`) можно только через измеренное смещение часов — это делает приложение.
     pub recent_presentations: Vec<PastPresentation>,
+    /// Выбор линии кадра, опоздание показов относительно задуманного vsync, время в acquire и
+    /// стоимость кадра (сессия 07). Обновляется при опросе диагностики.
+    pub present_target: PresentTargetDiagnostics,
+    /// Команды выбору линии кадра и позднему захвату (A/B задержки в одном прогоне) и их итоги.
+    pub present_target_commands: PresentTargetCommandLog,
+    /// Команды видоискателю и их итоги (сессия 07).
+    pub viewfinder_commands: ViewfinderCommandLog,
+    /// Подсказки производительности системе (ADPF): режим, сессия, отчёты, отказы.
+    pub adpf: AdpfDiagnostics,
+    /// Учёт команд ADPF.
+    pub adpf_commands: AdpfCommandLog,
 }
 
 impl RenderStatus {
@@ -159,6 +177,11 @@ impl RenderStatus {
             },
             fault: None,
             recent_presentations: Vec::new(),
+            present_target: PresentTargetDiagnostics::default(),
+            present_target_commands: PresentTargetCommandLog::default(),
+            viewfinder_commands: ViewfinderCommandLog::default(),
+            adpf: AdpfDiagnostics::default(),
+            adpf_commands: AdpfCommandLog::default(),
         }
     }
 

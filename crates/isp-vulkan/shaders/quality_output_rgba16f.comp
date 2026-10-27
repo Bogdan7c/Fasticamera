@@ -1,0 +1,5 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Выходной проход в цель приёмника R16G16B16A16_SFLOAT (вариант по формату приёмника кадра).
+layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D output_image;
+#include "quality_output_main.glsl"

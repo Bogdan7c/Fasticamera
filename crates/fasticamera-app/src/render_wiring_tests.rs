@@ -17,6 +17,7 @@ use shell_contract::commands::{CommandOutcome, FrameRate, FrameRateOutcome, Scre
 use shell_contract::surface::{
     NativeSurface, PlatformWindow, SurfaceGeneration, SurfaceReleaseOutcome, SurfaceSize, surface_release_handoff,
 };
+use shell_contract::vsync::{FrameTimelines, VsyncTimeline};
 
 use super::*;
 
@@ -90,6 +91,11 @@ impl FrameClock for SteadyClock {
             expected_present: MonotonicNanos::from_nanos(0),
             deadline: MonotonicNanos::from_nanos(0),
             skipped_ticks: 0,
+            timelines: FrameTimelines::only(VsyncTimeline {
+                vsync_id: 0,
+                expected_present: MonotonicNanos::from_nanos(0),
+                deadline: MonotonicNanos::from_nanos(0),
+            }),
         })
     }
 }
@@ -125,6 +131,9 @@ fn spawn_runtime(fail_attach: bool) -> (RenderRuntime, Arc<Mutex<u64>>) {
         },
         clock: SteadyClock { sequence: 0 },
         commands: Arc::new(SilentCommands),
+        performance_hints: std::sync::Arc::new(shell_contract::performance_hint::NoPerformanceHints::new(
+            "тест без ADPF",
+        )),
     };
     (
         RenderRuntime::spawn(parts, ValidationState::Enabled).expect("поток рендера"),

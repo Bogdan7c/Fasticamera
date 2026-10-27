@@ -7,7 +7,8 @@
 //! Раскладка:
 //! * нейтральная часть (собирается и тестируется на ПК): [`config`], [`touch_decode`],
 //!   [`haptic_plan`], [`permission_answer`], [`orientation_classifier`], [`surface_registry`],
-//!   [`accounting`], [`thermal_codes`], [`command_codes`], [`vsync_timeline`];
+//!   [`accounting`], [`thermal_codes`], [`command_codes`], [`vsync_timeline`],
+//!   [`battery_snapshot`] (разбор снимка батареи от Kotlin), [`power_pacing`] (сетка опроса);
 //! * только Android: модуль `android` — регистрация JNI-методов, safety-модули FFI
 //!   (`ANativeWindow`, `AMotionEvent`, датчики, тепло) и поток команд к Kotlin.
 //!
@@ -16,11 +17,15 @@
 //! и счётчик `surface_release_timeouts`, а не зависание главного потока.
 
 pub mod accounting;
+pub mod battery_snapshot;
 pub mod command_codes;
 pub mod config;
+pub mod detached_worker;
 pub mod haptic_plan;
 pub mod orientation_classifier;
+pub mod performance_hint_codes;
 pub mod permission_answer;
+pub mod power_pacing;
 pub mod surface_registry;
 pub mod thermal_codes;
 pub mod touch_decode;

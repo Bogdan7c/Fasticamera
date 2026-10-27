@@ -1,42 +1,46 @@
 #!/usr/bin/env bash
 # Smoke-сценарий на телефоне: запуск по intent-параметру и проверка строки результата.
 #
-#   scripts/device-smoke.sh [--variant debug|release] [--no-build] [--timeout SEC] [--artifacts-dir DIR] <сценарий>
+#   scripts/device-smoke.sh [--variant debug|release] [--no-build] [--timeout SEC] [--artifacts-dir DIR]
+#                           [--stages LIST] [--ab-window-ms MS] [--neutral-card] <сценарий>
 #
-# Сценарии: hello, lifecycle, permission, motion, platform, render, render-lifecycle, ahb-import,
-# gpu-fence, camera-catalog, camera-stream, raw-stream, raw-stream-endurance (обе сборки),
-# panic, camera-evict и raw-stream-cpu-probe (только debug).
-# lifecycle сворачивает и возвращает приложение, permission сбрасывает и затем возвращает
-# разрешение камеры нашего пакета; шаги на телефоне — scripts/smoke_driver.py,
-# ожидания — scripts/smoke_wait.py и scripts/smoke_checks.py.
-# render наблюдает 10 с показа (нужен --timeout 60); render-lifecycle сворачивает приложение
-# 20 раз кнопкой HOME и 3 раза гасит экран (экран без блокировки; нужен --timeout 300);
-# ahb-import и gpu-fence гоняют GPU-проверки на отдельном контексте (--timeout 60).
-# camera-catalog читает каталог камер и сверяет его с `dumpsys media.camera` (--timeout 30);
-# camera-stream проходит шаги открыть-поток-замер и подтверждает 60 к/с через NDK (--timeout 120);
-# camera-evict сам запускает системную камеру, чтобы она отняла камеру у нас (--timeout 90).
-# raw-stream (сессия 05) гонит минуту всю цепочку «камера -> лизинг кадров -> рендер -> экран» и судит
-# частоту по меткам сенсора, ноль CPU-копий, утечки, показ и метаданные кадров (--timeout 120);
-# raw-stream-endurance то же на 5 минут (--timeout 420); raw-stream-cpu-probe (debug) ~5 с доказывает, что
-# счётчик CPU-копий живой (--timeout 60). raw-stream* делают два скриншота экрана на стадии viewfinder_live
-# и сохраняют их (сырой вывод screencap и PNG) в каталог артефактов ВНЕ репозитория: --artifacts-dir DIR
-# либо свежий `mktemp -d` (путь печатается). Скриншоты в репозиторий не кладём.
+# Сценарии (--timeout в скобках): hello, panic (debug), lifecycle, permission (60), motion, platform,
+# render (120), render-lifecycle (400), ahb-import и gpu-fence (60); камера: camera-catalog (30, сверка с
+# dumpsys), camera-stream (120), camera-evict (debug, 90; сам запускает системную камеру); поток 05:
+# raw-stream (120), raw-stream-endurance (420), raw-stream-cpu-probe (debug, 60).
+# Видоискатель 07: viewfinder (120; ISP за минуту: к/с, GPU, AWB, задержка, скриншоты; --neutral-card —
+# ещё и «серая карта в центре вышла серой», телефон наведён на карту); viewfinder-latency (240; ABBA
+# двух профилей baseline / tuned: 6 окон × 20 с = 120 с + запуск); viewfinder-stage-budget (~6 мин на строку, по умолчанию 9 строк = 3600;
+# --stages levels,tone,whole_viewfinder — подмножество; --ab-window-ms 15000 — короткие окна для мс GPU;
+# только на батарее, без кабеля); viewfinder-endurance
+# (720; 10 минут, троттлинг); video-headroom-bench (720; стенд V4 16:9@60, 120 Гц — скрипт касается экрана).
+# Шаги на телефоне — scripts/smoke_driver.py, ожидания — smoke_wait.py, smoke_checks*.py.
+# raw-stream* и viewfinder снимают два скриншота на стадии viewfinder_live в каталог артефактов ВНЕ
+# репозитория: --artifacts-dir DIR либо свежий `mktemp -d` (путь печатается).
 # Validation-слой есть только в debug-сборке: в release отчёт пишет validation.mode=disabled.
+# Подробности отчёта — строки FASTICAMERA_DETAIL в выводе.
 # Коды выхода: 0 — сценарий прошёл, 1 — сценарий упал, 2 — устройство не найдено,
 # 3 — нет строки результата за таймаут, 4 — не собралось/не встало/не запустилось, 64 — неверный вызов.
+#
+# Разрешение камеры у пакета должно быть выдано (release: adb shell pm grant dev.fasticamera
+# android.permission.CAMERA); экран разблокирован.
+#
 set -euo pipefail
 
 # shellcheck source=lib/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
 usage() {
-    sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,27p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
 }
 
 variant="debug"
 should_build=true
 timeout_seconds=30
 artifacts_dir=""
+stages=""
+ab_window_ms=""
+neutral_card=false
 scenario=""
 
 while [[ $# -gt 0 ]]; do
@@ -45,6 +49,9 @@ while [[ $# -gt 0 ]]; do
         --no-build) should_build=false; shift ;;
         --timeout) timeout_seconds="${2:-}"; shift 2 ;;
         --artifacts-dir) artifacts_dir="${2:-}"; shift 2 ;;
+        --stages) stages="${2:-}"; shift 2 ;;
+        --ab-window-ms) ab_window_ms="${2:-}"; shift 2 ;;
+        --neutral-card) neutral_card=true; shift ;;
         -h|--help) usage; exit "$EXIT_OK" ;;
         -*) log_error "неизвестный аргумент: $1"; usage; exit "$EXIT_USAGE" ;;
         *)
@@ -63,6 +70,28 @@ if [[ -z "$scenario" ]]; then
 fi
 if ! package="$(package_for_variant "$variant")"; then
     log_error "вариант должен быть debug или release, а не '$variant'"
+    exit "$EXIT_USAGE"
+fi
+# Строки таблицы — только имена через запятую (их проверит Rust при initialize); ничего, что сломает adb shell.
+if [[ -n "$stages" && ! "$stages" =~ ^[a-z_]+(,[a-z_]+)*$ ]]; then
+    log_error "--stages ждёт имена строк через запятую (levels,tone,whole_viewfinder), а не '$stages'"
+    exit "$EXIT_USAGE"
+fi
+if [[ -n "$stages" && "$scenario" != "viewfinder-stage-budget" ]]; then
+    log_error "--stages имеет смысл только для viewfinder-stage-budget"
+    exit "$EXIT_USAGE"
+fi
+# Длина окна A/B — только целое число мс; границы (длиннее прогрева) проверит Rust при initialize.
+if [[ -n "$ab_window_ms" && ! "$ab_window_ms" =~ ^[1-9][0-9]*$ ]]; then
+    log_error "--ab-window-ms ждёт целое число миллисекунд, а не '$ab_window_ms'"
+    exit "$EXIT_USAGE"
+fi
+if [[ -n "$ab_window_ms" && "$scenario" != "viewfinder-stage-budget" ]]; then
+    log_error "--ab-window-ms имеет смысл только для viewfinder-stage-budget"
+    exit "$EXIT_USAGE"
+fi
+if [[ "$neutral_card" == true && "$scenario" != "viewfinder" ]]; then
+    log_error "--neutral-card имеет смысл только для viewfinder"
     exit "$EXIT_USAGE"
 fi
 if [[ ! "$timeout_seconds" =~ ^[0-9]+$ ]]; then
@@ -109,8 +138,15 @@ if scenario_resets_camera_permission "$scenario"; then
 fi
 
 since_epoch="$(device_epoch_timestamp "$serial")"
-start_activity "$serial" "$package" -e scenario "$scenario" || exit "$EXIT_BUILD_OR_INSTALL_FAILED"
+start_activity "$serial" "$package" -e scenario "$scenario" ${stages:+-e stages "$stages"} \
+    ${ab_window_ms:+-e ab_window_ms "$ab_window_ms"} ||
+    exit "$EXIT_BUILD_OR_INSTALL_FAILED"
 
+# Дополнительные флаги проверки результата (пустой массив — без флагов).
+wait_options=()
+if [[ "$neutral_card" == true ]]; then
+    wait_options+=(--neutral-card)
+fi
 log_step "ожидание FASTICAMERA_RESULT сценария $scenario (до $timeout_seconds с)"
 # Без exec: после проверки надо отработать ловушку восстановления разрешения.
 if python3 "$FASTICAMERA_ROOT/scripts/smoke_wait.py" \
@@ -119,7 +155,8 @@ if python3 "$FASTICAMERA_ROOT/scripts/smoke_wait.py" \
     --package "$package" \
     --scenario "$scenario" \
     --timeout "$timeout_seconds" \
-    ${artifacts_dir:+--artifacts-dir "$artifacts_dir"}; then
+    ${artifacts_dir:+--artifacts-dir "$artifacts_dir"} \
+    "${wait_options[@]}"; then
     smoke_exit_code=0
 else
     smoke_exit_code=$?

@@ -5,7 +5,7 @@ use camera_contract::frame_passport::FrameSequence;
 use camera_contract::geometry::PixelSize;
 use camera_contract::raw_format::RawFormat;
 
-use super::support::{Rig, passport};
+use super::support::{Rig, latest_wins_config, passport};
 use crate::config::RawFrameStreamConfig;
 use crate::stream::{DefectReason, ViewfinderPoll};
 
@@ -15,7 +15,7 @@ fn ring_config(budget_bytes: u64, max_frames: u32) -> RawFrameStreamConfig {
     RawFrameStreamConfig {
         snapshot_ring_budget_bytes: budget_bytes,
         snapshot_ring_max_frames: max_frames,
-        ..RawFrameStreamConfig::default()
+        ..latest_wins_config()
     }
 }
 
@@ -27,12 +27,12 @@ fn publish_paired(rig: &Rig, timestamp: i64) {
 
 #[test]
 fn latest_wins_hands_over_the_newest_frame_and_returns_the_superseded_ones() {
-    let rig = Rig::new(RawFrameStreamConfig::default());
+    let rig = Rig::new(latest_wins_config());
     for timestamp in [1_000, 2_000, 3_000] {
         publish_paired(&rig, timestamp);
     }
 
-    let ViewfinderPoll::NewFrame(lease) = rig.stream.viewfinder().poll_latest(rig.at(0)) else {
+    let ViewfinderPoll::NewFrame(lease) = rig.stream.viewfinder().poll_for_vsync(rig.at(0)) else {
         panic!("в ячейке должен быть кадр");
     };
     assert_eq!(lease.passport().sequence, FrameSequence(2));
@@ -45,20 +45,20 @@ fn latest_wins_hands_over_the_newest_frame_and_returns_the_superseded_ones() {
     lease.release_unused();
     assert!(rig.log.is_returned(3_000));
     assert!(matches!(
-        rig.stream.viewfinder().poll_latest(rig.at(0)),
+        rig.stream.viewfinder().poll_for_vsync(rig.at(0)),
         ViewfinderPoll::NoNewFrame
     ));
 }
 
 #[test]
 fn a_late_published_older_frame_never_replaces_a_newer_one_in_the_slot() {
-    let rig = Rig::new(RawFrameStreamConfig::default());
+    let rig = Rig::new(latest_wins_config());
     rig.offer_frame(1_000, 0); // sequence 0, ждёт пару
     rig.offer_frame(2_000, 0); // sequence 1
     rig.offer_result(2_000, 0); // 2000 опубликован раньше 1000
     rig.producer.expire_pending(rig.at(100)); // 1000 уходит по таймауту
 
-    let ViewfinderPoll::NewFrame(lease) = rig.stream.viewfinder().poll_latest(rig.at(100)) else {
+    let ViewfinderPoll::NewFrame(lease) = rig.stream.viewfinder().poll_for_vsync(rig.at(100)) else {
         panic!("в ячейке должен быть кадр");
     };
     assert_eq!(lease.passport().sensor_timestamp, SensorTimestamp::from_nanos(2_000));
@@ -129,7 +129,7 @@ fn ring_keeps_the_last_n_frames_counts_evictions_and_returns_them_oldest_first()
 
 #[test]
 fn lossless_consumer_gets_every_frame_in_order_and_defects_when_its_queue_is_full() {
-    let mut rig = Rig::new(RawFrameStreamConfig::default());
+    let mut rig = Rig::new(latest_wins_config());
     let lossless = rig.stream.attach_lossless_consumer(2.try_into().expect("ёмкость"));
     rig.restart();
     assert_eq!(rig.start.pool.lossless, 2);
@@ -157,7 +157,7 @@ fn lossless_consumer_gets_every_frame_in_order_and_defects_when_its_queue_is_ful
 
 #[test]
 fn each_lossless_consumer_has_its_own_queue() {
-    let mut rig = Rig::new(RawFrameStreamConfig::default());
+    let mut rig = Rig::new(latest_wins_config());
     let small = rig.stream.attach_lossless_consumer(1.try_into().expect("ёмкость"));
     let large = rig.stream.attach_lossless_consumer(4.try_into().expect("ёмкость"));
     rig.restart();

@@ -38,6 +38,9 @@ fn start_rig(config: RenderLoopConfig) -> Rig {
         backend: FakeBackend::new(probe),
         clock,
         commands: commands.clone(),
+        performance_hints: std::sync::Arc::new(shell_contract::performance_hint::NoPerformanceHints::new(
+            "тест без ADPF",
+        )),
     })
     .expect("поток запускается");
     Rig {

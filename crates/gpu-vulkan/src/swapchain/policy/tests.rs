@@ -38,6 +38,7 @@ fn headless_support() -> SurfaceSupport {
 fn request(size: Option<(u32, u32)>) -> PlanRequest {
     PlanRequest {
         color_depth: ColorDepthPreference::PreferTenBit,
+        display_color: DisplayColorPreference::PreferDisplayP3,
         requested_size: size.map(|(width_px, height_px)| SurfaceSize { width_px, height_px }),
     }
 }
@@ -237,4 +238,110 @@ fn surface_support_treats_ffffffff_as_undefined_extent() {
         ..Default::default()
     };
     assert_eq!(SurfaceSupport::from_vk(&defined).current_extent, Some(extent(10, 20)));
+}
+
+// ---- цветовое пространство показа (сессия 07) ----
+
+fn wide_gamut_formats() -> Vec<vk::SurfaceFormatKHR> {
+    vec![
+        format(vk::Format::R8G8B8A8_UNORM, vk::ColorSpaceKHR::SRGB_NONLINEAR),
+        format(vk::Format::A2B10G10R10_UNORM_PACK32, vk::ColorSpaceKHR::SRGB_NONLINEAR),
+        format(vk::Format::R8G8B8A8_UNORM, vk::ColorSpaceKHR::DISPLAY_P3_NONLINEAR_EXT),
+        format(
+            vk::Format::A2B10G10R10_UNORM_PACK32,
+            vk::ColorSpaceKHR::DISPLAY_P3_NONLINEAR_EXT,
+        ),
+    ]
+}
+
+#[test]
+fn display_p3_with_ten_bit_is_chosen_first_when_preferred() {
+    let chosen = choose_surface_format_with_color(
+        &wide_gamut_formats(),
+        ColorDepthPreference::PreferTenBit,
+        DisplayColorPreference::PreferDisplayP3,
+    )
+    .unwrap();
+    assert_eq!(
+        chosen,
+        format(
+            vk::Format::A2B10G10R10_UNORM_PACK32,
+            vk::ColorSpaceKHR::DISPLAY_P3_NONLINEAR_EXT
+        )
+    );
+}
+
+#[test]
+fn srgb_only_ignores_display_p3_even_when_offered() {
+    let chosen = choose_surface_format_with_color(
+        &wide_gamut_formats(),
+        ColorDepthPreference::PreferTenBit,
+        DisplayColorPreference::SrgbOnly,
+    )
+    .unwrap();
+    assert_eq!(
+        chosen,
+        format(vk::Format::A2B10G10R10_UNORM_PACK32, vk::ColorSpaceKHR::SRGB_NONLINEAR)
+    );
+}
+
+#[test]
+fn eight_bit_display_p3_is_never_chosen_and_falls_back_to_srgb() {
+    // P3 только 8-битный: 10-битного P3 нет → обычный порядок sRGB (10 бит sRGB).
+    let formats = vec![
+        format(vk::Format::R8G8B8A8_UNORM, vk::ColorSpaceKHR::DISPLAY_P3_NONLINEAR_EXT),
+        format(vk::Format::A2B10G10R10_UNORM_PACK32, vk::ColorSpaceKHR::SRGB_NONLINEAR),
+        format(vk::Format::R8G8B8A8_UNORM, vk::ColorSpaceKHR::SRGB_NONLINEAR),
+    ];
+    let chosen = choose_surface_format_with_color(
+        &formats,
+        ColorDepthPreference::PreferTenBit,
+        DisplayColorPreference::PreferDisplayP3,
+    )
+    .unwrap();
+    assert_eq!(chosen.color_space, vk::ColorSpaceKHR::SRGB_NONLINEAR);
+    assert_eq!(chosen.format, vk::Format::A2B10G10R10_UNORM_PACK32);
+    // Принудительные 8 бит: P3 не рассматривается даже при наличии 10-битного P3.
+    let eight = choose_surface_format_with_color(
+        &wide_gamut_formats(),
+        ColorDepthPreference::EightBitOnly,
+        DisplayColorPreference::PreferDisplayP3,
+    )
+    .unwrap();
+    assert_eq!(
+        eight,
+        format(vk::Format::R8G8B8A8_UNORM, vk::ColorSpaceKHR::SRGB_NONLINEAR)
+    );
+}
+
+#[test]
+fn preferring_p3_without_any_p3_format_keeps_previous_srgb_choice() {
+    let chosen = choose_surface_format_with_color(
+        &standard_formats(),
+        ColorDepthPreference::PreferTenBit,
+        DisplayColorPreference::PreferDisplayP3,
+    )
+    .unwrap();
+    assert_eq!(
+        chosen,
+        choose_surface_format(&standard_formats(), ColorDepthPreference::PreferTenBit).unwrap()
+    );
+}
+
+#[test]
+fn plan_reports_neutral_display_color_space() {
+    let mut support = phone_support();
+    support.current_extent = Some(extent(1080, 2400));
+    let PlanOutcome::Ready(p3_plan) = plan_swapchain(&support, &wide_gamut_formats(), &request(None)).unwrap() else {
+        panic!("ожидали план");
+    };
+    assert_eq!(p3_plan.display_color_space, DisplayColorSpace::DisplayP3);
+    let srgb_request = PlanRequest {
+        display_color: DisplayColorPreference::SrgbOnly,
+        ..request(None)
+    };
+    let PlanOutcome::Ready(srgb_plan) = plan_swapchain(&support, &wide_gamut_formats(), &srgb_request).unwrap() else {
+        panic!("ожидали план");
+    };
+    assert_eq!(srgb_plan.display_color_space, DisplayColorSpace::Srgb);
 }

@@ -15,7 +15,9 @@ use camera_contract::raw_format::RawFormat;
 use camera_contract::stream::{InvalidFrameRate, ReadoutAspect, StreamMode, TargetFrameRate};
 use serde::{Deserialize, Serialize};
 
+use crate::power_measurement::config::{PowerMeasurementConfig, PowerMeasurementConfigError};
 use crate::raw_stream_scenario_config::{RawStreamScenarioConfig, RawStreamScenarioConfigError};
+use crate::viewfinder_scenario_config::{ViewfinderScenarioConfig, ViewfinderScenarioConfigError};
 
 /// Формат RAW в конфиге.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -262,6 +264,10 @@ pub struct CameraScenarioConfig {
     pub evict: EvictScenarioConfig,
     /// Сценарии потока кадров `raw-stream*` (сессия 05).
     pub raw_stream: RawStreamScenarioConfig,
+    /// Замер тока батареи: A/B по стадиям и длинный прогон (сессия 07, решение 45).
+    pub power: PowerMeasurementConfig,
+    /// Сценарии видоискателя с ISP (сессия 07): smoke, задержка, бюджет стадий, 10 минут, стенд V4.
+    pub viewfinder: ViewfinderScenarioConfig,
 }
 
 fn step(
@@ -313,6 +319,8 @@ impl Default for CameraScenarioConfig {
             ],
             evict: EvictScenarioConfig::default(),
             raw_stream: RawStreamScenarioConfig::default(),
+            power: PowerMeasurementConfig::default(),
+            viewfinder: ViewfinderScenarioConfig::default(),
         }
     }
 }
@@ -330,6 +338,10 @@ pub enum CameraScenarioConfigError {
     InvalidFrameRate(#[from] InvalidFrameRate),
     #[error("raw_stream: {0}")]
     RawStream(#[from] RawStreamScenarioConfigError),
+    #[error("{0}")]
+    Power(#[from] PowerMeasurementConfigError),
+    #[error("{0}")]
+    Viewfinder(#[from] ViewfinderScenarioConfigError),
     #[error("ID камеры: {0}")]
     InvalidCameraId(#[from] EmptyCameraId),
     #[error(
@@ -378,6 +390,8 @@ impl CameraScenarioConfig {
         }
         self.evict.resolve()?;
         self.raw_stream.validate()?;
+        self.power.validate()?;
+        self.viewfinder.validate()?;
         Ok(())
     }
 }

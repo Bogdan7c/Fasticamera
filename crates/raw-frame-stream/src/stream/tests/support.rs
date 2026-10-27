@@ -32,6 +32,8 @@ struct ReturnedBuffer {
 #[derive(Default)]
 pub(super) struct ReturnLog {
     returned: Mutex<BTreeMap<i64, ReturnedBuffer>>,
+    /// Буферы, вернувшиеся повторно (нарушение инварианта 2: «ровно один раз»).
+    duplicate_returns: Mutex<Vec<i64>>,
 }
 
 impl ReturnLog {
@@ -41,6 +43,14 @@ impl ReturnLog {
 
     pub(super) fn is_returned(&self, buffer: i64) -> bool {
         self.lock().contains_key(&buffer)
+    }
+
+    /// Метки буферов, которые производитель получил больше одного раза (должно быть пусто).
+    pub(super) fn duplicate_returns(&self) -> Vec<i64> {
+        self.duplicate_returns
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     pub(super) fn returned_count(&self) -> usize {
@@ -94,7 +104,14 @@ unsafe impl ProducerFrame for FakeFrame {
             fence.set_nonblocking(true).expect("неблокирующий fence");
         }
         let signaled = vec![false; fences.len()];
-        self.log.lock().insert(self.buffer, ReturnedBuffer { fences, signaled });
+        let previous = self.log.lock().insert(self.buffer, ReturnedBuffer { fences, signaled });
+        if previous.is_some() {
+            self.log
+                .duplicate_returns
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(self.buffer);
+        }
     }
 }
 
@@ -213,6 +230,7 @@ pub(super) fn passport(raw_format: RawFormat, buffer_size: PixelSize) -> StreamP
         sensor_orientation: SensorOrientation::Degrees90,
         frame_rate: TargetFrameRate::new(60).expect("60 к/с допустимо"),
         frame_rate_mechanism: FrameRateMechanism::HalDefault,
+        color_calibration: Vec::new(),
     }
 }
 
@@ -225,4 +243,13 @@ pub(super) fn unsignaled_fence() -> (GpuReleaseFence, UnixStream) {
 pub(super) fn signal(signal_end: &mut UnixStream) {
     use std::io::Write;
     signal_end.write_all(&[1]).expect("сигнал fence");
+}
+
+/// Конфиг по умолчанию, но видоискатель — `LatestWins` (сессия 05). Тесты спаривания, возвратов
+/// и эпох проверяют путь одного кадра; при буфере с запасом одиночный кадр ждал бы заполнения.
+pub(super) fn latest_wins_config() -> RawFrameStreamConfig {
+    RawFrameStreamConfig {
+        viewfinder_pacing: crate::viewfinder_pacing::ViewfinderPacing::LatestWins,
+        ..RawFrameStreamConfig::default()
+    }
 }

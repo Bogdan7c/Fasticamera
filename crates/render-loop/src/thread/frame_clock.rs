@@ -9,8 +9,12 @@
 use std::time::Duration;
 
 use shell_contract::clock::MonotonicNanos;
+use shell_contract::vsync::FrameTimelines;
 
 /// Один тик «пора рисовать кадр».
+///
+/// Плоские `expected_present`/`deadline` — предпочитаемая платформой линия кадра; все линии —
+/// в `timelines` (по ним поток выбирает линию, см. `present_target`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameTick {
     /// Порядковый номер тика источника (растёт; пропуски видны по `skipped_ticks`).
@@ -18,14 +22,19 @@ pub struct FrameTick {
     /// Когда кадр, нарисованный по этому тику, ожидается на экране.
     pub expected_present: MonotonicNanos,
     /// Срок, к которому кадр надо сдать композитору, чтобы он попал в `expected_present`.
-    /// Сейчас поток его только несёт дальше (бюджет кадра будет читать будущий планировщик).
     pub deadline: MonotonicNanos,
     /// Сколько тиков пропущено с прошлого полученного (поток не успел или спал).
     pub skipped_ticks: u64,
+    /// Все линии кадра этого vsync (предпочитаемая среди них).
+    pub timelines: FrameTimelines,
 }
 
 /// Итог ожидания следующего кадра.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "тик с линиями кадра (~250 байт) возвращается по значению раз на vsync; Box выделял бы память на каждом vsync"
+)]
 pub enum FrameWait {
     /// Пришёл тик.
     Tick(FrameTick),

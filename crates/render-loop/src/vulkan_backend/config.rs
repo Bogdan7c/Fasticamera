@@ -4,11 +4,11 @@ use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use gpu_vulkan::error::GpuError;
-use gpu_vulkan::swapchain::{ColorDepthPreference, DisplayTargetConfig, FramesInFlight};
+use gpu_vulkan::swapchain::{ColorDepthPreference, DisplayColorPreference, DisplayTargetConfig, FramesInFlight};
 use gpu_vulkan::validation::ValidationMode;
 
 use super::present_time::PresentTimePolicy;
-use crate::config::RenderLoopConfig;
+use crate::config::{DisplayColorConfig, RenderLoopConfig, ViewfinderConfig};
 
 /// Параметры [`super::VulkanDisplayBackend`].
 #[derive(Debug, Clone)]
@@ -38,6 +38,10 @@ pub struct VulkanBackendConfig {
     /// Сколько импортов буферов камеры держать живыми (только Android). Не меньше пула буферов
     /// `AImageReader`, иначе каждый кадр будет импортироваться заново.
     pub camera_import_cache_capacity: NonZeroUsize,
+    /// Какое цветовое пространство просить у цепочки показа (из `RenderLoopConfig::display_color`).
+    pub display_color: DisplayColorPreference,
+    /// Видоискатель камеры (из `RenderLoopConfig::viewfinder`).
+    pub viewfinder: ViewfinderConfig,
 }
 
 impl VulkanBackendConfig {
@@ -70,6 +74,11 @@ impl VulkanBackendConfig {
             fallback_refresh_period: config.expected_refresh_period(),
             camera_present_history_capacity: Self::DEFAULT_CAMERA_PRESENT_HISTORY_CAPACITY,
             camera_import_cache_capacity: Self::DEFAULT_CAMERA_IMPORT_CACHE_CAPACITY,
+            display_color: match config.display_color {
+                DisplayColorConfig::PreferDisplayP3 => DisplayColorPreference::PreferDisplayP3,
+                DisplayColorConfig::SrgbOnly => DisplayColorPreference::SrgbOnly,
+            },
+            viewfinder: config.viewfinder.clone(),
         })
     }
 
@@ -89,6 +98,8 @@ impl VulkanBackendConfig {
             teardown_timeout: self.teardown_timeout,
             present_fence_capacity: DisplayTargetConfig::DEFAULT_PRESENT_FENCE_CAPACITY,
             color_depth: self.color_depth,
+            // ISP видоискателя кодирует выход в пространстве, которое выбрала цепочка (сессия 07).
+            display_color: self.display_color,
             requested_size: Some(size),
         }
     }
@@ -117,6 +128,27 @@ mod tests {
             "бюджет освобождения — из конфига потока"
         );
         assert_eq!(config.validation, ValidationMode::Disabled);
+        assert_eq!(
+            config.display_color,
+            DisplayColorPreference::PreferDisplayP3,
+            "по умолчанию просим Display P3"
+        );
+        let srgb = RenderLoopConfig {
+            display_color: DisplayColorConfig::SrgbOnly,
+            ..RenderLoopConfig::default()
+        };
+        let config =
+            VulkanBackendConfig::from_render_config(&srgb, ValidationMode::Disabled).expect("корректный конфиг");
+        assert_eq!(
+            config
+                .display_target_config(shell_contract::surface::SurfaceSize {
+                    width_px: 4,
+                    height_px: 4
+                })
+                .display_color,
+            DisplayColorPreference::SrgbOnly,
+            "выбор пространства доходит до цели показа"
+        );
     }
 
     #[test]

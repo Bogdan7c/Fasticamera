@@ -14,15 +14,23 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use shell_contract::commands::{FrameRate, ScreenWake, ShellCommands};
+use shell_contract::performance_hint::PerformanceHintService;
 use shell_contract::surface::{NativeSurface, SurfaceGeneration, SurfaceReleaseRequest, SurfaceSize};
 
+use super::adpf::{AdpfReporter, PresentedFrameWork};
 use super::frame_clock::{FrameClock, FrameTick, FrameWait};
+use super::monotonic_clock::{MonotonicTimer, SystemMonotonicTimer};
+use super::present_target::TickPlan;
+use super::present_target_stats::PresentTargetTracker;
 use super::status::{BackendHealth, FaultInfo, FaultKind, RenderState, RenderStatus};
 use crate::backend::{BackendDiagnostics, BackendError, DisplayBackend, DisplayInfo, FrameTiming, PresentOutcome};
 use crate::config::RenderLoopConfig;
 use crate::mailbox::{InboxEvent, RenderInboxReceiver, StampedEvent};
 use crate::pacing::{PacingParams, PacingTracker};
 use crate::surface_state::{SurfaceAction, SurfacePhase, SurfaceStateMachine};
+use crate::viewfinder::{ViewfinderCommand, ViewfinderCommandOutcome};
+
+mod frame_accounting;
 
 const LOG_TARGET: &str = "fasticamera::render";
 
@@ -50,6 +58,10 @@ pub(super) struct RenderWorker<B: DisplayBackend, C: FrameClock> {
     /// Surface, принятая из ящика, но ещё не отданная бэкенду (ждёт размера).
     unattached_surface: Option<NativeSurface>,
     pacing: PacingTracker,
+    /// Выбор линии кадра, план позднего захвата и их учёт (сессия 07).
+    present_target: PresentTargetTracker,
+    /// Отчёты системе о работе кадров (ADPF, P13 сессии 07); сессию создаёт на этом потоке.
+    adpf: AdpfReporter,
     status: RenderStatus,
     shared_status: Arc<Mutex<RenderStatus>>,
     next_frame_index: u64,
@@ -78,9 +90,13 @@ impl<B: DisplayBackend, C: FrameClock> RenderWorker<B, C> {
         clock: C,
         receiver: RenderInboxReceiver,
         shared_status: Arc<Mutex<RenderStatus>>,
+        performance_hints: Arc<dyn PerformanceHintService>,
     ) -> Self {
         let pacing = PacingTracker::new(PacingParams::from_config(&config));
         let status = RenderStatus::initial(config.expected_refresh_period());
+        // Задуманные линии ждут записей о показе столько же, сколько статус хранит сами записи.
+        let present_target = PresentTargetTracker::new(&config.present_target, config.recent_presentations_capacity);
+        let adpf = AdpfReporter::new(config.adpf.clone(), performance_hints);
         Self {
             config,
             backend,
@@ -89,6 +105,8 @@ impl<B: DisplayBackend, C: FrameClock> RenderWorker<B, C> {
             machine: SurfaceStateMachine::new(),
             unattached_surface: None,
             pacing,
+            present_target,
+            adpf,
             status,
             shared_status,
             next_frame_index: 0,
@@ -228,6 +246,21 @@ impl<B: DisplayBackend, C: FrameClock> RenderWorker<B, C> {
                 self.machine.on_resumed();
                 Vec::new()
             }
+            InboxEvent::Viewfinder(command) => {
+                self.apply_viewfinder_command(command);
+                Vec::new()
+            }
+            InboxEvent::PresentTarget(command) => {
+                // Политика линии кадра — состояние потока (не бэкенда): применяется сразу, между кадрами.
+                let outcome = self.present_target.apply_command(command);
+                self.status.present_target_commands.note(command, outcome);
+                self.status.present_target = self.present_target.snapshot();
+                Vec::new()
+            }
+            InboxEvent::Adpf(command) => {
+                self.apply_adpf_command(command);
+                Vec::new()
+            }
         };
         self.execute_actions(actions, &mut context);
         // Новая surface принята машиной (её не отвергли): ждёт размера.
@@ -238,6 +271,15 @@ impl<B: DisplayBackend, C: FrameClock> RenderWorker<B, C> {
         // квитанции сообщает оболочке `DroppedWithoutConfirmation`. Для destroyed машина
         // всегда выдаёт ConfirmRelease, так что сюда попадать нечему — это страховка.
         drop(context.release.take());
+    }
+
+    /// Команда видоискателю: бэкенд применяет её между кадрами, итог — в статусе. Неисправный
+    /// бэкенд не вызывается: команда учитывается как неисполнимая.
+    fn apply_viewfinder_command(&mut self, command: ViewfinderCommand) {
+        let outcome = self
+            .guarded(|backend| backend.apply_viewfinder_command(command))
+            .unwrap_or(ViewfinderCommandOutcome::Unsupported);
+        self.status.viewfinder_commands.note(command, outcome);
     }
 
     fn execute_actions(&mut self, actions: Vec<SurfaceAction>, context: &mut ActionContext) {
@@ -359,25 +401,45 @@ impl<B: DisplayBackend, C: FrameClock> RenderWorker<B, C> {
         if self.teardown_is_imminent() {
             return;
         }
+        // Начало периода работы кадра для ADPF (часы не прочитались — кадр без отчёта).
+        let frame_started = SystemMonotonicTimer.now().ok();
+        let target = match self.plan_present_target(self.next_frame_index, &tick) {
+            TickPlan::Present { target, .. } => target,
+            // Сход на ближнюю линию (решение 54): на этом тике не рисуем, не показываем и камеру не
+            // опрашиваем — кадр камеры останется в буфере видоискателя до следующего тика.
+            TickPlan::SkipForDepthReduction => return,
+        };
         let timing = FrameTiming {
             frame_index: self.next_frame_index,
             vsync_sequence: tick.sequence,
-            expected_present: tick.expected_present,
             skipped_vsyncs: tick.skipped_ticks,
+            target,
         };
         self.next_frame_index += 1;
         let Some(outcome) = self.guarded(|backend| backend.render_and_present(timing)) else {
             return;
         };
+        let frame_finished = SystemMonotonicTimer.now().ok();
+        let cpu_timing = self.account_frame_cpu_timing();
         let frame_failed = matches!(outcome, PresentOutcome::Failed(_));
         match outcome {
-            PresentOutcome::Presented => self.status.frames_presented += 1,
+            PresentOutcome::Presented => {
+                self.status.frames_presented += 1;
+                self.present_target.record_presented(timing.frame_index, &timing.target);
+                let work =
+                    PresentedFrameWork::measure(timing.frame_index, frame_started, frame_finished, cpu_timing.as_ref());
+                if let Some(work) = work {
+                    self.adpf.frame_presented(work, self.pacing.refresh_period());
+                }
+            }
             PresentOutcome::NeedsRecreate => self.recreate_swapchain(),
             PresentOutcome::SurfaceLost => self.handle_surface_lost(),
             PresentOutcome::TimedOut => self.status.acquire_timeouts += 1,
             PresentOutcome::Failed(error) => self.record_frame_failure(&error),
         }
         self.previous_frame_failed = frame_failed;
+        // После учёта показа: время GPU может прийти и для кадра, показанного только что.
+        self.account_frame_gpu_timings();
         // Каждый кадр, а не по таймеру: драйвер хранит лишь короткую историю времён показа,
         // и при редком опросе записи теряются (это давало ложные «пропуски» в пейсинге).
         self.drain_past_presentations();
@@ -438,22 +500,10 @@ impl<B: DisplayBackend, C: FrameClock> RenderWorker<B, C> {
         // (OxygenOS поднимает 60 -> 120 Гц после первого касания).
         self.adopt_reported_refresh_cycle(diagnostics.display.as_ref());
         self.status.pacing = self.pacing.snapshot();
+        self.status.present_target = self.present_target.snapshot();
+        self.status.adpf = self.adpf.snapshot();
         self.status.display = diagnostics.display.clone();
         self.adopt_backend_health(&diagnostics);
-    }
-
-    /// Забирает у бэкенда новые времена показов и кладёт их в статистику пейсинга.
-    /// Дёшево: вызывается на каждом кадре и перед событиями, которые уничтожают цепочку.
-    fn drain_past_presentations(&mut self) {
-        let Some(presentations) = self.guarded(DisplayBackend::drain_past_presentations) else {
-            return;
-        };
-        for presentation in presentations {
-            self.status
-                .note_presentation(presentation, self.config.recent_presentations_capacity);
-            self.pacing
-                .record_present(presentation.present_id, presentation.actual_present);
-        }
     }
 
     /// Переносит счётчики бэкенда (объекты GPU, validation, неудачные detach) в статус.

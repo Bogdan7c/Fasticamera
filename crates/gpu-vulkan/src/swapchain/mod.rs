@@ -30,7 +30,9 @@ pub mod present_sync;
 mod resources;
 mod state;
 
-pub use self::config::{ColorDepthPreference, DisplayTargetConfig, FramesInFlight};
+pub use self::config::{
+    ColorDepthPreference, DisplayColorPreference, DisplayColorSpace, DisplayTargetConfig, FramesInFlight,
+};
 pub use self::display_timing::PastPresentation;
 #[cfg(any(test, feature = "fault-injection"))]
 pub use self::fault_injection::InjectedFault;

@@ -15,6 +15,7 @@ use render_loop::thread::{FrameClock, RenderLoop, RenderLoopHandle, RenderLoopPa
 
 use crate::gpu_services::{RenderObservation, RenderStatusSource, UnavailableRender, ValidationState};
 use crate::render_route::{HoldAndConfirmRoute, InboxRoute, RenderRoute};
+use crate::viewfinder_control::{InboxRenderControl, RenderControl, UnavailableRenderControl};
 
 /// Что получает маршрутизатор после запуска рендера (или после отказа).
 pub struct RenderRuntime {
@@ -22,6 +23,8 @@ pub struct RenderRuntime {
     pub route: Box<dyn RenderRoute>,
     /// Откуда сценарии берут состояние рендера.
     pub status: Arc<dyn RenderStatusSource>,
+    /// Куда сценарии шлют регулировки рендера (видоискатель, линия кадра).
+    pub control: Arc<dyn RenderControl>,
 }
 
 impl RenderRuntime {
@@ -34,8 +37,10 @@ impl RenderRuntime {
     {
         let handle = RenderLoop::spawn(parts)?;
         let route = InboxRoute::new(handle.inbox());
+        let control = InboxRenderControl::new(handle.inbox());
         Ok(Self {
             route: Box::new(route),
+            control: Arc::new(control),
             status: Arc::new(LiveRenderStatus { handle, validation }),
         })
     }
@@ -46,7 +51,8 @@ impl RenderRuntime {
         tracing::error!(target: "fasticamera::render", reason = %reason, "рендер недоступен, surface подтверждается сразу");
         Self {
             route: Box::new(HoldAndConfirmRoute::new()),
-            status: Arc::new(UnavailableRender::new(reason)),
+            status: Arc::new(UnavailableRender::new(reason.clone())),
+            control: Arc::new(UnavailableRenderControl::new(reason)),
         }
     }
 }

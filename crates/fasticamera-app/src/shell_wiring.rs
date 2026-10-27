@@ -19,7 +19,7 @@
 use std::sync::{Arc, OnceLock};
 use std::thread;
 
-use android_shell::android::{AndroidShellServices, ShellInstallError, ThermalListenerState};
+use android_shell::android::{AndroidPerformanceHints, AndroidShellServices, ShellInstallError, ThermalListenerState};
 use gpu_vulkan::validation::ValidationMode;
 use raw_frame_stream::RawFrameStream;
 use render_loop::config::RenderLoopConfig;
@@ -70,11 +70,12 @@ pub fn ensure_installed(config: &RuntimeConfig) -> Result<(), ShellWiringError> 
     // Поток кадров один на процесс: его концы получают и рендер (видоискатель), и камера (производитель).
     let raw_stream = create_raw_stream(&config.camera().raw_stream);
     let render = start_render(config.render(), validation.clone(), &services, &raw_stream.stream);
-    let gpu = GpuServices {
-        render: render.status,
-        diagnostics: Arc::new(VulkanGpuDiagnostics::new(validation)),
-        render_config: config.render().clone(),
-    };
+    let gpu = GpuServices::new(
+        render.status,
+        Arc::new(VulkanGpuDiagnostics::new(validation)),
+        config.render().clone(),
+        render.control,
+    );
     let camera = start_android_camera(config.camera(), &raw_stream);
     let (router, starter) = EventRouter::new(RouterParts {
         events: handles.events,
@@ -142,6 +143,9 @@ fn try_start_render(
         backend,
         clock: VsyncFrameClock::new(subscription),
         commands: services.clone(),
+        // ADPF: поток рендера сам создаст сессию на себя, если `render.adpf.mode = enabled`
+        // (по умолчанию выключено) или его включит команда сценария.
+        performance_hints: Arc::new(AndroidPerformanceHints::new()),
     };
     RenderRuntime::spawn(parts, ValidationState::of(&validation))
         .map_err(|error| format!("поток рендера не запущен: {error}"))
@@ -179,6 +183,7 @@ fn shell_services(services: &Arc<AndroidShellServices>) -> ShellServices {
         diagnostics: services.clone(),
         vsync: services.clone(),
         facts: Arc::new(AndroidFacts(Arc::clone(services))),
+        power: services.clone(),
     }
 }
 

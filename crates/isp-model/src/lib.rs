@@ -13,6 +13,9 @@
 //!   ──gamut: мягко в охват экрана──▶ SceneInGamutImage ──tone (S-кривая, сохранение оттенка)──▶ DisplayLinearImage
 //!   ──transfer (sRGB OETF)──▶ DisplayEncodedImage
 //! ```
+//! Сбоку от цепочки: [`statistics`] — суммы каналов по плиткам из `CameraMosaic` для нашего
+//! AWB (08), целочисленный контракт для точной сверки с GPU-видоискателем.
+//!
 //! Типы стадий не дают подать изображение не в ту функцию — это проверяется компилятором:
 //!
 //! ```compile_fail
@@ -71,6 +74,7 @@ pub mod metrics;
 pub mod params;
 pub mod pipeline;
 pub mod sensor;
+pub mod statistics;
 pub mod test_patterns;
 #[cfg(test)]
 mod test_support;

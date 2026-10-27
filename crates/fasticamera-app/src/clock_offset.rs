@@ -70,19 +70,80 @@ fn read_clock_nanos(clock_id: libc::clockid_t, clock: &'static str) -> Result<i6
         .saturating_add(i64::from(reading.tv_nsec)))
 }
 
-impl ClockOffsetSource for SystemClocks {
-    /// Читает `MONOTONIC`, `BOOTTIME`, снова `MONOTONIC` и берёт середину первого и последнего:
-    /// так ошибка от времени между чтениями делится пополам (единицы микросекунд).
-    fn sample_offset(&self) -> Result<ClockOffset, ClockReadError> {
-        let monotonic_before = read_clock_nanos(libc::CLOCK_MONOTONIC, "CLOCK_MONOTONIC")?;
-        let boottime = read_clock_nanos(libc::CLOCK_BOOTTIME, "CLOCK_BOOTTIME")?;
-        let monotonic_after = read_clock_nanos(libc::CLOCK_MONOTONIC, "CLOCK_MONOTONIC")?;
-        let monotonic_middle = monotonic_before + (monotonic_after - monotonic_before) / 2;
-        Ok(ClockOffset::between(
-            BoottimeNanos::from_nanos(boottime),
-            MonotonicNanos::from_nanos(monotonic_middle),
-        ))
+/// Сколько «вилок» `MONOTONIC → BOOTTIME → MONOTONIC` снимать за одно смещение.
+///
+/// Ошибка смещения — половина зазора между двумя чтениями `MONOTONIC`. Обычно это единицы
+/// микросекунд, но если поток вытеснили посреди вилки (нагруженный ПК, фоновые потоки телефона),
+/// зазор вырастает до миллисекунд — и смещение, а с ним и замер задержки «сенсор → экран», уплывает
+/// (найдено в 07: тест смещения изредка падал под параллельными GPU-тестами). Из нескольких вилок
+/// берём самую тесную: вероятность вытеснения во всех пяти подряд пренебрежимо мала, а цена —
+/// 15 вызовов `clock_gettime` (vDSO, доли микросекунды каждый).
+const CLOCK_BRACKET_ATTEMPTS: usize = 5;
+
+/// Одна вилка чтений: `MONOTONIC` до, `BOOTTIME`, `MONOTONIC` после (нс).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ClockBracket {
+    monotonic_before: i64,
+    boottime: i64,
+    monotonic_after: i64,
+}
+
+impl ClockBracket {
+    /// Зазор между чтениями `MONOTONIC`: удвоенная граница ошибки смещения.
+    fn gap_nanos(self) -> i64 {
+        self.monotonic_after.saturating_sub(self.monotonic_before)
     }
+
+    /// Смещение по середине вилки: ошибка от времени между чтениями делится пополам.
+    fn offset(self) -> ClockOffset {
+        let monotonic_middle = self.monotonic_before + self.gap_nanos() / 2;
+        ClockOffset::between(
+            BoottimeNanos::from_nanos(self.boottime),
+            MonotonicNanos::from_nanos(monotonic_middle),
+        )
+    }
+}
+
+/// Снимает `attempts` вилок через `read_bracket` и возвращает смещение самой тесной.
+/// Ошибка чтения любой вилки — ошибка всего замера (молча не пропускаем).
+fn tightest_bracket_offset(
+    attempts: usize,
+    mut read_bracket: impl FnMut() -> Result<ClockBracket, ClockReadError>,
+) -> Result<ClockOffset, ClockReadError> {
+    let mut tightest = read_bracket()?;
+    for _ in 1..attempts {
+        let candidate = read_bracket()?;
+        if candidate.gap_nanos() < tightest.gap_nanos() {
+            tightest = candidate;
+        }
+    }
+    Ok(tightest.offset())
+}
+
+/// Одна вилка системных часов.
+fn read_system_bracket() -> Result<ClockBracket, ClockReadError> {
+    let monotonic_before = read_clock_nanos(libc::CLOCK_MONOTONIC, "CLOCK_MONOTONIC")?;
+    let boottime = read_clock_nanos(libc::CLOCK_BOOTTIME, "CLOCK_BOOTTIME")?;
+    let monotonic_after = read_clock_nanos(libc::CLOCK_MONOTONIC, "CLOCK_MONOTONIC")?;
+    Ok(ClockBracket {
+        monotonic_before,
+        boottime,
+        monotonic_after,
+    })
+}
+
+impl ClockOffsetSource for SystemClocks {
+    /// Самая тесная из [`CLOCK_BRACKET_ATTEMPTS`] вилок `MONOTONIC → BOOTTIME → MONOTONIC`,
+    /// смещение — по её середине.
+    fn sample_offset(&self) -> Result<ClockOffset, ClockReadError> {
+        tightest_bracket_offset(CLOCK_BRACKET_ATTEMPTS, read_system_bracket)
+    }
+}
+
+/// Текущий момент `CLOCK_MONOTONIC` — шкала показаний батареи (`BatterySample::at`) и вход
+/// `on_tick` замеров тока (`power_measurement`).
+pub fn monotonic_now() -> Result<MonotonicNanos, ClockReadError> {
+    read_clock_nanos(libc::CLOCK_MONOTONIC, "CLOCK_MONOTONIC").map(MonotonicNanos::from_nanos)
 }
 
 #[cfg(test)]

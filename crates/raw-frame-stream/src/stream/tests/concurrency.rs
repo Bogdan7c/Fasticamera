@@ -7,8 +7,7 @@ use std::time::{Duration, Instant};
 
 use shell_contract::sync_fence::GpuReleaseFence;
 
-use super::support::{ReturnLog, frame_for, result_for};
-use crate::config::RawFrameStreamConfig;
+use super::support::{ReturnLog, frame_for, latest_wins_config, result_for};
 use crate::stream::{RawFrameStream, ViewfinderPoll};
 
 const FRAMES: i64 = 2_000;
@@ -34,7 +33,7 @@ fn shuffled_camera_events() -> Vec<(bool, i64)> {
 
 #[test]
 fn camera_and_renderer_threads_return_every_buffer_exactly_once() {
-    let stream = RawFrameStream::new(RawFrameStreamConfig::default());
+    let stream = RawFrameStream::new(latest_wins_config());
     let producer = stream.producer();
     let viewfinder = stream.viewfinder();
     let log = Arc::new(ReturnLog::default());
@@ -50,7 +49,7 @@ fn camera_and_renderer_threads_return_every_buffer_exactly_once() {
             let (mut received, mut wrong_metadata, mut turn) = (0_u32, 0_u32, 0_u32);
             loop {
                 let finished = camera_done.load(Ordering::Acquire);
-                match viewfinder.poll_latest(Instant::now()) {
+                match viewfinder.poll_for_vsync(Instant::now()) {
                     ViewfinderPoll::NewFrame(lease) => {
                         received += 1;
                         let passport = lease.passport();

@@ -96,6 +96,9 @@ fn start_with_backend(
         backend: wrap(FakeBackend::new(Arc::clone(&probe))),
         clock,
         commands: Arc::new(FakeCommands::default()),
+        performance_hints: std::sync::Arc::new(shell_contract::performance_hint::NoPerformanceHints::new(
+            "тест без ADPF",
+        )),
     })
     .expect("поток запускается");
     Rig { handle, probe, journal }

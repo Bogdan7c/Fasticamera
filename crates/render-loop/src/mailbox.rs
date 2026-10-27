@@ -18,6 +18,9 @@ use std::time::{Duration, Instant};
 
 use shell_contract::surface::{NativeSurface, SurfaceGeneration, SurfaceReleaseRequest, SurfaceSize};
 
+use crate::thread::{AdpfCommand, PresentTargetCommand};
+use crate::viewfinder::ViewfinderCommand;
+
 /// Событие жизненного цикла для потока рендера.
 #[derive(Debug)]
 pub enum InboxEvent {
@@ -34,6 +37,15 @@ pub enum InboxEvent {
     Paused,
     /// Показ возобновлён.
     Resumed,
+    /// Команда видоискателю (сессия 07): применяется между кадрами, итог — в статусе потока.
+    /// Не схлопывается: каждая команда получает свой итог.
+    Viewfinder(ViewfinderCommand),
+    /// Команда выбору линии кадра и позднему захвату (сессия 07, A/B задержки): применяется между
+    /// кадрами, итог — в `RenderStatus::present_target_commands`. Не схлопывается.
+    PresentTarget(PresentTargetCommand),
+    /// Команда подсказкам производительности (ADPF, P13 сессии 07): включить/выключить. Итог — в
+    /// `RenderStatus::adpf_commands`. Не схлопывается.
+    Adpf(AdpfCommand),
 }
 
 /// Событие с моментом постановки в ящик: по нему считается задержка освобождения surface,
@@ -132,6 +144,21 @@ impl RenderInbox {
     /// Возобновляет показ.
     pub fn resumed(&self) -> InboxDelivery {
         self.push(InboxEvent::Resumed)
+    }
+
+    /// Передаёт команду видоискателю. Итог появится в `RenderStatus::viewfinder_commands`.
+    pub fn viewfinder_command(&self, command: ViewfinderCommand) -> InboxDelivery {
+        self.push(InboxEvent::Viewfinder(command))
+    }
+
+    /// Передаёт команду выбору линии кадра. Итог появится в `RenderStatus::present_target_commands`.
+    pub fn present_target_command(&self, command: PresentTargetCommand) -> InboxDelivery {
+        self.push(InboxEvent::PresentTarget(command))
+    }
+
+    /// Передаёт команду ADPF. Итог появится в `RenderStatus::adpf_commands`.
+    pub fn adpf_command(&self, command: AdpfCommand) -> InboxDelivery {
+        self.push(InboxEvent::Adpf(command))
     }
 
     /// Просит поток завершиться (после обработки уже лежащих событий).
@@ -314,6 +341,9 @@ mod tests {
                 InboxEvent::SurfaceDestroyed(_) => "destroyed",
                 InboxEvent::Paused => "paused",
                 InboxEvent::Resumed => "resumed",
+                InboxEvent::Viewfinder(_) => "viewfinder",
+                InboxEvent::PresentTarget(_) => "present_target",
+                InboxEvent::Adpf(_) => "adpf",
             })
             .collect();
         assert_eq!(kinds, ["created", "changed", "destroyed"]);
@@ -464,5 +494,65 @@ mod tests {
         let batch = receiver.take_pending();
         assert!(batch.stop_requested);
         assert_eq!(batch.events.len(), 1);
+    }
+
+    #[test]
+    fn viewfinder_commands_are_never_coalesced() {
+        use crate::viewfinder::ViewfinderPainter;
+
+        let (inbox, receiver) = render_mailbox();
+        let to_debug = ViewfinderCommand::SetPainter(ViewfinderPainter::DebugMosaic);
+        let to_isp = ViewfinderCommand::SetPainter(ViewfinderPainter::Isp);
+        for command in [to_debug, to_isp, to_isp] {
+            assert_eq!(inbox.viewfinder_command(command), InboxDelivery::Delivered);
+        }
+        let commands: Vec<ViewfinderCommand> = receiver
+            .take_pending()
+            .events
+            .into_iter()
+            .filter_map(|stamped| match stamped.event {
+                InboxEvent::Viewfinder(command) => Some(command),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            commands,
+            vec![to_debug, to_isp, to_isp],
+            "каждая команда дойдёт со своим итогом"
+        );
+    }
+
+    #[test]
+    fn present_target_commands_are_never_coalesced() {
+        use crate::config::{LateLatchMode, PresentTimelinePolicy};
+
+        let (inbox, receiver) = render_mailbox();
+        let nearest = PresentTargetCommand::Set {
+            policy: PresentTimelinePolicy::NearestFeasible { margin_us: 1_000 },
+            late_latch: LateLatchMode::BeforeCameraPoll,
+            depth_reduction: crate::config::DepthReductionMode::default(),
+        };
+        let preferred = PresentTargetCommand::Set {
+            policy: PresentTimelinePolicy::Preferred,
+            late_latch: LateLatchMode::Disabled,
+            depth_reduction: crate::config::DepthReductionMode::default(),
+        };
+        for command in [nearest, nearest, preferred] {
+            assert_eq!(inbox.present_target_command(command), InboxDelivery::Delivered);
+        }
+        let commands: Vec<PresentTargetCommand> = receiver
+            .take_pending()
+            .events
+            .into_iter()
+            .filter_map(|stamped| match stamped.event {
+                InboxEvent::PresentTarget(command) => Some(command),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            commands,
+            vec![nearest, nearest, preferred],
+            "каждая команда получит свой итог"
+        );
     }
 }

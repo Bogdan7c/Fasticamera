@@ -1,5 +1,6 @@
-//! Синтетические RAW-источники на обычной памяти Vulkan — для ПК-тестов предпросмотра и стенда
-//! render-loop (там, где нет `AHardwareBuffer`). Доступны под `cfg(test)` и feature `test-support`.
+//! Синтетические RAW-источники на обычной памяти Vulkan — для ПК-тестов предпросмотра, compute-потребителей
+//! (ISP, сессия 07: `MosaicSource::compute_binding` + `record_acquire_for(.., ConsumerStage::Compute)`) и
+//! стенда render-loop (там, где нет `AHardwareBuffer`). Доступны под `cfg(test)` и feature `test-support`.
 //!
 //! Эти ресурсы НЕ из камеры: владение всегда у нашей очереди (`KeepOwned`), раскладка картинки —
 //! `SHADER_READ_ONLY_OPTIMAL`. Тем не менее шейдер, дескрипторы и барьеры предпросмотра те же,
@@ -113,7 +114,8 @@ impl SyntheticRaw16 {
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 vk::PipelineStageFlags2::COPY,
                 vk::AccessFlags2::TRANSFER_WRITE,
-                vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                // Читать кадр может и мозаика (фрагмент), и compute-потребитель (ISP, сессия 07).
+                vk::PipelineStageFlags2::FRAGMENT_SHADER | vk::PipelineStageFlags2::COMPUTE_SHADER,
                 vk::AccessFlags2::SHADER_SAMPLED_READ,
             )];
             let region = vk::BufferImageCopy::default()

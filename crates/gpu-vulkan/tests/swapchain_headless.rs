@@ -377,7 +377,15 @@ fn chosen_format_always_builds_a_test_pattern_and_depth_preference_is_honoured()
 
     let mut preferred = attach(&context, config_with_size(START_SIZE));
     let preferred_info = preferred.info().unwrap();
-    eprintln!("headless-формат по умолчанию: {:?}", preferred_info.format);
+    eprintln!(
+        "headless-формат по умолчанию: {:?} / {:?}",
+        preferred_info.format, preferred_info.color_space
+    );
+    // Нейтральное цветовое пространство согласовано с выбранным пространством Vulkan.
+    assert_eq!(
+        Some(preferred_info.display_color_space),
+        gpu_vulkan::swapchain::DisplayColorSpace::from_vk(preferred_info.color_space)
+    );
     let ten_bit = matches!(
         preferred_info.format,
         vk::Format::A2B10G10R10_UNORM_PACK32 | vk::Format::A2R10G10B10_UNORM_PACK32

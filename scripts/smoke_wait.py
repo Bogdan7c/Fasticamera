@@ -30,6 +30,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import smoke_checks
+import smoke_checks_viewfinder
+import smoke_neutral_card
 import smoke_screen
 from smoke_driver import STAGE_MARKER, AdbDeviceActions, DriverError, StageDriver
 from smoke_dumpsys import CheckOutcome, PostCheck, dumpsys_post_check
@@ -183,6 +185,11 @@ CHECKS: dict[str, ScenarioCheck] = {
     "raw-stream": ignoring_observations(smoke_checks.check_raw_stream),
     "raw-stream-endurance": ignoring_observations(smoke_checks.check_raw_stream),
     "raw-stream-cpu-probe": ignoring_observations(smoke_checks.check_raw_stream_cpu_probe),
+    "viewfinder": ignoring_observations(smoke_checks_viewfinder.check_viewfinder),
+    "viewfinder-latency": ignoring_observations(smoke_checks_viewfinder.check_viewfinder_latency),
+    "viewfinder-stage-budget": ignoring_observations(smoke_checks_viewfinder.check_viewfinder_stage_budget),
+    "viewfinder-endurance": ignoring_observations(smoke_checks_viewfinder.check_viewfinder_endurance),
+    "video-headroom-bench": ignoring_observations(smoke_checks_viewfinder.check_video_headroom_bench),
 }
 
 StageHandler = Callable[[dict], None]
@@ -390,12 +397,17 @@ def parse_arguments(argv: list[str]) -> argparse.Namespace:
         "--artifacts-dir",
         type=Path,
         default=None,
-        help="каталог для скриншотов (вне репозитория); нужен сценариям raw-stream*",
+        help="каталог для скриншотов (вне репозитория); нужен сценариям raw-stream* и viewfinder",
+    )
+    parser.add_argument(
+        "--neutral-card",
+        action="store_true",
+        help="viewfinder: проверить по скриншотам, что серая карта в центре кадра вышла серой",
     )
     return parser.parse_args(argv)
 
 
-SCREENSHOT_SCENARIOS = frozenset({"raw-stream", "raw-stream-endurance"})
+SCREENSHOT_SCENARIOS = frozenset({"raw-stream", "raw-stream-endurance", "viewfinder"})
 """Сценарии, на стадии ``viewfinder_live`` которых драйвер делает скриншоты и после результата их анализирует."""
 
 
@@ -409,9 +421,20 @@ def screen_post_check(artifacts_dir: Path) -> PostCheck:
     return check
 
 
+def with_neutral_card(post_check: PostCheck | None, artifacts_dir: Path) -> PostCheck:
+    """Добавляет к пост-проверке ``viewfinder`` «серая карта в центре вышла серой» (флаг ``--neutral-card``)."""
+
+    def check(result: dict) -> CheckOutcome:
+        base = post_check(result) if post_check is not None else CheckOutcome([])
+        card = smoke_neutral_card.neutral_card_post_check(artifacts_dir)
+        return CheckOutcome([*base.problems, *card.problems], [*base.notes, *card.notes])
+
+    return check
+
+
 def post_check_for(scenario: str, serial: str, artifacts_dir: Path | None = None) -> PostCheck | None:
     """Проверка после результата, если сценарию она нужна: ``camera-catalog`` сверяется с dumpsys,
-    ``raw-stream*`` — со скриншотами в каталоге артефактов."""
+    ``raw-stream*`` и ``viewfinder`` — со скриншотами в каталоге артефактов."""
     if scenario == "camera-catalog":
         return dumpsys_post_check(serial)
     if scenario in SCREENSHOT_SCENARIOS:
@@ -427,12 +450,15 @@ def main(argv: list[str]) -> int:
         arguments.scenario,
         AdbDeviceActions(arguments.serial, arguments.package, artifacts_dir=arguments.artifacts_dir),
     )
+    post_check = post_check_for(arguments.scenario, arguments.serial, arguments.artifacts_dir)
+    if arguments.neutral_card and arguments.scenario == "viewfinder" and arguments.artifacts_dir is not None:
+        post_check = with_neutral_card(post_check, arguments.artifacts_dir)
     verdict = evaluate_stream(
         read_logcat_lines(arguments.serial, arguments.since_epoch, arguments.timeout),
         arguments.scenario,
         driver.handle_stage,
         arguments.package,
-        post_check_for(arguments.scenario, arguments.serial, arguments.artifacts_dir),
+        post_check,
     )
     if verdict.exit_code == EXIT_NO_RESULT:
         verdict = SmokeVerdict(verdict.exit_code, f"{verdict.message} за {arguments.timeout:g} с")

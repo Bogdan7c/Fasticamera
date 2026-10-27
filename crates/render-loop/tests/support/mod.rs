@@ -23,6 +23,7 @@ use render_loop::thread::{FrameClock, FrameTick, FrameWait};
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::commands::{CommandOutcome, FrameRate, FrameRateOutcome, ScreenWake, ShellCommands};
 use shell_contract::surface::{NativeSurface, PlatformWindow, SurfaceGeneration, SurfaceSize};
+use shell_contract::vsync::{FrameTimelines, VsyncTimeline};
 
 pub const SIZE: SurfaceSize = SurfaceSize {
     width_px: 1440,
@@ -216,6 +217,7 @@ impl DisplayBackend for FakeBackend {
             display: None,
             known_deviations: self.probe.known_deviations.lock().expect("отходы").clone(),
             camera: None,
+            viewfinder: None,
         }
     }
 
@@ -296,6 +298,15 @@ impl FrameClock for FakeClock {
                 i64::try_from(self.sequence).expect("номер тика") * PERIOD_NANOS - PERIOD_NANOS / 2,
             ),
             skipped_ticks: 0,
+            timelines: FrameTimelines::only(VsyncTimeline {
+                vsync_id: i64::try_from(self.sequence).expect("номер тика"),
+                expected_present: MonotonicNanos::from_nanos(
+                    i64::try_from(self.sequence).expect("номер тика") * PERIOD_NANOS,
+                ),
+                deadline: MonotonicNanos::from_nanos(
+                    i64::try_from(self.sequence).expect("номер тика") * PERIOD_NANOS - PERIOD_NANOS / 2,
+                ),
+            }),
         })
     }
 }

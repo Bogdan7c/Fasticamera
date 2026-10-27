@@ -10,21 +10,39 @@
 //! * `jni`/`ndk-sys` не используются; нужные функции NDK для AHardwareBuffer объявлены в одном
 //!   safety-модуле `android::hardware_buffer_ffi` (решение 32);
 //! * `unsafe` — только в safety-модулях с `// SAFETY:`.
+//!
+//! Публичный compute-набор (сессия 07, решение владельца): [`compute`], [`storage_image`],
+//! [`host_buffer`], [`device_buffer`], [`gpu_timing`], [`compositor`], [`backdrop`], [`frame_sink`] —
+//! чтобы `isp-vulkan` строил GPU-ISP на безопасных RAII-обёртках, не получая сырой `ash::Device`.
 
+pub mod backdrop;
+pub mod compositor;
+pub mod compute;
 pub mod context;
 pub mod device;
+pub mod device_buffer;
 pub mod error;
 pub mod frame_ring;
+pub mod frame_sink;
+pub mod gpu_timing;
 pub mod hardware_buffer_cache;
+pub mod host_buffer;
 pub mod instance;
+mod linear_sampler;
 pub mod live_objects;
 pub mod offscreen;
 pub mod raw_mosaic_preview;
 pub mod shaders;
+pub mod storage_image;
 pub mod swapchain;
 pub mod sync;
 pub mod test_pattern;
 pub mod validation;
+
+/// Блокирующие помощники для тестов других crate (сессия 07): разовая отправка, чтение storage-картинки
+/// и host-буфера. Только `cfg(test)` и фича `test-support`.
+#[cfg(any(test, feature = "test-support"))]
+pub mod kit_test_support;
 
 /// Только Android: импорт AHardwareBuffer и функции NDK для него (решение 32).
 #[cfg(target_os = "android")]

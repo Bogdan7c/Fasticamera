@@ -2,8 +2,8 @@
 //!
 //! Обычный показ ждёт только «картинка swapchain получена» и сигналит «рендер готов» + fence слота.
 //! Кадр камеры добавляет две вещи (сессия 05, решения 31 и 40):
-//! * **ждать acquire-fence камеры** перед чтением её буфера во фрагментном шейдере
-//!   ([`PresentSync::wait_for_camera_acquire`]);
+//! * **ждать acquire-fence камеры** перед первым использованием её буфера
+//!   ([`PresentSync::wait_for_camera_acquire`]); ожидание всегда на стадии `ALL_COMMANDS` — см. ниже;
 //! * **сигналить экспортируемый семафор** ([`PresentSync::export_release_after_submit`]): его fence
 //!   вызывающий забирает после сабмита и отдаёт камере как release-fence.
 //!
@@ -14,6 +14,18 @@
 //! окончания ВСЕХ сабмитов до k на этой очереди. Поэтому кадр камеры, который читал сабмит j < k,
 //! можно безопасно вернуть камере с fence сабмита k — именно так render-loop освобождает ПРЕДЫДУЩИЙ
 //! кадр fence-ом сабмита, который уже показывает следующий.
+//!
+//! # Почему ожидание fence камеры — на `ALL_COMMANDS`, а не на стадии шейдера-читателя
+//! В том же сабмите, что ждёт fence, записан «забор» буфера у `QUEUE_FAMILY_FOREIGN` (acquire-барьер,
+//! для RAW16 — ещё и переход раскладки `UNDEFINED → SHADER_READ_ONLY`). Спецификация
+//! (synchronization.adoc, примечание к queue family ownership transfer): «Prior to the introduction of
+//! VK_DEPENDENCY_QUEUE_FAMILY_OWNERSHIP_TRANSFER_USE_ALL_STAGES_BIT_KHR, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT
+//! is the only valid stage to wait on or wait for these operations, as the acquire and release
+//! operations do not occur in a defined stage». Ожидание на стадии фрагмента/compute не упорядочивает
+//! сам acquire (и переход раскладки) после записи камерой — он мог бы обогнать камеру. maintenance8 на
+//! Adreno 740 (Vulkan 1.3.128) нет, поэтому — `ALL_COMMANDS`. Цена мала: fence камеры почти всегда
+//! приходит уже сигнальным (факт 00/05), и тогда ожидания нет вовсе (`WaitSemaphore::NoWait`).
+//! Дефект найден ревью сессии 07 (до этого с 05 ожидание стояло на `FRAGMENT_SHADER`).
 
 use crate::swapchain::SwapchainError;
 use crate::swapchain::frame::PresentOutcome;
@@ -33,7 +45,9 @@ impl<'resources> PresentSync<'resources> {
         Self::default()
     }
 
-    /// Сабмит дождётся импортированного acquire-fence камеры на стадии фрагментного шейдера.
+    /// Сабмит дождётся импортированного acquire-fence камеры на стадии `ALL_COMMANDS` (почему —
+    /// в доке модуля: забор буфера у внешней очереди не имеет своей стадии). Это верно для любого
+    /// читателя — фрагментного шейдера (отладочная мозаика) или compute-прохода ISP.
     /// `WaitSemaphore::NoWait` (fence уже сигнален) ничего не добавляет.
     #[must_use]
     pub fn wait_for_camera_acquire(mut self, wait: &'resources WaitSemaphore) -> Self {
@@ -51,6 +65,11 @@ impl<'resources> PresentSync<'resources> {
 
     pub(crate) fn camera_acquire_semaphore(&self) -> Option<ash::vk::Semaphore> {
         self.camera_acquire.and_then(WaitSemaphore::semaphore)
+    }
+
+    /// Стадия ожидания acquire-fence камеры в сабмите: всегда `ALL_COMMANDS` (см. доку модуля).
+    pub(crate) fn camera_acquire_wait_stage(&self) -> ash::vk::PipelineStageFlags2 {
+        ash::vk::PipelineStageFlags2::ALL_COMMANDS
     }
 
     pub(crate) fn release_export(&self) -> Option<&'resources ExportableSemaphore> {
@@ -89,5 +108,27 @@ impl SyncedPresent<'_> {
             release_signal: None,
             outcome: Err(error.into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ash::vk;
+
+    use super::*;
+
+    #[test]
+    fn camera_acquire_wait_covers_all_commands_because_foreign_acquire_has_no_stage() {
+        let no_wait = WaitSemaphore::NoWait;
+        // Ожидание обязано покрывать acquire-барьер внешней очереди: по спецификации это возможно
+        // только на ALL_COMMANDS (до maintenance8). Стадия шейдера-читателя (фрагмент в 05) — дефект.
+        let waiting = PresentSync::none().wait_for_camera_acquire(&no_wait);
+        assert_eq!(
+            waiting.camera_acquire_wait_stage(),
+            vk::PipelineStageFlags2::ALL_COMMANDS
+        );
+        // `NoWait` не добавляет семафор; экспорт не затронут.
+        assert_eq!(waiting.camera_acquire_semaphore(), None);
+        assert!(waiting.release_export().is_none());
     }
 }

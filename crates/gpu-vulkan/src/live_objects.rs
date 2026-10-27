@@ -49,11 +49,13 @@ pub enum LiveObjectKind {
     Swapchain,
     /// `VkSurfaceKHR` (оболочка для пакета swapchain).
     Surface,
+    /// `VkQueryPool` (метки времени GPU, сессия 07).
+    QueryPool,
 }
 
 impl LiveObjectKind {
     /// Все виды в фиксированном порядке (порядок задаёт индекс в счётчиках).
-    pub const ALL: [LiveObjectKind; 15] = [
+    pub const ALL: [LiveObjectKind; 16] = [
         LiveObjectKind::Image,
         LiveObjectKind::ImageView,
         LiveObjectKind::Buffer,
@@ -69,6 +71,7 @@ impl LiveObjectKind {
         LiveObjectKind::Sampler,
         LiveObjectKind::Swapchain,
         LiveObjectKind::Surface,
+        LiveObjectKind::QueryPool,
     ];
 
     /// Индекс вида в массиве счётчиков.
@@ -268,6 +271,10 @@ owned_device_object!(
 owned_device_object!(
     /// Владеемый `VkSampler`.
     OwnedSampler, vk::Sampler, Sampler, destroy_sampler
+);
+owned_device_object!(
+    /// Владеемый `VkQueryPool` (метки времени GPU).
+    OwnedQueryPool, vk::QueryPool, QueryPool, destroy_query_pool
 );
 
 /// Владеемый `VkSwapchainKHR`. Уничтожается загрузчиком `VK_KHR_swapchain`.

@@ -8,7 +8,15 @@
 //! подтверждает её сразу после `detach` (не позже следующей проверки ящика), а при
 //! неисправности или остановке подтверждение/уничтожение запроса гарантировано.
 
+mod adpf;
 mod frame_clock;
+mod latch_sleep;
+mod monotonic_clock;
+mod present_depth;
+mod present_target;
+mod present_target_control;
+mod present_target_stats;
+mod rolling_durations;
 mod status;
 mod vsync_clock;
 mod worker;
@@ -18,8 +26,20 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 
 use shell_contract::commands::ShellCommands;
+use shell_contract::performance_hint::PerformanceHintService;
 
+pub use adpf::{AdpfCommand, AdpfCommandLog, AdpfCommandOutcome, AdpfDiagnostics, AdpfSessionState};
 pub use frame_clock::{FrameClock, FrameTick, FrameWait};
+pub use latch_sleep::{SleepUntil, SleepUntilOutcome, sleep_until};
+pub use monotonic_clock::{ClockReadError, MonotonicTimer, SystemMonotonicTimer};
+pub use present_target::{FrameCostEstimate, GpuCostSource};
+pub use present_target_control::{
+    PresentTargetCommand, PresentTargetCommandLog, PresentTargetCommandOutcome, PresentTargetCommandRecord,
+    PresentTargetSelection,
+};
+pub use present_target_stats::{PresentTargetDiagnostics, VSYNC_SHIFT_BUCKETS, VsyncShiftHistogram};
+pub use rolling_durations::DurationSummary;
+pub(crate) use rolling_durations::RollingDurations;
 pub use status::{BackendHealth, FaultInfo, FaultKind, RenderState, RenderStatus, ScreenWakeStatus};
 pub use vsync_clock::VsyncFrameClock;
 
@@ -40,6 +60,9 @@ pub struct RenderLoopParts<B: DisplayBackend, C: FrameClock> {
     pub clock: C,
     /// Команды оболочки (поток просит частоту кадров).
     pub commands: Arc<dyn ShellCommands>,
+    /// Служба подсказок производительности (ADPF): поток сам создаёт на ней сессию для себя, если
+    /// ADPF включён. Нет платформы — `NoPerformanceHints` (честное «не поддерживается»).
+    pub performance_hints: Arc<dyn PerformanceHintService>,
 }
 
 /// Почему поток не запустился.
@@ -72,6 +95,7 @@ impl RenderLoop {
             parts.clock,
             receiver,
             Arc::clone(&shared_status),
+            parts.performance_hints,
         );
         let commands = parts.commands;
         let join = thread::Builder::new()

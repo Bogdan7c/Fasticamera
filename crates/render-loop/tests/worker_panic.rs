@@ -30,6 +30,9 @@ fn clock_panic_faults_the_thread_promptly_releases_the_screen_and_keeps_confirmi
         backend: FakeBackend::new(Arc::clone(&probe)),
         clock: PanickingClock::new(5),
         commands: commands.clone(),
+        performance_hints: std::sync::Arc::new(shell_contract::performance_hint::NoPerformanceHints::new(
+            "тест без ADPF",
+        )),
     })
     .expect("поток запускается");
 

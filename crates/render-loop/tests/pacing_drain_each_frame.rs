@@ -153,6 +153,9 @@ fn run_scenario(serve_every_nth_drain: u64, ids_lost_on_resize: u32, recreate_on
         },
         clock,
         commands: Arc::new(FakeCommands::default()),
+        performance_hints: std::sync::Arc::new(shell_contract::performance_hint::NoPerformanceHints::new(
+            "тест без ADPF",
+        )),
     })
     .expect("поток запускается");
     let inbox = handle.inbox();
@@ -253,6 +256,9 @@ fn refresh_period_change_at_runtime_switches_pacing_and_restarts_window() {
         },
         clock,
         commands: Arc::new(FakeCommands::default()),
+        performance_hints: std::sync::Arc::new(shell_contract::performance_hint::NoPerformanceHints::new(
+            "тест без ADPF",
+        )),
     })
     .expect("поток запускается");
     let inbox = handle.inbox();

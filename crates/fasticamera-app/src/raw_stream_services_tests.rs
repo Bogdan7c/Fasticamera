@@ -67,9 +67,11 @@ fn pool_plan_upper_bound_follows_the_stream_config() {
         config.clone(),
     );
     let plan = services.pool_plan_upper_bound();
-    assert_eq!(plan.viewfinder, 3, "ячейка + два кадра у рендера");
+    // Верхняя оценка обеих политик: max(1, max_queued = 2) + два кадра у рендера.
+    assert_eq!(plan.viewfinder, config.viewfinder_pool_cells());
+    assert_eq!(plan.viewfinder, 4, "очередь джиттер-буфера (2) + два кадра у рендера");
     assert_eq!(plan.snapshot_ring, 0, "нулевой бюджет — кольца нет");
-    assert_eq!(plan.reader_max_images(), 3 + 3 + 1);
+    assert_eq!(plan.reader_max_images(), 4 + 3 + 1);
 
     let with_ring = RawStreamServices::new(
         Arc::new(NoStreamCounters),

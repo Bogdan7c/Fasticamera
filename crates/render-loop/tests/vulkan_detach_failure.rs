@@ -16,18 +16,19 @@ use std::sync::Arc;
 
 use gpu_vulkan::live_objects::LiveObjectKind;
 use gpu_vulkan::swapchain::InjectedFault;
-use render_loop::backend::{DisplayBackend, FrameTiming, PresentOutcome};
+use render_loop::backend::{DisplayBackend, FrameTiming, PresentOutcome, PresentTarget};
 use render_loop::config::RenderLoopConfig;
 use shell_contract::clock::MonotonicNanos;
 use support::{Journal, fake_surface};
 use vulkan_support::{START_SIZE, headless_backend_or_skip};
 
 fn timing(frame_index: u64) -> FrameTiming {
+    let expected_present = MonotonicNanos::from_nanos(1_000_000 * i64::try_from(frame_index).expect("кадр"));
     FrameTiming {
         frame_index,
         vsync_sequence: frame_index + 1,
-        expected_present: MonotonicNanos::from_nanos(1_000_000 * i64::try_from(frame_index).expect("кадр")),
         skipped_vsyncs: 0,
+        target: PresentTarget::latch_immediately(expected_present, expected_present),
     }
 }
 

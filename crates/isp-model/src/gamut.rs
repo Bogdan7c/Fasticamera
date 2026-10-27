@@ -61,6 +61,23 @@ pub enum InvalidGamutCompression {
     InvalidPower { power: f32 },
 }
 
+/// Разрешённые параметры сжатия в виде простых чисел — для загрузки в шейдер GPU (паритет 07).
+///
+/// Это снимок ровно тех f32, которые [`GamutCompression::compress_pixel`] подставляет в формулу
+/// модуля: шейдер получает те же входные числа бит в бит, а не пересчитывает `s` сам (пересчёт
+/// из настроек в f32 на GPU дал бы другое округление). Только чтение: собрать
+/// [`GamutCompression`] из этих чисел нельзя, поэтому несогласованное сжатие (порог без своего
+/// масштаба) не построить — единственный вход остаётся [`GamutCompression::resolve`].
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+pub struct GamutCompressionParameters {
+    /// Порог `threshold` по каналам R, G, B.
+    pub threshold: [f32; 3],
+    /// Масштаб `s` по каналам R, G, B (из `distance_limit`, см. `compression_scale`).
+    pub scale: [f32; 3],
+    /// Степень `p` колена.
+    pub power: f32,
+}
+
 /// Разрешённые параметры сжатия: пороги, степень и масштаб `s` по каналам.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GamutCompression {
@@ -91,6 +108,15 @@ impl GamutCompression {
             scale,
             power,
         })
+    }
+
+    /// Числа формулы для GPU (см. [`GamutCompressionParameters`]); поля остаются закрытыми.
+    pub fn parameters(&self) -> GamutCompressionParameters {
+        GamutCompressionParameters {
+            threshold: self.threshold,
+            scale: self.scale,
+            power: self.power,
+        }
     }
 
     /// Сжатое расстояние канала (формула модуля).

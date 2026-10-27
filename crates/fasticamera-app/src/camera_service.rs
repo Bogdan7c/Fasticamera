@@ -5,7 +5,10 @@
 //! (`camera-android`). Сервис даёт два узких входа.
 //! * Для **маршрутизатора** — события жизненного цикла приложения: [`CameraServices::app_resumed`],
 //!   [`CameraServices::app_paused`] (с учётом [`CameraLifecyclePolicy`]) и [`CameraServices::scenario_ended`]
-//!   (возврат политики по умолчанию и закрытие камеры, которую открывал сценарий).
+//!   (возврат политики по умолчанию и закрытие камеры, которую открывал сценарий; если включён
+//!   автозапуск видоискателя — возврат его желаемого состояния, см. `viewfinder_autostart`).
+//! * Для **composition root** — [`CameraServices::start_product_viewfinder`]: временная (до сессии 12)
+//!   политика «приложение стартует с живым видоискателем».
 //! * Для **сценариев** — доступ к ручке движка и снимку диагностики ([`CameraServices::running`]),
 //!   запрос удержания камеры в фоне.
 //!
@@ -20,11 +23,13 @@ use std::sync::{Arc, Mutex};
 
 use camera_android::{BackendDiagnostics, CpuProbeMode, DiagnosticsSnapshot};
 use camera_core::{CameraHandle, CameraRuntime, CommandId, CommandRejected};
+use raw_frame_stream::ViewfinderPacingSwitch;
 use serde::Serialize;
 
 use crate::camera_lifecycle::{CameraLifecyclePolicy, CameraLifecycleState, PolicyRestore};
 use crate::camera_scenario_config::CameraScenarioConfig;
 use crate::raw_stream_services::RawStreamServices;
+use crate::viewfinder_autostart::{ViewfinderAutostart, ViewfinderAutostartOutcome};
 
 const LOG_TARGET: &str = "fasticamera::camera::service";
 
@@ -161,6 +166,11 @@ pub struct ScenarioEndEffects {
     /// Отладочная проба CPU-доступа была взведена сценарием и сейчас выключена. Проба не должна
     /// пережить сценарий ни при каком его конце: иначе она копировала бы кадры в рабочем режиме.
     pub cpu_probe_disarmed: bool,
+    /// `Some` — камера сценария закрыта (`close` принят очередью): так кончился возврат
+    /// видоискателя продукта (`Disabled`, если автозапуск выключен — камера остаётся закрытой).
+    pub viewfinder_restored: Option<ViewfinderAutostartOutcome>,
+    /// `Some` — сценарий менял политику подачи кадров видоискателя, и она возвращена (итог переключения).
+    pub viewfinder_pacing_restored: Option<ViewfinderPacingSwitch>,
 }
 
 /// Всё о камере для маршрутизатора и сценариев. Дёшево клонируется.
@@ -171,6 +181,7 @@ pub struct CameraServices {
     counters: Arc<DispatchCounterCells>,
     scenarios: Arc<CameraScenarioConfig>,
     raw_stream: RawStreamServices,
+    viewfinder_autostart: Arc<ViewfinderAutostart>,
 }
 
 impl CameraServices {
@@ -182,7 +193,20 @@ impl CameraServices {
             counters: Arc::default(),
             scenarios: Arc::new(scenarios),
             raw_stream: RawStreamServices::detached(),
+            viewfinder_autostart: Arc::new(ViewfinderAutostart::disabled()),
         }
+    }
+
+    /// Подключает политику автозапуска видоискателя (по умолчанию выключена).
+    pub fn with_viewfinder_autostart(mut self, autostart: ViewfinderAutostart) -> Self {
+        self.viewfinder_autostart = Arc::new(autostart);
+        self
+    }
+
+    /// Временная политика до сессии 12: выставить движку желаемое состояние живого видоискателя.
+    /// Один раз за процесс (повтор — `AlreadyStarted`); фон и передний план дальше ведёт движок.
+    pub fn start_product_viewfinder(&self) -> ViewfinderAutostartOutcome {
+        self.viewfinder_autostart.start_once(self.engine_handle())
     }
 
     /// Подключает наблюдательные сервисы потока кадров (счётчики, проба CPU, часы).
@@ -258,10 +282,20 @@ impl CameraServices {
         let policy = self.lifecycle.restore_default();
         let cpu_probe_disarmed = self.raw_stream.cpu_probe_mode() != CpuProbeMode::Disarmed;
         self.raw_stream.disarm_cpu_probe();
+        let viewfinder_pacing_restored = self.raw_stream.restore_viewfinder_pacing_after_scenario();
         let close_claimed_camera = self
             .lifecycle
             .take_scenario_claim()
             .then(|| self.dispatch(CameraHandle::close));
+        // Камера сценария закрыта (желаемое забыто вместе с его ручными настройками) — вернуть
+        // желаемое состояние видоискателя продукта, если автозапуск включён. Если `close` не ушёл,
+        // открывать поверх желаемого сценария нельзя: в логе будет отказ `close`.
+        let viewfinder_restored = match close_claimed_camera {
+            Some(CameraDispatch::Sent(_)) => {
+                Some(self.viewfinder_autostart.restore_after_scenario(self.engine_handle()))
+            }
+            Some(_) | None => None,
+        };
         let release_after_hold = (policy == PolicyRestore::RestoredFromHold && visibility == AppVisibility::Background)
             .then(|| self.app_paused());
         ScenarioEndEffects {
@@ -269,7 +303,14 @@ impl CameraServices {
             close_claimed_camera,
             release_after_hold,
             cpu_probe_disarmed,
+            viewfinder_restored,
+            viewfinder_pacing_restored,
         }
+    }
+
+    /// Ручка движка или причина, по которой его нет.
+    fn engine_handle(&self) -> Result<&CameraHandle, CameraUnavailable> {
+        self.running().map(RunningCamera::handle)
     }
 
     fn dispatch(&self, send: impl FnOnce(&CameraHandle) -> Result<CommandId, CommandRejected>) -> CameraDispatch {

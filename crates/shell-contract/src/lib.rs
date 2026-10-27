@@ -18,7 +18,8 @@
 //! * [`vsync`] — тики vsync и линии кадра платформы (пейсинг рендера);
 //! * [`diagnostics`] — счётчики шва для smoke-проверок;
 //! * [`sync_fence`] — владение sync_fd: fence ожидания перед GPU и fence освобождения после GPU;
-//! * [`hardware_buffer`] — заимствованный `AHardwareBuffer` кадра камеры для импорта в GPU без копии.
+//! * [`hardware_buffer`] — заимствованный `AHardwareBuffer` кадра камеры для импорта в GPU без копии;
+//! * [`power`] — показания батареи (ток, заряд, температура) для замера цены стадий ISP.
 
 pub mod clock;
 pub mod commands;
@@ -29,7 +30,9 @@ pub mod haptics;
 pub mod hardware_buffer;
 pub mod motion;
 pub mod orientation;
+pub mod performance_hint;
 pub mod permission;
+pub mod power;
 pub mod surface;
 pub mod sync_fence;
 pub mod thermal;

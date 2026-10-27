@@ -38,13 +38,24 @@ impl DeviceProfile {
         match self {
             DeviceProfile::AndroidDisplay => ExtensionRequirements {
                 required: vec![khr::surface::NAME, khr::android_surface::NAME],
-                optional: vec![khr::get_surface_capabilities2::NAME, ext::surface_maintenance1::NAME],
+                // `swapchain_colorspace` — необязательно (сессия 07): без него доступен только sRGB,
+                // с ним swapchain может выбрать Display P3 (см. `swapchain::policy`).
+                optional: vec![
+                    khr::get_surface_capabilities2::NAME,
+                    ext::surface_maintenance1::NAME,
+                    ext::swapchain_colorspace::NAME,
+                ],
             },
             DeviceProfile::Headless => ExtensionRequirements::default(),
             DeviceProfile::HeadlessPresentation => ExtensionRequirements {
                 required: vec![khr::surface::NAME, ext::headless_surface::NAME],
-                // Как на Android: нужны, чтобы стенд проверял путь present-fence'ов (swapchain_maintenance1).
-                optional: vec![khr::get_surface_capabilities2::NAME, ext::surface_maintenance1::NAME],
+                // Как на Android: нужны, чтобы стенд проверял путь present-fence'ов (swapchain_maintenance1)
+                // и выбор цветового пространства (swapchain_colorspace).
+                optional: vec![
+                    khr::get_surface_capabilities2::NAME,
+                    ext::surface_maintenance1::NAME,
+                    ext::swapchain_colorspace::NAME,
+                ],
             },
         }
     }
@@ -93,6 +104,13 @@ pub struct FeatureSupport {
     pub storage_image_extended_formats: bool,
     /// `VK_EXT_swapchain_maintenance1::swapchainMaintenance1`.
     pub swapchain_maintenance1: bool,
+    /// Vulkan 1.2 `shaderFloat16` (необязательна, сессия 07): арифметика fp16 в шейдерах ISP.
+    pub shader_float16: bool,
+    /// Vulkan 1.1 `storageBuffer16BitAccess` (необязательна, сессия 07): 16-битные значения в storage-буферах.
+    pub storage_buffer_16bit_access: bool,
+    /// Vulkan 1.2 `hostQueryReset` (необязательна, сессия 07): сброс запросов меток времени с CPU
+    /// (`vkResetQueryPool`). Есть у RADV и Adreno 740; без неё метки сбрасываются командой в буфере.
+    pub host_query_reset: bool,
 }
 
 /// Семейство очередей физического устройства.

@@ -232,3 +232,24 @@ fn samples_over_the_limit_and_clock_failures_are_visible() {
     assert_eq!(report.clock_read_failures, 1);
     assert!(report.last_clock_error.unwrap_or_default().contains("CLOCK_BOOTTIME"));
 }
+
+#[test]
+fn frames_already_on_show_are_skipped_even_if_their_present_time_arrives_later() {
+    let mut sampler = LatencySampler::new(100, 2_000);
+    // Кадр 1 поставлен на показ до начала окна (время показа от драйвера ещё не пришло).
+    sampler.skip_already_presented(&[history(1, 11_000_000_000)]);
+    // Время показа кадра 1 пришло, и показан новый кадр 2 — в окно попадает только кадр 2.
+    sampler.collect(
+        &[history(1, 11_000_000_000), history(2, 11_016_000_000)],
+        &[shown(1, 10_040_000_000), shown(2, 10_046_000_000)],
+        offset(),
+    );
+    let report = sampler.report();
+    assert_eq!(report.samples, 1);
+    assert_eq!(report.p50_ms, Some(30.0));
+    // Пустая история ничего не меняет.
+    let mut fresh = LatencySampler::new(100, 2_000);
+    fresh.skip_already_presented(&[]);
+    fresh.collect(&[history(1, 11_000_000_000)], &[shown(1, 10_040_000_000)], offset());
+    assert_eq!(fresh.report().samples, 1);
+}

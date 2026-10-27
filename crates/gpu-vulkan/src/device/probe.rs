@@ -21,8 +21,22 @@ pub(crate) struct DeviceDetails {
     pub timestamp_period_ns: f32,
     /// Размер subgroup по умолчанию.
     pub subgroup_size: u32,
+    /// Арифметика subgroup (`subgroupAdd` и др.) доступна в compute-шейдерах.
+    pub subgroup_arithmetic_in_compute: bool,
     /// Максимальный размер 2D-картинки.
     pub max_image_dimension_2d: u32,
+    /// Максимальный размер push-констант, байт (спецификация гарантирует ≥ 128).
+    pub max_push_constants_size: u32,
+    /// Максимальное число рабочих групп одного dispatch по осям X, Y, Z.
+    pub max_compute_work_group_count: [u32; 3],
+    /// Максимум нитей в одной рабочей группе (`maxComputeWorkGroupInvocations`, спецификация гарантирует ≥ 128).
+    pub max_compute_work_group_invocations: u32,
+    /// Максимальный размер рабочей группы по осям X, Y, Z (`maxComputeWorkGroupSize`).
+    pub max_compute_work_group_size: [u32; 3],
+    /// Наибольший диапазон storage-буфера в дескрипторе, байт (`maxStorageBufferRange`).
+    pub max_storage_buffer_range: u32,
+    /// Наибольший диапазон uniform-буфера в дескрипторе, байт (`maxUniformBufferRange`).
+    pub max_uniform_buffer_range: u32,
     /// Типы и кучи памяти.
     pub memory_properties: vk::PhysicalDeviceMemoryProperties,
 }
@@ -73,11 +87,13 @@ fn probe_device(instance: &Instance, physical_device: vk::PhysicalDevice) -> Res
     unsafe { instance.get_physical_device_properties2(physical_device, &mut properties2) };
     let properties = properties2.properties;
 
-    // Возможности: base + 1.2 + 1.3 (+ swapchain_maintenance1, только если расширение есть).
+    // Возможности: base + 1.1 + 1.2 + 1.3 (+ swapchain_maintenance1, только если расширение есть).
+    let mut features_11 = vk::PhysicalDeviceVulkan11Features::default();
     let mut features_12 = vk::PhysicalDeviceVulkan12Features::default();
     let mut features_13 = vk::PhysicalDeviceVulkan13Features::default();
     let mut maintenance1_features = vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT::default();
     let mut features2 = vk::PhysicalDeviceFeatures2::default()
+        .push_next(&mut features_11)
         .push_next(&mut features_12)
         .push_next(&mut features_13);
     if has_swapchain_maintenance1 {
@@ -115,6 +131,9 @@ fn probe_device(instance: &Instance, physical_device: vk::PhysicalDevice) -> Res
             maintenance4: features_13.maintenance4 == vk::TRUE,
             storage_image_extended_formats: base_features.shader_storage_image_extended_formats == vk::TRUE,
             swapchain_maintenance1: maintenance1_features.swapchain_maintenance1 == vk::TRUE,
+            shader_float16: features_12.shader_float16 == vk::TRUE,
+            storage_buffer_16bit_access: features_11.storage_buffer16_bit_access == vk::TRUE,
+            host_query_reset: features_12.host_query_reset == vk::TRUE,
         },
     };
     let details = DeviceDetails {
@@ -129,7 +148,21 @@ fn probe_device(instance: &Instance, physical_device: vk::PhysicalDevice) -> Res
         driver_id: properties_12.driver_id,
         timestamp_period_ns: properties.limits.timestamp_period,
         subgroup_size: properties_11.subgroup_size,
+        // Модуль с capability GroupNonUniformArithmetic устройство принимает только при бите ARITHMETIC,
+        // а сама операция в compute — только если compute есть среди поддерживаемых стадий subgroup.
+        subgroup_arithmetic_in_compute: properties_11
+            .subgroup_supported_operations
+            .contains(vk::SubgroupFeatureFlags::ARITHMETIC)
+            && properties_11
+                .subgroup_supported_stages
+                .contains(vk::ShaderStageFlags::COMPUTE),
         max_image_dimension_2d: properties.limits.max_image_dimension2_d,
+        max_push_constants_size: properties.limits.max_push_constants_size,
+        max_compute_work_group_count: properties.limits.max_compute_work_group_count,
+        max_compute_work_group_invocations: properties.limits.max_compute_work_group_invocations,
+        max_compute_work_group_size: properties.limits.max_compute_work_group_size,
+        max_storage_buffer_range: properties.limits.max_storage_buffer_range,
+        max_uniform_buffer_range: properties.limits.max_uniform_buffer_range,
         memory_properties,
     };
     Ok(ProbedDevice {

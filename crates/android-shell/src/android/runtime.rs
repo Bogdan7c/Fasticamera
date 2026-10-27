@@ -82,6 +82,7 @@ pub fn install(config: &ShellConfig) -> Result<ShellHandles, ShellInstallError> 
         thermal,
         gyro_running: AtomicBool::new(false),
         orientation_running: AtomicBool::new(false),
+        power_sampling_running: AtomicBool::new(false),
     });
     // Сначала все потоки, потом публикация: провал на полпути не оставляет «установленную»
     // оболочку без потока команд, и initialize можно повторить. Уже запущенный тепловой
@@ -163,6 +164,7 @@ pub struct ShellRuntime {
     thermal: ThermalMonitor,
     gyro_running: AtomicBool,
     orientation_running: AtomicBool,
+    power_sampling_running: AtomicBool,
 }
 
 impl ShellRuntime {
@@ -255,7 +257,7 @@ impl ShellRuntime {
         self.accounting.snapshot(self.events.stats())
     }
 
-    /// Флаг «датчик занят» для гироскопа или ориентации: `true`, если удалось занять.
+    /// Флаг «датчик занят» (гироскоп, ориентация, опрос батареи): `true`, если удалось занять.
     pub fn try_claim_sensor(&self, sensor: ClaimedSensor) -> bool {
         self.sensor_flag(sensor)
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -270,6 +272,7 @@ impl ShellRuntime {
         match sensor {
             ClaimedSensor::Gyro => &self.gyro_running,
             ClaimedSensor::Orientation => &self.orientation_running,
+            ClaimedSensor::BatteryPower => &self.power_sampling_running,
         }
     }
 
@@ -284,4 +287,6 @@ impl ShellRuntime {
 pub enum ClaimedSensor {
     Gyro,
     Orientation,
+    /// Опрос батареи (`BatteryManager`) — «датчик тока»: второй опрос удвоил бы binder-вызовы.
+    BatteryPower,
 }

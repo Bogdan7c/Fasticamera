@@ -57,6 +57,9 @@ fn start_gpu_rig() -> Option<GpuRig> {
         backend,
         clock: vsync_clock_at_120_hz(),
         commands: Arc::new(FakeCommands::default()),
+        performance_hints: std::sync::Arc::new(shell_contract::performance_hint::NoPerformanceHints::new(
+            "тест без ADPF",
+        )),
     })
     .expect("поток запускается");
     Some(GpuRig {

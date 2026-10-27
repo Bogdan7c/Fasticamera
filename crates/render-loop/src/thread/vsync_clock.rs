@@ -39,6 +39,7 @@ impl FrameClock for VsyncFrameClock {
                     expected_present: tick.expected_present,
                     deadline: tick.deadline,
                     skipped_ticks: skipped,
+                    timelines: tick.timelines,
                 })
             }
             VsyncWait::TimedOut => FrameWait::TimedOut,
@@ -54,7 +55,7 @@ mod tests {
     use std::time::Instant;
 
     use shell_contract::clock::MonotonicNanos;
-    use shell_contract::vsync::VsyncTick;
+    use shell_contract::vsync::{FrameTimelines, VsyncTick, VsyncTimeline};
 
     use super::*;
 
@@ -62,13 +63,17 @@ mod tests {
 
     fn tick(sequence: u64) -> VsyncTick {
         let base = i64::try_from(sequence).unwrap_or(0) * 8_333_333;
-        VsyncTick {
-            sequence,
-            frame_time: MonotonicNanos::from_nanos(base),
-            expected_present: MonotonicNanos::from_nanos(base + 10_000_000),
-            deadline: MonotonicNanos::from_nanos(base + 4_000_000),
-            vsync_id: i64::try_from(sequence).unwrap_or(0),
-        }
+        // Две линии: ранняя (не предпочитаемая) и предпочитаемая — часы обязаны отдать обе.
+        FrameTimelines::from_platform_list(2, 1, |index| {
+            let offset = i64::try_from(index).unwrap_or(0) * 8_333_333;
+            VsyncTimeline {
+                vsync_id: i64::try_from(sequence).unwrap_or(0) * 10 + i64::try_from(index).unwrap_or(0),
+                expected_present: MonotonicNanos::from_nanos(base + 1_666_667 + offset),
+                deadline: MonotonicNanos::from_nanos(base - 4_333_333 + offset),
+            }
+        })
+        .map(|timelines| VsyncTick::from_timelines(sequence, MonotonicNanos::from_nanos(base), timelines))
+        .unwrap_or_else(|error| panic!("линии корректны: {error}"))
     }
 
     fn clock_over(slot: &Arc<VsyncSlot>) -> VsyncFrameClock {
@@ -103,6 +108,8 @@ mod tests {
             let expected = tick(frame_tick.sequence);
             assert_eq!(frame_tick.expected_present, expected.expected_present);
             assert_eq!(frame_tick.deadline, expected.deadline);
+            assert_eq!(frame_tick.timelines, expected.timelines, "все линии доходят до потока");
+            assert_eq!(frame_tick.timelines.as_slice().len(), 2);
         }
     }
 

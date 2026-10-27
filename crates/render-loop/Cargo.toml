@@ -8,8 +8,17 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# Только `vk::Extent2D` для размеров стенда V4 (`VideoHeadroomWorkload`, `OffscreenFrameSink`):
+# вызовов Vulkan в render-loop нет, всё через gpu-vulkan/isp-vulkan.
+ash.workspace = true
 camera-contract.workspace = true
 gpu-vulkan.workspace = true
+# ISP видоискателя на GPU (сессия 07): слитый compute-проход RAW → изображение видоискателя.
+isp-vulkan.workspace = true
+# Параметры ISP на кадр (`IspParams::resolve` из паспорта и подсказок кадра) и статистика AWB.
+isp-model.workspace = true
+# Только `clock_gettime(CLOCK_MONOTONIC)` в safety-модуле `thread/monotonic_clock.rs` (план позднего захвата).
+libc.workspace = true
 raw-frame-stream.workspace = true
 shell-contract.workspace = true
 serde.workspace = true
@@ -19,14 +28,18 @@ tracing.workspace = true
 [features]
 # Швы отказов бэкенда для тестов (пробрасывается в gpu-vulkan). В боевые сборки НЕ включается.
 fault-injection = ["gpu-vulkan/fault-injection"]
+# Тестовые швы чтения (readback изображения видоискателя в функциональных тестах). В боевые сборки НЕ включается.
+test-support = ["gpu-vulkan/test-support"]
 
 [dev-dependencies]
 camera-contract = { workspace = true, features = ["fixtures"] }
 # Синтетические RAW-источники на обычной памяти Vulkan для функционального теста показа кадров камеры на ПК.
 gpu-vulkan = { workspace = true, features = ["test-support"] }
 serde_json.workspace = true
+# Подделка службы ADPF для тестов отчётов потока рендера.
+shell-contract = { workspace = true, features = ["fake-performance-hints"] }
 # Интеграционные тесты потока включают швы отказов через самого себя.
-render-loop = { path = ".", features = ["fault-injection"] }
+render-loop = { path = ".", features = ["fault-injection", "test-support"] }
 
 [lints]
 workspace = true

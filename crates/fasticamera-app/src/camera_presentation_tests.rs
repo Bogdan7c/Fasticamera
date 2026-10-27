@@ -9,11 +9,12 @@ use crate::gpu_services::{UnavailableDiagnostics, ValidationState};
 use crate::gpu_test_support::{FakeRenderStatus, presenting_status};
 
 fn gpu_over(render: Arc<FakeRenderStatus>) -> GpuServices {
-    GpuServices {
+    GpuServices::new(
         render,
-        diagnostics: Arc::new(UnavailableDiagnostics::new("не нужны")),
-        render_config: render_loop::config::RenderLoopConfig::default(),
-    }
+        Arc::new(UnavailableDiagnostics::new("не нужны")),
+        render_loop::config::RenderLoopConfig::default(),
+        crate::gpu_test_support::RecordingRenderControl::new(),
+    )
 }
 
 #[test]

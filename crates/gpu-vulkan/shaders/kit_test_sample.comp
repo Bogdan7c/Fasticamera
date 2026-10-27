@@ -1,0 +1,21 @@
+#version 450
+// Тест compute-набора (сессия 07): чтение картинки через combined image sampler (линейный, края
+// зажаты) в compute-шейдере в центрах пикселей → значения в storage-буфер.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform sampler2D source_image;
+layout(set = 0, binding = 1, std430) buffer SampledTexels {
+    vec4 texels[];
+} sampled;
+layout(push_constant) uniform ImageSize {
+    uint width;
+    uint height;
+} image_size;
+
+void main() {
+    uvec2 position = gl_GlobalInvocationID.xy;
+    if (position.x >= image_size.width || position.y >= image_size.height) {
+        return;
+    }
+    vec2 coordinate = (vec2(position) + 0.5) / vec2(image_size.width, image_size.height);
+    sampled.texels[position.y * image_size.width + position.x] = textureLod(source_image, coordinate, 0.0);
+}

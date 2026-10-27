@@ -55,7 +55,8 @@ pub enum ConsumerStage {
 }
 
 impl ConsumerStage {
-    fn pipeline_stage(self) -> vk::PipelineStageFlags2 {
+    /// Стадия конвейера synchronization2, соответствующая потребителю.
+    pub(crate) fn pipeline_stage(self) -> vk::PipelineStageFlags2 {
         match self {
             Self::Compute => vk::PipelineStageFlags2::COMPUTE_SHADER,
             Self::Fragment => vk::PipelineStageFlags2::FRAGMENT_SHADER,

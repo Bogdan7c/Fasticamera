@@ -197,6 +197,14 @@ impl LatencySampler {
         }
     }
 
+    /// Начинает выборку «с этого момента»: кадры из `history` (уже поставленные на показ) не
+    /// считаются, даже если их время показа придёт позже. Нужно окнам `viewfinder-latency`: кадры,
+    /// показанные при прежней политике линии кадра, не должны попасть в окно новой.
+    pub fn skip_already_presented(&mut self, history: &[PresentedSample]) {
+        let newest = history.iter().map(|sample| sample.sensor_timestamp_nanos).max();
+        self.high_water_sensor_nanos = self.high_water_sensor_nanos.max(newest);
+    }
+
     /// Чтение часов не удалось: замеры этого тика потеряны, но потеря видна в отчёте.
     pub fn note_clock_failure(&mut self, error: &crate::clock_offset::ClockReadError) {
         self.clock_read_failures += 1;

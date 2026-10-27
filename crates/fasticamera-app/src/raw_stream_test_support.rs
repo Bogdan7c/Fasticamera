@@ -60,6 +60,9 @@ pub struct PumpFaults {
     pub probe_counter_dead: bool,
     /// Пик кадров на руках, который сообщает поток.
     pub max_frames_outstanding: u64,
+    /// Показывать кадры с частотой сенсора (60 к/с), а не на каждом шаге имитатора (1 мс):
+    /// нужно сценариям, которые сравнивают частоту показа/ISP с частотой сенсора (сессия 07).
+    pub paced_at_sensor_rate: bool,
 }
 
 impl Default for PumpFaults {
@@ -75,6 +78,7 @@ impl Default for PumpFaults {
             probe_refused_by_platform: false,
             probe_counter_dead: false,
             max_frames_outstanding: 3,
+            paced_at_sensor_rate: false,
         }
     }
 }
@@ -148,7 +152,11 @@ impl StreamPump {
                         show_frame(&render, frame_index, base_boottime, offset.is_ok(), faults);
                     }
                 }
-                thread::sleep(Duration::from_millis(1));
+                thread::sleep(if faults.paced_at_sensor_rate {
+                    SENSOR_INTERVAL
+                } else {
+                    Duration::from_millis(1)
+                });
             }
         });
         Self {

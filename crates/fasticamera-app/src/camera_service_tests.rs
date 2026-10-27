@@ -233,6 +233,9 @@ fn full_command_queue_is_counted_and_does_not_panic_or_block() {
     });
     let mut config = CameraConfig::default();
     config.engine.queues.command_capacity = 1;
+    // Автозапуск видоискателя занял бы единственное место в очереди: здесь проверяется только
+    // команда жизненного цикла (отказ очереди для автозапуска — в `viewfinder_autostart_tests`).
+    config.viewfinder_autostart.enabled = false;
     let diagnostics = std::sync::Arc::new(camera_android::BackendDiagnostics::new(4));
     let services = start_camera(
         &config,

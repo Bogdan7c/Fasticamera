@@ -12,6 +12,10 @@ fn headless_context_reports_real_device_with_required_features() {
     assert!(!capabilities.driver_name.is_empty(), "драйвер должен назвать себя");
     assert!(capabilities.api_version.major == 1 && capabilities.api_version.minor >= 3);
     assert!(capabilities.subgroup_size > 0);
+    if capabilities.driver_name.to_lowercase().contains("radv") {
+        // RADV (ПК-тесты) поддерживает арифметику subgroup в compute — на ней проверяется быстрый путь AWB.
+        assert!(capabilities.subgroup_arithmetic_in_compute, "RADV: {capabilities:?}");
+    }
     assert!(
         capabilities
             .enabled_device_extensions

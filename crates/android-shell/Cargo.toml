@@ -16,6 +16,8 @@ tracing.workspace = true
 [target.'cfg(target_os = "android")'.dependencies]
 jni.workspace = true
 ndk-sys.workspace = true
+# Только `gettid()` — идентификатор потока рендера для сессии ADPF (`android/performance_hint_ffi.rs`).
+libc.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

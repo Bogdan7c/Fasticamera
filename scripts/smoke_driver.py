@@ -150,6 +150,12 @@ SCENARIO_STEPS: dict[str, dict[str, tuple[Step, ...]]] = {
     # Измерение продолжается, пока скрипт снимает: скриншоты не нагружают приложение заметно.
     "raw-stream": {"viewfinder_live": VIEWFINDER_SHOT_STEPS},
     "raw-stream-endurance": {"viewfinder_live": VIEWFINDER_SHOT_STEPS},
+    # viewfinder (сессия 07): те же два скриншота установившегося видоискателя с ISP.
+    "viewfinder": {"viewfinder_live": VIEWFINDER_SHOT_STEPS},
+    # video-headroom-bench: Rust просит 120 Гц и включает стенд, затем пишет ``bench_started``. OxygenOS держит
+    # приложению 60 Гц до первого касания (бэклог п. 1), поэтому скрипт один раз касается центра экрана
+    # (на весь экран нет кнопок — касание безвредно). Достигнутую частоту Rust пишет в отчёт как есть.
+    "video-headroom-bench": {"bench_started": (Step(StepKind.TAP_SCREEN, only_if_true="tap_for_refresh"),)},
     "render-lifecycle": {
         "presenting_home": (Step(StepKind.PRESS_HOME),),
         "backgrounded_home": (Step(StepKind.PAUSE, BACKGROUND_PAUSE_SECONDS), Step(StepKind.RETURN_TO_APP)),

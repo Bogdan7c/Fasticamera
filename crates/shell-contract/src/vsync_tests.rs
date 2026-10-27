@@ -13,13 +13,89 @@ const SHORT_WAIT: Duration = Duration::from_millis(30);
 
 fn tick(sequence: u64) -> VsyncTick {
     let base = i64::try_from(sequence).unwrap_or(i64::MAX) * 8_333_333;
-    VsyncTick {
+    VsyncTick::from_timelines(
         sequence,
-        frame_time: MonotonicNanos::from_nanos(base),
-        expected_present: MonotonicNanos::from_nanos(base + 16_666_666),
-        deadline: MonotonicNanos::from_nanos(base + 8_000_000),
-        vsync_id: i64::try_from(sequence).unwrap_or(0) + 1000,
+        MonotonicNanos::from_nanos(base),
+        FrameTimelines::only(VsyncTimeline {
+            vsync_id: i64::try_from(sequence).unwrap_or(0) + 1000,
+            expected_present: MonotonicNanos::from_nanos(base + 16_666_666),
+            deadline: MonotonicNanos::from_nanos(base + 8_000_000),
+        }),
+    )
+}
+
+/// Линия с номером `index`: показ и срок растут на период 120 Гц с каждой линией.
+fn timeline_at(index: usize) -> VsyncTimeline {
+    let step = i64::try_from(index).unwrap_or(i64::MAX) * 8_333_333;
+    VsyncTimeline {
+        vsync_id: 500 + i64::try_from(index).unwrap_or(0),
+        expected_present: MonotonicNanos::from_nanos(20_000_000 + step),
+        deadline: MonotonicNanos::from_nanos(12_000_000 + step),
     }
+}
+
+#[test]
+fn tick_flat_fields_are_the_preferred_timeline_and_all_timelines_are_kept() {
+    let timelines = FrameTimelines::from_platform_list(3, 1, timeline_at).expect("список корректен");
+    let tick = VsyncTick::from_timelines(7, MonotonicNanos::from_nanos(5), timelines);
+    assert_eq!(tick.expected_present, timeline_at(1).expected_present);
+    assert_eq!(tick.deadline, timeline_at(1).deadline);
+    assert_eq!(tick.vsync_id, timeline_at(1).vsync_id);
+    assert_eq!(
+        tick.timelines.as_slice(),
+        &[timeline_at(0), timeline_at(1), timeline_at(2)]
+    );
+    assert_eq!(tick.timelines.preferred_index(), 1);
+    assert_eq!(tick.timelines.dropped_count(), 0);
+}
+
+#[test]
+fn more_timelines_than_capacity_are_truncated_with_a_count_keeping_the_earliest() {
+    let mut read_indices = Vec::new();
+    let timelines = FrameTimelines::from_platform_list(MAX_FRAME_TIMELINES + 3, 2, |index| {
+        read_indices.push(index);
+        timeline_at(index)
+    })
+    .expect("список корректен");
+    assert_eq!(timelines.dropped_count(), 3, "отброшенные линии посчитаны");
+    assert_eq!(timelines.as_slice().len(), MAX_FRAME_TIMELINES);
+    assert_eq!(timelines.as_slice()[0], timeline_at(0), "ранние линии сохранены");
+    assert_eq!(timelines.preferred(), timeline_at(2));
+    assert_eq!(
+        read_indices,
+        (0..MAX_FRAME_TIMELINES).collect::<Vec<_>>(),
+        "лишние не читались"
+    );
+}
+
+#[test]
+fn preferred_beyond_capacity_stays_in_the_window_and_its_index_is_rebased() {
+    let preferred_platform_index = MAX_FRAME_TIMELINES + 1;
+    let timelines = FrameTimelines::from_platform_list(MAX_FRAME_TIMELINES + 4, preferred_platform_index, timeline_at)
+        .expect("список корректен");
+    assert_eq!(timelines.preferred(), timeline_at(preferred_platform_index));
+    assert_eq!(
+        timelines.preferred_index(),
+        MAX_FRAME_TIMELINES - 1,
+        "окно кончается на предпочитаемой"
+    );
+    assert_eq!(timelines.as_slice()[0], timeline_at(2), "две самые ранние отброшены");
+    assert_eq!(timelines.dropped_count(), 4);
+}
+
+#[test]
+fn empty_list_and_preferred_out_of_range_are_distinct_errors() {
+    assert_eq!(
+        FrameTimelines::from_platform_list(0, 0, timeline_at),
+        Err(FrameTimelinesError::NoTimelines)
+    );
+    assert_eq!(
+        FrameTimelines::from_platform_list(2, 2, timeline_at),
+        Err(FrameTimelinesError::PreferredIndexOutOfRange {
+            preferred_index: 2,
+            timeline_count: 2
+        })
+    );
 }
 
 /// Производитель-заглушка: флаг выставляется, когда подписку уничтожили.

@@ -67,6 +67,13 @@ fn passport_carries_levels_mosaic_orientation_and_frame_rate_from_the_sources() 
     assert_eq!(passport.frame_rate_mechanism, vendor);
     assert_eq!(passport.camera, stream.camera);
     assert_eq!(passport.raw_format, RawFormat::Raw10);
+    // Калибровка цвета — та же, что в характеристиках, и непустая у основной камеры (07: ISP
+    // видоискателя берёт матрицы только из паспорта).
+    assert!(
+        !raw.color_calibration.is_empty(),
+        "у образца основной камеры есть DNG-матрицы"
+    );
+    assert_eq!(passport.color_calibration, raw.color_calibration);
 }
 
 #[test]

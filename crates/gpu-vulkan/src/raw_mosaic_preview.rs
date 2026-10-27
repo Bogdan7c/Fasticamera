@@ -17,6 +17,7 @@
 //! её переводит владелец цели). Барьеры владения записываются ВНЕ динамического рендеринга
 //! (до `cmd_begin_rendering` и после `cmd_end_rendering`).
 
+mod compute_source;
 pub mod params;
 pub mod reference;
 #[cfg(any(test, feature = "test-support"))]
@@ -96,47 +97,39 @@ pub struct PreviewFrame<'a> {
     pub handoff: FrameHandoff,
 }
 
-/// Записывает приём источника у внешнего владельца (читает фрагментный шейдер).
-fn record_acquire(device: &ash::Device, command_buffer: vk::CommandBuffer, queue_family: u32, source: &MosaicSource) {
+/// Записывает приём источника у внешнего владельца (камеры) перед чтением стадией `stage`.
+pub(crate) fn record_acquire(
+    device: &ash::Device,
+    command_buffer: vk::CommandBuffer,
+    queue_family: u32,
+    source: &MosaicSource,
+    stage: ConsumerStage,
+) {
     match *source {
-        MosaicSource::SampledR16 { image, acquire, .. } => record_image_acquire_for_stage(
-            device,
-            command_buffer,
-            image,
-            acquire,
-            queue_family,
-            ConsumerStage::Fragment,
-        ),
-        MosaicSource::PackedRaw10 { buffer, acquire, .. } => record_buffer_acquire_for_stage(
-            device,
-            command_buffer,
-            buffer,
-            acquire,
-            queue_family,
-            ConsumerStage::Fragment,
-        ),
+        MosaicSource::SampledR16 { image, acquire, .. } => {
+            record_image_acquire_for_stage(device, command_buffer, image, acquire, queue_family, stage)
+        }
+        MosaicSource::PackedRaw10 { buffer, acquire, .. } => {
+            record_buffer_acquire_for_stage(device, command_buffer, buffer, acquire, queue_family, stage)
+        }
     }
 }
 
-/// Записывает возврат источника внешнему владельцу (камере).
-fn record_release(device: &ash::Device, command_buffer: vk::CommandBuffer, queue_family: u32, source: &MosaicSource) {
+/// Записывает возврат источника внешнему владельцу (камере); читала его стадия `stage`.
+pub(crate) fn record_release(
+    device: &ash::Device,
+    command_buffer: vk::CommandBuffer,
+    queue_family: u32,
+    source: &MosaicSource,
+    stage: ConsumerStage,
+) {
     match *source {
-        MosaicSource::SampledR16 { image, release, .. } => record_image_release_for_stage(
-            device,
-            command_buffer,
-            image,
-            release,
-            queue_family,
-            ConsumerStage::Fragment,
-        ),
-        MosaicSource::PackedRaw10 { buffer, release, .. } => record_buffer_release_for_stage(
-            device,
-            command_buffer,
-            buffer,
-            release,
-            queue_family,
-            ConsumerStage::Fragment,
-        ),
+        MosaicSource::SampledR16 { image, release, .. } => {
+            record_image_release_for_stage(device, command_buffer, image, release, queue_family, stage)
+        }
+        MosaicSource::PackedRaw10 { buffer, release, .. } => {
+            record_buffer_release_for_stage(device, command_buffer, buffer, release, queue_family, stage)
+        }
     }
 }
 
@@ -234,10 +227,10 @@ impl RawMosaicPreview {
         // кадр (первая область барьера включает все более ранние команды очереди, то есть чтение его
         // прошлыми сабмитами), затем забираем новый — и только в первом сабмите, читающем новый кадр.
         if let Some(previous) = &handoff.release_previous {
-            record_release(device, command_buffer, queue_family, previous);
+            record_release(device, command_buffer, queue_family, previous, ConsumerStage::Fragment);
         }
         if handoff.acquire_source == SourceAcquire::BeforeRead {
-            record_acquire(device, command_buffer, queue_family, source);
+            record_acquire(device, command_buffer, queue_family, source, ConsumerStage::Fragment);
         }
         // SAFETY: командный буфер в состоянии записи (контракт вызывающего); пайплайн, layout и набор
         // принадлежат self; push-константы укладываются в объявленный диапазон FRAGMENT.
@@ -277,7 +270,13 @@ impl RawMosaicPreview {
         Self::validate_target(target)?;
         let device = self.context.device();
         if let Some(previous) = &release_previous {
-            record_release(device, command_buffer, self.context.queue_family_index(), previous);
+            record_release(
+                device,
+                command_buffer,
+                self.context.queue_family_index(),
+                previous,
+                ConsumerStage::Fragment,
+            );
         }
         // SAFETY: командный буфер в состоянии записи; рендеринг только очищает вложение.
         unsafe {
@@ -292,7 +291,13 @@ impl RawMosaicPreview {
     pub fn release_source_blocking(context: &GpuContext, source: &MosaicSource) -> Result<(), GpuError> {
         let queue_family = context.queue_family_index();
         context.run_one_shot(|command_buffer| {
-            record_release(context.device(), command_buffer, queue_family, source);
+            record_release(
+                context.device(),
+                command_buffer,
+                queue_family,
+                source,
+                ConsumerStage::Fragment,
+            );
             Ok(())
         })
     }
@@ -448,7 +453,13 @@ impl EncodingPath {
                 "vkCreatePipelineLayout(предпросмотр RAW)",
             )?,
         );
-        let pipeline = create_pipeline(context, color_format, fragment_spirv, &pipeline_layout)?;
+        let pipeline = create_pipeline(
+            context,
+            color_format,
+            fragment_spirv,
+            &pipeline_layout,
+            "vkCreateGraphicsPipelines(предпросмотр RAW)",
+        )?;
 
         let slot_count = u32::try_from(frame_slots).map_err(|_| GpuError::InvalidArgument {
             what: "число слотов кадров не помещается в u32".to_owned(),
@@ -487,11 +498,13 @@ impl EncodingPath {
 }
 
 /// Графический пайплайн (dynamic rendering, полноэкранный треугольник) под формат цели.
-fn create_pipeline(
+/// Общий с компоновщиком картинок (`crate::compositor`): тот же треугольник, другой фрагментный шейдер.
+pub(crate) fn create_pipeline(
     context: &GpuContext,
     color_format: vk::Format,
     fragment_spirv: &[u8],
     layout: &OwnedPipelineLayout,
+    step: &'static str,
 ) -> Result<OwnedPipeline, GpuError> {
     let device = context.device();
     let vertex_module = context.create_shader_module(blobs::FULLSCREEN_TRIANGLE_VERT)?;
@@ -540,10 +553,7 @@ fn create_pipeline(
         .push_next(&mut rendering_info);
     // SAFETY: все структуры и модули живут до конца вызова; кэша пайплайнов нет.
     let pipelines = unsafe { device.create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None) }
-        .map_err(|(_, result)| GpuError::Vulkan {
-            step: "vkCreateGraphicsPipelines(предпросмотр RAW)",
-            result,
-        })?;
+        .map_err(|(_, result)| GpuError::Vulkan { step, result })?;
     let handle = pipelines.first().copied().ok_or(GpuError::InvalidState {
         what: "vkCreateGraphicsPipelines не вернул пайплайн".to_owned(),
     })?;

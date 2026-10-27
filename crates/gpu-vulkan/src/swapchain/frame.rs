@@ -8,6 +8,7 @@
 use ash::vk;
 use shell_contract::clock::MonotonicNanos;
 
+use super::config::DisplayColorSpace;
 use crate::frame_ring::SlotIndex;
 use crate::test_pattern::{PatternTarget, SurfaceTransform};
 
@@ -21,6 +22,7 @@ pub struct DisplayFrame {
     pub(super) command_buffer: vk::CommandBuffer,
     pub(super) pattern_target: PatternTarget,
     pub(super) format: vk::Format,
+    pub(super) display_color_space: DisplayColorSpace,
     pub(super) transform: SurfaceTransform,
     pub(super) frame_index: u32,
     pub(super) swapchain_generation: u64,
@@ -44,6 +46,11 @@ impl DisplayFrame {
     /// Формат цветовой цели (с ним должен быть создан пайплайн рисования).
     pub fn format(&self) -> vk::Format {
         self.format
+    }
+
+    /// Цветовое пространство, в котором дисплей поймёт значения кадра (sRGB или Display P3).
+    pub fn display_color_space(&self) -> DisplayColorSpace {
+        self.display_color_space
     }
 
     /// Поворот дисплея: рисовать надо уже повёрнутой картинкой.

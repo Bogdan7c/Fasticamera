@@ -291,11 +291,11 @@ impl FrameRing {
                 .stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT),
         ];
         if let Some(camera_acquire) = sync.camera_acquire_semaphore() {
-            // Буфер камеры читает фрагментный шейдер: раньше этой стадии ждать fence не нужно.
+            // Ждём fence камеры только с первой стадии, которая читает её буфер (фрагмент или compute).
             waits.push(
                 vk::SemaphoreSubmitInfo::default()
                     .semaphore(camera_acquire)
-                    .stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER),
+                    .stage_mask(sync.camera_acquire_wait_stage()),
             );
         }
         let mut signals = vec![

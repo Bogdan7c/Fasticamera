@@ -12,6 +12,9 @@ fn full_features() -> FeatureSupport {
         maintenance4: true,
         storage_image_extended_formats: true,
         swapchain_maintenance1: true,
+        shader_float16: true,
+        storage_buffer_16bit_access: true,
+        host_query_reset: true,
     }
 }
 
@@ -235,4 +238,29 @@ fn profiles_declare_contract_extensions() {
             .required
             .contains(&ext::headless_surface::NAME)
     );
+}
+
+#[test]
+fn sixteen_bit_shader_features_are_optional() {
+    // Устройство без shaderFloat16 и storageBuffer16BitAccess всё равно выбирается: ни одна из
+    // 16-битных возможностей не обязательна (сессия 07), ISP выбирает вариант шейдера по отчёту.
+    let mut device = candidate("Old", vk::PhysicalDeviceType::INTEGRATED_GPU, &[]);
+    device.features.shader_float16 = false;
+    device.features.storage_buffer_16bit_access = false;
+    assert!(select_device(&[device], &requirements(&[], &[]), &[]).is_ok());
+}
+
+#[test]
+fn swapchain_colorspace_is_optional_for_display_profiles() {
+    for profile in [DeviceProfile::AndroidDisplay, DeviceProfile::HeadlessPresentation] {
+        let instance = profile.instance_extensions();
+        assert!(
+            instance.optional.contains(&ext::swapchain_colorspace::NAME),
+            "{profile:?}"
+        );
+        assert!(
+            !instance.required.contains(&ext::swapchain_colorspace::NAME),
+            "{profile:?}"
+        );
+    }
 }

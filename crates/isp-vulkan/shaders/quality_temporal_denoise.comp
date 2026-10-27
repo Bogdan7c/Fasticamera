@@ -1,0 +1,54 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Временной шумодав «на пробу» (стенд V4): рекурсивный фильтр в линейном RGB камеры с адаптацией к
+// движению, БЕЗ компенсации движения (MC-TNR — план `video`).
+//
+//   история' = текущий + w · (история − текущий)
+//   w = strength · (1 − smoothstep(T/2, T, k)),   k = mean|текущий − история| / σ(сигнал)
+//   σ² = noise_floor² + shot_noise_gain · max(mean(текущий), 0)   — модель шума «чтение + дробовой».
+//
+// Неподвижный пиксель (разность на уровне шума) усредняется с историей с весом до strength; разность
+// больше T·σ считается движением — история отбрасывается целиком (без «призраков» за движущимся краем).
+// pass_mode = 0 — истории нет (первый кадр, смена потока): история' = текущий.
+// pass_parameters = (strength, T = motion_threshold_sigmas, noise_floor, shot_noise_gain).
+// Запись на месте: каждая нить читает и пишет только свой пиксель истории.
+
+#include "quality_common.glsl"
+
+layout(set = 0, binding = 0, std430) readonly buffer CurrentRed { float values[]; } current_red;
+layout(set = 0, binding = 1, std430) readonly buffer CurrentGreen { float values[]; } current_green;
+layout(set = 0, binding = 2, std430) readonly buffer CurrentBlue { float values[]; } current_blue;
+layout(set = 0, binding = 3, std430) buffer HistoryRed { float values[]; } history_red;
+layout(set = 0, binding = 4, std430) buffer HistoryGreen { float values[]; } history_green;
+layout(set = 0, binding = 5, std430) buffer HistoryBlue { float values[]; } history_blue;
+
+const uint MODE_RESET_HISTORY = 0u;
+
+void main() {
+    uint x;
+    uint y;
+    if (!pixel_coordinates(x, y)) {
+        return;
+    }
+    uint index = y * geometry.width + x;
+    vec3 current = vec3(current_red.values[index], current_green.values[index], current_blue.values[index]);
+    vec3 blended = current;
+    if (geometry.pass_mode != MODE_RESET_HISTORY) {
+        vec3 history = vec3(history_red.values[index], history_green.values[index], history_blue.values[index]);
+        float strength = geometry.pass_parameters.x;
+        float motion_threshold = geometry.pass_parameters.y;
+        float noise_floor = geometry.pass_parameters.z;
+        float shot_noise_gain = geometry.pass_parameters.w;
+        float signal_level = max((current.r + current.g + current.b) / 3.0, 0.0);
+        float noise_sigma = sqrt(noise_floor * noise_floor + shot_noise_gain * signal_level);
+        vec3 difference = abs(current - history);
+        // noise_floor > 0 проверяется конфигом, поэтому σ > 0 и деление определено.
+        float normalized_difference = (difference.r + difference.g + difference.b) / 3.0 / noise_sigma;
+        float history_weight =
+            strength * (1.0 - smoothstep(0.5 * motion_threshold, motion_threshold, normalized_difference));
+        blended = current + history_weight * (history - current);
+    }
+    history_red.values[index] = blended.r;
+    history_green.values[index] = blended.g;
+    history_blue.values[index] = blended.b;
+}

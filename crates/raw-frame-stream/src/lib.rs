@@ -9,7 +9,7 @@
 //!
 //! # Кто с кем говорит
 //! ```text
-//! camera-android ──RawFrameProducer──▶ [RawFrameStream] ──ViewfinderFrames──▶ render-loop
+//! camera-android ──RawFrameProducer──▶ [RawFrameStream] ──ViewfinderFrames──▶ render-loop (раз в vsync)
 //!   (кадры + результаты)                  спаривание,     ──SnapshotRingFrames──▶ (сессия 14)
 //!                                          раздача,        ──LosslessFrames──▶ (будущая запись)
 //!                                          счётчики
@@ -22,7 +22,8 @@
 //! 2. Буфер возвращается производителю ровно один раз, когда последний лизинг возвращён;
 //!    fence-ы всех потребителей передаются производителю вместе.
 //! 3. Ни один вызов не ждёт другой поток: только короткие замки и атомарные счётчики.
-//! 4. Каждый сброс посчитан: вытеснение «самым свежим», вытеснение из кольца, переполнение
+//! 4. Каждый сброс посчитан: вытеснение «самым свежим», переполнение буфера видоискателя
+//!    (решение 53), вытеснение из кольца, переполнение
 //!    очереди «ни одного молча» (брак), исчерпание пула, неспаренные кадры и результаты.
 
 mod config;
@@ -31,6 +32,7 @@ mod lease;
 mod pool;
 mod producer_frame;
 mod stream;
+mod viewfinder_pacing;
 
 pub use config::{RawFrameStreamConfig, RawFrameStreamConfigError};
 pub use counters::RawStreamCounters;
@@ -41,3 +43,4 @@ pub use stream::{
     DefectReason, LosslessFrames, OfferOutcome, OfferedFrame, RawFrameProducer, RawFrameStream, ResultOutcome,
     SnapshotRingFrames, StreamDefect, StreamEpoch, StreamStart, ViewfinderFrames, ViewfinderPoll,
 };
+pub use viewfinder_pacing::{JitterBufferConfig, ViewfinderPacing, ViewfinderPacingSwitch};

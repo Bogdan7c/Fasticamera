@@ -1,8 +1,15 @@
-//! Показ кадров камеры: предпросмотр RAW-мозаики вместо тестового паттерна (сессия 05).
+//! Показ кадров камеры: видоискатель через ISP на GPU (сессия 07) или отладочная мозаика (сессия 05).
 //!
 //! # Кто чем владеет
 //! * [`CameraSession`] (`session`) — состояние показа одной surface: учёт лизингов, серии сабмитов,
-//!   экспортируемый семафор, импортёр. Единственный, кто решает, когда кадр можно вернуть камере;
+//!   экспортируемый семафор, импортёр, параметры ISP, привязка статистики AWB к кадрам. Единственный,
+//!   кто решает, когда кадр можно вернуть камере;
+//! * [`CameraPipelines`] (`pipelines`) — объекты GPU, записанные в кадры цели: ISP видоискателя,
+//!   компоновщик, отладочная мозаика, метки времени кадра; запись команд кадра видоискателя;
+//! * `isp_params` — кэш `IspParams` (пересчёт только при смене входов); `placement` — где на экране
+//!   изображение; `settings` — что меняют команды; `viewfinder_stats` — диагностика видоискателя;
+//! * `headroom_bench` — стенд «запас под видео» (V4): нагрузка полного кадра над тем же RAW в том же
+//!   сабмите, её ленивое создание и освобождение по завершённым сериям; `headroom_stats` — его счётчики;
 //! * [`lease::LeaseLedger`] — правила «что и когда возвращать» (нейтральный, без Vulkan);
 //! * [`submissions::SubmissionTracker`] — когда GPU точно закончил (нейтральный);
 //! * [`CameraFrameImporter`] — шов импорта буфера камеры в Vulkan: на телефоне `AHardwareBuffer`
@@ -12,15 +19,24 @@
 //! # Инварианты
 //! 1. Лизинг возвращается камере только вместе с fence сабмита, который уже не читает буфер
 //!    (или после подтверждённого простоя GPU); никогда — «просто так».
-//! 2. Кадр, который читал последний принятый сабмит, не возвращается: он может быть перерисован.
+//! 2. Кадр мозаики, который читал последний принятый сабмит, не возвращается: он может быть
+//!    перерисован. Кадр ISP читается ровно одним сабмитом и возвращается с fence ЭТОГО сабмита —
+//!    на экране дальше живёт изображение видоискателя, RAW больше не нужен.
 //! 3. Выброшенный лизинг при зависшем GPU — намеренная учтённая утечка, а не возврат.
 
 mod export_recovery;
+mod headroom_bench;
+mod headroom_stats;
+mod isp_params;
 mod lease;
 mod ownership;
 mod passport;
+mod pipelines;
+mod placement;
 mod session;
+mod settings;
 mod submissions;
+mod viewfinder_stats;
 
 #[cfg(target_os = "android")]
 mod android_importer;
@@ -34,7 +50,12 @@ pub use gpu_vulkan::hardware_buffer_cache::SubmissionSerial;
 use gpu_vulkan::raw_mosaic_preview::MosaicSource;
 use raw_frame_stream::{RawFrameLease, ViewfinderFrames};
 
-pub(super) use self::session::{CameraDrawError, CameraSession};
+pub(super) use self::headroom_bench::HeadroomBenchParts;
+pub(super) use self::headroom_stats::HeadroomLiveState;
+pub(super) use self::pipelines::CameraPipelines;
+pub(super) use self::session::{CameraDrawError, CameraSession, CameraSessionFailure, CameraSessionParts};
+pub(super) use self::settings::ViewfinderSettings;
+pub(super) use self::viewfinder_stats::ViewfinderStats;
 
 #[cfg(target_os = "android")]
 pub use self::android_importer::AndroidCameraImporter;

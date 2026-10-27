@@ -1,6 +1,6 @@
 //! Возврат буферов производителю: доли, fence-ы, утечка.
 
-use super::support::{Rig, signal, unsignaled_fence};
+use super::support::{Rig, latest_wins_config, signal, unsignaled_fence};
 use crate::config::RawFrameStreamConfig;
 use crate::lease::RawFrameLease;
 use crate::stream::ViewfinderPoll;
@@ -12,11 +12,11 @@ const RAW10_4096X3072_BYTES: u64 = 15_728_640;
 fn frame_held_by_viewfinder_and_ring(timestamp: i64) -> (Rig, RawFrameLease, RawFrameLease) {
     let rig = Rig::new(RawFrameStreamConfig {
         snapshot_ring_budget_bytes: 2 * RAW10_4096X3072_BYTES,
-        ..RawFrameStreamConfig::default()
+        ..latest_wins_config()
     });
     rig.offer_result(timestamp, 0);
     rig.offer_frame(timestamp, 0);
-    let ViewfinderPoll::NewFrame(from_viewfinder) = rig.stream.viewfinder().poll_latest(rig.at(0)) else {
+    let ViewfinderPoll::NewFrame(from_viewfinder) = rig.stream.viewfinder().poll_for_vsync(rig.at(0)) else {
         panic!("кадр должен быть в ячейке");
     };
     let mut from_ring = rig.stream.snapshot_ring().take_all();

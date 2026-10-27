@@ -16,6 +16,7 @@ name = "android-shell"
 version = "0.1.0"
 dependencies = [
  "jni",
+ "libc",
  "ndk-sys",
  "serde",
  "serde_json",
@@ -157,6 +158,7 @@ dependencies = [
  "camera-contract",
  "camera-core",
  "gpu-vulkan",
+ "isp-vulkan",
  "jni",
  "libc",
  "raw-frame-stream",
@@ -194,6 +196,20 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "isp-vulkan"
+version = "0.1.0"
+dependencies = [
+ "ash",
+ "camera-contract",
+ "gpu-vulkan",
+ "isp-model",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tracing",
 ]
 
 [[package]]
@@ -394,8 +410,12 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 name = "render-loop"
 version = "0.1.0"
 dependencies = [
+ "ash",
  "camera-contract",
  "gpu-vulkan",
+ "isp-model",
+ "isp-vulkan",
+ "libc",
  "raw-frame-stream",
  "render-loop",
  "serde",

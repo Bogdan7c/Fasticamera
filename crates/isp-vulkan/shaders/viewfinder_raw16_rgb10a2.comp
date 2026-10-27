@@ -1,0 +1,7 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_samplerless_texture_functions : require
+// ISP видоискателя: вход RAW16, выход — storage-картинка формата rgb10_a2 (см. viewfinder_isp.glsl).
+layout(set = 0, binding = 2, rgb10_a2) uniform writeonly image2D viewfinder_image;
+#include "viewfinder_isp.glsl"
+#include "viewfinder_source_raw16.glsl"

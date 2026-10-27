@@ -11,6 +11,10 @@
 //! * когда сабмит показал другой кадр (или чёрный), прежний показанный кадр переходит в *уходящие*
 //!   (`retiring`). Его последний читавший сабмит — один из ПРЕДЫДУЩИХ, поэтому fence ТЕКУЩЕГО
 //!   сабмита (он покрывает все более ранние сабмиты очереди, см. `PresentSync`) — безопасный сигнал;
+//! * кадр, который ISP видоискателя читает ОДИН раз (сессия 07), *поглощается* сабмитом
+//!   ([`FrameChange::Consume`]): этот же сабмит его принимает, обрабатывает и возвращает камере, на
+//!   экране остаётся изображение видоискателя, а не буфер камеры. Поэтому лизинг сразу уходящий, и
+//!   fence ЭТОГО сабмита (сигнал после всех его команд, включая барьер возврата) — безопасный сигнал;
 //! * без fence лизинг возвращается только когда GPU подтверждённо простаивает
 //!   ([`LeaseLedger::release_all_after_gpu_idle`]); иначе его можно лишь выбросить — это учтённая
 //!   утечка (решение 43), а не тихий возврат.
@@ -46,8 +50,12 @@ pub enum FrameChange {
     Keep,
     /// Сабмит показывает другой кадр камеры.
     Replace,
-    /// Сабмит показывает чёрный (потока нет): показанного кадра больше нет.
+    /// Сабмит показывает чёрный (потока нет) или изображение видоискателя без буфера камеры:
+    /// показанного кадра больше нет.
     Clear,
+    /// Сабмит читает новый кадр ОДИН раз и в нём же возвращает его камере (ISP видоискателя):
+    /// новый кадр сразу уходящий, прежний показанный (если был) — тоже.
+    Consume,
 }
 
 /// Лизинг, ушедший с экрана.
@@ -83,9 +91,11 @@ impl<Lease: CameraLease> LeaseLedger<Lease> {
     }
 
     /// Нужен ли сабмиту экспорт release-fence: есть ли кто-то, кого этот сабмит делает «уходящим»
-    /// или кто уже ждёт fence.
+    /// (прежний показанный кадр или поглощаемый новый) или кто уже ждёт fence.
     pub fn needs_release_fence(&self, change: FrameChange) -> bool {
-        !self.retiring.is_empty() || (self.displayed.is_some() && change != FrameChange::Keep)
+        !self.retiring.is_empty()
+            || change == FrameChange::Consume
+            || (self.displayed.is_some() && change != FrameChange::Keep)
     }
 
     /// Сколько лизингов ждут fence.
@@ -112,14 +122,29 @@ impl<Lease: CameraLease> LeaseLedger<Lease> {
                 }
             }
             FrameChange::Replace | FrameChange::Clear => {
-                if let Some(previous) = self.displayed.take() {
+                self.retire_displayed(serial);
+                self.displayed = new_frame;
+            }
+            FrameChange::Consume => {
+                // Возврат и прежнего, и нового кадра записан в ЭТОМ сабмите: оба ждут его fence.
+                self.retire_displayed(serial);
+                if let Some(consumed) = new_frame {
                     self.retiring.push(Retiring {
-                        lease: previous,
+                        lease: consumed,
                         released_by: serial,
                     });
                 }
-                self.displayed = new_frame;
             }
+        }
+    }
+
+    /// Показанный кадр уходит с экрана: его возврат записан в сабмите `serial`.
+    fn retire_displayed(&mut self, serial: SubmissionSerial) {
+        if let Some(previous) = self.displayed.take() {
+            self.retiring.push(Retiring {
+                lease: previous,
+                released_by: serial,
+            });
         }
     }
 
@@ -402,6 +427,52 @@ mod tests {
         assert!(
             journal.borrow().is_empty(),
             "утечка — не возврат: журнал возвратов пуст"
+        );
+        assert!(ledger.is_empty());
+    }
+
+    #[test]
+    fn consumed_frame_is_returned_with_the_fence_of_its_own_submit() {
+        let journal = Journal::default();
+        let mut ledger = LeaseLedger::default();
+        assert!(
+            ledger.needs_release_fence(FrameChange::Consume),
+            "поглощаемый кадр требует fence даже самым первым"
+        );
+        ledger.commit_submitted(FrameChange::Consume, Some(lease(&journal, 1)), SubmissionSerial(1));
+        assert!(
+            ledger.displayed().is_none(),
+            "на экране изображение видоискателя, а не буфер камеры"
+        );
+        assert_eq!(ledger.retiring_count(), 1);
+        assert_eq!(ledger.release_retiring_after_fence(real_fence()), 0);
+        assert_eq!(
+            *journal.borrow(),
+            vec![(1, Returned::AfterRealFence)],
+            "кадр отдан fence-ом своего же сабмита, следующего сабмита не ждём"
+        );
+        assert!(ledger.is_empty());
+    }
+
+    #[test]
+    fn consume_after_debug_mosaic_retires_the_displayed_frame_in_the_same_submit() {
+        let journal = Journal::default();
+        let mut ledger = LeaseLedger::default();
+        // Отладочная мозаика показывала кадр 1, затем переключились на ISP: кадр 2 поглощён.
+        ledger.commit_submitted(FrameChange::Replace, Some(lease(&journal, 1)), SubmissionSerial(1));
+        ledger.commit_submitted(FrameChange::Consume, Some(lease(&journal, 2)), SubmissionSerial(2));
+        assert_eq!(ledger.retiring_count(), 2);
+        assert_eq!(
+            ledger.release_retiring_completed(SubmissionSerial(1)),
+            0,
+            "серия 2 ещё идёт"
+        );
+        assert_eq!(ledger.release_retiring_completed(SubmissionSerial(2)), 2);
+        let mut returned = journal.borrow().clone();
+        returned.sort_by_key(|(id, _)| *id);
+        assert_eq!(
+            returned,
+            vec![(1, Returned::AfterSignaledFence), (2, Returned::AfterSignaledFence)]
         );
         assert!(ledger.is_empty());
     }

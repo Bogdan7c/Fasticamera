@@ -1,4 +1,4 @@
-//! Раздача готового кадра потребителям: ячейка видоискателя, кольцо, очереди «ни одного молча».
+//! Раздача готового кадра потребителям: ячейка видоискателя (политика — `viewfinder_cell`), кольцо, очереди «ни одного молча».
 
 use camera_contract::frame_passport::{FrameCaptureMeta, RawFramePassport};
 
@@ -38,26 +38,9 @@ impl HubState {
         deferred.release_unused_later(lease);
     }
 
-    /// `LatestWins`: в ячейке остаётся кадр с бо́льшим `sequence` (при публикации не по порядку
-    /// прибытия новый кадр может оказаться старше того, что уже лежит).
+    /// Доля видоискателю: что с ней делать, решает ячейка по действующей политике.
     fn give_to_viewfinder(&mut self, lease: &RawFrameLease, deferred: &mut Deferred) {
-        let incoming = lease.share();
-        let loser = match self.viewfinder_slot.take() {
-            Some(current) if current.passport().sequence > incoming.passport().sequence => {
-                self.viewfinder_slot = Some(current);
-                incoming
-            }
-            Some(current) => {
-                self.viewfinder_slot = Some(incoming);
-                current
-            }
-            None => {
-                self.viewfinder_slot = Some(incoming);
-                return;
-            }
-        };
-        StreamAccounting::bump(&self.accounting.dropped_superseded);
-        deferred.release_unused_later(loser);
+        self.viewfinder.accept(lease.share(), &self.accounting, deferred);
     }
 
     /// `KeepLast(N)`: кольцо хранится по возрастанию `sequence`; переполнение выбрасывает старейший.

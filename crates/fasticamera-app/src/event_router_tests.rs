@@ -19,6 +19,7 @@ use shell_contract::motion::{
 };
 use shell_contract::orientation::DeviceOrientation;
 use shell_contract::permission::CameraPermission;
+use shell_contract::power::{PowerSampling, PowerSamplingRequest, PowerSource, PowerSourceError};
 use shell_contract::surface::{
     PlatformWindow, SurfaceGeneration, SurfaceReleaseOutcome, SurfaceSize, surface_release_handoff,
 };
@@ -35,11 +36,14 @@ use crate::camera_service::CameraServices;
 use crate::camera_test_support::FakeCameraRig;
 use crate::gpu_services::{GpuDiagnostics, GpuServices, RenderStatusSource, ValidationState};
 use crate::gpu_test_support::{
-    FakeGpuDiagnostics, FakeRenderStatus, ReceiptPolicy, RecordingRoute, RoutedEvent, presenting_status,
+    FakeGpuDiagnostics, FakeRenderStatus, ReceiptPolicy, RecordingRenderControl, RecordingRoute, RoutedEvent,
+    presenting_status,
 };
 use crate::scenario::observing::{PlatformFacts, ThermalListenerReport};
 use crate::scenario::{Scenario, ScenarioConfig};
 
+#[path = "event_router_autostart_tests.rs"]
+mod autostart;
 #[path = "event_router_camera_tests.rs"]
 mod camera;
 #[path = "event_router_camera_scenario_tests.rs"]
@@ -48,6 +52,8 @@ mod camera_scenarios;
 mod raw_stream;
 #[path = "event_router_render_tests.rs"]
 mod render;
+#[path = "event_router_viewfinder_tests.rs"]
+mod viewfinder;
 
 /// Fake всей оболочки: записывает команды и отдаёт заранее заданные ответы.
 #[derive(Default)]
@@ -57,6 +63,8 @@ struct FakeShell {
     haptics_played: Mutex<Vec<HapticPattern>>,
     counters: Mutex<ShellCounters>,
     gyro_samples: Mutex<Vec<GyroSample>>,
+    /// Подставная батарея; `None` — батареи нет (честный отказ замера тока).
+    battery: Mutex<Option<Arc<shell_contract::power::fake::FakePowerSource>>>,
 }
 
 impl ShellCommands for FakeShell {
@@ -119,6 +127,18 @@ impl ShellDiagnostics for FakeShell {
 impl VsyncSource for FakeShell {
     fn start_vsync(&self) -> Result<VsyncSubscription, VsyncSourceError> {
         Err(VsyncSourceError::NoLooper)
+    }
+}
+
+/// Без подключённой батареи сценарии, которым нужен ток, видят честный отказ.
+impl PowerSource for FakeShell {
+    fn start_sampling(&self, request: PowerSamplingRequest) -> Result<PowerSampling, PowerSourceError> {
+        match self.battery.lock().expect("замок").as_ref() {
+            Some(battery) => battery.start_sampling(request),
+            None => Err(PowerSourceError::Unavailable {
+                reason: "fake-оболочка без батареи".to_owned(),
+            }),
+        }
     }
 }
 
@@ -192,6 +212,8 @@ struct Harness {
     /// Surface, которые сейчас держит получатель (не маршрутизатор).
     route_surfaces: Arc<Mutex<Vec<NativeSurface>>>,
     render: Arc<FakeRenderStatus>,
+    /// Регулировки рендера, которые слали сценарии и маршрутизатор.
+    control: Arc<RecordingRenderControl>,
     /// Сервис камеры, который видит маршрутизатор.
     camera: CameraServices,
     /// Движок камеры на fake-бэкенде (настоящий поток, подменена платформа); `None`, если сервис задан снаружи.
@@ -269,6 +291,7 @@ fn build_harness_with_camera(
     let (sender, events) = shell_event_channel(ShellQueueConfig::default()).expect("очередь");
     let shell = Arc::new(FakeShell::default());
     let output = CollectedOutput::default();
+    let control = RecordingRenderControl::new();
     let policy = Arc::new(ThermalPolicy::new(ThermalPolicyConfig::default()).expect("политика"));
     let (router, starter) = EventRouter::new(RouterParts {
         events,
@@ -280,6 +303,7 @@ fn build_harness_with_camera(
             diagnostics: shell.clone(),
             vsync: shell.clone(),
             facts: shell.clone(),
+            power: shell.clone(),
         },
         thermal_policy: Arc::clone(&policy),
         scenario_config: config,
@@ -289,11 +313,12 @@ fn build_harness_with_camera(
         },
         output: Box::new(output.clone()),
         route,
-        gpu: GpuServices {
-            render: Arc::clone(&render) as Arc<dyn RenderStatusSource>,
-            diagnostics: Arc::clone(&diagnostics) as Arc<dyn GpuDiagnostics>,
+        gpu: GpuServices::new(
+            Arc::clone(&render) as Arc<dyn RenderStatusSource>,
+            Arc::clone(&diagnostics) as Arc<dyn GpuDiagnostics>,
             render_config,
-        },
+            Arc::clone(&control) as Arc<dyn crate::viewfinder_control::RenderControl>,
+        ),
         camera: camera.clone(),
     });
     Harness {
@@ -306,6 +331,7 @@ fn build_harness_with_camera(
         route_log: Arc::default(),
         route_surfaces: Arc::default(),
         render,
+        control,
         camera,
         rig: None,
     }

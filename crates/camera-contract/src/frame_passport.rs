@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use serde::Serialize;
 
-use crate::capabilities::{Rational, SensorLevels, VendorProcessingFlags};
+use crate::capabilities::{ColorCalibrationSet, Rational, SensorLevels, VendorProcessingFlags};
 use crate::capture_result::{CaptureResultMeta, SensorTimestamp};
 use crate::geometry::{PixelRect, PixelSize, SensorOrientation};
 use crate::ids::CameraId;
@@ -41,6 +41,13 @@ pub struct StreamPassport {
     /// Частота, которая реально сконфигурирована (после возможного отката 4:3@60 → 30).
     pub frame_rate: TargetFrameRate,
     pub frame_rate_mechanism: FrameRateMechanism,
+    /// Цветовая калибровка этой камеры (DNG-матрицы на 1–2 иллюминанта) из характеристик.
+    ///
+    /// Живёт в паспорте (сессия 07), потому что ISP видоискателя видит только кадр с паспортом,
+    /// а не каталог камер: без матриц он не может перевести цвет сенсора в цвет экрана.
+    /// Пустой список — HAL калибровку не отдал; ISP обязан честно отказаться от цвета, а не
+    /// подставить чужие матрицы.
+    pub color_calibration: Vec<ColorCalibrationSet>,
 }
 
 /// Порядковый номер кадра внутри нашего потока (0, 1, 2…), который присваивает лизинг.

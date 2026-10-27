@@ -7,7 +7,9 @@ use serde::Serialize;
 /// «на руках» у этой части системы.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct PoolPlan {
-    /// Ячейка видоискателя (1) + кадры у потока рендера (`viewfinder_render_holds`).
+    /// Ячейки видоискателя (`max(1, viewfinder_jitter_buffer.max_queued)` — верхняя граница обеих
+    /// политик, переключаемых на ходу) + кадры у потока рендера (`viewfinder_render_holds`).
+    /// См. `RawFrameStreamConfig::viewfinder_pool_cells`.
     pub viewfinder: u32,
     /// Кадры, ждущие пару (`max_pending_frames`).
     pub pending_pairs: u32,

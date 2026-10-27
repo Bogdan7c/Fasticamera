@@ -1,0 +1,21 @@
+#version 450
+// Тест compute-набора (сессия 07): RAW10-кадр как readonly storage-буфер слов → копия в буфер записи.
+// Доказывает, что упакованный источник MosaicSource привязывается к compute-набору и читается.
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) readonly buffer PackedFrame {
+    uint words[];
+} packed_frame;
+layout(set = 0, binding = 1, std430) buffer CopiedWords {
+    uint words[];
+} copied;
+layout(push_constant) uniform WordCount {
+    uint count;
+} word_count;
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    if (index >= word_count.count) {
+        return;
+    }
+    copied.words[index] = packed_frame.words[index];
+}

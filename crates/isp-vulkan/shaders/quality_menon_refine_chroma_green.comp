@@ -1,0 +1,45 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Menon 2007, проход 6 (шаг уточнения, часть 2): красный и синий в зелёных узлах по уточнённому
+// зелёному (refine_chroma_at_green эталона): C = G' + ((C − G') ⊛ k_b), k_b = [0.5, 0, 0.5] вдоль
+// направления, где лежит нужный цвет. В красных и синих узлах плоскости копируются без изменений.
+
+#include "quality_common.glsl"
+
+layout(set = 0, binding = 0, std430) readonly buffer Red { float values[]; } red;
+layout(set = 0, binding = 1, std430) readonly buffer Blue { float values[]; } blue;
+layout(set = 0, binding = 2, std430) readonly buffer RefinedGreen { float values[]; } refined_green;
+layout(set = 0, binding = 3, std430) writeonly buffer RefinedRed { float values[]; } refined_red;
+layout(set = 0, binding = 4, std430) writeonly buffer RefinedBlue { float values[]; } refined_blue;
+
+// Разность «канал − уточнённый зелёный» в пикселе с индексом index.
+float difference_at(uint index, uint channel) {
+    float chroma = channel == CHANNEL_RED ? red.values[index] : blue.values[index];
+    precise float difference = chroma - refined_green.values[index];
+    return difference;
+}
+
+float refined_chroma_at_green(uint x, uint y, uint channel) {
+    ivec2 step = direction_step(chroma_direction_at_green(y, channel));
+    uint next = mirrored_index(x, y, step.x, step.y);
+    uint previous = mirrored_index(x, y, -step.x, -step.y);
+    precise float smoothed = 0.5 * difference_at(next, channel) + 0.5 * difference_at(previous, channel);
+    precise float value = refined_green.values[y * geometry.width + x] + smoothed;
+    return value;
+}
+
+void main() {
+    uint x;
+    uint y;
+    if (!pixel_coordinates(x, y)) {
+        return;
+    }
+    uint index = y * geometry.width + x;
+    if (channel_at(x, y) == CHANNEL_GREEN) {
+        refined_red.values[index] = refined_chroma_at_green(x, y, CHANNEL_RED);
+        refined_blue.values[index] = refined_chroma_at_green(x, y, CHANNEL_BLUE);
+    } else {
+        refined_red.values[index] = red.values[index];
+        refined_blue.values[index] = blue.values[index];
+    }
+}

@@ -51,6 +51,8 @@ pub struct DisplayTargetInfo {
     pub format: vk::Format,
     /// Цветовое пространство.
     pub color_space: vk::ColorSpaceKHR,
+    /// То же в нейтральном виде (ISP выбирает по нему охват выхода).
+    pub display_color_space: super::config::DisplayColorSpace,
     /// Физический размер картинок (с учётом поворота).
     pub extent: vk::Extent2D,
     /// Размер в прямой ориентации (как видит пользователь).

@@ -125,6 +125,7 @@ mod tests {
             sensor_orientation: SensorOrientation::Degrees90,
             frame_rate: TargetFrameRate::new(60).expect("60 к/с допустимо"),
             frame_rate_mechanism: FrameRateMechanism::HalDefault,
+            color_calibration: Vec::new(),
         }
     }
 

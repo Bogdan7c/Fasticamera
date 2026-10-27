@@ -155,7 +155,7 @@ scenario_resets_camera_permission() {
 }
 
 # Сценарии, которые делают скриншоты и потому нуждаются в каталоге артефактов (данные, не if по имени).
-readonly SCENARIOS_TAKING_SCREENSHOTS=(raw-stream raw-stream-endurance)
+readonly SCENARIOS_TAKING_SCREENSHOTS=(raw-stream raw-stream-endurance viewfinder)
 
 # Успех (0), если сценарий делает скриншоты.
 scenario_takes_screenshots() {

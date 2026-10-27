@@ -171,3 +171,59 @@ fn nan_light_is_black_not_white() {
     assert_eq!(crate::transfer::srgb_encode(f32::NAN), 0.0);
     assert_eq!(curve.map_pixel([0.5, f32::NAN, 0.2]), [0.0; 3]);
 }
+
+/// Формула модуля, вычисленная заново ТОЛЬКО из экспортированных чисел — так, как её считает шейдер.
+fn map_from_parameters(parameters: &super::ToneCurveParameters, scene: [f32; 3]) -> [f32; 3] {
+    let map_channel = |light: f32| {
+        if light <= 0.0 {
+            return 0.0;
+        }
+        let powered = light.powf(parameters.contrast);
+        (powered / (powered + parameters.scale_pow_contrast) * parameters.white_normalization).min(1.0)
+    };
+    let mut display = scene.map(map_channel);
+    // Порядок каналов по убыванию; при равенстве — R, G, B (как `channel_order`).
+    let mut order = [0usize, 1, 2];
+    order.sort_by(|&left, &right| scene[right].total_cmp(&scene[left]));
+    let [max, middle, min] = order;
+    let input_span = scene[max] - scene[min];
+    if input_span <= 0.0 || parameters.hue_preservation <= 0.0 {
+        return display;
+    }
+    let middle_share = (scene[middle] - scene[min]) / input_span;
+    let restored_middle = display[min] + middle_share * (display[max] - display[min]);
+    display[middle] += parameters.hue_preservation * (restored_middle - display[middle]);
+    display
+}
+
+#[test]
+fn exported_parameters_reproduce_tone_curve_bit_for_bit() {
+    // Неумолчательные числа, чтобы перепутанные поля экспорта не совпали случайно.
+    let settings = ToneCurveSettings {
+        contrast: 1.6,
+        scene_middle_gray: 0.1,
+        display_middle_gray: 0.22,
+        scene_white: 1.4,
+        hue_preservation: 0.6,
+    };
+    let curve = ToneCurve::resolve(&settings).unwrap();
+    let parameters = curve.parameters();
+    assert_eq!(parameters.contrast, settings.contrast);
+    assert_eq!(parameters.hue_preservation, settings.hue_preservation);
+    let pixels = [
+        [0.1, 0.1, 0.1],
+        [0.8, 0.3, 0.05],
+        [0.02, 0.5, 0.2],
+        [0.3, 0.01, 1.3],
+        [2.0, 0.7, 0.4],
+        [0.0, 0.04, 0.0],
+    ];
+    for pixel in pixels {
+        let expected = curve.map_pixel(pixel);
+        let reproduced = map_from_parameters(&parameters, pixel);
+        assert_eq!(expected.map(f32::to_bits), reproduced.map(f32::to_bits), "{pixel:?}");
+    }
+    // Белый сцены → ровно 1 через экспортированную нормировку.
+    let white = map_from_parameters(&parameters, [settings.scene_white; 3]);
+    assert!(white.iter().all(|channel| (channel - 1.0).abs() < 1e-6), "{white:?}");
+}

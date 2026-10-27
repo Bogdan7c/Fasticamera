@@ -250,7 +250,8 @@ impl EventRouter {
 
     /// Любой конец сценария (успех, провал, вытеснение другим, паника, дедлайн) проходит здесь, поэтому
     /// именно здесь политика камеры возвращается к умолчанию, а камера, которую открывал сценарий,
-    /// закрывается. Делается ДО строки результата: скрипт, увидев результат, застаёт камеру в штатном состоянии.
+    /// закрывается, а тронутые сценарием настройки рендера возвращаются. Делается ДО строки результата:
+    /// скрипт, увидев результат, застаёт камеру и рендер в штатном состоянии.
     fn finish(&mut self, name: &'static str, outcome: ScenarioOutcome) {
         let visibility = if self.display.is_resumed() {
             AppVisibility::Foreground
@@ -263,6 +264,12 @@ impl EventRouter {
         }
         if let Some(dispatch) = effects.release_after_hold {
             log_camera_dispatch(dispatch, "scenario_ended_release_after_hold");
+        }
+        // Настройки рендера, которые сценарий менял (рисовальщик, стадии ISP, стенд, линия кадра,
+        // частота экрана), возвращаются к штатным — тоже при любом конце сценария.
+        let restored = self.gpu.render_scenario_ended(self.services.commands.as_ref());
+        if !restored.is_empty() {
+            tracing::info!(target: "fasticamera::router", scenario = name, ?restored, "настройки рендера возвращены");
         }
         self.output.result(ScenarioReport {
             scenario: name.to_owned(),

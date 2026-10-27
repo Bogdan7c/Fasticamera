@@ -1,11 +1,37 @@
-//! Поиск инструментов сборки шейдеров (glslc, spirv-val из NDK) — чистая логика.
+//! Сборка шейдеров GLSL → SPIR-V (glslc и spirv-val из NDK): поиск инструментов и компиляция каталога.
 //!
-//! Файл подключается дважды: из `build.rs` (`#[path]`) и из `src/shaders.rs` под `cfg(test)`,
-//! чтобы логику поиска можно было тестировать обычным `cargo test`. Поэтому здесь только `std`
-//! и никаких обращений к окружению процесса: всё приходит через [`ToolchainEnvironment`].
+//! # Кто подключает файл
+//! * `crates/gpu-vulkan/build.rs` — `#[path = "build_support/shader_tools.rs"]`;
+//! * `crates/isp-vulkan/build.rs` (сессия 07) — `#[path = "../gpu-vulkan/build_support/shader_tools.rs"]`;
+//! * `crates/gpu-vulkan/src/shaders.rs` под `cfg(test)` — чтобы чистая логика поиска тестировалась
+//!   обычным `cargo test`.
+//!
+//! Поэтому файл САМОДОСТАТОЧЕН: только `std`, никаких `crate::`/`super::`, никаких путей относительно
+//! конкретного crate. Корень workspace ищется подъёмом от `CARGO_MANIFEST_DIR` вызывающего до каталога,
+//! где лежит `android/gradle.properties` ([`find_workspace_root`]); версия NDK берётся оттуда
+//! (`fasticamera.ndkVersion`), в коде её нет.
+//!
+//! # Использование из build.rs
+//! ```ignore
+//! #[path = "../gpu-vulkan/build_support/shader_tools.rs"]
+//! mod shader_tools;
+//! fn main() {
+//!     if let Err(message) = shader_tools::build_shader_blobs_from_cargo_env() {
+//!         eprintln!("\nошибка сборки шейдеров: {message}\n");
+//!         std::process::exit(1);
+//!     }
+//! }
+//! ```
+//! Результат — `$OUT_DIR/shader_blobs.rs` с константами `NAME_STAGE: &[u8]` (`name.comp` →
+//! `NAME_COMP`), подключается `include!(concat!(env!("OUT_DIR"), "/shader_blobs.rs"))`.
+//!
+//! Чистая логика (поиск путей, имена констант) не обращается к окружению процесса: всё приходит через
+//! [`ToolchainEnvironment`]. Окружение читают только функции раздела «сборка каталога».
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::{env, fs};
 
 /// Каталог инструментов шейдеров внутри NDK (после каталога версии).
 pub const SHADER_TOOLS_DIRECTORY: &str = "shader-tools";
@@ -170,6 +196,176 @@ pub fn constant_name_for(file_name: &str) -> Option<String> {
     Some(format!("{sanitized}_{}", extension.to_ascii_uppercase()))
 }
 
+// ---- сборка каталога шейдеров (читает окружение процесса, запускает инструменты) ----
+
+/// Целевая среда SPIR-V: Vulkan 1.3 (решение сессии 03).
+pub const TARGET_ENVIRONMENT: &str = "vulkan1.3";
+/// Имя генерируемого файла с константами в `OUT_DIR`.
+pub const BLOBS_FILE_NAME: &str = "shader_blobs.rs";
+/// Путь к `gradle.properties` относительно корня workspace.
+pub const GRADLE_PROPERTIES_RELATIVE: &str = "android/gradle.properties";
+
+/// Ищет корень workspace: первый каталог вверх от `start` (включая его), где есть
+/// `android/gradle.properties`. `None` — так высоко файла нет (сборка вне репозитория).
+pub fn find_workspace_root(start: &Path, exists: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
+    start
+        .ancestors()
+        .find(|candidate| exists(&candidate.join(GRADLE_PROPERTIES_RELATIVE)))
+        .map(Path::to_path_buf)
+}
+
+/// Читает окружение процесса в структуру для чистой логики поиска.
+pub fn read_environment(gradle_properties: Option<&Path>) -> ToolchainEnvironment {
+    let path_variable = |name: &str| env::var_os(name).filter(|value| !value.is_empty()).map(PathBuf::from);
+    let mut sdk_roots: Vec<PathBuf> = ["ANDROID_HOME", "ANDROID_SDK_ROOT"]
+        .iter()
+        .filter_map(|name| path_variable(name))
+        .collect();
+    if let Some(home) = path_variable("HOME") {
+        sdk_roots.push(home.join("Android").join("Sdk"));
+    }
+    let ndk_version = gradle_properties
+        .and_then(|path| fs::read_to_string(path).ok())
+        .and_then(|text| parse_gradle_property(&text, NDK_VERSION_PROPERTY));
+    ToolchainEnvironment {
+        glslc_override: path_variable("FASTICAMERA_GLSLC"),
+        ndk_home: path_variable("ANDROID_NDK_HOME"),
+        sdk_roots,
+        ndk_version,
+        host_tag: host_tag_for(env::consts::OS).to_owned(),
+    }
+}
+
+/// Исходники шейдеров каталога (отсортированы — сборка детерминирована).
+pub fn list_shader_sources(shaders_directory: &Path) -> Result<Vec<PathBuf>, String> {
+    let entries = fs::read_dir(shaders_directory)
+        .map_err(|error| format!("не удалось прочитать {}: {error}", shaders_directory.display()))?;
+    let mut sources: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| constant_name_for(name).is_some())
+        })
+        .collect();
+    sources.sort();
+    Ok(sources)
+}
+
+/// Запускает внешний инструмент; при ошибке возвращает его вывод (stdout и stderr).
+fn run_tool(mut command: Command, description: &str) -> Result<(), String> {
+    let output = command
+        .output()
+        .map_err(|error| format!("{description}: не удалось запустить: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{description} завершился с ошибкой ({}):\n{}{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ))
+    }
+}
+
+/// Компилирует все `*.vert|*.frag|*.comp` каталога `shaders_directory` (общие `*.glsl` подключаются
+/// `#include` из него же), проверяет `spirv-val` и пишет `out_directory/shader_blobs.rs`.
+pub fn compile_shader_directory(
+    shaders_directory: &Path,
+    out_directory: &Path,
+    environment: &ToolchainEnvironment,
+) -> Result<(), String> {
+    let exists = |path: &Path| path.is_file();
+    let glslc = resolve_glslc(environment, &exists).map_err(|error| error.to_string())?;
+    let spirv_val = sibling_tool(&glslc, "spirv-val", &exists).map_err(|error| error.to_string())?;
+
+    let mut generated =
+        String::from("// Сгенерировано build.rs: SPIR-V шейдеров, вшитый в бинарь. Не редактировать.\n\n");
+    for source in list_shader_sources(shaders_directory)? {
+        let file_name = source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| format!("странное имя файла шейдера: {}", source.display()))?;
+        let constant = constant_name_for(file_name).ok_or_else(|| format!("не шейдер: {file_name}"))?;
+        let spirv_path = out_directory.join(format!("{file_name}.spv"));
+
+        let mut compile = Command::new(&glslc);
+        compile
+            .arg(format!("--target-env={TARGET_ENVIRONMENT}"))
+            .arg("-Werror")
+            .arg("-O")
+            .arg("-I")
+            .arg(shaders_directory)
+            .arg("-o")
+            .arg(&spirv_path)
+            .arg(&source);
+        run_tool(compile, &format!("glslc {file_name}"))?;
+
+        let mut validate = Command::new(&spirv_val);
+        // spirv-val принимает значение --target-env отдельным аргументом (форма с `=` не работает).
+        validate.arg("--target-env").arg(TARGET_ENVIRONMENT).arg(&spirv_path);
+        run_tool(validate, &format!("spirv-val {file_name}"))?;
+
+        generated.push_str(&format!(
+            "/// SPIR-V шейдера `{file_name}`.\npub const {constant}: &[u8] = include_bytes!({:?});\n",
+            spirv_path.display().to_string()
+        ));
+    }
+    fs::write(out_directory.join(BLOBS_FILE_NAME), generated)
+        .map_err(|error| format!("не удалось записать {BLOBS_FILE_NAME}: {error}"))
+}
+
+/// Абсолютный путь к этому файлу по `file!()`: как есть, от корня workspace или от каталога crate.
+fn locate_this_file(workspace_root: Option<&Path>, manifest_directory: &Path) -> Option<PathBuf> {
+    let reported = Path::new(file!());
+    if reported.is_absolute() {
+        return Some(reported.to_path_buf());
+    }
+    workspace_root
+        .into_iter()
+        .chain(std::iter::once(manifest_directory))
+        .map(|base| base.join(reported))
+        .find(|candidate| candidate.is_file())
+}
+
+/// Полный шаг build.rs: каталог `shaders/` рядом с `Cargo.toml` вызывающего crate → `$OUT_DIR/shader_blobs.rs`.
+/// Печатает `cargo:rerun-if-*`, чтобы пересборка шла при смене шейдеров, NDK или переменных окружения.
+pub fn build_shader_blobs_from_cargo_env() -> Result<(), String> {
+    let manifest_directory = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").ok_or("нет CARGO_MANIFEST_DIR")?);
+    let out_directory = PathBuf::from(env::var_os("OUT_DIR").ok_or("нет OUT_DIR")?);
+    let shaders_directory = manifest_directory.join("shaders");
+    let workspace_root = find_workspace_root(&manifest_directory, &|path: &Path| path.is_file());
+    let gradle_properties = workspace_root
+        .as_ref()
+        .map(|root| root.join(GRADLE_PROPERTIES_RELATIVE));
+
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed={}", shaders_directory.display());
+    // Сам этот файл: правка общей логики сборки пересобирает шейдеры у всех подключивших crate.
+    // `file!()` относителен каталогу, из которого cargo запустил rustc (корень workspace или crate), а
+    // `rerun-if-changed` cargo понимает относительно crate, поэтому печатаем абсолютный существующий путь.
+    match locate_this_file(workspace_root.as_deref(), &manifest_directory) {
+        Some(path) => println!("cargo:rerun-if-changed={}", path.display()),
+        None => println!("cargo:warning=shader_tools.rs не найден по file!() = {}", file!()),
+    }
+    if let Some(path) = &gradle_properties {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+    for variable in [
+        "FASTICAMERA_GLSLC",
+        "ANDROID_NDK_HOME",
+        "ANDROID_HOME",
+        "ANDROID_SDK_ROOT",
+        "HOME",
+    ] {
+        println!("cargo:rerun-if-env-changed={variable}");
+    }
+    let environment = read_environment(gradle_properties.as_deref());
+    compile_shader_directory(&shaders_directory, &out_directory, &environment)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,6 +489,28 @@ mod tests {
         assert_eq!(constant_name_for("readme.md"), None);
         assert_eq!(constant_name_for("noextension"), None);
         assert_eq!(constant_name_for(".vert"), None);
+    }
+
+    #[test]
+    fn workspace_root_is_found_by_walking_up_to_gradle_properties() {
+        let marker = |path: &Path| path == Path::new("/repo/android/gradle.properties");
+        assert_eq!(
+            find_workspace_root(Path::new("/repo/crates/isp-vulkan"), &marker),
+            Some(PathBuf::from("/repo"))
+        );
+        assert_eq!(
+            find_workspace_root(Path::new("/repo/crates/gpu-vulkan"), &marker),
+            Some(PathBuf::from("/repo"))
+        );
+        assert_eq!(find_workspace_root(Path::new("/elsewhere/crate"), &marker), None);
+    }
+
+    #[test]
+    fn real_workspace_root_of_this_crate_has_gradle_properties() {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = find_workspace_root(manifest, &|path: &Path| path.is_file()).unwrap();
+        assert!(root.join("Cargo.toml").is_file(), "{}", root.display());
+        assert!(manifest.starts_with(&root));
     }
 
     #[test]

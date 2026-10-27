@@ -2,7 +2,7 @@
 //!
 //! Публичные типы и ручки; логика — в подмодулях:
 //! `hub` (замок и порядок замков), `state` (эпохи, пул), `pairing` (спаривание),
-//! `publish` (раздача), `deferred` (возвраты вне замка).
+//! `publish` (раздача), `viewfinder_cell` (политика видоискателя), `deferred` (возвраты вне замка).
 
 mod deferred;
 mod hub;
@@ -11,6 +11,7 @@ mod publish;
 mod state;
 #[cfg(test)]
 mod tests;
+mod viewfinder_cell;
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -27,6 +28,8 @@ use crate::counters::StreamAccounting;
 use crate::lease::RawFrameLease;
 use crate::pool::PoolPlan;
 use crate::producer_frame::ProducerFrame;
+use crate::viewfinder_pacing::{ViewfinderPacing, ViewfinderPacingSwitch};
+use viewfinder_cell::CellTake;
 
 /// Номер сессии потока. Кадры и результаты прошлой эпохи не смешиваются с новой.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
@@ -75,9 +78,11 @@ pub enum ResultOutcome {
 /// Ответ видоискателю.
 #[derive(Debug)]
 pub enum ViewfinderPoll {
-    /// Самый свежий кадр после прошлого опроса.
+    /// Кадр для этого vsync: самый свежий (`LatestWins`) или старейший непоказанный (буфер с
+    /// запасом). Один и тот же кадр не выдаётся дважды.
     NewFrame(RawFrameLease),
-    /// Поток идёт, нового кадра нет — показывать прежний.
+    /// Поток идёт, кадра для этого vsync нет (пусто, буфер заполняется или запас исчерпан) —
+    /// показывать прежний.
     NoNewFrame,
     /// Потока нет (не начат или остановлен): держать прошлый кадр нельзя — reader ждёт
     /// возврата всех буферов, чтобы удалиться.
@@ -122,7 +127,8 @@ impl RawFrameStream {
         }
     }
 
-    /// Ручка видоискателя (`LatestWins`). Потребитель один; повторный вызов отдаёт ту же ячейку.
+    /// Ручка видоискателя (политика — [`ViewfinderPacing`]). Потребитель один; повторный вызов
+    /// отдаёт ту же ячейку.
     pub fn viewfinder(&self) -> ViewfinderFrames {
         ViewfinderFrames {
             hub: Arc::clone(&self.hub),
@@ -148,6 +154,20 @@ impl RawFrameStream {
 
     pub fn counters(&self) -> RawStreamCounters {
         self.hub.accounting.snapshot()
+    }
+
+    /// Переключает политику видоискателя на ходу (A/B на телефоне, решение 53). Зовёт только
+    /// владелец потока (composition root). Лизинги не теряются и не выдаются дважды: при переходе
+    /// к `LatestWins` в ячейке остаётся самый новый кадр (прочие — `dropped_superseded`), при
+    /// переходе к буферу он заново заполняется. План пула не меняется: он уже рассчитан на обе.
+    pub fn set_viewfinder_pacing(&self, pacing: ViewfinderPacing) -> ViewfinderPacingSwitch {
+        self.hub
+            .with_state(|state, deferred| state.viewfinder.switch_to(pacing, &state.accounting, deferred))
+    }
+
+    /// Действующая политика видоискателя.
+    pub fn viewfinder_pacing(&self) -> ViewfinderPacing {
+        self.hub.with_state(|state, _| state.viewfinder.pacing())
     }
 }
 
@@ -202,29 +222,28 @@ impl RawFrameProducer {
     }
 
     /// Сессия закончилась: ожидающие пары кадры отпускаются (`frames_missing_meta_stopped`),
-    /// ячейка и кольцо пустеют, видоискатель получает `StreamInactive`.
+    /// ячейка (`viewfinder_flushed`) и кольцо пустеют, видоискатель получает `StreamInactive`.
     pub fn end_stream(&self, epoch: StreamEpoch) {
         self.hub.with_state(|state, deferred| state.end_stream(epoch, deferred))
     }
 }
 
-/// Потребитель видоискателя (`LatestWins`).
+/// Потребитель видоискателя (политика — [`ViewfinderPacing`]).
 pub struct ViewfinderFrames {
     hub: Arc<StreamHub>,
 }
 
 impl ViewfinderFrames {
-    /// Забрать самый свежий кадр. Попутно истекают ожидания пары к `now`.
-    pub fn poll_latest(&self, now: Instant) -> ViewfinderPoll {
+    /// Кадр для ОДНОГО показа на vsync. Звать ровно один раз на кадр, который будет показан:
+    /// при буфере с запасом каждый вызов расходует кадр очереди, лишний опрос «съел» бы кадр
+    /// следующего vsync. Попутно истекают ожидания пары к `now`.
+    pub fn poll_for_vsync(&self, now: Instant) -> ViewfinderPoll {
         self.hub.with_state(|state, deferred| {
             state.expire_pending(now, deferred);
-            match state.viewfinder_slot.take() {
-                Some(lease) => {
-                    StreamAccounting::bump(&state.accounting.viewfinder_delivered);
-                    ViewfinderPoll::NewFrame(lease)
-                }
-                None if state.active => ViewfinderPoll::NoNewFrame,
-                None => ViewfinderPoll::StreamInactive,
+            match state.viewfinder.take(state.active, &state.accounting) {
+                CellTake::Frame(lease) => ViewfinderPoll::NewFrame(lease),
+                CellTake::Nothing if state.active => ViewfinderPoll::NoNewFrame,
+                CellTake::Nothing => ViewfinderPoll::StreamInactive,
             }
         })
     }

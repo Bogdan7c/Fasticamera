@@ -24,6 +24,7 @@ camera-android.workspace = true
 camera-contract.workspace = true
 camera-core.workspace = true
 gpu-vulkan.workspace = true
+isp-vulkan.workspace = true
 raw-frame-stream.workspace = true
 render-loop.workspace = true
 shell-contract.workspace = true
@@ -38,6 +39,8 @@ tracing-subscriber.workspace = true
 # Fake-бэкенд движка и образцы камер OnePlus 11: функциональные тесты сервиса камеры и сценариев.
 camera-contract = { workspace = true, features = ["fixtures"] }
 camera-core = { workspace = true, features = ["fake-backend"] }
+# Подставной источник батареи: функциональные тесты сценариев замера тока (сессия 07).
+shell-contract = { workspace = true, features = ["fake-power-source"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni.workspace = true

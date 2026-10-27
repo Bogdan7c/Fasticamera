@@ -1,14 +1,18 @@
 //! План пула и сквозной путь кадра до потребителя.
 
-use super::support::{Rig, signal, unsignaled_fence};
+use super::support::{Rig, latest_wins_config, signal, unsignaled_fence};
 use crate::config::RawFrameStreamConfig;
 use crate::stream::{OfferOutcome, ViewfinderPoll};
 
 const RAW10_4096X3072_BYTES: u64 = 15_728_640;
 
+/// Буфер видоискателя (решение 53) добавил к плану сессии 05 (6 буферов) одну ячейку: очередь 2
+/// вместо ячейки 1. План один и тот же при любой стартовой политике — переключение на ходу.
 #[test]
-fn default_pool_plan_sums_to_six_buffers() {
+fn default_pool_plan_sums_to_seven_buffers_for_either_viewfinder_pacing() {
+    let latest_wins = Rig::new(latest_wins_config()).start.pool;
     let rig = Rig::new(RawFrameStreamConfig::default());
+    assert_eq!(latest_wins, rig.start.pool);
     let pool = rig.start.pool;
     assert_eq!(
         (
@@ -18,16 +22,16 @@ fn default_pool_plan_sums_to_six_buffers() {
             pool.lossless,
             pool.slack
         ),
-        (3, 2, 0, 0, 1)
+        (4, 2, 0, 0, 1)
     );
-    assert_eq!(pool.reader_max_images(), 6);
+    assert_eq!(pool.reader_max_images(), 7);
 }
 
 #[test]
-fn ring_and_lossless_queue_grow_the_pool_to_twelve_buffers() {
+fn ring_and_lossless_queue_grow_the_pool_to_thirteen_buffers() {
     let mut rig = Rig::new(RawFrameStreamConfig {
         snapshot_ring_budget_bytes: 4 * RAW10_4096X3072_BYTES,
-        ..RawFrameStreamConfig::default()
+        ..latest_wins_config()
     });
     let _lossless = rig.stream.attach_lossless_consumer(2.try_into().expect("ёмкость"));
     assert_eq!(
@@ -35,18 +39,18 @@ fn ring_and_lossless_queue_grow_the_pool_to_twelve_buffers() {
         "очередь входит в план со следующего begin_stream"
     );
     rig.restart();
-    assert_eq!(rig.start.pool.reader_max_images(), 12);
+    assert_eq!(rig.start.pool.reader_max_images(), 13);
 }
 
 #[test]
 fn a_frame_travels_from_the_camera_to_the_renderer_with_its_own_metadata_and_goes_back_after_the_gpu() {
-    let rig = Rig::new(RawFrameStreamConfig::default());
+    let rig = Rig::new(latest_wins_config());
     let viewfinder = rig.stream.viewfinder();
 
     // Камера: кадр, потом результат. Рендер: опрос, импорт буфера, возврат с fence-ом GPU.
     assert_eq!(rig.offer_frame(16_000, 0), OfferOutcome::AwaitingResult);
     rig.offer_result(16_000, 2);
-    let ViewfinderPoll::NewFrame(lease) = viewfinder.poll_latest(rig.at(3)) else {
+    let ViewfinderPoll::NewFrame(lease) = viewfinder.poll_for_vsync(rig.at(3)) else {
         panic!("кадр должен дойти до видоискателя");
     };
 
@@ -83,22 +87,22 @@ fn a_frame_travels_from_the_camera_to_the_renderer_with_its_own_metadata_and_goe
 
 #[test]
 fn viewfinder_handles_share_one_slot() {
-    let rig = Rig::new(RawFrameStreamConfig::default());
+    let rig = Rig::new(latest_wins_config());
     let first = rig.stream.viewfinder();
     let second = rig.stream.viewfinder();
     rig.offer_result(1_000, 0);
     rig.offer_frame(1_000, 0);
 
-    let ViewfinderPoll::NewFrame(lease) = first.poll_latest(rig.at(0)) else {
+    let ViewfinderPoll::NewFrame(lease) = first.poll_for_vsync(rig.at(0)) else {
         panic!("кадр должен быть в общей ячейке");
     };
-    assert!(matches!(second.poll_latest(rig.at(0)), ViewfinderPoll::NoNewFrame));
+    assert!(matches!(second.poll_for_vsync(rig.at(0)), ViewfinderPoll::NoNewFrame));
     lease.release_unused();
 }
 
 #[test]
 fn cpu_copies_are_counted() {
-    let rig = Rig::new(RawFrameStreamConfig::default());
+    let rig = Rig::new(latest_wins_config());
     rig.producer.note_cpu_copy();
     rig.producer.note_cpu_copy();
     assert_eq!(rig.stream.counters().cpu_copies, 2);

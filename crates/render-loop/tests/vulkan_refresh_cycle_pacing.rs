@@ -101,6 +101,9 @@ fn run_until_pacing_verdict(report_refresh_cycle: bool) -> render_loop::thread::
         },
         clock,
         commands: Arc::new(FakeCommands::default()),
+        performance_hints: std::sync::Arc::new(shell_contract::performance_hint::NoPerformanceHints::new(
+            "тест без ADPF",
+        )),
     })
     .expect("поток запускается");
     let inbox = handle.inbox();

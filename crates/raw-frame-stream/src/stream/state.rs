@@ -13,6 +13,7 @@ use camera_contract::raw_format::RawFormat;
 use shell_contract::sync_fence::GpuWaitFence;
 
 use super::deferred::Deferred;
+use super::viewfinder_cell::ViewfinderCell;
 use super::{StreamDefect, StreamEpoch, StreamStart};
 use crate::config::RawFrameStreamConfig;
 use crate::counters::StreamAccounting;
@@ -56,7 +57,8 @@ pub(super) struct HubState {
     pub(super) pending: VecDeque<PendingFrame>,
     /// В порядке прибытия; вытесняется старейший.
     pub(super) buffered_results: VecDeque<BufferedResult>,
-    pub(super) viewfinder_slot: Option<RawFrameLease>,
+    /// Ячейка видоискателя с действующей политикой (`LatestWins` или буфер с запасом).
+    pub(super) viewfinder: ViewfinderCell,
     /// По возрастанию `sequence` (старейший спереди).
     pub(super) ring: VecDeque<RawFrameLease>,
     pub(super) ring_capacity: usize,
@@ -76,6 +78,7 @@ fn frame_bytes(passport: &StreamPassport) -> u64 {
 impl HubState {
     pub(super) fn new(config: RawFrameStreamConfig, accounting: Arc<StreamAccounting>) -> Self {
         Self {
+            viewfinder: ViewfinderCell::new(config.viewfinder_pacing, config.viewfinder_jitter_buffer),
             config,
             accounting,
             epoch: StreamEpoch(0),
@@ -84,7 +87,6 @@ impl HubState {
             next_sequence: 0,
             pending: VecDeque::new(),
             buffered_results: VecDeque::new(),
-            viewfinder_slot: None,
             ring: VecDeque::new(),
             ring_capacity: 0,
             lossless: Vec::new(),
@@ -141,7 +143,7 @@ impl HubState {
     fn pool_plan(&self) -> PoolPlan {
         let lossless_total: usize = self.lossless.iter().map(|queue| queue.capacity).sum();
         PoolPlan {
-            viewfinder: 1 + self.config.viewfinder_render_holds,
+            viewfinder: self.config.viewfinder_pool_cells(),
             pending_pairs: self.config.max_pending_frames,
             snapshot_ring: u32::try_from(self.ring_capacity).unwrap_or(u32::MAX),
             lossless: u32::try_from(lossless_total).unwrap_or(u32::MAX),
@@ -158,9 +160,7 @@ impl HubState {
         for _ in self.buffered_results.drain(..) {
             StreamAccounting::bump(&self.accounting.results_unpaired);
         }
-        if let Some(lease) = self.viewfinder_slot.take() {
-            deferred.release_unused_later(lease);
-        }
+        self.viewfinder.flush(&self.accounting, deferred);
         for lease in self.ring.drain(..) {
             deferred.release_unused_later(lease);
         }

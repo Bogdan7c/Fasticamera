@@ -65,6 +65,8 @@ pub fn build_stream_passport(
         sensor_orientation: capabilities.sensor_orientation,
         frame_rate: stream.frame_rate,
         frame_rate_mechanism: mechanism,
+        // Матрицы цвета идут в паспорт как есть: ISP видоискателя (07) видит только паспорт.
+        color_calibration: raw.color_calibration.clone(),
     })
 }
 

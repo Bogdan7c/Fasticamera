@@ -2,7 +2,7 @@
 //!
 //! Потребители (экран камеры, маршрутизатор, сценарии) видят только трейты; этот тип —
 //! единственная реализация для телефона. Все методы неблокирующие: команды уходят в очередь
-//! потока платформы, датчики работают в своих потоках.
+//! потока платформы, датчики и опрос батареи работают в своих потоках.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,14 +16,17 @@ use shell_contract::motion::{
     AngularVelocity, GyroRequest, GyroSample, GyroSubscription, MotionRing, MotionSource, OrientationSubscription,
     SensorSourceError,
 };
+use shell_contract::power::{PowerSampleRing, PowerSampling, PowerSamplingRequest, PowerSource, PowerSourceError};
 use shell_contract::thermal::{HeadroomForecast, ThermalHeadroom, ThermalSource, ThermalSourceError, ThermalStatus};
 use shell_contract::vsync::{VsyncSlot, VsyncSource, VsyncSourceError, VsyncSubscription};
 
 use super::choreographer_thread::start_choreographer_thread;
 use super::platform_calls::PlatformCall;
+use super::power_sampler::{PowerSamplerThread, start_power_sampler};
 use super::runtime::{ClaimedSensor, ShellRuntime};
 use super::sensor_thread::{SensorThread, SensorThreadSpec, event_vector, start_sensor_thread};
 use super::thermal_monitor::ThermalListenerState;
+use crate::detached_worker::ClaimRelease;
 use crate::haptic_plan::{HapticCapabilities, plan_haptic};
 use crate::orientation_classifier::{AccelerationSample, OrientationClassifier};
 use crate::surface_registry::frame_rate_outcome;
@@ -252,6 +255,55 @@ impl ThermalSource for AndroidShellServices {
             .thermal()
             .source()
             .map_or(ThermalHeadroom::Unavailable, |source| source.headroom(forecast))
+    }
+}
+
+/// Держит поток опроса батареи. Уничтожение только просит поток остановиться (не ждёт его);
+/// флаг занятости освобождает сам поток при выходе (см. `power_sampler`).
+struct PowerSamplingLease {
+    _thread: PowerSamplerThread,
+}
+
+impl PowerSource for AndroidShellServices {
+    /// Только проверки и запуск потока `fasticamera-power`: ни одного вызова платформы на
+    /// потоке вызывающего. Первое показание появится в кольце после первого чтения потоком.
+    fn start_sampling(&self, request: PowerSamplingRequest) -> Result<PowerSampling, PowerSourceError> {
+        if self.runtime.attached_platform().is_none() {
+            return Err(PowerSourceError::NotAttached);
+        }
+        // JavaVM известна с JNI_OnLoad; отказ здесь — нарушение порядка запуска процесса.
+        let vm = jni::JavaVM::singleton().map_err(|error| PowerSourceError::Unavailable {
+            reason: format!("JavaVM не известна: {error}"),
+        })?;
+        if !self.runtime.try_claim_sensor(ClaimedSensor::BatteryPower) {
+            return Err(PowerSourceError::AlreadySampling);
+        }
+        // Флаг уже занят: освобождение уходит в поток (сработает при его выходе), а при ошибке
+        // запуска потока — сразу, вместе с несозданным замыканием.
+        let claim = {
+            let runtime = Arc::clone(&self.runtime);
+            ClaimRelease::new(move || runtime.release_sensor(ClaimedSensor::BatteryPower))
+        };
+        let ring = Arc::new(PowerSampleRing::new(request.ring_capacity));
+        let thread = start_power_sampler(
+            vm,
+            Arc::clone(&self.runtime),
+            Arc::clone(&ring),
+            request.period.duration(),
+            request.current_now_unit,
+            claim,
+        )
+        .map_err(|error| PowerSourceError::PlatformCallFailed {
+            reason: format!("поток опроса батареи не создан: {error}"),
+        })?;
+        let lease = PowerSamplingLease { _thread: thread };
+        tracing::info!(
+            target: "fasticamera::power",
+            period_ms = request.period.duration().as_millis(),
+            ring_capacity = request.ring_capacity.get(),
+            "опрос батареи запущен"
+        );
+        Ok(PowerSampling::new(ring, Box::new(lease)))
     }
 }
 

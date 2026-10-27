@@ -31,6 +31,8 @@ pub enum RunFailure {
     RenderUnavailable { reason: String },
     /// `raw-stream`: камера пошла, а рендер так и не показал её кадр за срок.
     RenderNeverShowedCamera { last_seen: &'static str },
+    /// Поток камеры прервался во время замера (состояние ушло из `Streaming`).
+    StreamInterrupted { state: &'static str },
     /// `camera-evict`: вытеснения не случилось за срок.
     #[cfg(any(test, feature = "debug-scenarios"))]
     NeverEvicted { last_state: &'static str },
@@ -62,6 +64,9 @@ impl RunFailure {
             }
             RunFailure::RenderNeverShowedCamera { last_seen } => {
                 format!("рендер не показал ни одного кадра камеры за отведённое время ({last_seen})")
+            }
+            RunFailure::StreamInterrupted { state } => {
+                format!("поток камеры прервался во время замера (состояние: {state})")
             }
             #[cfg(any(test, feature = "debug-scenarios"))]
             RunFailure::NeverEvicted { last_state } => {

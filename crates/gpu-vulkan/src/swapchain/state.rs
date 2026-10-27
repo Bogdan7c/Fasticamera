@@ -13,7 +13,7 @@ use ash::vk;
 use shell_contract::surface::SurfaceSize;
 
 use super::SwapchainError;
-use super::config::DisplayTargetConfig;
+use super::config::{DisplayColorPreference, DisplayTargetConfig};
 use super::display_timing;
 use super::fault_injection::{FaultPlan, InjectedFault};
 use super::frame::{AcquireOutcome, DisplayFrame, LayoutTransition, PresentOutcome, PresentRequest};
@@ -27,6 +27,23 @@ use crate::context::GpuContext;
 use crate::error::GpuError;
 use crate::frame_ring::{FrameRing, SlotIndex, SlotWait, timeout_nanos};
 use crate::live_objects::OwnedSurface;
+
+/// Какое предпочтение цвета можно реально передать политике: Display P3 без включённого расширения
+/// instance `VK_EXT_swapchain_colorspace` использовать нельзя (пространство не определено), поэтому
+/// тогда остаётся только sRGB.
+fn effective_display_color(context: &GpuContext, preference: DisplayColorPreference) -> DisplayColorPreference {
+    let extension_name = ash::ext::swapchain_colorspace::NAME.to_string_lossy();
+    let extension_enabled = context
+        .capabilities()
+        .enabled_instance_extensions
+        .iter()
+        .any(|enabled| *enabled == extension_name);
+    if extension_enabled {
+        preference
+    } else {
+        DisplayColorPreference::SrgbOnly
+    }
+}
 
 /// Как классифицирован результат `vkAcquireNextImageKHR`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,6 +113,7 @@ impl TargetState {
         let support = super::policy::SurfaceSupport::from_vk(&query.capabilities);
         let request = PlanRequest {
             color_depth: config.color_depth,
+            display_color: effective_display_color(context, config.display_color),
             requested_size: config.requested_size,
         };
         let plan = match plan_swapchain(&support, &query.formats, &request)? {
@@ -170,6 +188,7 @@ impl TargetState {
         DisplayTargetInfo {
             format: plan.surface_format.format,
             color_space: plan.surface_format.color_space,
+            display_color_space: plan.display_color_space,
             extent: plan.extent,
             logical_extent: plan.logical_extent(),
             transform: plan.transform,
@@ -261,6 +280,7 @@ impl TargetState {
                 extent: plan.extent,
             },
             format: plan.surface_format.format,
+            display_color_space: plan.display_color_space,
             transform: plan.transform,
             frame_index,
             swapchain_generation: self.generation,
@@ -466,6 +486,7 @@ impl TargetState {
         let support = super::policy::SurfaceSupport::from_vk(&query.capabilities);
         let request = PlanRequest {
             color_depth: self.config.color_depth,
+            display_color: effective_display_color(&self.context, self.config.display_color),
             requested_size: self.config.requested_size,
         };
         let plan = match plan_swapchain(&support, &query.formats, &request)? {

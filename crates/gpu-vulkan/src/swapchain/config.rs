@@ -52,6 +52,53 @@ pub enum ColorDepthPreference {
     EightBitOnly,
 }
 
+/// Предпочтение цветового пространства показа (сессия 07).
+///
+/// Экран телефона широкоцветный: видоискатель в Display P3 показывает насыщенные цвета сцены, которые
+/// в sRGB пришлось бы обрезать. P3 выбирается только вместе с 10-битным UNORM-форматом (8 бит на
+/// более широкий охват дают заметные ступеньки) и только если включено расширение instance
+/// `VK_EXT_swapchain_colorspace`; иначе — прежний выбор sRGB.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DisplayColorPreference {
+    /// Display P3 + 10-бит UNORM, если surface предлагает; иначе sRGB.
+    #[default]
+    PreferDisplayP3,
+    /// Только sRGB (`SRGB_NONLINEAR`), P3 даже не рассматривается.
+    SrgbOnly,
+}
+
+/// Цветовое пространство, в котором дисплей интерпретирует значения картинки swapchain.
+///
+/// Нейтральная замена `vk::ColorSpaceKHR` для потребителей: ISP по нему выбирает охват выхода
+/// (матрица XYZ → экран и OETF). Оба варианта — нелинейные с кривой sRGB (у Display P3 та же
+/// передаточная функция, другие первичные цвета). Значения пишутся «как есть» в UNORM-формат.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DisplayColorSpace {
+    /// sRGB / BT.709 первичные, кривая sRGB (`VK_COLOR_SPACE_SRGB_NONLINEAR_KHR`).
+    Srgb,
+    /// Display P3 первичные (D65), кривая sRGB (`VK_COLOR_SPACE_DISPLAY_P3_NONLINEAR_EXT`).
+    DisplayP3,
+}
+
+impl DisplayColorSpace {
+    /// Из цветового пространства Vulkan; `None` — пространство, которое политика не выбирает.
+    pub fn from_vk(color_space: ash::vk::ColorSpaceKHR) -> Option<Self> {
+        match color_space {
+            ash::vk::ColorSpaceKHR::SRGB_NONLINEAR => Some(Self::Srgb),
+            ash::vk::ColorSpaceKHR::DISPLAY_P3_NONLINEAR_EXT => Some(Self::DisplayP3),
+            _ => None,
+        }
+    }
+
+    /// В цветовое пространство Vulkan.
+    pub fn to_vk(self) -> ash::vk::ColorSpaceKHR {
+        match self {
+            Self::Srgb => ash::vk::ColorSpaceKHR::SRGB_NONLINEAR,
+            Self::DisplayP3 => ash::vk::ColorSpaceKHR::DISPLAY_P3_NONLINEAR_EXT,
+        }
+    }
+}
+
 /// Параметры создания [`crate::swapchain::DisplayTarget`].
 #[derive(Debug, Clone)]
 pub struct DisplayTargetConfig {
@@ -69,6 +116,8 @@ pub struct DisplayTargetConfig {
     pub present_fence_capacity: usize,
     /// Какую глубину цвета предпочесть.
     pub color_depth: ColorDepthPreference,
+    /// Какое цветовое пространство показа предпочесть (Display P3 требует 10 бит и расширения instance).
+    pub display_color: DisplayColorPreference,
     /// Желаемый размер (в обычной ориентации, как сообщил `surfaceChanged`). Используется, только если
     /// surface не диктует размер сама (`currentExtent` не определён — так у headless-стенда ПК).
     pub requested_size: Option<SurfaceSize>,
@@ -92,6 +141,7 @@ impl Default for DisplayTargetConfig {
             teardown_timeout: Self::DEFAULT_TEARDOWN_TIMEOUT,
             present_fence_capacity: Self::DEFAULT_PRESENT_FENCE_CAPACITY,
             color_depth: ColorDepthPreference::PreferTenBit,
+            display_color: DisplayColorPreference::PreferDisplayP3,
             requested_size: None,
         }
     }
@@ -121,5 +171,17 @@ mod tests {
         assert_eq!(config.frames_in_flight.get(), 2);
         assert_eq!(config.acquire_timeout, Duration::from_millis(100));
         assert_eq!(config.color_depth, ColorDepthPreference::PreferTenBit);
+        assert_eq!(config.display_color, DisplayColorPreference::PreferDisplayP3);
+    }
+
+    #[test]
+    fn display_color_space_round_trips_and_rejects_unknown_spaces() {
+        for space in [DisplayColorSpace::Srgb, DisplayColorSpace::DisplayP3] {
+            assert_eq!(DisplayColorSpace::from_vk(space.to_vk()), Some(space));
+        }
+        assert_eq!(
+            DisplayColorSpace::from_vk(ash::vk::ColorSpaceKHR::EXTENDED_SRGB_LINEAR_EXT),
+            None
+        );
     }
 }

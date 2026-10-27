@@ -173,7 +173,16 @@ impl FakeCameraRig {
         })
     }
 
-    pub fn with_config(config: CameraConfig) -> Self {
+    /// Движок с заданными настройками, но БЕЗ автозапуска видоискателя: тесты сценариев и
+    /// жизненного цикла начинают с закрытой камеры и сами решают, что открыть. Автозапуск
+    /// проверяют через [`FakeCameraRig::with_product_config`].
+    pub fn with_config(mut config: CameraConfig) -> Self {
+        config.viewfinder_autostart.enabled = false;
+        Self::with_product_config(config)
+    }
+
+    /// Движок с настройками как у продукта, включая `camera.viewfinder_autostart` как есть.
+    pub fn with_product_config(config: CameraConfig) -> Self {
         let control = FakeBackendControl::new();
         let diagnostics = Arc::new(BackendDiagnostics::new(config.android.failure_history_capacity));
         let close_device_delay_ms = Arc::new(AtomicU64::new(0));

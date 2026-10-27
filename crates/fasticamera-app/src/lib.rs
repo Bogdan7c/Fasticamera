@@ -33,6 +33,7 @@ mod gpu_test_support;
 pub mod jni_boundary;
 pub mod logging;
 pub mod panic_report;
+pub mod power_measurement;
 pub mod raw_stream_scenario_config;
 pub mod raw_stream_services;
 #[cfg(test)]
@@ -44,6 +45,11 @@ pub mod result_line;
 pub mod runtime;
 pub mod runtime_config;
 pub mod scenario;
+pub mod viewfinder_autostart;
+pub mod viewfinder_control;
+pub mod viewfinder_latency_profile;
+pub mod viewfinder_pacing_control;
+pub mod viewfinder_scenario_config;
 
 #[cfg(target_os = "android")]
 mod jni_exports;

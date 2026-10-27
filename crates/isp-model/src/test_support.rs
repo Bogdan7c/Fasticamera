@@ -89,5 +89,6 @@ pub(crate) fn main_camera_passport() -> StreamPassport {
             Err(error) => panic!("60 к/с допустимо: {error}"),
         },
         frame_rate_mechanism: FrameRateMechanism::HalDefault,
+        color_calibration: main_camera_calibration(),
     }
 }

@@ -3,8 +3,10 @@
 //! с синтетическими возможностями (в том числе «как на телефоне»: поворот 90°, `max = 0`).
 //!
 //! Решения (все ссылки — на спецификацию Vulkan, раздел `VkSwapchainCreateInfoKHR`):
-//! * формат — 10-бит (если просили и есть) → 8-бит; всегда UNORM + `SRGB_NONLINEAR`. sRGB-кодированные
-//!   форматы НЕ выбираем: `TestPattern` целочисленно точен только на UNORM (см. `ColorDepth::for_format`);
+//! * формат — при предпочтении Display P3 сначала 10-бит UNORM + `DISPLAY_P3_NONLINEAR_EXT` (сессия 07),
+//!   затем 10-бит (если просили и есть) → 8-бит с `SRGB_NONLINEAR`; всегда UNORM. sRGB-кодированные
+//!   форматы НЕ выбираем: `TestPattern` целочисленно точен только на UNORM (см. `ColorDepth::for_format`),
+//!   а ISP сам кодирует значения кривой экрана;
 //! * число картинок — `minImageCount + 1`, но не больше `maxImageCount` (0 = предела нет);
 //! * размер — если `currentExtent` определён, обязан совпасть с ним (VUID `imageExtent-01274`);
 //!   иначе берём запрошенный размер, при повороте на 90/270 меняем стороны местами и зажимаем в
@@ -17,7 +19,7 @@
 use ash::vk;
 use shell_contract::surface::SurfaceSize;
 
-use super::config::ColorDepthPreference;
+use super::config::{ColorDepthPreference, DisplayColorPreference, DisplayColorSpace};
 use crate::error::GpuError;
 use crate::test_pattern::SurfaceTransform;
 
@@ -68,6 +70,9 @@ impl SurfaceSupport {
 pub struct PlanRequest {
     /// Предпочтение глубины цвета.
     pub color_depth: ColorDepthPreference,
+    /// Предпочтение цветового пространства. Вызывающий обязан передать `SrgbOnly`, если расширение
+    /// instance `VK_EXT_swapchain_colorspace` не включено (без него P3-пространство использовать нельзя).
+    pub display_color: DisplayColorPreference,
     /// Желаемый размер в обычной ориентации (используется, только если surface не диктует размер).
     pub requested_size: Option<SurfaceSize>,
 }
@@ -77,6 +82,8 @@ pub struct PlanRequest {
 pub struct SwapchainPlan {
     /// Формат и цветовое пространство.
     pub surface_format: vk::SurfaceFormatKHR,
+    /// То же цветовое пространство в нейтральном виде (для ISP: какой охват писать).
+    pub display_color_space: DisplayColorSpace,
     /// `minImageCount` для создания.
     pub image_count: u32,
     /// Физический размер картинок (с учётом поворота).
@@ -121,6 +128,31 @@ const TEN_BIT_FORMATS: [vk::Format; 2] = [
     vk::Format::A2R10G10B10_UNORM_PACK32,
 ];
 const EIGHT_BIT_FORMATS: [vk::Format; 2] = [vk::Format::R8G8B8A8_UNORM, vk::Format::B8G8R8A8_UNORM];
+
+/// Выбирает формат с учётом предпочтения цветового пространства.
+///
+/// `PreferDisplayP3` + `PreferTenBit`: сначала 10-бит UNORM с `DISPLAY_P3_NONLINEAR_EXT`; нет такого —
+/// обычный порядок sRGB ([`choose_surface_format`]). 8-бит P3 не берём никогда: на широком охвате
+/// 8 бит дают видимые ступеньки, честнее показать sRGB. При `EightBitOnly` P3 поэтому не выбирается.
+pub fn choose_surface_format_with_color(
+    available: &[vk::SurfaceFormatKHR],
+    depth: ColorDepthPreference,
+    color: DisplayColorPreference,
+) -> Result<vk::SurfaceFormatKHR, GpuError> {
+    let wants_wide_gamut =
+        color == DisplayColorPreference::PreferDisplayP3 && depth == ColorDepthPreference::PreferTenBit;
+    if wants_wide_gamut {
+        let wide_gamut = TEN_BIT_FORMATS.iter().find_map(|wanted| {
+            available.iter().copied().find(|entry| {
+                entry.format == *wanted && entry.color_space == vk::ColorSpaceKHR::DISPLAY_P3_NONLINEAR_EXT
+            })
+        });
+        if let Some(entry) = wide_gamut {
+            return Ok(entry);
+        }
+    }
+    choose_surface_format(available, depth)
+}
 
 /// Выбирает формат: нет подходящего UNORM + `SRGB_NONLINEAR` — честная ошибка `Unsupported`
 /// (sRGB-кодированные форматы тестовый паттерн не принимает, поэтому «хоть какой-нибудь» не берём).
@@ -227,13 +259,22 @@ pub fn plan_swapchain(
     // а не рисуем зеркально (`quarter_turns` вернёт ту же ошибку).
     transform.quarter_turns()?;
 
-    let surface_format = choose_surface_format(formats, request.color_depth)?;
+    let surface_format = choose_surface_format_with_color(formats, request.color_depth, request.display_color)?;
+    // Политика выбирает только sRGB или Display P3; иное значение — ошибка в самой политике, не паника.
+    let display_color_space =
+        DisplayColorSpace::from_vk(surface_format.color_space).ok_or_else(|| GpuError::InvalidState {
+            what: format!(
+                "выбрано цветовое пространство вне политики: {:?}",
+                surface_format.color_space
+            ),
+        })?;
     let composite_alpha = choose_composite_alpha(support.supported_composite_alpha)?;
     let Some(extent) = choose_extent(support, transform, request.requested_size)? else {
         return Ok(PlanOutcome::ZeroExtent);
     };
     Ok(PlanOutcome::Ready(SwapchainPlan {
         surface_format,
+        display_color_space,
         image_count: choose_image_count(support.min_image_count, support.max_image_count),
         extent,
         transform,

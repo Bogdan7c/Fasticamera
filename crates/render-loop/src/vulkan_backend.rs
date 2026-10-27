@@ -5,8 +5,9 @@
 //!   только этот трейт и нейтральные типы `backend`, а типы Vulkan переводятся здесь (`mapping`);
 //! * `session::AttachedDisplay` владеет живым показом (цель, паттерн, окно ПК-стенда) и
 //!   порядком уничтожения; бэкенд держит `Option` такого показа;
-//! * `camera` — показ кадров камеры (сессия 05): предпросмотр RAW-мозаики вместо тестового паттерна,
-//!   импорт буферов, учёт лизингов и fence (`new_android_camera_preview` / `new_headless_camera_preview`);
+//! * `camera` — показ кадров камеры: видоискатель через ISP на GPU (сессия 07) или отладочная мозаика
+//!   (сессия 05), импорт буферов, учёт лизингов и fence (`new_android_camera_preview` /
+//!   `new_headless_camera_preview`); команды видоискателю и лента статистики AWB (`awb_statistics`);
 //! * `config` — настройки; `present_history` — мост «id показа Vulkan -> кадр потока».
 //!
 //! Режимы показа: [`VulkanDisplayBackend::new_android`] — боевой (Android, окно оболочки);
@@ -34,13 +35,30 @@ use gpu_vulkan::swapchain::PresentationSurface;
 use shell_contract::surface::{NativeSurface, SurfaceSize};
 
 use crate::backend::{
-    AttachError, BackendDiagnostics, BackendError, DisplayBackend, FrameTiming, PastPresentation, PresentOutcome,
+    AttachError, BackendDiagnostics, BackendError, DisplayBackend, FrameCpuTiming, FrameGpuTiming, FrameTiming,
+    PastPresentation, PresentOutcome,
 };
 use crate::camera_diagnostics::CameraStreamDiagnostics;
+use crate::viewfinder::{
+    AwbStatisticsFeed, AwbStatisticsReader, ViewfinderCommand, ViewfinderCommandOutcome, ViewfinderDiagnostics,
+};
+use camera::{ViewfinderSettings, ViewfinderStats};
 use census::census_by_kind;
-use session::AttachedDisplay;
+use session::{AttachedDisplay, CameraAttach};
 
 const LOG_TARGET: &str = "fasticamera::render::vulkan";
+
+/// Изображение видоискателя, прочитанное обратно (тестовый шов, фича `test-support`).
+#[cfg(feature = "test-support")]
+#[derive(Debug, Clone, PartialEq)]
+pub struct ViewfinderReadback {
+    /// Ширина, пиксели.
+    pub width: u32,
+    /// Высота, пиксели.
+    pub height: u32,
+    /// Пиксели `[r, g, b, a]` построчно сверху вниз (значения, закодированные кривой экрана).
+    pub pixels: Vec<[f32; 4]>,
+}
 
 /// Как окно из `attach` превращается в поверхность показа.
 #[derive(Debug, Clone, Copy)]
@@ -78,6 +96,13 @@ pub struct VulkanDisplayBackend {
     camera_feed: Option<CameraFeed>,
     /// Счётчики показа камеры по уже закрытым surface (текущая добавляется при опросе диагностики).
     camera_finished: CameraStreamDiagnostics,
+    /// Настройки видоискателя: из конфига, дальше — командами; переживают пересоздание surface.
+    viewfinder_settings: ViewfinderSettings,
+    /// Статистика видоискателя за жизнь бэкенда. `None`, пока её держит сессия показа камеры
+    /// (возвращается при освобождении surface).
+    viewfinder_stats: Option<ViewfinderStats>,
+    /// Лента статистики AWB (сессия показа публикует, читатель — `awb_statistics()`).
+    awb_feed: AwbStatisticsFeed,
 }
 
 impl VulkanDisplayBackend {
@@ -141,6 +166,19 @@ impl VulkanDisplayBackend {
         mode: PresentationMode,
     ) -> Result<Self, GpuInitError> {
         let context = GpuContext::new(&GpuContextConfig::new(profile, config.validation.clone()))?;
+        let viewfinder_settings = ViewfinderSettings::from_config(&config.viewfinder).unwrap_or_else(|error| {
+            // Конфиг проверяется `RenderLoopConfig::validate` до запуска; сюда попадает только конфиг,
+            // собранный в обход проверки. Показ не ломаем: вся полезная область, ошибка — в журнал.
+            tracing::error!(target: LOG_TARGET, %error, "секция viewfinder отвергнута: кадрирование по умолчанию");
+            ViewfinderSettings {
+                painter: config.viewfinder.painter,
+                stages: isp_vulkan::viewfinder::IspStageSet::ALL,
+                crop: camera_contract::viewfinder_crop::ViewfinderCrop::FULL_SENSOR,
+                placement: config.viewfinder.placement,
+                headroom: crate::viewfinder::HeadroomBench::Disabled,
+            }
+        });
+        let viewfinder_stats = Some(ViewfinderStats::new(config.viewfinder.gpu_time_window_frames));
         Ok(Self {
             context,
             config,
@@ -149,7 +187,40 @@ impl VulkanDisplayBackend {
             detach_failures: 0,
             camera_feed: None,
             camera_finished: CameraStreamDiagnostics::default(),
+            viewfinder_settings,
+            viewfinder_stats,
+            awb_feed: AwbStatisticsFeed::new(),
         })
+    }
+
+    /// Читатель статистики AWB видоискателя (latest-wins, с кадром и меткой сенсора). Composition root
+    /// берёт его до запуска потока рендера и отдаёт будущему владельцу AWB (сессия 08).
+    pub fn awb_statistics(&self) -> AwbStatisticsReader {
+        self.awb_feed.reader()
+    }
+
+    /// Читает изображение видоискателя присоединённой surface (тестовый шов, фича `test-support`):
+    /// размер и пиксели `[r, g, b, a]` построчно сверху вниз. `Ok(None)` — нет surface, камеры или кадра.
+    #[cfg(feature = "test-support")]
+    pub fn read_viewfinder_image(&self) -> Result<Option<ViewfinderReadback>, gpu_vulkan::error::GpuError> {
+        match self.attached.as_ref() {
+            Some(display) => display.read_viewfinder_image(),
+            None => Ok(None),
+        }
+    }
+
+    /// Диагностика видоискателя (`None` — камеры нет): живой сессии, иначе накопленная бэкендом.
+    fn viewfinder_diagnostics(&mut self) -> Option<ViewfinderDiagnostics> {
+        self.camera_feed.as_ref()?;
+        if let Some(live) = self.attached.as_mut().and_then(AttachedDisplay::viewfinder_diagnostics) {
+            return Some(live);
+        }
+        let settings = self.viewfinder_settings;
+        let stats = self
+            .viewfinder_stats
+            .get_or_insert_with(|| ViewfinderStats::new(self.config.viewfinder.gpu_time_window_frames));
+        // Сессии показа нет — объектов стенда V4 тоже нет (освобождены вместе с сессией).
+        Some(stats.snapshot(&settings, camera::HeadroomLiveState::default()))
     }
 
     /// Взводит одноразовый тестовый шов отказа в присоединённой цели (feature `fault-injection`):
@@ -189,14 +260,14 @@ impl DisplayBackend for VulkanDisplayBackend {
             }));
         }
         let (presentation, held_surface) = self.mode.wrap_window(surface);
-        let display = AttachedDisplay::attach(
-            &self.context,
-            &self.config,
-            presentation,
-            held_surface,
-            size,
-            self.camera_feed.as_ref(),
-        )?;
+        let camera = self.camera_feed.as_ref().map(|feed| CameraAttach {
+            feed,
+            settings: self.viewfinder_settings,
+            stats: &mut self.viewfinder_stats,
+            gpu_time_window_frames: self.config.viewfinder.gpu_time_window_frames,
+            awb_feed: &self.awb_feed,
+        });
+        let display = AttachedDisplay::attach(&self.context, &self.config, presentation, held_surface, size, camera)?;
         self.attached = Some(display);
         Ok(())
     }
@@ -229,6 +300,9 @@ impl DisplayBackend for VulkanDisplayBackend {
                 .camera_finished
                 .combined_with(camera, self.config.camera_present_history_capacity);
         }
+        if let Some(viewfinder) = report.viewfinder {
+            self.viewfinder_stats = Some(viewfinder);
+        }
         if let Some(error) = &report.error {
             // Окно возвращаем всё равно (иначе оболочка ждала бы таймаут), но ошибку не прячем.
             self.detach_failures += 1;
@@ -256,8 +330,10 @@ impl DisplayBackend for VulkanDisplayBackend {
                 None => self.camera_finished.clone(),
             }
         });
+        let viewfinder = self.viewfinder_diagnostics();
         BackendDiagnostics {
             camera,
+            viewfinder,
             live_objects,
             live_objects_by_kind,
             validation_errors: validation.errors,
@@ -273,5 +349,29 @@ impl DisplayBackend for VulkanDisplayBackend {
             Some(display) => display.drain_past_presentations(),
             None => Vec::new(),
         }
+    }
+
+    fn take_frame_cpu_timing(&mut self) -> Option<FrameCpuTiming> {
+        self.attached.as_mut()?.take_frame_cpu_timing()
+    }
+
+    fn drain_frame_gpu_timings(&mut self) -> Vec<FrameGpuTiming> {
+        self.attached
+            .as_mut()
+            .map(AttachedDisplay::drain_frame_gpu_timings)
+            .unwrap_or_default()
+    }
+
+    fn apply_viewfinder_command(&mut self, command: ViewfinderCommand) -> ViewfinderCommandOutcome {
+        if self.camera_feed.is_none() {
+            return ViewfinderCommandOutcome::Unsupported;
+        }
+        let outcome = self.viewfinder_settings.apply(command);
+        if outcome == ViewfinderCommandOutcome::Applied
+            && let Some(display) = self.attached.as_mut()
+        {
+            display.apply_viewfinder_settings(self.viewfinder_settings);
+        }
+        outcome
     }
 }

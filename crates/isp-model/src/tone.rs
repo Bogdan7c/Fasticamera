@@ -86,6 +86,25 @@ pub enum InvalidToneCurve {
     HuePreservationOutOfRange { hue_preservation: f32 },
 }
 
+/// Разрешённая кривая в виде простых чисел — для загрузки в шейдер GPU (паритет 07).
+///
+/// Ровно те f32, которые [`ToneCurve::map_channel`] и [`ToneCurve::map_pixel`] подставляют в
+/// формулу модуля: `s^c` и `1/F(x_white)` посчитаны на CPU в f64 и сужены до f32 один раз,
+/// шейдер получает их бит в бит и не решает уравнение среднего серого сам. Только чтение:
+/// собрать [`ToneCurve`] из этих чисел нельзя, поэтому кривую, где белый не попадает в 1, не
+/// построить — единственный вход остаётся [`ToneCurve::resolve`].
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+pub struct ToneCurveParameters {
+    /// Контраст `c` — показатель степени в `F(x) = x^c / (x^c + s^c)`.
+    pub contrast: f32,
+    /// `s^c` — постоянная знаменателя `F`.
+    pub scale_pow_contrast: f32,
+    /// `1 / F(x_white)` — множитель, после которого `x_white` становится ровно 1.
+    pub white_normalization: f32,
+    /// Доля сохранения оттенка 0…1.
+    pub hue_preservation: f32,
+}
+
 /// Разрешённая кривая: всё, что нужно на пиксель (одинаково для CPU и GPU).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ToneCurve {
@@ -124,6 +143,16 @@ impl ToneCurve {
             white_normalization: (1.0 / f_white) as f32,
             hue_preservation: settings.hue_preservation,
         })
+    }
+
+    /// Числа формулы для GPU (см. [`ToneCurveParameters`]); поля остаются закрытыми.
+    pub fn parameters(&self) -> ToneCurveParameters {
+        ToneCurveParameters {
+            contrast: self.contrast,
+            scale_pow_contrast: self.scale_pow_contrast,
+            white_normalization: self.white_normalization,
+            hue_preservation: self.hue_preservation,
+        }
     }
 
     /// Кривая для одного канала: `min(F(x)/F(x_white), 1)`. Отрицательный свет и NaN → 0

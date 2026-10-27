@@ -34,8 +34,24 @@ pub struct RawStreamCounters {
     // --- Раздача потребителям ---
     pub frames_published: u64,
     pub viewfinder_delivered: u64,
-    /// Видоискатель не успел забрать кадр, пришёл новее — старый отпущен (норма `LatestWins`).
+    /// Видоискатель не успел забрать кадр, пришёл новее — старый отпущен (норма `LatestWins`);
+    /// при любой политике — и кадр, опубликованный позже уже выданного более нового.
     pub dropped_superseded: u64,
+    /// Буфер видоискателя переполнен — старейший кадр отпущен (решение 53: часы камеры чуть
+    /// быстрее экрана, ~1 кадр за оборот фазы). Не путать с `dropped_superseded`.
+    pub dropped_jitter_overflow: u64,
+    /// Опросы буфера, пока он заполнялся (старт, новая эпоха, переключение политики): рендер
+    /// показывает прежнее изображение.
+    pub viewfinder_polls_while_priming: u64,
+    /// Опросы заполненного буфера, когда очередь пуста: повтор кадра на экране.
+    pub viewfinder_underruns: u64,
+    /// Кадры ячейки видоискателя, отпущенные концом потока или сменой эпохи.
+    pub viewfinder_flushed: u64,
+    /// Кадров в ячейке видоискателя сейчас. Баланс: `frames_published = viewfinder_delivered +
+    /// dropped_superseded + dropped_jitter_overflow + viewfinder_flushed + viewfinder_queued`.
+    pub viewfinder_queued: u64,
+    /// Сколько раз политика видоискателя переключена на ходу.
+    pub viewfinder_pacing_switches: u64,
     /// Кольцо снимков вытеснило старейший кадр (норма `KeepLast`).
     pub ring_evicted: u64,
     /// Потребитель «ни одного молча» не принял кадр — брак (будущая запись).
@@ -80,6 +96,12 @@ pub(crate) struct StreamAccounting {
     pub(crate) frames_published: AtomicU64,
     pub(crate) viewfinder_delivered: AtomicU64,
     pub(crate) dropped_superseded: AtomicU64,
+    pub(crate) dropped_jitter_overflow: AtomicU64,
+    pub(crate) viewfinder_polls_while_priming: AtomicU64,
+    pub(crate) viewfinder_underruns: AtomicU64,
+    pub(crate) viewfinder_flushed: AtomicU64,
+    viewfinder_queued: AtomicU64,
+    pub(crate) viewfinder_pacing_switches: AtomicU64,
     pub(crate) ring_evicted: AtomicU64,
     pub(crate) lossless_defects: AtomicU64,
     released_after_fence: AtomicU64,
@@ -103,6 +125,12 @@ impl StreamAccounting {
     pub(crate) fn note_pairing_wait_micros(&self, micros: u64) {
         self.max_pairing_wait_micros.fetch_max(micros, ORDER);
         self.total_pairing_wait_micros.fetch_add(micros, ORDER);
+    }
+
+    /// Уровень ячейки видоискателя (пишется под замком хаба после каждого её изменения).
+    pub(crate) fn set_viewfinder_queued(&self, queued: usize) {
+        self.viewfinder_queued
+            .store(u64::try_from(queued).unwrap_or(u64::MAX), ORDER);
     }
 
     pub(crate) fn note_frame_leased(&self) {
@@ -148,6 +176,12 @@ impl StreamAccounting {
             frames_published: self.frames_published.load(ORDER),
             viewfinder_delivered: self.viewfinder_delivered.load(ORDER),
             dropped_superseded: self.dropped_superseded.load(ORDER),
+            dropped_jitter_overflow: self.dropped_jitter_overflow.load(ORDER),
+            viewfinder_polls_while_priming: self.viewfinder_polls_while_priming.load(ORDER),
+            viewfinder_underruns: self.viewfinder_underruns.load(ORDER),
+            viewfinder_flushed: self.viewfinder_flushed.load(ORDER),
+            viewfinder_queued: self.viewfinder_queued.load(ORDER),
+            viewfinder_pacing_switches: self.viewfinder_pacing_switches.load(ORDER),
             ring_evicted: self.ring_evicted.load(ORDER),
             lossless_defects: self.lossless_defects.load(ORDER),
             released_after_fence: self.released_after_fence.load(ORDER),

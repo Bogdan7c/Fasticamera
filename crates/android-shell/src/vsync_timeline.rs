@@ -7,7 +7,11 @@
 //! трейта [`FrameTimelineReader`]; FFI-реализация живёт в safety-модуле `choreographer_thread`.
 
 use shell_contract::clock::MonotonicNanos;
-use shell_contract::vsync::VsyncTick;
+use shell_contract::vsync::{FrameTimelines, FrameTimelinesError, VsyncTick, VsyncTimeline};
+
+/// Почему тик не собран (общий словарь со списком линий из `shell-contract`). Колбэк логирует
+/// и считает такие случаи, но продолжает вызываться.
+pub type TimelineError = FrameTimelinesError;
 
 /// Одна линия кадра так, как её отдаёт платформа (всё — `CLOCK_MONOTONIC`, наносекунды).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,6 +19,17 @@ pub struct FrameTimeline {
     pub vsync_id: i64,
     pub expected_present_nanos: i64,
     pub deadline_nanos: i64,
+}
+
+impl FrameTimeline {
+    /// Линия в нейтральном словаре тика.
+    fn to_vsync_timeline(self) -> VsyncTimeline {
+        VsyncTimeline {
+            vsync_id: self.vsync_id,
+            expected_present: MonotonicNanos::from_nanos(self.expected_present_nanos),
+            deadline: MonotonicNanos::from_nanos(self.deadline_nanos),
+        }
+    }
 }
 
 /// Доступ к данным одного колбэка Choreographer. Реализация для телефона читает их из
@@ -30,42 +45,21 @@ pub trait FrameTimelineReader {
     fn timeline(&self, index: usize) -> FrameTimeline;
 }
 
-/// Почему тик не собран. Колбэк логирует и считает такие случаи, но продолжает вызываться.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum TimelineError {
-    #[error("платформа не передала ни одной линии кадра")]
-    NoTimelines,
-    #[error("предпочитаемая линия {preferred_index} вне списка из {timeline_count} линий")]
-    PreferredIndexOutOfRange {
-        preferred_index: usize,
-        timeline_count: usize,
-    },
-}
-
-/// Собирает тик с номером `sequence` из предпочитаемой линии кадра.
+/// Собирает тик с номером `sequence`: все линии кадра (до ёмкости тика, лишние отбрасываются со
+/// счётчиком `dropped_count`), плоские поля — из предпочитаемой.
 ///
 /// Индекс вне диапазона не «чиним» молча подстановкой другой линии: expected present — основа
 /// пейсинга, подмена скрыла бы сбой платформы. Вызывающий пропускает такой кадр и считает ошибку.
 pub fn build_tick(reader: &impl FrameTimelineReader, sequence: u64) -> Result<VsyncTick, TimelineError> {
-    let timeline_count = reader.timeline_count();
-    if timeline_count == 0 {
-        return Err(TimelineError::NoTimelines);
-    }
-    let preferred_index = reader.preferred_timeline_index();
-    if preferred_index >= timeline_count {
-        return Err(TimelineError::PreferredIndexOutOfRange {
-            preferred_index,
-            timeline_count,
-        });
-    }
-    let timeline = reader.timeline(preferred_index);
-    Ok(VsyncTick {
+    let timelines =
+        FrameTimelines::from_platform_list(reader.timeline_count(), reader.preferred_timeline_index(), |index| {
+            reader.timeline(index).to_vsync_timeline()
+        })?;
+    Ok(VsyncTick::from_timelines(
         sequence,
-        frame_time: MonotonicNanos::from_nanos(reader.frame_time_nanos()),
-        expected_present: MonotonicNanos::from_nanos(timeline.expected_present_nanos),
-        deadline: MonotonicNanos::from_nanos(timeline.deadline_nanos),
-        vsync_id: timeline.vsync_id,
-    })
+        MonotonicNanos::from_nanos(reader.frame_time_nanos()),
+        timelines,
+    ))
 }
 
 #[cfg(test)]
@@ -157,5 +151,60 @@ mod tests {
             timelines: vec![timeline(1, 2, 3), timeline(4, 5, 6)],
         };
         assert_eq!(4, build_tick(&data, 9).expect("индекс в диапазоне").vsync_id);
+    }
+
+    #[test]
+    fn tick_publishes_every_timeline_in_platform_order() {
+        let data = FakeCallbackData {
+            frame_time_nanos: 1_000,
+            preferred_index: 1,
+            timelines: vec![
+                timeline(10, 2_000, 1_500),
+                timeline(11, 3_000, 2_500),
+                timeline(12, 4_000, 3_500),
+            ],
+        };
+        let tick = build_tick(&data, 1).expect("линии есть");
+        let published: Vec<(i64, i64, i64)> = tick
+            .timelines
+            .as_slice()
+            .iter()
+            .map(|line| {
+                (
+                    line.vsync_id,
+                    line.expected_present.as_nanos(),
+                    line.deadline.as_nanos(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            published,
+            vec![(10, 2_000, 1_500), (11, 3_000, 2_500), (12, 4_000, 3_500)]
+        );
+        assert_eq!(tick.timelines.preferred_index(), 1);
+        assert_eq!(tick.timelines.dropped_count(), 0);
+    }
+
+    #[test]
+    fn surplus_timelines_are_truncated_with_a_counter_not_silently() {
+        let platform_count = shell_contract::vsync::MAX_FRAME_TIMELINES + 2;
+        let timelines = (0..platform_count)
+            .map(|index| {
+                let index = i64::try_from(index).expect("индекс");
+                timeline(index, 10_000 + index * 100, 9_000 + index * 100)
+            })
+            .collect();
+        let data = FakeCallbackData {
+            frame_time_nanos: 1,
+            preferred_index: 0,
+            timelines,
+        };
+        let tick = build_tick(&data, 1).expect("линии есть");
+        assert_eq!(tick.timelines.dropped_count(), 2);
+        assert_eq!(
+            tick.timelines.as_slice().len(),
+            shell_contract::vsync::MAX_FRAME_TIMELINES
+        );
+        assert_eq!(tick.expected_present.as_nanos(), 10_000, "предпочитаемая не пострадала");
     }
 }

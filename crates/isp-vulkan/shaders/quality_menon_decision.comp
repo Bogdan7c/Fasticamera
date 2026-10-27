@@ -1,0 +1,63 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Menon 2007, проход 2б: a posteriori решение направления и итоговый зелёный (directional_classifier +
+// select_green эталона):
+//   d_H = D_H ⊛ k (нули за краем), d_V = D_V ⊛ kᵀ; горизонталь, если d_V >= d_H;
+//   G = G_H или G_V по решению.
+// D_H/D_V посчитаны проходом 2а.
+
+#include "quality_common.glsl"
+
+layout(set = 0, binding = 0, std430) readonly buffer DifferenceHorizontal { float values[]; } difference_horizontal;
+layout(set = 0, binding = 1, std430) readonly buffer DifferenceVertical { float values[]; } difference_vertical;
+layout(set = 0, binding = 2, std430) readonly buffer GreenHorizontal { float values[]; } green_horizontal;
+layout(set = 0, binding = 3, std430) readonly buffer GreenVertical { float values[]; } green_vertical;
+layout(set = 0, binding = 4, std430) writeonly buffer Green { float values[]; } green;
+layout(set = 0, binding = 5, std430) writeonly buffer Direction { float values[]; } direction;
+
+// Ненулевые веса ядра классификатора эталона (CLASSIFIER_KERNEL и транспонированное) в порядке обхода
+// эталона (строки ядра, затем столбцы): (dx, dy, вес), где источник свёртки = (x + dx, y + dy),
+// dx = 2 − столбец, dy = 2 − строка.
+const int TAP_COUNT = 8;
+const ivec3 HORIZONTAL_TAPS[TAP_COUNT] = ivec3[TAP_COUNT](
+    ivec3(0, 2, 1), ivec3(-2, 2, 1),
+    ivec3(-1, 1, 1),
+    ivec3(0, 0, 3), ivec3(-2, 0, 3),
+    ivec3(-1, -1, 1),
+    ivec3(0, -2, 1), ivec3(-2, -2, 1));
+const ivec3 VERTICAL_TAPS[TAP_COUNT] = ivec3[TAP_COUNT](
+    ivec3(2, 0, 1), ivec3(0, 0, 3), ivec3(-2, 0, 1),
+    ivec3(1, -1, 1), ivec3(-1, -1, 1),
+    ivec3(2, -2, 1), ivec3(0, -2, 3), ivec3(-2, -2, 1));
+
+// Свёртка D с ядром (нули за краем), порядок сложения — как у эталона.
+float classifier(uint x, uint y, bool horizontal) {
+    precise float sum = 0.0;
+    for (int tap = 0; tap < TAP_COUNT; ++tap) {
+        ivec3 entry = horizontal ? HORIZONTAL_TAPS[tap] : VERTICAL_TAPS[tap];
+        int source_x = int(x) + entry.x;
+        int source_y = int(y) + entry.y;
+        if (source_x < 0 || source_y < 0 || source_x >= int(geometry.width) || source_y >= int(geometry.height)) {
+            continue;
+        }
+        uint source = uint(source_y) * geometry.width + uint(source_x);
+        float difference = horizontal ? difference_horizontal.values[source] : difference_vertical.values[source];
+        sum += float(entry.z) * difference;
+    }
+    return sum;
+}
+
+void main() {
+    uint x;
+    uint y;
+    if (!pixel_coordinates(x, y)) {
+        return;
+    }
+    uint index = y * geometry.width + x;
+    float horizontal_score = classifier(x, y, true);
+    float vertical_score = classifier(x, y, false);
+    // Как в эталоне: при равенстве побеждает горизонталь.
+    bool choose_horizontal = vertical_score >= horizontal_score;
+    direction.values[index] = choose_horizontal ? DIRECTION_HORIZONTAL : DIRECTION_VERTICAL;
+    green.values[index] = choose_horizontal ? green_horizontal.values[index] : green_vertical.values[index];
+}

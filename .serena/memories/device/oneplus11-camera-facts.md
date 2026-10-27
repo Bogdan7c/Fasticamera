@@ -35,6 +35,14 @@
 - sysfs Adreno (`/sys/class/kgsl/...`) без root — Permission denied: загрузку GPU так не снять.
 - Reader-ы закрытых сессий удаляются после возврата кадров (camera-stream: 5 закрыто, 5 удалено).
 
+## Видоискатель с ISP (сессия 07, 27.10.2026)
+- В сессии из одного RAW-потока (наш режим, 4:3@60 RAW10) HAL отдаёт `SENSOR_NEUTRAL_COLOR_POINT` как `0/0` во всех трёх каналах — весь поток. Временная нейтраль до нашего AWB берётся из `COLOR_CORRECTION_GAINS` того же кадра (`render-loop` `isp_params::NeutralSource`).
+- `BatteryManager.CURRENT_NOW` на OxygenOS 16 — в **мА**, а не в мкА, как в документации Android (≈ 490 при камере; `dumpsys battery`, блок Oplus «Battery current : 509» — те же мА). Конфиг `camera.scenarios.power.current_now_unit = milliamps`; проверка правдоподобия ловит неверную единицу. `CHARGE_COUNTER` — мкА·ч (≈ 1 952 000 при 57 %).
+- Swapchain на SurfaceView даёт `DISPLAY_P3_NONLINEAR_EXT` + 10 бит (с `VK_EXT_swapchain_colorspace`); выбран P3.
+- Время GPU прохода ISP (timestamp-запросы) ~9 мс debug / ~12 мс release, но отладочная мозаика 05 стоит те же ~13 мс: время «растягивается» до бюджета кадра — почти наверняка DVFS Adreno (частоту снять нельзя: perfetto `power/gpu_frequency` пуст, `/sys/class/devfreq` закрыт). Мс GPU на этом телефоне — не мера стоимости работы; мера — ток (мА) и вычитание A/B.
+- Вклад стадий (мс GPU, A/B, окна 15 с): статистика AWB 3,3 мс — самая дорогая; остальные стадии 0–0,6 мс. Ток телефона с видоискателем ≈ 400–530 мА.
+- release: ISP успевал 57 к/с из 60 (видоискатель `LatestWins` вытеснял кадры), задержка p50 71 / p95 91 мс — открытая проблема 07 (debug: 59,8 к/с, p50 60 мс).
+
 ## Вендорская обработка RAW
 - Коррекция виньетирования уже в RAW (`lensShadingApplied=true`, карта 17×13, угол ×4,33) и НЕ отключается (`SHADING_MODE_OFF`, `enableShadingCorrection`, `EnableIdealRAW`, `RawCbSourceType` не меняют пиксели).
 - Шумодава в RAW нет (NR OFF = HQ). Black 64 статический, white 1023, `dynamicBlackLevel` не отдаётся. CFA BGGR (3).

@@ -19,7 +19,16 @@ use std::time::{Duration, Instant};
 
 use crate::clock::MonotonicNanos;
 
-/// Один vsync: что сообщил Choreographer для выбранной (предпочитаемой) линии кадра.
+#[path = "vsync_timelines.rs"]
+mod timelines;
+
+pub use timelines::{FrameTimelines, FrameTimelinesError, MAX_FRAME_TIMELINES, VsyncTimeline};
+
+/// Один vsync: что сообщил Choreographer.
+///
+/// Плоские поля `expected_present`/`deadline`/`vsync_id` — предпочитаемая линия кадра (как до
+/// сессии 07: старые потребители не меняются). Все линии — в `timelines`; инвариант «плоские
+/// поля = `timelines.preferred()`» держит конструктор [`VsyncTick::from_timelines`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VsyncTick {
     /// Порядковый номер тика источника, начиная с [`VsyncSlot::FIRST_SEQUENCE`]; растёт строго.
@@ -32,10 +41,31 @@ pub struct VsyncTick {
     pub deadline: MonotonicNanos,
     /// Идентификатор линии кадра в SurfaceFlinger (нужен для отчётов о показе).
     pub vsync_id: i64,
+    /// Все линии кадра этого vsync (предпочитаемая среди них).
+    pub timelines: FrameTimelines,
+}
+
+impl VsyncTick {
+    /// Тик из списка линий: плоские поля берутся из предпочитаемой линии.
+    pub fn from_timelines(sequence: u64, frame_time: MonotonicNanos, timelines: FrameTimelines) -> Self {
+        let preferred = timelines.preferred();
+        Self {
+            sequence,
+            frame_time,
+            expected_present: preferred.expected_present,
+            deadline: preferred.deadline,
+            vsync_id: preferred.vsync_id,
+            timelines,
+        }
+    }
 }
 
 /// Итог ожидания следующего тика.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "тик с линиями кадра (~260 байт) возвращается по значению раз на vsync; Box выделял бы память на каждом vsync"
+)]
 pub enum VsyncWait {
     /// Свежий тик. `skipped` — сколько тиков между последним виденным и этим потребитель не увидел.
     Tick { tick: VsyncTick, skipped: u64 },

@@ -5,6 +5,10 @@
 //! * **возврат** — в сабмите, который заменяет кадр (или рисует чёрный при остановке потока), ДО экспорта
 //!   release-fence этого сабмита, поэтому fence покрывает и барьер возврата.
 //!
+//! ISP видоискателя (сессия 07) читает новый кадр ОДИН раз: приём и возврат — в одном сабмите
+//! ([`FrameChange::Consume`], [`ReleaseNew::SameSubmit`]); дальше на экран идёт изображение
+//! видоискателя, и следующий кадр экрана буфера камеры не касается.
+//!
 //! Перерисовка показанного кадра владение не трогает: приём из `UNDEFINED` в каждом сабмите гонялся бы с
 //! чтением того же образа соседним сабмитом (между ними нет ни зависимости по исполнению, ни семафора)
 //! и мог бы отбросить содержимое.
@@ -29,6 +33,17 @@ pub enum ReleaseDisplayed {
     No,
 }
 
+/// Когда возвращать камере НОВЫЙ кадр.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseNew {
+    /// В этом же сабмите, после единственного чтения (ISP видоискателя).
+    SameSubmit,
+    /// В сабмите, который его заменит (отладочная мозаика перерисовывает кадр).
+    WhenReplaced,
+    /// Нового кадра нет.
+    NoNewFrame,
+}
+
 /// План барьеров владения одного сабмита.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OwnershipPlan {
@@ -36,6 +51,8 @@ pub struct OwnershipPlan {
     pub acquire_new: AcquireNew,
     /// Возврат показанного кадра.
     pub release_displayed: ReleaseDisplayed,
+    /// Возврат нового кадра.
+    pub release_new: ReleaseNew,
 }
 
 impl OwnershipPlan {
@@ -46,14 +63,15 @@ impl OwnershipPlan {
         } else {
             ReleaseDisplayed::No
         };
-        let acquire_new = if change == FrameChange::Replace {
-            AcquireNew::Yes
-        } else {
-            AcquireNew::No
+        let (acquire_new, release_new) = match change {
+            FrameChange::Replace => (AcquireNew::Yes, ReleaseNew::WhenReplaced),
+            FrameChange::Consume => (AcquireNew::Yes, ReleaseNew::SameSubmit),
+            FrameChange::Keep | FrameChange::Clear => (AcquireNew::No, ReleaseNew::NoNewFrame),
         };
         Self {
             acquire_new,
             release_displayed,
+            release_new,
         }
     }
 }
@@ -68,7 +86,8 @@ mod tests {
             OwnershipPlan::for_change(FrameChange::Replace, true),
             OwnershipPlan {
                 acquire_new: AcquireNew::Yes,
-                release_displayed: ReleaseDisplayed::Yes
+                release_displayed: ReleaseDisplayed::Yes,
+                release_new: ReleaseNew::WhenReplaced,
             }
         );
         // Самый первый кадр: возвращать нечего.
@@ -76,7 +95,8 @@ mod tests {
             OwnershipPlan::for_change(FrameChange::Replace, false),
             OwnershipPlan {
                 acquire_new: AcquireNew::Yes,
-                release_displayed: ReleaseDisplayed::No
+                release_displayed: ReleaseDisplayed::No,
+                release_new: ReleaseNew::WhenReplaced,
             }
         );
     }
@@ -88,7 +108,8 @@ mod tests {
                 OwnershipPlan::for_change(FrameChange::Keep, has_displayed),
                 OwnershipPlan {
                     acquire_new: AcquireNew::No,
-                    release_displayed: ReleaseDisplayed::No
+                    release_displayed: ReleaseDisplayed::No,
+                    release_new: ReleaseNew::NoNewFrame,
                 }
             );
         }
@@ -100,13 +121,31 @@ mod tests {
             OwnershipPlan::for_change(FrameChange::Clear, true),
             OwnershipPlan {
                 acquire_new: AcquireNew::No,
-                release_displayed: ReleaseDisplayed::Yes
+                release_displayed: ReleaseDisplayed::Yes,
+                release_new: ReleaseNew::NoNewFrame,
             }
         );
         assert_eq!(
             OwnershipPlan::for_change(FrameChange::Clear, false).release_displayed,
             ReleaseDisplayed::No,
             "уже чёрный: возвращать нечего"
+        );
+    }
+
+    #[test]
+    fn isp_frame_is_acquired_and_released_in_the_same_submit() {
+        assert_eq!(
+            OwnershipPlan::for_change(FrameChange::Consume, false),
+            OwnershipPlan {
+                acquire_new: AcquireNew::Yes,
+                release_displayed: ReleaseDisplayed::No,
+                release_new: ReleaseNew::SameSubmit,
+            }
+        );
+        // Переключение с отладочной мозаики: её кадр возвращается тем же сабмитом.
+        assert_eq!(
+            OwnershipPlan::for_change(FrameChange::Consume, true).release_displayed,
+            ReleaseDisplayed::Yes
         );
     }
 }
