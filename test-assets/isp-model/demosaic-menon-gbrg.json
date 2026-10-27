@@ -1,0 +1,19 @@
+{
+  "format_version": 1,
+  "width": 40,
+  "height": 40,
+  "channels": 3,
+  "sample_type": "f32le",
+  "data_file": "demosaic-menon-gbrg.bin",
+  "description": "Эталонный демозаик Menon 2007 (с уточнением) сцены demosaic-scene, раскладка GBRG.",
+  "generator": "~/.cache/fasticamera/isp-reference-venv/bin/python tools/isp-reference/make_demosaic_fixtures.py",
+  "extra": {
+    "pattern": "GBRG",
+    "reference": "colour-demosaicing 0.2.7, demosaicing_CFA_Bayer_Menon2007(refining_step=True)",
+    "scene": "demosaic-scene",
+    "reference_versions": {
+      "colour-demosaicing": "0.2.7",
+      "numpy": "2.5.4"
+    }
+  }
+}

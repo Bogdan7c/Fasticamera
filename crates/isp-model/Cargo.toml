@@ -1,0 +1,20 @@
+[package]
+name = "isp-model"
+description = "Эталонный ISP на CPU в f32: уровни, баланс белого, демозаик, цвет по DNG-матрицам, тон, кривая передачи"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+camera-contract.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+camera-contract = { workspace = true, features = ["fixtures"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true

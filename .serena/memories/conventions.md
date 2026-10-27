@@ -43,6 +43,13 @@
 - `maxImages` — только из `PoolPlan`; любое исчерпание (`MAX_IMAGES_ACQUIRED`) — счётчик и провал smoke.
 - Сценарии с экраном камеры ждут `viewfinder_settle_ms` после первого кадра: AE в начале потока даёт почти чёрные кадры.
 
+## ISP-эталон (с сессии 06)
+- Стадия `isp-model` — чистая функция `(&Вход, &параметры) → Выход` своего типа стадии; новые изображения стадий строятся только через crate-private `map_into`/`from_stage_output` (публичные `from_samples`/`from_pixels` — для тестов, кропов и readback GPU).
+- Подготовка на кадр (DNG-итерации, обращения) — f64 в `IspParams::resolve`; попиксельно — f32 (`PixelMatrix`), как в шейдере. GPU (07) берёт `IspParams` как есть и сверяется с `pipeline::run_reference` постадийно с явным допуском.
+- Настройки «вида» (`ToneCurveSettings`, `GamutCompressionSettings`) — serde-конфиг с `deny_unknown_fields`; значения по умолчанию документируют источник.
+- Каждый внешний эталон — фикстура в `test-assets/isp-model/` с командой генерации в манифесте; расхождение с эталоном объясняется в тесте (пример — LibRaw берёт только ColorMatrix1).
+- Интеграционные тесты: общий `tests/support/` (`load_asset`, `real_capture`); `#![allow(clippy::unwrap_used, clippy::expect_used, reason = ...)]` на бинарь теста.
+
 ## Рендер (с сессии 03)
 - Маршрутизатор не держит surface: события → `RenderInbox`; квитанция освобождения — только поток рендера ПОСЛЕ detach. Бюджет: `max(acquire, teardown) + teardown ≤ render.release_receipt_budget_ms (450) < shell.surface_release_timeout_ms (500)` — проверяется конфигом.
 - Сценарии, которые долго работают с GPU, — на рабочем потоке (`scenario/background_job.rs`) с дедлайном `scenarios.gpu_job_timeout_ms`; маршрутизатор только опрашивает.

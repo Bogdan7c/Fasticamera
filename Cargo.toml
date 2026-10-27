@@ -22,6 +22,7 @@ android-shell = { path = "crates/android-shell" }
 gpu-vulkan = { path = "crates/gpu-vulkan" }
 render-loop = { path = "crates/render-loop" }
 raw-frame-stream = { path = "crates/raw-frame-stream" }
+isp-model = { path = "crates/isp-model" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

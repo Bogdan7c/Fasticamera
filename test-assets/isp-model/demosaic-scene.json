@@ -1,0 +1,14 @@
+{
+  "format_version": 1,
+  "width": 40,
+  "height": 40,
+  "channels": 3,
+  "sample_type": "f32le",
+  "data_file": "demosaic-scene.bin",
+  "description": "Сцена 40x40 RGB (гладкий фон, цветные края, решётка, шум) — вход паритета демозаика; мозаику строит тест.",
+  "generator": "~/.cache/fasticamera/isp-reference-venv/bin/python tools/isp-reference/make_demosaic_fixtures.py",
+  "extra": {
+    "seed": 20260606,
+    "noise_amplitude": 0.01
+  }
+}

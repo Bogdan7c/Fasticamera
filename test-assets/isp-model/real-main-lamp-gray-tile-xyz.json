@@ -1,0 +1,13 @@
+{
+  "format_version": 1,
+  "width": 48,
+  "height": 48,
+  "channels": 3,
+  "sample_type": "f32le",
+  "data_file": "real-main-lamp-gray-tile-xyz.bin",
+  "description": "XYZ D50 кропа gray-tile: независимая цепочка colour-demosaicing (Menon 2007) + colour-hdri",
+  "generator": "tools/isp-reference/make_real_crops.py --capture-dir <C7>/204802-f42af9 --stem 2_lamp --out-dir test-assets/isp-model",
+  "extra": {
+    "source_crop": "real-main-lamp-gray-tile"
+  }
+}
