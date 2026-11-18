@@ -170,6 +170,7 @@ impl CameraEngine {
         let was_streaming = self.session.as_ref().is_some_and(|session| session.repeating.is_some());
         self.backend.close_session();
         self.session = None;
+        self.end_three_a_stream();
         self.begin_reconfiguring_if(was_streaming, plan);
     }
 
@@ -254,22 +255,30 @@ impl CameraEngine {
         Halt
     }
 
-    /// Повторяющийся запрос должен совпадать с желаемым (поток и параметры).
+    /// Повторяющийся запрос должен совпадать с желаемым (поток и план управления 3A).
+    ///
+    /// План строится из намерения 3A на каждом `reconcile` (чистая функция исполнителей);
+    /// запрос перестраивается, только если план отличается от уже применённого.
     fn step_repeating_request(&mut self, now: Instant) -> Result<(), Halt> {
-        let wanted = self.desired.streaming.map(|intent| RepeatingRequest {
-            intent,
-            controls: self.desired.controls,
-        });
         let Some(session) = &self.session else {
             return self.settle_opened();
         };
         let current = session.repeating;
-        match (wanted, current) {
-            (Some(request), current) if current != Some(request) => self.start_repeating(request, now),
-            (Some(_), _) => Ok(()),
-            (None, Some(_)) => self.stop_repeating(now),
-            (None, None) => self.settle_opened(),
+        let Some(intent) = self.desired.streaming else {
+            return match current {
+                Some(_) => self.stop_repeating(now),
+                None => self.settle_opened(),
+            };
+        };
+        let planned = self.plan_three_a();
+        let wanted = RepeatingRequest {
+            intent,
+            controls: planned.controls,
+        };
+        if current != Some(wanted) {
+            self.start_repeating(wanted, now)?;
         }
+        self.finish_planned_request(planned, now)
     }
 
     /// Повторяющегося запроса нет: состояние «устройство открыто».
@@ -304,6 +313,7 @@ impl CameraEngine {
                 if let Some(session) = &mut self.session {
                     session.repeating = None;
                 }
+                self.end_three_a_stream();
                 self.settle_opened()
             }
             Err(failure) => Err(self.fail_from_request_failure(failure, now)),
@@ -311,7 +321,7 @@ impl CameraEngine {
     }
 
     /// Отказ повторяющегося запроса: отключение — вытеснение, остальное — сбой устройства.
-    fn fail_from_request_failure(&mut self, failure: RequestFailure, now: Instant) -> Halt {
+    pub(super) fn fail_from_request_failure(&mut self, failure: RequestFailure, now: Instant) -> Halt {
         match failure {
             RequestFailure::DeviceDisconnected => self.fail_recoverable(CameraUnavailableReason::Evicted, now),
             RequestFailure::NoSession => {

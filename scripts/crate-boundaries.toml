@@ -14,6 +14,7 @@ roles = ["platform_neutral", "android_platform", "gpu", "output", "composition_r
 "shell-contract" = "platform_neutral"
 "camera-core" = "platform_neutral"
 "isp-model" = "platform_neutral"
+"scene-estimation" = "platform_neutral"
 "ui-core" = "platform_neutral"
 "camera-screen" = "platform_neutral"
 "raw-frame-stream" = "platform_neutral"

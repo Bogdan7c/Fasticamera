@@ -12,8 +12,9 @@
 
 use std::sync::Arc;
 
+use camera_contract::three_a::{DirectiveSlot, WhiteBalanceDirective};
 use camera_core::backend::BackendFactory;
-use camera_core::{AppPresence, CameraRuntime};
+use camera_core::{AppPresence, CameraRuntime, ThreeAWiring};
 
 use crate::camera_config::CameraConfig;
 use crate::camera_service::{BackendDiagnosticsSource, CameraEngineAccess, CameraServices, RunningCamera};
@@ -33,13 +34,33 @@ pub struct CameraBackendParts {
 
 /// Запускает движок камеры. Любой отказ запуска (неверный конфиг, не создавшийся поток) не роняет
 /// приложение: возвращается сервис «камера недоступна: причина».
+///
+/// Ящик указаний баланса белого здесь свой и никем не читается: так запускают тесты и стенды без
+/// рендера. Боевой корень композиции зовёт [`start_camera_with_white_balance`].
 pub fn start_camera(config: &CameraConfig, backend: CameraBackendParts) -> CameraServices {
-    let services = spawn_engine(config, backend);
+    start_camera_with_white_balance(config, backend, DirectiveSlot::new())
+}
+
+/// Запускает движок камеры, отдавая ему **пишущую** половину ящика указаний AWB (решение 64).
+///
+/// Корень композиции создаёт ящик один раз: эта половина уходит движку (он кладёт режим AWB), а
+/// такой же клон — конструктору бэкенда рендера (он читает указание на своём потоке). Ни движок,
+/// ни рендер не знают друг о друге: между ними только нейтральный ящик из `camera-contract`.
+pub fn start_camera_with_white_balance(
+    config: &CameraConfig,
+    backend: CameraBackendParts,
+    white_balance: DirectiveSlot<WhiteBalanceDirective>,
+) -> CameraServices {
+    let services = spawn_engine(config, backend, white_balance);
     start_product_viewfinder(services, config)
 }
 
 /// Запуск потока движка; отказ — сервис «камера недоступна: причина».
-fn spawn_engine(config: &CameraConfig, backend: CameraBackendParts) -> CameraServices {
+fn spawn_engine(
+    config: &CameraConfig,
+    backend: CameraBackendParts,
+    white_balance: DirectiveSlot<WhiteBalanceDirective>,
+) -> CameraServices {
     if let Err(error) = config.validate() {
         return CameraServices::unavailable(format!("неверные настройки камеры: {error}"), config.scenarios.clone());
     }
@@ -48,7 +69,9 @@ fn spawn_engine(config: &CameraConfig, backend: CameraBackendParts) -> CameraSer
         diagnostics,
         raw_stream,
     } = backend;
-    match CameraRuntime::spawn(config.engine.clone(), AppPresence::Background, factory) {
+    // Состав 3A: вендорские исполнители сессии 08 и ящик, который читает рендер.
+    let wiring = ThreeAWiring::vendor(&config.engine.three_a).with_white_balance_slot(white_balance);
+    match CameraRuntime::spawn_with_wiring(config.engine.clone(), AppPresence::Background, factory, wiring) {
         Ok((runtime, handle)) => {
             tracing::info!(target: LOG_TARGET, "движок камеры запущен, присутствие: фон до события Resumed");
             let running = RunningCamera::new(runtime, handle, diagnostics);

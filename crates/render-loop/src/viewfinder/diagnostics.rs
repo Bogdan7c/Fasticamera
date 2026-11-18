@@ -8,6 +8,7 @@ use isp_vulkan::viewfinder::IspStageSet;
 
 use super::control::ViewfinderPainter;
 use super::headroom::HeadroomBenchDiagnostics;
+use super::white_balance::WhiteBalanceDiagnostics;
 use crate::thread::DurationSummary;
 
 /// В каком цветовом пространстве экрана кодируется выход ISP (по цепочке показа).
@@ -86,6 +87,13 @@ pub struct ViewfinderCounters {
     pub frames_rejected_geometry: u64,
     /// Сколько статистик AWB опубликовано.
     pub statistics_published: u64,
+    /// Сколько кадров камеры пришли из брекетинга (`RequestOrigin::Burst`) и возвращены камере без показа
+    /// и без AWB: у кадров серии разные выдержки, на экране они мигали бы. В «ровно один раз» эти кадры
+    /// НЕ пропуски — они учтены здесь.
+    pub bracket_frames_skipped: u64,
+    /// Сколько кадров обработано ISP, но скрыто на холодном старте AWB (решение 65): `frames_processed =
+    /// показанные новые кадры + эти`.
+    pub frames_hidden_cold_start: u64,
     /// Сколько статистик AWB выброшено: кадр слота не дошёл до GPU (сабмит не принят), и чей
     /// это кадр, неизвестно — публиковать чужие суммы нельзя.
     pub statistics_discarded: u64,
@@ -99,7 +107,7 @@ pub struct ViewfinderCounters {
 }
 
 /// Состояние видоискателя.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ViewfinderDiagnostics {
     /// Чем рисует.
     pub painter: ViewfinderPainter,
@@ -117,4 +125,6 @@ pub struct ViewfinderDiagnostics {
     pub counters: ViewfinderCounters,
     /// Стенд «запас под видео» (V4): включён ли, сколько кадров записал, время GPU по проходам.
     pub headroom: HeadroomBenchDiagnostics,
+    /// Наш AWB (сессия 08).
+    pub white_balance: WhiteBalanceDiagnostics,
 }

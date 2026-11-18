@@ -22,6 +22,7 @@
 
 mod prepare;
 mod record;
+mod slot;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,15 +39,17 @@ use gpu_vulkan::sync::{ExportableSemaphore, GpuReleaseFence, WaitSemaphore};
 use isp_vulkan::viewfinder::ViewfinderGeometry;
 use raw_frame_stream::{RawFrameLease, ViewfinderFrames};
 
+use self::slot::SlotFrame;
 use super::export_recovery::{ExportRecovery, RecoveryStep};
 use super::headroom_bench::{BenchSubmit, HeadroomBenchParts, HeadroomBenchRunner, HeadroomFrame};
 use super::isp_params::IspParamsCache;
 use super::lease::{FrameChange, LeaseLedger};
 use super::ownership::OwnershipPlan;
-use super::pipelines::CameraPipelines;
+use super::pipelines::{CameraPipelines, IspPresentation};
 use super::settings::ViewfinderSettings;
 use super::submissions::SubmissionTracker;
 use super::viewfinder_stats::ViewfinderStats;
+use super::white_balance::{FramePlan, WhiteBalanceParts, WhiteBalanceRunner};
 use super::{CameraFrameImporter, CameraImportError, CameraImporterFactory, SubmissionSerial};
 use crate::backend::FrameGpuTiming;
 use crate::camera_diagnostics::{CameraStreamDiagnostics, PresentedCameraFrame};
@@ -79,6 +82,8 @@ enum Content {
         source: MosaicSource,
         geometry: ViewfinderGeometry,
         identity: AwbFrameIdentity,
+        /// Решение AWB для кадра: белая, показ, нужна ли статистика.
+        plan: FramePlan,
         /// Тот же кадр через стенд V4 (`None` — стенд выключен или кадр мимо него).
         headroom: Option<HeadroomFrame>,
     },
@@ -135,6 +140,8 @@ pub struct CameraSessionParts<'a> {
     pub viewfinder: ViewfinderStats,
     /// Лента статистики AWB.
     pub awb_feed: AwbStatisticsFeed,
+    /// Наш AWB: настройки, указания 3A, память белой сцены.
+    pub white_balance: WhiteBalanceParts,
     /// Стенд V4: настройки конвейера, слоты кольца, включён ли.
     pub headroom: HeadroomBenchParts,
 }
@@ -158,11 +165,13 @@ pub struct CameraSession {
     params: IspParamsCache,
     viewfinder: ViewfinderStats,
     awb_feed: AwbStatisticsFeed,
+    /// Наш AWB (сессия 08): какая белая идёт в ISP, показывать ли кадр, нужна ли статистика.
+    white: WhiteBalanceRunner,
     /// В изображении видоискателя лежит актуальный кадр, его можно перекомпоновать. Сбрасывается
     /// чёрным кадром, остановкой потока, сменой рисовальщика и неудачей ISP.
     isp_image_shown: bool,
     /// Чей кадр ISP записал в слот (для привязки статистики AWB); `None` — кадр слота не дошёл до GPU.
-    slot_frames: Vec<Option<AwbFrameIdentity>>,
+    slot_frames: Vec<Option<SlotFrame>>,
     /// Номер кадра потока, чьи команды записаны в слот (`None` — сабмита не было): по нему время
     /// кадра на GPU привязывается к кадру, когда метки слота собраны.
     slot_frame_indices: Vec<Option<u64>>,
@@ -184,6 +193,7 @@ impl CameraSession {
             settings,
             viewfinder,
             awb_feed,
+            white_balance,
             headroom,
         } = parts;
         let importer = match make_importer(context) {
@@ -191,6 +201,15 @@ impl CameraSession {
             Err(error) => {
                 return Err(Box::new(CameraSessionFailure {
                     error: CameraSessionError::Importer(error),
+                    viewfinder,
+                }));
+            }
+        };
+        let white = match WhiteBalanceRunner::new(white_balance) {
+            Ok(white) => white,
+            Err(error) => {
+                return Err(Box::new(CameraSessionFailure {
+                    error: CameraSessionError::WhiteBalance(error),
                     viewfinder,
                 }));
             }
@@ -219,6 +238,7 @@ impl CameraSession {
             params: IspParamsCache::default(),
             viewfinder,
             awb_feed,
+            white,
             isp_image_shown: false,
             slot_frames: Vec::new(),
             slot_frame_indices: Vec::new(),
@@ -241,7 +261,8 @@ impl CameraSession {
 
     /// Снимок диагностики видоискателя.
     pub fn viewfinder_diagnostics(&mut self) -> ViewfinderDiagnostics {
-        self.viewfinder.snapshot(&self.settings, self.bench.live_state())
+        self.viewfinder
+            .snapshot(&self.settings, self.bench.live_state(), self.white.diagnostics())
     }
 
     /// Новые настройки (после команды). Смена рисовальщика сбрасывает «изображение актуально»:
@@ -439,8 +460,10 @@ impl CameraSession {
                 self.viewfinder.note_isp_dispatch_time(&report.isp_gpu_time);
                 if let Some(statistics) = report.awb_statistics {
                     match slot_frame {
-                        Some(frame) => {
-                            self.awb_feed.publish(frame, statistics);
+                        Some(SlotFrame { identity, stream }) => {
+                            // Сначала AWB (по ссылке), затем публикация: статистика уходит и потребителю ленты.
+                            self.white.ingest_statistics(stream, identity, &statistics);
+                            self.awb_feed.publish(identity, statistics);
                             self.viewfinder.counters_mut().statistics_published += 1;
                         }
                         None => self.viewfinder.counters_mut().statistics_discarded += 1,
@@ -497,7 +520,7 @@ impl CameraSession {
     }
 
     /// Запоминает, чей кадр ISP записал в слот (`None` — статистику слота публиковать нельзя).
-    fn note_slot_frame(&mut self, slot: usize, frame: Option<AwbFrameIdentity>) {
+    fn note_slot_frame(&mut self, slot: usize, frame: Option<SlotFrame>) {
         if self.slot_frames.len() <= slot {
             self.slot_frames.resize(slot + 1, None);
         }
@@ -507,7 +530,10 @@ impl CameraSession {
     /// Счётчики видоискателя и «изображение актуально» по итогу принятого сабмита.
     fn note_submitted_viewfinder(&mut self, slot: usize, content: &Content, recorded: Recorded) {
         let slot_frame = match (content, recorded) {
-            (Content::IspNew { identity, .. }, Recorded::IspNew { processed: true, .. }) => Some(*identity),
+            (Content::IspNew { identity, plan, .. }, Recorded::IspNew { processed: true, .. }) => Some(SlotFrame {
+                identity: *identity,
+                stream: plan.stream,
+            }),
             _ => None,
         };
         self.note_slot_frame(slot, slot_frame);
@@ -516,6 +542,11 @@ impl CameraSession {
             Recorded::IspNew { processed, shown } => {
                 if processed {
                     counters.frames_processed += 1;
+                    if !shown
+                        && matches!(content, Content::IspNew { plan, .. } if plan.presentation == IspPresentation::HideUntilColorKnown)
+                    {
+                        counters.frames_hidden_cold_start += 1;
+                    }
                 }
                 self.isp_image_shown = processed && shown;
             }
@@ -650,4 +681,7 @@ pub enum CameraSessionError {
     /// Экспортируемый семафор не создан.
     #[error("экспортируемый семафор release-fence: {0}")]
     ExportSemaphore(GpuError),
+    /// Настройки AWB отвергнуты.
+    #[error(transparent)]
+    WhiteBalance(#[from] super::white_balance::WhiteBalanceSetupError),
 }

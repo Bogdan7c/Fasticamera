@@ -1,5 +1,5 @@
 //! Сессия съёмки: контейнер выходов, цель запроса, сама `ACameraCaptureSession`,
-//! повторяющийся запрос.
+//! повторяющийся запрос, разовые запросы (триггер фокуса, серия) и вспомогательный поток 3A.
 //!
 //! # Порядок разрушения
 //!
@@ -8,18 +8,29 @@
 //! `AImageReader` не должно умереть раньше сессии, которая в него пишет. Поэтому поля
 //! [`ActiveSession`] объявлены в порядке разрушения (Rust освобождает поля по порядку объявления):
 //! сначала `handle` (стоп + закрытие сессии), затем `target`, затем `reader`. А при закрытии отдельно
-//! от устройства reader не отбрасывается сразу, а возвращается вызывающему ([`ActiveSession::into_parked_reader`])
-//! — отложить его можно только когда устройство отсоединилось от окна.
+//! от устройства reader не отбрасывается сразу, а возвращается вызывающему ([`ActiveSession::into_parked_outputs`])
+//! — отложить его можно только когда устройство отсоединилось от окна. Вспомогательный поток 3A
+//! (решение 62) паркуется вместе с RAW-читателем (`ParkedOutputs`): его окно привязано к устройству так же.
+//!
+//! # Запросы и их происхождение
+//!
+//! Каждый запрос (повторяющийся, триггер, кадр серии) собирается одним путём [`build_targeted_request`]
+//! с целью на RAW-окно и помечается ключом происхождения (`request_origin`). Ключи разовых запросов
+//! регистрируются **до** отправки и снимаются, если отправка не удалась ([`PendingOrigins`]).
 
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
 
 use camera_contract::stream::{FrameRateMechanism, ResolvedStream};
+use camera_contract::three_a::RequestOrigin;
 use camera_core::backend::{BackendEventSink, BackendFailure, ConfigureFailure, RequestFailure, SessionGeneration};
 use camera_ndk_sys as ndk;
 use raw_frame_stream::RawFrameProducer;
 
+use crate::companion_negotiation::{AttemptError, negotiate_session};
+use crate::companion_stream::{CompanionStreamSpec, CompanionStreamStatus, CompanionUnavailableReason};
 use crate::diagnostics::BackendDiagnostics;
+use crate::request_origin::{RequestKey, RequestOriginTable};
 use crate::request_plan::{RequestPlan, apply_entries};
 use crate::status_mapping::{camera_backend_failure, configure_failure, request_failure};
 use crate::tags;
@@ -29,82 +40,11 @@ use super::callbacks::{
     CaptureContext, CaptureContextSpec, SessionStateContext, capture_on_completed, capture_on_failed,
     capture_on_started, session_on_closed, session_on_idle_transition,
 };
+use super::companion::CompanionReader;
 use super::device::OpenedDevice;
+use super::outputs::{OutputContainer, OutputTarget, ParkedOutputs};
 use super::raw_reader::RawReader;
 use super::request::CaptureRequestHandle;
-
-/// Цель запроса (`ACameraOutputTarget`) на окно приёмника.
-pub(super) struct OutputTarget {
-    raw: NonNull<ndk::ACameraOutputTarget>,
-}
-
-impl OutputTarget {
-    fn create(window: *mut ndk::ANativeWindow) -> Result<Self, BackendFailure> {
-        let mut raw: *mut ndk::ACameraOutputTarget = ptr::null_mut();
-        // SAFETY: окно принадлежит живому reader-у; `raw` — валидное выходное место.
-        let status = unsafe { ndk::ACameraOutputTarget_create(window, &mut raw) };
-        match NonNull::new(raw) {
-            Some(raw) if status == tags::STATUS_OK => Ok(Self { raw }),
-            _ => Err(camera_backend_failure("ACameraOutputTarget_create", status)),
-        }
-    }
-
-    pub(super) fn as_ptr(&self) -> *const ndk::ACameraOutputTarget {
-        self.raw.as_ptr().cast_const()
-    }
-}
-
-impl Drop for OutputTarget {
-    fn drop(&mut self) {
-        // SAFETY: цель создана нами; запросы, ссылавшиеся на неё, уже освобождены.
-        unsafe { ndk::ACameraOutputTarget_free(self.raw.as_ptr()) };
-    }
-}
-
-/// Контейнер выходов с одним выходом: нужен только на время создания сессии.
-struct OutputContainer {
-    container: NonNull<ndk::ACaptureSessionOutputContainer>,
-    output: NonNull<ndk::ACaptureSessionOutput>,
-}
-
-impl OutputContainer {
-    fn with_window(window: *mut ndk::ANativeWindow) -> Result<Self, BackendFailure> {
-        let mut container: *mut ndk::ACaptureSessionOutputContainer = ptr::null_mut();
-        // SAFETY: `container` — валидное выходное место.
-        let status = unsafe { ndk::ACaptureSessionOutputContainer_create(&mut container) };
-        let Some(container) = NonNull::new(container).filter(|_| status == tags::STATUS_OK) else {
-            return Err(camera_backend_failure("ACaptureSessionOutputContainer_create", status));
-        };
-
-        let mut output: *mut ndk::ACaptureSessionOutput = ptr::null_mut();
-        // SAFETY: окно принадлежит живому reader-у; `output` — валидное выходное место.
-        let status = unsafe { ndk::ACaptureSessionOutput_create(window, &mut output) };
-        let Some(output) = NonNull::new(output).filter(|_| status == tags::STATUS_OK) else {
-            // SAFETY: контейнер создан выше и никому не передан.
-            unsafe { ndk::ACaptureSessionOutputContainer_free(container.as_ptr()) };
-            return Err(camera_backend_failure("ACaptureSessionOutput_create", status));
-        };
-
-        // С этого места оба объекта принадлежат `Self` и освободятся его Drop.
-        let this = Self { container, output };
-        // SAFETY: контейнер и выход живы.
-        let status = unsafe { ndk::ACaptureSessionOutputContainer_add(this.container.as_ptr(), this.output.as_ptr()) };
-        if status != tags::STATUS_OK {
-            return Err(camera_backend_failure("ACaptureSessionOutputContainer_add", status));
-        }
-        Ok(this)
-    }
-}
-
-impl Drop for OutputContainer {
-    fn drop(&mut self) {
-        // SAFETY: контейнер и выход созданы нами; сессия уже создана (или не создана) и копий не держит.
-        unsafe {
-            ndk::ACaptureSessionOutputContainer_free(self.container.as_ptr());
-            ndk::ACaptureSessionOutput_free(self.output.as_ptr());
-        }
-    }
-}
 
 /// Владелец `ACameraCaptureSession`: при разрушении останавливает повтор и закрывает сессию.
 struct SessionHandle {
@@ -131,14 +71,18 @@ impl Drop for SessionHandle {
 
 /// Активная сессия с приёмником и целью.
 ///
-/// Порядок полей = порядок разрушения (см. доку модуля): `handle` → `target` → `reader`.
+/// Порядок полей = порядок разрушения (см. доку модуля): `handle` → `target` → `reader` → `companion`.
 pub(super) struct ActiveSession {
     handle: SessionHandle,
+    /// Цель запросов — окно RAW-читателя. Вспомогательный поток целью **не бывает никогда**.
     target: OutputTarget,
     reader: RawReader,
+    /// Вспомогательный поток 3A, если он вошёл в сессию (решение 62).
+    companion: Option<CompanionReader>,
     generation: SessionGeneration,
     stream: ResolvedStream,
     mechanism: FrameRateMechanism,
+    diagnostics: Arc<BackendDiagnostics>,
 }
 
 /// Всё, что нужно для создания сессии.
@@ -152,11 +96,24 @@ pub(super) struct SessionSpec<'a> {
     pub frame_number_window: usize,
     /// Поток кадров: результаты запросов этой сессии уходят в него с эпохой её reader-а.
     pub producer: &'a RawFrameProducer,
+    /// Вспомогательный поток 3A; `None` — выключен настройкой.
+    pub companion: Option<CompanionStreamSpec>,
+    /// Размер таблицы происхождений разовых запросов.
+    pub origin_capacity: usize,
+}
+
+/// Один запрос для разовой отправки: готовый план и происхождение, которым пометятся его результаты.
+pub(super) struct OneShotRequest<'a> {
+    pub plan: &'a RequestPlan,
+    pub origin: RequestOrigin,
 }
 
 impl ActiveSession {
     /// Создаёт сессию на открытом устройстве. На любой ошибке ничего не течёт: приёмник и
     /// вспомогательные объекты освобождаются RAII.
+    ///
+    /// Вспомогательный поток 3A добавляется в контейнер выходов, если он включён; не вышло — сессия
+    /// создаётся заново без него (`negotiate_session`), а диагностика говорит, что автоматика HAL мертва.
     pub(super) fn create(
         device: &mut OpenedDevice,
         reader: RawReader,
@@ -164,10 +121,8 @@ impl ActiveSession {
         event_sink: &BackendEventSink,
         diagnostics: &Arc<BackendDiagnostics>,
     ) -> Result<(Self, Arc<SessionStateContext>), ConfigureFailure> {
-        let window = reader.window();
         let backend_failure = |failure: BackendFailure| ConfigureFailure::Backend(failure);
-        let outputs = OutputContainer::with_window(window).map_err(backend_failure)?;
-        let target = OutputTarget::create(window).map_err(backend_failure)?;
+        let target = OutputTarget::create(reader.window()).map_err(backend_failure)?;
 
         let state_context = Arc::new(SessionStateContext::new(
             event_sink.clone(),
@@ -181,6 +136,7 @@ impl ActiveSession {
             producer: spec.producer.clone(),
             epoch: reader.epoch(),
             frame_number_window: spec.frame_number_window,
+            origin_capacity: spec.origin_capacity,
         }));
         let state_callbacks = ndk::ACameraCaptureSession_stateCallbacks {
             context: state_context.as_callback_context(),
@@ -194,42 +150,26 @@ impl ActiveSession {
             .map(|plan| build_request(device, plan, spec.vendor))
             .transpose()
             .map_err(backend_failure)?;
-        let mut raw: *mut ndk::ACameraCaptureSession = ptr::null_mut();
-        // SAFETY: устройство открыто; контейнер, параметры (если есть) и колбэки живы на время вызова;
-        // NDK копирует структуру колбэков; контексты переживут сессию (state — до конца бэкенда,
-        // capture — до закрытия устройства); `raw` — валидное выходное место.
-        let status = unsafe {
-            match &session_request {
-                Some(request) => ndk::ACameraDevice_createCaptureSessionWithSessionParameters(
-                    device.as_ptr(),
-                    outputs.container.as_ptr(),
-                    request.as_ptr(),
-                    &state_callbacks,
-                    &mut raw,
-                ),
-                None => ndk::ACameraDevice_createCaptureSession(
-                    device.as_ptr(),
-                    outputs.container.as_ptr(),
-                    &state_callbacks,
-                    &mut raw,
-                ),
-            }
-        };
-        let Some(raw) = NonNull::new(raw).filter(|_| status == tags::STATUS_OK) else {
-            return Err(configure_failure("ACameraDevice_createCaptureSession", status));
-        };
+        let negotiated = negotiate_session(
+            spec.companion,
+            |companion_spec| CompanionReader::create(companion_spec, Arc::clone(diagnostics)),
+            |companion| create_ndk_session(device, &reader, companion, session_request.as_ref(), &state_callbacks),
+        )?;
+        report_companion(diagnostics, negotiated.status);
         device.adopt_capture_context(Arc::clone(&capture_context));
         let session = Self {
             handle: SessionHandle {
-                raw,
+                raw: negotiated.session,
                 state_context: Arc::clone(&state_context),
                 capture_context,
             },
             target,
             reader,
+            companion: negotiated.companion,
             generation: spec.generation,
             stream: spec.stream.clone(),
             mechanism: spec.mechanism,
+            diagnostics: Arc::clone(diagnostics),
         };
         Ok((session, state_context))
     }
@@ -246,18 +186,10 @@ impl ActiveSession {
         self.mechanism
     }
 
-    /// Ставит (или заменяет) повторяющийся запрос. Запрос собирается заново целиком:
-    /// каждое значение приходит из плана, остатков прошлого запроса в нём нет.
-    pub(super) fn set_repeating_request(
-        &mut self,
-        device: &OpenedDevice,
-        plan: &RequestPlan,
-        vendor: &VendorCapabilities,
-    ) -> Result<(), RequestFailure> {
-        let mut request = build_request(device, plan, vendor).map_err(RequestFailure::Backend)?;
-        request.add_target(&self.target).map_err(RequestFailure::Backend)?;
-
-        let mut callbacks = ndk::ACameraCaptureSession_captureCallbacksV2 {
+    /// Колбэки результатов: один и тот же набор для повторяющегося запроса и разовых — так
+    /// результаты и кадры текут одним путём.
+    fn capture_callbacks(&self) -> ndk::ACameraCaptureSession_captureCallbacksV2 {
+        ndk::ACameraCaptureSession_captureCallbacksV2 {
             context: self.handle.capture_context.as_callback_context(),
             onCaptureStarted: Some(capture_on_started),
             onCaptureProgressed: None,
@@ -266,7 +198,22 @@ impl ActiveSession {
             onCaptureSequenceCompleted: None,
             onCaptureSequenceAborted: None,
             onCaptureBufferLost: None,
-        };
+        }
+    }
+
+    /// Ставит (или заменяет) повторяющийся запрос. Запрос собирается заново целиком:
+    /// каждое значение приходит из плана, остатков прошлого запроса в нём нет. Метка происхождения —
+    /// зарезервированный ключ повторяющегося запроса (в таблице не хранится).
+    pub(super) fn set_repeating_request(
+        &mut self,
+        device: &OpenedDevice,
+        plan: &RequestPlan,
+        vendor: &VendorCapabilities,
+    ) -> Result<(), RequestFailure> {
+        let request = build_targeted_request(device, plan, vendor, &self.target, RequestKey::REPEATING)
+            .map_err(RequestFailure::Backend)?;
+
+        let mut callbacks = self.capture_callbacks();
         let mut request_pointer = request.as_ptr();
         // SAFETY: сессия, запрос и цель живы; NDK копирует структуру колбэков и запрос; контекст
         // колбэков живёт до закрытия устройства; идентификатор последовательности не нужен (null).
@@ -286,6 +233,60 @@ impl ActiveSession {
         }
     }
 
+    /// Отправляет разовые запросы одним вызовом `ACameraCaptureSession_captureV2` поверх идущего
+    /// повторяющегося. Цель каждого — только RAW-окно; колбэки те же, что у повторяющегося.
+    ///
+    /// Ключи происхождения регистрируются **до** отправки (колбэк может прийти раньше, чем вернётся
+    /// вызов) и снимаются, если отправка или сборка любого запроса не удалась.
+    pub(super) fn submit_one_shot(
+        &mut self,
+        device: &OpenedDevice,
+        requests: &[OneShotRequest<'_>],
+        vendor: &VendorCapabilities,
+    ) -> Result<(), RequestFailure> {
+        let count = i32::try_from(requests.len()).map_err(|_| {
+            RequestFailure::Backend(camera_backend_failure(
+                "ACameraCaptureSession_captureV2",
+                tags::STATUS_INVALID_PARAMETER,
+            ))
+        })?;
+        let origins = self.handle.capture_context.origins();
+        let mut pending = PendingOrigins::new(origins);
+        let mut handles = Vec::with_capacity(requests.len());
+        for one_shot in requests {
+            let registration = origins.register(one_shot.origin);
+            pending.track(registration.key);
+            if registration.evicted_oldest {
+                self.diagnostics.record_evicted_request_origin();
+            }
+            let handle = build_targeted_request(device, one_shot.plan, vendor, &self.target, registration.key)
+                .map_err(RequestFailure::Backend)?;
+            handles.push(handle);
+        }
+        let mut pointers: Vec<*mut ndk::ACaptureRequest> = handles.iter().map(CaptureRequestHandle::as_ptr).collect();
+
+        let mut callbacks = self.capture_callbacks();
+        // SAFETY: сессия, запросы и цель живы до конца вызова; NDK копирует структуру колбэков и
+        // запросы; `pointers` хранит ровно `count` валидных указателей; контекст колбэков живёт до
+        // закрытия устройства; идентификатор последовательности не нужен (null).
+        let status = unsafe {
+            ndk::ACameraCaptureSession_captureV2(
+                self.handle.raw.as_ptr(),
+                &mut callbacks,
+                count,
+                pointers.as_mut_ptr(),
+                ptr::null_mut(),
+            )
+        };
+        if status == tags::STATUS_OK {
+            // Запросы приняты: их ключи теперь снимают результаты, а не откат.
+            pending.commit();
+            Ok(())
+        } else {
+            Err(request_failure("ACameraCaptureSession_captureV2", status))
+        }
+    }
+
     pub(super) fn stop_repeating(&mut self) -> Result<(), RequestFailure> {
         // SAFETY: сессия жива и принадлежит нам.
         let status = unsafe { ndk::ACameraCaptureSession_stopRepeating(self.handle.raw.as_ptr()) };
@@ -296,20 +297,120 @@ impl ActiveSession {
         }
     }
 
-    /// Закрывает сессию и останавливает приём кадров, но reader не отбрасывает, а отдаёт вызывающему:
-    /// отложить его (а потом удалить) можно только после того, как устройство отпустило окно
-    /// (следующая сессия или закрытие устройства).
+    /// Закрывает сессию и останавливает приём кадров, но читатели не отбрасывает, а отдаёт вызывающему:
+    /// отложить RAW-читатель (а потом удалить) и удалить вспомогательный можно только после того, как
+    /// устройство отпустило окна (следующая сессия или закрытие устройства).
     ///
-    /// Порядок: сессия закрыта (камера больше не пишет в окно по этой сессии) → `stop_offering`
+    /// Порядок: сессия закрыта (камера больше не пишет в окна по этой сессии) → `stop_offering`
     /// (поток отпускает свои кадры, ворота слушателя закрыты).
-    pub(super) fn into_parked_reader(self) -> RawReader {
+    pub(super) fn into_parked_outputs(self) -> ParkedOutputs {
         let Self {
-            handle, target, reader, ..
+            handle,
+            target,
+            reader,
+            companion,
+            ..
         } = self;
         drop(handle);
         drop(target);
         reader.stop_offering();
-        reader
+        ParkedOutputs::new(reader, companion)
+    }
+}
+
+/// Одна попытка создать сессию `ACameraCaptureSession` с выходами RAW (+ вспомогательный, если дан).
+fn create_ndk_session(
+    device: &OpenedDevice,
+    reader: &RawReader,
+    companion: Option<&CompanionReader>,
+    session_request: Option<&CaptureRequestHandle>,
+    state_callbacks: &ndk::ACameraCaptureSession_stateCallbacks,
+) -> Result<NonNull<ndk::ACameraCaptureSession>, AttemptError> {
+    let mut outputs =
+        OutputContainer::create().map_err(|failure| AttemptError::Failed(ConfigureFailure::Backend(failure)))?;
+    outputs
+        .add_window(reader.window())
+        .map_err(|failure| AttemptError::Failed(ConfigureFailure::Backend(failure)))?;
+    if let Some(companion) = companion {
+        outputs
+            .add_window(companion.window())
+            .map_err(|failure| AttemptError::CompanionOutputRejected { status: failure.code })?;
+    }
+    let mut raw: *mut ndk::ACameraCaptureSession = ptr::null_mut();
+    // SAFETY: устройство открыто; контейнер, параметры (если есть) и колбэки живы на время вызова;
+    // NDK копирует структуру колбэков; контексты переживут сессию (state — до конца бэкенда,
+    // capture — до закрытия устройства); окна принадлежат читателям, которые живут дольше сессии;
+    // `raw` — валидное выходное место.
+    let status = unsafe {
+        match session_request {
+            Some(request) => ndk::ACameraDevice_createCaptureSessionWithSessionParameters(
+                device.as_ptr(),
+                outputs.as_ptr(),
+                request.as_ptr(),
+                state_callbacks,
+                &mut raw,
+            ),
+            None => {
+                ndk::ACameraDevice_createCaptureSession(device.as_ptr(), outputs.as_ptr(), state_callbacks, &mut raw)
+            }
+        }
+    };
+    NonNull::new(raw)
+        .filter(|_| status == tags::STATUS_OK)
+        .ok_or_else(|| AttemptError::Failed(configure_failure("ACameraDevice_createCaptureSession", status)))
+}
+
+/// Состояние вспомогательного потока — в диагностику и журнал; «мертва автоматика» не молчит.
+fn report_companion(diagnostics: &BackendDiagnostics, status: CompanionStreamStatus) {
+    diagnostics.record_companion_status(status);
+    if let CompanionStreamStatus::Unavailable { reason } = status {
+        let detail = format!("вспомогательный поток 3A недоступен: {reason:?}; автоматика HAL (AF, AE) не работает");
+        tracing::warn!(target: "fasticamera::camera::session", ?reason, "вспомогательный поток 3A недоступен, автоматика HAL мертва");
+        let code = match reason {
+            CompanionUnavailableReason::ReaderCreationFailed { status }
+            | CompanionUnavailableReason::OutputRegistrationFailed { status } => status,
+            CompanionUnavailableReason::RejectedByHal => tags::STATUS_STREAM_CONFIGURE_FAIL,
+        };
+        diagnostics.record_failure("three_a_companion", code, &detail);
+    } else if status.hal_three_a_is_dead() {
+        tracing::warn!(target: "fasticamera::camera::session", "вспомогательный поток 3A выключен настройкой, автоматика HAL мертва");
+    }
+}
+
+/// Ключи разовых запросов, зарегистрированные до отправки. Если отправка не удалась (ранний возврат
+/// или отказ NDK), `Drop` снимает их все; после успеха [`PendingOrigins::commit`] оставляет ключи
+/// до прихода результатов.
+struct PendingOrigins<'a> {
+    table: &'a RequestOriginTable,
+    keys: Vec<RequestKey>,
+    committed: bool,
+}
+
+impl<'a> PendingOrigins<'a> {
+    fn new(table: &'a RequestOriginTable) -> Self {
+        Self {
+            table,
+            keys: Vec::new(),
+            committed: false,
+        }
+    }
+
+    fn track(&mut self, key: RequestKey) {
+        self.keys.push(key);
+    }
+
+    fn commit(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for PendingOrigins<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            for key in &self.keys {
+                self.table.unregister(*key);
+            }
+        }
     }
 }
 
@@ -325,5 +426,19 @@ fn build_request(
         code: error.platform_status(),
         detail: error.to_string(),
     })?;
+    Ok(request)
+}
+
+/// Запрос для отправки в сессию: план применён, цель — RAW-окно, метка происхождения поставлена.
+fn build_targeted_request(
+    device: &OpenedDevice,
+    plan: &RequestPlan,
+    vendor: &VendorCapabilities,
+    target: &OutputTarget,
+    key: RequestKey,
+) -> Result<CaptureRequestHandle, BackendFailure> {
+    let mut request = build_request(device, plan, vendor)?;
+    request.add_target(target)?;
+    request.tag_origin(key)?;
     Ok(request)
 }

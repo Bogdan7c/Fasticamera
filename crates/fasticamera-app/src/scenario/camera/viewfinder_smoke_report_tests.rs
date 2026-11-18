@@ -7,6 +7,7 @@ use crate::gpu_services::ValidationState;
 use crate::scenario::camera::raw_stream_samples::LATENCY_MEANING;
 use crate::scenario::camera::viewfinder_metrics::IspCountersDelta;
 use crate::viewfinder_control::PresentTargetSetting;
+use camera_android::companion_stream::{CompanionStreamStatus, CompanionUnavailableReason};
 use render_loop::config::{AdpfMode, DepthReductionMode, LateLatchMode, PresentTimelinePolicy};
 
 fn session() -> SessionSummary {
@@ -64,7 +65,7 @@ fn healthy() -> ViewfinderSmokeObservation {
             isp: IspCountersDelta {
                 frames_processed: 3_600,
                 params_resolved: 3_600,
-                statistics_published: 3_600,
+                statistics_published: 900,
                 ..IspCountersDelta::default()
             },
             ..WindowDelta::default()
@@ -118,6 +119,29 @@ fn healthy() -> ViewfinderSmokeObservation {
         thermal_end: thermal(),
         last_isp_failure: None,
         last_params_failure: None,
+        white_balance: Some(working_awb()),
+        companion: CompanionStreamStatus::Active {
+            width: 640,
+            height: 480,
+        },
+    }
+}
+
+/// Исправный AWB: оценки идут, холодный старт кончился, статистика считается на каждом 4-м кадре.
+fn working_awb() -> WhiteBalanceReport {
+    WhiteBalanceReport {
+        estimates: 900,
+        our_white: None,
+        confidence: Some(0.9),
+        accepted_tiles: Some(40),
+        hal_delta_mired: Some(5.0),
+        hal_delta_duv: Some(0.001),
+        cold_start_pending: false,
+        hidden_frames: 3,
+        cold_start_forced: 0,
+        statistics_every_n_frames: 4,
+        estimation_failures: 0,
+        table_failure: None,
     }
 }
 
@@ -435,7 +459,7 @@ fn summary_fits_the_result_line_budget_and_carries_the_key_numbers() {
     assert_eq!(summary["isp_fps"], 60.0);
     assert_eq!(summary["look"]["display_color_space"], "display_p3");
     assert_eq!(summary["gpu_time"]["isp_dispatch"]["p95_ms"], 2.4);
-    assert_eq!(summary["awb_published"], 3_600);
+    assert_eq!(summary["awb_published"], 900);
     assert_eq!(summary["latency"]["p50_ms"], 40.0);
 }
 
@@ -488,4 +512,104 @@ fn worst_case_failure_line_fits_the_logcat_record() {
         violations.len(),
         "полный список — в деталях"
     );
+}
+
+#[test]
+fn decimated_statistics_pass_and_a_stalled_estimator_fails_with_the_expected_count() {
+    // Здоровый замер: 3600 кадров, каждый 4-й → 900 публикаций.
+    assert!(violations_of(|_| {}).is_empty());
+    // Половина от ожидаемого — граница доли 0,5 проходит.
+    assert!(violations_of(|o| o.window.isp.statistics_published = 450).is_empty());
+    // Меньше доли — провал с числами.
+    let violations = violations_of(|o| o.window.isp.statistics_published = 100);
+    assert_single(&violations, "статистика AWB опубликована 100 раз");
+}
+
+#[test]
+fn hidden_cold_start_frames_count_as_processed_but_not_as_presented() {
+    // Каждый десятый кадр скрыт (холодный старт): обработано 3600, показано 3300, скрыто 300 — сходится.
+    let violations = violations_of(|o| {
+        o.window.camera_frames_presented = 3_300;
+        o.window.isp.frames_hidden_cold_start = 300;
+    });
+    assert!(violations.is_empty(), "{violations:?}");
+    // Те же 300 непоказанных кадров без пометки «скрыты» — потеря кадров (9 % при допуске 3 %).
+    let violations = violations_of(|o| o.window.camera_frames_presented = 3_300);
+    assert_single(&violations, "через ISP 3600 кадров (скрыто 0)");
+}
+
+#[test]
+fn bracket_frames_skipped_by_the_render_are_accounted_not_counted_as_lost() {
+    // Сенсор 60 к/с, из 3600 кадров 120 ушли в брекетинг: ISP обработал 3480, остальные учтены отдельно.
+    let violations = violations_of(|o| {
+        o.window.isp.frames_processed = 3_480;
+        o.window.camera_frames_presented = 3_480;
+        o.window.isp.bracket_frames_skipped = 120;
+        o.window.isp.statistics_published = 870;
+    });
+    assert!(violations.is_empty(), "{violations:?}");
+    // Без учёта пропущенных те же 3480 кадров были бы потерей (3 % допуска при 60 → 58,0).
+    let violations = violations_of(|o| {
+        o.window.isp.frames_processed = 3_480;
+        o.window.camera_frames_presented = 3_480;
+        o.window.isp.statistics_published = 870;
+    });
+    assert_single(&violations, "расхождение больше");
+}
+
+#[test]
+fn dead_companion_stream_fails_the_viewfinder_for_every_non_active_state() {
+    for dead in [
+        CompanionStreamStatus::Unavailable {
+            reason: CompanionUnavailableReason::RejectedByHal,
+        },
+        CompanionStreamStatus::DisabledByConfig,
+    ] {
+        let violations = violations_of(|o| o.companion = dead);
+        assert_single(&violations, "вспомогательный поток 3A мёртв");
+    }
+    let violations = violations_of(|o| o.companion = CompanionStreamStatus::NotConfigured);
+    assert_single(&violations, "сессий не было");
+}
+
+#[test]
+fn awb_without_estimates_pending_cold_start_or_table_failure_fails() {
+    assert_single(&violations_of(|o| o.white_balance = None), "нет диагностики AWB");
+    assert_single(
+        &violations_of(|o| {
+            if let Some(wb) = &mut o.white_balance {
+                wb.estimates = 0;
+            }
+        }),
+        "ни одной оценки света",
+    );
+    assert_single(
+        &violations_of(|o| {
+            if let Some(wb) = &mut o.white_balance {
+                wb.cold_start_pending = true;
+            }
+        }),
+        "холодный старт AWB не кончился",
+    );
+    assert_single(
+        &violations_of(|o| {
+            if let Some(wb) = &mut o.white_balance {
+                wb.table_failure = Some("нет DNG".to_owned());
+            }
+        }),
+        "таблица локуса AWB не построена: нет DNG",
+    );
+}
+
+#[test]
+fn summary_carries_the_awb_report_hidden_and_skipped_frames_and_companion() {
+    let mut observation = healthy();
+    observation.window.isp.frames_hidden_cold_start = 3;
+    observation.window.isp.bracket_frames_skipped = 4;
+    let summary = observation.summary();
+    assert_eq!(summary["frames_hidden_cold_start"], 3);
+    assert_eq!(summary["bracket_frames_skipped"], 4);
+    assert_eq!(summary["white_balance"]["estimates"], 900);
+    assert_eq!(summary["white_balance"]["hal_delta_mired"], 5.0);
+    assert_eq!(summary["three_a_companion"]["state"], "active");
 }

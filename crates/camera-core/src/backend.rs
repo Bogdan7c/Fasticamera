@@ -20,11 +20,14 @@ use std::sync::Arc;
 use camera_contract::availability::CameraUnavailableReason;
 use camera_contract::capabilities::CameraDescriptor;
 use camera_contract::capture_result::{CaptureResultMeta, FrameNumber};
-use camera_contract::control::{CaptureIntent, ManualControl};
+use camera_contract::control::CaptureIntent;
 use camera_contract::ids::CameraId;
 use camera_contract::raw_format::RawFormat;
 use camera_contract::stream::{ConfiguredStream, ReadoutAspect, ResolvedStream, TargetFrameRate};
+use camera_contract::three_a::{BurstId, ExposureBracket, PointRequestId, RequestOrigin};
 use serde::Serialize;
+
+use crate::request_controls::{AfTrigger, RequestControls};
 
 /// Поколение открытого устройства. Растёт на каждое `open_device`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
@@ -163,15 +166,23 @@ pub enum BackendEvent {
 }
 
 impl BackendEvent {
-    /// Частое событие потока (результаты кадров), а не редкое событие устройства.
+    /// Частое событие потока (результаты **повторяющегося** запроса), а не редкое событие.
     ///
-    /// Получатель вправе вытеснять частые события при переполнении (со счётчиком),
-    /// а редкие — никогда.
+    /// Получатель вправе вытеснять частые события при переполнении (со счётчиком), а редкие —
+    /// никогда. Результаты разовых запросов (триггер фокуса, кадры серии) —
+    /// **редкие**: такой результат единственный на свой запрос, его потеря ломает тап или
+    /// серию без возможности понять почему (сессия 08). Их мало: десятки, а не 60 в секунду.
     pub fn is_capture_stream_event(&self) -> bool {
-        matches!(
-            self,
-            BackendEvent::CaptureCompleted { .. } | BackendEvent::CaptureFailed { .. }
-        )
+        match self {
+            BackendEvent::CaptureCompleted { result, .. } => matches!(
+                result.three_a.origin,
+                // `Unknown` — тоже частое: если бэкенд не опознаёт запросы вообще, поток таких
+                // результатов шёл бы 60 раз в секунду в ящик без лимита.
+                RequestOrigin::Repeating | RequestOrigin::Unknown
+            ),
+            BackendEvent::CaptureFailed { .. } => true,
+            _ => false,
+        }
     }
 }
 
@@ -233,8 +244,35 @@ pub trait CameraBackend {
         generation: SessionGeneration,
     ) -> Result<ConfiguredStream, ConfigureFailure>;
 
-    /// Поставить (или заменить) повторяющийся запрос с этими намерением и параметрами.
-    fn set_repeating_request(&mut self, intent: CaptureIntent, controls: &ManualControl) -> Result<(), RequestFailure>;
+    /// Поставить (или заменить) повторяющийся запрос с этими намерением и планом управления.
+    /// Результаты его кадров помечаются `RequestOrigin::Repeating`.
+    fn set_repeating_request(
+        &mut self,
+        intent: CaptureIntent,
+        controls: &RequestControls,
+    ) -> Result<(), RequestFailure>;
+
+    /// Отправить **один** запрос с триггером автофокуса поверх идущего повторяющегося
+    /// (`ACameraCaptureSession_capture`). Тот же рычаг частоты и вендорские ключи, что у потока.
+    /// Результат этого кадра помечается `RequestOrigin::FocusTrigger { request }`.
+    fn submit_focus_trigger(
+        &mut self,
+        intent: CaptureIntent,
+        controls: &RequestControls,
+        trigger: AfTrigger,
+        request: PointRequestId,
+    ) -> Result<(), RequestFailure>;
+
+    /// Отправить серию запросов (`ACameraCaptureSession_capture` с N запросами) поверх
+    /// повторяющегося: кадр `i` — с экспозицией `bracket.frames()[i]` (`ExposurePlan::Sensor`),
+    /// фокус — из `base`. Результаты помечаются `RequestOrigin::Burst { burst, index }`.
+    fn submit_bracket(
+        &mut self,
+        intent: CaptureIntent,
+        base: &RequestControls,
+        bracket: &ExposureBracket,
+        burst: BurstId,
+    ) -> Result<(), RequestFailure>;
 
     /// Остановить повторяющийся запрос; сессия остаётся.
     fn stop_repeating(&mut self) -> Result<(), RequestFailure>;

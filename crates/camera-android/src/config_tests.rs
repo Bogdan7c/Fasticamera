@@ -92,3 +92,54 @@ fn retired_reader_durations_follow_the_millisecond_fields() {
         std::time::Duration::from_millis(5)
     );
 }
+
+#[test]
+fn three_a_defaults_are_fifty_hertz_and_an_enabled_probe_sized_companion() {
+    let config = AndroidCameraConfig::default();
+    assert_eq!(config.mains_frequency, MainsFrequency::Hz50);
+    assert!(config.three_a_companion_stream.enabled);
+    assert_eq!(
+        (
+            config.three_a_companion_stream.width,
+            config.three_a_companion_stream.height
+        ),
+        (640, 480)
+    );
+    assert_eq!(config.request_origin_capacity, 64);
+}
+
+#[test]
+fn three_a_fields_come_from_json_and_are_validated() {
+    let parsed: AndroidCameraConfig = serde_json::from_str(
+        r#"{"mains_frequency": "60hz", "three_a_companion_stream": {"enabled": false, "width": 320}, "request_origin_capacity": 8}"#,
+    )
+    .expect("корректный JSON");
+    assert_eq!(parsed.mains_frequency, MainsFrequency::Hz60);
+    assert!(!parsed.three_a_companion_stream.enabled);
+    assert_eq!(parsed.three_a_companion_stream.width, 320);
+    assert_eq!(parsed.three_a_companion_stream.height, 480, "остальное — по умолчанию");
+    assert_eq!(parsed.validate(), Ok(()));
+
+    let broken = AndroidCameraConfig {
+        request_origin_capacity: 0,
+        ..AndroidCameraConfig::default()
+    };
+    assert_eq!(
+        broken.validate(),
+        Err(ConfigError::RequestOriginCapacityOutOfRange { actual: 0, max: 1024 })
+    );
+    let broken = AndroidCameraConfig {
+        three_a_companion_stream: CompanionStreamConfig {
+            width: 0,
+            ..CompanionStreamConfig::default()
+        },
+        ..AndroidCameraConfig::default()
+    };
+    assert!(matches!(
+        broken.validate(),
+        Err(ConfigError::CompanionStream(CompanionConfigError::SizeOutOfRange {
+            width: 0,
+            ..
+        }))
+    ));
+}

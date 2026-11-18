@@ -52,7 +52,8 @@ fn front_camera_without_focus_range_is_fixed_focus_and_without_notes_for_focus_k
         .bytes(tags::LENS_FACING, &[tags::LENS_FACING_FRONT])
         .floats(tags::MIN_FOCUS_DISTANCE, &[0.0])
         .without(tags::HYPERFOCAL_DISTANCE)
-        .without(tags::FOCUS_DISTANCE_CALIBRATION);
+        .without(tags::FOCUS_DISTANCE_CALIBRATION)
+        .with_front_camera_three_a();
     let parsed = parse_main(&source).unwrap();
     assert_eq!(parsed.capabilities.focus, FocusCapability::Fixed);
     assert_eq!(parsed.capabilities.facing, LensFacing::Front);

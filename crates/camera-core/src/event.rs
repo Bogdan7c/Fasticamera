@@ -2,11 +2,13 @@
 
 use camera_contract::availability::CameraUnavailableReason;
 use camera_contract::stream::{ConfiguredStream, StreamMode};
+use camera_contract::three_a::PointRequestId;
 use serde::Serialize;
 
 use crate::backend::ConfigureFailure;
 use crate::command::{CommandId, CommandOutcome};
 use crate::state::CameraState;
+use crate::three_a_status::{BracketReport, ControlAdjustment, FocusOutcome};
 
 /// Событие движка. Поток событий ограничен: при переполнении старые вытесняются со счётчиком
 /// ([`crate::CameraCounters::dropped_outward_events`]), а актуальное состояние всегда есть
@@ -49,6 +51,20 @@ pub enum CameraEvent {
         requested: StreamMode,
         fallback: StreamMode,
         failure: ConfigureFailure,
+    },
+    /// Тап `request` завершился (сошёлся, не сошёлся, вышло время).
+    FocusSettled {
+        request: PointRequestId,
+        outcome: FocusOutcome,
+    },
+    /// Ручные параметры применены с поправками на этой камере и потоке (после команды или
+    /// смены камеры). Пустого списка в событии не бывает.
+    ControlsAdjusted {
+        adjustments: Vec<ControlAdjustment>,
+    },
+    /// Итог серии с брекетингом.
+    BracketCaptured {
+        report: BracketReport,
     },
 }
 

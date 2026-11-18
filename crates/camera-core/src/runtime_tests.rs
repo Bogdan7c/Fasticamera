@@ -7,11 +7,12 @@ use std::time::Duration;
 use camera_contract::availability::CameraUnavailableReason;
 use camera_contract::capabilities::CameraDescriptor;
 use camera_contract::capture_result::{CaptureResultMeta, FrameNumber, SensorTimestamp};
-use camera_contract::control::{CaptureIntent, ManualControl};
+use camera_contract::control::CaptureIntent;
 use camera_contract::fixtures::camera_id;
 use camera_contract::ids::{CameraId, CameraTarget, LensRole};
 use camera_contract::raw_format::RawFormat;
 use camera_contract::stream::{ConfiguredStream, ReadoutAspect, ResolvedStream, StreamMode, TargetFrameRate};
+use camera_contract::three_a::{BurstId, ExposureBracket, PointRequestId};
 
 use super::*;
 use crate::backend::{
@@ -21,6 +22,7 @@ use crate::backend::{
 use crate::command::{CommandOutcome, CommandRejected, InvalidStateReason};
 use crate::event::CameraEvent;
 use crate::fake::{BackendMethod, FakeBackendControl};
+use crate::request_controls::{AfTrigger, RequestControls};
 use crate::state::{CameraError, CameraState, FatalCause};
 use crate::status::CameraStatus;
 
@@ -71,6 +73,9 @@ fn result_meta(frame: i64) -> CaptureResultMeta {
         sensitivity_iso: None,
         reported_frame_duration: None,
         rolling_shutter_skew: None,
+        three_a: camera_contract::three_a::ThreeAResultState::unreported(
+            camera_contract::three_a::RequestOrigin::Repeating,
+        ),
     }
 }
 
@@ -99,8 +104,30 @@ impl CameraBackend for GatedBackend {
     ) -> Result<ConfiguredStream, ConfigureFailure> {
         self.inner.configure_session(stream, generation)
     }
-    fn set_repeating_request(&mut self, intent: CaptureIntent, controls: &ManualControl) -> Result<(), RequestFailure> {
+    fn set_repeating_request(
+        &mut self,
+        intent: CaptureIntent,
+        controls: &RequestControls,
+    ) -> Result<(), RequestFailure> {
         self.inner.set_repeating_request(intent, controls)
+    }
+    fn submit_focus_trigger(
+        &mut self,
+        intent: CaptureIntent,
+        controls: &RequestControls,
+        trigger: AfTrigger,
+        request: PointRequestId,
+    ) -> Result<(), RequestFailure> {
+        self.inner.submit_focus_trigger(intent, controls, trigger, request)
+    }
+    fn submit_bracket(
+        &mut self,
+        intent: CaptureIntent,
+        base: &RequestControls,
+        bracket: &ExposureBracket,
+        burst: BurstId,
+    ) -> Result<(), RequestFailure> {
+        self.inner.submit_bracket(intent, base, bracket, burst)
     }
     fn stop_repeating(&mut self) -> Result<(), RequestFailure> {
         self.inner.stop_repeating()
@@ -227,6 +254,84 @@ fn a_flood_of_results_under_a_stuck_engine_drops_oldest_but_never_loses_device_d
         .wait_until_status(WAIT, |status| status.counters.stale_backend_events == capacity + 1)
         .expect("отключение не потеряно среди кадров");
     assert_eq!(status.counters.dropped_capture_events, 1000 - capacity);
+    assert_eq!(runtime.shutdown(WAIT), ShutdownReport::Stopped);
+}
+
+#[test]
+fn one_shot_results_survive_a_flood_under_a_stuck_engine() {
+    let fake = FakeBackendControl::new();
+    let (factory, release, entered) = gated_factory(&fake);
+    let (runtime, handle) = CameraRuntime::spawn(CameraEngineConfig::default(), AppPresence::Foreground, factory)
+        .expect("поток запускается");
+    entered.recv_timeout(WAIT).expect("поток дошёл до ворот");
+    let capacity = CameraEngineConfig::default().queues.capture_event_capacity as u64;
+
+    // 1000 результатов потока и три разовых (триггер тапа, два кадра серии) под застрявшим движком.
+    for frame in 0..1000 {
+        fake.send_event(BackendEvent::CaptureCompleted {
+            session: SessionGeneration(1),
+            result: result_meta(frame),
+        });
+        if frame % 300 == 0 {
+            let mut one_shot = result_meta(10_000 + frame);
+            one_shot.three_a.origin = camera_contract::three_a::RequestOrigin::Burst {
+                burst: camera_contract::three_a::BurstId(1),
+                index: (frame / 300) as u32,
+            };
+            fake.send_event(BackendEvent::CaptureCompleted {
+                session: SessionGeneration(1),
+                result: one_shot,
+            });
+        }
+    }
+    assert_eq!(handle.status().counters.dropped_capture_events, 1000 - capacity);
+    release.send(()).expect("ворота отпущены");
+    // Сессии нет, поэтому всё stale: оставшиеся кадры потока + все четыре разовых результата.
+    handle
+        .wait_until_status(WAIT, |status| status.counters.stale_backend_events == capacity + 4)
+        .expect("разовые результаты не потеряны среди кадров");
+    assert_eq!(runtime.shutdown(WAIT), ShutdownReport::Stopped);
+}
+
+#[test]
+fn waker_calls_from_other_threads_coalesce_into_one_refresh_of_the_exposure_controller() {
+    use crate::three_a_vendor::VendorFocus;
+    use crate::three_a_vendor::scripted::ScriptedExposureController;
+    use crate::three_a_wiring::ThreeAWiring;
+
+    let fake = FakeBackendControl::new();
+    let (factory, release, entered) = gated_factory(&fake);
+    let config = CameraEngineConfig::default();
+    let (exposure, script) = ScriptedExposureController::new(crate::request_controls::ExposurePlan::VendorAuto {
+        compensation_steps: 0,
+        lock: camera_contract::three_a::AeAfLock::Unlocked,
+        region: None,
+    });
+    let wiring = ThreeAWiring::vendor(&config.three_a).with_controllers(
+        Box::new(exposure),
+        Box::new(VendorFocus::new(config.three_a.focus_marker_grace_frames)),
+    );
+    let (runtime, handle) =
+        CameraRuntime::spawn_with_wiring(config, AppPresence::Foreground, factory, wiring).expect("поток запускается");
+    entered.recv_timeout(WAIT).expect("поток дошёл до ворот");
+
+    // Поток камеры стоит; 200 пробуждений с двух потоков приходят в ящик.
+    let wakers: Vec<_> = (0..2)
+        .map(|_| {
+            let waker = handle.three_a_waker();
+            std::thread::spawn(move || (0..100).for_each(|_| waker.wake()))
+        })
+        .collect();
+    for waker in wakers {
+        waker.join().expect("поток пробуждений дожил");
+    }
+    release.send(()).expect("ворота отпущены");
+    // Команда после пробуждений: к её ответу пробуждение уже обработано (оно в ящике раньше команд).
+    handle.close().expect("команда принята");
+    handle
+        .wait_until_status(WAIT, |status| status.counters.commands_handled == 1)
+        .expect("команда обработана");
+    assert_eq!(script.refresh_calls(), 1, "200 пробуждений — один вызов refresh()");
     assert_eq!(runtime.shutdown(WAIT), ShutdownReport::Stopped);
 }
 

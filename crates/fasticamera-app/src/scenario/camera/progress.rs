@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use camera_contract::availability::CameraUnavailableReason;
 use camera_contract::stream::FrameRateMechanism;
 use camera_core::CameraEvent;
+use camera_core::three_a_status::{BracketReport, FocusOutcome};
 use serde::Serialize;
 
 /// Срок ожидания: точка во времени, после которой ожидание считается проваленным.
@@ -70,6 +71,20 @@ pub enum EventNote {
         fallback_fps: u32,
         failure: String,
     },
+    /// Итог тапа фокуса.
+    FocusSettled {
+        request: u64,
+        outcome: FocusOutcome,
+    },
+    /// Ручные значения применены с поправками (сколько поправок).
+    ControlsAdjusted {
+        adjustments: usize,
+    },
+    /// Итог серии: снята ли целиком и сколько кадров вернулось.
+    BracketCaptured {
+        captured: bool,
+        frames: usize,
+    },
 }
 
 impl EventNote {
@@ -101,6 +116,23 @@ impl EventNote {
                 requested_fps: requested.frame_rate.frames_per_second(),
                 fallback_fps: fallback.frame_rate.frames_per_second(),
                 failure: failure.to_string(),
+            },
+            CameraEvent::FocusSettled { request, outcome } => EventNote::FocusSettled {
+                request: request.0,
+                outcome: *outcome,
+            },
+            CameraEvent::ControlsAdjusted { adjustments } => EventNote::ControlsAdjusted {
+                adjustments: adjustments.len(),
+            },
+            CameraEvent::BracketCaptured { report } => match report {
+                BracketReport::Captured { frames, .. } => EventNote::BracketCaptured {
+                    captured: true,
+                    frames: frames.len(),
+                },
+                BracketReport::Failed { frames, .. } => EventNote::BracketCaptured {
+                    captured: false,
+                    frames: frames.len(),
+                },
             },
         }
     }

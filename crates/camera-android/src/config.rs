@@ -4,7 +4,10 @@
 //! (`mem:device/oneplus11-camera-facts`); каждое поле объясняет, откуда число.
 
 use camera_contract::ids::{CameraId, EmptyCameraId};
+use camera_contract::three_a::MainsFrequency;
 use serde::Deserialize;
+
+use crate::companion_stream::{CompanionConfigError, CompanionStreamConfig};
 
 /// Настройки `camera-android`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -33,6 +36,14 @@ pub struct AndroidCameraConfig {
     pub retired_reader_drain_timeout_ms: u64,
     /// Шаг опроса (мс) при этом ожидании: как часто проверять, вернулись ли кадры.
     pub retired_reader_poll_interval_ms: u64,
+    /// Частота сети для антибандинга вендорского AE (решение 67: по умолчанию 50 Гц). Влияет
+    /// только на запросы с вендорской экспозицией; при ручном сенсоре мерцание — забота нашего AE.
+    pub mains_frequency: MainsFrequency,
+    /// Вспомогательный поток, оживляющий автоматику HAL (решение 62).
+    pub three_a_companion_stream: CompanionStreamConfig,
+    /// Сколько разовых запросов (триггер фокуса, кадры серии) могут ждать результата, пока таблица
+    /// происхождений не начнёт вытеснять самые старые. Серия — десятки кадров, тап — один запрос.
+    pub request_origin_capacity: usize,
 }
 
 impl Default for AndroidCameraConfig {
@@ -44,6 +55,9 @@ impl Default for AndroidCameraConfig {
             failure_history_capacity: 32,
             retired_reader_drain_timeout_ms: 500,
             retired_reader_poll_interval_ms: 5,
+            mains_frequency: MainsFrequency::Hz50,
+            three_a_companion_stream: CompanionStreamConfig::default(),
+            request_origin_capacity: 64,
         }
     }
 }
@@ -63,6 +77,10 @@ pub enum ConfigError {
     RetiredReaderTimeoutOutOfRange { actual: u64, max: u64 },
     #[error("retired_reader_poll_interval_ms должно быть от 1 до {max}, а не {actual}")]
     RetiredReaderPollOutOfRange { actual: u64, max: u64 },
+    #[error("request_origin_capacity должно быть от 1 до {max}, а не {actual}")]
+    RequestOriginCapacityOutOfRange { actual: usize, max: usize },
+    #[error(transparent)]
+    CompanionStream(#[from] CompanionConfigError),
 }
 
 impl AndroidCameraConfig {
@@ -109,6 +127,13 @@ impl AndroidCameraConfig {
                 max: Self::MAX_RETIRED_READER_POLL_MS,
             });
         }
+        if !(1..=Self::MAX_WINDOW).contains(&self.request_origin_capacity) {
+            return Err(ConfigError::RequestOriginCapacityOutOfRange {
+                actual: self.request_origin_capacity,
+                max: Self::MAX_WINDOW,
+            });
+        }
+        self.three_a_companion_stream.validate()?;
         Ok(())
     }
 

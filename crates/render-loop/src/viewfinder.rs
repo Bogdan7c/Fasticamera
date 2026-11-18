@@ -7,12 +7,14 @@
 //! * [`control`] — чем рисовать (ISP или отладочная мозаика 05) и типизированные команды на ходу;
 //! * [`diagnostics`] — что видоискатель делал: стадии, время GPU, счётчики параметров ISP;
 //! * [`headroom`] — стенд «запас под видео» (V4): включение командой и его диагностика;
+//! * [`white_balance`] — диагностика нашего AWB: белая, оценка, сравнение с HAL, холодный старт;
 //! * [`awb_feed`] — «последняя статистика AWB» с номером кадра и меткой сенсора (latest-wins).
 
 pub mod awb_feed;
 pub mod control;
 pub mod diagnostics;
 pub mod headroom;
+pub mod white_balance;
 
 pub use awb_feed::{AwbFrameIdentity, AwbPublication, AwbStatisticsFeed, AwbStatisticsReader, PublishedAwbStatistics};
 pub use control::{
@@ -23,3 +25,4 @@ pub use diagnostics::{
     ViewfinderStorage,
 };
 pub use headroom::{HeadroomBench, HeadroomBenchDiagnostics, HeadroomPassTime};
+pub use white_balance::{ColdStartState, EstimateReading, WhiteBalanceDiagnostics, WhiteDelta, WhiteReading};

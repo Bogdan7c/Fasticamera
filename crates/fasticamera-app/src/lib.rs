@@ -46,6 +46,9 @@ pub mod result_line;
 pub mod runtime;
 pub mod runtime_config;
 pub mod scenario;
+pub mod three_a_scenario_config;
+#[cfg(test)]
+mod three_a_test_hal;
 pub mod viewfinder_autostart;
 pub mod viewfinder_control;
 pub mod viewfinder_latency_profile;

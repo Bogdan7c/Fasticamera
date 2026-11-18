@@ -24,6 +24,7 @@ use crate::entry::{
     read_int64s, read_rationals,
 };
 use crate::tags::{self, Tag};
+use crate::three_a_characteristics::parse_three_a;
 
 /// Без какого ключа камеру описать нельзя.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -63,26 +64,32 @@ pub struct ParsedCharacteristics {
     pub notes: Vec<CharacteristicNote>,
 }
 
-/// Накопитель заметок на время разбора.
+/// Накопитель заметок на время разбора (общий и для разбора возможностей 3A).
 #[derive(Default)]
-struct Notes(Vec<CharacteristicNote>);
+pub(crate) struct Notes(Vec<CharacteristicNote>);
 
 impl Notes {
-    fn absent(&mut self, tag: Tag) {
+    /// Накопленные заметки отдельного разбора (для тестов разбора 3A).
+    #[cfg(test)]
+    pub(crate) fn into_notes(self) -> Vec<CharacteristicNote> {
+        self.0
+    }
+
+    pub(crate) fn absent(&mut self, tag: Tag) {
         self.0.push(CharacteristicNote {
             tag: tag.name,
             issue: CharacteristicIssue::Absent,
         });
     }
 
-    fn malformed(&mut self, tag: Tag, problem: EntryProblem) {
+    pub(crate) fn malformed(&mut self, tag: Tag, problem: EntryProblem) {
         self.0.push(CharacteristicNote {
             tag: tag.name,
             issue: CharacteristicIssue::Malformed { problem },
         });
     }
 
-    fn substituted(&mut self, tag: Tag, substitute: &'static str) {
+    pub(crate) fn substituted(&mut self, tag: Tag, substitute: &'static str) {
         self.0.push(CharacteristicNote {
             tag: tag.name,
             issue: CharacteristicIssue::Substituted { substitute },
@@ -90,7 +97,7 @@ impl Notes {
     }
 
     /// Необязательный ключ: отсутствие и непригодность превращаются в заметку и `None`.
-    fn optional<T>(&mut self, tag: Tag, read: Read<T>) -> Option<T> {
+    pub(crate) fn optional<T>(&mut self, tag: Tag, read: Read<T>) -> Option<T> {
         match read {
             Ok(Some(value)) => Some(value),
             Ok(None) => {
@@ -159,6 +166,7 @@ pub fn parse_characteristics(
         ae_fps_ranges: parse_ae_fps_ranges(source, &mut notes),
         manual_sensor: parse_manual_sensor(source, has_manual_sensor, &mut notes),
         raw,
+        three_a: parse_three_a(source, &mut notes),
         focus: parse_focus(source, &mut notes),
         optics,
         vendor_processing: VendorProcessingFlags {

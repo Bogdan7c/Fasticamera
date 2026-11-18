@@ -41,8 +41,10 @@ use crate::backend::{
 use crate::camera_diagnostics::CameraStreamDiagnostics;
 use crate::viewfinder::{
     AwbStatisticsFeed, AwbStatisticsReader, ViewfinderCommand, ViewfinderCommandOutcome, ViewfinderDiagnostics,
+    WhiteBalanceDiagnostics,
 };
-use camera::{ViewfinderSettings, ViewfinderStats};
+use camera::{SceneWhiteMemory, ViewfinderSettings, ViewfinderStats, WhiteBalanceParts};
+use camera_contract::three_a::{DirectiveSlot, WhiteBalanceDirective};
 use census::census_by_kind;
 use session::{AttachedDisplay, CameraAttach};
 
@@ -103,6 +105,11 @@ pub struct VulkanDisplayBackend {
     viewfinder_stats: Option<ViewfinderStats>,
     /// Лента статистики AWB (сессия показа публикует, читатель — `awb_statistics()`).
     awb_feed: AwbStatisticsFeed,
+    /// Указания AWB от движка камеры (читающая половина ящика; писатель — у composition root). Пока ничего
+    /// не опубликовано, действует `WhiteBalanceDirective::DEFAULT`.
+    white_balance_directives: DirectiveSlot<WhiteBalanceDirective>,
+    /// Белая сцены переживает пересоздание surface и смену камеры (решение 65).
+    scene_white: SceneWhiteMemory,
 }
 
 impl VulkanDisplayBackend {
@@ -127,10 +134,14 @@ impl VulkanDisplayBackend {
 
     /// Боевой конструктор Android с показом кадров камеры: предпросмотр RAW-мозаики вместо тестового
     /// паттерна. Буферы камеры импортируются в Vulkan без копий (`AndroidCameraImporter`).
+    ///
+    /// `white_balance_directives` — читающая половина «почтового ящика» указаний AWB: composition root
+    /// создаёт ящик, писатель отдаёт `camera-core`, читатель — сюда (решение 64).
     #[cfg(target_os = "android")]
     pub fn new_android_camera_preview(
         config: VulkanBackendConfig,
         frames: raw_frame_stream::ViewfinderFrames,
+        white_balance_directives: DirectiveSlot<WhiteBalanceDirective>,
     ) -> Result<Self, GpuInitError> {
         let cache_capacity = config.camera_import_cache_capacity;
         let feed = CameraFeed::new(
@@ -139,17 +150,20 @@ impl VulkanDisplayBackend {
         );
         let mut backend = Self::with_profile(config, DeviceProfile::AndroidDisplay, PresentationMode::AndroidWindow)?;
         backend.camera_feed = Some(feed);
+        backend.white_balance_directives = white_balance_directives;
         Ok(backend)
     }
 
     /// Конструктор СТЕНДА ПК с показом кадров камеры: импорт буферов — через `make_importer` (на ПК нет
     /// `AHardwareBuffer`, тест подставляет синтетические источники). Остальное — боевой путь:
-    /// опрос видоискателя, сабмит с ожиданием/экспортом fence, учёт лизингов.
+    /// опрос видоискателя, сабмит с ожиданием/экспортом fence, учёт лизингов. `white_balance_directives` —
+    /// как у боевого конструктора (тест публикует указания через писателя ящика).
     #[cfg(not(target_os = "android"))]
     pub fn new_headless_camera_preview(
         config: VulkanBackendConfig,
         frames: raw_frame_stream::ViewfinderFrames,
         make_importer: CameraImporterFactory,
+        white_balance_directives: DirectiveSlot<WhiteBalanceDirective>,
     ) -> Result<Self, GpuInitError> {
         let mut backend = Self::with_profile(
             config,
@@ -157,6 +171,7 @@ impl VulkanDisplayBackend {
             PresentationMode::HeadlessBench,
         )?;
         backend.camera_feed = Some(CameraFeed::new(frames, make_importer));
+        backend.white_balance_directives = white_balance_directives;
         Ok(backend)
     }
 
@@ -190,6 +205,8 @@ impl VulkanDisplayBackend {
             viewfinder_settings,
             viewfinder_stats,
             awb_feed: AwbStatisticsFeed::new(),
+            white_balance_directives: DirectiveSlot::new(),
+            scene_white: SceneWhiteMemory::default(),
         })
     }
 
@@ -220,7 +237,11 @@ impl VulkanDisplayBackend {
             .viewfinder_stats
             .get_or_insert_with(|| ViewfinderStats::new(self.config.viewfinder.gpu_time_window_frames));
         // Сессии показа нет — объектов стенда V4 тоже нет (освобождены вместе с сессией).
-        Some(stats.snapshot(&settings, camera::HeadroomLiveState::default()))
+        Some(stats.snapshot(
+            &settings,
+            camera::HeadroomLiveState::default(),
+            WhiteBalanceDiagnostics::idle(self.config.viewfinder.white_balance.statistics_every_n_frames),
+        ))
     }
 
     /// Взводит одноразовый тестовый шов отказа в присоединённой цели (feature `fault-injection`):
@@ -266,6 +287,11 @@ impl DisplayBackend for VulkanDisplayBackend {
             stats: &mut self.viewfinder_stats,
             gpu_time_window_frames: self.config.viewfinder.gpu_time_window_frames,
             awb_feed: &self.awb_feed,
+            white_balance: WhiteBalanceParts {
+                config: self.config.viewfinder.white_balance,
+                directives: self.white_balance_directives.clone(),
+                memory: self.scene_white.clone(),
+            },
         });
         let display = AttachedDisplay::attach(&self.context, &self.config, presentation, held_surface, size, camera)?;
         self.attached = Some(display);

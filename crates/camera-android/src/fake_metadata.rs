@@ -144,4 +144,41 @@ pub fn main_camera_characteristics() -> FakeMetadata {
         .floats(tags::AVAILABLE_FOCAL_LENGTHS, &[5.6])
         .floats(tags::PHYSICAL_SIZE, &[9.8, 7.4])
         .bytes(tags::LENS_SHADING_APPLIED, &[tags::LENS_SHADING_APPLIED_TRUE])
+        .with_back_camera_three_a()
+}
+
+/// Результат кадра с состоянием 3A: ровно те ключи, которые нужны `three_a_result`.
+pub fn three_a_result_fixture() -> FakeMetadata {
+    FakeMetadata::default()
+        .bytes(tags::AF_STATE, &[tags::AF_STATE_FOCUSED_LOCKED])
+        .bytes(tags::AE_STATE, &[tags::AE_STATE_CONVERGED])
+        .bytes(tags::LENS_STATE, &[tags::LENS_STATE_STATIONARY])
+        .floats(tags::LENS_FOCUS_DISTANCE, &[2.5])
+        .bytes(tags::SCENE_FLICKER, &[tags::SCENE_FLICKER_50HZ])
+}
+
+impl FakeMetadata {
+    /// 3A задней камеры OnePlus 11 по `dumpsys media.camera`: компенсация −18…18 по 1/6, регионы
+    /// [AE 1, AWB 0, AF 1], режимы AF 0–4, блокировка AE есть, антибандинг 0–3.
+    pub fn with_back_camera_three_a(self) -> Self {
+        self.int32s(tags::AE_COMPENSATION_RANGE, &[-18, 18])
+            .with(
+                tags::AE_COMPENSATION_STEP,
+                EntryValue::Rationals(vec![Rational {
+                    numerator: 1,
+                    denominator: 6,
+                }]),
+            )
+            .int32s(tags::MAX_REGIONS, &[1, 0, 1])
+            .bytes(tags::AF_AVAILABLE_MODES, &[0, 1, 2, 3, 4])
+            .bytes(tags::AE_LOCK_AVAILABLE, &[tags::AE_LOCK_AVAILABLE_TRUE])
+            .bytes(tags::AE_AVAILABLE_ANTIBANDING_MODES, &[0, 1, 2, 3])
+    }
+
+    /// 3A фронтальной камеры: фиксированный фокус — только `AF_MODE_OFF`, регионов AF нет.
+    pub fn with_front_camera_three_a(self) -> Self {
+        self.with_back_camera_three_a()
+            .int32s(tags::MAX_REGIONS, &[1, 0, 0])
+            .bytes(tags::AF_AVAILABLE_MODES, &[0])
+    }
 }

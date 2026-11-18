@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 mod adpf;
 mod present_target;
 mod viewfinder;
+mod white_balance;
 
 pub use adpf::{AdpfConfig, AdpfConfigError, AdpfMode, MAX_ADPF_GPU_WAIT_FRAMES, MIN_ADPF_TARGET_FRACTION};
 
@@ -19,6 +20,7 @@ pub use viewfinder::{
     CropAspectConfig, DisplayColorConfig, MAX_VIEWFINDER_GPU_TIME_WINDOW_FRAMES, ViewfinderConfig,
     ViewfinderConfigError, ViewfinderCropConfig, ViewfinderPlacement,
 };
+pub use white_balance::{WhiteBalanceConfig, WhiteBalanceConfigError};
 
 pub use present_target::{
     DEFAULT_NEAREST_FEASIBLE_MARGIN_US, DepthReductionMode, LateLatchMode, MAX_DEPTH_REDUCTION_STREAK_FRAMES,

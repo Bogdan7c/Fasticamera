@@ -1,5 +1,8 @@
 //! `AndroidCameraBackend` — реализация `CameraBackend` на Camera2 NDK.
 //!
+//! Все три вида запросов (повторяющийся, триггер фокуса, серия) строятся одним путём
+//! `request_plan::plan_request`, поэтому рычаг частоты кадров и вендорские ключи потока есть в каждом.
+//!
 //! Тонкий слой: решения принимает нейтральная логика (`frame_rate_plan`, `request_plan`,
 //! `characteristics`, `status_mapping`), здесь они только применяются через RAII-владельцы NDK.
 //! Все вызовы приходят с потока камеры, колбэки NDK — на чужих потоках и только шлют события.
@@ -7,16 +10,18 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use camera_contract::capabilities::{CameraDescriptor, FocusCapability};
-use camera_contract::control::{CaptureIntent, ManualControl};
+use camera_contract::capabilities::CameraDescriptor;
+use camera_contract::control::CaptureIntent;
 use camera_contract::ids::CameraId;
 use camera_contract::raw_format::{MosaicKind, NativeMosaic};
 use camera_contract::stream::{ConfiguredStream, ResolvedStream};
+use camera_contract::three_a::{BurstId, ExposureBracket, PointRequestId, RequestOrigin};
 use camera_core::backend::{
     BackendEventSink, BackendFailure, CameraBackend, ConfigureFailure, DeviceGeneration, OpenFailure, RequestFailure,
     SessionGeneration, UnsupportedStream,
 };
 
+use camera_core::request_controls::{AfTrigger, RequestControls};
 use raw_frame_stream::RawFrameProducer;
 
 use crate::characteristics::{CharacteristicsError, parse_characteristics};
@@ -26,7 +31,7 @@ use crate::cpu_access_probe::CpuAccessProbe;
 use crate::diagnostics::BackendDiagnostics;
 use crate::entry::{EntryLookup, EntryValue, MetadataSource};
 use crate::frame_rate_plan::plan_frame_rate;
-use crate::request_plan::{RequestInputs, plan_repeating_request, plan_session_parameters};
+use crate::request_plan::{PlannedRequest, RequestInputs, plan_bracket, plan_request, plan_session_parameters};
 use crate::retired_readers::RetiredReaders;
 use crate::stream_passport::build_stream_passport;
 use crate::tags::Tag;
@@ -36,8 +41,9 @@ use super::availability::AvailabilityRegistration;
 use super::callbacks::SessionStateContext;
 use super::device::OpenedDevice;
 use super::manager::CameraManager;
+use super::outputs::ParkedOutputs;
 use super::raw_reader::{RawReader, ReaderSpec, RetiredNdkReaders};
-use super::session::{ActiveSession, SessionSpec};
+use super::session::{ActiveSession, OneShotRequest, SessionSpec};
 
 const LOG_TARGET: &str = "fasticamera::camera::backend";
 
@@ -62,9 +68,9 @@ pub struct AndroidCameraBackend {
     // Порядок полей ниже — порядок разрушения как запасной (основной — `Drop`): сессия, приёмник
     // после сессии, затем устройство, затем менеджер.
     session: Option<ActiveSession>,
-    /// Reader закрытой сессии: живёт, пока устройство не отпустило окно (см. `session`); затем
-    /// отправляется в `retired_readers`.
-    parked_reader: Option<RawReader>,
+    /// Читатели закрытой сессии (RAW и вспомогательный поток 3A): живут, пока устройство не
+    /// отпустило их окна (см. `session`); RAW-читатель затем отправляется в `retired_readers`.
+    parked_outputs: Option<ParkedOutputs>,
     device: Option<OpenedDevice>,
     /// Контексты состояния сессий: не освобождаются до конца бэкенда, а при его разрушении
     /// намеренно утекают (`Drop`, см. доку `callbacks` и `context_leak`).
@@ -108,7 +114,7 @@ impl AndroidCameraBackend {
             cpu_probe,
             catalog: HashMap::new(),
             session: None,
-            parked_reader: None,
+            parked_outputs: None,
             device: None,
             retained_state_contexts: Vec::new(),
             availability,
@@ -215,6 +221,8 @@ impl AndroidCameraBackend {
             vendor: &record.vendor,
             frame_number_window: self.config.frame_number_window,
             producer: &self.producer,
+            companion: self.config.three_a_companion_stream.plan(),
+            origin_capacity: self.config.request_origin_capacity,
         };
         let (session, state_context) = ActiveSession::create(device, reader, &spec, &self.events, &self.diagnostics)?;
         self.diagnostics.record_retained_session_context();
@@ -307,10 +315,10 @@ impl CameraBackend for AndroidCameraBackend {
         // Предыдущую сессию закрываем до создания новой (при этом её поток кадров уже остановлен); её
         // reader держим, пока устройство не перешло на новую сессию (отложить reader под работающим
         // потоком нельзя). Прежний припаркованный reader при замене уходит в отсрочку.
-        let previous_reader = self.session.take().map(ActiveSession::into_parked_reader);
+        let previous_outputs = self.session.take().map(ActiveSession::into_parked_outputs);
         let outcome = self.create_session(stream, generation);
-        if let Some(reader) = previous_reader {
-            self.parked_reader = Some(reader);
+        if let Some(outputs) = previous_outputs {
+            self.parked_outputs = Some(outputs);
         }
         if let Err(failure) = &outcome {
             self.diagnostics
@@ -319,7 +327,11 @@ impl CameraBackend for AndroidCameraBackend {
         outcome
     }
 
-    fn set_repeating_request(&mut self, intent: CaptureIntent, controls: &ManualControl) -> Result<(), RequestFailure> {
+    fn set_repeating_request(
+        &mut self,
+        intent: CaptureIntent,
+        controls: &RequestControls,
+    ) -> Result<(), RequestFailure> {
         self.reap_retired_readers();
         let (Some(device), Some(session)) = (self.device.as_ref(), self.session.as_mut()) else {
             return Err(RequestFailure::NoSession);
@@ -327,19 +339,103 @@ impl CameraBackend for AndroidCameraBackend {
         let Some(record) = self.catalog.get(&session.stream().camera) else {
             return Err(RequestFailure::NoSession);
         };
-        let focus: FocusCapability = record.descriptor.capabilities.focus;
-        let plan = plan_repeating_request(&RequestInputs {
+        let planned = plan_request(&RequestInputs {
             intent,
             controls,
+            trigger: None,
             frame_rate: session.stream().frame_rate,
             mechanism: session.mechanism(),
-            focus,
+            camera: &record.descriptor.capabilities,
+            mains: self.config.mains_frequency,
         });
+        self.diagnostics.record_plan_notes(&planned.notes);
         session
-            .set_repeating_request(device, &plan, &record.vendor)
+            .set_repeating_request(device, &planned.plan, &record.vendor)
             .inspect_err(|failure| {
                 self.diagnostics
                     .record_failure("set_repeating_request", 0, &failure.to_string());
+            })
+    }
+
+    fn submit_focus_trigger(
+        &mut self,
+        intent: CaptureIntent,
+        controls: &RequestControls,
+        trigger: AfTrigger,
+        request: PointRequestId,
+    ) -> Result<(), RequestFailure> {
+        self.reap_retired_readers();
+        let (Some(device), Some(session)) = (self.device.as_ref(), self.session.as_mut()) else {
+            return Err(RequestFailure::NoSession);
+        };
+        let Some(record) = self.catalog.get(&session.stream().camera) else {
+            return Err(RequestFailure::NoSession);
+        };
+        let planned = plan_request(&RequestInputs {
+            intent,
+            controls,
+            trigger: Some(trigger),
+            frame_rate: session.stream().frame_rate,
+            mechanism: session.mechanism(),
+            camera: &record.descriptor.capabilities,
+            mains: self.config.mains_frequency,
+        });
+        self.diagnostics.record_plan_notes(&planned.notes);
+        let one_shot = [OneShotRequest {
+            plan: &planned.plan,
+            origin: RequestOrigin::FocusTrigger { request },
+        }];
+        session
+            .submit_one_shot(device, &one_shot, &record.vendor)
+            .inspect_err(|failure| {
+                self.diagnostics
+                    .record_failure("submit_focus_trigger", 0, &failure.to_string());
+            })
+    }
+
+    fn submit_bracket(
+        &mut self,
+        intent: CaptureIntent,
+        base: &RequestControls,
+        bracket: &ExposureBracket,
+        burst: BurstId,
+    ) -> Result<(), RequestFailure> {
+        self.reap_retired_readers();
+        let (Some(device), Some(session)) = (self.device.as_ref(), self.session.as_mut()) else {
+            return Err(RequestFailure::NoSession);
+        };
+        let Some(record) = self.catalog.get(&session.stream().camera) else {
+            return Err(RequestFailure::NoSession);
+        };
+        let planned: Vec<PlannedRequest> = plan_bracket(
+            &RequestInputs {
+                intent,
+                controls: base,
+                trigger: None,
+                frame_rate: session.stream().frame_rate,
+                mechanism: session.mechanism(),
+                camera: &record.descriptor.capabilities,
+                mains: self.config.mains_frequency,
+            },
+            bracket,
+        );
+        // Кадры серии различаются только экспозицией, поэтому заметки одинаковы — считаем один раз.
+        if let Some(first) = planned.first() {
+            self.diagnostics.record_plan_notes(&first.notes);
+        }
+        let one_shots: Vec<OneShotRequest<'_>> = planned
+            .iter()
+            .zip(0_u32..)
+            .map(|(request, index)| OneShotRequest {
+                plan: &request.plan,
+                origin: RequestOrigin::Burst { burst, index },
+            })
+            .collect();
+        session
+            .submit_one_shot(device, &one_shots, &record.vendor)
+            .inspect_err(|failure| {
+                self.diagnostics
+                    .record_failure("submit_bracket", 0, &failure.to_string());
             })
     }
 
@@ -355,7 +451,7 @@ impl CameraBackend for AndroidCameraBackend {
         self.reap_retired_readers();
         if let Some(session) = self.session.take() {
             tracing::debug!(target: LOG_TARGET, session = session.generation().0, "закрытие сессии");
-            self.parked_reader = Some(session.into_parked_reader());
+            self.parked_outputs = Some(session.into_parked_outputs());
         }
     }
 
@@ -364,7 +460,7 @@ impl CameraBackend for AndroidCameraBackend {
         // удалится, когда вернутся все его кадры; поток камеры при этом ничего не ждёт).
         self.close_session();
         self.device = None;
-        self.parked_reader = None;
+        self.parked_outputs = None;
         self.reap_retired_readers();
     }
 }

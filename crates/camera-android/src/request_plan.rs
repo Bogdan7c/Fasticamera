@@ -6,13 +6,20 @@
 //!   HAL выбирает режим сенсора);
 //! * вендорские ключи CamX — **только в запрос** (в таблице 00 попытка 4 шла `req_keys`, без
 //!   `sess_keys`); параметров сессии у такого потока нет вовсе;
-//! * ручная экспозиция: `AE_MODE=OFF`, выдержка, ISO и длительность кадра равная частоте потока.
+//! * ручная экспозиция: `AE_MODE=OFF`, выдержка, ISO и длительность кадра не короче частоты потока.
+//!
+//! С сессии 08 управляющую часть (экспозиция, фокус, регионы, триггер) задаёт `RequestControls`
+//! движка; её перевод в теги живёт в `request_controls_plan`, а здесь — то, что общее для **любого**
+//! запроса: шаблон, рычаг частоты кадров, вендорские ключи потока.
 
-use camera_contract::capabilities::FocusCapability;
-use camera_contract::control::{CaptureIntent, ExposureControl, FocusControl, ManualControl};
+use camera_contract::capabilities::CameraCapabilities;
+use camera_contract::control::CaptureIntent;
 use camera_contract::stream::{FrameRateMechanism, TargetFrameRate};
+use camera_contract::three_a::{ExposureBracket, MainsFrequency};
+use camera_core::request_controls::{AfTrigger, ExposurePlan, RequestControls};
 
 use crate::entry::EntryValue;
+use crate::request_controls_plan::{ControlsContext, PlanNote, controls_entries};
 use crate::tags::{self, Tag};
 use crate::vendor::{RequestEntryWriter, VendorCapabilities, VendorKey, VendorValue, VendorWriteError};
 
@@ -60,21 +67,70 @@ pub struct RequestPlan {
 #[derive(Debug, Clone, Copy)]
 pub struct RequestInputs<'a> {
     pub intent: CaptureIntent,
-    pub controls: &'a ManualControl,
+    pub controls: &'a RequestControls,
+    /// Разовое действие AF: ставится ровно в один запрос (триггер тапа); у остальных `None`.
+    pub trigger: Option<AfTrigger>,
     pub frame_rate: TargetFrameRate,
     pub mechanism: FrameRateMechanism,
-    pub focus: FocusCapability,
+    /// Возможности камеры (фокус, регионы, режимы 3A, активная область).
+    pub camera: &'a CameraCapabilities,
+    pub mains: MainsFrequency,
 }
 
-/// Строит повторяющийся запрос.
-pub fn plan_repeating_request(inputs: &RequestInputs<'_>) -> RequestPlan {
+/// Готовый запрос и то, что из желаемого записать не удалось.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlannedRequest {
+    pub plan: RequestPlan,
+    pub notes: Vec<PlanNote>,
+}
+
+/// Строит один запрос любого вида (повторяющийся, триггер): частота кадров и вендорские ключи
+/// потока идут **первыми и всегда** — ключи CamX «липкие» в HAL (зонд 08), а разовый запрос без
+/// них сменил бы режим сенсора; затем управляющая часть из плана движка.
+pub fn plan_request(inputs: &RequestInputs<'_>) -> PlannedRequest {
     let mut entries = frame_rate_entries(inputs.mechanism);
-    entries.extend(exposure_entries(inputs.controls.exposure, inputs.frame_rate));
-    entries.extend(focus_entries(inputs.intent, inputs.controls.focus, inputs.focus));
-    RequestPlan {
-        template: inputs.intent.into(),
-        entries,
+    let controls = controls_entries(
+        &ControlsContext {
+            intent: inputs.intent,
+            camera: inputs.camera,
+            mains: inputs.mains,
+            frame_rate: inputs.frame_rate,
+        },
+        inputs.controls,
+        inputs.trigger,
+    );
+    entries.extend(controls.entries);
+    PlannedRequest {
+        plan: RequestPlan {
+            template: inputs.intent.into(),
+            entries,
+        },
+        notes: controls.notes,
     }
+}
+
+/// Строит запросы серии: кадр `i` — базовый план с экспозицией `bracket.frames()[i]` (сенсор
+/// вручную), фокус и всё остальное — из `inputs`; триггера в серии нет. Каждый запрос идёт тем же
+/// путём [`plan_request`], поэтому рычаг частоты и вендорские ключи есть в каждом.
+pub fn plan_bracket(inputs: &RequestInputs<'_>, bracket: &ExposureBracket) -> Vec<PlannedRequest> {
+    bracket
+        .frames()
+        .iter()
+        .map(|frame| {
+            let controls = RequestControls {
+                exposure: ExposurePlan::Sensor {
+                    exposure_time: frame.exposure_time,
+                    iso: frame.iso,
+                },
+                focus: inputs.controls.focus,
+            };
+            plan_request(&RequestInputs {
+                controls: &controls,
+                trigger: None,
+                ..*inputs
+            })
+        })
+        .collect()
 }
 
 /// Параметры сессии: только публичные ключи рычага частоты. У вендорского рычага их нет.
@@ -105,65 +161,6 @@ fn frame_rate_entries(mechanism: FrameRateMechanism) -> Vec<PlannedEntry> {
             PlannedEntry::Vendor {
                 key: VendorKey::OverrideSensorFrameDuration,
                 value: VendorValue::Int64(saturating_i64(frame_duration.as_nanos())),
-            },
-        ],
-    }
-}
-
-fn exposure_entries(exposure: ExposureControl, frame_rate: TargetFrameRate) -> Vec<PlannedEntry> {
-    match exposure {
-        // Автомат вендора: шаблон уже включает AE, лишнего не пишем.
-        ExposureControl::Auto => Vec::new(),
-        ExposureControl::Manual { exposure_time, iso } => {
-            let exposure_nanos = saturating_i64(u64::try_from(exposure_time.as_nanos()).unwrap_or(u64::MAX));
-            // Кадр не может быть короче выдержки: HAL ограничит сам, но мы просим честно.
-            let frame_duration_nanos = saturating_i64(frame_rate.frame_duration().as_nanos()).max(exposure_nanos);
-            vec![
-                PlannedEntry::Public {
-                    tag: tags::AE_MODE,
-                    value: EntryValue::Bytes(vec![tags::AE_MODE_OFF]),
-                },
-                PlannedEntry::Public {
-                    tag: tags::SENSOR_EXPOSURE_TIME,
-                    value: EntryValue::Int64s(vec![exposure_nanos]),
-                },
-                PlannedEntry::Public {
-                    tag: tags::SENSOR_SENSITIVITY,
-                    value: EntryValue::Int32s(vec![saturating_i32(iso)]),
-                },
-                PlannedEntry::Public {
-                    tag: tags::SENSOR_FRAME_DURATION,
-                    value: EntryValue::Int64s(vec![frame_duration_nanos]),
-                },
-            ]
-        }
-    }
-}
-
-fn focus_entries(intent: CaptureIntent, control: FocusControl, capability: FocusCapability) -> Vec<PlannedEntry> {
-    // Фиксированный фокус (фронт): режимы AF бессмысленны и могут отвергаться — не пишем ничего.
-    if capability == FocusCapability::Fixed {
-        return Vec::new();
-    }
-    match control {
-        FocusControl::ContinuousAuto => {
-            let mode = match intent {
-                CaptureIntent::Preview => tags::AF_MODE_CONTINUOUS_PICTURE,
-                CaptureIntent::VideoRecord => tags::AF_MODE_CONTINUOUS_VIDEO,
-            };
-            vec![PlannedEntry::Public {
-                tag: tags::AF_MODE,
-                value: EntryValue::Bytes(vec![mode]),
-            }]
-        }
-        FocusControl::Manual { distance_diopters } => vec![
-            PlannedEntry::Public {
-                tag: tags::AF_MODE,
-                value: EntryValue::Bytes(vec![tags::AF_MODE_OFF]),
-            },
-            PlannedEntry::Public {
-                tag: tags::LENS_FOCUS_DISTANCE,
-                value: EntryValue::Floats(vec![distance_diopters]),
             },
         ],
     }
@@ -220,3 +217,7 @@ pub fn apply_entries(
 #[cfg(test)]
 #[path = "request_plan_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "request_plan_oneshot_tests.rs"]
+mod oneshot_tests;

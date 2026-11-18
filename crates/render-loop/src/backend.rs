@@ -237,7 +237,7 @@ pub struct DisplayInfo {
 
 /// Снимок диагностики бэкенда: текущие значения счётчиков и параметров цепочки.
 /// Времена показов сюда не входят: их вычерпывает [`DisplayBackend::drain_past_presentations`].
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct BackendDiagnostics {
     /// Сколько Vulkan-объектов (или их аналогов) сейчас живо у бэкенда; после `detach`
     /// должно вернуться к исходному значению.

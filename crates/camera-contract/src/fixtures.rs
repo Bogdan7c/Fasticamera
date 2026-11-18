@@ -14,6 +14,9 @@ use crate::capabilities::{
 use crate::geometry::{PixelRect, PixelSize, SensorOrientation};
 use crate::ids::{CameraId, CameraTopology, LensFacing};
 use crate::raw_format::{CfaLayout, MosaicKind, MosaicPattern, NativeMosaic, RawFormat};
+use crate::three_a::{
+    AfModeSupport, AntibandingModeSupport, ExposureCompensationSupport, LockSupport, MaxRegions, ThreeACapabilities,
+};
 
 /// Публичный потолок OnePlus 11: 33,3 мс на кадр (30 к/с) для всех RAW (00 C1).
 const PUBLIC_MIN_FRAME_DURATION: FrameDuration = FrameDuration::from_nanos(33_333_333);
@@ -124,11 +127,51 @@ fn capabilities(
         ae_fps_ranges: vec![FpsRange { min: 15, max: 30 }, FpsRange { min: 30, max: 30 }],
         manual_sensor: manual_sensor(),
         raw: RawSupport::Supported(raw_info()),
+        three_a: three_a_for(facing),
         focus,
         optics,
         vendor_processing: VendorProcessingFlags {
             lens_shading: LensShading::AppliedByVendor,
         },
+    }
+}
+
+/// Автоматика 3A по `dumpsys media.camera` (сессия 08): задние камеры — компенсация
+/// −18…18 по 1/6 EV, по одному региону AE и AF (AWB без регионов), режимы AF 0–4,
+/// блокировка AE, антибандинг 0–3; фронт — только `AF_MODE_OFF` (фиксированный фокус).
+fn three_a_for(facing: LensFacing) -> ThreeACapabilities {
+    let af_modes = match facing {
+        LensFacing::Front => vec![AfModeSupport::Off],
+        LensFacing::Back | LensFacing::External => vec![
+            AfModeSupport::Off,
+            AfModeSupport::Auto,
+            AfModeSupport::Macro,
+            AfModeSupport::ContinuousVideo,
+            AfModeSupport::ContinuousPicture,
+        ],
+    };
+    ThreeACapabilities {
+        exposure_compensation: ExposureCompensationSupport::Supported {
+            min_steps: -18,
+            max_steps: 18,
+            step_ev: Rational {
+                numerator: 1,
+                denominator: 6,
+            },
+        },
+        max_regions: MaxRegions {
+            auto_exposure: 1,
+            auto_white_balance: 0,
+            auto_focus: u32::from(facing != LensFacing::Front),
+        },
+        af_modes,
+        ae_lock: LockSupport::Available,
+        antibanding_modes: vec![
+            AntibandingModeSupport::Off,
+            AntibandingModeSupport::Hz50,
+            AntibandingModeSupport::Hz60,
+            AntibandingModeSupport::Auto,
+        ],
     }
 }
 

@@ -31,6 +31,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import smoke_checks
+import smoke_checks_three_a
 import smoke_checks_viewfinder
 import smoke_logcat
 import smoke_neutral_card
@@ -194,6 +195,7 @@ CHECKS: dict[str, ScenarioCheck] = {
     "viewfinder-stage-budget": ignoring_observations(smoke_checks_viewfinder.check_viewfinder_stage_budget),
     "viewfinder-endurance": ignoring_observations(smoke_checks_viewfinder.check_viewfinder_endurance),
     "video-headroom-bench": ignoring_observations(smoke_checks_viewfinder.check_video_headroom_bench),
+    "3a": ignoring_observations(smoke_checks_three_a.check_three_a),
 }
 
 StageHandler = Callable[[dict], None]
@@ -434,13 +436,17 @@ def parse_arguments(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--neutral-card",
         action="store_true",
-        help="viewfinder: проверить по скриншотам, что серая карта в центре кадра вышла серой",
+        help="viewfinder и 3a: проверить по скриншотам, что серая карта в центре кадра вышла серой",
     )
     return parser.parse_args(argv)
 
 
-SCREENSHOT_SCENARIOS = frozenset({"raw-stream", "raw-stream-endurance", "viewfinder"})
-"""Сценарии, на стадии ``viewfinder_live`` которых драйвер делает скриншоты и после результата их анализирует."""
+SCREENSHOT_SCENARIOS = frozenset({"raw-stream", "raw-stream-endurance", "viewfinder", "3a"})
+"""Сценарии, на стадии ``viewfinder_live`` (``3a`` — ``awb_ready``) которых драйвер делает скриншоты и после результата их анализирует."""
+
+
+NEUTRAL_CARD_SCENARIOS = frozenset({"viewfinder", "3a"})
+"""Сценарии, для которых работает флаг ``--neutral-card``."""
 
 
 def screen_post_check(artifacts_dir: Path) -> PostCheck:
@@ -483,7 +489,7 @@ def main(argv: list[str]) -> int:
         AdbDeviceActions(arguments.serial, arguments.package, artifacts_dir=arguments.artifacts_dir),
     )
     post_check = post_check_for(arguments.scenario, arguments.serial, arguments.artifacts_dir)
-    if arguments.neutral_card and arguments.scenario == "viewfinder" and arguments.artifacts_dir is not None:
+    if arguments.neutral_card and arguments.scenario in NEUTRAL_CARD_SCENARIOS and arguments.artifacts_dir is not None:
         post_check = with_neutral_card(post_check, arguments.artifacts_dir)
     verdict = evaluate_stream(
         read_logcat_lines(arguments.serial, arguments.since_epoch, arguments.timeout),

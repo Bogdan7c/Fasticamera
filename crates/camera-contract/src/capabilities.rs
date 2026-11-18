@@ -10,6 +10,7 @@ use serde::Serialize;
 use crate::geometry::{PixelRect, PixelSize, SensorOrientation};
 use crate::ids::{CameraId, CameraTopology, LensFacing};
 use crate::raw_format::{CfaLayout, MosaicPattern, NativeMosaic, RawFormat};
+use crate::three_a::ThreeACapabilities;
 
 /// Длительность кадра (время от начала одного кадра до начала следующего).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
@@ -318,6 +319,8 @@ pub struct CameraCapabilities {
     pub manual_sensor: ManualSensorRanges,
     pub raw: RawSupport,
     pub focus: FocusCapability,
+    /// Автоматика 3A HAL: компенсация, регионы, режимы AF, блокировка, антибандинг (08).
+    pub three_a: ThreeACapabilities,
     pub optics: Optics,
     pub vendor_processing: VendorProcessingFlags,
 }

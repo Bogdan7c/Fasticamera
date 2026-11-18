@@ -10,6 +10,8 @@
 //!   `viewfinder-stage-budget` (таблица решения 45), [`ViewfinderEnduranceScenario`] —
 //!   `viewfinder-endurance` (10 минут), [`VideoHeadroomScenario`] — `video-headroom-bench` (V4).
 //!   Общий запуск — `viewfinder_session`, числа — `viewfinder_metrics`.
+//! * сессия 08: [`ThreeAScenario`] — `3a` (тап, ручная экспозиция, EV, блокировка, брекетинг; шаги — `three_a_steps*`,
+//!   вердикт — `three_a_verdict`).
 //!
 //! Устройство каждого сценария одинаково: логика движется по тикам маршрутизатора (ничего не
 //! блокируется), отчёт — отдельные `Serialize`-структуры (`*_report.rs`), вердикт — чистая функция
@@ -33,6 +35,14 @@ mod raw_stream_samples;
 mod result_budget;
 mod stream;
 mod stream_report;
+mod three_a;
+mod three_a_report;
+mod three_a_results;
+mod three_a_steps;
+mod three_a_steps_bracket;
+mod three_a_steps_exposure;
+mod three_a_steps_focus;
+mod three_a_verdict;
 mod video_headroom;
 mod video_headroom_report;
 mod viewfinder_endurance;
@@ -49,6 +59,7 @@ mod viewfinder_smoke_report;
 mod viewfinder_stage_budget;
 mod viewfinder_stage_budget_report;
 mod viewfinder_tuning_report;
+mod white_balance_report;
 
 use super::observing::ObservingScenario;
 use crate::raw_stream_scenario_config::RawStreamRunKind;
@@ -58,6 +69,7 @@ pub use catalog::CameraCatalogScenario;
 pub use evict::CameraEvictScenario;
 pub use raw_stream::CameraRawStreamScenario;
 pub use stream::CameraStreamScenario;
+pub use three_a::ThreeAScenario;
 pub use video_headroom::VideoHeadroomScenario;
 pub use viewfinder_endurance::ViewfinderEnduranceScenario;
 pub use viewfinder_latency::ViewfinderLatencyScenario;
@@ -87,6 +99,8 @@ pub enum CameraScenario {
     ViewfinderEndurance,
     /// `video-headroom-bench`: стенд запаса под видео (V4), 16:9@60 и экран 120 Гц.
     VideoHeadroomBench,
+    /// `3a`: автоматика 3A и ручные параметры на живом видоискателе (сессия 08).
+    ThreeA,
     /// Только отладочная сборка: запускает системную камеру и отнимает у нас камеру.
     #[cfg(feature = "debug-scenarios")]
     Evict,
@@ -109,6 +123,7 @@ impl CameraScenario {
             CameraScenario::ViewfinderStageBudget,
             CameraScenario::ViewfinderEndurance,
             CameraScenario::VideoHeadroomBench,
+            CameraScenario::ThreeA,
         ]
     }
 
@@ -133,6 +148,7 @@ impl CameraScenario {
             CameraScenario::ViewfinderStageBudget => "viewfinder-stage-budget",
             CameraScenario::ViewfinderEndurance => "viewfinder-endurance",
             CameraScenario::VideoHeadroomBench => "video-headroom-bench",
+            CameraScenario::ThreeA => "3a",
         }
     }
 
@@ -152,6 +168,7 @@ impl CameraScenario {
             CameraScenario::ViewfinderStageBudget => Box::new(ViewfinderStageBudgetScenario::new()),
             CameraScenario::ViewfinderEndurance => Box::new(ViewfinderEnduranceScenario::new()),
             CameraScenario::VideoHeadroomBench => Box::new(VideoHeadroomScenario::new()),
+            CameraScenario::ThreeA => Box::new(ThreeAScenario::new()),
         }
     }
 }

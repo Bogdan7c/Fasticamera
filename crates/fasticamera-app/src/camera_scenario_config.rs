@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::power_measurement::config::{PowerMeasurementConfig, PowerMeasurementConfigError};
 use crate::raw_stream_scenario_config::{RawStreamScenarioConfig, RawStreamScenarioConfigError};
+use crate::three_a_scenario_config::{ThreeAScenarioConfig, ThreeAScenarioConfigError};
 use crate::viewfinder_scenario_config::{ViewfinderScenarioConfig, ViewfinderScenarioConfigError};
 
 /// Формат RAW в конфиге.
@@ -268,6 +269,8 @@ pub struct CameraScenarioConfig {
     pub power: PowerMeasurementConfig,
     /// Сценарии видоискателя с ISP (сессия 07): smoke, задержка, бюджет стадий, 10 минут, стенд V4.
     pub viewfinder: ViewfinderScenarioConfig,
+    /// Сценарий `3a` (сессия 08): тап, ручная экспозиция, EV, блокировка, брекетинг.
+    pub three_a: ThreeAScenarioConfig,
 }
 
 fn step(
@@ -321,6 +324,7 @@ impl Default for CameraScenarioConfig {
             raw_stream: RawStreamScenarioConfig::default(),
             power: PowerMeasurementConfig::default(),
             viewfinder: ViewfinderScenarioConfig::default(),
+            three_a: ThreeAScenarioConfig::default(),
         }
     }
 }
@@ -342,6 +346,8 @@ pub enum CameraScenarioConfigError {
     Power(#[from] PowerMeasurementConfigError),
     #[error("{0}")]
     Viewfinder(#[from] ViewfinderScenarioConfigError),
+    #[error("{0}")]
+    ThreeA(#[from] ThreeAScenarioConfigError),
     #[error("ID камеры: {0}")]
     InvalidCameraId(#[from] EmptyCameraId),
     #[error(
@@ -392,6 +398,7 @@ impl CameraScenarioConfig {
         self.raw_stream.validate()?;
         self.power.validate()?;
         self.viewfinder.validate()?;
+        self.three_a.validate()?;
         Ok(())
     }
 }

@@ -8,12 +8,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
 use isp_vulkan::viewfinder::{IspStage, IspStageSet};
-use render_loop::config::{AdpfMode, PresentTargetConfig};
+use render_loop::config::{AdpfMode, PresentTargetConfig, WhiteBalanceConfig};
 use render_loop::thread::{AdpfSessionState, DurationSummary, PresentTargetSelection};
 use render_loop::viewfinder::{
     HeadroomBench, HeadroomBenchDiagnostics, HeadroomPassTime, ViewfinderColorSpace, ViewfinderCommand,
     ViewfinderCounters, ViewfinderDiagnostics, ViewfinderExtent, ViewfinderGpuTimes, ViewfinderPainter,
-    ViewfinderStorage,
+    ViewfinderStorage, WhiteBalanceDiagnostics,
 };
 use shell_contract::power::fake::FakePowerSource;
 use shell_contract::power::{BatteryCurrent, BatterySample, ChargingState, PowerPlug};
@@ -112,6 +112,7 @@ fn fresh_viewfinder() -> ViewfinderDiagnostics {
         gpu_time: ViewfinderGpuTimes::default(),
         counters: ViewfinderCounters::default(),
         headroom: HeadroomBenchDiagnostics::default(),
+        white_balance: WhiteBalanceDiagnostics::idle(WhiteBalanceConfig::default().statistics_every_n_frames),
     }
 }
 
@@ -147,7 +148,10 @@ impl RenderMirror {
                     viewfinder.counters.frames_processed = processed;
                     // Как настоящий рендер: параметры разрешаются один раз на поток, а не на кадр.
                     viewfinder.counters.params_resolved = u64::from(processed > 0);
-                    viewfinder.counters.statistics_published = processed;
+                    // Как настоящий рендер: статистика AWB считается на каждом N-м обработанном кадре.
+                    let period = u64::from(viewfinder.white_balance.statistics_every_n_frames.max(1));
+                    viewfinder.counters.statistics_published = processed / period;
+                    viewfinder.white_balance.estimates = processed / period;
                     viewfinder.gpu_time.isp_dispatch =
                         (now.painter == ViewfinderPainter::Isp).then(|| micros(isp_micros(now.stages)));
                     viewfinder.gpu_time.frame_total = Some(match now.painter {
@@ -305,7 +309,17 @@ fn run_viewfinder(
     faults: MirrorFaults,
     battery: Option<PowerPlug>,
 ) -> (Harness, serde_json::Value) {
-    let mut harness = harness_for_rig(FakeCameraRig::with_config(config));
+    run_viewfinder_on(FakeCameraRig::with_config(config), name, faults, battery)
+}
+
+/// То же на готовом стенде камеры (тест мог подготовить диагностику бэкенда).
+fn run_viewfinder_on(
+    rig: FakeCameraRig,
+    name: &str,
+    faults: MirrorFaults,
+    battery: Option<PowerPlug>,
+) -> (Harness, serde_json::Value) {
+    let mut harness = harness_for_rig(rig);
     harness.deliver(ShellEvent::Resumed);
     let paced = PumpFaults {
         paced_at_sensor_rate: true,
@@ -393,6 +407,46 @@ fn viewfinder_smoke_fails_when_isp_misses_presented_frames() {
     assert_eq!(result["status"], "failed", "{result}");
     let error = result["error"].as_str().unwrap_or_default();
     assert!(error.contains("каждый показанный"), "{error}");
+}
+
+#[test]
+fn viewfinder_smoke_fails_when_the_three_a_companion_stream_is_dead() {
+    use camera_android::companion_stream::{CompanionStreamStatus, CompanionUnavailableReason};
+    let rig = FakeCameraRig::with_config(short_config(|_, _| {}));
+    rig.diagnostics
+        .record_companion_status(CompanionStreamStatus::Unavailable {
+            reason: CompanionUnavailableReason::RejectedByHal,
+        });
+    let (_harness, result) = run_viewfinder_on(rig, "viewfinder", MirrorFaults::default(), None);
+
+    assert_eq!(result["status"], "failed", "{result}");
+    let error = result["error"].as_str().unwrap_or_default();
+    assert!(error.contains("вспомогательный поток 3A мёртв"), "{error}");
+    assert_eq!(
+        result["report"]["three_a_companion"]["state"], "unavailable",
+        "{result}"
+    );
+}
+
+#[test]
+fn viewfinder_smoke_reports_decimated_awb_statistics_and_the_white_balance_section() {
+    let (_harness, result) = run_viewfinder(short_config(|_, _| {}), "viewfinder", MirrorFaults::default(), None);
+
+    assert_eq!(result["status"], "passed", "{result}");
+    let report = &result["report"];
+    let processed = report["frames_processed"].as_u64().expect("кадры");
+    let published = report["awb_published"].as_u64().expect("статистика");
+    assert_eq!(
+        published,
+        processed / 4,
+        "статистика идёт на каждом 4-м кадре: {report}"
+    );
+    assert!(
+        report["white_balance"]["estimates"].as_u64().is_some_and(|n| n > 0),
+        "{report}"
+    );
+    assert_eq!(report["three_a_companion"]["state"], "active");
+    assert!(result.to_string().len() < 4_000, "строка результата в бюджете");
 }
 
 #[test]

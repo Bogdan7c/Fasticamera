@@ -5,7 +5,7 @@
 //! (каталог, отказы — под коротким замком), читает приложение через [`BackendDiagnostics::snapshot`].
 //! Тип нейтральный и сериализуемый, поэтому проверяется на ПК.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -13,7 +13,10 @@ use camera_contract::ids::CameraId;
 use serde::Serialize;
 
 use crate::characteristics::CharacteristicNote;
+use crate::companion_stream::CompanionStreamStatus;
 use crate::reader_counters::{ReaderCounters, ReaderSnapshot};
+use crate::request_controls_plan::PlanNote;
+use crate::request_origin::OriginLookup;
 use crate::vendor::VendorTagReport;
 
 /// Камера, не попавшая в каталог, и причина.
@@ -45,6 +48,8 @@ struct SlowState {
     skipped_cameras: Vec<SkippedCamera>,
     failures: VecDeque<RecordedFailure>,
     dropped_failures: u64,
+    companion: CompanionStreamStatus,
+    plan_notes: BTreeMap<&'static str, u64>,
 }
 
 /// Общая диагностика бэкенда.
@@ -58,6 +63,11 @@ pub struct BackendDiagnostics {
     retained_session_contexts: AtomicU64,
     leaked_availability_contexts: AtomicU64,
     leaked_session_state_contexts: AtomicU64,
+    results_without_request_context: AtomicU64,
+    results_with_unregistered_request: AtomicU64,
+    evicted_request_origins: AtomicU64,
+    unreadable_three_a_keys: AtomicU64,
+    companion_stray_images: AtomicU64,
     state: Mutex<SlowState>,
 }
 
@@ -81,6 +91,22 @@ pub struct DiagnosticsSnapshot {
     /// Контексты состояния сессий, оставленные на весь процесс при разрушении бэкенда:
     /// `onClosed` сессии может прийти из её деструктора уже после этого (use-after-free иначе).
     pub leaked_session_state_contexts: u64,
+    /// Результаты, у которых NDK не вернул контекст запроса (происхождение стало `Unknown`).
+    /// Не ноль — значит `ACaptureRequest_setUserContext` не доживает до колбэков (проверка smoke `3a`).
+    pub results_without_request_context: u64,
+    /// Результаты с ключом, которого нет в таблице происхождений (запись снята или вытеснена).
+    pub results_with_unregistered_request: u64,
+    /// Записи таблицы происхождений, вытесненные при переполнении.
+    pub evicted_request_origins: u64,
+    /// Ключи состояния 3A в результатах, присутствующие, но непригодные.
+    pub unreadable_three_a_keys: u64,
+    /// Образы, пришедшие во вспомогательный поток 3A (должно быть 0: в него не шлют запросов).
+    pub companion_stray_images: u64,
+    /// Состояние вспомогательного потока 3A последней сессии. `disabled_by_config`/`unavailable`
+    /// значит, что автоматика HAL (AF, AE-состояние, баланс) мертва.
+    pub three_a_companion: CompanionStreamStatus,
+    /// Сколько раз при построении запросов желаемое не удалось записать (по виду заметки).
+    pub request_plan_notes: BTreeMap<&'static str, u64>,
     pub cameras: Vec<CameraCatalogReport>,
     pub skipped_cameras: Vec<SkippedCamera>,
     /// Последние отказы платформы (старые вытесняются).
@@ -99,11 +125,18 @@ impl BackendDiagnostics {
             retained_session_contexts: AtomicU64::new(0),
             leaked_availability_contexts: AtomicU64::new(0),
             leaked_session_state_contexts: AtomicU64::new(0),
+            results_without_request_context: AtomicU64::new(0),
+            results_with_unregistered_request: AtomicU64::new(0),
+            evicted_request_origins: AtomicU64::new(0),
+            unreadable_three_a_keys: AtomicU64::new(0),
+            companion_stray_images: AtomicU64::new(0),
             state: Mutex::new(SlowState {
                 cameras: Vec::new(),
                 skipped_cameras: Vec::new(),
                 failures: VecDeque::new(),
                 dropped_failures: 0,
+                companion: CompanionStreamStatus::NotConfigured,
+                plan_notes: BTreeMap::new(),
             }),
         }
     }
@@ -141,6 +174,52 @@ impl BackendDiagnostics {
     /// Бэкенд разрушен, `count` контекстов состояния сессий намеренно оставлены в памяти.
     pub fn record_leaked_session_state_contexts(&self, count: u64) {
         self.leaked_session_state_contexts.fetch_add(count, Ordering::Relaxed);
+    }
+
+    /// Итог поиска происхождения результата: неопознанное считается по причине.
+    pub fn record_origin_lookup(&self, lookup: OriginLookup) {
+        match lookup {
+            OriginLookup::Known(_) => {}
+            OriginLookup::NoContext => {
+                self.results_without_request_context.fetch_add(1, Ordering::Relaxed);
+            }
+            OriginLookup::Unregistered => {
+                self.results_with_unregistered_request.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Таблица происхождений была полна: вытеснена самая старая запись.
+    pub fn record_evicted_request_origin(&self) {
+        self.evicted_request_origins.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// В результате `count` ключей состояния 3A были, но не прочитались.
+    pub fn record_unreadable_three_a_keys(&self, count: usize) {
+        self.unreadable_three_a_keys
+            .fetch_add(u64::try_from(count).unwrap_or(u64::MAX), Ordering::Relaxed);
+    }
+
+    /// Во вспомогательном потоке 3A нашлись образы (их не должно быть); все удалены.
+    pub fn record_companion_stray_images(&self, count: u64) {
+        self.companion_stray_images.fetch_add(count, Ordering::Relaxed);
+    }
+
+    /// Состояние вспомогательного потока последней сессии (заменяет прежнее).
+    pub fn record_companion_status(&self, status: CompanionStreamStatus) {
+        self.slow_state().companion = status;
+    }
+
+    /// Что из желаемого в запросе не удалось записать: счётчик по виду заметки.
+    pub fn record_plan_notes(&self, notes: &[PlanNote]) {
+        if notes.is_empty() {
+            return;
+        }
+        let mut state = self.slow_state();
+        for note in notes {
+            let count = state.plan_notes.entry(note.name()).or_insert(0);
+            *count = count.saturating_add(1);
+        }
     }
 
     /// Запомнить разбор камеры (заменяет прежнюю запись о ней при повторном чтении каталога).
@@ -196,6 +275,13 @@ impl BackendDiagnostics {
             retained_session_contexts: self.retained_session_contexts.load(Ordering::Relaxed),
             leaked_availability_contexts: self.leaked_availability_contexts.load(Ordering::Relaxed),
             leaked_session_state_contexts: self.leaked_session_state_contexts.load(Ordering::Relaxed),
+            results_without_request_context: self.results_without_request_context.load(Ordering::Relaxed),
+            results_with_unregistered_request: self.results_with_unregistered_request.load(Ordering::Relaxed),
+            evicted_request_origins: self.evicted_request_origins.load(Ordering::Relaxed),
+            unreadable_three_a_keys: self.unreadable_three_a_keys.load(Ordering::Relaxed),
+            companion_stray_images: self.companion_stray_images.load(Ordering::Relaxed),
+            three_a_companion: state.companion,
+            request_plan_notes: state.plan_notes.clone(),
             cameras: state.cameras.clone(),
             skipped_cameras: state.skipped_cameras.clone(),
             recent_failures: state.failures.iter().cloned().collect(),

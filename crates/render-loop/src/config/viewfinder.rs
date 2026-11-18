@@ -9,6 +9,7 @@ use isp_vulkan::quality::VideoHeadroomConfig;
 use isp_vulkan::viewfinder::ViewfinderIspConfig;
 use serde::{Deserialize, Serialize};
 
+use super::white_balance::{WhiteBalanceConfig, WhiteBalanceConfigError};
 use crate::viewfinder::ViewfinderPainter;
 
 /// Наибольшее окно статистики времени GPU видоискателя, кадров (~28 минут при 60 к/с).
@@ -110,6 +111,8 @@ pub struct ViewfinderConfig {
     /// старте всегда выключен (включается командой `SetHeadroomBench`). `frame_slots` здесь НЕ
     /// действует: слотов столько же, сколько кадров в полёте у цепочки показа (как у ISP).
     pub headroom_bench: VideoHeadroomConfig,
+    /// Наш AWB (сессия 08): оценка света, скрытие первых кадров, прореживание статистики.
+    pub white_balance: WhiteBalanceConfig,
 }
 
 impl Default for ViewfinderConfig {
@@ -121,6 +124,7 @@ impl Default for ViewfinderConfig {
             placement: ViewfinderPlacement::default(),
             gpu_time_window_frames: 600,
             headroom_bench: VideoHeadroomConfig::default(),
+            white_balance: WhiteBalanceConfig::default(),
         }
     }
 }
@@ -134,6 +138,7 @@ impl ViewfinderConfig {
                 self.gpu_time_window_frames,
             ));
         }
+        self.white_balance.validate()?;
         let with_any_valid_slots = ViewfinderIspConfig {
             frame_slots: 1,
             ..self.isp
@@ -174,6 +179,9 @@ pub enum ViewfinderConfigError {
     /// Настройки стенда V4 отвергнуты самим конвейером.
     #[error("viewfinder.headroom_bench: {0}")]
     HeadroomBench(String),
+    /// Настройки AWB отвергнуты.
+    #[error(transparent)]
+    WhiteBalance(#[from] WhiteBalanceConfigError),
 }
 
 #[cfg(test)]

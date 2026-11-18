@@ -1,0 +1,411 @@
+//! Шаги `3a` про фокус и AWB: a (живая автоматика), b (AWB), c (тапы), f (блокировка AE/AF).
+
+use camera_contract::control::ManualControl;
+use camera_contract::three_a::{AeAfLock, AeState, PointRequestId, SensorPoint};
+use camera_core::CameraEvent;
+use camera_core::three_a_status::FocusProgress;
+use render_loop::viewfinder::ColdStartState;
+
+use super::engine_watch::RunFailure;
+use super::progress::Deadline;
+use super::three_a_report::{
+    AwbReport, AwbVsHal, FocusReport, LiveReport, LockReport, TapReport, TapResult, ThreeAObservation,
+};
+use super::three_a_results::{exposure_product, relative_gap};
+use super::three_a_steps::{StepEnv, StepProgress, ThreeAStep, invalid_value, sent};
+use super::white_balance_report::WhiteBalanceReport;
+use crate::three_a_scenario_config::TapPointConfig;
+
+/// Шаг a: вспомогательный поток в сессии и первые состояния AF/AE в результатах (решение 62 в продукте).
+#[derive(Default)]
+pub struct LiveStep {
+    deadline: Option<Deadline>,
+}
+
+impl ThreeAStep for LiveStep {
+    fn name(&self) -> &'static str {
+        "live"
+    }
+
+    fn begin(&mut self, env: &mut StepEnv<'_>, _observation: &mut ThreeAObservation) -> Result<(), RunFailure> {
+        self.deadline = Some(Deadline::after_millis(env.now, env.config.live_results_timeout_ms));
+        Ok(())
+    }
+
+    fn poll(&mut self, env: &mut StepEnv<'_>, observation: &mut ThreeAObservation) -> StepProgress {
+        let af_state = env.results.repeating_after(None).find_map(|result| result.af_state);
+        let ae_state = env.results.repeating_after(None).find_map(|result| result.ae_state);
+        let expired = self.deadline.is_some_and(|deadline| deadline.is_expired(env.now));
+        if !(af_state.is_some() && ae_state.is_some() || expired) {
+            return StepProgress::Pending;
+        }
+        let companion = env.running.diagnostics_snapshot().three_a_companion;
+        env.stage(
+            "three_a_live",
+            [
+                ("companion", super::detail::to_value(&companion)),
+                ("af_state", super::detail::to_value(&af_state)),
+                ("ae_state", super::detail::to_value(&ae_state)),
+            ],
+        );
+        observation.live = Some(LiveReport {
+            companion,
+            af_state,
+            ae_state,
+        });
+        StepProgress::Done
+    }
+}
+
+/// Шаг b: первая оценка света и конец холодного старта. На стадии `awb_ready` скрипт может снять скриншот.
+#[derive(Default)]
+pub struct AwbStep {
+    deadline: Option<Deadline>,
+}
+
+impl ThreeAStep for AwbStep {
+    fn name(&self) -> &'static str {
+        "awb"
+    }
+
+    fn begin(&mut self, env: &mut StepEnv<'_>, _observation: &mut ThreeAObservation) -> Result<(), RunFailure> {
+        self.deadline = Some(Deadline::after_millis(env.now, env.config.awb.ready_timeout_ms));
+        Ok(())
+    }
+
+    fn poll(&mut self, env: &mut StepEnv<'_>, observation: &mut ThreeAObservation) -> StepProgress {
+        let diagnostics = env
+            .presentation
+            .viewfinder
+            .as_ref()
+            .map(|viewfinder| &viewfinder.white_balance);
+        let ready = diagnostics.is_some_and(|wb| wb.estimates > 0 && matches!(wb.cold_start, ColdStartState::Warm));
+        let expired = self.deadline.is_some_and(|deadline| deadline.is_expired(env.now));
+        if !(ready || expired) {
+            return StepProgress::Pending;
+        }
+        let report = diagnostics.map(WhiteBalanceReport::of);
+        let hidden = diagnostics.map_or(0, |wb| wb.hidden_frames_cold_start);
+        let forced = diagnostics.map_or(0, |wb| wb.cold_start_forced);
+        let awb = AwbReport {
+            ready,
+            hidden_since_start: hidden.saturating_sub(env.baselines.hidden_frames),
+            forced_since_start: forced.saturating_sub(env.baselines.forced_shows),
+            max_hidden_frames: env.baselines.max_hidden_frames,
+            awb_vs_hal: awb_vs_hal(report.as_ref(), env.config.awb.warn_mired_vs_hal),
+            white_balance: report,
+        };
+        env.stage(
+            "awb_ready",
+            [
+                ("ready", awb.ready.into()),
+                ("hidden_since_start", awb.hidden_since_start.into()),
+                ("forced_since_start", awb.forced_since_start.into()),
+                ("awb_vs_hal", super::detail::to_value(&awb.awb_vs_hal)),
+            ],
+        );
+        observation.awb = Some(awb);
+        StepProgress::Done
+    }
+}
+
+/// Наша белая против белой HAL: справка по порогу.
+pub fn awb_vs_hal(report: Option<&WhiteBalanceReport>, warn_mired: f64) -> AwbVsHal {
+    match report.and_then(|report| report.hal_delta_mired) {
+        None => AwbVsHal::Unknown,
+        Some(delta) if delta.abs() > warn_mired => AwbVsHal::Warn,
+        Some(_) => AwbVsHal::Ok,
+    }
+}
+
+/// Тап, ожидающий итога.
+struct ActiveTap {
+    point: TapPointConfig,
+    request: PointRequestId,
+    frame_at_send: Option<i64>,
+    diopters_before: Option<f32>,
+    deadline: Deadline,
+}
+
+/// Шаг c: тап в центр и в точки у углов; на каждый — итог, кадры до сходимости, дистанция до и после.
+#[derive(Default)]
+pub struct TapStep {
+    next_index: usize,
+    active: Option<ActiveTap>,
+    taps: Vec<TapReport>,
+    triggers_at_start: u64,
+    unknown_origin_at_start: u64,
+    no_context_at_start: u64,
+}
+
+impl TapStep {
+    fn start_tap(&mut self, env: &mut StepEnv<'_>, point: TapPointConfig) -> Result<(), RunFailure> {
+        let sensor_point =
+            SensorPoint::new(point.x, point.y).map_err(|error| invalid_value("focus_and_expose_at", error))?;
+        let command = sent(
+            "focus_and_expose_at",
+            env.running.handle().focus_and_expose_at(sensor_point),
+        )?;
+        self.active = Some(ActiveTap {
+            point,
+            // Номер тапа движок берёт из номера команды (см. тесты camera-core).
+            request: PointRequestId(command.0),
+            frame_at_send: env.results.latest_frame(),
+            diopters_before: env
+                .results
+                .latest_repeating()
+                .and_then(|result| result.focus_distance_diopters),
+            deadline: Deadline::after_millis(env.now, env.config.tap.settle_timeout_ms),
+        });
+        Ok(())
+    }
+
+    fn settle_of(active: &ActiveTap, env: &StepEnv<'_>) -> Option<TapResult> {
+        let from_event = env.events.iter().find_map(|event| match event {
+            CameraEvent::FocusSettled { request, outcome } if *request == active.request => {
+                Some(TapResult::of(*outcome))
+            }
+            _ => None,
+        });
+        from_event.or_else(|| active.deadline.is_expired(env.now).then_some(TapResult::NoEvent))
+    }
+
+    fn finish_tap(&mut self, env: &mut StepEnv<'_>, result: TapResult) {
+        let Some(active) = self.active.take() else {
+            return;
+        };
+        let frames_to_settle = match (env.results.latest_frame(), active.frame_at_send) {
+            (Some(now), Some(sent)) => Some(now - sent),
+            _ => None,
+        };
+        let report = TapReport {
+            x: active.point.x,
+            y: active.point.y,
+            result,
+            frames_to_settle,
+            diopters_before: active.diopters_before,
+            diopters_after: env
+                .results
+                .latest_repeating()
+                .and_then(|result| result.focus_distance_diopters),
+        };
+        env.stage(
+            "three_a_tap",
+            [
+                ("x", report.x.into()),
+                ("y", report.y.into()),
+                ("result", super::detail::to_value(&report.result)),
+                ("frames_to_settle", report.frames_to_settle.into()),
+                ("diopters_after", report.diopters_after.into()),
+            ],
+        );
+        self.taps.push(report);
+    }
+
+    fn report(&self, env: &StepEnv<'_>) -> FocusReport {
+        let distances: Vec<f32> = self.taps.iter().filter_map(|tap| tap.diopters_after).collect();
+        let region_effect_diopters = distances
+            .iter()
+            .copied()
+            .reduce(f32::max)
+            .zip(distances.iter().copied().reduce(f32::min))
+            .map(|(highest, lowest)| ((highest - lowest) * 100.0).round() / 100.0);
+        let counters = env.status.three_a.counters;
+        FocusReport {
+            taps: self.taps.clone(),
+            region_effect_diopters,
+            triggers_sent: counters.focus_triggers_sent.saturating_sub(self.triggers_at_start),
+            results_without_request_context: env
+                .running
+                .diagnostics_snapshot()
+                .results_without_request_context
+                .saturating_sub(self.no_context_at_start),
+            results_with_unknown_origin: counters
+                .results_with_unknown_origin
+                .saturating_sub(self.unknown_origin_at_start),
+        }
+    }
+}
+
+impl ThreeAStep for TapStep {
+    fn name(&self) -> &'static str {
+        "tap"
+    }
+
+    fn begin(&mut self, env: &mut StepEnv<'_>, _observation: &mut ThreeAObservation) -> Result<(), RunFailure> {
+        let counters = env.status.three_a.counters;
+        self.triggers_at_start = counters.focus_triggers_sent;
+        self.unknown_origin_at_start = counters.results_with_unknown_origin;
+        self.no_context_at_start = env.running.diagnostics_snapshot().results_without_request_context;
+        Ok(())
+    }
+
+    fn poll(&mut self, env: &mut StepEnv<'_>, observation: &mut ThreeAObservation) -> StepProgress {
+        if let Some(active) = &self.active {
+            if let Some(result) = Self::settle_of(active, env) {
+                self.finish_tap(env, result);
+            }
+            return StepProgress::Pending;
+        }
+        let Some(point) = env.config.tap.points.get(self.next_index).copied() else {
+            observation.focus = Some(self.report(env));
+            return StepProgress::Done;
+        };
+        self.next_index += 1;
+        match self.start_tap(env, point) {
+            Ok(()) => StepProgress::Pending,
+            Err(failure) => StepProgress::Failed(failure),
+        }
+    }
+}
+
+/// Фазы блокировки.
+enum LockPhase {
+    WaitLocked {
+        marker: Option<i64>,
+        deadline: Deadline,
+    },
+    Hold {
+        first_locked_frame: i64,
+        until: std::time::Instant,
+    },
+    WaitUnlocked {
+        deadline: Deadline,
+    },
+}
+
+/// Шаг f: блокировка AE/AF по центру, ~2 с постоянства, сброс точки.
+#[derive(Default)]
+pub struct LockStep {
+    phase: Option<LockPhase>,
+    report: Option<LockReport>,
+}
+
+impl LockStep {
+    fn hold_report(first_locked_frame: i64, env: &StepEnv<'_>) -> (usize, usize, Option<f64>) {
+        let held: Vec<_> = env.results.repeating_after(Some(first_locked_frame - 1)).collect();
+        let baseline = held.first().and_then(|result| exposure_product(result));
+        let non_locked = held
+            .iter()
+            .filter(|result| result.ae_state != Some(AeState::Locked))
+            .count();
+        let deviation = baseline.and_then(|baseline| {
+            held.iter()
+                .filter_map(|result| exposure_product(result))
+                .filter_map(|product| relative_gap(product, baseline))
+                .reduce(f64::max)
+        });
+        (held.len(), non_locked, deviation)
+    }
+}
+
+impl ThreeAStep for LockStep {
+    fn name(&self) -> &'static str {
+        "lock"
+    }
+
+    fn begin(&mut self, env: &mut StepEnv<'_>, _observation: &mut ThreeAObservation) -> Result<(), RunFailure> {
+        let handle = env.running.handle();
+        // Чистый лист: ручные значения и компенсация предыдущих шагов не должны влиять на блокировку.
+        sent("apply_controls", handle.apply_controls(ManualControl::AUTOMATIC))?;
+        sent(
+            "lock_focus_and_exposure_at",
+            handle.lock_focus_and_exposure_at(SensorPoint::CENTER),
+        )?;
+        self.phase = Some(LockPhase::WaitLocked {
+            marker: env.results.latest_frame(),
+            deadline: Deadline::after_millis(env.now, env.config.lock.settle_timeout_ms),
+        });
+        Ok(())
+    }
+
+    fn poll(&mut self, env: &mut StepEnv<'_>, observation: &mut ThreeAObservation) -> StepProgress {
+        let now = env.now;
+        match self.phase.take() {
+            Some(LockPhase::WaitLocked { marker, deadline }) => {
+                let locked_frame = env
+                    .results
+                    .repeating_after(marker)
+                    .find(|result| result.ae_state == Some(AeState::Locked))
+                    .map(|result| result.frame_number.0);
+                self.phase = match locked_frame {
+                    Some(first_locked_frame) => Some(LockPhase::Hold {
+                        first_locked_frame,
+                        until: now + std::time::Duration::from_millis(env.config.lock.hold_ms),
+                    }),
+                    None if deadline.is_expired(now) => {
+                        self.report = Some(not_locked_report());
+                        return self.request_reset(env, observation);
+                    }
+                    None => Some(LockPhase::WaitLocked { marker, deadline }),
+                };
+                StepProgress::Pending
+            }
+            Some(LockPhase::Hold {
+                first_locked_frame,
+                until,
+            }) => {
+                if now < until {
+                    self.phase = Some(LockPhase::Hold {
+                        first_locked_frame,
+                        until,
+                    });
+                    return StepProgress::Pending;
+                }
+                let (samples_held, non_locked_after_lock, max_product_deviation) =
+                    Self::hold_report(first_locked_frame, env);
+                self.report = Some(LockReport {
+                    locked: true,
+                    samples_held,
+                    non_locked_after_lock,
+                    max_product_deviation,
+                    back_to_continuous: false,
+                });
+                self.request_reset(env, observation)
+            }
+            Some(LockPhase::WaitUnlocked { deadline }) => {
+                let three_a = &env.status.three_a;
+                let back =
+                    three_a.lock == AeAfLock::Unlocked && matches!(three_a.focus, FocusProgress::Continuous { .. });
+                if back || deadline.is_expired(now) {
+                    if let Some(mut report) = self.report.take() {
+                        report.back_to_continuous = back;
+                        observation.lock = Some(report);
+                    }
+                    return StepProgress::Done;
+                }
+                self.phase = Some(LockPhase::WaitUnlocked { deadline });
+                StepProgress::Pending
+            }
+            None => StepProgress::Done,
+        }
+    }
+}
+
+impl LockStep {
+    /// Сбрасывает точку интереса и начинает ждать возврата непрерывного AF.
+    fn request_reset(&mut self, env: &mut StepEnv<'_>, _observation: &mut ThreeAObservation) -> StepProgress {
+        match sent(
+            "reset_point_of_interest",
+            env.running.handle().reset_point_of_interest(),
+        ) {
+            Ok(_) => {
+                self.phase = Some(LockPhase::WaitUnlocked {
+                    deadline: Deadline::after_millis(env.now, env.config.lock.unlock_timeout_ms),
+                });
+                StepProgress::Pending
+            }
+            Err(failure) => StepProgress::Failed(failure),
+        }
+    }
+}
+
+fn not_locked_report() -> LockReport {
+    LockReport {
+        locked: false,
+        samples_held: 0,
+        non_locked_after_lock: 0,
+        max_product_deviation: None,
+        back_to_continuous: false,
+    }
+}

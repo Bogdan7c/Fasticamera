@@ -1,6 +1,7 @@
 //! Переходы машины состояний: последовательность `StateChanged` и журнал вызовов бэкенда.
 
-use camera_contract::control::{CaptureIntent, ExposureControl, FocusControl, ManualControl};
+use crate::request_controls::ExposurePlan;
+use camera_contract::control::{CaptureIntent, Control, ExposureTime, Iso, ManualControl};
 use camera_contract::fixtures::camera_id;
 use camera_contract::ids::LensRole;
 use std::time::Duration;
@@ -173,24 +174,36 @@ fn close_releases_the_device_forgets_desired_and_a_later_open_starts_fresh() {
     assert_eq!(rig.send(CameraCommand::Close), CommandOutcome::AlreadyInState);
 }
 
+/// Полностью ручная экспозиция 4 мс / ISO 200 (внутри диапазонов OnePlus 11 и кадра 60 к/с).
+fn manual_4ms_iso200() -> ManualControl {
+    ManualControl {
+        iso: Control::Manual(Iso::new(200).expect("ISO")),
+        shutter: Control::Manual(ExposureTime::new(Duration::from_millis(4)).expect("выдержка")),
+        ..ManualControl::AUTOMATIC
+    }
+}
+
 #[test]
 fn apply_controls_while_streaming_replaces_the_request_without_recreating_the_session() {
     let mut rig = Rig::new();
     rig.start_streaming_on_wide();
     let session_before = rig.fake.current_session_generation();
-    let controls = ManualControl {
-        exposure: ExposureControl::Manual {
-            exposure_time: Duration::from_millis(4),
-            iso: 200,
-        },
-        focus: FocusControl::Manual { distance_diopters: 2.0 },
-    };
+    let controls = manual_4ms_iso200();
     assert_eq!(
         rig.send(CameraCommand::ApplyControls { controls }),
         CommandOutcome::Accepted
     );
     assert_eq!(call_names(&rig.fake.take_calls()), vec!["set_repeating_request"]);
-    assert_eq!(rig.fake.repeating_request(), Some((CaptureIntent::Preview, controls)));
+    let (intent, request) = rig.fake.repeating_request().expect("запрос идёт");
+    assert_eq!(intent, CaptureIntent::Preview);
+    assert_eq!(
+        request.exposure,
+        ExposurePlan::Sensor {
+            exposure_time: ExposureTime::new(Duration::from_millis(4)).expect("выдержка"),
+            iso: Iso::new(200).expect("ISO"),
+        },
+        "ручные значения дошли до запроса HAL"
+    );
     assert_eq!(rig.fake.current_session_generation(), session_before);
     assert!(rig.fresh_state_names().is_empty(), "состояние не менялось");
     // Те же параметры ещё раз — no-op без вызовов.
@@ -207,20 +220,19 @@ fn apply_controls_without_streaming_touches_no_backend_but_the_next_stream_uses_
     rig.send(CameraCommand::Open { target: wide() });
     rig.send(CameraCommand::Configure { mode: mode_raw10_60() });
     rig.fake.take_calls();
-    let controls = ManualControl {
-        exposure: ExposureControl::Manual {
-            exposure_time: Duration::from_millis(2),
-            iso: 100,
-        },
-        focus: FocusControl::ContinuousAuto,
-    };
-    rig.send(CameraCommand::ApplyControls { controls });
+    let controls = manual_4ms_iso200();
+    assert_eq!(
+        rig.send(CameraCommand::ApplyControls { controls }),
+        CommandOutcome::Accepted
+    );
     assert!(rig.fake.take_calls().is_empty());
     rig.send(CameraCommand::StartStreaming {
         intent: CaptureIntent::VideoRecord,
     });
-    assert_eq!(
-        rig.fake.repeating_request(),
-        Some((CaptureIntent::VideoRecord, controls))
+    let (intent, request) = rig.fake.repeating_request().expect("запрос идёт");
+    assert_eq!(intent, CaptureIntent::VideoRecord);
+    assert!(
+        matches!(request.exposure, ExposurePlan::Sensor { iso, .. } if iso.value() == 200),
+        "ручные значения, заданные до потока, применены в первом запросе"
     );
 }

@@ -18,7 +18,7 @@ use super::settings::ViewfinderSettings;
 use crate::thread::RollingDurations;
 use crate::viewfinder::{
     ViewfinderColorSpace, ViewfinderCounters, ViewfinderDiagnostics, ViewfinderExtent, ViewfinderGpuTimes,
-    ViewfinderStorage,
+    ViewfinderStorage, WhiteBalanceDiagnostics,
 };
 
 /// Точка «начало команд кадра видоискателя».
@@ -150,6 +150,7 @@ impl ViewfinderStats {
         &mut self,
         settings: &ViewfinderSettings,
         headroom_live: HeadroomLiveState,
+        white_balance: WhiteBalanceDiagnostics,
     ) -> ViewfinderDiagnostics {
         ViewfinderDiagnostics {
             painter: settings.painter,
@@ -165,6 +166,7 @@ impl ViewfinderStats {
             },
             counters: self.counters.clone(),
             headroom: self.headroom.snapshot(settings.headroom, headroom_live),
+            white_balance,
         }
     }
 }
@@ -217,7 +219,11 @@ mod tests {
         stats.note_frame_time(&spans(&[(POINT_FRAME_START, POINT_COMPOSE_DONE, 2_000_000)]));
         stats.note_frame_time(&TimestampCollect::NotReady);
         stats.note_isp_dispatch_time(&spans(&[("isp-start", "isp-end", 2_500_000)]));
-        let snapshot = stats.snapshot(&settings(), HeadroomLiveState::default());
+        let snapshot = stats.snapshot(
+            &settings(),
+            HeadroomLiveState::default(),
+            WhiteBalanceDiagnostics::idle(4),
+        );
         let times = snapshot.gpu_time;
         assert_eq!(
             times.frame_total.map(|window| window.samples),
@@ -245,13 +251,19 @@ mod tests {
         stats.note_params(&decide(HintsSource::EarlierFrame, ParamsOutcome::Unchanged));
         stats.note_params(&decide(
             HintsSource::ThisFrame,
-            ParamsOutcome::ReusedAfterFailure(ParamsFailure::NoNeutral),
+            ParamsOutcome::ReusedAfterFailure(ParamsFailure::InvalidNeutral("нечисловая белая".to_owned())),
         ));
         stats.note_params(&decide(
             HintsSource::EarlierFrame,
             ParamsOutcome::Unavailable(ParamsUnavailable::NoMetadataYet),
         ));
-        let counters = stats.snapshot(&settings(), HeadroomLiveState::default()).counters;
+        let counters = stats
+            .snapshot(
+                &settings(),
+                HeadroomLiveState::default(),
+                WhiteBalanceDiagnostics::idle(4),
+            )
+            .counters;
         assert_eq!(counters.params_resolved, 1);
         assert_eq!(counters.params_unchanged, 2);
         assert_eq!(
@@ -260,7 +272,10 @@ mod tests {
         );
         assert_eq!((counters.params_failed, counters.params_reused_after_failure), (1, 1));
         assert_eq!(counters.frames_dropped_no_params, 1);
-        assert_eq!(counters.last_params_failure, Some(ParamsFailure::NoNeutral.to_string()));
+        assert_eq!(
+            counters.last_params_failure,
+            Some(ParamsFailure::InvalidNeutral("нечисловая белая".to_owned()).to_string())
+        );
         assert_eq!(counters.cpu_copies, 0);
     }
 }

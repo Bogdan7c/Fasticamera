@@ -57,3 +57,22 @@ colour-demosaicing 0.2.7 (BSD-3-Clause), `demosaicing_CFA_Bayer_Menon2007(CFA, p
 Полный кадр в репозиторий не кладётся.
 
 Тест: `crates/isp-model/tests/real_crops.rs`.
+
+## Белая точка (сессия 08)
+
+Эталоны для `crates/isp-model/src/color/white_point.rs` и `DngColorProfile::neutral_for_white`.
+Все числа лежат в поле `extra` манифеста (JSON хранит f64 без потерь); `.bin` пустой (0×0, `u16le`) —
+формат отсчётов здесь не нужен.
+
+| Файл | Содержимое |
+|---|---|
+| `white-point-reference.{json,bin}` | `forward` — (CCT, Duv) → uv/xy на сетке 9 температур (2500–10 000 К) × Duv {−0,02; 0; +0,02}: Робертсон 1968 (colour-science 0.4.7) и Ohno 2014 (для сведения); `inverse` — xy → (CCT, Duv) для 8 точек; `neutral` — нейтраль камеры (G = 1) для белых Планка 2000/2800/4000/5500/6500 К, двух смещений по Duv при 4000 К и D65 по `colour_hdri.xy_to_camera_neutral` (colour-hdri 0.2.6) на калибровке OnePlus 11 из `test_support.rs`; `conventions` — различия соглашений |
+
+Перегенерация (из корня репозитория):
+
+```
+~/.cache/fasticamera/isp-reference-venv/bin/python -I tools/isp-reference/make_white_point_fixtures.py
+```
+
+Тест: `crates/isp-model/tests/white_point_reference.rs` (допуски и их причины — у констант теста).
+Знак Duv — по CIE (плюс — выше кривой Планка, к зелёному). Размер ≈ 17 КБ.

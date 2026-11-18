@@ -104,3 +104,52 @@ fn fallback_defaults_to_30_and_validates_its_rate() {
         serde_json::from_str(r#"{"stream":{"frame_rate_fallback":{"to":{"fps":24}}}}"#).expect("откат на 24");
     assert_eq!(parsed.stream.frame_rate_fallback, FrameRateFallback::To { fps: 24 });
 }
+
+#[test]
+fn three_a_defaults_are_valid_and_each_broken_value_gives_its_own_error() {
+    let defaults = CameraEngineConfig::default().three_a;
+    assert!(
+        defaults.reset_point_on_camera_switch,
+        "по умолчанию точка сбрасывается при смене камеры"
+    );
+    assert_eq!(defaults.max_bracket_frames, 4);
+
+    for broken in [0.0, -0.1, 1.5, f32::NAN] {
+        let mut config = CameraEngineConfig::default();
+        config.three_a.metering_region_size_fraction = broken;
+        assert!(
+            matches!(
+                config.validate(),
+                Err(CameraEngineConfigError::InvalidMeteringRegionSize(_))
+            ),
+            "размер региона {broken} должен отвергаться"
+        );
+    }
+
+    let mut config = CameraEngineConfig::default();
+    config.three_a.max_bracket_frames = 0;
+    assert_eq!(
+        config.validate(),
+        Err(CameraEngineConfigError::InvalidThreeALimit {
+            field: "max_bracket_frames",
+            value: 0,
+            max: CameraEngineConfig::MAX_THREE_A_BRACKET_FRAMES,
+        })
+    );
+
+    let mut config = CameraEngineConfig::default();
+    config.three_a.focus_settle_timeout_ms = CameraEngineConfig::MAX_THREE_A_WAIT_MS + 1;
+    assert!(matches!(
+        config.validate(),
+        Err(CameraEngineConfigError::InvalidThreeALimit {
+            field: "focus_settle_timeout_ms",
+            ..
+        })
+    ));
+
+    let parsed = serde_json::from_str::<CameraEngineConfig>(r#"{"three_a":{"focus_timeout":5}}"#);
+    assert!(
+        parsed.is_err(),
+        "опечатка в секции three_a не должна молча стать дефолтом"
+    );
+}

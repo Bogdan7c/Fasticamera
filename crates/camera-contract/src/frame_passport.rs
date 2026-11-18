@@ -139,6 +139,7 @@ mod tests {
             sensitivity_iso: Some(400),
             reported_frame_duration: None,
             rolling_shutter_skew: None,
+            three_a: crate::three_a::ThreeAResultState::unreported(crate::three_a::RequestOrigin::Repeating),
         }
     }
 

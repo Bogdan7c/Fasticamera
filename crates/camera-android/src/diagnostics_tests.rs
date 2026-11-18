@@ -127,3 +127,59 @@ fn diagnostics_can_be_updated_from_other_threads_through_the_shared_handle() {
     }
     assert_eq!(diagnostics.snapshot().reader.frames_acquired, 1000);
 }
+
+#[test]
+fn origin_lookups_are_counted_by_reason_and_known_ones_are_free() {
+    use camera_contract::three_a::RequestOrigin;
+    let diagnostics = BackendDiagnostics::new(4);
+    diagnostics.record_origin_lookup(OriginLookup::Known(RequestOrigin::Repeating));
+    diagnostics.record_origin_lookup(OriginLookup::NoContext);
+    diagnostics.record_origin_lookup(OriginLookup::NoContext);
+    diagnostics.record_origin_lookup(OriginLookup::Unregistered);
+    diagnostics.record_evicted_request_origin();
+    let snapshot = diagnostics.snapshot();
+    assert_eq!(snapshot.results_without_request_context, 2);
+    assert_eq!(snapshot.results_with_unregistered_request, 1);
+    assert_eq!(snapshot.evicted_request_origins, 1);
+}
+
+#[test]
+fn companion_status_is_replaced_and_dead_three_a_is_visible_in_the_snapshot() {
+    use crate::companion_stream::CompanionUnavailableReason;
+    let diagnostics = BackendDiagnostics::new(4);
+    assert_eq!(
+        diagnostics.snapshot().three_a_companion,
+        CompanionStreamStatus::NotConfigured
+    );
+    diagnostics.record_companion_status(CompanionStreamStatus::Active {
+        width: 640,
+        height: 480,
+    });
+    diagnostics.record_companion_status(CompanionStreamStatus::Unavailable {
+        reason: CompanionUnavailableReason::RejectedByHal,
+    });
+    let status = diagnostics.snapshot().three_a_companion;
+    assert!(status.hal_three_a_is_dead());
+    assert_eq!(
+        status,
+        CompanionStreamStatus::Unavailable {
+            reason: CompanionUnavailableReason::RejectedByHal
+        }
+    );
+}
+
+#[test]
+fn plan_notes_and_three_a_counters_accumulate_by_kind() {
+    let diagnostics = BackendDiagnostics::new(4);
+    diagnostics.record_plan_notes(&[]);
+    diagnostics.record_plan_notes(&[PlanNote::AeRegionUnsupported, PlanNote::AeLockUnavailable]);
+    diagnostics.record_plan_notes(&[PlanNote::AeRegionUnsupported]);
+    diagnostics.record_unreadable_three_a_keys(2);
+    diagnostics.record_companion_stray_images(3);
+    let snapshot = diagnostics.snapshot();
+    assert_eq!(snapshot.request_plan_notes["ae_region_unsupported"], 2);
+    assert_eq!(snapshot.request_plan_notes["ae_lock_unavailable"], 1);
+    assert_eq!(snapshot.request_plan_notes.len(), 2);
+    assert_eq!(snapshot.unreadable_three_a_keys, 2);
+    assert_eq!(snapshot.companion_stray_images, 3);
+}

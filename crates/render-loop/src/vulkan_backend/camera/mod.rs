@@ -6,6 +6,7 @@
 //!   кто решает, когда кадр можно вернуть камере;
 //! * [`CameraPipelines`] (`pipelines`) — объекты GPU, записанные в кадры цели: ISP видоискателя,
 //!   компоновщик, отладочная мозаика, метки времени кадра; запись команд кадра видоискателя;
+//! * `white_balance` — наш AWB на потоке рендера (сессия 08): белая сцены, холодный старт, расписание статистики;
 //! * `isp_params` — кэш `IspParams` (пересчёт только при смене входов); `placement` — где на экране
 //!   изображение; `settings` — что меняют команды; `viewfinder_stats` — диагностика видоискателя;
 //! * `headroom_bench` — стенд «запас под видео» (V4): нагрузка полного кадра над тем же RAW в том же
@@ -37,6 +38,7 @@ mod session;
 mod settings;
 mod submissions;
 mod viewfinder_stats;
+mod white_balance;
 
 #[cfg(target_os = "android")]
 mod android_importer;
@@ -56,6 +58,7 @@ pub(super) use self::pipelines::CameraPipelines;
 pub(super) use self::session::{CameraDrawError, CameraSession, CameraSessionFailure, CameraSessionParts};
 pub(super) use self::settings::ViewfinderSettings;
 pub(super) use self::viewfinder_stats::ViewfinderStats;
+pub(super) use self::white_balance::{SceneWhiteMemory, WhiteBalanceParts};
 
 #[cfg(target_os = "android")]
 pub use self::android_importer::AndroidCameraImporter;

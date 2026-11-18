@@ -6,6 +6,7 @@
 
 use std::time::Instant;
 
+use camera_contract::three_a::RequestOrigin;
 use gpu_vulkan::raw_mosaic_preview::MosaicSource;
 use gpu_vulkan::swapchain::DisplayColorSpace;
 use gpu_vulkan::sync::{WaitSemaphore, import_wait_fence};
@@ -27,6 +28,16 @@ impl CameraSession {
         // кадр очереди, лишний «съел» бы кадр следующего vsync. Пропущенный ради схода тик (решение 54)
         // сюда не доходит вовсе — его кадр покажется следующим.
         match (self.frames.poll_for_vsync(Instant::now()), painter) {
+            // Кадр серии с брекетингом: у кадров серии разные выдержки, на экране они мигали бы, а AWB по
+            // ним ошибся бы. Возвращается камере нетронутым, считается отдельно (не «пропуск» в «ровно один раз»).
+            (ViewfinderPoll::NewFrame(lease), _) if is_bracket_frame(&lease) => {
+                lease.release_unused();
+                self.viewfinder.counters_mut().bracket_frames_skipped += 1;
+                match painter {
+                    ViewfinderPainter::Isp => self.prepare_isp_without_new_frame(),
+                    ViewfinderPainter::DebugMosaic => self.prepare_mosaic_redraw(serial),
+                }
+            }
             (ViewfinderPoll::NewFrame(lease), ViewfinderPainter::Isp) => {
                 self.prepare_isp_new(lease, serial, color_space)
             }
@@ -37,6 +48,7 @@ impl CameraSession {
                 // Следующий кадр — уже другой поток: подсказки и параметры ISP прежнего потока ему
                 // чужие (решение 42), история шумодава стенда V4 его не смешает.
                 self.params.forget_stream();
+                self.white.forget_stream();
                 self.bench.note_stream_inactive();
                 Prepared {
                     content: Content::Black,
@@ -59,7 +71,9 @@ impl CameraSession {
         color_space: DisplayColorSpace,
     ) -> Prepared {
         let gamut = gamut_for_display(color_space);
-        let decision = self.params.prepare(lease.passport(), gamut);
+        // Наш AWB решает до параметров: какая белая идёт в ISP, показывать ли кадр, нужна ли статистика.
+        let plan = self.white.plan_frame(lease.passport());
+        let decision = self.params.prepare(lease.passport(), plan.white, gamut);
         self.viewfinder.note_params(&decision);
         if let ParamsOutcome::Unavailable(reason) = &decision.outcome {
             tracing::debug!(target: LOG_TARGET, ?reason, "параметров ISP нет: кадр не показывается");
@@ -86,14 +100,15 @@ impl CameraSession {
                 let identity = frame_identity(&lease);
                 // Стенд V4 (если включён) читает тот же кадр в том же сабмите: параметры Menon из тех
                 // же входов, нагрузка — по полезной области.
-                let headroom = self
-                    .bench
-                    .prepare_frame(lease.passport(), gamut, self.viewfinder.headroom_mut());
+                let headroom =
+                    self.bench
+                        .prepare_frame(lease.passport(), plan.white, gamut, self.viewfinder.headroom_mut());
                 Prepared {
                     content: Content::IspNew {
                         source,
                         geometry,
                         identity,
+                        plan,
                         headroom,
                     },
                     change: FrameChange::Consume,
@@ -207,6 +222,16 @@ impl CameraSession {
             .map_err(|error| NewFrameError(format!("импорт acquire-fence в семафор: {}", error.reason)))?;
         Ok((source, wait))
     }
+}
+
+/// Кадр из серии с брекетингом (`RequestOrigin::Burst`). Кадр без метаданных серией не считается: его
+/// происхождение неизвестно, поведение прежнее (решение 42).
+fn is_bracket_frame(lease: &RawFrameLease) -> bool {
+    lease
+        .passport()
+        .capture
+        .details()
+        .is_some_and(|details| matches!(details.result.three_a.origin, RequestOrigin::Burst { .. }))
 }
 
 /// Чей кадр (для привязки статистики AWB).

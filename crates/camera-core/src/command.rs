@@ -1,9 +1,10 @@
 //! Команды движку (intent-методы [`crate::CameraHandle`]) и их явные итоги.
 
 use camera_contract::catalog::TargetUnavailable;
-use camera_contract::control::{CaptureIntent, ManualControl};
+use camera_contract::control::{CaptureIntent, ExposureBias, ManualControl};
 use camera_contract::ids::{CameraTarget, LensRole};
 use camera_contract::stream::StreamMode;
+use camera_contract::three_a::{ExposureBracket, SensorPoint, ThreeAProfile};
 use serde::Serialize;
 
 use crate::backend::UnsupportedStream;
@@ -35,8 +36,33 @@ pub enum CameraCommand {
     SwitchTo {
         role: LensRole,
     },
+    /// Ручные параметры целиком (домен 08). Диапазоны проверяются по текущей камере; поправки —
+    /// событием `ControlsAdjusted` и в снимке, а не молча.
     ApplyControls {
         controls: ManualControl,
+    },
+    /// Тап: однократный фокус и замер в точке (iOS: жёлтый квадрат). Номер тапа — номер
+    /// этой команды (`PointRequestId` = `CommandId`). Снимает блокировку AE/AF.
+    FocusAndExposeAt {
+        point: SensorPoint,
+    },
+    /// Долгий тап: фокус и замер в точке, затем блокировка AE/AF до снятия или смены камеры.
+    LockFocusAndExposureAt {
+        point: SensorPoint,
+    },
+    /// Вернуться к непрерывному фокусу и замеру по всему кадру, сняв блокировку.
+    ResetPointOfInterest,
+    /// Компенсация экспозиции (iOS: ползунок «солнце» рядом с точкой).
+    SetExposureBias {
+        bias: ExposureBias,
+    },
+    /// Профиль автоматики (V6).
+    SetThreeAProfile {
+        profile: ThreeAProfile,
+    },
+    /// Серия с брекетингом поверх идущего потока (V10). Итог — событие `BracketCaptured`.
+    CaptureBracket {
+        bracket: ExposureBracket,
     },
     /// Камера не нужна: закрыть и забыть желаемое.
     Close,
@@ -55,6 +81,12 @@ impl CameraCommand {
             CameraCommand::StopStreaming => "stop_streaming",
             CameraCommand::SwitchTo { .. } => "switch_to",
             CameraCommand::ApplyControls { .. } => "apply_controls",
+            CameraCommand::FocusAndExposeAt { .. } => "focus_and_expose_at",
+            CameraCommand::LockFocusAndExposureAt { .. } => "lock_focus_and_exposure_at",
+            CameraCommand::ResetPointOfInterest => "reset_point_of_interest",
+            CameraCommand::SetExposureBias { .. } => "set_exposure_bias",
+            CameraCommand::SetThreeAProfile { .. } => "set_three_a_profile",
+            CameraCommand::CaptureBracket { .. } => "capture_bracket",
             CameraCommand::Close => "close",
             CameraCommand::EnterBackground => "enter_background",
             CameraCommand::EnterForeground => "enter_foreground",
@@ -72,6 +104,10 @@ pub enum InvalidStateReason {
     NoStreamModeRequested,
     /// Движок в окончательной ошибке и команд не исполняет.
     EngineFailed,
+    /// Нужен идущий поток (тап, серия), а его нет.
+    NotStreaming,
+    /// Предыдущая серия ещё не завершена.
+    BracketInProgress,
 }
 
 /// Почему команду нельзя исполнить на этом телефоне.
@@ -80,6 +116,29 @@ pub enum InvalidStateReason {
 pub enum UnsupportedCommand {
     Target(TargetUnavailable),
     Stream(UnsupportedStream),
+    /// Камера не умеет то, что нужно команде (фиксированный фокус для тапа, нет ручного
+    /// сенсора для серии, нет блокировки AE…).
+    ThreeA(UnsupportedThreeA),
+}
+
+/// Какой возможности 3A у текущей камеры нет.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnsupportedThreeA {
+    /// Фокус фиксированный: тап меняет только замер, но фокусироваться нечем.
+    FixedFocusLens,
+    /// Нет `AF_MODE_AUTO` — однократный фокус по тапу невозможен.
+    SingleShotFocus,
+    /// Нет `aeLockAvailable`.
+    ExposureLock,
+    /// Нет ручного сенсора (`MANUAL_SENSOR`) — серия с экспозициями невозможна.
+    ManualSensor,
+    /// Полуавтомат (одна из ISO/выдержки ручная, другая авто) требует нашего AE — сессия 08a
+    /// (решения 63, 66). До неё честный отказ, а не подмена «всё авто» или «всё вручную».
+    SemiAutomaticExposure,
+    /// В серии больше кадров, чем разрешает конфиг (`three_a.max_bracket_frames` — бюджет пула
+    /// RAW-кадров). Добавлено сессией 08 к границе: честного другого варианта в итогах нет.
+    BracketTooLong,
 }
 
 /// Итог команды. Не `bool`: «уже так», «невозможно» и «не в том состоянии» —

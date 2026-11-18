@@ -29,20 +29,20 @@ const MIRED_NUMERATOR: f64 = 1.0e6;
 /// Строка таблицы Робертсона: точка на кривой Планка в цветовом пространстве CIE 1960 UCS (u, v)
 /// и наклон изотемпературной линии (нормали к кривой) в этой точке.
 #[derive(Debug, Clone, Copy)]
-struct IsotemperatureLine {
+pub(super) struct IsotemperatureLine {
     /// Обратная температура, майреды.
-    mired: f64,
-    u: f64,
-    v: f64,
+    pub(super) mired: f64,
+    pub(super) u: f64,
+    pub(super) v: f64,
     /// Наклон `dv/du` изотемпературной линии.
-    slope: f64,
+    pub(super) slope: f64,
 }
 
 /// Таблица Робертсона 1968: 31 линия от 0 до 600 майред (∞ … 1667 К).
 /// Совпадает со значениями Adobe DNG SDK (`kTempTable`) и, проверено по числам,
 /// с `colour.temperature.robertson1968.DATA_ISOTEMPERATURE_LINES_ROBERTSON1968` (colour-science 0.4.7):
 /// строки сгенерированы скриптом из этого массива.
-const ISOTEMPERATURE_LINES: [IsotemperatureLine; 31] = [
+pub(super) const ISOTEMPERATURE_LINES: [IsotemperatureLine; 31] = [
     IsotemperatureLine {
         mired: 0.0,
         u: 0.18006,
@@ -234,26 +234,46 @@ const ISOTEMPERATURE_LINES: [IsotemperatureLine; 31] = [
 /// Индекс последней линии таблицы (600 майред ≈ 1667 К).
 const LAST_LINE_INDEX: usize = ISOTEMPERATURE_LINES.len() - 1;
 
-/// Температура по цветности — алгоритм `Set_xy_coord` из Adobe DNG SDK.
-///
-/// 1. xy → (u, v) CIE 1960: `u = 2x / (1,5 − x + 6y)`, `v = 3y / (1,5 − x + 6y)`.
-/// 2. Идём по линиям 1…30, считаем знаковое расстояние точки до линии; первая линия,
-///    под которой (расстояние ≤ 0) оказалась точка, и предыдущая образуют пару.
-/// 3. Майреды интерполируются линейно по весу `f = dt / (dt_prev + dt)`.
-///
-/// Края (как в SDK, а не ошибка):
-/// - холоднее 600 майред (краснее ≈ 1667 К) — прижимается к последней линии, ответ 1666,7 К;
-/// - синее первой линии (10 майред) — ответ 10 майред = 100 000 К;
-/// - нефинитный вход (или `1,5 − x + 6y ≤ 0`) даёт `Kelvin(NaN)`: вызывающий код обязан
-///   отсеивать такие цветности (в `dng` это делает `Chromaticity::from_xyz`).
-pub fn temperature_from_chromaticity(xy: Chromaticity) -> Kelvin {
+/// Где точка оказалась относительно рабочего диапазона таблицы Робертсона.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TableRange {
+    /// Между линиями 10 и 600 майред: температура определена интерполяцией.
+    Inside,
+    /// Синее первой линии (10 майред, 100 000 К): ответ прижат к ней, как в SDK.
+    BeyondBlueEnd,
+    /// Краснее последней линии (600 майред, ≈ 1667 К): ответ прижат к ней, как в SDK.
+    BeyondRedEnd,
+}
+
+/// Майреды точки по Робертсону и положение точки относительно таблицы.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct MiredLocation {
+    pub(super) mired: f64,
+    pub(super) range: TableRange,
+}
+
+/// Цветность xy → (u, v) CIE 1960: `u = 2x / (1,5 − x + 6y)`, `v = 3y / (1,5 − x + 6y)`.
+/// `None`, если вход не конечен или знаменатель `≤ 0` (такой цветности у света не бывает).
+pub(super) fn ucs_from_chromaticity(xy: Chromaticity) -> Option<(f64, f64)> {
     let denominator = 1.5 - xy.x + 6.0 * xy.y;
     if !denominator.is_finite() || denominator <= 0.0 {
-        return Kelvin(f64::NAN);
+        return None;
     }
-    let u = 2.0 * xy.x / denominator;
-    let v = 3.0 * xy.y / denominator;
+    Some((2.0 * xy.x / denominator, 3.0 * xy.y / denominator))
+}
 
+/// Ядро алгоритма `Set_xy_coord` из Adobe DNG SDK: майреды точки `(u, v)` CIE 1960.
+///
+/// 1. Идём по линиям 1…30, считаем знаковое расстояние точки до линии; первая линия,
+///    под которой (расстояние ≤ 0) оказалась точка, и предыдущая образуют пару.
+/// 2. Майреды интерполируются линейно по весу `f = dt / (dt_prev + dt)`.
+///
+/// Края прижимаются, как в SDK, но возвращаются явным признаком [`TableRange`], чтобы
+/// вызывающий код мог отличить «определено» от «прижато к краю». `None` — вход не конечен.
+pub(super) fn locate_mired(u: f64, v: f64) -> Option<MiredLocation> {
+    if !u.is_finite() || !v.is_finite() {
+        return None;
+    }
     // Расстояние до предыдущей линии (над ней, > 0); для индекса 1 не используется.
     let mut previous_distance = 0.0;
     for (index, line) in ISOTEMPERATURE_LINES.iter().enumerate().skip(1) {
@@ -273,12 +293,34 @@ pub fn temperature_from_chromaticity(xy: Chromaticity) -> Kelvin {
             };
             let previous_mired = ISOTEMPERATURE_LINES[index - 1].mired;
             let mired = previous_mired * previous_weight + line.mired * (1.0 - previous_weight);
-            return Kelvin(MIRED_NUMERATOR / mired);
+            let range = if index == 1 && distance < 0.0 {
+                TableRange::BeyondBlueEnd
+            } else if index == LAST_LINE_INDEX && distance > 0.0 {
+                TableRange::BeyondRedEnd
+            } else {
+                TableRange::Inside
+            };
+            return Some(MiredLocation { mired, range });
         }
         previous_distance = distance;
     }
     // Недостижимо: на индексе LAST_LINE_INDEX цикл всегда возвращается.
-    Kelvin(f64::NAN)
+    None
+}
+
+/// Температура по цветности — алгоритм `Set_xy_coord` из Adobe DNG SDK (см. [`locate_mired`]).
+///
+/// Края (как в SDK, а не ошибка):
+/// - холоднее 600 майред (краснее ≈ 1667 К) — прижимается к последней линии, ответ 1666,7 К;
+/// - синее первой линии (10 майред) — ответ 10 майред = 100 000 К;
+/// - нефинитный вход (или `1,5 − x + 6y ≤ 0`) даёт `Kelvin(NaN)`: вызывающий код обязан
+///   отсеивать такие цветности (в `dng` это делает `Chromaticity::from_xyz`).
+///
+/// Код, которому нужно знать о прижатии, использует `white_point::cct_duv_from_chromaticity`.
+pub fn temperature_from_chromaticity(xy: Chromaticity) -> Kelvin {
+    ucs_from_chromaticity(xy)
+        .and_then(|(u, v)| locate_mired(u, v))
+        .map_or(Kelvin(f64::NAN), |location| Kelvin(MIRED_NUMERATOR / location.mired))
 }
 
 /// Эталонный свет с кодом EXIF, которого нет в таблице температур DNG (0 «неизвестно», 255 «другой»).

@@ -10,6 +10,7 @@ use gpu_vulkan::swapchain::DisplayFrame;
 
 use super::super::ownership::{AcquireNew, OwnershipPlan, ReleaseDisplayed};
 use super::super::pipelines::{AcquiredSourceReader, CameraPipelines, IspFrameRecording, NewIspFrame, ScreenContent};
+use super::slot::effective_stages;
 use super::{CameraSession, Content, LOG_TARGET, Recorded};
 
 impl CameraSession {
@@ -64,6 +65,7 @@ impl CameraSession {
                 source,
                 geometry,
                 identity,
+                plan,
                 headroom,
             } => {
                 let Some(params) = self.params.current() else {
@@ -89,8 +91,9 @@ impl CameraSession {
                         source,
                         params,
                         geometry: *geometry,
-                        stages: self.settings.stages,
+                        stages: effective_stages(self.settings.stages, plan),
                         frame_number: identity.sequence,
+                        presentation: plan.presentation,
                     },
                     bench_recorder
                         .as_mut()

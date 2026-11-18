@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use camera_contract::three_a::{DirectiveSlot, WhiteBalanceDirective};
 use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::validation::ValidationMode;
 use raw_frame_stream::ViewfinderFrames;
@@ -66,9 +67,19 @@ pub fn headless_camera_backend_or_skip(
     frames: ViewfinderFrames,
     make_importer: CameraImporterFactory,
 ) -> Option<VulkanDisplayBackend> {
+    headless_camera_backend_with_directives_or_skip(render_config, frames, make_importer, DirectiveSlot::new())
+}
+
+/// То же, но с «почтовым ящиком» указаний AWB, которым управляет тест (писатель — у теста).
+pub fn headless_camera_backend_with_directives_or_skip(
+    render_config: &RenderLoopConfig,
+    frames: ViewfinderFrames,
+    make_importer: CameraImporterFactory,
+    directives: DirectiveSlot<WhiteBalanceDirective>,
+) -> Option<VulkanDisplayBackend> {
     let config = VulkanBackendConfig::from_render_config(render_config, ValidationMode::FULL)
         .expect("конфиг бэкенда из конфига потока");
-    match VulkanDisplayBackend::new_headless_camera_preview(config, frames, make_importer) {
+    match VulkanDisplayBackend::new_headless_camera_preview(config, frames, make_importer, directives) {
         Ok(backend) => Some(backend),
         Err(error) => {
             if std::env::var(SKIP_ENV).as_deref() == Ok("1") {

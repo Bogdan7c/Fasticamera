@@ -14,8 +14,10 @@
 # --stages levels,tone,whole_viewfinder — подмножество; --ab-window-ms 15000 — короткие окна для мс GPU;
 # только на батарее, без кабеля); viewfinder-endurance
 # (720; 10 минут, троттлинг); video-headroom-bench (720; стенд V4 16:9@60, 120 Гц — скрипт касается экрана).
-# Шаги на телефоне — scripts/smoke_driver.py, ожидания — smoke_wait.py, smoke_checks*.py.
-# raw-stream* и viewfinder снимают два скриншота на стадии viewfinder_live в каталог артефактов ВНЕ
+# 3A 08: 3a (150; тап в центр и 4 угла, ручная выдержка 1/1000, EV, блокировка AE/AF, брекетинг 4 кадра, AWB;
+# скриншоты на стадии awb_ready, --neutral-card — серая карта; для вопроса о регионах фокуса навести на сцену
+# с ближним и дальним планом). Шаги на телефоне — scripts/smoke_driver.py, ожидания — smoke_wait.py, smoke_checks*.py.
+# raw-stream*, viewfinder и 3a снимают два скриншота на стадии viewfinder_live (3a — awb_ready) в каталог артефактов ВНЕ
 # репозитория: --artifacts-dir DIR либо свежий `mktemp -d` (путь печатается).
 # Validation-слой есть только в debug-сборке: в release отчёт пишет validation.mode=disabled.
 # Подробности отчёта — строки FASTICAMERA_DETAIL в выводе.
@@ -31,7 +33,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
 usage() {
-    sed -n '2,27p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,29p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
 }
 
 variant="debug"
@@ -90,8 +92,8 @@ if [[ -n "$ab_window_ms" && "$scenario" != "viewfinder-stage-budget" ]]; then
     log_error "--ab-window-ms имеет смысл только для viewfinder-stage-budget"
     exit "$EXIT_USAGE"
 fi
-if [[ "$neutral_card" == true && "$scenario" != "viewfinder" ]]; then
-    log_error "--neutral-card имеет смысл только для viewfinder"
+if [[ "$neutral_card" == true && "$scenario" != "viewfinder" && "$scenario" != "3a" ]]; then
+    log_error "--neutral-card имеет смысл только для viewfinder и 3a"
     exit "$EXIT_USAGE"
 fi
 if [[ ! "$timeout_seconds" =~ ^[0-9]+$ ]]; then

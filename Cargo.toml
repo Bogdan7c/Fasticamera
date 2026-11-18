@@ -24,6 +24,7 @@ render-loop = { path = "crates/render-loop" }
 raw-frame-stream = { path = "crates/raw-frame-stream" }
 isp-model = { path = "crates/isp-model" }
 isp-vulkan = { path = "crates/isp-vulkan" }
+scene-estimation = { path = "crates/scene-estimation" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

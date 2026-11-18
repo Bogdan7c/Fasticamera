@@ -111,6 +111,8 @@ pub enum ColorProfileError {
     UndefinedWhitePoint,
     #[error("нейтраль камеры отображается в нулевую яркость, нормировать матрицу нельзя")]
     ZeroLuminanceNeutral,
+    #[error("белая точка дала недопустимую нейтраль камеры: {0}")]
+    InvalidNeutralForWhite(#[source] InvalidCameraNeutral),
 }
 
 /// Чем закончился поиск белой точки.
@@ -221,6 +223,28 @@ impl DngColorProfile {
             temperature: self.temperature_of(white)?,
             convergence,
         })
+    }
+
+    /// Нейтраль камеры для белой точки сцены — обратная к [`Self::white_for_neutral`] операция.
+    ///
+    /// Спецификация DNG 1.6, «Translating White Balance xy Coordinates to Camera Neutral
+    /// Coordinates»: температура белой по Робертсону → матрицы интерполируются по майредам
+    /// (как в `white_for_neutral`) → `нейтраль = XYZtoCamera(T) · XYZ(xy, Y = 1)`.
+    /// Нормировка — на канал G (`G = 1`): так нейтраль хранят HAL и colour-hdri, а множители
+    /// баланса белого получаются как `1 / нейтраль`. Неинтерполируемая (вне таблицы) температура
+    /// прижимается к краю, как в SDK: интерполяция матриц и так прижата к крайним калибровкам.
+    pub fn neutral_for_white(&self, white: Chromaticity) -> Result<CameraNeutral, ColorProfileError> {
+        // `y > 0` нужно для XYZ с Y = 1; `temperature_of` отсеивает остальные вырожденные случаи.
+        if !white.x.is_finite() || !white.y.is_finite() || white.y <= 0.0 {
+            return Err(ColorProfileError::UndefinedWhitePoint);
+        }
+        let camera_response = self.xyz_to_camera(white)?.apply(white.to_xyz());
+        let green = camera_response[1];
+        if !green.is_finite() || green <= 0.0 {
+            return Err(ColorProfileError::ZeroLuminanceNeutral);
+        }
+        CameraNeutral::new(camera_response.map(|channel| channel / green))
+            .map_err(ColorProfileError::InvalidNeutralForWhite)
     }
 
     /// Матрица камера → XYZ D50 для данной нейтрали (спецификация DNG, «Camera to XYZ Matrix»).
@@ -430,3 +454,7 @@ fn normalize_forward_matrix(calibration: DngCalibration) -> Result<DngCalibratio
 #[cfg(test)]
 #[path = "dng_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "dng_neutral_tests.rs"]
+mod neutral_tests;

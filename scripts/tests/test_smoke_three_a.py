@@ -1,0 +1,186 @@
+"""Тесты smoke-сценария ``3a`` (сессия 08): проверки отчёта (``smoke_checks_three_a``) через сквозной
+``evaluate_stream``, шаги драйвера (скриншоты на ``awb_ready``) и ``device-smoke.sh 3a`` на фейковом adb
+(``--neutral-card`` принимается для ``3a``, но не для чужих сценариев)."""
+
+from __future__ import annotations
+
+import copy
+import struct
+import sys
+import unittest
+from pathlib import Path
+
+SCRIPTS_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(SCRIPTS_DIR))
+
+import smoke_driver  # noqa: E402  (путь к scripts/ добавлен строкой выше)
+import smoke_wait  # noqa: E402
+import test_smoke_device_script as device_script  # noqa: E402
+from test_smoke_viewfinder import RecordingActions, passed, result_line, stage_line  # noqa: E402
+
+
+def three_a_report() -> dict:
+    """Здоровый отчёт ``3a`` (форма — ``three_a_report.rs``, сводка)."""
+    return {
+        "state_at_end": "streaming",
+        "live": {"companion": {"state": "active", "width": 640, "height": 480}, "af_state": "passive_focused",
+                 "ae_state": "converged"},
+        "awb": {"ready": True, "hidden": 3, "forced": 0, "max_hidden": 10, "awb_vs_hal": "ok"},
+        "focus": {
+            "taps": [{"x": 0.5, "y": 0.5, "result": "focused"}] * 5,
+            "region_effect_diopters": 0.8,
+            "triggers_sent": 5,
+            "results_without_request_context": 0,
+            "results_with_unknown_origin": 0,
+        },
+        "manual": {
+            "requested_exposure_ns": 1_000_000,
+            "requested_iso": 400,
+            "applied": {"exposure_ns": 996_220, "iso": 400, "latency_frames": 6},
+            "adjustments_for_in_range": 0,
+            "long_shutter": {"requested_ns": 100_000_000, "frame_budget_ns": 16_666_667, "limited_event_seen": True,
+                             "applied_ns": 16_600_000},
+        },
+        "ev": {
+            "points": [
+                {"bias_ev": 0.0, "verifiable": True, "ratio_to_baseline": 1.0},
+                {"bias_ev": 1.0, "verifiable": True, "ratio_to_baseline": 2.05},
+                {"bias_ev": -1.0, "verifiable": True, "ratio_to_baseline": 0.49},
+            ],
+            "ev_unverifiable_at_limit": False,
+        },
+        "lock": {"locked": True, "non_locked_after_lock": 0, "back_to_continuous": True},
+        "bracket": {
+            "captured": True,
+            "frames": [{"index": i, "frame_number": 100 + i} for i in range(4)],
+            "frame_gaps": 0,
+            "skipped_delta": 4,
+            "presented_during": 30,
+        },
+        "restore_failure": None,
+    }
+
+
+def edited(path: str, value: object) -> dict:
+    """Здоровый отчёт с одним изменённым полем по пути ``a.b.c``."""
+    report = copy.deepcopy(three_a_report())
+    node = report
+    *parents, last = path.split(".")
+    for key in parents:
+        node = node[int(key)] if isinstance(node, list) else node[key]
+    node[last] = value
+    return report
+
+
+def verdict_of(report: dict) -> smoke_wait.SmokeVerdict:
+    return smoke_wait.evaluate_stream([result_line(passed("3a", report))], "3a")
+
+
+class ThreeACheckTest(unittest.TestCase):
+    def test_healthy_run_passes(self) -> None:
+        self.assertEqual(verdict_of(three_a_report()).exit_code, smoke_wait.EXIT_OK)
+
+    def test_notes_not_failures_are_not_rejected(self) -> None:
+        # Справка, не провал: далёкая от HAL белая, EV у предела сенсора, NotFocused по центру.
+        report = three_a_report()
+        report["awb"]["awb_vs_hal"] = "warn"
+        report["ev"]["ev_unverifiable_at_limit"] = True
+        report["ev"]["points"][1].update(verifiable=False, ratio_to_baseline=1.0)
+        report["focus"]["taps"][0] = {"x": 0.5, "y": 0.5, "result": "not_focused"}
+        self.assertEqual(verdict_of(report).exit_code, smoke_wait.EXIT_OK)
+
+    def test_each_rule_is_rechecked(self) -> None:
+        cases = {
+            "вспомогательный поток 3A": edited("live.companion", {"state": "unavailable"}),
+            "AF_STATE": edited("live.af_state", None),
+            "AE_STATE": edited("live.ae_state", None),
+            "AWB не готов": edited("awb.ready", False),
+            "скрыл 11 кадров": edited("awb.hidden", 11),
+            "принудительных показов": edited("awb.forced", 2),
+            "тап в центр закончился 'timed_out'": edited("focus.taps", [{"result": "timed_out"}] * 5),
+            "trigger_not_delivered": edited("focus.taps.1.result", "trigger_not_delivered"),
+            "без контекста запроса": edited("focus.results_without_request_context", 3),
+            "отправлено триггеров 4": edited("focus.triggers_sent", 4),
+            "region_effect_diopters": self._without("focus", "region_effect_diopters"),
+            "ручное exposure_ns": edited("manual.applied.exposure_ns", 1_200_000),
+            "ручное iso": edited("manual.applied.iso", 800),
+            "ControlsAdjusted на значения в диапазоне": edited("manual.adjustments_for_in_range", 1),
+            "LimitedByFrameDuration": edited("manual.long_shutter.limited_event_seen", False),
+            "длинная выдержка в результате": edited("manual.long_shutter.applied_ns", 40_000_000),
+            "точек EV меньше": edited("ev.points", []),
+            "EV +1": edited("ev.points.1.ratio_to_baseline", 0.9),
+            "AE_STATE не стал Locked": edited("lock.locked", False),
+            "не Locked": edited("lock.non_locked_after_lock", 2),
+            "непрерывный режим": edited("lock.back_to_continuous", False),
+            "серия не снята": edited("bracket.captured", False),
+            "не подряд": edited("bracket.frame_gaps", 1),
+            "порядке индексов": edited("bracket.frames", [{"index": 1}, {"index": 0}]),
+            "пропустил кадров серии": edited("bracket.skipped_delta", 0),
+            "видоискатель не показал": edited("bracket.presented_during", 0),
+            "не возвращены": edited("restore_failure", "очередь полна"),
+            "состояние камеры": edited("state_at_end", "error"),
+        }
+        for needle, report in cases.items():
+            with self.subTest(needle):
+                verdict = verdict_of(report)
+                self.assertEqual(verdict.exit_code, smoke_wait.EXIT_SCENARIO_FAILED, verdict.message)
+                self.assertIn(needle, verdict.message)
+
+    @staticmethod
+    def _without(section: str, key: str) -> dict:
+        report = copy.deepcopy(three_a_report())
+        del report[section][key]
+        return report
+
+    def test_rust_failure_is_a_failure(self) -> None:
+        verdict = smoke_wait.evaluate_stream(
+            [result_line({"scenario": "3a", "status": "failed", "error": "AE_STATE не стал Locked"})], "3a"
+        )
+        self.assertEqual(verdict.exit_code, smoke_wait.EXIT_SCENARIO_FAILED)
+
+    def test_three_a_has_expectations_and_is_a_screenshot_scenario(self) -> None:
+        self.assertIn("3a", smoke_wait.CHECKS)
+        self.assertIn("3a", smoke_wait.SCREENSHOT_SCENARIOS)
+        self.assertIn("3a", smoke_wait.NEUTRAL_CARD_SCENARIOS)
+
+
+class DriverStepsTest(unittest.TestCase):
+    def test_three_a_takes_two_shots_on_awb_ready_and_ignores_viewfinder_live(self) -> None:
+        actions = RecordingActions()
+        driver = smoke_driver.StageDriver("3a", actions)
+        driver.handle_stage({"scenario": "3a", "stage": "viewfinder_live"})
+        self.assertEqual(actions.calls, [])
+        driver.handle_stage({"scenario": "3a", "stage": "awb_ready", "ready": True})
+        self.assertEqual(actions.calls, ["screencap:viewfinder_a", "pause:1.5", "screencap:viewfinder_b"])
+
+
+class DeviceSmokeThreeATest(unittest.TestCase):
+    """``device-smoke.sh 3a`` на фейковом adb."""
+
+    setUp = device_script.DeviceSmokeScenariosTest.setUp
+    run_smoke = device_script.DeviceSmokeScenariosTest.run_smoke
+    adb_calls = device_script.DeviceSmokeScenariosTest.adb_calls
+
+    def test_three_a_runs_takes_screenshots_on_awb_ready_and_reports_a_pass(self) -> None:
+        width, height = 8, 10
+        self.dump_file.write_bytes(struct.pack("<IIII", width, height, 1, 0) + bytes((128, 128, 128, 255)) * 80)
+        completed = self.run_smoke(
+            "3a",
+            [stage_line("3a", "awb_ready", ready=True), result_line(passed("3a", three_a_report()))],
+            extra_arguments=("--artifacts-dir", str(self.work_dir / "shots")),
+        )
+        start = next(call for call in self.adb_calls() if "am start" in call)
+        self.assertIn("-e scenario 3a", start)
+        self.assertEqual(len([call for call in self.adb_calls() if call == "exec-out screencap"]), 2)
+        # Скриншоты однотонные: пост-проверка «меняется» может провалить прогон, но отчёт 3a разобран.
+        self.assertNotIn("AF_STATE", completed.stderr + completed.stdout)
+
+    def test_neutral_card_is_accepted_for_three_a_but_not_for_other_scenarios(self) -> None:
+        accepted = self.run_smoke("3a", [result_line(passed("3a", three_a_report()))], extra_arguments=("--neutral-card",))
+        self.assertNotEqual(accepted.returncode, 64, accepted.stderr)
+        rejected = self.run_smoke("camera-catalog", [], extra_arguments=("--neutral-card",))
+        self.assertEqual(rejected.returncode, 64, rejected.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()

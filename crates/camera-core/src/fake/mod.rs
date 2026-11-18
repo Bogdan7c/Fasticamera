@@ -8,6 +8,9 @@
 //!   `fail_current_device`, `complete_frames`);
 //! * читает журнал вызовов и текущее состояние («устройство открыто?»).
 //!
+//! Автоматика 3A (сессия 08) — в [`three_a`]: журнал триггеров и серий, сценарий состояний AF,
+//! результаты триггера и кадров серии, отказы отправки.
+//!
 //! Fake сам соблюдает контракт трейта: `close_session` и `close_device` идемпотентны,
 //! `open_device` при открытом устройстве сначала закрывает старое.
 
@@ -16,17 +19,20 @@ use std::panic::resume_unwind;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use camera_contract::three_a::RequestOrigin;
+
 use camera_contract::capabilities::CameraDescriptor;
-use camera_contract::capture_result::{CaptureResultMeta, FrameNumber, SensorTimestamp};
-use camera_contract::control::{CaptureIntent, ManualControl};
+use camera_contract::control::CaptureIntent;
 use camera_contract::fixtures::oneplus11_visible_cameras;
 use camera_contract::ids::CameraId;
 use camera_contract::stream::{ConfiguredStream, FrameRateMechanism, ResolvedStream};
+use camera_contract::three_a::{AfState, BurstId, ExposureBracket, PointRequestId};
 
 use crate::backend::{
     BackendEvent, BackendEventSink, BackendFactory, BackendFailure, CameraBackend, ConfigureFailure, DeviceErrorKind,
     DeviceGeneration, OpenFailure, RequestFailure, SessionGeneration,
 };
+use crate::request_controls::{AfTrigger, RequestControls};
 
 /// Вызов бэкенда в журнале (с аргументами и поколениями).
 #[derive(Debug, Clone, PartialEq)]
@@ -42,7 +48,19 @@ pub enum BackendCall {
     },
     SetRepeatingRequest {
         intent: CaptureIntent,
-        controls: ManualControl,
+        controls: RequestControls,
+    },
+    SubmitFocusTrigger {
+        intent: CaptureIntent,
+        controls: RequestControls,
+        trigger: AfTrigger,
+        request: PointRequestId,
+    },
+    SubmitBracket {
+        intent: CaptureIntent,
+        base: RequestControls,
+        bracket: ExposureBracket,
+        burst: BurstId,
     },
     StopRepeating,
     CloseSession,
@@ -56,6 +74,8 @@ pub enum BackendMethod {
     OpenDevice,
     ConfigureSession,
     SetRepeatingRequest,
+    SubmitFocusTrigger,
+    SubmitBracket,
     StopRepeating,
     CloseSession,
     CloseDevice,
@@ -89,11 +109,18 @@ struct FakeState {
     calls: Vec<BackendCall>,
     device: Option<(CameraId, DeviceGeneration)>,
     session: Option<SessionGeneration>,
-    repeating: Option<(CaptureIntent, ManualControl)>,
+    repeating: Option<(CaptureIntent, RequestControls)>,
+    trigger_script: VecDeque<Result<(), RequestFailure>>,
+    bracket_script: VecDeque<Result<(), RequestFailure>>,
+    /// Состояния AF для следующих результатов (по одному на результат).
+    af_script: VecDeque<AfState>,
+    submitted_brackets: Vec<(BurstId, ExposureBracket)>,
     sink: Option<BackendEventSink>,
     next_frame_number: i64,
     next_timestamp_nanos: i64,
 }
+
+mod three_a;
 
 /// Разделяемая ручка управления fake-бэкендом (клонируется через `Arc`).
 pub struct FakeBackendControl {
@@ -116,6 +143,10 @@ impl FakeBackendControl {
                 device: None,
                 session: None,
                 repeating: None,
+                trigger_script: VecDeque::new(),
+                bracket_script: VecDeque::new(),
+                af_script: VecDeque::new(),
+                submitted_brackets: Vec::new(),
                 sink: None,
                 next_frame_number: 0,
                 next_timestamp_nanos: 1_000_000_000,
@@ -220,29 +251,15 @@ impl FakeBackendControl {
         }
     }
 
-    /// `count` результатов текущей сессии с метками через `interval` друг от друга
-    /// (метки продолжаются с места, где остановились прошлые вызовы).
+    /// `count` результатов повторяющегося запроса текущей сессии с метками через `interval`
+    /// друг от друга (метки продолжаются с места, где остановились прошлые вызовы).
+    /// Экспозиция в результате — та, что запрошена планом `Sensor`, иначе 8 мс и ISO 100.
     pub fn complete_frames(&self, count: u32, interval: Duration) -> FakeEventDelivery {
         let Some(session) = self.current_session_generation() else {
             return FakeEventDelivery::NothingToAttachTo;
         };
-        let interval_nanos = i64::try_from(interval.as_nanos()).unwrap_or(i64::MAX);
         for _ in 0..count {
-            let result = {
-                let mut state = self.lock();
-                let frame = state.next_frame_number;
-                let timestamp = state.next_timestamp_nanos;
-                state.next_frame_number += 1;
-                state.next_timestamp_nanos = timestamp.saturating_add(interval_nanos);
-                CaptureResultMeta {
-                    frame_number: FrameNumber(frame),
-                    sensor_timestamp: Some(SensorTimestamp::from_nanos(timestamp)),
-                    exposure_time: Some(Duration::from_millis(8)),
-                    sensitivity_iso: Some(100),
-                    reported_frame_duration: None,
-                    rolling_shutter_skew: Some(Duration::from_micros(13_660)),
-                }
-            };
+            let result = self.next_result(RequestOrigin::Repeating, interval);
             self.send_event(BackendEvent::CaptureCompleted { session, result });
         }
         FakeEventDelivery::Sent
@@ -285,7 +302,7 @@ impl FakeBackendControl {
     }
 
     /// Параметры последнего активного повторяющегося запроса.
-    pub fn repeating_request(&self) -> Option<(CaptureIntent, ManualControl)> {
+    pub fn repeating_request(&self) -> Option<(CaptureIntent, RequestControls)> {
         self.lock().repeating
     }
 }
@@ -391,7 +408,11 @@ impl CameraBackend for FakeCameraBackend {
         }
     }
 
-    fn set_repeating_request(&mut self, intent: CaptureIntent, controls: &ManualControl) -> Result<(), RequestFailure> {
+    fn set_repeating_request(
+        &mut self,
+        intent: CaptureIntent,
+        controls: &RequestControls,
+    ) -> Result<(), RequestFailure> {
         self.enter(
             BackendMethod::SetRepeatingRequest,
             BackendCall::SetRepeatingRequest {
@@ -408,6 +429,58 @@ impl CameraBackend for FakeCameraBackend {
         }
         state.repeating = Some((intent, *controls));
         Ok(())
+    }
+
+    fn submit_focus_trigger(
+        &mut self,
+        intent: CaptureIntent,
+        controls: &RequestControls,
+        trigger: AfTrigger,
+        request: PointRequestId,
+    ) -> Result<(), RequestFailure> {
+        self.enter(
+            BackendMethod::SubmitFocusTrigger,
+            BackendCall::SubmitFocusTrigger {
+                intent,
+                controls: *controls,
+                trigger,
+                request,
+            },
+        );
+        let mut state = self.control.lock();
+        match state.trigger_script.pop_front() {
+            Some(scripted) => scripted,
+            None if state.session.is_none() => Err(RequestFailure::NoSession),
+            None => Ok(()),
+        }
+    }
+
+    fn submit_bracket(
+        &mut self,
+        intent: CaptureIntent,
+        base: &RequestControls,
+        bracket: &ExposureBracket,
+        burst: BurstId,
+    ) -> Result<(), RequestFailure> {
+        self.enter(
+            BackendMethod::SubmitBracket,
+            BackendCall::SubmitBracket {
+                intent,
+                base: *base,
+                bracket: bracket.clone(),
+                burst,
+            },
+        );
+        let mut state = self.control.lock();
+        let outcome = match state.bracket_script.pop_front() {
+            Some(scripted) => scripted,
+            None if state.session.is_none() => Err(RequestFailure::NoSession),
+            None => Ok(()),
+        };
+        if outcome.is_ok() {
+            state.submitted_brackets.push((burst, bracket.clone()));
+        }
+        outcome
     }
 
     fn stop_repeating(&mut self) -> Result<(), RequestFailure> {

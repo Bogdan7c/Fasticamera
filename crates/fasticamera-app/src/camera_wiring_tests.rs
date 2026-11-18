@@ -84,3 +84,61 @@ fn invalid_config_gives_unavailable_service_with_the_reason_and_no_thread() {
     assert!(error.reason.contains("max_consecutive_attempts"), "{error}");
     assert!(control.calls().is_empty(), "бэкенд не создавался и не вызывался");
 }
+
+/// Ящик указаний AWB, переданный корнем композиции, получает указания движка: сначала умолчание при старте,
+/// затем ручную точку белого после команды. Читатель (поток рендера) держит клон того же ящика.
+#[test]
+fn white_balance_slot_of_the_composition_root_receives_the_engine_directives() {
+    use camera_contract::control::{ColorTemperature, Control, ManualControl, Tint, WhiteBalanceSetting};
+    use camera_contract::three_a::{DirectiveSlot, WhiteBalanceDirective, WhiteBalanceMode};
+
+    let slot: DirectiveSlot<WhiteBalanceDirective> = DirectiveSlot::new();
+    let reader = slot.clone();
+    let mut config = CameraConfig::default();
+    config.viewfinder_autostart.enabled = false;
+    let control = camera_core::fake::FakeBackendControl::new();
+    let services = start_camera_with_white_balance(
+        &config,
+        CameraBackendParts {
+            factory: control.factory(),
+            diagnostics: Arc::new(camera_android::BackendDiagnostics::new(4)),
+            raw_stream: RawStreamServices::detached(),
+        },
+        slot,
+    );
+    let wait_for = |wanted: &dyn Fn(&WhiteBalanceDirective) -> bool| {
+        let deadline = std::time::Instant::now() + WAIT;
+        loop {
+            if let Some((_, directive)) = reader.latest().filter(|(_, directive)| wanted(directive)) {
+                return directive;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "указание не пришло: {:?}",
+                reader.latest()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    };
+
+    let initial = wait_for(&|_| true);
+    assert_eq!(
+        initial.mode,
+        WhiteBalanceMode::Auto,
+        "при старте — автоматический режим"
+    );
+
+    let setting = WhiteBalanceSetting {
+        temperature: ColorTemperature::from_kelvin(4_000.0).expect("температура"),
+        tint: Tint::NEUTRAL,
+    };
+    let handle = services.running().expect("запущен").handle().clone();
+    handle
+        .apply_controls(ManualControl {
+            white_balance: Control::Manual(setting),
+            ..ManualControl::AUTOMATIC
+        })
+        .expect("команда принята очередью");
+    let manual = wait_for(&|directive| matches!(directive.mode, WhiteBalanceMode::Manual { .. }));
+    assert_eq!(manual.mode, WhiteBalanceMode::Manual { setting });
+}

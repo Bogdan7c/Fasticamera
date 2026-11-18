@@ -11,6 +11,7 @@ use serde::Serialize;
 
 use crate::backend::SessionGeneration;
 use crate::state::CameraState;
+use crate::three_a_status::ThreeAStatus;
 
 /// Где приложение: Android отдаёт камеру только приложению на переднем плане.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -113,4 +114,6 @@ pub struct CameraStatus {
     /// Последняя причина недоступности (остаётся после восстановления — для отчёта).
     pub last_unavailable: Option<CameraUnavailableReason>,
     pub counters: CameraCounters,
+    /// Автоматика 3A и ручные параметры (08).
+    pub three_a: ThreeAStatus,
 }

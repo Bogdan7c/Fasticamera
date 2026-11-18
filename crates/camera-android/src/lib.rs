@@ -18,6 +18,8 @@
 
 pub mod callback_gate;
 pub mod characteristics;
+pub mod companion_negotiation;
+pub mod companion_stream;
 pub mod config;
 pub mod context_leak;
 pub mod cpu_access_probe;
@@ -26,15 +28,20 @@ pub mod entry;
 pub mod fence_fold;
 pub mod frame_numbers;
 pub mod frame_rate_plan;
+pub mod metering_region;
 pub mod outstanding_frames;
 pub mod reader_counters;
 pub mod reader_drain;
+pub mod request_controls_plan;
+pub mod request_origin;
 pub mod request_plan;
 pub mod result_meta;
 pub mod retired_readers;
 pub mod status_mapping;
 pub mod stream_passport;
 pub mod tags;
+mod three_a_characteristics;
+pub mod three_a_result;
 pub mod vendor;
 
 #[cfg(test)]

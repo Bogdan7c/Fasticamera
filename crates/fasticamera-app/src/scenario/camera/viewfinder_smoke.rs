@@ -19,6 +19,7 @@ use super::viewfinder_smoke_report::{
     ViewfinderGpuTimesMs, ViewfinderLook, ViewfinderSmokeObservation, evaluate_viewfinder, viewfinder_summary,
 };
 use super::viewfinder_tuning_report::{AdpfReport, PresentTargetReport};
+use super::white_balance_report::WhiteBalanceReport;
 use crate::camera_presentation::CameraPresentation;
 use crate::camera_service::RunningCamera;
 use crate::power_measurement::ThermalSnapshot;
@@ -178,6 +179,8 @@ impl SmokeRun {
             thermal_end: ThermalSnapshot::read(context.services.thermal.as_ref()),
             last_isp_failure: viewfinder.and_then(|viewfinder| viewfinder.counters.last_isp_failure.clone()),
             last_params_failure: viewfinder.and_then(|viewfinder| viewfinder.counters.last_params_failure.clone()),
+            white_balance: viewfinder.map(|viewfinder| WhiteBalanceReport::of(&viewfinder.white_balance)),
+            companion: running.diagnostics_snapshot().three_a_companion,
         }
     }
 }

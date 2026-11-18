@@ -1,9 +1,11 @@
 //! Почтовый ящик потока камеры: сюда пишут все, а читает один поток `fasticamera-camera`.
 //!
-//! Три полосы с явными приоритетами (читаются в этом порядке):
+//! Три полосы с явными приоритетами (читаются в этом порядке; пробуждение 3A — флаг между
+//! полосами 1 и 2, см. [`ThreeAWaker`]):
 //! 1. **редкие события бэкенда** (отключение, ошибка устройства, закрытие сессии, свобода
-//!    камеры) — без лимита и никогда не теряются: их мало, а потеря превращается в зависшую
-//!    камеру;
+//!    камеры) и результаты **разовых** запросов (триггер фокуса, кадры серии) — без лимита и
+//!    никогда не теряются: их мало, а потеря превращается в зависшую камеру или тап/серию
+//!    без итога;
 //! 2. **команды** — не больше `queues.command_capacity`; переполнение — отказ отправителю
 //!    ([`CommandRejected::QueueFull`]), команда не теряется молча;
 //! 3. **частые события** (результаты кадров) — не больше `queues.capture_event_capacity`;
@@ -14,7 +16,7 @@
 //! тоже приходят через ящик: [`CameraInbox::wait_next`].
 
 use std::collections::VecDeque;
-use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
 use crate::backend::{BackendEvent, BackendEventListener};
@@ -31,6 +33,8 @@ pub enum InboxItem {
         id: CommandId,
         command: CameraCommand,
     },
+    /// Кто-то снаружи попросил исполнителя экспозиции перечитать решение (см. [`ThreeAWaker`]).
+    ThreeARefresh,
     /// Наступил срок таймера движка, а другого содержимого нет.
     Timeout,
 }
@@ -45,6 +49,9 @@ struct InboxState {
     /// ([`CameraInbox::mark_stopped`]). Их отправители ответа не получат — это явный учёт.
     commands_discarded_at_stop: u64,
     next_command_id: u64,
+    /// Есть непрочитанная просьба пересмотреть план экспозиции. Флаг, а не очередь: сколько бы
+    /// раз ни разбудили, движок проснётся один раз (склейка пробуждений).
+    three_a_refresh_requested: bool,
     stop_requested: bool,
     /// Поток завершился: команды больше не принимаются, события отбрасываются.
     stopped: bool,
@@ -116,6 +123,7 @@ impl CameraInbox {
             );
         }
         state.commands.clear();
+        state.three_a_refresh_requested = false;
         state.rare_events.clear();
         state.capture_events.clear();
     }
@@ -135,6 +143,18 @@ impl CameraInbox {
         self.lock().commands.len()
     }
 
+    /// Попросить движок пересмотреть план экспозиции. Никогда не ждёт; повторы до чтения
+    /// склеиваются в одно пробуждение. После остановки потока — no-op.
+    fn request_three_a_refresh(&self) {
+        let mut state = self.lock();
+        if state.stopped {
+            return;
+        }
+        state.three_a_refresh_requested = true;
+        drop(state);
+        self.wake.notify_one();
+    }
+
     /// Подождать следующее содержимое, но не позже `deadline`. Вызывает только поток камеры.
     pub fn wait_next(&self, deadline: Option<Instant>) -> InboxItem {
         let mut state = self.lock();
@@ -144,6 +164,9 @@ impl CameraInbox {
             }
             if let Some(event) = state.rare_events.pop_front() {
                 return InboxItem::BackendEvent(event);
+            }
+            if std::mem::take(&mut state.three_a_refresh_requested) {
+                return InboxItem::ThreeARefresh;
             }
             if let Some((id, command)) = state.commands.pop_front() {
                 return InboxItem::Command { id, command };
@@ -166,6 +189,37 @@ impl CameraInbox {
                 None => self.wake.wait(state).unwrap_or_else(PoisonError::into_inner),
             };
         }
+    }
+}
+
+/// Ручка «пересмотри план экспозиции»: дёшево клонируется и безопасна для любого потока.
+///
+/// Нужна внешнему исполнителю экспозиции (наш AE в 08a живёт на потоке рендера и получает
+/// решения не от камеры): он готовит решение и зовёт [`ThreeAWaker::wake`]; поток камеры
+/// просыпается, спрашивает `ExposureController::refresh()` и, если план изменился, перестраивает
+/// повторяющийся запрос. Пробуждение идёт мимо полосы кадров (её при перегрузке вытесняют) и
+/// мимо очереди команд (она ограничена и может ответить `QueueFull`): это отдельный флаг, поэтому
+/// просьба не теряется и не отнимает место у команд. В 08 снаружи её никто не зовёт — она нужна
+/// 08a и тестам.
+#[derive(Clone)]
+pub struct ThreeAWaker {
+    inbox: Arc<CameraInbox>,
+}
+
+impl ThreeAWaker {
+    pub(crate) fn new(inbox: Arc<CameraInbox>) -> Self {
+        Self { inbox }
+    }
+
+    /// Разбудить поток камеры для `refresh()`. Не блокирует; много вызовов подряд — одно пробуждение.
+    pub fn wake(&self) {
+        self.inbox.request_three_a_refresh();
+    }
+}
+
+impl std::fmt::Debug for ThreeAWaker {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ThreeAWaker")
     }
 }
 

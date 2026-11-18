@@ -43,7 +43,7 @@ use raw_frame_stream::{
     OfferedFrame, ProducerFrame, RawFrameLease, RawFrameStream, RawFrameStreamConfig, ReleaseFences, StreamEpoch,
 };
 use render_loop::backend::{DisplayBackend, FrameTiming, PresentOutcome, PresentTarget};
-use render_loop::config::{DisplayColorConfig, RenderLoopConfig};
+use render_loop::config::{DisplayColorConfig, RenderLoopConfig, ViewfinderConfig, WhiteBalanceConfig};
 use render_loop::viewfinder::{
     HeadroomBench, HeadroomBenchDiagnostics, ViewfinderCommand, ViewfinderCommandOutcome, ViewfinderDiagnostics,
     ViewfinderExtent,
@@ -216,6 +216,16 @@ fn start() -> Option<Bench> {
         display_color: DisplayColorConfig::SrgbOnly,
         // Композиция на 120 Гц (прокси UI до сессии 11): запасной период пейсинга и показа — 120 Гц.
         preferred_frame_rate_hz: 120.0,
+        // Тест про стенд V4, не про AWB: каждый кадр показывается сразу (без скрытия холодного старта) и
+        // считает статистику (один вариант пайплайна ISP — счёт живых объектов не зависит от прореживания).
+        viewfinder: ViewfinderConfig {
+            white_balance: WhiteBalanceConfig {
+                max_hidden_frames: 0,
+                statistics_every_n_frames: 1,
+                ..WhiteBalanceConfig::default()
+            },
+            ..ViewfinderConfig::default()
+        },
         ..RenderLoopConfig::default()
     };
     // Тест проверяет путь кадра «первый же vsync», а не политику видоискателя: `LatestWins`
@@ -303,6 +313,9 @@ impl Bench {
                     sensitivity_iso: Some(100),
                     reported_frame_duration: None,
                     rolling_shutter_skew: None,
+                    three_a: camera_contract::three_a::ThreeAResultState::unreported(
+                        camera_contract::three_a::RequestOrigin::Repeating,
+                    ),
                 },
                 color: capture_hints(),
             },

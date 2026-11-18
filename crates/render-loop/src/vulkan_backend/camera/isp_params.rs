@@ -20,14 +20,17 @@
 //! чужие метаданные не подставляются никогда (решение 42), чужие уровни/CFA/матрицы — тоже.
 //! Описание сенсора — чистая функция содержимого паспорта, его кэш по равенству безопасен.
 //!
-//! # ВРЕМЕННО: нейтраль от HAL
-//! Нейтраль баланса белого берётся из подсказки HAL `NEUTRAL_COLOR_POINT`. Свой AWB появится в
-//! сессии 08 (он прочитает статистику из `AwbStatisticsFeed`) и заменит этот источник.
+//! # Нейтраль — только от нашего AWB
+//! Белая точка сцены приходит снаружи (`white`: цветность, решение 64) и переводится в нейтраль КОНКРЕТНОГО
+//! потока по его DNG-профилю (`DngColorProfile::neutral_for_white`). Подсказки HAL (`NEUTRAL_COLOR_POINT`,
+//! `COLOR_CORRECTION_GAINS`) сюда не попадают вообще: из кадра берутся только уровни. Кэш сравнивает белую
+//! точно, а решение «белая изменилась заметно» принимает AWB (порог отчёта), поэтому `IspParams::resolve` не
+//! идёт на каждый кадр.
 
 use std::sync::Arc;
 
 use camera_contract::frame_passport::{CaptureColorHints, FrameCaptureMeta, RawFramePassport, StreamPassport};
-use isp_model::color::dng::CameraNeutral;
+use isp_model::color::chromaticity::Chromaticity;
 use isp_model::demosaic::DemosaicMethod;
 use isp_model::image::DisplayGamut;
 use isp_model::params::{FrameInputs, IspParams, ProcessingControls};
@@ -48,11 +51,8 @@ pub enum ParamsFailure {
     /// Паспорт потока не описывает сенсор (не Bayer, нет матриц цвета, битые уровни).
     #[error("описание сенсора: {0}")]
     Sensor(String),
-    /// HAL не дал `NEUTRAL_COLOR_POINT` (до своего AWB, сессия 08, нейтраль берётся только оттуда).
-    #[error("у кадра нет нейтрали NEUTRAL_COLOR_POINT")]
-    NoNeutral,
-    /// Нейтраль битая (нулевой знаменатель, неположительные значения).
-    #[error("нейтраль {0}")]
+    /// Белая точка не переводится в нейтраль камеры потока (нечисловая, вне допустимого).
+    #[error("нейтраль для белой точки: {0}")]
     InvalidNeutral(String),
     /// Уровни кадра не имеют смысла.
     #[error("уровни кадра: {0}")]
@@ -103,7 +103,8 @@ struct CachedSensor {
 /// `StreamBoundState`, уже относится к одному потоку.
 #[derive(Debug, Clone, PartialEq)]
 struct ResolvedInputs {
-    neutral: [f64; 3],
+    /// Белая точка сцены (x, y) — точное сравнение: заметность смены решает AWB.
+    white: [f64; 2],
     dynamic_black_level: Option<[f32; 4]>,
     dynamic_white_level: Option<u32>,
     gamut: DisplayGamut,
@@ -117,8 +118,6 @@ struct StreamBoundState {
     last_hints: Option<CaptureColorHints>,
     /// Действующие параметры и входы, из которых они посчитаны.
     current: Option<(ResolvedInputs, IspParams)>,
-    /// Источник нейтрали последнего пересчёта (только для лога смены источника).
-    neutral_source: Option<NeutralSource>,
 }
 
 impl StreamBoundState {
@@ -127,7 +126,6 @@ impl StreamBoundState {
             stream: Arc::clone(stream),
             last_hints: None,
             current: None,
-            neutral_source: None,
         }
     }
 }
@@ -174,7 +172,7 @@ impl IspParamsCache {
     }
 
     /// Готовит параметры для кадра `passport` под охват экрана `gamut` (см. модуль).
-    pub fn prepare(&mut self, passport: &RawFramePassport, gamut: DisplayGamut) -> ParamsDecision {
+    pub fn prepare(&mut self, passport: &RawFramePassport, white: Chromaticity, gamut: DisplayGamut) -> ParamsDecision {
         // Раздельные заимствования: состояние потока и кэш сенсора — независимые поля.
         let Self {
             demosaic,
@@ -199,7 +197,7 @@ impl IspParamsCache {
                 }
             },
         };
-        let outcome = match bound.resolve_if_changed(sensor, *demosaic, &hints, gamut) {
+        let outcome = match bound.resolve_if_changed(sensor, *demosaic, &hints, white, gamut) {
             Ok(outcome) => outcome,
             Err(failure) => bound.fallback(failure, gamut),
         };
@@ -226,25 +224,11 @@ impl StreamBoundState {
         sensor: &mut Option<CachedSensor>,
         demosaic: DemosaicMethod,
         hints: &CaptureColorHints,
+        white: Chromaticity,
         gamut: DisplayGamut,
     ) -> Result<ParamsOutcome, ParamsFailure> {
-        let (neutral, neutral_source) = neutral_from_hints(hints)?;
-        if self.neutral_source != Some(neutral_source) {
-            // Раз на смену источника, не на кадр: видно в logcat, откуда сейчас берётся цвет.
-            // Значения рядом с источником: «единичные коэффициенты» HAL (баланса нет) иначе не отличить
-            // от честной нейтрали при плохом свете (сессия 07a, зелёный видоискатель).
-            tracing::info!(
-                target: "fasticamera::render::camera",
-                ?neutral_source,
-                ?neutral,
-                color_gains = ?hints.color_gains,
-                neutral_color_point = ?hints.neutral_color_point,
-                "источник временной нейтрали"
-            );
-            self.neutral_source = Some(neutral_source);
-        }
         let inputs = ResolvedInputs {
-            neutral,
+            white: [white.x, white.y],
             dynamic_black_level: hints.dynamic_black_level,
             dynamic_white_level: hints.dynamic_white_level,
             gamut,
@@ -255,8 +239,11 @@ impl StreamBoundState {
         let sensor = sensor_for(sensor, &self.stream)?;
         let frame =
             FrameInputs::from_capture_hints(sensor, hints).map_err(|error| ParamsFailure::Levels(error.to_string()))?;
-        let camera_neutral =
-            CameraNeutral::new(neutral).map_err(|error| ParamsFailure::InvalidNeutral(error.to_string()))?;
+        // Нейтраль ЭТОГО потока по его DNG-профилю: чужие камеры у одной белой точки имеют разные нейтрали.
+        let camera_neutral = sensor
+            .color_profile()
+            .neutral_for_white(white)
+            .map_err(|error| ParamsFailure::InvalidNeutral(error.to_string()))?;
         let controls = ProcessingControls::with_defaults(camera_neutral, demosaic, gamut);
         let params =
             IspParams::resolve(sensor, &frame, &controls).map_err(|error| ParamsFailure::Resolve(error.to_string()))?;
@@ -297,79 +284,6 @@ fn sensor_for<'a>(
         Some(Err(failure)) => Err(failure.clone()),
         None => Err(ParamsFailure::Sensor("описание не построено".to_owned())),
     }
-}
-
-/// Откуда взята временная нейтраль баланса белого (до нашего AWB в сессии 08).
-///
-/// Обе — подсказки того же вендорского AWB для ЭТОГО кадра, чужие кадры и умолчания не подставляются.
-/// Факт 07 (телефон): в сессии из одного RAW-потока HAL отдаёт `NEUTRAL_COLOR_POINT` как `0/0` во всех
-/// каналах, поэтому нужен запасной источник — коэффициенты `COLOR_CORRECTION_GAINS`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NeutralSource {
-    /// `ACAMERA_SENSOR_NEUTRAL_COLOR_POINT` — нейтраль в координатах камеры (DNG AsShotNeutral).
-    HalNeutralPoint,
-    /// `ACAMERA_COLOR_CORRECTION_GAINS` `[R, G_even, G_odd, B]`: коэффициент баланса канала обратен
-    /// нейтрали этого канала (серый после усилений одинаков во всех каналах), зелёный — среднее двух.
-    HalColorGains,
-}
-
-/// Временная нейтраль из подсказок кадра: сначала нейтральная точка HAL, затем его коэффициенты
-/// баланса. Нет ни того, ни другого (или оба некорректны) — ошибка с обеими причинами, а не догадка.
-fn neutral_from_hints(hints: &CaptureColorHints) -> Result<([f64; 3], NeutralSource), ParamsFailure> {
-    let point_problem = match neutral_from_point(hints) {
-        Ok(neutral) => return Ok((neutral, NeutralSource::HalNeutralPoint)),
-        Err(problem) => problem,
-    };
-    match neutral_from_gains(hints) {
-        Ok(neutral) => Ok((neutral, NeutralSource::HalColorGains)),
-        Err(gains_problem) => match (point_problem, gains_problem) {
-            // Ни ключа, ни коэффициентов: HAL нейтраль не сообщил вовсе.
-            (NeutralProblem::Absent, NeutralProblem::Absent) => Err(ParamsFailure::NoNeutral),
-            (point, gains) => Err(ParamsFailure::InvalidNeutral(format!(
-                "нейтральная точка: {}; коэффициенты баланса: {}",
-                point.describe(),
-                gains.describe()
-            ))),
-        },
-    }
-}
-
-/// Почему источник нейтрали не годится.
-enum NeutralProblem {
-    Absent,
-    Invalid(String),
-}
-
-impl NeutralProblem {
-    fn describe(&self) -> String {
-        match self {
-            Self::Absent => "нет в результате".to_owned(),
-            Self::Invalid(reason) => reason.clone(),
-        }
-    }
-}
-
-/// Нейтральная точка HAL: все знаменатели ненулевые, все значения конечные и положительные.
-fn neutral_from_point(hints: &CaptureColorHints) -> Result<[f64; 3], NeutralProblem> {
-    let rationals = hints.neutral_color_point.ok_or(NeutralProblem::Absent)?;
-    let mut values = [0.0; 3];
-    for (value, rational) in values.iter_mut().zip(rationals) {
-        *value = rational
-            .to_f64()
-            .filter(|converted| converted.is_finite() && *converted > 0.0)
-            .ok_or_else(|| NeutralProblem::Invalid(format!("{rationals:?}")))?;
-    }
-    Ok(values)
-}
-
-/// Нейтраль из коэффициентов баланса HAL: `N_c = 1 / g_c`, для зелёного — среднее двух коэффициентов.
-fn neutral_from_gains(hints: &CaptureColorHints) -> Result<[f64; 3], NeutralProblem> {
-    let gains = hints.color_gains.ok_or(NeutralProblem::Absent)?.0;
-    if !gains.iter().all(|gain| gain.is_finite() && *gain > 0.0) {
-        return Err(NeutralProblem::Invalid(format!("{gains:?}")));
-    }
-    let [red, green_even, green_odd, blue] = gains.map(f64::from);
-    Ok([1.0 / red, 2.0 / (green_even + green_odd), 1.0 / blue])
 }
 
 #[cfg(test)]

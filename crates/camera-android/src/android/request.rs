@@ -1,18 +1,20 @@
 //! `ACaptureRequest`: сборка запроса из плана и запись значений.
 
+use std::ffi::c_void;
 use std::ptr::{self, NonNull};
 
 use camera_core::backend::BackendFailure;
 use camera_ndk_sys as ndk;
 
 use crate::entry::EntryValue;
+use crate::request_origin::RequestKey;
 use crate::request_plan::RequestTemplate;
 use crate::status_mapping::camera_backend_failure;
 use crate::tags;
 use crate::vendor::RequestEntryWriter;
 
 use super::device::OpenedDevice;
-use super::session::OutputTarget;
+use super::outputs::OutputTarget;
 
 /// Владелец `ACaptureRequest`. Освобождается после отправки: NDK копирует запрос при постановке.
 pub(super) struct CaptureRequestHandle {
@@ -33,6 +35,22 @@ impl CaptureRequestHandle {
 
     pub(super) fn as_ptr(&self) -> *mut ndk::ACaptureRequest {
         self.raw.as_ptr()
+    }
+
+    /// Помечает запрос ключом происхождения (`ACaptureRequest_setUserContext`). Метку надо ставить
+    /// **до** отправки: после отправки контекст в колбэках уже не меняется (заголовок NDK).
+    ///
+    /// Ключ — число в роли указателя: NDK хранит и возвращает его, но никто его не разыменовывает,
+    /// поэтому висячего указателя быть не может (см. `request_origin`).
+    pub(super) fn tag_origin(&mut self, key: RequestKey) -> Result<(), BackendFailure> {
+        let context = ptr::without_provenance_mut::<c_void>(key.as_raw());
+        // SAFETY: запрос жив; контекст не разыменовывается ни NDK, ни нами — это просто число.
+        let status = unsafe { ndk::ACaptureRequest_setUserContext(self.raw.as_ptr(), context) };
+        if status == tags::STATUS_OK {
+            Ok(())
+        } else {
+            Err(camera_backend_failure("ACaptureRequest_setUserContext", status))
+        }
     }
 
     /// Добавляет цель (окно приёмника). Цель должна пережить запрос — её держит сессия.

@@ -10,15 +10,17 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use camera_contract::catalog::CameraCatalog;
-use camera_contract::control::{CaptureIntent, ManualControl};
+use camera_contract::control::{CaptureIntent, ExposureBias, ManualControl};
 use camera_contract::ids::{CameraTarget, LensRole};
 use camera_contract::stream::StreamMode;
+use camera_contract::three_a::{ExposureBracket, SensorPoint, ThreeAProfile};
 
 use crate::command::{CameraCommand, CommandId, CommandRejected};
 use crate::event::CameraEvent;
-use crate::inbox::CameraInbox;
+use crate::inbox::{CameraInbox, ThreeAWaker};
 use crate::state::{CameraState, ClosedReason};
 use crate::status::{AppPresence, CameraCounters, CameraStatus, StreamStats};
+use crate::three_a_status::ThreeAStatus;
 
 struct OutputState {
     status: CameraStatus,
@@ -54,6 +56,7 @@ impl EngineOutput {
                     stream: StreamStats::empty(),
                     last_unavailable: None,
                     counters: CameraCounters::default(),
+                    three_a: ThreeAStatus::initial(),
                 },
                 events: VecDeque::new(),
                 dropped_events: 0,
@@ -126,6 +129,11 @@ impl CameraHandle {
         Self { inbox, output }
     }
 
+    /// Ручка «пересмотри план экспозиции» для внешнего исполнителя (08a); в 08 её зовут только тесты.
+    pub fn three_a_waker(&self) -> ThreeAWaker {
+        ThreeAWaker::new(Arc::clone(&self.inbox))
+    }
+
     fn send(&self, command: CameraCommand) -> Result<CommandId, CommandRejected> {
         self.inbox.submit_command(command)
     }
@@ -153,8 +161,37 @@ impl CameraHandle {
         self.send(CameraCommand::SwitchTo { role })
     }
 
+    /// Ручные параметры целиком; поправки под камеру — в снимке и событии `ControlsAdjusted`.
     pub fn apply_controls(&self, controls: ManualControl) -> Result<CommandId, CommandRejected> {
         self.send(CameraCommand::ApplyControls { controls })
+    }
+
+    /// Тап: фокус и замер в точке. Номер команды — номер тапа в `FocusSettled`.
+    pub fn focus_and_expose_at(&self, point: SensorPoint) -> Result<CommandId, CommandRejected> {
+        self.send(CameraCommand::FocusAndExposeAt { point })
+    }
+
+    /// Долгий тап: фокус и замер в точке с блокировкой AE/AF.
+    pub fn lock_focus_and_exposure_at(&self, point: SensorPoint) -> Result<CommandId, CommandRejected> {
+        self.send(CameraCommand::LockFocusAndExposureAt { point })
+    }
+
+    /// Снять точку и блокировку: непрерывный фокус и замер по кадру.
+    pub fn reset_point_of_interest(&self) -> Result<CommandId, CommandRejected> {
+        self.send(CameraCommand::ResetPointOfInterest)
+    }
+
+    pub fn set_exposure_bias(&self, bias: ExposureBias) -> Result<CommandId, CommandRejected> {
+        self.send(CameraCommand::SetExposureBias { bias })
+    }
+
+    pub fn set_three_a_profile(&self, profile: ThreeAProfile) -> Result<CommandId, CommandRejected> {
+        self.send(CameraCommand::SetThreeAProfile { profile })
+    }
+
+    /// Серия с брекетингом поверх потока (V10); итог — событие `BracketCaptured`.
+    pub fn capture_bracket(&self, bracket: ExposureBracket) -> Result<CommandId, CommandRejected> {
+        self.send(CameraCommand::CaptureBracket { bracket })
     }
 
     /// Камера не нужна: закрыть и забыть желаемое.

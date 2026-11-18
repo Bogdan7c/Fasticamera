@@ -152,6 +152,9 @@ SCENARIO_STEPS: dict[str, dict[str, tuple[Step, ...]]] = {
     "raw-stream-endurance": {"viewfinder_live": VIEWFINDER_SHOT_STEPS},
     # viewfinder (сессия 07): те же два скриншота установившегося видоискателя с ISP.
     "viewfinder": {"viewfinder_live": VIEWFINDER_SHOT_STEPS},
+    # 3a (сессия 08): скриншоты на стадии ``awb_ready`` — наш AWB отработал холодный старт и дал первую белую;
+    # по ним же ``--neutral-card`` судит серую карту в центре кадра.
+    "3a": {"awb_ready": VIEWFINDER_SHOT_STEPS},
     # video-headroom-bench: Rust просит 120 Гц и включает стенд, затем пишет ``bench_started``. OxygenOS держит
     # приложению 60 Гц до первого касания (бэклог п. 1), поэтому скрипт один раз касается центра экрана
     # (на весь экран нет кнопок — касание безвредно). Достигнутую частоту Rust пишет в отчёт как есть.

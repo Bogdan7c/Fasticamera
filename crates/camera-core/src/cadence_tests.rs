@@ -24,6 +24,9 @@ fn complete_meta(frame: i64, timestamp: Option<i64>) -> CaptureResultMeta {
         sensitivity_iso: Some(100),
         reported_frame_duration: Some(FrameDuration::from_nanos(33_333_333)),
         rolling_shutter_skew: Some(Duration::from_micros(13_660)),
+        three_a: camera_contract::three_a::ThreeAResultState::unreported(
+            camera_contract::three_a::RequestOrigin::Repeating,
+        ),
     }
 }
 

@@ -1,0 +1,456 @@
+//! По тесту на каждое правило вердикта `3a`: здоровое наблюдение проходит, сломанное правило даёт ровно одно
+//! нарушение с нужным текстом.
+
+use camera_contract::three_a::{AeState, AfState};
+
+use super::*;
+use crate::scenario::camera::engine_watch::RunFailure;
+use crate::scenario::camera::three_a_report::{
+    AppliedExposure, AwbVsHal, BracketFrameReport, EvPointReport, LongShutterReport, TapReport, ThreeAObservation,
+};
+use crate::scenario::camera::viewfinder_session::SessionSummary;
+
+fn config() -> ThreeAScenarioConfig {
+    ThreeAScenarioConfig::default()
+}
+
+fn tap(result: TapResult) -> TapReport {
+    TapReport {
+        x: 0.5,
+        y: 0.5,
+        result,
+        frames_to_settle: Some(12),
+        diopters_before: Some(1.0),
+        diopters_after: Some(2.0),
+    }
+}
+
+/// Здоровый прогон на телефоне: всё по плану.
+fn healthy() -> ThreeAObservation {
+    let mut observation = ThreeAObservation::new(SessionSummary {
+        configured: None,
+        degraded: None,
+        time_to_streaming_ms: Some(900),
+        time_to_live_ms: Some(1_100),
+        state_at_end: "streaming",
+        events: Vec::new(),
+    });
+    observation.live = Some(LiveReport {
+        companion: CompanionStreamStatus::Active {
+            width: 640,
+            height: 480,
+        },
+        af_state: Some(AfState::PassiveFocused),
+        ae_state: Some(AeState::Converged),
+    });
+    observation.awb = Some(AwbReport {
+        ready: true,
+        hidden_since_start: 3,
+        forced_since_start: 0,
+        max_hidden_frames: 10,
+        awb_vs_hal: AwbVsHal::Ok,
+        white_balance: None,
+    });
+    observation.focus = Some(FocusReport {
+        taps: vec![tap(TapResult::Focused); 5],
+        region_effect_diopters: Some(0.4),
+        triggers_sent: 5,
+        results_without_request_context: 0,
+        results_with_unknown_origin: 0,
+    });
+    observation.manual = Some(ManualReport {
+        requested_exposure_ns: 1_000_000,
+        requested_iso: 400,
+        applied: Some(AppliedExposure {
+            exposure_ns: 996_220,
+            iso: 400,
+            latency_frames: 6,
+        }),
+        adjustments_for_in_range: 0,
+        long_shutter: LongShutterReport {
+            requested_ns: 100_000_000,
+            frame_budget_ns: Some(16_666_667),
+            limited_event_seen: true,
+            applied_ns: Some(16_600_000),
+        },
+    });
+    observation.ev = Some(EvReport {
+        points: vec![
+            ev_point(0.0, 1.0, true),
+            ev_point(1.0, 2.0, true),
+            ev_point(-1.0, 0.5, true),
+        ],
+        ev_unverifiable_at_limit: false,
+    });
+    observation.lock = Some(LockReport {
+        locked: true,
+        samples_held: 40,
+        non_locked_after_lock: 0,
+        max_product_deviation: Some(0.0),
+        back_to_continuous: true,
+    });
+    observation.bracket = Some(BracketRunReport {
+        captured: Some(true),
+        failure: None,
+        frames: [
+            (0, 100, 2_000_000),
+            (1, 101, 4_000_000),
+            (2, 102, 8_000_000),
+            (3, 103, 16_000_000),
+        ]
+        .into_iter()
+        .map(|(index, frame_number, exposure_ns)| BracketFrameReport {
+            index,
+            frame_number,
+            exposure_ns: Some(exposure_ns),
+            iso: Some(400),
+        })
+        .collect(),
+        frame_gaps: 0,
+        skipped_delta: 4,
+        dropped_during: 0,
+        presented_during: 30,
+    });
+    observation
+}
+
+fn ev_point(bias_ev: f32, ratio: f64, verifiable: bool) -> EvPointReport {
+    EvPointReport {
+        bias_ev,
+        median_product: Some(ratio * 1.0e9),
+        samples: 20,
+        ae_converged: true,
+        verifiable,
+        ratio_to_baseline: Some(ratio),
+    }
+}
+
+fn violations_of(change: impl FnOnce(&mut ThreeAObservation)) -> Vec<String> {
+    let mut observation = healthy();
+    change(&mut observation);
+    evaluate_three_a(&config(), &observation)
+}
+
+fn assert_single(violations: &[String], needle: &str) {
+    assert_eq!(violations.len(), 1, "{violations:?}");
+    assert!(violations[0].contains(needle), "нет «{needle}» в {violations:?}");
+}
+
+#[test]
+fn healthy_run_passes() {
+    assert_eq!(violations_of(|_| {}), Vec::<String>::new());
+}
+
+#[test]
+fn run_failure_is_reported_first() {
+    let violations = violations_of(|o| {
+        o.failure = Some(RunFailure::EngineFatal {
+            cause: "сбой".to_owned(),
+        });
+    });
+    assert!(violations[0].contains("сбой"), "{violations:?}");
+}
+
+#[test]
+fn dead_companion_missing_af_and_missing_ae_are_three_separate_violations() {
+    let dead = violations_of(|o| {
+        if let Some(live) = &mut o.live {
+            live.companion = CompanionStreamStatus::DisabledByConfig;
+        }
+    });
+    assert_single(&dead, "вспомогательный поток 3A не активен");
+    let no_af = violations_of(|o| o.live.iter_mut().for_each(|live| live.af_state = None));
+    assert_single(&no_af, "нет AF_STATE");
+    let no_ae = violations_of(|o| o.live.iter_mut().for_each(|live| live.ae_state = None));
+    assert_single(&no_ae, "нет AE_STATE");
+}
+
+#[test]
+fn awb_not_ready_too_many_hidden_frames_and_forced_show_each_fail() {
+    assert_single(
+        &violations_of(|o| o.awb.iter_mut().for_each(|a| a.ready = false)),
+        "AWB не готов",
+    );
+    assert_single(
+        &violations_of(|o| o.awb.iter_mut().for_each(|a| a.hidden_since_start = 11)),
+        "скрыл 11 кадров, предел 10",
+    );
+    assert_single(
+        &violations_of(|o| o.awb.iter_mut().for_each(|a| a.forced_since_start = 1)),
+        "принудительным показом",
+    );
+}
+
+#[test]
+fn awb_far_from_hal_is_a_note_not_a_violation() {
+    let violations = violations_of(|o| o.awb.iter_mut().for_each(|a| a.awb_vs_hal = AwbVsHal::Warn));
+    assert!(violations.is_empty(), "{violations:?}");
+}
+
+#[test]
+fn center_tap_must_settle_and_not_time_out_or_be_undelivered() {
+    let timed_out = violations_of(|o| o.focus.iter_mut().for_each(|f| f.taps[0].result = TapResult::TimedOut));
+    assert_single(&timed_out, "тап в центр: HAL не сообщил итог");
+    let not_delivered = violations_of(|o| {
+        o.focus
+            .iter_mut()
+            .for_each(|f| f.taps[0].result = TapResult::TriggerNotDelivered);
+    });
+    assert_single(&not_delivered, "бэкенд отверг разовый запрос");
+    let no_event = violations_of(|o| o.focus.iter_mut().for_each(|f| f.taps[0].result = TapResult::NoEvent));
+    assert_single(&no_event, "событие итога не пришло");
+    let not_focused = violations_of(|o| {
+        o.focus
+            .iter_mut()
+            .for_each(|f| f.taps[0].result = TapResult::NotFocused)
+    });
+    assert!(not_focused.is_empty(), "NotFocused — честный итог HAL: {not_focused:?}");
+}
+
+#[test]
+fn corner_tap_timeout_is_a_note_but_an_undelivered_corner_trigger_fails() {
+    let timed_out = violations_of(|o| o.focus.iter_mut().for_each(|f| f.taps[3].result = TapResult::TimedOut));
+    assert!(timed_out.is_empty(), "{timed_out:?}");
+    let undelivered = violations_of(|o| {
+        o.focus
+            .iter_mut()
+            .for_each(|f| f.taps[3].result = TapResult::TriggerNotDelivered);
+    });
+    assert_single(&undelivered, "тап 3");
+}
+
+#[test]
+fn lost_request_context_unknown_origin_and_missing_triggers_each_fail() {
+    assert_single(
+        &violations_of(|o| o.focus.iter_mut().for_each(|f| f.results_without_request_context = 2)),
+        "без контекста запроса: 2",
+    );
+    assert_single(
+        &violations_of(|o| o.focus.iter_mut().for_each(|f| f.results_with_unknown_origin = 1)),
+        "неопознанным происхождением: 1",
+    );
+    assert_single(
+        &violations_of(|o| o.focus.iter_mut().for_each(|f| f.triggers_sent = 4)),
+        "отправлено триггеров 4, тапов 5",
+    );
+}
+
+#[test]
+fn manual_exposure_and_iso_must_match_within_tolerance() {
+    // 1,5 % при допуске 1 %.
+    let off_exposure = violations_of(|o| {
+        o.manual.iter_mut().for_each(|m| {
+            m.applied = m.applied.map(|a| AppliedExposure {
+                exposure_ns: 1_015_000,
+                ..a
+            })
+        });
+    });
+    assert_single(&off_exposure, "выдержка в результате 1015000");
+    let off_iso = violations_of(|o| {
+        o.manual
+            .iter_mut()
+            .for_each(|m| m.applied = m.applied.map(|a| AppliedExposure { iso: 800, ..a }));
+    });
+    assert_single(&off_iso, "ISO в результате 800");
+    let never = violations_of(|o| o.manual.iter_mut().for_each(|m| m.applied = None));
+    assert_single(&never, "не появилась в результатах");
+}
+
+#[test]
+fn in_range_manual_values_must_not_raise_adjustments() {
+    let violations = violations_of(|o| o.manual.iter_mut().for_each(|m| m.adjustments_for_in_range = 1));
+    assert_single(&violations, "событий ControlsAdjusted (ожидалось 0)");
+}
+
+#[test]
+fn too_long_shutter_needs_the_event_and_a_result_within_the_frame() {
+    let no_event = violations_of(|o| {
+        o.manual
+            .iter_mut()
+            .for_each(|m| m.long_shutter.limited_event_seen = false)
+    });
+    assert_single(&no_event, "LimitedByFrameDuration");
+    let too_long = violations_of(|o| {
+        o.manual
+            .iter_mut()
+            .for_each(|m| m.long_shutter.applied_ns = Some(30_000_000))
+    });
+    assert_single(&too_long, "больше длительности кадра");
+    let none = violations_of(|o| o.manual.iter_mut().for_each(|m| m.long_shutter.applied_ns = None));
+    assert_single(&none, "не получен за срок");
+}
+
+#[test]
+fn ev_that_does_not_double_fails_but_unverifiable_points_are_skipped() {
+    let broken = violations_of(|o| {
+        o.ev.iter_mut().for_each(|ev| ev.points[1] = ev_point(1.0, 1.05, true));
+    });
+    assert_single(&broken, "EV +1");
+    let at_limit = violations_of(|o| {
+        o.ev.iter_mut().for_each(|ev| {
+            ev.points[1] = ev_point(1.0, 1.05, false);
+            ev.ev_unverifiable_at_limit = true;
+        });
+    });
+    assert!(at_limit.is_empty(), "{at_limit:?}");
+    let no_median = violations_of(|o| {
+        o.ev.iter_mut().for_each(|ev| ev.points[2].ratio_to_baseline = None);
+    });
+    assert_single(&no_median, "EV -1: нет медианы");
+}
+
+#[test]
+fn lock_must_reach_locked_stay_constant_and_return_to_continuous() {
+    assert_single(
+        &violations_of(|o| o.lock.iter_mut().for_each(|l| l.locked = false)),
+        "не стал Locked",
+    );
+    assert_single(
+        &violations_of(|o| o.lock.iter_mut().for_each(|l| l.non_locked_after_lock = 2)),
+        "2 результатов с AE_STATE не Locked",
+    );
+    assert_single(
+        &violations_of(|o| o.lock.iter_mut().for_each(|l| l.max_product_deviation = Some(0.05))),
+        "плавала на 5.0 %",
+    );
+    assert_single(
+        &violations_of(|o| o.lock.iter_mut().for_each(|l| l.back_to_continuous = false)),
+        "AF не вернулся в непрерывный режим",
+    );
+}
+
+#[test]
+fn bracket_needs_captured_four_ordered_consecutive_frames_with_requested_exposures() {
+    assert_single(
+        &violations_of(|o| o.bracket.iter_mut().for_each(|b| b.captured = None)),
+        "итог серии (BracketCaptured) не пришёл",
+    );
+    assert_single(
+        &violations_of(|o| {
+            o.bracket.iter_mut().for_each(|b| {
+                b.captured = Some(false);
+                b.failure = Some("не все кадры".to_owned());
+            });
+        }),
+        "серия не снята: не все кадры",
+    );
+    assert_single(
+        &violations_of(|o| o.bracket.iter_mut().for_each(|b| b.frames.truncate(3))),
+        "в серии 3 кадров, просили 4",
+    );
+    assert_single(
+        &violations_of(|o| o.bracket.iter_mut().for_each(|b| b.frames[1].index = 5)),
+        "не в порядке индексов",
+    );
+    assert_single(
+        &violations_of(|o| o.bracket.iter_mut().for_each(|b| b.frame_gaps = 2)),
+        "не подряд: пропущено 2",
+    );
+    assert_single(
+        &violations_of(|o| {
+            o.bracket
+                .iter_mut()
+                .for_each(|b| b.frames[2].exposure_ns = Some(9_000_000))
+        }),
+        "кадр 2 серии",
+    );
+}
+
+#[test]
+fn bracket_render_accounting_drops_and_presentation_are_checked() {
+    assert_single(
+        &violations_of(|o| o.bracket.iter_mut().for_each(|b| b.skipped_delta = 3)),
+        "пропустил кадров серии 3",
+    );
+    assert_single(
+        &violations_of(|o| o.bracket.iter_mut().for_each(|b| b.skipped_delta = 9)),
+        "пропустил кадров серии 9",
+    );
+    assert_single(
+        &violations_of(|o| o.bracket.iter_mut().for_each(|b| b.dropped_during = 3)),
+        "потерял 3 кадров",
+    );
+    assert_single(
+        &violations_of(|o| o.bracket.iter_mut().for_each(|b| b.presented_during = 0)),
+        "не показал ни одного кадра",
+    );
+}
+
+#[test]
+fn failed_restore_is_a_violation() {
+    let violations = violations_of(|o| o.restore_failure = Some("очередь полна".to_owned()));
+    assert_single(&violations, "автоматические параметры не возвращены: очередь полна");
+}
+
+/// Худший провал: каждое правило нарушено, тексты причин длинные, все пять тапов и три точки EV в отчёте.
+/// Строка результата обязана влезть в запись logcat и сохранить первое нарушение и ключевые числа.
+#[test]
+fn worst_case_failure_line_fits_the_logcat_record() {
+    use crate::scenario::camera::result_budget::judge_within_budget;
+    use crate::scenario::camera::result_budget::worst_case::{
+        assert_failure_line_fits, long_failure, long_reason, worst_session,
+    };
+
+    let mut observation = healthy();
+    observation.session = worst_session();
+    observation.failure = Some(long_failure());
+    observation.restore_failure = Some(long_reason("возврат"));
+    observation.live = Some(LiveReport {
+        companion: CompanionStreamStatus::Unavailable {
+            reason: camera_android::companion_stream::CompanionUnavailableReason::ReaderCreationFailed {
+                status: -10_000,
+            },
+        },
+        af_state: None,
+        ae_state: None,
+    });
+    observation.focus.iter_mut().for_each(|focus| {
+        focus
+            .taps
+            .iter_mut()
+            .for_each(|tap| tap.result = TapResult::TriggerNotDelivered);
+        focus.results_without_request_context = 99;
+        focus.results_with_unknown_origin = 99;
+        focus.triggers_sent = 0;
+    });
+    observation.manual.iter_mut().for_each(|manual| {
+        manual.applied = None;
+        manual.adjustments_for_in_range = 9;
+        manual.long_shutter.applied_ns = None;
+        manual.long_shutter.limited_event_seen = false;
+    });
+    observation.bracket.iter_mut().for_each(|bracket| {
+        bracket.captured = Some(false);
+        bracket.failure = Some(long_reason("серия"));
+        bracket.skipped_delta = 0;
+        bracket.presented_during = 0;
+    });
+    let violations = evaluate_three_a(&config(), &observation);
+    assert!(violations.len() >= 10, "{violations:?}");
+
+    let verdict = judge_within_budget(observation.summary(), violations.clone());
+    let line = assert_failure_line_fits("3a", verdict.outcome);
+    let error = line["error"].as_str().expect("текст ошибки");
+    assert!(
+        error.starts_with(&truncate_for_compare(&violations[0])),
+        "первое нарушение: {error}"
+    );
+    assert_eq!(line["report"]["focus"]["triggers_sent"], 0, "ключевые числа на месте");
+    assert_eq!(
+        verdict.violation_details.len(),
+        violations.len(),
+        "полный список — в деталях"
+    );
+}
+
+/// Первое нарушение в тексте ошибки может быть укорочено: сравниваем по началу.
+fn truncate_for_compare(text: &str) -> String {
+    text.chars().take(40).collect()
+}
+
+#[test]
+fn healthy_summary_is_far_below_the_line_budget() {
+    let bytes = healthy().summary().to_string().len();
+    assert!(bytes < 3_000, "сводка здорового прогона {bytes} байт");
+}

@@ -54,6 +54,8 @@ mod echo;
 mod raw_stream;
 #[path = "event_router_render_tests.rs"]
 mod render;
+#[path = "event_router_three_a_tests.rs"]
+mod three_a;
 #[path = "event_router_viewfinder_tests.rs"]
 mod viewfinder;
 

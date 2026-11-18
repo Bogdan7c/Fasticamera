@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 use camera_contract::capture_result::{CaptureResultMeta, FrameNumber, SensorTimestamp};
 use camera_contract::control::CaptureIntent;
 
+use camera_contract::three_a::RequestOrigin;
+
 use super::*;
 use crate::backend::{DeviceGeneration, SessionGeneration};
 
@@ -28,6 +30,9 @@ fn completed(frame: i64) -> BackendEvent {
             sensitivity_iso: None,
             reported_frame_duration: None,
             rolling_shutter_skew: None,
+            three_a: camera_contract::three_a::ThreeAResultState::unreported(
+                camera_contract::three_a::RequestOrigin::Repeating,
+            ),
         },
     }
 }
@@ -37,6 +42,14 @@ fn frame_of(item: &InboxItem) -> i64 {
         InboxItem::BackendEvent(BackendEvent::CaptureCompleted { result, .. }) => result.frame_number.0,
         other => panic!("ожидался результат кадра, а пришло {other:?}"),
     }
+}
+
+fn completed_with(frame: i64, origin: RequestOrigin) -> BackendEvent {
+    let BackendEvent::CaptureCompleted { session, mut result } = completed(frame) else {
+        unreachable!("completed() строит CaptureCompleted");
+    };
+    result.three_a.origin = origin;
+    BackendEvent::CaptureCompleted { session, result }
 }
 
 const SOON: Option<Instant> = None;
@@ -224,5 +237,87 @@ fn command_from_another_thread_wakes_the_waiter_with_its_id() {
                 intent: CaptureIntent::Preview
             }
         }
+    );
+}
+
+#[test]
+fn results_of_one_shot_requests_survive_a_flood_of_stream_results() {
+    let inbox = CameraInbox::new(queues(4, 2));
+    let trigger = RequestOrigin::FocusTrigger {
+        request: camera_contract::three_a::PointRequestId(7),
+    };
+    let burst = RequestOrigin::Burst {
+        burst: camera_contract::three_a::BurstId(9),
+        index: 2,
+    };
+    // 1000 результатов потока затопили ящик; среди них один результат триггера, один кадр
+    // серии и один неопознанный (неопознанные — частые: иначе ящик рос бы без предела).
+    for frame in 0..1000 {
+        inbox.deliver(completed(frame));
+        match frame {
+            100 => inbox.deliver(completed_with(10_000, trigger)),
+            400 => inbox.deliver(completed_with(10_001, burst)),
+            700 => inbox.deliver(completed_with(10_002, RequestOrigin::Unknown)),
+            _ => {}
+        }
+    }
+    // Первыми идут разовые результаты — все, по порядку прихода.
+    assert_eq!(frame_of(&inbox.wait_next(SOON)), 10_000);
+    assert_eq!(frame_of(&inbox.wait_next(SOON)), 10_001);
+    assert_eq!(
+        inbox.dropped_capture_events(),
+        1001 - 2,
+        "вытеснялись только частые (результаты потока и неопознанный)"
+    );
+}
+
+#[test]
+fn many_wakes_of_the_three_a_waker_become_one_refresh_served_after_rare_events() {
+    let inbox = Arc::new(CameraInbox::new(queues(4, 4)));
+    let waker = ThreeAWaker::new(Arc::clone(&inbox));
+    inbox.submit_command(CameraCommand::Close).expect("место есть");
+    inbox.deliver(BackendEvent::DeviceDisconnected {
+        device: DeviceGeneration(3),
+    });
+    for _ in 0..100 {
+        waker.wake();
+    }
+    assert!(matches!(
+        inbox.wait_next(SOON),
+        InboxItem::BackendEvent(BackendEvent::DeviceDisconnected { .. })
+    ));
+    assert_eq!(
+        inbox.wait_next(SOON),
+        InboxItem::ThreeARefresh,
+        "сто пробуждений — одно"
+    );
+    assert!(
+        matches!(inbox.wait_next(SOON), InboxItem::Command { .. }),
+        "следом команда, а не второе пробуждение"
+    );
+    // Новое пробуждение после чтения — снова одно.
+    waker.wake();
+    assert_eq!(inbox.wait_next(SOON), InboxItem::ThreeARefresh);
+}
+
+#[test]
+fn waker_wakes_a_blocked_thread_and_is_a_noop_after_the_thread_stopped() {
+    let inbox = Arc::new(CameraInbox::new(queues(4, 4)));
+    let waker = ThreeAWaker::new(Arc::clone(&inbox));
+    let waiter = {
+        let inbox = Arc::clone(&inbox);
+        std::thread::spawn(move || inbox.wait_next(None))
+    };
+    std::thread::sleep(Duration::from_millis(50));
+    waker.wake();
+    assert_eq!(waiter.join().expect("поток дожил"), InboxItem::ThreeARefresh);
+
+    inbox.mark_stopped();
+    waker.wake();
+    inbox.request_stop();
+    assert_eq!(
+        inbox.wait_next(SOON),
+        InboxItem::Stop,
+        "после остановки пробуждение ничего не оставило"
     );
 }

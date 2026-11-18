@@ -98,6 +98,9 @@ pub struct ViewfinderSession {
     time_to_streaming_ms: Option<u64>,
     time_to_live_ms: Option<u64>,
     stages: Vec<SessionStage>,
+    /// События 3A (итог тапа, поправки, серия), пришедшие на последнем тике: сессия уже вычерпала очередь движка,
+    /// второй вычерпыватель их бы не увидел. Читает сценарий `3a`.
+    three_a_events: Vec<CameraEvent>,
 }
 
 impl ViewfinderSession {
@@ -128,12 +131,18 @@ impl ViewfinderSession {
             time_to_streaming_ms: None,
             time_to_live_ms: None,
             stages: Vec::new(),
+            three_a_events: Vec::new(),
         })
     }
 
     /// Стадии, накопленные с прошлого вызова (выводить по порядку).
     pub fn take_stages(&mut self) -> Vec<SessionStage> {
         std::mem::take(&mut self.stages)
+    }
+
+    /// События 3A последнего тика (пусто, если их не было). Каждый тик заменяет прежние.
+    pub fn three_a_events(&self) -> &[CameraEvent] {
+        &self.three_a_events
     }
 
     /// Один тик: события камеры, фаза запуска, затем живой показ.
@@ -143,6 +152,7 @@ impl ViewfinderSession {
         let events = running.handle().drain_events(usize::MAX);
         self.events.absorb(now, &events);
         self.note_degradation(&events);
+        self.three_a_events = events.iter().filter(|event| is_three_a_event(event)).cloned().collect();
         if let Some(failure) = events
             .iter()
             .find_map(failure_of_event)
@@ -278,6 +288,14 @@ impl ViewfinderSession {
             events: notes[notes.len() - kept..].to_vec(),
         }
     }
+}
+
+/// Событие автоматики 3A: итог тапа, поправки ручных значений, итог серии.
+fn is_three_a_event(event: &CameraEvent) -> bool {
+    matches!(
+        event,
+        CameraEvent::FocusSettled { .. } | CameraEvent::ControlsAdjusted { .. } | CameraEvent::BracketCaptured { .. }
+    )
 }
 
 /// Сколько кадров камеры рендер показал к этому моменту (`None` — рендер не показывает камеру).

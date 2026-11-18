@@ -53,7 +53,7 @@ pub struct FaultInfo {
 }
 
 /// Последние известные показатели здоровья бэкенда.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct BackendHealth {
     pub live_objects: u64,
     /// Живые объекты по видам (виды с нулём не перечисляются); см. `BackendDiagnostics`.

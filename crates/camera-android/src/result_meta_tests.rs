@@ -15,7 +15,7 @@ fn camx_frame_result() -> FakeMetadata {
 
 #[test]
 fn full_result_carries_every_number_and_the_given_frame_number() {
-    let parsed = parse_capture_result(&camx_frame_result(), FrameNumber(42));
+    let parsed = parse_capture_result(&camx_frame_result(), FrameNumber(42), RequestOrigin::Repeating);
     assert_eq!(parsed.unreadable_keys, Vec::new());
     assert_eq!(parsed.meta.frame_number, FrameNumber(42));
     assert_eq!(
@@ -38,7 +38,7 @@ fn keys_hal_did_not_send_stay_none_and_are_not_reported_as_unreadable() {
     let source = camx_frame_result()
         .without(tags::ROLLING_SHUTTER_SKEW)
         .without(tags::SENSOR_SENSITIVITY);
-    let parsed = parse_capture_result(&source, FrameNumber(1));
+    let parsed = parse_capture_result(&source, FrameNumber(1), RequestOrigin::Repeating);
     assert_eq!(parsed.meta.rolling_shutter_skew, None);
     assert_eq!(parsed.meta.sensitivity_iso, None);
     assert_eq!(parsed.unreadable_keys, Vec::new(), "отсутствие — не сбой чтения");
@@ -54,7 +54,7 @@ fn present_but_unusable_keys_are_listed_separately_in_key_order() {
         .int64s(tags::SENSOR_EXPOSURE_TIME, &[-5])
         .floats(tags::SENSOR_SENSITIVITY, &[800.0])
         .unreadable(tags::ROLLING_SHUTTER_SKEW, -10000);
-    let parsed = parse_capture_result(&source, FrameNumber(1));
+    let parsed = parse_capture_result(&source, FrameNumber(1), RequestOrigin::Repeating);
     assert_eq!(parsed.meta.exposure_time, None);
     assert_eq!(parsed.meta.sensitivity_iso, None);
     assert_eq!(parsed.meta.rolling_shutter_skew, None);
@@ -104,7 +104,7 @@ fn full_color_result() -> FakeMetadata {
 
 #[test]
 fn color_hints_are_read_key_by_key_into_the_passport_shape() {
-    let parsed = parse_capture_result(&full_color_result(), FrameNumber(1));
+    let parsed = parse_capture_result(&full_color_result(), FrameNumber(1), RequestOrigin::Repeating);
     assert_eq!(parsed.unreadable_color_keys, Vec::new());
     assert_eq!(parsed.color.dynamic_black_level, Some([64.0, 64.5, 65.0, 64.25]));
     assert_eq!(parsed.color.dynamic_white_level, Some(1023));
@@ -121,11 +121,11 @@ fn color_hints_are_read_key_by_key_into_the_passport_shape() {
 fn color_keys_hal_did_not_send_are_none_and_not_unreadable() {
     // OnePlus 11 не отдаёт динамический black level (00 C3): отсутствие — не сбой чтения.
     let source = full_color_result().without(tags::DYNAMIC_BLACK_LEVEL);
-    let parsed = parse_capture_result(&source, FrameNumber(1));
+    let parsed = parse_capture_result(&source, FrameNumber(1), RequestOrigin::Repeating);
     assert_eq!(parsed.color.dynamic_black_level, None);
     assert!(parsed.color.color_gains.is_some(), "соседние ключи не страдают");
     assert_eq!(parsed.unreadable_color_keys, Vec::new());
-    let bare = parse_capture_result(&camx_frame_result(), FrameNumber(1));
+    let bare = parse_capture_result(&camx_frame_result(), FrameNumber(1), RequestOrigin::Repeating);
     assert_eq!(bare.color, CaptureColorHints::default());
 }
 
@@ -139,7 +139,7 @@ fn malformed_color_keys_become_none_and_are_listed_in_order() {
         // отрицательный белый уровень
         .int32s(tags::DYNAMIC_WHITE_LEVEL, &[-1])
         .unreadable(tags::NEUTRAL_COLOR_POINT, -10000);
-    let parsed = parse_capture_result(&source, FrameNumber(1));
+    let parsed = parse_capture_result(&source, FrameNumber(1), RequestOrigin::Repeating);
     assert_eq!(parsed.color, CaptureColorHints::default());
     assert_eq!(
         parsed.unreadable_color_keys,
@@ -151,4 +151,40 @@ fn malformed_color_keys_become_none_and_are_listed_in_order() {
         ]
     );
     assert_eq!(parsed.unreadable_keys, Vec::new(), "основные ключи результата целы");
+}
+
+#[test]
+fn three_a_state_and_origin_travel_with_the_result_and_unreadable_keys_are_reported() {
+    use camera_contract::three_a::{AfState, BurstId, PointRequestId};
+    let origin = RequestOrigin::FocusTrigger {
+        request: PointRequestId(7),
+    };
+    let source = camx_frame_result()
+        .bytes(tags::AF_STATE, &[tags::AF_STATE_FOCUSED_LOCKED])
+        .bytes(tags::AE_STATE, &[200]);
+    let parsed = parse_capture_result(&source, FrameNumber(5), origin);
+    assert_eq!(parsed.meta.three_a.origin, origin);
+    assert_eq!(parsed.meta.three_a.af_state, Some(AfState::FocusedLocked));
+    assert_eq!(parsed.meta.three_a.ae_state, None);
+    assert_eq!(
+        parsed.unreadable_three_a_keys,
+        vec![crate::three_a_result::ThreeAResultKey::AeState]
+    );
+    assert_eq!(
+        parsed.unreadable_keys,
+        Vec::new(),
+        "3A не смешивается с прежними ключами"
+    );
+
+    let burst = RequestOrigin::Burst {
+        burst: BurstId(1),
+        index: 2,
+    };
+    assert_eq!(
+        parse_capture_result(&camx_frame_result(), FrameNumber(6), burst)
+            .meta
+            .three_a
+            .origin,
+        burst
+    );
 }

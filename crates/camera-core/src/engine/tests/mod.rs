@@ -6,6 +6,11 @@ mod frame_rate_fallback;
 mod lifecycle;
 mod recovery;
 mod recovery_limits;
+mod three_a_bracket;
+mod three_a_controllers;
+mod three_a_controls;
+mod three_a_focus;
+mod three_a_support;
 mod transitions;
 
 use std::sync::{Arc, Mutex, PoisonError};
@@ -24,6 +29,7 @@ use crate::event::CameraEvent;
 use crate::fake::{BackendCall, FakeBackendControl};
 use crate::state::{CameraError, CameraState, ClosedReason, FatalCause};
 use crate::status::AppPresence;
+use crate::three_a_wiring::ThreeAWiring;
 
 /// Собирает события fake, чтобы стенд отдавал их движку в нужный момент.
 #[derive(Default)]
@@ -85,11 +91,31 @@ impl Rig {
 
     /// Стенд над готовым fake, но каталог ещё не прочитан.
     pub(super) fn over_fake(config: CameraEngineConfig, presence: AppPresence, fake: Arc<FakeBackendControl>) -> Self {
+        let wiring = ThreeAWiring::vendor(&config.three_a);
+        Self::over_fake_with_wiring(config, presence, fake, wiring)
+    }
+
+    /// Стенд с заданными исполнителями 3A и ящиком баланса белого; каталог прочитан.
+    pub(super) fn with_wiring(config: CameraEngineConfig, wiring: ThreeAWiring) -> Self {
+        let fake = FakeBackendControl::new();
+        let mut rig = Self::over_fake_with_wiring(config, AppPresence::Foreground, fake, wiring);
+        rig.engine.load_catalog(rig.now);
+        rig.settle();
+        rig.fake.take_calls();
+        rig
+    }
+
+    fn over_fake_with_wiring(
+        config: CameraEngineConfig,
+        presence: AppPresence,
+        fake: Arc<FakeBackendControl>,
+        wiring: ThreeAWiring,
+    ) -> Self {
         let collector = Arc::new(Collector::default());
         let listener: Arc<dyn BackendEventListener> = Arc::clone(&collector) as Arc<dyn BackendEventListener>;
         let backend = fake.backend(BackendEventSink::new(listener));
         Self {
-            engine: CameraEngine::new(config, presence, backend),
+            engine: CameraEngine::with_wiring(config, presence, backend, wiring),
             fake,
             collector,
             now: Instant::now(),
@@ -127,6 +153,11 @@ impl Rig {
         let answers: Vec<&CommandOutcome> = self.log.iter().filter_map(|event| event.command_outcome(id)).collect();
         assert_eq!(answers.len(), 1, "на команду должен быть ровно один итог");
         answers[0].clone()
+    }
+
+    /// Номер последней отправленной команды (он же номер тапа).
+    pub(super) fn last_command_id(&self) -> CommandId {
+        CommandId(self.next_command)
     }
 
     /// Событие бэкенда напрямую в движок (в том числе с чужим поколением).
@@ -206,6 +237,8 @@ pub(super) fn call_names(calls: &[BackendCall]) -> Vec<&'static str> {
             BackendCall::OpenDevice { .. } => "open_device",
             BackendCall::ConfigureSession { .. } => "configure_session",
             BackendCall::SetRepeatingRequest { .. } => "set_repeating_request",
+            BackendCall::SubmitFocusTrigger { .. } => "submit_focus_trigger",
+            BackendCall::SubmitBracket { .. } => "submit_bracket",
             BackendCall::StopRepeating => "stop_repeating",
             BackendCall::CloseSession => "close_session",
             BackendCall::CloseDevice => "close_device",

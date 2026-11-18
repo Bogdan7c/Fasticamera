@@ -29,7 +29,7 @@ use shell_contract::surface::{NativeSurface, SurfaceSize};
 use super::ViewfinderReadback;
 use super::camera::{
     CameraDrawError, CameraFeed, CameraPipelines, CameraSession, CameraSessionFailure, CameraSessionParts,
-    HeadroomBenchParts, ViewfinderSettings, ViewfinderStats,
+    HeadroomBenchParts, ViewfinderSettings, ViewfinderStats, WhiteBalanceParts,
 };
 use super::config::VulkanBackendConfig;
 use super::mapping::{FailureKind, classify_swapchain_error, display_info, gpu_backend_error};
@@ -71,6 +71,8 @@ pub(super) struct CameraAttach<'a> {
     pub(super) gpu_time_window_frames: usize,
     /// Лента статистики AWB.
     pub(super) awb_feed: &'a AwbStatisticsFeed,
+    /// Наш AWB: настройки, указания 3A, память белой сцены.
+    pub(super) white_balance: WhiteBalanceParts,
 }
 
 /// Чем рисуется содержимое кадра. Пайплайн всегда записан в кадры цели, поэтому уничтожается только
@@ -600,6 +602,7 @@ fn create_camera_painter(
             settings: camera.settings,
             viewfinder: stats,
             awb_feed: camera.awb_feed.clone(),
+            white_balance: camera.white_balance.clone(),
             headroom: HeadroomBenchParts {
                 config: config.viewfinder.headroom_bench,
                 frame_slots: info.frames_in_flight,

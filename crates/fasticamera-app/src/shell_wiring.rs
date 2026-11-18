@@ -20,6 +20,7 @@ use std::sync::{Arc, OnceLock};
 use std::thread;
 
 use android_shell::android::{AndroidPerformanceHints, AndroidShellServices, ShellInstallError, ThermalListenerState};
+use camera_contract::three_a::{DirectiveSlot, WhiteBalanceDirective};
 use gpu_vulkan::validation::ValidationMode;
 use raw_frame_stream::RawFrameStream;
 use render_loop::config::RenderLoopConfig;
@@ -30,7 +31,7 @@ use shell_contract::vsync::VsyncSource;
 
 use crate::camera_config::CameraConfig;
 use crate::camera_service::CameraServices;
-use crate::camera_wiring::{CameraBackendParts, start_camera};
+use crate::camera_wiring::{CameraBackendParts, start_camera_with_white_balance};
 use crate::event_router::{EventRouter, LogcatScenarioOutput, RouterParts, ScenarioStarter};
 use crate::gpu_services::{GpuServices, ValidationState};
 use crate::jni_boundary::run_guarded;
@@ -69,14 +70,22 @@ pub fn ensure_installed(config: &RuntimeConfig) -> Result<(), ShellWiringError> 
     let validation = config.validation_mode();
     // Поток кадров один на процесс: его концы получают и рендер (видоискатель), и камера (производитель).
     let raw_stream = create_raw_stream(&config.camera().raw_stream);
-    let render = start_render(config.render(), validation.clone(), &services, &raw_stream.stream);
+    // Ящик указаний AWB один на процесс: писатель уйдёт движку камеры, читатель — потоку рендера.
+    let white_balance = DirectiveSlot::new();
+    let render = start_render(
+        config.render(),
+        validation.clone(),
+        &services,
+        &raw_stream.stream,
+        white_balance.clone(),
+    );
     let gpu = GpuServices::new(
         render.status,
         Arc::new(VulkanGpuDiagnostics::new(validation)),
         config.render().clone(),
         render.control,
     );
-    let camera = start_android_camera(config.camera(), &raw_stream);
+    let camera = start_android_camera(config.camera(), &raw_stream, white_balance);
     let (router, starter) = EventRouter::new(RouterParts {
         events: handles.events,
         services: shell_services(&services),
@@ -117,8 +126,9 @@ fn start_render(
     validation: ValidationMode,
     services: &Arc<AndroidShellServices>,
     raw_stream: &RawFrameStream,
+    white_balance: DirectiveSlot<WhiteBalanceDirective>,
 ) -> RenderRuntime {
-    match try_start_render(render_config, validation, services, raw_stream) {
+    match try_start_render(render_config, validation, services, raw_stream, white_balance) {
         Ok(runtime) => runtime,
         Err(reason) => RenderRuntime::unavailable(reason),
     }
@@ -129,12 +139,14 @@ fn try_start_render(
     validation: ValidationMode,
     services: &Arc<AndroidShellServices>,
     raw_stream: &RawFrameStream,
+    white_balance: DirectiveSlot<WhiteBalanceDirective>,
 ) -> Result<RenderRuntime, String> {
     let backend_config = VulkanBackendConfig::from_render_config(render_config, validation.clone())
         .map_err(|error| format!("настройки бэкенда рендера: {error}"))?;
     // Режим показа камеры всегда: видоискатель отдаёт кадры, пока камера не стримит — рисуется чёрное.
-    let backend = VulkanDisplayBackend::new_android_camera_preview(backend_config, raw_stream.viewfinder())
-        .map_err(|error| format!("GPU не поднялся: {error}"))?;
+    let backend =
+        VulkanDisplayBackend::new_android_camera_preview(backend_config, raw_stream.viewfinder(), white_balance)
+            .map_err(|error| format!("GPU не поднялся: {error}"))?;
     let subscription = services
         .start_vsync()
         .map_err(|error| format!("vsync не запущен: {error}"))?;
@@ -153,15 +165,20 @@ fn try_start_render(
 
 /// Поднимает поток камеры на бэкенде Camera2 NDK. Менеджер Camera2 создаётся уже на потоке камеры;
 /// отказ запуска — сервис «камера недоступна: причина» (приложение живёт дальше).
-fn start_android_camera(config: &CameraConfig, raw_stream: &RawStreamCreation) -> CameraServices {
+fn start_android_camera(
+    config: &CameraConfig,
+    raw_stream: &RawStreamCreation,
+    white_balance: DirectiveSlot<WhiteBalanceDirective>,
+) -> CameraServices {
     let parts = camera_android::backend_factory(config.android.clone(), raw_stream.stream.producer());
-    start_camera(
+    start_camera_with_white_balance(
         config,
         CameraBackendParts {
             factory: parts.factory,
             diagnostics: parts.diagnostics,
             raw_stream: observe_stream(raw_stream, parts.cpu_access_probe),
         },
+        white_balance,
     )
 }
 

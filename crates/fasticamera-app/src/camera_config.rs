@@ -13,6 +13,12 @@ use serde::Deserialize;
 use crate::camera_scenario_config::{CameraScenarioConfig, CameraScenarioConfigError};
 use crate::viewfinder_autostart::{ViewfinderAutostartConfig, ViewfinderAutostartConfigError};
 
+/// Запас таблицы происхождений запросов сверх длины серии с брекетингом. Разовые записи серии
+/// (кадры брекета, триггер фокуса) не должны вытеснять друг друга, пока их результаты не пришли:
+/// вытесненная запись превращает результат в `Unknown` и ломает сбор серии (находка ревью 08).
+/// 8 — серия плюс несколько тапов фокуса, которые могут лететь одновременно.
+pub const REQUEST_ORIGIN_MARGIN: usize = 8;
+
 /// Настройки камеры целиком.
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -43,6 +49,15 @@ pub enum CameraConfigError {
     Scenarios(#[from] CameraScenarioConfigError),
     #[error("{0}")]
     ViewfinderAutostart(#[from] ViewfinderAutostartConfigError),
+    #[error(
+        "camera.android.request_origin_capacity ({capacity}) должно быть не меньше \
+         camera.engine.three_a.max_bracket_frames ({bracket_limit}) + {margin}: записи серии вытеснят друг друга"
+    )]
+    RequestOriginTooSmallForBracket {
+        capacity: usize,
+        bracket_limit: usize,
+        margin: usize,
+    },
 }
 
 impl CameraConfig {
@@ -53,6 +68,20 @@ impl CameraConfig {
         self.raw_stream.validate()?;
         self.scenarios.validate()?;
         self.viewfinder_autostart.validate()?;
+        self.validate_request_origin_capacity()
+    }
+
+    /// Согласованность двух владельцев: таблица происхождений бэкенда вмещает целую серию движка.
+    fn validate_request_origin_capacity(&self) -> Result<(), CameraConfigError> {
+        let bracket_limit = self.engine.three_a.max_bracket_frames;
+        let capacity = self.android.request_origin_capacity;
+        if capacity < bracket_limit + REQUEST_ORIGIN_MARGIN {
+            return Err(CameraConfigError::RequestOriginTooSmallForBracket {
+                capacity,
+                bracket_limit,
+                margin: REQUEST_ORIGIN_MARGIN,
+            });
+        }
         Ok(())
     }
 }

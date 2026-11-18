@@ -10,15 +10,17 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use camera_contract::capabilities::CameraDescriptor;
-use camera_contract::control::{CaptureIntent, ManualControl};
+use camera_contract::control::CaptureIntent;
 use camera_contract::ids::{CameraId, CameraTarget, LensRole};
 use camera_contract::stream::StreamMode;
+use camera_contract::three_a::AeAfLock;
 
 use super::CameraEngine;
 use crate::backend::UnsupportedStream;
-use crate::command::{CameraCommand, CommandOutcome, InvalidStateReason, UnsupportedCommand};
+use crate::command::{CameraCommand, CommandId, CommandOutcome, InvalidStateReason, UnsupportedCommand};
 use crate::state::{CameraError, CameraState, ClosedReason, FatalCause};
 use crate::status::AppPresence;
+use crate::three_a_control::ThreeAIntent;
 
 /// Желаемое состояние: что хочет продукт, независимо от того, получилось ли это пока.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -26,12 +28,13 @@ pub(crate) struct Desired {
     pub(crate) target: Option<CameraTarget>,
     pub(crate) mode: Option<StreamMode>,
     pub(crate) streaming: Option<CaptureIntent>,
-    pub(crate) controls: ManualControl,
+    /// Намерение автоматики 3A: точка, блокировка, профиль, ручные параметры.
+    pub(crate) three_a: ThreeAIntent,
 }
 
 impl CameraEngine {
     /// ID желаемой камеры по каталогу.
-    fn desired_camera_id(&self) -> Option<CameraId> {
+    pub(super) fn desired_camera_id(&self) -> Option<CameraId> {
         let target = self.desired.target.as_ref()?;
         self.catalog
             .resolve(target)
@@ -52,7 +55,7 @@ impl CameraEngine {
     }
 
     /// Решить команду: поменять желаемое (если можно) и вернуть итог.
-    pub(super) fn decide_command(&mut self, command: &CameraCommand) -> CommandOutcome {
+    pub(super) fn decide_command(&mut self, id: CommandId, command: &CameraCommand) -> CommandOutcome {
         if self.poisoned {
             return CommandOutcome::InvalidState(InvalidStateReason::EngineFailed);
         }
@@ -66,6 +69,14 @@ impl CameraEngine {
             CameraCommand::StopStreaming => self.decide_stop_streaming(),
             CameraCommand::SwitchTo { role } => self.decide_switch_to(*role),
             CameraCommand::ApplyControls { controls } => self.decide_apply_controls(*controls),
+            CameraCommand::FocusAndExposeAt { point } => self.decide_point_of_interest(id, *point, AeAfLock::Unlocked),
+            CameraCommand::LockFocusAndExposureAt { point } => {
+                self.decide_point_of_interest(id, *point, AeAfLock::Locked)
+            }
+            CameraCommand::ResetPointOfInterest => self.decide_reset_point_of_interest(),
+            CameraCommand::SetExposureBias { bias } => self.decide_set_exposure_bias(*bias),
+            CameraCommand::SetThreeAProfile { profile } => self.decide_set_three_a_profile(*profile),
+            CameraCommand::CaptureBracket { bracket } => self.decide_capture_bracket(id, bracket),
             CameraCommand::Close => self.decide_close(),
             CameraCommand::EnterBackground => self.decide_enter_background(),
             CameraCommand::EnterForeground => self.decide_enter_foreground(),
@@ -94,6 +105,7 @@ impl CameraEngine {
             return CommandOutcome::Unsupported(UnsupportedCommand::Stream(rejection));
         }
         self.desired.target = Some(target.clone());
+        self.reset_point_for_camera_change();
         CommandOutcome::Accepted
     }
 
@@ -153,14 +165,7 @@ impl CameraEngine {
             return CommandOutcome::Unsupported(UnsupportedCommand::Stream(rejection));
         }
         self.desired.target = Some(target);
-        CommandOutcome::Accepted
-    }
-
-    fn decide_apply_controls(&mut self, controls: ManualControl) -> CommandOutcome {
-        if self.desired.controls == controls {
-            return CommandOutcome::AlreadyInState;
-        }
-        self.desired.controls = controls;
+        self.reset_point_for_camera_change();
         CommandOutcome::Accepted
     }
 
@@ -209,7 +214,13 @@ impl CameraEngine {
             CameraCommand::Configure { .. }
             | CameraCommand::StartStreaming { .. }
             | CameraCommand::StopStreaming
-            | CameraCommand::ApplyControls { .. } => self.reconcile(now),
+            | CameraCommand::ApplyControls { .. }
+            | CameraCommand::FocusAndExposeAt { .. }
+            | CameraCommand::LockFocusAndExposureAt { .. }
+            | CameraCommand::ResetPointOfInterest
+            | CameraCommand::SetExposureBias { .. }
+            | CameraCommand::SetThreeAProfile { .. } => self.reconcile(now),
+            CameraCommand::CaptureBracket { .. } => self.submit_pending_bracket(now),
             CameraCommand::Close => self.apply_close(),
             CameraCommand::EnterBackground => self.apply_enter_background(),
             CameraCommand::EnterForeground => self.apply_enter_foreground(now),

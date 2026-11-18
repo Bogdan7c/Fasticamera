@@ -60,6 +60,16 @@ pub trait AcquiredSourceReader {
     fn record_while_acquired(&mut self, command_buffer: vk::CommandBuffer, frame_slot: usize, source: &MosaicSource);
 }
 
+/// Выводить ли обработанный кадр на экран.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IspPresentation {
+    /// Скомпоновать изображение видоискателя на экран.
+    Show,
+    /// Кадр обработан (нужна статистика AWB), но на экран не выводится: цвет ещё не известен (холодный
+    /// старт AWB, решение 65). Вместо изображения — чёрный кадр.
+    HideUntilColorKnown,
+}
+
 /// Новый кадр для ISP.
 #[derive(Debug, Clone, Copy)]
 pub struct NewIspFrame<'a> {
@@ -73,6 +83,8 @@ pub struct NewIspFrame<'a> {
     pub stages: IspStageSet,
     /// Номер кадра (`FrameSequence`) для подложки стекла.
     pub frame_number: u64,
+    /// Показывать ли результат на экране.
+    pub presentation: IspPresentation,
 }
 
 /// Чем кончилась запись кадра видоискателя.
@@ -209,9 +221,10 @@ impl CameraPipelines {
             .source
             .record_release_for(&self.context, command_buffer, ConsumerStage::Compute);
         timing_failures += self.point(frame, FRAME_POINT_ISP_DONE, TimestampStage::ComputeShaderDone);
-        let screen = match &isp {
-            Ok(()) => self.compose_or_black(frame, placement),
-            Err(_) => self.black(frame, None),
+        let screen = match (&isp, input.presentation) {
+            (Ok(()), IspPresentation::Show) => self.compose_or_black(frame, placement),
+            // Скрытый кадр: изображение видоискателя записано (статистика посчитана), экран остаётся чёрным.
+            (Ok(()), IspPresentation::HideUntilColorKnown) | (Err(_), _) => self.black(frame, None),
         };
         timing_failures += self.point(frame, FRAME_POINT_COMPOSE_DONE, TimestampStage::AllCommandsDone);
         IspFrameRecording {

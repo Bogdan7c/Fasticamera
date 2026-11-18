@@ -4,6 +4,7 @@
 //! уже закрытого: оно отбрасывается и считается в `stale_backend_events`. Так запоздалое
 //! `DeviceDisconnected` старого устройства не убьёт переоткрытое.
 
+use camera_contract::three_a::RequestOrigin;
 use std::time::Instant;
 
 use camera_contract::availability::CameraUnavailableReason;
@@ -57,8 +58,16 @@ impl CameraEngine {
             }
             BackendEvent::CaptureCompleted { session, ref result } => {
                 if self.is_current_session(session) {
-                    self.cadence.record_completed(result);
-                    self.note_stable_frame();
+                    // Темп потока и «стабильные кадры» — только по повторяющемуся запросу.
+                    // Разовые результаты (триггер, серия) идут невытесняемой полосой и обгоняют
+                    // очередь кадров: их метки испортили бы интервалы («не по порядку», ложные
+                    // пропуски), а длинная выдержка серии — законный пропуск, не сбой потока.
+                    // `Unknown` считаем как поток: так он был до 08, и это большинство кадров.
+                    if matches!(result.three_a.origin, RequestOrigin::Repeating | RequestOrigin::Unknown) {
+                        self.cadence.record_completed(result);
+                        self.note_stable_frame();
+                    }
+                    self.observe_three_a_result(result);
                 } else {
                     self.discard_stale_event(&event);
                 }

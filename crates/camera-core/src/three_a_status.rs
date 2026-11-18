@@ -1,0 +1,185 @@
+//! Что движок сообщает наружу об автоматике 3A и ручных параметрах (сессия 08).
+//!
+//! Снимок [`ThreeAStatus`] — часть [`crate::CameraStatus`]: всегда актуальная правда для
+//! экрана (12, 15) и smoke `3a`. Разовые итоги (фокус сошёлся, серия снята, значение
+//! ограничено) дополнительно приходят событиями [`crate::CameraEvent`].
+
+use std::time::Duration;
+
+use camera_contract::capture_result::{FrameNumber, SensorTimestamp};
+use camera_contract::control::ManualControl;
+use camera_contract::three_a::{
+    AeAfLock, AeState, AfState, BurstId, PointOfInterest, PointRequestId, RequestOrigin, ThreeAProfile,
+};
+use serde::Serialize;
+
+/// Что сейчас делает фокус (с точки зрения намерения, а не сырого `AF_STATE`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum FocusProgress {
+    /// Камера с фиксированным фокусом: управлять нечем.
+    FixedLens,
+    /// Ручная дистанция.
+    Manual,
+    /// Непрерывный AF по кадру; `af_state` — последнее, что сообщил HAL (`None` — не сообщил).
+    Continuous { af_state: Option<AfState> },
+    /// Тап отправлен, скан идёт.
+    Scanning { request: PointRequestId },
+    /// Итог тапа (держится, пока не придёт новый тап или сброс).
+    Settled {
+        request: PointRequestId,
+        outcome: FocusOutcome,
+    },
+}
+
+/// Итог однократного фокуса по тапу.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FocusOutcome {
+    /// `FOCUSED_LOCKED`.
+    Focused,
+    /// `NOT_FOCUSED_LOCKED`: HAL честно не нашёл фокус.
+    NotFocused,
+    /// HAL не сообщил итог за время из конфига (`three_a.focus_settle_timeout_ms`).
+    TimedOut,
+    /// Разовый запрос с триггером не принят бэкендом — скан не начинался. Не путать с
+    /// `TimedOut`: тут HAL тап вообще не получил (новый тап — новая попытка).
+    TriggerNotDelivered,
+}
+
+/// Какой ручной параметр поправлен.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlParameter {
+    /// Единицы значений — ISO.
+    Iso,
+    /// Единицы — наносекунды.
+    Shutter,
+    /// Единицы — диоптрии.
+    Focus,
+    /// Единицы — EV.
+    ExposureBias,
+    /// Единицы — кельвины (температура ручного баланса).
+    WhiteBalanceTemperature,
+}
+
+/// Почему значение применено не таким, как просили. Молчаливого обрезания нет.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdjustmentReason {
+    /// Меньше минимума камеры — поднято до минимума.
+    BelowCameraRange,
+    /// Больше максимума камеры — опущено до максимума.
+    AboveCameraRange,
+    /// Выдержка длиннее длительности кадра потока (60 к/с → ≤ 16,67 мс).
+    LimitedByFrameDuration,
+    /// Округлено до шага HAL (компенсация вендорского AE — 1/6 EV).
+    QuantizedToStep,
+    /// Камера параметр не поддерживает (например, фокус на фронтальной) — проигнорирован.
+    NotSupportedByCamera,
+    /// Компенсация при полностью ручной экспозиции не действует.
+    IgnoredWhileExposureFullyManual,
+}
+
+/// Явный итог «значение ограничено до …» (критерий плана 08).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct ControlAdjustment {
+    pub parameter: ControlParameter,
+    pub requested: f64,
+    pub applied: f64,
+    pub reason: AdjustmentReason,
+}
+
+/// Последний результат HAL с полями автоматики — для экрана и smoke.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct LastThreeAResult {
+    pub frame_number: FrameNumber,
+    pub sensor_timestamp: Option<SensorTimestamp>,
+    pub origin: RequestOrigin,
+    pub af_state: Option<AfState>,
+    pub ae_state: Option<AeState>,
+    pub focus_distance_diopters: Option<f32>,
+    pub exposure_time: Option<Duration>,
+    pub sensitivity_iso: Option<u32>,
+}
+
+/// Счётчики автоматики.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub struct ThreeACounters {
+    pub focus_triggers_sent: u64,
+    pub focus_trigger_failures: u64,
+    pub focus_timeouts: u64,
+    pub brackets_submitted: u64,
+    pub brackets_completed: u64,
+    pub bracket_failures: u64,
+    /// Результаты, чей запрос бэкенд не опознал (`RequestOrigin::Unknown`).
+    pub results_with_unknown_origin: u64,
+}
+
+/// Снимок автоматики 3A и ручных параметров.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ThreeAStatus {
+    pub point: PointOfInterest,
+    pub lock: AeAfLock,
+    pub profile: ThreeAProfile,
+    pub focus: FocusProgress,
+    /// Желаемые ручные параметры (как их задал пользователь).
+    pub controls: ManualControl,
+    /// Поправки к ним на текущей камере и потоке (пусто — применены как есть).
+    pub adjustments: Vec<ControlAdjustment>,
+    pub last_result: Option<LastThreeAResult>,
+    pub counters: ThreeACounters,
+}
+
+impl ThreeAStatus {
+    /// Снимок до первого публикуемого состояния движка: всё на автомате, фокус непрерывный.
+    pub fn initial() -> Self {
+        Self {
+            point: PointOfInterest::WholeFrame,
+            lock: AeAfLock::Unlocked,
+            profile: ThreeAProfile::Photo,
+            focus: FocusProgress::Continuous { af_state: None },
+            controls: ManualControl::AUTOMATIC,
+            adjustments: Vec::new(),
+            last_result: None,
+            counters: ThreeACounters::default(),
+        }
+    }
+}
+
+/// Результат одного кадра серии с брекетингом.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct BracketFrameResult {
+    pub index: u32,
+    pub frame_number: FrameNumber,
+    pub sensor_timestamp: Option<SensorTimestamp>,
+    pub exposure_time: Option<Duration>,
+    pub sensitivity_iso: Option<u32>,
+}
+
+/// Почему серия не снята целиком.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BracketFailure {
+    /// Бэкенд отверг отправку серии.
+    SubmitFailed,
+    /// Не все кадры серии вернули результат за время из конфига.
+    ResultsTimedOut,
+    /// Сессия закрылась или камера пропала посреди серии.
+    SessionLost,
+}
+
+/// Итог серии `burst` (для события).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum BracketReport {
+    Captured {
+        burst: BurstId,
+        frames: Vec<BracketFrameResult>,
+    },
+    Failed {
+        burst: BurstId,
+        failure: BracketFailure,
+        frames: Vec<BracketFrameResult>,
+    },
+}

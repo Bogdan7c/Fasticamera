@@ -44,6 +44,13 @@ MAX_JITTER_OVERFLOW_PER_MINUTE = 8.0
 MIN_SHOWN_ONCE_RATIO = 0.95
 """Грубая нижняя граница доли кадров, выданных рендеру ровно один раз (``delivered / frames_published``)."""
 
+MIN_AWB_PUBLISH_FRACTION = 0.25
+"""Грубая нижняя граница публикаций статистики AWB от ожидаемого при прореживании (обработанные кадры / N);
+Rust судит строже (0,5): исполнитель бывает занят, окно режет период на краях."""
+
+MAX_ACCOUNTING_GAP = 0.10
+"""Грубый допуск «обработано − скрыто на холодном старте = показано» (Rust судит строже, 3 %)."""
+
 MS_PER_MINUTE = 60_000.0
 
 
@@ -76,9 +83,11 @@ def check_viewfinder(result: dict) -> list[str]:
         problems.append(f"рисовальщик {look.get('painter')!r}, ожидался 'isp'")
     if look.get("display_color_space") not in COLOR_SPACES:
         problems.append(f"пространство экрана {look.get('display_color_space')!r}, ожидалось одно из {sorted(COLOR_SPACES)}")
-    awb = report.get("awb_published")
-    if not _is_number(awb) or awb <= 0:
-        problems.append(f"статистика AWB не публиковалась (awb_published={awb!r})")
+    problems.extend(_awb_problems(report))
+    problems.extend(_accounting_problems(report))
+    companion = _dict(report.get("three_a_companion")).get("state")
+    if companion != "active":
+        problems.append(f"вспомогательный поток 3A {companion!r}, ожидалось 'active' (иначе автоматика HAL мертва)")
     latency = _dict(report.get("latency"))
     if not _is_number(latency.get("samples")) or latency.get("samples", 0) <= 0:
         problems.append("задержка «сенсор → экран» не замерена")
@@ -89,6 +98,42 @@ def check_viewfinder(result: dict) -> list[str]:
     problems.extend(_adpf_problems(report))
     problems.extend(_streaming_problem(report))
     return problems
+
+
+def _awb_problems(report: dict) -> list[str]:
+    """AWB в сводке ``viewfinder``: статистика идёт с прореживанием (не на каждом кадре), оценки света есть,
+    холодный старт кончился. Прореживание: ожидается ``frames_processed / statistics_every_n_frames`` публикаций."""
+    awb = report.get("awb_published")
+    if not _is_number(awb) or awb <= 0:
+        return [f"статистика AWB не публиковалась (awb_published={awb!r})"]
+    white_balance = report.get("white_balance")
+    if not isinstance(white_balance, dict):
+        return ["в сводке нет раздела white_balance (наш AWB)"]
+    problems: list[str] = []
+    period, processed = white_balance.get("statistics_every_n_frames"), report.get("frames_processed")
+    if not _is_number(period) or period < 1 or not _is_number(processed):
+        problems.append(f"нет периода статистики или числа кадров (every_n={period!r}, frames_processed={processed!r})")
+    elif awb < processed / period * MIN_AWB_PUBLISH_FRACTION:
+        problems.append(f"статистика AWB опубликована {awb} раз, при {processed} кадрах и периоде {period} ожидалось больше")
+    if not _is_number(white_balance.get("estimates")) or white_balance["estimates"] <= 0:
+        problems.append("AWB не получил ни одной оценки света")
+    if white_balance.get("cold_start_pending") is not False:
+        problems.append("холодный старт AWB не кончился")
+    return problems
+
+
+def _accounting_problems(report: dict) -> list[str]:
+    """«Ровно один раз» с учётом скрытых на холодном старте кадров: обработано − скрыто ≈ показано."""
+    processed, hidden = report.get("frames_processed"), report.get("frames_hidden_cold_start")
+    presented, skipped = report.get("frames_presented"), report.get("bracket_frames_skipped")
+    if not all(_is_number(value) for value in (processed, hidden, presented, skipped)):
+        return [
+            "нет счётчиков учёта кадров (frames_processed, frames_hidden_cold_start, frames_presented, "
+            "bracket_frames_skipped)"
+        ]
+    if presented <= 0 or abs((processed - hidden) - presented) / presented > MAX_ACCOUNTING_GAP:
+        return [f"обработано {processed} (скрыто {hidden}), показано {presented}: кадры теряются"]
+    return []
 
 
 def _pacing_problems(report: dict) -> list[str]:

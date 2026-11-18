@@ -7,6 +7,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::capabilities::FrameDuration;
+use crate::three_a::ThreeAResultState;
 
 /// Время начала экспозиции кадра от сенсора (`ACAMERA_SENSOR_TIMESTAMP`), наносекунды.
 ///
@@ -49,7 +50,7 @@ pub enum ResultKey {
 }
 
 /// Сводка результата одного запроса. `None` в поле значит «HAL ключ не отдал».
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct CaptureResultMeta {
     pub frame_number: FrameNumber,
     pub sensor_timestamp: Option<SensorTimestamp>,
@@ -59,6 +60,8 @@ pub struct CaptureResultMeta {
     /// (33,3 мс при реальных 16,7 мс, 00 C2): темп считаем только по меткам сенсора.
     pub reported_frame_duration: Option<FrameDuration>,
     pub rolling_shutter_skew: Option<Duration>,
+    /// Состояние автоматики и происхождение запроса (08): фокус, AE, объектив, мерцание.
+    pub three_a: ThreeAResultState,
 }
 
 impl CaptureResultMeta {
@@ -100,6 +103,7 @@ mod tests {
             sensitivity_iso: Some(400),
             reported_frame_duration: None,
             rolling_shutter_skew: Some(Duration::from_micros(13_660)),
+            three_a: ThreeAResultState::unreported(crate::three_a::RequestOrigin::Repeating),
         };
         assert_eq!(
             meta.missing_keys(),

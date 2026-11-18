@@ -331,6 +331,9 @@ pub fn result_for(sensor_ts: i64, sequence: i64) -> FrameCaptureDetails {
             sensitivity_iso: Some(100),
             reported_frame_duration: None,
             rolling_shutter_skew: None,
+            three_a: camera_contract::three_a::ThreeAResultState::unreported(
+                camera_contract::three_a::RequestOrigin::Repeating,
+            ),
         },
         color: CaptureColorHints {
             neutral_color_point: Some(neutral()),

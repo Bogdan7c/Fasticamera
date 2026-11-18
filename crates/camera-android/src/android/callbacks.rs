@@ -58,8 +58,10 @@ use raw_frame_stream::{RawFrameProducer, StreamEpoch};
 
 use crate::diagnostics::BackendDiagnostics;
 use crate::frame_numbers::{FrameNumberMatcher, FrameNumberSource};
+use crate::request_origin::RequestOriginTable;
 use crate::result_meta::{parse_capture_result, read_sensor_timestamp};
 use crate::status_mapping::{capture_failure_reason, device_error_kind};
+use crate::tags;
 
 use super::manager::MetadataView;
 
@@ -81,6 +83,22 @@ fn run_guarded(diagnostics: &BackendDiagnostics, callback: &'static str, body: i
 unsafe fn context_ref<'a, T>(context: *mut c_void) -> Option<&'a T> {
     // SAFETY: по контракту функции указатель либо null, либо ведёт на живой `T`.
     unsafe { context.cast_const().cast::<T>().as_ref() }
+}
+
+/// Читает числовой ключ происхождения запроса (`ACaptureRequest_getUserContext`). Ключ — число в
+/// роли указателя (см. `request_origin`), поэтому он только сравнивается и нигде не разыменовывается.
+/// `0` — контекста нет (null, пустой запрос или отказ NDK): вызывающий считает это неопознанным.
+///
+/// # Safety
+/// `request` — указатель из колбэка NDK, живой на время колбэка, или `null`.
+unsafe fn request_origin_key(request: *const ndk::ACaptureRequest) -> usize {
+    if request.is_null() {
+        return 0;
+    }
+    let mut context: *mut c_void = std::ptr::null_mut();
+    // SAFETY: по контракту функции `request` жив; `context` — валидное выходное место.
+    let status = unsafe { ndk::ACaptureRequest_getUserContext(request, &mut context) };
+    if status == tags::STATUS_OK { context.addr() } else { 0 }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -239,6 +257,9 @@ pub(super) struct CaptureContext {
     epoch: StreamEpoch,
     closed: AtomicBool,
     matcher: Mutex<FrameNumberMatcher>,
+    /// Происхождения разовых запросов сессии (триггер фокуса, кадры серии). Живёт столько же,
+    /// сколько контекст: до `ACameraDevice_close`, когда колбэки запросов уже не придут.
+    origins: RequestOriginTable,
 }
 
 /// Из чего собирается контекст результатов сессии.
@@ -249,6 +270,8 @@ pub(super) struct CaptureContextSpec {
     pub producer: RawFrameProducer,
     pub epoch: StreamEpoch,
     pub frame_number_window: usize,
+    /// Сколько разовых запросов могут ждать результата одновременно.
+    pub origin_capacity: usize,
 }
 
 impl CaptureContext {
@@ -261,7 +284,13 @@ impl CaptureContext {
             epoch: spec.epoch,
             closed: AtomicBool::new(false),
             matcher: Mutex::new(FrameNumberMatcher::new(spec.frame_number_window)),
+            origins: RequestOriginTable::new(spec.origin_capacity),
         }
+    }
+
+    /// Таблица происхождений: сессия регистрирует в ней ключи разовых запросов до отправки.
+    pub(super) fn origins(&self) -> &RequestOriginTable {
+        &self.origins
     }
 
     pub(super) fn mark_closed(&self) {
@@ -302,7 +331,7 @@ pub(super) unsafe extern "C" fn capture_on_started(
 pub(super) unsafe extern "C" fn capture_on_completed(
     context: *mut c_void,
     _session: *mut ndk::ACameraCaptureSession,
-    _request: *mut ndk::ACaptureRequest,
+    request: *mut ndk::ACaptureRequest,
     result: *const ndk::ACameraMetadata,
 ) {
     // SAFETY: см. `capture_on_started`.
@@ -322,11 +351,23 @@ pub(super) unsafe extern "C" fn capture_on_completed(
         if let FrameNumberSource::Fallback(_) = source {
             context.diagnostics.record_unmatched_frame_number();
         }
-        let parsed = parse_capture_result(&view, source.frame_number());
+        // Какой запрос породил этот результат: повторяющийся, триггер фокуса или кадр серии.
+        // SAFETY: `request` — указатель из колбэка NDK, живой на время колбэка.
+        let origin_key = unsafe { request_origin_key(request) };
+        let lookup = context.origins.resolve(origin_key);
+        context.diagnostics.record_origin_lookup(lookup);
+        let parsed = parse_capture_result(&view, source.frame_number(), lookup.origin());
+        if !parsed.unreadable_three_a_keys.is_empty() {
+            context
+                .diagnostics
+                .record_unreadable_three_a_keys(parsed.unreadable_three_a_keys.len());
+        }
         context.sink.deliver(BackendEvent::CaptureCompleted {
             session: context.generation,
             result: parsed.meta,
         });
+        // Разовый запрос дал свой единственный результат: его запись больше не нужна.
+        context.origins.settle(origin_key);
         // Тот же результат с цветовыми подсказками — потоку кадров: он спарит его с буфером по
         // `SENSOR_TIMESTAMP`. Исход (спарен / ждёт / без метки / прошлая эпоха) поток считает сам.
         let _outcome = context.producer.offer_capture_result(
@@ -344,7 +385,7 @@ pub(super) unsafe extern "C" fn capture_on_completed(
 pub(super) unsafe extern "C" fn capture_on_failed(
     context: *mut c_void,
     _session: *mut ndk::ACameraCaptureSession,
-    _request: *mut ndk::ACaptureRequest,
+    request: *mut ndk::ACaptureRequest,
     failure: *mut ndk::ACameraCaptureFailure,
 ) {
     // SAFETY: см. `capture_on_started`.
@@ -356,6 +397,10 @@ pub(super) unsafe extern "C" fn capture_on_failed(
             context.diagnostics.record_callback_after_close();
             return;
         }
+        // Провал кадра тоже закрывает запрос: запись происхождения снимается, иначе таблица копила бы
+        // записи сброшенных запросов. (В `CaptureFailed` происхождения нет — граница движка его не несёт.)
+        // SAFETY: `request` — указатель из колбэка NDK, живой на время колбэка.
+        context.origins.settle(unsafe { request_origin_key(request) });
         // SAFETY: `failure` валиден на время колбэка (указатель из NDK).
         let Some(failure) = (unsafe { failure.as_ref() }) else {
             return;

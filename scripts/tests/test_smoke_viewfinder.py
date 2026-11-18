@@ -42,7 +42,19 @@ def viewfinder_report(**overrides: object) -> dict:
         "cpu_copies": 0,
         "gpu_time": {"isp_dispatch": {"samples": 600, "p50_ms": 1.8, "p95_ms": 2.3, "max_ms": 3.0}},
         "look": {"painter": "isp", "all_stages": True, "display_color_space": "display_p3"},
-        "awb_published": 3590,
+        # Прореживание статистики: 3600 обработанных кадров, каждый 4-й (900); 3 кадра скрыты на холодном старте AWB.
+        "awb_published": 900,
+        "frames_processed": 3600,
+        "frames_hidden_cold_start": 3,
+        "frames_presented": 3597,
+        "bracket_frames_skipped": 0,
+        "white_balance": {
+            "estimates": 900,
+            "cold_start_pending": False,
+            "statistics_every_n_frames": 4,
+            "hal_delta_mired": 5.0,
+        },
+        "three_a_companion": {"state": "active", "width": 640, "height": 480},
         "latency": {"samples": 3000, "p50_ms": 41.0, "p95_ms": 47.0},
         "validation": {"mode": "enabled", "errors": 0},
         "window_ms": 60000,
@@ -110,6 +122,19 @@ class ViewfinderCheckTest(unittest.TestCase):
             "прохода ISP": viewfinder_report(gpu_time={}),
             "рисовальщик": viewfinder_report(look={"painter": "debug_mosaic", "display_color_space": "srgb"}),
             "AWB": viewfinder_report(awb_published=0),
+            "опубликована 100 раз": viewfinder_report(awb_published=100),
+            "раздела white_balance": {k: v for k, v in viewfinder_report().items() if k != "white_balance"},
+            "ни одной оценки": viewfinder_report(
+                white_balance={"estimates": 0, "cold_start_pending": False, "statistics_every_n_frames": 4}
+            ),
+            "холодный старт AWB не кончился": viewfinder_report(
+                white_balance={"estimates": 5, "cold_start_pending": True, "statistics_every_n_frames": 4}
+            ),
+            "кадры теряются": viewfinder_report(frames_presented=3000),
+            "нет счётчиков учёта": viewfinder_report(frames_hidden_cold_start=None),
+            "вспомогательный поток 3A": viewfinder_report(
+                three_a_companion={"state": "unavailable", "reason": {"kind": "rejected_by_hal"}}
+            ),
             "задержка": viewfinder_report(latency={"samples": 0}),
             "validation": viewfinder_report(validation={"mode": "enabled", "errors": 2}),
             "состояние камеры": viewfinder_report(state_at_end="error"),
@@ -125,6 +150,11 @@ class ViewfinderCheckTest(unittest.TestCase):
                 verdict = verdict_of("viewfinder", report)
                 self.assertEqual(verdict.exit_code, smoke_wait.EXIT_SCENARIO_FAILED, verdict.message)
                 self.assertIn(needle, verdict.message)
+
+    def test_hidden_cold_start_frames_are_accounted_not_counted_as_lost(self) -> None:
+        # 3 скрытых кадра: показано на 3 меньше обработанных — это норма, а не потеря.
+        report = viewfinder_report(frames_presented=3597, frames_hidden_cold_start=3)
+        self.assertEqual(verdict_of("viewfinder", report).exit_code, smoke_wait.EXIT_OK)
 
     def test_drift_level_overflow_and_superseded_are_reported_apart_and_pass(self) -> None:
         pacing = pacing_report(dropped=8, superseded=4, jitter_overflow=4, shown_once_ratio=0.9978)

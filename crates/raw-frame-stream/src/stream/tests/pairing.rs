@@ -167,6 +167,9 @@ fn result_without_timestamp_is_counted_and_never_buffered() {
             sensitivity_iso: None,
             reported_frame_duration: None,
             rolling_shutter_skew: None,
+            three_a: camera_contract::three_a::ThreeAResultState::unreported(
+                camera_contract::three_a::RequestOrigin::Repeating,
+            ),
         },
         color: CaptureColorHints::default(),
     };

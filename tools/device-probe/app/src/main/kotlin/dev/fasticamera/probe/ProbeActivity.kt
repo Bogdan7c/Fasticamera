@@ -21,6 +21,7 @@ import dev.fasticamera.probe.scenario.ProbeScenario
 import dev.fasticamera.probe.scenario.ScenarioArgs
 import dev.fasticamera.probe.scenario.ScenarioContext
 import dev.fasticamera.probe.scenario.StreamScenario
+import dev.fasticamera.probe.scenario.ThreeAScenario
 import dev.fasticamera.probe.scenario.VulkanImportScenario
 import org.json.JSONObject
 import java.io.File
@@ -126,6 +127,7 @@ class ProbeActivity : Activity() {
         "platform" -> PlatformScenario()
         "capture" -> CaptureScenario()
         "codecsurface" -> CodecSurfaceScenario()
+        "threea" -> ThreeAScenario()
         else -> null
     }
 

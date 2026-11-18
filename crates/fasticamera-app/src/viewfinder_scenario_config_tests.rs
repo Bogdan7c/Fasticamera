@@ -204,3 +204,16 @@ fn zero_nan_and_out_of_range_values_are_rejected() {
         Err(ViewfinderScenarioConfigError::InvalidFrameRate(_))
     ));
 }
+
+#[test]
+fn awb_publish_fraction_default_is_half_and_values_outside_zero_one_are_rejected() {
+    assert_eq!(ViewfinderSmokeConfig::default().min_awb_publish_fraction, 0.5);
+    for bad in [0.0, -0.1, 1.5, f64::NAN] {
+        let mut config = ViewfinderScenarioConfig::default();
+        config.smoke.min_awb_publish_fraction = bad;
+        assert!(config.validate().is_err(), "{bad} должно отвергаться");
+    }
+    let mut config = ViewfinderScenarioConfig::default();
+    config.smoke.min_awb_publish_fraction = 1.0;
+    config.validate().expect("1.0 — граница допустима");
+}

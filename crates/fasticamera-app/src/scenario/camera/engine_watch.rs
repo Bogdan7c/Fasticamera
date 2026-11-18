@@ -107,7 +107,11 @@ pub fn failure_of_event(event: &CameraEvent) -> Option<RunFailure> {
         | CameraEvent::StreamDegraded { .. }
         | CameraEvent::Unavailable { .. }
         | CameraEvent::Recovered { .. }
-        | CameraEvent::StreamConfigured { .. } => None,
+        | CameraEvent::StreamConfigured { .. }
+        // События 3A (итог тапа, поправки, серия) — предмет проверок сценария `3a`, а не отказ движка.
+        | CameraEvent::FocusSettled { .. }
+        | CameraEvent::ControlsAdjusted { .. }
+        | CameraEvent::BracketCaptured { .. } => None,
     }
 }
 

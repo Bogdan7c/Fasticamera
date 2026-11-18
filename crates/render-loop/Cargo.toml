@@ -19,6 +19,8 @@ isp-vulkan.workspace = true
 isp-model.workspace = true
 # Только `clock_gettime(CLOCK_MONOTONIC)` в safety-модуле `thread/monotonic_clock.rs` (план позднего захвата).
 libc.workspace = true
+# Оценка света сцены (AWB, сессия 08): таблица локуса камеры, оценщик, сглаживание; нейтральный crate.
+scene-estimation.workspace = true
 raw-frame-stream.workspace = true
 shell-contract.workspace = true
 serde.workspace = true

@@ -15,7 +15,9 @@
 //! * `commands` — желаемое состояние и валидация команд;
 //! * `reconcile` — доведение реального состояния до желаемого;
 //! * `recovery` — ошибки, планы восстановления, попытки, таймер;
-//! * `backend_events` — события бэкенда (поколения, stale, темп).
+//! * `backend_events` — события бэкенда (поколения, stale, темп);
+//! * `three_a` — автоматика 3A: тап и блокировка, ручные параметры, серии, указание AWB
+//!   (исполнители подключаются через [`crate::ThreeAWiring`]).
 //!
 //! Решения, не заданные заданием:
 //! * `EnterForeground` выводит из `Fatal` только `RecoveryExhausted` (свежая попытка пользователя)
@@ -37,13 +39,14 @@ mod commands;
 mod frame_rate_fallback;
 mod reconcile;
 mod recovery;
+mod three_a;
 
 use std::sync::Arc;
 use std::time::Instant;
 
 use camera_contract::availability::CameraUnavailableReason;
 use camera_contract::catalog::CameraCatalog;
-use camera_contract::control::{CaptureIntent, ManualControl};
+use camera_contract::control::CaptureIntent;
 use camera_contract::ids::CameraId;
 use camera_contract::stream::ConfiguredStream;
 
@@ -52,12 +55,15 @@ use crate::cadence::CadenceTracker;
 use crate::command::{CameraCommand, CommandId};
 use crate::config::CameraEngineConfig;
 use crate::event::CameraEvent;
+use crate::request_controls::RequestControls;
 use crate::role_classifier::{RoleDiagnostic, classify_catalog};
 use crate::state::{CameraError, CameraState, ClosedReason, FatalCause};
 use crate::status::{AppPresence, CameraCounters, CameraStatus};
+use crate::three_a_wiring::ThreeAWiring;
 use availability_memory::AvailabilityMemory;
 pub(crate) use commands::Desired;
 use recovery::RecoveryTracker;
+use three_a::ThreeAEngine;
 
 pub(crate) const LOG_TARGET: &str = "fasticamera::camera::engine";
 
@@ -72,7 +78,8 @@ struct OpenDevice {
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct RepeatingRequest {
     intent: CaptureIntent,
-    controls: ManualControl,
+    /// План управляющей части, построенный из намерения 3A и возможностей камеры.
+    controls: RequestControls,
 }
 
 /// Сконфигурированная сессия.
@@ -128,11 +135,33 @@ impl CameraBackend for DeadBackend {
     fn set_repeating_request(
         &mut self,
         _intent: CaptureIntent,
-        _controls: &ManualControl,
+        _controls: &RequestControls,
     ) -> Result<(), crate::backend::RequestFailure> {
         Err(crate::backend::RequestFailure::Backend(Self::failure(
             "set_repeating_request",
         )))
+    }
+
+    fn submit_focus_trigger(
+        &mut self,
+        _intent: CaptureIntent,
+        _controls: &RequestControls,
+        _trigger: crate::request_controls::AfTrigger,
+        _request: camera_contract::three_a::PointRequestId,
+    ) -> Result<(), crate::backend::RequestFailure> {
+        Err(crate::backend::RequestFailure::Backend(Self::failure(
+            "submit_focus_trigger",
+        )))
+    }
+
+    fn submit_bracket(
+        &mut self,
+        _intent: CaptureIntent,
+        _base: &RequestControls,
+        _bracket: &camera_contract::three_a::ExposureBracket,
+        _burst: camera_contract::three_a::BurstId,
+    ) -> Result<(), crate::backend::RequestFailure> {
+        Err(crate::backend::RequestFailure::Backend(Self::failure("submit_bracket")))
     }
 
     fn stop_repeating(&mut self) -> Result<(), crate::backend::RequestFailure> {
@@ -164,6 +193,8 @@ pub struct CameraEngine {
     availability: AvailabilityMemory,
     cadence: CadenceTracker,
     counters: CameraCounters,
+    /// Автоматика 3A: исполнители, таймеры, серия (желаемое намерение — в `desired.three_a`).
+    three_a: ThreeAEngine,
     last_unavailable: Option<CameraUnavailableReason>,
     events: Vec<CameraEvent>,
     /// После паники внутри итерации бэкенд и внутренности в неизвестном состоянии:
@@ -174,17 +205,30 @@ pub struct CameraEngine {
 impl CameraEngine {
     /// Движок с рабочим бэкендом; каталог читается отдельно ([`CameraEngine::load_catalog`]).
     pub fn new(config: CameraEngineConfig, presence: AppPresence, backend: Box<dyn CameraBackend>) -> Self {
+        let wiring = ThreeAWiring::vendor(&config.three_a);
+        Self::with_wiring(config, presence, backend, wiring)
+    }
+
+    /// Движок с заданными исполнителями 3A и ящиком баланса белого (корень композиции, 08a, тесты).
+    pub fn with_wiring(
+        config: CameraEngineConfig,
+        presence: AppPresence,
+        backend: Box<dyn CameraBackend>,
+        wiring: ThreeAWiring,
+    ) -> Self {
         let state = CameraState::Closed {
             reason: match presence {
                 AppPresence::Foreground => ClosedReason::NotRequested,
                 AppPresence::Background => ClosedReason::AppInBackground,
             },
         };
+        let desired = Desired::default();
         Self {
             cadence: CadenceTracker::new(config.cadence),
+            three_a: ThreeAEngine::new(wiring, &desired.three_a),
             backend,
             config,
-            desired: Desired::default(),
+            desired,
             presence,
             catalog: Arc::new(CameraCatalog::empty()),
             catalog_loaded: false,
@@ -241,7 +285,7 @@ impl CameraEngine {
     pub fn handle_command(&mut self, id: CommandId, command: CameraCommand, now: Instant) {
         self.counters.commands_handled += 1;
         let name = command.name();
-        let outcome = self.decide_command(&command);
+        let outcome = self.decide_command(id, &command);
         self.events.push(CameraEvent::CommandHandled {
             command: id,
             name,
@@ -251,6 +295,8 @@ impl CameraEngine {
             return;
         }
         self.apply_command_effects(&command, &outcome, now);
+        // Режим AWB мог измениться любой командой (в том числе `Close`, сбросившей намерение).
+        self.three_a.publish_white_balance(&self.desired.three_a);
     }
 
     /// Асинхронное событие бэкенда.
@@ -267,6 +313,7 @@ impl CameraEngine {
             return;
         }
         self.fire_retry_timer_if_due(now);
+        self.fire_three_a_timers(now);
     }
 
     /// Когда движку нужно проснуться без внешних событий.
@@ -274,7 +321,10 @@ impl CameraEngine {
         if self.poisoned {
             return None;
         }
-        self.pending_retry_deadline()
+        [self.pending_retry_deadline(), self.three_a.next_deadline()]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     /// Снимок состояния.
@@ -287,6 +337,7 @@ impl CameraEngine {
             stream: self.cadence.stats().clone(),
             last_unavailable: self.last_unavailable,
             counters: self.counters,
+            three_a: self.three_a.status(&self.desired.three_a),
         }
     }
 
@@ -311,6 +362,7 @@ impl CameraEngine {
         }
         self.device = None;
         self.session = None;
+        self.end_three_a_stream();
         self.reconfiguring = false;
         self.recovery.stop_waiting();
         self.transition(CameraState::Error {
@@ -377,6 +429,7 @@ impl CameraEngine {
         }
         self.device = None;
         self.session = None;
+        self.end_three_a_stream();
     }
 
     /// Окончательная ошибка: устройство отпущено, ожиданий нет.

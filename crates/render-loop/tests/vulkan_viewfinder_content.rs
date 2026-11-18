@@ -27,18 +27,22 @@ use std::time::Instant;
 
 use camera_contract::capabilities::{LensShading, Rational, RawSupport, SensorLevels, VendorProcessingFlags};
 use camera_contract::capture_result::{CaptureResultMeta, FrameNumber, SensorTimestamp};
+use camera_contract::control::{ColorTemperature, Tint, WhiteBalanceSetting};
 use camera_contract::fixtures::{camera_id, main_wide_camera};
 use camera_contract::frame_passport::{CaptureColorHints, FrameCaptureDetails, StreamPassport};
 use camera_contract::geometry::{PixelRect, PixelSize, SensorOrientation};
 use camera_contract::raw_format::{CfaLayout, MosaicKind, MosaicPattern, RawFormat};
 use camera_contract::stream::{FrameRateMechanism, ReadoutAspect, TargetFrameRate};
+use camera_contract::three_a::{DirectiveSlot, ThreeAProfile, WhiteBalanceDirective, WhiteBalanceMode};
 use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::hardware_buffer_cache::ImportCacheCounters;
 use gpu_vulkan::raw_mosaic_preview::MosaicSource;
 use gpu_vulkan::raw_mosaic_preview::synthetic::SyntheticRaw16;
 use gpu_vulkan::sync::GpuWaitFence;
 use isp_model::cfa::BayerPattern;
-use isp_model::color::dng::CameraNeutral;
+use isp_model::color::dng::{CameraNeutral, DngColorProfile};
+use isp_model::color::temperature::Kelvin;
+use isp_model::color::white_point::{CctDuv, Duv, chromaticity_from_cct_duv};
 use isp_model::demosaic::DemosaicMethod;
 use isp_model::image::{DisplayGamut, RawMosaic};
 use isp_model::params::{FrameInputs, IspParams, ProcessingControls};
@@ -56,7 +60,7 @@ use shell_contract::clock::MonotonicNanos;
 use shell_contract::hardware_buffer::BorrowedHardwareBuffer;
 use shell_contract::surface::SurfaceSize;
 use support::{Journal, fake_surface};
-use vulkan_support::{assert_no_validation_errors, headless_camera_backend_or_skip};
+use vulkan_support::{assert_no_validation_errors, headless_camera_backend_with_directives_or_skip};
 
 const FRAME_SIZE: PixelSize = PixelSize::new(64, 48);
 const SURFACE_SIZE: SurfaceSize = SurfaceSize {
@@ -65,8 +69,33 @@ const SURFACE_SIZE: SurfaceSize = SurfaceSize {
 };
 const BLACK_LEVEL: u16 = 64;
 const WHITE_LEVEL: u16 = 1023;
-/// Нейтраль HAL кадра: камера видит серый как (0,5; 1; 0,75).
-const NEUTRAL: [f64; 3] = [0.5, 1.0, 0.75];
+/// Ручная точка белого, которую тест публикует через «почтовый ящик» указаний: 4000 К на кривой Планка.
+/// Ручной режим на свежем потоке принимает точку сразу (без скрытия кадров и сглаживания), поэтому
+/// эталон — чистая функция паспорта и этой точки.
+const MANUAL_KELVIN: f64 = 4000.0;
+
+/// Нейтраль камеры для ручной точки белого по DNG-профилю паспорта (то, что AWB отдаёт в ISP).
+fn scene_neutral() -> [f64; 3] {
+    let profile = DngColorProfile::from_calibration_sets(&calibration()).expect("профиль цвета");
+    let white = chromaticity_from_cct_duv(CctDuv {
+        temperature: Kelvin(MANUAL_KELVIN),
+        duv: Duv(0.0),
+    })
+    .expect("точка на кривой Планка");
+    profile.neutral_for_white(white).expect("нейтраль").values()
+}
+
+fn manual_white_directive() -> WhiteBalanceDirective {
+    WhiteBalanceDirective {
+        mode: WhiteBalanceMode::Manual {
+            setting: WhiteBalanceSetting {
+                temperature: ColorTemperature::from_kelvin(MANUAL_KELVIN).expect("температура"),
+                tint: Tint::NEUTRAL,
+            },
+        },
+        profile: ThreeAProfile::Photo,
+    }
+}
 /// Допуск: 10-битный выход (шаг 1/1023) плюс f32 шейдера против f32 эталона — 3 шага.
 const TOLERANCE: f32 = 3.0 / 1023.0;
 /// Сколько кадров показа ждать, пока новый кадр камеры дойдёт до изображения.
@@ -82,12 +111,13 @@ struct CellValues {
 
 /// Серый под нейтраль: сигнал над чёрным пропорционален нейтрали (40 % белого по зелёному).
 fn neutral_gray() -> CellValues {
+    let neutral = scene_neutral();
     let span = f64::from(WHITE_LEVEL - BLACK_LEVEL) * 0.4;
     let channel = |weight: f64| BLACK_LEVEL + (span * weight).round() as u16;
     CellValues {
-        red: channel(NEUTRAL[0]),
-        green: channel(NEUTRAL[1]),
-        blue: channel(NEUTRAL[2]),
+        red: channel(neutral[0]),
+        green: channel(neutral[1]),
+        blue: channel(neutral[2]),
     }
 }
 
@@ -145,17 +175,18 @@ fn stream_passport() -> StreamPassport {
     }
 }
 
-/// Нейтраль в виде, в котором её отдаёт HAL (рациональные с знаменателем 1000).
-fn neutral_rationals() -> [Rational; 3] {
-    NEUTRAL.map(|value| Rational {
-        numerator: (value * 1000.0).round() as i32,
-        denominator: 1000,
-    })
-}
-
+/// Подсказки HAL в кадрах: НАРОЧНО неверные (нейтраль и коэффициенты баланса от другого света). ISP обязан их
+/// игнорировать целиком (решение 62, критерий выхода 08): эталон считается по нейтрали нашего AWB.
 fn capture_hints() -> CaptureColorHints {
+    let rational = |numerator| Rational {
+        numerator,
+        denominator: 1000,
+    };
     CaptureColorHints {
-        neutral_color_point: Some(neutral_rationals()),
+        neutral_color_point: Some([rational(900), rational(1000), rational(200)]),
+        color_gains: Some(camera_contract::frame_passport::ColorCorrectionGains([
+            0.3, 1.0, 1.0, 7.0,
+        ])),
         ..CaptureColorHints::default()
     }
 }
@@ -165,9 +196,7 @@ fn reference_color(passport: &StreamPassport, cell: CellValues) -> [f32; 3] {
     let sensor = SensorDescription::from_stream_passport(passport, &passport.color_calibration).expect("сенсор");
     let hints = capture_hints();
     let frame = FrameInputs::from_capture_hints(&sensor, &hints).expect("уровни");
-    let neutral =
-        CameraNeutral::new(neutral_rationals().map(|rational| rational.to_f64().expect("знаменатель не ноль")))
-            .expect("нейтраль");
+    let neutral = CameraNeutral::new(scene_neutral()).expect("нейтраль");
     let controls = ProcessingControls::with_defaults(neutral, DemosaicMethod::Preview, DisplayGamut::Srgb);
     let params = IspParams::resolve(&sensor, &frame, &controls).expect("параметры");
     let size = PixelSize::new(4, 4);
@@ -300,6 +329,9 @@ fn offer(stream: &RawFrameStream, epoch: StreamEpoch, sensor_ts: i64, sequence: 
                 sensitivity_iso: Some(100),
                 reported_frame_duration: None,
                 rolling_shutter_skew: None,
+                three_a: camera_contract::three_a::ThreeAResultState::unreported(
+                    camera_contract::three_a::RequestOrigin::Repeating,
+                ),
             },
             color: capture_hints(),
         },
@@ -375,7 +407,9 @@ fn isp_output_through_the_real_backend_matches_the_isp_model_reference() {
         ..RawFrameStreamConfig::default()
     });
     let cells = HashMap::from([(GRAY_TS, neutral_gray()), (RED_TS, reddish())]);
-    let Some(mut backend) = headless_camera_backend_or_skip(
+    let directives = DirectiveSlot::new();
+    directives.publish(manual_white_directive());
+    let Some(mut backend) = headless_camera_backend_with_directives_or_skip(
         &render_config,
         stream.viewfinder(),
         Box::new(move |context| {
@@ -386,6 +420,7 @@ fn isp_output_through_the_real_backend_matches_the_isp_model_reference() {
                 counters: ImportCacheCounters::default(),
             }))
         }),
+        directives,
     ) else {
         return;
     };

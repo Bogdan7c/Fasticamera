@@ -138,6 +138,53 @@ pub struct StreamConfig {
     pub frame_rate_fallback: FrameRateFallback,
 }
 
+/// Автоматика 3A: тап, блокировка, серии (сессия 08).
+///
+/// Все значения — данные, а не код; обоснование каждого рядом.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ThreeAConfig {
+    /// Сторона региона замера/фокуса вокруг тапа как доля меньшей стороны сенсора.
+    /// Квадрат тапа в iOS Камере — порядка 1/6–1/5 короткой стороны кадра: берём середину
+    /// (≈ 1/5,5). Это **оценка по iOS, сверить со спецификацией 09**.
+    pub metering_region_size_fraction: f32,
+    /// Сколько ждать итога тапа от HAL, мс. Зонд 08: холодный захват AF занимает 27–34 кадра
+    /// ≈ 0,55 с при 60 к/с. 1500 мс — почти втрое больше: не обрывает медленный скан в
+    /// темноте, но и «тап без ответа» (RAW-only сессия не отдаёт `AF_STATE`) не висит вечно.
+    pub focus_settle_timeout_ms: u64,
+    /// Сколько результатов повторяющегося запроса подряд можно получить после отправки
+    /// триггера, не увидев результат самого триггера, прежде чем считать, что метка потеряна
+    /// (бэкенд не опознал запрос) и верить состоянию AF как есть. Конвейер Camera2 держит
+    /// порядка 4–8 кадров в полёте, поэтому 8 кадров (≈ 133 мс при 60 к/с) — запас, после
+    /// которого устаревший `FOCUSED_LOCKED` прошлого тапа уже вытеснен из конвейера.
+    pub focus_marker_grace_frames: u32,
+    /// Сбрасывать точку интереса и блокировку AE/AF при смене камеры. Оценка по iOS
+    /// (фокус и замер не переносятся на другую камеру), **сверить со спецификацией 09**.
+    pub reset_point_on_camera_switch: bool,
+    /// Предел длины серии с брекетингом. Кадры серии живут в пуле RAW-кадров рядом с кадрами
+    /// видоискателя и ожидающими парами (см. `PoolPlan` в `raw-frame-stream`, пул ≈ 7), поэтому
+    /// серия длиннее четырёх вытеснила бы видоискатель. 4 покрывает типичный HDR-брекет (3)
+    /// с запасом на один кадр. Это бюджет, а не возможность HAL: поднимать вместе с пулом.
+    pub max_bracket_frames: usize,
+    /// Сколько ждать результаты всех кадров серии с момента отправки, мс. Серия из 4 кадров
+    /// с выдержками до секунды укладывается в ~5 с; 10 с — двойной запас на ночные выдержки,
+    /// после чего серия честно объявляется проваленной (`ResultsTimedOut`).
+    pub bracket_result_timeout_ms: u64,
+}
+
+impl Default for ThreeAConfig {
+    fn default() -> Self {
+        Self {
+            metering_region_size_fraction: 0.18,
+            focus_settle_timeout_ms: 1_500,
+            focus_marker_grace_frames: 8,
+            reset_point_on_camera_switch: true,
+            max_bracket_frames: 4,
+            bracket_result_timeout_ms: 10_000,
+        }
+    }
+}
+
 /// Конфиг движка целиком.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -148,6 +195,7 @@ pub struct CameraEngineConfig {
     pub queues: QueueConfig,
     pub runtime: RuntimeThreadConfig,
     pub stream: StreamConfig,
+    pub three_a: ThreeAConfig,
 }
 
 /// Конфиг движка некорректен.
@@ -171,6 +219,10 @@ pub enum CameraEngineConfigError {
     InvalidFrameRateFallback(u32),
     #[error("queues: ёмкости должны быть от 1 до {max}")]
     InvalidQueueCapacity { max: usize },
+    #[error("three_a.metering_region_size_fraction должен быть в (0, 1], а не {0}")]
+    InvalidMeteringRegionSize(f32),
+    #[error("three_a: {field} должен быть от 1 до {max}, а не {value}")]
+    InvalidThreeALimit { field: &'static str, value: u64, max: u64 },
 }
 
 impl CameraEngineConfig {
@@ -178,6 +230,12 @@ impl CameraEngineConfig {
     pub const MAX_QUEUE_CAPACITY: usize = 65_536;
     /// Предел одной задержки повтора.
     pub const MAX_BACKOFF_MS: u64 = 3_600_000;
+    /// Предел любого ожидания автоматики 3A (итог тапа, результаты серии).
+    pub const MAX_THREE_A_WAIT_MS: u64 = 60_000;
+    /// Предел кадров серии, которые вообще можно разрешить конфигом.
+    pub const MAX_THREE_A_BRACKET_FRAMES: u64 = 32;
+    /// Предел «кадров на потерянную метку триггера».
+    pub const MAX_FOCUS_MARKER_GRACE_FRAMES: u64 = 600;
     /// Предел ожидания выхода потока в `Drop`.
     pub const MAX_DROP_SHUTDOWN_TIMEOUT_MS: u64 = 60_000;
 
@@ -234,6 +292,43 @@ impl CameraEngineConfig {
         }
         if let FrameRateFallback::To { fps } = self.stream.frame_rate_fallback {
             TargetFrameRate::new(fps).map_err(|_| CameraEngineConfigError::InvalidFrameRateFallback(fps))?;
+        }
+        self.validate_three_a()
+    }
+
+    /// Проверка секции `three_a`.
+    fn validate_three_a(&self) -> Result<(), CameraEngineConfigError> {
+        let three_a = &self.three_a;
+        let fraction = three_a.metering_region_size_fraction;
+        if !(fraction.is_finite() && fraction > 0.0 && fraction <= 1.0) {
+            return Err(CameraEngineConfigError::InvalidMeteringRegionSize(fraction));
+        }
+        let limits = [
+            (
+                "focus_settle_timeout_ms",
+                three_a.focus_settle_timeout_ms,
+                Self::MAX_THREE_A_WAIT_MS,
+            ),
+            (
+                "bracket_result_timeout_ms",
+                three_a.bracket_result_timeout_ms,
+                Self::MAX_THREE_A_WAIT_MS,
+            ),
+            (
+                "max_bracket_frames",
+                three_a.max_bracket_frames as u64,
+                Self::MAX_THREE_A_BRACKET_FRAMES,
+            ),
+            (
+                "focus_marker_grace_frames",
+                u64::from(three_a.focus_marker_grace_frames),
+                Self::MAX_FOCUS_MARKER_GRACE_FRAMES,
+            ),
+        ];
+        for (field, value, max) in limits {
+            if value == 0 || value > max {
+                return Err(CameraEngineConfigError::InvalidThreeALimit { field, value, max });
+            }
         }
         Ok(())
     }

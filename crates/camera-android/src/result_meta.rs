@@ -10,10 +10,12 @@ use std::time::Duration;
 use camera_contract::capabilities::FrameDuration;
 use camera_contract::capture_result::{CaptureResultMeta, FrameNumber, ResultKey, SensorTimestamp};
 use camera_contract::frame_passport::{CaptureColorHints, ColorCorrectionGains};
+use camera_contract::three_a::RequestOrigin;
 use serde::Serialize;
 
 use crate::entry::{MetadataSource, Read, read_floats, read_int32, read_int64, read_rationals};
 use crate::tags;
+use crate::three_a_result::{ThreeAResultKey, parse_three_a_result};
 
 /// Цветовые ключи результата (`CaptureColorHints`), по которым ведётся учёт непригодных записей.
 /// Отдельно от [`ResultKey`]: тот принадлежит контракту движка, а цветовые подсказки идут только
@@ -37,6 +39,8 @@ pub struct ParsedCaptureResult {
     pub color: CaptureColorHints,
     /// Цветовые ключи, присутствующие в результате, но непригодные (в порядке [`ColorHintKey`]).
     pub unreadable_color_keys: Vec<ColorHintKey>,
+    /// Ключи состояния 3A, присутствующие в результате, но непригодные (в порядке [`ThreeAResultKey`]).
+    pub unreadable_three_a_keys: Vec<ThreeAResultKey>,
 }
 
 /// Время начала экспозиции кадра — по нему результат сопоставляется с номером кадра.
@@ -47,8 +51,13 @@ pub fn read_sensor_timestamp(source: &dyn MetadataSource) -> Option<SensorTimest
     }
 }
 
-/// Разбирает результат запроса. Номер кадра приходит снаружи (его знает слой колбэков).
-pub fn parse_capture_result(source: &dyn MetadataSource, frame_number: FrameNumber) -> ParsedCaptureResult {
+/// Разбирает результат запроса. Номер кадра и происхождение запроса приходят снаружи (их знает
+/// слой колбэков).
+pub fn parse_capture_result(
+    source: &dyn MetadataSource,
+    frame_number: FrameNumber,
+    origin: RequestOrigin,
+) -> ParsedCaptureResult {
     let mut unreadable_keys = Vec::new();
     let mut take = |key: ResultKey, read: Read<i64>| -> Option<i64> {
         match read {
@@ -90,6 +99,7 @@ pub fn parse_capture_result(source: &dyn MetadataSource, frame_number: FrameNumb
     unreadable_keys.sort_by_key(|key| result_key_order(*key));
     unreadable_keys.dedup();
     let (color, unreadable_color_keys) = parse_color_hints(source);
+    let three_a = parse_three_a_result(source, origin);
     ParsedCaptureResult {
         meta: CaptureResultMeta {
             frame_number,
@@ -98,10 +108,12 @@ pub fn parse_capture_result(source: &dyn MetadataSource, frame_number: FrameNumb
             sensitivity_iso: sensitivity,
             reported_frame_duration,
             rolling_shutter_skew,
+            three_a: three_a.state,
         },
         unreadable_keys,
         color,
         unreadable_color_keys,
+        unreadable_three_a_keys: three_a.unreadable_keys,
     }
 }
 

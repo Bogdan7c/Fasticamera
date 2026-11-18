@@ -52,6 +52,7 @@ use super::headroom_stats::{HeadroomBenchStats, HeadroomLiveState};
 use super::isp_params::{IspParamsCache, ParamsOutcome};
 use super::pipelines::AcquiredSourceReader;
 use crate::viewfinder::{HeadroomBench, ViewfinderExtent};
+use isp_model::color::chromaticity::Chromaticity;
 
 const LOG_TARGET: &str = "fasticamera::render::headroom";
 
@@ -203,6 +204,7 @@ impl HeadroomBenchRunner {
     pub fn prepare_frame(
         &mut self,
         passport: &RawFramePassport,
+        white: Chromaticity,
         gamut: DisplayGamut,
         stats: &mut HeadroomBenchStats,
     ) -> Option<HeadroomFrame> {
@@ -213,7 +215,7 @@ impl HeadroomBenchRunner {
         if changed {
             stats.note_stream_change();
         }
-        let decision = self.params.prepare(passport, gamut);
+        let decision = self.params.prepare(passport, white, gamut);
         if let ParamsOutcome::Unavailable(reason) = decision.outcome {
             tracing::debug!(target: LOG_TARGET, ?reason, "параметров качественного ISP нет: кадр мимо стенда");
             stats.note_no_params();

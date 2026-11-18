@@ -3,7 +3,8 @@
 //! Модули:
 //! * `callbacks` и `reader_callback` — единственные места с `extern "C"` (guardrail
 //!   `camera-ffi-callbacks-only-in-safety-modules`);
-//! * `manager`, `device`, `session`, `request`, `raw_reader`, `availability` — владельцы объектов NDK;
+//! * `manager`, `device`, `session`, `outputs`, `request`, `raw_reader`, `companion` (вспомогательный
+//!   поток 3A), `availability` — владельцы объектов NDK;
 //! * `producer_frame` — кадр потока (`AImage`) и его возврат камере с fence-ом;
 //! * `backend` — `AndroidCameraBackend`.
 //!
@@ -14,8 +15,10 @@ mod availability;
 mod backend;
 mod boottime_clock;
 mod callbacks;
+mod companion;
 mod device;
 mod manager;
+mod outputs;
 mod producer_frame;
 mod raw_reader;
 mod reader_callback;

@@ -9,16 +9,19 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use camera_android::companion_stream::CompanionStreamStatus;
 use camera_android::{BackendDiagnostics, CpuAccessProbe};
 use camera_contract::capabilities::{CameraDescriptor, FpsRange};
-use camera_contract::control::{CaptureIntent, ManualControl};
+use camera_contract::control::CaptureIntent;
 use camera_contract::ids::CameraId;
 use camera_contract::stream::{ConfiguredStream, FrameRateMechanism, ReadoutAspect, ResolvedStream};
+use camera_contract::three_a::{BurstId, ExposureBracket, PointRequestId};
 use camera_core::backend::{
     BackendEventSink, BackendFactory, BackendFailure, CameraBackend, ConfigureFailure, DeviceGeneration, OpenFailure,
     RequestFailure, SessionGeneration,
 };
 use camera_core::fake::FakeBackendControl;
+use camera_core::request_controls::{AfTrigger, RequestControls};
 use camera_core::{CameraHandle, CameraState, CameraStatus};
 use raw_frame_stream::RawStreamCounters;
 
@@ -28,6 +31,12 @@ use crate::camera_service::{BackendDiagnosticsSource, CameraServices};
 use crate::camera_wiring::{CameraBackendParts, start_camera};
 use crate::clock_offset::SystemClocks;
 use crate::raw_stream_services::{RawStreamCounterSource, RawStreamServices};
+
+/// Состояние вспомогательного потока 3A «здорового» телефона (размер зонда 08).
+const ACTIVE_COMPANION: CompanionStreamStatus = CompanionStreamStatus::Active {
+    width: 640,
+    height: 480,
+};
 
 /// Сколько ждём в тестах состояния движка: запас на загруженную машину, ничего не висит вечно.
 pub const WAIT: Duration = Duration::from_secs(10);
@@ -87,8 +96,32 @@ impl CameraBackend for LeverReportingBackend {
         })
     }
 
-    fn set_repeating_request(&mut self, intent: CaptureIntent, controls: &ManualControl) -> Result<(), RequestFailure> {
+    fn set_repeating_request(
+        &mut self,
+        intent: CaptureIntent,
+        controls: &RequestControls,
+    ) -> Result<(), RequestFailure> {
         self.inner.set_repeating_request(intent, controls)
+    }
+
+    fn submit_focus_trigger(
+        &mut self,
+        intent: CaptureIntent,
+        controls: &RequestControls,
+        trigger: AfTrigger,
+        request: PointRequestId,
+    ) -> Result<(), RequestFailure> {
+        self.inner.submit_focus_trigger(intent, controls, trigger, request)
+    }
+
+    fn submit_bracket(
+        &mut self,
+        intent: CaptureIntent,
+        base: &RequestControls,
+        bracket: &ExposureBracket,
+        burst: BurstId,
+    ) -> Result<(), RequestFailure> {
+        self.inner.submit_bracket(intent, base, bracket, burst)
     }
 
     fn stop_repeating(&mut self) -> Result<(), RequestFailure> {
@@ -186,6 +219,8 @@ impl FakeCameraRig {
         let control = FakeBackendControl::new();
         let diagnostics = Arc::new(BackendDiagnostics::new(config.android.failure_history_capacity));
         let close_device_delay_ms = Arc::new(AtomicU64::new(0));
+        // Как у настоящего бэкенда после конфигурации сессии: вспомогательный поток 3A в сессии.
+        diagnostics.record_companion_status(ACTIVE_COMPANION);
         let stream_counters = Arc::new(ScriptedStreamCounters::default());
         let cpu_probe = CpuAccessProbe::disarmed();
         let probe_at_configure = Arc::new(Mutex::new(Vec::new()));

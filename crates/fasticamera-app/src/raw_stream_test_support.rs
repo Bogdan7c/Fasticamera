@@ -63,6 +63,9 @@ pub struct PumpFaults {
     /// Показывать кадры с частотой сенсора (60 к/с), а не на каждом шаге имитатора (1 мс):
     /// нужно сценариям, которые сравнивают частоту показа/ISP с частотой сенсора (сессия 07).
     pub paced_at_sensor_rate: bool,
+    /// Результаты съёмки шлёт сторонний источник (подставной HAL 3A), а не встроенный `FrameFeeder`:
+    /// его результаты без `AE_STATE` и дистанции фокуса, а два источника перемешали бы номера кадров.
+    pub results_from_external_hal: bool,
 }
 
 impl Default for PumpFaults {
@@ -79,6 +82,7 @@ impl Default for PumpFaults {
             probe_counter_dead: false,
             max_frames_outstanding: 3,
             paced_at_sensor_rate: false,
+            results_from_external_hal: false,
         }
     }
 }
@@ -88,12 +92,12 @@ pub struct StreamPump {
     stop: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
     // Подаёт результаты в fake-движок и считает кадры читателя.
-    _feeder: FrameFeeder,
+    _feeder: Option<FrameFeeder>,
 }
 
 impl StreamPump {
     pub fn start(rig: &FakeCameraRig, render: Arc<FakeRenderStatus>, faults: PumpFaults) -> Self {
-        let feeder = FrameFeeder::start(rig, SENSOR_INTERVAL);
+        let feeder = (!faults.results_from_external_hal).then(|| FrameFeeder::start(rig, SENSOR_INTERVAL));
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let control = Arc::clone(&rig.control);

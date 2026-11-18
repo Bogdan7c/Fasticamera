@@ -23,6 +23,7 @@ use crate::engine::CameraEngine;
 use crate::handle::{CameraHandle, EngineOutput};
 use crate::inbox::{CameraInbox, InboxItem};
 use crate::status::AppPresence;
+use crate::three_a_wiring::ThreeAWiring;
 
 const LOG_TARGET: &str = "fasticamera::camera::runtime";
 
@@ -66,6 +67,18 @@ impl CameraRuntime {
         presence: AppPresence,
         factory: BackendFactory,
     ) -> Result<(CameraRuntime, CameraHandle), RuntimeSpawnError> {
+        let wiring = ThreeAWiring::vendor(&config.three_a);
+        Self::spawn_with_wiring(config, presence, factory, wiring)
+    }
+
+    /// То же, что [`CameraRuntime::spawn`], но с составом 3A корня композиции: ящик указаний
+    /// баланса белого, читаемый потоком рендера, и (в 08a) свой исполнитель экспозиции.
+    pub fn spawn_with_wiring(
+        config: CameraEngineConfig,
+        presence: AppPresence,
+        factory: BackendFactory,
+        wiring: ThreeAWiring,
+    ) -> Result<(CameraRuntime, CameraHandle), RuntimeSpawnError> {
         config.validate()?;
         let drop_shutdown_timeout = Duration::from_millis(config.runtime.drop_shutdown_timeout_ms);
         let inbox = Arc::new(CameraInbox::new(config.queues));
@@ -75,6 +88,7 @@ impl CameraRuntime {
             config,
             presence,
             factory,
+            wiring,
             inbox: Arc::clone(&inbox),
             output: Arc::clone(&output),
             finished_signal,
@@ -147,6 +161,7 @@ struct Worker {
     config: CameraEngineConfig,
     presence: AppPresence,
     factory: BackendFactory,
+    wiring: ThreeAWiring,
     inbox: Arc<CameraInbox>,
     output: Arc<EngineOutput>,
     finished_signal: Sender<()>,
@@ -158,6 +173,7 @@ impl Worker {
             config,
             presence,
             factory,
+            wiring,
             inbox,
             output,
             finished_signal,
@@ -165,7 +181,7 @@ impl Worker {
         // Порядок удаления: сначала ящик помечается остановленным, потом сигнал «вышел».
         let _finished = finished_signal;
         let _stopped = StoppedOnDrop(Arc::clone(&inbox));
-        let engine = build_engine(config, presence, factory, &inbox);
+        let engine = build_engine(config, presence, factory, wiring, &inbox);
         let mut state = LoopState {
             engine,
             inbox: &inbox,
@@ -182,12 +198,13 @@ fn build_engine(
     config: CameraEngineConfig,
     presence: AppPresence,
     factory: BackendFactory,
+    wiring: ThreeAWiring,
     inbox: &Arc<CameraInbox>,
 ) -> CameraEngine {
     let listener: Arc<dyn BackendEventListener> = Arc::clone(inbox) as Arc<dyn BackendEventListener>;
     let sink = BackendEventSink::new(listener);
     match catch_unwind(AssertUnwindSafe(|| factory(sink))) {
-        Ok(Ok(backend)) => CameraEngine::new(config, presence, backend),
+        Ok(Ok(backend)) => CameraEngine::with_wiring(config, presence, backend, wiring),
         Ok(Err(failure)) => CameraEngine::failed_backend(config, presence, failure),
         Err(payload) => CameraEngine::failed_backend(
             config,
@@ -243,6 +260,9 @@ impl LoopState<'_> {
                 InboxItem::Stop => return,
                 InboxItem::Timeout => {
                     self.guarded(|engine, now| engine.on_timer(now));
+                }
+                InboxItem::ThreeARefresh => {
+                    self.guarded(|engine, now| engine.refresh_three_a(now));
                 }
                 InboxItem::BackendEvent(event) => {
                     self.guarded(|engine, now| engine.handle_backend_event(event, now));

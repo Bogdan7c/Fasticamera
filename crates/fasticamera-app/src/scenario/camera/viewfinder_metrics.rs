@@ -85,6 +85,10 @@ pub struct IspCountersDelta {
     pub frames_dropped_no_params: u64,
     pub frames_rejected_geometry: u64,
     pub statistics_published: u64,
+    /// Обработано ISP, но скрыто на холодном старте AWB (решение 65).
+    pub frames_hidden_cold_start: u64,
+    /// Кадры брекетинга, возвращённые камере без ISP: в `frames_processed` не входят.
+    pub bracket_frames_skipped: u64,
     pub gpu_timing_failures: u64,
     pub cpu_copies: u64,
 }
@@ -102,6 +106,8 @@ impl IspCountersDelta {
             frames_dropped_no_params: delta(|counters| counters.frames_dropped_no_params),
             frames_rejected_geometry: delta(|counters| counters.frames_rejected_geometry),
             statistics_published: delta(|counters| counters.statistics_published),
+            frames_hidden_cold_start: delta(|counters| counters.frames_hidden_cold_start),
+            bracket_frames_skipped: delta(|counters| counters.bracket_frames_skipped),
             gpu_timing_failures: delta(|counters| counters.gpu_timing_failures),
             cpu_copies: delta(|counters| counters.cpu_copies),
         }
@@ -272,6 +278,20 @@ impl WindowDelta {
     /// Кадров через ISP в секунду; `None` — окно пустое.
     pub fn isp_frames_per_second(&self) -> Option<f64> {
         ratio(self.isp.frames_processed as f64 * 1_000.0, self.window_ms as f64)
+    }
+
+    /// Кадров камеры, которые рендер принял и учёл (ISP + кадры брекетинга, возвращённые без ISP), в секунду:
+    /// именно её сравнивают с частотой сенсора, чтобы брекетинг не выглядел потерей кадров.
+    pub fn accounted_frames_per_second(&self) -> Option<f64> {
+        let accounted = self.isp.frames_processed + self.isp.bracket_frames_skipped;
+        ratio(accounted as f64 * 1_000.0, self.window_ms as f64)
+    }
+
+    /// Кадров, показанных на экране ровно один раз, по учёту ISP: обработанные минус скрытые на холодном старте.
+    pub fn isp_frames_shown(&self) -> u64 {
+        self.isp
+            .frames_processed
+            .saturating_sub(self.isp.frames_hidden_cold_start)
     }
 }
 

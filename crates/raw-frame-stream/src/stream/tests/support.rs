@@ -200,6 +200,9 @@ pub(super) fn result_for(timestamp: i64) -> FrameCaptureDetails {
             sensitivity_iso: Some(100),
             reported_frame_duration: None,
             rolling_shutter_skew: None,
+            three_a: camera_contract::three_a::ThreeAResultState::unreported(
+                camera_contract::three_a::RequestOrigin::Repeating,
+            ),
         },
         color: CaptureColorHints::default(),
     }

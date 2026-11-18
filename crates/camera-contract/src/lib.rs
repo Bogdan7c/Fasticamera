@@ -34,4 +34,5 @@ pub mod geometry;
 pub mod ids;
 pub mod raw_format;
 pub mod stream;
+pub mod three_a;
 pub mod viewfinder_crop;

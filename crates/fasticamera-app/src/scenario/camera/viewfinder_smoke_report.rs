@@ -3,8 +3,9 @@
 //! Правила вердикта ([`evaluate_viewfinder`]) — по плану 07 («Тесты», телефон):
 //! 1. запуск и поток без отказа камеры/рендера;
 //! 2. частота сенсора по `SENSOR_TIMESTAMP` не ниже `min_sensor_fps`;
-//! 3. ISP обрабатывает каждый кадр: «кадров через ISP в секунду» = частоте сенсора, а «кадров через
-//!    ISP» = «показано новых кадров» (оба — в пределах `frame_rate_tolerance`);
+//! 3. ISP обрабатывает каждый кадр: «кадров через ISP в секунду» (плюс кадры брекетинга, возвращённые без
+//!    ISP) = частоте сенсора, а «обработано минус скрыто на холодном старте AWB» = «показано новых кадров»
+//!    (оба — в пределах `frame_rate_tolerance`; «ровно один раз» с учётом скрытых и пропущенных кадров);
 //! 4. время прохода ISP (`isp_dispatch`) и окно времени кадра (`frame_total`) замерены (иначе замер не
 //!    работает). Сравнение p95 с целью `isp_dispatch_budget_ms` — только пометка в отчёте
 //!    ([`IspDispatchTarget`]), не провал (решение 56): на Adreno время GPU растягивается частотой (DVFS)
@@ -12,7 +13,9 @@
 //! 5. ноль CPU-копий (ISP и поток RAW), ноль ошибок validation (если слой включён);
 //! 6. параметры ISP разрешались, отказов нет, кадров без параметров и с неверной геометрией нет,
 //!    ошибок записи ISP и компоновки нет;
-//! 7. статистика AWB публиковалась;
+//! 7. статистика AWB публиковалась не реже доли `min_awb_publish_fraction` от ожидаемого при прореживании
+//!    (обработанные кадры / `statistics_every_n_frames`), оценки света были, холодный старт кончился;
+//!    вспомогательный поток 3A в сессии (иначе автоматика HAL молча мертва — решение 62);
 //!    Потери кадров видоискателя считаются, а не прячутся: вытеснение (`superseded`) и переполнение
 //!    джиттер-буфера (`jitter_overflow`) — в отчёте раздельно. Переполнений допустимо не больше
 //!    дрейфа часов камеры против экрана ([`max_jitter_overflow_in_window`]), иначе буфер не справляется;
@@ -22,6 +25,7 @@
 //!
 //! «Не чёрный» и (по флагу) «нейтральная карта» судит скрипт по скриншотам стадии `viewfinder_live`.
 
+use camera_android::companion_stream::CompanionStreamStatus;
 use isp_vulkan::viewfinder::IspStageSet;
 use render_loop::viewfinder::{ViewfinderDiagnostics, ViewfinderGpuTimes, ViewfinderPainter, ViewfinderStorage};
 use serde::Serialize;
@@ -34,6 +38,7 @@ use super::viewfinder_metrics::{GpuTimeMs, WindowDelta, color_space_name, ratio,
 use super::viewfinder_pacing_report::PacingWindowReport;
 use super::viewfinder_session::SessionSummary;
 use super::viewfinder_tuning_report::{AdpfReport, PresentTargetReport};
+use super::white_balance_report::WhiteBalanceReport;
 use crate::power_measurement::ThermalSnapshot;
 use crate::scenario::render_metrics::ValidationReportPart;
 use crate::viewfinder_scenario_config::ViewfinderSmokeConfig;
@@ -160,6 +165,10 @@ pub struct ViewfinderSmokeObservation {
     pub last_isp_failure: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_params_failure: Option<String>,
+    /// Наш AWB на конец замера (`None` — снимка видоискателя не было).
+    pub white_balance: Option<WhiteBalanceReport>,
+    /// Вспомогательный поток 3A последней сессии камеры (решение 62).
+    pub companion: CompanionStreamStatus,
 }
 
 /// Расхождение двух величин относительно опорной (`None` — опорная нулевая).
@@ -180,7 +189,7 @@ pub fn evaluate_viewfinder(config: &ViewfinderSmokeConfig, observation: &Viewfin
             "частота сенсора {fps:.2} к/с ниже {} к/с",
             config.min_sensor_fps
         )),
-        Some(fps) => match window.isp_frames_per_second() {
+        Some(fps) => match window.accounted_frames_per_second() {
             Some(isp_fps) if relative_gap(isp_fps, fps).is_some_and(|gap| gap <= config.frame_rate_tolerance) => {}
             Some(isp_fps) => violations.push(format!(
                 "ISP обработал {isp_fps:.2} кадров/с при частоте сенсора {fps:.2}: расхождение больше {:.0} %",
@@ -189,13 +198,15 @@ pub fn evaluate_viewfinder(config: &ViewfinderSmokeConfig, observation: &Viewfin
             None => violations.push("окно замера пустое: кадров/с ISP не посчитать".to_owned()),
         },
     }
-    let processed = window.isp.frames_processed as f64;
+    // «Ровно один раз»: обработанные = показанные + скрытые на холодном старте AWB; кадры брекетинга сюда
+    // не входят (они учтены отдельно и в ISP не попадают).
+    let processed = window.isp_frames_shown() as f64;
     let presented = window.camera_frames_presented as f64;
     match relative_gap(processed, presented) {
         None => violations.push("на экран не поставлено ни одного нового кадра камеры".to_owned()),
         Some(gap) if gap > config.frame_rate_tolerance => violations.push(format!(
-            "через ISP прошло {} кадров, показано новых {}: ISP обязан обработать каждый показанный кадр",
-            window.isp.frames_processed, window.camera_frames_presented
+            "через ISP {} кадров (скрыто {}), показано новых {}: ISP обязан обработать каждый показанный кадр",
+            window.isp.frames_processed, window.isp.frames_hidden_cold_start, window.camera_frames_presented
         )),
         Some(_) => {}
     }
@@ -219,6 +230,12 @@ pub fn evaluate_viewfinder(config: &ViewfinderSmokeConfig, observation: &Viewfin
         violations.push(violation);
     }
     violations.extend(isp_counter_violations(window));
+    violations.extend(white_balance_violations(
+        config,
+        window,
+        observation.white_balance.as_ref(),
+    ));
+    violations.extend(companion_violation(observation.companion));
     violations.extend(jitter_overflow_violation(config, observation));
     if observation.latency.samples == 0 {
         violations.push("задержка «сенсор → экран» не замерена ни разу".to_owned());
@@ -288,8 +305,54 @@ fn isp_counter_violations(window: &WindowDelta) -> Vec<String> {
             violations.push(format!("{name} = {value}, ожидалось 0"));
         }
     }
-    if isp.statistics_published == 0 {
-        violations.push("статистика AWB ни разу не опубликована".to_owned());
+    violations
+}
+
+/// Вспомогательный поток 3A должен быть в сессии: без него AF/AE HAL молчат, а smoke иначе прошёл бы.
+fn companion_violation(companion: CompanionStreamStatus) -> Option<String> {
+    match companion {
+        CompanionStreamStatus::Active { .. } => None,
+        CompanionStreamStatus::NotConfigured => {
+            Some("вспомогательный поток 3A: сессий не было, а видоискатель шёл (состояние не записано)".to_owned())
+        }
+        CompanionStreamStatus::DisabledByConfig | CompanionStreamStatus::Unavailable { .. } => Some(format!(
+            "вспомогательный поток 3A мёртв ({companion:?}): автоматика HAL (AF, AE, баланс) не работает"
+        )),
+    }
+}
+
+/// Наш AWB: статистика идёт с прореживанием, оценки света есть, холодный старт кончился, таблица построена.
+fn white_balance_violations(
+    config: &ViewfinderSmokeConfig,
+    window: &WindowDelta,
+    white_balance: Option<&WhiteBalanceReport>,
+) -> Vec<String> {
+    let Some(report) = white_balance else {
+        return vec!["в статусе рендера нет диагностики AWB".to_owned()];
+    };
+    let mut violations = Vec::new();
+    // Ожидание — по окну: сколько кадров прошло через ISP, каждый N-й даёт статистику.
+    let period = f64::from(report.statistics_every_n_frames.max(1));
+    let expected = window.isp.frames_processed as f64 / period;
+    let published = window.isp.statistics_published as f64;
+    if published < expected * config.min_awb_publish_fraction {
+        violations.push(format!(
+            "статистика AWB опубликована {} раз, ожидалось не меньше {:.0} (обработано {} кадров, каждый {}-й, доля {})",
+            window.isp.statistics_published,
+            (expected * config.min_awb_publish_fraction).ceil(),
+            window.isp.frames_processed,
+            report.statistics_every_n_frames,
+            config.min_awb_publish_fraction
+        ));
+    }
+    if report.estimates == 0 {
+        violations.push("AWB не получил ни одной оценки света".to_owned());
+    }
+    if report.cold_start_pending {
+        violations.push("холодный старт AWB не кончился: кадры всё ещё скрыты".to_owned());
+    }
+    if let Some(failure) = &report.table_failure {
+        violations.push(format!("таблица локуса AWB не построена: {failure}"));
     }
     violations
 }
@@ -313,6 +376,10 @@ impl ViewfinderSmokeObservation {
             "params_resolved": self.window.isp.params_resolved,
             "params_failed": self.window.isp.params_failed,
             "awb_published": self.window.isp.statistics_published,
+            "frames_hidden_cold_start": self.window.isp.frames_hidden_cold_start,
+            "bracket_frames_skipped": self.window.isp.bracket_frames_skipped,
+            "white_balance": self.white_balance,
+            "three_a_companion": self.companion,
             "gpu_time": self.gpu_time,
             "look": self.look,
             "validation": self.validation.as_ref().map(|validation| serde_json::json!({
