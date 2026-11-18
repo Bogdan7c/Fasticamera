@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::jni_boundary::run_guarded;
 use crate::panic_report::PanicReport;
+use crate::result_echo::{ResultEchoConfig, ResultEchoConfigError};
 use crate::runtime_config::RuntimeConfig;
 
 pub use hello::HelloReport;
@@ -208,6 +209,8 @@ pub struct ScenarioConfig {
     pub gpu_job_timeout_ms: u64,
     /// Длина цикла работы A в `gpu-fence` (чем больше, тем дольше A и надёжнее проверка порядка).
     pub fence_busy_iterations: u32,
+    /// Повтор строки результата наблюдающих сценариев (решение 58): logcat теряет строки во всплеске.
+    pub result_echo: ResultEchoConfig,
 }
 
 impl Default for ScenarioConfig {
@@ -228,6 +231,7 @@ impl Default for ScenarioConfig {
             ahb_height: 3072,
             gpu_job_timeout_ms: 30_000,
             fence_busy_iterations: gpu_vulkan::sync::diagnostics::DEFAULT_BUSY_ITERATIONS,
+            result_echo: ResultEchoConfig::default(),
         }
     }
 }
@@ -246,6 +250,8 @@ pub enum ScenarioConfigError {
         "render_refresh_stable_ms ({stable_ms}) должно быть меньше render_refresh_settle_timeout_ms ({settle_timeout_ms})"
     )]
     StableNotBelowSettleTimeout { stable_ms: u64, settle_timeout_ms: u64 },
+    #[error(transparent)]
+    ResultEcho(#[from] ResultEchoConfigError),
 }
 
 impl ScenarioConfig {
@@ -297,6 +303,7 @@ impl ScenarioConfig {
                 field: "render_lifecycle_cycles",
             });
         }
+        self.result_echo.validate()?;
         Ok(())
     }
 }

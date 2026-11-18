@@ -48,6 +48,8 @@ mod autostart;
 mod camera;
 #[path = "event_router_camera_scenario_tests.rs"]
 mod camera_scenarios;
+#[path = "event_router_echo_tests.rs"]
+mod echo;
 #[path = "event_router_raw_stream_tests.rs"]
 mod raw_stream;
 #[path = "event_router_render_tests.rs"]
@@ -157,6 +159,8 @@ impl PlatformFacts for FakeShell {
 struct CollectedOutput {
     stages: Arc<Mutex<Vec<serde_json::Value>>>,
     results: Arc<Mutex<Vec<serde_json::Value>>>,
+    /// Повторы итога (решение 58) — отдельно от `results`: «ровно один итог» остаётся проверкой.
+    repeats: Arc<Mutex<Vec<(Instant, serde_json::Value)>>>,
 }
 
 impl ScenarioOutput for CollectedOutput {
@@ -172,6 +176,17 @@ impl ScenarioOutput for CollectedOutput {
             .lock()
             .expect("замок")
             .push(serde_json::to_value(report).expect("json"));
+    }
+
+    fn repeat_last_result(&mut self) -> RepeatOutcome {
+        let last = self.results.lock().expect("замок").last().cloned();
+        match last {
+            Some(result) => {
+                self.repeats.lock().expect("замок").push((Instant::now(), result));
+                RepeatOutcome::Repeated
+            }
+            None => RepeatOutcome::NothingToRepeat,
+        }
     }
 }
 

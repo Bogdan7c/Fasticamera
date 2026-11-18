@@ -41,6 +41,7 @@ mod raw_stream_test_support;
 pub mod raw_stream_wiring;
 pub mod render_route;
 pub mod render_wiring;
+pub mod result_echo;
 pub mod result_line;
 pub mod runtime;
 pub mod runtime_config;

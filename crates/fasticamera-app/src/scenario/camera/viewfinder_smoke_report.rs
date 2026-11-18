@@ -5,8 +5,10 @@
 //! 2. частота сенсора по `SENSOR_TIMESTAMP` не ниже `min_sensor_fps`;
 //! 3. ISP обрабатывает каждый кадр: «кадров через ISP в секунду» = частоте сенсора, а «кадров через
 //!    ISP» = «показано новых кадров» (оба — в пределах `frame_rate_tolerance`);
-//! 4. время прохода ISP (`isp_dispatch`, p95) в бюджете `isp_dispatch_budget_ms`; окно времени кадра
-//!    (`frame_total`) обязано быть (иначе замер не работает);
+//! 4. время прохода ISP (`isp_dispatch`) и окно времени кадра (`frame_total`) замерены (иначе замер не
+//!    работает). Сравнение p95 с целью `isp_dispatch_budget_ms` — только пометка в отчёте
+//!    ([`IspDispatchTarget`]), не провал (решение 56): на Adreno время GPU растягивается частотой (DVFS)
+//!    до бюджета кадра — так же «стоит» и тривиальная мозаика 05, поэтому мс GPU там не мера цены;
 //! 5. ноль CPU-копий (ISP и поток RAW), ноль ошибок validation (если слой включён);
 //! 6. параметры ISP разрешались, отказов нет, кадров без параметров и с неверной геометрией нет,
 //!    ошибок записи ISP и компоновки нет;
@@ -87,6 +89,49 @@ impl ViewfinderLook {
     }
 }
 
+/// Время прохода ISP против цели плана 07 — для отчёта, не для вердикта (решение 56).
+///
+/// На телефоне с DVFS (OnePlus 11, Adreno 740) время GPU — «работа при той частоте, которую выбрал
+/// драйвер», а он растягивает работу до бюджета кадра. Поэтому превышение цели — повод посмотреть
+/// таблицу тока (мА), а не провал. На ПК и устройствах без растяжения пометка остаётся полезной.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(tag = "verdict", rename_all = "snake_case")]
+pub enum IspDispatchTarget {
+    /// p95 не больше цели.
+    Within { target_ms: f64, p95_ms: f64 },
+    /// p95 больше цели: пометка, сценарий не падает.
+    AboveTarget { target_ms: f64, p95_ms: f64 },
+    /// Замеров нет — это отдельное нарушение в [`evaluate_viewfinder`].
+    NotMeasured { target_ms: f64 },
+}
+
+impl IspDispatchTarget {
+    pub fn judge(config: &ViewfinderSmokeConfig, isp_dispatch: Option<GpuTimeMs>) -> Self {
+        let target_ms = config.isp_dispatch_budget_ms;
+        match isp_dispatch {
+            None => Self::NotMeasured { target_ms },
+            Some(time) if time.p95_ms > target_ms => Self::AboveTarget {
+                target_ms,
+                p95_ms: round2(time.p95_ms),
+            },
+            Some(time) => Self::Within {
+                target_ms,
+                p95_ms: round2(time.p95_ms),
+            },
+        }
+    }
+}
+
+/// Сводка `viewfinder` для строки результата: наблюдение плюс пометка о цели прохода ISP.
+pub fn viewfinder_summary(config: &ViewfinderSmokeConfig, observation: &ViewfinderSmokeObservation) -> Value {
+    let mut summary = observation.summary();
+    if let Value::Object(fields) = &mut summary {
+        let target = IspDispatchTarget::judge(config, observation.gpu_time.isp_dispatch);
+        fields.insert("isp_dispatch_target".to_owned(), to_value(&target));
+    }
+    summary
+}
+
 /// Наблюдения прогона `viewfinder`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ViewfinderSmokeObservation {
@@ -154,13 +199,10 @@ pub fn evaluate_viewfinder(config: &ViewfinderSmokeConfig, observation: &Viewfin
         )),
         Some(_) => {}
     }
-    match observation.gpu_time.isp_dispatch {
-        None => violations.push("нет замеров времени прохода ISP (isp_dispatch)".to_owned()),
-        Some(time) if time.p95_ms > config.isp_dispatch_budget_ms => violations.push(format!(
-            "проход ISP p95 {:.2} мс больше бюджета {} мс",
-            time.p95_ms, config.isp_dispatch_budget_ms
-        )),
-        Some(_) => {}
+    // Отсутствие замера — провал (замер сломан). Превышение цели — только пометка в отчёте
+    // (`IspDispatchTarget`, решение 56): на Adreno время GPU растягивается DVFS до бюджета кадра.
+    if observation.gpu_time.isp_dispatch.is_none() {
+        violations.push("нет замеров времени прохода ISP (isp_dispatch)".to_owned());
     }
     if observation.gpu_time.frame_total.is_none() {
         violations.push("нет замеров времени кадра видоискателя (frame_total)".to_owned());

@@ -231,7 +231,16 @@ impl StreamBoundState {
         let (neutral, neutral_source) = neutral_from_hints(hints)?;
         if self.neutral_source != Some(neutral_source) {
             // Раз на смену источника, не на кадр: видно в logcat, откуда сейчас берётся цвет.
-            tracing::info!(target: "fasticamera::render::camera", ?neutral_source, "источник временной нейтрали");
+            // Значения рядом с источником: «единичные коэффициенты» HAL (баланса нет) иначе не отличить
+            // от честной нейтрали при плохом свете (сессия 07a, зелёный видоискатель).
+            tracing::info!(
+                target: "fasticamera::render::camera",
+                ?neutral_source,
+                ?neutral,
+                color_gains = ?hints.color_gains,
+                neutral_color_point = ?hints.neutral_color_point,
+                "источник временной нейтрали"
+            );
             self.neutral_source = Some(neutral_source);
         }
         let inputs = ResolvedInputs {

@@ -16,7 +16,7 @@ use super::viewfinder_metrics::{GpuTimeMs, WindowBaseline, WindowDelta, collect_
 use super::viewfinder_pacing_report::PacingWindowReport;
 use super::viewfinder_session::{SessionTick, SessionTiming, ViewfinderSession};
 use super::viewfinder_smoke_report::{
-    ViewfinderGpuTimesMs, ViewfinderLook, ViewfinderSmokeObservation, evaluate_viewfinder,
+    ViewfinderGpuTimesMs, ViewfinderLook, ViewfinderSmokeObservation, evaluate_viewfinder, viewfinder_summary,
 };
 use super::viewfinder_tuning_report::{AdpfReport, PresentTargetReport};
 use crate::camera_presentation::CameraPresentation;
@@ -239,6 +239,7 @@ impl ObservingScenario for ViewfinderSmokeScenario {
         let observation = finished.into_observation(context, running, failure);
         emit_details(context, "detail_viewfinder", observation.detail_items());
         let violations = evaluate_viewfinder(&smoke_config, &observation);
-        ScenarioStep::Finished(finish_within_budget(context, observation.summary(), violations))
+        let summary = viewfinder_summary(&smoke_config, &observation);
+        ScenarioStep::Finished(finish_within_budget(context, summary, violations))
     }
 }

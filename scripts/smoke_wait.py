@@ -9,7 +9,8 @@
 * ``evaluate_stream`` — логика над последовательностью строк (тестируется на ПК); на строках
   стадий ``FASTICAMERA_STAGE`` вызывает обработчик (драйвер шагов из ``smoke_driver``);
 * ``CHECKS`` — ожидания каждого сценария (что именно считается «прошёл»);
-* ``read_logcat_lines`` — ввод: подпроцесс ``adb logcat`` с дедлайном;
+* ``read_logcat_lines`` — ввод: подпроцесс ``adb logcat`` с дедлайном, переживает обрыв ``adb``
+  (логика переподключения — ``smoke_logcat``);
 * ``main`` — разбор аргументов и вывод итога.
 
 Коды выхода совпадают с ``scripts/lib/common.sh``.
@@ -31,6 +32,7 @@ from pathlib import Path
 
 import smoke_checks
 import smoke_checks_viewfinder
+import smoke_logcat
 import smoke_neutral_card
 import smoke_screen
 from smoke_driver import STAGE_MARKER, AdbDeviceActions, DriverError, StageDriver
@@ -42,7 +44,9 @@ EXIT_NO_RESULT = 3
 EXIT_USAGE = 64
 
 RESULT_MARKER = "FASTICAMERA_RESULT "
-"""Префикс строки результата; контракт с ``crates/fasticamera-app/src/result_line.rs``."""
+"""Префикс строки результата; контракт с ``crates/fasticamera-app/src/result_line.rs``. Наблюдающие
+сценарии повторяют строку несколько раз (решение 58, ``result_echo.rs``): logcat теряет строки во
+всплеске записи. Вердикт — по первой дошедшей копии, остальные копии ожидание уже не читает."""
 
 PANIC_MARKER = "panic at "
 """Начало записи panic hook; контракт с ``crates/fasticamera-app/src/panic_report.rs``."""
@@ -321,6 +325,19 @@ def read_logcat_lines(serial: str, since_epoch: str, timeout_seconds: float) -> 
     """Строки logcat телефона с момента ``since_epoch``, пока не истечёт ``timeout_seconds``.
 
     ``-T`` вместо очистки буфера: ``logcat -c`` меняло бы состояние системы.
+    Обрыв беспроводного ``adb`` посреди прогона не кончает ожидание: ``smoke_logcat`` ждёт
+    устройство и продолжает с последней увиденной метки (дефект сессии 07, стенд V4).
+    """
+    return smoke_logcat.resumable_lines(
+        open_segment=lambda cursor_epoch, deadline: _logcat_segment(serial, cursor_epoch, deadline),
+        wait_for_device=lambda wait_seconds: _wait_for_device(serial, wait_seconds),
+        since_epoch=since_epoch,
+        deadline=time.monotonic() + timeout_seconds,
+    )
+
+
+def _logcat_segment(serial: str, since_epoch: str, deadline: float) -> Iterator[str]:
+    """Один подпроцесс ``adb logcat`` с метки ``since_epoch`` до конца его вывода или до ``deadline``.
 
     Строки читает отдельный поток блокирующим ``readline`` и кладёт в очередь, а генератор
     ждёт очередь с дедлайном. Ожидать готовности дескриптора через ``select`` нельзя:
@@ -334,10 +351,25 @@ def read_logcat_lines(serial: str, since_epoch: str, timeout_seconds: float) -> 
     ]
     process = subprocess.Popen(command, stdout=subprocess.PIPE, text=True, errors="replace")
     try:
-        yield from _lines_until_deadline(process, time.monotonic() + timeout_seconds)
+        yield from _lines_until_deadline(process, deadline)
     finally:
         process.kill()
         process.wait()
+
+
+def _wait_for_device(serial: str, wait_seconds: float) -> bool:
+    """``adb wait-for-device`` не дольше ``wait_seconds``: вернулось ли устройство в состояние ``device``."""
+    try:
+        completed = subprocess.run(
+            ["adb", "-s", serial, "wait-for-device"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=wait_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return False
+    return completed.returncode == 0
 
 
 _END_OF_STREAM = None

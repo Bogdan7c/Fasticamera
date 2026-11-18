@@ -396,17 +396,16 @@ fn viewfinder_smoke_fails_when_isp_misses_presented_frames() {
 }
 
 #[test]
-fn viewfinder_smoke_fails_over_isp_budget() {
+fn viewfinder_smoke_over_isp_target_passes_with_a_note_in_the_result_line() {
+    // Решение 56: превышение цели прохода ISP — пометка в строке результата, а не провал.
     let config = short_config(|viewfinder, _| viewfinder.smoke.isp_dispatch_budget_ms = 1.5);
     let (_harness, result) = run_viewfinder(config, "viewfinder", MirrorFaults::default(), None);
 
-    assert_eq!(result["status"], "failed", "{result}");
-    assert!(
-        result["error"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("больше бюджета 1.5")
-    );
+    assert_eq!(result["status"], "passed", "{result}");
+    let target = &result["report"]["isp_dispatch_target"];
+    assert_eq!(target["verdict"], "above_target", "{result}");
+    assert_eq!(target["target_ms"], 1.5);
+    assert!(target["p95_ms"].as_f64().is_some_and(|p95| p95 > 1.5), "{result}");
 }
 
 #[test]

@@ -175,6 +175,14 @@ fn twenty_create_destroy_cycles_confirm_every_waiter_and_leak_nothing() {
         );
     }
 
+    // Квитанция будит ожидающего раньше, чем поток публикует статус (так задумано: окно отдаём
+    // как можно раньше). Поэтому счётчик последнего цикла ждём, а не читаем сразу — иначе гонка
+    // теста (19 вместо 20), как в дефекте 7 сессии 07.
+    assert!(
+        wait_until(DEADLINE, || rig.handle.status().releases_confirmed == 20),
+        "все 20 освобождений должны быть подтверждены: {:?}",
+        rig.handle.status()
+    );
     let status = rig.handle.status();
     assert_eq!(status.surfaces_attached, 20);
     assert_eq!(status.releases_confirmed, 20);

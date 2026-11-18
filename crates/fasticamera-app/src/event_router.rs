@@ -23,11 +23,13 @@ use render_loop::mailbox::InboxDelivery;
 use crate::camera_service::{AppVisibility, CameraDispatch, CameraServices};
 use crate::gpu_services::GpuServices;
 use crate::jni_boundary::run_guarded;
+use crate::logging::{LogPriority, emit_unfiltered};
 use crate::render_route::RenderRoute;
-use crate::result_line::{emit_result_line, emit_stage_line};
+use crate::result_echo::{EchoDue, ResultEcho};
+use crate::result_line::{emit_stage_line, format_result_line};
 use crate::scenario::observing::{
-    DisplayState, ObservedEvent, ObservingScenario, ScenarioContext, ScenarioOutput, ScenarioStep, ShellServices,
-    StageLine,
+    DisplayState, ObservedEvent, ObservingScenario, RepeatOutcome, ScenarioContext, ScenarioOutput, ScenarioStep,
+    ShellServices, StageLine,
 };
 use crate::scenario::{ScenarioConfig, ScenarioOutcome, ScenarioReport};
 
@@ -37,7 +39,10 @@ pub const SCENARIO_TICK: Duration = Duration::from_millis(50);
 
 /// Пишет стадии и итоги сценариев в logcat.
 #[derive(Debug, Default)]
-pub struct LogcatScenarioOutput;
+pub struct LogcatScenarioOutput {
+    /// Последняя выданная строка итога — для повторов (решение 58): logcat может её потерять.
+    last_result_line: Option<String>,
+}
 
 impl ScenarioOutput for LogcatScenarioOutput {
     fn stage(&mut self, line: StageLine) {
@@ -45,7 +50,19 @@ impl ScenarioOutput for LogcatScenarioOutput {
     }
 
     fn result(&mut self, report: ScenarioReport) {
-        emit_result_line(&report);
+        let (line, _json) = format_result_line(&report);
+        emit_unfiltered(LogPriority::Info, line.clone());
+        self.last_result_line = Some(line);
+    }
+
+    fn repeat_last_result(&mut self) -> RepeatOutcome {
+        match &self.last_result_line {
+            Some(line) => {
+                emit_unfiltered(LogPriority::Info, line.clone());
+                RepeatOutcome::Repeated
+            }
+            None => RepeatOutcome::NothingToRepeat,
+        }
     }
 }
 
@@ -101,11 +118,14 @@ pub struct EventRouter {
     display: DisplayState,
     arrivals: Receiver<Box<dyn ObservingScenario>>,
     active: Option<Box<dyn ObservingScenario>>,
+    /// Повторы строки последнего итога (решение 58): logcat теряет строки во всплеске записи.
+    result_echo: ResultEcho,
 }
 
 impl EventRouter {
     pub fn new(parts: RouterParts) -> (Self, ScenarioStarter) {
         let (sender, arrivals) = channel();
+        let result_echo = ResultEcho::new(parts.scenario_config.result_echo);
         let router = Self {
             events: parts.events,
             services: parts.services,
@@ -119,6 +139,7 @@ impl EventRouter {
             display: DisplayState::default(),
             arrivals,
             active: None,
+            result_echo,
         };
         (router, ScenarioStarter { sender })
     }
@@ -144,7 +165,21 @@ impl EventRouter {
             Err(ReceiveError::SendersGone) => return RouterStep::Stopped,
         };
         self.drive_scenario(|scenario, context| scenario.on_tick(context));
+        self.repeat_result_if_due(Instant::now());
         step
+    }
+
+    /// Очередная копия строки последнего итога, если по расписанию пора (решение 58).
+    fn repeat_result_if_due(&mut self, now: Instant) {
+        if self.result_echo.take_due(now) != EchoDue::Repeat {
+            return;
+        }
+        if self.output.repeat_last_result() == RepeatOutcome::NothingToRepeat {
+            // Расписание взводится только после выдачи итога, так что сюда попасть нельзя;
+            // если всё же попали — расписание неверно, громко и без повторов дальше.
+            tracing::warn!(target: "fasticamera::router", "повтор итога запрошен, но итога ещё не было");
+            self.result_echo.cancel();
+        }
     }
 
     pub fn display(&self) -> &DisplayState {
@@ -209,6 +244,9 @@ impl EventRouter {
                 },
             );
         }
+        // Повторы прежнего итога (и только что выданного «вытеснен») больше не нужны: скрипт уже
+        // ждёт новый сценарий, и копия чужого итога не должна ему попасться.
+        self.result_echo.cancel();
         tracing::info!(target: "fasticamera::router", scenario = scenario.name(), "наблюдающий сценарий запущен");
         self.active = Some(scenario);
         self.drive_scenario(|scenario, context| scenario.start(context));
@@ -275,6 +313,7 @@ impl EventRouter {
             scenario: name.to_owned(),
             outcome,
         });
+        self.result_echo.arm(Instant::now());
     }
 }
 

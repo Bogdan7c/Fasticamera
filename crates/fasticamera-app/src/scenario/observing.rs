@@ -175,10 +175,22 @@ pub struct StageLine {
     pub fields: serde_json::Map<String, serde_json::Value>,
 }
 
+/// Чем кончилась просьба повторить последний итог.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepeatOutcome {
+    /// Та же строка итога выдана ещё раз.
+    Repeated,
+    /// Итога ещё не было — повторять нечего.
+    NothingToRepeat,
+}
+
 /// Куда сценарии пишут стадии и итог (на телефоне — logcat, в тестах — сборщик).
 pub trait ScenarioOutput {
     fn stage(&mut self, line: StageLine);
     fn result(&mut self, report: ScenarioReport);
+    /// Выдать ещё раз последнюю строку итога — байт-в-байт ту же (решение 58, [`crate::result_echo`]).
+    /// Когда повторять, решает маршрутизатор; вывод только хранит то, что уже ушло.
+    fn repeat_last_result(&mut self) -> RepeatOutcome;
 }
 
 /// Контекст одного вызова сценария.

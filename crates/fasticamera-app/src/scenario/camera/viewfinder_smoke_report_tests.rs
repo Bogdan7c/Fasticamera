@@ -248,11 +248,37 @@ fn isp_must_keep_up_with_the_sensor_and_with_presented_frames() {
 }
 
 #[test]
-fn isp_dispatch_over_budget_or_missing_fails_and_missing_frame_total_fails() {
-    assert_single(
-        &violations_of(|observation| observation.gpu_time.isp_dispatch = Some(time(2.5, 3.2))),
-        "больше бюджета 3",
+fn isp_dispatch_above_target_is_a_report_note_not_a_failure() {
+    // Решение 56: на Adreno мс GPU растягивает DVFS, превышение цели 3 мс — пометка, а не провал.
+    let config = ViewfinderSmokeConfig::default();
+    let mut above = healthy();
+    above.gpu_time.isp_dispatch = Some(time(11.5, 11.6));
+    assert_eq!(evaluate_viewfinder(&config, &above), Vec::<String>::new());
+    let summary = viewfinder_summary(&config, &above);
+    assert_eq!(summary["isp_dispatch_target"]["verdict"], "above_target");
+    assert_eq!(summary["isp_dispatch_target"]["target_ms"], 3.0);
+    assert_eq!(summary["isp_dispatch_target"]["p95_ms"], 11.6);
+    // Остальная сводка не потеряна: пометка добавляется к наблюдению, а не заменяет его.
+    assert_eq!(summary["isp_fps"], above.summary()["isp_fps"]);
+    assert!(summary["isp_fps"].is_number());
+
+    let mut within = healthy();
+    within.gpu_time.isp_dispatch = Some(time(2.5, 2.9));
+    assert_eq!(
+        viewfinder_summary(&config, &within)["isp_dispatch_target"]["verdict"],
+        "within"
     );
+
+    let mut missing = healthy();
+    missing.gpu_time.isp_dispatch = None;
+    assert_eq!(
+        viewfinder_summary(&config, &missing)["isp_dispatch_target"]["verdict"],
+        "not_measured"
+    );
+}
+
+#[test]
+fn isp_dispatch_missing_fails_and_missing_frame_total_fails() {
     assert_single(
         &violations_of(|observation| observation.gpu_time.isp_dispatch = None),
         "isp_dispatch",

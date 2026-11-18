@@ -161,7 +161,8 @@ impl ThermalStatusSetting {
 pub struct ViewfinderSmokeConfig {
     /// Длина замера, мс. Минута — как `raw-stream` (3600 кадров).
     pub measure_ms: u64,
-    /// Бюджет прохода ISP (`isp_dispatch`, p95), мс. Цель плана 07 — меньше 3 мс на 4K-входе.
+    /// Цель прохода ISP (`isp_dispatch`, p95), мс; план 07 — меньше 3 мс на 4K-входе. Только пометка
+    /// `isp_dispatch_target` в отчёте, не провал (решение 56: на Adreno мс GPU растягивает DVFS).
     pub isp_dispatch_budget_ms: f64,
     /// Нижняя граница частоты сенсора по `SENSOR_TIMESTAMP`, к/с: 95 % от 60, как шаги `camera-stream`.
     pub min_sensor_fps: f64,

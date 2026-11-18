@@ -83,7 +83,7 @@ pub fn ensure_installed(config: &RuntimeConfig) -> Result<(), ShellWiringError> 
         thermal_policy,
         scenario_config: *config.scenarios(),
         gyro_request: services.default_gyro_request(),
-        output: Box::new(LogcatScenarioOutput),
+        output: Box::new(LogcatScenarioOutput::default()),
         route: render.route,
         gpu,
         camera,
