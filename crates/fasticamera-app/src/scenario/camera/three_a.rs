@@ -17,6 +17,7 @@ use camera_core::CameraEvent;
 use super::detail::{EVENTS_IN_REPORT_LIMIT, emit_details};
 use super::engine_watch::RunFailure;
 use super::result_budget::finish_within_budget;
+use super::three_a_own_ae::OwnAeWatch;
 use super::three_a_report::ThreeAObservation;
 use super::three_a_results::ResultLog;
 use super::three_a_steps::{StartBaselines, StepEnv, StepProgress, ThreeAStep};
@@ -41,6 +42,8 @@ struct ThreeARun {
     pending_steps: VecDeque<Box<dyn ThreeAStep>>,
     current: Option<Box<dyn ThreeAStep>>,
     baselines: Option<StartBaselines>,
+    /// Наблюдение за нашим AE (пусто, пока экспозицию ведёт вендорский).
+    own_ae: OwnAeWatch,
     observation: ThreeAObservation,
 }
 
@@ -107,6 +110,7 @@ impl ThreeARun {
         };
         let status = running.handle().status();
         self.results.observe(status.three_a.last_result.as_ref());
+        self.own_ae.observe(&status.three_a);
         let events: Vec<CameraEvent> = self.session.three_a_events().to_vec();
         let mut env = StepEnv {
             now: context.now,
@@ -216,7 +220,11 @@ impl ObservingScenario for ThreeAScenario {
                 ("bracket_frames", config.bracket.exposures_ns.len().into()),
             ]),
         );
-        let observation = ThreeAObservation::new(session.summary(running, EVENTS_IN_REPORT_LIMIT));
+        let mut observation = ThreeAObservation::new(session.summary(running, EVENTS_IN_REPORT_LIMIT));
+        // Кого композиция поставила вести экспозицию: расхождение с движком — нарушение вердикта.
+        let choice = camera.exposure_controller();
+        observation.expected_ae_source = choice.effective.into();
+        observation.ae_fallback_reason = choice.fallback_reason.clone();
         self.run = Some(ThreeARun {
             config,
             session,
@@ -224,6 +232,7 @@ impl ObservingScenario for ThreeAScenario {
             pending_steps: all_steps(),
             current: None,
             baselines: None,
+            own_ae: OwnAeWatch::default(),
             observation,
         });
         ScenarioStep::Continue
@@ -247,6 +256,7 @@ impl ObservingScenario for ThreeAScenario {
         // Возврат автоматики при любом конце, в том числе провальном.
         finished.observation.restore_failure = restore_automatic(running);
         finished.observation.failure = failure;
+        finished.observation.own_ae = finished.own_ae.report(&finished.results);
         finished.observation.session = finished.session.summary(running, EVENTS_IN_REPORT_LIMIT);
         emit_details(context, "detail_three_a", finished.observation.detail_items());
         let violations = evaluate_three_a(&finished.config, &finished.observation);

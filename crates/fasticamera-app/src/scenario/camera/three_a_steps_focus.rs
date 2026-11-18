@@ -8,6 +8,7 @@ use render_loop::viewfinder::ColdStartState;
 
 use super::engine_watch::RunFailure;
 use super::progress::Deadline;
+use super::three_a_own_ae::{AeSource, is_lock_reached};
 use super::three_a_report::{
     AwbReport, AwbVsHal, FocusReport, LiveReport, LockReport, TapReport, TapResult, ThreeAObservation,
 };
@@ -36,7 +37,10 @@ impl ThreeAStep for LiveStep {
         let af_state = env.results.repeating_after(None).find_map(|result| result.af_state);
         let ae_state = env.results.repeating_after(None).find_map(|result| result.ae_state);
         let expired = self.deadline.is_some_and(|deadline| deadline.is_expired(env.now));
-        if !(af_state.is_some() && ae_state.is_some() || expired) {
+        // У нашего AE вендорский автомат выключен: ждать `AE_STATE` не нужно, экспозицию судит шаг e.
+        let ae_source = AeSource::of(&env.status.three_a);
+        let ae_ready = ae_source == AeSource::Own || ae_state.is_some();
+        if !(af_state.is_some() && ae_ready || expired) {
             return StepProgress::Pending;
         }
         let companion = env.running.diagnostics_snapshot().three_a_companion;
@@ -49,6 +53,7 @@ impl ThreeAStep for LiveStep {
             ],
         );
         observation.live = Some(LiveReport {
+            ae_source,
             companion,
             af_state,
             ae_state,
@@ -279,16 +284,42 @@ enum LockPhase {
 pub struct LockStep {
     phase: Option<LockPhase>,
     report: Option<LockReport>,
+    /// Наш AE: тиков под блокировкой, где статус вышел из `Holding`.
+    left_holding_ticks: usize,
 }
 
 impl LockStep {
-    fn hold_report(first_locked_frame: i64, env: &StepEnv<'_>) -> (usize, usize, Option<f64>) {
+    /// Блокировка достигнута: вендорский AE — `AE_STATE = Locked` в результате, наш — `Holding` (или честный
+    /// предел) в статусе движка. Возвращает номер кадра, с которого судим постоянство.
+    fn locked_frame(env: &StepEnv<'_>, marker: Option<i64>) -> Option<i64> {
+        match AeSource::of(&env.status.three_a) {
+            AeSource::Vendor => env
+                .results
+                .repeating_after(marker)
+                .find(|result| result.ae_state == Some(AeState::Locked))
+                .map(|result| result.frame_number.0),
+            // Запрос с замороженной целью доходит до сенсора с задержкой в несколько кадров:
+            // постоянство судим не раньше, чем через `own_ae_catch_up_frames`.
+            AeSource::Own => is_lock_reached(&env.status.three_a).then(|| {
+                env.results.latest_frame().unwrap_or(0) + i64::from(env.config.lock.own_ae_catch_up_frames) + 1
+            }),
+        }
+    }
+
+    fn hold_report(
+        first_locked_frame: i64,
+        env: &StepEnv<'_>,
+        left_holding_ticks: usize,
+    ) -> (usize, usize, Option<f64>) {
         let held: Vec<_> = env.results.repeating_after(Some(first_locked_frame - 1)).collect();
         let baseline = held.first().and_then(|result| exposure_product(result));
-        let non_locked = held
-            .iter()
-            .filter(|result| result.ae_state != Some(AeState::Locked))
-            .count();
+        let non_locked = match AeSource::of(&env.status.three_a) {
+            AeSource::Vendor => held
+                .iter()
+                .filter(|result| result.ae_state != Some(AeState::Locked))
+                .count(),
+            AeSource::Own => left_holding_ticks,
+        };
         let deviation = baseline.and_then(|baseline| {
             held.iter()
                 .filter_map(|result| exposure_product(result))
@@ -323,18 +354,13 @@ impl ThreeAStep for LockStep {
         let now = env.now;
         match self.phase.take() {
             Some(LockPhase::WaitLocked { marker, deadline }) => {
-                let locked_frame = env
-                    .results
-                    .repeating_after(marker)
-                    .find(|result| result.ae_state == Some(AeState::Locked))
-                    .map(|result| result.frame_number.0);
-                self.phase = match locked_frame {
+                self.phase = match Self::locked_frame(env, marker) {
                     Some(first_locked_frame) => Some(LockPhase::Hold {
                         first_locked_frame,
                         until: now + std::time::Duration::from_millis(env.config.lock.hold_ms),
                     }),
                     None if deadline.is_expired(now) => {
-                        self.report = Some(not_locked_report());
+                        self.report = Some(not_locked_report(AeSource::of(&env.status.three_a)));
                         return self.request_reset(env, observation);
                     }
                     None => Some(LockPhase::WaitLocked { marker, deadline }),
@@ -345,6 +371,10 @@ impl ThreeAStep for LockStep {
                 first_locked_frame,
                 until,
             }) => {
+                let own = AeSource::of(&env.status.three_a) == AeSource::Own;
+                if own && !is_lock_reached(&env.status.three_a) {
+                    self.left_holding_ticks += 1;
+                }
                 if now < until {
                     self.phase = Some(LockPhase::Hold {
                         first_locked_frame,
@@ -353,8 +383,9 @@ impl ThreeAStep for LockStep {
                     return StepProgress::Pending;
                 }
                 let (samples_held, non_locked_after_lock, max_product_deviation) =
-                    Self::hold_report(first_locked_frame, env);
+                    Self::hold_report(first_locked_frame, env, self.left_holding_ticks);
                 self.report = Some(LockReport {
+                    ae_source: AeSource::of(&env.status.three_a),
                     locked: true,
                     samples_held,
                     non_locked_after_lock,
@@ -400,8 +431,9 @@ impl LockStep {
     }
 }
 
-fn not_locked_report() -> LockReport {
+fn not_locked_report(ae_source: AeSource) -> LockReport {
     LockReport {
+        ae_source,
         locked: false,
         samples_held: 0,
         non_locked_after_lock: 0,

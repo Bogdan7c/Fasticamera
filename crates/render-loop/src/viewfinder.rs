@@ -8,14 +8,17 @@
 //! * [`diagnostics`] — что видоискатель делал: стадии, время GPU, счётчики параметров ISP;
 //! * [`headroom`] — стенд «запас под видео» (V4): включение командой и его диагностика;
 //! * [`white_balance`] — диагностика нашего AWB: белая, оценка, сравнение с HAL, холодный старт;
+//! * [`auto_exposure`] — связи нашего AE с движком камеры (ящики) и его диагностика;
 //! * [`awb_feed`] — «последняя статистика AWB» с номером кадра и меткой сенсора (latest-wins).
 
+pub mod auto_exposure;
 pub mod awb_feed;
 pub mod control;
 pub mod diagnostics;
 pub mod headroom;
 pub mod white_balance;
 
+pub use auto_exposure::{AutoExposureCounters, AutoExposureDiagnostics, AutoExposureLinks};
 pub use awb_feed::{AwbFrameIdentity, AwbPublication, AwbStatisticsFeed, AwbStatisticsReader, PublishedAwbStatistics};
 pub use control::{
     ViewfinderCommand, ViewfinderCommandLog, ViewfinderCommandOutcome, ViewfinderCommandRecord, ViewfinderPainter,

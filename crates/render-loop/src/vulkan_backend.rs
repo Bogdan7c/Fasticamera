@@ -40,10 +40,10 @@ use crate::backend::{
 };
 use crate::camera_diagnostics::CameraStreamDiagnostics;
 use crate::viewfinder::{
-    AwbStatisticsFeed, AwbStatisticsReader, ViewfinderCommand, ViewfinderCommandOutcome, ViewfinderDiagnostics,
-    WhiteBalanceDiagnostics,
+    AutoExposureLinks, AwbStatisticsFeed, AwbStatisticsReader, ViewfinderCommand, ViewfinderCommandOutcome,
+    ViewfinderDiagnostics, WhiteBalanceDiagnostics,
 };
-use camera::{SceneWhiteMemory, ViewfinderSettings, ViewfinderStats, WhiteBalanceParts};
+use camera::{AutoExposureParts, SceneWhiteMemory, ViewfinderSettings, ViewfinderStats, WhiteBalanceParts};
 use camera_contract::three_a::{DirectiveSlot, WhiteBalanceDirective};
 use census::census_by_kind;
 use session::{AttachedDisplay, CameraAttach};
@@ -110,6 +110,9 @@ pub struct VulkanDisplayBackend {
     white_balance_directives: DirectiveSlot<WhiteBalanceDirective>,
     /// Белая сцены переживает пересоздание surface и смену камеры (решение 65).
     scene_white: SceneWhiteMemory,
+    /// Ящики нашего AE (указания от движка, предложения движку). `None` — AE на потоке рендера выключен:
+    /// подтяжка ISP равна 1, предложений нет (вендорский AE в композиции).
+    auto_exposure: Option<AutoExposureLinks>,
 }
 
 impl VulkanDisplayBackend {
@@ -207,7 +210,17 @@ impl VulkanDisplayBackend {
             awb_feed: AwbStatisticsFeed::new(),
             white_balance_directives: DirectiveSlot::new(),
             scene_white: SceneWhiteMemory::default(),
+            auto_exposure: None,
         })
+    }
+
+    /// Включает наш AE на потоке рендера: композиция передаёт ящики между рендером и движком камеры (писатель
+    /// указаний и читатель предложений — у движка). Добавочный способ: конструкторы бэкенда не меняются, без
+    /// этого вызова AE на потоке рендера выключен. Настройки берутся из `viewfinder.auto_exposure` конфига.
+    #[must_use]
+    pub fn with_auto_exposure(mut self, links: AutoExposureLinks) -> Self {
+        self.auto_exposure = Some(links);
+        self
     }
 
     /// Читатель статистики AWB видоискателя (latest-wins, с кадром и меткой сенсора). Composition root
@@ -292,6 +305,11 @@ impl DisplayBackend for VulkanDisplayBackend {
                 directives: self.white_balance_directives.clone(),
                 memory: self.scene_white.clone(),
             },
+            auto_exposure: self.auto_exposure.as_ref().map(|links| AutoExposureParts {
+                config: self.config.viewfinder.auto_exposure,
+                directives: links.directives.clone(),
+                proposals: links.proposals.clone(),
+            }),
         });
         let display = AttachedDisplay::attach(&self.context, &self.config, presentation, held_surface, size, camera)?;
         self.attached = Some(display);

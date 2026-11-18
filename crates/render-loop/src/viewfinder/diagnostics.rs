@@ -6,6 +6,7 @@
 
 use isp_vulkan::viewfinder::IspStageSet;
 
+use super::auto_exposure::AutoExposureDiagnostics;
 use super::control::ViewfinderPainter;
 use super::headroom::HeadroomBenchDiagnostics;
 use super::white_balance::WhiteBalanceDiagnostics;
@@ -127,4 +128,6 @@ pub struct ViewfinderDiagnostics {
     pub headroom: HeadroomBenchDiagnostics,
     /// Наш AWB (сессия 08).
     pub white_balance: WhiteBalanceDiagnostics,
+    /// Наш AE (сессия 08a); `None` — ящики AE не переданы (вендорский AE) или сессии показа нет.
+    pub auto_exposure: Option<AutoExposureDiagnostics>,
 }

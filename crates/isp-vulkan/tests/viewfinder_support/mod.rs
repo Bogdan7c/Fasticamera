@@ -35,7 +35,7 @@ use isp_model::demosaic::DemosaicMethod;
 use isp_model::gamut::GamutCompressionSettings;
 use isp_model::image::{DisplayGamut, RawMosaic};
 use isp_model::levels::NormalizationLevels;
-use isp_model::params::{FrameInputs, IspParams, LensShadingMapInput, ProcessingControls};
+use isp_model::params::{ExposureGain, FrameInputs, IspParams, LensShadingMapInput, ProcessingControls};
 use isp_model::pipeline::{ReferenceRun, run_reference};
 use isp_model::sensor::SensorDescription;
 use isp_model::statistics::{AwbStatisticsSettings, TileGrid};
@@ -238,6 +238,7 @@ impl ParamsSpec {
             output_gamut: self.gamut,
             gamut_compression: self.gamut_compression,
             tone: self.tone,
+            exposure_gain: ExposureGain::UNITY,
         };
         IspParams::resolve(&sensor, &frame, &controls).unwrap()
     }

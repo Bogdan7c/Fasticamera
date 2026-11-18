@@ -66,6 +66,7 @@
 pub mod cfa;
 pub mod color;
 pub mod demosaic;
+pub mod exposure;
 pub mod gamut;
 pub mod image;
 pub mod lens_shading;

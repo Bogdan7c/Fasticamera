@@ -103,6 +103,8 @@ impl CameraEngine {
         self.three_a.announced_adjustments.clear();
         self.three_a.focus.reset_for_new_stream();
         self.three_a.exposure.reset_for_new_stream();
+        // Запроса больше нет — рендеру не на что подтягивать кадр.
+        self.three_a.exposure_directive.withdraw_applied();
     }
 
     /// Срок ожидания результатов серии из конфига.

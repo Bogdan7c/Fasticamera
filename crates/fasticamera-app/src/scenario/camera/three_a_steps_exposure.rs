@@ -10,6 +10,7 @@ use camera_core::three_a_status::{AdjustmentReason, ControlParameter};
 
 use super::engine_watch::RunFailure;
 use super::progress::Deadline;
+use super::three_a_own_ae::{AeSource, is_converged, is_limit_reached};
 use super::three_a_report::{
     AppliedExposure, EvPointReport, EvReport, LongShutterReport, ManualReport, ThreeAObservation,
 };
@@ -213,8 +214,15 @@ pub fn is_verifiable_energy(expected: f64, limits: Option<(f64, f64)>) -> bool {
 
 /// Фаза измерения одной компенсации.
 enum EvPhase {
-    Settling { until: std::time::Instant },
-    Collecting { marker: Option<i64>, deadline: Deadline },
+    /// Ждём `until`; наш AE после него ждёт ещё и `Settled`/`Holding`/`LimitReached`, но не дольше `hard_deadline`.
+    Settling {
+        until: std::time::Instant,
+        hard_deadline: Deadline,
+    },
+    Collecting {
+        marker: Option<i64>,
+        deadline: Deadline,
+    },
 }
 
 /// Шаг e: «выдержка × ISO» при компенсации 0, +1, −1 EV (вендорский AE квантует её шагом 1/6 EV).
@@ -234,6 +242,7 @@ impl EvStep {
     fn start_settling(&mut self, env: &StepEnv<'_>) {
         self.phase = Some(EvPhase::Settling {
             until: env.now + Duration::from_millis(env.config.ev.settle_ms),
+            hard_deadline: Deadline::after_millis(env.now, env.config.ev.settle_ms + env.config.ev.collect_timeout_ms),
         });
     }
 
@@ -248,9 +257,13 @@ impl EvStep {
             bias_ev: env.config.ev.biases_ev[self.index],
             median_product: median(products),
             samples: samples.len(),
-            ae_converged: samples
-                .last()
-                .is_some_and(|result| result.ae_state == Some(AeState::Converged)),
+            ae_converged: match AeSource::of(&env.status.three_a) {
+                AeSource::Vendor => samples
+                    .last()
+                    .is_some_and(|result| result.ae_state == Some(AeState::Converged)),
+                AeSource::Own => is_converged(env.status.three_a.auto_exposure),
+            },
+            ae_limit_reached: is_limit_reached(env.status.three_a.auto_exposure),
             verifiable: true,
             ratio_to_baseline: None,
         });
@@ -266,8 +279,13 @@ impl EvStep {
                 let expected = baseline.map(|base| base * 2.0_f64.powf(f64::from(point.bias_ev)));
                 point.verifiable = expected.is_some_and(|expected| is_verifiable_energy(expected, limits));
             }
+            // Наш AE сам сказал, что упёрся в предел: произведение там не равно цели, проверять нечего.
+            if point.ae_limit_reached {
+                point.verifiable = false;
+            }
         }
         EvReport {
+            ae_source: AeSource::of(&env.status.three_a),
             ev_unverifiable_at_limit: self.points.iter().any(|point| !point.verifiable),
             points: std::mem::take(&mut self.points),
         }
@@ -291,9 +309,13 @@ impl ThreeAStep for EvStep {
 
     fn poll(&mut self, env: &mut StepEnv<'_>, observation: &mut ThreeAObservation) -> StepProgress {
         match self.phase.take() {
-            Some(EvPhase::Settling { until }) => {
-                if env.now < until {
-                    self.phase = Some(EvPhase::Settling { until });
+            Some(EvPhase::Settling { until, hard_deadline }) => {
+                let progress = env.status.three_a.auto_exposure;
+                let own_still_moving = AeSource::of(&env.status.three_a) == AeSource::Own
+                    && !(is_converged(progress) || is_limit_reached(progress))
+                    && !hard_deadline.is_expired(env.now);
+                if env.now < until || own_still_moving {
+                    self.phase = Some(EvPhase::Settling { until, hard_deadline });
                 } else {
                     self.phase = Some(EvPhase::Collecting {
                         marker: env.results.latest_frame(),

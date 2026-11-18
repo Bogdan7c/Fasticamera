@@ -7,6 +7,8 @@
 //! * [`CameraPipelines`] (`pipelines`) — объекты GPU, записанные в кадры цели: ISP видоискателя,
 //!   компоновщик, отладочная мозаика, метки времени кадра; запись команд кадра видоискателя;
 //! * `white_balance` — наш AWB на потоке рендера (сессия 08): белая сцены, холодный старт, расписание статистики;
+//! * `exposure` — наш AE на потоке рендера (сессия 08a): замер по общей статистике, предложения движку, остаточная подтяжка ISP;
+//!   `statistics_schedule` — общее решение «считать ли статистику на кадре» для AWB и AE;
 //! * `isp_params` — кэш `IspParams` (пересчёт только при смене входов); `placement` — где на экране
 //!   изображение; `settings` — что меняют команды; `viewfinder_stats` — диагностика видоискателя;
 //! * `headroom_bench` — стенд «запас под видео» (V4): нагрузка полного кадра над тем же RAW в том же
@@ -26,6 +28,7 @@
 //! 3. Выброшенный лизинг при зависшем GPU — намеренная учтённая утечка, а не возврат.
 
 mod export_recovery;
+mod exposure;
 mod headroom_bench;
 mod headroom_stats;
 mod isp_params;
@@ -36,6 +39,7 @@ mod pipelines;
 mod placement;
 mod session;
 mod settings;
+mod statistics_schedule;
 mod submissions;
 mod viewfinder_stats;
 mod white_balance;
@@ -52,6 +56,7 @@ pub use gpu_vulkan::hardware_buffer_cache::SubmissionSerial;
 use gpu_vulkan::raw_mosaic_preview::MosaicSource;
 use raw_frame_stream::{RawFrameLease, ViewfinderFrames};
 
+pub(super) use self::exposure::AutoExposureParts;
 pub(super) use self::headroom_bench::HeadroomBenchParts;
 pub(super) use self::headroom_stats::HeadroomLiveState;
 pub(super) use self::pipelines::CameraPipelines;

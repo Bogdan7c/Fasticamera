@@ -16,6 +16,7 @@
 mod bracket;
 mod decide;
 mod directive;
+mod exposure_directive;
 mod planning;
 mod results;
 
@@ -24,16 +25,18 @@ use std::time::Instant;
 use camera_contract::three_a::PointRequestId;
 
 use crate::three_a_control::{ExposureController, FocusController, ThreeAIntent};
-use crate::three_a_status::{ControlAdjustment, LastThreeAResult, ThreeACounters, ThreeAStatus};
+use crate::three_a_status::{AutoExposureProgress, ControlAdjustment, LastThreeAResult, ThreeACounters, ThreeAStatus};
 use crate::three_a_wiring::ThreeAWiring;
 use bracket::BracketRun;
 use directive::WhiteBalancePublisher;
+use exposure_directive::{ExposurePublisher, refine_progress};
 
 /// Всё состояние 3A, которым владеет движок, кроме самого намерения (оно в `Desired`).
 pub(super) struct ThreeAEngine {
     exposure: Box<dyn ExposureController>,
     focus: Box<dyn FocusController>,
     white_balance: WhiteBalancePublisher,
+    exposure_directive: ExposurePublisher,
     /// Поправки ручных значений, как их видит снимок.
     adjustments: Vec<ControlAdjustment>,
     /// Что уже объявлено событием `ControlsAdjusted` (чтобы не повторять то же самое).
@@ -51,10 +54,13 @@ impl ThreeAEngine {
         let mut white_balance = WhiteBalancePublisher::new(wiring.white_balance);
         // Читатель (поток рендера) должен увидеть режим с первого кадра, а не «ничего».
         white_balance.publish_if_changed(initial_intent);
+        let mut exposure_directive = ExposurePublisher::new(wiring.exposure_directives);
+        exposure_directive.publish_if_changed(initial_intent, None);
         Self {
             exposure: wiring.exposure,
             focus: wiring.focus,
             white_balance,
+            exposure_directive,
             adjustments: Vec::new(),
             announced_adjustments: Vec::new(),
             last_result: None,
@@ -71,6 +77,7 @@ impl ThreeAEngine {
             lock: intent.lock,
             profile: intent.profile,
             focus: self.focus.progress(),
+            auto_exposure: self.auto_exposure_progress(intent),
             controls: intent.controls,
             adjustments: self.adjustments.clone(),
             last_result: self.last_result,
@@ -85,7 +92,22 @@ impl ThreeAEngine {
         [focus, bracket].into_iter().flatten().min()
     }
 
+    /// Состояние нашего AE для снимка (см. [`refine_progress`]).
+    fn auto_exposure_progress(&self, intent: &ThreeAIntent) -> Option<AutoExposureProgress> {
+        refine_progress(
+            self.exposure.progress(),
+            &intent.controls,
+            intent.lock,
+            &self.adjustments,
+        )
+    }
+
     pub(super) fn publish_white_balance(&mut self, intent: &ThreeAIntent) {
         self.white_balance.publish_if_changed(intent);
+    }
+
+    /// Намерение могло измениться командой без пересборки запроса — донести его до рендера.
+    pub(super) fn publish_exposure_intent(&mut self, intent: &ThreeAIntent) {
+        self.exposure_directive.publish_intent_keeping_applied(intent);
     }
 }

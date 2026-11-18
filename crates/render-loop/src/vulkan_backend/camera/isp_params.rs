@@ -32,9 +32,11 @@ use std::sync::Arc;
 use camera_contract::frame_passport::{CaptureColorHints, FrameCaptureMeta, RawFramePassport, StreamPassport};
 use isp_model::color::chromaticity::Chromaticity;
 use isp_model::demosaic::DemosaicMethod;
+use isp_model::exposure::ExposureGain;
 use isp_model::image::DisplayGamut;
 use isp_model::params::{FrameInputs, IspParams, ProcessingControls};
 use isp_model::sensor::SensorDescription;
+use isp_model::tone::ToneCurveSettings;
 
 /// Откуда взяты подсказки кадра.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +110,9 @@ struct ResolvedInputs {
     dynamic_black_level: Option<[f32; 4]>,
     dynamic_white_level: Option<u32>,
     gamut: DisplayGamut,
+    /// Остаточная подтяжка нашего AE (часть `IspParams` кадра: снимок повторяет её, решение владельца 1 сессии 08a).
+    /// Точное сравнение: единичная подтяжка не меняет ключ, а значит и старый путь бит-в-бит.
+    exposure_gain: ExposureGain,
 }
 
 /// Всё, что выведено из кадров ОДНОГО потока (см. «Привязка к потоку»).
@@ -171,8 +176,27 @@ impl IspParamsCache {
         self.bound = None;
     }
 
-    /// Готовит параметры для кадра `passport` под охват экрана `gamut` (см. модуль).
+    /// Средний серый сцены базового тона, из которого считаются параметры кадра: цель яркости нашего AE.
+    /// Берётся из той же функции настроек тона, что и сами параметры (`base_tone_settings`), — число не дублируется.
+    pub fn base_scene_middle_gray() -> f32 {
+        base_tone_settings().scene_middle_gray
+    }
+
+    /// Готовит параметры для кадра `passport` под охват экрана `gamut` (см. модуль), без остаточной подтяжки.
     pub fn prepare(&mut self, passport: &RawFramePassport, white: Chromaticity, gamut: DisplayGamut) -> ParamsDecision {
+        self.prepare_with_exposure_gain(passport, white, ExposureGain::UNITY, gamut)
+    }
+
+    /// То же, что [`Self::prepare`], с остаточной подтяжкой нашего AE для этого кадра: пока сенсор догоняет
+    /// экспозицию, ISP домножает яркость кадра на `exposure_gain` (через тон, см. `isp_model::exposure`).
+    /// Подтяжка входит в ключ кэша: смена `k` пересчитывает параметры, повтор — нет.
+    pub fn prepare_with_exposure_gain(
+        &mut self,
+        passport: &RawFramePassport,
+        white: Chromaticity,
+        exposure_gain: ExposureGain,
+        gamut: DisplayGamut,
+    ) -> ParamsDecision {
         // Раздельные заимствования: состояние потока и кэш сенсора — независимые поля.
         let Self {
             demosaic,
@@ -197,12 +221,17 @@ impl IspParamsCache {
                 }
             },
         };
-        let outcome = match bound.resolve_if_changed(sensor, *demosaic, &hints, white, gamut) {
+        let outcome = match bound.resolve_if_changed(sensor, *demosaic, &hints, white, exposure_gain, gamut) {
             Ok(outcome) => outcome,
             Err(failure) => bound.fallback(failure, gamut),
         };
         ParamsDecision { hints: source, outcome }
     }
+}
+
+/// Настройки тона видоискателя до подтяжки AE: умолчание `isp-model` (в конфиг не вынесены).
+fn base_tone_settings() -> ToneCurveSettings {
+    ToneCurveSettings::default()
 }
 
 /// Состояние потока кадра: кадр другого потока (другой `Arc`) начинает его с чистого листа.
@@ -225,6 +254,7 @@ impl StreamBoundState {
         demosaic: DemosaicMethod,
         hints: &CaptureColorHints,
         white: Chromaticity,
+        exposure_gain: ExposureGain,
         gamut: DisplayGamut,
     ) -> Result<ParamsOutcome, ParamsFailure> {
         let inputs = ResolvedInputs {
@@ -232,6 +262,7 @@ impl StreamBoundState {
             dynamic_black_level: hints.dynamic_black_level,
             dynamic_white_level: hints.dynamic_white_level,
             gamut,
+            exposure_gain,
         };
         if self.current.as_ref().is_some_and(|(current, _)| *current == inputs) {
             return Ok(ParamsOutcome::Unchanged);
@@ -244,7 +275,11 @@ impl StreamBoundState {
             .color_profile()
             .neutral_for_white(white)
             .map_err(|error| ParamsFailure::InvalidNeutral(error.to_string()))?;
-        let controls = ProcessingControls::with_defaults(camera_neutral, demosaic, gamut);
+        let controls = ProcessingControls {
+            tone: base_tone_settings(),
+            exposure_gain,
+            ..ProcessingControls::with_defaults(camera_neutral, demosaic, gamut)
+        };
         let params =
             IspParams::resolve(sensor, &frame, &controls).map_err(|error| ParamsFailure::Resolve(error.to_string()))?;
         self.current = Some((inputs, params));

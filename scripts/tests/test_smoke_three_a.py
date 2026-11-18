@@ -61,6 +61,28 @@ def three_a_report() -> dict:
     }
 
 
+def own_ae_report() -> dict:
+    """Здоровый отчёт ``3a`` с нашим AE: маркеры нашего исполнителя, HAL при AE_MODE_OFF молчит (``inactive``)."""
+    report = copy.deepcopy(three_a_report())
+    report["live"].update(ae_source="own", ae_state="inactive")
+    for point in report["ev"]["points"]:
+        point.update(ae_converged=True, ae_limit_reached=False)
+    report["expected_ae_source"] = "own"
+    report["lock"].update(ae_source="own", max_product_deviation=0.0)
+    report["own_ae"] = {
+        "progress_at_end": {"kind": "settled"},
+        "settled_seen": True,
+        "holding_seen": True,
+        "limit_reached_seen": False,
+        "worst_shortfall_ev": None,
+        "target_not_reached_ticks": 0,
+        "repeating_results_checked": 120,
+        "vendor_ae_results": 0,
+        "first_vendor_ae_frame": None,
+    }
+    return report
+
+
 def edited(path: str, value: object) -> dict:
     """Здоровый отчёт с одним изменённым полем по пути ``a.b.c``."""
     report = copy.deepcopy(three_a_report())
@@ -184,3 +206,73 @@ class DeviceSmokeThreeATest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OwnAeCheckTest(unittest.TestCase):
+    """Сессия 08a: проверки отчёта ``3a`` при нашем AE."""
+
+    @staticmethod
+    def _edited_own(mutate) -> dict:
+        report = own_ae_report()
+        mutate(report)
+        return report
+
+    def test_healthy_run_with_our_ae_passes_without_hal_ae_state(self) -> None:
+        report = own_ae_report()
+        report["live"]["ae_state"] = None  # у нашего AE AE_STATE справка, не правило
+        self.assertEqual(verdict_of(report).exit_code, smoke_wait.EXIT_OK)
+
+    def test_each_our_ae_rule_is_rechecked(self) -> None:
+        cases = {
+            "результатов с активным AE_STATE вендора 3": lambda r: r["own_ae"].update(vendor_ae_results=3),
+            "нет проверенных результатов": lambda r: r["own_ae"].update(repeating_results_checked=0),
+            "ни разу не дошёл": lambda r: r["own_ae"].update(
+                settled_seen=False, holding_seen=False, limit_reached_seen=False
+            ),
+            "наш AE не сошёлся": lambda r: r["ev"]["points"][1].update(ae_converged=False),
+            "не дошёл до Holding": lambda r: r["lock"].update(locked=False),
+            "вышел из Holding": lambda r: r["lock"].update(non_locked_after_lock=2),
+            "плавала": lambda r: r["lock"].update(max_product_deviation=0.2),
+            "в результатах HAL нет AF_STATE": lambda r: r["live"].update(af_state=None),
+        }
+        for needle, mutate in cases.items():
+            with self.subTest(needle):
+                verdict = verdict_of(self._edited_own(mutate))
+                self.assertEqual(verdict.exit_code, smoke_wait.EXIT_SCENARIO_FAILED, verdict.message)
+                self.assertIn(needle, verdict.message)
+
+    def test_engine_running_another_ae_than_the_composition_chose_fails(self) -> None:
+        own_but_vendor = three_a_report()
+        own_but_vendor["expected_ae_source"] = "own"
+        verdict = verdict_of(own_but_vendor)
+        self.assertEqual(verdict.exit_code, smoke_wait.EXIT_SCENARIO_FAILED, verdict.message)
+        self.assertIn("а композиция поставила 'own'", verdict.message)
+        fallback = own_ae_report()
+        fallback["expected_ae_source"] = "vendor"
+        fallback["ae_fallback_reason"] = "рендер недоступен"
+        verdict = verdict_of(fallback)
+        self.assertIn("замена: рендер недоступен", verdict.message)
+
+    def test_every_shifted_ev_point_at_the_limit_means_ev_was_not_verified(self) -> None:
+        report = own_ae_report()
+        for point in report["ev"]["points"][1:]:
+            point.update(ae_converged=False, ae_limit_reached=True, verifiable=False, ratio_to_baseline=1.0)
+        report["own_ae"].update(limit_reached_seen=True)
+        verdict = verdict_of(report)
+        self.assertEqual(verdict.exit_code, smoke_wait.EXIT_SCENARIO_FAILED, verdict.message)
+        self.assertIn("EV не проверен", verdict.message)
+
+    def test_limit_reached_point_is_an_honest_outcome_not_a_failure(self) -> None:
+        report = own_ae_report()
+        report["ev"]["points"][1].update(
+            ae_converged=False, ae_limit_reached=True, verifiable=False, ratio_to_baseline=1.0
+        )
+        report["own_ae"].update(limit_reached_seen=True, worst_shortfall_ev=-1.0, target_not_reached_ticks=40)
+        self.assertEqual(verdict_of(report).exit_code, smoke_wait.EXIT_OK)
+
+    def test_own_ae_section_in_a_vendor_run_is_a_contradiction(self) -> None:
+        report = three_a_report()
+        report["own_ae"] = own_ae_report()["own_ae"]
+        verdict = verdict_of(report)
+        self.assertEqual(verdict.exit_code, smoke_wait.EXIT_SCENARIO_FAILED, verdict.message)
+        self.assertIn("экспозицию вёл вендорский AE", verdict.message)

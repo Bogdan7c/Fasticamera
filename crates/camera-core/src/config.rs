@@ -3,6 +3,8 @@
 use camera_contract::stream::TargetFrameRate;
 use serde::{Deserialize, Serialize};
 
+use crate::three_a_own::OwnExposureConfig;
+
 /// Восстановление после недоступности (решение 39).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -170,6 +172,8 @@ pub struct ThreeAConfig {
     /// с выдержками до секунды укладывается в ~5 с; 10 с — двойной запас на ночные выдержки,
     /// после чего серия честно объявляется проваленной (`ResultsTimedOut`).
     pub bracket_result_timeout_ms: u64,
+    /// Наш AE на стороне движка (08a): стартовое значение, мерцание, пороги перестроения.
+    pub exposure: OwnExposureConfig,
 }
 
 impl Default for ThreeAConfig {
@@ -181,6 +185,7 @@ impl Default for ThreeAConfig {
             reset_point_on_camera_switch: true,
             max_bracket_frames: 4,
             bracket_result_timeout_ms: 10_000,
+            exposure: OwnExposureConfig::default(),
         }
     }
 }
@@ -223,6 +228,8 @@ pub enum CameraEngineConfigError {
     InvalidMeteringRegionSize(f32),
     #[error("three_a: {field} должен быть от 1 до {max}, а не {value}")]
     InvalidThreeALimit { field: &'static str, value: u64, max: u64 },
+    #[error("three_a.exposure.{field} должен быть конечным и положительным (допуски — до 2 EV), а не {value}")]
+    InvalidExposureSetting { field: &'static str, value: f64 },
 }
 
 impl CameraEngineConfig {
@@ -330,7 +337,7 @@ impl CameraEngineConfig {
                 return Err(CameraEngineConfigError::InvalidThreeALimit { field, value, max });
             }
         }
-        Ok(())
+        three_a.exposure.validate()
     }
 
     /// Задержка перед попыткой восстановления номер `attempt` (с 1).

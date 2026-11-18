@@ -5,6 +5,11 @@
 его запускали (решение 62 в продукте: AF/AE живы; ручная выдержка в результате; EV удваивает энергию кадра;
 блокировка держит; брекетинг снимает 4 кадра подряд). Допуски здесь вдвое-втрое грубее Rust. Справка, не провал:
 ``awb_vs_hal``, ``region_effect_diopters``, ``ev_unverifiable_at_limit``.
+
+Сессия 08a: экспозицию может вести наш AE (``live.ae_source == "own"``) или вендорский (по умолчанию в старых
+отчётах). У нашего AE вендорский автомат выключен: ``AE_STATE`` — справка, маркеры «сошлось»/«заблокировано» —
+состояние ``Settled``/``Holding`` нашего исполнителя, а секция ``own_ae`` доказывает, что ни один результат
+повторяющегося запроса не пришёл с активным автоматом HAL.
 """
 
 from __future__ import annotations
@@ -20,6 +25,9 @@ ROUGH_EXPOSURE_TOLERANCE = 0.05
 ROUGH_EV_TOLERANCE = 0.5
 """Грубый допуск отношения «выдержка × ISO» к 2^EV (Rust: 0,35)."""
 
+ROUGH_LOCK_TOLERANCE = 0.05
+"""Грубый допуск постоянства «выдержка × ISO» под блокировкой нашего AE (Rust: 1 %)."""
+
 MIN_EV_POINTS = 3
 """Точки EV: опорная (0), плюс и минус."""
 
@@ -34,12 +42,30 @@ def _rel_gap(value: object, target: object) -> float | None:
     return abs(value - target) / abs(target)
 
 
+def _ae_source_problems(report: dict) -> list[str]:
+    """Движок должен вести тот AE, который поставила композиция (``expected_ae_source``)."""
+    expected = report.get("expected_ae_source")
+    actual = _dict(report.get("live")).get("ae_source", "vendor")
+    if expected is None or expected == actual:
+        return []
+    reason = report.get("ae_fallback_reason")
+    suffix = f" (замена: {reason})" if reason else ""
+    return [f"экспозицию ведёт {actual!r}, а композиция поставила {expected!r}{suffix}"]
+
+
+def _is_own_ae(report: dict) -> bool:
+    """Экспозицию вёл наш AE (отчёты до 08a поля не имеют — это вендорский)."""
+    return _dict(report.get("live")).get("ae_source") == "own"
+
+
 def _live_problems(report: dict) -> list[str]:
     live = _dict(report.get("live"))
     problems = []
     if _dict(live.get("companion")).get("state") != "active":
         problems.append(f"вспомогательный поток 3A не активен: {live.get('companion')!r} (автоматика HAL мертва)")
-    for key in ("af_state", "ae_state"):
+    # У нашего AE вендорский автомат выключен (AE_MODE_OFF): AE_STATE там справка, а не правило.
+    required = ("af_state",) if _is_own_ae(report) else ("af_state", "ae_state")
+    for key in required:
         if live.get(key) is None:
             problems.append(f"в результатах HAL нет {key.upper()}")
     return problems
@@ -111,8 +137,15 @@ def _ev_problems(report: dict) -> list[str]:
     problems = []
     if not isinstance(ev.get("ev_unverifiable_at_limit"), bool):
         problems.append("нет признака ev_unverifiable_at_limit")
+    own = _is_own_ae(report)
+    shifted = [_dict(point) for point in points if _is_number(_dict(point).get("bias_ev")) and point["bias_ev"] != 0]
+    if own and shifted and all(point.get("ae_limit_reached") is True for point in shifted):
+        problems.append("EV не проверен: наш AE во всех точках с компенсацией упёрся в предел камеры")
     for point in map(_dict, points):
         bias = point.get("bias_ev")
+        # Наш AE: точка либо сошлась (Settled/Holding), либо честно упёрлась в предел (LimitReached).
+        if own and not point.get("ae_converged") and not point.get("ae_limit_reached"):
+            problems.append(f"EV {bias:+}: наш AE не сошёлся (ни Settled/Holding, ни LimitReached)")
         if not point.get("verifiable") or not _is_number(bias) or bias == 0:
             continue
         gap = _rel_gap(point.get("ratio_to_baseline"), 2.0**bias)
@@ -124,12 +157,39 @@ def _ev_problems(report: dict) -> list[str]:
 def _lock_problems(report: dict) -> list[str]:
     lock = _dict(report.get("lock"))
     problems = []
-    if lock.get("locked") is not True:
+    if _is_own_ae(report):
+        if lock.get("locked") is not True:
+            problems.append("наш AE не дошёл до Holding (и не упёрся в предел) после блокировки")
+        elif lock.get("non_locked_after_lock") != 0:
+            problems.append(f"под блокировкой наш AE вышел из Holding на тиках: {lock.get('non_locked_after_lock')!r}")
+        if _is_number(lock.get("max_product_deviation")) and lock["max_product_deviation"] > ROUGH_LOCK_TOLERANCE:
+            problems.append(f"под блокировкой «выдержка × ISO» плавала на {lock['max_product_deviation']:.3f}")
+    elif lock.get("locked") is not True:
         problems.append("AE_STATE не стал Locked после блокировки")
     elif lock.get("non_locked_after_lock") != 0:
         problems.append(f"под блокировкой результатов не Locked: {lock.get('non_locked_after_lock')!r}")
     if lock.get("back_to_continuous") is not True:
         problems.append("после сброса точки AF не вернулся в непрерывный режим")
+    return problems
+
+
+def _own_ae_problems(report: dict) -> list[str]:
+    """Секция ``own_ae``: при нашем AE — ни одного результата с вендорским AE и признак работы AE."""
+    own_ae = report.get("own_ae")
+    if not _is_own_ae(report):
+        return [] if own_ae is None else [f"own_ae есть, а экспозицию вёл вендорский AE: {own_ae!r}"]
+    section = _dict(own_ae)
+    problems = []
+    if section.get("vendor_ae_results") != 0:
+        problems.append(
+            f"наш AE: результатов с активным AE_STATE вендора {section.get('vendor_ae_results')!r} "
+            f"(первый кадр {section.get('first_vendor_ae_frame')!r}), ожидалось 0"
+        )
+    checked = section.get("repeating_results_checked")
+    if not _is_number(checked) or checked <= 0:
+        problems.append(f"наш AE: нет проверенных результатов повторяющегося запроса ({checked!r})")
+    if not any(section.get(key) is True for key in ("settled_seen", "holding_seen", "limit_reached_seen")):
+        problems.append(f"наш AE ни разу не дошёл до Settled/Holding/LimitReached (в конце: {section.get('progress_at_end')!r})")
     return problems
 
 
@@ -161,12 +221,14 @@ def check_three_a(result: dict) -> list[str]:
     if problems:
         return problems
     for section in (
+        _ae_source_problems,
         _live_problems,
         _awb_problems,
         _focus_problems,
         _manual_problems,
         _ev_problems,
         _lock_problems,
+        _own_ae_problems,
         _bracket_problems,
     ):
         problems.extend(section(report))

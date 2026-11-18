@@ -153,3 +153,83 @@ fn three_a_defaults_are_valid_and_each_broken_value_gives_its_own_error() {
         "опечатка в секции three_a не должна молча стать дефолтом"
     );
 }
+
+#[test]
+fn own_exposure_section_parses_validates_and_rejects_nonsense() {
+    use crate::three_a_own::FlickerPolicy;
+
+    let parsed: CameraEngineConfig = serde_json::from_str(
+        r#"{"three_a":{"exposure":{"flicker":{"policy":"follow_detector","clear_after_frames":12},"replan_min_change_ev":0.1}}}"#,
+    )
+    .expect("частичная секция");
+    assert_eq!(
+        parsed.three_a.exposure.flicker,
+        FlickerPolicy::FollowDetector { clear_after_frames: 12 }
+    );
+    assert_eq!(parsed.three_a.exposure.replan_min_change_ev, 0.1);
+    assert_eq!(
+        parsed.three_a.exposure.initial_exposure_seconds_iso, 4.0,
+        "остальное — по умолчанию"
+    );
+    assert_eq!(parsed.validate(), Ok(()));
+    assert_eq!(
+        FlickerPolicy::default(),
+        FlickerPolicy::FollowDetector { clear_after_frames: 30 }
+    );
+
+    let typo = serde_json::from_str::<CameraEngineConfig>(r#"{"three_a":{"exposure":{"flicker_policy":"x"}}}"#);
+    assert!(typo.is_err(), "опечатка в секции exposure отвергается");
+
+    let mut config = CameraEngineConfig::default();
+    config.three_a.exposure.initial_exposure_seconds_iso = 0.0;
+    assert!(matches!(
+        config.validate(),
+        Err(CameraEngineConfigError::InvalidExposureSetting {
+            field: "initial_exposure_seconds_iso",
+            ..
+        })
+    ));
+    for tolerance in [0.0, -1.0, f32::NAN, 5.0] {
+        let mut config = CameraEngineConfig::default();
+        config.three_a.exposure.not_reached_tolerance_ev = tolerance;
+        assert!(
+            matches!(
+                config.validate(),
+                Err(CameraEngineConfigError::InvalidExposureSetting {
+                    field: "not_reached_tolerance_ev",
+                    ..
+                })
+            ),
+            "допуск {tolerance}"
+        );
+    }
+    for step in [0.0, -0.1, f32::NAN] {
+        let mut config = CameraEngineConfig::default();
+        config.three_a.exposure.shortfall_report_step_ev = step;
+        assert!(
+            matches!(
+                config.validate(),
+                Err(CameraEngineConfigError::InvalidExposureSetting {
+                    field: "shortfall_report_step_ev",
+                    ..
+                })
+            ),
+            "шаг {step}"
+        );
+    }
+    let mut config = CameraEngineConfig::default();
+    config.three_a.exposure.replan_min_change_ev = f32::INFINITY;
+    assert!(matches!(
+        config.validate(),
+        Err(CameraEngineConfigError::InvalidExposureSetting {
+            field: "replan_min_change_ev",
+            ..
+        })
+    ));
+    let mut config = CameraEngineConfig::default();
+    config.three_a.exposure.flicker = FlickerPolicy::FollowDetector { clear_after_frames: 0 };
+    assert!(matches!(
+        config.validate(),
+        Err(CameraEngineConfigError::InvalidThreeALimit { .. })
+    ));
+}

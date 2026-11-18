@@ -15,6 +15,7 @@ use crate::color::chromaticity::xyz_d50_to_scene_linear;
 use crate::color::dng::{CameraNeutral, ColorProfileError, WhiteEstimate};
 use crate::color::matrix::{Matrix3, PixelMatrix, SingularMatrix};
 use crate::demosaic::DemosaicMethod;
+pub use crate::exposure::{ExposureGain, InvalidExposureGain, LuminanceWeights};
 use crate::gamut::{GamutCompression, GamutCompressionSettings, InvalidGamutCompression};
 use crate::image::DisplayGamut;
 use crate::lens_shading::{LensShadingGainMap, LensShadingStep};
@@ -67,6 +68,9 @@ pub struct ProcessingControls {
     pub output_gamut: DisplayGamut,
     pub gamut_compression: GamutCompressionSettings,
     pub tone: ToneCurveSettings,
+    /// Остаточная экспозиционная подтяжка (наш AE, 08a): применяется через тон, белый сенсора
+    /// остаётся белым (см. [`crate::exposure`]). [`ExposureGain::UNITY`] — без подтяжки.
+    pub exposure_gain: ExposureGain,
 }
 
 impl ProcessingControls {
@@ -78,6 +82,7 @@ impl ProcessingControls {
             output_gamut,
             gamut_compression: GamutCompressionSettings::default(),
             tone: ToneCurveSettings::default(),
+            exposure_gain: ExposureGain::UNITY,
         }
     }
 }
@@ -164,8 +169,34 @@ impl IspParams {
             demosaic: controls.demosaic,
             color: resolve_color(sensor, controls, &white_balance)?,
             gamut_compression: GamutCompression::resolve(&controls.gamut_compression)?,
-            tone: ToneCurve::resolve(&controls.tone)?,
+            tone: ToneCurve::resolve(&tone_with_exposure_gain(&controls.tone, controls.exposure_gain))?,
         })
+    }
+
+    /// Веса яркости для статистики ДО баланса белого (см. [`LuminanceWeights`]).
+    ///
+    /// Тон видит яркость сбалансированного пикселя: `Y = y · (g ⊙ rgb)`, где `g` — усиления
+    /// баланса, применённые к мозаике, а `y` — строка Y матрицы «сбалансированная камера → XYZ
+    /// D50» ([`ColorTransforms::camera_to_xyz_d50`]; в ней уже учтены `diag(g)⁻¹` и `max(N)`).
+    /// Значит веса для несбалансированных каналов: `w_i = y_i · g_i`. Для серого, чей
+    /// сбалансированный уровень `b`, получается `Y = b` при любой нейтрали.
+    pub fn scene_luminance_weights(&self) -> LuminanceWeights {
+        let luminance_row = self.color.camera_to_xyz_d50().rows[1];
+        let gains = self.white_balance.as_array();
+        LuminanceWeights::new(
+            luminance_row[0] * gains[0],
+            luminance_row[1] * gains[1],
+            luminance_row[2] * gains[2],
+        )
+    }
+}
+
+/// Настройки тона с подтяжкой: средний серый сцены делится на `k`, белый остаётся прежним.
+/// Деление на `UNITY` (1,0) точно, поэтому без подтяжки настройки не меняются ни на бит.
+fn tone_with_exposure_gain(tone: &ToneCurveSettings, gain: ExposureGain) -> ToneCurveSettings {
+    ToneCurveSettings {
+        scene_middle_gray: tone.scene_middle_gray / gain.multiplier(),
+        ..*tone
     }
 }
 

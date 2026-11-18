@@ -89,6 +89,10 @@ pub struct LockStepConfig {
     pub constancy_tolerance_fraction: f64,
     /// Сколько ждать возврата непрерывного AF после сброса точки, мс.
     pub unlock_timeout_ms: u64,
+    /// Наш AE: сколько кадров ждать после `Holding`, пока замороженная цель дойдёт до сенсора (HAL видит
+    /// новую экспозицию через 7-8 кадров), прежде чем судить постоянство «выдержка × ISO». Вдвое больше
+    /// задержки зонда 08 — оценка, сверить в 08c. Для вендорского AE не используется.
+    pub own_ae_catch_up_frames: u32,
 }
 
 /// Шаг брекетинга.
@@ -198,6 +202,7 @@ impl Default for LockStepConfig {
             hold_ms: 2 * SECOND_MS,
             constancy_tolerance_fraction: 0.01,
             unlock_timeout_ms: 3 * SECOND_MS,
+            own_ae_catch_up_frames: 15,
         }
     }
 }

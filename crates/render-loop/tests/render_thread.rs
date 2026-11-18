@@ -421,7 +421,10 @@ fn backend_panic_in_detach_still_confirms_waiter() {
         ),
         "ожидание не должно зависнуть: {outcome:?}"
     );
-    assert_eq!(rig.handle.status().state, RenderState::Faulted);
+    // Поток подтверждает освобождение (будит ждущего) внутри итерации, а снимок статуса
+    // публикует в её конце: сразу после подтверждения снимок ещё может быть прежним.
+    // Поэтому ждём `Faulted` с дедлайном, а не читаем статус мгновенно (разовый провал в 08a).
+    assert!(wait_until(DEADLINE, || rig.handle.status().state == RenderState::Faulted));
 }
 
 #[test]

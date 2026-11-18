@@ -20,16 +20,13 @@
 //! Ошибки разведены: сабмит не принят (GPU кадр не читал — лизинг нового кадра возвращается как
 //! нетронутый) и ошибка показа после принятого сабмита (GPU читал — возврат только по fence).
 
+mod collect;
 mod prepare;
 mod record;
 mod slot;
 
-use std::sync::Arc;
-use std::time::Duration;
-
 use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::error::GpuError;
-use gpu_vulkan::gpu_timing::TimestampCollect;
 use gpu_vulkan::raw_mosaic_preview::{MosaicPreviewParams, MosaicSource, RawMosaicPreview};
 use gpu_vulkan::swapchain::{
     DisplayFrame, DisplayTarget, PresentOutcome as GpuPresentOutcome, PresentRequest, PresentSync, SubmitProgress,
@@ -38,15 +35,19 @@ use gpu_vulkan::swapchain::{
 use gpu_vulkan::sync::{ExportableSemaphore, GpuReleaseFence, WaitSemaphore};
 use isp_vulkan::viewfinder::ViewfinderGeometry;
 use raw_frame_stream::{RawFrameLease, ViewfinderFrames};
+use std::sync::Arc;
 
 use self::slot::SlotFrame;
 use super::export_recovery::{ExportRecovery, RecoveryStep};
+use super::exposure::ExposureSlotFrame;
+use super::exposure::{AutoExposureParts, AutoExposureSetupError, ExposureRunner};
 use super::headroom_bench::{BenchSubmit, HeadroomBenchParts, HeadroomBenchRunner, HeadroomFrame};
 use super::isp_params::IspParamsCache;
 use super::lease::{FrameChange, LeaseLedger};
 use super::ownership::OwnershipPlan;
 use super::pipelines::{CameraPipelines, IspPresentation};
 use super::settings::ViewfinderSettings;
+use super::statistics_schedule::StatisticsDecision;
 use super::submissions::SubmissionTracker;
 use super::viewfinder_stats::ViewfinderStats;
 use super::white_balance::{FramePlan, WhiteBalanceParts, WhiteBalanceRunner};
@@ -56,10 +57,6 @@ use crate::camera_diagnostics::{CameraStreamDiagnostics, PresentedCameraFrame};
 use crate::viewfinder::{AwbFrameIdentity, AwbStatisticsFeed, ViewfinderDiagnostics};
 
 const LOG_TARGET: &str = "fasticamera::render::camera";
-
-/// Сколько времён кадра на GPU держать до вычерпывания потоком. Поток забирает их каждый кадр
-/// (обычно 0–1 штука), так что 64 — заведомый запас; дальше — вытеснение со счётчиком.
-const MAX_PENDING_GPU_TIMINGS: usize = 64;
 
 /// Почему кадр камеры не нарисован.
 #[derive(Debug)]
@@ -84,6 +81,9 @@ enum Content {
         identity: AwbFrameIdentity,
         /// Решение AWB для кадра: белая, показ, нужна ли статистика.
         plan: FramePlan,
+        /// Общее решение о статистике кадра (AWB + AE) и то, что нужно AE для замера слота.
+        statistics: StatisticsDecision,
+        exposure: Option<ExposureSlotFrame>,
         /// Тот же кадр через стенд V4 (`None` — стенд выключен или кадр мимо него).
         headroom: Option<HeadroomFrame>,
     },
@@ -142,6 +142,8 @@ pub struct CameraSessionParts<'a> {
     pub awb_feed: AwbStatisticsFeed,
     /// Наш AWB: настройки, указания 3A, память белой сцены.
     pub white_balance: WhiteBalanceParts,
+    /// Наш AE: настройки и ящики движка (`None` — вендорский AE, подтяжки и предложений нет).
+    pub auto_exposure: Option<AutoExposureParts>,
     /// Стенд V4: настройки конвейера, слоты кольца, включён ли.
     pub headroom: HeadroomBenchParts,
 }
@@ -167,6 +169,8 @@ pub struct CameraSession {
     awb_feed: AwbStatisticsFeed,
     /// Наш AWB (сессия 08): какая белая идёт в ISP, показывать ли кадр, нужна ли статистика.
     white: WhiteBalanceRunner,
+    /// Наш AE (сессия 08a): остаточная подтяжка ISP, замер по статистике, предложения движку. `None` — выключен.
+    exposure: Option<ExposureRunner>,
     /// В изображении видоискателя лежит актуальный кадр, его можно перекомпоновать. Сбрасывается
     /// чёрным кадром, остановкой потока, сменой рисовальщика и неудачей ISP.
     isp_image_shown: bool,
@@ -194,6 +198,7 @@ impl CameraSession {
             viewfinder,
             awb_feed,
             white_balance,
+            auto_exposure,
             headroom,
         } = parts;
         let importer = match make_importer(context) {
@@ -210,6 +215,18 @@ impl CameraSession {
             Err(error) => {
                 return Err(Box::new(CameraSessionFailure {
                     error: CameraSessionError::WhiteBalance(error),
+                    viewfinder,
+                }));
+            }
+        };
+        let exposure = match auto_exposure
+            .map(|parts| ExposureRunner::new(parts, IspParamsCache::base_scene_middle_gray()))
+            .transpose()
+        {
+            Ok(exposure) => exposure,
+            Err(error) => {
+                return Err(Box::new(CameraSessionFailure {
+                    error: CameraSessionError::AutoExposure(error),
                     viewfinder,
                 }));
             }
@@ -239,6 +256,7 @@ impl CameraSession {
             viewfinder,
             awb_feed,
             white,
+            exposure,
             isp_image_shown: false,
             slot_frames: Vec::new(),
             slot_frame_indices: Vec::new(),
@@ -261,8 +279,11 @@ impl CameraSession {
 
     /// Снимок диагностики видоискателя.
     pub fn viewfinder_diagnostics(&mut self) -> ViewfinderDiagnostics {
-        self.viewfinder
-            .snapshot(&self.settings, self.bench.live_state(), self.white.diagnostics())
+        let mut diagnostics =
+            self.viewfinder
+                .snapshot(&self.settings, self.bench.live_state(), self.white.diagnostics());
+        diagnostics.auto_exposure = self.exposure.as_ref().map(ExposureRunner::diagnostics);
+        diagnostics
     }
 
     /// Новые настройки (после команды). Смена рисовальщика сбрасывает «изображение актуально»:
@@ -450,89 +471,23 @@ impl CameraSession {
         self.maintain_export_semaphore(completed);
     }
 
-    /// Итоги слота после его fence: время GPU и статистика AWB (публикуется с кадром, который её дал).
-    fn collect_slot(&mut self, pipelines: &mut CameraPipelines, slot: usize) {
-        let collected = pipelines.collect_slot(slot);
-        self.bench.collect_slot(slot, self.viewfinder.headroom_mut());
-        let slot_frame = self.slot_frames.get_mut(slot).and_then(Option::take);
-        match collected.isp {
-            Ok(report) => {
-                self.viewfinder.note_isp_dispatch_time(&report.isp_gpu_time);
-                if let Some(statistics) = report.awb_statistics {
-                    match slot_frame {
-                        Some(SlotFrame { identity, stream }) => {
-                            // Сначала AWB (по ссылке), затем публикация: статистика уходит и потребителю ленты.
-                            self.white.ingest_statistics(stream, identity, &statistics);
-                            self.awb_feed.publish(identity, statistics);
-                            self.viewfinder.counters_mut().statistics_published += 1;
-                        }
-                        None => self.viewfinder.counters_mut().statistics_discarded += 1,
-                    }
-                }
-            }
-            Err(error) => {
-                self.viewfinder.counters_mut().gpu_timing_failures += 1;
-                tracing::warn!(target: LOG_TARGET, %error, slot, "итоги слота ISP не собраны");
-            }
-        }
-        if let Err(error) = collected.compositor {
-            tracing::warn!(target: LOG_TARGET, %error, slot, "набор дескрипторов компоновщика не освобождён");
-        }
-        let slot_frame_index = self.slot_frame_indices.get(slot).copied().flatten();
-        match collected.frame {
-            Ok(frame_time) => {
-                self.viewfinder.note_frame_time(&frame_time);
-                if let (Some(frame_index), TimestampCollect::Ready(spans)) = (slot_frame_index, &frame_time) {
-                    self.push_gpu_timing(FrameGpuTiming {
-                        frame_index,
-                        gpu_duration: Duration::from_nanos(spans.total_ns),
-                    });
-                }
-            }
-            Err(error) => {
-                self.viewfinder.counters_mut().gpu_timing_failures += 1;
-                tracing::warn!(target: LOG_TARGET, %error, slot, "метки кадра видоискателя не собраны");
-            }
-        }
-    }
-
-    /// Запоминает номер кадра потока, чьи команды записаны в слот.
-    fn note_slot_frame_index(&mut self, slot: usize, frame_index: Option<u64>) {
-        if self.slot_frame_indices.len() <= slot {
-            self.slot_frame_indices.resize(slot + 1, None);
-        }
-        self.slot_frame_indices[slot] = frame_index;
-    }
-
-    /// Кладёт время кадра на GPU в очередь для потока. Поток вычерпывает её каждый кадр; если
-    /// он почему-то не вычерпывает, самые старые замеры вытесняются (очередь ограничена).
-    fn push_gpu_timing(&mut self, timing: FrameGpuTiming) {
-        if self.completed_gpu_timings.len() >= MAX_PENDING_GPU_TIMINGS {
-            self.completed_gpu_timings.remove(0);
-            self.viewfinder.counters_mut().gpu_timings_overflowed += 1;
-        }
-        self.completed_gpu_timings.push(timing);
-    }
-
-    /// Вычерпывает собранные времена кадров на GPU (по возрастанию номера кадра).
-    pub fn drain_frame_gpu_timings(&mut self) -> Vec<FrameGpuTiming> {
-        std::mem::take(&mut self.completed_gpu_timings)
-    }
-
-    /// Запоминает, чей кадр ISP записал в слот (`None` — статистику слота публиковать нельзя).
-    fn note_slot_frame(&mut self, slot: usize, frame: Option<SlotFrame>) {
-        if self.slot_frames.len() <= slot {
-            self.slot_frames.resize(slot + 1, None);
-        }
-        self.slot_frames[slot] = frame;
-    }
-
     /// Счётчики видоискателя и «изображение актуально» по итогу принятого сабмита.
     fn note_submitted_viewfinder(&mut self, slot: usize, content: &Content, recorded: Recorded) {
         let slot_frame = match (content, recorded) {
-            (Content::IspNew { identity, plan, .. }, Recorded::IspNew { processed: true, .. }) => Some(SlotFrame {
+            (
+                Content::IspNew {
+                    identity,
+                    plan,
+                    statistics,
+                    exposure,
+                    ..
+                },
+                Recorded::IspNew { processed: true, .. },
+            ) => Some(SlotFrame {
                 identity: *identity,
                 stream: plan.stream,
+                statistics: *statistics,
+                exposure: *exposure,
             }),
             _ => None,
         };
@@ -684,4 +639,7 @@ pub enum CameraSessionError {
     /// Настройки AWB отвергнуты.
     #[error(transparent)]
     WhiteBalance(#[from] super::white_balance::WhiteBalanceSetupError),
+    /// Настройки AE отвергнуты.
+    #[error(transparent)]
+    AutoExposure(#[from] AutoExposureSetupError),
 }

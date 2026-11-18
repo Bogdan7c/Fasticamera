@@ -97,14 +97,17 @@ fn white_balance_slot_of_the_composition_root_receives_the_engine_directives() {
     let mut config = CameraConfig::default();
     config.viewfinder_autostart.enabled = false;
     let control = camera_core::fake::FakeBackendControl::new();
-    let services = start_camera_with_white_balance(
+    let services = start_camera_with_links(
         &config,
         CameraBackendParts {
             factory: control.factory(),
             diagnostics: Arc::new(camera_android::BackendDiagnostics::new(4)),
             raw_stream: RawStreamServices::detached(),
         },
-        slot,
+        CameraLinks {
+            white_balance: slot,
+            ..CameraLinks::default()
+        },
     );
     let wait_for = |wanted: &dyn Fn(&WhiteBalanceDirective) -> bool| {
         let deadline = std::time::Instant::now() + WAIT;
@@ -141,4 +144,227 @@ fn white_balance_slot_of_the_composition_root_receives_the_engine_directives() {
         .expect("команда принята очередью");
     let manual = wait_for(&|directive| matches!(directive.mode, WhiteBalanceMode::Manual { .. }));
     assert_eq!(manual.mode, WhiteBalanceMode::Manual { setting });
+}
+
+// --- Композиция нашего AE (08a): ящик предложений, толчок и переключатель `exposure_controller` ---
+
+mod auto_exposure_composition {
+    use std::time::{Duration, Instant};
+
+    use camera_contract::auto_exposure::{
+        ExposureProduct, ExposureProposal, MeasurementQuality, MeteredArea, ProposalConvergence,
+    };
+    use camera_contract::capture_result::SensorTimestamp;
+    use camera_contract::control::CaptureIntent;
+    use camera_contract::ids::{CameraTarget, LensRole};
+    use camera_contract::raw_format::RawFormat;
+    use camera_contract::stream::{ReadoutAspect, StreamMode, TargetFrameRate};
+    use camera_core::fake::FakeBackendControl;
+    use camera_core::request_controls::ExposurePlan;
+
+    use super::*;
+    use crate::auto_exposure_link::{ExposureControllerKind, RenderAutoExposure};
+
+    fn proposal(seconds_iso: f64) -> ExposureProposal {
+        ExposureProposal {
+            // Заведомо позже любого кадра потока fake.
+            measured_frame: SensorTimestamp::from_nanos(i64::MAX / 2),
+            target: ExposureProduct::from_seconds_iso(seconds_iso).expect("цель"),
+            metered_area: MeteredArea::WholeFrame,
+            convergence: ProposalConvergence::Settled,
+            quality: MeasurementQuality::Measured,
+        }
+    }
+
+    /// Камера на fake с заданным переключателем; видоискатель продукта не автозапускается.
+    fn start(kind: ExposureControllerKind, links: CameraLinks) -> (CameraServices, Arc<FakeBackendControl>) {
+        let mut config = CameraConfig {
+            exposure_controller: kind,
+            ..CameraConfig::default()
+        };
+        config.viewfinder_autostart.enabled = false;
+        let control = FakeBackendControl::new();
+        let services = start_camera_with_links(
+            &config,
+            CameraBackendParts {
+                factory: control.factory(),
+                diagnostics: Arc::new(camera_android::BackendDiagnostics::new(4)),
+                raw_stream: RawStreamServices::detached(),
+            },
+            links,
+        );
+        (services, control)
+    }
+
+    /// Открыть, настроить, запустить поток и отдать три кадра результатов.
+    fn stream(services: &CameraServices, control: &FakeBackendControl) {
+        let handle = services.running().expect("запущен").handle().clone();
+        handle.enter_foreground().expect("foreground");
+        handle.open(CameraTarget::Role(LensRole::Wide)).expect("open");
+        handle
+            .configure(StreamMode {
+                raw_format: RawFormat::Raw10,
+                readout: ReadoutAspect::SixteenByNine,
+                frame_rate: TargetFrameRate::new(60).expect("60 к/с"),
+            })
+            .expect("configure");
+        handle.start_streaming(CaptureIntent::Preview).expect("start");
+        wait_until("поток пошёл", || control.is_repeating());
+        control.complete_frames(3, Duration::from_millis(16));
+        handle
+            .wait_until_status(WAIT, |status| status.three_a.last_result.is_some())
+            .expect("результаты дошли до движка");
+    }
+
+    fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
+        let deadline = Instant::now() + WAIT;
+        while !condition() {
+            assert!(Instant::now() < deadline, "не дождались: {what}");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    fn sensor_product(control: &FakeBackendControl) -> Option<f64> {
+        match control.repeating_request()?.1.exposure {
+            ExposurePlan::Sensor { exposure_time, iso } => {
+                Some(exposure_time.duration().as_secs_f64() * f64::from(iso.value()))
+            }
+            ExposurePlan::VendorAuto { .. } => None,
+        }
+    }
+
+    /// Рендер создаётся раньше камеры: его ранний толчок идёт в пустоту (учтён счётчиком), а после запуска
+    /// привязка работает — следующее предложение будит движок. Предложение, прочитанное движком до начала
+    /// потока, при старте потока по контракту отбрасывается как «прошлый поток» (см. `ProposalGate`): рендер
+    /// обязан публиковать первое предложение каждого нового потока.
+    #[test]
+    fn early_push_before_the_camera_started_is_counted_and_the_later_binding_works() {
+        let links = CameraLinks::default();
+        let render = links
+            .auto_exposure
+            .render_end(ExposureControllerKind::Own)
+            .expect("сторона рендера");
+        render.proposals.publish(proposal(0.4));
+        assert_eq!(render.proposals.refresh_signal().missed_before_bind(), 1);
+        assert!(!render.proposals.refresh_signal().is_bound(), "камеры ещё нет");
+
+        let (services, control) = start(ExposureControllerKind::Own, links);
+        assert!(
+            render.proposals.refresh_signal().is_bound(),
+            "после запуска движок привязан"
+        );
+        stream(&services, &control);
+        render.proposals.publish(proposal(0.8));
+
+        wait_until(
+            "запрос собран под предложение после привязки",
+            || sensor_product(&control).is_some_and(|product| (product - 0.8).abs() < 0.02),
+        );
+    }
+
+    #[test]
+    fn proposal_after_the_start_wakes_the_engine_and_rebuilds_the_request() {
+        let links = CameraLinks::default();
+        let render = links
+            .auto_exposure
+            .render_end(ExposureControllerKind::Own)
+            .expect("сторона рендера");
+        let (services, control) = start(ExposureControllerKind::Own, links);
+        stream(&services, &control);
+        let before = sensor_product(&control).expect("наш AE строит ручной запрос с первого плана");
+
+        render.proposals.publish(proposal(1.6));
+
+        wait_until("запрос пересобран по толчку", || {
+            sensor_product(&control).is_some_and(|product| (product - 1.6).abs() < 0.05)
+        });
+        assert!(
+            (before - 1.6).abs() > 0.5,
+            "до предложения стояло стартовое значение: {before}"
+        );
+    }
+
+    #[test]
+    fn vendor_controller_keeps_vendor_ae_and_gives_the_renderer_nothing() {
+        let links = CameraLinks::default();
+        assert!(
+            links
+                .render_side(ExposureControllerKind::Vendor)
+                .auto_exposure
+                .is_none()
+        );
+        let reader = links
+            .auto_exposure
+            .render_end(ExposureControllerKind::Own)
+            .expect("ящики есть всегда");
+        let (services, control) = start(ExposureControllerKind::Vendor, links);
+        stream(&services, &control);
+
+        assert!(
+            matches!(
+                control.repeating_request().map(|(_, controls)| controls.exposure),
+                Some(ExposurePlan::VendorAuto { .. })
+            ),
+            "вендорский AE: запрос с AE_MODE_ON"
+        );
+        let status = services.running().expect("запущен").handle().status();
+        assert_eq!(
+            status.three_a.auto_exposure, None,
+            "вендорский AE состояния нашего AE не отдаёт"
+        );
+        assert!(
+            !reader.proposals.refresh_signal().is_bound(),
+            "с вендорским AE толчок рендера не привязывается"
+        );
+    }
+
+    #[test]
+    fn our_controller_with_unavailable_renderer_runs_vendor_ae_and_says_why() {
+        let links = CameraLinks {
+            render_auto_exposure: RenderAutoExposure::Unavailable {
+                reason: "GPU не поднялся".to_owned(),
+            },
+            ..CameraLinks::default()
+        };
+        let signal = links
+            .auto_exposure
+            .render_end(ExposureControllerKind::Own)
+            .expect("ящики");
+        let (services, control) = start(ExposureControllerKind::Own, links);
+        stream(&services, &control);
+
+        assert!(
+            matches!(
+                control.repeating_request().map(|(_, controls)| controls.exposure),
+                Some(ExposurePlan::VendorAuto { .. })
+            ),
+            "без рендера камера не должна застрять на стартовой экспозиции нашего AE"
+        );
+        let choice = services.exposure_controller();
+        assert_eq!(choice.effective, ExposureControllerKind::Vendor);
+        assert!(
+            choice
+                .fallback_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("GPU не поднялся"))
+        );
+        assert!(!signal.proposals.refresh_signal().is_bound(), "толчок не привязан");
+    }
+
+    #[test]
+    fn our_controller_never_sends_vendor_ae_to_the_backend() {
+        let (services, control) = start(ExposureControllerKind::Own, CameraLinks::default());
+        stream(&services, &control);
+
+        let vendor = control
+            .calls()
+            .iter()
+            .filter(|call| {
+                matches!(call, camera_core::fake::BackendCall::SetRepeatingRequest { controls, .. }
+                    if matches!(controls.exposure, ExposurePlan::VendorAuto { .. }))
+            })
+            .count();
+        assert_eq!(vendor, 0);
+        assert!(sensor_product(&control).is_some());
+    }
 }

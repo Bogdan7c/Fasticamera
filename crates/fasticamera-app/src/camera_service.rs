@@ -26,6 +26,7 @@ use camera_core::{CameraHandle, CameraRuntime, CommandId, CommandRejected};
 use raw_frame_stream::ViewfinderPacingSwitch;
 use serde::Serialize;
 
+use crate::auto_exposure_link::{EngineBinding, ExposureControllerChoice};
 use crate::camera_lifecycle::{CameraLifecyclePolicy, CameraLifecycleState, PolicyRestore};
 use crate::camera_scenario_config::CameraScenarioConfig;
 use crate::raw_stream_services::RawStreamServices;
@@ -50,6 +51,9 @@ impl BackendDiagnosticsSource for BackendDiagnostics {
 pub struct RunningCamera {
     handle: CameraHandle,
     diagnostics: Arc<dyn BackendDiagnosticsSource>,
+    /// Привязка толчка рендера к движку (наш AE). Объявлена раньше `_runtime`: при падении сначала
+    /// отвязывается получатель, потом останавливается поток движка.
+    _exposure_binding: Option<EngineBinding>,
     /// Только держим поток живым. `Mutex` нужен лишь ради `Sync`: `CameraRuntime` отправляется между
     /// потоками, но не разделяется (внутри приёмник канала), а сервис разделяется маршрутизатором и сценариями.
     _runtime: Mutex<CameraRuntime>,
@@ -60,8 +64,15 @@ impl RunningCamera {
         Self {
             handle,
             diagnostics,
+            _exposure_binding: None,
             _runtime: Mutex::new(runtime),
         }
+    }
+
+    /// Запоминает привязку толчка рендера: она живёт, пока жив движок.
+    pub fn with_exposure_binding(mut self, binding: EngineBinding) -> Self {
+        self._exposure_binding = Some(binding);
+        self
     }
 
     /// Ручка движка (команды, снимок состояния, события).
@@ -182,6 +193,7 @@ pub struct CameraServices {
     scenarios: Arc<CameraScenarioConfig>,
     raw_stream: RawStreamServices,
     viewfinder_autostart: Arc<ViewfinderAutostart>,
+    exposure_controller: ExposureControllerChoice,
 }
 
 impl CameraServices {
@@ -194,7 +206,19 @@ impl CameraServices {
             scenarios: Arc::new(scenarios),
             raw_stream: RawStreamServices::detached(),
             viewfinder_autostart: Arc::new(ViewfinderAutostart::disabled()),
+            exposure_controller: ExposureControllerChoice::default(),
         }
+    }
+
+    /// Запоминает, какой исполнитель экспозиции выбрала композиция (и почему не тот, что в конфиге).
+    pub fn with_exposure_controller(mut self, choice: ExposureControllerChoice) -> Self {
+        self.exposure_controller = choice;
+        self
+    }
+
+    /// Какой исполнитель экспозиции реально у камеры: сценарии сверяют с ним то, что видят в движке.
+    pub fn exposure_controller(&self) -> &ExposureControllerChoice {
+        &self.exposure_controller
     }
 
     /// Подключает политику автозапуска видоискателя (по умолчанию выключена).

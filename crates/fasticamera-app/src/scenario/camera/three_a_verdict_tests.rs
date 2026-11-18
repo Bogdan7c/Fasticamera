@@ -5,6 +5,7 @@ use camera_contract::three_a::{AeState, AfState};
 
 use super::*;
 use crate::scenario::camera::engine_watch::RunFailure;
+use crate::scenario::camera::three_a_own_ae::{AeSource, OwnAeReport};
 use crate::scenario::camera::three_a_report::{
     AppliedExposure, AwbVsHal, BracketFrameReport, EvPointReport, LongShutterReport, TapReport, ThreeAObservation,
 };
@@ -36,6 +37,7 @@ fn healthy() -> ThreeAObservation {
         events: Vec::new(),
     });
     observation.live = Some(LiveReport {
+        ae_source: AeSource::Vendor,
         companion: CompanionStreamStatus::Active {
             width: 640,
             height: 480,
@@ -75,6 +77,7 @@ fn healthy() -> ThreeAObservation {
         },
     });
     observation.ev = Some(EvReport {
+        ae_source: AeSource::Vendor,
         points: vec![
             ev_point(0.0, 1.0, true),
             ev_point(1.0, 2.0, true),
@@ -83,6 +86,7 @@ fn healthy() -> ThreeAObservation {
         ev_unverifiable_at_limit: false,
     });
     observation.lock = Some(LockReport {
+        ae_source: AeSource::Vendor,
         locked: true,
         samples_held: 40,
         non_locked_after_lock: 0,
@@ -120,6 +124,7 @@ fn ev_point(bias_ev: f32, ratio: f64, verifiable: bool) -> EvPointReport {
         median_product: Some(ratio * 1.0e9),
         samples: 20,
         ae_converged: true,
+        ae_limit_reached: false,
         verifiable,
         ratio_to_baseline: Some(ratio),
     }
@@ -397,6 +402,7 @@ fn worst_case_failure_line_fits_the_logcat_record() {
     observation.failure = Some(long_failure());
     observation.restore_failure = Some(long_reason("возврат"));
     observation.live = Some(LiveReport {
+        ae_source: AeSource::Vendor,
         companion: CompanionStreamStatus::Unavailable {
             reason: camera_android::companion_stream::CompanionUnavailableReason::ReaderCreationFailed {
                 status: -10_000,
@@ -453,4 +459,149 @@ fn truncate_for_compare(text: &str) -> String {
 fn healthy_summary_is_far_below_the_line_budget() {
     let bytes = healthy().summary().to_string().len();
     assert!(bytes < 3_000, "сводка здорового прогона {bytes} байт");
+}
+
+fn own_ae_report() -> OwnAeReport {
+    OwnAeReport {
+        progress_at_end: Some(camera_core::three_a_status::AutoExposureProgress::Settled),
+        settled_seen: true,
+        holding_seen: true,
+        limit_reached_seen: false,
+        worst_shortfall_ev: None,
+        target_not_reached_ticks: 0,
+        repeating_results_checked: 120,
+        vendor_ae_results: 0,
+        first_vendor_ae_frame: None,
+    }
+}
+
+/// Прогон с нашим AE: композиция поставила его, движок его ведёт, отчёты шагов помечены.
+fn make_own(observation: &mut ThreeAObservation) {
+    observation.expected_ae_source = AeSource::Own;
+    observation.own_ae = Some(own_ae_report());
+    observation
+        .live
+        .iter_mut()
+        .for_each(|live| live.ae_source = AeSource::Own);
+    observation.ev.iter_mut().for_each(|ev| ev.ae_source = AeSource::Own);
+    observation
+        .lock
+        .iter_mut()
+        .for_each(|lock| lock.ae_source = AeSource::Own);
+}
+
+#[test]
+fn our_ae_does_not_need_hal_ae_state_but_vendor_ae_does() {
+    let own = violations_of(|o| {
+        make_own(o);
+        o.live.iter_mut().for_each(|live| live.ae_state = None);
+    });
+    assert_eq!(own, Vec::<String>::new());
+}
+
+#[test]
+fn healthy_run_with_our_ae_passes_and_a_vendor_request_among_results_fails() {
+    assert_eq!(
+        violations_of(|o| o.own_ae = Some(own_ae_report())),
+        Vec::<String>::new()
+    );
+    let vendor_leak = violations_of(|o| {
+        make_own(o);
+        o.own_ae = Some(OwnAeReport {
+            vendor_ae_results: 3,
+            first_vendor_ae_frame: Some(1_042),
+            ..own_ae_report()
+        });
+    });
+    assert_single(&vendor_leak, "вендорским AE");
+}
+
+#[test]
+fn our_ae_that_never_settled_holds_or_hits_a_limit_fails_but_a_limit_alone_is_honest() {
+    let never = |o: &mut ThreeAObservation| {
+        make_own(o);
+        o.own_ae = Some(OwnAeReport {
+            settled_seen: false,
+            holding_seen: false,
+            ..own_ae_report()
+        });
+    };
+    assert_single(&violations_of(never), "не дошёл");
+    let limit = violations_of(|o| {
+        make_own(o);
+        o.own_ae = Some(OwnAeReport {
+            settled_seen: false,
+            holding_seen: false,
+            limit_reached_seen: true,
+            ..own_ae_report()
+        });
+    });
+    assert_eq!(limit, Vec::<String>::new());
+}
+
+#[test]
+fn our_ae_lock_failures_name_holding_not_hal_locked() {
+    let not_held = violations_of(|o| {
+        make_own(o);
+        o.lock.iter_mut().for_each(|l| l.locked = false);
+    });
+    assert_single(&not_held, "Holding");
+    let left = violations_of(|o| {
+        make_own(o);
+        o.lock.iter_mut().for_each(|l| l.non_locked_after_lock = 4);
+    });
+    assert_single(&left, "вышел из Holding");
+}
+
+#[test]
+fn engine_running_another_ae_than_the_composition_chose_fails_in_both_directions() {
+    let configured_own_but_vendor_runs = violations_of(|o| {
+        o.expected_ae_source = AeSource::Own;
+        o.ae_fallback_reason = None;
+    });
+    assert_single(&configured_own_but_vendor_runs, "а композиция поставила Own");
+    let chose_vendor_but_own_runs = violations_of(|o| {
+        make_own(o);
+        o.expected_ae_source = AeSource::Vendor;
+        o.ae_fallback_reason = Some("рендер недоступен".to_owned());
+        o.own_ae = None;
+    });
+    assert_single(&chose_vendor_but_own_runs, "замена: рендер недоступен");
+}
+
+#[test]
+fn our_ae_ev_point_that_neither_settled_nor_hit_a_limit_fails() {
+    let violations = violations_of(|o| {
+        make_own(o);
+        o.ev.iter_mut().for_each(|ev| ev.points[1].ae_converged = false);
+    });
+    assert_single(&violations, "EV +1: наш AE не сошёлся");
+}
+
+#[test]
+fn our_ae_hitting_the_limit_at_every_shifted_point_means_ev_was_not_verified() {
+    let all_limited = violations_of(|o| {
+        make_own(o);
+        o.ev.iter_mut().for_each(|ev| {
+            for point in ev.points.iter_mut().filter(|point| point.bias_ev != 0.0) {
+                point.ae_converged = false;
+                point.ae_limit_reached = true;
+                point.verifiable = false;
+            }
+        });
+    });
+    assert_single(&all_limited, "EV не проверен");
+    let one_limited = violations_of(|o| {
+        make_own(o);
+        o.ev.iter_mut().for_each(|ev| {
+            ev.points[1].ae_converged = false;
+            ev.points[1].ae_limit_reached = true;
+            ev.points[1].verifiable = false;
+        });
+    });
+    assert_eq!(
+        one_limited,
+        Vec::<String>::new(),
+        "один упор в предел — справка, не провал"
+    );
 }

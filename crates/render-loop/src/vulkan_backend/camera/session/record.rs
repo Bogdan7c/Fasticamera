@@ -66,6 +66,8 @@ impl CameraSession {
                 geometry,
                 identity,
                 plan,
+                statistics,
+                exposure: _,
                 headroom,
             } => {
                 let Some(params) = self.params.current() else {
@@ -91,7 +93,7 @@ impl CameraSession {
                         source,
                         params,
                         geometry: *geometry,
-                        stages: effective_stages(self.settings.stages, plan),
+                        stages: effective_stages(self.settings.stages, statistics.gpu),
                         frame_number: identity.sequence,
                         presentation: plan.presentation,
                     },

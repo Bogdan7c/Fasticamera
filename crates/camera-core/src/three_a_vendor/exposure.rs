@@ -1,15 +1,14 @@
 //! Временный вендорский AE (до 08a): компенсация, блокировка и регион через HAL, либо
 //! полностью ручной сенсор. Полуавтомат честно отвергается — он требует нашего AE.
 
-use camera_contract::capabilities::{FrameDuration, ManualSensorRanges};
 use camera_contract::capture_result::CaptureResultMeta;
-use camera_contract::control::{Control, ExposureBias, ExposureTime, Iso};
+use camera_contract::control::{Control, ExposureBias};
 use camera_contract::three_a::{AeAfLock, ExposureCompensationSupport, LockSupport, PointOfInterest};
-use std::time::Duration;
 
 use crate::command::UnsupportedThreeA;
 use crate::request_controls::ExposurePlan;
 use crate::three_a_control::{ExposureController, ExposureDecision, PlanRefresh, ThreeAContext};
+use crate::three_a_exposure_limits::plan_manual_sensor;
 use crate::three_a_status::{AdjustmentReason, ControlAdjustment, ControlParameter};
 
 /// Допуск, с которым дробное число шагов компенсации считается целым. `ExposureBias` хранится
@@ -126,102 +125,4 @@ fn compensation_in_steps(
     }
     // Диапазон шагов — `i32`, а `clamp` держит значение внутри него: приведение безопасно.
     clamped_steps as i32
-}
-
-/// Обе величины вручную: ISO и выдержка внутри диапазона камеры, выдержка не длиннее кадра.
-fn plan_manual_sensor(
-    context: &ThreeAContext<'_>,
-    iso: Iso,
-    shutter: ExposureTime,
-) -> Result<ExposureDecision, UnsupportedThreeA> {
-    let ManualSensorRanges::Supported {
-        iso: iso_range,
-        exposure_time: shutter_range,
-        ..
-    } = context.capabilities.manual_sensor
-    else {
-        return Err(UnsupportedThreeA::ManualSensor);
-    };
-    let mut adjustments = Vec::new();
-
-    let applied_iso = clamp_with_note(
-        iso.value(),
-        iso_range.min,
-        iso_range.max,
-        ControlParameter::Iso,
-        f64::from,
-        &mut adjustments,
-    );
-    let mut applied_shutter = clamp_with_note(
-        shutter.duration(),
-        shutter_range.shortest,
-        shutter_range.longest,
-        ControlParameter::Shutter,
-        |value| value.as_nanos() as f64,
-        &mut adjustments,
-    );
-    // Выдержка не может быть длиннее кадра потока: 60 к/с держим только короткой выдержкой.
-    let frame_limit = frame_limit(context.stream_frame_duration, shutter_range.shortest);
-    if let Some(limit) = frame_limit.filter(|limit| applied_shutter > *limit) {
-        adjustments.push(ControlAdjustment {
-            parameter: ControlParameter::Shutter,
-            requested: shutter.duration().as_nanos() as f64,
-            applied: limit.as_nanos() as f64,
-            reason: AdjustmentReason::LimitedByFrameDuration,
-        });
-        applied_shutter = limit;
-    }
-    // Компенсация при полностью ручной экспозиции не действует — говорим об этом явно.
-    let bias_ev = f64::from(context.intent.controls.exposure_bias.ev());
-    if bias_ev != 0.0 {
-        adjustments.push(ControlAdjustment {
-            parameter: ControlParameter::ExposureBias,
-            requested: bias_ev,
-            applied: 0.0,
-            reason: AdjustmentReason::IgnoredWhileExposureFullyManual,
-        });
-    }
-    // Нулевые границы диапазона — нелепые характеристики камеры, а не ошибка пользователя.
-    let (Ok(applied_iso), Ok(applied_shutter)) = (Iso::new(applied_iso), ExposureTime::new(applied_shutter)) else {
-        return Err(UnsupportedThreeA::ManualSensor);
-    };
-    Ok(ExposureDecision {
-        plan: ExposurePlan::Sensor {
-            exposure_time: applied_shutter,
-            iso: applied_iso,
-        },
-        adjustments,
-    })
-}
-
-/// Предел выдержки по длительности кадра; `None`, если кадр нулевой (HAL не ограничил) или
-/// короче минимальной выдержки камеры (предел бессмыслен).
-fn frame_limit(frame: FrameDuration, shortest: Duration) -> Option<Duration> {
-    let limit = frame.as_duration();
-    (limit >= shortest && !limit.is_zero()).then_some(limit)
-}
-
-/// Подтянуть значение к диапазону; если подтянули — записать, что и почему.
-fn clamp_with_note<T: PartialOrd + Copy>(
-    value: T,
-    min: T,
-    max: T,
-    parameter: ControlParameter,
-    to_number: impl Fn(T) -> f64,
-    adjustments: &mut Vec<ControlAdjustment>,
-) -> T {
-    let (applied, reason) = if value < min {
-        (min, AdjustmentReason::BelowCameraRange)
-    } else if value > max {
-        (max, AdjustmentReason::AboveCameraRange)
-    } else {
-        return value;
-    };
-    adjustments.push(ControlAdjustment {
-        parameter,
-        requested: to_number(value),
-        applied: to_number(applied),
-        reason,
-    });
-    applied
 }

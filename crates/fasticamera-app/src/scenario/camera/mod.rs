@@ -36,6 +36,7 @@ mod result_budget;
 mod stream;
 mod stream_report;
 mod three_a;
+mod three_a_own_ae;
 mod three_a_report;
 mod three_a_results;
 mod three_a_steps;

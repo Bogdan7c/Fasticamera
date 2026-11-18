@@ -9,6 +9,7 @@ use isp_vulkan::quality::VideoHeadroomConfig;
 use isp_vulkan::viewfinder::ViewfinderIspConfig;
 use serde::{Deserialize, Serialize};
 
+use super::auto_exposure::{AutoExposureConfig, AutoExposureConfigError};
 use super::white_balance::{WhiteBalanceConfig, WhiteBalanceConfigError};
 use crate::viewfinder::ViewfinderPainter;
 
@@ -113,6 +114,9 @@ pub struct ViewfinderConfig {
     pub headroom_bench: VideoHeadroomConfig,
     /// Наш AWB (сессия 08): оценка света, скрытие первых кадров, прореживание статистики.
     pub white_balance: WhiteBalanceConfig,
+    /// Наш AE (сессия 08a): замер, контроллер цели, предел остаточной подтяжки. Действует, только если
+    /// композиция передала бэкенду ящики AE (`with_auto_exposure`); иначе AE — вендорский.
+    pub auto_exposure: AutoExposureConfig,
 }
 
 impl Default for ViewfinderConfig {
@@ -125,6 +129,7 @@ impl Default for ViewfinderConfig {
             gpu_time_window_frames: 600,
             headroom_bench: VideoHeadroomConfig::default(),
             white_balance: WhiteBalanceConfig::default(),
+            auto_exposure: AutoExposureConfig::default(),
         }
     }
 }
@@ -139,6 +144,7 @@ impl ViewfinderConfig {
             ));
         }
         self.white_balance.validate()?;
+        self.auto_exposure.validate()?;
         let with_any_valid_slots = ViewfinderIspConfig {
             frame_slots: 1,
             ..self.isp
@@ -182,6 +188,9 @@ pub enum ViewfinderConfigError {
     /// Настройки AWB отвергнуты.
     #[error(transparent)]
     WhiteBalance(#[from] WhiteBalanceConfigError),
+    /// Настройки AE отвергнуты.
+    #[error(transparent)]
+    AutoExposure(#[from] AutoExposureConfigError),
 }
 
 #[cfg(test)]

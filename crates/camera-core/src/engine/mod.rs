@@ -297,6 +297,7 @@ impl CameraEngine {
         self.apply_command_effects(&command, &outcome, now);
         // Режим AWB мог измениться любой командой (в том числе `Close`, сбросившей намерение).
         self.three_a.publish_white_balance(&self.desired.three_a);
+        self.three_a.publish_exposure_intent(&self.desired.three_a);
     }
 
     /// Асинхронное событие бэкенда.

@@ -16,6 +16,7 @@ use camera_contract::control::{CaptureIntent, ManualControl};
 
 use super::super::{CameraEngine, Halt, LOG_TARGET};
 use super::ThreeAEngine;
+use super::exposure_directive::applied_from_plan;
 use crate::backend::RequestFailure;
 use crate::command::UnsupportedThreeA;
 use crate::event::CameraEvent;
@@ -179,6 +180,11 @@ impl CameraEngine {
         planned: PlannedRequest,
         now: Instant,
     ) -> Result<(), Halt> {
+        // Повторяющийся запрос уже стоит: рендеру можно сказать, что в нём (и где мерить).
+        let applied = applied_from_plan(&planned.controls.exposure, &planned.adjustments);
+        self.three_a
+            .exposure_directive
+            .publish_if_changed(&self.desired.three_a, applied);
         self.announce_adjustments(planned.adjustments);
         let Some(trigger) = planned.trigger else {
             return Ok(());

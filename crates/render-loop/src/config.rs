@@ -10,12 +10,14 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 mod adpf;
+mod auto_exposure;
 mod present_target;
 mod viewfinder;
 mod white_balance;
 
 pub use adpf::{AdpfConfig, AdpfConfigError, AdpfMode, MAX_ADPF_GPU_WAIT_FRAMES, MIN_ADPF_TARGET_FRACTION};
 
+pub use auto_exposure::{AutoExposureConfig, AutoExposureConfigError};
 pub use viewfinder::{
     CropAspectConfig, DisplayColorConfig, MAX_VIEWFINDER_GPU_TIME_WINDOW_FRAMES, ViewfinderConfig,
     ViewfinderConfigError, ViewfinderCropConfig, ViewfinderPlacement,

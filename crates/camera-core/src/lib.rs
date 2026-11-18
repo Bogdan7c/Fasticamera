@@ -35,6 +35,8 @@ pub mod runtime;
 pub mod state;
 pub mod status;
 pub mod three_a_control;
+mod three_a_exposure_limits;
+pub mod three_a_own;
 pub mod three_a_status;
 pub mod three_a_vendor;
 pub mod three_a_wiring;

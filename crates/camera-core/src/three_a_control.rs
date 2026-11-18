@@ -16,7 +16,7 @@ use camera_contract::three_a::{AeAfLock, PointOfInterest, PointRequestId, ThreeA
 
 use crate::command::UnsupportedThreeA;
 use crate::request_controls::{AfTrigger, ExposurePlan, FocusPlan};
-use crate::three_a_status::{ControlAdjustment, FocusOutcome, FocusProgress};
+use crate::three_a_status::{AutoExposureProgress, ControlAdjustment, FocusOutcome, FocusProgress};
 
 /// Намерение автоматики, которым владеет движок.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -84,6 +84,13 @@ pub trait ExposureController: Send {
     /// вызывает после пробуждения [`crate::ThreeAWaker`]; пробуждение идёт по
     /// невытесняемой полосе ящика, а не по полосе кадров.
     fn refresh(&mut self) -> PlanRefresh;
+
+    /// Где исполнитель на пути к цели — для снимка статуса. `None` (по умолчанию) — исполнителю
+    /// сказать нечего (вендорский AE ведёт HAL). Предел камеры и «ручной» режим движок
+    /// подмешивает сам из плана и намерения: исполнитель отвечает только про свой замер.
+    fn progress(&self) -> Option<AutoExposureProgress> {
+        None
+    }
 
     /// Поток или камера сменились: забыть всё, что относится к прошлому потоку.
     fn reset_for_new_stream(&mut self);

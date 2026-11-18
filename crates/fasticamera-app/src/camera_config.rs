@@ -10,6 +10,7 @@ use camera_core::config::CameraEngineConfigError;
 use raw_frame_stream::{RawFrameStreamConfig, RawFrameStreamConfigError};
 use serde::Deserialize;
 
+use crate::auto_exposure_link::ExposureControllerKind;
 use crate::camera_scenario_config::{CameraScenarioConfig, CameraScenarioConfigError};
 use crate::viewfinder_autostart::{ViewfinderAutostartConfig, ViewfinderAutostartConfigError};
 
@@ -34,6 +35,10 @@ pub struct CameraConfig {
     pub scenarios: CameraScenarioConfig,
     /// Временная (до сессии 12) политика: открыть живой видоискатель при старте приложения.
     pub viewfinder_autostart: ViewfinderAutostartConfig,
+    /// Чья автоэкспозиция ведёт камеру: наша по статистике RAW (по умолчанию) или вендорская
+    /// (`"own"` | `"vendor"`, сравнение A/B на телефоне, сессия 08a). Параметры нашего AE —
+    /// `engine.three_a.exposure`.
+    pub exposure_controller: ExposureControllerKind,
 }
 
 /// Какая часть секции `camera` неверна.

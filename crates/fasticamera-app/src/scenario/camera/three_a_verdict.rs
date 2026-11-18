@@ -8,6 +8,7 @@
 
 use camera_android::companion_stream::CompanionStreamStatus;
 
+use super::three_a_own_ae::{AeSource, own_ae_violations};
 use super::three_a_report::{
     AwbReport, BracketRunReport, EvReport, FocusReport, LiveReport, LockReport, ManualReport, TapResult,
     ThreeAObservation,
@@ -21,6 +22,7 @@ pub fn evaluate_three_a(config: &ThreeAScenarioConfig, observation: &ThreeAObser
     if let Some(failure) = &observation.failure {
         violations.push(failure.describe());
     }
+    violations.extend(ae_source_violations(observation));
     violations.extend(observation.live.iter().flat_map(live_violations));
     violations.extend(observation.awb.iter().flat_map(awb_violations));
     violations.extend(observation.focus.iter().flat_map(focus_violations));
@@ -43,6 +45,7 @@ pub fn evaluate_three_a(config: &ThreeAScenarioConfig, observation: &ThreeAObser
             .iter()
             .flat_map(|report| bracket_violations(config, report)),
     );
+    violations.extend(observation.own_ae.iter().flat_map(own_ae_violations));
     if let Some(reason) = &observation.restore_failure {
         violations.push(format!("автоматические параметры не возвращены: {reason}"));
     }
@@ -61,10 +64,31 @@ pub fn live_violations(live: &LiveReport) -> Vec<String> {
     if live.af_state.is_none() {
         violations.push("в результатах нет AF_STATE (автофокус HAL молчит)".to_owned());
     }
-    if live.ae_state.is_none() {
+    // У нашего AE вендорский автомат выключен (`AE_MODE_OFF`): `AE_STATE` там — справка, а не правило.
+    if live.ae_source == AeSource::Vendor && live.ae_state.is_none() {
         violations.push("в результатах нет AE_STATE (автоэкспозиция HAL молчит)".to_owned());
     }
     violations
+}
+
+/// Движок должен вести тот исполнитель экспозиции, который выбрала композиция: «настроен наш, а стоит вендорский»
+/// (и наоборот) не должно проходить зелёным.
+fn ae_source_violations(observation: &ThreeAObservation) -> Vec<String> {
+    let Some(live) = &observation.live else {
+        return Vec::new();
+    };
+    if live.ae_source == observation.expected_ae_source {
+        return Vec::new();
+    }
+    vec![format!(
+        "экспозицию ведёт {:?}, а композиция поставила {:?}{}",
+        live.ae_source,
+        observation.expected_ae_source,
+        observation
+            .ae_fallback_reason
+            .as_deref()
+            .map_or(String::new(), |reason| format!(" (замена: {reason})"))
+    )]
 }
 
 pub fn awb_violations(awb: &AwbReport) -> Vec<String> {
@@ -194,6 +218,9 @@ fn long_shutter_violations(config: &ThreeAScenarioConfig, manual: &ManualReport)
 pub fn ev_violations(config: &ThreeAScenarioConfig, ev: &EvReport) -> Vec<String> {
     let tolerance = config.ev.ratio_tolerance_fraction;
     let mut violations = Vec::new();
+    if ev.ae_source == AeSource::Own {
+        violations.extend(own_ae_ev_violations(ev));
+    }
     for point in ev.points.iter().filter(|point| point.verifiable) {
         let expected = 2.0_f64.powf(f64::from(point.bias_ev));
         match point.ratio_to_baseline {
@@ -214,16 +241,46 @@ pub fn ev_violations(config: &ThreeAScenarioConfig, ev: &EvReport) -> Vec<String
     violations
 }
 
+/// Сходимость точек EV при нашем AE: точка без `Settled`/`Holding` и без `LimitReached` не судима; если все
+/// ненулевые точки упёрлись в предел, компенсация вообще не проверена (честный провал «не проверить»).
+fn own_ae_ev_violations(ev: &EvReport) -> Vec<String> {
+    let mut violations: Vec<String> = ev
+        .points
+        .iter()
+        .filter(|point| !point.ae_converged && !point.ae_limit_reached)
+        .map(|point| {
+            format!(
+                "EV {:+}: наш AE не сошёлся (ни Settled/Holding, ни LimitReached)",
+                point.bias_ev
+            )
+        })
+        .collect();
+    let mut shifted = ev.points.iter().filter(|point| point.bias_ev != 0.0).peekable();
+    if shifted.peek().is_some() && shifted.all(|point| point.ae_limit_reached) {
+        violations.push("EV не проверен: наш AE во всех точках с компенсацией упёрся в предел камеры".to_owned());
+    }
+    violations
+}
+
 pub fn lock_violations(config: &ThreeAScenarioConfig, lock: &LockReport) -> Vec<String> {
     let mut violations = Vec::new();
     if !lock.locked {
-        violations.push("AE_STATE не стал Locked за срок после блокировки".to_owned());
+        violations.push(match lock.ae_source {
+            AeSource::Vendor => "AE_STATE не стал Locked за срок после блокировки".to_owned(),
+            AeSource::Own => "наш AE не дошёл до Holding (и не упёрся в предел) за срок после блокировки".to_owned(),
+        });
     } else {
         if lock.non_locked_after_lock != 0 {
-            violations.push(format!(
-                "под блокировкой {} результатов с AE_STATE не Locked",
-                lock.non_locked_after_lock
-            ));
+            violations.push(match lock.ae_source {
+                AeSource::Vendor => format!(
+                    "под блокировкой {} результатов с AE_STATE не Locked",
+                    lock.non_locked_after_lock
+                ),
+                AeSource::Own => format!(
+                    "под блокировкой наш AE вышел из Holding на {} тиках",
+                    lock.non_locked_after_lock
+                ),
+            });
         }
         match lock.max_product_deviation {
             Some(deviation) if deviation <= config.lock.constancy_tolerance_fraction => {}

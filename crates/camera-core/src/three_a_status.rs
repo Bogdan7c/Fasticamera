@@ -61,6 +61,10 @@ pub enum ControlParameter {
     ExposureBias,
     /// Единицы — кельвины (температура ручного баланса).
     WhiteBalanceTemperature,
+    /// Цель нашего AE, EV **относительно цели**: `requested` всегда 0, `applied` — округлённая
+    /// нехватка (< 0 темнее нужного, > 0 светлее). Не ручной параметр пользователя, а честный
+    /// итог «пределов камеры не хватило».
+    ExposureTarget,
 }
 
 /// Почему значение применено не таким, как просили. Молчаливого обрезания нет.
@@ -79,6 +83,29 @@ pub enum AdjustmentReason {
     NotSupportedByCamera,
     /// Компенсация при полностью ручной экспозиции не действует.
     IgnoredWhileExposureFullyManual,
+    /// Наш AE не смог набрать нужное произведение «выдержка × ISO»: упёрся в диапазон
+    /// сенсора, длительность кадра или кратность периоду мерцания. `applied - requested` —
+    /// честная нехватка в EV (< 0 темнее нужного, > 0 светлее).
+    TargetNotReached,
+}
+
+/// Где наш AE на пути к цели (для экрана и smoke); `None` в [`ThreeAStatus::auto_exposure`] —
+/// экспозицию ведёт вендорский AE и сказать нечего.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum AutoExposureProgress {
+    /// Замера от потока рендера ещё не было (идёт стартовое значение).
+    AwaitingMeasurement,
+    /// Цель ещё движется к оценке сцены.
+    Searching,
+    /// Цель совпала с оценкой сцены.
+    Settled,
+    /// Блокировка: цель заморожена.
+    Holding,
+    /// Пределов камеры не хватает: `shortfall_ev < 0` — темнее нужного, `> 0` — светлее.
+    LimitReached { shortfall_ev: f32 },
+    /// Обе величины ручные: замер ничего не решает.
+    Manual,
 }
 
 /// Явный итог «значение ограничено до …» (критерий плана 08).
@@ -123,6 +150,8 @@ pub struct ThreeAStatus {
     pub lock: AeAfLock,
     pub profile: ThreeAProfile,
     pub focus: FocusProgress,
+    /// Состояние нашего AE; `None`, пока экспозицию ведёт вендорский AE.
+    pub auto_exposure: Option<AutoExposureProgress>,
     /// Желаемые ручные параметры (как их задал пользователь).
     pub controls: ManualControl,
     /// Поправки к ним на текущей камере и потоке (пусто — применены как есть).
@@ -139,6 +168,7 @@ impl ThreeAStatus {
             lock: AeAfLock::Unlocked,
             profile: ThreeAProfile::Photo,
             focus: FocusProgress::Continuous { af_state: None },
+            auto_exposure: None,
             controls: ManualControl::AUTOMATIC,
             adjustments: Vec::new(),
             last_result: None,

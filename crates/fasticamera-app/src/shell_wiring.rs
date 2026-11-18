@@ -20,18 +20,19 @@ use std::sync::{Arc, OnceLock};
 use std::thread;
 
 use android_shell::android::{AndroidPerformanceHints, AndroidShellServices, ShellInstallError, ThermalListenerState};
-use camera_contract::three_a::{DirectiveSlot, WhiteBalanceDirective};
 use gpu_vulkan::validation::ValidationMode;
 use raw_frame_stream::RawFrameStream;
 use render_loop::config::RenderLoopConfig;
 use render_loop::thread::{RenderLoopParts, VsyncFrameClock};
+use render_loop::viewfinder::AutoExposureLinks;
 use render_loop::vulkan_backend::{VulkanBackendConfig, VulkanDisplayBackend};
 use shell_contract::thermal_policy::{ThermalPolicy, ThermalPolicyConfigError};
 use shell_contract::vsync::VsyncSource;
 
+use crate::auto_exposure_link::RenderAutoExposure;
 use crate::camera_config::CameraConfig;
 use crate::camera_service::CameraServices;
-use crate::camera_wiring::{CameraBackendParts, start_camera_with_white_balance};
+use crate::camera_wiring::{CameraBackendParts, CameraLinks, RenderLinks, start_camera_with_links};
 use crate::event_router::{EventRouter, LogcatScenarioOutput, RouterParts, ScenarioStarter};
 use crate::gpu_services::{GpuServices, ValidationState};
 use crate::jni_boundary::run_guarded;
@@ -70,22 +71,25 @@ pub fn ensure_installed(config: &RuntimeConfig) -> Result<(), ShellWiringError> 
     let validation = config.validation_mode();
     // Поток кадров один на процесс: его концы получают и рендер (видоискатель), и камера (производитель).
     let raw_stream = create_raw_stream(&config.camera().raw_stream);
-    // Ящик указаний AWB один на процесс: писатель уйдёт движку камеры, читатель — потоку рендера.
-    let white_balance = DirectiveSlot::new();
-    let render = start_render(
+    // Ящики связи камеры с рендером один набор на процесс: AWB и наш AE. Камера получает свою половину,
+    // рендер — свою (клоны делят состояние).
+    let mut links = CameraLinks::default();
+    let (render, render_auto_exposure) = start_render(
         config.render(),
         validation.clone(),
         &services,
         &raw_stream.stream,
-        white_balance.clone(),
+        links.render_side(config.camera().exposure_controller),
     );
+    // Камера узнаёт, есть ли у нашего AE рендер: без него она получит вендорский AE (с предупреждением).
+    links.render_auto_exposure = render_auto_exposure;
     let gpu = GpuServices::new(
         render.status,
         Arc::new(VulkanGpuDiagnostics::new(validation)),
         config.render().clone(),
         render.control,
     );
-    let camera = start_android_camera(config.camera(), &raw_stream, white_balance);
+    let camera = start_android_camera(config.camera(), &raw_stream, links);
     let (router, starter) = EventRouter::new(RouterParts {
         events: handles.events,
         services: shell_services(&services),
@@ -126,11 +130,14 @@ fn start_render(
     validation: ValidationMode,
     services: &Arc<AndroidShellServices>,
     raw_stream: &RawFrameStream,
-    white_balance: DirectiveSlot<WhiteBalanceDirective>,
-) -> RenderRuntime {
-    match try_start_render(render_config, validation, services, raw_stream, white_balance) {
-        Ok(runtime) => runtime,
-        Err(reason) => RenderRuntime::unavailable(reason),
+    links: RenderLinks,
+) -> (RenderRuntime, RenderAutoExposure) {
+    match try_start_render(render_config, validation, services, raw_stream, links) {
+        Ok(runtime) => (runtime, RenderAutoExposure::Connected),
+        Err(reason) => {
+            let unavailable = RenderAutoExposure::Unavailable { reason: reason.clone() };
+            (RenderRuntime::unavailable(reason), unavailable)
+        }
     }
 }
 
@@ -139,14 +146,28 @@ fn try_start_render(
     validation: ValidationMode,
     services: &Arc<AndroidShellServices>,
     raw_stream: &RawFrameStream,
-    white_balance: DirectiveSlot<WhiteBalanceDirective>,
+    links: RenderLinks,
 ) -> Result<RenderRuntime, String> {
+    let RenderLinks {
+        white_balance,
+        auto_exposure,
+    } = links;
     let backend_config = VulkanBackendConfig::from_render_config(render_config, validation.clone())
         .map_err(|error| format!("настройки бэкенда рендера: {error}"))?;
     // Режим показа камеры всегда: видоискатель отдаёт кадры, пока камера не стримит — рисуется чёрное.
     let backend =
         VulkanDisplayBackend::new_android_camera_preview(backend_config, raw_stream.viewfinder(), white_balance)
             .map_err(|error| format!("GPU не поднялся: {error}"))?;
+    // Наш AE (08a): рендер меряет сцену и пишет предложения движку, читает его указания. `None` —
+    // у камеры вендорский AE (`camera.exposure_controller = "vendor"`, A/B): рендеру мерить нечего,
+    // подтяжка ISP остаётся единичной.
+    let backend = match auto_exposure {
+        Some(render_end) => backend.with_auto_exposure(AutoExposureLinks {
+            directives: render_end.directives,
+            proposals: render_end.proposals,
+        }),
+        None => backend,
+    };
     let subscription = services
         .start_vsync()
         .map_err(|error| format!("vsync не запущен: {error}"))?;
@@ -165,20 +186,16 @@ fn try_start_render(
 
 /// Поднимает поток камеры на бэкенде Camera2 NDK. Менеджер Camera2 создаётся уже на потоке камеры;
 /// отказ запуска — сервис «камера недоступна: причина» (приложение живёт дальше).
-fn start_android_camera(
-    config: &CameraConfig,
-    raw_stream: &RawStreamCreation,
-    white_balance: DirectiveSlot<WhiteBalanceDirective>,
-) -> CameraServices {
+fn start_android_camera(config: &CameraConfig, raw_stream: &RawStreamCreation, links: CameraLinks) -> CameraServices {
     let parts = camera_android::backend_factory(config.android.clone(), raw_stream.stream.producer());
-    start_camera_with_white_balance(
+    start_camera_with_links(
         config,
         CameraBackendParts {
             factory: parts.factory,
             diagnostics: parts.diagnostics,
             raw_stream: observe_stream(raw_stream, parts.cpu_access_probe),
         },
-        white_balance,
+        links,
     )
 }
 

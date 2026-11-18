@@ -25,10 +25,11 @@ use camera_core::request_controls::{AfTrigger, RequestControls};
 use camera_core::{CameraHandle, CameraState, CameraStatus};
 use raw_frame_stream::RawStreamCounters;
 
+use crate::auto_exposure_link::{AutoExposureLink, RenderAutoExposure};
 use crate::camera_config::CameraConfig;
 use crate::camera_scenario_config::CameraScenarioConfig;
 use crate::camera_service::{BackendDiagnosticsSource, CameraServices};
-use crate::camera_wiring::{CameraBackendParts, start_camera};
+use crate::camera_wiring::{CameraBackendParts, CameraLinks, start_camera_with_links};
 use crate::clock_offset::SystemClocks;
 use crate::raw_stream_services::{RawStreamCounterSource, RawStreamServices};
 
@@ -190,6 +191,8 @@ pub struct FakeCameraRig {
     pub probe_at_configure: Arc<Mutex<Vec<bool>>>,
     /// Пауза внутри закрытия устройства, мс (0 — без паузы); тест меняет её на ходу.
     pub close_device_delay_ms: Arc<AtomicU64>,
+    /// Ящики нашего AE, общие с движком: сторона «рендера» тестов (см. `FakeRenderAe`).
+    pub auto_exposure: AutoExposureLink,
 }
 
 impl FakeCameraRig {
@@ -216,6 +219,12 @@ impl FakeCameraRig {
 
     /// Движок с настройками как у продукта, включая `camera.viewfinder_autostart` как есть.
     pub fn with_product_config(config: CameraConfig) -> Self {
+        Self::with_product_config_and_render(config, RenderAutoExposure::Connected)
+    }
+
+    /// То же, но с явным ответом композиции, поднялся ли рендер нашего AE (`Unavailable` — камера
+    /// получит вендорский AE, и в ящики никто не пишет).
+    pub fn with_product_config_and_render(config: CameraConfig, render: RenderAutoExposure) -> Self {
         let control = FakeBackendControl::new();
         let diagnostics = Arc::new(BackendDiagnostics::new(config.android.failure_history_capacity));
         let close_device_delay_ms = Arc::new(AtomicU64::new(0));
@@ -224,7 +233,12 @@ impl FakeCameraRig {
         let stream_counters = Arc::new(ScriptedStreamCounters::default());
         let cpu_probe = CpuAccessProbe::disarmed();
         let probe_at_configure = Arc::new(Mutex::new(Vec::new()));
-        let services = start_camera(
+        let links = CameraLinks {
+            render_auto_exposure: render,
+            ..CameraLinks::default()
+        };
+        let auto_exposure = links.auto_exposure.clone();
+        let services = start_camera_with_links(
             &config,
             CameraBackendParts {
                 factory: lever_reporting_factory(
@@ -241,6 +255,7 @@ impl FakeCameraRig {
                     config.raw_stream.clone(),
                 ),
             },
+            links,
         );
         Self {
             control,
@@ -250,6 +265,7 @@ impl FakeCameraRig {
             cpu_probe,
             probe_at_configure,
             close_device_delay_ms,
+            auto_exposure,
         }
     }
 

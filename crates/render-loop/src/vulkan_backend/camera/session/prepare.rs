@@ -6,15 +6,19 @@
 
 use std::time::Instant;
 
+use camera_contract::geometry::PixelRect;
 use camera_contract::three_a::RequestOrigin;
 use gpu_vulkan::raw_mosaic_preview::MosaicSource;
 use gpu_vulkan::swapchain::DisplayColorSpace;
 use gpu_vulkan::sync::{WaitSemaphore, import_wait_fence};
+use isp_model::exposure::ExposureGain;
 use isp_vulkan::viewfinder::{ViewfinderGeometry, gamut_for_display};
 use raw_frame_stream::{RawFrameLease, ViewfinderPoll};
 
+use super::super::exposure::{ExposureFrameFacts, ExposureFramePlan, ExposureSlotFrame};
 use super::super::isp_params::ParamsOutcome;
 use super::super::passport::preview_params;
+use super::super::statistics_schedule::StatisticsDecision;
 use super::{CameraSession, Content, LOG_TARGET, NewFrameError, Prepared};
 use crate::viewfinder::{AwbFrameIdentity, ViewfinderPainter};
 use crate::vulkan_backend::camera::SubmissionSerial;
@@ -49,6 +53,9 @@ impl CameraSession {
                 // чужие (решение 42), история шумодава стенда V4 его не смешает.
                 self.params.forget_stream();
                 self.white.forget_stream();
+                if let Some(exposure) = self.exposure.as_mut() {
+                    exposure.forget_stream();
+                }
                 self.bench.note_stream_inactive();
                 Prepared {
                     content: Content::Black,
@@ -73,7 +80,16 @@ impl CameraSession {
         let gamut = gamut_for_display(color_space);
         // Наш AWB решает до параметров: какая белая идёт в ISP, показывать ли кадр, нужна ли статистика.
         let plan = self.white.plan_frame(lease.passport());
-        let decision = self.params.prepare(lease.passport(), plan.white, gamut);
+        // Наш AE (если включён): остаточная подтяжка этого кадра и его потребность в статистике. Подтяжка входит
+        // в параметры кадра, поэтому решается до них.
+        let exposure_plan = self
+            .exposure
+            .as_mut()
+            .map(|exposure| exposure.plan_frame(lease.passport()));
+        let exposure_gain = exposure_plan.map_or(ExposureGain::UNITY, |exposure_plan| exposure_plan.gain);
+        let decision = self
+            .params
+            .prepare_with_exposure_gain(lease.passport(), plan.white, exposure_gain, gamut);
         self.viewfinder.note_params(&decision);
         if let ParamsOutcome::Unavailable(reason) = &decision.outcome {
             tracing::debug!(target: LOG_TARGET, ?reason, "параметров ISP нет: кадр не показывается");
@@ -98,6 +114,11 @@ impl CameraSession {
             Ok((source, wait)) => {
                 self.stats.camera_frames_imported += 1;
                 let identity = frame_identity(&lease);
+                let statistics = StatisticsDecision::combine(
+                    plan.statistics,
+                    exposure_plan.map(|exposure_plan| exposure_plan.statistics),
+                );
+                let exposure = self.exposure_slot_frame(exposure_plan, &lease, geometry.crop);
                 // Стенд V4 (если включён) читает тот же кадр в том же сабмите: параметры Menon из тех
                 // же входов, нагрузка — по полезной области.
                 let headroom =
@@ -109,6 +130,8 @@ impl CameraSession {
                         geometry,
                         identity,
                         plan,
+                        statistics,
+                        exposure,
                         headroom,
                     },
                     change: FrameChange::Consume,
@@ -124,6 +147,21 @@ impl CameraSession {
                 self.prepare_isp_without_new_frame()
             }
         }
+    }
+
+    /// Что слот помнит о кадре для замера AE: поток и факты кадра (выдержка×ISO результата, веса яркости
+    /// параметров, кадрирование). `None` — AE выключен или параметров кадра нет (недостижимо после `prepare`).
+    fn exposure_slot_frame(
+        &self,
+        exposure_plan: Option<ExposureFramePlan>,
+        lease: &RawFrameLease,
+        crop: PixelRect,
+    ) -> Option<ExposureSlotFrame> {
+        let (exposure_plan, params) = (exposure_plan?, self.params.current()?);
+        Some(ExposureSlotFrame {
+            stream: exposure_plan.stream,
+            facts: ExposureFrameFacts::of_frame(lease.passport(), params, crop),
+        })
     }
 
     /// Нового кадра для ISP нет: перекомпоновка прежнего изображения (или чёрный, если его нет).

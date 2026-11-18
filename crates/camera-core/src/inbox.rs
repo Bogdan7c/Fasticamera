@@ -217,6 +217,14 @@ impl ThreeAWaker {
     }
 }
 
+/// Толчок из ящика предложений AE (и самотолчок исполнителя) будит поток камеры так же, как
+/// [`ThreeAWaker::wake`].
+impl camera_contract::auto_exposure::RefreshSignal for ThreeAWaker {
+    fn signal(&self) {
+        self.wake();
+    }
+}
+
 impl std::fmt::Debug for ThreeAWaker {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("ThreeAWaker")

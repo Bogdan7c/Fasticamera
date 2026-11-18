@@ -12,12 +12,15 @@ use serde_json::Value;
 
 use super::detail::to_value;
 use super::engine_watch::RunFailure;
+use super::three_a_own_ae::{AeSource, OwnAeReport};
 use super::viewfinder_session::SessionSummary;
 use super::white_balance_report::WhiteBalanceReport;
 
 /// Шаг a: вспомогательный поток и первые состояния автоматики HAL.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct LiveReport {
+    /// Кто ведёт экспозицию: у нашего AE `AE_STATE` HAL — `Inactive`, и его отсутствие не нарушение.
+    pub ae_source: AeSource,
     pub companion: CompanionStreamStatus,
     pub af_state: Option<AfState>,
     pub ae_state: Option<AeState>,
@@ -138,7 +141,10 @@ pub struct EvPointReport {
     /// Медиана «выдержка × ISO», нс·ISO.
     pub median_product: Option<f64>,
     pub samples: usize,
+    /// AE сошёлся: вендорский — HAL `AE_STATE = Converged`, наш — `Settled`/`Holding` в статусе движка.
     pub ae_converged: bool,
+    /// Наш AE упёрся в пределы камеры (`LimitReached`): точку нельзя проверить, это честный итог, а не таймаут.
+    pub ae_limit_reached: bool,
     /// Можно ли проверить точку: ожидаемая энергия внутри пределов сенсора камеры.
     pub verifiable: bool,
     /// Отношение медианы к опорной (bias 0).
@@ -148,6 +154,8 @@ pub struct EvPointReport {
 /// Шаг e: компенсация экспозиции.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct EvReport {
+    /// Кто вёл экспозицию: от этого зависит, как судить сходимость точек.
+    pub ae_source: AeSource,
     pub points: Vec<EvPointReport>,
     /// Хотя бы одну точку нельзя проверить из-за пределов сенсора (не провал).
     pub ev_unverifiable_at_limit: bool,
@@ -156,10 +164,12 @@ pub struct EvReport {
 /// Шаг f: блокировка AE/AF.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct LockReport {
-    /// `AE_STATE = Locked` достигнут.
+    pub ae_source: AeSource,
+    /// Блокировка достигнута: вендорский AE — `AE_STATE = Locked`, наш — `Holding` в статусе движка.
     pub locked: bool,
     pub samples_held: usize,
-    /// Результатов под блокировкой, где AE_STATE не Locked.
+    /// Под блокировкой: вендорский AE — результатов с `AE_STATE` не `Locked`, наш — тиков, где статус
+    /// вышел из `Holding`.
     pub non_locked_after_lock: usize,
     /// Наибольшее отклонение «выдержка × ISO» от первого кадра под блокировкой, доля.
     pub max_product_deviation: Option<f64>,
@@ -207,6 +217,13 @@ pub struct ThreeAObservation {
     pub ev: Option<EvReport>,
     pub lock: Option<LockReport>,
     pub bracket: Option<BracketRunReport>,
+    /// Какой исполнитель экспозиции должен вести камеру по выбору композиции (сверяется с тем, что видно в движке).
+    pub expected_ae_source: AeSource,
+    /// Почему он не тот, что в конфиге (рендер недоступен); `None` — выбор совпал с конфигом.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ae_fallback_reason: Option<String>,
+    /// Наш AE за прогон; `None` — экспозицию вёл вендорский.
+    pub own_ae: Option<OwnAeReport>,
     /// Не удалось вернуть автоматические параметры в конце (причина).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub restore_failure: Option<String>,
@@ -225,6 +242,9 @@ impl ThreeAObservation {
             ev: None,
             lock: None,
             bracket: None,
+            expected_ae_source: AeSource::Vendor,
+            ae_fallback_reason: None,
+            own_ae: None,
             restore_failure: None,
         }
     }
@@ -243,6 +263,9 @@ impl ThreeAObservation {
             "ev": self.ev,
             "lock": self.lock,
             "bracket": self.bracket,
+            "expected_ae_source": self.expected_ae_source,
+            "ae_fallback_reason": self.ae_fallback_reason,
+            "own_ae": self.own_ae,
             "restore_failure": self.restore_failure,
         })
     }
@@ -254,6 +277,7 @@ impl ThreeAObservation {
             serde_json::json!({ "awb": to_value(&self.awb) }),
             serde_json::json!({ "focus": to_value(&self.focus), "lock": to_value(&self.lock) }),
             serde_json::json!({ "ev": to_value(&self.ev), "bracket": to_value(&self.bracket) }),
+            serde_json::json!({ "own_ae": to_value(&self.own_ae) }),
         ]
     }
 }

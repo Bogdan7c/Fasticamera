@@ -4,10 +4,12 @@
 //! в 08a — наш AE) вместе с писателем «почтового ящика» баланса белого. Так замена
 //! исполнителя и подключение потока рендера не требуют правки движка.
 
-use camera_contract::three_a::{DirectiveSlot, WhiteBalanceDirective};
+use camera_contract::auto_exposure::{ExposureDirective, ExposureProposalChannel};
+use camera_contract::three_a::{DirectiveSlot, MainsFrequency, WhiteBalanceDirective};
 
 use crate::config::ThreeAConfig;
 use crate::three_a_control::{ExposureController, FocusController};
+use crate::three_a_own::RawStatsExposure;
 use crate::three_a_vendor::{VendorExposure, VendorFocus};
 
 /// Исполнители 3A и ящик указаний баланса белого.
@@ -16,6 +18,9 @@ pub struct ThreeAWiring {
     pub focus: Box<dyn FocusController>,
     /// Сюда движок кладёт режим AWB; читает поток рендера (решение 64).
     pub white_balance: DirectiveSlot<WhiteBalanceDirective>,
+    /// Сюда движок кладёт указание нашему AE (где мерить, блокировка, что стоит в запросе);
+    /// читает поток рендера (08a). С вендорским AE ящик просто никто не читает.
+    pub exposure_directives: DirectiveSlot<ExposureDirective>,
 }
 
 impl ThreeAWiring {
@@ -25,7 +30,23 @@ impl ThreeAWiring {
             exposure: Box::new(VendorExposure),
             focus: Box::new(VendorFocus::new(config.focus_marker_grace_frames)),
             white_balance: DirectiveSlot::new(),
+            exposure_directives: DirectiveSlot::new(),
         }
+    }
+
+    /// Состав 08a: **наш** AE по статистике RAW и вендорский AF. `proposals` — ящик, в который
+    /// пишет рендер; `mains` — частота сети по умолчанию (конфиг Android, решение 67).
+    pub fn own(config: &ThreeAConfig, proposals: ExposureProposalChannel, mains: MainsFrequency) -> Self {
+        Self::vendor(config).with_controllers(
+            Box::new(RawStatsExposure::new(config.exposure, proposals, mains)),
+            Box::new(VendorFocus::new(config.focus_marker_grace_frames)),
+        )
+    }
+
+    /// Тот же состав, но с ящиком указаний AE, который уже держит читатель (поток рендера).
+    pub fn with_exposure_directive_slot(mut self, slot: DirectiveSlot<ExposureDirective>) -> Self {
+        self.exposure_directives = slot;
+        self
     }
 
     /// Тот же состав, но с ящиком, который уже держит читатель (поток рендера).

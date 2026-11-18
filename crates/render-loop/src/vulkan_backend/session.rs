@@ -28,8 +28,8 @@ use shell_contract::surface::{NativeSurface, SurfaceSize};
 #[cfg(feature = "test-support")]
 use super::ViewfinderReadback;
 use super::camera::{
-    CameraDrawError, CameraFeed, CameraPipelines, CameraSession, CameraSessionFailure, CameraSessionParts,
-    HeadroomBenchParts, ViewfinderSettings, ViewfinderStats, WhiteBalanceParts,
+    AutoExposureParts, CameraDrawError, CameraFeed, CameraPipelines, CameraSession, CameraSessionFailure,
+    CameraSessionParts, HeadroomBenchParts, ViewfinderSettings, ViewfinderStats, WhiteBalanceParts,
 };
 use super::config::VulkanBackendConfig;
 use super::mapping::{FailureKind, classify_swapchain_error, display_info, gpu_backend_error};
@@ -73,6 +73,8 @@ pub(super) struct CameraAttach<'a> {
     pub(super) awb_feed: &'a AwbStatisticsFeed,
     /// Наш AWB: настройки, указания 3A, память белой сцены.
     pub(super) white_balance: WhiteBalanceParts,
+    /// Наш AE: настройки и ящики движка (`None` — вендорский AE, подтяжки и предложений нет).
+    pub(super) auto_exposure: Option<AutoExposureParts>,
 }
 
 /// Чем рисуется содержимое кадра. Пайплайн всегда записан в кадры цели, поэтому уничтожается только
@@ -603,6 +605,7 @@ fn create_camera_painter(
             viewfinder: stats,
             awb_feed: camera.awb_feed.clone(),
             white_balance: camera.white_balance.clone(),
+            auto_exposure: camera.auto_exposure.clone(),
             headroom: HeadroomBenchParts {
                 config: config.viewfinder.headroom_bench,
                 frame_slots: info.frames_in_flight,

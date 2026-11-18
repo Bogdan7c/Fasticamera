@@ -176,3 +176,40 @@ fn three_a_typos_and_invalid_values_are_rejected_naming_the_owner() {
         .contains("metering_region_size_fraction")
     );
 }
+
+#[test]
+fn exposure_controller_defaults_to_ours_and_accepts_both_names_but_not_typos() {
+    use crate::auto_exposure_link::ExposureControllerKind;
+
+    assert_eq!(CameraConfig::default().exposure_controller, ExposureControllerKind::Own);
+    let vendor = config_with_camera(r#"{"exposure_controller":"vendor"}"#).expect("vendor");
+    assert_eq!(vendor.camera().exposure_controller, ExposureControllerKind::Vendor);
+    let own = config_with_camera(r#"{"exposure_controller":"own"}"#).expect("own");
+    assert_eq!(own.camera().exposure_controller, ExposureControllerKind::Own);
+    for typo in [r#"{"exposure_controler":"own"}"#, r#"{"exposure_controller":"auto"}"#] {
+        assert!(
+            matches!(config_with_camera(typo), Err(ConfigError::Malformed(_))),
+            "{typo}"
+        );
+    }
+}
+
+#[test]
+fn own_ae_settings_of_the_engine_are_read_from_the_app_config_and_defaulted() {
+    let config = config_with_camera(
+        r#"{"engine":{"three_a":{"exposure":{"initial_exposure_seconds_iso":2.5,"flicker":{"policy":"always_protect"}}}}}"#,
+    )
+    .expect("секция нашего AE");
+    let exposure = config.camera().engine.three_a.exposure;
+    assert_eq!(exposure.initial_exposure_seconds_iso, 2.5);
+    assert_eq!(exposure.flicker, camera_core::three_a_own::FlickerPolicy::AlwaysProtect);
+    assert_eq!(
+        exposure.replan_min_change_ev,
+        camera_core::three_a_own::OwnExposureConfig::default().replan_min_change_ev,
+        "несказанное берёт значение по умолчанию"
+    );
+    let bad = config_with_camera(r#"{"engine":{"three_a":{"exposure":{"initial_exposure_seconds_iso":0.0}}}}"#)
+        .expect_err("нулевое стартовое значение отвергается при разборе");
+    assert!(bad.to_string().contains("initial_exposure_seconds_iso"), "{bad}");
+    assert!(config_with_camera(r#"{"engine":{"three_a":{"exposure":{"initial_exposure":1.0}}}}"#).is_err());
+}

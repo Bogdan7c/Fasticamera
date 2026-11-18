@@ -167,6 +167,8 @@ impl ViewfinderStats {
             counters: self.counters.clone(),
             headroom: self.headroom.snapshot(settings.headroom, headroom_live),
             white_balance,
+            // Диагностику AE знает только сессия показа (у неё исполнитель): она дописывает поле сама.
+            auto_exposure: None,
         }
     }
 }

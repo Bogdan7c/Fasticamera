@@ -113,6 +113,7 @@ fn fresh_viewfinder() -> ViewfinderDiagnostics {
         counters: ViewfinderCounters::default(),
         headroom: HeadroomBenchDiagnostics::default(),
         white_balance: WhiteBalanceDiagnostics::idle(WhiteBalanceConfig::default().statistics_every_n_frames),
+        auto_exposure: None,
     }
 }
 

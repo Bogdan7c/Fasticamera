@@ -15,6 +15,7 @@
 //!   (установка `android-shell`, запуск потоков рендера и камеры и поток маршрутизатора), `vulkan_diagnostics`
 //!   (разовые GPU-проверки на `gpu-vulkan`) и приёмник `logging::logcat_sink`.
 
+pub mod auto_exposure_link;
 pub mod build_info;
 pub mod camera_config;
 pub mod camera_lifecycle;
@@ -26,6 +27,8 @@ mod camera_test_support;
 pub mod camera_wiring;
 pub mod clock_offset;
 pub mod event_router;
+#[cfg(test)]
+mod fake_render_ae;
 pub mod gpu_config;
 pub mod gpu_services;
 #[cfg(test)]

@@ -17,6 +17,7 @@ use camera_contract::stream::{FrameRateMechanism, ReadoutAspect, TargetFrameRate
 use camera_contract::three_a::{RequestOrigin, ThreeAResultState};
 use isp_model::color::chromaticity::Chromaticity;
 use isp_model::demosaic::DemosaicMethod;
+use isp_model::exposure::ExposureGain;
 use isp_model::image::DisplayGamut;
 
 use super::*;
@@ -125,6 +126,53 @@ fn params_are_resolved_once_and_reused_while_the_white_stays_the_same() {
         cache.prepare(&self::frame(&equal_stream, plain()), DAYLIGHT, DisplayGamut::Srgb),
         this_frame(ParamsOutcome::Resolved)
     );
+}
+
+#[test]
+fn exposure_gain_is_part_of_the_cache_key_and_unity_is_the_old_path_bit_for_bit() {
+    let stream = stream(calibration());
+    let frame = frame(&stream, plain());
+    let mut cache = IspParamsCache::default();
+    cache.prepare(&frame, DAYLIGHT, DisplayGamut::Srgb);
+    let plain_params = cache.current().cloned().expect("параметры есть");
+    // Единичная подтяжка — тот же ключ: без пересчёта и без единого бита разницы.
+    let unity = cache.prepare_with_exposure_gain(&frame, DAYLIGHT, ExposureGain::UNITY, DisplayGamut::Srgb);
+    assert_eq!(unity, this_frame(ParamsOutcome::Unchanged));
+    assert_eq!(cache.current(), Some(&plain_params));
+    // Подтяжка +0,5 EV: ключ другой — пересчёт, и тон действительно другой (свет сцены домножен на k).
+    let half_stop = ExposureGain::from_ev(0.5).expect("подтяжка");
+    let lifted = cache.prepare_with_exposure_gain(&frame, DAYLIGHT, half_stop, DisplayGamut::Srgb);
+    assert_eq!(lifted, this_frame(ParamsOutcome::Resolved));
+    let lifted_params = cache.current().cloned().expect("параметры есть");
+    assert_ne!(lifted_params.tone, plain_params.tone);
+    assert_eq!(lifted_params.color, plain_params.color, "цвет подтяжка не трогает");
+    // Тот же k — кэш; возврат к 1 — снова пересчёт и точно прежние параметры.
+    assert_eq!(
+        cache.prepare_with_exposure_gain(&frame, DAYLIGHT, half_stop, DisplayGamut::Srgb),
+        this_frame(ParamsOutcome::Unchanged)
+    );
+    assert_eq!(
+        cache.prepare_with_exposure_gain(&frame, DAYLIGHT, ExposureGain::UNITY, DisplayGamut::Srgb),
+        this_frame(ParamsOutcome::Resolved)
+    );
+    assert_eq!(cache.current(), Some(&plain_params));
+    // Веса яркости для статистики AE — от параметров ИМЕННО этого кадра, подтяжка на них не влияет.
+    assert_eq!(
+        lifted_params.scene_luminance_weights(),
+        plain_params.scene_luminance_weights()
+    );
+}
+
+#[test]
+fn base_scene_middle_gray_is_the_gray_the_resolved_tone_is_built_around() {
+    let stream = stream(calibration());
+    let mut cache = IspParamsCache::default();
+    cache.prepare(&frame(&stream, plain()), DAYLIGHT, DisplayGamut::Srgb);
+    let params = cache.current().expect("параметры есть");
+    // Тон с подтяжкой 1 даёт на средний серый базовых настроек ровно экранный средний серый.
+    let display = params.tone.map_channel(IspParamsCache::base_scene_middle_gray());
+    let wanted = isp_model::tone::ToneCurveSettings::default().display_middle_gray;
+    assert!((display - wanted).abs() < 1e-4, "{display} против {wanted}");
 }
 
 #[test]

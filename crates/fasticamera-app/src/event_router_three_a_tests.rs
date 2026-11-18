@@ -18,9 +18,11 @@ use render_loop::viewfinder::{
 };
 
 use super::*;
+use crate::auto_exposure_link::ExposureControllerKind;
 use crate::camera_config::CameraConfig;
 use crate::camera_scenario_config::CameraScenarioConfig;
 use crate::camera_test_support::WAIT;
+use crate::fake_render_ae::FakeRenderAe;
 use crate::raw_stream_test_support::{PumpFaults, StreamPump};
 use crate::three_a_scenario_config::ThreeAScenarioConfig;
 use crate::three_a_test_hal::{HalFaults, HalStats, SimulatedHal};
@@ -50,6 +52,7 @@ fn viewfinder_diagnostics() -> ViewfinderDiagnostics {
         counters: ViewfinderCounters::default(),
         headroom: HeadroomBenchDiagnostics::default(),
         white_balance: WhiteBalanceDiagnostics::idle(WhiteBalanceConfig::default().statistics_every_n_frames),
+        auto_exposure: None,
     }
 }
 
@@ -99,8 +102,18 @@ impl Drop for ThreeAMirror {
     }
 }
 
-/// Короткие сроки всех шагов: тест идёт секунды, а не минуты. Запуск видоискателя — как в тестах `viewfinder`.
+/// Короткие сроки всех шагов, **вендорский AE** (поведение сессии 08: маркеры `AE_STATE`). Тесты нашего AE —
+/// на [`short_own_config`].
 fn short_config(tune: impl FnOnce(&mut ThreeAScenarioConfig)) -> CameraConfig {
+    CameraConfig {
+        exposure_controller: ExposureControllerKind::Vendor,
+        ..short_own_config(tune)
+    }
+}
+
+/// Короткие сроки всех шагов: тест идёт секунды, а не минуты. Запуск видоискателя — как в тестах `viewfinder`.
+/// Экспозицию ведёт наш AE (умолчание продукта); роль рендера играет `FakeRenderAe`.
+fn short_own_config(tune: impl FnOnce(&mut ThreeAScenarioConfig)) -> CameraConfig {
     let viewfinder = ViewfinderScenarioConfig {
         streaming_timeout_ms: 2_000,
         render_live_timeout_ms: 1_000,
@@ -142,10 +155,20 @@ fn run_three_a_with(
     config: CameraConfig,
     faults: HalFaults,
     tune_rig: impl FnOnce(&FakeCameraRig),
-    mut during: impl FnMut(&Harness),
+    during: impl FnMut(&Harness, Option<&FakeRenderAe>),
 ) -> (Harness, serde_json::Value) {
     let rig = FakeCameraRig::with_config(config);
     tune_rig(&rig);
+    run_three_a_on(rig, faults, during)
+}
+
+/// То же на готовом стенде. Подставной рендер AE запускается, только если композиция поставила наш AE.
+fn run_three_a_on(
+    rig: FakeCameraRig,
+    faults: HalFaults,
+    mut during: impl FnMut(&Harness, Option<&FakeRenderAe>),
+) -> (Harness, serde_json::Value) {
+    let own_ae = rig.services.exposure_controller().effective == ExposureControllerKind::Own;
     let mut harness = harness_for_rig(rig);
     harness.deliver(ShellEvent::Resumed);
     let paced = PumpFaults {
@@ -156,18 +179,20 @@ fn run_three_a_with(
     let _pump = StreamPump::start(harness.rig(), Arc::clone(&harness.render), paced);
     let hal = SimulatedHal::start(harness.rig(), faults);
     let _mirror = ThreeAMirror::start(&harness, Arc::clone(&hal.stats));
+    // Наш AE: роль рендера играет подставной помощник (в тестах приложения настоящего рендера нет).
+    let render_ae = (own_ae).then(|| FakeRenderAe::start(harness.rig()));
     harness.start(Scenario::parse("3a").expect("сценарий зарегистрирован"));
     let deadline = Instant::now() + Duration::from_secs(30);
     while harness.output.results.lock().expect("замок").is_empty() && Instant::now() < deadline {
         harness.router.step(Duration::from_millis(2));
-        during(&harness);
+        during(&harness, render_ae.as_ref());
     }
     let result = harness.output.single_result();
     (harness, result)
 }
 
 fn run_three_a(faults: HalFaults) -> (Harness, serde_json::Value) {
-    run_three_a_with(short_config(|_| {}), faults, |_| {}, |_| {})
+    run_three_a_with(short_config(|_| {}), faults, |_| {}, |_, _| {})
 }
 
 fn error_of(result: &serde_json::Value) -> String {
@@ -278,7 +303,7 @@ fn dead_companion_fails_the_scenario_and_skips_the_remaining_steps() {
                     reason: CompanionUnavailableReason::RejectedByHal,
                 });
         },
-        |_| {},
+        |_, _| {},
     );
 
     assert_failed_with(&result, "вспомогательный поток 3A не активен");
@@ -341,7 +366,7 @@ fn backend_rejecting_the_focus_trigger_is_reported_as_not_delivered() {
                     detail: "тестовый отказ".to_owned(),
                 })));
         },
-        |_| {},
+        |_, _| {},
     );
     assert_failed_with(&result, "бэкенд отверг разовый запрос");
     assert_eq!(
@@ -384,7 +409,7 @@ fn interrupted_stream_during_manual_exposure_still_restores_automatic_controls()
         short_config(|_| {}),
         HalFaults::default(),
         |_| {},
-        |harness| {
+        |harness, _| {
             // Как только движок держит ручные значения (шаг d), у камеры отнимают устройство.
             let manual = harness.rig().handle().status().three_a.controls != ManualControl::AUTOMATIC;
             if manual && !disconnected {
@@ -397,4 +422,187 @@ fn interrupted_stream_during_manual_exposure_still_restores_automatic_controls()
     assert!(disconnected, "ручные значения не появились — вмешаться было не во что");
     assert_failed_with(&result, "прервался");
     assert_engine_restored(&harness);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Наш AE (08a): экспозицию ведёт движок по предложениям подставного рендера, HAL получает `AE_MODE_OFF`.
+// ---------------------------------------------------------------------------------------------
+
+fn run_three_a_own(faults: HalFaults) -> (Harness, serde_json::Value) {
+    run_three_a_with(short_own_config(|_| {}), faults, |_| {}, |_, _| {})
+}
+
+/// Запросы повторяющегося потока, ушедшие в бэкенд с вендорским AE.
+fn vendor_auto_requests(harness: &Harness) -> usize {
+    harness
+        .rig()
+        .control
+        .calls()
+        .iter()
+        .filter(|call| {
+            matches!(call, camera_core::fake::BackendCall::SetRepeatingRequest { controls, .. }
+                if matches!(controls.exposure, camera_core::request_controls::ExposurePlan::VendorAuto { .. }))
+        })
+        .count()
+}
+
+#[test]
+fn run_with_our_ae_passes_and_never_sends_a_vendor_ae_request() {
+    let (harness, result) = run_three_a_own(HalFaults::default());
+
+    assert_eq!(result["status"], "passed", "{result}");
+    let report = &result["report"];
+    assert_eq!(report["live"]["ae_source"], "own", "{report}");
+    assert_eq!(report["live"]["ae_state"], "inactive", "HAL при AE_MODE_OFF: {report}");
+    assert_eq!(
+        vendor_auto_requests(&harness),
+        0,
+        "ни одного повторяющегося запроса с вендорским AE: {:?}",
+        harness.rig().control.calls()
+    );
+    let own = &report["own_ae"];
+    assert_eq!(own["vendor_ae_results"], 0, "{own}");
+    assert!(
+        own["repeating_results_checked"].as_u64().is_some_and(|n| n > 10),
+        "{own}"
+    );
+    assert_eq!(own["settled_seen"], true, "{own}");
+    assert_eq!(own["holding_seen"], true, "блокировка дошла до Holding: {own}");
+    assert_engine_restored(&harness);
+}
+
+#[test]
+fn ev_steps_scale_the_exposure_product_by_two_and_one_half_with_our_ae() {
+    let (_harness, result) = run_three_a_own(HalFaults::default());
+
+    assert_eq!(result["status"], "passed", "{result}");
+    let points = result["report"]["ev"]["points"].as_array().expect("точки EV");
+    let ratios: Vec<f64> = points
+        .iter()
+        .filter_map(|point| point["ratio_to_baseline"].as_f64())
+        .collect();
+    assert_eq!(ratios.len(), 3);
+    assert!(
+        (ratios[1] - 2.0).abs() < 0.05 && (ratios[2] - 0.5).abs() < 0.05,
+        "+1 EV вдвое, -1 EV вполовину: {ratios:?}"
+    );
+    assert!(
+        points.iter().all(|point| point["ae_converged"] == true),
+        "маркер сходимости — Settled нашего AE, а не Converged HAL: {points:?}"
+    );
+}
+
+#[test]
+fn lock_keeps_the_product_constant_while_the_scene_changes_under_our_ae() {
+    let mut scene_changed = false;
+    let (_harness, result) = run_three_a_with(
+        short_own_config(|three_a| three_a.lock.hold_ms = 600),
+        HalFaults::default(),
+        |_| {},
+        |harness, render_ae| {
+            // Как только движок держит блокировку (Holding), «сцена» резко светлеет в 4 раза.
+            let holding = harness.rig().handle().status().three_a.auto_exposure
+                == Some(camera_core::three_a_status::AutoExposureProgress::Holding);
+            if let (true, false, Some(render_ae)) = (holding, scene_changed, render_ae) {
+                scene_changed = true;
+                render_ae.change_scene(8.0);
+            }
+        },
+    );
+
+    assert!(scene_changed, "блокировка не наступила — менять сцену было не во что");
+    assert_eq!(result["status"], "passed", "{result}");
+    let lock = &result["report"]["lock"];
+    assert_eq!(lock["locked"], true, "{lock}");
+    assert_eq!(lock["ae_source"], "own", "{lock}");
+    assert!(
+        lock["max_product_deviation"]
+            .as_f64()
+            .is_some_and(|deviation| deviation <= 0.01),
+        "под блокировкой произведение постоянно, несмотря на смену сцены: {lock}"
+    );
+    assert!(lock["samples_held"].as_u64().is_some_and(|n| n > 10), "{lock}");
+}
+
+#[test]
+fn our_ae_without_proposals_from_the_renderer_fails_the_scenario_by_its_own_rule() {
+    // Рендера нет (подставной не запущен): предложений нет, AE остаётся на стартовом значении.
+    let mut config = short_own_config(|_| {});
+    config.exposure_controller = ExposureControllerKind::Own;
+    let rig = FakeCameraRig::with_config(config);
+    let mut harness = harness_for_rig(rig);
+    harness.deliver(ShellEvent::Resumed);
+    let paced = PumpFaults {
+        paced_at_sensor_rate: true,
+        results_from_external_hal: true,
+        ..PumpFaults::default()
+    };
+    let _pump = StreamPump::start(harness.rig(), Arc::clone(&harness.render), paced);
+    let hal = SimulatedHal::start(harness.rig(), HalFaults::default());
+    let _mirror = ThreeAMirror::start(&harness, Arc::clone(&hal.stats));
+    harness.start(Scenario::parse("3a").expect("сценарий зарегистрирован"));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while harness.output.results.lock().expect("замок").is_empty() && Instant::now() < deadline {
+        harness.router.step(Duration::from_millis(2));
+    }
+    let result = harness.output.single_result();
+
+    assert_eq!(result["status"], "failed", "{result}");
+    let error = error_of(&result);
+    assert!(error.contains("наш AE не дошёл до Holding"), "{error}");
+    assert_eq!(result["report"]["own_ae"]["settled_seen"], false, "{result}");
+}
+
+#[test]
+fn unavailable_renderer_gives_the_camera_vendor_ae_visibly_and_the_scenario_passes_as_vendor() {
+    use crate::auto_exposure_link::RenderAutoExposure;
+
+    let mut config = short_own_config(|_| {});
+    config.viewfinder_autostart.enabled = false;
+    assert_eq!(config.exposure_controller, ExposureControllerKind::Own);
+    let rig = FakeCameraRig::with_product_config_and_render(
+        config,
+        RenderAutoExposure::Unavailable {
+            reason: "GPU не поднялся".to_owned(),
+        },
+    );
+    let choice = rig.services.exposure_controller().clone();
+    assert_eq!(choice.configured, ExposureControllerKind::Own);
+    assert_eq!(choice.effective, ExposureControllerKind::Vendor);
+    assert!(
+        choice
+            .fallback_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("GPU не поднялся"))
+    );
+
+    let (harness, result) = run_three_a_on(rig, HalFaults::default(), |_, _| {});
+
+    assert_eq!(result["status"], "passed", "{result}");
+    assert_eq!(result["report"]["live"]["ae_source"], "vendor", "{result}");
+    assert_eq!(result["report"]["expected_ae_source"], "vendor");
+    assert!(
+        result["report"]["ae_fallback_reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("GPU не поднялся")),
+        "причина замены видна в отчёте: {result}"
+    );
+    assert!(vendor_auto_requests(&harness) > 0, "камера работала на вендорском AE");
+}
+
+#[test]
+fn scenario_fails_when_the_engine_runs_another_ae_than_the_composition_chose() {
+    // Композиция заявляет наш AE, а в движке (по конфигу vendor) стоит вендорский.
+    let rig = FakeCameraRig::with_config(short_config(|_| {}));
+    let rig = FakeCameraRig {
+        services: rig.services.clone().with_exposure_controller(
+            crate::auto_exposure_link::ExposureControllerChoice::resolve(
+                ExposureControllerKind::Own,
+                &crate::auto_exposure_link::RenderAutoExposure::Connected,
+            ),
+        ),
+        ..rig
+    };
+    let (_harness, result) = run_three_a_on(rig, HalFaults::default(), |_, _| {});
+    assert_failed_with(&result, "а композиция поставила Own");
 }
