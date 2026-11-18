@@ -156,7 +156,7 @@ fn three_a_defaults_are_valid_and_each_broken_value_gives_its_own_error() {
 
 #[test]
 fn own_exposure_section_parses_validates_and_rejects_nonsense() {
-    use crate::three_a_own::FlickerPolicy;
+    use crate::three_a_own::{DetectedFrequency, FlickerPolicy};
 
     let parsed: CameraEngineConfig = serde_json::from_str(
         r#"{"three_a":{"exposure":{"flicker":{"policy":"follow_detector","clear_after_frames":12},"replan_min_change_ev":0.1}}}"#,
@@ -164,7 +164,10 @@ fn own_exposure_section_parses_validates_and_rejects_nonsense() {
     .expect("частичная секция");
     assert_eq!(
         parsed.three_a.exposure.flicker,
-        FlickerPolicy::FollowDetector { clear_after_frames: 12 }
+        FlickerPolicy::FollowDetector {
+            clear_after_frames: 12,
+            detected_frequency: DetectedFrequency::IgnoreUseConfigured
+        }
     );
     assert_eq!(parsed.three_a.exposure.replan_min_change_ev, 0.1);
     assert_eq!(
@@ -174,7 +177,10 @@ fn own_exposure_section_parses_validates_and_rejects_nonsense() {
     assert_eq!(parsed.validate(), Ok(()));
     assert_eq!(
         FlickerPolicy::default(),
-        FlickerPolicy::FollowDetector { clear_after_frames: 30 }
+        FlickerPolicy::FollowDetector {
+            clear_after_frames: 30,
+            detected_frequency: DetectedFrequency::IgnoreUseConfigured
+        }
     );
 
     let typo = serde_json::from_str::<CameraEngineConfig>(r#"{"three_a":{"exposure":{"flicker_policy":"x"}}}"#);
@@ -227,7 +233,10 @@ fn own_exposure_section_parses_validates_and_rejects_nonsense() {
         })
     ));
     let mut config = CameraEngineConfig::default();
-    config.three_a.exposure.flicker = FlickerPolicy::FollowDetector { clear_after_frames: 0 };
+    config.three_a.exposure.flicker = FlickerPolicy::FollowDetector {
+        clear_after_frames: 0,
+        detected_frequency: DetectedFrequency::IgnoreUseConfigured,
+    };
     assert!(matches!(
         config.validate(),
         Err(CameraEngineConfigError::InvalidThreeALimit { .. })

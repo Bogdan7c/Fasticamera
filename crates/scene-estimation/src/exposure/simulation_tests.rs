@@ -16,6 +16,7 @@ use isp_model::params::ExposureGain;
 
 use super::config::{ExposureControllerConfig, MeteringConfig};
 use super::controller::AutoExposureController;
+use super::measurement::MeasurementPhase;
 use super::meter::{CpuExposureMeter, ExposureMeter, ExposureMeteringRequest};
 use super::metering_weights::{MeteringArea, MeteringWeights, TilePlacement};
 use super::test_support::{GRID, plain_luminance, product, stats_from, target};
@@ -187,6 +188,7 @@ impl Rig {
                 luminance: plain_luminance(),
                 frame_product: product(applied),
                 target: target(),
+                phase: MeasurementPhase::Established,
             })
             .unwrap();
         while let Some(done) = self.meter.poll() {

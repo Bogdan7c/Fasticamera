@@ -35,6 +35,9 @@ mod test_support;
 
 pub use config::{ExposureControllerConfig, MeteringConfig};
 pub use controller::{AutoExposureController, ExposureCounters, IngestOutcome, SkippedMeasurement};
-pub use measurement::{ExposureMeasurement, ExposureMeasurementError, ExposureTarget, measure_exposure};
+pub use measurement::{
+    ExposureMeasurement, ExposureMeasurementError, ExposureTarget, MeasurementPhase, measure_exposure,
+    measure_exposure_in_phase,
+};
 pub use meter::{CompletedExposureMeasurement, CpuExposureMeter, ExposureMeter, ExposureMeteringRequest};
 pub use metering_weights::{MeteringArea, MeteringWeights, MeteringWeightsError, TilePlacement};

@@ -32,6 +32,7 @@ use camera_contract::three_a::{AeAfLock, ThreeAProfile};
 use isp_model::params::ExposureGain;
 
 use super::config::ExposureControllerConfig;
+use super::measurement::MeasurementPhase;
 use super::meter::CompletedExposureMeasurement;
 use super::publication::{ProposalCandidate, ProposalPublisher};
 use crate::error::ConfigError;
@@ -112,6 +113,8 @@ pub struct AutoExposureController {
     smoothed_log2: Option<f64>,
     scene: Option<SceneEstimate>,
     last_measured_frame: Option<SensorTimestamp>,
+    /// Была ли в этом потоке хоть одна надёжная (`Measured`) оценка: до неё замер идёт в фазе холодного старта.
+    reliable_estimate_seen: bool,
     last_advance: Option<SensorTimestamp>,
     moving: bool,
     /// Гистерезис `Settled`: вошли в допуск и ещё не вышли за `unsettle_tolerance_ev`.
@@ -137,6 +140,7 @@ impl AutoExposureController {
             smoothed_log2: None,
             scene: None,
             last_measured_frame: None,
+            reliable_estimate_seen: false,
             last_advance: None,
             moving: false,
             settled_latched: false,
@@ -175,6 +179,7 @@ impl AutoExposureController {
         self.smoothed_log2 = None;
         self.scene = None;
         self.last_measured_frame = None;
+        self.reliable_estimate_seen = false;
         self.last_advance = None;
         self.moving = false;
         self.settled_latched = false;
@@ -223,6 +228,7 @@ impl AutoExposureController {
             quality: measurement.quality,
         });
         self.last_measured_frame = Some(frame_time);
+        self.reliable_estimate_seen |= measurement.quality == MeasurementQuality::Measured;
         self.fresh_since_lock = true;
         // Холодный старт: сглаживать не от чего, цель встаёт сразу.
         self.smoothed_log2.get_or_insert(log2_product);
@@ -300,6 +306,15 @@ impl AutoExposureController {
         let residual_ev = (wanted_log2 - frame_product.seconds_iso().log2()).clamp(-limit, limit);
         // Конечное число в пределах ±max_residual_ev: `from_ev` не может отказать; на случай NaN подтяжки нет.
         ExposureGain::from_ev(residual_ev as f32).unwrap_or(ExposureGain::UNITY)
+    }
+
+    /// Фаза замера для следующих кадров: холодный старт, пока в потоке не было надёжной оценки.
+    pub fn measurement_phase(&self) -> MeasurementPhase {
+        if self.reliable_estimate_seen {
+            MeasurementPhase::Established
+        } else {
+            MeasurementPhase::ColdStart
+        }
     }
 
     /// Счётчики решений.

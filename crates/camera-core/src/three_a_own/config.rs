@@ -14,11 +14,31 @@ pub enum FlickerPolicy {
     /// Защита включена с начала потока и снимается, только когда HAL `clear_after_frames`
     /// кадров подряд говорит «мерцания нет»; любой отчёт о 50/60 Гц возвращает её сразу
     /// (решение 08a: детектор HAL). Нет ключа в результате — состояние не меняется.
-    FollowDetector { clear_after_frames: u32 },
+    /// Период защиты берётся из `detected_frequency`.
+    FollowDetector {
+        clear_after_frames: u32,
+        #[serde(default)]
+        detected_frequency: DetectedFrequency,
+    },
     /// Защита всегда (детектор HAL игнорируется, кроме уточнения частоты сети).
     AlwaysProtect,
     /// Защиты нет никогда (отладка, сравнение).
     NeverProtect,
+}
+
+/// Что делать с частотой сети, которую назвал детектор HAL.
+///
+/// Зонд 08 видел `sceneFlicker = 60 Гц` при сети 50 Гц: поверить детектору значило бы уйти на
+/// кратность 8,33 мс и получить полосы (регресс к решению 67). Поэтому по умолчанию отчёт
+/// только возвращает защиту, а период остаётся из конфига Android.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DetectedFrequency {
+    /// Период всегда из частоты сети конструктора (конфиг). **Оценка, сверить в 08c.**
+    #[default]
+    IgnoreUseConfigured,
+    /// Принять частоту, названную детектором.
+    Adopt,
 }
 
 impl Default for FlickerPolicy {
@@ -26,7 +46,10 @@ impl Default for FlickerPolicy {
     /// снял защиту, и достаточно мало, чтобы на улице выдержка не была зря ограничена.
     /// Это **оценка, сверить в 08c** на телефоне.
     fn default() -> Self {
-        Self::FollowDetector { clear_after_frames: 30 }
+        Self::FollowDetector {
+            clear_after_frames: 30,
+            detected_frequency: DetectedFrequency::IgnoreUseConfigured,
+        }
     }
 }
 
@@ -90,7 +113,7 @@ impl OwnExposureConfig {
                 });
             }
         }
-        if let FlickerPolicy::FollowDetector { clear_after_frames } = self.flicker
+        if let FlickerPolicy::FollowDetector { clear_after_frames, .. } = self.flicker
             && (clear_after_frames == 0 || clear_after_frames > Self::MAX_CLEAR_AFTER_FRAMES)
         {
             return Err(CameraEngineConfigError::InvalidThreeALimit {

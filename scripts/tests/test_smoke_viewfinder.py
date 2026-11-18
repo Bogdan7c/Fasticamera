@@ -115,6 +115,14 @@ class ViewfinderCheckTest(unittest.TestCase):
         self.assertEqual(verdict.exit_code, smoke_wait.EXIT_SCENARIO_FAILED)
         self.assertIn("пространство экрана", verdict.message)
 
+    def test_extra_awb_statistics_of_the_ae_cold_start_are_not_a_failure(self) -> None:
+        # Наш AE на холодном старте считает статистику на каждом кадре (до 30 кадров) и публикует её в ленту AWB:
+        # публикаций больше, чем frames_processed / period. Проверка нижняя, верхней границы нет.
+        for published in (900 + 30, 3600):
+            with self.subTest(published=published):
+                verdict = verdict_of("viewfinder", viewfinder_report(awb_published=published))
+                self.assertEqual(verdict.exit_code, smoke_wait.EXIT_OK, verdict.message)
+
     def test_each_rule_is_rechecked(self) -> None:
         cases = {
             "ISP 40": viewfinder_report(isp_fps=40.0),

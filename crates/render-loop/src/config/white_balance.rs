@@ -20,10 +20,12 @@ pub struct WhiteBalanceConfig {
 }
 
 impl Default for WhiteBalanceConfig {
-    /// * `max_hidden_frames` 10 ≈ 170 мс при 60 к/с. Статистика читается после fence слота (при
-    ///   `frames_in_flight = 2` оценка готова на 3-м кадре), значит нормальный старт прячет 2–3 кадра, а 10 —
-    ///   запас в 3 раза на медленный GPU и пропущенные такты. Холодное открытие камеры и так занимает сотни
-    ///   миллисекунд, ещё ≤ 170 мс чёрного заметно меньше, чем зелёный кадр на старте (решение 65).
+    /// * `max_hidden_frames` 20 ≈ 330 мс при 60 к/с (решение владельца 76, обновляет 65). Статистика читается
+    ///   после fence слота (при `frames_in_flight = 2` оценка готова на 3-м кадре), значит нормальный старт прячет
+    ///   2–3 кадра. Но на холодном старте камеры экспозиция стартовая (4 с·ISO): кадр пересвечен или тёмен, AWB
+    ///   его не оценивает, и оценка приходит только когда наш AE сведёт экспозицию (замер + задержка сенсора
+    ///   7–8 кадров ≈ 10–12 кадров). 20 кадров — запас, чтобы лимит не срабатывал раньше сходимости AE; ещё
+    ///   ≤ 330 мс чёрного заметно меньше, чем цветной кадр с временной белой.
     ///   Оценка до замера на телефоне: реальное число скрытых кадров меряется в `hidden_frames_cold_start`.
     /// * `statistics_every_n_frames` 4 → 15 Гц при 60 к/с. Стадия статистики стоила ≈ 55 мА из ≈ 119 мА всего ISP
     ///   на телефоне (07a); свет сцены меняется медленнее (сглаживание ≥ 0,25 с), 15 Гц даёт не меньше трёх
@@ -31,7 +33,7 @@ impl Default for WhiteBalanceConfig {
     fn default() -> Self {
         Self {
             scene: SceneEstimationConfig::default(),
-            max_hidden_frames: 10,
+            max_hidden_frames: 20,
             statistics_every_n_frames: 4,
         }
     }
@@ -69,7 +71,7 @@ mod tests {
     fn defaults_are_valid_and_decimate_to_15_hz() {
         let config = WhiteBalanceConfig::default();
         assert_eq!(config.validate(), Ok(()));
-        assert_eq!((config.max_hidden_frames, config.statistics_every_n_frames), (10, 4));
+        assert_eq!((config.max_hidden_frames, config.statistics_every_n_frames), (20, 4));
     }
 
     #[test]

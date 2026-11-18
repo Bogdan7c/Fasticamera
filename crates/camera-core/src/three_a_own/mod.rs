@@ -17,7 +17,7 @@ mod plan;
 mod proposal_gate;
 mod split;
 
-pub use config::{FlickerPolicy, OwnExposureConfig};
+pub use config::{DetectedFrequency, FlickerPolicy, OwnExposureConfig};
 pub use exposure::RawStatsExposure;
 
 #[cfg(test)]

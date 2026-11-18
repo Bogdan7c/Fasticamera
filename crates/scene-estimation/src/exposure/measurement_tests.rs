@@ -248,3 +248,51 @@ fn partial_clipping_never_asks_for_more_light_but_follows_the_measurement_down()
         "{down:?}"
     );
 }
+
+#[test]
+fn cold_start_phase_uses_the_larger_steps_and_established_phase_the_usual_ones() {
+    let config = MeteringConfig::default();
+    let run = |stats: &AwbStatistics, frame, phase| {
+        measure_exposure_in_phase(
+            stats,
+            &matrix_weights(),
+            plain_luminance(),
+            frame,
+            target(),
+            &config,
+            phase,
+        )
+        .unwrap()
+    };
+    // Почти весь кадр за белым: шаг вниз 5 EV на холодном старте, 2 EV потом.
+    let blown = stats_from(|column, _| if column < 30 { [1.0; 3] } else { [0.05; 3] });
+    let frame = product(0.02);
+    let cold = run(&blown, frame, MeasurementPhase::ColdStart);
+    let warm = run(&blown, frame, MeasurementPhase::Established);
+    assert!((required_ev(&cold, frame) + 5.0).abs() < 1e-9, "{cold:?}");
+    assert!((required_ev(&warm, frame) + 2.0).abs() < 1e-9, "{warm:?}");
+    // Почти чёрный кадр: 5 EV вверх на холодном старте, 3 EV потом.
+    let dark_frame = product(0.002);
+    let cold = run(&uniform_gray(0.0005), dark_frame, MeasurementPhase::ColdStart);
+    let warm = run(&uniform_gray(0.0005), dark_frame, MeasurementPhase::Established);
+    assert!((required_ev(&cold, dark_frame) - 5.0).abs() < 1e-9, "{cold:?}");
+    assert!((required_ev(&warm, dark_frame) - 3.0).abs() < 1e-9, "{warm:?}");
+}
+
+#[test]
+fn cold_start_does_not_change_the_exact_measurements() {
+    // Обычная сцена и частичный пересвет считаются по замеру, шаги тут ни при чём.
+    let frame = product(0.01);
+    let stats = uniform_gray(0.0375);
+    let cold = measure_exposure_in_phase(
+        &stats,
+        &matrix_weights(),
+        plain_luminance(),
+        frame,
+        target(),
+        &MeteringConfig::default(),
+        MeasurementPhase::ColdStart,
+    )
+    .unwrap();
+    assert_eq!(cold, measure(&stats, &matrix_weights(), frame));
+}

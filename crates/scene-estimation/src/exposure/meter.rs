@@ -11,7 +11,9 @@ use isp_model::exposure::LuminanceWeights;
 use isp_model::statistics::AwbStatistics;
 
 use super::config::MeteringConfig;
-use super::measurement::{ExposureMeasurement, ExposureMeasurementError, ExposureTarget, measure_exposure};
+use super::measurement::{
+    ExposureMeasurement, ExposureMeasurementError, ExposureTarget, MeasurementPhase, measure_exposure_in_phase,
+};
 use super::metering_weights::MeteringWeights;
 use crate::error::ConfigError;
 use crate::executor::FrameTag;
@@ -35,6 +37,8 @@ pub struct ExposureMeteringRequest<'a> {
     pub frame_product: ExposureProduct,
     /// Цель яркости (`scene_middle_gray` тона).
     pub target: ExposureTarget,
+    /// Фаза замера (холодный старт потока или установившаяся): определяет шаги при пересвете и темноте.
+    pub phase: MeasurementPhase,
 }
 
 /// Готовый замер кадра.
@@ -89,13 +93,14 @@ impl CpuExposureMeter {
 
 impl ExposureMeter for CpuExposureMeter {
     fn submit(&mut self, request: ExposureMeteringRequest<'_>) -> Result<(), SubmitError> {
-        let outcome = measure_exposure(
+        let outcome = measure_exposure_in_phase(
             request.statistics,
             request.weights,
             request.luminance,
             request.frame_product,
             request.target,
             &self.config,
+            request.phase,
         );
         if self.completed.len() >= CPU_COMPLETED_CAPACITY {
             self.completed.pop_front();

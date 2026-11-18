@@ -525,6 +525,17 @@ fn decimated_statistics_pass_and_a_stalled_estimator_fails_with_the_expected_cou
     assert_single(&violations, "статистика AWB опубликована 100 раз");
 }
 
+/// С нашим AE на холодном старте рендер считает статистику на каждом кадре до первой оценки (до
+/// `cold_start_every_frame_limit` = 30 кадров), и эти кадры тоже публикуются в ленту AWB. Правило судит только
+/// «не меньше доли от кадров/N», верхней границы нет, поэтому лишние публикации холодного старта не провал.
+#[test]
+fn extra_statistics_of_the_ae_cold_start_are_not_a_failure() {
+    // Штатное окно: 900 по расписанию плюс 30 кадров холодного старта AE.
+    assert!(violations_of(|o| o.window.isp.statistics_published = 900 + 30).is_empty());
+    // Даже вдвое больше расписания (статистика на каждом втором кадре) верхней границы не нарушает.
+    assert!(violations_of(|o| o.window.isp.statistics_published = 1_800).is_empty());
+}
+
 #[test]
 fn hidden_cold_start_frames_count_as_processed_but_not_as_presented() {
     // Каждый десятый кадр скрыт (холодный старт): обработано 3600, показано 3300, скрыто 300 — сходится.

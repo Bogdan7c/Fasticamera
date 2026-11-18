@@ -6,6 +6,7 @@ use camera_contract::auto_exposure::MeasurementQuality;
 use camera_contract::three_a::PointRequestId;
 
 use super::*;
+use crate::exposure::measurement::MeasurementPhase;
 use crate::exposure::metering_weights::{MeteringArea, TilePlacement};
 use crate::exposure::test_support::{GRID, plain_luminance, product, target, uniform_gray};
 
@@ -38,6 +39,7 @@ fn submitted_frame_comes_back_measured_with_its_tag_and_area() {
             luminance: plain_luminance(),
             frame_product: product(0.01),
             target: target(),
+            phase: MeasurementPhase::Established,
         })
         .unwrap();
     let done = meter.poll().unwrap();
@@ -71,6 +73,7 @@ fn unclaimed_measurements_are_capped_and_the_oldest_is_dropped_with_a_count() {
                 luminance: plain_luminance(),
                 frame_product: product(0.01),
                 target: target(),
+                phase: MeasurementPhase::Established,
             })
             .unwrap();
     }
@@ -98,6 +101,7 @@ fn failed_measurement_is_reported_not_dropped() {
             luminance: plain_luminance(),
             frame_product: product(0.01),
             target: target(),
+            phase: MeasurementPhase::Established,
         })
         .unwrap();
     assert!(meter.poll().unwrap().outcome.is_err());

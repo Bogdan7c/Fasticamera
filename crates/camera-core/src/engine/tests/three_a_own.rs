@@ -20,7 +20,7 @@ use super::three_a_support::*;
 use super::*;
 use crate::config::ThreeAConfig;
 use crate::request_controls::ExposurePlan;
-use crate::three_a_own::{FlickerPolicy, OwnExposureConfig, RawStatsExposure};
+use crate::three_a_own::{DetectedFrequency, FlickerPolicy, OwnExposureConfig, RawStatsExposure};
 use crate::three_a_status::{AdjustmentReason, AutoExposureProgress, ControlParameter};
 use crate::three_a_vendor::VendorFocus;
 
@@ -289,7 +289,10 @@ fn a_proposal_from_the_previous_stream_is_not_applied_and_is_counted() {
 #[test]
 fn clear_detector_reports_lift_the_flicker_guard_through_a_self_push_without_new_proposals() {
     let mut own = OwnRig::with_exposure_config(OwnExposureConfig {
-        flicker: FlickerPolicy::FollowDetector { clear_after_frames: 5 },
+        flicker: FlickerPolicy::FollowDetector {
+            clear_after_frames: 5,
+            detected_frequency: DetectedFrequency::IgnoreUseConfigured,
+        },
         ..OwnExposureConfig::default()
     });
     let first = own.feed_repeating(None);
@@ -310,9 +313,9 @@ fn clear_detector_reports_lift_the_flicker_guard_through_a_self_push_without_new
     );
     assert_eq!(own.sensor(), (Duration::from_millis(12), 100));
 
-    // Один отчёт о 60 Гц — защита сразу и с периодом 8,33 мс.
+    // Один отчёт о 60 Гц при конфиге 50 Гц — защита сразу, период прежний 10 мс.
     own.feed_repeating(Some(SceneFlicker::Mains60Hz));
-    assert_eq!(own.sensor(), (Duration::from_nanos(8_333_333), 144));
+    assert_eq!(own.sensor(), (Duration::from_millis(10), 120));
 }
 
 #[test]

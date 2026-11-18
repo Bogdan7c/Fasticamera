@@ -129,7 +129,11 @@ fn three_a_sections_of_every_owner_have_valid_defaults_and_arrive_through_runtim
     );
     assert!(defaults.camera().android.three_a_companion_stream.enabled);
     assert_eq!(defaults.render().viewfinder.white_balance.statistics_every_n_frames, 4);
-    assert_eq!(defaults.render().viewfinder.white_balance.max_hidden_frames, 10);
+    assert_eq!(
+        defaults.render().viewfinder.white_balance.max_hidden_frames,
+        20,
+        "решение 76"
+    );
 
     let configured = RuntimeConfig::from_json(
         r#"{"build_type":"debug","log_filter":"info",

@@ -16,7 +16,7 @@ use camera_contract::fixtures::main_wide_camera;
 use camera_contract::stream::TargetFrameRate;
 use camera_contract::three_a::{MainsFrequency, RequestOrigin, SceneFlicker, ThreeAResultState};
 
-use super::config::{FlickerPolicy, OwnExposureConfig};
+use super::config::{DetectedFrequency, FlickerPolicy, OwnExposureConfig};
 use super::exposure::RawStatsExposure;
 use crate::command::UnsupportedThreeA;
 use crate::request_controls::ExposurePlan;
@@ -309,7 +309,10 @@ fn burst_and_trigger_results_do_not_start_the_stream_or_feed_the_detector() {
 #[test]
 fn clear_detector_run_lifts_the_flicker_guard_and_pushes_the_engine_once() {
     let mut fixture = Fixture::with_config(OwnExposureConfig {
-        flicker: FlickerPolicy::FollowDetector { clear_after_frames: 3 },
+        flicker: FlickerPolicy::FollowDetector {
+            clear_after_frames: 3,
+            detected_frequency: DetectedFrequency::IgnoreUseConfigured,
+        },
         ..OwnExposureConfig::default()
     });
     fixture.exposure.observe_result(&repeating(1_000));
@@ -344,10 +347,12 @@ fn clear_detector_run_lifts_the_flicker_guard_and_pushes_the_engine_once() {
     assert_eq!(fixture.exposure.refresh(), PlanRefresh::Unchanged);
 }
 
-#[test]
-fn a_mains_report_restores_the_guard_at_once_with_the_reported_period() {
+fn lift_guard_then_report_60hz(detected_frequency: DetectedFrequency) -> Fixture {
     let mut fixture = Fixture::with_config(OwnExposureConfig {
-        flicker: FlickerPolicy::FollowDetector { clear_after_frames: 1 },
+        flicker: FlickerPolicy::FollowDetector {
+            clear_after_frames: 1,
+            detected_frequency,
+        },
         ..OwnExposureConfig::default()
     });
     fixture.exposure.observe_result(&repeating(1_000));
@@ -358,18 +363,32 @@ fn a_mains_report_restores_the_guard_at_once_with_the_reported_period() {
         .observe_result(&result(3_000, Some(SceneFlicker::None), RequestOrigin::Repeating));
     fixture.exposure.refresh();
     assert_eq!(fixture.planned().0, Duration::from_millis(12));
-
     fixture
         .exposure
         .observe_result(&result(4_000, Some(SceneFlicker::Mains60Hz), RequestOrigin::Repeating));
-    assert_eq!(fixture.exposure.refresh(), PlanRefresh::Changed);
+    assert_eq!(fixture.exposure.refresh(), PlanRefresh::Changed, "защита вернулась");
+    fixture
+}
+
+#[test]
+fn a_60hz_report_restores_the_guard_but_keeps_the_configured_50hz_period_by_default() {
+    let mut fixture = lift_guard_then_report_60hz(DetectedFrequency::IgnoreUseConfigured);
+    assert_eq!(fixture.planned(), (Duration::from_millis(10), 120));
+}
+
+#[test]
+fn adopt_option_takes_the_detected_frequency() {
+    let mut fixture = lift_guard_then_report_60hz(DetectedFrequency::Adopt);
     assert_eq!(fixture.planned(), (Duration::from_nanos(8_333_333), 144));
 }
 
 #[test]
 fn new_stream_remembers_the_last_target_and_restores_default_protection() {
     let mut fixture = Fixture::with_config(OwnExposureConfig {
-        flicker: FlickerPolicy::FollowDetector { clear_after_frames: 1 },
+        flicker: FlickerPolicy::FollowDetector {
+            clear_after_frames: 1,
+            detected_frequency: DetectedFrequency::IgnoreUseConfigured,
+        },
         ..OwnExposureConfig::default()
     });
     fixture.exposure.observe_result(&repeating(1_000));

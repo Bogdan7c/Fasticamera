@@ -115,7 +115,16 @@ struct Reductions {
     dark_sum: f32,
 }
 
-/// Замер по статистике кадра. `frame_product` — «выдержка × ISO» именно этого кадра (из его результата).
+/// Фаза замера: от неё зависят ограниченные шаги при пересвете и темноте.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeasurementPhase {
+    /// У потока ещё не было ни одной надёжной (`Measured`) оценки: шаги `cold_start_max_step_*`.
+    ColdStart,
+    /// Надёжная оценка потока уже была: обычные шаги `max_step_*`.
+    Established,
+}
+
+/// Замер в установившейся фазе (обычные шаги).
 pub fn measure_exposure(
     statistics: &AwbStatistics,
     weights: &MeteringWeights,
@@ -124,7 +133,32 @@ pub fn measure_exposure(
     target: ExposureTarget,
     config: &MeteringConfig,
 ) -> Result<ExposureMeasurement, ExposureMeasurementError> {
+    measure_exposure_in_phase(
+        statistics,
+        weights,
+        luminance,
+        frame_product,
+        target,
+        config,
+        MeasurementPhase::Established,
+    )
+}
+
+/// Замер по статистике кадра. `frame_product` — «выдержка × ISO» именно этого кадра (из его результата).
+pub fn measure_exposure_in_phase(
+    statistics: &AwbStatistics,
+    weights: &MeteringWeights,
+    luminance: LuminanceWeights,
+    frame_product: ExposureProduct,
+    target: ExposureTarget,
+    config: &MeteringConfig,
+    phase: MeasurementPhase,
+) -> Result<ExposureMeasurement, ExposureMeasurementError> {
     config.validate()?;
+    let (step_down_ev, step_up_ev) = match phase {
+        MeasurementPhase::ColdStart => (config.cold_start_max_step_down_ev, config.cold_start_max_step_up_ev),
+        MeasurementPhase::Established => (config.max_step_down_ev, config.max_step_up_ev),
+    };
     if statistics.grid() != weights.grid() {
         return Err(ExposureMeasurementError::GridMismatch {
             statistics_columns: statistics.grid().columns,
@@ -166,8 +200,8 @@ pub fn measure_exposure(
         // цикл на границе порога), а вниз — по измерению.
         ClipBand::Partial if clipped_fraction + dark_fraction >= config.blown_or_black_hold_fraction => frame_log2,
         ClipBand::Partial => measured_log2().min(frame_log2),
-        ClipBand::Severe => frame_log2 - f64::from(config.max_step_down_ev),
-        ClipBand::TooDark => frame_log2 + f64::from(config.max_step_up_ev),
+        ClipBand::Severe => frame_log2 - f64::from(step_down_ev),
+        ClipBand::TooDark => frame_log2 + f64::from(step_up_ev),
     };
     let required_product = ExposureProduct::from_seconds_iso(required_log2.exp2())
         .map_err(|_| ExposureMeasurementError::ProductOutOfRange)?;

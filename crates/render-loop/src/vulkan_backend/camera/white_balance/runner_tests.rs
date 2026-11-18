@@ -247,6 +247,9 @@ fn first_frames_are_hidden_until_the_first_estimate_then_shown_with_the_estimate
 
 #[test]
 fn dark_or_clipped_scenes_never_hide_the_picture_forever() {
+    // Предел берётся из конфига, а не зашит числом: тест про то, что скрытие ограничено любым лимитом.
+    let limit = WhiteBalanceConfig::default().max_hidden_frames;
+    let total_frames = 2 * limit;
     for (name, scene) in [
         ("тёмная", dark_scene()),
         ("пересвеченная", clipped_scene()),
@@ -255,29 +258,35 @@ fn dark_or_clipped_scenes_never_hide_the_picture_forever() {
         let (mut runner, _, _) = runner();
         let stream = new_stream();
         let mut presentations = Vec::new();
-        for index in 0..20 {
+        for index in 0..i64::from(total_frames) {
             presentations.push(process(&mut runner, &frame(&stream, index), &scene).presentation);
         }
         let hidden = presentations
             .iter()
             .filter(|p| **p == IspPresentation::HideUntilColorKnown)
             .count();
-        assert_eq!(hidden, 10, "{name}: скрыто ровно max_hidden_frames");
+        assert_eq!(hidden, limit as usize, "{name}: скрыто ровно max_hidden_frames");
         assert!(
-            presentations[10..].iter().all(|p| *p == IspPresentation::Show),
+            presentations[limit as usize..]
+                .iter()
+                .all(|p| *p == IspPresentation::Show),
             "{name}: после лимита показ идёт всегда"
         );
         let diagnostics = runner.diagnostics();
         assert_eq!(
             (diagnostics.hidden_frames_cold_start, diagnostics.cold_start_forced),
-            (10, 1),
+            (u64::from(limit), 1),
             "{name}"
         );
         assert_eq!(
             diagnostics.scene_white, None,
             "{name}: оценки не было — белая временная"
         );
-        assert_eq!(diagnostics.frames_with_provisional_white, 20, "{name}");
+        assert_eq!(
+            diagnostics.frames_with_provisional_white,
+            u64::from(total_frames),
+            "{name}"
+        );
     }
 }
 
@@ -287,7 +296,8 @@ fn forced_presentation_uses_the_best_available_weak_estimate_instead_of_the_prov
     let stream = new_stream();
     let scene = weak_gray_scene(3200.0);
     let mut last = None;
-    for index in 0..11 {
+    // Лимит скрытия — из конфига: кадров ровно столько, чтобы последний был первым принудительно показанным.
+    for index in 0..=i64::from(WhiteBalanceConfig::default().max_hidden_frames) {
         last = Some(process(&mut runner, &frame(&stream, index), &scene));
     }
     let forced = last.expect("кадры были");

@@ -3,8 +3,9 @@
 //! Лампы на сети мерцают с удвоенной частотой сети; выдержка, кратная полупериоду
 //! (10 мс при 50 Гц, 8,33 мс при 60 Гц), собирает целое число вспышек — полос на кадре нет.
 //! Защита включена по умолчанию, а снять её можно только по слову детектора HAL
-//! (`SceneFlicker::None` подряд `clear_after_frames` кадров). Любой отчёт о частоте сети
-//! возвращает защиту сразу и уточняет саму частоту.
+//! (`SceneFlicker::None` подряд `clear_after_frames` кадров). Любой отчёт о мерцании
+//! (50 или 60 Гц) возвращает защиту сразу; период берётся из конфига, а частоту детектора
+//! принимает только `DetectedFrequency::Adopt`.
 //!
 //! Детектор — отдельный тип: он меняется только в `observe_result`/`reset`, а план читает
 //! его **снимок** [`FlickerSnapshot`], который исполнитель забирает в `refresh()`.
@@ -13,7 +14,7 @@ use std::time::Duration;
 
 use camera_contract::three_a::{MainsFrequency, SceneFlicker};
 
-use super::config::FlickerPolicy;
+use super::config::{DetectedFrequency, FlickerPolicy};
 
 /// Что план знает о мерцании: нужна ли защита и по какой частоте сети.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,7 +105,7 @@ impl FlickerDetector {
     }
 
     fn observe_clear_frame(&mut self) {
-        let FlickerPolicy::FollowDetector { clear_after_frames } = self.policy else {
+        let FlickerPolicy::FollowDetector { clear_after_frames, .. } = self.policy else {
             return;
         };
         self.clear_streak = self.clear_streak.saturating_add(1);
@@ -114,7 +115,16 @@ impl FlickerDetector {
     }
 
     fn observe_mains(&mut self, frequency: MainsFrequency) {
-        self.mains = frequency;
+        // Частоту принимаем только по явной настройке: детектор HAL путает 50 и 60 Гц (зонд 08).
+        if matches!(
+            self.policy,
+            FlickerPolicy::FollowDetector {
+                detected_frequency: DetectedFrequency::Adopt,
+                ..
+            }
+        ) {
+            self.mains = frequency;
+        }
         self.clear_streak = 0;
         // `NeverProtect` — осознанный выбор «защиты нет»: даже явный отчёт её не включает.
         if self.policy != FlickerPolicy::NeverProtect {

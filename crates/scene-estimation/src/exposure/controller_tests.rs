@@ -9,7 +9,7 @@ use camera_contract::three_a::{MeteringRegion, PointOfInterest, PointRequestId, 
 
 use super::*;
 use crate::executor::FrameTag;
-use crate::exposure::measurement::{ExposureMeasurement, ExposureMeasurementError};
+use crate::exposure::measurement::{ExposureMeasurement, ExposureMeasurementError, MeasurementPhase};
 use crate::exposure::test_support::product;
 
 /// Кадр 60 к/с в наносекундах.
@@ -675,4 +675,21 @@ fn settled_has_hysteresis_so_jitter_near_the_tolerance_does_not_republish() {
     let mut far = started_at(directive(), 0.01);
     far.ingest(&whole_frame_measurement(1, above(0.01, 0.5)));
     assert_eq!(far.proposal(ts(1)).unwrap().convergence, ProposalConvergence::Searching);
+}
+
+#[test]
+fn the_measurement_phase_stays_cold_until_the_first_reliable_estimate_of_the_stream() {
+    let mut controller = controller();
+    assert_eq!(controller.measurement_phase(), MeasurementPhase::ColdStart);
+    // Пересвеченная оценка не надёжна: фаза прежняя.
+    let clipped = measured(0, MeteredArea::WholeFrame, 1.0, MeasurementQuality::ClippedHighlights);
+    assert_eq!(controller.ingest(&clipped), IngestOutcome::Accepted);
+    assert_eq!(controller.measurement_phase(), MeasurementPhase::ColdStart);
+    // Надёжная — фаза установившаяся.
+    let reliable = measured(1, MeteredArea::WholeFrame, 1.0, MeasurementQuality::Measured);
+    assert_eq!(controller.ingest(&reliable), IngestOutcome::Accepted);
+    assert_eq!(controller.measurement_phase(), MeasurementPhase::Established);
+    // Новый поток начинает холодный старт заново.
+    controller.begin_stream();
+    assert_eq!(controller.measurement_phase(), MeasurementPhase::ColdStart);
 }

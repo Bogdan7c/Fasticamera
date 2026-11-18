@@ -80,6 +80,11 @@ pub struct MeteringConfig {
     pub max_step_down_ev: f32,
     /// Шаг вверх при `TooDark`, EV.
     pub max_step_up_ev: f32,
+    /// То же, что `max_step_down_ev`, но на холодном старте потока — пока не было ни одной надёжной (`Measured`)
+    /// оценки: крупнее, чтобы не тратить кадры скрытия AWB на плавный спуск с пересвета. Оценка, сверить в 08c.
+    pub cold_start_max_step_down_ev: f32,
+    /// То же, что `max_step_up_ev`, но на холодном старте потока. Оценка, сверить в 08c.
+    pub cold_start_max_step_up_ev: f32,
 }
 
 impl Default for MeteringConfig {
@@ -90,7 +95,9 @@ impl Default for MeteringConfig {
     /// * пол 0,001 (≈ −10 EV) и «тёмная» плитка 0,003 — шум чтения на уровне долей процента белого;
     /// * пересвет 35 % и тьма 90 % — «значимая часть» области;
     /// * защита светов с 2 % до 35 % пересвета, до −1,5 EV: небо в кадре не должно выжигаться ради лица;
-    /// * шаги 2 EV вниз / 3 EV вверх: вниз осторожнее — после пересвета информации о светах нет вовсе.
+    /// * шаги 2 EV вниз / 3 EV вверх: вниз осторожнее — после пересвета информации о светах нет вовсе;
+    /// * шаги холодного старта 5 / 5 EV (решение владельца 76): камера стартует с 4 с·ISO, и AWB не оценивает
+    ///   пересвеченный или тёмный кадр, поэтому до первой надёжной оценки экспозицию надо вести быстро.
     fn default() -> Self {
         Self {
             matrix_center_sigma: 0.35,
@@ -108,6 +115,8 @@ impl Default for MeteringConfig {
             key_offset_ev: 0.0,
             max_step_down_ev: 2.0,
             max_step_up_ev: 3.0,
+            cold_start_max_step_down_ev: 5.0,
+            cold_start_max_step_up_ev: 5.0,
         }
     }
 }
@@ -153,6 +162,8 @@ impl MeteringConfig {
         }
         require_positive("metering.max_step_down_ev", self.max_step_down_ev)?;
         require_positive("metering.max_step_up_ev", self.max_step_up_ev)?;
+        require_positive("metering.cold_start_max_step_down_ev", self.cold_start_max_step_down_ev)?;
+        require_positive("metering.cold_start_max_step_up_ev", self.cold_start_max_step_up_ev)?;
         Ok(())
     }
 }

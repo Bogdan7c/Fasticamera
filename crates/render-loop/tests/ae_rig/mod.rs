@@ -133,6 +133,8 @@ pub struct Shot {
     pub sensor_product: f64,
     /// Яркость плашки на экране, линейный свет (`None` — кадр не показан).
     pub display_luminance: Option<f64>,
+    /// Закодированный пиксель плашки (`None` — кадр не показан).
+    pub pixel: Option<[f32; 3]>,
 }
 
 pub struct AeRig {
@@ -145,6 +147,9 @@ pub struct AeRig {
     pub proposals: ExposureProposalChannel,
     /// Цвет белой плитки лампы, нормированный по наибольшему каналу.
     pub tile: [f64; 3],
+    /// Масштаб сцены и разрешение пересвета (см. `RigSetup`).
+    pub scene_scale: f64,
+    pub allow_clipping: bool,
     /// Освещённость сцены относительно исходной (1 — исходная).
     pub light: f64,
     /// Что реально стоит на кадрах сейчас.
@@ -178,7 +183,42 @@ pub fn manual_lamp_white() -> DirectiveSlot<WhiteBalanceDirective> {
     directives
 }
 
+/// Чем отличаются сценарии стенда.
+pub struct RigSetup {
+    /// Настройки AE (`None` — ящики AE не переданы).
+    pub auto_exposure: Option<AutoExposureConfig>,
+    /// Указания AWB (`None` — AWB автоматический, как в продукте).
+    pub white_balance: Option<DirectiveSlot<WhiteBalanceDirective>>,
+    /// Сцена фикстуры, чья белая плитка заливает кадр.
+    pub scene: &'static str,
+    /// Экспозиция первых кадров, с·ISO.
+    pub start_product: f64,
+    /// Масштаб сцены (яркость кадра = масштаб × свет × экспозиция).
+    pub scene_scale: f64,
+    /// Разрешено ли пересвечивать кадры (значения обрезаются белым сенсора).
+    pub allow_clipping: bool,
+}
+
 pub fn rig_or_skip(auto_exposure: Option<AutoExposureConfig>) -> Option<(AeRig, Arc<Journal>)> {
+    rig_with(RigSetup {
+        auto_exposure,
+        white_balance: Some(manual_lamp_white()),
+        scene: "checker_bb2800",
+        start_product: DARK_START_PRODUCT,
+        scene_scale: SCENE_SCALE,
+        allow_clipping: false,
+    })
+}
+
+pub fn rig_with(setup: RigSetup) -> Option<(AeRig, Arc<Journal>)> {
+    let RigSetup {
+        auto_exposure,
+        white_balance,
+        scene,
+        start_product,
+        scene_scale,
+        allow_clipping,
+    } = setup;
     let enabled = auto_exposure.is_some();
     let render_config = RenderLoopConfig {
         display_color: DisplayColorConfig::SrgbOnly,
@@ -205,7 +245,7 @@ pub fn rig_or_skip(auto_exposure: Option<AutoExposureConfig>) -> Option<(AeRig, 
                 counters: ImportCacheCounters::default(),
             }))
         }),
-        manual_lamp_white(),
+        white_balance.unwrap_or_default(),
     )?;
     let directives = DirectiveSlot::new();
     let proposals = ExposureProposalChannel::new();
@@ -222,7 +262,7 @@ pub fn rig_or_skip(auto_exposure: Option<AutoExposureConfig>) -> Option<(AeRig, 
         .attach(fake_surface(&journal, 1), SURFACE_SIZE)
         .expect("surface присоединяется");
     let epoch = stream.producer().begin_stream(Arc::new(stream_passport())).epoch;
-    let tile = fixture_tiles("checker_bb2800")[WHITE_TILE];
+    let tile = fixture_tiles(scene)[WHITE_TILE];
     let brightest = tile.into_iter().fold(f64::MIN, f64::max);
     Some((
         AeRig {
@@ -235,8 +275,10 @@ pub fn rig_or_skip(auto_exposure: Option<AutoExposureConfig>) -> Option<(AeRig, 
             proposals,
             tile: tile.map(|channel| channel / brightest),
             light: 1.0,
-            sensor_product: DARK_START_PRODUCT,
-            commanded_product: DARK_START_PRODUCT,
+            sensor_product: start_product,
+            commanded_product: start_product,
+            scene_scale,
+            allow_clipping,
             pending: VecDeque::new(),
             seen: None,
             lock: AeAfLock::Unlocked,
@@ -257,12 +299,17 @@ impl AeRig {
 
     /// Мозаика сцены: яркость пропорциональна экспозиции кадра, цвет — белая плитка лампы.
     pub fn insert_scene(&self, sensor_ts: i64, sensor_product: f64) {
-        let level = SCENE_SCALE * self.light * sensor_product;
-        let rgb = self.tile.map(|channel| channel * level);
-        assert!(
-            rgb.iter().all(|channel| *channel < 0.9),
-            "сцена не должна пересвечиваться в тесте: {rgb:?}"
-        );
+        let level = self.scene_scale * self.light * sensor_product;
+        let mut rgb = self.tile.map(|channel| channel * level);
+        if self.allow_clipping {
+            // Белый сенсора: пересвеченный канал не бывает ярче 1.
+            rgb = rgb.map(|channel| channel.min(1.0));
+        } else {
+            assert!(
+                rgb.iter().all(|channel| *channel < 0.9),
+                "сцена не должна пересвечиваться в тесте: {rgb:?}"
+            );
+        }
         self.scenes
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -325,14 +372,19 @@ impl AeRig {
 
     /// Яркость плашки на экране (линейный свет экрана, sRGB-основные).
     pub fn display_luminance(&self) -> f64 {
+        let [red, green, blue] = self.display_pixel().map(|channel| f64::from(srgb_decode(channel)));
+        0.2126 * red + 0.7152 * green + 0.0722 * blue
+    }
+
+    /// Закодированный пиксель центра изображения видоискателя.
+    pub fn display_pixel(&self) -> [f32; 3] {
         let image: ViewfinderReadback = self
             .backend
             .read_viewfinder_image()
             .expect("readback изображения видоискателя")
             .expect("изображение видоискателя есть");
         let pixel = image.pixels[(image.height as usize / 2) * image.width as usize + image.width as usize / 2];
-        let [red, green, blue] = [pixel[0], pixel[1], pixel[2]].map(|channel| f64::from(srgb_decode(channel)));
-        0.2126 * red + 0.7152 * green + 0.0722 * blue
+        [pixel[0], pixel[1], pixel[2]]
     }
 
     /// Движок камеры: замечает новое предложение, ставит его в запрос и публикует указание с `applied`.
@@ -402,6 +454,7 @@ impl AeRig {
             frame: self.frame,
             sensor_product: self.sensor_product,
             display_luminance: shown.then(|| self.display_luminance()),
+            pixel: shown.then(|| self.display_pixel()),
         };
         self.history.push(shot);
         self.engine_reacts();

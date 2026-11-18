@@ -303,6 +303,7 @@ impl ExposureRunner {
             luminance: facts.luminance,
             frame_product,
             target: self.target,
+            phase: self.controller.measurement_phase(),
         };
         if self.meter.submit(request).is_err() {
             self.controller.note_skipped_measurement(SkippedMeasurement::MeterBusy);
