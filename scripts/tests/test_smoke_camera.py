@@ -19,6 +19,7 @@ import smoke_wait  # noqa: E402
 from test_smoke_driver import ADB, SERIAL, FakeAdb, fixture, make_actions, result_line, stage_line  # noqa: E402
 
 DUMPSYS_COMMAND = [*ADB, "shell", "dumpsys", "media.camera"]
+TRUST_COMMAND = [*ADB, "shell", "dumpsys", "trust"]
 SYSTEM_CAMERA_COMMAND = [
     *ADB, "shell", "am", "start", "-W", "-a", "android.media.action.STILL_IMAGE_CAMERA", "-p", "com.oplus.camera",
 ]
@@ -593,7 +594,25 @@ class SystemCameraStepTest(unittest.TestCase):
     def test_launch_command_uses_explicit_serial_action_and_system_camera_package(self) -> None:
         adb = CameraFakeAdb()
         make_actions(adb).launch_system_camera()
-        self.assertEqual(adb.commands, [SYSTEM_CAMERA_COMMAND])
+        self.assertEqual(adb.commands, [TRUST_COMMAND, SYSTEM_CAMERA_COMMAND])
+
+    def test_locked_phone_is_a_driver_error_before_launching_anything(self) -> None:
+        # Факт 08b: наше приложение видно поверх блокировки, а системная камера — нет; вытеснения не было.
+        adb = CameraFakeAdb()
+        adb.device_locked = True
+        with self.assertRaises(smoke_driver.DriverError) as raised:
+            make_actions(adb).launch_system_camera()
+        self.assertIn("заблокирован", str(raised.exception))
+        self.assertNotIn(SYSTEM_CAMERA_COMMAND, adb.commands, "системную камеру при блокировке не запускаем")
+
+    def test_device_locked_is_read_for_the_current_user_only(self) -> None:
+        output = (
+            ' User "Guest" (id=10, flags=0x0): trustState=UNTRUSTED, deviceLocked=0\n'
+            ' User "Owner" (id=0, flags=0x4c13) (current): trustState=UNTRUSTED, deviceLocked=1\n'
+        )
+        self.assertTrue(smoke_driver.parse_device_locked(output))
+        with self.assertRaises(smoke_driver.DriverError):
+            smoke_driver.parse_device_locked("no trust info")
 
     def test_chooser_instead_of_system_camera_is_a_driver_error(self) -> None:
         # Факт smoke 04: без пакета интент открывал диалог выбора, и вытеснения не было.
@@ -631,11 +650,12 @@ class SystemCameraStepTest(unittest.TestCase):
         adb = CameraFakeAdb()
         driver = smoke_driver.StageDriver("camera-evict", make_actions(adb))
         driver.handle_stage({"scenario": "camera-evict", "stage": "streaming", "camera": "2"})
-        self.assertEqual(adb.commands[0], SYSTEM_CAMERA_COMMAND)
-        self.assertEqual(adb.commands[1][: len(ADB) + 2], [*ADB, "shell", "am"], "возврат приложения — через am start")
-        self.assertIn("-n", adb.commands[1])
-        self.assertIn(f"dev.fasticamera.debug/{smoke_driver.MAIN_ACTIVITY}", adb.commands[1])
-        self.assertEqual(len(adb.commands), 2)
+        self.assertEqual(adb.commands[0], TRUST_COMMAND, "сначала проверка блокировки (факт 08b)")
+        self.assertEqual(adb.commands[1], SYSTEM_CAMERA_COMMAND)
+        self.assertEqual(adb.commands[2][: len(ADB) + 2], [*ADB, "shell", "am"], "возврат приложения — через am start")
+        self.assertIn("-n", adb.commands[2])
+        self.assertIn(f"dev.fasticamera.debug/{smoke_driver.MAIN_ACTIVITY}", adb.commands[2])
+        self.assertEqual(len(adb.commands), 3)
 
     def test_hold_between_launch_and_return_comes_from_the_table(self) -> None:
         steps = smoke_driver.SCENARIO_STEPS["camera-evict"]["streaming"]
@@ -667,7 +687,7 @@ class SystemCameraStepTest(unittest.TestCase):
         verdict = smoke_wait.evaluate_stream(lines, "camera-evict", driver.handle_stage)
         self.assertEqual(verdict.exit_code, smoke_wait.EXIT_OK, verdict.message)
         self.assertEqual(sleeps, [smoke_driver.SYSTEM_CAMERA_HOLD_SECONDS])
-        self.assertEqual(adb.commands[0], SYSTEM_CAMERA_COMMAND)
+        self.assertEqual(adb.commands[:2], [TRUST_COMMAND, SYSTEM_CAMERA_COMMAND])
 
 
 if __name__ == "__main__":

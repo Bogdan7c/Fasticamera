@@ -16,6 +16,8 @@ data class ThreeAPhaseSettings(
     val firstFrameGraceMs: Long,
     val activeArray: Rect,
     val frameDurationNs: Long,
+    /** Выдержка фазы age_test (диагностика возраста кадра). */
+    val ageTestExposureNs: Long = 8_000_000L,
 )
 
 /**
@@ -27,6 +29,7 @@ class ThreeAPhases(
     private val recorder: ThreeARecorder,
     private val log: ProbeLog,
     private val settings: ThreeAPhaseSettings,
+    private val rawProbe: ThreeARaw10Probe? = null,
 ) {
     val summaries = mutableListOf<ThreeAPhaseSummary>()
 
@@ -48,6 +51,17 @@ class ThreeAPhases(
             "mode_ae_on" to { runRepeatingPhase("mode_ae_on") { } },
             "mode_ae_off" to { runRepeatingPhase("mode_ae_off") { applyManualExposure(it, AE_OFF_EXPOSURE_NS, AE_OFF_ISO) } },
             "raw_sameness" to { runRepeatingPhase("raw_sameness") { applyManualExposure(it, AE_OFF_EXPOSURE_NS, SAMENESS_ISO) } },
+            "raw_sameness_fixed_focus" to { runRepeatingPhase("raw_sameness_fixed_focus") {
+                applyManualExposure(it, AE_OFF_EXPOSURE_NS, SAMENESS_ISO)
+                it.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+                it.set(CaptureRequest.LENS_FOCUS_DISTANCE, FIXED_FOCUS_DIOPTERS)
+            } },
+            "focus_sweep" to ::focusSweep,
+            "age_test" to { runRepeatingPhase("age_test") {
+                applyManualExposure(it, settings.ageTestExposureNs, AE_OFF_ISO)
+                it.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+                it.set(CaptureRequest.LENS_FOCUS_DISTANCE, FIXED_FOCUS_DIOPTERS)
+            } },
             "soak" to { runRepeatingPhase("soak") { applyManualExposure(it, AE_OFF_EXPOSURE_NS, AE_OFF_ISO) } },
             "ae_off_af_continuous" to { runRepeatingPhase("ae_off_af_continuous") { applyManualExposure(it, AE_OFF_EXPOSURE_NS, AE_OFF_ISO) } },
             "ae_off_af_trigger" to { afTrigger("ae_off_af_trigger", centerRegion()) { applyManualExposure(it, AE_OFF_EXPOSURE_NS, AE_OFF_ISO) } },
@@ -175,6 +189,32 @@ class ThreeAPhases(
         log.result("exposure_steps", JSONObject().put("steps", steps))
     }
 
+    /** Свип фокуса при AF_MODE_OFF: на каждом шаге отдельная порция статистики RAW, чтобы отличить реальное движение линзы от эха запроса. */
+    private fun focusSweep() {
+        rawProbe?.snapshotAndReset() // сброс накопленного до свипа
+        for (diopters in SWEEP_FOCUS_DIOPTERS) {
+            val phase = "sweep_$diopters"
+            val submittedAfter = recorder.lastFrameNumber
+            session.setRepeating(session.newRequest(ThreeATag(phase, ThreeATag.Kind.REPEATING)) { builder ->
+                applyManualExposure(builder, AE_OFF_EXPOSURE_NS, SAMENESS_ISO)
+                builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+                builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, diopters)
+            })
+            // Кадры сразу после смены запроса пропускает сам зонд (content_skip), здесь только ждём.
+            rawProbe?.snapshotAndReset()
+            hold(phase, SWEEP_STEP_MS)
+            val rows = recorder.rowsOfPhase(phase)
+            log.result(
+                "sweep_step",
+                JSONObject().put("requested_diopters", diopters)
+                    .put("reported_focus", JSONArray(rows.mapNotNull { it.focusDistance }.distinct().take(6)))
+                    .put("lens_state", JSONArray(rows.map { it.json.opt("lens_state") }.distinct()))
+                    .put("content", rawProbe?.snapshotAndReset() ?: JSONObject.NULL),
+            )
+            summaries += ThreeAPhaseSummarizer.summarize(phase, rows, submittedAfter)
+        }
+    }
+
     /** Пачка из 4 выдержек при работающем повторяющемся запросе (кейс продукта), 3 круга. */
     private fun burst() {
         val phase = "burst"
@@ -282,6 +322,9 @@ class ThreeAPhases(
         const val AE_OFF_EXPOSURE_NS = 8_000_000L
         const val AE_OFF_ISO = 800
         const val SAMENESS_ISO = 400
+        val SWEEP_FOCUS_DIOPTERS = listOf(0.0f, 2.2f, 5.0f, 10.0f)
+        const val SWEEP_STEP_MS = 1300L
+        const val FIXED_FOCUS_DIOPTERS = 2.2f
         val STEP_EXPOSURES_NS = listOf(2_000_000L, 4_000_000L, 8_000_000L, 16_000_000L)
         const val STEP_ISO = 400
         const val STEP_HOLD_MS = 500L

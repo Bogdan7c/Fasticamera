@@ -41,8 +41,9 @@ class ThreeAScenario : ProbeScenario {
             perRequestVendorKeys = VendorKeyValue.parseList(
                 // "-" = явно без вендорских ключей; без ae_fps и без req_keys — режим 4:3@60 основной камеры.
                 args.string("req_keys")?.takeIf { it != "-" } ?: DEFAULT_60FPS_KEYS.takeIf { args.string("req_keys") == null && args.intOrNull("ae_fps") == null },
-            ),
+            ) + VendorKeyValue.parseList(args.string("extra_req_keys")),
             aeTargetFps = args.intOrNull("ae_fps"),
+            sessionVendorKeys = VendorKeyValue.parseList(args.string("sess_keys")),
             openTimeoutMs = args.long("open_timeout_ms", DEFAULT_OPEN_TIMEOUT_MS),
             companionYuvSize = args.string("yuv")?.let(StreamExperimentConfig::parseSize),
             companionFormat = if (args.string("companion_format") == "private") android.graphics.ImageFormat.PRIVATE else android.graphics.ImageFormat.YUV_420_888,
@@ -67,11 +68,20 @@ class ThreeAScenario : ProbeScenario {
                 holdMs = args.long("hold_ms", DEFAULT_HOLD_MS),
                 firstFrameGraceMs = args.long("grace_ms", DEFAULT_GRACE_MS),
                 activeArray = activeArray,
+                ageTestExposureNs = args.long("age_exposure_ns", 8_000_000L),
                 frameDurationNs = args.long("frame_duration_ns", DEFAULT_FRAME_DURATION_NS),
             )
-            val phases = ThreeAPhases(session, recorder, context.log, settings)
-            phases.runAll(only = args.stringList("only", emptyList()).takeIf { it.isNotEmpty() }?.toSet())
+            val power = if (args.string("power") == "1") dev.fasticamera.probe.camera.threea.ThreeAPowerSampler(context.appContext, context.log, 1000L).also { it.start() } else null
+            val phases = ThreeAPhases(session, recorder, context.log, settings, rawProbe)
+            try {
+                phases.runAll(only = args.stringList("only", emptyList()).takeIf { it.isNotEmpty() }?.toSet())
+            } finally {
+                power?.stop()
+            }
             reportOverall(context, recorder, phases)
+            context.log.result("age_stats", JSONObject()
+                .put("image_age_ms", ageStats(recorder.imageAgesSnapshot()))
+                .put("result_age_ms", ageStats(recorder.resultAgesSnapshot())))
             rawProbe?.let { context.log.result("raw10_content", it.toJson()) }
         } finally {
             session.close()?.let { context.log.error("close", it) }
@@ -102,6 +112,14 @@ class ThreeAScenario : ProbeScenario {
         )
     }
 
+    /** Статистика возраста в мс, первые 30 кадров пропущены (разгон потока). */
+    private fun ageStats(agesNs: List<Long>): JSONObject {
+        val settled = agesNs.drop(AGE_SKIP_FRAMES).map { it / NS_PER_MS }.sorted()
+        if (settled.isEmpty()) return JSONObject().put("count", 0)
+        return JSONObject().put("count", settled.size).put("median", settled[settled.size / 2])
+            .put("min", settled.first()).put("max", settled.last()).put("p95", settled[settled.size * 95 / 100])
+    }
+
     private fun describeCharacteristics(characteristics: CameraCharacteristics): JSONObject {
         val isoModes = characteristics.get(CameraCharacteristics.Key("$ISO_SECTION.iso_available_modes", IntArray::class.java))
         val exposureRange = characteristics.get(CameraCharacteristics.Key("$ISO_SECTION.exposure_time_range", LongArray::class.java))
@@ -119,6 +137,8 @@ class ThreeAScenario : ProbeScenario {
     }
 
     private companion object {
+        const val AGE_SKIP_FRAMES = 30
+        const val NS_PER_MS = 1_000_000.0
         const val DEFAULT_CAMERA = "2"
         const val DEFAULT_WIDTH = 4096
         const val DEFAULT_HEIGHT = 3072

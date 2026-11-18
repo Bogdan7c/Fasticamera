@@ -84,6 +84,7 @@ class FakeAdb:
         self._failing_prefix = failing_prefix
         self.wakefulness = wakefulness
         self._power_key_works = power_key_works
+        self.device_locked = False
 
     def keycodes(self) -> list[str]:
         """Все нажатые ``input keyevent`` по порядку."""
@@ -96,6 +97,11 @@ class FakeAdb:
         if command == DUMP_COMMAND:
             output = self._dump_outputs.pop(0) if len(self._dump_outputs) > 1 else (self._dump_outputs or [""])[0]
             return smoke_driver.AdbResult(0, output, "")
+        if command == [*ADB, "shell", "dumpsys", "trust"]:
+            locked = "1" if self.device_locked else "0"
+            return smoke_driver.AdbResult(
+                0, f' User "Owner" (id=0, flags=0x4c13) (current): trustState=UNTRUSTED, deviceLocked={locked}\n', ""
+            )
         if command == [*ADB, "shell", "dumpsys", "power"]:
             return smoke_driver.AdbResult(0, f"Power Manager State:\n  mWakefulness={self.wakefulness}\n", "")
         if "keyevent" in command and self._power_key_works:

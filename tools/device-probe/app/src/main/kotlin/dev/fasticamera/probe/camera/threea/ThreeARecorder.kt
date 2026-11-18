@@ -23,6 +23,14 @@ class ThreeARecorder(private val log: ProbeLog, private val rawContentProbe: Thr
     private val imageAcquireErrors = AtomicInteger(0)
     private val untaggedResults = AtomicInteger(0)
 
+    /** Возраст кадра при приходе: elapsedRealtimeNanos (BOOTTIME) минус метка сенсора, в порядке прихода. */
+    private val imageAgesNs: MutableList<Long> = Collections.synchronizedList(ArrayList())
+    private val resultAgesNs: MutableList<Long> = Collections.synchronizedList(ArrayList())
+
+    fun imageAgesSnapshot(): List<Long> = synchronized(imageAgesNs) { imageAgesNs.toList() }
+
+    fun resultAgesSnapshot(): List<Long> = synchronized(resultAgesNs) { resultAgesNs.toList() }
+
     @Volatile
     var lastFrameNumber: Long = -1
         private set
@@ -36,6 +44,8 @@ class ThreeARecorder(private val log: ProbeLog, private val rawContentProbe: Thr
             untaggedResults.incrementAndGet()
             return
         }
+        val arrivedNs = android.os.SystemClock.elapsedRealtimeNanos()
+        result.get(android.hardware.camera2.CaptureResult.SENSOR_TIMESTAMP)?.let { resultAgesNs.add(arrivedNs - it) }
         val row = ThreeAFrameRow.from(tag, result)
         rows.add(row)
         lastFrameNumber = maxOf(lastFrameNumber, row.frameNumber)
@@ -60,6 +70,7 @@ class ThreeARecorder(private val log: ProbeLog, private val rawContentProbe: Thr
 
     /** RAW-картинки закрываются сразу: иначе очередь ридера переполнится и HAL начнёт терять буферы. */
     val imageListener = ImageReader.OnImageAvailableListener { reader ->
+        val callbackNs = android.os.SystemClock.elapsedRealtimeNanos()
         val image = try {
             reader.acquireNextImage()
         } catch (error: IllegalStateException) {
@@ -69,6 +80,7 @@ class ThreeARecorder(private val log: ProbeLog, private val rawContentProbe: Thr
         } ?: return@OnImageAvailableListener
         try {
             imageTimestamps.add(image.timestamp)
+            imageAgesNs.add(callbackNs - image.timestamp)
             rawContentProbe?.maybeAnalyze(image)
         } finally {
             image.close()

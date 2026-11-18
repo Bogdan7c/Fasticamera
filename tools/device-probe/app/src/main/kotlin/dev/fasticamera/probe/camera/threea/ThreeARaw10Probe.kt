@@ -39,13 +39,23 @@ class ThreeARaw10Probe(private val everyNth: Int, private val skipFirst: Int, pr
         samples += JSONObject().put("timestamp_ns", image.timestamp).put("whole", whole.toJson()).put("center", center.toJson())
     }
 
+    /** Отдаёт накопленное и обнуляет счётчики: следующий сегмент (шаг свипа) снова пропускает [skipFirst] кадров. */
+    @Synchronized
+    fun snapshotAndReset(): JSONObject {
+        val snapshot = toJson()
+        samples.clear()
+        frameChannelMeans.clear()
+        seen = 0
+        return snapshot
+    }
+
     /** Сводка по всем проанализированным кадрам: среднее средних по каналам и разброс между кадрами. */
     @Synchronized
     fun toJson(): JSONObject {
         val channelSummary = JSONArray()
         for (channel in 0 until CHANNELS) {
             val perFrame = frameChannelMeans.map { it[channel] }
-            val mean = if (perFrame.isEmpty()) Double.NaN else perFrame.average()
+            val mean = if (perFrame.isEmpty()) 0.0 else perFrame.average() // пустой набор: 0, JSON не принимает NaN
             val std = if (perFrame.size < 2) 0.0 else Math.sqrt(perFrame.sumOf { (it - mean) * (it - mean) } / (perFrame.size - 1))
             channelSummary.put(JSONObject().put("channel", channel).put("mean_of_frame_means", mean).put("std_between_frames", std))
         }

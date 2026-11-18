@@ -30,6 +30,8 @@ data class ThreeASessionConfig(
     val companionTargeted: Boolean = true,
     /** Публичный AE target fps [N,N] (сессионный параметр и в каждом запросе); null — не задавать. */
     val aeTargetFps: Int? = null,
+    /** Вендорские сессионные параметры (SessionConfiguration.sessionParameters). */
+    val sessionVendorKeys: List<VendorKeyValue> = emptyList(),
 )
 
 /**
@@ -102,9 +104,10 @@ class ThreeASession private constructor(
 
         /** Сессионные параметры: AE fps range — сессионный ключ, по нему HAL выбирает режим сенсора. */
         private fun sessionParameters(device: CameraDevice, config: ThreeASessionConfig): CaptureRequest? {
-            val fps = config.aeTargetFps ?: return null
+            if (config.aeTargetFps == null && config.sessionVendorKeys.isEmpty()) return null
             val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-            builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, android.util.Range(fps, fps))
+            config.aeTargetFps?.let { builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, android.util.Range(it, it)) }
+            config.sessionVendorKeys.forEach { it.applyTo(builder) }
             return builder.build()
         }
 

@@ -191,6 +191,20 @@ class DeviceActions(Protocol):
     def screencap(self, label: str) -> None: ...
 
 
+def parse_device_locked(output: str) -> bool:
+    """Заблокирован ли телефон: ``deviceLocked=`` текущего пользователя из ``dumpsys trust``.
+
+    Наше приложение показывается поверх экрана блокировки (``setShowWhenLocked``), поэтому экран
+    кажется разблокированным, а системная камера поверх блокировки не открывается (факт 08b).
+    """
+    for line in output.splitlines():
+        if "(current)" in line:
+            match = re.search(r"deviceLocked=([01])", line)
+            if match is not None:
+                return match.group(1) == "1"
+    raise DriverError("не удалось разобрать deviceLocked текущего пользователя из вывода dumpsys trust")
+
+
 def parse_wakefulness(output: str) -> str:
     """Значение ``mWakefulness=`` из вывода ``dumpsys power`` (Awake / Asleep / Dozing / Dreaming)."""
     match = re.search(r"mWakefulness=(\w+)", output)
@@ -372,7 +386,16 @@ class AdbDeviceActions:
         Системное приложение камеры открывает камеру, и Android отнимает её у нашего процесса, если тот
         держит её в фоне, — ровно то, что проверяет ``camera-evict``. Никаких настроек системы это не меняет.
         ``am start`` пишет ошибки в stdout при нулевом коде возврата, поэтому stdout проверяется отдельно.
+        Сначала проверяется блокировка: поверх экрана блокировки системная камера не открывает камеру,
+        и сценарий иначе честно, но непонятно падает «вытеснения не было» (факт 08b).
         """
+        trust = self._run_adb(self.adb_command("shell", "dumpsys", "trust"))
+        self._require_success(trust, "проверка блокировки перед запуском системной камеры (dumpsys trust)")
+        if parse_device_locked(trust.stdout):
+            raise DriverError(
+                "телефон заблокирован: системная камера не откроется поверх экрана блокировки, вытеснения не будет. "
+                "Разблокируйте телефон (наше приложение видно и поверх блокировки, экран лишь кажется разблокированным)"
+            )
         result = self._run_adb(
             self.adb_command("shell", "am", "start", "-W", "-a", SYSTEM_CAMERA_ACTION, "-p", SYSTEM_CAMERA_PACKAGE)
         )
