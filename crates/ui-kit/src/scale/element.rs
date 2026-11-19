@@ -21,6 +21,7 @@ use super::spec::{ScaleSpec, SnapPolicy, TickVisibility};
 use crate::drive::{AxisDrive, DriveSetup, MotionPhase, OffsetRange, ScrollTransition};
 use crate::environment::ElementEnvironment;
 use crate::event_queue::{EventOrigin, EventQueue};
+use crate::pan::PanUpdate;
 use crate::tokens::{HapticEvent, HapticTable, SnapRole};
 use crate::value::{Emphasis, Quantization, ValueModel};
 
@@ -185,14 +186,30 @@ impl<M: ValueModel + Clone> SnapScale<M> {
         Ok(())
     }
 
-    /// Жест отменён системой: **то же, что отпускание без скорости** (одно правило для всех
-    /// элементов): шкала доезжает до ближайшего упора без броска, а плавная шкала возле опорного
-    /// значения притягивается магнитом.
+    /// Жест отменён системой: **то же, что отпускание без скорости**: шкала доезжает до ближайшего
+    /// упора без броска, а плавная шкала возле опорного значения притягивается магнитом.
+    ///
+    /// Почему не «вернуть, как было» (так делает карусель): значение шкалы менялось вживую под
+    /// пальцем, камера уже получала его событиями `ValueChanged`; откат к старому значению был бы
+    /// ещё одним скачком выдержки/зума. Мягко доехать до упора от текущего положения — меньшее зло.
+    /// У карусели выбор происходит только при отпускании, поэтому ей откатывать нечего лишнего.
     pub fn drag_cancelled(&mut self, now: MonotonicNanos) -> Result<(), ScaleError> {
         let outcome = self.drive.drag_cancelled(now)?;
         self.apply_magnet(outcome, now)?;
         self.observe(now);
         Ok(())
+    }
+
+    /// Единая точка входа для пана: событие арены (через [`PanUpdate::from_gesture`]) в нужное
+    /// намерение. `time` — время **события** (`GestureEvent::time`); шкале оно нужно на каждом шаге
+    /// (события и значение считаются на этот момент).
+    pub fn apply_pan(&mut self, time: MonotonicNanos, update: PanUpdate) -> Result<(), ScaleError> {
+        match update {
+            PanUpdate::Began { translation } => self.drag_began(time, translation),
+            PanUpdate::Changed { translation } => self.drag_moved(time, translation),
+            PanUpdate::Ended { velocity } => self.drag_ended(time, velocity),
+            PanUpdate::Cancelled => self.drag_cancelled(time),
+        }
     }
 
     /// Палец, поймавший шкалу, отпущен без перетаскивания.

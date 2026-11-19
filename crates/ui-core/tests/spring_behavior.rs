@@ -637,3 +637,45 @@ fn additive_rejects_bad_input_and_immediate_clears_contributions() {
     animation.set_target(7.0, at_seconds(1.2)).unwrap();
     assert_eq!(animation.contribution_count(), 0);
 }
+
+#[test]
+fn evolve_since_measures_time_from_the_start_moment_and_does_not_extrapolate_backwards() {
+    let spring = Spring::bouncy();
+    let (mass, stiffness, damping) = physical(&spring);
+    let initial = SpringState {
+        displacement: 50.0,
+        velocity: -120.0,
+    };
+    // Старт в 1,0 с, выборка в 1,3 с: эталон — численное интегрирование на 0,3 с.
+    let state = spring.evolve_since(initial, at_seconds(1.0), at_seconds(1.3));
+    let (x_expected, v_expected) = rk4(mass, stiffness, damping, 50.0, -120.0, 0.3);
+    assert!(
+        (state.displacement - x_expected).abs() < 1e-6,
+        "x = {}",
+        state.displacement
+    );
+    assert!((state.velocity - v_expected).abs() < 1e-5, "v = {}", state.velocity);
+    // Выборка раньше старта равна выборке в момент старта: смещение и скорость начальные.
+    let before_start = spring.evolve_since(initial, at_seconds(1.0), at_seconds(0.5));
+    assert_eq!(before_start, initial);
+}
+
+#[test]
+fn spring_default_and_settling_epsilon_follow_motion_md_rows() {
+    // `Animation.spring(response:dampingFraction:)` по умолчанию: response 0,5, dampingFraction 0,825
+    // (`motion.md` 1.5). Эталон — жёсткость (2π/response)² из формул 1.2 и затухание 2·ζ·√k при m = 1.
+    let spring = Spring::from_response_damping_fraction(0.5, 0.825).unwrap();
+    let (mass, stiffness, damping) = physical(&spring);
+    let expected_stiffness = (2.0 * std::f64::consts::PI / 0.5).powi(2);
+    assert_eq!(mass, 1.0);
+    assert!((stiffness - expected_stiffness).abs() < 1e-9, "k = {stiffness}");
+    assert!(
+        (damping - 2.0 * 0.825 * expected_stiffness.sqrt()).abs() < 1e-9,
+        "c = {damping}"
+    );
+    // Критерий покоя по умолчанию: epsilon 0,001 от расстояния (`SwiftUI settlingDuration`):
+    // для пути в 100 pt допуск положения 0,1 pt.
+    let rest = RestCriterion::default();
+    assert_eq!(rest.relative_epsilon, 0.001);
+    assert!((rest.tolerance_for_distance(100.0, 10.0).position - 0.1).abs() < 1e-12);
+}

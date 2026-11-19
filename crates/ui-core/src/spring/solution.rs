@@ -14,6 +14,7 @@
 //! проходит через q = 0), иначе — прямыми `cos/sin` или экспонентами.
 
 use super::model::{PhysicalSpring, Spring};
+use crate::time::{MonotonicNanos, UiDuration};
 
 /// Смещение от цели и скорость. Единицы — как у величины анимации (pt и pt/с).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -41,6 +42,15 @@ impl Spring {
                 velocity: 0.0,
             },
         }
+    }
+
+    /// Состояние в момент `now` для пружины, стартовавшей в `start_time` из `initial`.
+    ///
+    /// Единственное место, где «сейчас − старт» превращается в секунды: им пользуются и
+    /// `SpringAnimation`, и вклады `AdditiveSpringAnimation`, поэтому их выборки не могут
+    /// разойтись. Время до старта не экстраполируется: выборка до `start_time` равна выборке в нём.
+    pub fn evolve_since(&self, initial: SpringState, start_time: MonotonicNanos, now: MonotonicNanos) -> SpringState {
+        self.evolve(initial, UiDuration::between(start_time, now).as_secs_f64())
     }
 }
 

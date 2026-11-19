@@ -34,6 +34,11 @@ pub struct DensityTokens {
     pub magnet_capture_points: f64,
     /// Промежуток между элементами карусели, pt. `[measured]` `layout.md`: зазор между словами 35,4.
     pub carousel_item_gap_points: f64,
+    /// На сколько pt за рамку кнопки палец ещё считается «на кнопке» (зона отслеживания нажатия).
+    /// `[reverse]` 8: Android `ViewConfiguration.TOUCH_SLOP` = 8 dp (AOSP `ViewConfiguration.java`,
+    /// `View.onTouchEvent` снимает «нажато», когда палец ушёл за рамку больше чем на slop). Число
+    /// UIKit в документации не найдено. Подгонка, не Apple (`behavior.md` 1.1, «кнопка»).
+    pub press_tracking_slop_points: f64,
 }
 
 impl Default for DensityTokens {
@@ -44,6 +49,7 @@ impl Default for DensityTokens {
             sparse_points_per_unit: 48.0,
             magnet_capture_points: 14.0,
             carousel_item_gap_points: 35.4,
+            press_tracking_slop_points: 8.0,
         }
     }
 }
@@ -66,6 +72,7 @@ impl DensityTokens {
             ("sparse_points_per_unit", self.sparse_points_per_unit),
             ("magnet_capture_points", self.magnet_capture_points),
             ("carousel_item_gap_points", self.carousel_item_gap_points),
+            ("press_tracking_slop_points", self.press_tracking_slop_points),
         ];
         for (name, value) in sizes {
             if !value.is_finite() || value <= 0.0 {

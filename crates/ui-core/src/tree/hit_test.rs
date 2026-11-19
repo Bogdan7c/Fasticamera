@@ -27,8 +27,9 @@ use crate::id::NodeId;
 #[serde(deny_unknown_fields)]
 pub struct HitTestConfig {
     /// Элемент с прозрачностью строго ниже порога касания не ловит.
-    /// `[review]` 0,01: UIKit `UIView.hitTest(_:with:)` — view с «alpha level less than 0.01» не
-    /// участвует в хит-тесте (формулировка по памяти, живая страница Apple не сверялась).
+    /// `[doc]` 0,01: D `uikit/uiview/hittest(_:with:)` (сырой JSON, сверено 19.11.2026): *"This method
+    /// ignores view objects that are hidden, that have disabled user interactions, or that have an
+    /// alpha level less than 0.01."*
     pub min_hittable_opacity: f64,
 }
 

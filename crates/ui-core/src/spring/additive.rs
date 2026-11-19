@@ -8,7 +8,7 @@ use super::animation::{SpringPhase, SpringSample, ensure_finite};
 use super::model::{Spring, SpringError};
 use super::rest::{RestCriterion, RestTolerance};
 use super::solution::SpringState;
-use crate::time::{MonotonicNanos, UiDuration};
+use crate::time::MonotonicNanos;
 
 /// Сколько вкладов живёт одновременно по умолчанию (`[estimate]` — подгонка, не Apple).
 pub const DEFAULT_MAX_LIVE_CONTRIBUTIONS: usize = 8;
@@ -37,8 +37,7 @@ struct Contribution {
 
 impl Contribution {
     fn state_at(&self, now: MonotonicNanos) -> SpringState {
-        let elapsed_s = UiDuration::between(self.start_time, now).as_secs_f64().max(0.0);
-        self.spring.evolve(self.initial, elapsed_s)
+        self.spring.evolve_since(self.initial, self.start_time, now)
     }
 
     /// Живой вклад (не успокоился). Для `immediate` вкладов не заводим вовсе.

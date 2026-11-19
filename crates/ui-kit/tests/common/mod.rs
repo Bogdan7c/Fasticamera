@@ -112,3 +112,77 @@ pub fn magnet_scale(
     )
     .unwrap()
 }
+
+// ---------- сцена `ui-core` и поток касаний в пикселях (сквозные тесты шва) ----------
+
+use shell_contract::touch::{PointerId, SurfacePoint, TouchPhase, TouchSample};
+use ui_core::geometry::{Insets, Rect};
+use ui_core::layout::{AnchorRule, AxisPlacement, Placement, ReferenceArea};
+use ui_core::scene::{SceneSettings, SurfaceGeometry, UiScene};
+
+/// Ширина surface, пиксели: 1080 px = 440 pt (решение 82).
+pub const SURFACE_WIDTH_PX: u32 = 1080;
+/// Высота surface, пиксели.
+pub const SURFACE_HEIGHT_PX: u32 = 2412;
+/// Пикселей на pt, посчитано независимо от `PointScale` (эталон перевода).
+pub const PIXELS_PER_POINT: f64 = 1080.0 / 440.0;
+
+/// Сцена с пустым деревом на нашем экране. `I` — намерение экрана.
+pub fn empty_scene<I: Clone>() -> UiScene<I> {
+    UiScene::new(
+        SurfaceGeometry {
+            width_px: SURFACE_WIDTH_PX,
+            height_px: SURFACE_HEIGHT_PX,
+            safe_area: Insets::ZERO,
+        },
+        SceneSettings::default(),
+    )
+    .unwrap()
+}
+
+/// Привязка к левому верхнему углу родителя: рамка `rect` (pt) в координатах родителя.
+pub fn anchored_rect(rect: Rect) -> Placement {
+    Placement::Anchored(AnchorRule {
+        area: ReferenceArea::Frame,
+        horizontal: AxisPlacement::Start {
+            inset: rect.origin.x,
+            length: rect.size.width,
+        },
+        vertical: AxisPlacement::Start {
+            inset: rect.origin.y,
+            length: rect.size.height,
+        },
+    })
+}
+
+/// Ребёнок корня с рамкой `rect` (pt); вёрстка пересчитана (иначе хит-тест идёт по старым рамкам).
+pub fn add_rect<I: Clone>(scene: &mut UiScene<I>, label: &'static str, rect: Rect) -> ui_core::id::NodeId {
+    let root = scene.tree().root();
+    let node = scene.insert_child(root, label).unwrap();
+    scene.set_placement(node, anchored_rect(rect)).unwrap();
+    scene.layout().unwrap();
+    node
+}
+
+/// Пиксельная координата, как её отправит оболочка (`f32`).
+pub fn to_pixels(point: f64) -> f32 {
+    (point * PIXELS_PER_POINT) as f32
+}
+
+/// Что реально увидела арена: пиксель, переведённый обратно в pt независимой формулой.
+pub fn seen_in_points(pixels: f32) -> f64 {
+    f64::from(pixels) / PIXELS_PER_POINT
+}
+
+/// Касание оболочки в ПИКСЕЛЯХ по координатам, заданным в pt.
+pub fn touch(pointer: i32, phase: TouchPhase, x_pt: f64, y_pt: f64, millis: i64) -> TouchSample {
+    TouchSample {
+        pointer: PointerId::new(pointer),
+        phase,
+        position: SurfacePoint {
+            x_px: to_pixels(x_pt),
+            y_px: to_pixels(y_pt),
+        },
+        time: ms(millis),
+    }
+}

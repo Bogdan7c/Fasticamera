@@ -7,10 +7,9 @@
 //! Общие контракты элементов: отмена жеста (одно правило), атомарная смена пределов/списка,
 //! смена Reduce Motion на лету, один тип перехода для шкалы и карусели.
 
-use shell_contract::haptics::HapticPattern;
 use ui_core::scroll::ScrollPhase;
 use ui_core::time::MotionPreference;
-use ui_kit::carousel::{CarouselEntry, CarouselError, CarouselEvent, CarouselSpec, SelectionCause, SnapCarousel};
+use ui_kit::carousel::{CarouselEntry, CarouselError, CarouselSpec, SnapCarousel};
 use ui_kit::drive::{DragOrigin, GrowthDirection, MotionPhase, ScrollTransition};
 use ui_kit::scale::{ScaleError, ScaleEvent, ScaleSpec, SnapScale};
 use ui_kit::tokens::{SpringToken, UiKitTokens};
@@ -127,76 +126,76 @@ fn mode_carousel(tokens: &UiKitTokens, motion: MotionPreference) -> SnapCarousel
     .unwrap()
 }
 
-/// Отмена жеста карусели фиксирует ближайший элемент: за половину пути — следующий (событие выбора
-/// от пальца с хаптикой), меньше половины — прежний (событий нет). Совпадает с отпусканием без скорости.
+/// Системная отмена жеста карусели = «сбросить без действия»: возврат к элементу, выбранному ДО
+/// жеста, без события выбора и без хаптики. Отпускание того же жеста выбрало бы другой элемент
+/// (60 pt — дальше половины пути), поэтому тест различает «отмена» и «отпускание».
 #[test]
-fn carousel_cancel_commits_the_nearest_item_like_a_release() {
+fn carousel_cancel_returns_to_the_previously_selected_item_without_events() {
     let tokens = UiKitTokens::default();
     // До центра следующего элемента 90,95 pt: 60 pt — дальше половины, 20 pt — ближе.
-    for (drag, expected, changed) in [(60.0, Mode::Photo, true), (20.0, Mode::Video, false)] {
-        let finish = |cancel: bool| {
-            let mut carousel = mode_carousel(&tokens, MotionPreference::Full);
-            carousel.drag_began(ms(0), pan_same(0.0)).unwrap();
-            carousel.drag_moved(pan_same(-drag)).unwrap();
-            if cancel {
-                carousel.drag_cancelled(ms(16)).unwrap();
-            } else {
-                carousel.release_without_drag(ms(16)).unwrap();
-            }
-            carousel
-        };
-        let mut cancelled = finish(true);
-        let mut released = finish(false);
-        assert_eq!(cancelled.selected(), &expected, "drag = {drag}");
-        let events = cancelled.drain_events();
-        assert_eq!(events, released.drain_events());
-        if changed {
-            assert!(matches!(
-                events.as_slice(),
-                [
-                    CarouselEvent::SelectionChanged {
-                        item: Mode::Photo,
-                        index: 1,
-                        cause: SelectionCause::Swipe
-                    },
-                    CarouselEvent::Haptic {
-                        pattern: HapticPattern::SelectionTick
-                    }
-                ]
-            ));
-        } else {
-            assert!(events.is_empty());
-        }
-        for at in [16, 200, 5_000] {
-            assert_eq!(
-                cancelled.offset_points(ms(at)).to_bits(),
-                released.offset_points(ms(at)).to_bits()
-            );
-        }
-        assert_eq!(cancelled.phase(ms(5_000)), MotionPhase::Resting);
+    for drag in [60.0, 20.0, -40.0] {
+        let mut carousel = mode_carousel(&tokens, MotionPreference::Full);
+        carousel.drag_began(ms(0), pan_same(0.0)).unwrap();
+        carousel.drag_moved(pan_same(-drag)).unwrap();
+        let under_finger = carousel.offset_points(ms(16));
+        carousel.drag_cancelled(ms(16)).unwrap();
+        assert_eq!(
+            carousel.selected(),
+            &Mode::Video,
+            "drag = {drag}: выбор остался прежним"
+        );
+        assert!(
+            carousel.drain_events().is_empty(),
+            "drag = {drag}: ни выбора, ни хаптики"
+        );
+        // Без скачка: в момент отмены положение то же, что было под пальцем.
+        assert!(
+            (carousel.offset_points(ms(16)) - under_finger).abs() < 1e-9,
+            "drag = {drag}"
+        );
+        assert_eq!(carousel.phase(ms(100)), MotionPhase::Settling, "drag = {drag}");
+        // Пружина привела карусель к ПРЕЖНЕМУ элементу (смещение 0), а не к ближайшему.
+        assert!(carousel.offset_points(ms(5_000)).abs() < 1e-9, "drag = {drag}");
+        assert_eq!(carousel.phase(ms(5_000)), MotionPhase::Resting, "drag = {drag}");
     }
+    // Контроль: то же перетаскивание, но отпущенное, выбирает Photo — отмена от отпускания отличается.
+    let mut released = mode_carousel(&tokens, MotionPreference::Full);
+    released.drag_began(ms(0), pan_same(0.0)).unwrap();
+    released.drag_moved(pan_same(-60.0)).unwrap();
+    released.release_without_drag(ms(16)).unwrap();
+    assert_eq!(released.selected(), &Mode::Photo);
 }
 
-/// За краем карусель возвращается к последнему элементу; индекс точки приходит от движка, а не
-/// ищется сравнением чисел: отмена за краем даёт ровно один выбор последнего.
+/// Отмена не с первого элемента и за краем: возврат именно к выбранному до жеста (не к ближайшему
+/// и не к последнему, как при отпускании за краем).
 #[test]
-fn carousel_cancel_past_the_edge_selects_the_last_item_by_engine_index() {
+fn carousel_cancel_past_the_edge_still_returns_to_the_selection_before_the_gesture() {
     let tokens = UiKitTokens::default();
     let mut carousel = mode_carousel(&tokens, MotionPreference::Full);
-    carousel.drag_began(ms(0), pan_same(0.0)).unwrap();
+    carousel.tapped_item(1, ms(0)).unwrap();
+    carousel.drain_events();
+    carousel.drag_began(ms(5_000), pan_same(0.0)).unwrap();
     // Тянем сильно за последний элемент (186,35 pt), в зону «резинки».
     carousel.drag_moved(pan_same(-300.0)).unwrap();
-    carousel.drag_cancelled(ms(16)).unwrap();
-    assert_eq!(carousel.selected(), &Mode::Portrait);
-    let events = carousel.drain_events();
-    assert!(matches!(
-        events.first(),
-        Some(CarouselEvent::SelectionChanged {
-            item: Mode::Portrait,
-            index: 2,
-            ..
-        })
-    ));
+    carousel.drag_cancelled(ms(5_016)).unwrap();
+    assert_eq!(carousel.selected(), &Mode::Photo);
+    assert!(carousel.drain_events().is_empty());
+    let photo_offset = 61.1 / 2.0 + 35.4 + 50.0 / 2.0;
+    assert!((carousel.offset_points(ms(15_000)) - photo_offset).abs() < 1e-9);
+}
+
+/// Отмена без идущего перетаскивания — явная ошибка движка, состояние не меняется (как у отпускания).
+#[test]
+fn carousel_cancel_without_a_drag_is_an_error_and_changes_nothing() {
+    let tokens = UiKitTokens::default();
+    let mut carousel = mode_carousel(&tokens, MotionPreference::Full);
+    assert_eq!(
+        carousel.drag_cancelled(ms(16)),
+        Err(CarouselError::Scroll(ui_core::scroll::ScrollError::NotDragging))
+    );
+    assert_eq!(carousel.selected(), &Mode::Video);
+    assert_eq!(carousel.phase(ms(16)), MotionPhase::Resting);
+    assert!(carousel.drain_events().is_empty());
 }
 
 // ---------- атомарность смены пределов / списка ----------

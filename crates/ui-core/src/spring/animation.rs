@@ -3,7 +3,7 @@
 use super::model::{Spring, SpringError};
 use super::rest::{RestCriterion, RestTolerance};
 use super::solution::SpringState;
-use crate::time::{MonotonicNanos, UiDuration};
+use crate::time::MonotonicNanos;
 
 /// Фаза анимации в момент выборки.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,8 +103,7 @@ impl SpringAnimation {
 
     /// Значение, скорость и фаза в момент `now`.
     pub fn sample(&self, now: MonotonicNanos) -> SpringSample {
-        let elapsed_s = UiDuration::between(self.start_time, now).as_secs_f64().max(0.0);
-        let state = self.spring.evolve(self.initial, elapsed_s);
+        let state = self.spring.evolve_since(self.initial, self.start_time, now);
         if self.spring.is_immediate() || self.tolerance.contains(state.displacement, state.velocity) {
             return SpringSample {
                 value: self.target,

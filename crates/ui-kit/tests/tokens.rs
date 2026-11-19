@@ -223,4 +223,13 @@ fn validate_rejects_broken_tokens() {
     let mut tokens = UiKitTokens::default();
     tokens.density.magnet_capture_points = f64::NAN;
     assert!(tokens.validate().is_err());
+    let mut tokens = UiKitTokens::default();
+    tokens.density.press_tracking_slop_points = 0.0;
+    assert!(matches!(
+        tokens.validate(),
+        Err(TokenError::NonPositiveSize {
+            name: "press_tracking_slop_points",
+            ..
+        })
+    ));
 }

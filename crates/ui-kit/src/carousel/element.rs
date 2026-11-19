@@ -18,7 +18,7 @@ use std::fmt::Debug;
 
 use ui_core::geometry::Vector;
 use ui_core::gesture::PanTranslation;
-use ui_core::scroll::ReleaseOutcome;
+use ui_core::scroll::{ReleaseOutcome, ScrollError};
 use ui_core::time::{MonotonicNanos, MotionPreference};
 
 use super::entry::{CarouselEntry, CarouselSpec, ItemPlacement, snap_offsets};
@@ -27,6 +27,7 @@ use super::events::{CarouselEvent, SelectionCause, TapOutcome};
 use crate::drive::{AxisDrive, DriveSetup, MotionPhase, OffsetRange, ScrollTransition};
 use crate::environment::ElementEnvironment;
 use crate::event_queue::EventQueue;
+use crate::pan::PanUpdate;
 use crate::tokens::{HapticEvent, HapticTable, SnapRole};
 
 /// Карусель элементов `T`. Идентичность элемента — `T: PartialEq`.
@@ -162,13 +163,38 @@ impl<T: Clone + PartialEq + Debug> SnapCarousel<T> {
         Ok(())
     }
 
-    /// Жест отменён системой: **то же, что отпускание без скорости** (одно правило для всех
-    /// элементов): фиксируется ближайший элемент (соседний по политике `AdjacentOnly`) и приходит
-    /// событие выбора, если он сменился. Причина выбора — `Swipe` (палец начал жест).
+    /// Жест отменён системой: **«сбросить без действия»** (`TouchPhase::Cancelled` оболочки).
+    /// Карусель пружиной возвращается к элементу, выбранному **до жеста**; события выбора и
+    /// хаптики нет. Выбор карусели меняется только в момент решения (при отпускании), поэтому во
+    /// время перетаскивания `selected()` ещё прежний, и возвращать нужно именно его.
+    ///
+    /// Почему не как отпускание без скорости (так делает шкала): системная отмена приходит не от
+    /// намерения пальца (звонок, жест системы, потеря окна), и смена режима камеры по ней была бы
+    /// сюрпризом. У шкалы значение менялось вживую под пальцем и «откатывать» его нельзя без
+    /// скачка, поэтому она доезжает до упора (см. `SnapScale::drag_cancelled`).
+    ///
+    /// Ошибка [`ScrollError::NotDragging`](ui_core::scroll::ScrollError::NotDragging), если жест
+    /// не шёл (как при отпускании).
     pub fn drag_cancelled(&mut self, now: MonotonicNanos) -> Result<(), CarouselError> {
-        let outcome = self.drive.drag_cancelled(now)?;
-        self.commit_release(outcome, SelectionCause::Swipe);
+        if self.drive.phase(now) != MotionPhase::Touched {
+            return Err(ScrollError::NotDragging.into());
+        }
+        let selected_offset = self.offset_for_index(self.selected)?;
+        // Перетаскивание само ничего не выбирало, поэтому `selected` — состояние до жеста.
+        // Пружина стартует от положения под пальцем (в перетаскивании скорость контента 0).
+        self.drive.scroll_to(selected_offset, ScrollTransition::Animated, now)?;
         Ok(())
+    }
+
+    /// Единая точка входа для пана: событие арены (через [`PanUpdate::from_gesture`]) в нужное
+    /// намерение. `time` — время **события** (`GestureEvent::time`).
+    pub fn apply_pan(&mut self, time: MonotonicNanos, update: PanUpdate) -> Result<(), CarouselError> {
+        match update {
+            PanUpdate::Began { translation } => self.drag_began(time, translation),
+            PanUpdate::Changed { translation } => self.drag_moved(translation),
+            PanUpdate::Ended { velocity } => self.drag_ended(time, velocity),
+            PanUpdate::Cancelled => self.drag_cancelled(time),
+        }
     }
 
     /// Палец, поймавший карусель, отпущен без перетаскивания.
