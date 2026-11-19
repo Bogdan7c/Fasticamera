@@ -386,7 +386,11 @@ mod tests {
         );
         // Следующие кадры без источника просто без UI.
         assert_eq!(state.produce_draw_list(&request(2)), None);
-        assert_eq!(state.snapshot().source_failures, 1, "снятый источник больше не вызывается");
+        assert_eq!(
+            state.snapshot().source_failures,
+            1,
+            "снятый источник больше не вызывается"
+        );
     }
 
     #[test]
