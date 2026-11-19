@@ -26,7 +26,7 @@
 - Устройство выбирается по модели `CPH2447`; несколько — задать `ANDROID_SERIAL`.
 
 ## UI-рендер и стекло (сессия 11)
-- Сценарий 11/11a: `scripts/device-smoke.sh [--variant release] --timeout 90 glass` (видоискатель + демо-стекло 30 с; скриншоты на стадии `glass_live`; бюджет p95 GPU UI = период × `camera.scenarios.glass.ui_gpu_budget_fraction`).
+- Сценарий 11/11a: `scripts/device-smoke.sh [--variant release] --timeout 90 glass` (видоискатель + демо-стекло 30 с; скриншоты на стадии `glass_live`; бюджет p95 GPU UI = период × `camera.scenarios.glass.ui_gpu_budget_fraction`, по умолчанию 0,5 — ловушка грубых ошибок, решение 90; рывки судит проверка видоискателя, `late_frames` — только цифра, решение 91; экран во время прогона не трогать — касание включает 120 Гц).
 - Golden: `cargo test -p ui-render-vulkan --test golden`; перегенерация `FASTICAMERA_UPDATE_GOLDEN=1 …`; PNG для глаз `FASTICAMERA_GOLDEN_PREVIEW_DIR=<вне репо> …` (README в `test-assets/ui-render-vulkan/golden/`).
 - Замер GPU на RADV: тест бенча в `crates/ui-render-vulkan/tests/` с `--nocapture` (пирамида и проход UI отдельно).
 - Запекание шрифта/иконок — автоматически в `build.rs` `ui-draw` (манифест `crates/ui-draw/assets/bake.json`, ≈ 1–2 с).

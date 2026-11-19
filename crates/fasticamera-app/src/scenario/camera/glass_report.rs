@@ -12,7 +12,9 @@
 //! 4. `pyramid_rebuilds > 0`: пирамида размытия фона реально строилась — иначе стекло рисовалось без фона;
 //! 5. GPU-время UI замерено, и p95 не больше бюджета `период кадра × ui_gpu_budget_fraction`
 //!    (период — из `render.preferred_frame_rate_hz`, решение 36; порог калибруется в 11a, решение 56);
-//! 6. кадров, показанных позже задуманного vsync, не больше `max_missed_frames` (по умолчанию 0);
+//! 6. кадры, показанные позже задуманного vsync, — только цифра `late_frames`, не провал (решение 91):
+//!    ровное опоздание на такт — это задержка, а не рывок (у `viewfinder` без стекла их 0…67 % от прогона
+//!    к прогону). Рывок для глаза — кадр выпал или показан дважды: их судит правило 8 с допуском на дрейф;
 //! 7. источник снят (иначе стекло осталось бы на экране после сценария);
 //! 8. видоискатель не хуже порогов `viewfinder` (к/с, «ровно один раз», копии, validation, джиттер-буфер…) —
 //!    нарушения идут с пометкой «видоискатель».
@@ -158,31 +160,21 @@ pub struct GlassObservation {
 }
 
 impl GlassObservation {
-    /// Кадров, показанных позже задуманного vsync, за окно: это и есть «пропуск кадра» для глаза.
-    pub fn missed_frames(&self) -> u64 {
+    /// Кадров, показанных позже задуманного vsync, за окно. Это задержка (планировщик показа целился в
+    /// линию раньше, чем успел GPU), а не рывок: ровный поток «на такт позже» глаз не видит. Только отчёт.
+    pub fn late_frames(&self) -> u64 {
         let shift = &self.viewfinder.window.present_target.vsync_shift;
         shift.late_1 + shift.late_2 + shift.late_3_plus
     }
 }
 
 /// Вердикт: список нарушений (пустой — прошёл).
-pub fn evaluate_glass(
-    config: &GlassScenarioConfig,
-    smoke: &ViewfinderSmokeConfig,
-    observation: &GlassObservation,
-) -> Vec<String> {
+pub fn evaluate_glass(smoke: &ViewfinderSmokeConfig, observation: &GlassObservation) -> Vec<String> {
     if let Some(failure) = &observation.viewfinder.failure {
         return vec![failure.describe()];
     }
     let mut violations = overlay_violations(&observation.overlay);
     violations.extend(gpu_time_violations(&observation.overlay, &observation.budget));
-    let missed = observation.missed_frames();
-    if missed > config.max_missed_frames {
-        violations.push(format!(
-            "кадров показано позже задуманного vsync: {missed} за {} мс, допустимо {}",
-            observation.viewfinder.window.window_ms, config.max_missed_frames
-        ));
-    }
     if let SourceRemoval::NotDelivered { reason } = &observation.removal {
         violations.push(format!("источник UI не снят: {reason}"));
     }
@@ -256,7 +248,7 @@ pub fn glass_notes(observation: &GlassObservation) -> Vec<String> {
 
 impl GlassObservation {
     /// Сводка для строки результата: только ограниченное по размеру; подробности — `detail_glass`.
-    pub fn summary(&self, config: &GlassScenarioConfig) -> Value {
+    pub fn summary(&self) -> Value {
         let viewfinder = &self.viewfinder;
         serde_json::json!({
             "failure": viewfinder.failure,
@@ -264,8 +256,7 @@ impl GlassObservation {
             "overlay": self.overlay,
             "warmup": self.warmup,
             "ui_gpu_budget": self.budget,
-            "missed_frames": self.missed_frames(),
-            "missed_frames_allowed": config.max_missed_frames,
+            "late_frames": self.late_frames(),
             "source_removal": self.removal,
             "gravity": self.gravity,
             "notes": glass_notes(self),

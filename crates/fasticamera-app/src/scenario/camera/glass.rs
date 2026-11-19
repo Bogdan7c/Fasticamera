@@ -414,11 +414,11 @@ impl ObservingScenario for GlassScenario {
         let Some(finished) = self.run.take() else {
             return ScenarioStep::Continue;
         };
-        let (config, smoke_config) = (finished.config.clone(), finished.smoke_config.clone());
+        let smoke_config = finished.smoke_config.clone();
         let observation = finished.into_observation(context, running, failure);
         emit_details(context, "detail_glass", observation.detail_items());
-        let violations = evaluate_glass(&config, &smoke_config, &observation);
-        let summary = observation.summary(&config);
+        let violations = evaluate_glass(&smoke_config, &observation);
+        let summary = observation.summary();
         ScenarioStep::Finished(finish_within_budget(context, summary, violations))
     }
 }

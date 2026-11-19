@@ -1,5 +1,6 @@
 //! Политика потока рендера при отказах бэкенда (fake-бэкенд, настоящий поток): учёт неудачных
-//! `detach` на пути неисправности и пауза между повторными пересозданиями цепочки.
+//! `detach` на пути неисправности, видимость итога detach в статусе к моменту квитанции
+//! и пауза между повторными пересозданиями цепочки.
 //!
 //! Файл относится к семейству `vulkan_*`: именно Vulkan-бэкенд даёт `detach_failures` (утечка
 //! swapchain/surface при зависшем GPU) и откладывает пересоздание при нулевом размере окна.
@@ -14,6 +15,7 @@ mod support;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::thread;
 use std::time::Duration;
 
 use render_loop::backend::{
@@ -34,10 +36,17 @@ struct LeakyDetachBackend {
     inner: FakeBackend,
     detach_failures: Arc<AtomicU64>,
     count_failure_on_detach: Arc<AtomicBool>,
+    /// Сколько спать внутри `attach`, мс (0 — не спать). Тест растягивает работу потока
+    /// ПОСЛЕ подтверждения квитанции, чтобы порядок «статус, затем квитанция» стал проверяемым.
+    attach_delay_ms: Arc<AtomicU64>,
 }
 
 impl DisplayBackend for LeakyDetachBackend {
     fn attach(&mut self, surface: NativeSurface, size: SurfaceSize) -> Result<(), AttachError> {
+        let delay_ms = self.attach_delay_ms.load(Ordering::SeqCst);
+        if delay_ms > 0 {
+            thread::sleep(Duration::from_millis(delay_ms));
+        }
         self.inner.attach(surface, size)
     }
 
@@ -79,6 +88,7 @@ fn start(config: RenderLoopConfig, probe_setup: impl FnOnce(&Probe)) -> Rig {
         inner,
         detach_failures: Arc::new(AtomicU64::new(0)),
         count_failure_on_detach: Arc::new(AtomicBool::new(false)),
+        attach_delay_ms: Arc::new(AtomicU64::new(0)),
     })
 }
 
@@ -130,6 +140,7 @@ fn detach_failure_on_the_fault_path_is_counted_and_the_receipt_is_still_confirme
             inner,
             detach_failures: counter,
             count_failure_on_detach: flag,
+            attach_delay_ms: Arc::new(AtomicU64::new(0)),
         },
     );
     rig.show_surface(1);
@@ -162,11 +173,19 @@ fn panicking_detach_on_the_fault_path_counts_as_a_detach_failure() {
     assert_eq!(rig.destroy_surface(1), SurfaceReleaseOutcome::Confirmed);
 }
 
+/// Инвариант: тот, кого разбудила квитанция освобождения, уже видит в статусе итог detach
+/// (`detach_failures`) и само подтверждение (`releases_confirmed`). Раньше статус
+/// публиковался только в конце итерации, ПОСЛЕ квитанции, и тест плавал под нагрузкой CI.
+///
+/// Порядок делаем детерминированным: поток держим внутри кадра, кладём в ящик одним пакетом
+/// «уничтожить surface 1» и «создать surface 2», а `attach` второй surface растягиваем на
+/// 300 мс. Без публикации до квитанции статус обновился бы только после медленного attach.
 #[test]
-fn detach_failure_on_the_normal_path_is_counted_and_the_receipt_is_confirmed() {
+fn detach_failure_on_the_normal_path_is_visible_in_the_status_when_the_receipt_is_confirmed() {
     let flag = Arc::new(AtomicBool::new(true));
     let counter = Arc::new(AtomicU64::new(0));
-    let (flag_in, counter_in) = (Arc::clone(&flag), Arc::clone(&counter));
+    let attach_delay_ms = Arc::new(AtomicU64::new(0));
+    let (flag_in, counter_in, delay_in) = (Arc::clone(&flag), Arc::clone(&counter), Arc::clone(&attach_delay_ms));
     let rig = start_with_backend(
         RenderLoopConfig::default(),
         |_| {},
@@ -174,13 +193,35 @@ fn detach_failure_on_the_normal_path_is_counted_and_the_receipt_is_confirmed() {
             inner,
             detach_failures: counter_in,
             count_failure_on_detach: flag_in,
+            attach_delay_ms: delay_in,
         },
     );
     rig.show_surface(1);
     assert!(wait_until(DEADLINE, || rig.handle.status().frames_presented >= 3));
 
-    assert_eq!(rig.destroy_surface(1), SurfaceReleaseOutcome::Confirmed);
-    assert_eq!(rig.handle.status().backend.detach_failures, 1);
+    // Поток стоит внутри кадра: всё, что положим ниже, он заберёт одним пакетом.
+    rig.probe.hold_frames.store(true, Ordering::SeqCst);
+    assert!(wait_until(DEADLINE, || rig
+        .probe
+        .frame_in_progress
+        .load(Ordering::SeqCst)));
+    let (request, waiter) = surface_release_handoff(SurfaceGeneration::new(1));
+    rig.handle.inbox().surface_destroyed(request);
+    attach_delay_ms.store(300, Ordering::SeqCst);
+    rig.show_surface(2);
+    rig.probe.hold_frames.store(false, Ordering::SeqCst);
+
+    assert_eq!(waiter.wait(DEADLINE), SurfaceReleaseOutcome::Confirmed);
+    // Читаем сразу после квитанции, пока поток ещё спит в attach второй surface.
+    let status_at_receipt = rig.handle.status();
+    assert_eq!(
+        status_at_receipt.backend.detach_failures, 1,
+        "итог detach не виден по квитанции"
+    );
+    assert_eq!(
+        status_at_receipt.releases_confirmed, 1,
+        "подтверждение не видно по квитанции"
+    );
 }
 
 #[test]

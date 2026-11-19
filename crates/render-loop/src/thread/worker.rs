@@ -389,13 +389,19 @@ impl<B: DisplayBackend, C: FrameClock> RenderWorker<B, C> {
             tracing::error!(target: LOG_TARGET, generation = generation.value(), "подтверждать нечего");
             return;
         };
-        pending.request.confirm_released();
+        let release_latency = pending.enqueued_at.elapsed();
         self.status.releases_confirmed += 1;
-        self.status.last_release_latency = Some(pending.enqueued_at.elapsed());
+        self.status.last_release_latency = Some(release_latency);
+        // Инвариант: статус публикуется ДО квитанции. Кого разбудит квитанция, тот уже видит
+        // итог detach (`detach_failures`, живые объекты) и само подтверждение. Иначе статус
+        // обновился бы только в конце итерации — после остальных событий пакета (например,
+        // attach новой surface), и проснувшийся читал бы старые счётчики.
+        self.publish();
+        pending.request.confirm_released();
         tracing::info!(
             target: LOG_TARGET,
             generation = generation.value(),
-            latency_us = pending.enqueued_at.elapsed().as_micros(),
+            latency_us = release_latency.as_micros(),
             "освобождение surface подтверждено"
         );
     }

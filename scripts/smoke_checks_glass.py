@@ -2,8 +2,10 @@
 
 Точные правила и пороги судит Rust (конфиг ``camera.scenarios.glass`` и ``camera.scenarios.viewfinder``,
 ``glass_report.rs``); здесь — независимая грубая перепроверка сводки строки результата по критерию 11a:
-источник UI стоял и рисовал без отказов, пирамида размытия строилась, GPU-время кадра UI в бюджете,
-0 пропусков кадров за окно, видоискатель живой, источник снят. Каждая проверка — чистая функция
+источник UI стоял и рисовал без отказов, пирамида размытия строилась, GPU-время кадра UI в бюджете
+(ловушка грубых ошибок, решение 90), видоискатель живой, источник снят. Кадры «позже задуманного vsync» —
+только цифра отчёта (решение 91): это задержка, а не рывок; рывки (кадр выпал) судит Rust порогами
+видоискателя с допуском на дрейф часов. Каждая проверка — чистая функция
 «JSON результата → список проблем» (пустой список — прошёл).
 
 Гравитация (свет стекла от наклона) — не провал: её недоступность и молчание датчика идут заметкой
@@ -32,7 +34,7 @@ def _dict(value: object) -> dict:
 
 
 def check_glass(result: dict) -> list[str]:
-    """``glass``: слой UI работал и уложился в бюджет, кадры не пропускались, видоискатель жив, источник снят."""
+    """``glass``: слой UI работал и уложился в бюджет, видоискатель жив, источник снят."""
     problems, report = _report_problem(result)
     if problems:
         return problems
@@ -41,7 +43,7 @@ def check_glass(result: dict) -> list[str]:
         problems.append(f"нет длины окна наблюдения (window_ms={window_ms!r})")
     problems.extend(_overlay_problems(_dict(report.get("overlay"))))
     problems.extend(_gpu_budget_problems(_dict(report.get("overlay")), _dict(report.get("ui_gpu_budget"))))
-    problems.extend(_missed_frames_problems(report))
+    problems.extend(_late_frames_problems(report))
     removal = _dict(report.get("source_removal")).get("state")
     if removal != "delivered":
         problems.append(f"источник UI не снят (source_removal.state={removal!r}, ожидалось 'delivered')")
@@ -87,13 +89,11 @@ def _gpu_budget_problems(overlay: dict, budget: dict) -> list[str]:
     return []
 
 
-def _missed_frames_problems(report: dict) -> list[str]:
-    """Кадры, показанные позже задуманного vsync: не больше допуска из конфига (по умолчанию 0 — критерий 11a)."""
-    missed, allowed = report.get("missed_frames"), report.get("missed_frames_allowed")
-    if not _is_number(missed) or not _is_number(allowed):
-        return [f"нет счёта пропущенных кадров (missed_frames={missed!r}, missed_frames_allowed={allowed!r})"]
-    if missed > allowed:
-        return [f"пропущено кадров: {missed} за окно, допустимо {allowed}"]
+def _late_frames_problems(report: dict) -> list[str]:
+    """Кадры позже задуманного vsync обязаны быть посчитаны; само число не провал (решение 91)."""
+    late = report.get("late_frames")
+    if not _is_number(late) or late < 0:
+        return [f"нет счёта кадров позже задуманного vsync (late_frames={late!r})"]
     return []
 
 

@@ -50,11 +50,7 @@ fn healthy_observation() -> GlassObservation {
 }
 
 fn verdict(observation: &GlassObservation) -> Vec<String> {
-    evaluate_glass(
-        &GlassScenarioConfig::default(),
-        &ViewfinderSmokeConfig::default(),
-        observation,
-    )
+    evaluate_glass(&ViewfinderSmokeConfig::default(), observation)
 }
 
 fn only_violation(observation: &GlassObservation) -> String {
@@ -113,21 +109,24 @@ fn a_blur_pyramid_that_was_never_built_fails() {
 #[test]
 fn gpu_time_p95_over_the_budget_fails_and_equal_to_the_budget_passes() {
     let mut observation = healthy_observation();
-    // Бюджет при 60 Гц: 16,67 × 0,25 = 4,17 мс (округлён до сотых).
-    assert_eq!(observation.budget.budget_ms, 4.17);
-    observation.overlay.gpu_time = Some(time(4.17));
+    // Бюджет при 60 Гц: 16,67 × 0,5 = 8,33 мс (округлён до сотых), решение 90.
+    assert_eq!(observation.budget.budget_ms, 8.33);
+    // Замер 11a на Adreno (p95 6,08 мс, растяжка DVFS) обязан проходить.
+    observation.overlay.gpu_time = Some(time(6.08));
+    assert_eq!(verdict(&observation), Vec::<String>::new(), "растяжка DVFS — не провал");
+    observation.overlay.gpu_time = Some(time(8.33));
     assert_eq!(verdict(&observation), Vec::<String>::new(), "ровно в бюджет — норма");
-    observation.overlay.gpu_time = Some(time(4.18));
+    observation.overlay.gpu_time = Some(time(8.34));
     let violation = only_violation(&observation);
-    assert!(violation.contains("4.18") && violation.contains("4.17"), "{violation}");
+    assert!(violation.contains("8.34") && violation.contains("8.33"), "{violation}");
 }
 
 #[test]
 fn the_budget_follows_the_configured_refresh_rate() {
     let mut observation = healthy_observation();
     observation.budget = UiGpuBudget::of(&GlassScenarioConfig::default(), 120.0);
-    assert_eq!(observation.budget.budget_ms, 2.08);
-    observation.overlay.gpu_time = Some(time(3.0));
+    assert_eq!(observation.budget.budget_ms, 4.17);
+    observation.overlay.gpu_time = Some(time(4.5));
     only_violation(&observation);
 }
 
@@ -139,21 +138,27 @@ fn missing_gpu_time_samples_fail() {
     assert!(violation.contains("нет замеров GPU-времени"), "{violation}");
 }
 
+/// Решение 91: ровное опоздание на такт — задержка, а не рывок. Оно только в отчёте и вердикт не меняет;
+/// рывки (кадр выпал) по-прежнему валят через проверку видоискателя с допуском на дрейф часов.
 #[test]
-fn frames_shown_after_their_vsync_fail_and_the_allowance_is_a_parameter() {
+fn frames_shown_after_their_vsync_are_reported_but_only_dropped_frames_fail() {
     let mut observation = healthy_observation();
-    observation.viewfinder.window.present_target.vsync_shift.late_1 = 2;
+    observation.viewfinder.window.present_target.vsync_shift.late_1 = 1_500;
     observation.viewfinder.window.present_target.vsync_shift.late_3_plus = 1;
-    assert_eq!(observation.missed_frames(), 3);
-    let violation = only_violation(&observation);
-    assert!(violation.contains("позже задуманного vsync: 3"), "{violation}");
-    let tolerant = GlassScenarioConfig {
-        max_missed_frames: 3,
-        ..GlassScenarioConfig::default()
-    };
+    assert_eq!(observation.late_frames(), 1_501);
     assert_eq!(
-        evaluate_glass(&tolerant, &ViewfinderSmokeConfig::default(), &observation),
-        Vec::<String>::new()
+        verdict(&observation),
+        Vec::<String>::new(),
+        "опоздание на такт — не провал"
+    );
+    assert_eq!(observation.summary()["late_frames"], 1_501);
+
+    // Рывок: джиттер-буфер переполнился сверх дрейфа часов (допуск видоискателя — 4 в минуту).
+    observation.viewfinder.pacing.jitter_overflow = 8;
+    let violation = only_violation(&observation);
+    assert!(
+        violation.starts_with("видоискатель: джиттер-буфер переполнился 8"),
+        "{violation}"
     );
 }
 
@@ -260,14 +265,17 @@ fn overlay_window_is_the_difference_of_counters_and_keeps_end_state() {
 #[test]
 fn the_summary_carries_the_contract_fields_and_fits_the_result_line() {
     let observation = healthy_observation();
-    let summary = observation.summary(&GlassScenarioConfig::default());
+    let summary = observation.summary();
     assert_eq!(summary["overlay"]["frames_drawn"], 1_800);
     assert_eq!(summary["overlay"]["gpu_time"]["p95_ms"], 1.5);
-    assert_eq!(summary["ui_gpu_budget"]["budget_ms"], 4.17);
+    assert_eq!(summary["ui_gpu_budget"]["budget_ms"], 8.33);
     assert_eq!(summary["warmup"]["frames"], 30);
     assert_eq!(summary["warmup"]["duration_ms"], 520);
-    assert_eq!(summary["missed_frames"], 0);
-    assert_eq!(summary["missed_frames_allowed"], 0);
+    assert_eq!(summary["late_frames"], 0);
+    assert!(
+        summary.get("missed_frames").is_none(),
+        "старое поле контракта убрано (решение 91)"
+    );
     assert_eq!(summary["source_removal"]["state"], "delivered");
     assert_eq!(summary["gravity"]["state"], "active");
     assert_eq!(summary["gravity"]["samples_in_window"], 6_000);

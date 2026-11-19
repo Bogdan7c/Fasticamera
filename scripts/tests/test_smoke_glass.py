@@ -30,7 +30,7 @@ def result_line(payload: dict) -> str:
 
 
 def glass_report(**overrides: object) -> dict:
-    """Здоровый отчёт ``glass``: 30 с, 1800 кадров UI, GPU p95 1,5 мс при бюджете 4,17 мс, 0 пропусков."""
+    """Здоровый отчёт ``glass``: 30 с, 1800 кадров UI, GPU p95 1,5 мс при бюджете 8,33 мс, 0 кадров позже vsync."""
     report: dict = {
         "failure": None,
         "window_ms": 30000,
@@ -47,9 +47,8 @@ def glass_report(**overrides: object) -> dict:
             "gpu_time": {"samples": 600, "p50_ms": 0.9, "p95_ms": 1.5, "max_ms": 2.0},
             "last_error": None,
         },
-        "ui_gpu_budget": {"refresh_hz": 60.0, "fraction": 0.25, "budget_ms": 4.17},
-        "missed_frames": 0,
-        "missed_frames_allowed": 0,
+        "ui_gpu_budget": {"refresh_hz": 60.0, "fraction": 0.5, "budget_ms": 8.33},
+        "late_frames": 0,
         "source_removal": {"state": "delivered"},
         "gravity": {"state": "active", "source": "dedicated_sensor", "samples_in_window": 6000},
         "notes": [],
@@ -102,8 +101,7 @@ class GlassCheckTest(unittest.TestCase):
             "limit_overflows": with_overlay(limit_overflows=1),
             "пирамида размытия": with_overlay(pyramid_rebuilds=0),
             "нет GPU-времени": with_overlay(gpu_time=None),
-            "больше бюджета": with_overlay(gpu_time={"samples": 600, "p50_ms": 2.0, "p95_ms": 4.5, "max_ms": 5.0}),
-            "пропущено кадров: 2": glass_report(missed_frames=2),
+            "больше бюджета": with_overlay(gpu_time={"samples": 600, "p50_ms": 4.0, "p95_ms": 9.0, "max_ms": 10.0}),
             "не снят": glass_report(source_removal={"state": "not_delivered", "reason": "рендер завершён"}),
             "ISP 40": with_viewfinder(isp_fps=40.0),
             "cpu_copies": with_viewfinder(cpu_copies=1),
@@ -119,18 +117,19 @@ class GlassCheckTest(unittest.TestCase):
                 self.assertIn(expected, verdict.message)
 
     def test_budget_edge_and_validation_disabled_in_release(self) -> None:
-        at_budget = with_overlay(gpu_time={"samples": 600, "p50_ms": 2.0, "p95_ms": 4.17, "max_ms": 5.0})
+        at_budget = with_overlay(gpu_time={"samples": 600, "p50_ms": 3.0, "p95_ms": 8.33, "max_ms": 9.0})
         self.assertEqual(verdict_of(at_budget).exit_code, smoke_wait.EXIT_OK)
         # release: validation-слоя нет, ошибок «не бывает» — это не провал.
         release = glass_report(validation={"mode": "disabled", "errors": 0})
         self.assertEqual(verdict_of(release).exit_code, smoke_wait.EXIT_OK)
 
-    def test_missed_frames_follow_the_allowance_from_the_report(self) -> None:
-        tolerant = glass_report(missed_frames=2, missed_frames_allowed=3)
-        self.assertEqual(verdict_of(tolerant).exit_code, smoke_wait.EXIT_OK)
+    def test_late_frames_are_reported_but_never_fail(self) -> None:
+        # Решение 91: 1516 кадров «на такт позже» (замер 11a) — задержка, а не рывок.
+        late = glass_report(late_frames=1516)
+        self.assertEqual(verdict_of(late).exit_code, smoke_wait.EXIT_OK)
         missing = glass_report()
-        del missing["missed_frames_allowed"]
-        self.assertIn("нет счёта пропущенных кадров", verdict_of(missing).message)
+        del missing["late_frames"]
+        self.assertIn("нет счёта кадров позже задуманного", verdict_of(missing).message)
 
     def test_missing_sections_are_reported_not_guessed(self) -> None:
         for section, expected in (("overlay", "раздела overlay"), ("viewfinder", "раздела viewfinder")):

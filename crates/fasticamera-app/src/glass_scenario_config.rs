@@ -18,12 +18,12 @@ pub struct GlassScenarioConfig {
     /// Длина окна наблюдения за анимацией стекла, мс. `[doc]` критерий выхода 11a: «0 пропусков кадров
     /// за 30 секунд анимации» (`user/foundation/11a-glass-phone-acceptance.md`).
     pub duration_ms: u64,
-    /// Доля периода кадра, которую вправе занять GPU-время UI (p95). `[estimate]` 0,25 — «запас до бюджета
-    /// кадра минус видоискатель»: при 60 Гц ≈ 4,2 мс. Подгонка, не Apple. Порог — параметр, а не вердикт
-    /// «медленно»: на Adreno мс GPU растягивает DVFS (решение 56), поэтому число калибруется на телефоне в 11a.
+    /// Доля периода кадра, которую вправе занять GPU-время UI (p95). `[measured]` 11a, решение 90: 0,5 —
+    /// ловушка грубых ошибок, а не мера цены. На Adreno мс GPU растягивает DVFS (решения 56–57): та же работа,
+    /// что на ПК стоит ≈ 1,2 мс, на телефоне даёт p95 ≈ 6,1 мс, а ISP в том же прогоне «ускоряется». Половина
+    /// кадра (8,3 мс при 60 Гц) пропускает растяжку, но ловит поломку в разы (например, пирамида строится
+    /// много раз за кадр). Настоящая цена стекла — ток (мА) в плановой оптимизации (решение 89).
     pub ui_gpu_budget_fraction: f64,
-    /// Сколько кадров может показаться позже задуманного vsync за окно. `[doc]` 11a: 0 пропусков.
-    pub max_missed_frames: u64,
     /// Сколько кадров UI должно быть нарисовано после установки источника, прежде чем начнётся окно замера.
     /// `[estimate]` 30 ≈ 0,5 с при 60 Гц: первые кадры с UI дороже обычных (создание рендера UI на потоке
     /// рендера, первая перестройка пирамиды, выделение её целей под логический размер). Подгонка в 11a, не Apple.
@@ -38,8 +38,7 @@ impl Default for GlassScenarioConfig {
     fn default() -> Self {
         Self {
             duration_ms: 30_000,
-            ui_gpu_budget_fraction: 0.25,
-            max_missed_frames: 0,
+            ui_gpu_budget_fraction: 0.5,
             warmup_ui_frames: 30,
             warmup_timeout_ms: 5_000,
             showcase: GlassShowcaseConfig::default(),
@@ -94,11 +93,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_config_is_valid_and_budget_is_a_quarter_of_the_frame_period() {
+    fn default_config_is_valid_and_budget_is_half_of_the_frame_period() {
         let config = GlassScenarioConfig::default();
         assert_eq!(config.validate(), Ok(()));
         let budget = config.ui_gpu_budget_ms(60.0);
-        assert!((budget - 4.1667).abs() < 1e-3, "{budget}");
+        // Решение 90: половина кадра при 60 Гц — ловушка грубых ошибок, а не мера цены.
+        assert!((budget - 8.3333).abs() < 1e-3, "{budget}");
         assert!((config.ui_gpu_budget_ms(120.0) - budget / 2.0).abs() < 1e-9);
     }
 
@@ -151,7 +151,9 @@ mod tests {
         assert!(serde_json::from_str::<GlassScenarioConfig>(r#"{"typo": 1}"#).is_err());
         let parsed: GlassScenarioConfig = serde_json::from_str(r#"{"duration_ms": 5000}"#).expect("разбор");
         assert_eq!(parsed.duration_ms, 5000);
-        assert_eq!(parsed.ui_gpu_budget_fraction, 0.25);
+        assert_eq!(parsed.ui_gpu_budget_fraction, 0.5);
+        // Поле `max_missed_frames` убрано (решение 91): старый конфиг с ним отказывается, а не молчит.
+        assert!(serde_json::from_str::<GlassScenarioConfig>(r#"{"max_missed_frames": 0}"#).is_err());
         assert_eq!((parsed.warmup_ui_frames, parsed.warmup_timeout_ms), (30, 5_000));
         let tuned: GlassScenarioConfig =
             serde_json::from_str(r#"{"warmup_ui_frames": 7, "warmup_timeout_ms": 900}"#).expect("разбор");

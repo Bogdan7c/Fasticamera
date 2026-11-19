@@ -95,8 +95,11 @@ fn glass_installs_the_showcase_shows_it_for_the_window_and_removes_it_before_the
     assert_eq!(report["overlay"]["frames_failed"], 0);
     assert!(report["overlay"]["pyramid_rebuilds"].as_u64().expect("пирамида") > 0);
     assert_eq!(report["overlay"]["gpu_time"]["p95_ms"], 1.8);
-    assert_eq!(report["ui_gpu_budget"]["budget_ms"], 4.17, "60 Гц × 0,25 из конфига");
-    assert_eq!(report["missed_frames"], 0);
+    assert_eq!(
+        report["ui_gpu_budget"]["budget_ms"], 8.33,
+        "60 Гц × 0,5 из конфига (решение 90)"
+    );
+    assert_eq!(report["late_frames"], 0);
     assert_eq!(report["source_removal"]["state"], "delivered");
     assert_eq!(report["gravity"]["state"], "active");
     assert_eq!(report["gravity"]["source"], "injected");
@@ -159,7 +162,7 @@ fn glass_fails_when_the_ui_gpu_time_is_over_the_budget_and_still_removes_the_sou
     assert_eq!(result["status"], "failed", "{result}");
     let error = result["error"].as_str().unwrap_or_default();
     assert!(
-        error.contains("GPU-время кадра UI") && error.contains("4.17"),
+        error.contains("GPU-время кадра UI") && error.contains("8.33"),
         "{error}"
     );
     assert_eq!(result["report"]["overlay"]["gpu_time"]["p95_ms"], 9.3);
