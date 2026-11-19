@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::time::{Duration, Instant};
 
+use shell_contract::commands::CommandOutcome;
 use shell_contract::event::{ShellEvent, ShellEventKind};
 use shell_contract::event_queue::{ReceiveError, ShellEventReceiver};
 use shell_contract::motion::GyroRequest;
@@ -309,11 +310,30 @@ impl EventRouter {
         if !restored.is_empty() {
             tracing::info!(target: "fasticamera::router", scenario = name, ?restored, "настройки рендера возвращены");
         }
+        // Подсказка владельцу — состояние на экране, а не импульс: при любом конце сценария (в том числе
+        // ошибке, таймауте, вытеснении и панике) она обязана исчезнуть, иначе «ЩЁЛКНИ ЛАМПОЙ» повисла бы навсегда.
+        self.clear_operator_prompt(name);
         self.output.result(ScenarioReport {
             scenario: name.to_owned(),
             outcome,
         });
         self.result_echo.arm(Instant::now());
+    }
+}
+
+impl EventRouter {
+    /// Снимает подсказку владельцу. Отказ не молчит: переполненная очередь оставила бы подсказку на экране.
+    fn clear_operator_prompt(&self, scenario: &'static str) {
+        match self.services.operator_prompt.clear() {
+            CommandOutcome::Queued => {}
+            // Activity уже нет — снимать нечего.
+            CommandOutcome::NotAttached => {
+                tracing::debug!(target: "fasticamera::router", scenario, "подсказка не снята: Activity не подключена");
+            }
+            CommandOutcome::Backpressure => {
+                tracing::warn!(target: "fasticamera::router", scenario, "очередь команд полна: подсказка владельцу могла остаться на экране");
+            }
+        }
     }
 }
 

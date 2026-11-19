@@ -208,6 +208,9 @@ class RecordingActions:
     def deny_permission_dialog(self) -> None:
         self.calls.append("deny_permission_dialog")
 
+    def screencap(self, label: str) -> None:
+        self.calls.append(f"screencap({label})")
+
 
 class StageDriverTest(unittest.TestCase):
     def drive(self, scenario: str, *stage_events: dict) -> list[str]:
@@ -216,6 +219,10 @@ class StageDriverTest(unittest.TestCase):
         for stage_event in stage_events:
             driver.handle_stage(stage_event)
         return actions.calls
+
+    def test_platform_prompt_stage_takes_one_screenshot_while_the_prompt_is_on_screen(self) -> None:
+        calls = self.drive("platform", {"scenario": "platform", "stage": "operator_prompt_shown"})
+        self.assertEqual(calls, ["screencap(operator_prompt)"])
 
     def test_lifecycle_ready_presses_home(self) -> None:
         self.assertEqual(self.drive("lifecycle", {"scenario": "lifecycle", "stage": "ready"}), ["press_home"])

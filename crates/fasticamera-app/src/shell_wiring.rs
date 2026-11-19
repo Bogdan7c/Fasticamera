@@ -212,6 +212,7 @@ fn shell_services(services: &Arc<AndroidShellServices>) -> ShellServices {
     ShellServices {
         commands: services.clone(),
         haptics: services.clone(),
+        operator_prompt: services.clone(),
         motion: services.clone(),
         thermal: services.clone(),
         diagnostics: services.clone(),

@@ -17,6 +17,8 @@ fn run(observed: impl Fn(u64) -> f64, sensor: impl Fn(u64) -> f64, gain: impl Fn
             TraceSample {
                 observed_ev: Some(observed(t_ms)),
                 sensor_ev: Some(sensor(t_ms)),
+                // Здесь показанный кадр совпадает с последним результатом HAL; расхождение — в отдельном тесте.
+                shown_ev: Some(sensor(t_ms)),
                 gain_ev: gain(t_ms),
                 ..flat_sample(t_ms, 0.0)
             }
@@ -248,4 +250,33 @@ fn counters_are_taken_inside_the_segment_only() {
         "рост внутри отрезка, не за весь ряд"
     );
     assert_eq!(m.directive_generations, Some((END_MS - 50) / 1_000 - CUE_MS / 1_000));
+}
+
+#[test]
+fn hal_result_ahead_of_the_shown_frame_gives_no_false_screen_overshoot() {
+    // Ступенька +1 EV. Показанный кадр доезжает до 1,0 позже последнего результата HAL (на 300 мс), а подтяжка
+    // кадра гасит остаток разрыва. Сумма «HAL + подтяжка» дала бы проскок 0,3 EV; настоящий экран монотонен.
+    let hal = |t_ms: u64| exponential(1.0, 150.0)(t_ms);
+    let shown = |t_ms: u64| exponential(1.0, 150.0)(t_ms.saturating_sub(300));
+    let gain = |t_ms: u64| (hal(t_ms) - shown(t_ms)).clamp(0.0, 0.3);
+    let samples: Vec<TraceSample> = (0..END_MS / 50)
+        .map(|index| {
+            let t_ms = index * 50;
+            TraceSample {
+                observed_ev: Some(scene_step(1.0)(t_ms)),
+                sensor_ev: Some(hal(t_ms)),
+                shown_ev: Some(shown(t_ms)),
+                gain_ev: gain(t_ms),
+                ..flat_sample(t_ms, 0.0)
+            }
+        })
+        .collect();
+
+    let m = metrics(&analyze(&samples));
+
+    assert!(
+        m.overshoot_ev < 0.05,
+        "ложное перерегулирование экрана: {}",
+        m.overshoot_ev
+    );
 }

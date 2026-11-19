@@ -3,7 +3,7 @@
 
 #![allow(clippy::unwrap_used, reason = "в тестах падение — сигнал провала")]
 
-use camera_contract::auto_exposure::{AppliedExposure, MeteredArea};
+use camera_contract::auto_exposure::{AppliedExposure, MeteredArea, ProductReach};
 use camera_contract::control::ExposureBias;
 use camera_contract::three_a::{MeteringRegion, PointOfInterest, PointRequestId, SensorPoint};
 
@@ -15,7 +15,7 @@ use crate::exposure::test_support::product;
 /// Кадр 60 к/с в наносекундах.
 const FRAME_NANOS: i64 = 16_666_667;
 
-fn ts(frame: i64) -> SensorTimestamp {
+pub(super) fn ts(frame: i64) -> SensorTimestamp {
     SensorTimestamp::from_nanos(frame * FRAME_NANOS)
 }
 
@@ -23,7 +23,7 @@ fn controller() -> AutoExposureController {
     AutoExposureController::new(ExposureControllerConfig::default()).unwrap()
 }
 
-fn directive() -> ExposureDirective {
+pub(super) fn directive() -> ExposureDirective {
     ExposureDirective::DEFAULT
 }
 
@@ -67,12 +67,12 @@ fn measured(frame: i64, area: MeteredArea, required: f64, quality: MeasurementQu
     }
 }
 
-fn whole_frame_measurement(frame: i64, required: f64) -> CompletedExposureMeasurement {
+pub(super) fn whole_frame_measurement(frame: i64, required: f64) -> CompletedExposureMeasurement {
     measured(frame, MeteredArea::WholeFrame, required, MeasurementQuality::Measured)
 }
 
 /// Контроллер, у которого цель стоит на `required` (холодный старт на кадре 0).
-fn started_at(directive: ExposureDirective, required: f64) -> AutoExposureController {
+pub(super) fn started_at(directive: ExposureDirective, required: f64) -> AutoExposureController {
     let mut controller = controller();
     controller.set_directive(directive);
     controller.begin_stream();
@@ -85,7 +85,7 @@ fn started_at(directive: ExposureDirective, required: f64) -> AutoExposureContro
 }
 
 /// Прокручивает кадры `from..to` (шаг 1), не принимая новых замеров.
-fn run_frames(controller: &mut AutoExposureController, from: i64, to: i64) {
+pub(super) fn run_frames(controller: &mut AutoExposureController, from: i64, to: i64) {
     for frame in from..to {
         controller.advance(ts(frame));
     }
@@ -461,10 +461,11 @@ fn begin_stream_forgets_target_and_republishes_first_proposal() {
     );
 }
 
-fn applied(seconds_iso: f64, shortfall_ev: f32) -> Option<AppliedExposure> {
+pub(super) fn applied(seconds_iso: f64, shortfall_ev: f32) -> Option<AppliedExposure> {
     Some(AppliedExposure {
         product: product(seconds_iso),
         shortfall_ev,
+        reach: ProductReach::Unbounded,
     })
 }
 
@@ -487,17 +488,17 @@ fn display_gain_bridges_the_gap_between_wanted_and_actual_exposure() {
 }
 
 #[test]
-fn display_gain_includes_bias_and_honest_shortfall() {
+fn display_gain_includes_bias_and_ignores_the_lagging_shortfall() {
     let mut controller = started_at(directive(), 0.02);
-    // Просили +0,5 EV компенсации, пределов не хватило на 0,25 EV (честно темнее).
+    // Просили +0,5 EV компенсации; нехватка прошлого поколения (-3 EV) подтяжку не двигает.
     controller.set_directive(ExposureDirective {
         bias: ExposureBias::from_ev(0.5).unwrap(),
-        applied: applied(0.02, -0.25),
+        applied: applied(0.02, -3.0),
         ..directive()
     });
-    // D = T·2^0,5·2^-0,25 = T·2^0,25; кадр на уровне T → подтяжка +0,25 EV.
+    // D = T·2^0,5; кадр на уровне T → подтяжка +0,5 EV (зажим), а не 0 и не -0,5 от нехватки.
     let gain = controller.display_gain(Some(product(0.02)));
-    assert!((gain.ev() - 0.25).abs() < 1e-4, "{}", gain.ev());
+    assert!((gain.ev() - 0.5).abs() < 1e-4, "{}", gain.ev());
 }
 
 #[test]

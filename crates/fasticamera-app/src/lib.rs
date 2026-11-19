@@ -36,6 +36,8 @@ pub mod gpu_services;
 mod gpu_test_support;
 pub mod jni_boundary;
 pub mod logging;
+#[cfg(test)]
+mod operator_prompt_fake;
 pub mod panic_report;
 pub mod power_measurement;
 pub mod raw_stream_scenario_config;

@@ -7,6 +7,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use camera_contract::auto_exposure::ProductReach;
 use camera_contract::capture_result::CaptureResultMeta;
 use camera_contract::three_a::PointRequestId;
 
@@ -51,6 +52,7 @@ impl ScriptedExposureController {
             plan: Ok(ExposureDecision {
                 plan: initial_plan,
                 adjustments: Vec::new(),
+                reach: ProductReach::Unbounded,
             }),
             refresh_reports_change: false,
             plan_calls: 0,
@@ -71,7 +73,11 @@ impl ScriptedExposure {
     /// Новое решение «со стороны»: следующий `refresh` сообщит `Changed` (один раз).
     pub fn publish_new_plan(&self, plan: ExposurePlan, adjustments: Vec<ControlAdjustment>) {
         let mut script = lock(&self.shared);
-        script.plan = Ok(ExposureDecision { plan, adjustments });
+        script.plan = Ok(ExposureDecision {
+            plan,
+            adjustments,
+            reach: ProductReach::Unbounded,
+        });
         script.refresh_reports_change = true;
     }
 

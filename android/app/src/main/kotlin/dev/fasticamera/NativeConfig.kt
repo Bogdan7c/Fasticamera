@@ -18,6 +18,10 @@ import org.json.JSONObject
  * быстро снять миллисекунды GPU всех стадий; ток в таком окне Rust честно пометит «не различим».
  * Границы (окно длиннее прогрева и периода выборки) проверяет Rust.
  *
+ * `enduranceMs` — длина прогона `viewfinder-endurance` на один запуск (intent-параметр `endurance_ms`,
+ * секция `camera.scenarios.power.endurance.duration_ms`). Короткий прогон (например 180000) годится для
+ * A/B замера тока «наш AE / вендорский» перезапусками; нижнюю границу (шаг снимков) проверяет Rust.
+ *
  * `exposureController` — какой автоэкспозицией управлять на один запуск (intent-параметр
  * `exposure_controller`, поле `camera.exposure_controller`: `own` или `vendor`). Kotlin значение не
  * разбирает, а передаёт как есть; неизвестное имя Rust отвергает при initialize.
@@ -27,6 +31,7 @@ data class NativeConfig(
     val logFilter: String,
     val stageBudgetRows: List<String>? = null,
     val abWindowMs: Long? = null,
+    val enduranceMs: Long? = null,
     val exposureController: String? = null,
 ) {
     fun toJson(): String {
@@ -39,9 +44,12 @@ data class NativeConfig(
             val stageBudget = JSONObject().put("rows", JSONArray(rows))
             scenarios.put("viewfinder", JSONObject().put("stage_budget", stageBudget))
         }
-        abWindowMs?.let { windowMs ->
-            val ab = JSONObject().put("window_ms", windowMs)
-            scenarios.put("power", JSONObject().put("ab", ab))
+        // Обе настройки живут в одной секции `power`: собираем её целиком, чтобы одна не затёрла другую.
+        val power = JSONObject()
+        abWindowMs?.let { windowMs -> power.put("ab", JSONObject().put("window_ms", windowMs)) }
+        enduranceMs?.let { durationMs -> power.put("endurance", JSONObject().put("duration_ms", durationMs)) }
+        if (power.length() > 0) {
+            scenarios.put("power", power)
         }
         val camera = JSONObject()
         if (scenarios.length() > 0) {
@@ -64,6 +72,9 @@ data class NativeConfig(
         /** Intent-параметр с длиной окна A/B замера тока, мс (строка с целым числом). */
         const val EXTRA_AB_WINDOW_MS = "ab_window_ms"
 
+        /** Intent-параметр с длиной прогона `viewfinder-endurance`, мс (строка с целым числом). */
+        const val EXTRA_ENDURANCE_MS = "endurance_ms"
+
         /** Intent-параметр с именем автоэкспозиции: `own` или `vendor` (проверяет Rust). */
         const val EXTRA_EXPOSURE_CONTROLLER = "exposure_controller"
 
@@ -77,6 +88,8 @@ data class NativeConfig(
             // Не число — параметр не применяется, а initialize идёт с окном по умолчанию: скрипт
             // device-smoke.sh пропускает сюда только цифры, так что это лишь защита от ручного вызова.
             abWindowMs = intent.getStringExtra(EXTRA_AB_WINDOW_MS)?.toLongOrNull(),
+            // Так же, как окно A/B: не число — умолчание конфига (скрипт пропускает только цифры).
+            enduranceMs = intent.getStringExtra(EXTRA_ENDURANCE_MS)?.toLongOrNull(),
             // Нет параметра — null, поле в JSON не попадает, Rust берёт умолчание (own).
             exposureController = intent.getStringExtra(EXTRA_EXPOSURE_CONTROLLER),
         )

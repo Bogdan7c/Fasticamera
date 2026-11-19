@@ -72,6 +72,10 @@ pub enum PlatformCommand {
     OpenSystemGallery,
     KeepScreenOn,
     QueryHapticCapabilities,
+    /// Показать подсказку владельцу на экране.
+    ShowOperatorPrompt,
+    /// Убрать подсказку владельцу с экрана.
+    ClearOperatorPrompt,
 }
 
 /// Отказ платформы выполнить ранее принятую команду.

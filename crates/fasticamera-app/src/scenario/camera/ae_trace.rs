@@ -1,8 +1,8 @@
 //! Сценарий `ae-trace` (сессия 08c, шаги 5–6): ряд нашего AE по ступенькам света, подтяжка ISP, мерцание.
 //!
-//! Владелец сидит у телефона с лампой. Телефон вибрирует на каждой подсказке, владелец включает или гасит лампу.
-//! Сценарий пишет ряд (`ae_trace_series`), по расписанию (`ae_trace_plan`) переключает профиль 3A и подаёт сигналы
-//! (`ae_trace_run`), в конце разбирает ряд (`ae_trace_analysis`), судит жёсткие нарушения (`ae_trace_verdict`) и
+//! Владелец сидит у телефона с лампой. Телефон показывает на экране подсказки (отсчёт «приготовься… 3, 2, 1», затем «щёлкни лампой»), владелец включает или гасит лампу.
+//! Сценарий пишет ряд (`ae_trace_series`), по расписанию (`ae_trace_plan`) переключает профиль 3A и показывает подсказки
+//! (`ae_trace_run`, тексты — `ae_trace_prompts`), в конце разбирает ряд (`ae_trace_analysis`), судит жёсткие нарушения (`ae_trace_verdict`) и
 //! выводит сводку и подробности (`ae_trace_report`).
 //!
 //! Ход: общий запуск видоискателя ([`ViewfinderSession`], как у `3a`) -> ожидание первой диагностики нашего AE ->
@@ -99,7 +99,7 @@ impl AeTraceRun {
             context.now,
             RecordingServices {
                 handle: running.handle(),
-                haptics: context.services.haptics.as_ref(),
+                prompts: context.services.operator_prompt.as_ref(),
             },
             Readings {
                 diagnostics,
@@ -259,7 +259,7 @@ fn collect_observation(run: AeTraceRun, failure: Option<String>, running: &Runni
         let outcome = tracing.finish();
         observation.dropped_samples = outcome.dropped_samples;
         observation.ticks_without_ae = outcome.ticks_without_ae;
-        observation.haptics = outcome.haptics;
+        observation.prompts = outcome.prompts;
         // Разбираем только полный прогон: по обрубку числа ступенек были бы выдумкой.
         if observation.failure.is_none() {
             observation.analysis = Some(analyze_run(&run.config, &outcome.timeline, &outcome.series));

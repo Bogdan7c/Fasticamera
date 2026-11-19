@@ -16,6 +16,7 @@ use shell_contract::motion::{
     AngularVelocity, GyroRequest, GyroSample, GyroSubscription, MotionRing, MotionSource, OrientationSubscription,
     SensorSourceError,
 };
+use shell_contract::operator_prompt::{OperatorPrompt, OperatorPromptService};
 use shell_contract::power::{PowerSampleRing, PowerSampling, PowerSamplingRequest, PowerSource, PowerSourceError};
 use shell_contract::thermal::{HeadroomForecast, ThermalHeadroom, ThermalSource, ThermalSourceError, ThermalStatus};
 use shell_contract::vsync::{VsyncSlot, VsyncSource, VsyncSourceError, VsyncSubscription};
@@ -117,6 +118,16 @@ impl HapticsService for AndroidShellServices {
             CommandOutcome::Backpressure => HapticOutcome::Backpressure,
             CommandOutcome::NotAttached => HapticOutcome::NotAttached,
         }
+    }
+}
+
+impl OperatorPromptService for AndroidShellServices {
+    fn show(&self, prompt: &OperatorPrompt) -> CommandOutcome {
+        self.enqueue_for_attached(PlatformCall::ShowOperatorPrompt(prompt.clone()))
+    }
+
+    fn clear(&self) -> CommandOutcome {
+        self.enqueue_for_attached(PlatformCall::ClearOperatorPrompt)
     }
 }
 

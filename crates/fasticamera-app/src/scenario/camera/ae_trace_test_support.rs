@@ -18,6 +18,25 @@ pub fn diagnostics(
     proposals_published: u64,
     directive_generation: Option<u64>,
 ) -> AutoExposureDiagnostics {
+    diagnostics_showing(
+        observed_ev,
+        observed_ev,
+        target_ev,
+        gain_ev,
+        proposals_published,
+        directive_generation,
+    )
+}
+
+/// То же, но с уровнем показанного кадра `shown_ev` (по умолчанию он равен замеру `observed_ev`).
+pub fn diagnostics_showing(
+    shown_ev: Option<f64>,
+    observed_ev: Option<f64>,
+    target_ev: Option<f64>,
+    gain_ev: f32,
+    proposals_published: u64,
+    directive_generation: Option<u64>,
+) -> AutoExposureDiagnostics {
     AutoExposureDiagnostics {
         directive_generation,
         authority: ExposureAuthority::Automatic,
@@ -25,6 +44,7 @@ pub fn diagnostics(
         target_log2_seconds_iso: target_ev,
         observed_scene_log2_seconds_iso: observed_ev,
         display_gain_ev: gain_ev,
+        displayed_frame_log2_seconds_iso: shown_ev,
         convergence: Some(ProposalConvergence::Settled),
         quality: None,
         last_proposal: None,
@@ -63,6 +83,7 @@ pub fn flat_sample(t_ms: u64, level_ev: f64) -> TraceSample {
         observed_ev: Some(level_ev),
         target_ev: Some(level_ev),
         sensor_ev: Some(level_ev),
+        shown_ev: Some(level_ev),
         gain_ev: 0.0,
         convergence: Some(ProposalConvergence::Settled),
         proposals_published: 0,

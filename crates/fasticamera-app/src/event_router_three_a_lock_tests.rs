@@ -1,46 +1,74 @@
-//! Окно удержания блокировки в сценарии `3a` (приёмка 08c): вибрация в начале и конце, размах замера сцены,
+//! Окно удержания блокировки в сценарии `3a` (приёмка 08c): отсчёт, подсказки в начале и конце, размах замера сцены,
 //! догон цели. Помощники стенда (`run_three_a_with`, `short_own_config`) — из родительского модуля.
 
 use std::time::{Duration, Instant};
 
 use camera_contract::three_a::AeAfLock;
+use shell_contract::commands::CommandOutcome;
+use shell_contract::operator_prompt::OperatorPromptKind;
+
+use crate::operator_prompt_fake::PromptEvent;
 
 use super::*;
 
 #[test]
-fn lock_hold_is_framed_by_two_haptic_cues_and_reports_a_static_scene_and_the_catch_up() {
-    let mut first_cue_lock = None;
+fn lock_hold_is_framed_by_prepare_act_done_prompts_and_reports_a_static_scene_and_the_catch_up() {
+    let mut lock_when_act_shown = None;
     let (harness, result) = run_three_a_with(
         short_own_config(|three_a| three_a.lock.hold_ms = 400),
         HalFaults::default(),
         |_| {},
         |harness, _| {
-            // В момент первого сигнала блокировка уже должна стоять: сигнал означает «окно началось».
-            let played = !harness.shell.haptics_played.lock().expect("замок").is_empty();
-            if played && first_cue_lock.is_none() {
-                first_cue_lock = Some(harness.rig().handle().status().three_a.lock);
+            // В момент подсказки «закрой объектив» блокировка уже должна стоять: надпись означает «окно началось».
+            let act_shown = harness.shell.prompts.shown_kinds().contains(&OperatorPromptKind::Act);
+            if act_shown && lock_when_act_shown.is_none() {
+                lock_when_act_shown = Some(harness.rig().handle().status().three_a.lock);
             }
         },
     );
 
     assert_eq!(result["status"], "passed", "{result}");
     assert_eq!(
-        first_cue_lock,
+        lock_when_act_shown,
         Some(AeAfLock::Locked),
-        "сигнал начала подан до блокировки"
+        "подсказка начала удержания показана до блокировки"
     );
+    // Состояние на экране: отсчёт -> «закрой» на всё удержание -> «убери руку» -> снято.
+    let events = harness.shell.prompts.events();
+    let kinds: Vec<OperatorPromptKind> = harness.shell.prompts.shown_kinds();
     assert_eq!(
-        *harness.shell.haptics_played.lock().expect("замок"),
-        [
-            shell_contract::haptics::HapticPattern::HeavyImpact,
-            shell_contract::haptics::HapticPattern::Success
+        kinds,
+        vec![
+            OperatorPromptKind::Prepare,
+            OperatorPromptKind::Prepare,
+            OperatorPromptKind::Act,
+            OperatorPromptKind::Done
         ],
-        "первый сигнал — начало окна, второй — конец, и других вибраций в сценарии нет"
+        "отсчёт 2 -> 1, затем закрыть, затем убрать: {events:?}"
+    );
+    let headlines: Vec<String> = harness
+        .shell
+        .prompts
+        .shown()
+        .iter()
+        .map(|prompt| prompt.headline().to_owned())
+        .collect();
+    assert_eq!(headlines[0], "ПРИГОТОВЬСЯ: через 2 с");
+    assert_eq!(headlines[1], "ПРИГОТОВЬСЯ: через 1 с");
+    assert_eq!(headlines[2], "ЗАКРОЙ ОБЪЕКТИВ РУКОЙ — держи");
+    assert_eq!(headlines[3], "УБЕРИ РУКУ");
+    assert!(
+        harness.shell.prompts.clear_count() == 1 && events.last() == Some(&PromptEvent::Cleared),
+        "«УБЕРИ РУКУ» не снимается шагом сразу (мелькнула бы незаметно) и снимается один раз в конце сценария: {events:?}"
+    );
+    assert!(
+        harness.shell.haptics_played.lock().expect("замок").is_empty(),
+        "вибрация как сигнал владельцу больше не используется"
     );
     let lock = &result["report"]["lock"];
-    let queued = serde_json::json!({"outcome": "queued", "realization": "waveform"});
-    assert_eq!(lock["haptic_hold_start"], queued, "{lock}");
-    assert_eq!(lock["haptic_hold_end"], queued, "{lock}");
+    for key in ["prompt_prepare", "prompt_hold_start", "prompt_hold_end"] {
+        assert_eq!(lock[key], "queued", "{key}: {lock}");
+    }
     assert_eq!(
         lock["observed_scene_range_ev"].as_f64(),
         Some(0.0),
@@ -53,7 +81,8 @@ fn lock_hold_is_framed_by_two_haptic_cues_and_reports_a_static_scene_and_the_cat
         "произведение замерло за разумное число кадров после команды: {lock}"
     );
     let stages = harness.output.stage_names();
-    assert_eq!(stages.iter().filter(|stage| *stage == "three_a_lock_cue").count(), 2);
+    // Стадии: первый шаг отсчёта, начало и конец удержания.
+    assert_eq!(stages.iter().filter(|stage| *stage == "three_a_lock_cue").count(), 3);
 }
 
 #[test]
@@ -65,7 +94,7 @@ fn scene_change_during_the_hold_shows_up_as_observed_scene_range_in_ev() {
         HalFaults::default(),
         |_| {},
         |harness, render_ae| {
-            if cue_at.is_none() && !harness.shell.haptics_played.lock().expect("замок").is_empty() {
+            if cue_at.is_none() && harness.shell.prompts.shown_kinds().contains(&OperatorPromptKind::Act) {
                 cue_at = Some(Instant::now());
             }
             // Через 300 мс после сигнала «закрывают объектив»: сцена светлеет в 8 раз (+3 EV), как под рукой
@@ -91,34 +120,47 @@ fn scene_change_during_the_hold_shows_up_as_observed_scene_range_in_ev() {
 }
 
 #[test]
-fn haptics_that_cannot_play_are_reported_in_the_lock_report_and_do_not_fail_the_run() {
-    use shell_contract::haptics::HapticOutcome;
+fn prompts_that_cannot_be_shown_are_reported_in_the_lock_report_and_do_not_fail_the_run() {
     let mut forced = false;
-    let (_harness, result) = run_three_a_with(
+    let (harness, result) = run_three_a_with(
         short_own_config(|_| {}),
         HalFaults::default(),
         |_| {},
         |harness, _| {
             if !forced {
                 forced = true;
-                *harness.shell.haptics_outcome.lock().expect("замок") = Some(HapticOutcome::Unsupported);
+                harness.shell.prompts.set_outcome(Some(CommandOutcome::NotAttached));
             }
         },
     );
 
     assert_eq!(
         result["status"], "passed",
-        "вибромотор — не предмет проверки камеры: {result}"
+        "экран подсказок — не предмет проверки камеры (ноты ставит скрипт): {result}"
     );
     let lock = &result["report"]["lock"];
-    assert_eq!(
-        lock["haptic_hold_start"],
-        serde_json::json!({"outcome": "unsupported"}),
-        "{lock}"
+    for key in ["prompt_prepare", "prompt_hold_start", "prompt_hold_end"] {
+        assert_eq!(lock[key], "not_attached", "{key}: {lock}");
+    }
+    assert!(
+        harness.shell.prompts.clear_count() >= 1,
+        "и недоставленная подсказка снимается"
     );
-    assert_eq!(
-        lock["haptic_hold_end"],
-        serde_json::json!({"outcome": "unsupported"}),
-        "{lock}"
+}
+
+#[test]
+fn lock_without_countdown_starts_the_hold_at_once_and_reports_no_prepare() {
+    let (harness, result) = run_three_a_with(
+        short_own_config(|three_a| three_a.lock.prepare_countdown_ms = 0),
+        HalFaults::default(),
+        |_| {},
+        |_, _| {},
     );
+
+    assert_eq!(result["status"], "passed", "{result}");
+    assert_eq!(
+        harness.shell.prompts.shown_kinds(),
+        vec![OperatorPromptKind::Act, OperatorPromptKind::Done]
+    );
+    assert!(result["report"]["lock"]["prompt_prepare"].is_null(), "{result}");
 }

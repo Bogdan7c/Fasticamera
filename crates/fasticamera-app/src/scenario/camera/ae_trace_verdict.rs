@@ -10,7 +10,7 @@ use super::ae_trace_observation::AeTraceObservation;
 use crate::ae_trace_scenario_config::AeTraceScenarioConfig;
 
 /// Сколько непринятых подсказок перечислять в нарушении: остальные видны числом.
-const LISTED_HAPTIC_FAILURES: usize = 3;
+const LISTED_PROMPT_FAILURES: usize = 3;
 
 /// Нарушения прогона (пусто — сценарий прошёл).
 pub fn evaluate_ae_trace(config: &AeTraceScenarioConfig, observation: &AeTraceObservation) -> Vec<String> {
@@ -21,7 +21,7 @@ pub fn evaluate_ae_trace(config: &AeTraceScenarioConfig, observation: &AeTraceOb
     if let Some(failure) = &observation.restore_failure {
         violations.push(format!("профиль 3A не возвращён в «Фото»: {failure}"));
     }
-    violations.extend(haptic_violations(observation));
+    violations.extend(prompt_violations(observation));
     if observation.dropped_samples > 0 {
         violations.push(format!(
             "ряд отсчётов переполнен: потеряно {} отсчётов (расписание не влезло в series_capacity)",
@@ -44,21 +44,21 @@ pub fn evaluate_ae_trace(config: &AeTraceScenarioConfig, observation: &AeTraceOb
     violations
 }
 
-fn haptic_violations(observation: &AeTraceObservation) -> Vec<String> {
-    let failures = &observation.haptics.failures;
+fn prompt_violations(observation: &AeTraceObservation) -> Vec<String> {
+    let failures = &observation.prompts.failures;
     if failures.is_empty() {
         return Vec::new();
     }
     let listed = failures
         .iter()
-        .take(LISTED_HAPTIC_FAILURES)
+        .take(LISTED_PROMPT_FAILURES)
         .cloned()
         .collect::<Vec<_>>()
         .join(", ");
     vec![format!(
-        "подсказки владельцу не дошли ({} из {}): {listed}",
+        "владельцу не показан сигнал на экране ({} из {} подсказок): {listed}",
         failures.len(),
-        failures.len() + observation.haptics.queued as usize
+        failures.len() + observation.prompts.queued as usize
     )]
 }
 

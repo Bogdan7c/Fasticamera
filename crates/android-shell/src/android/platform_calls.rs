@@ -16,8 +16,10 @@ use std::thread;
 use jni::objects::{JObject, JValue};
 use jni::{Env, JavaVM, jni_sig, jni_str};
 use shell_contract::commands::{CommandOutcome, PlatformCommand, PlatformCommandFailure, ScreenWake};
+use shell_contract::operator_prompt::OperatorPrompt;
 
 use super::runtime::ShellRuntime;
+use crate::command_codes::prompt_kind_code;
 use crate::haptic_plan::HapticRealization;
 
 /// Ёмкость локального кадра JNI на одну команду (массивы волны + строки исключения).
@@ -30,6 +32,8 @@ pub enum PlatformCall {
     PlayHaptic(HapticRealization),
     OpenSystemGallery,
     SetKeepScreenOn(ScreenWake),
+    ShowOperatorPrompt(OperatorPrompt),
+    ClearOperatorPrompt,
 }
 
 impl PlatformCall {
@@ -39,6 +43,8 @@ impl PlatformCall {
             PlatformCall::PlayHaptic(_) => PlatformCommand::PlayHaptic,
             PlatformCall::OpenSystemGallery => PlatformCommand::OpenSystemGallery,
             PlatformCall::SetKeepScreenOn(_) => PlatformCommand::KeepScreenOn,
+            PlatformCall::ShowOperatorPrompt(_) => PlatformCommand::ShowOperatorPrompt,
+            PlatformCall::ClearOperatorPrompt => PlatformCommand::ClearOperatorPrompt,
         }
     }
 }
@@ -128,7 +134,29 @@ fn invoke(env: &mut Env<'_>, platform: &JObject<'_>, call: &PlatformCall) -> jni
             )?;
         }
         PlatformCall::PlayHaptic(realization) => play_haptic(env, platform, realization)?,
+        PlatformCall::ShowOperatorPrompt(prompt) => show_operator_prompt(env, platform, prompt)?,
+        PlatformCall::ClearOperatorPrompt => {
+            env.call_method(platform, jni_str!("clearOperatorPrompt"), jni_sig!("()V"), &[])?;
+        }
     }
+    Ok(())
+}
+
+/// `ShellPlatform.showOperatorPrompt(headline: String, detail: String, kind: Int)`: тексты уходят в Java
+/// строками JNI (`new_string` кодирует Rust UTF-8 в modified UTF-8 JVM), вид — числом по таблице кодов.
+fn show_operator_prompt(env: &mut Env<'_>, platform: &JObject<'_>, prompt: &OperatorPrompt) -> jni::errors::Result<()> {
+    let headline = env.new_string(prompt.headline())?;
+    let detail = env.new_string(prompt.detail())?;
+    env.call_method(
+        platform,
+        jni_str!("showOperatorPrompt"),
+        jni_sig!("(Ljava/lang/String;Ljava/lang/String;I)V"),
+        &[
+            JValue::Object(&headline),
+            JValue::Object(&detail),
+            JValue::Int(prompt_kind_code(prompt.kind())),
+        ],
+    )?;
     Ok(())
 }
 

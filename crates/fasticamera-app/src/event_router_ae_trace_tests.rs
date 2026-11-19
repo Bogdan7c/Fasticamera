@@ -1,7 +1,7 @@
 //! Функциональные тесты сценария `ae-trace` (сессия 08c): настоящий маршрутизатор, настоящий движок камеры на
 //! fake-платформе, подставной HAL ([`SimulatedHal`]) и подставной рендер нашего AE ([`FakeRenderAe`] ведёт цель,
-//! [`AeDiagnosticsMirror`] публикует диагностику AE в статус рендера). «Владелец» — цикл теста: на каждый сигнал
-//! подсказки (щелчок `SelectionTick` в журнале вибромотора) он меняет яркость сцены на ±1 EV.
+//! [`AeDiagnosticsMirror`] публикует диагностику AE в статус рендера). «Владелец» — цикл теста: на каждую подсказку
+//! «ЩЁЛКНИ ЛАМПОЙ» (вид `Act` в журнале fake-экрана подсказок) он меняет яркость сцены на ±1 EV.
 //!
 //! Каждый тест доходит до строки результата: ряд записан, ступеньки найдены, профиль переключался и вернулся.
 
@@ -16,7 +16,10 @@ use render_loop::viewfinder::{
     ViewfinderDiagnostics, ViewfinderExtent, ViewfinderGpuTimes, ViewfinderPainter, ViewfinderStorage,
     WhiteBalanceDiagnostics,
 };
-use shell_contract::haptics::HapticPattern;
+use shell_contract::commands::CommandOutcome;
+use shell_contract::operator_prompt::OperatorPromptKind;
+
+use crate::operator_prompt_fake::PromptEvent;
 
 use super::*;
 use crate::ae_trace_scenario_config::AeTraceScenarioConfig;
@@ -78,6 +81,8 @@ fn ae_diagnostics(scene_seconds_iso: f64, gain_ev: f32, published: u64) -> AutoE
         target_log2_seconds_iso: Some(scene_ev),
         observed_scene_log2_seconds_iso: Some(scene_ev),
         display_gain_ev: gain_ev,
+        // Показанный кадр в этом зеркале всегда на уровне сцены: экран = сцена + подтяжка.
+        displayed_frame_log2_seconds_iso: Some(scene_ev),
         convergence: Some(camera_contract::auto_exposure::ProposalConvergence::Settled),
         quality: None,
         last_proposal: None,
@@ -139,6 +144,10 @@ fn short_ae_trace() -> AeTraceScenarioConfig {
         video_phase_ms: 1_600,
         static_phase_ms: 1_200,
         cue_interval_ms: 800,
+        // Отсчёт 2 x 100 мс + надпись 200 мс помещаются в период 800 мс.
+        cue_countdown_steps: 2,
+        cue_countdown_step_ms: 100,
+        cue_display_ms: 200,
         static_warmup_ms: 400,
         sample_interval_ms: 5,
         step_window_ms: 300,
@@ -170,15 +179,14 @@ fn config_with(controller: ExposureControllerKind, tune: impl FnOnce(&mut AeTrac
     }
 }
 
-/// Сколько сигналов подсказки (`SelectionTick`) уже сыграл вибромотор.
-fn cues_played(harness: &Harness) -> usize {
+/// Сколько подсказок «ЩЁЛКНИ ЛАМПОЙ» (вид `Act`) уже показано на экране.
+fn cues_shown(harness: &Harness) -> usize {
     harness
         .shell
-        .haptics_played
-        .lock()
-        .expect("замок")
-        .iter()
-        .filter(|pattern| **pattern == HapticPattern::SelectionTick)
+        .prompts
+        .shown_kinds()
+        .into_iter()
+        .filter(|kind| *kind == OperatorPromptKind::Act)
         .count()
 }
 
@@ -188,9 +196,20 @@ fn run_ae_trace(
     publishing: Publishing,
     owner_follows_cues: bool,
 ) -> (Harness, serde_json::Value) {
+    run_ae_trace_with_prompt_outcome(config, publishing, owner_follows_cues, None)
+}
+
+/// То же, но экран подсказок отвечает заданным исходом (`None` — «поставлено в очередь»).
+fn run_ae_trace_with_prompt_outcome(
+    config: CameraConfig,
+    publishing: Publishing,
+    owner_follows_cues: bool,
+    prompt_outcome: Option<CommandOutcome>,
+) -> (Harness, serde_json::Value) {
     let rig = FakeCameraRig::with_config(config);
     let own_ae = rig.services.exposure_controller().effective == ExposureControllerKind::Own;
     let mut harness = harness_for_rig(rig);
+    harness.shell.prompts.set_outcome(prompt_outcome);
     harness.deliver(ShellEvent::Resumed);
     let paced = PumpFaults {
         paced_at_sensor_rate: true,
@@ -206,7 +225,7 @@ fn run_ae_trace(
     let mut last_cues = 0;
     while harness.output.results.lock().expect("замок").is_empty() && Instant::now() < deadline {
         harness.router.step(Duration::from_millis(2));
-        let cues = cues_played(&harness);
+        let cues = cues_shown(&harness);
         if owner_follows_cues && cues != last_cues {
             last_cues = cues;
             let scene = if cues % 2 == 1 { SCENE_AFTER } else { SCENE_BEFORE };
@@ -274,19 +293,38 @@ fn full_run_finds_the_real_steps_of_both_profiles_and_returns_the_photo_profile(
         "{phases:?}"
     );
     assert_eq!(phases[1]["profile"], "video");
-    // Вибромотор: сигналы фаз по порядку и по одной подсказке в фото и видео.
+    // Экран подсказок: на каждую фазу своя надпись, перед каждой подсказкой отсчёт, после неё «жди»; в конце
+    // сценария маршрутизатор снимает подсказку, и она снимается ПОСЛЕ последней показанной.
+    let headlines: Vec<String> = harness
+        .shell
+        .prompts
+        .shown()
+        .iter()
+        .map(|prompt| prompt.headline().to_owned())
+        .collect();
     assert_eq!(
-        *harness.shell.haptics_played.lock().expect("замок"),
+        headlines,
         vec![
-            HapticPattern::LightImpact,
-            HapticPattern::SelectionTick,
-            HapticPattern::MediumImpact,
-            HapticPattern::SelectionTick,
-            HapticPattern::HeavyImpact,
+            "ФАЗА 1 ИЗ 3: ФОТО",
+            "ПРИГОТОВЬСЯ… 2",
+            "ПРИГОТОВЬСЯ… 1",
+            "ЩЁЛКНИ ЛАМПОЙ",
+            "ЖДИ СЛЕДУЮЩЕЙ СТУПЕНЬКИ",
+            "ФАЗА 2 ИЗ 3: ВИДЕО",
+            "ПРИГОТОВЬСЯ… 2",
+            "ПРИГОТОВЬСЯ… 1",
+            "ЩЁЛКНИ ЛАМПОЙ",
+            "ЖДИ СЛЕДУЮЩЕЙ СТУПЕНЬКИ",
+            "ФАЗА 3 ИЗ 3: СТАТИКА",
         ]
     );
-    assert_eq!(report["haptics"]["queued"], 5);
-    assert_eq!(report["haptics"]["failed"]["count"], 0);
+    assert_eq!(harness.shell.prompts.events().last(), Some(&PromptEvent::Cleared));
+    assert!(
+        harness.shell.haptics_played.lock().expect("замок").is_empty(),
+        "вибрация как сигнал владельцу больше не используется"
+    );
+    assert_eq!(report["prompts"]["queued"], 11);
+    assert_eq!(report["prompts"]["failed"]["count"], 0);
     assert_eq!(phases[2]["quiet"]["analyzed_ms"], 800);
     assert_profile_restored(&harness);
 }
@@ -374,8 +412,13 @@ fn render_without_ae_diagnostics_fails_with_an_explicit_reason_and_restores_the_
     assert_eq!(result["status"], "failed", "{result}");
     assert!(error_of(&result).contains("не публикует его диагностику"), "{result}");
     assert!(
-        harness.shell.haptics_played.lock().expect("замок").is_empty(),
+        harness.shell.prompts.shown().is_empty(),
         "без записи владельца не беспокоим"
+    );
+    assert_eq!(
+        harness.shell.prompts.clear_count(),
+        1,
+        "подсказку снимают и при провале"
     );
     assert_profile_restored(&harness);
 }
@@ -390,5 +433,26 @@ fn vendor_ae_is_refused_at_start_with_the_reason_and_never_claims_the_camera() {
 
     assert_eq!(result["status"], "failed", "{result}");
     assert!(error_of(&result).contains("вендорский AE"), "{result}");
-    assert!(harness.shell.haptics_played.lock().expect("замок").is_empty());
+    assert!(harness.shell.prompts.shown().is_empty());
+    assert_eq!(
+        harness.shell.prompts.clear_count(),
+        1,
+        "подсказку снимают и при отказе на старте"
+    );
+}
+
+#[test]
+fn prompts_that_cannot_be_shown_fail_the_run_with_a_clear_reason() {
+    let (harness, result) = run_ae_trace_with_prompt_outcome(
+        config_with(ExposureControllerKind::Own, |_| {}),
+        Publishing::Diagnostics { gain_ev: 0.0 },
+        true,
+        Some(CommandOutcome::NotAttached),
+    );
+
+    assert_eq!(result["status"], "failed", "{result}");
+    assert!(error_of(&result).contains("владельцу не показан сигнал"), "{result}");
+    assert!(error_of(&result).contains("NotAttached"), "{result}");
+    assert_eq!(result["report"]["prompts"]["queued"], 0, "{result}");
+    assert_eq!(harness.shell.prompts.events().last(), Some(&PromptEvent::Cleared));
 }

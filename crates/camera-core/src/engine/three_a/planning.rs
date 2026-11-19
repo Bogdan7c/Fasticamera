@@ -11,6 +11,7 @@
 
 use std::time::Instant;
 
+use camera_contract::auto_exposure::ProductReach;
 use camera_contract::capabilities::CameraCapabilities;
 use camera_contract::control::{CaptureIntent, ManualControl};
 
@@ -33,10 +34,13 @@ pub(in crate::engine) struct PlannedRequest {
     pub(in crate::engine) controls: RequestControls,
     pub(in crate::engine) trigger: Option<FocusTriggerRequest>,
     pub(in crate::engine) adjustments: Vec<ControlAdjustment>,
+    /// Достижимые произведения экспозиции этого плана (для указания рендеру).
+    pub(in crate::engine) exposure_reach: ProductReach,
 }
 
 /// Чистое объединение планов исполнителей в план запроса.
 pub(super) fn combine_plans(exposure: ExposureDecision, focus: FocusDecision) -> PlannedRequest {
+    let exposure_reach = exposure.reach;
     let mut adjustments = exposure.adjustments;
     adjustments.extend(focus.adjustments);
     PlannedRequest {
@@ -46,6 +50,7 @@ pub(super) fn combine_plans(exposure: ExposureDecision, focus: FocusDecision) ->
         },
         trigger: focus.trigger,
         adjustments,
+        exposure_reach,
     }
 }
 
@@ -69,6 +74,7 @@ pub(super) fn degraded_exposure(controls: &ManualControl) -> ExposureDecision {
             region: None,
         },
         adjustments,
+        reach: ProductReach::Unbounded,
     }
 }
 
@@ -181,7 +187,7 @@ impl CameraEngine {
         now: Instant,
     ) -> Result<(), Halt> {
         // Повторяющийся запрос уже стоит: рендеру можно сказать, что в нём (и где мерить).
-        let applied = applied_from_plan(&planned.controls.exposure, &planned.adjustments);
+        let applied = applied_from_plan(&planned.controls.exposure, &planned.adjustments, planned.exposure_reach);
         self.three_a
             .exposure_directive
             .publish_if_changed(&self.desired.three_a, applied);

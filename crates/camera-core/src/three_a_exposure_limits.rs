@@ -3,6 +3,7 @@
 //! полностью ручной план у обоих **обязан** быть одним и тем же, иначе переключатель A/B
 //! композиции менял бы ручную съёмку.
 
+use camera_contract::auto_exposure::ProductReach;
 use camera_contract::capabilities::{
     CameraCapabilities, ExposureTimeRange, FrameDuration, IsoRange, ManualSensorRanges,
 };
@@ -54,6 +55,7 @@ pub(crate) fn plan_manual_sensor(
             iso: applied_iso,
         },
         adjustments,
+        reach: ProductReach::Unbounded,
     })
 }
 

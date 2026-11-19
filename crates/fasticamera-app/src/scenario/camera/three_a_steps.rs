@@ -11,7 +11,7 @@ use std::time::Instant;
 use camera_core::command::CommandId;
 use camera_core::{CameraEvent, CameraStatus, CommandRejected};
 use raw_frame_stream::RawStreamCounters;
-use shell_contract::haptics::HapticsService;
+use shell_contract::operator_prompt::OperatorPromptService;
 
 use super::engine_watch::{RunFailure, rejected_failure};
 use super::three_a_report::ThreeAObservation;
@@ -45,8 +45,8 @@ pub struct StepEnv<'tick> {
     pub config: &'tick ThreeAScenarioConfig,
     pub baselines: StartBaselines,
     pub raw_counters: RawStreamCounters,
-    /// Тактильный отклик: шаги, где человек должен вмешаться (закрыть объектив), подают сигнал.
-    pub haptics: &'tick dyn HapticsService,
+    /// Подсказки владельцу на экране: шаги, где человек должен вмешаться (закрыть объектив), подают сигнал.
+    pub prompts: &'tick dyn OperatorPromptService,
     /// Стадии тика (выводит сценарий: у него `&mut ScenarioContext`).
     pub stages: &'tick mut Vec<SessionStage>,
 }

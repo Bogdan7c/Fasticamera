@@ -464,6 +464,16 @@ class DeviceSmokeViewfinderTest(unittest.TestCase):
         start = next(call for call in self.adb_calls() if "am start" in call)
         self.assertIn("-e stages levels -e ab_window_ms 15000", start)
 
+    def test_endurance_length_reaches_the_intent_as_an_extra(self) -> None:
+        completed = self.run_smoke(
+            "viewfinder-endurance",
+            [],
+            extra_arguments=("--endurance-ms", "180000", "--exposure-controller", "own"),
+        )
+        self.assertNotEqual(completed.returncode, 64, completed.stderr)
+        start = next(call for call in self.adb_calls() if "am start" in call)
+        self.assertIn("-e endurance_ms 180000", start)
+
     def test_bad_stages_or_flags_for_the_wrong_scenario_are_usage_errors(self) -> None:
         for arguments, scenario in (
             (("--stages", "levels;rm -rf"), "viewfinder-stage-budget"),
@@ -472,6 +482,8 @@ class DeviceSmokeViewfinderTest(unittest.TestCase):
             (("--ab-window-ms", "15s"), "viewfinder-stage-budget"),
             (("--ab-window-ms", "0"), "viewfinder-stage-budget"),
             (("--ab-window-ms", "15000"), "viewfinder"),
+            (("--endurance-ms", "3min"), "viewfinder-endurance"),
+            (("--endurance-ms", "180000"), "viewfinder"),
         ):
             with self.subTest(arguments=arguments, scenario=scenario):
                 completed = self.run_smoke(scenario, [], extra_arguments=arguments)

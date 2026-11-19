@@ -6,7 +6,9 @@
 //! Поле `applied` публикуется после того, как повторяющийся запрос реально поставлен: по нему
 //! рендер считает остаточную цифровую подтяжку, пока сенсор догоняет новую экспозицию.
 
-use camera_contract::auto_exposure::{AppliedExposure, ExposureAuthority, ExposureDirective, ExposureProduct};
+use camera_contract::auto_exposure::{
+    AppliedExposure, ExposureAuthority, ExposureDirective, ExposureProduct, ProductReach,
+};
 use camera_contract::control::{Control, ManualControl};
 use camera_contract::three_a::{AeAfLock, DirectiveSlot};
 
@@ -76,9 +78,13 @@ fn authority_of(controls: &ManualControl) -> ExposureAuthority {
     }
 }
 
-/// Что стоит в запросе: произведение «выдержка × ISO» и честная нехватка пределов.
+/// Что стоит в запросе: произведение «выдержка × ISO», честная нехватка пределов и достижимый отрезок.
 /// `None` для вендорского авто (произведение не известно движку).
-pub(super) fn applied_from_plan(plan: &ExposurePlan, adjustments: &[ControlAdjustment]) -> Option<AppliedExposure> {
+pub(super) fn applied_from_plan(
+    plan: &ExposurePlan,
+    adjustments: &[ControlAdjustment],
+    reach: ProductReach,
+) -> Option<AppliedExposure> {
     let ExposurePlan::Sensor { exposure_time, iso } = plan else {
         return None;
     };
@@ -92,6 +98,7 @@ pub(super) fn applied_from_plan(plan: &ExposurePlan, adjustments: &[ControlAdjus
     Some(AppliedExposure {
         product: ExposureProduct::from_sensor(*exposure_time, *iso),
         shortfall_ev,
+        reach,
     })
 }
 

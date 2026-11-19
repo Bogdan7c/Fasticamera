@@ -9,7 +9,7 @@
 
 #![allow(clippy::unwrap_used, reason = "в тестах падение — сигнал провала")]
 
-use camera_contract::auto_exposure::{AppliedExposure, MeteredArea};
+use camera_contract::auto_exposure::{AppliedExposure, MeteredArea, ProductReach};
 use camera_contract::capture_result::SensorTimestamp;
 use camera_contract::three_a::{AeAfLock, ThreeAProfile};
 use isp_model::params::ExposureGain;
@@ -21,7 +21,7 @@ use super::meter::{CpuExposureMeter, ExposureMeter, ExposureMeteringRequest};
 use super::metering_weights::{MeteringArea, MeteringWeights, TilePlacement};
 use super::test_support::{GRID, plain_luminance, product, stats_from, target};
 use crate::executor::FrameTag;
-use camera_contract::auto_exposure::ExposureDirective;
+use camera_contract::auto_exposure::{ExposureDirective, ExposureProduct};
 
 /// Кадров между замерами статистики.
 const STATS_EVERY: i64 = 4;
@@ -72,6 +72,13 @@ struct Rig {
     proposals: u32,
     /// Цель каждой опубликованной команды (для проверки «не дышит»).
     commands_seen: Vec<f64>,
+    /// Пределы сенсора: движок срезает по ним команду и честно сообщает нехватку.
+    reach: ProductReach,
+    /// Через сколько кадров после предложения рендер видит новое указание движка (пересборка запроса,
+    /// ящик указаний): за это время цель рендера уходит дальше, а нехватка в указании остаётся старой.
+    directive_lag_frames: i64,
+    /// Указания, которые движок уже построил, но рендер ещё не увидел: (кадр видимости, указание).
+    pending_applied: Vec<(i64, AppliedExposure)>,
 }
 
 impl Rig {
@@ -82,6 +89,7 @@ impl Rig {
             applied: Some(AppliedExposure {
                 product: product(initial),
                 shortfall_ev: 0.0,
+                reach: ProductReach::Unbounded,
             }),
             ..directive
         };
@@ -108,7 +116,55 @@ impl Rig {
             log: Vec::new(),
             proposals: 0,
             commands_seen: Vec::new(),
+            reach: ProductReach::Unbounded,
+            directive_lag_frames: 0,
+            pending_applied: Vec::new(),
         }
+    }
+
+    /// Рендер видит указание движка с запозданием в `frames` кадров.
+    fn with_directive_lag(mut self, frames: i64) -> Self {
+        self.directive_lag_frames = frames;
+        self
+    }
+
+    /// Сенсор умеет только произведения из `darkest..=brightest`: движок срезает по ним каждую команду и
+    /// публикует указание с нехваткой (как `plan_exposure`) и достижимым отрезком.
+    fn with_sensor_limits(mut self, darkest: f64, brightest: f64) -> Self {
+        self.reach = ProductReach::Between {
+            darkest: product(darkest),
+            brightest: product(brightest),
+        };
+        self.publish_applied(product(self.command), 0.0);
+        self
+    }
+
+    /// Указание движка с применённым произведением, нехваткой и пределами сенсора.
+    fn publish_applied(&mut self, applied: ExposureProduct, shortfall_ev: f32) {
+        let visible_at = self.frame + self.directive_lag_frames;
+        let applied = AppliedExposure {
+            product: applied,
+            shortfall_ev,
+            reach: self.reach,
+        };
+        self.pending_applied.push((visible_at, applied));
+        self.deliver_due_directives();
+    }
+
+    /// Отдаёт контроллеру указания, которые к текущему кадру уже дошли до рендера (последнее побеждает).
+    fn deliver_due_directives(&mut self) {
+        let frame = self.frame;
+        let due = self
+            .pending_applied
+            .iter()
+            .rposition(|(visible_at, _)| *visible_at <= frame);
+        let Some(last_due) = due else {
+            return;
+        };
+        let (_, applied) = self.pending_applied[last_due];
+        self.pending_applied.drain(..=last_due);
+        self.directive.applied = Some(applied);
+        self.controller.set_directive(self.directive);
     }
 
     fn ideal(&self) -> f64 {
@@ -149,16 +205,16 @@ impl Rig {
         if index % STATS_EVERY == 0 {
             self.measure(index, applied);
         }
+        self.deliver_due_directives();
         self.controller.advance(timestamp);
         if let Some(proposal) = self.controller.proposal(timestamp) {
             self.proposals += 1;
-            self.command = proposal.target.seconds_iso();
+            let requested = proposal.target;
+            let achieved = self.clamp_to_sensor(requested);
+            self.command = achieved.seconds_iso();
             self.commands_seen.push(self.command);
-            self.directive.applied = Some(AppliedExposure {
-                product: proposal.target,
-                shortfall_ev: 0.0,
-            });
-            self.controller.set_directive(self.directive);
+            // Нехватка относится к цели, на которую строился запрос: к моменту показа кадра она уже старая.
+            self.publish_applied(achieved, achieved.ev_above(requested) as f32);
         }
         self.history.push(self.command);
         let gain = self.controller.display_gain(Some(product(applied)));
@@ -194,6 +250,25 @@ impl Rig {
         while let Some(done) = self.meter.poll() {
             self.controller.ingest(&done);
         }
+    }
+
+    /// Что движок сможет поставить в запрос при просьбе `requested`.
+    fn clamp_to_sensor(&self, requested: ExposureProduct) -> ExposureProduct {
+        let ProductReach::Between { darkest, brightest } = self.reach else {
+            return requested;
+        };
+        ExposureProduct::from_seconds_iso(
+            requested
+                .seconds_iso()
+                .clamp(darkest.seconds_iso(), brightest.seconds_iso()),
+        )
+        .unwrap()
+    }
+
+    /// Уровень на экране кадра `index`: произведение кадра после подтяжки, log2 с·ISO (без насыщения).
+    fn screen_level_log2(&self, index: usize) -> f64 {
+        let entry = self.log[index];
+        entry.applied.log2() + f64::from(entry.gain.ev())
     }
 
     /// Ошибка кадра `index` относительно идеала сцены, EV (>0 — кадр светлее нужного).
@@ -387,4 +462,83 @@ fn backlit_scene_with_a_window_far_beyond_white_settles_without_a_limit_cycle() 
             high - low
         );
     }
+}
+
+/// Запаздывание указания движка у рендера, кадров (по логу телефона нехватка обновляется ~0,2 с после ступеньки).
+const DIRECTIVE_LAG_FRAMES: i64 = 12;
+
+/// Допуск перерегулирования экрана на ступеньке за предел сенсора, EV (порог сценария `ae-trace`).
+const SCREEN_OVERSHOOT_TOLERANCE_EV: f64 = 0.15;
+
+/// Насколько экран зашёл за свой конечный уровень в сторону движения на кадрах `from..to`, EV.
+fn screen_overshoot_ev(rig: &Rig, from: usize, to: usize) -> f64 {
+    let start = rig.screen_level_log2(from);
+    let end = rig.screen_level_log2(to - 1);
+    let direction = (end - start).signum();
+    (from..to)
+        .map(|index| (rig.screen_level_log2(index) - end) * direction)
+        .fold(0.0_f64, f64::max)
+}
+
+#[test]
+fn screen_does_not_overshoot_when_the_scene_step_crosses_the_sensor_limit_and_back() {
+    // Как на телефоне: «светлая» сцена достижима, «тёмная» нужна на 1,4 EV ярче предела сенсора.
+    const BRIGHT_IDEAL: f64 = 0.004;
+    const SENSOR_BRIGHTEST: f64 = BRIGHT_IDEAL * 1.67; // +0,74 EV над светлой сценой
+    const STEP_EV: f64 = 2.1;
+    for profile in [ExposureDirective::DEFAULT, video()] {
+        let mut rig = Rig::start(profile, BRIGHT_IDEAL, BRIGHT_IDEAL)
+            .with_sensor_limits(1.0e-4, SENSOR_BRIGHTEST)
+            .with_directive_lag(DIRECTIVE_LAG_FRAMES);
+        rig.run(60);
+        // Сцена темнеет: цель уходит ЗА предел сенсора, указание до первой пересборки старое.
+        let to_dark = rig.frame as usize;
+        rig.change_scene_by(-STEP_EV);
+        rig.run(150);
+        let limit_log2 = SENSOR_BRIGHTEST.log2();
+        let last = rig.log.len() - 1;
+        assert!(
+            (rig.log[last].applied.log2() - limit_log2).abs() < 0.02,
+            "сенсор должен упереться в предел"
+        );
+        let dark_overshoot = screen_overshoot_ev(&rig, to_dark, last + 1);
+        assert!(
+            dark_overshoot <= SCREEN_OVERSHOOT_TOLERANCE_EV,
+            "{profile:?}: экран перелетел за предел на {dark_overshoot} EV"
+        );
+        // Сцена светлеет обратно: цель возвращается из-за предела, нехватка в указании ещё «тёмная».
+        let to_bright = rig.frame as usize;
+        rig.change_scene_by(STEP_EV);
+        rig.run(150);
+        let last = rig.log.len() - 1;
+        let bright_overshoot = screen_overshoot_ev(&rig, to_bright, last + 1);
+        assert!(
+            bright_overshoot <= SCREEN_OVERSHOOT_TOLERANCE_EV,
+            "{profile:?}: экран перелетел при возврате на {bright_overshoot} EV"
+        );
+        assert!(
+            rig.error_ev(last).abs() <= 0.15,
+            "вернулись к идеалу (видео стоит в мёртвой зоне): {}",
+            rig.error_ev(last)
+        );
+    }
+}
+
+#[test]
+fn screen_holds_the_sensor_limit_without_chasing_the_unreachable_target() {
+    // Цель ярче предела на 1,4 EV стоит долго: подтяжка не должна «дотягивать» недостижимое.
+    let mut rig = Rig::start(ExposureDirective::DEFAULT, 0.004, 0.004)
+        .with_sensor_limits(1.0e-4, 0.00668)
+        .with_directive_lag(DIRECTIVE_LAG_FRAMES);
+    rig.run(60);
+    rig.change_scene_by(-2.1);
+    rig.run(300);
+    let last = rig.log.len() - 1;
+    assert!(
+        rig.log[last].gain.ev().abs() < 0.05,
+        "на пределе подтяжка не нужна: {}",
+        rig.log[last].gain.ev()
+    );
+    // Недостижимая цель так и осталась недостижимой: кадр темнее нужного ровно на нехватку.
+    assert!((rig.error_ev(last) + 1.4).abs() < 0.15, "{}", rig.error_ev(last));
 }

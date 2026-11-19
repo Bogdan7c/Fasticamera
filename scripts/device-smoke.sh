@@ -2,7 +2,7 @@
 # Smoke-сценарий на телефоне: запуск по intent-параметру и проверка строки результата.
 #
 #   scripts/device-smoke.sh [--variant debug|release] [--no-build] [--timeout SEC] [--artifacts-dir DIR]
-#                           [--stages LIST] [--ab-window-ms MS] [--exposure-controller own|vendor]
+#                           [--stages LIST] [--ab-window-ms MS] [--endurance-ms MS] [--exposure-controller own|vendor]
 #                           [--neutral-card] <сценарий>
 #
 # Сценарии (--timeout в скобках): hello, panic (debug), lifecycle, permission (60), motion, platform,
@@ -18,10 +18,12 @@
 # 3A 08: 3a (150; тап в центр и 4 угла, ручная выдержка 1/1000, EV, блокировка AE/AF, брекетинг 4 кадра, AWB;
 # скриншоты на стадии awb_ready, --neutral-card — серая карта; для вопроса о регионах фокуса навести на сцену
 # с ближним и дальним планом). 3A 08c: ae-trace (150; наш AE по ступенькам света: фото 36 с, видео 36 с, статика 20 с;
-# телефон вибрирует на каждую подсказку — владелец щёлкает лампой; сводка + ряд FASTICAMERA_DETAIL; нужен own AE).
+# телефон показывает на экране отсчёт «приготовься… 3, 2, 1» и «ЩЁЛКНИ ЛАМПОЙ» — владелец щёлкает лампой; сводка + ряд FASTICAMERA_DETAIL; нужен own AE).
 # Шаги на телефоне — scripts/smoke_driver.py, ожидания — smoke_wait.py, smoke_checks*.py.
 # raw-stream*, viewfinder и 3a снимают два скриншота на стадии viewfinder_live (3a — awb_ready) в каталог артефактов ВНЕ
 # репозитория: --artifacts-dir DIR либо свежий `mktemp -d` (путь печатается).
+# --endurance-ms MS — длина viewfinder-endurance на этот запуск (camera.scenarios.power.endurance.duration_ms;
+# 180000 — короткий замер тока для A/B «наш AE / вендорский»; не короче шага снимков 60 с — проверит Rust).
 # --exposure-controller own|vendor — какая автоэкспозиция на этот запуск (camera.exposure_controller; без флага —
 # умолчание конфига, own); годится для любого сценария, допустимость значения проверяет Rust при initialize.
 # Validation-слой есть только в debug-сборке: в release отчёт пишет validation.mode=disabled.
@@ -38,7 +40,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
 usage() {
-    sed -n '2,34p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,36p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
 }
 
 variant="debug"
@@ -47,6 +49,7 @@ timeout_seconds=30
 artifacts_dir=""
 stages=""
 ab_window_ms=""
+endurance_ms=""
 exposure_controller=""
 neutral_card=false
 scenario=""
@@ -59,6 +62,7 @@ while [[ $# -gt 0 ]]; do
         --artifacts-dir) artifacts_dir="${2:-}"; shift 2 ;;
         --stages) stages="${2:-}"; shift 2 ;;
         --ab-window-ms) ab_window_ms="${2:-}"; shift 2 ;;
+        --endurance-ms) endurance_ms="${2:-}"; shift 2 ;;
         --exposure-controller) exposure_controller="${2:-}"; shift 2 ;;
         --neutral-card) neutral_card=true; shift ;;
         -h|--help) usage; exit "$EXIT_OK" ;;
@@ -97,6 +101,15 @@ if [[ -n "$ab_window_ms" && ! "$ab_window_ms" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if [[ -n "$ab_window_ms" && "$scenario" != "viewfinder-stage-budget" ]]; then
     log_error "--ab-window-ms имеет смысл только для viewfinder-stage-budget"
+    exit "$EXIT_USAGE"
+fi
+# Длина прогона на выносливость — только целое число мс; нижнюю границу (шаг снимков) проверит Rust при initialize.
+if [[ -n "$endurance_ms" && ! "$endurance_ms" =~ ^[1-9][0-9]*$ ]]; then
+    log_error "--endurance-ms ждёт целое число миллисекунд, а не '$endurance_ms'"
+    exit "$EXIT_USAGE"
+fi
+if [[ -n "$endurance_ms" && "$scenario" != "viewfinder-endurance" ]]; then
+    log_error "--endurance-ms имеет смысл только для viewfinder-endurance"
     exit "$EXIT_USAGE"
 fi
 # Имя автоэкспозиции — own или vendor; точный набор значений и тут, и в Rust (ExposureControllerKind).
@@ -154,6 +167,7 @@ fi
 since_epoch="$(device_epoch_timestamp "$serial")"
 start_activity "$serial" "$package" -e scenario "$scenario" ${stages:+-e stages "$stages"} \
     ${ab_window_ms:+-e ab_window_ms "$ab_window_ms"} \
+    ${endurance_ms:+-e endurance_ms "$endurance_ms"} \
     ${exposure_controller:+-e exposure_controller "$exposure_controller"} ||
     exit "$EXIT_BUILD_OR_INSTALL_FAILED"
 

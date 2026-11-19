@@ -127,7 +127,7 @@ impl ThreeARun {
             config: &self.config,
             baselines,
             raw_counters: context.camera.raw_stream().counters(),
-            haptics: context.services.haptics.as_ref(),
+            prompts: context.services.operator_prompt.as_ref(),
             stages,
         };
         loop {

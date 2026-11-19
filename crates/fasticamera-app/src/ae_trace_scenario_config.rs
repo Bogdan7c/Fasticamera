@@ -28,6 +28,13 @@ pub struct AeTraceScenarioConfig {
     /// Период подсказок в фазах `photo` и `video`, мс. Первая подсказка — через один период после начала фазы:
     /// до неё остаётся спокойный участок для базового уровня сцены.
     pub cue_interval_ms: u64,
+    /// Сколько секунд отсчёта «приготовься… 3, 2, 1» перед каждой подсказкой (шагов отсчёта). 0 — без отсчёта.
+    /// Отсчёт идёт ДО подсказки и момент подсказки не сдвигает: окна разбора ступенек остаются прежними.
+    pub cue_countdown_steps: u64,
+    /// Длительность одного шага отсчёта, мс.
+    pub cue_countdown_step_ms: u64,
+    /// Сколько после подсказки «щёлкни лампой» держится её надпись, прежде чем смениться на «жди», мс.
+    pub cue_display_ms: u64,
     /// Сколько начала фазы `static` не разбирается (догорают последние ступеньки видео-фазы), мс.
     pub static_warmup_ms: u64,
     /// Не чаще чем раз в столько мс сценарий пишет отсчёт ряда (тик маршрутизатора — 50 мс).
@@ -67,6 +74,9 @@ impl Default for AeTraceScenarioConfig {
             video_phase_ms: 36 * SECOND_MS,
             static_phase_ms: 20 * SECOND_MS,
             cue_interval_ms: 6 * SECOND_MS,
+            cue_countdown_steps: 3,
+            cue_countdown_step_ms: SECOND_MS,
+            cue_display_ms: 2 * SECOND_MS,
             static_warmup_ms: 4 * SECOND_MS,
             sample_interval_ms: 50,
             step_window_ms: SECOND_MS,
@@ -108,6 +118,14 @@ pub enum AeTraceScenarioConfigError {
         phase_ms: u64,
         limit: u64,
     },
+    #[error(
+        "ae_trace.cue_countdown ({countdown_ms} мс) и cue_display_ms ({display_ms} мс) вместе не меньше cue_interval_ms ({interval_ms}): надписи подсказок наложились бы друг на друга"
+    )]
+    CountdownTooLong {
+        countdown_ms: u64,
+        display_ms: u64,
+        interval_ms: u64,
+    },
     #[error("ae_trace.step_window_ms ({window_ms}) вмещает меньше {needed} отсчётов при шаге {sample_ms} мс")]
     WindowTooThin {
         window_ms: u64,
@@ -128,6 +146,11 @@ impl AeTraceScenarioConfig {
             .saturating_add(self.static_phase_ms)
     }
 
+    /// Полная длина отсчёта перед подсказкой, мс.
+    pub fn countdown_ms(&self) -> u64 {
+        self.cue_countdown_steps.saturating_mul(self.cue_countdown_step_ms)
+    }
+
     /// Проверяет секцию целиком. Каждое правило — отдельная ошибка с именем поля.
     pub fn validate(&self) -> Result<(), AeTraceScenarioConfigError> {
         self.validate_positive()?;
@@ -142,6 +165,8 @@ impl AeTraceScenarioConfig {
             ("video_phase_ms", self.video_phase_ms),
             ("static_phase_ms", self.static_phase_ms),
             ("cue_interval_ms", self.cue_interval_ms),
+            ("cue_countdown_step_ms", self.cue_countdown_step_ms),
+            ("cue_display_ms", self.cue_display_ms),
             ("sample_interval_ms", self.sample_interval_ms),
             ("step_window_ms", self.step_window_ms),
             ("min_window_samples", self.min_window_samples),
@@ -175,6 +200,13 @@ impl AeTraceScenarioConfig {
             return Err(AeTraceScenarioConfigError::CueIntervalTooShort {
                 interval_ms: self.cue_interval_ms,
                 window_ms: self.step_window_ms,
+            });
+        }
+        if self.countdown_ms().saturating_add(self.cue_display_ms) >= self.cue_interval_ms {
+            return Err(AeTraceScenarioConfigError::CountdownTooLong {
+                countdown_ms: self.countdown_ms(),
+                display_ms: self.cue_display_ms,
+                interval_ms: self.cue_interval_ms,
             });
         }
         for (field, phase_ms) in [

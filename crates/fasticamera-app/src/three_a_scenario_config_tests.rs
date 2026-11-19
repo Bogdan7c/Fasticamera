@@ -78,6 +78,23 @@ fn invalid_values_are_reported_by_name() {
         reject(|c| c.bracket.exposures_ns = vec![1; 5]),
         ThreeAScenarioConfigError::BadBracketLength { limit: 4 }
     ));
+    // Отсчёт «приготовься»: по умолчанию 3 с шагом 1 с; шаг длиннее всего отсчёта отвергается.
+    assert_eq!(
+        reject(|c| {
+            c.lock.prepare_countdown_ms = 500;
+            c.lock.prepare_step_ms = 1_000;
+        }),
+        ThreeAScenarioConfigError::PrepareStepLongerThanCountdown {
+            step_ms: 1_000,
+            countdown_ms: 500
+        }
+    );
+    assert_eq!(
+        reject(|c| c.lock.prepare_step_ms = 0),
+        ThreeAScenarioConfigError::Zero {
+            field: "lock.prepare_step_ms"
+        }
+    );
     assert_eq!(
         reject(|c| c.manual.long_shutter_ns = c.manual.shutter_ns),
         ThreeAScenarioConfigError::LongShutterNotLonger
@@ -92,4 +109,17 @@ fn invalid_values_are_reported_by_name() {
 fn invalid_section_is_rejected_by_the_whole_runtime_config() {
     let error = config_with(r#"{"lock":{"hold_ms":0}}"#).expect_err("нулевое удержание");
     assert!(error.to_string().contains("lock.hold_ms"), "{error}");
+}
+
+#[test]
+fn lock_prepare_countdown_defaults_and_can_be_switched_off() {
+    let lock = LockStepConfig::default();
+    assert_eq!((lock.prepare_countdown_ms, lock.prepare_step_ms), (3_000, 1_000));
+    let mut config = ThreeAScenarioConfig::default();
+    config.lock.prepare_countdown_ms = 0;
+    assert_eq!(
+        config.validate(),
+        Ok(()),
+        "0 — без отсчёта, шаг при этом не проверяется"
+    );
 }

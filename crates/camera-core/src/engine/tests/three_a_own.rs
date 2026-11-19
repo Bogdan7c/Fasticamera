@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use camera_contract::auto_exposure::{
     ExposureAuthority, ExposureDirective, ExposureProduct, ExposureProposal, ExposureProposalChannel,
-    MeasurementQuality, MeteredArea, ProposalConvergence, RefreshSignal,
+    MeasurementQuality, MeteredArea, ProductReach, ProposalConvergence, RefreshSignal,
 };
 use camera_contract::capture_result::SensorTimestamp;
 use camera_contract::control::{Control, ExposureBias, ExposureTime, Iso, ManualControl};
@@ -435,6 +435,14 @@ fn directive_reports_the_honest_shortfall_when_camera_limits_are_hit() {
         (applied.shortfall_ev + 3.97).abs() < 0.06,
         "честная нехватка около −4 EV, а не {}",
         applied.shortfall_ev
+    );
+    // Указание несёт стабильный достижимый отрезок: рендер срезает по нему цель, а не по нехватке выше.
+    let ProductReach::Between { brightest, .. } = applied.reach else {
+        panic!("наш AE обязан отдать достижимый отрезок: {:?}", applied.reach);
+    };
+    assert!(
+        (brightest.seconds_iso() - 64.0).abs() < 1e-6,
+        "10 мс × ISO 6400, а не {brightest:?}"
     );
     let expected = own.rig.engine.status().three_a.adjustments;
     assert!(expected.iter().any(|adjustment| {

@@ -154,3 +154,15 @@ fn bind_after_missed_signals_sends_exactly_one_signal_and_bind_without_misses_se
     channel.refresh_signal().bind(third.clone());
     assert_eq!(third.signals.load(Ordering::Relaxed), 1);
 }
+
+#[test]
+fn product_reach_clamps_log2_into_its_segment_and_unbounded_leaves_it() {
+    let reach = ProductReach::Between {
+        darkest: product(0.25),
+        brightest: product(4.0),
+    };
+    assert_eq!(reach.clamp_log2(-5.0), -2.0, "темнее предела — на предел");
+    assert_eq!(reach.clamp_log2(7.0), 2.0, "светлее предела — на предел");
+    assert_eq!(reach.clamp_log2(0.5), 0.5, "внутри отрезка — без изменений");
+    assert_eq!(ProductReach::Unbounded.clamp_log2(123.0), 123.0);
+}

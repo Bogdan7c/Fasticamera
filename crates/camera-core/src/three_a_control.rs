@@ -9,6 +9,7 @@
 //! Баланс белого сюда не входит: его исполняет AWB на потоке рендера (решение 64), а движок
 //! только публикует режим через `DirectiveSlot<WhiteBalanceDirective>`.
 
+use camera_contract::auto_exposure::ProductReach;
 use camera_contract::capabilities::{CameraCapabilities, FrameDuration};
 use camera_contract::capture_result::CaptureResultMeta;
 use camera_contract::control::{CaptureIntent, ManualControl};
@@ -59,6 +60,10 @@ pub struct ThreeAContext<'a> {
 pub struct ExposureDecision {
     pub plan: ExposurePlan,
     pub adjustments: Vec<ControlAdjustment>,
+    /// Какие произведения «выдержка × ISO» этот исполнитель вообще может поставить в запрос при
+    /// действующем намерении; рендер по нему ограничивает остаточную подтяжку. Исполнители, не
+    /// отдающие произведение (вендорский AE, ручная экспозиция), ставят `Unbounded`.
+    pub reach: ProductReach,
 }
 
 /// Изменился ли план без команды владельца.

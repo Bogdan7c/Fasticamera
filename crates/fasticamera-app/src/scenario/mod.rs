@@ -170,6 +170,9 @@ pub struct ScenarioConfig {
     pub motion_duration_ms: u64,
     /// Пауза между паттернами хаптики в `platform`, мс: 700 — чтобы различить их на ощупь.
     pub haptic_interval_ms: u64,
+    /// Сколько `platform` держит на экране тестовую подсказку владельцу, мс: 2000 — чтобы скрипт успел снять
+    /// скриншот (стадия `operator_prompt_shown`) и убедиться, что текст дошёл до экрана.
+    pub operator_prompt_hold_ms: u64,
     /// Какую частоту `platform` просит у surface, Гц: 60 — частота показа по умолчанию
     /// (решение владельца 36, как `render.preferred_frame_rate_hz`).
     pub preferred_frame_rate_hz: f32,
@@ -218,6 +221,7 @@ impl Default for ScenarioConfig {
         Self {
             motion_duration_ms: 3000,
             haptic_interval_ms: 700,
+            operator_prompt_hold_ms: 2_000,
             preferred_frame_rate_hz: 60.0,
             render_refresh_tolerance_ratio: 0.05,
             render_stage_timeout_ms: 15_000,
@@ -264,6 +268,11 @@ impl ScenarioConfig {
         if self.haptic_interval_ms == 0 {
             return Err(ScenarioConfigError::Zero {
                 field: "haptic_interval_ms",
+            });
+        }
+        if self.operator_prompt_hold_ms == 0 {
+            return Err(ScenarioConfigError::Zero {
+                field: "operator_prompt_hold_ms",
             });
         }
         if !(self.preferred_frame_rate_hz.is_finite() && self.preferred_frame_rate_hz > 0.0) {

@@ -122,7 +122,7 @@ def check_motion(result: dict) -> list[str]:
 
 
 def check_platform(result: dict) -> list[str]:
-    """``platform``: термо-слушатель, вибромотор с реализацией каждого паттерна и частота кадров."""
+    """``platform``: термо-слушатель, вибромотор с реализацией каждого паттерна, подсказка владельцу на экране и частота кадров."""
     problems = _status_problem(result)
     if problems:
         return problems
@@ -142,9 +142,26 @@ def check_platform(result: dict) -> list[str]:
     ]
     if unsupported:
         problems.append(f"паттерны вибрации без реализации (unsupported): {', '.join(unsupported)}")
+    problems.extend(_operator_prompt_problems(report.get("operator_prompt")))
     frame_rate_result = report.get("frame_rate", {}).get("result")
     if frame_rate_result != "applied":
         problems.append(f"frame_rate.result={frame_rate_result!r}, ожидалось 'applied'")
+    return problems
+
+
+def _operator_prompt_problems(prompt: object) -> list[str]:
+    """Тестовая подсказка владельцу: показ и снятие обязаны быть приняты платформой (``queued``).
+
+    Это проверка без участия человека: подсказка заменила вибрацию как сигнал в сценариях ``3a`` и ``ae-trace``,
+    и если текст не доходит до экрана, владелец не узнает, когда действовать. Что текст виден глазами, подтверждает
+    скриншот на стадии ``operator_prompt_shown``.
+    """
+    if not isinstance(prompt, dict):
+        return [f"в отчёте нет operator_prompt ({prompt!r}): подсказка владельцу не проверена"]
+    problems = []
+    for key in ("show", "clear"):
+        if prompt.get(key) != "queued":
+            problems.append(f"operator_prompt.{key}={prompt.get(key)!r}, ожидалось 'queued': подсказка владельцу не дошла до экрана")
     return problems
 
 

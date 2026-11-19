@@ -1,6 +1,7 @@
 //! Временный вендорский AE (до 08a): компенсация, блокировка и регион через HAL, либо
 //! полностью ручной сенсор. Полуавтомат честно отвергается — он требует нашего AE.
 
+use camera_contract::auto_exposure::ProductReach;
 use camera_contract::capture_result::CaptureResultMeta;
 use camera_contract::control::{Control, ExposureBias};
 use camera_contract::three_a::{AeAfLock, ExposureCompensationSupport, LockSupport, PointOfInterest};
@@ -72,6 +73,7 @@ fn plan_vendor_auto(context: &ThreeAContext<'_>) -> Result<ExposureDecision, Uns
             region,
         },
         adjustments,
+        reach: ProductReach::Unbounded,
     })
 }
 

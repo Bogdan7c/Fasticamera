@@ -1,7 +1,7 @@
 //! Расписание сценария `ae-trace`: какая фаза идёт, когда подсказка владельцу, когда конец (чистая логика).
 //!
 //! Расписание строится один раз из конфига и дальше только отвечает на вопросы «что наступило к моменту
-//! `t`». Ни часов, ни вибромотора, ни камеры здесь нет: сценарий (`ae_trace.rs`) приносит время и сам
+//! `t`». Ни часов, ни экрана подсказок, ни камеры здесь нет: сценарий (`ae_trace.rs`) приносит время и сам
 //! исполняет события. Так порядок фаз и места подсказок проверяются тестом без телефона.
 //!
 //! Время — миллисекунды от начала расписания (от первой диагностики нашего AE, не от старта сценария).
@@ -74,8 +74,16 @@ impl PhaseWindow {
 pub enum PlanEvent {
     /// Началась фаза: переключить профиль и дать отличимый сигнал.
     PhaseStart(TracePhase),
-    /// Подсказка владельцу переключить лампу (`index` — номер внутри фазы с нуля).
+    /// Отсчёт перед подсказкой: до неё осталось `seconds_left` шагов отсчёта (`index` — номер подсказки с нуля).
+    Countdown {
+        phase: TracePhase,
+        index: usize,
+        seconds_left: u64,
+    },
+    /// Подсказка владельцу переключить лампу (`index` — номер внутри фазы с нуля). Момент не зависит от отсчёта.
     Cue { phase: TracePhase, index: usize },
+    /// Надпись подсказки отдержана: на экране снова «жди» до следующего отсчёта или конца фазы.
+    CueShown { phase: TracePhase, index: usize },
 }
 
 /// Событие с моментом исполнения.
@@ -111,10 +119,16 @@ impl Timeline {
             });
             let cues_ms = cue_moments(phase, start_ms, end_ms, config.cue_interval_ms);
             for (index, at_ms) in cues_ms.iter().enumerate() {
-                events.push(ScheduledEvent {
-                    at_ms: *at_ms,
-                    event: PlanEvent::Cue { phase, index },
-                });
+                push_cue_events(
+                    &mut events,
+                    config,
+                    CueSlot {
+                        phase,
+                        index,
+                        at_ms: *at_ms,
+                        end_ms,
+                    },
+                );
             }
             phases.push(PhaseWindow {
                 phase,
@@ -124,7 +138,18 @@ impl Timeline {
             });
             start_ms = end_ms;
         }
+        // События разных подсказок вставлялись в порядке подсказок; сортировка по времени устойчивая, поэтому
+        // события одного момента сохраняют порядок вставки (старт фазы раньше отсчёта).
+        events.sort_by_key(|scheduled| scheduled.at_ms);
         Self { phases, events }
+    }
+
+    /// Сколько подсказок в фазе (для надписи «ступенька 2 из 5»).
+    pub fn cue_count(&self, phase: TracePhase) -> usize {
+        self.phases
+            .iter()
+            .find(|window| window.phase == phase)
+            .map_or(0, |window| window.cues_ms.len())
     }
 
     /// Окна фаз по порядку.
@@ -148,6 +173,51 @@ impl Timeline {
         let pending = self.events.get(already_fired..).unwrap_or(&[]);
         let due = pending.partition_point(|scheduled| scheduled.at_ms <= elapsed_ms);
         &pending[..due]
+    }
+}
+
+/// Подсказка в расписании: где она стоит и где кончается её фаза.
+struct CueSlot {
+    phase: TracePhase,
+    index: usize,
+    at_ms: u64,
+    end_ms: u64,
+}
+
+/// События одной подсказки: отсчёт ДО неё, сама подсказка в прежний момент, возврат надписи «жди» ПОСЛЕ.
+fn push_cue_events(events: &mut Vec<ScheduledEvent>, config: &AeTraceScenarioConfig, slot: CueSlot) {
+    let CueSlot {
+        phase,
+        index,
+        at_ms,
+        end_ms,
+    } = slot;
+    // Отсчёт: «3, 2, 1» — шаги к моменту подсказки. Шаг, выпавший до начала расписания, пропускается
+    // (проверенный конфиг такого не допускает: отсчёт короче периода подсказок).
+    for seconds_left in (1..=config.cue_countdown_steps).rev() {
+        let before_cue_ms = seconds_left.saturating_mul(config.cue_countdown_step_ms);
+        if let Some(countdown_at_ms) = at_ms.checked_sub(before_cue_ms) {
+            events.push(ScheduledEvent {
+                at_ms: countdown_at_ms,
+                event: PlanEvent::Countdown {
+                    phase,
+                    index,
+                    seconds_left,
+                },
+            });
+        }
+    }
+    events.push(ScheduledEvent {
+        at_ms,
+        event: PlanEvent::Cue { phase, index },
+    });
+    // Если надпись отдержалась бы уже за границей фазы, её место займёт старт следующей фазы.
+    let shown_until_ms = at_ms.saturating_add(config.cue_display_ms);
+    if shown_until_ms < end_ms {
+        events.push(ScheduledEvent {
+            at_ms: shown_until_ms,
+            event: PlanEvent::CueShown { phase, index },
+        });
     }
 }
 

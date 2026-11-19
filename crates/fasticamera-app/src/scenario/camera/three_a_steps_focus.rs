@@ -5,10 +5,13 @@ use camera_contract::three_a::{AeAfLock, AeState, PointRequestId, SensorPoint};
 use camera_core::CameraEvent;
 use camera_core::three_a_status::FocusProgress;
 use render_loop::viewfinder::ColdStartState;
-use shell_contract::haptics::{HapticOutcome, HapticPattern};
+use shell_contract::commands::CommandOutcome;
+use shell_contract::operator_prompt::OperatorPrompt;
 
 use super::engine_watch::RunFailure;
+use super::operator_prompt_log::countdown_seconds_left;
 use super::progress::Deadline;
+use super::three_a_lock_prompts::{hold_end_prompt, hold_start_prompt, prepare_prompt};
 use super::three_a_own_ae::{AeSource, ObservedSceneRange, is_lock_reached};
 use super::three_a_report::{
     AwbReport, AwbVsHal, FocusReport, LiveReport, LockReport, TapReport, TapResult, ThreeAObservation,
@@ -267,6 +270,12 @@ impl ThreeAStep for TapStep {
 
 /// Фазы блокировки.
 enum LockPhase {
+    /// Отсчёт «приготовься» до команды блокировки: на экране «через N с закрой объектив рукой».
+    Prepare {
+        until: std::time::Instant,
+        /// Число, которое сейчас на экране; подсказка обновляется только при его смене.
+        shown_seconds: Option<u64>,
+    },
     WaitLocked {
         marker: Option<i64>,
         deadline: Deadline,
@@ -282,16 +291,10 @@ enum LockPhase {
     },
 }
 
-/// Тактильный сигнал в начале удержания: «блокировка взята, закрывайте объектив рукой».
-const HOLD_START_CUE: HapticPattern = HapticPattern::HeavyImpact;
-/// Тактильный сигнал в конце удержания: «окно кончилось, объектив можно открывать». Другой паттерн, чтобы
-/// сигналы не путались.
-const HOLD_END_CUE: HapticPattern = HapticPattern::Success;
-
 /// Шаг f: блокировка AE/AF по центру, удержание под наблюдением (`lock.hold_ms`), сброс точки.
 ///
-/// Удержание размечено тактильными сигналами (человек закрывает объектив по первому и открывает по второму),
-/// а доказательство, что сцена менялась, — размах сырого замера сцены нашим AE ([`ObservedSceneRange`]).
+/// Удержание размечено подсказками на экране (человек готовится по отсчёту, закрывает объектив по «ЗАКРОЙ»
+/// и открывает по «УБЕРИ РУКУ»; тексты — `three_a_lock_prompts`), а доказательство, что сцена менялась, — размах сырого замера сцены нашим AE ([`ObservedSceneRange`]).
 #[derive(Default)]
 pub struct LockStep {
     phase: Option<LockPhase>,
@@ -300,8 +303,10 @@ pub struct LockStep {
     left_holding_ticks: usize,
     /// Замеры сцены на тиках удержания.
     scene_range: ObservedSceneRange,
-    /// Итог сигнала в начале удержания.
-    haptic_hold_start: Option<HapticOutcome>,
+    /// Итог отсчёта «приготовься»: первая непринятая подсказка, иначе `Queued`; `None` — отсчёта не было.
+    prompt_prepare: Option<CommandOutcome>,
+    /// Итог подсказки в начале удержания.
+    prompt_hold_start: Option<CommandOutcome>,
 }
 
 /// Что собрано за удержание из журнала результатов.
@@ -395,27 +400,39 @@ impl LockStep {
         }
     }
 
-    /// Играет сигнал и возвращает итог платформы; итог всегда попадает в отчёт и в стадию (отказ не тихий).
-    fn play_cue(env: &mut StepEnv<'_>, pattern: HapticPattern, moment: &'static str) -> HapticOutcome {
-        let outcome = env.haptics.play(pattern);
+    /// Показывает подсказку и возвращает итог платформы. Итог всегда попадает в отчёт (отказ не тихий).
+    fn show_prompt(env: &StepEnv<'_>, prompt: &OperatorPrompt) -> CommandOutcome {
+        env.prompts.show(prompt)
+    }
+
+    /// Пишет стадию о подсказке-вехе (начало и конец удержания, первый шаг отсчёта) со словами и исходом.
+    fn stage_prompt(env: &mut StepEnv<'_>, moment: &'static str, prompt: &OperatorPrompt, outcome: CommandOutcome) {
         env.stage(
             "three_a_lock_cue",
             [
                 ("moment", moment.into()),
-                ("pattern", pattern.name().into()),
+                ("prompt", prompt.describe().into()),
                 ("outcome", super::detail::to_value(&outcome)),
             ],
         );
-        outcome
-    }
-}
-
-impl ThreeAStep for LockStep {
-    fn name(&self) -> &'static str {
-        "lock"
     }
 
-    fn begin(&mut self, env: &mut StepEnv<'_>, _observation: &mut ThreeAObservation) -> Result<(), RunFailure> {
+    /// Отсчёт «приготовься»: обновляет надпись при смене целой секунды; запоминает первый отказ платформы.
+    fn show_prepare_tick(&mut self, env: &mut StepEnv<'_>, seconds_left: u64) {
+        let prompt = prepare_prompt(seconds_left);
+        let outcome = Self::show_prompt(env, &prompt);
+        if self.prompt_prepare.is_none() {
+            Self::stage_prompt(env, "prepare", &prompt, outcome);
+        }
+        // Отказ запоминается и не затирается последующими удачными шагами отсчёта.
+        self.prompt_prepare = match self.prompt_prepare {
+            Some(CommandOutcome::Queued) | None => Some(outcome),
+            failed => failed,
+        };
+    }
+
+    /// Отправляет блокировку и начинает ждать `Locked`/`Holding`.
+    fn send_lock(&mut self, env: &mut StepEnv<'_>) -> Result<(), RunFailure> {
         let handle = env.running.handle();
         // Чистый лист: ручные значения и компенсация предыдущих шагов не должны влиять на блокировку.
         sent("apply_controls", handle.apply_controls(ManualControl::AUTOMATIC))?;
@@ -429,15 +446,61 @@ impl ThreeAStep for LockStep {
         });
         Ok(())
     }
+}
+
+impl ThreeAStep for LockStep {
+    fn name(&self) -> &'static str {
+        "lock"
+    }
+
+    fn begin(&mut self, env: &mut StepEnv<'_>, _observation: &mut ThreeAObservation) -> Result<(), RunFailure> {
+        let lock = &env.config.lock;
+        if lock.prepare_countdown_ms == 0 {
+            return self.send_lock(env);
+        }
+        // Блокировка уходит ПОСЛЕ отсчёта: удержание начнётся позже на `prepare_countdown_ms`, владелец успеет
+        // подготовить руку. Первая надпись показывается сразу.
+        let countdown = std::time::Duration::from_millis(lock.prepare_countdown_ms);
+        let step_ms = lock.prepare_step_ms;
+        let seconds_left = countdown_seconds_left(lock.prepare_countdown_ms, step_ms);
+        self.phase = Some(LockPhase::Prepare {
+            until: env.now + countdown,
+            shown_seconds: Some(seconds_left),
+        });
+        self.show_prepare_tick(env, seconds_left);
+        Ok(())
+    }
 
     fn poll(&mut self, env: &mut StepEnv<'_>, observation: &mut ThreeAObservation) -> StepProgress {
         let now = env.now;
         match self.phase.take() {
+            Some(LockPhase::Prepare { until, shown_seconds }) => {
+                if now >= until {
+                    return match self.send_lock(env) {
+                        Ok(()) => StepProgress::Pending,
+                        Err(failure) => StepProgress::Failed(failure),
+                    };
+                }
+                let remaining_ms = u64::try_from(until.saturating_duration_since(now).as_millis()).unwrap_or(u64::MAX);
+                // Пока срок не вышел, на экране не меньше 1: доля миллисекунды остатка не должна превращаться в «0 с».
+                let seconds_left = countdown_seconds_left(remaining_ms, env.config.lock.prepare_step_ms).max(1);
+                if shown_seconds != Some(seconds_left) {
+                    self.show_prepare_tick(env, seconds_left);
+                }
+                self.phase = Some(LockPhase::Prepare {
+                    until,
+                    shown_seconds: Some(seconds_left),
+                });
+                StepProgress::Pending
+            }
             Some(LockPhase::WaitLocked { marker, deadline }) => {
                 self.phase = match Self::locked_frame(env, marker) {
                     Some(first_locked_frame) => {
-                        // Окно удержания началось: сигнал «закрывайте объектив».
-                        self.haptic_hold_start = Some(Self::play_cue(env, HOLD_START_CUE, "hold_start"));
+                        // Окно удержания началось: на экране «ЗАКРОЙ ОБЪЕКТИВ РУКОЙ», надпись висит всё удержание.
+                        let prompt = hold_start_prompt();
+                        let outcome = Self::show_prompt(env, &prompt);
+                        Self::stage_prompt(env, "hold_start", &prompt, outcome);
+                        self.prompt_hold_start = Some(outcome);
                         Some(LockPhase::Hold {
                             first_locked_frame,
                             lock_marker: marker,
@@ -445,7 +508,9 @@ impl ThreeAStep for LockStep {
                         })
                     }
                     None if deadline.is_expired(now) => {
-                        self.report = Some(not_locked_report(AeSource::of(&env.status.three_a)));
+                        let mut report = not_locked_report(AeSource::of(&env.status.three_a));
+                        report.prompt_prepare = self.prompt_prepare;
+                        self.report = Some(report);
                         return self.request_reset(env, observation);
                     }
                     None => Some(LockPhase::WaitLocked { marker, deadline }),
@@ -466,8 +531,10 @@ impl ThreeAStep for LockStep {
                     });
                     return StepProgress::Pending;
                 }
-                // Окно кончилось: сигнал «объектив можно открывать».
-                let haptic_hold_end = Self::play_cue(env, HOLD_END_CUE, "hold_end");
+                // Окно кончилось: на экране «УБЕРИ РУКУ» (висит до конца сценария, снимает маршрутизатор).
+                let prompt = hold_end_prompt();
+                let prompt_hold_end = Self::show_prompt(env, &prompt);
+                Self::stage_prompt(env, "hold_end", &prompt, prompt_hold_end);
                 let held = Self::measure_hold(first_locked_frame, lock_marker, env, self.left_holding_ticks);
                 self.report = Some(LockReport {
                     ae_source: AeSource::of(&env.status.three_a),
@@ -477,8 +544,9 @@ impl ThreeAStep for LockStep {
                     max_product_deviation: held.max_product_deviation,
                     observed_scene_range_ev: self.scene_range.range_ev(),
                     product_frozen_after_frames: held.product_frozen_after_frames,
-                    haptic_hold_start: self.haptic_hold_start,
-                    haptic_hold_end: Some(haptic_hold_end),
+                    prompt_prepare: self.prompt_prepare,
+                    prompt_hold_start: self.prompt_hold_start,
+                    prompt_hold_end: Some(prompt_hold_end),
                     back_to_continuous: false,
                 });
                 self.request_reset(env, observation)
@@ -488,6 +556,9 @@ impl ThreeAStep for LockStep {
                 let back =
                     three_a.lock == AeAfLock::Unlocked && matches!(three_a.focus, FocusProgress::Continuous { .. });
                 if back || deadline.is_expired(now) {
+                    // Надпись «УБЕРИ РУКУ» здесь НЕ снимается: сброс точки занимает доли секунды, и снятая сразу
+                    // подсказка мелькнула бы незаметно — владелец остался бы с рукой на объективе. Она висит до
+                    // следующей подсказки или до конца сценария (её снимает маршрутизатор в `finish`).
                     if let Some(mut report) = self.report.take() {
                         report.back_to_continuous = back;
                         observation.lock = Some(report);
@@ -529,8 +600,9 @@ fn not_locked_report(ae_source: AeSource) -> LockReport {
         max_product_deviation: None,
         observed_scene_range_ev: None,
         product_frozen_after_frames: None,
-        haptic_hold_start: None,
-        haptic_hold_end: None,
+        prompt_prepare: None,
+        prompt_hold_start: None,
+        prompt_hold_end: None,
         back_to_continuous: false,
     }
 }

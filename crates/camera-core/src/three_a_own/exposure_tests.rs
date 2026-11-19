@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 use camera_contract::auto_exposure::{
-    ExposureProduct, ExposureProposal, ExposureProposalChannel, MeasurementQuality, MeteredArea, ProposalConvergence,
-    RefreshSignal,
+    ExposureProduct, ExposureProposal, ExposureProposalChannel, MeasurementQuality, MeteredArea, ProductReach,
+    ProposalConvergence, RefreshSignal,
 };
 use camera_contract::capabilities::{CameraCapabilities, ManualSensorRanges};
 use camera_contract::capture_result::{CaptureResultMeta, FrameNumber, SensorTimestamp};
@@ -565,4 +565,86 @@ fn quantization_noise_inside_the_tolerance_is_not_reported() {
     fixture.publish(2_000, 0.123_456, ProposalConvergence::Settled);
     fixture.exposure.refresh();
     assert!(fixture.plan().adjustments.is_empty());
+}
+
+/// Границы достижимого отрезка плана; панику на `Unbounded` даёт `expect`.
+fn reach_bounds(decision: &ExposureDecision) -> (f64, f64) {
+    match decision.reach {
+        ProductReach::Between { darkest, brightest } => (darkest.seconds_iso(), brightest.seconds_iso()),
+        ProductReach::Unbounded => panic!("наш AE обязан отдать достижимый отрезок"),
+    }
+}
+
+#[test]
+fn plan_reports_the_reachable_segment_that_the_extreme_targets_actually_hit() {
+    let mut fixture = Fixture::with_config(OwnExposureConfig::default());
+    fixture.exposure.observe_result(&repeating(1_000));
+    // Отрезок не зависит от текущей цели: сначала умеренная цель, потом крайние.
+    fixture.publish(2_000, 0.5, ProposalConvergence::Settled);
+    fixture.exposure.refresh();
+    let (darkest, brightest) = reach_bounds(&fixture.plan());
+    assert!(
+        (darkest - 10e-6 * 100.0).abs() < 1e-9,
+        "10 мкс × ISO 100, а не {darkest}"
+    );
+    assert!(
+        (brightest / (0.016_666_667 * 6_400.0) - 1.0).abs() < 1e-6,
+        "кадр × ISO 6400, а не {brightest}"
+    );
+
+    // Отрезок совпадает с тем, что реально ставится при заведомо недостижимых целях.
+    fixture.publish(3_000, 1.0e6, ProposalConvergence::Searching);
+    fixture.exposure.refresh();
+    assert!((product_of(&fixture.plan().plan) / brightest - 1.0).abs() < 1e-6);
+    fixture.publish(4_000, 1.0e-9, ProposalConvergence::Searching);
+    fixture.exposure.refresh();
+    let after_extremes = fixture.plan();
+    assert!((product_of(&after_extremes.plan) / darkest - 1.0).abs() < 1e-6);
+    assert_eq!(
+        reach_bounds(&after_extremes),
+        (darkest, brightest),
+        "отрезок не зависит от цели"
+    );
+}
+
+#[test]
+fn reachable_segment_follows_the_manual_anchor_and_the_flicker_protection() {
+    let mut fixture = Fixture::with_config(OwnExposureConfig::default());
+    fixture.exposure.observe_result(&repeating(1_000));
+    fixture.publish(2_000, 0.5, ProposalConvergence::Settled);
+    fixture.exposure.refresh();
+    // ISO закреплён на 200: отрезок — выдержки камеры, умноженные на 200.
+    let iso_anchored = fixture
+        .plan_for(ManualControl {
+            iso: Control::Manual(Iso::new(200).expect("ISO")),
+            ..ManualControl::AUTOMATIC
+        })
+        .expect("полуавтомат");
+    let (darkest, brightest) = reach_bounds(&iso_anchored);
+    assert!((darkest - 10e-6 * 200.0).abs() < 1e-9, "{darkest}");
+    assert!((brightest / (0.016_666_667 * 200.0) - 1.0).abs() < 1e-6, "{brightest}");
+
+    // Защита 50 Гц: выдержка кратна 10 мс, потолок кадра 16,67 мс даёт одну кратную.
+    let mut protected = Fixture::new();
+    protected.exposure.observe_result(&repeating(1_000));
+    protected.publish(2_000, 0.5, ProposalConvergence::Settled);
+    protected.exposure.refresh();
+    let (_, protected_brightest) = reach_bounds(&protected.plan());
+    assert!(
+        (protected_brightest / (0.010 * 6_400.0) - 1.0).abs() < 1e-6,
+        "{protected_brightest}"
+    );
+}
+
+#[test]
+fn executors_that_do_not_know_the_product_report_an_unbounded_reach() {
+    let mut fixture = Fixture::with_config(OwnExposureConfig::default());
+    let fully_manual = fixture
+        .plan_for(ManualControl {
+            iso: Control::Manual(Iso::new(50).expect("ISO")),
+            shutter: Control::Manual(ExposureTime::new(Duration::from_millis(4)).expect("выдержка")),
+            ..ManualControl::AUTOMATIC
+        })
+        .expect("ручной план");
+    assert_eq!(fully_manual.reach, ProductReach::Unbounded);
 }

@@ -2,7 +2,7 @@
 
 use camera_contract::auto_exposure::ProposalConvergence;
 
-use super::super::ae_trace_test_support::{diagnostics, flat_sample, hal_result};
+use super::super::ae_trace_test_support::{diagnostics, diagnostics_showing, flat_sample, hal_result};
 use super::*;
 
 #[test]
@@ -19,7 +19,8 @@ fn product_is_log2_of_seconds_times_iso() {
 #[test]
 fn sample_carries_the_diagnostics_and_the_sensor_level_of_the_repeating_frame() {
     let mut taker = SampleTaker::default();
-    let diag = diagnostics(Some(1.5), Some(1.25), 0.125, 7, Some(3));
+    // Показанный кадр на уровне 1,0; подтяжка 0,125 посчитана для него.
+    let diag = diagnostics_showing(Some(1.0), Some(1.5), Some(1.25), 0.125, 7, Some(3));
     let result = hal_result(10, RequestOrigin::Repeating, 20.0, 100, Some(SceneFlicker::Mains50Hz));
 
     let sample = taker.take(250, &diag, Some(&result), ThreeAProfile::Video);
@@ -118,4 +119,35 @@ fn full_series_drops_and_counts_instead_of_growing() {
     assert_eq!(series.push(flat_sample(100, 0.0)), PushOutcome::DroppedFull);
     assert_eq!(series.samples().len(), 2);
     assert_eq!(series.dropped(), 1);
+}
+
+#[test]
+fn screen_level_uses_the_shown_frame_not_the_newer_hal_result() {
+    // Ступенька света: последний результат HAL уже на 2 EV выше (новая экспозиция), а показан ещё старый
+    // кадр на уровне 0 с подтяжкой 0,5, посчитанной для него. Экран = 0 + 0,5, а не 2 + 0,5.
+    let mut taker = SampleTaker::default();
+    let diag = diagnostics_showing(Some(0.0), Some(2.0), Some(2.0), 0.5, 1, Some(1));
+    // 40 мс × ISO 100 = 4 с·ISO = 2 EV.
+    let newer_result = hal_result(20, RequestOrigin::Repeating, 40.0, 100, None);
+
+    let sample = taker.take(0, &diag, Some(&newer_result), ThreeAProfile::Photo);
+
+    assert!((sample.sensor_ev.expect("сенсор") - 2.0).abs() < 1e-9);
+    assert!(
+        (sample.screen_ev().expect("экран") - 0.5).abs() < 1e-9,
+        "{:?}",
+        sample.screen_ev()
+    );
+}
+
+#[test]
+fn screen_level_is_unknown_when_the_shown_frame_has_no_paired_exposure() {
+    let mut taker = SampleTaker::default();
+    let diag = diagnostics_showing(None, Some(0.0), Some(0.0), 0.5, 0, None);
+    let result = hal_result(1, RequestOrigin::Repeating, 10.0, 100, None);
+
+    let sample = taker.take(0, &diag, Some(&result), ThreeAProfile::Photo);
+
+    assert!(sample.sensor_ev.is_some());
+    assert_eq!(sample.screen_ev(), None, "подставлять уровень другого кадра нельзя");
 }

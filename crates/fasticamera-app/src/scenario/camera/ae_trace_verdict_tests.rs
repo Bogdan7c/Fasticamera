@@ -1,7 +1,8 @@
 //! Вердикт `ae-trace`: что считается нарушением, а что только справкой, и граница каждого порога.
 
 use camera_contract::three_a::ThreeAProfile;
-use shell_contract::haptics::{HapticOutcome, HapticPattern, HapticRealizationKind};
+use shell_contract::commands::CommandOutcome;
+use shell_contract::operator_prompt::{OperatorPrompt, OperatorPromptKind};
 
 use super::super::ae_trace_analysis::analyze_run;
 use super::super::ae_trace_plan::Timeline;
@@ -109,6 +110,7 @@ fn overshoot_over_the_threshold_on_a_real_step_fails_and_below_passes() {
         // Подсказка на 2000: сенсор на 2000..2200 проскакивает конечный уровень 1,0 на `size_ev`.
         for sample in series.iter_mut().filter(|sample| (2_000..2_200).contains(&sample.t_ms)) {
             sample.sensor_ev = Some(1.0 + size_ev);
+            sample.shown_ev = sample.sensor_ev;
         }
         violations_of(series)
     };
@@ -130,6 +132,7 @@ fn a_missed_cue_is_not_judged_even_if_the_series_wiggles() {
         .collect();
     for sample in series.iter_mut().filter(|sample| (2_000..2_200).contains(&sample.t_ms)) {
         sample.sensor_ev = Some(0.4);
+        sample.shown_ev = sample.sensor_ev;
     }
     for sample in series.iter_mut().filter(|sample| (4_000..8_000).contains(&sample.t_ms)) {
         sample.profile = ThreeAProfile::Video;
@@ -172,21 +175,21 @@ fn harness_problems_are_violations_even_without_an_analysis() {
 fn undelivered_cues_are_reported_with_the_count_and_the_reason() {
     let config = config();
     let mut observation = observe(&config, healthy_series(&config));
-    observation.haptics.record(
-        "старт photo",
-        HapticPattern::Success,
-        HapticOutcome::Queued(HapticRealizationKind::Waveform),
-    );
+    let prompt = |headline: &str| OperatorPrompt::new(OperatorPromptKind::Act, headline, "ступенька");
     observation
-        .haptics
-        .record("подсказка 1", HapticPattern::SelectionTick, HapticOutcome::Backpressure);
+        .prompts
+        .record("старт photo", &prompt("ФАЗА 1"), CommandOutcome::Queued);
     observation
-        .haptics
-        .record("подсказка 2", HapticPattern::SelectionTick, HapticOutcome::NotAttached);
+        .prompts
+        .record("подсказка 1", &prompt("ЩЁЛКНИ ЛАМПОЙ"), CommandOutcome::Backpressure);
+    observation
+        .prompts
+        .record("подсказка 2", &prompt("ЩЁЛКНИ ЛАМПОЙ"), CommandOutcome::NotAttached);
 
     let violations = evaluate_ae_trace(&config, &observation);
 
     assert_eq!(violations.len(), 1, "{violations:?}");
+    assert!(violations[0].contains("владельцу не показан сигнал"), "{violations:?}");
     assert!(violations[0].contains("2 из 3"), "{violations:?}");
     assert!(
         violations[0].contains("подсказка 1") && violations[0].contains("Backpressure"),

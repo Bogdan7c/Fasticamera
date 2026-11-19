@@ -3,34 +3,10 @@
 //! Структура ничего не считает и не форматирует: сценарий (`ae_trace.rs`) заполняет её по ходу прогона,
 //! вердикт (`ae_trace_verdict`) и отчёт (`ae_trace_report`) читают.
 
-use shell_contract::haptics::{HapticOutcome, HapticPattern};
-
 use super::ae_trace_analysis::RunAnalysis;
 use super::ae_trace_plan::Timeline;
 use super::ae_trace_series::TraceSample;
-
-/// Журнал подсказок владельцу. Подсказка, до которой не дошёл вибромотор, — не тишина: владелец не знает,
-/// когда переключать лампу, и ступеньки получатся пропущенными.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct HapticLog {
-    /// Сколько сигналов платформа приняла в очередь.
-    pub queued: u32,
-    /// Сигналы, которые не приняты: что хотели сыграть и чем кончилось.
-    pub failures: Vec<String>,
-}
-
-impl HapticLog {
-    /// Записывает итог одного сигнала. `moment` — когда он был нужен (для читаемого нарушения).
-    pub fn record(&mut self, moment: &str, pattern: HapticPattern, outcome: HapticOutcome) {
-        match outcome {
-            HapticOutcome::Queued(_) => self.queued += 1,
-            HapticOutcome::Unsupported | HapticOutcome::NotAttached | HapticOutcome::Backpressure => {
-                self.failures
-                    .push(format!("{moment} ({}): {outcome:?}", pattern.name()));
-            }
-        }
-    }
-}
+use super::operator_prompt_log::PromptLog;
 
 /// Итоги запуска видоискателя для отчёта (то, что нужно из `SessionSummary`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -46,7 +22,8 @@ pub struct AeTraceObservation {
     pub failure: Option<String>,
     /// Не удалось вернуть профиль «Фото» в конце.
     pub restore_failure: Option<String>,
-    pub haptics: HapticLog,
+    /// Подсказки владельцу на экране: сколько принято платформой и какие нет.
+    pub prompts: PromptLog,
     /// Отсчётов отброшено из-за полного ряда.
     pub dropped_samples: u64,
     /// Тиков, на которых диагностики AE не было (после её первого появления).

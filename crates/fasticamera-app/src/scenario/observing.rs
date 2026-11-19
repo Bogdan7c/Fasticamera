@@ -17,6 +17,7 @@ use shell_contract::diagnostics::ShellDiagnostics;
 use shell_contract::event::{ShellEvent, ShellEventKind};
 use shell_contract::haptics::HapticsService;
 use shell_contract::motion::{GyroRequest, MotionSource};
+use shell_contract::operator_prompt::OperatorPromptService;
 use shell_contract::orientation::DeviceOrientation;
 use shell_contract::permission::CameraPermission;
 use shell_contract::power::PowerSource;
@@ -58,6 +59,8 @@ pub trait PlatformFacts: Send + Sync {
 pub struct ShellServices {
     pub commands: Arc<dyn ShellCommands>,
     pub haptics: Arc<dyn HapticsService>,
+    /// Подсказки владельцу на экране (вместо вибрации-сигнала в сценариях, где человек действует руками).
+    pub operator_prompt: Arc<dyn OperatorPromptService>,
     pub motion: Arc<dyn MotionSource>,
     pub thermal: Arc<dyn ThermalSource>,
     pub diagnostics: Arc<dyn ShellDiagnostics>,

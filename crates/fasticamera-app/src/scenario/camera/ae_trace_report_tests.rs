@@ -4,11 +4,11 @@
 use camera_contract::three_a::ThreeAProfile;
 
 use super::super::ae_trace_analysis::analyze_run;
-use super::super::ae_trace_observation::HapticLog;
 use super::super::ae_trace_plan::TracePhase;
 use super::super::ae_trace_series::FlickerReading;
 use super::super::ae_trace_steps::{StepMetrics, StepResult};
 use super::super::ae_trace_test_support::{flat_sample, new_frame};
+use super::super::operator_prompt_log::PromptLog;
 use super::super::result_budget::{judge_within_budget, worst_case};
 use super::*;
 
@@ -98,7 +98,7 @@ fn run_without_analysis_still_reports_the_harness_facts() {
     let observation = AeTraceObservation {
         failure: Some("x".to_owned()),
         gain_limit_ev: 0.5,
-        haptics: HapticLog {
+        prompts: PromptLog {
             queued: 2,
             failures: vec!["подсказка: NotAttached".to_owned()],
         },
@@ -107,8 +107,8 @@ fn run_without_analysis_still_reports_the_harness_facts() {
     let report = summary(&observation);
     assert_eq!(report["real_steps"], 0);
     assert!(report.get("phases").is_none());
-    assert_eq!(report["haptics"]["queued"], 2);
-    assert_eq!(report["haptics"]["failed"]["count"], 1);
+    assert_eq!(report["prompts"]["queued"], 2);
+    assert_eq!(report["prompts"]["failed"]["count"], 1);
 }
 
 #[test]
@@ -137,7 +137,8 @@ fn details_start_with_a_legend_followed_by_rounded_rows() {
     let items = detail_items(&config, &observation);
 
     let legend = &items[0]["legend"];
-    assert_eq!(legend["columns"].as_array().map(Vec::len), Some(7));
+    assert_eq!(legend["columns"].as_array().map(Vec::len), Some(8));
+    assert_eq!(legend["columns"][7], "shown_ev");
     assert_eq!(legend["phases"][0]["cues_ms"][0], 2_000);
     assert_eq!(legend["flicker"]["2"], "mains_50hz");
     assert_eq!(legend["convergence"]["3"], "holding");
@@ -154,6 +155,7 @@ fn details_start_with_a_legend_followed_by_rounded_rows() {
     assert_eq!(row[1], 0.123, "округление до тысячных");
     assert_eq!(row[4], -0.05);
     assert_eq!(row[6], 2, "код мерцания 50 Гц");
+    assert_eq!(row[7], 0.0, "уровень показанного кадра из ряда");
 }
 
 /// Худший по размеру ступенька: все метрики есть и многозначные.
@@ -189,7 +191,7 @@ fn worst_case_summary_with_long_violations_still_fits_the_logcat_record() {
         phase.profile = ThreeAProfile::Video;
     }
     observation.analysis = Some(analysis);
-    observation.haptics.failures = (0..20)
+    observation.prompts.failures = (0..20)
         .map(|n| worst_case::long_reason(&format!("подсказка {n}")))
         .collect();
     observation.restore_failure = Some(worst_case::long_reason("возврат"));

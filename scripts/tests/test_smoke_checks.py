@@ -51,6 +51,7 @@ def platform_payload() -> dict:
                 {"pattern": "shutter", "realization": "primitive", "outcome": "queued"},
             ],
         },
+        "operator_prompt": {"show": "queued", "clear": "queued", "hold_ms": 2000},
         "frame_rate": {"requested_hz": 120.0, "result": "applied"},
     }
     return {"scenario": "platform", "status": "passed", "report": report}
@@ -235,6 +236,19 @@ class PlatformVerdictTest(unittest.TestCase):
     def test_unsupported_pattern_fails_and_is_named(self) -> None:
         verdict = self.failing_verdict(lambda report: report["haptics"]["patterns"][1].update(realization="unsupported"))
         self.assertIn("shutter", verdict.message)
+
+    def test_prompt_that_was_not_shown_fails_and_is_named(self) -> None:
+        verdict = self.failing_verdict(lambda report: report["operator_prompt"].update(show="not_attached"))
+        self.assertIn("operator_prompt.show", verdict.message)
+        self.assertIn("'not_attached'", verdict.message)
+
+    def test_prompt_that_was_not_cleared_fails(self) -> None:
+        verdict = self.failing_verdict(lambda report: report["operator_prompt"].update(clear="backpressure"))
+        self.assertIn("operator_prompt.clear", verdict.message)
+
+    def test_report_without_prompt_section_fails(self) -> None:
+        verdict = self.failing_verdict(lambda report: report.pop("operator_prompt"))
+        self.assertIn("нет operator_prompt", verdict.message)
 
     def test_frame_rate_not_applied_fails(self) -> None:
         verdict = self.failing_verdict(lambda report: report["frame_rate"].update(result="no_surface"))

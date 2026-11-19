@@ -83,9 +83,15 @@ pub struct EvStepConfig {
 pub struct LockStepConfig {
     /// Сколько ждать `AE_STATE = Locked` после блокировки, мс.
     pub settle_timeout_ms: u64,
-    /// Сколько держать блокировку под наблюдением, мс. В начале окна телефон вибрирует («закрывайте объектив
-    /// рукой»), в конце — второй сигнал: владельцу нужно среагировать на вибрацию и успеть закрыть и открыть
-    /// объектив внутри окна, поэтому окно длиннее прежних 2 с.
+    /// Сколько показывать отсчёт «приготовься: через N с, закрой объектив рукой» до начала блокировки, мс.
+    /// Команда блокировки уходит только ПОСЛЕ отсчёта: удержание начинается позже на эту величину, зато
+    /// владелец успевает подготовить руку. 0 — без отсчёта (удержание начинается сразу, как раньше).
+    pub prepare_countdown_ms: u64,
+    /// Шаг отсчёта «приготовься», мс: надпись обновляется раз в столько (целые секунды при 1000).
+    pub prepare_step_ms: u64,
+    /// Сколько держать блокировку под наблюдением, мс. В начале окна на экране «ЗАКРОЙ ОБЪЕКТИВ РУКОЙ», в конце —
+    /// «УБЕРИ РУКУ»: владельцу нужно среагировать на надпись и успеть закрыть и открыть объектив внутри окна,
+    /// поэтому окно длиннее прежних 2 с.
     pub hold_ms: u64,
     /// Допуск постоянства «экспозиция × ISO» под блокировкой, доля.
     pub constancy_tolerance_fraction: f64,
@@ -205,6 +211,8 @@ impl Default for LockStepConfig {
     fn default() -> Self {
         Self {
             settle_timeout_ms: 5 * SECOND_MS,
+            prepare_countdown_ms: 3 * SECOND_MS,
+            prepare_step_ms: SECOND_MS,
             hold_ms: 5 * SECOND_MS,
             constancy_tolerance_fraction: 0.01,
             unlock_timeout_ms: 3 * SECOND_MS,
@@ -248,6 +256,8 @@ pub enum ThreeAScenarioConfigError {
     BadEvBiases,
     #[error("three_a.bracket.exposures_ns: пусто или длиннее frame_limit ({limit})")]
     BadBracketLength { limit: usize },
+    #[error("three_a.lock.prepare_step_ms ({step_ms}) длиннее всего отсчёта prepare_countdown_ms ({countdown_ms})")]
+    PrepareStepLongerThanCountdown { step_ms: u64, countdown_ms: u64 },
     #[error("three_a.manual.long_shutter_ns должна быть больше shutter_ns")]
     LongShutterNotLonger,
 }
@@ -265,6 +275,7 @@ impl ThreeAScenarioConfig {
             ("ev.samples", self.ev.samples as u64),
             ("ev.collect_timeout_ms", self.ev.collect_timeout_ms),
             ("lock.settle_timeout_ms", self.lock.settle_timeout_ms),
+            ("lock.prepare_step_ms", self.lock.prepare_step_ms),
             ("lock.hold_ms", self.lock.hold_ms),
             ("lock.unlock_timeout_ms", self.lock.unlock_timeout_ms),
             (
@@ -292,6 +303,12 @@ impl ThreeAScenarioConfig {
             if !(value > 0.0 && value < 1.0) {
                 return Err(ThreeAScenarioConfigError::FractionOutOfRange { field, value });
             }
+        }
+        if self.lock.prepare_countdown_ms > 0 && self.lock.prepare_step_ms > self.lock.prepare_countdown_ms {
+            return Err(ThreeAScenarioConfigError::PrepareStepLongerThanCountdown {
+                step_ms: self.lock.prepare_step_ms,
+                countdown_ms: self.lock.prepare_countdown_ms,
+            });
         }
         let mired = self.awb.warn_mired_vs_hal;
         if !(mired.is_finite() && mired > 0.0) {

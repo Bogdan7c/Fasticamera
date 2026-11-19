@@ -9,7 +9,7 @@
 //! * числа округлены до тысячных (EV) и десятых (мс/с).
 //!
 //! Подробности: первая запись — легенда (колонки, коды сходимости и мерцания, моменты фаз и подсказок), дальше
-//! строки ряда `[t_ms, observed_ev, target_ev, sensor_ev, gain_ev, convergence, flicker]` с шагом
+//! строки ряда `[t_ms, observed_ev, target_ev, sensor_ev, gain_ev, convergence, flicker, shown_ev]` с шагом
 //! `detail_decimation_ms`.
 
 use serde_json::{Value, json};
@@ -40,7 +40,7 @@ pub const STEP_COLUMNS: [&str; 12] = [
 ];
 
 /// Колонки строки ряда в подробностях.
-const SERIES_COLUMNS: [&str; 7] = [
+const SERIES_COLUMNS: [&str; 8] = [
     "t_ms",
     "observed_ev",
     "target_ev",
@@ -48,6 +48,7 @@ const SERIES_COLUMNS: [&str; 7] = [
     "gain_ev",
     "convergence",
     "flicker",
+    "shown_ev",
 ];
 
 /// Округление до тысячных: EV с точностью глаза, строка короче.
@@ -74,9 +75,9 @@ pub fn summary(observation: &AeTraceObservation) -> Value {
         "ticks_without_ae": observation.ticks_without_ae,
         "time_to_streaming_ms": observation.timings.time_to_streaming_ms,
         "time_to_live_ms": observation.timings.time_to_live_ms,
-        "haptics": {
-            "queued": observation.haptics.queued,
-            "failed": bounded_list(&observation.haptics.failures),
+        "prompts": {
+            "queued": observation.prompts.queued,
+            "failed": bounded_list(&observation.prompts.failures),
         },
         "gain_limit_ev": round3(observation.gain_limit_ev),
         "restore_failure": observation.restore_failure,
@@ -197,7 +198,7 @@ fn legend(config: &AeTraceScenarioConfig, timeline: Option<&Timeline>) -> Value 
     json!({
         "legend": {
             "columns": SERIES_COLUMNS,
-            "unit": "EV = log2 от «выдержка × ISO» в с·ISO; экран = sensor_ev + gain_ev",
+            "unit": "EV = log2 от «выдержка × ISO» в с·ISO; экран = shown_ev + gain_ev (shown_ev — показанный кадр; sensor_ev — последний результат HAL, он впереди показа)",
             "decimation_ms": config.detail_decimation_ms,
             "convergence": {"0": "нет предложений", "1": "searching", "2": "settled", "3": "holding"},
             "flicker": flicker_codes(),
@@ -239,6 +240,7 @@ fn series_row(sample: &TraceSample) -> Value {
         sample
             .latest_flicker
             .map_or(Value::Null, |reading| json!(reading.code())),
+        opt3(sample.shown_ev),
     ])
 }
 

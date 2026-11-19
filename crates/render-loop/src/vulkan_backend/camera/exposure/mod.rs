@@ -178,6 +178,8 @@ pub struct ExposureRunner {
     /// Регион текущей области лежит вне сетки: ждать оценки бессмысленно.
     area_unavailable: bool,
     last_gain: ExposureGain,
+    /// Произведение показанного кадра, для которого посчитана `last_gain`.
+    last_frame_product: Option<ExposureProduct>,
     last_proposal: Option<ExposureProposal>,
     counters: RunnerCounters,
 }
@@ -211,6 +213,7 @@ impl ExposureRunner {
             cold_start_frames: 0,
             area_unavailable: false,
             last_gain: ExposureGain::UNITY,
+            last_frame_product: None,
             last_proposal: None,
             counters: RunnerCounters::default(),
         })
@@ -231,11 +234,13 @@ impl ExposureRunner {
             self.proposals.publish(proposal);
             self.last_proposal = Some(proposal);
         }
-        let gain = self.quantized(self.controller.display_gain(frame_exposure_product(passport)));
+        let frame_product = frame_exposure_product(passport);
+        let gain = self.quantized(self.controller.display_gain(frame_product));
         if gain != ExposureGain::UNITY {
             self.counters.frames_with_residual_gain += 1;
         }
         self.last_gain = gain;
+        self.last_frame_product = frame_product;
         ExposureFramePlan {
             stream,
             gain,
@@ -320,6 +325,7 @@ impl ExposureRunner {
             target_log2_seconds_iso: self.controller.target_log2(),
             observed_scene_log2_seconds_iso: self.controller.last_observed_log2(),
             display_gain_ev: self.last_gain.ev(),
+            displayed_frame_log2_seconds_iso: self.last_frame_product.map(|product| product.seconds_iso().log2()),
             convergence: self.last_proposal.map(|proposal| proposal.convergence),
             quality: self.last_proposal.map(|proposal| proposal.quality),
             last_proposal: self.last_proposal,

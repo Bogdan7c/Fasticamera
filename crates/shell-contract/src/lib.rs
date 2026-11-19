@@ -14,6 +14,7 @@
 //! * [`touch`], [`orientation`], [`permission`] — касания, физическая ориентация, разрешение камеры;
 //! * [`thermal`] и [`thermal_policy`] — показания тепла и единственный владелец тепловых решений;
 //! * [`haptics`], [`commands`] — намерения к платформе (вибрация, разрешение, частота кадров…);
+//! * [`operator_prompt`] — подсказка владельцу на экране (сигнал «сделай руками» вместо вибрации);
 //! * [`motion`] — гироскоп (кольцо последних секунд) и акселерометр для ориентации;
 //! * [`vsync`] — тики vsync и линии кадра платформы (пейсинг рендера);
 //! * [`diagnostics`] — счётчики шва для smoke-проверок;
@@ -29,6 +30,7 @@ pub mod event_queue;
 pub mod haptics;
 pub mod hardware_buffer;
 pub mod motion;
+pub mod operator_prompt;
 pub mod orientation;
 pub mod performance_hint;
 pub mod permission;

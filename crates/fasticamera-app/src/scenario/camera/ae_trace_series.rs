@@ -93,7 +93,10 @@ pub struct TraceSample {
     pub t_ms: u64,
     pub observed_ev: Option<f64>,
     pub target_ev: Option<f64>,
+    /// Уровень ПОСЛЕДНЕГО результата HAL (опережает показ на несколько кадров): уровень сенсора.
     pub sensor_ev: Option<f64>,
+    /// Уровень кадра, который сейчас показан (тот, для которого посчитана подтяжка `gain_ev`).
+    pub shown_ev: Option<f64>,
     pub gain_ev: f64,
     pub convergence: Option<ProposalConvergence>,
     /// Накопительный счётчик предложений нашего AE, опубликованных движку.
@@ -109,9 +112,11 @@ pub struct TraceSample {
 }
 
 impl TraceSample {
-    /// Уровень на экране: снятый сенсором плюс подтяжка ISP.
+    /// Уровень на экране: уровень ПОКАЗАННОГО кадра плюс его подтяжка ISP. Уровень сенсора (`sensor_ev`,
+    /// последний результат HAL) сюда не подходит: он на несколько кадров впереди показа, и сумма с подтяжкой
+    /// другого кадра на ступеньке света давала бы ложное перерегулирование.
     pub fn screen_ev(&self) -> Option<f64> {
-        self.sensor_ev.map(|sensor| sensor + self.gain_ev)
+        self.shown_ev.map(|shown| shown + self.gain_ev)
     }
 }
 
@@ -149,6 +154,7 @@ impl SampleTaker {
             observed_ev: diagnostics.observed_scene_log2_seconds_iso,
             target_ev: diagnostics.target_log2_seconds_iso,
             sensor_ev: self.latest_sensor_ev,
+            shown_ev: diagnostics.displayed_frame_log2_seconds_iso,
             gain_ev: f64::from(diagnostics.display_gain_ev),
             convergence: diagnostics.convergence,
             proposals_published: diagnostics.counters.proposals_published,

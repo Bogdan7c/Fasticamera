@@ -148,3 +148,70 @@ fn series_must_fit_the_schedule_and_the_window_must_hold_enough_samples() {
         Err(AeTraceScenarioConfigError::WindowTooThin { .. })
     ));
 }
+
+#[test]
+fn defaults_countdown_ends_before_the_next_cue_and_leaves_room_for_the_act_prompt() {
+    let config = AeTraceScenarioConfig::default();
+    assert_eq!(config.cue_countdown_steps, 3);
+    assert_eq!(config.cue_countdown_step_ms, 1_000);
+    assert_eq!(config.cue_display_ms, 2_000);
+    assert_eq!(config.countdown_ms(), 3_000);
+    assert!(config.countdown_ms() + config.cue_display_ms < config.cue_interval_ms);
+}
+
+#[test]
+fn countdown_that_does_not_fit_between_cues_is_rejected() {
+    // 5 с отсчёта + 2 с надписи не помещаются в период 6 с.
+    let too_long = AeTraceScenarioConfig {
+        cue_countdown_steps: 5,
+        ..AeTraceScenarioConfig::default()
+    };
+    assert_eq!(
+        too_long.validate(),
+        Err(AeTraceScenarioConfigError::CountdownTooLong {
+            countdown_ms: 5_000,
+            display_ms: 2_000,
+            interval_ms: 6_000,
+        })
+    );
+    // Длинная надпись подсказки тоже упирается в период.
+    let long_display = AeTraceScenarioConfig {
+        cue_display_ms: 3_000,
+        ..AeTraceScenarioConfig::default()
+    };
+    assert!(matches!(
+        long_display.validate(),
+        Err(AeTraceScenarioConfigError::CountdownTooLong { .. })
+    ));
+}
+
+#[test]
+fn countdown_can_be_switched_off_but_its_step_and_display_cannot_be_zero() {
+    let without_countdown = AeTraceScenarioConfig {
+        cue_countdown_steps: 0,
+        ..AeTraceScenarioConfig::default()
+    };
+    assert_eq!(without_countdown.validate(), Ok(()));
+    assert_eq!(without_countdown.countdown_ms(), 0);
+
+    let zero_step = AeTraceScenarioConfig {
+        cue_countdown_step_ms: 0,
+        ..AeTraceScenarioConfig::default()
+    };
+    assert_eq!(
+        zero_step.validate(),
+        Err(AeTraceScenarioConfigError::Zero {
+            field: "cue_countdown_step_ms"
+        })
+    );
+    let zero_display = AeTraceScenarioConfig {
+        cue_display_ms: 0,
+        ..AeTraceScenarioConfig::default()
+    };
+    assert_eq!(
+        zero_display.validate(),
+        Err(AeTraceScenarioConfigError::Zero {
+            field: "cue_display_ms"
+        })
+    );
+}

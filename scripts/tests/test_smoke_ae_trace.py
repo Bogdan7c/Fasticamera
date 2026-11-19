@@ -67,7 +67,7 @@ def ae_trace_report() -> dict:
         "ticks_without_ae": 0,
         "time_to_streaming_ms": 900,
         "time_to_live_ms": 1200,
-        "haptics": {"queued": 14, "failed": {"count": 0, "first": []}},
+        "prompts": {"queued": 14, "failed": {"count": 0, "first": []}},
         "gain_limit_ev": 0.5,
         "restore_failure": None,
         "step_cols": STEP_COLUMNS,
@@ -179,8 +179,8 @@ class AeTraceCheckTest(unittest.TestCase):
             "меньше 0.4": edited(set_row(0, 0, "step_ev", 0.3)),
             "подтяжка ISP": edited(lambda r: r.update(max_abs_gain_ev=0.7)),
             "не подтверждён": edited(lambda r: r["phases"][1].update(profile_confirmed=False)),
-            "подсказки владельцу не дошли": edited(
-                lambda r: r["haptics"].update(failed={"count": 2, "first": ["подсказка 1: Backpressure"]})
+            "владельцу не показан сигнал": edited(
+                lambda r: r["prompts"].update(failed={"count": 2, "first": ["подсказка 1: Backpressure"]})
             ),
             "не возвращён": edited(lambda r: r.update(restore_failure="очередь")),
             "ряд переполнен": edited(lambda r: r.update(dropped_samples=4)),

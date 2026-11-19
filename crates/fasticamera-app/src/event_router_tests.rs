@@ -69,6 +69,8 @@ struct FakeShell {
     haptics_played: Mutex<Vec<HapticPattern>>,
     /// Что отвечает хаптика; `None` — «поставлено в очередь» (обычный телефон с вибромотором).
     haptics_outcome: Mutex<Option<HapticOutcome>>,
+    /// Экран подсказок владельцу: что показано и снято, с настраиваемым ответом платформы.
+    prompts: Arc<crate::operator_prompt_fake::FakePrompts>,
     counters: Mutex<ShellCounters>,
     gyro_samples: Mutex<Vec<GyroSample>>,
     /// Подставная батарея; `None` — батареи нет (честный отказ замера тока).
@@ -319,6 +321,7 @@ fn build_harness_with_camera(
         services: ShellServices {
             commands: shell.clone(),
             haptics: shell.clone(),
+            operator_prompt: shell.prompts.clone(),
             motion: shell.clone(),
             thermal: shell.clone(),
             diagnostics: shell.clone(),
@@ -573,6 +576,7 @@ fn motion_scenario_measures_rate_from_sensor_timestamps() {
 fn platform_scenario_waits_for_surface_then_plays_all_patterns_in_order() {
     let mut harness = harness(ScenarioConfig {
         haptic_interval_ms: 1,
+        operator_prompt_hold_ms: 1,
         ..ScenarioConfig::default()
     });
     harness.start(Scenario::Platform);
@@ -604,6 +608,26 @@ fn platform_scenario_waits_for_surface_then_plays_all_patterns_in_order() {
     assert_eq!(report["thermal"]["listener"], "registered");
     assert_eq!(report["thermal"]["policy_pressure"], "elevated");
     assert_eq!(report["haptics"]["vibrator"], "present");
+    // Подсказка владельцу: показана ПОСЛЕ паттернов, снята до итога, исходы в отчёте.
+    let shown = harness.shell.prompts.shown();
+    assert_eq!(shown.len(), 1, "{shown:?}");
+    assert_eq!(shown[0].headline(), "ПРОВЕРКА ПОДСКАЗКИ");
+    assert_eq!(
+        report["operator_prompt"],
+        serde_json::json!({"show": "queued", "clear": "queued", "hold_ms": 1})
+    );
+    assert!(
+        harness
+            .output
+            .stage_names()
+            .contains(&"operator_prompt_shown".to_owned())
+    );
+    assert_eq!(
+        harness.shell.prompts.events().first(),
+        Some(&crate::operator_prompt_fake::PromptEvent::Shown(shown[0].clone())),
+        "первым делом показ, снятие после"
+    );
+    assert!(harness.shell.prompts.clear_count() >= 1);
     assert_eq!(
         report["haptics"]["patterns"][0],
         serde_json::json!({"pattern": "selection_tick", "outcome": "queued", "realization": "waveform"})
@@ -689,4 +713,43 @@ fn panicking_scenario_reports_panicked_and_router_keeps_handling_events() {
         headroom: ThermalHeadroom::Unavailable,
     }));
     assert_eq!(harness.policy.pressure(), ThermalPressure::Throttling);
+}
+
+#[test]
+fn platform_scenario_reports_a_prompt_the_phone_could_not_show() {
+    let mut harness = harness(ScenarioConfig {
+        haptic_interval_ms: 1,
+        operator_prompt_hold_ms: 1,
+        ..ScenarioConfig::default()
+    });
+    harness.shell.prompts.set_outcome(Some(CommandOutcome::NotAttached));
+    harness.start(Scenario::Platform);
+    harness.surface_created(1);
+    harness.deliver(ShellEvent::Resumed);
+    harness.run_until_result();
+    let result = harness.output.single_result();
+    assert_eq!(result["status"], "passed", "{result}");
+    assert_eq!(
+        result["report"]["operator_prompt"],
+        serde_json::json!({"show": "not_attached", "clear": "not_attached", "hold_ms": 1})
+    );
+}
+
+#[test]
+fn any_scenario_end_clears_the_operator_prompt_and_a_preempted_one_too() {
+    let mut harness = harness(ScenarioConfig::default());
+    harness.start(Scenario::Lifecycle);
+    harness.router.step(Duration::from_millis(1));
+    assert_eq!(
+        harness.shell.prompts.clear_count(),
+        0,
+        "пока сценарий идёт, подсказку не трогают"
+    );
+    harness.start(Scenario::Permission);
+    harness.router.step(Duration::from_millis(1));
+    assert_eq!(
+        harness.shell.prompts.clear_count(),
+        1,
+        "вытесненный сценарий закончился провалом, и подсказка снята до строки результата"
+    );
 }

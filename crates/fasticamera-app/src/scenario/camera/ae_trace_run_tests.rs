@@ -1,48 +1,16 @@
 //! Запись `ae-trace`: события расписания исполняются вовремя и один раз, профиль меняется на настоящем движке,
 //! сигналы владельцу попадают в журнал с исходом платформы, ряд пишется не чаще заданного шага.
 
-use std::sync::Mutex;
 use std::time::Duration;
 
 use camera_contract::three_a::ThreeAProfile;
-use shell_contract::haptics::{HapticOutcome, HapticRealizationKind};
+use shell_contract::commands::CommandOutcome;
+use shell_contract::operator_prompt::{OperatorPrompt, OperatorPromptKind};
 
 use super::super::ae_trace_test_support::diagnostics;
 use super::*;
 use crate::camera_test_support::{FakeCameraRig, WAIT};
-
-/// Вибромотор-запись: помнит, что сыграли, и отвечает заданным исходом.
-struct RecordingHaptics {
-    played: Mutex<Vec<HapticPattern>>,
-    outcome: HapticOutcome,
-}
-
-impl RecordingHaptics {
-    fn accepting() -> Self {
-        Self {
-            played: Mutex::new(Vec::new()),
-            outcome: HapticOutcome::Queued(HapticRealizationKind::Waveform),
-        }
-    }
-
-    fn rejecting(outcome: HapticOutcome) -> Self {
-        Self {
-            played: Mutex::new(Vec::new()),
-            outcome,
-        }
-    }
-
-    fn played(&self) -> Vec<HapticPattern> {
-        self.played.lock().expect("замок").clone()
-    }
-}
-
-impl HapticsService for RecordingHaptics {
-    fn play(&self, pattern: HapticPattern) -> HapticOutcome {
-        self.played.lock().expect("замок").push(pattern);
-        self.outcome
-    }
-}
+use crate::operator_prompt_fake::FakePrompts;
 
 fn config() -> AeTraceScenarioConfig {
     AeTraceScenarioConfig {
@@ -50,6 +18,10 @@ fn config() -> AeTraceScenarioConfig {
         video_phase_ms: 1_600,
         static_phase_ms: 800,
         cue_interval_ms: 800,
+        // Отсчёт 2 x 100 мс + надпись 200 мс помещаются в период 800 мс.
+        cue_countdown_steps: 2,
+        cue_countdown_step_ms: 100,
+        cue_display_ms: 200,
         static_warmup_ms: 100,
         sample_interval_ms: 50,
         step_window_ms: 300,
@@ -65,7 +37,7 @@ fn step(
     start: Instant,
     at_ms: u64,
     rig: &FakeCameraRig,
-    haptics: &RecordingHaptics,
+    prompts: &FakePrompts,
 ) -> Result<Advance, RunFailure> {
     let handle = rig.handle();
     let diag = diagnostics(Some(1.0), Some(1.0), 0.0, 0, Some(0));
@@ -75,7 +47,7 @@ fn step(
         start + Duration::from_millis(at_ms),
         RecordingServices {
             handle: &handle,
-            haptics,
+            prompts,
         },
         Readings {
             diagnostics: &diag,
@@ -91,32 +63,55 @@ fn profile_becomes(rig: &FakeCameraRig, expected: ThreeAProfile) -> bool {
 }
 
 #[test]
-fn phase_starts_switch_the_engine_profile_and_cues_play_a_single_tick() {
+fn phase_starts_switch_the_engine_profile_and_the_prompt_goes_prepare_act_wait() {
     let rig = FakeCameraRig::new();
     let config = config();
-    let haptics = RecordingHaptics::accepting();
+    let prompts = FakePrompts::default();
     let start = Instant::now();
     let mut tracing = Tracing::begin(&config, start);
 
     assert_eq!(
-        step(&mut tracing, &config, start, 0, &rig, &haptics),
+        step(&mut tracing, &config, start, 0, &rig, &prompts),
         Ok(Advance::Continue)
     );
-    assert_eq!(haptics.played(), vec![HapticPattern::LightImpact], "старт фото");
+    assert_eq!(prompts.shown().len(), 1, "старт фото");
+    assert_eq!(prompts.shown()[0].headline(), "ФАЗА 1 ИЗ 3: ФОТО");
     assert!(profile_becomes(&rig, ThreeAProfile::Photo));
 
-    step(&mut tracing, &config, start, 799, &rig, &haptics).expect("шаг");
-    assert_eq!(haptics.played().len(), 1, "до подсказки ничего нового");
-    step(&mut tracing, &config, start, 800, &rig, &haptics).expect("шаг");
+    step(&mut tracing, &config, start, 599, &rig, &prompts).expect("шаг");
+    assert_eq!(prompts.shown().len(), 1, "до отсчёта ничего нового");
+
+    // Отсчёт 2 -> 1 -> подсказка -> возврат «жди»: подсказка висит как состояние, каждая сменяет прежнюю.
+    step(&mut tracing, &config, start, 600, &rig, &prompts).expect("шаг");
+    step(&mut tracing, &config, start, 700, &rig, &prompts).expect("шаг");
+    step(&mut tracing, &config, start, 800, &rig, &prompts).expect("шаг");
+    step(&mut tracing, &config, start, 1_000, &rig, &prompts).expect("шаг");
+    let shown = prompts.shown();
     assert_eq!(
-        haptics.played(),
-        vec![HapticPattern::LightImpact, HapticPattern::SelectionTick]
+        shown.iter().map(|prompt| prompt.headline()).collect::<Vec<_>>(),
+        vec![
+            "ФАЗА 1 ИЗ 3: ФОТО",
+            "ПРИГОТОВЬСЯ… 2",
+            "ПРИГОТОВЬСЯ… 1",
+            "ЩЁЛКНИ ЛАМПОЙ",
+            "ЖДИ СЛЕДУЮЩЕЙ СТУПЕНЬКИ",
+        ]
+    );
+    assert_eq!(
+        prompts.shown_kinds(),
+        vec![
+            OperatorPromptKind::Info,
+            OperatorPromptKind::Prepare,
+            OperatorPromptKind::Prepare,
+            OperatorPromptKind::Act,
+            OperatorPromptKind::Info,
+        ]
     );
 
-    step(&mut tracing, &config, start, 1_600, &rig, &haptics).expect("шаг");
+    step(&mut tracing, &config, start, 1_600, &rig, &prompts).expect("шаг");
     assert_eq!(
-        haptics.played().last(),
-        Some(&HapticPattern::MediumImpact),
+        prompts.shown().last().map(|prompt| prompt.headline().to_owned()),
+        Some("ФАЗА 2 ИЗ 3: ВИДЕО".to_owned()),
         "старт видео"
     );
     assert!(
@@ -125,14 +120,14 @@ fn phase_starts_switch_the_engine_profile_and_cues_play_a_single_tick() {
     );
 
     // Повторный шаг в тот же момент не повторяет события.
-    let before = haptics.played().len();
-    step(&mut tracing, &config, start, 1_600, &rig, &haptics).expect("шаг");
-    assert_eq!(haptics.played().len(), before);
+    let before = prompts.shown().len();
+    step(&mut tracing, &config, start, 1_600, &rig, &prompts).expect("шаг");
+    assert_eq!(prompts.shown().len(), before);
 
-    step(&mut tracing, &config, start, 3_200, &rig, &haptics).expect("шаг");
+    step(&mut tracing, &config, start, 3_200, &rig, &prompts).expect("шаг");
     assert_eq!(
-        haptics.played().last(),
-        Some(&HapticPattern::HeavyImpact),
+        prompts.shown().last().map(|prompt| prompt.headline().to_owned()),
+        Some("ФАЗА 3 ИЗ 3: СТАТИКА".to_owned()),
         "старт static"
     );
     assert!(profile_becomes(&rig, ThreeAProfile::Photo), "static снова на «Фото»");
@@ -142,16 +137,16 @@ fn phase_starts_switch_the_engine_profile_and_cues_play_a_single_tick() {
 fn schedule_finishes_exactly_at_the_end_and_the_outcome_carries_the_series() {
     let rig = FakeCameraRig::new();
     let config = config();
-    let haptics = RecordingHaptics::accepting();
+    let prompts = FakePrompts::default();
     let start = Instant::now();
     let mut tracing = Tracing::begin(&config, start);
 
     assert_eq!(
-        step(&mut tracing, &config, start, 3_950, &rig, &haptics),
+        step(&mut tracing, &config, start, 3_950, &rig, &prompts),
         Ok(Advance::Continue)
     );
     assert_eq!(
-        step(&mut tracing, &config, start, 4_000, &rig, &haptics),
+        step(&mut tracing, &config, start, 4_000, &rig, &prompts),
         Ok(Advance::ScheduleFinished)
     );
 
@@ -159,20 +154,47 @@ fn schedule_finishes_exactly_at_the_end_and_the_outcome_carries_the_series() {
     assert_eq!(outcome.timeline.total_ms(), 4_000);
     assert_eq!(outcome.series.len(), 2, "шаги через 50 мс — два отсчёта");
     assert_eq!(outcome.series[1].t_ms, 4_000);
-    // Пропущенные события догнаны одним шагом: 3 старта фаз и 2 подсказки.
-    assert_eq!(haptics.played().len(), 5);
+    // Пропущенные события догнаны одним шагом: 3 старта фаз и по 4 события (2 отсчёта, подсказка, «жди»)
+    // на каждую из двух подсказок (по одной в фазах фото и видео: период 800 мс в фазе 1 600 мс).
+    assert_eq!(prompts.shown().len(), 3 + 2 * 4);
+    assert_eq!(outcome.prompts.queued, 11, "все принятые платформой записаны в журнал");
+}
+
+#[test]
+fn cue_moments_stay_where_the_vibration_used_to_be() {
+    // Подсказка «ЩЁЛКНИ ЛАМПОЙ» должна наступать ровно в момент подсказки расписания, а не сдвигаться отсчётом.
+    let rig = FakeCameraRig::new();
+    let config = config();
+    let prompts = FakePrompts::default();
+    let start = Instant::now();
+    let mut tracing = Tracing::begin(&config, start);
+
+    step(&mut tracing, &config, start, 799, &rig, &prompts).expect("шаг");
+    assert!(
+        prompts
+            .shown()
+            .iter()
+            .all(|prompt| prompt.kind() != OperatorPromptKind::Act),
+        "за миллисекунду до момента подсказки её ещё нет"
+    );
+    step(&mut tracing, &config, start, 800, &rig, &prompts).expect("шаг");
+    assert_eq!(
+        prompts.shown().last().map(OperatorPrompt::kind),
+        Some(OperatorPromptKind::Act)
+    );
+    assert_eq!(config.cue_interval_ms, 800);
 }
 
 #[test]
 fn samples_are_written_no_more_often_than_the_configured_interval() {
     let rig = FakeCameraRig::new();
     let config = config();
-    let haptics = RecordingHaptics::accepting();
+    let prompts = FakePrompts::default();
     let start = Instant::now();
     let mut tracing = Tracing::begin(&config, start);
 
     for at_ms in (0..=200).step_by(10) {
-        step(&mut tracing, &config, start, at_ms, &rig, &haptics).expect("шаг");
+        step(&mut tracing, &config, start, at_ms, &rig, &prompts).expect("шаг");
     }
 
     let times: Vec<u64> = tracing.finish().series.iter().map(|sample| sample.t_ms).collect();
@@ -180,24 +202,26 @@ fn samples_are_written_no_more_often_than_the_configured_interval() {
 }
 
 #[test]
-fn undelivered_signals_are_recorded_with_the_platform_outcome() {
+fn undelivered_prompts_are_recorded_with_the_platform_outcome() {
     let rig = FakeCameraRig::new();
     let config = config();
-    let haptics = RecordingHaptics::rejecting(HapticOutcome::NotAttached);
+    let prompts = FakePrompts::default();
+    prompts.set_outcome(Some(CommandOutcome::NotAttached));
     let start = Instant::now();
     let mut tracing = Tracing::begin(&config, start);
 
-    step(&mut tracing, &config, start, 800, &rig, &haptics).expect("шаг: сигнал не доставлен, но прогон идёт");
+    step(&mut tracing, &config, start, 800, &rig, &prompts).expect("шаг: подсказка не доставлена, но прогон идёт");
 
     let outcome = tracing.finish();
-    assert_eq!(outcome.haptics.queued, 0);
-    assert_eq!(outcome.haptics.failures.len(), 2, "старт фото и первая подсказка");
+    assert_eq!(outcome.prompts.queued, 0);
+    // Старт фото, два шага отсчёта и сама подсказка.
+    assert_eq!(outcome.prompts.failures.len(), 4, "{:?}", outcome.prompts.failures);
     assert!(
-        outcome.haptics.failures[1].contains("подсказка 1 фазы photo"),
+        outcome.prompts.failures[3].contains("подсказка 1 фазы photo"),
         "{:?}",
-        outcome.haptics.failures
+        outcome.prompts.failures
     );
-    assert!(outcome.haptics.failures[1].contains("NotAttached"));
+    assert!(outcome.prompts.failures[3].contains("NotAttached"));
 }
 
 #[test]

@@ -139,9 +139,9 @@ def _step_problems(report: dict) -> list[str]:
 def _harness_problems(report: dict) -> list[str]:
     """Поломки стенда в отчёте: подсказки, возврат профиля, переполнение ряда."""
     problems = []
-    failed = _dict(_dict(report.get("haptics")).get("failed"))
+    failed = _dict(_dict(report.get("prompts")).get("failed"))
     if failed.get("count") != 0:
-        problems.append(f"подсказки владельцу не дошли: {failed.get('first')!r}")
+        problems.append(f"владельцу не показан сигнал на экране: {failed.get('first')!r}")
     if report.get("restore_failure"):
         problems.append(f"профиль «Фото» не возвращён: {report.get('restore_failure')}")
     if report.get("dropped_samples") != 0:
@@ -180,7 +180,7 @@ def format_summary_table(report: dict) -> str:
         "",
         "ae-trace: итоги",
         f"  настоящих ступенек: {report.get('real_steps')}; отсчётов ряда: {report.get('samples')}; "
-        f"подсказок доставлено: {_dict(report.get('haptics')).get('queued')}",
+        f"подсказок показано: {_dict(report.get('prompts')).get('queued')}",
         f"  подтяжка ISP: максимум {_number(report.get('max_abs_gain_ev'), 3)} EV при пределе {_number(report.get('gain_limit_ev'), 3)} EV",
         "",
         f"  {'фаза':<6} {'профиль':<7} {'настоящих':>9} {'пропущено':>9} {'экран, мс':>10} {'сенсор, мс':>10} "

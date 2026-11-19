@@ -4,8 +4,9 @@
 //! ([`PlanBasis`]) и контекст движка, выход — решение. Поэтому её можно звать для проверки
 //! кандидатов (`validate`) и многократно, не боясь сдвинуть следующие планы.
 
-use camera_contract::auto_exposure::ExposureProduct;
+use camera_contract::auto_exposure::{ExposureProduct, ProductReach};
 use camera_contract::control::{Control, ExposureTime, Iso};
+use std::time::Duration;
 
 use super::flicker::FlickerProtection;
 use super::split::{Anchor, Split, SplitLimits, split};
@@ -74,8 +75,34 @@ pub(super) fn plan_exposure(
     Ok(ExposureDecision {
         plan: ExposurePlan::Sensor { exposure_time, iso },
         adjustments,
+        reach: reachable_products(anchor, limits, basis.flicker.period()),
     })
 }
+
+/// Произведения, между которыми `split` вообще может поставить запрос при этих закреплениях,
+/// пределах и защите от мерцания.
+///
+/// Границы получаем тем же `split`, что строит сам запрос (крайние запросы к нему), чтобы правила
+/// предела не жили в двух местах. Крайности — заведомо за любыми реальными пределами камеры.
+fn reachable_products(anchor: Anchor, limits: SplitLimits, flicker_period: Option<Duration>) -> ProductReach {
+    let product_of = |requested_seconds_iso: f64| {
+        let divided = split(requested_seconds_iso, anchor, limits, flicker_period);
+        ExposureProduct::from_seconds_iso(divided.product_seconds_iso()).ok()
+    };
+    match (
+        product_of(UNREACHABLY_DARK_SECONDS_ISO),
+        product_of(UNREACHABLY_BRIGHT_SECONDS_ISO),
+    ) {
+        (Some(darkest), Some(brightest)) => ProductReach::Between { darkest, brightest },
+        // Нелепый предел (нулевое произведение): ограничивать подтяжку нечем.
+        _ => ProductReach::Unbounded,
+    }
+}
+
+/// Запрос, темнее которого не бывает ни у одной камеры (1 нс·ISO): `split` вернёт самое тёмное.
+const UNREACHABLY_DARK_SECONDS_ISO: f64 = 1.0e-9;
+/// Запрос, светлее которого не бывает ни у одной камеры (1e9 с·ISO): `split` вернёт самое светлое.
+const UNREACHABLY_BRIGHT_SECONDS_ISO: f64 = 1.0e9;
 
 /// Поправка «цель не достигнута», если нехватка выше допуска.
 ///

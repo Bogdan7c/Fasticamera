@@ -301,8 +301,8 @@ impl AutoExposureController {
 
     /// Остаточная подтяжка ISP для кадра с произведением `frame_product` (из его результата).
     ///
-    /// `Manual`: `D = applied.product`; иначе `D = T · 2^bias · 2^shortfall_ev`, где `T` — сглаженная
-    /// цель. `k = D / A`, `|log2 k| ≤ max_residual_ev`. Нет данных (кадра, указания, цели) — `UNITY`.
+    /// `Manual`: `D = applied.product`; иначе `D = clamp(T · 2^bias, достижимое)`, где `T` — сглаженная
+    /// цель, «достижимое» — `applied.reach`. `k = D / A`, `|log2 k| ≤ max_residual_ev`. Нет данных (кадра, указания, цели) — `UNITY`.
     pub fn display_gain(&self, frame_product: Option<ExposureProduct>) -> ExposureGain {
         let (Some(frame_product), Some(applied)) = (frame_product, self.directive.applied) else {
             return ExposureGain::UNITY;
@@ -351,7 +351,12 @@ impl AutoExposureController {
         match self.directive.authority {
             ExposureAuthority::Manual => Some(applied.product.seconds_iso().log2()),
             ExposureAuthority::Automatic | ExposureAuthority::SemiAutomatic => {
-                Some(self.smoothed_log2? + f64::from(self.directive.bias.ev()) + f64::from(applied.shortfall_ev))
+                // Цель с компенсацией, срезанная до достижимого запросом. Достижимость — свойство
+                // указания (не кадра), поэтому не отстаёт от цели: на ступеньке за предел сенсора подтяжка
+                // не тянется к недостижимому и не перелетает, когда запрос догонит. Нехватку
+                // `applied.shortfall_ev` НЕ берём: она посчитана для цели прошлого поколения.
+                let requested_log2 = self.smoothed_log2? + f64::from(self.directive.bias.ev());
+                Some(applied.reach.clamp_log2(requested_log2))
             }
         }
     }
@@ -444,3 +449,7 @@ fn lock_phase_for(lock: AeAfLock) -> LockPhase {
 #[cfg(test)]
 #[path = "controller_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "controller_reach_tests.rs"]
+mod reach_tests;

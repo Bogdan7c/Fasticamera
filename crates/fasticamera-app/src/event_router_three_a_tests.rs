@@ -50,6 +50,7 @@ fn ae_diagnostics(scene_seconds_iso: f64) -> AutoExposureDiagnostics {
         target_log2_seconds_iso: None,
         observed_scene_log2_seconds_iso: Some(scene_seconds_iso.log2()),
         display_gain_ev: 0.0,
+        displayed_frame_log2_seconds_iso: None,
         convergence: None,
         quality: None,
         last_proposal: None,
@@ -154,6 +155,9 @@ fn short_own_config(tune: impl FnOnce(&mut ThreeAScenarioConfig)) -> CameraConfi
     three_a.ev.samples = 5;
     three_a.ev.collect_timeout_ms = 800;
     three_a.lock.settle_timeout_ms = 800;
+    // Отсчёт «приготовься» короткий (2 шага по 100 мс), чтобы тест шёл секунды.
+    three_a.lock.prepare_countdown_ms = 200;
+    three_a.lock.prepare_step_ms = 100;
     three_a.lock.hold_ms = 200;
     three_a.lock.unlock_timeout_ms = 800;
     three_a.bracket.result_timeout_ms = 1_500;

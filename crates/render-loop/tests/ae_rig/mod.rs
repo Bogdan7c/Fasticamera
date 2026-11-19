@@ -412,6 +412,7 @@ impl AeRig {
                 .map(|product| AppliedExposure {
                     product,
                     shortfall_ev: 0.0,
+                    reach: camera_contract::auto_exposure::ProductReach::Unbounded,
                 }),
         });
     }

@@ -20,7 +20,7 @@ import android.view.WindowManager
  * переводят вызов в API платформы. Вибромотор потокобезопасен и вызывается сразу; операции с
  * окном и Activity переносятся на главный поток, а их отказ сообщается в Rust кодом `COMMAND_*`.
  */
-class ShellPlatform(private val activity: Activity) {
+class ShellPlatform(private val activity: Activity, private val promptView: OperatorPromptView) {
     private val vibrator: Vibrator =
         activity.getSystemService(VibratorManager::class.java).defaultVibrator
 
@@ -107,6 +107,12 @@ class ShellPlatform(private val activity: Activity) {
         }
     }
 
+    /** Подсказка владельцу: тексты и вид готовит Rust, здесь только показ (см. [OperatorPromptView]). */
+    fun showOperatorPrompt(headline: String, detail: String, kind: Int) =
+        onMainThread(COMMAND_SHOW_OPERATOR_PROMPT) { promptView.show(headline, detail, kind) }
+
+    fun clearOperatorPrompt() = onMainThread(COMMAND_CLEAR_OPERATOR_PROMPT) { promptView.clear() }
+
     /** Выполняет [action] на главном потоке; исключение уходит в Rust как отказ команды [command]. */
     private fun onMainThread(command: Int, action: () -> Unit) {
         activity.runOnUiThread {
@@ -124,6 +130,8 @@ class ShellPlatform(private val activity: Activity) {
         const val COMMAND_PLAY_HAPTIC = 2
         const val COMMAND_OPEN_SYSTEM_GALLERY = 3
         const val COMMAND_KEEP_SCREEN_ON = 4
+        const val COMMAND_SHOW_OPERATOR_PROMPT = 5
+        const val COMMAND_CLEAR_OPERATOR_PROMPT = 6
 
         /** Версия раскладки `readBatterySnapshot` — контракт с `BATTERY_SNAPSHOT_LAYOUT_VERSION` в Rust. */
         const val BATTERY_SNAPSHOT_LAYOUT_VERSION = 1L

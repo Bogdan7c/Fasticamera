@@ -93,8 +93,9 @@ fn healthy() -> ThreeAObservation {
         max_product_deviation: Some(0.0),
         observed_scene_range_ev: None,
         product_frozen_after_frames: None,
-        haptic_hold_start: None,
-        haptic_hold_end: None,
+        prompt_prepare: None,
+        prompt_hold_start: None,
+        prompt_hold_end: None,
         back_to_continuous: true,
     });
     observation.bracket = Some(BracketRunReport {

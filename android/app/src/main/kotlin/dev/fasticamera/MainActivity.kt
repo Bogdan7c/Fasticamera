@@ -37,9 +37,12 @@ class MainActivity : Activity() {
             )
             insets
         }
+        // Плашка подсказок владельцу (внизу, GONE в покое) поверх видоискателя и строки статуса.
+        val promptView = OperatorPromptView(this)
         setContentView(FrameLayout(this).apply {
             addView(surfaceView)
             addView(statusView)
+            addView(promptView)
         })
         // После setContentView: контроллер панелей живёт у DecorView, а её создаёт setContentView.
         enterFullscreen()
@@ -47,7 +50,7 @@ class MainActivity : Activity() {
         val initReport = NativeBridge.initialize(NativeConfig.fromIntent(intent).toJson())
         logIfInitFailed(initReport)
 
-        platform = ShellPlatform(this)
+        platform = ShellPlatform(this, promptView)
         ShellBridge.nativeAttach(platform, packageName)
         surfaceView.holder.addCallback(SurfaceCallbacks)
         surfaceView.setOnTouchListener { _, event ->

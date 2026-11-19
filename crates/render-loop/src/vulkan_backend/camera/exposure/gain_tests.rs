@@ -7,7 +7,7 @@
     reason = "в тестах падение — сигнал провала"
 )]
 
-use camera_contract::auto_exposure::{AppliedExposure, ProposalConvergence};
+use camera_contract::auto_exposure::{AppliedExposure, ProductReach, ProposalConvergence};
 use camera_contract::control::ExposureBias;
 use camera_contract::three_a::AeAfLock;
 
@@ -83,6 +83,7 @@ fn applied(product: f64, shortfall_ev: f32) -> Option<AppliedExposure> {
     Some(AppliedExposure {
         product: ExposureProduct::from_seconds_iso(product).expect("произведение"),
         shortfall_ev,
+        reach: ProductReach::Unbounded,
     })
 }
 
@@ -97,15 +98,44 @@ fn automatic_gain_closes_the_gap_between_the_target_and_the_frame_the_sensor_sti
         bias: ExposureBias::from_ev(0.2).expect("компенсация"),
         ..ExposureDirective::DEFAULT
     });
-    // Сенсор показывает 3,5 с·ISO: до цели (с компенсацией и нехваткой пределов) ещё ~0,29 EV.
+    // Сенсор показывает 3,5 с·ISO: до цели с компенсацией (нехватка прошлого поколения не берётся) ещё ~0,39 EV.
     let plan = harness.step(Some(exposure_product(3.5)), &uniform_scene(DARK_VALUE));
-    let expected_ev = target_ev + 0.2 - 0.1 - 3.5_f64.log2();
+    let expected_ev = target_ev + 0.2 - 3.5_f64.log2();
     assert!(
-        (f64::from(plan.gain.ev()) - expected_ev).abs() < 0.01,
+        // Подтяжка квантуется шагом 0,125 EV: ошибка не больше половины шага.
+        (f64::from(plan.gain.ev()) - expected_ev).abs() < 0.0625 + 1e-6,
         "подтяжка {} EV против {expected_ev}",
         plan.gain.ev()
     );
-    assert_eq!(harness.runner.diagnostics().display_gain_ev, plan.gain.ev());
+    let diagnostics = harness.runner.diagnostics();
+    assert_eq!(diagnostics.display_gain_ev, plan.gain.ev());
+    // Диагностика называет кадр, для которого посчитана подтяжка: экран = его уровень + подтяжка.
+    let shown = diagnostics.displayed_frame_log2_seconds_iso.expect("показанный кадр");
+    assert!((shown - 3.5_f64.log2()).abs() < 1e-9, "{shown}");
+}
+
+#[test]
+fn gain_is_capped_by_the_reach_of_the_directive_and_not_by_the_stale_shortfall() {
+    let mut harness = Harness::new();
+    harness.steps(3, Some(UNIT_EXPOSURE), &uniform_scene(DARK_VALUE));
+    // Цель ≈ 3,99 с·ISO, а сенсор достаёт только до 2 с·ISO; нехватка в указании устарела (0).
+    harness.directives.publish(ExposureDirective {
+        applied: Some(AppliedExposure {
+            product: ExposureProduct::from_seconds_iso(2.0).expect("произведение"),
+            shortfall_ev: 0.0,
+            reach: ProductReach::Between {
+                darkest: ExposureProduct::from_seconds_iso(0.01).expect("произведение"),
+                brightest: ExposureProduct::from_seconds_iso(2.0).expect("произведение"),
+            },
+        }),
+        ..ExposureDirective::DEFAULT
+    });
+    let plan = harness.step(Some(exposure_product(2.0)), &uniform_scene(DARK_VALUE));
+    assert!(
+        plan.gain.ev().abs() < 1e-4,
+        "на пределе сенсора подтяжки нет: {}",
+        plan.gain.ev()
+    );
 }
 
 #[test]

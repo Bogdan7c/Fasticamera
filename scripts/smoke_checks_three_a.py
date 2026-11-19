@@ -182,7 +182,7 @@ def _lock_problems(report: dict) -> list[str]:
 def _lock_evidence_problems(lock: dict) -> list[str]:
     """Свидетельства окна удержания нашего AE (08c): поля есть и правильного типа. Значения не судим."""
     problems = []
-    for key in ("observed_scene_range_ev", "product_frozen_after_frames", "haptic_hold_start", "haptic_hold_end"):
+    for key in ("observed_scene_range_ev", "product_frozen_after_frames", "prompt_prepare", "prompt_hold_start", "prompt_hold_end"):
         if key not in lock:
             problems.append(f"в отчёте блокировки нет поля {key}")
     scene_range = lock.get("observed_scene_range_ev")
@@ -191,10 +191,13 @@ def _lock_evidence_problems(lock: dict) -> list[str]:
     frozen = lock.get("product_frozen_after_frames")
     if frozen is not None and not (_is_number(frozen) and float(frozen).is_integer() and frozen >= 0):
         problems.append(f"product_frozen_after_frames {frozen!r}: ожидалось неотрицательное целое или null")
-    for key in ("haptic_hold_start", "haptic_hold_end"):
-        cue = lock.get(key)
-        if key in lock and not (isinstance(cue, dict) and isinstance(cue.get("outcome"), str)):
-            problems.append(f"{key} {cue!r}: ожидался итог вибрации с полем outcome")
+    for key in ("prompt_hold_start", "prompt_hold_end"):
+        outcome = lock.get(key)
+        if key in lock and not isinstance(outcome, str):
+            problems.append(f"{key} {outcome!r}: ожидался итог показа подсказки (строка, например 'queued')")
+    prepare = lock.get("prompt_prepare")
+    if "prompt_prepare" in lock and prepare is not None and not isinstance(prepare, str):
+        problems.append(f"prompt_prepare {prepare!r}: ожидался итог показа отсчёта (строка) или null, если отсчёта не было")
     return problems
 
 
@@ -315,8 +318,15 @@ def three_a_notes(result: dict) -> list[str]:
         notes.append(f"3a: выдержка × ISO замерла через {frozen:g} кадров после команды блокировки")
     else:
         notes.append("3a: выдержка × ISO не замерла до конца окна удержания (product_frozen_after_frames = null)")
-    for key, moment in (("haptic_hold_start", "начала"), ("haptic_hold_end", "конца")):
-        cue = _dict(lock.get(key))
-        if cue.get("outcome") != "queued":
-            notes.append(f"3a: вибрация {moment} окна не сыграна ({cue.get('outcome')!r}): владелец мог не заметить сигнал")
+    for key, moment in (
+        ("prompt_prepare", "отсчёт перед окном"),
+        ("prompt_hold_start", "подсказка начала окна"),
+        ("prompt_hold_end", "подсказка конца окна"),
+    ):
+        outcome = lock.get(key)
+        # null у отсчёта — его не было по конфигу (prepare_countdown_ms = 0), это не отказ.
+        if key == "prompt_prepare" and outcome is None:
+            continue
+        if outcome != "queued":
+            notes.append(f"3a: на экране не показано — {moment} ({outcome!r}): владелец мог не увидеть сигнал")
     return notes

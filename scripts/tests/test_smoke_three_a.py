@@ -73,8 +73,9 @@ def own_ae_report() -> dict:
         max_product_deviation=0.0,
         observed_scene_range_ev=2.4,
         product_frozen_after_frames=9,
-        haptic_hold_start={"outcome": "queued", "realization": "waveform"},
-        haptic_hold_end={"outcome": "queued", "realization": "waveform"},
+        prompt_prepare="queued",
+        prompt_hold_start="queued",
+        prompt_hold_end="queued",
     )
     report["own_ae"] = {
         "progress_at_end": {"kind": "settled"},
@@ -310,7 +311,7 @@ class LockEvidenceTest(unittest.TestCase):
         return report
 
     def test_each_missing_or_malformed_evidence_field_fails(self) -> None:
-        for key in ("observed_scene_range_ev", "product_frozen_after_frames", "haptic_hold_start", "haptic_hold_end"):
+        for key in ("observed_scene_range_ev", "product_frozen_after_frames", "prompt_prepare", "prompt_hold_start", "prompt_hold_end"):
             with self.subTest(f"нет {key}"):
                 report = own_ae_report()
                 del report["lock"][key]
@@ -320,7 +321,8 @@ class LockEvidenceTest(unittest.TestCase):
         malformed = {
             "observed_scene_range_ev": "много",
             "product_frozen_after_frames": 2.5,
-            "haptic_hold_start": "queued",
+            "prompt_hold_start": {"outcome": "queued"},
+            "prompt_prepare": 5,
         }
         for key, value in malformed.items():
             with self.subTest(f"{key}={value!r}"):
@@ -349,11 +351,20 @@ class LockEvidenceTest(unittest.TestCase):
         self.assertTrue(any("не получен" in note for note in verdict.notes), verdict.notes)
         self.assertTrue(any("не замерла" in note for note in verdict.notes), verdict.notes)
 
-    def test_unplayed_haptic_cue_is_noted(self) -> None:
-        verdict = verdict_of(self._lock_edited(haptic_hold_start={"outcome": "unsupported"}))
+    def test_unshown_prompt_is_noted_with_its_moment(self) -> None:
+        verdict = verdict_of(self._lock_edited(prompt_hold_start="not_attached"))
         self.assertEqual(verdict.exit_code, smoke_wait.EXIT_OK, verdict.message)
-        self.assertTrue(any("вибрация начала окна не сыграна" in note for note in verdict.notes), verdict.notes)
-        self.assertFalse(any("вибрация конца" in note for note in verdict.notes), verdict.notes)
+        self.assertTrue(
+            any("на экране не показано — подсказка начала окна" in note for note in verdict.notes), verdict.notes
+        )
+        self.assertFalse(any("подсказка конца окна" in note for note in verdict.notes), verdict.notes)
+
+    def test_unshown_countdown_is_noted_but_a_missing_countdown_is_not(self) -> None:
+        verdict = verdict_of(self._lock_edited(prompt_prepare="backpressure"))
+        self.assertTrue(any("на экране не показано — отсчёт перед окном" in note for note in verdict.notes), verdict.notes)
+        without_countdown = verdict_of(self._lock_edited(prompt_prepare=None))
+        self.assertEqual(without_countdown.exit_code, smoke_wait.EXIT_OK, without_countdown.message)
+        self.assertFalse(any("отсчёт" in note for note in without_countdown.notes), without_countdown.notes)
 
     def test_vendor_run_has_no_lock_notes(self) -> None:
         self.assertEqual(verdict_of(three_a_report()).notes, ())
