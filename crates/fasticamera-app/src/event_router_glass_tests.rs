@@ -14,9 +14,14 @@ use shell_contract::gravity::{GravitySample, GravityVector};
 /// Окно наблюдения в тестах, мс.
 const WINDOW_MS: u64 = 300;
 
+/// Кадров UI прогрева в тестах (подставной рендер рисует кадр UI на каждый показанный кадр камеры).
+const WARMUP_FRAMES: u64 = 8;
+
 fn glass_config() -> CameraConfig {
     let mut config = short_config(|_, _| {});
     config.scenarios.glass.duration_ms = WINDOW_MS;
+    config.scenarios.glass.warmup_ui_frames = WARMUP_FRAMES;
+    config.scenarios.glass.warmup_timeout_ms = 200;
     config
 }
 
@@ -111,10 +116,19 @@ fn glass_installs_the_showcase_shows_it_for_the_window_and_removes_it_before_the
         "{names:?}"
     );
     let position = |name: &str| names.iter().position(|stage| stage == name).expect(name);
-    assert!(position("streaming") < position("glass_live"), "{names:?}");
+    assert!(position("streaming") < position("glass_warmup"), "{names:?}");
+    assert!(position("glass_warmup") < position("glass_live"), "{names:?}");
     assert!(position("glass_live") < position("detail_glass"), "{names:?}");
     let live = &stages_named(&harness, "glass_live")[0];
     assert_eq!(live["duration_ms"], WINDOW_MS);
+    // glass_live выдан только после прогрева: UI нарисовал не меньше warmup_ui_frames кадров.
+    assert!(
+        live["warmup_frames"].as_u64().expect("кадры прогрева") >= WARMUP_FRAMES,
+        "{live}"
+    );
+    assert_eq!(report["warmup"]["frames"], live["warmup_frames"]);
+    // Кадры прогрева в окно не входят: рисовано в окне меньше, чем всего с установки.
+    assert!(report["overlay"]["frames_drawn"].as_u64().expect("кадры UI") > 0);
     assert_fits_logcat(&harness, &result);
 }
 
@@ -158,7 +172,7 @@ fn glass_fails_when_the_ui_gpu_time_is_over_the_budget_and_still_removes_the_sou
 }
 
 #[test]
-fn glass_fails_with_the_render_error_text_when_ui_frames_fail() {
+fn glass_fails_in_warmup_with_the_render_error_text_when_ui_frames_never_succeed() {
     let faults = MirrorFaults {
         ui_overlay: UiOverlayFault::DrawFails,
         ..MirrorFaults::default()
@@ -167,13 +181,10 @@ fn glass_fails_with_the_render_error_text_when_ui_frames_fail() {
 
     assert_eq!(result["status"], "failed", "{result}");
     let error = result["error"].as_str().unwrap_or_default();
+    // Ни один кадр UI не удался: это провал прогрева, причина слоя UI приложена.
     assert!(
-        error.contains("frames_failed") && error.contains("превышен предел кадра"),
+        error.contains("прогрева") && error.contains("нарисовано 0") && error.contains("превышен предел кадра"),
         "{error}"
-    );
-    assert!(
-        error.contains("frames_drawn = 0"),
-        "ни одного нарисованного кадра: {error}"
     );
     assert_fits_logcat(&harness, &result);
 }
@@ -196,4 +207,52 @@ fn glass_without_a_live_viewfinder_fails_with_the_render_reason_and_never_instal
     let error = result["error"].as_str().unwrap_or_default();
     assert!(error.contains("рендер не показал ни одного кадра камеры"), "{error}");
     assert_eq!(harness.control.recorded_ui_overlay(), Vec::<RecordedUiOverlay>::new());
+}
+
+#[test]
+fn warmup_frames_stay_out_of_the_measured_window_even_when_they_fail() {
+    let faults = MirrorFaults {
+        ui_overlay: UiOverlayFault::FailsWhileWarmingUp,
+        ..MirrorFaults::default()
+    };
+    let (harness, result) = run_glass(faults, true);
+
+    // Первые кадры UI отказали, но они в прогреве: вердикт по окну чистый.
+    assert_eq!(result["status"], "passed", "{result}");
+    let report = &result["report"];
+    assert_eq!(report["overlay"]["frames_failed"], 0, "отказы прогрева не в окне");
+    assert!(report["warmup"]["frames"].as_u64().expect("прогрев") >= WARMUP_FRAMES);
+    let live = &stages_named(&harness, "glass_live")[0];
+    assert!(live["warmup_frames"].as_u64().expect("кадры прогрева") >= WARMUP_FRAMES);
+}
+
+#[test]
+fn glass_fails_with_the_warmup_reason_when_the_ui_never_draws_and_removes_the_source() {
+    let faults = MirrorFaults {
+        ui_overlay: UiOverlayFault::NeverDraws,
+        ..MirrorFaults::default()
+    };
+    let (harness, result) = run_glass(faults, true);
+
+    assert_eq!(result["status"], "failed", "{result}");
+    let error = result["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains("стекло не нарисовало 8 кадров") && error.contains("прогрева"),
+        "{error}"
+    );
+    assert!(
+        error.contains("рендер UI не создан"),
+        "последняя ошибка слоя UI: {error}"
+    );
+    let names = harness.output.stage_names();
+    assert!(names.contains(&"glass_warmup".to_owned()), "{names:?}");
+    assert!(
+        !names.contains(&"glass_live".to_owned()),
+        "скриншоты на живом стекле без прогрева: {names:?}"
+    );
+    assert_eq!(
+        harness.control.recorded_ui_overlay().last(),
+        Some(&RecordedUiOverlay::Remove),
+        "источник снят и при провале прогрева"
+    );
 }

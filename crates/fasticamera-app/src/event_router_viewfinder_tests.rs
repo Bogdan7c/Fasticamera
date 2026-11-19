@@ -52,7 +52,14 @@ enum UiOverlayFault {
     SlowGpu,
     /// Каждый кадр UI не рисуется (отказ рендера).
     DrawFails,
+    /// Первые `WARMUP_FAILED_FRAMES` кадров UI после установки отказывают (разгон), дальше здоров.
+    FailsWhileWarmingUp,
+    /// Источник стоит, но UI не нарисовал ни одного кадра.
+    NeverDraws,
 }
+
+/// Сколько первых кадров UI отказывает при [`UiOverlayFault::FailsWhileWarmingUp`].
+const WARMUP_FAILED_FRAMES: u64 = 4;
 
 /// Подставной поток рендера: как настоящий, применяет регулировки сценария (последнюю по виду) и
 /// ведёт счётчики видоискателя по числу показанных кадров камеры.
@@ -168,6 +175,17 @@ fn mirror_ui_overlay(
             } else {
                 1_500
             }));
+        }
+        UiOverlayFault::FailsWhileWarmingUp => {
+            let failed = drawn_since_install.min(WARMUP_FAILED_FRAMES);
+            overlay.frames_failed = failed;
+            overlay.frames_drawn = drawn_since_install - failed;
+            overlay.last_error = (failed > 0).then(|| "первый кадр UI: рендер ещё создаётся".to_owned());
+            overlay.gpu_time = Some(micros(1_500));
+            overlay.pyramid_rebuilds = overlay.frames_drawn;
+        }
+        UiOverlayFault::NeverDraws => {
+            overlay.last_error = Some("рендер UI не создан".to_owned());
         }
         UiOverlayFault::DrawFails => {
             overlay.frames_failed = drawn_since_install;

@@ -36,6 +36,10 @@ fn healthy_observation() -> GlassObservation {
             gpu_time: Some(time(1.5)),
             last_error: None,
         },
+        warmup: WarmupReport {
+            frames: 30,
+            duration_ms: 520,
+        },
         budget: UiGpuBudget::of(&config, 60.0),
         gravity: GravityReport::Active {
             source: "dedicated_sensor",
@@ -260,6 +264,8 @@ fn the_summary_carries_the_contract_fields_and_fits_the_result_line() {
     assert_eq!(summary["overlay"]["frames_drawn"], 1_800);
     assert_eq!(summary["overlay"]["gpu_time"]["p95_ms"], 1.5);
     assert_eq!(summary["ui_gpu_budget"]["budget_ms"], 4.17);
+    assert_eq!(summary["warmup"]["frames"], 30);
+    assert_eq!(summary["warmup"]["duration_ms"], 520);
     assert_eq!(summary["missed_frames"], 0);
     assert_eq!(summary["missed_frames_allowed"], 0);
     assert_eq!(summary["source_removal"]["state"], "delivered");
@@ -278,6 +284,7 @@ fn the_summary_carries_the_contract_fields_and_fits_the_result_line() {
 fn details_hold_the_overlay_and_the_full_viewfinder_summary() {
     let details = healthy_observation().detail_items();
     assert_eq!(details[0]["overlay"]["frames_drawn"], 1_800);
+    assert_eq!(details[0]["warmup"]["frames"], 30);
     assert!(details[1]["viewfinder_summary"]["pacing"].is_object());
     assert!(details.len() > 2, "части наблюдения видоискателя идут следом");
 }

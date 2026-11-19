@@ -12,6 +12,9 @@
 //! * счётчики копятся здесь, а не берутся из `UiRenderer::counters`: рендер пересоздаётся вместе с пайплайнами
 //!   цепочки, а диагностика обязана пережить это.
 
+use std::any::Any;
+use std::panic::{self, AssertUnwindSafe};
+
 use gpu_vulkan::gpu_timing::TimestampCollect;
 use ui_draw::draw_list::DrawList;
 use ui_draw::frame_source::{UiFrameRequest, UiFrameSource};
@@ -82,16 +85,39 @@ impl UiOverlayState {
 
     /// Просит у источника список рисования. Отказ источника считается (`source_failures`, `last_error`), UI
     /// этого кадра не рисуется — `None`. Без источника тоже `None` (вызывающий проверяет [`Self::is_active`]).
+    ///
+    /// Паника источника ловится ЗДЕСЬ, а не общим `catch_unwind` итерации потока рендера: тот переводит поток
+    /// в `Faulted` и гасит видоискатель, а UI не вправе уронить показ камеры. Источник после паники считается
+    /// сломанным и снимается (`active_source` пропадает, причина — в `last_error`).
     pub fn produce_draw_list(&mut self, request: &UiFrameRequest) -> Option<DrawList> {
         let source = self.source.as_mut()?;
-        match source.produce_frame(request) {
-            Ok(list) => Some(list),
-            Err(error) => {
+        // `AssertUnwindSafe`: после паники источник больше не используется (снимается ниже), поэтому его
+        // возможно «полуизменённое» состояние никто не увидит.
+        let produced = panic::catch_unwind(AssertUnwindSafe(|| source.produce_frame(request)));
+        match produced {
+            Ok(Ok(list)) => Some(list),
+            Ok(Err(error)) => {
                 self.source_failures += 1;
                 self.last_error = Some(error.to_string());
                 tracing::warn!(target: LOG_TARGET, %error, "источник кадра UI отказал: UI этого кадра не рисуется");
                 None
             }
+            Err(payload) => {
+                self.source_failures += 1;
+                let reason = panic_reason(payload.as_ref());
+                self.last_error = Some(format!("источник кадра UI паниковал и снят: {reason}"));
+                tracing::error!(target: LOG_TARGET, %reason, "источник кадра UI паниковал: снят, видоискатель продолжает");
+                self.drop_broken_source();
+                None
+            }
+        }
+    }
+
+    /// Снимает сломанный источник. Его `Drop` тоже может паниковать — и это не повод ронять показ.
+    fn drop_broken_source(&mut self) {
+        let broken = self.source.take();
+        if panic::catch_unwind(AssertUnwindSafe(move || drop(broken))).is_err() {
+            tracing::error!(target: LOG_TARGET, "сломанный источник кадра UI паниковал и при уничтожении");
         }
     }
 
@@ -161,6 +187,17 @@ pub struct UiOverlayFrame<'a> {
     pub state: &'a mut UiOverlayState,
     /// Когда кадр появится на экране (`FrameTiming::expected_present`): к этому моменту строятся анимации.
     pub present_time: shell_contract::clock::MonotonicNanos,
+}
+
+/// Текст паники для диагностики (`&str` и `String` — обычные полезные нагрузки `panic!`).
+fn panic_reason(payload: &(dyn Any + Send)) -> String {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        (*text).to_owned()
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text.clone()
+    } else {
+        "паника без текста".to_owned()
+    }
 }
 
 #[cfg(test)]
@@ -315,6 +352,41 @@ mod tests {
             "{snapshot:?}"
         );
         assert!(snapshot.last_error.is_some_and(|error| error.contains("слот кадра 1")));
+    }
+
+    /// Источник, который паникует при построении кадра (ошибка в коде экрана, сессия 12+).
+    struct PanickingSource;
+
+    impl UiFrameSource for PanickingSource {
+        fn name(&self) -> &'static str {
+            "panicking"
+        }
+
+        fn produce_frame(&mut self, _request: &UiFrameRequest) -> Result<DrawList, UiFrameError> {
+            panic!("сломанный экран");
+        }
+    }
+
+    #[test]
+    fn a_panicking_source_is_caught_counted_and_removed_without_unwinding_into_the_render_thread() {
+        let mut state = UiOverlayState::new(8);
+        assert_eq!(
+            state.apply(UiOverlayCommand::Install(Box::new(PanickingSource))),
+            UiOverlayOutcome::Applied
+        );
+        // Если паника ушла бы наружу, тест упал бы здесь же (итерация потока рендера → `Faulted`).
+        assert_eq!(state.produce_draw_list(&request(1)), None);
+        assert!(!state.is_active(), "сломанный источник снят");
+        let after = state.snapshot();
+        assert_eq!(after.source_failures, 1);
+        assert_eq!(after.active_source, None);
+        assert_eq!(
+            after.last_error.as_deref(),
+            Some("источник кадра UI паниковал и снят: сломанный экран")
+        );
+        // Следующие кадры без источника просто без UI.
+        assert_eq!(state.produce_draw_list(&request(2)), None);
+        assert_eq!(state.snapshot().source_failures, 1, "снятый источник больше не вызывается");
     }
 
     #[test]

@@ -9,13 +9,14 @@
 
 use shell_contract::gravity::{GravitySlot, GravitySubscription};
 use std::sync::Arc;
+use std::time::Instant;
 use ui_kit::tokens::UiKitTokens;
 
 use render_loop::ui_overlay::UiOverlayDiagnostics;
 
 use super::detail::{emit_details, to_value};
 use super::glass_report::{
-    GlassObservation, GravityReport, OverlayWindow, SourceRemoval, UiGpuBudget, evaluate_glass,
+    GlassObservation, GravityReport, OverlayWindow, SourceRemoval, UiGpuBudget, WarmupReport, evaluate_glass,
     gravity_samples_received, gravity_source_name,
 };
 use super::glass_showcase::GlassShowcase;
@@ -31,6 +32,7 @@ use crate::viewfinder_scenario_config::{ViewfinderScenarioConfig, ViewfinderSmok
 /// Подписка на гравитацию и число показаний на её старте (датчик живёт, пока жива подписка).
 struct GravityWatch {
     subscription: GravitySubscription,
+    /// Показаний на начало окна (после прогрева — см. [`GravityState::restart_window`]).
     samples_at_install: u64,
 }
 
@@ -65,6 +67,13 @@ impl GravityState {
         }
     }
 
+    /// Окно замера началось заново: показания считаются с этого момента.
+    fn restart_window(&mut self) {
+        if let Self::Watching(watch) = self {
+            watch.samples_at_install = gravity_samples_received(watch.subscription.slot());
+        }
+    }
+
     /// Строка отчёта на конец окна.
     fn report(&self) -> GravityReport {
         match self {
@@ -78,10 +87,33 @@ impl GravityState {
     }
 }
 
-/// Слой UI, установленный сценарием: счётчики рендера на момент установки и гравитация.
+/// Фаза установленного слоя UI.
+enum OverlayPhase {
+    /// Прогрев: ждём `warmup_ui_frames` кадров UI; в окно замера они не входят.
+    Warming {
+        installed_at: Instant,
+        /// Сколько кадров UI было нарисовано до установки (прогрев считается от этого числа).
+        frames_drawn_at_install: u64,
+    },
+    /// Идёт окно замера; `baseline` — счётчики UI на его начало.
+    Measuring {
+        baseline: UiOverlayDiagnostics,
+        warmup: WarmupReport,
+    },
+}
+
+/// Слой UI, установленный сценарием: фаза и гравитация.
 struct InstalledOverlay {
-    baseline: UiOverlayDiagnostics,
+    phase: OverlayPhase,
     gravity: GravityState,
+}
+
+/// Диагностика слоя UI из последнего снимка показа (`None` — рендер видоискателя ещё не показывал).
+fn ui_overlay_of(smoke: &SmokeRun) -> Option<&UiOverlayDiagnostics> {
+    smoke
+        .last_presentation()
+        .and_then(|presentation| presentation.viewfinder.as_ref())
+        .map(|viewfinder| &viewfinder.ui_overlay)
 }
 
 /// Состояние прогона.
@@ -114,6 +146,11 @@ fn undelivered_reason(delivery: &ControlDelivery) -> Option<String> {
     }
 }
 
+/// Целых мс от `since` до `now` (часы не идут назад: меньше — 0).
+fn elapsed_ms(since: Instant, now: Instant) -> u64 {
+    u64::try_from(now.saturating_duration_since(since).as_millis()).unwrap_or(u64::MAX)
+}
+
 /// Снимает источник UI и сообщает, дошла ли команда до потока рендера.
 fn remove_overlay(context: &ScenarioContext<'_>) -> SourceRemoval {
     match undelivered_reason(&context.gpu.remove_ui_overlay_for_scenario()) {
@@ -138,15 +175,112 @@ impl GlassRun {
         if let Some(reason) = undelivered_reason(&delivery) {
             return Err(format!("источник UI не установлен: {reason}"));
         }
-        self.overlay = Some(InstalledOverlay { baseline, gravity });
+        self.overlay = Some(InstalledOverlay {
+            phase: OverlayPhase::Warming {
+                installed_at: context.now,
+                frames_drawn_at_install: baseline.frames_drawn,
+            },
+            gravity,
+        });
+        context.emit_stage(
+            "glass_warmup",
+            stage_fields([
+                ("warmup_ui_frames", self.config.warmup_ui_frames.into()),
+                ("warmup_timeout_ms", self.config.warmup_timeout_ms.into()),
+            ]),
+        );
+        Ok(())
+    }
+
+    /// Тик прогрева: хватило кадров UI — перезапускаем окно замера и выдаём `glass_live`; не хватило за
+    /// `warmup_timeout_ms` — провал (причина готовым текстом). Вне прогрева ничего не делает.
+    fn advance_warmup(&mut self, context: &mut ScenarioContext<'_>) -> Result<(), String> {
+        let Some(InstalledOverlay {
+            phase:
+                OverlayPhase::Warming {
+                    installed_at,
+                    frames_drawn_at_install,
+                },
+            ..
+        }) = &self.overlay
+        else {
+            return Ok(());
+        };
+        let (installed_at, frames_at_install) = (*installed_at, *frames_drawn_at_install);
+        let current = ui_overlay_of(&self.smoke);
+        let warmed = current.map_or(0, |ui| ui.frames_drawn.saturating_sub(frames_at_install));
+        if warmed < self.config.warmup_ui_frames {
+            let waited_ms = elapsed_ms(installed_at, context.now);
+            if waited_ms >= self.config.warmup_timeout_ms {
+                return Err(self.warmup_failure_reason(warmed, waited_ms));
+            }
+            return Ok(());
+        }
+        self.smoke
+            .restart_window(context)
+            .map_err(|error| format!("прогрев стекла закончен, но окно замера не перезапущено: {error}"))?;
+        // Базовая линия UI — ЗДЕСЬ: кадры прогрева в вердикт не попадают.
+        let Some(baseline) = ui_overlay_of(&self.smoke).cloned() else {
+            return Err("в статусе рендера нет диагностики видоискателя: слой UI не наблюдаем".to_owned());
+        };
+        let warmup = WarmupReport {
+            frames: warmed,
+            duration_ms: elapsed_ms(installed_at, context.now),
+        };
+        if let Some(overlay) = &mut self.overlay {
+            overlay.gravity.restart_window();
+            overlay.phase = OverlayPhase::Measuring { baseline, warmup };
+        }
         context.emit_stage(
             "glass_live",
             stage_fields([
                 ("duration_ms", self.config.duration_ms.into()),
+                ("warmup_frames", warmup.frames.into()),
+                ("warmup_ms", warmup.duration_ms.into()),
                 ("gravity", to_value(&self.overlay_gravity_report())),
             ]),
         );
         Ok(())
+    }
+
+    /// Текст провала прогрева: сколько кадров нужно было, сколько нарисовано, ошибка слоя UI (если есть).
+    fn warmup_failure_reason(&self, warmed: u64, waited_ms: u64) -> String {
+        let mut reason = format!(
+            "стекло не нарисовало {} кадров за {waited_ms} мс прогрева (нарисовано {warmed}, ждали не больше {} мс)",
+            self.config.warmup_ui_frames, self.config.warmup_timeout_ms
+        );
+        if let Some(error) = ui_overlay_of(&self.smoke).and_then(|ui| ui.last_error.as_deref()) {
+            reason.push_str(&format!("; последняя ошибка слоя UI: {error}"));
+        }
+        reason
+    }
+
+    fn is_warming(&self) -> bool {
+        matches!(
+            self.overlay,
+            Some(InstalledOverlay {
+                phase: OverlayPhase::Warming { .. },
+                ..
+            })
+        )
+    }
+
+    /// Провал, когда окно `SmokeRun` кончилось раньше конца прогрева.
+    fn warmup_failure_reason_at_window_end(&self, context: &ScenarioContext<'_>) -> String {
+        let Some(InstalledOverlay {
+            phase:
+                OverlayPhase::Warming {
+                    installed_at,
+                    frames_drawn_at_install,
+                },
+            ..
+        }) = &self.overlay
+        else {
+            return "прогрев стекла не начинался".to_owned();
+        };
+        let warmed =
+            ui_overlay_of(&self.smoke).map_or(0, |ui| ui.frames_drawn.saturating_sub(*frames_drawn_at_install));
+        self.warmup_failure_reason(warmed, elapsed_ms(*installed_at, context.now))
     }
 
     fn overlay_gravity_report(&self) -> GravityReport {
@@ -170,17 +304,22 @@ impl GlassRun {
             .last_presentation()
             .and_then(|presentation| presentation.viewfinder.as_ref())
             .map(|viewfinder| viewfinder.ui_overlay.clone());
-        let (overlay_window, gravity, removal) = match &self.overlay {
+        let (overlay_window, warmup, gravity, removal) = match &self.overlay {
             Some(installed) => {
                 // Окно кончилось: убираем стекло с экрана и фиксируем, дошла ли команда.
                 let removal = remove_overlay(context);
-                let window = after
-                    .map(|after| OverlayWindow::between(&installed.baseline, &after))
-                    .unwrap_or_default();
-                (window, installed.gravity.report(), removal)
+                let (window, warmup) = match (&installed.phase, after) {
+                    (OverlayPhase::Measuring { baseline, warmup }, Some(after)) => {
+                        (OverlayWindow::between(baseline, &after), *warmup)
+                    }
+                    // Прогрев не закончился (отказ камеры раньше): окна UI не было.
+                    _ => (OverlayWindow::default(), WarmupReport::default()),
+                };
+                (window, warmup, installed.gravity.report(), removal)
             }
             None => (
                 OverlayWindow::default(),
+                WarmupReport::default(),
                 GravityReport::Unavailable {
                     reason: "слой UI не устанавливался".to_owned(),
                 },
@@ -191,6 +330,7 @@ impl GlassRun {
         GlassObservation {
             budget: UiGpuBudget::of(&self.config, refresh_hz),
             overlay: overlay_window,
+            warmup,
             gravity,
             removal,
             viewfinder: self.smoke.into_observation(context, running, failure),
@@ -250,11 +390,22 @@ impl ObservingScenario for GlassScenario {
             return ScenarioStep::Continue;
         };
         let step = run.smoke.tick(context, running);
-        // Видоискатель установился — ставим стекло (один раз). Дальше окно идёт само.
+        // Видоискатель установился — ставим стекло (один раз) и начинаем прогрев.
         if run.overlay.is_none()
             && run.smoke.is_measuring()
             && let Err(reason) = run.install_overlay(context)
         {
+            return ScenarioStep::Finished(failed(reason));
+        }
+        let warmup_result = match &step {
+            // Окно кончилось, а прогрев не закончился: стекло не нарисовало нужных кадров.
+            RunStep::Finish(None) if run.is_warming() => Err(run.warmup_failure_reason_at_window_end(context)),
+            RunStep::Finish(_) => Ok(()),
+            RunStep::Continue => run.advance_warmup(context),
+        };
+        if let Err(reason) = warmup_result {
+            remove_overlay(context);
+            self.run = None;
             return ScenarioStep::Finished(failed(reason));
         }
         let RunStep::Finish(failure) = step else {

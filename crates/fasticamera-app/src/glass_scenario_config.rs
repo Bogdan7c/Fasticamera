@@ -24,6 +24,12 @@ pub struct GlassScenarioConfig {
     pub ui_gpu_budget_fraction: f64,
     /// Сколько кадров может показаться позже задуманного vsync за окно. `[doc]` 11a: 0 пропусков.
     pub max_missed_frames: u64,
+    /// Сколько кадров UI должно быть нарисовано после установки источника, прежде чем начнётся окно замера.
+    /// `[estimate]` 30 ≈ 0,5 с при 60 Гц: первые кадры с UI дороже обычных (создание рендера UI на потоке
+    /// рендера, первая перестройка пирамиды, выделение её целей под логический размер). Подгонка в 11a, не Apple.
+    pub warmup_ui_frames: u64,
+    /// Сколько мс ждать конца прогрева, прежде чем признать провал «стекло не рисуется». `[estimate]` 5000.
+    pub warmup_timeout_ms: u64,
     /// Демо-сцена: раскладка, сценарий времени, вид, свет от наклона.
     pub showcase: GlassShowcaseConfig,
 }
@@ -34,6 +40,8 @@ impl Default for GlassScenarioConfig {
             duration_ms: 30_000,
             ui_gpu_budget_fraction: 0.25,
             max_missed_frames: 0,
+            warmup_ui_frames: 30,
+            warmup_timeout_ms: 5_000,
             showcase: GlassShowcaseConfig::default(),
         }
     }
@@ -46,6 +54,10 @@ pub enum GlassScenarioConfigError {
     ZeroDuration,
     #[error("glass.ui_gpu_budget_fraction = {value}: нужна доля от 0 (не включая) до 1")]
     BudgetFractionOutOfRange { value: f64 },
+    #[error("glass.warmup_ui_frames должно быть больше нуля")]
+    ZeroWarmupFrames,
+    #[error("glass.warmup_timeout_ms должно быть больше нуля")]
+    ZeroWarmupTimeout,
     #[error("glass.showcase: {0}")]
     Showcase(#[from] ShowcaseConfigError),
 }
@@ -60,6 +72,12 @@ impl GlassScenarioConfig {
     pub fn validate(&self) -> Result<(), GlassScenarioConfigError> {
         if self.duration_ms == 0 {
             return Err(GlassScenarioConfigError::ZeroDuration);
+        }
+        if self.warmup_ui_frames == 0 {
+            return Err(GlassScenarioConfigError::ZeroWarmupFrames);
+        }
+        if self.warmup_timeout_ms == 0 {
+            return Err(GlassScenarioConfigError::ZeroWarmupTimeout);
         }
         // Через сравнение: NaN не проходит и отвергается.
         let fraction = self.ui_gpu_budget_fraction;
@@ -104,6 +122,22 @@ mod tests {
                 "{value}"
             );
         }
+        let no_warmup_frames = GlassScenarioConfig {
+            warmup_ui_frames: 0,
+            ..GlassScenarioConfig::default()
+        };
+        assert_eq!(
+            no_warmup_frames.validate(),
+            Err(GlassScenarioConfigError::ZeroWarmupFrames)
+        );
+        let no_warmup_timeout = GlassScenarioConfig {
+            warmup_timeout_ms: 0,
+            ..GlassScenarioConfig::default()
+        };
+        assert_eq!(
+            no_warmup_timeout.validate(),
+            Err(GlassScenarioConfigError::ZeroWarmupTimeout)
+        );
         let mut broken_showcase = GlassScenarioConfig::default();
         broken_showcase.showcase.layout.edge_margin_pt = -1.0;
         assert!(matches!(
@@ -118,5 +152,9 @@ mod tests {
         let parsed: GlassScenarioConfig = serde_json::from_str(r#"{"duration_ms": 5000}"#).expect("разбор");
         assert_eq!(parsed.duration_ms, 5000);
         assert_eq!(parsed.ui_gpu_budget_fraction, 0.25);
+        assert_eq!((parsed.warmup_ui_frames, parsed.warmup_timeout_ms), (30, 5_000));
+        let tuned: GlassScenarioConfig =
+            serde_json::from_str(r#"{"warmup_ui_frames": 7, "warmup_timeout_ms": 900}"#).expect("разбор");
+        assert_eq!((tuned.warmup_ui_frames, tuned.warmup_timeout_ms), (7, 900));
     }
 }

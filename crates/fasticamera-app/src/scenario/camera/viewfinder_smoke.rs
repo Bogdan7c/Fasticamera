@@ -63,6 +63,14 @@ pub(super) enum RunStep {
     Finish(Option<RunFailure>),
 }
 
+/// Почему окно замера не удалось начать заново.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub(super) enum WindowRestartError {
+    /// Видоискатель ещё не установился: замер не начинался, перезапускать нечего.
+    #[error("окно замера ещё не начиналось: видоискатель не установился")]
+    NotMeasuring,
+}
+
 impl SmokeRun {
     /// Заявляет камеру, отправляет команды запуска и готовит замер (стадия `started` — за вызывающим).
     /// Ошибка — готовый текст провала сценария.
@@ -94,6 +102,22 @@ impl SmokeRun {
     /// Последний снимок показа (`None` — рендер ещё не показывал камеру нашей сессии).
     pub(super) fn last_presentation(&self) -> Option<&CameraPresentation> {
         self.last.as_deref()
+    }
+
+    /// Заново начинает окно замера с текущего момента: базовая линия, срок окончания (`measure_ms` от
+    /// сейчас), прогресс и задержки считаются заново, уже показанное в замер не входит. Нужно сценарию,
+    /// который после старта окна добавляет в кадр что-то дорогое в первые кадры (прогрев слоя UI в `glass`)
+    /// и не хочет, чтобы этот разгон попал в вердикт. Сценарий `viewfinder` метод не вызывает.
+    pub(super) fn restart_window(&mut self, context: &ScenarioContext<'_>) -> Result<(), WindowRestartError> {
+        let (Some(measuring), Some(last)) = (&mut self.measuring, &self.last) else {
+            return Err(WindowRestartError::NotMeasuring);
+        };
+        let now = context.now;
+        self.latency.skip_already_presented(&last.diagnostics.present_history);
+        measuring.baseline = WindowBaseline::capture(now, last, context.camera.raw_stream().counters());
+        measuring.until = now + Duration::from_millis(self.config.smoke.measure_ms);
+        measuring.next_progress = now + Duration::from_millis(self.config.progress_interval_ms);
+        Ok(())
     }
 
     pub(super) fn tick(&mut self, context: &mut ScenarioContext<'_>, running: &RunningCamera) -> RunStep {

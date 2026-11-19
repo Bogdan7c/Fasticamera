@@ -5,6 +5,7 @@
 //! бюджета, гравитацию. Вердикт ([`evaluate_glass`]) — чистая функция: список нарушений, пустой — прошёл.
 //!
 //! Правила вердикта:
+//! 0. прогрев (`warmup`) в окно не входит: счётчики окна считаются от его конца (см. `glass.rs`).
 //! 1. запуск и поток без отказа камеры/рендера (причина — одна, остальное не гадаем);
 //! 2. источник UI установлен (к концу окна `active_source` есть), `frames_drawn > 0`;
 //! 3. `frames_failed = 0`, `source_failures = 0`, `limit_overflows = 0` (текст последней ошибки — в нарушении);
@@ -66,6 +67,15 @@ impl OverlayWindow {
             last_error: after.last_error.clone(),
         }
     }
+}
+
+/// Прогрев слоя UI перед окном замера: сколько кадров UI и мс на него ушло (в окно они не входят).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct WarmupReport {
+    /// Кадров UI нарисовано с установки источника до начала окна.
+    pub frames: u64,
+    /// Сколько мс прошло от установки источника до начала окна.
+    pub duration_ms: u64,
 }
 
 /// Бюджет GPU-времени кадра UI.
@@ -140,6 +150,8 @@ pub struct GlassObservation {
     /// Замер видоискателя за то же окно (те же поля и пороги, что у `viewfinder`).
     pub viewfinder: ViewfinderSmokeObservation,
     pub overlay: OverlayWindow,
+    /// Прогрев перед окном (нули — окно не начиналось).
+    pub warmup: WarmupReport,
     pub budget: UiGpuBudget,
     pub gravity: GravityReport,
     pub removal: SourceRemoval,
@@ -250,6 +262,7 @@ impl GlassObservation {
             "failure": viewfinder.failure,
             "window_ms": viewfinder.window.window_ms,
             "overlay": self.overlay,
+            "warmup": self.warmup,
             "ui_gpu_budget": self.budget,
             "missed_frames": self.missed_frames(),
             "missed_frames_allowed": config.max_missed_frames,
@@ -277,7 +290,7 @@ impl GlassObservation {
     /// Подробности: полная сводка `viewfinder` и его части, затем слой UI целиком.
     pub fn detail_items(&self) -> Vec<Value> {
         let mut items = vec![
-            serde_json::json!({ "overlay": to_value(&self.overlay), "gravity": to_value(&self.gravity) }),
+            serde_json::json!({ "overlay": to_value(&self.overlay), "warmup": to_value(&self.warmup), "gravity": to_value(&self.gravity) }),
             serde_json::json!({ "viewfinder_summary": self.viewfinder.summary() }),
         ];
         items.extend(self.viewfinder.detail_items());
