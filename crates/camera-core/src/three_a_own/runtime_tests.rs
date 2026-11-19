@@ -19,6 +19,7 @@ use crate::fake::{BackendCall, FakeBackendControl};
 use crate::request_controls::ExposurePlan;
 use crate::runtime::{CameraRuntime, ShutdownReport};
 use crate::status::AppPresence;
+use crate::three_a_own::FlickerPolicy;
 use crate::three_a_wiring::ThreeAWiring;
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -32,6 +33,14 @@ fn proposal(target: f64) -> ExposureProposal {
         convergence: ProposalConvergence::Searching,
         quality: MeasurementQuality::Measured,
     }
+}
+
+/// Конфиг с явно включённой защитой 50 Гц: тесты ниже проверяют пробуждение потока, а старт
+/// 10 мс × ISO 400 — удобная метка «старт из конфига» (умолчание — защита выключена, решение 77).
+fn protected_engine_config() -> CameraEngineConfig {
+    let mut config = CameraEngineConfig::default();
+    config.three_a.exposure.flicker = FlickerPolicy::AlwaysProtect;
+    config
 }
 
 fn repeating_requests(fake: &FakeBackendControl) -> usize {
@@ -52,7 +61,7 @@ fn wait_for(what: &str, mut condition: impl FnMut() -> bool) {
 #[test]
 fn a_published_proposal_wakes_the_camera_thread_and_rebuilds_the_request_once() {
     let fake = FakeBackendControl::new();
-    let config = CameraEngineConfig::default();
+    let config = protected_engine_config();
     let channel = ExposureProposalChannel::new();
     let wiring = ThreeAWiring::own(&config.three_a, channel.clone(), MainsFrequency::Hz50);
     let (runtime, handle) = CameraRuntime::spawn_with_wiring(config, AppPresence::Foreground, fake.factory(), wiring)
@@ -110,7 +119,7 @@ fn a_published_proposal_wakes_the_camera_thread_and_rebuilds_the_request_once() 
 #[test]
 fn a_proposal_published_before_binding_is_applied_right_after_bind_without_new_publications() {
     let fake = FakeBackendControl::new();
-    let config = CameraEngineConfig::default();
+    let config = protected_engine_config();
     let channel = ExposureProposalChannel::new();
     let wiring = ThreeAWiring::own(&config.three_a, channel.clone(), MainsFrequency::Hz50);
     let (runtime, handle) = CameraRuntime::spawn_with_wiring(config, AppPresence::Foreground, fake.factory(), wiring)

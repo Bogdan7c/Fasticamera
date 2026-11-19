@@ -83,7 +83,9 @@ pub struct EvStepConfig {
 pub struct LockStepConfig {
     /// Сколько ждать `AE_STATE = Locked` после блокировки, мс.
     pub settle_timeout_ms: u64,
-    /// Сколько держать блокировку под наблюдением, мс.
+    /// Сколько держать блокировку под наблюдением, мс. В начале окна телефон вибрирует («закрывайте объектив
+    /// рукой»), в конце — второй сигнал: владельцу нужно среагировать на вибрацию и успеть закрыть и открыть
+    /// объектив внутри окна, поэтому окно длиннее прежних 2 с.
     pub hold_ms: u64,
     /// Допуск постоянства «экспозиция × ISO» под блокировкой, доля.
     pub constancy_tolerance_fraction: f64,
@@ -93,6 +95,10 @@ pub struct LockStepConfig {
     /// новую экспозицию через 7-8 кадров), прежде чем судить постоянство «выдержка × ISO». Вдвое больше
     /// задержки зонда 08 — оценка, сверить в 08c. Для вендорского AE не используется.
     pub own_ae_catch_up_frames: u32,
+    /// Сколько последних результатов подряд должны уложиться в допуск постоянства, чтобы «выдержка × ISO»
+    /// считалась замершей (отчёт `product_frozen_after_frames`). Меньше — случайное совпадение последних
+    /// кадров сойдёт за замирание.
+    pub product_frozen_min_tail_samples: usize,
 }
 
 /// Шаг брекетинга.
@@ -199,10 +205,11 @@ impl Default for LockStepConfig {
     fn default() -> Self {
         Self {
             settle_timeout_ms: 5 * SECOND_MS,
-            hold_ms: 2 * SECOND_MS,
+            hold_ms: 5 * SECOND_MS,
             constancy_tolerance_fraction: 0.01,
             unlock_timeout_ms: 3 * SECOND_MS,
             own_ae_catch_up_frames: 15,
+            product_frozen_min_tail_samples: 5,
         }
     }
 }
@@ -260,6 +267,10 @@ impl ThreeAScenarioConfig {
             ("lock.settle_timeout_ms", self.lock.settle_timeout_ms),
             ("lock.hold_ms", self.lock.hold_ms),
             ("lock.unlock_timeout_ms", self.lock.unlock_timeout_ms),
+            (
+                "lock.product_frozen_min_tail_samples",
+                self.lock.product_frozen_min_tail_samples as u64,
+            ),
             ("bracket.iso", u64::from(self.bracket.iso)),
             ("bracket.result_timeout_ms", self.bracket.result_timeout_ms),
             ("bracket.frame_limit", self.bracket.frame_limit as u64),

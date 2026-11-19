@@ -12,12 +12,26 @@
 //!   Общий запуск — `viewfinder_session`, числа — `viewfinder_metrics`.
 //! * сессия 08: [`ThreeAScenario`] — `3a` (тап, ручная экспозиция, EV, блокировка, брекетинг; шаги — `three_a_steps*`,
 //!   вердикт — `three_a_verdict`).
+//! * сессия 08c: [`AeTraceScenario`] — `ae-trace` (ряд нашего AE по ступенькам света; расписание — `ae_trace_plan`,
+//!   запись — `ae_trace_run`, разбор — `ae_trace_analysis`/`_steps`/`_stats`, вердикт — `ae_trace_verdict`).
 //!
 //! Устройство каждого сценария одинаково: логика движется по тикам маршрутизатора (ничего не
 //! блокируется), отчёт — отдельные `Serialize`-структуры (`*_report.rs`), вердикт — чистая функция
 //! `evaluate_*` с тестами на каждое правило. Общее — `progress` (дедлайны, журнал событий) и
 //! `engine_watch` (что считать отказом движка).
 
+mod ae_trace;
+mod ae_trace_analysis;
+mod ae_trace_observation;
+mod ae_trace_plan;
+mod ae_trace_report;
+mod ae_trace_run;
+mod ae_trace_series;
+mod ae_trace_stats;
+mod ae_trace_steps;
+#[cfg(test)]
+mod ae_trace_test_support;
+mod ae_trace_verdict;
 mod backend_summary;
 mod catalog;
 mod catalog_report;
@@ -65,6 +79,7 @@ mod white_balance_report;
 use super::observing::ObservingScenario;
 use crate::raw_stream_scenario_config::RawStreamRunKind;
 
+pub use ae_trace::AeTraceScenario;
 pub use catalog::CameraCatalogScenario;
 #[cfg(feature = "debug-scenarios")]
 pub use evict::CameraEvictScenario;
@@ -102,6 +117,8 @@ pub enum CameraScenario {
     VideoHeadroomBench,
     /// `3a`: автоматика 3A и ручные параметры на живом видоискателе (сессия 08).
     ThreeA,
+    /// `ae-trace`: ряд нашего AE по ступенькам света, подтяжка ISP и мерцание (сессия 08c).
+    AeTrace,
     /// Только отладочная сборка: запускает системную камеру и отнимает у нас камеру.
     #[cfg(feature = "debug-scenarios")]
     Evict,
@@ -125,6 +142,7 @@ impl CameraScenario {
             CameraScenario::ViewfinderEndurance,
             CameraScenario::VideoHeadroomBench,
             CameraScenario::ThreeA,
+            CameraScenario::AeTrace,
         ]
     }
 
@@ -150,6 +168,7 @@ impl CameraScenario {
             CameraScenario::ViewfinderEndurance => "viewfinder-endurance",
             CameraScenario::VideoHeadroomBench => "video-headroom-bench",
             CameraScenario::ThreeA => "3a",
+            CameraScenario::AeTrace => "ae-trace",
         }
     }
 
@@ -170,6 +189,7 @@ impl CameraScenario {
             CameraScenario::ViewfinderEndurance => Box::new(ViewfinderEnduranceScenario::new()),
             CameraScenario::VideoHeadroomBench => Box::new(VideoHeadroomScenario::new()),
             CameraScenario::ThreeA => Box::new(ThreeAScenario::new()),
+            CameraScenario::AeTrace => Box::new(AeTraceScenario::new()),
         }
     }
 }

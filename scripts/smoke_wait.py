@@ -31,6 +31,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import smoke_checks
+import smoke_checks_ae_trace
 import smoke_checks_three_a
 import smoke_checks_viewfinder
 import smoke_logcat
@@ -196,7 +197,13 @@ CHECKS: dict[str, ScenarioCheck] = {
     "viewfinder-endurance": ignoring_observations(smoke_checks_viewfinder.check_viewfinder_endurance),
     "video-headroom-bench": ignoring_observations(smoke_checks_viewfinder.check_video_headroom_bench),
     "3a": ignoring_observations(smoke_checks_three_a.check_three_a),
+    "ae-trace": ignoring_observations(smoke_checks_ae_trace.check_ae_trace),
 }
+
+NOTES: dict[str, Callable[[dict], list[str]]] = {
+    "3a": smoke_checks_three_a.three_a_notes,
+}
+"""Пояснения к вердикту прошедшего сценария (не провал): печатаются после вердикта, как заметки пост-проверок."""
 
 StageHandler = Callable[[dict], None]
 """Обработчик стадии сценария: получает JSON стадии, при неудаче шага бросает ``DriverError``."""
@@ -302,6 +309,7 @@ def _evaluate_stream(
             notes.extend(outcome.notes)
         if problems:
             return SmokeVerdict(EXIT_SCENARIO_FAILED, f"сценарий {scenario} не прошёл: {'; '.join(problems)}\n{payload}")
+        notes.extend(NOTES.get(scenario, lambda _result: [])(result))
         return SmokeVerdict(EXIT_OK, f"сценарий {scenario} прошёл: {payload}")
     return SmokeVerdict(EXIT_NO_RESULT, f"нет строки {RESULT_MARKER.strip()} сценария {scenario}")
 

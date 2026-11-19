@@ -1,124 +1,37 @@
-//! Детектор мерцания: когда защита снимается и когда возвращается.
+//! Ручная защита от мерцания: период кратности по политике и частоте сети (решение 77).
 
 use std::time::Duration;
 
-use camera_contract::three_a::{MainsFrequency, SceneFlicker};
+use camera_contract::three_a::MainsFrequency;
 
-use super::config::{DetectedFrequency, FlickerPolicy};
-use super::flicker::{FlickerDetector, Protection, half_mains_period};
-
-fn follow(frames: u32) -> FlickerDetector {
-    FlickerDetector::new(
-        FlickerPolicy::FollowDetector {
-            clear_after_frames: frames,
-            detected_frequency: DetectedFrequency::IgnoreUseConfigured,
-        },
-        MainsFrequency::Hz50,
-    )
-}
+use super::config::FlickerPolicy;
+use super::flicker::{FlickerProtection, half_mains_period};
 
 #[test]
-fn protection_is_cleared_only_after_the_configured_run_of_clear_frames() {
-    let mut detector = follow(3);
-    assert_eq!(detector.snapshot().period(), Some(Duration::from_millis(10)));
-    assert!(!detector.observe(Some(SceneFlicker::None)));
-    assert!(!detector.observe(Some(SceneFlicker::None)));
-    assert!(
-        detector.observe(Some(SceneFlicker::None)),
-        "третий чистый кадр снимает защиту"
-    );
-    assert_eq!(detector.snapshot().protection, Protection::Cleared);
-    assert_eq!(detector.snapshot().period(), None);
-}
-
-#[test]
-fn frames_without_the_key_neither_count_nor_break_the_run() {
-    let mut detector = follow(2);
-    detector.observe(Some(SceneFlicker::None));
-    assert!(!detector.observe(None));
-    assert!(
-        detector.observe(Some(SceneFlicker::None)),
-        "пропуск ключа серию не сбросил"
-    );
-}
-
-#[test]
-fn a_flicker_report_breaks_the_run_and_restores_protection_immediately() {
-    let mut detector = follow(2);
-    detector.observe(Some(SceneFlicker::None));
-    assert!(
-        !detector.observe(Some(SceneFlicker::Mains50Hz)),
-        "защита и так была, снимок тот же"
-    );
-    assert!(!detector.observe(Some(SceneFlicker::None)), "серия начата заново");
-    assert!(detector.observe(Some(SceneFlicker::None)));
-    assert!(
-        detector.observe(Some(SceneFlicker::Mains60Hz)),
-        "отчёт возвращает защиту"
-    );
-    let snapshot = detector.snapshot();
-    assert_eq!(snapshot.protection, Protection::Active);
-    assert_eq!(
-        snapshot.period(),
-        Some(Duration::from_millis(10)),
-        "60 Гц от детектора при конфиге 50 Гц период не меняет"
-    );
-}
-
-#[test]
-fn adopt_option_switches_the_period_to_the_detected_frequency() {
-    let mut detector = FlickerDetector::new(
-        FlickerPolicy::FollowDetector {
-            clear_after_frames: 1,
-            detected_frequency: DetectedFrequency::Adopt,
-        },
-        MainsFrequency::Hz50,
-    );
-    detector.observe(Some(SceneFlicker::None));
-    assert!(detector.observe(Some(SceneFlicker::Mains60Hz)));
-    let snapshot = detector.snapshot();
-    assert_eq!(snapshot.protection, Protection::Active);
-    assert_eq!(snapshot.period(), Some(half_mains_period(MainsFrequency::Hz60)));
+fn half_period_is_10ms_at_50hz_and_8_33ms_at_60hz() {
+    assert_eq!(half_mains_period(MainsFrequency::Hz50), Duration::from_millis(10));
     assert_eq!(half_mains_period(MainsFrequency::Hz60), Duration::from_nanos(8_333_333));
 }
 
 #[test]
-fn new_stream_restores_default_protection_but_keeps_the_adopted_frequency() {
-    let mut detector = FlickerDetector::new(
-        FlickerPolicy::FollowDetector {
-            clear_after_frames: 1,
-            detected_frequency: DetectedFrequency::Adopt,
-        },
-        MainsFrequency::Hz50,
-    );
-    detector.observe(Some(SceneFlicker::Mains60Hz));
-    detector.observe(Some(SceneFlicker::None));
-    assert_eq!(detector.snapshot().protection, Protection::Cleared);
-    detector.reset_for_new_stream();
-    let snapshot = detector.snapshot();
-    assert_eq!(snapshot.protection, Protection::Active);
-    assert_eq!(snapshot.mains, MainsFrequency::Hz60);
+fn always_protect_gives_the_half_period_of_the_configured_mains() {
+    let at_50 = FlickerProtection::new(FlickerPolicy::AlwaysProtect, MainsFrequency::Hz50);
+    let at_60 = FlickerProtection::new(FlickerPolicy::AlwaysProtect, MainsFrequency::Hz60);
+    assert_eq!(at_50.period(), Some(Duration::from_millis(10)));
+    assert_eq!(at_60.period(), Some(Duration::from_nanos(8_333_333)));
 }
 
 #[test]
-fn fixed_policies_ignore_the_clear_reports() {
-    let mut always = FlickerDetector::new(FlickerPolicy::AlwaysProtect, MainsFrequency::Hz50);
-    for _ in 0..100 {
-        always.observe(Some(SceneFlicker::None));
+fn never_protect_gives_no_period_for_any_mains() {
+    for mains in [MainsFrequency::Hz50, MainsFrequency::Hz60] {
+        assert_eq!(
+            FlickerProtection::new(FlickerPolicy::NeverProtect, mains).period(),
+            None
+        );
     }
-    assert_eq!(always.snapshot().protection, Protection::Active);
-    assert!(
-        !always.observe(Some(SceneFlicker::Mains60Hz)),
-        "защита и так есть, частота из конфига"
-    );
-    assert_eq!(always.snapshot().mains, MainsFrequency::Hz50);
+}
 
-    let mut never = FlickerDetector::new(FlickerPolicy::NeverProtect, MainsFrequency::Hz50);
-    assert_eq!(never.snapshot().period(), None);
-    never.observe(Some(SceneFlicker::Mains50Hz));
-    assert_eq!(
-        never.snapshot().protection,
-        Protection::Cleared,
-        "осознанное «нет защиты» отчёт не включает"
-    );
+#[test]
+fn default_policy_is_never_protect() {
+    assert_eq!(FlickerPolicy::default(), FlickerPolicy::NeverProtect);
 }

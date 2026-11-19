@@ -318,6 +318,7 @@ impl ExposureRunner {
             authority: self.directive.authority,
             metered_area: MeteredArea::for_point(self.directive.metering),
             target_log2_seconds_iso: self.controller.target_log2(),
+            observed_scene_log2_seconds_iso: self.controller.last_observed_log2(),
             display_gain_ev: self.last_gain.ev(),
             convergence: self.last_proposal.map(|proposal| proposal.convergence),
             quality: self.last_proposal.map(|proposal| proposal.quality),

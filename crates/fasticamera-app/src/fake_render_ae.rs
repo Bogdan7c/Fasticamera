@@ -154,6 +154,11 @@ impl FakeRenderAe {
         }
     }
 
+    /// Общий доступ к текущей сцене: подставной поток рендера отдаёт её сценарию как сырой замер сцены.
+    pub fn scene_probe(&self) -> Arc<Mutex<f64>> {
+        Arc::clone(&self.scene)
+    }
+
     /// «Смена сцены»: теперь сцене нужно столько света, с·ISO.
     pub fn change_scene(&self, scene_seconds_iso: f64) {
         *self.scene.lock().unwrap_or_else(PoisonError::into_inner) = scene_seconds_iso;

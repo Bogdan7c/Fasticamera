@@ -16,7 +16,7 @@ use camera_contract::fixtures::main_wide_camera;
 use camera_contract::stream::TargetFrameRate;
 use camera_contract::three_a::{MainsFrequency, RequestOrigin, SceneFlicker, ThreeAResultState};
 
-use super::config::{DetectedFrequency, FlickerPolicy, OwnExposureConfig};
+use super::config::{FlickerPolicy, OwnExposureConfig};
 use super::exposure::RawStatsExposure;
 use crate::command::UnsupportedThreeA;
 use crate::request_controls::ExposurePlan;
@@ -43,17 +43,23 @@ struct Fixture {
 }
 
 impl Fixture {
+    /// Стенд с включённой защитой 50 Гц: большинство тестов проверяют кратность 10 мс.
+    /// Умолчание конфига (защита выключена, решение 77) проверяют отдельные тесты.
     fn new() -> Self {
-        Self::with_config(OwnExposureConfig::default())
+        Self::with_config(protected_config())
     }
 
     fn with_config(config: OwnExposureConfig) -> Self {
+        Self::with_config_and_mains(config, MainsFrequency::Hz50)
+    }
+
+    fn with_config_and_mains(config: OwnExposureConfig, mains: MainsFrequency) -> Self {
         let channel = ExposureProposalChannel::new();
         let signal = Arc::new(CountingSignal::default());
         channel
             .refresh_signal()
             .bind(Arc::clone(&signal) as Arc<dyn RefreshSignal>);
-        let exposure = RawStatsExposure::new(config, channel.clone(), MainsFrequency::Hz50);
+        let exposure = RawStatsExposure::new(config, channel.clone(), mains);
         Self {
             stale: exposure.stale_proposals_counter(),
             exposure,
@@ -92,6 +98,14 @@ impl Fixture {
 
     fn pushes(&self) -> u32 {
         self.signal.0.load(Ordering::SeqCst)
+    }
+}
+
+/// Конфиг с явно включённой защитой от мерцания (ручной режим).
+fn protected_config() -> OwnExposureConfig {
+    OwnExposureConfig {
+        flicker: FlickerPolicy::AlwaysProtect,
+        ..OwnExposureConfig::default()
     }
 }
 
@@ -306,97 +320,100 @@ fn burst_and_trigger_results_do_not_start_the_stream_or_feed_the_detector() {
     assert_eq!(fixture.pushes(), pushes_before, "кадр серии метку потока не ставит");
 }
 
-#[test]
-fn clear_detector_run_lifts_the_flicker_guard_and_pushes_the_engine_once() {
-    let mut fixture = Fixture::with_config(OwnExposureConfig {
-        flicker: FlickerPolicy::FollowDetector {
-            clear_after_frames: 3,
-            detected_frequency: DetectedFrequency::IgnoreUseConfigured,
-        },
-        ..OwnExposureConfig::default()
-    });
+/// Тусклая сцена: цель 1,2 с·ISO (12 мс × ISO 100 без защиты).
+fn settle_dim_scene(fixture: &mut Fixture) {
     fixture.exposure.observe_result(&repeating(1_000));
     fixture.publish(2_000, 1.2, ProposalConvergence::Settled);
     fixture.exposure.refresh();
-    assert_eq!(fixture.planned(), (Duration::from_millis(10), 120), "защита 50 Гц");
+}
 
+#[test]
+fn default_config_leaves_the_shutter_free_up_to_the_frame_limit() {
+    let mut fixture = Fixture::with_config(OwnExposureConfig::default());
+    assert_eq!(OwnExposureConfig::default().flicker, FlickerPolicy::NeverProtect);
+    settle_dim_scene(&mut fixture);
+    assert_eq!(
+        fixture.planned(),
+        (Duration::from_millis(12), 100),
+        "без защиты выдержка свободна"
+    );
+    fixture.publish(3_000, 100.0, ProposalConvergence::Searching);
+    fixture.exposure.observe_result(&repeating(3_500));
+    fixture.exposure.refresh();
+    assert!(
+        fixture.planned().0 > Duration::from_millis(16),
+        "яркая цель упирается в предел кадра 16,7 мс, а не в кратность 10 мс"
+    );
+}
+
+#[test]
+fn always_protect_at_50hz_makes_the_shutter_a_multiple_of_10ms_and_iso_covers_the_rest() {
+    let mut fixture = Fixture::with_config(protected_config());
+    settle_dim_scene(&mut fixture);
+    assert_eq!(fixture.planned(), (Duration::from_millis(10), 120));
+}
+
+#[test]
+fn always_protect_at_60hz_makes_the_shutter_a_multiple_of_8_33ms() {
+    let mut fixture = Fixture::with_config_and_mains(protected_config(), MainsFrequency::Hz60);
+    settle_dim_scene(&mut fixture);
+    assert_eq!(fixture.planned(), (Duration::from_nanos(8_333_333), 144));
+}
+
+#[test]
+fn hal_no_flicker_reports_never_clear_always_protect() {
+    let mut fixture = Fixture::with_config(protected_config());
+    settle_dim_scene(&mut fixture);
     let pushes_before = fixture.pushes();
-    for frame in 0..3_i64 {
+    for frame in 0..100_i64 {
         fixture.exposure.observe_result(&result(
             3_000 + frame,
             Some(SceneFlicker::None),
             RequestOrigin::Repeating,
         ));
     }
-    assert_eq!(
-        fixture.pushes(),
-        pushes_before + 1,
-        "ровно один самотолчок на снятие защиты"
-    );
-    assert_eq!(
-        fixture.planned(),
-        (Duration::from_millis(10), 120),
-        "до refresh план не двигается"
-    );
-    assert_eq!(fixture.exposure.refresh(), PlanRefresh::Changed);
-    assert_eq!(
-        fixture.planned(),
-        (Duration::from_millis(12), 100),
-        "защита снята — выдержка свободна"
-    );
+    assert_eq!(fixture.pushes(), pushes_before, "отчёт HAL не толкает движок");
     assert_eq!(fixture.exposure.refresh(), PlanRefresh::Unchanged);
+    assert_eq!(fixture.planned(), (Duration::from_millis(10), 120), "защита осталась");
 }
 
-fn lift_guard_then_report_60hz(detected_frequency: DetectedFrequency) -> Fixture {
-    let mut fixture = Fixture::with_config(OwnExposureConfig {
-        flicker: FlickerPolicy::FollowDetector {
-            clear_after_frames: 1,
-            detected_frequency,
-        },
-        ..OwnExposureConfig::default()
-    });
-    fixture.exposure.observe_result(&repeating(1_000));
-    fixture.publish(2_000, 1.2, ProposalConvergence::Settled);
-    fixture.exposure.refresh();
-    fixture
-        .exposure
-        .observe_result(&result(3_000, Some(SceneFlicker::None), RequestOrigin::Repeating));
-    fixture.exposure.refresh();
-    assert_eq!(fixture.planned().0, Duration::from_millis(12));
-    fixture
-        .exposure
+#[test]
+fn hal_60hz_reports_never_enable_protection_nor_change_the_period() {
+    let mut off = Fixture::with_config(OwnExposureConfig::default());
+    settle_dim_scene(&mut off);
+    let pushes_before = off.pushes();
+    for frame in 0..100_i64 {
+        off.exposure.observe_result(&result(
+            4_000 + frame,
+            Some(SceneFlicker::Mains60Hz),
+            RequestOrigin::Repeating,
+        ));
+    }
+    assert_eq!(off.pushes(), pushes_before);
+    assert_eq!(off.exposure.refresh(), PlanRefresh::Unchanged);
+    assert_eq!(
+        off.planned(),
+        (Duration::from_millis(12), 100),
+        "NeverProtect остаётся без защиты"
+    );
+
+    let mut on = Fixture::with_config(protected_config());
+    settle_dim_scene(&mut on);
+    on.exposure
         .observe_result(&result(4_000, Some(SceneFlicker::Mains60Hz), RequestOrigin::Repeating));
-    assert_eq!(fixture.exposure.refresh(), PlanRefresh::Changed, "защита вернулась");
-    fixture
+    assert_eq!(on.exposure.refresh(), PlanRefresh::Unchanged);
+    assert_eq!(
+        on.planned(),
+        (Duration::from_millis(10), 120),
+        "период остаётся из конфига, 50 Гц"
+    );
 }
 
 #[test]
-fn a_60hz_report_restores_the_guard_but_keeps_the_configured_50hz_period_by_default() {
-    let mut fixture = lift_guard_then_report_60hz(DetectedFrequency::IgnoreUseConfigured);
-    assert_eq!(fixture.planned(), (Duration::from_millis(10), 120));
-}
-
-#[test]
-fn adopt_option_takes_the_detected_frequency() {
-    let mut fixture = lift_guard_then_report_60hz(DetectedFrequency::Adopt);
-    assert_eq!(fixture.planned(), (Duration::from_nanos(8_333_333), 144));
-}
-
-#[test]
-fn new_stream_remembers_the_last_target_and_restores_default_protection() {
-    let mut fixture = Fixture::with_config(OwnExposureConfig {
-        flicker: FlickerPolicy::FollowDetector {
-            clear_after_frames: 1,
-            detected_frequency: DetectedFrequency::IgnoreUseConfigured,
-        },
-        ..OwnExposureConfig::default()
-    });
+fn new_stream_remembers_the_last_target_and_keeps_the_manual_protection() {
+    let mut fixture = Fixture::new();
     fixture.exposure.observe_result(&repeating(1_000));
     fixture.publish(2_000, 1.2, ProposalConvergence::Settled);
-    fixture.exposure.refresh();
-    fixture
-        .exposure
-        .observe_result(&result(3_000, Some(SceneFlicker::None), RequestOrigin::Repeating));
     fixture.exposure.refresh();
 
     fixture.exposure.reset_for_new_stream();

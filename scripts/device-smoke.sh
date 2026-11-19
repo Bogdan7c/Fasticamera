@@ -2,7 +2,8 @@
 # Smoke-сценарий на телефоне: запуск по intent-параметру и проверка строки результата.
 #
 #   scripts/device-smoke.sh [--variant debug|release] [--no-build] [--timeout SEC] [--artifacts-dir DIR]
-#                           [--stages LIST] [--ab-window-ms MS] [--neutral-card] <сценарий>
+#                           [--stages LIST] [--ab-window-ms MS] [--exposure-controller own|vendor]
+#                           [--neutral-card] <сценарий>
 #
 # Сценарии (--timeout в скобках): hello, panic (debug), lifecycle, permission (60), motion, platform,
 # render (120), render-lifecycle (400), ahb-import и gpu-fence (60); камера: camera-catalog (30, сверка с
@@ -16,9 +17,13 @@
 # (720; 10 минут, троттлинг); video-headroom-bench (720; стенд V4 16:9@60, 120 Гц — скрипт касается экрана).
 # 3A 08: 3a (150; тап в центр и 4 угла, ручная выдержка 1/1000, EV, блокировка AE/AF, брекетинг 4 кадра, AWB;
 # скриншоты на стадии awb_ready, --neutral-card — серая карта; для вопроса о регионах фокуса навести на сцену
-# с ближним и дальним планом). Шаги на телефоне — scripts/smoke_driver.py, ожидания — smoke_wait.py, smoke_checks*.py.
+# с ближним и дальним планом). 3A 08c: ae-trace (150; наш AE по ступенькам света: фото 36 с, видео 36 с, статика 20 с;
+# телефон вибрирует на каждую подсказку — владелец щёлкает лампой; сводка + ряд FASTICAMERA_DETAIL; нужен own AE).
+# Шаги на телефоне — scripts/smoke_driver.py, ожидания — smoke_wait.py, smoke_checks*.py.
 # raw-stream*, viewfinder и 3a снимают два скриншота на стадии viewfinder_live (3a — awb_ready) в каталог артефактов ВНЕ
 # репозитория: --artifacts-dir DIR либо свежий `mktemp -d` (путь печатается).
+# --exposure-controller own|vendor — какая автоэкспозиция на этот запуск (camera.exposure_controller; без флага —
+# умолчание конфига, own); годится для любого сценария, допустимость значения проверяет Rust при initialize.
 # Validation-слой есть только в debug-сборке: в release отчёт пишет validation.mode=disabled.
 # Подробности отчёта — строки FASTICAMERA_DETAIL в выводе.
 # Коды выхода: 0 — сценарий прошёл, 1 — сценарий упал, 2 — устройство не найдено,
@@ -33,7 +38,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
 usage() {
-    sed -n '2,29p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,34p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
 }
 
 variant="debug"
@@ -42,6 +47,7 @@ timeout_seconds=30
 artifacts_dir=""
 stages=""
 ab_window_ms=""
+exposure_controller=""
 neutral_card=false
 scenario=""
 
@@ -53,6 +59,7 @@ while [[ $# -gt 0 ]]; do
         --artifacts-dir) artifacts_dir="${2:-}"; shift 2 ;;
         --stages) stages="${2:-}"; shift 2 ;;
         --ab-window-ms) ab_window_ms="${2:-}"; shift 2 ;;
+        --exposure-controller) exposure_controller="${2:-}"; shift 2 ;;
         --neutral-card) neutral_card=true; shift ;;
         -h|--help) usage; exit "$EXIT_OK" ;;
         -*) log_error "неизвестный аргумент: $1"; usage; exit "$EXIT_USAGE" ;;
@@ -90,6 +97,11 @@ if [[ -n "$ab_window_ms" && ! "$ab_window_ms" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if [[ -n "$ab_window_ms" && "$scenario" != "viewfinder-stage-budget" ]]; then
     log_error "--ab-window-ms имеет смысл только для viewfinder-stage-budget"
+    exit "$EXIT_USAGE"
+fi
+# Имя автоэкспозиции — own или vendor; точный набор значений и тут, и в Rust (ExposureControllerKind).
+if [[ -n "$exposure_controller" && ! "$exposure_controller" =~ ^(own|vendor)$ ]]; then
+    log_error "--exposure-controller ждёт own или vendor, а не '$exposure_controller'"
     exit "$EXIT_USAGE"
 fi
 if [[ "$neutral_card" == true && "$scenario" != "viewfinder" && "$scenario" != "3a" ]]; then
@@ -141,7 +153,8 @@ fi
 
 since_epoch="$(device_epoch_timestamp "$serial")"
 start_activity "$serial" "$package" -e scenario "$scenario" ${stages:+-e stages "$stages"} \
-    ${ab_window_ms:+-e ab_window_ms "$ab_window_ms"} ||
+    ${ab_window_ms:+-e ab_window_ms "$ab_window_ms"} \
+    ${exposure_controller:+-e exposure_controller "$exposure_controller"} ||
     exit "$EXIT_BUILD_OR_INSTALL_FAILED"
 
 # Дополнительные флаги проверки результата (пустой массив — без флагов).

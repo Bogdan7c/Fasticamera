@@ -9,6 +9,7 @@ use camera_contract::three_a::{AeState, AfState};
 use camera_core::three_a_status::FocusOutcome;
 use serde::Serialize;
 use serde_json::Value;
+use shell_contract::haptics::HapticOutcome;
 
 use super::detail::to_value;
 use super::engine_watch::RunFailure;
@@ -173,6 +174,17 @@ pub struct LockReport {
     pub non_locked_after_lock: usize,
     /// Наибольшее отклонение «выдержка × ISO» от первого кадра под блокировкой, доля.
     pub max_product_deviation: Option<f64>,
+    /// Размах сырого замера сцены нашим AE за время удержания, EV: доказательство, что сцену во время
+    /// блокировки меняли (закрыли объектив рукой). `None` — замера не было (вендорский AE). Около нуля —
+    /// блокировка проверена на неподвижной сцене, `max_product_deviation = 0` тогда ничего не доказывает.
+    pub observed_scene_range_ev: Option<f64>,
+    /// Через сколько кадров после кадра команды блокировки «выдержка × ISO» замерло до конца удержания:
+    /// факт, по которому выбирают `lock.own_ae_catch_up_frames`. `None` — не замерло (или кадров нет).
+    pub product_frozen_after_frames: Option<i64>,
+    /// Итог тактильного сигнала в начале удержания («закрывайте объектив»); `None` — удержание не началось.
+    pub haptic_hold_start: Option<HapticOutcome>,
+    /// Итог тактильного сигнала в конце удержания («можно открывать»).
+    pub haptic_hold_end: Option<HapticOutcome>,
     /// После сброса точки: непрерывный AF и блокировка снята.
     pub back_to_continuous: bool,
 }

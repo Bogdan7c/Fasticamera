@@ -5,7 +5,7 @@ use camera_contract::three_a::{AeState, AfState};
 
 use super::*;
 use crate::scenario::camera::engine_watch::RunFailure;
-use crate::scenario::camera::three_a_own_ae::{AeSource, OwnAeReport};
+use crate::scenario::camera::three_a_own_ae::{AeSource, EngineAeCount, OwnAeReport, ResultsChecked};
 use crate::scenario::camera::three_a_report::{
     AppliedExposure, AwbVsHal, BracketFrameReport, EvPointReport, LongShutterReport, TapReport, ThreeAObservation,
 };
@@ -91,6 +91,10 @@ fn healthy() -> ThreeAObservation {
         samples_held: 40,
         non_locked_after_lock: 0,
         max_product_deviation: Some(0.0),
+        observed_scene_range_ev: None,
+        product_frozen_after_frames: None,
+        haptic_hold_start: None,
+        haptic_hold_end: None,
         back_to_continuous: true,
     });
     observation.bracket = Some(BracketRunReport {
@@ -469,9 +473,16 @@ fn own_ae_report() -> OwnAeReport {
         limit_reached_seen: false,
         worst_shortfall_ev: None,
         target_not_reached_ticks: 0,
-        repeating_results_checked: 120,
+        results_checked: ResultsChecked {
+            repeating: 120,
+            ..ResultsChecked::default()
+        },
         vendor_ae_results: 0,
         first_vendor_ae_frame: None,
+        engine: Some(EngineAeCount {
+            results_observed: 360,
+            results_with_hal_ae_active: 0,
+        }),
     }
 }
 
@@ -514,6 +525,30 @@ fn healthy_run_with_our_ae_passes_and_a_vendor_request_among_results_fails() {
         });
     });
     assert_single(&vendor_leak, "вендорским AE");
+}
+
+#[test]
+fn vendor_ae_seen_only_by_the_engine_count_fails_and_a_missing_count_fails_too() {
+    // Сценарий по своей выборке вендорского AE не видел, а движок по каждому результату насчитал.
+    let unseen_leak = violations_of(|o| {
+        make_own(o);
+        o.own_ae = Some(OwnAeReport {
+            engine: Some(EngineAeCount {
+                results_observed: 360,
+                results_with_hal_ae_active: 2,
+            }),
+            ..own_ae_report()
+        });
+    });
+    assert_single(&unseen_leak, "движок с запуска насчитал 2");
+    let no_count = violations_of(|o| {
+        make_own(o);
+        o.own_ae = Some(OwnAeReport {
+            engine: None,
+            ..own_ae_report()
+        });
+    });
+    assert_single(&no_count, "нет счётчиков движка");
 }
 
 #[test]

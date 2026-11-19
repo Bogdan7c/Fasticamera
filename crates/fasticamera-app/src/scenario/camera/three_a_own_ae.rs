@@ -10,14 +10,18 @@
 //! Прямого журнала запросов сценарию не дают, но HAL отвечает на запрос честно: при `AE_MODE_OFF`
 //! (наш план `ExposurePlan::Sensor`) в результате `AE_STATE = Inactive`, а при вендорском AE
 //! (`AE_MODE_ON`) — `Searching`/`Converged`/`Locked`/`Precapture`/`FlashRequired`. Поэтому
-//! каждый результат повторяющегося запроса с активным `AE_STATE` — доказательство, что в HAL ушёл
-//! запрос с вендорским AE. Ограничение: журнал сценария видит каждый третий кадр (тик), а не все.
+//! каждый результат ЛЮБОГО происхождения (повторяющийся запрос, триггер фокуса, серия, неопознанный) с
+//! активным `AE_STATE` — доказательство, что в HAL ушёл запрос с вендорским AE. Каждый новый результат
+//! проверяется сразу, как появился ([`OwnAeWatch::observe_result`]), а не задним числом по журналу:
+//! журнал ограничен по длине и хранит только повторяющиеся результаты, поэтому слепой зоны нет.
+//! Ограничение: сценарий видит каждый третий кадр (тик), а не все.
 
-use camera_contract::three_a::{AeAfLock, AeState};
-use camera_core::three_a_status::{AdjustmentReason, AutoExposureProgress, ControlParameter, ThreeAStatus};
+use camera_contract::three_a::{AeAfLock, AeState, RequestOrigin};
+use camera_core::three_a_status::{
+    AdjustmentReason, AutoExposureProgress, ControlParameter, LastThreeAResult, ThreeACounters, ThreeAStatus,
+};
 use serde::Serialize;
 
-use super::three_a_results::ResultLog;
 use crate::auto_exposure_link::ExposureControllerKind;
 
 /// Кто ведёт экспозицию в этом прогоне.
@@ -75,6 +79,59 @@ pub fn is_vendor_ae_active(state: AeState) -> bool {
     !matches!(state, AeState::Inactive)
 }
 
+/// Сколько результатов проверено на вендорский AE, по происхождению запроса.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct ResultsChecked {
+    /// Повторяющийся запрос потока.
+    pub repeating: usize,
+    /// Разовый запрос с триггером автофокуса (тап).
+    pub focus_trigger: usize,
+    /// Кадры серии (брекетинг).
+    pub burst: usize,
+    /// Запрос не опознан.
+    pub unknown: usize,
+}
+
+impl ResultsChecked {
+    /// Учитывает один результат в счётчике его происхождения.
+    fn count(&mut self, origin: RequestOrigin) {
+        let counter = match origin {
+            RequestOrigin::Repeating => &mut self.repeating,
+            RequestOrigin::FocusTrigger { .. } => &mut self.focus_trigger,
+            RequestOrigin::Burst { .. } => &mut self.burst,
+            RequestOrigin::Unknown => &mut self.unknown,
+        };
+        *counter += 1;
+    }
+}
+
+/// Диапазон сырого замера сцены за окно наблюдения: свидетельство, что сцена за окно действительно менялась.
+///
+/// Значения — log2 от «выдержка × ISO» (см. `AutoExposureDiagnostics::observed_scene_log2_seconds_iso`),
+/// поэтому разность максимума и минимума — это EV.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct ObservedSceneRange {
+    extremes: Option<(f64, f64)>,
+}
+
+impl ObservedSceneRange {
+    /// Один замер. Нечисловое значение (NaN, бесконечность) замером не считается: диапазон не ломаем.
+    pub fn record(&mut self, log2_seconds_iso: f64) {
+        if !log2_seconds_iso.is_finite() {
+            return;
+        }
+        self.extremes = Some(match self.extremes {
+            None => (log2_seconds_iso, log2_seconds_iso),
+            Some((lowest, highest)) => (lowest.min(log2_seconds_iso), highest.max(log2_seconds_iso)),
+        });
+    }
+
+    /// Размах замеров, EV; `None` — ни одного замера (например, вендорский AE замера сцены не даёт).
+    pub fn range_ev(&self) -> Option<f64> {
+        self.extremes.map(|(lowest, highest)| highest - lowest)
+    }
+}
+
 /// Что сценарий наблюдал о нашем AE за прогон. Собирается каждый тик, итог — [`OwnAeReport`].
 #[derive(Debug, Default)]
 pub struct OwnAeWatch {
@@ -88,11 +145,30 @@ pub struct OwnAeWatch {
     /// Сколько тиков статус содержал поправку `TargetNotReached`.
     target_not_reached_ticks: u64,
     last_progress: Option<AutoExposureProgress>,
+    /// Проверено результатов на вендорский AE, по происхождению.
+    results_checked: ResultsChecked,
+    /// Из них с активным `AE_STATE` вендора, любое происхождение.
+    vendor_ae_results: usize,
+    /// Кадр первого такого результата (по порядку прихода).
+    first_vendor_ae_frame: Option<i64>,
+    /// Счётчики движка на последнем тике: учёт **каждого** результата с запуска движка, без выборки
+    /// (сценарий видит лишь последний результат на тик, ~каждый третий кадр).
+    engine_counters: Option<ThreeACounters>,
 }
 
 impl OwnAeWatch {
+    /// Новый результат HAL (любого происхождения, каждый кадр — один раз): проверяем на вендорский AE сразу.
+    pub fn observe_result(&mut self, result: &LastThreeAResult) {
+        self.results_checked.count(result.origin);
+        if result.ae_state.is_some_and(is_vendor_ae_active) {
+            self.vendor_ae_results += 1;
+            self.first_vendor_ae_frame.get_or_insert(result.frame_number.0);
+        }
+    }
+
     /// Один тик: смотрим состояние нашего AE и поправки.
     pub fn observe(&mut self, status: &ThreeAStatus) {
+        self.engine_counters = Some(status.counters);
         let Some(progress) = status.auto_exposure else {
             return;
         };
@@ -124,14 +200,10 @@ impl OwnAeWatch {
     }
 
     /// Итог для отчёта; `None`, если наш AE не вёл экспозицию (прогон с вендорским).
-    pub fn report(&self, results: &ResultLog) -> Option<OwnAeReport> {
+    pub fn report(&self) -> Option<OwnAeReport> {
         if !self.seen {
             return None;
         }
-        let vendor_results: Vec<_> = results
-            .repeating_after(None)
-            .filter(|result| result.ae_state.is_some_and(is_vendor_ae_active))
-            .collect();
         Some(OwnAeReport {
             progress_at_end: self.last_progress,
             settled_seen: self.settled,
@@ -139,9 +211,10 @@ impl OwnAeWatch {
             limit_reached_seen: self.limit_reached,
             worst_shortfall_ev: self.worst_shortfall_ev,
             target_not_reached_ticks: self.target_not_reached_ticks,
-            repeating_results_checked: results.repeating_after(None).count(),
-            vendor_ae_results: vendor_results.len(),
-            first_vendor_ae_frame: vendor_results.first().map(|result| result.frame_number.0),
+            results_checked: self.results_checked,
+            vendor_ae_results: self.vendor_ae_results,
+            first_vendor_ae_frame: self.first_vendor_ae_frame,
+            engine: self.engine_counters.as_ref().map(EngineAeCount::since_engine_start),
         })
     }
 }
@@ -159,11 +232,34 @@ pub struct OwnAeReport {
     pub worst_shortfall_ev: Option<f32>,
     /// Тиков, где в статусе была поправка `TargetNotReached`.
     pub target_not_reached_ticks: u64,
-    /// Сколько результатов повторяющегося запроса проверено на вендорский AE.
-    pub repeating_results_checked: usize,
-    /// Из них с активным `AE_STATE` вендора (должно быть 0).
+    /// Сколько результатов проверено на вендорский AE, по происхождению запроса.
+    pub results_checked: ResultsChecked,
+    /// Из них с активным `AE_STATE` вендора, любое происхождение (должно быть 0).
     pub vendor_ae_results: usize,
     pub first_vendor_ae_frame: Option<i64>,
+    /// Учёт движка по каждому результату за прогон (`None` — статуса не видели ни разу).
+    pub engine: Option<EngineAeCount>,
+}
+
+/// Учёт движка **с его запуска**, а не за прогон: выбор `own / vendor` фиксирован на процесс, поэтому
+/// любой результат с активным AE HAL за всю жизнь движка — нарушение. Так в учёт входят и кадры до первого
+/// тика сценария (автостарт видоискателя, запуск потока), и разность не прячет перезапуск счётчиков.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct EngineAeCount {
+    /// Результатов кадров любого происхождения с запуска движка.
+    pub results_observed: u64,
+    /// Из них с активным `AE_STATE` HAL — при нашем AE должно быть 0.
+    pub results_with_hal_ae_active: u64,
+}
+
+impl EngineAeCount {
+    /// Снимок счётчиков движка (последний тик сценария).
+    pub fn since_engine_start(counters: &ThreeACounters) -> Self {
+        Self {
+            results_observed: counters.results_observed,
+            results_with_hal_ae_active: counters.results_with_hal_ae_active,
+        }
+    }
 }
 
 /// Нарушения правил нашего AE (одно правило — одно нарушение).
@@ -171,12 +267,23 @@ pub fn own_ae_violations(report: &OwnAeReport) -> Vec<String> {
     let mut violations = Vec::new();
     if report.vendor_ae_results != 0 {
         violations.push(format!(
-            "наш AE: {} результатов повторяющегося запроса с активным AE_STATE вендора (первый — кадр {:?}): \
+            "наш AE: {} результатов с активным AE_STATE вендора (первый — кадр {:?}): \
              в HAL ушёл запрос с вендорским AE",
             report.vendor_ae_results, report.first_vendor_ae_frame
         ));
     }
-    if report.repeating_results_checked == 0 {
+    match report.engine {
+        Some(engine) if engine.results_with_hal_ae_active != 0 => violations.push(format!(
+            "наш AE: движок с запуска насчитал {} результатов с активным AE HAL из {}: в HAL ушёл запрос с вендорским AE",
+            engine.results_with_hal_ae_active, engine.results_observed
+        )),
+        Some(engine) if engine.results_observed == 0 => {
+            violations.push("наш AE: движок не насчитал ни одного результата с запуска".to_owned())
+        }
+        Some(_) => {}
+        None => violations.push("наш AE: нет счётчиков движка — учёт «каждого результата» не проверен".to_owned()),
+    }
+    if report.results_checked.repeating == 0 {
         violations
             .push("наш AE: нет результатов повторяющегося запроса, проверять «нет вендорского AE» нечем".to_owned());
     }

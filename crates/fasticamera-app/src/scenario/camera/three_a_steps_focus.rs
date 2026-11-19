@@ -5,14 +5,15 @@ use camera_contract::three_a::{AeAfLock, AeState, PointRequestId, SensorPoint};
 use camera_core::CameraEvent;
 use camera_core::three_a_status::FocusProgress;
 use render_loop::viewfinder::ColdStartState;
+use shell_contract::haptics::{HapticOutcome, HapticPattern};
 
 use super::engine_watch::RunFailure;
 use super::progress::Deadline;
-use super::three_a_own_ae::{AeSource, is_lock_reached};
+use super::three_a_own_ae::{AeSource, ObservedSceneRange, is_lock_reached};
 use super::three_a_report::{
     AwbReport, AwbVsHal, FocusReport, LiveReport, LockReport, TapReport, TapResult, ThreeAObservation,
 };
-use super::three_a_results::{exposure_product, relative_gap};
+use super::three_a_results::{FrozenCriteria, exposure_product, product_frozen_after_frames, relative_gap};
 use super::three_a_steps::{StepEnv, StepProgress, ThreeAStep, invalid_value, sent};
 use super::white_balance_report::WhiteBalanceReport;
 use crate::three_a_scenario_config::TapPointConfig;
@@ -272,6 +273,8 @@ enum LockPhase {
     },
     Hold {
         first_locked_frame: i64,
+        /// Номер кадра в момент команды блокировки: от него считаем «кадров до замирания».
+        lock_marker: Option<i64>,
         until: std::time::Instant,
     },
     WaitUnlocked {
@@ -279,13 +282,34 @@ enum LockPhase {
     },
 }
 
-/// Шаг f: блокировка AE/AF по центру, ~2 с постоянства, сброс точки.
+/// Тактильный сигнал в начале удержания: «блокировка взята, закрывайте объектив рукой».
+const HOLD_START_CUE: HapticPattern = HapticPattern::HeavyImpact;
+/// Тактильный сигнал в конце удержания: «окно кончилось, объектив можно открывать». Другой паттерн, чтобы
+/// сигналы не путались.
+const HOLD_END_CUE: HapticPattern = HapticPattern::Success;
+
+/// Шаг f: блокировка AE/AF по центру, удержание под наблюдением (`lock.hold_ms`), сброс точки.
+///
+/// Удержание размечено тактильными сигналами (человек закрывает объектив по первому и открывает по второму),
+/// а доказательство, что сцена менялась, — размах сырого замера сцены нашим AE ([`ObservedSceneRange`]).
 #[derive(Default)]
 pub struct LockStep {
     phase: Option<LockPhase>,
     report: Option<LockReport>,
     /// Наш AE: тиков под блокировкой, где статус вышел из `Holding`.
     left_holding_ticks: usize,
+    /// Замеры сцены на тиках удержания.
+    scene_range: ObservedSceneRange,
+    /// Итог сигнала в начале удержания.
+    haptic_hold_start: Option<HapticOutcome>,
+}
+
+/// Что собрано за удержание из журнала результатов.
+struct HoldMeasurements {
+    samples_held: usize,
+    non_locked_after_lock: usize,
+    max_product_deviation: Option<f64>,
+    product_frozen_after_frames: Option<i64>,
 }
 
 impl LockStep {
@@ -306,11 +330,14 @@ impl LockStep {
         }
     }
 
-    fn hold_report(
+    /// Разбор журнала результатов за удержание: сколько кадров, сколько не под блокировкой, отклонение
+    /// произведения и сколько кадров оно доходило до замирания.
+    fn measure_hold(
         first_locked_frame: i64,
+        lock_marker: Option<i64>,
         env: &StepEnv<'_>,
         left_holding_ticks: usize,
-    ) -> (usize, usize, Option<f64>) {
+    ) -> HoldMeasurements {
         let held: Vec<_> = env.results.repeating_after(Some(first_locked_frame - 1)).collect();
         let baseline = held.first().and_then(|result| exposure_product(result));
         let non_locked = match AeSource::of(&env.status.three_a) {
@@ -326,7 +353,60 @@ impl LockStep {
                 .filter_map(|product| relative_gap(product, baseline))
                 .reduce(f64::max)
         });
-        (held.len(), non_locked, deviation)
+        HoldMeasurements {
+            samples_held: held.len(),
+            non_locked_after_lock: non_locked,
+            max_product_deviation: deviation,
+            product_frozen_after_frames: Self::frozen_after_frames(lock_marker, env),
+        }
+    }
+
+    /// Через сколько кадров после команды блокировки произведение замерло до конца удержания. Считаем по
+    /// всем результатам повторяющегося запроса после кадра команды (в том числе до `Holding`: догон цели
+    /// до сенсора виден именно там).
+    fn frozen_after_frames(lock_marker: Option<i64>, env: &StepEnv<'_>) -> Option<i64> {
+        let marker = lock_marker?;
+        let products: Vec<(i64, f64)> = env
+            .results
+            .repeating_after(Some(marker))
+            .filter_map(|result| exposure_product(result).map(|product| (result.frame_number.0, product)))
+            .collect();
+        let criteria = FrozenCriteria {
+            tolerance_fraction: env.config.lock.constancy_tolerance_fraction,
+            min_tail_samples: env.config.lock.product_frozen_min_tail_samples,
+        };
+        product_frozen_after_frames(marker, &products, criteria)
+    }
+
+    /// Один тик удержания: счётчик выхода из `Holding` и замер сцены.
+    fn observe_hold_tick(&mut self, env: &StepEnv<'_>) {
+        let own = AeSource::of(&env.status.three_a) == AeSource::Own;
+        if own && !is_lock_reached(&env.status.three_a) {
+            self.left_holding_ticks += 1;
+        }
+        let observed_scene = env
+            .presentation
+            .viewfinder
+            .as_ref()
+            .and_then(|viewfinder| viewfinder.auto_exposure.as_ref())
+            .and_then(|auto_exposure| auto_exposure.observed_scene_log2_seconds_iso);
+        if let Some(log2_seconds_iso) = observed_scene {
+            self.scene_range.record(log2_seconds_iso);
+        }
+    }
+
+    /// Играет сигнал и возвращает итог платформы; итог всегда попадает в отчёт и в стадию (отказ не тихий).
+    fn play_cue(env: &mut StepEnv<'_>, pattern: HapticPattern, moment: &'static str) -> HapticOutcome {
+        let outcome = env.haptics.play(pattern);
+        env.stage(
+            "three_a_lock_cue",
+            [
+                ("moment", moment.into()),
+                ("pattern", pattern.name().into()),
+                ("outcome", super::detail::to_value(&outcome)),
+            ],
+        );
+        outcome
     }
 }
 
@@ -355,10 +435,15 @@ impl ThreeAStep for LockStep {
         match self.phase.take() {
             Some(LockPhase::WaitLocked { marker, deadline }) => {
                 self.phase = match Self::locked_frame(env, marker) {
-                    Some(first_locked_frame) => Some(LockPhase::Hold {
-                        first_locked_frame,
-                        until: now + std::time::Duration::from_millis(env.config.lock.hold_ms),
-                    }),
+                    Some(first_locked_frame) => {
+                        // Окно удержания началось: сигнал «закрывайте объектив».
+                        self.haptic_hold_start = Some(Self::play_cue(env, HOLD_START_CUE, "hold_start"));
+                        Some(LockPhase::Hold {
+                            first_locked_frame,
+                            lock_marker: marker,
+                            until: now + std::time::Duration::from_millis(env.config.lock.hold_ms),
+                        })
+                    }
                     None if deadline.is_expired(now) => {
                         self.report = Some(not_locked_report(AeSource::of(&env.status.three_a)));
                         return self.request_reset(env, observation);
@@ -369,27 +454,31 @@ impl ThreeAStep for LockStep {
             }
             Some(LockPhase::Hold {
                 first_locked_frame,
+                lock_marker,
                 until,
             }) => {
-                let own = AeSource::of(&env.status.three_a) == AeSource::Own;
-                if own && !is_lock_reached(&env.status.three_a) {
-                    self.left_holding_ticks += 1;
-                }
+                self.observe_hold_tick(env);
                 if now < until {
                     self.phase = Some(LockPhase::Hold {
                         first_locked_frame,
+                        lock_marker,
                         until,
                     });
                     return StepProgress::Pending;
                 }
-                let (samples_held, non_locked_after_lock, max_product_deviation) =
-                    Self::hold_report(first_locked_frame, env, self.left_holding_ticks);
+                // Окно кончилось: сигнал «объектив можно открывать».
+                let haptic_hold_end = Self::play_cue(env, HOLD_END_CUE, "hold_end");
+                let held = Self::measure_hold(first_locked_frame, lock_marker, env, self.left_holding_ticks);
                 self.report = Some(LockReport {
                     ae_source: AeSource::of(&env.status.three_a),
                     locked: true,
-                    samples_held,
-                    non_locked_after_lock,
-                    max_product_deviation,
+                    samples_held: held.samples_held,
+                    non_locked_after_lock: held.non_locked_after_lock,
+                    max_product_deviation: held.max_product_deviation,
+                    observed_scene_range_ev: self.scene_range.range_ev(),
+                    product_frozen_after_frames: held.product_frozen_after_frames,
+                    haptic_hold_start: self.haptic_hold_start,
+                    haptic_hold_end: Some(haptic_hold_end),
                     back_to_continuous: false,
                 });
                 self.request_reset(env, observation)
@@ -438,6 +527,10 @@ fn not_locked_report(ae_source: AeSource) -> LockReport {
         samples_held: 0,
         non_locked_after_lock: 0,
         max_product_deviation: None,
+        observed_scene_range_ev: None,
+        product_frozen_after_frames: None,
+        haptic_hold_start: None,
+        haptic_hold_end: None,
         back_to_continuous: false,
     }
 }

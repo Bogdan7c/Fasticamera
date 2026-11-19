@@ -7,7 +7,7 @@
 use camera_contract::auto_exposure::ExposureProduct;
 use camera_contract::control::{Control, ExposureTime, Iso};
 
-use super::flicker::FlickerSnapshot;
+use super::flicker::FlickerProtection;
 use super::split::{Anchor, Split, SplitLimits, split};
 use crate::command::UnsupportedThreeA;
 use crate::request_controls::ExposurePlan;
@@ -22,7 +22,7 @@ use crate::three_a_status::{AdjustmentReason, ControlAdjustment, ControlParamete
 pub(super) struct PlanBasis {
     /// Цель без компенсации: принятое предложение, память прошлого потока или стартовое.
     pub(super) target: ExposureProduct,
-    pub(super) flicker: FlickerSnapshot,
+    pub(super) flicker: FlickerProtection,
     /// Допуск «цель достигнута», EV.
     pub(super) not_reached_tolerance_ev: f32,
     /// Шаг округления сообщаемой нехватки, EV.

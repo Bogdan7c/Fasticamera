@@ -33,7 +33,7 @@ use camera_contract::capture_result::CaptureResultMeta;
 use camera_contract::three_a::{DirectiveGeneration, MainsFrequency, RequestOrigin};
 
 use super::config::OwnExposureConfig;
-use super::flicker::{FlickerDetector, FlickerSnapshot};
+use super::flicker::FlickerProtection;
 use super::plan::{PlanBasis, plan_exposure};
 use super::proposal_gate::{GateVerdict, ProposalGate};
 use crate::command::UnsupportedThreeA;
@@ -48,13 +48,12 @@ pub struct RawStatsExposure {
     /// ящик хранит последнее значение, и его нельзя читать второй раз.
     seen: Option<DirectiveGeneration>,
     gate: ProposalGate,
-    detector: FlickerDetector,
     /// Последнее принятое предложение (статус и память); план его не читает.
     accepted: Option<ExposureProposal>,
     /// Цель, по которой построен текущий план; `None` — стартовое значение.
     driving_target: Option<ExposureProduct>,
-    /// Мерцание, по которому построен текущий план.
-    planned_flicker: FlickerSnapshot,
+    /// Защита от мерцания: задана человеком (конфиг + частота сети), за поток не меняется.
+    flicker: FlickerProtection,
     /// Цель последнего принятого предложения прошлого потока.
     memory: Option<ExposureProduct>,
     /// Стартовая цель из конфига; `None` только при заведомо негодном конфиге (недостижимо
@@ -64,15 +63,14 @@ pub struct RawStatsExposure {
 
 impl RawStatsExposure {
     pub fn new(config: OwnExposureConfig, proposals: ExposureProposalChannel, mains: MainsFrequency) -> Self {
-        let detector = FlickerDetector::new(config.flicker, mains);
+        let flicker = FlickerProtection::new(config.flicker, mains);
         let configured_start = ExposureProduct::from_seconds_iso(config.initial_exposure_seconds_iso).ok();
         Self {
             config,
             proposals,
             seen: None,
             gate: ProposalGate::default(),
-            planned_flicker: detector.snapshot(),
-            detector,
+            flicker,
             accepted: None,
             driving_target: None,
             memory: None,
@@ -99,7 +97,7 @@ impl RawStatsExposure {
     fn basis(&self) -> Option<PlanBasis> {
         Some(PlanBasis {
             target: self.current_target()?,
-            flicker: self.planned_flicker,
+            flicker: self.flicker,
             not_reached_tolerance_ev: self.config.not_reached_tolerance_ev,
             shortfall_report_step_ev: self.config.shortfall_report_step_ev,
         })
@@ -119,18 +117,8 @@ impl RawStatsExposure {
         PlanRefresh::Changed
     }
 
-    /// Мерцание изменилось с момента построения плана?
-    fn adopt_flicker(&mut self) -> PlanRefresh {
-        let current = self.detector.snapshot();
-        if current == self.planned_flicker {
-            return PlanRefresh::Unchanged;
-        }
-        self.planned_flicker = current;
-        PlanRefresh::Changed
-    }
-
     /// Толкнуть движок: «загляни в `refresh()`». Нужен, когда решение выросло не из ящика
-    /// рендера (детектор мерцания, придержанное предложение дождалось метки потока).
+    /// рендера (придержанное предложение дождалось метки потока).
     fn nudge_engine(&self) {
         // Если движок ещё не привязан, толчок пропущен, но ящик сигнала это помнит: `bind`
         // дошлёт получателю один толчок, и движок вызовет `refresh()`.
@@ -146,16 +134,15 @@ impl ExposureController for RawStatsExposure {
     }
 
     fn observe_result(&mut self, result: &CaptureResultMeta) {
-        // Разовые кадры (триггер фокуса, серия) идут с чужими параметрами экспозиции и
-        // мерцание в них не показательно; поток потока — только повторяющийся запрос.
+        // Разовые кадры (триггер фокуса, серия) идут с чужими параметрами экспозиции;
+        // метку начала потока ставит только повторяющийся запрос. Мерцание из результата
+        // (`scene_flicker`) сюда не читается: детектор HAL фиктивный, решение 77.
         if result.three_a.origin != RequestOrigin::Repeating {
             return;
         }
-        let mut wake_engine = self.detector.observe(result.three_a.scene_flicker);
-        if let Some(timestamp) = result.sensor_timestamp {
-            wake_engine |= self.gate.mark_stream_start(timestamp);
-        }
-        if wake_engine {
+        if let Some(timestamp) = result.sensor_timestamp
+            && self.gate.mark_stream_start(timestamp)
+        {
             self.nudge_engine();
         }
     }
@@ -165,15 +152,9 @@ impl ExposureController for RawStatsExposure {
             self.seen = Some(generation);
             self.gate.offer(proposal);
         }
-        let target = match self.gate.review() {
+        match self.gate.review() {
             GateVerdict::Accepted(proposal) => self.adopt(proposal),
             GateVerdict::NothingToReview | GateVerdict::Waiting | GateVerdict::RejectedStale => PlanRefresh::Unchanged,
-        };
-        let flicker = self.adopt_flicker();
-        if target == PlanRefresh::Changed || flicker == PlanRefresh::Changed {
-            PlanRefresh::Changed
-        } else {
-            PlanRefresh::Unchanged
         }
     }
 
@@ -192,7 +173,5 @@ impl ExposureController for RawStatsExposure {
         }
         self.driving_target = None;
         self.gate.reset_for_new_stream();
-        self.detector.reset_for_new_stream();
-        self.planned_flicker = self.detector.snapshot();
     }
 }

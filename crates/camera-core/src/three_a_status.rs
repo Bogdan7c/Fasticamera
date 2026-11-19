@@ -9,7 +9,7 @@ use std::time::Duration;
 use camera_contract::capture_result::{FrameNumber, SensorTimestamp};
 use camera_contract::control::ManualControl;
 use camera_contract::three_a::{
-    AeAfLock, AeState, AfState, BurstId, PointOfInterest, PointRequestId, RequestOrigin, ThreeAProfile,
+    AeAfLock, AeState, AfState, BurstId, PointOfInterest, PointRequestId, RequestOrigin, SceneFlicker, ThreeAProfile,
 };
 use serde::Serialize;
 
@@ -126,6 +126,9 @@ pub struct LastThreeAResult {
     pub af_state: Option<AfState>,
     pub ae_state: Option<AeState>,
     pub focus_distance_diopters: Option<f32>,
+    /// Сырой ответ детектора мерцания HAL на этом кадре (`None` — HAL ключ не отдал). Только
+    /// наблюдение: решение о защите принимает исполнитель экспозиции, а не читатели статуса.
+    pub scene_flicker: Option<SceneFlicker>,
     pub exposure_time: Option<Duration>,
     pub sensitivity_iso: Option<u32>,
 }
@@ -141,6 +144,12 @@ pub struct ThreeACounters {
     pub bracket_failures: u64,
     /// Результаты, чей запрос бэкенд не опознал (`RequestOrigin::Unknown`).
     pub results_with_unknown_origin: u64,
+    /// Результатов кадров всего (любого происхождения: поток, тап, серия, неопознанные).
+    pub results_observed: u64,
+    /// Результатов, где HAL сообщил **активный** AE (`AE_STATE` есть и не `Inactive`). Считается по
+    /// каждому результату движка, а не по выборке читателей статуса: с нашим AE (`AE_MODE_OFF`) HAL
+    /// своего AE не ведёт, и любой такой результат — доказательство, что вендорский AE включился.
+    pub results_with_hal_ae_active: u64,
 }
 
 /// Снимок автоматики 3A и ручных параметров.

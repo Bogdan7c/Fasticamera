@@ -68,7 +68,14 @@ def own_ae_report() -> dict:
     for point in report["ev"]["points"]:
         point.update(ae_converged=True, ae_limit_reached=False)
     report["expected_ae_source"] = "own"
-    report["lock"].update(ae_source="own", max_product_deviation=0.0)
+    report["lock"].update(
+        ae_source="own",
+        max_product_deviation=0.0,
+        observed_scene_range_ev=2.4,
+        product_frozen_after_frames=9,
+        haptic_hold_start={"outcome": "queued", "realization": "waveform"},
+        haptic_hold_end={"outcome": "queued", "realization": "waveform"},
+    )
     report["own_ae"] = {
         "progress_at_end": {"kind": "settled"},
         "settled_seen": True,
@@ -76,9 +83,10 @@ def own_ae_report() -> dict:
         "limit_reached_seen": False,
         "worst_shortfall_ev": None,
         "target_not_reached_ticks": 0,
-        "repeating_results_checked": 120,
+        "results_checked": {"repeating": 120, "focus_trigger": 6, "burst": 4, "unknown": 0},
         "vendor_ae_results": 0,
         "first_vendor_ae_frame": None,
+        "engine": {"results_observed": 360, "results_with_hal_ae_active": 0},
     }
     return report
 
@@ -217,6 +225,12 @@ class OwnAeCheckTest(unittest.TestCase):
         mutate(report)
         return report
 
+    def test_tap_and_burst_missing_from_the_scenario_sample_is_not_a_failure(self) -> None:
+        # Сценарий видит ~каждый третий кадр: тап и серия могут не попасть в выборку, полный учёт — у движка.
+        report = own_ae_report()
+        report["own_ae"]["results_checked"].update(focus_trigger=0, burst=0)
+        self.assertEqual(verdict_of(report).exit_code, smoke_wait.EXIT_OK)
+
     def test_healthy_run_with_our_ae_passes_without_hal_ae_state(self) -> None:
         report = own_ae_report()
         report["live"]["ae_state"] = None  # у нашего AE AE_STATE справка, не правило
@@ -225,7 +239,15 @@ class OwnAeCheckTest(unittest.TestCase):
     def test_each_our_ae_rule_is_rechecked(self) -> None:
         cases = {
             "результатов с активным AE_STATE вендора 3": lambda r: r["own_ae"].update(vendor_ae_results=3),
-            "нет проверенных результатов": lambda r: r["own_ae"].update(repeating_results_checked=0),
+            "не проверено ни одного результата повторяющегося запроса": lambda r: r["own_ae"]["results_checked"].update(
+                repeating=0
+            ),
+            "движок с запуска насчитал 2 результатов с активным AE HAL": lambda r: r["own_ae"]["engine"].update(
+                results_with_hal_ae_active=2
+            ),
+            "движок не насчитал результатов": lambda r: r["own_ae"]["engine"].update(results_observed=0),
+            "нет учёта движка": lambda r: r["own_ae"].pop("engine"),
+            "нет results_checked": lambda r: r["own_ae"].pop("results_checked"),
             "ни разу не дошёл": lambda r: r["own_ae"].update(
                 settled_seen=False, holding_seen=False, limit_reached_seen=False
             ),
@@ -276,3 +298,69 @@ class OwnAeCheckTest(unittest.TestCase):
         verdict = verdict_of(report)
         self.assertEqual(verdict.exit_code, smoke_wait.EXIT_SCENARIO_FAILED, verdict.message)
         self.assertIn("экспозицию вёл вендорский AE", verdict.message)
+
+
+class LockEvidenceTest(unittest.TestCase):
+    """Сессия 08c: свидетельства окна удержания блокировки нашего AE и пояснения к вердикту."""
+
+    @staticmethod
+    def _lock_edited(**changes: object) -> dict:
+        report = own_ae_report()
+        report["lock"].update(changes)
+        return report
+
+    def test_each_missing_or_malformed_evidence_field_fails(self) -> None:
+        for key in ("observed_scene_range_ev", "product_frozen_after_frames", "haptic_hold_start", "haptic_hold_end"):
+            with self.subTest(f"нет {key}"):
+                report = own_ae_report()
+                del report["lock"][key]
+                verdict = verdict_of(report)
+                self.assertEqual(verdict.exit_code, smoke_wait.EXIT_SCENARIO_FAILED, verdict.message)
+                self.assertIn(f"нет поля {key}", verdict.message)
+        malformed = {
+            "observed_scene_range_ev": "много",
+            "product_frozen_after_frames": 2.5,
+            "haptic_hold_start": "queued",
+        }
+        for key, value in malformed.items():
+            with self.subTest(f"{key}={value!r}"):
+                verdict = verdict_of(self._lock_edited(**{key: value}))
+                self.assertEqual(verdict.exit_code, smoke_wait.EXIT_SCENARIO_FAILED, verdict.message)
+                self.assertIn(key, verdict.message)
+
+    def test_null_evidence_is_valid_when_nothing_was_measured(self) -> None:
+        report = self._lock_edited(observed_scene_range_ev=None, product_frozen_after_frames=None)
+        self.assertEqual(verdict_of(report).exit_code, smoke_wait.EXIT_OK)
+
+    def test_changed_scene_is_a_note_that_says_the_scene_changed(self) -> None:
+        verdict = verdict_of(own_ae_report())
+        self.assertEqual(verdict.exit_code, smoke_wait.EXIT_OK)
+        self.assertTrue(any("менялась" in note and "2.40" in note for note in verdict.notes), verdict.notes)
+        self.assertTrue(any("замерла через 9 кадров" in note for note in verdict.notes), verdict.notes)
+        self.assertFalse(any("СТАТИЧНОЙ" in note for note in verdict.notes), verdict.notes)
+
+    def test_static_scene_does_not_fail_but_the_verdict_says_so_loudly(self) -> None:
+        verdict = verdict_of(self._lock_edited(observed_scene_range_ev=0.0))
+        self.assertEqual(verdict.exit_code, smoke_wait.EXIT_OK, verdict.message)
+        self.assertTrue(any("СТАТИЧНОЙ сцене" in note for note in verdict.notes), verdict.notes)
+
+    def test_missing_scene_measurement_and_frozen_product_are_noted(self) -> None:
+        verdict = verdict_of(self._lock_edited(observed_scene_range_ev=None, product_frozen_after_frames=None))
+        self.assertTrue(any("не получен" in note for note in verdict.notes), verdict.notes)
+        self.assertTrue(any("не замерла" in note for note in verdict.notes), verdict.notes)
+
+    def test_unplayed_haptic_cue_is_noted(self) -> None:
+        verdict = verdict_of(self._lock_edited(haptic_hold_start={"outcome": "unsupported"}))
+        self.assertEqual(verdict.exit_code, smoke_wait.EXIT_OK, verdict.message)
+        self.assertTrue(any("вибрация начала окна не сыграна" in note for note in verdict.notes), verdict.notes)
+        self.assertFalse(any("вибрация конца" in note for note in verdict.notes), verdict.notes)
+
+    def test_vendor_run_has_no_lock_notes(self) -> None:
+        self.assertEqual(verdict_of(three_a_report()).notes, ())
+
+    def test_vendor_ae_in_a_burst_or_tap_result_fails_even_when_repeating_is_clean(self) -> None:
+        report = own_ae_report()
+        report["own_ae"].update(vendor_ae_results=1, first_vendor_ae_frame=812)
+        verdict = verdict_of(report)
+        self.assertEqual(verdict.exit_code, smoke_wait.EXIT_SCENARIO_FAILED, verdict.message)
+        self.assertIn("результатов с активным AE_STATE вендора 1", verdict.message)

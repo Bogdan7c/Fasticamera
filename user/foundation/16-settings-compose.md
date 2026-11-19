@@ -16,6 +16,7 @@
   - атомарная запись (временный файл + rename);
   - события изменения для подписчиков (`camera-screen`, `CaptureService`).
 - **Пункты** — из `scope-v1.md`. Например: формат HEIF/JPEG, RAW по умолчанию, сетка, уровень, зеркальный фронт, «сохранять настройки» (как iOS Preserve Settings: режим, панель, экспозиция).
+  - **Защита от мерцания ламп** (решение 77, 08c): «выкл» (по умолчанию) / сеть 50 Гц / сеть 60 Гц → `camera.engine.three_a.exposure.flicker` (`never_protect` / `always_protect`) и частота сети. Автоопределения нет: детектор HAL на этом телефоне фальшивый.
 - **Шов**:
   - `ShellEvent::SettingsChanged(SettingChange)` от Compose → `app-config`;
   - `ShellCommands::publish_settings(SettingsSnapshot)` → Compose;

@@ -42,6 +42,8 @@ use crate::gpu_test_support::{
 use crate::scenario::observing::{PlatformFacts, ThermalListenerReport};
 use crate::scenario::{Scenario, ScenarioConfig};
 
+#[path = "event_router_ae_trace_tests.rs"]
+mod ae_trace;
 #[path = "event_router_autostart_tests.rs"]
 mod autostart;
 #[path = "event_router_camera_tests.rs"]
@@ -65,6 +67,8 @@ struct FakeShell {
     permission_requests: AtomicU64,
     frame_rates: Mutex<Vec<f32>>,
     haptics_played: Mutex<Vec<HapticPattern>>,
+    /// Что отвечает хаптика; `None` — «поставлено в очередь» (обычный телефон с вибромотором).
+    haptics_outcome: Mutex<Option<HapticOutcome>>,
     counters: Mutex<ShellCounters>,
     gyro_samples: Mutex<Vec<GyroSample>>,
     /// Подставная батарея; `None` — батареи нет (честный отказ замера тока).
@@ -94,7 +98,7 @@ impl ShellCommands for FakeShell {
 impl HapticsService for FakeShell {
     fn play(&self, pattern: HapticPattern) -> HapticOutcome {
         self.haptics_played.lock().expect("замок").push(pattern);
-        HapticOutcome::Queued(HapticRealizationKind::Waveform)
+        (*self.haptics_outcome.lock().expect("замок")).unwrap_or(HapticOutcome::Queued(HapticRealizationKind::Waveform))
     }
 }
 

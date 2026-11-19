@@ -201,7 +201,7 @@ fn exposure_controller_defaults_to_ours_and_accepts_both_names_but_not_typos() {
 #[test]
 fn own_ae_settings_of_the_engine_are_read_from_the_app_config_and_defaulted() {
     let config = config_with_camera(
-        r#"{"engine":{"three_a":{"exposure":{"initial_exposure_seconds_iso":2.5,"flicker":{"policy":"always_protect"}}}}}"#,
+        r#"{"engine":{"three_a":{"exposure":{"initial_exposure_seconds_iso":2.5,"flicker":"always_protect"}}}}"#,
     )
     .expect("секция нашего AE");
     let exposure = config.camera().engine.three_a.exposure;

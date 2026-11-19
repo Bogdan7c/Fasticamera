@@ -20,7 +20,7 @@ use super::three_a_support::*;
 use super::*;
 use crate::config::ThreeAConfig;
 use crate::request_controls::ExposurePlan;
-use crate::three_a_own::{DetectedFrequency, FlickerPolicy, OwnExposureConfig, RawStatsExposure};
+use crate::three_a_own::{FlickerPolicy, OwnExposureConfig, RawStatsExposure};
 use crate::three_a_status::{AdjustmentReason, AutoExposureProgress, ControlParameter};
 use crate::three_a_vendor::VendorFocus;
 
@@ -51,8 +51,10 @@ struct OwnRig {
 }
 
 impl OwnRig {
+    /// Стенд с включённой защитой 50 Гц; умолчание конфига (выключена, решение 77) проверяет
+    /// отдельный тест.
     fn new() -> Self {
-        Self::with_exposure_config(OwnExposureConfig::default())
+        Self::with_exposure_config(protected_exposure_config())
     }
 
     fn with_exposure_config(exposure: OwnExposureConfig) -> Self {
@@ -286,36 +288,49 @@ fn a_proposal_from_the_previous_stream_is_not_applied_and_is_counted() {
     );
 }
 
-#[test]
-fn clear_detector_reports_lift_the_flicker_guard_through_a_self_push_without_new_proposals() {
-    let mut own = OwnRig::with_exposure_config(OwnExposureConfig {
-        flicker: FlickerPolicy::FollowDetector {
-            clear_after_frames: 5,
-            detected_frequency: DetectedFrequency::IgnoreUseConfigured,
-        },
+/// Конфиг с явно включённой защитой от мерцания (ручной режим).
+fn protected_exposure_config() -> OwnExposureConfig {
+    OwnExposureConfig {
+        flicker: FlickerPolicy::AlwaysProtect,
         ..OwnExposureConfig::default()
-    });
+    }
+}
+
+#[test]
+fn hal_no_flicker_reports_do_not_clear_the_protection_and_never_touch_the_request() {
+    let mut own = OwnRig::new();
     let first = own.feed_repeating(None);
     own.propose(first, 1.2, ProposalConvergence::Settled);
     assert_eq!(own.sensor(), (Duration::from_millis(10), 120));
     own.rig.fake.take_calls();
 
-    for _ in 0..4 {
+    // Раньше 30 «чистых» кадров снимали защиту; детектор HAL фиктивный (решение 77).
+    for _ in 0..60 {
         own.feed_repeating(Some(SceneFlicker::None));
     }
-    assert!(own.rig.fake.take_calls().is_empty(), "до порога кадров защита держится");
-    own.feed_repeating(Some(SceneFlicker::None));
-    let calls = own.rig.fake.take_calls();
-    assert_eq!(
-        call_names(&calls),
-        vec!["set_repeating_request"],
-        "защита снята самотолчком"
+    assert!(
+        own.rig.fake.take_calls().is_empty(),
+        "отчёты HAL запрос не перестраивают"
     );
-    assert_eq!(own.sensor(), (Duration::from_millis(12), 100));
+    assert_eq!(own.sensor(), (Duration::from_millis(10), 120), "защита осталась");
+}
 
-    // Один отчёт о 60 Гц при конфиге 50 Гц — защита сразу, период прежний 10 мс.
-    own.feed_repeating(Some(SceneFlicker::Mains60Hz));
-    assert_eq!(own.sensor(), (Duration::from_millis(10), 120));
+#[test]
+fn default_policy_is_off_and_a_hal_60hz_report_does_not_switch_protection_on() {
+    let mut own = OwnRig::with_exposure_config(OwnExposureConfig::default());
+    let first = own.feed_repeating(None);
+    own.propose(first, 1.2, ProposalConvergence::Settled);
+    assert_eq!(
+        own.sensor(),
+        (Duration::from_millis(12), 100),
+        "по умолчанию выдержка свободна"
+    );
+    own.rig.fake.take_calls();
+    for _ in 0..30 {
+        own.feed_repeating(Some(SceneFlicker::Mains60Hz));
+    }
+    assert!(own.rig.fake.take_calls().is_empty());
+    assert_eq!(own.sensor(), (Duration::from_millis(12), 100));
 }
 
 #[test]

@@ -156,19 +156,12 @@ fn three_a_defaults_are_valid_and_each_broken_value_gives_its_own_error() {
 
 #[test]
 fn own_exposure_section_parses_validates_and_rejects_nonsense() {
-    use crate::three_a_own::{DetectedFrequency, FlickerPolicy};
+    use crate::three_a_own::FlickerPolicy;
 
-    let parsed: CameraEngineConfig = serde_json::from_str(
-        r#"{"three_a":{"exposure":{"flicker":{"policy":"follow_detector","clear_after_frames":12},"replan_min_change_ev":0.1}}}"#,
-    )
-    .expect("частичная секция");
-    assert_eq!(
-        parsed.three_a.exposure.flicker,
-        FlickerPolicy::FollowDetector {
-            clear_after_frames: 12,
-            detected_frequency: DetectedFrequency::IgnoreUseConfigured
-        }
-    );
+    let parsed: CameraEngineConfig =
+        serde_json::from_str(r#"{"three_a":{"exposure":{"flicker":"always_protect","replan_min_change_ev":0.1}}}"#)
+            .expect("частичная секция");
+    assert_eq!(parsed.three_a.exposure.flicker, FlickerPolicy::AlwaysProtect);
     assert_eq!(parsed.three_a.exposure.replan_min_change_ev, 0.1);
     assert_eq!(
         parsed.three_a.exposure.initial_exposure_seconds_iso, 4.0,
@@ -177,11 +170,35 @@ fn own_exposure_section_parses_validates_and_rejects_nonsense() {
     assert_eq!(parsed.validate(), Ok(()));
     assert_eq!(
         FlickerPolicy::default(),
-        FlickerPolicy::FollowDetector {
-            clear_after_frames: 30,
-            detected_frequency: DetectedFrequency::IgnoreUseConfigured
-        }
+        FlickerPolicy::NeverProtect,
+        "по умолчанию защита выключена (решение 77)"
     );
+    assert_eq!(
+        CameraEngineConfig::default().three_a.exposure.flicker,
+        FlickerPolicy::NeverProtect
+    );
+
+    // Автодетект убран (решение 77): старая форма отвергается, а не молча превращается в другую.
+    let legacy = r#"{"three_a":{"exposure":{"flicker":{"policy":"follow_detector","clear_after_frames":12}}}}"#;
+    assert!(
+        serde_json::from_str::<CameraEngineConfig>(legacy).is_err(),
+        "старый конфиг должен отвергаться: {legacy}"
+    );
+
+    // Старый объект с лишним полем рядом с ручной политикой тоже не проходит: политика — только строка.
+    for legacy_object in [
+        r#"{"three_a":{"exposure":{"flicker":{"policy":"always_protect","clear_after_frames":12}}}}"#,
+        r#"{"three_a":{"exposure":{"flicker":{"policy":"always_protect"}}}}"#,
+        r#"{"three_a":{"exposure":{"flicker":"50hz"}}}"#,
+    ] {
+        assert!(
+            serde_json::from_str::<CameraEngineConfig>(legacy_object).is_err(),
+            "должно отвергаться: {legacy_object}"
+        );
+    }
+    let never: CameraEngineConfig =
+        serde_json::from_str(r#"{"three_a":{"exposure":{"flicker":"never_protect"}}}"#).expect("ручное «выкл»");
+    assert_eq!(never.three_a.exposure.flicker, FlickerPolicy::NeverProtect);
 
     let typo = serde_json::from_str::<CameraEngineConfig>(r#"{"three_a":{"exposure":{"flicker_policy":"x"}}}"#);
     assert!(typo.is_err(), "опечатка в секции exposure отвергается");
@@ -231,14 +248,5 @@ fn own_exposure_section_parses_validates_and_rejects_nonsense() {
             field: "replan_min_change_ev",
             ..
         })
-    ));
-    let mut config = CameraEngineConfig::default();
-    config.three_a.exposure.flicker = FlickerPolicy::FollowDetector {
-        clear_after_frames: 0,
-        detected_frequency: DetectedFrequency::IgnoreUseConfigured,
-    };
-    assert!(matches!(
-        config.validate(),
-        Err(CameraEngineConfigError::InvalidThreeALimit { .. })
     ));
 }

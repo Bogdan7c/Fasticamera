@@ -693,3 +693,6 @@ fn the_measurement_phase_stays_cold_until_the_first_reliable_estimate_of_the_str
     controller.begin_stream();
     assert_eq!(controller.measurement_phase(), MeasurementPhase::ColdStart);
 }
+
+#[path = "controller_observation_tests.rs"]
+mod observation;

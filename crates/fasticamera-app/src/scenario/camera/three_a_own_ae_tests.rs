@@ -16,6 +16,7 @@ fn result(frame: i64, ae_state: Option<AeState>, origin: RequestOrigin) -> LastT
         af_state: None,
         ae_state,
         focus_distance_diopters: None,
+        scene_flicker: None,
         exposure_time: None,
         sensitivity_iso: None,
     }
@@ -41,11 +42,11 @@ fn source_follows_the_engine_status_not_a_config() {
 fn watch_of_a_vendor_run_reports_nothing() {
     let mut watch = OwnAeWatch::default();
     watch.observe(&status_with(None));
-    assert_eq!(watch.report(&ResultLog::default()), None);
+    assert_eq!(watch.report(), None);
 }
 
 #[test]
-fn watch_collects_markers_limit_shortfall_and_counts_vendor_ae_results() {
+fn watch_collects_markers_limit_shortfall_and_counts_vendor_ae_results_of_every_origin() {
     let mut watch = OwnAeWatch::default();
     watch.observe(&status_with(Some(AutoExposureProgress::Searching)));
     watch.observe(&status_with(Some(AutoExposureProgress::Settled)));
@@ -58,26 +59,39 @@ fn watch_collects_markers_limit_shortfall_and_counts_vendor_ae_results() {
     });
     watch.observe(&limited);
 
-    let mut results = ResultLog::default();
-    for (frame, state) in [(1, Some(AeState::Inactive)), (2, Some(AeState::Converged)), (3, None)] {
-        results.observe(Some(&result(frame, state, RequestOrigin::Repeating)));
+    // Вендорский AE виден в результате ЛЮБОГО происхождения, а не только повторяющегося запроса.
+    let burst = RequestOrigin::Burst {
+        burst: camera_contract::three_a::BurstId(1),
+        index: 0,
+    };
+    let trigger = RequestOrigin::FocusTrigger {
+        request: camera_contract::three_a::PointRequestId(7),
+    };
+    for (frame, state, origin) in [
+        (1, Some(AeState::Inactive), RequestOrigin::Repeating),
+        (2, Some(AeState::Converged), RequestOrigin::Repeating),
+        (3, None, RequestOrigin::Repeating),
+        (4, Some(AeState::Searching), burst),
+        (5, Some(AeState::Locked), trigger),
+        (6, Some(AeState::Inactive), RequestOrigin::Unknown),
+    ] {
+        watch.observe_result(&result(frame, state, origin));
     }
-    // Разовый кадр с активным AE_STATE в журнал повторяющегося запроса не попадает.
-    results.observe(Some(&result(
-        4,
-        Some(AeState::Searching),
-        RequestOrigin::Burst {
-            burst: camera_contract::three_a::BurstId(1),
-            index: 0,
-        },
-    )));
 
-    let report = watch.report(&results).expect("наш AE вёл экспозицию");
+    let report = watch.report().expect("наш AE вёл экспозицию");
     assert!(report.settled_seen && report.limit_reached_seen && !report.holding_seen);
     assert_eq!(report.worst_shortfall_ev, Some(-1.5));
     assert_eq!(report.target_not_reached_ticks, 1);
-    assert_eq!(report.repeating_results_checked, 3);
-    assert_eq!(report.vendor_ae_results, 1);
+    assert_eq!(
+        report.results_checked,
+        ResultsChecked {
+            repeating: 3,
+            focus_trigger: 1,
+            burst: 1,
+            unknown: 1
+        }
+    );
+    assert_eq!(report.vendor_ae_results, 3, "повторяющийся, серия и триггер фокуса");
     assert_eq!(report.first_vendor_ae_frame, Some(2));
     assert!(
         own_ae_violations(&report)
@@ -128,4 +142,42 @@ fn lock_counts_only_with_the_engine_lock_and_holding_together() {
         Some(AutoExposureProgress::Settled)
     )));
     assert!(!is_lock_reached(&with(AeAfLock::Locked, None)));
+}
+
+#[test]
+fn vendor_ae_in_a_focus_trigger_or_burst_result_alone_is_counted_and_fails_the_rule() {
+    for origin in [
+        RequestOrigin::FocusTrigger {
+            request: camera_contract::three_a::PointRequestId(1),
+        },
+        RequestOrigin::Burst {
+            burst: camera_contract::three_a::BurstId(1),
+            index: 2,
+        },
+    ] {
+        let mut watch = OwnAeWatch::default();
+        watch.observe(&status_with(Some(AutoExposureProgress::Settled)));
+        watch.observe_result(&result(1, Some(AeState::Inactive), RequestOrigin::Repeating));
+        watch.observe_result(&result(9, Some(AeState::Converged), origin));
+
+        let report = watch.report().expect("наш AE вёл экспозицию");
+        assert_eq!(report.vendor_ae_results, 1, "{origin:?}");
+        assert_eq!(report.first_vendor_ae_frame, Some(9), "{origin:?}");
+        assert!(
+            own_ae_violations(&report)
+                .iter()
+                .any(|text| text.contains("вендорским AE")),
+            "{origin:?}"
+        );
+    }
+}
+
+#[test]
+fn observed_scene_range_is_the_spread_of_finite_measurements_in_ev() {
+    let mut range = ObservedSceneRange::default();
+    assert_eq!(range.range_ev(), None, "замеров не было");
+    for value in [1.0, 3.5, f64::NAN, -0.5, f64::INFINITY] {
+        range.record(value);
+    }
+    assert_eq!(range.range_ev(), Some(4.0), "от -0.5 до 3.5, нечисловые отброшены");
 }

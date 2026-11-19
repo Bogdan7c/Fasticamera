@@ -17,12 +17,17 @@ import org.json.JSONObject
  * секция `camera.scenarios.power.ab.window_ms`). Короткое окно (например 15000) годится, чтобы
  * быстро снять миллисекунды GPU всех стадий; ток в таком окне Rust честно пометит «не различим».
  * Границы (окно длиннее прогрева и периода выборки) проверяет Rust.
+ *
+ * `exposureController` — какой автоэкспозицией управлять на один запуск (intent-параметр
+ * `exposure_controller`, поле `camera.exposure_controller`: `own` или `vendor`). Kotlin значение не
+ * разбирает, а передаёт как есть; неизвестное имя Rust отвергает при initialize.
  */
 data class NativeConfig(
     val buildType: String,
     val logFilter: String,
     val stageBudgetRows: List<String>? = null,
     val abWindowMs: Long? = null,
+    val exposureController: String? = null,
 ) {
     fun toJson(): String {
         val json = JSONObject()
@@ -38,8 +43,13 @@ data class NativeConfig(
             val ab = JSONObject().put("window_ms", windowMs)
             scenarios.put("power", JSONObject().put("ab", ab))
         }
+        val camera = JSONObject()
         if (scenarios.length() > 0) {
-            json.put("camera", JSONObject().put("scenarios", scenarios))
+            camera.put("scenarios", scenarios)
+        }
+        exposureController?.let { name -> camera.put("exposure_controller", name) }
+        if (camera.length() > 0) {
+            json.put("camera", camera)
         }
         return json.toString()
     }
@@ -54,6 +64,9 @@ data class NativeConfig(
         /** Intent-параметр с длиной окна A/B замера тока, мс (строка с целым числом). */
         const val EXTRA_AB_WINDOW_MS = "ab_window_ms"
 
+        /** Intent-параметр с именем автоэкспозиции: `own` или `vendor` (проверяет Rust). */
+        const val EXTRA_EXPOSURE_CONTROLLER = "exposure_controller"
+
         fun fromIntent(intent: Intent): NativeConfig = NativeConfig(
             buildType = BuildConfig.BUILD_TYPE,
             logFilter = intent.getStringExtra(EXTRA_LOG_FILTER) ?: BuildConfig.LOG_FILTER,
@@ -64,6 +77,8 @@ data class NativeConfig(
             // Не число — параметр не применяется, а initialize идёт с окном по умолчанию: скрипт
             // device-smoke.sh пропускает сюда только цифры, так что это лишь защита от ручного вызова.
             abWindowMs = intent.getStringExtra(EXTRA_AB_WINDOW_MS)?.toLongOrNull(),
+            // Нет параметра — null, поле в JSON не попадает, Rust берёт умолчание (own).
+            exposureController = intent.getStringExtra(EXTRA_EXPOSURE_CONTROLLER),
         )
     }
 }

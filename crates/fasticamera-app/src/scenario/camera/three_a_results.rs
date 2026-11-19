@@ -90,6 +90,38 @@ pub fn relative_gap(value: f64, target: f64) -> Option<f64> {
     (target != 0.0).then(|| ((value - target) / target).abs())
 }
 
+/// Критерий «произведение «выдержка × ISO» перестало меняться».
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FrozenCriteria {
+    /// Допустимое относительное расхождение с итоговым значением, доля (тот же допуск, что у постоянства).
+    pub tolerance_fraction: f64,
+    /// Сколько последних результатов подряд должны уложиться в допуск, чтобы считать произведение замершим:
+    /// один последний результат «замершим» был бы всегда.
+    pub min_tail_samples: usize,
+}
+
+/// Через сколько кадров после `marker` (кадра команды) произведение перестало меняться до конца ряда.
+///
+/// `products` — пары «номер кадра, произведение» в порядке кадров. Ищем самый длинный хвост ряда, где каждое
+/// значение в допуске от ПОСЛЕДНЕГО; его начало и есть момент замирания. `None`, если хвост короче
+/// `min_tail_samples` (произведение менялось до самого конца) или ряд пуст.
+pub fn product_frozen_after_frames(marker: i64, products: &[(i64, f64)], criteria: FrozenCriteria) -> Option<i64> {
+    let (_, reference) = *products.last()?;
+    let mut tail_start = products.len();
+    for (index, (_, product)) in products.iter().enumerate().rev() {
+        let within = relative_gap(*product, reference).is_some_and(|gap| gap <= criteria.tolerance_fraction);
+        if !within {
+            break;
+        }
+        tail_start = index;
+    }
+    let tail_len = products.len() - tail_start;
+    if tail_len < criteria.min_tail_samples.max(1) {
+        return None;
+    }
+    products.get(tail_start).map(|(frame, _)| frame - marker)
+}
+
 #[cfg(test)]
 #[path = "three_a_results_tests.rs"]
 mod tests;

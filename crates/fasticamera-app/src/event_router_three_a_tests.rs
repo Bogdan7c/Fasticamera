@@ -4,8 +4,10 @@
 //! строки результата, а не проверяет отдельный шаг.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 
+use camera_contract::auto_exposure::{ExposureAuthority, MeteredArea};
 use camera_contract::control::ManualControl;
 use camera_contract::three_a::AeAfLock;
 use camera_core::backend::{BackendFailure, RequestFailure};
@@ -13,8 +15,9 @@ use camera_core::three_a_status::FocusProgress;
 use isp_vulkan::viewfinder::IspStageSet;
 use render_loop::config::WhiteBalanceConfig;
 use render_loop::viewfinder::{
-    HeadroomBenchDiagnostics, ViewfinderColorSpace, ViewfinderCounters, ViewfinderDiagnostics, ViewfinderExtent,
-    ViewfinderGpuTimes, ViewfinderPainter, ViewfinderStorage, WhiteBalanceDiagnostics, WhiteDelta, WhiteReading,
+    AutoExposureCounters, AutoExposureDiagnostics, HeadroomBenchDiagnostics, ViewfinderColorSpace, ViewfinderCounters,
+    ViewfinderDiagnostics, ViewfinderExtent, ViewfinderGpuTimes, ViewfinderPainter, ViewfinderStorage,
+    WhiteBalanceDiagnostics, WhiteDelta, WhiteReading,
 };
 
 use super::*;
@@ -38,6 +41,22 @@ struct ThreeAMirror {
     join: Option<JoinHandle<()>>,
 }
 
+/// Диагностика нашего AE рендера: из неё сценарий берёт сырой замер сцены.
+fn ae_diagnostics(scene_seconds_iso: f64) -> AutoExposureDiagnostics {
+    AutoExposureDiagnostics {
+        directive_generation: None,
+        authority: ExposureAuthority::Automatic,
+        metered_area: MeteredArea::WholeFrame,
+        target_log2_seconds_iso: None,
+        observed_scene_log2_seconds_iso: Some(scene_seconds_iso.log2()),
+        display_gain_ev: 0.0,
+        convergence: None,
+        quality: None,
+        last_proposal: None,
+        counters: AutoExposureCounters::default(),
+    }
+}
+
 fn viewfinder_diagnostics() -> ViewfinderDiagnostics {
     ViewfinderDiagnostics {
         painter: ViewfinderPainter::Isp,
@@ -57,7 +76,8 @@ fn viewfinder_diagnostics() -> ViewfinderDiagnostics {
 }
 
 impl ThreeAMirror {
-    fn start(harness: &Harness, hal_stats: Arc<HalStats>) -> Self {
+    /// `scene` — сцена подставного AE рендера (с·ISO): если она есть, рендер отдаёт её как сырой замер сцены.
+    fn start(harness: &Harness, hal_stats: Arc<HalStats>, scene: Option<Arc<Mutex<f64>>>) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let render = Arc::clone(&harness.render);
@@ -72,6 +92,9 @@ impl ThreeAMirror {
                         .map_or(0, |camera| camera.camera_frames_presented);
                     let viewfinder = status.backend.viewfinder.get_or_insert_with(viewfinder_diagnostics);
                     let hidden = if presented > 0 { HIDDEN_AT_START } else { 0 };
+                    viewfinder.auto_exposure = scene
+                        .as_ref()
+                        .map(|scene| ae_diagnostics(*scene.lock().unwrap_or_else(PoisonError::into_inner)));
                     viewfinder.counters.frames_processed = presented + hidden;
                     viewfinder.counters.frames_hidden_cold_start = hidden;
                     viewfinder.counters.bracket_frames_skipped = skipped;
@@ -178,9 +201,13 @@ fn run_three_a_on(
     };
     let _pump = StreamPump::start(harness.rig(), Arc::clone(&harness.render), paced);
     let hal = SimulatedHal::start(harness.rig(), faults);
-    let _mirror = ThreeAMirror::start(&harness, Arc::clone(&hal.stats));
     // Наш AE: роль рендера играет подставной помощник (в тестах приложения настоящего рендера нет).
     let render_ae = (own_ae).then(|| FakeRenderAe::start(harness.rig()));
+    let _mirror = ThreeAMirror::start(
+        &harness,
+        Arc::clone(&hal.stats),
+        render_ae.as_ref().map(FakeRenderAe::scene_probe),
+    );
     harness.start(Scenario::parse("3a").expect("сценарий зарегистрирован"));
     let deadline = Instant::now() + Duration::from_secs(30);
     while harness.output.results.lock().expect("замок").is_empty() && Instant::now() < deadline {
@@ -462,9 +489,15 @@ fn run_with_our_ae_passes_and_never_sends_a_vendor_ae_request() {
     );
     let own = &report["own_ae"];
     assert_eq!(own["vendor_ae_results"], 0, "{own}");
+    let checked = &own["results_checked"];
+    assert!(checked["repeating"].as_u64().is_some_and(|n| n > 10), "{own}");
     assert!(
-        own["repeating_results_checked"].as_u64().is_some_and(|n| n > 10),
-        "{own}"
+        checked["focus_trigger"].as_u64().is_some_and(|n| n > 0),
+        "тапы проверены на вендорский AE: {own}"
+    );
+    assert!(
+        checked["burst"].as_u64().is_some_and(|n| n > 0),
+        "кадры серии проверены на вендорский AE: {own}"
     );
     assert_eq!(own["settled_seen"], true, "{own}");
     assert_eq!(own["holding_seen"], true, "блокировка дошла до Holding: {own}");
@@ -539,7 +572,7 @@ fn our_ae_without_proposals_from_the_renderer_fails_the_scenario_by_its_own_rule
     };
     let _pump = StreamPump::start(harness.rig(), Arc::clone(&harness.render), paced);
     let hal = SimulatedHal::start(harness.rig(), HalFaults::default());
-    let _mirror = ThreeAMirror::start(&harness, Arc::clone(&hal.stats));
+    let _mirror = ThreeAMirror::start(&harness, Arc::clone(&hal.stats), None);
     harness.start(Scenario::parse("3a").expect("сценарий зарегистрирован"));
     let deadline = Instant::now() + Duration::from_secs(30);
     while harness.output.results.lock().expect("замок").is_empty() && Instant::now() < deadline {
@@ -606,3 +639,6 @@ fn scenario_fails_when_the_engine_runs_another_ae_than_the_composition_chose() {
     let (_harness, result) = run_three_a_on(rig, HalFaults::default(), |_, _| {});
     assert_failed_with(&result, "а композиция поставила Own");
 }
+
+#[path = "event_router_three_a_lock_tests.rs"]
+mod lock_window;

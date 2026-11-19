@@ -8,7 +8,7 @@
 use std::time::{Duration, Instant};
 
 use camera_contract::capture_result::CaptureResultMeta;
-use camera_contract::three_a::RequestOrigin;
+use camera_contract::three_a::{AeState, RequestOrigin};
 
 use super::super::CameraEngine;
 use crate::event::CameraEvent;
@@ -21,6 +21,11 @@ impl CameraEngine {
         let origin = result.three_a.origin;
         if origin == RequestOrigin::Unknown {
             self.three_a.counters.results_with_unknown_origin += 1;
+        }
+        // Учёт без выборки: каждый результат, независимо от того, успеет ли кто-то прочитать статус.
+        self.three_a.counters.results_observed += 1;
+        if result.three_a.ae_state.is_some_and(|state| state != AeState::Inactive) {
+            self.three_a.counters.results_with_hal_ae_active += 1;
         }
         self.record_last_three_a_result(result);
         self.three_a.exposure.observe_result(result);
@@ -54,6 +59,7 @@ impl CameraEngine {
             af_state: result.three_a.af_state,
             ae_state: result.three_a.ae_state,
             focus_distance_diopters: result.three_a.focus_distance_diopters,
+            scene_flicker: result.three_a.scene_flicker,
             exposure_time: result.exposure_time,
             sensitivity_iso: result.sensitivity_iso,
         });

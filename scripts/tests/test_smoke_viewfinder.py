@@ -342,7 +342,10 @@ class DriverStepsTest(unittest.TestCase):
         self.assertIn("viewfinder", smoke_wait.SCREENSHOT_SCENARIOS)
 
 
-THRESHOLDS = smoke_neutral_card.NeutralCardThresholds(region_fraction=0.2, max_relative_chroma=0.08, min_mean_level=20.0)
+THRESHOLDS = smoke_neutral_card.NeutralCardThresholds(
+    region_fraction=0.2, max_relative_chroma=0.08, min_mean_level=20.0,
+    display_middle_gray=0.20, max_middle_gray_error_ev=0.2, p3_luminance_coefficients=(0.2290, 0.6917, 0.0793),
+)
 
 
 def card(rgb: tuple[int, int, int]):
@@ -366,9 +369,30 @@ class NeutralCardTest(unittest.TestCase):
         self.assertEqual(len(analysis.problems), 1)
         self.assertIn("тёмный", analysis.problems[0])
 
+    def test_middle_gray_card_passes_and_wrong_levels_fail_with_the_ev_error(self) -> None:
+        middle = round(smoke_neutral_card.srgb_linear_to_encoded(0.20) * 255)  # 124: ближайшее к средний серый
+        ok = smoke_neutral_card.analyze_neutral_card(parsed(card((middle,) * 3)), THRESHOLDS, "viewfinder_a")
+        self.assertEqual(ok.problems, [])
+        self.assertIn("ошибка +0.01 EV", ok.notes[0])
+        self.assertIn("~123.6/255", ok.notes[0])
+        bright = smoke_neutral_card.analyze_neutral_card(parsed(card((160,) * 3)), THRESHOLDS, "viewfinder_a")
+        self.assertEqual(len(bright.problems), 1, bright.problems)
+        self.assertIn("светлее", bright.problems[0])
+        dim = smoke_neutral_card.analyze_neutral_card(parsed(card((90,) * 3)), THRESHOLDS, "viewfinder_a")
+        self.assertEqual(len(dim.problems), 1, dim.problems)
+        self.assertIn("темнее", dim.problems[0])
+
+    def test_ev_error_follows_the_formula(self) -> None:
+        self.assertAlmostEqual(smoke_neutral_card.middle_gray_error_ev(0.40, 0.20), 1.0)
+        self.assertAlmostEqual(smoke_neutral_card.middle_gray_error_ev(0.10, 0.20), -1.0)
+        white = smoke_neutral_card.display_luminance((255, 255, 255), THRESHOLDS.p3_luminance_coefficients)
+        self.assertAlmostEqual(white, 1.0, places=3)
+
     def test_thresholds_live_in_the_screen_toml(self) -> None:
         loaded = smoke_neutral_card.load_thresholds()
         self.assertGreater(loaded.max_relative_chroma, 0)
+        self.assertEqual(loaded.display_middle_gray, 0.20)
+        self.assertEqual(loaded.max_middle_gray_error_ev, 0.2)
         with self.assertRaises(smoke_screen.ScreenError):
             smoke_neutral_card.parse_thresholds("[band]\ntop_fraction = 0.3\n")
 
@@ -409,11 +433,26 @@ class DeviceSmokeViewfinderTest(unittest.TestCase):
         start = next(call for call in self.adb_calls() if "am start" in call)
         self.assertIn("-e scenario viewfinder-stage-budget -e stages levels,whole_viewfinder", start)
 
+    def test_exposure_controller_reaches_the_intent_and_is_validated(self) -> None:
+        completed = self.run_smoke(
+            "viewfinder-stage-budget",
+            [result_line(self.BUDGET_OK)],
+            extra_arguments=("--exposure-controller", "vendor"),
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        start = next(call for call in self.adb_calls() if "am start" in call)
+        self.assertIn("-e exposure_controller vendor", start)
+        for bad in ("auto", "own;ls"):
+            with self.subTest(value=bad):
+                rejected = self.run_smoke("viewfinder", [], extra_arguments=("--exposure-controller", bad))
+                self.assertEqual(rejected.returncode, 64, rejected.stderr)
+
     def test_without_stages_no_extra_is_sent(self) -> None:
         completed = self.run_smoke("viewfinder-stage-budget", [result_line(self.BUDGET_OK)])
         self.assertEqual(completed.returncode, 0, completed.stderr)
         start = next(call for call in self.adb_calls() if "am start" in call)
         self.assertNotIn("-e stages", start)
+        self.assertNotIn("exposure_controller", start)
 
     def test_ab_window_reaches_the_intent_as_an_extra_next_to_stages(self) -> None:
         completed = self.run_smoke(

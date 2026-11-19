@@ -124,6 +124,9 @@ pub struct AutoExposureController {
     lock: LockPhase,
     publisher: ProposalPublisher,
     counters: ExposureCounters,
+    /// Последний сырой замер своей области — только для диагностики (08c): обновляется и под
+    /// блокировкой, и в ручном режиме, когда оценка сцены замер не принимает. На решения не влияет.
+    last_observed_log2: Option<f64>,
 }
 
 impl AutoExposureController {
@@ -146,6 +149,7 @@ impl AutoExposureController {
             settled_latched: false,
             fresh_since_lock: false,
             counters: ExposureCounters::default(),
+            last_observed_log2: None,
         })
     }
 
@@ -186,6 +190,7 @@ impl AutoExposureController {
         self.fresh_since_lock = false;
         self.lock = lock_phase_for(self.directive.lock);
         self.publisher.reset();
+        self.last_observed_log2 = None;
     }
 
     /// Учитывает кадр, который не дошёл до замера.
@@ -209,6 +214,9 @@ impl AutoExposureController {
             self.counters.rejected_foreign_area += 1;
             return IngestOutcome::RejectedForeignArea;
         }
+        // Диагностика видит сцену всегда, даже когда оценка ниже замер отбросит (блокировка, ручной
+        // режим): только так приёмка доказывает «сцена сменилась, а экспозиция стоит».
+        self.last_observed_log2 = Some(measurement.required_product.seconds_iso().log2());
         if self.directive.authority == ExposureAuthority::Manual {
             self.counters.ignored_manual += 1;
             return IngestOutcome::IgnoredManual;
@@ -325,6 +333,12 @@ impl AutoExposureController {
     /// Сглаженная цель в EV относительно произведения 1 с·ISO (для диагностики и тестов).
     pub fn target_log2(&self) -> Option<f64> {
         self.smoothed_log2
+    }
+
+    /// Последний сырой замер своей области, log2 от с·ISO, — без сглаживания и даже под
+    /// блокировкой или в ручном режиме (только диагностика; `None` — замеров в этом потоке не было).
+    pub fn last_observed_log2(&self) -> Option<f64> {
+        self.last_observed_log2
     }
 
     /// Ждём ли мы сейчас заморозки цели или уже держим её.

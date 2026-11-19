@@ -13,6 +13,7 @@ fn result(frame: i64, origin: RequestOrigin) -> LastThreeAResult {
         af_state: None,
         ae_state: None,
         focus_distance_diopters: None,
+        scene_flicker: None,
         exposure_time: Some(Duration::from_millis(2)),
         sensitivity_iso: Some(400),
     }
@@ -87,4 +88,63 @@ fn product_median_and_gap_compute_the_documented_values() {
     assert_eq!(median(Vec::new()), None);
     assert_eq!(relative_gap(1.1, 1.0).map(|gap| (gap * 10.0).round()), Some(1.0));
     assert_eq!(relative_gap(1.0, 0.0), None);
+}
+
+const CRITERIA: FrozenCriteria = FrozenCriteria {
+    tolerance_fraction: 0.01,
+    min_tail_samples: 3,
+};
+
+#[test]
+fn product_frozen_after_frames_counts_from_the_command_frame_to_the_start_of_the_stable_tail() {
+    // Догон цели: произведение растёт до кадра 130, дальше стоит.
+    let products = [
+        (103, 1.0),
+        (106, 1.4),
+        (112, 1.8),
+        (118, 1.95),
+        (130, 2.0),
+        (133, 2.0),
+        (136, 2.001),
+        (139, 2.0),
+    ];
+    assert_eq!(product_frozen_after_frames(100, &products, CRITERIA), Some(30));
+}
+
+#[test]
+fn product_that_never_changed_is_frozen_from_the_first_frame_after_the_command() {
+    let products = [(103, 2.0), (106, 2.0), (109, 2.0)];
+    assert_eq!(product_frozen_after_frames(100, &products, CRITERIA), Some(3));
+}
+
+#[test]
+fn product_still_changing_at_the_end_is_not_frozen() {
+    let products = [(103, 1.0), (106, 1.2), (109, 1.4), (112, 1.6), (115, 1.8), (118, 2.0)];
+    assert_eq!(product_frozen_after_frames(100, &products, CRITERIA), None);
+}
+
+#[test]
+fn a_tail_shorter_than_the_minimum_does_not_count_as_frozen() {
+    // Стабильны только два последних результата, нужно три.
+    let products = [(103, 1.0), (106, 1.5), (109, 2.0), (112, 2.0)];
+    assert_eq!(product_frozen_after_frames(100, &products, CRITERIA), None);
+}
+
+#[test]
+fn a_late_jump_after_a_long_plateau_moves_the_frozen_point_to_the_new_plateau() {
+    let products = [
+        (103, 2.0),
+        (106, 2.0),
+        (109, 2.0),
+        (112, 3.0),
+        (115, 3.0),
+        (118, 3.0),
+        (121, 3.0),
+    ];
+    assert_eq!(product_frozen_after_frames(100, &products, CRITERIA), Some(12));
+}
+
+#[test]
+fn empty_series_is_not_frozen() {
+    assert_eq!(product_frozen_after_frames(100, &[], CRITERIA), None);
 }

@@ -8,49 +8,26 @@ use serde::{Deserialize, Serialize};
 use crate::config::CameraEngineConfigError;
 
 /// Когда держать выдержку кратной полупериоду сети (защита от мерцания ламп).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "snake_case", tag = "policy")]
-pub enum FlickerPolicy {
-    /// Защита включена с начала потока и снимается, только когда HAL `clear_after_frames`
-    /// кадров подряд говорит «мерцания нет»; любой отчёт о 50/60 Гц возвращает её сразу
-    /// (решение 08a: детектор HAL). Нет ключа в результате — состояние не меняется.
-    /// Период защиты берётся из `detected_frequency`.
-    FollowDetector {
-        clear_after_frames: u32,
-        #[serde(default)]
-        detected_frequency: DetectedFrequency,
-    },
-    /// Защита всегда (детектор HAL игнорируется, кроме уточнения частоты сети).
-    AlwaysProtect,
-    /// Защиты нет никогда (отладка, сравнение).
-    NeverProtect,
-}
-
-/// Что делать с частотой сети, которую назвал детектор HAL.
 ///
-/// Зонд 08 видел `sceneFlicker = 60 Гц` при сети 50 Гц: поверить детектору значило бы уйти на
-/// кратность 8,33 мс и получить полосы (регресс к решению 67). Поэтому по умолчанию отчёт
-/// только возвращает защиту, а период остаётся из конфига Android.
+/// Только ручной выбор: автоопределение по детектору HAL убрано (решение 77) — детектор на
+/// этом телефоне фиктивный (`60HZ` почти на всех кадрах, даже под светом без мерцания).
+/// **По умолчанию защита выключена**; включается вручную (`AlwaysProtect`) с частотой сети
+/// 50 или 60 Гц из конфига (позже — переключатель в UI, сессия 16). Автоопределение — в
+/// бэклоге (кандидат: свой детектор по построчной статистике RAW на GPU). Старый JSON
+/// `{"policy":"follow_detector",...}` отвергается строгим разбором, а не молча подменяется.
+///
+/// В JSON — простая строка (`"flicker": "always_protect"`), а не объект: у строки не бывает лишних
+/// полей, а `deny_unknown_fields` на варианты без полей у размеченного enum не действует (старый
+/// `{"policy":"always_protect","clear_after_frames":12}` молча принимался бы).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum DetectedFrequency {
-    /// Период всегда из частоты сети конструктора (конфиг). **Оценка, сверить в 08c.**
+pub enum FlickerPolicy {
+    /// Выдержка всегда кратна полупериоду сети (частота — из конфига Android, по умолчанию
+    /// 50 Гц, решение 67). Отчёты HAL о мерцании (в том числе `None`) защиту не снимают.
+    AlwaysProtect,
+    /// Защиты нет: выдержка свободна до предела кадра. По умолчанию (решение 77).
     #[default]
-    IgnoreUseConfigured,
-    /// Принять частоту, названную детектором.
-    Adopt,
-}
-
-impl Default for FlickerPolicy {
-    /// 30 кадров ≈ 0,5 с при 60 к/с: достаточно, чтобы единичный «пустой» отчёт детектора не
-    /// снял защиту, и достаточно мало, чтобы на улице выдержка не была зря ограничена.
-    /// Это **оценка, сверить в 08c** на телефоне.
-    fn default() -> Self {
-        Self::FollowDetector {
-            clear_after_frames: 30,
-            detected_frequency: DetectedFrequency::IgnoreUseConfigured,
-        }
-    }
+    NeverProtect,
 }
 
 /// Настройки исполнителя `RawStatsExposure`.
@@ -88,8 +65,6 @@ impl Default for OwnExposureConfig {
 }
 
 impl OwnExposureConfig {
-    /// Предел кадров «чисто» до снятия защиты: защита от опечатки в конфиге.
-    pub const MAX_CLEAR_AFTER_FRAMES: u32 = 3_600;
     /// Предел допусков в EV: больше — AE превращается в случайный.
     pub const MAX_TOLERANCE_EV: f32 = 2.0;
 
@@ -112,15 +87,6 @@ impl OwnExposureConfig {
                     value: f64::from(value),
                 });
             }
-        }
-        if let FlickerPolicy::FollowDetector { clear_after_frames, .. } = self.flicker
-            && (clear_after_frames == 0 || clear_after_frames > Self::MAX_CLEAR_AFTER_FRAMES)
-        {
-            return Err(CameraEngineConfigError::InvalidThreeALimit {
-                field: "exposure.flicker.clear_after_frames",
-                value: u64::from(clear_after_frames),
-                max: u64::from(Self::MAX_CLEAR_AFTER_FRAMES),
-            });
         }
         Ok(())
     }

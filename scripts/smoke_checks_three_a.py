@@ -31,6 +31,10 @@ ROUGH_LOCK_TOLERANCE = 0.05
 MIN_EV_POINTS = 3
 """Точки EV: опорная (0), плюс и минус."""
 
+STATIC_SCENE_RANGE_EV = 1.0
+"""Размах замера сцены под блокировкой меньше этого — сцену в окне удержания не меняли (объектив не закрывали).
+Это НЕ провал (автоматические прогоны идут без человека), но в вердикте об этом сказано явно."""
+
 
 def _dict(value: object) -> dict:
     return value if isinstance(value, dict) else {}
@@ -170,6 +174,27 @@ def _lock_problems(report: dict) -> list[str]:
         problems.append(f"под блокировкой результатов не Locked: {lock.get('non_locked_after_lock')!r}")
     if lock.get("back_to_continuous") is not True:
         problems.append("после сброса точки AF не вернулся в непрерывный режим")
+    if _is_own_ae(report) and lock.get("locked") is True:
+        problems.extend(_lock_evidence_problems(lock))
+    return problems
+
+
+def _lock_evidence_problems(lock: dict) -> list[str]:
+    """Свидетельства окна удержания нашего AE (08c): поля есть и правильного типа. Значения не судим."""
+    problems = []
+    for key in ("observed_scene_range_ev", "product_frozen_after_frames", "haptic_hold_start", "haptic_hold_end"):
+        if key not in lock:
+            problems.append(f"в отчёте блокировки нет поля {key}")
+    scene_range = lock.get("observed_scene_range_ev")
+    if scene_range is not None and not (_is_number(scene_range) and scene_range >= 0):
+        problems.append(f"observed_scene_range_ev {scene_range!r}: ожидалось неотрицательное число или null")
+    frozen = lock.get("product_frozen_after_frames")
+    if frozen is not None and not (_is_number(frozen) and float(frozen).is_integer() and frozen >= 0):
+        problems.append(f"product_frozen_after_frames {frozen!r}: ожидалось неотрицательное целое или null")
+    for key in ("haptic_hold_start", "haptic_hold_end"):
+        cue = lock.get(key)
+        if key in lock and not (isinstance(cue, dict) and isinstance(cue.get("outcome"), str)):
+            problems.append(f"{key} {cue!r}: ожидался итог вибрации с полем outcome")
     return problems
 
 
@@ -185,12 +210,36 @@ def _own_ae_problems(report: dict) -> list[str]:
             f"наш AE: результатов с активным AE_STATE вендора {section.get('vendor_ae_results')!r} "
             f"(первый кадр {section.get('first_vendor_ae_frame')!r}), ожидалось 0"
         )
-    checked = section.get("repeating_results_checked")
-    if not _is_number(checked) or checked <= 0:
-        problems.append(f"наш AE: нет проверенных результатов повторяющегося запроса ({checked!r})")
+    problems.extend(_results_checked_problems(section.get("results_checked")))
+    problems.extend(_engine_count_problems(section.get("engine")))
     if not any(section.get(key) is True for key in ("settled_seen", "holding_seen", "limit_reached_seen")):
         problems.append(f"наш AE ни разу не дошёл до Settled/Holding/LimitReached (в конце: {section.get('progress_at_end')!r})")
     return problems
+
+
+def _results_checked_problems(checked: object) -> list[str]:
+    """Выборка сценария по происхождению результатов. Сценарий видит лишь последний результат на тик (~каждый
+    третий кадр), поэтому тапа и серии в выборке может не оказаться — это не ошибка: полный учёт каждого
+    результата даёт движок (``own_ae.engine``). Обязателен только повторяющийся запрос."""
+    if not isinstance(checked, dict):
+        return [f"наш AE: нет results_checked по происхождению результатов ({checked!r})"]
+    count = checked.get("repeating")
+    if not _is_number(count) or count <= 0:
+        return [f"наш AE: не проверено ни одного результата повторяющегося запроса на вендорский AE (repeating={count!r})"]
+    return []
+
+
+def _engine_count_problems(engine: object) -> list[str]:
+    """Учёт движка по каждому результату за прогон: ни одного с активным AE HAL, и результаты вообще были."""
+    if not isinstance(engine, dict):
+        return [f"наш AE: нет учёта движка own_ae.engine ({engine!r}) — «каждый результат» не проверен"]
+    observed = engine.get("results_observed")
+    active = engine.get("results_with_hal_ae_active")
+    if not _is_number(observed) or observed <= 0:
+        return [f"наш AE: движок не насчитал результатов за прогон (results_observed={observed!r}, счёт с запуска движка)"]
+    if active != 0:
+        return [f"наш AE: движок с запуска насчитал {active!r} результатов с активным AE HAL из {observed!r}, ожидалось 0"]
+    return []
 
 
 def _bracket_problems(report: dict) -> list[str]:
@@ -237,3 +286,37 @@ def check_three_a(result: dict) -> list[str]:
     if report.get("state_at_end") != "streaming":
         problems.append(f"к концу прогона состояние камеры {report.get('state_at_end')!r}, ожидалось 'streaming'")
     return problems
+
+
+def three_a_notes(result: dict) -> list[str]:
+    """Пояснения к вердикту ``3a``: не провал, но читать обязательно. Вызывается после успешной проверки.
+
+    Главное: блокировка AE проверена на неподвижной сцене или нет. В автоматических прогонах руки над объективом
+    нет, и ``max_product_deviation = 0`` тогда ничего не доказывает — об этом вердикт говорит прямо.
+    """
+    _, report = _report_problem(result)
+    lock = _dict(report.get("lock"))
+    if not _is_own_ae(report) or lock.get("locked") is not True:
+        return []
+    notes = []
+    scene_range = lock.get("observed_scene_range_ev")
+    if not _is_number(scene_range):
+        notes.append("3a: размах замера сцены в окне блокировки не получен, смену сцены под блокировкой проверить нечем")
+    elif scene_range < STATIC_SCENE_RANGE_EV:
+        notes.append(
+            f"3a: блокировка проверена на СТАТИЧНОЙ сцене (размах замера {scene_range:.2f} EV < "
+            f"{STATIC_SCENE_RANGE_EV:g}): объектив в окне удержания не закрывали, отсутствие дрейфа "
+            "выдержки × ISO под блокировкой здесь ничего не доказывает"
+        )
+    else:
+        notes.append(f"3a: сцена в окне блокировки менялась (размах замера {scene_range:.2f} EV), дрейфа нет")
+    frozen = lock.get("product_frozen_after_frames")
+    if _is_number(frozen):
+        notes.append(f"3a: выдержка × ISO замерла через {frozen:g} кадров после команды блокировки")
+    else:
+        notes.append("3a: выдержка × ISO не замерла до конца окна удержания (product_frozen_after_frames = null)")
+    for key, moment in (("haptic_hold_start", "начала"), ("haptic_hold_end", "конца")):
+        cue = _dict(lock.get(key))
+        if cue.get("outcome") != "queued":
+            notes.append(f"3a: вибрация {moment} окна не сыграна ({cue.get('outcome')!r}): владелец мог не заметить сигнал")
+    return notes

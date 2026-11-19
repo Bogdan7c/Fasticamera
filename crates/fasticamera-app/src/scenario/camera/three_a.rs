@@ -109,7 +109,12 @@ impl ThreeARun {
             return RunStep::Continue;
         };
         let status = running.handle().status();
-        self.results.observe(status.three_a.last_result.as_ref());
+        // Каждый новый результат (любого происхождения) сразу проверяем на вендорский AE: журнал ограничен
+        // и хранит только повторяющиеся, поэтому задним числом проверять нечего.
+        let last_result = status.three_a.last_result.as_ref();
+        if let (true, Some(result)) = (self.results.observe(last_result), last_result) {
+            self.own_ae.observe_result(result);
+        }
         self.own_ae.observe(&status.three_a);
         let events: Vec<CameraEvent> = self.session.three_a_events().to_vec();
         let mut env = StepEnv {
@@ -122,6 +127,7 @@ impl ThreeARun {
             config: &self.config,
             baselines,
             raw_counters: context.camera.raw_stream().counters(),
+            haptics: context.services.haptics.as_ref(),
             stages,
         };
         loop {
@@ -256,7 +262,7 @@ impl ObservingScenario for ThreeAScenario {
         // Возврат автоматики при любом конце, в том числе провальном.
         finished.observation.restore_failure = restore_automatic(running);
         finished.observation.failure = failure;
-        finished.observation.own_ae = finished.own_ae.report(&finished.results);
+        finished.observation.own_ae = finished.own_ae.report();
         finished.observation.session = finished.session.summary(running, EVENTS_IN_REPORT_LIMIT);
         emit_details(context, "detail_three_a", finished.observation.detail_items());
         let violations = evaluate_three_a(&finished.config, &finished.observation);

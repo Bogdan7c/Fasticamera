@@ -5,7 +5,7 @@
 //! * `exposure` — сам исполнитель (`ExposureController`): принятое состояние и его смена;
 //! * `plan` — чистое построение `ExposurePlan::Sensor` из принятого состояния и контекста;
 //! * `split` — чистый делёж «выдержка × ISO» с кратностью периоду мерцания и пределами;
-//! * `flicker` — детектор мерцания по отчётам HAL;
+//! * `flicker` — ручная защита от мерцания (период кратности выдержки; автодетекта нет, решение 77);
 //! * `proposal_gate` — отсев предложений прошлого потока.
 //!
 //! Словарь границы с рендером — `camera_contract::auto_exposure`.
@@ -17,7 +17,7 @@ mod plan;
 mod proposal_gate;
 mod split;
 
-pub use config::{DetectedFrequency, FlickerPolicy, OwnExposureConfig};
+pub use config::{FlickerPolicy, OwnExposureConfig};
 pub use exposure::RawStatsExposure;
 
 #[cfg(test)]
