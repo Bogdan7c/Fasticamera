@@ -178,6 +178,50 @@ fn dragging_the_sun_keeps_the_focus_indicator_alive() {
 }
 
 #[test]
+fn holding_the_sun_without_a_step_change_still_keeps_the_indicator_alive_and_tells_the_camera_nothing() {
+    let mut screen = Screen::ready();
+    screen.tap_center(at_ms(0));
+    drag(&mut screen, 1.0);
+    let steps = screen.state.exposure().steps();
+
+    // Палец внутри того же шага: значение то же, но срок продлевается (3000 мс считаются от 2500).
+    let same_value = screen.step(ScreenAction::ExposureDragged {
+        requested: bias(1.0),
+        at: at_ms(2_500),
+    });
+    assert_eq!(
+        same_value.outcome,
+        ActionOutcome::NoChange(NoChangeReason::ValueUnchanged)
+    );
+    // Событие пана без запрошенного значения (палец у предела или в пределах шага).
+    let held = screen.step(ScreenAction::FocusSunHeld { at: at_ms(4_000) });
+    assert_eq!(held.outcome, ActionOutcome::Applied);
+    assert!(
+        held.effects.is_empty(),
+        "удержание «солнца» не должно ничего слать камере"
+    );
+    assert_eq!(screen.state.exposure().steps(), steps);
+
+    screen.step(ScreenAction::Tick(at_ms(6_500)));
+    assert!(matches!(screen.state.focus().indicator(), FocusIndicator::Shown { .. }));
+    screen.step(ScreenAction::Tick(at_ms(7_100)));
+    assert_eq!(screen.state.focus().indicator(), FocusIndicator::Hidden);
+}
+
+#[test]
+fn holding_the_sun_after_the_indicator_is_hidden_does_not_bring_it_back() {
+    let mut screen = Screen::ready();
+    screen.tap_center(at_ms(0));
+    screen.step(ScreenAction::Tick(at_ms(3_100)));
+    assert_eq!(screen.state.focus().indicator(), FocusIndicator::Hidden);
+
+    let held = screen.step(ScreenAction::FocusSunHeld { at: at_ms(3_200) });
+    assert_eq!(held.outcome, ActionOutcome::NoChange(NoChangeReason::ValueUnchanged));
+    assert!(held.effects.is_empty());
+    assert_eq!(screen.state.focus().indicator(), FocusIndicator::Hidden);
+}
+
+#[test]
 fn exposure_panel_close_button_closes_only_the_exposure_panel() {
     let mut screen = Screen::ready();
     screen.step(ScreenAction::StripToolTapped(crate::tools::ToolId::Exposure));

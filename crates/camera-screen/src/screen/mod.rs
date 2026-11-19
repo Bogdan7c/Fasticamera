@@ -187,6 +187,12 @@ impl CameraScreen {
             .map_or(f64::NAN, |stage| stage.focus().appearance_scale(self.clock.last))
     }
 
+    /// Фаза рамки фокуса сейчас (проба для тестов: рамка не должна жить дольше индикатора в состоянии).
+    #[cfg(test)]
+    pub(crate) fn focus_frame_phase(&self) -> Option<ui_kit::focus_frame::FocusPhase> {
+        self.stage.as_ref().map(|stage| stage.focus().frame_phase())
+    }
+
     /// Значение шкалы панели Exposure, EV (проба для тестов «без эха»).
     #[cfg(test)]
     pub(crate) fn slider_value_ev(&self) -> f64 {

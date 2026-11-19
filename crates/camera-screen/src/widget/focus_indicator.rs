@@ -9,12 +9,11 @@
 use ui_core::geometry::{Point, Rect, Size};
 use ui_core::gesture::{GestureEvent, PanDirection, PanSpec, RecognizerSpec};
 use ui_core::id::NodeId;
-use ui_core::time::MonotonicNanos;
 use ui_draw::geometry::PxSize;
 use ui_draw::scene_bridge::NodePlacementPx;
 use ui_draw::transform::Affine2;
 use ui_kit::drive::{GrowthDirection, ScrollTransition};
-use ui_kit::focus_frame::{FocusFrame, FocusFrameEvent, FocusFrameSpec, FocusHold, FocusPhase};
+use ui_kit::focus_frame::{FocusFrame, FocusFrameError, FocusFrameEvent, FocusFrameSpec, FocusHold, FocusPhase};
 use ui_kit::pan::PanUpdate;
 use ui_kit::scale::{ScaleSpec, TickVisibility};
 use ui_kit::tokens::ScaleDensity;
@@ -27,6 +26,7 @@ use super::intent::ScreenGesture;
 use super::kit::SceneKit;
 use super::layers::{DrawLayers, Layer};
 use super::{Ctx, Outputs};
+use crate::action::ScreenAction;
 use crate::focus::FocusIndicator;
 use crate::state::PanelState;
 
@@ -36,14 +36,12 @@ pub(crate) struct FocusIndicatorWidget {
     finger: FingerDrive,
     /// Где рамка стоит сейчас (`None` — скрыта).
     placed_at: Option<Point>,
-    /// Метка показа индикатора (`since`), по которой рамка поставлена. Новый тап (в том числе в ту же точку)
-    /// даёт новую метку, и рамка «пульсирует» заново, как в iOS.
-    placed_since: Option<MonotonicNanos>,
-    /// Шаги EV, замеченные прошлой синхронизацией. Метку показа двигает и продление срока при перетаскивании
-    /// «солнца» (`keep_alive`), но оно всегда сопровождается сменой шагов: такая смена метки новым тапом не
-    /// считается. Чистое решение — отдельный номер показа в `FocusIndicator` (ядро `reduce`, не эта зона).
-    seen_steps: i32,
-    /// Пан «солнца» пришёл, когда рамки уже нет (узел успел перестать быть доступным): считаем, не глотаем.
+    /// Номер показа индикатора (`FocusState::presentation`), по которому рамка поставлена. Новый тап (в том
+    /// числе в ту же точку) даёт новый номер, и рамка «пульсирует» заново, как в iOS. Продление срока жизни
+    /// (`keep_alive` от пальца на «солнце») номер не меняет и рамку не перезапускает.
+    placed_presentation: Option<u64>,
+    /// Пан «солнца» пришёл, когда индикатор уже скрыт или рамки уже нет (узел успел перестать быть
+    /// доступным, затухание закончилось): считаем, не глотаем и рамку не оживляем.
     ignored_sun_pans: u64,
 }
 
@@ -90,8 +88,7 @@ impl FocusIndicatorWidget {
             frame: Self::new_frame(ctx)?,
             finger: FingerDrive::default(),
             placed_at: None,
-            placed_since: None,
-            seen_steps: ctx.state.exposure().steps(),
+            placed_presentation: None,
             ignored_sun_pans: 0,
         })
     }
@@ -110,11 +107,18 @@ impl FocusIndicatorWidget {
         )
     }
 
-    pub(crate) fn handle_gesture(&mut self, event: &GestureEvent<ScreenGesture>) -> Result<bool, WidgetError> {
+    pub(crate) fn handle_gesture(
+        &mut self,
+        event: &GestureEvent<ScreenGesture>,
+        ctx: &Ctx<'_>,
+        out: &mut Outputs,
+    ) -> Result<bool, WidgetError> {
         if event.intent != ScreenGesture::SunPan {
             return Ok(false);
         }
-        if self.frame.phase() == FocusPhase::Hidden {
+        // Индикатор в состоянии экрана скрыт (рамка может ещё затухать): пан не оживляет рамку, иначе она
+        // зависла бы без владельца срока жизни до следующего тапа.
+        if ctx.state.focus().indicator() == FocusIndicator::Hidden || self.frame.phase() == FocusPhase::Hidden {
             self.ignored_sun_pans += 1;
             return Ok(true);
         }
@@ -123,9 +127,14 @@ impl FocusIndicatorWidget {
             if matches!(update, PanUpdate::Began { .. }) {
                 self.finger.finger_took_over();
             }
-            self.frame
-                .apply_pan(event.time, update)
-                .map_err(element("рамка фокуса"))?;
+            // Палец на «солнце» продлевает жизнь индикатора на каждом событии, даже без смены шага EV.
+            out.actions.push(ScreenAction::FocusSunHeld { at: event.time });
+            match self.frame.apply_pan(event.time, update) {
+                Ok(()) => {}
+                // Затухание закончилось ровно между кадрами: рамки уже нет — это не сбой сцены, а учтённый пропуск.
+                Err(FocusFrameError::NotVisible) => self.ignored_sun_pans += 1,
+                Err(other) => return Err(element("рамка фокуса")(other)),
+            }
         }
         Ok(true)
     }
@@ -139,14 +148,12 @@ impl FocusIndicatorWidget {
                 .map_err(element("рамка фокуса"))?;
             self.finger.program_took_over();
         }
-        let steps = ctx.state.exposure().steps();
-        let exposure_changed = steps != self.seen_steps;
-        self.seen_steps = steps;
         match ctx.state.focus().indicator() {
-            FocusIndicator::Shown { at, since, .. } => {
+            FocusIndicator::Shown { at, .. } => {
                 let moved = self.placed_at != Some(at);
-                // Метка сменилась без смены EV — это новый тап/долгий тап, пусть и в ту же точку.
-                let shown_again = self.placed_since != Some(since) && !exposure_changed;
+                let presentation = ctx.state.focus().presentation();
+                // Номер показа сменился — это новый тап/долгий тап, пусть и в ту же точку.
+                let shown_again = self.placed_presentation != Some(presentation);
                 if moved || shown_again {
                     self.frame.place(at, ctx.now).map_err(element("рамка фокуса"))?;
                 }
@@ -154,11 +161,11 @@ impl FocusIndicatorWidget {
                     kit.move_node(self.sun_node, Self::sun_rect(ctx, at), ctx.geometry.screen())?;
                     self.placed_at = Some(at);
                 }
-                self.placed_since = Some(since);
+                self.placed_presentation = Some(presentation);
                 kit.set_interactive(self.sun_node, ctx.state.panel() == PanelState::Closed)?;
             }
             FocusIndicator::Hidden => {
-                self.placed_since = None;
+                self.placed_presentation = None;
                 if self.placed_at.take().is_some() {
                     self.frame.dismiss(ctx.now).map_err(element("рамка фокуса"))?;
                 }
@@ -220,8 +227,14 @@ impl FocusIndicatorWidget {
 
     /// Масштаб появления рамки сейчас (проба для тестов повторного тапа).
     #[cfg(test)]
-    pub(crate) fn appearance_scale(&self, now: MonotonicNanos) -> f64 {
+    pub(crate) fn appearance_scale(&self, now: ui_core::time::MonotonicNanos) -> f64 {
         self.frame.snapshot(now).scale
+    }
+
+    /// Фаза рамки сейчас (проба для тестов «рамка не повисла после скрытия индикатора»).
+    #[cfg(test)]
+    pub(crate) fn frame_phase(&self) -> FocusPhase {
+        self.frame.phase()
     }
 
     pub(crate) fn ignored_sun_pans(&self) -> u64 {

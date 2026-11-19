@@ -167,6 +167,9 @@ pub struct FocusState {
     superseded_points: SupersededPoints,
     /// Номер последней точки камеры, которую экран уже учёл.
     pub(crate) last_seen_request: Option<PointRequestId>,
+    /// Номер показа: растёт при каждом [`Self::show`] (тап, долгий тап, точка камеры) и НЕ меняется от
+    /// `keep_alive`/`reposition`. По нему виджет отличает «новый тап» (рамка пульсирует заново) от продления срока.
+    pub(crate) presentation: u64,
 }
 
 impl FocusState {
@@ -190,6 +193,12 @@ impl FocusState {
     /// Показать индикатор в точке.
     pub(crate) fn show(&mut self, at: Point, origin: FocusOrigin, now: MonotonicNanos) {
         self.indicator = FocusIndicator::Shown { at, origin, since: now };
+        self.presentation = self.presentation.wrapping_add(1);
+    }
+
+    /// Номер текущего показа индикатора (см. поле `presentation`).
+    pub fn presentation(&self) -> u64 {
+        self.presentation
     }
 
     /// Скрыть индикатор и забыть ожидание подтверждения точки.

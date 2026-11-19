@@ -150,6 +150,7 @@ fn moment_of(action: &ScreenAction) -> Option<MonotonicNanos> {
         ScreenAction::ViewfinderTapped { at, .. }
         | ScreenAction::ViewfinderLongPressed { at, .. }
         | ScreenAction::ExposureDragged { at, .. }
+        | ScreenAction::FocusSunHeld { at }
         | ScreenAction::ShutterTapped { at }
         | ScreenAction::VolumeKey { at, .. } => Some(*at),
         ScreenAction::Tick(now) => Some(*now),
@@ -162,6 +163,7 @@ fn dispatch(ctx: &mut Ctx<'_>, action: ScreenAction) -> ActionOutcome {
         ScreenAction::ViewfinderTapped { point, at } => viewfinder::on_tap(ctx, point, at),
         ScreenAction::ViewfinderLongPressed { point, at } => viewfinder::on_long_press(ctx, point, at),
         ScreenAction::ExposureDragged { requested, at } => exposure::on_drag(ctx, requested, at),
+        ScreenAction::FocusSunHeld { at } => exposure::on_sun_held(ctx, at),
         ScreenAction::ExposureResetRequested => exposure::on_reset(ctx),
         ScreenAction::ExposureRestored { bias } => exposure::on_restored(ctx, bias),
         ScreenAction::ExposurePanelCloseRequested => exposure::on_panel_close(ctx),

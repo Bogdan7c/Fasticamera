@@ -168,3 +168,71 @@ fn a_full_or_dead_screen_channel_counts_the_answer_as_lost() {
     let counters = service.counters();
     assert_eq!((counters.completions_delivered, counters.completions_lost), (1, 2));
 }
+
+#[test]
+fn reply_owed_to_a_replaced_screen_is_dropped_and_does_not_complete_the_new_screens_shot_with_the_same_id() {
+    let slot = Arc::new(CaptureCompletionSlot::default());
+    let service = FakeCaptureService::new(Duration::from_millis(100), 8, Arc::clone(&slot));
+    let (old_sender, mut old_receiver) = screen_input_channel(4);
+    slot.attach(old_sender.injector());
+    assert_eq!(service.submit(shot(1), at_ms(0)), SubmitOutcome::Accepted);
+
+    // Экран переустановлен до ответа; новый экран нумерует снимки с 1 и снимает «свой» снимок id=1 позже.
+    slot.detach();
+    let (new_sender, mut new_receiver) = screen_input_channel(4);
+    slot.attach(new_sender.injector());
+    assert_eq!(service.submit(shot(1), at_ms(50)), SubmitOutcome::Accepted);
+
+    // Срок старого ответа (100) наступил, срок нового (150) — нет: новый экран не должен получить ничего.
+    service.poll_completions(at_ms(120));
+    assert_eq!(
+        new_receiver.try_next(),
+        None,
+        "ответ старого экрана закрыл снимок нового"
+    );
+    assert_eq!(old_receiver.try_next(), None, "снятый экран ответа не получает");
+    // Собственный ответ нового экрана приходит в свой срок.
+    service.poll_completions(at_ms(150));
+    assert_eq!(new_receiver.try_next(), Some(saved(1)));
+    assert_eq!(new_receiver.try_next(), None, "ровно один ответ на один снимок");
+
+    let counters = service.counters();
+    assert_eq!(counters.completions_dropped_on_screen_change, 1);
+    assert_eq!(counters.completions_delivered, 1);
+    assert_eq!(counters.submitted, 2);
+    assert_eq!(
+        service.journal(),
+        vec![shot(1), shot(1)],
+        "журнал переживает смену экрана"
+    );
+}
+
+#[test]
+fn stale_replies_do_not_occupy_the_queue_and_cause_a_false_busy_for_the_new_screen() {
+    let slot = Arc::new(CaptureCompletionSlot::default());
+    let service = FakeCaptureService::new(Duration::from_millis(100), 1, Arc::clone(&slot));
+    let (old_sender, _old_receiver) = screen_input_channel(4);
+    slot.attach(old_sender.injector());
+    assert_eq!(service.submit(shot(1), at_ms(0)), SubmitOutcome::Accepted);
+
+    let (new_sender, _new_receiver) = screen_input_channel(4);
+    slot.attach(new_sender.injector());
+    // Ёмкость очереди 1: без снятия чужого ответа новый снимок получил бы ложный `Busy`.
+    assert_eq!(service.submit(shot(1), at_ms(10)), SubmitOutcome::Accepted);
+    let counters = service.counters();
+    assert_eq!(counters.rejected_pending_full, 0);
+    assert_eq!(counters.completions_dropped_on_screen_change, 1);
+}
+
+#[test]
+fn replies_of_the_current_screen_are_not_dropped_by_polling() {
+    let slot = Arc::new(CaptureCompletionSlot::default());
+    let service = FakeCaptureService::new(Duration::from_millis(100), 8, Arc::clone(&slot));
+    let (sender, mut receiver) = screen_input_channel(4);
+    slot.attach(sender.injector());
+    service.submit(shot(3), at_ms(0));
+    service.poll_completions(at_ms(50));
+    service.poll_completions(at_ms(100));
+    assert_eq!(receiver.try_next(), Some(saved(3)));
+    assert_eq!(service.counters().completions_dropped_on_screen_change, 0);
+}

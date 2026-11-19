@@ -11,6 +11,10 @@
 //! * БЕЗ потоков: отложенные ответы лежат в очереди, которую источник UI опрашивает на каждом кадре
 //!   ([`CaptureService::poll_completions`], время — `present_time` кадра). Поток на каждый снимок на потоке рендера
 //!   был бы лишней аллокацией и неограниченным числом «сирот»;
+//! * отложенные ответы принадлежат ЭКРАНУ, которому они были обещаны: номера снимков свежего экрана начинаются
+//!   с 1 заново, и ответ старого экрана «закрыл» бы чужой снимок с тем же номером (или занял бы место в очереди и
+//!   дал ложный `Busy`). Поэтому при смене экрана (`attach`/`detach`) такие ответы снимаются со счётчиком;
+//!   журнал запросов сохраняется (для отчётов сценария);
 //! * ответ идёт в ТЕКУЩИЙ экран: канал входа создаётся заново при каждой установке экрана, поэтому адрес ответа
 //!   лежит в общей ячейке [`CaptureCompletionSlot`], которую сервис экрана переставляет при установке.
 
@@ -57,6 +61,8 @@ pub trait CaptureService: Send + Sync {
 #[derive(Default)]
 pub struct CaptureCompletionSlot {
     target: Mutex<Option<ScreenInputInjector>>,
+    /// Эпоха экрана: растёт при каждой установке и снятии. Ответ, обещанный в одной эпохе, в другой не доставляется.
+    epoch: AtomicU64,
 }
 
 impl CaptureCompletionSlot {
@@ -67,11 +73,18 @@ impl CaptureCompletionSlot {
     /// Новый экран установлен: ответы идут в его канал.
     pub fn attach(&self, injector: ScreenInputInjector) {
         *self.lock() = Some(injector);
+        self.epoch.fetch_add(1, Ordering::AcqRel);
     }
 
     /// Экран снят: ответов адресовать некому.
     pub fn detach(&self) {
         *self.lock() = None;
+        self.epoch.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Текущая эпоха экрана: отложенный ответ запоминает её при постановке и сверяет при выдаче.
+    fn current_epoch(&self) -> u64 {
+        self.epoch.load(Ordering::Acquire)
     }
 
     fn deliver(&self, action: ScreenAction) -> CompletionDelivery {
@@ -112,6 +125,8 @@ pub struct FakeCaptureCounters {
     pub journal_evicted: u64,
     /// Запросы, отвергнутые как `Busy`: очередь отложенных ответов уже полна.
     pub rejected_pending_full: u64,
+    /// Отложенные ответы, снятые при смене экрана (переустановка или снятие): они обещаны старому экрану.
+    pub completions_dropped_on_screen_change: u64,
 }
 
 #[derive(Default)]
@@ -122,6 +137,7 @@ struct CounterCells {
     lost: AtomicU64,
     journal_evicted: AtomicU64,
     rejected_pending_full: AtomicU64,
+    dropped_on_screen_change: AtomicU64,
 }
 
 /// Ответ, которому ещё не пришёл срок.
@@ -130,6 +146,8 @@ struct PendingCompletion {
     /// С какого момента (часы кадров) можно ответить.
     due: MonotonicNanos,
     request: ShotRequest,
+    /// Эпоха экрана на момент постановки (см. [`CaptureCompletionSlot`]).
+    epoch: u64,
 }
 
 /// Состояние фейка под одним замком: журнал и очередь отложенных ответов. Обе структуры ограничены.
@@ -179,6 +197,7 @@ impl FakeCaptureService {
             completions_lost: self.counters.lost.load(Ordering::Relaxed),
             journal_evicted: self.counters.journal_evicted.load(Ordering::Relaxed),
             rejected_pending_full: self.counters.rejected_pending_full.load(Ordering::Relaxed),
+            completions_dropped_on_screen_change: self.counters.dropped_on_screen_change.load(Ordering::Relaxed),
         }
     }
 
@@ -190,6 +209,20 @@ impl FakeCaptureService {
         }
         state.journal.push_back(request);
         counters.submitted.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Снимает отложенные ответы, обещанные другому экрану (эпоха устарела); считает их, а не глотает молча.
+    fn drop_stale_pending(&self, state: &mut FakeState) {
+        let current_epoch = self.slot.current_epoch();
+        let before = state.pending.len();
+        state.pending.retain(|pending| pending.epoch == current_epoch);
+        let dropped = (before - state.pending.len()) as u64;
+        if dropped > 0 {
+            self.counters
+                .dropped_on_screen_change
+                .fetch_add(dropped, Ordering::Relaxed);
+            tracing::warn!(target: "fasticamera::camera_screen", dropped, "экран сменился: отложенные ответы фейк-снимка сняты");
+        }
     }
 
     /// Срок ответа: `now` + задержка. Насыщающее сложение: огромная задержка не должна переполнять `i64`.
@@ -215,12 +248,17 @@ fn complete_saved(slot: &CaptureCompletionSlot, counters: &CounterCells, request
 
 impl CaptureService for FakeCaptureService {
     fn submit(&self, request: ShotRequest, now: MonotonicNanos) -> SubmitOutcome {
+        // Каждый снимок виден в logcat: без этого «миниатюра появилась» на телефоне нельзя связать
+        // с конкретным нажатием (затвор, громкость, таймер) — снимки редки, лог не шумит.
+        tracing::info!(target: "fasticamera::camera_screen", ?request, "фейк-снимок принят");
         if self.delay.is_zero() {
             Self::record(&mut self.lock_state(), self.capacity, &self.counters, request);
             complete_saved(&self.slot, &self.counters, request);
             return SubmitOutcome::Accepted;
         }
         let mut state = self.lock_state();
+        // Ответы старого экрана не должны ни занимать место в очереди, ни закрывать снимки нового.
+        self.drop_stale_pending(&mut state);
         // Копить отложенные ответы без предела нельзя: полная очередь — честное «занято».
         if state.pending.len() >= self.capacity {
             self.counters.rejected_pending_full.fetch_add(1, Ordering::Relaxed);
@@ -231,6 +269,7 @@ impl CaptureService for FakeCaptureService {
         state.pending.push_back(PendingCompletion {
             due: self.due_after(now),
             request,
+            epoch: self.slot.current_epoch(),
         });
         SubmitOutcome::Accepted
     }
@@ -239,6 +278,7 @@ impl CaptureService for FakeCaptureService {
         // Созревшие ответы достаём под замком, а отправляем уже без него (отправка берёт другой замок).
         let due: Vec<ShotRequest> = {
             let mut state = self.lock_state();
+            self.drop_stale_pending(&mut state);
             let mut due = Vec::new();
             while state.pending.front().is_some_and(|pending| pending.due <= now) {
                 if let Some(pending) = state.pending.pop_front() {

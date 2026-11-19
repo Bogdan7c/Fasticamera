@@ -20,13 +20,23 @@ pub(super) fn on_drag(ctx: &mut Ctx<'_>, requested: ExposureBias, at: MonotonicN
     if let Some(rejection) = check_adjustable(ctx) {
         return ActionOutcome::Rejected(rejection);
     }
+    // Пока палец двигает «солнце», квадрат фокуса не должен гаснуть — в том числе когда шаг не сменился
+    // (движение внутри шага 1/3 EV, упор в предел): срок продлевается до проверки на «значение то же».
+    ctx.state.focus.keep_alive(at);
     let steps = ctx.state.exposure.quantize(requested, &ctx.config.exposure);
     if ctx.state.exposure.set_by_user(steps) == ExposureChange::Unchanged {
         return ActionOutcome::NoChange(NoChangeReason::ValueUnchanged);
     }
-    // Пока палец двигает «солнце», квадрат фокуса не должен гаснуть.
-    ctx.state.focus.keep_alive(at);
     send_current_bias(ctx);
+    ActionOutcome::Applied
+}
+
+/// Палец держит «солнце» (событие пана без обязательной смены шага): продлевает жизнь индикатора фокуса.
+///
+/// Только срок индикатора: значение EV не трогается и камере ничего не уходит (никакого эха). Если
+/// индикатор уже скрыт, действие ничего не оживляет — скрытый индикатор возвращает только новый тап.
+pub(super) fn on_sun_held(ctx: &mut Ctx<'_>, at: MonotonicNanos) -> ActionOutcome {
+    ctx.state.focus.keep_alive(at);
     ActionOutcome::Applied
 }
 

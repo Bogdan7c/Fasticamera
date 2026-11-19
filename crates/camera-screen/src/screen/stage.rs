@@ -206,7 +206,7 @@ impl Stage {
             || self.top_bar.handle_gesture(event, out)?
             || self.drawer.handle_gesture(event, out)?
             || self.exposure.handle_gesture(event, out)?
-            || self.focus.handle_gesture(event)?)
+            || self.focus.handle_gesture(event, ctx, out)?)
     }
 
     /// Выравнивает элементы и узлы по состоянию экрана (программно, без эха действий).
