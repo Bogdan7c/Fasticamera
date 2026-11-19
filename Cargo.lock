@@ -145,6 +145,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "camera-screen"
+version = "0.1.0"
+dependencies = [
+ "camera-contract",
+ "serde",
+ "serde_json",
+ "shell-contract",
+ "thiserror",
+ "ui-core",
+ "ui-draw",
+ "ui-kit",
+]
+
+[[package]]
 name = "cexpr"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -195,9 +209,11 @@ version = "0.1.0"
 dependencies = [
  "android-shell",
  "android_log-sys",
+ "ash",
  "camera-android",
  "camera-contract",
  "camera-core",
+ "camera-screen",
  "gpu-vulkan",
  "isp-vulkan",
  "jni",
@@ -213,6 +229,7 @@ dependencies = [
  "ui-core",
  "ui-draw",
  "ui-kit",
+ "ui-render-vulkan",
 ]
 
 [[package]]

@@ -61,6 +61,10 @@ fn ae_diagnostics(scene_seconds_iso: f64) -> AutoExposureDiagnostics {
 fn viewfinder_diagnostics() -> ViewfinderDiagnostics {
     ViewfinderDiagnostics {
         painter: ViewfinderPainter::Isp,
+        // Место видоискателя — из конфига рендера (решение 93: экран камеры задаёт его командой `SetFraming`).
+        placement: render_loop::viewfinder::EffectivePlacement::Configured(
+            render_loop::config::ViewfinderPlacement::default(),
+        ),
         stages: IspStageSet::ALL,
         display_color_space: Some(ViewfinderColorSpace::DisplayP3),
         storage: Some(ViewfinderStorage::TenBitUnorm),

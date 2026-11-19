@@ -1,0 +1,33 @@
+//! Ошибки строителей вида.
+
+use thiserror::Error;
+use ui_draw::text::TextError;
+
+/// Строитель не смог собрать элементы списка рисования.
+#[derive(Debug, Clone, Copy, PartialEq, Error)]
+pub enum ViewError {
+    /// Масштаб пикселей на pt должен быть конечным и > 0.
+    #[error("px на pt должен быть конечным и > 0, получено {0}")]
+    InvalidScale(f32),
+    /// Символ подписи вне запечённого набора.
+    #[error("подпись: {0}")]
+    Text(#[from] TextError),
+    /// В группе стекла уже максимум членов; лишнего молча не отбрасываем.
+    #[error("в группе стекла уже {max} членов — предел шейдера")]
+    GlassGroupFull { max: usize },
+    /// Группа стекла без членов рисовать нечем.
+    #[error("в группе стекла нет ни одного члена")]
+    EmptyGlassGroup,
+    /// Индекс члена группы вне диапазона.
+    #[error("члена группы с номером {index} нет (в группе {len})")]
+    MemberOutOfRange { index: usize, len: usize },
+    /// Прозрачность вне 0..1 или не число.
+    #[error("прозрачность «{what}» вне 0..1: {value}")]
+    InvalidOpacity { what: &'static str, value: f32 },
+    /// Подписей карусели не столько, сколько её элементов.
+    #[error("в карусели {items} элементов, а подписей {labels}")]
+    CarouselLabelsMismatch { items: usize, labels: usize },
+    /// Материализация стекла вне 0..1 или не число.
+    #[error("материализация стекла вне 0..1: {0}")]
+    InvalidEffect(f32),
+}

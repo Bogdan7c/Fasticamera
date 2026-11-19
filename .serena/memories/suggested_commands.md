@@ -31,6 +31,12 @@
 - Замер GPU на RADV: тест бенча в `crates/ui-render-vulkan/tests/` с `--nocapture` (пирамида и проход UI отдельно).
 - Запекание шрифта/иконок — автоматически в `build.rs` `ui-draw` (манифест `crates/ui-draw/assets/bake.json`, ≈ 1–2 с).
 
+## Экран камеры (сессия 12)
+- Экран стоит поверх видоискателя ВСЕГДА (`camera_screen.enabled = true`); сценарии smoke снимают его на своё время.
+- Сценарий 12a: `scripts/device-smoke.sh [--variant release] --timeout 180 screen` — 18 шагов: драйвер сам тапает/свайпает/жмёт `KEYCODE_VOLUME_UP` по стадиям `screen_gesture` (жест — в самой стадии); телефон не трогать. Точки — `camera.scenarios.screen` (доли экрана, `[derived]` из раскладки).
+- Golden экрана: `cargo test -p fasticamera-app --all-features --test camera_screen_golden` (10 состояний, эталоны `test-assets/camera-screen/golden/`, хранение 6× уменьшено); перегенерация `FASTICAMERA_UPDATE_GOLDEN=1`, PNG полного кадра — `FASTICAMERA_GOLDEN_PREVIEW_DIR=<вне репо>`.
+- Логика экрана без GPU: `cargo test -p camera-screen`.
+
 ## Эталоны ISP (сессия 06, только ПК)
 - Venv вне системы: `uv venv ~/.cache/fasticamera/isp-reference-venv && uv pip install --python ~/.cache/fasticamera/isp-reference-venv/bin/python rawpy numpy scipy pillow colour-science colour-hdri colour-demosaicing`. Запуск скриптов — всегда `.../isp-reference-venv/bin/python -I`.
 - Фикстуры `test-assets/isp-model/` (README там): `tools/isp-reference/make_demosaic_fixtures.py`; реальные кропы — `make_real_crops.py --capture-dir ~/fasticamera-captures/c7-reference/captures/204802-f42af9 --stem 2_lamp --out-dir test-assets/isp-model [--full-frame-dir <вне репо>]` (детерминирован: побайтно тот же вывод).

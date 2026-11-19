@@ -21,6 +21,8 @@ use shell_contract::thermal_policy::ThermalPolicy;
 
 use render_loop::mailbox::InboxDelivery;
 
+use crate::camera_screen_config::CameraScreenConfig;
+use crate::camera_screen_service::{CameraScreenService, ScreenEnvironment};
 use crate::camera_service::{AppVisibility, CameraDispatch, CameraServices};
 use crate::gpu_services::GpuServices;
 use crate::jni_boundary::run_guarded;
@@ -95,6 +97,8 @@ pub struct RouterParts {
     pub gpu: GpuServices,
     /// Движок камеры и политика его жизненного цикла.
     pub camera: CameraServices,
+    /// Экран камеры (сессия 12): включён ли и параметры его обвязки.
+    pub camera_screen: CameraScreenConfig,
 }
 
 /// Итог одного шага маршрутизатора.
@@ -116,6 +120,8 @@ pub struct EventRouter {
     route: Box<dyn RenderRoute>,
     gpu: GpuServices,
     camera: CameraServices,
+    /// Экран камеры: владелец установки/снятия и маршрутизации входа (`camera_screen_service`).
+    camera_screen: CameraScreenService,
     display: DisplayState,
     arrivals: Receiver<Box<dyn ObservingScenario>>,
     active: Option<Box<dyn ObservingScenario>>,
@@ -137,6 +143,7 @@ impl EventRouter {
             route: parts.route,
             gpu: parts.gpu,
             camera: parts.camera,
+            camera_screen: CameraScreenService::new(parts.camera_screen),
             display: DisplayState::default(),
             arrivals,
             active: None,
@@ -147,6 +154,7 @@ impl EventRouter {
 
     /// Работает, пока живы отправители событий (на телефоне — весь процесс).
     pub fn run(mut self) {
+        self.install_camera_screen();
         while self.step(SCENARIO_TICK) != RouterStep::Stopped {}
         tracing::info!(target: "fasticamera::router", "очередь событий закрыта, маршрутизатор остановлен");
     }
@@ -166,6 +174,7 @@ impl EventRouter {
             Err(ReceiveError::SendersGone) => return RouterStep::Stopped,
         };
         self.drive_scenario(|scenario, context| scenario.on_tick(context));
+        self.maintain_camera_screen(Instant::now());
         self.repeat_result_if_due(Instant::now());
         step
     }
@@ -185,6 +194,34 @@ impl EventRouter {
 
     pub fn display(&self) -> &DisplayState {
         &self.display
+    }
+
+    /// Диагностика экрана камеры (для сценариев и тестов).
+    pub fn camera_screen(&self) -> &CameraScreenService {
+        &self.camera_screen
+    }
+
+    /// Ставит экран камеры поверх видоискателя (при запуске маршрутизатора). Решений о содержимом экрана здесь
+    /// нет: это забота сервиса экрана.
+    pub(crate) fn install_camera_screen(&mut self) {
+        let environment = ScreenEnvironment {
+            services: &self.services,
+            gpu: &self.gpu,
+            camera: &self.camera,
+            orientation: self.display.orientation(),
+        };
+        self.camera_screen.install(&environment);
+    }
+
+    /// Тик экрана камеры: досылка долга разрыва касаний и переустановка экрана, снятого рендером.
+    fn maintain_camera_screen(&mut self, now: Instant) {
+        let environment = ScreenEnvironment {
+            services: &self.services,
+            gpu: &self.gpu,
+            camera: &self.camera,
+            orientation: self.display.orientation(),
+        };
+        self.camera_screen.maintain(now, &environment);
     }
 
     /// Применяет событие к состоянию и возвращает его сводку для сценария.
@@ -221,12 +258,16 @@ impl EventRouter {
                 log_camera_dispatch(self.camera.app_paused(), "paused");
             }
             ShellEvent::ThermalStatus(reading) => self.thermal_policy.observe(reading),
-            ShellEvent::DeviceOrientation(orientation) => self.display.set_orientation(orientation),
-            // Касаниям, разрешению и отказам платформы потребителей в 02 нет: только лог.
-            ShellEvent::Touch(_)
-            | ShellEvent::TouchGap { .. }
-            | ShellEvent::CameraPermission(_)
-            | ShellEvent::PlatformCommandFailed(_) => {}
+            ShellEvent::DeviceOrientation(orientation) => {
+                self.display.set_orientation(orientation);
+                self.camera_screen.route_orientation(orientation);
+            }
+            // Касания и клавиши идут экрану камеры (на поток рендера — через ограниченный канал, без ожиданий).
+            ShellEvent::Touch(sample) => self.camera_screen.route_touch(sample),
+            ShellEvent::TouchGap { .. } => self.camera_screen.route_touch_gap(),
+            ShellEvent::HardwareKey(key) => self.camera_screen.route_hardware_key(key),
+            // Разрешению и отказам платформы потребителей в 02 нет: только лог.
+            ShellEvent::CameraPermission(_) | ShellEvent::PlatformCommandFailed(_) => {}
         }
         observed
     }
@@ -245,6 +286,9 @@ impl EventRouter {
                 },
             );
         }
+        // Экран камеры уступает место сценарию (если тот не просит его оставить); вернётся в `finish`.
+        self.camera_screen
+            .suspend_for_scenario(scenario.name(), scenario.camera_screen_policy(), &self.gpu);
         // Повторы прежнего итога (и только что выданного «вытеснен») больше не нужны: скрипт уже
         // ждёт новый сценарий, и копия чужого итога не должна ему попасться.
         self.result_echo.cancel();
@@ -269,6 +313,7 @@ impl EventRouter {
             &self.scenario_config,
             &self.gpu,
             &self.camera,
+            &self.camera_screen,
             self.gyro_request,
             Instant::now(),
             self.output.as_mut(),
@@ -310,6 +355,15 @@ impl EventRouter {
         if !restored.is_empty() {
             tracing::info!(target: "fasticamera::router", scenario = name, ?restored, "настройки рендера возвращены");
         }
+        // Экран камеры возвращается ПОСЛЕ возврата рендера: `render_scenario_ended` снял источник сценария (`glass`),
+        // и порядок команд в ящике рендера — «снять источник сценария, поставить свежий экран».
+        let environment = ScreenEnvironment {
+            services: &self.services,
+            gpu: &self.gpu,
+            camera: &self.camera,
+            orientation: self.display.orientation(),
+        };
+        self.camera_screen.resume_after_scenario(&environment);
         // Подсказка владельцу — состояние на экране, а не импульс: при любом конце сценария (в том числе
         // ошибке, таймауте, вытеснении и панике) она обязана исчезнуть, иначе «ЩЁЛКНИ ЛАМПОЙ» повисла бы навсегда.
         self.clear_operator_prompt(name);

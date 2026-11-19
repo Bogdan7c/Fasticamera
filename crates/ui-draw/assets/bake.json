@@ -22,6 +22,12 @@
     { "id": "flip_camera", "file": "icons/phosphor/camera-rotate.svg", "kind": "fill" },
     { "id": "menu_chevron", "file": "icons/phosphor/caret-up.svg", "kind": "fill" },
     { "id": "exposure", "file": "icons/phosphor/sun.svg", "kind": "fill" },
-    { "id": "grid", "file": "icons/lucide/grid-3x3.svg", "kind": "stroke", "stroke_width": 2.0 }
+    { "id": "grid", "file": "icons/lucide/grid-3x3.svg", "kind": "stroke", "stroke_width": 2.0 },
+    { "id": "timer", "file": "icons/phosphor/timer.svg", "kind": "fill" },
+    { "id": "aspect_ratio", "file": "icons/lucide/ratio.svg", "kind": "stroke", "stroke_width": 2.0 },
+    { "id": "close", "file": "icons/phosphor/x.svg", "kind": "fill" },
+    { "id": "reset", "file": "icons/phosphor/arrow-counter-clockwise.svg", "kind": "fill" },
+    { "id": "controls_menu", "file": "icons/phosphor/dots-six.svg", "kind": "fill" },
+    { "id": "level", "file": "icons/own/level.svg", "kind": "stroke", "stroke_width": 2.0 }
   ]
 }

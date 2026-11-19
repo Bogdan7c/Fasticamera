@@ -8,6 +8,7 @@
 use serde::Serialize;
 
 use crate::commands::PlatformCommandFailure;
+use crate::hardware_key::HardwareKeyEvent;
 use crate::orientation::DeviceOrientation;
 use crate::permission::CameraPermission;
 use crate::surface::{NativeSurface, SurfaceGeneration, SurfaceReleaseRequest, SurfaceSize};
@@ -37,6 +38,9 @@ pub enum ShellEvent {
     /// В потоке касаний дыра: столько записей выброшено из-за переполнения очереди.
     /// Распознаватели жестов обязаны сбросить незавершённые жесты.
     TouchGap { dropped_samples: u64 },
+    /// Аппаратная клавиша (громкость) нажата или отпущена. Редкое событие: относится к
+    /// «критичным» очереди и не вытесняется касаниями (при полной очереди — потеря со счётчиком).
+    HardwareKey(HardwareKeyEvent),
     /// Физическая ориентация телефона сменилась.
     DeviceOrientation(DeviceOrientation),
     /// Новое тепловое показание (по смене статуса или по периодическому опросу запаса).
@@ -58,6 +62,7 @@ pub enum ShellEventKind {
     Paused,
     Touch,
     TouchGap,
+    HardwareKey,
     DeviceOrientation,
     ThermalStatus,
     CameraPermission,
@@ -75,6 +80,7 @@ impl ShellEventKind {
             ShellEventKind::Paused => "paused",
             ShellEventKind::Touch => "touch",
             ShellEventKind::TouchGap => "touch_gap",
+            ShellEventKind::HardwareKey => "hardware_key",
             ShellEventKind::DeviceOrientation => "device_orientation",
             ShellEventKind::ThermalStatus => "thermal_status",
             ShellEventKind::CameraPermission => "camera_permission",
@@ -93,6 +99,7 @@ impl ShellEvent {
             ShellEvent::Paused => ShellEventKind::Paused,
             ShellEvent::Touch(_) => ShellEventKind::Touch,
             ShellEvent::TouchGap { .. } => ShellEventKind::TouchGap,
+            ShellEvent::HardwareKey(_) => ShellEventKind::HardwareKey,
             ShellEvent::DeviceOrientation(_) => ShellEventKind::DeviceOrientation,
             ShellEvent::ThermalStatus(_) => ShellEventKind::ThermalStatus,
             ShellEvent::CameraPermission(_) => ShellEventKind::CameraPermission,
@@ -115,6 +122,7 @@ mod tests {
             ShellEventKind::Paused,
             ShellEventKind::Touch,
             ShellEventKind::TouchGap,
+            ShellEventKind::HardwareKey,
             ShellEventKind::DeviceOrientation,
             ShellEventKind::ThermalStatus,
             ShellEventKind::CameraPermission,

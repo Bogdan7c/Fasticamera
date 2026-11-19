@@ -44,7 +44,7 @@ impl IconTexels {
 
 #[test]
 fn every_icon_has_a_non_empty_region_with_both_inside_and_outside_texels() {
-    assert_eq!(IconId::ALL.len(), 6);
+    assert_eq!(IconId::ALL.len(), 12);
     for id in IconId::ALL {
         let glyph = icon(id);
         assert!(
@@ -125,5 +125,78 @@ fn symmetric_chevron_is_mirrored_and_flash_icons_differ() {
     assert!(
         differing > 200,
         "вспышка включена и выключена выглядят одинаково: различий {differing}"
+    );
+}
+
+/// Доля текселей ячейки, лежащих внутри формы (значение SDF < 128).
+fn inside_fraction(id: IconId) -> f64 {
+    let texels = IconTexels::of(id);
+    let inside = (0..texels.height)
+        .flat_map(|row| (0..texels.width).map(move |column| (column, row)))
+        .filter(|&(column, row)| texels.at(column, row) < 128)
+        .count();
+    inside as f64 / (texels.width * texels.height) as f64
+}
+
+/// Иконки экрана камеры v1 (сессия 12) запеклись с реальным покрытием, а не пустой/залитой ячейкой.
+#[test]
+fn camera_screen_icons_have_real_coverage() {
+    for id in [
+        IconId::Timer,
+        IconId::AspectRatio,
+        IconId::Close,
+        IconId::Reset,
+        IconId::ControlsMenu,
+    ] {
+        let fraction = inside_fraction(id);
+        assert!(
+            (0.02..0.60).contains(&fraction),
+            "{id:?}: покрытие {fraction:.3} вне разумного диапазона"
+        );
+    }
+}
+
+/// Геометрия новых иконок: крест «×» и шесть точек «⋮⋮» — внутри в нужных местах, снаружи в пустых.
+#[test]
+fn close_and_controls_menu_have_expected_shapes() {
+    let manifest = support::load_manifest();
+    let spread = manifest.atlas.spread_texels as f64;
+    let scale = f64::from(manifest.atlas.icon_texels) / 256.0; // Phosphor: viewBox 256
+    let cell = |unit: f64| (spread + unit * scale).floor() as usize;
+
+    // Close: центр пересечения диагоналей (128,128) внутри, середины сторон (128,40) и (40,128) — снаружи.
+    let close = IconTexels::of(IconId::Close);
+    assert!(close.at(cell(128.0), cell(128.0)) < 128, "центр креста");
+    assert!(close.at(cell(128.0), cell(40.0)) > 128, "над крестом");
+    assert!(close.at(cell(40.0), cell(128.0)) > 128, "слева от креста");
+
+    // ControlsMenu (dots-six): центр верхней-левой точки (60,92) внутри, центр иконки (94,128)
+    // между рядами и столбцами — снаружи.
+    let dots = IconTexels::of(IconId::ControlsMenu);
+    assert!(dots.at(cell(60.0), cell(92.0)) < 128, "левая верхняя точка");
+    assert!(dots.at(cell(196.0), cell(164.0)) < 128, "правая нижняя точка");
+    assert!(dots.at(cell(94.0), cell(128.0)) > 128, "между точками");
+}
+
+/// Своя иконка `Level` (сессия 12, пакет P1g): горизонт с разрывом в центре и короткие боковые штрихи.
+/// Проверяем форму, а не «что-то запеклось»: линия есть слева и справа, в разрыве пусто, штрихи на краях.
+#[test]
+fn level_icon_is_a_horizon_with_a_central_gap_and_side_ticks() {
+    let manifest = support::load_manifest();
+    let spread = manifest.atlas.spread_texels as f64;
+    let scale = f64::from(manifest.atlas.icon_texels) / 24.0; // своя иконка: viewBox 24
+    let cell = |unit: f64| (spread + unit * scale).floor() as usize;
+
+    let level = IconTexels::of(IconId::Level);
+    assert!(level.at(cell(7.5), cell(12.0)) < 128, "левый отрезок горизонта");
+    assert!(level.at(cell(16.5), cell(12.0)) < 128, "правый отрезок горизонта");
+    assert!(level.at(cell(12.0), cell(12.0)) > 128, "разрыв в центре");
+    assert!(level.at(cell(2.0), cell(10.0)) < 128, "левый боковой штрих");
+    assert!(level.at(cell(22.0), cell(14.0)) < 128, "правый боковой штрих");
+    assert!(level.at(cell(12.0), cell(4.0)) > 128, "над горизонтом пусто");
+    let fraction = inside_fraction(IconId::Level);
+    assert!(
+        (0.02..0.60).contains(&fraction),
+        "покрытие {fraction:.3} вне разумного диапазона"
     );
 }

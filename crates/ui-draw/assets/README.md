@@ -34,11 +34,17 @@ Display. Оба начертания используют один `opsz` — р
 | `icons/phosphor/sun.svg` | там же | `8df1c7b747774f8b2c1fe353b1b785c74aac35bfa50f2ed7d8d9a85a4191b2ac` |
 | `icons/phosphor/LICENSE` | MIT, Copyright 2023 Phosphor Icons | `b5b1f1da112d18ea2147decfd48ddc1bf2b5aeb6c265381579340e95b15a2bb2` |
 | `icons/lucide/grid-3x3.svg` | Lucide (ISC), `lucide-icons/lucide`, `icons/`, коммит `742ea78395b4122e13fd46743caba5140f47fb66` | `6c24155397cf0e751c05931bae68e67e4fe0fd58baeb7b29e9f80c90ed1d5194` |
+| `icons/phosphor/timer.svg` | там же (`timer`) — таймер | `eccb04ff7903c451948aba91d91606eba71d9e050ed52b9e14a0e11199379d0e` |
+| `icons/phosphor/x.svg` | там же (`x`) — закрыть панель/меню | `7397b15e1fa66eaf6ff9b59fe91d483cb5c3bcf75b2fe052097ab6f0593b513a` |
+| `icons/phosphor/arrow-counter-clockwise.svg` | там же — сброс экспозиции | `4eb160d5ae781107c674481ac081962e6bce6281a646129e6c3f960b9dd5dac6` |
+| `icons/phosphor/dots-six.svg` | там же — кнопка меню Camera Controls («шесть точек», `layout.md`/`behavior.md`; `dots-nine` не взят: у Apple шесть) | `98d4801caca44a0be87d8aa5c63d3c31834047e5c0a862d7d751f33266332bbc` |
+| `icons/lucide/ratio.svg` | Lucide (ISC), `lucide-icons/lucide`, `icons/ratio.svg`, коммит `742ea78395b4122e13fd46743caba5140f47fb66` — соотношение сторон (у Phosphor аналога нет, `assets.md`); два пересекающихся скруглённых прямоугольника 12×20 и 20×12, `stroke` ширины 2 | `d30cb7b90d5164cfe6b14457cc0e333143a0a1e5ebdc281ba64facaf7eaf3125` |
+| `icons/own/level.svg` | **Своя** (лицензия проекта), нарисована в сессии 12 для пункта меню Level: у Phosphor и Lucide уровня нет (`assets.md`). viewBox 24, `stroke` ширины 2 с круглыми концами: горизонт с разрывом в центре (`M5 12h5`, `M14 12h5`) и два коротких боковых штриха (`M2 9v6`, `M22 9v6`) | `cc07f860b145327898bba2b5f1ca3415de814f9f7c0756b34ffc20fc0bf19eab` |
 | `icons/lucide/LICENSE` | ISC, Copyright 2026 Lucide Icons and Contributors | `b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57` |
 
 Phosphor — иконки-заливки (`kind: fill`, ненулевая обмотка), Lucide — иконка-контур (`kind: stroke`,
 ширина штриха 2 единицы viewBox 24 — доказывает путь «расстояние до средней линии минус полуширина»).
-Это стартовый набор из 6; полный набор v1 и «свои по мотивам» — сессия 12.
+Набор из 12 иконок: 6 стартовых плюс 6 для экрана камеры v1 (сессия 12: `timer`, `aspect_ratio`, `close`, `reset`, `controls_menu` взяты как есть из закреплённых коммитов; `level` — единственная своя, см. таблицу). `RAW` — подписью, шестерёнка настроек — сессия 16.
 
 ## Манифест `bake.json`
 

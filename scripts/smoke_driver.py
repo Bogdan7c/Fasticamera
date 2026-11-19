@@ -7,8 +7,30 @@ Rust-часть сценария пишет строки ``FASTICAMERA_STAGE {js
 
 Устройство:
 * ``Step`` / ``SCENARIO_STEPS`` — таблица «сценарий → стадия → шаги»;
+* ``ScreenFraction`` / ``DurationMs`` — типизированная нагрузка жестов (координаты в долях экрана, длительность в мс);
 * ``AdbDeviceActions`` — шаги через ``adb -s <serial>`` (serial всегда явный);
 * ``StageDriver`` — получает стадию, находит шаги, выполняет их по порядку.
+
+Жесты в произвольную точку (для сценариев экрана камеры) описываются в долях экрана, а не в пикселях:
+(0, 0) — верхний левый угол, (1, 1) — нижний правый пиксель. Драйвер сам переводит доли в пиксели
+по ``wm size``, поэтому сценарий не зависит от разрешения телефона. Пример (так будут описаны шаги
+сценария ``screen`` описывает жесты сама стадия, см. ``StepKind.STAGE_GESTURE``)::
+
+    "screen": {
+        "screen_ready": (
+            Step(StepKind.TAP_POINT, point=ScreenFraction(0.5, 0.9)),                  # тап по затвору
+            Step(StepKind.LONG_PRESS_POINT, point=ScreenFraction(0.5, 0.5), duration=DurationMs(800)),
+            Step(
+                StepKind.SWIPE,
+                point=ScreenFraction(0.8, 0.5),
+                end_point=ScreenFraction(0.2, 0.5),
+                duration=DurationMs(300),
+            ),                                                                          # свайп справа налево
+        ),
+    },
+
+Неверная точка (вне [0, 1]) или неположительная длительность — ``ValueError`` при построении ``Step``,
+то есть при импорте модуля, а не на телефоне.
 """
 
 from __future__ import annotations
@@ -19,12 +41,20 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, TypeVar
 
 import smoke_screen
+from smoke_driver_steps import (  # noqa: F401  (реэкспорт: тесты и вызывающие берут типы из smoke_driver)
+    _GESTURE_KINDS,
+    DurationMs,
+    ScreenFraction,
+    Step,
+    StepKind,
+)
 from smoke_ui import TapPoint, UiDumpParseError, find_deny_button
+
+_Payload = TypeVar("_Payload")
 
 STAGE_MARKER = "FASTICAMERA_STAGE "
 """Префикс строки стадии; контракт с Rust (``crates/fasticamera-app/src/scenario/``)."""
@@ -77,35 +107,6 @@ VIEWFINDER_SHOTS_PAUSE_SECONDS = 1.5
 
 class DriverError(Exception):
     """Шаг не удалось выполнить; сообщение уходит в вердикт сценария (код выхода 1)."""
-
-
-class StepKind(Enum):
-    """Виды шагов драйвера."""
-
-    PRESS_HOME = "press_home"
-    PAUSE = "pause"
-    RETURN_TO_APP = "return_to_app"
-    DENY_PERMISSION_DIALOG = "deny_permission_dialog"
-    SCREEN_OFF = "screen_off"
-    SCREEN_ON = "screen_on"
-    TAP_SCREEN = "tap_screen"
-    LAUNCH_SYSTEM_CAMERA = "launch_system_camera"
-    SCREENCAP = "screencap"
-
-
-@dataclass(frozen=True)
-class Step:
-    """Один шаг; ``seconds`` нужен только шагу ``PAUSE``, ``label`` — только шагу ``SCREENCAP``
-    (имя файла скриншота в каталоге артефактов).
-
-    ``only_if_true`` — имя булева поля стадии: шаг выполняется, только если поле есть и равно
-    ``true`` (иначе пропускается). Так стадия, общая для разных ситуаций, управляет шагом данными.
-    """
-
-    kind: StepKind
-    seconds: float = 0.0
-    only_if_true: str | None = None
-    label: str = ""
 
 
 VIEWFINDER_SHOT_STEPS = (
@@ -161,6 +162,10 @@ SCENARIO_STEPS: dict[str, dict[str, tuple[Step, ...]]] = {
     # glass (сессия 11): Rust ставит стекло поверх видоискателя и пишет ``glass_live``; на нём те же два скриншота
     # (стекло над живым кадром, с паузой между ними — анимация меняет картинку). Окно наблюдения идёт, пока скрипт снимает.
     "glass": {"glass_live": VIEWFINDER_SHOT_STEPS},
+    # screen (сессия 12): на КАЖДОЙ стадии ``screen_gesture`` драйвер выполняет жест из её поля ``gesture`` (тап, долгое
+    # нажатие, свайп — точки в долях экрана из плана касаний Rust; клавиша громкости). Стадию шага Rust выдаёт ровно
+    # один раз и ждёт следствий на экране и в камере, поэтому драйвер не знает ни точек, ни порядка шагов.
+    "screen": {"screen_gesture": (Step(StepKind.STAGE_GESTURE),)},
     # platform (08c): Rust показывает тестовую подсказку владельцу и держит её ``operator_prompt_hold_ms`` (2 с).
     # Скрипт снимает один скриншот, пока она на экране: по нему видно, что плашка дошла до экрана и стоит
     # внизу, а не в центре кадра (центр меряет ``--neutral-card``). Сценарий не ждёт скриншота — хватает запаса 2 с.
@@ -199,6 +204,22 @@ class DeviceActions(Protocol):
     def launch_system_camera(self) -> None: ...
 
     def screencap(self, label: str) -> None: ...
+
+    def tap_point(self, point: ScreenFraction) -> None: ...
+
+    def long_press_point(self, point: ScreenFraction, duration: DurationMs) -> None: ...
+
+    def swipe(self, start: ScreenFraction, end: ScreenFraction, duration: DurationMs) -> None: ...
+
+    def press_volume_up(self) -> None: ...
+
+
+def fraction_to_pixel(point: ScreenFraction, width_px: int, height_px: int) -> TapPoint:
+    """Доли экрана → пиксель: ``round(доля * (размер - 1))``, половина округляется вверх.
+
+    ``размер - 1`` — чтобы доля 1.0 попадала в последний пиксель (индекс ``размер - 1``), а не за экран.
+    """
+    return TapPoint(int(point.x * (width_px - 1) + 0.5), int(point.y * (height_px - 1) + 0.5))
 
 
 def parse_device_locked(output: str) -> bool:
@@ -385,10 +406,47 @@ class AdbDeviceActions:
         ``Override size`` (``wm size WxH``), он важнее физического размера. Не разобрали вывод —
         ``DriverError``, а не касание «наугад».
         """
+        width_px, height_px = self._read_screen_size()
+        self._tap(TapPoint(width_px // 2, height_px // 2))
+
+    def tap_point(self, point: ScreenFraction) -> None:
+        """Касание в точку, заданную долями экрана (``input tap``)."""
+        pixel = fraction_to_pixel(point, *self._read_screen_size())
+        self._tap(pixel)
+
+    def long_press_point(self, point: ScreenFraction, duration: DurationMs) -> None:
+        """Долгое касание: ``input swipe x y x y <мс>`` (стандартный способ удержания без отдельной команды)."""
+        pixel = fraction_to_pixel(point, *self._read_screen_size())
+        self._swipe_pixels(pixel, pixel, duration, f"долгое нажатие в ({pixel.x}, {pixel.y})")
+
+    def swipe(self, start: ScreenFraction, end: ScreenFraction, duration: DurationMs) -> None:
+        """Свайп из точки в точку за ``duration`` мс: ``input swipe x1 y1 x2 y2 <мс>``."""
+        width_px, height_px = self._read_screen_size()
+        start_pixel = fraction_to_pixel(start, width_px, height_px)
+        end_pixel = fraction_to_pixel(end, width_px, height_px)
+        self._swipe_pixels(
+            start_pixel, end_pixel, duration,
+            f"свайп ({start_pixel.x}, {start_pixel.y}) -> ({end_pixel.x}, {end_pixel.y})",
+        )
+
+    def press_volume_up(self) -> None:
+        """Клавиша громкости «+» (``input keyevent KEYCODE_VOLUME_UP``): затвор с клавиши в сценарии ``screen``."""
+        result = self._run_adb(self.adb_command("shell", "input", "keyevent", "KEYCODE_VOLUME_UP"))
+        self._require_success(result, "KEYCODE_VOLUME_UP")
+
+    def _read_screen_size(self) -> tuple[int, int]:
+        """Размер экрана в пикселях из ``wm size`` (``DriverError``, если вывод не разобрать)."""
         result = self._run_adb(self.adb_command("shell", "wm", "size"))
         self._require_success(result, "wm size")
-        width_px, height_px = parse_wm_size(result.stdout)
-        self._tap(TapPoint(width_px // 2, height_px // 2))
+        return parse_wm_size(result.stdout)
+
+    def _swipe_pixels(self, start: TapPoint, end: TapPoint, duration: DurationMs, what: str) -> None:
+        result = self._run_adb(
+            self.adb_command(
+                "shell", "input", "swipe", str(start.x), str(start.y), str(end.x), str(end.y), str(duration.value)
+            )
+        )
+        self._require_success(result, what)
 
     def launch_system_camera(self) -> None:
         """Открывает системную камеру интентом ``STILL_IMAGE_CAMERA`` (решение владельца 38).
@@ -519,9 +577,9 @@ class StageDriver:
         for step in self._steps_by_stage.get(str(stage_event.get("stage")), ()):
             if step.only_if_true is not None and stage_event.get(step.only_if_true) is not True:
                 continue
-            self._run_step(step)
+            self._run_step(step, stage_event)
 
-    def _run_step(self, step: Step) -> None:
+    def _run_step(self, step: Step, stage_event: dict) -> None:
         if step.kind is StepKind.PRESS_HOME:
             self._actions.press_home()
         elif step.kind is StepKind.PAUSE:
@@ -540,5 +598,66 @@ class StageDriver:
             self._actions.launch_system_camera()
         elif step.kind is StepKind.SCREENCAP:
             self._actions.screencap(step.label)
+        elif step.kind is StepKind.TAP_POINT:
+            self._actions.tap_point(self._require(step.point))
+        elif step.kind is StepKind.LONG_PRESS_POINT:
+            self._actions.long_press_point(self._require(step.point), self._require(step.duration))
+        elif step.kind is StepKind.SWIPE:
+            self._actions.swipe(
+                self._require(step.point), self._require(step.end_point), self._require(step.duration)
+            )
+        elif step.kind is StepKind.STAGE_GESTURE:
+            self._run_stage_gesture(stage_event)
         else:  # pragma: no cover - новый StepKind без ветки должен падать громко
             raise DriverError(f"неизвестный шаг {step.kind!r}")
+
+    def _run_stage_gesture(self, stage_event: dict) -> None:
+        """Жест из поля ``gesture`` стадии. Любая неточность описания — ``DriverError`` с именем шага, а не касание наугад."""
+        step_name = stage_event.get("step", "?")
+        gesture = stage_event.get("gesture")
+        if not isinstance(gesture, dict):
+            raise DriverError(f"шаг {step_name}: в стадии нет поля gesture (получено {gesture!r})")
+        kind = gesture.get("kind")
+        try:
+            if kind == "tap":
+                self._actions.tap_point(_fraction(gesture, "x", "y"))
+            elif kind == "long_press":
+                self._actions.long_press_point(_fraction(gesture, "x", "y"), _duration(gesture, "hold_ms"))
+            elif kind == "swipe":
+                self._actions.swipe(
+                    _fraction(gesture, "x", "y"), _fraction(gesture, "end_x", "end_y"), _duration(gesture, "duration_ms")
+                )
+            elif kind == "volume_up":
+                self._actions.press_volume_up()
+            else:
+                raise DriverError(f"шаг {step_name}: неизвестный жест {kind!r}")
+        except ValueError as error:
+            raise DriverError(f"шаг {step_name}: неверное описание жеста {gesture!r}: {error}") from error
+
+    @staticmethod
+    def _require(value: _Payload | None) -> _Payload:
+        """Нагрузка жеста; ``Step.__post_init__`` гарантирует её наличие, здесь защита от обхода конструктора."""
+        if value is None:
+            raise DriverError("у шага-жеста нет обязательной нагрузки")
+        return value
+
+
+def _number(gesture: dict, field: str) -> float:
+    """Число поля жеста (``bool`` — не число)."""
+    value = gesture.get(field)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"поле {field} должно быть числом, получено {value!r}")
+    return float(value)
+
+
+def _fraction(gesture: dict, x_field: str, y_field: str) -> ScreenFraction:
+    """Точка жеста в долях экрана; диапазон [0, 1] проверяет ``ScreenFraction``."""
+    return ScreenFraction(_number(gesture, x_field), _number(gesture, y_field))
+
+
+def _duration(gesture: dict, field: str) -> DurationMs:
+    """Длительность жеста в целых мс; положительность проверяет ``DurationMs``."""
+    value = _number(gesture, field)
+    if value != int(value):
+        raise ValueError(f"поле {field} должно быть целым числом мс, получено {value!r}")
+    return DurationMs(int(value))

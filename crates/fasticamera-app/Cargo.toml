@@ -23,6 +23,8 @@ android-shell.workspace = true
 camera-android.workspace = true
 camera-contract.workspace = true
 camera-core.workspace = true
+# Экран камеры (сессия 12): «мозг» и фасад `CameraScreen`; приложение только собирает его и исполняет эффекты.
+camera-screen.workspace = true
 gpu-vulkan.workspace = true
 isp-vulkan.workspace = true
 raw-frame-stream.workspace = true
@@ -45,6 +47,11 @@ camera-contract = { workspace = true, features = ["fixtures"] }
 camera-core = { workspace = true, features = ["fake-backend"] }
 # Подставной источник батареи: функциональные тесты сценариев замера тока (сессия 07).
 shell-contract = { workspace = true, features = ["fake-power-source"] }
+# Golden-кадры экрана камеры (сессия 12): настоящий рендер UI на GPU ПК поверх синтетического фона.
+# `camera-screen` GPU-crate-ы не видит (guardrail), поэтому сшивка экрана с `UiRenderer` — здесь, в composition root.
+ash.workspace = true
+gpu-vulkan = { workspace = true, features = ["test-support"] }
+ui-render-vulkan = { workspace = true, features = ["test-support"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni.workspace = true

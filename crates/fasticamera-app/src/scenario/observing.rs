@@ -26,6 +26,7 @@ use shell_contract::thermal::ThermalSource;
 use shell_contract::thermal_policy::ThermalPolicy;
 use shell_contract::vsync::VsyncSource;
 
+use crate::camera_screen_service::{CameraScreenPolicy, CameraScreenService};
 use crate::camera_service::CameraServices;
 use crate::gpu_services::GpuServices;
 
@@ -206,6 +207,8 @@ pub struct ScenarioContext<'call> {
     pub gpu: &'call GpuServices,
     /// Движок камеры, диагностика бэкенда и политика жизненного цикла камеры.
     pub camera: &'call CameraServices,
+    /// Диагностика экрана камеры (только чтение): статус, отчёт кадров, счётчики входа, журнал фейк-снимков.
+    pub camera_screen: &'call CameraScreenService,
     pub gyro_request: GyroRequest,
     pub now: Instant,
     output: &'call mut dyn ScenarioOutput,
@@ -224,6 +227,7 @@ impl<'call> ScenarioContext<'call> {
         config: &'call ScenarioConfig,
         gpu: &'call GpuServices,
         camera: &'call CameraServices,
+        camera_screen: &'call CameraScreenService,
         gyro_request: GyroRequest,
         now: Instant,
         output: &'call mut dyn ScenarioOutput,
@@ -236,6 +240,7 @@ impl<'call> ScenarioContext<'call> {
             config,
             gpu,
             camera,
+            camera_screen,
             gyro_request,
             now,
             output,
@@ -264,6 +269,12 @@ pub enum ScenarioStep {
 /// Наблюдающий сценарий.
 pub trait ObservingScenario: Send {
     fn name(&self) -> &'static str;
+
+    /// Что делать с экраном камеры на время сценария. По умолчанию экран снимается (сценарии меряют и
+    /// снимают «чистый» видоискатель); сценарий, проверяющий сам экран, возвращает `KeepRunning`.
+    fn camera_screen_policy(&self) -> CameraScreenPolicy {
+        CameraScreenPolicy::SuspendForScenario
+    }
 
     /// Вызывается один раз, когда маршрутизатор принял сценарий.
     fn start(&mut self, context: &mut ScenarioContext<'_>) -> ScenarioStep;

@@ -15,6 +15,8 @@
 //! * сессия 08c: [`AeTraceScenario`] — `ae-trace` (ряд нашего AE по ступенькам света; расписание — `ae_trace_plan`,
 //!   запись — `ae_trace_run`, разбор — `ae_trace_analysis`/`_steps`/`_stats`, вердикт — `ae_trace_verdict`).
 //! * сессия 11: [`GlassScenario`] — `glass` (стекло поверх видоискателя; отчёт и вердикт — `glass_report`).
+//! * сессия 12: [`ScreenScenario`] — `screen` (экран камеры iOS, на котором скрипт делает касания; шаги — `screen_steps`,
+//!   исполнитель — `screen_runner`, вердикт — `screen_report`). Единственный сценарий с `KeepRunning`.
 //!
 //! Устройство каждого сценария одинаково: логика движется по тикам маршрутизатора (ничего не
 //! блокируется), отчёт — отдельные `Serialize`-структуры (`*_report.rs`), вердикт — чистая функция
@@ -55,6 +57,14 @@ mod raw_stream_deltas;
 mod raw_stream_report;
 mod raw_stream_samples;
 mod result_budget;
+mod screen;
+mod screen_expect;
+mod screen_gesture;
+mod screen_probe;
+mod screen_report;
+mod screen_runner;
+mod screen_sensor_point;
+mod screen_steps;
 mod stream;
 mod stream_report;
 mod three_a;
@@ -94,6 +104,7 @@ pub use catalog::CameraCatalogScenario;
 pub use evict::CameraEvictScenario;
 pub use glass::GlassScenario;
 pub use raw_stream::CameraRawStreamScenario;
+pub use screen::ScreenScenario;
 pub use stream::CameraStreamScenario;
 pub use three_a::ThreeAScenario;
 pub use video_headroom::VideoHeadroomScenario;
@@ -127,6 +138,8 @@ pub enum CameraScenario {
     VideoHeadroomBench,
     /// `glass`: стекло поверх живого видоискателя, GPU-время UI и пропуски кадров (сессия 11).
     Glass,
+    /// `screen`: экран камеры iOS, касания по плану скрипта, доказательство «тап дошёл до HAL» (сессия 12).
+    Screen,
     /// `3a`: автоматика 3A и ручные параметры на живом видоискателе (сессия 08).
     ThreeA,
     /// `ae-trace`: ряд нашего AE по ступенькам света, подтяжка ISP и мерцание (сессия 08c).
@@ -156,6 +169,7 @@ impl CameraScenario {
             CameraScenario::ThreeA,
             CameraScenario::AeTrace,
             CameraScenario::Glass,
+            CameraScenario::Screen,
         ]
     }
 
@@ -183,6 +197,7 @@ impl CameraScenario {
             CameraScenario::ThreeA => "3a",
             CameraScenario::AeTrace => "ae-trace",
             CameraScenario::Glass => "glass",
+            CameraScenario::Screen => "screen",
         }
     }
 
@@ -205,6 +220,7 @@ impl CameraScenario {
             CameraScenario::ThreeA => Box::new(ThreeAScenario::new()),
             CameraScenario::AeTrace => Box::new(AeTraceScenario::new()),
             CameraScenario::Glass => Box::new(GlassScenario::new()),
+            CameraScenario::Screen => Box::new(ScreenScenario::new()),
         }
     }
 }

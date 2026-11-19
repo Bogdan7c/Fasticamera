@@ -20,7 +20,7 @@ use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::error::GpuError;
 use gpu_vulkan::gpu_timing::TimestampStage;
 use gpu_vulkan::raster::ColorAttachment;
-use gpu_vulkan::swapchain::{DisplayFrame, DisplayTargetInfo};
+use gpu_vulkan::swapchain::DisplayTargetInfo;
 use ui_core::input::{PointScale, PointScaleRule};
 use ui_draw::color::DisplayColor;
 use ui_draw::frame_source::UiFrameRequest;
@@ -29,8 +29,8 @@ use ui_render_vulkan::{BackdropInput, BackdropPlacement, UiFrame, UiRenderError,
 
 use super::super::ui_state::UiOverlayFrame;
 use super::super::viewfinder_stats::FRAME_POINT_UI_DONE;
-use super::{CameraPipelines, LOG_TARGET, PlaneSize, ScreenContent, logical_size, viewfinder_layout};
-use crate::config::{UiOverlayConfig, ViewfinderPlacement};
+use super::{CameraPipelines, FrameTarget, LOG_TARGET, ScreenContent, logical_size};
+use crate::config::UiOverlayConfig;
 
 /// Ленивый владелец рендера UI под формат цели.
 pub(super) struct UiPass {
@@ -119,11 +119,10 @@ impl CameraPipelines {
     /// `serial` — номер сабмита этого кадра (для подложки стекла).
     pub fn record_ui_overlay(
         &mut self,
-        frame: &DisplayFrame,
+        frame: &FrameTarget,
         ui: &mut UiOverlayFrame<'_>,
         screen: &ScreenContent,
         serial: super::super::SubmissionSerial,
-        placement: ViewfinderPlacement,
     ) -> u64 {
         if !ui.state.is_active() {
             return 0;
@@ -159,32 +158,20 @@ impl CameraPipelines {
         };
 
         // Фон под стеклом. Подложка берётся заново на каждый кадр (контракт `gpu_vulkan::backdrop`).
+        // Прямоугольник фона — тот же, что скомпоновал видоискатель (посчитан один раз на кадр).
+        // Без изображения камеры (чёрный кадр) стеклу фоном служит чёрный.
         let backdrop_source = match screen {
-            ScreenContent::Viewfinder => self
+            ScreenContent::Viewfinder { .. } => self
                 .isp
                 .backdrop_source(gpu_vulkan::backdrop::SubmissionSerial(serial.0)),
             ScreenContent::Black { .. } => None,
         };
-        let destination = backdrop_source.as_ref().and_then(|source| {
-            let size = source.extent();
-            viewfinder_layout(
-                frame,
-                PlaneSize {
-                    width: size.width,
-                    height: size.height,
-                },
-                placement,
-            )
-            .inspect_err(|error| {
-                tracing::warn!(target: LOG_TARGET, %error, "прямоугольник фона для UI не посчитан: стекло над чёрным");
-            })
-            .ok()
-            .map(|layout| px_rect(layout.destination))
-        });
-        let backdrop = match (&backdrop_source, destination) {
-            (Some(source), Some(destination)) => BackdropInput::Live {
+        let backdrop = match (&backdrop_source, screen) {
+            (Some(source), ScreenContent::Viewfinder { destination }) => BackdropInput::Live {
                 source,
-                placement: BackdropPlacement { destination },
+                placement: BackdropPlacement {
+                    destination: px_rect(*destination),
+                },
             },
             _ => BackdropInput::Absent {
                 fill: DisplayColor::BLACK,
@@ -194,12 +181,12 @@ impl CameraPipelines {
         let ui_frame = UiFrame {
             draw_list: &draw_list,
             logical_size: logical_px,
-            surface_transform: frame.transform(),
+            surface_transform: frame.transform,
             backdrop,
         };
-        let target = ColorAttachment::from_display_target(frame.pattern_target(), frame.format());
+        let target = ColorAttachment::from_display_target(frame.pattern_target, frame.format);
         let recorded = match self.ui.renderer.as_mut() {
-            Some(renderer) => renderer.record_frame(frame.command_buffer(), frame.ring_slot(), target, &ui_frame),
+            Some(renderer) => renderer.record_frame(frame.command_buffer, frame.ring_slot, target, &ui_frame),
             None => return 0,
         };
         match recorded {

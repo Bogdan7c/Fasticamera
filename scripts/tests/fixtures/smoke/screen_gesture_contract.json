@@ -1,0 +1,6 @@
+{
+  "tap": {"kind": "tap", "x": 0.5, "y": 0.25},
+  "long_press": {"kind": "long_press", "x": 0.1, "y": 0.2, "hold_ms": 800},
+  "swipe": {"kind": "swipe", "x": 0.5, "y": 0.6, "end_x": 0.5, "end_y": 0.4, "duration_ms": 300},
+  "volume_up": {"kind": "volume_up"}
+}

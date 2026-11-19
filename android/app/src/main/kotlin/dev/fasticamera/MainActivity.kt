@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.os.Bundle
 import android.util.Log
+import android.view.KeyEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.WindowInsets
@@ -78,6 +79,17 @@ class MainActivity : Activity() {
             ShellBridge.nativeDetach(platform)
         }
         super.onDestroy()
+    }
+
+    /**
+     * Все клавиши идут в Rust как есть; решает он. `true` от Rust — клавиша громкости наша, событие
+     * потребляется (громкость не меняется, системный ползунок не всплывает). Остальные клавиши
+     * и клавиши, которые Rust не принял, обрабатываются системой как обычно (`super`).
+     * `dispatchKeyEvent`, а не `onKeyDown`/`onKeyUp`: один вход для нажатия, автоповтора и отпускания.
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val consumedByRust = ShellBridge.nativeHardwareKey(event.keyCode, event.action, event.repeatCount, event.eventTime)
+        return consumedByRust || super.dispatchKeyEvent(event)
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {

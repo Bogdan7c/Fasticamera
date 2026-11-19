@@ -50,6 +50,8 @@ mod autostart;
 mod camera;
 #[path = "event_router_camera_scenario_tests.rs"]
 mod camera_scenarios;
+#[path = "event_router_camera_screen_tests.rs"]
+mod camera_screen_e2e;
 #[path = "event_router_echo_tests.rs"]
 mod echo;
 #[path = "event_router_raw_stream_tests.rs"]
@@ -355,6 +357,11 @@ fn build_harness_with_camera(
             Arc::clone(&control) as Arc<dyn crate::viewfinder_control::RenderControl>,
         ),
         camera: camera.clone(),
+        // Экран камеры выключен: прежние тесты проверяют сценарии без него (экрану — event_router_camera_screen_tests).
+        camera_screen: crate::camera_screen_config::CameraScreenConfig {
+            enabled: false,
+            ..Default::default()
+        },
     });
     Harness {
         router,

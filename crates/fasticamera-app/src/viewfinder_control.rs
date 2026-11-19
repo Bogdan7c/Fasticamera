@@ -18,7 +18,7 @@
 //! [`RenderAdjustment`] она не входит. По умолчанию UI выключен (продукт до сессии 12 стекла не рисует);
 //! включает только сценарий (`glass`), а конец сценария снимает источник при ЛЮБОМ исходе.
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use isp_vulkan::viewfinder::IspStageSet;
 use render_loop::config::{AdpfMode, DepthReductionMode, LateLatchMode, PresentTimelinePolicy};
@@ -274,6 +274,23 @@ impl GpuServices {
             self.scenario_claim.note(|touched| touched.ui_overlay = false);
         }
         delivery
+    }
+
+    /// Продукт: поставить источник кадра UI экрана камеры БЕЗ учёта сценария. Постоянная установка: конец
+    /// сценария её не снимает (экран снимает и возвращает сервис экрана, `camera_screen_service`).
+    pub fn install_product_ui_overlay(&self, source: Box<dyn UiFrameSource>) -> ControlDelivery {
+        self.control.ui_overlay(UiOverlayCommand::Install(source))
+    }
+
+    /// Продукт: снять источник кадра UI экрана камеры (на время сценария). Снятие без установки безвредно.
+    pub fn remove_product_ui_overlay(&self) -> ControlDelivery {
+        self.control.ui_overlay(UiOverlayCommand::Remove)
+    }
+
+    /// Управление рендером для исполнителей продуктовых намерений (место видоискателя от экрана).
+    /// Намерения продукта идут мимо учёта сценария: сценарий не должен откатывать то, что решил экран.
+    pub fn render_control(&self) -> Arc<dyn RenderControl> {
+        Arc::clone(&self.control)
     }
 
     /// Штатная политика линии кадра — из конфига рендера.

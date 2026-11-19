@@ -1,0 +1,29 @@
+[package]
+name = "camera-screen"
+description = "«Мозг» экрана камеры без UI-дерева и рисования: состояние, действия, эффекты-намерения, чистый редьюсер, геометрия кадра и перевод экран ↔ сенсор (сессия 12)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Нейтральный словарь камеры: SensorPoint, ExposureBias, ViewfinderCrop, SensorOrientation.
+# Не `camera-core`: факты камеры приходят нейтральным типом `CameraFacts`, который заполняет приложение.
+camera-contract.workspace = true
+# Словарь шва: время (`MonotonicNanos`), ориентация, гравитация, хаптика, размер surface.
+shell-contract.workspace = true
+# Только геометрия в pt (`Point`, `Rect`, `Size`) и правило масштаба `PointScaleRule`.
+ui-core.workspace = true
+# Готовые элементы экрана (шкала, карусель, плашка, рамка фокуса, затвор, панель) и их вид — решение 84.
+ui-kit.workspace = true
+# Словарь списка рисования (`DrawList`), иконки, `UiFrameSource`: источник кадра UI реализует экран.
+ui-draw.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

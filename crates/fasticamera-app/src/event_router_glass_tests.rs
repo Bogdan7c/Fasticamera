@@ -259,3 +259,6 @@ fn glass_fails_with_the_warmup_reason_when_the_ui_never_draws_and_removes_the_so
         "источник снят и при провале прогрева"
     );
 }
+
+#[path = "event_router_screen_tests.rs"]
+mod screen_scenario;

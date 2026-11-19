@@ -19,6 +19,7 @@ use crate::ae_trace_scenario_config::{AeTraceScenarioConfig, AeTraceScenarioConf
 use crate::glass_scenario_config::{GlassScenarioConfig, GlassScenarioConfigError};
 use crate::power_measurement::config::{PowerMeasurementConfig, PowerMeasurementConfigError};
 use crate::raw_stream_scenario_config::{RawStreamScenarioConfig, RawStreamScenarioConfigError};
+use crate::screen_scenario_config::{ScreenScenarioConfig, ScreenScenarioConfigError};
 use crate::three_a_scenario_config::{ThreeAScenarioConfig, ThreeAScenarioConfigError};
 use crate::viewfinder_scenario_config::{ViewfinderScenarioConfig, ViewfinderScenarioConfigError};
 
@@ -277,6 +278,8 @@ pub struct CameraScenarioConfig {
     pub ae_trace: AeTraceScenarioConfig,
     /// Сценарий `glass` (сессия 11): стекло поверх живого видоискателя.
     pub glass: GlassScenarioConfig,
+    /// Сценарий `screen` (сессия 12): экран камеры iOS, которым управляет скрипт (тапы, свайпы, клавиша).
+    pub screen: ScreenScenarioConfig,
 }
 
 fn step(
@@ -333,6 +336,7 @@ impl Default for CameraScenarioConfig {
             three_a: ThreeAScenarioConfig::default(),
             ae_trace: AeTraceScenarioConfig::default(),
             glass: GlassScenarioConfig::default(),
+            screen: ScreenScenarioConfig::default(),
         }
     }
 }
@@ -360,6 +364,8 @@ pub enum CameraScenarioConfigError {
     AeTrace(#[from] AeTraceScenarioConfigError),
     #[error("{0}")]
     Glass(#[from] GlassScenarioConfigError),
+    #[error("{0}")]
+    Screen(#[from] ScreenScenarioConfigError),
     #[error("ID камеры: {0}")]
     InvalidCameraId(#[from] EmptyCameraId),
     #[error(
@@ -413,6 +419,7 @@ impl CameraScenarioConfig {
         self.three_a.validate()?;
         self.ae_trace.validate()?;
         self.glass.validate()?;
+        self.screen.validate()?;
         Ok(())
     }
 }

@@ -17,6 +17,8 @@
 //! 7. точка «ISP готов»; компоновка изображения на экран; точка «компоновка готова».
 //! 8. (только если установлен источник UI) проход UI поверх компоновки и точка «UI готов»
 //!    (`ui_pass`): ставится вызывающим отдельно после шага 7 — запись видоискателя от UI не зависит.
+//!    Рисуется и поверх ЧЁРНОГО кадра (камеры нет, кадра ещё не было, скрытый кадр AWB, отказ ISP): тогда
+//!    у стекла фон `Absent` чёрный. Исключение — отладочная мозаика и тестовая картинка: они без UI.
 //!
 //! Шаги 3 и 6 записываются ВСЕГДА вместе: даже если ISP отказал, кадр принят и тем же сабмитом
 //! возвращён, а сабмит ждёт acquire-fence камеры — поэтому возврат лизинга с fence этого сабмита
@@ -29,19 +31,25 @@ use gpu_vulkan::error::GpuError;
 use gpu_vulkan::gpu_timing::{GpuTimestamps, TimestampCollect, TimestampStage};
 use gpu_vulkan::hardware_buffer_cache::queue_handoff::ConsumerStage;
 use gpu_vulkan::raw_mosaic_preview::{MosaicSource, RawMosaicPreview};
-use gpu_vulkan::swapchain::{DisplayFrame, DisplayTargetInfo};
+use gpu_vulkan::storage_image::SampledImageView;
+use gpu_vulkan::swapchain::DisplayTargetInfo;
 use isp_model::params::IspParams;
 use isp_vulkan::viewfinder::{
     IspStageSet, ViewfinderError, ViewfinderFrame, ViewfinderGeometry, ViewfinderIsp, ViewfinderIspConfig,
     ViewfinderSlotReport,
 };
 
-use super::placement::{PlaneSize, logical_target_size, viewfinder_destination};
+use super::placement::{PlaneSize, logical_target_size, resolve_destination};
 use super::viewfinder_stats::{FRAME_POINT_COMPOSE_DONE, FRAME_POINT_ISP_DONE, FRAME_POINT_START, FRAME_POINTS};
-use crate::config::{UiOverlayConfig, ViewfinderPlacement};
+use crate::config::UiOverlayConfig;
+use crate::viewfinder::EffectivePlacement;
 
+mod frame_target;
+#[cfg(test)]
+mod screen_tests;
 mod ui_pass;
 
+pub use frame_target::FrameTarget;
 use ui_pass::UiPass;
 
 const LOG_TARGET: &str = "fasticamera::render::camera";
@@ -108,7 +116,11 @@ pub struct IspFrameRecording {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScreenContent {
     /// Изображение видоискателя.
-    Viewfinder,
+    Viewfinder {
+        /// Прямоугольник изображения на логической цели: посчитан ОДИН раз на кадр и общий для компоновщика и
+        /// для фона стекла UI (они не могут разойтись).
+        destination: LogicalRect,
+    },
     /// Чёрный: компоновать нечего или компоновщик отказал (причина в тексте).
     Black { compose_failure: Option<String> },
 }
@@ -196,14 +208,14 @@ impl CameraPipelines {
     /// `frame_isp_span` диагностики включает и его работу.
     pub fn record_new_frame(
         &mut self,
-        frame: &DisplayFrame,
+        frame: &FrameTarget,
         input: &NewIspFrame<'_>,
         extra_reader: Option<&mut dyn AcquiredSourceReader>,
         release_displayed: Option<MosaicSource>,
-        placement: ViewfinderPlacement,
+        placement: EffectivePlacement,
     ) -> IspFrameRecording {
-        let command_buffer = frame.command_buffer();
-        let slot = frame.ring_slot();
+        let command_buffer = frame.command_buffer;
+        let slot = frame.ring_slot;
         let mut timing_failures = self.start_frame_timing(frame);
         if let Some(displayed) = release_displayed {
             // Кадр отладочной мозаики читался фрагментным шейдером.
@@ -220,7 +232,7 @@ impl CameraPipelines {
                     source: input.source,
                     params: input.params,
                     geometry: input.geometry,
-                    display_color_space: frame.display_color_space(),
+                    display_color_space: frame.display_color_space,
                     stages: input.stages,
                     frame: gpu_vulkan::backdrop::BackdropFrameNumber(input.frame_number),
                     frame_slot: slot,
@@ -253,13 +265,13 @@ impl CameraPipelines {
     /// импорта). Прежний кадр мозаики, если он ещё на руках, возвращается этим сабмитом.
     pub fn record_recompose(
         &mut self,
-        frame: &DisplayFrame,
+        frame: &FrameTarget,
         release_displayed: Option<MosaicSource>,
-        placement: ViewfinderPlacement,
+        placement: EffectivePlacement,
     ) -> IspFrameRecording {
         let mut timing_failures = self.start_frame_timing(frame);
         if let Some(displayed) = release_displayed {
-            displayed.record_release_for(&self.context, frame.command_buffer(), ConsumerStage::Fragment);
+            displayed.record_release_for(&self.context, frame.command_buffer, ConsumerStage::Fragment);
         }
         let screen = self.compose_or_black(frame, placement);
         timing_failures += self.point(frame, FRAME_POINT_COMPOSE_DONE, TimestampStage::AllCommandsDone);
@@ -270,11 +282,34 @@ impl CameraPipelines {
         }
     }
 
+    /// Кадр без изображения видоискателя (камера закрыта, потока нет, кадра ещё не было): чёрная цель.
+    /// Нужен, чтобы UI рисовался поверх чёрного (экран камеры не пропадает без кадра, сессия 12): метки
+    /// времени пишутся здесь, потому что проходу UI нужна их точка «UI готов».
+    ///
+    /// Чёрная цель проверяется до записи, поэтому при `Err` командный буфер чист (как у мозаики). Метка
+    /// «начало» ставится уже после очистки: цифра `frame_total` чуть меньше настоящей, зато без очистки
+    /// ничего не записано.
+    pub fn record_black_frame(
+        &mut self,
+        frame: &FrameTarget,
+        release_displayed: Option<MosaicSource>,
+    ) -> Result<IspFrameRecording, GpuError> {
+        self.preview
+            .record_black(frame.command_buffer, frame.pattern_target, release_displayed)?;
+        let mut timing_failures = self.start_frame_timing(frame);
+        timing_failures += self.point(frame, FRAME_POINT_COMPOSE_DONE, TimestampStage::AllCommandsDone);
+        Ok(IspFrameRecording {
+            isp: Ok(()),
+            screen: ScreenContent::Black { compose_failure: None },
+            timing_failures,
+        })
+    }
+
     /// Сброс меток слота и точка начала; возвращает число отказов.
-    fn start_frame_timing(&mut self, frame: &DisplayFrame) -> u64 {
+    fn start_frame_timing(&mut self, frame: &FrameTarget) -> u64 {
         match self
             .frame_timestamps
-            .record_reset(frame.command_buffer(), frame.ring_slot())
+            .record_reset(frame.command_buffer, frame.ring_slot)
         {
             Ok(()) => self.point(frame, FRAME_POINT_START, TimestampStage::AllCommandsDone),
             Err(error) => {
@@ -285,10 +320,10 @@ impl CameraPipelines {
     }
 
     /// Точка метки; 1 — если не записана (замер кадра пропадёт, кадр — нет).
-    fn point(&mut self, frame: &DisplayFrame, point: usize, stage: TimestampStage) -> u64 {
+    fn point(&mut self, frame: &FrameTarget, point: usize, stage: TimestampStage) -> u64 {
         match self
             .frame_timestamps
-            .record_point(frame.command_buffer(), frame.ring_slot(), point, stage)
+            .record_point(frame.command_buffer, frame.ring_slot, point, stage)
         {
             Ok(()) => 0,
             Err(error) => {
@@ -299,9 +334,9 @@ impl CameraPipelines {
     }
 
     /// Компоновка изображения видоискателя на экран; отказ — чёрный с причиной.
-    fn compose_or_black(&mut self, frame: &DisplayFrame, placement: ViewfinderPlacement) -> ScreenContent {
+    fn compose_or_black(&mut self, frame: &FrameTarget, placement: EffectivePlacement) -> ScreenContent {
         match self.compose(frame, placement) {
-            Ok(()) => ScreenContent::Viewfinder,
+            Ok(destination) => ScreenContent::Viewfinder { destination },
             Err(error) => {
                 tracing::warn!(target: LOG_TARGET, %error, "компоновка видоискателя не записана: чёрный кадр");
                 self.black(frame, Some(error.to_string()))
@@ -309,12 +344,24 @@ impl CameraPipelines {
         }
     }
 
-    fn compose(&mut self, frame: &DisplayFrame, placement: ViewfinderPlacement) -> Result<(), GpuError> {
+    /// Раскладка считается здесь ОДИН раз на кадр; возвращённый прямоугольник идёт и в компоновщик, и (через
+    /// [`ScreenContent::Viewfinder`]) в фон стекла UI.
+    fn compose(&mut self, frame: &FrameTarget, placement: EffectivePlacement) -> Result<LogicalRect, GpuError> {
         let image = self.isp.image().ok_or_else(|| GpuError::InvalidState {
             what: "изображения видоискателя ещё нет".to_owned(),
         })?;
         let source = image.sampled_view();
-        let layout = viewfinder_layout(
+        self.compose_view(frame, source, placement)
+    }
+
+    /// Компоновка готовой картинки `source` по действующему месту (общая часть боя и тестов на offscreen-цели).
+    fn compose_view(
+        &mut self,
+        frame: &FrameTarget,
+        source: SampledImageView,
+        placement: EffectivePlacement,
+    ) -> Result<LogicalRect, GpuError> {
+        let destination = viewfinder_layout(
             frame,
             PlaneSize {
                 width: source.extent.width,
@@ -323,24 +370,25 @@ impl CameraPipelines {
             placement,
         )?;
         self.compositor.record(
-            frame.command_buffer(),
-            frame.pattern_target(),
+            frame.command_buffer,
+            frame.pattern_target,
             &CompositeRequest {
                 source,
-                transform: frame.transform(),
-                destination: layout.destination,
+                transform: frame.transform,
+                destination,
                 background: BackgroundColor::BLACK,
-                frame_slot: frame.ring_slot(),
+                frame_slot: frame.ring_slot,
             },
-        )
+        )?;
+        Ok(destination)
     }
 
     /// Чёрный кадр (очистка цели). Отказ возможен только при нулевом размере цели — тогда цель
     /// не очищается вовсе (логируется); командный буфер остаётся корректным.
-    fn black(&self, frame: &DisplayFrame, compose_failure: Option<String>) -> ScreenContent {
+    fn black(&self, frame: &FrameTarget, compose_failure: Option<String>) -> ScreenContent {
         if let Err(error) = self
             .preview
-            .record_black(frame.command_buffer(), frame.pattern_target(), None)
+            .record_black(frame.command_buffer, frame.pattern_target, None)
         {
             tracing::error!(target: LOG_TARGET, %error, "чёрный кадр не записан");
         }
@@ -348,38 +396,26 @@ impl CameraPipelines {
     }
 }
 
-/// Где что лежит на логическом экране кадра.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ViewfinderLayout {
-    /// Логический размер цели (как видит пользователь, портрет).
-    logical: PlaneSize,
-    /// Прямоугольник изображения видоискателя в логических пикселях.
-    destination: LogicalRect,
-}
-
 /// Логический размер цели кадра (физический размер с учётом поворота дисплея).
-fn logical_size(frame: &DisplayFrame) -> Result<PlaneSize, GpuError> {
-    let target = frame.pattern_target();
+fn logical_size(frame: &FrameTarget) -> Result<PlaneSize, GpuError> {
+    let target = frame.pattern_target;
     Ok(logical_target_size(
         PlaneSize {
             width: target.extent.width,
             height: target.extent.height,
         },
-        frame.transform().quarter_turns()?,
+        frame.transform.quarter_turns()?,
     ))
 }
 
-/// Раскладка видоискателя на кадре: ОДНА функция и для компоновщика, и для UI-прохода — прямоугольник
-/// фона под стеклом не может разойтись с тем, куда компоновщик положил изображение.
+/// Прямоугольник изображения видоискателя на логической цели кадра (по действующему месту).
 fn viewfinder_layout(
-    frame: &DisplayFrame,
+    frame: &FrameTarget,
     image_size: PlaneSize,
-    placement: ViewfinderPlacement,
-) -> Result<ViewfinderLayout, GpuError> {
+    placement: EffectivePlacement,
+) -> Result<LogicalRect, GpuError> {
     let logical = logical_size(frame)?;
-    let destination =
-        viewfinder_destination(image_size, logical, placement).ok_or_else(|| GpuError::InvalidArgument {
-            what: format!("пустой прямоугольник видоискателя: {image_size:?} на {logical:?}"),
-        })?;
-    Ok(ViewfinderLayout { logical, destination })
+    resolve_destination(image_size, logical, placement).ok_or_else(|| GpuError::InvalidArgument {
+        what: format!("пустой прямоугольник видоискателя: {image_size:?} на {logical:?}"),
+    })
 }

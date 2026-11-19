@@ -297,6 +297,9 @@ pub struct RecordingRenderControl {
     pub adjustments: Mutex<Vec<crate::viewfinder_control::RenderAdjustment>>,
     /// Команды UI-проходу по порядку (источник — только по имени: он не `Clone`).
     pub ui_overlay_commands: Mutex<Vec<RecordedUiOverlay>>,
+    /// Установленный сейчас источник UI (как слот потока рендера): `Install` кладёт, `Remove` убирает.
+    /// Тест сам «рисует кадры» этим источником через [`RecordingRenderControl::produce_ui_frame`].
+    installed_ui_source: Mutex<Option<Box<dyn ui_draw::frame_source::UiFrameSource>>>,
 }
 
 /// Команда UI-проходу, как её записал [`RecordingRenderControl`].
@@ -316,6 +319,24 @@ impl RecordingRenderControl {
     /// Все запросы по порядку.
     pub fn recorded(&self) -> Vec<crate::viewfinder_control::RenderAdjustment> {
         self.adjustments.lock().expect("замок").clone()
+    }
+
+    /// Один «кадр рендера» установленным источником UI; `None` — источника сейчас нет.
+    pub fn produce_ui_frame(
+        &self,
+        request: &ui_draw::frame_source::UiFrameRequest,
+    ) -> Option<Result<ui_draw::draw_list::DrawList, ui_draw::frame_source::UiFrameError>> {
+        let mut slot = self.installed_ui_source.lock().expect("замок");
+        slot.as_mut().map(|source| source.produce_frame(request))
+    }
+
+    /// Имя установленного сейчас источника UI.
+    pub fn installed_ui_source_name(&self) -> Option<&'static str> {
+        self.installed_ui_source
+            .lock()
+            .expect("замок")
+            .as_ref()
+            .map(|source| source.name())
     }
 
     /// Все команды UI-проходу по порядку.
@@ -338,8 +359,15 @@ impl crate::viewfinder_control::RenderControl for RecordingRenderControl {
         command: render_loop::ui_overlay::UiOverlayCommand,
     ) -> crate::viewfinder_control::ControlDelivery {
         let recorded = match command {
-            render_loop::ui_overlay::UiOverlayCommand::Install(source) => RecordedUiOverlay::Install(source.name()),
-            render_loop::ui_overlay::UiOverlayCommand::Remove => RecordedUiOverlay::Remove,
+            render_loop::ui_overlay::UiOverlayCommand::Install(source) => {
+                let name = source.name();
+                *self.installed_ui_source.lock().expect("замок") = Some(source);
+                RecordedUiOverlay::Install(name)
+            }
+            render_loop::ui_overlay::UiOverlayCommand::Remove => {
+                *self.installed_ui_source.lock().expect("замок") = None;
+                RecordedUiOverlay::Remove
+            }
         };
         self.ui_overlay_commands.lock().expect("замок").push(recorded);
         crate::viewfinder_control::ControlDelivery::Delivered

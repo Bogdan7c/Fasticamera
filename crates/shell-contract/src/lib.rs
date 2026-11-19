@@ -11,6 +11,7 @@
 //! * [`clock`] — две шкалы времени Android как разные типы;
 //! * [`event`] и [`event_queue`] — события оболочки и ограниченная очередь с учётом потерь;
 //! * [`surface`] — surface экрана и квитанция её освобождения;
+//! * [`hardware_key`] — аппаратные клавиши (громкость как затвор);
 //! * [`touch`], [`orientation`], [`permission`] — касания, физическая ориентация, разрешение камеры;
 //! * [`thermal`] и [`thermal_policy`] — показания тепла и единственный владелец тепловых решений;
 //! * [`haptics`], [`commands`] — намерения к платформе (вибрация, разрешение, частота кадров…);
@@ -30,6 +31,7 @@ pub mod event_queue;
 pub mod gravity;
 pub mod haptics;
 pub mod hardware_buffer;
+pub mod hardware_key;
 pub mod motion;
 pub mod operator_prompt;
 pub mod orientation;

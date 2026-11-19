@@ -161,6 +161,7 @@ impl ViewfinderStats {
         ViewfinderDiagnostics {
             painter: settings.painter,
             stages: settings.stages,
+            placement: settings.effective_placement(),
             display_color_space: self.display_color_space,
             storage: self.storage,
             output_extent: self.output_extent,

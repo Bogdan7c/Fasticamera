@@ -92,7 +92,7 @@ fn effective(adjustments: &[RenderAdjustment]) -> Effective {
             RenderAdjustment::Viewfinder(ViewfinderCommand::SetPainter(painter)) => current.painter = *painter,
             RenderAdjustment::Viewfinder(ViewfinderCommand::SetIspStages(stages)) => current.stages = *stages,
             RenderAdjustment::Viewfinder(ViewfinderCommand::SetHeadroomBench(bench)) => current.bench = *bench,
-            RenderAdjustment::Viewfinder(ViewfinderCommand::SetCrop(_)) => {}
+            RenderAdjustment::Viewfinder(ViewfinderCommand::SetCrop(_) | ViewfinderCommand::SetFraming(_)) => {}
             RenderAdjustment::PresentTarget(setting) => {
                 current.selection = PresentTargetSelection {
                     policy: setting.policy,
@@ -123,6 +123,10 @@ fn isp_micros(stages: IspStageSet) -> u64 {
 fn fresh_viewfinder() -> ViewfinderDiagnostics {
     ViewfinderDiagnostics {
         painter: ViewfinderPainter::Isp,
+        // Место видоискателя — из конфига рендера (решение 93: экран камеры задаёт его командой `SetFraming`).
+        placement: render_loop::viewfinder::EffectivePlacement::Configured(
+            render_loop::config::ViewfinderPlacement::default(),
+        ),
         stages: IspStageSet::ALL,
         display_color_space: Some(ViewfinderColorSpace::DisplayP3),
         storage: Some(ViewfinderStorage::TenBitUnorm),

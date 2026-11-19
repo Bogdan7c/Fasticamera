@@ -12,6 +12,7 @@ use camera_contract::viewfinder_crop::{CropAspect, ViewfinderCrop};
 use isp_vulkan::viewfinder::IspStageSet;
 use serde::{Deserialize, Serialize};
 
+use super::framing::ViewfinderFraming;
 use super::headroom::HeadroomBench;
 
 /// Чем видоискатель рисует кадры камеры.
@@ -36,6 +37,9 @@ pub enum ViewfinderCommand {
     SetIspStages(IspStageSet),
     /// Кадрировать видоискатель так (соотношение сторон и зум, по центру полезной области).
     SetCrop(ViewfinderCrop),
+    /// Кадрирование И место на экране одной транзакцией (решение 93): ни одного кадра «новое кадрирование в
+    /// старом месте». `SetCrop` при этом по-прежнему меняет только кадрирование и места не трогает.
+    SetFraming(ViewfinderFraming),
     /// Включить или выключить стенд «запас под видео» (V4, см. [`super::headroom`]). Не продукт:
     /// включается только на время замера; видоискатель при этом работает как обычно.
     SetHeadroomBench(HeadroomBench),
@@ -63,14 +67,19 @@ impl ViewfinderCommand {
     /// известно только на кадре (тогда кадр не обрабатывается, причина — в диагностике).
     pub fn rejection_reason(&self) -> Option<String> {
         match self {
-            Self::SetCrop(ViewfinderCrop {
-                aspect: CropAspect::LongToShort { long, short },
-                ..
-            }) if *short == 0 || *long < *short => {
-                Some(format!("соотношение сторон {long}:{short}: нужно long ≥ short > 0"))
-            }
+            Self::SetCrop(crop) | Self::SetFraming(ViewfinderFraming { crop, .. }) => crop_rejection_reason(crop),
             _ => None,
         }
+    }
+}
+
+/// Почему кадрирование неисполнимо (`None` — исполнимо).
+fn crop_rejection_reason(crop: &ViewfinderCrop) -> Option<String> {
+    match crop.aspect {
+        CropAspect::LongToShort { long, short } if short == 0 || long < short => {
+            Some(format!("соотношение сторон {long}:{short}: нужно long ≥ short > 0"))
+        }
+        _ => None,
     }
 }
 
@@ -113,6 +122,7 @@ impl ViewfinderCommandLog {
 
 #[cfg(test)]
 mod tests {
+    use super::super::framing::FramingDestination;
     use camera_contract::viewfinder_crop::ZoomFactor;
     use isp_vulkan::viewfinder::IspStage;
 
@@ -130,7 +140,24 @@ mod tests {
             zoom: ZoomFactor::NONE,
         });
         assert!(zero.rejection_reason().is_some());
+        let broken_framing = ViewfinderCommand::SetFraming(ViewfinderFraming {
+            crop: ViewfinderCrop {
+                aspect: CropAspect::LongToShort { long: 3, short: 4 },
+                zoom: ZoomFactor::NONE,
+            },
+            destination: FramingDestination::Configured,
+        });
+        assert!(
+            broken_framing
+                .rejection_reason()
+                .is_some_and(|reason| reason.contains("3:4")),
+            "кадрирование внутри SetFraming проверяется так же, как в SetCrop"
+        );
         for fine in [
+            ViewfinderCommand::SetFraming(ViewfinderFraming {
+                crop: ViewfinderCrop::FULL_SENSOR,
+                destination: FramingDestination::Configured,
+            }),
             ViewfinderCommand::SetCrop(ViewfinderCrop::FULL_SENSOR),
             ViewfinderCommand::SetCrop(ViewfinderCrop {
                 aspect: CropAspect::SQUARE,

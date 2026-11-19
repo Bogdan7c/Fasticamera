@@ -6,7 +6,7 @@
 //!
 //! Секции `shell`, `thermal_policy`, `scenarios`, `render`, `gpu` и `camera` необязательны: Kotlin их пока
 //! не присылает, и действуют документированные значения по умолчанию владельцев (`ShellConfig`,
-//! `ThermalPolicyConfig`, `ScenarioConfig`, `RenderLoopConfig`, `GpuConfig`, `CameraConfig`). Прислать можно частично — опечатка в имени поля
+//! `ThermalPolicyConfig`, `ScenarioConfig`, `RenderLoopConfig`, `GpuConfig`, `CameraConfig`), а также `camera_screen` (экран камеры, `CameraScreenConfig`). Прислать можно частично — опечатка в имени поля
 //! всё равно ошибка.
 
 use android_shell::config::{ShellConfig, ShellConfigError, ValidatedShellConfig};
@@ -16,6 +16,7 @@ use shell_contract::thermal_policy::{ThermalPolicy, ThermalPolicyConfig, Thermal
 use tracing_subscriber::filter::Targets;
 
 use crate::camera_config::{CameraConfig, CameraConfigError};
+use crate::camera_screen_config::{CameraScreenConfig, CameraScreenConfigError};
 use crate::gpu_config::GpuConfig;
 use crate::scenario::ScenarioConfig;
 
@@ -99,6 +100,8 @@ struct RuntimeConfigJson {
     gpu: GpuConfig,
     #[serde(default)]
     camera: CameraConfig,
+    #[serde(default)]
+    camera_screen: CameraScreenConfig,
 }
 
 /// Проверенный конфиг нативной части.
@@ -113,6 +116,7 @@ pub struct RuntimeConfig {
     render: RenderLoopConfig,
     gpu: GpuConfig,
     camera: CameraConfig,
+    camera_screen: CameraScreenConfig,
 }
 
 impl RuntimeConfig {
@@ -126,6 +130,7 @@ impl RuntimeConfig {
         parsed.scenarios.validate()?;
         parsed.render.validate()?;
         parsed.camera.validate()?;
+        parsed.camera_screen.validate()?;
         // Бюджет ожиданий GPU потока рендера обязан быть меньше ожидания квитанции оболочкой:
         // иначе `surfaceDestroyed` отпустит главный поток по таймауту раньше подтверждения.
         // Конфиги разных crate-ов, поэтому согласованность проверяется здесь, на стыке.
@@ -145,6 +150,7 @@ impl RuntimeConfig {
             render: parsed.render,
             gpu: parsed.gpu,
             camera: parsed.camera,
+            camera_screen: parsed.camera_screen,
         })
     }
 
@@ -188,6 +194,11 @@ impl RuntimeConfig {
         &self.camera
     }
 
+    /// Экран камеры: включён ли и параметры его обвязки (сессия 12).
+    pub fn camera_screen(&self) -> &CameraScreenConfig {
+        &self.camera_screen
+    }
+
     /// Режим validation слоя Vulkan: секция `gpu` с учётом типа сборки.
     pub fn validation_mode(&self) -> gpu_vulkan::validation::ValidationMode {
         self.gpu.validation_mode(self.build_type)
@@ -213,6 +224,8 @@ pub enum ConfigError {
     Render(#[from] RenderConfigError),
     #[error("неверные настройки камеры: {0}")]
     Camera(#[from] CameraConfigError),
+    #[error("неверные настройки экрана камеры: {0}")]
+    CameraScreen(#[from] CameraScreenConfigError),
     #[error(
         "render.release_receipt_budget_ms ({render_budget_ms}) должен быть меньше shell.surface_release_timeout_ms ({shell_timeout_ms})"
     )]

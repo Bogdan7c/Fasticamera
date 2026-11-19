@@ -58,6 +58,9 @@ pub enum ButtonError {
     /// Токены не прошли проверку (в том числе отступ зоны отслеживания).
     #[error("токены: {0}")]
     Tokens(#[from] crate::tokens::TokenError),
+    /// Пружина анимации нажатия ([`super::PressAnimation`]) не построилась.
+    #[error("пружина нажатия: {0}")]
+    Spring(#[from] ui_core::spring::SpringError),
     /// Событие нажатия пришло без данных `Press`: на узел подписан не тот распознаватель.
     #[error("событие {state:?} пришло без данных `Press`")]
     NotPressData { state: GestureState },

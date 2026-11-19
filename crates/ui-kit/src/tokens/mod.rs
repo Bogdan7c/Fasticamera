@@ -8,21 +8,33 @@
 //! * [`HapticTable`] — таблица «событие → хаптика»;
 //! * [`GlassTokens`] — пресеты материала стекла «кнопка» и «панель»;
 //! * [`DensityTokens`] — pt на единицу шкалы, радиус магнита, промежуток карусели;
+//! * [`TypographyTokens`] — роли текста (начертание, кегль, трекинг, цифры);
+//! * [`ColorTokens`] — цвета фокуса, плашки, текста, затемнения;
+//! * [`ScaleTickTokens`] — размеры рисок и отметки текущего значения шкалы;
+//! * [`PanelTokens`], [`BannerTokens`], [`FocusTokens`], [`ShutterTokens`] — размеры и параметры K7–K10;
 //! * [`UiKitTokens`] — все вместе: serde-конфиг с `Default` и `validate()`.
 
+mod colors;
 mod density;
+mod elements;
 mod error;
 mod glass;
 mod haptics;
 mod motion;
+mod scale_view;
+mod typography;
 
 use serde::{Deserialize, Serialize};
 
+pub use colors::ColorTokens;
 pub use density::{DensityTokens, ScaleDensity};
+pub use elements::{BannerTokens, FocusTokens, PanelTokens, ShutterTokens};
 pub use error::TokenError;
 pub use glass::{GlassRole, GlassTokens};
 pub use haptics::{HapticEvent, HapticSetting, HapticTable};
 pub use motion::{MotionToken, MotionTokens, SnapRole, SpringToken};
+pub use scale_view::ScaleTickTokens;
+pub use typography::{DigitStyle, TextRole, TextRoleKind, TextWeight, Tracking, TypographyTokens};
 
 /// Все токены элементов. Владелец — экран; элементы берут из него копии нужных чисел при создании.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -32,6 +44,13 @@ pub struct UiKitTokens {
     pub density: DensityTokens,
     pub haptics: HapticTable,
     pub glass: GlassTokens,
+    pub typography: TypographyTokens,
+    pub colors: ColorTokens,
+    pub panel: PanelTokens,
+    pub banner: BannerTokens,
+    pub focus: FocusTokens,
+    pub shutter: ShutterTokens,
+    pub scale_ticks: ScaleTickTokens,
 }
 
 impl UiKitTokens {
@@ -39,6 +58,13 @@ impl UiKitTokens {
     pub fn validate(&self) -> Result<(), TokenError> {
         self.motion.validate()?;
         self.density.validate()?;
-        self.glass.validate()
+        self.glass.validate()?;
+        self.typography.validate()?;
+        self.colors.validate()?;
+        self.panel.validate()?;
+        self.banner.validate()?;
+        self.focus.validate()?;
+        self.shutter.validate()?;
+        self.scale_ticks.validate()
     }
 }

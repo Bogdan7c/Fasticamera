@@ -100,6 +100,7 @@ pub fn ensure_installed(config: &RuntimeConfig) -> Result<(), ShellWiringError> 
         route: render.route,
         gpu,
         camera,
+        camera_screen: config.camera_screen().clone(),
     });
     thread::Builder::new()
         .name("fasticamera-router".to_owned())

@@ -1,0 +1,40 @@
+//! Намерения экрана наружу. Экран ничего не вызывает — эффекты исполняет приложение
+//! (`fasticamera-app`): камеру, сервис снимка, хаптику, галерею и рендер.
+
+use camera_contract::control::ExposureBias;
+use camera_contract::three_a::SensorPoint;
+use shell_contract::haptics::HapticPattern;
+
+use crate::layout::FramingIntent;
+use crate::shutter::ShotRequest;
+
+/// Намерение камере. Имена совпадают с методами `CameraHandle` (`camera-core/src/handle.rs`),
+/// чтобы проводка в приложении была прямой.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ScreenCameraIntent {
+    /// `focus_and_expose_at`: тап. Снимает блокировку AE/AF сам (док `CameraCommand::FocusAndExposeAt`),
+    /// поэтому отдельный сброс экрану не нужен.
+    FocusAndExposeAt(SensorPoint),
+    /// `lock_focus_and_exposure_at`: долгий тап.
+    LockFocusAndExposureAt(SensorPoint),
+    /// `reset_point_of_interest`: вернуть фокус и замер на весь кадр, сняв блокировку.
+    ResetPointOfInterest,
+    /// `set_exposure_bias`.
+    SetExposureBias(ExposureBias),
+}
+
+/// Намерение наружу.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Effect {
+    /// Команда камере.
+    Camera(ScreenCameraIntent),
+    /// Запрос снимка сервису съёмки.
+    Capture(ShotRequest),
+    /// Хаптика по таблице `haptics.md` (тики шкал играют сами элементы, не редьюсер).
+    Haptic(HapticPattern),
+    /// Открыть системную галерею.
+    OpenSystemGallery,
+    /// Где и какую часть сенсора рисовать видоискателем (решение 93). Рендер получает это
+    /// через приложение.
+    Viewfinder(FramingIntent),
+}

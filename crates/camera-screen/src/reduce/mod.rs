@@ -1,0 +1,185 @@
+//! Редьюсер экрана: чистая функция `(состояние, действие, конфиг) → (новое состояние, эффекты, итог)`.
+//!
+//! Без часов, ввода-вывода и случайности: один и тот же вход даёт один и тот же выход. Обработчики
+//! разбиты по темам: видоискатель и фокус, меню и настройки, затвор и таймер, факты камеры,
+//! экспозиция, время и датчики.
+//!
+//! # Инварианты
+//! * Отказ ([`ActionOutcome::Rejected`]) не меняет состояние, кроме счётчика отказов и метки
+//!   последнего известного времени (время идёт и при отказе), и не выдаёт эффектов. Единственное
+//!   исключение — обработчик, который явно вызвал [`Ctx::keep_changes_despite_rejection`]
+//!   (невалидный размер surface сбрасывает раскладку).
+//! * Входное состояние никогда не изменяется (работаем с копией).
+//! * Действие, которое ничего не изменило (не считая метки времени) и не выдало эффектов,
+//!   получает итог `NoChange`: `Tick` без видимых изменений — тоже `NoChange`.
+
+mod exposure;
+mod facts;
+mod menu;
+mod sensors;
+mod shutter;
+mod viewfinder;
+
+#[cfg(test)]
+#[path = "exposure_tests.rs"]
+mod exposure_tests;
+#[cfg(test)]
+#[path = "facts_tests.rs"]
+mod facts_tests;
+#[cfg(test)]
+#[path = "menu_tests.rs"]
+mod menu_tests;
+#[cfg(test)]
+#[path = "sensors_tests.rs"]
+mod sensors_tests;
+#[cfg(test)]
+#[path = "shutter_tests.rs"]
+mod shutter_tests;
+#[cfg(test)]
+#[path = "viewfinder_tests.rs"]
+mod viewfinder_tests;
+
+use shell_contract::clock::MonotonicNanos;
+
+use crate::action::ScreenAction;
+use crate::config::ScreenConfig;
+use crate::effect::Effect;
+use crate::outcome::{ActionOutcome, NoChangeReason, Rejection};
+use crate::state::ScreenState;
+
+/// Результат применения действия.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScreenTransition {
+    /// Новое состояние.
+    pub state: ScreenState,
+    /// Намерения наружу, в порядке исполнения.
+    pub effects: Vec<Effect>,
+    /// Явный итог действия.
+    pub outcome: ActionOutcome,
+}
+
+/// Рабочий контекст обработчиков: изменяемая копия состояния, список эффектов и конфиг.
+pub(crate) struct Ctx<'a> {
+    pub(crate) state: &'a mut ScreenState,
+    pub(crate) effects: &'a mut Vec<Effect>,
+    pub(crate) config: &'a ScreenConfig,
+    /// Выставляется обработчиком, чьи изменения должны пережить отказ.
+    keeps_changes_on_rejection: bool,
+}
+
+impl Ctx<'_> {
+    /// Изменения этого действия сохраняются, даже если итог — отказ (эффекты всё равно отбрасываются).
+    /// Нужен, когда отказ сам по себе делает прежнее состояние неверным, а не просто «не применяется».
+    pub(crate) fn keep_changes_despite_rejection(&mut self) {
+        self.keeps_changes_on_rejection = true;
+    }
+
+    pub(crate) fn emit(&mut self, effect: Effect) {
+        self.effects.push(effect);
+    }
+}
+
+/// Применяет действие к состоянию.
+pub fn reduce(state: &ScreenState, action: ScreenAction, config: &ScreenConfig) -> ScreenTransition {
+    let mut next = state.clone();
+    if let Some(moment) = moment_of(&action) {
+        next.last_time = next.last_time.max(moment);
+    }
+    let mut effects = Vec::new();
+    let (outcome, keeps_changes_on_rejection) = {
+        let mut ctx = Ctx {
+            state: &mut next,
+            effects: &mut effects,
+            config,
+            keeps_changes_on_rejection: false,
+        };
+        let outcome = dispatch(&mut ctx, action);
+        (outcome, ctx.keeps_changes_on_rejection)
+    };
+    match outcome {
+        ActionOutcome::Rejected(reason) if keeps_changes_on_rejection => {
+            next.rejections.record(reason);
+            ScreenTransition {
+                state: next,
+                effects: Vec::new(),
+                outcome,
+            }
+        }
+        ActionOutcome::Rejected(reason) => reject(state, reason, next.last_time),
+        ActionOutcome::Applied if effects.is_empty() && is_unchanged_apart_from_time(state, &mut next) => {
+            ScreenTransition {
+                state: next,
+                effects,
+                outcome: ActionOutcome::NoChange(NoChangeReason::ValueUnchanged),
+            }
+        }
+        outcome => ScreenTransition {
+            state: next,
+            effects,
+            outcome,
+        },
+    }
+}
+
+/// Совпадает ли `next` со старым состоянием, не считая метки времени (она продвигается каждым
+/// `Tick` и сама по себе изменением экрана не является).
+fn is_unchanged_apart_from_time(state: &ScreenState, next: &mut ScreenState) -> bool {
+    let advanced_time = next.last_time;
+    next.last_time = state.last_time;
+    let unchanged = *next == *state;
+    next.last_time = advanced_time;
+    unchanged
+}
+
+/// Отказ: состояние как было, плюс счётчик причины и продвинутое время (иначе индикатор,
+/// созданный позже по факту камеры, получил бы устаревшее `since`).
+fn reject(state: &ScreenState, reason: Rejection, advanced_time: MonotonicNanos) -> ScreenTransition {
+    let mut unchanged = state.clone();
+    unchanged.last_time = advanced_time;
+    unchanged.rejections.record(reason);
+    ScreenTransition {
+        state: unchanged,
+        effects: Vec::new(),
+        outcome: ActionOutcome::Rejected(reason),
+    }
+}
+
+/// Момент времени, который несёт действие (если несёт).
+fn moment_of(action: &ScreenAction) -> Option<MonotonicNanos> {
+    match action {
+        ScreenAction::ViewfinderTapped { at, .. }
+        | ScreenAction::ViewfinderLongPressed { at, .. }
+        | ScreenAction::ExposureDragged { at, .. }
+        | ScreenAction::ShutterTapped { at }
+        | ScreenAction::VolumeKey { at, .. } => Some(*at),
+        ScreenAction::Tick(now) => Some(*now),
+        _ => None,
+    }
+}
+
+fn dispatch(ctx: &mut Ctx<'_>, action: ScreenAction) -> ActionOutcome {
+    match action {
+        ScreenAction::ViewfinderTapped { point, at } => viewfinder::on_tap(ctx, point, at),
+        ScreenAction::ViewfinderLongPressed { point, at } => viewfinder::on_long_press(ctx, point, at),
+        ScreenAction::ExposureDragged { requested, at } => exposure::on_drag(ctx, requested, at),
+        ScreenAction::ExposureResetRequested => exposure::on_reset(ctx),
+        ScreenAction::ExposureRestored { bias } => exposure::on_restored(ctx, bias),
+        ScreenAction::ExposurePanelCloseRequested => exposure::on_panel_close(ctx),
+        ScreenAction::ModeSelected(mode) => menu::on_mode_selected(ctx, mode),
+        ScreenAction::ControlsMenuOpenRequested => menu::on_open(ctx),
+        ScreenAction::ControlsMenuCloseRequested => menu::on_close(ctx),
+        ScreenAction::ControlsItemSelected(tool) => menu::on_item_selected(ctx, tool),
+        ScreenAction::SubmenuOptionSelected(option) => menu::on_option_selected(ctx, option),
+        ScreenAction::SubmenuBackRequested => menu::on_submenu_back(ctx),
+        ScreenAction::StripToolTapped(tool) => menu::on_strip_tool_tapped(ctx, tool),
+        ScreenAction::ShutterTapped { at } => shutter::on_shutter_button(ctx, at),
+        ScreenAction::VolumeKey { phase, at } => shutter::on_volume_key(ctx, phase, at),
+        ScreenAction::ThumbnailTapped => shutter::on_thumbnail_tapped(ctx),
+        ScreenAction::CaptureFinished { request, outcome } => shutter::on_capture_finished(ctx, request, outcome),
+        ScreenAction::CameraFactsChanged(facts) => facts::on_facts_changed(ctx, facts),
+        ScreenAction::DeviceOrientationChanged(orientation) => sensors::on_orientation(ctx, orientation),
+        ScreenAction::GravityChanged(gravity) => sensors::on_gravity(ctx, gravity),
+        ScreenAction::Tick(now) => sensors::on_tick(ctx, now),
+        ScreenAction::SurfaceResized(size) => sensors::on_surface_resized(ctx, size),
+    }
+}

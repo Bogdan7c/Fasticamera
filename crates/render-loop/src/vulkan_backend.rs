@@ -212,6 +212,7 @@ impl VulkanDisplayBackend {
                 stages: isp_vulkan::viewfinder::IspStageSet::ALL,
                 crop: camera_contract::viewfinder_crop::ViewfinderCrop::FULL_SENSOR,
                 placement: config.viewfinder.placement,
+                destination: crate::viewfinder::FramingDestination::Configured,
                 headroom: crate::viewfinder::HeadroomBench::Disabled,
             }
         });

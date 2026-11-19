@@ -6,7 +6,7 @@
 //! событие. Ошибки и паники не бросают исключений в Kotlin ([`LogAndCountCallbackFailure`]).
 
 use jni::objects::{JClass, JIntArray, JObject, JString};
-use jni::sys::jint;
+use jni::sys::{jint, jlong};
 use jni::{Env, NativeMethod, jni_str, native_method};
 use shell_contract::commands::PlatformCommandFailure;
 use shell_contract::event::ShellEvent;
@@ -18,6 +18,7 @@ use super::motion_event::copy_motion_event;
 use super::native_window::NativeWindowRef;
 use super::runtime::{AttachedPlatform, CountedGlobal, ShellRuntime, installed_runtime};
 use crate::command_codes::platform_command_from_code;
+use crate::key_decode::{DecodedKey, KeyConsumption, RawKeyEvent, decode_key_event};
 use crate::permission_answer::{RationaleVisibility, classify_permission_answer};
 use crate::surface_registry::frame_rate_outcome;
 use crate::touch_decode::{DecodedMotion, decode_motion_event};
@@ -56,6 +57,10 @@ const SHELL_NATIVE_METHODS: &[NativeMethod] = &[
     },
     native_method! {
         static fn native_touch(motion_event: android.view.MotionEvent),
+        error_policy = LogAndCountCallbackFailure,
+    },
+    native_method! {
+        static fn native_hardware_key(key_code: jint, action: jint, repeat_count: jint, event_time_millis: jlong) -> bool,
         error_policy = LogAndCountCallbackFailure,
     },
     native_method! {
@@ -274,6 +279,44 @@ fn native_touch<'local>(
         Err(error) => record_callback_failure(runtime, "touch", &error),
     }
     Ok(())
+}
+
+/// Аппаратная клавиша. Возвращает `true`, если клавиша наша и Kotlin должен потребить событие
+/// (громкость не меняется, ползунок не всплывает). Оболочка не установлена или событие
+/// некорректно — `false`: система обработает клавишу как обычно, а не «проглотит» её молча.
+fn native_hardware_key<'local>(
+    _env: &mut Env<'local>,
+    _class: JClass<'local>,
+    key_code: jint,
+    action: jint,
+    repeat_count: jint,
+    event_time_millis: jlong,
+) -> jni::errors::Result<bool> {
+    let Some(runtime) = runtime_or_warn("hardware_key") else {
+        return Ok(false);
+    };
+    let raw = RawKeyEvent {
+        key_code,
+        action,
+        repeat_count,
+        event_time_ms: event_time_millis,
+    };
+    match decode_key_event(&raw) {
+        Ok(DecodedKey::Handled(event)) => {
+            // Очередь не блокирует; потерю критичного события считает и логирует send_event.
+            // Потребляем клавишу только если приложение её действительно получило.
+            let outcome = runtime.send_event(ShellEvent::HardwareKey(event));
+            Ok(KeyConsumption::after_send(outcome).is_consumed())
+        }
+        Ok(DecodedKey::NotOurKey { key_code }) => {
+            tracing::trace!(target: "fasticamera::shell", key_code, "клавиша не наша — оставлена системе");
+            Ok(false)
+        }
+        Err(error) => {
+            record_callback_failure(runtime, "hardware_key", &error);
+            Ok(false)
+        }
+    }
 }
 
 fn native_camera_permission_result<'local>(

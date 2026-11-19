@@ -5,6 +5,7 @@
 //! владельцем AWB (сессия 08, читает статистику). Рисует видоискатель `vulkan_backend::camera`.
 //!
 //! * [`control`] — чем рисовать (ISP или отладочная мозаика 05) и типизированные команды на ходу;
+//! * [`framing`] — кадрирование + место видоискателя на экране одной командой (решение 93);
 //! * [`diagnostics`] — что видоискатель делал: стадии, время GPU, счётчики параметров ISP;
 //! * [`headroom`] — стенд «запас под видео» (V4): включение командой и его диагностика;
 //! * [`white_balance`] — диагностика нашего AWB: белая, оценка, сравнение с HAL, холодный старт;
@@ -15,6 +16,7 @@ pub mod auto_exposure;
 pub mod awb_feed;
 pub mod control;
 pub mod diagnostics;
+pub mod framing;
 pub mod headroom;
 pub mod white_balance;
 
@@ -27,5 +29,6 @@ pub use diagnostics::{
     ViewfinderColorSpace, ViewfinderCounters, ViewfinderDiagnostics, ViewfinderExtent, ViewfinderGpuTimes,
     ViewfinderStorage,
 };
+pub use framing::{EffectivePlacement, FramingDestination, NormalizedScreenRect, ScreenRectError, ViewfinderFraming};
 pub use headroom::{HeadroomBench, HeadroomBenchDiagnostics, HeadroomPassTime};
 pub use white_balance::{ColdStartState, EstimateReading, WhiteBalanceDiagnostics, WhiteDelta, WhiteReading};

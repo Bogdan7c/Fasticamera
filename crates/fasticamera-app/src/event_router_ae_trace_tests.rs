@@ -57,6 +57,10 @@ struct AeDiagnosticsMirror {
 fn viewfinder_without_ae() -> ViewfinderDiagnostics {
     ViewfinderDiagnostics {
         painter: ViewfinderPainter::Isp,
+        // Место видоискателя — из конфига рендера (решение 93: экран камеры задаёт его командой `SetFraming`).
+        placement: render_loop::viewfinder::EffectivePlacement::Configured(
+            render_loop::config::ViewfinderPlacement::default(),
+        ),
         stages: IspStageSet::ALL,
         display_color_space: Some(ViewfinderColorSpace::DisplayP3),
         storage: Some(ViewfinderStorage::TenBitUnorm),

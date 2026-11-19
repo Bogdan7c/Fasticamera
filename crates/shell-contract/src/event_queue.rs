@@ -403,6 +403,47 @@ mod tests {
         assert_eq!(receiver.stats().critical_events_lost, 0);
     }
 
+    fn volume_press(time_ns: i64) -> ShellEvent {
+        use crate::hardware_key::{HardwareKey, HardwareKeyEvent, KeyPhase, KeyRepeat};
+        ShellEvent::HardwareKey(HardwareKeyEvent {
+            key: HardwareKey::VolumeUp,
+            phase: KeyPhase::Pressed,
+            repeat: KeyRepeat::Initial,
+            time: MonotonicNanos::from_nanos(time_ns),
+        })
+    }
+
+    #[test]
+    fn hardware_key_survives_touch_flood_and_keeps_its_data() {
+        let (sender, receiver) = channel(2, 2);
+        for index in 0..50 {
+            sender.send(touch(index));
+        }
+        assert_eq!(sender.send(volume_press(123)), SendOutcome::Delivered);
+        let keys: Vec<_> = drain(&receiver)
+            .into_iter()
+            .filter_map(|event| match event {
+                ShellEvent::HardwareKey(key) => Some(key),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].time, MonotonicNanos::from_nanos(123));
+        assert_eq!(receiver.stats().critical_events_lost, 0);
+    }
+
+    #[test]
+    fn hardware_key_over_critical_capacity_is_lost_and_counted_not_silent() {
+        let (sender, receiver) = channel(1, 2);
+        assert_eq!(sender.send(volume_press(1)), SendOutcome::Delivered);
+        assert_eq!(sender.send(volume_press(2)), SendOutcome::Delivered);
+        // Общая ёмкость канала = 1 + 2 = 3 места; четвёртое событие не помещается.
+        assert_eq!(sender.send(volume_press(3)), SendOutcome::Delivered);
+        assert_eq!(sender.send(volume_press(4)), SendOutcome::CriticalLost);
+        assert_eq!(sender.stats().critical_events_lost, 1);
+        assert_eq!(drain(&receiver).len(), 3);
+    }
+
     #[test]
     fn order_of_mixed_events_is_preserved() {
         let (sender, receiver) = channel(8, 8);

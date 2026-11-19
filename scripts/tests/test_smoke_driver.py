@@ -190,6 +190,139 @@ class AdbDeviceActionsTest(unittest.TestCase):
             make_actions(adb).deny_permission_dialog()
 
 
+class SizedAdb(FakeAdb):
+    """``FakeAdb`` + ответ на ``wm size`` (остальное — как у родителя)."""
+
+    def __init__(self, width_px: int, height_px: int) -> None:
+        super().__init__()
+        self._size_output = f"Physical size: {width_px}x{height_px}\n"
+
+    def __call__(self, command: list[str]) -> smoke_driver.AdbResult:
+        if command == [*ADB, "shell", "wm", "size"]:
+            self.commands.append(command)
+            return smoke_driver.AdbResult(0, self._size_output, "")
+        return super().__call__(command)
+
+
+F = smoke_driver.ScreenFraction
+D = smoke_driver.DurationMs
+WM_SIZE = [*ADB, "shell", "wm", "size"]
+
+
+class FractionToPixelTest(unittest.TestCase):
+    def test_edges_map_to_first_and_last_pixel(self) -> None:
+        for width_px, height_px in ((1080, 2412), (1440, 3216)):
+            self.assertEqual(smoke_driver.fraction_to_pixel(F(0, 0), width_px, height_px), smoke_ui.TapPoint(0, 0))
+            self.assertEqual(
+                smoke_driver.fraction_to_pixel(F(1, 1), width_px, height_px),
+                smoke_ui.TapPoint(width_px - 1, height_px - 1),
+            )
+
+    def test_middle_and_rounding_on_both_resolutions(self) -> None:
+        # 0.5 * 1079 = 539.5 -> 540 (половина вверх); 0.5 * 2411 = 1205.5 -> 1206.
+        self.assertEqual(smoke_driver.fraction_to_pixel(F(0.5, 0.5), 1080, 2412), smoke_ui.TapPoint(540, 1206))
+        # 0.5 * 1439 = 719.5 -> 720; 0.5 * 3215 = 1607.5 -> 1608.
+        self.assertEqual(smoke_driver.fraction_to_pixel(F(0.5, 0.5), 1440, 3216), smoke_ui.TapPoint(720, 1608))
+        # 0.9 * 2411 = 2169.9 -> 2170; 0.9 * 3215 = 2893.5 -> 2894.
+        self.assertEqual(smoke_driver.fraction_to_pixel(F(0.25, 0.9), 1080, 2412), smoke_ui.TapPoint(270, 2170))
+        self.assertEqual(smoke_driver.fraction_to_pixel(F(0.25, 0.9), 1440, 3216), smoke_ui.TapPoint(360, 2894))
+
+
+class GestureValidationTest(unittest.TestCase):
+    def test_fraction_outside_unit_range_is_rejected(self) -> None:
+        for x, y in ((-0.01, 0.5), (1.01, 0.5), (0.5, -0.01), (0.5, 1.01), (float("nan"), 0.5)):
+            with self.subTest(x=x, y=y), self.assertRaises(ValueError):
+                F(x, y)
+
+    def test_non_positive_duration_is_rejected(self) -> None:
+        for value in (0, -5, 1.5, True):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                D(value)  # type: ignore[arg-type]
+
+    def test_step_requires_exact_payload_for_its_kind(self) -> None:
+        bad_steps = (
+            lambda: smoke_driver.Step(smoke_driver.StepKind.TAP_POINT),
+            lambda: smoke_driver.Step(smoke_driver.StepKind.TAP_POINT, point=F(0.5, 0.5), duration=D(10)),
+            lambda: smoke_driver.Step(smoke_driver.StepKind.LONG_PRESS_POINT, point=F(0.5, 0.5)),
+            lambda: smoke_driver.Step(smoke_driver.StepKind.SWIPE, point=F(0, 0), duration=D(10)),
+            lambda: smoke_driver.Step(smoke_driver.StepKind.SWIPE, point=F(0, 0), end_point=F(1, 1)),
+            lambda: smoke_driver.Step(smoke_driver.StepKind.PRESS_HOME, point=F(0.5, 0.5)),
+        )
+        for build in bad_steps:
+            with self.subTest(), self.assertRaises(ValueError):
+                build()
+
+    def test_existing_steps_and_table_are_unchanged(self) -> None:
+        self.assertEqual(
+            smoke_driver.SCENARIO_STEPS["render"]["awaiting_refresh"],
+            (smoke_driver.Step(smoke_driver.StepKind.TAP_SCREEN, only_if_true="observed_slower_than_expected"),),
+        )
+        # Сценарий screen (сессия 12) жесты берёт из стадии: подробности — test_smoke_screen_scenario.py.
+        self.assertEqual(
+            smoke_driver.SCENARIO_STEPS["screen"],
+            {"screen_gesture": (smoke_driver.Step(smoke_driver.StepKind.STAGE_GESTURE),)},
+        )
+
+
+class GestureCommandsTest(unittest.TestCase):
+    """Шаг жеста → точная команда adb на двух разрешениях (через настоящий ``StageDriver`` и ``AdbDeviceActions``)."""
+
+    def run_step(self, step: smoke_driver.Step, width_px: int, height_px: int) -> list[list[str]]:
+        adb = SizedAdb(width_px, height_px)
+        table = {"screen": {"go": (step,)}}
+        driver = smoke_driver.StageDriver("screen", make_actions(adb), table)
+        driver.handle_stage({"scenario": "screen", "stage": "go"})
+        return adb.commands
+
+    def test_tap_point(self) -> None:
+        step = smoke_driver.Step(smoke_driver.StepKind.TAP_POINT, point=F(0.5, 0.9))
+        self.assertEqual(
+            self.run_step(step, 1080, 2412), [WM_SIZE, [*ADB, "shell", "input", "tap", "540", "2170"]]
+        )
+        self.assertEqual(
+            self.run_step(step, 1440, 3216), [WM_SIZE, [*ADB, "shell", "input", "tap", "720", "2894"]]
+        )
+
+    def test_long_press_is_zero_length_swipe_with_duration(self) -> None:
+        step = smoke_driver.Step(smoke_driver.StepKind.LONG_PRESS_POINT, point=F(0.5, 0.5), duration=D(800))
+        self.assertEqual(
+            self.run_step(step, 1080, 2412),
+            [WM_SIZE, [*ADB, "shell", "input", "swipe", "540", "1206", "540", "1206", "800"]],
+        )
+
+    def test_swipe_from_edge_to_edge(self) -> None:
+        step = smoke_driver.Step(smoke_driver.StepKind.SWIPE, point=F(1, 0.5), end_point=F(0, 0.5), duration=D(300))
+        self.assertEqual(
+            self.run_step(step, 1440, 3216),
+            [WM_SIZE, [*ADB, "shell", "input", "swipe", "1439", "1608", "0", "1608", "300"]],
+        )
+
+    def test_adb_failure_is_reported_not_swallowed(self) -> None:
+        adb = FakeAdb(failing_prefix=[*ADB, "shell", "wm", "size"])
+        with self.assertRaises(smoke_driver.DriverError):
+            make_actions(adb).tap_point(F(0.5, 0.5))
+        self.assertEqual(adb.commands, [WM_SIZE])
+
+    def test_gesture_steps_reach_actions_in_order(self) -> None:
+        table = {
+            "screen": {
+                "go": (
+                    smoke_driver.Step(smoke_driver.StepKind.TAP_POINT, point=F(0.5, 0.25)),
+                    smoke_driver.Step(smoke_driver.StepKind.LONG_PRESS_POINT, point=F(0.5, 0.5), duration=D(800)),
+                    smoke_driver.Step(
+                        smoke_driver.StepKind.SWIPE, point=F(0.75, 0.5), end_point=F(0.25, 0.5), duration=D(300)
+                    ),
+                )
+            }
+        }
+        actions = RecordingActions()
+        smoke_driver.StageDriver("screen", actions, table).handle_stage({"scenario": "screen", "stage": "go"})
+        self.assertEqual(
+            actions.calls,
+            ["tap_point(0.5,0.25)", "long_press_point(0.5,0.5,800)", "swipe(0.75,0.5->0.25,0.5,300)"],
+        )
+
+
 class RecordingActions:
     """Фейковые действия: порядок вызовов."""
 
@@ -210,6 +343,23 @@ class RecordingActions:
 
     def screencap(self, label: str) -> None:
         self.calls.append(f"screencap({label})")
+
+    def tap_screen(self) -> None:
+        self.calls.append("tap_screen")
+
+    def tap_point(self, point: smoke_driver.ScreenFraction) -> None:
+        self.calls.append(f"tap_point({point.x:g},{point.y:g})")
+
+    def long_press_point(self, point: smoke_driver.ScreenFraction, duration: smoke_driver.DurationMs) -> None:
+        self.calls.append(f"long_press_point({point.x:g},{point.y:g},{duration.value})")
+
+    def swipe(
+        self, start: smoke_driver.ScreenFraction, end: smoke_driver.ScreenFraction, duration: smoke_driver.DurationMs
+    ) -> None:
+        self.calls.append(f"swipe({start.x:g},{start.y:g}->{end.x:g},{end.y:g},{duration.value})")
+
+    def press_volume_up(self) -> None:
+        self.calls.append("press_volume_up")
 
 
 class StageDriverTest(unittest.TestCase):

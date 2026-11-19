@@ -8,6 +8,7 @@ use isp_vulkan::viewfinder::IspStageSet;
 
 use super::auto_exposure::AutoExposureDiagnostics;
 use super::control::ViewfinderPainter;
+use super::framing::EffectivePlacement;
 use super::headroom::HeadroomBenchDiagnostics;
 use super::white_balance::WhiteBalanceDiagnostics;
 use crate::thread::DurationSummary;
@@ -115,6 +116,9 @@ pub struct ViewfinderDiagnostics {
     pub painter: ViewfinderPainter,
     /// Включённые стадии ISP.
     pub stages: IspStageSet,
+    /// Действующее место видоискателя на экране: правило конфига или прямоугольник из `SetFraming`
+    /// (по нему smoke видит, что команда экрана камеры дошла до рендера).
+    pub placement: EffectivePlacement,
     /// Пространство цепочки показа на последнем кадре (`None` — кадров не было).
     pub display_color_space: Option<ViewfinderColorSpace>,
     /// Формат изображения видоискателя (`None` — ISP ещё не работал).

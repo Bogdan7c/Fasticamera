@@ -37,6 +37,13 @@ object ShellBridge {
 
     @JvmStatic external fun nativeTouch(event: MotionEvent)
 
+    /**
+     * Аппаратная клавиша: сырые поля `KeyEvent`. Время — `getEventTime()` в мс
+     * (`uptimeMillis` = `CLOCK_MONOTONIC`, та же шкала, что у касаний; в наносекунды переводит Rust). Возвращает true, если Rust забрал клавишу
+     * (громкость): тогда Activity обязана потребить событие.
+     */
+    @JvmStatic external fun nativeHardwareKey(keyCode: Int, action: Int, repeatCount: Int, eventTimeMillis: Long): Boolean
+
     @JvmStatic external fun nativeCameraPermissionResult(grantResults: IntArray, shouldShowRationale: Boolean)
 
     /** Команда, принятая от Rust, не выполнилась; [command] — один из `ShellPlatform.COMMAND_*`. */

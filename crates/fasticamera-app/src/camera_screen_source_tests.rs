@@ -1,0 +1,282 @@
+//! Снимок наблюдаемого состояния экрана ([`ScreenStateSnapshot`]): его значения должны ПОВТОРЯТЬ настоящее
+//! состояние `ScreenState`, которое меняют настоящие действия редьюсера (а не подставленные руками поля).
+
+use camera_contract::control::ExposureBias;
+use camera_contract::geometry::{PixelRect, PixelSize, SensorOrientation};
+use camera_screen::tools::ToolId;
+use camera_screen::viewfinder_map::{MirrorMode, StreamGeometry};
+use camera_screen::{CameraFacts, CameraPresence, ScreenAction, ScreenConfig, ScreenState, reduce};
+use shell_contract::clock::MonotonicNanos;
+use shell_contract::surface::SurfaceSize;
+
+use super::*;
+use crate::camera_screen_capture::{CaptureService, SubmitOutcome};
+use crate::camera_screen_effects::{CameraIntentOutcome, CameraIntentPort, EffectTargets};
+use crate::camera_screen_facts::FactsDiagnostics;
+use crate::camera_screen_input::screen_input_channel;
+use crate::gpu_test_support::RecordingRenderControl;
+use camera_core::CommandId;
+use camera_screen::ScreenCameraIntent;
+use camera_screen::shutter::ShotRequest;
+use shell_contract::commands::{CommandOutcome, FrameRate, FrameRateOutcome, ScreenWake, ShellCommands};
+use shell_contract::haptics::{HapticOutcome, HapticPattern, HapticsService};
+use std::sync::Mutex;
+use ui_draw::geometry::PxSize;
+
+/// Применяет действие редьюсером к состоянию и возвращает новое состояние.
+fn apply(state: &ScreenState, action: ScreenAction) -> ScreenState {
+    reduce(state, action, &ScreenConfig::default()).state
+}
+
+/// Экран с живой камерой (без неё EV-перетаскивание отвергается).
+fn live_screen() -> ScreenState {
+    let state = ScreenState::new(&ScreenConfig::default()).expect("конфиг по умолчанию верен");
+    let facts = CameraFacts {
+        presence: CameraPresence::Live,
+        // Основная камера OnePlus 11: без геометрии потока тап не переводится в точку сенсора.
+        stream: Some(StreamGeometry {
+            valid_area: PixelRect {
+                left: 0,
+                top: 0,
+                size: PixelSize::new(4096, 3072),
+            },
+            active_array_size: PixelSize::new(4096, 3072),
+            sensor_orientation: SensorOrientation::Degrees90,
+            mirror: MirrorMode::None,
+        }),
+        ..CameraFacts::STARTING
+    };
+    let state = apply(&state, ScreenAction::CameraFactsChanged(facts));
+    // Без размера surface нет раскладки, и тап по видоискателю некуда привязать.
+    apply(
+        &state,
+        ScreenAction::SurfaceResized(SurfaceSize {
+            width_px: 1080,
+            height_px: 2412,
+        }),
+    )
+}
+
+#[test]
+fn a_fresh_screen_is_closed_neutral_and_in_photo_mode() {
+    let snapshot = ScreenStateSnapshot::observe(&live_screen());
+    assert_eq!(
+        snapshot,
+        ScreenStateSnapshot {
+            panel: PanelKind::Closed,
+            lock_plaque: Presence::Hidden,
+            focus_indicator: Presence::Hidden,
+            exposure_steps: 0,
+            mode: ModeKind::Photo,
+            shutter_placement: ShutterPlacement::Visible,
+            shutter_activity: ShutterActivity::Idle,
+        }
+    );
+}
+
+#[test]
+fn the_open_controls_menu_hides_the_shutter_and_closing_brings_it_back() {
+    let opened = apply(&live_screen(), ScreenAction::ControlsMenuOpenRequested);
+    let snapshot = ScreenStateSnapshot::observe(&opened);
+    assert_eq!(snapshot.panel, PanelKind::ControlsMenu);
+    assert_eq!(snapshot.shutter_placement, ShutterPlacement::HiddenUnderDrawer);
+
+    let closed = apply(&opened, ScreenAction::ControlsMenuCloseRequested);
+    let snapshot = ScreenStateSnapshot::observe(&closed);
+    assert_eq!(snapshot.panel, PanelKind::Closed);
+    assert_eq!(snapshot.shutter_placement, ShutterPlacement::Visible);
+}
+
+#[test]
+fn the_exposure_panel_and_the_ev_steps_are_visible_in_the_snapshot_and_reset_returns_zero() {
+    let panel = apply(&live_screen(), ScreenAction::StripToolTapped(ToolId::Exposure));
+    assert_eq!(ScreenStateSnapshot::observe(&panel).panel, PanelKind::ExposurePanel);
+
+    let dragged = apply(
+        &panel,
+        ScreenAction::ExposureDragged {
+            requested: ExposureBias::from_ev(1.0).expect("конечное значение"),
+            at: MonotonicNanos::from_nanos(0),
+        },
+    );
+    assert_eq!(ScreenStateSnapshot::observe(&dragged).exposure_steps, 3);
+
+    let reset = apply(&dragged, ScreenAction::ExposureResetRequested);
+    assert_eq!(ScreenStateSnapshot::observe(&reset).exposure_steps, 0);
+}
+
+#[test]
+fn a_viewfinder_tap_shows_the_focus_indicator_without_the_lock_plaque() {
+    let tapped = apply(
+        &live_screen(),
+        ScreenAction::ViewfinderTapped {
+            point: ui_core::geometry::Point::new(200.0, 400.0),
+            at: MonotonicNanos::from_nanos(1_000_000),
+        },
+    );
+    let snapshot = ScreenStateSnapshot::observe(&tapped);
+    assert_eq!(snapshot.focus_indicator, Presence::Shown);
+    assert_eq!(snapshot.lock_plaque, Presence::Hidden);
+}
+
+#[test]
+fn the_snapshot_serializes_for_the_run_report_with_readable_names() {
+    let json = serde_json::to_value(ScreenStateSnapshot::observe(&live_screen())).expect("снимок сериализуется");
+    assert_eq!(json["panel"], "Closed");
+    assert_eq!(json["shutter_placement"], "Visible");
+    assert_eq!(json["exposure_steps"], 0);
+}
+
+// ---- Проводка источника: досылка EV по кадрам (находка 4) ---------------------------------------------------------
+
+struct LiveFacts;
+
+impl CameraFactsSource for LiveFacts {
+    fn current_facts(&mut self) -> CameraFacts {
+        CameraFacts {
+            presence: CameraPresence::Live,
+            stream: Some(StreamGeometry {
+                valid_area: PixelRect {
+                    left: 0,
+                    top: 0,
+                    size: PixelSize::new(4096, 3072),
+                },
+                active_array_size: PixelSize::new(4096, 3072),
+                sensor_orientation: SensorOrientation::Degrees90,
+                mirror: MirrorMode::None,
+            }),
+            ..CameraFacts::STARTING
+        }
+    }
+
+    fn diagnostics(&self) -> FactsDiagnostics {
+        FactsDiagnostics::default()
+    }
+}
+
+/// Порт камеры, ответ которого тест меняет по ходу кадров.
+struct SwitchablePort {
+    outcome: Arc<Mutex<CameraIntentOutcome>>,
+    received: Arc<Mutex<Vec<ScreenCameraIntent>>>,
+}
+
+impl CameraIntentPort for SwitchablePort {
+    fn deliver(&self, intent: ScreenCameraIntent) -> CameraIntentOutcome {
+        self.received.lock().expect("замок").push(intent);
+        *self.outcome.lock().expect("замок")
+    }
+}
+
+struct QuietHaptics;
+
+impl HapticsService for QuietHaptics {
+    fn play(&self, _pattern: HapticPattern) -> HapticOutcome {
+        HapticOutcome::Unsupported
+    }
+}
+
+struct QuietCommands;
+
+impl ShellCommands for QuietCommands {
+    fn request_camera_permission(&self) -> CommandOutcome {
+        CommandOutcome::Queued
+    }
+
+    fn set_preferred_frame_rate(&self, _rate: FrameRate) -> FrameRateOutcome {
+        FrameRateOutcome::Applied
+    }
+
+    fn open_system_gallery(&self) -> CommandOutcome {
+        CommandOutcome::Queued
+    }
+
+    fn keep_screen_on(&self, _wake: ScreenWake) -> CommandOutcome {
+        CommandOutcome::Queued
+    }
+}
+
+struct NoCapture;
+
+impl CaptureService for NoCapture {
+    fn submit(&self, _request: ShotRequest, _now: MonotonicNanos) -> SubmitOutcome {
+        SubmitOutcome::Accepted
+    }
+}
+
+fn frame_request(now_ms: i64) -> UiFrameRequest {
+    UiFrameRequest {
+        present_time: MonotonicNanos::from_nanos(now_ms * 1_000_000),
+        logical_size: PxSize::new(1080.0, 2412.0),
+        px_per_pt: 1080.0 / 440.0,
+    }
+}
+
+#[test]
+fn an_exposure_bias_refused_by_a_full_camera_queue_is_resent_by_the_source_on_later_frames() {
+    let outcome = Arc::new(Mutex::new(CameraIntentOutcome::QueueFull));
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let (sender, receiver) = screen_input_channel(16);
+    let board = Arc::new(ScreenBoard::default());
+    let mut source = CameraScreenSource::new(ScreenSourceParts {
+        screen: CameraScreen::new(
+            ScreenConfig::default(),
+            ui_kit::tokens::UiKitTokens::default(),
+            ui_core::time::MotionPreference::Full,
+        )
+        .expect("экран"),
+        input: receiver,
+        facts: Box::new(LiveFacts),
+        gravity: GravityLink::Unavailable {
+            reason: "тест".to_owned(),
+        },
+        executor: EffectExecutor::new(EffectTargets {
+            camera: Box::new(SwitchablePort {
+                outcome: Arc::clone(&outcome),
+                received: Arc::clone(&received),
+            }),
+            haptics: Arc::new(QuietHaptics),
+            commands: Arc::new(QuietCommands),
+            render: RecordingRenderControl::new(),
+            capture: Arc::new(NoCapture),
+        }),
+        board: Arc::clone(&board),
+        report_min_interval: Duration::ZERO,
+    });
+
+    // Кадр 1: сцена построена, факты Live доставлены. Кадр 2: панель Exposure и перетаскивание шкалы.
+    source.produce_frame(&frame_request(16)).expect("кадр");
+    let bias = ExposureBias::from_ev(1.0).expect("EV");
+    sender.send_action(ScreenAction::StripToolTapped(ToolId::Exposure));
+    sender.send_action(ScreenAction::ExposureDragged {
+        requested: bias,
+        at: MonotonicNanos::from_nanos(20_000_000),
+    });
+    source.produce_frame(&frame_request(32)).expect("кадр");
+    let intents = |received: &Arc<Mutex<Vec<ScreenCameraIntent>>>| received.lock().expect("замок").clone();
+    assert_eq!(
+        intents(&received),
+        vec![ScreenCameraIntent::SetExposureBias(bias)],
+        "первая отправка упёрлась в очередь"
+    );
+    let report = board.latest().expect("отчёт");
+    assert_eq!((report.effects.camera.queue_full, report.effects.camera.sent), (1, 0));
+
+    // Очередь движка освободилась: следующий кадр досылает то же значение сам, без нового жеста пользователя.
+    *outcome.lock().expect("замок") = CameraIntentOutcome::Sent(CommandId(5));
+    source.produce_frame(&frame_request(48)).expect("кадр");
+    assert_eq!(
+        intents(&received),
+        vec![
+            ScreenCameraIntent::SetExposureBias(bias),
+            ScreenCameraIntent::SetExposureBias(bias)
+        ],
+        "значение досылается"
+    );
+    assert_eq!(
+        board.latest().expect("отчёт").effects.camera.exposure_resends_accepted,
+        1
+    );
+    // Принято — больше не досылается.
+    source.produce_frame(&frame_request(64)).expect("кадр");
+    assert_eq!(intents(&received).len(), 2);
+}

@@ -187,7 +187,7 @@ pub fn evaluate_glass(smoke: &ViewfinderSmokeConfig, observation: &GlassObservat
 }
 
 /// Счётчики слоя UI: источник стоял, кадры рисовались без отказов, пирамида фона строилась.
-fn overlay_violations(overlay: &OverlayWindow) -> Vec<String> {
+pub(super) fn overlay_violations(overlay: &OverlayWindow) -> Vec<String> {
     let mut violations = Vec::new();
     match &overlay.active_source {
         None => violations.push("источник UI не установлен к концу окна (active_source пуст)".to_owned()),
@@ -217,7 +217,7 @@ fn overlay_violations(overlay: &OverlayWindow) -> Vec<String> {
 }
 
 /// GPU-время кадра UI: замер есть и p95 в бюджете.
-fn gpu_time_violations(overlay: &OverlayWindow, budget: &UiGpuBudget) -> Vec<String> {
+pub(super) fn gpu_time_violations(overlay: &OverlayWindow, budget: &UiGpuBudget) -> Vec<String> {
     match overlay.gpu_time {
         None => vec!["нет замеров GPU-времени кадра UI (ui_overlay.gpu_time)".to_owned()],
         Some(time) if time.p95_ms > budget.budget_ms => vec![format!(
