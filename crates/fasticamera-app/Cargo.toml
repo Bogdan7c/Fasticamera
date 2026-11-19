@@ -28,6 +28,10 @@ isp-vulkan.workspace = true
 raw-frame-stream.workspace = true
 render-loop.workspace = true
 shell-contract.workspace = true
+# Демо-сцена стекла (сессия 11): сцена, элементы и словарь рисования.
+ui-core.workspace = true
+ui-draw.workspace = true
+ui-kit.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

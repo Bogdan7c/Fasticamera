@@ -11,7 +11,8 @@ use gpu_vulkan::swapchain::DisplayFrame;
 use super::super::ownership::{AcquireNew, OwnershipPlan, ReleaseDisplayed};
 use super::super::pipelines::{AcquiredSourceReader, CameraPipelines, IspFrameRecording, NewIspFrame, ScreenContent};
 use super::slot::effective_stages;
-use super::{CameraSession, Content, LOG_TARGET, Recorded};
+use super::{CameraSession, Content, LOG_TARGET, Recorded, SubmissionSerial};
+use crate::vulkan_backend::camera::ui_state::UiOverlayFrame;
 
 impl CameraSession {
     /// Записывает содержимое кадра в командный буфер `frame`.
@@ -21,6 +22,8 @@ impl CameraSession {
         frame: &DisplayFrame,
         content: &Content,
         plan: OwnershipPlan,
+        serial: SubmissionSerial,
+        ui: &mut UiOverlayFrame<'_>,
     ) -> Result<Recorded, GpuError> {
         // Возврат прежнего кадра мозаики — в сабмите, который его заменяет или убирает с экрана.
         let release_displayed = match plan.release_displayed {
@@ -58,6 +61,7 @@ impl CameraSession {
             }
             Content::Recompose => {
                 let recording = pipelines.record_recompose(frame, release_displayed, placement);
+                self.record_ui_overlay(pipelines, frame, &recording, serial, ui);
                 let shown = self.account_recording(pipelines, &recording);
                 Ok(Recorded::Recompose { shown })
             }
@@ -104,10 +108,26 @@ impl CameraSession {
                     placement,
                 );
                 let processed = recording.isp.is_ok();
+                self.record_ui_overlay(pipelines, frame, &recording, serial, ui);
                 let shown = self.account_recording(pipelines, &recording);
                 Ok(Recorded::IspNew { processed, shown })
             }
         }
+    }
+
+    /// UI поверх только что записанной компоновки (без источника — ничего). Отказы записи меток времени UI
+    /// идут в общий счётчик отказов замера кадра; сам UI считает свои отказы в `UiOverlayState`.
+    fn record_ui_overlay(
+        &mut self,
+        pipelines: &mut CameraPipelines,
+        frame: &DisplayFrame,
+        recording: &IspFrameRecording,
+        serial: SubmissionSerial,
+        ui: &mut UiOverlayFrame<'_>,
+    ) {
+        let timing_failures =
+            pipelines.record_ui_overlay(frame, ui, &recording.screen, serial, self.settings.placement);
+        self.viewfinder.counters_mut().gpu_timing_failures += timing_failures;
     }
 
     /// Учитывает отказы записи кадра видоискателя; возвращает, попало ли изображение на экран.

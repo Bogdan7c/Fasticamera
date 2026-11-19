@@ -14,6 +14,7 @@
 //!   вердикт — `three_a_verdict`).
 //! * сессия 08c: [`AeTraceScenario`] — `ae-trace` (ряд нашего AE по ступенькам света; расписание — `ae_trace_plan`,
 //!   запись — `ae_trace_run`, разбор — `ae_trace_analysis`/`_steps`/`_stats`, вердикт — `ae_trace_verdict`).
+//! * сессия 11: [`GlassScenario`] — `glass` (стекло поверх видоискателя; отчёт и вердикт — `glass_report`).
 //!
 //! Устройство каждого сценария одинаково: логика движется по тикам маршрутизатора (ничего не
 //! блокируется), отчёт — отдельные `Serialize`-структуры (`*_report.rs`), вердикт — чистая функция
@@ -42,6 +43,11 @@ mod engine_watch;
 mod evict;
 #[cfg(any(test, feature = "debug-scenarios"))]
 mod evict_report;
+// Демо-сцена стекла (сессия 11) и сценарий `glass` на ней. `pub(crate)`: её конфиг — часть
+// `camera.scenarios.glass` (`glass_scenario_config`).
+mod glass;
+mod glass_report;
+pub(crate) mod glass_showcase;
 mod operator_prompt_log;
 mod progress;
 mod raw_stream;
@@ -86,6 +92,7 @@ pub use ae_trace::AeTraceScenario;
 pub use catalog::CameraCatalogScenario;
 #[cfg(feature = "debug-scenarios")]
 pub use evict::CameraEvictScenario;
+pub use glass::GlassScenario;
 pub use raw_stream::CameraRawStreamScenario;
 pub use stream::CameraStreamScenario;
 pub use three_a::ThreeAScenario;
@@ -118,6 +125,8 @@ pub enum CameraScenario {
     ViewfinderEndurance,
     /// `video-headroom-bench`: стенд запаса под видео (V4), 16:9@60 и экран 120 Гц.
     VideoHeadroomBench,
+    /// `glass`: стекло поверх живого видоискателя, GPU-время UI и пропуски кадров (сессия 11).
+    Glass,
     /// `3a`: автоматика 3A и ручные параметры на живом видоискателе (сессия 08).
     ThreeA,
     /// `ae-trace`: ряд нашего AE по ступенькам света, подтяжка ISP и мерцание (сессия 08c).
@@ -146,6 +155,7 @@ impl CameraScenario {
             CameraScenario::VideoHeadroomBench,
             CameraScenario::ThreeA,
             CameraScenario::AeTrace,
+            CameraScenario::Glass,
         ]
     }
 
@@ -172,6 +182,7 @@ impl CameraScenario {
             CameraScenario::VideoHeadroomBench => "video-headroom-bench",
             CameraScenario::ThreeA => "3a",
             CameraScenario::AeTrace => "ae-trace",
+            CameraScenario::Glass => "glass",
         }
     }
 
@@ -193,6 +204,7 @@ impl CameraScenario {
             CameraScenario::VideoHeadroomBench => Box::new(VideoHeadroomScenario::new()),
             CameraScenario::ThreeA => Box::new(ThreeAScenario::new()),
             CameraScenario::AeTrace => Box::new(AeTraceScenario::new()),
+            CameraScenario::Glass => Box::new(GlassScenario::new()),
         }
     }
 }

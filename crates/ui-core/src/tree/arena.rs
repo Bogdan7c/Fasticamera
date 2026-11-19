@@ -168,21 +168,14 @@ impl UiTree {
     /// самого элемента и всех его предков.
     pub fn visual_bounds(&self, node: NodeId) -> Result<Rect, TreeError> {
         let frame = self.require(node)?.frame;
-        let mut corners = [
+        let to_screen = self.to_screen_transform(node)?;
+        let corners = [
             Point::new(frame.min_x(), frame.min_y()),
             Point::new(frame.max_x(), frame.min_y()),
             Point::new(frame.max_x(), frame.max_y()),
             Point::new(frame.min_x(), frame.max_y()),
-        ];
-        let mut current = Some(node);
-        while let Some(id) = current {
-            let data = self.require(id)?;
-            let transform = data.transform();
-            for corner in &mut corners {
-                *corner = transform.apply(*corner);
-            }
-            current = data.parent;
-        }
+        ]
+        .map(|corner| to_screen.apply(corner));
         let min_x = corners.iter().map(|c| c.x).fold(f64::INFINITY, f64::min);
         let max_x = corners.iter().map(|c| c.x).fold(f64::NEG_INFINITY, f64::max);
         let min_y = corners.iter().map(|c| c.y).fold(f64::INFINITY, f64::min);

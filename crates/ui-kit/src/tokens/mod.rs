@@ -6,11 +6,13 @@
 //!
 //! * [`MotionTokens`] — именованные пружины и сборка конфигов прокрутки по роли;
 //! * [`HapticTable`] — таблица «событие → хаптика»;
+//! * [`GlassTokens`] — пресеты материала стекла «кнопка» и «панель»;
 //! * [`DensityTokens`] — pt на единицу шкалы, радиус магнита, промежуток карусели;
 //! * [`UiKitTokens`] — все вместе: serde-конфиг с `Default` и `validate()`.
 
 mod density;
 mod error;
+mod glass;
 mod haptics;
 mod motion;
 
@@ -18,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 pub use density::{DensityTokens, ScaleDensity};
 pub use error::TokenError;
+pub use glass::{GlassRole, GlassTokens};
 pub use haptics::{HapticEvent, HapticSetting, HapticTable};
 pub use motion::{MotionToken, MotionTokens, SnapRole, SpringToken};
 
@@ -28,12 +31,14 @@ pub struct UiKitTokens {
     pub motion: MotionTokens,
     pub density: DensityTokens,
     pub haptics: HapticTable,
+    pub glass: GlassTokens,
 }
 
 impl UiKitTokens {
     /// Проверить все группы токенов.
     pub fn validate(&self) -> Result<(), TokenError> {
         self.motion.validate()?;
-        self.density.validate()
+        self.density.validate()?;
+        self.glass.validate()
     }
 }

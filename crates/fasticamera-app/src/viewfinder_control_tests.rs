@@ -7,7 +7,7 @@ use shell_contract::commands::{CommandOutcome, FrameRate, FrameRateOutcome, Scre
 
 use super::*;
 use crate::gpu_services::UnavailableDiagnostics;
-use crate::gpu_test_support::{FakeRenderStatus, RecordingRenderControl, presenting_status};
+use crate::gpu_test_support::{FakeRenderStatus, RecordedUiOverlay, RecordingRenderControl, presenting_status};
 
 /// Оболочка, которая только запоминает просьбы о частоте экрана.
 #[derive(Default)]
@@ -261,5 +261,162 @@ fn unavailable_render_reports_reason_for_adpf_too() {
         ControlDelivery::RenderUnavailable {
             reason: "GPU не поднялся".to_owned()
         }
+    );
+}
+
+// ---- UI и стекло поверх видоискателя (сессия 11) ----
+
+/// Источник кадра UI, который ничего не рисует: тестам нужен только факт установки.
+struct FakeUiSource;
+
+impl ui_draw::frame_source::UiFrameSource for FakeUiSource {
+    fn name(&self) -> &'static str {
+        "fake-ui"
+    }
+
+    fn produce_frame(
+        &mut self,
+        _request: &ui_draw::frame_source::UiFrameRequest,
+    ) -> Result<ui_draw::draw_list::DrawList, ui_draw::frame_source::UiFrameError> {
+        Ok(ui_draw::draw_list::DrawList::new(
+            ui_draw::light::LightDirection::from_angle_degrees(0.0),
+        ))
+    }
+}
+
+#[test]
+fn installed_ui_source_reaches_the_control_and_is_removed_first_at_the_end_of_the_scenario() {
+    let control = RecordingRenderControl::new();
+    let gpu = gpu_with(control.clone(), RenderLoopConfig::default());
+    gpu.set_viewfinder_painter_for_scenario(ViewfinderPainter::DebugMosaic);
+    assert!(
+        gpu.install_ui_overlay_for_scenario(Box::new(FakeUiSource))
+            .is_delivered()
+    );
+    assert_eq!(control.recorded_ui_overlay(), [RecordedUiOverlay::Install("fake-ui")]);
+    let before_end = control.recorded().len();
+
+    let effects = gpu.render_scenario_ended(&RateRecorder::default());
+
+    assert_eq!(
+        control.recorded_ui_overlay(),
+        [RecordedUiOverlay::Install("fake-ui"), RecordedUiOverlay::Remove],
+        "конец сценария снял источник"
+    );
+    assert_eq!(
+        effects.adjustments.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+        ["ui_overlay", "painter"],
+        "UI снимается раньше остальных возвратов"
+    );
+    assert_eq!(
+        control.recorded().len(),
+        before_end + 1,
+        "возврат рисовальщика — отдельная регулировка"
+    );
+
+    // Учёт забран: второй конец ничего не шлёт.
+    assert!(gpu.render_scenario_ended(&RateRecorder::default()).is_empty());
+    assert_eq!(control.recorded_ui_overlay().len(), 2);
+}
+
+#[test]
+fn ui_source_never_installed_means_the_end_sends_no_ui_command() {
+    let control = RecordingRenderControl::new();
+    let gpu = gpu_with(control.clone(), RenderLoopConfig::default());
+    gpu.set_isp_stages_for_scenario(IspStageSet::ALL.without(IspStage::Tone));
+
+    let effects = gpu.render_scenario_ended(&RateRecorder::default());
+
+    assert!(
+        control.recorded_ui_overlay().is_empty(),
+        "источник не ставили — снимать нечего"
+    );
+    assert_eq!(
+        effects.adjustments.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+        ["isp_stages"]
+    );
+}
+
+#[test]
+fn removing_the_source_inside_the_scenario_leaves_nothing_for_the_end_to_remove() {
+    let control = RecordingRenderControl::new();
+    let gpu = gpu_with(control.clone(), RenderLoopConfig::default());
+    gpu.install_ui_overlay_for_scenario(Box::new(FakeUiSource));
+    assert!(gpu.remove_ui_overlay_for_scenario().is_delivered());
+
+    let effects = gpu.render_scenario_ended(&RateRecorder::default());
+
+    assert!(effects.is_empty(), "{effects:?}");
+    assert_eq!(
+        control.recorded_ui_overlay(),
+        [RecordedUiOverlay::Install("fake-ui"), RecordedUiOverlay::Remove],
+        "снятие — одно, сценарием"
+    );
+}
+
+#[test]
+fn a_new_install_after_removal_is_claimed_again() {
+    let control = RecordingRenderControl::new();
+    let gpu = gpu_with(control.clone(), RenderLoopConfig::default());
+    gpu.install_ui_overlay_for_scenario(Box::new(FakeUiSource));
+    gpu.remove_ui_overlay_for_scenario();
+    gpu.install_ui_overlay_for_scenario(Box::new(FakeUiSource));
+
+    gpu.render_scenario_ended(&RateRecorder::default());
+
+    assert_eq!(
+        control.recorded_ui_overlay().last(),
+        Some(&RecordedUiOverlay::Remove),
+        "второй источник тоже снят концом сценария"
+    );
+    assert_eq!(control.recorded_ui_overlay().len(), 4);
+}
+
+#[test]
+fn unavailable_render_answers_the_ui_commands_with_its_reason_and_the_end_reports_it() {
+    let gpu = gpu_with(
+        Arc::new(UnavailableRenderControl::new("GPU не поднялся")),
+        RenderLoopConfig::default(),
+    );
+    let expected = ControlDelivery::RenderUnavailable {
+        reason: "GPU не поднялся".to_owned(),
+    };
+
+    assert_eq!(gpu.install_ui_overlay_for_scenario(Box::new(FakeUiSource)), expected);
+    let effects = gpu.render_scenario_ended(&RateRecorder::default());
+    assert_eq!(effects.adjustments, [("ui_overlay", expected.clone())]);
+    // Снятие недоставлено — учёт не сбрасывается, сценарий и дальше «владеет» источником.
+    assert_eq!(gpu.remove_ui_overlay_for_scenario(), expected);
+}
+
+#[test]
+fn inbox_control_delivers_ui_commands_in_order_and_reports_a_stopped_render_thread() {
+    use render_loop::mailbox::{InboxEvent, render_mailbox};
+    use render_loop::ui_overlay::UiOverlayCommand;
+
+    let (inbox, receiver) = render_mailbox();
+    let control = InboxRenderControl::new(inbox);
+    assert_eq!(
+        control.ui_overlay(UiOverlayCommand::Install(Box::new(FakeUiSource))),
+        ControlDelivery::Delivered
+    );
+    assert_eq!(control.ui_overlay(UiOverlayCommand::Remove), ControlDelivery::Delivered);
+    let trace: Vec<String> = receiver
+        .take_pending()
+        .events
+        .into_iter()
+        .map(|stamped| match stamped.event {
+            InboxEvent::UiOverlay(UiOverlayCommand::Install(source)) => format!("install:{}", source.name()),
+            InboxEvent::UiOverlay(UiOverlayCommand::Remove) => "remove".to_owned(),
+            other => format!("лишнее: {other:?}"),
+        })
+        .collect();
+    assert_eq!(trace, ["install:fake-ui", "remove"]);
+
+    drop(receiver);
+    assert_eq!(
+        control.ui_overlay(UiOverlayCommand::Remove),
+        ControlDelivery::RenderGone,
+        "поток рендера завершён: команда потеряна и это видно"
     );
 }

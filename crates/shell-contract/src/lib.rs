@@ -27,6 +27,7 @@ pub mod commands;
 pub mod diagnostics;
 pub mod event;
 pub mod event_queue;
+pub mod gravity;
 pub mod haptics;
 pub mod hardware_buffer;
 pub mod motion;

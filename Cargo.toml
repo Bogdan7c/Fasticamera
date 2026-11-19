@@ -27,6 +27,8 @@ isp-vulkan = { path = "crates/isp-vulkan" }
 scene-estimation = { path = "crates/scene-estimation" }
 ui-core = { path = "crates/ui-core" }
 ui-kit = { path = "crates/ui-kit" }
+ui-draw = { path = "crates/ui-draw" }
+ui-render-vulkan = { path = "crates/ui-render-vulkan" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -48,6 +50,12 @@ ash = { version = "0.38.0", default-features = false, features = ["loaded", "std
 # по пути из NDK (build-машине не нужен системный libclang); `logging` и `prettyplease` отключены:
 # форматирование сгенерированного кода не нужно, а лишние зависимости — это лишняя поверхность.
 bindgen = { version = "0.73.2", default-features = false, features = ["runtime"] }
+# Шрифт и иконки «запекаются» при сборке ui-draw (решения 87, 88): только build-dependencies и тесты,
+# в продукт не попадают. harfrust — вёрстка HarfBuzz (порт на Rust, команда HarfBuzz), skrifa — чтение
+# контуров глифов (Google Fontations), kurbo — разбор путей SVG иконок и их уплощение (linebender).
+harfrust = "0.16.0"
+skrifa = "0.50.0"
+kurbo = "0.13.1"
 
 [workspace.lints.rust]
 # Каждая unsafe-операция внутри unsafe fn обязана стоять в явном unsafe-блоке с `// SAFETY:`.

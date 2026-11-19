@@ -19,8 +19,10 @@
 # скриншоты на стадии awb_ready, --neutral-card — серая карта; для вопроса о регионах фокуса навести на сцену
 # с ближним и дальним планом). 3A 08c: ae-trace (150; наш AE по ступенькам света: фото 36 с, видео 36 с, статика 20 с;
 # телефон показывает на экране отсчёт «приготовься… 3, 2, 1» и «ЩЁЛКНИ ЛАМПОЙ» — владелец щёлкает лампой; сводка + ряд FASTICAMERA_DETAIL; нужен own AE).
+# Стекло 11: glass (90; стекло поверх живого видоискателя: запуск + окно 30 с анимации — GPU-время кадра UI в бюджете,
+# 0 пропусков кадров, скриншоты на стадии glass_live; гравитация — заметка, не провал; гоняется и в debug, и в release).
 # Шаги на телефоне — scripts/smoke_driver.py, ожидания — smoke_wait.py, smoke_checks*.py.
-# raw-stream*, viewfinder и 3a снимают два скриншота на стадии viewfinder_live (3a — awb_ready) в каталог артефактов ВНЕ
+# raw-stream*, viewfinder, glass и 3a снимают два скриншота на стадии viewfinder_live (3a — awb_ready, glass — glass_live) в каталог артефактов ВНЕ
 # репозитория: --artifacts-dir DIR либо свежий `mktemp -d` (путь печатается).
 # --endurance-ms MS — длина viewfinder-endurance на этот запуск (camera.scenarios.power.endurance.duration_ms;
 # 180000 — короткий замер тока для A/B «наш AE / вендорский»; не короче шага снимков 60 с — проверит Rust).
@@ -40,7 +42,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
 usage() {
-    sed -n '2,36p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,38p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
 }
 
 variant="debug"

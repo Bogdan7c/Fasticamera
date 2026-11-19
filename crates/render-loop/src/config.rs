@@ -12,12 +12,14 @@ use serde::{Deserialize, Serialize};
 mod adpf;
 mod auto_exposure;
 mod present_target;
+mod ui_overlay;
 mod viewfinder;
 mod white_balance;
 
 pub use adpf::{AdpfConfig, AdpfConfigError, AdpfMode, MAX_ADPF_GPU_WAIT_FRAMES, MIN_ADPF_TARGET_FRACTION};
 
 pub use auto_exposure::{AutoExposureConfig, AutoExposureConfigError};
+pub use ui_overlay::{UiOverlayConfig, UiOverlayConfigError};
 pub use viewfinder::{
     CropAspectConfig, DisplayColorConfig, MAX_VIEWFINDER_GPU_TIME_WINDOW_FRAMES, ViewfinderConfig,
     ViewfinderConfigError, ViewfinderCropConfig, ViewfinderPlacement,
@@ -82,6 +84,9 @@ pub enum ConfigError {
     /// Ошибка в секции подсказок производительности (ADPF).
     #[error(transparent)]
     Adpf(#[from] AdpfConfigError),
+    /// Ошибка в секции UI-прохода поверх видоискателя.
+    #[error(transparent)]
+    UiOverlay(#[from] UiOverlayConfigError),
 }
 
 /// Наименьшая допустимая `preferred_frame_rate_hz`, Гц. Реальные режимы экрана — 24..=240.
@@ -177,6 +182,9 @@ pub struct RenderLoopConfig {
     pub viewfinder: ViewfinderConfig,
     /// Подсказки производительности системе (ADPF, P13 сессии 07). По умолчанию выключены.
     pub adpf: AdpfConfig,
+    /// UI и стекло поверх видоискателя (сессия 11): пределы кадра и пирамида размытия. Сам проход
+    /// выключен, пока не установлен источник кадра UI (`RenderInbox::ui_overlay_command`).
+    pub ui_overlay: UiOverlayConfig,
 }
 
 impl Default for RenderLoopConfig {
@@ -201,6 +209,7 @@ impl Default for RenderLoopConfig {
             display_color: DisplayColorConfig::default(),
             viewfinder: ViewfinderConfig::default(),
             adpf: AdpfConfig::default(),
+            ui_overlay: UiOverlayConfig::default(),
         }
     }
 }
@@ -260,6 +269,7 @@ impl RenderLoopConfig {
         self.present_target.validate()?;
         self.viewfinder.validate()?;
         self.adpf.validate()?;
+        self.ui_overlay.validate()?;
         Ok(())
     }
 

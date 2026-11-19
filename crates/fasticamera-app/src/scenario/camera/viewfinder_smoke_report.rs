@@ -423,4 +423,4 @@ impl ViewfinderSmokeObservation {
 
 #[cfg(test)]
 #[path = "viewfinder_smoke_report_tests.rs"]
-mod tests;
+pub(super) mod tests;

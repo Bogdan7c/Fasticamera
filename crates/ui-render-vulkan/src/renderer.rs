@@ -1,0 +1,516 @@
+//! [`UiRenderer`]: записывает проход UI (фигуры, текст, иконки, стекло) поверх уже нарисованного кадра.
+//!
+//! # Владение
+//! Рендер владеет конвейерами, атласом SDF, буферами экземпляров по слотам кадра и пирамидой размытия
+//! (одной на все слоты: её содержимое зависит только от фона, а чтение прошлых кадров защищено барьером
+//! «чтение → запись» ступеней). Цель, командный буфер, fence и подложку держит вызывающий.
+//!
+//! # Порядок `record_frame`
+//! 1. Все проверки и упаковка — ДО команд (ошибка не оставляет следов в цели и пирамиде).
+//! 2. Если есть стекло: ступени под логический размер; при смене ключа фона — барьер чтения фона и перестройка.
+//! 3. Загрузка буферов слота и запись привязок (повтор тех же ресурсов — пустая операция).
+//! 4. `record_between_color_passes`, затем один проход `Preserve`: пакеты по порядку списка.
+
+use ash::vk;
+use gpu_vulkan::color_target::ColorTargetPreviousUse;
+use gpu_vulkan::compute::{BindingWrite, DescriptorResource};
+use gpu_vulkan::context::GpuContext;
+use gpu_vulkan::error::GpuError;
+use gpu_vulkan::raster::{AttachmentLoad, ColorAttachment, DrawCall, RasterPass, record_between_color_passes};
+use gpu_vulkan::sampled_texture::{SampledTexture, TextureDesc, TextureFormat};
+use ui_draw::atlas::sdf_atlas;
+use ui_draw::geometry::PxSize;
+
+use crate::config::{MAX_PYRAMID_LEVELS, UiRendererConfig};
+use crate::counters::UiRenderCounters;
+use crate::error::UiRenderError;
+use crate::frame::{BackdropInput, FrameMarker, PyramidOutcome, UiFrame, UiFrameReport};
+use crate::pack::FramePush;
+use crate::pipelines::{GLASS_FIRST_PYRAMID_BINDING, UiPipelines};
+use crate::plan::{Batch, BatchKind, FramePlan, build_plan};
+use crate::pyramid::{Pyramid, PyramidKey, RebuildSource};
+use crate::slots::SlotBuffers;
+
+/// Пирамида и то, что известно о её содержимом.
+struct LivePyramid {
+    pyramid: Pyramid,
+    /// Ключ содержимого; `None` — содержимого нет (только создана или кадр упал на полпути).
+    key: Option<PyramidKey>,
+    /// Рисовали ли в ступени хоть раз (определяет раскладку «до» при следующей подготовке).
+    rendered_once: bool,
+}
+
+/// Прежний набор ступеней, который ещё могут читать кадры в полёте: живёт, пока их слоты не освобождены.
+struct RetiredPyramid {
+    _pyramid: Pyramid,
+    waiting_slots: Vec<usize>,
+}
+
+/// Рендер UI.
+pub struct UiRenderer {
+    context: GpuContext,
+    config: UiRendererConfig,
+    pipelines: UiPipelines,
+    /// Атлас SDF: живёт, пока живы наборы дескрипторов, ссылающиеся на него.
+    _atlas: SampledTexture,
+    slot_buffers: Vec<SlotBuffers>,
+    slot_in_flight: Vec<bool>,
+    pyramid: Option<LivePyramid>,
+    retired: Vec<RetiredPyramid>,
+    counters: UiRenderCounters,
+}
+
+impl std::fmt::Debug for UiRenderer {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "UiRenderer({} слотов, {:?})",
+            self.config.frame_slots, self.counters
+        )
+    }
+}
+
+impl UiRenderer {
+    /// Создаёт рендер: проверяет настройки, строит конвейеры, загружает атлас (блокирующая разовая отправка —
+    /// путь инициализации, не кадра) и привязывает буферы слотов.
+    pub fn new(context: &GpuContext, config: &UiRendererConfig) -> Result<Self, UiRenderError> {
+        config.validate()?;
+        let mut pipelines = UiPipelines::new(context, config)?;
+        let atlas_data = sdf_atlas();
+        let atlas = SampledTexture::upload(
+            context,
+            &TextureDesc {
+                extent: vk::Extent2D {
+                    width: atlas_data.width,
+                    height: atlas_data.height,
+                },
+                format: TextureFormat::R8Unorm,
+                label: "ui-sdf-atlas",
+            },
+            atlas_data.texels,
+        )?;
+        let mut slot_buffers = Vec::with_capacity(config.frame_slots);
+        for slot in 0..config.frame_slots {
+            let buffers = SlotBuffers::new(context, &config.limits)?;
+            // Буферы слота постоянны: привязываем один раз, дальше повторная запись тех же ресурсов — пустая операция.
+            pipelines.shape.bind(
+                slot,
+                &[BindingWrite {
+                    binding: 0,
+                    resource: buffers.shapes.binding(),
+                }],
+            )?;
+            pipelines.glyph.bind(
+                slot,
+                &[
+                    BindingWrite {
+                        binding: 0,
+                        resource: buffers.glyphs.binding(),
+                    },
+                    BindingWrite {
+                        binding: 1,
+                        resource: atlas.read_only_binding(),
+                    },
+                ],
+            )?;
+            slot_buffers.push(buffers);
+        }
+        Ok(Self {
+            context: context.clone(),
+            config: *config,
+            pipelines,
+            _atlas: atlas,
+            slot_buffers,
+            slot_in_flight: vec![false; config.frame_slots],
+            pyramid: None,
+            retired: Vec::new(),
+            counters: UiRenderCounters::default(),
+        })
+    }
+
+    /// Счётчики диагностики.
+    pub fn counters(&self) -> UiRenderCounters {
+        self.counters
+    }
+
+    /// Настройки, с которыми создан рендер.
+    pub fn config(&self) -> &UiRendererConfig {
+        &self.config
+    }
+
+    /// Вызывающий подтверждает: fence сабмита, в который записан кадр слота, сигнален — буферы и наборы слота
+    /// снова можно переписывать. Слот вне диапазона — `SlotOutOfRange`.
+    pub fn release_slot_after_fence(&mut self, slot: usize) -> Result<(), UiRenderError> {
+        self.check_slot_range(slot)?;
+        let level_stages = self.pipelines.level_stages;
+        self.pipelines.shape.release_slot_after_fence(slot)?;
+        self.pipelines.glyph.release_slot_after_fence(slot)?;
+        self.pipelines.glass.release_slot_after_fence(slot)?;
+        self.pipelines.blur_from_backdrop.release_slot_after_fence(slot)?;
+        for stage in 0..level_stages {
+            self.pipelines
+                .blur_from_level
+                .release_slot_after_fence(slot * level_stages + stage)?;
+        }
+        self.slot_in_flight[slot] = false;
+        // Прежние ступени больше не нужны, когда освобождены все слоты, что были в полёте при их выводе из работы.
+        for retired in &mut self.retired {
+            retired.waiting_slots.retain(|waiting| *waiting != slot);
+        }
+        self.retired.retain(|retired| !retired.waiting_slots.is_empty());
+        Ok(())
+    }
+
+    /// Записывает кадр в `command_buffer`: пирамида (если нужна), барьер и проход UI в `target`.
+    /// Эквивалент [`Self::record_frame_marked`] без меток.
+    pub fn record_frame(
+        &mut self,
+        command_buffer: vk::CommandBuffer,
+        slot: usize,
+        target: ColorAttachment,
+        frame: &UiFrame<'_>,
+    ) -> Result<UiFrameReport, UiRenderError> {
+        self.record_frame_marked(command_buffer, slot, target, frame, &mut |_, _| {})
+    }
+
+    /// То же с метками: `mark` вызывается в точках [`FrameMarker`] вне динамического рендеринга
+    /// (вызывающий пишет в них метки времени GPU).
+    ///
+    /// Вызывается ПОСЛЕ того, как предыдущий проход (композитор) закрыл рендеринг в `target`. Ошибки до записи
+    /// команд (все, кроме `Gpu`) безопасны: буфер и цель не тронуты. После `Gpu` буфер годится только на выброс.
+    pub fn record_frame_marked(
+        &mut self,
+        command_buffer: vk::CommandBuffer,
+        slot: usize,
+        target: ColorAttachment,
+        frame: &UiFrame<'_>,
+        mark: &mut dyn FnMut(FrameMarker, vk::CommandBuffer),
+    ) -> Result<UiFrameReport, UiRenderError> {
+        match self.record_frame_inner(command_buffer, slot, target, frame, mark) {
+            Ok(report) => {
+                self.slot_in_flight[slot] = true;
+                self.counters.frames_recorded += 1;
+                self.counters.draw_calls += u64::from(report.draw_calls);
+                self.counters.shape_instances += u64::from(report.shape_instances);
+                self.counters.glyph_instances += u64::from(report.glyph_instances);
+                self.counters.glass_groups += u64::from(report.glass_groups);
+                match report.pyramid {
+                    PyramidOutcome::Rebuilt => self.counters.pyramid_rebuilds += 1,
+                    PyramidOutcome::Reused => self.counters.pyramid_reuses += 1,
+                    PyramidOutcome::NotNeeded => {}
+                }
+                Ok(report)
+            }
+            Err(error) => {
+                self.counters.frames_failed += 1;
+                if matches!(error, UiRenderError::LimitExceeded { .. }) {
+                    self.counters.limit_overflows += 1;
+                }
+                if matches!(error, UiRenderError::Gpu(_)) {
+                    // Ошибка GPU случается ПОСЛЕ начала записи команд, а вызывающий может отправить
+                    // частично записанный буфер. Поэтому:
+                    // * содержимому и раскладке ступеней пирамиды верить нельзя — следующая перестройка
+                    //   начинается с «не использовалась» (переход из UNDEFINED допустим из любой
+                    //   раскладки, содержимое всё равно пересчитывается);
+                    // * слот мог попасть в отправленный буфер (привязки, буферы экземпляров) — он
+                    //   «в полёте», пока владелец не подтвердит fence (`release_slot_after_fence`).
+                    if let Some(live) = self.pyramid.as_mut() {
+                        live.key = None;
+                        live.rendered_once = false;
+                    }
+                    self.slot_in_flight[slot] = true;
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn check_slot_range(&self, slot: usize) -> Result<(), UiRenderError> {
+        if slot < self.config.frame_slots {
+            Ok(())
+        } else {
+            Err(UiRenderError::SlotOutOfRange {
+                slot,
+                slots: self.config.frame_slots,
+            })
+        }
+    }
+
+    /// Все проверки входа; возвращает логический размер в целых px.
+    fn check_frame(
+        &self,
+        slot: usize,
+        target: &ColorAttachment,
+        frame: &UiFrame<'_>,
+    ) -> Result<(u32, u32), UiRenderError> {
+        self.check_slot_range(slot)?;
+        if self.slot_in_flight[slot] {
+            return Err(UiRenderError::SlotInFlight { slot });
+        }
+        if target.format() != self.config.target_format {
+            return Err(UiRenderError::TargetFormatMismatch {
+                expected: self.config.target_format,
+                actual: target.format(),
+            });
+        }
+        let PxSize { width, height } = frame.logical_size;
+        if !(width.is_finite() && height.is_finite() && width >= 1.0 && height >= 1.0) {
+            return Err(UiRenderError::InvalidLogicalSize { width, height });
+        }
+        let logical = (width.round() as u32, height.round() as u32);
+        frame
+            .surface_transform
+            .quarter_turns()
+            .map_err(UiRenderError::UnsupportedSurfaceTransform)?;
+        let expected = if frame.surface_transform.swaps_extent() {
+            vk::Extent2D {
+                width: logical.1,
+                height: logical.0,
+            }
+        } else {
+            vk::Extent2D {
+                width: logical.0,
+                height: logical.1,
+            }
+        };
+        if target.extent() != expected {
+            return Err(UiRenderError::TargetSizeMismatch {
+                expected,
+                actual: target.extent(),
+            });
+        }
+        Ok(logical)
+    }
+
+    fn record_frame_inner(
+        &mut self,
+        command_buffer: vk::CommandBuffer,
+        slot: usize,
+        target: ColorAttachment,
+        frame: &UiFrame<'_>,
+        mark: &mut dyn FnMut(FrameMarker, vk::CommandBuffer),
+    ) -> Result<UiFrameReport, UiRenderError> {
+        let logical = self.check_frame(slot, &target, frame)?;
+        let plan = build_plan(frame.draw_list, &self.config.limits)?;
+        let quarter_turns = frame
+            .surface_transform
+            .quarter_turns()
+            .map_err(UiRenderError::UnsupportedSurfaceTransform)?;
+
+        mark(FrameMarker::Start, command_buffer);
+        let outcome = if plan.has_glass() {
+            self.ensure_pyramid_current(command_buffer, slot, logical, frame)?
+        } else {
+            PyramidOutcome::NotNeeded
+        };
+        self.upload_and_bind_slot(slot, &plan, frame)?;
+        mark(FrameMarker::PyramidDone, command_buffer);
+
+        let draw_calls = if plan.batches.is_empty() {
+            0
+        } else {
+            record_between_color_passes(&self.context, command_buffer);
+            let mut pass = RasterPass::begin(&self.context, command_buffer, target, AttachmentLoad::Preserve)?;
+            let mut calls = 0_u32;
+            for batch in &plan.batches {
+                self.draw_batch(&mut pass, slot, batch, quarter_turns, &target, frame)?;
+                calls += 1;
+            }
+            pass.end();
+            calls
+        };
+        mark(FrameMarker::UiPassDone, command_buffer);
+        Ok(UiFrameReport {
+            pyramid: outcome,
+            draw_calls,
+            shape_instances: plan.shape_count,
+            glyph_instances: plan.glyph_count,
+            glass_groups: plan.group_count,
+        })
+    }
+
+    /// Ступени нужного размера и содержимого: создаёт/пересоздаёт, перестраивает при смене ключа.
+    fn ensure_pyramid_current(
+        &mut self,
+        command_buffer: vk::CommandBuffer,
+        slot: usize,
+        logical: (u32, u32),
+        frame: &UiFrame<'_>,
+    ) -> Result<PyramidOutcome, UiRenderError> {
+        let size_changed = self.pyramid.as_ref().is_none_or(|live| live.pyramid.logical != logical);
+        if size_changed {
+            let created = Pyramid::new(&self.context, logical, &self.config.pyramid)?;
+            if let Some(old) = self.pyramid.take() {
+                // Кадры в полёте ещё могут читать прежние ступени: держим их, пока эти слоты не освободятся.
+                let waiting_slots: Vec<usize> = (0..self.config.frame_slots)
+                    .filter(|index| self.slot_in_flight[*index])
+                    .collect();
+                if !waiting_slots.is_empty() {
+                    self.retired.push(RetiredPyramid {
+                        _pyramid: old.pyramid,
+                        waiting_slots,
+                    });
+                }
+                self.counters.pyramid_recreations += 1;
+            }
+            self.pyramid = Some(LivePyramid {
+                pyramid: created,
+                key: None,
+                rendered_once: false,
+            });
+        }
+        let (key, source) = match frame.backdrop {
+            BackdropInput::Live { source, placement } => (
+                PyramidKey::live(source, &placement.destination),
+                RebuildSource::Live {
+                    source,
+                    destination: placement.destination,
+                },
+            ),
+            BackdropInput::Absent { fill } => (PyramidKey::absent(fill), RebuildSource::Absent { fill }),
+        };
+        let Some(live) = self.pyramid.as_mut() else {
+            return Err(UiRenderError::Gpu(GpuError::InvalidState {
+                what: "пирамида не создана".to_owned(),
+            }));
+        };
+        if live.key == Some(key) {
+            return Ok(PyramidOutcome::Reused);
+        }
+        let previous_use = if live.rendered_once {
+            ColorTargetPreviousUse::SampledRead(
+                gpu_vulkan::hardware_buffer_cache::queue_handoff::ConsumerStage::Fragment,
+            )
+        } else {
+            ColorTargetPreviousUse::NotUsedYet
+        };
+        live.pyramid.record_rebuild(
+            &self.context,
+            command_buffer,
+            &mut self.pipelines,
+            slot,
+            source,
+            previous_use,
+        )?;
+        live.rendered_once = true;
+        live.key = Some(key);
+        Ok(PyramidOutcome::Rebuilt)
+    }
+
+    /// Загружает экземпляры в буферы слота и (для стекла) записывает привязки фона и уровней.
+    fn upload_and_bind_slot(
+        &mut self,
+        slot: usize,
+        plan: &FramePlan,
+        frame: &UiFrame<'_>,
+    ) -> Result<(), UiRenderError> {
+        let buffers = &mut self.slot_buffers[slot];
+        for (buffer, bytes) in [
+            (&mut buffers.shapes, &plan.shape_bytes),
+            (&mut buffers.glyphs, &plan.glyph_bytes),
+            (&mut buffers.groups, &plan.group_bytes),
+            (&mut buffers.members, &plan.member_bytes),
+        ] {
+            if !bytes.is_empty() {
+                buffer.write_bytes(0, bytes)?;
+            }
+        }
+        if !plan.has_glass() {
+            return Ok(());
+        }
+        let Some(live) = self.pyramid.as_ref() else {
+            return Err(UiRenderError::Gpu(GpuError::InvalidState {
+                what: "пирамида не создана".to_owned(),
+            }));
+        };
+        let backdrop_resource = match frame.backdrop {
+            BackdropInput::Live { source, .. } => DescriptorResource::ReadOnlyImage {
+                view: source.view().view,
+            },
+            // Absent: фон не читается (флаг в push-константах), но привязка обязана быть валидной.
+            BackdropInput::Absent { .. } => live.pyramid.level_binding(1),
+        };
+        let buffers = &self.slot_buffers[slot];
+        let mut writes = vec![
+            BindingWrite {
+                binding: 0,
+                resource: buffers.groups.binding(),
+            },
+            BindingWrite {
+                binding: 1,
+                resource: buffers.members.binding(),
+            },
+            BindingWrite {
+                binding: 2,
+                resource: backdrop_resource,
+            },
+        ];
+        for level in 1..=MAX_PYRAMID_LEVELS {
+            writes.push(BindingWrite {
+                binding: GLASS_FIRST_PYRAMID_BINDING + level - 1,
+                resource: live.pyramid.level_binding(level as usize),
+            });
+        }
+        self.pipelines.glass.bind(slot, &writes)?;
+        Ok(())
+    }
+
+    fn frame_push(
+        &self,
+        quarter_turns: u32,
+        target: &ColorAttachment,
+        frame: &UiFrame<'_>,
+        first_instance: u32,
+    ) -> FramePush {
+        let (placement, live, fill) = match frame.backdrop {
+            BackdropInput::Live { placement, .. } => {
+                let d = placement.destination;
+                ([d.origin.x, d.origin.y, d.size.width, d.size.height], true, [0.0; 4])
+            }
+            BackdropInput::Absent { fill } => ([0.0; 4], false, [fill.r, fill.g, fill.b, fill.a]),
+        };
+        let light = frame.draw_list.light.as_vector();
+        FramePush {
+            logical_size: [frame.logical_size.width, frame.logical_size.height],
+            physical_size: [target.extent().width as f32, target.extent().height as f32],
+            placement,
+            light: [light.dx, light.dy],
+            pyramid_levels: self.config.pyramid.levels,
+            backdrop_live: live,
+            absent_fill: fill,
+            atlas_spread_texels: sdf_atlas().spread_texels,
+            quarter_turns,
+            first_instance,
+        }
+    }
+
+    fn draw_batch(
+        &self,
+        pass: &mut RasterPass<'_>,
+        slot: usize,
+        batch: &Batch,
+        quarter_turns: u32,
+        target: &ColorAttachment,
+        frame: &UiFrame<'_>,
+    ) -> Result<(), UiRenderError> {
+        let pipeline = match batch.kind {
+            BatchKind::Shape => &self.pipelines.shape,
+            BatchKind::Glyph => &self.pipelines.glyph,
+            BatchKind::Glass => &self.pipelines.glass,
+        };
+        let push = self
+            .frame_push(quarter_turns, target, frame, batch.first_instance)
+            .to_bytes();
+        pass.draw(
+            pipeline,
+            slot,
+            &push,
+            DrawCall {
+                vertices_per_instance: 6,
+                instance_count: batch.instance_count,
+                scissor: None,
+            },
+        )?;
+        Ok(())
+    }
+}

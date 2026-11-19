@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use shell_contract::event_queue::ShellQueueConfig;
 use shell_contract::motion::{GyroRequest, SensorRate};
 
+use crate::gravity_source::{GravityConfig, GravityConfigError, GravitySettings};
 use crate::orientation_classifier::{OrientationClassifierConfig, OrientationConfigError};
 
 /// Минимальный период опроса запаса тепла: Android отвечает NaN, если спрашивать чаще раза
@@ -39,6 +40,8 @@ pub struct ShellConfig {
     pub accelerometer_rate_hz: u32,
     /// Пороги классификатора ориентации.
     pub orientation: OrientationClassifierConfig,
+    /// Гравитация для блика стекла: частота и фильтр отката на акселерометр.
+    pub gravity: GravityConfig,
 }
 
 impl Default for ShellConfig {
@@ -52,6 +55,7 @@ impl Default for ShellConfig {
             gyro_retained_ms: 5000,
             accelerometer_rate_hz: 50,
             orientation: OrientationClassifierConfig::default(),
+            gravity: GravityConfig::default(),
         }
     }
 }
@@ -65,6 +69,8 @@ pub enum ShellConfigError {
     ThermalPollTooFrequent(u64),
     #[error("ориентация: {0}")]
     Orientation(#[from] OrientationConfigError),
+    #[error("гравитация: {0}")]
+    Gravity(#[from] GravityConfigError),
 }
 
 /// Проверенные настройки в виде, удобном коду оболочки.
@@ -77,6 +83,7 @@ pub struct ValidatedShellConfig {
     pub default_gyro_request: GyroRequest,
     pub accelerometer_rate: SensorRate,
     pub orientation: OrientationClassifierConfig,
+    pub gravity: GravitySettings,
 }
 
 impl ShellConfig {
@@ -112,6 +119,7 @@ impl ShellConfig {
             },
             accelerometer_rate: SensorRate::new(nonzero_rate(self.accelerometer_rate_hz, "accelerometer_rate_hz")?),
             orientation: self.orientation.validate()?,
+            gravity: self.gravity.validate()?,
         })
     }
 }

@@ -34,6 +34,10 @@ pub enum HostBufferUsage {
     /// Storage-буфер чтения-записи (`STORAGE_BUFFER`), обнуляемый командой ([`HostBuffer::record_clear_for_compute`])
     /// и пригодный как приёмник копирования (`TRANSFER_DST`, readback).
     ReadWriteStorage,
+    /// Storage-буфер «CPU пишет, шейдер только читает» (`STORAGE_BUFFER | TRANSFER_SRC`): данные экземпляров
+    /// растрового прохода (`raster`) в вершинном шейдере, а также staging-источник копирования в картинку
+    /// (`SampledTexture`). Привязывается как [`BindingKind::ReadOnlyStorageBuffer`](crate::compute::BindingKind).
+    ReadOnlyStorage,
 }
 
 impl HostBufferUsage {
@@ -41,6 +45,7 @@ impl HostBufferUsage {
         match self {
             Self::UniformParameters => vk::BufferUsageFlags::UNIFORM_BUFFER,
             Self::ReadWriteStorage => vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+            Self::ReadOnlyStorage => vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_SRC,
         }
     }
 }
@@ -160,7 +165,7 @@ impl HostBuffer {
         Ok(bytes)
     }
 
-    /// Ресурс для привязки: uniform-буфер или storage чтения-записи (весь буфер).
+    /// Ресурс для привязки: uniform-буфер, storage чтения-записи или storage только чтения (весь буфер).
     pub fn binding(&self) -> DescriptorResource {
         match self.usage {
             HostBufferUsage::UniformParameters => DescriptorResource::UniformBuffer {
@@ -168,6 +173,10 @@ impl HostBuffer {
                 range_bytes: self.size_bytes,
             },
             HostBufferUsage::ReadWriteStorage => DescriptorResource::ReadWriteBuffer {
+                buffer: self.buffer.handle(),
+                range_bytes: self.size_bytes,
+            },
+            HostBufferUsage::ReadOnlyStorage => DescriptorResource::ReadOnlyBuffer {
                 buffer: self.buffer.handle(),
                 range_bytes: self.size_bytes,
             },
@@ -237,8 +246,7 @@ impl HostBuffer {
         }
     }
 
-    /// Сам `VkBuffer` (для копирования внутри crate: readback storage-картинки).
-    #[cfg(any(test, feature = "test-support"))]
+    /// Сам `VkBuffer` (для копирования внутри crate: readback картинок, загрузка `SampledTexture`).
     pub(crate) fn buffer_handle(&self) -> vk::Buffer {
         self.buffer.handle()
     }

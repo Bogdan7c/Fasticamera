@@ -28,6 +28,7 @@ use crate::config::RenderLoopConfig;
 use crate::mailbox::{InboxEvent, RenderInboxReceiver, StampedEvent};
 use crate::pacing::{PacingParams, PacingTracker};
 use crate::surface_state::{SurfaceAction, SurfacePhase, SurfaceStateMachine};
+use crate::ui_overlay::{UiOverlayCommand, UiOverlayOutcome};
 use crate::viewfinder::{ViewfinderCommand, ViewfinderCommandOutcome};
 
 mod frame_accounting;
@@ -261,6 +262,10 @@ impl<B: DisplayBackend, C: FrameClock> RenderWorker<B, C> {
                 self.apply_adpf_command(command);
                 Vec::new()
             }
+            InboxEvent::UiOverlay(command) => {
+                self.apply_ui_overlay_command(command);
+                Vec::new()
+            }
         };
         self.execute_actions(actions, &mut context);
         // Новая surface принята машиной (её не отвергли): ждёт размера.
@@ -280,6 +285,18 @@ impl<B: DisplayBackend, C: FrameClock> RenderWorker<B, C> {
             .guarded(|backend| backend.apply_viewfinder_command(command))
             .unwrap_or(ViewfinderCommandOutcome::Unsupported);
         self.status.viewfinder_commands.note(command, outcome);
+    }
+
+    /// Команда UI-проходу: бэкенд применяет её между кадрами; итог — в диагностике UI
+    /// (`ViewfinderDiagnostics::ui_overlay`). `Unsupported` (бэкенда с видоискателем нет или он неисправен)
+    /// не молчит: предупреждение в журнал, источник уничтожен.
+    fn apply_ui_overlay_command(&mut self, command: UiOverlayCommand) {
+        let outcome = self
+            .guarded(|backend| backend.apply_ui_overlay_command(command))
+            .unwrap_or(UiOverlayOutcome::Unsupported);
+        if outcome == UiOverlayOutcome::Unsupported {
+            tracing::warn!(target: LOG_TARGET, "команда UI-проходу не поддержана: видоискателя камеры нет");
+        }
     }
 
     fn execute_actions(&mut self, actions: Vec<SurfaceAction>, context: &mut ActionContext) {

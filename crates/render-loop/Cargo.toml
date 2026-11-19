@@ -23,6 +23,11 @@ libc.workspace = true
 scene-estimation.workspace = true
 raw-frame-stream.workspace = true
 shell-contract.workspace = true
+# Рисование UI и стекла поверх живого видоискателя (сессия 11): источник кадра UI (`UiFrameSource`),
+# GPU-рендер (`UiRenderer`) и правило масштаба pt (`PointScaleRule`, решение 82) — чтобы `px_per_pt` не был константой в коде.
+ui-core.workspace = true
+ui-draw.workspace = true
+ui-render-vulkan.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -31,7 +36,8 @@ tracing.workspace = true
 # Швы отказов бэкенда для тестов (пробрасывается в gpu-vulkan). В боевые сборки НЕ включается.
 fault-injection = ["gpu-vulkan/fault-injection"]
 # Тестовые швы чтения (readback изображения видоискателя в функциональных тестах). В боевые сборки НЕ включается.
-test-support = ["gpu-vulkan/test-support"]
+# (пробрасывается и в ui-render-vulkan: без неё его тестовый шейдер в сборке остаётся неиспользованной константой).
+test-support = ["gpu-vulkan/test-support", "ui-render-vulkan/test-support"]
 
 [dev-dependencies]
 camera-contract = { workspace = true, features = ["fixtures"] }

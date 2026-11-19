@@ -58,6 +58,8 @@ mod raw_stream;
 mod render;
 #[path = "event_router_three_a_tests.rs"]
 mod three_a;
+#[path = "event_router_ui_overlay_tests.rs"]
+mod ui_overlay;
 #[path = "event_router_viewfinder_tests.rs"]
 mod viewfinder;
 
@@ -73,6 +75,8 @@ struct FakeShell {
     prompts: Arc<crate::operator_prompt_fake::FakePrompts>,
     counters: Mutex<ShellCounters>,
     gyro_samples: Mutex<Vec<GyroSample>>,
+    /// Ящик гравитации: тест кладёт показания, подписка `start_gravity` отдаёт именно его.
+    gravity: Arc<shell_contract::gravity::GravitySlot>,
     /// Подставная батарея; `None` — батареи нет (честный отказ замера тока).
     battery: Mutex<Option<Arc<shell_contract::power::fake::FakePowerSource>>>,
 }
@@ -115,6 +119,13 @@ impl MotionSource for FakeShell {
 
     fn start_orientation(&self) -> Result<OrientationSubscription, SensorSourceError> {
         Ok(OrientationSubscription::new(Arc::new(AtomicU64::new(25)), Box::new(())))
+    }
+
+    fn start_gravity(&self) -> Result<shell_contract::gravity::GravitySubscription, SensorSourceError> {
+        Ok(
+            shell_contract::gravity::GravitySubscription::new(Arc::clone(&self.gravity), Box::new(()))
+                .with_source(shell_contract::gravity::GravitySource::Injected),
+        )
     }
 }
 

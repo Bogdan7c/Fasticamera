@@ -6,6 +6,7 @@
 
 use ash::vk;
 
+use crate::color_target::{ColorTarget, ColorTargetPreviousUse};
 use crate::context::GpuContext;
 use crate::error::GpuError;
 use crate::host_buffer::HostBuffer;
@@ -30,6 +31,17 @@ pub fn read_storage_image_rgba(
     current_use: StorageImagePreviousUse,
 ) -> Result<Vec<[f32; 4]>, GpuError> {
     crate::storage_image::readback::read_storage_image_rgba(image, current_use)
+}
+
+/// Читает цветовую цель построчно сверху вниз в `[r, g, b, a]` (8/10 бит UNORM и fp16 раскодируются).
+///
+/// `current_use` — последнее использование цели; после чтения она остаётся в той же раскладке
+/// (readback не меняет состояние вызывающего). `NotUsedYet` — `InvalidState`.
+pub fn read_color_target_rgba(
+    target: &ColorTarget,
+    current_use: ColorTargetPreviousUse,
+) -> Result<Vec<[f32; 4]>, GpuError> {
+    crate::color_target::readback::read_color_target_rgba(target, current_use)
 }
 
 /// Читает весь host-буфер. Контракт тот же, что у `HostBuffer::read_bytes`: запись GPU завершена и

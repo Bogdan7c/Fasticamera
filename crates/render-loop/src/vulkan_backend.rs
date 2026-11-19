@@ -39,11 +39,14 @@ use crate::backend::{
     PastPresentation, PresentOutcome,
 };
 use crate::camera_diagnostics::CameraStreamDiagnostics;
+use crate::ui_overlay::{UiOverlayCommand, UiOverlayOutcome};
 use crate::viewfinder::{
     AutoExposureLinks, AwbStatisticsFeed, AwbStatisticsReader, ViewfinderCommand, ViewfinderCommandOutcome,
     ViewfinderDiagnostics, WhiteBalanceDiagnostics,
 };
-use camera::{AutoExposureParts, SceneWhiteMemory, ViewfinderSettings, ViewfinderStats, WhiteBalanceParts};
+use camera::{
+    AutoExposureParts, SceneWhiteMemory, UiOverlayState, ViewfinderSettings, ViewfinderStats, WhiteBalanceParts,
+};
 use camera_contract::three_a::{DirectiveSlot, WhiteBalanceDirective};
 use census::census_by_kind;
 use session::{AttachedDisplay, CameraAttach};
@@ -113,9 +116,25 @@ pub struct VulkanDisplayBackend {
     /// Ящики нашего AE (указания от движка, предложения движку). `None` — AE на потоке рендера выключен:
     /// подтяжка ISP равна 1, предложений нет (вендорский AE в композиции).
     auto_exposure: Option<AutoExposureLinks>,
+    /// Источник кадра UI и счётчики UI-прохода (сессия 11): переживают пересоздание surface. Рендер UI
+    /// (объекты GPU) живёт в пайплайнах цепочки показа и создаётся только при установленном источнике.
+    ui_overlay: UiOverlayState,
 }
 
 impl VulkanDisplayBackend {
+    /// Создать рендер UI сразу при установке источника — МЕЖДУ кадрами, а не в первом кадре с UI:
+    /// конвейеры и загрузка атласа (блокирующая) заняли бы время записи кадра и сорвали бы его vsync
+    /// (ревью сессии 11). Цели показа ещё нет (surface не прикреплён) — рендер создастся лениво в
+    /// первом кадре, как раньше; отказ здесь не фатален: запись кадра повторит попытку и учтёт ошибку.
+    fn prepare_ui_renderer_between_frames(&mut self) {
+        let Some(display) = self.attached.as_mut() else {
+            return;
+        };
+        if let Err(error) = display.prepare_ui_overlay() {
+            tracing::warn!(target: LOG_TARGET, %error, "рендер UI не создан при установке источника: повтор в кадре");
+        }
+    }
+
     /// Боевой конструктор для Android: профиль `AndroidDisplay` (swapchain, AHB, display timing).
     /// Ошибка — честный `GpuInitError` (нет Vulkan, расширения, слоя validation…).
     #[cfg(target_os = "android")]
@@ -197,6 +216,7 @@ impl VulkanDisplayBackend {
             }
         });
         let viewfinder_stats = Some(ViewfinderStats::new(config.viewfinder.gpu_time_window_frames));
+        let ui_overlay = UiOverlayState::new(config.viewfinder.gpu_time_window_frames);
         Ok(Self {
             context,
             config,
@@ -211,6 +231,7 @@ impl VulkanDisplayBackend {
             white_balance_directives: DirectiveSlot::new(),
             scene_white: SceneWhiteMemory::default(),
             auto_exposure: None,
+            ui_overlay,
         })
     }
 
@@ -242,7 +263,9 @@ impl VulkanDisplayBackend {
     /// Диагностика видоискателя (`None` — камеры нет): живой сессии, иначе накопленная бэкендом.
     fn viewfinder_diagnostics(&mut self) -> Option<ViewfinderDiagnostics> {
         self.camera_feed.as_ref()?;
-        if let Some(live) = self.attached.as_mut().and_then(AttachedDisplay::viewfinder_diagnostics) {
+        if let Some(mut live) = self.attached.as_mut().and_then(AttachedDisplay::viewfinder_diagnostics) {
+            // UI-проход принадлежит бэкенду, а не сессии: его счётчики дописываются здесь.
+            live.ui_overlay = self.ui_overlay.snapshot();
             return Some(live);
         }
         let settings = self.viewfinder_settings;
@@ -250,11 +273,13 @@ impl VulkanDisplayBackend {
             .viewfinder_stats
             .get_or_insert_with(|| ViewfinderStats::new(self.config.viewfinder.gpu_time_window_frames));
         // Сессии показа нет — объектов стенда V4 тоже нет (освобождены вместе с сессией).
-        Some(stats.snapshot(
+        let mut snapshot = stats.snapshot(
             &settings,
             camera::HeadroomLiveState::default(),
             WhiteBalanceDiagnostics::idle(self.config.viewfinder.white_balance.statistics_every_n_frames),
-        ))
+        );
+        snapshot.ui_overlay = self.ui_overlay.snapshot();
+        Some(snapshot)
     }
 
     /// Взводит одноразовый тестовый шов отказа в присоединённой цели (feature `fault-injection`):
@@ -328,7 +353,7 @@ impl DisplayBackend for VulkanDisplayBackend {
 
     fn render_and_present(&mut self, timing: FrameTiming) -> PresentOutcome {
         match self.attached.as_mut() {
-            Some(display) => display.render_and_present(timing),
+            Some(display) => display.render_and_present(timing, &mut self.ui_overlay),
             None => PresentOutcome::Failed(BackendError {
                 operation: "render_and_present".to_owned(),
                 reason: "surface не присоединена".to_owned(),
@@ -415,6 +440,20 @@ impl DisplayBackend for VulkanDisplayBackend {
             && let Some(display) = self.attached.as_mut()
         {
             display.apply_viewfinder_settings(self.viewfinder_settings);
+        }
+        outcome
+    }
+
+    fn apply_ui_overlay_command(&mut self, command: UiOverlayCommand) -> UiOverlayOutcome {
+        // UI рисуется только поверх видоискателя камеры (фон стекла — его изображение): без камеры команда
+        // не поддержана, а источник из `Install` уничтожается здесь же.
+        if self.camera_feed.is_none() {
+            return UiOverlayOutcome::Unsupported;
+        }
+        let installs_source = matches!(command, UiOverlayCommand::Install(_));
+        let outcome = self.ui_overlay.apply(command);
+        if installs_source && outcome == UiOverlayOutcome::Applied {
+            self.prepare_ui_renderer_between_frames();
         }
         outcome
     }

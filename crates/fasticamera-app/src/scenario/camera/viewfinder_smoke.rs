@@ -35,8 +35,8 @@ struct Measuring {
     next_progress: Instant,
 }
 
-/// Состояние прогона.
-struct SmokeRun {
+/// Состояние прогона. Общее с сценарием `glass` (он ведёт тот же замер видоискателя и добавляет своё).
+pub(super) struct SmokeRun {
     config: ViewfinderScenarioConfig,
     session: ViewfinderSession,
     measuring: Option<Measuring>,
@@ -58,13 +58,45 @@ impl ViewfinderSmokeScenario {
 }
 
 /// Что сделать после тика.
-enum RunStep {
+pub(super) enum RunStep {
     Continue,
     Finish(Option<RunFailure>),
 }
 
 impl SmokeRun {
-    fn tick(&mut self, context: &mut ScenarioContext<'_>, running: &RunningCamera) -> RunStep {
+    /// Заявляет камеру, отправляет команды запуска и готовит замер (стадия `started` — за вызывающим).
+    /// Ошибка — готовый текст провала сценария.
+    pub(super) fn begin(
+        context: &ScenarioContext<'_>,
+        running: &RunningCamera,
+        config: ViewfinderScenarioConfig,
+    ) -> Result<Self, String> {
+        let step = config
+            .product_step()
+            .map_err(|error| format!("camera.scenarios.viewfinder: {error}"))?;
+        let session = ViewfinderSession::start(context, running, &step, SessionTiming::of(&config))
+            .map_err(|failure| failure.describe())?;
+        Ok(Self {
+            latency: LatencySampler::new(config.latency_samples_limit, config.latency_plausible_max_ms),
+            thermal_start: ThermalSnapshot::read(context.services.thermal.as_ref()),
+            config,
+            session,
+            measuring: None,
+            last: None,
+        })
+    }
+
+    /// Идёт ли замер (видоискатель установился). Становится истиной на тике `BecameLive`, один раз навсегда.
+    pub(super) fn is_measuring(&self) -> bool {
+        self.measuring.is_some()
+    }
+
+    /// Последний снимок показа (`None` — рендер ещё не показывал камеру нашей сессии).
+    pub(super) fn last_presentation(&self) -> Option<&CameraPresentation> {
+        self.last.as_deref()
+    }
+
+    pub(super) fn tick(&mut self, context: &mut ScenarioContext<'_>, running: &RunningCamera) -> RunStep {
         let tick = self.session.tick(context, running);
         for stage in self.session.take_stages() {
             context.emit_stage(stage.stage, stage.fields);
@@ -125,7 +157,7 @@ impl SmokeRun {
         }
     }
 
-    fn into_observation(
+    pub(super) fn into_observation(
         self,
         context: &ScenarioContext<'_>,
         running: &RunningCamera,
@@ -197,13 +229,9 @@ impl ObservingScenario for ViewfinderSmokeScenario {
             Err(unavailable) => return ScenarioStep::Finished(failed(unavailable.to_string())),
         };
         let config = camera.scenarios().viewfinder.clone();
-        let step = match config.product_step() {
-            Ok(step) => step,
-            Err(error) => return ScenarioStep::Finished(failed(format!("camera.scenarios.viewfinder: {error}"))),
-        };
-        let session = match ViewfinderSession::start(context, running, &step, SessionTiming::of(&config)) {
-            Ok(session) => session,
-            Err(failure) => return ScenarioStep::Finished(failed(failure.describe())),
+        let run = match SmokeRun::begin(context, running, config.clone()) {
+            Ok(run) => run,
+            Err(reason) => return ScenarioStep::Finished(failed(reason)),
         };
         context.emit_stage(
             "started",
@@ -212,14 +240,7 @@ impl ObservingScenario for ViewfinderSmokeScenario {
                 ("isp_dispatch_budget_ms", config.smoke.isp_dispatch_budget_ms.into()),
             ]),
         );
-        self.run = Some(SmokeRun {
-            latency: LatencySampler::new(config.latency_samples_limit, config.latency_plausible_max_ms),
-            thermal_start: ThermalSnapshot::read(context.services.thermal.as_ref()),
-            config,
-            session,
-            measuring: None,
-            last: None,
-        });
+        self.run = Some(run);
         ScenarioStep::Continue
     }
 

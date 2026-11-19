@@ -1,0 +1,36 @@
+[package]
+name = "ui-draw"
+description = "Что рисовать на экране камеры, без GPU: словарь рисования (фигуры, стекло, текст, иконки), параметры стекла GlassStyle, вёрстка подписей по запечённым метрикам Inter, SDF-атлас, CPU-эталон формул стекла и непрерывного скругления (решения 86–88, сессия 11)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+# Атлас SDF и метрики шрифта/иконок строятся при сборке (решения 87, 88).
+build = "build.rs"
+
+[dependencies]
+# Геометрия в pt и обход дерева для моста «сцена → список рисования».
+ui-core.workspace = true
+# Нейтральный вектор гравитации (наклон телефона → направление блика) и часы.
+shell-contract.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[build-dependencies]
+harfrust.workspace = true
+skrifa.workspace = true
+kurbo.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+# Сверка нашей вёрстки строки с полной вёрсткой HarfBuzz на наборе подписей (решение 87).
+harfrust.workspace = true
+skrifa.workspace = true
+# Тест «повторное запекание даёт те же байты» подключает build_support целиком, включая разбор SVG иконок.
+kurbo.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

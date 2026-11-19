@@ -295,6 +295,17 @@ impl GpuDiagnostics for FakeGpuDiagnostics {
 #[derive(Default)]
 pub struct RecordingRenderControl {
     pub adjustments: Mutex<Vec<crate::viewfinder_control::RenderAdjustment>>,
+    /// Команды UI-проходу по порядку (источник — только по имени: он не `Clone`).
+    pub ui_overlay_commands: Mutex<Vec<RecordedUiOverlay>>,
+}
+
+/// Команда UI-проходу, как её записал [`RecordingRenderControl`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecordedUiOverlay {
+    /// Поставлен источник с этим именем.
+    Install(&'static str),
+    /// Источник снят.
+    Remove,
 }
 
 impl RecordingRenderControl {
@@ -306,6 +317,11 @@ impl RecordingRenderControl {
     pub fn recorded(&self) -> Vec<crate::viewfinder_control::RenderAdjustment> {
         self.adjustments.lock().expect("замок").clone()
     }
+
+    /// Все команды UI-проходу по порядку.
+    pub fn recorded_ui_overlay(&self) -> Vec<RecordedUiOverlay> {
+        self.ui_overlay_commands.lock().expect("замок").clone()
+    }
 }
 
 impl crate::viewfinder_control::RenderControl for RecordingRenderControl {
@@ -314,6 +330,18 @@ impl crate::viewfinder_control::RenderControl for RecordingRenderControl {
         adjustment: crate::viewfinder_control::RenderAdjustment,
     ) -> crate::viewfinder_control::ControlDelivery {
         self.adjustments.lock().expect("замок").push(adjustment);
+        crate::viewfinder_control::ControlDelivery::Delivered
+    }
+
+    fn ui_overlay(
+        &self,
+        command: render_loop::ui_overlay::UiOverlayCommand,
+    ) -> crate::viewfinder_control::ControlDelivery {
+        let recorded = match command {
+            render_loop::ui_overlay::UiOverlayCommand::Install(source) => RecordedUiOverlay::Install(source.name()),
+            render_loop::ui_overlay::UiOverlayCommand::Remove => RecordedUiOverlay::Remove,
+        };
+        self.ui_overlay_commands.lock().expect("замок").push(recorded);
         crate::viewfinder_control::ControlDelivery::Delivered
     }
 }

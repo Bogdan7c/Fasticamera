@@ -4,6 +4,7 @@
 //! (та же, что у `SENSOR_TIMESTAMP` камеры, V2). Будущая стабилизация и совмещение серии
 //! кадров берут из него выборку за интервал экспозиции ([`MotionRing::samples_between`]).
 //! Ориентация приходит событиями `ShellEvent::DeviceOrientation` только при смене.
+//! Гравитация (наклон для блика) — отдельная подписка, см. [`crate::gravity`].
 
 use std::collections::VecDeque;
 use std::num::{NonZeroU32, NonZeroUsize};
@@ -14,6 +15,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::clock::BoottimeNanos;
+use crate::gravity::GravitySubscription;
 
 /// Угловая скорость в радианах в секунду по осям устройства Android
 /// (x — вправо по экрану, y — вверх по экрану, z — из экрана к пользователю).
@@ -238,6 +240,10 @@ pub trait MotionSource: Send + Sync {
     fn start_gyro(&self, request: GyroRequest) -> Result<GyroSubscription, SensorSourceError>;
 
     fn start_orientation(&self) -> Result<OrientationSubscription, SensorSourceError>;
+
+    /// Подписка на вектор гравитации (наклон телефона) для блика стекла. Показания идут в
+    /// [`crate::gravity::GravitySlot`] подписки; датчик выключается вместе с ней.
+    fn start_gravity(&self) -> Result<GravitySubscription, SensorSourceError>;
 }
 
 #[cfg(test)]

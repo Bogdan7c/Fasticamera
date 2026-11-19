@@ -25,6 +25,12 @@
   - Зонд 00 для сверки с Java: `cd tools/device-probe && python3 pc/probe.py run control stream camera=0 size=4096x3072 format=0x25 ae_fps=30 frames=150` (flavor `control` = `dev.fasticamera.probe`).
 - Устройство выбирается по модели `CPH2447`; несколько — задать `ANDROID_SERIAL`.
 
+## UI-рендер и стекло (сессия 11)
+- Сценарий 11/11a: `scripts/device-smoke.sh [--variant release] --timeout 90 glass` (видоискатель + демо-стекло 30 с; скриншоты на стадии `glass_live`; бюджет p95 GPU UI = период × `camera.scenarios.glass.ui_gpu_budget_fraction`).
+- Golden: `cargo test -p ui-render-vulkan --test golden`; перегенерация `FASTICAMERA_UPDATE_GOLDEN=1 …`; PNG для глаз `FASTICAMERA_GOLDEN_PREVIEW_DIR=<вне репо> …` (README в `test-assets/ui-render-vulkan/golden/`).
+- Замер GPU на RADV: тест бенча в `crates/ui-render-vulkan/tests/` с `--nocapture` (пирамида и проход UI отдельно).
+- Запекание шрифта/иконок — автоматически в `build.rs` `ui-draw` (манифест `crates/ui-draw/assets/bake.json`, ≈ 1–2 с).
+
 ## Эталоны ISP (сессия 06, только ПК)
 - Venv вне системы: `uv venv ~/.cache/fasticamera/isp-reference-venv && uv pip install --python ~/.cache/fasticamera/isp-reference-venv/bin/python rawpy numpy scipy pillow colour-science colour-hdri colour-demosaicing`. Запуск скриптов — всегда `.../isp-reference-venv/bin/python -I`.
 - Фикстуры `test-assets/isp-model/` (README там): `tools/isp-reference/make_demosaic_fixtures.py`; реальные кропы — `make_real_crops.py --capture-dir ~/fasticamera-captures/c7-reference/captures/204802-f42af9 --stem 2_lamp --out-dir test-assets/isp-model [--full-frame-dir <вне репо>]` (детерминирован: побайтно тот же вывод).

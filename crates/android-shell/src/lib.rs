@@ -6,7 +6,7 @@
 //!
 //! Раскладка:
 //! * нейтральная часть (собирается и тестируется на ПК): [`config`], [`touch_decode`],
-//!   [`haptic_plan`], [`permission_answer`], [`orientation_classifier`], [`surface_registry`],
+//!   [`haptic_plan`], [`permission_answer`], [`orientation_classifier`], [`gravity_source`] (гравитация для блика: путь и фильтр), [`surface_registry`],
 //!   [`accounting`], [`thermal_codes`], [`command_codes`], [`vsync_timeline`],
 //!   [`battery_snapshot`] (разбор снимка батареи от Kotlin), [`power_pacing`] (сетка опроса);
 //! * только Android: модуль `android` — регистрация JNI-методов, safety-модули FFI
@@ -21,6 +21,7 @@ pub mod battery_snapshot;
 pub mod command_codes;
 pub mod config;
 pub mod detached_worker;
+pub mod gravity_source;
 pub mod haptic_plan;
 pub mod orientation_classifier;
 pub mod performance_hint_codes;

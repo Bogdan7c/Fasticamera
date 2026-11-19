@@ -13,6 +13,7 @@ use shell_contract::clock::MonotonicNanos;
 use crate::camera_diagnostics::CameraStreamDiagnostics;
 use crate::config::LateLatchMode;
 use crate::thread::{SleepUntil, SleepUntilOutcome, SystemMonotonicTimer, sleep_until};
+use crate::ui_overlay::{UiOverlayCommand, UiOverlayOutcome};
 use crate::viewfinder::{ViewfinderCommand, ViewfinderCommandOutcome, ViewfinderDiagnostics};
 use shell_contract::surface::{NativeSurface, SurfaceSize};
 
@@ -309,5 +310,13 @@ pub trait DisplayBackend: Send + 'static {
     fn apply_viewfinder_command(&mut self, command: ViewfinderCommand) -> ViewfinderCommandOutcome {
         let _ = command;
         ViewfinderCommandOutcome::Unsupported
+    }
+
+    /// Применяет команду UI-прохода (источник кадра UI поверх видоискателя; между кадрами). По умолчанию
+    /// бэкенд UI рисовать не умеет — `Unsupported` (тестовый паттерн, fake-бэкенды); источник из `Install`
+    /// при этом уничтожается.
+    fn apply_ui_overlay_command(&mut self, command: UiOverlayCommand) -> UiOverlayOutcome {
+        let _ = command;
+        UiOverlayOutcome::Unsupported
     }
 }

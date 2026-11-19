@@ -17,6 +17,7 @@ roles = ["platform_neutral", "android_platform", "gpu", "output", "composition_r
 "scene-estimation" = "platform_neutral"
 "ui-core" = "platform_neutral"
 "ui-kit" = "platform_neutral"
+"ui-draw" = "platform_neutral"
 "camera-screen" = "platform_neutral"
 "raw-frame-stream" = "platform_neutral"
 "camera-ndk-sys" = "android_platform"
@@ -87,6 +88,15 @@ forbid = [
   "render-loop",
 ]
 reason = "элементы ui-kit не знают о камере, GPU и Android (шкала не знает, что она «зум»), решение 84"
+
+[[rules]]
+id = "ui-draw-neutral"
+applies_to_crates = ["ui-draw"]
+forbid = [
+  "ui-kit", "camera-screen", "camera-contract", "camera-core", "raw-frame-stream", "isp-model",
+  "scene-estimation", "render-loop",
+]
+reason = "ui-draw — «что рисовать»: словарь, эталон формул стекла и вёрстка текста без GPU и без знаний о камере; пресеты стекла — в токенах ui-kit, который видит ui-draw, а не наоборот, решение 86"
 
 [[rules]]
 id = "ui-render-not-camera"

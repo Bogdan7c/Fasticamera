@@ -9,6 +9,7 @@ use gpu_vulkan::gpu_timing::TimestampCollect;
 
 use super::{CameraPipelines, CameraSession, LOG_TARGET, SlotFrame};
 use crate::backend::FrameGpuTiming;
+use crate::vulkan_backend::camera::ui_state::UiOverlayState;
 
 /// Сколько времён кадра на GPU держать до вычерпывания потоком. Поток забирает их каждый кадр
 /// (обычно 0–1 штука), так что 64 — заведомый запас; дальше — вытеснение со счётчиком.
@@ -16,7 +17,7 @@ const MAX_PENDING_GPU_TIMINGS: usize = 64;
 
 impl CameraSession {
     /// Итоги слота после его fence: время GPU и статистика AWB (публикуется с кадром, который её дал).
-    pub(super) fn collect_slot(&mut self, pipelines: &mut CameraPipelines, slot: usize) {
+    pub(super) fn collect_slot(&mut self, pipelines: &mut CameraPipelines, slot: usize, ui: &mut UiOverlayState) {
         let collected = pipelines.collect_slot(slot);
         self.bench.collect_slot(slot, self.viewfinder.headroom_mut());
         let slot_frame = self.slot_frames.get_mut(slot).and_then(Option::take);
@@ -43,10 +44,14 @@ impl CameraSession {
         if let Err(error) = collected.compositor {
             tracing::warn!(target: LOG_TARGET, %error, slot, "набор дескрипторов компоновщика не освобождён");
         }
+        if let Err(error) = collected.ui {
+            tracing::warn!(target: LOG_TARGET, %error, slot, "слот рендера UI не освобождён");
+        }
         let slot_frame_index = self.slot_frame_indices.get(slot).copied().flatten();
         match collected.frame {
             Ok(frame_time) => {
                 self.viewfinder.note_frame_time(&frame_time);
+                ui.note_frame_time(&frame_time);
                 if let (Some(frame_index), TimestampCollect::Ready(spans)) = (slot_frame_index, &frame_time) {
                     self.push_gpu_timing(FrameGpuTiming {
                         frame_index,

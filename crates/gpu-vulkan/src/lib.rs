@@ -14,8 +14,14 @@
 //! Публичный compute-набор (сессия 07, решение владельца): [`compute`], [`storage_image`],
 //! [`host_buffer`], [`device_buffer`], [`gpu_timing`], [`compositor`], [`backdrop`], [`frame_sink`] —
 //! чтобы `isp-vulkan` строил GPU-ISP на безопасных RAII-обёртках, не получая сырой `ash::Device`.
+//!
+//! Растровый набор (сессия 11, решение 52): [`raster`] (графический конвейер, проход рендеринга,
+//! смешивание), [`color_target`] (промежуточная цветовая цель: рисуем → читаем сэмплером),
+//! [`sampled_texture`] (неизменяемая текстура, например SDF-атлас) — чтобы `ui-render-vulkan` рисовал
+//! UI и стекло по тем же правилам, без сырого `ash::Device`.
 
 pub mod backdrop;
+pub mod color_target;
 pub mod compositor;
 pub mod compute;
 pub mod context;
@@ -31,7 +37,9 @@ pub mod instance;
 mod linear_sampler;
 pub mod live_objects;
 pub mod offscreen;
+pub mod raster;
 pub mod raw_mosaic_preview;
+pub mod sampled_texture;
 pub mod shaders;
 pub mod storage_image;
 pub mod swapchain;

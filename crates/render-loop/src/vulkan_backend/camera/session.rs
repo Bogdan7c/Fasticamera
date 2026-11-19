@@ -49,6 +49,7 @@ use super::pipelines::{CameraPipelines, IspPresentation};
 use super::settings::ViewfinderSettings;
 use super::statistics_schedule::StatisticsDecision;
 use super::submissions::SubmissionTracker;
+use super::ui_state::UiOverlayFrame;
 use super::viewfinder_stats::ViewfinderStats;
 use super::white_balance::{FramePlan, WhiteBalanceParts, WhiteBalanceRunner};
 use super::{CameraFrameImporter, CameraImportError, CameraImporterFactory, SubmissionSerial};
@@ -300,7 +301,8 @@ impl CameraSession {
 
     /// Рисует и показывает один кадр. `frame` уже выдан целью и будет показан в любом случае
     /// (при ошибке записи — через сброс неотрисованного кадра). `frame_index` — номер кадра потока
-    /// рендера: с ним позже выдаётся время кадра на GPU.
+    /// рендера: с ним позже выдаётся время кадра на GPU. `ui` — UI-проход кадра (источник, счётчики, время
+    /// показа): без установленного источника ничего не меняет.
     pub fn draw_and_present(
         &mut self,
         display: &mut DisplayTarget,
@@ -308,12 +310,13 @@ impl CameraSession {
         frame: DisplayFrame,
         request: PresentRequest,
         frame_index: u64,
+        ui: &mut UiOverlayFrame<'_>,
     ) -> Result<GpuPresentOutcome, CameraDrawError> {
         let slot = frame.ring_slot();
         // 1. Слот свободен: GPU закончил его прошлый сабмит и все до него.
         let completed = self.tracker.note_slot_acquired(slot);
         self.retire_completed_work(completed);
-        self.collect_slot(pipelines, slot);
+        self.collect_slot(pipelines, slot, ui.state);
         // Метки слота собраны: следующий сабмит в слот (если будет) назначит ему новый кадр.
         self.note_slot_frame_index(slot, None);
         let serial = self.tracker.next_serial();
@@ -333,7 +336,7 @@ impl CameraSession {
 
         // 3. Запись команд.
         let plan = OwnershipPlan::for_change(change, self.displayed_source.is_some());
-        let recorded = match self.record_content(pipelines, &frame, &content, plan) {
+        let recorded = match self.record_content(pipelines, &frame, &content, plan, serial, ui) {
             Ok(recorded) => recorded,
             Err(error) => {
                 // Мозаика и чёрный проверяют всё до записи команд: новый кадр GPU не касался.

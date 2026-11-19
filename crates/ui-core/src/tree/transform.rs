@@ -5,6 +5,7 @@
 //! вокруг центра): сначала масштаб, затем поворот, затем сдвиг — `p' = c + T + R·S·(p − c)`.
 //! Сдвиг `T` в pt системы родителя и от масштаба/поворота самого элемента не зависит.
 
+use super::node_transform::NodeTransform;
 use crate::geometry::{Point, Vector};
 
 /// Масштаб элемента по осям (1,0 — без изменений).
@@ -35,15 +36,24 @@ pub(super) struct CenteredTransform {
 }
 
 impl CenteredTransform {
-    /// Из локальной (до преобразования) точки в точку родительской системы.
-    pub fn apply(&self, point: Point) -> Point {
+    /// То же преобразование в виде аффинной матрицы: единственное место, где формула
+    /// `p' = c + T + R·S·(p − c)` раскрывается в числа (рисование и `visual_bounds` берут её отсюда).
+    pub fn to_affine(self) -> NodeTransform {
         let (sin, cos) = self.rotation_radians.sin_cos();
-        let scaled_x = (point.x - self.center.x) * self.scale.x;
-        let scaled_y = (point.y - self.center.y) * self.scale.y;
-        Point::new(
-            self.center.x + self.translation.dx + scaled_x * cos - scaled_y * sin,
-            self.center.y + self.translation.dy + scaled_x * sin + scaled_y * cos,
-        )
+        // Линейная часть R·S: столбцы — образы осей x и y.
+        let m_a = cos * self.scale.x;
+        let m_b = sin * self.scale.x;
+        let m_c = -sin * self.scale.y;
+        let m_d = cos * self.scale.y;
+        NodeTransform {
+            a: m_a,
+            b: m_b,
+            c: m_c,
+            d: m_d,
+            // c + T − M·c: сдвиг, который оставляет центр рамки на месте до применения T.
+            tx: self.center.x + self.translation.dx - m_a * self.center.x - m_c * self.center.y,
+            ty: self.center.y + self.translation.dy - m_b * self.center.x - m_d * self.center.y,
+        }
     }
 
     /// Из точки родительской системы в локальную. `None`, если масштаб вырожден (защита:

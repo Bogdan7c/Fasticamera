@@ -29,7 +29,8 @@ use shell_contract::surface::{NativeSurface, SurfaceSize};
 use super::ViewfinderReadback;
 use super::camera::{
     AutoExposureParts, CameraDrawError, CameraFeed, CameraPipelines, CameraSession, CameraSessionFailure,
-    CameraSessionParts, HeadroomBenchParts, ViewfinderSettings, ViewfinderStats, WhiteBalanceParts,
+    CameraSessionParts, HeadroomBenchParts, UiOverlayFrame, UiOverlayState, ViewfinderSettings, ViewfinderStats,
+    WhiteBalanceParts,
 };
 use super::config::VulkanBackendConfig;
 use super::mapping::{FailureKind, classify_swapchain_error, display_info, gpu_backend_error};
@@ -247,7 +248,8 @@ impl AttachedDisplay {
     ///
     /// Попутно меряет CPU кадра ([`FrameCpuTiming`]): время в `acquire_frame` и путь от захвата
     /// кадра камеры до возврата из сабмита. Замер — только чтение монотонных часов, без ожиданий.
-    pub(super) fn render_and_present(&mut self, timing: FrameTiming) -> PresentOutcome {
+    /// `ui` — состояние UI-прохода бэкенда: без установленного источника кадр не меняется.
+    pub(super) fn render_and_present(&mut self, timing: FrameTiming, ui: &mut UiOverlayState) -> PresentOutcome {
         self.last_frame_cpu_timing = None;
         // Прошлый показ был SUBOPTIMAL: сначала пересоздание (его сделает поток через resize).
         if self.recreate_pending {
@@ -283,7 +285,7 @@ impl AttachedDisplay {
                 read_monotonic_clock()
             }
         };
-        let outcome = self.draw_and_present_acquired(frame, timing);
+        let outcome = self.draw_and_present_acquired(frame, timing, ui);
         let submitted = read_monotonic_clock();
         if let Some(cpu_timing) = self.last_frame_cpu_timing.as_mut() {
             cpu_timing.latch_wait = elapsed_between(acquire_finished, latch_moment).unwrap_or(Duration::ZERO);
@@ -337,7 +339,12 @@ impl AttachedDisplay {
     }
 
     /// Рисует содержимое в полученную картинку swapchain и ставит её на показ.
-    fn draw_and_present_acquired(&mut self, frame: DisplayFrame, timing: FrameTiming) -> PresentOutcome {
+    fn draw_and_present_acquired(
+        &mut self,
+        frame: DisplayFrame,
+        timing: FrameTiming,
+        ui: &mut UiOverlayState,
+    ) -> PresentOutcome {
         let Some(chain) = self.chain.as_mut() else {
             return PresentOutcome::Failed(chain_missing("draw_and_present"));
         };
@@ -372,7 +379,19 @@ impl AttachedDisplay {
                 chain.target.present(frame, request)
             }
             Painter::Camera { pipelines, session } => {
-                match session.draw_and_present(&mut chain.target, pipelines, frame, request, timing.frame_index) {
+                // UI строится к моменту показа ЭТОГО кадра (ожидаемый vsync выбранной линии).
+                let mut ui_frame = UiOverlayFrame {
+                    state: ui,
+                    present_time: timing.expected_present(),
+                };
+                match session.draw_and_present(
+                    &mut chain.target,
+                    pipelines,
+                    frame,
+                    request,
+                    timing.frame_index,
+                    &mut ui_frame,
+                ) {
                     Ok(outcome) => Ok(outcome),
                     Err(CameraDrawError::Swapchain(error)) => Err(error),
                     Err(CameraDrawError::Record(error)) => {
@@ -467,6 +486,14 @@ impl AttachedDisplay {
         match &mut self.chain.as_mut()?.painter {
             Painter::Camera { session, .. } => Some(session.viewfinder_diagnostics()),
             Painter::TestPattern(_) => None,
+        }
+    }
+
+    /// Создать рендер UI заранее (между кадрами), если показ идёт с камерой; иначе ничего.
+    pub(super) fn prepare_ui_overlay(&mut self) -> Result<(), ui_render_vulkan::UiRenderError> {
+        match self.chain.as_mut().map(|chain| &mut chain.painter) {
+            Some(Painter::Camera { pipelines, .. }) => pipelines.prepare_ui_overlay(),
+            _ => Ok(()),
         }
     }
 
@@ -585,12 +612,13 @@ fn create_camera_painter(
     info: &gpu_vulkan::swapchain::DisplayTargetInfo,
     camera: CameraAttach<'_>,
 ) -> Result<Painter, AttachError> {
-    let pipelines = CameraPipelines::new(context, info, &config.viewfinder.isp).map_err(|error| {
-        AttachError::SwapchainFailed(BackendError {
-            operation: "create_camera_pipelines".to_owned(),
-            reason: error.to_string(),
-        })
-    })?;
+    let pipelines =
+        CameraPipelines::new(context, info, &config.viewfinder.isp, &config.ui_overlay).map_err(|error| {
+            AttachError::SwapchainFailed(BackendError {
+                operation: "create_camera_pipelines".to_owned(),
+                reason: error.to_string(),
+            })
+        })?;
     let stats = camera
         .stats
         .take()

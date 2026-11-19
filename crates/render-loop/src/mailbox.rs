@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use shell_contract::surface::{NativeSurface, SurfaceGeneration, SurfaceReleaseRequest, SurfaceSize};
 
 use crate::thread::{AdpfCommand, PresentTargetCommand};
+use crate::ui_overlay::UiOverlayCommand;
 use crate::viewfinder::ViewfinderCommand;
 
 /// Событие жизненного цикла для потока рендера.
@@ -46,6 +47,10 @@ pub enum InboxEvent {
     /// Команда подсказкам производительности (ADPF, P13 сессии 07): включить/выключить. Итог — в
     /// `RenderStatus::adpf_commands`. Не схлопывается.
     Adpf(AdpfCommand),
+    /// Команда UI-проходу (сессия 11): поставить или снять источник кадра UI. Не схлопывается и не
+    /// переставляется: порядок `Install`/`Remove` сохраняется. Если поток уже завершён, источник
+    /// уничтожается при доставке (`ReceiverGone`).
+    UiOverlay(UiOverlayCommand),
 }
 
 /// Событие с моментом постановки в ящик: по нему считается задержка освобождения surface,
@@ -159,6 +164,12 @@ impl RenderInbox {
     /// Передаёт команду ADPF. Итог появится в `RenderStatus::adpf_commands`.
     pub fn adpf_command(&self, command: AdpfCommand) -> InboxDelivery {
         self.push(InboxEvent::Adpf(command))
+    }
+
+    /// Передаёт команду UI-проходу (источник кадра UI поверх видоискателя). Источник уничтожается на потоке
+    /// рендера: при замене, снятии или остановке потока.
+    pub fn ui_overlay_command(&self, command: UiOverlayCommand) -> InboxDelivery {
+        self.push(InboxEvent::UiOverlay(command))
     }
 
     /// Просит поток завершиться (после обработки уже лежащих событий).
@@ -344,6 +355,7 @@ mod tests {
                 InboxEvent::Viewfinder(_) => "viewfinder",
                 InboxEvent::PresentTarget(_) => "present_target",
                 InboxEvent::Adpf(_) => "adpf",
+                InboxEvent::UiOverlay(_) => "ui_overlay",
             })
             .collect();
         assert_eq!(kinds, ["created", "changed", "destroyed"]);
@@ -553,6 +565,125 @@ mod tests {
             commands,
             vec![nearest, nearest, preferred],
             "каждая команда получит свой итог"
+        );
+    }
+
+    /// Источник кадра UI для тестов ящика: имя различает экземпляры, флаг показывает, что источник уничтожен.
+    struct NamedSource {
+        name: &'static str,
+        dropped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl ui_draw::frame_source::UiFrameSource for NamedSource {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn produce_frame(
+            &mut self,
+            _request: &ui_draw::frame_source::UiFrameRequest,
+        ) -> Result<ui_draw::draw_list::DrawList, ui_draw::frame_source::UiFrameError> {
+            Err(ui_draw::frame_source::UiFrameError::SourceFailed {
+                reason: "тестовый источник".to_owned(),
+            })
+        }
+    }
+
+    impl Drop for NamedSource {
+        fn drop(&mut self) {
+            self.dropped.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn install_command(name: &'static str) -> (UiOverlayCommand, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let source = NamedSource {
+            name,
+            dropped: std::sync::Arc::clone(&dropped),
+        };
+        (UiOverlayCommand::Install(Box::new(source)), dropped)
+    }
+
+    /// Что лежит в пакете из команд UI-прохода: `install:<имя>` или `remove`.
+    fn ui_overlay_trace(batch: InboxBatch) -> Vec<String> {
+        batch
+            .events
+            .into_iter()
+            .filter_map(|stamped| match stamped.event {
+                InboxEvent::UiOverlay(UiOverlayCommand::Install(source)) => Some(format!("install:{}", source.name())),
+                InboxEvent::UiOverlay(UiOverlayCommand::Remove) => Some("remove".to_owned()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn ui_overlay_commands_keep_their_order_and_are_never_coalesced() {
+        let (inbox, receiver) = render_mailbox();
+        let (first, _first_dropped) = install_command("first");
+        let (second, _second_dropped) = install_command("second");
+        for command in [first, UiOverlayCommand::Remove, UiOverlayCommand::Remove, second] {
+            assert_eq!(inbox.ui_overlay_command(command), InboxDelivery::Delivered);
+        }
+        assert_eq!(
+            ui_overlay_trace(receiver.take_pending()),
+            ["install:first", "remove", "remove", "install:second"],
+            "две подряд `Remove` не схлопываются, порядок сохранён"
+        );
+    }
+
+    #[test]
+    fn ui_overlay_commands_interleave_with_lifecycle_events_in_arrival_order() {
+        let (inbox, receiver) = render_mailbox();
+        let (install, _dropped) = install_command("glass");
+        inbox.paused();
+        inbox.ui_overlay_command(install);
+        inbox.resumed();
+        inbox.ui_overlay_command(UiOverlayCommand::Remove);
+        let kinds: Vec<&str> = receiver
+            .take_pending()
+            .events
+            .iter()
+            .map(|stamped| match stamped.event {
+                InboxEvent::Paused => "paused",
+                InboxEvent::Resumed => "resumed",
+                InboxEvent::UiOverlay(UiOverlayCommand::Install(_)) => "install",
+                InboxEvent::UiOverlay(UiOverlayCommand::Remove) => "remove",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            ["paused", "install", "resumed", "remove"],
+            "пауза не схлопывается через команду UI"
+        );
+    }
+
+    #[test]
+    fn ui_overlay_command_after_the_thread_stopped_reports_receiver_gone_and_drops_the_source() {
+        let (inbox, receiver) = render_mailbox();
+        drop(receiver);
+        let (install, dropped) = install_command("late");
+        assert_eq!(inbox.ui_overlay_command(install), InboxDelivery::ReceiverGone);
+        assert!(
+            dropped.load(std::sync::atomic::Ordering::SeqCst),
+            "источник уничтожен при доставке в закрытый ящик, а не утёк"
+        );
+    }
+
+    #[test]
+    fn ui_overlay_source_left_in_the_mailbox_is_dropped_with_the_receiver() {
+        let (inbox, receiver) = render_mailbox();
+        let (install, dropped) = install_command("pending");
+        assert_eq!(inbox.ui_overlay_command(install), InboxDelivery::Delivered);
+        assert!(
+            !dropped.load(std::sync::atomic::Ordering::SeqCst),
+            "пока ящик жив, источник ждёт поток"
+        );
+        drop(receiver);
+        assert!(
+            dropped.load(std::sync::atomic::Ordering::SeqCst),
+            "недоставленный источник уничтожается вместе с приёмником"
         );
     }
 }

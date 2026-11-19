@@ -11,6 +11,7 @@ use shell_contract::clock::BoottimeNanos;
 use shell_contract::commands::{CommandOutcome, FrameRate, FrameRateOutcome, ScreenWake, ShellCommands};
 use shell_contract::diagnostics::{ShellCounters, ShellDiagnostics};
 use shell_contract::event::ShellEvent;
+use shell_contract::gravity::{GravitySlot, GravitySource, GravitySubscription};
 use shell_contract::haptics::{HapticOutcome, HapticPattern, HapticsService};
 use shell_contract::motion::{
     AngularVelocity, GyroRequest, GyroSample, GyroSubscription, MotionRing, MotionSource, OrientationSubscription,
@@ -28,12 +29,15 @@ use super::runtime::{ClaimedSensor, ShellRuntime};
 use super::sensor_thread::{SensorThread, SensorThreadSpec, event_vector, start_sensor_thread};
 use super::thermal_monitor::ThermalListenerState;
 use crate::detached_worker::ClaimRelease;
+use crate::gravity_source::GravitySettings;
+use crate::gravity_source::{GravityIntake, GravityIntakeOutcome, start_with_fallback};
 use crate::haptic_plan::{HapticCapabilities, plan_haptic};
 use crate::orientation_classifier::{AccelerationSample, OrientationClassifier};
 use crate::surface_registry::frame_rate_outcome;
 
 const GYRO_SENSOR: &str = "gyroscope";
 const ACCELEROMETER_SENSOR: &str = "accelerometer";
+const GRAVITY_SENSOR: &str = "gravity";
 
 /// Сервисы оболочки для потребителей.
 pub struct AndroidShellServices {
@@ -234,6 +238,98 @@ impl MotionSource for AndroidShellServices {
         })?;
         Ok(OrientationSubscription::new(samples_seen, Box::new(lease)))
     }
+
+    fn start_gravity(&self) -> Result<GravitySubscription, SensorSourceError> {
+        let package_name = self.package_name(GRAVITY_SENSOR)?;
+        let settings = self.runtime.config().gravity;
+        let slot = Arc::new(GravitySlot::new());
+        let mut chosen_source = GravitySource::Unspecified;
+        let lease = self.start_claimed_sensor(ClaimedSensor::Gravity, GRAVITY_SENSOR, || {
+            // Сначала готовый датчик гравитации платформы; нет его — акселерометр с фильтром.
+            let (thread, source) = start_with_fallback(
+                || {
+                    start_gravity_thread(
+                        GravityThreadPlan {
+                            sensor_name: GRAVITY_SENSOR,
+                            sensor_type: ndk_sys::ASENSOR_TYPE_GRAVITY,
+                            thread_name: "fasticamera-gravity",
+                        },
+                        &settings,
+                        package_name.clone(),
+                        GravityIntake::dedicated(),
+                        &slot,
+                    )
+                },
+                || {
+                    start_gravity_thread(
+                        GravityThreadPlan {
+                            sensor_name: ACCELEROMETER_SENSOR,
+                            sensor_type: ndk_sys::ASENSOR_TYPE_ACCELEROMETER,
+                            thread_name: "fasticamera-gravity-accel",
+                        },
+                        &settings,
+                        package_name.clone(),
+                        GravityIntake::filtered(settings.accelerometer_time_constant),
+                        &slot,
+                    )
+                },
+            )?;
+            chosen_source = source;
+            Ok(thread)
+        })?;
+        tracing::info!(
+            target: "fasticamera::shell",
+            source = ?chosen_source,
+            rate_hz = settings.rate.hertz(),
+            "гравитация запущена"
+        );
+        Ok(GravitySubscription::new(slot, Box::new(lease)).with_source(chosen_source))
+    }
+}
+
+/// Какой датчик и под каким именем потока запускает [`start_gravity_thread`].
+struct GravityThreadPlan {
+    sensor_name: &'static str,
+    sensor_type: std::ffi::c_int,
+    thread_name: &'static str,
+}
+
+/// Запускает поток датчика, который пропускает показания через `intake` в ящик гравитации.
+fn start_gravity_thread(
+    plan: GravityThreadPlan,
+    settings: &GravitySettings,
+    package_name: std::ffi::CString,
+    mut intake: GravityIntake,
+    slot: &Arc<GravitySlot>,
+) -> Result<SensorThread, SensorSourceError> {
+    let writer = Arc::clone(slot);
+    let sensor_name = plan.sensor_name;
+    let spec = SensorThreadSpec {
+        sensor_name,
+        // Метки событий — CLOCK_BOOTTIME, как у гироскопа и камеры.
+        sensor_type: plan.sensor_type,
+        sampling_period: settings.rate.sampling_period(),
+        package_name,
+        thread_name: plan.thread_name.to_owned(),
+    };
+    start_sensor_thread(spec, move |event| {
+        let time = BoottimeNanos::from_nanos(event.timestamp);
+        match intake.accept(time, event_vector(event)) {
+            GravityIntakeOutcome::Publish(sample) => writer.publish(sample),
+            // Отброшенное не теряется молча: счётчик в intake, в лог — на степенях двойки (не заливать лог).
+            GravityIntakeOutcome::RejectedNonFinite | GravityIntakeOutcome::RejectedOutOfOrder => {
+                let rejected = intake.rejected_samples();
+                if rejected.is_power_of_two() {
+                    tracing::warn!(
+                        target: "fasticamera::shell",
+                        sensor = sensor_name,
+                        rejected,
+                        "показание гравитации отброшено"
+                    );
+                }
+            }
+        }
+    })
 }
 
 impl VsyncSource for AndroidShellServices {

@@ -20,7 +20,7 @@ pub mod platform;
 
 mod ahb_import;
 mod background_job;
-mod camera;
+pub(crate) mod camera;
 mod gpu_fence;
 mod render;
 mod render_lifecycle;

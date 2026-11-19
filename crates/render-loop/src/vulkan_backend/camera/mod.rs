@@ -17,6 +17,8 @@
 //! * [`submissions::SubmissionTracker`] — когда GPU точно закончил (нейтральный);
 //! * [`CameraFrameImporter`] — шов импорта буфера камеры в Vulkan: на телефоне `AHardwareBuffer`
 //!   без копий (`android_importer`), на ПК — синтетические источники теста;
+//! * `ui_state` + `pipelines/ui_pass` — UI и стекло поверх видоискателя (сессия 11): источник кадра UI и счётчики
+//!   живут в бэкенде (`UiOverlayState`), рендер UI — в `CameraPipelines` (создаётся лениво, только при источнике);
 //! * `passport` — перевод паспорта кадра в параметры предпросмотра.
 //!
 //! # Инварианты
@@ -41,6 +43,7 @@ mod session;
 mod settings;
 mod statistics_schedule;
 mod submissions;
+mod ui_state;
 mod viewfinder_stats;
 mod white_balance;
 
@@ -62,6 +65,7 @@ pub(super) use self::headroom_stats::HeadroomLiveState;
 pub(super) use self::pipelines::CameraPipelines;
 pub(super) use self::session::{CameraDrawError, CameraSession, CameraSessionFailure, CameraSessionParts};
 pub(super) use self::settings::ViewfinderSettings;
+pub(super) use self::ui_state::{UiOverlayFrame, UiOverlayState};
 pub(super) use self::viewfinder_stats::ViewfinderStats;
 pub(super) use self::white_balance::{SceneWhiteMemory, WhiteBalanceParts};
 

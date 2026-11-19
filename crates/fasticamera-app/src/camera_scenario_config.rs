@@ -16,6 +16,7 @@ use camera_contract::stream::{InvalidFrameRate, ReadoutAspect, StreamMode, Targe
 use serde::{Deserialize, Serialize};
 
 use crate::ae_trace_scenario_config::{AeTraceScenarioConfig, AeTraceScenarioConfigError};
+use crate::glass_scenario_config::{GlassScenarioConfig, GlassScenarioConfigError};
 use crate::power_measurement::config::{PowerMeasurementConfig, PowerMeasurementConfigError};
 use crate::raw_stream_scenario_config::{RawStreamScenarioConfig, RawStreamScenarioConfigError};
 use crate::three_a_scenario_config::{ThreeAScenarioConfig, ThreeAScenarioConfigError};
@@ -274,6 +275,8 @@ pub struct CameraScenarioConfig {
     pub three_a: ThreeAScenarioConfig,
     /// Сценарий `ae-trace` (сессия 08c): ряд нашего AE по ступенькам света, подтяжка ISP, мерцание.
     pub ae_trace: AeTraceScenarioConfig,
+    /// Сценарий `glass` (сессия 11): стекло поверх живого видоискателя.
+    pub glass: GlassScenarioConfig,
 }
 
 fn step(
@@ -329,6 +332,7 @@ impl Default for CameraScenarioConfig {
             viewfinder: ViewfinderScenarioConfig::default(),
             three_a: ThreeAScenarioConfig::default(),
             ae_trace: AeTraceScenarioConfig::default(),
+            glass: GlassScenarioConfig::default(),
         }
     }
 }
@@ -354,6 +358,8 @@ pub enum CameraScenarioConfigError {
     ThreeA(#[from] ThreeAScenarioConfigError),
     #[error("{0}")]
     AeTrace(#[from] AeTraceScenarioConfigError),
+    #[error("{0}")]
+    Glass(#[from] GlassScenarioConfigError),
     #[error("ID камеры: {0}")]
     InvalidCameraId(#[from] EmptyCameraId),
     #[error(
@@ -406,6 +412,7 @@ impl CameraScenarioConfig {
         self.viewfinder.validate()?;
         self.three_a.validate()?;
         self.ae_trace.validate()?;
+        self.glass.validate()?;
         Ok(())
     }
 }

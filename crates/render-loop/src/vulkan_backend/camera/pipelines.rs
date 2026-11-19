@@ -15,13 +15,15 @@
 //!    кадр ещё принят для compute;
 //! 6. возврат кадра камере (`наша очередь → FOREIGN`) — RAW больше не читается никогда;
 //! 7. точка «ISP готов»; компоновка изображения на экран; точка «компоновка готова».
+//! 8. (только если установлен источник UI) проход UI поверх компоновки и точка «UI готов»
+//!    (`ui_pass`): ставится вызывающим отдельно после шага 7 — запись видоискателя от UI не зависит.
 //!
 //! Шаги 3 и 6 записываются ВСЕГДА вместе: даже если ISP отказал, кадр принят и тем же сабмитом
 //! возвращён, а сабмит ждёт acquire-fence камеры — поэтому возврат лизинга с fence этого сабмита
 //! корректен при любом исходе записи ISP.
 
 use ash::vk;
-use gpu_vulkan::compositor::{BackgroundColor, CompositeRequest, ImageCompositor};
+use gpu_vulkan::compositor::{BackgroundColor, CompositeRequest, ImageCompositor, LogicalRect};
 use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::error::GpuError;
 use gpu_vulkan::gpu_timing::{GpuTimestamps, TimestampCollect, TimestampStage};
@@ -36,7 +38,11 @@ use isp_vulkan::viewfinder::{
 
 use super::placement::{PlaneSize, logical_target_size, viewfinder_destination};
 use super::viewfinder_stats::{FRAME_POINT_COMPOSE_DONE, FRAME_POINT_ISP_DONE, FRAME_POINT_START, FRAME_POINTS};
-use crate::config::ViewfinderPlacement;
+use crate::config::{UiOverlayConfig, ViewfinderPlacement};
+
+mod ui_pass;
+
+use ui_pass::UiPass;
 
 const LOG_TARGET: &str = "fasticamera::render::camera";
 
@@ -116,6 +122,8 @@ pub struct SlotCollection {
     pub frame: Result<TimestampCollect, GpuError>,
     /// Освобождение набора дескрипторов компоновщика слота.
     pub compositor: Result<(), GpuError>,
+    /// Освобождение слота рендера UI (без рендера — `Ok`).
+    pub ui: Result<(), ui_render_vulkan::UiRenderError>,
 }
 
 /// Объекты GPU показа камеры (см. модуль).
@@ -125,6 +133,8 @@ pub struct CameraPipelines {
     isp: ViewfinderIsp,
     compositor: ImageCompositor,
     frame_timestamps: GpuTimestamps,
+    /// Рендер UI поверх видоискателя: создаётся лениво при первом кадре с установленным источником.
+    ui: UiPass,
     context: GpuContext,
 }
 
@@ -135,6 +145,7 @@ impl CameraPipelines {
         context: &GpuContext,
         target: &DisplayTargetInfo,
         isp_config: &ViewfinderIspConfig,
+        ui_config: &UiOverlayConfig,
     ) -> Result<Self, CameraPipelinesError> {
         let (target_format, frames_in_flight) = (target.format, target.frames_in_flight);
         let isp_config = ViewfinderIspConfig {
@@ -146,15 +157,18 @@ impl CameraPipelines {
             isp: ViewfinderIsp::new(context, &isp_config)?,
             compositor: ImageCompositor::new(context, target_format, frames_in_flight)?,
             frame_timestamps: GpuTimestamps::new(context, frames_in_flight, &FRAME_POINTS)?,
+            ui: UiPass::new(context, target, ui_config),
             context: context.clone(),
         })
     }
 
-    /// Пересоздаёт то, что зависит от формата цели (мозаика и компоновщик). Вызывающий уже дождался
-    /// сабмитов цели. ISP от формата цели не зависит и живёт дальше (его изображение тоже).
+    /// Пересоздаёт то, что зависит от формата цели (мозаика, компоновщик и рендер UI). Вызывающий уже
+    /// дождался сабмитов цели. ISP от формата цели не зависит и живёт дальше (его изображение тоже).
+    /// Рендер UI не создаётся заново сразу: он поднимется на первом кадре, если источник установлен.
     pub fn rebuild_for_format(&mut self, target: &DisplayTargetInfo) -> Result<(), GpuError> {
         self.preview = RawMosaicPreview::new(&self.context, target.format, target.frames_in_flight)?;
         self.compositor = ImageCompositor::new(&self.context, target.format, target.frames_in_flight)?;
+        self.ui.reset_for_format(target);
         Ok(())
     }
 
@@ -172,6 +186,7 @@ impl CameraPipelines {
             // Набор дескрипторов компоновщика этого слота снова можно переписывать (новое изображение
             // видоискателя после смены размера): fence слота пройден.
             compositor: self.compositor.release_slot_after_fence(slot),
+            ui: self.ui.release_slot_after_fence(slot),
         }
     }
 
@@ -299,30 +314,21 @@ impl CameraPipelines {
             what: "изображения видоискателя ещё нет".to_owned(),
         })?;
         let source = image.sampled_view();
-        let target = frame.pattern_target();
-        let transform = frame.transform();
-        let logical = logical_target_size(
+        let layout = viewfinder_layout(
+            frame,
             PlaneSize {
-                width: target.extent.width,
-                height: target.extent.height,
+                width: source.extent.width,
+                height: source.extent.height,
             },
-            transform.quarter_turns()?,
-        );
-        let image_size = PlaneSize {
-            width: source.extent.width,
-            height: source.extent.height,
-        };
-        let destination =
-            viewfinder_destination(image_size, logical, placement).ok_or_else(|| GpuError::InvalidArgument {
-                what: format!("пустой прямоугольник видоискателя: {image_size:?} на {logical:?}"),
-            })?;
+            placement,
+        )?;
         self.compositor.record(
             frame.command_buffer(),
-            target,
+            frame.pattern_target(),
             &CompositeRequest {
                 source,
-                transform,
-                destination,
+                transform: frame.transform(),
+                destination: layout.destination,
                 background: BackgroundColor::BLACK,
                 frame_slot: frame.ring_slot(),
             },
@@ -340,4 +346,40 @@ impl CameraPipelines {
         }
         ScreenContent::Black { compose_failure }
     }
+}
+
+/// Где что лежит на логическом экране кадра.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ViewfinderLayout {
+    /// Логический размер цели (как видит пользователь, портрет).
+    logical: PlaneSize,
+    /// Прямоугольник изображения видоискателя в логических пикселях.
+    destination: LogicalRect,
+}
+
+/// Логический размер цели кадра (физический размер с учётом поворота дисплея).
+fn logical_size(frame: &DisplayFrame) -> Result<PlaneSize, GpuError> {
+    let target = frame.pattern_target();
+    Ok(logical_target_size(
+        PlaneSize {
+            width: target.extent.width,
+            height: target.extent.height,
+        },
+        frame.transform().quarter_turns()?,
+    ))
+}
+
+/// Раскладка видоискателя на кадре: ОДНА функция и для компоновщика, и для UI-прохода — прямоугольник
+/// фона под стеклом не может разойтись с тем, куда компоновщик положил изображение.
+fn viewfinder_layout(
+    frame: &DisplayFrame,
+    image_size: PlaneSize,
+    placement: ViewfinderPlacement,
+) -> Result<ViewfinderLayout, GpuError> {
+    let logical = logical_size(frame)?;
+    let destination =
+        viewfinder_destination(image_size, logical, placement).ok_or_else(|| GpuError::InvalidArgument {
+            what: format!("пустой прямоугольник видоискателя: {image_size:?} на {logical:?}"),
+        })?;
+    Ok(ViewfinderLayout { logical, destination })
 }

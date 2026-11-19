@@ -8,9 +8,9 @@ use thiserror::Error;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LabelId(pub u32);
 
-/// Непрозрачный идентификатор иконки из атласа (решение 81).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct IconId(pub u32);
+/// Иконка из SDF-атласа (решения 81, 88): один тип на весь UI, набор запекает `ui-draw` при сборке.
+/// Раньше здесь была временная заглушка `IconId(u32)`; правило второго использования (решение 84).
+pub use ui_draw::icons::IconId;
 
 /// Иконка варианта.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

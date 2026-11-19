@@ -30,6 +30,7 @@ pub mod clock_offset;
 pub mod event_router;
 #[cfg(test)]
 mod fake_render_ae;
+pub mod glass_scenario_config;
 pub mod gpu_config;
 pub mod gpu_services;
 #[cfg(test)]

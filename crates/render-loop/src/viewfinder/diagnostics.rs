@@ -11,6 +11,7 @@ use super::control::ViewfinderPainter;
 use super::headroom::HeadroomBenchDiagnostics;
 use super::white_balance::WhiteBalanceDiagnostics;
 use crate::thread::DurationSummary;
+use crate::ui_overlay::UiOverlayDiagnostics;
 
 /// В каком цветовом пространстве экрана кодируется выход ISP (по цепочке показа).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,4 +131,7 @@ pub struct ViewfinderDiagnostics {
     pub white_balance: WhiteBalanceDiagnostics,
     /// Наш AE (сессия 08a); `None` — ящики AE не переданы (вендорский AE) или сессии показа нет.
     pub auto_exposure: Option<AutoExposureDiagnostics>,
+    /// UI и стекло поверх видоискателя (сессия 11): источник, счётчики, время GPU. Пока источник не
+    /// установлен, всё пусто (`UiOverlayDiagnostics::default()`).
+    pub ui_overlay: UiOverlayDiagnostics,
 }

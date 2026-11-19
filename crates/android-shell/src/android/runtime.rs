@@ -82,6 +82,7 @@ pub fn install(config: &ShellConfig) -> Result<ShellHandles, ShellInstallError> 
         thermal,
         gyro_running: AtomicBool::new(false),
         orientation_running: AtomicBool::new(false),
+        gravity_running: AtomicBool::new(false),
         power_sampling_running: AtomicBool::new(false),
     });
     // Сначала все потоки, потом публикация: провал на полпути не оставляет «установленную»
@@ -164,6 +165,7 @@ pub struct ShellRuntime {
     thermal: ThermalMonitor,
     gyro_running: AtomicBool,
     orientation_running: AtomicBool,
+    gravity_running: AtomicBool,
     power_sampling_running: AtomicBool,
 }
 
@@ -272,6 +274,7 @@ impl ShellRuntime {
         match sensor {
             ClaimedSensor::Gyro => &self.gyro_running,
             ClaimedSensor::Orientation => &self.orientation_running,
+            ClaimedSensor::Gravity => &self.gravity_running,
             ClaimedSensor::BatteryPower => &self.power_sampling_running,
         }
     }
@@ -287,6 +290,8 @@ impl ShellRuntime {
 pub enum ClaimedSensor {
     Gyro,
     Orientation,
+    /// Вектор гравитации для блика (датчик гравитации или акселерометр с фильтром).
+    Gravity,
     /// Опрос батареи (`BatteryManager`) — «датчик тока»: второй опрос удвоил бы binder-вызовы.
     BatteryPower,
 }

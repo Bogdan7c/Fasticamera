@@ -8,7 +8,7 @@ use gpu_vulkan::swapchain::{ColorDepthPreference, DisplayColorPreference, Displa
 use gpu_vulkan::validation::ValidationMode;
 
 use super::present_time::PresentTimePolicy;
-use crate::config::{DisplayColorConfig, RenderLoopConfig, ViewfinderConfig};
+use crate::config::{DisplayColorConfig, RenderLoopConfig, UiOverlayConfig, ViewfinderConfig};
 
 /// Параметры [`super::VulkanDisplayBackend`].
 #[derive(Debug, Clone)]
@@ -42,6 +42,8 @@ pub struct VulkanBackendConfig {
     pub display_color: DisplayColorPreference,
     /// Видоискатель камеры (из `RenderLoopConfig::viewfinder`).
     pub viewfinder: ViewfinderConfig,
+    /// UI и стекло поверх видоискателя (из `RenderLoopConfig::ui_overlay`).
+    pub ui_overlay: UiOverlayConfig,
 }
 
 impl VulkanBackendConfig {
@@ -79,6 +81,7 @@ impl VulkanBackendConfig {
                 DisplayColorConfig::SrgbOnly => DisplayColorPreference::SrgbOnly,
             },
             viewfinder: config.viewfinder.clone(),
+            ui_overlay: config.ui_overlay,
         })
     }
 
@@ -116,10 +119,21 @@ mod tests {
             acquire_timeout_ms: 70,
             // Не значение по умолчанию: тест доказывает, что поле берётся из конфига потока.
             teardown_timeout_ms: 120,
+            ui_overlay: UiOverlayConfig {
+                pyramid: ui_render_vulkan::BackdropPyramidConfig {
+                    levels: 2,
+                    ..ui_render_vulkan::BackdropPyramidConfig::default()
+                },
+                ..UiOverlayConfig::default()
+            },
             ..RenderLoopConfig::default()
         };
         let config =
             VulkanBackendConfig::from_render_config(&render, ValidationMode::Disabled).expect("корректный конфиг");
+        assert_eq!(
+            config.ui_overlay.pyramid.levels, 2,
+            "секция ui_overlay — из конфига потока"
+        );
         assert_eq!(config.frames_in_flight.get(), 3);
         assert_eq!(config.acquire_timeout, Duration::from_millis(70));
         assert_eq!(

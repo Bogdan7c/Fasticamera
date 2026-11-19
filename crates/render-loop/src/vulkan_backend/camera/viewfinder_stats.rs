@@ -16,6 +16,7 @@ use super::headroom_stats::{HeadroomBenchStats, HeadroomLiveState};
 use super::isp_params::{HintsSource, ParamsDecision, ParamsOutcome, ParamsUnavailable};
 use super::settings::ViewfinderSettings;
 use crate::thread::RollingDurations;
+use crate::ui_overlay::UiOverlayDiagnostics;
 use crate::viewfinder::{
     ViewfinderColorSpace, ViewfinderCounters, ViewfinderDiagnostics, ViewfinderExtent, ViewfinderGpuTimes,
     ViewfinderStorage, WhiteBalanceDiagnostics,
@@ -27,14 +28,19 @@ pub const POINT_FRAME_START: &str = "frame-start";
 pub const POINT_ISP_DONE: &str = "isp-done";
 /// Точка «компоновка на экран закончена».
 pub const POINT_COMPOSE_DONE: &str = "compose-done";
+/// Точка «UI записан поверх компоновки» (пишется только в кадрах, где UI рисовался: отрезок до неё —
+/// стоимость UI на GPU, пирамида размытия включительно).
+pub const POINT_UI_DONE: &str = "ui-done";
 /// Точки меток кадра в порядке записи (индексы — `FRAME_POINT_*`).
-pub const FRAME_POINTS: [&str; 3] = [POINT_FRAME_START, POINT_ISP_DONE, POINT_COMPOSE_DONE];
+pub const FRAME_POINTS: [&str; 4] = [POINT_FRAME_START, POINT_ISP_DONE, POINT_COMPOSE_DONE, POINT_UI_DONE];
 /// Индекс точки начала.
 pub const FRAME_POINT_START: usize = 0;
 /// Индекс точки конца ISP.
 pub const FRAME_POINT_ISP_DONE: usize = 1;
 /// Индекс точки конца компоновки.
 pub const FRAME_POINT_COMPOSE_DONE: usize = 2;
+/// Индекс точки конца UI (только кадры с UI).
+pub const FRAME_POINT_UI_DONE: usize = 3;
 
 /// Диагностика видоискателя, копящаяся за жизнь бэкенда.
 #[derive(Debug)]
@@ -169,13 +175,15 @@ impl ViewfinderStats {
             white_balance,
             // Диагностику AE знает только сессия показа (у неё исполнитель): она дописывает поле сама.
             auto_exposure: None,
+            // UI-проход принадлежит бэкенду, а не сессии: поле дописывает бэкенд (`UiOverlayState::snapshot`).
+            ui_overlay: UiOverlayDiagnostics::default(),
         }
     }
 }
 
 /// Длительность отрезка, кончающегося точкой `point` (отрезки — между соседними записанными точками:
 /// у перекомпоновки без ISP отрезок компоновки начинается от начала кадра).
-fn span_ending_at(spans: &TimestampSpans, point: &str) -> Option<Duration> {
+pub(super) fn span_ending_at(spans: &TimestampSpans, point: &str) -> Option<Duration> {
     spans
         .spans
         .iter()

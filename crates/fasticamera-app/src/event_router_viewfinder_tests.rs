@@ -38,6 +38,20 @@ struct MirrorFaults {
     isp_skips_half: bool,
     /// Поток рендера принимает команды ADPF, но режим не меняет (в статусе он остаётся выключенным).
     ignores_adpf_command: bool,
+    /// Как ведёт себя слой UI, пока сценарий держит источник (см. [`UiOverlayFault`]).
+    ui_overlay: UiOverlayFault,
+}
+
+/// Поведение подставного слоя UI (сценарий `glass`).
+#[derive(Clone, Copy, Default)]
+enum UiOverlayFault {
+    /// Здоров: кадр UI на каждый показанный кадр камеры, пирамида строится, GPU p95 1,8 мс.
+    #[default]
+    Healthy,
+    /// GPU-время UI p95 9,3 мс при бюджете 4,17 мс.
+    SlowGpu,
+    /// Каждый кадр UI не рисуется (отказ рендера).
+    DrawFails,
 }
 
 /// Подставной поток рендера: как настоящий, применяет регулировки сценария (последнюю по виду) и
@@ -114,6 +128,53 @@ fn fresh_viewfinder() -> ViewfinderDiagnostics {
         headroom: HeadroomBenchDiagnostics::default(),
         white_balance: WhiteBalanceDiagnostics::idle(WhiteBalanceConfig::default().statistics_every_n_frames),
         auto_exposure: None,
+        ui_overlay: render_loop::ui_overlay::UiOverlayDiagnostics::default(),
+    }
+}
+
+/// Как настоящий рендер ведёт диагностику UI-прохода по записанным командам: пока последняя команда —
+/// `Install`, на каждый показанный кадр камеры рисуется кадр UI (или отказывает по `fault`).
+fn mirror_ui_overlay(
+    control: &crate::gpu_test_support::RecordingRenderControl,
+    viewfinder: &mut ViewfinderDiagnostics,
+    presented: u64,
+    fault: UiOverlayFault,
+    started_at: &mut Option<u64>,
+) {
+    use crate::gpu_test_support::RecordedUiOverlay;
+    let commands = control.recorded_ui_overlay();
+    let overlay = &mut viewfinder.ui_overlay;
+    overlay.installs = commands
+        .iter()
+        .filter(|command| matches!(command, RecordedUiOverlay::Install(_)))
+        .count() as u64;
+    overlay.removals = commands
+        .iter()
+        .filter(|command| matches!(command, RecordedUiOverlay::Remove))
+        .count() as u64;
+    let Some(RecordedUiOverlay::Install(name)) = commands.last() else {
+        overlay.active_source = None;
+        *started_at = None;
+        return;
+    };
+    overlay.active_source = Some((*name).to_owned());
+    let drawn_since_install = presented.saturating_sub(*started_at.get_or_insert(presented));
+    match fault {
+        UiOverlayFault::Healthy | UiOverlayFault::SlowGpu => {
+            overlay.frames_drawn = drawn_since_install;
+            overlay.pyramid_rebuilds = drawn_since_install;
+            overlay.gpu_time = Some(micros(if matches!(fault, UiOverlayFault::SlowGpu) {
+                9_000
+            } else {
+                1_500
+            }));
+        }
+        UiOverlayFault::DrawFails => {
+            overlay.frames_failed = drawn_since_install;
+            overlay.last_error = Some("запись кадра UI: превышен предел кадра".to_owned());
+            overlay.gpu_time = Some(micros(1_500));
+            overlay.pyramid_rebuilds = drawn_since_install;
+        }
     }
 }
 
@@ -126,6 +187,8 @@ impl RenderMirror {
         let shell = Arc::clone(&harness.shell);
         let join = thread::spawn(move || {
             let mut bench_started_at: Option<u64> = None;
+            // Сколько кадров камеры было показано к моменту установки источника UI.
+            let mut overlay_started_at: Option<u64> = None;
             // Отчёты ADPF копятся по показанным кадрам, пока режим включён (как у настоящего рендера).
             let mut adpf_reports = 0_u64;
             let mut last_presented = 0_u64;
@@ -184,6 +247,15 @@ impl RenderMirror {
                         AdpfMode::Disabled => AdpfSessionState::Disabled,
                     };
                     status.adpf.reports_sent = adpf_reports;
+                    if let Some(viewfinder) = status.backend.viewfinder.as_mut() {
+                        mirror_ui_overlay(
+                            &control,
+                            viewfinder,
+                            presented,
+                            faults.ui_overlay,
+                            &mut overlay_started_at,
+                        );
+                    }
                     status.present_target.frame_gpu_time = Some(micros(9_000));
                     status.present_target.selection = now.selection;
                     status.present_target.frames_planned = presented;
@@ -338,6 +410,8 @@ fn run_viewfinder_on(
     (harness, result)
 }
 
+#[path = "event_router_glass_tests.rs"]
+mod glass;
 #[path = "event_router_viewfinder_latency_tests.rs"]
 mod latency;
 

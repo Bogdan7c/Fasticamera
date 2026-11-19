@@ -14,11 +14,16 @@ enum Flash {
     Auto,
 }
 
+/// Разные подписи → разные иконки (набор атласа маленький, поэтому по кругу).
+fn icon_for(label: u32) -> IconId {
+    IconId::ALL[label as usize % IconId::ALL.len()]
+}
+
 fn option(value: Flash, label: u32) -> PickerOption<Flash> {
     PickerOption {
         value,
         label: LabelId(label),
-        icon: OptionIcon::Icon(IconId(label + 100)),
+        icon: OptionIcon::Icon(icon_for(label)),
     }
 }
 
@@ -42,7 +47,7 @@ fn picker_selects_by_index_and_by_value_and_reports_what_changed() {
         }
     );
     assert_eq!(picker.selected().label, LabelId(3));
-    assert_eq!(picker.selected().icon, OptionIcon::Icon(IconId(103)));
+    assert_eq!(picker.selected().icon, OptionIcon::Icon(icon_for(3)));
     assert_eq!(picker.select_index(2).unwrap(), SelectionChange::Unchanged);
     assert_eq!(
         picker.select_value(Flash::On).unwrap(),

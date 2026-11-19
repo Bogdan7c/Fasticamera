@@ -12,6 +12,11 @@
 //!
 //! Сценарии не знают ни `RenderInbox`, ни потока рендера: только трейт [`RenderControl`]
 //! (на телефоне — ящик потока рендера, в тестах — запись запросов).
+//!
+//! UI и стекло поверх видоискателя (сессия 11) устроены так же, но идут отдельным методом
+//! [`RenderControl::ui_overlay`]: команда владеет источником кадра UI и не `Copy`, поэтому в
+//! [`RenderAdjustment`] она не входит. По умолчанию UI выключен (продукт до сессии 12 стекла не рисует);
+//! включает только сценарий (`glass`), а конец сценария снимает источник при ЛЮБОМ исходе.
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -19,9 +24,11 @@ use isp_vulkan::viewfinder::IspStageSet;
 use render_loop::config::{AdpfMode, DepthReductionMode, LateLatchMode, PresentTimelinePolicy};
 use render_loop::mailbox::{InboxDelivery, RenderInbox};
 use render_loop::thread::{AdpfCommand, PresentTargetCommand};
+use render_loop::ui_overlay::UiOverlayCommand;
 use render_loop::viewfinder::{HeadroomBench, ViewfinderCommand, ViewfinderPainter};
 use serde::Serialize;
 use shell_contract::commands::{FrameRate, FrameRateOutcome, InvalidFrameRate, ShellCommands};
+use ui_draw::frame_source::UiFrameSource;
 
 use crate::gpu_services::GpuServices;
 
@@ -78,6 +85,10 @@ impl ControlDelivery {
 /// Куда сценарии шлют регулировки (на телефоне — ящик потока рендера, в тестах — запись).
 pub trait RenderControl: Send + Sync {
     fn adjust(&self, adjustment: RenderAdjustment) -> ControlDelivery;
+
+    /// Поставить или снять источник кадра UI поверх видоискателя. Итог применения поток рендера пишет
+    /// в диагностику (`ViewfinderDiagnostics::ui_overlay`); здесь — только доставка.
+    fn ui_overlay(&self, command: UiOverlayCommand) -> ControlDelivery;
 }
 
 /// Живой поток рендера: регулировки идут тем же ящиком, что события surface.
@@ -104,6 +115,10 @@ impl RenderControl for InboxRenderControl {
         };
         ControlDelivery::of_inbox(delivery)
     }
+
+    fn ui_overlay(&self, command: UiOverlayCommand) -> ControlDelivery {
+        ControlDelivery::of_inbox(self.inbox.ui_overlay_command(command))
+    }
 }
 
 /// Рендер не поднялся: каждая регулировка честно отвечает причиной.
@@ -123,6 +138,13 @@ impl RenderControl for UnavailableRenderControl {
             reason: self.reason.clone(),
         }
     }
+
+    fn ui_overlay(&self, _command: UiOverlayCommand) -> ControlDelivery {
+        // Источник из `Install` уничтожается здесь же вместе с командой: ставить его некуда.
+        ControlDelivery::RenderUnavailable {
+            reason: self.reason.clone(),
+        }
+    }
 }
 
 /// Какие настройки рендера тронул текущий сценарий (их и только их вернёт конец сценария).
@@ -134,6 +156,8 @@ struct TouchedRenderSettings {
     present_target: bool,
     adpf: bool,
     display_refresh: bool,
+    /// Сценарий поставил источник кадра UI и ещё не снял его сам.
+    ui_overlay: bool,
 }
 
 impl TouchedRenderSettings {
@@ -144,6 +168,7 @@ impl TouchedRenderSettings {
             || self.present_target
             || self.adpf
             || self.display_refresh
+            || self.ui_overlay
     }
 }
 
@@ -232,6 +257,25 @@ impl GpuServices {
         Ok(commands.set_preferred_frame_rate(rate))
     }
 
+    /// Сценарий: поставить источник кадра UI поверх видоискателя (конец сценария снимет его сам).
+    /// Источник живёт на потоке рендера и вызывается там раз на показанный кадр. Прежний источник, если был,
+    /// заменяется. Учёт «сценарий ставил источник» ведётся с момента вызова, а не с момента доставки:
+    /// даже недоставленная установка не должна остаться без возврата.
+    pub fn install_ui_overlay_for_scenario(&self, source: Box<dyn UiFrameSource>) -> ControlDelivery {
+        self.scenario_claim.note(|touched| touched.ui_overlay = true);
+        self.control.ui_overlay(UiOverlayCommand::Install(source))
+    }
+
+    /// Сценарий: снять источник кадра UI. Если доставлено, конец сценария второй раз его не снимает.
+    /// Снятие без установки безвредно: поток рендера ответит «уже снят».
+    pub fn remove_ui_overlay_for_scenario(&self) -> ControlDelivery {
+        let delivery = self.control.ui_overlay(UiOverlayCommand::Remove);
+        if delivery.is_delivered() {
+            self.scenario_claim.note(|touched| touched.ui_overlay = false);
+        }
+        delivery
+    }
+
     /// Штатная политика линии кадра — из конфига рендера.
     pub fn configured_present_target(&self) -> PresentTargetSetting {
         PresentTargetSetting {
@@ -248,6 +292,14 @@ impl GpuServices {
         let mut effects = RenderRestoreEffects::default();
         if !touched.any() {
             return effects;
+        }
+        if touched.ui_overlay {
+            // UI первым: стекло над видоискателем не должно пережить сценарий и мешать остальным возвратам.
+            let delivery = self.control.ui_overlay(UiOverlayCommand::Remove);
+            if !delivery.is_delivered() {
+                tracing::warn!(target: LOG_TARGET, setting = "ui_overlay", ?delivery, "снятие источника UI не доставлено");
+            }
+            effects.adjustments.push(("ui_overlay", delivery));
         }
         let mut send = |name: &'static str, adjustment: RenderAdjustment| {
             let delivery = self.control.adjust(adjustment);

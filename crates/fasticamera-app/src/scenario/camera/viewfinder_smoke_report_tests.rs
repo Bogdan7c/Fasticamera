@@ -54,7 +54,7 @@ fn thermal() -> ThermalSnapshot {
 }
 
 /// Минута 60 к/с, каждый показанный кадр прошёл ISP, всё в бюджете.
-fn healthy() -> ViewfinderSmokeObservation {
+pub(in crate::scenario::camera) fn healthy() -> ViewfinderSmokeObservation {
     ViewfinderSmokeObservation {
         failure: None,
         session: session(),

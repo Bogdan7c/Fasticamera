@@ -11,6 +11,8 @@ publish.workspace = true
 ui-core.workspace = true
 # Только словарь хаптики (`HapticPattern`): элемент сообщает событие, паттерн — из таблицы токенов.
 shell-contract.workspace = true
+# Пресеты стекла хранят `GlassStyle` из нейтрального словаря рисования (решение 86).
+ui-draw.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 

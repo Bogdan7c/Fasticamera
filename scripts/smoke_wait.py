@@ -33,6 +33,7 @@ from pathlib import Path
 import smoke_checks
 import smoke_checks_ae_trace
 import smoke_checks_three_a
+import smoke_checks_glass
 import smoke_checks_viewfinder
 import smoke_logcat
 import smoke_neutral_card
@@ -198,10 +199,12 @@ CHECKS: dict[str, ScenarioCheck] = {
     "video-headroom-bench": ignoring_observations(smoke_checks_viewfinder.check_video_headroom_bench),
     "3a": ignoring_observations(smoke_checks_three_a.check_three_a),
     "ae-trace": ignoring_observations(smoke_checks_ae_trace.check_ae_trace),
+    "glass": ignoring_observations(smoke_checks_glass.check_glass),
 }
 
 NOTES: dict[str, Callable[[dict], list[str]]] = {
     "3a": smoke_checks_three_a.three_a_notes,
+    "glass": smoke_checks_glass.glass_notes,
 }
 """Пояснения к вердикту прошедшего сценария (не провал): печатаются после вердикта, как заметки пост-проверок."""
 
@@ -449,8 +452,8 @@ def parse_arguments(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-SCREENSHOT_SCENARIOS = frozenset({"raw-stream", "raw-stream-endurance", "viewfinder", "3a"})
-"""Сценарии, на стадии ``viewfinder_live`` (``3a`` — ``awb_ready``) которых драйвер делает скриншоты и после результата их анализирует."""
+SCREENSHOT_SCENARIOS = frozenset({"raw-stream", "raw-stream-endurance", "viewfinder", "3a", "glass"})
+"""Сценарии, на стадии ``viewfinder_live`` (``3a`` — ``awb_ready``, ``glass`` — ``glass_live``) которых драйвер делает скриншоты и после результата их анализирует."""
 
 
 NEUTRAL_CARD_SCENARIOS = frozenset({"viewfinder", "3a"})

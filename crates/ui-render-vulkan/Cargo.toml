@@ -1,0 +1,36 @@
+[package]
+name = "ui-render-vulkan"
+description = "GPU-рендер UI и материала Liquid Glass поверх живого фона: исполняет список рисования ui-draw шейдерами (паритет с эталоном ui-draw), пирамида размытия фона, SDF-текст и иконки"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+# Шейдеры (GLSL) компилируются в build.rs той же логикой, что у gpu-vulkan и isp-vulkan (решение 33).
+build = "build.rs"
+
+[dependencies]
+ash.workspace = true
+# Vulkan — только через растровый набор gpu-vulkan (решение 52).
+gpu-vulkan.workspace = true
+# Что рисовать: словарь, эталонные формулы, атлас (решение 86).
+ui-draw.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[features]
+# Синтетические подложки (`testing`) для тестов и стенда: compute-шейдер узоров. В боевые сборки НЕ включается.
+test-support = ["gpu-vulkan/test-support"]
+
+[dev-dependencies]
+gpu-vulkan = { workspace = true, features = ["test-support"] }
+ui-render-vulkan = { path = ".", features = ["test-support"] }
+# Сквозной тест: сцена, пружины и токены элементов.
+ui-core.workspace = true
+ui-kit.workspace = true
+shell-contract.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
