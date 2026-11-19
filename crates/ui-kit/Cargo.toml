@@ -1,0 +1,21 @@
+[package]
+name = "ui-kit"
+description = "Переиспользуемые элементы экрана камеры без знаний о камере: модели значений, механика шкалы с упорами, карусели и выбора, токены движения и хаптики (решение 84, сессия 10)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+ui-core.workspace = true
+# Только словарь хаптики (`HapticPattern`): элемент сообщает событие, паттерн — из таблицы токенов.
+shell-contract.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

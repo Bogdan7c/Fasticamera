@@ -23,9 +23,9 @@
 | Долгий тап: допустимый сдвиг пальца | **10 pt** | `[doc]` D `uikit/uilongpressgesturerecognizer/allowablemovement`: *"The default distance is 10 points."* |
 | Порог начала перетаскивания (pan) | **10 pt** | `[doc]` WWDC18 «Designing Fluid Interfaces» ([803](https://developer.apple.com/videos/play/wwdc2018/803/), 51:52): *"This distance is called hysteresis, and is usually 10 points in iOS."* В API-документации числа нет |
 | Тап: смещение, после которого это уже не тап | = порогу pan, 10 pt | `[estimate]` — следует из того, что тап проигрывает пану, начавшемуся по гистерезису |
-| Задержка одиночного тапа, если ждём двойной | «около полсекунды» | `[doc]` WWDC18 803 (56:17): *"tapping to show the app menu is delayed by about half a second"*. Максимальный интервал двойного тапа в документации не найден |
+| Задержка одиночного тапа, если ждём двойной | «около полсекунды» | `[doc]` WWDC18 803 (56:17): *"tapping to show the app menu is delayed by about half a second"*. Максимальный интервал двойного тапа в документации не найден . В `ui-core` (10) — параметр `TapSpec.max_interval_between_taps_ms` = 300 мс `[reverse]` Android `ViewConfiguration.DOUBLE_TAP_TIMEOUT` (исходник AOSP, 19.11.2026); уточнить на эталонном iPhone |
 | Порог начала щипка | не найден | `[estimate]` старт при изменении расстояния между пальцами на 10 pt |
-| Скорость пальца | pt/с по x и y | `[doc]` D `uikit/uipangesturerecognizer/velocity(in:)`: *"expressed in points per second"*; алгоритм оценки Apple не раскрывает. В `ui-core` — наименьшие квадраты по последним ~100 мс `[estimate]` (WWDC18 803, 52:34: *"We use the history of the touch"*) |
+| Скорость пальца | pt/с по x и y | `[doc]` D `uikit/uipangesturerecognizer/velocity(in:)`: *"expressed in points per second"*; алгоритм оценки Apple не раскрывает. В `ui-core` — наименьшие квадраты по последним ~100 мс `[estimate]` (WWDC18 803, 52:34: *"We use the history of the touch"*). Уточнено в 10 по исходнику AOSP `libs/input/VelocityTracker.cpp` `[reverse]`: полином 2-й степени (LSQ2) без весов, горизонт 100 мс, история 20 точек, палец стоит дольше 40 мс → скорость 0 |
 | Пауза пальца перед отпусканием | определять по ускорению, не по таймеру | `[doc]` WWDC18 803 (10:41–11:35): *"it turns out that's too slow ... instead we look at your finger's acceleration"* |
 
 ### 1.1. Состояния и арбитраж (UIKit)

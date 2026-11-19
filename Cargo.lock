@@ -644,6 +644,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "ui-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "shell-contract",
+ "thiserror",
+]
+
+[[package]]
+name = "ui-kit"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "shell-contract",
+ "thiserror",
+ "ui-core",
+]
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"

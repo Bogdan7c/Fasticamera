@@ -4,10 +4,12 @@
 //! Как именно воспроизвести паттерн на конкретном вибромоторе (примитив, готовый эффект или
 //! своя амплитудная волна) решает реализация сервиса, а не фича (решение владельца, сессия 02).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Паттерн отклика по образцу генераторов iOS.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+// `Deserialize` — чтобы таблицы «событие → паттерн» (`ui-kit`, сессия 10) задавались в конфиге
+// этим же словарём, без копии списка паттернов.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HapticPattern {
     /// `UISelectionFeedbackGenerator`: щелчок колеса (зум, переключатель режимов).

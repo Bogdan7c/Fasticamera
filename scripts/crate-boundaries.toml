@@ -16,6 +16,7 @@ roles = ["platform_neutral", "android_platform", "gpu", "output", "composition_r
 "isp-model" = "platform_neutral"
 "scene-estimation" = "platform_neutral"
 "ui-core" = "platform_neutral"
+"ui-kit" = "platform_neutral"
 "camera-screen" = "platform_neutral"
 "raw-frame-stream" = "platform_neutral"
 "camera-ndk-sys" = "android_platform"
@@ -68,6 +69,24 @@ applies_to_crates = ["camera-contract", "shell-contract"]
 forbid = []
 forbid_other_crates = true
 reason = "camera-contract и shell-contract — общие словари и не зависят от других crate-ов проекта, README «Карта модулей»"
+
+[[rules]]
+id = "ui-core-mechanics-only"
+applies_to_crates = ["ui-core"]
+forbid = [
+  "ui-kit", "camera-screen", "camera-contract", "camera-core", "raw-frame-stream", "isp-model",
+  "scene-estimation", "render-loop",
+]
+reason = "ui-core — механика UI без готовых элементов и без знаний о камере; видит только словарь шва shell-contract, сессия 10"
+
+[[rules]]
+id = "ui-kit-not-camera"
+applies_to_crates = ["ui-kit"]
+forbid = [
+  "camera-contract", "camera-core", "camera-screen", "raw-frame-stream", "isp-model", "scene-estimation",
+  "render-loop",
+]
+reason = "элементы ui-kit не знают о камере, GPU и Android (шкала не знает, что она «зум»), решение 84"
 
 [[rules]]
 id = "ui-render-not-camera"
