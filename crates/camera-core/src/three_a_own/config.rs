@@ -35,7 +35,7 @@ pub enum FlickerPolicy {
 #[serde(deny_unknown_fields, default)]
 pub struct OwnExposureConfig {
     /// Стартовое произведение «выдержка × ISO», с·ISO, пока нет ни предложения рендера, ни
-    /// памяти прошлого потока. 10 мс × ISO 400 = 4,0 — комнатный свет. **Оценка, сверить в 08c.**
+    /// памяти прошлого потока. 10 мс × ISO 400 = 4,0 — комнатный свет. **Оценка: 08c её не проверяла, сверить в 09.**
     pub initial_exposure_seconds_iso: f64,
     pub flicker: FlickerPolicy,
     /// Допуск «цель достигнута», EV: ISO целое, выдержка с шагом, поэтому точного попадания

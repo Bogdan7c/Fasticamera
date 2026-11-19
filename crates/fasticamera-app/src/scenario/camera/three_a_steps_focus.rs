@@ -508,6 +508,12 @@ impl ThreeAStep for LockStep {
                         })
                     }
                     None if deadline.is_expired(now) => {
+                        // Блокировка не взялась: на экране ещё «ПРИГОТОВЬСЯ: через 1 с», а удержания не будет.
+                        // Снимаем сразу, иначе ложная команда висела бы до конца сценария.
+                        let cleared = env.prompts.clear();
+                        if cleared != CommandOutcome::Queued {
+                            tracing::warn!(target: "fasticamera::scenario", ?cleared, "подсказка отсчёта не снята после несостоявшейся блокировки");
+                        }
                         let mut report = not_locked_report(AeSource::of(&env.status.three_a));
                         report.prompt_prepare = self.prompt_prepare;
                         self.report = Some(report);

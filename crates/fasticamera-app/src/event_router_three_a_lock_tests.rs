@@ -164,3 +164,33 @@ fn lock_without_countdown_starts_the_hold_at_once_and_reports_no_prepare() {
     );
     assert!(result["report"]["lock"]["prompt_prepare"].is_null(), "{result}");
 }
+
+#[test]
+fn lock_that_never_comes_clears_the_countdown_instead_of_leaving_it_on_screen() {
+    let (harness, result) = run_three_a_with(
+        // Вендорский AE: у фейкового HAL блокировку можно сломать (`ae_never_locks`); путь подсказок у шага общий.
+        short_config(|_| {}),
+        HalFaults {
+            ae_never_locks: true,
+            ..HalFaults::default()
+        },
+        |_| {},
+        |_, _| {},
+    );
+
+    assert_eq!(result["report"]["lock"]["locked"], false, "{result}");
+    let events = harness.shell.prompts.events();
+    // Только отсчёт, без «ЗАКРОЙ»/«УБЕРИ»: удержания не было.
+    assert!(
+        harness
+            .shell
+            .prompts
+            .shown_kinds()
+            .iter()
+            .all(|kind| *kind == OperatorPromptKind::Prepare),
+        "{events:?}"
+    );
+    // Шаг снимает отсчёт сам (1) и маршрутизатор ещё раз в конце (2): без снятия шагом «через 1 с» висело бы
+    // на экране все оставшиеся шаги.
+    assert_eq!(harness.shell.prompts.clear_count(), 2, "{events:?}");
+}
