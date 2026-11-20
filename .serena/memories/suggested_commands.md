@@ -33,7 +33,7 @@
 
 ## Экран камеры (сессия 12)
 - Экран стоит поверх видоискателя ВСЕГДА (`camera_screen.enabled = true`); сценарии smoke снимают его на своё время.
-- Сценарий 12a: `scripts/device-smoke.sh [--variant release] --timeout 180 screen` — 18 шагов: драйвер сам тапает/свайпает/жмёт `KEYCODE_VOLUME_UP` по стадиям `screen_gesture` (жест — в самой стадии); телефон не трогать. Точки — `camera.scenarios.screen` (доли экрана, `[derived]` из раскладки).
+- Сценарий screen (приёмка 12b): `scripts/device-smoke.sh [--variant release] --timeout 180 screen` — 18 шагов: драйвер сам тапает/свайпает/жмёт `KEYCODE_VOLUME_UP` по стадиям `screen_gesture` (жест — в самой стадии); телефон не трогать. Точки — `camera.scenarios.screen` (доли экрана, `[derived]` из раскладки).
 - Golden экрана: `cargo test -p fasticamera-app --all-features --test camera_screen_golden` (10 состояний, эталоны `test-assets/camera-screen/golden/`, хранение 6× уменьшено); перегенерация `FASTICAMERA_UPDATE_GOLDEN=1`, PNG полного кадра — `FASTICAMERA_GOLDEN_PREVIEW_DIR=<вне репо>`.
 - Логика экрана без GPU: `cargo test -p camera-screen`.
 
