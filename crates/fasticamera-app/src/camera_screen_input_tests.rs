@@ -257,3 +257,42 @@ fn receiver_state_follows_the_receiver_lifetime_without_sending() {
     // Проверка состояния ничего не отправляла и не считала.
     assert_eq!(sender.stats(), ScreenInputStats::default());
 }
+
+#[test]
+fn system_gesture_zones_travel_as_their_own_message_and_count_with_actions() {
+    use shell_contract::system_gesture::{RawEdgeInsetsPx, SystemGestureZones};
+    let zones = SystemGestureZones::try_from_insets(RawEdgeInsetsPx {
+        left: 0,
+        top: 156,
+        right: 0,
+        bottom: 132,
+    })
+    .expect("зоны");
+    let (sender, mut receiver) = screen_input_channel(4);
+    assert_eq!(sender.send_system_gesture_zones(zones), InputDelivery::Queued);
+    assert_eq!(drain(&mut receiver), vec![ScreenInput::SystemGestureZones(zones)]);
+    let stats = sender.stats();
+    assert_eq!((stats.queued_actions, stats.queued_touches), (1, 0));
+}
+
+#[test]
+fn system_gesture_zones_overflow_is_counted_without_owing_a_gap_and_gone_receiver_is_reported() {
+    use shell_contract::system_gesture::SystemGestureZones;
+    let (sender, receiver) = screen_input_channel(1);
+    assert_eq!(
+        sender.send_system_gesture_zones(SystemGestureZones::NONE),
+        InputDelivery::Queued
+    );
+    assert_eq!(
+        sender.send_system_gesture_zones(SystemGestureZones::NONE),
+        InputDelivery::Overflowed
+    );
+    assert!(!sender.owes_gap(), "потеря зон жесты не ломает");
+    assert_eq!(sender.stats().overflowed_actions, 1);
+    drop(receiver);
+    assert_eq!(
+        sender.send_system_gesture_zones(SystemGestureZones::NONE),
+        InputDelivery::ReceiverGone
+    );
+    assert_eq!(sender.stats().receiver_gone, 1);
+}

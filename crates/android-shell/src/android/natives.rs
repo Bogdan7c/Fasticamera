@@ -21,6 +21,7 @@ use crate::command_codes::platform_command_from_code;
 use crate::key_decode::{DecodedKey, KeyConsumption, RawKeyEvent, decode_key_event};
 use crate::permission_answer::{RationaleVisibility, classify_permission_answer};
 use crate::surface_registry::frame_rate_outcome;
+use crate::system_gesture_decode::decode_system_gesture_zones;
 use crate::touch_decode::{DecodedMotion, decode_motion_event};
 
 /// Класс Kotlin с `external`-методами оболочки.
@@ -61,6 +62,10 @@ const SHELL_NATIVE_METHODS: &[NativeMethod] = &[
     },
     native_method! {
         static fn native_hardware_key(key_code: jint, action: jint, repeat_count: jint, event_time_millis: jlong) -> bool,
+        error_policy = LogAndCountCallbackFailure,
+    },
+    native_method! {
+        static fn native_system_gesture_zones(left: jint, top: jint, right: jint, bottom: jint),
         error_policy = LogAndCountCallbackFailure,
     },
     native_method! {
@@ -317,6 +322,29 @@ fn native_hardware_key<'local>(
             Ok(false)
         }
     }
+}
+
+/// Зоны обязательных системных жестов (`WindowInsets.Type.mandatorySystemGestures()`), пиксели окна в порядке
+/// `Insets`: left, top, right, bottom. Событие-состояние: отправка без блокировки; потерю при полной очереди
+/// считает и логирует `send_event`. Невозможные числа — лог и счётчик, прежние зоны остаются.
+fn native_system_gesture_zones<'local>(
+    _env: &mut Env<'local>,
+    _class: JClass<'local>,
+    left: jint,
+    top: jint,
+    right: jint,
+    bottom: jint,
+) -> jni::errors::Result<()> {
+    let Some(runtime) = runtime_or_warn("system_gesture_zones") else {
+        return Ok(());
+    };
+    match decode_system_gesture_zones(left, top, right, bottom) {
+        Ok(zones) => {
+            runtime.send_event(ShellEvent::SystemGestureZones(zones));
+        }
+        Err(error) => record_callback_failure(runtime, "system_gesture_zones", &error),
+    }
+    Ok(())
 }
 
 fn native_camera_permission_result<'local>(

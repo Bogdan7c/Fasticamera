@@ -12,6 +12,7 @@
 //! * [`event`] и [`event_queue`] — события оболочки и ограниченная очередь с учётом потерь;
 //! * [`surface`] — surface экрана и квитанция её освобождения;
 //! * [`hardware_key`] — аппаратные клавиши (громкость как затвор);
+//! * [`system_gesture`] — зоны обязательных системных жестов по краям экрана;
 //! * [`touch`], [`orientation`], [`permission`] — касания, физическая ориентация, разрешение камеры;
 //! * [`thermal`] и [`thermal_policy`] — показания тепла и единственный владелец тепловых решений;
 //! * [`haptics`], [`commands`] — намерения к платформе (вибрация, разрешение, частота кадров…);
@@ -40,6 +41,7 @@ pub mod permission;
 pub mod power;
 pub mod surface;
 pub mod sync_fence;
+pub mod system_gesture;
 pub mod thermal;
 pub mod thermal_policy;
 pub mod touch;

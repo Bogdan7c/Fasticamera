@@ -12,6 +12,7 @@ use crate::hardware_key::HardwareKeyEvent;
 use crate::orientation::DeviceOrientation;
 use crate::permission::CameraPermission;
 use crate::surface::{NativeSurface, SurfaceGeneration, SurfaceReleaseRequest, SurfaceSize};
+use crate::system_gesture::SystemGestureZones;
 use crate::thermal::ThermalReading;
 use crate::touch::TouchSample;
 
@@ -43,6 +44,11 @@ pub enum ShellEvent {
     HardwareKey(HardwareKeyEvent),
     /// Физическая ориентация телефона сменилась.
     DeviceOrientation(DeviceOrientation),
+    /// Платформа сообщила (или изменила) полосы обязательных системных жестов по краям экрана.
+    /// Касание, начатое в такой полосе, принадлежит системе. Редкое событие-СОСТОЯНИЕ: «критичное»
+    /// в очереди (касания его не вытесняют); потеря при полной очереди считается, а зоны остаются
+    /// прежними до следующего сообщения платформы.
+    SystemGestureZones(SystemGestureZones),
     /// Новое тепловое показание (по смене статуса или по периодическому опросу запаса).
     ThermalStatus(ThermalReading),
     /// Ответ на запрос разрешения камеры.
@@ -64,6 +70,7 @@ pub enum ShellEventKind {
     TouchGap,
     HardwareKey,
     DeviceOrientation,
+    SystemGestureZones,
     ThermalStatus,
     CameraPermission,
     PlatformCommandFailed,
@@ -82,6 +89,7 @@ impl ShellEventKind {
             ShellEventKind::TouchGap => "touch_gap",
             ShellEventKind::HardwareKey => "hardware_key",
             ShellEventKind::DeviceOrientation => "device_orientation",
+            ShellEventKind::SystemGestureZones => "system_gesture_zones",
             ShellEventKind::ThermalStatus => "thermal_status",
             ShellEventKind::CameraPermission => "camera_permission",
             ShellEventKind::PlatformCommandFailed => "platform_command_failed",
@@ -101,6 +109,7 @@ impl ShellEvent {
             ShellEvent::TouchGap { .. } => ShellEventKind::TouchGap,
             ShellEvent::HardwareKey(_) => ShellEventKind::HardwareKey,
             ShellEvent::DeviceOrientation(_) => ShellEventKind::DeviceOrientation,
+            ShellEvent::SystemGestureZones(_) => ShellEventKind::SystemGestureZones,
             ShellEvent::ThermalStatus(_) => ShellEventKind::ThermalStatus,
             ShellEvent::CameraPermission(_) => ShellEventKind::CameraPermission,
             ShellEvent::PlatformCommandFailed(_) => ShellEventKind::PlatformCommandFailed,
@@ -124,6 +133,7 @@ mod tests {
             ShellEventKind::TouchGap,
             ShellEventKind::HardwareKey,
             ShellEventKind::DeviceOrientation,
+            ShellEventKind::SystemGestureZones,
             ShellEventKind::ThermalStatus,
             ShellEventKind::CameraPermission,
             ShellEventKind::PlatformCommandFailed,

@@ -2,6 +2,7 @@ package dev.fasticamera
 
 import android.Manifest
 import android.app.Activity
+import android.graphics.Insets
 import android.os.Bundle
 import android.util.Log
 import android.view.KeyEvent
@@ -22,6 +23,9 @@ import org.json.JSONObject
  */
 class MainActivity : Activity() {
     private lateinit var platform: ShellPlatform
+
+    /** Последние отправленные в Rust зоны системных жестов: повтор тех же чисел не пересылаем. */
+    private var lastSystemGestureZones: Insets? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -44,6 +48,12 @@ class MainActivity : Activity() {
             addView(surfaceView)
             addView(statusView)
             addView(promptView)
+            // Зоны обязательных системных жестов уходят в Rust: свайп от края, вытягивающий скрытую панель
+            // навигации, приходит в окно и обычными касаниями, а экран камеры не должен считать его своим.
+            setOnApplyWindowInsetsListener { _, insets ->
+                forwardSystemGestureZones(insets)
+                insets
+            }
         })
         // После setContentView: контроллер панелей живёт у DecorView, а её создаёт setContentView.
         enterFullscreen()
@@ -61,6 +71,29 @@ class MainActivity : Activity() {
 
         val scenario = intent.getStringExtra(EXTRA_SCENARIO)
         statusView.text = if (scenario != null) NativeBridge.runScenario(scenario) else initReport
+    }
+
+    /**
+     * Пересылает зоны системных жестов в Rust при каждом изменении. `getInsetsIgnoringVisibility` даёт зону
+     * и при скрытой панели (обычный `getInsets` вернул бы ноль). Окно с `SurfaceView` на весь экран, поэтому
+     * толщины от краёв окна — это толщины от краёв surface. Решений здесь нет: только пересылка.
+     */
+    private fun forwardSystemGestureZones(insets: WindowInsets) {
+        val zones = insets.getInsetsIgnoringVisibility(WindowInsets.Type.mandatorySystemGestures())
+        if (zones == lastSystemGestureZones) return
+        lastSystemGestureZones = zones
+        ShellBridge.nativeSystemGestureZones(zones.left, zones.top, zones.right, zones.bottom)
+    }
+
+    /**
+     * Вернувшись в фокус (после шторки уведомлений, другого приложения), панели снова скрываем: иначе они
+     * остаются висеть (рекомендация документации immersive).
+     */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            enterFullscreen()
+        }
     }
 
     override fun onResume() {

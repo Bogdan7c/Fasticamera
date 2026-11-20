@@ -44,6 +44,12 @@ object ShellBridge {
      */
     @JvmStatic external fun nativeHardwareKey(keyCode: Int, action: Int, repeatCount: Int, eventTimeMillis: Long): Boolean
 
+    /**
+     * Толщины зон обязательных системных жестов по краям окна, пиксели, в порядке `android.graphics.Insets`
+     * (`mandatorySystemGestures`). Касание, начатое в зоне, принадлежит системе; решает Rust.
+     */
+    @JvmStatic external fun nativeSystemGestureZones(left: Int, top: Int, right: Int, bottom: Int)
+
     @JvmStatic external fun nativeCameraPermissionResult(grantResults: IntArray, shouldShowRationale: Boolean)
 
     /** Команда, принятая от Rust, не выполнилась; [command] — один из `ShellPlatform.COMMAND_*`. */

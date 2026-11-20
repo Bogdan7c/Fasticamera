@@ -38,6 +38,7 @@ use camera_screen::shutter::ShotRequest;
 use camera_screen::{CameraScreen, ScreenAction, ScreenBuildError, ScreenTouch};
 use shell_contract::hardware_key::HardwareKeyEvent;
 use shell_contract::orientation::DeviceOrientation;
+use shell_contract::system_gesture::SystemGestureZones;
 use shell_contract::touch::TouchSample;
 use ui_kit::tokens::UiKitTokens;
 
@@ -173,6 +174,9 @@ pub struct CameraScreenService {
     installs: u64,
     recovery: RecoveryPlan,
     recovery_counters: RecoveryCounters,
+    /// Последние зоны системных жестов от платформы. Платформа шлёт их только при изменении (обычно один раз,
+    /// до установки экрана), а экран ставится и переставляется — свежий экран получает их сразу при установке.
+    system_gesture_zones: SystemGestureZones,
 }
 
 impl CameraScreenService {
@@ -200,6 +204,7 @@ impl CameraScreenService {
             installs: 0,
             recovery: RecoveryPlan::default(),
             recovery_counters: RecoveryCounters::default(),
+            system_gesture_zones: SystemGestureZones::NONE,
         }
     }
 
@@ -273,6 +278,10 @@ impl CameraScreenService {
                 // Ориентацию экран узнаёт сразу, а не при следующем повороте телефона.
                 if let Some(orientation) = env.orientation {
                     self.route_orientation(orientation);
+                }
+                // Зоны системных жестов — тоже сразу: свежий экран о них иначе не узнал бы до смены на стороне платформы.
+                if !self.system_gesture_zones.is_none() {
+                    self.send_system_gesture_zones(self.system_gesture_zones);
                 }
                 tracing::info!(target: LOG_TARGET, installs = self.installs, "экран камеры поставлен");
             }
@@ -416,6 +425,26 @@ impl CameraScreenService {
 
     pub fn route_orientation(&mut self, orientation: DeviceOrientation) {
         self.send_action(ScreenAction::DeviceOrientationChanged(orientation));
+    }
+
+    /// Зоны обязательных системных жестов: запоминает (для следующей установки экрана) и отдаёт установленному.
+    pub fn route_system_gesture_zones(&mut self, zones: SystemGestureZones) {
+        self.system_gesture_zones = zones;
+        self.send_system_gesture_zones(zones);
+    }
+
+    /// Последние зоны системных жестов, известные сервису (для тестов и диагностики).
+    pub fn system_gesture_zones(&self) -> SystemGestureZones {
+        self.system_gesture_zones
+    }
+
+    fn send_system_gesture_zones(&mut self, zones: SystemGestureZones) {
+        // Экрана нет — зоны не потеряны, они запомнены и уйдут при установке: в «отброшенный вход» не пишем.
+        if let Some(installed) = &self.installed
+            && installed.sender.send_system_gesture_zones(zones) == InputDelivery::ReceiverGone
+        {
+            self.dropped.actions += 1;
+        }
     }
 
     fn send_touch(&mut self, touch: ScreenTouch) {

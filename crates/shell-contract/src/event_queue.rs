@@ -445,6 +445,36 @@ mod tests {
     }
 
     #[test]
+    fn system_gesture_zones_survive_touch_flood_and_keep_their_data() {
+        use crate::system_gesture::{RawEdgeInsetsPx, ScreenEdge, SystemGestureZones};
+        let zones = SystemGestureZones::try_from_insets(RawEdgeInsetsPx {
+            left: 0,
+            top: 156,
+            right: 0,
+            bottom: 132,
+        })
+        .expect("корректные зоны");
+        let (sender, receiver) = channel(2, 2);
+        for index in 0..50 {
+            sender.send(touch(index));
+        }
+        assert_eq!(
+            sender.send(ShellEvent::SystemGestureZones(zones)),
+            SendOutcome::Delivered
+        );
+        let received: Vec<_> = drain(&receiver)
+            .into_iter()
+            .filter_map(|event| match event {
+                ShellEvent::SystemGestureZones(zones) => Some(zones),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(received, [zones]);
+        assert_eq!(received[0].thickness_px(ScreenEdge::Bottom), 132);
+        assert_eq!(receiver.stats().critical_events_lost, 0);
+    }
+
+    #[test]
     fn order_of_mixed_events_is_preserved() {
         let (sender, receiver) = channel(8, 8);
         sender.send(ShellEvent::Resumed);

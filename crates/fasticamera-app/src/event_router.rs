@@ -266,6 +266,7 @@ impl EventRouter {
             ShellEvent::Touch(sample) => self.camera_screen.route_touch(sample),
             ShellEvent::TouchGap { .. } => self.camera_screen.route_touch_gap(),
             ShellEvent::HardwareKey(key) => self.camera_screen.route_hardware_key(key),
+            ShellEvent::SystemGestureZones(zones) => self.camera_screen.route_system_gesture_zones(zones),
             // Разрешению и отказам платформы потребителей в 02 нет: только лог.
             ShellEvent::CameraPermission(_) | ShellEvent::PlatformCommandFailed(_) => {}
         }

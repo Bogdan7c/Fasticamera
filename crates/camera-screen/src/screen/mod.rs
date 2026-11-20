@@ -36,11 +36,13 @@ mod diagnostics;
 mod effect_queue;
 mod error;
 mod stage;
+mod system_gesture_filter;
 
 use std::sync::Arc;
 
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::surface::SurfaceSize;
+use shell_contract::system_gesture::SystemGestureZones;
 use shell_contract::touch::TouchSample;
 use ui_core::time::MotionPreference;
 use ui_draw::draw_list::DrawList;
@@ -65,6 +67,7 @@ use crate::widget::{Ctx, Outputs};
 use effect_queue::{EffectQueue, PushOutcome};
 use error::FrameBuildError;
 use stage::Stage;
+use system_gesture_filter::{SystemGestureFilter, TouchAdmission};
 
 /// Сколько раз за кадр повторяется «синхронизация → события элементов → действия». Действие элемента меняет
 /// состояние, а оно — другие элементы; три прохода покрывают цепочку «шкала → EV → «солнце»/панель».
@@ -119,6 +122,8 @@ pub struct CameraScreen {
     clock: TimeKeeper,
     diagnostics: ScreenDiagnostics,
     light: LightDirection,
+    /// Зоны системных жестов и указатели, отданные системе (фильтр входа касаний).
+    system_gestures: SystemGestureFilter,
 }
 
 impl CameraScreen {
@@ -142,13 +147,32 @@ impl CameraScreen {
             },
             diagnostics: ScreenDiagnostics::default(),
             light,
+            system_gestures: SystemGestureFilter::default(),
         })
+    }
+
+    /// Зоны обязательных системных жестов по краям surface (пиксели). Касание, начатое в зоне, принадлежит
+    /// системе и экраном не обрабатывается (см. [`system_gesture_filter`]). Это фильтр входа, а не состояние
+    /// экрана, поэтому метод фасада, а не действие редьюсера. Идущие касания решение не меняют.
+    pub fn set_system_gesture_zones(&mut self, zones: SystemGestureZones) {
+        self.system_gestures.set_zones(zones);
+    }
+
+    /// Зоны, которые экран применяет сейчас.
+    pub fn system_gesture_zones(&self) -> SystemGestureZones {
+        self.system_gestures.zones()
     }
 
     /// Касание с экрана. Пока сцены нет, касание теряется со счётчиком, а не молча: до первого успешного
     /// кадра — `touches_dropped_before_first_frame`, после ошибки или смены размера —
     /// `touches_dropped_while_stage_missing`.
+    ///
+    /// Касание, начатое в зоне системного жеста, не доходит до сцены вообще (`touches_ignored_in_system_gesture_zone`
+    /// считает касания, а не образцы). Разрыв потока забывает такие касания даже без сцены.
     pub fn handle_touch(&mut self, input: ScreenTouch) {
+        if matches!(input, ScreenTouch::Gap) {
+            self.system_gestures.reset_pointers();
+        }
         let Some(stage) = &mut self.stage else {
             if self.stage_ever_built {
                 self.diagnostics.touches_dropped_while_stage_missing += 1;
@@ -159,6 +183,14 @@ impl CameraScreen {
         };
         match input {
             ScreenTouch::Sample(sample) => {
+                match self.system_gestures.admit(self.state.surface_size(), &sample) {
+                    TouchAdmission::Process => {}
+                    TouchAdmission::IgnoredStart => {
+                        self.diagnostics.touches_ignored_in_system_gesture_zone += 1;
+                        return;
+                    }
+                    TouchAdmission::IgnoredContinuation => return,
+                }
                 self.diagnostics.touches_received += 1;
                 stage.kit_mut().scene_mut().handle_touch(&sample);
             }
@@ -491,6 +523,9 @@ mod screen_kit_tests;
 #[cfg(test)]
 #[path = "screen_panel_layout_tests.rs"]
 mod screen_panel_layout_tests;
+#[cfg(test)]
+#[path = "screen_system_gesture_tests.rs"]
+mod screen_system_gesture_tests;
 #[cfg(test)]
 #[path = "screen_tests.rs"]
 mod screen_tests;

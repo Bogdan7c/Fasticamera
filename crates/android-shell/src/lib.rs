@@ -5,7 +5,7 @@
 //! команд, хаптики, датчиков, тепла и диагностики. Бизнес-логики здесь нет.
 //!
 //! Раскладка:
-//! * нейтральная часть (собирается и тестируется на ПК): [`config`], [`touch_decode`], [`key_decode`] (клавиши громкости),
+//! * нейтральная часть (собирается и тестируется на ПК): [`config`], [`touch_decode`], [`key_decode`] (клавиши громкости), [`system_gesture_decode`] (зоны системных жестов),
 //!   [`haptic_plan`], [`permission_answer`], [`orientation_classifier`], [`gravity_source`] (гравитация для блика: путь и фильтр), [`surface_registry`],
 //!   [`accounting`], [`thermal_codes`], [`command_codes`], [`vsync_timeline`],
 //!   [`battery_snapshot`] (разбор снимка батареи от Kotlin), [`power_pacing`] (сетка опроса);
@@ -29,6 +29,7 @@ pub mod performance_hint_codes;
 pub mod permission_answer;
 pub mod power_pacing;
 pub mod surface_registry;
+pub mod system_gesture_decode;
 pub mod thermal_codes;
 pub mod touch_decode;
 pub mod vsync_timeline;

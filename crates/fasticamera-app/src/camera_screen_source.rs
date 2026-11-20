@@ -268,6 +268,7 @@ impl CameraScreenSource {
             match input {
                 ScreenInput::Touch(touch) => self.screen.handle_touch(touch),
                 ScreenInput::Action(action) => self.screen.handle_action(action),
+                ScreenInput::SystemGestureZones(zones) => self.screen.set_system_gesture_zones(zones),
             }
         }
         any

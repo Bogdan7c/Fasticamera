@@ -29,6 +29,7 @@ use std::sync::{Arc, Weak};
 
 use camera_screen::{KeyPhase as ScreenKeyPhase, ScreenAction, ScreenTouch};
 use shell_contract::hardware_key::{HardwareKey, HardwareKeyEvent, KeyPhase as ShellKeyPhase};
+use shell_contract::system_gesture::SystemGestureZones;
 
 /// Клавиша громкости → действие экрана. Первое нажатие — `Pressed` (затвор), автоповтор удержания — `Repeated`
 /// (в v1 без действия), отпускание — `Released`. Обе клавиши громкости равнозначны (`scope-v1.md`).
@@ -50,6 +51,9 @@ pub enum ScreenInput {
     Touch(ScreenTouch),
     /// Действие над экраном (клавиша, ориентация, итог снимка…).
     Action(ScreenAction),
+    /// Новые зоны обязательных системных жестов: настройка фильтра входа экрана, не действие редьюсера
+    /// (зоны не часть состояния экрана — они лишь решают, какие касания до него доходят).
+    SystemGestureZones(SystemGestureZones),
 }
 
 /// Итог отправки одного сообщения. Не `bool`: «в очереди», «отброшено из-за переполнения» и «получателя нет» —
@@ -165,7 +169,18 @@ pub struct ScreenInputInjector {
 impl ScreenInputInjector {
     /// Кладёт действие в очередь без ожидания.
     pub fn inject(&self, action: ScreenAction) -> InputDelivery {
-        let delivery = self.try_send(ScreenInput::Action(action));
+        self.send_counted_as_action(ScreenInput::Action(action))
+    }
+
+    /// Кладёт в очередь зоны системных жестов. В счётчиках идёт вместе с действиями: это такое же редкое
+    /// не-касание, потеря которого жесты не ломает (зоны остаются прежними до следующего сообщения платформы).
+    pub fn inject_system_gesture_zones(&self, zones: SystemGestureZones) -> InputDelivery {
+        self.send_counted_as_action(ScreenInput::SystemGestureZones(zones))
+    }
+
+    /// Отправка не-касания с учётом в счётчиках действий.
+    fn send_counted_as_action(&self, input: ScreenInput) -> InputDelivery {
+        let delivery = self.try_send(input);
         match delivery {
             InputDelivery::Queued => &self.counters.queued_actions,
             InputDelivery::Overflowed => &self.counters.overflowed_actions,
@@ -284,6 +299,11 @@ impl ScreenInputSender {
     /// Действие над экраном (клавиша, ориентация…).
     pub fn send_action(&self, action: ScreenAction) -> InputDelivery {
         self.injector.inject(action)
+    }
+
+    /// Зоны системных жестов (редкое не-касание, без ожидания).
+    pub fn send_system_gesture_zones(&self, zones: SystemGestureZones) -> InputDelivery {
+        self.injector.inject_system_gesture_zones(zones)
     }
 
     /// Должен ли отправитель экрану разрыв (для тестов и диагностики).

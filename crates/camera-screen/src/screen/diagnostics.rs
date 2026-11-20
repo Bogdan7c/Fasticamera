@@ -25,6 +25,9 @@ pub struct ScreenDiagnostics {
     pub touches_received: u64,
     /// Касания, пришедшие до первого кадра: сцены ещё нет, они потеряны (счётчик, а не тишина).
     pub touches_dropped_before_first_frame: u64,
+    /// Касания (от опускания пальца до отрыва), начатые в зоне обязательного системного жеста: они
+    /// принадлежат системе и экраном не обрабатываются.
+    pub touches_ignored_in_system_gesture_zone: u64,
     /// Разрывы потока касаний.
     pub touch_gaps: u64,
     pub gestures: GestureCounters,
