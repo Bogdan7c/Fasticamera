@@ -25,6 +25,12 @@ import org.json.JSONObject
  * `exposureController` — какой автоэкспозицией управлять на один запуск (intent-параметр
  * `exposure_controller`, поле `camera.exposure_controller`: `own` или `vendor`). Kotlin значение не
  * разбирает, а передаёт как есть; неизвестное имя Rust отвергает при initialize.
+ *
+ * `toneContrast` / `toneDisplayMiddleGray` — ручки тона видоискателя на один запуск (intent-параметры
+ * `tone_contrast` и `tone_display_middle_gray`, секция `render.viewfinder.tone`, сессия 12b): подбор контраста
+ * и средних тонов глазами владельца без пересборки. Число уходит в JSON числом, а нечисловая строка — как
+ * есть строкой: Rust отвергает её при initialize громко, а не берёт молча умолчание. Пределы (контраст > 0,
+ * середина в 0…1, кривая строится при подтяжке AE) проверяет Rust.
  */
 data class NativeConfig(
     val buildType: String,
@@ -33,6 +39,8 @@ data class NativeConfig(
     val abWindowMs: Long? = null,
     val enduranceMs: Long? = null,
     val exposureController: String? = null,
+    val toneContrast: String? = null,
+    val toneDisplayMiddleGray: String? = null,
 ) {
     fun toJson(): String {
         val json = JSONObject()
@@ -59,8 +67,18 @@ data class NativeConfig(
         if (camera.length() > 0) {
             json.put("camera", camera)
         }
+        val tone = JSONObject()
+        toneContrast?.let { value -> tone.put("contrast", numberOrRaw(value)) }
+        toneDisplayMiddleGray?.let { value -> tone.put("display_middle_gray", numberOrRaw(value)) }
+        if (tone.length() > 0) {
+            // Частичная секция: остальные поля render.* Rust берёт по умолчанию.
+            json.put("render", JSONObject().put("viewfinder", JSONObject().put("tone", tone)))
+        }
         return json.toString()
     }
+
+    /** Число — числом; иначе исходная строка, чтобы Rust отверг её с понятной ошибкой. */
+    private fun numberOrRaw(value: String): Any = value.trim().toDoubleOrNull() ?: value
 
     companion object {
         /** Intent-параметр с фильтром логов, например `info,fasticamera::scenario=trace`. */
@@ -78,6 +96,12 @@ data class NativeConfig(
         /** Intent-параметр с именем автоэкспозиции: `own` или `vendor` (проверяет Rust). */
         const val EXTRA_EXPOSURE_CONTROLLER = "exposure_controller"
 
+        /** Intent-параметр с контрастом тона видоискателя (строка с числом, проверяет Rust). */
+        const val EXTRA_TONE_CONTRAST = "tone_contrast"
+
+        /** Intent-параметр со средним серым экрана, линейная яркость 0…1 (строка с числом, проверяет Rust). */
+        const val EXTRA_TONE_DISPLAY_MIDDLE_GRAY = "tone_display_middle_gray"
+
         fun fromIntent(intent: Intent): NativeConfig = NativeConfig(
             buildType = BuildConfig.BUILD_TYPE,
             logFilter = intent.getStringExtra(EXTRA_LOG_FILTER) ?: BuildConfig.LOG_FILTER,
@@ -92,6 +116,9 @@ data class NativeConfig(
             enduranceMs = intent.getStringExtra(EXTRA_ENDURANCE_MS)?.toLongOrNull(),
             // Нет параметра — null, поле в JSON не попадает, Rust берёт умолчание (own).
             exposureController = intent.getStringExtra(EXTRA_EXPOSURE_CONTROLLER),
+            // Нет параметра — null, секция тона в JSON не попадает, Rust берёт умолчание.
+            toneContrast = intent.getStringExtra(EXTRA_TONE_CONTRAST),
+            toneDisplayMiddleGray = intent.getStringExtra(EXTRA_TONE_DISPLAY_MIDDLE_GRAY),
         )
     }
 }

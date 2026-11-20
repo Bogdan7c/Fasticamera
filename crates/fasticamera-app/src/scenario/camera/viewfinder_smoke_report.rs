@@ -176,8 +176,40 @@ fn relative_gap(value: f64, reference: f64) -> Option<f64> {
     ratio((value - reference).abs(), reference)
 }
 
-/// Вердикт: список нарушений (пустой — прошёл).
+/// Как судить переполнения джиттер-буфера видоискателя.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JitterOverflowJudgement {
+    /// Сверх дрейфа часов — провал (сценарии без касаний: `viewfinder`, `glass`).
+    BudgetIsViolation,
+    /// Только число в отчёте, без провала (решение 105).
+    ReportOnly,
+}
+
+/// Вердикт: список нарушений (пустой — прошёл). Переполнения буфера сверх дрейфа часов — провал.
 pub fn evaluate_viewfinder(config: &ViewfinderSmokeConfig, observation: &ViewfinderSmokeObservation) -> Vec<String> {
+    evaluate_viewfinder_with(config, observation, JitterOverflowJudgement::BudgetIsViolation)
+}
+
+/// Вердикт видоискателя под плотными касаниями (сценарий `screen`, 2 касания в секунду): всё то же, кроме
+/// порога переполнений джиттер-буфера — их число остаётся в отчёте (`pacing.jitter_overflow`), но не провал.
+///
+/// Решение 105 (12b): под касаниями итерации потока рендера иногда длиннее периода (в пойманном случае три
+/// подряд по 18–24 мс: сбор слота 6,7 мс, затем ожидание при отправке кадра 13 и 16,5 мс; запись UI под жестами
+/// 2–6 мс), опрос камеры опаздывает на такт, и буфер по замыслу выпускает кадр камеры, а не копит задержку:
+/// 0–5 за 12 с в release, 4–19 в debug. Удешевление потока рендера — сессия 16a; до неё порог здесь мерил бы
+/// известную нагрузку, а не поломку.
+pub fn evaluate_viewfinder_under_touch_load(
+    config: &ViewfinderSmokeConfig,
+    observation: &ViewfinderSmokeObservation,
+) -> Vec<String> {
+    evaluate_viewfinder_with(config, observation, JitterOverflowJudgement::ReportOnly)
+}
+
+fn evaluate_viewfinder_with(
+    config: &ViewfinderSmokeConfig,
+    observation: &ViewfinderSmokeObservation,
+    jitter_overflow: JitterOverflowJudgement,
+) -> Vec<String> {
     if let Some(failure) = &observation.failure {
         return vec![failure.describe()];
     }
@@ -236,7 +268,9 @@ pub fn evaluate_viewfinder(config: &ViewfinderSmokeConfig, observation: &Viewfin
         observation.white_balance.as_ref(),
     ));
     violations.extend(companion_violation(observation.companion));
-    violations.extend(jitter_overflow_violation(config, observation));
+    if jitter_overflow == JitterOverflowJudgement::BudgetIsViolation {
+        violations.extend(jitter_overflow_violation(config, observation));
+    }
     if observation.latency.samples == 0 {
         violations.push("задержка «сенсор → экран» не замерена ни разу".to_owned());
     }

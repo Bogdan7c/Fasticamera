@@ -18,8 +18,11 @@ object ShellBridge {
         System.loadLibrary("fasticamera")
     }
 
-    /** Activity создана: объект платформы для команд Rust → Kotlin и имя пакета (для датчиков NDK). */
-    @JvmStatic external fun nativeAttach(platform: ShellPlatform, packageName: String)
+    /**
+     * Activity создана: объект платформы для команд Rust → Kotlin. Имя пакета сюда больше не передаётся: оно
+     * приходит раньше, в [NativeBridge.initialize] (решение 106), чтобы датчики не ждали подключения окна.
+     */
+    @JvmStatic external fun nativeAttach(platform: ShellPlatform)
 
     /** Activity уничтожается: Rust отпускает глобальную ссылку на этот объект платформы. */
     @JvmStatic external fun nativeDetach(platform: ShellPlatform)

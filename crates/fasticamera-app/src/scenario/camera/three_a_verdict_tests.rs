@@ -641,3 +641,21 @@ fn our_ae_hitting_the_limit_at_every_shifted_point_means_ev_was_not_verified() {
         "один упор в предел — справка, не провал"
     );
 }
+
+/// Случай 12b (тёмная комната): опора EV 0 и точка +1 у потолка камеры, точка −1 сошлась, но судить её не по чему
+/// (`judge_points_against_baseline` сняла с неё «проверяемо»). Итог — честное «EV не проверен», а не молчаливый зелёный.
+#[test]
+fn limited_baseline_with_converged_minus_point_reports_ev_not_verified() {
+    let violations = violations_of(|o| {
+        make_own(o);
+        o.ev.iter_mut().for_each(|ev| {
+            for point in ev.points.iter_mut().filter(|point| point.bias_ev >= 0.0) {
+                point.ae_converged = false;
+                point.ae_limit_reached = true;
+                point.verifiable = false;
+            }
+            ev.points[2] = ev_point(-1.0, 0.81, false);
+        });
+    });
+    assert_single(&violations, "EV не проверен");
+}

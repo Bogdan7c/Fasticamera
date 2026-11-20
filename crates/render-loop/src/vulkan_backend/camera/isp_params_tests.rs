@@ -455,3 +455,25 @@ fn resolve_failure_after_a_gamut_change_does_not_reuse_params_of_the_other_gamut
         ParamsOutcome::ReusedAfterFailure(ParamsFailure::InvalidNeutral(_))
     ));
 }
+
+/// Ручки `viewfinder.tone` доходят до параметров кадра: контраст кривой — из конфига, а средний серый сцены
+/// (цель AE) превращается на экране в середину ИЗ КОНФИГА. Цель AE при этом не сдвигается.
+#[test]
+fn tone_knobs_from_the_config_reach_the_resolved_params_without_moving_the_ae_target() {
+    let tone = crate::config::ViewfinderToneConfig {
+        contrast: 1.8,
+        display_middle_gray: 0.24,
+    };
+    let stream = stream(calibration());
+    let mut cache = IspParamsCache::default().with_tone(tone);
+    cache.prepare(&frame(&stream, plain()), DAYLIGHT, DisplayGamut::Srgb);
+    let params = cache.current().expect("параметры есть");
+    assert_eq!(params.tone.parameters().contrast, 1.8);
+    let display = params.tone.map_channel(IspParamsCache::base_scene_middle_gray());
+    assert!((display - 0.24).abs() < 1e-4, "{display} против 0,24 из конфига");
+    assert_eq!(
+        IspParamsCache::base_scene_middle_gray(),
+        isp_model::tone::ToneCurveSettings::default().scene_middle_gray,
+        "цель AE не ручка тона"
+    );
+}

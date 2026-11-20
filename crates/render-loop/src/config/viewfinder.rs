@@ -10,6 +10,7 @@ use isp_vulkan::viewfinder::ViewfinderIspConfig;
 use serde::{Deserialize, Serialize};
 
 use super::auto_exposure::{AutoExposureConfig, AutoExposureConfigError};
+use super::tone::{ToneConfigError, ViewfinderToneConfig};
 use super::white_balance::{WhiteBalanceConfig, WhiteBalanceConfigError};
 use crate::viewfinder::ViewfinderPainter;
 
@@ -117,6 +118,9 @@ pub struct ViewfinderConfig {
     /// Наш AE (сессия 08a): замер, контроллер цели, предел остаточной подтяжки. Действует, только если
     /// композиция передала бэкенду ящики AE (`with_auto_exposure`); иначе AE — вендорский.
     pub auto_exposure: AutoExposureConfig,
+    /// Ручки тона видоискателя до 14a: контраст и средние тона экрана (сессия 12b, решение 98). Средний серый
+    /// сцены — цель AE — сюда не входит (см. `config::tone`).
+    pub tone: ViewfinderToneConfig,
 }
 
 impl Default for ViewfinderConfig {
@@ -130,6 +134,7 @@ impl Default for ViewfinderConfig {
             headroom_bench: VideoHeadroomConfig::default(),
             white_balance: WhiteBalanceConfig::default(),
             auto_exposure: AutoExposureConfig::default(),
+            tone: ViewfinderToneConfig::default(),
         }
     }
 }
@@ -145,6 +150,8 @@ impl ViewfinderConfig {
         }
         self.white_balance.validate()?;
         self.auto_exposure.validate()?;
+        // Тон проверяется на краях подтяжки ЭТОГО конфига AE (поэтому после проверки AE).
+        self.tone.validate(self.auto_exposure.controller.max_residual_ev)?;
         let with_any_valid_slots = ViewfinderIspConfig {
             frame_slots: 1,
             ..self.isp
@@ -191,6 +198,9 @@ pub enum ViewfinderConfigError {
     /// Настройки AE отвергнуты.
     #[error(transparent)]
     AutoExposure(#[from] AutoExposureConfigError),
+    /// Ручки тона отвергнуты.
+    #[error(transparent)]
+    Tone(#[from] ToneConfigError),
 }
 
 #[cfg(test)]

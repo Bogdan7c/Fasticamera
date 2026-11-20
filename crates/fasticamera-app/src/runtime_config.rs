@@ -341,6 +341,32 @@ mod tests {
         assert!(matches!(render_value, ConfigError::Render(_)), "{render_value}");
     }
 
+    /// Ручки тона видоискателя (сессия 12b) приходят из Kotlin как `render.viewfinder.tone` (intent-параметры
+    /// `tone_contrast` / `tone_display_middle_gray`): значения доходят до конфига рендера, плохие — отказ запуска.
+    #[test]
+    fn viewfinder_tone_knobs_come_from_json_and_bad_values_fail_the_start() {
+        let tuned = RuntimeConfig::from_json(
+            r#"{"build_type":"release","log_filter":"info","render":{"viewfinder":{"tone":{"contrast":1.6,"display_middle_gray":0.22}}}}"#,
+        )
+        .expect("конфиг с ручками тона");
+        assert_eq!(tuned.render().viewfinder.tone.contrast, 1.6);
+        assert_eq!(tuned.render().viewfinder.tone.display_middle_gray, 0.22);
+
+        let zero_contrast = RuntimeConfig::from_json(
+            r#"{"build_type":"release","log_filter":"info","render":{"viewfinder":{"tone":{"contrast":0.0}}}}"#,
+        )
+        .expect_err("нулевой контраст");
+        assert!(matches!(zero_contrast, ConfigError::Render(_)), "{zero_contrast}");
+        assert!(zero_contrast.to_string().contains("viewfinder.tone"), "{zero_contrast}");
+
+        // Kotlin кладёт нечисловое значение строкой — Rust отвергает его громко, а не берёт умолчание.
+        let not_a_number = RuntimeConfig::from_json(
+            r#"{"build_type":"release","log_filter":"info","render":{"viewfinder":{"tone":{"contrast":"1,5"}}}}"#,
+        )
+        .expect_err("контраст строкой");
+        assert!(matches!(not_a_number, ConfigError::Malformed(_)), "{not_a_number}");
+    }
+
     #[test]
     fn render_release_budget_must_stay_below_the_shell_receipt_timeout() {
         // По умолчанию 450 < 500: можно.

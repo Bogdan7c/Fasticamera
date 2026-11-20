@@ -48,11 +48,12 @@ use isp_model::image::{DisplayGamut, RawMosaic};
 use isp_model::params::{FrameInputs, IspParams, ProcessingControls};
 use isp_model::pipeline::run_reference;
 use isp_model::sensor::SensorDescription;
+use isp_model::tone::ToneCurveSettings;
 use raw_frame_stream::{
     OfferedFrame, ProducerFrame, RawFrameLease, RawFrameStream, RawFrameStreamConfig, ReleaseFences, StreamEpoch,
 };
 use render_loop::backend::{DisplayBackend, FrameTiming, PresentOutcome, PresentTarget};
-use render_loop::config::{DisplayColorConfig, RenderLoopConfig};
+use render_loop::config::{DisplayColorConfig, RenderLoopConfig, ViewfinderConfig, ViewfinderToneConfig};
 use render_loop::vulkan_backend::{
     CameraFrameImporter, CameraImportError, SubmissionSerial, ViewfinderReadback, VulkanDisplayBackend,
 };
@@ -193,11 +194,19 @@ fn capture_hints() -> CaptureColorHints {
 
 /// Эталон `isp-model` на тех же входах, что видит бэкенд: цвет пикселя выхода для ячейки `cell`.
 fn reference_color(passport: &StreamPassport, cell: CellValues) -> [f32; 3] {
+    reference_color_with_tone(passport, cell, ToneCurveSettings::default())
+}
+
+/// Эталон `isp-model` ячейки `cell` с настройками тона `tone` (подтяжки AE нет: стенд без нашего AE).
+fn reference_color_with_tone(passport: &StreamPassport, cell: CellValues, tone: ToneCurveSettings) -> [f32; 3] {
     let sensor = SensorDescription::from_stream_passport(passport, &passport.color_calibration).expect("сенсор");
     let hints = capture_hints();
     let frame = FrameInputs::from_capture_hints(&sensor, &hints).expect("уровни");
     let neutral = CameraNeutral::new(scene_neutral()).expect("нейтраль");
-    let controls = ProcessingControls::with_defaults(neutral, DemosaicMethod::Preview, DisplayGamut::Srgb);
+    let controls = ProcessingControls {
+        tone,
+        ..ProcessingControls::with_defaults(neutral, DemosaicMethod::Preview, DisplayGamut::Srgb)
+    };
     let params = IspParams::resolve(&sensor, &frame, &controls).expect("параметры");
     let size = PixelSize::new(4, 4);
     let samples = (0..16).map(|index| bggr_sample(cell, index % 4, index / 4)).collect();
@@ -483,5 +492,74 @@ fn isp_output_through_the_real_backend_matches_the_isp_model_reference() {
         baseline,
         "объекты Vulkan вернулись к исходным"
     );
+    assert_no_validation_errors(backend.context());
+}
+
+/// Ручки тона из конфига (`viewfinder.tone`, сессия 12b) доходят до показанного кадра: серый с контрастом 1,8 и
+/// серединой экрана 0,24 совпадает с эталоном `isp-model` с ТЕМИ ЖЕ ручками и заметно отличается от серого по
+/// умолчанию. Если конфиг до кэша параметров не дойдёт, ISP нарисует серый по умолчанию и тест упадёт.
+#[test]
+fn tone_knobs_from_the_config_reach_the_shown_viewfinder_image() {
+    let tone = ViewfinderToneConfig {
+        contrast: 1.8,
+        display_middle_gray: 0.24,
+    };
+    let render_config = RenderLoopConfig {
+        display_color: DisplayColorConfig::SrgbOnly,
+        viewfinder: ViewfinderConfig {
+            tone,
+            ..ViewfinderConfig::default()
+        },
+        ..RenderLoopConfig::default()
+    };
+    render_config
+        .validate()
+        .expect("конфиг с ручками тона проходит проверку");
+    let stream = RawFrameStream::new(RawFrameStreamConfig {
+        viewfinder_pacing: raw_frame_stream::ViewfinderPacing::LatestWins,
+        ..RawFrameStreamConfig::default()
+    });
+    let cells = HashMap::from([(GRAY_TS, neutral_gray())]);
+    let directives = DirectiveSlot::new();
+    directives.publish(manual_white_directive());
+    let Some(mut backend) = headless_camera_backend_with_directives_or_skip(
+        &render_config,
+        stream.viewfinder(),
+        Box::new(move |context| {
+            Ok(Box::new(UniformImporter {
+                context: context.clone(),
+                cells: cells.clone(),
+                entries: HashMap::new(),
+                counters: ImportCacheCounters::default(),
+            }))
+        }),
+        directives,
+    ) else {
+        return;
+    };
+    let journal = Arc::new(Journal::default());
+    backend
+        .attach(fake_surface(&journal, 1), SURFACE_SIZE)
+        .expect("surface присоединяется");
+    let passport = Arc::new(stream_passport());
+    let epoch = stream.producer().begin_stream(Arc::clone(&passport)).epoch;
+    let returned = Arc::new(Returned::default());
+
+    offer(&stream, epoch, GRAY_TS, 1, &returned);
+    present_until_processed(&mut backend, 0, 1);
+
+    let configured = reference_color_with_tone(&passport, neutral_gray(), tone.curve_settings());
+    let default = reference_color(&passport, neutral_gray());
+    // Эталоны должны различаться сильнее допуска сравнения, иначе тест не отличил бы «дошло» от «не дошло».
+    let separation = (configured[1] - default[1]).abs();
+    assert!(
+        separation > 4.0 * TOLERANCE,
+        "ручки тона почти не меняют серый ({configured:?} против {default:?}): тест ничего не докажет"
+    );
+    assert_image_color(&backend, configured, "серый с ручками тона из конфига");
+
+    stream.producer().end_stream(epoch);
+    assert!(backend.detach().is_some(), "окно возвращено");
+    assert_eq!(stream.counters().leaked_leases, 0);
     assert_no_validation_errors(backend.context());
 }

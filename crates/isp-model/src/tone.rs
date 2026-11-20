@@ -27,6 +27,7 @@
 //! `max` и `min` — с выхода по каналам. Параметр `hue_preservation` (0…1) смешивает
 //! «чисто по каналам» (0) и «оттенок сохранён» (1).
 
+use crate::exposure::ExposureGain;
 use crate::image::{DisplayLinearImage, SceneInGamutImage, space};
 
 /// Настройки тона (конфиг). Значения по умолчанию — оценка по публичным описаниям
@@ -64,6 +65,21 @@ impl Default for ToneCurveSettings {
             display_middle_gray: 0.20,
             scene_white: 1.0,
             hue_preservation: 1.0,
+        }
+    }
+}
+
+impl ToneCurveSettings {
+    /// Настройки с остаточной подтяжкой AE `gain` (сессия 08a): средний серый сцены делится на `k`, белый
+    /// остаётся прежним — кривая сдвигается по экспозиции, а белый сенсора остаётся белым экрана.
+    /// Деление на `UNITY` (1,0) точно, поэтому без подтяжки настройки не меняются ни на бит.
+    ///
+    /// Единственное место этой формулы: по нему считает [`crate::params::IspParams::resolve`] и по нему же
+    /// конфиг видоискателя заранее проверяет, что кривая строится при крайних подтяжках.
+    pub fn with_exposure_gain(&self, gain: ExposureGain) -> Self {
+        Self {
+            scene_middle_gray: self.scene_middle_gray / gain.multiplier(),
+            ..*self
         }
     }
 }

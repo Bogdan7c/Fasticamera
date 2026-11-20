@@ -12,6 +12,11 @@
 //! * неудачный пересчёт оставляет прежние параметры (если были, того же потока и под тот же охват
 //!   экрана) и сообщает причину.
 //!
+//! # Тон
+//! Ручки тона (`viewfinder.tone`: контраст и средние тона экрана) постоянны на жизнь кэша: кэш получает их
+//! при создании сессии показа (`with_tone`) и в ключ пересчёта не входят. Средний серый сцены в них не
+//! входит никогда: это цель AE (`base_scene_middle_gray`), см. `config::tone`.
+//!
 //! # Привязка к потоку
 //! Подсказки и параметры — данные КАДРОВ одного потока, поэтому годятся только для потока, из
 //! кадров которого получены. Поток = сессия камеры = один `Arc<StreamPassport>` (лизинг создаёт его
@@ -37,6 +42,8 @@ use isp_model::image::DisplayGamut;
 use isp_model::params::{FrameInputs, IspParams, ProcessingControls};
 use isp_model::sensor::SensorDescription;
 use isp_model::tone::ToneCurveSettings;
+
+use crate::config::ViewfinderToneConfig;
 
 /// Откуда взяты подсказки кадра.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,10 +142,18 @@ impl StreamBoundState {
     }
 }
 
-/// Кэш параметров ISP одной сессии показа.
-pub struct IspParamsCache {
+/// Входы обработки, постоянные на жизнь кэша (в ключ пересчёта не входят).
+#[derive(Debug, Clone, Copy)]
+struct ProcessingRecipe {
     /// Каким демозаиком будут считаться кадры (видоискатель — `Preview`, стенд V4 — `Quality`).
     demosaic: DemosaicMethod,
+    /// Настройки кривой тона до подтяжки AE: ручки `viewfinder.tone` поверх умолчания `isp-model`.
+    tone: ToneCurveSettings,
+}
+
+/// Кэш параметров ISP одной сессии показа.
+pub struct IspParamsCache {
+    recipe: ProcessingRecipe,
     sensor: Option<CachedSensor>,
     /// Подсказки и параметры текущего потока (`None` — потока нет или он забыт).
     bound: Option<StreamBoundState>,
@@ -153,12 +168,29 @@ impl Default for IspParamsCache {
 
 impl IspParamsCache {
     /// Кэш параметров под демозаик `demosaic` (стенд V4 берёт `Quality` — Menon 2007 — из тех же
-    /// входов, что видоискатель).
+    /// входов, что видоискатель) с тоном по умолчанию.
     pub fn for_demosaic(demosaic: DemosaicMethod) -> Self {
         Self {
-            demosaic,
+            recipe: ProcessingRecipe {
+                demosaic,
+                tone: ViewfinderToneConfig::default().curve_settings(),
+            },
             sensor: None,
             bound: None,
+        }
+    }
+
+    /// Тот же кэш с ручками тона из конфига. Вызывается до первого кадра (при создании сессии показа),
+    /// поэтому посчитанных параметров со старым тоном у кэша нет. Значения уже проверены при старте
+    /// (`ViewfinderToneConfig::validate`); не построившаяся кривая всё равно дала бы честный отказ кадра.
+    pub fn with_tone(self, tone: ViewfinderToneConfig) -> Self {
+        Self {
+            recipe: ProcessingRecipe {
+                tone: tone.curve_settings(),
+                ..self.recipe
+            },
+            bound: None,
+            ..self
         }
     }
 
@@ -177,9 +209,10 @@ impl IspParamsCache {
     }
 
     /// Средний серый сцены базового тона, из которого считаются параметры кадра: цель яркости нашего AE.
-    /// Берётся из той же функции настроек тона, что и сами параметры (`base_tone_settings`), — число не дублируется.
+    /// Ручки тона его не меняют (`ViewfinderToneConfig::curve_settings` берёт его из умолчания), поэтому
+    /// цель AE одна при любом конфиге — число берётся из того же источника, а не дублируется.
     pub fn base_scene_middle_gray() -> f32 {
-        base_tone_settings().scene_middle_gray
+        ViewfinderToneConfig::default().curve_settings().scene_middle_gray
     }
 
     /// Готовит параметры для кадра `passport` под охват экрана `gamut` (см. модуль), без остаточной подтяжки.
@@ -198,11 +231,7 @@ impl IspParamsCache {
         gamut: DisplayGamut,
     ) -> ParamsDecision {
         // Раздельные заимствования: состояние потока и кэш сенсора — независимые поля.
-        let Self {
-            demosaic,
-            sensor,
-            bound,
-        } = self;
+        let Self { recipe, sensor, bound } = self;
         let bound = bind_to_stream(bound, &passport.stream);
         let (hints, source) = match &passport.capture {
             FrameCaptureMeta::Paired(details) => {
@@ -221,17 +250,12 @@ impl IspParamsCache {
                 }
             },
         };
-        let outcome = match bound.resolve_if_changed(sensor, *demosaic, &hints, white, exposure_gain, gamut) {
+        let outcome = match bound.resolve_if_changed(sensor, recipe, &hints, white, exposure_gain, gamut) {
             Ok(outcome) => outcome,
             Err(failure) => bound.fallback(failure, gamut),
         };
         ParamsDecision { hints: source, outcome }
     }
-}
-
-/// Настройки тона видоискателя до подтяжки AE: умолчание `isp-model` (в конфиг не вынесены).
-fn base_tone_settings() -> ToneCurveSettings {
-    ToneCurveSettings::default()
 }
 
 /// Состояние потока кадра: кадр другого потока (другой `Arc`) начинает его с чистого листа.
@@ -251,7 +275,7 @@ impl StreamBoundState {
     fn resolve_if_changed(
         &mut self,
         sensor: &mut Option<CachedSensor>,
-        demosaic: DemosaicMethod,
+        recipe: &ProcessingRecipe,
         hints: &CaptureColorHints,
         white: Chromaticity,
         exposure_gain: ExposureGain,
@@ -276,9 +300,9 @@ impl StreamBoundState {
             .neutral_for_white(white)
             .map_err(|error| ParamsFailure::InvalidNeutral(error.to_string()))?;
         let controls = ProcessingControls {
-            tone: base_tone_settings(),
+            tone: recipe.tone,
             exposure_gain,
-            ..ProcessingControls::with_defaults(camera_neutral, demosaic, gamut)
+            ..ProcessingControls::with_defaults(camera_neutral, recipe.demosaic, gamut)
         };
         let params =
             IspParams::resolve(sensor, &frame, &controls).map_err(|error| ParamsFailure::Resolve(error.to_string()))?;

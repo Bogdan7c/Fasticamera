@@ -40,8 +40,9 @@ max_relative_chroma = 0.08
 # Средний уровень области (0..255), ниже которого карта считается неосвещённой: цветность там — шум.
 min_mean_level = 20.0
 # Уровень среднего серого. Карта на весь кадр после нашей AE обязана выйти на display_middle_gray тона
-# (crates/isp-model/src/tone.rs, ToneSettings::default().display_middle_gray) в ЛИНЕЙНОМ свете экрана.
-# Если там поменяли значение — поменять и здесь (Python крейты не читает).
+# (crates/isp-model/src/tone.rs, ToneCurveSettings::default().display_middle_gray; с 12b его переопределяет
+# конфиг render.viewfinder.tone.display_middle_gray и intent-параметр tone_display_middle_gray) в ЛИНЕЙНОМ свете
+# экрана. Если поменяли умолчание или запускаете с другим значением — поменять и здесь (Python крейты не читает).
 # Допущение: скриншот 8-бит, кодирован передаточной функцией sRGB / Display P3 (у них она одна и та же);
 # карта нейтральная (R≈G≈B), поэтому тег цветового пространства на уровень не влияет, важна только кривая.
 display_middle_gray = 0.20

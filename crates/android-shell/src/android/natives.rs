@@ -29,7 +29,7 @@ const SHELL_BRIDGE_CLASS: &jni::strings::JNIStr = jni_str!("dev/fasticamera/Shel
 
 const SHELL_NATIVE_METHODS: &[NativeMethod] = &[
     native_method! {
-        static fn native_attach(platform: dev.fasticamera.ShellPlatform, package_name: JString),
+        static fn native_attach(platform: dev.fasticamera.ShellPlatform),
         error_policy = LogAndCountCallbackFailure,
     },
     native_method! {
@@ -106,18 +106,9 @@ fn native_attach<'local>(
     env: &mut Env<'local>,
     _class: JClass<'local>,
     platform: JObject<'local>,
-    package_name: JString<'local>,
 ) -> jni::errors::Result<()> {
     let Some(runtime) = runtime_or_warn("attach") else {
         return Ok(());
-    };
-    let package_name = package_name.try_to_string(env)?;
-    let package_name = match std::ffi::CString::new(package_name) {
-        Ok(name) => name,
-        Err(error) => {
-            record_callback_failure(runtime, "attach", &error);
-            return Ok(());
-        }
     };
     // Осознанное исключение из «главный поток не ждёт»: ~10 коротких binder-вызовов к
     // вибромотору один раз за onCreate (замер сессии 02: вся подключённая Activity — 2–3 мс).
@@ -126,7 +117,7 @@ fn native_attach<'local>(
     tracing::info!(target: "fasticamera::shell", ?capabilities, "Activity подключена");
     let global = env.new_global_ref(&platform)?;
     let object = CountedGlobal::new(global, std::sync::Arc::clone(runtime.accounting()));
-    runtime.attach_platform(AttachedPlatform::new(object, capabilities, package_name));
+    runtime.attach_platform(AttachedPlatform::new(object, capabilities));
     Ok(())
 }
 

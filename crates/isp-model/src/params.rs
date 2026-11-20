@@ -169,7 +169,7 @@ impl IspParams {
             demosaic: controls.demosaic,
             color: resolve_color(sensor, controls, &white_balance)?,
             gamut_compression: GamutCompression::resolve(&controls.gamut_compression)?,
-            tone: ToneCurve::resolve(&tone_with_exposure_gain(&controls.tone, controls.exposure_gain))?,
+            tone: ToneCurve::resolve(&controls.tone.with_exposure_gain(controls.exposure_gain))?,
         })
     }
 
@@ -188,15 +188,6 @@ impl IspParams {
             luminance_row[1] * gains[1],
             luminance_row[2] * gains[2],
         )
-    }
-}
-
-/// Настройки тона с подтяжкой: средний серый сцены делится на `k`, белый остаётся прежним.
-/// Деление на `UNITY` (1,0) точно, поэтому без подтяжки настройки не меняются ни на бит.
-fn tone_with_exposure_gain(tone: &ToneCurveSettings, gain: ExposureGain) -> ToneCurveSettings {
-    ToneCurveSettings {
-        scene_middle_gray: tone.scene_middle_gray / gain.multiplier(),
-        ..*tone
     }
 }
 

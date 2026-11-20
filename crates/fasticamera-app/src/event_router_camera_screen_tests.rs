@@ -618,3 +618,33 @@ fn dummy_request() -> UiFrameRequest {
 mod recovery;
 #[path = "event_router_camera_screen_system_gesture_tests.rs"]
 mod system_gesture;
+
+/// Дефект 12b: в продукте датчик ориентации не запускал никто (только отладочный `motion`), и значки экрана не
+/// поворачивались вслед за телефоном. Теперь датчик держит установленный экран: стоит экран — датчик работает;
+/// сценарий снял экран — датчик свободен (его может занять сам сценарий); экран вернулся — датчик снова запущен.
+#[test]
+fn the_installed_screen_keeps_the_orientation_sensor_running_and_releases_it_for_a_scenario() {
+    let (mut harness, _clock) = ready_screen();
+    assert_eq!(
+        harness.shell.orientation_sensor.alive(),
+        1,
+        "экран стоит — датчик ориентации работает"
+    );
+    assert_eq!(harness.shell.orientation_sensor.starts(), 1);
+
+    let finish = start_probe(&mut harness, CameraScreenPolicy::SuspendForScenario, false);
+    assert_eq!(
+        harness.shell.orientation_sensor.alive(),
+        0,
+        "экран снят на время сценария — датчик отпущен"
+    );
+
+    finish_probe(&mut harness, &finish);
+    assert_eq!(*harness.router.camera_screen().status(), CameraScreenStatus::Installed);
+    assert_eq!(
+        harness.shell.orientation_sensor.alive(),
+        1,
+        "свежий экран снова держит датчик"
+    );
+    assert_eq!(harness.shell.orientation_sensor.starts(), 2);
+}

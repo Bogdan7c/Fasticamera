@@ -269,3 +269,39 @@ fn diagnostics_report_generation_authority_and_counters() {
     );
     assert!(diagnostics.target_log2_seconds_iso.is_some());
 }
+
+/// Шум лога 12b: обновление только обратной связи `applied` (≈ 15 раз в секунду) — не смена решения AE и в info не
+/// идёт; смена EV, блокировки или области — смена решения.
+#[test]
+fn only_a_changed_decision_counts_as_a_new_ae_directive_for_the_log() {
+    let base = ExposureDirective {
+        applied: Some(AppliedExposure {
+            product: ExposureProduct::from_seconds_iso(0.01).expect("произведение"),
+            shortfall_ev: 0.0,
+            reach: ProductReach::Unbounded,
+        }),
+        ..ExposureDirective::DEFAULT
+    };
+    let feedback_only = ExposureDirective {
+        applied: Some(AppliedExposure {
+            product: ExposureProduct::from_seconds_iso(0.02).expect("произведение"),
+            shortfall_ev: -0.3,
+            reach: ProductReach::Unbounded,
+        }),
+        ..base
+    };
+    assert!(
+        !changes_decision(&base, &feedback_only),
+        "только `applied` — обратная связь"
+    );
+    let new_bias = ExposureDirective {
+        bias: ExposureBias::from_ev(1.0).expect("EV"),
+        ..base
+    };
+    assert!(changes_decision(&base, &new_bias), "EV — решение");
+    let locked = ExposureDirective {
+        lock: AeAfLock::Locked,
+        ..base
+    };
+    assert!(changes_decision(&base, &locked), "блокировка — решение");
+}

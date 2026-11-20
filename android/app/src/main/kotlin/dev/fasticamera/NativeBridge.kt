@@ -13,8 +13,12 @@ object NativeBridge {
         System.loadLibrary("fasticamera")
     }
 
-    /** Передать конфиг нативной части (один раз на процесс). Ответ: `{"status": "initialized" | "already_initialized" | "failed", ...}`. */
-    @JvmStatic external fun initialize(configJson: String): String
+    /**
+     * Передать конфиг и имя пакета процесса нативной части (один раз на процесс). Имя пакета нужно Rust для
+     * датчиков с первого кадра (решение 106), поэтому приходит здесь, а не при подключении Activity.
+     * Ответ: `{"status": "initialized" | "already_initialized" | "failed", ...}`.
+     */
+    @JvmStatic external fun initialize(configJson: String, packageName: String): String
 
     /**
      * Выполнить smoke-сценарий по имени. Ответ: `{"scenario": ..., "status": "passed" | "failed" | "panicked", ...}`

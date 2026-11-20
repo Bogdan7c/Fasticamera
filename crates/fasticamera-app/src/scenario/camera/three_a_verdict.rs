@@ -242,7 +242,7 @@ pub fn ev_violations(config: &ThreeAScenarioConfig, ev: &EvReport) -> Vec<String
 }
 
 /// Сходимость точек EV при нашем AE: точка без `Settled`/`Holding` и без `LimitReached` не судима; если все
-/// ненулевые точки упёрлись в предел, компенсация вообще не проверена (честный провал «не проверить»).
+/// ненулевые точки непроверяемы (упёрлись сами или упёрлась опора), компенсация не проверена (честный провал «не проверить»).
 fn own_ae_ev_violations(ev: &EvReport) -> Vec<String> {
     let mut violations: Vec<String> = ev
         .points
@@ -255,9 +255,14 @@ fn own_ae_ev_violations(ev: &EvReport) -> Vec<String> {
             )
         })
         .collect();
+    // Непроверяемы все сдвинутые точки: упёрлись сами или упёрлась опора (12b, тёмная сцена). Молча «зелёным»
+    // такой прогон быть не может — компенсацию никто не проверил.
     let mut shifted = ev.points.iter().filter(|point| point.bias_ev != 0.0).peekable();
-    if shifted.peek().is_some() && shifted.all(|point| point.ae_limit_reached) {
-        violations.push("EV не проверен: наш AE во всех точках с компенсацией упёрся в предел камеры".to_owned());
+    if shifted.peek().is_some() && shifted.all(|point| !point.verifiable) {
+        violations.push(
+            "EV не проверен: во всех точках с компенсацией наш AE или опорная точка упёрлись в предел камеры"
+                .to_owned(),
+        );
     }
     violations
 }

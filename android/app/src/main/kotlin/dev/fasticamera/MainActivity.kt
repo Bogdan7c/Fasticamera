@@ -58,11 +58,11 @@ class MainActivity : Activity() {
         // После setContentView: контроллер панелей живёт у DecorView, а её создаёт setContentView.
         enterFullscreen()
 
-        val initReport = NativeBridge.initialize(NativeConfig.fromIntent(intent).toJson())
+        val initReport = NativeBridge.initialize(NativeConfig.fromIntent(intent).toJson(), packageName)
         logIfInitFailed(initReport)
 
         platform = ShellPlatform(this, promptView)
-        ShellBridge.nativeAttach(platform, packageName)
+        ShellBridge.nativeAttach(platform)
         surfaceView.holder.addCallback(SurfaceCallbacks)
         surfaceView.setOnTouchListener { _, event ->
             ShellBridge.nativeTouch(event)

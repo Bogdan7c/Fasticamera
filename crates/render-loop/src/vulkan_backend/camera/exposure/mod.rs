@@ -356,14 +356,21 @@ impl ExposureRunner {
             return;
         };
         let area_before = MeteredArea::for_point(self.directive.metering);
+        let decision_changed = changes_decision(&self.directive, &directive);
         self.controller.set_directive(directive);
         self.directive = directive;
         self.applied_generation = Some(generation);
         if MeteredArea::for_point(directive.metering) != area_before {
             self.restart_cold_start();
         }
-        // Раз на смену указания, не на кадр.
-        tracing::info!(target: LOG_TARGET, generation = generation.0, ?directive, "указание AE применено");
+        // Решение (область, блокировка, профиль, хозяин, EV) меняется редко — это info. Обратная связь
+        // «что применено на сенсоре» (`applied`) обновляет указание почти каждый результат (≈ 15 раз в секунду):
+        // на info она забивала буфер logcat и вытесняла строки старта (найдено в 12b), поэтому — debug.
+        if decision_changed {
+            tracing::info!(target: LOG_TARGET, generation = generation.0, ?directive, "указание AE применено");
+        } else {
+            tracing::debug!(target: LOG_TARGET, generation = generation.0, applied = ?directive.applied, "обратная связь AE обновлена");
+        }
     }
 
     /// Подтяжка, округлённая до шага `residual_gain_step_ev`: см. поле конфига (ключ кэша параметров ISP).
@@ -468,6 +475,23 @@ impl ExposureRunner {
             }
         }
     }
+}
+
+/// Изменилось ли в указании AE РЕШЕНИЕ движка, а не только обратная связь `applied` (см. `refresh_directive`).
+fn changes_decision(previous: &ExposureDirective, next: &ExposureDirective) -> bool {
+    let ExposureDirective {
+        metering,
+        lock,
+        profile,
+        authority,
+        bias,
+        applied: _,
+    } = *next;
+    previous.metering != metering
+        || previous.lock != lock
+        || previous.profile != profile
+        || previous.authority != authority
+        || previous.bias != bias
 }
 
 #[cfg(test)]

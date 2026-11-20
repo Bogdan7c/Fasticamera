@@ -3,6 +3,7 @@
 
 use camera_contract::control::ExposureBias;
 use camera_contract::three_a::AeAfLock;
+use shell_contract::gravity::GravityVector;
 use shell_contract::orientation::DeviceOrientation;
 use ui_core::time::MotionPreference;
 use ui_draw::draw_list::DrawItem;
@@ -15,7 +16,7 @@ use crate::action::ScreenAction;
 use crate::config::ScreenConfig;
 use crate::effect::{Effect, ScreenCameraIntent};
 use crate::facts::{CameraFacts, CameraPresence, UnavailableReason};
-use crate::settings::{AspectRatio, TimerSetting};
+use crate::settings::{AspectRatio, LevelSetting, TimerSetting};
 use crate::state::PanelState;
 use crate::test_support::live_facts;
 use crate::tools::{ToolId, ToolOption};
@@ -295,4 +296,78 @@ fn capture_blink_dims_the_frame_to_the_measured_depth_and_returns_without_oversh
         "{series:?}"
     );
     assert_eq!(*series.last().expect("серия"), 0.0);
+}
+
+/// Линия уровня около центра кадра (px): единственная фигура с центром в центре кадра и наклоном, отличным от
+/// осевого прямоугольника рамок. Возвращает её линейную часть `(a, c)` = куда ушла ось x линии на экране.
+fn level_line_direction(rig: &Rig) -> (f32, f32) {
+    let center = rig.frame_center();
+    let (cx, cy) = (center.x as f32 * PX_PER_PT, center.y as f32 * PX_PER_PT);
+    let lines: Vec<(f32, f32)> = rig
+        .last
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            DrawItem::Shape(shape)
+                if near(shape.transform.tx, cx, 0.5)
+                    && near(shape.transform.ty, cy, 0.5)
+                    && shape.transform.b != 0.0 =>
+            {
+                Some((shape.transform.a, shape.transform.c))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(lines.len(), 1, "ровно одна линия уровня в центре кадра: {lines:?}");
+    lines[0]
+}
+
+/// Включает уровень через меню (как владелец: Controls → Level → On) и закрывает меню.
+fn enable_level(rig: &mut Rig) {
+    rig.act(ScreenAction::ControlsMenuOpenRequested);
+    rig.act(ScreenAction::ControlsItemSelected(ToolId::Level));
+    rig.act(ScreenAction::SubmenuOptionSelected(ToolOption::Level(LevelSetting::On)));
+    rig.tap(rig.frame_center());
+    rig.run(600);
+    assert_eq!(rig.screen.state().settings().level, LevelSetting::On);
+    assert_eq!(rig.screen.state().panel(), PanelState::Closed);
+}
+
+/// Вектор гравитации телефона, повёрнутого в плоскости экрана по часовой на `roll_degrees` (`level.rs`, оси Android).
+fn gravity_at_roll(roll_degrees: f32) -> GravityVector {
+    let roll = roll_degrees.to_radians();
+    GravityVector {
+        x: -9.81 * roll.sin(),
+        y: 9.81 * roll.cos(),
+        z: 0.0,
+    }
+}
+
+/// Дефект 12b: линия уровня в альбомной стояла как в портретной (поворот на отклонение от ближайшей оси вместо
+/// крена). Теперь при крене 93° (альбомная, наклон 3°) линия на экране почти вертикальна — то есть вдоль горизонта
+/// мира, — а в портретной при крене 3° почти горизонтальна. Обе не жёлтые: горизонт неровный на 3°.
+#[test]
+fn level_line_follows_the_world_horizon_in_portrait_and_in_landscape() {
+    let mut rig = Rig::new();
+    enable_level(&mut rig);
+
+    rig.act(ScreenAction::GravityChanged(gravity_at_roll(3.0)));
+    rig.run(100);
+    let (a, c) = level_line_direction(&rig);
+    assert!(
+        a > 0.99 && c.abs() < 0.06,
+        "портретная: линия почти горизонтальна на экране: ({a}, {c})"
+    );
+
+    rig.act(ScreenAction::GravityChanged(gravity_at_roll(93.0)));
+    rig.run(100);
+    let (a, c) = level_line_direction(&rig);
+    assert!(
+        a.abs() < 0.06 && c.abs() > 0.99,
+        "альбомная: линия вдоль длинной стороны экрана, то есть по горизонту мира: ({a}, {c})"
+    );
+    assert!(
+        matches!(rig.screen.state().level(), crate::level::LevelReading::Tilted { deviation_degrees, .. } if (deviation_degrees - 3.0).abs() < 0.01),
+        "«ровно» судится по ближайшей оси: отклонение 3°, а не 93°"
+    );
 }

@@ -639,6 +639,7 @@ fn create_camera_painter(
                 frame_slots: info.frames_in_flight,
                 mode: camera.settings.headroom,
             },
+            tone: config.viewfinder.tone,
         },
     )
     .map_err(|failure| {

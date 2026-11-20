@@ -55,6 +55,7 @@ use super::white_balance::{FramePlan, WhiteBalanceParts, WhiteBalanceRunner};
 use super::{CameraFrameImporter, CameraImportError, CameraImporterFactory, SubmissionSerial};
 use crate::backend::FrameGpuTiming;
 use crate::camera_diagnostics::{CameraStreamDiagnostics, PresentedCameraFrame};
+use crate::config::ViewfinderToneConfig;
 use crate::viewfinder::{AwbFrameIdentity, AwbStatisticsFeed, ViewfinderDiagnostics};
 
 const LOG_TARGET: &str = "fasticamera::render::camera";
@@ -147,6 +148,8 @@ pub struct CameraSessionParts<'a> {
     pub auto_exposure: Option<AutoExposureParts>,
     /// Стенд V4: настройки конвейера, слоты кольца, включён ли.
     pub headroom: HeadroomBenchParts,
+    /// Ручки тона видоискателя (`viewfinder.tone`, уже проверены при старте).
+    pub tone: ViewfinderToneConfig,
 }
 
 /// Показ кадров камеры для одной surface.
@@ -201,6 +204,7 @@ impl CameraSession {
             white_balance,
             auto_exposure,
             headroom,
+            tone,
         } = parts;
         let importer = match make_importer(context) {
             Ok(importer) => importer,
@@ -253,7 +257,8 @@ impl CameraSession {
             stats: CameraStreamDiagnostics::default(),
             history_capacity,
             settings,
-            params: IspParamsCache::default(),
+            params: IspParamsCache::default().with_tone(tone),
+
             viewfinder,
             awb_feed,
             white,

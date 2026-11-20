@@ -25,7 +25,7 @@ use super::detail::to_value;
 use super::glass_report::{OverlayWindow, UiGpuBudget, WarmupReport, gpu_time_violations, overlay_violations};
 use super::screen_runner::StepRecord;
 use super::viewfinder_metrics::round2;
-use super::viewfinder_smoke_report::{ViewfinderSmokeObservation, evaluate_viewfinder};
+use super::viewfinder_smoke_report::{ViewfinderSmokeObservation, evaluate_viewfinder_under_touch_load};
 use crate::camera_screen_service::DroppedInputCounters;
 use crate::camera_screen_source::ScreenReport;
 use crate::viewfinder_scenario_config::ViewfinderSmokeConfig;
@@ -141,7 +141,8 @@ pub fn evaluate_screen(smoke: &ViewfinderSmokeConfig, observation: &ScreenObserv
     violations.extend(overlay_violations(&observation.overlay));
     violations.extend(gpu_time_violations(&observation.overlay, &observation.budget));
     violations.extend(
-        evaluate_viewfinder(smoke, &observation.viewfinder)
+        // Под касаниями переполнения буфера — только число в отчёте (решение 105).
+        evaluate_viewfinder_under_touch_load(smoke, &observation.viewfinder)
             .into_iter()
             .map(|violation| format!("видоискатель: {violation}")),
     );

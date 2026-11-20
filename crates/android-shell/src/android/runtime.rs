@@ -9,7 +9,6 @@
 //! * своя ссылка на текущее окно — в [`SurfaceRegistry`] (для частоты кадров);
 //! * Kotlin-объект платформы — глобальная ссылка JNI на время жизни Activity (подсчитывается).
 
-use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
@@ -29,6 +28,7 @@ use super::thermal_monitor::{ThermalMonitor, start_thermal_monitor};
 use crate::accounting::ShellAccounting;
 use crate::config::{ShellConfig, ShellConfigError, ValidatedShellConfig};
 use crate::haptic_plan::{HapticCapabilities, HapticTuning};
+use crate::package_name::PackageName;
 use crate::surface_registry::SurfaceRegistry;
 
 static SHELL_RUNTIME: OnceLock<Arc<ShellRuntime>> = OnceLock::new();
@@ -62,7 +62,7 @@ pub enum ShellInstallError {
 }
 
 /// Устанавливает оболочку процесса: очередь событий, поток команд, тепловой монитор.
-pub fn install(config: &ShellConfig) -> Result<ShellHandles, ShellInstallError> {
+pub fn install(config: &ShellConfig, package_name: PackageName) -> Result<ShellHandles, ShellInstallError> {
     if SHELL_RUNTIME.get().is_some() {
         return Err(ShellInstallError::AlreadyInstalled);
     }
@@ -73,6 +73,7 @@ pub fn install(config: &ShellConfig) -> Result<ShellHandles, ShellInstallError> 
     let thermal = start_thermal_monitor(validated.thermal_poll_interval, events.clone());
     let runtime = Arc::new(ShellRuntime {
         config: validated,
+        package_name,
         events,
         accounting: Arc::new(ShellAccounting::new()),
         surfaces: Mutex::new(SurfaceRegistry::default()),
@@ -125,18 +126,17 @@ impl Drop for CountedGlobal {
 }
 
 /// Подключённая Activity: Kotlin-объект платформы и то, что о ней узнали при подключении.
+/// Имени пакета здесь нет: это факт процесса, он приходит при `install` (решение 106).
 pub struct AttachedPlatform {
     object: CountedGlobal,
     haptic_capabilities: HapticCapabilities,
-    package_name: CString,
 }
 
 impl AttachedPlatform {
-    pub fn new(object: CountedGlobal, haptic_capabilities: HapticCapabilities, package_name: CString) -> Self {
+    pub fn new(object: CountedGlobal, haptic_capabilities: HapticCapabilities) -> Self {
         Self {
             object,
             haptic_capabilities,
-            package_name,
         }
     }
 
@@ -147,15 +147,13 @@ impl AttachedPlatform {
     pub fn haptic_capabilities(&self) -> &HapticCapabilities {
         &self.haptic_capabilities
     }
-
-    pub fn package_name(&self) -> &CString {
-        &self.package_name
-    }
 }
 
 /// Оболочка процесса.
 pub struct ShellRuntime {
     config: ValidatedShellConfig,
+    /// Имя пакета процесса (решение 106): по нему Android выдаёт менеджер датчиков с первого кадра.
+    package_name: PackageName,
     events: ShellEventSender,
     accounting: Arc<ShellAccounting>,
     surfaces: Mutex<SurfaceRegistry<NativeWindowRef>>,
@@ -172,6 +170,11 @@ pub struct ShellRuntime {
 impl ShellRuntime {
     pub fn config(&self) -> &ValidatedShellConfig {
         &self.config
+    }
+
+    /// Имя пакета процесса (известно с `install`, от подключения Activity не зависит).
+    pub fn package_name(&self) -> &PackageName {
+        &self.package_name
     }
 
     pub fn accounting(&self) -> &Arc<ShellAccounting> {

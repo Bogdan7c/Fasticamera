@@ -34,6 +34,10 @@
 ## Экран камеры (сессия 12)
 - Экран стоит поверх видоискателя ВСЕГДА (`camera_screen.enabled = true`); сценарии smoke снимают его на своё время.
 - Сценарий screen (приёмка 12b): `scripts/device-smoke.sh [--variant release] --timeout 180 screen` — 18 шагов: драйвер сам тапает/свайпает/жмёт `KEYCODE_VOLUME_UP` по стадиям `screen_gesture` (жест — в самой стадии); телефон не трогать. Точки — `camera.scenarios.screen` (доли экрана, `[derived]` из раскладки).
+- С 12b (решение 105) переполнения джиттер-буфера в `screen` — только цифра `viewfinder.jitter_overflow` (под касаниями поток рендера не успевает за такт, чинится в 16a); провалом остаются в `viewfinder`/`glass`. GPU UI p95 на нагретом телефоне ≈ 8 мс при пороге 8,33 — близко к ловушке.
+- Тон видоискателя на один запуск без пересборки (12b): `adb shell am start -S -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -n dev.fasticamera/dev.fasticamera.MainActivity -e tone_contrast 1.5 -e tone_display_middle_gray 0.22`; неверное значение — отказ initialize с полем `viewfinder.tone` в logcat (`native initialize failed`).
+- Датчики приложения на телефоне: `adb shell dumpsys sensorservice | grep "pid= *<pid> "` — гравитация и акселерометр должны регистрироваться в момент старта.
+- Шум логов: тихий запуск `-e log_filter "info,fasticamera::render::auto_exposure=warn,fasticamera::render::white_balance=warn"`.
 - Golden экрана: `cargo test -p fasticamera-app --all-features --test camera_screen_golden` (10 состояний, эталоны `test-assets/camera-screen/golden/`, хранение 6× уменьшено); перегенерация `FASTICAMERA_UPDATE_GOLDEN=1`, PNG полного кадра — `FASTICAMERA_GOLDEN_PREVIEW_DIR=<вне репо>`.
 - Логика экрана без GPU: `cargo test -p camera-screen`.
 

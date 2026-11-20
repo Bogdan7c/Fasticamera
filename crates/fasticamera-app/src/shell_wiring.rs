@@ -29,6 +29,8 @@ use render_loop::vulkan_backend::{VulkanBackendConfig, VulkanDisplayBackend};
 use shell_contract::thermal_policy::{ThermalPolicy, ThermalPolicyConfigError};
 use shell_contract::vsync::VsyncSource;
 
+use android_shell::package_name::PackageName;
+
 use crate::auto_exposure_link::RenderAutoExposure;
 use crate::camera_config::CameraConfig;
 use crate::camera_service::CameraServices;
@@ -60,13 +62,14 @@ pub enum ShellWiringError {
     RouterThread(std::io::Error),
 }
 
-/// Ставит оболочку один раз на процесс; повторный вызов — no-op.
-pub fn ensure_installed(config: &RuntimeConfig) -> Result<(), ShellWiringError> {
+/// Ставит оболочку один раз на процесс; повторный вызов — no-op. `package_name` — имя пакета процесса
+/// (решение 106): по нему оболочка включает датчики, не дожидаясь подключения Activity.
+pub fn ensure_installed(config: &RuntimeConfig, package_name: PackageName) -> Result<(), ShellWiringError> {
     if SHELL_WIRING.get().is_some() {
         return Ok(());
     }
     let thermal_policy = Arc::new(ThermalPolicy::new(config.thermal_policy())?);
-    let handles = android_shell::android::install(config.shell())?;
+    let handles = android_shell::android::install(config.shell(), package_name)?;
     let services = handles.services;
     let validation = config.validation_mode();
     // Поток кадров один на процесс: его концы получают и рендер (видоискатель), и камера (производитель).

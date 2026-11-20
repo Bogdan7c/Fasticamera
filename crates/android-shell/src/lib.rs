@@ -25,6 +25,7 @@ pub mod gravity_source;
 pub mod haptic_plan;
 pub mod key_decode;
 pub mod orientation_classifier;
+pub mod package_name;
 pub mod performance_hint_codes;
 pub mod permission_answer;
 pub mod power_pacing;

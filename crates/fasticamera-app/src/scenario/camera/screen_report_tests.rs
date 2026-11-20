@@ -208,3 +208,38 @@ fn the_summary_says_that_ev_is_proven_only_up_to_the_engine() {
         "контракт с scripts/smoke_checks_screen.py"
     );
 }
+
+/// Решение 105: под плотными касаниями переполнения джиттер-буфера — число в отчёте, а не провал.
+/// Те же 9 переполнений за окно в `viewfinder`/`glass` провалили бы прогон (порог — дрейф часов, 4 в минуту).
+#[test]
+fn jitter_overflow_under_touches_is_reported_but_does_not_fail_the_screen_run() {
+    let mut observation = healthy_observation();
+    observation.viewfinder.pacing.jitter_overflow = 9;
+
+    assert_eq!(verdict(&observation), Vec::<String>::new());
+    assert_eq!(
+        observation.summary()["viewfinder"]["jitter_overflow"],
+        9,
+        "число не спрятано"
+    );
+    let same_without_touches = super::super::viewfinder_smoke_report::evaluate_viewfinder(
+        &ViewfinderSmokeConfig::default(),
+        &observation.viewfinder,
+    );
+    assert!(
+        same_without_touches
+            .iter()
+            .any(|violation| violation.contains("джиттер-буфер переполнился 9 раз")),
+        "без касаний порог действует: {same_without_touches:?}"
+    );
+}
+
+/// Ослаблен только порог переполнений: остальные проверки видоискателя под касаниями по-прежнему валят прогон.
+#[test]
+fn other_viewfinder_checks_still_fail_the_screen_run() {
+    let mut observation = healthy_observation();
+    observation.viewfinder.window.isp.cpu_copies = 1;
+
+    let violation = only_violation(&observation);
+    assert!(violation.contains("видоискатель: CPU-копий кадров: 1"), "{violation}");
+}

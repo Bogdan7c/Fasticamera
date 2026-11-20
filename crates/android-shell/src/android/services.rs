@@ -73,14 +73,10 @@ impl AndroidShellServices {
         self.runtime.calls().enqueue(call)
     }
 
-    fn package_name(&self, sensor: &'static str) -> Result<std::ffi::CString, SensorSourceError> {
-        self.runtime
-            .attached_platform()
-            .map(|platform| platform.package_name().clone())
-            .ok_or_else(|| SensorSourceError::PlatformFailure {
-                sensor,
-                reason: "Activity не подключена: неизвестно имя пакета для ASensorManager".to_owned(),
-            })
+    /// Имя пакета процесса для `ASensorManager_getInstanceForPackage`. Известно с установки оболочки, поэтому
+    /// датчики не ждут подключения Activity (решение 106: раньше экран камеры получал здесь отказ на старте).
+    fn package_name(&self) -> std::ffi::CString {
+        self.runtime.package_name().as_c_str().to_owned()
     }
 }
 
@@ -174,7 +170,7 @@ impl AndroidShellServices {
 
 impl MotionSource for AndroidShellServices {
     fn start_gyro(&self, request: GyroRequest) -> Result<GyroSubscription, SensorSourceError> {
-        let package_name = self.package_name(GYRO_SENSOR)?;
+        let package_name = self.package_name();
         let ring = Arc::new(MotionRing::new(request.ring_capacity()));
         let writer = Arc::clone(&ring);
         let lease = self.start_claimed_sensor(ClaimedSensor::Gyro, GYRO_SENSOR, || {
@@ -202,7 +198,7 @@ impl MotionSource for AndroidShellServices {
     }
 
     fn start_orientation(&self) -> Result<OrientationSubscription, SensorSourceError> {
-        let package_name = self.package_name(ACCELEROMETER_SENSOR)?;
+        let package_name = self.package_name();
         let mut classifier = OrientationClassifier::new(self.runtime.config().orientation).map_err(|error| {
             SensorSourceError::PlatformFailure {
                 sensor: ACCELEROMETER_SENSOR,
@@ -240,7 +236,7 @@ impl MotionSource for AndroidShellServices {
     }
 
     fn start_gravity(&self) -> Result<GravitySubscription, SensorSourceError> {
-        let package_name = self.package_name(GRAVITY_SENSOR)?;
+        let package_name = self.package_name();
         let settings = self.runtime.config().gravity;
         let slot = Arc::new(GravitySlot::new());
         let mut chosen_source = GravitySource::Unspecified;

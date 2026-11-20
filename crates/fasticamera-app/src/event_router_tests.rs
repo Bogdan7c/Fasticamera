@@ -81,6 +81,8 @@ struct FakeShell {
     gravity: Arc<shell_contract::gravity::GravitySlot>,
     /// Подставная батарея; `None` — батареи нет (честный отказ замера тока).
     battery: Mutex<Option<Arc<shell_contract::power::fake::FakePowerSource>>>,
+    /// Датчик ориентации: кто и сколько его держит.
+    orientation_sensor: crate::orientation_sensor_fake::FakeOrientationSensor,
 }
 
 impl ShellCommands for FakeShell {
@@ -120,7 +122,7 @@ impl MotionSource for FakeShell {
     }
 
     fn start_orientation(&self) -> Result<OrientationSubscription, SensorSourceError> {
-        Ok(OrientationSubscription::new(Arc::new(AtomicU64::new(25)), Box::new(())))
+        Ok(self.orientation_sensor.subscribe())
     }
 
     fn start_gravity(&self) -> Result<shell_contract::gravity::GravitySubscription, SensorSourceError> {

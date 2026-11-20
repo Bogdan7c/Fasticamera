@@ -37,6 +37,7 @@ use std::time::{Duration, Instant};
 use camera_screen::shutter::ShotRequest;
 use camera_screen::{CameraScreen, ScreenAction, ScreenBuildError, ScreenTouch};
 use shell_contract::hardware_key::HardwareKeyEvent;
+use shell_contract::motion::{MotionSource, OrientationSubscription};
 use shell_contract::orientation::DeviceOrientation;
 use shell_contract::system_gesture::SystemGestureZones;
 use shell_contract::touch::TouchSample;
@@ -154,9 +155,33 @@ pub struct ScreenEnvironment<'a> {
     pub orientation: Option<DeviceOrientation>,
 }
 
-/// Установленный экран: писатель канала входа и доска отчёта.
+/// Установленный экран: писатель канала входа и датчик ориентации на его жизнь.
 struct InstalledScreen {
     sender: ScreenInputSender,
+    /// Держится ради побочного эффекта (RAII): пока экран стоит, классификатор оболочки шлёт
+    /// `ShellEvent::DeviceOrientation`, маршрутизатор пересылает его экрану (`route_orientation`), значки
+    /// поворачиваются. Экран снят (сценарий, паника источника) — подписка сброшена и датчик свободен: `motion`
+    /// занимает его сам. Без подписки событий ориентации в продукте не было вовсе (дефект 12b).
+    _orientation_sensor: OrientationSensor,
+}
+
+/// Датчик ориентации экрана: работает или недоступен (причина уже в логе, экран живёт с портретными значками).
+enum OrientationSensor {
+    Running(#[expect(dead_code, reason = "держится ради RAII: сброс останавливает датчик")] OrientationSubscription),
+    Unavailable,
+}
+
+impl OrientationSensor {
+    /// Запуск датчика; отказ — предупреждение в лог и явное «недоступен», а не молчание.
+    fn start(motion: &dyn MotionSource) -> Self {
+        match motion.start_orientation() {
+            Ok(subscription) => Self::Running(subscription),
+            Err(error) => {
+                tracing::warn!(target: LOG_TARGET, %error, "датчик ориентации недоступен: значки экрана не повернутся");
+                Self::Unavailable
+            }
+        }
+    }
 }
 
 /// Сервис экрана камеры.
@@ -273,7 +298,10 @@ impl CameraScreenService {
                 self.installs += 1;
                 self.recovery.installed_at = Some(Instant::now());
                 self.board = Some(board);
-                self.installed = Some(InstalledScreen { sender });
+                self.installed = Some(InstalledScreen {
+                    sender,
+                    _orientation_sensor: OrientationSensor::start(env.services.motion.as_ref()),
+                });
                 self.status = CameraScreenStatus::Installed;
                 // Ориентацию экран узнаёт сразу, а не при следующем повороте телефона.
                 if let Some(orientation) = env.orientation {
