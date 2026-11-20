@@ -4,7 +4,7 @@ use ui_core::geometry::{Point, Rect, Size};
 use ui_core::time::{MonotonicNanos, MotionPreference};
 
 use super::error::PanelError;
-use super::spec::PanelMorphSpec;
+use super::spec::{ContentSlide, PanelMorphSpec, PanelMotionKind};
 use crate::environment::ElementEnvironment;
 use crate::progress::{SpringProgress, SpringSource, UNIT_REST};
 use crate::tokens::PanelTokens;
@@ -72,6 +72,8 @@ pub struct PanelMorph {
     spec: PanelMorphSpec,
     tokens: PanelTokens,
     springs: SpringSource,
+    /// Предпочтение движения: при `Reduced` ни рамка, ни содержимое не перемещаются (только проявление).
+    motion: MotionPreference,
     progress: SpringProgress,
     /// Куда панель едет или где стоит: `true` — к открытию.
     wants_open: bool,
@@ -95,6 +97,7 @@ impl PanelMorph {
             spec,
             tokens: environment.tokens.panel,
             springs,
+            motion: environment.motion,
             progress,
             wants_open: false,
             unreported_settle: None,
@@ -158,6 +161,7 @@ impl PanelMorph {
     /// Reduce Motion включили или выключили на лету: действует на следующие движения.
     pub fn set_motion(&mut self, motion: MotionPreference) {
         self.springs.set_motion(motion);
+        self.motion = motion;
     }
 
     /// Раз в кадр: сообщить о завершении движения (ровно один раз).
@@ -181,27 +185,50 @@ impl PanelMorph {
         // Геометрия может чуть выйти за 0..1 у пружины с перелётом, а доли — нет.
         let unit = progress.clamp(0.0, 1.0);
         let geometric = progress.max(0.0);
-        let source = self.spec.source;
-        let target = self.spec.target;
-        let origin = Point::new(
-            lerp(source.origin.x, target.origin.x, geometric),
-            lerp(source.origin.y, target.origin.y, geometric),
-        );
-        let size = Size::new(
-            lerp(source.size.width, target.size.width, geometric),
-            lerp(source.size.height, target.size.height, geometric),
-        );
-        let source_radius = source.size.width.min(source.size.height) * 0.5;
         let reveal = self.tokens.content_reveal_start;
+        // Reduce Motion: содержимое не «въезжает» — оно только проявляется на месте.
+        let slide_pt = match (self.motion, self.spec.content_slide) {
+            (MotionPreference::Reduced, _) => 0.0,
+            (MotionPreference::Full, ContentSlide::FromTokens) => self.tokens.content_slide_distance_pt,
+            (MotionPreference::Full, ContentSlide::Points(distance)) => distance,
+        };
+        let (frame, corner_radius_pt, source_opacity) = match self.spec.motion_kind {
+            // Reduce Motion: рамка не растёт из источника, а стоит на цели и проявляется (источник гаснет).
+            PanelMotionKind::GrowFromSource if self.motion == MotionPreference::Reduced => {
+                (self.spec.target, self.spec.target_corner_radius_pt, (1.0 - unit) as f32)
+            }
+            PanelMotionKind::GrowFromSource => {
+                let (source, target) = (self.spec.source, self.spec.target);
+                let origin = Point::new(
+                    lerp(source.origin.x, target.origin.x, geometric),
+                    lerp(source.origin.y, target.origin.y, geometric),
+                );
+                let size = Size::new(
+                    lerp(source.size.width, target.size.width, geometric),
+                    lerp(source.size.height, target.size.height, geometric),
+                );
+                let source_radius = self
+                    .spec
+                    .source_corner_radius_pt
+                    .unwrap_or(source.size.width.min(source.size.height) * 0.5);
+                (
+                    Rect::new(origin, size),
+                    lerp(source_radius, self.spec.target_corner_radius_pt, geometric),
+                    (1.0 - unit) as f32,
+                )
+            }
+            // На месте: геометрия не зависит от прогресса, а гасить некого — источника нет.
+            PanelMotionKind::InPlace => (self.spec.target, self.spec.target_corner_radius_pt, 0.0),
+        };
         PanelSnapshot {
             phase: self.phase(now),
             progress,
-            frame: Rect::new(origin, size),
-            corner_radius_pt: lerp(source_radius, self.spec.target_corner_radius_pt, geometric),
+            frame,
+            corner_radius_pt,
             effect: unit as f32,
             content_opacity: ((progress - reveal) / (1.0 - reveal)).clamp(0.0, 1.0) as f32,
-            content_offset_pt: self.tokens.content_slide_distance_pt * (1.0 - unit),
-            source_opacity: (1.0 - unit) as f32,
+            content_offset_pt: slide_pt * (1.0 - unit),
+            source_opacity,
         }
     }
 }

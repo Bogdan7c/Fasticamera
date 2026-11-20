@@ -4,7 +4,7 @@
 //! касания» соблюдаются в одном месте.
 
 use ui_core::animator::{AnimatedProperty, AnimationRequest, PropertyKey, StartVelocity};
-use ui_core::geometry::Rect;
+use ui_core::geometry::{Insets, Rect};
 use ui_core::gesture::{RecognizerId, RecognizerSpec};
 use ui_core::id::NodeId;
 use ui_core::layout::{AnchorRule, AxisPlacement, Placement, ReferenceArea};
@@ -13,7 +13,7 @@ use ui_core::spring::Spring;
 use ui_core::time::MonotonicNanos;
 use ui_core::tree::{HitTestPolicy, Visibility};
 
-use super::error::WidgetError;
+use super::error::{WidgetError, element};
 use super::intent::ScreenGesture;
 
 /// Сцена экрана и список узлов, которые поворачиваются по ориентации телефона.
@@ -141,6 +141,68 @@ impl SceneKit {
             velocity: StartVelocity::Inherit,
             now,
         })?;
+        Ok(())
+    }
+
+    /// Визуально сдвигает узел по вертикали на `offset_pt` (pt, вниз положительно) пружиной. Хит-тест `ui-core`
+    /// учитывает сдвиг узла, поэтому зона касания едет вместе с картинкой. Так поднимается ряд затвора над
+    /// карточкой (решение 103): рамка раскладки не меняется, меняется только сдвиг.
+    pub(crate) fn slide_vertically_to(
+        &mut self,
+        node: NodeId,
+        offset_pt: f64,
+        spring: Spring,
+        now: MonotonicNanos,
+    ) -> Result<(), WidgetError> {
+        self.scene.animate(AnimationRequest {
+            key: PropertyKey {
+                node,
+                property: AnimatedProperty::TranslationY,
+            },
+            target: offset_pt,
+            spring,
+            velocity: StartVelocity::Inherit,
+            now,
+        })?;
+        Ok(())
+    }
+
+    /// Сдвигает узел по вертикали на `offset_pt` сразу, без анимации (Reduce Motion: без перемещений); идущая
+    /// анимация сдвига снимается.
+    pub(crate) fn jump_vertically_to(&mut self, node: NodeId, offset_pt: f64) -> Result<(), WidgetError> {
+        self.scene
+            .set_property(node, AnimatedProperty::TranslationY, offset_pt)?;
+        Ok(())
+    }
+
+    /// Текущий визуальный сдвиг узла по вертикали, pt (с учётом идущей анимации).
+    pub(crate) fn vertical_offset_pt(&self, node: NodeId) -> Result<f64, WidgetError> {
+        self.scene
+            .tree()
+            .translation(node)
+            .map(|translation| translation.dy)
+            .map_err(element("сдвиг узла"))
+    }
+
+    /// Расширяет зону касания узла с рамкой `frame` до квадрата не меньше `min_side_pt` (HIG: ≥ 44 pt), не
+    /// меняя рамку раскладки: круглая кнопка Ø 36 рисуется как есть, а попасть в неё проще.
+    pub(crate) fn ensure_min_touch_side(
+        &mut self,
+        node: NodeId,
+        frame: Rect,
+        min_side_pt: f64,
+    ) -> Result<(), WidgetError> {
+        let horizontal = ((min_side_pt - frame.size.width) * 0.5).max(0.0);
+        let vertical = ((min_side_pt - frame.size.height) * 0.5).max(0.0);
+        self.scene.set_touch_outset(
+            node,
+            Insets {
+                top: vertical,
+                left: horizontal,
+                bottom: vertical,
+                right: horizontal,
+            },
+        )?;
         Ok(())
     }
 

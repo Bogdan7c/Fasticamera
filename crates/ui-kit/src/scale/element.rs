@@ -108,6 +108,12 @@ impl<M: ValueModel + Clone> SnapScale<M> {
         &self.model
     }
 
+    /// Сколько pt занимает одна единица модели (по токену плотности шкалы). Нужно виду, чтобы
+    /// перевести смещение риски в номер шага, не зная токенов плотности.
+    pub fn points_per_unit(&self) -> f64 {
+        self.points_per_unit
+    }
+
     pub fn spec(&self) -> &ScaleSpec {
         &self.spec
     }

@@ -18,6 +18,8 @@ pub enum ScaleDensity {
     Regular,
     /// Редкие тики (крупные шаги).
     Sparse,
+    /// Линейка экспозиции нижней карточки: одна единица модели (шаг 1/3 EV) — 20 pt.
+    Ruler,
 }
 
 /// Числа раскладки элементов, pt.
@@ -30,6 +32,9 @@ pub struct DensityTokens {
     pub regular_points_per_unit: f64,
     /// pt на единицу при [`ScaleDensity::Sparse`]. `[estimate]` — подгонка, не Apple.
     pub sparse_points_per_unit: f64,
+    /// pt на единицу при [`ScaleDensity::Ruler`]: единица модели — один шаг 1/3 EV.
+    /// `[measured: R00 t=35.17–35.90]`: 20,0.
+    pub ruler_points_per_unit: f64,
     /// Радиус «магнита» опорного значения у непрерывной шкалы, pt. `[estimate]` — подгонка, не Apple.
     pub magnet_capture_points: f64,
     /// Промежуток между элементами карусели, pt. `[measured]` `layout.md`: зазор между словами 35,4.
@@ -47,6 +52,7 @@ impl Default for DensityTokens {
             dense_points_per_unit: 12.0,
             regular_points_per_unit: 24.0,
             sparse_points_per_unit: 48.0,
+            ruler_points_per_unit: 20.0,
             magnet_capture_points: 14.0,
             carousel_item_gap_points: 35.4,
             press_tracking_slop_points: 8.0,
@@ -61,6 +67,7 @@ impl DensityTokens {
             ScaleDensity::Dense => self.dense_points_per_unit,
             ScaleDensity::Regular => self.regular_points_per_unit,
             ScaleDensity::Sparse => self.sparse_points_per_unit,
+            ScaleDensity::Ruler => self.ruler_points_per_unit,
         }
     }
 
@@ -70,6 +77,7 @@ impl DensityTokens {
             ("dense_points_per_unit", self.dense_points_per_unit),
             ("regular_points_per_unit", self.regular_points_per_unit),
             ("sparse_points_per_unit", self.sparse_points_per_unit),
+            ("ruler_points_per_unit", self.ruler_points_per_unit),
             ("magnet_capture_points", self.magnet_capture_points),
             ("carousel_item_gap_points", self.carousel_item_gap_points),
             ("press_tracking_slop_points", self.press_tracking_slop_points),

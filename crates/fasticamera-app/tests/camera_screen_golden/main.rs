@@ -19,9 +19,9 @@ mod golden_files;
 mod render_rig;
 mod states;
 
-use camera_screen::PanelState;
 use camera_screen::settings::AspectRatio;
 use camera_screen::tools::ToolId;
+use camera_screen::{PanelState, ShutterVisibility};
 use driver::{HEIGHT_PX, PX_PER_PT, ScreenDriver, WIDTH_PX};
 use golden_files::{check_golden, is_update_mode};
 use render_rig::{RenderRig, Snapshot, ViewfinderRectPx, assert_no_validation_errors, gpu_context_or_skip};
@@ -55,6 +55,12 @@ fn near_white(pixel: [f32; 3]) -> bool {
     pixel.iter().all(|channel| *channel > 0.9)
 }
 
+/// Светлый текст или значок на тёмном стекле карточки (заголовок — белый α ≈ 0,6, риски шкалы — α 0,5…0,8).
+/// Тёмное стекло карточки имеет яркость ≈ 0,15, поэтому порог 0,35 отделяет рисунок от фона.
+fn light_on_dark_glass(pixel: [f32; 3]) -> bool {
+    pixel.iter().all(|channel| *channel > 0.35)
+}
+
 /// Жёлтый фокуса `#FFCC00` (токен `focus_yellow`) с запасом на сглаживание и альфу.
 fn focus_yellow(pixel: [f32; 3]) -> bool {
     pixel[0] > 0.85 && (0.65..0.95).contains(&pixel[1]) && pixel[2] < 0.25
@@ -75,14 +81,48 @@ const LOCK_PLAQUE_WINDOW: Window = (390, 475, 690, 560);
 const COUNTDOWN_WINDOW: Window = (420, 1030, 660, 1300);
 /// Окно затвора (кольцо Ø197 вокруг центра (540, 2034)).
 const SHUTTER_WINDOW: Window = (440, 1930, 640, 2140);
+/// Высота экрана в pt: низ экрана — точка привязки шторки и карточки (`bottom_anchored`).
+fn screen_height_pt() -> f64 {
+    f64::from(HEIGHT_PX) / f64::from(PX_PER_PT)
+}
+
+/// Верх карточки инструмента, px. `[derived]` T = высота экрана − отступ 8,2 − высота 183,1 (pt) = 791,4 pt.
+fn card_top_px() -> f32 {
+    ((screen_height_pt() - 8.2 - 183.1) * f64::from(PX_PER_PT)) as f32
+}
+
+/// Окно варианта `index` из `count` в ряду карточки: центр x = 220 + (index − (count−1)/2) · 75,7 pt, центр y = T+118 pt,
+/// половина зоны 30 pt по x (шаг 75,7 не залезает в соседа) и 20 pt по y. `[derived]` из `CardLayout`.
+fn card_option_window(index: usize, count: usize) -> Window {
+    let scale = f64::from(PX_PER_PT);
+    let center_x = (220.0 + (index as f64 - (count as f64 - 1.0) / 2.0) * 75.7) * scale;
+    let center_y = f64::from(card_top_px()) + 118.0 * scale;
+    (
+        (center_x - 30.0 * scale) as u32,
+        (center_y - 20.0 * scale) as u32,
+        (center_x + 30.0 * scale) as u32,
+        (center_y + 20.0 * scale) as u32,
+    )
+}
+
 /// Окно значка вспышки в полосе над кадром.
 const FLASH_ICON_WINDOW: Window = (370, 285, 460, 360);
-/// Окно шкалы EV в панели Exposure (нижняя часть панели, где идут деления).
+/// Окно шкалы EV в карточке Exposure: риски T+116…T+129 pt (T — верх карточки 791,4 pt) = 2227…2259 px, с запасом.
 const EXPOSURE_SCALE_WINDOW: Window = (240, 2190, 680, 2290);
+/// Узкое окно маркера шкалы (жёлтый 2 × 26 pt по центру x = 540 px, середина рисок y ≈ 2243 px).
+const EXPOSURE_MARKER_WINDOW: Window = (528, 2200, 552, 2290);
+/// Окно крупного значения карточки («1.0»): центр x = 540 px, y = T+77 pt = 868,4 pt = 2131 px, цифры 20,7 pt = 51 px.
+const CARD_VALUE_WINDOW: Window = (440, 2095, 640, 2170);
+/// Окно заголовка карточки («TIMER»): центр y = T+30 pt = 821,4 pt = 2016 px, заглавные 10,3 pt = 25 px.
+const CARD_TITLE_WINDOW: Window = (440, 1995, 640, 2040);
+/// Окно левой кнопки карточки «×»/«‹»: центр (49; T+43) pt = (120; 2048) px, диск Ø 36 pt = 88 px.
+const CARD_LEFT_BUTTON_WINDOW: Window = (90, 2018, 150, 2078);
+/// Окно правой кнопки «↻» (только Exposure): центр (391; T+44) pt = (960; 2050) px.
+const CARD_RIGHT_BUTTON_WINDOW: Window = (930, 2020, 990, 2080);
+/// Окно «ручки» шторки: центр x = 540 px, y = (верх шторки 510,1 + 8,9 + 1,85) pt = 1278 px; 37,6 × 3,7 pt.
+const SHEET_HANDLE_WINDOW: Window = (500, 1272, 580, 1284);
 /// Окно подписи значения EV над значком «солнце» в полосе над кадром.
 const EXPOSURE_STRIP_WINDOW: Window = (620, 285, 720, 410);
-/// Окно нижних пунктов подменю таймера (серые «таблетки» 3s/5s/10s).
-const SUBMENU_ROWS_WINDOW: Window = (130, 1960, 950, 2110);
 /// Окно надписи «Camera unavailable» в центре кадра 4:3.
 const UNAVAILABLE_NOTICE_WINDOW: Window = (380, 1140, 700, 1200);
 
@@ -118,8 +158,26 @@ fn rest_4x3() {
             "центр затвора белый: {:?}",
             snapshot.at(sx, sy)
         );
-        // Кадр 4:3 (y 449..1889) показывает «фото»; вне кадра — чёрная маска: над кадром, под кадром и по краям полос.
+        // Кадр 4:3 = 186,0…772,7 pt (159,3…746,0 эталона + сдвиг 26,67 к нашему экрану) показывает «фото»; вне кадра —
+        // чёрная маска: над кадром, под кадром и по краям полос.
+        let frame_pt = driver
+            .screen()
+            .state()
+            .layout()
+            .expect("раскладка")
+            .frame_rect(AspectRatio::FourByThree);
+        assert!(
+            (frame_pt.min_y() - 186.0).abs() < 0.05 && (frame_pt.max_y() - 772.67).abs() < 0.05,
+            "кадр 4:3 по высоте: {}…{} pt",
+            frame_pt.min_y(),
+            frame_pt.max_y()
+        );
         let (_, top, _, bottom) = frame_rect_px(&driver, AspectRatio::FourByThree);
+        // Край кадра на самом деле нарисован там, где его считает раскладка: фото на 3 px внутри, маска на 3 px снаружи.
+        assert!(snapshot.luma(700, top + 3) > 0.2, "первая строка кадра — фото");
+        assert!(near_black(snapshot.at(700, top - 3)), "строка над кадром — маска");
+        assert!(snapshot.luma(700, bottom - 3) > 0.2, "последняя строка кадра — фото");
+        assert!(near_black(snapshot.at(3, bottom + 3)), "строка под кадром — маска");
         assert!(snapshot.luma(700, top + 250) > 0.2, "внутри кадра фото");
         assert!(
             near_black(snapshot.at(3, top - 20)),
@@ -214,97 +272,232 @@ fn controls_menu_open() {
             driver.glass_circle_center_px(SHUTTER_DIAMETER_PX).is_none(),
             "затвор не рисуется"
         );
+        assert_sheet_has_handle_and_black_item_circles(&rest, &snapshot);
         check_golden("controls_menu", &snapshot);
     });
+}
+
+/// Новая шторка (iOS 27): «ручка» 37,6 × 3,7 pt белая α 0,75 у верха и чёрные круги пунктов поверх стекла.
+/// Ручка — светлая полоска там, где в покое фото; круг пункта заметно темнее стекла рядом с ним (чёрный α 0,5).
+fn assert_sheet_has_handle_and_black_item_circles(rest: &Snapshot, snapshot: &Snapshot) {
+    let scale = f64::from(PX_PER_PT);
+    let handle_pixels = snapshot.count_in(SHEET_HANDLE_WINDOW, |pixel| pixel.iter().all(|channel| *channel > 0.7));
+    assert!(handle_pixels > 150, "«ручка» шторки: {handle_pixels} светлых px");
+    let handle_in_rest = rest.count_in(SHEET_HANDLE_WINDOW, |pixel| pixel.iter().all(|channel| *channel > 0.7));
+    assert_eq!(
+        handle_in_rest, 0,
+        "в покое ручки нет, значит светлая полоска принадлежит шторке"
+    );
+    // Верх шторки = высота экрана − 8,6 − 464 pt; центр первого ряда пунктов на 83 pt ниже, колонки 91 / 220 / 349 pt.
+    let sheet_top_pt = screen_height_pt() - 8.6 - 464.0;
+    let circle_y = ((sheet_top_pt + 83.0) * scale) as u32;
+    // Точка внутри круга колонки 2 над значком (радиус круга 34 pt = 83 px, значок ±14 pt): 55 px выше центра.
+    let inside_circle = snapshot.luma(540, circle_y - 55);
+    // Стекло между колонками 1 и 2 (x = 155,5 pt) на той же высоте: круги Ø 68 pt по 34 pt в каждую сторону не доходят.
+    let glass_next_to_it = snapshot.luma((155.5 * scale) as u32, circle_y - 55);
+    assert!(
+        inside_circle < glass_next_to_it * 0.75,
+        "круг пункта чёрный поверх стекла: внутри {inside_circle}, стекло рядом {glass_next_to_it}"
+    );
 }
 
 #[test]
 fn timer_submenu() {
     with_rig(|rig| {
-        let menu = render(rig, &states::controls_menu());
+        let rest = render(rig, &states::rest());
         let driver = states::timer_submenu();
         let snapshot = render(rig, &driver);
         assert_eq!(driver.screen().state().panel(), PanelState::Submenu(ToolId::Timer));
-        // Подменю заменило иконки меню строками-«таблетками» вариантов: низ шторки заметно изменился.
-        let difference = snapshot.mean_difference_in(&menu, SUBMENU_ROWS_WINDOW);
-        assert!(
-            difference > 0.03,
-            "строки вариантов отличаются от сетки меню: {difference}"
+        assert_eq!(
+            driver.screen().state().shutter_visibility(),
+            ShutterVisibility::RaisedAboveCard
         );
+        // Карточка TIMER у низа экрана: заголовок и крупное значение «Off» — светлый текст по центру.
+        assert!(
+            snapshot.count_in(CARD_TITLE_WINDOW, light_on_dark_glass) > 150,
+            "заголовок TIMER"
+        );
+        assert!(
+            snapshot.count_in(CARD_VALUE_WINDOW, near_white) > 150,
+            "крупное значение «Off»"
+        );
+        // Левая кнопка — «‹» назад в меню (светлый шеврон на тёмном диске); правой кнопки у Timer нет.
+        assert!(
+            snapshot.count_in(CARD_LEFT_BUTTON_WINDOW, near_white) > 30,
+            "кнопка «‹»"
+        );
+        assert_eq!(
+            snapshot.count_in(CARD_RIGHT_BUTTON_WINDOW, near_white),
+            0,
+            "у Timer нет кнопки «↻»"
+        );
+        // Ряд вариантов Off / 3 / 5 / 10: выбран Off (значок timer) — жёлтый только в его зоне.
+        assert!(
+            snapshot.count_in(card_option_window(0, 4), focus_yellow) > 40,
+            "выбранный вариант жёлтый"
+        );
+        for index in 1..4 {
+            assert_eq!(
+                snapshot.count_in(card_option_window(index, 4), focus_yellow),
+                0,
+                "вариант {index} не выбран и не жёлтый"
+            );
+            assert!(
+                snapshot.count_in(card_option_window(index, 4), near_white) > 40,
+                "вариант {index} читается белым"
+            );
+        }
+        assert_raised_shutter_is_visible_above_the_card(&driver, &rest, &snapshot);
         check_golden("timer_submenu", &snapshot);
     });
+}
+
+/// Ряд затвора поднят на 100 pt, затвор виден (белый диск) и целиком выше верха карточки; на старом месте затвора
+/// теперь стекло карточки, а не белый диск.
+fn assert_raised_shutter_is_visible_above_the_card(driver: &ScreenDriver, rest: &Snapshot, snapshot: &Snapshot) {
+    let (rest_x, rest_y) = shutter_px(&ScreenDriver::new());
+    let (raised_x, raised_y) = shutter_px(driver);
+    let raise_px = rest_y as f32 - raised_y as f32;
+    assert!(
+        (raise_px - 100.0 * PX_PER_PT).abs() < 3.0,
+        "затвор поднят на 100 pt = {} px, поднят на {raise_px} px",
+        100.0 * PX_PER_PT
+    );
+    assert_eq!(raised_x, rest_x, "поднятый затвор по x не сдвинулся");
+    assert!(
+        near_white(snapshot.at(raised_x, raised_y)),
+        "диск поднятого затвора белый"
+    );
+    let ring_bottom = raised_y as f32 + SHUTTER_DIAMETER_PX / 2.0;
+    assert!(
+        ring_bottom < card_top_px(),
+        "затвор под ПОДНЯТЫМ положением не заходит в карточку: низ кольца {ring_bottom}, верх карточки {}",
+        card_top_px()
+    );
+    assert!(
+        near_white(rest.at(rest_x, rest_y)),
+        "в покое белый диск на старом месте"
+    );
+    assert!(
+        !near_white(snapshot.at(rest_x, rest_y)),
+        "на старом месте затвора теперь карточка, не диск"
+    );
 }
 
 #[test]
 fn exposure_panel_plus_one_ev() {
     with_rig(|rig| {
-        let zero = render(rig, &states::exposure_panel(0.0));
+        let rest = render(rig, &states::rest());
+        let zero_driver = states::exposure_panel(0.0);
+        let zero = render(rig, &zero_driver);
         let driver = states::exposure_panel(1.0);
         let snapshot = render(rig, &driver);
         assert_eq!(driver.screen().state().panel(), PanelState::ExposurePanel);
+        assert_eq!(
+            driver.screen().state().shutter_visibility(),
+            ShutterVisibility::RaisedAboveCard
+        );
         assert_eq!(
             driver.screen().state().exposure().steps(),
             3,
             "+1 EV = 3 шага по 1/3 EV"
         );
-        // Шкала сдвинулась (деления в другом месте) и подпись значения в полосе над кадром изменилась.
-        let scale = snapshot.mean_difference_in(&zero, EXPOSURE_SCALE_WINDOW);
-        assert!(scale > 0.005, "деления шкалы сдвинулись: {scale}");
+        // Шкала едет под значением: при +1/3 EV риски сдвинуты на шаг (20 pt) относительно жёлтого маркера.
+        // При +1 EV (ровно 3 шага) рисунок рисок совпадает с нулевым — целые деления стоят у маркера.
+        let one_third = render(rig, &states::exposure_panel(1.0 / 3.0));
+        let scale = one_third.mean_difference_in(&zero, EXPOSURE_SCALE_WINDOW);
+        // Окно шире самих рисок, поэтому средняя разница мала (≈ 0,004); неподвижная шкала даёт ровно 0.
+        assert!(scale > 0.002, "деления шкалы сдвинулись на шаг: {scale}");
+        // Затухание к краям: дальше ±6 шагов (6 · 20 pt = 295 px от маркера) рисок нет совсем; окно — левее x = 230 px.
+        let far_left: Window = (60, 2200, 230, 2290);
+        assert_eq!(
+            snapshot.count_in(far_left, light_on_dark_glass),
+            0,
+            "за краем затухания (дальше ±6 шагов) рисок нет"
+        );
+        assert!(
+            snapshot.count_in(EXPOSURE_SCALE_WINDOW, light_on_dark_glass) > 300,
+            "риски шкалы видны вокруг маркера"
+        );
+        for (name, frame) in [("0", &zero), ("+1", &snapshot)] {
+            assert!(
+                frame.count_in(EXPOSURE_MARKER_WINDOW, focus_yellow) > 100,
+                "жёлтый маркер шкалы при {name} EV"
+            );
+        }
+        // Крупное значение карточки: «0.0» → «1.0» (другие цифры — другие пиксели), в обоих случаях светлый текст.
+        assert!(
+            zero.count_in(CARD_VALUE_WINDOW, near_white) > 150,
+            "значение «0.0» в карточке"
+        );
+        assert!(
+            snapshot.count_in(CARD_VALUE_WINDOW, near_white) > 150,
+            "значение «1.0» в карточке"
+        );
+        let value = snapshot.mean_difference_in(&zero, CARD_VALUE_WINDOW);
+        assert!(
+            value > 0.005,
+            "значение в карточке изменилось с «0.0» на «1.0»: {value}"
+        );
+        // Верхний ряд: два ряда текста «1.0 / EV» — жёлтые при EV ≠ 0, белые при 0 (видео A «0.0 EV»).
         let label = snapshot.mean_difference_in(&zero, EXPOSURE_STRIP_WINDOW);
-        assert!(label > 0.005, "подпись +1.0 над кадром: {label}");
+        assert!(label > 0.005, "подпись «1.0 EV» над кадром: {label}");
         assert!(
             snapshot.count_in(EXPOSURE_STRIP_WINDOW, focus_yellow) > 200,
-            "значок и подпись EV жёлтые"
+            "«1.0 EV» жёлтое"
         );
-        assert_exposure_panel_clears_the_shutter(&driver, &snapshot);
+        assert_eq!(
+            zero.count_in(EXPOSURE_STRIP_WINDOW, focus_yellow),
+            0,
+            "«0.0 EV» не жёлтое"
+        );
+        assert!(zero.count_in(EXPOSURE_STRIP_WINDOW, near_white) > 200, "«0.0 EV» белое");
+        // Кнопки карточки: «×» слева (со значка — закрыть) и «↻» справа.
+        assert!(
+            snapshot.count_in(CARD_LEFT_BUTTON_WINDOW, near_white) > 30,
+            "кнопка «×»"
+        );
+        assert!(
+            snapshot.count_in(CARD_RIGHT_BUTTON_WINDOW, near_white) > 30,
+            "кнопка «↻»"
+        );
+        assert_card_reaches_the_bottom_and_the_shutter_rides_above_it(&driver);
+        assert_raised_shutter_is_visible_above_the_card(&driver, &rest, &snapshot);
         check_golden("exposure_plus1", &snapshot);
     });
 }
 
-/// Панель Exposure не перекрывает затвор (`motion.md` 4.1: затвор при панели виден и работает): белый диск
-/// затвора целиком над стеклом панели и не закрывает число и шкалу панели.
-fn assert_exposure_panel_clears_the_shutter(driver: &ScreenDriver, snapshot: &Snapshot) {
-    let (panel_x0, panel_y0, panel_x1, panel_y1) = driver.glass_panel_rect_px().expect("стекло панели в списке");
-    let (shutter_x, shutter_y) = shutter_px(driver);
-    let ring_bottom = shutter_y + (SHUTTER_DIAMETER_PX / 2.0) as u32;
-    // Рамки: кольцо затвора кончается выше верха стекла панели.
+/// Карточка Exposure — рамка 421 × 183,1 pt с отступом 8,2 pt от низа экрана и от боков по 9,5 pt (`CardLayout`).
+fn assert_card_reaches_the_bottom_and_the_shutter_rides_above_it(driver: &ScreenDriver) {
+    let (card_x0, card_y0, card_x1, card_y1) = driver.glass_panel_rect_px().expect("стекло карточки в списке");
+    let scale = PX_PER_PT;
     assert!(
-        (ring_bottom as f32) < panel_y0,
-        "кольцо затвора (низ {ring_bottom}) заходит в панель (верх {panel_y0})"
+        (card_y0 - card_top_px()).abs() < 2.0,
+        "верх карточки {card_y0}, ждали {}",
+        card_top_px()
     );
-    // Диск затвора на месте и белый; в тонкой полосе у самого верха панели (там нет содержимого панели)
-    // от диска нет ни одного белого пикселя.
-    assert!(near_white(snapshot.at(shutter_x, shutter_y)), "диск затвора виден");
-    let top_strip: Window = (
-        shutter_x - 90,
-        panel_y0 as u32 + 2,
-        shutter_x + 90,
-        panel_y0 as u32 + 12,
-    );
-    assert_eq!(
-        snapshot.count_in(top_strip, near_white),
-        0,
-        "белый диск затвора лежит поверх стекла панели"
-    );
-    // Число «+1.0» под диском: светлый текст занимает небольшую долю окна, а не залито белым диском.
-    let value_window: Window = (
-        shutter_x - 60,
-        panel_y0 as u32 + 14,
-        shutter_x + 60,
-        panel_y0 as u32 + 74,
-    );
-    let window_area = (value_window.2 - value_window.0) * (value_window.3 - value_window.1);
-    let white = snapshot.count_in(value_window, near_white) as u32;
+    let bottom_gap_pt = (HEIGHT_PX as f32 - card_y1) / scale;
     assert!(
-        white > 100 && white < window_area * 2 / 5,
-        "число панели: {white} белых px из {window_area} (мало — число закрыто, много — залито диском)"
+        (bottom_gap_pt - 8.2).abs() < 0.2,
+        "отступ карточки от низа экрана {bottom_gap_pt} pt, ждали 8,2"
     );
-    // Бока панели читаются как стекло: левый и правый края внутри экрана.
     assert!(
-        panel_x0 > 0.0 && panel_x1 < WIDTH_PX as f32,
-        "панель с боковыми отступами"
+        (card_x0 / scale - 9.5).abs() < 0.2,
+        "левый отступ карточки {} pt, ждали 9,5",
+        card_x0 / scale
     );
-    assert!(panel_y1 < HEIGHT_PX as f32, "панель выше нижнего края экрана");
+    assert!(
+        ((WIDTH_PX as f32 - card_x1) / scale - 9.5).abs() < 0.2,
+        "правый отступ карточки {} pt, ждали 9,5",
+        (WIDTH_PX as f32 - card_x1) / scale
+    );
+    // Затвор едет над карточкой: его кольцо кончается выше верха стекла (не «под кольцом», как в старой панели).
+    let (_, raised_y) = shutter_px(driver);
+    let ring_bottom = raised_y as f32 + SHUTTER_DIAMETER_PX / 2.0;
+    assert!(
+        ring_bottom < card_y0,
+        "кольцо затвора (низ {ring_bottom}) заходит в карточку (верх {card_y0})"
+    );
 }
 
 #[test]

@@ -53,11 +53,15 @@ pub enum MotionToken {
     ScaleSnap,
     /// Возврат из-за края («резинка»).
     EdgeReturn,
+    /// Короткое проявление на месте без перелёта: открытие карточки со значка, растворение ряда.
+    CardAppear,
+    /// Морф/закрытие панели без перелёта: меню → карточка, закрытие карточки, подъём затвора.
+    CardMorph,
 }
 
 impl MotionToken {
     /// Все токены — для проверок и тестов полноты.
-    pub const ALL: [MotionToken; 7] = [
+    pub const ALL: [MotionToken; 9] = [
         MotionToken::Smooth,
         MotionToken::Snappy,
         MotionToken::Bouncy,
@@ -65,6 +69,8 @@ impl MotionToken {
         MotionToken::CameraSheet,
         MotionToken::ScaleSnap,
         MotionToken::EdgeReturn,
+        MotionToken::CardAppear,
+        MotionToken::CardMorph,
     ];
 
     /// Имя для сообщений об ошибках.
@@ -77,6 +83,8 @@ impl MotionToken {
             MotionToken::CameraSheet => "camera.sheet",
             MotionToken::ScaleSnap => "scale.snap",
             MotionToken::EdgeReturn => "edge.return",
+            MotionToken::CardAppear => "card.appear",
+            MotionToken::CardMorph => "card.morph",
         }
     }
 }
@@ -108,6 +116,10 @@ pub struct MotionTokens {
     pub scale_snap: SpringToken,
     /// `[estimate]` — подгонка, не Apple: возврат из-за края, как в умолчании `ui-core`.
     pub edge_return: SpringToken,
+    /// `[measured: C t=47.93–48.12]` iOS 27: перекрёстное растворение карточки 0,15–0,2 с, без перелёта.
+    pub card_appear: SpringToken,
+    /// `[measured: C t=37.8–38.1, 62.93–63.25]` iOS 27: шторка → карточка и закрытие ≈ 0,3 с, без перелёта.
+    pub card_morph: SpringToken,
     /// Замедление, «резинка» и критерий покоя — умолчания `ui-core` (там же их метки).
     /// Поля `snap_spring`, `edge_return_spring` и `snap_selection` здесь **перекрываются**
     /// ролью ([`MotionTokens::scroll_config`]).
@@ -145,6 +157,14 @@ impl Default for MotionTokens {
                 duration_s: 0.4,
                 bounce: 0.0,
             },
+            card_appear: SpringToken {
+                duration_s: 0.2,
+                bounce: 0.0,
+            },
+            card_morph: SpringToken {
+                duration_s: 0.3,
+                bounce: 0.0,
+            },
             scroll: ScrollConfig::default(),
         }
     }
@@ -161,6 +181,8 @@ impl MotionTokens {
             MotionToken::CameraSheet => self.camera_sheet,
             MotionToken::ScaleSnap => self.scale_snap,
             MotionToken::EdgeReturn => self.edge_return,
+            MotionToken::CardAppear => self.card_appear,
+            MotionToken::CardMorph => self.card_morph,
         }
     }
 

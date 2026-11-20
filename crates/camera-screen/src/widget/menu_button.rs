@@ -1,4 +1,4 @@
-//! Кнопка меню Controls (Ø48,3, иконка «точки»): стеклянный круг, из которого вырастает шторка меню.
+//! Кнопка меню Controls (Ø44, иконка «точки»): стеклянный круг, из которого вырастает шторка меню.
 
 use super::rotation_only;
 use ui_core::gesture::GestureEvent;
@@ -7,6 +7,7 @@ use ui_draw::icons::IconId;
 use ui_kit::tokens::GlassRole;
 use ui_kit::view::{GlassShape, centered_icon, opacity_of_placement};
 
+use super::bottom_row::BottomRowFade;
 use super::button::{ButtonEvent, PressButton};
 use super::error::WidgetError;
 use super::intent::{ButtonId, ScreenGesture};
@@ -22,6 +23,8 @@ pub(crate) struct MenuButtonWidget {
     button: PressButton,
     /// Узел значка: поворачивается по ориентации телефона, сама кнопка стоит.
     icon_node: NodeId,
+    /// Растворение, пока открыта нижняя карточка.
+    fade: BottomRowFade,
 }
 
 impl MenuButtonWidget {
@@ -30,7 +33,11 @@ impl MenuButtonWidget {
         let node = kit.add_node(parent, "menu_button", frame, ctx.geometry.screen())?;
         let button = PressButton::attach(kit, ButtonId::MenuButton, node, frame, ctx)?;
         let icon_node = kit.add_rotating_content(node, "menu_button_icon")?;
-        Ok(Self { button, icon_node })
+        Ok(Self {
+            button,
+            icon_node,
+            fade: BottomRowFade::default(),
+        })
     }
 
     pub(crate) fn handle_gesture(
@@ -47,10 +54,12 @@ impl MenuButtonWidget {
         Ok(true)
     }
 
-    /// Кнопка ловит касания, только пока меню закрыто (открытое меню лежит поверх неё).
+    /// Кнопка ловит касания, только пока меню закрыто (открытое меню лежит поверх неё) и нет нижней карточки
+    /// (она растворяет кнопку, решение 103).
     pub(crate) fn sync(&mut self, kit: &mut SceneKit, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
-        let reachable = !matches!(ctx.state.panel(), PanelState::ControlsMenu | PanelState::Submenu(_));
-        kit.set_interactive(self.button.node(), reachable)
+        let row_shown = self.fade.sync(kit, ctx, self.button.node())?;
+        let menu_closed = ctx.state.panel() != PanelState::ControlsMenu;
+        kit.set_interactive(self.button.node(), row_shown && menu_closed)
     }
 
     /// `source_opacity` — прозрачность «источника» из морфа шторки: кнопка растворяется, пока из неё растёт панель.

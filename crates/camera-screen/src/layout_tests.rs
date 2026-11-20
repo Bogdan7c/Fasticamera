@@ -40,15 +40,15 @@ fn frame_16x9_matches_layout_md_table_4_3() {
 
 #[test]
 fn frame_4x3_matches_layout_md_table_4_3_within_rounding() {
-    // layout.md 4.3: 4:3 → «≈ 183–770 pt», «≈ 450–1890 px». Таблица округлена до целых pt;
-    // расчёт даёт 183,0–769,7 pt, то есть 449,2–1889,1 px. Допуск 2 px покрывает округление.
+    // [measured: R00 t=10.027] кадр 4:3 = 159,3–746,0 pt эталона; наш экран выше на 26,7 pt, раскладка привязана
+    // к низу: 186,0–772,7 pt, то есть 456,5–1896,6 px (ширина 1080 px = 440 pt).
     let layout = our_layout();
     let rect = layout.frame_rect(AspectRatio::FourByThree);
-    assert!((rect.min_y() - 183.0).abs() < 0.5);
-    assert!((rect.max_y() - 770.0).abs() < 0.5);
+    assert!((rect.min_y() - 186.0).abs() < 0.1, "верх {} pt", rect.min_y());
+    assert!((rect.max_y() - 772.7).abs() < 0.1, "низ {} pt", rect.max_y());
     let (top_px, bottom_px) = frame_px(&layout, AspectRatio::FourByThree);
-    assert!((top_px - 450.0).abs() < 2.0, "верх {top_px} px");
-    assert!((bottom_px - 1890.0).abs() < 2.0, "низ {bottom_px} px");
+    assert!((top_px - 456.5).abs() < 1.0, "верх {top_px} px");
+    assert!((bottom_px - 1896.6).abs() < 1.0, "низ {bottom_px} px");
     // Кадр 4:3 — ровно 4:3 при ширине 440 pt.
     assert!((rect.size.height / rect.size.width - 4.0 / 3.0).abs() < 1e-9);
 }

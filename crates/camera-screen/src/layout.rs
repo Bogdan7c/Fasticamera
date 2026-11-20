@@ -31,7 +31,7 @@ pub struct LayoutConfig {
     pub frame_16x9_top_pt: f64,
     /// Низ кадра 16:9. `[measured]` 858,2 pt по видео A.
     pub frame_16x9_bottom_pt: f64,
-    /// Низ кадра 4:3. `[measured]` ≈ 743 pt по видео B, перенесено на A; верх выводится из 4:3.
+    /// Низ кадра 4:3. `[measured: R00 t=10.027]` 746,0 pt; верх выводится из 4:3 (159,3).
     pub frame_4x3_bottom_pt: f64,
 }
 
@@ -42,7 +42,7 @@ impl Default for LayoutConfig {
             reference_height_pt: 956.0,
             frame_16x9_top_pt: 75.7,
             frame_16x9_bottom_pt: 858.2,
-            frame_4x3_bottom_pt: 743.0,
+            frame_4x3_bottom_pt: 746.0,
         }
     }
 }

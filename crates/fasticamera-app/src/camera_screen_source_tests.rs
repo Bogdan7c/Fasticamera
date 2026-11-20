@@ -88,6 +88,28 @@ fn the_open_controls_menu_hides_the_shutter_and_closing_brings_it_back() {
 }
 
 #[test]
+fn an_open_tool_card_raises_the_shutter_whichever_way_it_was_opened_and_closing_it_returns_the_shutter() {
+    // Карточка Aspect, открытая из меню: затвор поднят над карточкой (виден и снимает), а не спрятан под шторку.
+    let menu = apply(&live_screen(), ScreenAction::ControlsMenuOpenRequested);
+    let card_from_menu = apply(&menu, ScreenAction::ControlsItemSelected(ToolId::Aspect));
+    let snapshot = ScreenStateSnapshot::observe(&card_from_menu);
+    assert_eq!(snapshot.panel, PanelKind::Submenu);
+    assert_eq!(snapshot.shutter_placement, ShutterPlacement::RaisedAboveCard);
+
+    // Карточка Exposure со значка над кадром: тот же поднятый затвор.
+    let card_from_icon = apply(&live_screen(), ScreenAction::StripToolTapped(ToolId::Exposure));
+    let snapshot = ScreenStateSnapshot::observe(&card_from_icon);
+    assert_eq!(snapshot.panel, PanelKind::ExposurePanel);
+    assert_eq!(snapshot.shutter_placement, ShutterPlacement::RaisedAboveCard);
+
+    // «×» закрывает карточку: затвор возвращается на место.
+    let closed = apply(&card_from_icon, ScreenAction::SubmenuBackRequested);
+    let snapshot = ScreenStateSnapshot::observe(&closed);
+    assert_eq!(snapshot.panel, PanelKind::Closed);
+    assert_eq!(snapshot.shutter_placement, ShutterPlacement::Visible);
+}
+
+#[test]
 fn the_exposure_panel_and_the_ev_steps_are_visible_in_the_snapshot_and_reset_returns_zero() {
     let panel = apply(&live_screen(), ScreenAction::StripToolTapped(ToolId::Exposure));
     assert_eq!(ScreenStateSnapshot::observe(&panel).panel, PanelKind::ExposurePanel);

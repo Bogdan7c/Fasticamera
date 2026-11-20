@@ -193,14 +193,14 @@ fn member_transform_reports_a_missing_member() {
 // ---------- K2: содержимое и подписи ----------
 
 #[test]
-fn mode_label_cap_height_matches_the_measured_14_2_pt() {
+fn mode_label_cap_height_matches_the_measured_10_2_pt() {
     let tokens = tokens();
     let run = LabelPainter::new(&tokens.typography, scale())
         .layout("PHOTO", TextRoleKind::ModeLabel)
         .unwrap();
-    // `layout.md` 2.1: заглавные 14,2 ± 0,5 pt.
+    // [measured: R00 t=10.027]: заглавные 10,0–10,3 pt.
     let cap_pt = run.cap_height_px / SCALE;
-    assert!((cap_pt - 14.2).abs() < 0.5, "высота заглавных {cap_pt} pt");
+    assert!((cap_pt - 10.15).abs() < 0.3, "высота заглавных {cap_pt} pt");
     assert!(run.advance_px > 0.0);
 }
 
@@ -346,40 +346,51 @@ fn focus_frame_has_outline_four_inward_ticks_and_the_sun_to_the_right() {
     let tokens = tokens();
     let frame = placed_frame(&tokens);
     let snapshot = frame.snapshot(ms(2000));
-    let node = placement(Point::new(200.0, 400.0), 91.0, 92.0);
+    let node = placement(Point::new(200.0, 400.0), 74.7, 74.7);
     let items = focus_frame_items(&node, &snapshot, scale(), &tokens.focus, &tokens.colors).unwrap();
-    assert_eq!(items.len(), 6, "контур + 4 тика + солнце");
+    // Контур + 4 тика + диск + 8 лучей; направляющей нет (палец не на «солнце»).
+    assert_eq!(items.len(), 14);
     // Контур — квадрат размера узла с обводкой, без заливки.
     let DrawItem::Shape(outline) = &items[0] else { panic!() };
-    assert_eq!(outline.geometry.extent(), PxSize::new(273.0, 276.0));
+    assert_eq!(outline.geometry.extent(), PxSize::new(224.1, 224.1));
     assert!(outline.stroke.is_some() && outline.fill.a == 0.0);
-    // Тики лежат внутри рамки, на серединах сторон, ближе к краю, чем к центру.
+    // Тики лежат внутри рамки, на серединах сторон, ближе к краю, чем к центру, длиной 5,5 pt.
     let centre = PxPoint::new(600.0, 1200.0);
     for item in &items[1..5] {
         let DrawItem::Shape(tick) = item else { panic!() };
         let c = centre_px(&tick.transform);
         let (dx, dy) = ((c.x - centre.x).abs(), (c.y - centre.y).abs());
-        assert!(dx <= 136.5 && dy <= 138.0, "тик внутри рамки");
-        assert!(dx.max(dy) > 100.0 && dx.min(dy) < 0.01, "тик на середине стороны");
+        assert!(dx <= 112.05 && dy <= 112.05, "тик внутри рамки");
+        assert!(dx.max(dy) > 80.0 && dx.min(dy) < 0.01, "тик на середине стороны");
+        let extent = tick.geometry.extent();
+        assert_close(extent.width.max(extent.height), 5.5 * SCALE, "длина тика");
     }
-    // Солнце: правее правой стороны на 21,5 pt и выше центра на 5 pt (layout.md 2.2).
-    let DrawItem::Icon(sun) = &items[5] else { panic!() };
-    assert_eq!(sun.icon, IconId::Exposure);
-    let c = centre_px(&sun.transform);
-    assert_close(c.x, centre.x + 136.5 + 21.5 * SCALE, "солнце x");
-    assert_close(c.y, centre.y - 5.0 * SCALE, "солнце y");
+    // Диск «солнца» Ø 9: правее правой стороны на 17,8 pt, на высоте центра (dy = 0).
+    let DrawItem::Shape(disc) = &items[5] else { panic!() };
+    assert_eq!(disc.geometry, ShapeGeometry::Circle { diameter: 9.0 * SCALE });
+    let c = centre_px(&disc.transform);
+    assert_close(c.x, centre.x + 37.35 * SCALE + 17.8 * SCALE, "солнце x");
+    assert_close(c.y, centre.y, "солнце y");
+    // Лучи: 8 штук шириной 1 pt и длиной 12,5 − 7,8 = 4,7 pt; центры на среднем радиусе 10,15 pt.
+    for ray in &items[6..14] {
+        let DrawItem::Shape(ray) = ray else { panic!() };
+        assert_eq!(ray.geometry.extent(), PxSize::new(1.0 * SCALE, (12.5 - 7.8) * SCALE));
+        let rc = centre_px(&ray.transform);
+        let radius = ((rc.x - c.x).powi(2) + (rc.y - c.y).powi(2)).sqrt();
+        assert_close(radius, 10.15 * SCALE, "радиус центра луча");
+    }
 }
 
 #[test]
 fn sun_follows_the_exposure_value_upwards() {
     let tokens = tokens();
     let frame = placed_frame(&tokens);
-    let node = placement(Point::new(200.0, 400.0), 91.0, 92.0);
+    let node = placement(Point::new(200.0, 400.0), 74.7, 74.7);
     let mut snapshot = frame.snapshot(ms(2000));
     let rest = focus_frame_items(&node, &snapshot, scale(), &tokens.focus, &tokens.colors).unwrap();
     snapshot.sun_travel_up_pt = 10.0;
     let raised = focus_frame_items(&node, &snapshot, scale(), &tokens.focus, &tokens.colors).unwrap();
-    let (DrawItem::Icon(a), DrawItem::Icon(b)) = (&rest[5], &raised[5]) else {
+    let (DrawItem::Shape(a), DrawItem::Shape(b)) = (&rest[5], &raised[5]) else {
         panic!()
     };
     assert_close(
@@ -411,7 +422,12 @@ fn shutter_is_a_glass_ring_under_a_white_disc_of_the_measured_ratio() {
         &tokens.colors,
     )
     .unwrap();
-    let [DrawItem::Glass(ring), DrawItem::Shape(disc)] = items.as_slice() else {
+    let [
+        DrawItem::Glass(ring),
+        DrawItem::Shape(_ring_fill),
+        DrawItem::Shape(disc),
+    ] = items.as_slice()
+    else {
         panic!("ожидались стекло и диск: {items:?}");
     };
     // Порядок: стекло под диском. Кольцо — круг внешнего диаметра, диск — 67,9 / 80,1 от него.
@@ -447,7 +463,12 @@ fn shutter_is_a_glass_ring_under_a_white_disc_of_the_measured_ratio() {
         &tokens.colors,
     )
     .unwrap();
-    let [DrawItem::Glass(ring), DrawItem::Shape(disc)] = pressed.as_slice() else {
+    let [
+        DrawItem::Glass(ring),
+        DrawItem::Shape(_ring_fill),
+        DrawItem::Shape(disc),
+    ] = pressed.as_slice()
+    else {
         panic!()
     };
     assert_close(
@@ -474,7 +495,7 @@ fn disabled_and_busy_shutter_dim_by_tokens() {
             &tokens.colors,
         )
         .unwrap();
-        let (DrawItem::Glass(ring), DrawItem::Shape(disc)) = (&items[0], &items[1]) else {
+        let (DrawItem::Glass(ring), DrawItem::Shape(disc)) = (&items[0], &items[2]) else {
             panic!()
         };
         (ring.opacity.get(), disc.opacity.get())

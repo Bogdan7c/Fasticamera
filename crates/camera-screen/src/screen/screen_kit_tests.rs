@@ -6,7 +6,7 @@ use ui_core::geometry::Point;
 use ui_draw::draw_list::{DrawItem, DrawList};
 use ui_draw::icons::IconId;
 use ui_draw::shape::ShapeGeometry;
-use ui_kit::tokens::UiKitTokens;
+use ui_kit::tokens::{TextRoleKind, UiKitTokens};
 
 use super::test_rig::*;
 use crate::action::ScreenAction;
@@ -163,15 +163,6 @@ fn plain_button_press_grows_and_releases_smoothly_instead_of_jumping() {
     );
 }
 
-/// Центры рамки фокуса, найденные по иконке «солнца» (значок Exposure правее рамки): преобразования всех
-/// иконок Exposure — для сравнения «до/после».
-fn exposure_icon_positions(list: &DrawList) -> Vec<(f32, f32)> {
-    icon_transforms(list, IconId::Exposure)
-        .into_iter()
-        .map(|t| (t.tx, t.ty))
-        .collect()
-}
-
 #[test]
 fn camera_ev_range_change_keeps_the_focus_frame_in_place_and_clamps_the_sun() {
     let mut rig = Rig::new();
@@ -187,8 +178,12 @@ fn camera_ev_range_change_keeps_the_focus_frame_in_place_and_clamps_the_sun() {
     assert!((rig.screen.sun_value_ev() - 2.0 / 3.0).abs() < 0.01);
     let before = rig.last.clone();
     let focus_before = rig.screen.state().focus().indicator();
-    let before_icons = exposure_icon_positions(&before);
-    assert_eq!(before_icons.len(), 2, "значок EV в полосе и «солнце» у рамки");
+    assert_eq!(
+        text_count_of(&before, "0.7", TextRoleKind::StripValue),
+        1,
+        "число EV в полосе (два шага по 1/3)"
+    );
+    assert_eq!(sun_discs(&before).len(), 1, "«солнце» у рамки");
 
     // Камера сообщила узкий диапазон: максимум 0.3 EV, то есть ни одного шага вверх.
     let mut facts = live_facts();
@@ -277,37 +272,6 @@ fn level_menu_item_is_drawn_with_its_icon() {
         icon_transforms(&rig.last, IconId::Level).len(),
         1,
         "пункт Level рисуется иконкой, а не подписью «LVL»"
-    );
-}
-
-#[test]
-fn exposure_panel_ticks_come_from_the_kit_scale_view_with_a_yellow_current_mark() {
-    let mut rig = Rig::new();
-    rig.act(ScreenAction::StripToolTapped(ToolId::Exposure));
-    rig.run(900);
-    let colors = UiKitTokens::default().colors;
-    let slider = rig.center_with(|g| g.exposure_slider());
-    let slider_y_px = (slider.y * f64::from(PX_PER_PT)) as f32;
-    let slider_x_px = (slider.x * f64::from(PX_PER_PT)) as f32;
-    // Тонкие вертикальные прямоугольники на высоте ползунка — риски.
-    let ticks: Vec<_> = rig
-        .last
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            DrawItem::Shape(shape) if near(shape.transform.ty, slider_y_px, 20.0) => match shape.geometry {
-                ShapeGeometry::RoundedRect { size, .. } if size.width < size.height => Some(shape.clone()),
-                _ => None,
-            },
-            _ => None,
-        })
-        .collect();
-    assert!(ticks.len() > 10, "шкала нарисована рисками: {}", ticks.len());
-    let last = ticks.last().expect("риски есть");
-    assert_eq!(last.fill, colors.focus_yellow, "последней идёт жёлтая отметка");
-    assert!(
-        near(last.transform.tx, slider_x_px, 2.0),
-        "отметка стоит в центре ползунка"
     );
 }
 

@@ -1,7 +1,7 @@
 //! План шагов `screen`: порядок, уникальные имена, жесты из плана касаний, нейтральный конец.
 
 use super::*;
-use crate::camera_screen_source::{ModeKind, PanelKind};
+use crate::camera_screen_source::{ModeKind, PanelKind, ShutterPlacement};
 use crate::screen_scenario_config::ScreenTouchPlan;
 
 #[test]
@@ -88,6 +88,15 @@ fn no_step_is_left_inferred_and_the_state_steps_check_the_screen_directly() {
     assert_eq!(panel_of("menu_close_swipe"), Some(PanelKind::Closed));
     assert_eq!(panel_of("ev_icon_tap"), Some(PanelKind::ExposurePanel));
     assert_eq!(panel_of("ev_close_tap"), Some(PanelKind::Closed));
+    let shutter_of = |name: &str| {
+        find(name).expect.states().iter().find_map(|check| match check {
+            StateCheck::Shutter(placement) => Some(*placement),
+            _ => None,
+        })
+    };
+    assert_eq!(shutter_of("ev_icon_tap"), Some(ShutterPlacement::RaisedAboveCard));
+    assert_eq!(shutter_of("ev_close_tap"), Some(ShutterPlacement::Visible));
+    assert_eq!(shutter_of("menu_open_swipe"), Some(ShutterPlacement::HiddenUnderDrawer));
     assert!(
         find("modes_swipe_left")
             .expect

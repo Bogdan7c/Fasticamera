@@ -2,8 +2,8 @@
 //!
 //! * **Положение — вход.** Рамка не знает, откуда пришла точка: тап ([`FocusFrame::place`]) или
 //!   внешний источник (трекер, задел решения 69) вызывают один и тот же метод.
-//! * **Появление** — масштаб из увеличенного к 1 пружиной `snappy` (`motion.md` 4.2); начальный
-//!   масштаб — токен `focus.appear_scale` (`[estimate]`).
+//! * **Появление** — масштаб с 1,7× до 1,0× и линейное проявление за 0,12 с, без перелёта
+//!   (`[measured: R00 t=99.05–99.17]`, токены `focus.appear_*`); кривая по времени, не пружина.
 //! * **Удержание** — [`FocusHold`]: «держать, пока не скажу» (блокировка AE/AF LOCK) или
 //!   «потускнеть через ..., исчезнуть через ...». Срок отсчитывается от последней активности
 //!   (тап, жест на «солнце»); смена этапа стартует в момент дедлайна, а не кадра, поэтому
@@ -11,10 +11,11 @@
 //! * **«Солнце»** — встроенная [`SnapScale`](crate::scale::SnapScale) с вертикальной осью и без
 //!   рисок: своей физики у рамки нет, события шкалы пробрасываются [`FocusFrameEvent::Sun`].
 
+mod appear;
 mod element;
 mod error;
 mod spec;
 
-pub use element::{FocusFrame, FocusFrameEvent, FocusFrameSnapshot, FocusPhase};
+pub use element::{FocusFrame, FocusFrameEvent, FocusFrameSnapshot, FocusPhase, SunInteraction};
 pub use error::FocusFrameError;
 pub use spec::{FocusFrameSpec, FocusHold};

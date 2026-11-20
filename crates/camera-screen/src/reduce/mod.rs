@@ -21,6 +21,9 @@ mod shutter;
 mod viewfinder;
 
 #[cfg(test)]
+#[path = "card_tests.rs"]
+mod card_tests;
+#[cfg(test)]
 #[path = "exposure_tests.rs"]
 mod exposure_tests;
 #[cfg(test)]

@@ -1,35 +1,37 @@
-//! Меню Controls: шторка вырастает из кнопки меню (K7 `PanelMorph`), сетка 3 × 3 круглых пунктов из
-//! `menu_tools()`; пункт морфится в подменю (K7 пружиной `smooth` + K5 `OptionPicker` для выбора варианта).
+//! Меню Controls (iOS 27): шторка проявляется на месте (K7 `PanelMorph::in_place`, ≈ 0,25 с, пункты въезжают
+//! снизу на 4,9 pt), сетка 3 × 3 круглых пунктов с заглавными подписями из
+//! `menu_tools()`. Варианты инструмента показывает не шторка, а нижняя карточка (`tool_card.rs`, решение 103):
+//! пока карточка открыта из меню, шторка остаётся «под ней» открытой (чтобы «‹» вернул в меню), но её стекло и
+//! пункты гаснут на долю, которую карточка уже закрыла (`card_cover`, стекло не на стекле).
 //!
 //! Закрытие — свайп вниз по шторке или тап по видоискателю (его решает редьюсер). Затвор и режимы под
 //! шторкой скрывают сами (решение 94, `motion.md` 4.1).
 
-use ui_core::geometry::Rect;
 use ui_core::gesture::{GestureEvent, GestureState, PanDirection, PanSpec, RecognizerSpec};
 use ui_core::id::NodeId;
 use ui_draw::color::{DisplayColor, Opacity};
 use ui_draw::draw_list::{DrawItem, ShapeItem};
+use ui_draw::geometry::PxSize;
 use ui_draw::icons::IconId;
-use ui_draw::scene_bridge::NodePlacementPx;
 use ui_draw::shape::ShapeGeometry;
 use ui_draw::transform::Affine2;
 use ui_kit::panel_morph::{PanelMorph, PanelMorphSpec, PanelPhase, PanelSnapshot};
-use ui_kit::picker::{LabelId, OptionIcon, OptionPicker, PickerOption};
 use ui_kit::tokens::{GlassRole, MotionToken, TextRoleKind};
 use ui_kit::view::{centered_icon, centered_text, panel_glass_group};
 
 use super::button::{ButtonEvent, PressButton};
 use super::error::{WidgetError, element};
-use super::geometry::{MAX_MENU_ITEMS, MAX_SUBMENU_OPTIONS};
+use super::geometry::MAX_MENU_ITEMS;
 use super::intent::{ButtonId, ScreenGesture};
 use super::kit::SceneKit;
 use super::layers::{DrawLayers, Layer, VisualIndex};
 use super::text_runs::TextRuns;
-use super::{Ctx, Outputs, draw_plain_icon_button};
+use super::tool_card_content::tool_title;
+use super::{Ctx, Outputs};
 use crate::action::ScreenAction;
 use crate::settings::{AspectRatio, FlashMode, GridSetting, LevelSetting, RawCapture, TimerSetting};
 use crate::state::PanelState;
-use crate::tools::{ToolId, ToolOption};
+use crate::tools::ToolId;
 
 struct ItemSlot {
     button: PressButton,
@@ -37,46 +39,15 @@ struct ItemSlot {
     tool: Option<ToolId>,
 }
 
-struct OptionSlot {
-    button: PressButton,
-    option: Option<ToolOption>,
-}
-
-/// Открытое подменю: его морф и список вариантов.
-struct Submenu {
-    tool: ToolId,
-    morph: PanelMorph,
-    picker: OptionPicker<ToolOption>,
-    /// Подписи вариантов в порядке списка.
-    labels: Vec<String>,
-}
-
 pub(crate) struct ControlsDrawerWidget {
     sheet_node: NodeId,
     sheet_morph: PanelMorph,
     sheet_open_wanted: bool,
     items: Vec<ItemSlot>,
-    options: Vec<OptionSlot>,
-    back: PressButton,
-    back_content: NodeId,
-    submenu: Option<Submenu>,
 }
 
-/// Подпись инструмента под кругом пункта.
-fn tool_caption(tool: ToolId) -> &'static str {
-    match tool {
-        ToolId::Flash => "Flash",
-        ToolId::Raw => "RAW",
-        ToolId::Timer => "Timer",
-        ToolId::Exposure => "Exposure",
-        ToolId::Aspect => "Aspect",
-        ToolId::Grid => "Grid",
-        ToolId::Level => "Level",
-        ToolId::Live => "Live",
-        ToolId::Styles => "Styles",
-        ToolId::Night => "Night",
-    }
-}
+/// Пружина открытия и закрытия шторки: без перелёта, ≈ 0,3 с (`[measured: C t=22.88–23.15]` ≈ 0,25 с).
+const SHEET_MOTION: MotionToken = MotionToken::CardMorph;
 
 /// Включён ли инструмент (жёлтый круг): отличается от значения по умолчанию.
 fn tool_is_active(ctx: &Ctx<'_>, tool: ToolId) -> bool {
@@ -90,64 +61,6 @@ fn tool_is_active(ctx: &Ctx<'_>, tool: ToolId) -> bool {
         ToolId::Grid => settings.grid == GridSetting::On,
         ToolId::Level => settings.level == LevelSetting::On,
         ToolId::Live | ToolId::Styles | ToolId::Night => false,
-    }
-}
-
-/// Варианты подменю инструмента и подписи к ним. Выбор «Auto» вспышки не предлагается (инвариант 6).
-fn options_for(ctx: &Ctx<'_>, tool: ToolId) -> Vec<(ToolOption, String)> {
-    let seconds = |setting: TimerSetting| {
-        ctx.config
-            .timer
-            .seconds_for(setting)
-            .map_or_else(|| "Off".to_owned(), |value| format!("{value}s"))
-    };
-    match tool {
-        ToolId::Flash => vec![
-            (ToolOption::Flash(FlashMode::Off), "Off".to_owned()),
-            (ToolOption::Flash(FlashMode::On), "On".to_owned()),
-        ],
-        ToolId::Raw => vec![
-            (ToolOption::Raw(RawCapture::Off), "Off".to_owned()),
-            (ToolOption::Raw(RawCapture::On), "On".to_owned()),
-        ],
-        ToolId::Timer => [
-            TimerSetting::Off,
-            TimerSetting::Seconds3,
-            TimerSetting::Seconds5,
-            TimerSetting::Seconds10,
-        ]
-        .into_iter()
-        .map(|setting| (ToolOption::Timer(setting), seconds(setting)))
-        .collect(),
-        ToolId::Aspect => vec![
-            (ToolOption::Aspect(AspectRatio::FourByThree), "4:3".to_owned()),
-            (ToolOption::Aspect(AspectRatio::SixteenByNine), "16:9".to_owned()),
-            (ToolOption::Aspect(AspectRatio::Square), "1:1".to_owned()),
-        ],
-        ToolId::Grid => vec![
-            (ToolOption::Grid(GridSetting::Off), "Off".to_owned()),
-            (ToolOption::Grid(GridSetting::On), "On".to_owned()),
-        ],
-        ToolId::Level => vec![
-            (ToolOption::Level(LevelSetting::Off), "Off".to_owned()),
-            (ToolOption::Level(LevelSetting::On), "On".to_owned()),
-        ],
-        // У панели Exposure подменю нет, остальные инструменты не реализованы в v1.
-        ToolId::Exposure | ToolId::Live | ToolId::Styles | ToolId::Night => Vec::new(),
-    }
-}
-
-/// Выбранный сейчас вариант инструмента.
-fn current_option(ctx: &Ctx<'_>, tool: ToolId) -> Option<ToolOption> {
-    let settings = ctx.state.settings();
-    match tool {
-        ToolId::Flash => Some(ToolOption::Flash(settings.flash)),
-        ToolId::Raw => Some(ToolOption::Raw(settings.raw)),
-        ToolId::Timer => Some(ToolOption::Timer(settings.timer)),
-        ToolId::Aspect => Some(ToolOption::Aspect(settings.aspect)),
-        ToolId::Grid => Some(ToolOption::Grid(settings.grid)),
-        ToolId::Level => Some(ToolOption::Level(settings.level)),
-        ToolId::Exposure | ToolId::Live | ToolId::Styles | ToolId::Night => None,
     }
 }
 
@@ -182,26 +95,12 @@ impl ControlsDrawerWidget {
             }
             items.push(ItemSlot { button, content, tool });
         }
-        let mut options = Vec::with_capacity(MAX_SUBMENU_OPTIONS);
-        for slot in 0..MAX_SUBMENU_OPTIONS {
-            let rect = ctx.geometry.option_row(slot);
-            let node = kit.add_node(sheet_node, "submenu_option", rect, sheet_rect)?;
-            let button = PressButton::attach(kit, ButtonId::SubmenuOption(slot as u8), node, rect, ctx)?;
-            kit.set_interactive(node, false)?;
-            options.push(OptionSlot { button, option: None });
-        }
-        let back_rect = ctx.geometry.submenu_back();
-        let back_node = kit.add_node(sheet_node, "submenu_back", back_rect, sheet_rect)?;
-        let back = PressButton::attach(kit, ButtonId::SubmenuBack, back_node, back_rect, ctx)?;
-        let back_content = kit.add_rotating_content(back_node, "submenu_back_icon")?;
-        kit.set_interactive(back_node, false)?;
         kit.set_interactive(sheet_node, false)?;
 
-        let spec = PanelMorphSpec::new(
-            ctx.geometry.menu_button(),
-            sheet_rect,
-            ctx.geometry.config().sheet.corner_radius_pt,
-        );
+        // iOS 27: шторка не растёт из кнопки, а проявляется на месте; пункты въезжают снизу.
+        let sheet_config = &ctx.geometry.config().sheet;
+        let spec = PanelMorphSpec::in_place(sheet_rect, sheet_config.corner_radius_pt, SHEET_MOTION)
+            .with_content_slide_pt(sheet_config.open_content_slide_pt);
         let sheet_morph =
             PanelMorph::new(spec, &ctx.environment(sheet_rect.size.height), ctx.now).map_err(element("шторка меню"))?;
         Ok(Self {
@@ -209,10 +108,6 @@ impl ControlsDrawerWidget {
             sheet_morph,
             sheet_open_wanted: false,
             items,
-            options,
-            back,
-            back_content,
-            submenu: None,
         })
     }
 
@@ -239,38 +134,23 @@ impl ControlsDrawerWidget {
                     out.actions.push(ScreenAction::ControlsItemSelected(tool));
                 }
             }
-            ScreenGesture::Press(ButtonId::SubmenuOption(slot)) => {
-                let option_slot = self
-                    .options
-                    .get_mut(usize::from(slot))
-                    .ok_or_else(|| WidgetError::Inconsistent(format!("варианта подменю {slot} нет")))?;
-                if option_slot.button.handle(event.state, event.data, event.time)? == ButtonEvent::Activated
-                    && let Some(option) = option_slot.option
-                {
-                    if let Some(submenu) = &mut self.submenu {
-                        submenu.picker.select_value(option).map_err(element("выбор варианта"))?;
-                    }
-                    out.actions.push(ScreenAction::SubmenuOptionSelected(option));
-                }
-            }
-            ScreenGesture::Press(ButtonId::SubmenuBack) => {
-                if self.back.handle(event.state, event.data, event.time)? == ButtonEvent::Activated {
-                    out.actions.push(ScreenAction::SubmenuBackRequested);
-                }
-            }
             _ => return Ok(false),
         }
         Ok(true)
     }
 
-    /// Прозрачность кнопки меню (источника морфа): растворяется, пока из неё растёт шторка.
+    /// Прозрачность кнопки меню: шторка проявляется поверх неё на месте, и кнопка гаснет вместе с появлением
+    /// стекла шторки (стекло не на стекле). У морфа «на месте» своего `source_opacity` нет (источника нет),
+    /// поэтому берём долю материализации стекла.
     pub(crate) fn source_opacity(&self, now: ui_core::time::MonotonicNanos) -> f32 {
-        self.sheet_morph.snapshot(now).source_opacity
+        1.0 - self.sheet_morph.snapshot(now).effect.clamp(0.0, 1.0)
     }
 
+    /// Шторка открыта, пока открыто меню или карточка, пришедшая из меню (под ней шторка ждёт «‹»).
+    /// Касания шторка ловит только на уровне меню: поверх карточки она не должна перехватывать тапы.
     pub(crate) fn sync(&mut self, kit: &mut SceneKit, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
-        let panel = ctx.state.panel();
-        let sheet_open = matches!(panel, PanelState::ControlsMenu | PanelState::Submenu(_));
+        let menu_level = ctx.state.panel() == PanelState::ControlsMenu;
+        let sheet_open = menu_level || ctx.state.card_returns_to_menu();
         if sheet_open != self.sheet_open_wanted {
             self.sheet_open_wanted = sheet_open;
             if sheet_open {
@@ -278,159 +158,36 @@ impl ControlsDrawerWidget {
             } else {
                 self.sheet_morph.close(ctx.now).map_err(element("шторка меню"))?;
             }
-            kit.set_interactive(self.sheet_node, sheet_open)?;
         }
-        let menu_level = panel == PanelState::ControlsMenu;
+        kit.set_interactive(self.sheet_node, menu_level)?;
         for item in &self.items {
             kit.set_interactive(item.button.node(), menu_level && item.tool.is_some())?;
         }
-        self.sync_submenu(kit, ctx, panel)
-    }
-
-    /// Открывает/закрывает подменю по состоянию экрана.
-    fn sync_submenu(&mut self, kit: &mut SceneKit, ctx: &Ctx<'_>, panel: PanelState) -> Result<(), WidgetError> {
-        match panel {
-            PanelState::Submenu(tool) => {
-                if self.submenu.as_ref().map(|submenu| submenu.tool) != Some(tool) {
-                    self.open_submenu(kit, ctx, tool)?;
-                } else {
-                    self.reenter_submenu(kit, ctx, tool)?;
-                }
-            }
-            PanelState::Closed | PanelState::ControlsMenu | PanelState::ExposurePanel => {
-                if let Some(submenu) = &mut self.submenu
-                    && submenu.morph.phase(ctx.now) != PanelPhase::Closing
-                    && submenu.morph.phase(ctx.now) != PanelPhase::Closed
-                {
-                    submenu.morph.close(ctx.now).map_err(element("подменю"))?;
-                }
-                for slot in &mut self.options {
-                    kit.set_interactive(slot.button.node(), false)?;
-                    slot.option = None;
-                }
-                kit.set_interactive(self.back.node(), false)?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Подменю `tool` уже есть. Если оно закрывается (пользователь вышел и тут же вошёл снова), морф
-    /// разворачивается (пружина продолжается с текущего места), а варианты и кнопка «назад» снова
-    /// получают касания сразу, а не после конца морфа. Подсветка выбранного следует за состоянием экрана.
-    fn reenter_submenu(&mut self, kit: &mut SceneKit, ctx: &Ctx<'_>, tool: ToolId) -> Result<(), WidgetError> {
-        let Some(submenu) = &mut self.submenu else {
-            return Ok(());
-        };
-        let was_closing = matches!(submenu.morph.phase(ctx.now), PanelPhase::Closing | PanelPhase::Closed);
-        if was_closing {
-            submenu.morph.open(ctx.now).map_err(element("подменю"))?;
-        }
-        if let Some(current) = current_option(ctx, tool) {
-            // Состояние — владелец выбора: подсветка варианта следует за ним.
-            submenu
-                .picker
-                .select_value(current)
-                .map_err(element("выбор варианта"))?;
-        }
-        if was_closing {
-            let entries = options_for(ctx, tool);
-            self.bind_option_slots(kit, &entries)?;
-            kit.set_interactive(self.back.node(), true)?;
-        }
-        Ok(())
-    }
-
-    /// Раздаёт варианты строкам подменю: занятые строки принимают касания, остальные нет.
-    fn bind_option_slots(&mut self, kit: &mut SceneKit, entries: &[(ToolOption, String)]) -> Result<(), WidgetError> {
-        for (slot, entry) in self
-            .options
-            .iter_mut()
-            .zip(entries.iter().map(Some).chain(std::iter::repeat(None)))
-        {
-            slot.option = entry.map(|(option, _)| *option);
-            kit.set_interactive(slot.button.node(), entry.is_some())?;
-        }
-        Ok(())
-    }
-
-    fn open_submenu(&mut self, kit: &mut SceneKit, ctx: &Ctx<'_>, tool: ToolId) -> Result<(), WidgetError> {
-        let entries = options_for(ctx, tool);
-        if entries.len() > self.options.len() {
-            return Err(WidgetError::Inconsistent(format!(
-                "у {tool:?} вариантов {}, строк подменю {}",
-                entries.len(),
-                self.options.len()
-            )));
-        }
-        let current = current_option(ctx, tool)
-            .or_else(|| entries.first().map(|(option, _)| *option))
-            .ok_or_else(|| WidgetError::Inconsistent(format!("у {tool:?} нет подменю")))?;
-        let picker_options = entries
-            .iter()
-            .enumerate()
-            .map(|(index, (option, _))| PickerOption {
-                value: *option,
-                label: LabelId(index as u32),
-                icon: OptionIcon::LabelOnly,
-            })
-            .collect();
-        let picker = OptionPicker::new(picker_options, current).map_err(element("выбор варианта"))?;
-        // Морф растёт из круга пункта (если инструмент есть в сетке) или из кнопки меню.
-        let source: Rect = self
-            .items
-            .iter()
-            .position(|item| item.tool == Some(tool))
-            .map_or_else(|| ctx.geometry.menu_button(), |slot| ctx.geometry.menu_item(slot));
-        let spec = PanelMorphSpec::new(
-            source,
-            ctx.geometry.sheet(),
-            ctx.geometry.config().sheet.corner_radius_pt,
-        )
-        .with_spring(MotionToken::Smooth);
-        let mut morph = PanelMorph::new(spec, &ctx.environment(ctx.geometry.sheet().size.height), ctx.now)
-            .map_err(element("подменю"))?;
-        morph.open(ctx.now).map_err(element("подменю"))?;
-        self.bind_option_slots(kit, &entries)?;
-        kit.set_interactive(self.back.node(), true)?;
-        self.submenu = Some(Submenu {
-            tool,
-            morph,
-            picker,
-            labels: entries.into_iter().map(|(_, label)| label).collect(),
-        });
         Ok(())
     }
 
     pub(crate) fn advance(&mut self, ctx: &Ctx<'_>) {
         self.sheet_morph.advance(ctx.now);
         let _sheet_events = self.sheet_morph.drain_events();
-        let mut finished = false;
-        if let Some(submenu) = &mut self.submenu {
-            submenu.morph.advance(ctx.now);
-            let _events = submenu.morph.drain_events();
-            finished = submenu.morph.phase(ctx.now) == PanelPhase::Closed;
-        }
-        if finished {
-            self.submenu = None;
-        }
     }
 
+    /// `card_cover` — доля 0..1, на которую нижняя карточка уже закрыла шторку: стекло и пункты гаснут.
     pub(crate) fn draw(
         &self,
         ctx: &Ctx<'_>,
         visuals: &VisualIndex,
         layers: &mut DrawLayers,
         texts: &mut TextRuns,
+        card_cover: f32,
     ) -> Result<(), WidgetError> {
         let sheet = self.sheet_morph.snapshot(ctx.now);
         if sheet.phase == PanelPhase::Closed {
             return Ok(());
         }
-        let submenu_snapshot = self.submenu.as_ref().map(|submenu| submenu.morph.snapshot(ctx.now));
-        let submenu_progress = submenu_snapshot.map_or(0.0, |snapshot| snapshot.progress as f32);
-        // Стекло не на стекле: пока подменю закрывает шторку, её собственное стекло гаснет.
+        let uncovered = (1.0 - card_cover).clamp(0.0, 1.0);
+        // Стекло не на стекле: пока карточка закрывает шторку, её собственное стекло гаснет.
         let sheet_glass = PanelSnapshot {
-            effect: sheet.effect * (1.0 - submenu_progress).clamp(0.0, 1.0),
+            effect: sheet.effect * uncovered,
             ..sheet
         };
         layers.push(
@@ -441,29 +198,42 @@ impl ControlsDrawerWidget {
                 ctx.px,
             )?),
         );
-        let menu_alpha = sheet.content_opacity * (1.0 - submenu_progress).clamp(0.0, 1.0);
+        let content_alpha = sheet.content_opacity * uncovered;
+        self.draw_handle(ctx, layers, content_alpha);
         self.draw_items(
             ctx,
             visuals,
             layers,
             texts,
-            menu_alpha,
+            content_alpha,
             ctx.px.px(sheet.content_offset_pt),
-        )?;
-        if let (Some(submenu), Some(snapshot)) = (&self.submenu, submenu_snapshot)
-            && snapshot.phase != PanelPhase::Closed
-        {
-            layers.push(
-                Layer::Glass,
-                DrawItem::Glass(panel_glass_group(
-                    &snapshot,
-                    ctx.tokens.glass.style_for(GlassRole::Panel),
-                    ctx.px,
-                )?),
-            );
-            self.draw_submenu(ctx, visuals, layers, texts, submenu, &snapshot)?;
-        }
-        Ok(())
+        )
+    }
+
+    /// «Ручка» шторки: белая полоска-капсула у её верха (только рисунок, жест закрытия — на всей шторке).
+    fn draw_handle(&self, ctx: &Ctx<'_>, layers: &mut DrawLayers, alpha: f32) {
+        let Ok(opacity) = Opacity::new(alpha.clamp(0.0, 1.0)) else {
+            return;
+        };
+        let sheet_config = &ctx.geometry.config().sheet;
+        let handle = ctx.geometry.sheet_handle();
+        let center = handle.center();
+        layers.push(
+            Layer::Content,
+            DrawItem::Shape(ShapeItem {
+                geometry: ShapeGeometry::Capsule {
+                    size: PxSize::new(ctx.px.px(handle.size.width), ctx.px.px(handle.size.height)),
+                },
+                transform: Affine2::translate(ctx.px.px(center.x), ctx.px.px(center.y)),
+                fill: DisplayColor {
+                    a: sheet_config.handle_alpha,
+                    ..ctx.tokens.colors.text_primary
+                },
+                stroke: None,
+                shadow: None,
+                opacity,
+            }),
+        );
     }
 
     fn draw_items(
@@ -492,13 +262,10 @@ impl ControlsDrawerWidget {
             let opacity = Opacity::new(item_alpha)
                 .map_err(|_| WidgetError::Inconsistent("прозрачность пункта вне 0..1".to_owned()))?;
             let active = tool_is_active(ctx, tool);
+            // Круг всегда чёрный полупрозрачный; «включённость» показывает только значок (`[measured: C t=30.0]`).
             let fill = DisplayColor {
-                a: sheet_config.item_fill_alpha * if active { 2.0 } else { 1.0 },
-                ..if active {
-                    colors.focus_yellow
-                } else {
-                    colors.text_primary
-                }
+                a: sheet_config.item_fill_alpha,
+                ..DisplayColor::BLACK
             };
             let slide = Affine2::translate(0.0, slide_px);
             layers.push(
@@ -548,106 +315,27 @@ impl ControlsDrawerWidget {
                     ),
                 ),
                 None => {
-                    let run = texts.run(ctx, tool_caption(tool), TextRoleKind::Caption)?;
+                    let run = texts.run(ctx, tool_title(tool), TextRoleKind::Caption)?;
                     layers.push(Layer::Content, centered_text(run, content_host, icon_color, opacity));
                 }
             }
             // Подпись под кругом не поворачивается: она ставится от узла пункта, а не узла значка.
-            let caption = texts.run(ctx, tool_caption(tool), TextRoleKind::MenuItem)?;
+            let caption = texts.run(ctx, tool_title(tool), TextRoleKind::ToolCaption)?;
             let caption_shift = Affine2::translate(
                 0.0,
-                button.size.height * 0.5 + ctx.px.px(sheet_config.caption_below_circle_pt),
+                button.size.height * 0.5 + ctx.px.px(sheet_config.caption_center_below_circle_pt),
             );
+            // Подписи ВСЕХ пунктов белые, чуть приглушённые (`[measured: R00 t=22.512]`), активный — не исключение.
+            let caption_opacity = Opacity::new((item_alpha * sheet_config.caption_alpha).clamp(0.0, 1.0))
+                .map_err(|_| WidgetError::Inconsistent("прозрачность подписи вне 0..1".to_owned()))?;
             layers.push(
                 Layer::Content,
                 centered_text(
                     caption,
                     caption_shift.then(slide).then(button.transform),
                     colors.text_primary,
-                    opacity,
+                    caption_opacity,
                 ),
-            );
-        }
-        Ok(())
-    }
-
-    fn draw_submenu(
-        &self,
-        ctx: &Ctx<'_>,
-        visuals: &VisualIndex,
-        layers: &mut DrawLayers,
-        texts: &mut TextRuns,
-        submenu: &Submenu,
-        snapshot: &PanelSnapshot,
-    ) -> Result<(), WidgetError> {
-        let alpha = snapshot.content_opacity.clamp(0.0, 1.0);
-        let slide_px = ctx.px.px(snapshot.content_offset_pt);
-        let colors = &ctx.tokens.colors;
-        // Кнопка «назад»: стрелка вверх, повёрнутая на 90° против часовой, смотрит влево.
-        if let (Some(button), Some(content)) = (
-            visuals.placement(self.back.node()),
-            visuals.placement(self.back_content),
-        ) {
-            let content = NodePlacementPx {
-                transform: Affine2::rotate(-std::f32::consts::FRAC_PI_2).then(content.transform),
-                ..content
-            };
-            let sheet_config = &ctx.geometry.config().sheet;
-            let size = sheet_config.back_diameter_pt * sheet_config.back_icon_scale;
-            draw_plain_icon_button(
-                ctx,
-                layers,
-                &button,
-                &content,
-                IconId::MenuChevron,
-                size,
-                alpha,
-                slide_px,
-            )?;
-        }
-        let slide = Affine2::translate(0.0, slide_px);
-        for (index, label) in submenu.labels.iter().enumerate() {
-            let Some(slot) = self.options.get(index) else { continue };
-            let Some(row) = visuals.placement(slot.button.node()) else {
-                continue;
-            };
-            let selected = submenu.picker.selected_index() == index;
-            let row_alpha = (row.opacity * alpha).clamp(0.0, 1.0);
-            let opacity = Opacity::new(row_alpha)
-                .map_err(|_| WidgetError::Inconsistent("прозрачность строки вне 0..1".to_owned()))?;
-            // Выбранный вариант: тёмная подложка `scrim` + жёлтый текст. Жёлтая заливка под жёлтым текстом
-            // сливалась на тёплом стекле (над оранжевым фоном), а тёмная капсула держит контраст на любом фоне.
-            let fill = if selected {
-                colors.scrim
-            } else {
-                DisplayColor {
-                    a: ctx.geometry.config().sheet.item_fill_alpha,
-                    ..colors.text_primary
-                }
-            };
-            layers.push(
-                Layer::Content,
-                DrawItem::Shape(ShapeItem {
-                    geometry: ShapeGeometry::Capsule { size: row.size },
-                    transform: slide.then(row.transform),
-                    fill,
-                    stroke: None,
-                    shadow: None,
-                    opacity,
-                }),
-            );
-            let run = texts.run(ctx, label, TextRoleKind::MenuItem)?;
-            // Подпись прижата к левому краю строки с отступом в полвысоты (капсула).
-            let left_pad = row.size.height * 0.5;
-            let shift = Affine2::translate(-row.size.width * 0.5 + left_pad + run.advance_px * 0.5, 0.0);
-            let color = if selected {
-                colors.focus_yellow
-            } else {
-                colors.text_primary
-            };
-            layers.push(
-                Layer::Content,
-                centered_text(run, shift.then(slide).then(row.transform), color, opacity),
             );
         }
         Ok(())

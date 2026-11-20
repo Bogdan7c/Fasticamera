@@ -28,15 +28,37 @@ fn menu_opens_from_button_and_from_tapping_the_current_mode_and_closes_by_swipe_
 }
 
 #[test]
-fn swipe_down_does_not_close_the_exposure_panel() {
+fn swipe_down_closes_any_card_whatever_its_origin() {
+    // Карточка Exposure со значка над кадром.
     let mut screen = Screen::ready();
     screen.step(ScreenAction::StripToolTapped(ToolId::Exposure));
+    let closed = screen.step(ScreenAction::ControlsMenuCloseRequested);
+    assert_eq!(closed.outcome, ActionOutcome::Applied);
+    assert_eq!(screen.state.panel(), PanelState::Closed);
+
+    // Карточка Timer и карточка Exposure из меню — тем же правилом.
+    screen.step(ScreenAction::ControlsMenuOpenRequested);
+    screen.step(ScreenAction::ControlsItemSelected(ToolId::Timer));
+    assert_eq!(screen.state.panel(), PanelState::Submenu(ToolId::Timer));
     screen.step(ScreenAction::ControlsMenuCloseRequested);
+    assert_eq!(screen.state.panel(), PanelState::Closed);
+    screen.step(ScreenAction::ControlsMenuOpenRequested);
+    screen.step(ScreenAction::ControlsItemSelected(ToolId::Exposure));
     assert_eq!(screen.state.panel(), PanelState::ExposurePanel);
+    screen.step(ScreenAction::ControlsMenuCloseRequested);
+    assert_eq!(screen.state.panel(), PanelState::Closed);
 }
 
 #[test]
-fn menu_item_opens_its_submenu_and_picking_an_option_applies_it_and_returns_to_the_menu() {
+fn swipe_down_with_nothing_open_is_no_change() {
+    let mut screen = Screen::ready();
+    let outcome = screen.step(ScreenAction::ControlsMenuCloseRequested).outcome;
+    assert_eq!(outcome, ActionOutcome::NoChange(NoChangeReason::NothingToClose));
+    assert_eq!(screen.state.panel(), PanelState::Closed);
+}
+
+#[test]
+fn menu_item_opens_its_submenu_and_picking_an_option_applies_it_and_keeps_the_card_open() {
     let mut screen = Screen::ready();
     screen.step(ScreenAction::ControlsMenuOpenRequested);
     screen.step(ScreenAction::ControlsItemSelected(ToolId::Timer));
@@ -48,7 +70,7 @@ fn menu_item_opens_its_submenu_and_picking_an_option_applies_it_and_returns_to_t
 
     assert_eq!(picked.outcome, ActionOutcome::Applied);
     assert_eq!(screen.state.settings().timer, TimerSetting::Seconds10);
-    assert_eq!(screen.state.panel(), PanelState::ControlsMenu);
+    assert_eq!(screen.state.panel(), PanelState::Submenu(ToolId::Timer));
 }
 
 #[test]
@@ -61,21 +83,24 @@ fn every_menu_tool_has_a_working_submenu_option() {
         ToolOption::Grid(GridSetting::On),
         ToolOption::Level(LevelSetting::On),
     ];
+    // Один экран на все инструменты: после выбора карточка остаётся, «‹» возвращает в меню.
+    let mut screen = Screen::ready();
+    screen.step(ScreenAction::ControlsMenuOpenRequested);
     for option in options {
-        let mut screen = Screen::ready();
-        screen.step(ScreenAction::ControlsMenuOpenRequested);
         screen.step(ScreenAction::ControlsItemSelected(option.tool()));
         let picked = screen.step(ScreenAction::SubmenuOptionSelected(option));
         assert_eq!(picked.outcome, ActionOutcome::Applied, "{option:?}");
+        assert_eq!(screen.state.panel(), PanelState::Submenu(option.tool()), "{option:?}");
+        screen.step(ScreenAction::SubmenuBackRequested);
+        assert_eq!(screen.state.panel(), PanelState::ControlsMenu, "{option:?}");
     }
-    let mut screen = Screen::ready();
-    screen.step(ScreenAction::ControlsMenuOpenRequested);
-    screen.step(ScreenAction::ControlsItemSelected(ToolId::Grid));
-    screen.step(ScreenAction::SubmenuOptionSelected(ToolOption::Grid(GridSetting::On)));
-    assert_eq!(screen.state.settings().grid, GridSetting::On);
-    screen.step(ScreenAction::ControlsItemSelected(ToolId::Level));
-    screen.step(ScreenAction::SubmenuOptionSelected(ToolOption::Level(LevelSetting::On)));
-    assert_eq!(screen.state.settings().level, LevelSetting::On);
+    let settings = screen.state.settings();
+    assert_eq!(settings.flash, FlashMode::On);
+    assert_eq!(settings.raw, RawCapture::On);
+    assert_eq!(settings.timer, TimerSetting::Seconds5);
+    assert_eq!(settings.aspect, AspectRatio::Square);
+    assert_eq!(settings.grid, GridSetting::On);
+    assert_eq!(settings.level, LevelSetting::On);
 }
 
 #[test]
@@ -269,7 +294,7 @@ fn choosing_the_same_aspect_sends_no_framing() {
         AspectRatio::FourByThree,
     )));
     assert!(same.effects.is_empty());
-    assert_eq!(screen.state.panel(), PanelState::ControlsMenu);
+    assert_eq!(screen.state.panel(), PanelState::Submenu(ToolId::Aspect));
 }
 
 #[test]
@@ -318,7 +343,7 @@ fn screen_with_timer_icon() -> Screen {
 }
 
 #[test]
-fn option_picked_in_the_submenu_opened_from_the_icon_closes_the_panel_and_leaves_the_shutter_usable() {
+fn option_picked_in_the_card_opened_from_the_icon_keeps_it_open_and_the_shutter_usable() {
     let mut screen = screen_with_timer_icon();
     screen.step(ScreenAction::StripToolTapped(ToolId::Timer));
     assert_eq!(screen.state.panel(), PanelState::Submenu(ToolId::Timer));
@@ -329,14 +354,13 @@ fn option_picked_in_the_submenu_opened_from_the_icon_closes_the_panel_and_leaves
 
     assert_eq!(picked.outcome, ActionOutcome::Applied);
     assert_eq!(screen.state.settings().timer, TimerSetting::Seconds10);
-    assert_eq!(
-        screen.state.panel(),
-        PanelState::Closed,
-        "меню Controls пользователь не открывал"
-    );
-    assert_eq!(screen.state.shutter_visibility(), crate::ShutterVisibility::Visible);
+    assert_eq!(screen.state.panel(), PanelState::Submenu(ToolId::Timer));
     let shot = screen.step(ScreenAction::ShutterTapped { at: at_ms(0) });
-    assert_eq!(shot.outcome, ActionOutcome::Applied, "кнопка затвора нажимается");
+    assert_eq!(
+        shot.outcome,
+        ActionOutcome::Applied,
+        "затвор снимает при открытой карточке"
+    );
 }
 
 #[test]
@@ -355,11 +379,12 @@ fn the_origin_of_the_submenu_is_remembered_per_entry_not_left_over_from_a_previo
     screen.step(ScreenAction::StripToolTapped(ToolId::Timer));
     screen.tap_center(at_ms(0));
     assert_eq!(screen.state.panel(), PanelState::Closed);
-    // Теперь то же подменю из меню Controls: после выбора возврат в меню, как раньше.
+    // Теперь та же карточка из меню Controls: левая кнопка ведёт в меню, а не закрывает панель.
     screen.step(ScreenAction::ControlsMenuOpenRequested);
     screen.step(ScreenAction::ControlsItemSelected(ToolId::Timer));
     screen.step(ScreenAction::SubmenuOptionSelected(ToolOption::Timer(
         TimerSetting::Off,
     )));
+    screen.step(ScreenAction::SubmenuBackRequested);
     assert_eq!(screen.state.panel(), PanelState::ControlsMenu);
 }

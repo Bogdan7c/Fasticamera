@@ -6,6 +6,8 @@
 //!
 //! * Пружина по умолчанию — `camera.sheet` (`motion.md` 4.1, и открытие, и закрытие); морф пункта
 //!   в подменю — `smooth` (`motion.md` 4.2): задаётся в [`PanelMorphSpec::spring`].
+//! * Режим «на месте» ([`PanelMorphSpec::in_place`]): рамка и радиус постоянны, меняются только
+//!   стекло и содержимое (шторка и карточка iOS 27).
 //! * Прерывание (закрыли во время открытия) наследует положение и скорость: скачка нет.
 //! * События [`PanelEvent`] приходят по одному на каждое **завершённое** движение: прерванное
 //!   открытие события `Opened` не даёт.
@@ -16,4 +18,4 @@ mod spec;
 
 pub use element::{PanelEvent, PanelMorph, PanelPhase, PanelSnapshot, TransitionOutcome};
 pub use error::PanelError;
-pub use spec::{PanelMorphSpec, concentric_radius_pt};
+pub use spec::{ContentSlide, PanelMorphSpec, PanelMotionKind, concentric_radius_pt};

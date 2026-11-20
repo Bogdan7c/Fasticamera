@@ -22,8 +22,9 @@ pub struct ToolsConfig {
     /// Значки над кадром («Essentials»). `[doc]`/`[estimate]` `behavior.md` 2.2: вспышка, RAW,
     /// таймер (виден, только когда включён), EV.
     pub essentials: Vec<ToolId>,
-    /// Состав меню Controls v1. `[doc]`/`[estimate]` `behavior.md` 2.6 и `scope-v1.md`: Flash, Timer,
-    /// Exposure, Aspect, Grid, Level, RAW. Шестерёнки настроек нет до сессии 16 (инвариант 6).
+    /// Состав и порядок меню Controls v1: Flash, Aspect, Timer / Exposure, RAW, Grid / Level.
+    /// `[measured: C t=30.0]` порядок iOS 27 без нереализованных Live/Depth/Night; `[estimate]` Grid и Level
+    /// стоят в меню до сессии 16 (шестерёнки настроек пока нет, инвариант 6).
     pub controls_menu: Vec<ToolId>,
 }
 
@@ -33,12 +34,12 @@ impl Default for ToolsConfig {
             essentials: vec![ToolId::Flash, ToolId::Raw, ToolId::Timer, ToolId::Exposure],
             controls_menu: vec![
                 ToolId::Flash,
+                ToolId::Aspect,
                 ToolId::Timer,
                 ToolId::Exposure,
-                ToolId::Aspect,
+                ToolId::Raw,
                 ToolId::Grid,
                 ToolId::Level,
-                ToolId::Raw,
             ],
         }
     }

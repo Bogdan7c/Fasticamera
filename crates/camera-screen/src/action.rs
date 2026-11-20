@@ -64,9 +64,10 @@ pub enum ScreenAction {
     ControlsMenuCloseRequested,
     /// Тап по пункту меню Controls.
     ControlsItemSelected(ToolId),
-    /// Выбор варианта в подменю.
+    /// Выбор варианта в карточке инструмента: настройка применяется, карточка остаётся открытой.
     SubmenuOptionSelected(ToolOption),
-    /// Назад из подменю в меню.
+    /// Левая кнопка карточки инструмента (подменю или Exposure): «‹» из меню Controls возвращает в
+    /// меню, «×» карточки, открытой значком над кадром, закрывает панель.
     SubmenuBackRequested,
     /// Тап по значку над кадром.
     StripToolTapped(ToolId),

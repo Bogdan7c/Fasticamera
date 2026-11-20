@@ -63,6 +63,8 @@ pub enum ShutterPlacement {
     Visible,
     /// Меню Controls открыто: затвор ушёл под шторку.
     HiddenUnderDrawer,
+    /// Открыта карточка инструмента (решение 103): ряд затвора поднят на 100 pt, затвор виден и снимает.
+    RaisedAboveCard,
 }
 
 /// Что делает затвор (вид состояния без внутренних номеров запросов и времён).
@@ -139,6 +141,7 @@ impl ScreenStateSnapshot {
             shutter_placement: match state.shutter_visibility() {
                 ShutterVisibility::Visible => ShutterPlacement::Visible,
                 ShutterVisibility::HiddenUnderDrawer => ShutterPlacement::HiddenUnderDrawer,
+                ShutterVisibility::RaisedAboveCard => ShutterPlacement::RaisedAboveCard,
             },
             shutter_activity: match state.shutter() {
                 ShutterState::Idle => ShutterActivity::Idle,

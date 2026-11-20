@@ -33,6 +33,8 @@ pub(super) fn on_volume_key(ctx: &mut Ctx<'_>, phase: KeyPhase, at: MonotonicNan
     }
 }
 
+/// Кнопка затвора отвергается только под шторкой меню; при открытой карточке (`RaisedAboveCard`)
+/// затвор поднят, виден и снимает (решение 103).
 fn press(ctx: &mut Ctx<'_>, source: ShutterSource, at: MonotonicNanos) -> ActionOutcome {
     if source == ShutterSource::OnScreenButton && ctx.state.shutter_visibility() == ShutterVisibility::HiddenUnderDrawer
     {

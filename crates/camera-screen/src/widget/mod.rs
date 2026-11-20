@@ -11,13 +11,15 @@
 //! Своих жестов, физики и рисования примитивов здесь нет там, где их даёт `ui-kit`; чего не хватило —
 //! помечено `TODO(ui-kit)` и перечислено в отчёте пакета.
 
+pub(crate) mod bottom_row;
 pub(crate) mod button;
 pub(crate) mod capture_blink;
+pub(crate) mod card_geometry;
 pub(crate) mod controls_drawer;
 pub(crate) mod countdown;
 pub(crate) mod error;
 pub(crate) mod exposure_link;
-pub(crate) mod exposure_slider;
+pub(crate) mod exposure_ruler;
 pub(crate) mod focus_indicator;
 pub(crate) mod frame_mask;
 pub(crate) mod geometry;
@@ -32,6 +34,9 @@ pub(crate) mod mode_carousel;
 pub(crate) mod shutter_button;
 pub(crate) mod text_runs;
 pub(crate) mod thumbnail;
+pub(crate) mod tool_card;
+pub(crate) mod tool_card_content;
+pub(crate) mod tool_card_options;
 pub(crate) mod top_bar;
 pub(crate) mod unavailable_notice;
 
@@ -129,67 +134,7 @@ pub(crate) fn rotation_only(
 
 use ui_draw::color::{DisplayColor, Opacity};
 use ui_draw::draw_list::{DrawItem, ShapeItem};
-use ui_draw::icons::IconId;
 use ui_draw::shape::ShapeGeometry;
-use ui_kit::view::centered_icon;
-
-use layers::{DrawLayers, Layer};
-
-/// Круглая кнопка-значок на панели: полупрозрачная заливка (не стекло на стекле, `glass.md`) и иконка.
-///
-/// `button` — размещение узла кнопки, `content` — узла значка (ребёнок кнопки: несёт поворот по ориентации);
-/// `content_alpha` — прозрачность содержимого панели из морфа, `slide_px` — сдвиг содержимого вниз при появлении.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "собираемая по частям кнопка; обёртка структурой только спрячет смысл"
-)]
-pub(crate) fn draw_plain_icon_button(
-    ctx: &Ctx<'_>,
-    layers: &mut DrawLayers,
-    button: &NodePlacementPx,
-    content: &NodePlacementPx,
-    icon: IconId,
-    icon_size_pt: f64,
-    content_alpha: f32,
-    slide_px: f32,
-) -> Result<(), WidgetError> {
-    let alpha = (button.opacity * content_alpha).clamp(0.0, 1.0);
-    if alpha <= 0.0 {
-        return Ok(());
-    }
-    let opacity =
-        Opacity::new(alpha).map_err(|_| WidgetError::Inconsistent("прозрачность кнопки вне 0..1".to_owned()))?;
-    let slide = Affine2::translate(0.0, slide_px);
-    let fill = DisplayColor {
-        a: ctx.config.widgets.sheet.item_fill_alpha,
-        ..ctx.tokens.colors.text_primary
-    };
-    layers.push(
-        Layer::Content,
-        DrawItem::Shape(ShapeItem {
-            geometry: ShapeGeometry::Circle {
-                diameter: button.size.width.min(button.size.height),
-            },
-            transform: slide.then(button.transform),
-            fill,
-            stroke: None,
-            shadow: None,
-            opacity,
-        }),
-    );
-    layers.push(
-        Layer::Content,
-        centered_icon(
-            icon,
-            icon_size_pt,
-            ctx.px,
-            slide.then(content.transform),
-            ctx.tokens.colors.text_primary,
-            opacity,
-        ),
-    );
-    Ok(())
-}
 
 use ui_core::geometry::Rect;
 use ui_draw::shape::CornerSpec;

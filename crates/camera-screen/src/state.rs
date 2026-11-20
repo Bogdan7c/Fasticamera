@@ -35,24 +35,28 @@ pub enum PanelState {
     ExposurePanel,
 }
 
-/// Откуда открыто подменю: от этого зависит, куда вести после выбора варианта и по «Назад».
+/// Откуда открыта карточка инструмента (подменю или панель Exposure, решение 103).
 ///
-/// Подменю из меню Controls — часть шторки: после выбора возвращаемся в меню. Подменю, открытое
-/// тапом по значку над кадром (таймер), никакого меню за собой не имеет: после выбора панель
-/// закрывается, иначе пользователь увидел бы незапрошенное меню Controls, а затвор ушёл бы под шторку.
+/// От этого зависит, куда ведёт левая кнопка карточки («‹» / «×»): карточка из меню Controls — часть
+/// шторки, «‹» возвращает в меню; карточка, открытая тапом по значку над кадром, меню за собой не
+/// имеет, «×» закрывает панель (иначе пользователь увидел бы незапрошенное меню). Выбор варианта
+/// карточку не закрывает ни при каком происхождении (Apple 27: «Tap Aspect, then tap a ratio»).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum SubmenuOrigin {
-    /// Пункт меню Controls «морфнулся» в подменю.
+pub(crate) enum CardOrigin {
+    /// Пункт меню Controls «морфнулся» в карточку.
     #[default]
     ControlsMenu,
     /// Тап по значку над кадром.
     StripIcon,
 }
 
-/// Виден ли затвор (решение 94).
+/// Виден ли затвор и где (решения 94, 103).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShutterVisibility {
+    /// Панелей нет: затвор на обычном месте.
     Visible,
+    /// Открыта карточка инструмента: ряд затвора поднят над карточкой, затвор виден и снимает.
+    RaisedAboveCard,
     /// Меню Controls открыто: затвор уходит под шторку и не нажимается.
     HiddenUnderDrawer,
 }
@@ -74,9 +78,9 @@ pub struct ScreenState {
     pub(crate) registry: ModeRegistry,
     pub(crate) mode: CaptureMode,
     pub(crate) panel: PanelState,
-    /// Откуда открыто текущее подменю; осмысленно только при `PanelState::Submenu`
-    /// (выставляется при каждом входе в подменю).
-    pub(crate) submenu_origin: SubmenuOrigin,
+    /// Откуда открыта текущая карточка; осмысленно только при `Submenu`/`ExposurePanel`
+    /// (выставляется при каждом входе в карточку).
+    pub(crate) card_origin: CardOrigin,
     pub(crate) settings: CaptureSettings,
     pub(crate) exposure: ExposureState,
     pub(crate) focus: FocusState,
@@ -108,7 +112,7 @@ impl ScreenState {
             mode: registry.default_mode(),
             registry,
             panel: PanelState::Closed,
-            submenu_origin: SubmenuOrigin::default(),
+            card_origin: CardOrigin::default(),
             settings: CaptureSettings::default(),
             exposure: ExposureState::new(&config.exposure),
             focus: FocusState::default(),
@@ -218,12 +222,31 @@ impl ScreenState {
             .map_or(&[], |descriptor| descriptor.tools.menu())
     }
 
-    /// Виден ли затвор (решение 94: под шторкой при открытом меню или подменю).
+    /// Где затвор (решения 94, 103): под шторкой при меню, поднят при карточке, иначе на месте.
     pub fn shutter_visibility(&self) -> ShutterVisibility {
         match self.panel {
-            PanelState::ControlsMenu | PanelState::Submenu(_) => ShutterVisibility::HiddenUnderDrawer,
-            PanelState::Closed | PanelState::ExposurePanel => ShutterVisibility::Visible,
+            PanelState::ControlsMenu => ShutterVisibility::HiddenUnderDrawer,
+            PanelState::Submenu(_) | PanelState::ExposurePanel => ShutterVisibility::RaisedAboveCard,
+            PanelState::Closed => ShutterVisibility::Visible,
         }
+    }
+
+    /// Открыта ли карточка инструмента (подменю или Exposure).
+    pub fn is_tool_card_open(&self) -> bool {
+        matches!(self.panel, PanelState::Submenu(_) | PanelState::ExposurePanel)
+    }
+
+    /// Лежит ли под открытой карточкой меню Controls: карточка открыта из меню, левая кнопка — «‹» назад в
+    /// меню, а сама шторка остаётся под карточкой. У карточки, открытой значком над кадром, меню нет (`false`),
+    /// левая кнопка — «×». Виджеты читают намерение, а не поле `card_origin`.
+    pub(crate) fn card_returns_to_menu(&self) -> bool {
+        self.is_tool_card_open() && self.card_origin == CardOrigin::ControlsMenu
+    }
+
+    /// Скрыт ли нижний ряд (миниатюра, капсула режимов, кнопка меню): растворяется, пока открыта
+    /// карточка (решение 103). Под меню ряд закрывает сама шторка, это не «скрытие» ряда.
+    pub fn is_bottom_row_hidden(&self) -> bool {
+        self.is_tool_card_open()
     }
 
     /// Показывать ли текст «камера недоступна».

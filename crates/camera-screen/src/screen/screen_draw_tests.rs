@@ -8,6 +8,7 @@ use ui_core::time::MotionPreference;
 use ui_draw::draw_list::DrawItem;
 use ui_draw::icons::IconId;
 use ui_draw::shape::ShapeGeometry;
+use ui_kit::tokens::TextRoleKind;
 
 use super::test_rig::*;
 use crate::action::ScreenAction;
@@ -18,10 +19,6 @@ use crate::settings::{AspectRatio, TimerSetting};
 use crate::state::PanelState;
 use crate::test_support::live_facts;
 use crate::tools::{ToolId, ToolOption};
-
-fn near(actual: f32, expected: f32, tolerance: f32) -> bool {
-    (actual - expected).abs() <= tolerance
-}
 
 /// Члены стекла указанной формы около (x, y) px.
 fn glass_near(list: &ui_draw::draw_list::DrawList, y_px: f32) -> Vec<ShapeGeometry> {
@@ -36,7 +33,8 @@ fn glass_near(list: &ui_draw::draw_list::DrawList, y_px: f32) -> Vec<ShapeGeomet
 fn rest_layout_puts_elements_where_the_layout_doc_says() {
     let mut rig = Rig::new();
     let list = rig.frame().clone();
-    // `layout.md` 4.3: затвор по y ≈ 2034 px (Ø 197), капсула режимов ≈ 2269 px (540 × 117), значки ≈ 323 px.
+    // Наш экран 1080 × 2412 px (1 pt = 2,4545 px), эталонные y сдвинуты вниз на 26,7 pt:
+    // затвор y ≈ 2034 px (Ø 197), капсула режимов ≈ 2270 px (543 × 120), значок вспышки ≈ 318 px.
     let shutter = glass_near(&list, 2034.0);
     assert!(
         shutter
@@ -44,21 +42,42 @@ fn rest_layout_puts_elements_where_the_layout_doc_says() {
             .any(|g| matches!(g, ShapeGeometry::Circle { diameter } if near(*diameter, 197.0, 2.0))),
         "затвор Ø197 на y 2034: {shutter:?}"
     );
-    let capsule = glass_near(&list, 2269.0);
+    let capsule = glass_near(&list, 2270.0);
     assert!(
         capsule
             .iter()
-            .any(|g| matches!(g, ShapeGeometry::Capsule { size } if near(size.width, 540.0, 2.0) && near(size.height, 117.0, 2.0))),
-        "капсула 540×117 на y 2269: {capsule:?}"
+            .any(|g| matches!(g, ShapeGeometry::Capsule { size } if near(size.width, 543.4, 2.0) && near(size.height, 120.0, 2.0))),
+        "капсула 543×120 на y 2270: {capsule:?}"
+    );
+    // Пилюля выбранного режима 89 × 43 pt (218 × 106 px) лежит внутри капсулы на её центре.
+    let pill = mode_pill_size_px(&list);
+    assert!(
+        near(pill.0, 89.0 * PX_PER_PT, 1.0) && near(pill.1, 43.0 * PX_PER_PT, 1.0),
+        "пилюля режима 89×43: {pill:?}"
     );
     let flash = icon_transforms(&list, IconId::FlashOff);
     assert_eq!(flash.len(), 1);
     assert!(
-        near(flash[0].ty, 323.0, 4.0),
-        "значок вспышки на y 323, а не {}",
+        near(flash[0].ty, 317.6, 3.0),
+        "значок вспышки на y 318, а не {}",
         flash[0].ty
     );
-    // Миниатюра и кнопка меню — круги Ø≈118 в нижней зоне; переворота камеры и зума нет (инвариант 6).
+    // Кнопка меню Ø 44 pt (108 px) и миниатюра Ø 48 pt (118 px) — круги нижней зоны.
+    let circles = glass_near(&list, 2270.0);
+    assert!(
+        circles
+            .iter()
+            .any(|g| matches!(g, ShapeGeometry::Circle { diameter } if near(*diameter, 117.8, 2.0))),
+        "миниатюра Ø118: {circles:?}"
+    );
+    let menu_circle = glass_near(&list, 2034.0);
+    assert!(
+        menu_circle
+            .iter()
+            .any(|g| matches!(g, ShapeGeometry::Circle { diameter } if near(*diameter, 108.0, 2.0))),
+        "кнопка меню Ø108: {menu_circle:?}"
+    );
+    // Переворота камеры и зума нет (инвариант 6).
     assert_eq!(icon_transforms(&list, IconId::FlipCamera).len(), 0);
     assert_eq!(icon_transforms(&list, IconId::ControlsMenu).len(), 1);
 }
@@ -73,10 +92,16 @@ fn every_key_state_yields_a_valid_draw_list_with_its_distinguishing_content() {
     rig.tap(center);
     rig.run(300);
     assert_eq!(
-        icon_transforms(&rig.last, IconId::Exposure).len(),
-        2,
-        "значок EV и «солнце» у рамки"
+        text_count_of(&rig.last, "0.0", TextRoleKind::StripValue),
+        1,
+        "число EV над кадром"
     );
+    assert_eq!(
+        text_count_of(&rig.last, "EV", TextRoleKind::StripUnit),
+        1,
+        "единица EV под числом"
+    );
+    assert_eq!(sun_discs(&rig.last).len(), 1, "«солнце» у рамки (диск)");
 
     // AE/AF LOCK: камера подтвердила блокировку → плашка с текстом.
     let mut locked = live_facts();

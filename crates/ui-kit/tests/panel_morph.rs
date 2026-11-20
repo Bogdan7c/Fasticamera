@@ -55,6 +55,36 @@ fn closed_panel_looks_like_its_source_button() {
 }
 
 #[test]
+fn explicit_source_radius_replaces_the_half_side_default_and_blends_to_the_target_radius() {
+    let tokens = UiKitTokens::default();
+    // Шторка 430 × 464 → карточка: радиус источника 54, а не половина меньшей стороны (215).
+    let sheet = Rect::from_xywh(5.0, 483.0, 430.0, 464.0);
+    let card = Rect::from_xywh(9.5, 764.7, 421.0, 183.1);
+    let with_radius = PanelMorphSpec::new(sheet, card, 52.0).with_source_corner_radius_pt(54.0);
+    let default_radius = PanelMorphSpec::new(sheet, card, 52.0);
+
+    let closed = panel(with_radius, MotionPreference::Full, &tokens).snapshot(ms(0));
+    assert_eq!(closed.corner_radius_pt, 54.0);
+    // Умолчание не изменилось: половина меньшей стороны источника.
+    let closed_default = panel(default_radius, MotionPreference::Full, &tokens).snapshot(ms(0));
+    assert_eq!(closed_default.corner_radius_pt, 215.0);
+    // В конце открытия радиус — радиус цели.
+    let mut opened = panel(with_radius, MotionPreference::Full, &tokens);
+    opened.open(ms(0)).unwrap();
+    assert!((opened.snapshot(ms(5000)).corner_radius_pt - 52.0).abs() < 1e-6);
+}
+
+#[test]
+fn invalid_source_radius_is_rejected() {
+    let tokens = UiKitTokens::default();
+    let bad = spec().with_source_corner_radius_pt(-1.0);
+    assert!(matches!(
+        PanelMorph::new(bad, &env(&tokens, MotionPreference::Full), ms(0)),
+        Err(PanelError::InvalidRadius(_))
+    ));
+}
+
+#[test]
 fn opening_runs_through_phases_and_reports_opened_exactly_once() {
     let tokens = UiKitTokens::default();
     let mut panel = panel(spec(), MotionPreference::Full, &tokens);
@@ -222,4 +252,141 @@ fn closing_after_a_finished_but_unnoticed_opening_still_reports_both_events() {
         run(&mut panel, 5000, 8000, 16.0),
         vec![PanelEvent::Opened, PanelEvent::Closed]
     );
+}
+
+// ---- режим «на месте» (шторка и карточка iOS 27) ----
+
+/// Шторка iOS 27: пункты въезжают на 4,9 pt (`[measured: C t=22.88–23.15]`).
+const IN_PLACE_SLIDE_PT: f64 = 4.9;
+
+fn in_place_spec() -> PanelMorphSpec {
+    PanelMorphSpec::in_place(TARGET, TARGET_RADIUS_PT, MotionToken::Smooth).with_content_slide_pt(IN_PLACE_SLIDE_PT)
+}
+
+#[test]
+fn in_place_panel_keeps_frame_and_radius_at_every_progress() {
+    let tokens = UiKitTokens::default();
+    let mut panel = panel(in_place_spec(), MotionPreference::Full, &tokens);
+    // Закрытая: рамка уже на месте, стекло не материализовано, содержимое скрыто и сдвинуто.
+    let closed = panel.snapshot(ms(0));
+    assert_eq!(closed.frame, TARGET);
+    assert_eq!(closed.corner_radius_pt, TARGET_RADIUS_PT);
+    assert_eq!(closed.effect, 0.0);
+    assert_eq!(closed.content_opacity, 0.0);
+    assert_eq!(closed.content_offset_pt, IN_PLACE_SLIDE_PT);
+    assert_eq!(closed.source_opacity, 0.0, "источника нет: гасить нечего");
+
+    panel.open(ms(0)).unwrap();
+    let mut saw_midway = false;
+    for t in 0..800 {
+        let snapshot = panel.snapshot(ms(t));
+        assert_eq!(snapshot.frame, TARGET, "рамка не меняется на {t} мс");
+        assert_eq!(
+            snapshot.corner_radius_pt, TARGET_RADIUS_PT,
+            "радиус не меняется на {t} мс"
+        );
+        saw_midway |= snapshot.effect > 0.1 && snapshot.effect < 0.9;
+    }
+    assert!(saw_midway, "эффект должен проходить промежуточные значения");
+    let open = panel.snapshot(ms(3000));
+    assert_eq!(open.effect, 1.0);
+    assert_eq!(open.content_opacity, 1.0);
+    assert_eq!(open.content_offset_pt, 0.0);
+}
+
+#[test]
+fn in_place_content_opacity_grows_and_offset_shrinks_monotonically() {
+    let tokens = UiKitTokens::default();
+    let mut panel = panel(in_place_spec(), MotionPreference::Full, &tokens);
+    panel.open(ms(0)).unwrap();
+    let samples: Vec<_> = (0..600).map(|t| panel.snapshot(ms(t))).collect();
+    for pair in samples.windows(2) {
+        assert!(pair[1].content_opacity >= pair[0].content_opacity);
+        assert!(pair[1].content_offset_pt <= pair[0].content_offset_pt);
+        assert!(pair[1].effect >= pair[0].effect);
+    }
+    let max_offset = samples.iter().map(|s| s.content_offset_pt).fold(0.0, f64::max);
+    assert!(max_offset <= IN_PLACE_SLIDE_PT);
+    assert!(
+        samples
+            .iter()
+            .any(|s| s.content_offset_pt > 0.0 && s.content_offset_pt < IN_PLACE_SLIDE_PT)
+    );
+}
+
+#[test]
+fn in_place_slide_defaults_to_the_token_when_not_overridden() {
+    let tokens = UiKitTokens::default();
+    let spec = PanelMorphSpec::in_place(TARGET, TARGET_RADIUS_PT, MotionToken::Smooth);
+    let panel = panel(spec, MotionPreference::Full, &tokens);
+    assert_eq!(
+        panel.snapshot(ms(0)).content_offset_pt,
+        tokens.panel.content_slide_distance_pt
+    );
+}
+
+#[test]
+fn in_place_reversal_keeps_position_and_velocity() {
+    let tokens = UiKitTokens::default();
+    let mut panel = panel(in_place_spec(), MotionPreference::Full, &tokens);
+    panel.open(ms(0)).unwrap();
+    let before = panel.snapshot(ms(60)).effect;
+    assert_eq!(panel.close(ms(60)).unwrap(), TransitionOutcome::Reversed);
+    // Скачка нет.
+    assert!((panel.snapshot(ms(60)).effect - before).abs() < 1e-6);
+    // Скорость унаследована: эффект ещё чуть растёт, прежде чем пойти вниз.
+    assert!(panel.snapshot(ms(68)).effect > before);
+    let events = run(&mut panel, 60, 3000, 16.0);
+    assert_eq!(events, vec![PanelEvent::Closed]);
+    let closed = panel.snapshot(ms(3000));
+    assert_eq!(closed.effect, 0.0);
+    assert_eq!(closed.frame, TARGET);
+}
+
+#[test]
+fn in_place_snapshot_is_identical_at_60_and_120_hz() {
+    let tokens = UiKitTokens::default();
+    let mut slow = panel(in_place_spec(), MotionPreference::Full, &tokens);
+    let mut fast = panel(in_place_spec(), MotionPreference::Full, &tokens);
+    slow.open(ms(0)).unwrap();
+    fast.open(ms(0)).unwrap();
+    run(&mut slow, 0, 400, 1000.0 / 60.0);
+    run(&mut fast, 0, 400, 1000.0 / 120.0);
+    for at_ms in [30, 100, 250, 400] {
+        assert_eq!(slow.snapshot(ms(at_ms)), fast.snapshot(ms(at_ms)), "на {at_ms} мс");
+    }
+}
+
+#[test]
+fn negative_content_slide_is_an_error() {
+    let tokens = UiKitTokens::default();
+    let spec = PanelMorphSpec::in_place(TARGET, TARGET_RADIUS_PT, MotionToken::Smooth).with_content_slide_pt(-1.0);
+    let result = PanelMorph::new(spec, &env(&tokens, MotionPreference::Full), ms(0));
+    assert!(matches!(result, Err(PanelError::InvalidContentSlide(_))));
+}
+
+#[test]
+fn reduce_motion_panel_neither_slides_content_nor_moves_its_frame() {
+    let tokens = UiKitTokens::default();
+    let sheet = Rect::from_xywh(5.0, 483.0, 430.0, 464.0);
+    let card = Rect::from_xywh(9.5, 764.7, 421.0, 183.1);
+    let grow = PanelMorphSpec::new(sheet, card, 52.0).with_content_slide_pt(4.9);
+    let in_place = PanelMorphSpec::in_place(card, 52.0, MotionToken::CardMorph).with_content_slide_pt(4.9);
+    for (name, spec) in [("из источника", grow), ("на месте", in_place)] {
+        let mut full = panel(spec, MotionPreference::Full, &tokens);
+        let mut reduced = panel(spec, MotionPreference::Reduced, &tokens);
+        full.open(ms(0)).unwrap();
+        reduced.open(ms(0)).unwrap();
+        // Базовый случай: при обычном движении сдвиг есть в начале открытия — иначе тест ничего не доказывает.
+        assert!((full.snapshot(ms(0)).content_offset_pt - 4.9).abs() < 1e-9, "{name}");
+        for at_ms in [0, 40, 100, 200, 2000] {
+            let snapshot = reduced.snapshot(ms(at_ms));
+            assert_eq!(snapshot.content_offset_pt, 0.0, "{name}: сдвиг содержимого t={at_ms}");
+            assert_eq!(snapshot.frame, card, "{name}: рамка t={at_ms}");
+            assert_eq!(snapshot.corner_radius_pt, 52.0, "{name}: радиус t={at_ms}");
+        }
+        // Проявление остаётся: стекло и содержимое всё ещё нарастают.
+        assert!(reduced.snapshot(ms(40)).effect > 0.0 && reduced.snapshot(ms(40)).effect < 1.0);
+        assert_eq!(reduced.snapshot(ms(2000)).effect, 1.0);
+    }
 }

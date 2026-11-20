@@ -5,7 +5,7 @@ use crate::effect::{Effect, ScreenCameraIntent};
 use crate::modes::CaptureMode;
 use crate::outcome::{ActionOutcome, NoChangeReason, Rejection};
 use crate::settings::AspectRatio;
-use crate::state::{PanelState, SubmenuOrigin};
+use crate::state::{CardOrigin, PanelState};
 use crate::tools::{ToolId, ToolOption};
 
 /// Выбор режима. Повторный выбор текущего открывает меню Controls (`behavior.md` 2.4).
@@ -26,11 +26,14 @@ pub(super) fn on_open(ctx: &mut Ctx<'_>) -> ActionOutcome {
     ActionOutcome::Applied
 }
 
-/// Закрыть меню (свайп вниз). Панель экспозиции этим жестом не закрывается.
+/// Закрыть панель свайпом вниз: одно правило для меню Controls, подменю и любой карточки (в том числе
+/// открытой значком над кадром). `[estimate]`: для карточки со значка жест не снят, берём то же закрытие,
+/// что у остальных панелей, чтобы жест не зависел от происхождения. Закрывать нечего — `NoChange`.
 pub(super) fn on_close(ctx: &mut Ctx<'_>) -> ActionOutcome {
-    if matches!(ctx.state.panel, PanelState::ControlsMenu | PanelState::Submenu(_)) {
-        ctx.state.panel = PanelState::Closed;
+    if ctx.state.panel == PanelState::Closed {
+        return ActionOutcome::NoChange(NoChangeReason::NothingToClose);
     }
+    ctx.state.panel = PanelState::Closed;
     ActionOutcome::Applied
 }
 
@@ -43,20 +46,20 @@ pub(super) fn on_item_selected(ctx: &mut Ctx<'_>, tool: ToolId) -> ActionOutcome
         ToolId::Exposure => PanelState::ExposurePanel,
         other => PanelState::Submenu(other),
     };
-    ctx.state.submenu_origin = SubmenuOrigin::ControlsMenu;
+    ctx.state.card_origin = CardOrigin::ControlsMenu;
     ActionOutcome::Applied
 }
 
-/// Панель, в которую ведёт выход из подменю (выбор варианта или «Назад»): в меню Controls, если
-/// подменю открыто из него, и в никуда, если подменю открыто значком над кадром.
-fn panel_after_submenu(origin: SubmenuOrigin) -> PanelState {
+/// Панель, в которую ведёт левая кнопка карточки: в меню Controls, если карточка открыта из него,
+/// и в никуда, если значком над кадром.
+fn panel_after_card_left_button(origin: CardOrigin) -> PanelState {
     match origin {
-        SubmenuOrigin::ControlsMenu => PanelState::ControlsMenu,
-        SubmenuOrigin::StripIcon => PanelState::Closed,
+        CardOrigin::ControlsMenu => PanelState::ControlsMenu,
+        CardOrigin::StripIcon => PanelState::Closed,
     }
 }
 
-/// Вариант в подменю: применяется настройка, подменю закрывается (см. [`panel_after_submenu`]).
+/// Вариант в подменю: применяется настройка, карточка ОСТАЁТСЯ открытой (решение 103).
 pub(super) fn on_option_selected(ctx: &mut Ctx<'_>, option: ToolOption) -> ActionOutcome {
     if ctx.state.panel != PanelState::Submenu(option.tool()) {
         return ActionOutcome::Rejected(Rejection::OptionNotInSubmenu);
@@ -64,21 +67,24 @@ pub(super) fn on_option_selected(ctx: &mut Ctx<'_>, option: ToolOption) -> Actio
     if !apply_option(ctx, option) {
         return ActionOutcome::Rejected(Rejection::UnsupportedOption);
     }
-    ctx.state.panel = panel_after_submenu(ctx.state.submenu_origin);
     ActionOutcome::Applied
 }
 
-/// Назад из подменю.
+/// Левая кнопка карточки («‹» из меню, «×» со значка) — для подменю и для панели Exposure.
 pub(super) fn on_submenu_back(ctx: &mut Ctx<'_>) -> ActionOutcome {
-    if matches!(ctx.state.panel, PanelState::Submenu(_)) {
-        ctx.state.panel = panel_after_submenu(ctx.state.submenu_origin);
+    if ctx.state.is_tool_card_open() {
+        ctx.state.panel = panel_after_card_left_button(ctx.state.card_origin);
     }
     ActionOutcome::Applied
 }
 
 /// Тап по значку над кадром.
+///
+/// Пока открыто МЕНЮ — отказ (значки под шторкой). Пока открыта КАРТОЧКА — тап переключает на
+/// карточку/переключатель этого инструмента: верхний ряд в iOS 27 виден над карточкой (`[estimate]`:
+/// не снято). Повторный тап по значку открытой карточки (Exposure, Timer) её закрывает.
 pub(super) fn on_strip_tool_tapped(ctx: &mut Ctx<'_>, tool: ToolId) -> ActionOutcome {
-    if matches!(ctx.state.panel, PanelState::ControlsMenu | PanelState::Submenu(_)) {
+    if ctx.state.panel == PanelState::ControlsMenu {
         return ActionOutcome::Rejected(Rejection::PanelBlocksAction);
     }
     if !strip_contains(ctx, tool) {
@@ -95,14 +101,10 @@ pub(super) fn on_strip_tool_tapped(ctx: &mut Ctx<'_>, tool: ToolId) -> ActionOut
         }
         ToolId::Raw => ctx.state.settings.raw = ctx.state.settings.raw.toggled(),
         ToolId::Timer => {
-            ctx.state.panel = PanelState::Submenu(ToolId::Timer);
-            ctx.state.submenu_origin = SubmenuOrigin::StripIcon;
+            open_card_from_strip(ctx, PanelState::Submenu(ToolId::Timer));
         }
         ToolId::Exposure => {
-            ctx.state.panel = match ctx.state.panel {
-                PanelState::ExposurePanel => PanelState::Closed,
-                _ => PanelState::ExposurePanel,
-            };
+            open_card_from_strip(ctx, PanelState::ExposurePanel);
         }
         // ToolSet::new не пускает в ряд значков другие инструменты; ветка недостижима, но отказ явный.
         ToolId::Aspect | ToolId::Grid | ToolId::Level | ToolId::Live | ToolId::Styles | ToolId::Night => {
@@ -110,6 +112,16 @@ pub(super) fn on_strip_tool_tapped(ctx: &mut Ctx<'_>, tool: ToolId) -> ActionOut
         }
     }
     ActionOutcome::Applied
+}
+
+/// Открывает карточку тапом по значку; если она уже открыта — закрывает (переключатель).
+fn open_card_from_strip(ctx: &mut Ctx<'_>, card: PanelState) {
+    if ctx.state.panel == card {
+        ctx.state.panel = PanelState::Closed;
+    } else {
+        ctx.state.panel = card;
+        ctx.state.card_origin = CardOrigin::StripIcon;
+    }
 }
 
 /// Применяет вариант к настройкам. `false` — вариант не поддержан (автовспышка).

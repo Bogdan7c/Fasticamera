@@ -1,4 +1,5 @@
-//! Капсула режимов (K4 `SnapCarousel`): стеклянная капсула 220 × 47,8 pt с подписями режимов из реестра.
+//! Капсула режимов (K4 `SnapCarousel`): стеклянная капсула 221,4 × 48,9 pt с подписями режимов из реестра
+//! и пилюлей выбранного режима внутри.
 //!
 //! В v1 один режим (PHOTO, решение 80): горизонтальный жест даёт «резинку» без смены режима, тап по текущему
 //! режиму открывает меню Controls (`ModeSelected` того же режима, решает редьюсер).
@@ -6,13 +7,17 @@
 use ui_core::geometry::Point;
 use ui_core::gesture::{GestureData, GestureEvent, GestureState, PanDirection, PanSpec, RecognizerSpec, TapSpec};
 use ui_core::id::NodeId;
-use ui_draw::draw_list::{DrawItem, PressState};
+use ui_draw::color::DisplayColor;
+use ui_draw::draw_list::{DrawItem, PressState, ShapeItem, StrokeStyle};
+use ui_draw::geometry::PxSize;
+use ui_draw::shape::ShapeGeometry;
 use ui_kit::carousel::{CarouselEntry, CarouselEvent, CarouselSpec, SnapCarousel, TapOutcome};
 use ui_kit::drive::ScrollTransition;
 use ui_kit::pan::PanUpdate;
-use ui_kit::tokens::{GlassRole, MotionToken};
+use ui_kit::tokens::GlassRole;
 use ui_kit::view::{CarouselLabels, GlassShape, LabelPainter, carousel_items, opacity_of_placement};
 
+use super::bottom_row::BottomRowFade;
 use super::error::{WidgetError, element};
 use super::intent::ScreenGesture;
 use super::kit::SceneKit;
@@ -20,15 +25,14 @@ use super::layers::{DrawLayers, Layer, VisualIndex};
 use super::{Ctx, Outputs, single_member_group};
 use crate::action::ScreenAction;
 use crate::modes::CaptureMode;
-use crate::state::PanelState;
 
 pub(crate) struct ModeCarouselWidget {
     node: NodeId,
     carousel: SnapCarousel<CaptureMode>,
     /// Подписи, свёрстанные один раз при сборке сцены, в порядке записей реестра.
     labels: CarouselLabels,
-    /// К какой видимости едем (`None` — ещё не назначали): капсула растворяется, пока открыта панель Exposure.
-    shown: Option<bool>,
+    /// Растворение, пока открыта нижняя карточка (решение 103).
+    fade: BottomRowFade,
 }
 
 impl ModeCarouselWidget {
@@ -76,7 +80,7 @@ impl ModeCarouselWidget {
             node,
             carousel,
             labels,
-            shown: None,
+            fade: BottomRowFade::default(),
         })
     }
 
@@ -153,17 +157,8 @@ impl ModeCarouselWidget {
                 .select(index, ScrollTransition::Animated, ctx.now)
                 .map_err(element("карусель режимов"))?;
         }
-        let visible = ctx.state.panel() != PanelState::ExposurePanel;
-        if self.shown != Some(visible) {
-            self.shown = Some(visible);
-            kit.set_interactive(self.node, visible)?;
-            kit.fade_to(
-                self.node,
-                if visible { 1.0 } else { 0.0 },
-                ctx.spring(MotionToken::Smooth)?,
-                ctx.now,
-            )?;
-        }
+        let shown = self.fade.sync(kit, ctx, self.node)?;
+        kit.set_interactive(self.node, shown)?;
         Ok(())
     }
 
@@ -180,6 +175,32 @@ impl ModeCarouselWidget {
                 CarouselEvent::Haptic { pattern } => out.haptics.push(pattern),
             }
         }
+    }
+
+    /// Пилюля: светлая заливка и тонкий светлый ободок. `host` — преобразование центра капсулы.
+    fn selected_pill(ctx: &Ctx<'_>, host: ui_draw::transform::Affine2, opacity: ui_draw::color::Opacity) -> DrawItem {
+        let bottom = &ctx.geometry.config().bottom;
+        let pill = ctx.geometry.mode_pill();
+        let white = ctx.tokens.colors.text_primary;
+        DrawItem::Shape(ShapeItem {
+            geometry: ShapeGeometry::Capsule {
+                size: PxSize::new(ctx.px.px(pill.size.width), ctx.px.px(pill.size.height)),
+            },
+            transform: host,
+            fill: DisplayColor {
+                a: bottom.mode_pill_fill_alpha,
+                ..white
+            },
+            stroke: Some(StrokeStyle {
+                width_px: ctx.px.px(bottom.mode_pill_border_width_pt),
+                color: DisplayColor {
+                    a: bottom.mode_pill_border_alpha,
+                    ..white
+                },
+            }),
+            shadow: None,
+            opacity,
+        })
     }
 
     pub(crate) fn draw(
@@ -204,6 +225,9 @@ impl ModeCarouselWidget {
         )?;
         layers.push(Layer::Glass, DrawItem::Glass(group));
         let opacity = opacity_of_placement(&placement, "mode_labels")?;
+        // Пилюля выбранного режима под подписью. В v1 режим один и стоит по центру капсулы; при нескольких
+        // режимах пилюля поедет за выбранным (тогда её положение возьмётся из `carousel.placements`).
+        layers.push(Layer::Content, Self::selected_pill(ctx, host, opacity));
         // Подписи ставит вид `ui-kit`: выбранная — `selected_label`, остальные — приглушённые.
         layers.extend(
             Layer::Content,

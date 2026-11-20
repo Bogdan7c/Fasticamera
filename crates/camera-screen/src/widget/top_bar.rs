@@ -1,7 +1,7 @@
 //! Значки над кадром (`visible_strip_tools()`): вспышка, RAW, таймер (только когда включён), EV.
 //!
 //! Ряд — данные (М3): слоты узлов создаются заранее, а какой инструмент в каком слоте, решает состояние на
-//! каждом кадре. Значки без стекла (`[estimate]`: в iOS 27 их вид не измерен); активное состояние — жёлтым.
+//! каждом кадре. Значки без стекла; активное состояние — жёлтым. EV — не значок, а две строки текста («0.0» над «EV»).
 
 use ui_core::gesture::GestureEvent;
 use ui_core::id::NodeId;
@@ -16,6 +16,7 @@ use ui_kit::view::{centered_icon, centered_text, opacity_of_placement};
 
 use super::button::{ButtonEvent, PressButton};
 use super::error::WidgetError;
+use super::exposure_link::format_ev;
 use super::geometry::MAX_STRIP_ICONS;
 use super::intent::{ButtonId, ScreenGesture};
 use super::kit::SceneKit;
@@ -176,12 +177,19 @@ impl TopBarWidget {
                     } else {
                         colors.focus_yellow
                     };
-                    layers.push(Layer::Content, icon(IconId::Exposure, color));
-                    if steps != 0 {
-                        let ev = ctx.state.exposure().bias(&ctx.config.exposure).ev();
-                        let run = texts.run(ctx, &format!("{ev:+.1}"), TextRoleKind::Caption)?;
-                        layers.push(Layer::Content, centered_text(run, below, color, opacity));
-                    }
+                    // iOS 27: вместо значка солнца — две строки текста, число над «EV»; жёлтые при EV ≠ 0.
+                    let ev = ctx.state.exposure().bias(&ctx.config.exposure).ev();
+                    let line_at = |offset_pt: f64| Affine2::translate(0.0, ctx.px.px(offset_pt)).then(host);
+                    let value = texts.run(ctx, &format_ev(ev), TextRoleKind::StripValue)?;
+                    layers.push(
+                        Layer::Content,
+                        centered_text(value, line_at(strip.ev_value_offset_pt), color, opacity),
+                    );
+                    let unit = texts.run(ctx, "EV", TextRoleKind::StripUnit)?;
+                    layers.push(
+                        Layer::Content,
+                        centered_text(unit, line_at(strip.ev_unit_offset_pt), color, opacity),
+                    );
                 }
                 // В ряд над кадром другие инструменты не пускает `ToolSet::new`.
                 ToolId::Aspect | ToolId::Grid | ToolId::Level | ToolId::Live | ToolId::Styles | ToolId::Night => {

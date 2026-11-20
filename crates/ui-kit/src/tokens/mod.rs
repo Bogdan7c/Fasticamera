@@ -21,6 +21,7 @@ mod error;
 mod glass;
 mod haptics;
 mod motion;
+mod ruler;
 mod scale_view;
 mod typography;
 
@@ -33,6 +34,7 @@ pub use error::TokenError;
 pub use glass::{GlassRole, GlassTokens};
 pub use haptics::{HapticEvent, HapticSetting, HapticTable};
 pub use motion::{MotionToken, MotionTokens, SnapRole, SpringToken};
+pub use ruler::RulerTokens;
 pub use scale_view::ScaleTickTokens;
 pub use typography::{DigitStyle, TextRole, TextRoleKind, TextWeight, Tracking, TypographyTokens};
 
@@ -51,6 +53,7 @@ pub struct UiKitTokens {
     pub focus: FocusTokens,
     pub shutter: ShutterTokens,
     pub scale_ticks: ScaleTickTokens,
+    pub ruler: RulerTokens,
 }
 
 impl UiKitTokens {
@@ -65,6 +68,7 @@ impl UiKitTokens {
         self.banner.validate()?;
         self.focus.validate()?;
         self.shutter.validate()?;
-        self.scale_ticks.validate()
+        self.scale_ticks.validate()?;
+        self.ruler.validate()
     }
 }

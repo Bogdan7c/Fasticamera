@@ -44,15 +44,15 @@
 
 ### 1.2. Какие жесты конкурируют на экране камеры
 
-Таблица — вход для арбитража `ui-core` (10). Победитель — `[estimate]` по поведению, описанному в документации ниже. Проверить на эталонном iPhone.
+Таблица — вход для арбитража `ui-core` (10). Победитель — `[estimate]` по поведению, описанному в документации ниже; в 12a подтверждено записями R00/C: тап по кадру ставит рамку (R00 t=97–110), вертикаль рядом с рамкой тянет солнце, при открытой шторке рамка гаснет за 0,17 с (`[measured: R00 t=110–115]`). Остальное — на эталонном iPhone.
 
 | Место касания | Конкуренты | Правило |
 |---|---|---|
-| Видоискатель | тап (фокус), долгий тап (AE/AF Lock), щипок (зум), горизонтальный свайп (смена режима), вертикальный свайп вверх (меню Controls, iOS 26), вертикальный жест «солнца» рядом с рамкой | 2 пальца → щипок сразу, остальные отменяются. 1 палец: до 10 pt и 0,5 с — ничего; отпустил раньше — тап; держит 0,5 с без сдвига — долгий тап; сдвиг > 10 pt — направление решает: горизонталь → режимы, вертикаль рядом с рамкой фокуса → экспозиция, иначе вертикаль вверх → меню |
+| Видоискатель | тап (фокус), долгий тап (AE/AF Lock), щипок (зум), горизонтальный свайп (смена режима), вертикальный свайп вверх (меню Controls: в iOS 26 — по кадру, в iOS 27 по тексту Apple — от переключателя режимов), вертикальный жест «солнца» рядом с рамкой | 2 пальца → щипок сразу, остальные отменяются. 1 палец: до 10 pt и 0,5 с — ничего; отпустил раньше — тап; держит 0,5 с без сдвига — долгий тап; сдвиг > 10 pt — направление решает: горизонталь → режимы, вертикаль рядом с рамкой фокуса → экспозиция, иначе вертикаль вверх → меню |
 | Капсула режимов | тап по подписи (Photo ↔ Video), горизонтальный свайп (карусель), свайп вверх (меню Controls) | тап — после отпускания без сдвига; сдвиг по доминирующей оси |
 | Кнопка зума | тап (смена объектива), удержание и перетаскивание (колесо зума) | долгий тап (0,5 с) или сдвиг > 10 pt → колесо; иначе тап |
 | Затвор | тап (снимок), удержание (QuickTake — у нас позже), сдвиг влево (серия — позже) | в v1 только тап; удержание не перехватывается |
-| Меню Controls | тап по пункту, свайп вниз (закрыть) | — |
+| Меню Controls | тап по пункту (открывает карточку, раздел 2.6), закрытие: тап по кадру, свайп вниз, «‹» в карточке | `[doc]` UG/TOOLS (цитаты — раздел 2.6); на записях закрытие не снято |
 | Колесо зума / ползунок | горизонтальное перетаскивание с броском | прокрутка с замедлением и прилипанием (`motion.md` раздел 2) |
 
 ## 2. Элементы экрана Photo
@@ -69,20 +69,29 @@
 | Свайп вверх | меню Controls | `[review]` MacStories iOS 26: *"swipe up anywhere on the camera"*; в iOS 27 Apple пишет только про свайп от переключателя режимов (UG/TOOLS) |
 
 Диапазон и шаг экспозиции:
-- Панель Exposure iOS 27 (видео B, 328–346 с, значения прочитаны с экрана при перетаскивании): 0.0, 0.3, 1.0, 1.7, 2.0, …, −0.3, −1.0, −1.3 — **шаг 1/3 EV** (0,3 и 0,7 — округлённые 1/3 и 2/3), **верхний предел +2.0** (значение стоит на нём несколько кадров при движущемся пальце) `[measured]`. Нижний предел на видео не достигнут; `[estimate]` −2.0 по симметрии и по устаревшей статье [gadgethacks](https://ios.gadgethacks.com/how-to/control-focus-exposure-locks-separately-your-iphones-camera-0320703/) времён iOS 14 (*"from –2 to +2 EV"*).
-- Панель Exposure: вертикальная подпись EXPOSURE, число, линейка с тиками и жёлтой отметкой, кнопка «×», кнопка сброса появляется после первого изменения (видео B) `[measured]`; `[doc]` UG/TOOLS: *"Tap [reset] to reset the exposure."*
-- Перетаскивание «солнца» у рамки фокуса — та же величина EV `[estimate]`; наш AE ограничивает компенсацию сам (08a, решение 72).
+- **Диапазон −2,0…+2,0, шаг 1/3 EV** `[measured: R00 t=35.1–40.8]`: значения −0,3 … −2,0 … 0 … +2,0 … −2,0 прочитаны с экрана. Было: верх +2,0 `[measured]` по видео B, низ `[estimate]` по симметрии — теперь оба конца измерены. Подтверждено и в iOS 27: «±2,0» `[measured: C]`.
+- **Панель Exposure — карточка внизу** (решение 103; геометрия — `layout.md` раздел 2.2). Заголовок EXPOSURE, крупное значение, линейка рисок шаг 20,3 pt на 1/3 EV (≈ 60 pt на 1 EV), жёлтый маркер, «×» (с верхнего ряда) или «‹» (из шторки) слева, «↻» справа `[measured: C]`. `[doc]` UG/TOOLS: *"Tap Exposure, then drag the slider to adjust the level. The exposure locks until the next time you open Camera."* и *"Tip: Tap [the Undo button] to reset the exposure."*
+- **Поведение линейки** `[measured: R00 t=35.1–40.8]`: содержимое едет за пальцем, значение = ближайшая риска, под пальцем без прилипания, магнита у 0 нет. «Резинка» на концах 14–22,7 pt, возврат с λ ≈ 7–10 1/с, без перелёта. «↻» видна сразу, у 0,0 тускнеет до 44 %.
+- **Яркость рисок**: ±4 шага — полная, ±5 — 60 %, ±6 — 10 % `[measured: R00]`; целые EV ярче дробных (L137 против 97).
+- **Значение в верхнем ряду**: ненулевой EV остаётся индикатором после закрытия панели (26: «EV −2,0» слева сверху `[measured: R00 t=71.5–74.9]`; 27: «0.7 / EV» в ряду `[measured: C]`).
+- **Солнце у рамки** `[measured: R00 t=99–109.5]`: вертикальная линия 1 pt появляется **только пока палец на солнце**, длина 143 pt фиксированная; ход, который видели: −35,3 / +14,5 pt. Индикатор EV слева сверху от перетаскивания солнца **не меняется**. Это та же величина EV, что в панели, — `[estimate]`; наш AE ограничивает компенсацию сам (08a, решение 72).
+- В iOS 26 «сброс» тускнеет на нулевом значении (44 %) — в 27 то же ожидаем (`[estimate]`).
 
 ### 2.2. Значки над кадром (набор Essentials iOS 27)
 
+Состав и положения — `layout.md` раздел 2.2. Решение 103 и записи C:
+
 | Значок | Тап | Долгий тап | Источник |
 |---|---|---|---|
-| Вспышка | по кругу Auto → On → Off | подменю | `[doc]` UG/TOOLS: *"tap the Flash control above the camera frame to switch between Auto, On, or Off."*; `[review]` 9to5Mac iOS 26: *"A long press on these icons will bring up expanded configuration menus."* |
+| Вспышка (+ «A» при Auto) | по кругу Auto → On → Off | подменю `[estimate]` | `[doc]` UG/TOOLS: *"tap the Flash control above the camera frame to switch between Auto, On, or Off."*; `[review]` 9to5Mac iOS 26: *"A long press on these icons will bring up expanded configuration menus."* |
 | Live | Auto / On / Off | — | `[doc]` UG Take Live Photos |
-| EV (iOS 27, на видео A показано «0.0 EV») | открывает ползунок экспозиции `[estimate]` | — | видео A, кадр 52 с |
-| RAW / формат | в iOS 27 — через инструмент Format | — | `[doc]` UG Take Apple ProRAW photos: *"Tap [Camera Controls], then tap Format."* |
+| EV (два ряда текста: «0.7» и «EV») | **открывает карточку Exposure напрямую**, с «×» вместо «‹» | — | `[measured: C]` (значок верхнего ряда → та же карточка, у Exposure ещё «↻») |
+| RAW / формат («RAW» и «48») | **открывает карточку Format** (HEIF / RAW, 12MP / 48MP) | — | `[measured: C]`; `[doc]` UG Take Apple ProRAW photos: *"Tap [Camera Controls], then tap Format."* |
+| Ночь | в 27 есть в ряду; карточка не снята | — | `[measured: C]` положение; поведение `[estimate]` |
 
-iOS 27 позволяет менять набор значков (Edit, Reset to Essentials) — у нас позже (`scope-v1.md`). Наш набор v1 — `[estimate]` под утверждённый объём (решение 80): вспышка (вкл/выкл), RAW, таймер (когда включён), EV.
+- **Набор по умолчанию (Essentials)** — Flash и Live: `[doc]` UG/TOOLS: *"The Flash and Live Photo tools appear above the camera frame for quick access. You can add or edit the tools that appear there, so the ones you use most are always available."* и *"Tip: Tap Reset to Essentials to return to the default tools."* Остальное в ряду (EV, RAW, ночь) появляется, когда значение не по умолчанию `[measured: C]`.
+- Правка набора: *"Tap [Camera Controls], then tap Edit to reveal the tools. Tap a tool in the menu to add it above the camera frame … or tap [Minus] next to a tool above the camera frame to remove it."*; *"Tap Done, then swipe down on the tool menu to close it."* — Edit у нас позже (`scope-v1.md`).
+- Наш набор v1 — `[estimate]` под утверждённый объём (решение 80): вспышка (вкл/выкл), RAW, таймер (когда включён), EV.
 
 ### 2.3. Кнопки зума и колесо
 
@@ -114,7 +123,8 @@ iOS 27 позволяет менять набор значков (Edit, Reset to
 | Тап, любая кнопка громкости | снимок | `[doc]` UG/BASICS: *"Tap the Shutter button or press either volume button to take a photo."* |
 | Удержание | QuickTake-видео; сдвиг на замок — продолжить без пальца | `[doc]` UG/VIDEO: *"Touch and hold the Shutter button to start recording."*, *"Slide the Shutter button onto the lock"* — у нас позже |
 | Сдвиг влево | серия | `[doc]` UG/BURST: *"Drag the Shutter button left to begin taking photos in rapid succession."* — у нас позже |
-| Тап при открытом меню Controls | `[estimate]`: снимок без закрытия меню | на видео B затвор при открытом меню скрыт под шторкой — **проверить**. Сессия 12 решает по этой строке |
+| Тап при открытом меню Controls | **шторка скрывает затвор** (и зум, миниатюру, капсулу, переворот, кнопку меню) `[measured: C]`; в iOS 26 зум исчезает за 1 кадр, затвор тускнеет за 0,09 с `[measured: R00 t=21.3–21.95]`. Снимка из-под шторки нет | `[measured]` вместо прежнего `[estimate]` |
+| Тап при открытой карточке инструмента | затвор **виден и поднят** на ≈ 100–104 pt, диаметр прежний; снимок возможен `[estimate]` (кадра нажатия нет) | `[measured: C t=18, t=54]` положение |
 
 ### 2.6. Миниатюра, переворот, меню
 
@@ -124,17 +134,20 @@ iOS 27 позволяет менять набор значков (Edit, Reset to
 | Переворот камеры | тап — фронт/тыл | `[doc]` UG/SELFIE: *"Tap [flip] to switch to the front-facing camera."* |
 | Зеркальный фронт | настройка | `[doc]` UG/SELFIE: *"go to Settings > Camera, then turn on Mirror Front Camera."* |
 | Меню Controls: открыть | тап по кнопке «точки» или свайп вверх от режимов | `[doc]` UG/TOOLS |
-| Меню Controls: закрыть | свайп вниз по меню или тап по видоискателю | `[doc]` UG/TOOLS: *"swipe down on the tool menu to close it."*, *"Tap the screen to close it."* |
-| Пункт меню | превращается («морфится») в своё подменю | `[review]` MacStories iOS 26: *"Select any item from this menu, and it will elegantly morph into the related sub-menu with dedicated controls."* |
-| Состав меню Photo (iOS 27) | Flash, Depth, Live, Timer, Exposure, Styles + Format, Level, Grid | `[doc]` UG/TOOLS alt-текст: *"Flash, Depth, Live, Timer, Exposure, and Styles."*; `[review]` AppleInsider: *"there are extras, including Depth, Format, Level, and Grid."* |
-| Таймер | 3, 5 или 10 с | `[doc]` UG/TOOLS: *"Tap Timer, then tap 3, 5, or 10."* |
-| Соотношение | 1:1, 4:3, 16:9 | `[doc]` UG/TOOLS: *"Tap Aspect, then tap a ratio."* |
+| Меню Controls: закрыть | тап по экрану / свайп вниз / «‹» из карточки | `[doc]` UG/TOOLS: *"Tap the screen to close it."* (Flash, Timer, Aspect), *"swipe down on the tool menu to close it."* (Edit), *"Tap [the Back button], then swipe down on the camera tools menu to close it."* (Exposure), *"Tap [the Close button] to close the menu."* (Styles). Закрытие шторки в 27 на записи не снято. У нас (12a): свайп вниз закрывает меню и любую карточку, откуда бы она ни была открыта `[estimate]` |
+| Пункт меню (iOS 27) | **превращается в нижнюю карточку** своего инструмента; «‹» возвращает в шторку (≈ 0,6 с, слегка с перелётом); с значка верхнего ряда — та же карточка, но с «×» | `[measured: C]` для Aspect, Exposure, Format; `[review]` MacStories iOS 26: *"Select any item from this menu, and it will elegantly morph into the related sub-menu with dedicated controls."* |
+| Пункт меню (iOS 26, история) | Flash / Live / Timer / Aspect / Night **переключаются по кругу на месте** при открытой шторке и дают плашку сверху; Exposure и Styles морфятся в нижнюю панель | `[measured: R00 t=21.9–34.8; 75.5–87.9]` |
+| Состав меню Photo (iOS 27) | **FLASH, LIVE, ASPECT / TIMER, EXPOSURE, DEPTH / NIGHT MODE, FORMAT** (RAW 48), 3 колонки; последний ряд слева; «Edit» вне шторки слева сверху | `[measured: C]`; `[doc]` UG/TOOLS alt-текст: *"Flash, Depth, Live, Timer, Exposure, and Styles."* |
+| Grid / Level | в iOS 27 их **нет** ни в шторке, ни в каталоге Edit — в Settings → Camera | `[doc]` UG/TOOLS: *"Go to the Settings app on your iPhone. Tap Camera, then turn on Grid and Level."*; `[measured: C]`. В бете 27 (июнь) пункты GRID, LEVEL, RESOLUTION в шторке были `[measured: D t=15.5]` — в выпуске их убрали. **Мы оставляем их в своём меню как адаптацию Android до сессии 16** (настройки) |
+| Таймер | 3, 5 или 10 с; выключить — снова тап по значку таймера. Карточка Timer не снята — содержимое по аналогии с Aspect и Flash/Night (видео D: Night — «Auto (1s)» и ряд из трёх значков `[measured: D t=21.0]`) `[estimate]` | `[doc]` UG/TOOLS: *"Tap Timer, then tap 3, 5, or 10."*, *"tap the timer icon to turn it off."* iOS 26: off → 3 → 5 → 10 → off, цифра в жёлтом кольце `[measured: R00 t=31–33.5]` |
+| Соотношение | 1:1, 4:3, 16:9; карточка: заголовок, крупное значение, три значка, выбранный жёлтый | `[doc]` UG/TOOLS: *"Tap Aspect, then tap a ratio."*; `[measured: C]`. iOS 26: 4:3 → 16:9 → 1:1 по кругу `[measured: R00 t=77–83]` |
+| Вспышка в меню | *"Tap Flash, then tap to switch between Auto, On, or Off."* Карточка: заголовок FLASH, крупно «Auto», ряд значков Auto / On / Off, выбранный жёлтый, «‹» слева — форма по видео D (бета 27, съёмка камерой, без чисел) `[measured: D t=27.3]`; размеры — как у снятой карточки Aspect `[estimate]`. iOS 26: off → auto → on → off `[measured: R00]` | `[doc]` UG/TOOLS |
 | Ползунок Exposure | значение держится до следующего запуска (или всегда, с Preserve Settings) | `[doc]` UG/TOOLS: *"The exposure locks until the next time you open Camera."* |
 
-Расхождения источников:
-- Кнопка меню в iOS 27: alt-текст Apple — *"top-right corner"*, три обзора и видео A — внизу справа. Берём низ.
-- Сетка и уровень в iOS 27: страница Apple отправляет в Settings, обзоры показывают переключатели в меню камеры. Берём меню (и дублируем в настройках).
-
+Расхождения источников (разрешены в 12a):
+- Кнопка меню в iOS 27: alt-текст Apple — *"top-right corner"* (устарел), три обзора, видео A и запись C — **внизу справа**. Берём низ `[measured: C]`.
+- Сетка и уровень в iOS 27: страница Apple отправляет в Settings, записи C не показывают их ни в шторке, ни в Edit. Apple и C сходятся; обзоры с переключателями в меню камеры — **устарели**. У нас они остаются в меню как адаптация до сессии 16.
+- Флэш/Live в наборе: обзоры 26 говорят про значки сверху справа; в 27 — по центру `[measured: C]`.
 ### 2.7. Ориентация
 
 - Раскладка всегда портретная; при повороте телефона поворачиваются значки на месте `[estimate]` (общеизвестное поведение iOS, документального источника не найдено). Ориентация — наш классификатор (решение 29).

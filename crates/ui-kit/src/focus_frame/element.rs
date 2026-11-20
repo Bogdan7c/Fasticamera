@@ -3,9 +3,10 @@
 use ui_core::geometry::{Point, Rect, Size};
 use ui_core::time::{MonotonicNanos, MotionPreference, UiDuration, add_duration};
 
+use super::appear::TimedAppearance;
 use super::error::FocusFrameError;
 use super::spec::{FocusFrameSpec, FocusHold};
-use crate::drive::ScrollTransition;
+use crate::drive::{MotionPhase, ScrollTransition};
 use crate::environment::ElementEnvironment;
 use crate::pan::PanUpdate;
 use crate::progress::{SpringProgress, SpringSource};
@@ -38,6 +39,15 @@ pub enum FocusFrameEvent<V> {
     Sun(ScaleEvent<V>),
 }
 
+/// Что делает палец с «солнцем» в момент выборки: от этого зависит направляющая линия.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SunInteraction {
+    /// Палец не на «солнце» (в том числе «солнце» ещё доезжает само после отпускания).
+    Idle,
+    /// Палец на «солнце» (тянет его или держит): рисуется вертикальная направляющая.
+    Dragged,
+}
+
 /// Срез состояния рамки для рисования и проверок.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FocusFrameSnapshot<V> {
@@ -51,6 +61,8 @@ pub struct FocusFrameSnapshot<V> {
     /// Смещение «солнца» вверх от исходного положения, pt (вниз — отрицательное): значение шкалы
     /// относительно момента последнего `place`.
     pub sun_travel_up_pt: f64,
+    /// Палец на «солнце» или нет (направляющая линия видна только при `Dragged`).
+    pub sun_interaction: SunInteraction,
     pub sun: ScaleSnapshot<V>,
 }
 
@@ -59,9 +71,10 @@ pub struct FocusFrame<M: ValueModel + Clone> {
     tokens: FocusTokens,
     hold: FocusHold,
     springs: SpringSource,
-    /// 0 → 1: прогресс появления (масштаб).
-    appearance: SpringProgress,
-    /// Прозрачность 0..1 (значения, не прогресс).
+    /// Появление по времени: масштаб и проявление (см. [`TimedAppearance`]).
+    appearance: TimedAppearance,
+    /// Прозрачность удержания 0..1 (значения, не прогресс): 1 у живой рамки, `dimmed_opacity` у
+    /// притихшей, 0 у исчезнувшей. Проявление при появлении считает `appearance`.
     opacity: SpringProgress,
     phase: FocusPhase,
     center: Point,
@@ -74,8 +87,6 @@ pub struct FocusFrame<M: ValueModel + Clone> {
 }
 
 impl<M: ValueModel + Clone> FocusFrame<M> {
-    /// Пружина появления: `.snappy` (`motion.md` 4.2).
-    const APPEAR_SPRING: MotionToken = MotionToken::Snappy;
     /// Пружина прозрачности: `.smooth`, без перелёта.
     const OPACITY_SPRING: MotionToken = MotionToken::Smooth;
 
@@ -95,7 +106,11 @@ impl<M: ValueModel + Clone> FocusFrame<M> {
         Ok(Self {
             tokens: environment.tokens.focus,
             hold: spec.hold,
-            appearance: SpringProgress::at_rest(0.0, springs.spring(Self::APPEAR_SPRING)?, now)?,
+            appearance: TimedAppearance::new(
+                environment.tokens.focus.appear_scale,
+                environment.tokens.focus.appear_duration_s,
+                environment.motion,
+            ),
             opacity: SpringProgress::at_rest(0.0, springs.spring(Self::OPACITY_SPRING)?, now)?,
             springs,
             phase: FocusPhase::Hidden,
@@ -130,10 +145,9 @@ impl<M: ValueModel + Clone> FocusFrame<M> {
         if !center.x.is_finite() || !center.y.is_finite() {
             return Err(FocusFrameError::InvalidPoint(center));
         }
-        let appear = self.springs.spring(Self::APPEAR_SPRING)?;
-        let fade = self.springs.spring(Self::OPACITY_SPRING)?;
-        self.appearance = SpringProgress::starting(appear, 0.0, 1.0, now)?;
-        self.opacity.retarget(fade, 1.0, now)?;
+        // Удержание сразу полное: проявление при появлении ведёт `appearance`, а не пружина.
+        self.opacity = SpringProgress::at_rest(1.0, self.springs.spring(Self::OPACITY_SPRING)?, now)?;
+        self.appearance.restart(now);
         self.center = center;
         self.phase = FocusPhase::Active;
         self.idle_since = now;
@@ -255,6 +269,7 @@ impl<M: ValueModel + Clone> FocusFrame<M> {
     /// Reduce Motion включили или выключили на лету.
     pub fn set_motion(&mut self, motion: MotionPreference) {
         self.springs.set_motion(motion);
+        self.appearance.set_motion(motion);
         self.sun.set_motion(motion);
     }
 
@@ -302,13 +317,16 @@ impl<M: ValueModel + Clone> FocusFrame<M> {
     /// Всё для рисования за один вызов.
     pub fn snapshot(&self, now: MonotonicNanos) -> FocusFrameSnapshot<M::Value> {
         let sun = self.sun.snapshot(now);
-        let appearance = self.appearance.value(now);
         FocusFrameSnapshot {
             phase: self.phase,
             center: self.center,
-            scale: self.tokens.appear_scale + (1.0 - self.tokens.appear_scale) * appearance,
-            opacity: self.opacity.value(now).clamp(0.0, 1.0) as f32,
+            scale: self.appearance.scale(now),
+            opacity: self.opacity.value(now).clamp(0.0, 1.0) as f32 * self.appearance.opacity(now),
             sun_travel_up_pt: sun.offset_points - self.sun_anchor_offset_points,
+            sun_interaction: match sun.phase {
+                MotionPhase::Touched => SunInteraction::Dragged,
+                MotionPhase::Resting | MotionPhase::Settling => SunInteraction::Idle,
+            },
             sun,
         }
     }

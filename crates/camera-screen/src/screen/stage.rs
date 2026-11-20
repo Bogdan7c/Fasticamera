@@ -24,7 +24,6 @@ use crate::widget::capture_blink::CaptureBlinkWidget;
 use crate::widget::controls_drawer::ControlsDrawerWidget;
 use crate::widget::countdown::CountdownWidget;
 use crate::widget::error::WidgetError;
-use crate::widget::exposure_slider::ExposurePanelWidget;
 use crate::widget::focus_indicator::FocusIndicatorWidget;
 use crate::widget::frame_mask::FrameMaskWidget;
 use crate::widget::geometry::ScreenGeometry;
@@ -39,6 +38,7 @@ use crate::widget::mode_carousel::ModeCarouselWidget;
 use crate::widget::shutter_button::ShutterWidget;
 use crate::widget::text_runs::TextRuns;
 use crate::widget::thumbnail::ThumbnailWidget;
+use crate::widget::tool_card::ToolCardWidget;
 use crate::widget::top_bar::TopBarWidget;
 use crate::widget::unavailable_notice::UnavailableNoticeWidget;
 use crate::widget::{Ctx, Outputs};
@@ -54,7 +54,7 @@ pub(crate) struct Stage {
     carousel: ModeCarouselWidget,
     top_bar: TopBarWidget,
     drawer: ControlsDrawerWidget,
-    exposure: ExposurePanelWidget,
+    card: ToolCardWidget,
     focus: FocusIndicatorWidget,
     banner: LockBannerWidget,
     /// Кэш раскладки текста этой сцены: подписи раскладываются один раз (см. `widget::text_runs`).
@@ -90,8 +90,9 @@ impl Stage {
         let thumbnail = ThumbnailWidget::build(&mut kit, ctx, root)?;
         let carousel = ModeCarouselWidget::build(&mut kit, ctx, root)?;
         let menu_button = MenuButtonWidget::build(&mut kit, ctx, root)?;
-        let exposure = ExposurePanelWidget::build(&mut kit, ctx, root)?;
         let drawer = ControlsDrawerWidget::build(&mut kit, ctx, root)?;
+        // Карточка — над шторкой и в хит-тесте (шторка под ней ждёт «‹» и касаний не ловит).
+        let card = ToolCardWidget::build(&mut kit, ctx, root)?;
         let banner = LockBannerWidget::build(ctx)?;
         kit.relayout_if_needed()?;
         Ok(Self {
@@ -105,7 +106,7 @@ impl Stage {
             carousel,
             top_bar,
             drawer,
-            exposure,
+            card,
             focus,
             banner,
             texts: TextRuns::new(ctx.config.widgets.text_run_cache_capacity),
@@ -165,8 +166,8 @@ impl Stage {
     }
 
     #[cfg(test)]
-    pub(crate) fn exposure(&self) -> &ExposurePanelWidget {
-        &self.exposure
+    pub(crate) fn card(&self) -> &ToolCardWidget {
+        &self.card
     }
 
     /// Событие жеста → виджет. `false` — события не взял никто (ошибка сборки, считается).
@@ -205,18 +206,19 @@ impl Stage {
             || self.carousel.handle_gesture(event, ctx, out)?
             || self.top_bar.handle_gesture(event, out)?
             || self.drawer.handle_gesture(event, out)?
-            || self.exposure.handle_gesture(event, out)?
+            || self.card.handle_gesture(event, out)?
             || self.focus.handle_gesture(event, ctx, out)?)
     }
 
     /// Выравнивает элементы и узлы по состоянию экрана (программно, без эха действий).
     pub(crate) fn sync(&mut self, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
         self.shutter.sync(&mut self.kit, ctx)?;
+        self.thumbnail.sync(&mut self.kit, ctx)?;
         self.menu_button.sync(&mut self.kit, ctx)?;
         self.carousel.sync(&mut self.kit, ctx)?;
         self.top_bar.sync(&mut self.kit, ctx)?;
         self.drawer.sync(&mut self.kit, ctx)?;
-        self.exposure.sync(&mut self.kit, ctx)?;
+        self.card.sync(&mut self.kit, ctx)?;
         self.focus.sync(&mut self.kit, ctx)?;
         self.banner.sync(ctx)?;
         // Поворот значков по ориентации: пружина `smooth`, рамки раскладки не меняются.
@@ -233,7 +235,7 @@ impl Stage {
         self.kit.scene_mut().apply_animations();
         self.carousel.advance(out);
         self.drawer.advance(ctx);
-        self.exposure.advance(ctx, out)?;
+        self.card.advance(ctx, out);
         self.focus.advance(ctx, out)?;
         self.banner.advance(ctx)?;
         Ok(())
@@ -257,16 +259,23 @@ impl Stage {
         self.top_bar.draw(ctx, &visuals, &mut layers, &mut self.texts)?;
         CountdownWidget::draw(ctx, &mut layers, &mut self.texts)?;
         UnavailableNoticeWidget::draw(ctx, &mut layers, &mut self.texts)?;
-        // Общий принцип: любая панель со стеклом (шторка меню, панель Exposure) лежит над всей нижней зоной, и
-        // затвор, кнопка меню, миниатюра не рисуются поверх её стекла ни при каких размерах и анимациях. Каждая
-        // панель собирается отдельным набором слоёв и кладётся сверху (одновременно открыта одна панель).
+        // Общий принцип: любая панель со стеклом (шторка меню, нижняя карточка) лежит над нижней зоной, и
+        // миниатюра, капсула, кнопка меню не рисуются поверх её стекла ни при каких размерах и анимациях.
+        // Каждая панель собирается отдельным набором слоёв и кладётся сверху; карточка — последней, над
+        // шторкой, и её содержимое идёт после её стекла. Затвор рисуется в общем ряду, а не панелью:
+        // над карточкой он стоит выше её рамки (поднят), поэтому стекло карточки его не накрывает.
         let mut drawer_layers = DrawLayers::default();
-        self.drawer.draw(ctx, &visuals, &mut drawer_layers, &mut self.texts)?;
+        self.drawer.draw(
+            ctx,
+            &visuals,
+            &mut drawer_layers,
+            &mut self.texts,
+            self.card.cover_progress(ctx.now),
+        )?;
         layers.stack_on_top(drawer_layers);
-        let mut exposure_layers = DrawLayers::default();
-        self.exposure
-            .draw(ctx, &visuals, &mut exposure_layers, &mut self.texts)?;
-        layers.stack_on_top(exposure_layers);
+        let mut card_layers = DrawLayers::default();
+        self.card.draw(ctx, &visuals, &mut card_layers, &mut self.texts)?;
+        layers.stack_on_top(card_layers);
         Ok(layers.into_items())
     }
 
@@ -294,7 +303,7 @@ impl Stage {
 
     /// Значения шкал EV, не ставшие величиной компенсации (диагностика).
     pub(crate) fn invalid_exposure_values(&self) -> u64 {
-        self.exposure.invalid_bias_values() + self.focus.invalid_bias_values()
+        self.card.invalid_bias_values() + self.focus.invalid_bias_values()
     }
 
     pub(crate) fn text_layouts(&self) -> u64 {
@@ -321,6 +330,6 @@ impl Stage {
     }
 
     pub(crate) fn echo_suppressed(&self) -> u64 {
-        self.exposure.suppressed_echo_events() + self.focus.suppressed_echo_events()
+        self.card.suppressed_echo_events() + self.focus.suppressed_echo_events()
     }
 }

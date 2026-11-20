@@ -96,14 +96,19 @@ pub(crate) fn state_value_ev(ctx: &Ctx<'_>) -> f64 {
 /// Разошлась ли шкала с состоянием (допуск — доля шага из конфига `state_match_tolerance_steps`).
 pub(crate) fn differs_from_state(ctx: &Ctx<'_>, scale_value_ev: f64) -> bool {
     (scale_value_ev - state_value_ev(ctx)).abs()
-        > f64::from(ctx.config.exposure.step_ev) * ctx.geometry.config().exposure_panel.state_match_tolerance_steps
+        > f64::from(ctx.config.exposure.step_ev) * ctx.geometry.config().card.state_match_tolerance_steps
 }
 
-/// Подпись значения EV: `0`, `+1.0`, `-0.7` (табличные цифры задаёт роль текста).
+/// Подпись значения EV в карточке iOS 27: `0.0`, `1.7`, `−2.0` (точка, минус U+2212, без «+»)
+/// `[measured: C t=54.0]`. Ноль без знака: «−0.0» не бывает (значение округляется до десятых).
+///
+/// EV в состоянии всегда конечен: его даёт `ExposureState::bias` как `шаги × step_ev`, где шаги — целое, а
+/// `step_ev` проверен конфигом на конечность; `ExposureBias::from_ev` отвергает NaN/inf. Поэтому NaN/inf сюда
+/// попасть не может, а если попал — это ошибка вызывающего: в отладке падаем, а не печатаем молча «0.0»
+/// (`as i32` превращает NaN в 0).
 pub(crate) fn format_ev(ev: f32) -> String {
-    if ev.abs() < 0.05 {
-        "0".to_owned()
-    } else {
-        format!("{ev:+.1}")
-    }
+    debug_assert!(ev.is_finite(), "EV в подписи должен быть конечным, получено {ev}");
+    let tenths = (ev * 10.0).round() as i32;
+    let sign = if tenths < 0 { "\u{2212}" } else { "" };
+    format!("{sign}{}.{}", tenths.abs() / 10, tenths.abs() % 10)
 }

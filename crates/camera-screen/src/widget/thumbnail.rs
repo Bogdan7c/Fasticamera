@@ -7,6 +7,7 @@ use ui_draw::shape::ShapeGeometry;
 use ui_kit::tokens::GlassRole;
 use ui_kit::view::{GlassShape, opacity_of_placement};
 
+use super::bottom_row::BottomRowFade;
 use super::button::{ButtonEvent, PressButton};
 use super::error::WidgetError;
 use super::intent::{ButtonId, ScreenGesture};
@@ -18,6 +19,8 @@ use crate::shutter::ThumbnailState;
 
 pub(crate) struct ThumbnailWidget {
     button: PressButton,
+    /// Растворение, пока открыта нижняя карточка.
+    fade: BottomRowFade,
 }
 
 impl ThumbnailWidget {
@@ -26,7 +29,14 @@ impl ThumbnailWidget {
         let node = kit.add_node(parent, "thumbnail", frame, ctx.geometry.screen())?;
         Ok(Self {
             button: PressButton::attach(kit, ButtonId::Thumbnail, node, frame, ctx)?,
+            fade: BottomRowFade::default(),
         })
+    }
+
+    /// Миниатюра растворяется и не ловит касаний, пока открыта карточка (решение 103).
+    pub(crate) fn sync(&mut self, kit: &mut SceneKit, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
+        let shown = self.fade.sync(kit, ctx, self.button.node())?;
+        kit.set_interactive(self.button.node(), shown)
     }
 
     pub(crate) fn handle_gesture(
@@ -52,6 +62,9 @@ impl ThumbnailWidget {
         let Some(placement) = visuals.placement(self.button.node()) else {
             return Ok(());
         };
+        if placement.opacity <= 0.0 {
+            return Ok(());
+        }
         let (group, host) = single_member_group(
             ctx,
             GlassRole::Button,

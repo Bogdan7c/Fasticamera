@@ -1,12 +1,14 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! K9 «Рамка фокуса»: положение — вход, появление пружиной `snappy`, удержание и затухание по
+//! K9 «Рамка фокуса»: положение — вход, появление по времени (0,12 с, без перелёта), удержание и затухание по
 //! времени, «солнце» как встроенная шкала с пробросом событий.
 
 use ui_core::geometry::{Point, Rect, Vector};
 use ui_core::gesture::PanTranslation;
 use ui_core::time::{MonotonicNanos, MotionPreference, UiDuration};
 use ui_kit::drive::{DragOrigin, GrowthDirection};
-use ui_kit::focus_frame::{FocusFrame, FocusFrameError, FocusFrameEvent, FocusFrameSpec, FocusHold, FocusPhase};
+use ui_kit::focus_frame::{
+    FocusFrame, FocusFrameError, FocusFrameEvent, FocusFrameSpec, FocusHold, FocusPhase, SunInteraction,
+};
 use ui_kit::pan::PanUpdate;
 use ui_kit::scale::{ScaleEvent, TickVisibility};
 use ui_kit::tokens::UiKitTokens;
@@ -98,15 +100,91 @@ fn hidden_until_placed_then_appears_at_the_given_point_from_a_larger_scale() {
 }
 
 #[test]
-fn reduce_motion_removes_the_snappy_undershoot_of_the_scale() {
+fn appearance_is_a_timed_linear_curve_without_overshoot() {
     let tokens = UiKitTokens::default();
-    let lowest_scale = |motion| {
-        let mut frame = frame(auto_fade(&tokens), motion, &tokens);
-        frame.place(Point::new(100.0, 100.0), ms(0)).unwrap();
-        (0..1500).map(|t| frame.snapshot(ms(t)).scale).fold(f64::MAX, f64::min)
-    };
-    assert!(lowest_scale(MotionPreference::Full) < 0.999, "snappy перелетает за 1");
-    assert!(lowest_scale(MotionPreference::Reduced) >= 1.0 - 1e-9);
+    // [measured: R00 t=99.05–99.17]: 1,7 → 1,0 за 0,12 с, прозрачность линейно 0 → 1.
+    {
+        let mut frame = frame(auto_fade(&tokens), MotionPreference::Full, &tokens);
+        frame.place(Point::new(100.0, 100.0), ms(1000)).unwrap();
+        let start = frame.snapshot(ms(1000));
+        assert!((start.scale - 1.7).abs() < 1e-9);
+        assert_eq!(start.opacity, 0.0);
+        let half = frame.snapshot(ms(1060));
+        assert!((half.scale - 1.35).abs() < 1e-9, "середина пути: {}", half.scale);
+        assert!((half.opacity - 0.5).abs() < 1e-6, "{}", half.opacity);
+        let end = frame.snapshot(ms(1120));
+        assert_eq!((end.scale, end.opacity), (1.0, 1.0));
+        // Перелёта нет ни до, ни после срока.
+        let lowest = (1000..2000)
+            .map(|t| frame.snapshot(ms(t)).scale)
+            .fold(f64::MAX, f64::min);
+        assert!(lowest >= 1.0 - 1e-12, "{lowest}");
+    }
+}
+
+#[test]
+fn reduce_motion_appearance_has_no_zoom_and_only_fades_in_linearly() {
+    let tokens = UiKitTokens::default();
+    let mut frame = frame(auto_fade(&tokens), MotionPreference::Reduced, &tokens);
+    frame.place(Point::new(100.0, 100.0), ms(1000)).unwrap();
+    // С первого кадра масштаб конечный (1,0): рамка не «падает» с 1,7.
+    for at_ms in [1000, 1030, 1060, 1119, 1500] {
+        assert_eq!(frame.snapshot(ms(at_ms)).scale, 1.0, "t={at_ms}");
+    }
+    // Проявление остаётся: линейно 0 → 1 за срок.
+    assert_eq!(frame.snapshot(ms(1000)).opacity, 0.0);
+    assert!((frame.snapshot(ms(1060)).opacity - 0.5).abs() < 1e-6);
+    assert_eq!(frame.snapshot(ms(1120)).opacity, 1.0);
+    // Включение Reduce Motion на лету действует и на уже стоящую рамку при следующем появлении.
+    let mut live = self::frame(auto_fade(&tokens), MotionPreference::Full, &tokens);
+    live.set_motion(MotionPreference::Reduced);
+    live.place(Point::new(10.0, 10.0), ms(3000)).unwrap();
+    assert_eq!(live.snapshot(ms(3000)).scale, 1.0);
+}
+
+#[test]
+fn appearance_does_not_depend_on_frame_rate() {
+    let tokens = UiKitTokens::default();
+    let mut slow = frame(auto_fade(&tokens), MotionPreference::Full, &tokens);
+    let mut fast = frame(auto_fade(&tokens), MotionPreference::Full, &tokens);
+    slow.place(Point::new(100.0, 100.0), ms(0)).unwrap();
+    fast.place(Point::new(100.0, 100.0), ms(0)).unwrap();
+    run(&mut slow, 0, 200, 1000.0 / 60.0);
+    run(&mut fast, 0, 200, 1000.0 / 120.0);
+    for at_ms in [10, 60, 100, 120, 200] {
+        assert_eq!(slow.snapshot(ms(at_ms)), fast.snapshot(ms(at_ms)), "на {at_ms} мс");
+    }
+}
+
+#[test]
+fn sun_is_dragged_only_while_the_finger_is_on_it() {
+    let tokens = UiKitTokens::default();
+    let mut frame = frame(auto_fade(&tokens), MotionPreference::Full, &tokens);
+    frame.place(Point::new(200.0, 400.0), ms(0)).unwrap();
+    assert_eq!(frame.snapshot(ms(200)).sun_interaction, SunInteraction::Idle);
+    frame
+        .apply_pan(
+            ms(300),
+            PanUpdate::Began {
+                translation: vertical(0.0),
+            },
+        )
+        .unwrap();
+    frame
+        .apply_pan(
+            ms(310),
+            PanUpdate::Changed {
+                translation: vertical(-20.0),
+            },
+        )
+        .unwrap();
+    assert_eq!(frame.snapshot(ms(310)).sun_interaction, SunInteraction::Dragged);
+    frame
+        .apply_pan(ms(320), PanUpdate::Ended { velocity: Vector::ZERO })
+        .unwrap();
+    // Палец отпущен: даже если «солнце» ещё доезжает само, направляющей уже нет.
+    assert_eq!(frame.snapshot(ms(1500)).sun_interaction, SunInteraction::Idle);
+    assert_eq!(frame.snapshot(ms(321)).sun_interaction, SunInteraction::Idle);
 }
 
 #[test]
@@ -257,7 +335,7 @@ fn node_frame_uses_the_measured_size_around_the_point() {
     let tokens = UiKitTokens::default();
     let frame = frame(FocusFrameSpec::default(), MotionPreference::Full, &tokens);
     let rect = frame.node_frame(Point::new(200.0, 400.0));
-    assert_eq!(rect, Rect::from_xywh(200.0 - 45.5, 400.0 - 46.0, 91.0, 92.0));
+    assert_eq!(rect, Rect::from_xywh(200.0 - 37.35, 400.0 - 37.35, 74.7, 74.7));
 }
 
 #[test]

@@ -36,6 +36,23 @@ fn measured_and_doc_springs_match_the_specification_numbers() {
 }
 
 #[test]
+fn card_motion_tokens_match_the_measured_ios27_durations_and_never_overshoot() {
+    let tokens = MotionTokens::default();
+    // [measured: C t=47.93–48.12] растворение карточки 0,2 с; [measured: C t=37.8–38.1] морф ≈ 0,3 с.
+    assert_eq!(tokens.token(MotionToken::CardAppear).duration_s, 0.2);
+    assert_eq!(tokens.token(MotionToken::CardAppear).bounce, 0.0);
+    assert_eq!(tokens.token(MotionToken::CardMorph).duration_s, 0.3);
+    assert_eq!(tokens.token(MotionToken::CardMorph).bounce, 0.0);
+    assert_eq!(MotionToken::CardAppear.name(), "card.appear");
+    assert_eq!(MotionToken::CardMorph.name(), "card.morph");
+    // Обе пружины строятся в обоих режимах движения (Reduce Motion не ломает их).
+    for motion in [MotionPreference::Full, MotionPreference::Reduced] {
+        tokens.spring(MotionToken::CardAppear, motion).unwrap();
+        tokens.spring(MotionToken::CardMorph, motion).unwrap();
+    }
+}
+
+#[test]
 fn reduced_motion_removes_overshoot_from_every_spring() {
     let tokens = MotionTokens::default();
     for token in MotionToken::ALL {

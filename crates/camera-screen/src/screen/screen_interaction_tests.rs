@@ -2,34 +2,6 @@
 
 use super::test_rig::*;
 use crate::action::ScreenAction;
-use crate::settings::TimerSetting;
-use crate::state::PanelState;
-use crate::tools::ToolId;
-
-#[test]
-fn re_entering_a_submenu_that_is_still_closing_keeps_it_alive_and_tappable() {
-    let mut rig = Rig::new();
-    rig.screen.handle_action(ScreenAction::ControlsMenuOpenRequested);
-    rig.run(700);
-    rig.screen
-        .handle_action(ScreenAction::ControlsItemSelected(ToolId::Timer));
-    rig.run(700);
-    assert_eq!(rig.screen.state().panel(), PanelState::Submenu(ToolId::Timer));
-    // Назад — и сразу снова в тот же пункт, пока подменю лишь начало закрываться.
-    rig.act(ScreenAction::SubmenuBackRequested);
-    rig.now_ms += 3 * FRAME_MS;
-    rig.frame();
-    rig.act(ScreenAction::ControlsItemSelected(ToolId::Timer));
-    assert_eq!(rig.screen.state().panel(), PanelState::Submenu(ToolId::Timer));
-    // Варианты принимают касания сразу, не дожидаясь конца морфа.
-    let three_seconds = rig.center_with(|g| g.option_row(1));
-    rig.tap(three_seconds);
-    assert_eq!(
-        rig.screen.state().settings().timer,
-        TimerSetting::Seconds3,
-        "подменю не «мёртвое»: тап по варианту сработал"
-    );
-}
 
 #[test]
 fn a_repeated_tap_on_the_exact_same_point_pulses_the_focus_frame_again() {

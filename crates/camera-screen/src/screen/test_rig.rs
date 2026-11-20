@@ -7,8 +7,11 @@ use ui_core::time::MotionPreference;
 use ui_draw::draw_list::{DrawItem, DrawList};
 use ui_draw::frame_source::UiFrameRequest;
 use ui_draw::geometry::PxSize;
+use ui_draw::icons::IconId;
 use ui_draw::shape::ShapeGeometry;
-use ui_kit::tokens::UiKitTokens;
+use ui_draw::text::TextRun;
+use ui_kit::tokens::{TextRoleKind, UiKitTokens};
+use ui_kit::view::{LabelPainter, PxPerPt};
 
 use super::{CameraScreen, ScreenTouch};
 use crate::action::ScreenAction;
@@ -149,12 +152,32 @@ impl Rig {
         rect(&geometry)
     }
 
+    /// Точка раскладки виджетов в pt (например, центр заголовка карточки).
+    pub(super) fn point_with(&self, point: impl Fn(&crate::widget::geometry::ScreenGeometry) -> Point) -> Point {
+        let layout = *self.screen.state().layout().expect("раскладка");
+        let tokens = UiKitTokens::default();
+        let geometry = crate::widget::geometry::ScreenGeometry::new(&layout, &self.screen.config.widgets, &tokens);
+        point(&geometry)
+    }
+
     pub(super) fn center_with(
         &self,
         rect: impl Fn(&crate::widget::geometry::ScreenGeometry) -> ui_core::geometry::Rect,
     ) -> Point {
         self.center_of(rect)
     }
+}
+
+/// Рамка затвора на поднятом месте: центр на `raised_shutter_offset_pt` выше обычного. В рабочем коде затвор
+/// едет сдвигом узла, рамка нужна только проверкам.
+pub(super) fn raised_shutter(geometry: &crate::widget::geometry::ScreenGeometry) -> ui_core::geometry::Rect {
+    let shutter = geometry.shutter();
+    ui_core::geometry::Rect::from_xywh(
+        shutter.min_x(),
+        shutter.min_y() - geometry.config().card.raised_shutter_offset_pt,
+        shutter.size.width,
+        shutter.size.height,
+    )
 }
 
 /// Центры членов стекла (px) и их форма.
@@ -224,4 +247,79 @@ impl Rig {
         self.screen.handle_action(action);
         self.frame()
     }
+}
+
+/// Диски «солнца» рамки фокуса (круг Ø 9 pt, фигура, а не значок: `ui-kit` рисует «солнце» диском и лучами).
+pub(super) fn sun_discs(list: &DrawList) -> Vec<(f32, f32)> {
+    let disc_px = 9.0 * PX_PER_PT;
+    list.items
+        .iter()
+        .filter_map(|item| match item {
+            DrawItem::Shape(shape)
+                if matches!(shape.geometry, ShapeGeometry::Circle { diameter } if (diameter - disc_px).abs() < 1.0) =>
+            {
+                Some((shape.transform.tx, shape.transform.ty))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// pt → px этого стенда.
+pub(super) fn px(points: f64) -> f32 {
+    (points * f64::from(PX_PER_PT)) as f32
+}
+
+pub(super) fn near(actual: f32, expected: f32, tolerance: f32) -> bool {
+    (actual - expected).abs() <= tolerance
+}
+
+/// Прогон текста так же, как его раскладывает экран: по равенству прогонов видно, что написано.
+pub(super) fn run_of(text: &str, role: TextRoleKind) -> TextRun {
+    let tokens = UiKitTokens::default();
+    LabelPainter::new(&tokens.typography, PxPerPt::new(PX_PER_PT).expect("масштаб"))
+        .layout(text, role)
+        .expect("раскладка")
+}
+
+/// Преобразования всех нарисованных экземпляров этого текста этой ролью (с заметной прозрачностью).
+pub(super) fn texts_of(list: &DrawList, text: &str, role: TextRoleKind) -> Vec<ui_draw::draw_list::TextItem> {
+    let expected = run_of(text, role);
+    list.items
+        .iter()
+        .filter_map(|item| match item {
+            DrawItem::Text(drawn) if drawn.run == expected && drawn.opacity.get() > 0.05 => Some(drawn.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Сколько раз в списке нарисован этот текст этой ролью.
+pub(super) fn text_count_of(list: &DrawList, text: &str, role: TextRoleKind) -> usize {
+    texts_of(list, text, role).len()
+}
+
+pub(super) fn icons_of(list: &DrawList, icon: IconId) -> Vec<ui_draw::draw_list::IconItem> {
+    list.items
+        .iter()
+        .filter_map(|item| match item {
+            // Хвост пружины оставляет у ушедшего содержимого прозрачность ~0,001: «видимым» считаем > 0,05.
+            DrawItem::Icon(drawn) if drawn.icon == icon && drawn.opacity.get() > 0.05 => Some(*drawn),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Размер (px) пилюли выбранного режима: единственная капсула-фигура с ободком (капсула-стекло — не фигура).
+pub(super) fn mode_pill_size_px(list: &DrawList) -> (f32, f32) {
+    list.items
+        .iter()
+        .find_map(|item| match item {
+            DrawItem::Shape(shape) if shape.stroke.is_some() => match shape.geometry {
+                ShapeGeometry::Capsule { size } => Some((size.width, size.height)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("пилюля режима в списке рисования")
 }

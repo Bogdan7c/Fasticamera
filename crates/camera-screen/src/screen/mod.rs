@@ -230,7 +230,7 @@ impl CameraScreen {
     pub(crate) fn slider_value_ev(&self) -> f64 {
         self.stage
             .as_ref()
-            .map_or(f64::NAN, |stage| stage.exposure().slider_value_ev(self.clock.last))
+            .map_or(f64::NAN, |stage| stage.card().ruler_value_ev(self.clock.last))
     }
 
     /// Значение «солнца» рамки фокуса, EV (проба для тестов смены пределов без пересоздания рамки).
@@ -508,9 +508,19 @@ impl UiFrameSource for CameraScreen {
 #[path = "effect_queue_tests.rs"]
 mod effect_queue_tests;
 #[cfg(test)]
+#[path = "screen_card_close_tests.rs"]
+mod screen_card_close_tests;
+#[cfg(test)]
+#[path = "screen_card_tests.rs"]
+mod screen_card_tests;
+
+#[cfg(test)]
 #[path = "screen_draw_tests.rs"]
 mod screen_draw_tests;
 
+#[cfg(test)]
+#[path = "screen_card_layout_tests.rs"]
+mod screen_card_layout_tests;
 #[cfg(test)]
 #[path = "screen_failure_tests.rs"]
 mod screen_failure_tests;
@@ -521,8 +531,9 @@ mod screen_interaction_tests;
 #[path = "screen_kit_tests.rs"]
 mod screen_kit_tests;
 #[cfg(test)]
-#[path = "screen_panel_layout_tests.rs"]
-mod screen_panel_layout_tests;
+#[path = "screen_sheet_tests.rs"]
+mod screen_sheet_tests;
+
 #[cfg(test)]
 #[path = "screen_system_gesture_tests.rs"]
 mod screen_system_gesture_tests;

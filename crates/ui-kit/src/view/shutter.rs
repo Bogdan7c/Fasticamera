@@ -1,7 +1,7 @@
 //! K10: вид затвора — тонкое стеклянное кольцо (`glass.md` раздел 7) и белый диск.
 
 use ui_draw::color::Opacity;
-use ui_draw::draw_list::{DrawItem, PressState, ShapeItem};
+use ui_draw::draw_list::{DrawItem, PressState, ShapeItem, StrokeStyle};
 use ui_draw::glass::GlassStyle;
 use ui_draw::scene_bridge::NodePlacementPx;
 use ui_draw::shape::ShapeGeometry;
@@ -14,7 +14,10 @@ use crate::shutter::{ShutterLook, ShutterSnapshot};
 use crate::tokens::{ColorTokens, ShutterTokens};
 
 /// Затвор. `placement` — размещение узла затвора (круг внешнего диаметра). Порядок: стеклянный
-/// круг, затем поверх него белый диск меньшего диаметра — снаружи остаётся кольцо ≈ 6,1 pt.
+/// круг, серое полупрозрачное кольцо со светлым ободком в 1 pt по внешнему краю
+/// (`[measured: R00 t=10.027]`), затем поверх белый диск меньшего диаметра — между диском и
+/// краем остаётся кольцо ≈ 6,1 pt. Заливка кольца — круг внешнего диаметра: диск его перекрывает,
+/// поэтому «видно» только кольцо.
 /// Нажатие сжимает диск и даёт стеклу масштаб нажатия из пресета; вид (`Busy`, `Disabled`)
 /// притушает диск и затвор по токенам.
 pub fn shutter_items(
@@ -55,8 +58,25 @@ pub fn shutter_items(
     })?;
     let disc_ratio = (tokens.disc_diameter_pt / tokens.outer_diameter_pt) as f32;
     let outer_px = placement.size.width.min(placement.size.height);
+    // Ободок: обводка центрирована на границе, поэтому круг уменьшен на толщину ободка — тогда
+    // обводка занимает последний 1 pt внутри внешнего диаметра, а не выходит за него.
+    let rim_px = scale.px(tokens.ring_rim_width_pt);
+    let ring_fill = DrawItem::Shape(ShapeItem {
+        geometry: ShapeGeometry::Circle {
+            diameter: outer_px - rim_px,
+        },
+        transform: placement.transform,
+        fill: tokens.ring_fill,
+        stroke: Some(StrokeStyle {
+            width_px: rim_px,
+            color: tokens.ring_rim_color,
+        }),
+        shadow: None,
+        opacity: ring_opacity,
+    });
     Ok(vec![
         DrawItem::Glass(group),
+        ring_fill,
         DrawItem::Shape(ShapeItem {
             geometry: ShapeGeometry::Circle {
                 diameter: outer_px * disc_ratio,

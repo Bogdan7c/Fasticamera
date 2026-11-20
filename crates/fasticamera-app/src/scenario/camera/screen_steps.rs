@@ -185,9 +185,11 @@ fn exposure_steps(plan: &ScreenTouchPlan) -> Vec<PlannedStep> {
     vec![
         PlannedStep {
             name: "ev_icon_tap",
-            purpose: "тап по значку EV открыл панель Exposure (панель ExposurePanel)",
+            purpose: "тап по значку EV открыл карточку Exposure: панель ExposurePanel, ряд затвора поднят над карточкой",
             gesture: Gesture::tap(plan.ev_icon),
-            expect: button_without_camera_effect().state(StateCheck::Panel(PanelKind::ExposurePanel)),
+            expect: button_without_camera_effect()
+                .state(StateCheck::Panel(PanelKind::ExposurePanel))
+                .state(StateCheck::Shutter(ShutterPlacement::RaisedAboveCard)),
             inferred: None,
         },
         PlannedStep {
@@ -216,9 +218,11 @@ fn exposure_steps(plan: &ScreenTouchPlan) -> Vec<PlannedStep> {
         },
         PlannedStep {
             name: "ev_close_tap",
-            purpose: "кнопка «×» закрыла панель Exposure (панель Closed)",
+            purpose: "кнопка «×» закрыла карточку Exposure: панель Closed, затвор вернулся на место",
             gesture: Gesture::tap(plan.ev_close),
-            expect: button_without_camera_effect().state(StateCheck::Panel(PanelKind::Closed)),
+            expect: button_without_camera_effect()
+                .state(StateCheck::Panel(PanelKind::Closed))
+                .state(StateCheck::Shutter(ShutterPlacement::Visible)),
             inferred: None,
         },
         PlannedStep {

@@ -11,11 +11,12 @@ pub enum ButtonId {
     StripSlot(u8),
     /// Пункт сетки меню по номеру слота.
     MenuItem(u8),
-    /// Вариант подменю по номеру слота.
-    SubmenuOption(u8),
-    SubmenuBack,
-    ExposureClose,
-    ExposureReset,
+    /// Вариант в ряду нижней карточки по номеру слота.
+    CardOption(u8),
+    /// Левая кнопка карточки: «‹» назад в меню или «×» закрыть.
+    CardLeft,
+    /// Правая кнопка карточки: «↻» сброс (только Exposure).
+    CardRight,
 }
 
 /// Намерение жеста.
@@ -39,6 +40,6 @@ pub enum ScreenGesture {
     CapsuleTap,
     /// Пан вниз по шторке меню: закрыть.
     DrawerClosePan,
-    /// Горизонтальный пан ползунка панели Exposure.
+    /// Горизонтальный пан линейки Exposure в карточке.
     ExposureSliderPan,
 }

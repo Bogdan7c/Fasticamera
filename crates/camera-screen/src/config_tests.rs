@@ -13,17 +13,17 @@ fn default_config_is_valid_and_builds_a_screen() {
     let config = ScreenConfig::default();
     assert_eq!(config.validate(), Ok(()));
     let state = ScreenState::new(&config).expect("экран");
-    // Меню v1 по scope-v1.md: без шестерёнки настроек (инвариант 6).
+    // Меню v1: порядок iOS 27 (Flash, Aspect, Timer / Exposure, RAW, Grid / Level) без шестерёнки (инвариант 6).
     assert_eq!(
         state.menu_tools(),
         [
             ToolId::Flash,
+            ToolId::Aspect,
             ToolId::Timer,
             ToolId::Exposure,
-            ToolId::Aspect,
+            ToolId::Raw,
             ToolId::Grid,
-            ToolId::Level,
-            ToolId::Raw
+            ToolId::Level
         ]
     );
     // Таймер выключен — его значка над кадром нет.

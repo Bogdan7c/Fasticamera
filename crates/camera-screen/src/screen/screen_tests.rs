@@ -4,6 +4,7 @@ use camera_contract::control::ExposureBias;
 use shell_contract::haptics::HapticPattern;
 use shell_contract::touch::TouchPhase;
 use ui_core::geometry::Point;
+use ui_kit::tokens::TextRoleKind;
 
 use super::ScreenTouch;
 use super::test_rig::*;
@@ -233,94 +234,13 @@ fn strip_flash_icon_tap_toggles_flash_and_changes_the_icon() {
 }
 
 #[test]
-fn menu_item_then_option_taps_change_the_setting_through_the_submenu() {
-    use crate::settings::TimerSetting;
-    let mut rig = Rig::new();
-    rig.screen.handle_action(ScreenAction::ControlsMenuOpenRequested);
-    rig.run(700);
-    // Пункт Timer — второй в меню (Flash, Timer, Exposure, ...).
-    let timer_item = rig.center_with(|g| g.menu_item(1));
-    rig.tap(timer_item);
-    assert_eq!(
-        rig.screen.state().panel(),
-        PanelState::Submenu(crate::tools::ToolId::Timer)
-    );
-    rig.run(700);
-    // Второй вариант подменю — 3s.
-    let three_seconds = rig.center_with(|g| g.option_row(1));
-    rig.tap(three_seconds);
-    assert_eq!(rig.screen.state().settings().timer, TimerSetting::Seconds3);
-    assert_eq!(
-        rig.screen.state().panel(),
-        PanelState::ControlsMenu,
-        "после выбора — назад в меню"
-    );
-}
-
-#[test]
-fn exposure_panel_buttons_reset_and_close_through_real_touches() {
-    let mut rig = Rig::new();
-    rig.screen
-        .handle_action(ScreenAction::StripToolTapped(crate::tools::ToolId::Exposure));
-    rig.screen.handle_action(ScreenAction::ExposureDragged {
-        requested: ExposureBias::from_ev(2.0 / 3.0).expect("EV"),
-        at: ms(rig.now_ms),
-    });
-    rig.run(800);
-    assert_eq!(rig.screen.state().exposure().steps(), 2);
-    rig.effects();
-    let reset = rig.center_with(|g| g.exposure_button(crate::widget::geometry::ExposureButtonCorner::Reset));
-    rig.tap(reset);
-    assert_eq!(rig.screen.state().exposure().steps(), 0);
-    assert!(
-        rig.effects()
-            .iter()
-            .any(|e| matches!(e, Effect::Camera(ScreenCameraIntent::SetExposureBias(bias)) if bias.ev() == 0.0))
-    );
-    let close = rig.center_with(|g| g.exposure_button(crate::widget::geometry::ExposureButtonCorner::Close));
-    rig.tap(close);
-    assert_eq!(rig.screen.state().panel(), PanelState::Closed);
-}
-
-#[test]
-fn slider_pan_sets_exposure_in_thirds() {
-    let mut rig = Rig::new();
-    rig.screen
-        .handle_action(ScreenAction::StripToolTapped(crate::tools::ToolId::Exposure));
-    rig.run(800);
-    let slider = rig.center_with(|g| g.exposure_slider());
-    // Палец влево по шкале — значение растёт (большие значения справа).
-    rig.drag(slider, Point::new(slider.x - 60.0, slider.y), 320);
-    assert!(
-        rig.screen.state().exposure().steps() > 0,
-        "шагов {}",
-        rig.screen.state().exposure().steps()
-    );
-    let effects = rig.effects();
-    assert!(effects.iter().all(|e| match e {
-        Effect::Camera(ScreenCameraIntent::SetExposureBias(bias)) =>
-            (f64::from(bias.ev()) * 3.0 - (f64::from(bias.ev()) * 3.0).round()).abs() < 1e-3,
-        _ => true,
-    }));
-    assert!(
-        effects.iter().any(|e| matches!(e, Effect::Haptic(_))),
-        "тики шкалы: {effects:?}"
-    );
-}
-
-#[test]
 fn focus_indicator_disappears_when_the_state_hides_it_and_lock_plaque_follows_the_camera() {
     use camera_contract::three_a::AeAfLock;
-    use ui_draw::icons::IconId;
     let mut rig = Rig::new();
     let center = rig.frame_center();
     rig.tap(center);
     rig.run(300);
-    assert_eq!(
-        icon_transforms(&rig.last, IconId::Exposure).len(),
-        2,
-        "рамка и «солнце» показаны"
-    );
+    assert_eq!(sun_discs(&rig.last).len(), 1, "рамка и «солнце» показаны");
     // Срок индикатора — у `ScreenState` (`indicator_visible_ms`): после него рамка уходит.
     rig.run(4_000);
     assert_eq!(
@@ -328,10 +248,11 @@ fn focus_indicator_disappears_when_the_state_hides_it_and_lock_plaque_follows_th
         crate::focus::FocusIndicator::Hidden
     );
     rig.run(600);
+    assert_eq!(sun_discs(&rig.last).len(), 0, "«солнце» ушло вместе с рамкой");
     assert_eq!(
-        icon_transforms(&rig.last, IconId::Exposure).len(),
+        text_count_of(&rig.last, "0.0", TextRoleKind::StripValue),
         1,
-        "остался только значок EV над кадром"
+        "остался только текст EV над кадром"
     );
     // Плашка LOCK: появляется по факту камеры и уходит, когда камера сняла блокировку.
     let plain = text_count(&rig.last);

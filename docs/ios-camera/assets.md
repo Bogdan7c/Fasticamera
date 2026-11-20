@@ -10,7 +10,7 @@
 
 - `[doc]` HIG Typography ([ссылка](https://developer.apple.com/design/human-interface-guidelines/typography)): *"SF Pro is the system font in iOS and iPadOS."* и *"don't embed system fonts in your app or game."* — то есть встраивать SF нельзя даже в теории.
 - `[doc]` Там же: *"In a running app, the system font dynamically adjusts tracking at every point size."* У свободных шрифтов этого нет. Трекинг по кеглю задаём таблицей сами (раздел 3).
-- `[review]` Камера iOS 26 набрана **не SF Pro**. Википедия, статья San Francisco ([ссылка](https://en.wikipedia.org/wiki/San_Francisco_(sans-serif_typeface))), раздел SF Camera: *"It was replaced with SF Compact Rounded in the Camera app in iOS 26."* Источник один и вторичный. По видео это ещё предстоит подтвердить (см. `layout.md`, подписи режимов).
+- `[review]` Камера iOS 26 набрана **не SF Pro**. Википедия, статья San Francisco ([ссылка](https://en.wikipedia.org/wiki/San_Francisco_(sans-serif_typeface))), раздел SF Camera: *"It was replaced with SF Compact Rounded in the Camera app in iOS 26."* Источник один и вторичный. **Подтверждено в 12a** `[measured: R00 t=7.5–10.8]`: на 8 увеличенных кадрах подписей режимов концы букв скруглены (SF Compact Rounded) на iOS 26; в записи C (iOS 27) по сжатому видео не различимо.
 - `[doc]` HIG SF Symbols ([ссылка](https://developer.apple.com/design/human-interface-guidelines/sf-symbols)): *"Be sure to understand the terms and conditions for using SF Symbols, including the prohibition against using symbols — or images that are confusingly similar — in app icons, logos, or any other trademarked use."* Значит, иконки рисуем **по мотивам**, но не до неотличимости, и никогда не берём их для иконки приложения.
 - `[doc]` Там же, про свои символы: *"Create a custom symbol that's consistent with the ones the system provides in level of detail, optical weight, alignment, position, and perspective."* Это и есть наше правило для своих иконок.
 - `[doc]` Там же: *"Each symbol is also available in three scales: small, medium (the default), and large. The scales are defined relative to the cap height of the San Francisco system font."* Размер иконки привязываем к высоте заглавных выбранного шрифта, а не к рамке.
@@ -40,7 +40,7 @@
 - Выравнивание по вертикали — **по высоте заглавных** (cap height). Поля строки (ascender/descender) у всех шрифтов свои, и выравнивание «по рамке строки» даст скачки.
 - Цифры зума («1×», «2»), экспозиции («+0,7») и таймера — **табличные**: иначе подпись дёргается по ширине при смене цифры.
 
-Скруглённые свободные шрифты (аналог SF Compact Rounded: Nunito, M PLUS Rounded и др.) не измерены. Это нужно, только если владелец выберет вариант «скруглённый» (раздел 5).
+Скруглённые свободные шрифты (аналог SF Compact Rounded: Nunito, M PLUS Rounded и др.) не измерены: владелец отказался от второго шрифта (решение 104, раздел 5).
 
 ## 3. Кегли и трекинг iOS — таблицы из HIG
 
@@ -114,7 +114,7 @@
 | **B. Figtree** | чуть мягче, пропорции ближе к SF | ближе всех по x-высоте и cap height, лёгкий (~60 КБ) | моложе (2022), нет оси размера, нет тонких весов ниже 300 |
 | **C. Скруглённый под SF Compact Rounded** | как подписи в настоящей камере iOS 26+, если Википедия права | точнее всего повторяет камеру | источник один, кандидатов ещё надо измерить, а в настройках (Compose) всё равно нужен второй, нескруглённый шрифт |
 
-Рекомендация агента: **A (Inter)** как единый шрифт приложения. Вопрос «скруглённый ли шрифт в камере» — сверить по видео в 12 и на эталонном iPhone, тогда при необходимости добавить второй шрифт только для экрана камеры.
+Рекомендация агента: **A (Inter)** как единый шрифт приложения. Вопрос «скруглённый ли шрифт в камере» закрыт в 12a: **да, скруглённый**; владелец (решение 104) второй шрифт не берёт — остаётся Inter, размер по высоте заглавных (вердикт ниже).
 
 ### Иконки
 
@@ -125,6 +125,18 @@
 | **C. Material Symbols** | покрытие почти полное, ось толщины | стиль Google, хуже всего похож на iOS |
 
 Рекомендация агента: **A**. Файлы лицензий (OFL, MIT/ISC) — в репозиторий рядом с ассетами.
+
+### Вердикт по шрифту камеры (12a, решение 104)
+
+| Что | Значение | Метка |
+|---|---|---|
+| Гарнитура подписей режимов, зума, шторки | скруглённая, SF Compact Rounded | `[measured: R00 t=7.5–10.8]` |
+| Вес | ≈ Semibold | `[measured: R00]` |
+| Высота заглавных | **10,0 pt** (R00) / 10,3 pt (C); подписи шторки 10,3–10,7; ряд сверху двухстрочный: 10,3 и 6,6 | `[measured: R00]`, `[measured: C]` |
+| Кегль SF | ≈ 14–14,5 pt (cap/UPM = 0,705). Было `[estimate]` 14,2 pt заглавных и кегль 20 — ошибка почти вдвое | `[derived]` 10,0 / 0,705 |
+| Решение 104 | остаётся **Inter** (скруглённый второй шрифт владелец не берёт). Кегль подбираем по высоте заглавных: 10,0–10,3 / 0,728 (cap/UPM Inter) ≈ **14 pt** | `[derived]` |
+
+Заметка для 12b: Inter шире SF на 8–15 %, поэтому на подписях капсулы (шаг слов 75–78 pt) проверить переполнение; без скругления внешне будет суше, это принятая цена решения 104.
 
 ## 6. Чего не нашли
 
