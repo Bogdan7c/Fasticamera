@@ -155,7 +155,7 @@ fn after_adopting_the_ultra_wide_the_strip_selects_the_first_button_and_writes_0
 }
 
 #[test]
-fn tapping_a_strip_button_glides_the_zoom_publishes_intents_and_slides_the_strip() {
+fn tapping_a_strip_button_glides_the_zoom_publishes_one_intent_and_slides_the_strip() {
     let mut rig = Rig::with_zoom(LensRole::Wide, MotionPreference::Full);
     rig.run(32);
     rig.tap(button_center(&rig, 0, 1));
@@ -167,8 +167,8 @@ fn tapping_a_strip_button_glides_the_zoom_publishes_intents_and_slides_the_strip
     }
 
     let intents = lens_intents(&effects);
-    assert!(intents.len() > 2, "намерения идут по ходу перехода: {intents:?}");
-    assert!(near(intents.last().expect("намерения").ratio.value(), 0.593, 1.0e-3));
+    assert_eq!(intents.len(), 1, "один тап = одно намерение: {intents:?}");
+    assert!(near(intents[0].ratio.value(), 0.593, 1.0e-3));
     assert!(intents.iter().all(|intent| intent.facing == LensFacing::Back));
     assert!(haptics(&effects).is_empty(), "кнопки без вибрации");
     assert!(near(ratio_of(&rig), 0.593, 1.0e-3));
@@ -238,6 +238,57 @@ fn long_press_on_the_strip_opens_the_wheel_and_replaces_only_the_strip() {
     );
     // Показание на месте ленты: жёлтое «1×».
     assert_eq!(text_count_of(&list, "1\u{d7}", TextRoleKind::ZoomLabel), 1);
+    release(&mut rig, from);
+}
+
+/// Маркер колеса — измеренный жёлтый треугольник 3,3 × 8,7 pt (правило 96), а не прямоугольник: иконка
+/// `ZoomMarkerTriangle` цвета выбранного зума, ровно над центром диска на радиусе середины кольца.
+#[test]
+fn the_open_wheel_draws_the_measured_yellow_triangle_marker_above_the_disc_centre() {
+    use ui_draw::icons::IconId;
+
+    let mut rig = Rig::with_zoom(LensRole::Wide, MotionPreference::Full);
+    rig.run(32);
+    let from = button_center(&rig, 1, 1);
+    rig.touch(TouchPhase::Began, from, rig.now_ms);
+    let list = rig.run(700).clone();
+    assert!(rig.screen.state().zoom().is_wheel_open());
+
+    let markers: Vec<_> = list
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            DrawItem::Icon(icon) if icon.icon == IconId::ZoomMarkerTriangle => Some(*icon),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(markers.len(), 1, "ровно один маркер");
+    let marker = markers[0];
+    assert_eq!(
+        marker.color,
+        ui_kit::tokens::UiKitTokens::default().colors.zoom_selected
+    );
+    assert!(near(marker.size_px.width, px(3.3), 0.05), "{:?}", marker.size_px);
+    assert!(near(marker.size_px.height, px(8.7), 0.05), "{:?}", marker.size_px);
+    // Диск колеса (Ø 486 pt): маркер строго над его центром, на радиусе 230,5 pt.
+    let disc = list
+        .items
+        .iter()
+        .find_map(|item| match item {
+            DrawItem::Shape(shape)
+                if matches!(shape.geometry, ShapeGeometry::Circle { diameter } if near(diameter, px(486.0), 1.0)) =>
+            {
+                Some(shape.transform)
+            }
+            _ => None,
+        })
+        .expect("диск колеса");
+    assert!(near(marker.transform.tx, disc.tx, 0.5), "x маркера = x центра диска");
+    assert!(
+        near(disc.ty - marker.transform.ty, px(230.5), 0.5),
+        "радиус маркера: {}",
+        disc.ty - marker.transform.ty
+    );
     release(&mut rig, from);
 }
 

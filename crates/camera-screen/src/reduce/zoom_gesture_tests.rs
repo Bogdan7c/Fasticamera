@@ -31,26 +31,78 @@ fn ratio_of(screen: &Screen) -> f32 {
     screen.state.zoom().ratio().value()
 }
 
+/// Прогоняет кадры по 16 мс от `from_ms` и собирает эффекты всех кадров.
+fn run_frames(screen: &mut Screen, from_ms: i64, frames: i64) -> Vec<Effect> {
+    let mut effects = Vec::new();
+    for step in 1..=frames {
+        effects.extend(screen.step(ScreenAction::Tick(at_ms(from_ms + step * 16))).effects);
+    }
+    effects
+}
+
+fn framing_count(effects: &[Effect]) -> usize {
+    effects
+        .iter()
+        .filter(|effect| matches!(effect, Effect::Viewfinder(_)))
+        .count()
+}
+
 #[test]
-fn a_stop_tap_publishes_only_discrete_intents_along_the_whole_glide_and_ends_exactly_on_the_stop() {
+fn a_stop_tap_publishes_exactly_one_discrete_intent_for_the_whole_glide() {
     let mut screen = Screen::zoomed(LensRole::UltraWide);
-    // Упор «1×» (индекс 1) с ширика: промежуточные шаги тоже Discrete, финал ровно 1,0.
+    // Упор «1×» (индекс 1) с ширика: ровно одно намерение с коэффициентом упора, переход его не повторяет.
     let started = screen.step(ScreenAction::ZoomStopTapped {
         stop: 1,
         at: at_ms(1000),
     });
-    let mut intents = lens_intents(&started.effects);
-    for step in 1..=25 {
-        let tick = screen.step(ScreenAction::Tick(at_ms(1000 + step * 16)));
-        intents.extend(lens_intents(&tick.effects));
+    let mut effects = started.effects;
+    effects.extend(run_frames(&mut screen, 1000, 25));
+    assert!(!screen.state.zoom().is_gliding(), "переход должен завершиться");
+    let intents = lens_intents(&effects);
+    assert_eq!(intents.len(), 1, "{intents:?}");
+    assert_eq!(intents[0].gesture, ZoomGesture::Discrete);
+    assert!((intents[0].ratio.value() - 1.0).abs() < 1.0e-4, "{:?}", intents[0]);
+    assert!(framing_count(&effects) > 3, "кадрирование идёт по шагам перехода");
+    assert!((ratio_of(&screen) - 1.0).abs() < 1.0e-4);
+}
+
+#[test]
+fn a_new_tap_during_the_glide_publishes_one_more_intent_and_the_last_wins() {
+    let mut screen = Screen::zoomed(LensRole::Wide);
+    let first = screen.step(ScreenAction::ZoomStopTapped {
+        stop: 0,
+        at: at_ms(1000),
+    });
+    assert_eq!(lens_intents(&first.effects).len(), 1);
+    let mut effects = run_frames(&mut screen, 1000, 5);
+    assert!(screen.state.zoom().is_gliding(), "переход ещё идёт");
+    // Новый тап посреди перехода — на «2×» (индекс 2): одно новое намерение, дальше тишина.
+    let second = screen.step(ScreenAction::ZoomStopTapped {
+        stop: 2,
+        at: at_ms(1100),
+    });
+    effects.extend(second.effects);
+    effects.extend(run_frames(&mut screen, 1100, 25));
+    let intents = lens_intents(&effects);
+    assert_eq!(intents.len(), 1, "{intents:?}");
+    assert!((intents[0].ratio.value() - 2.0).abs() < 1.0e-4, "{:?}", intents[0]);
+    assert!((ratio_of(&screen) - 2.0).abs() < 1.0e-4);
+}
+
+#[test]
+fn a_wheel_drag_publishes_a_continuous_intent_on_every_change() {
+    let mut screen = Screen::zoomed(LensRole::Wide);
+    screen.step(ScreenAction::ZoomWheelTouched { at: at_ms(10) });
+    let mut intents = Vec::new();
+    for (index, requested) in [1.2_f32, 1.4, 1.6, 1.8].into_iter().enumerate() {
+        let moved = screen.step(ScreenAction::ZoomWheelDragged {
+            requested: ratio(requested),
+            at: at_ms(20 + index as i64 * 16),
+        });
+        intents.extend(lens_intents(&moved.effects));
     }
-    assert!(intents.len() > 3, "переход публикует шаги: {}", intents.len());
-    assert!(
-        intents.iter().all(|intent| intent.gesture == ZoomGesture::Discrete),
-        "{intents:?}"
-    );
-    let last = intents.last().expect("намерения");
-    assert!((last.ratio.value() - 1.0).abs() < 1.0e-4, "{last:?}");
+    assert_eq!(intents.len(), 4, "{intents:?}");
+    assert!(intents.iter().all(|intent| intent.gesture == ZoomGesture::Continuous));
 }
 
 #[test]
@@ -78,9 +130,15 @@ fn wheel_and_pinch_publish_continuous_intents() {
 fn the_flip_publishes_a_discrete_intent_in_both_directions() {
     let mut screen = Screen::zoomed(LensRole::Wide);
     let to_front = screen.step(ScreenAction::FlipCameraRequested { at: at_ms(100) });
-    assert_eq!(lens_intents(&to_front.effects)[0].gesture, ZoomGesture::Discrete);
+    let mut front_effects = to_front.effects;
+    front_effects.extend(run_frames(&mut screen, 100, 25));
+    assert_eq!(lens_intents(&front_effects).len(), 1, "переворот = одно намерение");
+    assert_eq!(lens_intents(&front_effects)[0].gesture, ZoomGesture::Discrete);
     let to_back = screen.step(ScreenAction::FlipCameraRequested { at: at_ms(200) });
-    assert_eq!(lens_intents(&to_back.effects)[0].gesture, ZoomGesture::Discrete);
+    let mut back_effects = to_back.effects;
+    back_effects.extend(run_frames(&mut screen, 200, 25));
+    assert_eq!(lens_intents(&back_effects).len(), 1, "переворот = одно намерение");
+    assert_eq!(lens_intents(&back_effects)[0].gesture, ZoomGesture::Discrete);
 }
 
 #[test]

@@ -44,7 +44,7 @@ impl IconTexels {
 
 #[test]
 fn every_icon_has_a_non_empty_region_with_both_inside_and_outside_texels() {
-    assert_eq!(IconId::ALL.len(), 12);
+    assert_eq!(IconId::ALL.len(), 13);
     for id in IconId::ALL {
         let glyph = icon(id);
         assert!(
@@ -198,5 +198,30 @@ fn level_icon_is_a_horizon_with_a_central_gap_and_side_ticks() {
     assert!(
         (0.02..0.60).contains(&fraction),
         "покрытие {fraction:.3} вне разумного диапазона"
+    );
+}
+
+/// Своя иконка `ZoomMarkerTriangle` (маркер колеса зума): треугольник основанием вверх, вершиной вниз.
+/// Проверяем форму: широко наверху, узко внизу, пусто по бокам внизу.
+#[test]
+fn zoom_marker_triangle_is_wide_at_the_top_and_narrow_at_the_bottom() {
+    let manifest = support::load_manifest();
+    let spread = manifest.atlas.spread_texels as f64;
+    let scale = f64::from(manifest.atlas.icon_texels) / 24.0; // своя иконка: viewBox 24
+    let cell = |unit: f64| (spread + unit * scale).floor() as usize;
+
+    let marker = IconTexels::of(IconId::ZoomMarkerTriangle);
+    assert!(marker.at(cell(3.0), cell(1.5)) < 128, "левая часть основания");
+    assert!(marker.at(cell(21.0), cell(1.5)) < 128, "правая часть основания");
+    assert!(marker.at(cell(12.0), cell(12.0)) < 128, "середина тела");
+    assert!(
+        marker.at(cell(3.0), cell(20.0)) > 128,
+        "слева внизу пусто (вершина узкая)"
+    );
+    assert!(marker.at(cell(21.0), cell(20.0)) > 128, "справа внизу пусто");
+    let fraction = inside_fraction(IconId::ZoomMarkerTriangle);
+    assert!(
+        (0.35..0.65).contains(&fraction),
+        "треугольник — около половины квадрата: {fraction:.3}"
     );
 }

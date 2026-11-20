@@ -12,8 +12,9 @@
 
 use ui_core::time::MonotonicNanos;
 use ui_draw::color::{DisplayColor, Opacity};
-use ui_draw::draw_list::{DrawItem, ShapeItem};
+use ui_draw::draw_list::{DrawItem, IconItem, ShapeItem};
 use ui_draw::geometry::PxSize;
+use ui_draw::icons::IconId;
 use ui_draw::scene_bridge::NodePlacementPx;
 use ui_draw::shape::{CornerSpec, ShapeGeometry};
 use ui_draw::text::TextRun;
@@ -136,16 +137,20 @@ pub fn arc_scale_items<M: ValueModel + Clone>(
         }
     }
 
-    // Маркер текущего значения: неподвижный, всегда наверху (угол 0).
-    drawing.foreground.push(radial_rect(
-        to_disc_center,
-        0.0,
-        tokens.marker_center_radius_pt,
-        (tokens.marker_width_pt, tokens.marker_height_pt),
-        colors.focus_yellow,
-        node_opacity,
-        px_per_pt,
-    ));
+    // Маркер текущего значения: неподвижный, всегда наверху (угол 0), жёлтый ТРЕУГОЛЬНИК 3,3 × 8,7 pt
+    // `[measured: R00]` (правило 96: измеренная форма, не прямоугольник). Рисуется собственной иконкой
+    // `ZoomMarkerTriangle`: треугольник занимает весь квадрат viewBox (основание — верх, вершина — низ, к центру
+    // диска), а прямоугольник иконки растягивается до измеренных ширины и высоты из токенов.
+    drawing.foreground.push(DrawItem::Icon(IconItem {
+        icon: IconId::ZoomMarkerTriangle,
+        transform: Affine2::translate(0.0, -px_per_pt.px(tokens.marker_center_radius_pt)).then(to_disc_center),
+        size_px: PxSize::new(
+            px_per_pt.px(tokens.marker_width_pt),
+            px_per_pt.px(tokens.marker_height_pt),
+        ),
+        color: colors.zoom_selected,
+        opacity: node_opacity,
+    }));
     Ok(drawing)
 }
 

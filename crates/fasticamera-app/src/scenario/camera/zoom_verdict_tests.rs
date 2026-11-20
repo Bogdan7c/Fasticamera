@@ -5,6 +5,7 @@ use camera_contract::ids::{LensFacing, LensRole};
 use super::*;
 use crate::scenario::camera::zoom_record::{HapticWindow, MirrorCheck, SwitchTiming};
 use crate::scenario::camera::zoom_report::FinalState;
+use crate::scenario::camera::zoom_reveal::RevealFaults;
 use crate::scenario::camera::zoom_test_support::{healthy_report, healthy_switch_step};
 
 fn config() -> ZoomScenarioConfig {
@@ -138,7 +139,7 @@ fn a_wrong_mirror_fails_and_an_unseen_camera_fails_unless_the_ring_lost_records(
 }
 
 #[test]
-fn the_wheel_drag_must_move_the_zoom_play_haptics_and_keep_the_motor_gap() {
+fn the_wheel_drag_must_move_the_zoom_and_play_a_plausible_number_of_haptics() {
     let mut report = healthy_report();
     report.steps[2].screen_ratio = 1.0;
     assert_single(&violations_of(&report), "не сдвинула зум");
@@ -146,26 +147,98 @@ fn the_wheel_drag_must_move_the_zoom_play_haptics_and_keep_the_motor_gap() {
     let mut report = healthy_report();
     report.steps[2].haptics = Some(HapticWindow {
         count: 1,
-        min_gap_ms: None,
-        unmeasured: false,
+        window_ms: 1_200.0,
     });
-    assert_single(&violations_of(&report), "вибраций за протяжку");
+    assert_single(&violations_of(&report), "вибраций за протяжку 1 при минимуме");
 
+    // Окно 1200 мс при ограничителе 30 мс пропускает не больше 41 вибрации.
+    let mut report = healthy_report();
+    report.steps[2].haptics = Some(HapticWindow {
+        count: 42,
+        window_ms: 1_200.0,
+    });
+    assert_single(&violations_of(&report), "при потолке 41");
+}
+
+#[test]
+fn haptic_gaps_are_not_judged_so_two_ticks_in_one_ui_frame_cannot_false_fail() {
+    // Прежняя проверка промежутка роняла прогон, когда два образца попадали в один кадр UI (0 мс на часах
+    // исполнителя). Теперь судится только число вибраций.
     let mut report = healthy_report();
     report.steps[2].haptics = Some(HapticWindow {
         count: 15,
-        min_gap_ms: Some(29.9),
-        unmeasured: false,
+        window_ms: 480.0,
     });
-    assert_single(&violations_of(&report), "мотор");
+    assert_eq!(violations_of(&report), Vec::<String>::new());
+}
 
+#[test]
+fn a_reveal_by_timeout_fails_the_step_and_the_run_with_a_clear_reason() {
     let mut report = healthy_report();
-    report.steps[2].haptics = Some(HapticWindow {
-        count: 40,
-        min_gap_ms: Some(32.0),
-        unmeasured: true,
-    });
-    assert_single(&violations_of(&report), "не измерены");
+    report.steps[0].reveal_faults.revealed_by_timeout = 1;
+    report.totals.reveal_faults.revealed_by_timeout = 1;
+    let violations = violations_of(&report);
+    assert_eq!(violations.len(), 2, "про шаг и про прогон: {violations:?}");
+    assert!(
+        violations
+            .iter()
+            .any(|text| text.starts_with("01_tap_0.6: переход не раскрылся по условию")
+                && text.contains("раскрытий по сроку")),
+        "{violations:?}"
+    );
+    assert!(
+        violations.iter().any(|text| text.contains("шаги: 01_tap_0.6")
+            && text.contains("раскрытий по сроку вместо условия готовности: 1")),
+        "{violations:?}"
+    );
+}
+
+#[test]
+fn an_honest_black_ending_fails_even_when_no_black_frame_was_expected() {
+    for (name, faults) in [
+        (
+            "picture_unavailable",
+            RevealFaults {
+                black_picture_unavailable: 3,
+                ..RevealFaults::default()
+            },
+        ),
+        (
+            "camera_unavailable",
+            RevealFaults {
+                black_camera_unavailable: 3,
+                ..RevealFaults::default()
+            },
+        ),
+        (
+            "ended_without_presentable_frame",
+            RevealFaults {
+                ended_without_presentable_frame: 1,
+                ..RevealFaults::default()
+            },
+        ),
+        (
+            "ended_without_stream",
+            RevealFaults {
+                ended_without_stream: 1,
+                ..RevealFaults::default()
+            },
+        ),
+    ] {
+        let mut report = healthy_report();
+        report.steps[1].reveal_faults = faults;
+        report.totals.reveal_faults = faults;
+        let violations = violations_of(&report);
+        assert_eq!(violations.len(), 2, "{name}: {violations:?}");
+        assert!(
+            violations.iter().all(|text| text.contains("не раскрылся по условию")),
+            "{name}: {violations:?}"
+        );
+        assert_eq!(
+            report.totals.black_frames_while_picture_expected, 0,
+            "{name}: счётчик «ждали картинку» молчит — прежний вердикт пропускал это"
+        );
+    }
 }
 
 #[test]

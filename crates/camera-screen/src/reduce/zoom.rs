@@ -26,19 +26,26 @@ fn current_range(ctx: &Ctx<'_>) -> Option<ZoomRange> {
     ctx.state.zoom_group().map(|group| group.range)
 }
 
-/// Намерение + кадрирование: значение изменили мы (пользователь, переход).
+/// Намерение + кадрирование: значение изменили мы (пользователь, переворот).
 ///
-/// `gesture` говорит движку, как выбирать камеру. **Тап по упору и его переход (glide) — `Discrete`**: все
-/// промежуточные шаги тоже `Discrete`. Шаг 0,6 → 1 публикует 0,7; 0,8; … — без гистерезиса ширик выбирается
-/// ниже 1,0, основная — ровно в 1,0, а финальный шаг точный, поэтому тап по «1» с ширика всегда садится на
-/// основную. Переворот и программные установки — тоже `Discrete`; колесо и щипок — `Continuous`.
+/// `gesture` говорит движку, как выбирать камеру. **Правило жестов: одно явное действие = одно намерение.**
+/// Тап по упору публикует ровно ОДНО `Discrete` с коэффициентом упора в момент тапа ([`publish_lens_intent`]);
+/// последующий переход (glide) меняет только значение на экране и кадрирование ([`publish_framing`]) и новых
+/// намерений не шлёт. Причина: движок на каждое `Discrete`, выбравшее заблокированный объектив, снимает блок
+/// и повторяет открытие — поток промежуточных шагов дал бы несколько повторов за один тап. Переворот — одно
+/// `Discrete`; колесо и щипок — `Continuous` на каждое изменение (движок применяет гистерезис и блок).
 fn publish_change(ctx: &mut Ctx<'_>, gesture: ZoomGesture) {
+    publish_lens_intent(ctx, ctx.state.zoom.ratio(), gesture);
+    publish_framing(ctx);
+}
+
+/// Только намерение объектива с заданным коэффициентом (кадрирование — отдельно).
+fn publish_lens_intent(ctx: &mut Ctx<'_>, ratio: ZoomRatio, gesture: ZoomGesture) {
     ctx.emit(Effect::Lens(LensIntent {
         facing: ctx.state.zoom.facing(),
-        ratio: ctx.state.zoom.ratio(),
+        ratio,
         gesture,
     }));
-    publish_framing(ctx);
 }
 
 /// Только кадрирование: значение пришло от камеры или определено каталогом.
@@ -70,7 +77,9 @@ pub(super) fn on_stop_tapped(ctx: &mut Ctx<'_>, stop: usize, at: MonotonicNanos)
         return ActionOutcome::NoChange(NoChangeReason::ValueUnchanged);
     }
     ctx.state.zoom.start_glide(target, at, ctx.config.zoom.motion.glide_ms);
-    // Первый шаг перехода — сразу: намерение и кадрирование не ждут следующего кадра.
+    // Одно намерение на тап: сразу целевой упор (новый тап посреди перехода шлёт новое — последнее побеждает).
+    publish_lens_intent(ctx, target, ZoomGesture::Discrete);
+    // Первый шаг перехода — сразу: кадрирование не ждёт следующего кадра.
     advance_glide(ctx, at);
     ActionOutcome::Applied
 }
@@ -189,8 +198,8 @@ fn advance_glide(ctx: &mut Ctx<'_>, now: MonotonicNanos) {
         ctx.state.zoom.cancel_glide();
     }
     if changed {
-        // Переход запускает только тап по упору (колесо и щипок его отменяют): явный выбор, `Discrete`.
-        publish_change(ctx, ZoomGesture::Discrete);
+        // Намерение тап уже опубликовал целиком; переход двигает только значение на экране и кадрирование.
+        publish_framing(ctx);
     }
 }
 

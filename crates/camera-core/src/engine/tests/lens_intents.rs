@@ -71,6 +71,73 @@ fn intent_before_the_camera_is_requested_is_remembered_but_opens_nothing() {
 }
 
 #[test]
+fn intent_read_before_the_first_open_is_applied_right_after_it_and_the_stream_starts_on_that_lens() {
+    let mut lens = LensRig::closed();
+    lens.intent_discrete(LensFacing::Back, 0.6);
+    assert!(lens.rig.fake.take_calls().is_empty(), "до Open камеру не открываем");
+
+    // Команда просит основную камеру (умолчание продукта), а экран раньше выбрал ширик.
+    assert_eq!(
+        lens.rig.send(CameraCommand::Open { target: wide() }),
+        CommandOutcome::Accepted
+    );
+    lens.rig.send(CameraCommand::Configure {
+        mode: mode_raw10_4x3_at(60),
+    });
+    lens.rig.send(CameraCommand::StartStreaming {
+        intent: CaptureIntent::Preview,
+    });
+    lens.frames(3);
+
+    assert_eq!(
+        lens.open_cameras(),
+        vec![ultra_wide_id().to_string()],
+        "основную камеру не открывали вовсе: отложенное намерение сменило цель до перестройки"
+    );
+    assert_eq!(
+        lens.switch_state(),
+        LensSwitchState::Steady {
+            role: LensRole::UltraWide
+        }
+    );
+    assert_eq!(lens.rig.engine.status().lens.counters.intents_ignored, 0);
+}
+
+#[test]
+fn a_deferred_intent_is_applied_once_and_does_not_override_a_later_command() {
+    let mut lens = LensRig::closed();
+    lens.intent_discrete(LensFacing::Back, 0.6);
+    lens.rig.send(CameraCommand::Open { target: wide() });
+    lens.rig.send(CameraCommand::Configure {
+        mode: mode_raw10_4x3_at(60),
+    });
+    lens.rig.send(CameraCommand::StartStreaming {
+        intent: CaptureIntent::Preview,
+    });
+    lens.frames(3);
+
+    // Позднее явное решение (команда) побеждает; отложенное намерение второй раз не применяется.
+    lens.rig.send(CameraCommand::SwitchTo { role: LensRole::Wide });
+    lens.frames(3);
+    lens.poll();
+    lens.rig.send(CameraCommand::Close);
+    lens.rig.send(CameraCommand::Open { target: wide() });
+    lens.rig.send(CameraCommand::Configure {
+        mode: mode_raw10_4x3_at(60),
+    });
+    lens.rig.send(CameraCommand::StartStreaming {
+        intent: CaptureIntent::Preview,
+    });
+    lens.rig.fake.take_calls();
+    lens.frames(3);
+    assert_eq!(
+        lens.switch_state(),
+        LensSwitchState::Steady { role: LensRole::Wide },
+        "после Close и новой Open поток на основной: старое намерение второй раз не применяется"
+    );
+}
+
+#[test]
 fn intent_published_before_the_catalog_is_read_is_applied_after_loading() {
     let intents = camera_contract::zoom::LensIntentChannel::new();
     let config = CameraEngineConfig::default();

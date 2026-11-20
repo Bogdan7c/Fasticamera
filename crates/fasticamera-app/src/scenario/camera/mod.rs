@@ -97,13 +97,17 @@ mod viewfinder_stage_budget_report;
 mod viewfinder_tuning_report;
 mod white_balance_report;
 mod zoom;
+mod zoom_home;
 mod zoom_plan;
 mod zoom_record;
 mod zoom_report;
+mod zoom_reveal;
 mod zoom_runner;
 #[cfg(test)]
 mod zoom_test_support;
+mod zoom_tick;
 mod zoom_verdict;
+mod zoom_views;
 
 use super::observing::ObservingScenario;
 use crate::raw_stream_scenario_config::RawStreamRunKind;

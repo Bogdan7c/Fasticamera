@@ -236,3 +236,59 @@ fn full_command_queue_stops_the_chain_and_names_the_rejected_command() {
     );
     drop(release);
 }
+
+fn lens_status(active: Option<LensRole>, switch: LensSwitchState) -> LensStatus {
+    LensStatus {
+        active: active.map(|role| camera_core::lens_status::ActiveLens {
+            role,
+            camera: camera_contract::fixtures::camera_id("3"),
+            facing: camera_contract::ids::LensFacing::Back,
+        }),
+        switch,
+        ..LensStatus::initial()
+    }
+}
+
+#[test]
+fn user_lens_is_the_streaming_lens_when_a_session_exists() {
+    let status = lens_status(
+        Some(LensRole::UltraWide),
+        LensSwitchState::Steady {
+            role: LensRole::UltraWide,
+        },
+    );
+    assert_eq!(UserLens::from_lens_status(&status), UserLens::Role(LensRole::UltraWide));
+    // Идущая смена не перебивает реально стримящий объектив: возвращаем то, что пользователь видел.
+    let switching = lens_status(
+        Some(LensRole::Wide),
+        LensSwitchState::Switching {
+            from: LensRole::Wide,
+            to: LensRole::UltraWide,
+        },
+    );
+    assert_eq!(UserLens::from_lens_status(&switching), UserLens::Role(LensRole::Wide));
+}
+
+#[test]
+fn user_lens_without_a_session_falls_back_to_the_switch_target() {
+    let status = lens_status(
+        None,
+        LensSwitchState::Switching {
+            from: LensRole::Wide,
+            to: LensRole::UltraWide,
+        },
+    );
+    assert_eq!(
+        UserLens::from_lens_status(&status),
+        UserLens::Role(LensRole::UltraWide),
+        "заявка посреди смены: выбор пользователя — цель смены, а не роль по умолчанию"
+    );
+}
+
+#[test]
+fn user_lens_without_session_and_switch_is_none_before_scenario() {
+    assert_eq!(
+        UserLens::from_lens_status(&LensStatus::initial()),
+        UserLens::NoneBeforeScenario
+    );
+}

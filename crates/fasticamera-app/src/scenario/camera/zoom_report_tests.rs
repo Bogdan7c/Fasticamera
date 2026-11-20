@@ -37,22 +37,28 @@ fn totals_take_continuity_deltas_not_absolute_counters() {
         held_frames_presented: 10,
         black_frames_while_picture_expected: 0,
         holds_revealed_by_timeout: 1,
+        black_frames_picture_unavailable: 4,
         ..ContinuityCounters::default()
     };
     let end = ContinuityCounters {
         held_frames_presented: 70,
         black_frames_while_picture_expected: 2,
         holds_revealed_by_timeout: 1,
+        black_frames_picture_unavailable: 6,
         ..ContinuityCounters::default()
     };
     let totals = ZoomTotals::default().with_continuity(&start, &end);
     assert_eq!(
-        (
-            totals.held_frames,
-            totals.black_frames_while_picture_expected,
-            totals.holds_revealed_by_timeout
-        ),
-        (60, 2, 0)
+        (totals.held_frames, totals.black_frames_while_picture_expected),
+        (60, 2)
+    );
+    assert_eq!(
+        totals.reveal_faults,
+        RevealFaults {
+            black_picture_unavailable: 2,
+            ..RevealFaults::default()
+        },
+        "прирост считается от начала окна: старый таймаут (1 → 1) не в счёт"
     );
 }
 

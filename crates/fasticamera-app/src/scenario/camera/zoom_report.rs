@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 
 use super::detail::to_value;
 use super::zoom_record::ZoomStepRecord;
+use super::zoom_reveal::RevealFaults;
 use crate::camera_screen_source::ZoomView;
 
 /// Состояние экрана и камеры в конце прогона: сценарий обязан оставить 1× основной камеры.
@@ -39,7 +40,8 @@ pub struct ZoomTotals {
     pub black_frames_while_picture_expected: u64,
     /// Кадры, показанные удержанными (размытый переход).
     pub held_frames: u64,
-    pub holds_revealed_by_timeout: u64,
+    /// Плохие исходы держания переходного кадра за прогон. Должны быть нулевыми.
+    pub reveal_faults: RevealFaults,
     /// Счётчики смен объективов движка за прогон.
     pub switches_completed: u64,
     pub switches_failed: u64,
@@ -59,9 +61,7 @@ impl ZoomTotals {
             .black_frames_while_picture_expected
             .saturating_sub(start.black_frames_while_picture_expected);
         self.held_frames = end.held_frames_presented.saturating_sub(start.held_frames_presented);
-        self.holds_revealed_by_timeout = end
-            .holds_revealed_by_timeout
-            .saturating_sub(start.holds_revealed_by_timeout);
+        self.reveal_faults = RevealFaults::between(start, end);
         self
     }
 }
@@ -109,6 +109,7 @@ impl ZoomObservationReport {
             "max_first_live_frame_ms": self.max_first_live_frame_ms().map(super::viewfinder_metrics::round2),
             "black_frames_while_picture_expected": self.totals.black_frames_while_picture_expected,
             "held_frames": self.totals.held_frames,
+            "reveal_faults": to_value(&self.totals.reveal_faults),
             "switches_failed": self.totals.switches_failed,
             "switches_completed": self.totals.switches_completed,
             "lens_intents_published": self.totals.lens_intents_published,

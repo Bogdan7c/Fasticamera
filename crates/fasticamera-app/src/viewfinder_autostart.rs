@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use camera_contract::ids::{CameraTarget, LensRole};
 use camera_contract::stream::{InvalidFrameRate, StreamMode, TargetFrameRate};
-use camera_core::{CameraHandle, CommandId, CommandRejected};
+use camera_core::{CameraHandle, CommandId, CommandRejected, LensStatus, LensSwitchState};
 use serde::{Deserialize, Serialize};
 
 use crate::camera_scenario_config::{
@@ -116,6 +116,21 @@ pub enum UserLens {
     NoneBeforeScenario,
     /// До сценария шёл поток объектива этой роли: он и возвращается.
     Role(LensRole),
+}
+
+impl UserLens {
+    /// Объектив пользователя по статусу объективов движка на момент заявки сценария.
+    ///
+    /// Приоритет: объектив, который реально отдаёт поток (`active`); если сессии ещё нет (заявка во время старта или
+    /// в середине смены объектива) — цель идущей смены (`Switching { to }`): именно её пользователь уже выбрал, а
+    /// возврат на роль по умолчанию потерял бы этот выбор. Ни потока, ни смены — [`UserLens::NoneBeforeScenario`].
+    pub fn from_lens_status(lens: &LensStatus) -> Self {
+        match (&lens.active, lens.switch) {
+            (Some(active), _) => Self::Role(active.role),
+            (None, LensSwitchState::Switching { to, .. }) => Self::Role(to),
+            (None, LensSwitchState::Idle | LensSwitchState::Steady { .. }) => Self::NoneBeforeScenario,
+        }
+    }
 }
 
 /// Какая из команд автозапуска не ушла.

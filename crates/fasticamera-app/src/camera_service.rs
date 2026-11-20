@@ -297,18 +297,13 @@ impl CameraServices {
     }
 
     /// Запоминает объектив пользователя ПЕРВОЙ заявкой сценария (повторная заявка того же сценария ничего не
-    /// перезаписывает: к ней камера уже могла быть переключена самим сценарием). Нет потока — запоминать нечего.
+    /// перезаписывает: к ней камера уже могла быть переключена самим сценарием). Нет потока и смены — запоминать нечего.
     fn remember_user_lens_before_claim(&self) {
         if self.lifecycle.has_scenario_claim() {
             return;
         }
         let lens = match self.running() {
-            Ok(running) => running
-                .handle()
-                .status()
-                .lens
-                .active
-                .map_or(UserLens::NoneBeforeScenario, |active| UserLens::Role(active.role)),
+            Ok(running) => UserLens::from_lens_status(&running.handle().status().lens),
             Err(_) => UserLens::NoneBeforeScenario,
         };
         *self

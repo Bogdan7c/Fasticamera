@@ -17,23 +17,24 @@
 //! Одна шкала времени: действие и «первый живой кадр» меряются по времени кадров рендера (`render_now`), а время
 //! события движка и срок шага — по часам маршрутизатора (`Instant`); смешивать шкалы нельзя.
 
-use std::sync::Arc;
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use camera_contract::ids::{CameraId, LensFacing, LensRole};
-use camera_contract::zoom::ZoomCatalog;
-use camera_core::{CameraEvent, CameraStatus};
+use camera_core::CameraEvent;
 use camera_screen::ScreenAction;
-use render_loop::viewfinder::{ContinuityCounters, FrameRecord};
+use render_loop::viewfinder::ContinuityCounters;
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::touch::TouchPhase;
 
+use super::zoom_home::{QueuedStep, StepRole, steps_to_home, stray_event_failure};
 use super::zoom_plan::{SwitchExpectation, ZoomAction, ZoomStep, expectation_for_tap, nearest_stop};
 use super::zoom_record::{
     MirrorCheck, RingWatch, SwitchTiming, ZoomStepRecord, first_live_frame_ms, haptic_window, mirror_check,
 };
-use crate::camera_screen_effects::RecentHapticTimes;
-use crate::camera_screen_source::{ScreenReport, ZoomView};
+use super::zoom_reveal::RevealFaults;
+pub use super::zoom_tick::{Injection, RunnerState, TouchInjection, ZoomObservation, ZoomTick};
+pub use super::zoom_views::{EngineView, ScreenView, camera_of_role};
 use crate::screen_scenario_config::ScreenPoint;
 use crate::zoom_scenario_config::ZoomScenarioConfig;
 
@@ -42,114 +43,6 @@ const SCREEN_RATIO_TOLERANCE_MILLI: u32 = 20;
 /// Имя роли для отчёта (совпадает с serde `LensRole`).
 fn role_name(role: LensRole) -> &'static str {
     role.name()
-}
-
-/// Объектив, который сейчас отдаёт кадры, глазами исполнителя.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActiveLensView {
-    pub role: LensRole,
-    pub camera: CameraId,
-    pub facing: LensFacing,
-}
-
-/// Что исполнителю нужно знать о движке (срез `CameraStatus`: сам статус тяжёлый и тесту незачем его собирать).
-#[derive(Debug, Clone)]
-pub struct EngineView {
-    /// Поток идёт.
-    pub streaming: bool,
-    pub active: Option<ActiveLensView>,
-    pub catalog: Arc<ZoomCatalog>,
-    /// Измеренная частота потока текущей сессии по меткам сенсора, к/с.
-    pub measured_fps: Option<f64>,
-}
-
-impl EngineView {
-    pub fn of(status: &CameraStatus) -> Self {
-        Self {
-            streaming: matches!(status.state, camera_core::CameraState::Streaming { .. }),
-            active: status.lens.active.as_ref().map(|active| ActiveLensView {
-                role: active.role,
-                camera: active.camera.clone(),
-                facing: active.facing,
-            }),
-            catalog: Arc::clone(&status.lens.zoom_catalog),
-            measured_fps: status.stream.measured_frames_per_second,
-        }
-    }
-}
-
-/// Что исполнителю нужно знать об экране камеры (срез отчёта).
-#[derive(Debug, Clone, Copy)]
-pub struct ScreenView {
-    pub zoom: ZoomView,
-    /// Когда принимались последние вибрации (кольцо исполнителя эффектов).
-    pub haptics: RecentHapticTimes,
-    /// Сколько намерений объектива экран положил в ящик за всё время.
-    pub lens_published: u64,
-}
-
-impl ScreenView {
-    pub fn of(report: &ScreenReport) -> Self {
-        Self {
-            zoom: report.state.zoom,
-            haptics: report.effects.haptics.recent_queued,
-            lens_published: report.effects.lens.published,
-        }
-    }
-}
-
-/// Один тик наблюдения.
-pub struct ZoomObservation<'a> {
-    /// Часы маршрутизатора.
-    pub now: Instant,
-    /// Самое свежее время на шкале рендера (кадры видоискателя/UI): им метятся действия и касания.
-    pub render_now: MonotonicNanos,
-    pub engine: &'a EngineView,
-    /// События движка, пришедшие с прошлого тика (исполнитель — единственный, кто их забирает).
-    pub events: &'a [CameraEvent],
-    /// Кольцо последних показанных кадров видоискателя (старые первыми).
-    pub frames: &'a [FrameRecord],
-    pub counters: &'a ContinuityCounters,
-    pub screen: &'a ScreenView,
-}
-
-/// Образец касания в долях экрана (сценарий-обвязка переводит в пиксели поверхности).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TouchInjection {
-    pub phase: TouchPhase,
-    pub point: ScreenPoint,
-    pub time: MonotonicNanos,
-}
-
-/// Что вложить в экран.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Injection {
-    Action(ScreenAction),
-    Touch(TouchInjection),
-}
-
-/// Состояние прогона после тика.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RunnerState {
-    Running,
-    AllDone,
-    Failed(String),
-}
-
-/// Итог тика.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ZoomTick {
-    pub injections: Vec<Injection>,
-    pub state: RunnerState,
-}
-
-impl ZoomTick {
-    fn idle(state: RunnerState) -> Self {
-        Self {
-            injections: Vec::new(),
-            state,
-        }
-    }
 }
 
 /// Базовые линии на начало шага: приращения считаются от них.
@@ -173,6 +66,7 @@ struct DragProgress {
 /// Идущий шаг.
 struct ActiveStep {
     step: ZoomStep,
+    role: StepRole,
     expectation: SwitchExpectation,
     started_at: Instant,
     action_render: MonotonicNanos,
@@ -192,23 +86,53 @@ struct ActiveStep {
 /// Исполнитель шагов.
 pub struct ZoomRunner {
     config: ZoomScenarioConfig,
-    pending: std::vec::IntoIter<ZoomStep>,
+    pending: VecDeque<QueuedStep>,
     active: Option<ActiveStep>,
     records: Vec<ZoomStepRecord>,
     ring: RingWatch,
-    finished: bool,
+    /// Итог прогона, когда он уже известен: `AllDone` или `Failed`; дальше исполнитель только повторяет его.
+    outcome: Option<RunnerState>,
+    /// Приводить ли экран к дому (Back 1×) в начале и после провала; см. [`ZoomRunner::anchored_at_back_one_x`].
+    anchored: bool,
+    /// Подготовка к дому уже поставлена в очередь.
+    prepared: bool,
+    /// Провал, о котором скажем после возврата к дому (идёт возврат).
+    deferred_failure: Option<String>,
+    /// Имя последнего законченного шага плана: в тексте провала про «чужие» события.
+    last_step_name: Option<String>,
+    /// С какого момента подготовка ждёт, пока экран успокоится (колесо закрыто, плавного перехода нет).
+    calming_since: Option<Instant>,
+    /// Шаги плана, которые не запускались из-за провала раньше.
+    skipped: Vec<String>,
 }
 
 impl ZoomRunner {
     pub fn new(config: ZoomScenarioConfig, steps: Vec<ZoomStep>) -> Self {
         Self {
             config,
-            pending: steps.into_iter(),
+            pending: steps
+                .into_iter()
+                .map(|step| QueuedStep::new(step, StepRole::Planned))
+                .collect(),
             active: None,
             records: Vec::new(),
             ring: RingWatch::default(),
-            finished: false,
+            outcome: None,
+            anchored: false,
+            prepared: false,
+            deferred_failure: None,
+            last_step_name: None,
+            calming_since: None,
+            skipped: Vec::new(),
         }
+    }
+
+    /// Привязать прогон к «дому»: в начале экран приводится к задней основной камере на 1× с закрытым колесом, а после
+    /// провала шага исполнитель возвращает его туда же, прежде чем сообщить провал (см. `zoom_home`). Тесты правил
+    /// отдельных шагов работают без привязки: они подают нужное состояние сами.
+    pub fn anchored_at_back_one_x(mut self) -> Self {
+        self.anchored = true;
+        self
     }
 
     /// Записи законченных шагов (и провалившегося, если был).
@@ -216,20 +140,26 @@ impl ZoomRunner {
         &self.records
     }
 
-    /// Имена шагов, до которых дело не дошло (включая идущий).
+    /// Имена шагов плана, до которых дело не дошло (включая идущий). Подготовка и возврат к дому — не шаги плана.
     pub fn unfinished_names(&self) -> Vec<String> {
-        self.active
+        let running = self
+            .active
             .iter()
-            .map(|active| active.step.name.clone())
-            .chain(self.pending.clone().map(|step| step.name))
-            .collect()
+            .filter(|active| active.role == StepRole::Planned)
+            .map(|active| active.step.name.clone());
+        let waiting = self
+            .pending
+            .iter()
+            .filter(|queued| queued.role == StepRole::Planned)
+            .map(|queued| queued.step.name.clone());
+        running.chain(waiting).chain(self.skipped.iter().cloned()).collect()
     }
 
     /// Один тик наблюдения.
     pub fn tick(&mut self, observation: &ZoomObservation<'_>) -> ZoomTick {
         self.ring.absorb(observation.frames);
-        if self.finished {
-            return ZoomTick::idle(RunnerState::AllDone);
+        if let Some(outcome) = &self.outcome {
+            return ZoomTick::idle(outcome.clone());
         }
         match self.active.take() {
             None => self.begin_next(observation),
@@ -240,23 +170,55 @@ impl ZoomRunner {
     // ---- начало шага -------------------------------------------------------------------------------------------
 
     fn begin_next(&mut self, observation: &ZoomObservation<'_>) -> ZoomTick {
-        let Some(step) = self.pending.next() else {
-            self.finished = true;
-            return ZoomTick::idle(RunnerState::AllDone);
+        self.queue_preparation_once(observation);
+        // События движка, которых не ждал ни один шаг (между шагами и после последнего), тоже судятся. Во время
+        // возврата к дому провал уже случился: его события второй раз не разбираем.
+        if self.deferred_failure.is_none() {
+            let context = match &self.last_step_name {
+                Some(name) => format!("после шага {name}"),
+                None => "до первого шага".to_owned(),
+            };
+            if let Some(reason) = stray_event_failure(observation.events, &context) {
+                let record = ZoomStepRecord::not_started("unjudged_events", &reason);
+                return self.step_failed(observation, StepRole::Planned, Some(record), "unjudged_events", &reason);
+            }
+        }
+        let Some(QueuedStep { step, role }) = self.pending.pop_front() else {
+            return self.conclude_run();
         };
         let engine = observation.engine;
         if !engine.streaming {
-            return self.fail_before_start(step, "движок не отдаёт поток: шаг начать нельзя");
+            return self.fail_before_start(observation, role, step, "движок не отдаёт поток: шаг начать нельзя");
+        }
+        if role == StepRole::Preparation && (observation.screen.zoom.wheel_open || observation.screen.zoom.gliding) {
+            // Приведение к дому ждёт, пока колесо закроется, а плавный переход дойдёт до упора: тап поверх движения
+            // был бы перебит инерцией.
+            let since = *self.calming_since.get_or_insert(observation.now);
+            if observation.now.saturating_duration_since(since) >= Duration::from_millis(self.config.step_timeout_ms) {
+                return self.fail_before_start(
+                    observation,
+                    role,
+                    step,
+                    "экран не успокоился: колесо открыто или идёт переход",
+                );
+            }
+            self.pending.push_front(QueuedStep::new(step, role));
+            return ZoomTick::idle(RunnerState::Running);
         }
         let current_role = engine.active.as_ref().map(|active| active.role);
         let mut target_ratio_milli = None;
         let (expectation, injections, drag) = match step.action {
             ZoomAction::TapStop { ratio } => {
                 let Some(group) = engine.catalog.back.as_ref() else {
-                    return self.fail_before_start(step, "в каталоге зума нет задних камер");
+                    return self.fail_before_start(observation, role, step, "в каталоге зума нет задних камер");
                 };
                 let Some((index, kind)) = nearest_stop(group, ratio) else {
-                    return self.fail_before_start(step, &format!("на ленте нет кнопки для {ratio}×"));
+                    return self.fail_before_start(
+                        observation,
+                        role,
+                        step,
+                        &format!("на ленте нет кнопки для {ratio}×"),
+                    );
                 };
                 target_ratio_milli = Some((f64::from(group.stops[index].ratio.value()) * 1000.0).round() as u32);
                 (
@@ -302,6 +264,7 @@ impl ZoomRunner {
         };
         self.ring.reset_overrun();
         self.active = Some(ActiveStep {
+            role,
             expectation,
             started_at: observation.now,
             action_render: observation.render_now,
@@ -327,10 +290,76 @@ impl ZoomRunner {
         }
     }
 
-    fn fail_before_start(&mut self, step: ZoomStep, reason: &str) -> ZoomTick {
-        self.records.push(failed_record(&step.name, reason));
-        self.finished = true;
-        ZoomTick::idle(RunnerState::Failed(format!("{}: {reason}", step.name)))
+    fn fail_before_start(
+        &mut self,
+        observation: &ZoomObservation<'_>,
+        role: StepRole,
+        step: ZoomStep,
+        reason: &str,
+    ) -> ZoomTick {
+        let record = ZoomStepRecord::not_started(&step.name, reason);
+        self.step_failed(observation, role, Some(record), &step.name, reason)
+    }
+
+    // ---- дом: подготовка, возврат, итог -------------------------------------------------------------------------
+
+    /// В первый раз перед планом ставит шаги приведения к дому (если прогон привязан к дому и экран не дома).
+    fn queue_preparation_once(&mut self, observation: &ZoomObservation<'_>) {
+        if !self.anchored || self.prepared || self.deferred_failure.is_some() {
+            return;
+        }
+        self.prepared = true;
+        let steps = steps_to_home(observation.engine, observation.screen, "00_prepare");
+        for step in steps.into_iter().rev() {
+            self.pending.push_front(QueuedStep::new(step, StepRole::Preparation));
+        }
+    }
+
+    /// Шаг не удался. Планируемый и подготовительный шаги оставляют запись и обрывают прогон (после возврата к дому);
+    /// неудавшийся шаг возврата только обрывает возврат: исходный провал уже назван, а состояние экрана
+    /// покажет итог прогона.
+    fn step_failed(
+        &mut self,
+        observation: &ZoomObservation<'_>,
+        role: StepRole,
+        record: Option<ZoomStepRecord>,
+        name: &str,
+        reason: &str,
+    ) -> ZoomTick {
+        if role == StepRole::Restoration {
+            self.pending.clear();
+            return ZoomTick::idle(RunnerState::Running);
+        }
+        self.records.extend(record);
+        self.skipped.extend(
+            self.pending
+                .drain(..)
+                .filter(|queued| queued.role == StepRole::Planned)
+                .map(|queued| queued.step.name),
+        );
+        self.deferred_failure = Some(format!("{name}: {reason}"));
+        if self.anchored && observation.engine.streaming {
+            let steps = steps_to_home(observation.engine, observation.screen, "restore");
+            self.pending.extend(
+                steps
+                    .into_iter()
+                    .map(|step| QueuedStep::new(step, StepRole::Restoration)),
+            );
+        }
+        if self.pending.is_empty() {
+            return self.conclude_run();
+        }
+        ZoomTick::idle(RunnerState::Running)
+    }
+
+    /// Очередь пуста: прогон закончен — провалом (названным раньше) или успехом.
+    fn conclude_run(&mut self) -> ZoomTick {
+        let outcome = match self.deferred_failure.take() {
+            Some(reason) => RunnerState::Failed(reason),
+            None => RunnerState::AllDone,
+        };
+        self.outcome = Some(outcome.clone());
+        ZoomTick::idle(outcome)
     }
 
     // ---- ход шага ----------------------------------------------------------------------------------------------
@@ -516,22 +545,22 @@ impl ZoomRunner {
         let record = self.build_record(&active, observation, None);
         let failure = self.judge_screen(&active, &record, observation);
         let record = ZoomStepRecord { failure, ..record };
-        let failed = record.failure.clone();
+        let Some(reason) = record.failure.clone() else {
+            // Шаг плана попадает в отчёт; подготовка и возврат к дому — нет (их провал виден отдельно).
+            if active.role == StepRole::Planned {
+                self.last_step_name = Some(record.name.clone());
+                self.records.push(record);
+            }
+            return ZoomTick::idle(RunnerState::Running);
+        };
         let name = record.name.clone();
-        self.records.push(record);
-        if let Some(reason) = failed {
-            self.finished = true;
-            return ZoomTick::idle(RunnerState::Failed(format!("{name}: {reason}")));
-        }
-        ZoomTick::idle(RunnerState::Running)
+        self.step_failed(observation, active.role, Some(record), &name, &reason)
     }
 
     fn fail_active(&mut self, active: ActiveStep, observation: &ZoomObservation<'_>, reason: &str) -> ZoomTick {
         let record = self.build_record(&active, observation, Some(reason.to_owned()));
         let name = record.name.clone();
-        self.records.push(record);
-        self.finished = true;
-        ZoomTick::idle(RunnerState::Failed(format!("{name}: {reason}")))
+        self.step_failed(observation, active.role, Some(record), &name, reason)
     }
 
     /// Проверки состояния экрана в конце шага (то, что видно пользователю): показанный коэффициент.
@@ -593,6 +622,7 @@ impl ZoomRunner {
             black_frames_while_picture_expected: counters
                 .black_frames_while_picture_expected
                 .saturating_sub(base.black_frames_while_picture_expected),
+            reveal_faults: RevealFaults::between(base, counters),
             retargets: active.retargets,
             lens_intents_published: observation
                 .screen
@@ -603,9 +633,10 @@ impl ZoomRunner {
             mirror,
             haptics: active.drag.is_some().then(|| {
                 haptic_window(
-                    &observation.screen.haptics,
+                    observation.screen.haptics.total(),
                     active.baseline.haptics_total,
                     active.action_render,
+                    observation.render_now,
                 )
             }),
             screen_ratio: f64::from(observation.screen.zoom.ratio_milli) / 1000.0,
@@ -614,38 +645,6 @@ impl ZoomRunner {
             notes: active.notes.clone(),
         }
     }
-}
-
-/// Запись провалившегося до начала шага.
-fn failed_record(name: &str, reason: &str) -> ZoomStepRecord {
-    ZoomStepRecord {
-        name: name.to_owned(),
-        expected: "not_started".to_owned(),
-        switch: None,
-        first_live_frame_ms: None,
-        new_camera: None,
-        held_frames: 0,
-        black_frames_while_picture_expected: 0,
-        retargets: 0,
-        lens_intents_published: 0,
-        measured_fps: None,
-        expected_fps: None,
-        mirror: MirrorCheck::NotApplicable,
-        haptics: None,
-        screen_ratio: 0.0,
-        ring_overran: false,
-        failure: Some(reason.to_owned()),
-        notes: Vec::new(),
-    }
-}
-
-/// Камера роли по каталогу зума.
-fn camera_of_role(catalog: &ZoomCatalog, role: LensRole) -> Option<CameraId> {
-    [catalog.back.as_ref(), catalog.front.as_ref()]
-        .into_iter()
-        .flatten()
-        .find_map(|group| group.lens_for_role(role))
-        .map(|lens| lens.camera.clone())
 }
 
 /// Имя ожидания для отчёта.

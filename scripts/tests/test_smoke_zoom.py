@@ -34,6 +34,13 @@ def zoom_report(**overrides: object) -> dict:
         "max_first_live_frame_ms": 610.5,
         "black_frames_while_picture_expected": 0,
         "held_frames": 96,
+        "reveal_faults": {
+            "revealed_by_timeout": 0,
+            "ended_without_stream": 0,
+            "ended_without_presentable_frame": 0,
+            "black_camera_unavailable": 0,
+            "black_picture_unavailable": 0,
+        },
         "switches_failed": 0,
         "switches_completed": 6,
         "lens_intents_published": 240,
@@ -68,6 +75,22 @@ class ZoomCheckTest(unittest.TestCase):
             "ни одной смены": zoom_report(switches_observed=0),
             "max_switch_ms": zoom_report(max_switch_ms=None),
             "max_first_live_frame_ms": zoom_report(max_first_live_frame_ms=None),
+            "reveal_faults.revealed_by_timeout=1": zoom_report(
+                reveal_faults={**zoom_report()["reveal_faults"], "revealed_by_timeout": 1}
+            ),
+            "reveal_faults.black_picture_unavailable=2": zoom_report(
+                reveal_faults={**zoom_report()["reveal_faults"], "black_picture_unavailable": 2}
+            ),
+            "reveal_faults.ended_without_presentable_frame=1": zoom_report(
+                reveal_faults={**zoom_report()["reveal_faults"], "ended_without_presentable_frame": 1}
+            ),
+            "reveal_faults.black_camera_unavailable=1": zoom_report(
+                reveal_faults={**zoom_report()["reveal_faults"], "black_camera_unavailable": 1}
+            ),
+            "reveal_faults.ended_without_stream=1": zoom_report(
+                reveal_faults={**zoom_report()["reveal_faults"], "ended_without_stream": 1}
+            ),
+            "нет reveal_faults": zoom_report(reveal_faults=None),
             "намерений объектива": zoom_report(lens_intents_published=0),
             "провален вне шагов": zoom_report(failure="рендер недоступен"),
             "итогового состояния": zoom_report(final=None),

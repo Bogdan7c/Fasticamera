@@ -9,7 +9,7 @@ use render_loop::viewfinder::{FrameLabel, FrameRecord};
 use serde::Serialize;
 use shell_contract::clock::MonotonicNanos;
 
-use crate::camera_screen_effects::{RECENT_HAPTICS_CAPACITY, RecentHapticTimes};
+use super::zoom_reveal::RevealFaults;
 
 /// Наносекунд в миллисекунде.
 const NANOS_PER_MS: f64 = 1_000_000.0;
@@ -112,29 +112,29 @@ impl RingWatch {
 }
 
 /// Вибрации в окне шага.
+///
+/// Промежутки между вибрациями здесь НЕ меряются: ограничитель частоты решает по времени касаний, а исполнитель
+/// штампует вибрации временем кадра UI — на разных часах «минимальный промежуток» дал бы ложный провал (два образца в
+/// одном кадре → 0 мс) или ложный проход. Ограничитель в 30 мс доказывают юнит-тесты `ui-kit` на времени касаний;
+/// сценарий судит только число вибраций: не меньше порога и не больше, чем ограничитель вообще мог пропустить.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct HapticWindow {
     /// Сколько вибраций принято в окне.
     pub count: u64,
-    /// Наименьший промежуток между соседними, мс (`None` — меньше двух).
-    pub min_gap_ms: Option<f64>,
-    /// Кольцо исполнителя вытеснило часть окна: промежутки могли быть меньше, чем видно.
-    pub unmeasured: bool,
+    /// Длина окна на шкале рендера, мс: от действия до конца наблюдения (верхняя граница числа тиков).
+    pub window_ms: f64,
 }
 
-/// Вибрации, принятые после `since`, когда к началу окна уже было принято `total_at_start`.
-pub fn haptic_window(recent: &RecentHapticTimes, total_at_start: u64, since: MonotonicNanos) -> HapticWindow {
-    let in_window_total = recent.total().saturating_sub(total_at_start);
-    let times: Vec<MonotonicNanos> = recent.retained().into_iter().filter(|time| *time >= since).collect();
-    let min_gap_ms = times
-        .windows(2)
-        .map(|pair| ms_between(pair[0], pair[1]))
-        .min_by(f64::total_cmp);
+/// Вибрации окна: принятых к `total_now` больше, чем к началу окна (`total_at_start`); окно — `since..until`.
+pub fn haptic_window(
+    total_now: u64,
+    total_at_start: u64,
+    since: MonotonicNanos,
+    until: MonotonicNanos,
+) -> HapticWindow {
     HapticWindow {
-        count: in_window_total,
-        min_gap_ms,
-        // Окно больше кольца: часть вибраций уже не видна.
-        unmeasured: in_window_total > RECENT_HAPTICS_CAPACITY as u64,
+        count: total_now.saturating_sub(total_at_start),
+        window_ms: ms_between(since, until),
     }
 }
 
@@ -155,6 +155,8 @@ pub struct ZoomStepRecord {
     pub held_frames: u64,
     /// Чёрных кадров там, где ждали картинку, за шаг. Должно быть 0.
     pub black_frames_while_picture_expected: u64,
+    /// Плохие исходы держания переходного кадра за шаг (раскрытие по сроку, честное чёрное). Должны быть нулевыми.
+    pub reveal_faults: RevealFaults,
     /// Промежуточных целей смены, отменённых новой целью.
     pub retargets: u32,
     /// Намерений объектива, которые экран положил в ящик за шаг.
@@ -174,6 +176,32 @@ pub struct ZoomStepRecord {
     pub failure: Option<String>,
     /// Заметки без провала (деградация частоты, потолок частоты камеры).
     pub notes: Vec<String>,
+}
+
+impl ZoomStepRecord {
+    /// Запись шага, который провалился до начала (или стал провалом прогона вне шагов): измерений нет.
+    pub fn not_started(name: &str, reason: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            expected: "not_started".to_owned(),
+            switch: None,
+            first_live_frame_ms: None,
+            new_camera: None,
+            held_frames: 0,
+            black_frames_while_picture_expected: 0,
+            reveal_faults: RevealFaults::default(),
+            retargets: 0,
+            lens_intents_published: 0,
+            measured_fps: None,
+            expected_fps: None,
+            mirror: MirrorCheck::NotApplicable,
+            haptics: None,
+            screen_ratio: 0.0,
+            ring_overran: false,
+            failure: Some(reason.to_owned()),
+            notes: Vec::new(),
+        }
+    }
 }
 
 /// Смена объектива глазами движка и сценария.

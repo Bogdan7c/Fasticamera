@@ -5,6 +5,7 @@ use camera_contract::ids::{LensFacing, LensRole};
 
 use super::zoom_record::{HapticWindow, MirrorCheck, SwitchTiming, ZoomStepRecord};
 use super::zoom_report::{FinalState, ZoomObservationReport, ZoomTotals};
+use super::zoom_reveal::RevealFaults;
 
 /// Здоровый шаг со сменой объектива: события за 400 мс, первый живой кадр за 520 мс, 60 к/с, зеркало верное.
 pub fn healthy_switch_step(name: &str) -> ZoomStepRecord {
@@ -21,6 +22,7 @@ pub fn healthy_switch_step(name: &str) -> ZoomStepRecord {
         new_camera: Some("3".to_owned()),
         held_frames: 20,
         black_frames_while_picture_expected: 0,
+        reveal_faults: RevealFaults::default(),
         retargets: 0,
         lens_intents_published: 3,
         measured_fps: Some(59.5),
@@ -48,7 +50,7 @@ pub fn healthy_crop_step(name: &str) -> ZoomStepRecord {
     }
 }
 
-/// Здоровая протяжка по колесу: зум ушёл к 5×, вибраций 15, наименьший промежуток 32 мс.
+/// Здоровая протяжка по колесу: зум ушёл к 5×, вибраций 15 за окно в 1,2 с (ограничитель 30 мс пропустил бы до 41).
 pub fn healthy_drag_step(name: &str) -> ZoomStepRecord {
     ZoomStepRecord {
         expected: "no_switch".to_owned(),
@@ -60,8 +62,7 @@ pub fn healthy_drag_step(name: &str) -> ZoomStepRecord {
         screen_ratio: 5.4,
         haptics: Some(HapticWindow {
             count: 15,
-            min_gap_ms: Some(32.0),
-            unmeasured: false,
+            window_ms: 1_200.0,
         }),
         ..healthy_switch_step(name)
     }

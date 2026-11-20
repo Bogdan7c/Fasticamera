@@ -8,7 +8,8 @@
 //!
 //! # Ход
 //! 1. **Готовность:** поток идёт, каталог зума опубликован, экран видит живую камеру и нарисовал кадр, рендер отдаёт
-//!    непрерывность (кольцо кадров). Срок — `ready_timeout_ms`.
+//!    непрерывность (кольцо кадров). Срок — `ready_timeout_ms`. Затем исполнитель сам приводит экран к дому (задняя
+//!    основная камера, 1×, колесо закрыто) и после провала возвращает его туда же (`zoom_home`).
 //! 2. **Шаги** ([`planned_steps`]): `.6, 1, 2, 1, .6` → переворот на фронталку и назад → `1` → протяжка по ленте →
 //!    завершающий `1`. На каждом шаге записывается время «действие → смена объектива» и «действие → первый живой кадр
 //!    новой камеры», удержанные и чёрные кадры, частота, зеркало.
@@ -176,7 +177,8 @@ impl ObservingScenario for ZoomScenario {
                     return self.continue_or_time_out_since(context, started, "камера или экран ещё не готовы");
                 }
                 let steps = planned_steps(&run.config);
-                let runner = ZoomRunner::new(run.config.clone(), steps);
+                // Прогон привязан к «дому»: начинает с Back 1× и после провала возвращается туда же (`zoom_home`).
+                let runner = ZoomRunner::new(run.config.clone(), steps).anchored_at_back_one_x();
                 let baselines = Baselines {
                     continuity: counters.clone(),
                     switches_completed: status.lens.counters.switches_completed,

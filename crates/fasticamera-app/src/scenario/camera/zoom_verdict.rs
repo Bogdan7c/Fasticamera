@@ -10,8 +10,11 @@
 //! 6. частота потока камеры не ниже ожидаемой (задние 60, фронтальная 30) с допуском;
 //! 7. зеркало: фронтальная — по горизонтали, задние — без зеркала; кадров камеры нет в кольце — «не измерено» = нарушение,
 //!    если кольцо ничего не теряло;
-//! 8. протяжка по колесу: зум сдвинулся, вибраций не меньше порога, промежуток между ними не меньше 30 мс (решение 112);
-//! 9. после прогона экран на 1× основной камеры, как до него (завершающий тап `1`).
+//! 8. протяжка по колесу: зум сдвинулся, вибраций не меньше порога и не больше, чем мог пропустить ограничитель частоты
+//!    за окно шага (сами промежутки не меряем: часы ограничителя и исполнителя разные, решение 112);
+//! 9. каждая смена объектива раскрылась **по условию** готовности цвета и яркости: раскрытие по сроку и удержание,
+//!    закончившееся честным чёрным, — нарушения ([`super::zoom_reveal::RevealFaults`]);
+//! 10. после прогона экран на 1× основной камеры, как до него (завершающий тап `1`).
 
 use camera_contract::ids::{LensFacing, LensRole};
 
@@ -55,6 +58,19 @@ pub fn evaluate_zoom(config: &ZoomScenarioConfig, report: &ZoomObservationReport
             culprits.join(", ")
         ));
     }
+    if !report.totals.reveal_faults.is_clean() {
+        let culprits: Vec<&str> = report
+            .steps
+            .iter()
+            .filter(|step| !step.reveal_faults.is_clean())
+            .map(|step| step.name.as_str())
+            .collect();
+        violations.push(format!(
+            "переход не раскрылся по условию готовности цвета и яркости ({}), шаги: {}",
+            report.totals.reveal_faults.describe(),
+            culprits.join(", ")
+        ));
+    }
     if report.totals.switches_failed > 0 {
         violations.push(format!(
             "движок сообщил о неудачных сменах объектива: {} (должно быть 0)",
@@ -91,6 +107,12 @@ fn step_violations(config: &ZoomScenarioConfig, step: &ZoomStepRecord) -> Vec<St
             None => violations.push(format!("{name}: живой кадр новой камеры в кольце кадров не найден")),
         }
     }
+    if !step.reveal_faults.is_clean() {
+        violations.push(format!(
+            "{name}: переход не раскрылся по условию готовности: {}",
+            step.reveal_faults.describe()
+        ));
+    }
     if step.failure.is_none() {
         violations.extend(frame_rate_violation(config, step));
     }
@@ -112,23 +134,20 @@ fn step_violations(config: &ZoomScenarioConfig, step: &ZoomStepRecord) -> Vec<St
                 step.screen_ratio
             ));
         }
-        if haptics.unmeasured {
-            violations.push(format!(
-                "{name}: вибраций больше, чем помнит кольцо исполнителя, — промежутки не измерены"
-            ));
-        }
         if haptics.count < config.min_haptics_in_drag {
             violations.push(format!(
                 "{name}: вибраций за протяжку {} при минимуме {}",
                 haptics.count, config.min_haptics_in_drag
             ));
         }
-        if let Some(gap) = haptics.min_gap_ms
-            && gap < config.min_haptic_gap_ms as f64
-        {
+        // Верхняя граница: ограничитель частоты пропускает не больше одной вибрации на `min_haptic_gap_ms` окна
+        // (плюс первая). Больше — ограничитель не работает или считается лишнее. Сами промежутки не меряем: часы
+        // ограничителя (время касаний) и исполнителя (время кадра UI) разные, см. `HapticWindow`.
+        let max_ticks = (haptics.window_ms / config.min_haptic_gap_ms as f64).floor() as u64 + 1;
+        if haptics.count > max_ticks {
             violations.push(format!(
-                "{name}: промежуток между вибрациями {gap:.1} мс меньше {} мс (мотор «смазывается»)",
-                config.min_haptic_gap_ms
+                "{name}: вибраций за протяжку {} при потолке {max_ticks} (окно {:.0} мс, не чаще раза в {} мс)",
+                haptics.count, haptics.window_ms, config.min_haptic_gap_ms
             ));
         }
     }

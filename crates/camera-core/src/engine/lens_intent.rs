@@ -17,8 +17,11 @@
 //!
 //! # Что намерение не делает
 //! Смена коэффициента **внутри** одного объектива цель не меняет и бэкенд не трогает: кадрирование
-//! считают экран и рендер. Намерение до первой `Open` (цели ещё нет) только запоминается: движок
-//! сам камеру не открывает, это делает команда.
+//! считают экран и рендер. Намерение до первой `Open` (цели ещё нет) **откладывается**: движок
+//! сам камеру не открывает, это делает команда, но сразу после того, как `Open` записал цель
+//! ([`CameraEngine::note_lens_target_changed`]), отложенное намерение применяется по тем же правилам
+//! (жест, блокировка роли), и поток стартует на объективе, который выбрал экран, а не на умолчании команды.
+//! Отложено может быть только одно, самое свежее намерение: ящик и так хранит последнее.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -33,6 +36,15 @@ use crate::lens_status::{ActiveLens, LensStatus, LensSwitchFailure};
 use crate::zoom::{select_initial_lens, select_lens};
 use camera_contract::three_a::DirectiveGeneration;
 
+/// Итог применения намерения к цели камеры.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IntentApplication {
+    /// Цель камеры сменилась: вызывающему нужна перестройка потока.
+    TargetChanged,
+    /// Цель осталась прежней (тот же объектив, отказ, блок, отложено): бэкенд трогать не нужно.
+    NotApplied,
+}
+
 /// Всё, чем движок владеет в части объективов, кроме самой цели камеры.
 pub(super) struct LensEngineState {
     /// Ящик намерений экрана; `None` — экран к движку не подключён.
@@ -40,6 +52,9 @@ pub(super) struct LensEngineState {
     /// Поколение последнего прочитанного намерения.
     seen: Option<DirectiveGeneration>,
     last_intent: Option<LensIntent>,
+    /// Намерение прочитано, но цели камеры ещё не было (до первой `Open`): ждёт её появления.
+    /// Одно и самое свежее; применяется один раз в [`CameraEngine::note_lens_target_changed`].
+    deferred_intent: Option<LensIntent>,
     /// Последний задний объектив, на котором стояла цель: опора гистерезиса, когда экран
     /// возвращается с фронтальной камеры (иначе выбор считался бы «с нуля» и мигал на границе).
     last_back_role: Option<LensRole>,
@@ -58,6 +73,7 @@ impl LensEngineState {
             intents: None,
             seen: None,
             last_intent: None,
+            deferred_intent: None,
             last_back_role: None,
             last_streamed_back_role: None,
             zoom_catalog: Arc::new(ZoomCatalog::default()),
@@ -94,36 +110,50 @@ impl CameraEngine {
         };
         self.lens.seen = Some(generation);
         self.lens.last_intent = Some(intent);
+        // Новое намерение вытесняет отложенное: применяется только самое свежее.
+        self.lens.deferred_intent = None;
+        if self.apply_lens_intent(intent, now) == IntentApplication::TargetChanged {
+            // Как после `SwitchTo`: новая камера отменяет ожидание восстановления прежней.
+            self.recovery.clear();
+            self.reconcile(now);
+            self.three_a.publish_white_balance(&self.desired.three_a);
+            self.three_a.publish_exposure_intent(&self.desired.three_a);
+        }
+    }
+
+    /// Применить намерение к цели камеры (без перестройки потока: её делает вызывающий).
+    ///
+    /// Общий путь чтения ящика и повтора отложенного намерения после `Open`; правила жестов и
+    /// блокировки роли здесь одни и те же.
+    fn apply_lens_intent(&mut self, intent: LensIntent, now: Instant) -> IntentApplication {
         let Some(role) = self.role_for_intent(intent) else {
             tracing::warn!(target: LOG_TARGET, ?intent, "для намерения нет камеры направления");
             self.lens.tracker.note_intent_ignored();
-            return;
+            return IntentApplication::NotApplied;
         };
         let role_is_blocked = self.lens.tracker.blocked().is_some_and(|block| block.role == role);
         if role_is_blocked && intent.gesture == ZoomGesture::Continuous {
             // Смена на эту роль только что провалилась, а колесо продолжает публиковать
             // коэффициенты в её диапазоне: не пробуем снова, пока жест не уведёт к другой роли.
-            return;
+            return IntentApplication::NotApplied;
         }
         // Явный выбор (`Discrete`) заблокированной роли — прямая просьба пользователя: блок
         // снимается и пробуется одна попытка. Провал вернёт блок и снова даст `LensSwitchFailed`,
         // по которому экран откатится. Намерение другой роли блок тоже снимает.
         self.lens.tracker.clear_block();
         match self.decide_switch_to(role, RetargetCause::Intent, now) {
-            CommandOutcome::Accepted => {
-                // Как после `SwitchTo`: новая камера отменяет ожидание восстановления прежней.
-                self.recovery.clear();
-                self.reconcile(now);
-                self.three_a.publish_white_balance(&self.desired.three_a);
-                self.three_a.publish_exposure_intent(&self.desired.three_a);
-            }
+            CommandOutcome::Accepted => IntentApplication::TargetChanged,
             // Объектив тот же: меняется только кадрирование, бэкенд не трогаем.
-            CommandOutcome::AlreadyInState => {}
-            // Камера ещё не запрошена командой: намерение запомнено, открывать нечего.
-            CommandOutcome::InvalidState(InvalidStateReason::NoCameraRequested) => {}
+            CommandOutcome::AlreadyInState => IntentApplication::NotApplied,
+            // Камера ещё не запрошена командой: намерение ждёт первой `Open`.
+            CommandOutcome::InvalidState(InvalidStateReason::NoCameraRequested) => {
+                self.lens.deferred_intent = Some(intent);
+                IntentApplication::NotApplied
+            }
             rejected => {
                 tracing::warn!(target: LOG_TARGET, ?intent, ?rejected, "намерение объектива не выполнено");
                 self.lens.tracker.note_intent_ignored();
+                IntentApplication::NotApplied
             }
         }
     }
@@ -165,6 +195,12 @@ impl CameraEngine {
         }
         if let Some(event) = self.lens.tracker.on_target_changed(role, cause, now) {
             self.events.push(event);
+        }
+        // Цель появилась (первая `Open`): выполнить намерение, которое экран положил раньше. Берём его
+        // до применения, поэтому повторный вход через `decide_switch_to` не зациклится. Перестройку
+        // потока потом делает вызывающая команда (`apply_command_effects`).
+        if let Some(intent) = self.lens.deferred_intent.take() {
+            self.apply_lens_intent(intent, now);
         }
     }
 

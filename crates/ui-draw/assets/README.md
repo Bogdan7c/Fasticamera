@@ -40,11 +40,12 @@ Display. Оба начертания используют один `opsz` — р
 | `icons/phosphor/dots-six.svg` | там же — кнопка меню Camera Controls («шесть точек», `layout.md`/`behavior.md`; `dots-nine` не взят: у Apple шесть) | `98d4801caca44a0be87d8aa5c63d3c31834047e5c0a862d7d751f33266332bbc` |
 | `icons/lucide/ratio.svg` | Lucide (ISC), `lucide-icons/lucide`, `icons/ratio.svg`, коммит `742ea78395b4122e13fd46743caba5140f47fb66` — соотношение сторон (у Phosphor аналога нет, `assets.md`); два пересекающихся скруглённых прямоугольника 12×20 и 20×12, `stroke` ширины 2 | `d30cb7b90d5164cfe6b14457cc0e333143a0a1e5ebdc281ba64facaf7eaf3125` |
 | `icons/own/level.svg` | **Своя** (лицензия проекта), нарисована в сессии 12 для пункта меню Level: у Phosphor и Lucide уровня нет (`assets.md`). viewBox 24, `stroke` ширины 2 с круглыми концами: горизонт с разрывом в центре (`M5 12h5`, `M14 12h5`) и два коротких боковых штриха (`M2 9v6`, `M22 9v6`) | `cc07f860b145327898bba2b5f1ca3415de814f9f7c0756b34ffc20fc0bf19eab` |
+| `icons/own/zoom-marker-triangle.svg` | **Своя** (лицензия проекта), нарисована в сессии 13 (правка после c8631a6) для маркера колеса зума: у iOS маркер — жёлтый треугольник 3,3 × 8,7 pt (`docs/ios-camera/layout.md`, `[measured: R00]`, правило 96). viewBox 24, `fill`: треугольник на весь квадрат — основание вдоль верха `M0 0H24`, вершина внизу (12, 24); экран растягивает квадрат до 3,3 × 8,7 pt. Направление вершины (к центру диска) — `[estimate]`, в замере не снято | `e4345338ac58cecd8a09220abd175bc016978730be32360aec8fec0471c274b3` |
 | `icons/lucide/LICENSE` | ISC, Copyright 2026 Lucide Icons and Contributors | `b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57` |
 
 Phosphor — иконки-заливки (`kind: fill`, ненулевая обмотка), Lucide — иконка-контур (`kind: stroke`,
 ширина штриха 2 единицы viewBox 24 — доказывает путь «расстояние до средней линии минус полуширина»).
-Набор из 12 иконок: 6 стартовых плюс 6 для экрана камеры v1 (сессия 12: `timer`, `aspect_ratio`, `close`, `reset`, `controls_menu` взяты как есть из закреплённых коммитов; `level` — единственная своя, см. таблицу). `RAW` — подписью, шестерёнка настроек — сессия 16.
+Набор из 13 иконок: 6 стартовых плюс 6 для экрана камеры v1 (сессия 12: `timer`, `aspect_ratio`, `close`, `reset`, `controls_menu` взяты как есть из закреплённых коммитов; `level` — своя, см. таблицу; 13-я — своя `zoom_marker_triangle`, сессия 13). `RAW` — подписью, шестерёнка настроек — сессия 16.
 
 ## Манифест `bake.json`
 

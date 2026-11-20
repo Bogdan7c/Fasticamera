@@ -7,8 +7,9 @@ use ui_core::geometry::{Point, Vector};
 use ui_core::gesture::{GestureData, GestureState, PanTranslation};
 use ui_core::time::MotionPreference;
 use ui_draw::color::DisplayColor;
-use ui_draw::draw_list::DrawItem;
+use ui_draw::draw_list::{DrawItem, IconItem};
 use ui_draw::geometry::{PxPoint, PxSize};
+use ui_draw::icons::IconId;
 use ui_draw::scene_bridge::NodePlacementPx;
 use ui_draw::shape::ShapeGeometry;
 use ui_draw::transform::Affine2;
@@ -306,6 +307,14 @@ fn draw(
     .unwrap()
 }
 
+/// Иконка-маркер: последний элемент переднего слоя (должна быть иконкой, не фигурой).
+fn marker_icon(drawing: &ui_kit::view::ArcScaleDrawing) -> IconItem {
+    match drawing.foreground.last() {
+        Some(DrawItem::Icon(icon)) => *icon,
+        other => panic!("маркер должен быть иконкой: {other:?}"),
+    }
+}
+
 fn shape_center(item: &DrawItem) -> (PxPoint, ShapeGeometry, DisplayColor, f32) {
     let DrawItem::Shape(shape) = item else {
         panic!("ожидалась фигура: {item:?}")
@@ -342,15 +351,15 @@ fn ticks_sit_on_the_ring_at_14_2_degrees_per_octave_around_the_fixed_marker() {
     let tokens = UiKitTokens::default();
     let scale = dial_scale(1.0, &tokens);
     let drawing = draw(&scale, &tokens, &[], 1.0);
-    let marker = drawing.foreground.last().map(shape_center).unwrap();
-    // Маркер — жёлтый, наверху (угол 0), 3,3 × 8,7 pt.
-    assert_eq!(marker.2, tokens.colors.focus_yellow);
-    assert!(angle_of(marker.0).abs() < 1e-3);
-    let ShapeGeometry::RoundedRect { size, .. } = marker.1 else {
-        panic!()
-    };
-    assert!((f64::from(size.width) / f64::from(SCALE) - 3.3).abs() < 0.01);
-    assert!((f64::from(size.height) / f64::from(SCALE) - 8.7).abs() < 0.01);
+    let marker = marker_icon(&drawing);
+    // Маркер — жёлтый треугольник #FFCE00 наверху (угол 0), 3,3 × 8,7 pt, на радиусе середины кольца.
+    assert_eq!(marker.icon, IconId::ZoomMarkerTriangle);
+    assert_eq!(marker.color, tokens.colors.zoom_selected);
+    let marker_center = marker.transform.apply_point(PxPoint::ORIGIN);
+    assert!(angle_of(marker_center).abs() < 1e-3);
+    assert!((radius_of(marker_center) - 230.5).abs() < 0.01);
+    assert!((f64::from(marker.size_px.width) / f64::from(SCALE) - 3.3).abs() < 0.01);
+    assert!((f64::from(marker.size_px.height) / f64::from(SCALE) - 8.7).abs() < 0.01);
 
     // Остальные фигуры — риски на радиусе середины кольца (222,5…238,5).
     let ticks: Vec<_> = drawing.foreground[..drawing.foreground.len() - 1]
@@ -469,8 +478,7 @@ fn node_opacity_scales_every_drawn_item_and_hidden_ticks_leave_only_disc_and_mar
     let drawing = draw(&scale, &tokens, &[], 0.5);
     let (_, _, _, disc_opacity) = shape_center(&drawing.backing[0]);
     assert!((disc_opacity - 0.45 * 0.5).abs() < 1e-6);
-    let (_, _, _, marker_opacity) = shape_center(drawing.foreground.last().unwrap());
-    assert!((marker_opacity - 0.5).abs() < 1e-6);
+    assert!((marker_icon(&drawing).opacity.get() - 0.5).abs() < 1e-6);
 
     let spec = ScaleSpec {
         ticks: TickVisibility::Hidden,

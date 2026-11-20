@@ -22,6 +22,14 @@ fn lens_intents(effects: &[Effect]) -> Vec<LensIntent> {
         .collect()
 }
 
+/// Сколько команд кадрирования в эффектах.
+fn framing_count(effects: &[Effect]) -> usize {
+    effects
+        .iter()
+        .filter(|effect| matches!(effect, Effect::Viewfinder(_)))
+        .count()
+}
+
 /// Коэффициент в последней команде кадрирования рендеру.
 fn framing_ratio(effects: &[Effect]) -> Option<f32> {
     effects.iter().rev().find_map(|effect| match effect {
@@ -91,7 +99,7 @@ fn adoption_happens_once_and_later_active_lens_changes_do_not_override_the_user(
 // ---- тап по кнопке ленты ----
 
 #[test]
-fn tapping_the_ultra_wide_stop_glides_to_it_and_publishes_intents_ending_at_the_stop_ratio() {
+fn tapping_the_ultra_wide_stop_glides_to_it_publishing_one_intent_and_framing_along_the_glide() {
     let mut screen = Screen::zoomed(LensRole::Wide);
     let started = screen.step(ScreenAction::ZoomStopTapped {
         stop: 0,
@@ -102,6 +110,7 @@ fn tapping_the_ultra_wide_stop_glides_to_it_and_publishes_intents_ending_at_the_
 
     let mut intents = lens_intents(&started.effects);
     let mut last_framing = framing_ratio(&started.effects);
+    let mut framing_count = framing_count(&started.effects);
     let mut previous = ratio_of(&screen);
     // Кадры по 16 мс до конца перехода (0,27 с): значение монотонно падает к упору.
     for step in 1..=25 {
@@ -114,13 +123,16 @@ fn tapping_the_ultra_wide_stop_glides_to_it_and_publishes_intents_ending_at_the_
         previous = now;
         intents.extend(lens_intents(&tick.effects));
         last_framing = framing_ratio(&tick.effects).or(last_framing);
+        framing_count += self::framing_count(&tick.effects);
     }
     assert!(!screen.state.zoom().is_gliding());
     assert!(near(ratio_of(&screen), 0.593));
-    assert!(intents.len() > 3, "намерения идут по ходу перехода: {}", intents.len());
-    assert!(intents.iter().all(|intent| intent.facing == LensFacing::Back));
-    let final_intent = intents.last().expect("намерения");
-    assert!(near(final_intent.ratio.value(), 0.593), "{final_intent:?}");
+    // Один тап = одно намерение с коэффициентом упора; переход его не повторяет, а кадрирование идёт по шагам.
+    assert_eq!(intents.len(), 1, "{intents:?}");
+    assert_eq!(intents[0].facing, LensFacing::Back);
+    assert_eq!(intents[0].gesture, ZoomGesture::Discrete);
+    assert!(near(intents[0].ratio.value(), 0.593), "{:?}", intents[0]);
+    assert!(framing_count > 3, "кадрирование идёт по ходу перехода: {framing_count}");
     assert!(near(last_framing.expect("кадрирование"), 0.593));
 }
 

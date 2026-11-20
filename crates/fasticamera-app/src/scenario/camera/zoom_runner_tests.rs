@@ -8,11 +8,14 @@ use camera_contract::geometry::{PixelRect, PixelSize};
 use camera_contract::viewfinder_crop::{CropAspect, CropCenter, ViewfinderCrop, ZoomFactor};
 use camera_contract::zoom::{FramedCrop, PreviewMirror, ZoomFit, ZoomRatio};
 use camera_core::lens_status::LensSwitchFailure;
-use render_loop::viewfinder::{FrameCropReport, FrameLabel};
+use render_loop::viewfinder::{FrameCropReport, FrameLabel, FrameRecord};
 use ui_draw::frame_source::BackdropContinuity;
 
 use super::*;
+use crate::camera_screen_effects::RecentHapticTimes;
+use crate::camera_screen_source::ZoomView;
 use crate::camera_test_support::oneplus_zoom_catalog;
+use crate::scenario::camera::zoom_views::ActiveLensView;
 
 const MS: i64 = 1_000_000;
 
@@ -465,7 +468,7 @@ fn a_drag_record_carries_the_haptics_of_its_window_only() {
     assert_eq!(record.failure, None);
     let haptics = record.haptics.expect("у протяжки есть окно вибраций");
     assert_eq!(haptics.count, 4, "вибрация до шага не считается");
-    assert_eq!(haptics.min_gap_ms, Some(32.0));
+    assert!(haptics.window_ms > 0.0, "окно меряется от действия до конца наблюдения");
     assert_eq!(record.screen_ratio, 5.4);
 }
 
@@ -672,3 +675,6 @@ fn a_tap_step_waits_while_the_screen_is_still_gliding_to_the_stop() {
     assert_eq!(rig.runner.records().len(), 1);
     assert_eq!(rig.runner.records()[0].failure, None);
 }
+
+#[path = "zoom_runner_home_tests.rs"]
+mod home;

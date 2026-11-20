@@ -28,6 +28,7 @@
     { "id": "close", "file": "icons/phosphor/x.svg", "kind": "fill" },
     { "id": "reset", "file": "icons/phosphor/arrow-counter-clockwise.svg", "kind": "fill" },
     { "id": "controls_menu", "file": "icons/phosphor/dots-six.svg", "kind": "fill" },
-    { "id": "level", "file": "icons/own/level.svg", "kind": "stroke", "stroke_width": 2.0 }
+    { "id": "level", "file": "icons/own/level.svg", "kind": "stroke", "stroke_width": 2.0 },
+    { "id": "zoom_marker_triangle", "file": "icons/own/zoom-marker-triangle.svg", "kind": "fill" }
   ]
 }

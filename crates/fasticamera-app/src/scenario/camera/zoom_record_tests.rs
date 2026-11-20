@@ -149,36 +149,16 @@ fn an_empty_ring_changes_nothing() {
     assert!(!watch.overran());
 }
 
-fn recent_with(times_ms: &[i64]) -> RecentHapticTimes {
-    let times: Vec<MonotonicNanos> = times_ms.iter().map(|time| at_ms(*time)).collect();
-    RecentHapticTimes::from_times(&times)
-}
-
 #[test]
-fn haptic_window_counts_only_the_window_and_reports_the_smallest_gap() {
-    let recent = recent_with(&[10, 70, 300, 340, 372, 500]);
-    // Окно начинается на 300 мс; до него уже принято 2 вибрации.
-    let window = haptic_window(&recent, 2, at_ms(300));
+fn haptic_window_counts_only_the_window_and_measures_its_length() {
+    // К началу окна принято 2 вибрации, к концу — 6; окно 300..1500 мс.
+    let window = haptic_window(6, 2, at_ms(300), at_ms(1_500));
     assert_eq!(window.count, 4);
-    assert_eq!(window.min_gap_ms, Some(32.0));
-    assert!(!window.unmeasured);
+    assert_eq!(window.window_ms, 1_200.0);
 }
 
 #[test]
-fn a_window_with_fewer_than_two_haptics_has_no_gap() {
-    let recent = recent_with(&[10, 400]);
-    let window = haptic_window(&recent, 1, at_ms(300));
-    assert_eq!((window.count, window.min_gap_ms), (1, None));
-}
-
-#[test]
-fn a_window_larger_than_the_ring_is_unmeasured() {
-    let times: Vec<i64> = (0..40).map(|index| index * 40).collect();
-    let recent = recent_with(&times);
-    let window = haptic_window(&recent, 0, at_ms(0));
-    assert_eq!(window.count, 40);
-    assert!(
-        window.unmeasured,
-        "кольцо помнит {RECENT_HAPTICS_CAPACITY}, а вибраций было больше"
-    );
+fn a_counter_that_went_backwards_gives_zero_haptics_not_a_wrapped_number() {
+    let window = haptic_window(1, 3, at_ms(0), at_ms(10));
+    assert_eq!(window.count, 0);
 }

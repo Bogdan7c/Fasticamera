@@ -17,8 +17,12 @@ const STRIP_WINDOW: Window = (420, 1740, 680, 1880);
 /// Круг выбранного упора ленты и полоса фона слева от него на той же высоте.
 const STRIP_BUBBLE_POINT: (u32, u32) = (540, 1775);
 const STRIP_BACKGROUND_POINT: (u32, u32) = (450, 1775);
-/// Жёлтая риска текущего значения на верху колеса: прямоугольник ≈ 8 × 20 px у центра колеса.
+/// Жёлтый маркер текущего значения на верху колеса: треугольник 3,3 × 8,7 pt ≈ 8 × 21 px (основание вверху, вершина
+/// вниз, к центру диска), у середины колеса.
 const WHEEL_MARKER_WINDOW: Window = (520, 1560, 560, 1600);
+/// Верхняя и нижняя половины маркера (по высоте): у треугольника сверху пикселей заметно больше, чем снизу.
+const WHEEL_MARKER_UPPER_HALF: Window = (520, 1570, 560, 1581);
+const WHEEL_MARKER_LOWER_HALF: Window = (520, 1581, 560, 1592);
 /// Шахматка в левом нижнем углу «фото»: самые контрастные пиксели картинки (размытие их гасит).
 const CHECKER_WINDOW: Window = (0, 1000, 340, 1600);
 /// Строка кадра на высоте верха шахматки: по ней меряется ширина карточки переворота.
@@ -90,14 +94,22 @@ fn wheel_open_at_one_point_seven() {
             "намерение ведётся пальцем: {:?}",
             intent.ratio
         );
+        let marker_pixels = snapshot.count_in(WHEEL_MARKER_WINDOW, focus_yellow);
         assert!(
-            snapshot.count_in(WHEEL_MARKER_WINDOW, focus_yellow) > 100,
-            "жёлтая риска текущего значения"
+            (40..140).contains(&marker_pixels),
+            "жёлтый треугольник текущего значения (≈ 67 px), а найдено {marker_pixels}"
+        );
+        // Именно треугольник вершиной вниз, а не прямоугольник: сверху пикселей заметно больше, чем снизу.
+        let upper = snapshot.count_in(WHEEL_MARKER_UPPER_HALF, focus_yellow);
+        let lower = snapshot.count_in(WHEEL_MARKER_LOWER_HALF, focus_yellow);
+        assert!(
+            lower > 0 && upper > lower + 10,
+            "маркер сужается к центру диска: сверху {upper} px, снизу {lower} px"
         );
         assert_eq!(
             rest.count_in(WHEEL_MARKER_WINDOW, focus_yellow),
             0,
-            "в покое колеса нет"
+            "в покое колеса, а с ним и маркера нет"
         );
         check_golden("zoom_wheel_1_7", &snapshot);
     });

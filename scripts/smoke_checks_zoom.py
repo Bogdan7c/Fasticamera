@@ -2,7 +2,7 @@
 
 Точные правила и пороги судит Rust (конфиг ``camera.scenarios.zoom``, ``zoom_verdict.rs``); здесь — независимая
 грубая перепроверка сводки строки результата: все шаги плана выполнены, чёрных кадров там, где ждали картинку, РОВНО
-ноль (решение 113), неудачных смен нет, времена переключения измерены, экран оставлен на 1× основной камеры.
+ноль (решение 113), неудачных смен нет, все переходы раскрылись по условию готовности (раскрытие по сроку и честное чёрное — провал), времена переключения измерены, экран оставлен на 1× основной камеры.
 Подробности по шагам (время «действие → смена объектива» и «действие → первый живой кадр», удержанные кадры, частота,
 зеркало, вибрации колеса) лежат в строках ``detail_zoom`` и печатаются как ``FASTICAMERA_DETAIL``.
 
@@ -24,6 +24,15 @@ EXPECTED_FINAL_RATIO_MILLI = 1000
 
 FINAL_RATIO_TOLERANCE_MILLI = 20
 """Допуск на 1×: 2 % (как в Rust)."""
+
+REVEAL_FAULT_FIELDS = (
+    "revealed_by_timeout",
+    "ended_without_stream",
+    "ended_without_presentable_frame",
+    "black_camera_unavailable",
+    "black_picture_unavailable",
+)
+"""Плохие исходы держания переходного кадра (``RevealFaults`` в ``zoom_reveal.rs``): все обязаны быть нулями."""
 
 
 def check_zoom(result: dict) -> list[str]:
@@ -60,9 +69,27 @@ def _counter_problems(report: dict) -> list[str]:
         problems.append(f"чёрных кадров там, где ждали картинку: {black!r}, ожидалось ровно 0")
     if report.get("switches_failed") != 0:
         problems.append(f"неудачных смен объектива: {report.get('switches_failed')!r}, ожидалось 0")
+    problems.extend(_reveal_problems(report))
     published = report.get("lens_intents_published")
     if not _is_number(published) or published <= 0:
         problems.append(f"экран не публиковал намерений объектива (lens_intents_published={published!r})")
+    return problems
+
+
+def _reveal_problems(report: dict) -> list[str]:
+    """Каждая смена объектива раскрылась по условию готовности цвета и яркости (ядро заявки фичи, решение 113).
+
+    Раскрытие по сроку (``max_hold_ms``) и держание, закончившееся честным чёрным, не дают чёрных кадров «там, где
+    ждали картинку», поэтому счётчик чёрных их не ловит; сводка Rust несёт их отдельно в ``reveal_faults``.
+    """
+    faults = report.get("reveal_faults")
+    if not isinstance(faults, dict):
+        return [f"в сводке нет reveal_faults (значение {faults!r}): раскрытие переходов не проверено"]
+    problems: list[str] = []
+    for name in REVEAL_FAULT_FIELDS:
+        value = faults.get(name)
+        if value != 0:
+            problems.append(f"переход не раскрылся по условию готовности: reveal_faults.{name}={value!r}, ожидалось 0")
     return problems
 
 
