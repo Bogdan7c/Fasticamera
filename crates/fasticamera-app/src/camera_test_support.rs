@@ -39,6 +39,19 @@ const ACTIVE_COMPANION: CompanionStreamStatus = CompanionStreamStatus::Active {
     height: 480,
 };
 
+/// Шкала зума OnePlus 11 (ширик 0,59 / основная 1 / фронтальная), построенная теми же функциями движка, что и на
+/// телефоне, из образцов камер по фактам 00. Для тестов, которым нужен настоящий каталог без запуска движка.
+pub fn oneplus_zoom_catalog() -> Arc<camera_contract::zoom::ZoomCatalog> {
+    use camera_contract::fixtures::{front_camera, main_wide_camera, ultra_wide_camera};
+    use camera_core::role_classifier::classify_catalog;
+    use camera_core::zoom::{ZoomConfig, build_zoom_catalog};
+
+    let cameras = vec![main_wide_camera(), ultra_wide_camera(), front_camera()];
+    let classified = classify_catalog(cameras, &camera_core::config::CameraEngineConfig::default().roles)
+        .expect("образцы камер без повторных ID");
+    Arc::new(build_zoom_catalog(&classified.catalog, &ZoomConfig::default()))
+}
+
 /// Сколько ждём в тестах состояния движка: запас на загруженную машину, ничего не висит вечно.
 pub const WAIT: Duration = Duration::from_secs(10);
 

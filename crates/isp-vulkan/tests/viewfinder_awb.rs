@@ -36,8 +36,8 @@ use isp_model::statistics::{
     AwbStatistics, AwbStatisticsSettings, TileGrid, cells_size, compute_awb_statistics, quantize_sample, tile_of_cell,
 };
 use isp_vulkan::viewfinder::{
-    AwbReduction, AwbReductionPolicy, ViewfinderGeometry, ViewfinderIsp, ViewfinderIspConfig, ViewfinderStorageFormat,
-    WorkgroupSizeConfig,
+    AwbReduction, AwbReductionPolicy, OutputAllocation, ViewfinderGeometry, ViewfinderIsp, ViewfinderIspConfig,
+    ViewfinderStorageFormat, WorkgroupSizeConfig,
 };
 use viewfinder_support::{
     ParamsSpec, RawFrame, RunRequest, assert_no_validation_errors, gpu_context_or_skip, reference_upright,
@@ -121,6 +121,7 @@ fn whole(raw: &RawFrame, orientation: SensorOrientation) -> ViewfinderGeometry {
         valid_area: raw.full_rect(),
         crop: raw.full_rect(),
         sensor_orientation: orientation,
+        allocation: OutputAllocation::Exact,
     }
 }
 
@@ -200,6 +201,7 @@ fn statistics_equal_reference_exactly_when_level_division_is_exact() {
             valid_area: raw.full_rect(),
             crop,
             sensor_orientation: orientation,
+            allocation: OutputAllocation::Exact,
         };
         for reduction in BOTH_REDUCTIONS {
             let config = config_with_reduction(&context, config(grid, workgroup), reduction);
@@ -460,6 +462,7 @@ fn single_tile_and_straddling_workgroups_match_reference_exactly_in_both_variant
             valid_area: raw.full_rect(),
             crop,
             sensor_orientation: orientation,
+            allocation: OutputAllocation::Exact,
         };
         let mut results = Vec::new();
         for reduction in BOTH_REDUCTIONS {

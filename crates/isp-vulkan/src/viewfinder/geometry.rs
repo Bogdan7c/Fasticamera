@@ -6,7 +6,7 @@
 //! внутри полезной области, а та — внутри буфера.
 
 use ash::vk;
-use camera_contract::geometry::{PixelRect, SensorOrientation};
+use camera_contract::geometry::{PixelRect, PixelSize, SensorOrientation};
 use camera_contract::viewfinder_crop::ViewfinderCrop;
 use gpu_vulkan::raw_mosaic_preview::MosaicSource;
 
@@ -19,6 +19,22 @@ const RAW10_PIXELS_PER_GROUP: u64 = 4;
 /// Шейдер читает буфер RAW10 словами по 4 байта.
 const RAW10_WORD_BYTES: u64 = 4;
 
+/// Под какой размер выделяется выходная картинка ISP.
+///
+/// Непрерывный зум меняет размер кадрирования на каждом кадре. Если бы картинка пересоздавалась под каждый
+/// размер, колесо зума аллоцировало бы GPU-память каждый кадр. Поэтому картинка выделяется ПОД ЁМКОСТЬ
+/// (кадрирование при зуме 1× того же соотношения сторон), а ISP пишет реальное содержимое в её левый верхний
+/// прямоугольник; читатели (компоновщик, подложка стекла) берут только его (`gpu_vulkan::source_window`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputAllocation {
+    /// Картинка ровно под размер кадрирования (сценарии, тесты: размер меняется — картинка пересоздаётся).
+    Exact,
+    /// Картинка под кадрирование такого размера (пиксели буфера RAW, до деления на ячейки): оно не меньше
+    /// любого кадрирования того же соотношения сторон при большем зуме. Пересоздание — только когда оно
+    /// меняется (смена потока или соотношения сторон).
+    ReserveForCrop(PixelSize),
+}
+
 /// Геометрия кадра от вызывающего.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ViewfinderGeometry {
@@ -28,27 +44,47 @@ pub struct ViewfinderGeometry {
     pub crop: PixelRect,
     /// Ориентация сенсора: на сколько повернуть кадр по часовой, чтобы он встал прямо.
     pub sensor_orientation: SensorOrientation,
+    /// Под какой размер выделить выходную картинку.
+    pub allocation: OutputAllocation,
 }
 
 impl ViewfinderGeometry {
-    /// Геометрия с кадрированием, разрешённым из выбора экрана.
+    /// Геометрия с кадрированием, разрешённым из выбора экрана. Картинка выделяется под ёмкость: то же
+    /// соотношение сторон без зума (центр не важен — размер не зависит от него).
     pub fn from_crop(
         valid_area: PixelRect,
         crop: &ViewfinderCrop,
         sensor_orientation: SensorOrientation,
     ) -> Result<Self, ViewfinderError> {
+        let capacity = ViewfinderCrop {
+            zoom: camera_contract::viewfinder_crop::ZoomFactor::NONE,
+            ..*crop
+        };
         Ok(Self {
             valid_area,
             crop: crop.resolve(valid_area)?,
             sensor_orientation,
+            allocation: OutputAllocation::ReserveForCrop(capacity.resolve(valid_area)?.size),
         })
     }
 
     /// Размер прямого (upright) выхода: половина кадрирования (ячейка 2×2 → пиксель), стороны
     /// меняются местами при повороте на 90° и 270°.
     pub fn output_extent(&self) -> vk::Extent2D {
-        let cells_width = self.crop.size.width / 2;
-        let cells_height = self.crop.size.height / 2;
+        self.upright_extent_of(self.crop.size)
+    }
+
+    /// Размер выходной картинки (ёмкость): содержимое всегда помещается в левый верхний угол.
+    pub fn allocation_extent(&self) -> vk::Extent2D {
+        match self.allocation {
+            OutputAllocation::Exact => self.output_extent(),
+            OutputAllocation::ReserveForCrop(size) => self.upright_extent_of(size),
+        }
+    }
+
+    fn upright_extent_of(&self, crop_size: PixelSize) -> vk::Extent2D {
+        let cells_width = crop_size.width / 2;
+        let cells_height = crop_size.height / 2;
         if self.sensor_orientation.quarter_turns_clockwise() % 2 == 1 {
             vk::Extent2D {
                 width: cells_height,
@@ -68,8 +104,10 @@ impl ViewfinderGeometry {
 pub(crate) struct CheckedGeometry {
     /// Кадрирование в пикселях буфера.
     pub crop: PixelRect,
-    /// Размер выхода.
+    /// Размер выхода (содержимого кадра).
     pub output: vk::Extent2D,
+    /// Размер выходной картинки (ёмкость ≥ выхода по обеим осям).
+    pub allocation: vk::Extent2D,
     /// Поворот сенсора, четверти по часовой (0..=3).
     pub quarter_turns: u32,
     /// Шаг строки RAW10 в байтах; для RAW16 — 0 (шейдер его не читает).
@@ -111,9 +149,16 @@ pub(crate) fn check_geometry(
             "полезная область {valid_area:?} выходит за буфер {source_width}x{source_height}"
         )));
     }
+    let (output, allocation) = (geometry.output_extent(), geometry.allocation_extent());
+    if allocation.width < output.width || allocation.height < output.height {
+        return Err(ViewfinderError::geometry(format!(
+            "ёмкость выхода {allocation:?} меньше выхода {output:?}: кадрирование {crop:?} больше зарезервированного"
+        )));
+    }
     Ok(CheckedGeometry {
         crop,
-        output: geometry.output_extent(),
+        output,
+        allocation,
         quarter_turns: geometry.sensor_orientation.quarter_turns_clockwise(),
         raw10_row_stride_bytes,
     })

@@ -28,8 +28,9 @@ pub enum ViewfinderPainter {
     DebugMosaic,
 }
 
-/// Команда видоискателю. Каждая описывает намерение целиком (никаких «флагов»).
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Команда видоискателю. Каждая описывает намерение целиком (никаких «флагов»). Не `Copy`: кадрирование по
+/// зуму держит общий каталог шкал камер (`Arc`).
+#[derive(Debug, Clone, PartialEq)]
 pub enum ViewfinderCommand {
     /// Рисовать выбранным рисовальщиком.
     SetPainter(ViewfinderPainter),
@@ -67,7 +68,10 @@ impl ViewfinderCommand {
     /// известно только на кадре (тогда кадр не обрабатывается, причина — в диагностике).
     pub fn rejection_reason(&self) -> Option<String> {
         match self {
-            Self::SetCrop(crop) | Self::SetFraming(ViewfinderFraming { crop, .. }) => crop_rejection_reason(crop),
+            Self::SetCrop(crop) => crop_rejection_reason(crop),
+            Self::SetFraming(ViewfinderFraming { crop, .. }) => {
+                crop_aspect_rejection_reason(crop.aspect()).or_else(|| crop.rejection_reason())
+            }
             _ => None,
         }
     }
@@ -75,7 +79,13 @@ impl ViewfinderCommand {
 
 /// Почему кадрирование неисполнимо (`None` — исполнимо).
 fn crop_rejection_reason(crop: &ViewfinderCrop) -> Option<String> {
-    match crop.aspect {
+    crop_aspect_rejection_reason(crop.aspect)
+}
+
+/// Почему соотношение сторон неисполнимо (`None` — исполнимо). Общее правило для фиксированного кадрирования и
+/// кадрирования по зуму.
+fn crop_aspect_rejection_reason(aspect: CropAspect) -> Option<String> {
+    match aspect {
         CropAspect::LongToShort { long, short } if short == 0 || long < short => {
             Some(format!("соотношение сторон {long}:{short}: нужно long ≥ short > 0"))
         }
@@ -123,7 +133,7 @@ impl ViewfinderCommandLog {
 #[cfg(test)]
 mod tests {
     use super::super::framing::FramingDestination;
-    use camera_contract::viewfinder_crop::ZoomFactor;
+    use camera_contract::viewfinder_crop::{ViewfinderCrop, ZoomFactor};
     use isp_vulkan::viewfinder::IspStage;
 
     use super::*;
@@ -133,18 +143,22 @@ mod tests {
         let broken = ViewfinderCommand::SetCrop(ViewfinderCrop {
             aspect: CropAspect::LongToShort { long: 3, short: 4 },
             zoom: ZoomFactor::NONE,
+            center: camera_contract::viewfinder_crop::CropCenter::ValidAreaCenter,
         });
         assert!(broken.rejection_reason().is_some_and(|reason| reason.contains("3:4")));
         let zero = ViewfinderCommand::SetCrop(ViewfinderCrop {
             aspect: CropAspect::LongToShort { long: 4, short: 0 },
             zoom: ZoomFactor::NONE,
+            center: camera_contract::viewfinder_crop::CropCenter::ValidAreaCenter,
         });
         assert!(zero.rejection_reason().is_some());
         let broken_framing = ViewfinderCommand::SetFraming(ViewfinderFraming {
             crop: ViewfinderCrop {
                 aspect: CropAspect::LongToShort { long: 3, short: 4 },
                 zoom: ZoomFactor::NONE,
-            },
+                center: camera_contract::viewfinder_crop::CropCenter::ValidAreaCenter,
+            }
+            .into(),
             destination: FramingDestination::Configured,
         });
         assert!(
@@ -155,13 +169,14 @@ mod tests {
         );
         for fine in [
             ViewfinderCommand::SetFraming(ViewfinderFraming {
-                crop: ViewfinderCrop::FULL_SENSOR,
+                crop: ViewfinderCrop::FULL_SENSOR.into(),
                 destination: FramingDestination::Configured,
             }),
             ViewfinderCommand::SetCrop(ViewfinderCrop::FULL_SENSOR),
             ViewfinderCommand::SetCrop(ViewfinderCrop {
                 aspect: CropAspect::SQUARE,
                 zoom: ZoomFactor::NONE,
+                center: camera_contract::viewfinder_crop::CropCenter::ValidAreaCenter,
             }),
             ViewfinderCommand::SetPainter(ViewfinderPainter::DebugMosaic),
             ViewfinderCommand::SetIspStages(IspStageSet::ALL.without(IspStage::Tone)),
@@ -175,14 +190,14 @@ mod tests {
     fn log_counts_each_outcome_and_keeps_the_last_command() {
         let mut log = ViewfinderCommandLog::default();
         let painter = ViewfinderCommand::SetPainter(ViewfinderPainter::DebugMosaic);
-        log.note(painter, ViewfinderCommandOutcome::Applied);
-        log.note(painter, ViewfinderCommandOutcome::AlreadyInEffect);
+        log.note(painter.clone(), ViewfinderCommandOutcome::Applied);
+        log.note(painter.clone(), ViewfinderCommandOutcome::AlreadyInEffect);
         log.note(painter, ViewfinderCommandOutcome::Unsupported);
         let stages = ViewfinderCommand::SetIspStages(IspStageSet::ALL);
         let rejected = ViewfinderCommandOutcome::Rejected {
             reason: "причина".to_owned(),
         };
-        log.note(stages, rejected.clone());
+        log.note(stages.clone(), rejected.clone());
         assert_eq!(
             (log.applied, log.already_in_effect, log.unsupported, log.rejected),
             (1, 1, 1, 1)

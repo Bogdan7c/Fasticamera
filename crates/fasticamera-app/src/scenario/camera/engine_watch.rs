@@ -108,6 +108,12 @@ pub fn failure_of_event(event: &CameraEvent) -> Option<RunFailure> {
         | CameraEvent::Unavailable { .. }
         | CameraEvent::Recovered { .. }
         | CameraEvent::StreamConfigured { .. }
+        // Смену объектива и потолок частоты камеры судит сценарий `zoom` сам (по ним и считает метрики); для
+        // остальных сценариев, которые объективов не переключают, эти события — наблюдение, а не отказ.
+        | CameraEvent::StreamLimitedByCamera { .. }
+        | CameraEvent::LensSwitched { .. }
+        | CameraEvent::LensSwitchRetargeted { .. }
+        | CameraEvent::LensSwitchFailed { .. }
         // События 3A (итог тапа, поправки, серия) — предмет проверок сценария `3a`, а не отказ движка.
         | CameraEvent::FocusSettled { .. }
         | CameraEvent::ControlsAdjusted { .. }

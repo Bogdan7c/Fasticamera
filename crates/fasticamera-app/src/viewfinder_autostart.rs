@@ -10,7 +10,9 @@
 //!   когда движок камеры поднялся ([`ViewfinderAutostart::start_once`] из `camera_wiring`);
 //! * после сценария, который заявлял права на камеру (он её закрывает и открывает свою), желаемое
 //!   состояние автозапуска возвращается ([`ViewfinderAutostart::restore_after_scenario`]); сценарии,
-//!   которые камеры не касались, не трогаются вовсе;
+//!   которые камеры не касались, не трогаются вовсе. Объектив, который выбрал пользователь (сессия 13), возвращается
+//!   вместе с ним: вызывающий передаёт роль, стоявшую на момент заявки сценария ([`UserLens`]), и видоискатель
+//!   открывается ею, а не ролью по умолчанию;
 //! * передний план / фон и восстановление после вытеснения — НЕ здесь: это делает сам движок
 //!   (решение 39). Желаемое состояние в фоне сохраняется, поэтому `Paused`/`Resumed` команд
 //!   автозапуска не повторяют.
@@ -19,7 +21,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use camera_contract::ids::CameraTarget;
+use camera_contract::ids::{CameraTarget, LensRole};
 use camera_contract::stream::{InvalidFrameRate, StreamMode, TargetFrameRate};
 use camera_core::{CameraHandle, CommandId, CommandRejected};
 use serde::{Deserialize, Serialize};
@@ -102,6 +104,18 @@ impl ViewfinderAutostartConfig {
     pub fn validate(&self) -> Result<(), ViewfinderAutostartConfigError> {
         self.resolve().map(|_| ())
     }
+}
+
+/// Какой объектив стоял у пользователя до сценария, заявившего камеру.
+///
+/// Не `Option<LensRole>`: «объектива не было» (камера закрыта, поток не шёл) и «объектив известен» на месте вызова
+/// читаются по-разному, а первое значит «открыть роль по умолчанию».
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserLens {
+    /// До сценария поток не шёл: возвращать нечего, открывается роль автозапуска из конфига.
+    NoneBeforeScenario,
+    /// До сценария шёл поток объектива этой роли: он и возвращается.
+    Role(LensRole),
 }
 
 /// Какая из команд автозапуска не ушла.
@@ -212,15 +226,27 @@ impl ViewfinderAutostart {
     /// Сценарий, заявлявший права на камеру, закончился, и вызывающий уже отправил `close` (он
     /// стирает желаемое сценария, включая ручные настройки): вернуть желаемое состояние
     /// видоискателя. Выключенный автозапуск ничего не шлёт — камера остаётся закрытой, как до 07.
+    ///
+    /// Объектив пользователя возвращается ТЕМ ЖЕ порядком команд (`open` с его ролью), а не повторной публикацией
+    /// намерения в ящик объективов: толчок ящика движок обрабатывает раньше очереди команд (`CameraInbox::wait_next`),
+    /// поэтому намерение, опубликованное сразу после `close`/`open`, могло бы быть прочитано ДО них и потеряться.
     pub fn restore_after_scenario(
         &self,
         engine: Result<&CameraHandle, CameraUnavailable>,
+        user_lens: UserLens,
     ) -> ViewfinderAutostartOutcome {
-        let AutostartPlan::Enabled(step) = &self.plan else {
+        let AutostartPlan::Enabled(default_step) = &self.plan else {
             return ViewfinderAutostartOutcome::Disabled;
         };
+        let step = match user_lens {
+            UserLens::NoneBeforeScenario => default_step.clone(),
+            UserLens::Role(role) => ResolvedStep {
+                target: CameraTarget::Role(role),
+                mode: default_step.mode,
+            },
+        };
         let outcome = match engine {
-            Ok(handle) => send_desired_viewfinder(handle, step),
+            Ok(handle) => send_desired_viewfinder(handle, &step),
             Err(_) => ViewfinderAutostartOutcome::EngineUnavailable,
         };
         log_outcome(outcome, "restore_after_scenario");

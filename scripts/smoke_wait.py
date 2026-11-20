@@ -35,6 +35,7 @@ import smoke_checks_ae_trace
 import smoke_checks_three_a
 import smoke_checks_glass
 import smoke_checks_screen
+import smoke_checks_zoom
 import smoke_checks_viewfinder
 import smoke_logcat
 import smoke_neutral_card
@@ -202,12 +203,14 @@ CHECKS: dict[str, ScenarioCheck] = {
     "ae-trace": ignoring_observations(smoke_checks_ae_trace.check_ae_trace),
     "glass": ignoring_observations(smoke_checks_glass.check_glass),
     "screen": ignoring_observations(smoke_checks_screen.check_screen),
+    "zoom": ignoring_observations(smoke_checks_zoom.check_zoom),
 }
 
 NOTES: dict[str, Callable[[dict], list[str]]] = {
     "3a": smoke_checks_three_a.three_a_notes,
     "glass": smoke_checks_glass.glass_notes,
     "screen": smoke_checks_screen.screen_notes,
+    "zoom": smoke_checks_zoom.zoom_notes,
 }
 """Пояснения к вердикту прошедшего сценария (не провал): печатаются после вердикта, как заметки пост-проверок."""
 

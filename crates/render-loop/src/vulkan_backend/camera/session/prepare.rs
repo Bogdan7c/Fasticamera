@@ -15,18 +15,31 @@ use isp_model::exposure::ExposureGain;
 use isp_vulkan::viewfinder::{ViewfinderGeometry, gamut_for_display};
 use raw_frame_stream::{RawFrameLease, ViewfinderPoll};
 
+use camera_contract::zoom::FramedCrop;
+use shell_contract::clock::MonotonicNanos;
+
+use super::super::continuity::{ExposureReadiness, PictureMeta, ProcessedFrame, Screen, StreamEvent};
 use super::super::exposure::{ExposureFrameFacts, ExposureFramePlan, ExposureSlotFrame};
 use super::super::isp_params::ParamsOutcome;
 use super::super::passport::preview_params;
 use super::super::statistics_schedule::StatisticsDecision;
+use super::transition::TransitionFrame;
 use super::{CameraSession, Content, LOG_TARGET, NewFrameError, Prepared};
-use crate::viewfinder::{AwbFrameIdentity, ViewfinderPainter};
+use crate::viewfinder::{AwbFrameIdentity, FrameCropReport, ViewfinderPainter};
 use crate::vulkan_backend::camera::SubmissionSerial;
 use crate::vulkan_backend::camera::lease::FrameChange;
+use crate::vulkan_backend::camera::pipelines::IspPresentation;
 
 impl CameraSession {
     /// Решает, что рисовать в этом кадре.
-    pub(super) fn prepare_content(&mut self, serial: SubmissionSerial, color_space: DisplayColorSpace) -> Prepared {
+    ///
+    /// `now` — время показа кадра (шкала vsync): по нему машина непрерывности отсчитывает сроки удержания.
+    pub(super) fn prepare_content(
+        &mut self,
+        serial: SubmissionSerial,
+        color_space: DisplayColorSpace,
+        now: MonotonicNanos,
+    ) -> Prepared {
         let painter = self.settings.painter;
         // Единственный опрос потока за кадр показа: при буфере видоискателя каждый опрос расходует
         // кадр очереди, лишний «съел» бы кадр следующего vsync. Пропущенный ради схода тик (решение 54)
@@ -38,15 +51,17 @@ impl CameraSession {
                 lease.release_unused();
                 self.viewfinder.counters_mut().bracket_frames_skipped += 1;
                 match painter {
-                    ViewfinderPainter::Isp => self.prepare_isp_without_new_frame(),
+                    ViewfinderPainter::Isp => self.prepare_isp_without_new_frame(now, StreamEvent::Unpresentable),
                     ViewfinderPainter::DebugMosaic => self.prepare_mosaic_redraw(serial),
                 }
             }
             (ViewfinderPoll::NewFrame(lease), ViewfinderPainter::Isp) => {
-                self.prepare_isp_new(lease, serial, color_space)
+                self.prepare_isp_new(lease, serial, color_space, now)
             }
             (ViewfinderPoll::NewFrame(lease), ViewfinderPainter::DebugMosaic) => self.prepare_mosaic_new(lease, serial),
-            (ViewfinderPoll::NoNewFrame, ViewfinderPainter::Isp) => self.prepare_isp_without_new_frame(),
+            (ViewfinderPoll::NoNewFrame, ViewfinderPainter::Isp) => {
+                self.prepare_isp_without_new_frame(now, StreamEvent::Quiet)
+            }
             (ViewfinderPoll::NoNewFrame, ViewfinderPainter::DebugMosaic) => self.prepare_mosaic_redraw(serial),
             (ViewfinderPoll::StreamInactive, _) => {
                 // Следующий кадр — уже другой поток: подсказки и параметры ISP прежнего потока ему
@@ -57,12 +72,22 @@ impl CameraSession {
                     exposure.forget_stream();
                 }
                 self.bench.note_stream_inactive();
+                // Продукт (ISP) удерживает последний показанный кадр вместо чёрного (решения 110, 113);
+                // отладочная мозаика — стенд замера, непрерывности у неё нет.
+                let (content, transition) = match painter {
+                    ViewfinderPainter::Isp => {
+                        let transition = self.plan_recompose_transition(now, StreamEvent::Inactive);
+                        (content_of(&transition), Some(transition))
+                    }
+                    ViewfinderPainter::DebugMosaic => (Content::Black, None),
+                };
                 Prepared {
-                    content: Content::Black,
+                    content,
                     change: FrameChange::Clear,
                     new_lease: None,
                     camera_wait: None,
                     stream_inactive: true,
+                    transition,
                 }
             }
         }
@@ -76,6 +101,7 @@ impl CameraSession {
         lease: RawFrameLease,
         serial: SubmissionSerial,
         color_space: DisplayColorSpace,
+        now: MonotonicNanos,
     ) -> Prepared {
         let gamut = gamut_for_display(color_space);
         // Наш AWB решает до параметров: какая белая идёт в ISP, показывать ли кадр, нужна ли статистика.
@@ -94,20 +120,19 @@ impl CameraSession {
         if let ParamsOutcome::Unavailable(reason) = &decision.outcome {
             tracing::debug!(target: LOG_TARGET, ?reason, "параметров ISP нет: кадр не показывается");
             lease.release_unused();
-            return self.prepare_isp_without_new_frame();
+            return self.prepare_isp_without_new_frame(now, StreamEvent::Unpresentable);
         }
         let stream = &lease.passport().stream;
-        let geometry = match ViewfinderGeometry::from_crop(
-            stream.valid_area,
-            &self.settings.crop,
-            stream.sensor_orientation,
-        ) {
+        // Кадрирование — для камеры ЭТОГО кадра (по паспорту его потока), а не «текущей»: кадр старой камеры,
+        // ещё идущий через ISP во время переключения, не получает кадрирование новой (нет скачка на кадр).
+        let framed = self.settings.crop.framed_for(&stream.camera);
+        let geometry = match ViewfinderGeometry::from_crop(stream.valid_area, &framed.crop, stream.sensor_orientation) {
             Ok(geometry) => geometry,
             Err(error) => {
                 self.viewfinder.counters_mut().frames_rejected_geometry += 1;
                 tracing::warn!(target: LOG_TARGET, %error, "геометрия кадра не подходит ISP: кадр возвращён нетронутым");
                 lease.release_unused();
-                return self.prepare_isp_without_new_frame();
+                return self.prepare_isp_without_new_frame(now, StreamEvent::Unpresentable);
             }
         };
         match self.import_with_fence(&lease, serial) {
@@ -124,7 +149,9 @@ impl CameraSession {
                 let headroom =
                     self.bench
                         .prepare_frame(lease.passport(), plan.white, gamut, self.viewfinder.headroom_mut());
+                let transition = self.plan_new_frame_transition(&lease, plan, &framed, &geometry, now);
                 Prepared {
+                    transition: Some(transition),
                     content: Content::IspNew {
                         source,
                         geometry,
@@ -144,9 +171,47 @@ impl CameraSession {
                 self.stats.camera_frame_failures += 1;
                 tracing::warn!(target: LOG_TARGET, %error, "кадр камеры не подготовлен: возвращён нетронутым");
                 lease.release_unused();
-                self.prepare_isp_without_new_frame()
+                self.prepare_isp_without_new_frame(now, StreamEvent::Unpresentable)
             }
         }
+    }
+
+    /// Решение непрерывности для нового кадра: поток, готовность цвета (AWB) и яркости (AE), направление камеры.
+    fn plan_new_frame_transition(
+        &self,
+        lease: &RawFrameLease,
+        plan: crate::vulkan_backend::camera::white_balance::FramePlan,
+        framed: &FramedCrop,
+        geometry: &ViewfinderGeometry,
+        now: MonotonicNanos,
+    ) -> TransitionFrame {
+        let passport = lease.passport();
+        let facing = self.settings.crop.facing_of(&passport.stream.camera);
+        // Вендорский AE (раннера нет): измерять нечего, ждать яркости незачем.
+        let exposure = self.exposure.as_ref().map_or(ExposureReadiness::Ready, |runner| {
+            runner.reveal_readiness(
+                passport,
+                self.continuity_config.reveal_exposure,
+                self.continuity_config.max_exposure_error_ev,
+            )
+        });
+        let event = StreamEvent::Processed(ProcessedFrame {
+            stream: plan.stream,
+            color_known: plan.presentation == IspPresentation::Show,
+            exposure,
+        });
+        let picture = PictureMeta {
+            stream: plan.stream,
+            shown_ratio: framed.shown_ratio,
+            mirror: framed.mirror,
+            facing,
+        };
+        let crop = FrameCropReport {
+            camera: passport.stream.camera.clone(),
+            resolved: geometry.crop,
+            framed: *framed,
+        };
+        self.plan_transition(now, event, Some(picture), Some(crop))
     }
 
     /// Что слот помнит о кадре для замера AE: поток и факты кадра (выдержка×ISO результата, веса яркости
@@ -166,22 +231,21 @@ impl CameraSession {
 
     /// Нового кадра для ISP нет: перекомпоновка прежнего изображения (или чёрный, если его нет).
     /// Кадр отладочной мозаики, оставшийся на экране после смены рисовальщика, возвращается этим сабмитом.
-    fn prepare_isp_without_new_frame(&mut self) -> Prepared {
+    fn prepare_isp_without_new_frame(&mut self, now: MonotonicNanos, event: StreamEvent) -> Prepared {
         let change = if self.ledger.displayed().is_some() {
             FrameChange::Clear
         } else {
             FrameChange::Keep
         };
+        // Что на экране — решает машина непрерывности: живое изображение, удержанный кадр или чёрный.
+        let transition = self.plan_recompose_transition(now, event);
         Prepared {
-            content: if self.isp_image_shown {
-                Content::Recompose
-            } else {
-                Content::Black
-            },
+            content: content_of(&transition),
             change,
             new_lease: None,
             camera_wait: None,
             stream_inactive: false,
+            transition: Some(transition),
         }
     }
 
@@ -204,6 +268,7 @@ impl CameraSession {
                     new_lease: Some(lease),
                     camera_wait: Some(wait),
                     stream_inactive: false,
+                    transition: None,
                 }
             }
             Err(error) => {
@@ -241,6 +306,7 @@ impl CameraSession {
             new_lease: None,
             camera_wait: None,
             stream_inactive: false,
+            transition: None,
         }
     }
 
@@ -259,6 +325,15 @@ impl CameraSession {
         let wait = import_wait_fence(&self.context, fence)
             .map_err(|error| NewFrameError(format!("импорт acquire-fence в семафор: {}", error.reason)))?;
         Ok((source, wait))
+    }
+}
+
+/// Содержимое кадра без нового кадра камеры по решению непрерывности: чёрный или перекомпоновка (живая или
+/// удержанная — какая именно, решает `plan` при записи).
+fn content_of(transition: &TransitionFrame) -> Content {
+    match transition.plan.screen {
+        Screen::Black => Content::Black,
+        Screen::Live | Screen::Held => Content::Recompose,
     }
 }
 

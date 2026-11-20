@@ -12,7 +12,9 @@
 //!   (`CameraCapabilities.three_a.exposure_compensation`), а не любой;
 //! * геометрия потока (полезная область, активная область, ориентация сенсора) — паспорт потока, собранный
 //!   тем же кодом, что у бэкенда (`build_stream_passport`): правило «16:9 занимает верх буфера» живёт в одном месте.
-//!   Зеркало: тыл — без зеркала, фронтальная камера — по горизонтали (задел, фронталки в v1 нет).
+//!   Зеркало экран из геометрии потока больше не берёт (с сессии 13 оно приходит из каталога зума по камере
+//!   кадра), поэтому здесь `MirrorMode::None`;
+//! * объективы — `lens` статуса движка ([`LensFactsBuilder`]: каталог зума, активная камера, смена, неудача смены).
 //!
 //! Паспорт потока дорогой (клон калибровки цвета ради трёх полей), поэтому геометрия кэшируется по ИДЕНТИЧНОСТИ
 //! сконфигурированного потока ([`StreamGeometryCache`]): пересчёт только при смене потока. Ошибка паспорта не
@@ -22,11 +24,12 @@
 //!
 //! Факты считаются на каждом кадре UI; шлются экрану только при реальном изменении ([`CameraFactsWatcher`]).
 
+use crate::camera_screen_lens_facts::{LensFactsBuilder, LensFactsDiagnostics};
 use camera_android::stream_passport::{PassportError, build_stream_passport};
 use camera_contract::availability::CameraUnavailableReason;
 use camera_contract::capabilities::CameraCapabilities;
 use camera_contract::geometry::SensorOrientation;
-use camera_contract::ids::{CameraId, LensFacing};
+use camera_contract::ids::CameraId;
 use camera_contract::stream::ConfiguredStream;
 use camera_contract::three_a::ExposureCompensationSupport;
 use camera_core::state::FatalCause;
@@ -49,11 +52,11 @@ pub fn facts_for_absent_engine() -> CameraFacts {
 /// Перевод статуса движка в факты экрана без кэша (паспорт собирается заново). Для тестов и разовых вызовов;
 /// на кадре UI используется [`camera_facts_with_cache`].
 pub fn camera_facts_from_status(status: &CameraStatus) -> CameraFacts {
-    camera_facts_with_cache(status, &mut StreamGeometryCache::default())
+    camera_facts_with_cache(status, &mut FactsCache::default())
 }
 
 /// Перевод статуса движка в факты экрана; геометрия потока берётся из кэша.
-pub fn camera_facts_with_cache(status: &CameraStatus, cache: &mut StreamGeometryCache) -> CameraFacts {
+pub fn camera_facts_with_cache(status: &CameraStatus, cache: &mut FactsCache) -> CameraFacts {
     let active = active_camera_capabilities(status);
     CameraFacts {
         presence: presence_of_state(&status.state),
@@ -63,7 +66,24 @@ pub fn camera_facts_with_cache(status: &CameraStatus, cache: &mut StreamGeometry
         exposure_range: active.map_or(ExposureRangeFact::NotReported, |caps| {
             exposure_range_of(&caps.three_a.exposure_compensation)
         }),
-        stream: cache.geometry_of(status, active),
+        stream: cache.geometry.geometry_of(status, active),
+        lens: cache.lens.facts_of(&status.lens),
+    }
+}
+
+/// Всё, что источник фактов помнит между кадрами: кэш геометрии потока и память о неудачах смены объектива.
+#[derive(Debug, Default)]
+pub struct FactsCache {
+    geometry: StreamGeometryCache,
+    lens: LensFactsBuilder,
+}
+
+impl FactsCache {
+    pub fn diagnostics(&self) -> FactsDiagnostics {
+        FactsDiagnostics {
+            lens: self.lens.diagnostics(),
+            ..self.geometry.diagnostics()
+        }
     }
 }
 
@@ -176,6 +196,8 @@ pub struct FactsDiagnostics {
     pub passport_builds: u64,
     /// Сколько потоков не дали паспорта (нет RAW, 16:9 не влезает): у них геометрии нет, и это не тишина.
     pub passport_failures: u64,
+    /// Счётчики перевода статуса объективов.
+    pub lens: LensFactsDiagnostics,
 }
 
 /// Паспорт одного сконфигурированного потока: итог сборки геометрии.
@@ -234,10 +256,8 @@ impl StreamGeometryCache {
             valid_area: passport.valid_area,
             active_array_size: capabilities.active_array.size,
             sensor_orientation: passport.sensor_orientation,
-            mirror: match capabilities.facing {
-                LensFacing::Front => MirrorMode::Horizontal,
-                LensFacing::Back | LensFacing::External => MirrorMode::None,
-            },
+            // Зеркало решает каталог зума по камере кадра (решение 115), а не геометрия потока.
+            mirror: MirrorMode::None,
         })
     }
 }
@@ -254,25 +274,25 @@ pub trait CameraFactsSource: Send {
 /// Факты от настоящего движка: свежий снимок статуса без ожидания.
 pub struct EngineFactsSource {
     handle: camera_core::CameraHandle,
-    geometry: StreamGeometryCache,
+    cache: FactsCache,
 }
 
 impl EngineFactsSource {
     pub fn new(handle: camera_core::CameraHandle) -> Self {
         Self {
             handle,
-            geometry: StreamGeometryCache::default(),
+            cache: FactsCache::default(),
         }
     }
 }
 
 impl CameraFactsSource for EngineFactsSource {
     fn current_facts(&mut self) -> CameraFacts {
-        camera_facts_with_cache(&self.handle.status(), &mut self.geometry)
+        camera_facts_with_cache(&self.handle.status(), &mut self.cache)
     }
 
     fn diagnostics(&self) -> FactsDiagnostics {
-        self.geometry.diagnostics()
+        self.cache.diagnostics()
     }
 }
 
@@ -290,7 +310,7 @@ impl CameraFactsSource for AbsentEngineFactsSource {
 }
 
 /// Итог наблюдения: изменились ли факты с прошлого раза.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum FactsChange {
     /// Факты новые (первое наблюдение или отличаются от прежних): их надо отправить экрану.
     Changed(CameraFacts),
@@ -311,10 +331,10 @@ impl CameraFactsWatcher {
 
     /// Сравнивает факты с последними отправленными.
     pub fn observe(&mut self, facts: CameraFacts) -> FactsChange {
-        if self.last_sent == Some(facts) {
+        if self.last_sent.as_ref() == Some(&facts) {
             return FactsChange::Unchanged;
         }
-        self.last_sent = Some(facts);
+        self.last_sent = Some(facts.clone());
         FactsChange::Changed(facts)
     }
 }

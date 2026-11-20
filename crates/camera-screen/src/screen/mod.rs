@@ -63,6 +63,7 @@ use crate::state::ScreenState;
 use crate::widget::capture_blink::CaptureBlinkWidget;
 use crate::widget::error::WidgetError;
 use crate::widget::geometry::ScreenGeometry;
+use crate::widget::transition_veil::TransitionVeil;
 use crate::widget::{Ctx, Outputs};
 use effect_queue::{EffectQueue, PushOutcome};
 use error::FrameBuildError;
@@ -118,6 +119,8 @@ pub struct CameraScreen {
     /// Раньше этого момента сцену не пересобирают (пауза после ошибки); `None` — пауза не идёт.
     rebuild_not_before: Option<MonotonicNanos>,
     blink: CaptureBlinkWidget,
+    /// Размытие удержанного кадра и поворот-карточка при смене камеры (сессия 13).
+    veil: TransitionVeil,
     effects: EffectQueue,
     clock: TimeKeeper,
     diagnostics: ScreenDiagnostics,
@@ -132,6 +135,7 @@ impl CameraScreen {
         tokens.validate()?;
         let state = ScreenState::new(&config)?;
         let light = LightDirection::from_angle_degrees(tokens.glass.button.specular.rest_angle_deg);
+        let veil = TransitionVeil::new(&config.zoom.transition);
         Ok(Self {
             effects: EffectQueue::new(config.widgets.effect_queue_capacity),
             config,
@@ -142,6 +146,7 @@ impl CameraScreen {
             stage_ever_built: false,
             rebuild_not_before: None,
             blink: CaptureBlinkWidget::default(),
+            veil,
             clock: TimeKeeper {
                 last: MonotonicNanos::from_nanos(0),
             },
@@ -356,7 +361,7 @@ impl CameraScreen {
             }
         }
         let layout = *self.state.layout().ok_or(crate::widget::error::WidgetError::NoLayout)?;
-        let geometry = ScreenGeometry::new(&layout, &self.config.widgets, &self.tokens);
+        let geometry = ScreenGeometry::new(&layout, &self.config.widgets, &self.config.zoom, &self.tokens);
         let geometry = Arc::new(geometry);
         let stage = Stage::build(
             &self.context(&geometry, px, now),
@@ -427,8 +432,15 @@ impl CameraScreen {
         }
         // Фаза 2: сборка списка рисования только читает сцену. Ошибка вида сцену не портит: она остаётся
         // со всеми идущими жестами, следующий кадр пробует снова.
+        self.veil.advance(
+            request.backdrop,
+            self.state.zoom().last_flip(),
+            now,
+            self.motion,
+            &self.config.zoom.transition,
+        );
         let geometry = stage.geometry();
-        let drawn = stage.draw(&self.context(&geometry, px, now), &self.blink);
+        let drawn = stage.draw(&self.context(&geometry, px, now), &self.blink, &self.veil);
         self.stage = Some(stage);
         match drawn {
             Ok(items) => Ok(DrawList {
@@ -543,5 +555,17 @@ mod screen_tests;
 #[cfg(test)]
 #[path = "screen_text_cache_tests.rs"]
 mod screen_text_cache_tests;
+#[cfg(test)]
+#[path = "screen_zoom_flip_tests.rs"]
+mod screen_zoom_flip_tests;
+#[cfg(test)]
+#[path = "screen_zoom_gesture_tests.rs"]
+mod screen_zoom_gesture_tests;
+#[cfg(test)]
+#[path = "screen_zoom_tests.rs"]
+mod screen_zoom_tests;
+#[cfg(test)]
+#[path = "screen_zoom_transition_tests.rs"]
+mod screen_zoom_transition_tests;
 #[cfg(test)]
 mod test_rig;

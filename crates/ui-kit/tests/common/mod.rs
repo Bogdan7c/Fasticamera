@@ -89,7 +89,7 @@ pub fn log_model(anchors: Vec<f64>, max: f64) -> Logarithmic {
     .unwrap()
 }
 
-/// Плавная шкала с магнитами; 24 pt на единицу, радиус магнита 14 pt (умолчания токенов).
+/// Плавная шкала с магнитами; 24 pt на единицу, радиус магнита по умолчанию токенов (14 pt).
 pub fn magnet_scale(
     value: f64,
     anchors: Vec<f64>,

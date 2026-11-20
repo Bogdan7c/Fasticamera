@@ -64,11 +64,17 @@ pub enum Rejection {
     InvalidSurface,
     /// Значок над кадром нажат при открытом меню Controls.
     PanelBlocksAction,
+    /// Зум недоступен: каталога камер нет или в нём нет шкалы для этого направления (например, фронталки).
+    ZoomUnavailable,
+    /// Упора с таким номером в ленте зума нет.
+    ZoomStopMissing,
+    /// Масштаб щипка или запрошенный коэффициент не число / не больше нуля.
+    InvalidZoomInput,
 }
 
 impl Rejection {
     /// Число причин (размер таблицы счётчиков). Сверяется с [`Rejection::ALL`] на этапе компиляции.
-    const COUNT: usize = 14;
+    const COUNT: usize = 17;
 
     /// Номер ячейки счётчика. `match` без `_`: новый вариант `Rejection` не скомпилируется, пока ему
     /// не дали номер, — забытая ячейка невозможна. Согласованность номеров с `ALL` проверяет тест.
@@ -88,6 +94,9 @@ impl Rejection {
             Rejection::StaleCaptureResult => 11,
             Rejection::InvalidSurface => 12,
             Rejection::PanelBlocksAction => 13,
+            Rejection::ZoomUnavailable => 14,
+            Rejection::ZoomStopMissing => 15,
+            Rejection::InvalidZoomInput => 16,
         }
     }
 
@@ -107,6 +116,9 @@ impl Rejection {
         Rejection::StaleCaptureResult,
         Rejection::InvalidSurface,
         Rejection::PanelBlocksAction,
+        Rejection::ZoomUnavailable,
+        Rejection::ZoomStopMissing,
+        Rejection::InvalidZoomInput,
     ];
 }
 

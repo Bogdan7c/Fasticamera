@@ -18,6 +18,7 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use camera_contract::ids::LensFacing;
 use camera_screen::focus::FocusIndicator;
 use camera_screen::modes::CaptureMode;
 use camera_screen::shutter::{ShutterState, ThumbnailState};
@@ -115,6 +116,31 @@ pub struct ScreenStateSnapshot {
     pub mode: ModeKind,
     pub shutter_placement: ShutterPlacement,
     pub shutter_activity: ShutterActivity,
+    /// Зум, который показывает экран (сессия 13).
+    pub zoom: ZoomView,
+}
+
+/// Зум глазами отчёта: коэффициент (в тысячных, чтобы снимок оставался `Eq`), направление, открыто ли колесо.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ZoomView {
+    /// Коэффициент × 1000, округлённый (0,593 → 593).
+    pub ratio_milli: u32,
+    pub facing: LensFacing,
+    pub wheel_open: bool,
+    /// Идёт плавный переход к упору после тапа по кнопке ленты (значение ещё не дошло до цели).
+    pub gliding: bool,
+}
+
+impl ZoomView {
+    fn observe(state: &ScreenState) -> Self {
+        let zoom = state.zoom();
+        Self {
+            ratio_milli: (f64::from(zoom.ratio().value()) * 1000.0).round() as u32,
+            facing: zoom.facing(),
+            wheel_open: zoom.is_wheel_open(),
+            gliding: zoom.is_gliding(),
+        }
+    }
 }
 
 impl ScreenStateSnapshot {
@@ -143,6 +169,7 @@ impl ScreenStateSnapshot {
                 ShutterVisibility::HiddenUnderDrawer => ShutterPlacement::HiddenUnderDrawer,
                 ShutterVisibility::RaisedAboveCard => ShutterPlacement::RaisedAboveCard,
             },
+            zoom: ZoomView::observe(state),
             shutter_activity: match state.shutter() {
                 ShutterState::Idle => ShutterActivity::Idle,
                 ShutterState::Countdown { .. } => ShutterActivity::Countdown,

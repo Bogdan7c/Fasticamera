@@ -3,6 +3,11 @@
 
 mod commands;
 mod frame_rate_fallback;
+mod lens_blocks;
+mod lens_frame_rate;
+mod lens_intents;
+mod lens_support;
+mod lens_switching;
 mod lifecycle;
 mod recovery;
 mod recovery_limits;
@@ -118,6 +123,19 @@ impl Rig {
         let backend = fake.backend(BackendEventSink::new(listener));
         Self {
             engine: CameraEngine::with_wiring(config, presence, backend, wiring),
+            fake,
+            collector,
+            now: Instant::now(),
+            next_command: 0,
+            log: Vec::new(),
+            cursor: 0,
+        }
+    }
+
+    /// Стенд из готовых частей (движок собран тестом, например с ящиком намерений объектива).
+    fn from_parts(engine: CameraEngine, fake: Arc<FakeBackendControl>, collector: Arc<Collector>) -> Self {
+        Self {
+            engine,
             fake,
             collector,
             now: Instant::now(),

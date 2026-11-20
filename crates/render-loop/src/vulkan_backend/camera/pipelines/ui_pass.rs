@@ -23,7 +23,7 @@ use gpu_vulkan::raster::ColorAttachment;
 use gpu_vulkan::swapchain::DisplayTargetInfo;
 use ui_core::input::{PointScale, PointScaleRule};
 use ui_draw::color::DisplayColor;
-use ui_draw::frame_source::UiFrameRequest;
+use ui_draw::frame_source::{BackdropContinuity, UiFrameRequest};
 use ui_draw::geometry::{PxPoint, PxRect, PxSize};
 use ui_render_vulkan::{BackdropInput, BackdropPlacement, UiFrame, UiRenderError, UiRenderer, UiRendererConfig};
 
@@ -116,13 +116,16 @@ impl CameraPipelines {
     ///
     /// `screen` — что компоновка положила на экран: изображение видоискателя даёт живой фон стеклу,
     /// чёрный кадр (скрытый кадр AWB, отказ ISP или компоновщика) — фон `Absent` чёрного цвета.
-    /// `serial` — номер сабмита этого кадра (для подложки стекла).
+    /// `serial` — номер сабмита этого кадра (для подложки стекла). `continuity` — что под UI: живой кадр,
+    /// удержанный на смене объектива или кадра нет (решает машина непрерывности; UI размывает удержанный
+    /// кадр и проявляет живой).
     pub fn record_ui_overlay(
         &mut self,
         frame: &FrameTarget,
         ui: &mut UiOverlayFrame<'_>,
         screen: &ScreenContent,
         serial: super::super::SubmissionSerial,
+        continuity: BackdropContinuity,
     ) -> u64 {
         if !ui.state.is_active() {
             return 0;
@@ -152,6 +155,7 @@ impl CameraPipelines {
             present_time: ui.present_time,
             logical_size: logical_px,
             px_per_pt,
+            backdrop: continuity,
         };
         let Some(draw_list) = ui.state.produce_draw_list(&request) else {
             return 0;
@@ -161,18 +165,33 @@ impl CameraPipelines {
         // Прямоугольник фона — тот же, что скомпоновал видоискатель (посчитан один раз на кадр).
         // Без изображения камеры (чёрный кадр) стеклу фоном служит чёрный.
         let backdrop_source = match screen {
+            // Живое изображение: подложка читает содержимое кадра (не всю картинку ёмкости) и зеркалится так же,
+            // как скомпонованное на экран, — стекло преломляет то, что видит пользователь.
             ScreenContent::Viewfinder { .. } => self
                 .isp
-                .backdrop_source(gpu_vulkan::backdrop::SubmissionSerial(serial.0)),
+                .backdrop_source(gpu_vulkan::backdrop::SubmissionSerial(serial.0))
+                .and_then(|source| {
+                    let window = source.window().with_mirror(self.view_live_mirror());
+                    source
+                        .with_window(window)
+                        .inspect_err(|error| {
+                            tracing::error!(target: LOG_TARGET, %error, "окно подложки стекла отвергнуто");
+                        })
+                        .ok()
+                }),
+            // Удержанный кадр: подложка из него, с тем же окном (зеркало и увеличение), что и на экране.
+            ScreenContent::Held { .. } => self.held_backdrop_source(),
             ScreenContent::Black { .. } => None,
         };
         let backdrop = match (&backdrop_source, screen) {
-            (Some(source), ScreenContent::Viewfinder { destination }) => BackdropInput::Live {
-                source,
-                placement: BackdropPlacement {
-                    destination: px_rect(*destination),
-                },
-            },
+            (Some(source), ScreenContent::Viewfinder { destination } | ScreenContent::Held { destination }) => {
+                BackdropInput::Live {
+                    source,
+                    placement: BackdropPlacement {
+                        destination: px_rect(*destination),
+                    },
+                }
+            }
             _ => BackdropInput::Absent {
                 fill: DisplayColor::BLACK,
             },

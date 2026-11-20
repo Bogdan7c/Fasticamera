@@ -13,8 +13,9 @@
 use std::sync::Arc;
 
 use camera_contract::three_a::{DirectiveSlot, WhiteBalanceDirective};
+use camera_contract::zoom::LensIntentChannel;
 use camera_core::backend::BackendFactory;
-use camera_core::{AppPresence, CameraRuntime, ThreeAWiring};
+use camera_core::{AppPresence, CameraRuntime, LensWiring, ThreeAWiring};
 
 use crate::auto_exposure_link::{
     AutoExposureLink, AutoExposureRenderEnd, ExposureControllerChoice, ExposureControllerKind, RenderAutoExposure,
@@ -45,6 +46,9 @@ pub struct CameraLinks {
     pub auto_exposure: AutoExposureLink,
     /// Поднялся ли рендер, который будет мерить сцену для нашего AE (решает, какой AE получит камера).
     pub render_auto_exposure: RenderAutoExposure,
+    /// Намерения объектива (сессия 13): экран камеры публикует (`Effect::Lens`), движок читает и выбирает
+    /// камеру с гистерезисом. Один ящик на процесс: тот же клон получает исполнитель эффектов экрана.
+    pub lens_intents: LensIntentChannel,
 }
 
 /// Рендерная половина тех же ящиков ([`CameraLinks::render_side`]).
@@ -122,7 +126,14 @@ fn spawn_engine(config: &CameraConfig, backend: CameraBackendParts, links: Camer
         );
     }
     let wiring = three_a_wiring(config, &links, choice.effective);
-    match CameraRuntime::spawn_with_wiring(config.engine.clone(), AppPresence::Background, factory, wiring) {
+    let lens_intents = links.lens_intents.clone();
+    match CameraRuntime::spawn_with_lens_wiring(
+        config.engine.clone(),
+        AppPresence::Background,
+        factory,
+        wiring,
+        LensWiring::new(lens_intents.clone()),
+    ) {
         Ok((runtime, handle)) => {
             tracing::info!(
                 target: LOG_TARGET,
@@ -140,6 +151,7 @@ fn spawn_engine(config: &CameraConfig, backend: CameraBackendParts, links: Camer
             CameraServices::new(CameraEngineAccess::Running(Arc::new(running)), config.scenarios.clone())
                 .with_raw_stream(raw_stream)
                 .with_exposure_controller(choice)
+                .with_lens_intents(lens_intents)
         }
         Err(error) => {
             CameraServices::unavailable(format!("движок камеры не запущен: {error}"), config.scenarios.clone())

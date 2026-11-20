@@ -5,7 +5,9 @@
 //!    отпускаем ставшие ненужными импорты, семафоры ожидания и лизинги, собираем итоги слота
 //!    (время GPU, статистика AWB → [`AwbStatisticsFeed`]);
 //! 2. решение о содержимом (`prepare`): рисовальщик ISP — новый кадр через ISP, перекомпоновка
-//!    прежнего изображения видоискателя или чёрный; отладочная мозаика — как в сессии 05;
+//!    прежнего изображения видоискателя или чёрный; отладочная мозаика — как в сессии 05. Что именно ляжет на
+//!    экран (живое изображение, удержанный последний кадр при смене потока или чёрный), решает машина
+//!    непрерывности (`continuity`, склейка — `session/transition.rs`);
 //! 3. запись команд (`record`) по плану владения ([`OwnershipPlan`]);
 //! 4. сабмит через `present_with_sync`: ждём acquire-fence нового кадра (стадия `ALL_COMMANDS`,
 //!    см. `PresentSync`), при необходимости экспортируем release-fence;
@@ -23,11 +25,13 @@
 mod collect;
 mod prepare;
 mod record;
+mod shutdown;
 mod slot;
+mod transition;
 
 use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::error::GpuError;
-use gpu_vulkan::raw_mosaic_preview::{MosaicPreviewParams, MosaicSource, RawMosaicPreview};
+use gpu_vulkan::raw_mosaic_preview::{MosaicPreviewParams, MosaicSource};
 use gpu_vulkan::swapchain::{
     DisplayFrame, DisplayTarget, PresentOutcome as GpuPresentOutcome, PresentRequest, PresentSync, SubmitProgress,
     SwapchainError, SyncedPresent,
@@ -37,7 +41,10 @@ use isp_vulkan::viewfinder::ViewfinderGeometry;
 use raw_frame_stream::{RawFrameLease, ViewfinderFrames};
 use std::sync::Arc;
 
+use self::record::FrameDecision;
 use self::slot::SlotFrame;
+use self::transition::TransitionFrame;
+use super::continuity::{Composed, ContinuityMachine};
 use super::export_recovery::{ExportRecovery, RecoveryStep};
 use super::exposure::ExposureSlotFrame;
 use super::exposure::{AutoExposureParts, AutoExposureSetupError, ExposureRunner};
@@ -55,7 +62,7 @@ use super::white_balance::{FramePlan, WhiteBalanceParts, WhiteBalanceRunner};
 use super::{CameraFrameImporter, CameraImportError, CameraImporterFactory, SubmissionSerial};
 use crate::backend::FrameGpuTiming;
 use crate::camera_diagnostics::{CameraStreamDiagnostics, PresentedCameraFrame};
-use crate::config::ViewfinderToneConfig;
+use crate::config::{ContinuityConfig, ViewfinderToneConfig};
 use crate::viewfinder::{AwbFrameIdentity, AwbStatisticsFeed, ViewfinderDiagnostics};
 
 const LOG_TARGET: &str = "fasticamera::render::camera";
@@ -99,6 +106,8 @@ enum Content {
 struct Prepared {
     content: Content,
     change: FrameChange,
+    /// Решение непрерывности кадра (сессия 13): `None` у отладочной мозаики — стенд замера без удержания.
+    transition: Option<TransitionFrame>,
     /// Новый кадр, который читает этот сабмит (`Some` только при `Replace` и `Consume`).
     new_lease: Option<RawFrameLease>,
     /// Ожидание acquire-fence нового кадра (должно жить до конца сабмита на GPU).
@@ -118,14 +127,6 @@ enum Recorded {
     Recompose { shown: bool },
     /// Чёрный.
     Black,
-}
-
-/// Итог освобождения сессии.
-pub struct CameraShutdown {
-    /// Счётчики сессии (в них же — сколько лизингов возвращено после простоя и сколько утекло).
-    pub diagnostics: CameraStreamDiagnostics,
-    /// Статистика видоискателя возвращается владельцу (бэкенду) — она копится за его жизнь.
-    pub viewfinder: ViewfinderStats,
 }
 
 /// Что сессия получает от бэкенда при создании.
@@ -150,6 +151,8 @@ pub struct CameraSessionParts<'a> {
     pub headroom: HeadroomBenchParts,
     /// Ручки тона видоискателя (`viewfinder.tone`, уже проверены при старте).
     pub tone: ViewfinderToneConfig,
+    /// Удержание последнего кадра при смене объектива (`viewfinder.continuity`, уже проверено при старте).
+    pub continuity: ContinuityConfig,
 }
 
 /// Показ кадров камеры для одной surface.
@@ -187,6 +190,9 @@ pub struct CameraSession {
     completed_gpu_timings: Vec<FrameGpuTiming>,
     /// Стенд «запас под видео» (V4).
     bench: HeadroomBenchRunner,
+    /// Машина непрерывности картинки при смене потока (сессия 13) и её сроки.
+    continuity: ContinuityMachine,
+    continuity_config: ContinuityConfig,
     context: GpuContext,
 }
 
@@ -205,6 +211,7 @@ impl CameraSession {
             auto_exposure,
             headroom,
             tone,
+            continuity,
         } = parts;
         let importer = match make_importer(context) {
             Ok(importer) => importer,
@@ -268,6 +275,8 @@ impl CameraSession {
             slot_frame_indices: Vec::new(),
             completed_gpu_timings: Vec::new(),
             bench: HeadroomBenchRunner::new(context, headroom),
+            continuity: ContinuityMachine::new(continuity),
+            continuity_config: continuity,
             context: context.clone(),
         })
     }
@@ -289,6 +298,7 @@ impl CameraSession {
             self.viewfinder
                 .snapshot(&self.settings, self.bench.live_state(), self.white.diagnostics());
         diagnostics.auto_exposure = self.exposure.as_ref().map(ExposureRunner::diagnostics);
+        diagnostics.continuity.holding = self.continuity.is_holding();
         diagnostics
     }
 
@@ -328,22 +338,39 @@ impl CameraSession {
         self.viewfinder.note_display_color_space(frame.display_color_space());
 
         // 2. Что показывать.
+        let now = ui.present_time;
         let Prepared {
             content,
             change,
             new_lease,
             camera_wait,
             stream_inactive,
-        } = self.prepare_content(serial, frame.display_color_space());
+            transition,
+        } = self.prepare_content(serial, frame.display_color_space(), now);
         if stream_inactive {
             self.release_imports_when_gpu_is_done();
         }
 
         // 3. Запись команд.
         let plan = OwnershipPlan::for_change(change, self.displayed_source.is_some());
-        let recorded = match self.record_content(pipelines, &frame, &content, plan, serial, ui) {
-            Ok(recorded) => recorded,
+        let (recorded, composed) = match self.record_content(
+            pipelines,
+            &frame,
+            &FrameDecision {
+                content: &content,
+                ownership: plan,
+                transition: transition.as_ref(),
+            },
+            serial,
+            ui,
+        ) {
+            Ok(recorded) => (recorded.recorded, recorded.composed),
             Err(error) => {
+                // Удержание могло начаться до сбоя записи (картинка уже отцеплена): машина узнаёт, что на экране
+                // ничего нет (чёрный не принятого кадра).
+                if let Some(transition) = &transition {
+                    self.commit_transition(pipelines, now, transition, Composed::Black, false);
+                }
                 // Мозаика и чёрный проверяют всё до записи команд: новый кадр GPU не касался.
                 if let Some(lease) = new_lease {
                     lease.release_unused();
@@ -358,6 +385,15 @@ impl CameraSession {
         };
 
         // 4. Сабмит и показ.
+        // Машина узнаёт, что реально записано: состояние удержания и владение удержанной картинкой меняются
+        // здесь, до сабмита (картинка отцеплена командой записи), а метки и счётчики — только для принятых кадров.
+        let processed = matches!(recorded, Recorded::IspNew { processed: true, .. });
+        let committed = transition.as_ref().map(|transition| {
+            (
+                transition,
+                self.commit_transition(pipelines, now, transition, composed, processed),
+            )
+        });
         let wants_release_fence = self.ledger.needs_release_fence(change) && self.recovery.can_export();
         let mut sync = PresentSync::none();
         if let Some(wait) = &camera_wait {
@@ -397,6 +433,10 @@ impl CameraSession {
                 }
                 self.note_submitted_content(&content, recorded, change, new_lease.as_ref(), &outcome);
                 self.note_submitted_viewfinder(slot, &content, recorded);
+                if let Some((transition, report)) = committed {
+                    let replaced_by_held = processed && composed == Composed::Held;
+                    self.note_transition_presented(now, transition, report, replaced_by_held);
+                }
                 self.bench
                     .finish_frame(slot, BenchSubmit::Submitted(serial), self.viewfinder.headroom_mut());
                 self.displayed_source = match (change, &content) {
@@ -410,62 +450,6 @@ impl CameraSession {
                 }
                 outcome.map_err(CameraDrawError::Swapchain)
             }
-        }
-    }
-
-    /// Освобождение сессии при отсоединении surface. Возвращает итоговые счётчики.
-    ///
-    /// GPU дождался ⇒ все лизинги возвращаются камере с сигнальным fence, импорты уничтожаются.
-    /// GPU не освободился вовремя ⇒ лизинги НАМЕРЕННО выбрасываются (учтённая утечка, решение 43), импортёр и
-    /// семафоры тоже оставляются в утечке: GPU может их ещё использовать.
-    pub fn shutdown(mut self, display: &DisplayTarget) -> CameraShutdown {
-        let gpu_wait = display.wait_for_submitted_frames();
-        match &gpu_wait {
-            Ok(()) => {
-                self.tracker.note_gpu_idle();
-                // Кадр мозаики на экране ещё у нас: отдельным возвратом владения передаём его камере.
-                if let Some(source) = self.displayed_source.take()
-                    && let Err(error) = RawMosaicPreview::release_source_blocking(&self.context, &source)
-                {
-                    tracing::warn!(target: LOG_TARGET, %error, "возврат владения показанным кадром не записан");
-                }
-                let released = self.ledger.release_all_after_gpu_idle();
-                self.stats.leases_released_after_idle += released as u64;
-                self.importer.release_all_imports_gpu_idle();
-                self.waits_in_flight.clear();
-                self.bench.release_all_gpu_idle(self.viewfinder.headroom_mut());
-            }
-            Err(error) => {
-                let leaked = self.ledger.leak_all();
-                self.stats.leases_leaked_on_teardown += leaked as u64;
-                tracing::error!(
-                    target: LOG_TARGET,
-                    %error,
-                    leaked,
-                    "GPU не освободился: лизинги кадров камеры намеренно выброшены (учтённая утечка), импорты оставлены"
-                );
-            }
-        }
-        let diagnostics = self.diagnostics();
-        let Self {
-            importer,
-            export,
-            waits_in_flight,
-            viewfinder,
-            bench,
-            ..
-        } = self;
-        if gpu_wait.is_err() {
-            // Импортёр, семафор экспорта, семафоры ожидания и объекты стенда V4 может ещё использовать
-            // GPU: не уничтожаем.
-            std::mem::forget(importer);
-            std::mem::forget(export);
-            std::mem::forget(waits_in_flight);
-            std::mem::forget(bench);
-        }
-        CameraShutdown {
-            diagnostics,
-            viewfinder,
         }
     }
 

@@ -258,6 +258,58 @@ def summarize_stream(record: dict) -> dict:
     }
 
 
+def summarize_dual(record: dict) -> list[str]:
+    """Строки сводки сценария `dual` (сессия 13F): по одной на ногу/попытку."""
+    data = record.get("data", {})
+    lines = []
+    for entry in data.get("open") or []:
+        lines.append(f"open cam{entry.get('camera')}: {entry.get('status')} {entry.get('code_name', '')} {round(entry.get('ms', 0))} ms")
+    for entry in data.get("session") or []:
+        if isinstance(entry, dict):
+            lines.append(f"session cam{entry.get('camera')}: {entry.get('status')} {round(entry.get('ms', 0))} ms")
+    if data.get("device_errors_after_open") or data.get("device_errors_final"):
+        lines.append(f"device_errors: {data.get('device_errors_after_open')} -> {data.get('device_errors_final')}")
+    for camera in data.get("cameras") or []:
+        results = camera.get("results", {})
+        for leg in camera.get("legs", []):
+            timing = leg.get("timing", {})
+            fps = round(timing["fps_median"], 1) if timing.get("status") == "computed" else None
+            lines.append(f"leg {leg['leg']}: frames={leg['frames']} fps={fps} drops={timing.get('estimated_dropped_frames')} "
+                         f"acq_err={leg['acquire_errors']}")
+        lines.append(f"  results cam{camera['camera']}: n={results.get('count')} failures={results.get('failures')} "
+                     f"lost={results.get('buffers_lost')} af={results.get('af_transitions')} physical={results.get('physical_result_counts')}")
+    if data.get("current"):
+        lines.append(f"current: {json.dumps(data['current'], ensure_ascii=False)}")
+    if data.get("switch_ms_summary"):
+        for variant, stat in data["switch_ms_summary"].items():
+            if stat:
+                lines.append(f"switch {variant}: median={stat['median']:.0f} min={stat['min']:.0f} max={stat['max']:.0f} ms (n={stat['count']})")
+            else:
+                lines.append(f"switch {variant}: нет успешных попыток")
+        for attempt in data.get("attempts", []):
+            if attempt.get("failed_at") or attempt.get("exception"):
+                lines.append(f"  rep{attempt['repetition']} {attempt['variant']}: сбой {attempt.get('failed_at')} {attempt.get('exception', '')}")
+    if data.get("total_ms_summary"):
+        stat = data["total_ms_summary"]
+        lines.append(f"standby open->first frame: median={stat['median']:.0f} min={stat['min']:.0f} max={stat['max']:.0f} ms (n={stat['count']})")
+        for attempt in data.get("attempts", []):
+            lines.append(f"  rep{attempt['repetition']}: open={attempt.get('open_ms')} session={attempt.get('session_done_ms')} "
+                         f"first={attempt.get('first_frame_ms')} {attempt.get('failed_at', '')}")
+    for window in data.get("windows") or []:
+        cur = window.get("current", {})
+        med = (cur.get("current_now_raw") or {}).get("median")
+        lines.append(f"window{window['index']} {window['kind']}: median={med} distinct={cur.get('distinct_values')} "
+                     f"frames={window.get('frames_main')}/{window.get('frames_wide')}")
+    if "b_minus_a_of_means" in data:
+        lines.append(f"ABBA: {data.get('window_median_summary')} B-A={data['b_minus_a_of_means']}")
+    if data.get("skipped"):
+        lines.append(f"skipped: {data['skipped']}")
+    for key in ("failed_step", "exception", "stream_exception", "stage_reached"):
+        if data.get(key):
+            lines.append(f"{key}: {data[key]}")
+    return lines
+
+
 def print_run_summary(result: RunResult) -> None:
     status = "done" if result.finished else "НЕТ done (таймаут или падение процесса)"
     print(f"run {result.run_id}: {status}, записей {len(result.records)}, {result.elapsed_s:.1f} c")
@@ -267,6 +319,8 @@ def print_run_summary(result: RunResult) -> None:
             print(f"  ERROR {name}: {json.dumps(record.get('data'), ensure_ascii=False)}")
         elif name in ("stream", "import_stream"):
             print("  " + json.dumps(summarize_stream(record), ensure_ascii=False))
+        elif name == "dual":
+            print("\n".join("  " + line for line in summarize_dual(record)))
 
 
 def table(directory: Path) -> None:
@@ -274,6 +328,9 @@ def table(directory: Path) -> None:
     for path in sorted(directory.glob("*.json")):
         saved = json.loads(path.read_text())
         for record in saved["records"]:
+            if record.get("name") == "dual":
+                print(f"## {saved.get('label') or path.stem} ({saved.get('params')})")
+                print("\n".join("- " + line for line in summarize_dual(record)))
             if record.get("name") in ("stream", "import_stream"):
                 rows.append((saved.get("flavor"), saved.get("label"), summarize_stream(record)))
     header = "| flavor | label | cam | fmt | size | session | ae_fps | keys | stage | img_fps | res_fps | drops | frame_dur | vendor |"

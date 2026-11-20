@@ -37,6 +37,7 @@ fn request_at(nanos: i64) -> UiFrameRequest {
         present_time: MonotonicNanos::from_nanos(nanos),
         logical_size: PxSize::new(SCREEN_WIDTH_PX, SCREEN_HEIGHT_PX),
         px_per_pt: PX_PER_PT,
+        backdrop: ui_draw::frame_source::BackdropContinuity::Live,
     }
 }
 

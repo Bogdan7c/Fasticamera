@@ -9,6 +9,7 @@ use shell_contract::surface::SurfaceSize;
 use ui_core::geometry::Point;
 
 use camera_contract::control::ExposureBias;
+use camera_contract::zoom::ZoomRatio;
 
 use crate::facts::CameraFacts;
 use crate::modes::CaptureMode;
@@ -26,8 +27,8 @@ pub enum KeyPhase {
     Repeated,
 }
 
-/// Действие над экраном.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Действие над экраном. С сессии 13 не `Copy`: факты камеры несут общий каталог зума (`Arc`).
+#[derive(Debug, Clone, PartialEq)]
 pub enum ScreenAction {
     /// Тап по видоискателю (фону): точка в pt. При открытой панели закрывает её.
     ViewfinderTapped { point: Point, at: MonotonicNanos },
@@ -92,4 +93,21 @@ pub enum ScreenAction {
     Tick(MonotonicNanos),
     /// Размер surface.
     SurfaceResized(SurfaceSize),
+    /// Тап по кнопке ленты зума: плавный переход к упору (номер — позиция в `LensGroup::stops`).
+    ZoomStopTapped { stop: usize, at: MonotonicNanos },
+    /// Палец лёг на колесо зума (долгий тап или пан по ленте открыл его; прикосновение к открытому колесу).
+    /// Закрытое колесо открывается. Продлевает жизнь колеса.
+    ZoomWheelTouched { at: MonotonicNanos },
+    /// Палец поднят с колеса: через `zoom.wheel.idle_dismiss_ms` покоя колесо уйдёт.
+    ZoomWheelReleased { at: MonotonicNanos },
+    /// Колесо сдвинуто: запрошенный коэффициент (зажимается в пределы группы).
+    ZoomWheelDragged { requested: ZoomRatio, at: MonotonicNanos },
+    /// Начался щипок по видоискателю: запоминается коэффициент начала жеста.
+    ZoomPinchBegan { at: MonotonicNanos },
+    /// Щипок идёт: `scale` — отношение текущего расстояния между пальцами к начальному.
+    ZoomPinchChanged { scale: f64, at: MonotonicNanos },
+    /// Щипок закончился (или отменён: значение остаётся там, куда дошло).
+    ZoomPinchEnded { at: MonotonicNanos },
+    /// Кнопка переворота: фронтальная ↔ задняя камера.
+    FlipCameraRequested { at: MonotonicNanos },
 }

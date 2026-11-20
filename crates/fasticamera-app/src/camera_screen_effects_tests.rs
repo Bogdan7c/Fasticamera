@@ -4,12 +4,16 @@
 
 use std::sync::Mutex;
 
+use camera_contract::auto_exposure::RefreshSignal;
 use camera_contract::control::ExposureBias;
+use camera_contract::ids::LensFacing;
 use camera_contract::three_a::SensorPoint;
+use camera_contract::zoom::{LensIntent, ZoomRatio};
 use camera_screen::settings::{AspectRatio, FlashMode, RawCapture};
 use camera_screen::shutter::ShotRequestId;
 use camera_screen::{LayoutConfig, ScreenLayout};
 use render_loop::ui_overlay::UiOverlayCommand;
+use render_loop::viewfinder::FramingCrop;
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::commands::{FrameRate, FrameRateOutcome, ScreenWake};
 use shell_contract::haptics::HapticRealizationKind;
@@ -102,6 +106,8 @@ struct Rig {
     commands: Arc<FakeCommands>,
     capture: Arc<StubCapture>,
     render: Arc<RecordingRenderControl>,
+    /// Ящик намерений объектива: тот же клон, что у исполнителя (читатель — «движок»).
+    lens: LensIntentChannel,
 }
 
 struct Behavior {
@@ -138,6 +144,7 @@ fn build_executor(behavior: Behavior) -> (EffectExecutor, Rig) {
     });
     let render = RecordingRenderControl::new();
     let camera_outcome = Arc::new(Mutex::new(behavior.camera));
+    let lens = LensIntentChannel::new();
     let executor = EffectExecutor::new(EffectTargets {
         camera: Box::new(FakeCameraPort {
             outcome: Arc::clone(&camera_outcome),
@@ -147,6 +154,7 @@ fn build_executor(behavior: Behavior) -> (EffectExecutor, Rig) {
         commands: commands.clone(),
         render: render.clone(),
         capture: capture.clone(),
+        lens: lens.clone(),
     });
     (
         executor,
@@ -157,6 +165,7 @@ fn build_executor(behavior: Behavior) -> (EffectExecutor, Rig) {
             commands,
             capture,
             render,
+            lens,
         },
     )
 }
@@ -179,7 +188,12 @@ fn layout_framing() -> FramingIntent {
         },
     )
     .expect("раскладка")
-    .framing_intent(AspectRatio::FourByThree)
+    .framing_intent(
+        AspectRatio::FourByThree,
+        LensFacing::Back,
+        ZoomRatio::ONE,
+        crate::camera_test_support::oneplus_zoom_catalog(),
+    )
 }
 
 #[test]
@@ -275,14 +289,18 @@ fn viewfinder_effect_becomes_a_set_framing_command_with_the_screens_rectangle() 
     let (mut executor, rig) = build_executor(Behavior::default());
     let intent = layout_framing();
 
-    executor.execute(vec![Effect::Viewfinder(intent)]);
+    executor.execute(vec![Effect::Viewfinder(intent.clone())]);
 
     let recorded = rig.render.recorded();
     assert_eq!(recorded.len(), 1, "{recorded:?}");
-    let RenderAdjustment::Viewfinder(ViewfinderCommand::SetFraming(framing)) = recorded[0] else {
+    let RenderAdjustment::Viewfinder(ViewfinderCommand::SetFraming(framing)) = recorded[0].clone() else {
         panic!("ожидали SetFraming, пришло {:?}", recorded[0]);
     };
-    assert_eq!(framing.crop, intent.crop);
+    assert_eq!(
+        framing.crop,
+        FramingCrop::Zoom(intent.zoom.clone()),
+        "рендер получает входы формулы кадрирования целиком (по камере КАЖДОГО кадра), а не готовый кроп"
+    );
     let FramingDestination::ScreenRect(rect) = framing.destination else {
         panic!("ожидали прямоугольник экрана, пришло {:?}", framing.destination);
     };
@@ -305,7 +323,7 @@ fn an_invalid_rectangle_is_counted_and_never_sent_to_render() {
     let mut intent = layout_framing();
     intent.destination.width = 1.5;
 
-    executor.execute(vec![Effect::Viewfinder(intent)]);
+    executor.execute(vec![Effect::Viewfinder(intent.clone())]);
 
     assert!(rig.render.recorded().is_empty(), "неверная команда рендеру не уходит");
     let counters = executor.counters().framing;
@@ -486,4 +504,146 @@ fn a_resend_to_a_stopped_or_absent_engine_is_abandoned_with_a_counter() {
         assert_eq!(executor.pending_exposure_bias(), None, "{outcome:?}");
         assert_eq!(executor.counters().camera.exposure_resends_abandoned, 1, "{outcome:?}");
     }
+}
+
+fn lens_intent(ratio: f32) -> LensIntent {
+    LensIntent {
+        facing: LensFacing::Back,
+        ratio: ZoomRatio::new(ratio).expect("коэффициент"),
+        gesture: camera_contract::zoom::ZoomGesture::Continuous,
+    }
+}
+
+/// Считает толчки, как это делает движок (`LensIntentWaker`).
+#[derive(Default)]
+struct CountingSignal(std::sync::atomic::AtomicU64);
+
+impl RefreshSignal for CountingSignal {
+    fn signal(&self) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn lens_effect_goes_to_the_latest_wins_slot_and_never_to_the_camera_command_queue() {
+    let (mut executor, rig) = build_executor(Behavior::default());
+
+    let feedback = executor.execute(vec![Effect::Lens(lens_intent(0.6)), Effect::Lens(lens_intent(2.0))]);
+
+    assert!(feedback.is_empty());
+    assert!(
+        rig.intents.lock().expect("замок").is_empty(),
+        "намерение объектива не должно попасть в очередь команд камеры"
+    );
+    let (_, latest) = rig.lens.latest().expect("в ящике лежит намерение");
+    assert_eq!(
+        latest,
+        lens_intent(2.0),
+        "последнее побеждает, промежуточное значение заменено"
+    );
+    let counters = executor.counters().lens;
+    assert_eq!(counters.published, 2);
+    assert_eq!(
+        (counters.wakes_delivered, counters.wakes_before_engine_bound),
+        (0, 2),
+        "движок ещё не привязан: толчки пропущены, а значение лежит в ящике"
+    );
+}
+
+#[test]
+fn lens_effect_wakes_the_engine_once_it_is_bound_and_counts_the_delivery() {
+    let (mut executor, rig) = build_executor(Behavior::default());
+    let engine = Arc::new(CountingSignal::default());
+    rig.lens.refresh_signal().bind(engine.clone());
+
+    executor.execute(vec![Effect::Lens(lens_intent(1.0))]);
+
+    assert_eq!(
+        engine.0.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "движок получил толчок"
+    );
+    let counters = executor.counters().lens;
+    assert_eq!(
+        (
+            counters.published,
+            counters.wakes_delivered,
+            counters.wakes_before_engine_bound
+        ),
+        (1, 1, 0)
+    );
+}
+
+#[test]
+fn lens_effect_does_not_touch_other_counters() {
+    let (mut executor, _rig) = build_executor(Behavior::default());
+    executor.execute(vec![Effect::Lens(lens_intent(1.0))]);
+
+    let counters = executor.counters();
+    assert_eq!(counters.camera, CameraIntentCounters::default());
+    assert_eq!(counters.framing, FramingCounters::default());
+    assert_eq!(counters.haptics, HapticCounters::default());
+}
+
+#[test]
+fn accepted_haptics_are_remembered_with_their_frame_times_oldest_first() {
+    let (mut executor, _rig) = build_executor(Behavior::default());
+    let play = |executor: &mut EffectExecutor, at_ms: i64| {
+        executor.begin_frame(MonotonicNanos::from_nanos(at_ms * 1_000_000));
+        executor.execute(vec![Effect::Haptic(HapticPattern::SelectionTick)]);
+    };
+
+    for at_ms in [100, 160, 190, 400] {
+        play(&mut executor, at_ms);
+    }
+
+    let recent = executor.counters().haptics.recent_queued;
+    assert_eq!(executor.counters().haptics.queued, 4);
+    assert_eq!(recent.total(), 4);
+    let times: Vec<i64> = recent
+        .retained()
+        .iter()
+        .map(|time| time.as_nanos() / 1_000_000)
+        .collect();
+    assert_eq!(times, vec![100, 160, 190, 400]);
+}
+
+#[test]
+fn the_haptic_ring_keeps_only_the_newest_times_but_still_counts_all() {
+    let (mut executor, _rig) = build_executor(Behavior::default());
+    let total = RECENT_HAPTICS_CAPACITY as i64 + 5;
+    for at_ms in 0..total {
+        executor.begin_frame(MonotonicNanos::from_nanos(at_ms * 1_000_000));
+        executor.execute(vec![Effect::Haptic(HapticPattern::SelectionTick)]);
+    }
+
+    let recent = executor.counters().haptics.recent_queued;
+    assert_eq!(recent.total(), total as u64, "счёт не теряется при вытеснении");
+    let times: Vec<i64> = recent
+        .retained()
+        .iter()
+        .map(|time| time.as_nanos() / 1_000_000)
+        .collect();
+    assert_eq!(times.len(), RECENT_HAPTICS_CAPACITY);
+    assert_eq!(times.first().copied(), Some(5), "самые старые вытеснены");
+    assert_eq!(times.last().copied(), Some(total - 1));
+}
+
+#[test]
+fn rejected_haptics_are_not_remembered_as_played() {
+    let (mut executor, _rig) = build_executor(Behavior {
+        haptics: HapticOutcome::Backpressure,
+        ..Behavior::default()
+    });
+    for at_ms in [10, 11, 12] {
+        executor.begin_frame(MonotonicNanos::from_nanos(at_ms * 1_000_000));
+        executor.execute(vec![Effect::Haptic(HapticPattern::SelectionTick)]);
+    }
+    let haptics = executor.counters().haptics;
+    assert_eq!((haptics.queued, haptics.backpressure), (0, 3));
+    assert_eq!(
+        haptics.recent_queued.total(),
+        0,
+        "отвергнутые вибрации в кольцо не попадают"
+    );
 }

@@ -34,6 +34,12 @@ fn delta() -> ProbeDelta {
             mode: ModeKind::Photo,
             shutter_placement: ShutterPlacement::Visible,
             shutter_activity: ShutterActivity::Idle,
+            zoom: crate::camera_screen_source::ZoomView {
+                ratio_milli: 1_000,
+                facing: camera_contract::ids::LensFacing::Back,
+                wheel_open: false,
+                gliding: false,
+            },
         },
     }
 }

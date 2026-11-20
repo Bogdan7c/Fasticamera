@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 mod adpf;
 mod auto_exposure;
+mod continuity;
 mod present_target;
 mod tone;
 mod ui_overlay;
@@ -20,6 +21,7 @@ mod white_balance;
 pub use adpf::{AdpfConfig, AdpfConfigError, AdpfMode, MAX_ADPF_GPU_WAIT_FRAMES, MIN_ADPF_TARGET_FRACTION};
 
 pub use auto_exposure::{AutoExposureConfig, AutoExposureConfigError};
+pub use continuity::{ContinuityConfig, ContinuityConfigError, RevealExposureCheck};
 pub use tone::{ToneConfigError, ViewfinderToneConfig};
 pub use ui_overlay::{UiOverlayConfig, UiOverlayConfigError};
 pub use viewfinder::{

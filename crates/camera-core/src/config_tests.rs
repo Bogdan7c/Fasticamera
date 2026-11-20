@@ -250,3 +250,21 @@ fn own_exposure_section_parses_validates_and_rejects_nonsense() {
         })
     ));
 }
+
+#[test]
+fn engine_config_rejects_invalid_zoom_section_and_accepts_partial_json() {
+    let mut config = CameraEngineConfig::default();
+    config.zoom.front_max_ratio = f32::NAN;
+    assert!(matches!(
+        config.validate(),
+        Err(CameraEngineConfigError::InvalidZoom(
+            crate::zoom::ZoomConfigError::InvalidMaxRatio {
+                field: "front_max_ratio",
+                ..
+            }
+        ))
+    ));
+    let parsed: CameraEngineConfig = serde_json::from_str(r#"{"zoom": {"back_max_ratio": 8.0}}"#).expect("json");
+    assert_eq!(parsed.zoom.back_max_ratio, 8.0);
+    assert_eq!(parsed.validate(), Ok(()));
+}

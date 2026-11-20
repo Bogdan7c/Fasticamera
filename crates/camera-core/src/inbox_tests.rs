@@ -321,3 +321,75 @@ fn waker_wakes_a_blocked_thread_and_is_a_noop_after_the_thread_stopped() {
         "после остановки пробуждение ничего не оставило"
     );
 }
+
+/// Толчок намерений объектива через настоящий ящик.
+fn lens_waker(inbox: &Arc<CameraInbox>) -> LensIntentWaker {
+    LensIntentWaker::new(Arc::clone(inbox))
+}
+
+fn poke(waker: &LensIntentWaker) {
+    use camera_contract::auto_exposure::RefreshSignal;
+    waker.signal();
+}
+
+#[test]
+fn command_then_lens_intent_is_served_in_arrival_order_so_the_intent_wins() {
+    let inbox = Arc::new(CameraInbox::new(queues(4, 4)));
+    let waker = lens_waker(&inbox);
+    inbox.submit_command(CameraCommand::Close).expect("место есть");
+    poke(&waker);
+    assert!(matches!(inbox.wait_next(SOON), InboxItem::Command { .. }));
+    assert_eq!(
+        inbox.wait_next(SOON),
+        InboxItem::LensIntentRefresh,
+        "намерение пришло позже команды: исполняется после неё"
+    );
+}
+
+#[test]
+fn lens_intent_then_command_is_served_in_arrival_order_so_the_command_wins() {
+    let inbox = Arc::new(CameraInbox::new(queues(4, 4)));
+    let waker = lens_waker(&inbox);
+    poke(&waker);
+    inbox.submit_command(CameraCommand::Close).expect("место есть");
+    assert_eq!(
+        inbox.wait_next(SOON),
+        InboxItem::LensIntentRefresh,
+        "намерение пришло раньше команды: исполняется до неё"
+    );
+    assert!(matches!(inbox.wait_next(SOON), InboxItem::Command { .. }));
+}
+
+#[test]
+fn coalesced_lens_pokes_keep_the_last_arrival_and_never_overflow() {
+    let inbox = Arc::new(CameraInbox::new(queues(4, 4)));
+    let waker = lens_waker(&inbox);
+    poke(&waker);
+    inbox.submit_command(CameraCommand::Close).expect("место есть");
+    // Второй толчок позже команды: склеенный толчок встаёт за ней, а не перед ней.
+    for _ in 0..100 {
+        poke(&waker);
+    }
+    assert!(matches!(inbox.wait_next(SOON), InboxItem::Command { .. }));
+    assert_eq!(inbox.wait_next(SOON), InboxItem::LensIntentRefresh);
+    let none_left = inbox.wait_next(Some(Instant::now()));
+    assert_eq!(none_left, InboxItem::Timeout, "сто толчков — одно пробуждение");
+}
+
+#[test]
+fn queued_commands_keep_fifo_order_around_a_lens_poke() {
+    let inbox = Arc::new(CameraInbox::new(queues(4, 4)));
+    let waker = lens_waker(&inbox);
+    let first = inbox.submit_command(CameraCommand::Close).expect("место есть");
+    poke(&waker);
+    let second = inbox.submit_command(CameraCommand::Close).expect("место есть");
+    let mut order = Vec::new();
+    for _ in 0..3 {
+        match inbox.wait_next(SOON) {
+            InboxItem::Command { id, .. } => order.push(Some(id)),
+            InboxItem::LensIntentRefresh => order.push(None),
+            other => panic!("неожиданно {other:?}"),
+        }
+    }
+    assert_eq!(order, vec![Some(first), None, Some(second)]);
+}

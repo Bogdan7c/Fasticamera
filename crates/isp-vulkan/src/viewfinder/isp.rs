@@ -61,8 +61,10 @@ pub struct ViewfinderFrame<'a> {
 /// Итог записи кадра.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecordedViewfinderFrame {
-    /// Что читать компоновщику (размер выхода и формат).
+    /// Что читать компоновщику: вся картинка (ёмкость) и формат. Содержимое кадра — `content`.
     pub output: SampledImageView,
+    /// Размер содержимого записанного кадра: левый верхний прямоугольник `output` (читать только его).
+    pub content: vk::Extent2D,
     /// Номер записанного кадра.
     pub frame: BackdropFrameNumber,
 }
@@ -191,9 +193,31 @@ impl ViewfinderIsp {
     /// Подложка стекла из последнего записанного кадра; `written_by` — номер сабмита, в который
     /// вызывающий отправил эту запись (`None` — кадров ещё не было).
     pub fn backdrop_source(&self, written_by: SubmissionSerial) -> Option<BackdropSource> {
-        self.image
-            .as_ref()
-            .map(|image| BackdropSource::publish(image.storage_image(), image.color_space(), image.frame(), written_by))
+        self.image.as_ref().and_then(|image| {
+            image
+                .backdrop_source(written_by)
+                .inspect_err(|error| {
+                    tracing::error!(target: "fasticamera::isp_viewfinder", %error, "подложка стекла не опубликована");
+                })
+                .ok()
+        })
+    }
+
+    /// Отцепляет текущую выходную картинку от ISP и отдаёт её вызывающему целиком (удержание последнего
+    /// показанного кадра при смене потока): ISP больше в неё не пишет, следующая запись выделит новую
+    /// картинку. Нулевая цена на горячем пути — ни копий, ни ожиданий GPU: картинка просто меняет владельца.
+    ///
+    /// Вызывающий обязан вернуть картинку через [`Self::retire_detached_image`], а не бросить: освобождение
+    /// ждёт GPU (сабмиты, читавшие картинку, ещё могут быть в полёте).
+    pub fn detach_image(&mut self) -> Option<ViewfinderImage> {
+        self.image.take()
+    }
+
+    /// Возвращает отцепленную картинку на уничтожение: она освободится, когда завершится первая запись ISP,
+    /// сделанная ПОСЛЕ этого вызова (сабмиты идут в порядке записи на одной очереди, значит все чтения
+    /// удержанной картинки к тому времени закончены). Вызывать до `record` кадра, который не читает картинку.
+    pub fn retire_detached_image(&mut self, image: ViewfinderImage) {
+        self.retired_images.retire(image, self.next_serial);
     }
 
     /// Актуальна ли подложка: опубликована из ТЕКУЩЕГО изображения видоискателя. `false` — изображение
@@ -236,7 +260,7 @@ impl ViewfinderIsp {
             self.config.awb_statistics.check_for_mosaic(frame.geometry.crop.size)?;
         }
         let serial = self.next_serial;
-        self.ensure_image(geometry.output, frame.display_color_space, serial)?;
+        self.ensure_image(geometry.allocation, frame.display_color_space, serial)?;
         let image = self.image.as_ref().ok_or(ViewfinderError::InvalidConfig {
             what: "изображение не создано (внутренняя ошибка порядка вызовов)".to_owned(),
         })?;
@@ -305,6 +329,7 @@ impl ViewfinderIsp {
             image.mark_written(
                 frame.frame,
                 frame.display_color_space,
+                geometry.output,
                 StorageImagePreviousUse::SampledRead(frame.reader),
             );
         }
@@ -315,6 +340,7 @@ impl ViewfinderIsp {
         self.next_serial = RecordSerial(serial.0 + 1);
         Ok(RecordedViewfinderFrame {
             output,
+            content: geometry.output,
             frame: frame.frame,
         })
     }
@@ -355,7 +381,8 @@ impl ViewfinderIsp {
         }
     }
 
-    /// Создаёт изображение нужного размера; прежнее (другого размера) уходит в отложенное уничтожение.
+    /// Создаёт изображение нужной ЁМКОСТИ (при зуме она не меняется — картинка не пересоздаётся); прежнее
+    /// (другой ёмкости) уходит в отложенное уничтожение.
     fn ensure_image(
         &mut self,
         extent: vk::Extent2D,

@@ -4,6 +4,8 @@
 //! * `Camera` → ручка движка ([`CameraIntentPort`]);
 //! * `Haptic` → [`HapticsService`];
 //! * `OpenSystemGallery` → [`ShellCommands::open_system_gallery`];
+//! * `Lens` → ящик намерений объектива [`LensIntentChannel`] (сессия 13): «последнее побеждает», НЕ очередь команд
+//!   движка — промежуточные значения колеса и щипка не копятся;
 //! * `Viewfinder` → команда рендеру `SetFraming` через [`RenderControl`] (решение 93: место кадра решает экран);
 //! * `Capture` → [`CaptureService`] (фейк до сессии 14).
 //!
@@ -17,11 +19,15 @@
 
 use std::sync::Arc;
 
+use camera_contract::auto_exposure::SignalDelivery;
 use camera_contract::control::ExposureBias;
+use camera_contract::zoom::{LensIntent, LensIntentChannel};
 use camera_core::{CameraHandle, CommandId, CommandRejected};
 use camera_screen::shutter::{CaptureFailureReason, CaptureOutcome, ShotRequest};
 use camera_screen::{Effect, FramingIntent, ScreenAction, ScreenCameraIntent};
-use render_loop::viewfinder::{FramingDestination, NormalizedScreenRect, ViewfinderCommand, ViewfinderFraming};
+use render_loop::viewfinder::{
+    FramingCrop, FramingDestination, NormalizedScreenRect, ViewfinderCommand, ViewfinderFraming,
+};
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::commands::{CommandOutcome, ShellCommands};
 use shell_contract::haptics::{HapticOutcome, HapticPattern, HapticsService};
@@ -100,6 +106,59 @@ pub struct CameraIntentCounters {
     pub exposure_resends_abandoned: u64,
 }
 
+/// Сколько последних времён принятых вибраций помнит [`RecentHapticTimes`] (с запасом на 30 рисок колеса за жест).
+pub const RECENT_HAPTICS_CAPACITY: usize = 32;
+
+/// Времена кадров (шкала часов потока рендера, нс), на которых принята последняя вибрация, — кольцо фиксированной
+/// длины. Нужно сценарию, чтобы судить «промежуток между вибрациями» ОКНОМ одного шага, а не наименьшим за всю жизнь
+/// процесса (одна пара в одном кадре до сценария обнулила бы такой минимум навсегда). Копируемое: живёт в счётчиках.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecentHapticTimes {
+    nanos: [i64; RECENT_HAPTICS_CAPACITY],
+    /// Сколько вибраций принято за всё время (больше ёмкости — старые вытеснены).
+    total: u64,
+}
+
+impl Default for RecentHapticTimes {
+    fn default() -> Self {
+        Self {
+            nanos: [0; RECENT_HAPTICS_CAPACITY],
+            total: 0,
+        }
+    }
+}
+
+impl RecentHapticTimes {
+    fn push(&mut self, at: MonotonicNanos) {
+        let slot = (self.total % RECENT_HAPTICS_CAPACITY as u64) as usize;
+        self.nanos[slot] = at.as_nanos();
+        self.total += 1;
+    }
+
+    /// Кольцо с заданными временами (для тестов потребителей кольца: сценарий `zoom`).
+    #[cfg(test)]
+    pub(crate) fn from_times(times: &[MonotonicNanos]) -> Self {
+        let mut recent = Self::default();
+        for time in times {
+            recent.push(*time);
+        }
+        recent
+    }
+
+    /// Сколько вибраций принято за всё время.
+    pub fn total(&self) -> u64 {
+        self.total
+    }
+
+    /// Времена принятых вибраций, которые ещё помнит кольцо, от старых к новым.
+    pub fn retained(&self) -> Vec<MonotonicNanos> {
+        let kept = self.total.min(RECENT_HAPTICS_CAPACITY as u64);
+        (self.total - kept..self.total)
+            .map(|index| MonotonicNanos::from_nanos(self.nanos[(index % RECENT_HAPTICS_CAPACITY as u64) as usize]))
+            .collect()
+    }
+}
+
 /// Счётчики хаптики по видам итога.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct HapticCounters {
@@ -107,6 +166,21 @@ pub struct HapticCounters {
     pub unsupported: u64,
     pub not_attached: u64,
     pub backpressure: u64,
+    /// Когда принимались последние вибрации. Быстрая прокрутка колеса зума не должна «смазывать» мотор в гул
+    /// (решение 112): ограничитель частоты стоит в виджете, а это — его наблюдаемый итог. Время кадра UI то же, по
+    /// которому ограничитель решает, поэтому промежуток между двумя принятыми вибрациями не меньше его интервала.
+    pub recent_queued: RecentHapticTimes,
+}
+
+/// Счётчики намерений объектива (сессия 13): ящик «последнее побеждает».
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LensCounters {
+    /// Намерений положено в ящик (в том числе заменивших ещё не прочитанное движком).
+    pub published: u64,
+    /// Из них при публикации движок уже был привязан и получил толчок.
+    pub wakes_delivered: u64,
+    /// Из них движок ещё не привязан: толчок пропущен, `bind` досылает его сам.
+    pub wakes_before_engine_bound: u64,
 }
 
 /// Счётчики команд оболочке (галерея).
@@ -146,6 +220,7 @@ pub struct EffectCounters {
     pub gallery: ShellCommandCounters,
     pub framing: FramingCounters,
     pub capture: CaptureCounters,
+    pub lens: LensCounters,
 }
 
 /// Сервисы, которым адресованы эффекты (собираются композицией один раз на экран).
@@ -155,6 +230,8 @@ pub struct EffectTargets {
     pub commands: Arc<dyn ShellCommands>,
     pub render: Arc<dyn RenderControl>,
     pub capture: Arc<dyn CaptureService>,
+    /// Ящик намерений объектива: тот же клон, что у движка камеры (`CameraServices::lens_intents`).
+    pub lens: LensIntentChannel,
 }
 
 /// Исполнитель эффектов.
@@ -225,6 +302,7 @@ impl EffectExecutor {
                 Effect::Haptic(pattern) => self.play_haptic(pattern),
                 Effect::OpenSystemGallery => self.open_gallery(),
                 Effect::Viewfinder(intent) => self.place_viewfinder(intent),
+                Effect::Lens(intent) => self.publish_lens_intent(intent),
                 Effect::Capture(request) => feedback.extend(self.submit_capture(request)),
             }
         }
@@ -276,7 +354,10 @@ impl EffectExecutor {
     fn play_haptic(&mut self, pattern: HapticPattern) {
         let counters = &mut self.counters.haptics;
         match self.targets.haptics.play(pattern) {
-            HapticOutcome::Queued(_) => counters.queued += 1,
+            HapticOutcome::Queued(_) => {
+                counters.queued += 1;
+                counters.recent_queued.push(self.frame_time);
+            }
             HapticOutcome::Unsupported => counters.unsupported += 1,
             HapticOutcome::NotAttached => counters.not_attached += 1,
             HapticOutcome::Backpressure => counters.backpressure += 1,
@@ -292,13 +373,24 @@ impl EffectExecutor {
         }
     }
 
+    /// Намерение объектива — в ящик «последнее побеждает» (не в очередь команд движка, не может быть `QueueFull`).
+    fn publish_lens_intent(&mut self, intent: LensIntent) {
+        let counters = &mut self.counters.lens;
+        let (_generation, delivery) = self.targets.lens.publish(intent);
+        counters.published += 1;
+        match delivery {
+            SignalDelivery::Delivered => counters.wakes_delivered += 1,
+            SignalDelivery::NotBoundYet => counters.wakes_before_engine_bound += 1,
+        }
+    }
+
     fn place_viewfinder(&mut self, intent: FramingIntent) {
         let counters = &mut self.counters.framing;
-        let framing = match framing_of(intent) {
+        let framing = match framing_of(&intent) {
             Ok(framing) => framing,
             Err(error) => {
                 counters.invalid_rect += 1;
-                tracing::error!(target: LOG_TARGET, %error, ?intent, "место видоискателя от экрана неверно: команда не отправлена");
+                tracing::error!(target: LOG_TARGET, %error, destination = ?intent.destination, "место видоискателя от экрана неверно: команда не отправлена");
                 return;
             }
         };
@@ -344,10 +436,12 @@ impl EffectExecutor {
 }
 
 /// Намерение экрана → команда рендеру. У экрана свой тип прямоугольника, у рендера — проверяемый: перевод с ошибкой.
-fn framing_of(intent: FramingIntent) -> Result<ViewfinderFraming, render_loop::viewfinder::ScreenRectError> {
+///
+/// Кадрирование — `FramingCrop::Zoom`: рендер считает его по камере КАЖДОГО кадра одной формулой с экраном.
+fn framing_of(intent: &FramingIntent) -> Result<ViewfinderFraming, render_loop::viewfinder::ScreenRectError> {
     let rect = intent.destination;
     Ok(ViewfinderFraming {
-        crop: intent.crop,
+        crop: FramingCrop::Zoom(intent.zoom.clone()),
         destination: FramingDestination::ScreenRect(NormalizedScreenRect::new(
             rect.left,
             rect.top,

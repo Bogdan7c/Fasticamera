@@ -31,6 +31,12 @@ impl CameraEngine {
     }
 
     pub(super) fn route_backend_event(&mut self, event: BackendEvent, now: Instant) {
+        self.dispatch_backend_event(event, now);
+        // Отказ новой камеры посреди смены объектива возвращает цель; довести до неё.
+        self.run_pending_lens_revert(now);
+    }
+
+    fn dispatch_backend_event(&mut self, event: BackendEvent, now: Instant) {
         self.availability.begin_event();
         match event {
             BackendEvent::DeviceDisconnected { device } => {
@@ -66,6 +72,7 @@ impl CameraEngine {
                     if matches!(result.three_a.origin, RequestOrigin::Repeating | RequestOrigin::Unknown) {
                         self.cadence.record_completed(result);
                         self.note_stable_frame();
+                        self.note_lens_frame(now);
                     }
                     self.observe_three_a_result(result);
                 } else {

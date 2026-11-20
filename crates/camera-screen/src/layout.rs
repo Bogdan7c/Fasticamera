@@ -10,7 +10,10 @@
 //! 3. Кадр занимает всю ширину экрана; 16:9 и низ кадра 4:3 заданы измерениями, верх 4:3 и кадр 1:1
 //!    выводятся из соотношения сторон (1:1 стоит по центру кадра 4:3).
 
-use camera_contract::viewfinder_crop::ViewfinderCrop;
+use std::sync::Arc;
+
+use camera_contract::ids::LensFacing;
+use camera_contract::zoom::{ZoomCatalog, ZoomFraming, ZoomRatio};
 use serde::{Deserialize, Serialize};
 use shell_contract::surface::SurfaceSize;
 use thiserror::Error;
@@ -109,10 +112,15 @@ pub struct NormalizedScreenRect {
 }
 
 /// Команда рендеру: какое кадрирование сенсора нарисовать и в какое место экрана.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+///
+/// С сессии 13 кадрирование — не готовый прямоугольник, а **входы** общей формулы [`ZoomFraming`]
+/// (соотношение сторон, коэффициент зума, каталог камер): рендер сам применяет её к камере КАЖДОГО кадра
+/// (`ZoomFraming::crop_for_camera`), поэтому кадр старой камеры при переключении не получает кадрирование
+/// новой (решение 93). Экран считает по той же формуле перевод тап ↔ сенсор.
+#[derive(Debug, Clone, PartialEq)]
 pub struct FramingIntent {
-    /// Какую часть сенсора показать.
-    pub crop: ViewfinderCrop,
+    /// Входы формулы кадрирования.
+    pub zoom: ZoomFraming,
     /// Куда на экране её положить.
     pub destination: NormalizedScreenRect,
 }
@@ -220,15 +228,21 @@ impl ScreenLayout {
         }
     }
 
-    /// Команда рендеру для соотношения: кадрирование сенсора + место на экране.
-    ///
-    /// Зум здесь всегда «без зума»: щипок и кнопки зума появятся в сессии 13 и поменяют ровно эту
-    /// функцию (кадрирование собирается в одном месте).
-    pub fn framing_intent(&self, aspect: AspectRatio) -> FramingIntent {
+    /// Команда рендеру для соотношения: входы формулы кадрирования + место на экране. Кадрирование
+    /// собирается только здесь (одно место для экрана и рендера).
+    pub fn framing_intent(
+        &self,
+        aspect: AspectRatio,
+        facing: LensFacing,
+        ratio: ZoomRatio,
+        catalog: Arc<ZoomCatalog>,
+    ) -> FramingIntent {
         FramingIntent {
-            crop: ViewfinderCrop {
+            zoom: ZoomFraming {
                 aspect: aspect.crop_aspect(),
-                zoom: camera_contract::viewfinder_crop::ZoomFactor::NONE,
+                facing,
+                ratio,
+                catalog,
             },
             destination: self.frame_rect_normalized(aspect),
         }

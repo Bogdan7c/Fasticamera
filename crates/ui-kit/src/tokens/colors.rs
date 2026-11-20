@@ -26,6 +26,8 @@ pub struct ColorTokens {
     /// Выбранная подпись карусели режимов (PHOTO). `[estimate]` — подгонка, не Apple: жёлтый, как
     /// у выбранного режима в камере iOS; сверить со скринами iPhone в 12a.
     pub selected_label: DisplayColor,
+    /// Выбранная подпись и значение зума. `[measured: R00 t=88.5–100]` #FFCE00 (золотистый, не лимонный).
+    pub zoom_selected: DisplayColor,
 }
 
 impl Default for ColorTokens {
@@ -37,6 +39,7 @@ impl Default for ColorTokens {
             text_muted: DisplayColor::WHITE.with_alpha(0.6),
             scrim: DisplayColor::BLACK.with_alpha(0.4),
             selected_label: DisplayColor::rgb(1.0, 0.8, 0.0),
+            zoom_selected: DisplayColor::rgb(1.0, 206.0 / 255.0, 0.0),
         }
     }
 }
@@ -51,6 +54,7 @@ impl ColorTokens {
             ("text_muted", self.text_muted),
             ("scrim", self.scrim),
             ("selected_label", self.selected_label),
+            ("zoom_selected", self.zoom_selected),
         ];
         for (name, color) in colors {
             if !color.is_valid() {

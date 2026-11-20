@@ -4,21 +4,28 @@
 //! Состояние экрана НЕ подменяется: до нужного вида экран доводится теми же путями, что и в приложении
 //! (касание → жест → действие → редьюсер → виджеты → список рисования).
 
+use std::sync::Arc;
+
 use camera_contract::control::ExposureBias;
+use camera_contract::fixtures::{camera_id, front_camera, main_wide_camera, ultra_wide_camera};
 use camera_contract::geometry::{PixelRect, PixelSize, SensorOrientation};
+use camera_contract::ids::{LensFacing, LensRole};
 use camera_contract::three_a::{AeAfLock, MeteringRegion, PointOfInterest, PointRequestId, SensorPoint};
+use camera_contract::zoom::ZoomCatalog;
+use camera_core::role_classifier::classify_catalog;
+use camera_core::zoom::{ZoomConfig, build_zoom_catalog};
 use camera_screen::exposure::ExposureRangeFact;
 use camera_screen::viewfinder_map::{MirrorMode, StreamGeometry};
 use camera_screen::{
-    CameraFacts, CameraPresence, CameraScreen, Effect, FocusPhase, ScreenAction, ScreenCameraIntent, ScreenConfig,
-    ScreenTouch,
+    ActiveLens, CameraFacts, CameraPresence, CameraScreen, Effect, FocusPhase, LensFacts, LensSwitch, ScreenAction,
+    ScreenCameraIntent, ScreenConfig, ScreenTouch,
 };
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::touch::{PointerId, SurfacePoint, TouchPhase, TouchSample};
 use ui_core::geometry::Point;
 use ui_core::time::MotionPreference;
 use ui_draw::draw_list::{DrawItem, DrawList};
-use ui_draw::frame_source::UiFrameRequest;
+use ui_draw::frame_source::{BackdropContinuity, UiFrameRequest};
 use ui_draw::geometry::PxSize;
 use ui_draw::icons::IconId;
 use ui_draw::light::LightDirection;
@@ -66,6 +73,32 @@ pub fn live_facts() -> CameraFacts {
         focus: FocusPhase::Continuous,
         exposure_range: ExposureRangeFact::NotReported,
         stream: Some(main_camera_stream()),
+        lens: live_lens_facts(),
+    }
+}
+
+/// Камера роли `wide` в каталоге OnePlus 11.
+const MAIN_CAMERA: &str = "2";
+
+/// Шкала зума OnePlus 11, построенная теми же функциями движка, что и на телефоне (образцы камер по фактам 00).
+pub fn oneplus_zoom_catalog() -> Arc<ZoomCatalog> {
+    let cameras = vec![main_wide_camera(), ultra_wide_camera(), front_camera()];
+    let classified = classify_catalog(cameras, &camera_core::config::CameraEngineConfig::default().roles)
+        .expect("образцы камер без повторных ID");
+    Arc::new(build_zoom_catalog(&classified.catalog, &ZoomConfig::default()))
+}
+
+/// Объективы работающей основной камеры: шкала OnePlus 11 (ширик 0,59 / основная 1 / фронтальная), активна `wide`.
+pub fn live_lens_facts() -> LensFacts {
+    LensFacts {
+        catalog: Some(oneplus_zoom_catalog()),
+        active: Some(ActiveLens {
+            camera: camera_id(MAIN_CAMERA),
+            role: LensRole::Wide,
+            facing: LensFacing::Back,
+        }),
+        switch: LensSwitch::Steady,
+        last_failure: None,
     }
 }
 
@@ -87,6 +120,8 @@ pub struct ScreenDriver {
     screen: CameraScreen,
     now_ms: i64,
     last_list: DrawList,
+    /// Что рендер сообщает экрану о кадре под UI (по умолчанию — свежий кадр камеры).
+    backdrop: BackdropContinuity,
 }
 
 impl ScreenDriver {
@@ -99,6 +134,7 @@ impl ScreenDriver {
             screen,
             now_ms: 0,
             last_list: DrawList::new(LightDirection::from_angle_degrees(45.0)),
+            backdrop: BackdropContinuity::Live,
         };
         driver.frame();
         driver.send(ScreenAction::CameraFactsChanged(live_facts()));
@@ -109,6 +145,16 @@ impl ScreenDriver {
 
     pub fn screen(&self) -> &CameraScreen {
         &self.screen
+    }
+
+    /// Текущее время водителя (метка для действий, которые несут `at`).
+    pub fn now(&self) -> MonotonicNanos {
+        at_ms(self.now_ms)
+    }
+
+    /// Что рендер сообщает экрану о кадре под UI на следующих кадрах (удержание кадра на переходе камеры).
+    pub fn set_backdrop(&mut self, backdrop: BackdropContinuity) {
+        self.backdrop = backdrop;
     }
 
     /// Последний построенный список рисования.
@@ -127,6 +173,7 @@ impl ScreenDriver {
             present_time: at_ms(self.now_ms),
             logical_size: PxSize::new(WIDTH_PX as f32, HEIGHT_PX as f32),
             px_per_pt: PX_PER_PT,
+            backdrop: self.backdrop,
         };
         self.last_list = self.screen.produce_frame(&request).expect("экран строит кадр");
     }

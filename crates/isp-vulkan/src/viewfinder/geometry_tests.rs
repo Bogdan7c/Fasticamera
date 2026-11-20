@@ -40,6 +40,7 @@ fn geometry(valid_area: PixelRect, crop: PixelRect, orientation: SensorOrientati
         valid_area,
         crop,
         sensor_orientation: orientation,
+        allocation: OutputAllocation::Exact,
     }
 }
 
@@ -69,6 +70,7 @@ fn from_crop_resolves_aspect_and_zoom() {
     let crop = ViewfinderCrop {
         aspect: CropAspect::SIXTEEN_BY_NINE,
         zoom: ZoomFactor::new(2.0).unwrap(),
+        center: camera_contract::viewfinder_crop::CropCenter::ValidAreaCenter,
     };
     let resolved = ViewfinderGeometry::from_crop(area, &crop, SensorOrientation::Degrees90).unwrap();
     assert_eq!(resolved.crop, rect(1024, 960, 2048, 1152));

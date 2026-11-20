@@ -140,6 +140,7 @@ fn fresh_viewfinder() -> ViewfinderDiagnostics {
         white_balance: WhiteBalanceDiagnostics::idle(WhiteBalanceConfig::default().statistics_every_n_frames),
         auto_exposure: None,
         ui_overlay: render_loop::ui_overlay::UiOverlayDiagnostics::default(),
+        continuity: Default::default(),
     }
 }
 
@@ -436,6 +437,8 @@ fn run_viewfinder_on(
 mod glass;
 #[path = "event_router_viewfinder_latency_tests.rs"]
 mod latency;
+#[path = "event_router_zoom_tests.rs"]
+mod zoom;
 
 fn stages_named(harness: &Harness, name: &str) -> Vec<serde_json::Value> {
     harness
@@ -533,10 +536,11 @@ fn viewfinder_smoke_reports_decimated_awb_statistics_and_the_white_balance_secti
     let report = &result["report"];
     let processed = report["frames_processed"].as_u64().expect("кадры");
     let published = report["awb_published"].as_u64().expect("статистика");
-    assert_eq!(
-        published,
-        processed / 4,
-        "статистика идёт на каждом 4-м кадре: {report}"
+    // Статистика — на каждом 4-м кадре от начала потока, а окно отчёта начинается в произвольной фазе этого
+    // счёта: на 18 кадров честно выходит 4 или 5 публикаций (пол или потолок от деления на 4).
+    assert!(
+        (processed / 4..=processed.div_ceil(4)).contains(&published),
+        "статистика идёт на каждом 4-м кадре: {published} из {processed}: {report}"
     );
     assert!(
         report["white_balance"]["estimates"].as_u64().is_some_and(|n| n > 0),

@@ -37,7 +37,9 @@ fn square_framing(destination: FramingDestination) -> ViewfinderFraming {
         crop: ViewfinderCrop {
             aspect: CropAspect::SQUARE,
             zoom: ZoomFactor::NONE,
-        },
+            center: camera_contract::viewfinder_crop::CropCenter::ValidAreaCenter,
+        }
+        .into(),
         destination,
     }
 }
@@ -59,7 +61,7 @@ fn framing_command_reports_each_outcome_and_the_effective_place_follows_it() {
 
     let command = ViewfinderCommand::SetFraming(square_framing(FramingDestination::ScreenRect(lower_half())));
     assert_eq!(
-        harness.backend.apply_viewfinder_command(command),
+        harness.backend.apply_viewfinder_command(command.clone()),
         ViewfinderCommandOutcome::Applied
     );
     // Кадрирование и место поменялись ОДНОЙ командой: в диагностике новое место, а следующий кадр ISP
@@ -82,7 +84,7 @@ fn framing_command_reports_each_outcome_and_the_effective_place_follows_it() {
     );
 
     assert_eq!(
-        harness.backend.apply_viewfinder_command(command),
+        harness.backend.apply_viewfinder_command(command.clone()),
         ViewfinderCommandOutcome::AlreadyInEffect,
         "повтор ничего не меняет"
     );
@@ -92,7 +94,9 @@ fn framing_command_reports_each_outcome_and_the_effective_place_follows_it() {
         crop: ViewfinderCrop {
             aspect: CropAspect::LongToShort { long: 1, short: 2 },
             zoom: ZoomFactor::NONE,
-        },
+            center: camera_contract::viewfinder_crop::CropCenter::ValidAreaCenter,
+        }
+        .into(),
         destination: FramingDestination::Configured,
     });
     let outcome = harness.backend.apply_viewfinder_command(broken);
@@ -110,6 +114,7 @@ fn framing_command_reports_each_outcome_and_the_effective_place_follows_it() {
     let wide = ViewfinderCrop {
         aspect: CropAspect::LongToShort { long: 16, short: 9 },
         zoom: ZoomFactor::NONE,
+        center: camera_contract::viewfinder_crop::CropCenter::ValidAreaCenter,
     };
     assert_eq!(
         harness
@@ -124,7 +129,7 @@ fn framing_command_reports_each_outcome_and_the_effective_place_follows_it() {
 
     // Возврат к настроенному месту.
     let back = ViewfinderCommand::SetFraming(ViewfinderFraming {
-        crop: wide,
+        crop: wide.into(),
         destination: FramingDestination::Configured,
     });
     assert_eq!(
@@ -147,11 +152,11 @@ fn the_rect_is_a_fraction_of_the_target_and_survives_surface_recreation_with_ano
     // Полное кадрирование: у крошечного тестового кадра после квадратного кропа не хватает ячеек для сетки
     // статистики AWB на первом кадре новой сессии (свойство тестовых данных, не рендера).
     let command = ViewfinderCommand::SetFraming(ViewfinderFraming {
-        crop: ViewfinderCrop::FULL_SENSOR,
+        crop: ViewfinderCrop::FULL_SENSOR.into(),
         destination: FramingDestination::ScreenRect(lower_half()),
     });
     assert_eq!(
-        harness.backend.apply_viewfinder_command(command),
+        harness.backend.apply_viewfinder_command(command.clone()),
         ViewfinderCommandOutcome::Applied
     );
     harness.show_new_camera_frame();
@@ -165,7 +170,7 @@ fn the_rect_is_a_fraction_of_the_target_and_survives_surface_recreation_with_ano
         "место пережило пересоздание surface"
     );
     assert_eq!(
-        harness.backend.apply_viewfinder_command(command),
+        harness.backend.apply_viewfinder_command(command.clone()),
         ViewfinderCommandOutcome::AlreadyInEffect,
         "бэкенд помнит применённое"
     );

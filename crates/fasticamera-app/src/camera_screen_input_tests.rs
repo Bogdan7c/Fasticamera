@@ -26,7 +26,7 @@ fn messages_arrive_in_send_order_and_are_counted() {
     let (mut sender, mut receiver) = screen_input_channel(8);
     let orientation = ScreenAction::DeviceOrientationChanged(DeviceOrientation::LandscapeLeft);
     assert_eq!(sender.send_touch(sample(TouchPhase::Began, 1)), InputDelivery::Queued);
-    assert_eq!(sender.send_action(orientation), InputDelivery::Queued);
+    assert_eq!(sender.send_action(orientation.clone()), InputDelivery::Queued);
     assert_eq!(sender.send_touch(sample(TouchPhase::Ended, 2)), InputDelivery::Queued);
 
     assert_eq!(
@@ -117,8 +117,8 @@ fn overflowed_actions_are_counted_without_owing_a_gap() {
     let (sender, mut receiver) = screen_input_channel(1);
     let first = ScreenAction::DeviceOrientationChanged(DeviceOrientation::Portrait);
     let second = ScreenAction::DeviceOrientationChanged(DeviceOrientation::LandscapeRight);
-    assert_eq!(sender.send_action(first), InputDelivery::Queued);
-    assert_eq!(sender.send_action(second), InputDelivery::Overflowed);
+    assert_eq!(sender.send_action(first.clone()), InputDelivery::Queued);
+    assert_eq!(sender.send_action(second.clone()), InputDelivery::Overflowed);
     assert!(!sender.owes_gap(), "потеря действия жесты не ломает");
     assert_eq!(drain(&mut receiver), vec![ScreenInput::Action(first)]);
     assert_eq!(sender.stats().overflowed_actions, 1);
@@ -129,7 +129,7 @@ fn injector_clone_feeds_the_same_queue_and_counters() {
     let (sender, mut receiver) = screen_input_channel(4);
     let injector = sender.injector();
     let action = ScreenAction::DeviceOrientationChanged(DeviceOrientation::PortraitUpsideDown);
-    assert_eq!(injector.inject(action), InputDelivery::Queued);
+    assert_eq!(injector.inject(action.clone()), InputDelivery::Queued);
     assert_eq!(drain(&mut receiver), vec![ScreenInput::Action(action)]);
     assert_eq!(sender.stats().queued_actions, 1);
 }

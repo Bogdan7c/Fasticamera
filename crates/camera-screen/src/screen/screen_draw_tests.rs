@@ -78,8 +78,15 @@ fn rest_layout_puts_elements_where_the_layout_doc_says() {
             .any(|g| matches!(g, ShapeGeometry::Circle { diameter } if near(*diameter, 108.0, 2.0))),
         "кнопка меню Ø108: {menu_circle:?}"
     );
-    // Переворота камеры и зума нет (инвариант 6).
-    assert_eq!(icon_transforms(&list, IconId::FlipCamera).len(), 0);
+    // Кнопка переворота (сессия 13, решение 115): Ø 48 в (382; 898) — в одном ряду с миниатюрой.
+    let flip = icon_transforms(&list, IconId::FlipCamera);
+    assert_eq!(flip.len(), 1);
+    assert!(
+        near(flip[0].tx, 382.0 * PX_PER_PT, 2.0) && near(flip[0].ty, 2270.0, 3.0),
+        "кнопка переворота на (382; 898) pt: ({}, {})",
+        flip[0].tx,
+        flip[0].ty
+    );
     assert_eq!(icon_transforms(&list, IconId::ControlsMenu).len(), 1);
 }
 

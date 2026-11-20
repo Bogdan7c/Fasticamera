@@ -282,7 +282,7 @@ impl<B: DisplayBackend, C: FrameClock> RenderWorker<B, C> {
     /// бэкенд не вызывается: команда учитывается как неисполнимая.
     fn apply_viewfinder_command(&mut self, command: ViewfinderCommand) {
         let outcome = self
-            .guarded(|backend| backend.apply_viewfinder_command(command))
+            .guarded(|backend| backend.apply_viewfinder_command(command.clone()))
             .unwrap_or(ViewfinderCommandOutcome::Unsupported);
         self.status.viewfinder_commands.note(command, outcome);
     }

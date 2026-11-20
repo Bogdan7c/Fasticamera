@@ -9,6 +9,7 @@ use serde::Serialize;
 
 use crate::geometry::{PixelRect, PixelSize, SensorOrientation};
 use crate::ids::{CameraId, CameraTopology, LensFacing};
+use crate::lens_calibration::LensCalibration;
 use crate::raw_format::{CfaLayout, MosaicPattern, NativeMosaic, RawFormat};
 use crate::three_a::ThreeACapabilities;
 
@@ -216,7 +217,7 @@ pub struct PhysicalSizeMm {
     pub height_mm: f32,
 }
 
-/// Оптика: диафрагмы, фокусные расстояния и размер сенсора.
+/// Оптика: диафрагмы, фокусные расстояния, размер сенсора, калибровка и цифровой зум.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Optics {
     /// Доступные f-числа (`ACAMERA_LENS_INFO_AVAILABLE_APERTURES`).
@@ -224,6 +225,10 @@ pub struct Optics {
     /// Доступные фокусные расстояния, мм (`ACAMERA_LENS_INFO_AVAILABLE_FOCAL_LENGTHS`).
     pub focal_lengths_mm: Vec<f32>,
     pub sensor_physical_size: PhysicalSizeMm,
+    /// Геометрическая калибровка объектива (сессия 13): оптическая ось и положение камеры.
+    pub calibration: LensCalibration,
+    /// Наибольший цифровой зум (`ACAMERA_SCALER_AVAILABLE_MAX_DIGITAL_ZOOM`); `None` — ключа нет.
+    pub max_digital_zoom: Option<f32>,
 }
 
 impl Optics {
@@ -233,6 +238,23 @@ impl Optics {
     /// от того, как сенсор повёрнут в корпусе. `None`, если фокусных расстояний нет
     /// или размеры не положительные (битые метаданные).
     pub fn widest_field_of_view_degrees(&self) -> Option<f64> {
+        let (shortest_focal_mm, long_side_mm) = self.shortest_focal_and_long_side()?;
+        let half_angle = (f64::from(long_side_mm) / 2.0 / f64::from(shortest_focal_mm)).atan();
+        Some((2.0 * half_angle).to_degrees())
+    }
+
+    /// Эквивалентное фокусное расстояние (35 мм) по диагонали сенсора, мм:
+    /// `f × 43,27 / диагональ`. Основная OnePlus 11 — ≈ 23,6 мм, ширик — ≈ 14,0 мм.
+    /// `None` — битые метаданные (как у [`Self::widest_field_of_view_degrees`]).
+    pub fn equivalent_focal_length_mm(&self) -> Option<f64> {
+        let (shortest_focal_mm, _) = self.shortest_focal_and_long_side()?;
+        let size = self.sensor_physical_size;
+        let diagonal_mm = f64::from(size.width_mm).hypot(f64::from(size.height_mm));
+        Some(f64::from(shortest_focal_mm) * FULL_FRAME_DIAGONAL_MM / diagonal_mm)
+    }
+
+    /// Самое короткое правдоподобное фокусное расстояние и длинная сторона сенсора (обе > 0).
+    fn shortest_focal_and_long_side(&self) -> Option<(f32, f32)> {
         let shortest_focal_mm = self
             .focal_lengths_mm
             .iter()
@@ -243,13 +265,19 @@ impl Optics {
             .sensor_physical_size
             .width_mm
             .max(self.sensor_physical_size.height_mm);
-        if !(long_side_mm.is_finite() && long_side_mm > 0.0) {
+        let short_side_mm = self
+            .sensor_physical_size
+            .width_mm
+            .min(self.sensor_physical_size.height_mm);
+        if !(long_side_mm.is_finite() && short_side_mm.is_finite() && short_side_mm > 0.0) {
             return None;
         }
-        let half_angle = (f64::from(long_side_mm) / 2.0 / f64::from(shortest_focal_mm)).atan();
-        Some((2.0 * half_angle).to_degrees())
+        Some((shortest_focal_mm, long_side_mm))
     }
 }
+
+/// Диагональ кадра 36×24 мм — основа «эквивалентного фокусного расстояния».
+const FULL_FRAME_DIAGONAL_MM: f64 = 43.266_615_305_567_87;
 
 /// Применил ли вендор коррекцию виньетирования к RAW (`ACAMERA_SENSOR_INFO_LENS_SHADING_APPLIED`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

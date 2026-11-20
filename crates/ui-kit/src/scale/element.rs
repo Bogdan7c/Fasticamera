@@ -89,7 +89,7 @@ impl<M: ValueModel + Clone> SnapScale<M> {
             model,
             spec,
             points_per_unit,
-            magnet_capture_points: environment.tokens.density.magnet_capture_points,
+            magnet_capture_points: environment.tokens.density.magnet_capture(spec.density),
             haptics: environment.tokens.haptics,
             drive,
             detents: layout.detents,

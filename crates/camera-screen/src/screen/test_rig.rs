@@ -5,7 +5,7 @@ use shell_contract::touch::{PointerId, SurfacePoint, TouchPhase, TouchSample};
 use ui_core::geometry::Point;
 use ui_core::time::MotionPreference;
 use ui_draw::draw_list::{DrawItem, DrawList};
-use ui_draw::frame_source::UiFrameRequest;
+use ui_draw::frame_source::{BackdropContinuity, UiFrameRequest};
 use ui_draw::geometry::PxSize;
 use ui_draw::icons::IconId;
 use ui_draw::shape::ShapeGeometry;
@@ -35,6 +35,7 @@ pub(super) fn request(at_ms: i64, size: (f32, f32)) -> UiFrameRequest {
         present_time: ms(at_ms),
         logical_size: PxSize::new(size.0, size.1),
         px_per_pt: size.0 / 440.0,
+        backdrop: ui_draw::frame_source::BackdropContinuity::Live,
     }
 }
 
@@ -42,6 +43,8 @@ pub(super) struct Rig {
     pub(super) screen: CameraScreen,
     pub(super) now_ms: i64,
     pub(super) last: DrawList,
+    /// Что рендер говорит о фоне под UI в следующих кадрах (сессия 13).
+    pub(super) backdrop: BackdropContinuity,
 }
 
 impl Rig {
@@ -50,12 +53,23 @@ impl Rig {
         Self::with(ScreenConfig::default(), MotionPreference::Full)
     }
 
+    /// Экран с каталогом зума и активным объективом `role`; эффекты создания (адоптирование) отброшены.
+    pub(super) fn with_zoom(role: camera_contract::ids::LensRole, motion: MotionPreference) -> Self {
+        let mut rig = Self::with(ScreenConfig::default(), motion);
+        rig.screen
+            .handle_action(ScreenAction::CameraFactsChanged(crate::test_support::zoom_facts(role)));
+        rig.frame();
+        rig.screen.drain_effects();
+        rig
+    }
+
     pub(super) fn with(config: ScreenConfig, motion: MotionPreference) -> Self {
         let screen = CameraScreen::new(config, UiKitTokens::default(), motion).expect("экран");
         let mut rig = Self {
             screen,
             now_ms: 0,
             last: DrawList::new(ui_draw::light::LightDirection::from_angle_degrees(45.0)),
+            backdrop: BackdropContinuity::Live,
         };
         rig.frame();
         rig.screen.handle_action(ScreenAction::CameraFactsChanged(live_facts()));
@@ -66,10 +80,9 @@ impl Rig {
 
     /// Один кадр на текущем времени.
     pub(super) fn frame(&mut self) -> &DrawList {
-        self.last = self
-            .screen
-            .produce_frame(&request(self.now_ms, (WIDTH_PX, HEIGHT_PX)))
-            .expect("кадр");
+        let mut frame_request = request(self.now_ms, (WIDTH_PX, HEIGHT_PX));
+        frame_request.backdrop = self.backdrop;
+        self.last = self.screen.produce_frame(&frame_request).expect("кадр");
         &self.last
     }
 
@@ -84,8 +97,13 @@ impl Rig {
     }
 
     pub(super) fn touch(&mut self, phase: TouchPhase, point: Point, at_ms: i64) {
+        self.touch_pointer(0, phase, point, at_ms);
+    }
+
+    /// Касание конкретным пальцем (для щипка).
+    pub(super) fn touch_pointer(&mut self, pointer: i32, phase: TouchPhase, point: Point, at_ms: i64) {
         self.screen.handle_touch(ScreenTouch::Sample(TouchSample {
-            pointer: PointerId::new(0),
+            pointer: PointerId::new(pointer),
             phase,
             position: SurfacePoint {
                 x_px: (point.x * f64::from(PX_PER_PT)) as f32,
@@ -137,7 +155,12 @@ impl Rig {
     fn center_of(&self, rect: impl Fn(&crate::widget::geometry::ScreenGeometry) -> ui_core::geometry::Rect) -> Point {
         let layout = *self.screen.state().layout().expect("раскладка");
         let tokens = UiKitTokens::default();
-        let geometry = crate::widget::geometry::ScreenGeometry::new(&layout, &self.screen.config.widgets, &tokens);
+        let geometry = crate::widget::geometry::ScreenGeometry::new(
+            &layout,
+            &self.screen.config.widgets,
+            &self.screen.config.zoom,
+            &tokens,
+        );
         rect(&geometry).center()
     }
 
@@ -148,7 +171,12 @@ impl Rig {
     ) -> ui_core::geometry::Rect {
         let layout = *self.screen.state().layout().expect("раскладка");
         let tokens = UiKitTokens::default();
-        let geometry = crate::widget::geometry::ScreenGeometry::new(&layout, &self.screen.config.widgets, &tokens);
+        let geometry = crate::widget::geometry::ScreenGeometry::new(
+            &layout,
+            &self.screen.config.widgets,
+            &self.screen.config.zoom,
+            &tokens,
+        );
         rect(&geometry)
     }
 
@@ -156,7 +184,12 @@ impl Rig {
     pub(super) fn point_with(&self, point: impl Fn(&crate::widget::geometry::ScreenGeometry) -> Point) -> Point {
         let layout = *self.screen.state().layout().expect("раскладка");
         let tokens = UiKitTokens::default();
-        let geometry = crate::widget::geometry::ScreenGeometry::new(&layout, &self.screen.config.widgets, &tokens);
+        let geometry = crate::widget::geometry::ScreenGeometry::new(
+            &layout,
+            &self.screen.config.widgets,
+            &self.screen.config.zoom,
+            &tokens,
+        );
         point(&geometry)
     }
 

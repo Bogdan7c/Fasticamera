@@ -18,6 +18,7 @@ use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::error::GpuError;
 use gpu_vulkan::raster::{AttachmentLoad, ColorAttachment, DrawCall, RasterPass, record_between_color_passes};
 use gpu_vulkan::sampled_texture::{SampledTexture, TextureDesc, TextureFormat};
+use gpu_vulkan::source_window::SourceWindow;
 use ui_draw::atlas::sdf_atlas;
 use ui_draw::geometry::PxSize;
 
@@ -462,12 +463,22 @@ impl UiRenderer {
         frame: &UiFrame<'_>,
         first_instance: u32,
     ) -> FramePush {
-        let (placement, live, fill) = match frame.backdrop {
-            BackdropInput::Live { placement, .. } => {
+        let (placement, live, fill, backdrop_window) = match frame.backdrop {
+            BackdropInput::Live { placement, source } => {
                 let d = placement.destination;
-                ([d.origin.x, d.origin.y, d.size.width, d.size.height], true, [0.0; 4])
+                (
+                    [d.origin.x, d.origin.y, d.size.width, d.size.height],
+                    true,
+                    [0.0; 4],
+                    source.window().mapping(),
+                )
             }
-            BackdropInput::Absent { fill } => ([0.0; 4], false, [fill.r, fill.g, fill.b, fill.a]),
+            BackdropInput::Absent { fill } => (
+                [0.0; 4],
+                false,
+                [fill.r, fill.g, fill.b, fill.a],
+                SourceWindow::of_content(vk::Extent2D { width: 1, height: 1 }).mapping(),
+            ),
         };
         let light = frame.draw_list.light.as_vector();
         FramePush {
@@ -481,6 +492,7 @@ impl UiRenderer {
             atlas_spread_texels: sdf_atlas().spread_texels,
             quarter_turns,
             first_instance,
+            backdrop_window,
         }
     }
 

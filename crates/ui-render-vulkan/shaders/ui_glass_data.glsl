@@ -29,6 +29,8 @@ layout(set = 0, binding = 6) uniform sampler2D pyramid_4;
 layout(set = 0, binding = 7) uniform sampler2D pyramid_5;
 layout(set = 0, binding = 8) uniform sampler2D pyramid_6;
 
+#include "ui_source_window.glsl"
+
 // Уровень пирамиды k (1..6) в точке экрана: уровень хранится в системе координат экрана,
 // тексель уровня k покрывает 2^k px.
 vec3 pyramid_color(int level, vec2 screen_px) {
@@ -52,7 +54,9 @@ vec3 sharp_backdrop(vec2 screen_px) {
     if (any(lessThan(relative, vec2(0.0))) || any(greaterThanEqual(relative, vec2(1.0)))) {
         return vec3(0.0);
     }
-    return textureLod(backdrop_image, relative, 0.0).rgb;
+    // Окно фона: содержимое в углу картинки ёмкости, зеркало, увеличение (см. ui_source_window.glsl).
+    vec2 uv = window_uv(relative, frame.window, frame.extra.yz, vec2(textureSize(backdrop_image, 0)));
+    return textureLod(backdrop_image, uv, 0.0).rgb;
 }
 
 // Размытый фон: `lod` 0 — резкий, целое k — уровень k, между — смесь соседних уровней.

@@ -95,6 +95,11 @@ impl CameraLifecycleState {
         }
     }
 
+    /// Есть ли заявка сценария на камеру прямо сейчас (не снимая её).
+    pub fn has_scenario_claim(&self) -> bool {
+        self.scenario_claim.load(Ordering::SeqCst)
+    }
+
     /// Снимает заявку сценария; `true`, если заявка была (камеру надо закрыть).
     pub fn take_scenario_claim(&self) -> bool {
         self.scenario_claim.swap(false, Ordering::SeqCst)

@@ -19,6 +19,7 @@
 //! Ничего не обрезается молча: переполнение группы стекла, символ вне запечённого набора и
 //! некорректная прозрачность — [`ViewError`].
 
+mod arc_scale;
 mod banner;
 mod carousel;
 mod content;
@@ -31,6 +32,7 @@ mod scale;
 mod scale_ticks;
 mod shutter;
 
+pub use arc_scale::{ArcLabel, ArcScaleDrawing, arc_scale_items};
 pub use banner::{banner_items, measure_banner_pt};
 pub use carousel::{CarouselLabels, carousel_items};
 pub use content::{

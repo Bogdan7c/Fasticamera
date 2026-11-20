@@ -28,6 +28,7 @@ pub mod camera_screen_effects;
 pub mod camera_screen_facts;
 pub mod camera_screen_gravity;
 pub mod camera_screen_input;
+pub mod camera_screen_lens_facts;
 pub mod camera_screen_service;
 pub mod camera_screen_source;
 pub mod camera_service;
@@ -72,6 +73,7 @@ pub mod viewfinder_control;
 pub mod viewfinder_latency_profile;
 pub mod viewfinder_pacing_control;
 pub mod viewfinder_scenario_config;
+pub mod zoom_scenario_config;
 
 #[cfg(target_os = "android")]
 mod jni_exports;

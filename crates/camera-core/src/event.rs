@@ -1,12 +1,16 @@
 //! События движка наружу.
 
 use camera_contract::availability::CameraUnavailableReason;
+use std::time::Duration;
+
+use camera_contract::ids::{CameraId, LensRole};
 use camera_contract::stream::{ConfiguredStream, StreamMode};
 use camera_contract::three_a::PointRequestId;
 use serde::Serialize;
 
 use crate::backend::ConfigureFailure;
 use crate::command::{CommandId, CommandOutcome};
+use crate::lens_status::LensSwitchFailure;
 use crate::state::CameraState;
 use crate::three_a_status::{BracketReport, ControlAdjustment, FocusOutcome};
 
@@ -46,11 +50,21 @@ pub enum CameraEvent {
     },
     /// Запрошенную частоту не достичь (например, на камере нет вендорских ключей 4:3@60),
     /// и движок честно откатился на запасную частоту из конфига (решение 23). Желаемый режим
-    /// запоминает именно `fallback`; `requested` и причина — для UI и отчётов.
+    /// остаётся запрошенным; потолок `fallback` запоминается за этой камерой
+    /// (следующая настройка этой камеры сразу идёт на него — событие `StreamLimitedByCamera`);
+    /// `requested` и причина — для UI и отчётов.
     StreamDegraded {
         requested: StreamMode,
         fallback: StreamMode,
         failure: ConfigureFailure,
+    },
+    /// Камера уже показала, что запрошенную частоту не держит (потолок известен по прошлому
+    /// `StreamDegraded`): сессия настраивается сразу на `effective`, без повторной неудачной
+    /// попытки. Желаемый режим остаётся `requested`.
+    StreamLimitedByCamera {
+        camera: CameraId,
+        requested: StreamMode,
+        effective: StreamMode,
     },
     /// Тап `request` завершился (сошёлся, не сошёлся, вышло время).
     FocusSettled {
@@ -65,6 +79,29 @@ pub enum CameraEvent {
     /// Итог серии с брекетингом.
     BracketCaptured {
         report: BracketReport,
+    },
+    /// Первый кадр новой камеры пришёл: смена `from → to` завершена (экран проявляет новую
+    /// камеру из удержанного размытого кадра). `elapsed` — от намерения или команды, начавших
+    /// смену, до этого кадра. `from == to` — возврат на прежний объектив после отменённой или
+    /// провалившейся смены: кадры снова идут, проявлять нужно ту же камеру.
+    LensSwitched {
+        from: LensRole,
+        to: LensRole,
+        elapsed: Duration,
+    },
+    /// Цель смены поменялась посреди смены: промежуточная `abandoned` отменена явно, смена
+    /// продолжается из прежнего `from` в новую `to` (если `to == from` — это возврат).
+    LensSwitchRetargeted {
+        from: LensRole,
+        abandoned: LensRole,
+        to: LensRole,
+    },
+    /// Новая камера `to` не удалась: желаемой снова стала `from`, а `to` заблокирована для
+    /// селектора (см. `LensStatus::blocked`).
+    LensSwitchFailed {
+        from: LensRole,
+        to: LensRole,
+        reason: LensSwitchFailure,
     },
 }
 

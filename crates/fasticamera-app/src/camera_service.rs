@@ -19,9 +19,10 @@
 //! сервис хранит причину ([`CameraEngineAccess::Unavailable`]), а сценарии честно сообщают её в отчёте.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use camera_android::{BackendDiagnostics, CpuProbeMode, DiagnosticsSnapshot};
+use camera_contract::zoom::LensIntentChannel;
 use camera_core::{CameraHandle, CameraRuntime, CommandId, CommandRejected};
 use raw_frame_stream::ViewfinderPacingSwitch;
 use serde::Serialize;
@@ -30,7 +31,7 @@ use crate::auto_exposure_link::{EngineBinding, ExposureControllerChoice};
 use crate::camera_lifecycle::{CameraLifecyclePolicy, CameraLifecycleState, PolicyRestore};
 use crate::camera_scenario_config::CameraScenarioConfig;
 use crate::raw_stream_services::RawStreamServices;
-use crate::viewfinder_autostart::{ViewfinderAutostart, ViewfinderAutostartOutcome};
+use crate::viewfinder_autostart::{UserLens, ViewfinderAutostart, ViewfinderAutostartOutcome};
 
 const LOG_TARGET: &str = "fasticamera::camera::service";
 
@@ -194,6 +195,10 @@ pub struct CameraServices {
     raw_stream: RawStreamServices,
     viewfinder_autostart: Arc<ViewfinderAutostart>,
     exposure_controller: ExposureControllerChoice,
+    /// Ящик намерений объектива (сессия 13): его публикует экран камеры и автозапуск, читает движок.
+    lens_intents: LensIntentChannel,
+    /// Объектив пользователя на момент заявки сценария: по концу сценария видоискатель открывается им.
+    user_lens_before_scenario: Arc<Mutex<UserLens>>,
 }
 
 impl CameraServices {
@@ -207,7 +212,20 @@ impl CameraServices {
             raw_stream: RawStreamServices::detached(),
             viewfinder_autostart: Arc::new(ViewfinderAutostart::disabled()),
             exposure_controller: ExposureControllerChoice::default(),
+            lens_intents: LensIntentChannel::new(),
+            user_lens_before_scenario: Arc::new(Mutex::new(UserLens::NoneBeforeScenario)),
         }
+    }
+
+    /// Подключает ящик намерений объектива, который читает движок (композиция передаёт тот же клон движку).
+    pub fn with_lens_intents(mut self, lens_intents: LensIntentChannel) -> Self {
+        self.lens_intents = lens_intents;
+        self
+    }
+
+    /// Ящик намерений объектива: экран камеры публикует в него вместо очереди команд движка.
+    pub fn lens_intents(&self) -> &LensIntentChannel {
+        &self.lens_intents
     }
 
     /// Запоминает, какой исполнитель экспозиции выбрала композиция (и почему не тот, что в конфиге).
@@ -274,12 +292,35 @@ impl CameraServices {
 
     /// Сценарий начал пользоваться камерой: по его концу маршрутизатор камеру закроет.
     pub fn claim_camera_for_scenario(&self) {
+        self.remember_user_lens_before_claim();
         self.lifecycle.claim_for_scenario();
+    }
+
+    /// Запоминает объектив пользователя ПЕРВОЙ заявкой сценария (повторная заявка того же сценария ничего не
+    /// перезаписывает: к ней камера уже могла быть переключена самим сценарием). Нет потока — запоминать нечего.
+    fn remember_user_lens_before_claim(&self) {
+        if self.lifecycle.has_scenario_claim() {
+            return;
+        }
+        let lens = match self.running() {
+            Ok(running) => running
+                .handle()
+                .status()
+                .lens
+                .active
+                .map_or(UserLens::NoneBeforeScenario, |active| UserLens::Role(active.role)),
+            Err(_) => UserLens::NoneBeforeScenario,
+        };
+        *self
+            .user_lens_before_scenario
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = lens;
     }
 
     /// Только отладочный сценарий на время своей работы: приложение в фоне камеру не отпускает.
     /// Возвращает политику по умолчанию маршрутизатор ([`CameraServices::scenario_ended`]).
     pub fn hold_in_background_for_diagnostics(&self) {
+        self.remember_user_lens_before_claim();
         self.lifecycle.hold_in_background_for_diagnostics();
     }
 
@@ -314,10 +355,18 @@ impl CameraServices {
         // Камера сценария закрыта (желаемое забыто вместе с его ручными настройками) — вернуть
         // желаемое состояние видоискателя продукта, если автозапуск включён. Если `close` не ушёл,
         // открывать поверх желаемого сценария нельзя: в логе будет отказ `close`.
+        let user_lens = std::mem::replace(
+            &mut *self
+                .user_lens_before_scenario
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+            UserLens::NoneBeforeScenario,
+        );
         let viewfinder_restored = match close_claimed_camera {
-            Some(CameraDispatch::Sent(_)) => {
-                Some(self.viewfinder_autostart.restore_after_scenario(self.engine_handle()))
-            }
+            Some(CameraDispatch::Sent(_)) => Some(
+                self.viewfinder_autostart
+                    .restore_after_scenario(self.engine_handle(), user_lens),
+            ),
             Some(_) | None => None,
         };
         let release_after_hold = (policy == PolicyRestore::RestoredFromHold && visibility == AppVisibility::Background)

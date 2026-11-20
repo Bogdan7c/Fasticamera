@@ -21,6 +21,8 @@
 //! * [`frame_passport`] — паспорт RAW-кадра: постоянная часть потока и покадровые метаданные;
 //! * [`auto_exposure`] — словарь нашего AE (08a): произведение экспозиции, предложение замера
 //!   (рендер → движок) с поздно привязываемым толчком, указание AE (движок → рендер);
+//! * [`lens_calibration`] — оптическая ось и положение объектива, проверка правдоподобия (13);
+//! * [`zoom`] — шкала зума всех камер направления, намерение экрана, формула кадрирования (13);
 //! * [`availability`] — почему камера недоступна (вытеснение, ошибка HAL, разрешение…);
 //! * `fixtures` (фича `fixtures`, только тесты) — образцы камер OnePlus 11 по фактам 00.
 
@@ -35,7 +37,9 @@ pub mod fixtures;
 pub mod frame_passport;
 pub mod geometry;
 pub mod ids;
+pub mod lens_calibration;
 pub mod raw_format;
 pub mod stream;
 pub mod three_a;
 pub mod viewfinder_crop;
+pub mod zoom;

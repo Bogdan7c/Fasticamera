@@ -7,6 +7,8 @@ pub struct GestureCounters {
     pub long_presses: u64,
     pub pans: u64,
     pub button_presses: u64,
+    /// Начатые щипки по видоискателю (зум).
+    pub pinches: u64,
     pub cancelled: u64,
 }
 

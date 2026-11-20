@@ -18,6 +18,7 @@ use camera_contract::three_a::{ExposureBracket, SensorPoint, ThreeAProfile};
 use crate::command::{CameraCommand, CommandId, CommandRejected};
 use crate::event::CameraEvent;
 use crate::inbox::{CameraInbox, ThreeAWaker};
+use crate::lens_status::LensStatus;
 use crate::state::{CameraState, ClosedReason};
 use crate::status::{AppPresence, CameraCounters, CameraStatus, StreamStats};
 use crate::three_a_status::ThreeAStatus;
@@ -57,6 +58,7 @@ impl EngineOutput {
                     last_unavailable: None,
                     counters: CameraCounters::default(),
                     three_a: ThreeAStatus::initial(),
+                    lens: LensStatus::initial(),
                 },
                 events: VecDeque::new(),
                 dropped_events: 0,

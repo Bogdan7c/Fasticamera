@@ -10,13 +10,25 @@
 //! Прямоугольник задаётся долями ЛОГИЧЕСКОЙ цели ([`NormalizedScreenRect`]): он не зависит от размера
 //! surface в пикселях и переживает её пересоздание — пиксели считаются заново на каждом кадре.
 
-use camera_contract::viewfinder_crop::ViewfinderCrop;
+use camera_contract::ids::{CameraId, LensFacing};
+use camera_contract::viewfinder_crop::{CropAspect, ViewfinderCrop};
+use camera_contract::zoom::{FramedCrop, PreviewMirror, ZoomFit, ZoomFraming, ZoomRatio};
 
 use crate::config::ViewfinderPlacement;
 
 /// Допуск на погрешность f32 при проверке, что правый/нижний край не выходит за 1.0 (`0.7 + 0.3` в f32
 /// даёт `1.0000001`; такой прямоугольник честно «до края», а не «за краем»).
 const EDGE_TOLERANCE: f32 = 1e-6;
+
+/// Зум, который хочет экран: коэффициент вместе с направлением, на чьей шкале он задан (шкалы задних и
+/// фронтальной камер несравнимы).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WantedZoom {
+    /// Направление шкалы.
+    pub facing: LensFacing,
+    /// Коэффициент на этой шкале.
+    pub ratio: ZoomRatio,
+}
 
 /// Прямоугольник в долях логической (портретной, как видит пользователь) цели, 0..1, от верхнего левого угла.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -127,11 +139,87 @@ pub enum FramingDestination {
     ScreenRect(NormalizedScreenRect),
 }
 
+/// Как выбирается кадрирование: фиксированное для любой камеры или по зуму (своё у каждой камеры).
+///
+/// `Zoom` решается ПО КАМЕРЕ КАДРА, а не по «текущей» камере: кадр старой камеры, который ещё идёт через
+/// ISP во время переключения объектива, получает кадрирование старой камеры, а не новой (нет скачка на один
+/// кадр). Формулу даёт `camera-contract` ([`ZoomFraming::crop_for_camera`]) — ту же, что считает экран.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FramingCrop {
+    /// Одно и то же кадрирование для кадров любой камеры (сценарии, умолчание из конфига).
+    Fixed(ViewfinderCrop),
+    /// Кадрирование по коэффициенту зума и шкалам камер.
+    Zoom(ZoomFraming),
+}
+
+impl FramingCrop {
+    /// Соотношение сторон (для проверки команды и для ёмкости выходного изображения ISP).
+    pub fn aspect(&self) -> CropAspect {
+        match self {
+            Self::Fixed(crop) => crop.aspect,
+            Self::Zoom(zoom) => zoom.aspect,
+        }
+    }
+
+    /// Итог кадрирования для кадра камеры `camera`. У фиксированного кадрирования нет зеркала и
+    /// сдвига шкалы: показанный коэффициент — опорный.
+    pub fn framed_for(&self, camera: &CameraId) -> FramedCrop {
+        match self {
+            Self::Fixed(crop) => FramedCrop {
+                crop: *crop,
+                mirror: PreviewMirror::None,
+                shown_ratio: ZoomRatio::ONE,
+                fit: ZoomFit::Exact,
+            },
+            Self::Zoom(zoom) => zoom.crop_for_camera(camera),
+        }
+    }
+
+    /// Направление камеры `camera` по каталогу зума (`None` — фиксированное кадрирование или камеры нет в каталоге).
+    pub fn facing_of(&self, camera: &CameraId) -> Option<LensFacing> {
+        match self {
+            Self::Fixed(_) => None,
+            Self::Zoom(zoom) => zoom.catalog.lens_for_camera(camera).map(|(group, _)| group.facing),
+        }
+    }
+
+    /// Зум, который хочет экран: коэффициент и направление, на шкале которого он задан (`None` у
+    /// фиксированного кадрирования — зума по шкале нет).
+    pub fn wanted_zoom(&self) -> Option<WantedZoom> {
+        match self {
+            Self::Fixed(_) => None,
+            Self::Zoom(zoom) => Some(WantedZoom {
+                facing: zoom.facing,
+                ratio: zoom.ratio,
+            }),
+        }
+    }
+
+    /// Почему кадрирование неисполнимо без состояния бэкенда (`None` — исполнимо).
+    pub fn rejection_reason(&self) -> Option<String> {
+        match self {
+            Self::Fixed(_) => None,
+            // Пустой каталог — ошибка сборки команды: ни одна камера не получит свой центр и зеркало, а
+            // молчаливо показать «весь кадр» значило бы скрыть поломку.
+            Self::Zoom(zoom) if zoom.catalog.back.is_none() && zoom.catalog.front.is_none() => {
+                Some("каталог зума пуст: нет ни одной камеры".to_owned())
+            }
+            Self::Zoom(_) => None,
+        }
+    }
+}
+
+impl From<ViewfinderCrop> for FramingCrop {
+    fn from(crop: ViewfinderCrop) -> Self {
+        Self::Fixed(crop)
+    }
+}
+
 /// Кадрирование + место одной транзакцией.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ViewfinderFraming {
-    /// Какую часть сенсора берёт ISP (соотношение сторон и зум).
-    pub crop: ViewfinderCrop,
+    /// Какую часть сенсора берёт ISP (соотношение сторон и зум), по камере кадра.
+    pub crop: FramingCrop,
     /// Куда на экране положить результат.
     pub destination: FramingDestination,
 }

@@ -210,7 +210,9 @@ impl VulkanDisplayBackend {
             ViewfinderSettings {
                 painter: config.viewfinder.painter,
                 stages: isp_vulkan::viewfinder::IspStageSet::ALL,
-                crop: camera_contract::viewfinder_crop::ViewfinderCrop::FULL_SENSOR,
+                crop: crate::viewfinder::FramingCrop::Fixed(
+                    camera_contract::viewfinder_crop::ViewfinderCrop::FULL_SENSOR,
+                ),
                 placement: config.viewfinder.placement,
                 destination: crate::viewfinder::FramingDestination::Configured,
                 headroom: crate::viewfinder::HeadroomBench::Disabled,
@@ -261,6 +263,16 @@ impl VulkanDisplayBackend {
         }
     }
 
+    /// Читает содержимое удержанного кадра присоединённой surface (тестовый шов, фича `test-support`).
+    /// `Ok(None)` — нет surface, камеры или удержания.
+    #[cfg(feature = "test-support")]
+    pub fn read_held_image(&self) -> Result<Option<ViewfinderReadback>, gpu_vulkan::error::GpuError> {
+        match self.attached.as_ref() {
+            Some(display) => display.read_held_image(),
+            None => Ok(None),
+        }
+    }
+
     /// Диагностика видоискателя (`None` — камеры нет): живой сессии, иначе накопленная бэкендом.
     fn viewfinder_diagnostics(&mut self) -> Option<ViewfinderDiagnostics> {
         self.camera_feed.as_ref()?;
@@ -269,7 +281,7 @@ impl VulkanDisplayBackend {
             live.ui_overlay = self.ui_overlay.snapshot();
             return Some(live);
         }
-        let settings = self.viewfinder_settings;
+        let settings = self.viewfinder_settings.clone();
         let stats = self
             .viewfinder_stats
             .get_or_insert_with(|| ViewfinderStats::new(self.config.viewfinder.gpu_time_window_frames));
@@ -322,7 +334,7 @@ impl DisplayBackend for VulkanDisplayBackend {
         let (presentation, held_surface) = self.mode.wrap_window(surface);
         let camera = self.camera_feed.as_ref().map(|feed| CameraAttach {
             feed,
-            settings: self.viewfinder_settings,
+            settings: self.viewfinder_settings.clone(),
             stats: &mut self.viewfinder_stats,
             gpu_time_window_frames: self.config.viewfinder.gpu_time_window_frames,
             awb_feed: &self.awb_feed,
@@ -440,7 +452,7 @@ impl DisplayBackend for VulkanDisplayBackend {
         if outcome == ViewfinderCommandOutcome::Applied
             && let Some(display) = self.attached.as_mut()
         {
-            display.apply_viewfinder_settings(self.viewfinder_settings);
+            display.apply_viewfinder_settings(self.viewfinder_settings.clone());
         }
         outcome
     }

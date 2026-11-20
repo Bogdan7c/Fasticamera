@@ -34,6 +34,9 @@ pub struct Logarithmic {
     limits: LogLimits,
     /// Предел числа рисок (инженерная защита, см. [`DEFAULT_MAX_MARKS`]).
     max_marks: u32,
+    /// Риски в заданных значениях (а не равномерно по логарифму). `None` — равномерная сетка
+    /// `tick_spacing_units`. Нужна колесу зума: риски через 0,1× — равномерны по значению, а не по октаве.
+    tick_values: Option<Vec<f64>>,
 }
 
 impl Logarithmic {
@@ -71,7 +74,28 @@ impl Logarithmic {
             spec,
             limits,
             max_marks,
+            tick_values: None,
         })
+    }
+
+    /// Расставить обычные риски в заданных **значениях** (а не равномерно по логарифму): рисунок рисок и
+    /// рубежи хаптики колеса берутся из одного `marks()`, поэтому правило «риски через 0,1×» живёт здесь.
+    /// Значения вне пределов в `marks()` не попадают (но запоминаются: после смены камеры вернутся).
+    /// Риски, совпавшие с опорной точкой, сливаются с ней (остаётся опорная).
+    /// Ошибки: значение не конечно или <= 0; рисок больше предела.
+    pub fn with_tick_values(mut self, values: Vec<f64>) -> Result<Self, ValueError> {
+        for value in &values {
+            ensure_finite(*value)?;
+            if *value <= 0.0 {
+                return Err(ValueError::InvalidSpec {
+                    name: "tick_values",
+                    reason: "риска логарифмической шкалы должна быть > 0",
+                });
+            }
+        }
+        ensure_mark_budget(values.len() as f64, self.max_marks)?;
+        self.tick_values = Some(values);
+        Ok(self)
     }
 
     fn validate_limits(spec: &LogarithmicSpec, limits: LogLimits, max_marks: u32) -> Result<(), ValueError> {
@@ -162,10 +186,20 @@ impl ValueModel for Logarithmic {
             .filter(|anchor| (self.limits.min..=self.limits.max).contains(*anchor))
             .map(|anchor| self.position_of_unclamped(*anchor))
             .collect();
-        let first_tick = (lowest / spacing - INDEX_EPSILON).ceil() as i64;
-        let last_tick = (highest / spacing + INDEX_EPSILON).floor() as i64;
-        let mut marks: Vec<Mark> = (first_tick..=last_tick)
-            .map(|index| index as f64 * spacing)
+        let tick_positions: Vec<f64> = match &self.tick_values {
+            Some(values) => values
+                .iter()
+                .filter(|value| (self.limits.min..=self.limits.max).contains(*value))
+                .map(|value| self.position_of_unclamped(*value))
+                .collect(),
+            None => {
+                let first_tick = (lowest / spacing - INDEX_EPSILON).ceil() as i64;
+                let last_tick = (highest / spacing + INDEX_EPSILON).floor() as i64;
+                (first_tick..=last_tick).map(|index| index as f64 * spacing).collect()
+            }
+        };
+        let mut marks: Vec<Mark> = tick_positions
+            .into_iter()
             .filter(|position| {
                 anchors
                     .iter()

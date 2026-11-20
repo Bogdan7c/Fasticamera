@@ -91,6 +91,10 @@ pub enum TextRoleKind {
     StripUnit,
     /// Подпись варианта в ряду нижней карточки («4:3», «On», «10»): табличные цифры.
     CardOption,
+    /// Подпись ленты и колеса зума («.6», «1.4×», «24MM»): табличные цифры.
+    ZoomLabel,
+    /// Мелкая подпись колеса зума под значением (фокусное в мм).
+    ZoomFocalLabel,
 }
 
 /// Одна роль текста.
@@ -170,6 +174,11 @@ pub struct TypographyTokens {
     /// `[estimate]` — подгонка, не Apple: размер вариантов карточки не снят, взят как у подписей верхнего
     /// ряда (`strip_value`, `[measured: C t=18.0]` заглавные 10,3 pt → 14,1 pt); полужирный, табличные цифры.
     pub card_option: TextRole,
+    /// `[measured: R00 t=88.5–100]` заглавные 10,0 pt → кегль 14,2 pt (Inter, доля заглавной 0,705);
+    /// полужирный, табличные цифры.
+    pub zoom_label: TextRole,
+    /// `[measured: R00 t=88.5–100]` заглавные 7,3 pt → кегль 10,4 pt; полужирный.
+    pub zoom_focal_label: TextRole,
 }
 
 impl Default for TypographyTokens {
@@ -193,6 +202,8 @@ impl Default for TypographyTokens {
             strip_value: role(TextWeight::Semibold, 14.1, DigitStyle::Tabular),
             strip_unit: role(TextWeight::Semibold, 9.1, DigitStyle::Proportional),
             card_option: role(TextWeight::Semibold, 14.1, DigitStyle::Tabular),
+            zoom_label: role(TextWeight::Semibold, 14.2, DigitStyle::Tabular),
+            zoom_focal_label: role(TextWeight::Semibold, 10.4, DigitStyle::Proportional),
         }
     }
 }
@@ -213,6 +224,8 @@ impl TypographyTokens {
             TextRoleKind::StripValue => &self.strip_value,
             TextRoleKind::StripUnit => &self.strip_unit,
             TextRoleKind::CardOption => &self.card_option,
+            TextRoleKind::ZoomLabel => &self.zoom_label,
+            TextRoleKind::ZoomFocalLabel => &self.zoom_focal_label,
         }
     }
 
@@ -229,6 +242,8 @@ impl TypographyTokens {
         self.tool_caption.validate("typography.tool_caption")?;
         self.strip_value.validate("typography.strip_value")?;
         self.strip_unit.validate("typography.strip_unit")?;
-        self.card_option.validate("typography.card_option")
+        self.card_option.validate("typography.card_option")?;
+        self.zoom_label.validate("typography.zoom_label")?;
+        self.zoom_focal_label.validate("typography.zoom_focal_label")
     }
 }

@@ -4,6 +4,7 @@ use camera_contract::stream::TargetFrameRate;
 use serde::{Deserialize, Serialize};
 
 use crate::three_a_own::OwnExposureConfig;
+use crate::zoom::{ZoomConfig, ZoomConfigError};
 
 /// Восстановление после недоступности (решение 39).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -201,6 +202,8 @@ pub struct CameraEngineConfig {
     pub runtime: RuntimeThreadConfig,
     pub stream: StreamConfig,
     pub three_a: ThreeAConfig,
+    /// Шкала зума и выбор камеры (сессия 13).
+    pub zoom: ZoomConfig,
 }
 
 /// Конфиг движка некорректен.
@@ -230,6 +233,8 @@ pub enum CameraEngineConfigError {
     InvalidThreeALimit { field: &'static str, value: u64, max: u64 },
     #[error("three_a.exposure.{field} должен быть конечным и положительным (допуски — до 2 EV), а не {value}")]
     InvalidExposureSetting { field: &'static str, value: f64 },
+    #[error("zoom: {0}")]
+    InvalidZoom(#[from] ZoomConfigError),
 }
 
 impl CameraEngineConfig {
@@ -300,6 +305,7 @@ impl CameraEngineConfig {
         if let FrameRateFallback::To { fps } = self.stream.frame_rate_fallback {
             TargetFrameRate::new(fps).map_err(|_| CameraEngineConfigError::InvalidFrameRateFallback(fps))?;
         }
+        self.zoom.validate()?;
         self.validate_three_a()
     }
 

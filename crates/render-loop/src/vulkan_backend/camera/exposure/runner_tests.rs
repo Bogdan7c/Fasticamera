@@ -313,3 +313,102 @@ fn ready_measurements_are_collected_even_when_the_current_frame_is_skipped() {
     let counters = harness.runner.diagnostics().counters;
     assert_eq!((counters.accepted, counters.skipped_no_paired_exposure), (1, 1));
 }
+
+// ---- готовность яркости для показа нового потока вместо удержанного кадра (сессия 13) ----
+
+/// Готовность яркости последнего кадра харнеса при проверке «измерено и правдоподобно» с допуском 1 EV.
+fn readiness_of(harness: &Harness, exposure: Option<Exposure>) -> ExposureReadiness {
+    let passport = frame_at(&harness.stream, harness.next_index, exposure);
+    harness
+        .runner
+        .reveal_readiness(&passport, RevealExposureCheck::MeasuredAndPlausible, 1.0)
+}
+
+#[test]
+fn reveal_waits_for_the_first_measurement_of_the_new_stream() {
+    let mut harness = Harness::new();
+    // Поток привязан (кадр спланирован), но замера его статистики ещё не было.
+    let passport = frame_at(&harness.stream, 0, Some(UNIT_EXPOSURE));
+    harness.runner.plan_frame(&passport);
+    assert_eq!(
+        harness
+            .runner
+            .reveal_readiness(&passport, RevealExposureCheck::MeasuredAndPlausible, 1.0),
+        ExposureReadiness::Waiting,
+        "замера нет — яркость не известна"
+    );
+    assert_eq!(
+        harness
+            .runner
+            .reveal_readiness(&passport, RevealExposureCheck::Ignore, 1.0),
+        ExposureReadiness::Ready,
+        "проверка выключена конфигом"
+    );
+}
+
+#[test]
+fn reveal_is_ready_only_when_the_shown_level_is_close_to_the_target() {
+    // Кадр снят с экспозицией, на 2 EV меньшей нужной (тёмная сцена, камера ещё не ответила): замер есть, но
+    // показанный уровень далёк от цели даже с подтяжкой ±0,5 EV — ждём.
+    let mut dark_frame = Harness::new();
+    dark_frame.steps(3, Some(UNIT_EXPOSURE), &uniform_scene(DARK_VALUE));
+    assert_eq!(
+        readiness_of(&dark_frame, Some(UNIT_EXPOSURE)),
+        ReadinessProbe::WAITING,
+        "замер принят, но уровень на экране далёк от цели"
+    );
+    // Кадр уже на цели: его замер даёт ровно средний серый при его экспозиции, показанный уровень = цель.
+    let mut on_target = Harness::new();
+    on_target.steps(3, Some(UNIT_EXPOSURE), &uniform_scene(TARGET_GRAY));
+    assert_eq!(readiness_of(&on_target, Some(UNIT_EXPOSURE)), ReadinessProbe::READY);
+    // И допуск работает как параметр: те же числа с допуском 0,1 EV и сдвигом сцены на 0,3 EV — ждём.
+    let mut slightly_off = Harness::new();
+    slightly_off.steps(3, Some(UNIT_EXPOSURE), &uniform_scene(TARGET_GRAY * 1.23));
+    let passport = frame_at(&slightly_off.stream, slightly_off.next_index, Some(UNIT_EXPOSURE));
+    assert_eq!(
+        slightly_off
+            .runner
+            .reveal_readiness(&passport, RevealExposureCheck::MeasuredAndPlausible, 1.0),
+        ExposureReadiness::Ready
+    );
+    assert_eq!(
+        slightly_off
+            .runner
+            .reveal_readiness(&passport, RevealExposureCheck::MeasuredAndPlausible, 0.1),
+        ExposureReadiness::Waiting
+    );
+}
+
+#[test]
+fn reveal_does_not_wait_when_the_ae_has_nothing_to_measure() {
+    // Кадр без парных выдержки и ISO: измерять нечего, ждать весь срок удержания зря.
+    let harness = Harness::new();
+    let unpaired = missing_frame(&harness.stream, 0);
+    assert_eq!(
+        harness
+            .runner
+            .reveal_readiness(&unpaired, RevealExposureCheck::MeasuredAndPlausible, 1.0),
+        ExposureReadiness::Ready
+    );
+    // Ручная экспозиция: AE ничего не решает.
+    let mut manual = Harness::new();
+    let mut directive = ExposureDirective::DEFAULT;
+    directive.authority = ExposureAuthority::Manual;
+    manual.directives.publish(directive);
+    let passport = frame_at(&manual.stream, 0, Some(UNIT_EXPOSURE));
+    manual.runner.plan_frame(&passport);
+    assert_eq!(
+        manual
+            .runner
+            .reveal_readiness(&passport, RevealExposureCheck::MeasuredAndPlausible, 1.0),
+        ExposureReadiness::Ready
+    );
+}
+
+/// Короткие имена результатов для читаемых `assert_eq!`.
+struct ReadinessProbe;
+
+impl ReadinessProbe {
+    const READY: ExposureReadiness = ExposureReadiness::Ready;
+    const WAITING: ExposureReadiness = ExposureReadiness::Waiting;
+}

@@ -13,6 +13,7 @@ use crate::capabilities::{
 };
 use crate::geometry::{PixelRect, PixelSize, SensorOrientation};
 use crate::ids::{CameraId, CameraTopology, LensFacing};
+use crate::lens_calibration::{LensCalibration, LensIntrinsics, LensPose, PoseReference};
 use crate::raw_format::{CfaLayout, MosaicKind, MosaicPattern, NativeMosaic, RawFormat};
 use crate::three_a::{
     AfModeSupport, AntibandingModeSupport, ExposureCompensationSupport, LockSupport, MaxRegions, ThreeACapabilities,
@@ -175,6 +176,41 @@ fn three_a_for(facing: LensFacing) -> ThreeACapabilities {
     }
 }
 
+/// Калибровка в виде, как её отдаёт HAL OnePlus 11 (`intrinsics` = `[f_x, f_y, c_x, c_y]`, перекос 0;
+/// `preCorrectionActiveArraySize` = активная область).
+fn calibration(
+    active: PixelSize,
+    intrinsics: [f32; 4],
+    rotation_xyzw: [f32; 4],
+    translation_m: [f32; 3],
+) -> LensCalibration {
+    let [
+        focal_length_x_px,
+        focal_length_y_px,
+        principal_point_x_px,
+        principal_point_y_px,
+    ] = intrinsics;
+    LensCalibration {
+        intrinsics: Some(LensIntrinsics {
+            focal_length_x_px,
+            focal_length_y_px,
+            principal_point_x_px,
+            principal_point_y_px,
+            skew: 0.0,
+        }),
+        pose: Some(LensPose {
+            reference: PoseReference::PrimaryCamera,
+            rotation_xyzw,
+            translation_m,
+        }),
+        pre_correction_active_array: PixelRect {
+            left: 0,
+            top: 0,
+            size: active,
+        },
+    }
+}
+
 fn adjustable_focus() -> FocusCapability {
     FocusCapability::Adjustable {
         min_focus_distance_diopters: 10.0,
@@ -183,7 +219,8 @@ fn adjustable_focus() -> FocusCapability {
     }
 }
 
-/// Основная камера 2 (IMX890): RAW 4096×3072; оптика правдоподобная (угол ~ 82°).
+/// Основная камера 2 (IMX890): RAW 4096×3072; оптика и калибровка — `dumpsys media.camera` 20.11.2026
+/// (угол по длинной стороне ≈ 72,5°, эквивалент ≈ 23,6 мм).
 pub fn main_wide_camera() -> CameraDescriptor {
     CameraDescriptor {
         id: camera_id("2"),
@@ -194,17 +231,25 @@ pub fn main_wide_camera() -> CameraDescriptor {
             adjustable_focus(),
             Optics {
                 apertures_f_number: vec![1.8],
-                focal_lengths_mm: vec![5.6],
+                focal_lengths_mm: vec![5.59],
                 sensor_physical_size: PhysicalSizeMm {
-                    width_mm: 9.8,
-                    height_mm: 7.4,
+                    width_mm: 8.192,
+                    height_mm: 6.144,
                 },
+                calibration: calibration(
+                    PixelSize::new(4096, 3072),
+                    [2865.7437, 2865.9556, 2040.2867, 1515.4318],
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 0.0, 0.0],
+                ),
+                max_digital_zoom: Some(10.0),
             },
         ),
     }
 }
 
-/// Ширик 3 (IMX581): RAW 4000×3000; оптика правдоподобная (угол ~ 115°).
+/// Ширик 3 (IMX581): RAW 4000×3000; оптика и калибровка — `dumpsys media.camera` 20.11.2026
+/// (угол ≈ 102°, эквивалент ≈ 14,0 мм, ось смещена на ≈ 241 px влево).
 pub fn ultra_wide_camera() -> CameraDescriptor {
     CameraDescriptor {
         id: camera_id("3"),
@@ -215,17 +260,24 @@ pub fn ultra_wide_camera() -> CameraDescriptor {
             adjustable_focus(),
             Optics {
                 apertures_f_number: vec![2.2],
-                focal_lengths_mm: vec![2.6],
+                focal_lengths_mm: vec![2.59],
                 sensor_physical_size: PhysicalSizeMm {
-                    width_mm: 8.0,
-                    height_mm: 6.0,
+                    width_mm: 6.4,
+                    height_mm: 4.8,
                 },
+                calibration: calibration(
+                    PixelSize::new(4000, 3000),
+                    [1651.1941, 1651.4, 1759.3125, 1494.7776],
+                    [0.999_982_9, 0.002_863_54, 0.002_770_56, 0.004_279_29],
+                    [-0.016_867_29, -0.000_014_58, 0.000_271_79],
+                ),
+                max_digital_zoom: Some(10.0),
             },
         ),
     }
 }
 
-/// Фронт 1 (S5K3P9): RAW 2304×1728, фокус фиксированный.
+/// Фронт 1 (S5K3P9): RAW 2304×1728, фокус фиксированный; оптика — `dumpsys media.camera` 20.11.2026.
 pub fn front_camera() -> CameraDescriptor {
     CameraDescriptor {
         id: camera_id("1"),
@@ -236,11 +288,19 @@ pub fn front_camera() -> CameraDescriptor {
             FocusCapability::Fixed,
             Optics {
                 apertures_f_number: vec![2.4],
-                focal_lengths_mm: vec![3.3],
+                focal_lengths_mm: vec![3.23],
                 sensor_physical_size: PhysicalSizeMm {
-                    width_mm: 4.6,
-                    height_mm: 3.5,
+                    width_mm: 4.608,
+                    height_mm: 3.456,
                 },
+                // Заглушка HAL: ось в (0, 0) — «калибровки нет» по правдоподобию (13).
+                calibration: calibration(
+                    PixelSize::new(2304, 1728),
+                    [3229.9998, 3229.9998, 0.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                    [0.0, 0.0, 0.0],
+                ),
+                max_digital_zoom: Some(10.0),
             },
         ),
     }

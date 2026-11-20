@@ -57,11 +57,15 @@ pub enum MotionToken {
     CardAppear,
     /// Морф/закрытие панели без перелёта: меню → карточка, закрытие карточки, подъём затвора.
     CardMorph,
+    /// Появление колеса зума: подъём с перелётом `[measured: R00 t=88.5–100]`.
+    WheelAppear,
+    /// Уход колеса зума: короткий спуск без перелёта `[measured: R00 t=88.5–100]`.
+    WheelDismiss,
 }
 
 impl MotionToken {
     /// Все токены — для проверок и тестов полноты.
-    pub const ALL: [MotionToken; 9] = [
+    pub const ALL: [MotionToken; 11] = [
         MotionToken::Smooth,
         MotionToken::Snappy,
         MotionToken::Bouncy,
@@ -71,6 +75,8 @@ impl MotionToken {
         MotionToken::EdgeReturn,
         MotionToken::CardAppear,
         MotionToken::CardMorph,
+        MotionToken::WheelAppear,
+        MotionToken::WheelDismiss,
     ];
 
     /// Имя для сообщений об ошибках.
@@ -85,6 +91,8 @@ impl MotionToken {
             MotionToken::EdgeReturn => "edge.return",
             MotionToken::CardAppear => "card.appear",
             MotionToken::CardMorph => "card.morph",
+            MotionToken::WheelAppear => "wheel.appear",
+            MotionToken::WheelDismiss => "wheel.dismiss",
         }
     }
 }
@@ -120,6 +128,11 @@ pub struct MotionTokens {
     pub card_appear: SpringToken,
     /// `[measured: C t=37.8–38.1, 62.93–63.25]` iOS 27: шторка → карточка и закрытие ≈ 0,3 с, без перелёта.
     pub card_morph: SpringToken,
+    /// `[measured: R00 t=88.5–100]` появление колеса зума: 0,2 с, подъём 10,7 pt с перелётом 1,7 pt
+    /// (≈ 16 % хода → bounce ≈ 0,5 по формуле перелёта пружины).
+    pub wheel_appear: SpringToken,
+    /// `[measured: R00 t=88.5–100]` уход колеса зума: 0,11 с, без перелёта.
+    pub wheel_dismiss: SpringToken,
     /// Замедление, «резинка» и критерий покоя — умолчания `ui-core` (там же их метки).
     /// Поля `snap_spring`, `edge_return_spring` и `snap_selection` здесь **перекрываются**
     /// ролью ([`MotionTokens::scroll_config`]).
@@ -165,6 +178,14 @@ impl Default for MotionTokens {
                 duration_s: 0.3,
                 bounce: 0.0,
             },
+            wheel_appear: SpringToken {
+                duration_s: 0.2,
+                bounce: 0.5,
+            },
+            wheel_dismiss: SpringToken {
+                duration_s: 0.11,
+                bounce: 0.0,
+            },
             scroll: ScrollConfig::default(),
         }
     }
@@ -183,6 +204,8 @@ impl MotionTokens {
             MotionToken::EdgeReturn => self.edge_return,
             MotionToken::CardAppear => self.card_appear,
             MotionToken::CardMorph => self.card_morph,
+            MotionToken::WheelAppear => self.wheel_appear,
+            MotionToken::WheelDismiss => self.wheel_dismiss,
         }
     }
 

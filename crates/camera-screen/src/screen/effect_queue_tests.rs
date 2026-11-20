@@ -51,3 +51,54 @@ fn draining_an_empty_queue_allocates_nothing_and_a_full_drain_keeps_every_effect
     assert!(queue.drain().is_empty());
     assert_eq!(queue.queued(), 3, "счётчик принятых переживает опустошение");
 }
+
+#[test]
+fn a_newer_lens_intent_replaces_the_pending_one_even_in_a_full_queue() {
+    use camera_contract::ids::LensFacing;
+    use camera_contract::zoom::LensIntent;
+
+    let lens = |value: f32| {
+        Effect::Lens(LensIntent {
+            facing: LensFacing::Back,
+            ratio: crate::test_support::ratio(value),
+            gesture: camera_contract::zoom::ZoomGesture::Continuous,
+        })
+    };
+    // Очередь на один эффект уже занята намерением: итоговое значение колеса не должно потеряться на переполнении.
+    let mut queue = EffectQueue::new(1);
+    assert_eq!(queue.push(lens(1.2)), PushOutcome::Queued);
+    assert_eq!(queue.push(lens(1.7)), PushOutcome::Queued);
+    assert_eq!(queue.push(lens(2.0)), PushOutcome::Queued);
+    assert_eq!(queue.overflowed(), 0);
+    assert_eq!(queue.drain(), [lens(2.0)], "осталось только последнее намерение");
+    // Чужой эффект на полной очереди по-прежнему отбрасывается и считается.
+    assert_eq!(queue.push(lens(1.0)), PushOutcome::Queued);
+    assert_eq!(queue.push(Effect::OpenSystemGallery), PushOutcome::Overflowed);
+}
+
+#[test]
+fn lens_intents_do_not_replace_other_kinds_and_keep_their_place_in_order() {
+    use camera_contract::ids::LensFacing;
+    use camera_contract::zoom::LensIntent;
+
+    let lens = |value: f32| {
+        Effect::Lens(LensIntent {
+            facing: LensFacing::Back,
+            ratio: crate::test_support::ratio(value),
+            gesture: camera_contract::zoom::ZoomGesture::Continuous,
+        })
+    };
+    let mut queue = EffectQueue::new(4);
+    queue.push(Effect::OpenSystemGallery);
+    queue.push(lens(1.1));
+    queue.push(Effect::Haptic(HapticPattern::SelectionTick));
+    queue.push(lens(1.9));
+    assert_eq!(
+        queue.drain(),
+        [
+            Effect::OpenSystemGallery,
+            lens(1.9),
+            Effect::Haptic(HapticPattern::SelectionTick)
+        ]
+    );
+}

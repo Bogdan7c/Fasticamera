@@ -246,6 +246,7 @@ mod tests {
             present_time: MonotonicNanos::from_nanos(present_nanos),
             logical_size: PxSize::new(100.0, 200.0),
             px_per_pt: 2.0,
+            backdrop: ui_draw::frame_source::BackdropContinuity::Live,
         }
     }
 

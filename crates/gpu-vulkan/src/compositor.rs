@@ -28,11 +28,12 @@ use crate::error::{GpuError, run_step};
 use crate::live_objects::{OwnedPipeline, OwnedPipelineLayout};
 use crate::raw_mosaic_preview::create_pipeline;
 use crate::shaders::blobs;
+use crate::source_window::SourceWindow;
 use crate::storage_image::SampledImageView;
 use crate::test_pattern::{PatternTarget, SurfaceTransform};
 
-/// Размер push-констант: 4 × u32 + 2 × vec4 (см. `CompositeParameters` в шейдере).
-const PUSH_CONSTANT_BYTES: u32 = 48;
+/// Размер push-констант: 4 × u32 + 4 × vec4 (см. `CompositeParameters` в шейдере).
+const PUSH_CONSTANT_BYTES: u32 = 80;
 
 /// Цвет фона вне прямоугольника назначения (letterbox), линейные значения UNORM 0..1.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -162,7 +163,26 @@ impl ImageCompositor {
         target: PatternTarget,
         request: &CompositeRequest,
     ) -> Result<(), GpuError> {
-        let push_bytes = push_constants(target, request)?;
+        self.record_windowed(
+            command_buffer,
+            target,
+            request,
+            &SourceWindow::full(request.source.extent),
+        )
+    }
+
+    /// То же, что [`Self::record`], но читает только окно `window` источника: содержимое в левом верхнем
+    /// углу картинки ёмкости, зеркало и увеличение (см. [`SourceWindow`]). Прямоугольник назначения
+    /// считает вызывающий по РАЗМЕРУ СОДЕРЖИМОГО, а не картинки.
+    pub fn record_windowed(
+        &mut self,
+        command_buffer: vk::CommandBuffer,
+        target: PatternTarget,
+        request: &CompositeRequest,
+        window: &SourceWindow,
+    ) -> Result<(), GpuError> {
+        window.validate_within(request.source.extent)?;
+        let push_bytes = push_constants(target, request, window)?;
         self.descriptors.write(
             request.frame_slot,
             &[BindingWrite {
@@ -203,7 +223,11 @@ impl ImageCompositor {
 }
 
 /// Проверяет запрос и собирает байты push-констант в порядке `CompositeParameters`.
-fn push_constants(target: PatternTarget, request: &CompositeRequest) -> Result<Vec<u8>, GpuError> {
+fn push_constants(
+    target: PatternTarget,
+    request: &CompositeRequest,
+    window: &SourceWindow,
+) -> Result<Vec<u8>, GpuError> {
     let invalid = |what: String| GpuError::InvalidArgument { what };
     if target.extent.width == 0 || target.extent.height == 0 {
         return Err(invalid("нулевой размер цели компоновщика".to_owned()));
@@ -232,6 +256,13 @@ fn push_constants(target: PatternTarget, request: &CompositeRequest) -> Result<V
     ];
     let mut bytes: Vec<u8> = words.iter().flat_map(|word| word.to_ne_bytes()).collect();
     bytes.extend(floats.iter().flat_map(|value| value.to_ne_bytes()));
+    // Окно источника: origin.xy, step.xy, content.xy (+ выравнивание до vec4).
+    let [origin_x, origin_y, step_x, step_y, content_x, content_y] = window.mapping().to_floats();
+    bytes.extend(
+        [origin_x, origin_y, step_x, step_y, content_x, content_y, 0.0, 0.0]
+            .iter()
+            .flat_map(|value| value.to_ne_bytes()),
+    );
     Ok(bytes)
 }
 
@@ -295,6 +326,10 @@ mod tests {
         }
     }
 
+    fn window() -> SourceWindow {
+        SourceWindow::full(vk::Extent2D { width: 8, height: 8 })
+    }
+
     fn target() -> PatternTarget {
         PatternTarget {
             view: vk::ImageView::null(),
@@ -310,7 +345,7 @@ mod tests {
             width: 10,
             height: 12,
         };
-        let bytes = push_constants(target(), &request(destination, SurfaceTransform::Rotate270)).unwrap();
+        let bytes = push_constants(target(), &request(destination, SurfaceTransform::Rotate270), &window()).unwrap();
         assert_eq!(bytes.len(), PUSH_CONSTANT_BYTES as usize);
         let word = |index: usize| {
             u32::from_ne_bytes([
@@ -324,6 +359,9 @@ mod tests {
         assert_eq!((word(0), word(1), word(2)), (24, 16, 3));
         assert_eq!((float(4), float(5), float(6), float(7)), (2.0, 3.0, 10.0, 12.0));
         assert_eq!((float(8), float(11)), (0.0, 1.0), "чёрный непрозрачный фон");
+        // Окно: источник 8×8 целиком — origin 0, step = размер, content = размер.
+        assert_eq!((float(12), float(13), float(14), float(15)), (0.0, 0.0, 8.0, 8.0));
+        assert_eq!((float(16), float(17)), (8.0, 8.0));
     }
 
     #[test]
@@ -334,12 +372,13 @@ mod tests {
             width: 0,
             height: 4,
         };
-        assert!(push_constants(target(), &request(empty, SurfaceTransform::Identity)).is_err());
+        assert!(push_constants(target(), &request(empty, SurfaceTransform::Identity), &window()).is_err());
         let full = LogicalRect::covering(vk::Extent2D { width: 24, height: 16 });
-        let mirrored = push_constants(target(), &request(full, SurfaceTransform::HorizontalMirror)).unwrap_err();
+        let mirrored =
+            push_constants(target(), &request(full, SurfaceTransform::HorizontalMirror), &window()).unwrap_err();
         assert!(matches!(mirrored, GpuError::Unsupported { .. }), "{mirrored:?}");
         let mut nan_background = request(full, SurfaceTransform::Identity);
         nan_background.background = BackgroundColor([f32::NAN, 0.0, 0.0, 1.0]);
-        assert!(push_constants(target(), &nan_background).is_err());
+        assert!(push_constants(target(), &nan_background, &window()).is_err());
     }
 }

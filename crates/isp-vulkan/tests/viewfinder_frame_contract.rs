@@ -20,7 +20,8 @@ use gpu_vulkan::host_buffer::{HostBuffer, HostBufferUsage};
 use gpu_vulkan::kit_test_support::run_one_shot_blocking;
 use gpu_vulkan::shaders::blobs;
 use isp_vulkan::viewfinder::{
-    IspStage, IspStageSet, ViewfinderError, ViewfinderFrame, ViewfinderGeometry, ViewfinderIsp, ViewfinderStorageFormat,
+    IspStage, IspStageSet, OutputAllocation, ViewfinderError, ViewfinderFrame, ViewfinderGeometry, ViewfinderIsp,
+    ViewfinderStorageFormat,
 };
 use viewfinder_support::{
     GpuSource, ParamsSpec, RawFrame, RunRequest, SourceLayout, assert_no_validation_errors, gpu_context_or_skip,
@@ -248,6 +249,7 @@ fn backdrop_becomes_stale_after_the_image_is_recreated() {
                 size: PixelSize::new(16, 12),
             },
             sensor_orientation: SensorOrientation::Degrees0,
+            allocation: OutputAllocation::Exact,
         },
         ..full
     };

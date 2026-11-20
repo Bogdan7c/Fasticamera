@@ -10,6 +10,7 @@ use camera_contract::stream::ConfiguredStream;
 use serde::Serialize;
 
 use crate::backend::SessionGeneration;
+use crate::lens_status::LensStatus;
 use crate::state::CameraState;
 use crate::three_a_status::ThreeAStatus;
 
@@ -116,4 +117,6 @@ pub struct CameraStatus {
     pub counters: CameraCounters,
     /// Автоматика 3A и ручные параметры (08).
     pub three_a: ThreeAStatus,
+    /// Шкала зума, активный объектив и смена объектива (13).
+    pub lens: LensStatus,
 }

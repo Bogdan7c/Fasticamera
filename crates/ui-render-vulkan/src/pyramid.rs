@@ -39,6 +39,9 @@ pub(crate) enum PyramidKey {
         frame: BackdropFrameNumber,
         /// Размещение фона побитно (f32 не `Eq`; изменение хоть на бит = перестройка).
         destination_bits: [u32; 4],
+        /// Окно чтения фона побитно (origin, step, содержимое): удержанный кадр с меняющимся увеличением
+        /// или зеркало — другой фон, ступени переиспользовать нельзя.
+        window_bits: [u32; 6],
     },
     Absent {
         fill_bits: [u32; 4],
@@ -51,6 +54,7 @@ impl PyramidKey {
             generation: source.image_generation(),
             frame: source.frame(),
             destination_bits: rect_bits(destination),
+            window_bits: source.window().mapping().to_floats().map(f32::to_bits),
         }
     }
 
@@ -156,6 +160,7 @@ impl Pyramid {
                     tap_offset_px: source_texel_px,
                     target_texel_px: source_texel_px * 2.0,
                     source_texel_px,
+                    backdrop_window: source.window().mapping(),
                 };
                 let full_screen = DrawCall {
                     vertices_per_instance: 3,

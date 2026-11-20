@@ -9,7 +9,7 @@ use std::sync::Arc;
 use shell_contract::surface::SurfaceSize;
 use ui_core::geometry::Insets;
 use ui_core::gesture::{
-    GestureData, GestureEvent, GestureState, LongPressSpec, PanDirection, PanSpec, RecognizerSpec, TapSpec,
+    GestureData, GestureEvent, GestureState, LongPressSpec, PanDirection, PanSpec, PinchSpec, RecognizerSpec, TapSpec,
 };
 use ui_core::id::NodeId;
 use ui_core::layout::AnchorRule;
@@ -24,6 +24,7 @@ use crate::widget::capture_blink::CaptureBlinkWidget;
 use crate::widget::controls_drawer::ControlsDrawerWidget;
 use crate::widget::countdown::CountdownWidget;
 use crate::widget::error::WidgetError;
+use crate::widget::flip_button::FlipButtonWidget;
 use crate::widget::focus_indicator::FocusIndicatorWidget;
 use crate::widget::frame_mask::FrameMaskWidget;
 use crate::widget::geometry::ScreenGeometry;
@@ -40,7 +41,10 @@ use crate::widget::text_runs::TextRuns;
 use crate::widget::thumbnail::ThumbnailWidget;
 use crate::widget::tool_card::ToolCardWidget;
 use crate::widget::top_bar::TopBarWidget;
+use crate::widget::transition_veil::TransitionVeil;
 use crate::widget::unavailable_notice::UnavailableNoticeWidget;
+use crate::widget::zoom_strip::ZoomStripWidget;
+use crate::widget::zoom_wheel::ZoomWheelWidget;
 use crate::widget::{Ctx, Outputs};
 
 pub(crate) struct Stage {
@@ -57,6 +61,9 @@ pub(crate) struct Stage {
     card: ToolCardWidget,
     focus: FocusIndicatorWidget,
     banner: LockBannerWidget,
+    flip: FlipButtonWidget,
+    zoom_strip: ZoomStripWidget,
+    zoom_wheel: ZoomWheelWidget,
     /// Кэш раскладки текста этой сцены: подписи раскладываются один раз (см. `widget::text_runs`).
     texts: TextRuns,
 }
@@ -86,9 +93,13 @@ impl Stage {
         let viewfinder = Self::build_viewfinder(&mut kit, root)?;
         let focus = FocusIndicatorWidget::build(&mut kit, ctx, viewfinder)?;
         let top_bar = TopBarWidget::build(&mut kit, ctx, root)?;
+        // Колесо зума лежит под нижним рядом: затвор, миниатюра и капсула остаются нажимаемыми поверх него.
+        let zoom_wheel = ZoomWheelWidget::build(&mut kit, ctx, root)?;
         let shutter = ShutterWidget::build(&mut kit, ctx, root)?;
         let thumbnail = ThumbnailWidget::build(&mut kit, ctx, root)?;
+        let flip = FlipButtonWidget::build(&mut kit, ctx, root)?;
         let carousel = ModeCarouselWidget::build(&mut kit, ctx, root)?;
+        let zoom_strip = ZoomStripWidget::build(&mut kit, ctx, root)?;
         let menu_button = MenuButtonWidget::build(&mut kit, ctx, root)?;
         let drawer = ControlsDrawerWidget::build(&mut kit, ctx, root)?;
         // Карточка — над шторкой и в хит-тесте (шторка под ней ждёт «‹» и касаний не ловит).
@@ -109,6 +120,9 @@ impl Stage {
             card,
             focus,
             banner,
+            flip,
+            zoom_strip,
+            zoom_wheel,
             texts: TextRuns::new(ctx.config.widgets.text_run_cache_capacity),
         })
     }
@@ -118,28 +132,45 @@ impl Stage {
         let node = kit.scene_mut().insert_child(root, "viewfinder")?;
         kit.scene_mut()
             .set_placement(node, Placement::Anchored(AnchorRule::fill_parent()))?;
-        kit.add_recognizer(
+        let tap = kit.add_recognizer(
             node,
             RecognizerSpec::Tap(TapSpec::default()),
             ScreenGesture::ViewfinderTap,
         )?;
-        kit.add_recognizer(
+        let long_press = kit.add_recognizer(
             node,
             RecognizerSpec::LongPress(LongPressSpec::default()),
             ScreenGesture::ViewfinderLongPress,
         )?;
+        let mut single_finger = vec![tap, long_press];
         for (direction, intent) in [
             (PanDirection::Horizontal, ScreenGesture::ModesPan),
             (PanDirection::Up, ScreenGesture::MenuOpenPan),
         ] {
-            kit.add_recognizer(
+            single_finger.push(kit.add_recognizer(
                 node,
                 RecognizerSpec::Pan(PanSpec {
                     direction,
                     ..PanSpec::default()
                 }),
                 intent,
-            )?;
+            )?);
+        }
+        // Щипок (зум). Два пальца обязаны отдать касание щипку, даже если один палец уже начал пан или долгий тап.
+        // Однопальцевые жесты (`ExtraFingers::FailOrCancel`) второй палец сам проваливает или отменяет, но
+        // победитель-пан при старте проваливает остальных кандидатов, в том числе ещё не начавшийся щипок. Поэтому
+        // щипок объявлен «одновременным» с каждым однопальцевым жестом узла: он остаётся кандидатом и стартует,
+        // когда ложится второй палец. Один палец щипок не запускает (нужна пара). Проверено в
+        // `screen_zoom_gesture_tests`: щипок после начатого пана, щипок с нуля, пан одним пальцем зум не трогает.
+        let pinch = kit.add_recognizer(
+            node,
+            RecognizerSpec::Pinch(PinchSpec::default()),
+            ScreenGesture::ViewfinderPinch,
+        )?;
+        for recognizer in single_finger {
+            kit.scene_mut()
+                .allow_simultaneous(pinch, recognizer)
+                .map_err(|error| WidgetError::Inconsistent(format!("щипок и однопальцевый жест: {error}")))?;
         }
         Ok(node)
     }
@@ -196,11 +227,18 @@ impl Stage {
                 }
                 return Ok(true);
             }
+            ScreenGesture::ViewfinderPinch => {
+                Self::route_pinch(event, out);
+                return Ok(true);
+            }
             // Тап-«страж» кнопки нужен только арбитражу: действие рождает её `Press`.
             ScreenGesture::ButtonTapGuard(_) => return Ok(true),
             _ => {}
         }
         Ok(self.shutter.handle_gesture(event, out)?
+            || self.flip.handle_gesture(event, out)?
+            || self.zoom_strip.handle_gesture(event, out)?
+            || self.zoom_wheel.handle_gesture(event, out)?
             || self.thumbnail.handle_gesture(event, out)?
             || self.menu_button.handle_gesture(event, out)?
             || self.carousel.handle_gesture(event, ctx, out)?
@@ -210,10 +248,38 @@ impl Stage {
             || self.focus.handle_gesture(event, ctx, out)?)
     }
 
+    /// Щипок → действия зума: начало запоминает коэффициент, каждое изменение несёт масштаб жеста.
+    fn route_pinch(event: &GestureEvent<ScreenGesture>, out: &mut Outputs) {
+        let at = event.time;
+        let scale = match event.data {
+            GestureData::Pinch { scale, .. } => Some(scale),
+            _ => None,
+        };
+        match (event.state, scale) {
+            (GestureState::Began, Some(scale)) => {
+                out.actions.push(ScreenAction::ZoomPinchBegan { at });
+                out.actions.push(ScreenAction::ZoomPinchChanged { scale, at });
+            }
+            (GestureState::Changed, Some(scale)) => out.actions.push(ScreenAction::ZoomPinchChanged { scale, at }),
+            (GestureState::Ended, scale) => {
+                if let Some(scale) = scale {
+                    out.actions.push(ScreenAction::ZoomPinchChanged { scale, at });
+                }
+                out.actions.push(ScreenAction::ZoomPinchEnded { at });
+            }
+            // Системная отмена: значение остаётся там, куда дошло; щипок закрывается без последнего изменения.
+            (GestureState::Cancelled, _) => out.actions.push(ScreenAction::ZoomPinchEnded { at }),
+            _ => {}
+        }
+    }
+
     /// Выравнивает элементы и узлы по состоянию экрана (программно, без эха действий).
     pub(crate) fn sync(&mut self, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
         self.shutter.sync(&mut self.kit, ctx)?;
         self.thumbnail.sync(&mut self.kit, ctx)?;
+        self.flip.sync(&mut self.kit, ctx)?;
+        self.zoom_strip.sync(&mut self.kit, ctx)?;
+        self.zoom_wheel.sync(&mut self.kit, ctx)?;
         self.menu_button.sync(&mut self.kit, ctx)?;
         self.carousel.sync(&mut self.kit, ctx)?;
         self.top_bar.sync(&mut self.kit, ctx)?;
@@ -236,23 +302,35 @@ impl Stage {
         self.carousel.advance(out);
         self.drawer.advance(ctx);
         self.card.advance(ctx, out);
+        self.zoom_wheel.advance(ctx, out);
         self.focus.advance(ctx, out)?;
         self.banner.advance(ctx)?;
         Ok(())
     }
 
     /// Список рисования кадра в порядке слоёв.
-    pub(crate) fn draw(&mut self, ctx: &Ctx<'_>, blink: &CaptureBlinkWidget) -> Result<Vec<DrawItem>, WidgetError> {
+    pub(crate) fn draw(
+        &mut self,
+        ctx: &Ctx<'_>,
+        blink: &CaptureBlinkWidget,
+        veil: &TransitionVeil,
+    ) -> Result<Vec<DrawItem>, WidgetError> {
         let visuals = VisualIndex::of(self.kit.scene());
         let mut layers = DrawLayers::default();
         FrameMaskWidget::draw(ctx, &mut layers)?;
+        // Завеса перехода между камерами — первой над кадром: сетка и уровень лежат поверх размытия.
+        veil.draw(ctx, &mut layers)?;
         GridOverlayWidget::draw(ctx, &mut layers)?;
         LevelIndicatorWidget::draw(ctx, &mut layers)?;
         blink.draw(ctx, &mut layers)?;
         self.focus.draw(ctx, &mut layers)?;
         self.banner.draw(ctx, &mut layers, &mut self.texts)?;
+        // Колесо — до нижнего ряда: затвор и кнопки рисуются поверх его диска.
+        self.zoom_wheel.draw(ctx, &visuals, &mut layers, &mut self.texts)?;
+        self.zoom_strip.draw(ctx, &visuals, &mut layers, &mut self.texts)?;
         self.shutter.draw(ctx, &visuals, &mut layers)?;
         self.thumbnail.draw(ctx, &visuals, &mut layers)?;
+        self.flip.draw(ctx, &visuals, &mut layers)?;
         self.menu_button
             .draw(ctx, &visuals, &mut layers, self.drawer.source_opacity(ctx.now))?;
         self.carousel.draw(ctx, &visuals, &mut layers)?;
@@ -293,9 +371,12 @@ impl Stage {
                 | ScreenGesture::MenuOpenPan
                 | ScreenGesture::SunPan
                 | ScreenGesture::DrawerClosePan
-                | ScreenGesture::ExposureSliderPan,
+                | ScreenGesture::ExposureSliderPan
+                | ScreenGesture::ZoomStripPan
+                | ScreenGesture::ZoomWheelPan,
                 GestureState::Began,
             ) => counters.pans += 1,
+            (ScreenGesture::ViewfinderPinch, GestureState::Began) => counters.pinches += 1,
             (ScreenGesture::Press(_), GestureState::Ended) => counters.button_presses += 1,
             _ => {}
         }
@@ -330,6 +411,8 @@ impl Stage {
     }
 
     pub(crate) fn echo_suppressed(&self) -> u64 {
-        self.card.suppressed_echo_events() + self.focus.suppressed_echo_events()
+        self.card.suppressed_echo_events()
+            + self.focus.suppressed_echo_events()
+            + self.zoom_wheel.suppressed_echo_events()
     }
 }

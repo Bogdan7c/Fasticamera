@@ -4,9 +4,10 @@
 //! команд автозапуска, конец сценария камеры возвращает видоискатель, а прочие сценарии его не трогают.
 
 use camera_contract::control::CaptureIntent;
-use camera_contract::ids::{CameraTarget, LensRole};
+use camera_contract::ids::{CameraTarget, LensFacing, LensRole};
 use camera_contract::raw_format::RawFormat;
 use camera_contract::stream::{ReadoutAspect, StreamMode, TargetFrameRate};
+use camera_contract::zoom::{LensIntent, ZoomRatio};
 use camera_core::{CameraEvent, CameraState, CameraStatus, ClosedReason};
 
 use super::*;
@@ -64,12 +65,13 @@ fn wait_product_viewfinder(rig: &FakeCameraRig) -> CameraStatus {
     status
 }
 
-/// Сценарий камеры: заявляет права и переключает поток на ширик 16:9@30, затем заканчивается.
-struct UltraWideProbe {
+/// Сценарий камеры: заявляет права и переключает поток на камеру `role` в режиме 16:9@30, затем заканчивается.
+struct RoleProbe {
+    role: LensRole,
     finish_now: Arc<Mutex<bool>>,
 }
 
-impl ObservingScenario for UltraWideProbe {
+impl ObservingScenario for RoleProbe {
     fn name(&self) -> &'static str {
         "ultra-wide-probe"
     }
@@ -79,7 +81,7 @@ impl ObservingScenario for UltraWideProbe {
         let running = context.camera.running().expect("движок");
         let handle = running.handle();
         handle.close().expect("close");
-        handle.open(CameraTarget::Role(LensRole::UltraWide)).expect("open");
+        handle.open(CameraTarget::Role(self.role)).expect("open");
         handle
             .configure(StreamMode {
                 raw_format: RawFormat::Raw10,
@@ -189,7 +191,8 @@ fn camera_scenario_end_restores_the_product_viewfinder() {
     let finish_now = Arc::new(Mutex::new(false));
     harness
         .starter
-        .start(Box::new(UltraWideProbe {
+        .start(Box::new(RoleProbe {
+            role: LensRole::UltraWide,
             finish_now: Arc::clone(&finish_now),
         }))
         .expect("старт пробы");
@@ -212,6 +215,83 @@ fn camera_scenario_end_restores_the_product_viewfinder() {
 
     wait_product_viewfinder(harness.rig());
     assert_eq!(harness.camera.dispatch_counters().sent, 2, "Resumed и close сценария");
+}
+
+/// Камера роли `ultra_wide` в каталоге OnePlus 11.
+const ULTRA_WIDE_CAMERA_ID: &str = "3";
+
+/// Поток идёт на камере с этим ID.
+fn wait_streaming_on(rig: &FakeCameraRig, camera: &str) -> CameraStatus {
+    rig.handle()
+        .wait_until_status(WAIT, |status| {
+            matches!(&status.state, CameraState::Streaming { stream } if stream.stream.camera.as_str() == camera)
+        })
+        .unwrap_or_else(|| panic!("поток на камере {camera} не наступил: {:?}", rig.state()))
+}
+
+#[test]
+fn scenario_end_brings_back_the_lens_the_user_had_chosen_and_not_the_default_one() {
+    let mut harness = harness_for_rig(product_rig(true));
+    harness.deliver(ShellEvent::Resumed);
+    wait_product_viewfinder(harness.rig());
+
+    // Пользователь выбрал 0,6× тем же путём, что экран: через ящик намерений объектива.
+    harness.camera.lens_intents().publish(LensIntent {
+        facing: LensFacing::Back,
+        ratio: ZoomRatio::new(0.6).expect("коэффициент"),
+        gesture: camera_contract::zoom::ZoomGesture::Discrete,
+    });
+    let chosen = wait_streaming_on(harness.rig(), ULTRA_WIDE_CAMERA_ID);
+    assert_eq!(
+        chosen.lens.active.as_ref().map(|active| active.role),
+        Some(LensRole::UltraWide)
+    );
+
+    // Сценарий уводит поток на основную камеру и заканчивается.
+    let finish_now = Arc::new(Mutex::new(false));
+    harness
+        .starter
+        .start(Box::new(RoleProbe {
+            role: LensRole::Wide,
+            finish_now: Arc::clone(&finish_now),
+        }))
+        .expect("старт пробы");
+    harness.router.step(Duration::from_millis(2));
+    wait_streaming_on(harness.rig(), MAIN_CAMERA_ID);
+    *finish_now.lock().expect("замок") = true;
+    harness.run_until_result();
+    assert_eq!(harness.output.single_result()["status"], "passed");
+
+    // Видоискатель вернулся на ширик с режимом продукта, а не на основную камеру по умолчанию.
+    let restored = wait_streaming_on(harness.rig(), ULTRA_WIDE_CAMERA_ID);
+    let CameraState::Streaming { stream } = &restored.state else {
+        unreachable!("ждали поток");
+    };
+    assert_eq!(stream.stream.readout, ReadoutAspect::FourByThree);
+    assert_eq!(stream.stream.frame_rate.frames_per_second(), 60);
+    assert_eq!(
+        restored.lens.active.as_ref().map(|active| active.role),
+        Some(LensRole::UltraWide)
+    );
+}
+
+#[test]
+fn scenario_end_without_a_user_lens_choice_returns_the_default_main_camera() {
+    let mut harness = harness_for_rig(product_rig(true));
+    harness.deliver(ShellEvent::Resumed);
+    wait_product_viewfinder(harness.rig());
+
+    let finish_now = Arc::new(Mutex::new(true));
+    harness
+        .starter
+        .start(Box::new(RoleProbe {
+            role: LensRole::UltraWide,
+            finish_now,
+        }))
+        .expect("старт пробы");
+    harness.run_until_result();
+
+    wait_product_viewfinder(harness.rig());
 }
 
 #[test]
@@ -262,7 +342,10 @@ fn disabled_autostart_opens_nothing_and_scenario_end_leaves_the_camera_closed() 
     let finish_now = Arc::new(Mutex::new(true));
     harness
         .starter
-        .start(Box::new(UltraWideProbe { finish_now }))
+        .start(Box::new(RoleProbe {
+            role: LensRole::UltraWide,
+            finish_now,
+        }))
         .expect("старт пробы");
     harness.run_until_result();
     let closed = harness.rig().wait_state("closed");

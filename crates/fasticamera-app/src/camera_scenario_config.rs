@@ -22,6 +22,7 @@ use crate::raw_stream_scenario_config::{RawStreamScenarioConfig, RawStreamScenar
 use crate::screen_scenario_config::{ScreenScenarioConfig, ScreenScenarioConfigError};
 use crate::three_a_scenario_config::{ThreeAScenarioConfig, ThreeAScenarioConfigError};
 use crate::viewfinder_scenario_config::{ViewfinderScenarioConfig, ViewfinderScenarioConfigError};
+use crate::zoom_scenario_config::{ZoomScenarioConfig, ZoomScenarioConfigError};
 
 /// Формат RAW в конфиге.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -280,6 +281,8 @@ pub struct CameraScenarioConfig {
     pub glass: GlassScenarioConfig,
     /// Сценарий `screen` (сессия 12): экран камеры iOS, которым управляет скрипт (тапы, свайпы, клавиша).
     pub screen: ScreenScenarioConfig,
+    /// Сценарий `zoom` (сессия 13): переключение объективов и зум на настоящем экране камеры.
+    pub zoom: ZoomScenarioConfig,
 }
 
 fn step(
@@ -337,6 +340,7 @@ impl Default for CameraScenarioConfig {
             ae_trace: AeTraceScenarioConfig::default(),
             glass: GlassScenarioConfig::default(),
             screen: ScreenScenarioConfig::default(),
+            zoom: ZoomScenarioConfig::default(),
         }
     }
 }
@@ -366,6 +370,8 @@ pub enum CameraScenarioConfigError {
     Glass(#[from] GlassScenarioConfigError),
     #[error("{0}")]
     Screen(#[from] ScreenScenarioConfigError),
+    #[error("{0}")]
+    Zoom(#[from] ZoomScenarioConfigError),
     #[error("ID камеры: {0}")]
     InvalidCameraId(#[from] EmptyCameraId),
     #[error(
@@ -420,6 +426,7 @@ impl CameraScenarioConfig {
         self.ae_trace.validate()?;
         self.glass.validate()?;
         self.screen.validate()?;
+        self.zoom.validate()?;
         Ok(())
     }
 }

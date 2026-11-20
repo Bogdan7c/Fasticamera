@@ -353,7 +353,7 @@ impl Bench {
 
     fn command(&mut self, command: ViewfinderCommand) {
         assert_eq!(
-            self.backend.apply_viewfinder_command(command),
+            self.backend.apply_viewfinder_command(command.clone()),
             ViewfinderCommandOutcome::Applied,
             "{command:?}"
         );

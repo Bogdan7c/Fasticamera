@@ -7,6 +7,7 @@
 use isp_vulkan::viewfinder::IspStageSet;
 
 use super::auto_exposure::AutoExposureDiagnostics;
+use super::continuity::ContinuityDiagnostics;
 use super::control::ViewfinderPainter;
 use super::framing::EffectivePlacement;
 use super::headroom::HeadroomBenchDiagnostics;
@@ -138,4 +139,6 @@ pub struct ViewfinderDiagnostics {
     /// UI и стекло поверх видоискателя (сессия 11): источник, счётчики, время GPU. Пока источник не
     /// установлен, всё пусто (`UiOverlayDiagnostics::default()`).
     pub ui_overlay: UiOverlayDiagnostics,
+    /// Непрерывность картинки при смене объектива (сессия 13): удержания, метки кадров, кадрирование кадров.
+    pub continuity: ContinuityDiagnostics,
 }

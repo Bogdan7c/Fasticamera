@@ -19,9 +19,11 @@ use std::time::{Duration, Instant};
 
 use camera_contract::availability::CameraUnavailableReason;
 
+use super::lens_switch::is_fault_of_new_camera;
 use super::{CameraEngine, Halt, LOG_TARGET};
 use crate::backend::{BackendFailure, CameraAvailability, DeviceErrorKind};
 use crate::event::CameraEvent;
+use crate::lens_status::LensSwitchFailure;
 use crate::state::{CameraError, CameraState, FatalCause, RecoveryPlan};
 use crate::status::{AppPresence, CameraCounters};
 
@@ -122,6 +124,12 @@ impl CameraEngine {
     ///
     /// Возвращает [`Halt`], чтобы вызывающий шаг доведения мог остановиться одним `return Err(..)`.
     pub(super) fn fail_recoverable(&mut self, reason: CameraUnavailableReason, now: Instant) -> Halt {
+        // Посреди смены объектива отказ самой новой камеры — не повод ждать её: возвращаемся.
+        if is_fault_of_new_camera(reason)
+            && let Some(halt) = self.try_revert_lens_switch(LensSwitchFailure::Unavailable { reason })
+        {
+            return halt;
+        }
         tracing::warn!(target: LOG_TARGET, reason = reason.name(), "камера недоступна");
         self.release_platform();
         self.reconfiguring = false;

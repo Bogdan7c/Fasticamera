@@ -26,6 +26,9 @@ use crate::entry::{
 use crate::tags::{self, Tag};
 use crate::three_a_characteristics::parse_three_a;
 
+mod lens_calibration;
+use lens_calibration::{parse_lens_calibration, parse_max_digital_zoom};
+
 /// Без какого ключа камеру описать нельзя.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum CharacteristicsError {
@@ -137,7 +140,7 @@ pub fn parse_characteristics(
     let pixel_array = parse_size(source, tags::PIXEL_ARRAY_SIZE)?;
     let active_array = parse_active_array(source)?;
     let sensor_orientation = parse_sensor_orientation(source)?;
-    let optics = parse_optics(source, &mut notes)?;
+    let optics = parse_optics(source, active_array, &mut notes)?;
     let has_raw = request_capabilities.contains(&RequestCapability::Raw);
     let has_manual_sensor = request_capabilities.contains(&RequestCapability::ManualSensor);
 
@@ -272,7 +275,13 @@ fn parse_size(source: &dyn MetadataSource, tag: Tag) -> Result<PixelSize, Charac
 
 /// `ACAMERA_SENSOR_INFO_ACTIVE_ARRAY_SIZE`: `(left, top, width, height)`, не `right/bottom`.
 fn parse_active_array(source: &dyn MetadataSource) -> Result<PixelRect, CharacteristicsError> {
-    let tag = tags::ACTIVE_ARRAY_SIZE;
+    parse_array_rect(source, tags::ACTIVE_ARRAY_SIZE)
+}
+
+/// Прямоугольник сенсора формата `int32[4]` `(left, top, width, height)`: общий для активной
+/// области и `PRE_CORRECTION_ACTIVE_ARRAY_SIZE`. Ключ обязателен — снисхождение к отсутствию
+/// решает вызывающий.
+fn parse_array_rect(source: &dyn MetadataSource, tag: Tag) -> Result<PixelRect, CharacteristicsError> {
     let values = required(tag, read_int32s(source, tag, 4))?;
     Ok(PixelRect {
         left: to_pixels(tag, values[0])?,
@@ -292,7 +301,11 @@ fn parse_sensor_orientation(source: &dyn MetadataSource) -> Result<SensorOrienta
     })
 }
 
-fn parse_optics(source: &dyn MetadataSource, notes: &mut Notes) -> Result<Optics, CharacteristicsError> {
+fn parse_optics(
+    source: &dyn MetadataSource,
+    active_array: PixelRect,
+    notes: &mut Notes,
+) -> Result<Optics, CharacteristicsError> {
     let size = required(tags::PHYSICAL_SIZE, read_floats(source, tags::PHYSICAL_SIZE, 2))?;
     Ok(Optics {
         apertures_f_number: notes
@@ -311,6 +324,8 @@ fn parse_optics(source: &dyn MetadataSource, notes: &mut Notes) -> Result<Optics
             width_mm: size[0],
             height_mm: size[1],
         },
+        calibration: parse_lens_calibration(source, active_array, notes),
+        max_digital_zoom: parse_max_digital_zoom(source, notes),
     })
 }
 

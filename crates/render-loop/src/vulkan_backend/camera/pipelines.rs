@@ -31,6 +31,7 @@ use gpu_vulkan::error::GpuError;
 use gpu_vulkan::gpu_timing::{GpuTimestamps, TimestampCollect, TimestampStage};
 use gpu_vulkan::hardware_buffer_cache::queue_handoff::ConsumerStage;
 use gpu_vulkan::raw_mosaic_preview::{MosaicSource, RawMosaicPreview};
+use gpu_vulkan::source_window::{HorizontalMirror, SourceWindow};
 use gpu_vulkan::storage_image::SampledImageView;
 use gpu_vulkan::swapchain::DisplayTargetInfo;
 use isp_model::params::IspParams;
@@ -45,11 +46,14 @@ use crate::config::UiOverlayConfig;
 use crate::viewfinder::EffectivePlacement;
 
 mod frame_target;
+mod held;
 #[cfg(test)]
 mod screen_tests;
 mod ui_pass;
 
 pub use frame_target::FrameTarget;
+pub use held::ShowFrameAs;
+pub(in crate::vulkan_backend::camera) use held::mirror_of;
 use ui_pass::UiPass;
 
 const LOG_TARGET: &str = "fasticamera::render::camera";
@@ -97,8 +101,11 @@ pub struct NewIspFrame<'a> {
     pub stages: IspStageSet,
     /// Номер кадра (`FrameSequence`) для подложки стекла.
     pub frame_number: u64,
-    /// Показывать ли результат на экране.
-    pub presentation: IspPresentation,
+    /// Что реально положить на экран (решение машины непрерывности: живое, удержанное или чёрное).
+    pub show: ShowFrameAs,
+    /// Зеркало изображения этого кадра при показе (фронтальная камера). Запоминается вместе с картинкой:
+    /// перекомпоновка без нового кадра зеркалит её так же.
+    pub mirror: HorizontalMirror,
 }
 
 /// Чем кончилась запись кадра видоискателя.
@@ -119,6 +126,11 @@ pub enum ScreenContent {
     Viewfinder {
         /// Прямоугольник изображения на логической цели: посчитан ОДИН раз на кадр и общий для компоновщика и
         /// для фона стекла UI (они не могут разойтись).
+        destination: LogicalRect,
+    },
+    /// Удержанный последний кадр (смена объектива, сессия 13). Прямоугольник — как у `Viewfinder`.
+    Held {
+        /// Прямоугольник удержанного кадра на логической цели.
         destination: LogicalRect,
     },
     /// Чёрный: компоновать нечего или компоновщик отказал (причина в тексте).
@@ -147,6 +159,8 @@ pub struct CameraPipelines {
     frame_timestamps: GpuTimestamps,
     /// Рендер UI поверх видоискателя: создаётся лениво при первом кадре с установленным источником.
     ui: UiPass,
+    /// Удержанный кадр и зеркало живого изображения (сессия 13).
+    view: held::ViewState,
     context: GpuContext,
 }
 
@@ -170,6 +184,7 @@ impl CameraPipelines {
             compositor: ImageCompositor::new(context, target_format, frames_in_flight)?,
             frame_timestamps: GpuTimestamps::new(context, frames_in_flight, &FRAME_POINTS)?,
             ui: UiPass::new(context, target, ui_config),
+            view: held::ViewState::default(),
             context: context.clone(),
         })
     }
@@ -248,10 +263,20 @@ impl CameraPipelines {
             .source
             .record_release_for(&self.context, command_buffer, ConsumerStage::Compute);
         timing_failures += self.point(frame, FRAME_POINT_ISP_DONE, TimestampStage::ComputeShaderDone);
-        let screen = match (&isp, input.presentation) {
-            (Ok(()), IspPresentation::Show) => self.compose_or_black(frame, placement),
-            // Скрытый кадр: изображение видоискателя записано (статистика посчитана), экран остаётся чёрным.
-            (Ok(()), IspPresentation::HideUntilColorKnown) | (Err(_), _) => self.black(frame, None),
+        if isp.is_ok() {
+            // Картинка ISP теперь содержит кадр с этим зеркалом (перекомпоновка зеркалит её так же).
+            self.view.live_mirror = input.mirror;
+        }
+        let screen = match (&isp, input.show) {
+            (Ok(()), ShowFrameAs::Live) => self.compose_or_black(frame, placement),
+            // Скрытый кадр или переход: изображение ISP записано (статистика посчитана), а на экран идёт
+            // удержанный последний кадр (или чёрный, если держать нечего — холодный старт).
+            (_, ShowFrameAs::Held { magnification }) => self.compose_held_or_black(frame, placement, magnification),
+            // Отказ ISP при удержании не должен давать чёрный: удержанный кадр остаётся на экране.
+            (Err(_), ShowFrameAs::Live) if self.view.held.is_some() => {
+                self.compose_held_or_black(frame, placement, 1.0)
+            }
+            (Ok(()), ShowFrameAs::Black) | (Err(_), ShowFrameAs::Live | ShowFrameAs::Black) => self.black(frame, None),
         };
         timing_failures += self.point(frame, FRAME_POINT_COMPOSE_DONE, TimestampStage::AllCommandsDone);
         IspFrameRecording {
@@ -263,17 +288,24 @@ impl CameraPipelines {
 
     /// Нового кадра нет: экран собирается из прежнего изображения видоискателя (без ISP и без
     /// импорта). Прежний кадр мозаики, если он ещё на руках, возвращается этим сабмитом.
-    pub fn record_recompose(
+    /// То же, что [`Self::record_recompose`], но с явным решением, что положить на экран (живое, удержанное
+    /// или чёрное): так машина непрерывности ведёт кадры без нового кадра камеры.
+    pub fn record_recompose_as(
         &mut self,
         frame: &FrameTarget,
         release_displayed: Option<MosaicSource>,
         placement: EffectivePlacement,
+        show: ShowFrameAs,
     ) -> IspFrameRecording {
         let mut timing_failures = self.start_frame_timing(frame);
         if let Some(displayed) = release_displayed {
             displayed.record_release_for(&self.context, frame.command_buffer, ConsumerStage::Fragment);
         }
-        let screen = self.compose_or_black(frame, placement);
+        let screen = match show {
+            ShowFrameAs::Live => self.compose_or_black(frame, placement),
+            ShowFrameAs::Held { magnification } => self.compose_held_or_black(frame, placement, magnification),
+            ShowFrameAs::Black => self.black(frame, None),
+        };
         timing_failures += self.point(frame, FRAME_POINT_COMPOSE_DONE, TimestampStage::AllCommandsDone);
         IspFrameRecording {
             isp: Ok(()),
@@ -347,29 +379,47 @@ impl CameraPipelines {
     /// Раскладка считается здесь ОДИН раз на кадр; возвращённый прямоугольник идёт и в компоновщик, и (через
     /// [`ScreenContent::Viewfinder`]) в фон стекла UI.
     fn compose(&mut self, frame: &FrameTarget, placement: EffectivePlacement) -> Result<LogicalRect, GpuError> {
-        let image = self.isp.image().ok_or_else(|| GpuError::InvalidState {
-            what: "изображения видоискателя ещё нет".to_owned(),
-        })?;
-        let source = image.sampled_view();
-        self.compose_view(frame, source, placement)
+        let (source, window) = match (self.isp.image(), self.live_window()) {
+            (Some(image), Some(window)) => (image.sampled_view(), window),
+            _ => {
+                return Err(GpuError::InvalidState {
+                    what: "изображения видоискателя ещё нет".to_owned(),
+                });
+            }
+        };
+        self.compose_windowed(frame, source, window, placement)
     }
 
-    /// Компоновка готовой картинки `source` по действующему месту (общая часть боя и тестов на offscreen-цели).
+    /// Компоновка целой готовой картинки `source` по действующему месту (тесты на offscreen-цели).
+    #[cfg(test)]
     fn compose_view(
         &mut self,
         frame: &FrameTarget,
         source: SampledImageView,
         placement: EffectivePlacement,
     ) -> Result<LogicalRect, GpuError> {
+        self.compose_windowed(frame, source, SourceWindow::full(source.extent), placement)
+    }
+
+    /// Компоновка окна `window` картинки `source`. Прямоугольник на экране считается по РАЗМЕРУ СОДЕРЖИМОГО
+    /// (не картинки: у картинки постоянной ёмкости она больше) и не зависит от увеличения и зеркала.
+    fn compose_windowed(
+        &mut self,
+        frame: &FrameTarget,
+        source: SampledImageView,
+        window: SourceWindow,
+        placement: EffectivePlacement,
+    ) -> Result<LogicalRect, GpuError> {
+        let content = window.content();
         let destination = viewfinder_layout(
             frame,
             PlaneSize {
-                width: source.extent.width,
-                height: source.extent.height,
+                width: content.width,
+                height: content.height,
             },
             placement,
         )?;
-        self.compositor.record(
+        self.compositor.record_windowed(
             frame.command_buffer,
             frame.pattern_target,
             &CompositeRequest {
@@ -379,6 +429,7 @@ impl CameraPipelines {
                 background: BackgroundColor::BLACK,
                 frame_slot: frame.ring_slot,
             },
+            &window,
         )?;
         Ok(destination)
     }

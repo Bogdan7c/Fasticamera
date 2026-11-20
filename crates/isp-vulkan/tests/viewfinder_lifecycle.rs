@@ -18,7 +18,8 @@ use gpu_vulkan::hardware_buffer_cache::queue_handoff::ConsumerStage;
 use gpu_vulkan::kit_test_support::run_one_shot_blocking;
 use gpu_vulkan::swapchain::DisplayColorSpace;
 use isp_vulkan::viewfinder::{
-    IspStage, IspStageSet, ViewfinderError, ViewfinderFrame, ViewfinderGeometry, ViewfinderIsp, ViewfinderStorageFormat,
+    IspStage, IspStageSet, OutputAllocation, ViewfinderError, ViewfinderFrame, ViewfinderGeometry, ViewfinderIsp,
+    ViewfinderStorageFormat,
 };
 use viewfinder_support::{
     GpuSource, ParamsSpec, RawFrame, RunRequest, assert_no_validation_errors, gpu_context_or_skip, record_and_submit,
@@ -95,6 +96,7 @@ fn slots_retirement_and_live_objects_follow_the_contract() {
                     size: PixelSize::new(16, 12),
                 },
                 sensor_orientation: SensorOrientation::Degrees0,
+                allocation: OutputAllocation::Exact,
             },
             ..full
         };
@@ -252,5 +254,100 @@ fn invalid_frames_are_rejected_before_any_command_is_recorded() {
     })
     .unwrap();
     assert_eq!(isp.image().unwrap().extent().width, 2);
+    assert_no_validation_errors(&context);
+}
+
+/// Удержание кадра (сессия 13): `detach_image` отдаёт текущую картинку целиком (с содержимым) и ISP продолжает
+/// на НОВОЙ картинке, не трогая удержанную; удержанная читается как была; после `retire_detached_image` она
+/// освобождается только когда завершится следующая запись ISP, а в конце все объекты GPU возвращаются.
+#[test]
+fn detached_image_keeps_its_pixels_while_the_isp_moves_on_and_is_retired_by_a_later_record() {
+    use gpu_vulkan::kit_test_support::read_storage_image_rgba;
+    use gpu_vulkan::live_objects::LiveObjectKind;
+
+    let Some(context) = gpu_context_or_skip() else { return };
+    let baseline = context.live_objects();
+    {
+        let spec = ParamsSpec::default();
+        let params = spec.build();
+        // Два разных кадра: градиент по x и по y, чтобы удержанные и новые пиксели различались.
+        let by_x = RawFrame::from_linear(32, 24, spec.pattern, spec.levels(), |x, _, channel| {
+            f64::from(x) / 40.0 * spec.neutral[channel]
+        });
+        let by_y = RawFrame::from_linear(32, 24, spec.pattern, spec.levels(), |_, y, channel| {
+            f64::from(y) / 30.0 * spec.neutral[channel]
+        });
+        let first_source = GpuSource::new(&context, &by_x, viewfinder_support::SourceLayout::Raw16);
+        let second_source = GpuSource::new(&context, &by_y, viewfinder_support::SourceLayout::Raw16);
+        let mut isp = ViewfinderIsp::new(&context, &test_config(ViewfinderStorageFormat::HalfFloatOnly)).unwrap();
+        let first = RunRequest::whole_frame(&by_x, &params, spec.display());
+        record_and_submit(
+            &context,
+            &mut isp,
+            &first,
+            &first_source.source(),
+            0,
+            BackdropFrameNumber(1),
+        );
+        isp.collect(0).unwrap();
+        let before = {
+            let image = isp.image().unwrap();
+            read_storage_image_rgba(image.storage_image(), image.current_use()).unwrap()
+        };
+
+        // Отцепили: у ISP картинки больше нет, у нас — прежняя целиком.
+        let held = isp.detach_image().expect("картинка была");
+        assert!(isp.image().is_none(), "ISP остался без картинки до следующего кадра");
+        assert!(isp.detach_image().is_none(), "отцепить второй раз нечего");
+        assert_eq!(held.content_extent(), held.extent(), "Exact: содержимое = картинка");
+        let images_with_held = context.live_objects().count(LiveObjectKind::Image);
+
+        // ISP пишет следующий кадр в НОВУЮ картинку; удержанная не меняется ни на байт.
+        let second = RunRequest::whole_frame(&by_y, &params, spec.display());
+        record_and_submit(
+            &context,
+            &mut isp,
+            &second,
+            &second_source.source(),
+            0,
+            BackdropFrameNumber(2),
+        );
+        isp.collect(0).unwrap();
+        assert_eq!(
+            context.live_objects().count(LiveObjectKind::Image),
+            images_with_held + 1
+        );
+        let after = read_storage_image_rgba(held.storage_image(), held.current_use()).unwrap();
+        assert_eq!(after, before, "удержанная картинка не тронута записью следующего кадра");
+        let live = {
+            let image = isp.image().unwrap();
+            read_storage_image_rgba(image.storage_image(), image.current_use()).unwrap()
+        };
+        assert_ne!(live, before, "новый кадр лежит в новой картинке");
+
+        // Возврат на уничтожение: не раньше следующей записи ISP.
+        isp.retire_detached_image(held);
+        assert_eq!(isp.retired_objects(), 1, "ждёт завершения следующей записи");
+        assert_eq!(
+            context.live_objects().count(LiveObjectKind::Image),
+            images_with_held + 1
+        );
+        record_and_submit(
+            &context,
+            &mut isp,
+            &second,
+            &second_source.source(),
+            0,
+            BackdropFrameNumber(3),
+        );
+        isp.collect(0).unwrap();
+        assert_eq!(
+            isp.retired_objects(),
+            0,
+            "после завершения записи удержанная картинка освобождена"
+        );
+        assert_eq!(context.live_objects().count(LiveObjectKind::Image), images_with_held);
+    }
+    assert_eq!(context.live_objects(), baseline, "объекты GPU вернулись к исходным");
     assert_no_validation_errors(&context);
 }

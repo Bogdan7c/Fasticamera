@@ -41,6 +41,7 @@ pub mod raster;
 pub mod raw_mosaic_preview;
 pub mod sampled_texture;
 pub mod shaders;
+pub mod source_window;
 pub mod storage_image;
 pub mod swapchain;
 pub mod sync;

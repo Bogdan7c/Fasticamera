@@ -139,7 +139,7 @@ fn disabled_autostart_sends_nothing_and_restore_keeps_the_camera_closed() {
     assert!(!autostart.is_enabled());
     assert_eq!(autostart.start_once(Ok(&handle)), ViewfinderAutostartOutcome::Disabled);
     assert_eq!(
-        autostart.restore_after_scenario(Ok(&handle)),
+        autostart.restore_after_scenario(Ok(&handle), UserLens::NoneBeforeScenario),
         ViewfinderAutostartOutcome::Disabled
     );
     // Проверочная команда: если бы автозапуск что-то послал, его события пришли бы раньше неё.
@@ -168,7 +168,7 @@ fn unavailable_engine_is_reported_without_panic_and_counts_as_the_single_start()
         ViewfinderAutostartOutcome::AlreadyStarted
     );
     assert_eq!(
-        autostart.restore_after_scenario(unavailable()),
+        autostart.restore_after_scenario(unavailable(), UserLens::NoneBeforeScenario),
         ViewfinderAutostartOutcome::EngineUnavailable
     );
 }

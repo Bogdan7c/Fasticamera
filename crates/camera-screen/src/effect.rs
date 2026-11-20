@@ -3,6 +3,7 @@
 
 use camera_contract::control::ExposureBias;
 use camera_contract::three_a::SensorPoint;
+use camera_contract::zoom::LensIntent;
 use shell_contract::haptics::HapticPattern;
 
 use crate::layout::FramingIntent;
@@ -23,8 +24,8 @@ pub enum ScreenCameraIntent {
     SetExposureBias(ExposureBias),
 }
 
-/// Намерение наружу.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Намерение наружу. С сессии 13 не `Copy`: кадрирование несёт общий каталог зума (`Arc`).
+#[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
     /// Команда камере.
     Camera(ScreenCameraIntent),
@@ -37,4 +38,8 @@ pub enum Effect {
     /// Где и какую часть сенсора рисовать видоискателем (решение 93). Рендер получает это
     /// через приложение.
     Viewfinder(FramingIntent),
+    /// Какой объектив показывать (сессия 13): направление + коэффициент. Приложение кладёт намерение в ящик
+    /// «последнее побеждает» (`LensIntentChannel`), а НЕ в очередь команд камеры: промежуточные значения колеса
+    /// и щипка не должны копиться. Экран не выбирает камеру — это делает движок с гистерезисом.
+    Lens(LensIntent),
 }

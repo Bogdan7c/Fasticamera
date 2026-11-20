@@ -1,6 +1,6 @@
 //! Тесты раскладки: числа `layout.md` 4.3, привязка к низу, границы и ошибки.
 
-use camera_contract::viewfinder_crop::{CropAspect, ZoomFactor};
+use camera_contract::viewfinder_crop::CropAspect;
 use shell_contract::surface::SurfaceSize;
 
 use crate::layout::{LayoutConfig, LayoutError, ScreenLayout};
@@ -120,9 +120,9 @@ fn framing_intent_carries_sensor_crop_and_destination_without_zoom() {
         (AspectRatio::SixteenByNine, CropAspect::SIXTEEN_BY_NINE),
         (AspectRatio::Square, CropAspect::SQUARE),
     ] {
-        let intent = layout.framing_intent(aspect);
-        assert_eq!(intent.crop.aspect, crop);
-        assert_eq!(intent.crop.zoom, ZoomFactor::NONE);
+        let intent = crate::test_support::plain_framing(&layout, aspect);
+        assert_eq!(intent.zoom.aspect, crop);
+        assert_eq!(intent.zoom.ratio, camera_contract::zoom::ZoomRatio::ONE);
         assert_eq!(intent.destination, layout.frame_rect_normalized(aspect));
     }
 }

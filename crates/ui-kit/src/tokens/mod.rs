@@ -11,9 +11,11 @@
 //! * [`TypographyTokens`] — роли текста (начертание, кегль, трекинг, цифры);
 //! * [`ColorTokens`] — цвета фокуса, плашки, текста, затемнения;
 //! * [`ScaleTickTokens`] — размеры рисок и отметки текущего значения шкалы;
+//! * [`ArcScaleTokens`] — вид дуговой шкалы (диск, кольцо рисок, затухание);
 //! * [`PanelTokens`], [`BannerTokens`], [`FocusTokens`], [`ShutterTokens`] — размеры и параметры K7–K10;
 //! * [`UiKitTokens`] — все вместе: serde-конфиг с `Default` и `validate()`.
 
+mod arc_scale;
 mod colors;
 mod density;
 mod elements;
@@ -27,6 +29,8 @@ mod typography;
 
 use serde::{Deserialize, Serialize};
 
+pub use crate::haptic_throttle::HapticThrottleTokens;
+pub use arc_scale::ArcScaleTokens;
 pub use colors::ColorTokens;
 pub use density::{DensityTokens, ScaleDensity};
 pub use elements::{BannerTokens, FocusTokens, PanelTokens, ShutterTokens};
@@ -45,6 +49,8 @@ pub struct UiKitTokens {
     pub motion: MotionTokens,
     pub density: DensityTokens,
     pub haptics: HapticTable,
+    /// Ограничитель частоты вибраций (колесо и щипок зума).
+    pub haptic_throttle: HapticThrottleTokens,
     pub glass: GlassTokens,
     pub typography: TypographyTokens,
     pub colors: ColorTokens,
@@ -53,6 +59,7 @@ pub struct UiKitTokens {
     pub focus: FocusTokens,
     pub shutter: ShutterTokens,
     pub scale_ticks: ScaleTickTokens,
+    pub arc_scale: ArcScaleTokens,
     pub ruler: RulerTokens,
 }
 
@@ -61,6 +68,7 @@ impl UiKitTokens {
     pub fn validate(&self) -> Result<(), TokenError> {
         self.motion.validate()?;
         self.density.validate()?;
+        self.haptic_throttle.validate()?;
         self.glass.validate()?;
         self.typography.validate()?;
         self.colors.validate()?;
@@ -69,6 +77,7 @@ impl UiKitTokens {
         self.focus.validate()?;
         self.shutter.validate()?;
         self.scale_ticks.validate()?;
+        self.arc_scale.validate()?;
         self.ruler.validate()
     }
 }

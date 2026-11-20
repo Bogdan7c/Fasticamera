@@ -38,7 +38,7 @@ use isp_model::demosaic::DemosaicMethod;
 use isp_model::image::DisplayGamut;
 use isp_model::params::{FrameInputs, IspParams, LensShadingMapInput, ProcessingControls};
 use isp_model::test_patterns::color_bars;
-use isp_vulkan::viewfinder::{ViewfinderGeometry, ViewfinderStorageFormat};
+use isp_vulkan::viewfinder::{OutputAllocation, ViewfinderGeometry, ViewfinderStorageFormat};
 use viewfinder_support::{
     ONE_LSB, ParamsSpec, RawFrame, RunRequest, assert_no_validation_errors, gpu_context_or_skip, isp_support, parity,
     reference_upright, run_viewfinder, test_config,
@@ -204,6 +204,7 @@ fn rotated_output_matches_rotated_reference() {
             valid_area: raw.full_rect(),
             crop: raw.full_rect(),
             sensor_orientation: orientation,
+            allocation: OutputAllocation::Exact,
         };
         let request = RunRequest {
             geometry,

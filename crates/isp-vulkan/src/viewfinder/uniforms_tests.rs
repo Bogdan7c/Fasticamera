@@ -29,6 +29,7 @@ fn geometry() -> CheckedGeometry {
             size: PixelSize::new(40, 20),
         },
         output: vk::Extent2D { width: 10, height: 20 },
+        allocation: vk::Extent2D { width: 10, height: 20 },
         quarter_turns: 1,
         raw10_row_stride_bytes: 64,
     }

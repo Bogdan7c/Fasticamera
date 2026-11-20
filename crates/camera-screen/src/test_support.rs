@@ -49,6 +49,7 @@ pub(crate) fn live_facts() -> CameraFacts {
         focus: FocusPhase::Continuous,
         exposure_range: ExposureRangeFact::NotReported,
         stream: Some(main_camera_stream()),
+        lens: crate::facts::LensFacts::NONE,
     }
 }
 
@@ -108,5 +109,134 @@ impl Screen {
     pub(crate) fn tap_center(&mut self, at: MonotonicNanos) -> ScreenTransition {
         let point = self.current_frame_center();
         self.step(ScreenAction::ViewfinderTapped { point, at })
+    }
+}
+
+/// Команда рендеру без зума и без каталога камер (до сессии 13 кадрирование было только таким).
+pub(crate) fn plain_framing(
+    layout: &crate::layout::ScreenLayout,
+    aspect: crate::settings::AspectRatio,
+) -> crate::layout::FramingIntent {
+    layout.framing_intent(
+        aspect,
+        camera_contract::ids::LensFacing::Back,
+        camera_contract::zoom::ZoomRatio::ONE,
+        std::sync::Arc::new(camera_contract::zoom::ZoomCatalog::default()),
+    )
+}
+
+// ---- зум (сессия 13) ----
+
+use std::sync::Arc;
+
+use camera_contract::geometry::PixelSize as ZoomPixelSize;
+use camera_contract::ids::{CameraId, LensFacing, LensRole};
+use camera_contract::lens_calibration::{OpticalAxis, UncalibratedReason};
+use camera_contract::viewfinder_crop::ZoomFactor;
+use camera_contract::zoom::{
+    LensGroup, LensZoomPoint, PreviewMirror, ZoomCatalog, ZoomRange, ZoomRatio, ZoomStop, ZoomStopKind,
+};
+
+use crate::facts::{ActiveLens, LensFacts, LensSwitch, LensSwitchFailure};
+
+/// Коэффициент из литерала теста.
+pub(crate) fn ratio(value: f32) -> ZoomRatio {
+    ZoomRatio::new(value).expect("коэффициент теста конечен и > 0")
+}
+
+/// ID камеры OnePlus 11 из каталога тестов: ширик, основная, фронтальная.
+pub(crate) fn camera_id(id: &str) -> CameraId {
+    CameraId::new(id).expect("ID теста непустой")
+}
+
+fn lens_point(role: LensRole, id: &str, native: f32, focal_mm: f32, mirror: PreviewMirror) -> LensZoomPoint {
+    LensZoomPoint {
+        role,
+        camera: camera_id(id),
+        native_ratio: ratio(native),
+        equivalent_focal_mm: focal_mm,
+        optical_axis: OpticalAxis::Uncalibrated {
+            reason: UncalibratedReason::NotReported,
+        },
+        active_array: ZoomPixelSize::new(4096, 3072),
+        preview_mirror: mirror,
+        max_digital_zoom: ZoomFactor::new(10.0).expect("зум теста"),
+    }
+}
+
+/// Шкалы как у OnePlus 11 (решения 111, 115): задняя — ширик 0,593 / основная 1 / кроп 2× (до 10×), фронтальная 1…3×.
+pub(crate) fn zoom_catalog() -> Arc<ZoomCatalog> {
+    let stop = |value: f32, kind: ZoomStopKind| ZoomStop {
+        ratio: ratio(value),
+        kind,
+    };
+    Arc::new(ZoomCatalog {
+        back: Some(LensGroup {
+            facing: LensFacing::Back,
+            lenses: vec![
+                lens_point(LensRole::UltraWide, "3", 0.593, 14.0, PreviewMirror::None),
+                lens_point(LensRole::Wide, "2", 1.0, 24.0, PreviewMirror::None),
+            ],
+            stops: vec![
+                stop(0.593, ZoomStopKind::Lens(LensRole::UltraWide)),
+                stop(1.0, ZoomStopKind::Lens(LensRole::Wide)),
+                stop(2.0, ZoomStopKind::DigitalCrop),
+            ],
+            range: ZoomRange {
+                min: ratio(0.593),
+                max: ratio(10.0),
+            },
+        }),
+        front: Some(LensGroup {
+            facing: LensFacing::Front,
+            lenses: vec![lens_point(LensRole::Front, "1", 1.0, 20.0, PreviewMirror::Horizontal)],
+            stops: vec![stop(1.0, ZoomStopKind::Lens(LensRole::Front))],
+            range: ZoomRange {
+                min: ratio(1.0),
+                max: ratio(3.0),
+            },
+        }),
+    })
+}
+
+/// Факты живой камеры с каталогом зума и активным объективом `role` (ширик «3», основная «2», фронтальная «1»).
+pub(crate) fn zoom_facts(role: LensRole) -> CameraFacts {
+    let (camera, facing) = match role {
+        LensRole::UltraWide => ("3", LensFacing::Back),
+        LensRole::Wide | LensRole::Tele => ("2", LensFacing::Back),
+        LensRole::Front => ("1", LensFacing::Front),
+    };
+    CameraFacts {
+        lens: LensFacts {
+            catalog: Some(zoom_catalog()),
+            active: Some(ActiveLens {
+                camera: camera_id(camera),
+                role,
+                facing,
+            }),
+            switch: LensSwitch::Steady,
+            last_failure: None,
+        },
+        ..live_facts()
+    }
+}
+
+/// Те же факты, но с неудачей смены объектива номер `sequence` (на камеру `target`).
+pub(crate) fn zoom_facts_with_failure(role: LensRole, sequence: u64, target: &str) -> CameraFacts {
+    let mut facts = zoom_facts(role);
+    facts.lens.last_failure = Some(LensSwitchFailure {
+        sequence,
+        target: camera_id(target),
+    });
+    facts
+}
+
+impl Screen {
+    /// Экран с размером surface, живой камерой и каталогом зума; активна основная камера.
+    pub(crate) fn zoomed(role: LensRole) -> Self {
+        let mut screen = Self::unprepared(ScreenConfig::default());
+        screen.step(ScreenAction::SurfaceResized(OUR_SURFACE));
+        screen.step(ScreenAction::CameraFactsChanged(zoom_facts(role)));
+        screen
     }
 }

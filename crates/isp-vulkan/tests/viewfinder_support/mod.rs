@@ -41,8 +41,8 @@ use isp_model::sensor::SensorDescription;
 use isp_model::statistics::{AwbStatisticsSettings, TileGrid};
 use isp_model::tone::ToneCurveSettings;
 use isp_vulkan::viewfinder::{
-    IspStageSet, ViewfinderFrame, ViewfinderGeometry, ViewfinderIsp, ViewfinderIspConfig, ViewfinderSlotReport,
-    ViewfinderStorageFormat,
+    IspStageSet, OutputAllocation, ViewfinderFrame, ViewfinderGeometry, ViewfinderIsp, ViewfinderIspConfig,
+    ViewfinderSlotReport, ViewfinderStorageFormat,
 };
 
 const SKIP_ENV: &str = "FASTICAMERA_SKIP_GPU_TESTS";
@@ -295,6 +295,7 @@ impl<'a> RunRequest<'a> {
                 valid_area: raw.full_rect(),
                 crop: raw.full_rect(),
                 sensor_orientation: SensorOrientation::Degrees0,
+                allocation: OutputAllocation::Exact,
             },
             display,
             stages: IspStageSet::ALL,
@@ -348,10 +349,16 @@ pub fn record_and_submit(
 pub fn readback(isp: &mut ViewfinderIsp, slot: usize) -> ViewfinderRun {
     let report = isp.collect(slot).unwrap();
     let image = isp.image().unwrap();
-    let pixels = read_storage_image_rgba(image.storage_image(), image.current_use()).unwrap();
+    let whole = read_storage_image_rgba(image.storage_image(), image.current_use()).unwrap();
+    // Картинка может быть больше содержимого (ёмкость под зум): отдаём ровно левый верхний прямоугольник кадра.
+    let (capacity, content) = (image.extent(), image.content_extent());
+    let pixels = (0..content.height)
+        .flat_map(|y| (0..content.width).map(move |x| (y * capacity.width + x) as usize))
+        .map(|index| whole[index])
+        .collect();
     ViewfinderRun {
-        width: image.extent().width,
-        height: image.extent().height,
+        width: content.width,
+        height: content.height,
         format: image.format(),
         pixels,
         report,

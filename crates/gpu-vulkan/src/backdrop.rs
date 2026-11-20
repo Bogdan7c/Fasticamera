@@ -39,6 +39,7 @@ use ash::vk;
 
 use crate::context::GpuContext;
 use crate::hardware_buffer_cache::queue_handoff::ConsumerStage;
+use crate::source_window::SourceWindow;
 use crate::storage_image::{SampledImageView, StorageImage, StorageImageGeneration};
 use crate::swapchain::DisplayColorSpace;
 
@@ -60,6 +61,9 @@ pub struct BackdropSource {
     color_space: DisplayColorSpace,
     frame: BackdropFrameNumber,
     written_by: SubmissionSerial,
+    /// Какую часть картинки читать: у картинки постоянной ёмкости содержимое кадра лежит в её левом
+    /// верхнем прямоугольнике (зум без пересоздания), плюс зеркало и увеличение. По умолчанию — вся картинка.
+    window: SourceWindow,
     context: GpuContext,
 }
 
@@ -72,6 +76,7 @@ impl std::fmt::Debug for BackdropSource {
             .field("color_space", &self.color_space)
             .field("frame", &self.frame)
             .field("written_by", &self.written_by)
+            .field("window", &self.window)
             .finish()
     }
 }
@@ -93,8 +98,22 @@ impl BackdropSource {
             color_space,
             frame,
             written_by,
+            window: SourceWindow::full(image.sampled_view().extent),
             context: image.context().clone(),
         }
+    }
+
+    /// Та же подложка с другим окном чтения (содержимое кадра меньше картинки, зеркало, увеличение).
+    /// Окно обязано помещаться в картинку — иначе отказ.
+    pub fn with_window(mut self, window: SourceWindow) -> Result<Self, crate::error::GpuError> {
+        window.validate_within(self.view.extent)?;
+        self.window = window;
+        Ok(self)
+    }
+
+    /// Окно чтения: что именно из картинки видно на экране.
+    pub fn window(&self) -> SourceWindow {
+        self.window
     }
 
     /// Представление для чтения: размер и формат.
@@ -210,6 +229,21 @@ mod tests {
         assert_eq!(backdrop.view(), image.sampled_view());
         assert!(backdrop.is_from(&image));
         assert_eq!(backdrop.image_generation(), image.generation());
+        assert_eq!(
+            backdrop.window(),
+            SourceWindow::full(vk::Extent2D { width: 4, height: 2 }),
+            "по умолчанию читается вся картинка"
+        );
+        let content = SourceWindow::of_content(vk::Extent2D { width: 2, height: 2 });
+        let windowed = backdrop.clone().with_window(content).unwrap();
+        assert_eq!(windowed.window(), content);
+        assert_eq!(windowed.extent(), backdrop.extent(), "размер картинки окно не меняет");
+        assert!(
+            backdrop
+                .with_window(SourceWindow::of_content(vk::Extent2D { width: 5, height: 2 }))
+                .is_err(),
+            "содержимое шире картинки отвергается"
+        );
     }
 
     #[test]

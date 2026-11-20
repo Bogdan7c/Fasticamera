@@ -5,6 +5,8 @@
 layout(push_constant) uniform BlurParams {
     vec4 destination;  // размещение фона (x, y, ширина, высота), логические px — для источника-фона
     vec4 steps;        // x: сдвиг диагональных выборок, px; y: px экрана на тексель цели; z: px на тексель источника-уровня
+    vec4 window;       // окно чтения фона: origin.xy, step.xy (первая ступень)
+    vec4 content;      // x, y: размер содержимого фона, текселей (первая ступень)
 } blur;
 
 layout(location = 0) out vec4 out_color;

@@ -30,6 +30,7 @@ use std::sync::{Arc, Weak};
 use camera_screen::{KeyPhase as ScreenKeyPhase, ScreenAction, ScreenTouch};
 use shell_contract::hardware_key::{HardwareKey, HardwareKeyEvent, KeyPhase as ShellKeyPhase};
 use shell_contract::system_gesture::SystemGestureZones;
+use shell_contract::touch::TouchSample;
 
 /// Клавиша громкости → действие экрана. Первое нажатие — `Pressed` (затвор), автоповтор удержания — `Repeated`
 /// (в v1 без действия), отпускание — `Released`. Обе клавиши громкости равнозначны (`scope-v1.md`).
@@ -44,8 +45,8 @@ pub fn volume_key_action(event: HardwareKeyEvent) -> ScreenAction {
     ScreenAction::VolumeKey { phase, at: event.time }
 }
 
-/// Одно сообщение входа экрана.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Одно сообщение входа экрана. С сессии 13 не `Copy`: действие несёт факты камеры с общим каталогом зума.
+#[derive(Debug, Clone, PartialEq)]
 pub enum ScreenInput {
     /// Касание или разрыв потока касаний.
     Touch(ScreenTouch),
@@ -170,6 +171,22 @@ impl ScreenInputInjector {
     /// Кладёт действие в очередь без ожидания.
     pub fn inject(&self, action: ScreenAction) -> InputDelivery {
         self.send_counted_as_action(ScreenInput::Action(action))
+    }
+
+    /// Кладёт в очередь образец касания (для сценариев, которые водят пальцем по экрану сами).
+    ///
+    /// В отличие от [`ScreenInputSender::send_touch`] долга разрыва не ведёт: у сценария нет права «чинить» поток
+    /// касаний, поэтому потеря образца (`Overflowed`) — повод провалить сценарий, а не молча склеить жест. Касания
+    /// живого пальца идут тем же каналом: пока идёт сценарий, экран трогать нельзя (правило всех smoke-сценариев).
+    pub fn inject_touch(&self, sample: TouchSample) -> InputDelivery {
+        let delivery = self.try_send(ScreenInput::Touch(ScreenTouch::Sample(sample)));
+        match delivery {
+            InputDelivery::Queued => &self.counters.queued_touches,
+            InputDelivery::Overflowed => &self.counters.overflowed_touches,
+            InputDelivery::ReceiverGone => &self.counters.receiver_gone,
+        }
+        .fetch_add(1, Ordering::Relaxed);
+        delivery
     }
 
     /// Кладёт в очередь зоны системных жестов. В счётчиках идёт вместе с действиями: это такое же редкое

@@ -6,19 +6,29 @@
 
 use camera_contract::three_a::{AeAfLock, PointOfInterest};
 
-use super::{Ctx, exposure, shutter};
+use super::{Ctx, exposure, shutter, zoom};
+use crate::effect::Effect;
 use crate::facts::{CameraFacts, CameraPresence, FocusPhase};
 use crate::focus::{CameraPointMatch, FocusIndicator, FocusOrigin, LockState};
 use crate::outcome::ActionOutcome;
 
 pub(super) fn on_facts_changed(ctx: &mut Ctx<'_>, facts: CameraFacts) -> ActionOutcome {
-    let previous = ctx.state.facts;
-    ctx.state.facts = facts;
+    let framing_before = ctx.state.framing_intent();
+    let previous = std::mem::replace(&mut ctx.state.facts, facts);
+    let facts = ctx.state.facts.clone();
     apply_exposure_range(ctx, &previous, &facts);
     if facts.presence == CameraPresence::Live {
         apply_live_facts(ctx, &facts);
     } else {
         apply_not_live(ctx);
+    }
+    zoom::on_facts(ctx, &previous);
+    // Каталог или значение зума по фактам поменяли кадрирование: рендер получает его сразу (без намерения
+    // объектива — значение уже действует в камере).
+    if let Some(framing_after) = ctx.state.framing_intent()
+        && framing_before.as_ref() != Some(&framing_after)
+    {
+        ctx.emit(Effect::Viewfinder(framing_after));
     }
     ActionOutcome::Applied
 }

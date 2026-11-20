@@ -11,6 +11,16 @@
 //! 3. **частые события** (результаты кадров) — не больше `queues.capture_event_capacity`;
 //!    при переполнении вытесняется **старейшее** со счётчиком: свежий кадр важнее старого.
 //!
+//! **Порядок прихода команд и намерений объектива.** И команда (`Open`, `SwitchTo`), и намерение
+//! экрана меняют цель камеры, и побеждать должно то, что пришло позже. Поэтому команды и
+//! просьба «прочитай ящик намерений» получают номера из одного счётчика прихода, и поток
+//! разбирает их по возрастанию номера. Полос по-прежнему три, очередь команд ограничена, а
+//! просьба остаётся флагом (повторы склеиваются, переполнения нет). Склейка хранит номер
+//! **последнего** толчка: движок читает самое свежее намерение, и оно новее любой команды,
+//! пришедшей между толчками. Остаточное окно: слот намерений пишется раньше толчка, поэтому
+//! намерение, записанное, но ещё не подтолкнувшее, может быть прочитано чуть раньше своего
+//! номера; это всегда «новее», а не «старее», так что порядок «позже побеждает» не нарушается.
+//!
 //! Отправители (колбэки NDK на потоках binder, UI-поток) **никогда не ждут**: они берут замок
 //! на микросекунды, кладут запись и будят поток. Остановка и просроченный таймер движка
 //! тоже приходят через ящик: [`CameraInbox::wait_next`].
@@ -35,6 +45,8 @@ pub enum InboxItem {
     },
     /// Кто-то снаружи попросил исполнителя экспозиции перечитать решение (см. [`ThreeAWaker`]).
     ThreeARefresh,
+    /// В ящике намерений объектива появилось новое (см. [`LensIntentWaker`]).
+    LensIntentRefresh,
     /// Наступил срок таймера движка, а другого содержимого нет.
     Timeout,
 }
@@ -42,19 +54,49 @@ pub enum InboxItem {
 #[derive(Default)]
 struct InboxState {
     rare_events: VecDeque<BackendEvent>,
-    commands: VecDeque<(CommandId, CameraCommand)>,
+    /// Команды в порядке прихода; первый элемент — с наименьшим номером прихода.
+    commands: VecDeque<QueuedCommand>,
     capture_events: VecDeque<BackendEvent>,
     dropped_capture_events: u64,
     /// Сколько принятых, но не выполненных команд сброшено при остановке потока
     /// ([`CameraInbox::mark_stopped`]). Их отправители ответа не получат — это явный учёт.
     commands_discarded_at_stop: u64,
     next_command_id: u64,
+    /// Общий счётчик прихода команд и толчков намерений объектива (см. заголовок модуля).
+    next_arrival: u64,
     /// Есть непрочитанная просьба пересмотреть план экспозиции. Флаг, а не очередь: сколько бы
     /// раз ни разбудили, движок проснётся один раз (склейка пробуждений).
     three_a_refresh_requested: bool,
+    /// Номер прихода последнего непрочитанного толчка «загляни в ящик намерений объектива».
+    /// Не очередь: намерения «последнее побеждает», копить пробуждения незачем.
+    lens_intent_refresh_arrival: Option<u64>,
     stop_requested: bool,
     /// Поток завершился: команды больше не принимаются, события отбрасываются.
     stopped: bool,
+}
+
+/// Принятая команда с номером прихода.
+struct QueuedCommand {
+    arrival: u64,
+    id: CommandId,
+    command: CameraCommand,
+}
+
+impl InboxState {
+    /// Следующий номер прихода (общий для команд и толчков намерений).
+    fn next_arrival_number(&mut self) -> u64 {
+        self.next_arrival += 1;
+        self.next_arrival
+    }
+
+    /// Толчок намерений стоит в очереди раньше первой команды (или команд нет): его читать первым.
+    fn lens_refresh_is_due_before_commands(&self) -> bool {
+        match (self.lens_intent_refresh_arrival, self.commands.front()) {
+            (Some(_), None) => true,
+            (Some(refresh), Some(command)) => refresh < command.arrival,
+            (None, _) => false,
+        }
+    }
 }
 
 /// Ящик потока камеры.
@@ -92,7 +134,8 @@ impl CameraInbox {
         }
         state.next_command_id += 1;
         let id = CommandId(state.next_command_id);
-        state.commands.push_back((id, command));
+        let arrival = state.next_arrival_number();
+        state.commands.push_back(QueuedCommand { arrival, id, command });
         drop(state);
         self.wake.notify_one();
         Ok(id)
@@ -124,6 +167,7 @@ impl CameraInbox {
         }
         state.commands.clear();
         state.three_a_refresh_requested = false;
+        state.lens_intent_refresh_arrival = None;
         state.rare_events.clear();
         state.capture_events.clear();
     }
@@ -155,6 +199,19 @@ impl CameraInbox {
         self.wake.notify_one();
     }
 
+    /// Попросить движок прочитать ящик намерений объектива. Никогда не ждёт; повторы
+    /// склеиваются. После остановки потока — no-op.
+    fn request_lens_intent_refresh(&self) {
+        let mut state = self.lock();
+        if state.stopped {
+            return;
+        }
+        // Номер перезаписывается: берём последний толчок (см. заголовок модуля).
+        state.lens_intent_refresh_arrival = Some(state.next_arrival_number());
+        drop(state);
+        self.wake.notify_one();
+    }
+
     /// Подождать следующее содержимое, но не позже `deadline`. Вызывает только поток камеры.
     pub fn wait_next(&self, deadline: Option<Instant>) -> InboxItem {
         let mut state = self.lock();
@@ -168,7 +225,12 @@ impl CameraInbox {
             if std::mem::take(&mut state.three_a_refresh_requested) {
                 return InboxItem::ThreeARefresh;
             }
-            if let Some((id, command)) = state.commands.pop_front() {
+            // Намерения и команды — по порядку прихода: позже пришедшее побеждает.
+            if state.lens_refresh_is_due_before_commands() {
+                state.lens_intent_refresh_arrival = None;
+                return InboxItem::LensIntentRefresh;
+            }
+            if let Some(QueuedCommand { id, command, .. }) = state.commands.pop_front() {
                 return InboxItem::Command { id, command };
             }
             // Срок таймера проверяется до частых событий: поток кадров не должен его заглушить.
@@ -228,6 +290,31 @@ impl camera_contract::auto_exposure::RefreshSignal for ThreeAWaker {
 impl std::fmt::Debug for ThreeAWaker {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("ThreeAWaker")
+    }
+}
+
+/// Толчок «в ящике намерений объектива новое»: будит поток камеры, и тот читает намерение.
+/// Привязывается к ящику намерений при запуске [`crate::CameraRuntime`]. Не блокирует.
+#[derive(Clone)]
+pub struct LensIntentWaker {
+    inbox: Arc<CameraInbox>,
+}
+
+impl LensIntentWaker {
+    pub(crate) fn new(inbox: Arc<CameraInbox>) -> Self {
+        Self { inbox }
+    }
+}
+
+impl camera_contract::auto_exposure::RefreshSignal for LensIntentWaker {
+    fn signal(&self) {
+        self.inbox.request_lens_intent_refresh();
+    }
+}
+
+impl std::fmt::Debug for LensIntentWaker {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("LensIntentWaker")
     }
 }
 

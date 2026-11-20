@@ -97,6 +97,7 @@ impl RenderClock {
             present_time: self.time(),
             logical_size: PxSize::new(SURFACE_WIDTH_PX as f32, SURFACE_HEIGHT_PX as f32),
             px_per_pt: PX_PER_PT as f32,
+            backdrop: ui_draw::frame_source::BackdropContinuity::Live,
         };
         let produced = harness
             .control
@@ -610,6 +611,7 @@ fn dummy_request() -> UiFrameRequest {
         present_time: MonotonicNanos::from_nanos(0),
         logical_size: PxSize::new(SURFACE_WIDTH_PX as f32, SURFACE_HEIGHT_PX as f32),
         px_per_pt: PX_PER_PT as f32,
+        backdrop: ui_draw::frame_source::BackdropContinuity::Live,
     }
 }
 

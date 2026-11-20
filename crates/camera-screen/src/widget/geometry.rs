@@ -9,6 +9,7 @@ use ui_kit::tokens::UiKitTokens;
 use crate::layout::ScreenLayout;
 use crate::settings::AspectRatio;
 use crate::widgets_config::{RoundButtonLayout, WidgetLayoutConfig};
+use crate::zoom_config::ZoomConfig;
 
 /// Сколько значков над кадром может стоять одновременно (вспышка, RAW, таймер, EV).
 pub(crate) const MAX_STRIP_ICONS: usize = 4;
@@ -22,16 +23,23 @@ pub(crate) const MAX_SUBMENU_OPTIONS: usize = 4;
 pub(crate) struct ScreenGeometry {
     layout: ScreenLayout,
     config: WidgetLayoutConfig,
+    zoom: ZoomConfig,
     shutter_diameter_pt: f64,
     /// Длина риски линейки (токен `ruler.tick_length_pt`): по ней зона шкалы ставится на низ рисок.
     pub(super) ruler_tick_length_pt: f64,
 }
 
 impl ScreenGeometry {
-    pub(crate) fn new(layout: &ScreenLayout, config: &WidgetLayoutConfig, tokens: &UiKitTokens) -> Self {
+    pub(crate) fn new(
+        layout: &ScreenLayout,
+        config: &WidgetLayoutConfig,
+        zoom: &ZoomConfig,
+        tokens: &UiKitTokens,
+    ) -> Self {
         Self {
             layout: *layout,
             config: config.clone(),
+            zoom: zoom.clone(),
             shutter_diameter_pt: tokens.shutter.outer_diameter_pt,
             ruler_tick_length_pt: tokens.ruler.tick_length_pt,
         }
@@ -165,5 +173,55 @@ impl ScreenGeometry {
             frame.center().x,
             frame.min_y() + self.config.focus.lock_plate_top_inset_pt + plate_height_pt * 0.5,
         )
+    }
+
+    // ---- зум (сессия 13) ----
+
+    /// На сколько pt координаты эталонного iPhone сдвинуты вниз (привязка к низу).
+    pub(crate) fn bottom_shift_pt(&self) -> f64 {
+        self.layout.bottom_anchor_shift_pt()
+    }
+
+    pub(crate) fn zoom_config(&self) -> &ZoomConfig {
+        &self.zoom
+    }
+
+    /// Зона ленты зума: охватывает все положения кнопок при любой выбранной (лента едет под выбранной).
+    pub(crate) fn zoom_strip(&self) -> Rect {
+        let strip = &self.zoom.strip;
+        let reach = f64::from(strip.max_buttons.saturating_sub(1)) * strip.pitch_pt + strip.touch_size_pt * 0.5;
+        self.centered(strip.selected_x_pt, strip.center_y_pt, reach * 2.0, strip.touch_size_pt)
+    }
+
+    /// Рамка кнопки `slot`, когда выбрана кнопка `selected`: выбранная всегда на `selected_x_pt`.
+    pub(crate) fn zoom_button(&self, slot: usize, selected: usize) -> Rect {
+        let strip = &self.zoom.strip;
+        let offset = slot as f64 - selected as f64;
+        self.centered(
+            strip.selected_x_pt + offset * strip.pitch_pt,
+            strip.center_y_pt,
+            strip.touch_size_pt,
+            strip.touch_size_pt,
+        )
+    }
+
+    /// Зона колеса: от верха кольца рисок до низа экрана, на всю ширину (диск шире экрана и обрезан им).
+    pub(crate) fn zoom_wheel_zone(&self) -> Rect {
+        let screen = self.screen();
+        let top = self.zoom.wheel.touch_top_pt + self.layout.bottom_anchor_shift_pt();
+        Rect::from_xywh(0.0, top, screen.size.width, (screen.size.height - top).max(1.0))
+    }
+
+    /// Центр диска колеса в абсолютных координатах экрана.
+    pub(crate) fn zoom_wheel_center(&self) -> Point {
+        Point::new(
+            self.zoom.wheel.center_x_pt,
+            self.zoom.wheel.center_y_pt + self.layout.bottom_anchor_shift_pt(),
+        )
+    }
+
+    /// Кнопка переворота камеры.
+    pub(crate) fn flip_button(&self) -> Rect {
+        self.round(self.zoom.flip_button)
     }
 }

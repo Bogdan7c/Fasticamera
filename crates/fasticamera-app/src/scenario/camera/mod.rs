@@ -16,7 +16,9 @@
 //!   запись — `ae_trace_run`, разбор — `ae_trace_analysis`/`_steps`/`_stats`, вердикт — `ae_trace_verdict`).
 //! * сессия 11: [`GlassScenario`] — `glass` (стекло поверх видоискателя; отчёт и вердикт — `glass_report`).
 //! * сессия 12: [`ScreenScenario`] — `screen` (экран камеры iOS, на котором скрипт делает касания; шаги — `screen_steps`,
-//!   исполнитель — `screen_runner`, вердикт — `screen_report`). Единственный сценарий с `KeepRunning`.
+//!   исполнитель — `screen_runner`, вердикт — `screen_report`). С `KeepRunning`.
+//! * сессия 13: [`ZoomScenario`] — `zoom` (переключение объективов и зум на настоящем экране, без чёрных кадров; план —
+//!   `zoom_plan`, исполнитель — `zoom_runner`, разборы — `zoom_record`, вердикт — `zoom_verdict`). Тоже `KeepRunning`.
 //!
 //! Устройство каждого сценария одинаково: логика движется по тикам маршрутизатора (ничего не
 //! блокируется), отчёт — отдельные `Serialize`-структуры (`*_report.rs`), вердикт — чистая функция
@@ -94,6 +96,14 @@ mod viewfinder_stage_budget;
 mod viewfinder_stage_budget_report;
 mod viewfinder_tuning_report;
 mod white_balance_report;
+mod zoom;
+mod zoom_plan;
+mod zoom_record;
+mod zoom_report;
+mod zoom_runner;
+#[cfg(test)]
+mod zoom_test_support;
+mod zoom_verdict;
 
 use super::observing::ObservingScenario;
 use crate::raw_stream_scenario_config::RawStreamRunKind;
@@ -112,6 +122,7 @@ pub use viewfinder_endurance::ViewfinderEnduranceScenario;
 pub use viewfinder_latency::ViewfinderLatencyScenario;
 pub use viewfinder_smoke::ViewfinderSmokeScenario;
 pub use viewfinder_stage_budget::ViewfinderStageBudgetScenario;
+pub use zoom::ZoomScenario;
 
 /// Какой из сценариев камеры. Реестр сценариев (`Scenario`) знает только этот тип, а не каждый
 /// сценарий камеры по отдельности: `scenario/mod.rs` не раздувается с каждым новым сценарием.
@@ -140,6 +151,8 @@ pub enum CameraScenario {
     Glass,
     /// `screen`: экран камеры iOS, касания по плану скрипта, доказательство «тап дошёл до HAL» (сессия 12).
     Screen,
+    /// `zoom`: переключение объективов и зум на настоящем экране камеры, без чёрных кадров (сессия 13).
+    Zoom,
     /// `3a`: автоматика 3A и ручные параметры на живом видоискателе (сессия 08).
     ThreeA,
     /// `ae-trace`: ряд нашего AE по ступенькам света, подтяжка ISP и мерцание (сессия 08c).
@@ -170,6 +183,7 @@ impl CameraScenario {
             CameraScenario::AeTrace,
             CameraScenario::Glass,
             CameraScenario::Screen,
+            CameraScenario::Zoom,
         ]
     }
 
@@ -198,6 +212,7 @@ impl CameraScenario {
             CameraScenario::AeTrace => "ae-trace",
             CameraScenario::Glass => "glass",
             CameraScenario::Screen => "screen",
+            CameraScenario::Zoom => "zoom",
         }
     }
 
@@ -221,6 +236,7 @@ impl CameraScenario {
             CameraScenario::AeTrace => Box::new(AeTraceScenario::new()),
             CameraScenario::Glass => Box::new(GlassScenario::new()),
             CameraScenario::Screen => Box::new(ScreenScenario::new()),
+            CameraScenario::Zoom => Box::new(ZoomScenario::new()),
         }
     }
 }

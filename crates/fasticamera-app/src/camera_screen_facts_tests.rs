@@ -13,6 +13,7 @@ use camera_contract::stream::{
     ConfiguredStream, FrameRateMechanism, ReadoutAspect, ResolvedStream, StreamMode, TargetFrameRate,
 };
 use camera_contract::three_a::{AeAfLock, MeteringRegion, PointOfInterest, PointRequestId, SensorPoint};
+use camera_core::lens_status::LensStatus;
 use camera_core::state::{ClosedReason, RecoveryPlan};
 use camera_core::status::{AppPresence, CameraCounters, StreamStats};
 use camera_core::three_a_status::{FocusOutcome, ThreeAStatus};
@@ -39,6 +40,7 @@ fn status_in(state: CameraState) -> CameraStatus {
         last_unavailable: None,
         counters: CameraCounters::default(),
         three_a: ThreeAStatus::initial(),
+        lens: LensStatus::initial(),
     }
 }
 
@@ -299,10 +301,15 @@ fn stream_geometry_comes_from_the_passport_of_the_streaming_camera() {
 }
 
 #[test]
-fn front_camera_is_mirrored_and_other_camera_uses_its_own_active_array() {
+fn front_camera_geometry_has_no_mirror_because_mirror_comes_from_the_zoom_catalog_and_other_camera_uses_its_own_active_array()
+ {
     let front = camera_facts_from_status(&status_in(streaming("1", ReadoutAspect::FourByThree)));
     let geometry = front.stream.expect("поток фронталки");
-    assert_eq!(geometry.mirror, MirrorMode::Horizontal);
+    assert_eq!(
+        geometry.mirror,
+        MirrorMode::None,
+        "с сессии 13 зеркало берётся из каталога зума по камере кадра (решение 115), геометрия потока его не несёт"
+    );
     assert_eq!(geometry.sensor_orientation, SensorOrientation::Degrees270);
 
     let wide = camera_facts_from_status(&status_in(streaming("3", ReadoutAspect::FourByThree)));
@@ -326,19 +333,19 @@ fn watcher_reports_only_real_changes() {
     let first = camera_facts_from_status(&status_in(streaming("2", ReadoutAspect::FourByThree)));
 
     assert_eq!(
-        watcher.observe(first),
-        FactsChange::Changed(first),
+        watcher.observe(first.clone()),
+        FactsChange::Changed(first.clone()),
         "первое наблюдение — изменение"
     );
-    assert_eq!(watcher.observe(first), FactsChange::Unchanged, "те же факты");
+    assert_eq!(watcher.observe(first.clone()), FactsChange::Unchanged, "те же факты");
 
     let mut locked_status = status_in(streaming("2", ReadoutAspect::FourByThree));
     locked_status.three_a.lock = AeAfLock::Locked;
     let locked = camera_facts_from_status(&locked_status);
-    assert_eq!(watcher.observe(locked), FactsChange::Changed(locked));
+    assert_eq!(watcher.observe(locked.clone()), FactsChange::Changed(locked.clone()));
     assert_eq!(watcher.observe(locked), FactsChange::Unchanged);
     // Возврат к прежним фактам — снова изменение (сравнивается с последними отправленными).
-    assert_eq!(watcher.observe(first), FactsChange::Changed(first));
+    assert_eq!(watcher.observe(first.clone()), FactsChange::Changed(first));
 }
 
 /// Поток 16:9 в буфере, где полоса 16:9 не помещается (4096×2000 < 4096×9/16 = 2304 строки): паспорт не соберётся.
@@ -352,7 +359,7 @@ fn streaming_without_a_passport() -> CameraState {
 
 #[test]
 fn the_passport_is_built_once_per_stream_not_once_per_frame() {
-    let mut cache = StreamGeometryCache::default();
+    let mut cache = FactsCache::default();
     let status = status_in(streaming("2", ReadoutAspect::FourByThree));
     let first = camera_facts_with_cache(&status, &mut cache);
     for _ in 0..50 {
@@ -380,7 +387,7 @@ fn the_passport_is_built_once_per_stream_not_once_per_frame() {
 
 #[test]
 fn a_passport_error_is_counted_once_per_stream_and_yields_no_geometry() {
-    let mut cache = StreamGeometryCache::default();
+    let mut cache = FactsCache::default();
     let status = status_in(streaming_without_a_passport());
     for _ in 0..10 {
         assert_eq!(camera_facts_with_cache(&status, &mut cache).stream, None);
@@ -399,7 +406,7 @@ fn a_passport_error_is_counted_once_per_stream_and_yields_no_geometry() {
 
 #[test]
 fn an_unknown_camera_is_not_cached_and_is_not_a_passport_failure() {
-    let mut cache = StreamGeometryCache::default();
+    let mut cache = FactsCache::default();
     let unknown = status_in(streaming("99", ReadoutAspect::FourByThree));
     assert_eq!(camera_facts_with_cache(&unknown, &mut cache).stream, None);
     assert_eq!(cache.diagnostics(), FactsDiagnostics::default());

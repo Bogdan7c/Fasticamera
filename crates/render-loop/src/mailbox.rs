@@ -515,7 +515,7 @@ mod tests {
         let (inbox, receiver) = render_mailbox();
         let to_debug = ViewfinderCommand::SetPainter(ViewfinderPainter::DebugMosaic);
         let to_isp = ViewfinderCommand::SetPainter(ViewfinderPainter::Isp);
-        for command in [to_debug, to_isp, to_isp] {
+        for command in [to_debug.clone(), to_isp.clone(), to_isp.clone()] {
             assert_eq!(inbox.viewfinder_command(command), InboxDelivery::Delivered);
         }
         let commands: Vec<ViewfinderCommand> = receiver
@@ -529,7 +529,7 @@ mod tests {
             .collect();
         assert_eq!(
             commands,
-            vec![to_debug, to_isp, to_isp],
+            vec![to_debug, to_isp.clone(), to_isp],
             "каждая команда дойдёт со своим итогом"
         );
     }

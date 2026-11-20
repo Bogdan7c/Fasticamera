@@ -226,6 +226,107 @@ fn image_with_other_proportions_is_fitted_not_stretched_and_the_rest_of_the_rect
     assert_eq!(context.validation_report().errors, 0);
 }
 
+/// Текстура-градиент `width × height`: R = x/(width−1), G = y/(height−1). По цвету пикселя видно, из какого
+/// тексела он взят.
+fn gradient_texture(context: &GpuContext, width: u32, height: u32) -> SampledTexture {
+    let mut texels = Vec::new();
+    for y in 0..height {
+        for x in 0..width {
+            texels.extend_from_slice(&[(x * 255 / (width - 1)) as u8, (y * 255 / (height - 1)) as u8, 0, 255]);
+        }
+    }
+    SampledTexture::upload(
+        context,
+        &TextureDesc {
+            extent: vk::Extent2D { width, height },
+            format: TextureFormat::Rgba8Unorm,
+            label: "градиент",
+        },
+        &texels,
+    )
+    .expect("текстура загружена")
+}
+
+/// Конечные пиксели экрана для кадра в картинке постоянной ёмкости (сессия 13): раскладка считается по РАЗМЕРУ
+/// СОДЕРЖИМОГО (а не картинки), читается только содержимое, зеркало разворачивает его, увеличение берёт центр.
+/// Ожидание каждого пикселя — по эталону окна `TexelMapping::texel_at`, плюс абсолютные точки, которые
+/// сломанное окно не даст.
+#[test]
+fn content_window_decides_the_layout_and_the_final_pixels_with_mirror_and_magnification() {
+    use gpu_vulkan::source_window::{HorizontalMirror, SourceWindow};
+
+    let Some(context) = context_or_skip() else { return };
+    let mut stand = Stand::new(&context);
+    // Ёмкость 32×16, содержимое 16×16 (квадрат): раскладка квадратная, как и у содержимого, а не 2:1 как у картинки.
+    let texture = gradient_texture(&context, 32, 16);
+    let content = vk::Extent2D { width: 16, height: 16 };
+    let placement = rect(0.1, 0.5, 0.8, 0.4); // пиксели 10..90 по x и 100..180 по y: квадрат 80×80
+    let cases = [
+        ("обычное", SourceWindow::of_content(content)),
+        (
+            "зеркало",
+            SourceWindow::of_content(content).with_mirror(HorizontalMirror::On),
+        ),
+        (
+            "увеличение ×2",
+            SourceWindow::of_content(content)
+                .with_magnification(2.0)
+                .expect("увеличение"),
+        ),
+        (
+            "зеркало и ×1,5",
+            SourceWindow::of_content(content)
+                .with_mirror(HorizontalMirror::On)
+                .with_magnification(1.5)
+                .expect("увеличение"),
+        ),
+    ];
+    let mut images = Vec::new();
+    for (name, window) in cases {
+        let image = stand.frame(|pipelines, target| {
+            pipelines
+                .compose_windowed(target, texture.sampled_view(), window, placement)
+                .map(|_| ())
+        });
+        // Квадрат 80×80 по содержимому: полосы вне него чёрные (картинка 2:1 заняла бы 80×40).
+        for (x, y) in [(50, 105), (50, 175), (15, 101), (85, 178)] {
+            assert_ne!(
+                pixel(&image, x, y),
+                BLACK,
+                "{name}: ({x},{y}) внутри квадрата содержимого"
+            );
+        }
+        for (x, y) in [(5, 140), (95, 140), (50, 95), (50, 185)] {
+            assert_eq!(pixel(&image, x, y), BLACK, "{name}: ({x},{y}) вне прямоугольника");
+        }
+        // Каждый пиксель сетки проб — по эталону окна.
+        for y in (104..180).step_by(12) {
+            for x in (14..90).step_by(12) {
+                let relative = [(x as f32 + 0.5 - 10.0) / 80.0, (y as f32 + 0.5 - 100.0) / 80.0];
+                let texel = window.mapping().texel_at(relative);
+                let expected = [(texel[0] - 0.5) / 31.0 * 255.0, (texel[1] - 0.5) / 15.0 * 255.0];
+                let actual = pixel(&image, x, y);
+                for (channel, want) in expected.into_iter().enumerate() {
+                    assert!(
+                        (f32::from(actual[channel]) - want).abs() <= 4.0,
+                        "{name}: ({x},{y}) = {actual:?}, канал {channel} ждали ≈ {want}"
+                    );
+                }
+            }
+        }
+        images.push(image);
+    }
+    let red = |index: usize, x: u32| f32::from(pixel(&images[index], x, 140)[0]);
+    assert!(red(0, 20) < red(0, 80), "обычное: красный растёт слева направо");
+    assert!(red(1, 20) > red(1, 80), "зеркало: красный убывает слева направо");
+    assert!(
+        red(2, 20) > red(0, 20) + 20.0,
+        "увеличение ×2: левый край сдвинулся вглубь содержимого"
+    );
+    context.wait_idle().expect("простой GPU");
+    assert_eq!(context.validation_report().errors, 0);
+}
+
 #[test]
 fn next_frame_with_a_new_rect_leaves_nothing_in_the_old_place() {
     let Some(context) = context_or_skip() else { return };
@@ -309,6 +410,7 @@ fn ui_is_drawn_over_a_black_frame_when_there_is_no_camera_image() {
             },
             &recording.screen,
             SubmissionSerial(1),
+            ui_draw::frame_source::BackdropContinuity::NoCameraFrame,
         );
         assert_eq!(failures, 0, "метки времени записаны");
         Ok(())
@@ -342,6 +444,7 @@ fn a_failing_ui_source_leaves_the_viewfinder_on_screen_and_is_counted() {
             },
             &ScreenContent::Viewfinder { destination },
             SubmissionSerial(1),
+            ui_draw::frame_source::BackdropContinuity::Live,
         );
         assert_eq!(failures, 0);
         Ok(())
@@ -373,6 +476,7 @@ fn without_an_installed_source_the_black_frame_path_records_no_ui() {
             },
             &recording.screen,
             SubmissionSerial(1),
+            ui_draw::frame_source::BackdropContinuity::NoCameraFrame,
         );
         assert_eq!(failures, 0);
         Ok(())

@@ -36,7 +36,7 @@ pub use self::config::{
     MAX_FRAME_SLOTS, MAX_WORKGROUP_INVOCATIONS, ViewfinderIspConfig, ViewfinderStorageFormat, WorkgroupSizeConfig,
 };
 pub use self::error::ViewfinderError;
-pub use self::geometry::ViewfinderGeometry;
+pub use self::geometry::{OutputAllocation, ViewfinderGeometry};
 pub use self::image::ViewfinderImage;
 pub use self::isp::{RecordedViewfinderFrame, ViewfinderFrame, ViewfinderIsp, ViewfinderSlotReport};
 pub use self::stages::{IspStage, IspStageSet};

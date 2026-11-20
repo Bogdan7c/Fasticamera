@@ -7,13 +7,18 @@
 //! «чтения читателя → запись compute» (WAR).
 
 use ash::vk;
-use gpu_vulkan::backdrop::BackdropFrameNumber;
+use gpu_vulkan::backdrop::{BackdropFrameNumber, BackdropSource, SubmissionSerial};
+use gpu_vulkan::error::GpuError;
+use gpu_vulkan::source_window::SourceWindow;
 use gpu_vulkan::storage_image::{SampledImageView, StorageImage, StorageImageFormat, StorageImagePreviousUse};
 use gpu_vulkan::swapchain::DisplayColorSpace;
 
 /// Изображение видоискателя.
 pub struct ViewfinderImage {
     storage: StorageImage,
+    /// Размер содержимого последнего записанного кадра: левый верхний прямоугольник картинки. Картинка
+    /// может быть больше (ёмкость под зум 1×), остальное — остатки прежних кадров, читать их нельзя.
+    content: vk::Extent2D,
     /// Пространство значений последнего записанного кадра.
     color_space: DisplayColorSpace,
     /// Номер последнего записанного кадра.
@@ -27,6 +32,7 @@ impl std::fmt::Debug for ViewfinderImage {
         formatter
             .debug_struct("ViewfinderImage")
             .field("storage", &self.storage)
+            .field("content", &self.content)
             .field("color_space", &self.color_space)
             .field("frame", &self.frame)
             .field("current_use", &self.current_use)
@@ -37,8 +43,10 @@ impl std::fmt::Debug for ViewfinderImage {
 impl ViewfinderImage {
     /// Новая картинка, ещё ни разу не записанная.
     pub(crate) fn new(storage: StorageImage, color_space: DisplayColorSpace) -> Self {
+        let content = storage.extent();
         Self {
             storage,
+            content,
             color_space,
             frame: BackdropFrameNumber(0),
             current_use: StorageImagePreviousUse::NotUsedYet,
@@ -50,9 +58,31 @@ impl ViewfinderImage {
         self.storage.sampled_view()
     }
 
-    /// Размер, пиксели.
+    /// Размер самой картинки (ёмкость), пиксели.
     pub fn extent(&self) -> vk::Extent2D {
         self.storage.extent()
+    }
+
+    /// Размер содержимого последнего записанного кадра (≤ `extent`): что именно показывать.
+    pub fn content_extent(&self) -> vk::Extent2D {
+        self.content
+    }
+
+    /// Окно чтения: только содержимое последнего кадра, без зеркала и увеличения. Компоновщик и
+    /// подложка стекла обязаны читать картинку через него (см. `gpu_vulkan::source_window`).
+    pub fn content_window(&self) -> SourceWindow {
+        SourceWindow::of_content(self.content)
+    }
+
+    /// Подложка стекла из этой картинки с окном её содержимого; `written_by` — номер сабмита, в который
+    /// вызывающий отправил запись (для удержанной картинки — сабмит, записавший её последний кадр).
+    ///
+    /// Ошибка — только при нарушенном инварианте «содержимое помещается в картинку»: его держат `ensure_image`
+    /// и проверка геометрии, так что в работе её не бывает; молча подменять окно на «всю картинку» нельзя
+    /// (на стекло попали бы остатки прежних кадров), поэтому ошибка возвращается.
+    pub fn backdrop_source(&self, written_by: SubmissionSerial) -> Result<BackdropSource, GpuError> {
+        BackdropSource::publish(&self.storage, self.color_space, self.frame, written_by)
+            .with_window(self.content_window())
     }
 
     /// Формат картинки (выбран политикой из конфига по возможностям устройства).
@@ -85,8 +115,10 @@ impl ViewfinderImage {
         &mut self,
         frame: BackdropFrameNumber,
         color_space: DisplayColorSpace,
+        content: vk::Extent2D,
         now_used_as: StorageImagePreviousUse,
     ) {
+        self.content = content;
         self.frame = frame;
         self.color_space = color_space;
         self.current_use = now_used_as;

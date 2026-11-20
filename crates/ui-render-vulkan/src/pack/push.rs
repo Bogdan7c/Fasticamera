@@ -1,11 +1,17 @@
-//! Push-константы: блок кадра (`FrameParams`, 96 байт) и блок ступени размытия (`BlurParams`, 32 байта).
+//! Push-константы: блок кадра (`FrameParams`, 112 байт) и блок ступени размытия (`BlurParams`, 64 байта).
+//!
+//! В обоих есть окно чтения фона ([`TexelMapping`]): содержимое кадра камеры лежит в левом верхнем углу
+//! картинки постоянной ёмкости, фон может быть зеркальным (фронтальная камера) или увеличенным
+//! (удержанный кадр при смене объектива). Шейдеры читают фон только через это окно.
+
+use gpu_vulkan::source_window::TexelMapping;
 
 use super::put_floats;
 
 /// Размер блока кадра.
-pub(crate) const FRAME_PUSH_BYTES: u32 = 96;
+pub(crate) const FRAME_PUSH_BYTES: u32 = 112;
 /// Размер блока ступени размытия.
-pub(crate) const BLUR_PUSH_BYTES: u32 = 32;
+pub(crate) const BLUR_PUSH_BYTES: u32 = 64;
 
 /// Блок кадра для конвейеров фигур, глифов и стекла.
 #[derive(Debug, Clone, Copy)]
@@ -30,6 +36,8 @@ pub(crate) struct FramePush {
     pub quarter_turns: u32,
     /// Номер первого экземпляра пакета.
     pub first_instance: u32,
+    /// Окно чтения фона (для `Absent` — любое: фон не читается).
+    pub backdrop_window: TexelMapping,
 }
 
 impl FramePush {
@@ -52,10 +60,29 @@ impl FramePush {
             &[self.light[0], self.light[1], self.pyramid_levels as f32, live],
         );
         put_floats(&mut bytes, &self.absent_fill);
-        put_floats(&mut bytes, &[self.atlas_spread_texels, 0.0, 0.0, 0.0]);
+        // extra: x — spread атласа; y, z — размер содержимого фона (для зажима выборки).
+        put_floats(
+            &mut bytes,
+            &[
+                self.atlas_spread_texels,
+                self.backdrop_window.content[0],
+                self.backdrop_window.content[1],
+                0.0,
+            ],
+        );
         for word in [self.quarter_turns, self.first_instance, 0, 0] {
             bytes.extend_from_slice(&word.to_ne_bytes());
         }
+        // window: origin.xy, step.xy.
+        put_floats(
+            &mut bytes,
+            &[
+                self.backdrop_window.origin[0],
+                self.backdrop_window.origin[1],
+                self.backdrop_window.step[0],
+                self.backdrop_window.step[1],
+            ],
+        );
         bytes
     }
 }
@@ -71,6 +98,8 @@ pub(crate) struct BlurPush {
     pub target_texel_px: f32,
     /// px экрана на тексель источника-уровня.
     pub source_texel_px: f32,
+    /// Окно чтения фона (первая ступень).
+    pub backdrop_window: TexelMapping,
 }
 
 impl BlurPush {
@@ -82,6 +111,25 @@ impl BlurPush {
             &mut bytes,
             &[self.tap_offset_px, self.target_texel_px, self.source_texel_px, 0.0],
         );
+        // window: origin.xy, step.xy; content: x, y (+ выравнивание).
+        put_floats(
+            &mut bytes,
+            &[
+                self.backdrop_window.origin[0],
+                self.backdrop_window.origin[1],
+                self.backdrop_window.step[0],
+                self.backdrop_window.step[1],
+            ],
+        );
+        put_floats(
+            &mut bytes,
+            &[
+                self.backdrop_window.content[0],
+                self.backdrop_window.content[1],
+                0.0,
+                0.0,
+            ],
+        );
         bytes
     }
 }
@@ -92,6 +140,11 @@ mod tests {
 
     #[test]
     fn push_blocks_have_declared_sizes_and_field_order() {
+        let window = TexelMapping {
+            origin: [30.0, 31.0],
+            step: [32.0, 33.0],
+            content: [34.0, 35.0],
+        };
         let frame = FramePush {
             logical_size: [1.0, 2.0],
             physical_size: [3.0, 4.0],
@@ -103,6 +156,7 @@ mod tests {
             atlas_spread_texels: 15.0,
             quarter_turns: 3,
             first_instance: 21,
+            backdrop_window: window,
         };
         let bytes = frame.to_bytes();
         assert_eq!(bytes.len(), FRAME_PUSH_BYTES as usize);
@@ -119,12 +173,38 @@ mod tests {
         assert_eq!(f32::from_bits(word(11)), 1.0, "фон живой");
         assert_eq!(f32::from_bits(word(16)), 15.0);
         assert_eq!((word(20), word(21)), (3, 21));
+        assert_eq!(
+            (f32::from_bits(word(17)), f32::from_bits(word(18))),
+            (34.0, 35.0),
+            "содержимое фона"
+        );
+        assert_eq!(
+            (f32::from_bits(word(24)), f32::from_bits(word(27))),
+            (30.0, 33.0),
+            "окно фона"
+        );
         let blur = BlurPush {
             destination: [1.0; 4],
             tap_offset_px: 2.0,
             target_texel_px: 4.0,
             source_texel_px: 2.0,
+            backdrop_window: window,
         };
-        assert_eq!(blur.to_bytes().len(), BLUR_PUSH_BYTES as usize);
+        let blur_bytes = blur.to_bytes();
+        assert_eq!(blur_bytes.len(), BLUR_PUSH_BYTES as usize);
+        let blur_float = |index: usize| {
+            f32::from_ne_bytes([
+                blur_bytes[index * 4],
+                blur_bytes[index * 4 + 1],
+                blur_bytes[index * 4 + 2],
+                blur_bytes[index * 4 + 3],
+            ])
+        };
+        assert_eq!((blur_float(8), blur_float(11)), (30.0, 33.0), "окно: origin и step");
+        assert_eq!(
+            (blur_float(12), blur_float(13)),
+            (34.0, 35.0),
+            "окно: размер содержимого"
+        );
     }
 }

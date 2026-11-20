@@ -3,6 +3,11 @@
 //! Менять состояние можно только через [`crate::reduce`]; снаружи — чтение запросами по смыслу
 //! («виден ли затвор», «какие значки показать»), а не доступом к полям.
 
+use std::sync::Arc;
+
+use camera_contract::ids::LensFacing;
+use camera_contract::viewfinder_crop::{ViewfinderCrop, ZoomFactor};
+use camera_contract::zoom::{FramedCrop, LensGroup, PreviewMirror, ZoomCatalog, ZoomFit, ZoomFraming};
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::orientation::DeviceOrientation;
 use shell_contract::surface::SurfaceSize;
@@ -20,7 +25,8 @@ use crate::outcome::RejectionCounters;
 use crate::settings::{CaptureSettings, TimerSetting};
 use crate::shutter::{ShotRequestId, ShutterState, ThumbnailState};
 use crate::tools::ToolId;
-use crate::viewfinder_map::{MappingError, ViewfinderMapping};
+use crate::viewfinder_map::{MappingError, MirrorMode, StreamGeometry, ViewfinderMapping};
+use crate::zoom::ZoomState;
 
 /// Открытая панель. Одновременно открыта не больше одной.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -84,6 +90,8 @@ pub struct ScreenState {
     pub(crate) settings: CaptureSettings,
     pub(crate) exposure: ExposureState,
     pub(crate) focus: FocusState,
+    /// Зум: единственный владелец значения, которое видит пользователь (сессия 13).
+    pub(crate) zoom: ZoomState,
     pub(crate) facts: CameraFacts,
     pub(crate) orientation: DeviceOrientation,
     pub(crate) level: LevelReading,
@@ -116,6 +124,7 @@ impl ScreenState {
             settings: CaptureSettings::default(),
             exposure: ExposureState::new(&config.exposure),
             focus: FocusState::default(),
+            zoom: ZoomState::new(),
             facts: CameraFacts::STARTING,
             orientation: DeviceOrientation::Portrait,
             level: LevelReading::Unknown,
@@ -149,6 +158,50 @@ impl ScreenState {
 
     pub fn focus(&self) -> &FocusState {
         &self.focus
+    }
+
+    /// Зум экрана: направление, коэффициент, колесо, щипок.
+    pub fn zoom(&self) -> &ZoomState {
+        &self.zoom
+    }
+
+    /// Шкала зума текущего направления; `None` — каталога нет или в нём нет этого направления
+    /// (тогда ленты зума нет, а действия зума получают отказ `ZoomUnavailable`).
+    pub fn zoom_group(&self) -> Option<&LensGroup> {
+        self.facts.lens.catalog.as_ref()?.group(self.zoom.facing())
+    }
+
+    /// Куда перевернётся камера по кнопке: с задней — на фронтальную, с любой другой — на заднюю.
+    pub fn flip_target_facing(&self) -> LensFacing {
+        match self.zoom.facing() {
+            LensFacing::Back => LensFacing::Front,
+            LensFacing::Front | LensFacing::External => LensFacing::Back,
+        }
+    }
+
+    /// Шкала зума направления, на которое переворачивает кнопка; `None` — такой камеры в каталоге нет.
+    pub fn flip_target_group(&self) -> Option<&LensGroup> {
+        self.facts.lens.catalog.as_ref()?.group(self.flip_target_facing())
+    }
+
+    /// Есть ли куда переворачивать. Каталог опубликован и в нём нет второго направления (например, у
+    /// устройства только задние камеры) — кнопка не рисуется и не ловит касания: «не поддерживается»
+    /// показываем честно (инвариант 6), а не мёртвой кнопкой. Пока каталога нет (запуск), кнопка видна как
+    /// раньше: тап получит отказ `ZoomUnavailable`, решать «нет камеры» ещё не по чему.
+    pub fn can_flip_camera(&self) -> bool {
+        match self.facts.lens.catalog.as_ref() {
+            Some(catalog) => catalog.group(self.flip_target_facing()).is_some(),
+            None => true,
+        }
+    }
+
+    /// Каталог зума для кадрирования: пустой, пока движок его не опубликовал (кадр целиком по центру).
+    fn zoom_catalog(&self) -> Arc<ZoomCatalog> {
+        self.facts
+            .lens
+            .catalog
+            .clone()
+            .unwrap_or_else(|| Arc::new(ZoomCatalog::default()))
     }
 
     /// Последние факты камеры, которые учёл экран.
@@ -249,6 +302,12 @@ impl ScreenState {
         self.is_tool_card_open()
     }
 
+    /// Идёт ли переключение объектива по фактам движка (сессия 13). Картинку перехода рисует `BackdropContinuity`
+    /// рендера; это факт для логики (например, диагностики и тестов), а не источник размытия.
+    pub fn is_lens_switching(&self) -> bool {
+        matches!(self.facts.lens.switch, crate::facts::LensSwitch::Switching { .. })
+    }
+
     /// Показывать ли текст «камера недоступна».
     pub fn is_camera_unavailable(&self) -> bool {
         matches!(self.facts.presence, CameraPresence::Unavailable { .. })
@@ -259,9 +318,30 @@ impl ScreenState {
         icon_rotation_clockwise_degrees(self.orientation)
     }
 
-    /// Команда рендеру для текущего соотношения; `None`, пока нет раскладки.
+    /// Команда рендеру для текущего соотношения и зума; `None`, пока нет раскладки.
     pub fn framing_intent(&self) -> Option<FramingIntent> {
-        self.layout.map(|layout| layout.framing_intent(self.settings.aspect))
+        self.layout.map(|layout| {
+            layout.framing_intent(
+                self.settings.aspect,
+                self.zoom.facing(),
+                self.zoom.ratio(),
+                self.zoom_catalog(),
+            )
+        })
+    }
+
+    /// Кадрирование кадра **активной камеры** по общей с рендером формуле. Нет активной камеры (потока нет) —
+    /// кадр целиком по центру без зеркала, как посчитает и рендер для камеры вне каталога.
+    fn framed_crop(&self, framing: &ZoomFraming) -> FramedCrop {
+        match &self.facts.lens.active {
+            Some(active) => framing.crop_for_camera(&active.camera),
+            None => FramedCrop {
+                crop: ViewfinderCrop::centered(framing.aspect, ZoomFactor::NONE),
+                mirror: PreviewMirror::None,
+                shown_ratio: framing.ratio,
+                fit: ZoomFit::CameraNotInCatalog,
+            },
+        }
     }
 
     /// Перевод «экран ↔ сенсор» для текущего кадра. Единственное место, где он собирается.
@@ -272,9 +352,25 @@ impl ScreenState {
             .stream
             .as_ref()
             .ok_or(ViewfinderUnavailable::NoStreamGeometry)?;
-        let intent = layout.framing_intent(self.settings.aspect);
+        let intent = layout.framing_intent(
+            self.settings.aspect,
+            self.zoom.facing(),
+            self.zoom.ratio(),
+            self.zoom_catalog(),
+        );
         let frame = layout.frame_rect(self.settings.aspect);
-        ViewfinderMapping::new(frame, &intent.crop, stream).map_err(ViewfinderUnavailable::Mapping)
+        // Кадрирование и зеркало берутся из той же формулы, что считает рендер для кадра этой камеры
+        // (решение 93). `StreamGeometry::mirror` от приложения при этом ИГНОРИРУЕТСЯ: два источника зеркала
+        // дали бы двойное отражение (тап слева на фронталке ушёл бы не туда).
+        let framed = self.framed_crop(&intent.zoom);
+        let stream = StreamGeometry {
+            mirror: match framed.mirror {
+                PreviewMirror::None => MirrorMode::None,
+                PreviewMirror::Horizontal => MirrorMode::Horizontal,
+            },
+            ..*stream
+        };
+        ViewfinderMapping::new(frame, &framed.crop, &stream).map_err(ViewfinderUnavailable::Mapping)
     }
 
     /// Выдать следующий номер запроса снимка.

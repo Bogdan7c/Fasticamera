@@ -106,7 +106,10 @@ fn surface_resize_recomputes_the_frame_position_and_tells_the_renderer() {
     let layout = screen.state.layout().copied().expect("раскладка");
     assert_eq!(
         first.effects,
-        [Effect::Viewfinder(layout.framing_intent(AspectRatio::FourByThree))]
+        [Effect::Viewfinder(crate::test_support::plain_framing(
+            &layout,
+            AspectRatio::FourByThree
+        ))]
     );
 
     // Экран стал выше (другая высота surface) — кадр прижат к низу, значит, поехал вниз.
@@ -119,7 +122,10 @@ fn surface_resize_recomputes_the_frame_position_and_tells_the_renderer() {
     let [Effect::Viewfinder(intent)] = second.effects.as_slice() else {
         panic!("ожидалась команда рендеру, получено {:?}", second.effects);
     };
-    assert_eq!(*intent, new_layout.framing_intent(AspectRatio::FourByThree));
+    assert_eq!(
+        *intent,
+        crate::test_support::plain_framing(&new_layout, AspectRatio::FourByThree)
+    );
     assert!(
         new_layout.frame_rect(AspectRatio::FourByThree).min_y() > layout.frame_rect(AspectRatio::FourByThree).min_y()
     );
@@ -140,7 +146,7 @@ fn surface_resize_re_uses_the_current_aspect() {
     let [Effect::Viewfinder(intent)] = resized.effects.as_slice() else {
         panic!("нужна команда рендеру")
     };
-    assert_eq!(intent.crop.aspect, camera_contract::viewfinder_crop::CropAspect::SQUARE);
+    assert_eq!(intent.zoom.aspect, camera_contract::viewfinder_crop::CropAspect::SQUARE);
 }
 
 #[test]

@@ -18,8 +18,8 @@ use super::settings::ViewfinderSettings;
 use crate::thread::RollingDurations;
 use crate::ui_overlay::UiOverlayDiagnostics;
 use crate::viewfinder::{
-    ViewfinderColorSpace, ViewfinderCounters, ViewfinderDiagnostics, ViewfinderExtent, ViewfinderGpuTimes,
-    ViewfinderStorage, WhiteBalanceDiagnostics,
+    ContinuityStats, ViewfinderColorSpace, ViewfinderCounters, ViewfinderDiagnostics, ViewfinderExtent,
+    ViewfinderGpuTimes, ViewfinderStorage, WhiteBalanceDiagnostics,
 };
 
 /// Точка «начало команд кадра видоискателя».
@@ -55,6 +55,8 @@ pub struct ViewfinderStats {
     output_extent: Option<ViewfinderExtent>,
     /// Стенд V4 (счётчики и окна по проходам).
     headroom: HeadroomBenchStats,
+    /// Непрерывность картинки при смене объектива (сессия 13).
+    continuity: ContinuityStats,
 }
 
 impl ViewfinderStats {
@@ -70,7 +72,13 @@ impl ViewfinderStats {
             storage: None,
             output_extent: None,
             headroom: HeadroomBenchStats::new(window_frames),
+            continuity: ContinuityStats::default(),
         }
+    }
+
+    /// Накопитель непрерывности для правки владельцем показа (сессия видоискателя).
+    pub fn continuity_mut(&mut self) -> &mut ContinuityStats {
+        &mut self.continuity
     }
 
     /// Статистика стенда V4 для правки владельцем показа.
@@ -122,7 +130,8 @@ impl ViewfinderStats {
             StorageImageFormat::A2B10G10R10Unorm => ViewfinderStorage::TenBitUnorm,
             StorageImageFormat::Rgba16Float => ViewfinderStorage::HalfFloat,
         });
-        let extent = image.extent();
+        // Размер кадра, а не картинки: у картинки постоянной ёмкости остальное — остатки прежних кадров.
+        let extent = image.content_extent();
         self.output_extent = Some(ViewfinderExtent {
             width: extent.width,
             height: extent.height,
@@ -178,6 +187,8 @@ impl ViewfinderStats {
             auto_exposure: None,
             // UI-проход принадлежит бэкенду, а не сессии: поле дописывает бэкенд (`UiOverlayState::snapshot`).
             ui_overlay: UiOverlayDiagnostics::default(),
+            // Идёт ли удержание, знает только сессия показа: она дописывает поле `holding` сама.
+            continuity: self.continuity.snapshot(false),
         }
     }
 }

@@ -420,7 +420,7 @@ impl Rig {
         let before = self.handle.status().viewfinder_commands;
         let handled_before = before.applied + before.already_in_effect + before.rejected + before.unsupported;
         assert_eq!(
-            self.handle.inbox().viewfinder_command(command),
+            self.handle.inbox().viewfinder_command(command.clone()),
             InboxDelivery::Delivered
         );
         assert!(

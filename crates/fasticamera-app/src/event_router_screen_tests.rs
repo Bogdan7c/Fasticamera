@@ -48,6 +48,7 @@ impl UiClock {
             present_time: MonotonicNanos::from_nanos(self.now_ms * 1_000_000),
             logical_size: PxSize::new(SURFACE_WIDTH_PX as f32, SURFACE_HEIGHT_PX as f32),
             px_per_pt: PX_PER_PT,
+            backdrop: ui_draw::frame_source::BackdropContinuity::Live,
         };
         if let Some(produced) = harness.control.produce_ui_frame(&request) {
             produced.expect("кадр экрана построен");

@@ -4,24 +4,23 @@
 //! получает копию после каждой применённой команды. Здесь только правило «что меняет команда»
 //! (чистая логика, проверяется без GPU).
 
-use camera_contract::viewfinder_crop::ViewfinderCrop;
 use isp_vulkan::viewfinder::IspStageSet;
 
 use crate::config::{ViewfinderConfig, ViewfinderConfigError, ViewfinderPlacement};
 use crate::viewfinder::{
-    EffectivePlacement, FramingDestination, HeadroomBench, ViewfinderCommand, ViewfinderCommandOutcome,
+    EffectivePlacement, FramingCrop, FramingDestination, HeadroomBench, ViewfinderCommand, ViewfinderCommandOutcome,
     ViewfinderPainter,
 };
 
 /// Действующие настройки видоискателя.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ViewfinderSettings {
     /// Чем рисовать.
     pub painter: ViewfinderPainter,
     /// Включённые стадии ISP.
     pub stages: IspStageSet,
     /// Кадрирование.
-    pub crop: ViewfinderCrop,
+    pub crop: FramingCrop,
     /// Положение на экране по конфигу (действует, пока команда не задала прямоугольник).
     pub placement: ViewfinderPlacement,
     /// Место из команды `SetFraming`: `Configured` — как в конфиге, иначе прямоугольник экрана камеры.
@@ -36,7 +35,7 @@ impl ViewfinderSettings {
         Ok(Self {
             painter: config.painter,
             stages: IspStageSet::ALL,
-            crop: config.crop.to_crop()?,
+            crop: FramingCrop::Fixed(config.crop.to_crop()?),
             placement: config.placement,
             destination: FramingDestination::Configured,
             headroom: HeadroomBench::Disabled,
@@ -54,11 +53,11 @@ impl ViewfinderSettings {
         if let Some(reason) = command.rejection_reason() {
             return ViewfinderCommandOutcome::Rejected { reason };
         }
-        let before = *self;
+        let before = self.clone();
         match command {
             ViewfinderCommand::SetPainter(painter) => self.painter = painter,
             ViewfinderCommand::SetIspStages(stages) => self.stages = stages,
-            ViewfinderCommand::SetCrop(crop) => self.crop = crop,
+            ViewfinderCommand::SetCrop(crop) => self.crop = FramingCrop::Fixed(crop),
             // Одной транзакцией: кадрирование и место меняются в одном присваивании, промежуточного
             // состояния «новое кадрирование в старом месте» не существует.
             ViewfinderCommand::SetFraming(framing) => {
@@ -77,7 +76,7 @@ impl ViewfinderSettings {
 
 #[cfg(test)]
 mod tests {
-    use camera_contract::viewfinder_crop::{CropAspect, ZoomFactor};
+    use camera_contract::viewfinder_crop::{CropAspect, ViewfinderCrop, ZoomFactor};
     use isp_vulkan::viewfinder::IspStage;
 
     use super::*;
@@ -92,7 +91,7 @@ mod tests {
         let settings = defaults();
         assert_eq!(settings.painter, ViewfinderPainter::Isp);
         assert_eq!(settings.stages, IspStageSet::ALL);
-        assert_eq!(settings.crop, ViewfinderCrop::FULL_SENSOR);
+        assert_eq!(settings.crop, ViewfinderCrop::FULL_SENSOR.into());
     }
 
     #[test]
@@ -104,12 +103,16 @@ mod tests {
             "стенд не продукт: по умолчанию выключен"
         );
         let enable = ViewfinderCommand::SetHeadroomBench(HeadroomBench::Enabled);
-        assert_eq!(settings.apply(enable), ViewfinderCommandOutcome::Applied);
+        assert_eq!(settings.apply(enable.clone()), ViewfinderCommandOutcome::Applied);
         assert_eq!(settings.apply(enable), ViewfinderCommandOutcome::AlreadyInEffect);
         assert_eq!(settings.headroom, HeadroomBench::Enabled);
         assert_eq!(
-            (settings.painter, settings.stages, settings.crop),
-            (ViewfinderPainter::Isp, IspStageSet::ALL, ViewfinderCrop::FULL_SENSOR),
+            (settings.painter, settings.stages, settings.crop.clone()),
+            (
+                ViewfinderPainter::Isp,
+                IspStageSet::ALL,
+                ViewfinderCrop::FULL_SENSOR.into()
+            ),
             "видоискатель работает как прежде"
         );
         assert_eq!(
@@ -123,7 +126,7 @@ mod tests {
     fn painter_switch_applies_once_and_then_is_already_in_effect() {
         let mut settings = defaults();
         let to_debug = ViewfinderCommand::SetPainter(ViewfinderPainter::DebugMosaic);
-        assert_eq!(settings.apply(to_debug), ViewfinderCommandOutcome::Applied);
+        assert_eq!(settings.apply(to_debug.clone()), ViewfinderCommandOutcome::Applied);
         assert_eq!(settings.painter, ViewfinderPainter::DebugMosaic);
         assert_eq!(settings.apply(to_debug), ViewfinderCommandOutcome::AlreadyInEffect);
         assert_eq!(
@@ -156,6 +159,7 @@ mod tests {
         let outcome = settings.apply(ViewfinderCommand::SetCrop(ViewfinderCrop {
             aspect: CropAspect::LongToShort { long: 1, short: 2 },
             zoom: ZoomFactor::NONE,
+            center: camera_contract::viewfinder_crop::CropCenter::ValidAreaCenter,
         }));
         assert!(
             matches!(outcome, ViewfinderCommandOutcome::Rejected { .. }),
@@ -165,17 +169,19 @@ mod tests {
         let square = ViewfinderCrop {
             aspect: CropAspect::SQUARE,
             zoom: ZoomFactor::NONE,
+            center: camera_contract::viewfinder_crop::CropCenter::ValidAreaCenter,
         };
         assert_eq!(
             settings.apply(ViewfinderCommand::SetCrop(square)),
             ViewfinderCommandOutcome::Applied
         );
-        assert_eq!(settings.crop, square);
+        assert_eq!(settings.crop, square.into());
     }
     fn square_crop() -> ViewfinderCrop {
         ViewfinderCrop {
             aspect: CropAspect::SQUARE,
             zoom: ZoomFactor::NONE,
+            center: camera_contract::viewfinder_crop::CropCenter::ValidAreaCenter,
         }
     }
 
@@ -187,11 +193,11 @@ mod tests {
     fn framing_changes_crop_and_place_together_then_is_already_in_effect() {
         let mut settings = defaults();
         let framing = ViewfinderFraming {
-            crop: square_crop(),
+            crop: square_crop().into(),
             destination: FramingDestination::ScreenRect(upper_half()),
         };
         assert_eq!(
-            settings.apply(ViewfinderCommand::SetFraming(framing)),
+            settings.apply(ViewfinderCommand::SetFraming(framing.clone())),
             ViewfinderCommandOutcome::Applied
         );
         assert_eq!(settings.crop, framing.crop);
@@ -200,13 +206,13 @@ mod tests {
             EffectivePlacement::ScreenRect(upper_half())
         );
         assert_eq!(
-            settings.apply(ViewfinderCommand::SetFraming(framing)),
+            settings.apply(ViewfinderCommand::SetFraming(framing.clone())),
             ViewfinderCommandOutcome::AlreadyInEffect,
             "повтор ничего не меняет"
         );
         // Смена только места при том же кадрировании — тоже изменение.
         let back_to_config = ViewfinderFraming {
-            crop: square_crop(),
+            crop: square_crop().into(),
             destination: FramingDestination::Configured,
         };
         assert_eq!(
@@ -223,16 +229,18 @@ mod tests {
     fn framing_with_a_broken_crop_is_rejected_and_leaves_crop_and_place_untouched() {
         let mut settings = defaults();
         let applied = ViewfinderFraming {
-            crop: square_crop(),
+            crop: square_crop().into(),
             destination: FramingDestination::ScreenRect(upper_half()),
         };
         settings.apply(ViewfinderCommand::SetFraming(applied));
-        let before = settings;
+        let before = settings.clone();
         let broken = ViewfinderFraming {
             crop: ViewfinderCrop {
                 aspect: CropAspect::LongToShort { long: 1, short: 2 },
                 zoom: ZoomFactor::NONE,
-            },
+                center: camera_contract::viewfinder_crop::CropCenter::ValidAreaCenter,
+            }
+            .into(),
             destination: FramingDestination::Configured,
         };
         let outcome = settings.apply(ViewfinderCommand::SetFraming(broken));
@@ -250,7 +258,7 @@ mod tests {
     fn set_crop_keeps_the_place_set_by_framing() {
         let mut settings = defaults();
         settings.apply(ViewfinderCommand::SetFraming(ViewfinderFraming {
-            crop: ViewfinderCrop::FULL_SENSOR,
+            crop: ViewfinderCrop::FULL_SENSOR.into(),
             destination: FramingDestination::ScreenRect(upper_half()),
         }));
         assert_eq!(

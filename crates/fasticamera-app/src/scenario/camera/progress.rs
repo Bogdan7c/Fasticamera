@@ -6,6 +6,7 @@
 use std::time::{Duration, Instant};
 
 use camera_contract::availability::CameraUnavailableReason;
+use camera_contract::ids::LensRole;
 use camera_contract::stream::FrameRateMechanism;
 use camera_core::CameraEvent;
 use camera_core::three_a_status::{BracketReport, FocusOutcome};
@@ -85,6 +86,30 @@ pub enum EventNote {
         captured: bool,
         frames: usize,
     },
+    /// Смена объектива завершена: первый кадр новой камеры пришёл (`from == to` — возврат на прежний).
+    LensSwitched {
+        from: LensRole,
+        to: LensRole,
+        elapsed_ms: u64,
+    },
+    /// Цель смены поменялась посреди смены.
+    LensSwitchRetargeted {
+        from: LensRole,
+        abandoned: LensRole,
+        to: LensRole,
+    },
+    /// Новая камера не удалась (причина — текст `LensSwitchFailure`).
+    LensSwitchFailed {
+        from: LensRole,
+        to: LensRole,
+        reason: String,
+    },
+    /// Камера известна как не держащая запрошенный режим: настройка сразу на `effective_fps`.
+    StreamLimitedByCamera {
+        camera: String,
+        requested_fps: u32,
+        effective_fps: u32,
+    },
 }
 
 impl EventNote {
@@ -123,6 +148,30 @@ impl EventNote {
             },
             CameraEvent::ControlsAdjusted { adjustments } => EventNote::ControlsAdjusted {
                 adjustments: adjustments.len(),
+            },
+            CameraEvent::LensSwitched { from, to, elapsed } => EventNote::LensSwitched {
+                from: *from,
+                to: *to,
+                elapsed_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+            },
+            CameraEvent::LensSwitchRetargeted { from, abandoned, to } => EventNote::LensSwitchRetargeted {
+                from: *from,
+                abandoned: *abandoned,
+                to: *to,
+            },
+            CameraEvent::LensSwitchFailed { from, to, reason } => EventNote::LensSwitchFailed {
+                from: *from,
+                to: *to,
+                reason: format!("{reason:?}"),
+            },
+            CameraEvent::StreamLimitedByCamera {
+                camera,
+                requested,
+                effective,
+            } => EventNote::StreamLimitedByCamera {
+                camera: camera.to_string(),
+                requested_fps: requested.frame_rate.frames_per_second(),
+                effective_fps: effective.frame_rate.frames_per_second(),
             },
             CameraEvent::BracketCaptured { report } => match report {
                 BracketReport::Captured { frames, .. } => EventNote::BracketCaptured {

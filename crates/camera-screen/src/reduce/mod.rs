@@ -19,6 +19,7 @@ mod menu;
 mod sensors;
 mod shutter;
 mod viewfinder;
+mod zoom;
 
 #[cfg(test)]
 #[path = "card_tests.rs"]
@@ -41,6 +42,12 @@ mod shutter_tests;
 #[cfg(test)]
 #[path = "viewfinder_tests.rs"]
 mod viewfinder_tests;
+#[cfg(test)]
+#[path = "zoom_gesture_tests.rs"]
+mod zoom_gesture_tests;
+#[cfg(test)]
+#[path = "zoom_tests.rs"]
+mod zoom_tests;
 
 use shell_contract::clock::MonotonicNanos;
 
@@ -155,7 +162,15 @@ fn moment_of(action: &ScreenAction) -> Option<MonotonicNanos> {
         | ScreenAction::ExposureDragged { at, .. }
         | ScreenAction::FocusSunHeld { at }
         | ScreenAction::ShutterTapped { at }
-        | ScreenAction::VolumeKey { at, .. } => Some(*at),
+        | ScreenAction::VolumeKey { at, .. }
+        | ScreenAction::ZoomStopTapped { at, .. }
+        | ScreenAction::ZoomWheelTouched { at }
+        | ScreenAction::ZoomWheelReleased { at }
+        | ScreenAction::ZoomWheelDragged { at, .. }
+        | ScreenAction::ZoomPinchBegan { at }
+        | ScreenAction::ZoomPinchChanged { at, .. }
+        | ScreenAction::ZoomPinchEnded { at }
+        | ScreenAction::FlipCameraRequested { at } => Some(*at),
         ScreenAction::Tick(now) => Some(*now),
         _ => None,
     }
@@ -186,5 +201,13 @@ fn dispatch(ctx: &mut Ctx<'_>, action: ScreenAction) -> ActionOutcome {
         ScreenAction::GravityChanged(gravity) => sensors::on_gravity(ctx, gravity),
         ScreenAction::Tick(now) => sensors::on_tick(ctx, now),
         ScreenAction::SurfaceResized(size) => sensors::on_surface_resized(ctx, size),
+        ScreenAction::ZoomStopTapped { stop, at } => zoom::on_stop_tapped(ctx, stop, at),
+        ScreenAction::ZoomWheelTouched { at } => zoom::on_wheel_touched(ctx, at),
+        ScreenAction::ZoomWheelReleased { at } => zoom::on_wheel_released(ctx, at),
+        ScreenAction::ZoomWheelDragged { requested, at } => zoom::on_wheel_dragged(ctx, requested, at),
+        ScreenAction::ZoomPinchBegan { at } => zoom::on_pinch_began(ctx, at),
+        ScreenAction::ZoomPinchChanged { scale, at } => zoom::on_pinch_changed(ctx, scale, at),
+        ScreenAction::ZoomPinchEnded { at } => zoom::on_pinch_ended(ctx, at),
+        ScreenAction::FlipCameraRequested { at } => zoom::on_flip(ctx, at),
     }
 }

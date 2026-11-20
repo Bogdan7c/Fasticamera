@@ -19,6 +19,7 @@ use super::frame_rate_fallback::fallback_for;
 use super::{CameraEngine, Halt, LOG_TARGET, LiveSession, OpenDevice, RepeatingRequest};
 use crate::backend::{ConfigureFailure, DeviceGeneration, OpenFailure, RequestFailure, SessionGeneration};
 use crate::event::CameraEvent;
+use crate::lens_status::LensSwitchFailure;
 use crate::state::{CameraState, ClosedReason};
 use crate::status::AppPresence;
 
@@ -48,7 +49,9 @@ impl CameraEngine {
                 return None;
             }
         };
-        let stream = self.desired.mode.and_then(|mode| {
+        let stream = self.desired.mode.and_then(|requested| {
+            // Эффективный режим этой камеры: запрошенная частота, сниженная до её потолка.
+            let mode = self.frame_rate_limits.effective_mode(&descriptor.id, requested);
             let option = descriptor.capabilities.largest_raw_stream(mode.raw_format)?;
             Some(resolved_stream(&descriptor.id, &mode, option.size))
         });
@@ -69,6 +72,22 @@ impl CameraEngine {
         };
         if self.drive_to_plan(&plan, now).is_ok() {
             self.complete_recovery_if_pending();
+        }
+        // Новая камера отказала посреди смены объектива: цель уже возвращена, довести до неё.
+        self.run_pending_lens_revert(now);
+    }
+
+    /// Цель вернули на другую камеру посреди перестройки: показанное `Reconfiguring` должно
+    /// называть поток новой цели, а не отменённой. Флаг `reconfiguring` остаётся у `reconcile`.
+    pub(super) fn retarget_reconfiguring_state(&mut self) {
+        if !self.reconfiguring {
+            return;
+        }
+        if let Some(Plan {
+            stream: Some(target), ..
+        }) = self.current_plan()
+        {
+            self.transition(CameraState::Reconfiguring { target });
         }
     }
 
@@ -152,9 +171,18 @@ impl CameraEngine {
         if self.session.is_some() {
             return Ok(());
         }
-        let Some(mode) = self.desired.mode else {
+        let Some(requested) = self.desired.mode else {
             return Ok(());
         };
+        // Поток плана уже построен по эффективному режиму; режим для настройки берём от него же.
+        let mode = self.frame_rate_limits.effective_mode(&plan.camera, requested);
+        if mode != requested {
+            self.events.push(CameraEvent::StreamLimitedByCamera {
+                camera: plan.camera.clone(),
+                requested,
+                effective: mode,
+            });
+        }
         self.configure_session(stream, mode, now)
     }
 
@@ -223,8 +251,11 @@ impl CameraEngine {
             fallback_fps = fallback.frame_rate.frames_per_second(),
             "частота недостижима, откат на запасную"
         );
-        // Желаемое запоминает запасной режим: status, темп и пересборка плана видят его же.
-        self.desired.mode = Some(fallback);
+        // Желаемый режим остаётся запрошенным: потолок запоминается за этой камерой, и
+        // эффективный режим (план, темп, status) для неё теперь запасной. Другая камера
+        // по-прежнему получит запрошенную частоту.
+        self.frame_rate_limits
+            .remember_ceiling(stream.camera.clone(), fallback.frame_rate);
         self.events.push(CameraEvent::StreamDegraded {
             requested,
             fallback,
@@ -240,6 +271,16 @@ impl CameraEngine {
     /// Режим невозможен на этой камере: не недоступность, повторять не нужно. Желаемые режим
     /// и поток сбрасываются, устройство остаётся открытым.
     fn reject_stream_mode(&mut self, mode: StreamMode, failure: ConfigureFailure) -> Halt {
+        // Идёт смена объектива: виновата новая камера, а желаемые режим и поток нужны камере, на
+        // которую возвращаемся, — их нельзя стирать. Сначала возврат, потом обычная ветка.
+        if let Some(halt) = self.try_revert_lens_switch(LensSwitchFailure::StreamRejected {
+            failure: failure.clone(),
+        }) {
+            tracing::warn!(target: LOG_TARGET, %failure, "новая камера не приняла режим потока");
+            self.events
+                .push(CameraEvent::StreamConfigurationFailed { mode, failure });
+            return halt;
+        }
         tracing::warn!(target: LOG_TARGET, %failure, "режим потока не сконфигурировался");
         self.desired.mode = None;
         self.desired.streaming = None;

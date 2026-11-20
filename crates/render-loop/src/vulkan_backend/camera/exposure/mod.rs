@@ -44,8 +44,9 @@ use scene_estimation::exposure::{
 };
 
 use self::placement::tile_placement;
+use super::continuity::ExposureReadiness;
 use super::statistics_schedule::StatisticsDemand;
-use crate::config::AutoExposureConfig;
+use crate::config::{AutoExposureConfig, RevealExposureCheck};
 use crate::viewfinder::{AutoExposureCounters, AutoExposureDiagnostics, AwbFrameIdentity};
 
 const LOG_TARGET: &str = "fasticamera::render::auto_exposure";
@@ -222,6 +223,47 @@ impl ExposureRunner {
     /// Поток камеры неактивен: следующий кадр — уже другой поток.
     pub fn forget_stream(&mut self) {
         self.bound = None;
+    }
+
+    /// Готова ли яркость потока кадра `passport` к показу вместо удержанного кадра (сессия 13, смена объектива).
+    ///
+    /// Яркость «правдоподобна», когда AE уже измерил сцену ЭТОГО потока и показанный уровень кадра (произведение
+    /// «выдержка × ISO» кадра + остаточная подтяжка) отличается от цели AE не больше чем на `max_error_ev`.
+    /// Принятый замер сам по себе не доказывает правдоподобия: поток мог начаться с чёрной выдержки, а цель к
+    /// ней ещё не сошлась.
+    ///
+    /// Ожидание НЕ включается там, где AE нечего измерять и ждать было бы зря весь срок удержания: проверка
+    /// выключена конфигом, экспозиция ручная, область замера вне сетки статистики, у кадра нет спаренных выдержки
+    /// и ISO. Вызывать после `plan_frame` этого кадра (подтяжка и произведение кадра уже посчитаны).
+    pub fn reveal_readiness(
+        &self,
+        passport: &RawFramePassport,
+        check: RevealExposureCheck,
+        max_error_ev: f32,
+    ) -> ExposureReadiness {
+        let nothing_to_wait_for = check == RevealExposureCheck::Ignore
+            || self.directive.authority == ExposureAuthority::Manual
+            || self.area_unavailable
+            || frame_exposure_product(passport).is_none();
+        if nothing_to_wait_for {
+            return ExposureReadiness::Ready;
+        }
+        let plausible = self.has_estimate
+            && self
+                .displayed_level_error_ev()
+                .is_some_and(|error_ev| error_ev.abs() <= f64::from(max_error_ev));
+        if plausible {
+            ExposureReadiness::Ready
+        } else {
+            ExposureReadiness::Waiting
+        }
+    }
+
+    /// Насколько показанный уровень кадра выше цели AE, EV (`None` — цели или произведения кадра нет).
+    fn displayed_level_error_ev(&self) -> Option<f64> {
+        let frame_log2 = self.last_frame_product?.seconds_iso().log2();
+        let target_log2 = self.controller.target_log2()?;
+        Some(frame_log2 + f64::from(self.last_gain.ev()) - target_log2)
     }
 
     /// План для нового кадра камеры (см. модуль). Вызывается до подготовки параметров ISP.

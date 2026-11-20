@@ -45,7 +45,8 @@ pub struct PresentTargetSetting {
 }
 
 /// Одна регулировка рендера. Каждая описывает намерение целиком.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// С сессии 13 не `Copy`: команда видоискателя несёт каталог зума (`Arc`).
+#[derive(Debug, Clone, PartialEq)]
 pub enum RenderAdjustment {
     /// Команда видоискателю (рисовальщик, стадии ISP, стенд запаса).
     Viewfinder(ViewfinderCommand),

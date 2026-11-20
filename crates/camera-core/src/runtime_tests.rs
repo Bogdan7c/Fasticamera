@@ -540,3 +540,44 @@ fn handle_works_from_other_threads() {
     );
     assert_eq!(runtime.shutdown(WAIT), ShutdownReport::Stopped);
 }
+
+// ---- Намерения объектива через настоящий поток (сессия 13) ----
+
+#[test]
+fn published_lens_intent_wakes_the_camera_thread_and_switches_the_lens() {
+    use camera_contract::ids::LensFacing;
+    use camera_contract::zoom::{LensIntent, LensIntentChannel, ZoomRatio};
+
+    let fake = FakeBackendControl::new();
+    let intents = LensIntentChannel::new();
+    let config = CameraEngineConfig::default();
+    let wiring = ThreeAWiring::vendor(&config.three_a);
+    let (_runtime, handle) = CameraRuntime::spawn_with_lens_wiring(
+        config,
+        AppPresence::Foreground,
+        fake.factory(),
+        wiring,
+        crate::lens_wiring::LensWiring::new(intents.clone()),
+    )
+    .expect("поток камеры запускается");
+    start_stream(&handle);
+    assert_eq!(
+        handle.status().lens.active.map(|active| active.role),
+        Some(LensRole::Wide)
+    );
+
+    let (_, delivery) = intents.publish(LensIntent {
+        facing: LensFacing::Back,
+        ratio: ZoomRatio::new(0.6).expect("коэффициент"),
+        gesture: camera_contract::zoom::ZoomGesture::Continuous,
+    });
+    assert_eq!(delivery, camera_contract::auto_exposure::SignalDelivery::Delivered);
+
+    let status = handle
+        .wait_until_status(WAIT, |status| {
+            status.lens.active.as_ref().map(|active| active.role) == Some(LensRole::UltraWide)
+        })
+        .expect("поток камеры проснулся по толчку и сменил объектив");
+    assert_eq!(status.state.name(), "streaming");
+    assert_eq!(fake.open_camera(), Some(camera_id("3")));
+}

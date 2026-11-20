@@ -24,7 +24,10 @@ fn layout() -> ScreenLayout {
 fn mapping_for(aspect: AspectRatio, stream: &StreamGeometry) -> (ViewfinderMapping, Rect) {
     let layout = layout();
     let frame = layout.frame_rect(aspect);
-    let crop = layout.framing_intent(aspect).crop;
+    let crop = camera_contract::viewfinder_crop::ViewfinderCrop::centered(
+        aspect.crop_aspect(),
+        camera_contract::viewfinder_crop::ZoomFactor::NONE,
+    );
     (ViewfinderMapping::new(frame, &crop, stream).expect("перевод"), frame)
 }
 

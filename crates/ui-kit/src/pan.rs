@@ -44,6 +44,9 @@ pub enum PanUpdateError {
     /// Состояние `Began`/`Changed`/`Ended`, но данные не пана (например, это событие тапа).
     #[error("событие {state:?} пришло без данных пана: на элемент подписан не `Pan`")]
     NotPanData { state: GestureState },
+    /// То же для долгого тапа, который ведёт шкалу (колесо зума тем же касанием).
+    #[error("событие {state:?} пришло без данных долгого тапа: на элемент подписан не `LongPress`")]
+    NotLongPressData { state: GestureState },
 }
 
 impl PanUpdate {
@@ -65,6 +68,30 @@ impl PanUpdate {
             (GestureState::Ended, GestureData::Pan { velocity, .. }) => Ok(Some(PanUpdate::Ended { velocity })),
             (GestureState::Began | GestureState::Changed | GestureState::Ended, _) => {
                 Err(PanUpdateError::NotPanData { state })
+            }
+        }
+    }
+
+    /// Долгий тап, который после срабатывания ведёт элемент за пальцем (колесо зума: «удержи и води»).
+    /// После `Began` долгий тап продолжает отдавать смещения, поэтому для элемента это тот же пан.
+    ///
+    /// У долгого тапа нет скорости отпускания: `Ended` приходит с нулевой скоростью, то есть шкала
+    /// останавливается там, где отпущен палец (магнит опорного значения сработает), без броска.
+    pub fn from_long_press(state: GestureState, data: GestureData) -> Result<Option<Self>, PanUpdateError> {
+        match (state, data) {
+            (GestureState::Failed | GestureState::Possible, _) => Ok(None),
+            (GestureState::Cancelled, _) => Ok(Some(PanUpdate::Cancelled)),
+            (GestureState::Began, GestureData::LongPress { translation, .. }) => {
+                Ok(Some(PanUpdate::Began { translation }))
+            }
+            (GestureState::Changed, GestureData::LongPress { translation, .. }) => {
+                Ok(Some(PanUpdate::Changed { translation }))
+            }
+            (GestureState::Ended, GestureData::LongPress { .. }) => {
+                Ok(Some(PanUpdate::Ended { velocity: Vector::ZERO }))
+            }
+            (GestureState::Began | GestureState::Changed | GestureState::Ended, _) => {
+                Err(PanUpdateError::NotLongPressData { state })
             }
         }
     }

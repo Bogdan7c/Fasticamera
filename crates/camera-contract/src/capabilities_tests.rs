@@ -30,6 +30,12 @@ fn field_of_view_uses_long_sensor_side_and_shortest_focal_length() {
             width_mm: 24.0,
             height_mm: 36.0,
         },
+        calibration: LensCalibration::not_reported(PixelRect {
+            left: 0,
+            top: 0,
+            size: PixelSize::new(6000, 4000),
+        }),
+        max_digital_zoom: None,
     };
     let fov = optics.widest_field_of_view_degrees().expect("угол есть");
     assert!((fov - 90.0).abs() < 1e-9, "угол {fov}");

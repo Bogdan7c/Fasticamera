@@ -15,6 +15,7 @@
 //! * [`shutter`] — машина состояний затвора (М2), запрос снимка.
 //! * [`focus`], [`exposure`], [`level`], [`orientation`] — фокус и блокировка, EV, уровень, поворот значков.
 //! * [`layout`], [`viewfinder_map`] — раскладка и перевод экран ↔ сенсор.
+//! * [`zoom`], [`zoom_config`], [`zoom_labels`] — зум (сессия 13): владелец значения, числа, правило подписей.
 //! * [`action`], [`effect`], [`outcome`], `reduce` — вход, выход и итог.
 //! * [`screen`] — фасад [`CameraScreen`] (сцена `ui-core`, виджеты на элементах `ui-kit`, кадр `DrawList`);
 //!   `widget` — по модулю на каждый виджет; [`widgets_config`] — числа их раскладки.
@@ -40,17 +41,24 @@ pub mod tools;
 pub mod viewfinder_map;
 mod widget;
 pub mod widgets_config;
+pub mod zoom;
+pub mod zoom_config;
+pub mod zoom_labels;
 
 pub use action::{KeyPhase, ScreenAction};
 pub use config::{ScreenConfig, ScreenConfigError, ToolsConfig};
 pub use effect::{Effect, ScreenCameraIntent};
-pub use facts::{CameraFacts, CameraPresence, FocusPhase, UnavailableReason};
+pub use facts::{
+    ActiveLens, CameraFacts, CameraPresence, FocusPhase, LensFacts, LensSwitch, LensSwitchFailure, UnavailableReason,
+};
 pub use layout::{FramingIntent, LayoutConfig, LayoutError, NormalizedScreenRect, ScreenLayout};
 pub use outcome::{ActionOutcome, NoChangeReason, Rejection, RejectionCounters};
 pub use reduce::{ScreenTransition, reduce};
 pub use screen::{CameraScreen, GestureCounters, ScreenBuildError, ScreenDiagnostics, ScreenTouch};
 pub use state::{PanelState, ScreenState, ShutterVisibility, ViewfinderUnavailable};
 pub use widgets_config::{WidgetConfigError, WidgetLayoutConfig};
+pub use zoom::{FlipMark, ZoomState};
+pub use zoom_config::{ZoomConfig, ZoomConfigError};
 
 #[cfg(test)]
 #[path = "config_tests.rs"]

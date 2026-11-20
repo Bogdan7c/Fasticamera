@@ -1,5 +1,8 @@
 use camera_contract::capabilities::Rational;
 use camera_contract::fixtures::{camera_id, front_camera, main_wide_camera};
+use camera_contract::lens_calibration::{
+    CalibrationPlausibility, LensCalibration, LensIntrinsics, LensPose, OpticalAxis, PoseReference, UncalibratedReason,
+};
 use camera_contract::raw_format::MosaicKind;
 
 use super::*;
@@ -358,4 +361,273 @@ fn sensor_orientation_that_is_not_a_quarter_turn_is_an_error_not_a_rounded_value
             ..
         }
     ));
+}
+
+// --- Геометрическая калибровка объектива (сессия 13) ---
+
+const INTRINSICS_TAG: &str = "ACAMERA_LENS_INTRINSIC_CALIBRATION";
+
+/// Все пять калибровочных ключей, которых может не быть у HAL.
+const CALIBRATION_TAGS: [Tag; 6] = [
+    tags::LENS_INTRINSIC_CALIBRATION,
+    tags::LENS_POSE_ROTATION,
+    tags::LENS_POSE_TRANSLATION,
+    tags::LENS_POSE_REFERENCE,
+    tags::PRE_CORRECTION_ACTIVE_ARRAY_SIZE,
+    tags::MAX_DIGITAL_ZOOM,
+];
+
+fn note_tags(parsed: &ParsedCharacteristics) -> Vec<&'static str> {
+    parsed.notes.iter().map(|note| note.tag).collect()
+}
+
+fn plausibility() -> CalibrationPlausibility {
+    CalibrationPlausibility {
+        max_principal_point_offset: 0.15,
+    }
+}
+
+#[test]
+fn full_calibration_set_is_parsed_into_exact_optics_values() {
+    let parsed = parse_main(&main_camera_characteristics()).unwrap();
+    let optics = &parsed.capabilities.optics;
+    assert_eq!(
+        optics.calibration,
+        LensCalibration {
+            intrinsics: Some(LensIntrinsics {
+                focal_length_x_px: 2865.7437,
+                focal_length_y_px: 2865.9556,
+                principal_point_x_px: 2040.2867,
+                principal_point_y_px: 1515.4318,
+                skew: 0.0,
+            }),
+            pose: Some(LensPose {
+                reference: PoseReference::PrimaryCamera,
+                rotation_xyzw: [1.0, 0.0, 0.0, 0.0],
+                translation_m: [0.0, 0.0, 0.0],
+            }),
+            pre_correction_active_array: PixelRect {
+                left: 0,
+                top: 0,
+                size: PixelSize::new(4096, 3072),
+            },
+        }
+    );
+    assert_eq!(optics.max_digital_zoom, Some(10.0));
+    assert_eq!(parsed.notes, Vec::new());
+}
+
+#[test]
+fn ultra_wide_pose_keeps_hal_rotation_and_translation_as_is() {
+    let source = main_camera_characteristics()
+        .floats(
+            tags::LENS_POSE_ROTATION,
+            &[0.9999829, 0.00286354, 0.00277056, 0.00427929],
+        )
+        .floats(tags::LENS_POSE_TRANSLATION, &[-0.01686729, -0.00001458, 0.00027179]);
+    let pose = parse_main(&source)
+        .unwrap()
+        .capabilities
+        .optics
+        .calibration
+        .pose
+        .unwrap();
+    assert_eq!(pose.rotation_xyzw, [0.9999829, 0.00286354, 0.00277056, 0.00427929]);
+    assert_eq!(pose.translation_m, [-0.01686729, -0.00001458, 0.00027179]);
+}
+
+#[test]
+fn absent_calibration_keys_become_none_with_pre_correction_falling_back_to_active_array() {
+    let mut source = main_camera_characteristics();
+    for tag in CALIBRATION_TAGS {
+        source = source.without(tag);
+    }
+    let parsed = parse_main(&source).expect("калибровка необязательна, камера разбирается");
+    let optics = &parsed.capabilities.optics;
+    assert_eq!(optics.calibration.intrinsics, None);
+    assert_eq!(optics.calibration.pose, None);
+    assert_eq!(
+        optics.calibration.pre_correction_active_array, parsed.capabilities.active_array,
+        "без ключа система координат калибровки — активная область"
+    );
+    assert_eq!(optics.max_digital_zoom, None);
+    // Заметки как у других необязательных ключей: по одной `Absent`; ключ reference при
+    // отсутствии позы не читается и шума не даёт.
+    let absent: Vec<_> = parsed
+        .notes
+        .iter()
+        .filter(|note| note.issue == CharacteristicIssue::Absent)
+        .map(|note| note.tag)
+        .collect();
+    assert_eq!(
+        absent,
+        vec![
+            INTRINSICS_TAG,
+            "ACAMERA_LENS_POSE_ROTATION",
+            "ACAMERA_LENS_POSE_TRANSLATION",
+            "ACAMERA_SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE",
+            "ACAMERA_SCALER_AVAILABLE_MAX_DIGITAL_ZOOM",
+        ]
+    );
+    assert_eq!(parsed.notes.len(), 5);
+}
+
+#[test]
+fn pose_needs_both_rotation_and_translation() {
+    let source = main_camera_characteristics().without(tags::LENS_POSE_TRANSLATION);
+    let parsed = parse_main(&source).unwrap();
+    assert_eq!(parsed.capabilities.optics.calibration.pose, None);
+    assert_eq!(note_tags(&parsed), vec!["ACAMERA_LENS_POSE_TRANSLATION"]);
+}
+
+#[test]
+fn missing_pose_reference_defaults_to_primary_camera_and_leaves_a_substitution_note() {
+    let source = main_camera_characteristics().without(tags::LENS_POSE_REFERENCE);
+    let parsed = parse_main(&source).unwrap();
+    let pose = parsed.capabilities.optics.calibration.pose.unwrap();
+    assert_eq!(pose.reference, PoseReference::PrimaryCamera);
+    assert_eq!(
+        parsed.notes,
+        vec![CharacteristicNote {
+            tag: "ACAMERA_LENS_POSE_REFERENCE",
+            issue: CharacteristicIssue::Substituted {
+                substitute: "PrimaryCamera (умолчание NDK)"
+            },
+        }]
+    );
+}
+
+#[test]
+fn each_known_pose_reference_code_maps_and_unknown_code_is_kept_as_other() {
+    let reference_for = |code: u8| {
+        let source = main_camera_characteristics().bytes(tags::LENS_POSE_REFERENCE, &[code]);
+        parse_main(&source)
+            .unwrap()
+            .capabilities
+            .optics
+            .calibration
+            .pose
+            .unwrap()
+            .reference
+    };
+    assert_eq!(reference_for(0), PoseReference::PrimaryCamera);
+    assert_eq!(reference_for(1), PoseReference::Gyroscope);
+    assert_eq!(reference_for(2), PoseReference::Undefined);
+    assert_eq!(reference_for(3), PoseReference::Automotive);
+    assert_eq!(reference_for(77), PoseReference::Other(77));
+}
+
+#[test]
+fn intrinsics_with_four_floats_are_malformed_gives_none_and_a_note_not_an_error() {
+    let source = main_camera_characteristics().floats(tags::LENS_INTRINSIC_CALIBRATION, &[3230.0, 3230.0, 0.0, 0.0]);
+    let parsed = parse_main(&source).expect("непригодный необязательный ключ не роняет разбор");
+    assert_eq!(parsed.capabilities.optics.calibration.intrinsics, None);
+    assert_eq!(
+        parsed.notes,
+        vec![CharacteristicNote {
+            tag: INTRINSICS_TAG,
+            issue: CharacteristicIssue::Malformed {
+                problem: EntryProblem::TooFewElements { expected: 5, actual: 4 }
+            },
+        }]
+    );
+}
+
+#[test]
+fn wrong_typed_pose_reference_becomes_undefined_with_a_malformed_note() {
+    let source = main_camera_characteristics().floats(tags::LENS_POSE_REFERENCE, &[0.0]);
+    let parsed = parse_main(&source).unwrap();
+    assert_eq!(
+        parsed.capabilities.optics.calibration.pose.unwrap().reference,
+        PoseReference::Undefined
+    );
+    assert!(matches!(
+        parsed.notes.as_slice(),
+        [CharacteristicNote {
+            issue: CharacteristicIssue::Malformed { .. },
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn malformed_pre_correction_array_falls_back_to_active_array_with_a_note() {
+    let source = main_camera_characteristics().int32s(tags::PRE_CORRECTION_ACTIVE_ARRAY_SIZE, &[0, 0, 4096]);
+    let parsed = parse_main(&source).unwrap();
+    assert_eq!(
+        parsed.capabilities.optics.calibration.pre_correction_active_array,
+        parsed.capabilities.active_array
+    );
+    assert_eq!(
+        note_tags(&parsed),
+        vec!["ACAMERA_SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE"]
+    );
+}
+
+#[test]
+fn pre_correction_array_with_its_own_offset_is_kept_distinct_from_the_active_array() {
+    let source = main_camera_characteristics().int32s(tags::PRE_CORRECTION_ACTIVE_ARRAY_SIZE, &[8, 16, 4112, 3088]);
+    let rect = parse_main(&source)
+        .unwrap()
+        .capabilities
+        .optics
+        .calibration
+        .pre_correction_active_array;
+    assert_eq!((rect.left, rect.top, rect.size), (8, 16, PixelSize::new(4112, 3088)));
+}
+
+#[test]
+fn max_digital_zoom_below_one_or_not_finite_is_malformed_and_unknown() {
+    for bad in [0.5, f32::NAN, f32::INFINITY] {
+        let source = main_camera_characteristics().floats(tags::MAX_DIGITAL_ZOOM, &[bad]);
+        let parsed = parse_main(&source).unwrap();
+        assert_eq!(parsed.capabilities.optics.max_digital_zoom, None, "зум {bad}");
+        assert_eq!(
+            parsed.notes,
+            vec![CharacteristicNote {
+                tag: "ACAMERA_SCALER_AVAILABLE_MAX_DIGITAL_ZOOM",
+                issue: CharacteristicIssue::Malformed {
+                    problem: EntryProblem::OutOfRange
+                },
+            }]
+        );
+    }
+    let exactly_one = main_camera_characteristics().floats(tags::MAX_DIGITAL_ZOOM, &[1.0]);
+    assert_eq!(
+        parse_main(&exactly_one).unwrap().capabilities.optics.max_digital_zoom,
+        Some(1.0)
+    );
+}
+
+#[test]
+fn front_camera_hal_placeholder_is_parsed_as_is_but_never_becomes_a_corner_axis() {
+    // Камера 1: заглушка HAL c_x = c_y = 0. Разбор отдаёт её как есть, а проверка правдоподобия
+    // делает из неё «калибровки нет» — ось в углу сенсора невозможна.
+    let source =
+        main_camera_characteristics().floats(tags::LENS_INTRINSIC_CALIBRATION, &[3230.0, 3230.0, 0.0, 0.0, 0.0]);
+    let capabilities = parse_main(&source).unwrap().capabilities;
+    let intrinsics = capabilities.optics.calibration.intrinsics.unwrap();
+    assert_eq!(
+        (intrinsics.principal_point_x_px, intrinsics.principal_point_y_px),
+        (0.0, 0.0)
+    );
+    assert_eq!(
+        capabilities
+            .optics
+            .calibration
+            .optical_axis(capabilities.active_array, &plausibility()),
+        OpticalAxis::Uncalibrated {
+            reason: UncalibratedReason::PrincipalPointOutsideSensor
+        }
+    );
+}
+
+#[test]
+fn parsed_main_camera_calibration_gives_a_calibrated_axis_near_the_center() {
+    let capabilities = parse_main(&main_camera_characteristics()).unwrap().capabilities;
+    let axis = capabilities
+        .optics
+        .calibration
+        .optical_axis(capabilities.active_array, &plausibility());
+    assert!(matches!(axis, OpticalAxis::Calibrated { .. }), "{axis:?}");
 }

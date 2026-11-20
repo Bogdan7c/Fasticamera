@@ -22,7 +22,7 @@ use crate::value::{Emphasis, ValueModel};
 /// Контент едет за пальцем: при `FingerLeft` / `FingerUp` палец идёт к началу экранной оси,
 /// контент вместе с ним, значит большие значения подъезжают с конца оси (`+1`); при `FingerRight` /
 /// `FingerDown` — наоборот (`-1`).
-fn growth_sign(direction: GrowthDirection) -> f32 {
+pub(super) fn growth_sign(direction: GrowthDirection) -> f32 {
     match direction {
         GrowthDirection::FingerLeft | GrowthDirection::FingerUp => 1.0,
         GrowthDirection::FingerRight | GrowthDirection::FingerDown => -1.0,

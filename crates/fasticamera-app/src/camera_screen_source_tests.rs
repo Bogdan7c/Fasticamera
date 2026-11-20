@@ -70,6 +70,12 @@ fn a_fresh_screen_is_closed_neutral_and_in_photo_mode() {
             mode: ModeKind::Photo,
             shutter_placement: ShutterPlacement::Visible,
             shutter_activity: ShutterActivity::Idle,
+            zoom: ZoomView {
+                ratio_milli: 1_000,
+                facing: camera_contract::ids::LensFacing::Back,
+                wheel_open: false,
+                gliding: false,
+            },
         }
     );
 }
@@ -230,6 +236,7 @@ fn frame_request(now_ms: i64) -> UiFrameRequest {
         present_time: MonotonicNanos::from_nanos(now_ms * 1_000_000),
         logical_size: PxSize::new(1080.0, 2412.0),
         px_per_pt: 1080.0 / 440.0,
+        backdrop: ui_draw::frame_source::BackdropContinuity::Live,
     }
 }
 
@@ -260,6 +267,7 @@ fn an_exposure_bias_refused_by_a_full_camera_queue_is_resent_by_the_source_on_la
             commands: Arc::new(QuietCommands),
             render: RecordingRenderControl::new(),
             capture: Arc::new(NoCapture),
+            lens: camera_contract::zoom::LensIntentChannel::new(),
         }),
         board: Arc::clone(&board),
         report_min_interval: Duration::ZERO,
@@ -301,4 +309,71 @@ fn an_exposure_bias_refused_by_a_full_camera_queue_is_resent_by_the_source_on_la
     // Принято — больше не досылается.
     source.produce_frame(&frame_request(64)).expect("кадр");
     assert_eq!(intents(&received).len(), 2);
+}
+
+/// Экран с каталогом зума OnePlus 11 и основной камерой: зум-действия принимаются.
+fn zoom_screen() -> ScreenState {
+    use camera_contract::fixtures::camera_id;
+    use camera_contract::ids::{LensFacing, LensRole};
+    let state = live_screen();
+    let facts = CameraFacts {
+        lens: camera_screen::LensFacts {
+            catalog: Some(crate::camera_test_support::oneplus_zoom_catalog()),
+            active: Some(camera_screen::ActiveLens {
+                camera: camera_id("2"),
+                role: LensRole::Wide,
+                facing: LensFacing::Back,
+            }),
+            ..camera_screen::LensFacts::NONE
+        },
+        ..CameraFacts::STARTING
+    };
+    apply(
+        &state,
+        ScreenAction::CameraFactsChanged(CameraFacts {
+            presence: CameraPresence::Live,
+            stream: Some(StreamGeometry {
+                valid_area: PixelRect {
+                    left: 0,
+                    top: 0,
+                    size: PixelSize::new(4096, 3072),
+                },
+                active_array_size: PixelSize::new(4096, 3072),
+                sensor_orientation: SensorOrientation::Degrees90,
+                mirror: MirrorMode::None,
+            }),
+            ..facts
+        }),
+    )
+}
+
+#[test]
+fn zoom_view_follows_the_real_zoom_state_ratio_facing_and_wheel() {
+    use camera_contract::ids::LensFacing;
+    use camera_contract::zoom::ZoomRatio;
+    let at = MonotonicNanos::from_nanos(1_000_000);
+    let state = zoom_screen();
+    let initial = ScreenStateSnapshot::observe(&state).zoom;
+    assert_eq!(initial.ratio_milli, 1_000, "до выбора пользователя экран показывает 1×");
+    assert_eq!((initial.facing, initial.wheel_open), (LensFacing::Back, false));
+
+    let touched = apply(&state, ScreenAction::ZoomWheelTouched { at });
+    assert!(
+        ScreenStateSnapshot::observe(&touched).zoom.wheel_open,
+        "палец на колесе — колесо открыто"
+    );
+
+    let dragged = apply(
+        &touched,
+        ScreenAction::ZoomWheelDragged {
+            requested: ZoomRatio::new(1.7).expect("коэффициент"),
+            at,
+        },
+    );
+    assert_eq!(ScreenStateSnapshot::observe(&dragged).zoom.ratio_milli, 1_700);
+
+    let flipped = apply(&dragged, ScreenAction::FlipCameraRequested { at });
+    let view = ScreenStateSnapshot::observe(&flipped).zoom;
+    assert_eq!(view.facing, LensFacing::Front, "переворот меняет направление в снимке");
+    assert!(!view.wheel_open, "переворот закрывает колесо");
 }

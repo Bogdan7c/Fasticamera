@@ -85,7 +85,14 @@ fn unreachable_60_degrades_to_30_and_keeps_streaming() {
     let status = rig.engine.status();
     let configured = status.configured.expect("сессия живая");
     assert_eq!(configured.stream.frame_rate.frames_per_second(), 30);
-    assert_eq!(rig.engine.desired.mode, Some(mode_raw10_4x3_at(30)));
+    // Желаемый режим остаётся запрошенным; потолок запомнен за камерой 2 (сессия 13).
+    assert_eq!(rig.engine.desired.mode, Some(mode_raw10_4x3_at(60)));
+    assert_eq!(
+        rig.engine
+            .frame_rate_limits
+            .ceiling_of(&camera_contract::fixtures::camera_id("2")),
+        Some(TargetFrameRate::new(30).expect("30 к/с"))
+    );
     assert_eq!(
         configure_calls(&rig)
             .iter()

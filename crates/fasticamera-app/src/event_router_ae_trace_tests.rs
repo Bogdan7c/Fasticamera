@@ -74,6 +74,7 @@ fn viewfinder_without_ae() -> ViewfinderDiagnostics {
         white_balance: WhiteBalanceDiagnostics::idle(WhiteBalanceConfig::default().statistics_every_n_frames),
         auto_exposure: None,
         ui_overlay: render_loop::ui_overlay::UiOverlayDiagnostics::default(),
+        continuity: Default::default(),
     }
 }
 

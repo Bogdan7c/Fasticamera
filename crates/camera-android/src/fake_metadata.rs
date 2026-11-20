@@ -141,9 +141,19 @@ pub fn main_camera_characteristics() -> FakeMetadata {
         .floats(tags::HYPERFOCAL_DISTANCE, &[0.3])
         .bytes(tags::FOCUS_DISTANCE_CALIBRATION, &[tags::FOCUS_CALIBRATION_APPROXIMATE])
         .floats(tags::AVAILABLE_APERTURES, &[1.8])
-        .floats(tags::AVAILABLE_FOCAL_LENGTHS, &[5.6])
-        .floats(tags::PHYSICAL_SIZE, &[9.8, 7.4])
+        .floats(tags::AVAILABLE_FOCAL_LENGTHS, &[5.59])
+        .floats(tags::PHYSICAL_SIZE, &[8.192, 6.144])
         .bytes(tags::LENS_SHADING_APPLIED, &[tags::LENS_SHADING_APPLIED_TRUE])
+        // Калибровка объектива: `dumpsys media.camera` OnePlus 11, 20.11.2026 (сессия 13).
+        .floats(
+            tags::LENS_INTRINSIC_CALIBRATION,
+            &[2865.7437, 2865.9556, 2040.2867, 1515.4318, 0.0],
+        )
+        .floats(tags::LENS_POSE_ROTATION, &[1.0, 0.0, 0.0, 0.0])
+        .floats(tags::LENS_POSE_TRANSLATION, &[0.0, 0.0, 0.0])
+        .bytes(tags::LENS_POSE_REFERENCE, &[tags::LENS_POSE_REFERENCE_PRIMARY_CAMERA])
+        .int32s(tags::PRE_CORRECTION_ACTIVE_ARRAY_SIZE, &[0, 0, width, height])
+        .floats(tags::MAX_DIGITAL_ZOOM, &[10.0])
         .with_back_camera_three_a()
 }
 

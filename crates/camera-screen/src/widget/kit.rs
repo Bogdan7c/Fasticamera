@@ -175,6 +175,43 @@ impl SceneKit {
         Ok(())
     }
 
+    /// Сдвигает узел по горизонтали на `offset_pt` пружиной (лента зума едет под неподвижной выбранной кнопкой).
+    pub(crate) fn slide_horizontally_to(
+        &mut self,
+        node: NodeId,
+        offset_pt: f64,
+        spring: Spring,
+        now: MonotonicNanos,
+    ) -> Result<(), WidgetError> {
+        self.scene.animate(AnimationRequest {
+            key: PropertyKey {
+                node,
+                property: AnimatedProperty::TranslationX,
+            },
+            target: offset_pt,
+            spring,
+            velocity: StartVelocity::Inherit,
+            now,
+        })?;
+        Ok(())
+    }
+
+    /// Сдвигает узел по горизонтали сразу, без анимации; идущая анимация сдвига снимается.
+    pub(crate) fn jump_horizontally_to(&mut self, node: NodeId, offset_pt: f64) -> Result<(), WidgetError> {
+        self.scene
+            .set_property(node, AnimatedProperty::TranslationX, offset_pt)?;
+        Ok(())
+    }
+
+    /// Текущий визуальный сдвиг узла по горизонтали, pt (с учётом идущей анимации).
+    pub(crate) fn horizontal_offset_pt(&self, node: NodeId) -> Result<f64, WidgetError> {
+        self.scene
+            .tree()
+            .translation(node)
+            .map(|translation| translation.dx)
+            .map_err(element("сдвиг узла"))
+    }
+
     /// Текущий визуальный сдвиг узла по вертикали, pt (с учётом идущей анимации).
     pub(crate) fn vertical_offset_pt(&self, node: NodeId) -> Result<f64, WidgetError> {
         self.scene

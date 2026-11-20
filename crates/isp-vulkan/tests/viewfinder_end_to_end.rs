@@ -20,7 +20,7 @@ use gpu_vulkan::hardware_buffer_cache::queue_handoff::ConsumerStage;
 use gpu_vulkan::offscreen::OffscreenTarget;
 use gpu_vulkan::test_pattern::SurfaceTransform;
 use isp_vulkan::viewfinder::{
-    IspStageSet, ViewfinderFrame, ViewfinderGeometry, ViewfinderIsp, ViewfinderStorageFormat,
+    IspStageSet, OutputAllocation, ViewfinderFrame, ViewfinderGeometry, ViewfinderIsp, ViewfinderStorageFormat,
 };
 use viewfinder_support::{
     GpuSource, ParamsSpec, RawFrame, SourceLayout, assert_no_validation_errors, gpu_context_or_skip, reference_upright,
@@ -51,6 +51,7 @@ fn raw_frame_reaches_the_screen_with_expected_colors_and_orientation() {
             valid_area: raw.full_rect(),
             crop: raw.full_rect(),
             sensor_orientation: SensorOrientation::Degrees90,
+            allocation: OutputAllocation::Exact,
         };
         // Прямая картинка 12×16: поворот на 90° по часовой кладёт левую половину сенсора НАВЕРХ.
         let reference = reference_upright(&raw, raw.full_rect(), SensorOrientation::Degrees90, &params);

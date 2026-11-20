@@ -35,8 +35,11 @@
 
 mod availability_memory;
 mod backend_events;
+mod camera_frame_rate;
 mod commands;
 mod frame_rate_fallback;
+mod lens_intent;
+mod lens_switch;
 mod reconcile;
 mod recovery;
 mod three_a;
@@ -55,13 +58,17 @@ use crate::cadence::CadenceTracker;
 use crate::command::{CameraCommand, CommandId};
 use crate::config::CameraEngineConfig;
 use crate::event::CameraEvent;
+use crate::lens_wiring::LensWiring;
 use crate::request_controls::RequestControls;
 use crate::role_classifier::{RoleDiagnostic, classify_catalog};
 use crate::state::{CameraError, CameraState, ClosedReason, FatalCause};
 use crate::status::{AppPresence, CameraCounters, CameraStatus};
 use crate::three_a_wiring::ThreeAWiring;
+use crate::zoom::{ZoomDiagnostic, build_zoom_catalog_reporting};
 use availability_memory::AvailabilityMemory;
+use camera_frame_rate::CameraFrameRateLimits;
 pub(crate) use commands::Desired;
+use lens_intent::LensEngineState;
 use recovery::RecoveryTracker;
 use three_a::ThreeAEngine;
 
@@ -182,6 +189,7 @@ pub struct CameraEngine {
     catalog: Arc<CameraCatalog>,
     catalog_loaded: bool,
     role_diagnostics: Vec<RoleDiagnostic>,
+    zoom_diagnostics: Vec<ZoomDiagnostic>,
     state: CameraState,
     device: Option<OpenDevice>,
     session: Option<LiveSession>,
@@ -192,9 +200,13 @@ pub struct CameraEngine {
     /// Последняя известная доступность камер (см. `availability_memory`).
     availability: AvailabilityMemory,
     cadence: CadenceTracker,
+    /// Потолки частоты по камерам: желаемый режим не меняется, меняется эффективный.
+    frame_rate_limits: CameraFrameRateLimits,
     counters: CameraCounters,
     /// Автоматика 3A: исполнители, таймеры, серия (желаемое намерение — в `desired.three_a`).
     three_a: ThreeAEngine,
+    /// Шкала зума, чтение намерений экрана и учёт смены объектива (13).
+    lens: LensEngineState,
     last_unavailable: Option<CameraUnavailableReason>,
     events: Vec<CameraEvent>,
     /// После паники внутри итерации бэкенд и внутренности в неизвестном состоянии:
@@ -233,17 +245,26 @@ impl CameraEngine {
             catalog: Arc::new(CameraCatalog::empty()),
             catalog_loaded: false,
             role_diagnostics: Vec::new(),
+            zoom_diagnostics: Vec::new(),
             state,
             device: None,
             session: None,
             reconfiguring: false,
             recovery: RecoveryTracker::default(),
             availability: AvailabilityMemory::default(),
+            frame_rate_limits: CameraFrameRateLimits::default(),
             counters: CameraCounters::default(),
+            lens: LensEngineState::new(),
             last_unavailable: None,
             events: Vec::new(),
             poisoned: false,
         }
+    }
+
+    /// Движок с подключённым ящиком намерений объектива (корень композиции, `CameraRuntime`, тесты).
+    pub fn with_lens_wiring(mut self, wiring: LensWiring) -> Self {
+        self.lens.attach_intents(wiring.intents);
+        self
     }
 
     /// Движок, у которого бэкенд не создался на потоке камеры: сразу `Fatal::BackendUnavailable`,
@@ -256,7 +277,7 @@ impl CameraEngine {
     }
 
     /// Читает каталог камер и назначает роли. Сбой — `Fatal::CatalogUnavailable`.
-    pub fn load_catalog(&mut self, _now: Instant) {
+    pub fn load_catalog(&mut self, now: Instant) {
         let failure = match self.backend.load_catalog() {
             Err(failure) => failure,
             Ok(cameras) => match classify_catalog(cameras, &self.config.roles) {
@@ -265,8 +286,16 @@ impl CameraEngine {
                         tracing::warn!(target: LOG_TARGET, ?diagnostic, "роль камеры назначена не полностью");
                     }
                     self.role_diagnostics = classified.diagnostics;
+                    let zoom = build_zoom_catalog_reporting(&classified.catalog, &self.config.zoom);
+                    for diagnostic in &zoom.diagnostics {
+                        tracing::warn!(target: LOG_TARGET, ?diagnostic, "шкала зума построена не полностью");
+                    }
+                    self.zoom_diagnostics = zoom.diagnostics;
+                    self.lens.set_zoom_catalog(Arc::new(zoom.catalog));
                     self.catalog = Arc::new(classified.catalog);
                     self.catalog_loaded = true;
+                    // Экран мог опубликовать намерение раньше, чем прочитался каталог.
+                    self.refresh_lens_intent(now);
                     return;
                 }
                 Err(error) => BackendFailure {
@@ -285,7 +314,7 @@ impl CameraEngine {
     pub fn handle_command(&mut self, id: CommandId, command: CameraCommand, now: Instant) {
         self.counters.commands_handled += 1;
         let name = command.name();
-        let outcome = self.decide_command(id, &command);
+        let outcome = self.decide_command(id, &command, now);
         self.events.push(CameraEvent::CommandHandled {
             command: id,
             name,
@@ -339,12 +368,18 @@ impl CameraEngine {
             last_unavailable: self.last_unavailable,
             counters: self.counters,
             three_a: self.three_a.status(&self.desired.three_a),
+            lens: self.lens_status(),
         }
     }
 
     /// Забрать накопленные события (в порядке появления).
     pub fn drain_events(&mut self) -> Vec<CameraEvent> {
         std::mem::take(&mut self.events)
+    }
+
+    /// Диагностика построения шкалы зума последнего прочитанного каталога (исключённые камеры).
+    pub fn zoom_diagnostics(&self) -> &[ZoomDiagnostic] {
+        &self.zoom_diagnostics
     }
 
     /// Диагностика назначения ролей последнего прочитанного каталога.
@@ -436,6 +471,7 @@ impl CameraEngine {
     /// Окончательная ошибка: устройство отпущено, ожиданий нет.
     fn enter_fatal(&mut self, cause: FatalCause) {
         self.release_platform();
+        self.reset_lens_switch();
         self.reconfiguring = false;
         self.recovery.stop_waiting();
         self.transition(CameraState::Error {

@@ -4,7 +4,11 @@
 //! и шлёт действие `CameraFactsChanged`. Так экран тестируется без камеры, а движок можно менять,
 //! не трогая экран.
 
+use std::sync::Arc;
+
+use camera_contract::ids::{CameraId, LensFacing, LensRole};
 use camera_contract::three_a::{AeAfLock, PointOfInterest};
+use camera_contract::zoom::ZoomCatalog;
 
 use crate::exposure::ExposureRangeFact;
 use crate::viewfinder_map::StreamGeometry;
@@ -50,8 +54,62 @@ pub enum FocusPhase {
     NoResult,
 }
 
+/// Какая камера отдаёт кадры прямо сейчас (приложение берёт из статуса движка).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveLens {
+    /// Камера активного потока; по ней кадрирование находит свою точку в каталоге зума.
+    pub camera: CameraId,
+    pub role: LensRole,
+    pub facing: LensFacing,
+}
+
+/// Идёт ли переключение объектива (сессия 13). Размытие экран рисует по `BackdropContinuity` рендера; это
+/// факт для логики («нельзя ли сейчас…»), а не источник картинки.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum LensSwitch {
+    /// Объектив не меняется.
+    #[default]
+    Steady,
+    /// Движок переходит с `from` на `to`.
+    Switching { from: CameraId, to: CameraId },
+}
+
+/// Последняя неудачная смена объектива. `sequence` растёт с каждой новой неудачей: по нему экран отличает
+/// новую неудачу от уже учтённой (повторная доставка того же снимка фактов откат не повторяет).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LensSwitchFailure {
+    /// Номер неудачи, строго возрастающий в пределах процесса.
+    pub sequence: u64,
+    /// Камера, на которую не удалось перейти.
+    pub target: CameraId,
+}
+
+/// Факты об объективах (сессия 13). Заполняет приложение из статуса движка; экран о движке не знает.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LensFacts {
+    /// Шкалы зума по направлениям; `None` — движок каталога ещё не опубликовал.
+    pub catalog: Option<Arc<ZoomCatalog>>,
+    /// Активная камера; `None` — потока нет.
+    pub active: Option<ActiveLens>,
+    pub switch: LensSwitch,
+    /// Последняя неудача смены объектива; `None` — неудач не было.
+    pub last_failure: Option<LensSwitchFailure>,
+}
+
+impl LensFacts {
+    /// Факты до первого сообщения: ни каталога, ни камеры.
+    pub const NONE: LensFacts = LensFacts {
+        catalog: None,
+        active: None,
+        switch: LensSwitch::Steady,
+        last_failure: None,
+    };
+}
+
 /// Снимок фактов камеры. Отправляется целиком при каждом изменении; редьюсер сам находит разницу.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// С сессии 13 не `Copy`: несёт общий каталог зума (`Arc`).
+#[derive(Debug, Clone, PartialEq)]
 pub struct CameraFacts {
     /// Присутствие камеры.
     pub presence: CameraPresence,
@@ -66,6 +124,8 @@ pub struct CameraFacts {
     pub exposure_range: ExposureRangeFact,
     /// Геометрия потока для перевода координат; `None` — потока ещё нет.
     pub stream: Option<StreamGeometry>,
+    /// Объективы: каталог зума, активная камера, смена, неудача смены.
+    pub lens: LensFacts,
 }
 
 impl CameraFacts {
@@ -77,6 +137,7 @@ impl CameraFacts {
         focus: FocusPhase::Continuous,
         exposure_range: ExposureRangeFact::NotReported,
         stream: None,
+        lens: LensFacts::NONE,
     };
 }
 

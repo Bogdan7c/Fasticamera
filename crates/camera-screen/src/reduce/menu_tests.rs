@@ -247,13 +247,10 @@ fn changing_the_aspect_sends_new_framing_and_hides_the_focus_indicator() {
         AspectRatio::SixteenByNine,
     )));
 
-    let expected = screen
-        .state
-        .layout()
-        .expect("раскладка")
-        .framing_intent(AspectRatio::SixteenByNine);
-    assert_eq!(changed.effects, [Effect::Viewfinder(expected)]);
-    assert_eq!(expected.crop.aspect, CropAspect::SIXTEEN_BY_NINE);
+    let expected = screen.state.layout().expect("раскладка");
+    let expected = crate::test_support::plain_framing(expected, AspectRatio::SixteenByNine);
+    assert_eq!(changed.effects, [Effect::Viewfinder(expected.clone())]);
+    assert_eq!(expected.zoom.aspect, CropAspect::SIXTEEN_BY_NINE);
     // Место — кадр 16:9 из раскладки (≈ 102–885 pt), а не кадр 4:3.
     assert!((f64::from(expected.destination.top) * 982.67 - 102.4).abs() < 0.2);
     assert_eq!(screen.state.settings().aspect, AspectRatio::SixteenByNine);

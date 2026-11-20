@@ -18,6 +18,7 @@ fn crop(aspect: CropAspect, zoom: f32) -> ViewfinderCrop {
     ViewfinderCrop {
         aspect,
         zoom: ZoomFactor::new(zoom).unwrap(),
+        center: CropCenter::ValidAreaCenter,
     }
 }
 
@@ -123,6 +124,7 @@ fn invalid_inputs_are_explicit_errors() {
     let bad_aspect = ViewfinderCrop {
         aspect: CropAspect::LongToShort { long: 3, short: 4 },
         zoom: ZoomFactor::NONE,
+        center: CropCenter::ValidAreaCenter,
     };
     assert_eq!(
         bad_aspect.resolve(SENSOR_4_3),
@@ -131,6 +133,7 @@ fn invalid_inputs_are_explicit_errors() {
     let zero_short = ViewfinderCrop {
         aspect: CropAspect::LongToShort { long: 4, short: 0 },
         zoom: ZoomFactor::NONE,
+        center: CropCenter::ValidAreaCenter,
     };
     assert!(matches!(
         zero_short.resolve(SENSOR_4_3),
@@ -147,4 +150,47 @@ fn invalid_inputs_are_explicit_errors() {
         crop(CropAspect::SensorNative, 3.0).resolve(rect(0, 0, 4, 4)),
         Err(ViewfinderCropError::CropTooSmall { .. })
     ));
+}
+
+#[test]
+fn center_on_optical_axis_shifts_crop_toward_axis() {
+    // Ширик: ось 1759,3 / 1494,8 из 4000×3000; зум 1,69 (≈ 1× основной) — кадрирование 2366×1774.
+    let area = rect(0, 0, 4000, 3000);
+    let crop = ViewfinderCrop {
+        aspect: CropAspect::FOUR_BY_THREE,
+        zoom: ZoomFactor::new(1.69).unwrap(),
+        center: CropCenter::BufferPixel { x: 1759.3, y: 1494.8 },
+    };
+    let result = crop.resolve(area).unwrap();
+    assert_inside_and_even(result, area);
+    let center_x = f64::from(result.left) + f64::from(result.size.width) / 2.0;
+    let center_y = f64::from(result.top) + f64::from(result.size.height) / 2.0;
+    // Чётное выравнивание сдвигает центр не больше чем на 1 пиксель.
+    assert!((center_x - 1759.3).abs() <= 1.5, "центр x {center_x}");
+    assert!((center_y - 1494.8).abs() <= 1.5, "центр y {center_y}");
+}
+
+#[test]
+fn center_near_edge_keeps_crop_inside_area() {
+    // Ось у самого края: прямоугольник сдвигается внутрь, а не обрезается и не уменьшается.
+    let area = rect(0, 0, 4000, 3000);
+    let crop = ViewfinderCrop {
+        aspect: CropAspect::FOUR_BY_THREE,
+        zoom: ZoomFactor::new(2.0).unwrap(),
+        center: CropCenter::BufferPixel { x: 10.0, y: 2990.0 },
+    };
+    let result = crop.resolve(area).unwrap();
+    assert_eq!(result, rect(0, 1500, 2000, 1500));
+}
+
+#[test]
+fn non_finite_center_falls_back_to_area_center() {
+    let centered = crop(CropAspect::FOUR_BY_THREE, 2.0).resolve(SENSOR_4_3).unwrap();
+    let broken = ViewfinderCrop {
+        center: CropCenter::BufferPixel { x: f32::NAN, y: 0.0 },
+        ..crop(CropAspect::FOUR_BY_THREE, 2.0)
+    };
+    let result = broken.resolve(SENSOR_4_3).unwrap();
+    assert_eq!(result.left, centered.left, "NaN по x — центр области");
+    assert_eq!(result.top, 0, "y = 0 — край, сдвиг внутрь");
 }

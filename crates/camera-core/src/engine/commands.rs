@@ -16,6 +16,7 @@ use camera_contract::stream::StreamMode;
 use camera_contract::three_a::AeAfLock;
 
 use super::CameraEngine;
+use super::lens_switch::RetargetCause;
 use crate::backend::UnsupportedStream;
 use crate::command::{CameraCommand, CommandId, CommandOutcome, InvalidStateReason, UnsupportedCommand};
 use crate::state::{CameraError, CameraState, ClosedReason, FatalCause};
@@ -55,7 +56,7 @@ impl CameraEngine {
     }
 
     /// Решить команду: поменять желаемое (если можно) и вернуть итог.
-    pub(super) fn decide_command(&mut self, id: CommandId, command: &CameraCommand) -> CommandOutcome {
+    pub(super) fn decide_command(&mut self, id: CommandId, command: &CameraCommand, now: Instant) -> CommandOutcome {
         if self.poisoned {
             return CommandOutcome::InvalidState(InvalidStateReason::EngineFailed);
         }
@@ -63,11 +64,11 @@ impl CameraEngine {
             return CommandOutcome::InvalidState(InvalidStateReason::EngineFailed);
         }
         match command {
-            CameraCommand::Open { target } => self.decide_open(target),
+            CameraCommand::Open { target } => self.decide_open(target, now),
             CameraCommand::Configure { mode } => self.decide_configure(*mode),
             CameraCommand::StartStreaming { intent } => self.decide_start_streaming(*intent),
             CameraCommand::StopStreaming => self.decide_stop_streaming(),
-            CameraCommand::SwitchTo { role } => self.decide_switch_to(*role),
+            CameraCommand::SwitchTo { role } => self.decide_switch_to(*role, RetargetCause::Command, now),
             CameraCommand::ApplyControls { controls } => self.decide_apply_controls(*controls),
             CameraCommand::FocusAndExposeAt { point } => self.decide_point_of_interest(id, *point, AeAfLock::Unlocked),
             CameraCommand::LockFocusAndExposureAt { point } => {
@@ -92,7 +93,7 @@ impl CameraEngine {
         }
     }
 
-    fn decide_open(&mut self, target: &CameraTarget) -> CommandOutcome {
+    fn decide_open(&mut self, target: &CameraTarget, now: Instant) -> CommandOutcome {
         let catalog = Arc::clone(&self.catalog);
         let descriptor = match catalog.resolve(target) {
             Ok(descriptor) => descriptor,
@@ -106,6 +107,7 @@ impl CameraEngine {
         }
         self.desired.target = Some(target.clone());
         self.reset_point_for_camera_change();
+        self.note_lens_target_changed(&descriptor.id, RetargetCause::Command, now);
         CommandOutcome::Accepted
     }
 
@@ -125,6 +127,8 @@ impl CameraEngine {
             return CommandOutcome::AlreadyInState;
         }
         self.desired.mode = Some(mode);
+        // Новый запрос режима проверяется на каждой камере заново.
+        self.frame_rate_limits.forget_all();
         CommandOutcome::Accepted
     }
 
@@ -143,10 +147,14 @@ impl CameraEngine {
         if self.desired.streaming.take().is_none() {
             return CommandOutcome::AlreadyInState;
         }
+        // Кадров не будет: показанного объектива нет, смена (если шла) не завершится.
+        self.reset_lens_switch();
         CommandOutcome::Accepted
     }
 
-    fn decide_switch_to(&mut self, role: LensRole) -> CommandOutcome {
+    /// Смена цели на камеру роли `role`: общий путь команды `SwitchTo` и намерения экрана
+    /// (`cause` решает, снимается ли блокировка роли).
+    pub(super) fn decide_switch_to(&mut self, role: LensRole, cause: RetargetCause, now: Instant) -> CommandOutcome {
         if self.desired.target.is_none() {
             return CommandOutcome::InvalidState(InvalidStateReason::NoCameraRequested);
         }
@@ -166,6 +174,7 @@ impl CameraEngine {
         }
         self.desired.target = Some(target);
         self.reset_point_for_camera_change();
+        self.note_lens_target_changed(&descriptor.id, cause, now);
         CommandOutcome::Accepted
     }
 
@@ -176,6 +185,8 @@ impl CameraEngine {
             return CommandOutcome::AlreadyInState;
         }
         self.desired = Desired::default();
+        self.frame_rate_limits.forget_all();
+        self.reset_lens_switch();
         CommandOutcome::Accepted
     }
 

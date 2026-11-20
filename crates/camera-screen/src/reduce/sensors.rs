@@ -5,7 +5,7 @@ use shell_contract::gravity::GravityVector;
 use shell_contract::orientation::DeviceOrientation;
 use shell_contract::surface::SurfaceSize;
 
-use super::{Ctx, shutter};
+use super::{Ctx, shutter, zoom};
 use crate::effect::Effect;
 use crate::layout::ScreenLayout;
 use crate::level::level_reading;
@@ -30,6 +30,7 @@ pub(super) fn on_tick(ctx: &mut Ctx<'_>, now: MonotonicNanos) -> ActionOutcome {
     ctx.state.focus.fade_if_due(now, ctx.config.focus.indicator_visible_ms);
     // Итог проверки (`LockWaitCheck`) не нужен: снятое ожидание видно по изменению состояния.
     ctx.state.focus.expire_lock_wait(now);
+    zoom::on_tick(ctx, now);
     ActionOutcome::Applied
 }
 
@@ -48,7 +49,8 @@ pub(super) fn on_surface_resized(ctx: &mut Ctx<'_>, size: SurfaceSize) -> Action
     };
     ctx.state.surface = Some(size);
     ctx.state.layout = Some(layout);
-    let intent = layout.framing_intent(ctx.state.settings.aspect);
-    ctx.emit(Effect::Viewfinder(intent));
+    if let Some(intent) = ctx.state.framing_intent() {
+        ctx.emit(Effect::Viewfinder(intent));
+    }
     ActionOutcome::Applied
 }

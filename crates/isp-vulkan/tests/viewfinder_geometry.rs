@@ -18,7 +18,7 @@ mod viewfinder_support;
 use camera_contract::geometry::{PixelRect, PixelSize, SensorOrientation};
 use camera_contract::viewfinder_crop::{CropAspect, ViewfinderCrop, ZoomFactor};
 use isp_model::test_patterns::color_bars;
-use isp_vulkan::viewfinder::{ViewfinderGeometry, ViewfinderStorageFormat};
+use isp_vulkan::viewfinder::{OutputAllocation, ViewfinderGeometry, ViewfinderStorageFormat};
 use viewfinder_support::{
     ParamsSpec, RawFrame, RunRequest, SourceLayout, assert_no_validation_errors, gpu_context_or_skip, parity,
     reference_upright, run_viewfinder, test_config,
@@ -60,6 +60,7 @@ fn sensor_corner_marker_lands_in_the_expected_upright_corner_for_every_orientati
                 valid_area: raw.full_rect(),
                 crop: raw.full_rect(),
                 sensor_orientation: orientation,
+                allocation: OutputAllocation::Exact,
             },
             ..RunRequest::whole_frame(&raw, &params, spec.display())
         };
@@ -104,6 +105,7 @@ fn crop_with_aspect_and_zoom_selects_the_expected_region() {
         let crop = ViewfinderCrop {
             aspect,
             zoom: ZoomFactor::new(zoom).unwrap(),
+            center: camera_contract::viewfinder_crop::CropCenter::ValidAreaCenter,
         };
         let geometry = ViewfinderGeometry::from_crop(raw.full_rect(), &crop, SensorOrientation::Degrees90).unwrap();
         let expected = PixelRect {
@@ -150,6 +152,7 @@ fn rows_below_a_16_by_9_valid_area_are_never_read() {
                 valid_area,
                 crop: valid_area,
                 sensor_orientation: SensorOrientation::Degrees90,
+                allocation: OutputAllocation::Exact,
             },
             ..RunRequest::whole_frame(&raw, &params, spec.display())
         };
@@ -164,5 +167,88 @@ fn rows_below_a_16_by_9_valid_area_are_never_read() {
         );
         assert_eq!(totals.used_cells, 32 * 18, "{layout:?}: ровно ячейки полезной области");
     }
+    assert_no_validation_errors(&context);
+}
+
+/// Непрерывный зум не аллоцирует (сессия 13): кадры при зуме 1,0 → 1,3 → 2,0 → 3,7 идут через ОДИН ISP, и
+/// после первого кадра не появляется ни одной новой картинки или памяти; при этом каждый кадр совпадает с
+/// эталоном именно своей области (центр оптической оси сдвинут от центра), а размер содержимого — размер кадрирования/2.
+#[test]
+fn continuous_zoom_reuses_one_output_image_and_each_frame_matches_its_own_crop() {
+    use camera_contract::viewfinder_crop::CropCenter;
+    use gpu_vulkan::backdrop::BackdropFrameNumber;
+    use gpu_vulkan::live_objects::LiveObjectKind;
+    use isp_vulkan::viewfinder::ViewfinderIsp;
+    use viewfinder_support::{GpuSource, readback, record_and_submit};
+
+    let Some(context) = gpu_context_or_skip() else { return };
+    let spec = ParamsSpec::default();
+    let params = spec.build();
+    let (width, height) = (64_u32, 48_u32);
+    let bars = color_bars(PixelSize::new(width, height), 1.0).unwrap();
+    let raw = RawFrame::from_linear(width, height, spec.pattern, spec.levels(), |x, y, channel| {
+        f64::from(bars.pixel(x, y)[channel]) * (0.1 + 0.8 * f64::from(y) / f64::from(height - 1))
+    });
+    let gpu_source = GpuSource::new(&context, &raw, SourceLayout::Raw16);
+    let source = gpu_source.source();
+    let mut isp = ViewfinderIsp::new(&context, &test_config(ViewfinderStorageFormat::HalfFloatOnly)).unwrap();
+    let orientation = SensorOrientation::Degrees90;
+    let mut after_first_frame = None;
+    let mut sizes = Vec::new();
+    for (index, zoom) in [1.0_f32, 1.3, 2.0, 3.7].into_iter().enumerate() {
+        let crop = ViewfinderCrop {
+            aspect: CropAspect::SensorNative,
+            zoom: ZoomFactor::new(zoom).unwrap(),
+            // Оптическая ось левее центра: у большого зума кадрирование сдвигается внутрь области.
+            center: CropCenter::BufferPixel { x: 20.0, y: 20.0 },
+        };
+        let geometry = ViewfinderGeometry::from_crop(raw.full_rect(), &crop, orientation).unwrap();
+        let request = RunRequest {
+            geometry,
+            ..RunRequest::whole_frame(&raw, &params, spec.display())
+        };
+        record_and_submit(
+            &context,
+            &mut isp,
+            &request,
+            &source,
+            0,
+            BackdropFrameNumber(index as u64 + 1),
+        );
+        let run = readback(&mut isp, 0);
+        let reference = reference_upright(&raw, geometry.crop, orientation, &params);
+        let result = parity(&run, &reference);
+        assert!(result.max_abs <= TOLERANCE, "зум {zoom}: {result:?}");
+        // Содержимое — кадрирование/2 с поворотом 90° (стороны меняются местами).
+        assert_eq!(
+            (run.width, run.height),
+            (geometry.crop.size.height / 2, geometry.crop.size.width / 2),
+            "зум {zoom}: размер содержимого"
+        );
+        sizes.push((run.width, run.height));
+        let snapshot = context.live_objects();
+        match &after_first_frame {
+            None => after_first_frame = Some(snapshot),
+            Some(first) => assert_eq!(
+                snapshot.differences_from(first),
+                Vec::new(),
+                "зум {zoom}: после первого кадра не появилось новых объектов GPU"
+            ),
+        }
+        assert_eq!(
+            isp.retired_objects(),
+            0,
+            "зум {zoom}: ничего не пересоздавалось и не ждёт уничтожения"
+        );
+    }
+    assert!(
+        sizes.windows(2).all(|pair| pair[1].0 < pair[0].0),
+        "содержимое действительно уменьшается с зумом: {sizes:?}"
+    );
+    let first = after_first_frame.unwrap();
+    assert_eq!(
+        first.count(LiveObjectKind::Image),
+        context.live_objects().count(LiveObjectKind::Image)
+    );
     assert_no_validation_errors(&context);
 }

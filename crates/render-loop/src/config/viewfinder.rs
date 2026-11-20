@@ -10,6 +10,7 @@ use isp_vulkan::viewfinder::ViewfinderIspConfig;
 use serde::{Deserialize, Serialize};
 
 use super::auto_exposure::{AutoExposureConfig, AutoExposureConfigError};
+use super::continuity::{ContinuityConfig, ContinuityConfigError};
 use super::tone::{ToneConfigError, ViewfinderToneConfig};
 use super::white_balance::{WhiteBalanceConfig, WhiteBalanceConfigError};
 use crate::viewfinder::ViewfinderPainter;
@@ -77,7 +78,11 @@ impl ViewfinderCropConfig {
                 CropAspect::LongToShort { long, short }
             }
         };
-        Ok(ViewfinderCrop { aspect, zoom })
+        Ok(ViewfinderCrop {
+            aspect,
+            zoom,
+            center: camera_contract::viewfinder_crop::CropCenter::ValidAreaCenter,
+        })
     }
 }
 
@@ -121,6 +126,8 @@ pub struct ViewfinderConfig {
     /// Ручки тона видоискателя до 14a: контраст и средние тона экрана (сессия 12b, решение 98). Средний серый
     /// сцены — цель AE — сюда не входит (см. `config::tone`).
     pub tone: ViewfinderToneConfig,
+    /// Удержание последнего кадра при смене объектива (сессия 13): сроки и условие показа нового потока.
+    pub continuity: ContinuityConfig,
 }
 
 impl Default for ViewfinderConfig {
@@ -135,6 +142,7 @@ impl Default for ViewfinderConfig {
             white_balance: WhiteBalanceConfig::default(),
             auto_exposure: AutoExposureConfig::default(),
             tone: ViewfinderToneConfig::default(),
+            continuity: ContinuityConfig::default(),
         }
     }
 }
@@ -150,6 +158,7 @@ impl ViewfinderConfig {
         }
         self.white_balance.validate()?;
         self.auto_exposure.validate()?;
+        self.continuity.validate()?;
         // Тон проверяется на краях подтяжки ЭТОГО конфига AE (поэтому после проверки AE).
         self.tone.validate(self.auto_exposure.controller.max_residual_ev)?;
         let with_any_valid_slots = ViewfinderIspConfig {
@@ -201,6 +210,9 @@ pub enum ViewfinderConfigError {
     /// Ручки тона отвергнуты.
     #[error(transparent)]
     Tone(#[from] ToneConfigError),
+    /// Сроки удержания кадра отвергнуты.
+    #[error(transparent)]
+    Continuity(#[from] ContinuityConfigError),
 }
 
 #[cfg(test)]

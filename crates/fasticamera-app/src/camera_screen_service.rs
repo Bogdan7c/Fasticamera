@@ -51,7 +51,8 @@ use crate::camera_screen_effects::{
 use crate::camera_screen_facts::{AbsentEngineFactsSource, CameraFactsSource, EngineFactsSource};
 use crate::camera_screen_gravity::start_gravity_feed;
 use crate::camera_screen_input::{
-    InputDelivery, ReceiverState, ScreenInputSender, ScreenInputStats, screen_input_channel, volume_key_action,
+    InputDelivery, ReceiverState, ScreenInputInjector, ScreenInputSender, ScreenInputStats, screen_input_channel,
+    volume_key_action,
 };
 use crate::camera_screen_source::{CameraScreenSource, GravityLink, ScreenBoard, ScreenReport, ScreenSourceParts};
 use crate::camera_service::CameraServices;
@@ -252,6 +253,12 @@ impl CameraScreenService {
     }
 
     /// Вход, отброшенный потому, что экрана не было.
+    /// Писатель действий и касаний для сценариев (клон канала входа установленного экрана); `None` — экрана нет.
+    /// Не `&mut`: сценарий держит только чтение сервиса, а вход экрана — ограниченная очередь без ожиданий.
+    pub fn input_injector(&self) -> Option<ScreenInputInjector> {
+        self.installed.as_ref().map(|installed| installed.sender.injector())
+    }
+
     pub fn dropped_input(&self) -> DroppedInputCounters {
         self.dropped
     }
@@ -528,6 +535,7 @@ impl CameraScreenService {
             commands: Arc::clone(&env.services.commands),
             render: env.gpu.render_control(),
             capture: Arc::clone(&self.capture) as Arc<dyn CaptureService>,
+            lens: env.camera.lens_intents().clone(),
         });
         let source = CameraScreenSource::new(ScreenSourceParts {
             screen,

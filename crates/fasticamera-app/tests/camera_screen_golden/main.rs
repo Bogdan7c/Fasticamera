@@ -18,6 +18,8 @@ mod driver;
 mod golden_files;
 mod render_rig;
 mod states;
+mod zoom_goldens;
+mod zoom_states;
 
 use camera_screen::settings::AspectRatio;
 use camera_screen::tools::ToolId;

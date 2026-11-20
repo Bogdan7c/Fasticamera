@@ -14,6 +14,7 @@ use crate::level::{LevelConfig, LevelConfigError};
 use crate::shutter::{CaptureConfig, CaptureConfigError, TimerConfig, TimerConfigError};
 use crate::tools::{ToolId, ToolSet, ToolSetError};
 use crate::widgets_config::{WidgetConfigError, WidgetLayoutConfig};
+use crate::zoom_config::{ZoomConfig, ZoomConfigError};
 
 /// Наборы инструментов режима Photo как данные (М3).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +67,8 @@ pub struct ScreenConfig {
     pub tools: ToolsConfig,
     /// Раскладка и вид виджетов (аддитивно, пакет P5b).
     pub widgets: WidgetLayoutConfig,
+    /// Зум, лента кнопок, колесо, переходы между камерами (сессия 13).
+    pub zoom: ZoomConfig,
 }
 
 /// Ошибка конфига экрана.
@@ -87,6 +90,8 @@ pub enum ScreenConfigError {
     Tools(#[from] ToolSetError),
     #[error("виджеты: {0}")]
     Widgets(#[from] WidgetConfigError),
+    #[error("зум: {0}")]
+    Zoom(#[from] ZoomConfigError),
 }
 
 impl ScreenConfig {
@@ -100,6 +105,7 @@ impl ScreenConfig {
         self.level.validate()?;
         self.tools.tool_set()?;
         self.widgets.validate()?;
+        self.zoom.validate()?;
         Ok(())
     }
 }

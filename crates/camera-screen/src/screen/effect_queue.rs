@@ -29,7 +29,26 @@ impl EffectQueue {
         }
     }
 
+    /// Эффекты «последнее побеждает»: новое намерение объектива и новое кадрирование заменяют ещё не забранные
+    /// прежние (у колеса и щипка они идут на каждом кадре; очередь не должна ни копить их, ни, переполнившись,
+    /// потерять именно последнее, итоговое значение).
+    fn supersedes(newer: &Effect, pending: &Effect) -> bool {
+        matches!(
+            (newer, pending),
+            (Effect::Lens(_), Effect::Lens(_)) | (Effect::Viewfinder(_), Effect::Viewfinder(_))
+        )
+    }
+
     pub(crate) fn push(&mut self, effect: Effect) -> PushOutcome {
+        if let Some(pending) = self
+            .effects
+            .iter_mut()
+            .find(|pending| Self::supersedes(&effect, pending))
+        {
+            *pending = effect;
+            self.queued += 1;
+            return PushOutcome::Queued;
+        }
         if self.effects.len() >= self.capacity {
             self.overflowed += 1;
             return PushOutcome::Overflowed;

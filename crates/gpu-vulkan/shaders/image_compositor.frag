@@ -17,6 +17,8 @@ layout(push_constant) uniform CompositeParameters {
     uint reserved;        // выравнивание vec4 ниже до 16 байт
     vec4 destination;     // x, y, ширина, высота прямоугольника в логических пикселях
     vec4 background;      // цвет вне прямоугольника
+    vec4 window;          // окно источника (SourceWindow::mapping): origin.xy, step.xy — текселей
+    vec4 content;         // x, y: размер содержимого источника, текселей (картинка может быть больше)
 } parameters;
 
 layout(location = 0) out vec4 out_color;
@@ -41,5 +43,9 @@ void main() {
         out_color = parameters.background;
         return;
     }
-    out_color = textureLod(source_image, relative, 0.0);
+    // Окно источника: содержимое в левом верхнем углу картинки, зеркало и увеличение (SourceWindow). Выборка
+    // зажимается на полтекселя внутрь содержимого, чтобы билинейный фильтр не подмешал чужие текселя.
+    vec2 texel = parameters.window.xy + relative * parameters.window.zw;
+    texel = clamp(texel, vec2(0.5), max(parameters.content.xy - 0.5, vec2(0.5)));
+    out_color = textureLod(source_image, texel / vec2(textureSize(source_image, 0)), 0.0);
 }

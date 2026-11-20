@@ -21,7 +21,8 @@ use crate::command::{CameraCommand, CommandId};
 use crate::config::{CameraEngineConfig, CameraEngineConfigError};
 use crate::engine::CameraEngine;
 use crate::handle::{CameraHandle, EngineOutput};
-use crate::inbox::{CameraInbox, InboxItem};
+use crate::inbox::{CameraInbox, InboxItem, LensIntentWaker};
+use crate::lens_wiring::LensWiring;
 use crate::status::AppPresence;
 use crate::three_a_wiring::ThreeAWiring;
 
@@ -79,16 +80,46 @@ impl CameraRuntime {
         factory: BackendFactory,
         wiring: ThreeAWiring,
     ) -> Result<(CameraRuntime, CameraHandle), RuntimeSpawnError> {
+        Self::spawn_inner(config, presence, factory, wiring, None)
+    }
+
+    /// То же, что [`CameraRuntime::spawn_with_wiring`], плюс ящик намерений объектива от экрана
+    /// камеры (сессия 13). Толчок «в ящике новое» runtime привязывает сам: публикация намерения
+    /// будит поток камеры, и тот сменяет объектив. Корню композиции достаточно передать ящик.
+    pub fn spawn_with_lens_wiring(
+        config: CameraEngineConfig,
+        presence: AppPresence,
+        factory: BackendFactory,
+        wiring: ThreeAWiring,
+        lens: LensWiring,
+    ) -> Result<(CameraRuntime, CameraHandle), RuntimeSpawnError> {
+        Self::spawn_inner(config, presence, factory, wiring, Some(lens))
+    }
+
+    fn spawn_inner(
+        config: CameraEngineConfig,
+        presence: AppPresence,
+        factory: BackendFactory,
+        wiring: ThreeAWiring,
+        lens: Option<LensWiring>,
+    ) -> Result<(CameraRuntime, CameraHandle), RuntimeSpawnError> {
         config.validate()?;
         let drop_shutdown_timeout = Duration::from_millis(config.runtime.drop_shutdown_timeout_ms);
         let inbox = Arc::new(CameraInbox::new(config.queues));
         let output = Arc::new(EngineOutput::new(presence, config.queues.outward_event_capacity));
         let (finished_signal, finished) = mpsc::channel();
+        if let Some(lens) = &lens {
+            // Если экран уже публиковал намерения, `bind` досылает один толчок.
+            lens.intents
+                .refresh_signal()
+                .bind(Arc::new(LensIntentWaker::new(Arc::clone(&inbox))));
+        }
         let worker = Worker {
             config,
             presence,
             factory,
             wiring,
+            lens,
             inbox: Arc::clone(&inbox),
             output: Arc::clone(&output),
             finished_signal,
@@ -162,6 +193,7 @@ struct Worker {
     presence: AppPresence,
     factory: BackendFactory,
     wiring: ThreeAWiring,
+    lens: Option<LensWiring>,
     inbox: Arc<CameraInbox>,
     output: Arc<EngineOutput>,
     finished_signal: Sender<()>,
@@ -174,6 +206,7 @@ impl Worker {
             presence,
             factory,
             wiring,
+            lens,
             inbox,
             output,
             finished_signal,
@@ -181,7 +214,7 @@ impl Worker {
         // Порядок удаления: сначала ящик помечается остановленным, потом сигнал «вышел».
         let _finished = finished_signal;
         let _stopped = StoppedOnDrop(Arc::clone(&inbox));
-        let engine = build_engine(config, presence, factory, wiring, &inbox);
+        let engine = build_engine(config, presence, factory, wiring, lens, &inbox);
         let mut state = LoopState {
             engine,
             inbox: &inbox,
@@ -199,12 +232,19 @@ fn build_engine(
     presence: AppPresence,
     factory: BackendFactory,
     wiring: ThreeAWiring,
+    lens: Option<LensWiring>,
     inbox: &Arc<CameraInbox>,
 ) -> CameraEngine {
     let listener: Arc<dyn BackendEventListener> = Arc::clone(inbox) as Arc<dyn BackendEventListener>;
     let sink = BackendEventSink::new(listener);
     match catch_unwind(AssertUnwindSafe(|| factory(sink))) {
-        Ok(Ok(backend)) => CameraEngine::with_wiring(config, presence, backend, wiring),
+        Ok(Ok(backend)) => {
+            let engine = CameraEngine::with_wiring(config, presence, backend, wiring);
+            match lens {
+                Some(lens) => engine.with_lens_wiring(lens),
+                None => engine,
+            }
+        }
         Ok(Err(failure)) => CameraEngine::failed_backend(config, presence, failure),
         Err(payload) => CameraEngine::failed_backend(
             config,
@@ -263,6 +303,9 @@ impl LoopState<'_> {
                 }
                 InboxItem::ThreeARefresh => {
                     self.guarded(|engine, now| engine.refresh_three_a(now));
+                }
+                InboxItem::LensIntentRefresh => {
+                    self.guarded(|engine, now| engine.refresh_lens_intent(now));
                 }
                 InboxItem::BackendEvent(event) => {
                     self.guarded(|engine, now| engine.handle_backend_event(event, now));

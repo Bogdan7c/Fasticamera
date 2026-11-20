@@ -31,7 +31,12 @@ fn our_geometry() -> ScreenGeometry {
         },
     )
     .expect("раскладка");
-    ScreenGeometry::new(&layout, &WidgetLayoutConfig::default(), &UiKitTokens::default())
+    ScreenGeometry::new(
+        &layout,
+        &WidgetLayoutConfig::default(),
+        &crate::zoom_config::ZoomConfig::default(),
+        &UiKitTokens::default(),
+    )
 }
 
 #[test]
@@ -373,7 +378,12 @@ fn card_content_is_placed_from_the_card_centre_on_any_screen_width() {
         },
     )
     .expect("раскладка");
-    let geometry = ScreenGeometry::new(&layout, &WidgetLayoutConfig::default(), &UiKitTokens::default());
+    let geometry = ScreenGeometry::new(
+        &layout,
+        &WidgetLayoutConfig::default(),
+        &crate::zoom_config::ZoomConfig::default(),
+        &UiKitTokens::default(),
+    );
     let card = geometry.card();
     assert!(
         (card.center().x - width_pt / 2.0).abs() < 1e-9,

@@ -13,21 +13,56 @@ use super::super::pipelines::{
     AcquiredSourceReader, CameraPipelines, FrameTarget, IspFrameRecording, NewIspFrame, ScreenContent,
 };
 use super::slot::effective_stages;
+use super::transition::{TransitionFrame, backdrop_of};
 use super::{CameraSession, Content, LOG_TARGET, Recorded, SubmissionSerial};
 use crate::viewfinder::ViewfinderPainter;
+use crate::vulkan_backend::camera::continuity::Composed;
+use crate::vulkan_backend::camera::pipelines::{ShowFrameAs, mirror_of};
 use crate::vulkan_backend::camera::ui_state::UiOverlayFrame;
+use ui_draw::frame_source::BackdropContinuity;
+
+/// Что записано в кадре: содержимое для счётчиков и то, что реально попало на экран.
+pub(super) struct RecordedFrame {
+    pub recorded: Recorded,
+    pub composed: Composed,
+}
+
+/// Решения `prepare` для записи кадра: что рисовать, кто владеет кадрами и что решила непрерывность.
+pub(super) struct FrameDecision<'a> {
+    /// Содержимое кадра.
+    pub content: &'a Content,
+    /// План владения буферами камеры.
+    pub ownership: OwnershipPlan,
+    /// Решение непрерывности (`None` у отладочной мозаики): по нему начинается удержание и выбирается, что лечь
+    /// на экран.
+    pub transition: Option<&'a TransitionFrame>,
+}
 
 impl CameraSession {
-    /// Записывает содержимое кадра в командный буфер `frame`.
+    /// Записывает содержимое кадра в командный буфер `frame` по решениям `decision`.
     pub(super) fn record_content(
         &mut self,
         pipelines: &mut CameraPipelines,
         frame: &DisplayFrame,
-        content: &Content,
-        plan: OwnershipPlan,
+        decision: &FrameDecision<'_>,
         serial: SubmissionSerial,
         ui: &mut UiOverlayFrame<'_>,
-    ) -> Result<Recorded, GpuError> {
+    ) -> Result<RecordedFrame, GpuError> {
+        let FrameDecision {
+            content,
+            ownership: plan,
+            transition,
+        } = *decision;
+        // Удержание начинается ДО записи кадра нового потока: ISP перезаписал бы живую картинку, и последний
+        // показанный кадр пропал бы. Отцепление — смена владельца картинки, команд не пишет.
+        if let Some(held) = transition.and_then(|transition| transition.plan.begins_hold)
+            && let Err(error) = pipelines.hold_live_image(held)
+        {
+            tracing::warn!(target: LOG_TARGET, %error, "удержание без картинки: кадры будут чёрными");
+            self.viewfinder.continuity_mut().counters_mut().holds_without_image += 1;
+        }
+        let show = transition.map_or(ShowFrameAs::Live, TransitionFrame::show);
+        let continuity = backdrop_of(transition, BackdropContinuity::Live);
         // Возврат прежнего кадра мозаики — в сабмите, который его заменяет или убирает с экрана.
         let release_displayed = match plan.release_displayed {
             ReleaseDisplayed::Yes => self.displayed_source,
@@ -56,23 +91,35 @@ impl CameraSession {
                         handoff,
                     },
                 )?;
-                Ok(Recorded::Mosaic)
+                Ok(RecordedFrame {
+                    recorded: Recorded::Mosaic,
+                    composed: Composed::Live,
+                })
             }
             Content::Black => {
-                self.record_black_content(pipelines, frame, &target, release_displayed, serial, ui)?;
-                Ok(Recorded::Black)
+                let continuity = backdrop_of(transition, BackdropContinuity::NoCameraFrame);
+                self.record_black_content(pipelines, frame, release_displayed, serial, ui, continuity)?;
+                Ok(RecordedFrame {
+                    recorded: Recorded::Black,
+                    composed: Composed::Black,
+                })
             }
             Content::Recompose => {
-                let recording = pipelines.record_recompose(&target, release_displayed, placement);
-                self.record_ui_overlay(pipelines, &target, &recording, serial, ui);
-                let shown = self.account_recording(pipelines, &recording);
-                Ok(Recorded::Recompose { shown })
+                let recording = pipelines.record_recompose_as(&target, release_displayed, placement, show);
+                self.record_ui_overlay(pipelines, &target, &recording, serial, ui, continuity);
+                let composed = self.account_recording(pipelines, &recording);
+                Ok(RecordedFrame {
+                    recorded: Recorded::Recompose {
+                        shown: composed == Composed::Live,
+                    },
+                    composed,
+                })
             }
             Content::IspNew {
                 source,
                 geometry,
                 identity,
-                plan,
+                plan: _,
                 statistics,
                 exposure: _,
                 headroom,
@@ -82,10 +129,14 @@ impl CameraSession {
                     // у камеры (барьеров нет), сабмит вернёт его по своему fence — это безопасно.
                     tracing::error!(target: LOG_TARGET, "кадр ISP без параметров: чёрный кадр");
                     self.viewfinder.counters_mut().isp_record_failures += 1;
-                    self.record_black_content(pipelines, frame, &target, release_displayed, serial, ui)?;
-                    return Ok(Recorded::IspNew {
-                        processed: false,
-                        shown: false,
+                    let continuity = backdrop_of(transition, BackdropContinuity::NoCameraFrame);
+                    self.record_black_content(pipelines, frame, release_displayed, serial, ui, continuity)?;
+                    return Ok(RecordedFrame {
+                        recorded: Recorded::IspNew {
+                            processed: false,
+                            shown: false,
+                        },
+                        composed: Composed::Black,
                     });
                 };
                 // Стенд V4 читает тот же кадр между ISP и возвратом камере (итог — после сабмита).
@@ -98,7 +149,10 @@ impl CameraSession {
                         geometry: *geometry,
                         stages: effective_stages(self.settings.stages, statistics.gpu),
                         frame_number: identity.sequence,
-                        presentation: plan.presentation,
+                        show,
+                        mirror: transition
+                            .and_then(|transition| transition.picture)
+                            .map_or(Default::default(), |picture| mirror_of(picture.mirror)),
                     },
                     bench_recorder
                         .as_mut()
@@ -107,9 +161,15 @@ impl CameraSession {
                     placement,
                 );
                 let processed = recording.isp.is_ok();
-                self.record_ui_overlay(pipelines, &target, &recording, serial, ui);
-                let shown = self.account_recording(pipelines, &recording);
-                Ok(Recorded::IspNew { processed, shown })
+                self.record_ui_overlay(pipelines, &target, &recording, serial, ui, continuity);
+                let composed = self.account_recording(pipelines, &recording);
+                Ok(RecordedFrame {
+                    recorded: Recorded::IspNew {
+                        processed,
+                        shown: composed == Composed::Live,
+                    },
+                    composed,
+                })
             }
         }
     }
@@ -123,11 +183,12 @@ impl CameraSession {
         &mut self,
         pipelines: &mut CameraPipelines,
         frame: &DisplayFrame,
-        target: &FrameTarget,
         release_displayed: Option<MosaicSource>,
         serial: SubmissionSerial,
         ui: &mut UiOverlayFrame<'_>,
+        continuity: BackdropContinuity,
     ) -> Result<(), GpuError> {
+        let target = &FrameTarget::of(frame);
         let draws_ui = self.settings.painter == ViewfinderPainter::Isp && ui.state.is_active();
         if !draws_ui {
             return pipelines
@@ -136,7 +197,7 @@ impl CameraSession {
         }
         let recording = pipelines.record_black_frame(target, release_displayed)?;
         self.viewfinder.counters_mut().gpu_timing_failures += recording.timing_failures;
-        self.record_ui_overlay(pipelines, target, &recording, serial, ui);
+        self.record_ui_overlay(pipelines, target, &recording, serial, ui, continuity);
         Ok(())
     }
 
@@ -149,13 +210,14 @@ impl CameraSession {
         recording: &IspFrameRecording,
         serial: SubmissionSerial,
         ui: &mut UiOverlayFrame<'_>,
+        continuity: BackdropContinuity,
     ) {
-        let timing_failures = pipelines.record_ui_overlay(frame, ui, &recording.screen, serial);
+        let timing_failures = pipelines.record_ui_overlay(frame, ui, &recording.screen, serial, continuity);
         self.viewfinder.counters_mut().gpu_timing_failures += timing_failures;
     }
 
-    /// Учитывает отказы записи кадра видоискателя; возвращает, попало ли изображение на экран.
-    fn account_recording(&mut self, pipelines: &CameraPipelines, recording: &IspFrameRecording) -> bool {
+    /// Учитывает отказы записи кадра видоискателя; возвращает, что реально попало на экран.
+    fn account_recording(&mut self, pipelines: &CameraPipelines, recording: &IspFrameRecording) -> Composed {
         let counters = self.viewfinder.counters_mut();
         counters.gpu_timing_failures += recording.timing_failures;
         if let Err(error) = &recording.isp {
@@ -163,13 +225,14 @@ impl CameraSession {
             counters.last_isp_failure = Some(error.to_string());
             tracing::warn!(target: LOG_TARGET, %error, "ISP видоискателя не записан: кадр возвращён камере, на экране чёрный");
         }
-        let shown = match &recording.screen {
-            ScreenContent::Viewfinder { .. } => true,
+        let composed = match &recording.screen {
+            ScreenContent::Viewfinder { .. } => Composed::Live,
+            ScreenContent::Held { .. } => Composed::Held,
             ScreenContent::Black { compose_failure } => {
                 if compose_failure.is_some() {
                     counters.compose_failures += 1;
                 }
-                false
+                Composed::Black
             }
         };
         if recording.isp.is_ok()
@@ -177,6 +240,6 @@ impl CameraSession {
         {
             self.viewfinder.note_isp_image(image);
         }
-        shown
+        composed
     }
 }

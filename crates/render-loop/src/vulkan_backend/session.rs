@@ -13,7 +13,6 @@
 //!   (не всего устройства).
 
 use std::cell::Cell;
-use std::sync::Arc;
 use std::time::Duration;
 
 use gpu_vulkan::context::GpuContext;
@@ -28,9 +27,8 @@ use shell_contract::surface::{NativeSurface, SurfaceSize};
 #[cfg(feature = "test-support")]
 use super::ViewfinderReadback;
 use super::camera::{
-    AutoExposureParts, CameraDrawError, CameraFeed, CameraPipelines, CameraSession, CameraSessionFailure,
-    CameraSessionParts, HeadroomBenchParts, UiOverlayFrame, UiOverlayState, ViewfinderSettings, ViewfinderStats,
-    WhiteBalanceParts,
+    AutoExposureParts, CameraDrawError, CameraFeed, CameraPipelines, CameraSession, UiOverlayFrame, UiOverlayState,
+    ViewfinderSettings, ViewfinderStats, WhiteBalanceParts,
 };
 use super::config::VulkanBackendConfig;
 use super::mapping::{FailureKind, classify_swapchain_error, display_info, gpu_backend_error};
@@ -44,6 +42,10 @@ use crate::camera_diagnostics::CameraStreamDiagnostics;
 use crate::config::LateLatchMode;
 use crate::thread::{MonotonicTimer, SleepUntilOutcome, SystemMonotonicTimer};
 use crate::viewfinder::{AwbStatisticsFeed, ViewfinderDiagnostics};
+
+mod camera_painter;
+
+use camera_painter::create_camera_painter;
 
 const LOG_TARGET: &str = "fasticamera::render::vulkan";
 
@@ -504,23 +506,23 @@ impl AttachedDisplay {
         }
     }
 
-    /// Читает изображение видоискателя (тестовый шов): размер и пиксели `[r, g, b, a]` построчно.
-    /// `Ok(None)` — камеры нет или ISP ещё не записал ни одного кадра.
+    /// Читает содержимое изображения видоискателя (тестовый шов): размер кадра и пиксели `[r, g, b, a]`
+    /// построчно сверху вниз. `Ok(None)` — камеры нет или ISP ещё не записал ни одного кадра.
     #[cfg(feature = "test-support")]
     pub(super) fn read_viewfinder_image(&self) -> Result<Option<ViewfinderReadback>, GpuError> {
-        let Some(Painter::Camera { pipelines, .. }) = self.chain.as_ref().map(|chain| &chain.painter) else {
-            return Ok(None);
-        };
-        let Some(image) = pipelines.isp().image() else {
-            return Ok(None);
-        };
-        let extent = image.extent();
-        let pixels = gpu_vulkan::kit_test_support::read_storage_image_rgba(image.storage_image(), image.current_use())?;
-        Ok(Some(ViewfinderReadback {
-            width: extent.width,
-            height: extent.height,
-            pixels,
-        }))
+        match self.chain.as_ref().map(|chain| &chain.painter) {
+            Some(Painter::Camera { pipelines, .. }) => pipelines.read_live_picture(),
+            _ => Ok(None),
+        }
+    }
+
+    /// Читает содержимое удержанного кадра (тестовый шов). `Ok(None)` — удержания нет.
+    #[cfg(feature = "test-support")]
+    pub(super) fn read_held_image(&self) -> Result<Option<ViewfinderReadback>, GpuError> {
+        match self.chain.as_ref().map(|chain| &chain.painter) {
+            Some(Painter::Camera { pipelines, .. }) => pipelines.read_held_picture(),
+            _ => Ok(None),
+        }
     }
 
     /// Параметры цепочки в нейтральном виде; ошибка запроса логируется, а не глотается.
@@ -602,58 +604,6 @@ impl Drop for AttachedDisplay {
             }
         }
     }
-}
-
-/// Рисовальщик камеры: объекты GPU под формат цели и сессия показа. При отказе статистика
-/// видоискателя возвращается владельцу (`camera.stats`), а цель уничтожит вызывающий.
-fn create_camera_painter(
-    context: &GpuContext,
-    config: &VulkanBackendConfig,
-    info: &gpu_vulkan::swapchain::DisplayTargetInfo,
-    camera: CameraAttach<'_>,
-) -> Result<Painter, AttachError> {
-    let pipelines =
-        CameraPipelines::new(context, info, &config.viewfinder.isp, &config.ui_overlay).map_err(|error| {
-            AttachError::SwapchainFailed(BackendError {
-                operation: "create_camera_pipelines".to_owned(),
-                reason: error.to_string(),
-            })
-        })?;
-    let stats = camera
-        .stats
-        .take()
-        .unwrap_or_else(|| ViewfinderStats::new(camera.gpu_time_window_frames));
-    let session = CameraSession::new(
-        context,
-        CameraSessionParts {
-            frames: Arc::clone(&camera.feed.frames),
-            make_importer: &camera.feed.make_importer,
-            history_capacity: config.camera_present_history_capacity,
-            settings: camera.settings,
-            viewfinder: stats,
-            awb_feed: camera.awb_feed.clone(),
-            white_balance: camera.white_balance.clone(),
-            auto_exposure: camera.auto_exposure.clone(),
-            headroom: HeadroomBenchParts {
-                config: config.viewfinder.headroom_bench,
-                frame_slots: info.frames_in_flight,
-                mode: camera.settings.headroom,
-            },
-            tone: config.viewfinder.tone,
-        },
-    )
-    .map_err(|failure| {
-        let CameraSessionFailure { error, viewfinder } = *failure;
-        *camera.stats = Some(viewfinder);
-        AttachError::SwapchainFailed(BackendError {
-            operation: "create_camera_session".to_owned(),
-            reason: error.to_string(),
-        })
-    })?;
-    Ok(Painter::Camera {
-        pipelines: Box::new(pipelines),
-        session: Box::new(session),
-    })
 }
 
 /// Ошибка «цепочки нет»: показ уже освобождён (недостижимо через `VulkanDisplayBackend`, но не паникуем).
