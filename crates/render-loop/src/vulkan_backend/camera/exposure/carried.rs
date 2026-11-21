@@ -4,15 +4,57 @@
 //! Рендер применяет её к кадру только если выполнены оба условия:
 //! 1. камера кадра совпадает с камерой оценки: оценка чужой камеры бессмысленна (другая чувствительность);
 //! 2. у потока ещё нет собственной цели — это проверяет контроллер: первый принятый замер вытесняет ожидание.
+//!
+//! **Почему рендер помнит объявления по камерам, а не только последнее.** Ящик указаний хранит одно последнее
+//! значение, а рендер показывает кадр камеры с задержкой в 2–3 кадра (буфер видоискателя). При частых обменах
+//! (палец дрожит у отметки объектива, решение 130) движок успевает объявить ожидание для СЛЕДУЮЩЕГО обмена
+//! (камера A) раньше, чем рендер покажет первый кадр только что повышенной камеры B. Последнее значение ящика
+//! тогда «не для этой камеры», и кадр B удерживался (на телефоне — 2 удержанных кадра на ≈ 20 обменов).
+//! Поэтому [`CarriedExpectations`] запоминает последнее объявление КАЖДОЙ камеры, пока движок не отзовёт их.
 
-use camera_contract::auto_exposure::{ExposureDirective, ExposureProduct};
+use camera_contract::auto_exposure::{CarriedSceneExposure, ExposureDirective, ExposureProduct};
 use camera_contract::frame_passport::RawFramePassport;
 
-/// Ожидаемое произведение «выдержка × ISO» для кадра `passport`; `None` — движок ничего не передал или передал
-/// для другой камеры.
-pub(super) fn expected_target(directive: &ExposureDirective, passport: &RawFramePassport) -> Option<ExposureProduct> {
-    directive
-        .stream_start
-        .filter(|carried| carried.is_for(&passport.stream.camera))
-        .map(|carried| carried.target)
+/// Сколько камер помнит рендер. У телефона камер единицы (OnePlus 11: 3 задних + фронт); предел нужен только
+/// для того, чтобы память не росла от ошибочного источника объявлений. Это граница структуры, а не настройка:
+/// при переполнении забывается самое старое объявление — худший исход «удержим кадр, как без объявления».
+const REMEMBERED_CAMERAS: usize = 8;
+
+/// Последние объявления движка «чего ждать от нового потока камеры X», по одному на камеру.
+#[derive(Debug, Default)]
+pub(super) struct CarriedExpectations {
+    /// От старого к новому; камеры не повторяются.
+    by_camera: Vec<CarriedSceneExposure>,
+}
+
+impl CarriedExpectations {
+    /// Учесть новое указание движка (вызывать на каждое обновление указания).
+    ///
+    /// * `stream_start = Some(оценка)` — объявление для её камеры заменяет прежнее объявление этой камеры,
+    ///   объявления других камер остаются (см. модуль).
+    /// * `stream_start = None` — движок отозвал ожидание (обмен не состоялся, перенос не посчитать, памяти нет).
+    ///   Отзыв не говорит, какой камеры он касается, поэтому забываем всё: без объявления рендер просто
+    ///   дождётся своего замера — это безопасно, а неверная оценка открыла бы кадр с чужой яркостью.
+    pub(super) fn observe(&mut self, directive: &ExposureDirective) {
+        let Some(announced) = directive.stream_start else {
+            self.by_camera.clear();
+            return;
+        };
+        // Прежнее объявление той же камеры устарело: заменяем, а не копим.
+        self.by_camera.retain(|known| known.camera != announced.camera);
+        if self.by_camera.len() >= REMEMBERED_CAMERAS {
+            // Самое старое — первое (порядок «от старого к новому»).
+            self.by_camera.remove(0);
+        }
+        self.by_camera.push(announced);
+    }
+
+    /// Ожидаемое произведение «выдержка × ISO» для кадра `passport`; `None` — для камеры кадра движок ничего
+    /// не объявлял (или отозвал).
+    pub(super) fn expected_target(&self, passport: &RawFramePassport) -> Option<ExposureProduct> {
+        self.by_camera
+            .iter()
+            .find(|carried| carried.is_for(&passport.stream.camera))
+            .map(|carried| carried.target)
+    }
 }

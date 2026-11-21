@@ -19,8 +19,12 @@ use ui_draw::frame_source::BackdropContinuity;
 pub enum HoldReason {
     /// Поток закрылся (опрос видоискателя ответил `StreamInactive`).
     StreamInactive,
-    /// Появился кадр другого потока (или без известного цвета), а показывать его пока нельзя.
-    NewStreamNotReady,
+    /// Кадр нового потока (или тот же поток) без известного цвета: AWB ещё скрывает кадр.
+    ColorUnknown,
+    /// Кадр нового потока, цвет известен, но для яркости нет цели (ни замера, ни объявления движка).
+    ExposureWithoutTarget,
+    /// Кадр нового потока, цвет известен, цель яркости есть, но уровень кадра дальше допуска.
+    ExposureLevelOff,
 }
 
 /// Как кончилось удержание.
@@ -98,6 +102,14 @@ pub struct FrameRecord {
 pub struct ContinuityCounters {
     /// Сколько удержаний началось.
     pub holds_started: u64,
+    /// Из них — потому что поток закрылся (`StreamInactive`).
+    pub holds_started_stream_inactive: u64,
+    /// Из них — кадр без известного цвета.
+    pub holds_started_color_unknown: u64,
+    /// Из них — у яркости нового потока не было цели (ни замера, ни объявления движка для этой камеры).
+    pub holds_started_exposure_without_target: u64,
+    /// Из них — цель яркости была, но уровень кадра дальше допуска.
+    pub holds_started_exposure_level_off: u64,
     /// Сколько кадров показано удержанными (переходными).
     pub held_frames_presented: u64,
     /// Сколько кадров показано живыми.
@@ -169,9 +181,16 @@ impl ContinuityStats {
         self.recent.push_back(record);
     }
 
-    /// Учитывает начало удержания.
-    pub fn note_hold_started(&mut self) {
+    /// Учитывает начало удержания и его причину.
+    pub fn note_hold_started(&mut self, reason: HoldReason) {
         self.counters.holds_started += 1;
+        let by_reason = match reason {
+            HoldReason::StreamInactive => &mut self.counters.holds_started_stream_inactive,
+            HoldReason::ColorUnknown => &mut self.counters.holds_started_color_unknown,
+            HoldReason::ExposureWithoutTarget => &mut self.counters.holds_started_exposure_without_target,
+            HoldReason::ExposureLevelOff => &mut self.counters.holds_started_exposure_level_off,
+        };
+        *by_reason += 1;
     }
 
     /// Учитывает конец удержания.
@@ -245,7 +264,7 @@ mod tests {
     #[test]
     fn hold_endings_are_counted_per_kind_and_remember_the_last_duration() {
         let mut stats = ContinuityStats::default();
-        stats.note_hold_started();
+        stats.note_hold_started(HoldReason::ExposureLevelOff);
         stats.note_hold_ended(HoldEnd::Condition, 120);
         stats.note_hold_ended(HoldEnd::Timeout, 1500);
         stats.note_hold_ended(HoldEnd::NoPresentableFrame, 1600);
@@ -261,6 +280,31 @@ mod tests {
                 counters.last_hold_duration_ms,
             ),
             (1, 1, 1, 1, 1, Some(3000))
+        );
+    }
+
+    #[test]
+    fn each_hold_start_is_counted_under_its_reason() {
+        let mut stats = ContinuityStats::default();
+        for reason in [
+            HoldReason::StreamInactive,
+            HoldReason::ColorUnknown,
+            HoldReason::ExposureWithoutTarget,
+            HoldReason::ExposureWithoutTarget,
+            HoldReason::ExposureLevelOff,
+        ] {
+            stats.note_hold_started(reason);
+        }
+        let counters = stats.snapshot(false).counters;
+        assert_eq!(
+            (
+                counters.holds_started,
+                counters.holds_started_stream_inactive,
+                counters.holds_started_color_unknown,
+                counters.holds_started_exposure_without_target,
+                counters.holds_started_exposure_level_off,
+            ),
+            (5, 1, 1, 2, 1)
         );
     }
 

@@ -22,6 +22,8 @@ use super::zoom_record::ms_between;
 pub struct ContinuityDelta {
     /// Удержаний началось. Смена объектива без удержания — нулевое значение при `held_frames == 0`.
     pub holds_started: u64,
+    /// Почему они начались (сумма равна `holds_started`): какое условие показа нового кадра не выполнено.
+    pub hold_causes: HoldCauses,
     /// Удержаний закончилось по условию готовности цвета и яркости (норма).
     pub holds_revealed_by_condition: u64,
     /// Кадров показано живыми.
@@ -39,6 +41,38 @@ pub struct ContinuityDelta {
     pub recomposed: u64,
 }
 
+/// Причины начала удержаний за окно (приращения счётчиков рендера `holds_started_*`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct HoldCauses {
+    /// Поток закрылся (`StreamInactive`). При повышении тёплой — нарушение инварианта обмена.
+    pub stream_inactive: u64,
+    /// Цвет кадра нового потока ещё неизвестен (AWB).
+    pub color_unknown: u64,
+    /// У яркости нового потока не было цели: ни своего замера, ни объявления движка для камеры кадра.
+    pub exposure_without_target: u64,
+    /// Цель яркости была, но уровень кадра дальше допуска.
+    pub exposure_level_off: u64,
+}
+
+impl HoldCauses {
+    fn between(start: &ContinuityCounters, end: &ContinuityCounters) -> Self {
+        Self {
+            stream_inactive: end
+                .holds_started_stream_inactive
+                .saturating_sub(start.holds_started_stream_inactive),
+            color_unknown: end
+                .holds_started_color_unknown
+                .saturating_sub(start.holds_started_color_unknown),
+            exposure_without_target: end
+                .holds_started_exposure_without_target
+                .saturating_sub(start.holds_started_exposure_without_target),
+            exposure_level_off: end
+                .holds_started_exposure_level_off
+                .saturating_sub(start.holds_started_exposure_level_off),
+        }
+    }
+}
+
 impl ContinuityDelta {
     /// Приращения от снимков `start` до `end` (счётчики не убывают; убыль, если вдруг, даёт 0).
     pub fn between(
@@ -51,6 +85,7 @@ impl ContinuityDelta {
             holds_started: continuity_end
                 .holds_started
                 .saturating_sub(continuity_start.holds_started),
+            hold_causes: HoldCauses::between(continuity_start, continuity_end),
             holds_revealed_by_condition: continuity_end
                 .holds_revealed_by_condition
                 .saturating_sub(continuity_start.holds_revealed_by_condition),

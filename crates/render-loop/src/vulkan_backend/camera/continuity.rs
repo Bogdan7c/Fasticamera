@@ -88,8 +88,10 @@ pub struct ProcessedFrame {
 pub enum ExposureReadiness {
     /// Яркость правдоподобна (или ждать нечего).
     Ready,
-    /// AE ещё не измерил сцену нового потока или уровень далёк от цели.
-    Waiting,
+    /// Цели нет: собственного замера у потока ещё нет и движок не объявил ожидание для камеры кадра.
+    WaitingForTarget,
+    /// Цель есть (замер потока или объявление движка), но показанный уровень кадра дальше допуска от неё.
+    WaitingLevelOff,
 }
 
 /// Что положить на экран.
@@ -332,11 +334,7 @@ impl ContinuityMachine {
         let mut hold_event = None;
         // 1. Начало удержания: живая картинка отцеплена (её держит владелец GPU), живой больше нет.
         if let Some(held) = plan.begins_hold {
-            let reason = if matches!(event, StreamEvent::Inactive) {
-                HoldReason::StreamInactive
-            } else {
-                HoldReason::NewStreamNotReady
-            };
+            let reason = hold_reason(event);
             self.phase = Phase::Holding(Hold {
                 since: now,
                 last_activity: now,
@@ -478,6 +476,21 @@ pub fn held_magnification(held: &PictureMeta, wanted: Option<WantedZoom>) -> f32
     }
     let ratio = wanted.ratio.value() / held.shown_ratio.value();
     if ratio.is_finite() { ratio.max(1.0) } else { 1.0 }
+}
+
+/// Почему начинается удержание: какое из условий показа нового кадра не выполнено (см. `plan_live`).
+fn hold_reason(event: StreamEvent) -> HoldReason {
+    match event {
+        StreamEvent::Processed(frame) if !frame.color_known => HoldReason::ColorUnknown,
+        StreamEvent::Processed(frame) => match frame.exposure {
+            ExposureReadiness::WaitingLevelOff => HoldReason::ExposureLevelOff,
+            // `Ready` с известным цветом удержание не начинает; если сюда всё же попали — честнее «нет цели»,
+            // чем молча назвать причиной уровень.
+            ExposureReadiness::WaitingForTarget | ExposureReadiness::Ready => HoldReason::ExposureWithoutTarget,
+        },
+        // Удержание начинается только на кадре или пропаже потока; остальное — пропажа потока.
+        StreamEvent::Inactive | StreamEvent::Quiet | StreamEvent::Unpresentable => HoldReason::StreamInactive,
+    }
 }
 
 #[cfg(test)]

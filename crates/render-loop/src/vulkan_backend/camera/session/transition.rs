@@ -109,7 +109,7 @@ impl CameraSession {
         let capacity = self.continuity_config.recent_frames;
         let stats = self.viewfinder.continuity_mut();
         match report.event {
-            Some(HoldEvent::Started(_)) => stats.note_hold_started(),
+            Some(HoldEvent::Started(reason)) => stats.note_hold_started(reason),
             Some(HoldEvent::Ended { end, duration_ms }) => stats.note_hold_ended(end, duration_ms),
             None => {}
         }

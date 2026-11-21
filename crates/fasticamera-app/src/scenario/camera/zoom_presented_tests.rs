@@ -111,7 +111,9 @@ fn delta_counts_growth_of_continuity_and_isp_counters_only() {
     let end = ContinuityCounters {
         black_frames_before_first_picture: 7,
         live_frames_presented: 130,
-        holds_started: 2,
+        holds_started: 4,
+        holds_started_exposure_without_target: 1,
+        holds_started_exposure_level_off: 1,
         frames_hidden_by_continuity: 5,
         ..ContinuityCounters::default()
     };
@@ -133,6 +135,12 @@ fn delta_counts_growth_of_continuity_and_isp_counters_only() {
             live_frames_presented: 30,
             frames_hidden_by_continuity: 5,
             frames_hidden_cold_start: 3,
+            holds_started: 2,
+            hold_causes: HoldCauses {
+                exposure_without_target: 1,
+                exposure_level_off: 1,
+                ..HoldCauses::default()
+            },
             ..ContinuityDelta::default()
         }
     );

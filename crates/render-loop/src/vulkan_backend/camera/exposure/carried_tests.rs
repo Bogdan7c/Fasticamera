@@ -68,14 +68,14 @@ fn first_frame_is_ready_by_the_carried_target_without_an_own_measurement() {
 #[test]
 fn without_a_carried_target_the_first_frame_waits_for_the_measurement() {
     let (harness, frame) = new_stream_under(ExposureDirective::DEFAULT);
-    assert_eq!(readiness(&harness, &frame), ExposureReadiness::Waiting);
+    assert_eq!(readiness(&harness, &frame), ExposureReadiness::WaitingForTarget);
     assert_eq!(carried_count(&harness), 0);
 }
 
 #[test]
 fn a_carried_target_for_another_camera_is_never_used() {
     let (harness, frame) = new_stream_under(carrying("0", 1.0));
-    assert_eq!(readiness(&harness, &frame), ExposureReadiness::Waiting);
+    assert_eq!(readiness(&harness, &frame), ExposureReadiness::WaitingForTarget);
     assert_eq!(carried_count(&harness), 0);
 }
 
@@ -83,7 +83,7 @@ fn a_carried_target_for_another_camera_is_never_used() {
 fn an_implausible_frame_level_keeps_waiting_even_with_a_carried_target() {
     // Ожидали 64 с·ISO (6 EV выше кадра): кадр темнее допуска 1 EV, подтяжка ±0,5 EV не спасает.
     let (harness, frame) = new_stream_under(carrying(STREAM_CAMERA, 64.0));
-    assert_eq!(readiness(&harness, &frame), ExposureReadiness::Waiting);
+    assert_eq!(readiness(&harness, &frame), ExposureReadiness::WaitingLevelOff);
     assert_eq!(carried_count(&harness), 0);
 }
 
@@ -101,7 +101,7 @@ fn the_tolerance_applies_to_the_carried_target_as_it_does_to_a_measured_one() {
         harness
             .runner
             .reveal_readiness(&frame, RevealExposureCheck::MeasuredAndPlausible, 0.01),
-        ExposureReadiness::Waiting
+        ExposureReadiness::WaitingLevelOff
     );
 }
 
@@ -142,7 +142,7 @@ fn a_new_stream_forgets_the_carried_target_of_the_previous_one_when_the_camera_d
     let other_stream = Arc::new(other_passport);
     let other_frame = frame_at(&other_stream, 1, Some(UNIT_EXPOSURE));
     harness.runner.plan_frame(&other_frame);
-    assert_eq!(readiness(&harness, &other_frame), ExposureReadiness::Waiting);
+    assert_eq!(readiness(&harness, &other_frame), ExposureReadiness::WaitingForTarget);
 }
 
 #[test]
@@ -185,4 +185,71 @@ fn proposals_name_the_camera_they_were_measured_on() {
     harness.steps(3, Some(UNIT_EXPOSURE), &uniform_scene(DARK_VALUE));
     let (_, proposal) = harness.proposals.latest().expect("предложение опубликовано");
     assert_eq!(proposal.measured_on, CameraTag::of(&camera_id(STREAM_CAMERA)));
+}
+
+/// Поток другой камеры `camera` на том же паспорте харнеса.
+fn stream_of_camera(harness: &Harness, camera: &str) -> Arc<camera_contract::frame_passport::StreamPassport> {
+    let mut passport = (*harness.stream).clone();
+    passport.camera = camera_id(camera);
+    Arc::new(passport)
+}
+
+#[test]
+fn a_rapid_swap_back_announced_before_the_first_frame_does_not_hide_the_promoted_camera() {
+    // Порядок как на телефоне при дрожании пальца у отметки (решение 130): показывается камера «0»; движок
+    // объявил ожидание для «2» и повысил её; кадры «2» ещё в буфере видоискателя, а движок уже объявил
+    // ожидание для СЛЕДУЮЩЕГО обмена — обратно на «0». Первый кадр «2» обязан открыться по своему объявлению.
+    let mut harness = Harness::new();
+    let old_stream = stream_of_camera(&harness, "0");
+    harness.directives.publish(carrying(STREAM_CAMERA, 1.0));
+    // Рендер успел увидеть объявление для «2», пока показывал старую камеру.
+    harness
+        .runner
+        .plan_frame(&frame_at(&old_stream, 0, Some(UNIT_EXPOSURE)));
+    // Следующий обмен объявлен раньше, чем показан первый кадр «2».
+    harness.directives.publish(carrying("0", 1.0));
+    let first_promoted = frame_at(&harness.stream, 1, Some(UNIT_EXPOSURE));
+    harness.runner.plan_frame(&first_promoted);
+    assert_eq!(readiness(&harness, &first_promoted), ExposureReadiness::Ready);
+    assert_eq!(carried_count(&harness), 1, "открыто по объявлению своей камеры");
+}
+
+#[test]
+fn a_withdrawal_forgets_the_announcements_of_every_camera() {
+    // Движок объявил «2», затем отозвал ожидание (обмен не состоялся): отзыв не называет камеру — забыть всё.
+    let mut harness = Harness::new();
+    let old_stream = stream_of_camera(&harness, "0");
+    harness.directives.publish(carrying(STREAM_CAMERA, 1.0));
+    harness
+        .runner
+        .plan_frame(&frame_at(&old_stream, 0, Some(UNIT_EXPOSURE)));
+    harness.directives.publish(ExposureDirective::DEFAULT);
+    let first = frame_at(&harness.stream, 1, Some(UNIT_EXPOSURE));
+    harness.runner.plan_frame(&first);
+    assert_eq!(readiness(&harness, &first), ExposureReadiness::WaitingForTarget);
+    assert_eq!(carried_count(&harness), 0);
+}
+
+#[test]
+fn a_newer_announcement_for_the_same_camera_replaces_the_older_one() {
+    // Сначала для «2» ждали 64 с·ISO (неправдоподобно для кадра 1 с·ISO), потом переобъявили 1 с·ISO.
+    let mut harness = Harness::new();
+    let old_stream = stream_of_camera(&harness, "0");
+    harness.directives.publish(carrying(STREAM_CAMERA, 64.0));
+    harness
+        .runner
+        .plan_frame(&frame_at(&old_stream, 0, Some(UNIT_EXPOSURE)));
+    harness.directives.publish(carrying(STREAM_CAMERA, 1.0));
+    harness
+        .runner
+        .plan_frame(&frame_at(&old_stream, 1, Some(UNIT_EXPOSURE)));
+    // Объявление другой камеры между ними не мешает.
+    harness.directives.publish(carrying("0", 8.0));
+    let first = frame_at(&harness.stream, 2, Some(UNIT_EXPOSURE));
+    harness.runner.plan_frame(&first);
+    assert_eq!(
+        readiness(&harness, &first),
+        ExposureReadiness::Ready,
+        "по новому объявлению"
+    );
 }

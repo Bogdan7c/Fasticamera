@@ -92,7 +92,7 @@ fn cold_start_is_black_until_the_first_ready_frame_and_that_black_is_allowed() {
     let (plan, report) = step(
         &mut machine,
         32,
-        frame(A, false, ExposureReadiness::Waiting),
+        frame(A, false, ExposureReadiness::WaitingForTarget),
         None,
         None,
     );
@@ -102,7 +102,7 @@ fn cold_start_is_black_until_the_first_ready_frame_and_that_black_is_allowed() {
     let (plan, report) = step(
         &mut machine,
         48,
-        frame(A, true, ExposureReadiness::Waiting),
+        frame(A, true, ExposureReadiness::WaitingForTarget),
         None,
         Some(picture(A, 1.0, None)),
     );
@@ -156,9 +156,9 @@ fn hidden_and_dark_frames_of_the_new_stream_do_not_show_and_the_first_ready_one_
     step(&mut machine, 16, StreamEvent::Inactive, None, None);
     // Поток B: цвет неизвестен (скрытие AWB), потом цвет есть, но яркость ждёт AE.
     for (now, color_known, exposure) in [
-        (32, false, ExposureReadiness::Waiting),
-        (48, false, ExposureReadiness::Waiting),
-        (64, true, ExposureReadiness::Waiting),
+        (32, false, ExposureReadiness::WaitingForTarget),
+        (48, false, ExposureReadiness::WaitingForTarget),
+        (64, true, ExposureReadiness::WaitingForTarget),
     ] {
         let (plan, report) = step(
             &mut machine,
@@ -198,7 +198,7 @@ fn hidden_and_dark_frames_of_the_new_stream_do_not_show_and_the_first_ready_one_
 fn a_new_stream_that_never_gets_plausible_is_revealed_by_timeout_not_frozen_forever() {
     let mut machine = machine_showing_a();
     step(&mut machine, 0, StreamEvent::Inactive, None, None);
-    let waiting = frame(B, true, ExposureReadiness::Waiting);
+    let waiting = frame(B, true, ExposureReadiness::WaitingForTarget);
     let (plan, _) = step(&mut machine, 99, waiting, None, None);
     assert_eq!(plan.screen, Screen::Held, "до max_hold_ms 100 держим");
     let (plan, report) = step(&mut machine, 100, waiting, None, Some(picture(B, 1.0, None)));
@@ -261,7 +261,7 @@ fn activity_of_the_new_stream_postpones_the_no_stream_limit() {
     let (plan, _) = step(
         &mut machine,
         90,
-        frame(B, false, ExposureReadiness::Waiting),
+        frame(B, false, ExposureReadiness::WaitingForTarget),
         None,
         None,
     );
@@ -296,10 +296,19 @@ fn direct_switch_to_a_ready_stream_needs_no_hold_and_a_not_ready_one_holds_in_th
 
     // Не готовый: первый же кадр B начинает удержание ДО его записи (картинка A отцепляется до ISP).
     let mut machine = machine_showing_a();
-    let (plan, report) = step(&mut machine, 16, frame(B, true, ExposureReadiness::Waiting), None, None);
+    let (plan, report) = step(
+        &mut machine,
+        16,
+        frame(B, true, ExposureReadiness::WaitingForTarget),
+        None,
+        None,
+    );
     assert_eq!(plan.screen, Screen::Held);
     assert_eq!(plan.begins_hold, Some(picture(A, 1.0, Some(LensFacing::Back))));
-    assert_eq!(report.event, Some(HoldEvent::Started(HoldReason::NewStreamNotReady)));
+    assert_eq!(
+        report.event,
+        Some(HoldEvent::Started(HoldReason::ExposureWithoutTarget))
+    );
     assert_eq!(plan.backdrop(), BackdropContinuity::HeldLastFrame { since: ms(16) });
 }
 
@@ -442,7 +451,13 @@ fn persistent_unpresentable_stream_ends_the_hold_honestly_with_its_own_label_and
 fn a_rare_failure_between_processed_frames_does_not_cut_the_hold() {
     let mut machine = machine_showing_a();
     step(&mut machine, 0, StreamEvent::Inactive, None, None);
-    step(&mut machine, 90, frame(B, true, ExposureReadiness::Waiting), None, None);
+    step(
+        &mut machine,
+        90,
+        frame(B, true, ExposureReadiness::WaitingForTarget),
+        None,
+        None,
+    );
     // Приход без картинки через 20 мс после обработанного кадра: от обработанного прошло меньше max_hold_ms.
     let (plan, _) = step(&mut machine, 110, StreamEvent::Unpresentable, None, None);
     assert_eq!(plan.screen, Screen::Held);
@@ -450,9 +465,31 @@ fn a_rare_failure_between_processed_frames_does_not_cut_the_hold() {
     let (plan, _) = step(
         &mut machine,
         126,
-        frame(B, true, ExposureReadiness::Waiting),
+        frame(B, true, ExposureReadiness::WaitingForTarget),
         None,
         Some(picture(B, 1.0, None)),
     );
     assert_eq!((plan.screen, plan.ends_hold), (Screen::Live, Some(HoldEnd::Timeout)));
+}
+
+#[test]
+fn a_hold_names_the_condition_that_kept_the_new_frame_off_the_screen() {
+    // Каждое из условий показа отдельно: на телефоне по этим причинам видно, ПОЧЕМУ удержан кадр (13b).
+    let cases = [
+        (frame(B, false, ExposureReadiness::Ready), HoldReason::ColorUnknown),
+        (
+            frame(B, true, ExposureReadiness::WaitingForTarget),
+            HoldReason::ExposureWithoutTarget,
+        ),
+        (
+            frame(B, true, ExposureReadiness::WaitingLevelOff),
+            HoldReason::ExposureLevelOff,
+        ),
+    ];
+    for (event, expected) in cases {
+        let mut machine = machine_showing_a();
+        let (plan, report) = step(&mut machine, 16, event, None, None);
+        assert_eq!(plan.screen, Screen::Held, "{expected:?}");
+        assert_eq!(report.event, Some(HoldEvent::Started(expected)));
+    }
 }

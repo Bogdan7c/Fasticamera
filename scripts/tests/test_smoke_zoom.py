@@ -165,7 +165,7 @@ class ZoomCheckTest(unittest.TestCase):
             "удержанных кадров 3": with_step(0, held=3),
             "чёрных кадров 1": with_step(3, black=1),
             "скрытых непрерывностью кадров 2": with_step(4, hidden=2),
-            "пропущено кадров 2": with_step(0, gap_periods=3.1, frames_missed=2),
+            "пропущено кадров 3": with_step(0, gap_periods=4.0, frames_missed=3),
             "пропущено кадров None": with_step(0, frames_missed=None),
             "частота камер, пока стримят обе, 41.0": with_step(1, fps_min=41.0),
             "смена вверх случилась при 1105 тыс.": with_step(1, sw_milli=1105),
@@ -184,7 +184,7 @@ class ZoomCheckTest(unittest.TestCase):
                 self.assertEqual(verdict.exit_code, smoke_wait.EXIT_SCENARIO_FAILED, verdict.message)
                 self.assertIn(expected, verdict.message)
 
-    def test_one_missed_frame_passes_even_with_jittered_periods_and_two_fail(self) -> None:
+    def test_up_to_two_missed_frames_pass_even_with_jittered_periods_and_three_fail(self) -> None:
         def report_with_gap(periods: float, missed: int) -> dict:
             steps = healthy_seamless()
             steps[0] = {**steps[0], "gap_periods": periods, "frames_missed": missed}
@@ -192,7 +192,9 @@ class ZoomCheckTest(unittest.TestCase):
 
         # 2,0003 периода — один пропущенный кадр с дрожанием времени показа (так было на телефоне): проходит.
         self.assertEqual(verdict_of(report_with_gap(2.0003, 1)).exit_code, smoke_wait.EXIT_OK)
-        self.assertEqual(verdict_of(report_with_gap(3.0, 2)).exit_code, smoke_wait.EXIT_SCENARIO_FAILED)
+        # Два пропуска — допуск владельца (решение 132); три — провал.
+        self.assertEqual(verdict_of(report_with_gap(3.0003, 2)).exit_code, smoke_wait.EXIT_OK)
+        self.assertEqual(verdict_of(report_with_gap(4.0, 3)).exit_code, smoke_wait.EXIT_SCENARIO_FAILED)
 
     def test_hover_swaps_are_a_note_not_a_failure(self) -> None:
         steps = healthy_seamless()

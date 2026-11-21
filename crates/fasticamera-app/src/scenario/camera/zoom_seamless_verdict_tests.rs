@@ -88,6 +88,16 @@ fn a_gap_over_the_threshold_slow_fps_and_missing_measurements_fail() {
     });
     assert_eq!(seamless_step_violations(&plan(), &jittered), Vec::<String>::new());
 
+    // Два пропуска (≈ 50 мс при 60 к/с; на телефоне первые кадры повышенной камеры изредка опаздывают) — в допуске
+    // владельца (решение 132).
+    let mut two_missed = healthy();
+    two_missed.seamless.as_mut().expect("запись").gap = Some(SwitchGap {
+        gap_ms: 49.825,
+        any_frame_gap_ms: 16.6,
+        period_ms: 16.61,
+    });
+    assert_eq!(seamless_step_violations(&plan(), &two_missed), Vec::<String>::new());
+
     // Вердикт смотрит на настоящую заморозку (живой → живой), а не на «до любого кадра»: повтор старого кадра
     // сокращает второе число до одного периода, но картинка при этом стояла.
     let mut repeated_old_frame = healthy();

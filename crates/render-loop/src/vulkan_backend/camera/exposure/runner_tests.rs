@@ -335,7 +335,7 @@ fn reveal_waits_for_the_first_measurement_of_the_new_stream() {
         harness
             .runner
             .reveal_readiness(&passport, RevealExposureCheck::MeasuredAndPlausible, 1.0),
-        ExposureReadiness::Waiting,
+        ExposureReadiness::WaitingForTarget,
         "замера нет — яркость не известна"
     );
     assert_eq!(
@@ -376,7 +376,7 @@ fn reveal_is_ready_only_when_the_shown_level_is_close_to_the_target() {
         slightly_off
             .runner
             .reveal_readiness(&passport, RevealExposureCheck::MeasuredAndPlausible, 0.1),
-        ExposureReadiness::Waiting
+        ExposureReadiness::WaitingLevelOff
     );
 }
 
@@ -411,7 +411,7 @@ struct ReadinessProbe;
 
 impl ReadinessProbe {
     const READY: ExposureReadiness = ExposureReadiness::Ready;
-    const WAITING: ExposureReadiness = ExposureReadiness::Waiting;
+    const WAITING: ExposureReadiness = ExposureReadiness::WaitingLevelOff;
 }
 
 // ---- готовность в тёмной сцене: цель недостижима, кадр на краю пределов потока ----

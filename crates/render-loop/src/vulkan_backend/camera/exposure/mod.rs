@@ -190,6 +190,8 @@ pub struct ExposureRunner {
     /// Произведение показанного кадра, для которого посчитана `last_gain`.
     last_frame_product: Option<ExposureProduct>,
     last_proposal: Option<ExposureProposal>,
+    /// Объявления движка «чего ждать от нового потока», по камерам (см. `carried`).
+    carried: carried::CarriedExpectations,
     counters: RunnerCounters,
 }
 
@@ -224,6 +226,7 @@ impl ExposureRunner {
             last_gain: ExposureGain::UNITY,
             last_frame_product: None,
             last_proposal: None,
+            carried: carried::CarriedExpectations::default(),
             counters: RunnerCounters::default(),
         })
     }
@@ -260,19 +263,24 @@ impl ExposureRunner {
         // Собственного замера у потока ещё нет, но движок передал ожидаемую экспозицию для ЭТОЙ камеры
         // (`carried`): судим по ней той же формулой и тем же допуском.
         let judged_by_carried = !self.has_estimate && self.controller.is_display_target_expected();
-        let plausible = (self.has_estimate || judged_by_carried)
-            && self
-                .displayed_level_error_ev()
-                .is_some_and(|error_ev| error_ev.abs() <= f64::from(max_error_ev));
-        if plausible {
-            if judged_by_carried {
-                let counter = &self.counters.frames_ready_by_carried_exposure;
-                counter.set(counter.get() + 1);
-            }
-            ExposureReadiness::Ready
+        // Цели нет (ни замера, ни объявления для камеры кадра) или нечем сравнить — ждём цель; это причина,
+        // отличная от «цель есть, но уровень не тот»: на телефоне их нужно различать (диагностика удержаний).
+        let error_ev = if self.has_estimate || judged_by_carried {
+            self.displayed_level_error_ev()
         } else {
-            ExposureReadiness::Waiting
+            None
+        };
+        let Some(error_ev) = error_ev else {
+            return ExposureReadiness::WaitingForTarget;
+        };
+        if error_ev.abs() > f64::from(max_error_ev) {
+            return ExposureReadiness::WaitingLevelOff;
         }
+        if judged_by_carried {
+            let counter = &self.counters.frames_ready_by_carried_exposure;
+            counter.set(counter.get() + 1);
+        }
+        ExposureReadiness::Ready
     }
 
     /// Насколько показанный уровень кадра выше ДОСТИЖИМОЙ цели AE, EV (`None` — цели или произведения кадра нет).
@@ -296,8 +304,7 @@ impl ExposureRunner {
         self.refresh_directive();
         let stream = self.bind_stream(passport);
         // Ожидаемая экспозиция нового потока (если движок передал её для камеры кадра) — до шага цели и подтяжки.
-        self.controller
-            .expect_target(carried::expected_target(&self.directive, passport));
+        self.controller.expect_target(self.carried.expected_target(passport));
         // Шаг цели и предложение — по метке сенсора показываемого кадра.
         self.controller.advance(passport.sensor_timestamp);
         if let Some(proposal) = self
@@ -434,6 +441,9 @@ impl ExposureRunner {
         self.controller.set_directive(directive);
         self.directive = directive;
         self.applied_generation = Some(generation);
+        // Объявление ожидаемой экспозиции запоминаем по камере сразу: следующее указание может его перезаписать
+        // раньше, чем рендер покажет первый кадр этой камеры.
+        self.carried.observe(&directive);
         if MeteredArea::for_point(directive.metering) != area_before {
             self.restart_cold_start();
         }
