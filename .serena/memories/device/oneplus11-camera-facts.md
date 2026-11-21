@@ -81,7 +81,7 @@
 ## Вендорская обработка RAW
 - Коррекция виньетирования уже в RAW (`lensShadingApplied=true`, карта 17×13, угол ×4,33) и НЕ отключается (`SHADING_MODE_OFF`, `enableShadingCorrection`, `EnableIdealRAW`, `RawCbSourceType` не меняют пиксели).
 - Шумодава в RAW нет (NR OFF = HQ). Black 64 статический, white 1023, `dynamicBlackLevel` не отдаётся. CFA BGGR (3).
-- OIS: характеристики объявляют только OFF, но основная по умолчанию отвечает ois_mode=1; явный OFF принимается.
+- OIS: характеристики объявляют только OFF, но основная по умолчанию отвечает ois_mode=1; явный OFF принимается. Продукт OIS не выключает — владелец (13a, 21.11): «стоковый оптостаб работает очень хорошо» на видоискателе. Для EIS плана `video` учитывать сдвиг линзы OIS (не стабилизировать дважды); есть ли OIS у ширика — не проверено.
 
 ## Vulkan / кодер
 - Импорт без копий: `AImageReader` usage `GPU_SAMPLED_IMAGE` (0x100); `GPU_DATA_BUFFER` для RAW gralloc не выделяет (камера молча без кадров). RAW16 → `VkImage R16_UINT` storage; RAW10 → `VkBuffer` (AHB stride в байтах, 5120 для 4096). AHB props: format UNDEFINED, externalFormat 0. Acquire-fence приходит сигнальным; release через `AImage_deleteAsync` + sync_fd. Сумма GPU = CPU.
