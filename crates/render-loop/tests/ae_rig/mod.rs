@@ -54,6 +54,8 @@ pub const SENSOR_DELAY_FRAMES: i64 = 8;
 pub const WHITE_TILE: usize = 20 * 32 + 2;
 /// ISO кадров стенда; меняется только выдержка.
 pub const ISO: u32 = 100;
+/// Плиток статистики в кадре стенда (32×24: одна ячейка 2×2 на плитку).
+pub const TILE_COUNT: usize = 32 * 24;
 /// Масштаб сцены: подобран так, что цель замера ≈ 1 с·ISO (проверяется тестом `the_scene_is_calibrated...`).
 pub const SCENE_SCALE: f64 = 0.0748;
 /// Старт на 2 EV темнее цели.
@@ -150,6 +152,8 @@ pub struct AeRig {
     /// Масштаб сцены и разрешение пересвета (см. `RigSetup`).
     pub scene_scale: f64,
     pub allow_clipping: bool,
+    /// Распределение яркости по плиткам.
+    pub layout: SceneLayout,
     /// Освещённость сцены относительно исходной (1 — исходная).
     pub light: f64,
     /// Что реально стоит на кадрах сейчас.
@@ -197,6 +201,27 @@ pub struct RigSetup {
     pub scene_scale: f64,
     /// Разрешено ли пересвечивать кадры (значения обрезаются белым сенсора).
     pub allow_clipping: bool,
+    /// Как яркость распределена по плиткам кадра.
+    pub layout: SceneLayout,
+}
+
+/// Распределение яркости сцены по плиткам статистики (сетка 32×24 = кадр стенда).
+#[derive(Debug, Clone, PartialEq)]
+pub enum SceneLayout {
+    /// Вся сцена одной яркости (серая плашка на весь кадр).
+    Uniform,
+    /// Своя относительная отражательная способность у каждой плитки (строки сверху вниз, 768 чисел).
+    PerTile(Vec<f64>),
+}
+
+impl SceneLayout {
+    /// Относительная яркость плитки `index` (1 — как у ровной сцены).
+    pub fn reflectance(&self, index: usize) -> f64 {
+        match self {
+            Self::Uniform => 1.0,
+            Self::PerTile(tiles) => tiles[index],
+        }
+    }
 }
 
 pub fn rig_or_skip(auto_exposure: Option<AutoExposureConfig>) -> Option<(AeRig, Arc<Journal>)> {
@@ -207,6 +232,7 @@ pub fn rig_or_skip(auto_exposure: Option<AutoExposureConfig>) -> Option<(AeRig, 
         start_product: DARK_START_PRODUCT,
         scene_scale: SCENE_SCALE,
         allow_clipping: false,
+        layout: SceneLayout::Uniform,
     })
 }
 
@@ -218,6 +244,7 @@ pub fn rig_with(setup: RigSetup) -> Option<(AeRig, Arc<Journal>)> {
         start_product,
         scene_scale,
         allow_clipping,
+        layout,
     } = setup;
     let enabled = auto_exposure.is_some();
     let render_config = RenderLoopConfig {
@@ -279,6 +306,7 @@ pub fn rig_with(setup: RigSetup) -> Option<(AeRig, Arc<Journal>)> {
             commanded_product: start_product,
             scene_scale,
             allow_clipping,
+            layout,
             pending: VecDeque::new(),
             seen: None,
             lock: AeAfLock::Unlocked,
@@ -297,23 +325,30 @@ impl AeRig {
         FIRST_TS + self.frame * FRAME_NANOS
     }
 
-    /// Мозаика сцены: яркость пропорциональна экспозиции кадра, цвет — белая плитка лампы.
+    /// Мозаика сцены: яркость пропорциональна экспозиции кадра и отражению плитки, цвет — белая плитка лампы.
     pub fn insert_scene(&self, sensor_ts: i64, sensor_product: f64) {
         let level = self.scene_scale * self.light * sensor_product;
-        let mut rgb = self.tile.map(|channel| channel * level);
-        if self.allow_clipping {
-            // Белый сенсора: пересвеченный канал не бывает ярче 1.
-            rgb = rgb.map(|channel| channel.min(1.0));
-        } else {
-            assert!(
-                rgb.iter().all(|channel| *channel < 0.9),
-                "сцена не должна пересвечиваться в тесте: {rgb:?}"
-            );
-        }
+        let tiles: Vec<[f64; 3]> = (0..TILE_COUNT)
+            .map(|index| {
+                let rgb = self
+                    .tile
+                    .map(|channel| channel * level * self.layout.reflectance(index));
+                if self.allow_clipping {
+                    // Белый сенсора: пересвеченный канал не бывает ярче 1.
+                    rgb.map(|channel| channel.min(1.0))
+                } else {
+                    assert!(
+                        rgb.iter().all(|channel| *channel < 0.9),
+                        "сцена не должна пересвечиваться в тесте: плитка {index} {rgb:?}"
+                    );
+                    rgb
+                }
+            })
+            .collect();
         self.scenes
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(sensor_ts, Arc::new(mosaic_from_tiles(&vec![rgb; 768])));
+            .insert(sensor_ts, Arc::new(mosaic_from_tiles(&tiles)));
     }
 
     pub fn offer(&mut self, sensor_ts: i64, result: Option<FrameCaptureDetails>) {

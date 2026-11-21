@@ -17,7 +17,7 @@ use std::time::Duration;
 use camera_contract::auto_exposure::{
     ExposureProduct, ExposureProposal, MeasurementQuality, MeteredArea, ProposalConvergence,
 };
-use camera_contract::three_a::AeAfLock;
+use camera_contract::three_a::{AeAfLock, PointOfInterest};
 
 use crate::auto_exposure_link::ExposureControllerKind;
 use crate::camera_test_support::FakeCameraRig;
@@ -88,6 +88,16 @@ pub struct FakeRenderAe {
     stop: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
     scene: Arc<Mutex<f64>>,
+    tap_point: Arc<Mutex<TapPointScene>>,
+}
+
+/// Сколько света нужно точке тапа по сравнению со всем кадром.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TapPointScene {
+    /// Точка тапа видит ту же сцену, что и весь кадр.
+    SameAsWholeFrame,
+    /// Точке тапа нужно столько света, с·ISO, независимо от всего кадра (например, тёмный угол).
+    Needs(f64),
 }
 
 impl FakeRenderAe {
@@ -99,9 +109,11 @@ impl FakeRenderAe {
     pub fn start_with_scene(rig: &FakeCameraRig, scene_seconds_iso: f64) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let scene = Arc::new(Mutex::new(scene_seconds_iso));
+        let tap_point = Arc::new(Mutex::new(TapPointScene::SameAsWholeFrame));
         let handle = rig.handle();
         let link = rig.auto_exposure.clone();
-        let (thread_stop, thread_scene) = (Arc::clone(&stop), Arc::clone(&scene));
+        let (thread_stop, thread_scene, thread_tap_point) =
+            (Arc::clone(&stop), Arc::clone(&scene), Arc::clone(&tap_point));
         let join = thread::spawn(move || {
             let Some(render_end) = link.render_end(ExposureControllerKind::Own) else {
                 return;
@@ -127,7 +139,13 @@ impl FakeRenderAe {
                     camera_contract::auto_exposure::ExposureDirective::DEFAULT,
                     |(_, value)| value,
                 );
-                let scene_now = *thread_scene.lock().unwrap_or_else(PoisonError::into_inner);
+                let whole_frame_scene = *thread_scene.lock().unwrap_or_else(PoisonError::into_inner);
+                let tap_point_scene = *thread_tap_point.lock().unwrap_or_else(PoisonError::into_inner);
+                // Замер по точке тапа видит свою сцену, если тест её задал (`with_tap_point_scene`).
+                let scene_now = match (directive.metering, tap_point_scene) {
+                    (PointOfInterest::Point { .. }, TapPointScene::Needs(seconds_iso)) => seconds_iso,
+                    _ => whole_frame_scene,
+                };
                 let (target, convergence) = meter.step(scene_now, directive.lock);
                 let Ok(target) = ExposureProduct::from_seconds_iso(target) else {
                     continue;
@@ -156,7 +174,13 @@ impl FakeRenderAe {
             stop,
             join: Some(join),
             scene,
+            tap_point,
         }
+    }
+
+    /// Что видит замер по точке тапа (по умолчанию — то же, что весь кадр).
+    pub fn set_tap_point_scene(&self, tap_point: TapPointScene) {
+        *self.tap_point.lock().unwrap_or_else(PoisonError::into_inner) = tap_point;
     }
 
     /// Общий доступ к текущей сцене: подставной поток рендера отдаёт её сценарию как сырой замер сцены.

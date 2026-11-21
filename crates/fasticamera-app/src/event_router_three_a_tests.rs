@@ -25,7 +25,7 @@ use crate::auto_exposure_link::ExposureControllerKind;
 use crate::camera_config::CameraConfig;
 use crate::camera_scenario_config::CameraScenarioConfig;
 use crate::camera_test_support::WAIT;
-use crate::fake_render_ae::FakeRenderAe;
+use crate::fake_render_ae::{DEFAULT_SCENE_SECONDS_ISO, FakeRenderAe, TapPointScene};
 use crate::raw_stream_test_support::{PumpFaults, StreamPump};
 use crate::three_a_scenario_config::ThreeAScenarioConfig;
 use crate::three_a_test_hal::{HalFaults, HalStats, SimulatedHal};
@@ -511,6 +511,44 @@ fn run_with_our_ae_passes_and_never_sends_a_vendor_ae_request() {
     );
     assert_eq!(own["settled_seen"], true, "{own}");
     assert_eq!(own["holding_seen"], true, "блокировка дошла до Holding: {own}");
+    assert_engine_restored(&harness);
+}
+
+#[test]
+fn ev_points_are_metered_on_the_whole_frame_even_after_the_corner_taps() {
+    // Решение 135 (13c): тапы шага c оставляли точку замера в углу кадра, и точки EV мерились по нему.
+    // Здесь угол «тёмный»: точечному замеру нужно в 8 раз больше света (+3 EV), чем всему кадру. Шаг EV обязан
+    // сбросить точку и мерить по всему кадру — опорная точка встаёт на свет кадра, а не угла.
+    let mut tap_point_set = false;
+    let (harness, result) = run_three_a_with(
+        short_own_config(|_| {}),
+        HalFaults::default(),
+        |_| {},
+        |_, render_ae| {
+            if let (false, Some(render_ae)) = (tap_point_set, render_ae) {
+                render_ae.set_tap_point_scene(TapPointScene::Needs(8.0 * DEFAULT_SCENE_SECONDS_ISO));
+                tap_point_set = true;
+            }
+        },
+    );
+
+    assert_eq!(result["status"], "passed", "{result}");
+    let points = result["report"]["ev"]["points"].as_array().expect("точки EV");
+    assert_eq!(points.len(), 3, "{points:?}");
+    assert!(
+        points.iter().all(|point| point["metered_area"] == "whole_frame"),
+        "все точки EV — по всему кадру: {points:?}"
+    );
+    // Опорная точка: свет всего кадра (2 с·ISO = 2·10⁹ нс·ISO), а не угла (16 с·ISO).
+    let baseline_ns_iso = points[0]["median_product"].as_f64().expect("медиана опорной точки");
+    let baseline_ev_from_frame = (baseline_ns_iso / (DEFAULT_SCENE_SECONDS_ISO * 1.0e9)).log2();
+    assert!(
+        baseline_ev_from_frame.abs() < 0.3,
+        "опора EV на свету кадра, а не тёмного угла: {baseline_ev_from_frame:.2} EV ({points:?})"
+    );
+    // Перед шагом EV были все пять тапов (последний — в углу): сброс делает именно шаг EV.
+    let taps = result["report"]["focus"]["taps"].as_array().expect("тапы");
+    assert_eq!(taps.len(), 5, "{taps:?}");
     assert_engine_restored(&harness);
 }
 

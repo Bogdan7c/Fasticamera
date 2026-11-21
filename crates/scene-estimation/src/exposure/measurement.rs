@@ -14,20 +14,34 @@
 //! поэтому яркость плитки — **нижняя оценка**, а это безопасная сторона для светов.
 //! Редукции по плиткам с ячейками (веса `w` из таблицы, `W = Σ w`):
 //! ```text
-//! mean_log2_Y   = Σ w·log2(max(Y_tile, dark_floor)) / W
+//! measured_Y    = Σ w·(used·Y_used/(used+saturated)) / W        — вклад принятых ячеек
+//! clipped_Y     = Σ w·(saturated·clipped_cell_luminance/(used+saturated)) / W — вклад пересвета (нижняя оценка)
+//! log_Y         = Σ w·log2(max(Y_tile, dark_floor)) / W         — среднее логарифмов (геометрическое)
 //! clipped_share = Σ w·saturated/(used+saturated) / W
 //! dark_share    = Σ w·[Y_tile < dark_tile_luminance] / W
 //! ```
-//! Требуемое произведение: `log2 P* = log2 P_frame + log2(target) − mean_log2_Y + protection_ev`.
-//! Яркость линейна по экспозиции, поэтому сдвиг на `log2(target) − mean_log2_Y` — ровно то,
-//! на сколько ступеней кадр надо сделать ярче или темнее. При `ClippedHighlights` и `TooDark`
-//! средняя яркость недостоверна, и вместо неё берётся ограниченный шаг от произведения кадра.
+//! Цель с защитой светов: `T' = target · 2^protection_ev`. Способ — `MeteringConfig::scene_average`
+//! (решение владельца 133):
+//! * по умолчанию — обычное среднее света с предохранителем пересвета (решение 134):
+//!   ```text
+//!   m     = max(measured_Y, dark_floor)                — растёт вместе с выдержкой
+//!   c     = min(clipped_Y, k · T'),  k = clipped_max_share_of_target < 1   — белое остаётся белым
+//!   log2 P* = log2 P_frame + log2(T' − c) − log2(m)    — решение уравнения m · (P*/P) + c = T'
+//!   ```
+//!   Без предела всегда-белое место (окно, солнце) не давало бы равновесия: его нижняя оценка не убывает с
+//!   выдержкой, и экспозиция уходила бы в ноль. Пересвет не растёт с выдержкой, поэтому он вычитается из цели,
+//!   а не делит её: так замер не зависит от выдержки кадра и компенсация EV ±1 даёт ×2 и ×½;
+//! * лог-среднее (прежний способ 08a…13b, для A/B): `log2 P* = log2 P_frame + log2(T') − log_Y`.
+//!
+//! Обычное среднее не меньше геометрического, поэтому на неровной сцене оно просит меньше света; на ровной
+//! они совпадают. При `ClippedHighlights` и `TooDark` средняя яркость недостоверна, и вместо неё берётся
+//! ограниченный шаг от произведения кадра.
 
 use camera_contract::auto_exposure::{ExposureProduct, MeasurementQuality};
 use isp_model::exposure::LuminanceWeights;
 use isp_model::statistics::{AwbStatistics, AwbTile, QUANT_SCALE};
 
-use super::config::MeteringConfig;
+use super::config::{MeteringConfig, SceneAverage};
 use super::metering_weights::MeteringWeights;
 use crate::error::ConfigError;
 
@@ -94,8 +108,8 @@ pub struct ExposureMeasurement {
     pub required_product: ExposureProduct,
     /// Надёжность замера.
     pub quality: MeasurementQuality,
-    /// Взвешенное среднее `log2 Y` по области.
-    pub mean_log2_luminance: f32,
+    /// `log2` яркости области способом из `MeteringConfig::scene_average` (по умолчанию — обычное среднее света).
+    pub scene_log2_luminance: f32,
     /// Доля (по весу) пересвеченных ячеек.
     pub clipped_fraction: f32,
     /// Доля (по весу) тёмных плиток.
@@ -110,6 +124,11 @@ pub struct ExposureMeasurement {
 #[derive(Debug, Clone, Copy, Default)]
 struct Reductions {
     used_weight: f32,
+    /// Σ w·(вклад принятых ячеек в яркость плитки) — измеримая часть обычного среднего.
+    measured_luminance_sum: f32,
+    /// Σ w·(вклад пересвеченных ячеек в яркость плитки) — нижняя оценка, у обычного среднего ограничена.
+    clipped_luminance_sum: f32,
+    /// Σ w·log2(max(Y_tile, пол)) — для лог-среднего.
     log2_sum: f32,
     clipped_sum: f32,
     dark_sum: f32,
@@ -173,7 +192,6 @@ pub fn measure_exposure_in_phase(
             used_weight: reductions.used_weight,
         });
     }
-    let mean_log2_luminance = reductions.log2_sum / reductions.used_weight;
     let clipped_fraction = reductions.clipped_sum / reductions.used_weight;
     let dark_fraction = reductions.dark_sum / reductions.used_weight;
     let band = classify(clipped_fraction, dark_fraction, config);
@@ -189,11 +207,11 @@ pub fn measure_exposure_in_phase(
         }
         _ => 0.0,
     };
+    let target_luminance = target.scene_middle_gray() * config.key_offset_ev.exp2();
+    // Яркость сцены — после защиты: предохранитель пересвета обычного среднего считается от защищённой цели.
+    let scene = scene_luminance(&reductions, target_luminance * protection_ev.exp2(), config);
     let frame_log2 = frame_product.seconds_iso().log2();
-    let measured_log2 = || {
-        let target_luminance = target.scene_middle_gray() * config.key_offset_ev.exp2();
-        frame_log2 + f64::from(target_luminance.log2() - mean_log2_luminance + protection_ev)
-    };
+    let measured_log2 = || frame_log2 + f64::from(scene.exposure_shift_log2);
     let required_log2 = match band {
         ClipBand::Normal => measured_log2(),
         // Часть кадра за белым: яркость известна лишь снизу, поэтому вверх идти нельзя (иначе предельный
@@ -208,7 +226,7 @@ pub fn measure_exposure_in_phase(
     Ok(ExposureMeasurement {
         required_product,
         quality,
-        mean_log2_luminance,
+        scene_log2_luminance: scene.log2_luminance,
         clipped_fraction,
         dark_fraction,
         used_weight: reductions.used_weight,
@@ -216,7 +234,7 @@ pub fn measure_exposure_in_phase(
     })
 }
 
-/// Проход по плиткам: яркость, логарифм, доли — взвешенные суммы.
+/// Проход по плиткам: яркость (два слагаемых), логарифм, доли — взвешенные суммы.
 fn reduce_tiles(
     tiles: &[AwbTile],
     weights: &[f32],
@@ -230,8 +248,11 @@ fn reduce_tiles(
             // Пустая плитка (края при неровном делении, нулевой кадр) в замере не участвует.
             continue;
         }
-        let tile_luminance = tile_luminance(tile, luminance, config);
+        let parts = tile_luminance(tile, luminance, config);
+        let tile_luminance = parts.total();
         totals.used_weight += weight;
+        totals.measured_luminance_sum += weight * parts.measured;
+        totals.clipped_luminance_sum += weight * parts.clipped;
         totals.log2_sum += weight * tile_luminance.max(config.dark_floor).log2();
         totals.clipped_sum += weight * (tile.saturated_cells as f32 / cells as f32);
         if tile_luminance < config.dark_tile_luminance {
@@ -241,8 +262,52 @@ fn reduce_tiles(
     totals
 }
 
+/// Яркость области и сдвиг экспозиции выбранным способом усреднения (решения владельца 133, 134).
+///
+/// Вызывается только при `used_weight >= min_used_weight > 0`, поэтому деление определено.
+fn scene_luminance(
+    reductions: &Reductions,
+    protected_target_luminance: f32,
+    config: &MeteringConfig,
+) -> SceneLuminance {
+    match config.scene_average {
+        SceneAverage::LinearLight => {
+            // Пол — на измеримую часть: совсем чёрная область (все плитки ≈ 0) не уходит в −∞ и не делит на ноль.
+            let measured = (reductions.measured_luminance_sum / reductions.used_weight).max(config.dark_floor);
+            let clipped = reductions.clipped_luminance_sum / reductions.used_weight;
+            // Решение 134: пересвет (нижняя оценка) «занимает» не больше доли цели; остальное обязана дать
+            // измеримая часть. Предел — от цели с защитой светов: равновесие замера — при Y = цель · 2^защита.
+            let clipped_effective = clipped.min(config.clipped_max_share_of_target * protected_target_luminance);
+            SceneLuminance {
+                log2_luminance: (measured + clipped_effective).log2(),
+                // Пересвет при смене выдержки остаётся белым, растёт только измеримая часть. Поэтому решаем
+                // `measured · (P*/P) + clipped = цель`, а не `P* = P · цель / Y`: иначе замер зависел бы от выдержки
+                // кадра и компенсация EV ±1 давала бы ×3 и ×0 вместо ×2 и ×½ (найдено на телефоне, 13c).
+                // `цель − clipped ≥ (1 − доля) · цель > 0` — это гарантирует `validate()` (доля < 1).
+                exposure_shift_log2: (protected_target_luminance - clipped_effective).log2() - measured.log2(),
+            }
+        }
+        SceneAverage::LogLuminance => {
+            let log2_luminance = reductions.log2_sum / reductions.used_weight;
+            SceneLuminance {
+                log2_luminance,
+                exposure_shift_log2: protected_target_luminance.log2() - log2_luminance,
+            }
+        }
+    }
+}
+
+/// Яркость области и вывод из неё: на сколько ступеней изменить экспозицию кадра.
+#[derive(Debug, Clone, Copy)]
+struct SceneLuminance {
+    /// `log2` яркости области выбранным способом (с пересветом по нижней оценке и пределу).
+    log2_luminance: f32,
+    /// `log2(P*/P)`: на сколько ступеней кадр надо сделать ярче (> 0) или темнее, включая защиту светов.
+    exposure_shift_log2: f32,
+}
+
 /// Яркость плитки: принятые ячейки по весам яркости, пересвеченные — `clipped_cell_luminance`.
-fn tile_luminance(tile: &AwbTile, luminance: LuminanceWeights, config: &MeteringConfig) -> f32 {
+fn tile_luminance(tile: &AwbTile, luminance: LuminanceWeights, config: &MeteringConfig) -> TileLuminance {
     let cells = (tile.used_cells + tile.saturated_cells) as f32;
     let used_luminance_sum = if tile.used_cells == 0 {
         0.0
@@ -255,7 +320,26 @@ fn tile_luminance(tile: &AwbTile, luminance: LuminanceWeights, config: &Metering
             tile.sum_b as f32 / per_cell,
         ) * tile.used_cells as f32
     };
-    (used_luminance_sum + tile.saturated_cells as f32 * config.clipped_cell_luminance) / cells
+    TileLuminance {
+        measured: used_luminance_sum / cells,
+        clipped: tile.saturated_cells as f32 * config.clipped_cell_luminance / cells,
+    }
+}
+
+/// Яркость плитки двумя слагаемыми: вклад принятых ячеек и вклад пересвеченных (каждая — `clipped_cell_luminance`).
+#[derive(Debug, Clone, Copy)]
+struct TileLuminance {
+    /// Вклад принятых ячеек (их яркость, разделённая на все ячейки плитки).
+    measured: f32,
+    /// Вклад пересвеченных ячеек — нижняя оценка: настоящая яркость не меньше.
+    clipped: f32,
+}
+
+impl TileLuminance {
+    /// Полная яркость плитки (как в 08a: пересвет — по нижней оценке, без ограничения).
+    fn total(self) -> f32 {
+        self.measured + self.clipped
+    }
 }
 
 /// Режим замера по пересвету и темноте.

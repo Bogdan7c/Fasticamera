@@ -33,7 +33,7 @@ mod simulation_tests;
 #[cfg(test)]
 mod test_support;
 
-pub use config::{ExposureControllerConfig, MeteringConfig};
+pub use config::{ExposureControllerConfig, MeteringConfig, SceneAverage};
 pub use controller::{AutoExposureController, ExposureCounters, IngestOutcome, SkippedMeasurement};
 pub use measurement::{
     ExposureMeasurement, ExposureMeasurementError, ExposureTarget, MeasurementPhase, measure_exposure,

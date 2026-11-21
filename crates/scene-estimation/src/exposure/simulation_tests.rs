@@ -14,7 +14,7 @@ use camera_contract::capture_result::SensorTimestamp;
 use camera_contract::three_a::{AeAfLock, ThreeAProfile};
 use isp_model::params::ExposureGain;
 
-use super::config::{ExposureControllerConfig, MeteringConfig};
+use super::config::{ExposureControllerConfig, MeteringConfig, SceneAverage};
 use super::controller::AutoExposureController;
 use super::measurement::MeasurementPhase;
 use super::meter::{CpuExposureMeter, ExposureMeter, ExposureMeteringRequest};
@@ -79,6 +79,10 @@ struct Rig {
     directive_lag_frames: i64,
     /// Указания, которые движок уже построил, но рендер ещё не увидел: (кадр видимости, указание).
     pending_applied: Vec<(i64, AppliedExposure)>,
+    /// Компенсация экспозиции, EV: движок просит у сенсора цель рендера × 2^компенсация (как `RawStatsExposure`).
+    bias_ev: f64,
+    /// Последняя цель рендера (для EV 0): движок пересчитывает по ней команду, когда меняется компенсация.
+    last_target: Option<ExposureProduct>,
 }
 
 impl Rig {
@@ -119,12 +123,45 @@ impl Rig {
             reach: ProductReach::Unbounded,
             directive_lag_frames: 0,
             pending_applied: Vec::new(),
+            bias_ev: 0.0,
+            last_target: None,
+        }
+    }
+
+    /// Движок: команда сенсору = цель рендера × 2^компенсация, срезанная пределами; рендеру — `applied`.
+    fn command_for_target(&mut self, target: ExposureProduct) {
+        let requested = ExposureProduct::from_seconds_iso(target.seconds_iso() * self.bias_ev.exp2()).unwrap();
+        let achieved = self.clamp_to_sensor(requested);
+        self.command = achieved.seconds_iso();
+        self.commands_seen.push(self.command);
+        // Нехватка относится к цели, на которую строился запрос: к моменту показа кадра она уже старая.
+        self.publish_applied(achieved, achieved.ev_above(requested) as f32);
+    }
+
+    /// Новая компенсация: движок сразу пересобирает запрос по последней цели (как при смене указания в продукте).
+    fn set_bias_ev(&mut self, bias_ev: f64) {
+        self.bias_ev = bias_ev;
+        if let Some(target) = self.last_target {
+            self.command_for_target(target);
         }
     }
 
     /// Рендер видит указание движка с запозданием в `frames` кадров.
     fn with_directive_lag(mut self, frames: i64) -> Self {
         self.directive_lag_frames = frames;
+        self
+    }
+
+    /// Замер с другими настройками (способ усреднения, предохранитель пересвета): матрица, как в продукте.
+    fn with_metering(mut self, config: MeteringConfig) -> Self {
+        self.weights = MeteringWeights::build(
+            GRID,
+            TilePlacement::full_frame(4.0 / 3.0).unwrap(),
+            MeteringArea::Matrix,
+            &config,
+        )
+        .unwrap();
+        self.meter = CpuExposureMeter::new(config).unwrap();
         self
     }
 
@@ -209,12 +246,8 @@ impl Rig {
         self.controller.advance(timestamp);
         if let Some(proposal) = self.controller.proposal(timestamp, test_camera()) {
             self.proposals += 1;
-            let requested = proposal.target;
-            let achieved = self.clamp_to_sensor(requested);
-            self.command = achieved.seconds_iso();
-            self.commands_seen.push(self.command);
-            // Нехватка относится к цели, на которую строился запрос: к моменту показа кадра она уже старая.
-            self.publish_applied(achieved, achieved.ev_above(requested) as f32);
+            self.last_target = Some(proposal.target);
+            self.command_for_target(proposal.target);
         }
         self.history.push(self.command);
         let gain = self.controller.display_gain(Some(product(applied)));
@@ -542,3 +575,7 @@ fn screen_holds_the_sensor_limit_without_chasing_the_unreachable_target() {
     // Недостижимая цель так и осталась недостижимой: кадр темнее нужного ровно на нехватку.
     assert!((rig.error_ev(last) + 1.4).abs() < 0.15, "{}", rig.error_ev(last));
 }
+
+/// Пересвет и компенсация EV с обычным средним (13c, решения 133, 134).
+#[path = "simulation_clipping_tests.rs"]
+mod clipping;

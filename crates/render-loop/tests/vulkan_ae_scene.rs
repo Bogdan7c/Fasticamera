@@ -13,7 +13,9 @@
 //! * блокировка держит цель: после «Holding» сцена светлеет на 1 EV, и плашка светлеет вместе с ней (экспозиция
 //!   не догоняет); без блокировки та же смена сцены возвращает плашку к цели;
 //! * кадр без метаданных не ломает поток и показывается без подтяжки;
-//! * кадр серии AE не видит; без ящиков AE рендер работает как прежде (подтяжки и диагностики нет).
+//! * кадр серии AE не видит; без ящиков AE рендер работает как прежде (подтяжки и диагностики нет);
+//! * на контрастной сцене (стол под лампой в тёмной комнате) контур сходится к обычному среднему света, а не к
+//!   лог-среднему (13c, решение 133).
 
 #![cfg(not(target_os = "android"))]
 #![allow(
@@ -28,12 +30,15 @@ mod support;
 mod vulkan_support;
 
 use ae_rig::{
-    AeRig, BRACKET_TS_BASE, FRAME_NANOS, SENSOR_DELAY_FRAMES, Shot, converged_rig, display_middle_gray, ev_error,
-    rig_or_skip, tone_display,
+    AeRig, BRACKET_TS_BASE, DARK_START_PRODUCT, FRAME_NANOS, RigSetup, SCENE_SCALE, SENSOR_DELAY_FRAMES, SceneLayout,
+    Shot, TILE_COUNT, converged_rig, display_middle_gray, ev_error, manual_lamp_white, rig_or_skip, rig_with,
+    tone_display,
 };
 use camera_contract::auto_exposure::ProposalConvergence;
 use camera_contract::three_a::{AeAfLock, BurstId, RequestOrigin};
+use isp_model::statistics::TileGrid;
 use render_loop::config::AutoExposureConfig;
+use scene_estimation::exposure::{MeteringArea, MeteringConfig, MeteringWeights, TilePlacement};
 
 // ---- сходимость ----
 
@@ -329,5 +334,97 @@ fn without_auto_exposure_links_the_render_works_as_before() {
     // Экспозиция не менялась: плашка осталась тёмной (никто её не вытягивал).
     let wanted = display_middle_gray();
     assert!(ev_error(rig.last_luminance(), wanted) < -1.0);
+    rig.finish(&journal);
+}
+
+// ---- способ усреднения (сессия 13c, решение 133) ----
+
+/// Сцена 13c в миниатюре: стол под лампой (центр, 10×8 плиток) в 32 раза светлее тёмной комнаты вокруг.
+fn lamp_lit_table_in_a_dark_room() -> Vec<f64> {
+    (0..TILE_COUNT)
+        .map(|index| {
+            let (column, row) = (index % 32, index / 32);
+            if (11..21).contains(&column) && (8..16).contains(&row) {
+                1.0
+            } else {
+                1.0 / 32.0
+            }
+        })
+        .collect()
+}
+
+/// Средняя отражательная способность сцены по весам матрицы: обычное среднее и среднее геометрическое.
+fn matrix_means(reflectance: &[f64]) -> (f64, f64) {
+    let weights = MeteringWeights::build(
+        TileGrid { columns: 32, rows: 24 },
+        TilePlacement::full_frame(4.0 / 3.0).expect("4:3"),
+        MeteringArea::Matrix,
+        &MeteringConfig::default(),
+    )
+    .expect("веса матрицы");
+    let total: f64 = weights.weights().iter().map(|&weight| f64::from(weight)).sum();
+    let weighted = |value: &dyn Fn(f64) -> f64| {
+        weights
+            .weights()
+            .iter()
+            .zip(reflectance)
+            .map(|(&weight, &tile)| f64::from(weight) * value(tile))
+            .sum::<f64>()
+            / total
+    };
+    (weighted(&|tile| tile), weighted(&|tile| tile.log2()).exp2())
+}
+
+#[test]
+fn a_lamp_lit_table_in_a_dark_room_converges_to_the_average_light_not_to_the_log_mean() {
+    // Причина «×12» из 13c, сквозь настоящий шейдер статистики: на контрастной сцене контур обязан сойтись к
+    // экспозиции обычного среднего света. Опора — та же камера на ровной сцене (цель ≈ 1 с·ISO): у неё оба
+    // способа совпадают, поэтому отношение целей зависит только от способа усреднения.
+    let Some((uniform, uniform_journal)) = converged_rig() else {
+        return;
+    };
+    let uniform_target = uniform.proposals.latest().expect("предложение").1.target.seconds_iso();
+    uniform.finish(&uniform_journal);
+
+    let reflectance = lamp_lit_table_in_a_dark_room();
+    let (linear_mean, geometric_mean) = matrix_means(&reflectance);
+    let Some((mut rig, journal)) = rig_with(RigSetup {
+        auto_exposure: Some(AutoExposureConfig::default()),
+        white_balance: Some(manual_lamp_white()),
+        scene: "checker_bb2800",
+        start_product: DARK_START_PRODUCT,
+        scene_scale: SCENE_SCALE,
+        allow_clipping: false,
+        layout: SceneLayout::PerTile(reflectance),
+    }) else {
+        return;
+    };
+    rig.run(120);
+    let diagnostics = rig.viewfinder().auto_exposure.expect("AE включён");
+    assert_eq!(
+        diagnostics.convergence,
+        Some(ProposalConvergence::Settled),
+        "{diagnostics:?}"
+    );
+    let target = rig.proposals.latest().expect("предложение").1.target.seconds_iso();
+    let measured_ev = (target / uniform_target).log2();
+    let linear_ev = (1.0 / linear_mean).log2();
+    let log_ev = (1.0 / geometric_mean).log2();
+    assert!(
+        log_ev - linear_ev > 1.5,
+        "сцена различает способы: обычное {linear_ev:.2} EV, лог {log_ev:.2} EV"
+    );
+    assert!(
+        (measured_ev - linear_ev).abs() < 0.15,
+        "контур сошёлся к обычному среднему: {measured_ev:.2} EV (обычное {linear_ev:.2}, лог {log_ev:.2})"
+    );
+    assert!(
+        rig.history
+            .iter()
+            .rev()
+            .take(10)
+            .any(|shot| shot.display_luminance.is_some()),
+        "кадры сцены дошли до экрана"
+    );
     rig.finish(&journal);
 }

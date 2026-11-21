@@ -17,7 +17,7 @@ mod awb_support;
 mod support;
 mod vulkan_support;
 
-use ae_rig::{AeRig, RigSetup, Shot, display_middle_gray, ev_error, rig_with};
+use ae_rig::{AeRig, RigSetup, SceneLayout, Shot, display_middle_gray, ev_error, rig_with};
 use render_loop::config::{AutoExposureConfig, WhiteBalanceConfig};
 
 /// Стартовая экспозиция камеры из конфига, с·ISO.
@@ -57,6 +57,7 @@ fn run_scenario(name: &str, scene: &'static str, scene_scale: f64) -> Option<Col
         start_product: START_PRODUCT,
         scene_scale,
         allow_clipping: true,
+        layout: SceneLayout::Uniform,
     })?;
     rig.run(FRAMES);
     let numbers = summarize(&mut rig, scene_scale);

@@ -24,6 +24,45 @@ fn unknown_fields_are_rejected() {
 }
 
 #[test]
+fn scene_average_defaults_to_linear_light_and_parses_both_names() {
+    // Решение 133: по умолчанию — обычное среднее света; лог-среднее — только явной строкой в конфиге.
+    assert_eq!(MeteringConfig::default().scene_average, SceneAverage::LinearLight);
+    let log: MeteringConfig = serde_json::from_str(r#"{"scene_average": "log_luminance"}"#).unwrap();
+    assert_eq!(log.scene_average, SceneAverage::LogLuminance);
+    let linear: MeteringConfig = serde_json::from_str(r#"{"scene_average": "linear_light"}"#).unwrap();
+    assert_eq!(linear.scene_average, SceneAverage::LinearLight);
+    // Опечатка в способе — ошибка разбора, а не молчаливое «по умолчанию».
+    assert!(serde_json::from_str::<MeteringConfig>(r#"{"scene_average": "geometric"}"#).is_err());
+    // Запись и чтение сохраняют выбор.
+    let json = serde_json::to_string(&log).unwrap();
+    assert_eq!(serde_json::from_str::<MeteringConfig>(&json).unwrap(), log);
+}
+
+#[test]
+fn clipped_share_of_target_must_stay_below_one() {
+    // Решение 134: при доле ≥ 1 пересвет один «набирал» бы цель, и у замера могло не быть равновесия.
+    for (share, valid) in [
+        (0.0, true),
+        (0.5, true),
+        (0.99, true),
+        (1.0, false),
+        (-0.1, false),
+        (f32::NAN, false),
+    ] {
+        let config = MeteringConfig {
+            clipped_max_share_of_target: share,
+            ..MeteringConfig::default()
+        };
+        assert_eq!(
+            config.validate().is_ok(),
+            valid,
+            "доля {share}: {:?}",
+            config.validate()
+        );
+    }
+}
+
+#[test]
 fn metering_config_rejects_negative_nan_and_inverted_thresholds() {
     let cases: [(&str, MeteringConfig); 9] = [
         (

@@ -63,7 +63,7 @@ pub(super) fn measured(
         outcome: Ok(ExposureMeasurement {
             required_product: product(required),
             quality,
-            mean_log2_luminance: -3.7,
+            scene_log2_luminance: -3.7,
             clipped_fraction: 0.0,
             dark_fraction: 0.0,
             used_weight: 1.0,

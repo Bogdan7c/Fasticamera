@@ -150,6 +150,18 @@ pub struct EvPointReport {
     pub verifiable: bool,
     /// Отношение медианы к опорной (bias 0).
     pub ratio_to_baseline: Option<f64>,
+    /// По какой области мерилась точка (решение 135: шаг сбрасывает тап и мерит по всему кадру).
+    pub metered_area: EvMeteredArea,
+}
+
+/// Область замера точки EV — из статуса движка на момент записи точки.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvMeteredArea {
+    /// Весь кадр (матричный замер): так шаг EV меряется с 13c.
+    WholeFrame,
+    /// Точка тапа: сброс не дошёл до движка за срок — точка мерилась по последнему тапу.
+    TapPoint,
 }
 
 /// Шаг e: компенсация экспозиции.

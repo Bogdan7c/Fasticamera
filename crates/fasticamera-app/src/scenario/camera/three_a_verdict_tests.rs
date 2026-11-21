@@ -7,7 +7,8 @@ use super::*;
 use crate::scenario::camera::engine_watch::RunFailure;
 use crate::scenario::camera::three_a_own_ae::{AeSource, EngineAeCount, OwnAeReport, ResultsChecked};
 use crate::scenario::camera::three_a_report::{
-    AppliedExposure, AwbVsHal, BracketFrameReport, EvPointReport, LongShutterReport, TapReport, ThreeAObservation,
+    AppliedExposure, AwbVsHal, BracketFrameReport, EvMeteredArea, EvPointReport, LongShutterReport, TapReport,
+    ThreeAObservation,
 };
 use crate::scenario::camera::viewfinder_session::SessionSummary;
 
@@ -132,6 +133,7 @@ fn ev_point(bias_ev: f32, ratio: f64, verifiable: bool) -> EvPointReport {
         ae_limit_reached: false,
         verifiable,
         ratio_to_baseline: Some(ratio),
+        metered_area: EvMeteredArea::WholeFrame,
     }
 }
 

@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use camera_contract::capabilities::ManualSensorRanges;
 use camera_contract::control::{Control, ExposureBias, ExposureTime, Iso, ManualControl};
-use camera_contract::three_a::AeState;
+use camera_contract::three_a::{AeState, PointOfInterest};
 use camera_core::CameraEvent;
 use camera_core::three_a_status::{AdjustmentReason, ControlParameter};
 
@@ -12,7 +12,7 @@ use super::engine_watch::RunFailure;
 use super::progress::Deadline;
 use super::three_a_own_ae::{AeSource, is_converged, is_limit_reached};
 use super::three_a_report::{
-    AppliedExposure, EvPointReport, EvReport, LongShutterReport, ManualReport, ThreeAObservation,
+    AppliedExposure, EvMeteredArea, EvPointReport, EvReport, LongShutterReport, ManualReport, ThreeAObservation,
 };
 use super::three_a_results::{exposure_product, median, relative_gap};
 use super::three_a_steps::{StepEnv, StepProgress, ThreeAStep, invalid_value, sent};
@@ -247,6 +247,11 @@ fn judge_points_against_baseline(points: &mut [EvPointReport], limits: Option<(f
 
 /// Фаза измерения одной компенсации.
 enum EvPhase {
+    /// Ждём, пока движок применит сброс точки замера (тапы шага c оставляют её в углу кадра). Не дольше
+    /// `deadline`: потом точки меряются как есть, а область видна в отчёте каждой точки (`metered_area`).
+    AwaitingWholeFrame {
+        deadline: Deadline,
+    },
     /// Ждём `until`; наш AE после него ждёт ещё и `Settled`/`Holding`/`LimitReached`, но не дольше `hard_deadline`.
     Settling {
         until: std::time::Instant,
@@ -299,6 +304,10 @@ impl EvStep {
             ae_limit_reached: is_limit_reached(env.status.three_a.auto_exposure),
             verifiable: true,
             ratio_to_baseline: None,
+            metered_area: match env.status.three_a.point {
+                PointOfInterest::WholeFrame => EvMeteredArea::WholeFrame,
+                PointOfInterest::Point { .. } => EvMeteredArea::TapPoint,
+            },
         });
     }
 
@@ -324,12 +333,29 @@ impl ThreeAStep for EvStep {
             "apply_controls",
             env.running.handle().apply_controls(ManualControl::AUTOMATIC),
         )?;
-        self.start_settling(env);
+        // Решение 135: компенсацию проверяем на матричном замере, как у вендорского AE. Без сброса точки
+        // остаются на последнем тапе шага c (угол кадра): в тёмной комнате это +2,4 EV и упор в предел камеры.
+        sent(
+            "reset_point_of_interest",
+            env.running.handle().reset_point_of_interest(),
+        )?;
+        self.phase = Some(EvPhase::AwaitingWholeFrame {
+            deadline: Deadline::after_millis(env.now, env.config.ev.settle_ms),
+        });
         Ok(())
     }
 
     fn poll(&mut self, env: &mut StepEnv<'_>, observation: &mut ThreeAObservation) -> StepProgress {
         match self.phase.take() {
+            Some(EvPhase::AwaitingWholeFrame { deadline }) => {
+                if env.status.three_a.point == PointOfInterest::WholeFrame || deadline.is_expired(env.now) {
+                    // Сходимость считается от момента, когда движок уже мерит по новой области.
+                    self.start_settling(env);
+                } else {
+                    self.phase = Some(EvPhase::AwaitingWholeFrame { deadline });
+                }
+                StepProgress::Pending
+            }
             Some(EvPhase::Settling { until, hard_deadline }) => {
                 let progress = env.status.three_a.auto_exposure;
                 let own_still_moving = AeSource::of(&env.status.three_a) == AeSource::Own
@@ -410,6 +436,7 @@ mod tests {
             ae_limit_reached,
             verifiable: true,
             ratio_to_baseline: None,
+            metered_area: EvMeteredArea::WholeFrame,
         }
     }
 
