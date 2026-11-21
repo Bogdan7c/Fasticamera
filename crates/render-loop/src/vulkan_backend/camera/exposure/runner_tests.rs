@@ -12,6 +12,7 @@
 
 use std::time::Duration;
 
+use camera_contract::auto_exposure::{AppliedExposure, ProductReach};
 use camera_contract::capture_result::SensorTimestamp;
 use camera_contract::stream::ReadoutAspect;
 use camera_contract::three_a::{MeteringRegion, PointRequestId, SensorPoint};
@@ -411,4 +412,112 @@ struct ReadinessProbe;
 impl ReadinessProbe {
     const READY: ExposureReadiness = ExposureReadiness::Ready;
     const WAITING: ExposureReadiness = ExposureReadiness::Waiting;
+}
+
+// ---- готовность в тёмной сцене: цель недостижима, кадр на краю пределов потока ----
+
+/// Произведение потока на его самом светлом краю в «тёмной» комнате телефона (6,7 с·ISO в логе: 106,67).
+const BRIGHTEST_SECONDS_ISO: f64 = 100.0;
+const DARKEST_SECONDS_ISO: f64 = 0.01;
+
+/// Указание: в запросе стоит `applied_seconds_iso`, достижим отрезок `[darkest, brightest]`.
+fn directive_with_reach(applied_seconds_iso: f64, darkest: f64, brightest: f64) -> ExposureDirective {
+    let product = |seconds_iso| ExposureProduct::from_seconds_iso(seconds_iso).expect("произведение");
+    ExposureDirective {
+        applied: Some(AppliedExposure {
+            product: product(applied_seconds_iso),
+            shortfall_ev: -4.0,
+            reach: ProductReach::Between {
+                darkest: product(darkest),
+                brightest: product(brightest),
+            },
+        }),
+        ..ExposureDirective::DEFAULT
+    }
+}
+
+/// Харнес, где движок сообщил указание `directive`, а кадры идут с произведением `frame_seconds_iso`.
+fn harness_under(directive: ExposureDirective, frame_seconds_iso: f64, scene: &AwbStatistics) -> Harness {
+    let mut harness = Harness::new();
+    harness.directives.publish(directive);
+    harness.steps(3, Some(exposure_product(frame_seconds_iso)), scene);
+    harness
+}
+
+#[test]
+fn reveal_is_ready_in_a_dark_room_when_the_frame_sits_at_the_brightest_edge() {
+    // Сцена на 4 EV темнее цели при самом светлом кадре потока: цель недостижима, AE сделал всё возможное.
+    let scene = uniform_scene(TARGET_GRAY / 16.0);
+    let harness = harness_under(
+        directive_with_reach(BRIGHTEST_SECONDS_ISO, DARKEST_SECONDS_ISO, BRIGHTEST_SECONDS_ISO),
+        BRIGHTEST_SECONDS_ISO,
+        &scene,
+    );
+    let target_above_edge_ev =
+        harness.runner.controller.target_log2().expect("цель есть") - BRIGHTEST_SECONDS_ISO.log2();
+    assert!(
+        target_above_edge_ev > 3.0,
+        "цель должна быть за краем: {target_above_edge_ev} EV"
+    );
+    assert_eq!(
+        readiness_of(&harness, Some(exposure_product(BRIGHTEST_SECONDS_ISO))),
+        ReadinessProbe::READY
+    );
+}
+
+#[test]
+fn reveal_is_ready_when_the_frame_sits_at_the_darkest_edge_of_a_bright_scene() {
+    // Симметрия: сцена светлее цели на ~2,7 EV, кадр уже на самом тёмном краю потока (1 с·ISO).
+    let harness = harness_under(
+        directive_with_reach(1.0, 1.0, BRIGHTEST_SECONDS_ISO),
+        1.0,
+        &uniform_scene(BRIGHT_VALUE),
+    );
+    assert_eq!(readiness_of(&harness, Some(UNIT_EXPOSURE)), ReadinessProbe::READY);
+}
+
+#[test]
+fn reveal_still_waits_while_ae_has_headroom_to_converge() {
+    // Цель в пределах потока (≈4 с·ISO), кадр на 2 EV темнее и подтяжка ±0,5 EV не дотягивает: AE сходится — ждём.
+    let harness = harness_under(
+        directive_with_reach(1.0, DARKEST_SECONDS_ISO, BRIGHTEST_SECONDS_ISO),
+        1.0,
+        &uniform_scene(DARK_VALUE),
+    );
+    assert_eq!(readiness_of(&harness, Some(UNIT_EXPOSURE)), ReadinessProbe::WAITING);
+}
+
+#[test]
+fn reveal_is_ready_within_a_reachable_target() {
+    // Сцена на цели, пределы потока широкие: готово и без срезки.
+    let harness = harness_under(
+        directive_with_reach(1.0, DARKEST_SECONDS_ISO, BRIGHTEST_SECONDS_ISO),
+        1.0,
+        &uniform_scene(TARGET_GRAY),
+    );
+    assert_eq!(readiness_of(&harness, Some(UNIT_EXPOSURE)), ReadinessProbe::READY);
+}
+
+#[test]
+fn reveal_does_not_trust_the_previous_streams_reach() {
+    // Указание всё ещё описывает прошлую камеру (самое светлое 26,67 с·ISO), а кадр нового потока стоит на
+    // 100 с·ISO — вне чужого отрезка. Тёмная цель недостижима «по чужим пределам»: ждём, а не открываем.
+    let scene = uniform_scene(TARGET_GRAY / 16.0);
+    let harness = harness_under(
+        directive_with_reach(26.67, DARKEST_SECONDS_ISO, 26.67),
+        BRIGHTEST_SECONDS_ISO,
+        &scene,
+    );
+    assert_eq!(
+        readiness_of(&harness, Some(exposure_product(BRIGHTEST_SECONDS_ISO))),
+        ReadinessProbe::WAITING
+    );
+    // Запрос снят (applied = None, поток закончился): пределов нет, ждём полной цели.
+    let mut withdrawn = Harness::new();
+    withdrawn.directives.publish(ExposureDirective::DEFAULT);
+    withdrawn.steps(3, Some(exposure_product(BRIGHTEST_SECONDS_ISO)), &scene);
+    assert_eq!(
+        readiness_of(&withdrawn, Some(exposure_product(BRIGHTEST_SECONDS_ISO))),
+        ReadinessProbe::WAITING
+    );
 }

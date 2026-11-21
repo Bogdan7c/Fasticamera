@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use camera_core::CameraEvent;
 use camera_screen::ScreenAction;
-use render_loop::viewfinder::{ContinuityCounters, FrameRecord};
+use render_loop::viewfinder::{ContinuityCounters, FrameRecord, ViewfinderCounters};
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::touch::TouchPhase;
 
@@ -23,6 +23,8 @@ pub struct ZoomObservation<'a> {
     /// Кольцо последних показанных кадров видоискателя (старые первыми).
     pub frames: &'a [FrameRecord],
     pub counters: &'a ContinuityCounters,
+    /// Счётчики ISP видоискателя (скрытые кадры холодного старта, пересборки).
+    pub isp_counters: &'a ViewfinderCounters,
     pub screen: &'a ScreenView,
 }
 

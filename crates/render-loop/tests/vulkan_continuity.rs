@@ -27,6 +27,7 @@ mod vulkan_support;
 
 use std::sync::Arc;
 
+use camera_contract::auto_exposure::{AppliedExposure, ExposureDirective, ExposureProduct, ProductReach};
 use continuity_rig::{
     MAIN, Rig, SIZE_A, SIZE_B, WIDE, assert_picture, content_size, dark, finish, gray, passport, reddish,
     reference_color, test_continuity,
@@ -255,6 +256,50 @@ fn a_new_stream_that_never_looks_plausible_is_revealed_by_timeout_and_its_frames
         processed - processed_before,
         b_ticks.len() as u64,
         "frames_processed сходится: скрытые удержанием кадры обработаны, как показанные"
+    );
+    finish(&mut rig, &[epoch_b]);
+}
+
+/// Тёмная комната: цель AE недостижима, поток B стоит на самом светлом краю своих пределов (ровно то, что
+/// видно в логе телефона: `product = reach.brightest`, нехватка −4 EV). AE сделал всё возможное, поэтому кадры
+/// B открываются по ГОТОВНОСТИ, а не по сроку `max_hold_ms` (до исправления каждая смена шла по таймауту).
+#[test]
+fn a_dark_room_stream_pinned_at_the_reach_edge_is_revealed_by_readiness_not_by_timeout() {
+    let Some(mut rig) = Rig::new(test_continuity(RevealExposureCheck::MeasuredAndPlausible), true) else {
+        return;
+    };
+    let passport_a = Arc::new(passport(MAIN, SIZE_A));
+    let passport_b = Arc::new(passport(WIDE, SIZE_B));
+    let epoch_a = rig.begin(&passport_a);
+    rig.feed_until_live(epoch_a, gray());
+    rig.stream.producer().end_stream(epoch_a);
+    let _gap = (0..3).map(|_| rig.tick()).collect::<Vec<_>>();
+
+    // «Движок» поставил запрос потока B: кадры идут с 1 с·ISO (10 мс × ISO 100 в стенде) — это самое светлое
+    // произведение потока, темнее можно до 0,01 с·ISO.
+    let product = |seconds_iso: f64| ExposureProduct::from_seconds_iso(seconds_iso).expect("произведение");
+    rig.exposure_directives.publish(ExposureDirective {
+        applied: Some(AppliedExposure {
+            product: product(1.0),
+            shortfall_ev: -4.0,
+            reach: ProductReach::Between {
+                darkest: product(0.01),
+                brightest: product(1.0),
+            },
+        }),
+        ..ExposureDirective::DEFAULT
+    });
+
+    let epoch_b = rig.begin(&passport_b);
+    let b_ticks = rig.feed_until_live(epoch_b, dark());
+    let (reveal, _hidden) = b_ticks.split_last().expect("есть тики");
+    assert_eq!(reveal.record.label, FrameLabel::Live);
+    let counters = rig.counters();
+    assert_eq!(counters.holds_revealed_by_condition, 1, "{counters:?}");
+    assert_eq!(counters.holds_revealed_by_timeout, 0, "{counters:?}");
+    assert!(
+        counters.last_hold_duration_ms.is_some_and(|ms| ms < 25),
+        "открыли раньше max_hold_ms = 25: {counters:?}"
     );
     finish(&mut rig, &[epoch_b]);
 }

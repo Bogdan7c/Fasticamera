@@ -67,6 +67,12 @@ def _counter_problems(report: dict) -> list[str]:
     black = report.get("black_frames_while_picture_expected")
     if black != 0:
         problems.append(f"чёрных кадров там, где ждали картинку: {black!r}, ожидалось ровно 0")
+    no_picture = report.get("black_frames_before_first_picture")
+    if no_picture != 0:
+        problems.append(
+            f"чёрный кадр «нет картинки» во время смены объектива — удержание не началось: "
+            f"black_frames_before_first_picture={no_picture!r}, ожидалось ровно 0"
+        )
     if report.get("switches_failed") != 0:
         problems.append(f"неудачных смен объектива: {report.get('switches_failed')!r}, ожидалось 0")
     problems.extend(_reveal_problems(report))

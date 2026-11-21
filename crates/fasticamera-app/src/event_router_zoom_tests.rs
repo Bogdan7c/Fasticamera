@@ -47,6 +47,8 @@ enum ContinuityFault {
     RevealByTimeoutAfterEachSwitch,
     /// После каждой смены камеры удержание кончается честным чёрным «картинка недоступна» (кадры идут, показать нечего).
     BlackPictureUnavailableAfterEachSwitch,
+    /// Камера активна и поток идёт, но на экран живой кадр не доходит никогда (стартовый чёрный: рендер держит кадры).
+    NeverShowsLivePicture,
 }
 
 /// Кольцо показанных кадров и счётчики непрерывности, которые на телефоне ведёт рендер.
@@ -107,7 +109,7 @@ impl ContinuityMirror {
                         crop: None,
                         held_magnification: 1.0,
                     }
-                } else if hold_left > 0 || active.is_none() {
+                } else if hold_left > 0 || active.is_none() || matches!(fault, ContinuityFault::NeverShowsLivePicture) {
                     hold_left = hold_left.saturating_sub(1);
                     if hold_left == 0 && matches!(fault, ContinuityFault::RevealByTimeoutAfterEachSwitch) {
                         counters.holds_revealed_by_timeout += 1;
@@ -450,6 +452,22 @@ fn a_hold_ended_in_honest_black_fails_the_run_with_its_own_reason() {
         "{error}"
     );
     assert_eq!(result["report"]["black_frames_while_picture_expected"], 0, "{result}");
+}
+
+#[test]
+fn zoom_does_not_start_stepping_while_the_render_has_not_shown_a_live_frame_of_the_active_camera() {
+    // Движок в Streaming и экран «Live» по состоянию, но рендер живого кадра не показал: тап ушёл бы в чёрный экран.
+    let (_harness, result) = run_zoom(
+        zoom_config(|zoom| zoom.ready_timeout_ms = 800),
+        ContinuityFault::NeverShowsLivePicture,
+    );
+
+    assert_eq!(result["status"], "failed", "{result}");
+    let error = result["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains("не готово") && error.contains("рендер ещё не показал живой кадр активной камеры"),
+        "{error}"
+    );
 }
 
 /// Крутит маршрутизатор и кадры UI `millis` миллисекунд или пока `done` не вернёт `true`; итог — дошли ли до `done`.

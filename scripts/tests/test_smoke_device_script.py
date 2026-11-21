@@ -130,6 +130,27 @@ class DeviceSmokeScenariosTest(unittest.TestCase):
                 return position
         self.fail(f"в журнале adb нет вызова с {fragment!r}: {calls}")
 
+    # --- второй вариант приложения ---
+
+    def test_other_variant_is_stopped_before_the_launch_and_the_logcat_mark(self) -> None:
+        """Дефект 13a: живой debug-процесс повторял свою строку результата, и прогон release «прошёл» чужим
+        итогом. Второй вариант обязан быть остановлен ДО отметки logcat и запуска сценария."""
+        for variant, own_package, other_package in (
+            ("debug", "dev.fasticamera.debug", "dev.fasticamera"),
+            ("release", "dev.fasticamera", "dev.fasticamera.debug"),
+        ):
+            with self.subTest(variant=variant):
+                self.adb_log.write_text("", encoding="utf-8")
+                completed = self.run_smoke(
+                    "lifecycle", [result_line(LIFECYCLE_OK)], extra_arguments=("--variant", variant)
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                calls = self.adb_calls()
+                stop = self.index_of(calls, f"shell am force-stop {other_package}")
+                self.assertEqual(calls[stop], f"shell am force-stop {other_package}", "остановлен не тот пакет")
+                self.assertLess(stop, self.index_of(calls, "shell date"), "остановка после отметки logcat")
+                self.assertLess(stop, self.index_of(calls, f"-n {own_package}/"), "остановка после запуска")
+
     # --- точка отсчёта logcat ---
 
     def test_logcat_starts_from_device_time_with_milliseconds(self) -> None:

@@ -33,6 +33,7 @@ def zoom_report(**overrides: object) -> dict:
         "max_switch_ms": 420,
         "max_first_live_frame_ms": 610.5,
         "black_frames_while_picture_expected": 0,
+        "black_frames_before_first_picture": 0,
         "held_frames": 96,
         "reveal_faults": {
             "revealed_by_timeout": 0,
@@ -68,6 +69,7 @@ class ZoomCheckTest(unittest.TestCase):
     def test_each_rule_is_rechecked_and_names_its_reason(self) -> None:
         cases = {
             "чёрных кадров": zoom_report(black_frames_while_picture_expected=1),
+            "удержание не началось": zoom_report(black_frames_before_first_picture=30),
             "неудачных смен": zoom_report(switches_failed=1),
             "выполнено шагов": zoom_report(steps_done=7),
             "не выполнено шагов": zoom_report(unfinished=2),
@@ -155,6 +157,17 @@ class DeviceSmokeZoomTest(unittest.TestCase):
         completed = self.run_smoke("zoom", [result_line(payload)])
         self.assertEqual(completed.returncode, 1, completed.stderr)
         self.assertIn("чёрных кадров", completed.stderr)
+
+    def test_zoom_with_a_black_no_picture_frame_fails_even_when_picture_expected_blacks_are_zero(self) -> None:
+        report = zoom_report(black_frames_before_first_picture=1)
+        problems = smoke_checks_zoom.check_zoom({"status": "passed", "report": report})
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("удержание не началось", problems[0])
+        self.assertIn("black_frames_before_first_picture=1", problems[0])
+        # Сводка без поля (старый сценарий) тоже не проходит: чёрные кадры «нет картинки» не измерены.
+        stale = zoom_report()
+        del stale["black_frames_before_first_picture"]
+        self.assertTrue(smoke_checks_zoom.check_zoom({"status": "passed", "report": stale}))
 
     def test_the_usage_header_documents_zoom(self) -> None:
         text = (SCRIPTS_DIR / "device-smoke.sh").read_text(encoding="utf-8")

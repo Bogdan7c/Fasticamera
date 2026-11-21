@@ -8,7 +8,7 @@ use camera_contract::geometry::{PixelRect, PixelSize};
 use camera_contract::viewfinder_crop::{CropAspect, CropCenter, ViewfinderCrop, ZoomFactor};
 use camera_contract::zoom::{FramedCrop, PreviewMirror, ZoomFit, ZoomRatio};
 use camera_core::lens_status::LensSwitchFailure;
-use render_loop::viewfinder::{FrameCropReport, FrameLabel, FrameRecord};
+use render_loop::viewfinder::{BlackKind, FrameCropReport, FrameLabel, FrameRecord, ViewfinderCounters};
 use ui_draw::frame_source::BackdropContinuity;
 
 use super::*;
@@ -92,6 +92,7 @@ struct Rig {
     engine: EngineView,
     frames: Vec<FrameRecord>,
     counters: ContinuityCounters,
+    isp_counters: ViewfinderCounters,
     screen: ScreenView,
 }
 
@@ -106,6 +107,7 @@ impl Rig {
             engine,
             frames: vec![live_frame(1_000, "2", PreviewMirror::None)],
             counters: ContinuityCounters::default(),
+            isp_counters: ViewfinderCounters::default(),
             screen,
         }
     }
@@ -120,6 +122,7 @@ impl Rig {
             events,
             frames: &self.frames,
             counters: &self.counters,
+            isp_counters: &self.isp_counters,
             screen: &self.screen,
         };
         self.runner.tick(&observation)
@@ -678,3 +681,50 @@ fn a_tap_step_waits_while_the_screen_is_still_gliding_to_the_stop() {
 
 #[path = "zoom_runner_home_tests.rs"]
 mod home;
+
+#[test]
+fn the_step_record_tells_what_the_screen_showed_and_which_continuity_counters_moved() {
+    let mut rig = Rig::new(
+        vec![step("01_tap_0.6", ZoomAction::TapStop { ratio: 0.6 })],
+        engine(LensRole::Wide, "2", LensFacing::Back),
+        screen(1_000, LensFacing::Back, 0),
+    );
+    rig.tick(0, &[]);
+    rig.screen = screen(590, LensFacing::Back, 1);
+    // После действия экран 300 мс был чёрным «нет картинки», потом пошли живые кадры новой камеры.
+    rig.frames = vec![
+        FrameRecord {
+            present_time: at_ms(rig.elapsed_ms + 16),
+            label: FrameLabel::Black(BlackKind::NoPicture),
+            backdrop: BackdropContinuity::Live,
+            crop: None,
+            held_magnification: 1.0,
+        },
+        live_frame(rig.elapsed_ms + 316, "3", PreviewMirror::None),
+    ];
+    rig.counters.black_frames_before_first_picture = 1;
+    rig.counters.live_frames_presented = 1;
+    rig.isp_counters.frames_hidden_cold_start = 2;
+    rig.tick(100, &[switched(LensRole::Wide, LensRole::UltraWide)]);
+    run_to_record(&mut rig);
+
+    let record = &rig.runner.records()[0];
+    assert_eq!(record.continuity.black_frames_before_first_picture, 1);
+    assert_eq!(record.continuity.live_frames_presented, 1);
+    assert_eq!(record.continuity.frames_hidden_cold_start, 2);
+    assert_eq!(record.held_frames, 0);
+    let first_black = record
+        .presented_frames
+        .iter()
+        .find(|bucket| bucket.label == "black_no_picture");
+    assert_eq!(
+        first_black.map(|bucket| (bucket.camera.clone(), bucket.frames)),
+        Some((None, 1))
+    );
+    assert!(
+        record
+            .presented_frames
+            .iter()
+            .any(|bucket| bucket.label == "live" && bucket.camera.as_deref() == Some("3"))
+    );
+}

@@ -216,3 +216,72 @@ fn reset_forgets_the_switch_and_the_block_but_keeps_counters() {
     assert!(tracker.blocked().is_none());
     assert_eq!(tracker.counters().switches_failed, 1);
 }
+
+#[test]
+fn stream_start_in_idle_makes_the_lens_shown_so_a_retarget_is_a_switch() {
+    let now = Instant::now();
+    let mut tracker = LensSwitchTracker::new();
+    tracker.on_stream_started(LensRole::Wide);
+    assert_eq!(tracker.state(), LensSwitchState::Steady { role: LensRole::Wide });
+    assert_eq!(tracker.counters(), LensCounters::default(), "первый показ — не смена");
+
+    tracker.on_target_changed(LensRole::UltraWide, RetargetCause::Intent, now);
+    assert_eq!(
+        tracker.state(),
+        LensSwitchState::Switching {
+            from: LensRole::Wide,
+            to: LensRole::UltraWide
+        }
+    );
+    let event = tracker.on_frame(LensRole::UltraWide, now + Duration::from_millis(200));
+    assert!(matches!(event, Some(CameraEvent::LensSwitched { .. })));
+    assert_eq!(tracker.counters().switches_completed, 1);
+}
+
+#[test]
+fn retarget_before_any_stream_start_is_not_a_switch() {
+    let now = Instant::now();
+    let mut tracker = LensSwitchTracker::new();
+    tracker.on_target_changed(LensRole::Wide, RetargetCause::Command, now);
+    tracker.on_target_changed(LensRole::UltraWide, RetargetCause::Intent, now);
+    assert_eq!(tracker.state(), LensSwitchState::Idle);
+    tracker.on_stream_started(LensRole::UltraWide);
+    assert_eq!(
+        tracker.state(),
+        LensSwitchState::Steady {
+            role: LensRole::UltraWide
+        }
+    );
+    assert_eq!(tracker.counters(), LensCounters::default());
+}
+
+#[test]
+fn stream_start_during_a_switch_does_not_finish_it_the_first_frame_does() {
+    let start = Instant::now();
+    let mut tracker = steady(LensRole::Wide, start);
+    tracker.on_target_changed(LensRole::UltraWide, RetargetCause::Intent, start);
+    let switching = LensSwitchState::Switching {
+        from: LensRole::Wide,
+        to: LensRole::UltraWide,
+    };
+    tracker.on_stream_started(LensRole::UltraWide);
+    assert_eq!(tracker.state(), switching, "старт потока смену не завершает");
+    assert_eq!(tracker.counters().switches_completed, 0);
+    assert!(
+        tracker
+            .on_frame(LensRole::UltraWide, start + Duration::from_millis(90))
+            .is_some()
+    );
+}
+
+#[test]
+fn stream_start_in_steady_changes_nothing_for_the_same_or_another_role() {
+    let now = Instant::now();
+    let mut tracker = steady(LensRole::Wide, now);
+    tracker.on_stream_started(LensRole::Wide);
+    assert_eq!(tracker.state(), LensSwitchState::Steady { role: LensRole::Wide });
+    // Другая роль без смены цели не бывает; если случится — решает кадр, а не старт потока.
+    tracker.on_stream_started(LensRole::UltraWide);
+    assert_eq!(tracker.state(), LensSwitchState::Steady { role: LensRole::Wide });
+    assert_eq!(tracker.counters(), LensCounters::default());
+}

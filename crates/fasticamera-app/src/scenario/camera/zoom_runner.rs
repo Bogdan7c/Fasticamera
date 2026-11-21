@@ -23,12 +23,13 @@ use std::time::{Duration, Instant};
 use camera_contract::ids::{CameraId, LensFacing, LensRole};
 use camera_core::CameraEvent;
 use camera_screen::ScreenAction;
-use render_loop::viewfinder::ContinuityCounters;
+use render_loop::viewfinder::{ContinuityCounters, ViewfinderCounters};
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::touch::TouchPhase;
 
 use super::zoom_home::{QueuedStep, StepRole, steps_to_home, stray_event_failure};
 use super::zoom_plan::{SwitchExpectation, ZoomAction, ZoomStep, expectation_for_tap, nearest_stop};
+use super::zoom_presented::{ContinuityDelta, presented_histogram};
 use super::zoom_record::{
     MirrorCheck, RingWatch, SwitchTiming, ZoomStepRecord, first_live_frame_ms, haptic_window, mirror_check,
 };
@@ -48,6 +49,7 @@ fn role_name(role: LensRole) -> &'static str {
 /// Базовые линии на начало шага: приращения считаются от них.
 struct Baseline {
     counters: ContinuityCounters,
+    isp_counters: ViewfinderCounters,
     haptics_total: u64,
     lens_published: u64,
     active_facing: Option<LensFacing>,
@@ -270,6 +272,7 @@ impl ZoomRunner {
             action_render: observation.render_now,
             baseline: Baseline {
                 counters: observation.counters.clone(),
+                isp_counters: observation.isp_counters.clone(),
                 haptics_total: observation.screen.haptics.total(),
                 lens_published: observation.screen.lens_published,
                 active_facing: engine.active.as_ref().map(|active| active.facing),
@@ -623,6 +626,13 @@ impl ZoomRunner {
                 .black_frames_while_picture_expected
                 .saturating_sub(base.black_frames_while_picture_expected),
             reveal_faults: RevealFaults::between(base, counters),
+            continuity: ContinuityDelta::between(
+                base,
+                counters,
+                &active.baseline.isp_counters,
+                observation.isp_counters,
+            ),
+            presented_frames: presented_histogram(observation.frames, active.action_render),
             retargets: active.retargets,
             lens_intents_published: observation
                 .screen

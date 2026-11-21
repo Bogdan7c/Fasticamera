@@ -12,6 +12,9 @@
 //!    если кольцо ничего не теряло;
 //! 8. протяжка по колесу: зум сдвинулся, вибраций не меньше порога и не больше, чем мог пропустить ограничитель частоты
 //!    за окно шага (сами промежутки не меряем: часы ограничителя и исполнителя разные, решение 112);
+//!
+//! Дополнительно (8а): **чёрных кадров «нет картинки» (`black_frames_before_first_picture`) за прогон — 0**: сценарий стартует, когда
+//!    живой кадр уже показан, так что такой кадр значит чёрный экран без удержания при смене объектива (решения 110, 113);
 //! 9. каждая смена объектива раскрылась **по условию** готовности цвета и яркости: раскрытие по сроку и удержание,
 //!    закончившееся честным чёрным, — нарушения ([`super::zoom_reveal::RevealFaults`]);
 //! 10. после прогона экран на 1× основной камеры, как до него (завершающий тап `1`).
@@ -56,6 +59,22 @@ pub fn evaluate_zoom(config: &ZoomScenarioConfig, report: &ZoomObservationReport
             "чёрных кадров там, где ждали картинку: {} (должно быть 0), шаги: {}",
             report.totals.black_frames_while_picture_expected,
             culprits.join(", ")
+        ));
+    }
+    let black_before_picture_steps: Vec<&str> = report
+        .steps
+        .iter()
+        .filter(|step| step.continuity.black_frames_before_first_picture > 0)
+        .map(|step| step.name.as_str())
+        .collect();
+    if report.totals.black_frames_before_first_picture > 0 || !black_before_picture_steps.is_empty() {
+        violations.push(format!(
+            "чёрный кадр «нет картинки» во время смены объектива — удержание не началось: кадров {} (должно быть 0), шаги: {}",
+            report
+                .totals
+                .black_frames_before_first_picture
+                .max(report.steps.iter().map(|step| step.continuity.black_frames_before_first_picture).sum()),
+            black_before_picture_steps.join(", ")
         ));
     }
     if !report.totals.reveal_faults.is_clean() {

@@ -16,6 +16,7 @@ use serde::Serialize;
 
 use crate::config::AndroidCameraConfig;
 use crate::entry::EntryValue;
+use crate::sensor_modes::SENSOR_MODE_TABLE_TAG_NAME;
 
 /// Вендорский ключ, который знает бэкенд (по смыслу, не по имени тега).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -27,6 +28,8 @@ pub enum VendorKey {
     OverrideSensorFrameDuration,
     /// Qualcomm `is_qcfa_sensor`: сенсор Quad Bayer (характеристика, не запрос).
     IsQcfaSensor,
+    /// Qualcomm `SensorModeTable`: режимы сенсора «размер + макс. частота» (характеристика; разбор — `sensor_modes`).
+    SensorModeTable,
 }
 
 /// Тип значения вендорского тега (из дампа `dumpsys media.camera`, 00 п. 114).
@@ -86,7 +89,7 @@ pub struct VendorTagSpec {
 }
 
 /// Все вендорские теги, которые использует бэкенд.
-pub const VENDOR_TAG_SPECS: [VendorTagSpec; 3] = [
+pub const VENDOR_TAG_SPECS: [VendorTagSpec; 4] = [
     VendorTagSpec {
         key: VendorKey::DisableFpsLimits,
         name: "org.quic.camera.manualExposure.disableFPSLimits",
@@ -105,6 +108,12 @@ pub const VENDOR_TAG_SPECS: [VendorTagSpec; 3] = [
         // точное имя не сверено с устройством. Не найдено — родная мозаика честно «неизвестна».
         name: "org.codeaurora.qcamera3.quadra_cfa.is_qcfa_sensor",
         kind: VendorValueKind::Byte,
+        access: VendorAccess::CharacteristicOnAnyCamera,
+    },
+    VendorTagSpec {
+        key: VendorKey::SensorModeTable,
+        name: SENSOR_MODE_TABLE_TAG_NAME,
+        kind: VendorValueKind::Int32,
         access: VendorAccess::CharacteristicOnAnyCamera,
     },
 ];

@@ -5,7 +5,7 @@
 //!   ([`characteristics`]) и результатов ([`result_meta`]) через трейт-источник метаданных
 //!   ([`entry`]), реестр вендорских тегов ([`vendor`]), выбор рычага частоты ([`frame_rate_plan`]),
 //!   план записей запроса ([`request_plan`]), коды NDK → смысловые отказы ([`status_mapping`]),
-//!   сопоставление номеров кадров ([`frame_numbers`]), паспорт потока ([`stream_passport`]),
+//!   таблица режимов сенсора ([`sensor_modes`]), сопоставление номеров кадров ([`frame_numbers`]), паспорт потока ([`stream_passport`]),
 //!   слияние fence-ов ([`fence_fold`]), опустошение reader-а ([`reader_drain`]), отсрочка удаления
 //!   reader-ов ([`retired_readers`]), диагностика ([`diagnostics`]);
 //! * **тонкий слой NDK** (`android`, только под Android): RAII-владельцы объектов Camera2,
@@ -37,6 +37,7 @@ pub mod request_origin;
 pub mod request_plan;
 pub mod result_meta;
 pub mod retired_readers;
+pub mod sensor_modes;
 pub mod status_mapping;
 pub mod stream_passport;
 pub mod tags;

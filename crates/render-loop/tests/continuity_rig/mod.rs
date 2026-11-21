@@ -341,6 +341,8 @@ pub struct Rig {
     pub next_sensor_ts: i64,
     pub next_sequence: i64,
     pub with_exposure: bool,
+    /// Ящик указаний нашему AE (пишет «движок» теста): без AE пустой и ни на что не влияет.
+    pub exposure_directives: DirectiveSlot<camera_contract::auto_exposure::ExposureDirective>,
     pub _journal: Arc<Journal>,
 }
 
@@ -396,9 +398,10 @@ impl Rig {
             }),
             directives,
         )?;
+        let exposure_directives = DirectiveSlot::new();
         let mut backend = if with_auto_exposure {
             backend.with_auto_exposure(AutoExposureLinks {
-                directives: DirectiveSlot::new(),
+                directives: exposure_directives.clone(),
                 proposals: camera_contract::auto_exposure::ExposureProposalChannel::new(),
             })
         } else {
@@ -424,6 +427,7 @@ impl Rig {
             next_sensor_ts: 1_000_000_000,
             next_sequence: 1,
             with_exposure: with_auto_exposure,
+            exposure_directives,
             _journal: journal,
         })
     }

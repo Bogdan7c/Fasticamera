@@ -71,7 +71,7 @@ pub fn build_stream_passport(
 }
 
 /// Где в буфере лежат настоящие данные (см. доку модуля).
-fn valid_area(readout: ReadoutAspect, buffer: PixelSize) -> Result<PixelRect, PassportError> {
+pub(crate) fn valid_area(readout: ReadoutAspect, buffer: PixelSize) -> Result<PixelRect, PassportError> {
     let height = match readout {
         ReadoutAspect::FourByThree => buffer.height,
         ReadoutAspect::SixteenByNine => {

@@ -53,6 +53,23 @@ impl LensRig {
         lens
     }
 
+    /// Основная камера уже в `Streaming`, но движок ещё не обработал ни одного кадра: именно так
+    /// выглядит приложение сразу после готовности экрана (находка на телефоне, 13a).
+    pub(super) fn streaming_on_wide_before_first_frame() -> Self {
+        let mut lens = Self::closed();
+        lens.rig.send(CameraCommand::Open { target: wide() });
+        lens.rig.send(CameraCommand::Configure {
+            mode: mode_raw10_4x3_at(60),
+        });
+        lens.rig.send(CameraCommand::StartStreaming {
+            intent: CaptureIntent::Preview,
+        });
+        assert_eq!(lens.rig.state_name(), "streaming");
+        lens.rig.fresh_events();
+        lens.rig.fake.take_calls();
+        lens
+    }
+
     /// Плавное намерение (колесо, щипок): с гистерезисом. Движок читает его, как после толчка.
     pub(super) fn intent(&mut self, facing: LensFacing, ratio: f32) {
         self.intent_with(facing, ratio, ZoomGesture::Continuous);

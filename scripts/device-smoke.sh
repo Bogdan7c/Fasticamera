@@ -173,6 +173,10 @@ if scenario_resets_camera_permission "$scenario"; then
     }
 fi
 
+stop_other_variant "$serial" "$variant" || {
+    log_error "не удалось остановить второй вариант приложения перед запуском"
+    exit "$EXIT_BUILD_OR_INSTALL_FAILED"
+}
 since_epoch="$(device_epoch_timestamp "$serial")"
 start_activity "$serial" "$package" -e scenario "$scenario" ${stages:+-e stages "$stages"} \
     ${ab_window_ms:+-e ab_window_ms "$ab_window_ms"} \

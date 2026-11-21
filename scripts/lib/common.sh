@@ -39,6 +39,28 @@ package_for_variant() {
     esac
 }
 
+# Пакет второго варианта сборки (debug ↔ release): оба стоят на телефоне рядом.
+other_variant_package() {
+    case "$1" in
+        debug) package_for_variant release ;;
+        release) package_for_variant debug ;;
+        *) return 1 ;;
+    esac
+}
+
+# Останавливает второй вариант нашего приложения перед запуском сценария.
+# Зачем (дефект 13a): `am start -S` останавливает только свой пакет. Прогон release сразу после debug
+# застал живой debug-процесс: он ещё повторял свою строку FASTICAMERA_RESULT (повтор результата,
+# решение 58), и ожидание приняло её за итог release, а сам release-прогон никто не дождался. К тому же
+# фоновый вариант держит камеру. `force-stop` касается только нашего пакета; не установлен — no-op.
+stop_other_variant() {
+    local serial="$1" variant="$2"
+    local other_package
+    other_package="$(other_variant_package "$variant")" || return 1
+    log_step "остановка второго варианта $other_package"
+    adb -s "$serial" shell am force-stop "$other_package"
+}
+
 # Путь к APK варианта после `gradlew assemble<Variant>`.
 apk_path_for_variant() {
     # FASTICAMERA_APK_PATH позволяет подставить готовый APK (используется тестами скриптов).

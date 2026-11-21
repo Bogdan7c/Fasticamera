@@ -6,6 +6,7 @@ use std::sync::Arc;
 use camera_contract::ids::{CameraId, LensFacing, LensRole};
 use camera_contract::zoom::ZoomCatalog;
 use camera_core::CameraStatus;
+use render_loop::viewfinder::{FrameLabel, FrameRecord};
 
 use crate::camera_screen_effects::RecentHapticTimes;
 use crate::camera_screen_source::{ScreenReport, ZoomView};
@@ -72,3 +73,20 @@ pub fn camera_of_role(catalog: &ZoomCatalog, role: LensRole) -> Option<CameraId>
         .find_map(|group| group.lens_for_role(role))
         .map(|lens| lens.camera.clone())
 }
+
+/// Показал ли экран ЖИВУЮ картинку именно этой камеры: в недавних кадрах рендера есть кадр с меткой `Live`, чьё
+/// кадрирование принадлежит `camera`.
+///
+/// Зачем отдельно от состояния движка и экрана: «поток идёт» и `CameraPresence::Live` выводятся из состояния движка и
+/// ничего не говорят о том, дошёл ли первый кадр камеры до экрана. Касание в этот промежуток (стартовый чёрный экран)
+/// некого удерживать: все кадры шага получаются «чёрными без картинки». Удержанные, чёрные и пересобранные кадры
+/// (`crop: None`) и живые кадры другой камеры не считаются.
+pub fn screen_shows_live_picture_of(frames: &[FrameRecord], camera: &CameraId) -> bool {
+    frames
+        .iter()
+        .any(|frame| frame.label == FrameLabel::Live && frame.crop.as_ref().is_some_and(|crop| &crop.camera == camera))
+}
+
+#[cfg(test)]
+#[path = "zoom_views_tests.rs"]
+mod tests;

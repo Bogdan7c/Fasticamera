@@ -89,6 +89,15 @@ fn intent_read_before_the_first_open_is_applied_right_after_it_and_the_stream_st
     });
     lens.frames(3);
 
+    assert!(
+        !lens
+            .rig
+            .fresh_events()
+            .iter()
+            .any(|event| matches!(event, CameraEvent::LensSwitched { .. })),
+        "намерение до первого показа — первый показ, а не смена объектива"
+    );
+    assert_eq!(lens.rig.engine.status().lens.counters.switches_completed, 0);
     assert_eq!(
         lens.open_cameras(),
         vec![ultra_wide_id().to_string()],

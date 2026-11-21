@@ -33,6 +33,7 @@ use crate::entry::{EntryLookup, EntryValue, MetadataSource};
 use crate::frame_rate_plan::plan_frame_rate;
 use crate::request_plan::{PlannedRequest, RequestInputs, plan_bracket, plan_request, plan_session_parameters};
 use crate::retired_readers::RetiredReaders;
+use crate::sensor_modes::{SensorModeAvailability, SensorModeProblem};
 use crate::stream_passport::build_stream_passport;
 use crate::tags::Tag;
 use crate::vendor::{VendorCapabilities, VendorKey};
@@ -51,6 +52,8 @@ const LOG_TARGET: &str = "fasticamera::camera::backend";
 struct CameraRecord {
     descriptor: CameraDescriptor,
     vendor: VendorCapabilities,
+    /// Вендорская таблица режимов сенсора: решает, можно ли обещать AE-диапазон выше публичного потолка.
+    sensor_modes: SensorModeAvailability,
 }
 
 /// Бэкенд камеры на Camera2 NDK.
@@ -132,6 +135,10 @@ impl AndroidCameraBackend {
         let view = characteristics.view();
         let vendor = VendorCapabilities::resolve(&camera, &self.config, &view);
         let native_mosaic = read_native_mosaic(&view, &vendor);
+        let sensor_modes = SensorModeAvailability::read(&view, &vendor);
+        if let SensorModeAvailability::Unusable(problem) = &sensor_modes {
+            note_unusable_sensor_modes(&camera, problem);
+        }
         let parsed =
             parse_characteristics(&view, native_mosaic).map_err(|error: CharacteristicsError| error.to_string())?;
         self.diagnostics.record_camera(&camera, vendor.report(), parsed.notes);
@@ -141,6 +148,7 @@ impl AndroidCameraBackend {
                 capabilities: parsed.capabilities,
             },
             vendor,
+            sensor_modes,
         })
     }
 
@@ -186,11 +194,17 @@ impl AndroidCameraBackend {
                 detail: format!("камеры {} нет в прочитанном каталоге", stream.camera),
             }));
         };
-        let mechanism = plan_frame_rate(stream, &record.descriptor.capabilities, &record.vendor, &self.config)
-            .map_err(|unsupported: UnsupportedStream| {
-                tracing::warn!(target: LOG_TARGET, %unsupported, "режим потока недостижим на этой камере");
-                ConfigureFailure::Unsupported(unsupported)
-            })?;
+        let mechanism = plan_frame_rate(
+            stream,
+            &record.descriptor.capabilities,
+            &record.vendor,
+            &record.sensor_modes,
+            &self.config,
+        )
+        .map_err(|unsupported: UnsupportedStream| {
+            tracing::warn!(target: LOG_TARGET, %unsupported, "режим потока недостижим на этой камере");
+            ConfigureFailure::Unsupported(unsupported)
+        })?;
 
         // Паспорт постоянной части: без него поток кадров не стартует (RAW не поддержан / полоса 16:9
         // не помещается — это отказ режима, а не сбой платформы).
@@ -234,6 +248,11 @@ impl AndroidCameraBackend {
             frame_rate_mechanism: mechanism,
         })
     }
+}
+
+/// Таблица режимов есть, но непригодна: это видно в логе (планировщик на ней откажет в 60 к/с).
+fn note_unusable_sensor_modes(camera: &CameraId, problem: &SensorModeProblem) {
+    tracing::warn!(target: LOG_TARGET, camera = %camera, %problem, "таблица режимов сенсора непригодна");
 }
 
 /// Родная мозаика сенсора по вендорской характеристике `is_qcfa_sensor`; нет тега — неизвестна.

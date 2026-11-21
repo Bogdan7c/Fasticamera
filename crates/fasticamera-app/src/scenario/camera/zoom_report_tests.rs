@@ -83,3 +83,22 @@ fn the_worst_failing_summary_fits_the_result_line() {
     let verdict = judge_within_budget(report.summary(), violations);
     assert_failure_line_fits("zoom", verdict.outcome);
 }
+
+#[test]
+fn black_frames_before_first_picture_grow_into_totals_and_the_summary() {
+    let start = ContinuityCounters {
+        black_frames_before_first_picture: 5,
+        ..ContinuityCounters::default()
+    };
+    let end = ContinuityCounters {
+        black_frames_before_first_picture: 9,
+        ..ContinuityCounters::default()
+    };
+    let mut report = healthy_report();
+    report.totals = ZoomTotals::default().with_continuity(&start, &end);
+    assert_eq!(
+        report.totals.black_frames_before_first_picture, 4,
+        "холодный старт до окна не в счёт"
+    );
+    assert_eq!(report.summary()["black_frames_before_first_picture"], 4);
+}

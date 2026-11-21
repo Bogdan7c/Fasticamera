@@ -292,3 +292,26 @@ fn a_healthy_switch_step_alone_has_no_violations() {
         Vec::<String>::new()
     );
 }
+
+#[test]
+fn a_black_no_picture_frame_during_a_switch_fails_even_with_zero_picture_expected_blacks() {
+    // Именно этот случай телефона: шаг 01_tap_0.6 — held 0, black_while_expected 0, а экран был чёрным «нет картинки».
+    let mut report = healthy_report();
+    report.steps[0].continuity.black_frames_before_first_picture = 30;
+    report.totals.black_frames_before_first_picture = 30;
+    let violations = violations_of(&report);
+    assert_single(
+        &violations,
+        "чёрный кадр «нет картинки» во время смены объектива — удержание не началось",
+    );
+    assert!(violations[0].contains("01_tap_0.6"), "{}", violations[0]);
+}
+
+#[test]
+fn a_black_no_picture_frame_in_a_step_alone_still_fails_when_totals_missed_it() {
+    let mut report = healthy_report();
+    report.steps[1].continuity.black_frames_before_first_picture = 1;
+    let violations = violations_of(&report);
+    assert_single(&violations, "удержание не началось");
+    assert!(violations[0].contains("02_tap_2"), "{}", violations[0]);
+}

@@ -7,6 +7,16 @@ use camera_contract::capabilities::Rational;
 use crate::entry::{EntryLookup, EntryValue, MetadataSource};
 use crate::tags::{self, Tag};
 
+/// Реальные массивы `SensorModeTable` с OnePlus 11 (`dumpsys media.camera`).
+pub const FRONT_TABLE: [i32; 14] = [4, 3, 4608, 3456, 30, 2304, 1728, 30, 2304, 1296, 30, 2304, 1728, 30];
+pub const MAIN_TABLE: [i32; 41] = [
+    13, 3, 8192, 6144, 24, 4096, 3072, 30, 4096, 3072, 30, 4096, 2304, 30, 4096, 2304, 60, 1600, 1200, 24, 4096, 3072,
+    24, 2048, 1152, 240, 1296, 736, 480, 4096, 2304, 120, 7680, 4320, 24, 4096, 2304, 30, 4096, 2304, 30,
+];
+pub const ULTRA_WIDE_TABLE: [i32; 20] = [
+    6, 3, 8000, 6000, 24, 4000, 3000, 30, 4000, 3000, 60, 4000, 2250, 30, 4000, 2250, 60, 2832, 2124, 24,
+];
+
 /// Карта тегов; отсутствующий тег = «HAL не отдал».
 #[derive(Debug, Clone, Default)]
 pub struct FakeMetadata {

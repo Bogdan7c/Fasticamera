@@ -38,6 +38,9 @@ impl FinalState {
 pub struct ZoomTotals {
     /// Чёрные кадры там, где ждали картинку. Должно быть 0.
     pub black_frames_while_picture_expected: u64,
+    /// Чёрные кадры «картинки камеры ещё не было» за прогон. Сценарий стартует, когда живой кадр уже показан,
+    /// поэтому любой такой кадр за прогон — чёрный экран без удержания при смене объектива. Должно быть 0.
+    pub black_frames_before_first_picture: u64,
     /// Кадры, показанные удержанными (размытый переход).
     pub held_frames: u64,
     /// Плохие исходы держания переходного кадра за прогон. Должны быть нулевыми.
@@ -60,6 +63,9 @@ impl ZoomTotals {
         self.black_frames_while_picture_expected = end
             .black_frames_while_picture_expected
             .saturating_sub(start.black_frames_while_picture_expected);
+        self.black_frames_before_first_picture = end
+            .black_frames_before_first_picture
+            .saturating_sub(start.black_frames_before_first_picture);
         self.held_frames = end.held_frames_presented.saturating_sub(start.held_frames_presented);
         self.reveal_faults = RevealFaults::between(start, end);
         self
@@ -108,6 +114,7 @@ impl ZoomObservationReport {
             "max_switch_ms": self.max_switch_ms(),
             "max_first_live_frame_ms": self.max_first_live_frame_ms().map(super::viewfinder_metrics::round2),
             "black_frames_while_picture_expected": self.totals.black_frames_while_picture_expected,
+            "black_frames_before_first_picture": self.totals.black_frames_before_first_picture,
             "held_frames": self.totals.held_frames,
             "reveal_faults": to_value(&self.totals.reveal_faults),
             "switches_failed": self.totals.switches_failed,

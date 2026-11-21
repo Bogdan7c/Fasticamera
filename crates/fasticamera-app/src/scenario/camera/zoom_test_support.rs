@@ -3,6 +3,7 @@
 
 use camera_contract::ids::{LensFacing, LensRole};
 
+use super::zoom_presented::ContinuityDelta;
 use super::zoom_record::{HapticWindow, MirrorCheck, SwitchTiming, ZoomStepRecord};
 use super::zoom_report::{FinalState, ZoomObservationReport, ZoomTotals};
 use super::zoom_reveal::RevealFaults;
@@ -23,6 +24,8 @@ pub fn healthy_switch_step(name: &str) -> ZoomStepRecord {
         held_frames: 20,
         black_frames_while_picture_expected: 0,
         reveal_faults: RevealFaults::default(),
+        continuity: ContinuityDelta::default(),
+        presented_frames: Vec::new(),
         retargets: 0,
         lens_intents_published: 3,
         measured_fps: Some(59.5),

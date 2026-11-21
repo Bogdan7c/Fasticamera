@@ -32,6 +32,7 @@ use super::zoom_plan::planned_steps;
 use super::zoom_report::{FinalState, ZoomObservationReport, ZoomTotals};
 use super::zoom_runner::{EngineView, Injection, RunnerState, ScreenView, TouchInjection, ZoomObservation, ZoomRunner};
 use super::zoom_verdict::evaluate_zoom;
+use super::zoom_views::screen_shows_live_picture_of;
 use crate::camera_presentation::CameraPresentationObservation;
 use crate::camera_screen_input::{InputDelivery, ScreenInputInjector};
 use crate::camera_screen_service::CameraScreenPolicy;
@@ -166,15 +167,29 @@ impl ObservingScenario for ZoomScenario {
             return self.continue_or_time_out(context, "рендер ещё не показал ни одного кадра");
         };
         let counters = &viewfinder.continuity.counters;
+        let isp_counters = &viewfinder.counters;
         match &mut run.phase {
             Phase::Preparing { started_at } => {
                 let started = *started_at;
-                let ready = engine.streaming
+                let engine_and_screen_ready = engine.streaming
                     && engine.catalog.back.is_some()
                     && engine.active.is_some()
                     && report.presence == camera_screen::CameraPresence::Live;
-                if !ready {
+                if !engine_and_screen_ready {
                     return self.continue_or_time_out_since(context, started, "камера или экран ещё не готовы");
+                }
+                // Состояние движка не доказывает, что картинка уже на экране: касание в стартовый чёрный экран
+                // некого удерживать и ломает вердикт. Ждём живой кадр активной камеры.
+                let active_camera_on_screen = engine
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| screen_shows_live_picture_of(frames, &active.camera));
+                if !active_camera_on_screen {
+                    return self.continue_or_time_out_since(
+                        context,
+                        started,
+                        "рендер ещё не показал живой кадр активной камеры",
+                    );
                 }
                 let steps = planned_steps(&run.config);
                 // Прогон привязан к «дому»: начинает с Back 1× и после провала возвращается туда же (`zoom_home`).
@@ -202,6 +217,7 @@ impl ObservingScenario for ZoomScenario {
                     events: &events,
                     frames,
                     counters,
+                    isp_counters,
                     screen: &screen,
                 };
                 let tick = runner.tick(&observation);

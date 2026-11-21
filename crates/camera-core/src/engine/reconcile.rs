@@ -342,6 +342,8 @@ impl CameraEngine {
                 let stream = session.configured.clone();
                 self.reconfiguring = false;
                 self.transition(CameraState::Streaming { stream });
+                // Кадры пойдут на экран: объектив с этого момента «показан» (первый показ — не смена).
+                self.note_lens_stream_started();
                 Ok(())
             }
             Err(failure) => Err(self.fail_from_request_failure(failure, now)),

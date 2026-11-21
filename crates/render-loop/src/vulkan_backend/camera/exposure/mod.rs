@@ -24,6 +24,7 @@
 //! 4. Ручная экспозиция: замер ничего не решает, статистику «на каждом кадре» AE не просит.
 
 mod placement;
+mod reveal_level;
 
 use std::sync::Arc;
 
@@ -44,6 +45,7 @@ use scene_estimation::exposure::{
 };
 
 use self::placement::tile_placement;
+use self::reveal_level::{DisplayedLevelInputs, displayed_level_error_ev};
 use super::continuity::ExposureReadiness;
 use super::statistics_schedule::StatisticsDemand;
 use crate::config::{AutoExposureConfig, RevealExposureCheck};
@@ -230,7 +232,8 @@ impl ExposureRunner {
     /// Яркость «правдоподобна», когда AE уже измерил сцену ЭТОГО потока и показанный уровень кадра (произведение
     /// «выдержка × ISO» кадра + остаточная подтяжка) отличается от цели AE не больше чем на `max_error_ev`.
     /// Принятый замер сам по себе не доказывает правдоподобия: поток мог начаться с чёрной выдержки, а цель к
-    /// ней ещё не сошлась.
+    /// ней ещё не сошлась. Цель берётся ДОСТИЖИМАЯ (срезана пределами потока): в тёмной сцене кадр на краю
+    /// пределов уже готов, ждать недостижимого незачем.
     ///
     /// Ожидание НЕ включается там, где AE нечего измерять и ждать было бы зря весь срок удержания: проверка
     /// выключена конфигом, экспозиция ручная, область замера вне сетки статистики, у кадра нет спаренных выдержки
@@ -259,11 +262,20 @@ impl ExposureRunner {
         }
     }
 
-    /// Насколько показанный уровень кадра выше цели AE, EV (`None` — цели или произведения кадра нет).
+    /// Насколько показанный уровень кадра выше ДОСТИЖИМОЙ цели AE, EV (`None` — цели или произведения кадра нет).
+    /// Что такое достижимая цель и почему пределам верим не всегда — в `reveal_level`.
     fn displayed_level_error_ev(&self) -> Option<f64> {
         let frame_log2 = self.last_frame_product?.seconds_iso().log2();
         let target_log2 = self.controller.target_log2()?;
-        Some(frame_log2 + f64::from(self.last_gain.ev()) - target_log2)
+        Some(displayed_level_error_ev(DisplayedLevelInputs {
+            frame_log2,
+            gain_ev: f64::from(self.last_gain.ev()),
+            target_log2,
+            bias_ev: f64::from(self.directive.bias.ev()),
+            applied: self.directive.applied,
+            // Меньше шага подтяжки глаз и квантование ISP различить не могут: это и есть допуск округления.
+            reach_tolerance_ev: f64::from(self.config.residual_gain_step_ev),
+        }))
     }
 
     /// План для нового кадра камеры (см. модуль). Вызывается до подготовки параметров ISP.

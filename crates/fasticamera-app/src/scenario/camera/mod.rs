@@ -99,6 +99,7 @@ mod white_balance_report;
 mod zoom;
 mod zoom_home;
 mod zoom_plan;
+mod zoom_presented;
 mod zoom_record;
 mod zoom_report;
 mod zoom_reveal;

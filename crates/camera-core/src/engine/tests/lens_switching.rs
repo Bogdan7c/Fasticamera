@@ -370,3 +370,99 @@ fn close_and_stop_streaming_forget_the_switch() {
     assert_eq!(lens.switch_state(), LensSwitchState::Idle);
     assert!(lens.rig.engine.status().lens.active.is_none());
 }
+
+#[test]
+fn tap_right_after_streaming_but_before_the_first_frame_is_still_a_switch() {
+    // Находка 13a: тап `.6` пришёл, когда движок уже `Streaming`, но кадров ещё не обработал.
+    let mut lens = LensRig::streaming_on_wide_before_first_frame();
+    assert_eq!(
+        lens.switch_state(),
+        LensSwitchState::Steady { role: LensRole::Wide },
+        "старт потока уже закрепил показ основного объектива"
+    );
+
+    lens.intent_discrete(LensFacing::Back, 0.6);
+    assert_eq!(lens.rig.fake.open_camera(), Some(ultra_wide_id()));
+    assert_eq!(
+        lens.switch_state(),
+        LensSwitchState::Switching {
+            from: LensRole::Wide,
+            to: LensRole::UltraWide
+        },
+        "кадр основной камеры не нужен: смена началась сразу"
+    );
+    assert!(switched_events(&lens.rig.fresh_events()).is_empty());
+
+    lens.rig.now += Duration::from_millis(300);
+    lens.frames(2);
+    let events = lens.rig.fresh_events();
+    assert_eq!(
+        switched_events(&events),
+        vec![&CameraEvent::LensSwitched {
+            from: LensRole::Wide,
+            to: LensRole::UltraWide,
+            elapsed: Duration::from_millis(300)
+        }],
+        "ровно одно LensSwitched"
+    );
+    let status = lens.rig.engine.status().lens;
+    assert_eq!(status.counters.switches_completed, 1);
+    assert_eq!(
+        status.switch,
+        LensSwitchState::Steady {
+            role: LensRole::UltraWide
+        }
+    );
+}
+
+#[test]
+fn recovery_after_eviction_restarts_the_same_lens_without_a_fake_switch() {
+    let mut lens = LensRig::streaming_on_wide_before_first_frame();
+    lens.rig.fake.disconnect_current_device();
+    lens.rig.pump();
+    assert_eq!(lens.rig.state_name(), "error", "ждём «камера свободна»");
+    lens.rig.fresh_events();
+
+    lens.rig.feed(BackendEvent::CameraAvailability {
+        camera: camera_id("2"),
+        availability: CameraAvailability::Available,
+    });
+    assert_eq!(lens.rig.state_name(), "streaming", "восстановились");
+    lens.frames(3);
+
+    assert!(
+        switched_events(&lens.rig.fresh_events()).is_empty(),
+        "восстановление той же камеры — не смена объектива"
+    );
+    let status = lens.rig.engine.status().lens;
+    assert_eq!(status.switch, LensSwitchState::Steady { role: LensRole::Wide });
+    assert_eq!(status.counters.switches_completed, 0);
+}
+
+#[test]
+fn close_forgets_the_shown_lens_and_the_next_stream_start_is_a_first_show_again() {
+    let mut lens = LensRig::streaming_on_wide_before_first_frame();
+    lens.rig.send(CameraCommand::Close);
+    assert_eq!(lens.switch_state(), LensSwitchState::Idle);
+
+    // Новая камера — ширик: цель выбрана до старта потока, это первый показ, а не смена.
+    lens.rig.send(CameraCommand::Open {
+        target: CameraTarget::Role(LensRole::UltraWide),
+    });
+    lens.rig.send(CameraCommand::Configure {
+        mode: mode_raw10_4x3_at(60),
+    });
+    assert_eq!(lens.switch_state(), LensSwitchState::Idle, "поток ещё не запущен");
+    lens.rig.send(CameraCommand::StartStreaming {
+        intent: CaptureIntent::Preview,
+    });
+    assert_eq!(
+        lens.switch_state(),
+        LensSwitchState::Steady {
+            role: LensRole::UltraWide
+        }
+    );
+    lens.frames(3);
+    assert!(switched_events(&lens.rig.fresh_events()).is_empty());
+    assert_eq!(lens.rig.engine.status().lens.counters.switches_completed, 0);
+}

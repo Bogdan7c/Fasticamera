@@ -1,10 +1,12 @@
 use camera_contract::capabilities::FrameDuration;
-use camera_contract::fixtures::{camera_id, main_wide_camera, ultra_wide_camera};
+use camera_contract::fixtures::{camera_id, front_camera, main_wide_camera, ultra_wide_camera};
 use camera_contract::geometry::PixelSize;
 use camera_contract::raw_format::RawFormat;
 use camera_contract::stream::TargetFrameRate;
 
 use super::*;
+use crate::fake_metadata::{FRONT_TABLE, MAIN_TABLE, ULTRA_WIDE_TABLE};
+use crate::sensor_modes::{SensorModeParseError, SensorModeProblem, SensorModeTable};
 use crate::vendor::{TagResolution, TagResolver};
 
 /// Устройство, знающее оба тега CamX (или не знающее ни одного).
@@ -44,12 +46,49 @@ fn main_stream(readout: ReadoutAspect, fps: u32) -> ResolvedStream {
     stream("2", PixelSize::new(4096, 3072), readout, fps)
 }
 
+/// Таблица режимов, прочитанная из реального массива OnePlus 11.
+fn listed(values: &[i32]) -> SensorModeAvailability {
+    SensorModeAvailability::Listed(SensorModeTable::parse(values).unwrap())
+}
+
+fn plan_with_modes(
+    stream: &ResolvedStream,
+    capabilities: &CameraCapabilities,
+    vendor: &VendorCapabilities,
+    sensor_modes: &SensorModeAvailability,
+) -> Result<FrameRateMechanism, UnsupportedStream> {
+    plan_frame_rate(
+        stream,
+        capabilities,
+        vendor,
+        sensor_modes,
+        &AndroidCameraConfig::default(),
+    )
+}
+
+/// Планирование с таблицей основной камеры (для тестов, где таблица не должна влиять на исход).
 fn plan(
     stream: &ResolvedStream,
     capabilities: &CameraCapabilities,
     vendor: &VendorCapabilities,
 ) -> Result<FrameRateMechanism, UnsupportedStream> {
-    plan_frame_rate(stream, capabilities, vendor, &AndroidCameraConfig::default())
+    plan_with_modes(stream, capabilities, vendor, &listed(&MAIN_TABLE))
+}
+
+fn not_achievable(fps: u32) -> Result<FrameRateMechanism, UnsupportedStream> {
+    Err(UnsupportedStream::FrameRateNotAchievable {
+        requested: TargetFrameRate::new(fps).unwrap(),
+    })
+}
+
+fn ae_range(fps: u32) -> Result<FrameRateMechanism, UnsupportedStream> {
+    Ok(FrameRateMechanism::PublicAeTargetRange {
+        range: FpsRange { min: fps, max: fps },
+    })
+}
+
+fn front_stream(readout: ReadoutAspect, fps: u32) -> ResolvedStream {
+    stream("1", PixelSize::new(2304, 1728), readout, fps)
 }
 
 #[test]
@@ -90,7 +129,7 @@ fn main_camera_4x3_at_60_uses_the_camx_override_with_exactly_16666667_ns() {
 fn ultra_wide_4x3_at_60_uses_ae_range_never_camx_even_if_the_device_knows_the_tags() {
     let wide = ultra_wide_camera().capabilities;
     let ultra = stream("3", PixelSize::new(4000, 3000), ReadoutAspect::FourByThree, 60);
-    let mechanism = plan(&ultra, &wide, &vendor_for("3", true)).unwrap();
+    let mechanism = plan_with_modes(&ultra, &wide, &vendor_for("3", true), &listed(&ULTRA_WIDE_TABLE)).unwrap();
     assert_eq!(
         mechanism,
         FrameRateMechanism::PublicAeTargetRange {
@@ -184,6 +223,7 @@ fn rate_above_the_configured_limit_is_not_achievable_without_a_vendor_lever() {
             &main_stream(ReadoutAspect::SixteenByNine, 120),
             &main,
             &vendor_for("2", true),
+            &listed(&MAIN_TABLE),
             &config
         ),
         Ok(FrameRateMechanism::PublicAeTargetRange {
@@ -275,4 +315,120 @@ fn duration_slightly_over_the_tolerance_is_above_the_ceiling() {
         plan_with_declared_min_duration(over, 60),
         FrameRateMechanism::VendorSensorFrameDurationOverride { .. }
     ));
+}
+
+// --- Таблица режимов сенсора решает, можно ли обещать AE-диапазон выше публичного потолка ---
+
+#[test]
+fn front_4x3_at_60_is_not_achievable_because_the_table_has_no_60fps_mode() {
+    // Регрессия приёмки 13: AE [60,60] на фронте уводил HAL в 4608x3456 и валил провайдер камеры.
+    assert_eq!(
+        plan_with_modes(
+            &front_stream(ReadoutAspect::FourByThree, 60),
+            &front_camera().capabilities,
+            &vendor_for("1", true),
+            &listed(&FRONT_TABLE)
+        ),
+        not_achievable(60)
+    );
+}
+
+#[test]
+fn front_16x9_at_60_is_not_achievable_because_2304x1296_exists_only_at_30() {
+    assert_eq!(
+        plan_with_modes(
+            &front_stream(ReadoutAspect::SixteenByNine, 60),
+            &front_camera().capabilities,
+            &vendor_for("1", true),
+            &listed(&FRONT_TABLE)
+        ),
+        not_achievable(60)
+    );
+}
+
+#[test]
+fn front_4x3_at_30_stays_on_the_public_range_without_consulting_the_table() {
+    for sensor_modes in [SensorModeAvailability::AbsentOnDevice, listed(&FRONT_TABLE)] {
+        assert_eq!(
+            plan_with_modes(
+                &front_stream(ReadoutAspect::FourByThree, 30),
+                &front_camera().capabilities,
+                &vendor_for("1", true),
+                &sensor_modes
+            ),
+            ae_range(30)
+        );
+    }
+}
+
+#[test]
+fn main_16x9_at_60_needs_the_table_to_offer_the_4096x2304_mode() {
+    let main = main_wide_camera().capabilities;
+    let stream = main_stream(ReadoutAspect::SixteenByNine, 60);
+    // Вырезка 16:9 считается от ширины буфера: 4096 x 2304.
+    assert_eq!(
+        plan_with_modes(&stream, &main, &vendor_for("2", true), &listed(&MAIN_TABLE)),
+        ae_range(60)
+    );
+    // Тот же запрос на таблице фронта (режима 4096x2304 нет) — отказ.
+    assert_eq!(
+        plan_with_modes(&stream, &main, &vendor_for("2", true), &listed(&FRONT_TABLE)),
+        not_achievable(60)
+    );
+}
+
+#[test]
+fn main_4x3_at_60_keeps_the_camx_override_even_though_its_table_has_no_4096x3072_at_60() {
+    let main = main_wide_camera().capabilities;
+    for sensor_modes in [
+        listed(&MAIN_TABLE),
+        SensorModeAvailability::AbsentOnDevice,
+        SensorModeAvailability::Unusable(SensorModeProblem::TagResolveFailed { status: 1 }),
+    ] {
+        assert_eq!(
+            plan_with_modes(
+                &main_stream(ReadoutAspect::FourByThree, 60),
+                &main,
+                &vendor_for("2", true),
+                &sensor_modes
+            ),
+            Ok(FrameRateMechanism::VendorSensorFrameDurationOverride {
+                frame_duration: FrameDuration::from_nanos(16_666_667)
+            })
+        );
+    }
+}
+
+#[test]
+fn without_a_usable_table_the_ae_branches_above_the_ceiling_are_not_achievable() {
+    let ultra = ultra_wide_camera().capabilities;
+    let ultra_stream = stream("3", PixelSize::new(4000, 3000), ReadoutAspect::FourByThree, 60);
+    let main = main_wide_camera().capabilities;
+    let main_16x9 = main_stream(ReadoutAspect::SixteenByNine, 60);
+    let malformed = SensorModeAvailability::Unusable(SensorModeProblem::Malformed(
+        SensorModeParseError::UnsupportedFieldCount { actual: 4 },
+    ));
+    for sensor_modes in [SensorModeAvailability::AbsentOnDevice, malformed] {
+        assert_eq!(
+            plan_with_modes(&ultra_stream, &ultra, &vendor_for("3", true), &sensor_modes),
+            not_achievable(60)
+        );
+        assert_eq!(
+            plan_with_modes(&main_16x9, &main, &vendor_for("2", true), &sensor_modes),
+            not_achievable(60)
+        );
+    }
+}
+
+#[test]
+fn a_widescreen_crop_that_does_not_fit_the_buffer_is_not_achievable_not_a_panic() {
+    let mut main = main_wide_camera().capabilities;
+    // Буфер 4096x2000: вырезка 4096x2304 в него не помещается.
+    let narrow = PixelSize::new(4096, 2000);
+    main.raw_streams[0].size = narrow;
+    let stream = stream("2", narrow, ReadoutAspect::SixteenByNine, 60);
+    assert_eq!(
+        plan_with_modes(&stream, &main, &vendor_for("2", true), &listed(&MAIN_TABLE)),
+        not_achievable(60)
+    );
 }

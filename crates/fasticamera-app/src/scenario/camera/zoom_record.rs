@@ -9,6 +9,7 @@ use render_loop::viewfinder::{FrameLabel, FrameRecord};
 use serde::Serialize;
 use shell_contract::clock::MonotonicNanos;
 
+use super::zoom_presented::{ContinuityDelta, PresentedBucket};
 use super::zoom_reveal::RevealFaults;
 
 /// Наносекунд в миллисекунде.
@@ -157,6 +158,12 @@ pub struct ZoomStepRecord {
     pub black_frames_while_picture_expected: u64,
     /// Плохие исходы держания переходного кадра за шаг (раскрытие по сроку, честное чёрное). Должны быть нулевыми.
     pub reveal_faults: RevealFaults,
+    /// Приращения остальных счётчиков непрерывности и ISP за шаг (удержания, живые кадры, чёрные «нет картинки»,
+    /// скрытые кадры холодного старта и т. д.): что экран показывал, кроме уже названных выше кадров.
+    pub continuity: ContinuityDelta,
+    /// Гистограмма показанных кадров за окно шага (действие → конец шага) по корзинам «метка + камера»,
+    /// с временем первого кадра корзины от действия: что именно видел экран в паузе перед первым живым кадром.
+    pub presented_frames: Vec<PresentedBucket>,
     /// Промежуточных целей смены, отменённых новой целью.
     pub retargets: u32,
     /// Намерений объектива, которые экран положил в ящик за шаг.
@@ -190,6 +197,8 @@ impl ZoomStepRecord {
             held_frames: 0,
             black_frames_while_picture_expected: 0,
             reveal_faults: RevealFaults::default(),
+            continuity: ContinuityDelta::default(),
+            presented_frames: Vec::new(),
             retargets: 0,
             lens_intents_published: 0,
             measured_fps: None,

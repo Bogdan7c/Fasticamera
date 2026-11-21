@@ -220,6 +220,18 @@ impl CameraEngine {
         }
     }
 
+    /// Поток текущей сессии запущен (`Streaming`): первый показ объектива закреплён за этим
+    /// моментом, а не за первым кадром (см. правила в `lens_switch`).
+    pub(super) fn note_lens_stream_started(&mut self) {
+        let Some(session) = &self.session else {
+            return;
+        };
+        let Some(role) = self.catalog.role_of(&session.configured.stream.camera) else {
+            return;
+        };
+        self.lens.tracker.on_stream_started(role);
+    }
+
     /// Показывать нечего (камера закрыта, поток остановлен, окончательная ошибка).
     pub(super) fn reset_lens_switch(&mut self) {
         self.lens.tracker.reset();
