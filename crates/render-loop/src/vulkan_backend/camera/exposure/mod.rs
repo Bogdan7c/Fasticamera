@@ -273,7 +273,9 @@ impl ExposureRunner {
         let Some(error_ev) = error_ev else {
             return ExposureReadiness::WaitingForTarget;
         };
-        if error_ev.abs() > f64::from(max_error_ev) {
+        // Несравнимая ошибка (NaN) — тоже «уровень не тот», а не «готов»: годится только ошибка в допуске.
+        let within_tolerance = error_ev.abs() <= f64::from(max_error_ev);
+        if !within_tolerance {
             return ExposureReadiness::WaitingLevelOff;
         }
         if judged_by_carried {
