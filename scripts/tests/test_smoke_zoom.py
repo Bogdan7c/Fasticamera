@@ -34,7 +34,10 @@ def seamless_switch(step: str, leg: str, **overrides: object) -> dict:
         "black": 0,
         "hidden": 0,
         "gap_periods": 1.02,
+        "frames_missed": 0,
         "gap_ms": 17.0,
+        "tgt_milli": 1000,
+        "sw_milli": 1004,
         "ready_ms": 240.0,
         "fps_min": 59.2,
         "closed_ms": None,
@@ -44,7 +47,7 @@ def seamless_switch(step: str, leg: str, **overrides: object) -> dict:
 
 
 def seamless_release(step: str, **overrides: object) -> dict:
-    entry = seamless_switch(step, "release", method=None, events=0, gap_periods=None, gap_ms=None, ready_ms=None, fps_min=None)
+    entry = seamless_switch(step, "release", method=None, events=0, gap_periods=None, frames_missed=None, gap_ms=None, ready_ms=None, fps_min=None)
     entry["closed_ms"] = 3700.0
     entry.update(overrides)
     return entry
@@ -162,8 +165,11 @@ class ZoomCheckTest(unittest.TestCase):
             "удержанных кадров 3": with_step(0, held=3),
             "чёрных кадров 1": with_step(3, black=1),
             "скрытых непрерывностью кадров 2": with_step(4, hidden=2),
-            "разрыв показа 3.5": with_step(0, gap_periods=3.5),
+            "пропущено кадров 2": with_step(0, gap_periods=3.1, frames_missed=2),
+            "пропущено кадров None": with_step(0, frames_missed=None),
             "частота камер, пока стримят обе, 41.0": with_step(1, fps_min=41.0),
+            "смена вверх случилась при 1105 тыс.": with_step(1, sw_milli=1105),
+            "в момент смены не измерен": with_step(4, sw_milli=None),
             "ready_ms=None": with_step(0, ready_ms=None),
             "тёплая не закрылась": with_step(2, closed_ms=None),
             "leaked_leases=1": zoom_report(leaked_leases=1),
@@ -178,14 +184,24 @@ class ZoomCheckTest(unittest.TestCase):
                 self.assertEqual(verdict.exit_code, smoke_wait.EXIT_SCENARIO_FAILED, verdict.message)
                 self.assertIn(expected, verdict.message)
 
-    def test_gap_at_the_limit_passes_and_just_over_fails(self) -> None:
-        def report_with_gap(gap: float) -> dict:
+    def test_one_missed_frame_passes_even_with_jittered_periods_and_two_fail(self) -> None:
+        def report_with_gap(periods: float, missed: int) -> dict:
             steps = healthy_seamless()
-            steps[0] = {**steps[0], "gap_periods": gap}
+            steps[0] = {**steps[0], "gap_periods": periods, "frames_missed": missed}
             return zoom_report(seamless=steps)
 
-        self.assertEqual(verdict_of(report_with_gap(2.0)).exit_code, smoke_wait.EXIT_OK)
-        self.assertEqual(verdict_of(report_with_gap(2.01)).exit_code, smoke_wait.EXIT_SCENARIO_FAILED)
+        # 2,0003 периода — один пропущенный кадр с дрожанием времени показа (так было на телефоне): проходит.
+        self.assertEqual(verdict_of(report_with_gap(2.0003, 1)).exit_code, smoke_wait.EXIT_OK)
+        self.assertEqual(verdict_of(report_with_gap(3.0, 2)).exit_code, smoke_wait.EXIT_SCENARIO_FAILED)
+
+    def test_hover_swaps_are_a_note_not_a_failure(self) -> None:
+        steps = healthy_seamless()
+        steps.insert(2, seamless_switch("13_wheel_seamless_hover", "hover", events=9))
+        verdict = verdict_of(zoom_report(seamless=steps))
+        self.assertEqual(verdict.exit_code, smoke_wait.EXIT_OK, verdict.message)
+        notes = [note for note in verdict.notes if "колебания у отметки" in note]
+        self.assertEqual(len(notes), 1, verdict.notes)
+        self.assertIn("смен 9", notes[0])
 
     def test_many_hidden_frames_in_a_tap_is_a_note_not_a_failure(self) -> None:
         report = zoom_report(tap_hidden=[{"step": "01_tap_0.6", "hidden": 10}, {"step": "02_tap_1", "hidden": 4}])
@@ -267,7 +283,8 @@ class DeviceSmokeZoomTest(unittest.TestCase):
     def test_the_usage_header_documents_zoom(self) -> None:
         text = (SCRIPTS_DIR / "device-smoke.sh").read_text(encoding="utf-8")
         header = text.split("set -euo pipefail", 1)[0]
-        self.assertIn("zoom (150;", header)
+        self.assertIn("zoom (240;", header)
+        self.assertNotIn("zoom (150;", header, "прогон идёт около 240 с: старый таймаут 150 с обрывал бы его")
 
     def test_neutral_card_has_no_meaning_for_zoom(self) -> None:
         completed = self.run_smoke("zoom", [], extra_arguments=("--neutral-card",))

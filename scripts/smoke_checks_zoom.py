@@ -25,6 +25,9 @@ EXPECTED_FINAL_RATIO_MILLI = 1000
 FINAL_RATIO_TOLERANCE_MILLI = 20
 """Допуск на 1×: 2 % (как в Rust)."""
 
+MAX_SWITCH_RATIO_ERROR_MILLI = 30
+"""Допуск «экран на отметке объектива в момент смены вверх» (``SeamlessPlan::switch_ratio_tolerance_milli``)."""
+
 REVEAL_FAULT_FIELDS = (
     "revealed_by_timeout",
     "ended_without_stream",
@@ -38,8 +41,11 @@ REVEAL_FAULT_FIELDS = (
 MIN_BACK_FPS = 55.0
 """Порог частоты каждой задней камеры, пока стримят обе (решение владельца; Rust читает его из конфига)."""
 
-MAX_SWITCH_GAP_PERIODS = 2.0
-"""Наибольший разрыв показа при бесшовной смене, в периодах кадра (``SeamlessPlan::max_switch_gap_periods``)."""
+MAX_FRAMES_MISSED_AT_SWITCH = 1
+"""Сколько кадров можно пропустить на стыке бесшовной смены (``SeamlessPlan::max_frames_missed_at_switch``).
+
+Судим по целым кадрам (``frames_missed`` отчёта), а не по дробным периодам ``gap_periods``: времена показа дрожат на
+доли мс, и один пропущенный кадр на телефоне меряется как 2,0003 периода."""
 
 PROMOTED_METHOD = "promoted_standby"
 """Метод смены, который обязан быть у бесшовных шагов (``LensSwitchMethod::PromotedStandby``)."""
@@ -167,9 +173,21 @@ def _seamless_switch_problems(step: dict) -> list[str]:
     for key, label in (("held", "удержанных кадров"), ("black", "чёрных кадров"), ("hidden", "скрытых непрерывностью кадров")):
         if step.get(key) != 0:
             problems.append(f"{name}: {label} {step.get(key)!r}, ожидалось 0")
-    gap = step.get("gap_periods")
-    if not _is_number(gap) or gap > MAX_SWITCH_GAP_PERIODS:
-        problems.append(f"{name}: разрыв показа {gap!r} периода кадра, порог {MAX_SWITCH_GAP_PERIODS}")
+    missed = step.get("frames_missed")
+    if not _is_number(missed) or missed > MAX_FRAMES_MISSED_AT_SWITCH:
+        problems.append(
+            f"{name}: на смене пропущено кадров {missed!r} (разрыв {step.get('gap_periods')!r} периода кадра), "
+            f"допустимо {MAX_FRAMES_MISSED_AT_SWITCH}"
+        )
+    if step.get("leg") == "back":
+        target, shown = step.get("tgt_milli"), step.get("sw_milli")
+        if not _is_number(target) or not _is_number(shown):
+            problems.append(f"{name}: коэффициент экрана в момент смены не измерен (tgt_milli={target!r}, sw_milli={shown!r})")
+        elif abs(shown - target) > MAX_SWITCH_RATIO_ERROR_MILLI:
+            problems.append(
+                f"{name}: смена вверх случилась при {shown} тыс., отметка объектива {target} тыс. "
+                f"(допуск {MAX_SWITCH_RATIO_ERROR_MILLI}): без тёплой камеры или с гистерезисом"
+            )
     fps = step.get("fps_min")
     if not _is_number(fps) or fps < MIN_BACK_FPS:
         problems.append(f"{name}: частота камер, пока стримят обе, {fps!r} к/с, порог {MIN_BACK_FPS:.0f}")
@@ -212,8 +230,14 @@ def zoom_notes(result: dict) -> list[str]:
             if isinstance(step, dict) and step.get("leg") in ("out", "back"):
                 notes.append(
                     f"zoom: {step.get('step')}: тёплая готова через {step.get('ready_ms')} мс, "
-                    f"разрыв показа {step.get('gap_ms')} мс ({step.get('gap_periods')} периода), "
+                    f"заморозка картинки (живой → живой) {step.get('gap_ms')} мс ({step.get('gap_periods')} периода), "
+                    f"до любого кадра {step.get('any_frame_gap_ms')} мс ({step.get('any_frame_gap_periods')} периода), "
                     f"частота обеих камер не ниже {step.get('fps_min')} к/с"
+                )
+            elif isinstance(step, dict) and step.get("leg") == "hover":
+                notes.append(
+                    f"zoom: {step.get('step')}: колебания у отметки объектива — смен {step.get('events')} "
+                    "(каждая смена сбрасывает 3A; измерение, не провал)"
                 )
             elif isinstance(step, dict):
                 notes.append(f"zoom: {step.get('step')}: тёплая закрылась через {step.get('closed_ms')} мс после отпускания")

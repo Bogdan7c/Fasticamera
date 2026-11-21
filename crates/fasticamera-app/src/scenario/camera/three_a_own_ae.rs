@@ -250,6 +250,8 @@ pub struct EngineAeCount {
     pub results_observed: u64,
     /// Из них с активным `AE_STATE` HAL — при нашем AE должно быть 0.
     pub results_with_hal_ae_active: u64,
+    /// Предложений AE, отвергнутых как измеренных на другой камере (13b). Сценарий `3a` идёт на одной камере: 0.
+    pub foreign_camera_proposals_rejected: u64,
 }
 
 impl EngineAeCount {
@@ -258,6 +260,7 @@ impl EngineAeCount {
         Self {
             results_observed: counters.results_observed,
             results_with_hal_ae_active: counters.results_with_hal_ae_active,
+            foreign_camera_proposals_rejected: counters.ae_foreign_camera_proposals_rejected,
         }
     }
 }
@@ -280,6 +283,10 @@ pub fn own_ae_violations(report: &OwnAeReport) -> Vec<String> {
         Some(engine) if engine.results_observed == 0 => {
             violations.push("наш AE: движок не насчитал ни одного результата с запуска".to_owned())
         }
+        Some(engine) if engine.foreign_camera_proposals_rejected != 0 => violations.push(format!(
+            "наш AE: отвергнуто {} предложений как измеренных на другой камере: в сценарии с одной камерой должно быть 0",
+            engine.foreign_camera_proposals_rejected
+        )),
         Some(_) => {}
         None => violations.push("наш AE: нет счётчиков движка — учёт «каждого результата» не проверен".to_owned()),
     }

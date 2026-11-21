@@ -50,6 +50,14 @@ pub fn ratio_for_continuous_switch(
     group.range.clamp(ratio)
 }
 
+/// Коэффициент плавного жеста при готовой тёплой камере: ровно собственный коэффициент объектива `to`.
+///
+/// С готовой тёплой гистерезис селектора не нужен (решение 128): смена идёт на самой отметке объектива, а не на
+/// `native × (1 + гистерезис)`, поэтому палец не заходит за отметку. Результат ограничен диапазоном группы.
+pub fn ratio_at_native_mark(group: &LensGroup, to: &LensZoomPoint) -> ZoomRatio {
+    group.range.clamp(to.native_ratio)
+}
+
 /// Частоты за окно: показываемая эпоха и тёплые эпохи (к/с).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WindowFps {

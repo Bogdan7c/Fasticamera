@@ -25,7 +25,7 @@
 //! план не перестраивают (порог `replan_min_change_ev`).
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use camera_contract::auto_exposure::{
     CameraTag, ExposureProduct, ExposureProposal, ExposureProposalChannel, ProposalConvergence,
@@ -176,6 +176,10 @@ impl ExposureController for RawStatsExposure {
             Some(ProposalConvergence::Settled) => AutoExposureProgress::Settled,
             Some(ProposalConvergence::Holding) => AutoExposureProgress::Holding,
         })
+    }
+
+    fn foreign_camera_proposals_rejected(&self) -> u64 {
+        self.gate.foreign_camera_counter().load(Ordering::Relaxed)
     }
 
     fn reset_for_new_stream(&mut self) {

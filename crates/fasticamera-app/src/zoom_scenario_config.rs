@@ -71,14 +71,20 @@ pub struct SeamlessPlan {
     pub pinch_start_half_width: f64,
     /// Относительное изменение расстояния между пальцами за образец. `[estimate]` 0,012.
     pub pinch_step: f64,
-    /// Во сколько раз коэффициент плавного жеста при подъёме выше собственного коэффициента объектива:
-    /// гистерезис селектора (0,05) не пускает вверх раньше `native × 1,05`. `[derived]` 1,10.
-    pub overshoot_ratio: f32,
+    /// Насколько (в тысячных коэффициента) экран может отличаться от отметки объектива в момент смены вверх по шкале.
+    /// С готовой тёплой смена идёт ровно на отметке (решение 128); допуск — шаг щипка (1,2 %) и задержка события.
+    /// Гистерезис селектора (5 %) заведомо не проходит. `[derived]` 30.
+    pub switch_ratio_tolerance_milli: u32,
+    /// Сколько мс колебаться около отметки главной камеры при замере дребезга (0 — шаг выключен). `[estimate]` 2000.
+    pub hover_ms: u64,
+    /// Полуширина колебаний около отметки, тысячные коэффициента: ±2 % — типичный дрожащий палец. `[estimate]` 20.
+    pub hover_band_milli: u32,
     /// Наименьшая частота каждой задней камеры, пока стримят обе, к/с (решение владельца: 55 из 60).
     pub min_back_fps: f64,
-    /// Наибольший разрыв между последним кадром старой камеры и первым живым новой, в периодах кадра.
-    /// `[estimate]` 2.
-    pub max_switch_gap_periods: f64,
+    /// Сколько кадров можно пропустить на стыке «последний живой кадр старой камеры → первый живой новой»
+    /// (0 — новый кадр строго на следующем месте). Считается целыми кадрами (`SwitchGap::frames_missed`), а не дробными
+    /// периодами: дрожание времени показа не должно решать вердикт. `[estimate]` 1.
+    pub max_frames_missed_at_switch: u32,
     /// Тап `.6 ↔ 1` с скрытыми кадрами больше этого — заметка, не провал (цель ≈ 2 после решения 118).
     pub tap_hidden_frames_note_above: u64,
 }
@@ -97,9 +103,11 @@ impl Default for SeamlessPlan {
             pinch_center: ScreenPoint::new(0.5, 0.4),
             pinch_start_half_width: 0.15,
             pinch_step: 0.012,
-            overshoot_ratio: 1.10,
+            switch_ratio_tolerance_milli: 30,
+            hover_ms: 2_000,
+            hover_band_milli: 20,
             min_back_fps: 55.0,
-            max_switch_gap_periods: 2.0,
+            max_frames_missed_at_switch: 1,
             tap_hidden_frames_note_above: 4,
         }
     }
@@ -143,14 +151,19 @@ impl SeamlessPlan {
                 reason: "центр щипка вне экрана",
             });
         }
-        if !(self.overshoot_ratio.is_finite() && self.overshoot_ratio > 1.0) {
+        if self.hover_ms > 0 && self.hover_band_milli == 0 {
             return Err(ZoomScenarioConfigError::Seamless {
-                reason: "overshoot_ratio должно быть конечным и больше 1",
+                reason: "hover_band_milli должно быть больше нуля, пока включён замер дребезга (hover_ms > 0)",
             });
         }
-        if !finite_positive(self.min_back_fps) || !finite_positive(self.max_switch_gap_periods) {
+        if self.switch_ratio_tolerance_milli == 0 {
             return Err(ZoomScenarioConfigError::Seamless {
-                reason: "min_back_fps и max_switch_gap_periods должны быть конечными и больше нуля",
+                reason: "switch_ratio_tolerance_milli должно быть больше нуля",
+            });
+        }
+        if !finite_positive(self.min_back_fps) {
+            return Err(ZoomScenarioConfigError::Seamless {
+                reason: "min_back_fps должно быть конечным и больше нуля",
             });
         }
         Ok(())

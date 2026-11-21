@@ -68,10 +68,30 @@ fn seamless_steps() -> Vec<ZoomStep> {
     ]
 }
 
+/// Те же шаги плюс замер дребезга у отметки между подъёмом и отпусканием.
+fn seamless_steps_with_hover() -> Vec<ZoomStep> {
+    let mut steps = seamless_steps();
+    steps.insert(
+        2,
+        step(
+            "13_wheel_seamless_hover",
+            ZoomAction::Seamless {
+                gesture: SeamlessGesture::Wheel,
+                leg: SeamlessLeg::Hover,
+            },
+        ),
+    );
+    steps
+}
+
 impl Phone {
     fn new(method: LensSwitchMethod, standby: StandbyBehaviour) -> Self {
+        Self::with_steps(seamless_steps(), method, standby)
+    }
+
+    fn with_steps(steps: Vec<ZoomStep>, method: LensSwitchMethod, standby: StandbyBehaviour) -> Self {
         let rig = Rig::new(
-            seamless_steps(),
+            steps,
             engine(LensRole::Wide, "2", LensFacing::Back),
             screen(1_000, LensFacing::Back, 0),
         );
@@ -131,7 +151,9 @@ impl Phone {
         self.rig
             .frames
             .push(live_frame(ms, self.active_camera, PreviewMirror::None));
-        if self.rig.frames.len() > 240 {
+        // Кольцо кадров рендера — как на телефоне (`viewfinder.continuity.recent_frames` = 120): старые кадры
+        // вытесняются, и к концу долгого шага в кольце только кадры последней камеры.
+        if self.rig.frames.len() > 120 {
             self.rig.frames.remove(0);
         }
         self.rig.raw_stream.frames_published += 1;
@@ -166,8 +188,9 @@ impl Phone {
 
     fn cross_threshold(&mut self) {
         let (switch_to, role_from, role_to) = match (self.active_camera, self.ratio) {
+            // С готовой тёплой гистерезиса нет: вверх смена идёт ровно на отметке главной камеры (решение 128).
             ("2", ratio) if ratio < 1_000.0 => ("3", LensRole::Wide, LensRole::UltraWide),
-            ("3", ratio) if ratio >= 1_050.0 => ("2", LensRole::UltraWide, LensRole::Wide),
+            ("3", ratio) if ratio >= 1_000.0 => ("2", LensRole::UltraWide, LensRole::Wide),
             _ => return,
         };
         self.active_camera = switch_to;
@@ -240,8 +263,16 @@ fn a_promoted_wheel_gesture_runs_out_back_and_release_with_clean_records() {
     let fps = out.fps.expect("частота измерена");
     assert!(fps.primary > 55.0 && fps.standby > 55.0, "{fps:?}");
     let gap = out.gap.expect("разрыв измерен");
-    assert!(gap.periods() <= 2.0, "{gap:?}");
+    assert!(gap.frames_missed() <= 1, "{gap:?}");
     assert_eq!(records[1].new_camera.as_deref(), Some("2"), "обратно на основную");
+    // Подъём остановился на отметке главной камеры, а не «с перелётом» за гистерезис (решение 128).
+    let back = records[1].seamless.as_ref().expect("запись подъёма");
+    assert_eq!(back.target_ratio_milli, Some(1_000));
+    let shown_at_switch = back.ratio_at_switch_milli.expect("экран в момент смены измерен");
+    assert!(
+        (1_000..=1_030).contains(&shown_at_switch),
+        "смена при {shown_at_switch} тыс."
+    );
     let closed = records[2]
         .seamless
         .as_ref()
@@ -310,4 +341,33 @@ fn a_back_leg_without_lying_fingers_fails_before_touching_the_screen() {
     };
     assert!(reason.contains("нечего вести"), "{reason}");
     assert!(tick.injections.is_empty());
+}
+
+#[test]
+fn hovering_around_the_mark_counts_every_swap_and_keeps_the_frames_live() {
+    let mut phone = Phone::with_steps(
+        seamless_steps_with_hover(),
+        LensSwitchMethod::PromotedStandby,
+        StandbyBehaviour::Healthy,
+    );
+    assert_eq!(phone.run_to_end(), RunnerState::AllDone);
+
+    let records = phone.rig.runner.records();
+    assert_eq!(records.len(), 4);
+    let hover = &records[2];
+    assert_eq!(hover.failure, None);
+    let swaps = hover.seamless.as_ref().expect("запись колебаний").switch_events;
+    // Колебания ±2 % около 1,0 за 2 с пересекают отметку много раз; «телефон» теста меняет объектив на каждом
+    // пересечении (худший случай), и шаг обязан сосчитать каждую смену, а не одну.
+    assert!(swaps >= 4, "смен при колебаниях: {swaps}");
+    // Зеркало проверено по камере, на которой колебания закончились: кадров ПЕРВОЙ камеры смены в кольце к концу
+    // шага уже нет (на телефоне это и роняло шаг «кадров новой камеры в кольце нет»).
+    assert_eq!(hover.mirror, MirrorCheck::Correct);
+    assert_eq!(
+        seamless_step_violations(&ZoomScenarioConfig::default().seamless, hover),
+        Vec::<String>::new()
+    );
+    // Пальцы подняты ровно один раз — после колебаний, на шаге отпускания.
+    let ended = phone.touches.iter().filter(|t| t.phase == TouchPhase::Ended).count();
+    assert_eq!(ended, 1);
 }

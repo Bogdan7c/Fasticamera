@@ -14,7 +14,7 @@ use shell_contract::sync_fence::GpuWaitFence;
 
 use super::deferred::Deferred;
 use super::standby::StandbyEpochs;
-use super::viewfinder_cell::ViewfinderCell;
+use super::viewfinder_cell::{PrimingAfterFlush, ViewfinderCell};
 use super::{StreamDefect, StreamEpoch, StreamStart};
 use crate::config::RawFrameStreamConfig;
 use crate::counters::StreamAccounting;
@@ -116,7 +116,7 @@ impl HubState {
     }
 
     pub(super) fn begin_stream(&mut self, passport: Arc<StreamPassport>, deferred: &mut Deferred) -> StreamStart {
-        self.release_everything(deferred);
+        self.release_everything(PrimingAfterFlush::Refill, deferred);
         self.epoch = self.allocate_epoch();
         self.active = true;
         self.ring_capacity = self.ring_capacity_for(&passport);
@@ -137,7 +137,7 @@ impl HubState {
         if !self.accepts(epoch) {
             return;
         }
-        self.release_everything(deferred);
+        self.release_everything(PrimingAfterFlush::Refill, deferred);
         self.active = false;
         self.ring_capacity = 0;
     }
@@ -167,7 +167,9 @@ impl HubState {
     }
 
     /// Отпускает всё, что держит поток: ожидающие кадры, результаты, ячейку, кольцо, очереди.
-    pub(super) fn release_everything(&mut self, deferred: &mut Deferred) {
+    ///
+    /// `priming` — набирает ли буфер видоискателя запас заново (конец потока) или сохраняет его (обмен ролей).
+    pub(super) fn release_everything(&mut self, priming: PrimingAfterFlush, deferred: &mut Deferred) {
         for pending in self.pending.drain(..) {
             StreamAccounting::bump(&self.accounting.frames_missing_meta_stopped);
             deferred.return_untouched_later(pending.frame);
@@ -175,7 +177,7 @@ impl HubState {
         for _ in self.buffered_results.drain(..) {
             StreamAccounting::bump(&self.accounting.results_unpaired);
         }
-        self.viewfinder.flush(&self.accounting, deferred);
+        self.viewfinder.flush_with(priming, &self.accounting, deferred);
         for lease in self.ring.drain(..) {
             deferred.release_unused_later(lease);
         }

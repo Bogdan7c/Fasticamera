@@ -55,6 +55,18 @@ fn going_up_the_scale_overshoots_the_hysteresis_band() {
 }
 
 #[test]
+fn with_a_ready_standby_the_gesture_stops_exactly_on_the_lens_mark_going_up() {
+    let group = back_group();
+    let wide = lens(&group, LensRole::Wide);
+    let ratio = ratio_at_native_mark(&group, &wide);
+    assert_eq!(ratio, wide.native_ratio, "без запаса на гистерезис (решение 128)");
+    assert!(
+        ratio.value() < wide.native_ratio.value() * 1.05,
+        "ниже порога гистерезиса"
+    );
+}
+
+#[test]
 fn the_result_never_leaves_the_group_range() {
     let group = back_group();
     let wide = lens(&group, LensRole::Wide);

@@ -4,10 +4,12 @@
 //! * смена исполнена повышением тёплой (`promoted_standby`), событие `LensSwitched` — ровно одно;
 //! * ни одного удержанного кадра, ни одного чёрного кадра любого вида, ни одного кадра нового потока, скрытого
 //!   непрерывностью (`frames_hidden_by_continuity`);
-//! * разрыв между последним кадром старой камеры и первым живым новой — не больше `max_switch_gap_periods` периодов;
+//! * разрыв между последним кадром старой камеры и первым живым новой — пропущено не больше `max_frames_missed_at_switch` кадров;
+//! * подъём (`back`) происходит при коэффициенте экрана на отметке объектива, а не после гистерезиса (решение 128);
 //! * обе задние камеры, пока стримят обе, держат не меньше `min_back_fps`;
 //! * тёплая стала готова (время «нажатие → готова» измерено).
 //!
+//! Шаг `hover` (замер дребезга у порога) только не должен давать удержанных и чёрных кадров; число смен — измерение.
 //! Шаг `release` обязан закончиться: колесо ушло и ни одна ячейка не держит камеру (время измерено).
 //! Итоги прогона: ни одного утёкшего лизинга, ни одного отказа тёплой, ни одного отвергнутого обмена.
 
@@ -26,6 +28,24 @@ pub fn seamless_step_violations(plan: &SeamlessPlan, step: &ZoomStepRecord) -> V
     if seamless.leg == "release" {
         if seamless.closed_ms.is_none() {
             violations.push(format!("{name}: время «пальцы подняты → тёплая закрыта» не измерено"));
+        }
+        return violations;
+    }
+    if seamless.leg == "hover" {
+        // Замер дребезга у порога (13b): число смен — результат измерения, а не нарушение; но каждый кадр на дребезге
+        // обязан быть живым (без удержанных и чёрных), иначе дребезг виден на экране.
+        for (count, what) in [
+            (step.held_frames, "удержанных кадров"),
+            (
+                step.black_frames_while_picture_expected + step.continuity.black_frames_before_first_picture,
+                "чёрных кадров",
+            ),
+        ] {
+            if count > 0 {
+                violations.push(format!(
+                    "{name}: {what} {count} при колебаниях у порога (должно быть 0)"
+                ));
+            }
         }
         return violations;
     }
@@ -54,18 +74,32 @@ pub fn seamless_step_violations(plan: &SeamlessPlan, step: &ZoomStepRecord) -> V
         }
     }
     match seamless.gap {
-        Some(gap) if gap.periods() > plan.max_switch_gap_periods => violations.push(format!(
-            "{name}: разрыв показа при смене {:.1} мс = {:.1} периода кадра ({:.1} мс), порог {} периода",
+        Some(gap) if gap.frames_missed() > plan.max_frames_missed_at_switch => violations.push(format!(
+            "{name}: на смене пропущено кадров {} (разрыв {:.1} мс = {:.2} периода кадра {:.1} мс), допустимо {}",
+            gap.frames_missed(),
             gap.gap_ms,
             gap.periods(),
             gap.period_ms,
-            plan.max_switch_gap_periods
+            plan.max_frames_missed_at_switch
         )),
         Some(_) => {}
         None if step.ring_overran => {}
         None => violations.push(format!(
             "{name}: разрыв показа при смене не измерен (нет кадров старой или новой камеры)"
         )),
+    }
+    // Подъём (`back`) с готовой тёплой идёт ровно на отметке объектива (решение 128), а не после гистерезиса селектора.
+    if seamless.leg == "back" {
+        match (seamless.target_ratio_milli, seamless.ratio_at_switch_milli) {
+            (Some(target), Some(shown)) if shown.abs_diff(target) > plan.switch_ratio_tolerance_milli => {
+                violations.push(format!(
+                    "{name}: смена случилась при {shown} тыс., а отметка объектива {target} тыс. (допуск {})",
+                    plan.switch_ratio_tolerance_milli
+                ));
+            }
+            (Some(_), Some(_)) => {}
+            _ => violations.push(format!("{name}: коэффициент экрана в момент смены не измерен")),
+        }
     }
     match seamless.fps {
         Some(fps) if fps.minimum() < plan.min_back_fps => violations.push(format!(
@@ -106,7 +140,11 @@ pub fn seamless_totals_violations(report: &ZoomObservationReport) -> Vec<String>
     let seamless_switches = report
         .steps
         .iter()
-        .filter(|step| step.seamless.as_ref().is_some_and(|seamless| seamless.leg != "release"))
+        .filter(|step| {
+            step.seamless
+                .as_ref()
+                .is_some_and(|seamless| matches!(seamless.leg, "out" | "back"))
+        })
         .count() as u64;
     if totals.standby_promotions < seamless_switches {
         violations.push(format!(

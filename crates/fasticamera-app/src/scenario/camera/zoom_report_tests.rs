@@ -153,3 +153,27 @@ fn the_summary_lists_every_seamless_step_and_the_hidden_frames_of_every_tap() {
     assert_eq!(taps[0], serde_json::json!({"step": "01_tap_0.6", "hidden": 2}));
     assert_eq!(taps[1]["hidden"], 9);
 }
+
+#[test]
+fn the_summary_reports_the_swap_count_and_the_screen_ratio_of_the_switch_legs() {
+    let mut report = full_plan_report();
+    let mut hover = crate::scenario::camera::zoom_test_support::healthy_release_step("13_wheel_seamless_hover");
+    {
+        let seamless = hover.seamless.as_mut().expect("запись");
+        seamless.leg = "hover";
+        seamless.switch_events = 7;
+    }
+    report.steps.push(hover);
+    let summary = report.summary();
+    let entries = summary["seamless"].as_array().expect("список бесшовных шагов");
+    let hover_entry = entries.last().expect("колебания в сводке");
+    assert_eq!(
+        (hover_entry["leg"].as_str(), hover_entry["events"].as_u64()),
+        (Some("hover"), Some(7))
+    );
+    let back = &entries[1];
+    assert_eq!(
+        (back["tgt_milli"].as_u64(), back["sw_milli"].as_u64()),
+        (Some(1000), Some(1004))
+    );
+}

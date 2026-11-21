@@ -483,6 +483,7 @@ fn own_ae_report() -> OwnAeReport {
         engine: Some(EngineAeCount {
             results_observed: 360,
             results_with_hal_ae_active: 0,
+            foreign_camera_proposals_rejected: 0,
         }),
     }
 }
@@ -537,6 +538,7 @@ fn vendor_ae_seen_only_by_the_engine_count_fails_and_a_missing_count_fails_too()
             engine: Some(EngineAeCount {
                 results_observed: 360,
                 results_with_hal_ae_active: 2,
+                foreign_camera_proposals_rejected: 0,
             }),
             ..own_ae_report()
         });
@@ -550,6 +552,22 @@ fn vendor_ae_seen_only_by_the_engine_count_fails_and_a_missing_count_fails_too()
         });
     });
     assert_single(&no_count, "нет счётчиков движка");
+}
+
+#[test]
+fn rejected_foreign_camera_proposals_fail_a_single_camera_run() {
+    let foreign = violations_of(|o| {
+        make_own(o);
+        o.own_ae = Some(OwnAeReport {
+            engine: Some(EngineAeCount {
+                results_observed: 360,
+                results_with_hal_ae_active: 0,
+                foreign_camera_proposals_rejected: 3,
+            }),
+            ..own_ae_report()
+        });
+    });
+    assert_single(&foreign, "отвергнуто 3 предложений");
 }
 
 #[test]

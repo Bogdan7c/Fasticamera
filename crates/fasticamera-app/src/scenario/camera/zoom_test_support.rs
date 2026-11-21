@@ -138,8 +138,12 @@ pub fn healthy_seamless_switch_step(name: &str, leg: &'static str) -> ZoomStepRe
             }),
             gap: Some(SwitchGap {
                 gap_ms: 17.0,
+                any_frame_gap_ms: 17.0,
                 period_ms: 16.7,
             }),
+            // Спуск (`out`) цели-отметки не проверяет; подъём (`back`) идёт ровно на отметку главной камеры.
+            target_ratio_milli: Some(1_000),
+            ratio_at_switch_milli: Some(1_004),
             closed_ms: None,
         }),
         ..healthy_switch_step(name)
@@ -156,6 +160,8 @@ pub fn healthy_release_step(name: &str) -> ZoomStepRecord {
             ready_ms: None,
             fps: None,
             gap: None,
+            target_ratio_milli: None,
+            ratio_at_switch_milli: None,
             closed_ms: Some(3_700.0),
         }),
         ..healthy_crop_step(name)

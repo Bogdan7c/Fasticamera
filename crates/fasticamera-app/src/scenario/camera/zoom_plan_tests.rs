@@ -28,11 +28,13 @@ fn default_plan_runs_taps_then_flip_round_trip_then_drag_and_ends_on_one_x() {
             "10_tap_1_before_seamless",
             "11_wheel_seamless_out",
             "12_wheel_seamless_back",
-            "13_wheel_seamless_release",
-            "14_pinch_seamless_out",
-            "15_pinch_seamless_back",
-            "16_pinch_seamless_release",
-            "17_tap_1_final",
+            "13_wheel_seamless_hover",
+            "14_wheel_seamless_release",
+            "15_pinch_seamless_out",
+            "16_pinch_seamless_back",
+            "17_pinch_seamless_hover",
+            "18_pinch_seamless_release",
+            "19_tap_1_final",
         ]
     );
     assert_eq!(
@@ -43,7 +45,7 @@ fn default_plan_runs_taps_then_flip_round_trip_then_drag_and_ends_on_one_x() {
         }
     );
     assert_eq!(
-        steps[15].action,
+        steps[17].action,
         ZoomAction::Seamless {
             gesture: SeamlessGesture::Pinch,
             leg: SeamlessLeg::Release
@@ -143,4 +145,13 @@ fn the_facing_after_a_step_follows_the_expectation() {
         SwitchExpectation::NoSwitch.facing_after(Some(LensFacing::Front)),
         Some(LensFacing::Front)
     );
+}
+
+#[test]
+fn the_hover_step_is_planned_only_while_hover_ms_is_positive() {
+    let mut config = ZoomScenarioConfig::default();
+    config.seamless.hover_ms = 0;
+    let names: Vec<String> = planned_steps(&config).into_iter().map(|step| step.name).collect();
+    assert!(names.iter().all(|name| !name.contains("hover")), "{names:?}");
+    assert!(names.contains(&"13_wheel_seamless_release".to_owned()), "{names:?}");
 }

@@ -242,6 +242,11 @@ def _engine_count_problems(engine: object) -> list[str]:
         return [f"наш AE: движок не насчитал результатов за прогон (results_observed={observed!r}, счёт с запуска движка)"]
     if active != 0:
         return [f"наш AE: движок с запуска насчитал {active!r} результатов с активным AE HAL из {observed!r}, ожидалось 0"]
+    foreign = engine.get("foreign_camera_proposals_rejected")
+    if foreign != 0:
+        return [
+            f"наш AE: предложений AE, отвергнутых как измеренных на другой камере, {foreign!r}, ожидалось 0 (одна камера)"
+        ]
     return []
 
 

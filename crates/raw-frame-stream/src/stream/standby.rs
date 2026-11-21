@@ -23,6 +23,7 @@ use camera_contract::frame_passport::{FrameCaptureDetails, StreamPassport};
 
 use super::deferred::Deferred;
 use super::state::{BufferedResult, HubState};
+use super::viewfinder_cell::PrimingAfterFlush;
 use super::{StreamEpoch, StreamStart};
 use crate::counters::StreamAccounting;
 use crate::producer_frame::ProducerFrame;
@@ -197,7 +198,8 @@ impl HubState {
             + self.viewfinder.queued()
             + self.ring.len()
             + self.lossless.iter().map(|queue| queue.frames.len()).sum::<usize>();
-        self.release_everything(deferred);
+        // Запас буфера видоискателя сохраняется: у нового показываемого первый кадр без повторного набора.
+        self.release_everything(PrimingAfterFlush::Keep, deferred);
         self.accounting.add(
             &self.accounting.frames_released_by_promotion,
             u64::try_from(held_frames).unwrap_or(u64::MAX),

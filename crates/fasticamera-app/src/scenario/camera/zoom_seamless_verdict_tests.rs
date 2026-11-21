@@ -16,6 +16,10 @@ fn healthy() -> ZoomStepRecord {
     healthy_seamless_switch_step("11_wheel_seamless_out", "out")
 }
 
+fn healthy_back() -> ZoomStepRecord {
+    healthy_seamless_switch_step("12_wheel_seamless_back", "back")
+}
+
 #[test]
 fn a_healthy_seamless_switch_and_release_have_no_violations() {
     assert_eq!(seamless_step_violations(&plan(), &healthy()), Vec::<String>::new());
@@ -70,9 +74,29 @@ fn a_gap_over_the_threshold_slow_fps_and_missing_measurements_fail() {
     let mut gap = healthy();
     gap.seamless.as_mut().expect("запись").gap = Some(SwitchGap {
         gap_ms: 60.0,
+        any_frame_gap_ms: 60.0,
         period_ms: 16.7,
     });
-    assert!(seamless_step_violations(&plan(), &gap)[0].contains("разрыв показа"));
+    assert!(seamless_step_violations(&plan(), &gap)[0].contains("пропущено кадров 3"));
+
+    // Один пропущенный кадр с дрожанием времени показа (на телефоне 33,343 мс при периоде 16,672) — в допуске.
+    let mut jittered = healthy();
+    jittered.seamless.as_mut().expect("запись").gap = Some(SwitchGap {
+        gap_ms: 33.343,
+        any_frame_gap_ms: 33.343,
+        period_ms: 16.672,
+    });
+    assert_eq!(seamless_step_violations(&plan(), &jittered), Vec::<String>::new());
+
+    // Вердикт смотрит на настоящую заморозку (живой → живой), а не на «до любого кадра»: повтор старого кадра
+    // сокращает второе число до одного периода, но картинка при этом стояла.
+    let mut repeated_old_frame = healthy();
+    repeated_old_frame.seamless.as_mut().expect("запись").gap = Some(SwitchGap {
+        gap_ms: 60.0,
+        any_frame_gap_ms: 16.7,
+        period_ms: 16.7,
+    });
+    assert!(seamless_step_violations(&plan(), &repeated_old_frame)[0].contains("пропущено кадров"));
 
     let mut slow = healthy();
     slow.seamless.as_mut().expect("запись").fps = Some(FpsPair {
@@ -133,4 +157,19 @@ fn finger_driven_steps_are_not_judged_by_the_tap_time_thresholds() {
     report.steps = vec![slow];
     report.totals.standby_promotions = 1;
     assert_eq!(evaluate_zoom(&config, &report), Vec::<String>::new());
+}
+
+#[test]
+fn a_back_switch_far_above_the_lens_mark_or_without_a_measured_ratio_fails() {
+    let mut late = healthy_back();
+    late.seamless.as_mut().expect("запись").ratio_at_switch_milli = Some(1_100);
+    let violations = seamless_step_violations(&plan(), &late);
+    assert_eq!(violations.len(), 1, "{violations:?}");
+    assert!(violations[0].contains("1100 тыс."), "{violations:?}");
+
+    let mut unmeasured = healthy_back();
+    unmeasured.seamless.as_mut().expect("запись").ratio_at_switch_milli = None;
+    assert!(seamless_step_violations(&plan(), &unmeasured)[0].contains("не измерен"));
+
+    assert!(seamless_step_violations(&plan(), &healthy_back()).is_empty());
 }

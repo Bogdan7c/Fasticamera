@@ -86,7 +86,11 @@ impl ThreeAEngine {
             controls: intent.controls,
             adjustments: self.adjustments.clone(),
             last_result: self.last_result,
-            counters: self.counters,
+            counters: ThreeACounters {
+                // Счётчик ведёт исполнитель экспозиции (он единственный знает про чужие предложения).
+                ae_foreign_camera_proposals_rejected: self.exposure.foreign_camera_proposals_rejected(),
+                ..self.counters
+            },
         }
     }
 

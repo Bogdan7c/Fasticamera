@@ -53,12 +53,40 @@ fn a_gap_of_one_period_means_the_new_camera_took_the_next_slot() {
     assert!((gap.period_ms - 17.0).abs() < 1e-9, "{gap:?}");
     assert!((gap.gap_ms - 17.0).abs() < 1e-9, "{gap:?}");
     assert!((gap.periods() - 1.0).abs() < 1e-9);
+    assert_eq!(gap.frames_missed(), 0);
+}
+
+#[test]
+fn missed_frames_are_whole_frames_regardless_of_present_time_jitter() {
+    let gap = |gap_ms: f64| SwitchGap {
+        gap_ms,
+        any_frame_gap_ms: gap_ms,
+        period_ms: 16.67,
+    };
+    // Один пропущенный кадр с дрожанием времени показа на доли мс в обе стороны — это один кадр, а не «2,0003 > 2».
+    assert_eq!(gap(33.343).frames_missed(), 1);
+    assert_eq!(gap(33.2).frames_missed(), 1);
+    // Новый кадр на следующем месте — 0; два пропуска — 2.
+    assert_eq!(gap(16.9).frames_missed(), 0);
+    assert_eq!(gap(50.0).frames_missed(), 2);
+    // Странные измерения (нулевой период, разрыв назад) не дают «пропусков» из воздуха.
+    assert_eq!(
+        SwitchGap {
+            gap_ms: 10.0,
+            any_frame_gap_ms: 10.0,
+            period_ms: 0.0
+        }
+        .frames_missed(),
+        0
+    );
+    assert_eq!(gap(-5.0).frames_missed(), 0);
 }
 
 #[test]
 fn a_stall_shows_up_as_many_periods() {
     let gap = switch_gap(&timeline(170 + 85), &camera_id("2"), &camera_id("3"), at_ms(0)).expect("разрыв измерен");
     assert!((gap.periods() - 5.0).abs() < 1e-9, "{gap:?}");
+    assert_eq!(gap.frames_missed(), 4);
 }
 
 #[test]
@@ -82,7 +110,7 @@ fn without_enough_old_frames_or_without_the_new_camera_nothing_is_measured() {
 }
 
 #[test]
-fn a_recomposed_frame_between_the_cameras_is_not_a_stall() {
+fn a_recomposed_frame_between_the_cameras_does_not_hide_the_freeze() {
     let mut frames = timeline(170 + 85);
     let mut recomposed = live(187, "2");
     recomposed.crop = None;
@@ -90,8 +118,12 @@ fn a_recomposed_frame_between_the_cameras_is_not_a_stall() {
     frames.sort_by_key(|frame| frame.present_time);
     let gap = switch_gap(&frames, &camera_id("2"), &camera_id("3"), at_ms(0)).expect("разрыв измерен");
     assert!(
-        (gap.gap_ms - 68.0).abs() < 1e-9,
-        "до пересобранного кадра, а не до последнего кадра старой камеры: {gap:?}"
+        (gap.any_frame_gap_ms - 68.0).abs() < 1e-9,
+        "диагностика считает до пересобранного кадра: {gap:?}"
+    );
+    assert!(
+        (gap.gap_ms - 85.0).abs() < 1e-9,
+        "заморозка — до последнего ЖИВОГО кадра старой камеры, повтор её не сокращает: {gap:?}"
     );
 }
 

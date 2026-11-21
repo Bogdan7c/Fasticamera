@@ -28,6 +28,17 @@ pub(super) enum CellTake {
     Nothing,
 }
 
+/// Что ячейка делает с заполненностью буфера после сброса (`flush_with`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PrimingAfterFlush {
+    /// Конец потока или новая эпоха: буфер набирает `reserve + 1` кадров заново.
+    Refill,
+    /// Обмен ролей камер: запас уже набран показом прежней камеры, а ритм кадров не менялся — первый же кадр новой
+    /// показываемой камеры идёт на экран без повторного набора. Иначе `reserve + 1` тиков показывался бы повтор
+    /// последнего кадра старой камеры, то есть картинка замирала на смене объектива (13b).
+    Keep,
+}
+
 pub(super) struct ViewfinderCell {
     pacing: ViewfinderPacing,
     jitter: JitterBufferConfig,
@@ -101,13 +112,22 @@ impl ViewfinderCell {
         }
     }
 
-    /// Конец потока или новая эпоха: всё отпускается нетронутым, буфер заполняется заново.
-    pub(super) fn flush(&mut self, accounting: &StreamAccounting, deferred: &mut Deferred) {
+    /// Сброс очереди (конец потока, новая эпоха, обмен ролей): всё отпускается нетронутым; нужно ли буферу набираться
+    /// заново, решает `priming` (см. [`PrimingAfterFlush`]).
+    /// Номер последнего выданного кадра сбрасывается всегда: у нового потока своя нумерация.
+    pub(super) fn flush_with(
+        &mut self,
+        priming: PrimingAfterFlush,
+        accounting: &StreamAccounting,
+        deferred: &mut Deferred,
+    ) {
         for lease in self.queue.drain(..) {
             StreamAccounting::bump(&accounting.viewfinder_flushed);
             deferred.release_unused_later(lease);
         }
-        self.primed = false;
+        if priming == PrimingAfterFlush::Refill {
+            self.primed = false;
+        }
         self.last_handed = None;
         self.publish_gauge(accounting);
     }

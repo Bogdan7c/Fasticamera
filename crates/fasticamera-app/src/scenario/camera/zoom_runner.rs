@@ -68,7 +68,12 @@ struct ActiveStep {
     /// Коэффициент, который должен показать экран после тапа (в тысячных).
     target_ratio_milli: Option<u32>,
     switch: Option<SwitchTiming>,
+    /// Камера ПЕРВОЙ смены шага: от неё меряются «первый живой кадр» и разрыв показа.
     new_camera: Option<CameraId>,
+    /// Камера ПОСЛЕДНЕЙ смены шага: на ней шаг заканчивается, её кадры видны в кольце в конце шага, по ним
+    /// проверяется зеркало. У шагов с одной сменой совпадает с `new_camera`; у «зависания у порога» смен много,
+    /// и кадры первой камеры к концу шага уже вытеснены из кольца.
+    last_switched_camera: Option<CameraId>,
     first_live_ms: Option<f64>,
     retargets: u32,
     notes: Vec<String>,
@@ -77,6 +82,8 @@ struct ActiveStep {
     seamless: Option<SeamlessProgress>,
     /// Сколько событий `LensSwitched` пришло за шаг.
     switch_events: u32,
+    /// Что показывал экран, когда сценарий увидел первое событие смены объектива (тысячные).
+    ratio_at_switch_milli: Option<u32>,
     /// Разрыв показа при смене камеры (измеряется в тот тик, когда новая камера впервые показана живой).
     gap: Option<SwitchGap>,
     /// Когда наблюдение «после» кончается; `None` — ещё ждём смену/кадр.
@@ -293,12 +300,14 @@ impl ZoomRunner {
             target_ratio_milli,
             switch: None,
             new_camera: None,
+            last_switched_camera: None,
             first_live_ms: None,
             retargets: 0,
             notes: Vec::new(),
             drag,
             seamless,
             switch_events: 0,
+            ratio_at_switch_milli: None,
             gap: None,
             settle_until: None,
             step,
@@ -451,7 +460,9 @@ impl ZoomRunner {
                         ));
                     }
                     active.switch_events += 1;
+                    active.last_switched_camera = camera_of_role(&observation.engine.catalog, *to);
                     if active.switch.is_none() {
+                        active.ratio_at_switch_milli = Some(observation.screen.zoom.ratio_milli);
                         active.switch = Some(SwitchTiming {
                             from: role_name(*from),
                             to: role_name(*to),
@@ -591,7 +602,8 @@ impl ZoomRunner {
                 .map(|lens| lens.facing)
                 .or(active.baseline.active_facing),
         );
-        let mirror = match (&active.new_camera, facing_after) {
+        // Зеркало — по камере, на которой шаг закончился (см. `last_switched_camera`).
+        let mirror = match (&active.last_switched_camera, facing_after) {
             (Some(camera), Some(facing)) => mirror_check(observation.frames, camera, active.action_render, facing),
             _ => MirrorCheck::NotApplicable,
         };
@@ -639,6 +651,7 @@ impl ZoomRunner {
             ring_overran: self.ring.overran(),
             seamless: active.seamless.as_ref().map(|progress| SeamlessRecord {
                 gap: active.gap,
+                ratio_at_switch_milli: active.ratio_at_switch_milli,
                 ..progress.record(active.switch_events)
             }),
             failure,
@@ -653,6 +666,7 @@ pub fn expectation_name(expectation: SwitchExpectation) -> String {
         SwitchExpectation::NoSwitch => "no_switch".to_owned(),
         SwitchExpectation::ToRole(role) => format!("to_{}", role_name(role)),
         SwitchExpectation::ToAnyBack => "to_any_back".to_owned(),
+        SwitchExpectation::MaybeSwitchesBack => "maybe_switches_back".to_owned(),
     }
 }
 

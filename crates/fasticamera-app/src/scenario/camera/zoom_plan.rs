@@ -43,6 +43,9 @@ pub enum SeamlessLeg {
     Out,
     /// Ведём значение обратно к объективу выше на шкале (пальцы всё ещё лежат).
     Back,
+    /// Пальцы лежат у отметки главной камеры и колеблются около неё (±`hover_band_milli`) `hover_ms` — замер, сколько
+    /// раз смена объективов срабатывает на дребезге у порога (каждая смена сбрасывает 3A). Продукт не меняется.
+    Hover,
     /// Пальцы подняты; ждём, пока колесо уйдёт, а тёплая закроется.
     Release,
 }
@@ -61,6 +64,7 @@ impl SeamlessLeg {
         match self {
             Self::Out => "out",
             Self::Back => "back",
+            Self::Hover => "hover",
             Self::Release => "release",
         }
     }
@@ -83,6 +87,8 @@ pub enum SwitchExpectation {
     ToRole(LensRole),
     /// Смена на любой задний объектив (экран сам выбирает, какой: возврат к последнему заднему значению).
     ToAnyBack,
+    /// Смен может не быть или быть много (замер дребезга у порога), но каждая — на задний объектив.
+    MaybeSwitchesBack,
 }
 
 impl SwitchExpectation {
@@ -91,13 +97,13 @@ impl SwitchExpectation {
         match self {
             Self::NoSwitch => false,
             Self::ToRole(expected) => expected == to,
-            Self::ToAnyBack => facing_of_role(to) == LensFacing::Back,
+            Self::ToAnyBack | Self::MaybeSwitchesBack => facing_of_role(to) == LensFacing::Back,
         }
     }
 
     /// Ждём ли вообще смену объектива.
     pub fn expects_switch(self) -> bool {
-        self != Self::NoSwitch
+        !matches!(self, Self::NoSwitch | Self::MaybeSwitchesBack)
     }
 
     /// Какое направление должны показывать кадры после смены (для проверки зеркала).
@@ -105,7 +111,7 @@ impl SwitchExpectation {
         match self {
             Self::NoSwitch => current,
             Self::ToRole(role) => Some(facing_of_role(role)),
-            Self::ToAnyBack => Some(LensFacing::Back),
+            Self::ToAnyBack | Self::MaybeSwitchesBack => Some(LensFacing::Back),
         }
     }
 }
@@ -136,7 +142,17 @@ pub fn planned_steps(config: &ZoomScenarioConfig) -> Vec<ZoomStep> {
         // Бесшовные жесты начинаются с 1× основной камеры (их «Out» уходит на объектив ниже по шкале).
         actions.push(("tap_1_before_seamless".to_owned(), ZoomAction::TapStop { ratio: 1.0 }));
         for gesture in [SeamlessGesture::Wheel, SeamlessGesture::Pinch] {
-            for leg in [SeamlessLeg::Out, SeamlessLeg::Back, SeamlessLeg::Release] {
+            let legs: &[SeamlessLeg] = if config.seamless.hover_ms > 0 {
+                &[
+                    SeamlessLeg::Out,
+                    SeamlessLeg::Back,
+                    SeamlessLeg::Hover,
+                    SeamlessLeg::Release,
+                ]
+            } else {
+                &[SeamlessLeg::Out, SeamlessLeg::Back, SeamlessLeg::Release]
+            };
+            for &leg in legs {
                 actions.push((
                     format!("{}_seamless_{}", gesture.name(), leg.name()),
                     ZoomAction::Seamless { gesture, leg },

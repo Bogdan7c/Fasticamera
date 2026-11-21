@@ -128,7 +128,13 @@ impl ZoomObservationReport {
                     "black": step.black_frames_while_picture_expected + step.continuity.black_frames_before_first_picture,
                     "hidden": step.continuity.frames_hidden_by_continuity,
                     "gap_periods": seamless.gap.map(|gap| round2(gap.periods())),
+                    // По этому полю судит вердикт (и Python-проверка): целые пропущенные кадры.
+                    "frames_missed": seamless.gap.map(|gap| gap.frames_missed()),
                     "gap_ms": seamless.gap.map(|gap| round2(gap.gap_ms)),
+                    "any_frame_gap_ms": seamless.gap.map(|gap| round2(gap.any_frame_gap_ms)),
+                    "any_frame_gap_periods": seamless.gap.map(|gap| round2(gap.any_frame_periods())),
+                    "tgt_milli": seamless.target_ratio_milli,
+                    "sw_milli": seamless.ratio_at_switch_milli,
                     "ready_ms": seamless.ready_ms.map(round2),
                     "fps_min": seamless.fps.map(|fps| round2(fps.minimum())),
                     "closed_ms": seamless.closed_ms.map(round2),

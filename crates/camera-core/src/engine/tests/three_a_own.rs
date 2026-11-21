@@ -544,3 +544,41 @@ fn target_jitter_at_a_rounding_boundary_with_the_same_shortfall_gives_one_adjust
     assert_eq!(adjustment.requested, 0.0);
     assert!((adjustment.applied + 0.9).abs() < 1e-6);
 }
+
+#[test]
+fn engine_status_counts_proposals_measured_on_another_camera_and_stays_zero_otherwise() {
+    let mut own = OwnRig::new();
+    let first = own.feed_repeating(None);
+    own.propose(first, 0.01, ProposalConvergence::Searching);
+    assert_eq!(
+        own.rig
+            .engine
+            .status()
+            .three_a
+            .counters
+            .ae_foreign_camera_proposals_rejected,
+        0,
+        "одна камера, предложения своей камеры: чужих нет"
+    );
+
+    // Запоздавшее предложение, измеренное на другой камере (после обмена камер так бывает).
+    own.channel.publish(ExposureProposal {
+        measured_frame: SensorTimestamp::from_nanos(timestamp(first + 1)),
+        measured_on: CameraTag::of(&camera_id("99")),
+        target: ExposureProduct::from_seconds_iso(0.02).expect("цель"),
+        metered_area: MeteredArea::WholeFrame,
+        convergence: ProposalConvergence::Searching,
+        quality: MeasurementQuality::Measured,
+    });
+    own.deliver_pushes();
+    assert_eq!(
+        own.rig
+            .engine
+            .status()
+            .three_a
+            .counters
+            .ae_foreign_camera_proposals_rejected,
+        1,
+        "отвергнутое чужое предложение видно в статусе движка (его печатает сценарий 3a)"
+    );
+}

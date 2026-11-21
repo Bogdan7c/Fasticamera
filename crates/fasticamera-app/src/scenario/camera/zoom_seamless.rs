@@ -26,7 +26,7 @@ use camera_contract::ids::CameraId;
 use camera_contract::zoom::{LensGroup, LensZoomPoint};
 use raw_frame_stream::RawStreamCounters;
 
-use super::standby_plan::{ratio_for_continuous_switch, window_fps};
+use super::standby_plan::{ratio_at_native_mark, window_fps};
 use super::zoom_plan::{SeamlessGesture, SeamlessLeg, SwitchExpectation};
 use super::zoom_seamless_fingers::{Fingers, ZoomDirection};
 use super::zoom_seamless_record::{FpsPair, SeamlessRecord};
@@ -61,6 +61,13 @@ enum Phase {
     Crossing {
         dwell: u32,
         moves: u32,
+    },
+    /// Колебания около отметки главной камеры (замер дребезга, `SeamlessLeg::Hover`).
+    Hovering {
+        /// Когда колебания начались.
+        since: Instant,
+        /// Сейчас палец идёт вниз (к нижней границе полосы) или вверх.
+        descending: bool,
     },
     WaitClosed,
     Done,
@@ -107,6 +114,8 @@ pub struct SeamlessProgress {
     lifted_at: Option<Instant>,
     next_sample_at: Instant,
     target: Option<SeamlessTarget>,
+    /// Отметка главной камеры в тысячных, около которой колеблются (только у `SeamlessLeg::Hover`).
+    hover_center_milli: Option<u32>,
     /// Камера, которую показ покидает.
     from_camera: Option<CameraId>,
     ready_ms: Option<f64>,
@@ -150,6 +159,7 @@ pub fn begin(
         lifted_at: None,
         next_sample_at: observation.now,
         target: None,
+        hover_center_milli: None,
         from_camera: None,
         ready_ms: None,
         fps: None,
@@ -174,9 +184,9 @@ pub fn begin(
                 .back
                 .as_ref()
                 .ok_or("в каталоге зума нет задних камер")?;
-            let (from, to) =
+            let (_from, to) =
                 neighbour(group, &active.camera, below).ok_or("на шкале нет соседнего объектива в нужную сторону")?;
-            let ratio = ratio_for_continuous_switch(group, from, to, plan.overshoot_ratio);
+            let ratio = ratio_at_native_mark(group, to);
             progress.target = Some(SeamlessTarget {
                 camera: to.camera.clone(),
                 ratio_milli: (f64::from(ratio.value()) * 1000.0).round() as u32,
@@ -194,6 +204,35 @@ pub fn begin(
                 progress.pressed_at = Some(observation.now);
                 progress.phase = Phase::WaitReady;
             }
+        }
+        SeamlessLeg::Hover => {
+            let Some(fingers) = held.take() else {
+                return Err("жест «Hover» без лежащих пальцев: нечем колебаться у отметки".to_owned());
+            };
+            if fingers.gesture() != gesture {
+                *held = Some(fingers);
+                return Err("лежат пальцы другого жеста".to_owned());
+            }
+            let active = observation.engine.active.as_ref().ok_or("активного объектива нет")?;
+            let group = observation
+                .engine
+                .catalog
+                .back
+                .as_ref()
+                .ok_or("в каталоге зума нет задних камер")?;
+            let lens = group
+                .lenses
+                .iter()
+                .find(|lens| lens.camera == active.camera)
+                .ok_or("активной камеры нет на шкале зума")?;
+            progress.hover_center_milli = Some((f64::from(lens.native_ratio.value()) * 1000.0).round() as u32);
+            progress.fingers = fingers;
+            progress.fingers_down = true;
+            progress.phase = Phase::Hovering {
+                since: observation.now,
+                descending: true,
+            };
+            expectation = SwitchExpectation::MaybeSwitchesBack;
         }
         SeamlessLeg::Release => {
             let Some(mut fingers) = held.take() else {
@@ -242,6 +281,8 @@ impl SeamlessProgress {
             ready_ms: self.ready_ms,
             fps: self.fps,
             gap: None,
+            target_ratio_milli: self.target.as_ref().map(|target| target.ratio_milli),
+            ratio_at_switch_milli: None,
             closed_ms: self.closed_ms,
         }
     }
@@ -274,6 +315,7 @@ impl SeamlessProgress {
             Phase::WaitReady => self.wait_ready(observation, interval, due, out),
             Phase::FpsWindow { since, before } => self.fps_window(observation, interval, due, since, &before, out),
             Phase::Crossing { dwell, moves } => self.crossing(observation, interval, due, dwell, moves, out),
+            Phase::Hovering { since, descending } => self.hovering(observation, interval, due, since, descending, out),
             Phase::WaitClosed => self.wait_closed(observation),
             Phase::Done => SeamlessSignal::None,
         }
@@ -419,7 +461,8 @@ impl SeamlessProgress {
         let shown = observation.screen.zoom.ratio_milli;
         let reached = match target.direction {
             ZoomDirection::Out => shown <= target.ratio_milli + REACHED_TOLERANCE_MILLI,
-            ZoomDirection::In => shown + REACHED_TOLERANCE_MILLI >= target.ratio_milli,
+            // Вверх — не меньше самой отметки: остановка чуть ниже неё оставила бы смену несостоявшейся.
+            ZoomDirection::In => shown >= target.ratio_milli,
         };
         if reached {
             out.extend(self.fingers.hold(observation.render_now));
@@ -442,6 +485,46 @@ impl SeamlessProgress {
             dwell,
             moves: moves + 1,
         };
+        SeamlessSignal::None
+    }
+
+    /// Колебания около отметки: вниз до нижней границы полосы, вверх до верхней, и так `hover_ms`. Что смена
+    /// делает на каждом пересечении — решает движок; шаг только считает события.
+    fn hovering(
+        &mut self,
+        observation: &ZoomObservation<'_>,
+        interval: Duration,
+        due: bool,
+        since: Instant,
+        descending: bool,
+        out: &mut Vec<super::zoom_tick::TouchInjection>,
+    ) -> SeamlessSignal {
+        if !due {
+            return SeamlessSignal::None;
+        }
+        self.next_sample_at = observation.now + interval;
+        let Some(center) = self.hover_center_milli else {
+            return SeamlessSignal::Failed("у колебаний нет центра".to_owned());
+        };
+        if observation.now.saturating_duration_since(since) >= Duration::from_millis(self.plan.hover_ms) {
+            out.extend(self.fingers.hold(observation.render_now));
+            self.phase = Phase::Done;
+            return SeamlessSignal::None;
+        }
+        let shown = observation.screen.zoom.ratio_milli;
+        let band = self.plan.hover_band_milli;
+        // Развернуться на границе полосы; между границами палец идёт в текущую сторону.
+        let descending = match descending {
+            true => shown > center.saturating_sub(band),
+            false => shown >= center + band,
+        };
+        let direction = if descending {
+            ZoomDirection::Out
+        } else {
+            ZoomDirection::In
+        };
+        out.extend(self.fingers.nudge(direction, &self.plan, observation.render_now));
+        self.phase = Phase::Hovering { since, descending };
         SeamlessSignal::None
     }
 

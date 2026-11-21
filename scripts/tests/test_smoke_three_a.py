@@ -87,7 +87,7 @@ def own_ae_report() -> dict:
         "results_checked": {"repeating": 120, "focus_trigger": 6, "burst": 4, "unknown": 0},
         "vendor_ae_results": 0,
         "first_vendor_ae_frame": None,
-        "engine": {"results_observed": 360, "results_with_hal_ae_active": 0},
+        "engine": {"results_observed": 360, "results_with_hal_ae_active": 0, "foreign_camera_proposals_rejected": 0},
     }
     return report
 
@@ -245,6 +245,9 @@ class OwnAeCheckTest(unittest.TestCase):
             ),
             "движок с запуска насчитал 2 результатов с активным AE HAL": lambda r: r["own_ae"]["engine"].update(
                 results_with_hal_ae_active=2
+            ),
+            "отвергнутых как измеренных на другой камере, 3": lambda r: r["own_ae"]["engine"].update(
+                foreign_camera_proposals_rejected=3
             ),
             "движок не насчитал результатов": lambda r: r["own_ae"]["engine"].update(results_observed=0),
             "нет учёта движка": lambda r: r["own_ae"].pop("engine"),

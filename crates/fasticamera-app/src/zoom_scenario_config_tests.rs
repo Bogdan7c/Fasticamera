@@ -113,12 +113,12 @@ fn seamless_plan_rejects_zero_timeouts_and_non_finite_steps() {
             "pinch_step {bad} должен быть отвергнут"
         );
     }
-    let low_overshoot = ZoomScenarioConfig {
+    let zero_tolerance = ZoomScenarioConfig {
         seamless: SeamlessPlan {
-            overshoot_ratio: 1.0,
+            switch_ratio_tolerance_milli: 0,
             ..SeamlessPlan::default()
         },
         ..ZoomScenarioConfig::default()
     };
-    assert!(low_overshoot.validate().is_err());
+    assert!(zero_tolerance.validate().is_err());
 }
