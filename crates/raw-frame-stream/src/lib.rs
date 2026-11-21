@@ -41,6 +41,7 @@ pub use pool::PoolPlan;
 pub use producer_frame::{ProducerFrame, ReleaseFences};
 pub use stream::{
     DefectReason, LosslessFrames, OfferOutcome, OfferedFrame, RawFrameProducer, RawFrameStream, ResultOutcome,
-    SnapshotRingFrames, StreamDefect, StreamEpoch, StreamStart, ViewfinderFrames, ViewfinderPoll,
+    SnapshotRingFrames, StandbyBegin, StandbyPromotion, StreamDefect, StreamEpoch, StreamStart, ViewfinderFrames,
+    ViewfinderPoll,
 };
 pub use viewfinder_pacing::{JitterBufferConfig, ViewfinderPacing, ViewfinderPacingSwitch};

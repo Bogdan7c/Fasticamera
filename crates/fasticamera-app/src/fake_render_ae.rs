@@ -111,11 +111,15 @@ impl FakeRenderAe {
             while !thread_stop.load(Ordering::SeqCst) {
                 thread::sleep(STEP_PAUSE);
                 // Без результатов потока мерить нечего (метки кадра нет).
-                let Some(frame) = handle
-                    .status()
-                    .three_a
-                    .last_result
-                    .and_then(|result| result.sensor_timestamp)
+                let status = handle.status();
+                let Some(frame) = status.three_a.last_result.and_then(|result| result.sensor_timestamp) else {
+                    continue;
+                };
+                // Предложение несёт камеру замера (13b): движок отвергает предложения чужой камеры.
+                let Some(camera) = status
+                    .configured
+                    .as_ref()
+                    .map(|configured| configured.stream.camera.clone())
                 else {
                     continue;
                 };
@@ -140,6 +144,7 @@ impl FakeRenderAe {
                 last_key = Some(key);
                 render_end.proposals.publish(ExposureProposal {
                     measured_frame: frame,
+                    measured_on: camera_contract::auto_exposure::CameraTag::of(&camera),
                     target,
                     metered_area: area,
                     convergence,

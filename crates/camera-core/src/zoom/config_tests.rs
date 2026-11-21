@@ -89,3 +89,21 @@ fn partial_json_keeps_defaults_and_unknown_keys_are_rejected() {
     assert_eq!(parsed.front_max_ratio, 3.0);
     assert!(serde_json::from_str::<ZoomConfig>(r#"{"unknown": 1}"#).is_err());
 }
+
+#[test]
+fn untrusted_cameras_default_to_empty_and_reject_empty_or_duplicate_ids() {
+    assert!(ZoomConfig::default().untrusted_optical_axis_cameras.is_empty());
+    assert_eq!(
+        broken(|c| c.untrusted_optical_axis_cameras = vec![String::new()]),
+        ZoomConfigError::EmptyUntrustedCameraId
+    );
+    assert_eq!(
+        broken(|c| c.untrusted_optical_axis_cameras = vec!["3".to_owned(), "3".to_owned()]),
+        ZoomConfigError::DuplicateUntrustedCameraId("3".to_owned())
+    );
+    let valid = ZoomConfig {
+        untrusted_optical_axis_cameras: vec!["3".to_owned()],
+        ..ZoomConfig::default()
+    };
+    assert_eq!(valid.validate(), Ok(()));
+}

@@ -6,11 +6,12 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 use camera_contract::auto_exposure::{
-    ExposureAuthority, ExposureDirective, ExposureProduct, ExposureProposal, ExposureProposalChannel,
+    CameraTag, ExposureAuthority, ExposureDirective, ExposureProduct, ExposureProposal, ExposureProposalChannel,
     MeasurementQuality, MeteredArea, ProductReach, ProposalConvergence, RefreshSignal,
 };
 use camera_contract::capture_result::SensorTimestamp;
 use camera_contract::control::{Control, ExposureBias, ExposureTime, Iso, ManualControl};
+use camera_contract::fixtures::camera_id;
 use camera_contract::ids::{CameraTarget, LensRole};
 use camera_contract::three_a::{
     DirectiveGeneration, DirectiveSlot, MainsFrequency, PointOfInterest, RequestOrigin, SceneFlicker,
@@ -107,6 +108,7 @@ impl OwnRig {
     fn propose(&mut self, frame: i64, target: f64, convergence: ProposalConvergence) {
         self.channel.publish(ExposureProposal {
             measured_frame: SensorTimestamp::from_nanos(timestamp(frame)),
+            measured_on: CameraTag::of(&camera_id("2")),
             target: ExposureProduct::from_seconds_iso(target).expect("цель"),
             metered_area: MeteredArea::WholeFrame,
             convergence,
@@ -249,6 +251,27 @@ fn a_new_proposal_rebuilds_the_request_exactly_once_and_repeats_do_not() {
     assert!(
         own.rig.fake.take_calls().is_empty(),
         "одинаковые предложения запрос не трогают"
+    );
+}
+
+#[test]
+fn switching_the_camera_carries_the_remembered_target_through_the_exposure_transfer() {
+    let mut own = OwnRig::new();
+    let first = own.feed_repeating(None);
+    own.propose(first, 0.4, ProposalConvergence::Settled);
+    assert_eq!(own.sensor(), (Duration::from_millis(4), 100));
+
+    // Обычное переоткрытие: основная -> ширик. Память прошлого потока (0,4 с·ISO на основной)
+    // должна стать стартом ширика с поправкой чувствительности (+1,22 EV, решение 126).
+    own.rig.send(CameraCommand::SwitchTo {
+        role: LensRole::UltraWide,
+    });
+    let (shutter, iso) = own.sensor();
+    let product = shutter.as_secs_f64() * f64::from(iso);
+    let shift_ev = (product / 0.4).log2();
+    assert!(
+        (shift_ev - 1.22).abs() < 0.01,
+        "сдвиг {shift_ev} EV, произведение {product}"
     );
 }
 

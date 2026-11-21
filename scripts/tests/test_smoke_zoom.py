@@ -23,6 +23,44 @@ def result_line(payload: dict) -> str:
     return f"  1792957062.000  4242  4242 I Fasticamera: FASTICAMERA_RESULT {json.dumps(payload)}\n"
 
 
+def seamless_switch(step: str, leg: str, **overrides: object) -> dict:
+    """Здоровая бесшовная смена: повышение тёплой, 0 удержанных/чёрных/скрытых, разрыв 1 период, обе камеры 59 к/с."""
+    entry: dict = {
+        "step": step,
+        "leg": leg,
+        "method": "promoted_standby",
+        "events": 1,
+        "held": 0,
+        "black": 0,
+        "hidden": 0,
+        "gap_periods": 1.02,
+        "gap_ms": 17.0,
+        "ready_ms": 240.0,
+        "fps_min": 59.2,
+        "closed_ms": None,
+    }
+    entry.update(overrides)
+    return entry
+
+
+def seamless_release(step: str, **overrides: object) -> dict:
+    entry = seamless_switch(step, "release", method=None, events=0, gap_periods=None, gap_ms=None, ready_ms=None, fps_min=None)
+    entry["closed_ms"] = 3700.0
+    entry.update(overrides)
+    return entry
+
+
+def healthy_seamless() -> list[dict]:
+    return [
+        seamless_switch("11_wheel_seamless_out", "out"),
+        seamless_switch("12_wheel_seamless_back", "back"),
+        seamless_release("13_wheel_seamless_release"),
+        seamless_switch("14_pinch_seamless_out", "out"),
+        seamless_switch("15_pinch_seamless_back", "back"),
+        seamless_release("16_pinch_seamless_release"),
+    ]
+
+
 def zoom_report(**overrides: object) -> dict:
     """Здоровая сводка ``zoom``: 10 шагов, 6 смен объектива, чёрных кадров 0, экран оставлен на 1× основной камеры."""
     report: dict = {
@@ -45,6 +83,11 @@ def zoom_report(**overrides: object) -> dict:
         "switches_failed": 0,
         "switches_completed": 6,
         "lens_intents_published": 240,
+        "leaked_leases": 0,
+        "standby_failures": 0,
+        "promotion_fallbacks": 0,
+        "seamless": healthy_seamless(),
+        "tap_hidden": [{"step": "01_tap_0.6", "hidden": 2}, {"step": "02_tap_1", "hidden": 2}],
         "final": {"ratio_milli": 1000, "facing": "back", "role": "wide"},
         "failure": None,
     }
@@ -105,6 +148,58 @@ class ZoomCheckTest(unittest.TestCase):
                 verdict = verdict_of(report)
                 self.assertEqual(verdict.exit_code, smoke_wait.EXIT_SCENARIO_FAILED, verdict.message)
                 self.assertIn(expected, verdict.message)
+
+    def test_each_seamless_rule_is_rechecked_and_names_its_reason(self) -> None:
+        def with_step(index: int, **changes: object) -> dict:
+            steps = healthy_seamless()
+            steps[index] = {**steps[index], **changes}
+            return zoom_report(seamless=steps)
+
+        cases = {
+            "reopened": with_step(0, method="reopened"),
+            "ожидалось 'promoted_standby'": with_step(1, method=None),
+            "событий LensSwitched 2": with_step(0, events=2),
+            "удержанных кадров 3": with_step(0, held=3),
+            "чёрных кадров 1": with_step(3, black=1),
+            "скрытых непрерывностью кадров 2": with_step(4, hidden=2),
+            "разрыв показа 3.5": with_step(0, gap_periods=3.5),
+            "частота камер, пока стримят обе, 41.0": with_step(1, fps_min=41.0),
+            "ready_ms=None": with_step(0, ready_ms=None),
+            "тёплая не закрылась": with_step(2, closed_ms=None),
+            "leaked_leases=1": zoom_report(leaked_leases=1),
+            "standby_failures=1": zoom_report(standby_failures=1),
+            "promotion_fallbacks=2": zoom_report(promotion_fallbacks=2),
+            "бесшовных смен 2": zoom_report(seamless=healthy_seamless()[:2] + [healthy_seamless()[2]]),
+            "нет списка бесшовных шагов": zoom_report(seamless=None),
+        }
+        for expected, report in cases.items():
+            with self.subTest(expected=expected):
+                verdict = verdict_of(report)
+                self.assertEqual(verdict.exit_code, smoke_wait.EXIT_SCENARIO_FAILED, verdict.message)
+                self.assertIn(expected, verdict.message)
+
+    def test_gap_at_the_limit_passes_and_just_over_fails(self) -> None:
+        def report_with_gap(gap: float) -> dict:
+            steps = healthy_seamless()
+            steps[0] = {**steps[0], "gap_periods": gap}
+            return zoom_report(seamless=steps)
+
+        self.assertEqual(verdict_of(report_with_gap(2.0)).exit_code, smoke_wait.EXIT_OK)
+        self.assertEqual(verdict_of(report_with_gap(2.01)).exit_code, smoke_wait.EXIT_SCENARIO_FAILED)
+
+    def test_many_hidden_frames_in_a_tap_is_a_note_not_a_failure(self) -> None:
+        report = zoom_report(tap_hidden=[{"step": "01_tap_0.6", "hidden": 10}, {"step": "02_tap_1", "hidden": 4}])
+        verdict = verdict_of(report)
+        self.assertEqual(verdict.exit_code, smoke_wait.EXIT_OK, verdict.message)
+        notes = [note for note in verdict.notes if "NOTE" in note]
+        self.assertEqual(len(notes), 1, verdict.notes)
+        self.assertIn("01_tap_0.6", notes[0])
+        self.assertIn("10", notes[0])
+
+    def test_seamless_notes_carry_the_phone_numbers(self) -> None:
+        joined = " ".join(verdict_of(zoom_report()).notes)
+        self.assertIn("240.0 мс", joined)
+        self.assertIn("3700.0 мс", joined)
 
     def test_one_x_tolerance_edges(self) -> None:
         near = zoom_report(final={"ratio_milli": 1020, "facing": "back", "role": "wide"})

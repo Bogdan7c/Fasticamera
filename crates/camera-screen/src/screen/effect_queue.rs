@@ -1,5 +1,7 @@
 //! Ограниченная очередь эффектов, которую опустошает приложение (`drain_effects`).
 
+use camera_contract::zoom::ZoomGesture;
+
 use crate::effect::Effect;
 
 /// Очередь с предельной ёмкостью. Переполнение — не молчаливая потеря: новый эффект отбрасывается и считается.
@@ -39,13 +41,31 @@ impl EffectQueue {
         )
     }
 
+    /// Что остаётся в очереди вместо `pending`. Обычно это `newer`. Исключение: переход спроса на тёплую камеру
+    /// приходит `Continuous`-намерением с тем же направлением и коэффициентом, что и ещё не забранное
+    /// `Discrete` (тап, переворот). Цель та же, поэтому жест `Discrete` сохраняется (он влияет на выбор камеры),
+    /// а спрос берётся у нового: последнее намерение всегда несёт актуальный спрос и не теряет явного действия.
+    fn merged(newer: Effect, pending: &Effect) -> Effect {
+        match (&newer, pending) {
+            (Effect::Lens(newer_intent), Effect::Lens(pending_intent))
+                if newer_intent.gesture == ZoomGesture::Continuous
+                    && pending_intent.gesture == ZoomGesture::Discrete
+                    && newer_intent.facing == pending_intent.facing
+                    && newer_intent.ratio == pending_intent.ratio =>
+            {
+                Effect::Lens(pending_intent.with_standby(newer_intent.standby))
+            }
+            _ => newer,
+        }
+    }
+
     pub(crate) fn push(&mut self, effect: Effect) -> PushOutcome {
         if let Some(pending) = self
             .effects
             .iter_mut()
             .find(|pending| Self::supersedes(&effect, pending))
         {
-            *pending = effect;
+            *pending = Self::merged(effect, pending);
             self.queued += 1;
             return PushOutcome::Queued;
         }

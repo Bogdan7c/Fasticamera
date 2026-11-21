@@ -40,6 +40,9 @@ mod sensors_tests;
 #[path = "shutter_tests.rs"]
 mod shutter_tests;
 #[cfg(test)]
+#[path = "standby_tests.rs"]
+mod standby_tests;
+#[cfg(test)]
 #[path = "viewfinder_tests.rs"]
 mod viewfinder_tests;
 #[cfg(test)]
@@ -164,6 +167,8 @@ fn moment_of(action: &ScreenAction) -> Option<MonotonicNanos> {
         | ScreenAction::ShutterTapped { at }
         | ScreenAction::VolumeKey { at, .. }
         | ScreenAction::ZoomStopTapped { at, .. }
+        | ScreenAction::ZoomStripPressBegan { at }
+        | ScreenAction::ZoomStripPressEnded { at }
         | ScreenAction::ZoomWheelTouched { at }
         | ScreenAction::ZoomWheelReleased { at }
         | ScreenAction::ZoomWheelDragged { at, .. }
@@ -176,7 +181,18 @@ fn moment_of(action: &ScreenAction) -> Option<MonotonicNanos> {
     }
 }
 
+/// Применяет действие, а затем сверяет спрос на тёплого соседа: любое действие могло открыть колесо, начать
+/// щипок или закрыть их, а переход спроса обязан дойти до движка (см. `zoom::sync_standby_demand`).
+/// Отказ состояние не меняет, поэтому сверять после него нечего.
 fn dispatch(ctx: &mut Ctx<'_>, action: ScreenAction) -> ActionOutcome {
+    let outcome = dispatch_action(ctx, action);
+    if !matches!(outcome, ActionOutcome::Rejected(_)) {
+        zoom::sync_standby_demand(ctx);
+    }
+    outcome
+}
+
+fn dispatch_action(ctx: &mut Ctx<'_>, action: ScreenAction) -> ActionOutcome {
     match action {
         ScreenAction::ViewfinderTapped { point, at } => viewfinder::on_tap(ctx, point, at),
         ScreenAction::ViewfinderLongPressed { point, at } => viewfinder::on_long_press(ctx, point, at),
@@ -202,6 +218,8 @@ fn dispatch(ctx: &mut Ctx<'_>, action: ScreenAction) -> ActionOutcome {
         ScreenAction::Tick(now) => sensors::on_tick(ctx, now),
         ScreenAction::SurfaceResized(size) => sensors::on_surface_resized(ctx, size),
         ScreenAction::ZoomStopTapped { stop, at } => zoom::on_stop_tapped(ctx, stop, at),
+        ScreenAction::ZoomStripPressBegan { at } => zoom::on_strip_press_began(ctx, at),
+        ScreenAction::ZoomStripPressEnded { at } => zoom::on_strip_press_ended(ctx, at),
         ScreenAction::ZoomWheelTouched { at } => zoom::on_wheel_touched(ctx, at),
         ScreenAction::ZoomWheelReleased { at } => zoom::on_wheel_released(ctx, at),
         ScreenAction::ZoomWheelDragged { requested, at } => zoom::on_wheel_dragged(ctx, requested, at),

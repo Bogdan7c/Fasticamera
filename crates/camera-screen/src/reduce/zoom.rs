@@ -40,12 +40,50 @@ fn publish_change(ctx: &mut Ctx<'_>, gesture: ZoomGesture) {
 }
 
 /// Только намерение объектива с заданным коэффициентом (кадрирование — отдельно).
+///
+/// **Инвариант спроса:** каждое намерение несёт спрос на тёплого соседа, который диктует состояние жестов
+/// *в этот момент*, и записывает его как опубликованный. Очередь эффектов хранит лишь последнее намерение,
+/// поэтому последнее всегда содержит актуальный спрос: ни старое `KeepNeighbourWarm` не перезапишет новое
+/// `NotNeeded`, ни наоборот. Тап по упору без колеса и щипка несёт `NotNeeded` (решение 117).
 fn publish_lens_intent(ctx: &mut Ctx<'_>, ratio: ZoomRatio, gesture: ZoomGesture) {
-    ctx.emit(Effect::Lens(LensIntent {
-        facing: ctx.state.zoom.facing(),
-        ratio,
-        gesture,
-    }));
+    let demand = ctx.state.zoom.derived_standby_demand();
+    ctx.state.zoom.record_published_standby(demand);
+    ctx.emit(Effect::Lens(
+        LensIntent::without_standby(ctx.state.zoom.facing(), ratio, gesture).with_standby(demand),
+    ));
+}
+
+/// Сверить спрос на тёплого соседа с опубликованным и при **переходе** выдать ровно одно намерение
+/// (текущее направление и коэффициент, `Continuous`: значение не меняется, движок не должен переоценивать
+/// выбор камеры). Если действие уже выдало намерение, оно успело записать спрос, и здесь ничего не нужно.
+/// Вызывается после каждого принятого действия ([`super::dispatch`]); время — только из действий
+/// (`last_time`), редьюсер чистый.
+pub(super) fn sync_standby_demand(ctx: &mut Ctx<'_>) {
+    let threshold_nanos = (ctx.config.zoom.standby.press_threshold_ms * NANOS_PER_MS).round() as i64;
+    let now = ctx.state.last_time;
+    ctx.state.zoom.promote_strip_press(now, threshold_nanos);
+    let demand = ctx.state.zoom.derived_standby_demand();
+    if demand != ctx.state.zoom.published_standby_demand() {
+        publish_lens_intent(ctx, ctx.state.zoom.ratio(), ZoomGesture::Continuous);
+    }
+}
+
+/// Палец лёг на ленту кнопок: запомнить момент; спрос появится, когда нажатие станет дольше тапа (`Tick`).
+pub(super) fn on_strip_press_began(ctx: &mut Ctx<'_>, at: MonotonicNanos) -> ActionOutcome {
+    if ctx.state.zoom_group().is_none() {
+        return ActionOutcome::Rejected(Rejection::ZoomUnavailable);
+    }
+    ctx.state.zoom.begin_strip_press(at);
+    ActionOutcome::Applied
+}
+
+/// Палец поднят с ленты (тап, конец удержания или отмена жеста).
+pub(super) fn on_strip_press_ended(ctx: &mut Ctx<'_>, _at: MonotonicNanos) -> ActionOutcome {
+    if ctx.state.zoom.end_strip_press() {
+        ActionOutcome::Applied
+    } else {
+        ActionOutcome::NoChange(NoChangeReason::NothingToClose)
+    }
 }
 
 /// Только кадрирование: значение пришло от камеры или определено каталогом.

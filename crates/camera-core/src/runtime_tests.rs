@@ -570,6 +570,7 @@ fn published_lens_intent_wakes_the_camera_thread_and_switches_the_lens() {
         facing: LensFacing::Back,
         ratio: ZoomRatio::new(0.6).expect("коэффициент"),
         gesture: camera_contract::zoom::ZoomGesture::Continuous,
+        standby: camera_contract::zoom::StandbyDemand::NotNeeded,
     });
     assert_eq!(delivery, camera_contract::auto_exposure::SignalDelivery::Delivered);
 

@@ -82,7 +82,7 @@ impl ReaderContext {
     }
 
     /// Прекращает приём кадров. Идемпотентно. Порядок важен:
-    /// 1. `end_stream` — поток отпускает кадры, которые держит сам, и считает эту эпоху устаревшей
+    /// 1. `end_stream`/`end_standby_stream` — поток отпускает кадры, которые держит сам, и считает эту эпоху устаревшей
     ///    (кадр, предложенный между шагами 1 и 2, сразу вернётся как `StaleEpoch`);
     /// 2. закрытие ворот — ждёт колбэк, уже вошедший в NDK, и не пускает новые.
     ///
@@ -91,7 +91,9 @@ impl ReaderContext {
         if self.stopped.swap(true, Ordering::AcqRel) {
             return;
         }
+        // Роль эпохи меняется обменом (13b): закрываем обоими способами, лишний — no-op хаба.
         self.producer.end_stream(self.epoch);
+        self.producer.end_standby_stream(self.epoch);
         self.gate.close();
     }
 

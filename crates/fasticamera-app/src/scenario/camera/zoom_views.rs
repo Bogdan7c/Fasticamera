@@ -8,6 +8,7 @@ use camera_contract::zoom::ZoomCatalog;
 use camera_core::CameraStatus;
 use render_loop::viewfinder::{FrameLabel, FrameRecord};
 
+use super::standby_views::StandbyEngineView;
 use crate::camera_screen_effects::RecentHapticTimes;
 use crate::camera_screen_source::{ScreenReport, ZoomView};
 
@@ -28,6 +29,8 @@ pub struct EngineView {
     pub catalog: Arc<ZoomCatalog>,
     /// Измеренная частота потока текущей сессии по меткам сенсора, к/с.
     pub measured_fps: Option<f64>,
+    /// Тёплые камеры 13b: ячейки и счётчики (бесшовные шаги ждут готовности тёплой и её закрытия).
+    pub standby: StandbyEngineView,
 }
 
 impl EngineView {
@@ -41,6 +44,7 @@ impl EngineView {
             }),
             catalog: Arc::clone(&status.lens.zoom_catalog),
             measured_fps: status.stream.measured_frames_per_second,
+            standby: StandbyEngineView::of(status),
         }
     }
 }

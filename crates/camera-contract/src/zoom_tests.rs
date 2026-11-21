@@ -170,6 +170,7 @@ fn channel_keeps_latest_intent_and_wakes_bound_engine() {
         facing: LensFacing::Back,
         ratio: ratio(0.8),
         gesture: ZoomGesture::Continuous,
+        standby: StandbyDemand::NotNeeded,
     });
     assert_eq!(delivery, SignalDelivery::NotBoundYet);
     let signal = Arc::new(CountingSignal::default());
@@ -181,6 +182,7 @@ fn channel_keeps_latest_intent_and_wakes_bound_engine() {
         facing: LensFacing::Back,
         ratio: ratio(1.4),
         gesture: ZoomGesture::Discrete,
+        standby: StandbyDemand::NotNeeded,
     });
     let (second, latest) = channel.newer_than(Some(first)).unwrap();
     assert!(second > first);
@@ -311,4 +313,20 @@ fn ultra_wide_near_its_native_ratio_cannot_center_its_axis_and_shifts_toward_it(
         (centered.0 - 0.5).abs() < 2e-3,
         "с 0,70× ось уже в центре: {centered:?}"
     );
+}
+
+#[test]
+fn intent_constructors_name_the_standby_demand_and_serialize_it() {
+    let plain = LensIntent::without_standby(LensFacing::Back, ZoomRatio::ONE, ZoomGesture::Discrete);
+    assert_eq!(plain.standby, StandbyDemand::NotNeeded);
+    let warm = plain.with_standby(StandbyDemand::KeepNeighbourWarm);
+    assert_eq!(warm.standby, StandbyDemand::KeepNeighbourWarm);
+    assert_eq!(
+        (warm.facing, warm.gesture),
+        (plain.facing, plain.gesture),
+        "прочее не меняется"
+    );
+    let json = serde_json::to_value(warm).expect("сериализация");
+    assert_eq!(json["standby"], "keep_neighbour_warm");
+    assert_eq!(StandbyDemand::default(), StandbyDemand::NotNeeded);
 }

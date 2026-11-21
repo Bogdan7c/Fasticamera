@@ -169,6 +169,7 @@ mod auto_exposure_composition {
         ExposureProposal {
             // Заведомо позже любого кадра потока fake.
             measured_frame: SensorTimestamp::from_nanos(i64::MAX / 2),
+            measured_on: camera_contract::auto_exposure::CameraTag::of(&camera_contract::fixtures::camera_id("2")),
             target: ExposureProduct::from_seconds_iso(seconds_iso).expect("цель"),
             metered_area: MeteredArea::WholeFrame,
             convergence: ProposalConvergence::Settled,

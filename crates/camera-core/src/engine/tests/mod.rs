@@ -11,6 +11,11 @@ mod lens_switching;
 mod lifecycle;
 mod recovery;
 mod recovery_limits;
+mod standby_demand;
+mod standby_failures;
+mod standby_promotion;
+mod standby_support;
+mod stream_start_exposure;
 mod three_a_bracket;
 mod three_a_controllers;
 mod three_a_controls;
@@ -262,6 +267,11 @@ pub(super) fn call_names(calls: &[BackendCall]) -> Vec<&'static str> {
             BackendCall::StopRepeating => "stop_repeating",
             BackendCall::CloseSession => "close_session",
             BackendCall::CloseDevice => "close_device",
+            BackendCall::OpenStandbyDevice { .. } => "open_standby_device",
+            BackendCall::ConfigureStandbySession { .. } => "configure_standby_session",
+            BackendCall::SetStandbyRepeatingRequest { .. } => "set_standby_repeating_request",
+            BackendCall::CloseStandby { .. } => "close_standby",
+            BackendCall::SwapStandbyWithPrimary { .. } => "swap_standby_with_primary",
         })
         .collect()
 }

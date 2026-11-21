@@ -240,6 +240,7 @@ impl CameraEngine {
 
     fn apply_close(&mut self) {
         self.release_platform();
+        self.standby.end_demand();
         self.reconfiguring = false;
         self.recovery.clear();
         if !self.is_fatal() {
@@ -253,6 +254,7 @@ impl CameraEngine {
     fn apply_enter_background(&mut self) {
         self.presence = AppPresence::Background;
         self.release_platform();
+        self.standby.end_demand();
         self.reconfiguring = false;
         self.recovery.stop_waiting();
         if !self.is_fatal() {

@@ -17,6 +17,7 @@ use crate::companion_stream::CompanionStreamStatus;
 use crate::reader_counters::{ReaderCounters, ReaderSnapshot};
 use crate::request_controls_plan::PlanNote;
 use crate::request_origin::OriginLookup;
+use crate::standby_diagnostics::{StandbyDiagnostics, StandbySlotSnapshot};
 use crate::vendor::VendorTagReport;
 
 /// Камера, не попавшая в каталог, и причина.
@@ -68,6 +69,7 @@ pub struct BackendDiagnostics {
     evicted_request_origins: AtomicU64,
     unreadable_three_a_keys: AtomicU64,
     companion_stray_images: AtomicU64,
+    standby: StandbyDiagnostics,
     state: Mutex<SlowState>,
 }
 
@@ -112,6 +114,8 @@ pub struct DiagnosticsSnapshot {
     /// Последние отказы платформы (старые вытесняются).
     pub recent_failures: Vec<RecordedFailure>,
     pub dropped_failures: u64,
+    /// Счётчики тёплых камер по ячейкам (13b); ячейки без событий не выводятся.
+    pub standby: Vec<StandbySlotSnapshot>,
 }
 
 impl BackendDiagnostics {
@@ -130,6 +134,7 @@ impl BackendDiagnostics {
             evicted_request_origins: AtomicU64::new(0),
             unreadable_three_a_keys: AtomicU64::new(0),
             companion_stray_images: AtomicU64::new(0),
+            standby: StandbyDiagnostics::default(),
             state: Mutex::new(SlowState {
                 cameras: Vec::new(),
                 skipped_cameras: Vec::new(),
@@ -149,6 +154,11 @@ impl BackendDiagnostics {
     /// Счётчики reader-ов (пишут слушатель `AImageReader`, возврат кадров и закрытие reader-ов).
     pub fn reader(&self) -> &ReaderCounters {
         &self.reader
+    }
+
+    /// Счётчики тёплых камер (13b): пишут колбэки результатов и поток камеры.
+    pub fn standby(&self) -> &StandbyDiagnostics {
+        &self.standby
     }
 
     pub fn record_callback_panic(&self) {
@@ -286,6 +296,7 @@ impl BackendDiagnostics {
             skipped_cameras: state.skipped_cameras.clone(),
             recent_failures: state.failures.iter().cloned().collect(),
             dropped_failures: state.dropped_failures,
+            standby: self.standby.snapshot(),
         }
     }
 }

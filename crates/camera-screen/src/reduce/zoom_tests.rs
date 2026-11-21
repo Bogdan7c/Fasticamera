@@ -208,6 +208,8 @@ fn dragging_the_wheel_sets_the_ratio_clamps_to_the_range_and_publishes_each_valu
             facing: LensFacing::Back,
             ratio: ratio(1.7),
             gesture: ZoomGesture::Continuous,
+            // Колесо открыто — тёплый сосед нужен (решение 117).
+            standby: camera_contract::zoom::StandbyDemand::KeepNeighbourWarm,
         }]
     );
     assert!(near(framing_ratio(&moved.effects).expect("кадрирование"), 1.7));
@@ -361,6 +363,7 @@ fn flipping_goes_to_front_at_one_x_and_returns_to_the_last_back_ratio() {
             facing: LensFacing::Front,
             ratio: ratio(1.0),
             gesture: ZoomGesture::Discrete,
+            standby: camera_contract::zoom::StandbyDemand::NotNeeded,
         }]
     );
     assert!(!screen.state.zoom().is_wheel_open(), "переворот закрывает колесо");
@@ -406,10 +409,12 @@ fn a_new_switch_failure_snaps_the_ratio_into_the_active_lens_without_an_echo_int
         "2",
     )));
     assert!(near(ratio_of(&screen), 5.93), "{}", ratio_of(&screen));
-    assert!(
-        lens_intents(&failed.effects).is_empty(),
-        "откат — синхронизация, не новое намерение"
-    );
+    // Откат значения — синхронизация, не новое намерение значения. Но он оборвал щипок, а конец щипка — это
+    // переход спроса: единственное намерение несёт «не нужно» (с уже откатанным значением активной камеры).
+    let intents = lens_intents(&failed.effects);
+    assert_eq!(intents.len(), 1, "{intents:?}");
+    assert_eq!(intents[0].standby, camera_contract::zoom::StandbyDemand::NotNeeded);
+    assert!(near(intents[0].ratio.value(), 5.93), "{:?}", intents[0]);
     assert!(near(framing_ratio(&failed.effects).expect("кадрирование"), 5.93));
     assert!(!screen.state.zoom().is_pinching(), "откат гасит идущий щипок");
 }

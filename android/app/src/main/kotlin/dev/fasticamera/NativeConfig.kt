@@ -31,6 +31,10 @@ import org.json.JSONObject
  * и средних тонов глазами владельца без пересборки. Число уходит в JSON числом, а нечисловая строка — как
  * есть строкой: Rust отвергает её при initialize громко, а не берёт молча умолчание. Пределы (контраст > 0,
  * середина в 0…1, кривая строится при подтяжке AE) проверяет Rust.
+ *
+ * `untrustedOpticalAxisCameras` — ID камер, чьей оптической оси из калибровки HAL верить нельзя (профиль
+ * телефона из `fasticamera.zoom.untrustedOpticalAxisCameras`, поле `camera.engine.zoom.untrusted_optical_axis_cameras`).
+ * Пустой список в JSON не попадает: Rust берёт пустое умолчание. ID проверяет Rust.
  */
 data class NativeConfig(
     val buildType: String,
@@ -41,6 +45,7 @@ data class NativeConfig(
     val exposureController: String? = null,
     val toneContrast: String? = null,
     val toneDisplayMiddleGray: String? = null,
+    val untrustedOpticalAxisCameras: List<String> = emptyList(),
 ) {
     fun toJson(): String {
         val json = JSONObject()
@@ -64,6 +69,10 @@ data class NativeConfig(
             camera.put("scenarios", scenarios)
         }
         exposureController?.let { name -> camera.put("exposure_controller", name) }
+        if (untrustedOpticalAxisCameras.isNotEmpty()) {
+            val zoom = JSONObject().put("untrusted_optical_axis_cameras", JSONArray(untrustedOpticalAxisCameras))
+            camera.put("engine", JSONObject().put("zoom", zoom))
+        }
         if (camera.length() > 0) {
             json.put("camera", camera)
         }
@@ -119,6 +128,11 @@ data class NativeConfig(
             // Нет параметра — null, секция тона в JSON не попадает, Rust берёт умолчание.
             toneContrast = intent.getStringExtra(EXTRA_TONE_CONTRAST),
             toneDisplayMiddleGray = intent.getStringExtra(EXTRA_TONE_DISPLAY_MIDDLE_GRAY),
+            // Профиль телефона из gradle.properties: пустая строка — список пуст.
+            untrustedOpticalAxisCameras = BuildConfig.UNTRUSTED_OPTICAL_AXIS_CAMERAS
+                .split(',')
+                .map { it.trim() }
+                .filter { it.isNotEmpty() },
         )
     }
 }

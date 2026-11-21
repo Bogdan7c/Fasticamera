@@ -9,8 +9,8 @@ use camera_contract::three_a::{MeteringRegion, PointOfInterest, PointRequestId, 
 
 use super::*;
 use crate::executor::FrameTag;
-use crate::exposure::measurement::{ExposureMeasurement, ExposureMeasurementError, MeasurementPhase};
-use crate::exposure::test_support::product;
+use crate::exposure::measurement::{ExposureMeasurement, ExposureMeasurementError};
+use crate::exposure::test_support::{product, test_camera};
 
 /// Кадр 60 к/с в наносекундах.
 const FRAME_NANOS: i64 = 16_666_667;
@@ -19,7 +19,7 @@ pub(super) fn ts(frame: i64) -> SensorTimestamp {
     SensorTimestamp::from_nanos(frame * FRAME_NANOS)
 }
 
-fn controller() -> AutoExposureController {
+pub(super) fn controller() -> AutoExposureController {
     AutoExposureController::new(ExposureControllerConfig::default()).unwrap()
 }
 
@@ -27,7 +27,7 @@ pub(super) fn directive() -> ExposureDirective {
     ExposureDirective::DEFAULT
 }
 
-fn video() -> ExposureDirective {
+pub(super) fn video() -> ExposureDirective {
     ExposureDirective {
         profile: ThreeAProfile::Video,
         ..directive()
@@ -46,7 +46,12 @@ fn tap(request: u64) -> ExposureDirective {
 }
 
 /// Готовый замер: сцена просит `required` с·ISO, снят на кадре `frame`.
-fn measured(frame: i64, area: MeteredArea, required: f64, quality: MeasurementQuality) -> CompletedExposureMeasurement {
+pub(super) fn measured(
+    frame: i64,
+    area: MeteredArea,
+    required: f64,
+    quality: MeasurementQuality,
+) -> CompletedExposureMeasurement {
     CompletedExposureMeasurement {
         frame: FrameTag {
             stream_generation: 1,
@@ -92,7 +97,7 @@ pub(super) fn run_frames(controller: &mut AutoExposureController, from: i64, to:
 }
 
 /// `required` выше текущей цели на `ev` ступеней.
-fn above(base: f64, ev: f64) -> f64 {
+pub(super) fn above(base: f64, ev: f64) -> f64 {
     base * ev.exp2()
 }
 
@@ -101,14 +106,17 @@ fn first_estimate_sets_the_target_at_once_without_smoothing() {
     let mut controller = controller();
     controller.begin_stream();
     assert!(controller.target_log2().is_none());
-    assert!(controller.proposal(ts(0)).is_none(), "цели нет — предложения нет");
+    assert!(
+        controller.proposal(ts(0), test_camera()).is_none(),
+        "цели нет — предложения нет"
+    );
     controller.ingest(&whole_frame_measurement(0, 0.05));
     // Сразу после приёма и после шага времени цель равна оценке: никакого разгона от нуля.
     assert!((controller.target_log2().unwrap() - 0.05_f64.log2()).abs() < 1e-12);
     controller.advance(ts(0));
     controller.advance(ts(1));
     assert!((controller.target_log2().unwrap() - 0.05_f64.log2()).abs() < 1e-12);
-    let proposal = controller.proposal(ts(1)).unwrap();
+    let proposal = controller.proposal(ts(1), test_camera()).unwrap();
     assert!((proposal.target.seconds_iso() - 0.05).abs() < 1e-9);
     assert_eq!(proposal.convergence, ProposalConvergence::Settled);
     assert_eq!(proposal.metered_area, MeteredArea::WholeFrame);
@@ -159,7 +167,7 @@ fn video_dead_band_ignores_small_errors_and_hysteresis_runs_until_stop_threshold
     run_frames(&mut controller, 1, 200);
     assert_eq!(controller.target_log2().unwrap(), base);
     assert_eq!(
-        controller.proposal(ts(200)).unwrap().convergence,
+        controller.proposal(ts(200), test_camera()).unwrap().convergence,
         ProposalConvergence::Settled,
         "покой внутри мёртвой зоны — это Settled"
     );
@@ -235,7 +243,10 @@ fn measurement_for_another_area_is_rejected_and_counted() {
 fn changing_the_area_drops_the_old_scene_estimate_but_keeps_the_target() {
     let mut controller = started_at(directive(), 0.01);
     controller.set_directive(tap(1));
-    assert!(controller.proposal(ts(5)).is_none(), "оценки новой области ещё нет");
+    assert!(
+        controller.proposal(ts(5), test_camera()).is_none(),
+        "оценки новой области ещё нет"
+    );
     assert!(controller.target_log2().is_some());
     controller.ingest(&measured(
         6,
@@ -243,7 +254,7 @@ fn changing_the_area_drops_the_old_scene_estimate_but_keeps_the_target() {
         0.04,
         MeasurementQuality::Measured,
     ));
-    let proposal = controller.proposal(ts(6)).unwrap();
+    let proposal = controller.proposal(ts(6), test_camera()).unwrap();
     assert_eq!(proposal.metered_area, MeteredArea::Point(PointRequestId(1)));
 }
 
@@ -258,7 +269,7 @@ fn clipped_and_dark_measurements_are_searching_never_settled() {
         MeasurementQuality::ClippedHighlights,
     ));
     controller.advance(ts(0));
-    let proposal = controller.proposal(ts(0)).unwrap();
+    let proposal = controller.proposal(ts(0), test_camera()).unwrap();
     assert_eq!(proposal.convergence, ProposalConvergence::Searching);
     assert_eq!(proposal.quality, MeasurementQuality::ClippedHighlights);
 }
@@ -274,7 +285,7 @@ fn lock_freezes_the_target_after_settling_and_unlock_resumes_following() {
     controller.advance(ts(1));
     assert!(controller.is_holding());
     assert_eq!(
-        controller.proposal(ts(1)).unwrap().convergence,
+        controller.proposal(ts(1), test_camera()).unwrap().convergence,
         ProposalConvergence::Holding
     );
     let frozen = controller.target_log2().unwrap();
@@ -361,7 +372,7 @@ fn manual_authority_ignores_measurements_and_publishes_nothing() {
         IngestOutcome::IgnoredManual
     );
     controller.advance(ts(2));
-    assert!(controller.proposal(ts(2)).is_none());
+    assert!(controller.proposal(ts(2), test_camera()).is_none());
     assert_eq!(controller.counters().ignored_manual, 1);
     assert!((controller.target_log2().unwrap() - 0.01_f64.log2()).abs() < 1e-12);
 }
@@ -412,26 +423,32 @@ fn time_step_is_zero_out_of_order_and_clamped_after_a_long_gap() {
 #[test]
 fn proposals_are_rate_limited_but_first_and_area_change_go_out_at_once() {
     let mut controller = started_at(directive(), 0.01);
-    assert!(controller.proposal(ts(0)).is_some(), "первое — сразу");
-    assert!(controller.proposal(ts(0)).is_none(), "без изменений — нет");
+    assert!(controller.proposal(ts(0), test_camera()).is_some(), "первое — сразу");
+    assert!(
+        controller.proposal(ts(0), test_camera()).is_none(),
+        "без изменений — нет"
+    );
     // Цель сдвинулась на 1 EV, но 20 мс < 50 мс: рано.
     controller.ingest(&whole_frame_measurement(1, above(0.01, 1.0)));
     run_frames(&mut controller, 1, 3);
-    assert!(controller.proposal(ts(1)).is_none());
+    assert!(controller.proposal(ts(1), test_camera()).is_none());
     // Через >= 50 мс с прошлой публикации и сдвиге >= 1/24 EV — публикуем.
     run_frames(&mut controller, 3, 6);
-    assert!(controller.proposal(ts(6)).is_some());
+    assert!(controller.proposal(ts(6), test_camera()).is_some());
     // Крошечный сдвиг (< 1/24 EV) не публикуется даже спустя время.
     controller.ingest(&whole_frame_measurement(7, above(0.01, 1.0 + 0.02)));
     run_frames(&mut controller, 7, 400);
-    let settled = controller.proposal(ts(400));
+    let settled = controller.proposal(ts(400), test_camera());
     assert!(
         settled.is_some(),
         "смена convergence/накопленный сдвиг дошли до публикации"
     );
     controller.ingest(&whole_frame_measurement(401, above(0.01, 1.0 + 0.02 + 0.01)));
     run_frames(&mut controller, 401, 800);
-    assert!(controller.proposal(ts(800)).is_none(), "сдвиг 0,01 EV < порога");
+    assert!(
+        controller.proposal(ts(800), test_camera()).is_none(),
+        "сдвиг 0,01 EV < порога"
+    );
     // Смена области — сразу, без ожидания интервала.
     controller.set_directive(tap(9));
     controller.ingest(&measured(
@@ -441,7 +458,7 @@ fn proposals_are_rate_limited_but_first_and_area_change_go_out_at_once() {
         MeasurementQuality::Measured,
     ));
     assert_eq!(
-        controller.proposal(ts(801)).unwrap().metered_area,
+        controller.proposal(ts(801), test_camera()).unwrap().metered_area,
         MeteredArea::Point(PointRequestId(9))
     );
 }
@@ -449,14 +466,14 @@ fn proposals_are_rate_limited_but_first_and_area_change_go_out_at_once() {
 #[test]
 fn begin_stream_forgets_target_and_republishes_first_proposal() {
     let mut controller = started_at(directive(), 0.01);
-    assert!(controller.proposal(ts(0)).is_some());
+    assert!(controller.proposal(ts(0), test_camera()).is_some());
     controller.begin_stream();
     assert!(controller.target_log2().is_none());
-    assert!(controller.proposal(ts(1)).is_none());
+    assert!(controller.proposal(ts(1), test_camera()).is_none());
     controller.ingest(&whole_frame_measurement(1, 0.04));
     assert!((controller.target_log2().unwrap() - 0.04_f64.log2()).abs() < 1e-12);
     assert!(
-        controller.proposal(ts(1)).is_some(),
+        controller.proposal(ts(1), test_camera()).is_some(),
         "первое предложение нового потока уходит сразу"
     );
 }
@@ -548,151 +565,6 @@ fn display_gain_is_constant_while_holding() {
     controller.ingest(&whole_frame_measurement(2, above(0.02, 3.0)));
     run_frames(&mut controller, 2, 100);
     assert_eq!(controller.display_gain(frame), first);
-}
-
-fn lock_directive(base: ExposureDirective) -> ExposureDirective {
-    ExposureDirective {
-        lock: AeAfLock::Locked,
-        ..base
-    }
-}
-
-#[test]
-fn video_lock_is_searching_while_settling_and_holding_afterwards() {
-    let mut controller = started_at(video(), 0.01);
-    // Сцена ярче на 1 EV, блокировка запрошена до схождения.
-    controller.set_directive(lock_directive(video()));
-    controller.ingest(&whole_frame_measurement(1, above(0.01, 1.0)));
-    controller.advance(ts(1));
-    let early = controller.proposal(ts(1)).unwrap();
-    assert_eq!(
-        early.convergence,
-        ProposalConvergence::Searching,
-        "досчёт блокировки не Settled"
-    );
-    let mut seen_searching_until_holding = true;
-    for frame in 2..120 {
-        controller.advance(ts(frame));
-        if controller
-            .proposal(ts(frame))
-            .is_some_and(|proposal| proposal.convergence == ProposalConvergence::Settled)
-        {
-            seen_searching_until_holding = false;
-        }
-    }
-    assert!(seen_searching_until_holding, "Settled появился до Holding");
-    assert_eq!(
-        controller
-            .proposal(ts(300))
-            .map(|p| p.convergence)
-            .unwrap_or(ProposalConvergence::Holding),
-        ProposalConvergence::Holding
-    );
-    assert!(controller.is_holding());
-}
-
-#[test]
-fn returning_from_manual_does_not_chase_a_stale_scene_estimate() {
-    let mut controller = started_at(directive(), 0.01);
-    let frozen = controller.target_log2().unwrap();
-    controller.set_directive(ExposureDirective {
-        authority: ExposureAuthority::Manual,
-        ..directive()
-    });
-    // Пока ручной режим, сцена изменилась, но замеры игнорируются.
-    controller.ingest(&whole_frame_measurement(1, above(0.01, 3.0)));
-    controller.set_directive(directive());
-    run_frames(&mut controller, 2, 200);
-    assert_eq!(
-        controller.target_log2().unwrap(),
-        frozen,
-        "цель стоит до свежего замера"
-    );
-    assert!(
-        controller.proposal(ts(200)).is_none(),
-        "публикации по устаревшей оценке нет"
-    );
-    controller.ingest(&whole_frame_measurement(201, above(0.01, 3.0)));
-    run_frames(&mut controller, 201, 400);
-    assert!((controller.target_log2().unwrap() - frozen - 3.0).abs() < 0.05);
-}
-
-#[test]
-fn lock_in_the_same_area_waits_for_a_fresh_measurement() {
-    let mut controller = started_at(directive(), 0.01);
-    controller.set_directive(lock_directive(directive()));
-    // Старая оценка совпала с целью, но свежего замера после запроса блокировки не было.
-    run_frames(&mut controller, 1, 30);
-    assert!(!controller.is_holding(), "заморозка по давнишней оценке");
-    controller.ingest(&whole_frame_measurement(30, above(0.01, 1.0)));
-    controller.advance(ts(30));
-    assert!(!controller.is_holding(), "цель ещё не дошла до свежей оценки");
-    run_frames(&mut controller, 31, 120);
-    assert!(controller.is_holding());
-    assert!((controller.target_log2().unwrap() - 0.01_f64.log2() - 1.0).abs() <= 0.1);
-}
-
-#[test]
-fn lock_still_freezes_by_timeout_without_any_fresh_measurement() {
-    let mut controller = started_at(directive(), 0.01);
-    controller.set_directive(lock_directive(directive()));
-    run_frames(&mut controller, 1, 55);
-    assert!(!controller.is_holding());
-    run_frames(&mut controller, 55, 70);
-    assert!(controller.is_holding());
-}
-
-#[test]
-fn settled_has_hysteresis_so_jitter_near_the_tolerance_does_not_republish() {
-    // Цель практически неподвижна (огромная τ): дрожит только оценка сцены относительно неё.
-    let mut controller = AutoExposureController::new(ExposureControllerConfig {
-        photo_time_constant_seconds: 1.0e6,
-        ..ExposureControllerConfig::default()
-    })
-    .unwrap();
-    controller.begin_stream();
-    controller.ingest(&whole_frame_measurement(0, 0.01));
-    controller.advance(ts(0));
-    assert_eq!(
-        controller.proposal(ts(0)).unwrap().convergence,
-        ProposalConvergence::Settled
-    );
-    // Оценка дрожит между 0,05 и 0,15 EV от цели: между допуском (0,1) и порогом выхода (0,2).
-    let mut published = 0;
-    let mut frame = 1;
-    for round in 0..40 {
-        let jitter = if round % 2 == 0 { 0.15 } else { 0.05 };
-        controller.ingest(&whole_frame_measurement(frame, above(0.01, jitter)));
-        // Цель мгновенно не идёт к оценке: зафиксируем её у границы, пересчитывая сходимость на месте.
-        controller.advance(ts(frame));
-        if let Some(proposal) = controller.proposal(ts(frame + 6)) {
-            published += 1;
-            assert_ne!(proposal.convergence, ProposalConvergence::Holding);
-        }
-        frame += 6;
-    }
-    assert!(published <= 3, "публикаций {published}: Settled/Searching дрожит");
-    // Явный выход за порог 0,2 EV снимает Settled.
-    let mut far = started_at(directive(), 0.01);
-    far.ingest(&whole_frame_measurement(1, above(0.01, 0.5)));
-    assert_eq!(far.proposal(ts(1)).unwrap().convergence, ProposalConvergence::Searching);
-}
-
-#[test]
-fn the_measurement_phase_stays_cold_until_the_first_reliable_estimate_of_the_stream() {
-    let mut controller = controller();
-    assert_eq!(controller.measurement_phase(), MeasurementPhase::ColdStart);
-    // Пересвеченная оценка не надёжна: фаза прежняя.
-    let clipped = measured(0, MeteredArea::WholeFrame, 1.0, MeasurementQuality::ClippedHighlights);
-    assert_eq!(controller.ingest(&clipped), IngestOutcome::Accepted);
-    assert_eq!(controller.measurement_phase(), MeasurementPhase::ColdStart);
-    // Надёжная — фаза установившаяся.
-    let reliable = measured(1, MeteredArea::WholeFrame, 1.0, MeasurementQuality::Measured);
-    assert_eq!(controller.ingest(&reliable), IngestOutcome::Accepted);
-    assert_eq!(controller.measurement_phase(), MeasurementPhase::Established);
-    // Новый поток начинает холодный старт заново.
-    controller.begin_stream();
-    assert_eq!(controller.measurement_phase(), MeasurementPhase::ColdStart);
 }
 
 #[path = "controller_observation_tests.rs"]

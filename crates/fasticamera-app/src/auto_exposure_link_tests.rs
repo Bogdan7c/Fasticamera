@@ -24,6 +24,7 @@ impl RefreshSignal for CountingReceiver {
 fn proposal() -> ExposureProposal {
     ExposureProposal {
         measured_frame: SensorTimestamp::from_nanos(1),
+        measured_on: camera_contract::auto_exposure::CameraTag::of(&camera_contract::fixtures::camera_id("2")),
         target: ExposureProduct::from_seconds_iso(2.0).expect("цель"),
         metered_area: MeteredArea::WholeFrame,
         convergence: ProposalConvergence::Searching,

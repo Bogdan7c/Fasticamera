@@ -8,6 +8,7 @@ mod deferred;
 mod hub;
 mod pairing;
 mod publish;
+mod standby;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -30,6 +31,8 @@ use crate::pool::PoolPlan;
 use crate::producer_frame::ProducerFrame;
 use crate::viewfinder_pacing::{ViewfinderPacing, ViewfinderPacingSwitch};
 use viewfinder_cell::CellTake;
+
+pub use standby::{StandbyBegin, StandbyPromotion};
 
 /// Номер сессии потока. Кадры и результаты прошлой эпохи не смешиваются с новой.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
@@ -60,6 +63,8 @@ pub enum OfferOutcome {
     AwaitingResult,
     /// Кадр прошлой эпохи или потока нет — отпущен производителю без раздачи.
     StaleEpoch,
+    /// Эпоха тёплая (standby): кадр сразу возвращён камере, потребителям не достался.
+    ReturnedAsStandby,
 }
 
 /// Что стало с предложенным результатом.
@@ -73,6 +78,8 @@ pub enum ResultOutcome {
     WithoutTimestamp,
     /// Результат прошлой эпохи — отброшен.
     StaleEpoch,
+    /// Эпоха тёплая: результат лежит в её буфере до обмена (старые вытесняются).
+    BufferedForStandby,
 }
 
 /// Ответ видоискателю.
@@ -185,6 +192,25 @@ impl RawFrameProducer {
             .with_state(|state, deferred| state.begin_stream(passport, deferred))
     }
 
+    /// Тёплая эпоха для второй камеры: номер из общего счётчика и ПОЛНЫЙ план пула (после обмена
+    /// её reader станет показываемым). Показываемую эпоху не трогает. Сверх `max_standby_streams`
+    /// — [`StandbyBegin::LimitReached`], ничего не создаётся.
+    pub fn begin_standby_stream(&self, passport: Arc<StreamPassport>) -> StandbyBegin {
+        self.hub.with_state(|state, _| state.begin_standby_stream(passport))
+    }
+
+    /// Конец тёплой эпохи: накопленные результаты отпускаются. Чужая или закрытая — no-op.
+    pub fn end_standby_stream(&self, epoch: StreamEpoch) {
+        self.hub.with_state(|state, _| state.end_standby_stream(epoch))
+    }
+
+    /// Атомарный обмен: тёплая становится показываемой, прежняя показываемая — тёплой. Всё, что
+    /// держала прежняя показываемая, отпускается без показа; `StreamInactive` из-за обмена не бывает.
+    pub fn promote_standby(&self, standby_epoch: StreamEpoch) -> StandbyPromotion {
+        self.hub
+            .with_state(|state, deferred| state.promote_standby(standby_epoch, deferred))
+    }
+
     pub fn offer_frame(&self, epoch: StreamEpoch, frame: OfferedFrame, now: Instant) -> OfferOutcome {
         self.hub
             .with_state(|state, deferred| state.offer_frame(epoch, frame, now, deferred))
@@ -206,6 +232,9 @@ impl RawFrameProducer {
             // Считаем только текущую эпоху: отказ reader-а прошлой сессии к новой не относится.
             if state.accepts(epoch) {
                 StreamAccounting::bump(&state.accounting.dropped_pool_exhausted);
+            } else {
+                // Тёплая эпоха считается отдельно; чужая — не считается нигде.
+                state.note_standby_pool_exhausted(epoch);
             }
         })
     }

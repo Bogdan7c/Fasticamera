@@ -9,6 +9,7 @@
   matrix <flavor> <file.json>   прогнать список экспериментов из файла
   table <dir>                   сводная таблица потоков (C2) по сохранённым прогонам
   pull-captures <flavor> [dest] забрать эталонные снимки C7 (files/captures) и удалить их с телефона
+  pull-align <flavor> <run> [dest]  забрать files/align/<run> (зелёные плоскости product_alignment); телефон не чистим
 
 Результаты пишутся в каталог вне репозитория (по умолчанию ~/fasticamera-captures/probe-runs),
 в git и user/ они не попадают (правило README плана).
@@ -223,6 +224,23 @@ def pull_captures(flavor: str, destination: Path) -> None:
     adb("shell", f"run-as {shlex.quote(package)} rm -rf files/captures")
 
 
+def pull_align(flavor: str, run_id: str, destination: Path) -> None:
+    """Забирает files/align/<run> (кадры замера совмещения) tar-потоком через run-as; файлы на телефоне остаются."""
+    package = FLAVOR_PACKAGES[flavor]
+    destination.mkdir(parents=True, exist_ok=True)
+    serial = os.environ.get("ANDROID_SERIAL")
+    adb_prefix = ["adb"] + (["-s", serial] if serial else [])
+    archive = subprocess.run(adb_prefix + ["exec-out", "run-as", package, "tar", "-C", f"files/align/{run_id}", "-c", "."],
+                             capture_output=True)
+    if archive.returncode != 0 or not archive.stdout:
+        raise ProbeError(f"не удалось упаковать align/{run_id}: {archive.stderr.decode(errors='replace').strip()}")
+    unpacked = subprocess.run(["tar", "-x", "-C", str(destination)], input=archive.stdout, capture_output=True)
+    if unpacked.returncode != 0:
+        raise ProbeError(f"tar -x: {unpacked.stderr.decode(errors='replace').strip()}")
+    for path in sorted(p for p in destination.rglob("*") if p.is_file()):
+        print(f"{path.stat().st_size:>12}  {path}")
+
+
 # --- Сводка -----------------------------------------------------------------------
 
 
@@ -258,6 +276,44 @@ def summarize_stream(record: dict) -> dict:
     }
 
 
+def summarize_sensitivity(data: dict) -> list[str]:
+    """Строки замера чувствительности (`product_sensitivity`): EV основная-минус-ширик по ступеням."""
+    lines = []
+    static = data.get("static")
+    if static:
+        lines.append(f"expected ev: aperture={static.get('expected_ev_aperture_only'):.3f} "
+                     f"aperture+pixel_area={static.get('expected_ev_aperture_and_pixel_area'):.3f} "
+                     f"zoom_ratio_wide={static.get('zoom_ratio_wide'):.3f}")
+    for step in data.get("steps") or []:
+        label = f"exp={step['requested_exposure_ns']} iso={step['requested_iso']}"
+        ev = step.get("ev_main_minus_wide")
+        if ev:
+            lines.append(f"ev {label}: " + " ".join(f"{name}={ev[name]:+.3f}" for name in ("R", "Gr", "Gb", "B", "green_avg")))
+        else:
+            lines.append(f"ev {label}: {step.get('status')}")
+        for camera in ("main", "wide"):
+            stats = step.get(camera)
+            if stats:
+                lines.append(f"  {camera}: exp={stats['actual_exposure_ns']} iso={stats['actual_iso']} used={stats['frames_used']}/"
+                             f"{stats['frames_collected']} clip={stats['clipped_fraction_max_channel']:.4f} af={stats['af_state']}")
+    return lines
+
+
+def summarize_alignment(data: dict) -> list[str]:
+    """Строки сводки `product_alignment`: ожидание AF, перекос меток и применённые параметры каждой пары."""
+    if "pairs" not in data:
+        return []
+    lines = [f"alignment: af_wait={data.get('af_wait')} applied_after_ms={data.get('applied_after_ms')} "
+             f"wide_exposure_factor={data.get('wide_exposure_factor')}"]
+    for pair in data["pairs"]:
+        frames = pair.get("frames", {})
+        parts = [f"{label}: clip={meta['clipped_fraction']:.4f} mean={meta['mean_level_black_subtracted']:.1f} "
+                 f"diopt={meta['result']['focus_distance_diopters']} af={meta['result']['af_state']}"
+                 for label, meta in frames.items()]
+        lines.append(f"  pair{pair['index']}: skew_ms={pair.get('skew_ms')} " + " | ".join(parts) + f" {pair.get('error', '')}")
+    return lines
+
+
 def summarize_dual(record: dict) -> list[str]:
     """Строки сводки сценария `dual` (сессия 13F): по одной на ногу/попытку."""
     data = record.get("data", {})
@@ -278,6 +334,9 @@ def summarize_dual(record: dict) -> list[str]:
                          f"acq_err={leg['acquire_errors']}")
         lines.append(f"  results cam{camera['camera']}: n={results.get('count')} failures={results.get('failures')} "
                      f"lost={results.get('buffers_lost')} af={results.get('af_transitions')} physical={results.get('physical_result_counts')}")
+    if data.get("steps") is not None:
+        lines.extend(summarize_sensitivity(data))
+    lines.extend(summarize_alignment(data))
     if data.get("current"):
         lines.append(f"current: {json.dumps(data['current'], ensure_ascii=False)}")
     if data.get("switch_ms_summary"):
@@ -377,6 +436,10 @@ def main() -> int:
     pull_parser = sub.add_parser("pull-captures")
     pull_parser.add_argument("flavor", choices=FLAVOR_PACKAGES)
     pull_parser.add_argument("destination", type=Path, nargs="?", default=DEFAULT_OUTPUT_DIR.parent / "c7-reference")
+    align_parser = sub.add_parser("pull-align")
+    align_parser.add_argument("flavor", choices=FLAVOR_PACKAGES)
+    align_parser.add_argument("run_id")
+    align_parser.add_argument("destination", type=Path)
     table_parser = sub.add_parser("table")
     table_parser.add_argument("directory", type=Path)
     args = parser.parse_args()
@@ -395,6 +458,8 @@ def main() -> int:
             uninstall(args.flavor)
         elif args.command == "pull-captures":
             pull_captures(args.flavor, args.destination)
+        elif args.command == "pull-align":
+            pull_align(args.flavor, args.run_id, args.destination)
         elif args.command == "run":
             params = parse_params(args.params)
             result = run_scenario(args.flavor, args.scenario, params, args.timeout)

@@ -11,6 +11,9 @@
 //!   конфига `[measured: R00 M:124]`;
 //! * колесо: открыто ли, лежит ли на нём палец, когда была последняя активность (для ухода через ≈ 2,15 с);
 //! * щипок: коэффициент в начале жеста;
+//! * спрос на тёплого соседа (13b, решения 117 и 124): нажатие на ленту, ставшее дольше тапа, открытое колесо и
+//!   щипок значат «соседняя камера скоро понадобится». Это **выведенный факт** — им владеет `ZoomState`, а
+//!   редьюсер публикует каждый его переход движку (экран о камерах ничего не знает, соседей выбирает движок);
 //! * метка переворота: номер и момент (по ней UI рисует карточку);
 //! * наблюдатель неудач смены объектива ([`FailureWatch`]): учтённый номер не откатывает повторно.
 //!
@@ -18,7 +21,7 @@
 //! держит группу); последний «задний» коэффициент помнится для возврата с фронтальной камеры.
 
 use camera_contract::ids::LensFacing;
-use camera_contract::zoom::{LensGroup, ZoomRatio};
+use camera_contract::zoom::{LensGroup, StandbyDemand, ZoomRatio};
 use shell_contract::clock::MonotonicNanos;
 
 /// Допуск сравнения коэффициента с упором (относительный): упор «1×» не должен промахиваться на ошибку f32.
@@ -71,6 +74,17 @@ pub(crate) enum WheelPhase {
     },
 }
 
+/// Палец лежит на ленте кнопок зума. Тап и долгое нажатие неотличимы, пока палец не пролежал дольше порога
+/// тапа (`zoom.standby.press_threshold_ms`): до порога тёплую камеру будить нельзя (решение 117: тап по `.6`/`1`
+/// её не будит), после — это уже «зум, а не тап» (решение 124).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct StripPress {
+    /// Когда палец лёг (из времени действия, не из часов).
+    since: MonotonicNanos,
+    /// Палец пролежал дольше порога тапа; признак защёлкивается и не откатывается до отпускания.
+    outlasted_tap: bool,
+}
+
 /// Метка переворота камеры: растёт номером, чтобы UI отличал новый переворот от уже нарисованного.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FlipMark {
@@ -94,6 +108,13 @@ pub struct ZoomState {
     wheel: WheelPhase,
     /// Коэффициент в начале идущего щипка; `Some` только пока щипок идёт.
     pinch_start: Option<ZoomRatio>,
+    /// Палец на ленте кнопок; `Some` только пока он лежит.
+    strip_press: Option<StripPress>,
+    /// Спрос на тёплого соседа, который экран **уже опубликовал** движку последним намерением. Сравнение с
+    /// выведенным значением ([`Self::derived_standby_demand`]) и есть «переход», который надо отправить.
+    published_standby: StandbyDemand,
+    /// Сколько раз спрос менялся за жизнь экрана (диагностика).
+    standby_transitions: u64,
     flip: Option<FlipMark>,
     pub(crate) failure_watch: FailureWatch,
 }
@@ -108,6 +129,9 @@ impl ZoomState {
             glide: None,
             wheel: WheelPhase::Closed,
             pinch_start: None,
+            strip_press: None,
+            published_standby: StandbyDemand::NotNeeded,
+            standby_transitions: 0,
             flip: None,
             failure_watch: FailureWatch::Unarmed,
         }
@@ -148,6 +172,31 @@ impl ZoomState {
     /// Идёт ли щипок.
     pub fn is_pinching(&self) -> bool {
         self.pinch_start.is_some()
+    }
+
+    /// Спрос на тёплого соседа, который диктует **текущее** состояние жестов (решения 117 и 124): нажатие на
+    /// ленте дольше тапа, открытое колесо или щипок. У фронтальной камеры соседей нет — спроса нет, чтобы не
+    /// слать движку пустых просьб. До первого значения от пользователя или камеры спроса нет тоже.
+    pub fn derived_standby_demand(&self) -> StandbyDemand {
+        let press_outlasted_tap = self.strip_press.is_some_and(|press| press.outlasted_tap);
+        let wanted = self.facing == LensFacing::Back
+            && self.is_adopted()
+            && (press_outlasted_tap || self.is_wheel_open() || self.is_pinching());
+        if wanted {
+            StandbyDemand::KeepNeighbourWarm
+        } else {
+            StandbyDemand::NotNeeded
+        }
+    }
+
+    /// Спрос, уже опубликованный движку (последнее намерение).
+    pub fn published_standby_demand(&self) -> StandbyDemand {
+        self.published_standby
+    }
+
+    /// Сколько раз спрос на тёплого соседа менялся (диагностика).
+    pub fn standby_transitions(&self) -> u64 {
+        self.standby_transitions
     }
 
     /// Идёт ли плавный переход к упору.
@@ -284,6 +333,39 @@ impl ZoomState {
         self.wheel = WheelPhase::Closed;
     }
 
+    /// Палец лёг на ленту кнопок в момент `at`. Повторное «лёг» без отпускания не сдвигает начало.
+    pub(crate) fn begin_strip_press(&mut self, at: MonotonicNanos) {
+        if self.strip_press.is_none() {
+            self.strip_press = Some(StripPress {
+                since: at,
+                outlasted_tap: false,
+            });
+        }
+    }
+
+    /// Палец поднят с ленты (или жест отменён). Возвращает `true`, если нажатие было.
+    pub(crate) fn end_strip_press(&mut self) -> bool {
+        self.strip_press.take().is_some()
+    }
+
+    /// Защёлкнуть «дольше тапа», если палец лежит не меньше `threshold_nanos` на момент `now`.
+    pub(crate) fn promote_strip_press(&mut self, now: MonotonicNanos, threshold_nanos: i64) {
+        if let Some(press) = &mut self.strip_press
+            && !press.outlasted_tap
+            && now.as_nanos().saturating_sub(press.since.as_nanos()) >= threshold_nanos
+        {
+            press.outlasted_tap = true;
+        }
+    }
+
+    /// Записать спрос, ушедший движку в намерении. Меняет счётчик переходов только при реальной смене.
+    pub(crate) fn record_published_standby(&mut self, demand: StandbyDemand) {
+        if self.published_standby != demand {
+            self.published_standby = demand;
+            self.standby_transitions = self.standby_transitions.saturating_add(1);
+        }
+    }
+
     pub(crate) fn begin_pinch(&mut self) {
         self.mark_user_chosen();
         self.pinch_start = Some(self.ratio);
@@ -303,6 +385,7 @@ impl ZoomState {
         self.facing = facing;
         self.glide = None;
         self.pinch_start = None;
+        self.strip_press = None;
         self.wheel = WheelPhase::Closed;
         self.set_ratio(ratio);
         let sequence = self.flip.map_or(1, |mark| mark.sequence.saturating_add(1));

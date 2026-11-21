@@ -42,6 +42,7 @@ mod lens_intent;
 mod lens_switch;
 mod reconcile;
 mod recovery;
+mod standby;
 mod three_a;
 
 use std::sync::Arc;
@@ -70,6 +71,7 @@ use camera_frame_rate::CameraFrameRateLimits;
 pub(crate) use commands::Desired;
 use lens_intent::LensEngineState;
 use recovery::RecoveryTracker;
+use standby::StandbyEngine;
 use three_a::ThreeAEngine;
 
 pub(crate) const LOG_TARGET: &str = "fasticamera::camera::engine";
@@ -207,6 +209,8 @@ pub struct CameraEngine {
     three_a: ThreeAEngine,
     /// Шкала зума, чтение намерений экрана и учёт смены объектива (13).
     lens: LensEngineState,
+    /// «Тёплые» соседние камеры (13b).
+    standby: StandbyEngine,
     last_unavailable: Option<CameraUnavailableReason>,
     events: Vec<CameraEvent>,
     /// После паники внутри итерации бэкенд и внутренности в неизвестном состоянии:
@@ -255,6 +259,7 @@ impl CameraEngine {
             frame_rate_limits: CameraFrameRateLimits::default(),
             counters: CameraCounters::default(),
             lens: LensEngineState::new(),
+            standby: StandbyEngine::new(),
             last_unavailable: None,
             events: Vec::new(),
             poisoned: false,
@@ -344,6 +349,7 @@ impl CameraEngine {
         }
         self.fire_retry_timer_if_due(now);
         self.fire_three_a_timers(now);
+        self.fire_standby_release_timer(now);
     }
 
     /// Когда движку нужно проснуться без внешних событий.
@@ -351,10 +357,14 @@ impl CameraEngine {
         if self.poisoned {
             return None;
         }
-        [self.pending_retry_deadline(), self.three_a.next_deadline()]
-            .into_iter()
-            .flatten()
-            .min()
+        [
+            self.pending_retry_deadline(),
+            self.three_a.next_deadline(),
+            self.standby.next_deadline(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     /// Снимок состояния.
@@ -396,6 +406,9 @@ impl CameraEngine {
         if catch_unwind(AssertUnwindSafe(|| self.backend.close_device())).is_err() {
             tracing::error!(target: LOG_TARGET, "паника и при закрытии устройства после паники движка");
         }
+        if catch_unwind(AssertUnwindSafe(|| self.close_standby_resources())).is_err() {
+            tracing::error!(target: LOG_TARGET, "паника и при закрытии тёплых камер после паники движка");
+        }
         self.device = None;
         self.session = None;
         self.end_three_a_stream();
@@ -428,6 +441,7 @@ impl CameraEngine {
     pub fn shutdown(&mut self) {
         if !self.poisoned {
             self.release_platform();
+            self.standby.end_demand();
         }
         self.recovery.stop_waiting();
         if !self.is_fatal() {
@@ -460,6 +474,8 @@ impl CameraEngine {
 
     /// Закрыть устройство на бэкенде, если оно у нас записано открытым.
     fn release_platform(&mut self) {
+        // Тёплые закрываются раньше основной: основная закрыта — тёплым рядом делать нечего.
+        self.close_standby_resources();
         if self.device.is_some() || self.session.is_some() {
             self.backend.close_device();
         }
@@ -471,6 +487,7 @@ impl CameraEngine {
     /// Окончательная ошибка: устройство отпущено, ожиданий нет.
     fn enter_fatal(&mut self, cause: FatalCause) {
         self.release_platform();
+        self.standby.end_demand();
         self.reset_lens_switch();
         self.reconfiguring = false;
         self.recovery.stop_waiting();

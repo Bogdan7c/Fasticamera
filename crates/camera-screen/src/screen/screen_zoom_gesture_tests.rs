@@ -210,6 +210,7 @@ fn the_flip_button_toggles_the_direction_hides_the_strip_on_front_and_restores_t
             facing: LensFacing::Front,
             ratio: crate::test_support::ratio(1.0),
             gesture: ZoomGesture::Discrete,
+            standby: camera_contract::zoom::StandbyDemand::NotNeeded,
         }]
     );
     assert_eq!(rig.screen.state().zoom().facing(), LensFacing::Front);

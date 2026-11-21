@@ -255,6 +255,7 @@ impl CameraScreen {
         let mut snapshot = self.diagnostics.clone();
         snapshot.effects_queued = self.effects.queued();
         snapshot.effects_overflowed = self.effects.overflowed();
+        snapshot.standby_demand_transitions = self.state.zoom().standby_transitions();
         if let Some(stage) = &self.stage {
             snapshot.echo_events_suppressed = stage.echo_suppressed();
             snapshot.ignored_sun_pans = stage.focus().ignored_sun_pans();
@@ -561,6 +562,9 @@ mod screen_zoom_flip_tests;
 #[cfg(test)]
 #[path = "screen_zoom_gesture_tests.rs"]
 mod screen_zoom_gesture_tests;
+#[cfg(test)]
+#[path = "screen_zoom_standby_tests.rs"]
+mod screen_zoom_standby_tests;
 #[cfg(test)]
 #[path = "screen_zoom_tests.rs"]
 mod screen_zoom_tests;

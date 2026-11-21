@@ -138,3 +138,8 @@ pub(super) fn isp_params_for(neutral: CameraNeutral) -> IspParams {
     let controls = ProcessingControls::with_defaults(neutral, DemosaicMethod::Quality, DisplayGamut::Srgb);
     IspParams::resolve(&sensor, &frame, &controls).unwrap()
 }
+
+/// Камера, на которой «измерены» предложения в тестах контроллера.
+pub(super) fn test_camera() -> camera_contract::auto_exposure::CameraTag {
+    camera_contract::auto_exposure::CameraTag::of(&camera_contract::ids::CameraId::new("0").expect("id камеры"))
+}

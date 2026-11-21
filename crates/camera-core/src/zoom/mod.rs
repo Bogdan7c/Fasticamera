@@ -12,10 +12,12 @@
 mod catalog;
 mod config;
 mod selector;
+mod standby;
 
 pub use catalog::{ZoomCatalogBuild, ZoomDiagnostic, build_zoom_catalog, build_zoom_catalog_reporting};
 pub use config::{ZoomConfig, ZoomConfigError};
-pub use selector::{select_initial_lens, select_lens};
+pub use selector::{SwitchCost, select_initial_lens, select_lens};
+pub use standby::standby_candidates;
 
 #[cfg(test)]
 mod catalog_tests;
@@ -23,3 +25,5 @@ mod catalog_tests;
 mod config_tests;
 #[cfg(test)]
 mod selector_tests;
+#[cfg(test)]
+mod standby_tests;

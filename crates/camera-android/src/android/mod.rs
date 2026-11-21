@@ -6,6 +6,7 @@
 //! * `manager`, `device`, `session`, `outputs`, `request`, `raw_reader`, `companion` (вспомогательный
 //!   поток 3A), `availability` — владельцы объектов NDK;
 //! * `producer_frame` — кадр потока (`AImage`) и его возврат камере с fence-ом;
+//! * `standby_slot` — ячейки тёплых камер (13b); `backend/standby_api` — их `StandbyCamera` и обмен ролей;
 //! * `backend` — `AndroidCameraBackend`.
 //!
 //! Весь `unsafe` здесь сопровождён `// SAFETY:`; решения (какой рычаг, какие записи, какой отказ)
@@ -24,6 +25,7 @@ mod raw_reader;
 mod reader_callback;
 mod request;
 mod session;
+mod standby_slot;
 
 use std::sync::Arc;
 

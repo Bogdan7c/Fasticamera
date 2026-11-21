@@ -8,6 +8,7 @@ use camera_contract::ids::{LensFacing, LensRole};
 use super::lens_support::{LensRig, ultra_wide_id};
 use super::*;
 use crate::backend::{BackendFailure, CameraAvailability, ConfigureFailure, DeviceErrorKind, OpenFailure};
+use crate::lens_status::LensSwitchMethod;
 use crate::lens_status::{LensSwitchFailure, LensSwitchState};
 
 fn switched_events(events: &[CameraEvent]) -> Vec<&CameraEvent> {
@@ -58,7 +59,8 @@ fn intent_switches_wide_to_ultra_wide_and_completes_on_the_first_frame_of_the_ne
         vec![&CameraEvent::LensSwitched {
             from: LensRole::Wide,
             to: LensRole::UltraWide,
-            elapsed: Duration::from_millis(480)
+            elapsed: Duration::from_millis(480),
+            method: LensSwitchMethod::Reopened,
         }]
     );
     let status = lens.rig.engine.status().lens;
@@ -115,7 +117,8 @@ fn failed_open_of_the_new_camera_reverts_blocks_the_role_and_does_not_retry() {
     assert!(lens.rig.fresh_events().contains(&CameraEvent::LensSwitched {
         from: LensRole::Wide,
         to: LensRole::Wide,
-        elapsed: Duration::ZERO
+        elapsed: Duration::ZERO,
+        method: LensSwitchMethod::Reopened,
     }));
     assert_eq!(lens.switch_state(), LensSwitchState::Steady { role: LensRole::Wide });
 
@@ -401,7 +404,8 @@ fn tap_right_after_streaming_but_before_the_first_frame_is_still_a_switch() {
         vec![&CameraEvent::LensSwitched {
             from: LensRole::Wide,
             to: LensRole::UltraWide,
-            elapsed: Duration::from_millis(300)
+            elapsed: Duration::from_millis(300),
+            method: LensSwitchMethod::Reopened,
         }],
         "ровно одно LensSwitched"
     );

@@ -13,6 +13,7 @@ use camera_contract::raw_format::RawFormat;
 use shell_contract::sync_fence::GpuWaitFence;
 
 use super::deferred::Deferred;
+use super::standby::StandbyEpochs;
 use super::viewfinder_cell::ViewfinderCell;
 use super::{StreamDefect, StreamEpoch, StreamStart};
 use crate::config::RawFrameStreamConfig;
@@ -46,7 +47,12 @@ pub(super) struct LosslessQueue {
 pub(super) struct HubState {
     pub(super) config: RawFrameStreamConfig,
     pub(super) accounting: Arc<StreamAccounting>,
+    /// Показываемая эпоха (после обмена с тёплой может быть меньше `last_issued_epoch`).
     pub(super) epoch: StreamEpoch,
+    /// Последний выданный номер эпохи (показываемой или тёплой): общий монотонный счётчик.
+    pub(super) last_issued_epoch: u64,
+    /// Тёплые эпохи (см. `standby.rs`).
+    pub(super) standby: StandbyEpochs,
     /// Между `begin_stream` и `end_stream`. До первого начала и после конца — false.
     pub(super) active: bool,
     pub(super) passport: Option<Arc<StreamPassport>>,
@@ -82,6 +88,8 @@ impl HubState {
             config,
             accounting,
             epoch: StreamEpoch(0),
+            last_issued_epoch: 0,
+            standby: StandbyEpochs::default(),
             active: false,
             passport: None,
             next_sequence: 0,
@@ -109,14 +117,20 @@ impl HubState {
 
     pub(super) fn begin_stream(&mut self, passport: Arc<StreamPassport>, deferred: &mut Deferred) -> StreamStart {
         self.release_everything(deferred);
-        self.epoch = StreamEpoch(self.epoch.0 + 1);
+        self.epoch = self.allocate_epoch();
         self.active = true;
         self.ring_capacity = self.ring_capacity_for(&passport);
         self.passport = Some(passport);
         StreamStart {
             epoch: self.epoch,
-            pool: self.pool_plan(),
+            pool: self.pool_plan_for(self.ring_capacity),
         }
+    }
+
+    /// Выдаёт следующий номер эпохи из общего счётчика (показываемые и тёплые не пересекаются).
+    pub(super) fn allocate_epoch(&mut self) -> StreamEpoch {
+        self.last_issued_epoch += 1;
+        StreamEpoch(self.last_issued_epoch)
     }
 
     pub(super) fn end_stream(&mut self, epoch: StreamEpoch, deferred: &mut Deferred) {
@@ -129,7 +143,7 @@ impl HubState {
     }
 
     /// Сколько кадров вместит кольцо: `min(бюджет / размер кадра, потолок)`.
-    fn ring_capacity_for(&self, passport: &StreamPassport) -> usize {
+    pub(super) fn ring_capacity_for(&self, passport: &StreamPassport) -> usize {
         let bytes_per_frame = frame_bytes(passport);
         if bytes_per_frame == 0 {
             return 0;
@@ -140,19 +154,20 @@ impl HubState {
         usize::try_from(capped).unwrap_or(usize::MAX)
     }
 
-    fn pool_plan(&self) -> PoolPlan {
+    /// План пула при данной ёмкости кольца (для показываемой и для тёплой эпохи одинаково).
+    pub(super) fn pool_plan_for(&self, ring_capacity: usize) -> PoolPlan {
         let lossless_total: usize = self.lossless.iter().map(|queue| queue.capacity).sum();
         PoolPlan {
             viewfinder: self.config.viewfinder_pool_cells(),
             pending_pairs: self.config.max_pending_frames,
-            snapshot_ring: u32::try_from(self.ring_capacity).unwrap_or(u32::MAX),
+            snapshot_ring: u32::try_from(ring_capacity).unwrap_or(u32::MAX),
             lossless: u32::try_from(lossless_total).unwrap_or(u32::MAX),
             slack: self.config.pool_slack,
         }
     }
 
     /// Отпускает всё, что держит поток: ожидающие кадры, результаты, ячейку, кольцо, очереди.
-    fn release_everything(&mut self, deferred: &mut Deferred) {
+    pub(super) fn release_everything(&mut self, deferred: &mut Deferred) {
         for pending in self.pending.drain(..) {
             StreamAccounting::bump(&self.accounting.frames_missing_meta_stopped);
             deferred.return_untouched_later(pending.frame);

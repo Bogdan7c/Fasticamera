@@ -217,3 +217,23 @@ fn own_ae_settings_of_the_engine_are_read_from_the_app_config_and_defaulted() {
     assert!(bad.to_string().contains("initial_exposure_seconds_iso"), "{bad}");
     assert!(config_with_camera(r#"{"engine":{"three_a":{"exposure":{"initial_exposure":1.0}}}}"#).is_err());
 }
+
+#[test]
+fn untrusted_optical_axis_cameras_arrive_from_the_phone_profile_and_default_to_empty() {
+    let absent = config_with_camera("{}").expect("пустая секция");
+    assert!(absent.camera().engine.zoom.untrusted_optical_axis_cameras.is_empty());
+
+    let from_profile = config_with_camera(r#"{"engine":{"zoom":{"untrusted_optical_axis_cameras":["3"]}}}"#)
+        .expect("профиль телефона");
+    assert_eq!(
+        from_profile.camera().engine.zoom.untrusted_optical_axis_cameras,
+        vec!["3"]
+    );
+
+    let duplicate = config_with_camera(r#"{"engine":{"zoom":{"untrusted_optical_axis_cameras":["3","3"]}}}"#)
+        .expect_err("повтор ID — ошибка конфига");
+    assert!(
+        duplicate.to_string().contains("untrusted_optical_axis_cameras"),
+        "{duplicate}"
+    );
+}

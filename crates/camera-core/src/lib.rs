@@ -20,11 +20,13 @@
 //! guardrail `neutral-no-platform`).
 
 pub mod backend;
+pub mod backend_standby;
 pub mod cadence;
 pub mod command;
 pub mod config;
 pub mod engine;
 pub mod event;
+pub mod exposure_transfer;
 #[cfg(any(test, feature = "fake-backend"))]
 pub mod fake;
 pub mod handle;
@@ -34,6 +36,8 @@ pub mod lens_wiring;
 pub mod request_controls;
 pub mod role_classifier;
 pub mod runtime;
+pub mod standby_config;
+pub mod standby_status;
 pub mod state;
 pub mod status;
 pub mod three_a_control;

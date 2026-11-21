@@ -191,6 +191,24 @@ impl Default for ZoomTransitionConfig {
     }
 }
 
+/// Когда экран просит у движка тёплую соседнюю камеру (13b, решения 117 и 124).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ZoomStandbyConfig {
+    /// Сколько палец должен пролежать на ленте кнопок, чтобы нажатие стало «дольше тапа» и разбудило тёплую
+    /// камеру (раньше колеса, которое открывает долгое нажатие на 0,5 с). `[estimate]` 200 мс — подгонка, не
+    /// Apple: короче типичного тапа (≈ 100–150 мс) не бывает, а запас на запуск камеры нужен как можно больше.
+    pub press_threshold_ms: f64,
+}
+
+impl Default for ZoomStandbyConfig {
+    fn default() -> Self {
+        Self {
+            press_threshold_ms: 200.0,
+        }
+    }
+}
+
 /// Весь конфиг зума.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -200,6 +218,7 @@ pub struct ZoomConfig {
     pub motion: ZoomMotionConfig,
     pub pinch: ZoomPinchConfig,
     pub transition: ZoomTransitionConfig,
+    pub standby: ZoomStandbyConfig,
     /// Кнопка переворота. `[measured: R00 t=7.5–10.8]` круг Ø 48 в (382; 898).
     pub flip_button: RoundButtonLayout,
     /// Заливка кнопки переворота. `[measured: R00 t=7.5–10.8]` #1C1C1C, без кольца.
@@ -216,6 +235,7 @@ impl Default for ZoomConfig {
             motion: ZoomMotionConfig::default(),
             pinch: ZoomPinchConfig::default(),
             transition: ZoomTransitionConfig::default(),
+            standby: ZoomStandbyConfig::default(),
             flip_button: RoundButtonLayout {
                 center_x_pt: 382.0,
                 center_y_pt: 898.0,
@@ -261,6 +281,7 @@ impl ZoomConfig {
             ("wheel.idle_dismiss_ms", self.wheel.idle_dismiss_ms),
             ("wheel.dismiss_ms", self.wheel.dismiss_ms),
             ("motion.glide_ms", self.motion.glide_ms),
+            ("standby.press_threshold_ms", self.standby.press_threshold_ms),
             ("transition.blur_fade_out_ms", self.transition.blur_fade_out_ms),
             ("transition.flip_rotate_ms", self.transition.flip_rotate_ms),
             ("transition.flip_fade_out_ms", self.transition.flip_fade_out_ms),

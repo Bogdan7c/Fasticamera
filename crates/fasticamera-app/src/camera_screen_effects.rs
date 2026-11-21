@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use camera_contract::auto_exposure::SignalDelivery;
 use camera_contract::control::ExposureBias;
-use camera_contract::zoom::{LensIntent, LensIntentChannel};
+use camera_contract::zoom::{LensIntent, LensIntentChannel, StandbyDemand, ZoomGesture};
 use camera_core::{CameraHandle, CommandId, CommandRejected};
 use camera_screen::shutter::{CaptureFailureReason, CaptureOutcome, ShotRequest};
 use camera_screen::{Effect, FramingIntent, ScreenAction, ScreenCameraIntent};
@@ -246,6 +246,17 @@ pub struct EffectExecutor {
     pending_exposure_bias: Option<ExposureBias>,
 }
 
+/// Конец жизни исполнителя = конец жизни экрана: источник кадров снимают сценарий, рендер или переустановка, и
+/// все пути заканчиваются тем, что исполнитель уничтожается на потоке рендера **после** последнего исполненного
+/// кадра. Это единственная точка, где гарантированно нет гонки с ещё идущим кадром (команда «снять экран»
+/// доезжает до рендера асинхронно): последним в ящик попадёт «тёплый сосед не нужен», и камера не останется
+/// греться из-за исчезнувшего колеса (решение 117: спрос живёт, пока колесо или щипок на экране).
+impl Drop for EffectExecutor {
+    fn drop(&mut self) {
+        self.release_standby_demand();
+    }
+}
+
 impl EffectExecutor {
     pub fn new(targets: EffectTargets) -> Self {
         Self {
@@ -384,6 +395,27 @@ impl EffectExecutor {
             SignalDelivery::Delivered => counters.wakes_delivered += 1,
             SignalDelivery::NotBoundYet => counters.wakes_before_engine_bound += 1,
         }
+    }
+
+    /// Снять спрос на тёплого соседа от этого экрана: если в ящике лежит `KeepNeighbourWarm`, кладёт то же
+    /// намерение (направление, коэффициент, жест) с `NotNeeded`. Ничего не делает, если ящик пуст или спроса нет:
+    /// чужое намерение (сценарий) без спроса не трогаем и пустых толчков движку не шлём.
+    /// Возвращает `true`, если «не нужно» опубликовано.
+    pub fn release_standby_demand(&mut self) -> bool {
+        let Some((_generation, latest)) = self.targets.lens.latest() else {
+            return false;
+        };
+        if latest.standby != StandbyDemand::KeepNeighbourWarm {
+            return false;
+        }
+        // Жест — всегда `Continuous`, а не повтор последнего: повтор `Discrete` имеет побочный эффект
+        // (снимает блокировку объектива после отказа), а здесь мы только снимаем спрос (ревью 13b, замечание 6).
+        let release = LensIntent {
+            gesture: ZoomGesture::Continuous,
+            ..latest
+        };
+        self.publish_lens_intent(release.with_standby(StandbyDemand::NotNeeded));
+        true
     }
 
     fn place_viewfinder(&mut self, intent: FramingIntent) {

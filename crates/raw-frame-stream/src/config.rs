@@ -30,6 +30,9 @@ pub struct RawFrameStreamConfig {
     /// Параметры буфера видоискателя. План пула всегда учитывает его ячейки, даже при
     /// `LatestWins`: переключение на ходу не должно исчерпать `maxImages` reader-а.
     pub viewfinder_jitter_buffer: JitterBufferConfig,
+    /// Сколько тёплых (standby) эпох может жить одновременно, кроме показываемой (сессия 13b).
+    /// 0 — тёплые запрещены. Каждая держит целый reader с полным планом пула, поэтому предел мал.
+    pub max_standby_streams: u32,
 }
 
 impl Default for RawFrameStreamConfig {
@@ -44,6 +47,7 @@ impl Default for RawFrameStreamConfig {
             pool_slack: 1,
             viewfinder_pacing: ViewfinderPacing::default(),
             viewfinder_jitter_buffer: JitterBufferConfig::default(),
+            max_standby_streams: 1,
         }
     }
 }
@@ -81,6 +85,8 @@ mod bounds {
     pub(super) const SNAPSHOT_RING_MAX_FRAMES: RangeInclusive<u64> = 0..=64;
     pub(super) const POOL_SLACK: RangeInclusive<u64> = 0..=4;
     /// Запас больше 4 кадров — больше 66 мс задержки при 60 Гц: это уже не сглаживание дрожания.
+    /// Тёплых больше четырёх — это уже второй показываемый поток по памяти (каждый reader ≈ 15 буферов).
+    pub(super) const MAX_STANDBY_STREAMS: RangeInclusive<u64> = 0..=4;
     pub(super) const JITTER_RESERVE: RangeInclusive<u64> = 0..=4;
     /// Каждая ячейка — буфер камеры (RAW10 12 Мп ≈ 15 МиБ); больше 8 — перерасход памяти.
     pub(super) const JITTER_MAX_QUEUED: RangeInclusive<u64> = 1..=8;
@@ -116,6 +122,11 @@ impl RawFrameStreamConfig {
             &bounds::SNAPSHOT_RING_MAX_FRAMES,
         )?;
         check_range("pool_slack", self.pool_slack, &bounds::POOL_SLACK)?;
+        check_range(
+            "max_standby_streams",
+            self.max_standby_streams,
+            &bounds::MAX_STANDBY_STREAMS,
+        )?;
         self.validate_jitter_buffer()
     }
 
@@ -178,7 +189,7 @@ mod tests {
     #[test]
     fn every_bounded_field_rejects_values_outside_its_range_and_names_itself() {
         type Mutate = fn(&mut RawFrameStreamConfig);
-        let cases: [(&str, Mutate, u64, u64); 10] = [
+        let cases: [(&str, Mutate, u64, u64); 11] = [
             ("pairing_timeout_ms", |c| c.pairing_timeout_ms = 0, 1, 1000),
             ("pairing_timeout_ms", |c| c.pairing_timeout_ms = 1001, 1, 1000),
             ("max_pending_frames", |c| c.max_pending_frames = 0, 1, 8),
@@ -189,6 +200,7 @@ mod tests {
             ("snapshot_ring_max_frames", |c| c.snapshot_ring_max_frames = 65, 0, 64),
             ("pool_slack", |c| c.pool_slack = 5, 0, 4),
             ("max_buffered_results", |c| c.max_buffered_results = 65, 1, 64),
+            ("max_standby_streams", |c| c.max_standby_streams = 5, 0, 4),
         ];
         for (field, mutate, min, max) in cases {
             let mut config = RawFrameStreamConfig::default();
@@ -222,6 +234,7 @@ mod tests {
                 reserve: 0,
                 max_queued: 1,
             },
+            max_standby_streams: 0,
         };
         assert_eq!(config.validate(), Ok(()));
     }

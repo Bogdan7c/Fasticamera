@@ -240,6 +240,7 @@ fn scenario_end_brings_back_the_lens_the_user_had_chosen_and_not_the_default_one
         facing: LensFacing::Back,
         ratio: ZoomRatio::new(0.6).expect("коэффициент"),
         gesture: camera_contract::zoom::ZoomGesture::Discrete,
+        standby: camera_contract::zoom::StandbyDemand::NotNeeded,
     });
     let chosen = wait_streaming_on(harness.rig(), ULTRA_WIDE_CAMERA_ID);
     assert_eq!(

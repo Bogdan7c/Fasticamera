@@ -35,6 +35,25 @@ REVEAL_FAULT_FIELDS = (
 """Плохие исходы держания переходного кадра (``RevealFaults`` в ``zoom_reveal.rs``): все обязаны быть нулями."""
 
 
+MIN_BACK_FPS = 55.0
+"""Порог частоты каждой задней камеры, пока стримят обе (решение владельца; Rust читает его из конфига)."""
+
+MAX_SWITCH_GAP_PERIODS = 2.0
+"""Наибольший разрыв показа при бесшовной смене, в периодах кадра (``SeamlessPlan::max_switch_gap_periods``)."""
+
+PROMOTED_METHOD = "promoted_standby"
+"""Метод смены, который обязан быть у бесшовных шагов (``LensSwitchMethod::PromotedStandby``)."""
+
+EXPECTED_SEAMLESS_SWITCHES = 4
+"""Бесшовных смен за прогон: колесо туда-обратно и щипок туда-обратно."""
+
+EXPECTED_SEAMLESS_RELEASES = 2
+"""Отпусканий: колесо и щипок."""
+
+TAP_HIDDEN_NOTE_ABOVE = 4
+"""Тап по кнопке с большим числом скрытых кадров — заметка (цель после решения 118 около 2 вместо 9–10)."""
+
+
 def check_zoom(result: dict) -> list[str]:
     """``zoom``: шаги прошли, чёрных кадров 0, неудачных смен 0, времена измерены, экран оставлен на 1× основной камеры."""
     problems, report = _report_problem(result)
@@ -46,6 +65,7 @@ def check_zoom(result: dict) -> list[str]:
     problems.extend(_counter_problems(report))
     problems.extend(_timing_problems(report))
     problems.extend(_final_problems(report))
+    problems.extend(_seamless_problems(report))
     return problems
 
 
@@ -113,6 +133,51 @@ def _timing_problems(report: dict) -> list[str]:
     return problems
 
 
+def _seamless_problems(report: dict) -> list[str]:
+    """Бесшовные шаги 13b: смена повышением тёплой без удержанных/чёрных/скрытых кадров, разрыв и частота в норме,
+    после отпускания тёплых нет; итоги — без утечек лизингов, отказов тёплой и отвергнутых обменов."""
+    problems: list[str] = []
+    for name in ("leaked_leases", "standby_failures", "promotion_fallbacks"):
+        if report.get(name) != 0:
+            problems.append(f"{name}={report.get(name)!r}, ожидалось ровно 0")
+    steps = report.get("seamless")
+    if not isinstance(steps, list):
+        return problems + [f"в сводке нет списка бесшовных шагов (seamless={steps!r})"]
+    switches = [step for step in steps if isinstance(step, dict) and step.get("leg") in ("out", "back")]
+    releases = [step for step in steps if isinstance(step, dict) and step.get("leg") == "release"]
+    if len(switches) < EXPECTED_SEAMLESS_SWITCHES:
+        problems.append(f"бесшовных смен {len(switches)}, ожидалось {EXPECTED_SEAMLESS_SWITCHES}")
+    if len(releases) < EXPECTED_SEAMLESS_RELEASES:
+        problems.append(f"отпусканий {len(releases)}, ожидалось {EXPECTED_SEAMLESS_RELEASES}")
+    for step in switches:
+        problems.extend(_seamless_switch_problems(step))
+    for step in releases:
+        if not _is_number(step.get("closed_ms")):
+            problems.append(f"{step.get('step')}: тёплая не закрылась после отпускания (closed_ms={step.get('closed_ms')!r})")
+    return problems
+
+
+def _seamless_switch_problems(step: dict) -> list[str]:
+    name = step.get("step")
+    problems: list[str] = []
+    if step.get("method") != PROMOTED_METHOD:
+        problems.append(f"{name}: смена исполнена как {step.get('method')!r}, ожидалось {PROMOTED_METHOD!r}")
+    if step.get("events") != 1:
+        problems.append(f"{name}: событий LensSwitched {step.get('events')!r}, ожидалось ровно 1")
+    for key, label in (("held", "удержанных кадров"), ("black", "чёрных кадров"), ("hidden", "скрытых непрерывностью кадров")):
+        if step.get(key) != 0:
+            problems.append(f"{name}: {label} {step.get(key)!r}, ожидалось 0")
+    gap = step.get("gap_periods")
+    if not _is_number(gap) or gap > MAX_SWITCH_GAP_PERIODS:
+        problems.append(f"{name}: разрыв показа {gap!r} периода кадра, порог {MAX_SWITCH_GAP_PERIODS}")
+    fps = step.get("fps_min")
+    if not _is_number(fps) or fps < MIN_BACK_FPS:
+        problems.append(f"{name}: частота камер, пока стримят обе, {fps!r} к/с, порог {MIN_BACK_FPS:.0f}")
+    if not _is_number(step.get("ready_ms")):
+        problems.append(f"{name}: время «нажатие → тёплая готова» не измерено (ready_ms={step.get('ready_ms')!r})")
+    return problems
+
+
 def _final_problems(report: dict) -> list[str]:
     final = report.get("final")
     if not isinstance(final, dict):
@@ -141,6 +206,26 @@ def zoom_notes(result: dict) -> list[str]:
             f"zoom: самое долгое переключение — событие движка через {switch} мс, первый живой кадр через {live} мс; "
             "пороги в camera.scenarios.zoom (estimate), цифры телефона — основание их уточнить"
         )
+    seamless = report.get("seamless")
+    if isinstance(seamless, list):
+        for step in seamless:
+            if isinstance(step, dict) and step.get("leg") in ("out", "back"):
+                notes.append(
+                    f"zoom: {step.get('step')}: тёплая готова через {step.get('ready_ms')} мс, "
+                    f"разрыв показа {step.get('gap_ms')} мс ({step.get('gap_periods')} периода), "
+                    f"частота обеих камер не ниже {step.get('fps_min')} к/с"
+                )
+            elif isinstance(step, dict):
+                notes.append(f"zoom: {step.get('step')}: тёплая закрылась через {step.get('closed_ms')} мс после отпускания")
+    taps = report.get("tap_hidden")
+    if isinstance(taps, list):
+        for tap in taps:
+            hidden = tap.get("hidden") if isinstance(tap, dict) else None
+            if _is_number(hidden) and hidden > TAP_HIDDEN_NOTE_ABOVE:
+                notes.append(
+                    f"zoom: NOTE {tap.get('step')}: скрытых непрерывностью кадров {hidden} (цель около 2 после решения 118; "
+                    f"порог заметки {TAP_HIDDEN_NOTE_ABOVE})"
+                )
     held = report.get("held_frames")
     if _is_number(held):
         notes.append(f"zoom: удержанных (размытых) кадров за прогон: {held}")

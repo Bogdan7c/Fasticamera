@@ -5,12 +5,14 @@
 
 use camera_contract::ids::{CameraId, LensFacing};
 use camera_contract::zoom::PreviewMirror;
+use camera_core::lens_status::LensSwitchMethod;
 use render_loop::viewfinder::{FrameLabel, FrameRecord};
 use serde::Serialize;
 use shell_contract::clock::MonotonicNanos;
 
 use super::zoom_presented::{ContinuityDelta, PresentedBucket};
 use super::zoom_reveal::RevealFaults;
+use super::zoom_seamless_record::SeamlessRecord;
 
 /// Наносекунд в миллисекунде.
 const NANOS_PER_MS: f64 = 1_000_000.0;
@@ -179,6 +181,8 @@ pub struct ZoomStepRecord {
     pub screen_ratio: f64,
     /// Кольцо кадров рендера теряло записи во время шага: «нет кадра» значит «не измерено».
     pub ring_overran: bool,
+    /// Что записал бесшовный шаг 13b (`None` — обычный шаг).
+    pub seamless: Option<SeamlessRecord>,
     /// Причина провала шага (`None` — шаг дошёл до конца).
     pub failure: Option<String>,
     /// Заметки без провала (деградация частоты, потолок частоты камеры).
@@ -207,6 +211,7 @@ impl ZoomStepRecord {
             haptics: None,
             screen_ratio: 0.0,
             ring_overran: false,
+            seamless: None,
             failure: Some(reason.to_owned()),
             notes: Vec::new(),
         }
@@ -222,6 +227,8 @@ pub struct SwitchTiming {
     pub engine_elapsed_ms: u64,
     /// Время от действия сценария до того, как сценарий увидел событие, мс (точность — тик маршрутизатора).
     pub observed_ms: u64,
+    /// Как смена исполнена: переоткрытием камеры или повышением тёплой (13b).
+    pub method: LensSwitchMethod,
 }
 
 #[cfg(test)]

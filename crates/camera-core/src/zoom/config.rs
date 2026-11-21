@@ -28,6 +28,12 @@ pub struct ZoomConfig {
     /// создаётся, если объектив лежит в `2.0 ± 5 %`. Так будущий настоящий телевик ≈ 2× заменяет
     /// кроп, а не соседствует с ним. `[estimate]`
     pub stop_dedupe_tolerance: f32,
+    /// ID камер, чьей оптической оси из калибровки HAL верить нельзя (профиль телефона): их кадр
+    /// ставится по центру сенсора (`UncalibratedReason::DistrustedByProfile`). По умолчанию пусто:
+    /// какие камеры врут, знает только профиль конкретного телефона, а не код (на OnePlus 11 это
+    /// ширик «3», см. `android/gradle.properties`). Неизвестный каталогу ID не ошибка (профиль
+    /// общий для сборок), но попадает в диагностику построения шкалы.
+    pub untrusted_optical_axis_cameras: Vec<String>,
 }
 
 impl Default for ZoomConfig {
@@ -39,6 +45,7 @@ impl Default for ZoomConfig {
             front_max_ratio: 3.0,
             switch_up_hysteresis: 0.05,
             stop_dedupe_tolerance: 0.05,
+            untrusted_optical_axis_cameras: Vec::new(),
         }
     }
 }
@@ -56,6 +63,10 @@ pub enum ZoomConfigError {
     InvalidHysteresis(f32),
     #[error("zoom.stop_dedupe_tolerance должен быть конечным и в [0, 0.5), а не {0}")]
     InvalidDedupeTolerance(f32),
+    #[error("zoom.untrusted_optical_axis_cameras: пустой ID камеры")]
+    EmptyUntrustedCameraId,
+    #[error("zoom.untrusted_optical_axis_cameras: камера {0:?} указана дважды")]
+    DuplicateUntrustedCameraId(String),
 }
 
 impl ZoomConfig {
@@ -88,6 +99,20 @@ impl ZoomConfig {
         let tolerance = self.stop_dedupe_tolerance;
         if !(tolerance.is_finite() && (0.0..0.5).contains(&tolerance)) {
             return Err(ZoomConfigError::InvalidDedupeTolerance(tolerance));
+        }
+        self.validate_untrusted_cameras()
+    }
+
+    /// Список недоверенных осей: ID непустые и не повторяются (повтор — почти всегда опечатка).
+    fn validate_untrusted_cameras(&self) -> Result<(), ZoomConfigError> {
+        let mut seen = std::collections::HashSet::new();
+        for id in &self.untrusted_optical_axis_cameras {
+            if id.is_empty() {
+                return Err(ZoomConfigError::EmptyUntrustedCameraId);
+            }
+            if !seen.insert(id.as_str()) {
+                return Err(ZoomConfigError::DuplicateUntrustedCameraId(id.clone()));
+            }
         }
         Ok(())
     }

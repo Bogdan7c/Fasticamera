@@ -54,6 +54,14 @@ pub fn stream_delta(before: &RawStreamCounters, after: &RawStreamCounters) -> Ra
         frames_outstanding: after.frames_outstanding,
         max_frames_outstanding: after.max_frames_outstanding,
         cpu_copies: grew(before.cpu_copies, after.cpu_copies),
+        // Тёплые камеры (13b): все — накопления, считаются приращением.
+        standby_streams_begun: grew(before.standby_streams_begun, after.standby_streams_begun),
+        standby_begins_refused: grew(before.standby_begins_refused, after.standby_begins_refused),
+        standby_frames_returned: grew(before.standby_frames_returned, after.standby_frames_returned),
+        standby_promotions: grew(before.standby_promotions, after.standby_promotions),
+        frames_released_by_promotion: grew(before.frames_released_by_promotion, after.frames_released_by_promotion),
+        standby_results_evicted: grew(before.standby_results_evicted, after.standby_results_evicted),
+        standby_pool_exhausted: grew(before.standby_pool_exhausted, after.standby_pool_exhausted),
     }
 }
 

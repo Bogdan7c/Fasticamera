@@ -11,6 +11,7 @@ use camera_contract::availability::CameraUnavailableReason;
 
 use super::{CameraEngine, LOG_TARGET};
 use crate::backend::{BackendEvent, DeviceGeneration, SessionGeneration};
+use crate::standby_status::StandbyFailureReason;
 
 impl CameraEngine {
     fn is_current_device(&self, generation: DeviceGeneration) -> bool {
@@ -43,6 +44,8 @@ impl CameraEngine {
                 if self.is_current_device(device) {
                     let _ = self.fail_recoverable(CameraUnavailableReason::Evicted, now);
                     self.retry_now_if_camera_already_freed(now);
+                } else if let Some(slot) = self.standby_slot_of_device(device) {
+                    self.on_standby_lost(slot, StandbyFailureReason::DeviceDisconnected);
                 } else {
                     self.discard_stale_event(&event);
                 }
@@ -51,6 +54,8 @@ impl CameraEngine {
                 if self.is_current_device(device) {
                     self.fail_from_device_error(error, now);
                     self.retry_now_if_camera_already_freed(now);
+                } else if let Some(slot) = self.standby_slot_of_device(device) {
+                    self.on_standby_lost(slot, StandbyFailureReason::DeviceError { error });
                 } else {
                     self.discard_stale_event(&event);
                 }
@@ -58,6 +63,8 @@ impl CameraEngine {
             BackendEvent::SessionClosed { session } => {
                 if self.is_current_session(session) {
                     self.handle_unexpected_session_close(now);
+                } else if let Some(slot) = self.standby_slot_of_session(session) {
+                    self.on_standby_lost(slot, StandbyFailureReason::SessionClosedByPlatform);
                 } else {
                     self.discard_stale_event(&event);
                 }
@@ -75,6 +82,9 @@ impl CameraEngine {
                         self.note_lens_frame(now);
                     }
                     self.observe_three_a_result(result);
+                } else if self.standby_slot_of_session(session).is_some() {
+                    // Бывшая основная после обмена ролей: не устаревшее, а тёплое — отдельный счётчик.
+                    self.note_result_after_swap();
                 } else {
                     self.discard_stale_event(&event);
                 }
@@ -82,6 +92,22 @@ impl CameraEngine {
             BackendEvent::CaptureFailed { session, reason, .. } => {
                 if self.is_current_session(session) {
                     self.cadence.record_failed(reason);
+                } else if self.standby_slot_of_session(session).is_some() {
+                    self.note_result_after_swap();
+                } else {
+                    self.discard_stale_event(&event);
+                }
+            }
+            BackendEvent::StandbyStreaming { session } => {
+                // `true` — тёплая ячейка стала готовой к повышению, больше делать нечего.
+                let became_ready = self.on_standby_streaming(session);
+                if became_ready {
+                    // Готовность учтена в самой ячейке.
+                } else if self.is_current_session(session) {
+                    // Гонка обмена: колбэк NDK прочёл роль «тёплая», а доставил событие уже после обмена —
+                    // сессия теперь основная. Это не устаревшее событие (инвариант 4 контракта 13b),
+                    // а запоздавший результат бывшей тёплой: считаем там же, где результаты после обмена.
+                    self.note_result_after_swap();
                 } else {
                     self.discard_stale_event(&event);
                 }

@@ -12,7 +12,7 @@
 //! Ленты нет на фронтальной камере и пока открыто колесо, меню или карточка (решения 112, 115).
 
 use ui_core::geometry::Rect;
-use ui_core::gesture::{GestureEvent, LongPressSpec, PanDirection, PanSpec, RecognizerSpec};
+use ui_core::gesture::{GestureEvent, GestureState, LongPressSpec, PanDirection, PanSpec, RecognizerSpec};
 use ui_core::id::NodeId;
 use ui_core::time::MotionPreference;
 use ui_draw::color::{DisplayColor, Opacity};
@@ -93,6 +93,15 @@ impl ZoomStripWidget {
         let Some(button) = self.buttons.get_mut(usize::from(slot)) else {
             return Ok(false);
         };
+        // Нажатие на ленту видит редьюсер: дольше порога тапа оно будит тёплую камеру (решение 124). Конец
+        // нажатия идёт раньше тапа, чтобы намерение тапа уже несло итоговый спрос.
+        match event.state {
+            GestureState::Began => out.actions.push(ScreenAction::ZoomStripPressBegan { at: event.time }),
+            GestureState::Ended | GestureState::Cancelled | GestureState::Failed => {
+                out.actions.push(ScreenAction::ZoomStripPressEnded { at: event.time });
+            }
+            _ => {}
+        }
         if button.handle(event.state, event.data, event.time)? == ButtonEvent::Activated {
             out.actions.push(ScreenAction::ZoomStopTapped {
                 stop: usize::from(slot),

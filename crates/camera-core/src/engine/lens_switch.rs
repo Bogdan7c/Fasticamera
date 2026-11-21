@@ -28,7 +28,7 @@ use camera_contract::availability::CameraUnavailableReason;
 use camera_contract::ids::LensRole;
 
 use crate::event::CameraEvent;
-use crate::lens_status::{LensBlock, LensCounters, LensSwitchFailure, LensSwitchState};
+use crate::lens_status::{LensBlock, LensCounters, LensSwitchFailure, LensSwitchMethod, LensSwitchState};
 
 /// Чья это цель: от неё зависит, снимается ли блокировка.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +68,9 @@ pub(super) struct LensSwitchTracker {
     started_at: Option<Instant>,
     blocked: Option<LensBlock>,
     counters: LensCounters,
+    /// Как исполняется текущая смена; по умолчанию — переоткрытием. Повышение тёплой выставляет
+    /// [`Self::note_promoted_standby`], любая новая цель сбрасывает обратно.
+    method: LensSwitchMethod,
 }
 
 impl LensSwitchTracker {
@@ -77,7 +80,13 @@ impl LensSwitchTracker {
             started_at: None,
             blocked: None,
             counters: LensCounters::default(),
+            method: LensSwitchMethod::default(),
         }
+    }
+
+    /// Текущая смена исполнена повышением тёплой камеры (обменом ролей), а не переоткрытием.
+    pub(super) fn note_promoted_standby(&mut self) {
+        self.method = LensSwitchMethod::PromotedStandby;
     }
 
     pub(super) fn state(&self) -> LensSwitchState {
@@ -104,6 +113,8 @@ impl LensSwitchTracker {
         cause: RetargetCause,
         now: Instant,
     ) -> Option<CameraEvent> {
+        // Способ исполнения определяется заново для каждой цели: прежнее повышение к ней не относится.
+        self.method = LensSwitchMethod::default();
         if cause == RetargetCause::Command && self.blocked.as_ref().is_some_and(|block| block.role == new_role) {
             self.blocked = None;
         }
@@ -168,7 +179,12 @@ impl LensSwitchTracker {
                     self.counters.switches_completed += 1;
                 }
                 self.counters.last_switch_elapsed = Some(elapsed);
-                Some(CameraEvent::LensSwitched { from, to, elapsed })
+                Some(CameraEvent::LensSwitched {
+                    from,
+                    to,
+                    elapsed,
+                    method: std::mem::take(&mut self.method),
+                })
             }
             // Кадр не той камеры, которую ждём (запоздавший): смену он не завершает.
             LensSwitchState::Switching { .. } => None,
@@ -186,6 +202,7 @@ impl LensSwitchTracker {
 
     /// Новая камера отказала: вернуть цель на `from`, заблокировать `to`.
     pub(super) fn on_switch_failed(&mut self, revert: Revert, reason: LensSwitchFailure) -> CameraEvent {
+        self.method = LensSwitchMethod::default();
         self.state = LensSwitchState::Switching {
             from: revert.from,
             to: revert.from,
@@ -212,6 +229,7 @@ impl LensSwitchTracker {
         self.state = LensSwitchState::Idle;
         self.started_at = None;
         self.blocked = None;
+        self.method = LensSwitchMethod::default();
     }
 }
 

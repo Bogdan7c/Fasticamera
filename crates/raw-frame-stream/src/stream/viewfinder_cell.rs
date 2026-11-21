@@ -50,6 +50,11 @@ impl ViewfinderCell {
         }
     }
 
+    /// Сколько кадров лежит в ячейке сейчас.
+    pub(super) fn queued(&self) -> usize {
+        self.queue.len()
+    }
+
     pub(super) fn pacing(&self) -> ViewfinderPacing {
         self.pacing
     }

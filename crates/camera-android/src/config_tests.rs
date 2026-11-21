@@ -143,3 +143,29 @@ fn three_a_fields_come_from_json_and_are_validated() {
         }))
     ));
 }
+
+#[test]
+fn standby_capacity_defaults_to_one_and_zero_disables_it() {
+    let mut config = AndroidCameraConfig::default();
+    assert_eq!(
+        config.standby_capacity, 1,
+        "на OnePlus 11 ресурс HAL вмещает одну тёплую"
+    );
+    config.standby_capacity = 0;
+    assert_eq!(config.validate(), Ok(()));
+}
+
+#[test]
+fn standby_capacity_above_the_diagnostics_table_is_rejected() {
+    let config = AndroidCameraConfig {
+        standby_capacity: crate::standby_diagnostics::MAX_STANDBY_SLOTS + 1,
+        ..AndroidCameraConfig::default()
+    };
+    assert_eq!(
+        config.validate(),
+        Err(ConfigError::StandbyCapacityOutOfRange {
+            actual: crate::standby_diagnostics::MAX_STANDBY_SLOTS + 1,
+            max: crate::standby_diagnostics::MAX_STANDBY_SLOTS
+        })
+    );
+}

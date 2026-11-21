@@ -1,4 +1,9 @@
-//! Приём предложений рендера: отсев предложений прошлого потока.
+//! Приём предложений рендера: отсев предложений прошлого потока и чужой камеры.
+//!
+//! Отсев двойной. Сначала по камере (13b): две камеры стримят одновременно (тёплая вторая), их метки
+//! времени перемешиваются на одной шкале `BOOTTIME`, поэтому по времени одно от другого не отличить, и
+//! запоздавшее предложение прежней камеры после обмена выглядело бы «свежим». Предложение несёт камеру
+//! замера, и принимается только та же, что у текущего потока. Затем по времени, как описано ниже.
 //!
 //! Метки кадров (`SENSOR_TIMESTAMP`) одной шкалы `BOOTTIME` и растут, поэтому предложение
 //! по кадру **раньше** первого результата нового потока заведомо посчитано по картинке
@@ -13,7 +18,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use camera_contract::auto_exposure::ExposureProposal;
+use camera_contract::auto_exposure::{CameraTag, ExposureProposal};
 use camera_contract::capture_result::SensorTimestamp;
 
 /// Что решил отсев о придержанном предложении.
@@ -25,12 +30,16 @@ pub(super) enum GateVerdict {
     Waiting,
     /// Предложение отброшено как относящееся к прошлому потоку (счётчик уже увеличен).
     RejectedStale,
+    /// Предложение измерено на другой камере, чем текущий поток (счётчик уже увеличен).
+    RejectedForeignCamera,
     /// Предложение принято.
     Accepted(ExposureProposal),
 }
 
 #[derive(Debug, Default)]
 pub(super) struct ProposalGate {
+    /// Камера текущего потока; `None` — движок камеру не назвал (отсев по камере выключен, остаётся по времени).
+    camera: Option<CameraTag>,
     /// Метка первого результата повторяющегося запроса текущего потока.
     stream_start: Option<SensorTimestamp>,
     /// Самое свежее предложение, ещё не прошедшее отсев (последнее побеждает).
@@ -38,12 +47,20 @@ pub(super) struct ProposalGate {
     /// Общий счётчик: исполнитель живёт в движке в `Box<dyn ..>`, а читать счётчик хочется
     /// снаружи (диагностика композиции, тесты).
     stale_rejected: Arc<AtomicU64>,
+    /// Предложений отброшено как измеренных на чужой камере (общий счётчик, как `stale_rejected`).
+    foreign_camera_rejected: Arc<AtomicU64>,
 }
 
 impl ProposalGate {
     /// Принять предложение на проверку; прежнее непроверенное заменяется.
     pub(super) fn offer(&mut self, proposal: ExposureProposal) {
         self.held = Some(proposal);
+    }
+
+    /// Поток стартует на камере `camera`: предложения, измеренные не на ней, больше не принимаются.
+    /// Переживает [`Self::reset_for_new_stream`]: камера известна до первого кадра нового потока.
+    pub(super) fn begin_stream_on(&mut self, camera: CameraTag) {
+        self.camera = Some(camera);
     }
 
     /// Первый результат повторяющегося запроса нового потока. Повторные вызовы метку не
@@ -62,6 +79,12 @@ impl ProposalGate {
         let Some(proposal) = self.held else {
             return GateVerdict::NothingToReview;
         };
+        // Камеру можно проверить сразу, метки потока для этого не нужно.
+        if self.camera.is_some_and(|camera| camera != proposal.measured_on) {
+            self.held = None;
+            self.foreign_camera_rejected.fetch_add(1, Ordering::Relaxed);
+            return GateVerdict::RejectedForeignCamera;
+        }
         let Some(start) = self.stream_start else {
             return GateVerdict::Waiting;
         };
@@ -82,5 +105,9 @@ impl ProposalGate {
 
     pub(super) fn stale_counter(&self) -> Arc<AtomicU64> {
         Arc::clone(&self.stale_rejected)
+    }
+
+    pub(super) fn foreign_camera_counter(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.foreign_camera_rejected)
     }
 }

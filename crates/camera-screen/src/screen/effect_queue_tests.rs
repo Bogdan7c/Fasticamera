@@ -62,6 +62,7 @@ fn a_newer_lens_intent_replaces_the_pending_one_even_in_a_full_queue() {
             facing: LensFacing::Back,
             ratio: crate::test_support::ratio(value),
             gesture: camera_contract::zoom::ZoomGesture::Continuous,
+            standby: camera_contract::zoom::StandbyDemand::NotNeeded,
         })
     };
     // Очередь на один эффект уже занята намерением: итоговое значение колеса не должно потеряться на переполнении.
@@ -86,6 +87,7 @@ fn lens_intents_do_not_replace_other_kinds_and_keep_their_place_in_order() {
             facing: LensFacing::Back,
             ratio: crate::test_support::ratio(value),
             gesture: camera_contract::zoom::ZoomGesture::Continuous,
+            standby: camera_contract::zoom::StandbyDemand::NotNeeded,
         })
     };
     let mut queue = EffectQueue::new(4);
@@ -101,4 +103,41 @@ fn lens_intents_do_not_replace_other_kinds_and_keep_their_place_in_order() {
             Effect::Haptic(HapticPattern::SelectionTick)
         ]
     );
+}
+
+#[test]
+fn a_demand_only_intent_keeps_the_pending_discrete_gesture_and_takes_the_new_demand() {
+    use camera_contract::ids::LensFacing;
+    use camera_contract::zoom::{LensIntent, StandbyDemand, ZoomGesture, ZoomRatio};
+
+    let one = ZoomRatio::new(1.0).expect("коэффициент");
+    let two = ZoomRatio::new(2.0).expect("коэффициент");
+    let mut queue = EffectQueue::new(4);
+    queue.push(Effect::Lens(LensIntent::without_standby(
+        LensFacing::Back,
+        two,
+        ZoomGesture::Discrete,
+    )));
+    // Тот же объектив и коэффициент, но уже со спросом: явное действие не теряется, спрос свежий.
+    queue.push(Effect::Lens(
+        LensIntent::without_standby(LensFacing::Back, two, ZoomGesture::Continuous)
+            .with_standby(StandbyDemand::KeepNeighbourWarm),
+    ));
+    let drained = queue.drain();
+    assert_eq!(
+        drained,
+        [Effect::Lens(
+            LensIntent::without_standby(LensFacing::Back, two, ZoomGesture::Discrete)
+                .with_standby(StandbyDemand::KeepNeighbourWarm)
+        )]
+    );
+    // Другой коэффициент — это уже новое значение: побеждает последнее целиком.
+    queue.push(Effect::Lens(LensIntent::without_standby(
+        LensFacing::Back,
+        two,
+        ZoomGesture::Discrete,
+    )));
+    let newer = LensIntent::without_standby(LensFacing::Back, one, ZoomGesture::Continuous);
+    queue.push(Effect::Lens(newer));
+    assert_eq!(queue.drain(), [Effect::Lens(newer)]);
 }

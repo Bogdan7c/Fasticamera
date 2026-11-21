@@ -32,6 +32,12 @@ android {
         ndk {
             abiFilters += "arm64-v8a"
         }
+        // Камеры с недоверенной оптической осью (профиль телефона; список через запятую, может быть пустым).
+        buildConfigField(
+            "String",
+            "UNTRUSTED_OPTICAL_AXIS_CAMERAS",
+            "\"${optionalProperty("fasticamera.zoom.untrustedOpticalAxisCameras")}\"",
+        )
     }
 
     buildFeatures {

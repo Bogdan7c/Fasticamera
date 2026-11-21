@@ -24,7 +24,7 @@ use camera_contract::geometry::PixelSize;
 use camera_contract::raw_format::RawFormat;
 use camera_core::backend::BackendFailure;
 use camera_ndk_sys as ndk;
-use raw_frame_stream::{RawFrameProducer, StreamEpoch};
+use raw_frame_stream::{RawFrameProducer, StandbyBegin, StreamEpoch, StreamStart};
 
 use crate::cpu_access_probe::CpuAccessProbe;
 use crate::diagnostics::BackendDiagnostics;
@@ -66,8 +66,18 @@ impl RetirableReader for NdkReader {
     }
 }
 
+/// С какой эпохой потока кадров начинается reader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ReaderEpochKind {
+    /// Показываемая эпоха (`begin_stream`): основная камера.
+    Shown,
+    /// Тёплая эпоха (`begin_standby_stream`, 13b): кадры возвращаются камере, пока не будет обмена.
+    Standby,
+}
+
 /// Что нужно для создания reader-а.
 pub(super) struct ReaderSpec {
+    pub epoch_kind: ReaderEpochKind,
     pub size: PixelSize,
     pub format: RawFormat,
     /// Постоянная часть паспорта сессии: уходит в `begin_stream`.
@@ -76,6 +86,26 @@ pub(super) struct ReaderSpec {
     pub probe: CpuAccessProbe,
     pub diagnostics: Arc<BackendDiagnostics>,
     pub retirement: Arc<RetiredNdkReaders>,
+}
+
+/// Начинает эпоху потока кадров нужного вида. Тёплых эпох может быть не больше, чем разрешает
+/// конфиг потока: отказ — это отказ сессии тёплой, а не паника.
+fn begin_epoch(
+    producer: &RawFrameProducer,
+    kind: ReaderEpochKind,
+    passport: Arc<StreamPassport>,
+) -> Result<StreamStart, BackendFailure> {
+    match kind {
+        ReaderEpochKind::Shown => Ok(producer.begin_stream(passport)),
+        ReaderEpochKind::Standby => match producer.begin_standby_stream(passport) {
+            StandbyBegin::Started(start) => Ok(start),
+            StandbyBegin::LimitReached { limit } => Err(BackendFailure {
+                operation: "begin_standby_stream",
+                code: 0,
+                detail: format!("тёплых эпох уже {limit} (max_standby_streams)"),
+            }),
+        },
+    }
 }
 
 /// Владелец reader-а сессии. При разрушении не удаляет reader, а останавливает и откладывает его.
@@ -93,6 +123,7 @@ impl RawReader {
     /// Эпоха потока принадлежит этому reader-у: на любой ошибке поток закрывается (`end_stream`).
     pub(super) fn create(spec: ReaderSpec) -> Result<Self, BackendFailure> {
         let ReaderSpec {
+            epoch_kind,
             size,
             format,
             passport,
@@ -101,7 +132,7 @@ impl RawReader {
             diagnostics,
             retirement,
         } = spec;
-        let start = producer.begin_stream(passport);
+        let start = begin_epoch(&producer, epoch_kind, passport)?;
         let context = Arc::new(ReaderContext::new(
             diagnostics,
             producer,

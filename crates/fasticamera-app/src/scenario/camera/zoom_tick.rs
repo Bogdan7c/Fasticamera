@@ -4,9 +4,10 @@ use std::time::Instant;
 
 use camera_core::CameraEvent;
 use camera_screen::ScreenAction;
+use raw_frame_stream::RawStreamCounters;
 use render_loop::viewfinder::{ContinuityCounters, FrameRecord, ViewfinderCounters};
 use shell_contract::clock::MonotonicNanos;
-use shell_contract::touch::TouchPhase;
+use shell_contract::touch::{PointerId, TouchPhase};
 
 use super::zoom_views::{EngineView, ScreenView};
 use crate::screen_scenario_config::ScreenPoint;
@@ -26,11 +27,15 @@ pub struct ZoomObservation<'a> {
     /// Счётчики ISP видоискателя (скрытые кадры холодного старта, пересборки).
     pub isp_counters: &'a ViewfinderCounters,
     pub screen: &'a ScreenView,
+    /// Счётчики потока кадров (частота показываемой и тёплой камер, утечки лизингов).
+    pub raw_stream: &'a RawStreamCounters,
 }
 
 /// Образец касания в долях экрана (сценарий-обвязка переводит в пиксели поверхности).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TouchInjection {
+    /// Какой палец (щипок — два пальца, остальное — палец 0).
+    pub pointer: PointerId,
     pub phase: TouchPhase,
     pub point: ScreenPoint,
     pub time: MonotonicNanos,

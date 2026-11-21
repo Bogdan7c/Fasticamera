@@ -7,7 +7,7 @@
 //! рендер считает остаточную цифровую подтяжку, пока сенсор догоняет новую экспозицию.
 
 use camera_contract::auto_exposure::{
-    AppliedExposure, ExposureAuthority, ExposureDirective, ExposureProduct, ProductReach,
+    AppliedExposure, CarriedSceneExposure, ExposureAuthority, ExposureDirective, ExposureProduct, ProductReach,
 };
 use camera_contract::control::{Control, ManualControl};
 use camera_contract::three_a::{AeAfLock, DirectiveSlot};
@@ -32,7 +32,19 @@ impl ExposurePublisher {
 
     /// Опубликовать указание для намерения и применённой экспозиции, если оно изменилось.
     pub(super) fn publish_if_changed(&mut self, intent: &ThreeAIntent, applied: Option<AppliedExposure>) {
-        self.publish_directive_if_changed(directive_for(intent, applied));
+        // Ожидаемая экспозиция потока живёт дольше намерения и запроса: меняется только на границе потока.
+        let stream_start = self.last_published.and_then(|last| last.stream_start);
+        self.publish_directive_if_changed(ExposureDirective {
+            stream_start,
+            ..directive_for(intent, applied)
+        });
+    }
+
+    /// Сообщить рендеру, какую экспозицию ожидать от НОВОГО потока до его первого замера (`None` — ожидать
+    /// нечего). Вызывается до смены потока, чтобы указание было на месте к первому кадру нового потока.
+    pub(super) fn announce_stream_start(&mut self, stream_start: Option<CarriedSceneExposure>) {
+        let last = self.last_published.unwrap_or(ExposureDirective::DEFAULT);
+        self.publish_directive_if_changed(ExposureDirective { stream_start, ..last });
     }
 
     /// Намерение изменилось (например, `Close` сбросил его), а запрос не пересобирался:
@@ -43,6 +55,11 @@ impl ExposurePublisher {
     }
 
     /// Повторяющегося запроса больше нет: убрать `applied`, остальное оставить как было.
+    ///
+    /// `stream_start` НЕ трогаем сознательно: при обмене тёплой он объявлен ДО обмена, а конец потока
+    /// наступает уже после; сброс оставил бы рендеру окно «ожидание пропало». Устареть оно не может: каждый
+    /// новый поток объявляет своё ожидание (или «ожидать нечего») при старте, а рендер применяет его только к
+    /// камере, названной в нём, и только пока у потока нет собственного замера.
     pub(super) fn withdraw_applied(&mut self) {
         if let Some(last) = self.last_published {
             self.publish_directive_if_changed(ExposureDirective { applied: None, ..last });
@@ -67,6 +84,8 @@ pub(super) fn directive_for(intent: &ThreeAIntent, applied: Option<AppliedExposu
         authority: authority_of(&intent.controls),
         bias: intent.controls.exposure_bias,
         applied,
+        // Ожидание нового потока — не часть намерения: его дописывает издатель (`publish_if_changed`).
+        stream_start: None,
     }
 }
 

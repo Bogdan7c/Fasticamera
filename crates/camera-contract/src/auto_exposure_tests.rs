@@ -12,6 +12,7 @@ fn product(seconds_iso: f64) -> ExposureProduct {
 fn proposal(nanos: i64, seconds_iso: f64) -> ExposureProposal {
     ExposureProposal {
         measured_frame: SensorTimestamp::from_nanos(nanos),
+        measured_on: CameraTag::of(&crate::fixtures::camera_id("0")),
         target: product(seconds_iso),
         metered_area: MeteredArea::WholeFrame,
         convergence: ProposalConvergence::Searching,

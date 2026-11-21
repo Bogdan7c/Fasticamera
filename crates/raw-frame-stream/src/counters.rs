@@ -77,6 +77,24 @@ pub struct RawStreamCounters {
 
     /// Копий пикселей через CPU (инвариант 1: на пути видоискателя должно быть 0).
     pub cpu_copies: u64,
+
+    // --- Тёплые (standby) эпохи, сессия 13b ---
+    /// Тёплых эпох начато.
+    pub standby_streams_begun: u64,
+    /// `begin_standby_stream` отказал: достигнут `max_standby_streams`.
+    pub standby_begins_refused: u64,
+    /// Кадры тёплых эпох, сразу возвращённые камере (в баланс буферов входят, см. выше).
+    pub standby_frames_returned: u64,
+    /// Удачных обменов `promote_standby`.
+    pub standby_promotions: u64,
+    /// Сколько кадров отпустил обмен у прежней показываемой эпохи (ожидающие пары + доли ячейки,
+    /// кольца и очередей). Справочный счётчик: те же кадры учтены и в обычных (`viewfinder_flushed`,
+    /// `frames_missing_meta_stopped`, `released_unused`), поэтому в балансе буферов не участвует.
+    pub frames_released_by_promotion: u64,
+    /// Результат тёплой эпохи вытеснен из её ограниченного буфера.
+    pub standby_results_evicted: u64,
+    /// Reader тёплой эпохи ответил «буферов нет» (отдельно от `dropped_pool_exhausted`).
+    pub standby_pool_exhausted: u64,
 }
 
 /// Живые счётчики. Обновляются из колбэков камеры и потока рендера без замков.
@@ -112,6 +130,13 @@ pub(crate) struct StreamAccounting {
     frames_outstanding: AtomicU64,
     max_frames_outstanding: AtomicU64,
     pub(crate) cpu_copies: AtomicU64,
+    pub(crate) standby_streams_begun: AtomicU64,
+    pub(crate) standby_begins_refused: AtomicU64,
+    pub(crate) standby_frames_returned: AtomicU64,
+    pub(crate) standby_promotions: AtomicU64,
+    pub(crate) frames_released_by_promotion: AtomicU64,
+    pub(crate) standby_results_evicted: AtomicU64,
+    pub(crate) standby_pool_exhausted: AtomicU64,
 }
 
 /// Счётчики — монотонная статистика, порядок между ними не важен: `Relaxed` достаточно.
@@ -120,6 +145,11 @@ const ORDER: Ordering = Ordering::Relaxed;
 impl StreamAccounting {
     pub(crate) fn bump(counter: &AtomicU64) {
         counter.fetch_add(1, ORDER);
+    }
+
+    /// Прибавляет `amount` к счётчику (для событий, считающих сразу пачку кадров).
+    pub(crate) fn add(&self, counter: &AtomicU64, amount: u64) {
+        counter.fetch_add(amount, ORDER);
     }
 
     pub(crate) fn note_pairing_wait_micros(&self, micros: u64) {
@@ -192,6 +222,13 @@ impl StreamAccounting {
             frames_outstanding: self.frames_outstanding.load(ORDER),
             max_frames_outstanding: self.max_frames_outstanding.load(ORDER),
             cpu_copies: self.cpu_copies.load(ORDER),
+            standby_streams_begun: self.standby_streams_begun.load(ORDER),
+            standby_begins_refused: self.standby_begins_refused.load(ORDER),
+            standby_frames_returned: self.standby_frames_returned.load(ORDER),
+            standby_promotions: self.standby_promotions.load(ORDER),
+            frames_released_by_promotion: self.frames_released_by_promotion.load(ORDER),
+            standby_results_evicted: self.standby_results_evicted.load(ORDER),
+            standby_pool_exhausted: self.standby_pool_exhausted.load(ORDER),
         }
     }
 }

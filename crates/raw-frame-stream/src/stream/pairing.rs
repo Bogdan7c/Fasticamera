@@ -8,6 +8,7 @@ use camera_contract::capture_result::SensorTimestamp;
 use camera_contract::frame_passport::{FrameCaptureDetails, FrameCaptureMeta, FrameSequence, MissingCaptureMeta};
 
 use super::deferred::Deferred;
+use super::standby::StandbyResultStored;
 use super::state::{BufferedResult, HubState, PendingFrame};
 use super::{OfferOutcome, OfferedFrame, ResultOutcome, StreamEpoch};
 use crate::counters::StreamAccounting;
@@ -26,8 +27,12 @@ impl HubState {
     ) -> OfferOutcome {
         StreamAccounting::bump(&self.accounting.frames_offered);
         if !self.accepts(epoch) {
+            // Тёплая эпоха: кадр сразу камере; чужая/закрытая — устаревшая.
+            let Err(frame) = self.return_standby_frame(epoch, offered.frame, deferred) else {
+                return OfferOutcome::ReturnedAsStandby;
+            };
             StreamAccounting::bump(&self.accounting.stale_epoch_frames);
-            deferred.return_untouched_later(offered.frame);
+            deferred.return_untouched_later(frame);
             return OfferOutcome::StaleEpoch;
         }
         self.expire_pending(now, deferred);
@@ -63,8 +68,15 @@ impl HubState {
     ) -> ResultOutcome {
         StreamAccounting::bump(&self.accounting.results_offered);
         if !self.accepts(epoch) {
-            StreamAccounting::bump(&self.accounting.stale_epoch_results);
-            return ResultOutcome::StaleEpoch;
+            if !self.standby.contains(epoch) {
+                StreamAccounting::bump(&self.accounting.stale_epoch_results);
+                return ResultOutcome::StaleEpoch;
+            }
+            return match self.buffer_standby_result(epoch, details) {
+                StandbyResultStored::Buffered => ResultOutcome::BufferedForStandby,
+                StandbyResultStored::WithoutTimestamp => ResultOutcome::WithoutTimestamp,
+                StandbyResultStored::NotStandby => ResultOutcome::StaleEpoch,
+            };
         }
         let Some(sensor_timestamp) = details.result.sensor_timestamp else {
             StreamAccounting::bump(&self.accounting.results_unpaired);

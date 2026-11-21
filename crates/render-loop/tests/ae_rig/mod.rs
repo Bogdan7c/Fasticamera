@@ -414,6 +414,7 @@ impl AeRig {
                     shortfall_ev: 0.0,
                     reach: camera_contract::auto_exposure::ProductReach::Unbounded,
                 }),
+            stream_start: None,
         });
     }
 

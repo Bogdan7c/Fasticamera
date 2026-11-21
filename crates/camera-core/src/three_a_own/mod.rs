@@ -19,11 +19,14 @@ mod split;
 
 pub use config::{FlickerPolicy, OwnExposureConfig};
 pub use exposure::RawStatsExposure;
+pub(crate) use split::{Anchor, SplitLimits, split};
 
 #[cfg(test)]
 mod exposure_tests;
 #[cfg(test)]
 mod flicker_tests;
+#[cfg(test)]
+mod foreign_camera_tests;
 #[cfg(test)]
 mod runtime_tests;
 #[cfg(test)]

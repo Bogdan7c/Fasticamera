@@ -86,6 +86,11 @@ struct LeverReportingBackend {
 }
 
 impl CameraBackend for LeverReportingBackend {
+    /// Тёплые камеры fake отдаются движку как есть (13b): обёртка подменяет только рычаг частоты основной.
+    fn standby(&mut self) -> camera_core::backend_standby::StandbySupport<'_> {
+        self.inner.standby()
+    }
+
     fn load_catalog(&mut self) -> Result<Vec<CameraDescriptor>, BackendFailure> {
         self.inner.load_catalog()
     }

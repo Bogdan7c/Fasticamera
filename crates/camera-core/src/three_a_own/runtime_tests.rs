@@ -5,10 +5,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use camera_contract::auto_exposure::{
-    ExposureProduct, ExposureProposal, ExposureProposalChannel, MeasurementQuality, MeteredArea, ProposalConvergence,
+    CameraTag, ExposureProduct, ExposureProposal, ExposureProposalChannel, MeasurementQuality, MeteredArea,
+    ProposalConvergence,
 };
 use camera_contract::capture_result::SensorTimestamp;
 use camera_contract::control::{CaptureIntent, ManualControl};
+use camera_contract::fixtures::camera_id;
 use camera_contract::ids::{CameraTarget, LensRole};
 use camera_contract::raw_format::RawFormat;
 use camera_contract::stream::{ReadoutAspect, StreamMode, TargetFrameRate};
@@ -28,6 +30,7 @@ fn proposal(target: f64) -> ExposureProposal {
     ExposureProposal {
         // Заведомо позже любого кадра нового потока fake.
         measured_frame: SensorTimestamp::from_nanos(i64::MAX / 2),
+        measured_on: CameraTag::of(&camera_id("2")),
         target: ExposureProduct::from_seconds_iso(target).expect("цель"),
         metered_area: MeteredArea::WholeFrame,
         convergence: ProposalConvergence::Searching,

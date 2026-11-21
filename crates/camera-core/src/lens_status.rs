@@ -12,6 +12,7 @@ use camera_contract::zoom::{LensIntent, ZoomCatalog};
 use serde::Serialize;
 
 use crate::backend::ConfigureFailure;
+use crate::standby_status::StandbyStatus;
 
 /// Где движок в смене объектива.
 ///
@@ -27,6 +28,17 @@ pub enum LensSwitchState {
     Idle,
     Steady { role: LensRole },
     Switching { from: LensRole, to: LensRole },
+}
+
+/// Каким путём исполнена смена объектива (по первому кадру новой основной).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LensSwitchMethod {
+    /// Старая камера закрыта, новая открыта и сконфигурирована заново.
+    #[default]
+    Reopened,
+    /// Новая камера уже стримила «тёплой» и повышена обменом ролей без закрытия и открытия.
+    PromotedStandby,
 }
 
 /// Почему смена на новую камеру не удалась (вина именно новой камеры).
@@ -85,6 +97,8 @@ pub struct LensStatus {
     /// выберет другую роль или команда не укажет эту явно.
     pub blocked: Option<LensBlock>,
     pub counters: LensCounters,
+    /// Тёплые камеры (13b).
+    pub standby: StandbyStatus,
 }
 
 impl LensStatus {
@@ -97,6 +111,7 @@ impl LensStatus {
             last_intent: None,
             blocked: None,
             counters: LensCounters::default(),
+            standby: StandbyStatus::default(),
         }
     }
 }

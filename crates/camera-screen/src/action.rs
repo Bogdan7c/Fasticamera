@@ -95,6 +95,10 @@ pub enum ScreenAction {
     SurfaceResized(SurfaceSize),
     /// Тап по кнопке ленты зума: плавный переход к упору (номер — позиция в `LensGroup::stops`).
     ZoomStopTapped { stop: usize, at: MonotonicNanos },
+    /// Палец лёг на ленту кнопок зума (решение 124: дольше порога тапа — разбудить тёплую камеру).
+    ZoomStripPressBegan { at: MonotonicNanos },
+    /// Палец поднят с ленты кнопок или жест отменён (тап, долгое нажатие, пан, ушедший в колесо).
+    ZoomStripPressEnded { at: MonotonicNanos },
     /// Палец лёг на колесо зума (долгий тап или пан по ленте открыл его; прикосновение к открытому колесу).
     /// Закрытое колесо открывается. Продлевает жизнь колеса.
     ZoomWheelTouched { at: MonotonicNanos },

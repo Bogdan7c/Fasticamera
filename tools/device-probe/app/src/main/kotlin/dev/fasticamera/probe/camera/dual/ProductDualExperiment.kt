@@ -1,6 +1,7 @@
 package dev.fasticamera.probe.camera.dual
 
 import android.content.Context
+import android.hardware.camera2.CameraManager
 import android.os.Handler
 import android.os.SystemClock
 import dev.fasticamera.probe.camera.CameraSessionRunner
@@ -41,9 +42,17 @@ class ProductDualExperiment(
         vendorKeys = emptyList(), companionYuv = companion("3"), discardFrames = discardFrames,
     )
 
-    private fun mainRig() = CameraRig("2", listOf(mainLeg), mainProfile(), runner, imageHandler, stepTimeoutMs)
-    private fun wideRig(discardFrames: Boolean) =
-        CameraRig("3", listOf(wideLeg), wideProfile(discardFrames), runner, imageHandler, stepTimeoutMs)
+    private fun mainRig(frameSink: RawFrameSink? = null) =
+        CameraRig("2", listOf(mainLeg), mainProfile(), runner, imageHandler, stepTimeoutMs, frameSink)
+
+    private fun wideRig(discardFrames: Boolean, frameSink: RawFrameSink? = null) =
+        CameraRig("3", listOf(wideLeg), wideProfile(discardFrames), runner, imageHandler, stepTimeoutMs, frameSink)
+
+    /** Поднимает обе камеры в заданном порядке; вторая стартует, пока первая уже стримит. null — успех. */
+    private fun bringUpBoth(order: BringUpOrder, main: CameraRig, wide: CameraRig): String? = when (order) {
+        BringUpOrder.MAIN_FIRST -> bringUp(main) ?: bringUp(wide)
+        BringUpOrder.WIDE_FIRST -> bringUp(wide) ?: bringUp(main)
+    }
 
     /** Открывает, настраивает и запускает поток; null — успех, иначе описание шага, на котором остановились. */
     private fun bringUp(rig: CameraRig): String? {
@@ -53,13 +62,16 @@ class ProductDualExperiment(
         return null
     }
 
-    /** Пункт 1: обе камеры [seconds] секунд; [discardWide] — кадры ширика возвращаются «в никуда». */
-    fun streamBoth(seconds: Int, discardWide: Boolean): JSONObject {
-        val report = JSONObject().put("discard_wide_frames", discardWide)
+    /**
+     * Пункт 1: обе камеры [seconds] секунд; [discardWide] — кадры ширика возвращаются «в никуда»;
+     * [order] — какая камера поднимается первой (вторая стартует при уже идущем потоке первой).
+     */
+    fun streamBoth(seconds: Int, discardWide: Boolean, order: BringUpOrder = BringUpOrder.MAIN_FIRST): JSONObject {
+        val report = JSONObject().put("discard_wide_frames", discardWide).put("order", order.wireName)
         val main = mainRig()
         val wide = wideRig(discardWide)
         try {
-            val failedStep = bringUp(main) ?: bringUp(wide)
+            val failedStep = bringUpBoth(order, main, wide)
             report.put("failed_step", failedStep ?: JSONObject.NULL)
             if (failedStep == null) {
                 report.put("first_frames", JSONObject().put("2", main.awaitFirstFrame()).put("3", wide.awaitFirstFrame()))
@@ -74,6 +86,113 @@ class ProductDualExperiment(
             main.close()
         }
         return report
+    }
+
+    /**
+     * Замер чувствительности: обе камеры в продуктовой конфигурации стримят одновременно, на каждой ступени
+     * [SensitivityPlan.steps] выставляется одна и та же ручная экспозиция и сравниваются средние RAW
+     * в совпадающем поле зрения. Статические факты и регионы — в отчёте.
+     */
+    fun measureSensitivity(plan: SensitivityPlan): JSONObject {
+        val report = JSONObject().put("order", plan.order.wireName)
+        val cameraManager = checkNotNull(appContext.getSystemService(CameraManager::class.java)) { "нет CameraManager" }
+        val mainOptics = SensorOptics.fromCharacteristics("2", cameraManager.getCameraCharacteristics("2"))
+        val wideOptics = SensorOptics.fromCharacteristics("3", cameraManager.getCameraCharacteristics("3"))
+        val mainSampler = createSampler(mainOptics, mainLeg, plan.fovFraction)
+        val wideSampler = createSampler(wideOptics, wideLeg, plan.fovFraction * SensitivityMeasurement.zoomRatioWide(mainOptics, wideOptics))
+        val main = mainRig(mainSampler.sampler)
+        val wide = wideRig(discardFrames = false, frameSink = wideSampler.sampler)
+        try {
+            val failedStep = bringUpBoth(plan.order, main, wide)
+            report.put("failed_step", failedStep ?: JSONObject.NULL)
+            if (failedStep == null) {
+                report.put("first_frames", JSONObject().put("2", main.awaitFirstFrame()).put("3", wide.awaitFirstFrame()))
+                Thread.sleep(WARMUP_MS)
+                val measurement = SensitivityMeasurement(
+                    SensitivitySubject(main, mainOptics, mainSampler.region, mainSampler.center, mainSampler.sampler, mainLeg.width, mainLeg.height),
+                    SensitivitySubject(wide, wideOptics, wideSampler.region, wideSampler.center, wideSampler.sampler, wideLeg.width, wideLeg.height),
+                    FRAME_DURATION_NS, plan,
+                )
+                val result = measurement.run()
+                result.keys().forEach { key -> report.put(key, result.get(key)) }
+            }
+            report.put("device_errors", JSONArray(runner.deviceErrors.toList()))
+        } catch (error: Exception) {
+            report.put("exception", "${error.javaClass.name}: ${error.message}")
+        } finally {
+            report.put("cameras", JSONArray(listOf(main.toJson(), wide.toJson())))
+            wide.close()
+            main.close()
+        }
+        return report
+    }
+
+    /**
+     * Замер совмещения кадров: обе камеры стримят в продуктовой конфигурации, экспозиция ширика поднята на
+     * [AlignmentMeasurement.wideExposureFactor], чтобы яркость сошлась; зелёные плоскости пар кадров пишутся на диск
+     * (основная — весь массив, ширик — область k*(1+запас) вокруг оптической оси), статика линз — в отчёт.
+     */
+    fun measureAlignment(plan: AlignmentPlan): JSONObject {
+        val report = JSONObject().put("order", plan.order.wireName)
+        val cameraManager = checkNotNull(appContext.getSystemService(CameraManager::class.java)) { "нет CameraManager" }
+        val mainCharacteristics = cameraManager.getCameraCharacteristics("2")
+        val wideCharacteristics = cameraManager.getCameraCharacteristics("3")
+        val mainOptics = SensorOptics.fromCharacteristics("2", mainCharacteristics)
+        val wideOptics = SensorOptics.fromCharacteristics("3", wideCharacteristics)
+        val zoomRatio = SensitivityMeasurement.zoomRatioWide(mainOptics, wideOptics)
+        val factor = AlignmentMeasurement.wideExposureFactor(mainOptics, wideOptics, mainLeg.width, wideLeg.width)
+        val mainExposure = ExposureStep(plan.mainExposureNs, plan.iso)
+        val wideExposure = ExposureStep((plan.mainExposureNs * factor).toLong(), plan.iso)
+        val mainSetup = createSampler(mainOptics, mainLeg, 1.0)
+        val wideSetup = createSampler(wideOptics, wideLeg, (zoomRatio * (1.0 + plan.marginFraction)).coerceAtMost(1.0))
+        val wideRegion = wideSetup.region.fitToMultipleOf(plan.downsample)
+        val mainRing = AlignmentFrameRing(AlignmentMeasurement.RING_CAPACITY, ringBytes(mainLeg))
+        val wideRing = AlignmentFrameRing(AlignmentMeasurement.RING_CAPACITY, ringBytes(wideLeg))
+        val main = mainRig(mainRing)
+        val wide = wideRig(discardFrames = false, frameSink = wideRing)
+        report.put("wide_exposure_factor", factor)
+        try {
+            val failedStep = bringUpBoth(plan.order, main, wide)
+            report.put("failed_step", failedStep ?: JSONObject.NULL)
+            if (failedStep == null) {
+                report.put("first_frames", JSONObject().put("2", main.awaitFirstFrame()).put("3", wide.awaitFirstFrame()))
+                Thread.sleep(WARMUP_MS)
+                val measurement = AlignmentMeasurement(
+                    AlignmentSubject("main", main, mainOptics, mainSetup.region.fitToMultipleOf(plan.downsample), mainSetup.center, mainRing, mainLeg.width, mainLeg.height, mainExposure),
+                    AlignmentSubject("wide", wide, wideOptics, wideRegion, wideSetup.center, wideRing, wideLeg.width, wideLeg.height, wideExposure),
+                    FRAME_DURATION_NS, plan,
+                )
+                val result = measurement.run()
+                result.getJSONObject("static")
+                    .put("lens_main", LensGeometryFacts.fromCharacteristics(mainCharacteristics))
+                    .put("lens_wide", LensGeometryFacts.fromCharacteristics(wideCharacteristics))
+                result.keys().forEach { key -> report.put(key, result.get(key)) }
+            }
+            report.put("device_errors", JSONArray(runner.deviceErrors.toList()))
+        } catch (error: Exception) {
+            report.put("exception", "${error.javaClass.name}: ${error.stackTraceToString().take(1500)}")
+        } finally {
+            report.put("cameras", JSONArray(listOf(main.toJson(), wide.toJson())))
+            wide.close()
+            main.close()
+        }
+        return report
+    }
+
+    /** Размер слота кольца: буфер кадра RAW10 (5 байт на 4 пикселя) с запасом 50% на выравнивание строки. */
+    private fun ringBytes(leg: LegSpec): Int = leg.width * leg.height * 3 / 2
+
+    /** Область, у которой ширина и высота кратны [step] (левый верхний угол прежний, чётный). */
+    private fun PixelRegion.fitToMultipleOf(step: Int) = copy(width = width / step * step, height = height / step * step)
+
+    /** Область и сборщик для одной камеры: центр — оптическая ось из калибровки, размер — доля буфера. */
+    private class SamplerSetup(val sampler: RawRegionSampler, val region: PixelRegion, val center: OpticalCenter)
+
+    private fun createSampler(optics: SensorOptics, leg: LegSpec, sizeFraction: Double): SamplerSetup {
+        val array = optics.preCorrectionActiveArray
+        val center = SensitivityGeometry.opticalCenter(optics.intrinsicCalibration, array.width(), array.height())
+        val region = SensitivityGeometry.centeredRegion(leg.width, leg.height, sizeFraction, center)
+        return SamplerSetup(RawRegionSampler(region, optics.whiteLevel), region, center)
     }
 
     /** Пункт 2: пока камера 2 стримит, время «открыть 3 → сессия → первый RAW-кадр». */

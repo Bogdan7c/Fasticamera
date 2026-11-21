@@ -88,3 +88,29 @@ pub(crate) fn is_bright(layout: &ZoomWheelLayout, value: f64) -> bool {
         .any(|bright| (value - bright).abs() < EPS)
         || (value >= layout.bright_whole_numbers_from - EPS && (value - value.round()).abs() < EPS)
 }
+
+#[cfg(test)]
+mod tests {
+    use ui_kit::value::ValueModel;
+
+    use super::*;
+    use crate::test_support::zoom_catalog;
+
+    /// Колесо, остановившееся на упоре (магнит ставит позицию ровно в упор), отдаёт экрану коэффициент
+    /// **ровно** упора: ни на ULP меньше. Иначе селектор объективов (`ratio >= native`) не включил бы
+    /// основную камеру на делении 1.0 (проверка того, что 0.9999… не приходит с колеса).
+    #[test]
+    fn wheel_value_at_a_stop_position_is_exactly_the_stop_ratio_in_f32() {
+        let catalog = zoom_catalog();
+        for group in [catalog.back.as_ref(), catalog.front.as_ref()].into_iter().flatten() {
+            let model = build_model(&ZoomWheelLayout::default(), group).expect("модель колеса");
+            for stop in &group.stops {
+                let position = model
+                    .position_of(f64::from(stop.ratio.value()))
+                    .expect("упор в пределах");
+                let reported = model.value_at(position) as f32;
+                assert_eq!(reported, stop.ratio.value(), "упор {:?}", stop.kind);
+            }
+        }
+    }
+}

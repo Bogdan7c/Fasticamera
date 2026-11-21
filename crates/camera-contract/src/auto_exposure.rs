@@ -23,6 +23,7 @@ use std::time::Duration;
 use serde::Serialize;
 use thiserror::Error;
 
+pub use crate::auto_exposure_carry::{CameraTag, CarriedSceneExposure};
 use crate::capture_result::SensorTimestamp;
 use crate::control::{ExposureBias, ExposureTime, Iso};
 use crate::three_a::{AeAfLock, DirectiveGeneration, DirectiveSlot, PointOfInterest, PointRequestId, ThreeAProfile};
@@ -129,6 +130,10 @@ pub struct ExposureProposal {
     /// Кадр, по статистике которого сделано предложение (`SENSOR_TIMESTAMP`). По метке движок
     /// отличает предложения прошлого потока от нового: метки одной шкалы `BOOTTIME` растут.
     pub measured_frame: SensorTimestamp,
+    /// Камера кадра, по которому сделано предложение. Метки времени двух одновременно стримящих
+    /// камер перемешиваются на `BOOTTIME`, поэтому одной метки мало: движок не принимает предложение,
+    /// измеренное не на камере его текущего потока (сессия 13b).
+    pub measured_on: CameraTag,
     /// Произведение для среднего серого при компенсации 0 EV на текущей камере. Компенсацию,
     /// пределы и делёж добавляет движок.
     pub target: ExposureProduct,
@@ -213,6 +218,9 @@ pub struct ExposureDirective {
     pub bias: ExposureBias,
     /// Что стоит в запросе; `None`, пока повторяющегося запроса нет.
     pub applied: Option<AppliedExposure>,
+    /// Ожидаемая экспозиция нового потока до его первого собственного замера (решения 118, 126).
+    /// Движок публикует её ДО смены потока; `None` — переносить нечего (первый поток сессии).
+    pub stream_start: Option<CarriedSceneExposure>,
 }
 
 impl ExposureDirective {
@@ -224,6 +232,7 @@ impl ExposureDirective {
         authority: ExposureAuthority::Automatic,
         bias: ExposureBias::NONE,
         applied: None,
+        stream_start: None,
     };
 }
 

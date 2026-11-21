@@ -40,6 +40,7 @@ fn engine(role: LensRole, camera: &str, facing: LensFacing) -> EngineView {
         }),
         catalog: oneplus_zoom_catalog(),
         measured_fps: Some(59.7),
+        standby: crate::scenario::camera::zoom_test_support::quiet_standby(oneplus_zoom_catalog()),
     }
 }
 
@@ -94,6 +95,7 @@ struct Rig {
     counters: ContinuityCounters,
     isp_counters: ViewfinderCounters,
     screen: ScreenView,
+    raw_stream: raw_frame_stream::RawStreamCounters,
 }
 
 impl Rig {
@@ -109,6 +111,7 @@ impl Rig {
             counters: ContinuityCounters::default(),
             isp_counters: ViewfinderCounters::default(),
             screen,
+            raw_stream: Default::default(),
         }
     }
 
@@ -124,6 +127,7 @@ impl Rig {
             counters: &self.counters,
             isp_counters: &self.isp_counters,
             screen: &self.screen,
+            raw_stream: &self.raw_stream,
         };
         self.runner.tick(&observation)
     }
@@ -134,6 +138,7 @@ fn switched(from: LensRole, to: LensRole) -> CameraEvent {
         from,
         to,
         elapsed: Duration::from_millis(380),
+        method: camera_core::lens_status::LensSwitchMethod::Reopened,
     }
 }
 
@@ -479,3 +484,5 @@ fn a_drag_record_carries_the_haptics_of_its_window_only() {
 mod guards;
 #[path = "zoom_runner_home_tests.rs"]
 mod home;
+#[path = "zoom_runner_seamless_tests.rs"]
+mod seamless;

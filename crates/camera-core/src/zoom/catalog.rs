@@ -16,7 +16,7 @@
 use camera_contract::capabilities::CameraDescriptor;
 use camera_contract::catalog::CameraCatalog;
 use camera_contract::ids::{CameraId, LensFacing, LensRole};
-use camera_contract::lens_calibration::CalibrationPlausibility;
+use camera_contract::lens_calibration::{CalibrationPlausibility, OpticalAxis, UncalibratedReason};
 use camera_contract::viewfinder_crop::ZoomFactor;
 use camera_contract::zoom::{
     LensGroup, LensZoomPoint, PreviewMirror, ZoomCatalog, ZoomRange, ZoomRatio, ZoomStop, ZoomStopKind,
@@ -39,6 +39,8 @@ pub enum ZoomDiagnostic {
     MaxDigitalZoomInvalid { camera: CameraId, value: f32 },
     /// Опорной камеры направления нет (или она исключена): шкалы нет вовсе.
     ReferenceLensMissing { facing: LensFacing },
+    /// Профиль требует не верить оси камеры, которой нет в каталоге (чужая сборка телефона): игнорируется.
+    UntrustedCameraNotInCatalog { camera: String },
 }
 
 /// Шкала зума и диагностика её построения.
@@ -56,6 +58,7 @@ pub fn build_zoom_catalog(catalog: &CameraCatalog, config: &ZoomConfig) -> ZoomC
 /// Шкала зума и диагностика: что исключено и почему.
 pub fn build_zoom_catalog_reporting(catalog: &CameraCatalog, config: &ZoomConfig) -> ZoomCatalogBuild {
     let mut diagnostics = Vec::new();
+    report_unknown_untrusted_cameras(catalog, config, &mut diagnostics);
     let back = build_group(
         catalog,
         config,
@@ -84,6 +87,42 @@ pub fn build_zoom_catalog_reporting(catalog: &CameraCatalog, config: &ZoomConfig
         catalog: ZoomCatalog { back, front },
         diagnostics,
     }
+}
+
+/// Профиль называет камеры, которых в каталоге нет: молча не пропускаем, а пишем в диагностику.
+fn report_unknown_untrusted_cameras(
+    catalog: &CameraCatalog,
+    config: &ZoomConfig,
+    diagnostics: &mut Vec<ZoomDiagnostic>,
+) {
+    for id in &config.untrusted_optical_axis_cameras {
+        let known = CameraId::new(id.as_str()).is_ok_and(|camera| catalog.camera(&camera).is_some());
+        if !known {
+            diagnostics.push(ZoomDiagnostic::UntrustedCameraNotInCatalog { camera: id.clone() });
+        }
+    }
+}
+
+/// Оптическая ось камеры: по калибровке HAL, если профиль телефона ей не отказал в доверии.
+/// Недоверенная ось даёт `Uncalibrated`, и кадрирование идёт по центру сенсора (`crop_center`).
+fn optical_axis_for(descriptor: &CameraDescriptor, config: &ZoomConfig) -> OpticalAxis {
+    let capabilities = &descriptor.capabilities;
+    if config
+        .untrusted_optical_axis_cameras
+        .iter()
+        .any(|id| id == descriptor.id.as_str())
+    {
+        return OpticalAxis::Uncalibrated {
+            reason: UncalibratedReason::DistrustedByProfile,
+        };
+    }
+    let plausibility = CalibrationPlausibility {
+        max_principal_point_offset: config.calibration_max_principal_point_offset,
+    };
+    capabilities
+        .optics
+        .calibration
+        .optical_axis(capabilities.active_array, &plausibility)
 }
 
 /// Описание группы: какие роли в неё входят и чем она ограничена.
@@ -185,18 +224,12 @@ fn lens_point(
         return None;
     };
     let capabilities = &descriptor.capabilities;
-    let plausibility = CalibrationPlausibility {
-        max_principal_point_offset: config.calibration_max_principal_point_offset,
-    };
     Some(LensZoomPoint {
         role,
         camera: binding.camera.clone(),
         native_ratio,
         equivalent_focal_mm: focal_mm as f32,
-        optical_axis: capabilities
-            .optics
-            .calibration
-            .optical_axis(capabilities.active_array, &plausibility),
+        optical_axis: optical_axis_for(descriptor, config),
         active_array: capabilities.active_array.size,
         preview_mirror: match spec.facing {
             LensFacing::Front => PreviewMirror::Horizontal,

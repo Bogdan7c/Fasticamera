@@ -12,17 +12,17 @@ use std::time::Duration;
 
 /// Пределы, внутри которых делим.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct SplitLimits {
-    pub(super) iso_min: u32,
-    pub(super) iso_max: u32,
-    pub(super) shutter_shortest: Duration,
+pub(crate) struct SplitLimits {
+    pub(crate) iso_min: u32,
+    pub(crate) iso_max: u32,
+    pub(crate) shutter_shortest: Duration,
     /// Самая длинная допустимая выдержка: `min(у камеры, длительность кадра потока)`.
-    pub(super) shutter_cap: Duration,
+    pub(crate) shutter_cap: Duration,
 }
 
 /// Что закреплено пользователем (уже приведённое к пределам камеры).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Anchor {
+pub(crate) enum Anchor {
     /// Ничего: делим свободно.
     Free,
     /// ISO закреплён, выдержку подбираем.
@@ -33,20 +33,20 @@ pub(super) enum Anchor {
 
 /// Итог дележа.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct Split {
-    pub(super) shutter: Duration,
-    pub(super) iso: u32,
+pub(crate) struct Split {
+    pub(crate) shutter: Duration,
+    pub(crate) iso: u32,
 }
 
 impl Split {
     /// Произведение «выдержка × ISO», с·ISO.
-    pub(super) fn product_seconds_iso(self) -> f64 {
+    pub(crate) fn product_seconds_iso(self) -> f64 {
         self.shutter.as_secs_f64() * f64::from(self.iso)
     }
 }
 
 /// Разделить `requested_seconds_iso` (> 0, конечное) на выдержку и ISO.
-pub(super) fn split(
+pub(crate) fn split(
     requested_seconds_iso: f64,
     anchor: Anchor,
     limits: SplitLimits,

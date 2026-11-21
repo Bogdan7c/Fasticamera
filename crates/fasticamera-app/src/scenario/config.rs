@@ -4,6 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::camera::{StandbyScenarioConfig, StandbyScenarioConfigError};
 use crate::result_echo::{ResultEchoConfig, ResultEchoConfigError};
 
 /// Настройки сценариев (секция `scenarios` конфига нативной части).
@@ -58,6 +59,8 @@ pub struct ScenarioConfig {
     pub fence_busy_iterations: u32,
     /// Повтор строки результата наблюдающих сценариев (решение 58): logcat теряет строки во всплеске.
     pub result_echo: ResultEchoConfig,
+    /// Сценарий `standby` (13b): сроки ожиданий и порог частоты тёплых камер.
+    pub standby: StandbyScenarioConfig,
 }
 
 impl Default for ScenarioConfig {
@@ -80,6 +83,7 @@ impl Default for ScenarioConfig {
             gpu_job_timeout_ms: 30_000,
             fence_busy_iterations: gpu_vulkan::sync::diagnostics::DEFAULT_BUSY_ITERATIONS,
             result_echo: ResultEchoConfig::default(),
+            standby: StandbyScenarioConfig::default(),
         }
     }
 }
@@ -100,6 +104,8 @@ pub enum ScenarioConfigError {
     StableNotBelowSettleTimeout { stable_ms: u64, settle_timeout_ms: u64 },
     #[error(transparent)]
     ResultEcho(#[from] ResultEchoConfigError),
+    #[error(transparent)]
+    Standby(#[from] StandbyScenarioConfigError),
 }
 
 impl ScenarioConfig {
@@ -157,6 +163,7 @@ impl ScenarioConfig {
             });
         }
         self.result_echo.validate()?;
+        self.standby.validate()?;
         Ok(())
     }
 }

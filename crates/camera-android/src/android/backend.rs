@@ -18,8 +18,9 @@ use camera_contract::stream::{ConfiguredStream, ResolvedStream};
 use camera_contract::three_a::{BurstId, ExposureBracket, PointRequestId, RequestOrigin};
 use camera_core::backend::{
     BackendEventSink, BackendFailure, CameraBackend, ConfigureFailure, DeviceGeneration, OpenFailure, RequestFailure,
-    SessionGeneration, UnsupportedStream,
+    SessionGeneration,
 };
+use camera_core::backend_standby::StandbySupport;
 
 use camera_core::request_controls::{AfTrigger, RequestControls};
 use raw_frame_stream::RawFrameProducer;
@@ -30,11 +31,9 @@ use crate::context_leak::leak_contexts_for_process_lifetime;
 use crate::cpu_access_probe::CpuAccessProbe;
 use crate::diagnostics::BackendDiagnostics;
 use crate::entry::{EntryLookup, EntryValue, MetadataSource};
-use crate::frame_rate_plan::plan_frame_rate;
-use crate::request_plan::{PlannedRequest, RequestInputs, plan_bracket, plan_request, plan_session_parameters};
+use crate::request_plan::{PlannedRequest, RequestInputs, plan_bracket, plan_request};
 use crate::retired_readers::RetiredReaders;
 use crate::sensor_modes::{SensorModeAvailability, SensorModeProblem};
-use crate::stream_passport::build_stream_passport;
 use crate::tags::Tag;
 use crate::vendor::{VendorCapabilities, VendorKey};
 
@@ -43,8 +42,16 @@ use super::callbacks::SessionStateContext;
 use super::device::OpenedDevice;
 use super::manager::CameraManager;
 use super::outputs::ParkedOutputs;
-use super::raw_reader::{RawReader, ReaderSpec, RetiredNdkReaders};
-use super::session::{ActiveSession, OneShotRequest, SessionSpec};
+use super::raw_reader::RetiredNdkReaders;
+use super::session::{ActiveSession, OneShotRequest};
+
+mod session_build;
+mod standby_api;
+
+use session_build::{RequestEnv, SessionEnv, apply_repeating_request, build_session};
+
+use super::standby_slot::StandbySlots;
+use crate::result_routing::CaptureRole;
 
 const LOG_TARGET: &str = "fasticamera::camera::backend";
 
@@ -78,6 +85,9 @@ pub struct AndroidCameraBackend {
     /// Контексты состояния сессий: не освобождаются до конца бэкенда, а при его разрушении
     /// намеренно утекают (`Drop`, см. доку `callbacks` и `context_leak`).
     retained_state_contexts: Vec<Arc<SessionStateContext>>,
+    /// Тёплые камеры (13b): ячейки со своими устройствами и сессиями. Объявлены после основной
+    /// линии: при запасном разрушении основная освобождается первой.
+    standby: StandbySlots,
     availability: Option<AvailabilityRegistration>,
     manager: CameraManager,
 }
@@ -96,6 +106,7 @@ impl AndroidCameraBackend {
             code: 0,
             detail: error.to_string(),
         })?;
+        let standby_capacity = config.standby_capacity;
         let manager = CameraManager::create()?;
         let availability = match AvailabilityRegistration::register(&manager, events.clone(), Arc::clone(&diagnostics))
         {
@@ -120,6 +131,7 @@ impl AndroidCameraBackend {
             parked_outputs: None,
             device: None,
             retained_state_contexts: Vec::new(),
+            standby: StandbySlots::new(standby_capacity),
             availability,
             manager,
         })
@@ -167,7 +179,7 @@ impl AndroidCameraBackend {
             .record_failure(failure.operation, failure.code, &failure.detail);
     }
 
-    /// Создание новой сессии (предыдущая уже закрыта вызывающим).
+    /// Создание новой сессии основной камеры (предыдущая уже закрыта вызывающим).
     fn create_session(
         &mut self,
         stream: &ResolvedStream,
@@ -176,77 +188,20 @@ impl AndroidCameraBackend {
         let Some(device) = self.device.as_mut() else {
             return Err(ConfigureFailure::DeviceDisconnected);
         };
-        if device.camera() != &stream.camera {
-            return Err(ConfigureFailure::Backend(BackendFailure {
-                operation: "configure_session",
-                code: 0,
-                detail: format!(
-                    "устройство открыто для камеры {}, а режим — для {}",
-                    device.camera(),
-                    stream.camera
-                ),
-            }));
-        }
-        let Some(record) = self.catalog.get(&stream.camera) else {
-            return Err(ConfigureFailure::Backend(BackendFailure {
-                operation: "configure_session",
-                code: 0,
-                detail: format!("камеры {} нет в прочитанном каталоге", stream.camera),
-            }));
-        };
-        let mechanism = plan_frame_rate(
-            stream,
-            &record.descriptor.capabilities,
-            &record.vendor,
-            &record.sensor_modes,
-            &self.config,
-        )
-        .map_err(|unsupported: UnsupportedStream| {
-            tracing::warn!(target: LOG_TARGET, %unsupported, "режим потока недостижим на этой камере");
-            ConfigureFailure::Unsupported(unsupported)
-        })?;
-
-        // Паспорт постоянной части: без него поток кадров не стартует (RAW не поддержан / полоса 16:9
-        // не помещается — это отказ режима, а не сбой платформы).
-        let passport = build_stream_passport(stream, &record.descriptor.capabilities, mechanism).map_err(|error| {
-            ConfigureFailure::Backend(BackendFailure {
-                operation: "build_stream_passport",
-                code: 0,
-                detail: error.to_string(),
-            })
-        })?;
-        let reader = RawReader::create(ReaderSpec {
-            size: stream.buffer_size,
-            format: stream.raw_format,
-            passport: Arc::new(passport),
-            producer: self.producer.clone(),
-            probe: self.cpu_probe.clone(),
-            diagnostics: Arc::clone(&self.diagnostics),
-            retirement: Arc::clone(&self.retired_readers),
-        })
-        .map_err(ConfigureFailure::Backend)?;
-        // Шаблон параметров сессии — PREVIEW: единственный их ключ (диапазон AE) от шаблона не зависит.
-        let session_parameters = plan_session_parameters(CaptureIntent::Preview, mechanism);
-        let spec = SessionSpec {
-            stream,
-            mechanism,
-            generation,
-            session_parameters: session_parameters.as_ref(),
-            vendor: &record.vendor,
-            frame_number_window: self.config.frame_number_window,
+        let env = SessionEnv {
+            config: &self.config,
+            catalog: &self.catalog,
+            events: &self.events,
+            diagnostics: &self.diagnostics,
             producer: &self.producer,
-            companion: self.config.three_a_companion_stream.plan(),
-            origin_capacity: self.config.request_origin_capacity,
+            cpu_probe: &self.cpu_probe,
+            retired_readers: &self.retired_readers,
         };
-        let (session, state_context) = ActiveSession::create(device, reader, &spec, &self.events, &self.diagnostics)?;
+        let built = build_session(&env, device, stream, generation, CaptureRole::Primary)?;
         self.diagnostics.record_retained_session_context();
-        self.retained_state_contexts.push(state_context);
-        self.session = Some(session);
-        tracing::info!(target: LOG_TARGET, camera = %stream.camera, ?mechanism, "сессия сконфигурирована");
-        Ok(ConfiguredStream {
-            stream: stream.clone(),
-            frame_rate_mechanism: mechanism,
-        })
+        self.retained_state_contexts.push(built.state_context);
+        self.session = Some(built.session);
+        Ok(built.configured)
     }
 }
 
@@ -355,25 +310,12 @@ impl CameraBackend for AndroidCameraBackend {
         let (Some(device), Some(session)) = (self.device.as_ref(), self.session.as_mut()) else {
             return Err(RequestFailure::NoSession);
         };
-        let Some(record) = self.catalog.get(&session.stream().camera) else {
-            return Err(RequestFailure::NoSession);
+        let env = RequestEnv {
+            config: &self.config,
+            catalog: &self.catalog,
+            diagnostics: &self.diagnostics,
         };
-        let planned = plan_request(&RequestInputs {
-            intent,
-            controls,
-            trigger: None,
-            frame_rate: session.stream().frame_rate,
-            mechanism: session.mechanism(),
-            camera: &record.descriptor.capabilities,
-            mains: self.config.mains_frequency,
-        });
-        self.diagnostics.record_plan_notes(&planned.notes);
-        session
-            .set_repeating_request(device, &planned.plan, &record.vendor)
-            .inspect_err(|failure| {
-                self.diagnostics
-                    .record_failure("set_repeating_request", 0, &failure.to_string());
-            })
+        apply_repeating_request(&env, device, session, intent, controls)
     }
 
     fn submit_focus_trigger(
@@ -474,6 +416,10 @@ impl CameraBackend for AndroidCameraBackend {
         }
     }
 
+    fn standby(&mut self) -> StandbySupport<'_> {
+        self.standby_support()
+    }
+
     fn close_device(&mut self) {
         // Порядок: стоп повтора и закрытие сессии → закрытие устройства → отсрочка reader-а (он
         // удалится, когда вернутся все его кадры; поток камеры при этом ничего не ждёт).
@@ -487,6 +433,8 @@ impl CameraBackend for AndroidCameraBackend {
 impl Drop for AndroidCameraBackend {
     fn drop(&mut self) {
         self.close_device();
+        // Тёплые закрываются раньше reader-ов: их кадры тоже должны успеть вернуться.
+        self.close_all_standby();
         // Единственное место, где поток камеры ждёт возврата кадров от других потоков, и ожидание
         // ограничено: reader нельзя удалять, пока GPU может читать его кадры; не вернулись — утекает.
         let report = self.retired_readers.shutdown(

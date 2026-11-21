@@ -22,6 +22,9 @@ use shell_contract::surface::SurfaceSize;
 use super::*;
 use crate::gpu_test_support::RecordingRenderControl;
 
+#[path = "camera_screen_effects_standby_tests.rs"]
+mod standby;
+
 /// Порт камеры: запоминает намерения и отвечает заданным итогом.
 struct FakeCameraPort {
     outcome: Arc<Mutex<CameraIntentOutcome>>,
@@ -511,6 +514,7 @@ fn lens_intent(ratio: f32) -> LensIntent {
         facing: LensFacing::Back,
         ratio: ZoomRatio::new(ratio).expect("коэффициент"),
         gesture: camera_contract::zoom::ZoomGesture::Continuous,
+        standby: camera_contract::zoom::StandbyDemand::NotNeeded,
     }
 }
 

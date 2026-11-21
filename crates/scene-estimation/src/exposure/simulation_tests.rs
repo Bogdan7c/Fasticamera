@@ -19,7 +19,7 @@ use super::controller::AutoExposureController;
 use super::measurement::MeasurementPhase;
 use super::meter::{CpuExposureMeter, ExposureMeter, ExposureMeteringRequest};
 use super::metering_weights::{MeteringArea, MeteringWeights, TilePlacement};
-use super::test_support::{GRID, plain_luminance, product, stats_from, target};
+use super::test_support::{GRID, plain_luminance, product, stats_from, target, test_camera};
 use crate::executor::FrameTag;
 use camera_contract::auto_exposure::{ExposureDirective, ExposureProduct};
 
@@ -207,7 +207,7 @@ impl Rig {
         }
         self.deliver_due_directives();
         self.controller.advance(timestamp);
-        if let Some(proposal) = self.controller.proposal(timestamp) {
+        if let Some(proposal) = self.controller.proposal(timestamp, test_camera()) {
             self.proposals += 1;
             let requested = proposal.target;
             let achieved = self.clamp_to_sensor(requested);

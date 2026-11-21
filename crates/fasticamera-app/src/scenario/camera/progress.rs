@@ -149,7 +149,7 @@ impl EventNote {
             CameraEvent::ControlsAdjusted { adjustments } => EventNote::ControlsAdjusted {
                 adjustments: adjustments.len(),
             },
-            CameraEvent::LensSwitched { from, to, elapsed } => EventNote::LensSwitched {
+            CameraEvent::LensSwitched { from, to, elapsed, .. } => EventNote::LensSwitched {
                 from: *from,
                 to: *to,
                 elapsed_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),

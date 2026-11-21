@@ -32,6 +32,7 @@ use crate::companion_stream::{CompanionStreamSpec, CompanionStreamStatus, Compan
 use crate::diagnostics::BackendDiagnostics;
 use crate::request_origin::{RequestKey, RequestOriginTable};
 use crate::request_plan::{RequestPlan, apply_entries};
+use crate::result_routing::{CaptureRole, ResultRouting};
 use crate::status_mapping::{camera_backend_failure, configure_failure, request_failure};
 use crate::tags;
 use crate::vendor::VendorCapabilities;
@@ -83,6 +84,8 @@ pub(super) struct ActiveSession {
     stream: ResolvedStream,
     mechanism: FrameRateMechanism,
     diagnostics: Arc<BackendDiagnostics>,
+    /// Повторяющийся запрос стоит (кадры идут): обмен ролей требует этого от обеих сторон, как fake.
+    repeating_active: bool,
 }
 
 /// Всё, что нужно для создания сессии.
@@ -100,6 +103,8 @@ pub(super) struct SessionSpec<'a> {
     pub companion: Option<CompanionStreamSpec>,
     /// Размер таблицы происхождений разовых запросов.
     pub origin_capacity: usize,
+    /// Начальная роль сессии: основная (результаты движку) или тёплая в ячейке (13b).
+    pub role: CaptureRole,
 }
 
 /// Один запрос для разовой отправки: готовый план и происхождение, которым пометятся его результаты.
@@ -135,6 +140,7 @@ impl ActiveSession {
             diagnostics: Arc::clone(diagnostics),
             producer: spec.producer.clone(),
             epoch: reader.epoch(),
+            role: spec.role,
             frame_number_window: spec.frame_number_window,
             origin_capacity: spec.origin_capacity,
         }));
@@ -170,12 +176,28 @@ impl ActiveSession {
             stream: spec.stream.clone(),
             mechanism: spec.mechanism,
             diagnostics: Arc::clone(diagnostics),
+            repeating_active: false,
         };
         Ok((session, state_context))
     }
 
     pub(super) fn generation(&self) -> SessionGeneration {
         self.generation
+    }
+
+    /// Эпоха потока кадров reader-а этой сессии (по ней обмен ролей находит тёплую в хабе).
+    pub(super) fn epoch(&self) -> raw_frame_stream::StreamEpoch {
+        self.reader.epoch()
+    }
+
+    /// Стоит ли повторяющийся запрос: сессия отдаёт кадры (условие обмена ролей).
+    pub(super) fn is_streaming(&self) -> bool {
+        self.repeating_active
+    }
+
+    /// Роль сессии для колбэков результатов: обмен ролей переключает её одним атомарным store.
+    pub(super) fn result_routing(&self) -> &ResultRouting {
+        self.handle.capture_context.routing()
     }
 
     pub(super) fn stream(&self) -> &ResolvedStream {
@@ -227,6 +249,7 @@ impl ActiveSession {
             )
         };
         if status == tags::STATUS_OK {
+            self.repeating_active = true;
             Ok(())
         } else {
             Err(request_failure("ACameraCaptureSession_setRepeatingRequestV2", status))
@@ -291,6 +314,7 @@ impl ActiveSession {
         // SAFETY: сессия жива и принадлежит нам.
         let status = unsafe { ndk::ACameraCaptureSession_stopRepeating(self.handle.raw.as_ptr()) };
         if status == tags::STATUS_OK {
+            self.repeating_active = false;
             Ok(())
         } else {
             Err(request_failure("ACameraCaptureSession_stopRepeating", status))

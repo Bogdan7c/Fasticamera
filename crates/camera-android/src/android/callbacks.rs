@@ -60,6 +60,7 @@ use crate::diagnostics::BackendDiagnostics;
 use crate::frame_numbers::{FrameNumberMatcher, FrameNumberSource};
 use crate::request_origin::RequestOriginTable;
 use crate::result_meta::{parse_capture_result, read_sensor_timestamp};
+use crate::result_routing::{CaptureRole, CompletedRoute, FailedRoute, ResultRouting};
 use crate::status_mapping::{capture_failure_reason, device_error_kind};
 use crate::tags;
 
@@ -256,6 +257,9 @@ pub(super) struct CaptureContext {
     producer: RawFrameProducer,
     epoch: StreamEpoch,
     closed: AtomicBool,
+    /// Роль сессии (основная/тёплая): решает, доставлять ли результаты движку. Меняется обменом
+    /// ролей с потока камеры, читается колбэками без блокировок (13b, см. `result_routing`).
+    routing: ResultRouting,
     matcher: Mutex<FrameNumberMatcher>,
     /// Происхождения разовых запросов сессии (триггер фокуса, кадры серии). Живёт столько же,
     /// сколько контекст: до `ACameraDevice_close`, когда колбэки запросов уже не придут.
@@ -269,6 +273,8 @@ pub(super) struct CaptureContextSpec {
     pub diagnostics: Arc<BackendDiagnostics>,
     pub producer: RawFrameProducer,
     pub epoch: StreamEpoch,
+    /// Начальная роль сессии.
+    pub role: CaptureRole,
     pub frame_number_window: usize,
     /// Сколько разовых запросов могут ждать результата одновременно.
     pub origin_capacity: usize,
@@ -283,6 +289,7 @@ impl CaptureContext {
             producer: spec.producer,
             epoch: spec.epoch,
             closed: AtomicBool::new(false),
+            routing: ResultRouting::new(spec.role),
             matcher: Mutex::new(FrameNumberMatcher::new(spec.frame_number_window)),
             origins: RequestOriginTable::new(spec.origin_capacity),
         }
@@ -295,6 +302,11 @@ impl CaptureContext {
 
     pub(super) fn mark_closed(&self) {
         self.closed.store(true, Ordering::Release);
+    }
+
+    /// Роль сессии: меняется только обменом ролей (поток камеры), см. `result_routing`.
+    pub(super) fn routing(&self) -> &ResultRouting {
+        &self.routing
     }
 
     pub(super) fn as_callback_context(self: &Arc<Self>) -> *mut c_void {
@@ -362,14 +374,19 @@ pub(super) unsafe extern "C" fn capture_on_completed(
                 .diagnostics
                 .record_unreadable_three_a_keys(parsed.unreadable_three_a_keys.len());
         }
-        context.sink.deliver(BackendEvent::CaptureCompleted {
-            session: context.generation,
-            result: parsed.meta,
-        });
+        // Куда результат: основная — движку, тёплая — только потоку кадров (13b).
+        let route = context.routing.route_completed();
+        if route == CompletedRoute::Engine {
+            context.sink.deliver(BackendEvent::CaptureCompleted {
+                session: context.generation,
+                result: parsed.meta,
+            });
+        }
         // Разовый запрос дал свой единственный результат: его запись больше не нужна.
         context.origins.settle(origin_key);
         // Тот же результат с цветовыми подсказками — потоку кадров: он спарит его с буфером по
         // `SENSOR_TIMESTAMP`. Исход (спарен / ждёт / без метки / прошлая эпоха) поток считает сам.
+        // У тёплой эпохи результат ждёт в буфере хаба до обмена ролей.
         let _outcome = context.producer.offer_capture_result(
             context.epoch,
             FrameCaptureDetails {
@@ -378,6 +395,20 @@ pub(super) unsafe extern "C" fn capture_on_completed(
             },
             Instant::now(),
         );
+        if let CompletedRoute::Standby {
+            slot,
+            announce_streaming,
+        } = route
+        {
+            context.diagnostics.standby().record_result_offered(slot);
+            // Первый результат тёплой = «готова». Событие — после предложения потоку: к обмену
+            // результат уже лежит в буфере хаба.
+            if announce_streaming {
+                context.sink.deliver(BackendEvent::StandbyStreaming {
+                    session: context.generation,
+                });
+            }
+        }
     });
 }
 
@@ -401,6 +432,11 @@ pub(super) unsafe extern "C" fn capture_on_failed(
         // записи сброшенных запросов. (В `CaptureFailed` происхождения нет — граница движка его не несёт.)
         // SAFETY: `request` — указатель из колбэка NDK, живой на время колбэка.
         context.origins.settle(unsafe { request_origin_key(request) });
+        // Провал кадра тёплой движку не доставляется: только счётчик ячейки (13b).
+        if let FailedRoute::Standby { slot } = context.routing.route_failed() {
+            context.diagnostics.standby().record_capture_failure(slot);
+            return;
+        }
         // SAFETY: `failure` валиден на время колбэка (указатель из NDK).
         let Some(failure) = (unsafe { failure.as_ref() }) else {
             return;

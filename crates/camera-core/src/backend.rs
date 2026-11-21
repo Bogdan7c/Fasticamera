@@ -27,6 +27,7 @@ use camera_contract::stream::{ConfiguredStream, ReadoutAspect, ResolvedStream, T
 use camera_contract::three_a::{BurstId, ExposureBracket, PointRequestId, RequestOrigin};
 use serde::Serialize;
 
+use crate::backend_standby::StandbySupport;
 use crate::request_controls::{AfTrigger, RequestControls};
 
 /// Поколение открытого устройства. Растёт на каждое `open_device`.
@@ -158,6 +159,9 @@ pub enum BackendEvent {
         frame_number: FrameNumber,
         reason: CaptureFailureReason,
     },
+    /// Тёплая камера отдала первый результат кадра: она готова к повышению (13b). Редкое событие
+    /// (один раз на сессию), не событие потока кадров. Результатов кадров тёплой бэкенд не шлёт.
+    StandbyStreaming { session: SessionGeneration },
     /// Камера стала свободной или занятой для приложения.
     CameraAvailability {
         camera: CameraId,
@@ -282,4 +286,10 @@ pub trait CameraBackend {
 
     /// Закрыть устройство (и сессию), если открыто.
     fn close_device(&mut self);
+
+    /// Тёплая камера (13b). По умолчанию — [`StandbySupport::Unsupported`]: бэкенды без неё
+    /// (`DeadBackend`, Android до своей очереди) остаются как были.
+    fn standby(&mut self) -> StandbySupport<'_> {
+        StandbySupport::Unsupported
+    }
 }

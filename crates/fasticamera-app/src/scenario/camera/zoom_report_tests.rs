@@ -74,7 +74,7 @@ fn max_times_ignore_steps_without_a_switch() {
 
 #[test]
 fn the_worst_failing_summary_fits_the_result_line() {
-    let mut report = healthy_report();
+    let mut report = full_plan_report();
     // Худший случай: длинные кириллические причины в сводке и в нарушениях.
     report.run_failure = Some(crate::scenario::camera::result_budget::worst_case::long_reason("zoom"));
     let violations: Vec<String> = (0..12)
@@ -101,4 +101,55 @@ fn black_frames_before_first_picture_grow_into_totals_and_the_summary() {
         "холодный старт до окна не в счёт"
     );
     assert_eq!(report.summary()["black_frames_before_first_picture"], 4);
+}
+
+/// Отчёт полного плана: 5 тапов, две ноги переворота, протяжка, три тапа 1 и все бесшовные шаги (по именам плана).
+fn full_plan_report() -> ZoomObservationReport {
+    use crate::scenario::camera::zoom_test_support::{
+        healthy_crop_step, healthy_release_step, healthy_seamless_switch_step, healthy_switch_step,
+    };
+    let mut report = healthy_report();
+    let mut steps = vec![
+        healthy_switch_step("01_tap_0.6"),
+        healthy_switch_step("02_tap_1"),
+        healthy_crop_step("03_tap_2"),
+        healthy_switch_step("04_tap_1"),
+        healthy_switch_step("05_tap_0.6"),
+        healthy_switch_step("06_flip_to_front"),
+        healthy_switch_step("07_flip_to_back"),
+    ];
+    for (name, leg) in [
+        ("11_wheel_seamless_out", "out"),
+        ("12_wheel_seamless_back", "back"),
+        ("14_pinch_seamless_out", "out"),
+        ("15_pinch_seamless_back", "back"),
+    ] {
+        steps.push(healthy_seamless_switch_step(name, leg));
+    }
+    steps.push(healthy_release_step("13_wheel_seamless_release"));
+    steps.push(healthy_release_step("16_pinch_seamless_release"));
+    report.steps = steps;
+    report
+}
+
+#[test]
+fn the_summary_lists_every_seamless_step_and_the_hidden_frames_of_every_tap() {
+    let mut report = full_plan_report();
+    report.steps[0].continuity.frames_hidden_by_continuity = 2;
+    report.steps[1].continuity.frames_hidden_by_continuity = 9;
+    let summary = report.summary();
+
+    let seamless = summary["seamless"].as_array().expect("список бесшовных шагов");
+    assert_eq!(seamless.len(), 6);
+    assert_eq!(seamless[0]["step"], "11_wheel_seamless_out");
+    assert_eq!(seamless[0]["method"], "promoted_standby");
+    assert_eq!(seamless[0]["held"], 0);
+    assert_eq!(seamless[0]["hidden"], 0);
+    assert_eq!(seamless[0]["fps_min"], 59.2);
+    assert_eq!(seamless[4]["closed_ms"], 3700.0);
+
+    let taps = summary["tap_hidden"].as_array().expect("тапы");
+    assert_eq!(taps.len(), 5, "только кнопки ленты, без переворота и бесшовных шагов");
+    assert_eq!(taps[0], serde_json::json!({"step": "01_tap_0.6", "hidden": 2}));
+    assert_eq!(taps[1]["hidden"], 9);
 }

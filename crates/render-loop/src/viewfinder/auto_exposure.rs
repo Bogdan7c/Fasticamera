@@ -51,6 +51,9 @@ pub struct AutoExposureCounters {
     pub cold_start_statistics_frames: u64,
     /// Кадров, показанных с остаточной подтяжкой (множитель не 1).
     pub frames_with_residual_gain: u64,
+    /// Кадров, чью яркость признали правдоподобной по ожидаемой экспозиции нового потока (перенос с прошлой
+    /// камеры, решения 118, 126), а не по собственному замеру: показ нового потока без удержания.
+    pub frames_ready_by_carried_exposure: u64,
 }
 
 /// Диагностика нашего AE на потоке рендера. `None` в `ViewfinderDiagnostics`, пока AE не включён.

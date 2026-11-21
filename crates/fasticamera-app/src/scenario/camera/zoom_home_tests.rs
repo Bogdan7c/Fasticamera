@@ -19,6 +19,7 @@ fn engine(role: LensRole, facing: LensFacing) -> EngineView {
         }),
         catalog: Arc::clone(&oneplus_zoom_catalog()),
         measured_fps: Some(60.0),
+        standby: crate::scenario::camera::zoom_test_support::quiet_standby(Arc::clone(&oneplus_zoom_catalog())),
     }
 }
 
@@ -116,6 +117,7 @@ fn only_failed_and_unrequested_lens_events_are_stray() {
         from: LensRole::Wide,
         to: LensRole::Tele,
         elapsed: std::time::Duration::from_millis(300),
+        method: camera_core::lens_status::LensSwitchMethod::Reopened,
     };
     let text = stray_event_failure(&[switched], "после шага 03").expect("провал");
     assert!(text.contains("wide→tele") && text.contains("ни один шаг"), "{text}");

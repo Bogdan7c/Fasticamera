@@ -25,7 +25,7 @@ use camera_core::CameraEvent;
 use camera_screen::ScreenAction;
 use render_loop::viewfinder::{ContinuityCounters, ViewfinderCounters};
 use shell_contract::clock::MonotonicNanos;
-use shell_contract::touch::TouchPhase;
+use shell_contract::touch::{PointerId, TouchPhase};
 
 use super::zoom_home::{QueuedStep, StepRole, steps_to_home, stray_event_failure};
 use super::zoom_plan::{SwitchExpectation, ZoomAction, ZoomStep, expectation_for_tap, nearest_stop};
@@ -34,9 +34,11 @@ use super::zoom_record::{
     MirrorCheck, RingWatch, SwitchTiming, ZoomStepRecord, first_live_frame_ms, haptic_window, mirror_check,
 };
 use super::zoom_reveal::RevealFaults;
+use super::zoom_seamless::SeamlessProgress;
+use super::zoom_seamless_fingers::Fingers;
+use super::zoom_seamless_record::{SeamlessRecord, SwitchGap, switch_gap};
 pub use super::zoom_tick::{Injection, RunnerState, TouchInjection, ZoomObservation, ZoomTick};
 pub use super::zoom_views::{EngineView, ScreenView, camera_of_role};
-use crate::screen_scenario_config::ScreenPoint;
 use crate::zoom_scenario_config::ZoomScenarioConfig;
 
 /// Допуск «экран показывает то значение, которое выбрали»: 2 % коэффициента в тысячных.
@@ -55,16 +57,6 @@ struct Baseline {
     active_facing: Option<LensFacing>,
 }
 
-/// Протяжка пальцем: сколько образцов отправлено.
-struct DragProgress {
-    /// Сколько образцов `Moved` уже отправлено.
-    moved: u32,
-    /// Отправлен ли `Ended`.
-    ended: bool,
-    /// Когда следующий образец (часы маршрутизатора).
-    next_at: Instant,
-}
-
 /// Идущий шаг.
 struct ActiveStep {
     step: ZoomStep,
@@ -81,6 +73,12 @@ struct ActiveStep {
     retargets: u32,
     notes: Vec<String>,
     drag: Option<DragProgress>,
+    /// Часть бесшовного жеста 13b (`None` — обычный шаг).
+    seamless: Option<SeamlessProgress>,
+    /// Сколько событий `LensSwitched` пришло за шаг.
+    switch_events: u32,
+    /// Разрыв показа при смене камеры (измеряется в тот тик, когда новая камера впервые показана живой).
+    gap: Option<SwitchGap>,
     /// Когда наблюдение «после» кончается; `None` — ещё ждём смену/кадр.
     settle_until: Option<Instant>,
 }
@@ -106,6 +104,8 @@ pub struct ZoomRunner {
     calming_since: Option<Instant>,
     /// Шаги плана, которые не запускались из-за провала раньше.
     skipped: Vec<String>,
+    /// Пальцы бесшовного жеста, которые лежат на экране между его частями.
+    held: Option<Fingers>,
 }
 
 impl ZoomRunner {
@@ -126,6 +126,7 @@ impl ZoomRunner {
             last_step_name: None,
             calming_since: None,
             skipped: Vec::new(),
+            held: None,
         }
     }
 
@@ -209,7 +210,7 @@ impl ZoomRunner {
         }
         let current_role = engine.active.as_ref().map(|active| active.role);
         let mut target_ratio_milli = None;
-        let (expectation, injections, drag) = match step.action {
+        let (expectation, injections, drag, seamless) = match step.action {
             ZoomAction::TapStop { ratio } => {
                 let Some(group) = engine.catalog.back.as_ref() else {
                     return self.fail_before_start(observation, role, step, "в каталоге зума нет задних камер");
@@ -230,6 +231,7 @@ impl ZoomRunner {
                         at: observation.render_now,
                     })],
                     None,
+                    None,
                 )
             }
             ZoomAction::Flip => {
@@ -248,10 +250,12 @@ impl ZoomRunner {
                         at: observation.render_now,
                     })],
                     None,
+                    None,
                 )
             }
             ZoomAction::WheelDrag => {
                 let start = TouchInjection {
+                    pointer: PointerId::new(0),
                     phase: TouchPhase::Began,
                     point: self.config.wheel_drag.start,
                     time: observation.render_now,
@@ -261,8 +265,17 @@ impl ZoomRunner {
                     ended: false,
                     next_at: observation.now + Duration::from_millis(self.config.wheel_drag.sample_interval_ms),
                 };
-                (SwitchExpectation::NoSwitch, vec![Injection::Touch(start)], Some(drag))
+                (
+                    SwitchExpectation::NoSwitch,
+                    vec![Injection::Touch(start)],
+                    Some(drag),
+                    None,
+                )
             }
+            ZoomAction::Seamless { gesture, leg } => match self.begin_seamless(observation, gesture, leg) {
+                Ok((expectation, injections, progress)) => (expectation, injections, None, Some(progress)),
+                Err(reason) => return self.fail_before_start(observation, role, step, &reason),
+            },
         };
         self.ring.reset_overrun();
         self.active = Some(ActiveStep {
@@ -284,6 +297,9 @@ impl ZoomRunner {
             retargets: 0,
             notes: Vec::new(),
             drag,
+            seamless,
+            switch_events: 0,
+            gap: None,
             settle_until: None,
             step,
         });
@@ -322,6 +338,21 @@ impl ZoomRunner {
     /// неудавшийся шаг возврата только обрывает возврат: исходный провал уже назван, а состояние экрана
     /// покажет итог прогона.
     fn step_failed(
+        &mut self,
+        observation: &ZoomObservation<'_>,
+        role: StepRole,
+        record: Option<ZoomStepRecord>,
+        name: &str,
+        reason: &str,
+    ) -> ZoomTick {
+        // Пальцы бесшовного жеста не должны остаться на экране после провала: сначала поднимаем их.
+        let lift = self.lift_stranded_fingers(observation);
+        let mut tick = self.record_failure(observation, role, record, name, reason);
+        tick.injections.splice(0..0, lift);
+        tick
+    }
+
+    fn record_failure(
         &mut self,
         observation: &ZoomObservation<'_>,
         role: StepRole,
@@ -374,6 +405,9 @@ impl ZoomRunner {
         }
         self.absorb_frames(&mut active, observation);
         self.continue_drag(&mut active, observation, &mut injections);
+        if let Some(reason) = self.drive_seamless(&mut active, observation, &mut injections) {
+            return self.fail_active(active, observation, &reason);
+        }
         if active.settle_until.is_none() && self.is_complete(&active, observation) {
             active.settle_until = Some(observation.now + Duration::from_millis(self.config.step_settle_ms));
         }
@@ -384,7 +418,10 @@ impl ZoomRunner {
             return self.finish_step(active, observation);
         }
         let timeout = Duration::from_millis(self.config.step_timeout_ms);
-        if active.settle_until.is_none() && observation.now.saturating_duration_since(active.started_at) >= timeout {
+        if active.settle_until.is_none()
+            && generic_timeout_applies(&active)
+            && observation.now.saturating_duration_since(active.started_at) >= timeout
+        {
             let reason = self.timeout_reason(&active);
             return self.fail_active(active, observation, &reason);
         }
@@ -399,7 +436,12 @@ impl ZoomRunner {
     fn absorb_events(&self, active: &mut ActiveStep, observation: &ZoomObservation<'_>) -> Option<String> {
         for event in observation.events {
             match event {
-                CameraEvent::LensSwitched { from, to, elapsed } => {
+                CameraEvent::LensSwitched {
+                    from,
+                    to,
+                    elapsed,
+                    method,
+                } => {
                     if !active.expectation.accepts(*to) {
                         return Some(format!(
                             "движок сменил объектив {}→{}, а ждали {}",
@@ -408,6 +450,7 @@ impl ZoomRunner {
                             expectation_name(active.expectation)
                         ));
                     }
+                    active.switch_events += 1;
                     if active.switch.is_none() {
                         active.switch = Some(SwitchTiming {
                             from: role_name(*from),
@@ -417,6 +460,7 @@ impl ZoomRunner {
                                 observation.now.saturating_duration_since(active.started_at).as_millis(),
                             )
                             .unwrap_or(u64::MAX),
+                            method: *method,
                         });
                         active.new_camera = camera_of_role(&observation.engine.catalog, *to);
                     }
@@ -464,44 +508,21 @@ impl ZoomRunner {
             && let Some(camera) = &active.new_camera
         {
             active.first_live_ms = first_live_frame_ms(observation.frames, camera, active.action_render);
-        }
-    }
-
-    fn continue_drag(&self, active: &mut ActiveStep, observation: &ZoomObservation<'_>, out: &mut Vec<Injection>) {
-        let plan = self.config.wheel_drag;
-        let Some(drag) = active.drag.as_mut() else {
-            return;
-        };
-        let interval = Duration::from_millis(plan.sample_interval_ms);
-        while !drag.ended && observation.now >= drag.next_at {
-            let step_index = drag.moved + 1;
-            // Метки образцов идут ровным шагом от момента действия: скорость пальца не зависит от дрожания тиков.
-            let time = MonotonicNanos::from_nanos(
-                active.action_render.as_nanos()
-                    + i64::from(step_index) * i64::try_from(plan.sample_interval_ms).unwrap_or(i64::MAX) * 1_000_000,
-            );
-            let point = ScreenPoint::new(plan.start.x + plan.step_dx * f64::from(step_index), plan.start.y);
-            if drag.moved < plan.samples {
-                drag.moved += 1;
-                out.push(Injection::Touch(TouchInjection {
-                    phase: TouchPhase::Moved,
-                    point,
-                    time,
-                }));
-            } else {
-                drag.ended = true;
-                out.push(Injection::Touch(TouchInjection {
-                    phase: TouchPhase::Ended,
-                    point: ScreenPoint::new(plan.start.x + plan.step_dx * f64::from(plan.samples), plan.start.y),
-                    time,
-                }));
+            if active.first_live_ms.is_some()
+                && let Some(old) = active.seamless.as_ref().and_then(SeamlessProgress::leaving_camera)
+            {
+                active.gap = switch_gap(observation.frames, old, camera, active.action_render);
             }
-            drag.next_at += interval;
         }
     }
 
     /// Дошёл ли шаг до конца ожидания (после него идёт наблюдение).
     fn is_complete(&self, active: &ActiveStep, observation: &ZoomObservation<'_>) -> bool {
+        if let Some(seamless) = &active.seamless {
+            let switched = !active.expectation.expects_switch()
+                || (active.switch.is_some() && (active.first_live_ms.is_some() || self.ring.overran()));
+            return seamless.is_done() && switched && observation.engine.streaming;
+        }
         if let Some(drag) = &active.drag {
             return drag.ended;
         }
@@ -524,28 +545,15 @@ impl ZoomRunner {
         let within_deadline = observation.now.saturating_duration_since(active.started_at)
             < Duration::from_millis(self.config.step_timeout_ms);
         let zoom = observation.screen.zoom;
-        let moving = zoom.gliding || (active.drag.is_some() && zoom.wheel_open);
+        let moving = zoom.gliding || ((active.drag.is_some() || active.seamless.is_some()) && zoom.wheel_open);
         moving && within_deadline
-    }
-
-    fn timeout_reason(&self, active: &ActiveStep) -> String {
-        match (&active.switch, active.expectation) {
-            (None, expectation) => format!(
-                "за {} мс движок не сообщил о смене объектива ({})",
-                self.config.step_timeout_ms,
-                expectation_name(expectation)
-            ),
-            (Some(_), _) => format!(
-                "смена объектива сообщена, но живого кадра новой камеры на экране нет за {} мс",
-                self.config.step_timeout_ms
-            ),
-        }
     }
 
     // ---- конец шага --------------------------------------------------------------------------------------------
 
-    fn finish_step(&mut self, active: ActiveStep, observation: &ZoomObservation<'_>) -> ZoomTick {
+    fn finish_step(&mut self, mut active: ActiveStep, observation: &ZoomObservation<'_>) -> ZoomTick {
         let record = self.build_record(&active, observation, None);
+        self.stash_fingers(&mut active);
         let failure = self.judge_screen(&active, &record, observation);
         let record = ZoomStepRecord { failure, ..record };
         let Some(reason) = record.failure.clone() else {
@@ -560,33 +568,11 @@ impl ZoomRunner {
         self.step_failed(observation, active.role, Some(record), &name, &reason)
     }
 
-    fn fail_active(&mut self, active: ActiveStep, observation: &ZoomObservation<'_>, reason: &str) -> ZoomTick {
+    fn fail_active(&mut self, mut active: ActiveStep, observation: &ZoomObservation<'_>, reason: &str) -> ZoomTick {
         let record = self.build_record(&active, observation, Some(reason.to_owned()));
+        self.stash_fingers(&mut active);
         let name = record.name.clone();
         self.step_failed(observation, active.role, Some(record), &name, reason)
-    }
-
-    /// Проверки состояния экрана в конце шага (то, что видно пользователю): показанный коэффициент.
-    fn judge_screen(
-        &self,
-        active: &ActiveStep,
-        record: &ZoomStepRecord,
-        observation: &ZoomObservation<'_>,
-    ) -> Option<String> {
-        if let Some(target) = active.target_ratio_milli {
-            let shown = observation.screen.zoom.ratio_milli;
-            if shown.abs_diff(target) > SCREEN_RATIO_TOLERANCE_MILLI {
-                return Some(format!("экран показывает {shown} тыс., а выбран упор {target} тыс."));
-            }
-        }
-        let moves_zoom = active.expectation.expects_switch() || active.drag.is_some();
-        if moves_zoom && record.lens_intents_published == 0 {
-            return Some("экран не положил намерение объектива в ящик движка".to_owned());
-        }
-        if active.expectation.expects_switch() && active.new_camera.is_none() {
-            return Some("смена объектива есть, а камеру новой роли в каталоге зума найти не удалось".to_owned());
-        }
-        record.failure.clone()
     }
 
     fn build_record(
@@ -651,6 +637,10 @@ impl ZoomRunner {
             }),
             screen_ratio: f64::from(observation.screen.zoom.ratio_milli) / 1000.0,
             ring_overran: self.ring.overran(),
+            seamless: active.seamless.as_ref().map(|progress| SeamlessRecord {
+                gap: active.gap,
+                ..progress.record(active.switch_events)
+            }),
             failure,
             notes: active.notes.clone(),
         }
@@ -665,6 +655,23 @@ pub fn expectation_name(expectation: SwitchExpectation) -> String {
         SwitchExpectation::ToAnyBack => "to_any_back".to_owned(),
     }
 }
+
+/// Действует ли общий срок шага (бесшовные части ведут свои сроки по фазам).
+fn generic_timeout_applies(active: &ActiveStep) -> bool {
+    active
+        .seamless
+        .as_ref()
+        .is_none_or(SeamlessProgress::generic_timeout_applies)
+}
+
+#[path = "zoom_runner_drag.rs"]
+mod drag;
+#[path = "zoom_runner_judge.rs"]
+mod judge;
+#[path = "zoom_runner_seamless.rs"]
+mod seamless;
+
+use drag::DragProgress;
 
 #[cfg(test)]
 #[path = "zoom_runner_tests.rs"]

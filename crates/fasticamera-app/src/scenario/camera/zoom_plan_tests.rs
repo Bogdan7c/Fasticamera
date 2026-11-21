@@ -25,8 +25,29 @@ fn default_plan_runs_taps_then_flip_round_trip_then_drag_and_ends_on_one_x() {
             "07_flip_to_back",
             "08_tap_1_before_drag",
             "09_wheel_drag",
-            "10_tap_1_final",
+            "10_tap_1_before_seamless",
+            "11_wheel_seamless_out",
+            "12_wheel_seamless_back",
+            "13_wheel_seamless_release",
+            "14_pinch_seamless_out",
+            "15_pinch_seamless_back",
+            "16_pinch_seamless_release",
+            "17_tap_1_final",
         ]
+    );
+    assert_eq!(
+        steps[10].action,
+        ZoomAction::Seamless {
+            gesture: SeamlessGesture::Wheel,
+            leg: SeamlessLeg::Out
+        }
+    );
+    assert_eq!(
+        steps[15].action,
+        ZoomAction::Seamless {
+            gesture: SeamlessGesture::Pinch,
+            leg: SeamlessLeg::Release
+        }
     );
     assert_eq!(steps[5].action, ZoomAction::Flip);
     assert_eq!(steps[8].action, ZoomAction::WheelDrag);
@@ -43,6 +64,10 @@ fn flip_and_drag_can_be_switched_off_but_the_final_one_x_tap_stays() {
         flip_round_trip: false,
         wheel_drag: crate::zoom_scenario_config::WheelDragPlan {
             samples: 0,
+            ..Default::default()
+        },
+        seamless: crate::zoom_scenario_config::SeamlessPlan {
+            enabled: false,
             ..Default::default()
         },
         ..ZoomScenarioConfig::default()

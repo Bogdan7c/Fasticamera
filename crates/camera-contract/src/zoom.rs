@@ -181,6 +181,21 @@ pub enum ZoomGesture {
     Continuous,
 }
 
+/// Нужна ли «тёплая» соседняя камера (13b): открытая и стримящая параллельно основной, чтобы
+/// переход через порог зума обошёлся без закрытия и открытия камер.
+///
+/// Какие именно камеры греть и сколько — решает движок (правило каталога зума и ёмкость
+/// бэкенда); экран о камерах ничего не знает и говорит только «нужно» или «не нужно».
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StandbyDemand {
+    /// Держать соседей тёплыми: колесо зума открыто или идёт щипок.
+    KeepNeighbourWarm,
+    /// Тёплые камеры не нужны (пауза до их закрытия — параметр движка).
+    #[default]
+    NotNeeded,
+}
+
 /// Намерение экрана: какое направление и какой коэффициент показать. Движок сам решает, какой
 /// камерой — экран камеры не выбирает.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -188,6 +203,25 @@ pub struct LensIntent {
     pub facing: LensFacing,
     pub ratio: ZoomRatio,
     pub gesture: ZoomGesture,
+    /// Нужны ли тёплые соседи (13b).
+    pub standby: StandbyDemand,
+}
+
+impl LensIntent {
+    /// Намерение без запроса тёплых камер (тап по кнопке, переворот, программная установка).
+    pub fn without_standby(facing: LensFacing, ratio: ZoomRatio, gesture: ZoomGesture) -> Self {
+        Self {
+            facing,
+            ratio,
+            gesture,
+            standby: StandbyDemand::NotNeeded,
+        }
+    }
+
+    /// То же намерение с другим спросом на тёплые камеры.
+    pub fn with_standby(self, standby: StandbyDemand) -> Self {
+        Self { standby, ..self }
+    }
 }
 
 /// Ящик намерений «экран → движок»: последнее значение побеждает, промежуточные (каждый кадр

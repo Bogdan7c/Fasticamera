@@ -6,13 +6,13 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 use camera_contract::auto_exposure::{
-    ExposureProduct, ExposureProposal, ExposureProposalChannel, MeasurementQuality, MeteredArea, ProductReach,
-    ProposalConvergence, RefreshSignal,
+    CameraTag, ExposureProduct, ExposureProposal, ExposureProposalChannel, MeasurementQuality, MeteredArea,
+    ProductReach, ProposalConvergence, RefreshSignal,
 };
 use camera_contract::capabilities::{CameraCapabilities, ManualSensorRanges};
 use camera_contract::capture_result::{CaptureResultMeta, FrameNumber, SensorTimestamp};
 use camera_contract::control::{CaptureIntent, Control, ExposureBias, ExposureTime, Iso, ManualControl};
-use camera_contract::fixtures::main_wide_camera;
+use camera_contract::fixtures::{camera_id, main_wide_camera};
 use camera_contract::stream::TargetFrameRate;
 use camera_contract::three_a::{MainsFrequency, RequestOrigin, SceneFlicker, ThreeAResultState};
 
@@ -59,7 +59,9 @@ impl Fixture {
         channel
             .refresh_signal()
             .bind(Arc::clone(&signal) as Arc<dyn RefreshSignal>);
-        let exposure = RawStatsExposure::new(config, channel.clone(), mains);
+        let mut exposure = RawStatsExposure::new(config, channel.clone(), mains);
+        // Как движок при старте потока: исполнитель знает камеру и отсеивает предложения чужой.
+        exposure.begin_stream_on_camera(&camera_id(FIXTURE_CAMERA));
         Self {
             stale: exposure.stale_proposals_counter(),
             exposure,
@@ -121,9 +123,17 @@ fn product_of(plan: &ExposurePlan) -> f64 {
     shutter.as_secs_f64() * f64::from(iso)
 }
 
+/// Камера, на которой стартует поток стенда и измерены его предложения.
+const FIXTURE_CAMERA: &str = "0";
+
+fn fixture_camera_tag() -> CameraTag {
+    CameraTag::of(&camera_id(FIXTURE_CAMERA))
+}
+
 fn proposal(measured_ns: i64, target: f64, convergence: ProposalConvergence) -> ExposureProposal {
     ExposureProposal {
         measured_frame: SensorTimestamp::from_nanos(measured_ns),
+        measured_on: fixture_camera_tag(),
         target: ExposureProduct::from_seconds_iso(target).expect("цель"),
         metered_area: MeteredArea::WholeFrame,
         convergence,

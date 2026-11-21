@@ -98,6 +98,9 @@ pub enum UncalibratedReason {
     PrincipalPointOutsideSensor,
     /// Ось дальше порога от центра: `offset` — доля длинной стороны.
     PrincipalPointTooFarFromCenter { offset: f32 },
+    /// Калибровка HAL есть и правдоподобна, но профиль телефона объявил её неверной (замер на
+    /// живых кадрах показал расхождение): ось не используется, кадрирование — по центру сенсора.
+    DistrustedByProfile,
 }
 
 /// Где оптическая ось камеры в долях активной области (как [`SensorPoint`]).

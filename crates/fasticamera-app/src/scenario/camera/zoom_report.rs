@@ -55,6 +55,14 @@ pub struct ZoomTotals {
     pub lens_intents_published: u64,
     /// Вложения в экран (действия и касания), которые канал входа не принял.
     pub input_refusals: u64,
+    /// Утёкшие лизинги кадров за прогон. Должно быть 0.
+    pub leaked_leases: u64,
+    /// Тёплые камеры, ушедшие в отказ за прогон. Должно быть 0.
+    pub standby_failures: u64,
+    /// Обмены ролей, отвергнутые бэкендом (смена пошла переоткрытием). Должно быть 0.
+    pub promotion_fallbacks: u64,
+    /// Повышения тёплой за прогон.
+    pub standby_promotions: u64,
 }
 
 impl ZoomTotals {
@@ -103,6 +111,41 @@ impl ZoomObservationReport {
             .max_by(f64::total_cmp)
     }
 
+    /// Компактная строка на каждый бесшовный шаг: смена (метод, удержанные, чёрные, скрытые, разрыв в периодах),
+    /// готовность тёплой, частота, закрытие. Ключи короткие: строка результата ограничена 4000 байтами.
+    fn seamless_summary(&self) -> Vec<Value> {
+        use super::viewfinder_metrics::round2;
+        self.steps
+            .iter()
+            .filter_map(|step| {
+                let seamless = step.seamless.as_ref()?;
+                Some(json!({
+                    "step": step.name,
+                    "leg": seamless.leg,
+                    "method": step.switch.map(|switch| to_value(&switch.method)),
+                    "events": seamless.switch_events,
+                    "held": step.held_frames,
+                    "black": step.black_frames_while_picture_expected + step.continuity.black_frames_before_first_picture,
+                    "hidden": step.continuity.frames_hidden_by_continuity,
+                    "gap_periods": seamless.gap.map(|gap| round2(gap.periods())),
+                    "gap_ms": seamless.gap.map(|gap| round2(gap.gap_ms)),
+                    "ready_ms": seamless.ready_ms.map(round2),
+                    "fps_min": seamless.fps.map(|fps| round2(fps.minimum())),
+                    "closed_ms": seamless.closed_ms.map(round2),
+                }))
+            })
+            .collect()
+    }
+
+    /// Скрытые непрерывностью кадры каждого тапа по кнопке ленты (цель после решения 118 — около 2 вместо 9–10).
+    fn tap_hidden_summary(&self) -> Vec<Value> {
+        self.steps
+            .iter()
+            .filter(|step| step.name.contains("_tap_") && step.seamless.is_none())
+            .map(|step| json!({ "step": step.name, "hidden": step.continuity.frames_hidden_by_continuity }))
+            .collect()
+    }
+
     /// Сводка для строки результата: только числа и короткие имена.
     pub fn summary(&self) -> Value {
         let switches = self.steps.iter().filter(|step| step.switch.is_some()).count();
@@ -120,6 +163,12 @@ impl ZoomObservationReport {
             "switches_failed": self.totals.switches_failed,
             "switches_completed": self.totals.switches_completed,
             "lens_intents_published": self.totals.lens_intents_published,
+            "leaked_leases": self.totals.leaked_leases,
+            "standby_failures": self.totals.standby_failures,
+            "promotion_fallbacks": self.totals.promotion_fallbacks,
+            "standby_promotions": self.totals.standby_promotions,
+            "seamless": self.seamless_summary(),
+            "tap_hidden": self.tap_hidden_summary(),
             "final": self.final_state.map(|state| json!({
                 "ratio_milli": state.ratio_milli,
                 "facing": format!("{:?}", state.facing).to_lowercase(),

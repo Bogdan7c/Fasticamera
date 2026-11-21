@@ -20,10 +20,12 @@
 
 use std::time::Instant;
 
+use camera_core::standby_status::StandbyCounters;
 use camera_core::{CameraEvent, CameraState};
+use raw_frame_stream::RawStreamCounters;
 use render_loop::viewfinder::ContinuityCounters;
 use shell_contract::clock::MonotonicNanos;
-use shell_contract::touch::{PointerId, SurfacePoint, TouchSample};
+use shell_contract::touch::{SurfacePoint, TouchSample};
 
 use super::detail::emit_details;
 use super::engine_watch::{failure_of_event, fatal_failure};
@@ -44,6 +46,8 @@ use crate::zoom_scenario_config::ZoomScenarioConfig;
 /// Базовые линии на момент готовности: суммы прогона считаются от них.
 struct Baselines {
     continuity: ContinuityCounters,
+    raw_stream: RawStreamCounters,
+    standby: StandbyCounters,
     switches_completed: u64,
     switches_failed: u64,
     switches_retargeted: u64,
@@ -168,6 +172,7 @@ impl ObservingScenario for ZoomScenario {
         };
         let counters = &viewfinder.continuity.counters;
         let isp_counters = &viewfinder.counters;
+        let raw_stream = context.camera.raw_stream().counters();
         match &mut run.phase {
             Phase::Preparing { started_at } => {
                 let started = *started_at;
@@ -196,6 +201,8 @@ impl ObservingScenario for ZoomScenario {
                 let runner = ZoomRunner::new(run.config.clone(), steps).anchored_at_back_one_x();
                 let baselines = Baselines {
                     continuity: counters.clone(),
+                    raw_stream,
+                    standby: status.lens.standby.counters,
                     switches_completed: status.lens.counters.switches_completed,
                     switches_failed: status.lens.counters.switches_failed,
                     switches_retargeted: status.lens.counters.switches_retargeted,
@@ -219,6 +226,7 @@ impl ObservingScenario for ZoomScenario {
                     counters,
                     isp_counters,
                     screen: &screen,
+                    raw_stream: &raw_stream,
                 };
                 let tick = runner.tick(&observation);
                 let surface = context.display.surface_size();
@@ -300,6 +308,7 @@ fn engine_failure(status: &camera_core::CameraStatus, events: &[CameraEvent]) ->
 /// Наблюдение на конец прогона.
 fn observation_of(run: ZoomRun, context: &ScenarioContext<'_>, run_failure: Option<String>) -> ZoomObservationReport {
     let status = context.camera.running().ok().map(|running| running.handle().status());
+    let raw_stream_now = context.camera.raw_stream().counters();
     let report = context.camera_screen.report();
     let continuity = match context.gpu.observe_camera_presentation() {
         CameraPresentationObservation::Live(presentation) => {
@@ -327,6 +336,27 @@ fn observation_of(run: ZoomRun, context: &ScenarioContext<'_>, run_failure: Opti
                         .saturating_sub(baselines.switches_retargeted),
                     intents_ignored: counters.intents_ignored.saturating_sub(baselines.intents_ignored),
                     lens_intents_published: report.effects.lens.published.saturating_sub(baselines.lens_published),
+                    leaked_leases: raw_stream_now
+                        .leaked_leases
+                        .saturating_sub(baselines.raw_stream.leaked_leases),
+                    standby_failures: status
+                        .lens
+                        .standby
+                        .counters
+                        .failures
+                        .saturating_sub(baselines.standby.failures),
+                    promotion_fallbacks: status
+                        .lens
+                        .standby
+                        .counters
+                        .promotion_fallbacks
+                        .saturating_sub(baselines.standby.promotion_fallbacks),
+                    standby_promotions: status
+                        .lens
+                        .standby
+                        .counters
+                        .promotions
+                        .saturating_sub(baselines.standby.promotions),
                     ..totals
                 }
                 .with_continuity(&baselines.continuity, end);
@@ -377,7 +407,7 @@ fn deliver(
 
 fn sample_of(touch: TouchInjection, size: shell_contract::surface::SurfaceSize) -> TouchSample {
     TouchSample {
-        pointer: PointerId::new(0),
+        pointer: touch.pointer,
         phase: touch.phase,
         position: SurfacePoint {
             x_px: (touch.point.x * f64::from(size.width_px)) as f32,

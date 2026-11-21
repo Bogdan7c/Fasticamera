@@ -42,6 +42,8 @@ pub struct ScreenDiagnostics {
     /// Эффекты, попавшие в очередь, и отброшенные из-за переполнения.
     pub effects_queued: u64,
     pub effects_overflowed: u64,
+    /// Сколько раз менялся спрос на тёплого соседа (13b): колесо, щипок или долгое нажатие на ленте.
+    pub standby_demand_transitions: u64,
     /// События значения EV, погашенные как эхо программной установки (без `SetExposureBias`).
     pub echo_events_suppressed: u64,
     /// Паны «солнца», пришедшие при скрытой рамке.

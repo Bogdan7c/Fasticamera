@@ -6,15 +6,28 @@
 //! * если коэффициент **ниже** текущего объектива, текущий показать его не может — переход к
 //!   кандидату немедленный;
 //! * плавный жест (колесо, щипок), едем вверх: переключаемся на самый длинный объектив, чей
-//!   `native × (1 + switch_up_hysteresis)` уже пройден (промежуточный объектив не пропускается);
-//!   пока порога нет — короткий объектив просто кропает. Колебание пальца вокруг 1× не
-//!   заставляет камеры мигать;
+//!   порог уже пройден (промежуточный объектив не пропускается); пока порога нет — короткий
+//!   объектив просто кропает. Порог зависит от цены смены ([`SwitchCost`]): если нужная камера
+//!   уже тёплая и смена — обмен ролей за миллисекунды, порог равен собственному коэффициенту
+//!   объектива (на делении колеса 1× показывается основная, а не кроп ширика); если камеру надо
+//!   переоткрывать (сотни миллисекунд), порог — `native × (1 + switch_up_hysteresis)`, и
+//!   колебание пальца вокруг границы не заставляет камеры мигать;
 //! * явный выбор (тап по кнопке зума, переворот): гистерезиса нет, сразу кандидат.
 
 use camera_contract::ids::LensRole;
 use camera_contract::zoom::{LensGroup, LensZoomPoint, ZoomGesture, ZoomRatio};
 
 use super::ZoomConfig;
+
+/// Сколько стоит переключение вверх на конкретный объектив. Решает движок: только он знает,
+/// какие камеры сейчас тёплые и готовы к обмену ролей.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwitchCost {
+    /// Камера уже стримит тёплой: смена — обмен ролей, мигания нет, гистерезис не нужен.
+    CheapPromotion,
+    /// Камеру придётся закрыть и открыть заново: чтобы не мигать у границы, нужен гистерезис.
+    ExpensiveReopen,
+}
 
 /// Камера для первого показа группы (текущей камеры нет): без гистерезиса, по кандидату.
 /// `None` — в группе нет камер.
@@ -27,13 +40,15 @@ pub fn select_initial_lens(group: &LensGroup, ratio: ZoomRatio) -> Option<LensRo
 /// [`select_initial_lens`].
 ///
 /// `gesture` решает, нужен ли гистерезис: явный выбор ([`ZoomGesture::Discrete`]) идёт прямо к
-/// кандидату, плавный ([`ZoomGesture::Continuous`]) — через гистерезис вверх.
+/// кандидату, плавный ([`ZoomGesture::Continuous`]) — через гистерезис вверх. `switch_cost_to`
+/// говорит, дорого ли переключиться на данный объектив: дешёвая смена порога гистерезиса не имеет.
 pub fn select_lens(
     group: &LensGroup,
     ratio: ZoomRatio,
     current: LensRole,
     gesture: ZoomGesture,
     config: &ZoomConfig,
+    switch_cost_to: impl Fn(&LensZoomPoint) -> SwitchCost,
 ) -> Option<LensRole> {
     let candidate = candidate_lens(group, ratio)?;
     let Some(current_lens) = group.lens_for_role(current) else {
@@ -56,7 +71,7 @@ pub fn select_lens(
         .iter()
         .rev()
         .filter(|lens| lens.native_ratio.value() > current_lens.native_ratio.value())
-        .find(|lens| wanted >= lens.native_ratio.value() * (1.0 + config.switch_up_hysteresis));
+        .find(|lens| wanted >= switch_up_threshold(lens, switch_cost_to(lens), config));
     Some(switch_up.map_or(current_lens.role, |lens| lens.role))
 }
 
@@ -69,4 +84,12 @@ fn candidate_lens(group: &LensGroup, ratio: ZoomRatio) -> Option<&LensZoomPoint>
         .rev()
         .find(|lens| lens.native_ratio.value() <= ratio.value())
         .or_else(|| group.lenses.first())
+}
+
+/// Коэффициент, с которого плавный жест, идущий вверх, переключается на `lens`.
+fn switch_up_threshold(lens: &LensZoomPoint, cost: SwitchCost, config: &ZoomConfig) -> f32 {
+    match cost {
+        SwitchCost::CheapPromotion => lens.native_ratio.value(),
+        SwitchCost::ExpensiveReopen => lens.native_ratio.value() * (1.0 + config.switch_up_hysteresis),
+    }
 }

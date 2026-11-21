@@ -24,8 +24,8 @@
 //! (`Holding`). Снятие блокировки снова включает слежение.
 
 use camera_contract::auto_exposure::{
-    AppliedExposure, ExposureAuthority, ExposureDirective, ExposureProduct, ExposureProposal, MeasurementQuality,
-    MeteredArea, ProposalConvergence,
+    AppliedExposure, CameraTag, ExposureAuthority, ExposureDirective, ExposureProduct, ExposureProposal,
+    MeasurementQuality, MeteredArea, ProposalConvergence,
 };
 use camera_contract::capture_result::SensorTimestamp;
 use camera_contract::three_a::{AeAfLock, ThreeAProfile};
@@ -111,6 +111,10 @@ pub struct AutoExposureController {
     directive: ExposureDirective,
     area: MeteredArea,
     smoothed_log2: Option<f64>,
+    /// Ожидаемая цель нового потока до его первого замера (log2 от с·ISO): перенесена движком с прошлой
+    /// камеры (решения 118, 126). Нужна ТОЛЬКО для подтяжки показа и проверки правдоподобия яркости; в
+    /// предложения движку не попадает и первым же принятым замером вытесняется (см. [`Self::expect_target`]).
+    expected_log2: Option<f64>,
     scene: Option<SceneEstimate>,
     last_measured_frame: Option<SensorTimestamp>,
     /// Была ли в этом потоке хоть одна надёжная (`Measured`) оценка: до неё замер идёт в фазе холодного старта.
@@ -141,6 +145,7 @@ impl AutoExposureController {
             lock: lock_phase_for(directive.lock),
             directive,
             smoothed_log2: None,
+            expected_log2: None,
             scene: None,
             last_measured_frame: None,
             reliable_estimate_seen: false,
@@ -181,6 +186,7 @@ impl AutoExposureController {
     /// Новый поток камеры: цели нет, первая надёжная оценка встанет сразу. Указание и счётчики остаются.
     pub fn begin_stream(&mut self) {
         self.smoothed_log2 = None;
+        self.expected_log2 = None;
         self.scene = None;
         self.last_measured_frame = None;
         self.reliable_estimate_seen = false;
@@ -191,6 +197,16 @@ impl AutoExposureController {
         self.lock = lock_phase_for(self.directive.lock);
         self.publisher.reset();
         self.last_observed_log2 = None;
+    }
+
+    /// Ожидаемая экспозиция нового потока, пока своего замера у него нет (`None` — не ожидаем ничего).
+    ///
+    /// Подтяжка показа ([`Self::display_gain`]) и [`Self::display_target_log2`] берут её вместо цели, пока
+    /// собственной цели потока нет. Предложения движку она НЕ порождает: ожидание — не измерение.
+    /// Первый принятый замер ставит собственную цель, и ожидание перестаёт участвовать.
+    /// [`Self::begin_stream`] ожидание сбрасывает: его выставляют заново после привязки потока.
+    pub fn expect_target(&mut self, target: Option<ExposureProduct>) {
+        self.expected_log2 = target.map(|product| product.seconds_iso().log2());
     }
 
     /// Учитывает кадр, который не дошёл до замера.
@@ -272,7 +288,10 @@ impl AutoExposureController {
     }
 
     /// Предложение движку, если его пора публиковать; `None` — пока нечего или рано.
-    pub fn proposal(&mut self, sensor_timestamp: SensorTimestamp) -> Option<ExposureProposal> {
+    ///
+    /// `measured_on` — камера кадра, по которому идёт замер: предложение несёт её, чтобы движок не принял
+    /// замер другой (одновременно стримящей) камеры.
+    pub fn proposal(&mut self, sensor_timestamp: SensorTimestamp, measured_on: CameraTag) -> Option<ExposureProposal> {
         if self.directive.authority == ExposureAuthority::Manual {
             return None;
         }
@@ -292,6 +311,7 @@ impl AutoExposureController {
         self.counters.proposals_published += 1;
         Some(ExposureProposal {
             measured_frame,
+            measured_on,
             target,
             metered_area: candidate.area,
             convergence: candidate.convergence,
@@ -335,6 +355,17 @@ impl AutoExposureController {
         self.smoothed_log2
     }
 
+    /// Цель для ПОКАЗА, log2 от с·ИСО: собственная сглаженная, а пока её нет — ожидаемая (перенесённая).
+    /// `None` — нет ни той, ни другой.
+    pub fn display_target_log2(&self) -> Option<f64> {
+        self.smoothed_log2.or(self.expected_log2)
+    }
+
+    /// Показ сейчас идёт по ожидаемой цели, а не по собственной (замера в потоке ещё не было).
+    pub fn is_display_target_expected(&self) -> bool {
+        self.smoothed_log2.is_none() && self.expected_log2.is_some()
+    }
+
     /// Последний сырой замер своей области, log2 от с·ISO, — без сглаживания и даже под
     /// блокировкой или в ручном режиме (только диагностика; `None` — замеров в этом потоке не было).
     pub fn last_observed_log2(&self) -> Option<f64> {
@@ -355,7 +386,7 @@ impl AutoExposureController {
                 // указания (не кадра), поэтому не отстаёт от цели: на ступеньке за предел сенсора подтяжка
                 // не тянется к недостижимому и не перелетает, когда запрос догонит. Нехватку
                 // `applied.shortfall_ev` НЕ берём: она посчитана для цели прошлого поколения.
-                let requested_log2 = self.smoothed_log2? + f64::from(self.directive.bias.ev());
+                let requested_log2 = self.display_target_log2()? + f64::from(self.directive.bias.ev());
                 Some(applied.reach.clamp_log2(requested_log2))
             }
         }
@@ -453,3 +484,11 @@ mod tests;
 #[cfg(test)]
 #[path = "controller_reach_tests.rs"]
 mod reach_tests;
+
+#[cfg(test)]
+#[path = "controller_expected_tests.rs"]
+mod expected_tests;
+
+#[cfg(test)]
+#[path = "controller_lock_tests.rs"]
+mod lock_tests;

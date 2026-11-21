@@ -6,8 +6,10 @@ use camera_contract::fixtures::{
     camera_id, front_camera, logical_back_camera, main_wide_camera, oneplus11_visible_cameras, ultra_wide_camera,
 };
 use camera_contract::ids::{LensFacing, LensRole};
-use camera_contract::lens_calibration::OpticalAxis;
-use camera_contract::zoom::{PreviewMirror, ZoomCatalog, ZoomStopKind};
+use camera_contract::lens_calibration::{OpticalAxis, UncalibratedReason};
+use camera_contract::viewfinder_crop::{CropAspect, CropCenter};
+use camera_contract::zoom::{PreviewMirror, ZoomCatalog, ZoomFraming, ZoomRatio, ZoomStopKind};
+use std::sync::Arc;
 
 use super::{ZoomConfig, ZoomDiagnostic, build_zoom_catalog, build_zoom_catalog_reporting};
 use crate::config::RoleClassifierConfig;
@@ -198,4 +200,84 @@ fn config_caps_the_range_and_hal_limit_wins_when_lower() {
 fn logical_camera_alone_gives_an_empty_catalog() {
     let zoom = build_zoom_catalog(&catalog_of(vec![logical_back_camera()]), &ZoomConfig::default());
     assert_eq!(zoom, ZoomCatalog::default());
+}
+
+fn config_distrusting(cameras: &[&str]) -> ZoomConfig {
+    ZoomConfig {
+        untrusted_optical_axis_cameras: cameras.iter().map(|id| (*id).to_owned()).collect(),
+        ..ZoomConfig::default()
+    }
+}
+
+/// Центр кадрирования камеры `camera_name` на 1× по готовой шкале (как считает экран и рендер).
+fn crop_center_at_one_x(zoom: ZoomCatalog, camera_name: &str) -> CropCenter {
+    ZoomFraming {
+        aspect: CropAspect::FOUR_BY_THREE,
+        facing: LensFacing::Back,
+        ratio: ZoomRatio::new(1.0).expect("валидный коэффициент"),
+        catalog: Arc::new(zoom),
+    }
+    .crop_for_camera(&camera_id(camera_name))
+    .crop
+    .center
+}
+
+#[test]
+fn profile_distrusted_axis_frames_by_sensor_centre_and_leaves_other_cameras_alone() {
+    let catalog = catalog_of(oneplus11_visible_cameras());
+    let zoom = build_zoom_catalog(&catalog, &config_distrusting(&["3"]));
+    let back = zoom.back.clone().expect("задняя группа");
+
+    let ultra_wide = back.lens_for_role(LensRole::UltraWide).expect("ширик");
+    assert_eq!(
+        ultra_wide.optical_axis,
+        OpticalAxis::Uncalibrated {
+            reason: UncalibratedReason::DistrustedByProfile
+        },
+        "калибровка HAL у ширика правдоподобна, но профиль ей не верит"
+    );
+    assert_eq!(crop_center_at_one_x(zoom.clone(), "3"), CropCenter::ValidAreaCenter);
+
+    // Остальные камеры считаются как без профиля: у основной ось по калибровке, у фронта — заглушка.
+    let reference = build_zoom_catalog(&catalog, &ZoomConfig::default());
+    let main_axis = |zoom: &ZoomCatalog| {
+        zoom.back
+            .as_ref()
+            .and_then(|group| group.lens_for_role(LensRole::Wide))
+            .map(|lens| lens.optical_axis)
+    };
+    assert_eq!(main_axis(&zoom), main_axis(&reference));
+    assert_eq!(zoom.front, reference.front);
+    // Без профиля ось ширика по-прежнему настоящая (регресс: список пуст по умолчанию).
+    let default_ultra_wide = reference
+        .back
+        .expect("задняя группа")
+        .lens_for_role(LensRole::UltraWide)
+        .cloned();
+    assert!(matches!(
+        default_ultra_wide.expect("ширик").optical_axis,
+        OpticalAxis::Calibrated { .. }
+    ));
+}
+
+#[test]
+fn profile_naming_a_camera_absent_from_the_catalog_is_reported_not_applied() {
+    let build = build_zoom_catalog_reporting(&catalog_of(oneplus11_visible_cameras()), &config_distrusting(&["77"]));
+    assert!(
+        build
+            .diagnostics
+            .contains(&ZoomDiagnostic::UntrustedCameraNotInCatalog {
+                camera: "77".to_owned()
+            })
+    );
+    let ultra_wide = build
+        .catalog
+        .back
+        .expect("группа")
+        .lens_for_role(LensRole::UltraWide)
+        .cloned();
+    assert!(matches!(
+        ultra_wide.expect("ширик").optical_axis,
+        OpticalAxis::Calibrated { .. }
+    ));
 }

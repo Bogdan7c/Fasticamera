@@ -85,6 +85,7 @@ impl LensRig {
             facing,
             ratio: ZoomRatio::new(ratio).expect("валидный коэффициент"),
             gesture,
+            standby: camera_contract::zoom::StandbyDemand::NotNeeded,
         });
         self.rig.engine.refresh_lens_intent(self.rig.now);
         self.rig.pump();

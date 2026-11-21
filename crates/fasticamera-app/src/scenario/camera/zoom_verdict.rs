@@ -23,6 +23,7 @@ use camera_contract::ids::{LensFacing, LensRole};
 
 use super::zoom_record::{MirrorCheck, ZoomStepRecord};
 use super::zoom_report::ZoomObservationReport;
+use super::zoom_seamless_verdict::{seamless_step_violations, seamless_totals_violations};
 use crate::zoom_scenario_config::ZoomScenarioConfig;
 
 /// После протяжки по колесу зум обязан уйти заметно выше 1× (протяжка влево ведёт к ≈ 5×).
@@ -102,6 +103,7 @@ pub fn evaluate_zoom(config: &ZoomScenarioConfig, report: &ZoomObservationReport
     for step in &report.steps {
         violations.extend(step_violations(config, step));
     }
+    violations.extend(seamless_totals_violations(report));
     violations.extend(final_state_violations(report));
     violations
 }
@@ -109,15 +111,18 @@ pub fn evaluate_zoom(config: &ZoomScenarioConfig, report: &ZoomObservationReport
 fn step_violations(config: &ZoomScenarioConfig, step: &ZoomStepRecord) -> Vec<String> {
     let mut violations = Vec::new();
     let name = &step.name;
+    // У бесшовных жестов момент пересечения порога выбирает палец, а не движок: «начало движения → событие» включает
+    // путь пальца, поэтому пороги времени тапа к ним не применяются (их заменяет разрыв показа в `seamless_verdict`).
+    let finger_driven = step.seamless.is_some();
     if let Some(switch) = step.switch {
-        if switch.observed_ms > config.max_switch_ms {
+        if !finger_driven && switch.observed_ms > config.max_switch_ms {
             violations.push(format!(
                 "{name}: событие смены объектива через {} мс при пороге {} мс",
                 switch.observed_ms, config.max_switch_ms
             ));
         }
         match step.first_live_frame_ms {
-            Some(live) if live > config.max_first_live_frame_ms as f64 => violations.push(format!(
+            Some(live) if !finger_driven && live > config.max_first_live_frame_ms as f64 => violations.push(format!(
                 "{name}: первый живой кадр новой камеры через {live:.0} мс при пороге {} мс",
                 config.max_first_live_frame_ms
             )),
@@ -126,6 +131,7 @@ fn step_violations(config: &ZoomScenarioConfig, step: &ZoomStepRecord) -> Vec<St
             None => violations.push(format!("{name}: живой кадр новой камеры в кольце кадров не найден")),
         }
     }
+    violations.extend(seamless_step_violations(&config.seamless, step));
     if !step.reveal_faults.is_clean() {
         violations.push(format!(
             "{name}: переход не раскрылся по условию готовности: {}",

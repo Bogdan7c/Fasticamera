@@ -163,6 +163,7 @@ fn intent_published_before_the_catalog_is_read_is_applied_after_loading() {
         facing: LensFacing::Back,
         ratio: camera_contract::zoom::ZoomRatio::new(1.0).expect("коэффициент"),
         gesture: camera_contract::zoom::ZoomGesture::Continuous,
+        standby: camera_contract::zoom::StandbyDemand::NotNeeded,
     });
     rig.engine.refresh_lens_intent(rig.now);
     assert!(

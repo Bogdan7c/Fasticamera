@@ -54,7 +54,8 @@ fn switch_completes_on_first_frame_of_the_new_camera_with_elapsed() {
         Some(CameraEvent::LensSwitched {
             from: LensRole::Wide,
             to: LensRole::UltraWide,
-            elapsed: Duration::from_millis(480)
+            elapsed: Duration::from_millis(480),
+            method: crate::lens_status::LensSwitchMethod::Reopened,
         })
     );
     assert_eq!(

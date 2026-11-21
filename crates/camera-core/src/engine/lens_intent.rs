@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use camera_contract::ids::{CameraId, CameraTarget, LensFacing, LensRole};
-use camera_contract::zoom::{LensIntent, LensIntentChannel, ZoomCatalog, ZoomGesture};
+use camera_contract::zoom::{LensIntent, LensIntentChannel, ZoomCatalog, ZoomGesture, ZoomRatio};
 
 use super::lens_switch::{LensSwitchTracker, RetargetCause, Revert};
 use super::{CameraEngine, Halt, LOG_TARGET};
@@ -112,12 +112,25 @@ impl CameraEngine {
         self.lens.last_intent = Some(intent);
         // Новое намерение вытесняет отложенное: применяется только самое свежее.
         self.lens.deferred_intent = None;
+        // Спрос на тёплые — до выбора камеры: повышение при смене цели видит уже актуальный спрос.
+        let delay = self.config.standby.release_delay();
+        self.standby.set_demand(intent.standby, now, delay);
         if self.apply_lens_intent(intent, now) == IntentApplication::TargetChanged {
             // Как после `SwitchTo`: новая камера отменяет ожидание восстановления прежней.
             self.recovery.clear();
             self.reconcile(now);
             self.three_a.publish_white_balance(&self.desired.three_a);
             self.three_a.publish_exposure_intent(&self.desired.three_a);
+        } else {
+            // Камера та же, но спрос или коэффициент могли изменить, кого греть.
+            self.sync_standby(now);
+        }
+    }
+
+    /// Сработал срок закрытия тёплых (таймер движка).
+    pub(super) fn fire_standby_release_timer(&mut self, now: Instant) {
+        if self.standby.release_is_due(now) {
+            self.sync_standby(now);
         }
     }
 
@@ -162,9 +175,14 @@ impl CameraEngine {
     fn role_for_intent(&self, intent: LensIntent) -> Option<LensRole> {
         let group = self.lens.zoom_catalog.group(intent.facing)?;
         match (intent.facing, self.current_back_role()) {
-            (LensFacing::Back, Some(current)) => {
-                select_lens(group, intent.ratio, current, intent.gesture, &self.config.zoom)
-            }
+            (LensFacing::Back, Some(current)) => select_lens(
+                group,
+                intent.ratio,
+                current,
+                intent.gesture,
+                &self.config.zoom,
+                |lens| self.switch_cost_to(lens),
+            ),
             _ => select_initial_lens(group, intent.ratio),
         }
     }
@@ -202,6 +220,24 @@ impl CameraEngine {
         if let Some(intent) = self.lens.deferred_intent.take() {
             self.apply_lens_intent(intent, now);
         }
+    }
+
+    /// Шкала зума (для правила «кого греть»).
+    pub(super) fn zoom_catalog_handle(&self) -> Arc<ZoomCatalog> {
+        Arc::clone(&self.lens.zoom_catalog)
+    }
+
+    /// Коэффициент последнего намерения экрана, если оно для этого направления.
+    pub(super) fn screen_ratio_for(&self, facing: LensFacing) -> Option<ZoomRatio> {
+        self.lens
+            .last_intent
+            .filter(|intent| intent.facing == facing)
+            .map(|intent| intent.ratio)
+    }
+
+    /// Текущая смена объектива исполнена повышением тёплой камеры, а не переоткрытием.
+    pub(super) fn note_lens_promoted_standby(&mut self) {
+        self.lens.tracker.note_promoted_standby();
     }
 
     /// Пришёл кадр повторяющегося запроса текущей сессии.
@@ -300,6 +336,7 @@ impl CameraEngine {
             last_intent: self.lens.last_intent,
             blocked: self.lens.tracker.blocked().cloned(),
             counters: self.lens.tracker.counters(),
+            standby: self.standby.status(),
         }
     }
 }

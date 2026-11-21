@@ -4,7 +4,7 @@ use camera_contract::fixtures::{camera_id, main_wide_camera, oneplus11_visible_c
 use camera_contract::ids::LensRole;
 use camera_contract::zoom::{LensGroup, ZoomGesture, ZoomRatio};
 
-use super::{ZoomConfig, build_zoom_catalog, select_initial_lens, select_lens};
+use super::{SwitchCost, ZoomConfig, build_zoom_catalog, select_initial_lens, select_lens};
 use crate::config::RoleClassifierConfig;
 use crate::role_classifier::classify_catalog;
 
@@ -48,7 +48,18 @@ fn pick_discrete(group: &LensGroup, value: f32, current: LensRole) -> LensRole {
 }
 
 fn pick_with(group: &LensGroup, value: f32, current: LensRole, gesture: ZoomGesture) -> LensRole {
-    select_lens(group, ratio(value), current, gesture, &ZoomConfig::default()).expect("в группе есть камеры")
+    pick_with_cost(group, value, current, gesture, SwitchCost::ExpensiveReopen)
+}
+
+/// Выбор, когда каждая смена вверх стоит `cost` (тёплые камеры — `CheapPromotion`).
+fn pick_with_cost(
+    group: &LensGroup,
+    value: f32,
+    current: LensRole,
+    gesture: ZoomGesture,
+    cost: SwitchCost,
+) -> LensRole {
+    select_lens(group, ratio(value), current, gesture, &ZoomConfig::default(), |_| cost).expect("в группе есть камеры")
 }
 
 #[test]
@@ -159,4 +170,59 @@ fn hysteresis_does_not_skip_the_intermediate_lens_when_the_longest_threshold_is_
     assert_eq!(pick(&group, tele_native * 1.06, LensRole::UltraWide), LensRole::Tele);
     // Нет ни одного пройденного порога — остаёмся.
     assert_eq!(pick(&group, 1.04, LensRole::UltraWide), LensRole::UltraWide);
+}
+
+#[test]
+fn warm_target_switches_up_exactly_at_its_native_ratio() {
+    let group = back_group();
+    let up = |value: f32, cost: SwitchCost| {
+        pick_with_cost(&group, value, LensRole::UltraWide, ZoomGesture::Continuous, cost)
+    };
+    // Деление колеса 1.0: с тёплой основной показываем основную, а не кроп ширика.
+    assert_eq!(up(1.0, SwitchCost::CheapPromotion), LensRole::Wide);
+    // Без тёплой — прежний гистерезис: 1.0 и 1.049 ещё ширик, 1.05 уже основная.
+    assert_eq!(up(1.0, SwitchCost::ExpensiveReopen), LensRole::UltraWide);
+    assert_eq!(up(1.049, SwitchCost::ExpensiveReopen), LensRole::UltraWide);
+    assert_eq!(up(1.05, SwitchCost::ExpensiveReopen), LensRole::Wide);
+    // Ниже собственного коэффициента основной даже тёплая основная не включается.
+    assert_eq!(up(0.999, SwitchCost::CheapPromotion), LensRole::UltraWide);
+}
+
+#[test]
+fn cost_is_asked_per_target_lens_so_only_the_warm_one_loses_its_hysteresis() {
+    let group = three_lens_group();
+    // Тёплый только телевик (≈ 2×): основная на 1.0 переоткрывается, телевик на 2.0 — обмен.
+    let cost = |lens: &camera_contract::zoom::LensZoomPoint| {
+        if lens.role == LensRole::Tele {
+            SwitchCost::CheapPromotion
+        } else {
+            SwitchCost::ExpensiveReopen
+        }
+    };
+    let tele_native = group
+        .lens_for_role(LensRole::Tele)
+        .expect("телевик")
+        .native_ratio
+        .value();
+    let at = |value: f32, current| {
+        select_lens(
+            &group,
+            ratio(value),
+            current,
+            ZoomGesture::Continuous,
+            &ZoomConfig::default(),
+            cost,
+        )
+        .expect("камеры есть")
+    };
+    assert_eq!(
+        at(1.0, LensRole::UltraWide),
+        LensRole::UltraWide,
+        "основная не тёплая: гистерезис"
+    );
+    assert_eq!(
+        at(tele_native, LensRole::Wide),
+        LensRole::Tele,
+        "телевик тёплый: ровно на своём коэффициенте"
+    );
 }

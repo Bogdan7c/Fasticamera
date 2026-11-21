@@ -40,6 +40,123 @@ impl Default for WheelDragPlan {
     }
 }
 
+/// Бесшовные шаги 13b: настоящее долгое нажатие, колесо и щипок поверх тёплой второй камеры.
+///
+/// Пальцы ведутся по НАБЛЮДЕНИЮ (экран показывает значение → двигаем дальше), а не по сетке заранее
+/// посчитанных точек: сколько пикселей колеса на единицу зума, знает только экран. Поэтому здесь шаги и
+/// пределы, а не координаты цели. Целевые коэффициенты берутся из каталога зума в момент шага.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct SeamlessPlan {
+    /// Включать ли бесшовные шаги в план (после протяжки, перед завершающим тапом).
+    pub enabled: bool,
+    /// Сколько ждать, пока колесо откроется и тёплая станет готова после нажатия, мс. `[estimate]` 5000.
+    pub ready_timeout_ms: u64,
+    /// Сколько ждать, пока после «не нужно» колесо уйдёт и все тёплые закроются, мс. Обязано быть больше
+    /// покоя колеса (≈ 2,15 с) плюс паузы движка (1,5 с). `[estimate]` 9000.
+    pub release_timeout_ms: u64,
+    /// Окно замера частоты обеих камер, пока тёплая готова, мс. `[estimate]` 1000.
+    pub fps_window_ms: u64,
+    /// Интервал между образцами пальцев, мс. `[estimate]` 16 — кадр 60 Гц.
+    pub sample_interval_ms: u64,
+    /// Предел образцов движения к цели; больше — провал «палец не довёл значение». `[estimate]` 160.
+    pub max_drag_samples: u32,
+    /// Сколько неподвижных образцов после достижения цели («продолжаем немного»). `[estimate]` 12.
+    pub dwell_samples: u32,
+    /// Сдвиг пальца по колесу за образец, доли ширины экрана. `[estimate]` 0,0045 (≈ 2 pt).
+    pub wheel_step_dx: f64,
+    /// Центр щипка (доли экрана): середина кадра видоискателя, не лента и не колесо.
+    pub pinch_center: ScreenPoint,
+    /// Половина начального расстояния между пальцами, доли ширины. `[estimate]` 0,15.
+    pub pinch_start_half_width: f64,
+    /// Относительное изменение расстояния между пальцами за образец. `[estimate]` 0,012.
+    pub pinch_step: f64,
+    /// Во сколько раз коэффициент плавного жеста при подъёме выше собственного коэффициента объектива:
+    /// гистерезис селектора (0,05) не пускает вверх раньше `native × 1,05`. `[derived]` 1,10.
+    pub overshoot_ratio: f32,
+    /// Наименьшая частота каждой задней камеры, пока стримят обе, к/с (решение владельца: 55 из 60).
+    pub min_back_fps: f64,
+    /// Наибольший разрыв между последним кадром старой камеры и первым живым новой, в периодах кадра.
+    /// `[estimate]` 2.
+    pub max_switch_gap_periods: f64,
+    /// Тап `.6 ↔ 1` с скрытыми кадрами больше этого — заметка, не провал (цель ≈ 2 после решения 118).
+    pub tap_hidden_frames_note_above: u64,
+}
+
+impl Default for SeamlessPlan {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            ready_timeout_ms: 5_000,
+            release_timeout_ms: 9_000,
+            fps_window_ms: 1_000,
+            sample_interval_ms: 16,
+            max_drag_samples: 160,
+            dwell_samples: 12,
+            wheel_step_dx: 0.004_5,
+            pinch_center: ScreenPoint::new(0.5, 0.4),
+            pinch_start_half_width: 0.15,
+            pinch_step: 0.012,
+            overshoot_ratio: 1.10,
+            min_back_fps: 55.0,
+            max_switch_gap_periods: 2.0,
+            tap_hidden_frames_note_above: 4,
+        }
+    }
+}
+
+impl SeamlessPlan {
+    fn validate(&self) -> Result<(), ZoomScenarioConfigError> {
+        for (reason, value) in [
+            ("ready_timeout_ms должно быть больше нуля", self.ready_timeout_ms),
+            ("release_timeout_ms должно быть больше нуля", self.release_timeout_ms),
+            ("fps_window_ms должно быть больше нуля", self.fps_window_ms),
+            ("sample_interval_ms должно быть больше нуля", self.sample_interval_ms),
+            (
+                "max_drag_samples должно быть больше нуля",
+                u64::from(self.max_drag_samples),
+            ),
+        ] {
+            if value == 0 {
+                return Err(ZoomScenarioConfigError::Seamless { reason });
+            }
+        }
+        let finite_positive = |value: f64| value.is_finite() && value > 0.0;
+        if !finite_positive(self.wheel_step_dx) || self.wheel_step_dx >= 0.1 {
+            return Err(ZoomScenarioConfigError::Seamless {
+                reason: "wheel_step_dx должен быть конечным, больше 0 и меньше 0,1",
+            });
+        }
+        if !(finite_positive(self.pinch_step) && self.pinch_step < 0.5) {
+            return Err(ZoomScenarioConfigError::Seamless {
+                reason: "pinch_step должен быть конечным, больше 0 и меньше 0,5",
+            });
+        }
+        if !(finite_positive(self.pinch_start_half_width) && self.pinch_start_half_width < 0.5) {
+            return Err(ZoomScenarioConfigError::Seamless {
+                reason: "pinch_start_half_width должен быть в (0; 0,5)",
+            });
+        }
+        let center_valid = (0.0..=1.0).contains(&self.pinch_center.x) && (0.0..=1.0).contains(&self.pinch_center.y);
+        if !center_valid {
+            return Err(ZoomScenarioConfigError::Seamless {
+                reason: "центр щипка вне экрана",
+            });
+        }
+        if !(self.overshoot_ratio.is_finite() && self.overshoot_ratio > 1.0) {
+            return Err(ZoomScenarioConfigError::Seamless {
+                reason: "overshoot_ratio должно быть конечным и больше 1",
+            });
+        }
+        if !finite_positive(self.min_back_fps) || !finite_positive(self.max_switch_gap_periods) {
+            return Err(ZoomScenarioConfigError::Seamless {
+                reason: "min_back_fps и max_switch_gap_periods должны быть конечными и больше нуля",
+            });
+        }
+        Ok(())
+    }
+}
+
 /// Секция `camera.scenarios.zoom`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -71,6 +188,8 @@ pub struct ZoomScenarioConfig {
     pub min_haptic_gap_ms: u64,
     /// Сколько вибраций обязана дать протяжка по колесу, чтобы шаг считался доказательством хаптики.
     pub min_haptics_in_drag: u64,
+    /// Бесшовные шаги тёплой камеры (13b).
+    pub seamless: SeamlessPlan,
 }
 
 impl Default for ZoomScenarioConfig {
@@ -89,6 +208,7 @@ impl Default for ZoomScenarioConfig {
             frame_rate_tolerance: 0.1,
             min_haptic_gap_ms: 30,
             min_haptics_in_drag: 2,
+            seamless: SeamlessPlan::default(),
         }
     }
 }
@@ -106,6 +226,8 @@ pub enum ZoomScenarioConfigError {
     ToleranceOutOfRange { value: f64 },
     #[error("zoom.wheel_drag: {reason}")]
     WheelDrag { reason: &'static str },
+    #[error("zoom.seamless: {reason}")]
+    Seamless { reason: &'static str },
 }
 
 impl ZoomScenarioConfig {
@@ -138,7 +260,8 @@ impl ZoomScenarioConfig {
         if !(tolerance.is_finite() && tolerance > 0.0 && tolerance < 1.0) {
             return Err(ZoomScenarioConfigError::ToleranceOutOfRange { value: tolerance });
         }
-        self.wheel_drag.validate()
+        self.wheel_drag.validate()?;
+        self.seamless.validate()
     }
 }
 

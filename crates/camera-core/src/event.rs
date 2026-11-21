@@ -10,7 +10,7 @@ use serde::Serialize;
 
 use crate::backend::ConfigureFailure;
 use crate::command::{CommandId, CommandOutcome};
-use crate::lens_status::LensSwitchFailure;
+use crate::lens_status::{LensSwitchFailure, LensSwitchMethod};
 use crate::state::CameraState;
 use crate::three_a_status::{BracketReport, ControlAdjustment, FocusOutcome};
 
@@ -88,6 +88,8 @@ pub enum CameraEvent {
         from: LensRole,
         to: LensRole,
         elapsed: Duration,
+        /// Как смена исполнена: переоткрытием или повышением тёплой (13b).
+        method: LensSwitchMethod,
     },
     /// Цель смены поменялась посреди смены: промежуточная `abandoned` отменена явно, смена
     /// продолжается из прежнего `from` в новую `to` (если `to == from` — это возврат).

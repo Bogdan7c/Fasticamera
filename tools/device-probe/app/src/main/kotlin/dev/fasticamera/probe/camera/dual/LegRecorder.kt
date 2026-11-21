@@ -14,7 +14,13 @@ import java.util.concurrent.atomic.AtomicInteger
  * Приёмник кадров одной ноги: ImageReader, который сразу возвращает картинки и копит их метки
  * сенсора (`Image.timestamp`) и момент прихода первого кадра по часам телефона.
  */
-class LegRecorder(val spec: LegSpec, imageHandler: Handler, private val discardFrames: Boolean = false) {
+class LegRecorder(
+    val spec: LegSpec,
+    imageHandler: Handler,
+    private val discardFrames: Boolean = false,
+    /** Необязательный потребитель содержимого кадра (замер уровней); null — кадры только считаются. */
+    private val frameSink: RawFrameSink? = null,
+) {
     private val lock = Any()
     private val sensorTimestampsNs = ArrayList<Long>()
     private val acquireErrors = AtomicInteger(0)
@@ -45,6 +51,8 @@ class LegRecorder(val spec: LegSpec, imageHandler: Handler, private val discardF
         } ?: return
         val arrivedAtNs = SystemClock.elapsedRealtimeNanos()
         val timestampNs = image.timestamp
+        // Содержимое читаем до возврата буфера; сам потребитель ловит свои ошибки (см. RawRegionSampler).
+        frameSink?.onFrame(image)
         image.close()
         // «В никуда»: буфер возвращён сразу, кадры не считаем — проверяем, что поток от этого не зависит.
         if (discardFrames) return

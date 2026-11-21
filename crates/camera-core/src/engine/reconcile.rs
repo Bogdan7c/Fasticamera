@@ -12,6 +12,7 @@
 use std::time::Instant;
 
 use camera_contract::availability::CameraUnavailableReason;
+use camera_contract::capabilities::CameraDescriptor;
 use camera_contract::ids::CameraId;
 use camera_contract::stream::{ResolvedStream, StreamMode};
 
@@ -24,14 +25,14 @@ use crate::state::{CameraState, ClosedReason};
 use crate::status::AppPresence;
 
 /// Что должно быть открыто сейчас: камера, поток под неё и запрос.
-struct Plan {
-    camera: CameraId,
-    stream: Option<ResolvedStream>,
+pub(super) struct Plan {
+    pub(super) camera: CameraId,
+    pub(super) stream: Option<ResolvedStream>,
 }
 
 impl CameraEngine {
     /// Доведение заперто: окончательная ошибка, фон, ожидание повода повтора, нет каталога.
-    fn reconcile_is_blocked(&self) -> bool {
+    pub(super) fn reconcile_is_blocked(&self) -> bool {
         self.poisoned
             || self.is_fatal()
             || self.presence == AppPresence::Background
@@ -49,15 +50,22 @@ impl CameraEngine {
                 return None;
             }
         };
-        let stream = self.desired.mode.and_then(|requested| {
+        let stream = self.resolved_stream_for(descriptor);
+        Some(Plan {
+            camera: descriptor.id.clone(),
+            stream,
+        })
+    }
+
+    /// Поток, который желаемый режим даёт для камеры `descriptor` (эффективная частота камеры,
+    /// самый большой RAW). Один источник и для основной, и для тёплой камеры: иначе сессия
+    /// тёплой после повышения отличалась бы от плана основной, и её пришлось бы пересоздавать.
+    pub(super) fn resolved_stream_for(&self, descriptor: &CameraDescriptor) -> Option<ResolvedStream> {
+        self.desired.mode.and_then(|requested| {
             // Эффективный режим этой камеры: запрошенная частота, сниженная до её потолка.
             let mode = self.frame_rate_limits.effective_mode(&descriptor.id, requested);
             let option = descriptor.capabilities.largest_raw_stream(mode.raw_format)?;
             Some(resolved_stream(&descriptor.id, &mode, option.size))
-        });
-        Some(Plan {
-            camera: descriptor.id.clone(),
-            stream,
         })
     }
 
@@ -73,6 +81,9 @@ impl CameraEngine {
         if self.drive_to_plan(&plan, now).is_ok() {
             self.complete_recovery_if_pending();
         }
+        // Тёплые — после основной: они никогда не задерживают и не ломают её (сбои тёплой
+        // остаются в её ячейке).
+        self.sync_standby(now);
         // Новая камера отказала посреди смены объектива: цель уже возвращена, довести до неё.
         self.run_pending_lens_revert(now);
     }
@@ -101,6 +112,8 @@ impl CameraEngine {
     }
 
     fn drive_to_plan(&mut self, plan: &Plan, now: Instant) -> Result<(), Halt> {
+        // Смена камеры вторым способом: тёплая камера уже стримит — обмен ролей вместо close/open.
+        self.step_promote_standby(plan);
         self.step_release_wrong_device(plan);
         self.step_open_device(plan, now)?;
         self.step_session(plan, now)?;
@@ -209,6 +222,7 @@ impl CameraEngine {
         match self.backend.configure_session(stream, generation) {
             Ok(configured) => {
                 self.cadence.begin_session(generation, mode.frame_rate.frame_duration());
+                self.carry_exposure_memory_to(&stream.camera);
                 self.events.push(CameraEvent::StreamConfigured {
                     stream: configured.clone(),
                 });

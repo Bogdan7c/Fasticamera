@@ -204,6 +204,8 @@ fn zoom_config(tune: impl FnOnce(&mut crate::zoom_scenario_config::ZoomScenarioC
     config.scenarios.zoom.ready_timeout_ms = 5_000;
     config.scenarios.zoom.step_timeout_ms = 4_000;
     config.scenarios.zoom.step_settle_ms = 150;
+    // Бесшовным шагам 13b нужна тёплая камера: стенд роутера её не держит, их доказывают тесты исполнителя и телефон.
+    config.scenarios.zoom.seamless.enabled = false;
     tune(&mut config.scenarios.zoom);
     config
 }

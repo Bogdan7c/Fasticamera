@@ -84,3 +84,41 @@ fn unknown_fields_are_rejected_when_parsing_json() {
         "остальное — умолчания"
     );
 }
+
+#[test]
+fn seamless_plan_rejects_zero_timeouts_and_non_finite_steps() {
+    let zero_timeout = ZoomScenarioConfig {
+        seamless: SeamlessPlan {
+            release_timeout_ms: 0,
+            ..SeamlessPlan::default()
+        },
+        ..ZoomScenarioConfig::default()
+    };
+    assert_eq!(
+        zero_timeout.validate(),
+        Err(ZoomScenarioConfigError::Seamless {
+            reason: "release_timeout_ms должно быть больше нуля"
+        })
+    );
+    for bad in [f64::NAN, 0.0, -0.1, 0.6] {
+        let config = ZoomScenarioConfig {
+            seamless: SeamlessPlan {
+                pinch_step: bad,
+                ..SeamlessPlan::default()
+            },
+            ..ZoomScenarioConfig::default()
+        };
+        assert!(
+            matches!(config.validate(), Err(ZoomScenarioConfigError::Seamless { .. })),
+            "pinch_step {bad} должен быть отвергнут"
+        );
+    }
+    let low_overshoot = ZoomScenarioConfig {
+        seamless: SeamlessPlan {
+            overshoot_ratio: 1.0,
+            ..SeamlessPlan::default()
+        },
+        ..ZoomScenarioConfig::default()
+    };
+    assert!(low_overshoot.validate().is_err());
+}

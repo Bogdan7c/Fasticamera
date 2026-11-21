@@ -23,13 +23,16 @@
 //! 3. Кадры серии (`RequestOrigin::Burst`) сюда не доходят: их отпускают до `plan_frame`.
 //! 4. Ручная экспозиция: замер ничего не решает, статистику «на каждом кадре» AE не просит.
 
+mod carried;
 mod placement;
 mod reveal_level;
 
+use std::cell::Cell;
 use std::sync::Arc;
 
 use camera_contract::auto_exposure::{
-    ExposureAuthority, ExposureDirective, ExposureProduct, ExposureProposal, ExposureProposalChannel, MeteredArea,
+    CameraTag, ExposureAuthority, ExposureDirective, ExposureProduct, ExposureProposal, ExposureProposalChannel,
+    MeteredArea,
 };
 use camera_contract::frame_passport::{FrameCaptureMeta, RawFramePassport, StreamPassport};
 use camera_contract::geometry::PixelRect;
@@ -159,6 +162,9 @@ struct RunnerCounters {
     statistics_stale: u64,
     cold_start_statistics_frames: u64,
     frames_with_residual_gain: u64,
+    /// Кадров, признанных готовыми по ожидаемой (перенесённой) экспозиции. `Cell`: `reveal_readiness` — запрос
+    /// (`&self`), счёт — побочное наблюдение, не состояние решения.
+    frames_ready_by_carried_exposure: Cell<u64>,
 }
 
 /// AE одной сессии показа (см. модуль).
@@ -251,11 +257,18 @@ impl ExposureRunner {
         if nothing_to_wait_for {
             return ExposureReadiness::Ready;
         }
-        let plausible = self.has_estimate
+        // Собственного замера у потока ещё нет, но движок передал ожидаемую экспозицию для ЭТОЙ камеры
+        // (`carried`): судим по ней той же формулой и тем же допуском.
+        let judged_by_carried = !self.has_estimate && self.controller.is_display_target_expected();
+        let plausible = (self.has_estimate || judged_by_carried)
             && self
                 .displayed_level_error_ev()
                 .is_some_and(|error_ev| error_ev.abs() <= f64::from(max_error_ev));
         if plausible {
+            if judged_by_carried {
+                let counter = &self.counters.frames_ready_by_carried_exposure;
+                counter.set(counter.get() + 1);
+            }
             ExposureReadiness::Ready
         } else {
             ExposureReadiness::Waiting
@@ -266,7 +279,7 @@ impl ExposureRunner {
     /// Что такое достижимая цель и почему пределам верим не всегда — в `reveal_level`.
     fn displayed_level_error_ev(&self) -> Option<f64> {
         let frame_log2 = self.last_frame_product?.seconds_iso().log2();
-        let target_log2 = self.controller.target_log2()?;
+        let target_log2 = self.controller.display_target_log2()?;
         Some(displayed_level_error_ev(DisplayedLevelInputs {
             frame_log2,
             gain_ev: f64::from(self.last_gain.ev()),
@@ -282,9 +295,15 @@ impl ExposureRunner {
     pub fn plan_frame(&mut self, passport: &RawFramePassport) -> ExposureFramePlan {
         self.refresh_directive();
         let stream = self.bind_stream(passport);
+        // Ожидаемая экспозиция нового потока (если движок передал её для камеры кадра) — до шага цели и подтяжки.
+        self.controller
+            .expect_target(carried::expected_target(&self.directive, passport));
         // Шаг цели и предложение — по метке сенсора показываемого кадра.
         self.controller.advance(passport.sensor_timestamp);
-        if let Some(proposal) = self.controller.proposal(passport.sensor_timestamp) {
+        if let Some(proposal) = self
+            .controller
+            .proposal(passport.sensor_timestamp, CameraTag::of(&passport.stream.camera))
+        {
             self.proposals.publish(proposal);
             self.last_proposal = Some(proposal);
         }
@@ -397,6 +416,7 @@ impl ExposureRunner {
                 proposals_published: counters.proposals_published,
                 cold_start_statistics_frames: self.counters.cold_start_statistics_frames,
                 frames_with_residual_gain: self.counters.frames_with_residual_gain,
+                frames_ready_by_carried_exposure: self.counters.frames_ready_by_carried_exposure.get(),
             },
         }
     }
@@ -540,14 +560,19 @@ fn changes_decision(previous: &ExposureDirective, next: &ExposureDirective) -> b
         authority,
         bias,
         applied: _,
+        stream_start,
     } = *next;
     previous.metering != metering
         || previous.lock != lock
         || previous.profile != profile
         || previous.authority != authority
         || previous.bias != bias
+        || previous.stream_start != stream_start
 }
 
+#[cfg(test)]
+#[path = "carried_tests.rs"]
+mod carried_tests;
 #[cfg(test)]
 #[path = "gain_tests.rs"]
 mod gain_tests;

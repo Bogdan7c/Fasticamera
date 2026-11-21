@@ -1,6 +1,7 @@
 package dev.fasticamera.probe.camera.threea
 
 import android.media.Image
+import dev.fasticamera.probe.camera.Raw10Pixels
 import org.json.JSONArray
 import org.json.JSONObject
 import java.nio.ByteBuffer
@@ -69,11 +70,7 @@ class ThreeARaw10Probe(private val everyNth: Int, private val skipFirst: Int, pr
     /** Читает блок 2x2 с левым верхним углом (x, y); x чётный, поэтому пары не пересекают границу 5-байтовой группы. */
     private fun accumulate2x2(buffer: ByteBuffer, rowStride: Int, x: Int, y: Int, target: Accumulator) {
         for (dy in 0..1) for (dx in 0..1) {
-            val px = x + dx
-            val rowBase = (y + dy) * rowStride + (px / 4) * 5
-            val high = buffer.get(rowBase + px % 4).toInt() and 0xFF
-            val low = (buffer.get(rowBase + 4).toInt() and 0xFF) shr ((px % 4) * 2) and 0x3
-            target.add(dy * 2 + dx, (high shl 2) or low)
+            target.add(dy * 2 + dx, Raw10Pixels.read(buffer, rowStride, x + dx, y + dy))
         }
     }
 

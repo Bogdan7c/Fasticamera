@@ -23,6 +23,47 @@ pub enum ZoomAction {
     Flip,
     /// Протяжка пальцем по ленте: открывает колесо и ведёт значение (настоящие образцы касаний).
     WheelDrag,
+    /// Бесшовный жест 13b: настоящие касания, тёплая вторая камера, смена объектива обменом ролей.
+    Seamless { gesture: SeamlessGesture, leg: SeamlessLeg },
+}
+
+/// Чем ведётся бесшовный шаг.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeamlessGesture {
+    /// Долгое нажатие на ленте, колесо открывается, палец ведёт колесо.
+    Wheel,
+    /// Два пальца по видоискателю.
+    Pinch,
+}
+
+/// Часть бесшовного жеста: жест тянется через несколько шагов плана, палец лежит между ними.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeamlessLeg {
+    /// Пальцы ложатся, ждём тёплую, ведём значение к объективу ниже на шкале.
+    Out,
+    /// Ведём значение обратно к объективу выше на шкале (пальцы всё ещё лежат).
+    Back,
+    /// Пальцы подняты; ждём, пока колесо уйдёт, а тёплая закроется.
+    Release,
+}
+
+impl SeamlessGesture {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Wheel => "wheel",
+            Self::Pinch => "pinch",
+        }
+    }
+}
+
+impl SeamlessLeg {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Out => "out",
+            Self::Back => "back",
+            Self::Release => "release",
+        }
+    }
 }
 
 /// Один шаг плана.
@@ -90,6 +131,18 @@ pub fn planned_steps(config: &ZoomScenarioConfig) -> Vec<ZoomStep> {
     if config.wheel_drag.samples > 0 {
         actions.push(("tap_1_before_drag".to_owned(), ZoomAction::TapStop { ratio: 1.0 }));
         actions.push(("wheel_drag".to_owned(), ZoomAction::WheelDrag));
+    }
+    if config.seamless.enabled {
+        // Бесшовные жесты начинаются с 1× основной камеры (их «Out» уходит на объектив ниже по шкале).
+        actions.push(("tap_1_before_seamless".to_owned(), ZoomAction::TapStop { ratio: 1.0 }));
+        for gesture in [SeamlessGesture::Wheel, SeamlessGesture::Pinch] {
+            for leg in [SeamlessLeg::Out, SeamlessLeg::Back, SeamlessLeg::Release] {
+                actions.push((
+                    format!("{}_seamless_{}", gesture.name(), leg.name()),
+                    ZoomAction::Seamless { gesture, leg },
+                ));
+            }
+        }
     }
     // Завершающий тап: экран остаётся на 1× основной камеры независимо от конфига.
     actions.push(("tap_1_final".to_owned(), ZoomAction::TapStop { ratio: 1.0 }));

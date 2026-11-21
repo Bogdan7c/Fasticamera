@@ -377,3 +377,48 @@ fn zoom_view_follows_the_real_zoom_state_ratio_facing_and_wheel() {
     assert_eq!(view.facing, LensFacing::Front, "переворот меняет направление в снимке");
     assert!(!view.wheel_open, "переворот закрывает колесо");
 }
+
+#[test]
+fn dropping_the_source_releases_the_warm_demand_the_screen_left_in_the_lens_slot() {
+    use camera_contract::ids::LensFacing;
+    use camera_contract::zoom::{LensIntent, LensIntentChannel, StandbyDemand, ZoomGesture, ZoomRatio};
+
+    let lens = LensIntentChannel::new();
+    let (_sender, receiver) = screen_input_channel(16);
+    let source = CameraScreenSource::new(ScreenSourceParts {
+        screen: CameraScreen::new(
+            ScreenConfig::default(),
+            ui_kit::tokens::UiKitTokens::default(),
+            ui_core::time::MotionPreference::Full,
+        )
+        .expect("экран"),
+        input: receiver,
+        facts: Box::new(LiveFacts),
+        gravity: GravityLink::Unavailable {
+            reason: "тест".to_owned(),
+        },
+        executor: EffectExecutor::new(EffectTargets {
+            camera: Box::new(crate::camera_screen_effects::AbsentCameraPort),
+            haptics: Arc::new(QuietHaptics),
+            commands: Arc::new(QuietCommands),
+            render: RecordingRenderControl::new(),
+            capture: Arc::new(NoCapture),
+            lens: lens.clone(),
+        }),
+        board: Arc::new(ScreenBoard::default()),
+        report_min_interval: Duration::ZERO,
+    });
+    let warm = LensIntent::without_standby(
+        LensFacing::Back,
+        ZoomRatio::new(1.4).expect("коэффициент"),
+        ZoomGesture::Continuous,
+    )
+    .with_standby(StandbyDemand::KeepNeighbourWarm);
+    lens.publish(warm);
+
+    // Экран снят (сценарий, рендер, переустановка): источник уничтожен вместе с исполнителем.
+    drop(source);
+
+    let (_, latest) = lens.latest().expect("намерение");
+    assert_eq!(latest, warm.with_standby(StandbyDemand::NotNeeded));
+}

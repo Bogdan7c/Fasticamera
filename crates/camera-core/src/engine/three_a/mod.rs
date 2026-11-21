@@ -16,6 +16,7 @@
 mod bracket;
 mod decide;
 mod directive;
+mod exposure_carry;
 mod exposure_directive;
 mod planning;
 mod results;
@@ -37,6 +38,9 @@ pub(super) struct ThreeAEngine {
     focus: Box<dyn FocusController>,
     white_balance: WhiteBalancePublisher,
     exposure_directive: ExposurePublisher,
+    /// Камера, на которой стартовал последний поток: в её произведении записана память исполнителя
+    /// экспозиции (см. `exposure_carry`).
+    exposure_camera: Option<camera_contract::ids::CameraId>,
     /// Поправки ручных значений, как их видит снимок.
     adjustments: Vec<ControlAdjustment>,
     /// Что уже объявлено событием `ControlsAdjusted` (чтобы не повторять то же самое).
@@ -61,6 +65,7 @@ impl ThreeAEngine {
             focus: wiring.focus,
             white_balance,
             exposure_directive,
+            exposure_camera: None,
             adjustments: Vec::new(),
             announced_adjustments: Vec::new(),
             last_result: None,

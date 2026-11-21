@@ -3,6 +3,7 @@
 use camera_contract::stream::TargetFrameRate;
 use serde::{Deserialize, Serialize};
 
+use crate::standby_config::{StandbyConfig, StandbyConfigError};
 use crate::three_a_own::OwnExposureConfig;
 use crate::zoom::{ZoomConfig, ZoomConfigError};
 
@@ -204,6 +205,8 @@ pub struct CameraEngineConfig {
     pub three_a: ThreeAConfig,
     /// Шкала зума и выбор камеры (сессия 13).
     pub zoom: ZoomConfig,
+    /// Тёплые камеры (13b): ёмкость и пауза до закрытия.
+    pub standby: StandbyConfig,
 }
 
 /// Конфиг движка некорректен.
@@ -235,6 +238,8 @@ pub enum CameraEngineConfigError {
     InvalidExposureSetting { field: &'static str, value: f64 },
     #[error("zoom: {0}")]
     InvalidZoom(#[from] ZoomConfigError),
+    #[error("standby: {0}")]
+    InvalidStandby(#[from] StandbyConfigError),
 }
 
 impl CameraEngineConfig {
@@ -306,6 +311,7 @@ impl CameraEngineConfig {
             TargetFrameRate::new(fps).map_err(|_| CameraEngineConfigError::InvalidFrameRateFallback(fps))?;
         }
         self.zoom.validate()?;
+        self.standby.validate()?;
         self.validate_three_a()
     }
 

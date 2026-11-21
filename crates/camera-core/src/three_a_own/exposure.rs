@@ -13,12 +13,11 @@
 //!   обновляется **только** в `refresh()` и только когда он отвечает `Changed`. Мелкий дрейф
 //!   предложений ниже `replan_min_change_ev` запрос не перестраивает и план не двигает.
 //!
-//! # Память прошлого потока и диафрагма
+//! # Память прошлого потока и смена камеры
 //! Пока нет предложения нового потока, план стартует с цели из памяти прошлого потока
-//! (последнее принятое предложение), иначе из конфига. Пересчёта по диафрагме нет: диафрагма
-//! известна только контексту `plan`, а память пишется вне его, и чистый `plan` её не запомнит.
-//! У устройства диафрагмы основных камер f/1,8–2,4 (разница до ~0,6 EV): это лишь старт
-//! поиска, первое же предложение рендера его заменяет.
+//! (последнее принятое предложение), иначе из конфига. Память записана в произведении прошлой
+//! камеры, поэтому при смене камеры движок, который знает обе, пересчитывает её через
+//! `exposure_transfer` ([`ExposureController::carry_memory_to_new_camera`], решения 118 и 126).
 //!
 //! # Блокировка
 //! Исполнитель намерения в `refresh()` не знает. Блокировку ведёт рендер: после
@@ -28,8 +27,11 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
-use camera_contract::auto_exposure::{ExposureProduct, ExposureProposal, ExposureProposalChannel, ProposalConvergence};
+use camera_contract::auto_exposure::{
+    CameraTag, ExposureProduct, ExposureProposal, ExposureProposalChannel, ProposalConvergence,
+};
 use camera_contract::capture_result::CaptureResultMeta;
+use camera_contract::ids::CameraId;
 use camera_contract::three_a::{DirectiveGeneration, MainsFrequency, RequestOrigin};
 
 use super::config::OwnExposureConfig;
@@ -37,6 +39,7 @@ use super::flicker::FlickerProtection;
 use super::plan::{PlanBasis, plan_exposure};
 use super::proposal_gate::{GateVerdict, ProposalGate};
 use crate::command::UnsupportedThreeA;
+use crate::exposure_transfer::ExposureTransfer;
 use crate::three_a_control::{ExposureController, ExposureDecision, PlanRefresh, ThreeAContext};
 use crate::three_a_status::AutoExposureProgress;
 
@@ -82,6 +85,11 @@ impl RawStatsExposure {
     /// им можно пользоваться и после того, как исполнитель отдан движку.
     pub fn stale_proposals_counter(&self) -> Arc<AtomicU64> {
         self.gate.stale_counter()
+    }
+
+    /// Сколько предложений отброшено как измеренных на другой камере, чем текущий поток (13b). Счётчик общий.
+    pub fn foreign_camera_proposals_counter(&self) -> Arc<AtomicU64> {
+        self.gate.foreign_camera_counter()
     }
 
     /// Цель до первого предложения: память прошлого потока, иначе конфиг.
@@ -154,7 +162,10 @@ impl ExposureController for RawStatsExposure {
         }
         match self.gate.review() {
             GateVerdict::Accepted(proposal) => self.adopt(proposal),
-            GateVerdict::NothingToReview | GateVerdict::Waiting | GateVerdict::RejectedStale => PlanRefresh::Unchanged,
+            GateVerdict::NothingToReview
+            | GateVerdict::Waiting
+            | GateVerdict::RejectedStale
+            | GateVerdict::RejectedForeignCamera => PlanRefresh::Unchanged,
         }
     }
 
@@ -173,5 +184,26 @@ impl ExposureController for RawStatsExposure {
         }
         self.driving_target = None;
         self.gate.reset_for_new_stream();
+    }
+
+    fn begin_stream_on_camera(&mut self, camera: &CameraId) {
+        self.gate.begin_stream_on(CameraTag::of(camera));
+    }
+
+    fn carried_scene_target(&self) -> Option<ExposureProduct> {
+        self.memory
+    }
+
+    fn scene_target_after_transfer(&self, transfer: &ExposureTransfer) -> Option<ExposureProduct> {
+        // Тот же итог, что даст `reset_for_new_stream` + `carry_memory_to_new_camera`: последнее принятое
+        // предложение прошлого потока, а если его не было, прежняя память.
+        let remembered = self.accepted.map(|proposal| proposal.target).or(self.memory)?;
+        Some(transfer.apply(remembered))
+    }
+
+    /// Память прошлого потока записана в произведении прошлой камеры: новой камере она нужна
+    /// пересчитанной, иначе первая экспозиция смещена на разницу чувствительности (решение 126).
+    fn carry_memory_to_new_camera(&mut self, transfer: &ExposureTransfer) {
+        self.memory = self.memory.map(|remembered| transfer.apply(remembered));
     }
 }

@@ -17,6 +17,8 @@
 //! * сессия 11: [`GlassScenario`] — `glass` (стекло поверх видоискателя; отчёт и вердикт — `glass_report`).
 //! * сессия 12: [`ScreenScenario`] — `screen` (экран камеры iOS, на котором скрипт делает касания; шаги — `screen_steps`,
 //!   исполнитель — `screen_runner`, вердикт — `screen_report`). С `KeepRunning`.
+//! * сессия 13b: [`StandbyScenario`] — `standby` (тёплая вторая камера: повышение обменом ролей без переоткрытия, частота обеих
+//!   камер, одна открытая камера после отпуска; намерения кладёт сам сценарий; шаги — `standby_runner`, вердикт — `standby_verdict`).
 //! * сессия 13: [`ZoomScenario`] — `zoom` (переключение объективов и зум на настоящем экране, без чёрных кадров; план —
 //!   `zoom_plan`, исполнитель — `zoom_runner`, разборы — `zoom_record`, вердикт — `zoom_verdict`). Тоже `KeepRunning`.
 //!
@@ -67,6 +69,15 @@ mod screen_report;
 mod screen_runner;
 mod screen_sensor_point;
 mod screen_steps;
+mod standby;
+mod standby_config;
+mod standby_plan;
+mod standby_report;
+mod standby_runner;
+#[cfg(test)]
+mod standby_test_support;
+mod standby_verdict;
+mod standby_views;
 mod stream;
 mod stream_report;
 mod three_a;
@@ -104,6 +115,10 @@ mod zoom_record;
 mod zoom_report;
 mod zoom_reveal;
 mod zoom_runner;
+mod zoom_seamless;
+mod zoom_seamless_fingers;
+mod zoom_seamless_record;
+mod zoom_seamless_verdict;
 #[cfg(test)]
 mod zoom_test_support;
 mod zoom_tick;
@@ -120,6 +135,8 @@ pub use evict::CameraEvictScenario;
 pub use glass::GlassScenario;
 pub use raw_stream::CameraRawStreamScenario;
 pub use screen::ScreenScenario;
+pub use standby::StandbyScenario;
+pub use standby_config::{StandbyScenarioConfig, StandbyScenarioConfigError};
 pub use stream::CameraStreamScenario;
 pub use three_a::ThreeAScenario;
 pub use video_headroom::VideoHeadroomScenario;
@@ -158,6 +175,8 @@ pub enum CameraScenario {
     Screen,
     /// `zoom`: переключение объективов и зум на настоящем экране камеры, без чёрных кадров (сессия 13).
     Zoom,
+    /// `standby`: тёплая вторая камера, обмен ролей без переоткрытия, частота обеих камер (сессия 13b).
+    Standby,
     /// `3a`: автоматика 3A и ручные параметры на живом видоискателе (сессия 08).
     ThreeA,
     /// `ae-trace`: ряд нашего AE по ступенькам света, подтяжка ISP и мерцание (сессия 08c).
@@ -189,6 +208,7 @@ impl CameraScenario {
             CameraScenario::Glass,
             CameraScenario::Screen,
             CameraScenario::Zoom,
+            CameraScenario::Standby,
         ]
     }
 
@@ -218,6 +238,7 @@ impl CameraScenario {
             CameraScenario::Glass => "glass",
             CameraScenario::Screen => "screen",
             CameraScenario::Zoom => "zoom",
+            CameraScenario::Standby => "standby",
         }
     }
 
@@ -242,6 +263,7 @@ impl CameraScenario {
             CameraScenario::Glass => Box::new(GlassScenario::new()),
             CameraScenario::Screen => Box::new(ScreenScenario::new()),
             CameraScenario::Zoom => Box::new(ZoomScenario::new()),
+            CameraScenario::Standby => Box::new(StandbyScenario::new()),
         }
     }
 }

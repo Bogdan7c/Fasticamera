@@ -32,6 +32,7 @@ use crate::backend::{
     BackendEvent, BackendEventSink, BackendFactory, BackendFailure, CameraBackend, ConfigureFailure, DeviceErrorKind,
     DeviceGeneration, OpenFailure, RequestFailure, SessionGeneration,
 };
+use crate::backend_standby::{StandbySlotId, StandbySupport};
 use crate::request_controls::{AfTrigger, RequestControls};
 
 /// Вызов бэкенда в журнале (с аргументами и поколениями).
@@ -65,6 +66,27 @@ pub enum BackendCall {
     StopRepeating,
     CloseSession,
     CloseDevice,
+    OpenStandbyDevice {
+        slot: StandbySlotId,
+        camera: CameraId,
+        generation: DeviceGeneration,
+    },
+    ConfigureStandbySession {
+        slot: StandbySlotId,
+        stream: ResolvedStream,
+        generation: SessionGeneration,
+    },
+    SetStandbyRepeatingRequest {
+        slot: StandbySlotId,
+        intent: CaptureIntent,
+        controls: RequestControls,
+    },
+    CloseStandby {
+        slot: StandbySlotId,
+    },
+    SwapStandbyWithPrimary {
+        slot: StandbySlotId,
+    },
 }
 
 /// Метод бэкенда — для программирования паники.
@@ -79,6 +101,11 @@ pub enum BackendMethod {
     StopRepeating,
     CloseSession,
     CloseDevice,
+    OpenStandbyDevice,
+    ConfigureStandbySession,
+    SetStandbyRepeatingRequest,
+    CloseStandby,
+    SwapStandby,
 }
 
 /// Итог попытки послать событие через fake.
@@ -116,10 +143,12 @@ struct FakeState {
     af_script: VecDeque<AfState>,
     submitted_brackets: Vec<(BurstId, ExposureBracket)>,
     sink: Option<BackendEventSink>,
+    standby: standby::FakeStandbyState,
     next_frame_number: i64,
     next_timestamp_nanos: i64,
 }
 
+mod standby;
 mod three_a;
 
 /// Разделяемая ручка управления fake-бэкендом (клонируется через `Arc`).
@@ -148,6 +177,7 @@ impl FakeBackendControl {
                 af_script: VecDeque::new(),
                 submitted_brackets: Vec::new(),
                 sink: None,
+                standby: standby::FakeStandbyState::new(),
                 next_frame_number: 0,
                 next_timestamp_nanos: 1_000_000_000,
             }),
@@ -506,5 +536,9 @@ impl CameraBackend for FakeCameraBackend {
         state.device = None;
         state.session = None;
         state.repeating = None;
+    }
+
+    fn standby(&mut self) -> StandbySupport<'_> {
+        standby::standby_support(self)
     }
 }

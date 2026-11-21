@@ -8,6 +8,7 @@ use camera_contract::three_a::MainsFrequency;
 use serde::Deserialize;
 
 use crate::companion_stream::{CompanionConfigError, CompanionStreamConfig};
+use crate::standby_diagnostics::MAX_STANDBY_SLOTS;
 
 /// Настройки `camera-android`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -44,6 +45,10 @@ pub struct AndroidCameraConfig {
     /// Сколько разовых запросов (триггер фокуса, кадры серии) могут ждать результата, пока таблица
     /// происхождений не начнёт вытеснять самые старые. Серия — десятки кадров, тап — один запрос.
     pub request_origin_capacity: usize,
+    /// Сколько тёплых камер бэкенд держит одновременно (13b). Ограничен ресурсом HAL, а не числом
+    /// камер: на OnePlus 11 стоимость 66 + 33 ≤ 100, то есть основная и одна тёплая. `0` — тёплые
+    /// не поддерживаются (`standby()` отвечает `Unsupported`). Каких соседей греть, решает движок.
+    pub standby_capacity: usize,
 }
 
 impl Default for AndroidCameraConfig {
@@ -58,6 +63,7 @@ impl Default for AndroidCameraConfig {
             mains_frequency: MainsFrequency::Hz50,
             three_a_companion_stream: CompanionStreamConfig::default(),
             request_origin_capacity: 64,
+            standby_capacity: 1,
         }
     }
 }
@@ -79,6 +85,8 @@ pub enum ConfigError {
     RetiredReaderPollOutOfRange { actual: u64, max: u64 },
     #[error("request_origin_capacity должно быть от 1 до {max}, а не {actual}")]
     RequestOriginCapacityOutOfRange { actual: usize, max: usize },
+    #[error("standby_capacity должно быть от 0 до {max}, а не {actual}")]
+    StandbyCapacityOutOfRange { actual: usize, max: usize },
     #[error(transparent)]
     CompanionStream(#[from] CompanionConfigError),
 }
@@ -131,6 +139,12 @@ impl AndroidCameraConfig {
             return Err(ConfigError::RequestOriginCapacityOutOfRange {
                 actual: self.request_origin_capacity,
                 max: Self::MAX_WINDOW,
+            });
+        }
+        if self.standby_capacity > MAX_STANDBY_SLOTS {
+            return Err(ConfigError::StandbyCapacityOutOfRange {
+                actual: self.standby_capacity,
+                max: MAX_STANDBY_SLOTS,
             });
         }
         self.three_a_companion_stream.validate()?;

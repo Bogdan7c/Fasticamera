@@ -13,6 +13,7 @@ import android.util.Range
 import android.view.Surface
 import dev.fasticamera.probe.camera.CameraSessionRunner
 import dev.fasticamera.probe.camera.FrameTimingStats
+import dev.fasticamera.probe.camera.ManualExposure
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
@@ -32,14 +33,21 @@ class CameraRig(
     private val runner: CameraSessionRunner,
     private val imageHandler: Handler,
     private val timeoutMs: Long,
+    /** Потребитель содержимого кадров основной (первой) ноги камеры; null — только счётчики. */
+    frameSink: RawFrameSink? = null,
 ) {
-    private val recorders: List<LegRecorder> = legs.map { LegRecorder(it, imageHandler, profile.discardFrames) }
+    private val recorders: List<LegRecorder> = legs.mapIndexed { index, leg ->
+        LegRecorder(leg, imageHandler, profile.discardFrames, frameSink.takeIf { index == 0 })
+    }
 
     /** Компаньон: выход в сессии, который никогда не бывает целью запроса (оживляет 3A Qualcomm). */
     private val companion: LegRecorder? = profile.companionYuv?.let { LegRecorder(it, imageHandler, discardFrames = true) }
     private val captureStats = CaptureStats()
     private var device: CameraDevice? = null
     private var session: CameraCaptureSession? = null
+
+    /** Текущая ручная экспозиция: стартует из профиля и меняется через [applyManualExposure]. */
+    private var currentManualExposure: ManualExposure? = profile.manualExposure
 
     val firstFrameAtNs: Long? get() = recorders.mapNotNull { it.firstFrameAtNs }.minOrNull()
 
@@ -71,6 +79,22 @@ class CameraRig(
         val request = buildStreamRequest(opened, recorders.map(LegRecorder::surface))
         activeSession.setRepeatingRequest(request, captureStats, imageHandler)
     }
+
+    /**
+     * Меняет ручную экспозицию на лету: пересобирает повторяющийся запрос и перезапускает его.
+     * Сессия и вендорские ключи остаются теми же; HAL применит значения с задержкой в несколько кадров,
+     * поэтому о применении судят по результатам ([latestResultInfo]), а не по этому вызову.
+     */
+    fun applyManualExposure(exposure: ManualExposure) {
+        currentManualExposure = exposure
+        startStreaming()
+    }
+
+    /** Применённые значения последнего результата или null, пока результатов нет. */
+    fun latestResultInfo(): FrameResultInfo? = captureStats.latestResult()
+
+    /** Результат кадра с меткой сенсора [timestampNs] (метка Image == SENSOR_TIMESTAMP) или null, если не пришёл/вытеснен. */
+    fun resultInfoFor(timestampNs: Long): FrameResultInfo? = captureStats.resultFor(timestampNs)
 
     /** Закрывает только сессию (устройство остаётся открытым — вариант «предоткрытая камера»). */
     fun closeSession() {
@@ -114,7 +138,7 @@ class CameraRig(
         val builder = opened.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
         targets.forEach(builder::addTarget)
         profile.aeTargetFps?.let { fps -> builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(fps, fps)) }
-        profile.manualExposure?.let { manual ->
+        currentManualExposure?.let { manual ->
             builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
             builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, manual.exposureTimeNs)
             builder.set(CaptureRequest.SENSOR_SENSITIVITY, manual.sensitivityIso)
@@ -138,6 +162,14 @@ class CameraRig(
         private val afTransitions = ArrayList<List<Any>>()
         private var lastAfState: Int? = null
         private var resultIndex = 0
+        private val recentResults = object : LinkedHashMap<Long, FrameResultInfo>() {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, FrameResultInfo>?) = size > RECENT_RESULTS_LIMIT
+        }
+        private var latestInfo: FrameResultInfo? = null
+
+        fun latestResult(): FrameResultInfo? = synchronized(lock) { latestInfo }
+
+        fun resultFor(timestampNs: Long): FrameResultInfo? = synchronized(lock) { recentResults[timestampNs] }
 
         /** Пишем только смены AF_STATE: [номер результата, имя состояния] — видно, сошёлся ли автофокус. */
         private fun recordAfState(state: Int?) {
@@ -152,7 +184,20 @@ class CameraRig(
 
         override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
             recordAfState(result.get(CaptureResult.CONTROL_AF_STATE))
-            result.get(CaptureResult.SENSOR_TIMESTAMP)?.let { synchronized(lock) { resultTimestampsNs += it } }
+            val timestampNs = result.get(CaptureResult.SENSOR_TIMESTAMP)
+            timestampNs?.let { synchronized(lock) { resultTimestampsNs += it } }
+            val info = FrameResultInfo(
+                exposureTimeNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME),
+                sensitivityIso = result.get(CaptureResult.SENSOR_SENSITIVITY),
+                dynamicBlackLevel = result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL),
+                afState = result.get(CaptureResult.CONTROL_AF_STATE),
+                focusDistanceDiopters = result.get(CaptureResult.LENS_FOCUS_DISTANCE),
+                lensState = result.get(CaptureResult.LENS_STATE),
+            )
+            synchronized(lock) {
+                latestInfo = info
+                if (timestampNs != null) recentResults[timestampNs] = info
+            }
             for (physicalId in result.physicalCameraTotalResults.keys) {
                 physicalResultCounts.getOrPut(physicalId) { AtomicInteger(0) }.incrementAndGet()
             }
@@ -178,6 +223,22 @@ class CameraRig(
         }
     }
 }
+
+/** Сколько последних результатов держим для сопоставления с кадрами по метке сенсора. */
+private const val RECENT_RESULTS_LIMIT = 512
+
+/** Применённые HAL параметры одного кадра (из результата захвата); null — поле не пришло. */
+class FrameResultInfo(
+    val exposureTimeNs: Long?,
+    val sensitivityIso: Int?,
+    /** Динамический чёрный уровень по CFA-позициям в порядке чтения сенсора, если HAL его отдаёт. */
+    val dynamicBlackLevel: FloatArray?,
+    val afState: Int?,
+    /** LENS_FOCUS_DISTANCE: диоптрии (1/м), 0 = бесконечность; нужен для оценки параллакса. */
+    val focusDistanceDiopters: Float? = null,
+    /** LENS_STATE (STATIONARY/MOVING) на момент кадра. */
+    val lensState: Int? = null,
+)
 
 /** Читаемое имя CONTROL_AF_STATE для отчёта. */
 internal fun afStateName(state: Int): String = when (state) {
