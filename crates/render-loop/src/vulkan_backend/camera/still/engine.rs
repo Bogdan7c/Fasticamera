@@ -116,7 +116,13 @@ impl<G: StillGpu> StillEngine<G> {
                 self.begin(begin);
                 StillCommandOutcome::Accepted
             }
-            StillCommand::Target(offer) => self.accept_target(offer),
+            StillCommand::Target(offer) => {
+                let outcome = self.accept_target(offer);
+                // Отказ цели (`Unavailable`) мог дать итог последнему снимку вне шага: без surface поток рендера
+                // больше не проснётся ради пустой очереди, поэтому GPU отпускается здесь же (`engine_surface`).
+                self.release_gpu_if_drained_without_surface();
+                outcome
+            }
         }
     }
 

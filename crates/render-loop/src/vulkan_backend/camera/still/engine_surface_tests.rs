@@ -243,3 +243,35 @@ fn workload_is_unfinished_from_the_press_until_the_final() {
     assert_eq!(sink.finals_for(StillId(1)), 1);
     assert_eq!(rig.engine.workload(), StillWorkload::Idle);
 }
+
+#[test]
+fn a_refused_target_for_the_last_still_without_the_screen_still_releases_the_gpu() {
+    let (mut rig, _) = proven_rig();
+    let sink = rig.begin(plan(1, 25));
+    rig.run(3);
+    assert!(matches!(
+        sink.0.lock().unwrap().first(),
+        Some(DevelopEvent::Secured { .. })
+    ));
+    rig.engine.on_detach();
+    assert!(rig.engine.has_gpu(), "захваченный снимок держит GPU");
+
+    // Запись не смогла открыть кодер: итог снимку выдаётся вне шага, очередь пустеет здесь же.
+    rig.engine
+        .apply_command(StillCommand::Target(PrimaryTargetOffer::Unavailable { id: StillId(1) }));
+
+    assert_eq!(sink.finals_for(StillId(1)), 1);
+    assert!(matches!(
+        sink.take().last(),
+        Some(DevelopEvent::Failed {
+            failure: DevelopFailure::TargetUnavailable,
+            ..
+        })
+    ));
+    assert_eq!(rig.engine.workload(), StillWorkload::Idle);
+    assert!(
+        !rig.engine.has_gpu(),
+        "поток рендера ради пустой очереди не проснётся: GPU отпускается при самом отказе"
+    );
+    assert_eq!(rig.engine.diagnostics().gpu_released_without_surface, 1);
+}
