@@ -26,6 +26,9 @@ use scene_estimation::exposure::{CompletedExposureMeasurement, ExposureTarget, l
 
 use crate::vulkan_backend::camera::flash_facts::AmbientLevel;
 
+/// Тот же журнал, что у нашего AE видоискателя (`exposure/mod.rs`): замеры предвспышки — его часть.
+const LOG_TARGET: &str = "fasticamera::render::auto_exposure";
+
 /// Сколько кадров с отправленной, но не вернувшейся статистикой помнить. Исполнитель замера держит их
 /// единицы; больше — потеря ответов, и лишнее забывается.
 const MAX_IN_FLIGHT_FRAMES: usize = 8;
@@ -116,12 +119,29 @@ impl PreflashMeter {
         target: ExposureTarget,
         key_offset_ev: f32,
     ) -> Option<PreflashSamples> {
+        // Покадровая лента (диагностика 14d): яркость КАЖДОГО измеренного кадра, включая освещённые вспышкой.
+        if let Ok(measurement) = done.outcome.as_ref() {
+            tracing::debug!(
+                target: LOG_TARGET,
+                frame = done.frame.sensor_timestamp_nanos,
+                ?light,
+                frame_product = done.frame_product.seconds_iso(),
+                green_per_product = f64::from(measurement.mean_green_level) / done.frame_product.seconds_iso(),
+                "кадр в ленте вспышки"
+            );
+        }
         let kind = match light {
             FrameLight::Ambient => PreflashLight::Ambient,
             FrameLight::TorchLit => PreflashLight::Torch,
             FrameLight::FlashFired | FrameLight::PartiallyLit | FrameLight::Unknown => return None,
         };
-        let measurement = done.outcome.as_ref().ok()?;
+        let measurement = match done.outcome.as_ref() {
+            Ok(measurement) => measurement,
+            Err(error) => {
+                tracing::debug!(target: LOG_TARGET, ?light, ?error, "кадр без замера: линейного замера предвспышки нет");
+                return None;
+            }
+        };
         let Some(mid_gray_product) = linear_mid_gray_product(measurement, done.frame_product, target, key_offset_ev)
         else {
             // Нулевая яркость или не число: линейного замера нет, но это не молчание.
@@ -138,6 +158,15 @@ impl PreflashMeter {
             quality: measurement.quality,
         });
         self.samples_published += 1;
+        tracing::debug!(
+            target: LOG_TARGET,
+            ?kind,
+            ?frame,
+            frame_product = done.frame_product.seconds_iso(),
+            mid_gray_product = mid_gray_product.seconds_iso(),
+            quality = ?measurement.quality,
+            "замер предвспышки"
+        );
         if kind == PreflashLight::Ambient {
             // Лишнее забываем с головы: движок снимков читает ленту каждый кадр, копиться могут единицы.
             if self.pending_ambient_levels.len() >= MAX_PENDING_AMBIENT_LEVELS {

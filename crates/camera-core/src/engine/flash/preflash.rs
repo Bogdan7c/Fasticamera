@@ -8,9 +8,7 @@ use std::time::{Duration, Instant};
 
 use camera_contract::auto_exposure::{CameraTag, ExposureProduct, MeasurementQuality};
 use camera_contract::capabilities::FrameDuration;
-use camera_contract::flash::{
-    FlashControl, FlashShotId, FlashStillFailure, PreflashMetering, PreflashSample, PreflashSamples,
-};
+use camera_contract::flash::{FlashShotId, FlashStillFailure, PreflashMetering, PreflashSample, PreflashSamples};
 
 use super::super::{CameraEngine, LOG_TARGET};
 use super::plan::{FlashPlanInputs, plan_flash_frame};
@@ -127,6 +125,16 @@ impl CameraEngine {
                 .ambient
                 .filter(|sample| Preflash::is_pre_request_ambient(sample, tag, request_floor));
         }
+        tracing::debug!(
+            target: LOG_TARGET,
+            ?shot,
+            preflash_product = exposure.product.seconds_iso(),
+            exposure_ms = exposure.exposure_time.duration().as_secs_f64() * 1e3,
+            iso = exposure.iso.value(),
+            request_floor = ?request_floor,
+            has_ambient = ambient.is_some(),
+            "предвспышка начата"
+        );
         Ok(FlashRun {
             shot,
             camera,
@@ -184,9 +192,21 @@ impl CameraEngine {
             return Judgement::Ignore;
         };
         let is_fresh = preflash.torch_frame_floor.is_none_or(|floor| torch.frame > floor);
-        let is_ours = torch.measured_on == tag
-            && torch.frame_product.ev_above(preflash.exposure.product).abs() <= PREFLASH_PRODUCT_MATCH_TOLERANCE_EV;
+        let product_gap_ev = torch.frame_product.ev_above(preflash.exposure.product);
+        let is_own_camera = torch.measured_on == tag;
+        let is_ours = is_own_camera && product_gap_ev.abs() <= PREFLASH_PRODUCT_MATCH_TOLERANCE_EV;
         if !is_fresh || !is_ours {
+            // Причина отказа — в отладочный лог: без неё «предвспышка не измерена» на телефоне не разобрать.
+            tracing::debug!(
+                target: LOG_TARGET,
+                frame = ?torch.frame,
+                is_fresh,
+                is_own_camera,
+                product_gap_ev,
+                frame_product = torch.frame_product.seconds_iso(),
+                wanted_product = preflash.exposure.product.seconds_iso(),
+                "замер с фонариком отвергнут"
+            );
             return Judgement::Ignore;
         }
         // Замер без фонарика должен быть из той же сцены: старше срока — другой кадр жизни. Он снят до
@@ -204,7 +224,16 @@ impl CameraEngine {
         match ambient {
             Some(ambient) => Judgement::Plan { torch, ambient },
             // Ждём следующий кадр с фонариком; срок предвспышки не продлевается.
-            None => Judgement::Ignore,
+            None => {
+                tracing::debug!(
+                    target: LOG_TARGET,
+                    torch_frame = ?torch.frame,
+                    known_ambient = ?preflash.ambient.map(|sample| sample.frame),
+                    request_floor = ?preflash.request_floor,
+                    "замер с фонариком годен, но нет замера без фонарика до запроса фонарика"
+                );
+                Judgement::Ignore
+            }
         }
     }
 
@@ -295,15 +324,12 @@ impl CameraEngine {
 
     /// Фонарик в повторяющемся запросе нужен только в предвспышке; единственное место, где он ставится.
     pub(in crate::engine) fn apply_flash_to_plan(&self, planned: &mut crate::engine::three_a::PlannedRequest) {
-        let Some(exposure) = self.flash.preflash_exposure() else {
+        let Some((exposure_time, iso, flash)) = self.flash.repeating_override() else {
             return;
         };
-        planned.controls.exposure = ExposurePlan::Sensor {
-            exposure_time: exposure.exposure_time,
-            iso: exposure.iso,
-        };
-        planned.controls.flash = FlashControl::Torch;
-        // Поправки и достижимый отрезок относились к плану нашего AE, а не к экспозиции предвспышки.
+        planned.controls.exposure = ExposurePlan::Sensor { exposure_time, iso };
+        planned.controls.flash = flash;
+        // Поправки и достижимый отрезок относились к плану нашего AE, а не к экспозиции последовательности.
         planned.adjustments.clear();
         planned.exposure_reach = camera_contract::auto_exposure::ProductReach::Unbounded;
     }

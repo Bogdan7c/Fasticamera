@@ -97,6 +97,13 @@ impl CameraEngine {
         };
         match stage {
             Stage::Preflash(preflash) if now >= preflash.deadline => {
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    remeasures = preflash.remeasures,
+                    has_ambient = preflash.ambient.is_some(),
+                    torch_frame_floor = ?preflash.torch_frame_floor,
+                    "срок предвспышки вышел без годного замера"
+                );
                 self.fail_flash_keeping_stream(FlashStillFailure::PreflashNotMeasured, now);
             }
             Stage::Gap { submit_at, .. } if now >= submit_at => self.submit_flash_still_request(now),

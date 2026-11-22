@@ -28,6 +28,19 @@ impl CameraEngine {
             self.three_a.counters.results_with_hal_ae_active += 1;
         }
         self.record_last_three_a_result(result);
+        // Покадровая лента вокруг кадра со вспышкой (диагностика 14d): результаты паузы и ожидания.
+        if self.flash.in_progress() {
+            tracing::debug!(
+                target: super::super::LOG_TARGET,
+                frame_number = result.frame_number.0,
+                timestamp = ?result.sensor_timestamp,
+                ?origin,
+                exposure = ?result.exposure_time,
+                iso = ?result.sensitivity_iso,
+                flash = ?result.three_a.flash,
+                "результат в ленте вспышки"
+            );
+        }
         self.three_a.exposure.observe_result(result);
         if let Some((request, outcome)) = self.three_a.focus.observe_result(result) {
             if self
@@ -119,6 +132,11 @@ impl CameraEngine {
         self.fail_flash_stream_ended();
         self.three_a.focus_settle_deadline = None;
         self.three_a.announced_adjustments.clear();
+        // «Последний результат» принадлежит потоку. Номера кадров у каждой сессии свои и после смены
+        // камеры начинаются заново, а сравнение «новее» идёт по номеру кадра: без сброса результаты нового
+        // потока отбрасывались бы как «старые», и последним навсегда оставался кадр прежней камеры
+        // (14d: пол запроса фонарика отставал на секунды, ширик не снимал со вспышкой).
+        self.three_a.last_result = None;
         self.three_a.focus.reset_for_new_stream();
         self.three_a.exposure.reset_for_new_stream();
         // Запроса больше нет — рендеру не на что подтягивать кадр.

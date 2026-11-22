@@ -243,3 +243,45 @@ fn plan_from_a_still_clipped_torch_after_the_budget_is_counted_and_a_good_one_is
         0
     );
 }
+
+/// Дефект, найденный ручной приёмкой 14d на ширике: номера кадров у каждой сессии свои и после смены
+/// камеры начинаются заново. «Последний результат» сравнивался по номеру кадра и навсегда оставался
+/// результатом прежней камеры — пол запроса фонарика отставал на секунды, и все свежие замеры без
+/// фонарика отвергались как «снятые после запроса» (`PreflashNotMeasured`). Последний результат
+/// принадлежит потоку: новый поток начинает его заново.
+#[test]
+fn a_new_stream_resets_the_last_result_even_when_its_frame_numbers_start_lower() {
+    use camera_contract::control::CaptureIntent;
+
+    let mut flash = FlashRig::measured(8.0);
+    for _ in 0..40 {
+        flash.feed_repeating();
+    }
+    assert_eq!(
+        flash.rig.send(crate::command::CameraCommand::StopStreaming),
+        crate::command::CommandOutcome::Accepted
+    );
+    assert_eq!(
+        flash.rig.send(crate::command::CameraCommand::StartStreaming {
+            intent: CaptureIntent::Preview
+        }),
+        crate::command::CommandOutcome::Accepted
+    );
+    // Новый поток: номера кадров снова с 1, а часы сенсора идут дальше.
+    let later = camera_contract::capture_result::SensorTimestamp::from_nanos(60_000_000_000);
+    let mut first = super::three_a_support::result_meta(1, camera_contract::three_a::RequestOrigin::Repeating, None);
+    first.sensor_timestamp = Some(later);
+    flash.rig.feed_result(first);
+    let last = flash
+        .rig
+        .engine
+        .status()
+        .three_a
+        .last_result
+        .expect("результат нового потока");
+    assert_eq!(
+        (last.frame_number.0, last.sensor_timestamp),
+        (1, Some(later)),
+        "последний результат — первый кадр нового потока, а не кадр 41 прежнего"
+    );
+}

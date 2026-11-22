@@ -192,6 +192,21 @@ fn active_preflash_demands_statistics_on_every_frame_and_inactive_does_not() {
         );
     }
     publish_flash(&harness, FlashDirective::INACTIVE);
+    // Покадровая лента вокруг кадра со вспышкой: после предвспышки ещё ровно столько кадров «каждый кадр»,
+    // потом снова расписание.
+    for frame in 0..POST_FLASH_EVERY_FRAME_FRAMES {
+        assert_eq!(
+            step_lit(
+                &mut harness,
+                UNIT_EXPOSURE,
+                FlashResult::UNREPORTED,
+                &uniform_scene(0.1)
+            )
+            .statistics,
+            StatisticsDemand::EveryFrame,
+            "кадр {frame} после предвспышки"
+        );
+    }
     assert_eq!(
         step_lit(
             &mut harness,

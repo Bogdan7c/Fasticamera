@@ -111,6 +111,9 @@ class FlashScenario : ProbeScenario {
             torchOnFrames = args.int("torch_on_frames", DEFAULT_TORCH_ON_FRAMES),
             torchOffFrames = args.int("torch_off_frames", DEFAULT_TORCH_OFF_FRAMES),
             intentExposureNs = args.long("intent_exposure_ns", DEFAULT_EXPOSURE_NS),
+            preflashExposureNs = args.long("preflash_ns", 4_000_000L),
+            preflashLitFrames = args.int("torch_lit_frames", 2),
+            offGapsMs = args.stringList("off_gaps", listOf("50", "100", "200")).map { it.toLong() },
         )
     }
 

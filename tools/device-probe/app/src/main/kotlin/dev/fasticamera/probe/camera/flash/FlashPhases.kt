@@ -28,6 +28,12 @@ class FlashSettings(
     val torchOffFrames: Int,
     /** Выдержка для фазы single_intent. */
     val intentExposureNs: Long,
+    /** Выдержка кадров предвспышки (torch) в фазах последовательности. */
+    val preflashExposureNs: Long,
+    /** Сколько освещённых кадров torch дождаться перед гашением (продукт держит torch ≈ 20 кадров). */
+    val preflashLitFrames: Int,
+    /** Паузы между гашением torch и выстрелом для фазы fire_after_off_gap, мс. */
+    val offGapsMs: List<Long>,
 )
 
 /**
@@ -53,7 +59,7 @@ class FlashPhases(
         if (enabled("torch_latency")) sequences.torchLatency()
         if (enabled("preflash_fire")) sequences.preflashFire(FlashSequencePhases.Order.SHOT_THEN_OFF)
         if (enabled("fire_after_off_gap")) {
-            for (gapMs in OFF_GAPS_MS) sequences.preflashFire(FlashSequencePhases.Order.OFF_THEN_SHOT, gapMs)
+            for (gapMs in settings.offGapsMs) sequences.preflashFire(FlashSequencePhases.Order.OFF_THEN_SHOT, gapMs)
         }
         if (enabled("fire_right_after_torch_off")) sequences.preflashFire(FlashSequencePhases.Order.OFF_THEN_SHOT)
         if (enabled("torch")) torch()

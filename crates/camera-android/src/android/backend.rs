@@ -317,6 +317,8 @@ impl CameraBackend for AndroidCameraBackend {
             catalog: &self.catalog,
             diagnostics: &self.diagnostics,
         };
+        // Лента запросов вспышки (14d): какая вспышка и экспозиция ушли в повторяющийся запрос.
+        tracing::debug!(target: LOG_TARGET, flash = ?controls.flash, exposure = ?controls.exposure, "повторяющийся запрос");
         apply_repeating_request(&env, device, session, intent, controls)
     }
 
@@ -415,6 +417,7 @@ impl CameraBackend for AndroidCameraBackend {
         let Some(record) = self.catalog.get(&session.stream().camera) else {
             return Err(RequestFailure::NoSession);
         };
+        tracing::debug!(target: LOG_TARGET, ?shot, flash = ?controls.flash, exposure = ?controls.exposure, "разовый запрос со вспышкой");
         // Условия снимка (Single, ручной сенсор, вспышка есть) проверяет чистый планировщик;
         // отказ — честная ошибка запроса, а не молчаливый обычный кадр.
         let planned = plan_flash_still(&RequestInputs {

@@ -61,6 +61,8 @@ use super::statistics_schedule::StatisticsDemand;
 use crate::config::{AutoExposureConfig, RevealExposureCheck};
 use crate::viewfinder::{AutoExposureCounters, AutoExposureDiagnostics, AwbFrameIdentity};
 
+/// Кадров «каждый кадр» после конца предвспышки: пауза (≈ 6 кадров) + разовый кадр (≈ 6) + запас.
+const POST_FLASH_EVERY_FRAME_FRAMES: u32 = 30;
 const LOG_TARGET: &str = "fasticamera::render::auto_exposure";
 
 /// Поколение потока у AE: растёт с каждым новым потоком камеры.
@@ -197,6 +199,9 @@ pub struct ExposureRunner {
     cold_start_frames: u32,
     /// Регион текущей области лежит вне сетки: ждать оценки бессмысленно.
     area_unavailable: bool,
+    /// Сколько ещё кадров после предвспышки мерить каждый кадр: покадровая лента вокруг кадра со вспышкой
+    /// (на каком кадре на самом деле свет). Диагностика 14d, цена — статистика на полсекунды.
+    post_flash_every_frame_left: u32,
     last_gain: ExposureGain,
     /// Произведение показанного кадра, для которого посчитана `last_gain`.
     last_frame_product: Option<ExposureProduct>,
@@ -236,6 +241,7 @@ impl ExposureRunner {
             has_estimate: false,
             cold_start_frames: 0,
             area_unavailable: false,
+            post_flash_every_frame_left: 0,
             last_gain: ExposureGain::UNITY,
             last_frame_product: None,
             last_proposal: None,
@@ -472,6 +478,11 @@ impl ExposureRunner {
         let area_before = MeteredArea::for_point(self.directive.metering);
         let decision_changed = changes_decision(&self.directive, &directive);
         self.controller.set_directive(directive);
+        let preflash_ended = matches!(self.directive.flash.preflash, PreflashMetering::Active { .. })
+            && !matches!(directive.flash.preflash, PreflashMetering::Active { .. });
+        if preflash_ended {
+            self.post_flash_every_frame_left = POST_FLASH_EVERY_FRAME_FRAMES;
+        }
         self.directive = directive;
         self.applied_generation = Some(generation);
         // Объявление ожидаемой экспозиции запоминаем по камере сразу: следующее указание может его перезаписать
@@ -531,6 +542,10 @@ impl ExposureRunner {
     fn statistics_demand(&mut self) -> StatisticsDemand {
         // Предвспышка: движку нужен замер КАЖДОГО кадра (и без фонарика, и с ним), чтобы поймать кадры с фонариком.
         if matches!(self.directive.flash.preflash, PreflashMetering::Active { .. }) {
+            return StatisticsDemand::EveryFrame;
+        }
+        if self.post_flash_every_frame_left > 0 {
+            self.post_flash_every_frame_left -= 1;
             return StatisticsDemand::EveryFrame;
         }
         let manual = self.directive.authority == ExposureAuthority::Manual;

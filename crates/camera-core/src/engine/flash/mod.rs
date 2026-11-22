@@ -34,7 +34,7 @@ use std::time::Instant;
 use camera_contract::auto_exposure::{CameraTag, ExposureProduct};
 use camera_contract::capture_result::SensorTimestamp;
 use camera_contract::control::{ExposureTime, Iso};
-use camera_contract::flash::{FlashShotId, PreflashSample};
+use camera_contract::flash::{FlashControl, FlashShotId, PreflashSample};
 use camera_contract::ids::CameraId;
 use camera_contract::three_a::DirectiveGeneration;
 
@@ -172,9 +172,16 @@ impl FlashEngine {
 
     /// Экспозиция предвспышки, пока фаза — `Preflash`; иначе `None`. По ней же повторяющийся запрос
     /// получает фонарик: условие «фонарик ⇔ Preflash» выражено одним местом.
-    pub(super) fn preflash_exposure(&self) -> Option<PreflashExposure> {
+    /// Экспозиция и светодиод, которых последовательность требует от ПОВТОРЯЮЩЕГОСЯ запроса: только на время
+    /// предвспышки (фонарик + экспозиция предвспышки). В паузе и ожидании результата повторяющийся запрос —
+    /// обычный план нашего AE без фонарика.
+    pub(super) fn repeating_override(&self) -> Option<(ExposureTime, Iso, FlashControl)> {
         match self.run.as_ref()?.stage {
-            Stage::Preflash(preflash) => Some(preflash.exposure),
+            Stage::Preflash(preflash) => Some((
+                preflash.exposure.exposure_time,
+                preflash.exposure.iso,
+                FlashControl::Torch,
+            )),
             Stage::Gap { .. } | Stage::Fired { .. } => None,
         }
     }

@@ -280,6 +280,17 @@ impl<G: StillGpu> StillEngine<G> {
         let Some(green) = mean_green_level(sampling) else {
             return LitVerdict::Undecidable(LitUndecidable::SamplesUnavailable);
         };
+        // Обе стороны проверки — в отладочный лог: по ним видно, не горела ли вспышка или расходятся шкалы.
+        tracing::debug!(
+            target: "fasticamera::render::still",
+            frame_green = green,
+            frame_product = frame_product.seconds_iso(),
+            frame_green_per_product = green / frame_product.seconds_iso(),
+            ambient_green_per_product = ?ambient,
+            predicted_share,
+            ?area,
+            "проверка освещённости кадра со вспышкой"
+        );
         judge_lit(
             predicted_share,
             ambient,

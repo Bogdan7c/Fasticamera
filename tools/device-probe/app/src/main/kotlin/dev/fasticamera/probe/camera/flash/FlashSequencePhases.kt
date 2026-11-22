@@ -54,7 +54,7 @@ class FlashSequencePhases(
             else -> "fire_after_off_gap_${gapAfterOffMs}ms"
         }
         val shotExposureNs = settings.baselineExposureNs
-        val preflashExposureNs = PREFLASH_EXPOSURE_NS
+        val preflashExposureNs = settings.preflashExposureNs
         // Фон на выдержке предвспышки измеряем один раз: нужен, чтобы отличить освещённые кадры torch.
         base.settle("${label}_ambient_pre", preflashExposureNs)
         val ambientPre = ambientOfTail("${label}_ambient_pre") ?: run { log.error(label, "нет фона предвспышки"); return }
@@ -66,7 +66,7 @@ class FlashSequencePhases(
             val ambientShot = ambientOfTail("${label}_settle_$round") ?: continue
             val torchPhase = "${label}_torch_$round"
             val torchMark = markedRepeating(base.repeatingRequest(torchPhase, preflashExposureNs, FLASH_TORCH))
-            val litTorchFrames = awaitLitFrames(torchPhase, ambientPre, count = LIT_TORCH_FRAMES_REQUIRED)
+            val litTorchFrames = awaitLitFrames(torchPhase, ambientPre, count = settings.preflashLitFrames)
             val shotTag = ThreeATag("${label}_shot", ThreeATag.Kind.TRIGGER, round = round, requestedExposureNs = shotExposureNs)
             val shotRequest = base.manualRequest(shotTag, shotExposureNs, FLASH_SINGLE) { }
             val offRequest = base.repeatingRequest("${label}_off_$round", shotExposureNs, FLASH_OFF)
@@ -122,7 +122,7 @@ class FlashSequencePhases(
         val torchLit = window.filter { it.result.flashMode == FLASH_TORCH && it.profile?.let { p -> FlashAnalysis.isLit(p, ambientPre) } == true }
         val torchGain4 = torchLit.takeIf { it.isNotEmpty() }?.let { FlashAnalysis.median(it.map { f -> f.profile!!.overallMean }) - ambientPre.mean }
         val shotGain = shotFrame.profile?.let { it.overallMean - ambientShot.mean }
-        val exposureRatio = shotFrame.result.exposureNs?.let { it.toDouble() / PREFLASH_EXPOSURE_NS } ?: (settings.baselineExposureNs.toDouble() / PREFLASH_EXPOSURE_NS)
+        val exposureRatio = shotFrame.result.exposureNs?.let { it.toDouble() / settings.preflashExposureNs } ?: (settings.baselineExposureNs.toDouble() / settings.preflashExposureNs)
         val after = window.filter { it.result.frameNumber > shot.frameNumber }
         val firstUnlitAfter = after.firstOrNull { f -> f.profile?.let { !FlashAnalysis.isLit(it, ambientShot) } == true }
         val json = JSONObject().put("round", round).put("lit_torch_frames_when_shot_sent", litTorchFramesAtShot)
