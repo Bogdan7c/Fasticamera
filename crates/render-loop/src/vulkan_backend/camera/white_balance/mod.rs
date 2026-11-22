@@ -26,6 +26,7 @@ mod cold_start;
 mod hal_white;
 mod memory;
 mod schedule;
+mod torch;
 
 use std::sync::Arc;
 
@@ -45,6 +46,8 @@ use self::hal_white::{HalWhiteTracker, delta_between, reading_of};
 pub use self::memory::SceneWhiteMemory;
 pub use self::schedule::StatisticsPlan;
 use self::schedule::StatisticsSchedule;
+use self::torch::TorchWhiteTracker;
+use super::flash_facts::TorchWhite;
 use super::pipelines::IspPresentation;
 use crate::config::WhiteBalanceConfig;
 use crate::viewfinder::{AwbFrameIdentity, ColdStartState, EstimateReading, WhiteBalanceDiagnostics};
@@ -89,6 +92,15 @@ pub struct WhiteBalanceParts {
 #[error("настройки AWB: {0}")]
 pub struct WhiteBalanceSetupError(pub String);
 
+/// Зачем статистика кадра отдана оценке света.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatisticsPurpose {
+    /// Обычный кадр видоискателя: оценка питает контроллер AWB.
+    Viewfinder,
+    /// Кадр с фонариком предвспышки: оценка света светодиода, мимо контроллера.
+    Torch,
+}
+
 /// Привязка к потоку: профиль цвета и таблица локуса считаются один раз на поток.
 struct BoundStream {
     passport: Arc<StreamPassport>,
@@ -129,6 +141,8 @@ pub struct WhiteBalanceRunner {
     last_failure: Option<String>,
     table_failure: Option<String>,
     scene_white: Option<SceneWhite>,
+    /// Белая светодиода по кадрам с фонариком предвспышки (14d): мимо контроллера видоискателя.
+    torch: TorchWhiteTracker,
     counters: RunnerCounters,
 }
 
@@ -163,6 +177,7 @@ impl WhiteBalanceRunner {
             last_failure: None,
             table_failure: None,
             scene_white: None,
+            torch: TorchWhiteTracker::default(),
             counters: RunnerCounters::default(),
         })
     }
@@ -205,6 +220,28 @@ impl WhiteBalanceRunner {
 
     /// Статистика кадра слота (собрана после fence): исполнителю, готовые оценки — контроллеру.
     pub fn ingest_statistics(&mut self, stream: AwbStream, frame: AwbFrameIdentity, statistics: &AwbStatistics) {
+        self.submit_statistics(stream, frame, statistics, StatisticsPurpose::Viewfinder);
+    }
+
+    /// Статистика кадра с фонариком предвспышки: оценка света светодиода, НЕ влияющая на белую видоискателя.
+    /// Отдаётся независимо от расписания AWB: предвспышка — единицы кадров, и пропустить кадр с фонариком по
+    /// прореживанию значило бы остаться без белой светодиода.
+    pub fn ingest_torch_statistics(&mut self, stream: AwbStream, frame: AwbFrameIdentity, statistics: &AwbStatistics) {
+        self.submit_statistics(stream, frame, statistics, StatisticsPurpose::Torch);
+    }
+
+    /// Новые белые светодиода для движка снимков (список становится пустым).
+    pub fn drain_torch_whites(&mut self) -> Vec<TorchWhite> {
+        self.torch.drain()
+    }
+
+    fn submit_statistics(
+        &mut self,
+        stream: AwbStream,
+        frame: AwbFrameIdentity,
+        statistics: &AwbStatistics,
+        purpose: StatisticsPurpose,
+    ) {
         let Some(bound) = self.bound.as_ref().filter(|bound| bound.id == stream) else {
             self.counters.statistics_stale += 1;
             return;
@@ -221,8 +258,14 @@ impl WhiteBalanceRunner {
             statistics,
             table,
         };
+        if purpose == StatisticsPurpose::Torch {
+            self.torch.note_submitted(frame.sensor_timestamp_nanos);
+        }
         if self.estimator.submit(request).is_err() {
             self.counters.estimator_busy += 1;
+            if purpose == StatisticsPurpose::Torch {
+                self.torch.withdraw(frame.sensor_timestamp_nanos);
+            }
         }
         self.collect_estimates(stream);
     }
@@ -256,6 +299,8 @@ impl WhiteBalanceRunner {
             cold_start_forced: self.counters.forced,
             frames_with_provisional_white: self.counters.provisional_frames,
             table_failure: self.table_failure.clone(),
+            torch_white_estimates: self.torch.estimated,
+            torch_white_failures: self.torch.failed,
         }
     }
 
@@ -301,6 +346,7 @@ impl WhiteBalanceRunner {
         self.hal.reset();
         self.hal_white = None;
         self.last_estimate = None;
+        self.torch.reset();
         let scene_white_known = self.controller.has_scene_white();
         // Без таблицы оценок не будет никогда: ждать нечего, прятать кадры незачем.
         self.cold_start.begin_stream(scene_white_known || table.is_none());
@@ -405,6 +451,17 @@ impl WhiteBalanceRunner {
                 continue;
             }
             self.counters.estimates += 1;
+            if self.torch.claim(done.frame.sensor_timestamp_nanos) {
+                // Кадр с фонариком: оценка света светодиода, контроллер видоискателя её не видит.
+                match (&done.outcome, self.bound.as_ref()) {
+                    (Ok(EstimateOutcome::Estimated(estimate)), Some(bound)) => {
+                        self.torch
+                            .record(&bound.passport, done.frame.sensor_timestamp_nanos, estimate.white);
+                    }
+                    _ => self.torch.record_failure(),
+                }
+                continue;
+            }
             match done.outcome {
                 Ok(outcome) => {
                     if let EstimateOutcome::Estimated(estimate) = &outcome {
@@ -431,4 +488,7 @@ impl WhiteBalanceRunner {
 
 #[cfg(test)]
 #[path = "runner_tests.rs"]
-mod tests;
+mod runner_tests;
+#[cfg(test)]
+#[path = "torch_tests.rs"]
+mod torch_tests;

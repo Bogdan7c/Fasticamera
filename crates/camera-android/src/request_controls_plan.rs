@@ -11,6 +11,7 @@
 
 use camera_contract::capabilities::{CameraCapabilities, FocusCapability};
 use camera_contract::control::CaptureIntent;
+use camera_contract::flash::FlashControl;
 use camera_contract::stream::TargetFrameRate;
 use camera_contract::three_a::{
     AeAfLock, AfModeSupport, AntibandingModeSupport, ExposureCompensationSupport, LockSupport, MainsFrequency,
@@ -46,6 +47,8 @@ pub enum PlanNote {
     CompensationClamped { requested_steps: i32, applied_steps: i32 },
     /// Камера не объявила нужный антибандинг: тег не записан, остаётся умолчание HAL.
     AntibandingUnsupported { requested: AntibandingModeSupport },
+    /// Просили включить светодиод, но у камеры вспышки нет: `FLASH_MODE` не записан вовсе.
+    FlashUnavailable { requested: FlashControl },
 }
 
 impl PlanNote {
@@ -61,6 +64,7 @@ impl PlanNote {
             PlanNote::CompensationUnsupported { .. } => "compensation_unsupported",
             PlanNote::CompensationClamped { .. } => "compensation_clamped",
             PlanNote::AntibandingUnsupported { .. } => "antibanding_unsupported",
+            PlanNote::FlashUnavailable { .. } => "flash_unavailable",
         }
     }
 }
@@ -93,6 +97,8 @@ pub fn controls_entries(
     out.push_byte(tags::AWB_MODE, tags::AWB_MODE_AUTO);
     exposure_entries(context, &controls.exposure, &mut out);
     focus_entries(context, &controls.focus, &mut out);
+    // Вспышка — до триггера: триггер остаётся единственной добавкой в хвосте запроса.
+    flash_entries(context, controls.flash, &mut out);
     trigger_entries(context, trigger, &mut out);
     out
 }
@@ -300,6 +306,31 @@ fn trigger_entries(context: &ControlsContext<'_>, trigger: Option<AfTrigger>, ou
         AfTrigger::Cancel => tags::AF_TRIGGER_CANCEL,
     };
     out.push_byte(tags::AF_TRIGGER, code);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Вспышка (14d)
+// ---------------------------------------------------------------------------------------------
+
+/// Пишет `FLASH_MODE` в КАЖДЫЙ запрос камеры со вспышкой, включая явный `OFF`: ключи HAL «липкие»,
+/// и запрос без ключа мог бы унаследовать фонарик или разовую вспышку предыдущего запроса.
+///
+/// У камеры без вспышки (фронт) ключ не пишется вовсе: светодиода нет, наследовать нечего, а
+/// отказ HAL на лишний ключ провалил бы весь запрос. Если при этом просили включить светодиод —
+/// это [`PlanNote::FlashUnavailable`], а не молчаливый `OFF`.
+fn flash_entries(context: &ControlsContext<'_>, flash: FlashControl, out: &mut ControlsEntries) {
+    if !context.camera.flash.is_present() {
+        if flash != FlashControl::Off {
+            out.note(PlanNote::FlashUnavailable { requested: flash });
+        }
+        return;
+    }
+    let code = match flash {
+        FlashControl::Off => tags::FLASH_MODE_OFF,
+        FlashControl::Torch => tags::FLASH_MODE_TORCH,
+        FlashControl::Single => tags::FLASH_MODE_SINGLE,
+    };
+    out.push_byte(tags::FLASH_MODE, code);
 }
 
 fn saturating_i32(value: u32) -> i32 {

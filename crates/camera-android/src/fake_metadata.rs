@@ -164,6 +164,8 @@ pub fn main_camera_characteristics() -> FakeMetadata {
         .bytes(tags::LENS_POSE_REFERENCE, &[tags::LENS_POSE_REFERENCE_PRIMARY_CAMERA])
         .int32s(tags::PRE_CORRECTION_ACTIVE_ARRAY_SIZE, &[0, 0, width, height])
         .floats(tags::MAX_DIGITAL_ZOOM, &[10.0])
+        // Вспышка есть у задних камер OnePlus 11 (зонд `flash` 14d).
+        .bytes(tags::FLASH_INFO_AVAILABLE, &[tags::FLASH_INFO_AVAILABLE_TRUE])
         .with_back_camera_three_a()
 }
 
@@ -175,6 +177,8 @@ pub fn three_a_result_fixture() -> FakeMetadata {
         .bytes(tags::LENS_STATE, &[tags::LENS_STATE_STATIONARY])
         .floats(tags::LENS_FOCUS_DISTANCE, &[2.5])
         .bytes(tags::SCENE_FLICKER, &[tags::SCENE_FLICKER_50HZ])
+        .bytes(tags::FLASH_MODE, &[tags::FLASH_MODE_OFF])
+        .bytes(tags::FLASH_STATE, &[tags::FLASH_STATE_READY])
 }
 
 impl FakeMetadata {

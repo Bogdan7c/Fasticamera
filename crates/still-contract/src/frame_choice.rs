@@ -5,6 +5,7 @@
 //! и в счётчики, чтобы «снимок без задержки» был доказан, а не предположен.
 
 use camera_contract::capture_result::SensorTimestamp;
+use camera_contract::flash::{FlashShotId, FlashStillFailure};
 use serde::Serialize;
 use shell_contract::clock::MonotonicNanos;
 
@@ -25,21 +26,27 @@ pub enum FrameChoice {
         wanted: Option<SensorTimestamp>,
         reason: SubstitutionReason,
     },
+    /// Кадр разового запроса со вспышкой этого снимка (14d), освещённость проверена по пикселям.
+    FlashFrame {
+        sensor_timestamp: SensorTimestamp,
+        shot: FlashShotId,
+    },
 }
 
 impl FrameChoice {
     /// Метка сенсора выбранного кадра.
     pub fn sensor_timestamp(&self) -> SensorTimestamp {
         match self {
-            Self::ShownAtPress { sensor_timestamp, .. } | Self::Substituted { sensor_timestamp, .. } => {
-                *sensor_timestamp
-            }
+            Self::ShownAtPress { sensor_timestamp, .. }
+            | Self::Substituted { sensor_timestamp, .. }
+            | Self::FlashFrame { sensor_timestamp, .. } => *sensor_timestamp,
         }
     }
 
-    /// Снят ли ровно показанный кадр (без замены).
+    /// Снят ли ровно тот кадр, что просили (без замены): показанный при нажатии или кадр
+    /// своего запроса со вспышкой.
     pub fn is_exact(&self) -> bool {
-        matches!(self, Self::ShownAtPress { .. })
+        matches!(self, Self::ShownAtPress { .. } | Self::FlashFrame { .. })
     }
 }
 
@@ -83,4 +90,14 @@ pub enum NoFrameReason {
     /// Рендер остановился или отпустил экран раньше, чем кадр был захвачен.
     #[error("рендер остановлен до захвата кадра")]
     RendererStopped,
+    /// Движок камеры не снял кадр со вспышкой (14d): причина — от него.
+    #[error("кадр со вспышкой не снят: {0:?}")]
+    FlashNotCaptured(FlashStillFailure),
+    /// Кадр запроса со вспышкой не дошёл до кольца в срок `still.flash_frame_wait_ms`.
+    #[error("кадр со вспышкой не дошёл до кольца в срок")]
+    FlashFrameNeverArrived,
+    /// Кадр запроса со вспышкой дошёл, но по пикселям не освещён (факт 14d: HAL может сообщить
+    /// `FIRED` без света) — молча тёмный кадр не проявляется.
+    #[error("кадр со вспышкой не освещён")]
+    FlashFrameNotLit,
 }

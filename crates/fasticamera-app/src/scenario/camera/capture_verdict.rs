@@ -5,11 +5,15 @@
 use std::collections::BTreeSet;
 
 use super::capture_burst::BurstRecord;
+use super::capture_flash_record::CameraFlashRecord;
 use super::capture_observation::LiveDelta;
-use super::capture_plan::{STEP_BURST, STEP_SINGLE_HEIF, STEP_SINGLE_HEIF_DNG};
+use super::capture_plan::{
+    STEP_BURST, STEP_SINGLE_FLASH_AUTO, STEP_SINGLE_FLASH_ON, STEP_SINGLE_HEIF, STEP_SINGLE_HEIF_DNG,
+};
 use super::capture_report::{CaptureObservationReport, ShotOutcome, ShotRecord};
 use crate::capture_backend::CaptureMode;
 use crate::capture_scenario_config::CaptureScenarioConfig;
+use crate::still_capture_service::FlashModeName;
 
 pub fn evaluate_capture(config: &CaptureScenarioConfig, report: &CaptureObservationReport) -> Vec<String> {
     let mut violations = Vec::new();
@@ -75,6 +79,63 @@ fn shot_violations(shot: &ShotRecord) -> Vec<String> {
     if shot.format != "heif" {
         violations.push(format!("{label}: основной формат {}, ждали heif", shot.format));
     }
+    violations.extend(flash_violations(shot, &label));
+    violations
+}
+
+/// Правила вспышки одного снимка (14d). `On` — вспышка обязана сработать: кадр разового запроса, маршрут сервиса со
+/// вспышкой и итог камеры `Fired`. `Off` — кадр вспышки быть не должен. `Auto` — наблюдательный режим: допустим любой
+/// исход, но кадр обязан СОВПАДАТЬ с решением сервиса (решил вспыхнуть — кадр вспышки, нет — показанный).
+fn flash_violations(shot: &ShotRecord, label: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    if shot.flash_requested != shot.flash_expected {
+        violations.push(format!(
+            "{label}: экран просил вспышку {:?}, шаг ждал {:?}",
+            shot.flash_requested, shot.flash_expected
+        ));
+    }
+    // Итог снимка, не дошедшего до записи, судят общие правила выше: кадра выбрано может не быть.
+    if !matches!(shot.outcome, ShotOutcome::Saved { .. }) {
+        return violations;
+    }
+    let flash_frame = shot.frame.is_flash_frame();
+    let route_uses_flash = shot.flash.as_ref().and_then(|flash| flash.route_uses_flash);
+    match shot.flash_expected {
+        FlashModeName::Off if flash_frame => {
+            violations.push(format!("{label}: вспышка выключена, а взят кадр со вспышкой"));
+        }
+        FlashModeName::On => {
+            if !flash_frame {
+                violations.push(format!(
+                    "{label}: вспышка включена, а взят не кадр со вспышкой ({})",
+                    shot.frame.choice_name()
+                ));
+            }
+            if route_uses_flash != Some(true) {
+                violations.push(format!(
+                    "{label}: вспышка включена, а маршрут сервиса со вспышкой не подтверждён ({route_uses_flash:?})"
+                ));
+            }
+            match shot.flash.as_ref().and_then(|flash| flash.camera.as_ref()) {
+                Some(CameraFlashRecord::Fired { .. }) => {}
+                Some(CameraFlashRecord::Failed { failure }) => {
+                    violations.push(format!("{label}: камера сообщила срыв вспышки: {failure}"));
+                }
+                None => violations.push(format!("{label}: камера не сообщила итог вспышки")),
+            }
+        }
+        FlashModeName::Auto => {
+            if let Some(decided) = route_uses_flash
+                && decided != flash_frame
+            {
+                violations.push(format!(
+                    "{label}: Auto: сервис решил вспышка={decided}, а взят кадр «{}»",
+                    shot.frame.choice_name()
+                ));
+            }
+        }
+        FlashModeName::Off => {}
+    }
     violations
 }
 
@@ -95,7 +156,12 @@ fn address_violations(report: &CaptureObservationReport) -> Vec<String> {
 /// Одиночные шаги: ровно по одному сохранённому снимку (если шаг дошёл до конца).
 fn single_step_violations(report: &CaptureObservationReport) -> Vec<String> {
     let mut violations = Vec::new();
-    for name in [STEP_SINGLE_HEIF, STEP_SINGLE_HEIF_DNG] {
+    for name in [
+        STEP_SINGLE_HEIF,
+        STEP_SINGLE_HEIF_DNG,
+        STEP_SINGLE_FLASH_ON,
+        STEP_SINGLE_FLASH_AUTO,
+    ] {
         let reached = report
             .steps
             .iter()
@@ -261,13 +327,17 @@ fn frame_violations(config: &CaptureScenarioConfig, report: &CaptureObservationR
                 config.max_press_to_frame_ms
             )),
             Some(_) => {}
-            None => violations.push(format!(
-                "задержку нажатия не измерили ни у одного снимка: {}",
-                summary
-                    .delay_unavailable_reason
-                    .as_deref()
-                    .unwrap_or("причина не названа")
-            )),
+            // Снимки со вспышкой задержку не меряют (кадр снят после нажатия): их одних недостаточно для замера.
+            None if report.shots.len() > usize::try_from(summary.flash_frames).unwrap_or(usize::MAX) => {
+                violations.push(format!(
+                    "задержку нажатия не измерили ни у одного снимка: {}",
+                    summary
+                        .delay_unavailable_reason
+                        .as_deref()
+                        .unwrap_or("причина не названа")
+                ));
+            }
+            None => {}
         }
     }
     // Вытеснение показанного кадра из кольца — недостаточная глубина кольца (решение 139): берём большее из
@@ -287,6 +357,16 @@ fn frame_violations(config: &CaptureScenarioConfig, report: &CaptureObservationR
         violations.push(format!(
             "рендер: GPU снимков объявлен потерянным {} раз (по сроку {})",
             delta.gpu_lost, delta.gpu_lost_by_deadline
+        ));
+    }
+    // Вспышка (14d): HAL может сообщить `FIRED` без света, поэтому «кадр освещён» доказывает только проверка
+    // рендера по пикселям. Неосвещённый или не дошедший до кольца кадр со вспышкой — провал прогона.
+    if let Some(delta) = report.render_still_detail
+        && (delta.flash.not_lit > 0 || delta.flash.never_arrived > 0)
+    {
+        violations.push(format!(
+            "рендер: кадр со вспышкой не освещён {} раз, не дошёл до кольца {} раз",
+            delta.flash.not_lit, delta.flash.never_arrived
         ));
     }
     violations

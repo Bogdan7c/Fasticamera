@@ -52,6 +52,8 @@ pub struct FakeGpuState {
     pub lose_present: bool,
     /// Копия готова, но сырые отсчёты прочитать нельзя.
     pub fail_raw_samples: bool,
+    /// Значение всех сырых отсчётов копии (`None` — каждый БАЙТ равен 7: отсчёт 0x0707). Для проверки света вспышки.
+    pub raw_fill: Option<u16>,
     /// Копия никогда не завершается (зависший fence).
     pub capture_forever: bool,
     /// Проявление никогда не завершается (зависший fence).
@@ -222,7 +224,11 @@ impl StillGpu for FakeGpu {
             return Err("отсчёты не читаются".to_owned());
         }
         let bytes = FRAME_SIZE.width as usize * FRAME_SIZE.height as usize * 2;
-        RawSamples16::new(FRAME_SIZE, Arc::new(OwnedPixels(vec![7; bytes]))).map_err(|error| error.to_string())
+        RawSamples16::new(
+            FRAME_SIZE,
+            Arc::new(OwnedPixels(fill_bytes(self.lock().raw_fill, bytes))),
+        )
+        .map_err(|error| error.to_string())
     }
 
     fn develop_start(&mut self, _request: DevelopStart<'_, FakeRaw>) -> Result<(), String> {
@@ -333,5 +339,13 @@ impl StillGpu for FakeGpu {
         AbandonReport {
             gpu_idle: state.abandon_idle,
         }
+    }
+}
+
+/// Байты отсчётов: `bytes / 2` значений `value` (little-endian); без значения — каждый байт 7 (как до вспышки).
+fn fill_bytes(value: Option<u16>, bytes: usize) -> Vec<u8> {
+    match value {
+        Some(value) => value.to_le_bytes().iter().copied().cycle().take(bytes).collect(),
+        None => vec![7; bytes],
     }
 }

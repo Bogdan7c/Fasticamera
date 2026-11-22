@@ -92,6 +92,10 @@ pub struct WhiteBalanceDiagnostics {
     pub frames_with_provisional_white: u64,
     /// Таблицу локуса потока построить не удалось (текст причины): AWB не работает, белая — временная.
     pub table_failure: Option<String>,
+    /// Сколько оценок света светодиода получено по кадрам с фонариком предвспышки (14d).
+    pub torch_white_estimates: u64,
+    /// Сколько кадров с фонариком оценки не дали (нет серых плиток, ошибка, исполнитель занят).
+    pub torch_white_failures: u64,
 }
 
 impl WhiteBalanceDiagnostics {
@@ -118,6 +122,8 @@ impl WhiteBalanceDiagnostics {
             cold_start_forced: 0,
             frames_with_provisional_white: 0,
             table_failure: None,
+            torch_white_estimates: 0,
+            torch_white_failures: 0,
         }
     }
 }

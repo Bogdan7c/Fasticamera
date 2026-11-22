@@ -14,6 +14,8 @@ use android_shell::still_orphan_sweep::OrphanSweepReport;
 use photo_output::service::PhotoFileFormats;
 
 use crate::camera_service::CameraServices;
+use crate::flash_camera_port::CameraHandleFlashPort;
+use crate::flash_still_relay::FlashStillRelay;
 use crate::runtime_config::RuntimeConfig;
 use crate::still_camera_catalog::{EngineCameraCatalog, HandleCatalogSource, software_description};
 use crate::still_render_port::StillRenderLink;
@@ -35,8 +37,9 @@ pub(crate) fn assemble_still(
     services: &Arc<AndroidShellServices>,
     render: StillRenderLink,
     camera: &CameraServices,
+    flash_relay: Arc<FlashStillRelay>,
 ) -> StillAssembly {
-    let prerequisites = gather_dependencies(config, services, render, camera);
+    let prerequisites = gather_dependencies(config, services, render, camera, flash_relay);
     start_still_or_fallback(config.photo(), config.camera_screen(), prerequisites)
 }
 
@@ -46,6 +49,7 @@ fn gather_dependencies(
     services: &Arc<AndroidShellServices>,
     render: StillRenderLink,
     camera: &CameraServices,
+    flash_relay: Arc<FlashStillRelay>,
 ) -> Result<StillRuntimeDeps, String> {
     let render = match render {
         StillRenderLink::Live(port) => port,
@@ -71,5 +75,7 @@ fn gather_dependencies(
         render,
         shutter_sound: Arc::clone(services) as Arc<dyn shell_contract::still_media::ShutterSoundService>,
         orphan_sweep: Arc::new(AndroidOrphanSweep(store)),
+        flash_camera: Arc::new(CameraHandleFlashPort::new(running.handle().clone())),
+        flash_relay,
     })
 }

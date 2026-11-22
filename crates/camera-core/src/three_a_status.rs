@@ -6,6 +6,7 @@
 
 use std::time::Duration;
 
+use crate::flash_status::FlashStatus;
 use camera_contract::capture_result::{FrameNumber, SensorTimestamp};
 use camera_contract::control::ManualControl;
 use camera_contract::three_a::{
@@ -170,6 +171,8 @@ pub struct ThreeAStatus {
     pub adjustments: Vec<ControlAdjustment>,
     pub last_result: Option<LastThreeAResult>,
     pub counters: ThreeACounters,
+    /// Вспышка активной камеры, совет для Auto и последовательность снимка со вспышкой (14d).
+    pub flash: FlashStatus,
 }
 
 impl ThreeAStatus {
@@ -185,6 +188,7 @@ impl ThreeAStatus {
             adjustments: Vec::new(),
             last_result: None,
             counters: ThreeACounters::default(),
+            flash: FlashStatus::default(),
         }
     }
 }

@@ -2,6 +2,10 @@
 //! который гоняет события fake в движок и ведёт журнал событий движка.
 
 mod commands;
+mod flash_decisions;
+mod flash_preflash;
+mod flash_sequence;
+mod flash_support;
 mod frame_rate_fallback;
 mod lens_blocks;
 mod lens_frame_rate;
@@ -264,6 +268,7 @@ pub(super) fn call_names(calls: &[BackendCall]) -> Vec<&'static str> {
             BackendCall::SetRepeatingRequest { .. } => "set_repeating_request",
             BackendCall::SubmitFocusTrigger { .. } => "submit_focus_trigger",
             BackendCall::SubmitBracket { .. } => "submit_bracket",
+            BackendCall::SubmitFlashStill { .. } => "submit_flash_still",
             BackendCall::StopRepeating => "stop_repeating",
             BackendCall::CloseSession => "close_session",
             BackendCall::CloseDevice => "close_device",

@@ -101,3 +101,23 @@ fn zero_capacity_still_keeps_the_latest_request() {
     let only = table.register(trigger(1));
     assert_eq!(table.resolve(only.key.as_raw()), OriginLookup::Known(trigger(1)));
 }
+
+#[test]
+fn flash_still_origin_resolves_by_its_shot_and_is_settled_like_any_one_shot() {
+    use camera_contract::flash::FlashShotId;
+
+    let table = RequestOriginTable::new(4);
+    let first = table.register(RequestOrigin::FlashStill { shot: FlashShotId(7) });
+    let second = table.register(RequestOrigin::FlashStill { shot: FlashShotId(8) });
+    assert_eq!(
+        table.resolve(first.key.as_raw()),
+        OriginLookup::Known(RequestOrigin::FlashStill { shot: FlashShotId(7) })
+    );
+    assert_eq!(
+        table.resolve(second.key.as_raw()).origin(),
+        RequestOrigin::FlashStill { shot: FlashShotId(8) }
+    );
+    table.settle(first.key.as_raw());
+    assert_eq!(table.resolve(first.key.as_raw()), OriginLookup::Unregistered);
+    assert_eq!(table.pending(), 1, "соседний снимок не задет");
+}

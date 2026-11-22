@@ -73,12 +73,31 @@ fn aspect_label(aspect: AspectRatio) -> &'static str {
     }
 }
 
+/// Значок режима вспышки: молния / молния с «A» / перечёркнутая молния. Один источник для значка над
+/// кадром, пункта шторки и карточки.
+pub(crate) const fn flash_icon(mode: FlashMode) -> IconId {
+    match mode {
+        FlashMode::Off => IconId::FlashOff,
+        FlashMode::On => IconId::FlashOn,
+        FlashMode::Auto => IconId::FlashAuto,
+    }
+}
+
+/// Подпись режима вспышки для крупного значения карточки.
+fn flash_label(mode: FlashMode) -> &'static str {
+    match mode {
+        FlashMode::Auto => "Auto",
+        FlashMode::On => "On",
+        FlashMode::Off => "Off",
+    }
+}
+
 /// Крупное значение карточки по текущему состоянию («Off», «3s», «4:3», «−2.0»).
 pub(crate) fn card_value(state: &ScreenState, config: &ScreenConfig, tool: ToolId) -> String {
     let settings = state.settings();
     match tool {
         ToolId::Timer => timer_value(config, settings.timer),
-        ToolId::Flash => on_off(settings.flash == FlashMode::On).to_owned(),
+        ToolId::Flash => flash_label(settings.flash).to_owned(),
         ToolId::Raw => on_off(settings.raw == RawCapture::On).to_owned(),
         ToolId::Aspect => aspect_label(settings.aspect).to_owned(),
         ToolId::Grid => on_off(settings.grid == GridSetting::On).to_owned(),
@@ -129,8 +148,10 @@ pub(crate) fn option_entries(config: &ScreenConfig, tool: ToolId) -> Vec<OptionE
             row
         }
         ToolId::Flash => vec![
-            icon(ToolOption::Flash(FlashMode::On), IconId::FlashOn),
-            icon(ToolOption::Flash(FlashMode::Off), IconId::FlashOff),
+            // Порядок карточки iOS 27: Auto, On, Off.
+            icon(ToolOption::Flash(FlashMode::Auto), flash_icon(FlashMode::Auto)),
+            icon(ToolOption::Flash(FlashMode::On), flash_icon(FlashMode::On)),
+            icon(ToolOption::Flash(FlashMode::Off), flash_icon(FlashMode::Off)),
         ],
         ToolId::Aspect => [
             AspectRatio::FourByThree,
@@ -224,7 +245,11 @@ mod tests {
         );
         assert_eq!(
             faces(ToolId::Flash),
-            [OptionFace::Icon(IconId::FlashOn), OptionFace::Icon(IconId::FlashOff)]
+            [
+                OptionFace::Icon(IconId::FlashAuto),
+                OptionFace::Icon(IconId::FlashOn),
+                OptionFace::Icon(IconId::FlashOff)
+            ]
         );
         assert_eq!(faces(ToolId::Aspect), [text("4:3"), text("16:9"), text("1:1")]);
         assert_eq!(faces(ToolId::Raw), [text("Off"), text("On")]);
@@ -249,5 +274,13 @@ mod tests {
         assert_eq!(open_card_tool(&screen.state), Some(ToolId::Timer));
         assert_eq!(card_value(&screen.state, &config, ToolId::Aspect), "4:3");
         assert_eq!(card_value(&screen.state, &config, ToolId::Flash), "Off");
+        for (mode, label) in [
+            (FlashMode::Auto, "Auto"),
+            (FlashMode::On, "On"),
+            (FlashMode::Off, "Off"),
+        ] {
+            screen.state.settings.flash = mode;
+            assert_eq!(card_value(&screen.state, &config, ToolId::Flash), label);
+        }
     }
 }

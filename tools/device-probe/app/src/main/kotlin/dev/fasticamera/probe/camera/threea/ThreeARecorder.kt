@@ -12,10 +12,27 @@ import java.util.Collections
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
+ * Наблюдатель за кадрами: получает результат и RAW-картинку каждого кадра, пока картинка ещё не закрыта.
+ * Вызывается на потоке колбэков камеры (результат) и на потоке ридера (картинка) — реализация потокобезопасна и быстрая.
+ */
+interface ThreeAFrameObserver {
+    /** [arrivedNs] — elapsedRealtimeNanos прихода результата (та же шкала, что SENSOR_TIMESTAMP). */
+    fun onResult(row: ThreeAFrameRow, result: TotalCaptureResult, arrivedNs: Long)
+
+    /** Картинку нельзя сохранять: после возврата её закроют. */
+    fun onImage(image: android.media.Image, arrivedNs: Long)
+}
+
+/**
  * Собирает результаты кадров (с метками запросов), отказы и метки пришедших RAW-картинок.
  * Каждый результат сразу пишется в JSONL событием `frame`; копия в памяти нужна для сводок фаз.
  */
-class ThreeARecorder(private val log: ProbeLog, private val rawContentProbe: ThreeARaw10Probe? = null) : CameraCaptureSession.CaptureCallback() {
+class ThreeARecorder(
+    private val log: ProbeLog,
+    private val rawContentProbe: ThreeARaw10Probe? = null,
+    /** Необязательный наблюдатель за каждым кадром (сценарий `flash`); null — поведение как раньше. */
+    private val frameObserver: ThreeAFrameObserver? = null,
+) : CameraCaptureSession.CaptureCallback() {
 
     private val rows: MutableList<ThreeAFrameRow> = Collections.synchronizedList(ArrayList())
     private val imageTimestamps: MutableSet<Long> = Collections.synchronizedSet(HashSet())
@@ -50,6 +67,7 @@ class ThreeARecorder(private val log: ProbeLog, private val rawContentProbe: Thr
         rows.add(row)
         lastFrameNumber = maxOf(lastFrameNumber, row.frameNumber)
         log.event("frame", row.json)
+        frameObserver?.onResult(row, result, arrivedNs)
     }
 
     override fun onCaptureFailed(session: CameraCaptureSession, request: CaptureRequest, failure: CaptureFailure) {
@@ -82,6 +100,7 @@ class ThreeARecorder(private val log: ProbeLog, private val rawContentProbe: Thr
             imageTimestamps.add(image.timestamp)
             imageAgesNs.add(callbackNs - image.timestamp)
             rawContentProbe?.maybeAnalyze(image)
+            frameObserver?.onImage(image, callbackNs)
         } finally {
             image.close()
         }

@@ -11,7 +11,7 @@ use crate::scenario::ScenarioReport;
 #[test]
 fn uris_list_every_saved_file_and_skip_unsaved_shots() {
     let mut report = healthy_report();
-    assert_eq!(report.uris().len(), 13, "1 + 2 + 10 файлов");
+    assert_eq!(report.uris().len(), 15, "1 + 2 + 1 + 1 + 10 файлов");
     report.shots[0].outcome = ShotOutcome::Failed {
         failure: "x".to_owned(),
     };
@@ -19,7 +19,7 @@ fn uris_list_every_saved_file_and_skip_unsaved_shots() {
 
     let uris = report.uris();
 
-    assert_eq!(uris.len(), 11);
+    assert_eq!(uris.len(), 13);
     assert!(
         uris.contains(&"content://media/external_primary/file/2"),
         "DNG второго снимка в списке: {uris:?}"
@@ -34,9 +34,9 @@ fn uris_list_every_saved_file_and_skip_unsaved_shots() {
 fn the_summary_carries_the_uris_counts_and_the_burst_accounting() {
     let summary = healthy_report().summary();
 
-    assert_eq!(summary["shots_total"], 12);
-    assert_eq!(summary["shots_saved"], 12);
-    assert_eq!(summary["uris"].as_array().expect("адреса").len(), 13);
+    assert_eq!(summary["shots_total"], 14);
+    assert_eq!(summary["shots_saved"], 14);
+    assert_eq!(summary["uris"].as_array().expect("адреса").len(), 15);
     assert_eq!(summary["burst"]["presses"], 10);
     assert_eq!(summary["burst"]["saved"], 10);
     assert_eq!(summary["mode"]["mode"], "real");
@@ -46,18 +46,38 @@ fn the_summary_carries_the_uris_counts_and_the_burst_accounting() {
 }
 
 #[test]
+fn the_summary_omits_defaults_and_names_the_flash_shot_with_the_camera_report() {
+    let summary = healthy_report().summary();
+    let plain = summary["shots"][0].as_object().expect("снимок");
+    for key in ["fmt", "aspect", "zoom_milli", "flash", "choice", "flash_cam"] {
+        assert!(!plain.contains_key(key), "умолчание {key} не пишется: {plain:?}");
+    }
+    let flash = &summary["shots"][2];
+    assert_eq!(flash["flash"], "on");
+    assert_eq!(flash["choice"], "flash_frame");
+    assert_eq!(flash["flash_cam"]["state"], "fired");
+    assert_eq!(flash["flash_cam"]["iso"], 400);
+    assert_eq!(summary["shots"][3]["flash"], "auto");
+    assert!(
+        summary["shots"][3].get("choice").is_none(),
+        "Auto не вспыхнул: показанный кадр — умолчание"
+    );
+    assert_eq!(summary["frames"]["flash"], 1);
+}
+
+#[test]
 fn the_details_carry_the_frame_summary_the_render_diagnostics_place_and_per_shot_choice() {
     let mut report = healthy_report();
     let mut delta = StillDiagnosticsDelta::default();
-    delta.picks.exact = 12;
+    delta.picks.exact = 14;
     report.render_still_detail = Some(delta);
     let items = report.detail_items();
 
-    assert_eq!(items[0]["frame_summary"]["exact"], 12);
+    assert_eq!(items[0]["frame_summary"]["exact"], 14);
     assert_eq!(items[0]["frame_summary"]["max_press_to_frame_ms"], 80.0);
-    assert_eq!(items[0]["render_still_detail"]["picks"]["exact"], 12);
-    // Затем шаги, серия и 12 снимков с выбором кадра и задержкой.
-    assert_eq!(items.len(), 1 + 3 + 1 + 12);
+    assert_eq!(items[0]["render_still_detail"]["picks"]["exact"], 14);
+    // Затем шаги, серия и 14 снимков с выбором кадра и задержкой.
+    assert_eq!(items.len(), 1 + 5 + 1 + 14);
     let shot = items.last().expect("снимок");
     assert_eq!(shot["frame_choice"]["kind"], "exact");
     assert_eq!(shot["press_to_frame_ms"], 80.0);
@@ -72,11 +92,11 @@ fn the_summary_reports_the_exact_share_the_delay_and_a_substitution_reason_stays
     };
     let summary = report.summary();
 
-    assert_eq!(summary["frames"]["exact"], 11);
+    assert_eq!(summary["frames"]["exact"], 13);
     assert_eq!(summary["frames"]["evicted"], 1);
     assert_eq!(summary["frames"]["p2f_max_ms"], 80.0);
-    assert!((summary["frames"]["share"].as_f64().unwrap() - 11.0 / 12.0).abs() < 1e-3);
-    let first = &report.detail_items()[1 + 3 + 1];
+    assert!((summary["frames"]["share"].as_f64().unwrap() - 13.0 / 14.0).abs() < 1e-3);
+    let first = &report.detail_items()[1 + 5 + 1];
     assert_eq!(first["frame_choice"]["reason"], "shown_frame_evicted");
 }
 
@@ -118,12 +138,14 @@ fn the_worst_case_result_line_with_thirteen_long_uris_fits_the_logcat_record() {
         .collect();
 
     let verdict = judge_within_budget(report.summary(), violations);
+
     let (line, json_text) = format_result_line(&ScenarioReport {
         scenario: "capture".to_owned(),
         outcome: verdict.outcome,
     });
 
     let json: serde_json::Value = serde_json::from_str(&json_text).expect("строка результата — JSON");
+
     assert!(line.len() <= LOGCAT_MAX_TEXT_BYTES, "строка {} байт", line.len());
     assert_eq!(
         json["status"], "failed",
@@ -131,7 +153,7 @@ fn the_worst_case_result_line_with_thirteen_long_uris_fits_the_logcat_record() {
     );
     assert_eq!(
         json["report"]["uris"].as_array().expect("адреса в сводке").len(),
-        13,
+        15,
         "адреса не потеряны"
     );
 }

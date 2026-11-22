@@ -117,7 +117,9 @@ pub fn failure_of_event(event: &CameraEvent) -> Option<RunFailure> {
         // События 3A (итог тапа, поправки, серия) — предмет проверок сценария `3a`, а не отказ движка.
         | CameraEvent::FocusSettled { .. }
         | CameraEvent::ControlsAdjusted { .. }
-        | CameraEvent::BracketCaptured { .. } => None,
+        | CameraEvent::BracketCaptured { .. }
+        // Итог снимка со вспышкой судит сценарий `capture` (через наблюдателя итогов), а не общий разбор отказов.
+        | CameraEvent::FlashStillFinished { .. } => None,
     }
 }
 

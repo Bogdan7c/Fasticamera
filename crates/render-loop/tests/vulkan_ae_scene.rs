@@ -316,6 +316,134 @@ fn bracket_frames_are_invisible_to_the_exposure_loop() {
     rig.finish(&journal);
 }
 
+#[test]
+fn flash_still_frames_are_never_shown_and_invisible_to_the_exposure_loop() {
+    let Some((mut rig, journal)) = converged_rig() else {
+        return;
+    };
+    for _ in 0..4 {
+        rig.render();
+    }
+    let before = rig.viewfinder();
+    let before_ae = before.auto_exposure.expect("AE");
+    let generation_before = rig.proposals.latest().expect("предложение").0;
+    for shot in 0..3u64 {
+        let sensor_ts = BRACKET_TS_BASE + i64::try_from(shot).unwrap() * FRAME_NANOS;
+        // Кадр вспышки в 8 раз светлее: если бы его показали или измерили AE, экран и цель сдвинулись бы.
+        rig.insert_scene(sensor_ts, rig.sensor_product * 8.0);
+        let result = rig.result_with_flash(
+            sensor_ts,
+            rig.sensor_product,
+            RequestOrigin::FlashStill {
+                shot: camera_contract::flash::FlashShotId(shot),
+            },
+            camera_contract::flash::FlashResult {
+                mode: Some(camera_contract::flash::FlashModeEcho::Single),
+                state: Some(camera_contract::flash::FlashState::Fired),
+            },
+        );
+        rig.offer(sensor_ts, Some(result));
+        assert!(!rig.render(), "кадр вспышки не показан");
+    }
+    for _ in 0..6 {
+        rig.render();
+    }
+    let after = rig.viewfinder();
+    assert_eq!(after.counters.flash_frames_skipped, 3);
+    assert_eq!(
+        after.counters.bracket_frames_skipped,
+        before.counters.bracket_frames_skipped
+    );
+    assert_eq!(
+        after.counters.frames_processed, before.counters.frames_processed,
+        "ISP кадры вспышки не обрабатывал"
+    );
+    assert_eq!(
+        after.auto_exposure.expect("AE"),
+        before_ae,
+        "AE кадров вспышки не видел"
+    );
+    assert_eq!(rig.proposals.latest().expect("предложение").0, generation_before);
+    // Экран кадры вспышки не взял, но кольцо снимков их хранит и отдаёт ТОЛЬКО по метке запроса.
+    let ring = rig.stream.snapshot_ring();
+    for shot in 0..3u64 {
+        match ring.pick_flash_frame(camera_contract::flash::FlashShotId(shot)) {
+            raw_frame_stream::FlashRingPick::Found(lease) => {
+                let expected = BRACKET_TS_BASE + i64::try_from(shot).unwrap() * FRAME_NANOS;
+                assert_eq!(lease.passport().sensor_timestamp.as_nanos(), expected);
+                lease.release_unused();
+            }
+            other => panic!("кадр вспышки {shot} должен лежать в кольце снимков: {other:?}"),
+        }
+    }
+    rig.finish(&journal);
+}
+
+#[test]
+fn torch_frames_are_shown_and_measured_for_the_flash_but_do_not_pull_the_viewfinder_exposure() {
+    use camera_contract::flash::{FlashModeEcho, FlashResult, FlashState, PreflashLight};
+    let Some((mut rig, journal)) = converged_rig() else {
+        return;
+    };
+    for _ in 0..4 {
+        rig.render();
+    }
+    let before_ae = rig.viewfinder().auto_exposure.expect("AE");
+    let target_before = rig.proposals.latest().expect("предложение").1.target.seconds_iso();
+    // Движок объявил предвспышку: рендер мерит каждый кадр, в том числе обычные до фонарика.
+    rig.publish_active_preflash(1);
+    let torch = FlashResult {
+        mode: Some(FlashModeEcho::Torch),
+        state: Some(FlashState::Fired),
+    };
+    let sensor_ts = |index: i64| BRACKET_TS_BASE + index * FRAME_NANOS;
+    for index in 0..3 {
+        rig.insert_scene(sensor_ts(index), rig.sensor_product);
+        let result = rig.result_with(sensor_ts(index), rig.sensor_product, RequestOrigin::Repeating);
+        rig.offer(sensor_ts(index), Some(result));
+        rig.render();
+    }
+    for index in 3..6 {
+        // Фонарик делает сцену в 8 раз ярче при том же произведении.
+        rig.insert_scene(sensor_ts(index), rig.sensor_product * 8.0);
+        let result = rig.result_with_flash(sensor_ts(index), rig.sensor_product, RequestOrigin::Repeating, torch);
+        rig.offer(sensor_ts(index), Some(result));
+        assert!(rig.render(), "кадр с фонариком показан");
+    }
+    for _ in 0..6 {
+        rig.render();
+    }
+    let after = rig.viewfinder();
+    let after_ae = after.auto_exposure.expect("AE");
+    assert!(
+        after_ae.counters.measurements_withheld_for_led_light >= 1,
+        "{after_ae:?}"
+    );
+    assert!(after.counters.led_lit_frames_withheld_from_smoothing >= 1);
+    assert_eq!(after.counters.flash_frames_skipped, 0);
+    let target_after = rig.proposals.latest().expect("предложение").1.target.seconds_iso();
+    let drift_ev = (target_after / target_before).log2().abs();
+    assert!(
+        drift_ev < 0.2,
+        "цель видоискателя ушла к свету фонарика на {drift_ev} EV; было {before_ae:?}"
+    );
+
+    let (_, samples) = rig.proposals.preflash_newer_than(None).expect("замеры предвспышки");
+    let ambient = samples.ambient.expect("замер без фонарика");
+    let lit = samples.torch.expect("замер с фонариком");
+    assert_eq!(
+        (ambient.light, lit.light),
+        (PreflashLight::Ambient, PreflashLight::Torch)
+    );
+    // Сцена с фонариком в 8 раз ярче: до цели ей нужно в 8 раз меньше произведения (линейно, 3 EV).
+    let ev_gap = lit.mid_gray_product.ev_above(ambient.mid_gray_product);
+    assert!(
+        (ev_gap + 3.0).abs() < 0.4,
+        "разница линейных замеров {ev_gap} EV, ждали −3"
+    );
+    rig.finish(&journal);
+}
+
 // ---- AE выключен ----
 
 #[test]

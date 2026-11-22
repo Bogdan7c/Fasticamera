@@ -21,7 +21,6 @@ use super::entry::{DevelopInputs, EstimateBasis, PickPlan, Stage, StillEntry, St
 use super::facts::{FactsRefusal, build_facts};
 use super::feed::ShownContent;
 use super::gpu::{CapturePoll, DevelopProgress, DevelopStart, StillGpu};
-use super::params_history::ParamsLookup;
 use super::present_log::{PressResolution, Unprovable};
 use super::step_timing::StillStep;
 use crate::vulkan_backend::camera::isp_params::{IspParamsCache, ParamsOutcome};
@@ -29,7 +28,7 @@ use raw_frame_stream::RingPickRequest;
 use std::time::Instant;
 
 /// Что с GPU снимков перед копированием.
-enum GpuReadiness {
+pub(super) enum GpuReadiness {
     Ready,
     /// Занят работой другого снимка, а кадру нужен GPU под другой поток: ждём.
     Busy,
@@ -48,6 +47,7 @@ impl<G: StillGpu> StillEngine<G> {
         self.timed(StillStep::Advance, |engine| {
             let now = engine.clock.now();
             engine.timed(StillStep::Choosing, |engine| engine.step_choosing(now));
+            engine.timed(StillStep::Choosing, |engine| engine.step_flash_frames(now));
             engine.timed(StillStep::CapturePoll, |engine| engine.step_capture_poll(now));
             engine.timed(StillStep::CaptureStart, StillEngine::step_capture_start);
             engine.step_target_timeouts(now);
@@ -164,10 +164,26 @@ impl<G: StillGpu> StillEngine<G> {
 
     // ---- копия RAW ----
 
+    /// Занят ли слот копии RAW: одна копия за раз (память), её ведёт GPU или запись в стадии `Capturing`.
+    pub(super) fn capture_slot_busy(&self) -> bool {
+        self.gpu.as_ref().is_some_and(StillGpu::capture_in_flight)
+            || self.any_in_stage(|stage| matches!(stage, Stage::Capturing { .. }))
+    }
+
+    /// Готов ли GPU снимков к копии ДО того, как кадр изъят из кольца (изымать кадр, который некуда копировать,
+    /// нельзя: он ушёл бы в вечный возврат). Поток — тот, на который смотрит видоискатель.
+    pub(super) fn gpu_gate_before_pick(&mut self) -> GpuReadiness {
+        if let Some(stream) = self.current_stream.clone() {
+            self.ensure_gpu(&stream)
+        } else if self.gpu.is_none() {
+            GpuReadiness::Unavailable("потока кадров ещё нет".to_owned())
+        } else {
+            GpuReadiness::Ready
+        }
+    }
+
     fn step_capture_start(&mut self) {
-        let capture_busy = self.gpu.as_ref().is_some_and(StillGpu::capture_in_flight)
-            || self.any_in_stage(|stage| matches!(stage, Stage::Capturing { .. }));
-        if capture_busy {
+        if self.capture_slot_busy() {
             return;
         }
         let Some((index, entry)) = self.take_first_in_stage(|stage| matches!(stage, Stage::AwaitingCapture(_))) else {
@@ -177,19 +193,15 @@ impl<G: StillGpu> StillEngine<G> {
         self.put_back(index, entry);
     }
 
-    fn start_capture(&mut self, mut entry: StillEntry<G>) -> Option<StillEntry<G>> {
+    fn start_capture(&mut self, entry: StillEntry<G>) -> Option<StillEntry<G>> {
         let Stage::AwaitingCapture(plan) = entry.stage else {
             return Some(entry);
         };
         // GPU под поток, на который смотрит видоискатель, готовят заранее; здесь последняя проверка до изъятия кадра.
-        if let Some(stream) = self.current_stream.clone() {
-            match self.ensure_gpu(&stream) {
-                GpuReadiness::Ready => {}
-                GpuReadiness::Busy => return Some(entry),
-                GpuReadiness::Unavailable(reason) => return self.refuse_capture_gpu(entry, &reason),
-            }
-        } else if self.gpu.is_none() {
-            return self.refuse_capture_gpu(entry, "потока кадров ещё нет");
+        match self.gpu_gate_before_pick() {
+            GpuReadiness::Ready => {}
+            GpuReadiness::Busy => return Some(entry),
+            GpuReadiness::Unavailable(reason) => return self.refuse_capture_gpu(entry, &reason),
         }
         let pick = translate_pick(self.ring.pick(plan.request), plan.shown_at);
         let (lease, choice, detail) = match pick {
@@ -207,6 +219,19 @@ impl<G: StillGpu> StillEngine<G> {
             let after_shown_ms = (entry.plan.press.at.as_nanos() - shown_at.as_nanos()) as f64 / 1_000_000.0;
             self.counters.exact_press_after_shown.observe(after_shown_ms);
         }
+        self.launch_capture(entry, lease, choice, Stage::AwaitingCapture(plan))
+    }
+
+    /// Общая часть запуска копии для выбранного кадра (обычный снимок и кадр со вспышкой): GPU под поток кадра,
+    /// факты и параметры, старт копии. `retry` — стадия, в которую запись возвращается, если GPU занят другим
+    /// снимком (кадр отпускается нетронутым и берётся заново).
+    pub(super) fn launch_capture(
+        &mut self,
+        mut entry: StillEntry<G>,
+        lease: raw_frame_stream::RawFrameLease,
+        choice: FrameChoice,
+        retry: Stage<G>,
+    ) -> Option<StillEntry<G>> {
         // Кадр мог оказаться из другого потока, чем тот, под который готов GPU (смена объектива между шагами).
         let stream = Arc::clone(&lease.passport().stream);
         match self.ensure_gpu(&stream) {
@@ -214,7 +239,7 @@ impl<G: StillGpu> StillEngine<G> {
             GpuReadiness::Busy => {
                 // GPU занят другим снимком и не годится этому кадру: кадр возвращаем нетронутым, ждём.
                 lease.release_unused();
-                entry.stage = Stage::AwaitingCapture(plan);
+                entry.stage = retry;
                 return Some(entry);
             }
             GpuReadiness::Unavailable(reason) => {
@@ -270,19 +295,11 @@ impl<G: StillGpu> StillEngine<G> {
         choice: FrameChoice,
     ) -> Result<(Box<still_contract::shot::StillFrameFacts>, Box<IspParamsCache>), NoFrameReason> {
         let passport = lease.passport();
-        let params = match self.params_history.lookup(passport.sensor_timestamp, &passport.stream) {
-            ParamsLookup::Own(params) => {
-                self.counters.params.own += 1;
-                params
-            }
-            ParamsLookup::NearestOfSameStream { params, distance_nanos } => {
-                tracing::debug!(target: super::LOG_TARGET, distance_nanos, "у кадра снимка нет своей записи параметров");
-                self.counters.params.nearest_of_same_stream += 1;
-                params
-            }
-            ParamsLookup::Missing => {
-                self.counters.params.missing += 1;
-                return Err(NoFrameReason::FrameUnusable);
+        let params = match choice {
+            // Кадр со вспышкой проявляется параметрами плана движка камеры и белой светодиода, а не записью показа.
+            FrameChoice::FlashFrame { shot, .. } => self.flash_frame_params(shot, passport)?,
+            FrameChoice::ShownAtPress { .. } | FrameChoice::Substituted { .. } => {
+                self.viewfinder_params_for(passport)?
             }
         };
         let facts = match build_facts(&entry.plan, passport, choice, &params) {
@@ -323,7 +340,10 @@ impl<G: StillGpu> StillEngine<G> {
                 NoFrameReason::RendererBusy
                 | NoFrameReason::FrameUnusable
                 | NoFrameReason::CaptureFailed
-                | NoFrameReason::RendererStopped,
+                | NoFrameReason::RendererStopped
+                | NoFrameReason::FlashNotCaptured(_)
+                | NoFrameReason::FlashFrameNeverArrived
+                | NoFrameReason::FlashFrameNotLit,
                 _,
             ) => {}
         }
@@ -334,6 +354,8 @@ impl<G: StillGpu> StillEngine<G> {
         let picks = &mut self.counters.picks;
         match choice {
             FrameChoice::ShownAtPress { .. } => picks.exact += 1,
+            // Кадр со вспышкой считается своим счётчиком (`flash.frames_found`), не выбором «что было на экране».
+            FrameChoice::FlashFrame { .. } => {}
             FrameChoice::Substituted { reason, .. } => match (reason, detail) {
                 (Reason::PresentationTimingUnknown, _) => picks.substituted_timing_unknown += 1,
                 (Reason::ShownFrameEvicted, PickDetail::TargetLostBeforeRing) => {
@@ -397,6 +419,11 @@ impl<G: StillGpu> StillEngine<G> {
         let Stage::Capturing { facts, params, .. } = entry.take_stage() else {
             return Some(entry);
         };
+        // Кадр со вспышкой: HAL мог сообщить `FIRED` на тёмном кадре — до `Secured` проверяем по пикселям.
+        if let Some(reason) = self.reject_unlit_flash_frame(&raw, &facts, &params) {
+            self.finish(entry, StillOutcome::NotSecured(reason));
+            return None;
+        }
         let samples = if facts.outputs.needs_raw_samples() {
             let extracted = match self.gpu.as_ref() {
                 Some(gpu) => gpu.raw_samples(&raw),
@@ -597,7 +624,7 @@ impl<G: StillGpu> StillEngine<G> {
     // ---- GPU ----
 
     /// GPU под поток: уже годный, пересоздаваемый (если простаивает) или занятый.
-    fn ensure_gpu(&mut self, stream: &Arc<StreamPassport>) -> GpuReadiness {
+    pub(super) fn ensure_gpu(&mut self, stream: &Arc<StreamPassport>) -> GpuReadiness {
         if let Some(gpu) = &self.gpu {
             if gpu.serves(stream) {
                 return GpuReadiness::Ready;

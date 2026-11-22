@@ -37,6 +37,7 @@ mod availability_memory;
 mod backend_events;
 mod camera_frame_rate;
 mod commands;
+mod flash;
 mod frame_rate_fallback;
 mod lens_intent;
 mod lens_switch;
@@ -69,6 +70,7 @@ use crate::zoom::{ZoomDiagnostic, build_zoom_catalog_reporting};
 use availability_memory::AvailabilityMemory;
 use camera_frame_rate::CameraFrameRateLimits;
 pub(crate) use commands::Desired;
+use flash::FlashEngine;
 use lens_intent::LensEngineState;
 use recovery::RecoveryTracker;
 use standby::StandbyEngine;
@@ -173,6 +175,17 @@ impl CameraBackend for DeadBackend {
         Err(crate::backend::RequestFailure::Backend(Self::failure("submit_bracket")))
     }
 
+    fn submit_flash_still(
+        &mut self,
+        _intent: CaptureIntent,
+        _controls: &RequestControls,
+        _shot: camera_contract::flash::FlashShotId,
+    ) -> Result<(), crate::backend::RequestFailure> {
+        Err(crate::backend::RequestFailure::Backend(Self::failure(
+            "submit_flash_still",
+        )))
+    }
+
     fn stop_repeating(&mut self) -> Result<(), crate::backend::RequestFailure> {
         Ok(())
     }
@@ -207,6 +220,8 @@ pub struct CameraEngine {
     counters: CameraCounters,
     /// Автоматика 3A: исполнители, таймеры, серия (желаемое намерение — в `desired.three_a`).
     three_a: ThreeAEngine,
+    /// Снимок со вспышкой: последовательность, счётчики, наблюдатель (14d).
+    flash: FlashEngine,
     /// Шкала зума, чтение намерений экрана и учёт смены объектива (13).
     lens: LensEngineState,
     /// «Тёплые» соседние камеры (13b).
@@ -239,9 +254,11 @@ impl CameraEngine {
             },
         };
         let desired = Desired::default();
+        let flash = FlashEngine::new(wiring.flash_observer.clone());
         Self {
             cadence: CadenceTracker::new(config.cadence),
             three_a: ThreeAEngine::new(wiring, &desired.three_a),
+            flash,
             backend,
             config,
             desired,
@@ -325,6 +342,8 @@ impl CameraEngine {
             name,
             outcome: outcome.clone(),
         });
+        // Итог снимка со вспышкой идёт строго после ответа на команду.
+        self.settle_flash_command(&command, &outcome, now);
         if self.poisoned {
             return;
         }
@@ -352,6 +371,14 @@ impl CameraEngine {
         self.fire_standby_release_timer(now);
     }
 
+    /// Статус 3A: вспышке нужны возможности камеры и состояние потока, поэтому её блок собирается здесь.
+    fn three_a_status(&self) -> crate::three_a_status::ThreeAStatus {
+        crate::three_a_status::ThreeAStatus {
+            flash: self.flash_status(),
+            ..self.three_a.status(&self.desired.three_a)
+        }
+    }
+
     /// Когда движку нужно проснуться без внешних событий.
     pub fn next_deadline(&self) -> Option<Instant> {
         if self.poisoned {
@@ -361,6 +388,7 @@ impl CameraEngine {
             self.pending_retry_deadline(),
             self.three_a.next_deadline(),
             self.standby.next_deadline(),
+            self.flash.deadline(),
         ]
         .into_iter()
         .flatten()
@@ -377,7 +405,7 @@ impl CameraEngine {
             stream: self.cadence.stats().clone(),
             last_unavailable: self.last_unavailable,
             counters: self.counters,
-            three_a: self.three_a.status(&self.desired.three_a),
+            three_a: self.three_a_status(),
             lens: self.lens_status(),
         }
     }

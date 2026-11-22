@@ -2,6 +2,7 @@
 
 use camera_contract::catalog::TargetUnavailable;
 use camera_contract::control::{CaptureIntent, ExposureBias, ManualControl};
+use camera_contract::flash::FlashShotId;
 use camera_contract::ids::{CameraTarget, LensRole};
 use camera_contract::stream::StreamMode;
 use camera_contract::three_a::{ExposureBracket, SensorPoint, ThreeAProfile};
@@ -64,6 +65,12 @@ pub enum CameraCommand {
     CaptureBracket {
         bracket: ExposureBracket,
     },
+    /// Снимок со вспышкой `shot` (14d): предвспышка, пауза, разовый запрос со вспышкой.
+    /// Итог — ровно одно событие `FlashStillFinished` на каждую команду, дошедшую до движка
+    /// (в том числе на отказ: он приходит и как `CommandHandled`, и как итог снимка).
+    CaptureFlashStill {
+        shot: FlashShotId,
+    },
     /// Камера не нужна: закрыть и забыть желаемое.
     Close,
     /// Приложение ушло с переднего плана: отпустить камеру, желаемое сохранить.
@@ -87,6 +94,7 @@ impl CameraCommand {
             CameraCommand::SetExposureBias { .. } => "set_exposure_bias",
             CameraCommand::SetThreeAProfile { .. } => "set_three_a_profile",
             CameraCommand::CaptureBracket { .. } => "capture_bracket",
+            CameraCommand::CaptureFlashStill { .. } => "capture_flash_still",
             CameraCommand::Close => "close",
             CameraCommand::EnterBackground => "enter_background",
             CameraCommand::EnterForeground => "enter_foreground",
@@ -108,6 +116,8 @@ pub enum InvalidStateReason {
     NotStreaming,
     /// Предыдущая серия ещё не завершена.
     BracketInProgress,
+    /// Предыдущий снимок со вспышкой ещё не завершён.
+    FlashInProgress,
 }
 
 /// Почему команду нельзя исполнить на этом телефоне.
@@ -139,6 +149,10 @@ pub enum UnsupportedThreeA {
     /// В серии больше кадров, чем разрешает конфиг (`three_a.max_bracket_frames` — бюджет пула
     /// RAW-кадров). Добавлено сессией 08 к границе: честного другого варианта в итогах нет.
     BracketTooLong,
+    /// У активной камеры нет вспышки (14d).
+    FlashUnit,
+    /// Снимок со вспышкой считается только нашим AE (решения 63, 158); при вендорском AE — отказ.
+    FlashNeedsOwnExposure,
 }
 
 /// Итог команды. Не `bool`: «уже так», «невозможно» и «не в том состоянии» —

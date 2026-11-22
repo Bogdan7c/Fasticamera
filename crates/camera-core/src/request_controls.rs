@@ -8,6 +8,7 @@
 //! режим сенсора, а вендорские ключи CamX «липкие» (зонд 08).
 
 use camera_contract::control::{ExposureTime, FocusDistance, Iso};
+use camera_contract::flash::FlashControl;
 use camera_contract::three_a::{AeAfLock, MeteringRegion};
 use serde::Serialize;
 
@@ -48,6 +49,10 @@ pub enum FocusPlan {
 pub struct RequestControls {
     pub exposure: ExposurePlan,
     pub focus: FocusPlan,
+    /// Светодиод в этом запросе (14d). Пишется в КАЖДЫЙ запрос, `Off` — тоже: ключи HAL липкие.
+    /// Фонарик — только в повторяющемся запросе на время предвспышки, разовая — только в
+    /// `submit_flash_still`.
+    pub flash: FlashControl,
 }
 
 /// Разовое действие автофокуса (`ACAMERA_CONTROL_AF_TRIGGER`): ставится ровно в один запрос.

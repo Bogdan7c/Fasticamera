@@ -242,6 +242,24 @@ fn exposure_range_is_taken_from_the_active_camera() {
 }
 
 #[test]
+fn flash_is_available_only_when_the_active_camera_has_a_flash_unit() {
+    // Основная задняя камера образцов со вспышкой: значок вспышки показывается.
+    let back = camera_facts_from_status(&status_in(streaming("2", ReadoutAspect::FourByThree)));
+    assert_eq!(back.flash, FlashAvailability::Available);
+    // Фронтальная без вспышки: честное «нет», значок скрыт.
+    let front_id = front_camera().id.as_str().to_owned();
+    let front = camera_facts_from_status(&status_in(streaming(&front_id, ReadoutAspect::FourByThree)));
+    assert_eq!(front.flash, FlashAvailability::Unavailable);
+    // Камеры нет в каталоге или не открыта — вспышку не предлагаем.
+    let unknown = camera_facts_from_status(&status_in(streaming("99", ReadoutAspect::FourByThree)));
+    assert_eq!(unknown.flash, FlashAvailability::Unavailable);
+    let closed = camera_facts_from_status(&status_in(CameraState::Closed {
+        reason: ClosedReason::NotRequested,
+    }));
+    assert_eq!(closed.flash, FlashAvailability::Unavailable);
+}
+
+#[test]
 fn exposure_range_translation_covers_unsupported_and_broken_steps() {
     assert_eq!(
         exposure_range_of(&ExposureCompensationSupport::NotSupported),

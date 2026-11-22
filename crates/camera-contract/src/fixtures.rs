@@ -11,6 +11,7 @@ use crate::capabilities::{
     PhysicalSizeMm, Rational, RawSensorInfo, RawStreamOption, RawSupport, ReferenceIlluminant, RequestCapability,
     SensorLevels, VendorProcessingFlags,
 };
+use crate::flash::FlashUnit;
 use crate::geometry::{PixelRect, PixelSize, SensorOrientation};
 use crate::ids::{CameraId, CameraTopology, LensFacing};
 use crate::lens_calibration::{LensCalibration, LensIntrinsics, LensPose, PoseReference};
@@ -131,6 +132,11 @@ fn capabilities(
         three_a: three_a_for(facing),
         focus,
         optics,
+        // Вспышка у задних камер, у фронта нет (зонд `flash` 14d, `flash.info.available`).
+        flash: match facing {
+            LensFacing::Front => FlashUnit::Absent,
+            LensFacing::Back | LensFacing::External => FlashUnit::Present,
+        },
         vendor_processing: VendorProcessingFlags {
             lens_shading: LensShading::AppliedByVendor,
         },

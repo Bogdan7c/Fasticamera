@@ -60,6 +60,8 @@ pub struct RawStreamCounters {
     pub ring_picks_substituted: u64,
     /// Выбор из кольца: выдать нечего (выключено, пусто, нет годного).
     pub ring_picks_unavailable: u64,
+    /// Кадр со вспышкой (14d) найден в кольце по метке запроса (поиск не «выбор», замен нет).
+    pub ring_flash_picks_found: u64,
     /// Потребитель «ни одного молча» не принял кадр — брак (будущая запись).
     pub lossless_defects: u64,
 
@@ -130,6 +132,7 @@ pub(crate) struct StreamAccounting {
     pub(crate) ring_picks_exact: AtomicU64,
     pub(crate) ring_picks_substituted: AtomicU64,
     pub(crate) ring_picks_unavailable: AtomicU64,
+    pub(crate) ring_flash_picks_found: AtomicU64,
     pub(crate) lossless_defects: AtomicU64,
     released_after_fence: AtomicU64,
     released_unused: AtomicU64,
@@ -225,6 +228,7 @@ impl StreamAccounting {
             ring_picks_exact: self.ring_picks_exact.load(ORDER),
             ring_picks_substituted: self.ring_picks_substituted.load(ORDER),
             ring_picks_unavailable: self.ring_picks_unavailable.load(ORDER),
+            ring_flash_picks_found: self.ring_flash_picks_found.load(ORDER),
             lossless_defects: self.lossless_defects.load(ORDER),
             released_after_fence: self.released_after_fence.load(ORDER),
             released_unused: self.released_unused.load(ORDER),

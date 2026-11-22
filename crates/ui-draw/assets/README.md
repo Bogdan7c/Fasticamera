@@ -29,6 +29,7 @@ Display. Оба начертания используют один `opsz` — р
 |---|---|---|
 | `icons/phosphor/lightning.svg` | Phosphor Icons (MIT), `phosphor-icons/core`, `assets/regular/`, коммит `2b75f3ad12b420c9504ef05df8d2564a28f8500e` | `3a50c776266b21812f8ec5b5a841a81f54aa942569a31eb03a36fb0a5bfbe66e` |
 | `icons/phosphor/lightning-slash.svg` | там же | `e0444fc03c39d830ed46d38c2a633b01c69fcb7f740022aafe07cad04a66146f` |
+| `icons/phosphor/lightning-a.svg` | там же — автовспышка (молния с «A»), решение 153 | `e4df6e557f2f0aa125d2ca1bf3b274ebae6b26e1d7e099a5a74c328dfcaade1f` |
 | `icons/phosphor/camera-rotate.svg` | там же | `c7f308fd058ac9c62cf8164ea5d4ae6e5513199cf348d70d57a8e1a6f62c8ee3` |
 | `icons/phosphor/caret-up.svg` | там же | `bccc26004e73e5de783ac6dde607e3671e776261d81972ccdbd296b4aca21ca9` |
 | `icons/phosphor/sun.svg` | там же | `8df1c7b747774f8b2c1fe353b1b785c74aac35bfa50f2ed7d8d9a85a4191b2ac` |
@@ -45,7 +46,7 @@ Display. Оба начертания используют один `opsz` — р
 
 Phosphor — иконки-заливки (`kind: fill`, ненулевая обмотка), Lucide — иконка-контур (`kind: stroke`,
 ширина штриха 2 единицы viewBox 24 — доказывает путь «расстояние до средней линии минус полуширина»).
-Набор из 13 иконок: 6 стартовых плюс 6 для экрана камеры v1 (сессия 12: `timer`, `aspect_ratio`, `close`, `reset`, `controls_menu` взяты как есть из закреплённых коммитов; `level` — своя, см. таблицу; 13-я — своя `zoom_marker_triangle`, сессия 13). `RAW` — подписью, шестерёнка настроек — сессия 16.
+Набор из 14 иконок: 6 стартовых плюс 6 для экрана камеры v1 (сессия 12: `timer`, `aspect_ratio`, `close`, `reset`, `controls_menu` взяты как есть из закреплённых коммитов; `level` — своя, см. таблицу; 13-я — своя `zoom_marker_triangle`, сессия 13; 14-я — `flash_auto` (`lightning-a`), сессия 14d). `RAW` — подписью, шестерёнка настроек — сессия 16.
 
 ## Манифест `bake.json`
 

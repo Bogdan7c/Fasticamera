@@ -97,7 +97,7 @@ fn two_shots_in_one_file_are_a_violation() {
         }
     });
     assert!(
-        has(&violations, "адреса файлов повторяются: 13 адресов, уникальных 12"),
+        has(&violations, "адреса файлов повторяются: 15 адресов, уникальных 14"),
         "{violations:?}"
     );
 }
@@ -249,7 +249,7 @@ fn the_render_must_have_accepted_every_command_and_lost_none() {
         delta.lost_to_backend_fault = 1;
     });
     assert!(
-        has(&violations, "рендер принял команд снимка 11, а службой принято 12"),
+        has(&violations, "рендер принял команд снимка 13, а службой принято 14"),
         "{violations:?}"
     );
     assert!(has(&violations, "снимок не умеет бэкенд рендера: 2"), "{violations:?}");
@@ -290,7 +290,10 @@ fn a_run_with_a_failed_single_step_is_judged_on_the_runner_failure_without_extra
 
     assert!(has(&violations, "снимок 1 сорвался"), "{violations:?}");
     assert!(
-        has(&violations, "шаги не дошли до конца: single_heif_dng, burst"),
+        has(
+            &violations,
+            "шаги не дошли до конца: single_heif_dng, single_flash_on, single_flash_auto, burst"
+        ),
         "{violations:?}"
     );
     assert!(!has(&violations, "учёта нет"), "{violations:?}");
@@ -311,22 +314,22 @@ fn substitute(shot: &mut super::super::capture_report::ShotRecord, reason: Subst
 fn a_healthy_run_has_exact_frames_with_the_expected_delay() {
     let report = healthy_report();
     let summary = report.frame_summary();
-    assert_eq!((summary.exact, summary.choices_unknown), (12, 0));
+    assert_eq!((summary.exact, summary.choices_unknown), (14, 0));
     assert_eq!(summary.max_press_to_frame_ms, Some(80.0));
 }
 
 #[test]
 fn too_few_exact_frames_fail_with_the_share_and_the_threshold() {
-    // Порог 0,9: 12 снимков, 2 замены → доля 0,83.
+    // Порог 0,9: 14 снимков, 2 замены → доля 0,86.
     let violations = violations_of(|report| {
         substitute(&mut report.shots[0], SubstitutionReason::PresentationTimingUnknown);
         substitute(&mut report.shots[1], SubstitutionReason::PresentationTimingUnknown);
     });
     assert!(
-        has(&violations, "взят у 10 из 12 снимков (доля 0.83), нужна не меньше 0.90"),
+        has(&violations, "взят у 12 из 14 снимков (доля 0.86), нужна не меньше 0.90"),
         "{violations:?}"
     );
-    // Одна замена из 12 — 0,92: в пределах порога.
+    // Одна замена из 14 — 0,93: в пределах порога.
     let within =
         violations_of(|report| substitute(&mut report.shots[0], SubstitutionReason::PresentationTimingUnknown));
     assert!(within.is_empty(), "{within:?}");
@@ -372,7 +375,7 @@ fn shots_without_a_known_choice_are_named_not_silently_skipped() {
         );
     });
     assert!(
-        has(&violations, "выбор кадра неизвестен у снимков: 1 из 12"),
+        has(&violations, "выбор кадра неизвестен у снимков: 1 из 14"),
         "{violations:?}"
     );
 }
@@ -401,6 +404,144 @@ fn a_lost_still_gpu_fails_the_run() {
     });
     assert!(
         has(&violations, "GPU снимков объявлен потерянным 1 раз (по сроку 1)"),
+        "{violations:?}"
+    );
+}
+
+#[test]
+fn an_unlit_or_never_arrived_flash_frame_fails_the_run() {
+    let violations = violations_of(|report| {
+        let mut delta = StillDiagnosticsDelta::default();
+        delta.flash.not_lit = 1;
+        delta.flash.never_arrived = 2;
+        report.render_still_detail = Some(delta);
+    });
+    assert!(
+        has(
+            &violations,
+            "кадр со вспышкой не освещён 1 раз, не дошёл до кольца 2 раз"
+        ),
+        "{violations:?}"
+    );
+    // Освещённые и «не решаемые» кадры прогон не валят.
+    let fine = violations_of(|report| {
+        let mut delta = StillDiagnosticsDelta::default();
+        delta.flash.lit_check_passed = 1;
+        delta.flash.lit_check_skipped = 1;
+        report.render_still_detail = Some(delta);
+    });
+    assert!(!has(&fine, "кадр со вспышкой"), "{fine:?}");
+}
+
+// ---- Вспышка (14d) ----------------------------------------------------------------------------------------------
+
+use super::super::capture_flash_record::CameraFlashRecord;
+use crate::still_capture_service::FlashModeName;
+
+/// Номер снимка шага `single_flash_on` в здоровом отчёте.
+const FLASH_ON: usize = 2;
+/// Номер снимка шага `single_flash_auto` в здоровом отчёте.
+const FLASH_AUTO: usize = 3;
+
+#[test]
+fn a_healthy_flash_step_is_not_judged_by_the_press_to_frame_threshold() {
+    // Кадр вспышки снят после нажатия: даже «огромная» формальная задержка его не касается (её у него нет).
+    let healthy = healthy_report();
+    assert!(healthy.shots[FLASH_ON].frame.is_flash_frame());
+    assert_eq!(healthy.shots[FLASH_ON].frame.press_to_frame_ms, None);
+    assert!(evaluate_capture(&config(), &healthy).is_empty());
+    assert_eq!(healthy.frame_summary().flash_frames, 1);
+    assert_eq!(healthy.frame_summary().delays_measured, 13, "только снимки без вспышки");
+}
+
+#[test]
+fn flash_on_without_a_flash_frame_is_a_violation_naming_the_choice() {
+    let violations = violations_of(|report| {
+        report.shots[FLASH_ON].frame.frame_choice = FrameChoiceView::Exact;
+    });
+    assert!(
+        has(&violations, "вспышка включена, а взят не кадр со вспышкой (exact)"),
+        "{violations:?}"
+    );
+}
+
+#[test]
+fn flash_on_needs_the_service_route_and_a_fired_camera_report() {
+    let no_route = violations_of(|report| {
+        report.shots[FLASH_ON].flash.as_mut().unwrap().route_uses_flash = Some(false);
+    });
+    assert!(
+        has(&no_route, "маршрут сервиса со вспышкой не подтверждён"),
+        "{no_route:?}"
+    );
+    let camera_failed = violations_of(|report| {
+        report.shots[FLASH_ON].flash.as_mut().unwrap().camera = Some(CameraFlashRecord::Failed {
+            failure: "PreflashNotMeasured".to_owned(),
+        });
+    });
+    assert!(
+        has(&camera_failed, "камера сообщила срыв вспышки: PreflashNotMeasured"),
+        "{camera_failed:?}"
+    );
+    let silent_camera = violations_of(|report| {
+        report.shots[FLASH_ON].flash.as_mut().unwrap().camera = None;
+    });
+    assert!(
+        has(&silent_camera, "камера не сообщила итог вспышки"),
+        "{silent_camera:?}"
+    );
+}
+
+#[test]
+fn a_flash_frame_where_the_flash_is_off_and_a_wrong_screen_setting_are_violations() {
+    let off_with_flash_frame = violations_of(|report| {
+        report.shots[0].frame.frame_choice = FrameChoiceView::FlashFrame;
+    });
+    assert!(
+        has(&off_with_flash_frame, "вспышка выключена, а взят кадр со вспышкой"),
+        "{off_with_flash_frame:?}"
+    );
+    let wrong_setting = violations_of(|report| report.shots[5].flash_requested = FlashModeName::On);
+    assert!(
+        has(&wrong_setting, "экран просил вспышку On, шаг ждал Off"),
+        "{wrong_setting:?}"
+    );
+}
+
+#[test]
+fn auto_flash_accepts_either_outcome_but_the_frame_must_match_the_service_decision() {
+    // Сервис не вспыхивал, кадр показанный — наблюдаемый исход «вспышка не понадобилась»: без нарушений.
+    assert!(violations_of(|_| {}).is_empty());
+    // Сервис решил вспыхнуть, а кадр показанный: расхождение решения и кадра.
+    let mismatch = violations_of(|report| {
+        report.shots[FLASH_AUTO].flash.as_mut().unwrap().route_uses_flash = Some(true);
+    });
+    assert!(
+        has(&mismatch, "Auto: сервис решил вспышка=true, а взят кадр «exact»"),
+        "{mismatch:?}"
+    );
+    // Сервис решил вспыхнуть и кадр вспышки: исход допустим.
+    let fired = violations_of(|report| {
+        report.shots[FLASH_AUTO].frame.frame_choice = FrameChoiceView::FlashFrame;
+        report.shots[FLASH_AUTO].flash.as_mut().unwrap().route_uses_flash = Some(true);
+    });
+    assert!(fired.is_empty(), "{fired:?}");
+}
+
+#[test]
+fn a_flash_step_must_leave_exactly_one_saved_shot() {
+    let violations = violations_of(|report| {
+        report.shots[FLASH_ON].step = "single_flash_auto";
+    });
+    assert!(
+        has(&violations, "шаг single_flash_on: сохранённых снимков 0, ждали ровно 1"),
+        "{violations:?}"
+    );
+    assert!(
+        has(
+            &violations,
+            "шаг single_flash_auto: сохранённых снимков 2, ждали ровно 1"
+        ),
         "{violations:?}"
     );
 }

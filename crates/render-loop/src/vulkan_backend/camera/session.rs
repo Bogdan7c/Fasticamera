@@ -30,6 +30,7 @@ mod slot;
 mod still_feed;
 mod transition;
 
+use camera_contract::flash::FrameLight;
 use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::error::GpuError;
 use gpu_vulkan::raw_mosaic_preview::{MosaicPreviewParams, MosaicSource};
@@ -90,6 +91,8 @@ enum Content {
         source: MosaicSource,
         geometry: ViewfinderGeometry,
         identity: AwbFrameIdentity,
+        /// Чем освещён кадр (по его результату): светодиод не питает AE и AWB видоискателя.
+        light: FrameLight,
         /// Решение AWB для кадра: белая, показ, нужна ли статистика.
         plan: FramePlan,
         /// Общее решение о статистике кадра (AWB + AE) и то, что нужно AE для замера слота.
@@ -475,6 +478,7 @@ impl CameraSession {
             (
                 Content::IspNew {
                     identity,
+                    light,
                     plan,
                     statistics,
                     exposure,
@@ -483,6 +487,7 @@ impl CameraSession {
                 Recorded::IspNew { processed: true, .. },
             ) => Some(SlotFrame {
                 identity: *identity,
+                light: *light,
                 stream: plan.stream,
                 statistics: *statistics,
                 exposure: *exposure,

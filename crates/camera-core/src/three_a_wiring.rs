@@ -7,7 +7,10 @@
 use camera_contract::auto_exposure::{ExposureDirective, ExposureProposalChannel};
 use camera_contract::three_a::{DirectiveSlot, MainsFrequency, WhiteBalanceDirective};
 
+use std::sync::Arc;
+
 use crate::config::ThreeAConfig;
+use crate::flash_status::FlashStillObserver;
 use crate::three_a_control::{ExposureController, FocusController};
 use crate::three_a_own::RawStatsExposure;
 use crate::three_a_vendor::{VendorExposure, VendorFocus};
@@ -21,6 +24,8 @@ pub struct ThreeAWiring {
     /// Сюда движок кладёт указание нашему AE (где мерить, блокировка, что стоит в запросе);
     /// читает поток рендера (08a). С вендорским AE ящик просто никто не читает.
     pub exposure_directives: DirectiveSlot<ExposureDirective>,
+    /// Наблюдатель итогов снимков со вспышкой (14d); по умолчанию его нет, и итог идёт только событием.
+    pub flash_observer: Option<Arc<dyn FlashStillObserver>>,
 }
 
 impl ThreeAWiring {
@@ -31,6 +36,7 @@ impl ThreeAWiring {
             focus: Box::new(VendorFocus::new(config.focus_marker_grace_frames)),
             white_balance: DirectiveSlot::new(),
             exposure_directives: DirectiveSlot::new(),
+            flash_observer: None,
         }
     }
 
@@ -46,6 +52,12 @@ impl ThreeAWiring {
     /// Тот же состав, но с ящиком указаний AE, который уже держит читатель (поток рендера).
     pub fn with_exposure_directive_slot(mut self, slot: DirectiveSlot<ExposureDirective>) -> Self {
         self.exposure_directives = slot;
+        self
+    }
+
+    /// Тот же состав, но с наблюдателем итогов снимков со вспышкой (14d).
+    pub fn with_flash_observer(mut self, observer: Arc<dyn FlashStillObserver>) -> Self {
+        self.flash_observer = Some(observer);
         self
     }
 

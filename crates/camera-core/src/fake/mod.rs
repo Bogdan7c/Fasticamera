@@ -63,6 +63,12 @@ pub enum BackendCall {
         bracket: ExposureBracket,
         burst: BurstId,
     },
+    /// Разовый запрос со вспышкой (14d).
+    SubmitFlashStill {
+        intent: CaptureIntent,
+        controls: RequestControls,
+        shot: camera_contract::flash::FlashShotId,
+    },
     StopRepeating,
     CloseSession,
     CloseDevice,
@@ -98,6 +104,7 @@ pub enum BackendMethod {
     SetRepeatingRequest,
     SubmitFocusTrigger,
     SubmitBracket,
+    SubmitFlashStill,
     StopRepeating,
     CloseSession,
     CloseDevice,
@@ -142,12 +149,17 @@ struct FakeState {
     /// Состояния AF для следующих результатов (по одному на результат).
     af_script: VecDeque<AfState>,
     submitted_brackets: Vec<(BurstId, ExposureBracket)>,
+    /// Сценарий отказов `submit_flash_still` (14d; пустая очередь — успех).
+    flash_script: VecDeque<Result<(), RequestFailure>>,
+    /// Принятые разовые запросы со вспышкой: из них строятся их результаты.
+    submitted_flash_stills: Vec<(camera_contract::flash::FlashShotId, RequestControls)>,
     sink: Option<BackendEventSink>,
     standby: standby::FakeStandbyState,
     next_frame_number: i64,
     next_timestamp_nanos: i64,
 }
 
+mod flash;
 mod standby;
 mod three_a;
 
@@ -176,6 +188,8 @@ impl FakeBackendControl {
                 bracket_script: VecDeque::new(),
                 af_script: VecDeque::new(),
                 submitted_brackets: Vec::new(),
+                flash_script: VecDeque::new(),
+                submitted_flash_stills: Vec::new(),
                 sink: None,
                 standby: standby::FakeStandbyState::new(),
                 next_frame_number: 0,
@@ -483,6 +497,23 @@ impl CameraBackend for FakeCameraBackend {
             None if state.session.is_none() => Err(RequestFailure::NoSession),
             None => Ok(()),
         }
+    }
+
+    fn submit_flash_still(
+        &mut self,
+        intent: CaptureIntent,
+        controls: &RequestControls,
+        shot: camera_contract::flash::FlashShotId,
+    ) -> Result<(), RequestFailure> {
+        self.enter(
+            BackendMethod::SubmitFlashStill,
+            BackendCall::SubmitFlashStill {
+                intent,
+                controls: *controls,
+                shot,
+            },
+        );
+        self.control.accept_flash_still(controls, shot)
     }
 
     fn submit_bracket(

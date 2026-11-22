@@ -373,6 +373,22 @@ impl AeRig {
     }
 
     pub fn result_with(&mut self, sensor_ts: i64, sensor_product: f64, origin: RequestOrigin) -> FrameCaptureDetails {
+        self.result_with_flash(
+            sensor_ts,
+            sensor_product,
+            origin,
+            camera_contract::flash::FlashResult::UNREPORTED,
+        )
+    }
+
+    /// Результат кадра с тем, что HAL сообщил о вспышке.
+    pub fn result_with_flash(
+        &mut self,
+        sensor_ts: i64,
+        sensor_product: f64,
+        origin: RequestOrigin,
+        flash: camera_contract::flash::FlashResult,
+    ) -> FrameCaptureDetails {
         self.sequence += 1;
         FrameCaptureDetails {
             result: CaptureResultMeta {
@@ -382,7 +398,10 @@ impl AeRig {
                 sensitivity_iso: Some(ISO),
                 reported_frame_duration: None,
                 rolling_shutter_skew: None,
-                three_a: ThreeAResultState::unreported(origin),
+                three_a: ThreeAResultState {
+                    flash,
+                    ..ThreeAResultState::unreported(origin)
+                },
             },
             color: CaptureColorHints::default(),
         }
@@ -435,6 +454,19 @@ impl AeRig {
         self.publish_directive();
     }
 
+    /// Движок камеры объявил предвспышку снимка `shot`: рендер обязан мерить каждый кадр.
+    pub fn publish_active_preflash(&self, shot: u64) {
+        self.directives.publish(ExposureDirective {
+            flash: camera_contract::flash::FlashDirective {
+                preflash: camera_contract::flash::PreflashMetering::Active {
+                    shot: camera_contract::flash::FlashShotId(shot),
+                },
+                planned: None,
+            },
+            ..ExposureDirective::DEFAULT
+        });
+    }
+
     pub fn publish_directive(&self) {
         self.directives.publish(ExposureDirective {
             metering: PointOfInterest::WholeFrame,
@@ -450,6 +482,7 @@ impl AeRig {
                     reach: camera_contract::auto_exposure::ProductReach::Unbounded,
                 }),
             stream_start: None,
+            flash: camera_contract::flash::FlashDirective::INACTIVE,
         });
     }
 

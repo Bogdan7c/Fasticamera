@@ -91,3 +91,42 @@ fn default_target_timeout_covers_the_wait_of_the_last_queued_still() {
         config.target_timeout_ms
     );
 }
+
+#[test]
+fn flash_settings_have_validated_ranges_and_the_wait_covers_the_camera_worst_case() {
+    let defaults = StillDevelopConfig::default();
+    // Худший срок движка камеры от нажатия до кадра со вспышкой (док поля): рендер ждёт дольше.
+    assert!(defaults.flash_frame_wait_ms > 1_000);
+    let mut zero_wait = defaults;
+    zero_wait.flash_frame_wait_ms = 0;
+    assert!(matches!(
+        zero_wait.validate(),
+        Err(StillConfigError::OutOfRange {
+            field: "flash_frame_wait_ms",
+            ..
+        })
+    ));
+    let mut zero_stride = defaults;
+    zero_stride.flash_lit_sample_stride_cells = 0;
+    assert!(matches!(
+        zero_stride.validate(),
+        Err(StillConfigError::OutOfRange {
+            field: "flash_lit_sample_stride_cells",
+            ..
+        })
+    ));
+    for broken in [0.0, 1.5, f32::NAN, -0.1] {
+        let mut config = defaults;
+        config.flash_lit_min_fraction_of_predicted = broken;
+        assert!(
+            matches!(config.validate(), Err(StillConfigError::FractionOutOfRange { field, .. }) if field == "flash_lit_min_fraction_of_predicted"),
+            "{broken}"
+        );
+        let mut config = defaults;
+        config.flash_lit_check_min_predicted_share = broken;
+        assert!(
+            matches!(config.validate(), Err(StillConfigError::FractionOutOfRange { field, .. }) if field == "flash_lit_check_min_predicted_share"),
+            "{broken}"
+        );
+    }
+}

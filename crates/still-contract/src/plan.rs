@@ -4,6 +4,7 @@
 //! (зум, соотношение, поворот телефона), фиксируется в плане НА МОМЕНТ НАЖАТИЯ: снимок не должен
 //! зависеть от того, что пользователь сделал после (решение 3 сессии 14a — тот же принцип для вида).
 
+use camera_contract::flash::FlashShotId;
 use camera_contract::zoom::ZoomFraming;
 use serde::Serialize;
 use shell_contract::clock::MonotonicNanos;
@@ -31,6 +32,10 @@ pub struct ShutterPress {
 pub enum FrameSelection {
     /// Кадр сенсора, который был на экране в момент нажатия (без задержки затвора).
     ShownAtPress,
+    /// Разовый кадр со вспышкой снимка `shot` (14d, решение 158): его снимает движок камеры после
+    /// предвспышки, рендер берёт его из кольца ТОЛЬКО по метке запроса
+    /// (`RequestOrigin::FlashStill { shot }`), без подстановки другого кадра.
+    FlashFrame { shot: FlashShotId },
 }
 
 /// Формат основной картинки (решение 11: по умолчанию HEIF, JPEG — выбор в настройках).

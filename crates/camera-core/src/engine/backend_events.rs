@@ -81,7 +81,7 @@ impl CameraEngine {
                         self.note_stable_frame();
                         self.note_lens_frame(now);
                     }
-                    self.observe_three_a_result(result);
+                    self.observe_three_a_result(result, now);
                 } else if self.standby_slot_of_session(session).is_some() {
                     // Бывшая основная после обмена ролей: не устаревшее, а тёплое — отдельный счётчик.
                     self.note_result_after_swap();

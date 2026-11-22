@@ -6,15 +6,19 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use camera_screen::settings::{AspectRatio, RawCapture};
+use camera_contract::flash::FlashShotId;
+use camera_core::flash_status::FlashStillReport;
+use camera_screen::settings::{AspectRatio, FlashMode, RawCapture};
 use camera_screen::shutter::{PrimaryFormat, ShotRequest};
 use serde::Serialize;
 use shell_contract::clock::MonotonicNanos;
 use still_contract::frame_choice::FrameChoice;
 use still_contract::plan::StillId;
 
+use super::capture_flash_record::FlashShotRecord;
 use super::capture_frame_timing::{ClockBridge, FrameTiming};
 use super::capture_report::{ShotOutcome, ShotRecord};
+use crate::still_capture_service::FlashRouteEntry;
 use crate::still_choice_log::ChoiceEntry;
 use crate::still_phase_log::{PhaseEntry, PhaseKind};
 
@@ -100,6 +104,8 @@ pub struct CaptureObservation<'a> {
     pub press_time: MonotonicNanos,
     /// Что экран применит к следующему снимку.
     pub raw_setting: RawCapture,
+    /// Режим вспышки, который экран применит к следующему снимку (14d).
+    pub flash_setting: FlashMode,
     /// Всего отказов редьюсера экрана (накопительно). Во время шагов экран получает только нажатия затвора и
     /// ответы службы, поэтому прирост — отказы нажатий (занят затвор, полон набор сохраняемых).
     pub actions_rejected: u64,
@@ -153,6 +159,10 @@ pub struct PhaseBook {
     lost: u64,
     /// Какой кадр выбрал рендер для каждого снимка (по номеру снимка службы).
     choices: HashMap<StillId, FrameChoice>,
+    /// Маршруты, выбранные сервисом снимка (по номеру снимка службы), 14d.
+    flash_routes: HashMap<StillId, FlashRouteEntry>,
+    /// Итоги камеры по снимкам со вспышкой (по номеру снимка со вспышкой), 14d.
+    flash_reports: HashMap<FlashShotId, FlashStillReport>,
 }
 
 impl PhaseBook {
@@ -161,6 +171,24 @@ impl PhaseBook {
         for entry in entries {
             self.choices.insert(entry.still, entry.choice);
         }
+    }
+
+    /// Запоминает маршруты сервиса и итоги камеры по вспышке (повтор той же записи безвреден).
+    pub fn absorb_flash(&mut self, routes: Vec<FlashRouteEntry>, reports: Vec<FlashStillReport>) {
+        for route in routes {
+            self.flash_routes.insert(route.still, route);
+        }
+        for report in reports {
+            self.flash_reports.insert(report.shot(), report);
+        }
+    }
+
+    pub fn flash_route_of(&self, still: StillId) -> Option<&FlashRouteEntry> {
+        self.flash_routes.get(&still)
+    }
+
+    pub fn flash_report_of(&self, shot: FlashShotId) -> Option<&FlashStillReport> {
+        self.flash_reports.get(&shot)
     }
 
     pub fn choice_of(&self, still: StillId) -> Option<FrameChoice> {
@@ -207,11 +235,26 @@ pub fn aspect_name(aspect: AspectRatio) -> &'static str {
     }
 }
 
+/// Что план шага ждёт от настроек снимка: решение «шаг просил RAW / вспышку» сверяется с запросом экрана.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShotExpectation {
+    pub raw: bool,
+    pub flash: FlashMode,
+}
+
+impl ShotExpectation {
+    /// Ожидание без RAW и без вспышки (серия).
+    pub const PLAIN: Self = Self {
+        raw: false,
+        flash: FlashMode::Off,
+    };
+}
+
 /// Запись снимка по запросу экрана и фазам службы. Времена — от нажатия `pressed_at`.
 pub fn shot_record(
     number: u32,
     step: &'static str,
-    raw_expected: bool,
+    expected: ShotExpectation,
     request: &ShotRequest,
     pressed_at: Instant,
     book: &PhaseBook,
@@ -245,8 +288,11 @@ pub fn shot_record(
         step,
         request: request.request.0,
         still: still.map(|id| id.0),
-        raw_expected,
+        raw_expected: expected.raw,
         raw_requested: request.raw == RawCapture::On,
+        flash_expected: expected.flash.into(),
+        flash_requested: request.flash.into(),
+        flash: FlashShotRecord::of(still, book),
         format: match request.primary_format {
             PrimaryFormat::Heif => "heif",
             PrimaryFormat::Jpeg => "jpeg",

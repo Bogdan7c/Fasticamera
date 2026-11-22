@@ -221,16 +221,26 @@ fn touches_before_the_first_frame_are_counted_not_lost_silently() {
 }
 
 #[test]
-fn strip_flash_icon_tap_toggles_flash_and_changes_the_icon() {
+fn strip_flash_icon_tap_cycles_flash_and_changes_the_icon() {
     use ui_draw::icons::IconId;
     let mut rig = Rig::new();
     assert_eq!(icon_transforms(rig.frame(), IconId::FlashOff).len(), 1);
     let flash = rig.center_with(|g| g.strip_icon(0, 3));
     rig.tap(flash);
+    assert_eq!(rig.screen.state().settings().flash, crate::settings::FlashMode::Auto);
+    rig.run(100);
+    assert_eq!(
+        icon_transforms(&rig.last, IconId::FlashAuto).len(),
+        1,
+        "Auto — молния с «A»"
+    );
+    assert_eq!(icon_transforms(&rig.last, IconId::FlashOff).len(), 0);
+    assert_eq!(icon_transforms(&rig.last, IconId::FlashOn).len(), 0);
+    rig.tap(flash);
     assert_eq!(rig.screen.state().settings().flash, crate::settings::FlashMode::On);
     rig.run(100);
     assert_eq!(icon_transforms(&rig.last, IconId::FlashOn).len(), 1);
-    assert_eq!(icon_transforms(&rig.last, IconId::FlashOff).len(), 0);
+    assert_eq!(icon_transforms(&rig.last, IconId::FlashAuto).len(), 0);
 }
 
 #[test]

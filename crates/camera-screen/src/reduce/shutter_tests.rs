@@ -29,6 +29,8 @@ fn first_request() -> ShotRequestId {
 #[test]
 fn shutter_without_timer_starts_capturing_and_requests_a_shot_with_current_settings() {
     let mut screen = Screen::ready();
+    // Цикл вспышки Off → Auto → On: два тапа.
+    screen.step(ScreenAction::StripToolTapped(ToolId::Flash));
     screen.step(ScreenAction::StripToolTapped(ToolId::Flash));
     screen.step(ScreenAction::StripToolTapped(ToolId::Raw));
 

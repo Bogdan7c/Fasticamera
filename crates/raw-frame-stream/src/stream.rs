@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use camera_contract::capture_result::SensorTimestamp;
+use camera_contract::flash::FlashShotId;
 use camera_contract::frame_passport::{FrameCaptureDetails, FrameSequence, StreamPassport};
 use serde::Serialize;
 use shell_contract::sync_fence::GpuWaitFence;
@@ -30,7 +31,7 @@ use crate::counters::StreamAccounting;
 use crate::lease::RawFrameLease;
 use crate::pool::PoolPlan;
 use crate::producer_frame::ProducerFrame;
-use crate::ring_pick::{RingPick, RingPickRequest};
+use crate::ring_pick::{FlashRingPick, RingPick, RingPickRequest};
 use crate::viewfinder_pacing::{ViewfinderPacing, ViewfinderPacingSwitch};
 use viewfinder_cell::CellTake;
 
@@ -296,6 +297,12 @@ impl SnapshotRingFrames {
     /// Правило выбора и замены — в [`RingPickRequest`]/[`RingPick`] и `stream/ring_pick.rs`.
     pub fn pick(&self, request: RingPickRequest) -> RingPick {
         self.hub.with_state(|state, _| state.pick_from_ring(request))
+    }
+
+    /// Найти в кольце кадр разового запроса со вспышкой снимка `shot` (14d): строго по метке
+    /// запроса, без замены другим кадром. Доля отдельная, её надо вернуть явно.
+    pub fn pick_flash_frame(&self, shot: FlashShotId) -> FlashRingPick {
+        self.hub.with_state(|state, _| state.pick_flash_frame_from_ring(shot))
     }
 
     /// Забрать все кадры кольца, от старых к новым.

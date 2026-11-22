@@ -68,6 +68,8 @@ pub(super) fn measured(
             dark_fraction: 0.0,
             used_weight: 1.0,
             protection_ev: 0.0,
+            mean_luminance: 0.075,
+            mean_green_level: 0.075,
         }),
     }
 }

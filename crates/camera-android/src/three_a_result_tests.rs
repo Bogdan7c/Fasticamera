@@ -1,3 +1,4 @@
+use camera_contract::flash::{FlashModeEcho, FlashResult, FlashShotId, FlashState};
 use camera_contract::three_a::{BurstId, PointRequestId};
 
 use super::*;
@@ -22,6 +23,10 @@ fn full_result_maps_every_key_and_keeps_the_origin() {
             lens_state: Some(LensState::Stationary),
             focus_distance_diopters: Some(2.5),
             scene_flicker: Some(SceneFlicker::Mains50Hz),
+            flash: FlashResult {
+                mode: Some(FlashModeEcho::Off),
+                state: Some(FlashState::Ready),
+            },
             origin,
         }
     );
@@ -156,4 +161,86 @@ fn negative_or_non_finite_focus_distance_is_unreadable() {
         Some(0.0),
         "0 диоптрий — бесконечность, это значение"
     );
+}
+
+#[test]
+fn every_flash_mode_and_state_code_maps_to_its_own_value() {
+    let modes = [
+        (tags::FLASH_MODE_OFF, FlashModeEcho::Off),
+        (tags::FLASH_MODE_SINGLE, FlashModeEcho::Single),
+        (tags::FLASH_MODE_TORCH, FlashModeEcho::Torch),
+    ];
+    for (code, mode) in modes {
+        let parsed = parse(&FakeMetadata::default().bytes(tags::FLASH_MODE, &[code]));
+        assert_eq!(parsed.state.flash.mode, Some(mode), "код {code}");
+        assert_eq!(parsed.state.flash.state, None, "код {code}");
+        assert_eq!(parsed.unreadable_keys, Vec::new(), "код {code}");
+    }
+    let states = [
+        (tags::FLASH_STATE_UNAVAILABLE, FlashState::Unavailable),
+        (tags::FLASH_STATE_CHARGING, FlashState::Charging),
+        (tags::FLASH_STATE_READY, FlashState::Ready),
+        (tags::FLASH_STATE_FIRED, FlashState::Fired),
+        (tags::FLASH_STATE_PARTIAL, FlashState::Partial),
+    ];
+    for (code, state) in states {
+        let parsed = parse(&FakeMetadata::default().bytes(tags::FLASH_STATE, &[code]));
+        assert_eq!(parsed.state.flash.state, Some(state), "код {code}");
+        assert_eq!(parsed.state.flash.mode, None, "код {code}");
+        assert_eq!(parsed.unreadable_keys, Vec::new(), "код {code}");
+    }
+}
+
+#[test]
+fn torch_and_single_frames_are_told_apart_by_their_own_result() {
+    let torch = parse(
+        &FakeMetadata::default()
+            .bytes(tags::FLASH_MODE, &[tags::FLASH_MODE_TORCH])
+            .bytes(tags::FLASH_STATE, &[tags::FLASH_STATE_FIRED]),
+    );
+    assert_eq!(torch.state.flash.light(), camera_contract::flash::FrameLight::TorchLit);
+    let single = parse_three_a_result(
+        &FakeMetadata::default()
+            .bytes(tags::FLASH_MODE, &[tags::FLASH_MODE_SINGLE])
+            .bytes(tags::FLASH_STATE, &[tags::FLASH_STATE_FIRED]),
+        RequestOrigin::FlashStill { shot: FlashShotId(5) },
+    );
+    assert_eq!(
+        single.state.flash.light(),
+        camera_contract::flash::FrameLight::FlashFired
+    );
+    assert_eq!(single.state.origin, RequestOrigin::FlashStill { shot: FlashShotId(5) });
+}
+
+#[test]
+fn absent_flash_keys_are_unreported_and_not_unreadable() {
+    let parsed = parse(
+        &three_a_result_fixture()
+            .without(tags::FLASH_MODE)
+            .without(tags::FLASH_STATE),
+    );
+    assert_eq!(parsed.state.flash, FlashResult::UNREPORTED);
+    assert_eq!(parsed.unreadable_keys, Vec::new());
+}
+
+#[test]
+fn unknown_or_wrong_type_flash_values_are_unreadable_and_leave_the_other_key_intact() {
+    let unknown = parse(
+        &three_a_result_fixture()
+            .bytes(tags::FLASH_MODE, &[99])
+            .bytes(tags::FLASH_STATE, &[99]),
+    );
+    assert_eq!(unknown.state.flash, FlashResult::UNREPORTED);
+    assert_eq!(
+        unknown.unreadable_keys,
+        vec![ThreeAResultKey::FlashMode, ThreeAResultKey::FlashState]
+    );
+    let half = parse(&three_a_result_fixture().int32s(tags::FLASH_STATE, &[3]));
+    assert_eq!(
+        half.state.flash.mode,
+        Some(FlashModeEcho::Off),
+        "здоровый ключ не задет"
+    );
+    assert_eq!(half.state.flash.state, None);
+    assert_eq!(half.unreadable_keys, vec![ThreeAResultKey::FlashState]);
 }

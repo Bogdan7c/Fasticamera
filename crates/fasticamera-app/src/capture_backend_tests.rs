@@ -37,6 +37,8 @@ fn deps() -> StillRuntimeDeps {
         render: FakeRenderPort::new(RenderMode::Accepting),
         shutter_sound: Arc::new(CountingSound::default()),
         orphan_sweep: Arc::new(FixedSweep(OrphanSweepReport::Removed { count: 2 })),
+        flash_camera: crate::flash_test_support::FakeFlashCamera::new(),
+        flash_relay: Arc::default(),
     }
 }
 

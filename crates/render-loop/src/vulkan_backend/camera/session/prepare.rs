@@ -7,7 +7,6 @@
 use std::time::Instant;
 
 use camera_contract::geometry::PixelRect;
-use camera_contract::three_a::RequestOrigin;
 use gpu_vulkan::raw_mosaic_preview::MosaicSource;
 use gpu_vulkan::swapchain::DisplayColorSpace;
 use gpu_vulkan::sync::{WaitSemaphore, import_wait_fence};
@@ -20,6 +19,7 @@ use shell_contract::clock::MonotonicNanos;
 
 use super::super::continuity::{ExposureReadiness, PictureMeta, ProcessedFrame, Screen, StreamEvent};
 use super::super::exposure::{ExposureFrameFacts, ExposureFramePlan, ExposureSlotFrame};
+use super::super::frame_role::{ViewfinderFrameRole, frame_light, viewfinder_frame_role};
 use super::super::isp_params::ParamsOutcome;
 use super::super::passport::preview_params;
 use super::super::statistics_schedule::StatisticsDecision;
@@ -46,11 +46,17 @@ impl CameraSession {
         // кадр очереди, лишний «съел» бы кадр следующего vsync. Пропущенный ради схода тик (решение 54)
         // сюда не доходит вовсе — его кадр покажется следующим.
         match (self.frames.poll_for_vsync(Instant::now()), painter) {
-            // Кадр серии с брекетингом: у кадров серии разные выдержки, на экране они мигали бы, а AWB по
-            // ним ошибся бы. Возвращается камере нетронутым, считается отдельно (не «пропуск» в «ровно один раз»).
-            (ViewfinderPoll::NewFrame(lease), _) if is_bracket_frame(&lease) => {
+            // Кадр серии с брекетингом (у кадров серии разные выдержки, на экране они мигали бы, а AWB по ним
+            // ошибся бы) и кадр разового запроса со вспышкой (это снимок, а не видоискатель). Возвращаются камере
+            // нетронутыми, считаются отдельно (не «пропуск» в «ровно один раз»).
+            (ViewfinderPoll::NewFrame(lease), _) if !viewfinder_frame_role(lease.passport()).is_shown() => {
+                let role = viewfinder_frame_role(lease.passport());
                 lease.release_unused();
-                self.viewfinder.counters_mut().bracket_frames_skipped += 1;
+                match role {
+                    ViewfinderFrameRole::Bracket => self.viewfinder.counters_mut().bracket_frames_skipped += 1,
+                    ViewfinderFrameRole::FlashStill => self.viewfinder.counters_mut().flash_frames_skipped += 1,
+                    ViewfinderFrameRole::Shown => {}
+                }
                 match painter {
                     ViewfinderPainter::Isp => self.prepare_isp_without_new_frame(now, StreamEvent::Unpresentable),
                     ViewfinderPainter::DebugMosaic => self.prepare_mosaic_redraw(serial),
@@ -149,6 +155,7 @@ impl CameraSession {
             Ok((source, wait)) => {
                 self.stats.camera_frames_imported += 1;
                 let identity = frame_identity(&lease);
+                let light = frame_light(lease.passport());
                 let statistics = StatisticsDecision::combine(
                     plan.statistics,
                     exposure_plan.map(|exposure_plan| exposure_plan.statistics),
@@ -166,6 +173,7 @@ impl CameraSession {
                         source,
                         geometry,
                         identity,
+                        light,
                         plan,
                         statistics,
                         exposure,
@@ -345,16 +353,6 @@ fn content_of(transition: &TransitionFrame) -> Content {
         Screen::Black => Content::Black,
         Screen::Live | Screen::Held => Content::Recompose,
     }
-}
-
-/// Кадр из серии с брекетингом (`RequestOrigin::Burst`). Кадр без метаданных серией не считается: его
-/// происхождение неизвестно, поведение прежнее (решение 42).
-fn is_bracket_frame(lease: &RawFrameLease) -> bool {
-    lease
-        .passport()
-        .capture
-        .details()
-        .is_some_and(|details| matches!(details.result.three_a.origin, RequestOrigin::Burst { .. }))
 }
 
 /// Чей кадр (для привязки статистики AWB).

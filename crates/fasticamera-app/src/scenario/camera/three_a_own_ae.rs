@@ -88,6 +88,8 @@ pub struct ResultsChecked {
     pub focus_trigger: usize,
     /// Кадры серии (брекетинг).
     pub burst: usize,
+    /// Разовый запрос снимка со вспышкой (14d).
+    pub flash_still: usize,
     /// Запрос не опознан.
     pub unknown: usize,
 }
@@ -99,6 +101,7 @@ impl ResultsChecked {
             RequestOrigin::Repeating => &mut self.repeating,
             RequestOrigin::FocusTrigger { .. } => &mut self.focus_trigger,
             RequestOrigin::Burst { .. } => &mut self.burst,
+            RequestOrigin::FlashStill { .. } => &mut self.flash_still,
             RequestOrigin::Unknown => &mut self.unknown,
         };
         *counter += 1;

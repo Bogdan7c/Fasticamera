@@ -161,6 +161,39 @@ pub struct StillStepCpu {
     pub encoder_present_start: DurationStat,
 }
 
+/// Счётчики снимков со вспышкой (14d): каждый исход и каждый обход проверки — отдельно, молчаливых путей нет.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct FlashStillCounters {
+    /// Принятые `Begin` со вспышкой.
+    pub begins: u64,
+    /// Кадр запроса со вспышкой найден в кольце и пошёл на копию.
+    pub frames_found: u64,
+    /// Кадр не дошёл до кольца в срок `flash_frame_wait_ms` (`FlashFrameNeverArrived`).
+    pub never_arrived: u64,
+    /// Движок камеры сообщил, что вспышка не снята, пока снимок ждал кадр (`FlashNotCaptured`).
+    pub not_captured_by_camera: u64,
+    /// Сообщение «вспышка не снята» пришло для снимка, который кадр уже не ждёт (опоздало или без вспышки): проигнорировано.
+    pub late_failure_reports: u64,
+    /// У рендера нет плана кадра со вспышкой для снимка (`FrameUnusable`).
+    pub no_plan: u64,
+    /// У кадра нет спаренных выдержки и ISO: подтяжку считать не из чего (`FrameUnusable`).
+    pub no_exposure_product: u64,
+    /// Белая для проявления взята из оценки кадра с фонариком.
+    pub white_from_torch_frame: u64,
+    /// Оценки по кадру с фонариком нет: взята текущая белая видоискателя (причина — `FlashWhiteFallback`).
+    pub white_fallback_no_torch_estimate: u64,
+    /// Проверка освещённости пройдена: кадр освещён.
+    pub lit_check_passed: u64,
+    /// Проверка: кадр не освещён (`FlashFrameNotLit`).
+    pub not_lit: u64,
+    /// Проверка не решаема: предсказанная доля вспышки слишком мала, кадр принят.
+    pub lit_check_skipped_low_predicted_share: u64,
+    /// Проверка не решаема: нет уровня света сцены того же потока, кадр принят.
+    pub lit_check_skipped_no_ambient_level: u64,
+    /// Проверка не решаема: отсчёты RAW или уровни кадра прочитать нельзя, кадр принят.
+    pub lit_check_skipped_samples_unavailable: u64,
+}
+
 /// Диагностика снимков.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct StillDiagnostics {
@@ -176,6 +209,8 @@ pub struct StillDiagnostics {
     pub refusals: RefusalCounters,
     /// Итоги.
     pub outcomes: OutcomeCounters,
+    /// Снимки со вспышкой.
+    pub flash: FlashStillCounters,
     /// Копии RAW: запущено / готово.
     pub captures_started: u64,
     pub captures_completed: u64,

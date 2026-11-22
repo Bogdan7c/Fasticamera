@@ -95,8 +95,8 @@ pub(super) fn on_strip_tool_tapped(ctx: &mut Ctx<'_>, tool: ToolId) -> ActionOut
     }
     match tool {
         ToolId::Flash => {
-            // Auto не поддержан (инвариант 6): тап переключает только Off ↔ On.
-            let next = ctx.state.settings.flash.toggled();
+            // Цикл iOS 26: Off → Auto → On → Off.
+            let next = ctx.state.settings.flash.next_in_cycle();
             ctx.state.settings.flash = next;
         }
         ToolId::Raw => ctx.state.settings.raw = ctx.state.settings.raw.toggled(),
@@ -124,12 +124,12 @@ fn open_card_from_strip(ctx: &mut Ctx<'_>, card: PanelState) {
     }
 }
 
-/// Применяет вариант к настройкам. `false` — вариант не поддержан (автовспышка или вспышки у камеры нет).
+/// Применяет вариант к настройкам. `false` — вариант не поддержан (например, вспышки у камеры нет).
 fn apply_option(ctx: &mut Ctx<'_>, option: ToolOption) -> bool {
     match option {
         ToolOption::Flash(mode) => {
-            // Вспышки у камеры нет (инвариант 6) — выбирать нечего, как и автовспышку.
-            if !mode.is_selectable() || !ctx.state.is_tool_available(ToolId::Flash) {
+            // Вспышки у камеры нет (инвариант 6) — выбирать нечего.
+            if !ctx.state.is_tool_available(ToolId::Flash) {
                 return false;
             }
             ctx.state.settings.flash = mode;

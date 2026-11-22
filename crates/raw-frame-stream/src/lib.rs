@@ -40,7 +40,7 @@ pub use counters::RawStreamCounters;
 pub use lease::RawFrameLease;
 pub use pool::PoolPlan;
 pub use producer_frame::{ProducerFrame, ReleaseFences};
-pub use ring_pick::{RingPick, RingPickRequest, RingSubstitutionReason, RingUnavailableReason};
+pub use ring_pick::{FlashRingPick, RingPick, RingPickRequest, RingSubstitutionReason, RingUnavailableReason};
 pub use stream::{
     DefectReason, LosslessFrames, OfferOutcome, OfferedFrame, RawFrameProducer, RawFrameStream, ResultOutcome,
     SnapshotRingFrames, StandbyBegin, StandbyPromotion, StreamDefect, StreamEpoch, StreamStart, ViewfinderFrames,

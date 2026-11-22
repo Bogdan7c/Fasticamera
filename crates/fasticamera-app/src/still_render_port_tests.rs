@@ -10,7 +10,7 @@
 use render_loop::mailbox::{InboxEvent, render_mailbox};
 use render_loop::still::StillBegin;
 use still_contract::develop::{PrimaryTarget, PrimaryTargetOffer};
-use still_contract::plan::StillId;
+use still_contract::plan::{FrameSelection, StillId};
 
 use super::*;
 use crate::still_test_support::{FakeRenderPort, RenderMode, shot};
@@ -24,7 +24,7 @@ impl render_loop::still::StillEventSink for IdleSink {
 
 fn begin_command(id: u64) -> StillCommand {
     StillCommand::Begin(StillBegin {
-        plan: crate::still_capture_service::plan_from_shot(StillId(id), &shot(1)),
+        plan: crate::still_capture_service::plan_from_shot(StillId(id), &shot(1), FrameSelection::ShownAtPress),
         events: Arc::new(IdleSink),
     })
 }

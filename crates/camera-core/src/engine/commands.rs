@@ -78,6 +78,7 @@ impl CameraEngine {
             CameraCommand::SetExposureBias { bias } => self.decide_set_exposure_bias(*bias),
             CameraCommand::SetThreeAProfile { profile } => self.decide_set_three_a_profile(*profile),
             CameraCommand::CaptureBracket { bracket } => self.decide_capture_bracket(id, bracket),
+            CameraCommand::CaptureFlashStill { .. } => self.decide_capture_flash_still(),
             CameraCommand::Close => self.decide_close(),
             CameraCommand::EnterBackground => self.decide_enter_background(),
             CameraCommand::EnterForeground => self.decide_enter_foreground(),
@@ -232,6 +233,8 @@ impl CameraEngine {
             | CameraCommand::SetExposureBias { .. }
             | CameraCommand::SetThreeAProfile { .. } => self.reconcile(now),
             CameraCommand::CaptureBracket { .. } => self.submit_pending_bracket(now),
+            // Предвспышку запускает `settle_flash_command` сразу после ответа на команду.
+            CameraCommand::CaptureFlashStill { .. } => {}
             CameraCommand::Close => self.apply_close(),
             CameraCommand::EnterBackground => self.apply_enter_background(),
             CameraCommand::EnterForeground => self.apply_enter_foreground(now),

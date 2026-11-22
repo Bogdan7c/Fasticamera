@@ -69,6 +69,16 @@ impl FrameParamsHistory {
         self.entries.is_empty()
     }
 
+    /// Самая свежая запись потока `stream` (по порядку записи): текущая белая видоискателя для кадра со вспышкой,
+    /// у которого нет оценки по кадру с фонариком (14d).
+    pub fn latest_of_stream(&self, stream: &Arc<StreamPassport>) -> Option<&FrameStillParams> {
+        self.entries
+            .iter()
+            .rev()
+            .map(|(_, params)| params)
+            .find(|params| Arc::ptr_eq(&params.stream, stream))
+    }
+
     /// Параметры для кадра `sensor_timestamp` потока `stream` (см. модуль).
     pub fn lookup(&self, sensor_timestamp: SensorTimestamp, stream: &Arc<StreamPassport>) -> ParamsLookup {
         let same_stream = || {

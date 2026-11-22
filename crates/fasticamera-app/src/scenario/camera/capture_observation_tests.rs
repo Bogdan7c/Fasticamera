@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use camera_screen::settings::FlashMode;
 use camera_screen::shutter::{PrimaryFormat, ShotRequestId};
 use still_contract::plan::StillId;
 
@@ -98,7 +99,18 @@ fn a_saved_shot_gets_both_addresses_both_latencies_and_the_request_format() {
         ..shot(4)
     };
 
-    let record = shot_record(3, "single_heif_dng", true, &request, pressed, &book, &no_clock());
+    let record = shot_record(
+        3,
+        "single_heif_dng",
+        ShotExpectation {
+            raw: true,
+            flash: FlashMode::Off,
+        },
+        &request,
+        pressed,
+        &book,
+        &no_clock(),
+    );
 
     assert_eq!(record.number, 3);
     assert_eq!(record.request, 4);
@@ -135,7 +147,15 @@ fn a_failed_shot_keeps_the_service_text_and_has_no_save_time() {
         0,
     );
 
-    let record = shot_record(1, "single_heif", false, &shot(9), pressed, &book, &no_clock());
+    let record = shot_record(
+        1,
+        "single_heif",
+        ShotExpectation::PLAIN,
+        &shot(9),
+        pressed,
+        &book,
+        &no_clock(),
+    );
 
     assert_eq!(
         record.outcome,
@@ -153,8 +173,24 @@ fn an_unfinished_shot_says_whether_the_frame_was_at_least_captured() {
     let mut book = PhaseBook::default();
     book.extend(vec![entry(1, 2, 20, pressed, PhaseKind::Secured)], 0);
 
-    let captured = shot_record(1, "burst", false, &shot(2), pressed, &book, &no_clock());
-    let silent = shot_record(2, "burst", false, &shot(3), pressed, &book, &no_clock());
+    let captured = shot_record(
+        1,
+        "burst",
+        ShotExpectation::PLAIN,
+        &shot(2),
+        pressed,
+        &book,
+        &no_clock(),
+    );
+    let silent = shot_record(
+        2,
+        "burst",
+        ShotExpectation::PLAIN,
+        &shot(3),
+        pressed,
+        &book,
+        &no_clock(),
+    );
 
     assert_eq!(captured.outcome, ShotOutcome::Unfinished { secured: true });
     assert_eq!(silent.outcome, ShotOutcome::Unfinished { secured: false });
@@ -229,9 +265,9 @@ fn a_shot_takes_the_frame_choice_of_its_own_still_and_never_of_a_neighbour() {
         ..shot(id)
     };
 
-    let first = shot_record(1, "burst", false, &request(1), pressed, &book, &clock);
-    let second = shot_record(2, "burst", false, &request(2), pressed, &book, &clock);
-    let third = shot_record(3, "burst", false, &request(3), pressed, &book, &clock);
+    let first = shot_record(1, "burst", ShotExpectation::PLAIN, &request(1), pressed, &book, &clock);
+    let second = shot_record(2, "burst", ShotExpectation::PLAIN, &request(2), pressed, &book, &clock);
+    let third = shot_record(3, "burst", ShotExpectation::PLAIN, &request(3), pressed, &book, &clock);
 
     assert_eq!(first.frame.frame_choice, FrameChoiceView::Exact);
     assert_eq!(first.frame.press_to_frame_ms, Some(80.0));

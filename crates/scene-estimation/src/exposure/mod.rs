@@ -23,6 +23,7 @@
 
 pub mod config;
 pub mod controller;
+pub mod linear;
 pub mod measurement;
 pub mod meter;
 pub mod metering_weights;
@@ -35,6 +36,7 @@ mod test_support;
 
 pub use config::{ExposureControllerConfig, MeteringConfig, SceneAverage};
 pub use controller::{AutoExposureController, ExposureCounters, IngestOutcome, SkippedMeasurement};
+pub use linear::linear_mid_gray_product;
 pub use measurement::{
     ExposureMeasurement, ExposureMeasurementError, ExposureTarget, MeasurementPhase, measure_exposure,
     measure_exposure_in_phase,

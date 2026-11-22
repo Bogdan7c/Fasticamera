@@ -443,7 +443,7 @@ fn re_entering_the_card_while_it_is_still_closing_keeps_it_tappable() {
 }
 
 #[test]
-fn flash_card_offers_on_then_off_and_taps_switch_the_flash_in_place() {
+fn flash_card_offers_auto_on_off_and_taps_switch_the_flash_in_place() {
     use crate::settings::FlashMode;
     let mut rig = Rig::new();
     open_menu(&mut rig);
@@ -451,21 +451,33 @@ fn flash_card_offers_on_then_off_and_taps_switch_the_flash_in_place() {
     rig.tap(flash_item);
     rig.run(700);
     assert_eq!(rig.screen.state().panel(), PanelState::Submenu(ToolId::Flash));
-    // Значок вспышки есть и над кадром; в карточке (ниже её верха) — ровно по одному «On» и «Off».
+    // Значок вспышки есть и над кадром; в карточке (ниже её верха) — ровно по одному значку на режим.
     let card_top_px = px(rig.rect_with(|g| g.card()).min_y());
-    let in_card = |icon| {
+    let in_card = |rig: &Rig, icon| {
         icons_of(&rig.last, icon)
             .into_iter()
             .filter(|drawn| drawn.transform.ty > card_top_px)
             .collect::<Vec<_>>()
     };
-    assert_eq!(in_card(IconId::FlashOn).len(), 1);
-    assert_eq!(in_card(IconId::FlashOff).len(), 1);
-    // Порядок iOS без Auto: слева «On», справа «Off».
-    assert!(in_card(IconId::FlashOn)[0].transform.tx < in_card(IconId::FlashOff)[0].transform.tx);
-    let on_slot = rig.center_with(|g| g.card_option_slot(0, 2));
-    rig.tap(on_slot);
-    assert_eq!(rig.screen.state().settings().flash, FlashMode::On);
-    rig.run(100);
-    assert_eq!(text_count_of(&rig.last, "On", TextRoleKind::CardValue), 1);
+    assert_eq!(in_card(&rig, IconId::FlashAuto).len(), 1);
+    assert_eq!(in_card(&rig, IconId::FlashOn).len(), 1);
+    assert_eq!(in_card(&rig, IconId::FlashOff).len(), 1);
+    // Порядок карточки iOS 27: слева направо Auto, On, Off.
+    let x_of = |rig: &Rig, icon| in_card(rig, icon)[0].transform.tx;
+    assert!(x_of(&rig, IconId::FlashAuto) < x_of(&rig, IconId::FlashOn));
+    assert!(x_of(&rig, IconId::FlashOn) < x_of(&rig, IconId::FlashOff));
+    assert_eq!(text_count_of(&rig.last, "Off", TextRoleKind::CardValue), 1);
+
+    // Тап по каждому слоту применяет режим и обновляет крупное значение.
+    for (index, mode, label) in [
+        (0, FlashMode::Auto, "Auto"),
+        (1, FlashMode::On, "On"),
+        (2, FlashMode::Off, "Off"),
+    ] {
+        let slot = rig.center_with(|g| g.card_option_slot(index, 3));
+        rig.tap(slot);
+        assert_eq!(rig.screen.state().settings().flash, mode);
+        rig.run(100);
+        assert_eq!(text_count_of(&rig.last, label, TextRoleKind::CardValue), 1, "{label}");
+    }
 }

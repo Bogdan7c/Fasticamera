@@ -119,6 +119,7 @@ impl CameraSession {
                 source,
                 geometry,
                 identity,
+                light: _,
                 plan: _,
                 statistics,
                 exposure: _,

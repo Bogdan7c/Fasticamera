@@ -17,6 +17,7 @@ import dev.fasticamera.probe.scenario.CaptureScenario
 import dev.fasticamera.probe.scenario.CatalogScenario
 import dev.fasticamera.probe.scenario.CodecSurfaceScenario
 import dev.fasticamera.probe.scenario.DualScenario
+import dev.fasticamera.probe.scenario.FlashScenario
 import dev.fasticamera.probe.scenario.HeifScenario
 import dev.fasticamera.probe.scenario.PlatformScenario
 import dev.fasticamera.probe.scenario.ProbeScenario
@@ -130,6 +131,7 @@ class ProbeActivity : Activity() {
         "capture" -> CaptureScenario()
         "codecsurface" -> CodecSurfaceScenario()
         "threea" -> ThreeAScenario()
+        "flash" -> FlashScenario()
         "dual" -> DualScenario()
         "heif" -> HeifScenario()
         else -> null

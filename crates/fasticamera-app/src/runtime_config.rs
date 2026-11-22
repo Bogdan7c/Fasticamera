@@ -146,6 +146,12 @@ impl RuntimeConfig {
         parsed.photo.validate(&parsed.camera_screen.screen.capture)?;
         // Срок цели рендера против очереди кодеров службы: тоже конфиги двух crate-ов.
         parsed.photo.validate_against_render(&parsed.render.still)?;
+        // Цепочка сроков вспышки (14d): камера < рендер < служба < экран — конфиги четырёх crate-ов.
+        parsed.photo.validate_flash_deadlines(
+            parsed.camera.engine.three_a.flash.worst_case_sequence_ms(),
+            &parsed.render.still,
+            &parsed.camera_screen.screen.capture,
+        )?;
         // Бюджет ожиданий GPU потока рендера обязан быть меньше ожидания квитанции оболочкой:
         // иначе `surfaceDestroyed` отпустит главный поток по таймауту раньше подтверждения.
         // Конфиги разных crate-ов, поэтому согласованность проверяется здесь, на стыке.

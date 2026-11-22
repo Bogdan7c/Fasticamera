@@ -14,6 +14,7 @@ use std::time::Instant;
 use camera_contract::auto_exposure::ProductReach;
 use camera_contract::capabilities::CameraCapabilities;
 use camera_contract::control::{CaptureIntent, ManualControl};
+use camera_contract::flash::FlashControl;
 
 use super::super::{CameraEngine, Halt, LOG_TARGET};
 use super::ThreeAEngine;
@@ -47,6 +48,8 @@ pub(super) fn combine_plans(exposure: ExposureDecision, focus: FocusDecision) ->
         controls: RequestControls {
             exposure: exposure.plan,
             focus: focus.plan,
+            // Фонарик добавляет движок вспышки в `plan_three_a` (`apply_flash_to_plan`), не здесь.
+            flash: FlashControl::Off,
         },
         trigger: focus.trigger,
         adjustments,
@@ -126,7 +129,7 @@ fn unconstrained_frame_duration() -> camera_contract::capabilities::FrameDuratio
 
 impl CameraEngine {
     /// Возможности камеры, на которой строится план: открытая, иначе желаемая.
-    pub(super) fn planning_capabilities(&self) -> Option<CameraCapabilities> {
+    pub(in crate::engine) fn planning_capabilities(&self) -> Option<CameraCapabilities> {
         let camera = match &self.device {
             Some(device) => device.camera.clone(),
             None => self.desired_camera_id()?,
@@ -165,7 +168,8 @@ impl CameraEngine {
     /// План для повторяющегося запроса по текущему желаемому намерению.
     pub(in crate::engine) fn plan_three_a(&mut self) -> PlannedRequest {
         let intent = self.desired.three_a;
-        self.with_three_a_context(&intent, ThreeAEngine::plan)
+        let mut planned = self
+            .with_three_a_context(&intent, ThreeAEngine::plan)
             .unwrap_or_else(|| {
                 tracing::error!(target: LOG_TARGET, "нет возможностей камеры для плана 3A: строим автомат");
                 combine_plans(
@@ -176,7 +180,11 @@ impl CameraEngine {
                         adjustments: Vec::new(),
                     },
                 )
-            })
+            });
+        // Единый путь планирования: фонарик предвспышки попадает и в повторяющийся запрос, и в
+        // триггеры фокуса, которые берут его контролы.
+        self.apply_flash_to_plan(&mut planned);
+        planned
     }
 
     /// После того как повторяющийся запрос соответствует плану: объявить поправки и

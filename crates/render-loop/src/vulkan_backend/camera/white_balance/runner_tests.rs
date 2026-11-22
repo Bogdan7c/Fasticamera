@@ -43,7 +43,7 @@ fn calibration() -> Vec<ColorCalibrationSet> {
 }
 
 /// Новый поток (каждый вызов — новый `Arc`, то есть новая сессия камеры).
-fn new_stream() -> Arc<StreamPassport> {
+pub(super) fn new_stream() -> Arc<StreamPassport> {
     Arc::new(StreamPassport {
         camera: camera_id("2"),
         raw_format: RawFormat::Raw16,
@@ -92,11 +92,11 @@ fn frame_at(stream: &Arc<StreamPassport>, index: i64, color: CaptureColorHints) 
     }
 }
 
-fn frame(stream: &Arc<StreamPassport>, index: i64) -> RawFramePassport {
+pub(super) fn frame(stream: &Arc<StreamPassport>, index: i64) -> RawFramePassport {
     frame_at(stream, index, CaptureColorHints::default())
 }
 
-fn identity_of(passport: &RawFramePassport) -> AwbFrameIdentity {
+pub(super) fn identity_of(passport: &RawFramePassport) -> AwbFrameIdentity {
     AwbFrameIdentity {
         sequence: passport.sequence.0,
         sensor_timestamp_nanos: passport.sensor_timestamp.as_nanos(),
@@ -137,7 +137,7 @@ fn statistics_of(tile: AwbTile) -> AwbStatistics {
     AwbStatistics::from_tiles(grid(), vec![tile; 768]).expect("768 плиток")
 }
 
-fn gray_scene(kelvin: f64) -> AwbStatistics {
+pub(super) fn gray_scene(kelvin: f64) -> AwbStatistics {
     statistics_of(gray_tile(kelvin))
 }
 
@@ -156,7 +156,7 @@ fn clipped_scene() -> AwbStatistics {
 }
 
 /// Однотонная зелень: далеко от кривой Планка, серых кандидатов нет.
-fn single_colour_scene() -> AwbStatistics {
+pub(super) fn single_colour_scene() -> AwbStatistics {
     statistics_of(tile_of([0.05, 0.4, 0.05]))
 }
 
@@ -189,7 +189,7 @@ fn runner_with(
     (runner, directives, memory)
 }
 
-fn runner() -> (
+pub(super) fn runner() -> (
     WhiteBalanceRunner,
     DirectiveSlot<WhiteBalanceDirective>,
     SceneWhiteMemory,
@@ -197,7 +197,7 @@ fn runner() -> (
     runner_with(WhiteBalanceConfig::default())
 }
 
-fn kelvin_of(white: Chromaticity) -> f64 {
+pub(super) fn kelvin_of(white: Chromaticity) -> f64 {
     cct_duv_from_chromaticity(white)
         .expect("в таблице Робертсона")
         .temperature
@@ -205,7 +205,11 @@ fn kelvin_of(white: Chromaticity) -> f64 {
 }
 
 /// Один «показ»: план кадра, затем (как делает сессия на следующем такте) статистика этого кадра.
-fn process(runner: &mut WhiteBalanceRunner, passport: &RawFramePassport, statistics: &AwbStatistics) -> FramePlan {
+pub(super) fn process(
+    runner: &mut WhiteBalanceRunner,
+    passport: &RawFramePassport,
+    statistics: &AwbStatistics,
+) -> FramePlan {
     let plan = runner.plan_frame(passport);
     if plan.statistics == StatisticsPlan::Compute {
         runner.ingest_statistics(plan.stream, identity_of(passport), statistics);

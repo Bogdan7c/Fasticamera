@@ -1,11 +1,12 @@
 //! Выбор кадра из кольца снимков: точное попадание, замены, отказы и учёт буферов.
 
 use camera_contract::capture_result::SensorTimestamp;
+use camera_contract::flash::FlashShotId;
 use camera_contract::three_a::{BurstId, PointRequestId, RequestOrigin};
 
 use super::support::{Rig, latest_wins_config, result_with_origin};
 use crate::config::RawFrameStreamConfig;
-use crate::ring_pick::{RingPick, RingPickRequest, RingSubstitutionReason, RingUnavailableReason};
+use crate::ring_pick::{FlashRingPick, RingPick, RingPickRequest, RingSubstitutionReason, RingUnavailableReason};
 
 const RAW10_4096X3072_BYTES: u64 = 15_728_640;
 
@@ -335,4 +336,91 @@ fn picking_does_not_touch_other_counters_or_the_consumers_state() {
     };
     assert_eq!(after, expected);
     assert_eq!(rig.stream.snapshot_ring().capacity(), 3);
+}
+
+fn flash_origin(shot: u64) -> RequestOrigin {
+    RequestOrigin::FlashStill {
+        shot: FlashShotId(shot),
+    }
+}
+
+/// Метка найденного кадра со вспышкой (долю возвращает).
+fn found_flash_stamp(pick: FlashRingPick) -> i64 {
+    match pick {
+        FlashRingPick::Found(lease) => {
+            let nanos = lease.passport().sensor_timestamp.as_nanos();
+            lease.release_unused();
+            nanos
+        }
+        other => panic!("ожидался кадр со вспышкой, пришло {other:?}"),
+    }
+}
+
+#[test]
+fn flash_frame_is_found_only_by_its_shot_and_regular_picks_still_reject_it() {
+    let rig = rig_with_ring(4);
+    publish_repeating(&rig, 1_000);
+    publish_with_origin(&rig, 2_000, flash_origin(7));
+    publish_repeating(&rig, 3_000);
+    let ring = rig.stream.snapshot_ring();
+
+    assert_eq!(found_flash_stamp(ring.pick_flash_frame(FlashShotId(7))), 2_000);
+    assert_eq!(rig.stream.counters().ring_flash_picks_found, 1);
+    assert!(
+        matches!(ring.pick_flash_frame(FlashShotId(8)), FlashRingPick::NotInRingYet),
+        "чужой номер снимка не находит этот кадр"
+    );
+
+    // Обычный выбор по точной метке кадра со вспышкой его НЕ отдаёт: берёт ближайший обычный.
+    let (nanos, substitution) = picked_stamp(ring.pick(RingPickRequest::ShownFrame(stamp(2_000))));
+    assert_eq!(nanos, 1_000);
+    assert_eq!(
+        substitution,
+        Some((RingSubstitutionReason::TargetNotRepeating, stamp(2_000)))
+    );
+    let (nanos, _) = picked_stamp(ring.pick(RingPickRequest::NearestToEstimate(stamp(2_000))));
+    assert_ne!(nanos, 2_000, "оценочный выбор тоже не берёт кадр со вспышкой");
+}
+
+#[test]
+fn flash_frame_is_never_substituted_by_a_regular_or_nearby_frame() {
+    let rig = rig_with_ring(4);
+    publish_repeating(&rig, 1_000);
+    publish_with_origin(&rig, 1_100, burst_origin());
+    publish_without_meta(&rig, 1_200);
+    let ring = rig.stream.snapshot_ring();
+
+    assert!(matches!(
+        ring.pick_flash_frame(FlashShotId(1)),
+        FlashRingPick::NotInRingYet
+    ));
+    // Кольцо позже получает кадр запроса — тогда он находится, и только он.
+    publish_with_origin(&rig, 1_300, flash_origin(1));
+    assert_eq!(found_flash_stamp(ring.pick_flash_frame(FlashShotId(1))), 1_300);
+}
+
+#[test]
+fn flash_pick_on_a_disabled_ring_reports_disabled_and_a_found_share_is_returned_once() {
+    let disabled = Rig::new(latest_wins_config());
+    assert!(matches!(
+        disabled.stream.snapshot_ring().pick_flash_frame(FlashShotId(1)),
+        FlashRingPick::RingDisabled
+    ));
+
+    let rig = rig_with_ring(2);
+    publish_with_origin(&rig, 1_000, flash_origin(3));
+    let ring = rig.stream.snapshot_ring();
+    let before = rig.stream.counters();
+    assert_eq!(found_flash_stamp(ring.pick_flash_frame(FlashShotId(3))), 1_000);
+    let after = rig.stream.counters();
+    assert_eq!(
+        after,
+        crate::RawStreamCounters {
+            ring_flash_picks_found: 1,
+            released_unused: before.released_unused + 1,
+            ..before
+        },
+        "поиск меняет только свой счётчик и возврат доли"
+    );
+    assert_eq!(ring.capacity(), 2);
 }

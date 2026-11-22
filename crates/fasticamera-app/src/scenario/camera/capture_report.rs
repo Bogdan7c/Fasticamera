@@ -8,11 +8,13 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::capture_burst::BurstRecord;
+use super::capture_flash_record::FlashShotRecord;
 use super::capture_frame_timing::{FrameSummary, FrameTiming};
 use super::capture_render_still::StillDiagnosticsDelta;
 use super::detail::to_value;
 use crate::capture_backend::CaptureMode;
 use crate::capture_scenario_config::FullFrameSize;
+use crate::still_capture_service::FlashModeName;
 
 /// Чем кончился снимок.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -40,6 +42,11 @@ pub struct ShotRecord {
     pub raw_expected: bool,
     /// Что на самом деле просил экран в запросе (по журналу запросов).
     pub raw_requested: bool,
+    /// Режим вспышки, который план шага ожидал, и который экран на самом деле просил в запросе (14d).
+    pub flash_expected: FlashModeName,
+    pub flash_requested: FlashModeName,
+    /// Решение сервиса и итог камеры по вспышке; `None` — журналы о снимке ничего не знают.
+    pub flash: Option<FlashShotRecord>,
     /// Формат основной картинки запроса: `heif` или `jpeg`.
     pub format: &'static str,
     /// Соотношение сторон кадра запроса (`4:3`…).
@@ -177,16 +184,38 @@ fn compact_shot(shot: &ShotRecord) -> Value {
         ShotOutcome::Failed { .. } => "failed",
         ShotOutcome::Unfinished { .. } => "unfinished",
     };
-    json!({
+    let mut compact = json!({
         "n": shot.number,
         "step": shot.step,
         "outcome": outcome,
-        "fmt": shot.format,
-        "aspect": shot.aspect,
-        "zoom_milli": shot.zoom_milli,
         "secured_ms": shot.secured_after_ms,
         "saved_ms": shot.saved_after_ms,
-    })
+    });
+    // Строка результата ограничена 4000 байтами, поэтому умолчания не пишутся (скрипт ПК читает отсутствие как
+    // умолчание): нет `fmt` — `heif`, нет `aspect` — `4:3`, нет `zoom_milli` — 1000, нет `flash` — вспышка
+    // выключена, нет `choice` — взят ровно показанный кадр (`exact`). Остальное (режим, кадр вспышки, замена,
+    // неизвестный выбор, итог камеры: выдержка, ISO, доля света) называется явно.
+    if let Some(object) = compact.as_object_mut() {
+        if shot.format != "heif" {
+            object.insert("fmt".to_owned(), json!(shot.format));
+        }
+        if shot.aspect != "4:3" {
+            object.insert("aspect".to_owned(), json!(shot.aspect));
+        }
+        if shot.zoom_milli != 1_000 {
+            object.insert("zoom_milli".to_owned(), json!(shot.zoom_milli));
+        }
+        if shot.flash_requested != FlashModeName::Off {
+            object.insert("flash".to_owned(), to_value(&shot.flash_requested));
+        }
+        if shot.frame.choice_name() != "exact" {
+            object.insert("choice".to_owned(), json!(shot.frame.choice_name()));
+        }
+        if let Some(camera) = shot.flash.as_ref().and_then(|flash| flash.camera.as_ref()) {
+            object.insert("flash_cam".to_owned(), to_value(camera));
+        }
+    }
+    compact
 }
 
 #[cfg(test)]

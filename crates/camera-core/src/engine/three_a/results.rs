@@ -17,7 +17,7 @@ use crate::three_a_status::{BracketFailure, LastThreeAResult};
 
 impl CameraEngine {
     /// Результат кадра текущей сессии.
-    pub(in crate::engine) fn observe_three_a_result(&mut self, result: &CaptureResultMeta) {
+    pub(in crate::engine) fn observe_three_a_result(&mut self, result: &CaptureResultMeta, now: Instant) {
         let origin = result.three_a.origin;
         if origin == RequestOrigin::Unknown {
             self.three_a.counters.results_with_unknown_origin += 1;
@@ -41,6 +41,9 @@ impl CameraEngine {
         }
         if let RequestOrigin::Burst { burst, index } = origin {
             self.collect_bracket_frame(burst, index, result);
+        }
+        if let RequestOrigin::FlashStill { shot } = origin {
+            self.collect_flash_result(shot, result, now);
         }
     }
 
@@ -73,7 +76,14 @@ impl CameraEngine {
         if self.poisoned {
             return;
         }
-        let exposure = self.three_a.exposure.refresh();
+        // Замеры предвспышки приходят тем же пробуждением, что и предложения AE.
+        self.poll_flash_samples(now);
+        // Пока идёт снимок со вспышкой, экспозицию держит он: решения AE догонятся при возврате в `Idle`.
+        let exposure = if self.flash.in_progress() {
+            PlanRefresh::Unchanged
+        } else {
+            self.three_a.exposure.refresh()
+        };
         let focus = self.three_a.focus.refresh();
         if exposure == PlanRefresh::Changed || focus == PlanRefresh::Changed {
             self.reconcile(now);
@@ -98,6 +108,7 @@ impl CameraEngine {
         {
             self.fail_bracket(BracketFailure::ResultsTimedOut);
         }
+        self.fire_flash_timers(now);
     }
 
     /// Поток закончился (сессия закрыта, камера потеряна, запрос остановлен): всё, что
@@ -105,6 +116,7 @@ impl CameraEngine {
     /// намерении, после восстановления запустится заново.
     pub(in crate::engine) fn end_three_a_stream(&mut self) {
         self.fail_bracket(BracketFailure::SessionLost);
+        self.fail_flash_stream_ended();
         self.three_a.focus_settle_deadline = None;
         self.three_a.announced_adjustments.clear();
         self.three_a.focus.reset_for_new_stream();

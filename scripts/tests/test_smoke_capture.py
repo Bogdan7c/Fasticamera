@@ -36,24 +36,44 @@ def result_line(payload: dict) -> str:
 
 
 def compact_shot(number: int, step: str, outcome: str = "saved", **overrides: object) -> dict:
-    shot = {"n": number, "step": step, "outcome": outcome, "fmt": "heif", "aspect": "4:3", "zoom_milli": 1000, "secured_ms": 40, "saved_ms": 900}
+    shot = {"n": number, "step": step, "outcome": outcome, "fmt": "heif", "aspect": "4:3", "zoom_milli": 1000, "secured_ms": 40, "saved_ms": 900,
+            "flash": "off", "choice": "exact"}
     shot.update(overrides)
     return shot
 
 
+FIRED_CAMERA = {"state": "fired", "exposure_ms": 12.5, "iso": 400, "flash_share": 0.62, "elapsed_ms": 910}
+
+
+def flash_on_shot(number: int, **overrides: object) -> dict:
+    """Снимок шага ``single_flash_on``: вспышка On, кадр разового запроса, камера сообщила срабатывание."""
+    fields: dict = {"flash": "on", "choice": "flash_frame", "flash_cam": dict(FIRED_CAMERA)}
+    fields.update(overrides)
+    return compact_shot(number, "single_flash_on", **fields)
+
+
+def flash_auto_shot(number: int, fired: bool = False, **overrides: object) -> dict:
+    """Снимок шага ``single_flash_auto``: наблюдательный, вспышка могла и не сработать."""
+    fields: dict = {"flash": "auto", "choice": "exact"}
+    if fired:
+        fields.update(choice="flash_frame", flash_cam=dict(FIRED_CAMERA))
+    fields.update(overrides)
+    return compact_shot(number, "single_flash_auto", **fields)
+
+
 def capture_report(**overrides: object) -> dict:
-    """Здоровая сводка ``capture``: 12 снимков (1 + 1 с DNG + 10), 13 адресов, серия без отказов."""
-    shots = [compact_shot(1, "single_heif"), compact_shot(2, "single_heif_dng", "saved_with_raw")]
-    shots += [compact_shot(number, "burst") for number in range(3, 13)]
-    uris = [f"{IMAGES}{1000 + index}" for index in range(13)]
+    """Здоровая сводка ``capture``: 14 снимков (1 + 1 с DNG + вспышка On + вспышка Auto + 10), 15 адресов."""
+    shots = [compact_shot(1, "single_heif"), compact_shot(2, "single_heif_dng", "saved_with_raw"), flash_on_shot(3), flash_auto_shot(4)]
+    shots += [compact_shot(number, "burst") for number in range(5, 15)]
+    uris = [f"{IMAGES}{1000 + index}" for index in range(15)]
     report: dict = {
-        "steps_planned": 3,
-        "steps_done": 3,
+        "steps_planned": 5,
+        "steps_done": 5,
         "unfinished": 0,
         "mode": {"mode": "real"},
         "mode_end": {"mode": "real"},
-        "shots_total": 12,
-        "shots_saved": 12,
+        "shots_total": 14,
+        "shots_saved": 14,
         "shots": shots,
         "burst": {
             "presses": 10, "submitted": 10, "accepted": 10, "rejected_by_service": 0, "refused_by_screen": 0,
@@ -62,8 +82,8 @@ def capture_report(**overrides: object) -> dict:
                            "black_frames_while_picture_expected": 0, "holds_started": 0, "live_frames_presented": 300},
         },
         "phase_entries_lost": 0,
-        "frames": {"exact": 12, "subst": 0, "evicted": 0, "unknown": 0, "share": 1.0, "p2f_max_ms": 92.4, "p2f_p50_ms": 81.0},
-        "render_still": {"begins_accepted": 12},
+        "frames": {"exact": 14, "subst": 0, "evicted": 0, "unknown": 0, "share": 1.0, "p2f_max_ms": 92.4, "p2f_p50_ms": 81.0},
+        "render_still": {"begins_accepted": 14},
         "full_frame": {"width_px": 4096, "height_px": 3072},
         "uris": uris,
     }
@@ -86,7 +106,7 @@ class CaptureSummaryChecksTest(unittest.TestCase):
         joined = " ".join(verdict.notes)
         self.assertIn("«кадр захвачен» через 40 мс", joined)
         self.assertIn("отказал экран 0", joined)
-        self.assertIn("точно показанный кадр взят у 12 снимков", joined)
+        self.assertIn("точно показанный кадр взят у 14 снимков", joined)
         self.assertIn("доля точных 1.0", joined)
         self.assertIn("медиана 81.0 мс, максимум 92.4 мс", joined)
 
@@ -94,12 +114,12 @@ class CaptureSummaryChecksTest(unittest.TestCase):
         return smoke_checks_capture.check_capture(passed(capture_report(**overrides)))
 
     def test_frame_choice_deviations_are_named(self) -> None:
-        healthy = {"exact": 12, "subst": 0, "evicted": 0, "unknown": 0, "share": 1.0, "p2f_max_ms": 92.4, "p2f_p50_ms": 81.0}
+        healthy = {"exact": 14, "subst": 0, "evicted": 0, "unknown": 0, "share": 1.0, "p2f_max_ms": 92.4, "p2f_p50_ms": 81.0}
         cases = {
             "unknown": (dict(healthy, exact=11, unknown=1), "выбор кадра неизвестен у снимков: 1"),
             "evicted": (dict(healthy, exact=11, subst=1, evicted=1), "вытеснен из кольца у 1 снимков"),
             "not_measured": (dict(healthy, p2f_max_ms=None), "задержка «нажатие → кадр» не измерена"),
-            "not_counted": (dict(healthy, exact=10), "выбор кадра учтён у 10 снимков из 12"),
+            "not_counted": (dict(healthy, exact=10), "выбор кадра учтён у 10 снимков из 14"),
         }
         for name, (frames, needle) in cases.items():
             with self.subTest(name):
@@ -113,16 +133,16 @@ class CaptureSummaryChecksTest(unittest.TestCase):
 
     def test_a_substituting_but_otherwise_healthy_run_is_not_failed_by_the_script_and_the_note_names_the_replacements(self) -> None:
         # Порог доли точных судит Rust; скрипт замены сам не проваливает, но называет их в NOTE.
-        frames = {"exact": 11, "subst": 1, "evicted": 0, "unknown": 0, "share": 0.917, "p2f_max_ms": 140.0, "p2f_p50_ms": 82.0}
+        frames = {"exact": 13, "subst": 1, "evicted": 0, "unknown": 0, "share": 0.929, "p2f_max_ms": 140.0, "p2f_p50_ms": 82.0}
         verdict = verdict_of(capture_report(frames=frames))
         self.assertEqual(verdict.exit_code, smoke_wait.EXIT_OK, verdict.message)
         joined = " ".join(verdict.notes)
         self.assertIn("замен 1", joined)
-        self.assertIn("доля точных 0.917", joined)
+        self.assertIn("доля точных 0.929", joined)
 
     def test_every_deviation_is_named(self) -> None:
         cases = {
-            "steps_done": (dict(steps_done=2), "выполнено шагов 2 из 3"),
+            "steps_done": (dict(steps_done=2), "выполнено шагов 2 из 5"),
             "unfinished": (dict(unfinished=1), "не выполнено шагов"),
             "fake_start": (dict(mode={"mode": "fake_fallback", "reason": "x"}), "при старте не настоящий"),
             "fake_end": (dict(mode_end={"mode": "fake_for_scenario", "scenario": "screen"}), "в конце не настоящий"),
@@ -137,12 +157,12 @@ class CaptureSummaryChecksTest(unittest.TestCase):
         report["shots"][4] = compact_shot(5, "burst", "failed")
         problems = smoke_checks_capture.check_capture(passed(report))
         self.assertTrue(any("снимок 5 не сохранён: 'failed'" in problem for problem in problems), problems)
-        self.assertTrue(any("адресов файлов 13, а по снимкам должно быть 12" in problem for problem in problems), problems)
-        duplicate = capture_report(uris=[f"{IMAGES}1"] * 13)
+        self.assertTrue(any("адресов файлов 15, а по снимкам должно быть 14" in problem for problem in problems), problems)
+        duplicate = capture_report(uris=[f"{IMAGES}1"] * 15)
         self.assertTrue(any("повторяются" in problem for problem in smoke_checks_capture.check_capture(passed(duplicate))))
         no_raw = capture_report()
         no_raw["shots"][1] = compact_shot(2, "single_heif_dng", "saved")
-        no_raw["uris"] = no_raw["uris"][:12]
+        no_raw["uris"] = no_raw["uris"][:14]
         self.assertTrue(any("снимков с DNG 0" in problem for problem in smoke_checks_capture.check_capture(passed(no_raw))))
 
     def test_burst_accounting_must_close(self) -> None:
@@ -161,9 +181,9 @@ class CaptureSummaryChecksTest(unittest.TestCase):
     def test_screen_refusals_that_add_up_are_a_note_not_a_failure(self) -> None:
         report = capture_report()
         report["burst"].update(submitted=6, accepted=6, saved=6, refused_by_screen=4)
-        for index in range(7, 13):
+        for index in range(4):
             report["shots"].pop()
-        report["uris"] = report["uris"][:7]
+        report["uris"] = report["uris"][:11]
         verdict = verdict_of(report)
         self.assertEqual(verdict.exit_code, smoke_wait.EXIT_OK, verdict.message)
         self.assertTrue(any("NOTE экран отказал 4" in note for note in verdict.notes), verdict.notes)
@@ -285,7 +305,7 @@ class ContentQueryParsingTest(unittest.TestCase):
 class ExpectationsTest(unittest.TestCase):
     def test_addresses_map_to_shots_in_order_with_dng_after_its_primary(self) -> None:
         expectations = files.expectations_of(capture_report())
-        self.assertEqual(len(expectations), 13)
+        self.assertEqual(len(expectations), 15)
         self.assertEqual([(e.shot, e.kind) for e in expectations[:3]], [(1, "primary"), (2, "primary"), (2, "raw")])
         self.assertEqual(expectations[0].size, (4096, 3072))
         self.assertEqual(expectations[2].mimes, files.RAW_MIME)
@@ -297,7 +317,7 @@ class ExpectationsTest(unittest.TestCase):
         report["uris"] = report["uris"][1:]
         expectations = files.expectations_of(report)
         self.assertEqual(expectations[0].shot, 2)
-        self.assertEqual(len(expectations), 12)
+        self.assertEqual(len(expectations), 14)
 
     def test_other_framing_is_not_compared_and_says_so(self) -> None:
         report = capture_report()
@@ -372,7 +392,7 @@ class FilePostCheckTest(unittest.TestCase):
         self.assertIn("плитки 8x6 по 512x512", joined)
         self.assertIn("ImageDecoder: снимок 1 4096x3072, пространство цвета sRGB", joined)
         self.assertIn("exiftool или perl не найден", joined, "недоступный инструмент — заметка, не провал")
-        self.assertIn("проверено файлов 13", joined)
+        self.assertIn("проверено файлов 15", joined)
         self.assertTrue(created and not created[0].exists(), "временный каталог убран, в репозиторий ничего не пишется")
 
     def test_a_pending_file_is_a_problem(self) -> None:
@@ -457,7 +477,7 @@ class CleanupTest(unittest.TestCase):
         self.assertEqual(outcome.problems, [])
         self.assertEqual(sorted(phone.deletes()), sorted(capture_report()["uris"]))
         self.assertNotIn(other, phone.deletes(), "чужой файл владельца не тронут")
-        self.assertIn("удалено файлов 13 из 13", " ".join(outcome.notes))
+        self.assertIn("удалено файлов 15 из 15", " ".join(outcome.notes))
 
     def test_keep_captures_deletes_nothing_and_lists_the_addresses(self) -> None:
         phone = self.phone_with_files()
@@ -472,7 +492,7 @@ class CleanupTest(unittest.TestCase):
         outcome = self.clean(phone)
         self.assertNotIn(f"{IMAGES}1003", phone.deletes())
         self.assertIn("НЕ удалён", " ".join(outcome.notes))
-        self.assertEqual(len(phone.deletes()), 12)
+        self.assertEqual(len(phone.deletes()), 14)
 
     def test_a_file_of_another_owner_is_not_deleted(self) -> None:
         phone = self.phone_with_files()
@@ -482,7 +502,7 @@ class CleanupTest(unittest.TestCase):
         self.assertNotIn(f"{IMAGES}1003", phone.deletes())
         self.assertNotIn(f"{IMAGES}1004", phone.deletes(), "владелец неизвестен: не наш")
         self.assertIn("com.other.gallery", " ".join(outcome.notes))
-        self.assertEqual(len(phone.deletes()), 11)
+        self.assertEqual(len(phone.deletes()), 13)
 
     def test_a_file_with_a_foreign_name_is_not_deleted(self) -> None:
         phone = self.phone_with_files()
@@ -492,7 +512,7 @@ class CleanupTest(unittest.TestCase):
         for number in (1003, 1004, 1005):
             self.assertNotIn(f"{IMAGES}{number}", phone.deletes())
         self.assertEqual(" ".join(outcome.notes).count("не по шаблону имён приложения"), 3)
-        self.assertEqual(len(phone.deletes()), 10)
+        self.assertEqual(len(phone.deletes()), 12)
 
     def test_a_file_renamed_by_the_oneplus_gallery_is_still_ours_and_deleted(self) -> None:
         # 14c: галерея OnePlus переименовывает наш снимок «…_886.HEIC» в «…_0886.HEIC» (файл и владелец те же).
@@ -529,8 +549,8 @@ class CleanupTest(unittest.TestCase):
 
         outcome = files.capture_cleanup(SERIAL, False, PACKAGE, run_adb=garbled)(passed(capture_report()))
         self.assertEqual(phone.deletes(), [])
-        self.assertEqual(" ".join(outcome.notes).count("ответ MediaStore не разобран"), 13)
-        self.assertIn("удалено файлов 0 из 13", " ".join(outcome.notes))
+        self.assertEqual(" ".join(outcome.notes).count("ответ MediaStore не разобран"), 15)
+        self.assertIn("удалено файлов 0 из 15", " ".join(outcome.notes))
 
     def test_an_unsafe_address_from_the_report_is_never_passed_to_adb(self) -> None:
         phone = self.phone_with_files()
@@ -544,7 +564,7 @@ class CleanupTest(unittest.TestCase):
         phone.delete_returncode = 1
         outcome = self.clean(phone)
         self.assertEqual(outcome.problems, [])
-        self.assertEqual(" ".join(outcome.notes).count("ВНИМАНИЕ, файл остался в галерее"), 13)
+        self.assertEqual(" ".join(outcome.notes).count("ВНИМАНИЕ, файл остался в галерее"), 15)
         dead = self.phone_with_files()
         dead.query_returncode = 1
         outcome = self.clean(dead)
@@ -567,8 +587,8 @@ class CleanupInTheVerdictFlowTest(unittest.TestCase):
             [result_line(payload)], "capture", cleanup=files.capture_cleanup(SERIAL, False, PACKAGE, run_adb=phone.adb)
         )
         self.assertEqual(verdict.exit_code, smoke_wait.EXIT_SCENARIO_FAILED)
-        self.assertEqual(len(phone.deletes()), 13, "файлы провального прогона тоже убраны")
-        self.assertIn("удалено файлов 13 из 13", " ".join(verdict.notes))
+        self.assertEqual(len(phone.deletes()), 15, "файлы провального прогона тоже убраны")
+        self.assertIn("удалено файлов 15 из 15", " ".join(verdict.notes))
 
     def test_cleanup_runs_after_the_post_check_even_when_the_post_check_fails(self) -> None:
         order: list[str] = []
@@ -695,7 +715,7 @@ class DeviceSmokeCaptureTest(unittest.TestCase):
         completed = self.run_smoke(passed(self.report))
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(sorted(self.deletes()), sorted(self.report["uris"]))
-        self.assertIn("удалено файлов 13 из 13", completed.stdout)
+        self.assertIn("удалено файлов 15 из 15", completed.stdout)
         self.assertIn("плитки 8x6", completed.stdout)
 
     def test_keep_captures_leaves_the_files_and_prints_their_addresses(self) -> None:
@@ -711,13 +731,13 @@ class DeviceSmokeCaptureTest(unittest.TestCase):
         completed = self.run_smoke(passed(self.report))
         self.assertEqual(completed.returncode, 1, completed.stdout)
         self.assertIn("is_pending=1", completed.stderr)
-        self.assertEqual(len(self.deletes()), 13)
+        self.assertEqual(len(self.deletes()), 15)
 
     def test_a_failed_scenario_with_files_still_cleans_them(self) -> None:
         payload = {"scenario": "capture", "status": "failed", "error": "серия: сорвалось снимков 1", "report": self.report}
         completed = self.run_smoke(payload)
         self.assertEqual(completed.returncode, 1, completed.stdout)
-        self.assertEqual(len(self.deletes()), 13)
+        self.assertEqual(len(self.deletes()), 15)
 
     def test_keep_captures_is_only_for_capture(self) -> None:
         completed = subprocess.run(

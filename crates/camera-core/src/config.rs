@@ -3,6 +3,7 @@
 use camera_contract::stream::TargetFrameRate;
 use serde::{Deserialize, Serialize};
 
+use crate::flash_config::{FlashConfig, FlashConfigError};
 use crate::standby_config::{StandbyConfig, StandbyConfigError};
 use crate::three_a_own::OwnExposureConfig;
 use crate::zoom::{ZoomConfig, ZoomConfigError};
@@ -176,6 +177,8 @@ pub struct ThreeAConfig {
     pub bracket_result_timeout_ms: u64,
     /// Наш AE на стороне движка (08a): стартовое значение, мерцание, пороги перестроения.
     pub exposure: OwnExposureConfig,
+    /// Вспышка (14d): предвспышка, пауза, сроки, порог Auto.
+    pub flash: FlashConfig,
 }
 
 impl Default for ThreeAConfig {
@@ -188,6 +191,7 @@ impl Default for ThreeAConfig {
             max_bracket_frames: 4,
             bracket_result_timeout_ms: 10_000,
             exposure: OwnExposureConfig::default(),
+            flash: FlashConfig::default(),
         }
     }
 }
@@ -240,6 +244,8 @@ pub enum CameraEngineConfigError {
     InvalidZoom(#[from] ZoomConfigError),
     #[error("standby: {0}")]
     InvalidStandby(#[from] StandbyConfigError),
+    #[error("{0}")]
+    InvalidFlash(#[from] FlashConfigError),
 }
 
 impl CameraEngineConfig {
@@ -349,7 +355,9 @@ impl CameraEngineConfig {
                 return Err(CameraEngineConfigError::InvalidThreeALimit { field, value, max });
             }
         }
-        three_a.exposure.validate()
+        three_a.exposure.validate()?;
+        three_a.flash.validate()?;
+        Ok(())
     }
 
     /// Задержка перед попыткой восстановления номер `attempt` (с 1).

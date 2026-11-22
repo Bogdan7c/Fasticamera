@@ -223,46 +223,7 @@ struct RenderBehaviour {
     choice: ResponderChoice,
 }
 
-/// Выбор кадра ответчика рендера. Метка сенсора строится от НАСТОЯЩИХ часов процесса и момента нажатия плана, а не
-/// константой: тогда сценарий, переводящий её через измеренное смещение часов, получает ту задержку, что задана здесь.
-#[derive(Clone, Copy)]
-struct ResponderChoice {
-    /// Сколько мс назад (до нажатия) началась экспозиция выбранного кадра.
-    latency_ms: i64,
-    /// `None` — ровно показанный кадр; `Some(причина)` — замена.
-    substituted: Option<still_contract::frame_choice::SubstitutionReason>,
-}
-
-impl Default for ResponderChoice {
-    fn default() -> Self {
-        Self {
-            latency_ms: 80,
-            substituted: None,
-        }
-    }
-}
-
-impl ResponderChoice {
-    /// Выбор для плана: метка сенсора = нажатие в шкале BOOTTIME − задержка.
-    fn for_press(self, pressed_at: shell_contract::clock::MonotonicNanos) -> still_contract::frame_choice::FrameChoice {
-        use crate::clock_offset::{ClockOffsetSource, SystemClocks};
-        let offset = SystemClocks.sample_offset().expect("системные часы читаются");
-        let sensor_timestamp = camera_contract::capture_result::SensorTimestamp::from_nanos(
-            offset.monotonic_to_boottime(pressed_at).as_nanos() - self.latency_ms * 1_000_000,
-        );
-        match self.substituted {
-            None => still_contract::frame_choice::FrameChoice::ShownAtPress {
-                sensor_timestamp,
-                shown_at: shell_contract::clock::MonotonicNanos::from_nanos(pressed_at.as_nanos() - 10_000_000),
-            },
-            Some(reason) => still_contract::frame_choice::FrameChoice::Substituted {
-                sensor_timestamp,
-                wanted: None,
-                reason,
-            },
-        }
-    }
-}
+use super::capture_support::ResponderChoice;
 
 struct StillResponder {
     stop: Arc<AtomicBool>,
@@ -287,7 +248,12 @@ impl StillResponder {
                     render.update(|status| status.still_commands.begins_accepted += 1);
                     let mut facts = facts_for(plan.id);
                     facts.outputs = plan.outputs;
-                    let choice = behaviour.choice.for_press(plan.press.at);
+                    let choice = match plan.selection {
+                        still_contract::plan::FrameSelection::FlashFrame { shot } => {
+                            crate::flash_test_support::flash_frame_choice(shot, plan.press.at)
+                        }
+                        still_contract::plan::FrameSelection::ShownAtPress => behaviour.choice.for_press(plan.press.at),
+                    };
                     facts.sensor_timestamp = choice.sensor_timestamp();
                     facts.choice = choice;
                     let raw = (plan.outputs.raw == RawOutput::Dng).then(|| {
@@ -376,6 +342,7 @@ struct Stand {
 fn real_stand() -> Stand {
     let port = FakeRenderPort::new(RenderMode::Accepting);
     let store = Arc::new(FakeStore::default());
+    let flash_relay = Arc::new(crate::flash_still_relay::FlashStillRelay::default());
     let runtime = StillRuntime::start(
         &PhotoConfig::default(),
         StillRuntimeDeps {
@@ -388,6 +355,9 @@ fn real_stand() -> Stand {
             render: port.clone(),
             shutter_sound: Arc::new(CountingSound::default()),
             orphan_sweep: Arc::new(FixedSweep(OrphanSweepReport::Removed { count: 0 })),
+            // Камера отвечает `Fired` на каждую команду вспышки, как движок после снятого кадра.
+            flash_camera: crate::flash_test_support::FakeFlashCamera::reporting_fired_to(flash_relay.clone()),
+            flash_relay,
         },
     )
     .expect("служба запускается");
@@ -495,12 +465,12 @@ fn capture_takes_a_heif_then_heif_with_dng_then_a_burst_and_the_report_lists_exa
 
     assert_eq!(run.result["status"], "passed", "{}", run.result);
     let report = &run.result["report"];
-    // Адреса отчёта — ровно файлы, опубликованные хранилищем: 1 + (HEIC + DNG) + 10.
+    // Адреса отчёта — ровно файлы, опубликованные хранилищем: 1 + (HEIC + DNG) + 2 вспышечных + 10.
     let reported: BTreeSet<String> = uris_of(&run.result).into_iter().collect();
     let published: BTreeSet<String> = published_uris(&run.store).into_iter().collect();
-    assert_eq!(reported.len(), 13, "{report}");
+    assert_eq!(reported.len(), 15, "{report}");
     assert_eq!(reported, published);
-    assert_eq!(report["shots_saved"], 12);
+    assert_eq!(report["shots_saved"], 14);
     assert_eq!(report["mode"]["mode"], "real");
     assert_eq!(report["mode_end"]["mode"], "real");
     // Серия: все 10 нажатий прошли, ни одного отказа, видоискатель не просел.
@@ -508,14 +478,20 @@ fn capture_takes_a_heif_then_heif_with_dng_then_a_burst_and_the_report_lists_exa
     assert_eq!(report["burst"]["saved"], 10);
     assert_eq!(report["burst"]["refused_by_screen"], 0);
     assert_eq!(
-        report["render_still"]["begins_accepted"], 12,
-        "рендер принял 12 команд снимка"
+        report["render_still"]["begins_accepted"], 14,
+        "рендер принял 14 команд снимка"
     );
     // Второй снимок — с DNG, остальные без.
     let shots = report["shots"].as_array().expect("снимки");
     assert_eq!(shots[0]["outcome"], "saved");
     assert_eq!(shots[1]["outcome"], "saved_with_raw");
     assert!(shots[2..].iter().all(|shot| shot["outcome"] == "saved"));
+    // Шаг вспышки On дошёл до кадра разового запроса и итога камеры (путь: сервис → камера → рендер → файл).
+    assert_eq!(
+        (shots[2]["flash"].as_str(), shots[2]["choice"].as_str()),
+        (Some("on"), Some("flash_frame"))
+    );
+    assert_eq!(shots[2]["flash_cam"]["state"], "fired", "{}", shots[2]);
     // Файлы настоящей службы: у DNG-снимка заголовок TIFF из подделки формата.
     let drafts = run.store.drafts();
     assert!(
@@ -527,6 +503,10 @@ fn capture_takes_a_heif_then_heif_with_dng_then_a_burst_and_the_report_lists_exa
     assert_eq!(
         screen.report().expect("отчёт").capture_settings.raw,
         camera_screen::settings::RawCapture::Off
+    );
+    assert_eq!(
+        screen.report().expect("отчёт").capture_settings.flash,
+        camera_screen::settings::FlashMode::Off
     );
     assert_eq!(screen.installs(), 1);
     assert_eq!(screen.capture_diagnostics().mode, CaptureMode::Real);
@@ -541,7 +521,7 @@ fn the_detail_lines_hold_every_shot_with_its_times_and_the_reserved_render_place
         .flat_map(|stage| stage["items"].as_array().cloned().unwrap_or_default())
         .collect();
     // Выбор кадра дошёл от рендера до отчёта: ровно показанный кадр, задержка ≈ заданных 80 мс (допуск на смещение часов).
-    assert_eq!(items[0]["frame_summary"]["exact"], 12);
+    assert_eq!(items[0]["frame_summary"]["exact"], 14);
     let max_delay = items[0]["frame_summary"]["max_press_to_frame_ms"]
         .as_f64()
         .expect("задержка измерена");
@@ -551,13 +531,25 @@ fn the_detail_lines_hold_every_shot_with_its_times_and_the_reserved_render_place
         "рендер ПК диагностику снимков не публикует"
     );
     let shots: Vec<&serde_json::Value> = items.iter().filter(|item| item["request"].is_u64()).collect();
-    assert_eq!(shots.len(), 12);
+    assert_eq!(shots.len(), 14);
     for shot in shots {
         assert!(
             shot["secured_after_ms"].is_u64() && shot["saved_after_ms"].is_u64(),
             "{shot}"
         );
-        assert_eq!(shot["frame_choice"]["kind"], "exact", "{shot}");
+        let expected_kind = if shot["step"] == "single_flash_on" {
+            "flash_frame"
+        } else {
+            "exact"
+        };
+        assert_eq!(shot["frame_choice"]["kind"], expected_kind, "{shot}");
+        if expected_kind == "flash_frame" {
+            assert!(
+                shot["press_to_frame_ms"].is_null(),
+                "кадр вспышки снят после нажатия: {shot}"
+            );
+            continue;
+        }
         let delay = shot["press_to_frame_ms"].as_f64().expect("задержка снимка");
         assert!((79.0..=81.0).contains(&delay), "{shot}");
         assert_eq!(shot["shown_before_press_ms"], 10.0);
@@ -704,9 +696,9 @@ fn a_render_that_substitutes_the_frame_fails_the_run_naming_the_share_and_the_ev
 
     assert_eq!(run.result["status"], "failed", "{}", run.result);
     let error = run.result["error"].as_str().expect("текст ошибки");
-    assert!(error.contains("точно показанный кадр взят у 0 из 12"), "{error}");
-    assert!(error.contains("вытеснен из кольца у 12"), "{error}");
-    assert_eq!(run.result["report"]["frames"]["evicted"], 12);
+    assert!(error.contains("точно показанный кадр взят у 1 из 14"), "{error}");
+    assert!(error.contains("вытеснен из кольца у 13"), "{error}");
+    assert_eq!(run.result["report"]["frames"]["evicted"], 13);
 }
 
 #[test]
@@ -753,7 +745,7 @@ fn a_slow_capture_makes_the_screen_refuse_extra_burst_presses_and_the_accounting
     assert_eq!(burst["saved"], burst["accepted"], "всё принятое сохранено");
     assert_eq!(
         uris_of(&run.result).len(),
-        1 + 2 + burst["saved"].as_u64().expect("сохранено") as usize,
+        1 + 2 + 1 + 1 + burst["saved"].as_u64().expect("сохранено") as usize,
         "адреса — только настоящие файлы"
     );
 }

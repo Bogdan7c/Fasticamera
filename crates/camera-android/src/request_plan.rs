@@ -123,6 +123,8 @@ pub fn plan_bracket(inputs: &RequestInputs<'_>, bracket: &ExposureBracket) -> Ve
                     iso: frame.iso,
                 },
                 focus: inputs.controls.focus,
+                // Светодиод кадров серии — из базы: серия не включает вспышку сама.
+                flash: inputs.controls.flash,
             };
             plan_request(&RequestInputs {
                 controls: &controls,
@@ -221,3 +223,7 @@ mod tests;
 #[cfg(test)]
 #[path = "request_plan_oneshot_tests.rs"]
 mod oneshot_tests;
+
+#[cfg(test)]
+#[path = "request_plan_flash_tests.rs"]
+mod flash_tests;

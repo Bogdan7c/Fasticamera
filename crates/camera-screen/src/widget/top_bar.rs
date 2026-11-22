@@ -22,9 +22,10 @@ use super::intent::{ButtonId, ScreenGesture};
 use super::kit::SceneKit;
 use super::layers::{DrawLayers, Layer, VisualIndex};
 use super::text_runs::TextRuns;
+use super::tool_card_content::flash_icon;
 use super::{Ctx, Outputs};
 use crate::action::ScreenAction;
-use crate::settings::{FlashMode, RawCapture};
+use crate::settings::RawCapture;
 use crate::tools::ToolId;
 use ui_core::geometry::Rect;
 
@@ -128,14 +129,13 @@ impl TopBarWidget {
             let settings = ctx.state.settings();
             match tool {
                 ToolId::Flash => {
-                    let on = settings.flash == FlashMode::On;
-                    layers.push(
-                        Layer::Content,
-                        icon(
-                            if on { IconId::FlashOn } else { IconId::FlashOff },
-                            if on { colors.focus_yellow } else { colors.text_primary },
-                        ),
-                    );
+                    // Жёлтым — только On; Auto — белый значок с «A» (см. `FlashMode::is_highlighted`).
+                    let color = if settings.flash.is_highlighted() {
+                        colors.focus_yellow
+                    } else {
+                        colors.text_primary
+                    };
+                    layers.push(Layer::Content, icon(flash_icon(settings.flash), color));
                 }
                 ToolId::Raw => {
                     let on = settings.raw == RawCapture::On;

@@ -12,6 +12,7 @@
 use std::fmt;
 use std::sync::Arc;
 
+use camera_contract::flash::FlashStillFailure;
 use serde::Serialize;
 use still_contract::develop::{DevelopEvent, PrimaryTargetOffer};
 use still_contract::plan::{StillId, StillPlan};
@@ -45,6 +46,10 @@ pub enum StillCommand {
     Begin(StillBegin),
     /// Ответ записи: куда рисовать основную картинку снимка.
     Target(PrimaryTargetOffer),
+    /// Движок камеры не снял кадр со вспышкой снимка `id` (14d): рендер завершает этот снимок
+    /// `NotSecured(FlashNotCaptured(failure))`, не дожидаясь своего срока. Для снимка без
+    /// вспышки или уже захваченного — ничего (опоздавший ответ, учитывается счётчиком).
+    FlashFailed { id: StillId, failure: FlashStillFailure },
 }
 
 impl StillCommand {
@@ -52,6 +57,25 @@ impl StillCommand {
         match self {
             Self::Begin(begin) => begin.plan.id,
             Self::Target(offer) => offer.id(),
+            Self::FlashFailed { id, .. } => *id,
+        }
+    }
+}
+
+/// Вид команды снимка (для счётчиков потока рендера: исход `Accepted` значит разное у разных видов).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StillCommandKind {
+    Begin,
+    Target,
+    FlashFailed,
+}
+
+impl StillCommandKind {
+    pub(crate) fn of(command: &StillCommand) -> Self {
+        match command {
+            StillCommand::Begin(_) => Self::Begin,
+            StillCommand::Target(_) => Self::Target,
+            StillCommand::FlashFailed { .. } => Self::FlashFailed,
         }
     }
 }
@@ -77,6 +101,11 @@ pub struct StillCommandLog {
     pub targets_accepted: u64,
     /// Цели, которые бэкенд не принял: уничтожены (поверхность кодера отпущена).
     pub targets_dropped: u64,
+    /// Сообщения «вспышка не снята» (14d), принятые бэкендом (для снимка без вспышки или уже захваченного он
+    /// их учитывает сам как опоздавшие).
+    pub flash_failures_accepted: u64,
+    /// Сообщения «вспышка не снята», которые бэкенд не принял (снимков нет): отброшены.
+    pub flash_failures_dropped: u64,
     /// Команды, потерянные из-за неисправного бэкенда (паника): итог снимка доведёт срок записи.
     pub lost_to_backend_fault: u64,
 }

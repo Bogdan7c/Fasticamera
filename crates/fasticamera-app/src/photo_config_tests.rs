@@ -199,3 +199,92 @@ fn render_target_timeout_not_below_service_develop_timeout_is_rejected() {
         })
     );
 }
+
+// ---- Цепочка сроков вспышки (14d): камера < рендер < служба < экран --------------------------------------------
+
+/// Худший срок вспышки камеры в тестах, где его значение не важно (звенья ниже по цепочке задаются явно).
+/// Не равен умолчанию камеры нарочно: умолчание меняется вместе с повторными замерами предвспышки.
+const CAMERA_WORST_MS: u64 = 1_000;
+
+fn render_flash_wait(flash_frame_wait_ms: u32) -> StillDevelopConfig {
+    StillDevelopConfig {
+        flash_frame_wait_ms,
+        ..StillDevelopConfig::default()
+    }
+}
+
+fn service_capture_timeout(capture_timeout_ms: u64) -> PhotoConfig {
+    PhotoConfig {
+        service: StillServiceConfig {
+            capture_timeout_ms,
+            ..StillServiceConfig::default()
+        },
+        ..PhotoConfig::default()
+    }
+}
+
+#[test]
+fn default_flash_deadline_chain_is_strictly_increasing() {
+    // Умолчания всех четырёх слоёв согласованы: ломается, если кто-то сдвинет один слой, не пересчитав соседей.
+    // Живое умолчание камеры, а не константа: цепочка обязана сходиться при ЛЮБЫХ согласованных умолчаниях.
+    let camera_worst_ms = camera_core::flash_config::FlashConfig::default().worst_case_sequence_ms();
+    PhotoConfig::default()
+        .validate_flash_deadlines(
+            camera_worst_ms,
+            &StillDevelopConfig::default(),
+            &CaptureConfig::default(),
+        )
+        .unwrap();
+}
+
+#[test]
+fn render_flash_wait_not_above_the_camera_sequence_is_rejected() {
+    let config = PhotoConfig::default();
+    let screen = CaptureConfig::default();
+    assert_eq!(
+        config.validate_flash_deadlines(1_300, &render_flash_wait(1_300), &screen),
+        Err(PhotoConfigError::FlashFrameWaitNotAboveCameraSequence {
+            render_ms: 1_300,
+            camera_ms: 1_300
+        }),
+        "равенство недопустимо"
+    );
+    assert!(
+        config
+            .validate_flash_deadlines(1_299, &render_flash_wait(1_300), &screen)
+            .is_ok()
+    );
+}
+
+#[test]
+fn service_capture_timeout_not_above_the_render_flash_wait_is_rejected() {
+    let screen = CaptureConfig::default();
+    let render = render_flash_wait(1_300);
+    assert_eq!(
+        service_capture_timeout(1_300).validate_flash_deadlines(CAMERA_WORST_MS, &render, &screen),
+        Err(PhotoConfigError::ServiceCaptureTimeoutNotAboveFlashFrameWait {
+            service_ms: 1_300,
+            render_ms: 1_300
+        })
+    );
+    assert!(
+        service_capture_timeout(1_301)
+            .validate_flash_deadlines(CAMERA_WORST_MS, &render, &screen)
+            .is_ok()
+    );
+}
+
+#[test]
+fn screen_capture_timeout_not_above_the_service_in_the_flash_chain_is_rejected() {
+    let screen = CaptureConfig {
+        capture_timeout_ms: 1_500,
+        ..CaptureConfig::default()
+    };
+    assert_eq!(
+        PhotoConfig::default().validate_flash_deadlines(CAMERA_WORST_MS, &StillDevelopConfig::default(), &screen),
+        Err(PhotoConfigError::ScreenCaptureTimeoutNotAboveFlashChain {
+            screen_ms: 1_500,
+            service_ms: 2_200
+        })
+    );
+}

@@ -56,3 +56,27 @@ fn a_restarted_backend_never_produces_negative_or_wrapped_numbers() {
     assert_eq!((delta.picks.exact, delta.gpu_lost), (0, 0));
     assert_eq!(delta.exact_press_after_shown_mean_ms, None);
 }
+
+#[test]
+fn flash_delta_counts_only_this_run_and_sums_every_undecidable_reason() {
+    let mut before = StillDiagnostics::default();
+    before.flash.lit_check_passed = 4;
+    before.flash.not_lit = 1;
+    before.flash.lit_check_skipped_low_predicted_share = 2;
+
+    let mut after = before.clone();
+    after.flash.begins = 2;
+    after.flash.frames_found = 2;
+    after.flash.lit_check_passed += 1;
+    after.flash.lit_check_skipped_low_predicted_share += 1;
+    after.flash.lit_check_skipped_no_ambient_level += 1;
+    after.flash.white_from_torch_frame = 2;
+
+    let flash = StillDiagnosticsDelta::between(&before, &after).flash;
+    assert_eq!(flash.begins, 2);
+    assert_eq!(flash.frames_found, 2);
+    assert_eq!(flash.lit_check_passed, 1, "прежние 4 проверки к прогону не относятся");
+    assert_eq!(flash.not_lit, 0, "прежний неосвещённый кадр к прогону не относится");
+    assert_eq!(flash.lit_check_skipped, 2, "обе причины «не решаемо» сложены");
+    assert_eq!(flash.white_from_torch_frame, 2);
+}

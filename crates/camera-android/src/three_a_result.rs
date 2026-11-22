@@ -5,6 +5,7 @@
 //! тоже `None`, и ключ **отдельно** попадает в список непригодных, чтобы не путать с отсутствием.
 //! В сессии из одного RAW-потока `AF_STATE` не приходит вовсе (факт зонда 08) — это штатное `None`.
 
+use camera_contract::flash::{FlashModeEcho, FlashResult, FlashState};
 use camera_contract::three_a::{AeState, AfState, LensState, RequestOrigin, SceneFlicker, ThreeAResultState};
 use serde::Serialize;
 
@@ -20,6 +21,10 @@ pub enum ThreeAResultKey {
     LensState,
     FocusDistance,
     SceneFlicker,
+    /// Эхо `FLASH_MODE` (14d).
+    FlashMode,
+    /// `FLASH_STATE` (14d).
+    FlashState,
 }
 
 /// Состояние 3A кадра и ключи, которые были, но не прочитались (в порядке [`ThreeAResultKey`]).
@@ -56,6 +61,20 @@ pub fn parse_three_a_result(source: &dyn MetadataSource, origin: RequestOrigin) 
         read_byte(source, tags::SCENE_FLICKER),
         scene_flicker_from_code,
     );
+    let flash = FlashResult {
+        mode: enum_value(
+            &mut unreadable_keys,
+            ThreeAResultKey::FlashMode,
+            read_byte(source, tags::FLASH_MODE),
+            flash_mode_from_code,
+        ),
+        state: enum_value(
+            &mut unreadable_keys,
+            ThreeAResultKey::FlashState,
+            read_byte(source, tags::FLASH_STATE),
+            flash_state_from_code,
+        ),
+    };
     let focus_distance_diopters = focus_distance(&mut unreadable_keys, read_float(source, tags::LENS_FOCUS_DISTANCE));
     ParsedThreeA {
         state: ThreeAResultState {
@@ -64,6 +83,7 @@ pub fn parse_three_a_result(source: &dyn MetadataSource, origin: RequestOrigin) 
             lens_state,
             focus_distance_diopters,
             scene_flicker,
+            flash,
             origin,
         },
         unreadable_keys,
@@ -143,6 +163,26 @@ fn scene_flicker_from_code(code: u8) -> Option<SceneFlicker> {
         tags::SCENE_FLICKER_NONE => SceneFlicker::None,
         tags::SCENE_FLICKER_50HZ => SceneFlicker::Mains50Hz,
         tags::SCENE_FLICKER_60HZ => SceneFlicker::Mains60Hz,
+        _ => return None,
+    })
+}
+
+fn flash_mode_from_code(code: u8) -> Option<FlashModeEcho> {
+    Some(match code {
+        tags::FLASH_MODE_OFF => FlashModeEcho::Off,
+        tags::FLASH_MODE_SINGLE => FlashModeEcho::Single,
+        tags::FLASH_MODE_TORCH => FlashModeEcho::Torch,
+        _ => return None,
+    })
+}
+
+fn flash_state_from_code(code: u8) -> Option<FlashState> {
+    Some(match code {
+        tags::FLASH_STATE_UNAVAILABLE => FlashState::Unavailable,
+        tags::FLASH_STATE_CHARGING => FlashState::Charging,
+        tags::FLASH_STATE_READY => FlashState::Ready,
+        tags::FLASH_STATE_FIRED => FlashState::Fired,
+        tags::FLASH_STATE_PARTIAL => FlashState::Partial,
         _ => return None,
     })
 }

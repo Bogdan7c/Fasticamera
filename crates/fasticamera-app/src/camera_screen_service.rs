@@ -332,6 +332,16 @@ impl CameraScreenService {
         self.capture.frame_choices()
     }
 
+    /// Маршруты настоящих снимков: со вспышкой или без и почему (сценарий `capture`, 14d).
+    pub fn capture_flash_routes(&self) -> Vec<crate::still_capture_service::FlashRouteEntry> {
+        self.capture.flash_routes()
+    }
+
+    /// Итоги камеры по снимкам со вспышкой: выдержка, ISO, доля света (сценарий `capture`, 14d).
+    pub fn capture_flash_reports(&self) -> Vec<camera_core::flash_status::FlashStillReport> {
+        self.capture.flash_reports()
+    }
+
     /// Курсор «сейчас» журнала итогов снимков.
     pub fn capture_phase_cursor_now(&self) -> PhaseCursor {
         self.capture.phase_cursor_now()

@@ -162,9 +162,9 @@ def expected_size(shot: dict, full_frame: object) -> tuple[tuple[int, int] | Non
     width, height = full_frame.get("width_px"), full_frame.get("height_px")
     if not isinstance(width, int) or not isinstance(height, int):
         return None, "полный кадр в отчёте не числами"
-    if shot.get("aspect") == "4:3" and shot.get("zoom_milli") == 1000:
+    if shot.get("aspect", "4:3") == "4:3" and shot.get("zoom_milli", 1000) == 1000:
         return (width, height), None
-    return None, f"кадрирование {shot.get('aspect')} при зуме {shot.get('zoom_milli')} тыс.: размер не сверяется"
+    return None, f"кадрирование {shot.get('aspect', '4:3')} при зуме {shot.get('zoom_milli', 1000)} тыс.: размер не сверяется"
 
 
 def expectations_of(report: dict) -> list[FileExpectation]:
@@ -175,7 +175,7 @@ def expectations_of(report: dict) -> list[FileExpectation]:
     result: list[FileExpectation] = []
     cursor = 0
     for shot in saved_shots(report):
-        fmt = shot.get("fmt") if shot.get("fmt") in PRIMARY_MIME else "heif"
+        fmt = shot.get("fmt", "heif") if shot.get("fmt", "heif") in PRIMARY_MIME else "heif"
         size, note = expected_size(shot, report.get("full_frame"))
         if cursor < len(uris):
             result.append(FileExpectation(str(uris[cursor]), int(shot.get("n", 0)), "primary", PRIMARY_MIME[fmt], size, note))

@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use camera_contract::catalog::CameraCatalog;
 use camera_contract::control::{CaptureIntent, ExposureBias, ManualControl};
+use camera_contract::flash::FlashShotId;
 use camera_contract::ids::{CameraTarget, LensRole};
 use camera_contract::stream::StreamMode;
 use camera_contract::three_a::{ExposureBracket, SensorPoint, ThreeAProfile};
@@ -194,6 +195,11 @@ impl CameraHandle {
     /// Серия с брекетингом поверх потока (V10); итог — событие `BracketCaptured`.
     pub fn capture_bracket(&self, bracket: ExposureBracket) -> Result<CommandId, CommandRejected> {
         self.send(CameraCommand::CaptureBracket { bracket })
+    }
+
+    /// Снимок со вспышкой `shot` (14d); итог — событие `FlashStillFinished`.
+    pub fn capture_flash_still(&self, shot: FlashShotId) -> Result<CommandId, CommandRejected> {
+        self.send(CameraCommand::CaptureFlashStill { shot })
     }
 
     /// Камера не нужна: закрыть и забыть желаемое.

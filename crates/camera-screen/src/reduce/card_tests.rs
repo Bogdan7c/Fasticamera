@@ -141,7 +141,7 @@ fn strip_toggle_icon_works_over_an_open_card_without_closing_it() {
     let mut screen = Screen::ready();
     screen.step(ScreenAction::StripToolTapped(ToolId::Exposure));
     screen.step(ScreenAction::StripToolTapped(ToolId::Flash));
-    assert_eq!(screen.state.settings().flash, FlashMode::On);
+    assert_eq!(screen.state.settings().flash, FlashMode::Auto);
     assert_eq!(screen.state.panel(), PanelState::ExposurePanel);
 }
 

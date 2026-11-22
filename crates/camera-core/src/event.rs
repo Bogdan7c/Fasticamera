@@ -10,6 +10,7 @@ use serde::Serialize;
 
 use crate::backend::ConfigureFailure;
 use crate::command::{CommandId, CommandOutcome};
+use crate::flash_status::FlashStillReport;
 use crate::lens_status::{LensSwitchFailure, LensSwitchMethod};
 use crate::state::CameraState;
 use crate::three_a_status::{BracketReport, ControlAdjustment, FocusOutcome};
@@ -79,6 +80,10 @@ pub enum CameraEvent {
     /// Итог серии с брекетингом.
     BracketCaptured {
         report: BracketReport,
+    },
+    /// Итог снимка со вспышкой (14d): ровно один на команду `CaptureFlashStill`.
+    FlashStillFinished {
+        report: FlashStillReport,
     },
     /// Первый кадр новой камеры пришёл: смена `from → to` завершена (экран проявляет новую
     /// камеру из удержанного размытого кадра). `elapsed` — от намерения или команды, начавших

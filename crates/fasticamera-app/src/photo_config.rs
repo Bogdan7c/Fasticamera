@@ -79,6 +79,23 @@ pub enum PhotoConfigError {
     /// «экран > служба > рендер»): иначе служба успеет сорвать снимок, который рендер ещё честно ждёт.
     #[error("render.still.target_timeout_ms = {render_ms} не меньше photo.service.develop_timeout_ms = {service_ms}")]
     RenderTargetTimeoutNotBelowService { render_ms: u64, service_ms: u64 },
+    /// Рендер ждёт кадр со вспышкой (14d) не дольше, чем камере нужно на всю последовательность (предвспышка,
+    /// пауза, результат): рендер сдавался бы `FlashFrameNeverArrived` раньше, чем камера честно закончит.
+    #[error(
+        "render.still.flash_frame_wait_ms = {render_ms} не больше худшего срока вспышки камеры camera.engine.three_a.flash (preflash + пауза + результат) = {camera_ms} мс"
+    )]
+    FlashFrameWaitNotAboveCameraSequence { render_ms: u64, camera_ms: u64 },
+    /// Служба сорвала бы снимок со вспышкой по сроку `capture_timeout_ms` раньше, чем рендер сам откажется ждать
+    /// кадр (`flash_frame_wait_ms`): итог был бы «служба молчит», а не причина.
+    #[error(
+        "photo.service.capture_timeout_ms = {service_ms} не больше render.still.flash_frame_wait_ms = {render_ms}: служба сорвёт снимок со вспышкой раньше рендера"
+    )]
+    ServiceCaptureTimeoutNotAboveFlashFrameWait { service_ms: u64, render_ms: u64 },
+    /// Экран объявил бы снимок со вспышкой потерянным раньше, чем служба довела бы его до итога.
+    #[error(
+        "camera_screen.screen.capture.capture_timeout_ms = {screen_ms} не больше photo.service.capture_timeout_ms = {service_ms} (цепочка сроков вспышки)"
+    )]
+    ScreenCaptureTimeoutNotAboveFlashChain { screen_ms: u64, service_ms: u64 },
 }
 
 impl PhotoConfig {
@@ -142,6 +159,36 @@ impl PhotoConfig {
                 render_ms: render_target_ms,
                 service_ms: service.develop_timeout_ms,
             });
+        }
+        Ok(())
+    }
+
+    /// Цепочка сроков снимка со вспышкой (14d): камера (вся последовательность, `camera_worst_case_ms`) <
+    /// рендер (`flash_frame_wait_ms`) < служба (`capture_timeout_ms`) < экран (`capture_timeout_ms`).
+    ///
+    /// Каждый внешний слой — страховка внутреннего: он обязан сдаваться ПОЗЖЕ, иначе итог снимка скажет «слой
+    /// выше молчит» вместо настоящей причины. Звено «служба < экран» общее с обычным снимком и уже проверяет
+    /// [`PhotoConfig::validate`]; здесь оно повторено, чтобы цепочка вспышки читалась и проверялась целиком.
+    pub fn validate_flash_deadlines(
+        &self,
+        camera_worst_case_ms: u64,
+        render: &StillDevelopConfig,
+        screen: &CaptureConfig,
+    ) -> Result<(), PhotoConfigError> {
+        let render_ms = u64::from(render.flash_frame_wait_ms);
+        if render_ms <= camera_worst_case_ms {
+            return Err(PhotoConfigError::FlashFrameWaitNotAboveCameraSequence {
+                render_ms,
+                camera_ms: camera_worst_case_ms,
+            });
+        }
+        let service_ms = self.service.capture_timeout_ms;
+        if service_ms <= render_ms {
+            return Err(PhotoConfigError::ServiceCaptureTimeoutNotAboveFlashFrameWait { service_ms, render_ms });
+        }
+        let screen_ms = u64::from(screen.capture_timeout_ms);
+        if screen_ms <= service_ms {
+            return Err(PhotoConfigError::ScreenCaptureTimeoutNotAboveFlashChain { screen_ms, service_ms });
         }
         Ok(())
     }

@@ -1,5 +1,6 @@
 use camera_contract::capabilities::Rational;
 use camera_contract::fixtures::{camera_id, front_camera, main_wide_camera};
+use camera_contract::flash::FlashUnit;
 use camera_contract::lens_calibration::{
     CalibrationPlausibility, LensCalibration, LensIntrinsics, LensPose, OpticalAxis, PoseReference, UncalibratedReason,
 };
@@ -56,8 +57,10 @@ fn front_camera_without_focus_range_is_fixed_focus_and_without_notes_for_focus_k
         .floats(tags::MIN_FOCUS_DISTANCE, &[0.0])
         .without(tags::HYPERFOCAL_DISTANCE)
         .without(tags::FOCUS_DISTANCE_CALIBRATION)
+        .bytes(tags::FLASH_INFO_AVAILABLE, &[tags::FLASH_INFO_AVAILABLE_FALSE])
         .with_front_camera_three_a();
     let parsed = parse_main(&source).unwrap();
+    assert_eq!(parsed.capabilities.flash, FlashUnit::Absent);
     assert_eq!(parsed.capabilities.focus, FocusCapability::Fixed);
     assert_eq!(parsed.capabilities.facing, LensFacing::Front);
     assert_eq!(front_camera().capabilities.focus, FocusCapability::Fixed);
@@ -295,6 +298,30 @@ fn color_calibration_set_without_matrices_is_skipped_and_missing_transform_is_id
     let issues: Vec<_> = parsed.notes.iter().map(|note| note.tag).collect();
     assert!(issues.contains(&"ACAMERA_SENSOR_FORWARD_MATRIX2"));
     assert!(issues.contains(&"ACAMERA_SENSOR_CALIBRATION_TRANSFORM1"));
+}
+
+#[test]
+fn flash_unit_follows_the_hal_flag_and_an_absent_key_is_absent_with_a_note() {
+    let flash = |source: FakeMetadata| parse_main(&source).unwrap();
+    let present = flash(main_camera_characteristics());
+    assert_eq!(present.capabilities.flash, FlashUnit::Present);
+    assert_eq!(present.notes, Vec::new());
+    assert_eq!(
+        flash(main_camera_characteristics().bytes(tags::FLASH_INFO_AVAILABLE, &[tags::FLASH_INFO_AVAILABLE_FALSE]))
+            .capabilities
+            .flash,
+        FlashUnit::Absent
+    );
+    let missing = flash(main_camera_characteristics().without(tags::FLASH_INFO_AVAILABLE));
+    assert_eq!(missing.capabilities.flash, FlashUnit::Absent);
+    assert_eq!(note_tags(&missing), vec!["ACAMERA_FLASH_INFO_AVAILABLE"]);
+    let wrong_type = flash(main_camera_characteristics().int32s(tags::FLASH_INFO_AVAILABLE, &[1]));
+    assert_eq!(
+        wrong_type.capabilities.flash,
+        FlashUnit::Absent,
+        "не тот тип — не вспышка"
+    );
+    assert_eq!(note_tags(&wrong_type), vec!["ACAMERA_FLASH_INFO_AVAILABLE"]);
 }
 
 #[test]

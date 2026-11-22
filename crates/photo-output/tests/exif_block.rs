@@ -282,3 +282,57 @@ fn container_carried_rotation_leaves_no_orientation_tag() {
         assert_eq!(ifd0.entry(271).ascii(), "OnePlus", "остальные поля IFD0 на месте");
     }
 }
+
+/// Значение тега `Flash` (0x9209) для фактов кадра, изменённых `adjust`.
+fn flash_tag_for(adjust: impl FnOnce(&mut still_contract::shot::StillFrameFacts)) -> Vec<u16> {
+    let area = PixelRect {
+        left: 0,
+        top: 0,
+        size: PixelSize::new(64, 48),
+    };
+    let mut facts = still_facts(main_camera_stream(area), area);
+    adjust(&mut facts);
+    let bytes = build_exif_tiff(&ExifInputs {
+        rotation_carrier: RotationCarrier::ExifOrientationTag,
+        facts: &facts,
+        camera: &camera_description(),
+        captured_at: &capture_moment(),
+        pixel_size: PixelSize::new(4000, 3000),
+    })
+    .unwrap();
+    let tiff = ParsedTiff::open(&bytes);
+    let ifd0 = tiff.first_ifd();
+    exif_ifd(&tiff, &ifd0).entry(37385).shorts()
+}
+
+#[test]
+fn flash_tag_says_fired_only_for_a_flash_frame_and_no_function_for_a_camera_without_flash() {
+    use camera_contract::flash::{FlashModeEcho, FlashResult, FlashShotId, FlashState};
+    use still_contract::frame_choice::FrameChoice;
+
+    // Кадр со вспышкой, прошедший проверку освещённости рендера (выбор `FlashFrame`) — «сработала».
+    let fired = flash_tag_for(|facts| {
+        facts.choice = FrameChoice::FlashFrame {
+            sensor_timestamp: facts.sensor_timestamp,
+            shot: FlashShotId(7),
+        };
+    });
+    assert_eq!(fired, vec![0x0001]);
+    // Обычный снимок камеры со вспышкой — «не сработала», даже если HAL написал FIRED на кадре:
+    // `FIRED` без выбора `FlashFrame` не доказательство (факт 14d).
+    let not_fired = flash_tag_for(|facts| {
+        facts.capture.result.three_a.flash = FlashResult {
+            mode: Some(FlashModeEcho::Off),
+            state: Some(FlashState::Fired),
+        };
+    });
+    assert_eq!(not_fired, vec![0x0000]);
+    // Камера без вспышки (фронт): HAL сообщает UNAVAILABLE — «функции вспышки нет».
+    let no_function = flash_tag_for(|facts| {
+        facts.capture.result.three_a.flash = FlashResult {
+            mode: None,
+            state: Some(FlashState::Unavailable),
+        };
+    });
+    assert_eq!(no_function, vec![0x0020]);
+}

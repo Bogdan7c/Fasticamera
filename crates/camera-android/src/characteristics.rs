@@ -14,6 +14,7 @@ use camera_contract::capabilities::{
     Rational, RawSensorInfo, RawStreamOption, RawSupport, ReferenceIlluminant, RequestCapability, SensorLevels,
     VendorProcessingFlags,
 };
+use camera_contract::flash::FlashUnit;
 use camera_contract::geometry::{PixelRect, PixelSize, SensorOrientation};
 use camera_contract::ids::{CameraId, CameraTopology, LensFacing};
 use camera_contract::raw_format::{CfaLayout, MosaicKind, MosaicPattern, NativeMosaic, RawFormat};
@@ -171,6 +172,7 @@ pub fn parse_characteristics(
         raw,
         three_a: parse_three_a(source, &mut notes),
         focus: parse_focus(source, &mut notes),
+        flash: parse_flash_unit(source, &mut notes),
         optics,
         vendor_processing: VendorProcessingFlags {
             lens_shading: parse_lens_shading(source, &mut notes),
@@ -592,6 +594,18 @@ fn parse_focus(source: &dyn MetadataSource, notes: &mut Notes) -> FocusCapabilit
         min_focus_distance_diopters,
         hyperfocal_distance_diopters,
         calibration,
+    }
+}
+
+/// Вспышка: ключ отсутствует или непригоден — вспышки нет (честная заметка, не молчание);
+/// незнакомое значение булева тоже считается «нет».
+fn parse_flash_unit(source: &dyn MetadataSource, notes: &mut Notes) -> FlashUnit {
+    match notes.optional(
+        tags::FLASH_INFO_AVAILABLE,
+        read_byte(source, tags::FLASH_INFO_AVAILABLE),
+    ) {
+        Some(tags::FLASH_INFO_AVAILABLE_TRUE) => FlashUnit::Present,
+        Some(_) | None => FlashUnit::Absent,
     }
 }
 

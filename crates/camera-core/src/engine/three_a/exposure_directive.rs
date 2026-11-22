@@ -10,6 +10,7 @@ use camera_contract::auto_exposure::{
     AppliedExposure, CarriedSceneExposure, ExposureAuthority, ExposureDirective, ExposureProduct, ProductReach,
 };
 use camera_contract::control::{Control, ManualControl};
+use camera_contract::flash::FlashDirective;
 use camera_contract::three_a::{AeAfLock, DirectiveSlot};
 
 use crate::request_controls::ExposurePlan;
@@ -20,6 +21,9 @@ use crate::three_a_status::{AdjustmentReason, AutoExposureProgress, ControlAdjus
 pub(super) struct ExposurePublisher {
     slot: DirectiveSlot<ExposureDirective>,
     last_published: Option<ExposureDirective>,
+    /// Часть указания про вспышку: живёт дольше намерения и запроса (как `stream_start`), поэтому
+    /// указание, пересобранное из намерения после любой команды, её не сбрасывает.
+    flash: FlashDirective,
 }
 
 impl ExposurePublisher {
@@ -27,6 +31,7 @@ impl ExposurePublisher {
         Self {
             slot,
             last_published: None,
+            flash: FlashDirective::INACTIVE,
         }
     }
 
@@ -36,7 +41,18 @@ impl ExposurePublisher {
         let stream_start = self.last_published.and_then(|last| last.stream_start);
         self.publish_directive_if_changed(ExposureDirective {
             stream_start,
+            flash: self.flash,
             ..directive_for(intent, applied)
+        });
+    }
+
+    /// Изменить часть про вспышку и опубликовать указание, если оно изменилось.
+    pub(super) fn update_flash(&mut self, update: impl FnOnce(&mut FlashDirective)) {
+        update(&mut self.flash);
+        let base = self.last_published.unwrap_or(ExposureDirective::DEFAULT);
+        self.publish_directive_if_changed(ExposureDirective {
+            flash: self.flash,
+            ..base
         });
     }
 
@@ -86,6 +102,8 @@ pub(super) fn directive_for(intent: &ThreeAIntent, applied: Option<AppliedExposu
         applied,
         // Ожидание нового потока — не часть намерения: его дописывает издатель (`publish_if_changed`).
         stream_start: None,
+        // Вспышку дописывает издатель (`publish_if_changed`): она не часть намерения.
+        flash: FlashDirective::INACTIVE,
     }
 }
 

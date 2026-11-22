@@ -1,6 +1,6 @@
 //! `AndroidCameraBackend` — реализация `CameraBackend` на Camera2 NDK.
 //!
-//! Все три вида запросов (повторяющийся, триггер фокуса, серия) строятся одним путём
+//! Все виды запросов (повторяющийся, триггер фокуса, серия, кадр со вспышкой) строятся одним путём
 //! `request_plan::plan_request`, поэтому рычаг частоты кадров и вендорские ключи потока есть в каждом.
 //!
 //! Тонкий слой: решения принимает нейтральная логика (`frame_rate_plan`, `request_plan`,
@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use camera_contract::capabilities::CameraDescriptor;
 use camera_contract::control::CaptureIntent;
+use camera_contract::flash::FlashShotId;
 use camera_contract::ids::CameraId;
 use camera_contract::raw_format::{MosaicKind, NativeMosaic};
 use camera_contract::stream::{ConfiguredStream, ResolvedStream};
@@ -31,10 +32,11 @@ use crate::context_leak::leak_contexts_for_process_lifetime;
 use crate::cpu_access_probe::CpuAccessProbe;
 use crate::diagnostics::BackendDiagnostics;
 use crate::entry::{EntryLookup, EntryValue, MetadataSource};
+use crate::flash_still_plan::plan_flash_still;
 use crate::request_plan::{PlannedRequest, RequestInputs, plan_bracket, plan_request};
 use crate::retired_readers::RetiredReaders;
 use crate::sensor_modes::{SensorModeAvailability, SensorModeProblem};
-use crate::tags::Tag;
+use crate::tags::{self, Tag};
 use crate::vendor::{VendorCapabilities, VendorKey};
 
 use super::availability::AvailabilityRegistration;
@@ -397,6 +399,56 @@ impl CameraBackend for AndroidCameraBackend {
             .inspect_err(|failure| {
                 self.diagnostics
                     .record_failure("submit_bracket", 0, &failure.to_string());
+            })
+    }
+
+    fn submit_flash_still(
+        &mut self,
+        intent: CaptureIntent,
+        controls: &RequestControls,
+        shot: FlashShotId,
+    ) -> Result<(), RequestFailure> {
+        self.reap_retired_readers();
+        let (Some(device), Some(session)) = (self.device.as_ref(), self.session.as_mut()) else {
+            return Err(RequestFailure::NoSession);
+        };
+        let Some(record) = self.catalog.get(&session.stream().camera) else {
+            return Err(RequestFailure::NoSession);
+        };
+        // Условия снимка (Single, ручной сенсор, вспышка есть) проверяет чистый планировщик;
+        // отказ — честная ошибка запроса, а не молчаливый обычный кадр.
+        let planned = plan_flash_still(&RequestInputs {
+            intent,
+            controls,
+            trigger: None,
+            frame_rate: session.stream().frame_rate,
+            mechanism: session.mechanism(),
+            camera: &record.descriptor.capabilities,
+            mains: self.config.mains_frequency,
+        })
+        .map_err(|refusal| {
+            let failure = RequestFailure::Backend(BackendFailure {
+                operation: "submit_flash_still",
+                code: tags::STATUS_INVALID_PARAMETER,
+                detail: refusal.to_string(),
+            });
+            self.diagnostics.record_failure(
+                "submit_flash_still",
+                tags::STATUS_INVALID_PARAMETER,
+                &refusal.to_string(),
+            );
+            failure
+        })?;
+        self.diagnostics.record_plan_notes(&planned.notes);
+        let one_shot = [OneShotRequest {
+            plan: &planned.plan,
+            origin: RequestOrigin::FlashStill { shot },
+        }];
+        session
+            .submit_one_shot(device, &one_shot, &record.vendor)
+            .inspect_err(|failure| {
+                self.diagnostics
+                    .record_failure("submit_flash_still", 0, &failure.to_string());
             })
     }
 

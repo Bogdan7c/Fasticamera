@@ -3,13 +3,15 @@
 
 use std::time::Duration;
 
-use camera_screen::settings::RawCapture;
+use camera_screen::settings::{FlashMode, RawCapture};
 
+use super::super::capture_flash_record::{CameraFlashRecord, FlashShotRecord};
 use super::super::capture_frame_timing::FrameChoiceView;
 use super::super::capture_plan::planned_steps;
 use super::super::capture_report::ShotOutcome;
 use super::super::capture_test_support::{Behaviour, ChoicePolicy, World, drive, fast_config};
 use super::*;
+use crate::still_capture_service::FlashModeName;
 
 const TICK: Duration = Duration::from_millis(10);
 const LIMIT: Duration = Duration::from_secs(60);
@@ -34,13 +36,19 @@ fn saved_addresses(records: &RunnerRecords) -> Vec<String> {
 }
 
 #[test]
-fn a_healthy_run_takes_one_heif_then_heif_with_dng_then_a_burst_and_leaves_raw_off() {
+fn a_healthy_run_takes_one_heif_then_heif_with_dng_then_both_flash_steps_then_a_burst_and_leaves_raw_and_flash_off() {
     let (world, state, records) = run(Behaviour::default());
 
     assert_eq!(state, RunnerState::AllDone);
     assert_eq!(
         records.steps.iter().map(|step| step.name).collect::<Vec<_>>(),
-        vec!["single_heif", "single_heif_dng", "burst"]
+        vec![
+            "single_heif",
+            "single_heif_dng",
+            "single_flash_on",
+            "single_flash_auto",
+            "burst"
+        ]
     );
     assert!(
         records.steps.iter().all(|step| step.failure.is_none()),
@@ -48,12 +56,29 @@ fn a_healthy_run_takes_one_heif_then_heif_with_dng_then_a_burst_and_leaves_raw_o
         records.steps
     );
     assert!(records.unfinished.is_empty());
-    // 1 + 1 + 10 снимков; файлов 1 + 2 + 10.
-    assert_eq!(records.shots.len(), 12);
-    assert_eq!(saved_addresses(&records).len(), 13);
-    // RAW: включён ровно на втором шаге и возвращён к серии (два нажатия значка).
+    // 1 + 1 + 1 + 1 + 10 снимков; файлов 1 + 2 + 1 + 1 + 10.
+    assert_eq!(records.shots.len(), 14);
+    assert_eq!(saved_addresses(&records).len(), 15);
+    // RAW: включён ровно на втором шаге и возвращён к следующему (два нажатия значка).
     assert_eq!(world.raw_taps, 2);
     assert_eq!(world.raw, RawCapture::Off);
+    // Вспышка идёт по кругу Off → Auto → On → Off: до On два нажатия, до Auto (с On) два, до Off (с Auto) два.
+    assert_eq!(world.flash_taps, 6);
+    assert_eq!(world.flash, FlashMode::Off, "серия снимала с выключенной вспышкой");
+    let requested_flash: Vec<_> = records.shots.iter().map(|shot| shot.flash_requested).collect();
+    assert_eq!(
+        requested_flash[..4],
+        [
+            FlashModeName::Off,
+            FlashModeName::Off,
+            FlashModeName::On,
+            FlashModeName::Auto
+        ]
+    );
+    assert!(
+        requested_flash[4..].iter().all(|mode| *mode == FlashModeName::Off),
+        "{requested_flash:?}"
+    );
     let requested: Vec<bool> = records.shots.iter().map(|shot| shot.raw_requested).collect();
     assert_eq!(requested[..2], [false, true]);
     assert!(
@@ -67,7 +92,7 @@ fn a_healthy_run_takes_one_heif_then_heif_with_dng_then_a_burst_and_leaves_raw_o
     assert_eq!(records.shots[0].zoom_milli, 1_000);
     assert_eq!(records.shots[0].format, "heif");
     // Рендер мира выбирает ровно показанный кадр: нажатие − начало экспозиции = 80 мс, показан за 10 мс до нажатия.
-    for shot in &records.shots {
+    for shot in records.shots.iter().filter(|shot| shot.step != "single_flash_on") {
         assert_eq!(
             shot.frame.frame_choice,
             FrameChoiceView::Exact,
@@ -77,6 +102,70 @@ fn a_healthy_run_takes_one_heif_then_heif_with_dng_then_a_burst_and_leaves_raw_o
         assert_eq!(shot.frame.press_to_frame_ms, Some(80.0), "снимок {}", shot.number);
         assert_eq!(shot.frame.shown_before_press_ms, Some(10.0), "снимок {}", shot.number);
     }
+    // Шаг On: кадр разового запроса со вспышкой, задержка затвора к нему не применима, камера сообщила итог.
+    let flash_shot = &records.shots[2];
+    assert_eq!(flash_shot.frame.frame_choice, FrameChoiceView::FlashFrame);
+    assert_eq!(flash_shot.frame.press_to_frame_ms, None);
+    assert_eq!(flash_shot.frame.shown_before_press_ms, None);
+    let flash = flash_shot.flash.as_ref().expect("запись вспышки");
+    assert_eq!(flash.route_uses_flash, Some(true));
+    assert_eq!(flash.fired(), Some(true));
+    // Шаг Auto без совета вспыхнуть: показанный кадр, вспышки в записи нет (сервис решил «нет», камеры не просили).
+    let auto_shot = &records.shots[3];
+    assert_eq!(auto_shot.frame.frame_choice, FrameChoiceView::Exact);
+    assert_eq!(
+        auto_shot.flash.as_ref().and_then(|flash| flash.route_uses_flash),
+        Some(false)
+    );
+    assert_eq!(auto_shot.flash.as_ref().and_then(FlashShotRecord::fired), None);
+}
+
+#[test]
+fn auto_flash_takes_the_flash_frame_when_the_camera_advises_a_flash() {
+    let (_world, state, records) = run(Behaviour {
+        auto_advises_flash: true,
+        ..Behaviour::default()
+    });
+
+    assert_eq!(state, RunnerState::AllDone, "{:?}", records.failure);
+    let auto_shot = &records.shots[3];
+    assert_eq!(auto_shot.step, "single_flash_auto");
+    assert_eq!(auto_shot.frame.frame_choice, FrameChoiceView::FlashFrame);
+    assert_eq!(auto_shot.flash.as_ref().and_then(FlashShotRecord::fired), Some(true));
+}
+
+#[test]
+fn a_flash_icon_that_changes_nothing_fails_the_step_naming_both_settings_and_taps_once() {
+    let (world, state, records) = run(Behaviour {
+        flash_toggle_works: false,
+        ..Behaviour::default()
+    });
+
+    let RunnerState::Failed(reason) = state else {
+        panic!("{state:?}");
+    };
+    assert!(reason.contains("вспышка стоит Off, нужна On"), "{reason}");
+    assert_eq!(world.flash_taps, 1, "значок нажат один раз, а не молотится");
+    assert_eq!(records.steps.last().map(|step| step.name), Some("single_flash_on"));
+    assert_eq!(records.unfinished, vec!["single_flash_auto", "burst"]);
+}
+
+#[test]
+fn a_camera_that_fails_the_flash_still_stops_the_run_at_the_flash_step() {
+    let (_world, state, records) = run(Behaviour {
+        camera_fires_flash: false,
+        ..Behaviour::default()
+    });
+
+    let RunnerState::Failed(reason) = state else {
+        panic!("{state:?}");
+    };
+    assert!(reason.contains("снимок 3 сорвался"), "{reason}");
+    let flash = records.shots[2].flash.as_ref().expect("запись вспышки");
+    assert!(
+        matches!(flash.camera, Some(CameraFlashRecord::Failed { .. })),
+        "срыв камеры назван в записи: {flash:?}"
+    );
 }
 
 #[test]
@@ -134,9 +223,9 @@ fn a_slow_capture_makes_the_screen_refuse_extra_presses_and_the_numbers_still_ad
 
 #[test]
 fn a_service_that_rejects_presses_is_counted_apart_from_screen_refusals() {
-    // Мир отвергает как «занят» нажатия 3 и 4 от начала прогона (это 1-е и 2-е нажатие серии).
+    // Мир отвергает как «занят» нажатия 5 и 6 от начала прогона (это 1-е и 2-е нажатие серии).
     let (_world, state, records) = run(Behaviour {
-        service_rejects_press: [3, 4].into_iter().collect(),
+        service_rejects_press: [5, 6].into_iter().collect(),
         ..Behaviour::default()
     });
 
@@ -164,15 +253,18 @@ fn a_failed_phase_of_a_single_shot_stops_the_run_with_the_service_reason() {
     );
     assert_eq!(records.steps.len(), 1);
     assert_eq!(records.steps[0].failure.as_deref(), Some(reason.as_str()));
-    assert_eq!(records.unfinished, vec!["single_heif_dng", "burst"]);
+    assert_eq!(
+        records.unfinished,
+        vec!["single_heif_dng", "single_flash_on", "single_flash_auto", "burst"]
+    );
     assert!(matches!(records.shots[0].outcome, ShotOutcome::Failed { .. }));
 }
 
 #[test]
 fn a_failed_burst_shot_is_counted_as_failed_and_not_hidden() {
-    // Первый снимок серии — запрос 3 (единичные были 1 и 2).
+    // Первый снимок серии — запрос 5 (единичные были 1–4).
     let (_world, state, records) = run(Behaviour {
-        failing_requests: [3].into_iter().collect(),
+        failing_requests: [5].into_iter().collect(),
         ..Behaviour::default()
     });
 
@@ -191,13 +283,16 @@ fn a_raw_icon_that_changes_nothing_fails_the_step_naming_the_setting() {
     let RunnerState::Failed(reason) = state else {
         panic!("{state:?}");
     };
-    assert!(reason.contains("значок RAW не переключил настройку"), "{reason}");
+    assert!(reason.contains("RAW стоит Off, нужно On"), "{reason}");
     assert_eq!(world.raw_taps, 1, "значок нажат один раз, а не молотится");
     assert_eq!(
         records.steps.iter().map(|step| step.name).collect::<Vec<_>>(),
         vec!["single_heif", "single_heif_dng"]
     );
-    assert_eq!(records.unfinished, vec!["burst"]);
+    assert_eq!(
+        records.unfinished,
+        vec!["single_flash_on", "single_flash_auto", "burst"]
+    );
 }
 
 #[test]
@@ -247,9 +342,9 @@ fn a_captured_but_never_saved_shot_fails_on_the_saving_deadline() {
 
 #[test]
 fn a_burst_whose_results_never_arrive_fails_on_the_drain_deadline_and_counts_them_unfinished() {
-    // Единичные снимки (запросы 1 и 2) сохраняются, а у серии итогов нет.
+    // Единичные снимки (запросы 1–4) сохраняются, а у серии итогов нет.
     let mut world = World::new(Behaviour {
-        no_result_after_request: Some(2),
+        no_result_after_request: Some(4),
         ..Behaviour::default()
     });
     let mut config = fast_config();
@@ -294,7 +389,8 @@ fn a_substituting_render_shows_up_in_every_shot_with_its_reason_and_no_shown_tim
     });
 
     assert_eq!(state, RunnerState::AllDone);
-    for shot in &records.shots {
+    // Кадр шага On — кадр вспышки (его выбор не «замена показанного»), остальные — замены.
+    for shot in records.shots.iter().filter(|shot| shot.step != "single_flash_on") {
         assert!(shot.frame.is_evicted_substitution(), "снимок {}", shot.number);
         assert_eq!(shot.frame.press_to_frame_ms, Some(130.0));
         assert_eq!(shot.frame.shown_before_press_ms, None);
@@ -308,7 +404,8 @@ fn a_render_that_never_reports_a_choice_leaves_every_shot_unknown_without_invent
         ..Behaviour::default()
     });
 
-    for shot in &records.shots {
+    // Кадр шага On найден по метке запроса: журнал выбора для него не нужен.
+    for shot in records.shots.iter().filter(|shot| shot.step != "single_flash_on") {
         assert!(!shot.frame.choice_known(), "снимок {}", shot.number);
         assert_eq!(shot.frame.press_to_frame_ms, None);
     }

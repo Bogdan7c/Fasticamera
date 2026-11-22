@@ -4,6 +4,7 @@ use std::time::Duration;
 use camera_contract::capabilities::{FpsRange, FrameDuration};
 use camera_contract::control::{ExposureTime, FocusDistance, Iso};
 use camera_contract::fixtures::{camera_id, front_camera, main_wide_camera};
+use camera_contract::flash::FlashControl;
 use camera_contract::three_a::{AeAfLock, AfModeSupport, BracketExposure, MeteringRegion, SensorPoint};
 use camera_core::request_controls::FocusPlan;
 
@@ -73,7 +74,11 @@ pub(super) fn auto_exposure() -> ExposurePlan {
 }
 
 pub(super) fn controls(exposure: ExposurePlan, focus: FocusPlan) -> RequestControls {
-    RequestControls { exposure, focus }
+    RequestControls {
+        exposure,
+        focus,
+        flash: FlashControl::Off,
+    }
 }
 
 pub(super) fn sensor(exposure_ms: u64, iso: u32) -> ExposurePlan {
@@ -253,7 +258,12 @@ fn vendor_auto_ae_writes_the_full_table_and_continuous_picture_for_preview() {
         entries["ACAMERA_CONTROL_AF_MODE"],
         &bytes(tags::AF_MODE_CONTINUOUS_PICTURE)
     );
-    assert_eq!(entries.len(), 7, "лишних записей нет: {entries:?}");
+    assert_eq!(
+        entries["ACAMERA_FLASH_MODE"],
+        &bytes(tags::FLASH_MODE_OFF),
+        "светодиод явно выключен: ключи HAL липкие (14d)"
+    );
+    assert_eq!(entries.len(), 8, "лишних записей нет: {entries:?}");
     assert!(!entries.contains_key("ACAMERA_CONTROL_AE_REGIONS"));
     assert!(!entries.contains_key("ACAMERA_CONTROL_AF_TRIGGER"));
 }
@@ -527,8 +537,13 @@ fn applying_the_full_camx_plan_writes_all_entries_into_the_request_map() {
     let plan = plan_of(camx_60(), &controls(sensor(8, 800), continuous()), &camera).plan;
     let mut request = FakeRequest::default();
     apply_entries(&plan.entries, &vendor("2"), &mut request).unwrap();
-    // 2 вендорских + CONTROL_MODE, AWB_MODE + AE_MODE, выдержка, ISO, длительность кадра + AF_MODE.
-    assert_eq!(request.entries.len(), 9);
+    // 2 вендорских + CONTROL_MODE, AWB_MODE + AE_MODE, выдержка, ISO, длительность кадра + AF_MODE
+    // + FLASH_MODE (явный OFF).
+    assert_eq!(request.entries.len(), 10);
+    assert_eq!(
+        request.entries[&tags::FLASH_MODE.code],
+        EntryValue::Bytes(vec![tags::FLASH_MODE_OFF])
+    );
     assert_eq!(request.entries[&0x804a_0000], EntryValue::Bytes(vec![1]));
     assert_eq!(request.entries[&0x804a_0001], EntryValue::Int64s(vec![16_666_667]));
     assert_eq!(

@@ -129,6 +129,14 @@ impl CameraBackend for GatedBackend {
     ) -> Result<(), RequestFailure> {
         self.inner.submit_bracket(intent, base, bracket, burst)
     }
+    fn submit_flash_still(
+        &mut self,
+        intent: CaptureIntent,
+        controls: &RequestControls,
+        shot: camera_contract::flash::FlashShotId,
+    ) -> Result<(), RequestFailure> {
+        self.inner.submit_flash_still(intent, controls, shot)
+    }
     fn stop_repeating(&mut self) -> Result<(), RequestFailure> {
         self.inner.stop_repeating()
     }

@@ -10,7 +10,7 @@ use crate::backend::{BackendEvent, RequestFailure};
 use crate::request_controls::ExposurePlan;
 
 /// Интервал между метками кадров в результатах, которые строит fake сам (60 к/с).
-const FAKE_FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
+pub(super) const FAKE_FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 
 impl FakeBackendControl {
     /// Следующий `submit_focus_trigger` вернёт этот итог (очередь; пустая — успех).
@@ -52,7 +52,7 @@ impl FakeBackendControl {
         FakeEventDelivery::Sent
     }
 
-    fn deliver_result(&self, origin: RequestOrigin) -> FakeEventDelivery {
+    pub(super) fn deliver_result(&self, origin: RequestOrigin) -> FakeEventDelivery {
         let Some(session) = self.current_session_generation() else {
             return FakeEventDelivery::NothingToAttachTo;
         };
@@ -84,6 +84,16 @@ impl FakeBackendControl {
                 .map_or((Duration::from_millis(8), 100), |frame| {
                     (frame.exposure_time.duration(), frame.iso.value())
                 }),
+            // Кадр вспышки несёт то, что отправили: выдержку и ISO своего разового запроса.
+            RequestOrigin::FlashStill { shot } => state
+                .submitted_flash_stills
+                .iter()
+                .find(|(submitted, _)| *submitted == shot)
+                .and_then(|(_, controls)| match controls.exposure {
+                    ExposurePlan::Sensor { exposure_time, iso } => Some((exposure_time.duration(), iso.value())),
+                    ExposurePlan::VendorAuto { .. } => None,
+                })
+                .unwrap_or((Duration::from_millis(8), 100)),
             RequestOrigin::Repeating | RequestOrigin::FocusTrigger { .. } | RequestOrigin::Unknown => {
                 match state.repeating.map(|(_, controls)| controls.exposure) {
                     Some(ExposurePlan::Sensor { exposure_time, iso }) => (exposure_time.duration(), iso.value()),

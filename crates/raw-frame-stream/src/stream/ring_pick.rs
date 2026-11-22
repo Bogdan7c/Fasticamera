@@ -6,18 +6,21 @@
 //!   (кадры серии, фокус-триггера и неопознанные пропускаются: их экспозиция не «то, что видел
 //!   пользователь»).
 //! * Точное попадание: метка совпала и кадр годен.
+//! * Кадр со вспышкой (14d) ищется отдельно ([`HubState::pick_flash_frame_from_ring`]): строго по
+//!   `RequestOrigin::FlashStill { shot }`, без замены; обычные выборы его не видят.
 //! * Замена: ближайший годный кадр по |Δt| к цели; при равенстве расстояний — более ранний
 //!   (раньше значит «не позже, чем увидел пользователь»: задержка нажатия на экране делает
 //!   более поздний кадр заведомо менее честным).
 
 use camera_contract::capture_result::SensorTimestamp;
+use camera_contract::flash::FlashShotId;
 use camera_contract::frame_passport::FrameCaptureMeta;
 use camera_contract::three_a::RequestOrigin;
 
 use super::state::HubState;
 use crate::counters::StreamAccounting;
 use crate::lease::RawFrameLease;
-use crate::ring_pick::{RingPick, RingPickRequest, RingSubstitutionReason, RingUnavailableReason};
+use crate::ring_pick::{FlashRingPick, RingPick, RingPickRequest, RingSubstitutionReason, RingUnavailableReason};
 
 /// Чем кадр кольца для снимка: годен или почему нет.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,9 +35,10 @@ fn eligibility(lease: &RawFrameLease) -> Eligibility {
         FrameCaptureMeta::Missing { .. } => Eligibility::WithoutMeta,
         FrameCaptureMeta::Paired(details) => match details.result.three_a.origin {
             RequestOrigin::Repeating => Eligibility::Eligible,
-            RequestOrigin::FocusTrigger { .. } | RequestOrigin::Burst { .. } | RequestOrigin::Unknown => {
-                Eligibility::NotRepeating
-            }
+            RequestOrigin::FocusTrigger { .. }
+            | RequestOrigin::Burst { .. }
+            | RequestOrigin::FlashStill { .. }
+            | RequestOrigin::Unknown => Eligibility::NotRepeating,
         },
     }
 }
@@ -48,6 +52,25 @@ impl HubState {
             RingPick::Unavailable(_) => StreamAccounting::bump(&self.accounting.ring_picks_unavailable),
         }
         outcome
+    }
+
+    /// Найти кадр разового запроса со вспышкой `shot`: точное совпадение метки запроса и
+    /// метаданные `Paired` (метка запроса живёт в результате). Ближайшего/другого кадра НЕ бывает.
+    pub(super) fn pick_flash_frame_from_ring(&self, shot: FlashShotId) -> FlashRingPick {
+        if self.ring_capacity == 0 {
+            return FlashRingPick::RingDisabled;
+        }
+        let found = self.ring.iter().find(|held| match &held.passport().capture {
+            FrameCaptureMeta::Paired(details) => details.result.three_a.origin == (RequestOrigin::FlashStill { shot }),
+            FrameCaptureMeta::Missing { .. } => false,
+        });
+        match found {
+            Some(held) => {
+                StreamAccounting::bump(&self.accounting.ring_flash_picks_found);
+                FlashRingPick::Found(held.share())
+            }
+            None => FlashRingPick::NotInRingYet,
+        }
     }
 
     fn choose_from_ring(&self, request: RingPickRequest) -> RingPick {

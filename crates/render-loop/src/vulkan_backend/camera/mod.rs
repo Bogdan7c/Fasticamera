@@ -32,6 +32,8 @@
 mod continuity;
 mod export_recovery;
 mod exposure;
+mod flash_facts;
+mod frame_role;
 mod headroom_bench;
 mod headroom_stats;
 mod isp_params;
@@ -62,6 +64,7 @@ use gpu_vulkan::raw_mosaic_preview::MosaicSource;
 use raw_frame_stream::{RawFrameLease, ViewfinderFrames};
 
 pub(super) use self::exposure::AutoExposureParts;
+pub(super) use self::exposure::ResidualGainLimits;
 pub(super) use self::headroom_bench::HeadroomBenchParts;
 pub(super) use self::headroom_stats::HeadroomLiveState;
 pub(super) use self::pipelines::CameraPipelines;

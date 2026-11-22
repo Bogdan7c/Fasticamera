@@ -94,3 +94,19 @@ fn render_target_timeout_is_checked_against_the_service_queue_at_the_junction() 
         "{error}"
     );
 }
+
+#[test]
+fn camera_flash_sequence_longer_than_the_render_wait_rejects_the_whole_config() {
+    // Результат вспышки ждём 2 с: вся последовательность камеры (≈2,6 с) длиннее ожидания кадра рендером (1,3 с).
+    let error = RuntimeConfig::from_json(&config_with(
+        r#","camera":{"engine":{"three_a":{"flash":{"result_timeout_ms":2000}}}}"#,
+    ))
+    .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            ConfigError::Photo(PhotoConfigError::FlashFrameWaitNotAboveCameraSequence { .. })
+        ),
+        "{error}"
+    );
+}

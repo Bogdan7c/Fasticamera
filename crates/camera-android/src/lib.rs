@@ -26,6 +26,7 @@ pub mod cpu_access_probe;
 pub mod diagnostics;
 pub mod entry;
 pub mod fence_fold;
+pub mod flash_still_plan;
 pub mod frame_numbers;
 pub mod frame_rate_plan;
 pub mod metering_region;

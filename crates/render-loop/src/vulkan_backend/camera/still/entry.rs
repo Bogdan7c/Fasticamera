@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use camera_contract::capture_result::SensorTimestamp;
+use camera_contract::flash::FlashShotId;
 use raw_frame_stream::RingPickRequest;
 use still_contract::develop::{DevelopEvent, DevelopFailure, PrimaryTarget};
 use still_contract::frame_choice::NoFrameReason;
@@ -50,6 +51,9 @@ pub struct DevelopInputs<G: StillGpu> {
 pub enum Stage<G: StillGpu> {
     /// Ждёт доказательства, какой кадр был на экране в момент нажатия.
     Choosing { deadline: Instant, estimate: EstimateBasis },
+    /// Снимок со вспышкой (14d): ждёт, пока кадр разового запроса `shot` дойдёт до кольца. Кольцо и срок —
+    /// вся зависимость: показы видоискателя не нужны, но без surface кольца и видоискателя тоже нет.
+    AwaitingFlashFrame { shot: FlashShotId, deadline: Instant },
     /// Кадр определён, ждёт свободного копирования.
     AwaitingCapture(PickPlan),
     /// Копия RAW идёт на GPU (кадр уже изъят из кольца).
@@ -102,7 +106,7 @@ impl<G: StillGpu> Stage<G> {
             | Self::Developing { .. }
             | Self::Developed { .. }
             | Self::Presenting { .. } => true,
-            Self::Choosing { .. } | Self::AwaitingCapture(_) | Self::Transit => false,
+            Self::Choosing { .. } | Self::AwaitingFlashFrame { .. } | Self::AwaitingCapture(_) | Self::Transit => false,
         }
     }
 }
@@ -128,6 +132,8 @@ pub struct StillEntry<G: StillGpu> {
     events: Option<Arc<dyn StillEventSink>>,
     /// `Secured` уже отправлен (определяет запасной итог).
     secured: bool,
+    /// Кадр со вспышкой этой записи уже найден в кольце и посчитан (повторные находки не считаются).
+    flash_frame_found: bool,
 }
 
 impl<G: StillGpu> StillEntry<G> {
@@ -137,7 +143,13 @@ impl<G: StillGpu> StillEntry<G> {
             stage,
             events: Some(events),
             secured: false,
+            flash_frame_found: false,
         }
+    }
+
+    /// Отмечает находку кадра со вспышкой; `true` — первая находка этой записи (её и надо посчитать).
+    pub fn note_flash_frame_found(&mut self) -> bool {
+        !std::mem::replace(&mut self.flash_frame_found, true)
     }
 
     /// Отправлено ли `Secured`.

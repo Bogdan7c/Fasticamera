@@ -32,6 +32,7 @@ fn observation<'a>(now: Instant, at_ms: i64, journal: &'a [ShotRequest], accepte
         now,
         press_time: MonotonicNanos::from_nanos(at_ms * 1_000_000),
         raw_setting: camera_screen::settings::RawCapture::Off,
+        flash_setting: camera_screen::settings::FlashMode::Off,
         actions_rejected: 0,
         submit: SubmitCounts { accepted, rejected: 0 },
         journal,

@@ -11,7 +11,7 @@
 use still_contract::develop::DevelopEvent;
 use still_contract::frame_choice::NoFrameReason;
 
-use crate::still::{StillCommand, StillCommandOutcome};
+use crate::still::{StillCommand, StillCommandKind, StillCommandOutcome};
 use std::any::Any;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -304,10 +304,13 @@ impl<B: DisplayBackend, C: FrameClock> RenderWorker<B, C> {
     /// завершает снимок честным `NotSecured` (инвариант модуля `still`: у каждого `Begin` — ровно один итог),
     /// а чужую цель кодера уничтожает (поверхность отпускается).
     fn apply_still_command(&mut self, command: StillCommand) {
-        let is_begin = matches!(command, StillCommand::Begin(_));
+        let kind = StillCommandKind::of(&command);
         match self.guarded(|backend| backend.apply_still_command(command)) {
-            Some(StillCommandOutcome::Accepted) if is_begin => self.status.still_commands.begins_accepted += 1,
-            Some(StillCommandOutcome::Accepted) => self.status.still_commands.targets_accepted += 1,
+            Some(StillCommandOutcome::Accepted) => match kind {
+                StillCommandKind::Begin => self.status.still_commands.begins_accepted += 1,
+                StillCommandKind::Target => self.status.still_commands.targets_accepted += 1,
+                StillCommandKind::FlashFailed => self.status.still_commands.flash_failures_accepted += 1,
+            },
             Some(StillCommandOutcome::Unsupported(StillCommand::Begin(begin))) => {
                 self.status.still_commands.begins_unsupported += 1;
                 tracing::warn!(target: LOG_TARGET, id = begin.plan.id.0, "снимок не поддержан бэкендом: кадра нет");
@@ -315,6 +318,11 @@ impl<B: DisplayBackend, C: FrameClock> RenderWorker<B, C> {
                     id: begin.plan.id,
                     reason: NoFrameReason::NoLiveCameraFrame,
                 });
+            }
+            // Бэкенд снимков не умеет: о неснятой вспышке сообщать некому, итог снимка уже дан потоком (`Begin`).
+            Some(StillCommandOutcome::Unsupported(StillCommand::FlashFailed { id, failure })) => {
+                self.status.still_commands.flash_failures_dropped += 1;
+                tracing::warn!(target: LOG_TARGET, id = id.0, ?failure, "отказ вспышки без снимка: отброшен");
             }
             Some(StillCommandOutcome::Unsupported(StillCommand::Target(offer))) => {
                 self.status.still_commands.targets_dropped += 1;

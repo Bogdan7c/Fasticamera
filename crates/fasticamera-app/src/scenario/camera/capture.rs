@@ -9,7 +9,7 @@
 //! 1. **Ворота:** сервис снимка настоящий ([`CaptureMode::Real`]; фейк или запасной фейк с причиной — провал сразу),
 //!    поток идёт, экран видит живую камеру, рендер показал ЖИВОЙ кадр активной камеры. Затем выдержка
 //!    `viewfinder_settle_ms` (AE в начале потока даёт почти чёрные кадры).
-//! 2. **Шаги** ([`planned_steps`]): `single_heif`, `single_heif_dng`, `burst` — устройство в [`CaptureRunner`].
+//! 2. **Шаги** ([`planned_steps`]): `single_heif`, `single_heif_dng`, `single_flash_on`, `single_flash_auto`, `burst` — устройство в [`CaptureRunner`].
 //! 3. **Итог:** сводка с адресами файлов в строке результата (по ним скрипт ПК проверит и удалит файлы) и
 //!    подробности `detail_capture`. Решает [`evaluate_capture`].
 //!
@@ -27,7 +27,7 @@ use render_loop::viewfinder::ViewfinderDiagnostics;
 
 use super::capture_frame_timing::ClockBridge;
 use super::capture_observation::{CaptureObservation, LiveCounters, RenderFrameTiming, SubmitCounts, TimingSummaryMs};
-use super::capture_plan::planned_steps;
+use super::capture_plan::{planned_steps, taps_to_flash_off};
 use super::capture_render_still::StillDiagnosticsDelta;
 use super::capture_report::{CaptureObservationReport, RenderStillDelta};
 use super::capture_runner::{CaptureRunner, RunnerState};
@@ -218,11 +218,16 @@ impl ObservingScenario for CaptureScenario {
                 stepping
                     .runner
                     .absorb_choices(context.camera_screen.capture_frame_choices());
+                stepping.runner.absorb_flash(
+                    context.camera_screen.capture_flash_routes(),
+                    context.camera_screen.capture_flash_reports(),
+                );
                 let journal = context.camera_screen.capture_journal();
                 let observation = CaptureObservation {
                     now: context.now,
                     press_time,
                     raw_setting: report.capture_settings.raw,
+                    flash_setting: report.capture_settings.flash,
                     actions_rejected: report.diagnostics.actions_rejected,
                     submit: SubmitCounts {
                         accepted: report.effects.capture.accepted,
@@ -295,7 +300,15 @@ impl CaptureScenario {
             return ScenarioStep::Continue;
         };
         let render_after = still_snapshot(context);
-        let restore_failure = restore_raw_if_left_on(&run, context);
+        // Настройки экрана возвращаем на КАЖДОМ пути выхода (успех, провал шага, провал готовности): они остаются
+        // у владельца телефона. Вспышку возвращаем и тогда, когда шаги не дошли до неё, — она могла быть `On`/`Auto`.
+        let restore_failure = [
+            restore_raw_if_left_on(&run, context),
+            restore_flash_if_left_on(&run, context),
+        ]
+        .into_iter()
+        .flatten()
+        .reduce(|first, second| format!("{first}; {second}"));
         let report = observation_of(run, context, run_failure.or(restore_failure), render_after);
         emit_details(context, "detail_capture", report.detail_items());
         let config = context.camera.scenarios().capture.clone();
@@ -318,6 +331,23 @@ fn restore_raw_if_left_on(run: &CaptureRun, context: &ScenarioContext<'_>) -> Op
         InputDelivery::Queued => None,
         refused => Some(format!("RAW остался включённым: значок не нажат ({refused:?})")),
     }
+}
+
+/// Шаги вспышки включают `On`/`Auto`; если прогон оборвался, настройка осталась бы у владельца телефона. Возвращаем
+/// `Off` теми же нажатиями значка: по кругу `Off → Auto → On → Off` от `On` это одно нажатие, от `Auto` — два.
+/// `Some(текст)` — вернуть не удалось (канал входа не принял действие).
+fn restore_flash_if_left_on(run: &CaptureRun, context: &ScenarioContext<'_>) -> Option<String> {
+    let flash = context.camera_screen.report()?.capture_settings.flash;
+    let taps = taps_to_flash_off(flash);
+    for _ in 0..taps {
+        let delivery = run.injector.inject(ScreenAction::StripToolTapped(ToolId::Flash));
+        if delivery != InputDelivery::Queued {
+            return Some(format!(
+                "вспышка осталась в режиме {flash:?}: значок не нажат ({delivery:?})"
+            ));
+        }
+    }
+    None
 }
 
 /// Почему сценарий не стартует: режим сервиса снимка не настоящий.

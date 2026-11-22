@@ -31,6 +31,7 @@ use camera_contract::auto_exposure::{
     CameraTag, ExposureProduct, ExposureProposal, ExposureProposalChannel, ProposalConvergence,
 };
 use camera_contract::capture_result::CaptureResultMeta;
+use camera_contract::flash::PreflashSamples;
 use camera_contract::ids::CameraId;
 use camera_contract::three_a::{DirectiveGeneration, MainsFrequency, RequestOrigin};
 
@@ -40,7 +41,7 @@ use super::plan::{PlanBasis, plan_exposure};
 use super::proposal_gate::{GateVerdict, ProposalGate};
 use crate::command::UnsupportedThreeA;
 use crate::exposure_transfer::ExposureTransfer;
-use crate::three_a_control::{ExposureController, ExposureDecision, PlanRefresh, ThreeAContext};
+use crate::three_a_control::{ExposureController, ExposureDecision, PlanRefresh, SceneForFlash, ThreeAContext};
 use crate::three_a_status::AutoExposureProgress;
 
 /// Наш AE на стороне движка.
@@ -180,6 +181,22 @@ impl ExposureController for RawStatsExposure {
 
     fn foreign_camera_proposals_rejected(&self) -> u64 {
         self.gate.foreign_camera_counter().load(Ordering::Relaxed)
+    }
+
+    fn scene_for_flash(&self) -> SceneForFlash {
+        match self.accepted {
+            Some(proposal) => SceneForFlash::Measured {
+                mid_gray_product: proposal.target,
+            },
+            None => SceneForFlash::NoMeasurement,
+        }
+    }
+
+    fn preflash_samples_newer_than(
+        &self,
+        seen: Option<DirectiveGeneration>,
+    ) -> Option<(DirectiveGeneration, PreflashSamples)> {
+        self.proposals.preflash_newer_than(seen)
     }
 
     fn reset_for_new_stream(&mut self) {

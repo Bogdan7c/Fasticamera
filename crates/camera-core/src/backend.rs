@@ -21,6 +21,7 @@ use camera_contract::availability::CameraUnavailableReason;
 use camera_contract::capabilities::CameraDescriptor;
 use camera_contract::capture_result::{CaptureResultMeta, FrameNumber};
 use camera_contract::control::CaptureIntent;
+use camera_contract::flash::FlashShotId;
 use camera_contract::ids::CameraId;
 use camera_contract::raw_format::RawFormat;
 use camera_contract::stream::{ConfiguredStream, ReadoutAspect, ResolvedStream, TargetFrameRate};
@@ -276,6 +277,17 @@ pub trait CameraBackend {
         base: &RequestControls,
         bracket: &ExposureBracket,
         burst: BurstId,
+    ) -> Result<(), RequestFailure>;
+
+    /// Отправить ОДИН разовый запрос со вспышкой поверх повторяющегося (14d):
+    /// `controls.flash` = [`FlashControl::Single`], экспозиция — `ExposurePlan::Sensor`.
+    /// Ключи частоты и вендорские — как в любом запросе (ключи HAL липкие). Результат
+    /// помечается `RequestOrigin::FlashStill { shot }`.
+    fn submit_flash_still(
+        &mut self,
+        intent: CaptureIntent,
+        controls: &RequestControls,
+        shot: FlashShotId,
     ) -> Result<(), RequestFailure>;
 
     /// Остановить повторяющийся запрос; сессия остаётся.

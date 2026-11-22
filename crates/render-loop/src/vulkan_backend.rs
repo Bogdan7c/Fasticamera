@@ -46,8 +46,8 @@ use crate::viewfinder::{
     ViewfinderDiagnostics, WhiteBalanceDiagnostics,
 };
 use camera::{
-    AutoExposureParts, GpuMaker, SceneWhiteMemory, StillDiagnostics, StillEngine, SystemStillClock, UiOverlayState,
-    ViewfinderSettings, ViewfinderStats, VulkanStillGpu, VulkanStillSettings, WhiteBalanceParts,
+    AutoExposureParts, GpuMaker, ResidualGainLimits, SceneWhiteMemory, StillDiagnostics, StillEngine, SystemStillClock,
+    UiOverlayState, ViewfinderSettings, ViewfinderStats, VulkanStillGpu, VulkanStillSettings, WhiteBalanceParts,
 };
 use camera_contract::three_a::{DirectiveSlot, WhiteBalanceDirective};
 use census::census_by_kind;
@@ -267,6 +267,7 @@ impl VulkanDisplayBackend {
         self.still = Some(StillEngine::new(
             self.config.still,
             self.config.viewfinder.tone,
+            ResidualGainLimits::of(&self.config.viewfinder.auto_exposure),
             ring,
             maker,
             Box::new(SystemStillClock),

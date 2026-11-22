@@ -5,6 +5,7 @@
 
 use std::time::Duration;
 
+use camera_contract::flash::FrameLight;
 use gpu_vulkan::gpu_timing::TimestampCollect;
 
 use super::{CameraPipelines, CameraSession, LOG_TARGET, SlotFrame};
@@ -68,10 +69,23 @@ impl CameraSession {
 
     /// Отдаёт статистику кадра тем потребителям, которые её просили (решение общего расписания кадра):
     /// AWB — только свои кадры (форсирование ради AE его поведение не меняет), AE — любой посчитанный.
+    ///
+    /// Кадр, освещённый светодиодом (14d), питает видоискатель НЕ ТАК: AE меряет его для расчёта вспышки, но
+    /// внутри runner не отдаёт контроллеру; AWB получает кадр с фонариком отдельным путём (белая светодиода,
+    /// мимо контроллера), а кадры с частичной/неопознанной вспышкой не получает вовсе.
     fn route_statistics(&mut self, slot_frame: &SlotFrame, statistics: &isp_model::statistics::AwbStatistics) {
-        if slot_frame.statistics.awb_receives() {
-            self.white
-                .ingest_statistics(slot_frame.stream, slot_frame.identity, statistics);
+        let light = slot_frame.light;
+        if light.feeds_viewfinder_smoothing() {
+            if slot_frame.statistics.awb_receives() {
+                self.white
+                    .ingest_statistics(slot_frame.stream, slot_frame.identity, statistics);
+            }
+        } else {
+            self.viewfinder.counters_mut().led_lit_frames_withheld_from_smoothing += 1;
+            if light == FrameLight::TorchLit {
+                self.white
+                    .ingest_torch_statistics(slot_frame.stream, slot_frame.identity, statistics);
+            }
         }
         if slot_frame.statistics.ae_receives()
             && let (Some(exposure), Some(frame)) = (self.exposure.as_mut(), slot_frame.exposure.as_ref())

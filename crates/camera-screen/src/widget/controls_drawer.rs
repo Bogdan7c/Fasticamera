@@ -26,10 +26,11 @@ use super::intent::{ButtonId, ScreenGesture};
 use super::kit::SceneKit;
 use super::layers::{DrawLayers, Layer, VisualIndex};
 use super::text_runs::TextRuns;
+use super::tool_card_content::flash_icon;
 use super::tool_card_content::tool_title;
 use super::{Ctx, Outputs};
 use crate::action::ScreenAction;
-use crate::settings::{AspectRatio, FlashMode, GridSetting, LevelSetting, RawCapture, TimerSetting};
+use crate::settings::{AspectRatio, GridSetting, LevelSetting, RawCapture, TimerSetting};
 use crate::state::PanelState;
 use crate::tools::ToolId;
 
@@ -53,7 +54,7 @@ const SHEET_MOTION: MotionToken = MotionToken::CardMorph;
 fn tool_is_active(ctx: &Ctx<'_>, tool: ToolId) -> bool {
     let settings = ctx.state.settings();
     match tool {
-        ToolId::Flash => settings.flash == FlashMode::On,
+        ToolId::Flash => settings.flash.is_highlighted(),
         ToolId::Raw => settings.raw == RawCapture::On,
         ToolId::Timer => settings.timer != TimerSetting::Off,
         ToolId::Exposure => ctx.state.exposure().steps() != 0,
@@ -297,11 +298,7 @@ impl ControlsDrawerWidget {
             let content_host = slide.then(content.transform);
             let settings = ctx.state.settings();
             let icon = match tool {
-                ToolId::Flash => Some(if settings.flash == FlashMode::On {
-                    IconId::FlashOn
-                } else {
-                    IconId::FlashOff
-                }),
+                ToolId::Flash => Some(flash_icon(settings.flash)),
                 ToolId::Timer => Some(IconId::Timer),
                 ToolId::Exposure => Some(IconId::Exposure),
                 ToolId::Aspect => Some(IconId::AspectRatio),

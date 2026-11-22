@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 
+use crate::flash::FlashUnit;
 use crate::geometry::{PixelRect, PixelSize, SensorOrientation};
 use crate::ids::{CameraId, CameraTopology, LensFacing};
 use crate::lens_calibration::LensCalibration;
@@ -350,6 +351,8 @@ pub struct CameraCapabilities {
     /// Автоматика 3A HAL: компенсация, регионы, режимы AF, блокировка, антибандинг (08).
     pub three_a: ThreeACapabilities,
     pub optics: Optics,
+    /// Есть ли вспышка (`android.flash.info.available`, 14d). На OnePlus 11 — у задних камер.
+    pub flash: FlashUnit,
     pub vendor_processing: VendorProcessingFlags,
 }
 

@@ -7,7 +7,9 @@
 
 use std::time::Duration;
 
+use camera_contract::flash::FlashState;
 use camera_contract::geometry::PixelSize;
+use still_contract::frame_choice::FrameChoice;
 use still_contract::shot::{StillFrameFacts, StillRotation};
 
 use crate::tiff::{ByteOrder, Ifd, TiffFile, TiffValue, unsigned_rational};
@@ -104,6 +106,7 @@ mod tag {
     pub const OFFSET_TIME_ORIGINAL: u16 = 36881;
     pub const OFFSET_TIME_DIGITIZED: u16 = 36882;
     pub const COMPONENTS_CONFIGURATION: u16 = 37121;
+    pub const FLASH: u16 = 37385;
     pub const FOCAL_LENGTH: u16 = 37386;
     pub const SUB_SEC_TIME_ORIGINAL: u16 = 37521;
     pub const SUB_SEC_TIME_DIGITIZED: u16 = 37522;
@@ -121,6 +124,12 @@ const MAX_SHORT_SENSITIVITY: u32 = u16::MAX as u32;
 const EXIF_VERSION_2_32: &[u8; 4] = b"0232";
 /// FlashPix 1.0 — обязательное поле Exif для JPEG, значение фиксировано.
 const FLASHPIX_VERSION_1_0: &[u8; 4] = b"0100";
+/// `Flash` (Exif 2.32, тег 0x9209): бит 0 — вспышка сработала.
+const FLASH_FIRED: u16 = 0x0001;
+/// `Flash`: вспышка не сработала (камера со вспышкой, снимок без неё).
+const FLASH_DID_NOT_FIRE: u16 = 0x0000;
+/// `Flash`: бит 5 — у камеры нет вспышки (HAL сообщил `FLASH_STATE_UNAVAILABLE`).
+const FLASH_NO_FUNCTION: u16 = 0x0020;
 /// ComponentsConfiguration для YCbCr-картинки: Y, Cb, Cr, нет (Exif, таблица 6).
 const COMPONENTS_YCBCR: [u8; 4] = [1, 2, 3, 0];
 /// `ColorSpace = 1` — sRGB.
@@ -246,6 +255,7 @@ pub(crate) fn capture_exif_ifd(
         let clamped = u16::try_from(iso.min(MAX_SHORT_SENSITIVITY)).unwrap_or(u16::MAX);
         exif.set(tag::PHOTOGRAPHIC_SENSITIVITY, TiffValue::short(clamped));
     }
+    exif.set(tag::FLASH, TiffValue::short(flash_value(facts)));
     if let Some(lens) = camera.lens {
         if let Some(fraction) = unsigned_rational(f64::from(lens.f_number), REAL_VALUE_DENOMINATOR) {
             exif.set(tag::F_NUMBER, TiffValue::Rational(vec![fraction]));
@@ -268,6 +278,19 @@ pub(crate) fn capture_exif_ifd(
         exif.set(tag::OFFSET_TIME_DIGITIZED, utc_offset);
     }
     exif
+}
+
+/// Значение тега `Flash` (14d). «Сработала» — только кадр со вспышкой, прошедший проверку освещённости
+/// рендера (`FrameChoice::FlashFrame`): `FLASH_STATE = FIRED` HAL сам по себе не доказательство. Режим
+/// (On / Auto) в факты снимка не попадает, поэтому биты режима не пишутся.
+fn flash_value(facts: &StillFrameFacts) -> u16 {
+    if matches!(facts.choice, FrameChoice::FlashFrame { .. }) {
+        return FLASH_FIRED;
+    }
+    match facts.capture.result.three_a.flash.state {
+        Some(FlashState::Unavailable) => FLASH_NO_FUNCTION,
+        _ => FLASH_DID_NOT_FIRE,
+    }
 }
 
 /// Собирает блок Exif как поток TIFF (без заголовка `Exif\0\0`): IFD0 + Exif IFD.

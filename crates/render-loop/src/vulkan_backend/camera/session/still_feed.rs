@@ -12,6 +12,18 @@ use crate::vulkan_backend::camera::still::{ShownNow, StillFeed};
 impl CameraSession {
     /// Забирает накопленное для движка снимков (лента становится пустой).
     pub fn take_still_feed(&mut self) -> StillFeed {
+        // Факты о свете для кадра со вспышки (14d): планы из указаний AE, уровень света сцены, белая светодиода.
+        if let Some(exposure) = self.exposure.as_mut() {
+            for plan in exposure.drain_flash_plans() {
+                self.still_feed.note_flash_plan(plan);
+            }
+            for level in exposure.drain_ambient_levels() {
+                self.still_feed.note_ambient_level(level);
+            }
+        }
+        for white in self.white.drain_torch_whites() {
+            self.still_feed.note_torch_white(white);
+        }
         self.still_feed.take()
     }
 

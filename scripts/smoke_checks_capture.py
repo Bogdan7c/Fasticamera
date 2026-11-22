@@ -17,8 +17,14 @@ from __future__ import annotations
 
 from smoke_checks import _is_number, _report_problem
 
-EXPECTED_STEPS = 3
-"""Шагов плана: ``single_heif``, ``single_heif_dng``, ``burst`` (``capture_plan.rs``)."""
+EXPECTED_STEPS = 5
+"""Шагов плана: ``single_heif``, ``single_heif_dng``, ``single_flash_on``, ``single_flash_auto``, ``burst``
+(``capture_plan.rs``)."""
+
+STEP_FLASH_ON = "single_flash_on"
+STEP_FLASH_AUTO = "single_flash_auto"
+FLASH_FRAME_CHOICE = "flash_frame"
+"""Шаги вспышки (14d) и имя выбора кадра разового запроса со вспышкой (``choice_name`` в ``capture_frame_timing.rs``)."""
 
 SAVED_OUTCOME = "saved"
 SAVED_WITH_RAW_OUTCOME = "saved_with_raw"
@@ -40,6 +46,7 @@ def check_capture(result: dict) -> list[str]:
     problems.extend(_steps_problems(report))
     problems.extend(_mode_problems(report))
     problems.extend(_shots_problems(report))
+    problems.extend(_flash_problems(report))
     problems.extend(_burst_problems(report))
     problems.extend(_frames_problems(report))
     if report.get("phase_entries_lost") != 0:
@@ -103,8 +110,47 @@ def _shots_problems(report: dict) -> list[str]:
     raw_shots = [shot for shot in shots if isinstance(shot, dict) and shot.get("outcome") == SAVED_WITH_RAW_OUTCOME]
     if len(raw_shots) != 1:
         problems.append(f"снимков с DNG {len(raw_shots)}, ожидался ровно один (шаг single_heif_dng)")
-    if any(isinstance(shot, dict) and shot.get("fmt") != "heif" for shot in shots):
+    if any(isinstance(shot, dict) and shot.get("fmt", "heif") != "heif" for shot in shots):
         problems.append("основной формат не только heif")
+    return problems
+
+
+def _flash_problems(report: dict) -> list[str]:
+    """Вспышка (14d): ``On`` обязан дать кадр со вспышкой и срабатывание по камере; ``Auto`` — наблюдательный (любой
+    исход, не вердикт), но его выбор кадра обязан быть известен; остальные шаги идут с выключенной вспышкой и без
+    кадров со вспышкой. Полные правила судит Rust (``capture_verdict.rs``)."""
+    shots = report.get("shots")
+    if not isinstance(shots, list):
+        return []
+    problems: list[str] = []
+    by_step: dict[str, list[dict]] = {}
+    for shot in shots:
+        if isinstance(shot, dict):
+            by_step.setdefault(str(shot.get("step")), []).append(shot)
+    for step, mode in ((STEP_FLASH_ON, "on"), (STEP_FLASH_AUTO, "auto")):
+        step_shots = by_step.get(step, [])
+        if len(step_shots) != 1:
+            problems.append(f"шаг {step}: снимков {len(step_shots)}, ожидался ровно один")
+            continue
+        shot = step_shots[0]
+        if shot.get("flash", "off") != mode:
+            problems.append(f"шаг {step}: экран просил вспышку {shot.get('flash', 'off')!r}, ожидался {mode!r}")
+    flash_on = by_step.get(STEP_FLASH_ON, [])
+    if len(flash_on) == 1:
+        shot = flash_on[0]
+        if shot.get("choice", "exact") != FLASH_FRAME_CHOICE:
+            problems.append(f"шаг {STEP_FLASH_ON}: взят кадр {shot.get('choice', 'exact')!r}, ожидался кадр со вспышкой")
+        camera = shot.get("flash_cam")
+        if not isinstance(camera, dict) or camera.get("state") != "fired":
+            problems.append(f"шаг {STEP_FLASH_ON}: нет итога камеры по вспышке (flash_cam={camera!r})")
+    for step, step_shots in by_step.items():
+        if step in (STEP_FLASH_ON, STEP_FLASH_AUTO):
+            continue
+        for shot in step_shots:
+            if shot.get("flash", "off") != "off":
+                problems.append(f"снимок {shot.get('n')} ({step}): вспышка {shot.get('flash')!r}, ожидалась 'off'")
+            if shot.get("choice", "exact") == FLASH_FRAME_CHOICE:
+                problems.append(f"снимок {shot.get('n')} ({step}): вспышка выключена, а взят кадр со вспышкой")
     return problems
 
 
@@ -183,6 +229,7 @@ def capture_notes(result: dict) -> list[str]:
         burst_times = [shot.get("saved_ms") for shot in shots if isinstance(shot, dict) and shot.get("step") == "burst" and _is_number(shot.get("saved_ms"))]
         if burst_times:
             notes.append(f"capture: серия: «сохранено» через {min(burst_times)}…{max(burst_times)} мс от своих нажатий")
+    notes.extend(_flash_notes(report))
     burst = report.get("burst")
     if isinstance(burst, dict):
         notes.append(
@@ -211,5 +258,34 @@ def capture_notes(result: dict) -> list[str]:
             f"capture: NOTE точно показанный кадр взят у {frames.get('exact')} снимков, замен {frames.get('subst')} "
             f"(вытеснено из кольца {frames.get('evicted')}), доля точных {frames.get('share')}; задержка «нажатие → начало "
             f"экспозиции кадра»: медиана {frames.get('p2f_p50_ms')} мс, максимум {frames.get('p2f_max_ms')} мс"
+        )
+    return notes
+
+
+def _flash_notes(report: dict) -> list[str]:
+    """Что вспышка сделала в прошедшем прогоне: режим, выбор кадра и отчёт камеры. Шаг ``Auto`` — только наблюдение:
+    сработала ли вспышка, зависит от света в комнате."""
+    shots = report.get("shots")
+    if not isinstance(shots, list):
+        return []
+    notes: list[str] = []
+    for shot in shots:
+        if not isinstance(shot, dict) or shot.get("step") not in (STEP_FLASH_ON, STEP_FLASH_AUTO):
+            continue
+        camera = shot.get("flash_cam")
+        camera_text = "камера итога не сообщила"
+        if isinstance(camera, dict) and camera.get("state") == "fired":
+            camera_text = (
+                f"камера: выдержка {camera.get('exposure_ms'):.1f} мс, ISO {camera.get('iso')}, "
+                f"доля света вспышки {camera.get('flash_share')}, от команды до результата {camera.get('elapsed_ms')} мс"
+            ) if _is_number(camera.get("exposure_ms")) else f"камера: {camera!r}"
+        elif isinstance(camera, dict):
+            camera_text = f"камера: {camera!r}"
+        choice = shot.get("choice", "exact")
+        fired = choice == FLASH_FRAME_CHOICE
+        label = "NOTE" if shot.get("step") == STEP_FLASH_AUTO else "capture"
+        notes.append(
+            f"capture: {label} вспышка {shot.get('flash', 'off')} (шаг {shot.get('step')}): кадр {choice}, "
+            f"вспышка сработала: {'да' if fired else 'нет'}; {camera_text}"
         )
     return notes

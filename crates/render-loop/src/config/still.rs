@@ -17,6 +17,9 @@ pub const MAX_STILL_LOG_CAPACITY: u32 = 4_096;
 /// Наибольший шаг снимков без экрана, мс (секунда): реже — проявление серии растянулось бы на минуты.
 pub const MAX_STEP_INTERVAL_WITHOUT_DISPLAY_MS: u32 = 1_000;
 
+/// Наибольший шаг выборки проверки света вспышки, ячеек: больше — на кадре остаётся пара десятков точек.
+pub const MAX_FLASH_LIT_SAMPLE_STRIDE_CELLS: u32 = 256;
+
 /// Секция `still` конфига потока рендера.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -69,6 +72,22 @@ pub struct StillDevelopConfig {
     /// Сколько последних показов помнить (что было на экране под каждым `present_id`). Как минимум на время
     /// ожидания записей показа при 120 Гц с запасом. `[estimate]`: 256.
     pub present_log_capacity: u32,
+    /// Сколько ждать, пока кадр разового запроса со вспышкой дойдёт до кольца (14d), считая от `Begin`. Должен
+    /// ПРЕВОСХОДИТЬ худший срок движка камеры от нажатия до кадра (предвспышка со всеми продлениями на перемеры + пауза + результат:
+    /// `FlashConfig::worst_case_sequence_ms()`, по умолчанию 1 500 мс): иначе рендер сдастся раньше, чем камера успеет. Истекло —
+    /// `NotSecured(FlashFrameNeverArrived)`. `[estimate]`: 1 800 (худший срок камеры 1 500 мс плюс запас).
+    pub flash_frame_wait_ms: u32,
+    /// Проверка «кадр со вспышкой действительно освещён» (HAL может сообщить `FIRED` на тёмном кадре): кадр
+    /// принят, если измеренная доля света вспышки не меньше этой доли от ПРЕДСКАЗАННОЙ движком камеры
+    /// (`FlashFramePlan::flash_share`). Диапазон (0, 1]. `[estimate]`: 0,5.
+    pub flash_lit_min_fraction_of_predicted: f32,
+    /// Если предсказанная доля вспышки меньше этой (далёкая сцена: вспышка почти не добавит света), отличить
+    /// «освещён» от «не освещён» по пикселям нельзя — кадр принимается, а решение считается отдельным счётчиком.
+    /// Диапазон (0, 1]. `[estimate]`: 0,2.
+    pub flash_lit_check_min_predicted_share: f32,
+    /// Шаг выборки проверки освещённости, в ячейках 2×2 по обеим осям: проверка читает RAW на потоке рендера,
+    /// поэтому берёт редкую решётку, а не весь кадр. `[estimate]`: 8 (≈ 50 тыс. ячеек на кадре 4080×3060).
+    pub flash_lit_sample_stride_cells: u32,
     /// Проявление: высота полосы, рабочая группа (`isp_vulkan::photo`).
     pub photo: PhotoConfig,
 }
@@ -88,6 +107,10 @@ impl Default for StillDevelopConfig {
             slices_per_frame: 1,
             frame_params_capacity: 48,
             present_log_capacity: 256,
+            flash_frame_wait_ms: 1_800,
+            flash_lit_min_fraction_of_predicted: 0.5,
+            flash_lit_check_min_predicted_share: 0.2,
+            flash_lit_sample_stride_cells: 8,
             photo: PhotoConfig::default(),
         }
     }
@@ -108,6 +131,14 @@ pub enum StillConfigError {
         /// Наибольшее допустимое.
         max: u32,
     },
+    /// Доля вне (0, 1] или не число.
+    #[error("still.{field} должен быть числом в (0, 1], а не {value}")]
+    FractionOutOfRange {
+        /// Имя поля.
+        field: &'static str,
+        /// Значение.
+        value: f32,
+    },
     /// Настройки проявления отвергнуты.
     #[error("still.photo: {0}")]
     Photo(String),
@@ -121,7 +152,7 @@ impl StillDevelopConfig {
 
     /// Проверяет секцию до создания объектов GPU.
     pub fn validate(&self) -> Result<(), StillConfigError> {
-        let ranges: [(&'static str, u32, u32, u32); 11] = [
+        let ranges: [(&'static str, u32, u32, u32); 13] = [
             ("queue_capacity", self.queue_capacity, 1, MAX_STILL_QUEUE_CAPACITY),
             ("presentation_wait_ms", self.presentation_wait_ms, 1, MAX_STILL_WAIT_MS),
             ("target_timeout_ms", self.target_timeout_ms, 1, MAX_STILL_WAIT_MS),
@@ -152,6 +183,13 @@ impl StillDevelopConfig {
                 1,
                 MAX_STEP_INTERVAL_WITHOUT_DISPLAY_MS,
             ),
+            ("flash_frame_wait_ms", self.flash_frame_wait_ms, 1, MAX_STILL_WAIT_MS),
+            (
+                "flash_lit_sample_stride_cells",
+                self.flash_lit_sample_stride_cells,
+                1,
+                MAX_FLASH_LIT_SAMPLE_STRIDE_CELLS,
+            ),
             (
                 "frame_params_capacity",
                 self.frame_params_capacity,
@@ -162,6 +200,21 @@ impl StillDevelopConfig {
         for (field, value, min, max) in ranges {
             if value < min || value > max {
                 return Err(StillConfigError::OutOfRange { field, value, min, max });
+            }
+        }
+        for (field, value) in [
+            (
+                "flash_lit_min_fraction_of_predicted",
+                self.flash_lit_min_fraction_of_predicted,
+            ),
+            (
+                "flash_lit_check_min_predicted_share",
+                self.flash_lit_check_min_predicted_share,
+            ),
+        ] {
+            // `!(a && b)` — нечисло тоже отвергается.
+            if !(value > 0.0 && value <= 1.0) {
+                return Err(StillConfigError::FractionOutOfRange { field, value });
             }
         }
         if self.present_log_capacity == 0 || self.present_log_capacity > MAX_STILL_LOG_CAPACITY {

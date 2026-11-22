@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use camera_contract::capabilities::{LensShading, RawSupport, SensorLevels, VendorProcessingFlags};
 use camera_contract::capture_result::{CaptureResultMeta, FrameNumber, SensorTimestamp};
 use camera_contract::fixtures::{camera_id, main_wide_camera};
+use camera_contract::flash::{FlashResult, FlashShotId};
 use camera_contract::frame_passport::{CaptureColorHints, FrameCaptureDetails, StreamPassport};
 use camera_contract::geometry::{PixelRect, PixelSize, SensorOrientation};
 use camera_contract::ids::{LensFacing, LensRole};
@@ -238,6 +239,29 @@ impl StreamRig {
 
     /// Следующий кадр с результатом съёмки и происхождением `origin`; возвращает метку.
     pub fn offer_with_origin(&mut self, origin: RequestOrigin, with_metadata: bool) -> SensorTimestamp {
+        self.offer_detailed(origin, with_metadata, None, FlashResult::UNREPORTED)
+    }
+
+    /// Кадр запроса со вспышкой снимка `shot`: выдержка × ISO = 1 с·ISO (10 мс × 100), HAL сообщил `flash`.
+    pub fn offer_flash_still(&mut self, shot: u64, flash: FlashResult) -> SensorTimestamp {
+        self.offer_detailed(
+            RequestOrigin::FlashStill {
+                shot: FlashShotId(shot),
+            },
+            true,
+            Some(Duration::from_millis(10)),
+            flash,
+        )
+    }
+
+    /// Кадр с полным набором того, что движок снимков читает из результата.
+    pub fn offer_detailed(
+        &mut self,
+        origin: RequestOrigin,
+        with_metadata: bool,
+        exposure_time: Option<Duration>,
+        flash: FlashResult,
+    ) -> SensorTimestamp {
         let ts = self.next_ts;
         self.next_ts += SENSOR_STEP;
         let number = self.next_frame_number;
@@ -262,11 +286,14 @@ impl StreamRig {
                     result: CaptureResultMeta {
                         frame_number: FrameNumber(number),
                         sensor_timestamp: Some(stamp(ts)),
-                        exposure_time: None,
+                        exposure_time,
                         sensitivity_iso: Some(100),
                         reported_frame_duration: None,
                         rolling_shutter_skew: None,
-                        three_a: ThreeAResultState::unreported(origin),
+                        three_a: ThreeAResultState {
+                            flash,
+                            ..ThreeAResultState::unreported(origin)
+                        },
                     },
                     color: CaptureColorHints::default(),
                 },
@@ -404,6 +431,7 @@ pub fn engine_rig(config: StillDevelopConfig, stream: StreamRig) -> EngineRig {
     let engine = StillEngine::new(
         config,
         ViewfinderToneConfig::default(),
+        crate::vulkan_backend::camera::exposure::ResidualGainLimits::of(&crate::config::AutoExposureConfig::default()),
         stream.stream.snapshot_ring(),
         maker,
         Box::new(clock.clone()),

@@ -20,6 +20,7 @@ use android_shell::still_orphan_sweep::OrphanSweepReport;
 use camera_contract::capabilities::{LensShading, SensorLevels, VendorProcessingFlags};
 use camera_contract::capture_result::{CaptureResultMeta, FrameNumber, SensorTimestamp};
 use camera_contract::fixtures::camera_id;
+use camera_contract::flash::FlashStillFailure;
 use camera_contract::frame_passport::{CaptureColorHints, FrameCaptureDetails, StreamPassport};
 use camera_contract::geometry::{PixelRect, PixelSize, SensorOrientation};
 use camera_contract::ids::{CameraId, LensFacing};
@@ -49,6 +50,9 @@ use still_contract::shot::{AsShotNeutral, DigitalGainEv, OwnedPixels, Rgba8Image
 use crate::camera_screen_capture::CaptureService;
 use crate::camera_screen_input::{ScreenInput, ScreenInputReceiver, screen_input_channel};
 use crate::capture_backend::CaptureBackend;
+use crate::flash_camera_port::FlashCameraPort;
+use crate::flash_still_relay::FlashStillRelay;
+use crate::flash_test_support::FakeFlashCamera;
 use crate::photo_config::PhotoConfig;
 use crate::still_render_port::{StillCommandDelivery, StillRenderPort};
 use crate::still_runtime::{OrphanSweepSource, StillRuntime, StillRuntimeDeps};
@@ -99,6 +103,14 @@ pub enum RenderMode {
     Unavailable,
 }
 
+/// Вид команды снимка в журнале рендера-подделки.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoggedCommand {
+    Begin,
+    Target,
+    FlashFailed,
+}
+
 /// Что рендер-подделка получила.
 pub struct FakeRenderPort {
     mode: Mutex<RenderMode>,
@@ -107,6 +119,10 @@ pub struct FakeRenderPort {
     /// Цели основной картинки: номер снимка и «это чтение в память».
     targets: Mutex<Vec<(StillId, bool)>>,
     unavailable_offers: Mutex<Vec<StillId>>,
+    /// Сообщения «снимок со вспышкой не снят» (14d): номер снимка и причина.
+    flash_failures: Mutex<Vec<(StillId, FlashStillFailure)>>,
+    /// Порядок принятых команд: нужен, чтобы проверить «`Begin` раньше любой вспышечной команды».
+    command_log: Mutex<Vec<(LoggedCommand, StillId)>>,
 }
 
 impl FakeRenderPort {
@@ -117,7 +133,19 @@ impl FakeRenderPort {
             sinks: Mutex::default(),
             targets: Mutex::default(),
             unavailable_offers: Mutex::default(),
+            flash_failures: Mutex::default(),
+            command_log: Mutex::default(),
         })
+    }
+
+    /// Причины срыва снимков со вспышкой, о которых приложение сообщило рендеру.
+    pub fn flash_failures(&self) -> Vec<(StillId, FlashStillFailure)> {
+        lock(&self.flash_failures).clone()
+    }
+
+    /// Принятые команды по порядку: вид и номер снимка.
+    pub fn command_log(&self) -> Vec<(LoggedCommand, StillId)> {
+        lock(&self.command_log).clone()
     }
 
     pub fn plans(&self) -> Vec<StillPlan> {
@@ -162,7 +190,14 @@ impl StillRenderPort for FakeRenderPort {
             }
             RenderMode::Accepting => {}
         }
+        let kind = match &command {
+            StillCommand::Begin(_) => LoggedCommand::Begin,
+            StillCommand::Target(_) => LoggedCommand::Target,
+            StillCommand::FlashFailed { .. } => LoggedCommand::FlashFailed,
+        };
+        lock(&self.command_log).push((kind, command.still_id()));
         match command {
+            StillCommand::FlashFailed { id, failure } => lock(&self.flash_failures).push((id, failure)),
             StillCommand::Begin(begin) => {
                 lock(&self.plans).push(begin.plan.clone());
                 lock(&self.sinks).push((begin.plan.id, begin.events));
@@ -464,6 +499,9 @@ pub struct StillRig {
     pub service: photo_output::service::StillService,
     pub capture: Arc<dyn CaptureService>,
     pub screen: ScreenInputReceiver,
+    /// Камера-подделка для вспышки (14d) и мост её итогов к рендеру.
+    pub flash_camera: Arc<FakeFlashCamera>,
+    pub flash_relay: Arc<FlashStillRelay>,
 }
 
 /// Поднятая настоящая служба с подделками вокруг неё, без экрана: экран подключает тот, кому он нужен (стенд
@@ -477,6 +515,16 @@ pub struct StartedStill {
 
 /// Запускает настоящую службу снимков вокруг `render` и подделок платформы.
 pub fn start_still_runtime(config: &PhotoConfig, render: &Arc<FakeRenderPort>) -> StartedStill {
+    start_still_runtime_with_flash(config, render, FakeFlashCamera::new(), Arc::default())
+}
+
+/// То же, но с заданной камерой для вспышки и мостом её итогов (настоящий движок или подделка).
+pub fn start_still_runtime_with_flash(
+    config: &PhotoConfig,
+    render: &Arc<FakeRenderPort>,
+    flash_camera: Arc<dyn FlashCameraPort>,
+    flash_relay: Arc<FlashStillRelay>,
+) -> StartedStill {
     let store = Arc::new(FakeStore::default());
     let sound = Arc::new(CountingSound::default());
     let deps = StillRuntimeDeps {
@@ -489,6 +537,8 @@ pub fn start_still_runtime(config: &PhotoConfig, render: &Arc<FakeRenderPort>) -
         render: render.clone(),
         shutter_sound: sound.clone(),
         orphan_sweep: Arc::new(FixedSweep(OrphanSweepReport::Removed { count: 0 })),
+        flash_camera,
+        flash_relay,
     };
     let runtime = StillRuntime::start(config, deps).expect("служба запускается");
     let (service, backend) = runtime.into_parts();
@@ -507,12 +557,14 @@ impl StillRig {
 
     pub fn start_with(config: PhotoConfig, render_mode: RenderMode) -> Self {
         let render = FakeRenderPort::new(render_mode);
+        let flash_camera = FakeFlashCamera::new();
+        let flash_relay = Arc::new(FlashStillRelay::default());
         let StartedStill {
             store,
             sound,
             service,
             backend,
-        } = start_still_runtime(&config, &render);
+        } = start_still_runtime_with_flash(&config, &render, flash_camera.clone(), flash_relay.clone());
         let capture = backend.service();
         let (sender, screen) = screen_input_channel(64);
         backend.completion_slot().attach(sender.injector());
@@ -524,7 +576,23 @@ impl StillRig {
             service,
             capture,
             screen,
+            flash_camera,
+            flash_relay,
         }
+    }
+
+    /// Счётчики сервиса снимка (настоящая служба: режим `real`).
+    pub fn capture_counters(&self) -> crate::still_capture_service::CaptureCounters {
+        self.real_diagnostics().capture
+    }
+
+    /// Маршруты принятых снимков (со вспышкой или без).
+    pub fn capture_flash_routes(&self) -> Vec<crate::still_capture_service::FlashRouteEntry> {
+        self.backend.flash_routes()
+    }
+
+    fn real_diagnostics(&self) -> crate::capture_backend::RealDiagnostics {
+        self.backend.diagnostics().real.expect("стенд поднят настоящим режимом")
     }
 
     /// Ставит новый экран: у него свой канал и эпоха (как переустановка экрана в приложении).

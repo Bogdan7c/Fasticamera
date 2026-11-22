@@ -15,6 +15,7 @@ use std::sync::Arc;
 use camera_contract::three_a::{DirectiveSlot, WhiteBalanceDirective};
 use camera_contract::zoom::LensIntentChannel;
 use camera_core::backend::BackendFactory;
+use camera_core::flash_status::FlashStillObserver;
 use camera_core::{AppPresence, CameraRuntime, LensWiring, ThreeAWiring};
 
 use crate::auto_exposure_link::{
@@ -22,6 +23,7 @@ use crate::auto_exposure_link::{
 };
 use crate::camera_config::CameraConfig;
 use crate::camera_service::{BackendDiagnosticsSource, CameraEngineAccess, CameraServices, RunningCamera};
+use crate::flash_still_relay::FlashStillRelay;
 use crate::raw_stream_services::RawStreamServices;
 use crate::viewfinder_autostart::ViewfinderAutostart;
 
@@ -49,6 +51,9 @@ pub struct CameraLinks {
     /// Намерения объектива (сессия 13): экран камеры публикует (`Effect::Lens`), движок читает и выбирает
     /// камеру с гистерезисом. Один ящик на процесс: тот же клон получает исполнитель эффектов экрана.
     pub lens_intents: LensIntentChannel,
+    /// Наблюдатель итогов снимков со вспышкой (14d): движок сообщает ему итог, а служба снимков при запуске
+    /// подключает к нему рендер (поздняя привязка, `FlashStillRelay`). Один на процесс.
+    pub flash_relay: Arc<FlashStillRelay>,
 }
 
 /// Рендерная половина тех же ящиков ([`CameraLinks::render_side`]).
@@ -102,7 +107,10 @@ fn three_a_wiring(config: &CameraConfig, links: &CameraLinks, effective: Exposur
         .with_exposure_directive_slot(links.auto_exposure.engine_directive_slot()),
         ExposureControllerKind::Vendor => ThreeAWiring::vendor(&config.engine.three_a),
     };
-    wiring.with_white_balance_slot(links.white_balance.clone())
+    // Итоги снимков со вспышкой идут и событием движка, и наблюдателю: в проде события никто не разбирает.
+    wiring
+        .with_white_balance_slot(links.white_balance.clone())
+        .with_flash_observer(Arc::clone(&links.flash_relay) as Arc<dyn FlashStillObserver>)
 }
 
 /// Запуск потока движка; отказ — сервис «камера недоступна: причина».

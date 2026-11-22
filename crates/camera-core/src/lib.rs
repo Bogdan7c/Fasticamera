@@ -29,6 +29,8 @@ pub mod event;
 pub mod exposure_transfer;
 #[cfg(any(test, feature = "fake-backend"))]
 pub mod fake;
+pub mod flash_config;
+pub mod flash_status;
 pub mod handle;
 pub mod inbox;
 pub mod lens_status;

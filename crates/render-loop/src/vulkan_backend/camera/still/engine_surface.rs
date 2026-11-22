@@ -55,6 +55,7 @@ impl<G: StillGpu> StillEngine<G> {
         }
         self.present_log.restart();
         self.params_history.clear();
+        self.flash_facts.clear();
         self.current_stream = None;
         self.prewarm_failed_for = None;
         self.release_gpu_if_drained_without_surface();
@@ -100,5 +101,8 @@ impl<G: StillGpu> StillEngine<G> {
 
 /// Стадии, которым для продолжения нужен экран (ленты видоискателя): только у них пропажа surface отнимает путь.
 fn needs_display_to_continue<G: StillGpu>(stage: &Stage<G>) -> bool {
-    matches!(stage, Stage::Choosing { .. } | Stage::AwaitingCapture(_))
+    matches!(
+        stage,
+        Stage::Choosing { .. } | Stage::AwaitingFlashFrame { .. } | Stage::AwaitingCapture(_)
+    )
 }

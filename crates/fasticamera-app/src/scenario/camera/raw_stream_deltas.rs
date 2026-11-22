@@ -49,6 +49,8 @@ pub fn stream_delta(before: &RawStreamCounters, after: &RawStreamCounters) -> Ra
         ring_picks_exact: grew(before.ring_picks_exact, after.ring_picks_exact),
         ring_picks_substituted: grew(before.ring_picks_substituted, after.ring_picks_substituted),
         ring_picks_unavailable: grew(before.ring_picks_unavailable, after.ring_picks_unavailable),
+        // Кадры снимков со вспышкой (14d), найденные в кольце по метке запроса: накопление.
+        ring_flash_picks_found: grew(before.ring_flash_picks_found, after.ring_flash_picks_found),
         lossless_defects: grew(before.lossless_defects, after.lossless_defects),
         released_after_fence: grew(before.released_after_fence, after.released_after_fence),
         released_unused: grew(before.released_unused, after.released_unused),

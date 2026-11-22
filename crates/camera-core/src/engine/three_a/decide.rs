@@ -22,7 +22,7 @@ use crate::three_a_control::ThreeAIntent;
 
 impl CameraEngine {
     /// Повторяющийся запрос реально идёт (а не только «хотим поток»).
-    pub(super) fn is_streaming_now(&self) -> bool {
+    pub(in crate::engine) fn is_streaming_now(&self) -> bool {
         self.session.as_ref().is_some_and(|session| session.repeating.is_some())
     }
 
@@ -103,6 +103,10 @@ impl CameraEngine {
     ) -> CommandOutcome {
         if !self.is_streaming_now() {
             return CommandOutcome::InvalidState(InvalidStateReason::NotStreaming);
+        }
+        // Серия и вспышка делят повторяющийся запрос и сроки: одновременно нельзя.
+        if self.flash.in_progress() {
+            return CommandOutcome::InvalidState(InvalidStateReason::FlashInProgress);
         }
         if self.three_a.bracket.is_some() {
             return CommandOutcome::InvalidState(InvalidStateReason::BracketInProgress);

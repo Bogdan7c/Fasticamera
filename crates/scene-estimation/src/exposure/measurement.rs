@@ -118,6 +118,15 @@ pub struct ExposureMeasurement {
     pub used_weight: f32,
     /// Поправка защиты светов, EV (<= 0), уже учтённая в `required_product`.
     pub protection_ev: f32,
+    /// ЛИНЕЙНАЯ средняя яркость области: `Σw·Y_tile / W` (пересвеченные ячейки — по нижней оценке
+    /// `clipped_cell_luminance`, БЕЗ предела `clipped_max_share_of_target` и без защиты светов; не ниже
+    /// `dark_floor`). Не зависит от способа усреднения `scene_average`, поэтому годится для сложения света
+    /// (расчёт вспышки, 14d): `линейный замер = произведение кадра × цель / эта яркость`.
+    pub mean_luminance: f32,
+    /// Средний уровень ЗЕЛЁНОГО (нормированный отсчёт 0…1 до баланса белого) по области с теми же весами;
+    /// пересвеченные ячейки считаются белыми (1,0). Шкала совпадает со шкалой сырых отсчётов RAW после
+    /// вычитания чёрного, поэтому по нему сравнивают кадр статистики с самим RAW (проверка света вспышки).
+    pub mean_green_level: f32,
 }
 
 /// Редукции по плиткам (шаг, который на GPU станет проходом редукции).
@@ -132,6 +141,8 @@ struct Reductions {
     log2_sum: f32,
     clipped_sum: f32,
     dark_sum: f32,
+    /// Σ w·(средний зелёный плитки, пересвет = 1,0) — для `mean_green_level`.
+    green_sum: f32,
 }
 
 /// Фаза замера: от неё зависят ограниченные шаги при пересвете и темноте.
@@ -231,6 +242,10 @@ pub fn measure_exposure_in_phase(
         dark_fraction,
         used_weight: reductions.used_weight,
         protection_ev,
+        mean_luminance: ((reductions.measured_luminance_sum + reductions.clipped_luminance_sum)
+            / reductions.used_weight)
+            .max(config.dark_floor),
+        mean_green_level: reductions.green_sum / reductions.used_weight,
     })
 }
 
@@ -253,6 +268,7 @@ fn reduce_tiles(
         totals.used_weight += weight;
         totals.measured_luminance_sum += weight * parts.measured;
         totals.clipped_luminance_sum += weight * parts.clipped;
+        totals.green_sum += weight * tile_green_level(tile, cells);
         totals.log2_sum += weight * tile_luminance.max(config.dark_floor).log2();
         totals.clipped_sum += weight * (tile.saturated_cells as f32 / cells as f32);
         if tile_luminance < config.dark_tile_luminance {
@@ -260,6 +276,14 @@ fn reduce_tiles(
         }
     }
     totals
+}
+
+/// Средний уровень зелёного плитки (0…1): принятые ячейки — по сумме, пересвеченные — белые (1,0).
+fn tile_green_level(tile: &AwbTile, cells: u32) -> f32 {
+    let cells = cells as f32;
+    // Зелёный даёт два отсчёта на ячейку (см. `tile_luminance`).
+    let used_part = tile.sum_g as f32 / (2.0 * QUANT_SCALE * cells);
+    used_part + tile.saturated_cells as f32 / cells
 }
 
 /// Яркость области и сдвиг экспозиции выбранным способом усреднения (решения владельца 133, 134).

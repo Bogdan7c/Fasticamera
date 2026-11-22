@@ -33,6 +33,9 @@ pub enum FrameChoiceView {
     Exact,
     /// Показанного взять нельзя; причина — из рендера.
     Substituted { reason: SubstitutionReason },
+    /// Кадр разового запроса со вспышкой (14d): точный по построению (найден по метке запроса), но снят ПОСЛЕ
+    /// нажатия, поэтому «задержка затвора» к нему неприменима и пороги задержки его не касаются.
+    FlashFrame,
     /// Выбор неизвестен: снимок не дошёл до захвата, журнал его вытеснил или служба не назвала номер снимка.
     Unavailable { why: &'static str },
 }
@@ -78,6 +81,18 @@ impl FrameTiming {
                 )),
             ),
             FrameChoice::Substituted { reason, .. } => (FrameChoiceView::Substituted { reason }, None),
+            // Кадр со вспышкой найден по метке запроса, а не выбран из показанных: «показан ли до нажатия» к нему
+            // неприменимо (его снимают ПОСЛЕ нажатия).
+            FrameChoice::FlashFrame { .. } => {
+                return Self {
+                    frame_choice: FrameChoiceView::FlashFrame,
+                    press_to_frame_ms: None,
+                    press_to_frame_unavailable: Some(
+                        "кадр со вспышкой снят после нажатия: задержка затвора к нему не применима".to_owned(),
+                    ),
+                    shown_before_press_ms: None,
+                };
+            }
         };
         let (press_to_frame_ms, press_to_frame_unavailable) = match clock {
             ClockBridge::Available(offset) => {
@@ -99,7 +114,22 @@ impl FrameTiming {
 
     /// Взят ровно показанный кадр.
     pub fn is_exact(&self) -> bool {
-        self.frame_choice == FrameChoiceView::Exact
+        matches!(self.frame_choice, FrameChoiceView::Exact | FrameChoiceView::FlashFrame)
+    }
+
+    /// Взят кадр разового запроса со вспышкой.
+    pub fn is_flash_frame(&self) -> bool {
+        self.frame_choice == FrameChoiceView::FlashFrame
+    }
+
+    /// Короткое имя выбора для сводки и сверки ПК.
+    pub fn choice_name(&self) -> &'static str {
+        match self.frame_choice {
+            FrameChoiceView::Exact => "exact",
+            FrameChoiceView::Substituted { .. } => "substituted",
+            FrameChoiceView::FlashFrame => "flash_frame",
+            FrameChoiceView::Unavailable { .. } => "unknown",
+        }
     }
 
     /// Выбор известен (точный или замена).
@@ -124,7 +154,10 @@ pub struct FrameSummary {
     /// Снимки, у которых выбор известен / неизвестен.
     pub choices_known: u32,
     pub choices_unknown: u32,
+    /// Точные: показанный кадр и кадр со вспышкой.
     pub exact: u32,
+    /// Из точных — кадры разового запроса со вспышкой (их задержка не меряется: они снимаются после нажатия).
+    pub flash_frames: u32,
     pub substituted: u32,
     /// Из замен — из-за вытеснения показанного кадра из кольца.
     pub substituted_evicted: u32,
@@ -152,6 +185,7 @@ impl FrameSummary {
             choices_known,
             choices_unknown: count(|timing| !timing.choice_known()),
             exact,
+            flash_frames: count(FrameTiming::is_flash_frame),
             substituted: choices_known.saturating_sub(exact),
             substituted_evicted: count(FrameTiming::is_evicted_substitution),
             exact_share: (choices_known > 0).then(|| f64::from(exact) / f64::from(choices_known)),
@@ -159,8 +193,10 @@ impl FrameSummary {
             max_press_to_frame_ms: delays.last().copied(),
             // Нижняя медиана (индекс (n-1)/2): для чётного числа берётся меньшая из двух средних.
             p50_press_to_frame_ms: delays.get(delays.len().saturating_sub(1) / 2).copied(),
+            // Причина берётся только у снимков, у которых задержку МОЖНО было измерить (не у кадров вспышки).
             delay_unavailable_reason: timings
                 .iter()
+                .filter(|timing| !timing.is_flash_frame())
                 .find_map(|timing| timing.press_to_frame_unavailable.clone()),
         }
     }
@@ -172,6 +208,7 @@ impl FrameSummary {
     pub fn compact(&self) -> serde_json::Value {
         serde_json::json!({
             "exact": self.exact,
+            "flash": self.flash_frames,
             "subst": self.substituted,
             "evicted": self.substituted_evicted,
             "unknown": self.choices_unknown,

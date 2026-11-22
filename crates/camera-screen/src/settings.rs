@@ -8,9 +8,9 @@ use camera_contract::viewfinder_crop::CropAspect;
 
 /// Режим вспышки.
 ///
-/// `Auto` существует как слот (у iOS: Auto → On → Off), но в v1 он **не поддержан** (инвариант 6,
-/// `docs/ios-camera/feature-map.md`: решение «нужна ли вспышка» — вывод оценки AE, а не экрана).
-/// Экран его никогда не выбирает: [`FlashMode::is_selectable`] возвращает `false`.
+/// `Auto` входит в v1 (решение 153): экран хранит и передаёт в снимок именно выбор пользователя.
+/// Решение «стрелять ли вспышкой» для `Auto` принимает приложение/движок по оценке AE, а не экран
+/// (решение 159). Режим по умолчанию при запуске — `Off` (решение 160).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum FlashMode {
     /// Вспышка выключена.
@@ -18,22 +18,25 @@ pub enum FlashMode {
     Off,
     /// Вспышка включена.
     On,
-    /// Автовспышка. Не поддержана в v1 и не выбирается.
+    /// Автовспышка: сработает ли она, решает оценка AE (не экран).
     Auto,
 }
 
 impl FlashMode {
-    /// Можно ли выбрать режим сейчас (`Auto` — нет, см. тип).
-    pub const fn is_selectable(self) -> bool {
-        !matches!(self, FlashMode::Auto)
-    }
-
-    /// Следующий режим по тапу на значок над кадром: Off ↔ On (`Auto` пропускается).
-    pub const fn toggled(self) -> FlashMode {
+    /// Следующий режим по тапу на значок над кадром: Off → Auto → On → Off (iOS 26,
+    /// `docs/ios-camera/behavior.md`).
+    pub const fn next_in_cycle(self) -> FlashMode {
         match self {
-            FlashMode::Off | FlashMode::Auto => FlashMode::On,
+            FlashMode::Off => FlashMode::Auto,
+            FlashMode::Auto => FlashMode::On,
             FlashMode::On => FlashMode::Off,
         }
+    }
+
+    /// Цветом «включено» (жёлтый) подсвечивается только `On`: `Auto` — «может сработать», значок
+    /// остаётся нейтральным (белым) `[estimate]`, как у `Off`; жёлтый у iOS — «вспышка будет».
+    pub const fn is_highlighted(self) -> bool {
+        matches!(self, FlashMode::On)
     }
 }
 

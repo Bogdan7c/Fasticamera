@@ -36,6 +36,7 @@ use crate::camera_config::CameraConfig;
 use crate::camera_service::CameraServices;
 use crate::camera_wiring::{CameraBackendParts, CameraLinks, RenderLinks, start_camera_with_links};
 use crate::event_router::{EventRouter, LogcatScenarioOutput, RouterParts, ScenarioStarter};
+use crate::flash_still_relay::FlashStillRelay;
 use crate::gpu_services::{GpuServices, ValidationState};
 use crate::jni_boundary::run_guarded;
 use crate::raw_stream_wiring::{RawStreamCreation, create_raw_stream, observe_stream};
@@ -86,7 +87,11 @@ pub fn ensure_installed(config: &RuntimeConfig, package_name: PackageName) -> Re
     let raw_stream = create_raw_stream(&config.camera().raw_stream);
     // Ящики связи камеры с рендером один набор на процесс: AWB и наш AE. Камера получает свою половину,
     // рендер — свою (клоны делят состояние).
-    let mut links = CameraLinks::default();
+    let mut links = CameraLinks {
+        // Ёмкость памяти итогов вспышки — та же, что у журнала снимков (конфиг `photo.journal_capacity`).
+        flash_relay: Arc::new(FlashStillRelay::new(config.photo().journal_capacity)),
+        ..CameraLinks::default()
+    };
     let (render, render_auto_exposure) = start_render(
         config.render(),
         validation.clone(),
@@ -102,9 +107,10 @@ pub fn ensure_installed(config: &RuntimeConfig, package_name: PackageName) -> Re
         config.render().clone(),
         render.control,
     );
+    let flash_relay = Arc::clone(&links.flash_relay);
     let camera = start_android_camera(config.camera(), &raw_stream, links);
     // Снимок: настоящая служба, если есть рендер, камера и паспорт телефона; иначе явный запасной фейк.
-    let still = assemble_still(config, &services, render.still, &camera);
+    let still = assemble_still(config, &services, render.still, &camera, flash_relay);
     let (router, starter) = EventRouter::new(RouterParts {
         events: handles.events,
         services: shell_services(&services),

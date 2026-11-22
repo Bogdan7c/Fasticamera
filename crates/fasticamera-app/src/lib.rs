@@ -43,6 +43,11 @@ pub mod device_config;
 pub mod event_router;
 #[cfg(test)]
 mod fake_render_ae;
+pub mod flash_camera_port;
+pub mod flash_shot_route;
+pub mod flash_still_relay;
+#[cfg(test)]
+mod flash_test_support;
 pub mod glass_scenario_config;
 pub mod gpu_config;
 pub mod gpu_services;

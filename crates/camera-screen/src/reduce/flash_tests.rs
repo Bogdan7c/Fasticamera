@@ -67,6 +67,7 @@ fn flash_option_cannot_be_applied_without_a_flash() {
 fn shot_requests_never_ask_for_flash_without_it_even_if_on_was_chosen_earlier() {
     let mut screen = Screen::ready();
     screen.step(ScreenAction::StripToolTapped(ToolId::Flash));
+    screen.step(ScreenAction::StripToolTapped(ToolId::Flash));
     assert_eq!(screen.state.settings().flash, FlashMode::On);
     let with_flash = screen.step(ScreenAction::ShutterTapped { at: at_ms(0) });
     assert!(matches!(with_flash.effects.first(), Some(Effect::Capture(shot)) if shot.flash == FlashMode::On));
@@ -103,4 +104,38 @@ fn a_new_screen_starts_without_flash_until_the_camera_reports_it() {
     let screen = Screen::unprepared(crate::ScreenConfig::default());
     assert_eq!(screen.state.camera_facts().flash, FlashAvailability::Unavailable);
     assert_eq!(screen.state.effective_flash(), FlashMode::Off);
+}
+
+/// Снимок несёт выбор пользователя как есть (включая `Auto`: решает его приложение, решение 159);
+/// без вспышки у камеры — всегда `Off`.
+#[test]
+fn shot_request_carries_the_chosen_flash_mode_when_available_and_off_when_not() {
+    for (mode, taps) in [(FlashMode::Off, 0), (FlashMode::Auto, 1), (FlashMode::On, 2)] {
+        let mut screen = Screen::ready();
+        for _ in 0..taps {
+            screen.step(ScreenAction::StripToolTapped(ToolId::Flash));
+        }
+        assert_eq!(screen.state.settings().flash, mode);
+        let shot = screen.step(ScreenAction::ShutterTapped { at: at_ms(0) });
+        assert!(
+            matches!(shot.effects.first(), Some(Effect::Capture(request)) if request.flash == mode),
+            "{mode:?}: снимок должен нести выбранный режим"
+        );
+    }
+
+    // Auto выбран, затем вспышка пропала: в снимок идёт Off, выбор пользователя цел.
+    let mut screen = Screen::ready();
+    screen.step(ScreenAction::StripToolTapped(ToolId::Flash));
+    screen.step(ScreenAction::CameraFactsChanged(without_flash()));
+    assert_eq!(screen.state.effective_flash(), FlashMode::Off);
+    let shot = screen.step(ScreenAction::ShutterTapped { at: at_ms(0) });
+    assert!(matches!(shot.effects.first(), Some(Effect::Capture(request)) if request.flash == FlashMode::Off));
+    assert_eq!(screen.state.settings().flash, FlashMode::Auto);
+}
+
+#[test]
+fn a_new_screen_starts_with_flash_off_by_default() {
+    // Решение 160: при запуске вспышка выключена.
+    assert_eq!(crate::settings::CaptureSettings::default().flash, FlashMode::Off);
+    assert_eq!(Screen::ready().state.settings().flash, FlashMode::Off);
 }

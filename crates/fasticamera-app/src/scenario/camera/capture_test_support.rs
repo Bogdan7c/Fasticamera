@@ -15,9 +15,12 @@ use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use camera_contract::capture_result::SensorTimestamp;
+use camera_contract::flash::FlashShotId;
+use camera_core::flash_status::FlashStillReport;
 use camera_screen::ScreenAction;
-use camera_screen::settings::RawCapture;
+use camera_screen::settings::{FlashMode, RawCapture};
 use camera_screen::shutter::{PrimaryFormat, ShotRequest, ShotRequestId};
+use camera_screen::tools::ToolId;
 use shell_contract::clock::{BoottimeNanos, MonotonicNanos};
 use still_contract::frame_choice::{FrameChoice, SubstitutionReason};
 use still_contract::plan::StillId;
@@ -27,6 +30,7 @@ use super::capture_observation::{CaptureObservation, LiveCounters, SubmitCounts}
 use super::capture_runner::{CaptureRunner, RunnerState};
 use crate::capture_scenario_config::CaptureScenarioConfig;
 use crate::clock_offset::ClockOffset;
+use crate::still_capture_service::FlashRouteEntry;
 use crate::still_choice_log::ChoiceEntry;
 use crate::still_phase_log::{PhaseEntry, PhaseKind};
 use crate::still_test_support::shot;
@@ -57,6 +61,12 @@ pub struct Behaviour {
     pub terminal_after: Duration,
     /// Переключает ли значок RAW настройку.
     pub raw_toggle_works: bool,
+    /// Переключает ли значок вспышки настройку по кругу `Off → Auto → On`.
+    pub flash_toggle_works: bool,
+    /// Камера снимает кадр со вспышкой там, где сервис выбрал вспышку (`false` — камера срывает снимок).
+    pub camera_fires_flash: bool,
+    /// Сервис выбирает вспышку в режиме `Auto` (камера советует вспыхнуть).
+    pub auto_advises_flash: bool,
     /// Номера запросов экрана, которые служба срывает (`Failed`).
     pub failing_requests: BTreeSet<u64>,
     /// Номера нажатий (с 1), которые сервис отвергает как занятые (до журнала не доходят).
@@ -77,6 +87,9 @@ impl Default for Behaviour {
             secured_after: Duration::from_millis(30),
             terminal_after: Duration::from_millis(400),
             raw_toggle_works: true,
+            flash_toggle_works: true,
+            camera_fires_flash: true,
+            auto_advises_flash: false,
             failing_requests: BTreeSet::new(),
             service_rejects_press: BTreeSet::new(),
             silent_service: false,
@@ -111,6 +124,7 @@ pub struct World {
     pub behaviour: Behaviour,
     pub journal: Vec<ShotRequest>,
     pub raw: RawCapture,
+    pub flash: FlashMode,
     pub submit: SubmitCounts,
     pub actions_rejected: u64,
     pub live: LiveCounters,
@@ -119,12 +133,17 @@ pub struct World {
     pub presses: u64,
     /// Сколько раз нажат значок RAW.
     pub raw_taps: u64,
+    /// Сколько раз нажат значок вспышки.
+    pub flash_taps: u64,
     secured_until: Duration,
     next_request: u64,
     pending: Vec<PendingPhase>,
     pending_choices: Vec<PendingChoice>,
     /// Выборы, уже записанные «рендером» (журнал форвардера: копится, как настоящий).
     pub choices: Vec<ChoiceEntry>,
+    /// Маршруты и итоги камеры по вспышке, которые «сервис» и «камера» мира уже записали.
+    pub flash_routes: Vec<FlashRouteEntry>,
+    pub flash_reports: Vec<FlashStillReport>,
 }
 
 impl World {
@@ -135,17 +154,21 @@ impl World {
             behaviour,
             journal: Vec::new(),
             raw: RawCapture::Off,
+            flash: FlashMode::Off,
             submit: SubmitCounts::default(),
             actions_rejected: 0,
             live: LiveCounters::default(),
             mode_is_real: true,
             presses: 0,
             raw_taps: 0,
+            flash_taps: 0,
             secured_until: Duration::ZERO,
             next_request: 1,
             pending: Vec::new(),
             pending_choices: Vec::new(),
             choices: Vec::new(),
+            flash_routes: Vec::new(),
+            flash_reports: Vec::new(),
         }
     }
 
@@ -157,7 +180,25 @@ impl World {
         ))
     }
 
-    fn choice_for(&self, pressed_at: MonotonicNanos) -> Option<FrameChoice> {
+    /// Идёт ли снимок со вспышкой по режиму мира и совету камеры (то же решение, что у сервиса).
+    fn flash_used_for(&self, mode: FlashMode) -> bool {
+        match mode {
+            FlashMode::Off => false,
+            FlashMode::On => true,
+            FlashMode::Auto => self.behaviour.auto_advises_flash,
+        }
+    }
+
+    fn choice_for(&self, pressed_at: MonotonicNanos, still: u64, flash: bool) -> Option<FrameChoice> {
+        if flash {
+            // Кадр разового запроса со вспышкой: снят ПОСЛЕ нажатия, ищется по метке запроса.
+            return Some(FrameChoice::FlashFrame {
+                sensor_timestamp: SensorTimestamp::from_nanos(
+                    pressed_at.as_nanos() + WORLD_BOOT_AHEAD_NANOS + 700_000_000,
+                ),
+                shot: FlashShotId(still),
+            });
+        }
         let sensor = |latency_ms: i64| {
             SensorTimestamp::from_nanos(pressed_at.as_nanos() + WORLD_BOOT_AHEAD_NANOS - latency_ms * 1_000_000)
         };
@@ -186,6 +227,12 @@ impl World {
 
     fn apply(&mut self, action: ScreenAction) {
         match action {
+            ScreenAction::StripToolTapped(ToolId::Flash) => {
+                self.flash_taps += 1;
+                if self.behaviour.flash_toggle_works {
+                    self.flash = self.flash.next_in_cycle();
+                }
+            }
             ScreenAction::StripToolTapped(_) => {
                 self.raw_taps += 1;
                 if self.behaviour.raw_toggle_works {
@@ -214,6 +261,7 @@ impl World {
         self.journal.push(ShotRequest {
             pressed_at: at,
             raw: self.raw,
+            flash: self.flash,
             primary_format: PrimaryFormat::Heif,
             ..shot(request_id)
         });
@@ -228,7 +276,30 @@ impl World {
             still,
             kind: PhaseKind::Secured,
         });
-        if let Some(choice) = self.choice_for(at) {
+        let flash = self.flash_used_for(self.flash);
+        let flash_fires = flash && self.behaviour.camera_fires_flash;
+        self.flash_routes.push(FlashRouteEntry {
+            still: StillId(still),
+            mode: self.flash.into(),
+            uses_flash: flash,
+            why: "мир стенда",
+        });
+        if flash {
+            self.flash_reports.push(if flash_fires {
+                crate::flash_test_support::fired_report(FlashShotId(still))
+            } else {
+                FlashStillReport::Failed {
+                    shot: FlashShotId(still),
+                    failure: camera_contract::flash::FlashStillFailure::PreflashNotMeasured,
+                }
+            });
+        }
+        let choice = if flash && !flash_fires {
+            None
+        } else {
+            self.choice_for(at, still, flash)
+        };
+        if let Some(choice) = choice {
             self.pending_choices.push(PendingChoice {
                 due: self.elapsed + self.behaviour.secured_after,
                 entry: ChoiceEntry {
@@ -245,7 +316,7 @@ impl World {
         if no_result {
             return;
         }
-        let kind = if self.behaviour.failing_requests.contains(&request_id) {
+        let kind = if self.behaviour.failing_requests.contains(&request_id) || (flash && !flash_fires) {
             PhaseKind::Failed {
                 failure: "запись: MediaStore отказал".to_owned(),
             }
@@ -304,11 +375,13 @@ pub fn drive(runner: &mut CaptureRunner, world: &mut World, tick: Duration, limi
         let due_choices = world.due_choices();
         world.choices.extend(due_choices);
         runner.absorb_choices(world.choices.clone());
+        runner.absorb_flash(world.flash_routes.clone(), world.flash_reports.clone());
         let journal = world.journal.clone();
         let observation = CaptureObservation {
             now: world.now(),
             press_time: world.press_time(),
             raw_setting: world.raw,
+            flash_setting: world.flash,
             actions_rejected: world.actions_rejected,
             submit: world.submit,
             journal: &journal,
@@ -347,7 +420,7 @@ pub fn report_of(records: super::capture_runner::RunnerRecords) -> super::captur
     use crate::capture_backend::CaptureMode;
     let accepted = u64::try_from(records.shots.len()).unwrap();
     CaptureObservationReport {
-        planned_steps: 3,
+        planned_steps: 5,
         steps: records.steps,
         shots: records.shots,
         burst: records.burst,

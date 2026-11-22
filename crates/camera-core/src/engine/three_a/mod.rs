@@ -18,12 +18,15 @@ mod decide;
 mod directive;
 mod exposure_carry;
 mod exposure_directive;
+mod flash_access;
 mod planning;
 mod results;
 
 use std::time::Instant;
 
+use crate::flash_status::FlashStatus;
 use camera_contract::three_a::PointRequestId;
+pub(in crate::engine) use planning::PlannedRequest;
 
 use crate::three_a_control::{ExposureController, FocusController, ThreeAIntent};
 use crate::three_a_status::{AutoExposureProgress, ControlAdjustment, LastThreeAResult, ThreeACounters, ThreeAStatus};
@@ -91,6 +94,8 @@ impl ThreeAEngine {
                 ae_foreign_camera_proposals_rejected: self.exposure.foreign_camera_proposals_rejected(),
                 ..self.counters
             },
+            // Вспышку собирает `CameraEngine::status`: статусу нужны возможности камеры и поток.
+            flash: FlashStatus::default(),
         }
     }
 

@@ -21,6 +21,7 @@
 use std::sync::Arc;
 
 use android_shell::still_orphan_sweep::OrphanSweepReport;
+use camera_core::flash_status::FlashStillReport;
 use photo_output::service::{
     CameraCatalog, StillFileFormats, StillService, StillServiceDeps, StillServiceHandle, StillServiceStartError,
     StillServiceStats, WallClock,
@@ -32,8 +33,10 @@ use crate::camera_screen_config::CameraScreenConfig;
 use crate::capture_backend::{
     CaptureBackend, CaptureDiagnostics, CaptureMode, CaptureMonitor, CaptureWiring, RealBackendParts, RealDiagnostics,
 };
+use crate::flash_camera_port::FlashCameraPort;
+use crate::flash_still_relay::FlashStillRelay;
 use crate::photo_config::PhotoConfig;
-use crate::still_capture_service::{StillCaptureParts, StillCaptureService};
+use crate::still_capture_service::{FlashRouteEntry, StillCaptureParts, StillCaptureService};
 use crate::still_choice_log::ChoiceEntry;
 use crate::still_event_forwarder::DevelopEventForwarder;
 use crate::still_phase_log::{PhaseBatch, PhaseCursor};
@@ -57,6 +60,11 @@ pub struct StillRuntimeDeps {
     pub render: Arc<dyn StillRenderPort>,
     pub shutter_sound: Arc<dyn ShutterSoundService>,
     pub orphan_sweep: Arc<dyn OrphanSweepSource>,
+    /// Камера для вспышки (14d): совет для Auto и команда снимка со вспышкой.
+    pub flash_camera: Arc<dyn FlashCameraPort>,
+    /// Мост итогов вспышки от камеры к рендеру; движок камеры держит его как наблюдателя, а запуск службы
+    /// подключает к нему поток рендера (поздняя привязка).
+    pub flash_relay: Arc<FlashStillRelay>,
 }
 
 /// Собранный снимок: владелец службы и набор для экрана.
@@ -87,12 +95,16 @@ impl StillRuntime {
             },
         )?;
         let handle = service.handle();
+        // С этого момента срыв вспышки от камеры доходит до рендера. Снимок без запущенной службы невозможен,
+        // поэтому до привязки итогов вспышки не бывает.
+        deps.flash_relay.bind_render(Arc::clone(&deps.render));
         let events = Arc::new(DevelopEventForwarder::new(handle.clone()));
         let capture = Arc::new(StillCaptureService::new(StillCaptureParts {
             service: handle.clone(),
             render: deps.render,
             ledger: Arc::clone(&ledger),
             events: Arc::clone(&events),
+            flash_camera: deps.flash_camera,
             journal_capacity: config.journal_capacity,
         }));
         let monitor = Arc::new(RealMonitor {
@@ -101,6 +113,7 @@ impl StillRuntime {
             events,
             ledger,
             orphan_sweep: deps.orphan_sweep,
+            flash_relay: deps.flash_relay,
         });
         let backend = CaptureBackend::real(RealBackendParts {
             service: capture as Arc<dyn CaptureService>,
@@ -170,6 +183,7 @@ struct RealMonitor {
     events: Arc<DevelopEventForwarder>,
     ledger: Arc<StillScreenLedger>,
     orphan_sweep: Arc<dyn OrphanSweepSource>,
+    flash_relay: Arc<FlashStillRelay>,
 }
 
 impl CaptureMonitor for RealMonitor {
@@ -183,6 +197,7 @@ impl CaptureMonitor for RealMonitor {
                 events: self.events.counters(),
                 screen: self.ledger.counters(),
                 orphan_drafts: self.orphan_sweep.orphan_sweep_report(),
+                flash: self.flash_relay.counters(),
             }),
         }
     }
@@ -205,5 +220,13 @@ impl CaptureMonitor for RealMonitor {
 
     fn frame_choices(&self) -> Vec<ChoiceEntry> {
         self.events.choice_log().snapshot()
+    }
+
+    fn flash_routes(&self) -> Vec<FlashRouteEntry> {
+        self.capture.flash_routes()
+    }
+
+    fn flash_reports(&self) -> Vec<FlashStillReport> {
+        self.flash_relay.reports()
     }
 }

@@ -13,6 +13,7 @@ use camera_android::companion_stream::CompanionStreamStatus;
 use camera_android::{BackendDiagnostics, CpuAccessProbe};
 use camera_contract::capabilities::{CameraDescriptor, FpsRange};
 use camera_contract::control::CaptureIntent;
+use camera_contract::flash::FlashShotId;
 use camera_contract::ids::CameraId;
 use camera_contract::stream::{ConfiguredStream, FrameRateMechanism, ReadoutAspect, ResolvedStream};
 use camera_contract::three_a::{BurstId, ExposureBracket, PointRequestId};
@@ -143,6 +144,15 @@ impl CameraBackend for LeverReportingBackend {
         self.inner.submit_bracket(intent, base, bracket, burst)
     }
 
+    fn submit_flash_still(
+        &mut self,
+        intent: CaptureIntent,
+        controls: &RequestControls,
+        shot: FlashShotId,
+    ) -> Result<(), RequestFailure> {
+        self.inner.submit_flash_still(intent, controls, shot)
+    }
+
     fn stop_repeating(&mut self) -> Result<(), RequestFailure> {
         self.inner.stop_repeating()
     }
@@ -211,6 +221,8 @@ pub struct FakeCameraRig {
     pub close_device_delay_ms: Arc<AtomicU64>,
     /// Ящики нашего AE, общие с движком: сторона «рендера» тестов (см. `FakeRenderAe`).
     pub auto_exposure: AutoExposureLink,
+    /// Наблюдатель итогов вспышки, который держит движок (14d): служба снимков подключает к нему рендер.
+    pub flash_relay: Arc<crate::flash_still_relay::FlashStillRelay>,
 }
 
 impl FakeCameraRig {
@@ -256,6 +268,7 @@ impl FakeCameraRig {
             ..CameraLinks::default()
         };
         let auto_exposure = links.auto_exposure.clone();
+        let flash_relay = Arc::clone(&links.flash_relay);
         let services = start_camera_with_links(
             &config,
             CameraBackendParts {
@@ -284,6 +297,7 @@ impl FakeCameraRig {
             probe_at_configure,
             close_device_delay_ms,
             auto_exposure,
+            flash_relay,
         }
     }
 

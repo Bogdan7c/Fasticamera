@@ -12,6 +12,7 @@
 
 use std::sync::Arc;
 
+use camera_core::flash_status::FlashStillReport;
 use camera_screen::shutter::ShotRequest;
 use photo_output::service::StillServiceStats;
 use serde::Serialize;
@@ -21,7 +22,8 @@ use crate::camera_screen_capture::{CaptureCompletionSlot, CaptureService, FakeCa
 use crate::camera_screen_config::CameraScreenConfig;
 use crate::camera_screen_service::SilentShutterSound;
 use crate::capture_switch::SwitchableCaptureService;
-use crate::still_capture_service::CaptureCounters;
+use crate::flash_still_relay::FlashRelayCounters;
+use crate::still_capture_service::{CaptureCounters, FlashRouteEntry};
 use crate::still_choice_log::ChoiceEntry;
 use crate::still_event_forwarder::ForwarderCounters;
 use crate::still_phase_log::{PhaseBatch, PhaseCursor};
@@ -65,6 +67,8 @@ pub struct RealDiagnostics {
     pub screen: LedgerCounters,
     /// Уборка осиротевших черновиков прошлого процесса.
     pub orphan_drafts: android_shell::still_orphan_sweep::OrphanSweepReport,
+    /// Итоги снимков со вспышкой от камеры (14d): сняты / срыв передан рендеру / не передан.
+    pub flash: FlashRelayCounters,
 }
 
 /// Всё, что сценарии узнают о съёмке: режим и счётчики того, что за ним стоит.
@@ -93,6 +97,12 @@ pub trait CaptureMonitor: Send + Sync {
 
     /// Какие кадры выбрал рендер для снимков (хранимые, ограниченный журнал). У фейка рендера нет — пусто.
     fn frame_choices(&self) -> Vec<ChoiceEntry>;
+
+    /// Маршруты последних принятых снимков: со вспышкой или показанный кадр и почему (14d). У фейка вспышки нет.
+    fn flash_routes(&self) -> Vec<FlashRouteEntry>;
+
+    /// Итоги камеры по снимкам со вспышкой (выдержка, ISO, доля света вспышки). У фейка камеры нет — пусто.
+    fn flash_reports(&self) -> Vec<FlashStillReport>;
 
     /// Сколько запросов снимка принято за процесс (не ограничено журналом; не зависит от режима).
     fn accepted_total(&self) -> u64;
@@ -134,6 +144,14 @@ impl CaptureMonitor for FakeMonitor {
     }
 
     fn frame_choices(&self) -> Vec<ChoiceEntry> {
+        Vec::new()
+    }
+
+    fn flash_routes(&self) -> Vec<FlashRouteEntry> {
+        Vec::new()
+    }
+
+    fn flash_reports(&self) -> Vec<FlashStillReport> {
         Vec::new()
     }
 }
@@ -303,6 +321,16 @@ impl CaptureBackend {
     /// Выборы кадра настоящих снимков (кого рендер взял для каждого `StillId`).
     pub fn frame_choices(&self) -> Vec<ChoiceEntry> {
         self.monitor.frame_choices()
+    }
+
+    /// Маршруты настоящих снимков: со вспышкой или без и почему (14d).
+    pub fn flash_routes(&self) -> Vec<FlashRouteEntry> {
+        self.monitor.flash_routes()
+    }
+
+    /// Итоги камеры по снимкам со вспышкой (14d).
+    pub fn flash_reports(&self) -> Vec<FlashStillReport> {
+        self.monitor.flash_reports()
     }
 }
 

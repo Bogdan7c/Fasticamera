@@ -25,6 +25,8 @@
 
 mod carried;
 mod placement;
+mod preflash;
+mod residual_gain;
 mod reveal_level;
 
 use std::cell::Cell;
@@ -34,6 +36,7 @@ use camera_contract::auto_exposure::{
     CameraTag, ExposureAuthority, ExposureDirective, ExposureProduct, ExposureProposal, ExposureProposalChannel,
     MeteredArea,
 };
+use camera_contract::flash::{FlashFramePlan, FrameLight, PreflashMetering};
 use camera_contract::frame_passport::{FrameCaptureMeta, RawFramePassport, StreamPassport};
 use camera_contract::geometry::PixelRect;
 use camera_contract::three_a::{DirectiveGeneration, DirectiveSlot, PointOfInterest};
@@ -48,8 +51,12 @@ use scene_estimation::exposure::{
 };
 
 use self::placement::tile_placement;
+use self::preflash::PreflashMeter;
+pub use self::residual_gain::ResidualGainLimits;
 use self::reveal_level::{DisplayedLevelInputs, displayed_level_error_ev};
 use super::continuity::ExposureReadiness;
+use super::flash_facts::AmbientLevel;
+use super::frame_role::frame_light;
 use super::statistics_schedule::StatisticsDemand;
 use crate::config::{AutoExposureConfig, RevealExposureCheck};
 use crate::viewfinder::{AutoExposureCounters, AutoExposureDiagnostics, AwbFrameIdentity};
@@ -96,6 +103,9 @@ pub struct ExposureFrameFacts {
     pub luminance: LuminanceWeights,
     /// Кадрирование, по которому ISP посчитал плитки статистики (координаты буфера).
     pub crop: PixelRect,
+    /// Чем освещён кадр (по его результату): кадр со светодиодом даёт замер предвспышки, но не питает
+    /// контроллер AE видоискателя.
+    pub light: FrameLight,
 }
 
 impl ExposureFrameFacts {
@@ -105,6 +115,7 @@ impl ExposureFrameFacts {
             product: frame_exposure_product(passport),
             luminance: params.scene_luminance_weights(),
             crop,
+            light: frame_light(passport),
         }
     }
 }
@@ -192,6 +203,8 @@ pub struct ExposureRunner {
     last_proposal: Option<ExposureProposal>,
     /// Объявления движка «чего ждать от нового потока», по камерам (см. `carried`).
     carried: carried::CarriedExpectations,
+    /// Замеры предвспышки и факты для движка снимков (14d).
+    preflash: PreflashMeter,
     counters: RunnerCounters,
 }
 
@@ -227,6 +240,7 @@ impl ExposureRunner {
             last_frame_product: None,
             last_proposal: None,
             carried: carried::CarriedExpectations::default(),
+            preflash: PreflashMeter::default(),
             counters: RunnerCounters::default(),
         })
     }
@@ -394,7 +408,21 @@ impl ExposureRunner {
         };
         if self.meter.submit(request).is_err() {
             self.controller.note_skipped_measurement(SkippedMeasurement::MeterBusy);
+        } else {
+            // Ответ придёт позже и без света кадра: запоминаем его по метке сенсора.
+            self.preflash.note_submitted(frame.sensor_timestamp_nanos, facts.light);
         }
+    }
+
+    /// Новые планы кадра со вспышкой из указаний движка (для движка снимков; список становится пустым).
+    pub fn drain_flash_plans(&mut self) -> Vec<FlashFramePlan> {
+        self.preflash.drain_plans()
+    }
+
+    /// Новые уровни света сцены без вспышки по кадрам (для проверки «кадр со вспышкой освещён»;
+    /// список становится пустым).
+    pub fn drain_ambient_levels(&mut self) -> Vec<AmbientLevel> {
+        self.preflash.drain_ambient_levels()
     }
 
     /// Снимок диагностики.
@@ -426,6 +454,9 @@ impl ExposureRunner {
                 cold_start_statistics_frames: self.counters.cold_start_statistics_frames,
                 frames_with_residual_gain: self.counters.frames_with_residual_gain,
                 frames_ready_by_carried_exposure: self.counters.frames_ready_by_carried_exposure.get(),
+                preflash_samples_published: self.preflash.samples_published,
+                preflash_not_computable: self.preflash.not_computable,
+                measurements_withheld_for_led_light: self.preflash.withheld_from_controller,
             },
         }
     }
@@ -446,6 +477,7 @@ impl ExposureRunner {
         // Объявление ожидаемой экспозиции запоминаем по камере сразу: следующее указание может его перезаписать
         // раньше, чем рендер покажет первый кадр этой камеры.
         self.carried.observe(&directive);
+        self.preflash.observe_plan(directive.flash.planned);
         if MeteredArea::for_point(directive.metering) != area_before {
             self.restart_cold_start();
         }
@@ -460,14 +492,8 @@ impl ExposureRunner {
     }
 
     /// Подтяжка, округлённая до шага `residual_gain_step_ev`: см. поле конфига (ключ кэша параметров ISP).
-    /// Подтяжка меньше половины шага становится ровно `UNITY`.
     fn quantized(&self, gain: ExposureGain) -> ExposureGain {
-        let step = self.config.residual_gain_step_ev;
-        // Шаг проверен конфигом (конечный, > 0), подтяжка ограничена контроллером: округление конечно.
-        let steps = (gain.ev() / step).round();
-        // Округление не должно выводить подтяжку за предел контроллера (шаг крупнее предела: 0,3 при 0,5 дало бы 0,6).
-        let limit = self.config.controller.max_residual_ev;
-        ExposureGain::from_ev((steps * step).clamp(-limit, limit)).unwrap_or(ExposureGain::UNITY)
+        ResidualGainLimits::of(&self.config).quantize_ev(gain.ev())
     }
 
     /// Привязывает к потоку кадра; новый поток сбрасывает контроллер и начинает холодный старт.
@@ -482,6 +508,7 @@ impl ExposureRunner {
         // Замеры старого потока исполнитель мог ещё не отдать: они чужие.
         while self.meter.poll().is_some() {}
         self.controller.begin_stream();
+        self.preflash.reset_for_new_stream();
         // Предложение прежнего потока в диагностике нового не показываем.
         self.last_proposal = None;
         self.weights = None;
@@ -502,6 +529,10 @@ impl ExposureRunner {
 
     /// Чего AE хочет от статистики: «каждый кадр», пока нет первой оценки, но не дольше предела.
     fn statistics_demand(&mut self) -> StatisticsDemand {
+        // Предвспышка: движку нужен замер КАЖДОГО кадра (и без фонарика, и с ним), чтобы поймать кадры с фонариком.
+        if matches!(self.directive.flash.preflash, PreflashMetering::Active { .. }) {
+            return StatisticsDemand::EveryFrame;
+        }
         let manual = self.directive.authority == ExposureAuthority::Manual;
         let waiting = !self.has_estimate && !self.area_unavailable && !manual;
         if waiting && self.cold_start_frames < self.config.cold_start_every_frame_limit {
@@ -556,6 +587,24 @@ impl ExposureRunner {
                 self.counters.statistics_stale += 1;
                 continue;
             }
+            let Some(bound) = self.bound.as_ref() else { continue };
+            let outcome =
+                self.preflash
+                    .complete(&done, &bound.passport, self.target, self.config.metering.key_offset_ev);
+            if let Some(samples) = outcome.publish {
+                // Толкаем движок только во время предвспышки: вне её замеры «без фонарика» лишь копятся
+                // в ящике, движок прочитает их сам в начале предвспышки.
+                if matches!(self.directive.flash.preflash, PreflashMetering::Active { .. }) {
+                    self.proposals.publish_preflash(samples);
+                } else {
+                    self.proposals.store_preflash_quietly(samples);
+                }
+            }
+            if !outcome.light.feeds_viewfinder_smoothing() {
+                // Кадр освещён светодиодом: замер ушёл вспышке, а видоискателю нельзя — потянул бы экспозицию к свету LED.
+                self.preflash.withheld_from_controller += 1;
+                continue;
+            }
             if self.controller.ingest(&done) == IngestOutcome::Accepted {
                 self.has_estimate = true;
             }
@@ -573,6 +622,7 @@ fn changes_decision(previous: &ExposureDirective, next: &ExposureDirective) -> b
         bias,
         applied: _,
         stream_start,
+        flash,
     } = *next;
     previous.metering != metering
         || previous.lock != lock
@@ -580,6 +630,7 @@ fn changes_decision(previous: &ExposureDirective, next: &ExposureDirective) -> b
         || previous.authority != authority
         || previous.bias != bias
         || previous.stream_start != stream_start
+        || previous.flash != flash
 }
 
 #[cfg(test)]
@@ -589,7 +640,10 @@ mod carried_tests;
 #[path = "gain_tests.rs"]
 mod gain_tests;
 #[cfg(test)]
-mod test_support;
+#[path = "preflash_tests.rs"]
+mod preflash_tests;
+#[cfg(test)]
+pub(in crate::vulkan_backend::camera) mod test_support;
 #[cfg(test)]
 #[path = "runner_tests.rs"]
 mod tests;

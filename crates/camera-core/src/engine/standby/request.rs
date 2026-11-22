@@ -11,6 +11,7 @@
 use camera_contract::auto_exposure::ExposureProduct;
 use camera_contract::capabilities::{CameraCapabilities, FocusCapability, FrameDuration};
 use camera_contract::control::{CaptureIntent, ExposureTime, Iso};
+use camera_contract::flash::FlashControl;
 use camera_contract::three_a::AeAfLock;
 
 use crate::exposure_transfer::exposure_transfer;
@@ -55,7 +56,15 @@ pub(super) fn build_standby_request(
         FocusCapability::Fixed => FocusPlan::FixedLens,
         FocusCapability::Adjustable { .. } => FocusPlan::Continuous { region: None },
     };
-    (RequestControls { exposure, focus }, source_product)
+    (
+        RequestControls {
+            exposure,
+            focus,
+            // Тёплая камера никогда не светит: светодиод общий, а её кадры не на экране (14d).
+            flash: FlashControl::Off,
+        },
+        source_product,
+    )
 }
 
 fn vendor_auto(compensation_steps: i32) -> ExposurePlan {
@@ -127,6 +136,7 @@ mod tests {
         RequestControls {
             exposure,
             focus: FocusPlan::Continuous { region: None },
+            flash: FlashControl::Off,
         }
     }
 
@@ -150,6 +160,22 @@ mod tests {
             carried.ev_above(primary)
         );
         assert_eq!(request.focus, FocusPlan::Continuous { region: None });
+    }
+
+    #[test]
+    fn standby_request_never_carries_the_primary_torch_or_single_flash() {
+        let main = main_wide_camera().capabilities;
+        let ultra = ultra_wide_camera().capabilities;
+        for led in [FlashControl::Torch, FlashControl::Single] {
+            let mut primary = controls(sensor(8, 100));
+            primary.flash = led;
+            let (request, _) = build_standby_request(&primary, &main, &ultra, frame_60());
+            assert_eq!(
+                request.flash,
+                FlashControl::Off,
+                "светодиод основной ({led:?}) не должен доехать до тёплой"
+            );
+        }
     }
 
     #[test]

@@ -19,6 +19,7 @@
   "icons": [
     { "id": "flash_on", "file": "icons/phosphor/lightning.svg", "kind": "fill" },
     { "id": "flash_off", "file": "icons/phosphor/lightning-slash.svg", "kind": "fill" },
+    { "id": "flash_auto", "file": "icons/phosphor/lightning-a.svg", "kind": "fill" },
     { "id": "flip_camera", "file": "icons/phosphor/camera-rotate.svg", "kind": "fill" },
     { "id": "menu_chevron", "file": "icons/phosphor/caret-up.svg", "kind": "fill" },
     { "id": "exposure", "file": "icons/phosphor/sun.svg", "kind": "fill" },

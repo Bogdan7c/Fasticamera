@@ -9,6 +9,7 @@ use camera_contract::availability::CameraUnavailableReason;
 use camera_contract::ids::LensRole;
 use camera_contract::stream::FrameRateMechanism;
 use camera_core::CameraEvent;
+use camera_core::flash_status::FlashStillReport;
 use camera_core::three_a_status::{BracketReport, FocusOutcome};
 use serde::Serialize;
 
@@ -85,6 +86,11 @@ pub enum EventNote {
     BracketCaptured {
         captured: bool,
         frames: usize,
+    },
+    /// Итог снимка со вспышкой (14d): снят ли и номер снимка.
+    FlashStillFinished {
+        shot: u64,
+        fired: bool,
     },
     /// Смена объектива завершена: первый кадр новой камеры пришёл (`from == to` — возврат на прежний).
     LensSwitched {
@@ -182,6 +188,10 @@ impl EventNote {
                     captured: false,
                     frames: frames.len(),
                 },
+            },
+            CameraEvent::FlashStillFinished { report } => EventNote::FlashStillFinished {
+                shot: report.shot().0,
+                fired: matches!(report, FlashStillReport::Fired { .. }),
             },
         }
     }

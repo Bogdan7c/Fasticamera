@@ -76,6 +76,20 @@ pub enum PlanRefresh {
     Changed,
 }
 
+/// Что исполнитель экспозиции знает о сцене для вспышки (14d): без вспышки, «средний серый» нашего AE.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SceneForFlash {
+    /// Экспозицию ведёт не наш AE (вендорский): свет сцены посчитать нечем.
+    NotOwnExposure,
+    /// Наш AE, но ни одного принятого замера на этом потоке ещё нет.
+    NoMeasurement,
+    /// Принятая цель нашего AE на этом потоке: произведение «выдержка × ISO» для среднего серого
+    /// при компенсации 0 EV (без EV пользователя), то есть свет сцены без вспышки.
+    Measured {
+        mid_gray_product: camera_contract::auto_exposure::ExposureProduct,
+    },
+}
+
 /// Исполнитель экспозиции.
 pub trait ExposureController: Send {
     /// Как выполнить намерение на этой камере. `Err` — честное «не умею» (полуавтомат у
@@ -102,6 +116,23 @@ pub trait ExposureController: Send {
     /// (вендорский AE предложений не принимает) — 0.
     fn foreign_camera_proposals_rejected(&self) -> u64 {
         0
+    }
+
+    /// Свет сцены для расчёта вспышки (14d). По умолчанию (вендорский AE) — [`SceneForFlash::NotOwnExposure`].
+    fn scene_for_flash(&self) -> SceneForFlash {
+        SceneForFlash::NotOwnExposure
+    }
+
+    /// Линейные замеры предвспышки новее `seen` (14d): ящик нашего AE, куда пишет рендер. Читать
+    /// их может только исполнитель, у которого ящик есть; у вендорского AE — всегда `None`.
+    fn preflash_samples_newer_than(
+        &self,
+        _seen: Option<camera_contract::three_a::DirectiveGeneration>,
+    ) -> Option<(
+        camera_contract::three_a::DirectiveGeneration,
+        camera_contract::flash::PreflashSamples,
+    )> {
+        None
     }
 
     /// Поток или камера сменились: забыть всё, что относится к прошлому потоку.

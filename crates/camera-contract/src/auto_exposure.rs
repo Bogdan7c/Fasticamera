@@ -26,6 +26,7 @@ use thiserror::Error;
 pub use crate::auto_exposure_carry::{CameraTag, CarriedSceneExposure};
 use crate::capture_result::SensorTimestamp;
 use crate::control::{ExposureBias, ExposureTime, Iso};
+use crate::flash::{FlashDirective, PreflashSamples};
 use crate::three_a::{AeAfLock, DirectiveGeneration, DirectiveSlot, PointOfInterest, PointRequestId, ThreeAProfile};
 
 /// Почему произведение экспозиции отвергнуто.
@@ -221,6 +222,8 @@ pub struct ExposureDirective {
     /// Ожидаемая экспозиция нового потока до его первого собственного замера (решения 118, 126).
     /// Движок публикует её ДО смены потока; `None` — переносить нечего (первый поток сессии).
     pub stream_start: Option<CarriedSceneExposure>,
+    /// Вспышка (14d): идёт ли предвспышка и какой план выбран для кадра со вспышкой.
+    pub flash: FlashDirective,
 }
 
 impl ExposureDirective {
@@ -233,6 +236,7 @@ impl ExposureDirective {
         bias: ExposureBias::NONE,
         applied: None,
         stream_start: None,
+        flash: FlashDirective::INACTIVE,
     };
 }
 
@@ -348,6 +352,9 @@ impl LateBoundRefreshSignal {
 #[derive(Debug, Clone, Default)]
 pub struct ExposureProposalChannel {
     slot: DirectiveSlot<ExposureProposal>,
+    /// Линейные замеры предвспышки (14d). Отдельный ящик: предложение сглажено и защищает света,
+    /// а расчёт вспышки складывает свет — ему нужны линейные замеры конкретных кадров.
+    preflash: DirectiveSlot<PreflashSamples>,
     signal: LateBoundRefreshSignal,
 }
 
@@ -370,6 +377,27 @@ impl ExposureProposalChannel {
     /// Предложение новее `seen`.
     pub fn newer_than(&self, seen: Option<DirectiveGeneration>) -> Option<(DirectiveGeneration, ExposureProposal)> {
         self.slot.newer_than(seen)
+    }
+
+    /// Положить последние замеры предвспышки и толкнуть движок.
+    pub fn publish_preflash(&self, samples: PreflashSamples) -> (DirectiveGeneration, SignalDelivery) {
+        let generation = self.preflash.publish(samples);
+        (generation, self.signal.signal())
+    }
+
+    /// Положить последние замеры предвспышки БЕЗ толчка движку. Пока предвспышки нет, движку замеры
+    /// не нужны сразу: он прочитает ящик сам, когда начнёт предвспышку. Толчок на каждом измеренном
+    /// кадре будил бы поток камеры ≈ 15 раз в секунду впустую (14d).
+    pub fn store_preflash_quietly(&self, samples: PreflashSamples) -> DirectiveGeneration {
+        self.preflash.publish(samples)
+    }
+
+    /// Замеры предвспышки новее `seen`.
+    pub fn preflash_newer_than(
+        &self,
+        seen: Option<DirectiveGeneration>,
+    ) -> Option<(DirectiveGeneration, PreflashSamples)> {
+        self.preflash.newer_than(seen)
     }
 
     /// Толчок для привязки получателя композицией.

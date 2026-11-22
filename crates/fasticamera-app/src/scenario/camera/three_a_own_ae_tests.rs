@@ -88,6 +88,7 @@ fn watch_collects_markers_limit_shortfall_and_counts_vendor_ae_results_of_every_
             repeating: 3,
             focus_trigger: 1,
             burst: 1,
+            flash_still: 0,
             unknown: 1
         }
     );

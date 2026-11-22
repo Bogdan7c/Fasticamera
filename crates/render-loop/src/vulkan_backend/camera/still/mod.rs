@@ -16,6 +16,8 @@
 //! * [`choice`], [`facts`], [`rotation`] — перевод выбора кольца в словарь снимка, факты кадра (кадрирование из
 //!   плана, нейтраль DNG, поворот);
 //! * [`gpu`] — узкая граница GPU; [`vulkan_gpu`] — настоящая реализация, поддельная — в тестах;
+//! * `flash_frame`, `flash_lit`, `flash_facts_store` — снимок со вспышкой (14d): ожидание кадра по метке запроса,
+//!   параметры кадра, проверка света по пикселям, факты о свете от видоискателя;
 //! * [`entry`], [`engine`], [`engine_steps`] — очередь, итоги («ровно один на снимок»), шаги на кадр;
 //! * `engine_surface` — жизнь без surface: что бросается при отсоединении, что доводится, когда отпускается GPU;
 //! * [`diagnostics`] — счётчики.
@@ -38,6 +40,10 @@ mod engine_surface;
 pub mod entry;
 pub mod facts;
 pub mod feed;
+mod flash_facts_store;
+mod flash_frame;
+mod flash_lit;
+mod frame_params;
 pub mod gpu;
 mod gpu_loss;
 pub mod params_history;
@@ -46,6 +52,8 @@ pub mod rotation;
 mod step_timing;
 pub mod vulkan_gpu;
 
+#[cfg(test)]
+mod engine_flash_tests;
 #[cfg(test)]
 mod engine_loss_tests;
 #[cfg(test)]

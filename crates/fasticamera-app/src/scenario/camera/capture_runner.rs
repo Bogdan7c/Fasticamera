@@ -8,17 +8,19 @@
 
 use std::time::{Duration, Instant};
 
+use camera_core::flash_status::FlashStillReport;
 use camera_screen::ScreenAction;
-use camera_screen::settings::RawCapture;
+use camera_screen::settings::{FlashMode, RawCapture};
 use camera_screen::shutter::ShotRequest;
 use camera_screen::tools::ToolId;
 use shell_contract::clock::MonotonicNanos;
 
 use super::capture_burst::{BurstBaselines, BurstProgress, BurstRecord, BurstState};
-use super::capture_observation::{CaptureObservation, PhaseBook, SubmitCounts, shot_record};
+use super::capture_observation::{CaptureObservation, PhaseBook, ShotExpectation, SubmitCounts, shot_record};
 use super::capture_plan::{PlannedStep, StepKind};
 use super::capture_report::{ShotOutcome, ShotRecord, StepRecord};
 use crate::capture_scenario_config::CaptureScenarioConfig;
+use crate::still_capture_service::FlashRouteEntry;
 use crate::still_choice_log::ChoiceEntry;
 use crate::still_phase_log::PhaseEntry;
 
@@ -47,17 +49,28 @@ struct SingleShot {
     actions_rejected_before: u64,
 }
 
+/// Нажатия значков, которыми шаг приводит настройки экрана к нужным.
+///
+/// RAW переключается одним нажатием. Вспышка ходит по кругу `Off → Auto → On → Off`, поэтому до цели может быть
+/// 1–2 нажатия: следующее нажатие делается только после того, как предыдущее ПРИМЕНИЛОСЬ (настройка сменилась) —
+/// иначе очередь входа экрана перекрутила бы круг.
+struct SettingsTaps {
+    raw_target: RawCapture,
+    flash_target: FlashMode,
+    /// Начало ожидания последнего нажатия (по нему срок `raw_toggle_timeout_ms`).
+    started: Instant,
+    raw_tapped: bool,
+    /// Режим вспышки, при котором значок нажали в последний раз; `None` — ещё не нажимали.
+    flash_tapped_at: Option<FlashMode>,
+}
+
 enum Stage {
     /// Пауза между шагами (и перед первым).
     Pause {
         until: Instant,
     },
-    /// Приводим настройку RAW экрана к нужной шагу.
-    EnsureRaw {
-        target: RawCapture,
-        started: Instant,
-        tapped: bool,
-    },
+    /// Приводим настройки RAW и вспышки экрана к нужным шагу.
+    EnsureSettings(SettingsTaps),
     AwaitShot(SingleShot),
     Burst(Box<BurstState>),
     Finished,
@@ -96,6 +109,11 @@ impl CaptureRunner {
     /// Новые записи журнала итогов службы (звать перед тиком).
     pub fn absorb_phases(&mut self, entries: Vec<PhaseEntry>, lost: u64) {
         self.book.extend(entries, lost);
+    }
+
+    /// Маршруты сервиса и итоги камеры по вспышке (звать перед тиком; повтор безвреден).
+    pub fn absorb_flash(&mut self, routes: Vec<FlashRouteEntry>, reports: Vec<FlashStillReport>) {
+        self.book.absorb_flash(routes, reports);
     }
 
     /// Выборы кадра из журнала рендера (звать перед тиком; повтор безвреден).
@@ -183,34 +201,44 @@ impl CaptureRunner {
                     self.stage = Stage::Finished;
                     return RunnerState::AllDone;
                 };
-                self.stage = Stage::EnsureRaw {
-                    target: step.required_raw(),
+                self.stage = Stage::EnsureSettings(SettingsTaps {
+                    raw_target: step.required_raw(),
+                    flash_target: step.required_flash(),
                     started: obs.now,
-                    tapped: false,
-                };
+                    raw_tapped: false,
+                    flash_tapped_at: None,
+                });
                 RunnerState::Running
             }
-            Stage::EnsureRaw {
-                target,
-                started,
-                tapped,
-            } => {
-                if obs.raw_setting == *target {
+            Stage::EnsureSettings(taps) => {
+                if obs.raw_setting == taps.raw_target && obs.flash_setting == taps.flash_target {
                     return self.start_step(obs, injections);
                 }
-                if !*tapped {
-                    *tapped = true;
-                    *started = obs.now;
+                // Сначала RAW (одно нажатие), потом вспышка (до двух нажатий по кругу).
+                if obs.raw_setting != taps.raw_target && !taps.raw_tapped {
+                    taps.raw_tapped = true;
+                    taps.started = obs.now;
                     injections.push(ScreenAction::StripToolTapped(ToolId::Raw));
                     return RunnerState::Running;
                 }
-                let waited = obs.now.saturating_duration_since(*started);
+                if obs.raw_setting == taps.raw_target
+                    && obs.flash_setting != taps.flash_target
+                    && taps.flash_tapped_at != Some(obs.flash_setting)
+                {
+                    taps.flash_tapped_at = Some(obs.flash_setting);
+                    taps.started = obs.now;
+                    injections.push(ScreenAction::StripToolTapped(ToolId::Flash));
+                    return RunnerState::Running;
+                }
+                let waited = obs.now.saturating_duration_since(taps.started);
                 if waited >= Duration::from_millis(self.config.raw_toggle_timeout_ms) {
                     let reason = format!(
-                        "значок RAW не переключил настройку экрана за {} мс: стоит {:?}, нужно {:?}",
+                        "значки не привели настройки экрана к нужным за {} мс: RAW стоит {:?}, нужно {:?}; вспышка стоит {:?}, нужна {:?}",
                         waited.as_millis(),
                         obs.raw_setting,
-                        target
+                        taps.raw_target,
+                        obs.flash_setting,
+                        taps.flash_target
                     );
                     return self.fail(reason);
                 }
@@ -291,7 +319,10 @@ impl CaptureRunner {
         let record = shot_record(
             number,
             step.name,
-            step.required_raw() == RawCapture::On,
+            ShotExpectation {
+                raw: step.required_raw() == RawCapture::On,
+                flash: step.required_flash(),
+            },
             request,
             pressed_at,
             &self.book,

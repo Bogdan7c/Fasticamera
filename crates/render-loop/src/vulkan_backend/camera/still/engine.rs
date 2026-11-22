@@ -30,12 +30,14 @@ use super::diagnostics::StillDiagnostics;
 use super::engine_surface::SurfaceLink;
 use super::entry::{EstimateBasis, Stage, StillEntry, StillOutcome};
 use super::feed::StillFeed;
+use super::flash_facts_store::FlashFactsStore;
 use super::gpu::StillGpu;
 use super::params_history::FrameParamsHistory;
 use super::present_log::PresentLog;
 use crate::backend::PastPresentation;
 use crate::config::{StillDevelopConfig, ViewfinderToneConfig};
 use crate::still::{StillBegin, StillCommand, StillCommandOutcome};
+use crate::vulkan_backend::camera::exposure::ResidualGainLimits;
 
 /// Часы движка: отдельный шов, чтобы сроки проверялись тестами без ожидания.
 pub trait StillClock: Send {
@@ -68,6 +70,10 @@ pub struct StillEngine<G: StillGpu> {
     pub(super) queue: Vec<StillEntry<G>>,
     pub(super) present_log: PresentLog,
     pub(super) params_history: FrameParamsHistory,
+    /// Планы, белая светодиода и свет сцены для кадра со вспышкой (14d).
+    pub(super) flash_facts: FlashFactsStore,
+    /// Шаг и предел остаточной подтяжки видоискателя: кадр со вспышкой округляет подтяжку так же.
+    pub(super) residual_gain: ResidualGainLimits,
     /// Поток последнего обработанного кадра: под него заранее создаётся GPU.
     pub(super) current_stream: Option<Arc<StreamPassport>>,
     /// Поток, для которого создание GPU заранее уже не удалось (повторять до смены потока незачем).
@@ -82,6 +88,7 @@ impl<G: StillGpu> StillEngine<G> {
     pub fn new(
         config: StillDevelopConfig,
         tone: ViewfinderToneConfig,
+        residual_gain: ResidualGainLimits,
         ring: SnapshotRingFrames,
         maker: GpuMaker<G>,
         clock: Box<dyn StillClock>,
@@ -98,6 +105,8 @@ impl<G: StillGpu> StillEngine<G> {
             queue: Vec::new(),
             present_log: PresentLog::new(present_capacity),
             params_history: FrameParamsHistory::new(params_capacity),
+            flash_facts: FlashFactsStore::default(),
+            residual_gain,
             current_stream: None,
             prewarm_failed_for: None,
             // До первой ленты видоискателя surface у движка не было: так честнее, чем «присоединена».
@@ -122,6 +131,12 @@ impl<G: StillGpu> StillEngine<G> {
                 // больше не проснётся ради пустой очереди, поэтому GPU отпускается здесь же (`engine_surface`).
                 self.release_gpu_if_drained_without_surface();
                 outcome
+            }
+            StillCommand::FlashFailed { id, failure } => {
+                self.apply_flash_failed(id, failure);
+                // Снимок мог остаться последним в очереди без surface: GPU отпускается здесь же.
+                self.release_gpu_if_drained_without_surface();
+                StillCommandOutcome::Accepted
             }
         }
     }
@@ -152,8 +167,22 @@ impl<G: StillGpu> StillEngine<G> {
             Some(super::feed::ShownContent::Live(sensor_timestamp)) => EstimateBasis::Live(sensor_timestamp),
             Some(super::feed::ShownContent::NotLive) | None => EstimateBasis::NoLiveFrame,
         };
-        let deadline = self.clock.now() + std::time::Duration::from_millis(u64::from(self.config.presentation_wait_ms));
-        let entry = StillEntry::new(plan, events, Stage::Choosing { deadline, estimate });
+        // Снимок со вспышкой ждёт кадр запроса, а не доказательства показа (`flash_frame`).
+        let stage = match Self::flash_shot_of(plan.selection) {
+            Some(shot) => {
+                self.counters.flash.begins += 1;
+                Stage::AwaitingFlashFrame {
+                    shot,
+                    deadline: self.flash_wait_deadline(),
+                }
+            }
+            None => {
+                let deadline =
+                    self.clock.now() + std::time::Duration::from_millis(u64::from(self.config.presentation_wait_ms));
+                Stage::Choosing { deadline, estimate }
+            }
+        };
+        let entry = StillEntry::new(plan, events, stage);
         if self.ring.capacity() == 0 {
             self.counters.picks.no_frame_ring_disabled += 1;
             return self.finish(entry, StillOutcome::NotSecured(NoFrameReason::RingDisabled));
@@ -205,6 +234,8 @@ impl<G: StillGpu> StillEngine<G> {
         for record in feed.presents {
             self.present_log.record_shown(record);
         }
+        self.flash_facts
+            .record(feed.flash_plans, feed.torch_whites, feed.ambient_levels);
         let got_params = !feed.params.is_empty();
         for (sensor_timestamp, params) in feed.params {
             self.current_stream = Some(Arc::clone(&params.stream));

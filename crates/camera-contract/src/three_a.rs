@@ -12,6 +12,7 @@ use thiserror::Error;
 
 use crate::capabilities::Rational;
 use crate::control::{ExposureTime, Iso, WhiteBalanceSetting};
+use crate::flash::{FlashResult, FlashShotId};
 
 /// Профиль автоматики (V6): скорость адаптации AE/AWB и допустимость скачков.
 /// В 08 реализуется `Photo`, но каждый контракт принимает профиль с первого дня.
@@ -404,6 +405,9 @@ pub enum RequestOrigin {
     FocusTrigger { request: PointRequestId },
     /// Кадр `index` серии `burst`.
     Burst { burst: BurstId, index: u32 },
+    /// Разовый кадр со вспышкой снимка `shot` (14d). Видоискатель его не показывает,
+    /// кольцо снимков отдаёт его только по этой метке.
+    FlashStill { shot: FlashShotId },
     /// HAL отдал результат, но запрос не опознан (контекст не прочитан) — со счётчиком.
     Unknown,
 }
@@ -418,6 +422,8 @@ pub struct ThreeAResultState {
     /// Фактическая дистанция фокуса объектива на этом кадре, диоптрии.
     pub focus_distance_diopters: Option<f32>,
     pub scene_flicker: Option<SceneFlicker>,
+    /// Что HAL сообщил о вспышке на этом кадре (14d); по нему кадр опознаётся как освещённый.
+    pub flash: FlashResult,
     pub origin: RequestOrigin,
 }
 
@@ -430,6 +436,7 @@ impl ThreeAResultState {
             lens_state: None,
             focus_distance_diopters: None,
             scene_flicker: None,
+            flash: FlashResult::UNREPORTED,
             origin,
         }
     }

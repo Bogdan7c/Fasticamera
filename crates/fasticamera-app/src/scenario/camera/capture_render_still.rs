@@ -4,7 +4,7 @@
 //! выбор кадра по видам и причинам замены, потеря GPU снимков, отказы до захвата, итоги. Это независимая от журнала
 //! выборов сверка: журнал говорит «что выбрано для каждого снимка», счётчики рендера — «что рендер учёл».
 
-use render_loop::still_diagnostics::{StillDiagnostics, StillStepCpu};
+use render_loop::still_diagnostics::{FlashStillCounters, StillDiagnostics, StillStepCpu};
 use serde::Serialize;
 
 /// Выбор кадра: приращения по видам.
@@ -19,6 +19,47 @@ pub struct PickDelta {
     pub substituted_not_regular: u64,
     /// Все виды «кадра нет» вместе.
     pub no_frame: u64,
+}
+
+/// Снимки со вспышкой (14d): что рендер учёл за прогон. Доказательство «кадр освещён» на телефоне —
+/// `lit_check_passed`: проверка по пикселям RAW (HAL может сообщить `FIRED` без света).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub struct FlashDelta {
+    pub begins: u64,
+    pub frames_found: u64,
+    pub never_arrived: u64,
+    pub not_captured_by_camera: u64,
+    pub white_from_torch_frame: u64,
+    pub white_fallback_no_torch_estimate: u64,
+    pub lit_check_passed: u64,
+    pub not_lit: u64,
+    /// Проверка не решаема (мала предсказанная доля вспышки, нет уровня сцены, нет отсчётов) — все причины.
+    pub lit_check_skipped: u64,
+}
+
+impl FlashDelta {
+    fn between(before: &FlashStillCounters, after: &FlashStillCounters) -> Self {
+        let sub = |after: u64, before: u64| after.saturating_sub(before);
+        let skipped = |c: &FlashStillCounters| {
+            c.lit_check_skipped_low_predicted_share
+                .saturating_add(c.lit_check_skipped_no_ambient_level)
+                .saturating_add(c.lit_check_skipped_samples_unavailable)
+        };
+        Self {
+            begins: sub(after.begins, before.begins),
+            frames_found: sub(after.frames_found, before.frames_found),
+            never_arrived: sub(after.never_arrived, before.never_arrived),
+            not_captured_by_camera: sub(after.not_captured_by_camera, before.not_captured_by_camera),
+            white_from_torch_frame: sub(after.white_from_torch_frame, before.white_from_torch_frame),
+            white_fallback_no_torch_estimate: sub(
+                after.white_fallback_no_torch_estimate,
+                before.white_fallback_no_torch_estimate,
+            ),
+            lit_check_passed: sub(after.lit_check_passed, before.lit_check_passed),
+            not_lit: sub(after.not_lit, before.not_lit),
+            lit_check_skipped: sub(skipped(after), skipped(before)),
+        }
+    }
 }
 
 /// Приращение диагностики снимков рендера.
@@ -42,6 +83,8 @@ pub struct StillDiagnosticsDelta {
     /// не вычесть). Сценарий идёт в свежем процессе, поэтому это и есть цена снимков прогона: вход 14c
     /// для вопроса «что держит поток рендера, пока видоискатель теряет кадры».
     pub step_cpu: StillStepCpu,
+    /// Снимки со вспышкой (14d).
+    pub flash: FlashDelta,
 }
 
 impl StillDiagnosticsDelta {
@@ -115,6 +158,7 @@ impl StillDiagnosticsDelta {
             exact_press_after_shown_count: shown_count,
             exact_press_after_shown_mean_ms: (shown_count > 0).then(|| shown_total_ms / shown_count as f64),
             step_cpu: after.step_cpu,
+            flash: FlashDelta::between(&before.flash, &after.flash),
         }
     }
 }

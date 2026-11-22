@@ -123,29 +123,36 @@ fn submenu_back_returns_to_the_menu_without_changing_settings() {
 }
 
 #[test]
-fn automatic_flash_is_never_selectable() {
+fn automatic_flash_is_selectable_from_the_card() {
     let mut screen = Screen::ready();
     screen.step(ScreenAction::ControlsMenuOpenRequested);
     screen.step(ScreenAction::ControlsItemSelected(ToolId::Flash));
-    let before = screen.state.clone();
 
     let picked = screen.step(ScreenAction::SubmenuOptionSelected(ToolOption::Flash(FlashMode::Auto)));
 
-    assert_eq!(picked.outcome, ActionOutcome::Rejected(Rejection::UnsupportedOption));
-    assert_eq!(screen.state.settings().flash, FlashMode::Off);
-    assert_eq!(screen.state.panel(), before.panel(), "подменю остаётся открытым");
-    assert_eq!(screen.state.rejections().get(Rejection::UnsupportedOption), 1);
+    assert_eq!(picked.outcome, ActionOutcome::Applied);
+    assert_eq!(screen.state.settings().flash, FlashMode::Auto);
+    assert_eq!(screen.state.rejections().get(Rejection::UnsupportedOption), 0);
 }
 
 #[test]
-fn flash_icon_toggles_off_on_off_and_never_lands_on_auto() {
+fn flash_icon_cycles_off_auto_on_off() {
     let mut screen = Screen::ready();
-    let mut seen = Vec::new();
+    let mut seen = vec![screen.state.settings().flash];
     for _ in 0..4 {
         screen.step(ScreenAction::StripToolTapped(ToolId::Flash));
         seen.push(screen.state.settings().flash);
     }
-    assert_eq!(seen, [FlashMode::On, FlashMode::Off, FlashMode::On, FlashMode::Off]);
+    assert_eq!(
+        seen,
+        [
+            FlashMode::Off,
+            FlashMode::Auto,
+            FlashMode::On,
+            FlashMode::Off,
+            FlashMode::Auto
+        ]
+    );
 }
 
 #[test]

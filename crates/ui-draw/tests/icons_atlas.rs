@@ -44,7 +44,7 @@ impl IconTexels {
 
 #[test]
 fn every_icon_has_a_non_empty_region_with_both_inside_and_outside_texels() {
-    assert_eq!(IconId::ALL.len(), 13);
+    assert_eq!(IconId::ALL.len(), 14);
     for id in IconId::ALL {
         let glyph = icon(id);
         assert!(
@@ -125,6 +125,16 @@ fn symmetric_chevron_is_mirrored_and_flash_icons_differ() {
     assert!(
         differing > 200,
         "вспышка включена и выключена выглядят одинаково: различий {differing}"
+    );
+    // Автовспышка («молния с A») обязана отличаться от обычной молнии: иначе режим не читается.
+    let auto = IconTexels::of(IconId::FlashAuto);
+    let auto_differing = (0..on.height)
+        .flat_map(|row| (0..on.width).map(move |column| (column, row)))
+        .filter(|&(column, row)| on.at(column, row) != auto.at(column, row))
+        .count();
+    assert!(
+        auto_differing > 200,
+        "автовспышка и вспышка включена выглядят одинаково: различий {auto_differing}"
     );
 }
 

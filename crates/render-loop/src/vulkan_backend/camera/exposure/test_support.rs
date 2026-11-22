@@ -24,18 +24,18 @@ use isp_model::statistics::{AwbTile, TileGrid, quantize_sample};
 use super::*;
 
 pub(super) const CELLS: u32 = 4096;
-pub(super) const FRAME_NANOS: i64 = 16_666_667;
+pub(in crate::vulkan_backend::camera) const FRAME_NANOS: i64 = 16_666_667;
 /// Цель тона в тестах: то же число, что у боевого рендера.
-pub(super) const TARGET_GRAY: f32 = 0.075;
+pub(in crate::vulkan_backend::camera) const TARGET_GRAY: f32 = 0.075;
 /// Яркость, которую точно представляет 12-битная статистика: 77/4095.
 pub(super) const DARK_VALUE: f32 = 77.0 / 4095.0;
 /// 2048/4095 ≈ 0,5.
 pub(super) const BRIGHT_VALUE: f32 = 2048.0 / 4095.0;
 /// Веса яркости суммой 1: для серого `v` яркость равна `v`.
-pub(super) const LUMINANCE: LuminanceWeights = LuminanceWeights::new(0.25, 0.5, 0.25);
-pub(super) const BUFFER: PixelSize = PixelSize::new(64, 48);
+pub(in crate::vulkan_backend::camera) const LUMINANCE: LuminanceWeights = LuminanceWeights::new(0.25, 0.5, 0.25);
+pub(in crate::vulkan_backend::camera) const BUFFER: PixelSize = PixelSize::new(64, 48);
 
-pub(super) fn stream_of(readout: ReadoutAspect, valid_height: u32) -> Arc<StreamPassport> {
+pub(in crate::vulkan_backend::camera) fn stream_of(readout: ReadoutAspect, valid_height: u32) -> Arc<StreamPassport> {
     Arc::new(StreamPassport {
         camera: camera_id("2"),
         raw_format: RawFormat::Raw16,
@@ -65,31 +65,35 @@ pub(super) fn stream_of(readout: ReadoutAspect, valid_height: u32) -> Arc<Stream
 }
 
 /// Новый поток 4:3 (каждый вызов — новый `Arc`, то есть новая сессия камеры).
-pub(super) fn new_stream() -> Arc<StreamPassport> {
+pub(in crate::vulkan_backend::camera) fn new_stream() -> Arc<StreamPassport> {
     stream_of(ReadoutAspect::FourByThree, BUFFER.height)
 }
 
 /// Выдержка и ISO результата кадра.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct Exposure {
-    pub(super) time: Duration,
-    pub(super) iso: u32,
+pub(in crate::vulkan_backend::camera) struct Exposure {
+    pub(in crate::vulkan_backend::camera) time: Duration,
+    pub(in crate::vulkan_backend::camera) iso: u32,
 }
 
 /// 10 мс × ISO 100 = 1 с·ISO: удобная единица.
-pub(super) const UNIT_EXPOSURE: Exposure = Exposure {
+pub(in crate::vulkan_backend::camera) const UNIT_EXPOSURE: Exposure = Exposure {
     time: Duration::from_millis(10),
     iso: 100,
 };
 
-pub(super) fn exposure_product(seconds_iso: f64) -> Exposure {
+pub(in crate::vulkan_backend::camera) fn exposure_product(seconds_iso: f64) -> Exposure {
     Exposure {
         time: Duration::from_secs_f64(seconds_iso / 100.0),
         iso: 100,
     }
 }
 
-pub(super) fn frame_at(stream: &Arc<StreamPassport>, index: i64, exposure: Option<Exposure>) -> RawFramePassport {
+pub(in crate::vulkan_backend::camera) fn frame_at(
+    stream: &Arc<StreamPassport>,
+    index: i64,
+    exposure: Option<Exposure>,
+) -> RawFramePassport {
     frame_with_keys(
         stream,
         index,
@@ -98,7 +102,7 @@ pub(super) fn frame_at(stream: &Arc<StreamPassport>, index: i64, exposure: Optio
     )
 }
 
-pub(super) fn frame_with_keys(
+pub(in crate::vulkan_backend::camera) fn frame_with_keys(
     stream: &Arc<StreamPassport>,
     index: i64,
     exposure_time: Option<Duration>,
@@ -124,7 +128,23 @@ pub(super) fn frame_with_keys(
     }
 }
 
-pub(super) fn missing_frame(stream: &Arc<StreamPassport>, index: i64) -> RawFramePassport {
+/// Кадр с заданным происхождением запроса и тем, что HAL сообщил о вспышке.
+pub(in crate::vulkan_backend::camera) fn flash_frame_at(
+    stream: &Arc<StreamPassport>,
+    index: i64,
+    exposure: Option<Exposure>,
+    origin: RequestOrigin,
+    flash: camera_contract::flash::FlashResult,
+) -> RawFramePassport {
+    let mut passport = frame_at(stream, index, exposure);
+    if let FrameCaptureMeta::Paired(details) = &mut passport.capture {
+        details.result.three_a.origin = origin;
+        details.result.three_a.flash = flash;
+    }
+    passport
+}
+
+pub(in crate::vulkan_backend::camera) fn missing_frame(stream: &Arc<StreamPassport>, index: i64) -> RawFramePassport {
     RawFramePassport {
         capture: FrameCaptureMeta::Missing {
             reason: MissingCaptureMeta::PairingTimedOut,
@@ -146,6 +166,7 @@ pub(super) fn facts_of(passport: &RawFramePassport) -> ExposureFrameFacts {
         product: frame_exposure_product(passport),
         luminance: LUMINANCE,
         crop: passport.stream.valid_area,
+        light: frame_light(passport),
     }
 }
 

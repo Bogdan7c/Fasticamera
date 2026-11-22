@@ -468,6 +468,38 @@ impl Rig {
         self.offer_capture_metadata(epoch, sensor_ts, sequence);
     }
 
+    /// Предлагает кадр разового запроса со вспышкой снимка `shot` (14d): выдержка × ISO — 10 мс × 100, HAL
+    /// сообщил `FIRED`. Видоискатель такой кадр не показывает, кольцо снимков отдаёт его по метке запроса.
+    pub fn offer_flash_still(&mut self, epoch: StreamEpoch, cell: CellValues, shot: u64) {
+        let (sensor_ts, sequence) = self.offer_frame_only(epoch, cell);
+        self.stream.producer().offer_capture_result(
+            epoch,
+            FrameCaptureDetails {
+                result: CaptureResultMeta {
+                    frame_number: FrameNumber(sequence),
+                    sensor_timestamp: Some(SensorTimestamp::from_nanos(sensor_ts)),
+                    exposure_time: Some(std::time::Duration::from_millis(10)),
+                    sensitivity_iso: Some(100),
+                    reported_frame_duration: None,
+                    rolling_shutter_skew: None,
+                    three_a: camera_contract::three_a::ThreeAResultState {
+                        flash: camera_contract::flash::FlashResult {
+                            mode: Some(camera_contract::flash::FlashModeEcho::Single),
+                            state: Some(camera_contract::flash::FlashState::Fired),
+                        },
+                        ..camera_contract::three_a::ThreeAResultState::unreported(
+                            camera_contract::three_a::RequestOrigin::FlashStill {
+                                shot: camera_contract::flash::FlashShotId(shot),
+                            },
+                        )
+                    },
+                },
+                color: capture_hints(),
+            },
+            Instant::now(),
+        );
+    }
+
     /// Предлагает кадр БЕЗ метаданных результата съёмки: кадр приходит, но параметров ISP для него нет
     /// (`NoMetadataYet`) и показать его нельзя. Так в тесте поток «стримит, но не показывается».
     pub fn offer_without_metadata(&mut self, epoch: StreamEpoch, cell: CellValues) {
