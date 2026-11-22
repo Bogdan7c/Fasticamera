@@ -1,5 +1,6 @@
 //! Снимок состояния потока рендера для сценариев и smoke-проверок.
 
+use crate::still::StillCommandLog;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -145,6 +146,8 @@ pub struct RenderStatus {
     pub present_target_commands: PresentTargetCommandLog,
     /// Команды видоискателю и их итоги (сессия 07).
     pub viewfinder_commands: ViewfinderCommandLog,
+    /// Команды снимка (сессия 14): принятые, неподдержанные, отпущенные цели.
+    pub still_commands: StillCommandLog,
     /// Подсказки производительности системе (ADPF): режим, сессия, отчёты, отказы.
     pub adpf: AdpfDiagnostics,
     /// Учёт команд ADPF.
@@ -180,6 +183,7 @@ impl RenderStatus {
             present_target: PresentTargetDiagnostics::default(),
             present_target_commands: PresentTargetCommandLog::default(),
             viewfinder_commands: ViewfinderCommandLog::default(),
+            still_commands: StillCommandLog::default(),
             adpf: AdpfDiagnostics::default(),
             adpf_commands: AdpfCommandLog::default(),
         }

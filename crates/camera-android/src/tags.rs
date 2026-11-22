@@ -119,6 +119,9 @@ ndk_tags! {
     DYNAMIC_WHITE_LEVEL = 0x000e_001d => ACAMERA_SENSOR_DYNAMIC_WHITE_LEVEL;
     COLOR_CORRECTION_GAINS = 0x0000_0002 => ACAMERA_COLOR_CORRECTION_GAINS;
     NEUTRAL_COLOR_POINT = 0x000e_0012 => ACAMERA_SENSOR_NEUTRAL_COLOR_POINT;
+    /// `double[2 × число каналов CFA]`: пары (S, O) модели шума по каналам (`NdkCameraMetadataTags.h`:
+    /// `ACAMERA_SENSOR_START + 19`).
+    NOISE_PROFILE = 0x000e_0013 => ACAMERA_SENSOR_NOISE_PROFILE;
 
     // --- Запрос (capture request); экспозиция и длительность кадра читаются и в результате ---
     AE_TARGET_FPS_RANGE = 0x0001_0005 => ACAMERA_CONTROL_AE_TARGET_FPS_RANGE;

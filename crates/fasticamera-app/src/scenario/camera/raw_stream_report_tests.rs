@@ -76,6 +76,7 @@ fn healthy(kind: RawStreamRunKind) -> RawStreamObservation {
             viewfinder: 3,
             pending_pairs: 2,
             snapshot_ring: 0,
+            snapshot_capture_holds: 0,
             lossless: 0,
             slack: 1,
         },

@@ -34,6 +34,8 @@ pub enum PlatformCall {
     SetKeepScreenOn(ScreenWake),
     ShowOperatorPrompt(OperatorPrompt),
     ClearOperatorPrompt,
+    /// Звук затвора снимка (`ShellPlatform.playShutterSound`).
+    PlayShutterSound,
 }
 
 impl PlatformCall {
@@ -45,6 +47,7 @@ impl PlatformCall {
             PlatformCall::SetKeepScreenOn(_) => PlatformCommand::KeepScreenOn,
             PlatformCall::ShowOperatorPrompt(_) => PlatformCommand::ShowOperatorPrompt,
             PlatformCall::ClearOperatorPrompt => PlatformCommand::ClearOperatorPrompt,
+            PlatformCall::PlayShutterSound => PlatformCommand::PlayShutterSound,
         }
     }
 }
@@ -137,6 +140,9 @@ fn invoke(env: &mut Env<'_>, platform: &JObject<'_>, call: &PlatformCall) -> jni
         PlatformCall::ShowOperatorPrompt(prompt) => show_operator_prompt(env, platform, prompt)?,
         PlatformCall::ClearOperatorPrompt => {
             env.call_method(platform, jni_str!("clearOperatorPrompt"), jni_sig!("()V"), &[])?;
+        }
+        PlatformCall::PlayShutterSound => {
+            env.call_method(platform, jni_str!("playShutterSound"), jni_sig!("()V"), &[])?;
         }
     }
     Ok(())

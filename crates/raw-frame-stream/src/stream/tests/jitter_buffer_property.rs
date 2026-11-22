@@ -7,8 +7,7 @@ use std::collections::VecDeque;
 use camera_contract::frame_passport::FrameSequence;
 
 use super::jitter_buffer::TestRandom;
-use super::support::Rig;
-use crate::config::RawFrameStreamConfig;
+use super::support::{Rig, jitter_buffer_config};
 use crate::lease::RawFrameLease;
 use crate::stream::ViewfinderPoll;
 use crate::viewfinder_pacing::ViewfinderPacing;
@@ -39,7 +38,7 @@ fn assert_viewfinder_balance(rig: &Rig, step: usize) {
 
 #[test]
 fn randomized_stream_keeps_exact_accounting_and_returns_every_buffer_once() {
-    let mut rig = Rig::new(RawFrameStreamConfig::default());
+    let mut rig = Rig::new(jitter_buffer_config());
     let mut random = TestRandom(0xF00D_2000);
     let mut next_timestamp = 0_i64;
     let mut delayed_results: VecDeque<i64> = VecDeque::new();

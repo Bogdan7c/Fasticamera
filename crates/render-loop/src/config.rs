@@ -13,6 +13,7 @@ mod adpf;
 mod auto_exposure;
 mod continuity;
 mod present_target;
+mod still;
 mod tone;
 mod ui_overlay;
 mod viewfinder;
@@ -22,6 +23,7 @@ pub use adpf::{AdpfConfig, AdpfConfigError, AdpfMode, MAX_ADPF_GPU_WAIT_FRAMES, 
 
 pub use auto_exposure::{AutoExposureConfig, AutoExposureConfigError};
 pub use continuity::{ContinuityConfig, ContinuityConfigError, RevealExposureCheck};
+pub use still::{StillConfigError, StillDevelopConfig};
 pub use tone::{ToneConfigError, ViewfinderToneConfig};
 pub use ui_overlay::{UiOverlayConfig, UiOverlayConfigError};
 pub use viewfinder::{
@@ -91,6 +93,9 @@ pub enum ConfigError {
     /// Ошибка в секции UI-прохода поверх видоискателя.
     #[error(transparent)]
     UiOverlay(#[from] UiOverlayConfigError),
+    /// Ошибка в секции снимка.
+    #[error(transparent)]
+    Still(#[from] StillConfigError),
 }
 
 /// Наименьшая допустимая `preferred_frame_rate_hz`, Гц. Реальные режимы экрана — 24..=240.
@@ -189,6 +194,9 @@ pub struct RenderLoopConfig {
     /// UI и стекло поверх видоискателя (сессия 11): пределы кадра и пирамида размытия. Сам проход
     /// выключен, пока не установлен источник кадра UI (`RenderInbox::ui_overlay_command`).
     pub ui_overlay: UiOverlayConfig,
+    /// Снимок без задержки затвора (сессия 14): выбор кадра, очередь, проявление по полосам. JSON без ключа —
+    /// умолчания секции.
+    pub still: StillDevelopConfig,
 }
 
 impl Default for RenderLoopConfig {
@@ -214,6 +222,7 @@ impl Default for RenderLoopConfig {
             viewfinder: ViewfinderConfig::default(),
             adpf: AdpfConfig::default(),
             ui_overlay: UiOverlayConfig::default(),
+            still: StillDevelopConfig::default(),
         }
     }
 }
@@ -274,6 +283,7 @@ impl RenderLoopConfig {
         self.viewfinder.validate()?;
         self.adpf.validate()?;
         self.ui_overlay.validate()?;
+        self.still.validate()?;
         Ok(())
     }
 

@@ -1,7 +1,8 @@
 //! Сценарий `screen` (сессия 12): экран камеры iOS поверх живого видоискателя, на котором скрипт делает касания.
 //!
 //! Экран камеры постоянно стоит поверх видоискателя, а на время обычного сценария снимается; этот сценарий —
-//! единственный, кто объявляет [`CameraScreenPolicy::KeepRunning`] и проверяет сам экран.
+//! единственный, кто проверяет сам экран кнопками затвора: он объявляет [`CameraScreenPolicy::KeepRunningWithFakeCapture`]
+//! (экран на месте, снимки на время сценария — фейк, файлы в галерею владельца не пишутся).
 //!
 //! # Ход
 //! 1. Общий запуск и замер видоискателя ([`SmokeRun`], как у `glass`): заявить камеру, открыть, дождаться кадров.
@@ -169,7 +170,7 @@ impl ScreenRun {
         self.smoke
             .restart_window(context)
             .map_err(|error| format!("прогрев экрана закончен, но окно замера не перезапущено: {error}"))?;
-        let probe = ScreenProbe::from_parts(&report, &status, context.camera_screen.capture_journal().len() as u64);
+        let probe = ScreenProbe::from_parts(&report, &status, context.camera_screen.capture_requests_accepted());
         let timing = StepTiming {
             timeout: std::time::Duration::from_millis(self.config.step_timeout_ms),
             settle: std::time::Duration::from_millis(self.config.step_settle_ms),
@@ -312,7 +313,7 @@ impl ObservingScenario for ScreenScenario {
 
     /// Единственный сценарий, который проверяет сам экран: он остаётся на месте и получает вход.
     fn camera_screen_policy(&self) -> CameraScreenPolicy {
-        CameraScreenPolicy::KeepRunning
+        CameraScreenPolicy::KeepRunningWithFakeCapture
     }
 
     fn start(&mut self, context: &mut ScenarioContext<'_>) -> ScenarioStep {

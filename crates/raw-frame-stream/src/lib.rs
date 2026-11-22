@@ -31,14 +31,16 @@ mod counters;
 mod lease;
 mod pool;
 mod producer_frame;
+mod ring_pick;
 mod stream;
 mod viewfinder_pacing;
 
-pub use config::{RawFrameStreamConfig, RawFrameStreamConfigError};
+pub use config::{DEFAULT_SNAPSHOT_RING_BUDGET_BYTES, RawFrameStreamConfig, RawFrameStreamConfigError};
 pub use counters::RawStreamCounters;
 pub use lease::RawFrameLease;
 pub use pool::PoolPlan;
 pub use producer_frame::{ProducerFrame, ReleaseFences};
+pub use ring_pick::{RingPick, RingPickRequest, RingSubstitutionReason, RingUnavailableReason};
 pub use stream::{
     DefectReason, LosslessFrames, OfferOutcome, OfferedFrame, RawFrameProducer, RawFrameStream, ResultOutcome,
     SnapshotRingFrames, StandbyBegin, StandbyPromotion, StreamDefect, StreamEpoch, StreamStart, ViewfinderFrames,

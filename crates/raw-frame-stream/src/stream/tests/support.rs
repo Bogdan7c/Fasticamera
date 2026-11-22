@@ -208,6 +208,16 @@ pub(super) fn result_for(timestamp: i64) -> FrameCaptureDetails {
     }
 }
 
+/// Результат с заданным происхождением запроса (серия, фокус-триггер) вместо повторяющегося.
+pub(super) fn result_with_origin(
+    timestamp: i64,
+    origin: camera_contract::three_a::RequestOrigin,
+) -> FrameCaptureDetails {
+    let mut details = result_for(timestamp);
+    details.result.three_a = camera_contract::three_a::ThreeAResultState::unreported(origin);
+    details
+}
+
 pub(super) fn passport(raw_format: RawFormat, buffer_size: PixelSize) -> StreamPassport {
     StreamPassport {
         camera: camera_id("2"),
@@ -248,11 +258,23 @@ pub(super) fn signal(signal_end: &mut UnixStream) {
     signal_end.write_all(&[1]).expect("сигнал fence");
 }
 
-/// Конфиг по умолчанию, но видоискатель — `LatestWins` (сессия 05). Тесты спаривания, возвратов
-/// и эпох проверяют путь одного кадра; при буфере с запасом одиночный кадр ждал бы заполнения.
+/// Конфиг по умолчанию, но видоискатель — `LatestWins` (сессия 05), а кольцо выключено. Тесты
+/// спаривания, возвратов и эпох проверяют путь одного кадра; при буфере с запасом одиночный кадр
+/// ждал бы заполнения, а кольцо по умолчанию (12 кадров, решение 139) добавляло бы лишнюю долю
+/// к каждому кадру. Тесты, которым кольцо нужно, включают его бюджетом явно.
 pub(super) fn latest_wins_config() -> RawFrameStreamConfig {
     RawFrameStreamConfig {
         viewfinder_pacing: crate::viewfinder_pacing::ViewfinderPacing::LatestWins,
+        snapshot_ring_budget_bytes: 0,
+        ..RawFrameStreamConfig::default()
+    }
+}
+
+/// Конфиг по умолчанию с выключенным кольцом снимков: тесты буфера видоискателя (решение 53) считают
+/// доли кадров только у ячейки, а кольцо по умолчанию (12 кадров, решение 139) держало бы их тоже.
+pub(super) fn jitter_buffer_config() -> RawFrameStreamConfig {
+    RawFrameStreamConfig {
+        snapshot_ring_budget_bytes: 0,
         ..RawFrameStreamConfig::default()
     }
 }

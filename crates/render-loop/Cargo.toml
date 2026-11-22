@@ -8,6 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+still-contract.workspace = true
 # Только `vk::Extent2D` для размеров стенда V4 (`VideoHeadroomWorkload`, `OffscreenFrameSink`):
 # вызовов Vulkan в render-loop нет, всё через gpu-vulkan/isp-vulkan.
 ash.workspace = true

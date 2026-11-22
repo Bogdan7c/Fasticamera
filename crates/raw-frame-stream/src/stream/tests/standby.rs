@@ -77,6 +77,47 @@ fn standby_frames_go_straight_back_and_never_reach_the_viewfinder_or_ring() {
     assert!(rig.log.duplicate_returns().is_empty());
 }
 
+/// Решение 139: у тёплой эпохи кольца нет в смысле «её кадры не снимаются» — они не попадают
+/// в кольцо и pick их не видит. План пула при этом полный (с кольцом): после обмена её reader
+/// станет показываемым, а `maxImages` меняется только пересозданием reader-а.
+#[test]
+fn standby_frames_never_enter_the_ring_pick_but_its_pool_plan_keeps_the_ring_for_the_swap() {
+    use crate::ring_pick::{RingPick, RingPickRequest, RingUnavailableReason};
+    let rig = Rig::new(RawFrameStreamConfig {
+        snapshot_ring_budget_bytes: 3 * 15_728_640,
+        ..latest_wins_config()
+    });
+    let standby = begin_standby(&rig);
+    assert_eq!(standby.pool.snapshot_ring, 3, "полный план: ring нужен после обмена");
+    assert_eq!(standby.pool.snapshot_capture_holds, 2);
+
+    offer_result_on(&rig, standby.epoch, 1_000, 0);
+    offer_frame_on(&rig, standby.epoch, 1_000, 0);
+
+    let pick = rig
+        .stream
+        .snapshot_ring()
+        .pick(RingPickRequest::ShownFrame(SensorTimestamp::from_nanos(1_000)));
+    assert!(
+        matches!(pick, RingPick::Unavailable(RingUnavailableReason::RingEmpty)),
+        "кадр тёплой эпохи в кольцо не попал: {pick:?}"
+    );
+
+    // После обмена кольцо показываемой эпохи снова принимает кадры нового reader-а.
+    promote(&rig, standby.epoch);
+    rig.producer
+        .offer_capture_result(standby.epoch, result_for(2_000), rig.at(1));
+    rig.producer.offer_frame(standby.epoch, rig.frame(2_000), rig.at(1));
+    let RingPick::Exact(lease) = rig
+        .stream
+        .snapshot_ring()
+        .pick(RingPickRequest::ShownFrame(SensorTimestamp::from_nanos(2_000)))
+    else {
+        panic!("после обмена кадр должен быть в кольце");
+    };
+    lease.release_unused();
+}
+
 #[test]
 fn standby_plan_is_the_full_plan_of_the_shown_stream_and_epochs_never_repeat() {
     let rig = Rig::new(latest_wins_config());

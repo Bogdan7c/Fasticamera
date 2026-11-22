@@ -45,6 +45,10 @@ pub fn stream_delta(before: &RawStreamCounters, after: &RawStreamCounters) -> Ra
         viewfinder_queued: after.viewfinder_queued,
         viewfinder_pacing_switches: grew(before.viewfinder_pacing_switches, after.viewfinder_pacing_switches),
         ring_evicted: grew(before.ring_evicted, after.ring_evicted),
+        // Выбор кадра из кольца для снимка (решение 139): накопления.
+        ring_picks_exact: grew(before.ring_picks_exact, after.ring_picks_exact),
+        ring_picks_substituted: grew(before.ring_picks_substituted, after.ring_picks_substituted),
+        ring_picks_unavailable: grew(before.ring_picks_unavailable, after.ring_picks_unavailable),
         lossless_defects: grew(before.lossless_defects, after.lossless_defects),
         released_after_fence: grew(before.released_after_fence, after.released_after_fence),
         released_unused: grew(before.released_unused, after.released_unused),

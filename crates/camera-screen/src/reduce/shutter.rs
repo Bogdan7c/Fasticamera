@@ -1,4 +1,5 @@
-//! Затвор: нажатие кнопки и клавиши громкости, отсчёт таймера, итог снимка, миниатюра.
+//! Затвор: нажатие кнопки и клавиши громкости, отсчёт таймера, две фазы завершения снимка (захват и
+//! сохранение, решение 140), сроки, миниатюра.
 
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::haptics::HapticPattern;
@@ -60,8 +61,13 @@ fn start_from_idle(ctx: &mut Ctx<'_>, at: MonotonicNanos) -> ActionOutcome {
     if ctx.state.facts.presence != CameraPresence::Live {
         return ActionOutcome::Rejected(Rejection::CameraNotLive);
     }
+    // Решение 140: ждать сохранения могут не больше `max_saving_shots` снимков; нажатие сверх — явный отказ
+    // «подожди» (и без запуска таймера: отсчёт, за которым не будет снимка, только обманул бы пользователя).
+    if !ctx.state.saving.has_room() {
+        return ActionOutcome::Rejected(Rejection::SavingQueueFull);
+    }
     match ctx.config.timer.seconds_for(ctx.state.settings.timer) {
-        None => request_capture(ctx),
+        None => request_capture(ctx, at),
         Some(seconds) => {
             ctx.state.shutter = ShutterState::Countdown {
                 ends_at: deadline_after_seconds(at, seconds),
@@ -71,32 +77,54 @@ fn start_from_idle(ctx: &mut Ctx<'_>, at: MonotonicNanos) -> ActionOutcome {
     ActionOutcome::Applied
 }
 
-/// Выдаёт номер, переводит затвор в `Capturing` и просит снимок с настройками на этот момент.
-pub(super) fn request_capture(ctx: &mut Ctx<'_>) {
+/// Выдаёт номер, переводит затвор в `Capturing` и просит снимок с настройками на момент `pressed_at`
+/// (метка тапа/клавиши или `Tick`, на котором сработал таймер) вместе со звуком затвора.
+pub(super) fn request_capture(ctx: &mut Ctx<'_>, pressed_at: MonotonicNanos) {
     let request = ctx.state.allocate_shot_request();
     ctx.state.shutter = ShutterState::Capturing { request };
-    // Метка времени у этого пути всегда свежая: тап/клавиша или `Tick`, который и вызвал отсчёт.
-    ctx.state.capture_deadline = Some(deadline_after(
-        ctx.state.last_time,
-        ctx.config.capture.result_timeout_ms,
-    ));
-    let settings = ctx.state.settings;
-    ctx.emit(Effect::Capture(ShotRequest {
+    ctx.state.capture_deadline = Some(deadline_after(pressed_at, ctx.config.capture.capture_timeout_ms));
+    let shot = ShotRequest {
         request,
-        flash: settings.flash,
-        raw: settings.raw,
-        aspect: settings.aspect,
-    }));
+        pressed_at,
+        framing: ctx.state.zoom_framing(),
+        orientation: ctx.state.orientation,
+        primary_format: ctx.config.capture.primary_format,
+        flash: ctx.state.effective_flash(),
+        raw: ctx.state.settings.raw,
+        aspect: ctx.state.settings.aspect,
+    };
+    ctx.emit(Effect::Capture(shot));
+    // Звук идёт вместе с запросом снимка: при таймере — в момент срабатывания, не при нажатии кнопки.
+    ctx.emit(Effect::PlayShutterSound);
 }
 
-/// Итог снимка от сервиса съёмки.
-pub(super) fn on_capture_finished(ctx: &mut Ctx<'_>, request: ShotRequestId, outcome: CaptureOutcome) -> ActionOutcome {
+/// Фаза 1: кадр захвачен. Затвор свободен (можно снимать снова), снимок ждёт сохранения.
+pub(super) fn on_capture_secured(ctx: &mut Ctx<'_>, request: ShotRequestId) -> ActionOutcome {
     if !is_awaited(&ctx.state.shutter, request) {
         return ActionOutcome::Rejected(Rejection::StaleCaptureResult);
     }
     ctx.state.shutter = ShutterState::Idle;
     ctx.state.capture_deadline = None;
+    let saving_deadline = deadline_after(ctx.state.last_time, ctx.config.capture.saving_timeout_ms);
+    if ctx.state.saving.begin(request, saving_deadline).is_err() {
+        // Недостижимо при исправной работе (нажатие при полном наборе отвергается заранее): снимок не будет
+        // отслежен, его итог получит `StaleCaptureResult`. Но потеря считается, а не глотается.
+        ctx.state.saving_overflows = ctx.state.saving_overflows.saturating_add(1);
+    }
+    ActionOutcome::Applied
+}
+
+/// Фаза 2: итог снимка. Приходит и для снимка в `Capturing` (ошибка до захвата освобождает затвор), и для
+/// уже захваченного, сохраняемого (затвор при этом не трогается: он может снимать следующий).
+pub(super) fn on_capture_finished(ctx: &mut Ctx<'_>, request: ShotRequestId, outcome: CaptureOutcome) -> ActionOutcome {
+    if is_awaited(&ctx.state.shutter, request) {
+        ctx.state.shutter = ShutterState::Idle;
+        ctx.state.capture_deadline = None;
+    } else if !ctx.state.saving.finish(request) {
+        return ActionOutcome::Rejected(Rejection::StaleCaptureResult);
+    }
     match outcome {
+        // Миниатюра — последний СОХРАНЁННЫЙ по порядку прихода итогов, а не по порядку нажатий.
         CaptureOutcome::Saved => ctx.state.thumbnail = ThumbnailState::Last { shot: request },
         CaptureOutcome::Failed(_) => ctx.emit(Effect::Haptic(HapticPattern::Error)),
     }
@@ -136,7 +164,15 @@ pub(super) fn fire_countdown_if_due(ctx: &mut Ctx<'_>, now: MonotonicNanos) {
         ctx.state.rejections.record(Rejection::CameraNotLive);
         return;
     }
-    request_capture(ctx);
+    // Набор сохраняемых мог не успеть освободиться: честный отказ с хаптикой, а не молчаливое «ничего».
+    if !ctx.state.saving.has_room() {
+        ctx.state.shutter = ShutterState::Idle;
+        ctx.state.rejections.record(Rejection::SavingQueueFull);
+        ctx.emit(Effect::Haptic(HapticPattern::Error));
+        return;
+    }
+    // Момент снимка — момент срабатывания таймера, а не нажатия кнопки.
+    request_capture(ctx, now);
 }
 
 /// Снимок объявляется потерянным: затвор свободен, потеря посчитана, пользователь получает
@@ -166,6 +202,19 @@ pub(super) fn abandon_capture_if_overdue(ctx: &mut Ctx<'_>, now: MonotonicNanos)
     if overdue {
         abandon_capture(ctx);
     }
+}
+
+/// Захваченные снимки, чей срок сохранения вышел, объявляются потерянными: считаются, пользователь получает
+/// хаптику ошибки (один раз за тик). Затвор не трогается. Поздний `CaptureFinished` получит
+/// `StaleCaptureResult`. Вызывается из `Tick`.
+pub(super) fn expire_overdue_saving(ctx: &mut Ctx<'_>, now: MonotonicNanos) {
+    let expired = ctx.state.saving.expire(now);
+    if expired == 0 {
+        return;
+    }
+    let expired = u32::try_from(expired).unwrap_or(u32::MAX);
+    ctx.state.lost_captures = ctx.state.lost_captures.saturating_add(expired);
+    ctx.emit(Effect::Haptic(HapticPattern::Error));
 }
 
 /// Отмена отсчёта (камера пропала).

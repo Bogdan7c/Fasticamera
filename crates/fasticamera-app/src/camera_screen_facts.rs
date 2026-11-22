@@ -14,6 +14,7 @@
 //!   тем же кодом, что у бэкенда (`build_stream_passport`): правило «16:9 занимает верх буфера» живёт в одном месте.
 //!   Зеркало экран из геометрии потока больше не берёт (с сессии 13 оно приходит из каталога зума по камере
 //!   кадра), поэтому здесь `MirrorMode::None`;
+//! * вспышка — [`flash_availability_of`]: пока всегда «нет» (сессия 14d);
 //! * объективы — `lens` статуса движка ([`LensFactsBuilder`]: каталог зума, активная камера, смена, неудача смены).
 //!
 //! Паспорт потока дорогой (клон калибровки цвета ради трёх полей), поэтому геометрия кэшируется по ИДЕНТИЧНОСТИ
@@ -37,7 +38,7 @@ use camera_core::three_a_status::{FocusOutcome, FocusProgress};
 use camera_core::{CameraError, CameraState, CameraStatus};
 use camera_screen::exposure::ExposureRangeFact;
 use camera_screen::viewfinder_map::{MirrorMode, StreamGeometry};
-use camera_screen::{CameraFacts, CameraPresence, FocusPhase, UnavailableReason};
+use camera_screen::{CameraFacts, CameraPresence, FlashAvailability, FocusPhase, UnavailableReason};
 
 /// Факты, когда движка камеры в приложении нет вообще (не поднялся): честное «сбой камеры».
 pub fn facts_for_absent_engine() -> CameraFacts {
@@ -68,7 +69,14 @@ pub fn camera_facts_with_cache(status: &CameraStatus, cache: &mut FactsCache) ->
         }),
         stream: cache.geometry.geometry_of(status, active),
         lens: cache.lens.facts_of(&status.lens),
+        flash: flash_availability_of(status),
     }
+}
+
+/// Вспышка камеры для экрана. Сессия 14d (решение 138) научит движок снимать со вспышкой и сообщать об этом в
+/// статусе; до тех пор камера честно не предлагает вспышку (инвариант 6): значок и пункт меню скрыты.
+fn flash_availability_of(_status: &CameraStatus) -> FlashAvailability {
+    FlashAvailability::Unavailable
 }
 
 /// Всё, что источник фактов помнит между кадрами: кэш геометрии потока и память о неудачах смены объектива.

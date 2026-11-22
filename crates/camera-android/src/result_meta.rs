@@ -27,6 +27,7 @@ pub enum ColorHintKey {
     DynamicWhiteLevel,
     ColorCorrectionGains,
     NeutralColorPoint,
+    NoiseProfile,
 }
 
 /// Результат разбора: сводка и ключи, которые были, но не прочитались.
@@ -154,6 +155,8 @@ fn parse_color_hints(source: &dyn MetadataSource) -> (CaptureColorHints, Vec<Col
     )
     .and_then(|values| <[_; 3]>::try_from(&values[..3]).ok());
 
+    let noise_profile = take_color_hint(&mut unreadable, ColorHintKey::NoiseProfile, read_noise_profile(source));
+
     // Отрицательный белый уровень бессмыслен: это непригодная запись, а не «ноль».
     let dynamic_white_level = dynamic_white_level.and_then(|level| match u32::try_from(level) {
         Ok(level) => Some(level),
@@ -170,6 +173,7 @@ fn parse_color_hints(source: &dyn MetadataSource) -> (CaptureColorHints, Vec<Col
             dynamic_white_level,
             color_gains,
             neutral_color_point,
+            noise_profile,
         },
         unreadable,
     )
@@ -203,6 +207,14 @@ fn result_key_order(key: ResultKey) -> u8 {
         ResultKey::RollingShutterSkew => 4,
     }
 }
+
+#[path = "result_meta_noise.rs"]
+mod noise;
+use noise::read_noise_profile;
+
+#[cfg(test)]
+#[path = "result_meta_noise_tests.rs"]
+mod noise_tests;
 
 #[cfg(test)]
 #[path = "result_meta_tests.rs"]

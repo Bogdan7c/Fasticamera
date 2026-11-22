@@ -8,27 +8,66 @@ const RAW10_4096X3072_BYTES: u64 = 15_728_640;
 
 /// Буфер видоискателя (решение 53) добавил к плану сессии 05 (6 буферов) одну ячейку: очередь 2
 /// вместо ячейки 1. План один и тот же при любой стартовой политике — переключение на ходу.
+/// Кольцо — только в конфиге по умолчанию (решение 139): 12 кадров + 2 удержания снимков.
 #[test]
-fn default_pool_plan_sums_to_seven_buffers_for_either_viewfinder_pacing() {
-    let latest_wins = Rig::new(latest_wins_config()).start.pool;
-    let rig = Rig::new(RawFrameStreamConfig::default());
-    assert_eq!(latest_wins, rig.start.pool);
-    let pool = rig.start.pool;
+fn default_pool_plan_sums_to_twenty_one_buffers_with_the_ring_of_decision_139() {
+    let default_plan = Rig::new(RawFrameStreamConfig::default()).start.pool;
+    let pool = default_plan;
     assert_eq!(
         (
             pool.viewfinder,
             pool.pending_pairs,
             pool.snapshot_ring,
+            pool.snapshot_capture_holds,
             pool.lossless,
             pool.slack
         ),
-        (4, 2, 0, 0, 1)
+        (4, 2, 12, 2, 0, 1)
     );
-    assert_eq!(pool.reader_max_images(), 7);
+    assert_eq!(pool.reader_max_images(), 21);
+    // Та же политика видоискателя на старте не меняет план: переключение на ходу.
+    let latest_wins = Rig::new(RawFrameStreamConfig {
+        viewfinder_pacing: crate::viewfinder_pacing::ViewfinderPacing::LatestWins,
+        ..RawFrameStreamConfig::default()
+    })
+    .start
+    .pool;
+    assert_eq!(latest_wins, default_plan);
 }
 
 #[test]
-fn ring_and_lossless_queue_grow_the_pool_to_thirteen_buffers() {
+fn capture_holds_count_toward_max_images_only_when_the_ring_is_enabled() {
+    let without_ring = Rig::new(latest_wins_config()).start.pool;
+    assert_eq!(
+        (without_ring.snapshot_ring, without_ring.snapshot_capture_holds),
+        (0, 0)
+    );
+    assert_eq!(
+        without_ring.reader_max_images(),
+        4 + 2 + 1,
+        "кольца нет — удержаний снимков нет"
+    );
+
+    let with_ring = Rig::new(RawFrameStreamConfig {
+        snapshot_ring_budget_bytes: 3 * RAW10_4096X3072_BYTES,
+        snapshot_capture_holds: 2,
+        ..latest_wins_config()
+    })
+    .start
+    .pool;
+    assert_eq!((with_ring.snapshot_ring, with_ring.snapshot_capture_holds), (3, 2));
+    assert_eq!(with_ring.reader_max_images(), 4 + 2 + 3 + 2 + 1);
+
+    // План, собранный снаружи с кольцом 0, тоже не считает удержания.
+    let hand_made = crate::PoolPlan {
+        snapshot_capture_holds: 5,
+        ..without_ring
+    };
+    assert_eq!(hand_made.reader_max_images(), without_ring.reader_max_images());
+}
+
+#[test]
+fn ring_and_lossless_queue_grow_the_pool_to_fifteen_buffers() {
     let mut rig = Rig::new(RawFrameStreamConfig {
         snapshot_ring_budget_bytes: 4 * RAW10_4096X3072_BYTES,
         ..latest_wins_config()
@@ -39,7 +78,11 @@ fn ring_and_lossless_queue_grow_the_pool_to_thirteen_buffers() {
         "очередь входит в план со следующего begin_stream"
     );
     rig.restart();
-    assert_eq!(rig.start.pool.reader_max_images(), 13);
+    assert_eq!(
+        rig.start.pool.reader_max_images(),
+        15,
+        "4+2 + кольцо 4 + удержания 2 + очередь 2 + запас 1"
+    );
 }
 
 #[test]

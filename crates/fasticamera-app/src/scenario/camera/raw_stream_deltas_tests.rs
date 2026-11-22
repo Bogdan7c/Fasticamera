@@ -35,6 +35,31 @@ fn stream_delta_subtracts_cumulative_counters_and_keeps_peaks_and_gauges() {
 }
 
 #[test]
+fn stream_delta_counts_ring_picks_of_this_run_only() {
+    let before = RawStreamCounters {
+        ring_picks_exact: 3,
+        ring_picks_substituted: 1,
+        ring_picks_unavailable: 2,
+        ..RawStreamCounters::default()
+    };
+    let after = RawStreamCounters {
+        ring_picks_exact: 10,
+        ring_picks_substituted: 1,
+        ring_picks_unavailable: 5,
+        ..RawStreamCounters::default()
+    };
+    let delta = stream_delta(&before, &after);
+    assert_eq!(
+        (
+            delta.ring_picks_exact,
+            delta.ring_picks_substituted,
+            delta.ring_picks_unavailable
+        ),
+        (7, 0, 3)
+    );
+}
+
+#[test]
 fn counters_that_went_backwards_saturate_at_zero() {
     let before = RawStreamCounters {
         frames_offered: 10,

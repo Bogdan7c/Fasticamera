@@ -25,7 +25,7 @@ pub mod surface;
 pub mod target;
 
 mod fault_injection;
-mod present_fences;
+pub(crate) mod present_fences;
 pub mod present_sync;
 mod resources;
 mod state;

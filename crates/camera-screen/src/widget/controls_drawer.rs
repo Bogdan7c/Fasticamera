@@ -160,8 +160,16 @@ impl ControlsDrawerWidget {
             }
         }
         kit.set_interactive(self.sheet_node, menu_level)?;
-        for item in &self.items {
-            kit.set_interactive(item.button.node(), menu_level && item.tool.is_some())?;
+        // Состав меню зависит от возможностей камеры (вспышка появляется и пропадает по фактам): пункты идут
+        // подряд, пустые слоты скрыты и касаний не принимают.
+        let menu_tools = ctx.state.menu_tools();
+        for (slot, item) in self.items.iter_mut().enumerate() {
+            let tool = menu_tools.get(slot).copied();
+            if item.tool.is_some() != tool.is_some() {
+                kit.set_shown(item.button.node(), tool.is_some())?;
+            }
+            item.tool = tool;
+            kit.set_interactive(item.button.node(), menu_level && tool.is_some())?;
         }
         Ok(())
     }

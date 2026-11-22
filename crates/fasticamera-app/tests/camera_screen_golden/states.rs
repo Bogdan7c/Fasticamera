@@ -107,6 +107,8 @@ pub fn camera_unavailable() -> ScreenDriver {
         presence: CameraPresence::Unavailable {
             reason: UnavailableReason::InUse,
         },
+        // Раскладка golden — со значком вспышки (см. `driver::live_facts`).
+        flash: camera_screen::FlashAvailability::Available,
         ..CameraFacts::STARTING
     }));
     driver.run(SETTLE_MS);

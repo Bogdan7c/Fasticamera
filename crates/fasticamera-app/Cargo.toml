@@ -27,9 +27,13 @@ camera-core.workspace = true
 camera-screen.workspace = true
 gpu-vulkan.workspace = true
 isp-vulkan.workspace = true
+# Служба записи снимков (сессия 14): допуск, DNG/Exif, MediaStore; приложение только подключает её.
+photo-output.workspace = true
 raw-frame-stream.workspace = true
 render-loop.workspace = true
 shell-contract.workspace = true
+# Словарь снимка: план, события проявления, фазы.
+still-contract.workspace = true
 # Демо-сцена стекла (сессия 11): сцена, элементы и словарь рисования.
 ui-core.workspace = true
 ui-draw.workspace = true

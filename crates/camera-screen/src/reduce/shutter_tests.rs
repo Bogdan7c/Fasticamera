@@ -7,10 +7,12 @@ use crate::effect::Effect;
 use crate::facts::{CameraFacts, CameraPresence};
 use crate::outcome::{ActionOutcome, NoChangeReason, Rejection};
 use crate::settings::{AspectRatio, FlashMode, RawCapture, TimerSetting};
-use crate::shutter::{CaptureFailureReason, CaptureOutcome, ShotRequest, ShotRequestId, ShutterState, ThumbnailState};
+use crate::shutter::{CaptureFailureReason, CaptureOutcome, ShotRequestId, ShutterState, ThumbnailState};
 use crate::state::PanelState;
 use crate::test_support::{Screen, at_ms, live_facts};
 use crate::tools::{ToolId, ToolOption};
+use shell_contract::orientation::DeviceOrientation;
+use still_contract::plan::PrimaryFormat;
 
 fn select_timer(screen: &mut Screen, timer: TimerSetting) {
     screen.step(ScreenAction::ControlsMenuOpenRequested);
@@ -39,14 +41,24 @@ fn shutter_without_timer_starts_capturing_and_requests_a_shot_with_current_setti
             request: first_request()
         }
     );
+    let [Effect::Capture(shot), Effect::PlayShutterSound] = transition.effects.as_slice() else {
+        panic!("нужны запрос снимка и звук затвора: {:?}", transition.effects)
+    };
+    assert_eq!(shot.request, first_request());
+    assert_eq!(shot.pressed_at, at_ms(1_000), "момент нажатия = метка тапа");
+    assert_eq!(shot.flash, FlashMode::On);
+    assert_eq!(shot.raw, RawCapture::On);
+    assert_eq!(shot.aspect, AspectRatio::FourByThree);
+    assert_eq!(shot.primary_format, PrimaryFormat::Heif, "формат из конфига экрана");
     assert_eq!(
-        transition.effects,
-        [Effect::Capture(ShotRequest {
-            request: first_request(),
-            flash: FlashMode::On,
-            raw: RawCapture::On,
-            aspect: AspectRatio::FourByThree,
-        })]
+        shot.orientation,
+        DeviceOrientation::Portrait,
+        "датчик молчал: телефон вертикально"
+    );
+    assert_eq!(
+        Some(shot.framing.clone()),
+        screen.state.framing_intent().map(|intent| intent.zoom),
+        "кадрирование снимка = кадрирование видоискателя"
     );
 }
 
@@ -73,7 +85,9 @@ fn timer_starts_a_countdown_without_a_shot_and_fires_exactly_at_the_end() {
             request: first_request()
         }
     );
-    assert!(matches!(due.effects.as_slice(), [Effect::Capture(shot)] if shot.request == first_request()));
+    assert!(
+        matches!(due.effects.as_slice(), [Effect::Capture(shot), Effect::PlayShutterSound] if shot.request == first_request())
+    );
 }
 
 #[test]
@@ -120,7 +134,9 @@ fn settings_chosen_during_countdown_apply_to_the_shot() {
 
     let due = screen.step(ScreenAction::Tick(at_ms(3_000)));
 
-    assert!(matches!(due.effects.as_slice(), [Effect::Capture(shot)] if shot.raw == RawCapture::On));
+    assert!(
+        matches!(due.effects.as_slice(), [Effect::Capture(shot), Effect::PlayShutterSound] if shot.raw == RawCapture::On)
+    );
 }
 
 #[test]
@@ -185,7 +201,9 @@ fn saved_shot_returns_to_idle_and_fills_the_thumbnail() {
     assert_eq!(screen.state.thumbnail(), ThumbnailState::Last { shot: first_request() });
     // Следующий снимок получает новый номер и снова доходит до запроса.
     let next = screen.step(ScreenAction::ShutterTapped { at: at_ms(100) });
-    assert!(matches!(next.effects.as_slice(), [Effect::Capture(shot)] if shot.request == ShotRequestId(2)));
+    assert!(
+        matches!(next.effects.as_slice(), [Effect::Capture(shot), Effect::PlayShutterSound] if shot.request == ShotRequestId(2))
+    );
 }
 
 #[test]
@@ -253,7 +271,10 @@ fn on_screen_shutter_is_refused_while_the_menu_is_open_but_volume_key_shoots() {
         at: at_ms(1),
     });
     assert_eq!(key.outcome, ActionOutcome::Applied);
-    assert!(matches!(key.effects.as_slice(), [Effect::Capture(_)]));
+    assert!(matches!(
+        key.effects.as_slice(),
+        [Effect::Capture(_), Effect::PlayShutterSound]
+    ));
     assert_eq!(
         screen.state.panel(),
         PanelState::ControlsMenu,
@@ -333,7 +354,7 @@ fn full_flow_tap_shutter_to_saved_thumbnail_reaches_every_stage() {
     let focus = screen.tap_center(at_ms(0));
     assert!(matches!(focus.effects.as_slice(), [Effect::Camera(_)]));
     let shot = screen.step(ScreenAction::ShutterTapped { at: at_ms(500) });
-    let Effect::Capture(request) = shot.effects[0] else {
+    let Effect::Capture(request) = shot.effects[0].clone() else {
         panic!("нужен запрос снимка")
     };
     screen.step(ScreenAction::CaptureFinished {
@@ -375,7 +396,10 @@ fn camera_loss_during_capture_frees_the_shutter_counts_the_loss_and_signals_the_
     // Камера вернулась — затвор снова снимает.
     screen.step(ScreenAction::CameraFactsChanged(live_facts()));
     let again = screen.step(ScreenAction::ShutterTapped { at: at_ms(5_000) });
-    assert!(matches!(again.effects.as_slice(), [Effect::Capture(_)]));
+    assert!(matches!(
+        again.effects.as_slice(),
+        [Effect::Capture(_), Effect::PlayShutterSound]
+    ));
 }
 
 #[test]
@@ -388,7 +412,7 @@ fn camera_loss_without_a_capture_in_flight_is_not_counted_as_a_lost_shot() {
 #[test]
 fn missing_capture_result_frees_the_shutter_exactly_at_the_configured_timeout() {
     let mut screen = Screen::ready();
-    let timeout_ms = i64::from(screen.config.capture.result_timeout_ms);
+    let timeout_ms = i64::from(screen.config.capture.capture_timeout_ms);
     screen.step(ScreenAction::ShutterTapped { at: at_ms(1_000) });
 
     screen.step(ScreenAction::Tick(at_ms(1_000 + timeout_ms - 1)));
@@ -419,7 +443,7 @@ fn a_capture_finished_in_time_is_not_counted_as_lost_by_later_ticks() {
 fn the_timeout_of_a_timer_shot_counts_from_the_moment_the_shot_was_requested() {
     let mut screen = Screen::ready();
     select_timer(&mut screen, TimerSetting::Seconds3);
-    let timeout_ms = i64::from(screen.config.capture.result_timeout_ms);
+    let timeout_ms = i64::from(screen.config.capture.capture_timeout_ms);
     screen.step(ScreenAction::ShutterTapped { at: at_ms(0) });
     screen.step(ScreenAction::Tick(at_ms(3_000)));
     assert!(matches!(screen.state.shutter(), ShutterState::Capturing { .. }));

@@ -5,7 +5,7 @@
 
 use camera_contract::frame_passport::FrameSequence;
 
-use super::support::{Rig, latest_wins_config};
+use super::support::{Rig, jitter_buffer_config, latest_wins_config};
 use crate::config::RawFrameStreamConfig;
 use crate::stream::ViewfinderPoll;
 use crate::viewfinder_pacing::{JitterBufferConfig, ViewfinderPacing, ViewfinderPacingSwitch};
@@ -30,7 +30,7 @@ pub(super) fn tick(rig: &Rig) -> Option<i64> {
 }
 
 fn jitter_rig() -> Rig {
-    Rig::new(RawFrameStreamConfig::default())
+    Rig::new(jitter_buffer_config())
 }
 
 #[test]
@@ -220,7 +220,7 @@ fn reserve_and_queue_length_come_from_the_config() {
             reserve: 2,
             max_queued: 3,
         },
-        ..RawFrameStreamConfig::default()
+        ..jitter_buffer_config()
     });
     arrive(&rig, 1_000);
     arrive(&rig, 2_000);
@@ -295,7 +295,7 @@ fn simulate_drift(config: RawFrameStreamConfig, camera_hz: f64, display_hz: f64,
 #[test]
 fn camera_clock_faster_than_display_drops_only_the_drift_and_counts_it() {
     let seconds = 300.0;
-    let run = simulate_drift(RawFrameStreamConfig::default(), 60.03, 60.00, seconds);
+    let run = simulate_drift(jitter_buffer_config(), 60.03, 60.00, seconds);
     let drift_frames = (0.03 * seconds) as u64; // 9 лишних кадров за 5 минут
     let counters = run.counters;
     assert!(
@@ -336,7 +336,7 @@ fn camera_clock_faster_than_display_drops_only_the_drift_and_counts_it() {
 #[test]
 fn camera_clock_slower_than_display_repeats_only_the_drift_and_counts_it() {
     let seconds = 300.0;
-    let run = simulate_drift(RawFrameStreamConfig::default(), 59.97, 60.00, seconds);
+    let run = simulate_drift(jitter_buffer_config(), 59.97, 60.00, seconds);
     let drift_frames = (0.03 * seconds) as u64;
     let counters = run.counters;
     assert!(

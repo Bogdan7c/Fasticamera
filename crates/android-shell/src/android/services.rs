@@ -19,6 +19,7 @@ use shell_contract::motion::{
 };
 use shell_contract::operator_prompt::{OperatorPrompt, OperatorPromptService};
 use shell_contract::power::{PowerSampleRing, PowerSampling, PowerSamplingRequest, PowerSource, PowerSourceError};
+use shell_contract::still_media::ShutterSoundService;
 use shell_contract::thermal::{HeadroomForecast, ThermalHeadroom, ThermalSource, ThermalSourceError, ThermalStatus};
 use shell_contract::vsync::{VsyncSlot, VsyncSource, VsyncSourceError, VsyncSubscription};
 
@@ -47,6 +48,11 @@ pub struct AndroidShellServices {
 impl AndroidShellServices {
     pub(crate) fn new(runtime: Arc<ShellRuntime>) -> Self {
         Self { runtime }
+    }
+
+    /// Оболочка процесса — для сервисов снимка этого crate (`still_*`), которым нужен JNI-доступ.
+    pub(crate) fn runtime(&self) -> &Arc<ShellRuntime> {
+        &self.runtime
     }
 
     /// Запрос гироскопа по настройкам (частота и окно истории из конфига).
@@ -128,6 +134,14 @@ impl OperatorPromptService for AndroidShellServices {
 
     fn clear(&self) -> CommandOutcome {
         self.enqueue_for_attached(PlatformCall::ClearOperatorPrompt)
+    }
+}
+
+impl ShutterSoundService for AndroidShellServices {
+    /// Звук затвора: команда в очередь потока платформы (как хаптика), главный поток и рендер не ждут.
+    /// Отказ самой платформы приходит позже событием `PlatformCommandFailed(PlayShutterSound)`.
+    fn play_shutter_sound(&self) -> CommandOutcome {
+        self.enqueue_for_attached(PlatformCall::PlayShutterSound)
     }
 }
 

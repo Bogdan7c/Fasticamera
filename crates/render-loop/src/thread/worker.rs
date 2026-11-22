@@ -8,6 +8,10 @@
 //! либо подтверждением (после отпускания окна), либо уничтожением запроса
 //! (`DroppedWithoutConfirmation`) — даже при панике бэкенда или остановке потока.
 
+use still_contract::develop::DevelopEvent;
+use still_contract::frame_choice::NoFrameReason;
+
+use crate::still::{StillCommand, StillCommandOutcome};
 use std::any::Any;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -266,6 +270,10 @@ impl<B: DisplayBackend, C: FrameClock> RenderWorker<B, C> {
                 self.apply_ui_overlay_command(command);
                 Vec::new()
             }
+            InboxEvent::Still(command) => {
+                self.apply_still_command(command);
+                Vec::new()
+            }
         };
         self.execute_actions(actions, &mut context);
         // Новая surface принята машиной (её не отвергли): ждёт размера.
@@ -285,6 +293,31 @@ impl<B: DisplayBackend, C: FrameClock> RenderWorker<B, C> {
             .guarded(|backend| backend.apply_viewfinder_command(command.clone()))
             .unwrap_or(ViewfinderCommandOutcome::Unsupported);
         self.status.viewfinder_commands.note(command, outcome);
+    }
+
+    /// Команда снимка: бэкенд принимает её между кадрами. Если бэкенд снимков не умеет, поток сам
+    /// завершает снимок честным `NotSecured` (инвариант модуля `still`: у каждого `Begin` — ровно один итог),
+    /// а чужую цель кодера уничтожает (поверхность отпускается).
+    fn apply_still_command(&mut self, command: StillCommand) {
+        let is_begin = matches!(command, StillCommand::Begin(_));
+        match self.guarded(|backend| backend.apply_still_command(command)) {
+            Some(StillCommandOutcome::Accepted) if is_begin => self.status.still_commands.begins_accepted += 1,
+            Some(StillCommandOutcome::Accepted) => self.status.still_commands.targets_accepted += 1,
+            Some(StillCommandOutcome::Unsupported(StillCommand::Begin(begin))) => {
+                self.status.still_commands.begins_unsupported += 1;
+                tracing::warn!(target: LOG_TARGET, id = begin.plan.id.0, "снимок не поддержан бэкендом: кадра нет");
+                begin.events.deliver(DevelopEvent::NotSecured {
+                    id: begin.plan.id,
+                    reason: NoFrameReason::NoLiveCameraFrame,
+                });
+            }
+            Some(StillCommandOutcome::Unsupported(StillCommand::Target(offer))) => {
+                self.status.still_commands.targets_dropped += 1;
+                tracing::warn!(target: LOG_TARGET, id = offer.id().0, "цель кодера без снимка: отпущена");
+            }
+            // Бэкенд неисправен (паника внутри guarded): команда потеряна; итог снимка доведёт срок записи.
+            None => self.status.still_commands.lost_to_backend_fault += 1,
+        }
     }
 
     /// Команда UI-проходу: бэкенд применяет её между кадрами; итог — в диагностике UI
@@ -442,6 +475,9 @@ impl<B: DisplayBackend, C: FrameClock> RenderWorker<B, C> {
         let Some(outcome) = self.guarded(|backend| backend.render_and_present(timing)) else {
             return;
         };
+        // Снимки продвигаются ПОСЛЕ показа кадра видоискателя: их полосы GPU встают в очередь за кадром,
+        // а не перед ним (сессия 14: видоискатель не ждёт снимка).
+        self.guarded(DisplayBackend::advance_stills);
         let frame_finished = SystemMonotonicTimer.now().ok();
         let cpu_timing = self.account_frame_cpu_timing();
         let frame_failed = matches!(outcome, PresentOutcome::Failed(_));

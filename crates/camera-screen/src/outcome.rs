@@ -58,8 +58,10 @@ pub enum Rejection {
     UnknownMode,
     /// Вариант не относится к открытому подменю или подменю не открыто.
     OptionNotInSubmenu,
-    /// Итог снимка пришёл не для текущего запроса.
+    /// Итог или «кадр захвачен» пришёл не для ожидаемого снимка (устарел, дубль или чужой).
     StaleCaptureResult,
+    /// Нажатие сверх ёмкости набора сохраняемых снимков (решение 140): «подожди», уже снятое не теряется.
+    SavingQueueFull,
     /// Размер surface не даёт раскладки.
     InvalidSurface,
     /// Значок над кадром нажат при открытом меню Controls.
@@ -74,7 +76,7 @@ pub enum Rejection {
 
 impl Rejection {
     /// Число причин (размер таблицы счётчиков). Сверяется с [`Rejection::ALL`] на этапе компиляции.
-    const COUNT: usize = 17;
+    const COUNT: usize = 18;
 
     /// Номер ячейки счётчика. `match` без `_`: новый вариант `Rejection` не скомпилируется, пока ему
     /// не дали номер, — забытая ячейка невозможна. Согласованность номеров с `ALL` проверяет тест.
@@ -97,6 +99,7 @@ impl Rejection {
             Rejection::ZoomUnavailable => 14,
             Rejection::ZoomStopMissing => 15,
             Rejection::InvalidZoomInput => 16,
+            Rejection::SavingQueueFull => 17,
         }
     }
 
@@ -119,6 +122,7 @@ impl Rejection {
         Rejection::ZoomUnavailable,
         Rejection::ZoomStopMissing,
         Rejection::InvalidZoomInput,
+        Rejection::SavingQueueFull,
     ];
 }
 

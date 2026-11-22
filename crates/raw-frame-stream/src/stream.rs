@@ -8,6 +8,7 @@ mod deferred;
 mod hub;
 mod pairing;
 mod publish;
+mod ring_pick;
 mod standby;
 mod state;
 #[cfg(test)]
@@ -29,6 +30,7 @@ use crate::counters::StreamAccounting;
 use crate::lease::RawFrameLease;
 use crate::pool::PoolPlan;
 use crate::producer_frame::ProducerFrame;
+use crate::ring_pick::{RingPick, RingPickRequest};
 use crate::viewfinder_pacing::{ViewfinderPacing, ViewfinderPacingSwitch};
 use viewfinder_cell::CellTake;
 
@@ -287,6 +289,13 @@ impl SnapshotRingFrames {
     /// Текущая ёмкость кольца (0 — выключено).
     pub fn capacity(&self) -> usize {
         self.hub.with_state(|state, _| state.ring_capacity)
+    }
+
+    /// Неразрушающий выбор одного кадра для снимка (решение 139): кольцо сохраняет свою долю
+    /// и вытесняет кадр как обычно, наружу уходит отдельная доля — её надо вернуть явно.
+    /// Правило выбора и замены — в [`RingPickRequest`]/[`RingPick`] и `stream/ring_pick.rs`.
+    pub fn pick(&self, request: RingPickRequest) -> RingPick {
+        self.hub.with_state(|state, _| state.pick_from_ring(request))
     }
 
     /// Забрать все кадры кольца, от старых к новым.

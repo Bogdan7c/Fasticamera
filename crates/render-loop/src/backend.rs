@@ -12,6 +12,8 @@ use shell_contract::clock::MonotonicNanos;
 
 use crate::camera_diagnostics::CameraStreamDiagnostics;
 use crate::config::LateLatchMode;
+use crate::still::{StillCommand, StillCommandOutcome};
+use crate::still_diagnostics::StillDiagnostics;
 use crate::thread::{SleepUntil, SleepUntilOutcome, SystemMonotonicTimer, sleep_until};
 use crate::ui_overlay::{UiOverlayCommand, UiOverlayOutcome};
 use crate::viewfinder::{ViewfinderCommand, ViewfinderCommandOutcome, ViewfinderDiagnostics};
@@ -263,6 +265,8 @@ pub struct BackendDiagnostics {
     pub camera: Option<CameraStreamDiagnostics>,
     /// Видоискатель (ISP, компоновка, параметры); `None` — бэкенд не показывает камеру.
     pub viewfinder: Option<ViewfinderDiagnostics>,
+    /// Снимки без задержки затвора (сессия 14); `None` — бэкенд снимков не умеет.
+    pub still: Option<StillDiagnostics>,
 }
 
 /// Бэкенд показа. Все методы вызываются из одного потока рендера (но сам объект может быть
@@ -319,4 +323,14 @@ pub trait DisplayBackend: Send + 'static {
         let _ = command;
         UiOverlayOutcome::Unsupported
     }
+
+    /// Принимает команду снимка (между кадрами). По умолчанию снимков нет — команда возвращается потоку,
+    /// и он завершает снимок честным `NotSecured` (тестовый паттерн, fake-бэкенды).
+    fn apply_still_command(&mut self, command: StillCommand) -> StillCommandOutcome {
+        StillCommandOutcome::Unsupported(command)
+    }
+
+    /// Продвигает незаконченные снимки: опрос fence-ов, следующая полоса проявления, итоговые события.
+    /// Поток зовёт на каждом показанном кадре после показа. По умолчанию снимков нет — ничего.
+    fn advance_stills(&mut self) {}
 }

@@ -378,3 +378,46 @@ fn level_line_follows_the_world_horizon_in_portrait_and_in_landscape() {
         "«ровно» судится по ближайшей оси: отклонение 3°, а не 93°"
     );
 }
+
+#[test]
+fn flash_is_not_drawn_or_tappable_while_the_camera_reports_no_flash() {
+    use crate::facts::{CameraFacts, FlashAvailability};
+    use crate::test_support::live_facts;
+    let mut rig = Rig::new();
+    assert_eq!(
+        icon_transforms(rig.frame(), IconId::FlashOff).len(),
+        1,
+        "с вспышкой значок есть"
+    );
+    let old_flash_spot = rig.center_with(|g| g.strip_icon(0, 3));
+
+    rig.screen.handle_action(ScreenAction::CameraFactsChanged(CameraFacts {
+        flash: FlashAvailability::Unavailable,
+        ..live_facts()
+    }));
+    rig.run(100);
+
+    assert!(
+        icon_transforms(&rig.last, IconId::FlashOff).is_empty(),
+        "значка вспышки нет в кадре"
+    );
+    assert!(icon_transforms(&rig.last, IconId::FlashOn).is_empty());
+    rig.tap(old_flash_spot);
+    assert_eq!(
+        rig.screen.state().settings().flash,
+        crate::settings::FlashMode::Off,
+        "тап по бывшему месту"
+    );
+
+    // В меню Controls пункта вспышки тоже нет, остальные на месте.
+    rig.act(ScreenAction::ControlsMenuOpenRequested);
+    rig.run(900);
+    assert!(
+        icon_transforms(&rig.last, IconId::FlashOff).is_empty(),
+        "в меню нет значка вспышки"
+    );
+    assert!(
+        !icon_transforms(&rig.last, IconId::AspectRatio).is_empty(),
+        "пункт Aspect на месте"
+    );
+}

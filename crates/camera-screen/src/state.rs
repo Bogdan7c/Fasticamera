@@ -15,14 +15,15 @@ use thiserror::Error;
 
 use crate::config::{ScreenConfig, ScreenConfigError};
 use crate::exposure::ExposureState;
-use crate::facts::{CameraFacts, CameraPresence};
+use crate::facts::{CameraFacts, CameraPresence, FlashAvailability};
 use crate::focus::FocusState;
 use crate::layout::{FramingIntent, ScreenLayout};
 use crate::level::LevelReading;
 use crate::modes::{CaptureMode, ModeDescriptor, ModeRegistry};
 use crate::orientation::icon_rotation_clockwise_degrees;
 use crate::outcome::RejectionCounters;
-use crate::settings::{CaptureSettings, TimerSetting};
+use crate::saving::SavingShots;
+use crate::settings::{CaptureSettings, FlashMode, TimerSetting};
 use crate::shutter::{ShotRequestId, ShutterState, ThumbnailState};
 use crate::tools::ToolId;
 use crate::viewfinder_map::{MappingError, MirrorMode, StreamGeometry, ViewfinderMapping};
@@ -98,11 +99,17 @@ pub struct ScreenState {
     pub(crate) shutter: ShutterState,
     pub(crate) thumbnail: ThumbnailState,
     pub(crate) next_request: u64,
-    /// Срок, после которого ждать `CaptureFinished` бессмысленно (`CaptureConfig`); `Some` только
-    /// пока затвор в `Capturing`.
+    /// Срок, после которого ждать `CaptureSecured` бессмысленно (`CaptureConfig::capture_timeout_ms`); `Some`
+    /// только пока затвор в `Capturing`.
     pub(crate) capture_deadline: Option<MonotonicNanos>,
-    /// Сколько снимков экран объявил потерянными (камера пропала или итог не пришёл в срок).
+    /// Захваченные снимки, ждущие сохранения (решение 140); у каждого свой срок `saving_timeout_ms`.
+    pub(crate) saving: SavingShots,
+    /// Сколько снимков экран объявил потерянными (камера пропала до захвата, захват или сохранение не
+    /// уложились в срок).
     pub(crate) lost_captures: u32,
+    /// Сколько захваченных снимков не удалось взять на учёт из-за переполнения набора. Недостижимо при
+    /// исправной работе (нажатие при полном наборе отвергается заранее), счётчик — страховка от тихой потери.
+    pub(crate) saving_overflows: u32,
     /// Последний известный момент времени (метки действий не убывают). Нужен, когда индикатор
     /// создаётся по факту камеры, а не по жесту: у факта своей метки времени нет.
     pub(crate) last_time: MonotonicNanos,
@@ -132,7 +139,9 @@ impl ScreenState {
             thumbnail: ThumbnailState::Empty,
             next_request: 1,
             capture_deadline: None,
+            saving: SavingShots::new(config.capture.max_saving_shots),
             lost_captures: 0,
+            saving_overflows: 0,
             last_time: MonotonicNanos::from_nanos(0),
             surface: None,
             layout: None,
@@ -225,10 +234,20 @@ impl ScreenState {
         self.level
     }
 
-    /// Сколько снимков потеряно: камера пропала во время съёмки или итог не пришёл в срок
-    /// (`CaptureConfig::result_timeout_ms`). Потеря считается, а не глотается молча.
+    /// Сколько снимков потеряно: камера пропала во время захвата, кадр не захвачен или снимок не сохранён в срок
+    /// (`CaptureConfig::capture_timeout_ms` / `saving_timeout_ms`). Потеря считается, а не глотается молча.
     pub fn lost_captures(&self) -> u32 {
         self.lost_captures
+    }
+
+    /// Сколько захваченных снимков сейчас сохраняется (затвор при этом свободен).
+    pub fn saving_shots(&self) -> usize {
+        self.saving.len()
+    }
+
+    /// Сколько захваченных снимков не взято на учёт из-за переполнения набора (см. поле).
+    pub fn saving_overflows(&self) -> u32 {
+        self.saving_overflows
     }
 
     pub fn rejections(&self) -> &RejectionCounters {
@@ -266,13 +285,48 @@ impl ScreenState {
             .iter()
             .copied()
             .filter(|tool| *tool != ToolId::Timer || self.settings.timer != TimerSetting::Off)
+            .filter(|tool| self.is_tool_available(*tool))
             .collect()
     }
 
-    /// Пункты меню Controls текущего режима.
-    pub fn menu_tools(&self) -> &[ToolId] {
-        self.current_descriptor()
-            .map_or(&[], |descriptor| descriptor.tools.menu())
+    /// Пункты меню Controls текущего режима, которые можно показать сейчас (без инструментов, которых у камеры
+    /// нет: вспышка, пока `FlashAvailability::Unavailable`). Остальные пункты идут подряд в порядке меню.
+    pub fn menu_tools(&self) -> Vec<ToolId> {
+        let Some(descriptor) = self.current_descriptor() else {
+            return Vec::new();
+        };
+        descriptor
+            .tools
+            .menu()
+            .iter()
+            .copied()
+            .filter(|tool| self.is_tool_available(*tool))
+            .collect()
+    }
+
+    /// Есть ли у камеры то, чем инструмент пользуется (инвариант 6: нет возможности — нет значка и пункта).
+    pub(crate) fn is_tool_available(&self, tool: ToolId) -> bool {
+        match tool {
+            ToolId::Flash => self.facts.flash == FlashAvailability::Available,
+            ToolId::Raw
+            | ToolId::Timer
+            | ToolId::Exposure
+            | ToolId::Aspect
+            | ToolId::Grid
+            | ToolId::Level
+            | ToolId::Live
+            | ToolId::Styles
+            | ToolId::Night => true,
+        }
+    }
+
+    /// Вспышка, которая действительно уйдёт в снимок: выбор пользователя, но только если камера вспышку
+    /// поддерживает. Выбранная `On`, когда вспышка пропала, в снимок не попадает (`Off`).
+    pub fn effective_flash(&self) -> FlashMode {
+        match self.facts.flash {
+            FlashAvailability::Available => self.settings.flash,
+            FlashAvailability::Unavailable => FlashMode::Off,
+        }
     }
 
     /// Где затвор (решения 94, 103): под шторкой при меню, поднят при карточке, иначе на месте.
@@ -316,6 +370,17 @@ impl ScreenState {
     /// Целевой угол поворота значков, градусы по часовой (раскладка не меняется).
     pub fn icon_rotation_clockwise_degrees(&self) -> f32 {
         icon_rotation_clockwise_degrees(self.orientation)
+    }
+
+    /// Входы формулы кадрирования на сейчас: соотношение, направление, зум, шкала камер. Те же значения, что
+    /// экран отдаёт рендеру (`framing_intent`), поэтому снимок кадрируется как видоискатель.
+    pub(crate) fn zoom_framing(&self) -> ZoomFraming {
+        ZoomFraming {
+            aspect: self.settings.aspect.crop_aspect(),
+            facing: self.zoom.facing(),
+            ratio: self.zoom.ratio(),
+            catalog: self.zoom_catalog(),
+        }
     }
 
     /// Команда рендеру для текущего соотношения и зума; `None`, пока нет раскладки.

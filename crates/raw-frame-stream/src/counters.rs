@@ -54,6 +54,12 @@ pub struct RawStreamCounters {
     pub viewfinder_pacing_switches: u64,
     /// Кольцо снимков вытеснило старейший кадр (норма `KeepLast`).
     pub ring_evicted: u64,
+    /// Выбор кадра из кольца для снимка: точное попадание.
+    pub ring_picks_exact: u64,
+    /// Выбор из кольца: выдан ближайший годный кадр вместо запрошенного (причина — в `RingPick`).
+    pub ring_picks_substituted: u64,
+    /// Выбор из кольца: выдать нечего (выключено, пусто, нет годного).
+    pub ring_picks_unavailable: u64,
     /// Потребитель «ни одного молча» не принял кадр — брак (будущая запись).
     pub lossless_defects: u64,
 
@@ -121,6 +127,9 @@ pub(crate) struct StreamAccounting {
     viewfinder_queued: AtomicU64,
     pub(crate) viewfinder_pacing_switches: AtomicU64,
     pub(crate) ring_evicted: AtomicU64,
+    pub(crate) ring_picks_exact: AtomicU64,
+    pub(crate) ring_picks_substituted: AtomicU64,
+    pub(crate) ring_picks_unavailable: AtomicU64,
     pub(crate) lossless_defects: AtomicU64,
     released_after_fence: AtomicU64,
     released_unused: AtomicU64,
@@ -213,6 +222,9 @@ impl StreamAccounting {
             viewfinder_queued: self.viewfinder_queued.load(ORDER),
             viewfinder_pacing_switches: self.viewfinder_pacing_switches.load(ORDER),
             ring_evicted: self.ring_evicted.load(ORDER),
+            ring_picks_exact: self.ring_picks_exact.load(ORDER),
+            ring_picks_substituted: self.ring_picks_substituted.load(ORDER),
+            ring_picks_unavailable: self.ring_picks_unavailable.load(ORDER),
             lossless_defects: self.lossless_defects.load(ORDER),
             released_after_fence: self.released_after_fence.load(ORDER),
             released_unused: self.released_unused.load(ORDER),

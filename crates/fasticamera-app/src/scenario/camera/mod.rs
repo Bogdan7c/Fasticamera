@@ -22,6 +22,10 @@
 //! * сессия 13: [`ZoomScenario`] — `zoom` (переключение объективов и зум на настоящем экране, без чёрных кадров; план —
 //!   `zoom_plan`, исполнитель — `zoom_runner`, разборы — `zoom_record`, вердикт — `zoom_verdict`). Тоже `KeepRunning`.
 //!
+//! * сессия 14: [`CaptureScenario`] — `capture` (снимок на настоящем экране: один HEIF, HEIF + DNG, серия из 10 быстрых нажатий; файлы
+//!   проверяет и удаляет скрипт ПК по адресам из строки результата; план — `capture_plan`, исполнитель — `capture_runner`/`capture_burst`,
+//!   отчёт — `capture_report`, вердикт — `capture_verdict`). Тоже `KeepRunning`.
+//!
 //! Устройство каждого сценария одинаково: логика движется по тикам маршрутизатора (ничего не
 //! блокируется), отчёт — отдельные `Serialize`-структуры (`*_report.rs`), вердикт — чистая функция
 //! `evaluate_*` с тестами на каждое правило. Общее — `progress` (дедлайны, журнал событий) и
@@ -41,6 +45,15 @@ mod ae_trace_steps;
 mod ae_trace_test_support;
 mod ae_trace_verdict;
 mod backend_summary;
+mod capture;
+mod capture_burst;
+mod capture_observation;
+mod capture_plan;
+mod capture_report;
+mod capture_runner;
+#[cfg(test)]
+mod capture_test_support;
+mod capture_verdict;
 mod catalog;
 mod catalog_report;
 mod detail;
@@ -129,6 +142,7 @@ use super::observing::ObservingScenario;
 use crate::raw_stream_scenario_config::RawStreamRunKind;
 
 pub use ae_trace::AeTraceScenario;
+pub use capture::CaptureScenario;
 pub use catalog::CameraCatalogScenario;
 #[cfg(feature = "debug-scenarios")]
 pub use evict::CameraEvictScenario;
@@ -175,6 +189,8 @@ pub enum CameraScenario {
     Screen,
     /// `zoom`: переключение объективов и зум на настоящем экране камеры, без чёрных кадров (сессия 13).
     Zoom,
+    /// `capture`: снимок на настоящем экране камеры, HEIF/DNG и серия быстрых нажатий до файла в галерее (сессия 14).
+    Capture,
     /// `standby`: тёплая вторая камера, обмен ролей без переоткрытия, частота обеих камер (сессия 13b).
     Standby,
     /// `3a`: автоматика 3A и ручные параметры на живом видоискателе (сессия 08).
@@ -208,6 +224,7 @@ impl CameraScenario {
             CameraScenario::Glass,
             CameraScenario::Screen,
             CameraScenario::Zoom,
+            CameraScenario::Capture,
             CameraScenario::Standby,
         ]
     }
@@ -238,6 +255,7 @@ impl CameraScenario {
             CameraScenario::Glass => "glass",
             CameraScenario::Screen => "screen",
             CameraScenario::Zoom => "zoom",
+            CameraScenario::Capture => "capture",
             CameraScenario::Standby => "standby",
         }
     }
@@ -263,6 +281,7 @@ impl CameraScenario {
             CameraScenario::Glass => Box::new(GlassScenario::new()),
             CameraScenario::Screen => Box::new(ScreenScenario::new()),
             CameraScenario::Zoom => Box::new(ZoomScenario::new()),
+            CameraScenario::Capture => Box::new(CaptureScenario::new()),
             CameraScenario::Standby => Box::new(StandbyScenario::new()),
         }
     }

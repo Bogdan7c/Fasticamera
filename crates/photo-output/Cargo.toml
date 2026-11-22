@@ -1,0 +1,23 @@
+[package]
+name = "photo-output"
+description = "Файлы снимков Fasticamera: своя запись DNG по спецификации, Exif, служба записи снимков (HEIF/JPEG через сервисы оболочки, MediaStore)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+camera-contract.workspace = true
+shell-contract.workspace = true
+still-contract.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+camera-contract = { workspace = true, features = ["fixtures"] }
+
+[lints]
+workspace = true

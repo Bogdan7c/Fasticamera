@@ -1,0 +1,306 @@
+//! Движок снимков: очередь, протокол событий, ленты от видоискателя. Шаги по кадрам — в `engine_steps`.
+//!
+//! # Кто чем владеет
+//! * движок — очередь снимков ([`StillEntry`]), журнал показов, историю параметров кадров, счётчики;
+//! * [`StillGpu`] — железо (создаётся лениво через [`GpuMaker`], живёт, пока есть surface);
+//! * кольцо снимков — источник кадров (`SnapshotRingFrames`, неразрушающий `pick`).
+//!
+//! # Инварианты
+//! 1. Каждый принятый `Begin` кончается РОВНО одним итоговым событием: итог доставляет только
+//!    [`StillEngine::finish`], а он забирает запись по значению (см. `entry`).
+//! 2. Поток рендера не ждёт: GPU опрашивается, а не ждётся (исключение — [`StillEngine::abandon_all`], где ожидание
+//!    ограничено реализацией GPU). Исход GPU неизвестен (сбой опроса, срок) — GPU объявляется потерянным и его
+//!    объекты остаются в учтённой утечке (`gpu_loss`), а не уничтожаются.
+//! 3. Один снимок копируется и один проявляется за раз (память); полос на кадр не больше `slices_per_frame`.
+//! 4. Лизинг кадра кольца у движка живёт только внутри `start_capture`: дальше им владеет GPU до fence копии.
+
+use std::sync::Arc;
+use std::time::Instant;
+
+use camera_contract::frame_passport::StreamPassport;
+use raw_frame_stream::SnapshotRingFrames;
+use still_contract::develop::{DevelopFailure, PrimaryTargetOffer};
+use still_contract::frame_choice::NoFrameReason;
+
+use super::diagnostics::StillDiagnostics;
+use super::entry::{EstimateBasis, Stage, StillEntry, StillOutcome};
+use super::feed::StillFeed;
+use super::gpu::StillGpu;
+use super::params_history::FrameParamsHistory;
+use super::present_log::PresentLog;
+use crate::backend::PastPresentation;
+use crate::config::{StillDevelopConfig, ViewfinderToneConfig};
+use crate::still::{StillBegin, StillCommand, StillCommandOutcome};
+
+/// Часы движка: отдельный шов, чтобы сроки проверялись тестами без ожидания.
+pub trait StillClock: Send {
+    fn now(&self) -> Instant;
+}
+
+/// Системные часы.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SystemStillClock;
+
+impl StillClock for SystemStillClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+}
+
+/// Создаёт GPU снимков под поток кадров (полезная область потока определяет размеры буферов).
+pub type GpuMaker<G> = Box<dyn FnMut(&Arc<StreamPassport>) -> Result<G, String> + Send>;
+
+/// Движок снимков одного бэкенда.
+pub struct StillEngine<G: StillGpu> {
+    pub(super) config: StillDevelopConfig,
+    /// Ручки тона видоискателя: снимок проявляется тем же тоном (`viewfinder.tone`).
+    pub(super) tone: ViewfinderToneConfig,
+    pub(super) ring: SnapshotRingFrames,
+    pub(super) clock: Box<dyn StillClock>,
+    pub(super) maker: GpuMaker<G>,
+    pub(super) gpu: Option<G>,
+    /// Очередь по порядку прихода.
+    pub(super) queue: Vec<StillEntry<G>>,
+    pub(super) present_log: PresentLog,
+    pub(super) params_history: FrameParamsHistory,
+    /// Поток последнего обработанного кадра: под него заранее создаётся GPU.
+    pub(super) current_stream: Option<Arc<StreamPassport>>,
+    /// Поток, для которого создание GPU заранее уже не удалось (повторять до смены потока незачем).
+    pub(super) prewarm_failed_for: Option<Arc<StreamPassport>>,
+    pub(super) counters: StillDiagnostics,
+}
+
+impl<G: StillGpu> StillEngine<G> {
+    /// Движок поверх кольца снимков. GPU создаётся лениво через `maker`.
+    pub fn new(
+        config: StillDevelopConfig,
+        tone: ViewfinderToneConfig,
+        ring: SnapshotRingFrames,
+        maker: GpuMaker<G>,
+        clock: Box<dyn StillClock>,
+    ) -> Self {
+        let present_capacity = usize::try_from(config.present_log_capacity).unwrap_or(usize::MAX);
+        let params_capacity = usize::try_from(config.frame_params_capacity).unwrap_or(usize::MAX);
+        Self {
+            config,
+            tone,
+            ring,
+            clock,
+            maker,
+            gpu: None,
+            queue: Vec::new(),
+            present_log: PresentLog::new(present_capacity),
+            params_history: FrameParamsHistory::new(params_capacity),
+            current_stream: None,
+            prewarm_failed_for: None,
+            counters: StillDiagnostics::default(),
+        }
+    }
+
+    // ---- команды ----
+
+    /// Принимает команду потока рендера. `Unsupported` — только для цели, которой некуда лечь (снимка нет или он
+    /// не ждёт цель): команда возвращается потоку, он её уничтожает (поверхность кодера отпускается).
+    pub fn apply_command(&mut self, command: StillCommand) -> StillCommandOutcome {
+        match command {
+            StillCommand::Begin(begin) => {
+                self.begin(begin);
+                StillCommandOutcome::Accepted
+            }
+            StillCommand::Target(offer) => self.accept_target(offer),
+        }
+    }
+
+    /// Отказ `Begin`, пришедшему без присоединённой surface: у снимка нет потока рендера с показами и GPU, а
+    /// очередь двигается только на показанных кадрах (`advance` после показа) — запись ждала бы до следующего
+    /// attach. Итог тот же, что у снимка, брошенного отсоединением: `NotSecured(RendererStopped)`, ровно один.
+    pub fn refuse_begin_without_surface(&mut self, begin: StillBegin) {
+        self.counters.begins += 1;
+        self.counters.refusals.begin_without_surface += 1;
+        let StillBegin { plan, events } = begin;
+        // Стадия фиктивная: запись нужна лишь как носитель инварианта «ровно один итог».
+        let entry = StillEntry::new(
+            plan,
+            events,
+            Stage::Choosing {
+                deadline: self.clock.now(),
+                estimate: EstimateBasis::NoLiveFrame,
+            },
+        );
+        self.finish(entry, StillOutcome::NotSecured(NoFrameReason::RendererStopped));
+    }
+
+    fn begin(&mut self, begin: StillBegin) {
+        self.counters.begins += 1;
+        let StillBegin { plan, events } = begin;
+        let estimate = match self.present_log.latest_shown() {
+            Some(super::feed::ShownContent::Live(sensor_timestamp)) => EstimateBasis::Live(sensor_timestamp),
+            Some(super::feed::ShownContent::NotLive) | None => EstimateBasis::NoLiveFrame,
+        };
+        let deadline = self.clock.now() + std::time::Duration::from_millis(u64::from(self.config.presentation_wait_ms));
+        let entry = StillEntry::new(plan, events, Stage::Choosing { deadline, estimate });
+        if self.ring.capacity() == 0 {
+            self.counters.picks.no_frame_ring_disabled += 1;
+            return self.finish(entry, StillOutcome::NotSecured(NoFrameReason::RingDisabled));
+        }
+        let queue_capacity = usize::try_from(self.config.queue_capacity).unwrap_or(usize::MAX);
+        if self.queue.len() >= queue_capacity {
+            self.counters.refusals.queue_full += 1;
+            return self.finish(entry, StillOutcome::NotSecured(NoFrameReason::RendererBusy));
+        }
+        self.queue.push(entry);
+        self.counters.queue_high_water = self.counters.queue_high_water.max(self.queue.len());
+    }
+
+    fn accept_target(&mut self, offer: PrimaryTargetOffer) -> StillCommandOutcome {
+        let id = offer.id();
+        let position = self
+            .queue
+            .iter()
+            .position(|entry| entry.plan.id == id && matches!(entry.stage, Stage::AwaitingTarget { .. }));
+        let Some(index) = position else {
+            self.counters.targets_unexpected += 1;
+            return StillCommandOutcome::Unsupported(StillCommand::Target(offer));
+        };
+        let mut entry = self.queue.remove(index);
+        match offer {
+            PrimaryTargetOffer::Ready { target, .. } => {
+                if let Stage::AwaitingTarget { inputs, .. } = entry.take_stage() {
+                    entry.stage = Stage::AwaitingDevelop { target, inputs };
+                }
+                self.queue.insert(index, entry);
+            }
+            // Контракт `develop.rs`: цели нет — рендер отпускает снимок итогом `TargetUnavailable`.
+            PrimaryTargetOffer::Unavailable { .. } => {
+                self.finish(entry, StillOutcome::Failed(DevelopFailure::TargetUnavailable));
+            }
+        }
+        StillCommandOutcome::Accepted
+    }
+
+    // ---- ленты от видоискателя и драйвера ----
+
+    /// Принимает ленту видоискателя за кадр (показы и параметры обработанных кадров).
+    pub fn ingest_feed(&mut self, feed: StillFeed) {
+        if feed.presents_restarted {
+            self.present_log.restart();
+        }
+        for record in feed.presents {
+            self.present_log.record_shown(record);
+        }
+        let got_params = !feed.params.is_empty();
+        for (sensor_timestamp, params) in feed.params {
+            self.current_stream = Some(Arc::clone(&params.stream));
+            self.params_history.record(sensor_timestamp, params);
+        }
+        if got_params {
+            self.prewarm_gpu();
+        }
+    }
+
+    /// Принимает записи показа драйвера (`present_id` → момент на экране).
+    pub fn ingest_presentations(&mut self, presentations: &[PastPresentation]) {
+        for presentation in presentations {
+            self.present_log
+                .record_timing(presentation.present_id, presentation.actual_present);
+        }
+    }
+
+    // ---- итоги ----
+
+    /// ЕДИНСТВЕННОЕ место, где снимок получает итог: считает его и доставляет, забирая запись.
+    pub(super) fn finish(&mut self, entry: StillEntry<G>, outcome: StillOutcome) {
+        let counters = &mut self.counters.outcomes;
+        match &outcome {
+            StillOutcome::NotSecured(_) => counters.not_secured += 1,
+            StillOutcome::Rendered => counters.rendered += 1,
+            StillOutcome::Readback(_) => counters.readback += 1,
+            StillOutcome::Failed(failure) => match failure {
+                DevelopFailure::ParamsUnavailable(_) => counters.failed_params_unavailable += 1,
+                DevelopFailure::Gpu(_) => counters.failed_gpu += 1,
+                DevelopFailure::TargetUnavailable => counters.failed_target_unavailable += 1,
+                DevelopFailure::TargetTimedOut => counters.failed_target_timed_out += 1,
+                DevelopFailure::Abandoned => counters.failed_abandoned += 1,
+            },
+        }
+        entry.deliver_final(outcome);
+    }
+
+    // ---- остановка ----
+
+    /// Бросает все незаконченные снимки: surface отпущена, поток останавливается или GPU пересоздаётся.
+    ///
+    /// Порядок: сначала GPU (ограниченное ожидание всей отправленной работы), потом итоги записям. Если GPU не
+    /// освободился за срок, объекты GPU снимков намеренно утекают (соглашение crate): память, в которую ещё может
+    /// писать GPU, не уничтожается.
+    pub fn abandon_all(&mut self) {
+        let gpu_idle = match self.gpu.as_mut() {
+            Some(gpu) => gpu.abandon().gpu_idle,
+            None => true,
+        };
+        if !gpu_idle {
+            self.counters.gpu_leaked_on_abandon += 1;
+            tracing::error!(
+                target: "fasticamera::render::still",
+                "GPU снимков не освободился: объекты проявления намеренно оставлены в утечку"
+            );
+        }
+        let entries: Vec<StillEntry<G>> = self.queue.drain(..).collect();
+        for mut entry in entries {
+            if entry.is_secured() {
+                self.counters.abandoned_after_capture += 1;
+            } else {
+                self.counters.abandoned_before_capture += 1;
+            }
+            if !gpu_idle {
+                entry.leak_gpu_objects();
+            }
+            let outcome = entry.abandonment_outcome();
+            self.finish(entry, outcome);
+        }
+        if let Some(gpu) = self.gpu.take()
+            && !gpu_idle
+        {
+            std::mem::forget(gpu);
+        }
+    }
+
+    /// Surface отпущена: снимки брошены, GPU и ленты забыты (после отсоединения живых объектов GPU снимков нет).
+    pub fn on_detach(&mut self) {
+        self.abandon_all();
+        self.present_log.restart();
+        self.params_history.clear();
+        self.current_stream = None;
+        self.prewarm_failed_for = None;
+    }
+
+    // ---- диагностика ----
+
+    /// Снимок счётчиков.
+    pub fn diagnostics(&self) -> StillDiagnostics {
+        StillDiagnostics {
+            queue_len: self.queue.len(),
+            ..self.counters.clone()
+        }
+    }
+
+    /// Сколько снимков сейчас в очереди (тесты).
+    #[cfg(test)]
+    pub fn queue_len(&self) -> usize {
+        self.queue.len()
+    }
+
+    /// Создан ли GPU снимков (тесты).
+    #[cfg(test)]
+    pub fn has_gpu(&self) -> bool {
+        self.gpu.is_some()
+    }
+}
+
+impl<G: StillGpu> Drop for StillEngine<G> {
+    /// Бэкенд уничтожен (остановка потока, паника): каждый снимок получает итог, GPU освобождается по тем же
+    /// правилам, что при отсоединении.
+    fn drop(&mut self) {
+        self.abandon_all();
+    }
+}

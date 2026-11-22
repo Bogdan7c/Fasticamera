@@ -1,13 +1,17 @@
-//! Сервис снимка для экрана камеры (сессия 12): нейтральный контракт и ФЕЙК до настоящего сервиса (сессия 14).
+//! Сервис снимка для экрана камеры (сессия 12, две фазы — сессия 14): нейтральный контракт и ФЕЙК до настоящего
+//! сервиса.
 //!
-//! Экран только просит снимок ([`camera_screen::Effect::Capture`]) и ждёт `CaptureFinished` обратно. Кто и как
-//! снимает — забота сервиса за трейтом [`CaptureService`]: сессия 14 подставит настоящий (RAW → ISP → файл),
-//! экран и исполнитель эффектов при этом не изменятся.
+//! Экран только просит снимок ([`camera_screen::Effect::Capture`], с полным [`ShotRequest`], включая момент
+//! нажатия) и ждёт два ответа обратно (решение 140): `CaptureSecured` («кадр захвачен», затвор свободен) и
+//! `CaptureFinished` («сохранён» или «ошибка»). Кто и как снимает — забота сервиса за трейтом [`CaptureService`]:
+//! настоящий (кольцо кадров → ISP → файл) подставляется без изменений экрана и исполнителя эффектов. Трейт для
+//! двух фаз НЕ менялся: обе фазы приходят тем же путём — действиями в канал входа экрана.
 //!
 //! Фейк [`FakeCaptureService`]:
 //! * записывает запросы в ОГРАНИЧЕННЫЙ журнал (ёмкость из конфига, вытеснение — со счётчиком);
-//! * через `camera_screen.fake_capture_delay_ms` отвечает экрану `CaptureFinished(Saved)` через тот же канал входа,
-//!   что касания (задержка 0 — ответ сразу);
+//! * через `camera_screen.fake_capture_secured_delay_ms` отвечает `CaptureSecured`, а через
+//!   `camera_screen.fake_capture_delay_ms` — `CaptureFinished(Saved)`, через тот же канал входа, что касания
+//!   (задержка 0 — ответ сразу). Захват не может случиться позже сохранения: срок `Secured` не больше срока `Saved`;
 //! * БЕЗ потоков: отложенные ответы лежат в очереди, которую источник UI опрашивает на каждом кадре
 //!   ([`CaptureService::poll_completions`], время — `present_time` кадра). Поток на каждый снимок на потоке рендера
 //!   был бы лишней аллокацией и неограниченным числом «сирот»;
@@ -24,7 +28,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use camera_screen::ScreenAction;
-use camera_screen::shutter::{CaptureOutcome, ShotRequest};
+use camera_screen::shutter::{CaptureOutcome, ShotRequest, ShotRequestId};
 use shell_contract::clock::MonotonicNanos;
 
 use crate::camera_screen_input::{InputDelivery, ScreenInputInjector};
@@ -71,25 +75,51 @@ impl CaptureCompletionSlot {
     }
 
     /// Новый экран установлен: ответы идут в его канал.
+    ///
+    /// Эпоха растёт ПОД замком адреса: иначе ответ старой эпохи, проверенный между сменой адреса и ростом
+    /// эпохи, попал бы в канал нового экрана (номера запросов свежего экрана начинаются с 1 заново).
     pub fn attach(&self, injector: ScreenInputInjector) {
-        *self.lock() = Some(injector);
+        let mut target = self.lock();
+        *target = Some(injector);
         self.epoch.fetch_add(1, Ordering::AcqRel);
     }
 
     /// Экран снят: ответов адресовать некому.
     pub fn detach(&self) {
-        *self.lock() = None;
+        let mut target = self.lock();
+        *target = None;
         self.epoch.fetch_add(1, Ordering::AcqRel);
     }
 
-    /// Текущая эпоха экрана: отложенный ответ запоминает её при постановке и сверяет при выдаче.
-    fn current_epoch(&self) -> u64 {
+    /// Текущая эпоха экрана: ответ запоминает её при постановке запроса и сверяет при выдаче.
+    pub(crate) fn current_epoch(&self) -> u64 {
         self.epoch.load(Ordering::Acquire)
     }
 
     fn deliver(&self, action: ScreenAction) -> CompletionDelivery {
         // Адрес копируем из-под замка и отправляем уже без него.
         let target = self.lock().clone();
+        Self::inject(target, action)
+    }
+
+    /// Доставка ответа, обещанного в эпохе `epoch`: чужая эпоха (экран сменился) — ответ НЕ доставляется,
+    /// иначе он закрыл бы снимок нового экрана с тем же номером. Сверка и копия адреса — под одним замком.
+    pub(crate) fn deliver_in_epoch(&self, epoch: u64, action: ScreenAction) -> EpochDelivery {
+        let target = {
+            let target = self.lock();
+            if self.current_epoch() != epoch {
+                return EpochDelivery::StaleScreen;
+            }
+            target.clone()
+        };
+        match Self::inject(target, action) {
+            CompletionDelivery::Delivered => EpochDelivery::Delivered,
+            CompletionDelivery::NoScreen => EpochDelivery::NoScreen,
+            CompletionDelivery::Lost => EpochDelivery::Lost,
+        }
+    }
+
+    fn inject(target: Option<ScreenInputInjector>, action: ScreenAction) -> CompletionDelivery {
         match target {
             None => CompletionDelivery::NoScreen,
             Some(injector) => match injector.inject(action) {
@@ -98,6 +128,18 @@ impl CaptureCompletionSlot {
             },
         }
     }
+}
+
+/// Куда делся ответ настоящей службы снимков (она сверяет эпоху экрана, фейк — нет).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EpochDelivery {
+    Delivered,
+    /// Экран сменился после постановки запроса: ответ принадлежал старому экрану и снят.
+    StaleScreen,
+    /// Экрана в этот момент нет.
+    NoScreen,
+    /// Канал переполнен или экран уничтожен.
+    Lost,
 }
 
 /// Куда делся ответ фейка.
@@ -111,15 +153,17 @@ enum CompletionDelivery {
 }
 
 /// Счётчики фейка.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
 pub struct FakeCaptureCounters {
     /// Запросы, принятые журналом.
     pub submitted: u64,
-    /// Ответы `CaptureFinished`, дошедшие до канала экрана.
+    /// Ответы `CaptureSecured` («кадр захвачен»), дошедшие до канала экрана.
+    pub secured_delivered: u64,
+    /// Итоги `CaptureFinished(Saved)`, дошедшие до канала экрана (по одному на снимок).
     pub completions_delivered: u64,
-    /// Ответы, которым не нашлось экрана (снят на время сценария).
+    /// Ответы любой фазы, которым не нашлось экрана (снят на время сценария).
     pub completions_without_screen: u64,
-    /// Ответы, потерянные каналом (переполнение или уничтоженный экран).
+    /// Ответы любой фазы, потерянные каналом (переполнение или уничтоженный экран).
     pub completions_lost: u64,
     /// Старые записи журнала, вытесненные новыми (журнал ограничен конфигом).
     pub journal_evicted: u64,
@@ -132,6 +176,7 @@ pub struct FakeCaptureCounters {
 #[derive(Default)]
 struct CounterCells {
     submitted: AtomicU64,
+    secured_delivered: AtomicU64,
     delivered: AtomicU64,
     without_screen: AtomicU64,
     lost: AtomicU64,
@@ -140,14 +185,40 @@ struct CounterCells {
     dropped_on_screen_change: AtomicU64,
 }
 
+/// Фаза ответа фейка.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompletionPhase {
+    /// «Кадр захвачен» (`CaptureSecured`).
+    Secured,
+    /// «Сохранён» (`CaptureFinished(Saved)`).
+    Saved,
+}
+
 /// Ответ, которому ещё не пришёл срок.
 #[derive(Debug, Clone, Copy)]
 struct PendingCompletion {
     /// С какого момента (часы кадров) можно ответить.
     due: MonotonicNanos,
-    request: ShotRequest,
+    request: ShotRequestId,
+    phase: CompletionPhase,
     /// Эпоха экрана на момент постановки (см. [`CaptureCompletionSlot`]).
     epoch: u64,
+}
+
+/// Сроки ответов фейка: через сколько после запроса приходят две фазы.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FakeCaptureTiming {
+    /// До `CaptureSecured`. Не больше `saved_after`: захват не бывает позже сохранения.
+    pub secured_after: Duration,
+    /// До `CaptureFinished(Saved)`.
+    pub saved_after: Duration,
+}
+
+impl FakeCaptureTiming {
+    /// Срок захвата, зажатый сроком сохранения.
+    fn effective_secured_after(&self) -> Duration {
+        self.secured_after.min(self.saved_after)
+    }
 }
 
 /// Состояние фейка под одним замком: журнал и очередь отложенных ответов. Обе структуры ограничены.
@@ -159,7 +230,7 @@ struct FakeState {
 
 /// Фейк-сервис снимка: ограниченный журнал запросов и отложенный ответ `Saved`.
 pub struct FakeCaptureService {
-    delay: Duration,
+    timing: FakeCaptureTiming,
     /// Ёмкость журнала И очереди отложенных ответов (из конфига, не меньше 1).
     capacity: usize,
     slot: Arc<CaptureCompletionSlot>,
@@ -168,10 +239,10 @@ pub struct FakeCaptureService {
 }
 
 impl FakeCaptureService {
-    /// Фейк с задержкой ответа, ёмкостью журнала и ячейкой адреса (её переставляет сервис экрана).
-    pub fn new(delay: Duration, journal_capacity: usize, slot: Arc<CaptureCompletionSlot>) -> Self {
+    /// Фейк со сроками ответов, ёмкостью журнала и ячейкой адреса (её переставляет сервис экрана).
+    pub fn new(timing: FakeCaptureTiming, journal_capacity: usize, slot: Arc<CaptureCompletionSlot>) -> Self {
         Self {
-            delay,
+            timing,
             // Конфиг уже запретил 0; `max(1)` — страховка от нулевой ёмкости, при которой журнал не вёл бы себя как журнал.
             capacity: journal_capacity.max(1),
             slot,
@@ -186,12 +257,13 @@ impl FakeCaptureService {
 
     /// Последние принятые запросы по порядку (не больше ёмкости; более старые вытеснены и посчитаны).
     pub fn journal(&self) -> Vec<ShotRequest> {
-        self.lock_state().journal.iter().copied().collect()
+        self.lock_state().journal.iter().cloned().collect()
     }
 
     pub fn counters(&self) -> FakeCaptureCounters {
         FakeCaptureCounters {
             submitted: self.counters.submitted.load(Ordering::Relaxed),
+            secured_delivered: self.counters.secured_delivered.load(Ordering::Relaxed),
             completions_delivered: self.counters.delivered.load(Ordering::Relaxed),
             completions_without_screen: self.counters.without_screen.load(Ordering::Relaxed),
             completions_lost: self.counters.lost.load(Ordering::Relaxed),
@@ -226,20 +298,35 @@ impl FakeCaptureService {
     }
 
     /// Срок ответа: `now` + задержка. Насыщающее сложение: огромная задержка не должна переполнять `i64`.
-    fn due_after(&self, now: MonotonicNanos) -> MonotonicNanos {
-        let delay_nanos = i64::try_from(self.delay.as_nanos()).unwrap_or(i64::MAX);
+    fn due_after(now: MonotonicNanos, delay: Duration) -> MonotonicNanos {
+        let delay_nanos = i64::try_from(delay.as_nanos()).unwrap_or(i64::MAX);
         MonotonicNanos::from_nanos(now.as_nanos().saturating_add(delay_nanos))
+    }
+
+    /// Сколько снимков ещё ждут итога сохранения (запись `Saved` в очереди — по одной на снимок).
+    fn outstanding_shots(state: &FakeState) -> usize {
+        state
+            .pending
+            .iter()
+            .filter(|pending| pending.phase == CompletionPhase::Saved)
+            .count()
     }
 }
 
-/// Отправляет ответ и записывает его судьбу в счётчики.
-fn complete_saved(slot: &CaptureCompletionSlot, counters: &CounterCells, request: ShotRequest) {
-    let action = ScreenAction::CaptureFinished {
-        request: request.request,
-        outcome: CaptureOutcome::Saved,
+/// Отправляет ответ нужной фазы и записывает его судьбу в счётчики.
+fn complete(slot: &CaptureCompletionSlot, counters: &CounterCells, request: ShotRequestId, phase: CompletionPhase) {
+    let (action, delivered) = match phase {
+        CompletionPhase::Secured => (ScreenAction::CaptureSecured { request }, &counters.secured_delivered),
+        CompletionPhase::Saved => (
+            ScreenAction::CaptureFinished {
+                request,
+                outcome: CaptureOutcome::Saved,
+            },
+            &counters.delivered,
+        ),
     };
     let cell = match slot.deliver(action) {
-        CompletionDelivery::Delivered => &counters.delivered,
+        CompletionDelivery::Delivered => delivered,
         CompletionDelivery::NoScreen => &counters.without_screen,
         CompletionDelivery::Lost => &counters.lost,
     };
@@ -250,45 +337,59 @@ impl CaptureService for FakeCaptureService {
     fn submit(&self, request: ShotRequest, now: MonotonicNanos) -> SubmitOutcome {
         // Каждый снимок виден в logcat: без этого «миниатюра появилась» на телефоне нельзя связать
         // с конкретным нажатием (затвор, громкость, таймер) — снимки редки, лог не шумит.
-        tracing::info!(target: "fasticamera::camera_screen", ?request, "фейк-снимок принят");
-        if self.delay.is_zero() {
-            Self::record(&mut self.lock_state(), self.capacity, &self.counters, request);
-            complete_saved(&self.slot, &self.counters, request);
-            return SubmitOutcome::Accepted;
-        }
+        tracing::info!(target: "fasticamera::camera_screen", request = ?request.request, pressed_at = ?request.pressed_at, "фейк-снимок принят");
+        let id = request.request;
+        let secured_after = self.timing.effective_secured_after();
         let mut state = self.lock_state();
         // Ответы старого экрана не должны ни занимать место в очереди, ни закрывать снимки нового.
         self.drop_stale_pending(&mut state);
         // Копить отложенные ответы без предела нельзя: полная очередь — честное «занято».
-        if state.pending.len() >= self.capacity {
+        if Self::outstanding_shots(&state) >= self.capacity {
             self.counters.rejected_pending_full.fetch_add(1, Ordering::Relaxed);
             tracing::warn!(target: "fasticamera::camera_screen", "очередь ответов фейк-снимка полна: запрос отвергнут как занятый");
             return SubmitOutcome::Rejected(SubmitRejection::Busy);
         }
         Self::record(&mut state, self.capacity, &self.counters, request);
-        state.pending.push_back(PendingCompletion {
-            due: self.due_after(now),
-            request,
-            epoch: self.slot.current_epoch(),
-        });
+        let epoch = self.slot.current_epoch();
+        // Фазы без задержки отвечают сразу (после выхода из-под замка: отправка берёт другой замок), остальные
+        // ждут срока кадровых часов.
+        let mut immediate = Vec::new();
+        for (phase, delay) in [
+            (CompletionPhase::Secured, secured_after),
+            (CompletionPhase::Saved, self.timing.saved_after),
+        ] {
+            if delay.is_zero() {
+                immediate.push(phase);
+            } else {
+                state.pending.push_back(PendingCompletion {
+                    due: Self::due_after(now, delay),
+                    request: id,
+                    phase,
+                    epoch,
+                });
+            }
+        }
+        drop(state);
+        for phase in immediate {
+            complete(&self.slot, &self.counters, id, phase);
+        }
         SubmitOutcome::Accepted
     }
 
     fn poll_completions(&self, now: MonotonicNanos) {
         // Созревшие ответы достаём под замком, а отправляем уже без него (отправка берёт другой замок).
-        let due: Vec<ShotRequest> = {
+        let mut due: Vec<PendingCompletion> = {
             let mut state = self.lock_state();
             self.drop_stale_pending(&mut state);
-            let mut due = Vec::new();
-            while state.pending.front().is_some_and(|pending| pending.due <= now) {
-                if let Some(pending) = state.pending.pop_front() {
-                    due.push(pending.request);
-                }
-            }
-            due
+            let (ready, waiting): (VecDeque<_>, VecDeque<_>) =
+                state.pending.drain(..).partition(|pending| pending.due <= now);
+            state.pending = waiting;
+            ready.into_iter().collect()
         };
-        for request in due {
-            complete_saved(&self.slot, &self.counters, request);
+        // По сроку, а при равных — в порядке постановки: `Secured` снимка всегда раньше его `Saved`.
+        due.sort_by_key(|pending| pending.due);
+        for pending in due {
+            complete(&self.slot, &self.counters, pending.request, pending.phase);
         }
     }
 }

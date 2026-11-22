@@ -8,20 +8,23 @@ use camera_contract::auto_exposure::RefreshSignal;
 use camera_contract::control::ExposureBias;
 use camera_contract::ids::LensFacing;
 use camera_contract::three_a::SensorPoint;
-use camera_contract::zoom::{LensIntent, ZoomRatio};
+use camera_contract::zoom::{LensIntent, ZoomCatalog, ZoomFraming, ZoomRatio};
 use camera_screen::settings::{AspectRatio, FlashMode, RawCapture};
-use camera_screen::shutter::ShotRequestId;
+use camera_screen::shutter::{PrimaryFormat, ShotRequestId};
 use camera_screen::{LayoutConfig, ScreenLayout};
 use render_loop::ui_overlay::UiOverlayCommand;
 use render_loop::viewfinder::FramingCrop;
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::commands::{FrameRate, FrameRateOutcome, ScreenWake};
 use shell_contract::haptics::HapticRealizationKind;
+use shell_contract::orientation::DeviceOrientation;
 use shell_contract::surface::SurfaceSize;
 
 use super::*;
 use crate::gpu_test_support::RecordingRenderControl;
 
+#[path = "camera_screen_effects_shot_tests.rs"]
+mod shot_and_sound;
 #[path = "camera_screen_effects_standby_tests.rs"]
 mod standby;
 
@@ -87,6 +90,19 @@ impl CaptureService for StubCapture {
     }
 }
 
+/// Звук затвора с заданным ответом и счётчиком вызовов.
+struct FakeShutterSound {
+    outcome: CommandOutcome,
+    calls: Mutex<u32>,
+}
+
+impl ShutterSoundService for FakeShutterSound {
+    fn play_shutter_sound(&self) -> CommandOutcome {
+        *self.calls.lock().expect("замок") += 1;
+        self.outcome
+    }
+}
+
 /// Управление рендером с заданным итогом доставки.
 struct FixedDeliveryControl(fn() -> ControlDelivery);
 
@@ -108,6 +124,7 @@ struct Rig {
     haptics: Arc<FakeHaptics>,
     commands: Arc<FakeCommands>,
     capture: Arc<StubCapture>,
+    shutter_sound: Arc<FakeShutterSound>,
     render: Arc<RecordingRenderControl>,
     /// Ящик намерений объектива: тот же клон, что у исполнителя (читатель — «движок»).
     lens: LensIntentChannel,
@@ -118,6 +135,7 @@ struct Behavior {
     haptics: HapticOutcome,
     gallery: CommandOutcome,
     capture: SubmitOutcome,
+    shutter_sound: CommandOutcome,
 }
 
 impl Default for Behavior {
@@ -127,11 +145,20 @@ impl Default for Behavior {
             haptics: HapticOutcome::Queued(HapticRealizationKind::Primitive),
             gallery: CommandOutcome::Queued,
             capture: SubmitOutcome::Accepted,
+            shutter_sound: CommandOutcome::Queued,
         }
     }
 }
 
 fn build_executor(behavior: Behavior) -> (EffectExecutor, Rig) {
+    build_executor_with_capture(behavior, None)
+}
+
+/// Исполнитель с подменой сервиса снимка: `Some(сервис)` вместо заглушки (функциональные тесты с настоящей службой).
+fn build_executor_with_capture(
+    behavior: Behavior,
+    capture_override: Option<Arc<dyn CaptureService>>,
+) -> (EffectExecutor, Rig) {
     let intents = Arc::new(Mutex::new(Vec::new()));
     let haptics = Arc::new(FakeHaptics {
         outcome: behavior.haptics,
@@ -145,6 +172,10 @@ fn build_executor(behavior: Behavior) -> (EffectExecutor, Rig) {
         outcome: behavior.capture,
         requests: Mutex::default(),
     });
+    let shutter_sound = Arc::new(FakeShutterSound {
+        outcome: behavior.shutter_sound,
+        calls: Mutex::default(),
+    });
     let render = RecordingRenderControl::new();
     let camera_outcome = Arc::new(Mutex::new(behavior.camera));
     let lens = LensIntentChannel::new();
@@ -156,7 +187,8 @@ fn build_executor(behavior: Behavior) -> (EffectExecutor, Rig) {
         haptics: haptics.clone(),
         commands: commands.clone(),
         render: render.clone(),
-        capture: capture.clone(),
+        capture: capture_override.unwrap_or_else(|| capture.clone()),
+        shutter_sound: shutter_sound.clone(),
         lens: lens.clone(),
     });
     (
@@ -167,6 +199,7 @@ fn build_executor(behavior: Behavior) -> (EffectExecutor, Rig) {
             haptics,
             commands,
             capture,
+            shutter_sound,
             render,
             lens,
         },
@@ -176,6 +209,16 @@ fn build_executor(behavior: Behavior) -> (EffectExecutor, Rig) {
 fn shot(id: u64) -> ShotRequest {
     ShotRequest {
         request: ShotRequestId(id),
+        // Момент нажатия различим по номеру: исполнитель обязан передать запрос целиком, а не пересобрать.
+        pressed_at: MonotonicNanos::from_nanos(1_000_000 * i64::try_from(id).expect("мало")),
+        framing: ZoomFraming {
+            aspect: AspectRatio::FourByThree.crop_aspect(),
+            facing: LensFacing::Back,
+            ratio: ZoomRatio::ONE,
+            catalog: Arc::new(ZoomCatalog::default()),
+        },
+        orientation: DeviceOrientation::LandscapeLeft,
+        primary_format: PrimaryFormat::Jpeg,
         flash: FlashMode::Off,
         raw: RawCapture::Off,
         aspect: AspectRatio::FourByThree,

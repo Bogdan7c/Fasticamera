@@ -124,11 +124,12 @@ fn open_card_from_strip(ctx: &mut Ctx<'_>, card: PanelState) {
     }
 }
 
-/// Применяет вариант к настройкам. `false` — вариант не поддержан (автовспышка).
+/// Применяет вариант к настройкам. `false` — вариант не поддержан (автовспышка или вспышки у камеры нет).
 fn apply_option(ctx: &mut Ctx<'_>, option: ToolOption) -> bool {
     match option {
         ToolOption::Flash(mode) => {
-            if !mode.is_selectable() {
+            // Вспышки у камеры нет (инвариант 6) — выбирать нечего, как и автовспышку.
+            if !mode.is_selectable() || !ctx.state.is_tool_available(ToolId::Flash) {
                 return false;
             }
             ctx.state.settings.flash = mode;

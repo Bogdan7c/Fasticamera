@@ -34,7 +34,7 @@ impl ImportBackend for VulkanImportBackend {
     }
 }
 
-/// Кэш импортов AHB. При уничтожении сначала ждёт простоя GPU, потом освобождает импорты:
+/// Кэш импортов AHB. При уничтожении НЕпустого кэша сначала ждёт простоя GPU, потом освобождает импорты:
 /// даже если владелец забыл `retire_completed`/`clear`, память не освободится под работающим GPU.
 pub struct AndroidImportCache {
     // Порядок полей: кэш (импорты) освобождается ДО контекста, но уже после `Drop::drop` с wait_idle.
@@ -93,6 +93,11 @@ impl AndroidImportCache {
 
 impl Drop for AndroidImportCache {
     fn drop(&mut self) {
+        // Пустой кэш (владелец уже сказал `retire_completed`/`clear` для завершённых серий) освобождать нечего, а
+        // `vkDeviceWaitIdle` — ожидание без срока: на потоке рендера (пересоздание GPU снимков) его быть не должно.
+        if self.cache.is_empty() && self.cache.pending_destroy_count() == 0 {
+            return;
+        }
         // Страховка: импорты освободятся сразу после этого метода, значит GPU не должен их читать.
         if let Err(error) = self.context.wait_idle() {
             tracing::error!(target: "fasticamera::gpu", %error, "wait_idle перед освобождением кэша импортов AHB");

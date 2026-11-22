@@ -5,8 +5,12 @@
 //! режим, серию и видео, без переходов. Редьюсер уже умеет отвечать на них явным отказом `ShutterBusy`.
 
 use camera_contract::viewfinder_crop::CropAspect;
+use camera_contract::zoom::ZoomFraming;
 use serde::{Deserialize, Serialize};
 use shell_contract::clock::MonotonicNanos;
+use shell_contract::orientation::DeviceOrientation;
+// Переэкспорт: `PrimaryFormat` — тип поля `ShotRequest::primary_format`, приложению не нужна своя зависимость от словаря снимка.
+pub use still_contract::plan::PrimaryFormat;
 use thiserror::Error;
 
 use crate::settings::{AspectRatio, FlashMode, RawCapture, TimerSetting};
@@ -54,11 +58,28 @@ impl ShutterState {
     }
 }
 
-/// Запрос снимка сервису съёмки. Не путать с `CaptureIntent` из `camera-contract` — тот шаблон
-/// потока камеры, а это «сделай снимок с такими настройками».
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Запрос снимка сервису съёмки: всё, что экран знал **в момент нажатия** (решения 137–143).
+/// Не путать с `CaptureIntent` из `camera-contract` — тот шаблон потока камеры, а это «сделай снимок
+/// с такими настройками». Не `Copy`: кадрирование несёт общий каталог зума (`Arc`).
+#[derive(Debug, Clone, PartialEq)]
 pub struct ShotRequest {
     pub request: ShotRequestId,
+    /// Момент нажатия на часах оболочки (`MonotonicNanos`, та же шкала, что у меток касаний и кадров).
+    /// Откуда берётся:
+    /// * тап по затвору — метка касания (`ShutterTapped { at }`);
+    /// * клавиша громкости — метка нажатия (`VolumeKey { at }`);
+    /// * таймер — момент, когда отсчёт кончился и снимок делается (метка `Tick`, на котором затвор сработал),
+    ///   а НЕ момент нажатия кнопки таймера: кадр для снимка выбирают «на момент решения снимать».
+    pub pressed_at: MonotonicNanos,
+    /// Кадрирование экрана в этот момент: та же формула, что у видоискателя (`FramingIntent::zoom`),
+    /// поэтому снимок = то, что было в кадре.
+    pub framing: ZoomFraming,
+    /// Как держали телефон. Пока датчик ничего не сообщил, экран считает телефон вертикальным
+    /// (`DeviceOrientation::Portrait`) — обычное положение при съёмке и честное умолчание.
+    pub orientation: DeviceOrientation,
+    /// Формат основной картинки из конфига экрана (`capture.primary_format`).
+    pub primary_format: PrimaryFormat,
+    /// Вспышка. Пока камера её не поддерживает (`FlashAvailability::Unavailable`), всегда `Off`.
     pub flash: FlashMode,
     pub raw: RawCapture,
     pub aspect: AspectRatio,
@@ -82,7 +103,8 @@ pub enum CaptureFailureReason {
     Storage,
 }
 
-/// Итог снимка от сервиса съёмки.
+/// Итог снимка от сервиса съёмки (завершает снимок; фаза «кадр захвачен» — отдельное действие
+/// `ScreenAction::CaptureSecured`, решение 140).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureOutcome {
     /// Снимок сохранён.
@@ -101,33 +123,62 @@ pub enum ThumbnailState {
     Last { shot: ShotRequestId },
 }
 
-/// Ожидание итога снимка.
+/// Ожидание и ёмкость двух фаз снимка (решение 140) и формат основной картинки.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, default)]
 pub struct CaptureConfig {
-    /// Сколько ждать `CaptureFinished` после запроса снимка, мс. `[estimate]` 15 с — запас на
-    /// RAW + обработку одного кадра (подгонка, не Apple); по истечении снимок объявляется потерянным
-    /// и затвор освобождается (иначе умерший сервис снимка заблокировал бы затвор навсегда).
-    pub result_timeout_ms: u32,
+    /// Сколько затвор может быть занят: от запроса снимка до «кадр захвачен» (`CaptureSecured`), мс.
+    /// `[estimate]` 2000 мс — кадр берётся из кольца уже готовых кадров, захват занимает десятки мс, 2 с —
+    /// большой запас на сбой (подгонка, не Apple). Чем короче срок, тем быстрее умерший сервис отпускает
+    /// затвор; прежние 15 с держали бы пользователя без съёмки. Обязан быть длиннее срока захвата службы
+    /// (`photo.service.capture_timeout_ms` 1 500): экран — страховка. По истечении снимок объявляется потерянным
+    /// и затвор освобождается.
+    pub capture_timeout_ms: u32,
+    /// Сколько ждать сохранения уже захваченного снимка (`CaptureFinished`), мс. `[derived]` 45 с = срок
+    /// проявления службы (30 с) + завершение кодера HEIF (5 с) + запас 10 с: срок экрана — страховка и обязан
+    /// быть длиннее полного срока службы, иначе медленный, но живой снимок объявляется потерянным, а файл
+    /// потом появляется в галерее без миниатюры (согласование проверяет приложение при старте). По
+    /// истечении снимок считается потерянным (затвор при этом не трогается: он давно свободен).
+    pub saving_timeout_ms: u32,
+    /// Сколько снимков могут сохраняться одновременно. `[doc]` решение 140: 10 (≈ 45 МБ на снимок). Нажатие
+    /// сверх ёмкости получает явный отказ `Rejection::SavingQueueFull`; уже снятое не теряется.
+    pub max_saving_shots: usize,
+    /// Формат основной картинки. `[doc]` решение 11: HEIF по умолчанию; выбор в настройках — сессия 16.
+    pub primary_format: PrimaryFormat,
 }
 
 impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
-            result_timeout_ms: 15_000,
+            capture_timeout_ms: 2_000,
+            saving_timeout_ms: 45_000,
+            max_saving_shots: 10,
+            primary_format: PrimaryFormat::Heif,
         }
     }
 }
 
 /// Ошибка конфига ожидания снимка.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-#[error("время ожидания итога снимка должно быть больше нуля")]
-pub struct CaptureConfigError;
+pub enum CaptureConfigError {
+    #[error("срок захвата кадра должен быть больше нуля")]
+    ZeroCaptureTimeout,
+    #[error("срок сохранения снимка должен быть больше нуля")]
+    ZeroSavingTimeout,
+    #[error("ёмкость набора сохраняемых снимков должна быть не меньше 1")]
+    ZeroSavingCapacity,
+}
 
 impl CaptureConfig {
     pub fn validate(&self) -> Result<(), CaptureConfigError> {
-        if self.result_timeout_ms == 0 {
-            return Err(CaptureConfigError);
+        if self.capture_timeout_ms == 0 {
+            return Err(CaptureConfigError::ZeroCaptureTimeout);
+        }
+        if self.saving_timeout_ms == 0 {
+            return Err(CaptureConfigError::ZeroSavingTimeout);
+        }
+        if self.max_saving_shots == 0 {
+            return Err(CaptureConfigError::ZeroSavingCapacity);
         }
         Ok(())
     }

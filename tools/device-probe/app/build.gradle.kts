@@ -122,6 +122,9 @@ androidComponents {
 }
 
 dependencies {
+    // Сессия 14: проба цветопередачи HEIF (сценарий heif). Только зонд, в продукт не идёт.
+    // 1.2.0 — последняя стабильная на Google Maven (maven-metadata.xml: release=1.2.0, 22.11.2026).
+    implementation("androidx.heifwriter:heifwriter:1.2.0")
     // org.json в unit-тестах на JVM: в android.jar только заглушки, которые бросают исключения.
     testImplementation("org.json:json:20260814")
     testImplementation("junit:junit:4.13.2")

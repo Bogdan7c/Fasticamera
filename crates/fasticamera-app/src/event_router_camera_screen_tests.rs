@@ -21,6 +21,9 @@ use ui_draw::draw_list::DrawList;
 use ui_draw::frame_source::{UiFrameError, UiFrameRequest, UiFrameSource};
 use ui_draw::geometry::PxSize;
 
+#[path = "event_router_camera_screen_still_tests.rs"]
+mod real_still;
+
 use super::*;
 use crate::camera_config::CameraConfig;
 use crate::camera_screen_config::CameraScreenConfig;
@@ -273,7 +276,14 @@ fn the_volume_key_takes_a_shot_and_the_result_comes_back_to_the_screen() {
     );
     assert_eq!(report.effects.capture.accepted, 1);
     assert_eq!(
-        harness.router.camera_screen().capture_counters().completions_delivered,
+        harness
+            .router
+            .camera_screen()
+            .capture_diagnostics()
+            .fake
+            .expect("в этом тесте стоит фейк")
+            .counters
+            .completions_delivered,
         1
     );
 }

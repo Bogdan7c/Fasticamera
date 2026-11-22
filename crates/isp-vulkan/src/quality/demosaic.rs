@@ -41,7 +41,7 @@ pub enum MenonPass {
 
 /// Доступ прохода к плоскости: номер привязки = позиция в списке.
 #[derive(Debug, Clone, Copy)]
-enum PlaneAccess {
+pub(crate) enum PlaneAccess {
     Read(PlaneSlot),
     Write(PlaneSlot),
 }
@@ -73,7 +73,7 @@ impl MenonPass {
         }
     }
 
-    fn spirv(self) -> &'static [u8] {
+    pub(crate) fn spirv(self) -> &'static [u8] {
         match self {
             Self::DirectionalGreen => blobs::QUALITY_MENON_GREEN_COMP,
             Self::ColorDifferences => blobs::QUALITY_MENON_DIFFERENCES_COMP,
@@ -87,7 +87,7 @@ impl MenonPass {
     }
 
     /// Плоскости прохода в порядке привязок шейдера (таблица слотов — `planes.rs`).
-    fn plane_accesses(self) -> &'static [PlaneAccess] {
+    pub(crate) fn plane_accesses(self) -> &'static [PlaneAccess] {
         use PlaneAccess::{Read, Write};
         use PlaneSlot::{Blue, Direction, Green, Mosaic, Red, ScratchHorizontal, ScratchVertical};
         match self {
@@ -141,6 +141,42 @@ impl MenonPass {
     }
 }
 
+/// Создаёт пайплайны всех проходов Menon над плоскостями `planes`; привязки плоскостей пишутся сразу во все
+/// слоты. Общая часть стенда V4 и снимка (`photo`): снимок держит плоскости под полосу, а не под кадр, и
+/// сам решает, какого размера dispatch писать, но пайплайны и привязки плоскостей у них одни.
+pub(crate) fn create_pass_pipelines(
+    context: &GpuContext,
+    planes: &QualityPlanes,
+    local: LocalSize,
+    frame_slots: usize,
+) -> Result<Vec<(MenonPass, QualityPass)>, GpuError> {
+    let mut passes = Vec::with_capacity(MenonPass::ORDER.len());
+    for pass in MenonPass::ORDER {
+        let accesses = pass.plane_accesses();
+        let kinds: Vec<BindingKind> = accesses
+            .iter()
+            .map(|access| match access {
+                PlaneAccess::Read(_) => BindingKind::ReadOnlyStorageBuffer,
+                PlaneAccess::Write(_) => BindingKind::ReadWriteStorageBuffer,
+            })
+            .collect();
+        let mut pipeline = QualityPass::new(context, pass.label(), pass.spirv(), &kinds, local, frame_slots)?;
+        let writes: Vec<BindingWrite> = (0_u32..)
+            .zip(accesses)
+            .map(|(binding, access)| BindingWrite {
+                binding,
+                resource: match *access {
+                    PlaneAccess::Read(slot) => planes.plane(slot).read_only_binding(),
+                    PlaneAccess::Write(slot) => planes.plane(slot).read_write_binding(),
+                },
+            })
+            .collect();
+        pipeline.bind_all_slots(&writes)?;
+        passes.push((pass, pipeline));
+    }
+    Ok(passes)
+}
+
 /// Демозаик Menon 2007 на GPU: владеет плоскостями и пайплайнами проходов.
 ///
 /// Порядок полей = порядок уничтожения: пайплайны (их наборы ссылаются на плоскости) → плоскости.
@@ -164,30 +200,7 @@ impl QualityDemosaic {
         frame_slots: usize,
     ) -> Result<Self, QualityError> {
         let planes = QualityPlanes::new(context, extent)?;
-        let mut passes = Vec::with_capacity(MenonPass::ORDER.len());
-        for pass in MenonPass::ORDER {
-            let accesses = pass.plane_accesses();
-            let kinds: Vec<BindingKind> = accesses
-                .iter()
-                .map(|access| match access {
-                    PlaneAccess::Read(_) => BindingKind::ReadOnlyStorageBuffer,
-                    PlaneAccess::Write(_) => BindingKind::ReadWriteStorageBuffer,
-                })
-                .collect();
-            let mut pipeline = QualityPass::new(context, pass.label(), pass.spirv(), &kinds, local, frame_slots)?;
-            let writes: Vec<BindingWrite> = (0_u32..)
-                .zip(accesses)
-                .map(|(binding, access)| BindingWrite {
-                    binding,
-                    resource: match *access {
-                        PlaneAccess::Read(slot) => planes.plane(slot).read_only_binding(),
-                        PlaneAccess::Write(slot) => planes.plane(slot).read_write_binding(),
-                    },
-                })
-                .collect();
-            pipeline.bind_all_slots(&writes)?;
-            passes.push((pass, pipeline));
-        }
+        let passes = create_pass_pipelines(context, &planes, local, frame_slots)?;
         Ok(Self { passes, planes })
     }
 

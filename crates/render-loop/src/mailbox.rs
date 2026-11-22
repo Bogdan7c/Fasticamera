@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use shell_contract::surface::{NativeSurface, SurfaceGeneration, SurfaceReleaseRequest, SurfaceSize};
 
+use crate::still::StillCommand;
 use crate::thread::{AdpfCommand, PresentTargetCommand};
 use crate::ui_overlay::UiOverlayCommand;
 use crate::viewfinder::ViewfinderCommand;
@@ -51,6 +52,9 @@ pub enum InboxEvent {
     /// переставляется: порядок `Install`/`Remove` сохраняется. Если поток уже завершён, источник
     /// уничтожается при доставке (`ReceiverGone`).
     UiOverlay(UiOverlayCommand),
+    /// Команда снимка (сессия 14): начать снимок или передать цель кодера. Не схлопывается. Если поток уже
+    /// завершён, команда уничтожается при доставке (`ReceiverGone`): отправитель сам завершает снимок.
+    Still(StillCommand),
 }
 
 /// Событие с моментом постановки в ящик: по нему считается задержка освобождения surface,
@@ -170,6 +174,12 @@ impl RenderInbox {
     /// рендера: при замене, снятии или остановке потока.
     pub fn ui_overlay_command(&self, command: UiOverlayCommand) -> InboxDelivery {
         self.push(InboxEvent::UiOverlay(command))
+    }
+
+    /// Передаёт команду снимка. Итог снимка придёт событием в приёмник из `StillCommand::Begin`;
+    /// учёт команд — `RenderStatus::still_commands`.
+    pub fn still_command(&self, command: StillCommand) -> InboxDelivery {
+        self.push(InboxEvent::Still(command))
     }
 
     /// Просит поток завершиться (после обработки уже лежащих событий).
@@ -356,6 +366,7 @@ mod tests {
                 InboxEvent::PresentTarget(_) => "present_target",
                 InboxEvent::Adpf(_) => "adpf",
                 InboxEvent::UiOverlay(_) => "ui_overlay",
+                InboxEvent::Still(_) => "still",
             })
             .collect();
         assert_eq!(kinds, ["created", "changed", "destroyed"]);

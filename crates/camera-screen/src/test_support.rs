@@ -50,6 +50,8 @@ pub(crate) fn live_facts() -> CameraFacts {
         exposure_range: ExposureRangeFact::NotReported,
         stream: Some(main_camera_stream()),
         lens: crate::facts::LensFacts::NONE,
+        // Большинство тестов проверяют вспышку как возможность камеры; «вспышки нет» — отдельные тесты.
+        flash: crate::facts::FlashAvailability::Available,
     }
 }
 

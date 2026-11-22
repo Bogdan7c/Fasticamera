@@ -10,16 +10,60 @@ use crate::color_target::{ColorTarget, ColorTargetPreviousUse};
 use crate::context::GpuContext;
 use crate::error::GpuError;
 use crate::host_buffer::HostBuffer;
+use crate::one_shot_queue::{CompletedWork, DrainOutcome, OneShotSubmitter, SubmitError, SubmittedWork, WorkStatus};
 use crate::storage_image::{StorageImage, StorageImagePreviousUse};
 
-/// Записывает команды замыканием в новый командный буфер, отправляет и ждёт завершения.
+/// Записывает команды замыканием, отправляет через [`OneShotSubmitter`] и ждёт завершения (ограниченно).
 ///
-/// Таймаут — `GpuError::Timeout`, объекты отправки при этом намеренно утекают (GPU мог их ещё читать).
+/// Возвращает [`CompletedWork`] — доказательство «fence сигнален» для `HostReadbackBuffer::seal` и
+/// подтверждений проявки снимка. Таймаут — `GpuError::Timeout` (срок — `submit_wait_timeout` контекста),
+/// объекты отправки при этом намеренно утекают (GPU мог их ещё читать).
 pub fn run_one_shot_blocking(
     context: &GpuContext,
     record: impl FnOnce(vk::CommandBuffer) -> Result<(), GpuError>,
-) -> Result<(), GpuError> {
-    context.run_one_shot(record)
+) -> Result<CompletedWork, GpuError> {
+    run_one_shot_blocking_traced(context, record).map(|run| run.proof)
+}
+
+/// Завершённая блокирующая работа: токен отправки (чтобы отметить записанные ею буферы,
+/// `HostReadbackBuffer::mark_written_by`) и доказательство завершения (для `seal`).
+pub struct BlockingRun {
+    /// Токен отправленной работы.
+    pub work: SubmittedWork,
+    /// Доказательство завершения этой же работы.
+    pub proof: CompletedWork,
+}
+
+/// То же, что [`run_one_shot_blocking`], но возвращает и токен работы: `buffer.mark_written_by(&run.work)` →
+/// `buffer.seal(&run.proof)`.
+pub fn run_one_shot_blocking_traced(
+    context: &GpuContext,
+    record: impl FnOnce(vk::CommandBuffer) -> Result<(), GpuError>,
+) -> Result<BlockingRun, GpuError> {
+    let mut submitter = OneShotSubmitter::new(context, 1)?;
+    let work = submitter.submit(Vec::new(), record).map_err(|error| match error {
+        SubmitError::Record(error) | SubmitError::Gpu(error) => error,
+        SubmitError::CapacityExhausted { .. } => GpuError::InvalidState {
+            what: "свежая очередь без свободного слота".to_owned(),
+        },
+    })?;
+    match submitter.drain(context.submit_wait_timeout())? {
+        DrainOutcome::Drained => {}
+        DrainOutcome::TimedOut { .. } => {
+            return Err(GpuError::Timeout {
+                step: "OneShotSubmitter::drain(run_one_shot_blocking)",
+            });
+        }
+    }
+    match submitter.poll(&work) {
+        WorkStatus::Completed(proof) => Ok(BlockingRun { work, proof }),
+        WorkStatus::Pending => Err(GpuError::InvalidState {
+            what: "после drain работа всё ещё Pending".to_owned(),
+        }),
+        WorkStatus::Failed(failure) => Err(GpuError::InvalidState {
+            what: format!("опрос работы не удался: {failure:?}"),
+        }),
+    }
 }
 
 /// Читает storage-картинку построчно сверху вниз в `[r, g, b, a]` (10-бит UNORM и fp16 раскодируются).

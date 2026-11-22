@@ -26,6 +26,7 @@ use shell_contract::surface::{NativeSurface, SurfaceSize};
 
 #[cfg(feature = "test-support")]
 use super::ViewfinderReadback;
+use super::camera::StillFeed;
 use super::camera::{
     AutoExposureParts, CameraDrawError, CameraFeed, CameraPipelines, CameraSession, UiOverlayFrame, UiOverlayState,
     ViewfinderSettings, ViewfinderStats, WhiteBalanceParts,
@@ -430,6 +431,10 @@ impl AttachedDisplay {
                 if format_changed {
                     self.rebuild_painter()?;
                 }
+                // Номера показов начались заново: журнал показов снимков тоже.
+                if let Some(Painter::Camera { session, .. }) = self.chain.as_mut().map(|chain| &mut chain.painter) {
+                    session.note_presents_restarted();
+                }
                 Ok(())
             }
             // Размер нулевой (окно свёрнуто): цепочка остаётся устаревшей, acquire снова
@@ -479,6 +484,14 @@ impl AttachedDisplay {
     pub(super) fn camera_diagnostics(&self) -> Option<CameraStreamDiagnostics> {
         match &self.chain.as_ref()?.painter {
             Painter::Camera { session, .. } => Some(session.diagnostics()),
+            Painter::TestPattern(_) => None,
+        }
+    }
+
+    /// Лента для снимков за прошлые кадры (`None` — камеры нет).
+    pub(super) fn take_still_feed(&mut self) -> Option<StillFeed> {
+        match &mut self.chain.as_mut()?.painter {
+            Painter::Camera { session, .. } => Some(session.take_still_feed()),
             Painter::TestPattern(_) => None,
         }
     }

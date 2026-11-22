@@ -12,7 +12,7 @@
 //!
 //! # Карта модулей
 //! * [`settings`], [`tools`], [`modes`] — настройки съёмки, инструменты как данные (М3), реестр режимов (М1).
-//! * [`shutter`] — машина состояний затвора (М2), запрос снимка.
+//! * [`shutter`] — машина состояний затвора (М2), запрос снимка; `saving` — набор снимков, ждущих сохранения.
 //! * [`focus`], [`exposure`], [`level`], [`orientation`] — фокус и блокировка, EV, уровень, поворот значков.
 //! * [`layout`], [`viewfinder_map`] — раскладка и перевод экран ↔ сенсор.
 //! * [`zoom`], [`zoom_config`], [`zoom_labels`] — зум (сессия 13): владелец значения, числа, правило подписей.
@@ -32,6 +32,7 @@ pub mod modes;
 pub mod orientation;
 pub mod outcome;
 mod reduce;
+mod saving;
 pub mod screen;
 pub mod settings;
 pub mod shutter;
@@ -49,7 +50,8 @@ pub use action::{KeyPhase, ScreenAction};
 pub use config::{ScreenConfig, ScreenConfigError, ToolsConfig};
 pub use effect::{Effect, ScreenCameraIntent};
 pub use facts::{
-    ActiveLens, CameraFacts, CameraPresence, FocusPhase, LensFacts, LensSwitch, LensSwitchFailure, UnavailableReason,
+    ActiveLens, CameraFacts, CameraPresence, FlashAvailability, FocusPhase, LensFacts, LensSwitch, LensSwitchFailure,
+    UnavailableReason,
 };
 pub use layout::{FramingIntent, LayoutConfig, LayoutError, NormalizedScreenRect, ScreenLayout};
 pub use outcome::{ActionOutcome, NoChangeReason, Rejection, RejectionCounters};
@@ -69,6 +71,9 @@ mod layout_tests;
 #[cfg(test)]
 #[path = "level_tests.rs"]
 mod level_tests;
+#[cfg(test)]
+#[path = "saving_unit_tests.rs"]
+mod saving_unit_tests;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]

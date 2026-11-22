@@ -39,13 +39,15 @@ use crate::backend::{
     PastPresentation, PresentOutcome,
 };
 use crate::camera_diagnostics::CameraStreamDiagnostics;
+use crate::still::{StillCommand, StillCommandOutcome};
 use crate::ui_overlay::{UiOverlayCommand, UiOverlayOutcome};
 use crate::viewfinder::{
     AutoExposureLinks, AwbStatisticsFeed, AwbStatisticsReader, ViewfinderCommand, ViewfinderCommandOutcome,
     ViewfinderDiagnostics, WhiteBalanceDiagnostics,
 };
 use camera::{
-    AutoExposureParts, SceneWhiteMemory, UiOverlayState, ViewfinderSettings, ViewfinderStats, WhiteBalanceParts,
+    AutoExposureParts, GpuMaker, SceneWhiteMemory, StillDiagnostics, StillEngine, SystemStillClock, UiOverlayState,
+    ViewfinderSettings, ViewfinderStats, VulkanStillGpu, VulkanStillSettings, WhiteBalanceParts,
 };
 use camera_contract::three_a::{DirectiveSlot, WhiteBalanceDirective};
 use census::census_by_kind;
@@ -119,6 +121,9 @@ pub struct VulkanDisplayBackend {
     /// Источник кадра UI и счётчики UI-прохода (сессия 11): переживают пересоздание surface. Рендер UI
     /// (объекты GPU) живёт в пайплайнах цепочки показа и создаётся только при установленном источнике.
     ui_overlay: UiOverlayState,
+    /// Движок снимков (сессия 14): выбор кадра «что было на экране», очередь, проявление. `None` — снимков нет,
+    /// команды снимка завершаются честным `NotSecured` (поток рендера сам).
+    still: Option<StillEngine<VulkanStillGpu>>,
 }
 
 impl VulkanDisplayBackend {
@@ -235,6 +240,7 @@ impl VulkanDisplayBackend {
             scene_white: SceneWhiteMemory::default(),
             auto_exposure: None,
             ui_overlay,
+            still: None,
         })
     }
 
@@ -245,6 +251,44 @@ impl VulkanDisplayBackend {
     pub fn with_auto_exposure(mut self, links: AutoExposureLinks) -> Self {
         self.auto_exposure = Some(links);
         self
+    }
+
+    /// Включает снимки без задержки затвора (сессия 14): композиция отдаёт потребителя кольца снимков того же
+    /// потока, что и видоискатель. Добавочный способ, как `with_auto_exposure`: без вызова (или без источника
+    /// кадров камеры) снимков нет. Настройки — `VulkanBackendConfig::still`.
+    #[must_use]
+    pub fn with_still_capture(mut self, ring: raw_frame_stream::SnapshotRingFrames) -> Self {
+        let Some(feed) = self.camera_feed.as_ref() else {
+            tracing::warn!(target: LOG_TARGET, "снимки включены без источника кадров камеры: игнорируются");
+            return self;
+        };
+        let importers = feed.make_importer.clone();
+        let context = self.context.clone();
+        let settings = VulkanStillSettings::from_config(&self.config.still, self.config.teardown_timeout);
+        let maker: GpuMaker<VulkanStillGpu> =
+            Box::new(move |stream| VulkanStillGpu::new(&context, settings, &importers, stream));
+        self.still = Some(StillEngine::new(
+            self.config.still,
+            self.config.viewfinder.tone,
+            ring,
+            maker,
+            Box::new(SystemStillClock),
+        ));
+        self
+    }
+
+    /// Учёт снимков (`None` — снимков нет).
+    pub fn still_diagnostics(&self) -> Option<StillDiagnostics> {
+        self.still.as_ref().map(StillEngine::diagnostics)
+    }
+
+    /// Подаёт записи показа драйвера движку снимков, как если бы их вычерпал `drain_past_presentations`
+    /// (тестовый шов, фича `test-support`: на ПК записей display timing нет).
+    #[cfg(feature = "test-support")]
+    pub fn inject_past_presentations(&mut self, presentations: &[PastPresentation]) {
+        if let Some(still) = self.still.as_mut() {
+            still.ingest_presentations(presentations);
+        }
     }
 
     /// Читатель статистики AWB видоискателя (latest-wins, с кадром и меткой сенсора). Composition root
@@ -375,6 +419,10 @@ impl DisplayBackend for VulkanDisplayBackend {
     }
 
     fn detach(&mut self) -> Option<NativeSurface> {
+        // Surface уходит: каждый незаконченный снимок получает итог, объекты GPU снимков освобождаются до цепочки.
+        if let Some(still) = self.still.as_mut() {
+            still.on_detach();
+        }
         let display = self.attached.take()?;
         let report = display.release();
         if let Some(camera) = &report.camera {
@@ -413,9 +461,11 @@ impl DisplayBackend for VulkanDisplayBackend {
             }
         });
         let viewfinder = self.viewfinder_diagnostics();
+        let still = self.still_diagnostics();
         BackendDiagnostics {
             camera,
             viewfinder,
+            still,
             live_objects,
             live_objects_by_kind,
             validation_errors: validation.errors,
@@ -427,10 +477,16 @@ impl DisplayBackend for VulkanDisplayBackend {
     }
 
     fn drain_past_presentations(&mut self) -> Vec<PastPresentation> {
-        match self.attached.as_mut() {
+        let drained = match self.attached.as_mut() {
             Some(display) => display.drain_past_presentations(),
             None => Vec::new(),
+        };
+        // Единственный потребитель записей драйвера — этот метод; снимкам они нужны для доказательства
+        // «какой кадр был на экране в момент нажатия», поэтому копия уходит и им.
+        if let Some(still) = self.still.as_mut() {
+            still.ingest_presentations(&drained);
         }
+        drained
     }
 
     fn take_frame_cpu_timing(&mut self) -> Option<FrameCpuTiming> {
@@ -455,6 +511,32 @@ impl DisplayBackend for VulkanDisplayBackend {
             display.apply_viewfinder_settings(self.viewfinder_settings.clone());
         }
         outcome
+    }
+
+    fn apply_still_command(&mut self, command: StillCommand) -> StillCommandOutcome {
+        let attached = self.attached.is_some();
+        match self.still.as_mut() {
+            // Снимку без surface некуда деваться: очередь двигается только на показанных кадрах, и `Begin` ждал бы
+            // до следующего attach. Итог — сразу (`RendererStopped`), а не после.
+            Some(still) => match command {
+                StillCommand::Begin(begin) if !attached => {
+                    still.refuse_begin_without_surface(begin);
+                    StillCommandOutcome::Accepted
+                }
+                command => still.apply_command(command),
+            },
+            None => StillCommandOutcome::Unsupported(command),
+        }
+    }
+
+    fn advance_stills(&mut self) {
+        let Some(still) = self.still.as_mut() else {
+            return;
+        };
+        if let Some(feed) = self.attached.as_mut().and_then(AttachedDisplay::take_still_feed) {
+            still.ingest_feed(feed);
+        }
+        still.advance();
     }
 
     fn apply_ui_overlay_command(&mut self, command: UiOverlayCommand) -> UiOverlayOutcome {

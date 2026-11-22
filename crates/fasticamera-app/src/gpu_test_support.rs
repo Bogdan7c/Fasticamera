@@ -77,6 +77,7 @@ pub fn presenting_status() -> RenderStatus {
         present_target: render_loop::thread::PresentTargetDiagnostics::default(),
         present_target_commands: render_loop::thread::PresentTargetCommandLog::default(),
         viewfinder_commands: render_loop::viewfinder::ViewfinderCommandLog::default(),
+        still_commands: render_loop::still::StillCommandLog::default(),
         adpf: render_loop::thread::AdpfDiagnostics::default(),
         adpf_commands: render_loop::thread::AdpfCommandLog::default(),
     }

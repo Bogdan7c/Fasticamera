@@ -24,6 +24,7 @@ use render_loop::mailbox::InboxDelivery;
 use crate::camera_screen_config::CameraScreenConfig;
 use crate::camera_screen_service::{CameraScreenService, ScreenEnvironment};
 use crate::camera_service::{AppVisibility, CameraDispatch, CameraServices};
+use crate::capture_backend::CaptureWiring;
 use crate::gpu_services::GpuServices;
 use crate::jni_boundary::run_guarded;
 use crate::logging::{LogPriority, emit_unfiltered};
@@ -99,6 +100,9 @@ pub struct RouterParts {
     pub camera: CameraServices,
     /// Экран камеры (сессия 12): включён ли и параметры его обвязки.
     pub camera_screen: CameraScreenConfig,
+    /// Кто снимает для экрана: фейк по замыслу или готовый набор composition root (настоящая служба снимков,
+    /// либо фейк-запасной с причиной).
+    pub capture: CaptureWiring,
 }
 
 /// Итог одного шага маршрутизатора.
@@ -143,7 +147,10 @@ impl EventRouter {
             route: parts.route,
             gpu: parts.gpu,
             camera: parts.camera,
-            camera_screen: CameraScreenService::new(parts.camera_screen),
+            camera_screen: {
+                let capture = parts.capture.into_backend(&parts.camera_screen);
+                CameraScreenService::with_capture(parts.camera_screen, capture)
+            },
             display: DisplayState::default(),
             arrivals,
             active: None,

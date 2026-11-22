@@ -20,6 +20,7 @@ roles = ["platform_neutral", "android_platform", "gpu", "output", "composition_r
 "ui-draw" = "platform_neutral"
 "camera-screen" = "platform_neutral"
 "raw-frame-stream" = "platform_neutral"
+"still-contract" = "platform_neutral"
 "camera-ndk-sys" = "android_platform"
 "camera-android" = "android_platform"
 "android-shell" = "android_platform"
@@ -70,6 +71,16 @@ applies_to_crates = ["camera-contract", "shell-contract"]
 forbid = []
 forbid_other_crates = true
 reason = "camera-contract и shell-contract — общие словари и не зависят от других crate-ов проекта, README «Карта модулей»"
+
+[[rules]]
+id = "still-contract-vocabulary"
+applies_to_crates = ["still-contract"]
+forbid = [
+  "camera-core", "camera-android", "camera-ndk-sys", "raw-frame-stream", "isp-model", "isp-vulkan",
+  "scene-estimation", "render-loop", "gpu-vulkan", "ui-core", "ui-kit", "ui-draw", "ui-render-vulkan",
+  "camera-screen", "photo-output", "android-shell",
+]
+reason = "still-contract — словарь снимка без логики: видит только словари camera-contract и shell-contract, решение 143"
 
 [[rules]]
 id = "ui-core-mechanics-only"

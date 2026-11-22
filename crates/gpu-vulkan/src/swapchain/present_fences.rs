@@ -26,11 +26,22 @@ use crate::live_objects::OwnedFence;
 
 /// Чем закончилось ожидание показов.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PresentsDone {
+pub(crate) enum PresentsDone {
     /// Все отслеживаемые показы закончены, пробелов покрытия нет: swapchain уничтожать можно.
     Confirmed,
     /// Дождаться показов fence'ами нельзя (нет расширения или есть показ с неизвестным исходом):
     /// вызывающий обязан использовать запасной путь — ожидание простоя устройства.
+    DeviceWideWaitRequired,
+}
+
+/// Результат неблокирующего опроса показов.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PresentsPoll {
+    /// Все отслеживаемые показы закончены, пробелов покрытия нет.
+    Done,
+    /// Часть показов ещё не просигналила: спросите позже.
+    Pending,
+    /// Узнать окончание показов опросом нельзя (нет расширения или есть показ с неизвестным исходом).
     DeviceWideWaitRequired,
 }
 
@@ -51,7 +62,7 @@ struct FenceEntry {
 }
 
 /// Пул fence'ов показа.
-pub(super) struct PresentFencePool {
+pub(crate) struct PresentFencePool {
     context: GpuContext,
     entries: Vec<FenceEntry>,
     /// Верхняя граница размера пула; исчерпание = пробел покрытия, а не ошибка.
@@ -60,7 +71,7 @@ pub(super) struct PresentFencePool {
 }
 
 /// Способ узнать, что показы закончены.
-pub(super) enum PresentTracking {
+pub(crate) enum PresentTracking {
     /// Есть `VK_EXT_swapchain_maintenance1`: fence на каждый показ.
     PerPresentFence(PresentFencePool),
     /// Расширения нет (ПК-стенд без него): остаётся только `vkDeviceWaitIdle` — ограниченного
@@ -70,7 +81,7 @@ pub(super) enum PresentTracking {
 
 impl PresentTracking {
     /// Выбирает способ по возможностям контекста.
-    pub(super) fn for_context(context: &GpuContext, pool_capacity: usize) -> Self {
+    pub(crate) fn for_context(context: &GpuContext, pool_capacity: usize) -> Self {
         if context.present_fences_supported() {
             Self::PerPresentFence(PresentFencePool::new(context, pool_capacity))
         } else {
@@ -79,13 +90,13 @@ impl PresentTracking {
     }
 
     /// Отслеживаются ли показы fence'ами (для `info()` и тестов).
-    pub(super) fn is_fence_based(&self) -> bool {
+    pub(crate) fn is_fence_based(&self) -> bool {
         matches!(self, Self::PerPresentFence(_))
     }
 
     /// Готовит fence под очередной показ. `None` — отслеживания нет (или пул исчерпан и это учтено
     /// как пробел покрытия): показ идёт без fence'а.
-    pub(super) fn begin_present(&mut self) -> Result<Option<vk::Fence>, GpuError> {
+    pub(crate) fn begin_present(&mut self) -> Result<Option<vk::Fence>, GpuError> {
         match self {
             Self::PerPresentFence(pool) => pool.begin_present(),
             Self::DeviceWideWait => Ok(None),
@@ -93,22 +104,30 @@ impl PresentTracking {
     }
 
     /// `vkQueuePresentKHR` вернул ошибку: исход показа с этим fence'ом неизвестен.
-    pub(super) fn present_failed(&mut self, fence: Option<vk::Fence>) {
+    pub(crate) fn present_failed(&mut self, fence: Option<vk::Fence>) {
         if let (Self::PerPresentFence(pool), Some(fence)) = (self, fence) {
             pool.mark_lost(fence);
         }
     }
 
     /// Ждёт окончания всех отслеживаемых показов не дольше `timeout`.
-    pub(super) fn wait_presents_done(&mut self, timeout: Duration) -> Result<PresentsDone, GpuError> {
+    pub(crate) fn wait_presents_done(&mut self, timeout: Duration) -> Result<PresentsDone, GpuError> {
         match self {
             Self::PerPresentFence(pool) => pool.wait_all_pending(timeout),
             Self::DeviceWideWait => Ok(PresentsDone::DeviceWideWaitRequired),
         }
     }
 
+    /// Спрашивает, закончены ли все отслеживаемые показы, БЕЗ ожидания (`vkGetFenceStatus`).
+    pub(crate) fn poll_presents_done(&mut self) -> Result<PresentsPoll, GpuError> {
+        match self {
+            Self::PerPresentFence(pool) => pool.poll_all_pending(),
+            Self::DeviceWideWait => Ok(PresentsPoll::DeviceWideWaitRequired),
+        }
+    }
+
     /// Устройство простаивает целиком: всё, что было неизвестным, закончилось.
-    pub(super) fn settle_after_device_idle(&mut self) -> Result<(), GpuError> {
+    pub(crate) fn settle_after_device_idle(&mut self) -> Result<(), GpuError> {
         match self {
             Self::PerPresentFence(pool) => pool.settle_after_device_idle(),
             Self::DeviceWideWait => Ok(()),
@@ -117,7 +136,7 @@ impl PresentTracking {
 
     /// Сколько показов сейчас ждут сигнала (для тестов учёта).
     #[cfg(any(test, feature = "fault-injection"))]
-    pub(super) fn pending_count(&self) -> usize {
+    pub(crate) fn pending_count(&self) -> usize {
         match self {
             Self::PerPresentFence(pool) => pool.count_in(EntryState::Pending),
             Self::DeviceWideWait => 0,
@@ -208,6 +227,18 @@ impl PresentFencePool {
             entry.state = EntryState::Lost;
         }
         self.coverage_gap = true;
+    }
+
+    fn poll_all_pending(&mut self) -> Result<PresentsPoll, GpuError> {
+        self.reclaim_signaled()?;
+        if self.entries.iter().any(|entry| entry.state == EntryState::Pending) {
+            return Ok(PresentsPoll::Pending);
+        }
+        Ok(if self.coverage_gap {
+            PresentsPoll::DeviceWideWaitRequired
+        } else {
+            PresentsPoll::Done
+        })
     }
 
     fn wait_all_pending(&mut self, timeout: Duration) -> Result<PresentsDone, GpuError> {

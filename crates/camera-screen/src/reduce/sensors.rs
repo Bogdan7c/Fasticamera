@@ -27,6 +27,7 @@ pub(super) fn on_gravity(ctx: &mut Ctx<'_>, gravity: GravityVector) -> ActionOut
 pub(super) fn on_tick(ctx: &mut Ctx<'_>, now: MonotonicNanos) -> ActionOutcome {
     shutter::fire_countdown_if_due(ctx, now);
     shutter::abandon_capture_if_overdue(ctx, now);
+    shutter::expire_overdue_saving(ctx, now);
     ctx.state.focus.fade_if_due(now, ctx.config.focus.indicator_visible_ms);
     // Итог проверки (`LockWaitCheck`) не нужен: снятое ожидание видно по изменению состояния.
     ctx.state.focus.expire_lock_wait(now);

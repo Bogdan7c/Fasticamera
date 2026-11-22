@@ -8,12 +8,11 @@ use camera_contract::geometry::PixelSize;
 use camera_contract::raw_format::RawFormat;
 
 use super::jitter_buffer::{arrive, tick};
-use super::support::{Rig, passport, result_for};
-use crate::config::RawFrameStreamConfig;
+use super::support::{Rig, jitter_buffer_config, passport, result_for};
 use crate::stream::{StandbyBegin, StandbyPromotion, StreamEpoch};
 
 fn jitter_rig() -> Rig {
-    Rig::new(RawFrameStreamConfig::default())
+    Rig::new(jitter_buffer_config())
 }
 
 fn begin_standby_epoch(rig: &Rig) -> StreamEpoch {

@@ -15,6 +15,7 @@ use render_loop::thread::{FrameClock, RenderLoop, RenderLoopHandle, RenderLoopPa
 
 use crate::gpu_services::{RenderObservation, RenderStatusSource, UnavailableRender, ValidationState};
 use crate::render_route::{HoldAndConfirmRoute, InboxRoute, RenderRoute};
+use crate::still_render_port::{InboxStillPort, StillRenderLink};
 use crate::viewfinder_control::{InboxRenderControl, RenderControl, UnavailableRenderControl};
 
 /// Что получает маршрутизатор после запуска рендера (или после отказа).
@@ -25,6 +26,8 @@ pub struct RenderRuntime {
     pub status: Arc<dyn RenderStatusSource>,
     /// Куда сценарии шлют регулировки рендера (видоискатель, линия кадра).
     pub control: Arc<dyn RenderControl>,
+    /// Шов для снимка: команды плана и цели основной картинки (сессия 14).
+    pub still: StillRenderLink,
 }
 
 impl RenderRuntime {
@@ -38,7 +41,9 @@ impl RenderRuntime {
         let handle = RenderLoop::spawn(parts)?;
         let route = InboxRoute::new(handle.inbox());
         let control = InboxRenderControl::new(handle.inbox());
+        let still = StillRenderLink::Live(Arc::new(InboxStillPort::new(handle.inbox())));
         Ok(Self {
+            still,
             route: Box::new(route),
             control: Arc::new(control),
             status: Arc::new(LiveRenderStatus { handle, validation }),
@@ -52,7 +57,8 @@ impl RenderRuntime {
         Self {
             route: Box::new(HoldAndConfirmRoute::new()),
             status: Arc::new(UnavailableRender::new(reason.clone())),
-            control: Arc::new(UnavailableRenderControl::new(reason)),
+            control: Arc::new(UnavailableRenderControl::new(reason.clone())),
+            still: StillRenderLink::Unavailable { reason },
         }
     }
 }

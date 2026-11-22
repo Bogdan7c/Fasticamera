@@ -36,14 +36,15 @@ use std::time::{Duration, Instant};
 
 use camera_screen::shutter::ShotRequest;
 use camera_screen::{CameraScreen, ScreenAction, ScreenBuildError, ScreenTouch};
+use shell_contract::commands::CommandOutcome;
 use shell_contract::hardware_key::HardwareKeyEvent;
 use shell_contract::motion::{MotionSource, OrientationSubscription};
 use shell_contract::orientation::DeviceOrientation;
+use shell_contract::still_media::ShutterSoundService;
 use shell_contract::system_gesture::SystemGestureZones;
 use shell_contract::touch::TouchSample;
 use ui_kit::tokens::UiKitTokens;
 
-use crate::camera_screen_capture::{CaptureCompletionSlot, CaptureService, FakeCaptureCounters, FakeCaptureService};
 use crate::camera_screen_config::CameraScreenConfig;
 use crate::camera_screen_effects::{
     AbsentCameraPort, CameraIntentPort, EffectExecutor, EffectTargets, HandleCameraPort,
@@ -56,8 +57,10 @@ use crate::camera_screen_input::{
 };
 use crate::camera_screen_source::{CameraScreenSource, GravityLink, ScreenBoard, ScreenReport, ScreenSourceParts};
 use crate::camera_service::CameraServices;
+use crate::capture_backend::{CaptureBackend, CaptureDiagnostics};
 use crate::gpu_services::{GpuServices, RenderObservation};
 use crate::scenario::observing::ShellServices;
+use crate::still_phase_log::{PhaseBatch, PhaseCursor};
 use crate::viewfinder_control::ControlDelivery;
 
 const LOG_TARGET: &str = "fasticamera::camera_screen";
@@ -81,8 +84,27 @@ pub enum CameraScreenPolicy {
     /// Экран снимается на время сценария (по умолчанию: сценарии меряют и снимают «чистый» видоискатель).
     #[default]
     SuspendForScenario,
-    /// Экран остаётся на месте и продолжает получать вход (сценарий `screen`, проверяющий сам экран).
+    /// Экран остаётся на месте и продолжает получать вход (сценарий `zoom`, проверяющий объективы на экране).
     KeepRunning,
+    /// Как [`CameraScreenPolicy::KeepRunning`], но снимки на время сценария идут в фейк: сценарий жмёт затвор ради
+    /// проверки экрана (сценарий `screen`), и файлы в галерее владельца ему не нужны. После сценария — снова
+    /// настоящие (`resume_after_scenario`).
+    KeepRunningWithFakeCapture,
+}
+
+impl CameraScreenPolicy {
+    /// Остаётся ли экран на месте на время сценария.
+    pub fn keeps_screen(self) -> bool {
+        match self {
+            Self::SuspendForScenario => false,
+            Self::KeepRunning | Self::KeepRunningWithFakeCapture => true,
+        }
+    }
+
+    /// Нужно ли на время сценария заменить настоящие снимки фейком.
+    pub fn wants_fake_capture(self) -> bool {
+        matches!(self, Self::KeepRunningWithFakeCapture)
+    }
 }
 
 /// Состояние экрана. Не `bool`: «выключен», «не собран», «нет рендера» и «снят на сценарий» — разные ответы.
@@ -185,6 +207,28 @@ impl OrientationSensor {
     }
 }
 
+/// Звук затвора «звука нет»: честная заглушка до подключения платформенного `MediaActionSound` (его делает
+/// оболочка, главный агент подставляет вместо этой заглушки). Запросы звука не теряются молча: считаются,
+/// а ответ — `NotAttached` («играть некому»), поэтому исполнитель эффектов ведёт свой счётчик отказов.
+#[derive(Default)]
+pub struct SilentShutterSound {
+    requests: std::sync::atomic::AtomicU64,
+}
+
+impl SilentShutterSound {
+    /// Сколько раз экран просил сыграть звук затвора.
+    pub fn requests(&self) -> u64 {
+        self.requests.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl ShutterSoundService for SilentShutterSound {
+    fn play_shutter_sound(&self) -> CommandOutcome {
+        self.requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        CommandOutcome::NotAttached
+    }
+}
+
 /// Сервис экрана камеры.
 pub struct CameraScreenService {
     config: CameraScreenConfig,
@@ -194,8 +238,8 @@ pub struct CameraScreenService {
     board: Option<Arc<ScreenBoard>>,
     /// Статистика канала последнего экрана на момент снятия (после снятия канал уже недоступен).
     last_input_stats: ScreenInputStats,
-    capture: Arc<FakeCaptureService>,
-    completion_slot: Arc<CaptureCompletionSlot>,
+    /// Кто снимает (настоящая служба или фейк), адрес её ответов, звук затвора и диагностика режима.
+    capture: CaptureBackend,
     dropped: DroppedInputCounters,
     installs: u64,
     recovery: RecoveryPlan,
@@ -206,13 +250,14 @@ pub struct CameraScreenService {
 }
 
 impl CameraScreenService {
+    /// Сервис с фейк-снимком (ПК, тесты). Настоящий набор подставляет [`CameraScreenService::with_capture`].
     pub fn new(config: CameraScreenConfig) -> Self {
-        let completion_slot = Arc::new(CaptureCompletionSlot::default());
-        let capture = Arc::new(FakeCaptureService::new(
-            config.fake_capture_delay(),
-            config.fake_capture_journal_capacity,
-            Arc::clone(&completion_slot),
-        ));
+        let capture = CaptureBackend::fake(&config);
+        Self::with_capture(config, capture)
+    }
+
+    /// Сервис с готовым набором «кто снимает» (его собирает composition root).
+    pub fn with_capture(config: CameraScreenConfig, capture: CaptureBackend) -> Self {
         let status = if config.enabled {
             CameraScreenStatus::NotInstalledYet
         } else {
@@ -225,7 +270,6 @@ impl CameraScreenService {
             board: None,
             last_input_stats: ScreenInputStats::default(),
             capture,
-            completion_slot,
             dropped: DroppedInputCounters::default(),
             installs: 0,
             recovery: RecoveryPlan::default(),
@@ -263,13 +307,29 @@ impl CameraScreenService {
         self.dropped
     }
 
-    /// Запросы снимка, принятые фейк-сервисом, по порядку.
+    /// Последние запросы снимка, принятые сервисом (журнал ограничен), по порядку.
     pub fn capture_journal(&self) -> Vec<ShotRequest> {
         self.capture.journal()
     }
 
-    pub fn capture_counters(&self) -> FakeCaptureCounters {
-        self.capture.counters()
+    /// Сколько запросов снимка принято за процесс: не ограничено журналом и не зависит от режима.
+    pub fn capture_requests_accepted(&self) -> u64 {
+        self.capture.accepted_total()
+    }
+
+    /// Режим съёмки (настоящий / фейк / фейк-запасной с причиной) и счётчики того, что за ним стоит.
+    pub fn capture_diagnostics(&self) -> CaptureDiagnostics {
+        self.capture.diagnostics()
+    }
+
+    /// Итоги настоящих снимков после курсора: адреса файлов и время фаз (для сценария `capture`).
+    pub fn capture_phases_after(&self, cursor: PhaseCursor) -> PhaseBatch {
+        self.capture.phases_after(cursor)
+    }
+
+    /// Курсор «сейчас» журнала итогов снимков.
+    pub fn capture_phase_cursor_now(&self) -> PhaseCursor {
+        self.capture.phase_cursor_now()
     }
 
     /// Сколько раз экран ставился (свежий `CameraScreen` на каждую установку).
@@ -299,7 +359,7 @@ impl CameraScreenService {
                 return;
             }
         };
-        self.completion_slot.attach(sender.injector());
+        self.capture.completion_slot().attach(sender.injector());
         match env.gpu.install_product_ui_overlay(Box::new(source)) {
             ControlDelivery::Delivered => {
                 self.installs += 1;
@@ -321,12 +381,12 @@ impl CameraScreenService {
                 tracing::info!(target: LOG_TARGET, installs = self.installs, "экран камеры поставлен");
             }
             ControlDelivery::RenderGone => {
-                self.completion_slot.detach();
+                self.capture.completion_slot().detach();
                 tracing::error!(target: LOG_TARGET, "поток рендера завершён: экран камеры не поставлен");
                 self.status = CameraScreenStatus::RenderGone;
             }
             ControlDelivery::RenderUnavailable { reason } => {
-                self.completion_slot.detach();
+                self.capture.completion_slot().detach();
                 tracing::warn!(target: LOG_TARGET, %reason, "рендер недоступен: экрана камеры нет, касания отбрасываются");
                 self.status = CameraScreenStatus::RenderUnavailable { reason };
             }
@@ -335,7 +395,10 @@ impl CameraScreenService {
 
     /// Сценарий начался: снять экран, если сценарий не просит оставить.
     pub fn suspend_for_scenario(&mut self, scenario: &'static str, policy: CameraScreenPolicy, gpu: &GpuServices) {
-        if policy == CameraScreenPolicy::KeepRunning {
+        if policy.wants_fake_capture() {
+            self.capture.substitute_fake_for_scenario(scenario, &self.config);
+        }
+        if policy.keeps_screen() {
             return;
         }
         if self.installed.is_none() {
@@ -353,7 +416,7 @@ impl CameraScreenService {
         self.recovery = RecoveryPlan::default();
         self.remember_input_stats();
         self.installed = None;
-        self.completion_slot.detach();
+        self.capture.completion_slot().detach();
         let delivery = gpu.remove_product_ui_overlay();
         if !delivery.is_delivered() {
             tracing::warn!(target: LOG_TARGET, scenario, ?delivery, "снятие экрана на время сценария не доставлено");
@@ -363,6 +426,8 @@ impl CameraScreenService {
 
     /// Сценарий закончился любым путём: вернуть экран (свежий). Не трогает экран, который сценарий не снимал.
     pub fn resume_after_scenario(&mut self, env: &ScreenEnvironment<'_>) {
+        // Настоящие снимки возвращаются при ЛЮБОМ конце сценария, в том числе когда экран не снимался.
+        self.capture.restore_after_scenario();
         if matches!(self.status, CameraScreenStatus::SuspendedForScenario { .. }) {
             self.recovery = RecoveryPlan::default();
             self.status = CameraScreenStatus::NotInstalledYet;
@@ -390,7 +455,7 @@ impl CameraScreenService {
     fn note_dropped_by_renderer(&mut self, now: Instant, gpu: &GpuServices) {
         self.remember_input_stats();
         self.installed = None;
-        self.completion_slot.detach();
+        self.capture.completion_slot().detach();
         self.recovery_counters.renderer_drops += 1;
         // Экран, проживший «здоровый» срок, — новый сбой, а не повтор прежнего.
         let lived_healthy = self.recovery.installed_at.is_some_and(|installed_at| {
@@ -534,7 +599,8 @@ impl CameraScreenService {
             haptics: Arc::clone(&env.services.haptics),
             commands: Arc::clone(&env.services.commands),
             render: env.gpu.render_control(),
-            capture: Arc::clone(&self.capture) as Arc<dyn CaptureService>,
+            capture: self.capture.service(),
+            shutter_sound: self.capture.shutter_sound(),
             lens: env.camera.lens_intents().clone(),
         });
         let source = CameraScreenSource::new(ScreenSourceParts {

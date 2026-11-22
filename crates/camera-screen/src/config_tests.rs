@@ -14,10 +14,10 @@ fn default_config_is_valid_and_builds_a_screen() {
     assert_eq!(config.validate(), Ok(()));
     let state = ScreenState::new(&config).expect("экран");
     // Меню v1: порядок iOS 27 (Flash, Aspect, Timer / Exposure, RAW, Grid / Level) без шестерёнки (инвариант 6).
+    // Вспышки у камеры пока нет (`FlashAvailability::Unavailable`, решение 138): пункта Flash в меню нет.
     assert_eq!(
         state.menu_tools(),
         [
-            ToolId::Flash,
             ToolId::Aspect,
             ToolId::Timer,
             ToolId::Exposure,
@@ -26,11 +26,8 @@ fn default_config_is_valid_and_builds_a_screen() {
             ToolId::Level
         ]
     );
-    // Таймер выключен — его значка над кадром нет.
-    assert_eq!(
-        state.visible_strip_tools(),
-        [ToolId::Flash, ToolId::Raw, ToolId::Exposure]
-    );
+    // Таймер выключен — его значка над кадром нет; вспышки нет — значка нет тоже.
+    assert_eq!(state.visible_strip_tools(), [ToolId::Raw, ToolId::Exposure]);
 }
 
 #[test]
@@ -204,9 +201,47 @@ fn tool_ids_parse_from_snake_case_names() {
 }
 
 #[test]
-fn zero_capture_result_timeout_is_refused() {
-    let mut config = ScreenConfig::default();
-    config.capture.result_timeout_ms = 0;
-    assert!(matches!(config.validate(), Err(ScreenConfigError::Capture(_))));
+fn every_capture_limit_must_be_positive() {
+    use crate::shutter::CaptureConfigError;
     assert!(ScreenConfig::default().validate().is_ok());
+    type Break = fn(&mut ScreenConfig);
+    let cases: [(Break, CaptureConfigError); 3] = [
+        (
+            |c| c.capture.capture_timeout_ms = 0,
+            CaptureConfigError::ZeroCaptureTimeout,
+        ),
+        (
+            |c| c.capture.saving_timeout_ms = 0,
+            CaptureConfigError::ZeroSavingTimeout,
+        ),
+        (
+            |c| c.capture.max_saving_shots = 0,
+            CaptureConfigError::ZeroSavingCapacity,
+        ),
+    ];
+    for (break_it, expected) in cases {
+        let mut config = ScreenConfig::default();
+        break_it(&mut config);
+        assert_eq!(
+            config.validate(),
+            Err(ScreenConfigError::Capture(expected)),
+            "{expected:?}"
+        );
+    }
+}
+
+#[test]
+fn capture_defaults_follow_decision_140_and_primary_format_comes_from_json() {
+    let defaults = ScreenConfig::default().capture;
+    assert_eq!(defaults.max_saving_shots, 10, "решение 140");
+    assert_eq!(
+        defaults.saving_timeout_ms, 45_000,
+        "срок службы: проявление 30 с + кодер 5 с + запас 10 с"
+    );
+    assert!(defaults.capture_timeout_ms < defaults.saving_timeout_ms);
+    assert_eq!(defaults.primary_format, still_contract::plan::PrimaryFormat::Heif);
+    let parsed: ScreenConfig = serde_json::from_str(r#"{"capture": {"primary_format": "jpeg"}}"#).expect("разбор");
+    assert_eq!(parsed.capture.primary_format, still_contract::plan::PrimaryFormat::Jpeg);
+    assert_eq!(parsed.capture.max_saving_shots, 10, "остальное — по умолчанию");
+    assert!(serde_json::from_str::<ScreenConfig>(r#"{"capture": {"result_timeout_ms": 1}}"#).is_err());
 }

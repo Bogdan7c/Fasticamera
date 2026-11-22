@@ -9,6 +9,7 @@ mod jitter_buffer_property;
 mod pairing;
 mod pool_and_flow;
 mod release;
+mod ring_pick;
 mod standby;
 mod standby_jitter;
 mod support;

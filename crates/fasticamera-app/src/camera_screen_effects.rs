@@ -7,7 +7,8 @@
 //! * `Lens` → ящик намерений объектива [`LensIntentChannel`] (сессия 13): «последнее побеждает», НЕ очередь команд
 //!   движка — промежуточные значения колеса и щипка не копятся;
 //! * `Viewfinder` → команда рендеру `SetFraming` через [`RenderControl`] (решение 93: место кадра решает экран);
-//! * `Capture` → [`CaptureService`] (фейк до сессии 14).
+//! * `Capture` → [`CaptureService`] (фейк до сессии 14), запрос передаётся целиком (с моментом нажатия);
+//! * `PlayShutterSound` → [`ShutterSoundService`]: отказ (`NotAttached`, `Backpressure`) — счётчик, не ошибка экрана.
 //!
 //! Исполнитель живёт на ПОТОКЕ РЕНДЕРА (внутри источника UI) и ничего не ждёт: всё — постановка в ограниченные
 //! очереди. Желаемая компенсация экспозиции — исключение из «потеряно навсегда»: экран уже показывает новое EV,
@@ -31,6 +32,7 @@ use render_loop::viewfinder::{
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::commands::{CommandOutcome, ShellCommands};
 use shell_contract::haptics::{HapticOutcome, HapticPattern, HapticsService};
+use shell_contract::still_media::ShutterSoundService;
 
 use crate::camera_screen_capture::{CaptureService, SubmitOutcome, SubmitRejection};
 use crate::viewfinder_control::{ControlDelivery, RenderAdjustment, RenderControl};
@@ -214,6 +216,17 @@ pub struct CaptureCounters {
     pub rejected_unavailable: u64,
 }
 
+/// Счётчики звука затвора: итог каждой попытки по виду (звук — украшение, отказ не ломает снимок).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ShutterSoundCounters {
+    /// Команда поставлена в очередь платформы.
+    pub queued: u64,
+    /// Платформа не подключена (Activity нет): играть некому.
+    pub not_attached: u64,
+    /// Очередь команд платформы переполнена: звук отброшен.
+    pub backpressure: u64,
+}
+
 /// Все счётчики исполнителя.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct EffectCounters {
@@ -222,6 +235,7 @@ pub struct EffectCounters {
     pub gallery: ShellCommandCounters,
     pub framing: FramingCounters,
     pub capture: CaptureCounters,
+    pub shutter_sound: ShutterSoundCounters,
     pub lens: LensCounters,
 }
 
@@ -232,6 +246,8 @@ pub struct EffectTargets {
     pub commands: Arc<dyn ShellCommands>,
     pub render: Arc<dyn RenderControl>,
     pub capture: Arc<dyn CaptureService>,
+    /// Звук затвора (`MediaActionSound` на телефоне): эффект играет его в момент снимка.
+    pub shutter_sound: Arc<dyn ShutterSoundService>,
     /// Ящик намерений объектива: тот же клон, что у движка камеры (`CameraServices::lens_intents`).
     pub lens: LensIntentChannel,
 }
@@ -317,6 +333,7 @@ impl EffectExecutor {
                 Effect::Viewfinder(intent) => self.place_viewfinder(intent),
                 Effect::Lens(intent) => self.publish_lens_intent(intent),
                 Effect::Capture(request) => feedback.extend(self.submit_capture(request)),
+                Effect::PlayShutterSound => self.play_shutter_sound(),
             }
         }
         feedback
@@ -441,9 +458,20 @@ impl EffectExecutor {
         }
     }
 
-    /// Запрос снимка; отвергнутый — действие `CaptureFinished(Failed)` обратно экрану.
+    /// Звук затвора. Платформа может отказать — это счётчик, а не ошибка экрана: снимок от звука не зависит.
+    fn play_shutter_sound(&mut self) {
+        let counters = &mut self.counters.shutter_sound;
+        match self.targets.shutter_sound.play_shutter_sound() {
+            CommandOutcome::Queued => counters.queued += 1,
+            CommandOutcome::NotAttached => counters.not_attached += 1,
+            CommandOutcome::Backpressure => counters.backpressure += 1,
+        }
+    }
+
+    /// Запрос снимка (целиком, с моментом нажатия); отвергнутый — действие `CaptureFinished(Failed)` обратно экрану.
     fn submit_capture(&mut self, request: ShotRequest) -> Option<ScreenAction> {
         let counters = &mut self.counters.capture;
+        let request_id = request.request;
         let rejection = match self.targets.capture.submit(request, self.frame_time) {
             SubmitOutcome::Accepted => {
                 counters.accepted += 1;
@@ -463,7 +491,7 @@ impl EffectExecutor {
         };
         tracing::warn!(target: LOG_TARGET, ?rejection, "сервис снимка отверг запрос: экрану возвращён провал");
         Some(ScreenAction::CaptureFinished {
-            request: request.request,
+            request: request_id,
             outcome: CaptureOutcome::Failed(reason),
         })
     }

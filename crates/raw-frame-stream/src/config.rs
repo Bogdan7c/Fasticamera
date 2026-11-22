@@ -4,6 +4,11 @@ use serde::Deserialize;
 
 use crate::viewfinder_pacing::{JitterBufferConfig, ViewfinderPacing};
 
+/// Бюджет кольца по умолчанию: 12 кадров RAW16 4096×3072 (12 × 25 165 824 байт) — самый тяжёлый
+/// формат. Так потолок числа кадров (`snapshot_ring_max_frames = 12`, решение 139) решает для
+/// любого формата, а бюджет остаётся предохранителем при смене разрешения.
+pub const DEFAULT_SNAPSHOT_RING_BUDGET_BYTES: u64 = 12 * 25_165_824;
+
 /// Параметры лизинга. Значения по умолчанию обоснованы в отчёте сессии 05.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -19,9 +24,15 @@ pub struct RawFrameStreamConfig {
     /// Сколько кадров видоискателя держит поток рендера: показанный сейчас + только что взятый.
     pub viewfinder_render_holds: u32,
     /// Бюджет памяти кольца снимков `KeepLast(N)`, байты. 0 — кольцо выключено (решение 41).
+    /// По умолчанию — [`DEFAULT_SNAPSHOT_RING_BUDGET_BYTES`] (решение 139).
     pub snapshot_ring_budget_bytes: u64,
-    /// Потолок числа кадров кольца, даже если бюджет позволяет больше.
+    /// Потолок числа кадров кольца, даже если бюджет позволяет больше. По умолчанию 12
+    /// (≈ 200 мс при 60 к/с, решение 139).
     pub snapshot_ring_max_frames: u32,
+    /// Сколько долей кадров одновременно держат снимки сверх кольца: доля держит буфер камеры,
+    /// пока GPU не скопирует кадр, и переживает вытеснение из кольца. В `maxImages` входит
+    /// только при включённом кольце.
+    pub snapshot_capture_holds: u32,
     /// Запас буферов сверх расчёта (колбэк reader-а держит кадр, пока раздаёт его).
     pub pool_slack: u32,
     /// Политика видоискателя на старте (решение 53: буфер с запасом). На ходу меняется
@@ -42,8 +53,10 @@ impl Default for RawFrameStreamConfig {
             max_pending_frames: 2,
             max_buffered_results: 8,
             viewfinder_render_holds: 2,
-            snapshot_ring_budget_bytes: 0,
-            snapshot_ring_max_frames: 30,
+            snapshot_ring_budget_bytes: DEFAULT_SNAPSHOT_RING_BUDGET_BYTES,
+            snapshot_ring_max_frames: 12,
+            // [estimate] снимок копирует кадр за 1–2 кадра; 10 быстрых нажатий идут по одному.
+            snapshot_capture_holds: 2,
             pool_slack: 1,
             viewfinder_pacing: ViewfinderPacing::default(),
             viewfinder_jitter_buffer: JitterBufferConfig::default(),
@@ -83,6 +96,8 @@ mod bounds {
     pub(super) const VIEWFINDER_RENDER_HOLDS: RangeInclusive<u64> = 1..=4;
     /// Потолок кольца: 64 кадра 4096x3072 RAW10 уже около 1 ГиБ.
     pub(super) const SNAPSHOT_RING_MAX_FRAMES: RangeInclusive<u64> = 0..=64;
+    /// Каждая доля — буфер камеры; десять одновременно удерживаемых — уже перерасход памяти.
+    pub(super) const SNAPSHOT_CAPTURE_HOLDS: RangeInclusive<u64> = 0..=8;
     pub(super) const POOL_SLACK: RangeInclusive<u64> = 0..=4;
     /// Запас больше 4 кадров — больше 66 мс задержки при 60 Гц: это уже не сглаживание дрожания.
     /// Тёплых больше четырёх — это уже второй показываемый поток по памяти (каждый reader ≈ 15 буферов).
@@ -120,6 +135,11 @@ impl RawFrameStreamConfig {
             "snapshot_ring_max_frames",
             self.snapshot_ring_max_frames,
             &bounds::SNAPSHOT_RING_MAX_FRAMES,
+        )?;
+        check_range(
+            "snapshot_capture_holds",
+            self.snapshot_capture_holds,
+            &bounds::SNAPSHOT_CAPTURE_HOLDS,
         )?;
         check_range("pool_slack", self.pool_slack, &bounds::POOL_SLACK)?;
         check_range(
@@ -189,7 +209,7 @@ mod tests {
     #[test]
     fn every_bounded_field_rejects_values_outside_its_range_and_names_itself() {
         type Mutate = fn(&mut RawFrameStreamConfig);
-        let cases: [(&str, Mutate, u64, u64); 11] = [
+        let cases: [(&str, Mutate, u64, u64); 12] = [
             ("pairing_timeout_ms", |c| c.pairing_timeout_ms = 0, 1, 1000),
             ("pairing_timeout_ms", |c| c.pairing_timeout_ms = 1001, 1, 1000),
             ("max_pending_frames", |c| c.max_pending_frames = 0, 1, 8),
@@ -198,6 +218,7 @@ mod tests {
             ("viewfinder_render_holds", |c| c.viewfinder_render_holds = 0, 1, 4),
             ("viewfinder_render_holds", |c| c.viewfinder_render_holds = 5, 1, 4),
             ("snapshot_ring_max_frames", |c| c.snapshot_ring_max_frames = 65, 0, 64),
+            ("snapshot_capture_holds", |c| c.snapshot_capture_holds = 9, 0, 8),
             ("pool_slack", |c| c.pool_slack = 5, 0, 4),
             ("max_buffered_results", |c| c.max_buffered_results = 65, 1, 64),
             ("max_standby_streams", |c| c.max_standby_streams = 5, 0, 4),
@@ -228,6 +249,7 @@ mod tests {
             viewfinder_render_holds: 1,
             snapshot_ring_budget_bytes: u64::MAX,
             snapshot_ring_max_frames: 0,
+            snapshot_capture_holds: 0,
             pool_slack: 0,
             viewfinder_pacing: ViewfinderPacing::LatestWins,
             viewfinder_jitter_buffer: JitterBufferConfig {
@@ -237,6 +259,16 @@ mod tests {
             max_standby_streams: 0,
         };
         assert_eq!(config.validate(), Ok(()));
+    }
+
+    #[test]
+    fn default_ring_is_twelve_frames_even_for_the_heaviest_raw16_format() {
+        // Решение 139: 12 кадров ≈ 200 мс при 60 к/с; бюджет вмещает 12 кадров RAW16 4096×3072.
+        let config = RawFrameStreamConfig::default();
+        assert_eq!(config.snapshot_ring_max_frames, 12);
+        assert_eq!(config.snapshot_ring_budget_bytes, 301_989_888);
+        assert_eq!(config.snapshot_ring_budget_bytes / 25_165_824, 12);
+        assert_eq!(config.snapshot_capture_holds, 2);
     }
 
     #[test]

@@ -106,6 +106,18 @@ impl LensFacts {
     };
 }
 
+/// Есть ли у камеры вспышка, которой экран может пользоваться (инвариант 6: нет возможности — нет и значка).
+///
+/// Вспышка «вкл/выкл» появится в сессии 14d (решение 138); до неё приложение всегда сообщает `Unavailable`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FlashAvailability {
+    /// Вспышки нет (или приложение ещё не умеет ей снимать): значок и пункт меню не показываются.
+    #[default]
+    Unavailable,
+    /// Вспышка доступна: значок и пункт меню показываются, режим попадает в запрос снимка.
+    Available,
+}
+
 /// Снимок фактов камеры. Отправляется целиком при каждом изменении; редьюсер сам находит разницу.
 ///
 /// С сессии 13 не `Copy`: несёт общий каталог зума (`Arc`).
@@ -126,6 +138,8 @@ pub struct CameraFacts {
     pub stream: Option<StreamGeometry>,
     /// Объективы: каталог зума, активная камера, смена, неудача смены.
     pub lens: LensFacts,
+    /// Доступна ли вспышка. Не доступна — экран её не показывает и снимает с `FlashMode::Off`.
+    pub flash: FlashAvailability,
 }
 
 impl CameraFacts {
@@ -138,6 +152,7 @@ impl CameraFacts {
         exposure_range: ExposureRangeFact::NotReported,
         stream: None,
         lens: LensFacts::NONE,
+        flash: FlashAvailability::Unavailable,
     };
 }
 

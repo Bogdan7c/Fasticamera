@@ -74,6 +74,9 @@ pub fn live_facts() -> CameraFacts {
         exposure_range: ExposureRangeFact::NotReported,
         stream: Some(main_camera_stream()),
         lens: live_lens_facts(),
+        // Golden-кадры снимают раскладку экрана со значком вспышки (он вернётся в 14d, решение 138);
+        // скрытие значка без вспышки доказывает `camera-screen` тест рисования, а не golden.
+        flash: camera_screen::FlashAvailability::Available,
     }
 }
 

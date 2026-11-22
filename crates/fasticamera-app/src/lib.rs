@@ -35,7 +35,11 @@ pub mod camera_service;
 #[cfg(test)]
 mod camera_test_support;
 pub mod camera_wiring;
+pub mod capture_backend;
+pub mod capture_scenario_config;
+mod capture_switch;
 pub mod clock_offset;
+pub mod device_config;
 pub mod event_router;
 #[cfg(test)]
 mod fake_render_ae;
@@ -51,6 +55,7 @@ mod operator_prompt_fake;
 #[cfg(test)]
 mod orientation_sensor_fake;
 pub mod panic_report;
+pub mod photo_config;
 pub mod power_measurement;
 pub mod raw_stream_scenario_config;
 pub mod raw_stream_services;
@@ -65,6 +70,16 @@ pub mod runtime;
 pub mod runtime_config;
 pub mod scenario;
 pub mod screen_scenario_config;
+pub mod still_camera_catalog;
+pub mod still_capture_service;
+pub mod still_event_forwarder;
+pub mod still_phase_log;
+pub mod still_render_port;
+pub mod still_runtime;
+pub mod still_screen_ledger;
+#[cfg(test)]
+mod still_test_support;
+pub mod still_wall_clock;
 pub mod three_a_scenario_config;
 #[cfg(test)]
 mod three_a_test_hal;
@@ -79,5 +94,7 @@ pub mod zoom_scenario_config;
 mod jni_exports;
 #[cfg(target_os = "android")]
 mod shell_wiring;
+#[cfg(target_os = "android")]
+mod still_android_wiring;
 #[cfg(target_os = "android")]
 mod vulkan_diagnostics;

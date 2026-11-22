@@ -16,7 +16,7 @@
 //! недоступным (причина видна сценариям), а маршрутизатор подтверждает освобождение surface сразу.
 //! Если не поднялась камера, приложение тоже живёт: сервис камеры хранит причину (`CameraServices::unavailable`).
 
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
 use android_shell::android::{AndroidPerformanceHints, AndroidShellServices, ShellInstallError, ThermalListenerState};
@@ -42,11 +42,21 @@ use crate::raw_stream_wiring::{RawStreamCreation, create_raw_stream, observe_str
 use crate::render_wiring::RenderRuntime;
 use crate::runtime_config::RuntimeConfig;
 use crate::scenario::observing::{ObservingScenario, PlatformFacts, ShellServices, ThermalListenerReport};
+use crate::still_android_wiring::assemble_still;
 use crate::vulkan_diagnostics::VulkanGpuDiagnostics;
 
 /// Что остаётся у composition root после сборки: вход для наблюдающих сценариев.
 struct ShellWiring {
     starter: ScenarioStarter,
+    /// Служба записи снимков живёт столько же, сколько процесс: она лежит в статике `SHELL_WIRING`, а `Drop`
+    /// статика в Rust не вызывается НИКОГДА, поэтому корректной остановки с ожиданием рабочего потока здесь нет
+    /// и обещать её нельзя. Точки остановки платформы тоже нет: `MainActivity.onDestroy` отключает только
+    /// платформу, а Activity пересоздаётся при смене конфигурации, и служба обязана пережить это (рендер и
+    /// камера живут так же). Что бывает при смерти процесса: рабочий поток обрывается вместе с ним, черновики
+    /// (`IS_PENDING = 1`) остаются в хранилище, а незавершённые снимки итога не получают — их убирает уборка
+    /// сирот при следующем старте (`still_orphan_sweep`). `None` — работает запасной фейк.
+    /// Под `Mutex` ради `Sync` статика (внутри приёмник канала); замок не берётся: служба только держится живой.
+    _still_service: Mutex<Option<photo_output::service::StillService>>,
 }
 
 static SHELL_WIRING: OnceLock<ShellWiring> = OnceLock::new();
@@ -93,6 +103,8 @@ pub fn ensure_installed(config: &RuntimeConfig, package_name: PackageName) -> Re
         render.control,
     );
     let camera = start_android_camera(config.camera(), &raw_stream, links);
+    // Снимок: настоящая служба, если есть рендер, камера и паспорт телефона; иначе явный запасной фейк.
+    let still = assemble_still(config, &services, render.still, &camera);
     let (router, starter) = EventRouter::new(RouterParts {
         events: handles.events,
         services: shell_services(&services),
@@ -104,6 +116,7 @@ pub fn ensure_installed(config: &RuntimeConfig, package_name: PackageName) -> Re
         gpu,
         camera,
         camera_screen: config.camera_screen().clone(),
+        capture: still.capture,
     });
     thread::Builder::new()
         .name("fasticamera-router".to_owned())
@@ -119,7 +132,13 @@ pub fn ensure_installed(config: &RuntimeConfig, package_name: PackageName) -> Re
     // Второй `set` означает, что два вызова прошли проверку `get()` одновременно: оболочка и поток
     // маршрутизатора созданы дважды. Молча отбрасывать лишнюю обвязку нельзя — это нарушение
     // инварианта «один раз на процесс», о нём громко сообщаем.
-    if SHELL_WIRING.set(ShellWiring { starter }).is_err() {
+    if SHELL_WIRING
+        .set(ShellWiring {
+            starter,
+            _still_service: Mutex::new(still.service),
+        })
+        .is_err()
+    {
         tracing::error!(
             target: "fasticamera::shell_wiring",
             "оболочка уже установлена: повторная обвязка отброшена (initialize вызван параллельно?)"
@@ -165,6 +184,8 @@ fn try_start_render(
     // Наш AE (08a): рендер меряет сцену и пишет предложения движку, читает его указания. `None` —
     // у камеры вендорский AE (`camera.exposure_controller = "vendor"`, A/B): рендеру мерить нечего,
     // подтяжка ISP остаётся единичной.
+    // Снимки без задержки затвора (сессия 14): рендер берёт кадры из кольца снимков того же потока камеры.
+    let backend = backend.with_still_capture(raw_stream.snapshot_ring());
     let backend = match auto_exposure {
         Some(render_end) => backend.with_auto_exposure(AutoExposureLinks {
             directives: render_end.directives,

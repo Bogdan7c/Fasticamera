@@ -23,6 +23,10 @@ use super::{CameraFrameImporter, CameraImportError, SubmissionSerial};
 pub struct AndroidCameraImporter {
     context: GpuContext,
     cache: AndroidImportCache,
+    /// Ёмкость кэша (нужна, чтобы в `Drop` подменить кэш пустым, если старый приходится оставить в утечку).
+    capacity: NonZeroUsize,
+    /// Последняя серия сабмитов, о завершении которой GPU сообщил (`retire_completed`).
+    completed: SubmissionSerial,
 }
 
 impl AndroidCameraImporter {
@@ -31,6 +35,8 @@ impl AndroidCameraImporter {
         Self {
             context: context.clone(),
             cache: AndroidImportCache::new(context, capacity),
+            capacity,
+            completed: SubmissionSerial(0),
         }
     }
 
@@ -109,6 +115,7 @@ impl CameraFrameImporter for AndroidCameraImporter {
     }
 
     fn retire_completed(&mut self, completed: SubmissionSerial) {
+        self.completed = self.completed.max(completed);
         self.cache.retire_completed(completed);
     }
 
@@ -125,5 +132,25 @@ impl CameraFrameImporter for AndroidCameraImporter {
 
     fn cache_counters(&self) -> ImportCacheCounters {
         self.cache.counters()
+    }
+}
+
+impl Drop for AndroidCameraImporter {
+    /// Уничтожение импортёра НЕ ждёт GPU (поток рендера не ждёт, инвариант 4): импорты серий, о завершении
+    /// которых GPU уже сообщил (`retire_completed`), освобождаются сразу, а пустой кэш не вызывает
+    /// `vkDeviceWaitIdle`. Если GPU мог ещё читать какой-то импорт (серия не подтверждена), импорты остаются в
+    /// учтённой утечке: лучше утечка, чем уничтожение под работающим GPU (соглашение crate).
+    fn drop(&mut self) {
+        if let Err(error) = self.cache.clear(self.completed) {
+            tracing::error!(
+                target: "fasticamera::render::camera",
+                ?error,
+                "импорты снимков, возможно, ещё читает GPU: кэш оставлен в учтённую утечку"
+            );
+            // Подменяем кэш пустым и забываем старый: иначе его `Drop` ждал бы простоя GPU (`vkDeviceWaitIdle`).
+            let stale = std::mem::replace(&mut self.cache, AndroidImportCache::new(&self.context, self.capacity));
+            std::mem::forget(stale);
+        }
+        // Кэш пуст: его `Drop` не ждёт GPU.
     }
 }

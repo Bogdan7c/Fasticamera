@@ -8,7 +8,7 @@ use gpu_vulkan::swapchain::{ColorDepthPreference, DisplayColorPreference, Displa
 use gpu_vulkan::validation::ValidationMode;
 
 use super::present_time::PresentTimePolicy;
-use crate::config::{DisplayColorConfig, RenderLoopConfig, UiOverlayConfig, ViewfinderConfig};
+use crate::config::{DisplayColorConfig, RenderLoopConfig, StillDevelopConfig, UiOverlayConfig, ViewfinderConfig};
 
 /// Параметры [`super::VulkanDisplayBackend`].
 #[derive(Debug, Clone)]
@@ -44,6 +44,8 @@ pub struct VulkanBackendConfig {
     pub viewfinder: ViewfinderConfig,
     /// UI и стекло поверх видоискателя (из `RenderLoopConfig::ui_overlay`).
     pub ui_overlay: UiOverlayConfig,
+    /// Снимок без задержки затвора (из `RenderLoopConfig::still`).
+    pub still: StillDevelopConfig,
 }
 
 impl VulkanBackendConfig {
@@ -82,6 +84,7 @@ impl VulkanBackendConfig {
             },
             viewfinder: config.viewfinder.clone(),
             ui_overlay: config.ui_overlay,
+            still: config.still,
         })
     }
 

@@ -19,6 +19,8 @@ ui-core.workspace = true
 ui-kit.workspace = true
 # Словарь списка рисования (`DrawList`), иконки, `UiFrameSource`: источник кадра UI реализует экран.
 ui-draw.workspace = true
+# Словарь снимка: формат основной картинки (`PrimaryFormat`) в запросе снимка и в конфиге экрана (решение 143).
+still-contract.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 

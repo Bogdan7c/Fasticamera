@@ -32,6 +32,8 @@ from pathlib import Path
 
 import smoke_checks
 import smoke_checks_ae_trace
+import smoke_checks_capture
+import smoke_checks_capture_files
 import smoke_checks_three_a
 import smoke_checks_glass
 import smoke_checks_screen
@@ -205,6 +207,7 @@ CHECKS: dict[str, ScenarioCheck] = {
     "glass": ignoring_observations(smoke_checks_glass.check_glass),
     "screen": ignoring_observations(smoke_checks_screen.check_screen),
     "zoom": ignoring_observations(smoke_checks_zoom.check_zoom),
+    "capture": ignoring_observations(smoke_checks_capture.check_capture),
     "standby": ignoring_observations(smoke_checks_standby.check_standby),
 }
 
@@ -213,6 +216,7 @@ NOTES: dict[str, Callable[[dict], list[str]]] = {
     "glass": smoke_checks_glass.glass_notes,
     "screen": smoke_checks_screen.screen_notes,
     "zoom": smoke_checks_zoom.zoom_notes,
+    "capture": smoke_checks_capture.capture_notes,
     "standby": smoke_checks_standby.standby_notes,
 }
 """Пояснения к вердикту прошедшего сценария (не провал): печатаются после вердикта, как заметки пост-проверок."""
@@ -243,11 +247,12 @@ def evaluate_stream(
     stage_handler: StageHandler | None = None,
     package: str | None = None,
     post_check: PostCheck | None = None,
+    cleanup: PostCheck | None = None,
 ) -> SmokeVerdict:
     """Как ``_evaluate_stream``, но вердикт несёт собранные подробности отчёта (стадии ``detail_*``)."""
     details: list[dict] = []
     notes: list[str] = []
-    verdict = _evaluate_stream(lines, scenario, stage_handler, package, post_check, details, notes)
+    verdict = _evaluate_stream(lines, scenario, stage_handler, package, post_check, details, notes, cleanup)
     return replace(verdict, details=tuple(details), notes=tuple(notes))
 
 
@@ -273,6 +278,7 @@ def _evaluate_stream(
     post_check: PostCheck | None,
     details: list[dict],
     notes: list[str],
+    cleanup: PostCheck | None = None,
 ) -> SmokeVerdict:
     """Читает строки до результата нужного сценария (или падения процесса) и выносит вердикт.
 
@@ -283,6 +289,9 @@ def _evaluate_stream(
     только для ``package`` (см. ``CrashAttribution``); падения чужих приложений игнорируются.
     ``post_check`` (если задан) вызывается над JSON результата, когда основная проверка прошла: так
     ``camera-catalog`` сверяется с ``dumpsys media.camera`` уже после результата. Её проблемы — провал.
+    ``cleanup`` (если задан) вызывается над JSON результата ВСЕГДА, как только пришёл результат нужного сценария, —
+    и после успешной, и после проваленной проверки: так ``capture`` убирает с телефона файлы, которые успел записать
+    даже провальный прогон. Его пояснения — в заметки, проблемы — в провал.
     Кончились строки без результата — ``EXIT_NO_RESULT`` (таймаут или обрыв logcat).
     """
     check = CHECKS.get(scenario)
@@ -319,6 +328,10 @@ def _evaluate_stream(
             outcome = post_check(result)
             problems = outcome.problems
             notes.extend(outcome.notes)
+        if cleanup is not None:
+            cleaned = cleanup(result)
+            problems = [*problems, *cleaned.problems]
+            notes.extend(cleaned.notes)
         if problems:
             return SmokeVerdict(EXIT_SCENARIO_FAILED, f"сценарий {scenario} не прошёл: {'; '.join(problems)}\n{payload}")
         notes.extend(NOTES.get(scenario, lambda _result: [])(result))
@@ -454,6 +467,11 @@ def parse_arguments(argv: list[str]) -> argparse.Namespace:
         help="каталог для скриншотов (вне репозитория); нужен сценариям raw-stream* и viewfinder",
     )
     parser.add_argument(
+        "--keep-captures",
+        action="store_true",
+        help="capture: не удалять с телефона файлы снимков этого прогона (оставить владельцу посмотреть)",
+    )
+    parser.add_argument(
         "--neutral-card",
         action="store_true",
         help="viewfinder и 3a: проверить по скриншотам, что серая карта в центре кадра вышла серой",
@@ -502,6 +520,20 @@ def post_check_for(scenario: str, serial: str, artifacts_dir: Path | None = None
     return None
 
 
+def capture_post_check_for(scenario: str, serial: str, package: str) -> PostCheck | None:
+    """Проверка файлов снимков (``capture``): каждый адрес отчёта — в MediaStore, на диске ПК и в ``ImageDecoder``."""
+    if scenario != "capture":
+        return None
+    return smoke_checks_capture_files.capture_files_post_check(serial, package)
+
+
+def cleanup_for(scenario: str, serial: str, keep_captures: bool, package: str) -> PostCheck | None:
+    """Уборка после сценария: ``capture`` удаляет с телефона свои файлы, если не просили оставить."""
+    if scenario != "capture":
+        return None
+    return smoke_checks_capture_files.capture_cleanup(serial, keep=keep_captures, package=package)
+
+
 def main(argv: list[str]) -> int:
     arguments = parse_arguments(argv)
     driver = StageDriver(
@@ -509,6 +541,8 @@ def main(argv: list[str]) -> int:
         AdbDeviceActions(arguments.serial, arguments.package, artifacts_dir=arguments.artifacts_dir),
     )
     post_check = post_check_for(arguments.scenario, arguments.serial, arguments.artifacts_dir)
+    if post_check is None:
+        post_check = capture_post_check_for(arguments.scenario, arguments.serial, arguments.package)
     if arguments.neutral_card and arguments.scenario in NEUTRAL_CARD_SCENARIOS and arguments.artifacts_dir is not None:
         post_check = with_neutral_card(post_check, arguments.artifacts_dir)
     verdict = evaluate_stream(
@@ -517,6 +551,7 @@ def main(argv: list[str]) -> int:
         driver.handle_stage,
         arguments.package,
         post_check,
+        cleanup_for(arguments.scenario, arguments.serial, arguments.keep_captures, arguments.package),
     )
     if verdict.exit_code == EXIT_NO_RESULT:
         verdict = SmokeVerdict(verdict.exit_code, f"{verdict.message} за {arguments.timeout:g} с")

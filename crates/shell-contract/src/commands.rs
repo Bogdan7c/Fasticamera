@@ -76,6 +76,8 @@ pub enum PlatformCommand {
     ShowOperatorPrompt,
     /// Убрать подсказку владельцу с экрана.
     ClearOperatorPrompt,
+    /// Сыграть звук затвора (`MediaActionSound`).
+    PlayShutterSound,
 }
 
 /// Отказ платформы выполнить ранее принятую команду.

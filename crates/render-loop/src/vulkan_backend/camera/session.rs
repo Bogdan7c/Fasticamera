@@ -27,6 +27,7 @@ mod prepare;
 mod record;
 mod shutdown;
 mod slot;
+mod still_feed;
 mod transition;
 
 use gpu_vulkan::context::GpuContext;
@@ -55,11 +56,12 @@ use super::ownership::OwnershipPlan;
 use super::pipelines::{CameraPipelines, IspPresentation};
 use super::settings::ViewfinderSettings;
 use super::statistics_schedule::StatisticsDecision;
+use super::still::StillFeedRecorder;
 use super::submissions::SubmissionTracker;
 use super::ui_state::UiOverlayFrame;
 use super::viewfinder_stats::ViewfinderStats;
 use super::white_balance::{FramePlan, WhiteBalanceParts, WhiteBalanceRunner};
-use super::{CameraFrameImporter, CameraImportError, CameraImporterFactory, SubmissionSerial};
+use super::{CameraFrameImporter, CameraImportError, SharedImporterFactory, SubmissionSerial};
 use crate::backend::FrameGpuTiming;
 use crate::camera_diagnostics::{CameraStreamDiagnostics, PresentedCameraFrame};
 use crate::config::{ContinuityConfig, ViewfinderToneConfig};
@@ -134,7 +136,7 @@ pub struct CameraSessionParts<'a> {
     /// Видоискатель потока кадров.
     pub frames: Arc<ViewfinderFrames>,
     /// Фабрика импортёра.
-    pub make_importer: &'a CameraImporterFactory,
+    pub make_importer: &'a SharedImporterFactory,
     /// Ёмкость истории показов.
     pub history_capacity: usize,
     /// Действующие настройки видоискателя.
@@ -193,6 +195,8 @@ pub struct CameraSession {
     /// Машина непрерывности картинки при смене потока (сессия 13) и её сроки.
     continuity: ContinuityMachine,
     continuity_config: ContinuityConfig,
+    /// Лента для снимков (сессия 14): что лежало на экране и с какими параметрами обработан каждый кадр.
+    still_feed: StillFeedRecorder,
     context: GpuContext,
 }
 
@@ -213,7 +217,7 @@ impl CameraSession {
             tone,
             continuity,
         } = parts;
-        let importer = match make_importer(context) {
+        let importer = match make_importer.make(context) {
             Ok(importer) => importer,
             Err(error) => {
                 return Err(Box::new(CameraSessionFailure {
@@ -277,6 +281,7 @@ impl CameraSession {
             bench: HeadroomBenchRunner::new(context, headroom),
             continuity: ContinuityMachine::new(continuity),
             continuity_config: continuity,
+            still_feed: StillFeedRecorder::default(),
             context: context.clone(),
         })
     }
@@ -432,6 +437,7 @@ impl CameraSession {
                     self.waits_in_flight.push((serial, wait));
                 }
                 self.note_submitted_content(&content, recorded, change, new_lease.as_ref(), &outcome);
+                self.note_still_present(&content, recorded, composed, new_lease.as_ref(), &outcome);
                 self.note_submitted_viewfinder(slot, &content, recorded);
                 if let Some((transition, report)) = committed {
                     let replaced_by_held = processed && composed == Composed::Held;

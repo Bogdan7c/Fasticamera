@@ -218,6 +218,7 @@ impl DisplayBackend for FakeBackend {
             known_deviations: self.probe.known_deviations.lock().expect("отходы").clone(),
             camera: None,
             viewfinder: None,
+            still: None,
         }
     }
 

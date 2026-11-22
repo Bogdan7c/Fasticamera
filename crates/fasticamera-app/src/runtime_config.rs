@@ -17,7 +17,9 @@ use tracing_subscriber::filter::Targets;
 
 use crate::camera_config::{CameraConfig, CameraConfigError};
 use crate::camera_screen_config::{CameraScreenConfig, CameraScreenConfigError};
+use crate::device_config::{DeviceConfig, DeviceIdentityError};
 use crate::gpu_config::GpuConfig;
+use crate::photo_config::{PhotoConfig, PhotoConfigError};
 use crate::scenario::ScenarioConfig;
 
 /// Тип сборки APK (`BuildConfig.BUILD_TYPE` на стороне Kotlin).
@@ -102,6 +104,12 @@ struct RuntimeConfigJson {
     camera: CameraConfig,
     #[serde(default)]
     camera_screen: CameraScreenConfig,
+    /// Паспорт телефона (`Build.MANUFACTURER`/`Build.MODEL`): Kotlin присылает его при каждом запуске.
+    #[serde(default)]
+    device: DeviceConfig,
+    /// Служба записи снимков (сессия 14).
+    #[serde(default)]
+    photo: PhotoConfig,
 }
 
 /// Проверенный конфиг нативной части.
@@ -117,6 +125,8 @@ pub struct RuntimeConfig {
     gpu: GpuConfig,
     camera: CameraConfig,
     camera_screen: CameraScreenConfig,
+    device: DeviceConfig,
+    photo: PhotoConfig,
 }
 
 impl RuntimeConfig {
@@ -131,6 +141,9 @@ impl RuntimeConfig {
         parsed.render.validate()?;
         parsed.camera.validate()?;
         parsed.camera_screen.validate()?;
+        parsed.device.validate()?;
+        // Предел очереди и сроки экрана со службой — конфиги двух crate-ов: согласуются здесь.
+        parsed.photo.validate(&parsed.camera_screen.screen.capture)?;
         // Бюджет ожиданий GPU потока рендера обязан быть меньше ожидания квитанции оболочкой:
         // иначе `surfaceDestroyed` отпустит главный поток по таймауту раньше подтверждения.
         // Конфиги разных crate-ов, поэтому согласованность проверяется здесь, на стыке.
@@ -151,6 +164,8 @@ impl RuntimeConfig {
             gpu: parsed.gpu,
             camera: parsed.camera,
             camera_screen: parsed.camera_screen,
+            device: parsed.device,
+            photo: parsed.photo,
         })
     }
 
@@ -199,6 +214,16 @@ impl RuntimeConfig {
         &self.camera_screen
     }
 
+    /// Паспорт телефона для тегов файлов снимка (может отсутствовать — это явное состояние).
+    pub fn device(&self) -> &DeviceConfig {
+        &self.device
+    }
+
+    /// Служба записи снимков: допуск, сроки, качество, каталог (сессия 14).
+    pub fn photo(&self) -> &PhotoConfig {
+        &self.photo
+    }
+
     /// Режим validation слоя Vulkan: секция `gpu` с учётом типа сборки.
     pub fn validation_mode(&self) -> gpu_vulkan::validation::ValidationMode {
         self.gpu.validation_mode(self.build_type)
@@ -226,6 +251,10 @@ pub enum ConfigError {
     Camera(#[from] CameraConfigError),
     #[error("неверные настройки экрана камеры: {0}")]
     CameraScreen(#[from] CameraScreenConfigError),
+    #[error("неверный паспорт телефона: {0}")]
+    Device(#[from] DeviceIdentityError),
+    #[error("неверные настройки службы снимков: {0}")]
+    Photo(#[from] PhotoConfigError),
     #[error(
         "render.release_receipt_budget_ms ({render_budget_ms}) должен быть меньше shell.surface_release_timeout_ms ({shell_timeout_ms})"
     )]
@@ -234,6 +263,10 @@ pub enum ConfigError {
         shell_timeout_ms: u64,
     },
 }
+
+#[cfg(test)]
+#[path = "runtime_config_photo_tests.rs"]
+mod photo_tests;
 
 #[cfg(test)]
 mod tests {

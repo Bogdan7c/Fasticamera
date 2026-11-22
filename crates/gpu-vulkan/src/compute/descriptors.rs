@@ -46,6 +46,10 @@ pub(crate) struct DescriptorRing {
     /// По слоту: набор привязан в командный буфер, а fence слота ещё не подтверждён владельцем.
     /// Атомарные флаги — потому что привязка пишется из `&self` (`ComputePipeline::record_dispatch`).
     bound_since_release: Vec<AtomicBool>,
+    /// По слоту: владелец подтвердил fence (`release_after_fence`), и запомненное в `current` больше нельзя
+    /// считать записанным: ресурсы за это время могли быть уничтожены, а их хэндлы Vulkan — выданы заново
+    /// (драйвер переиспользует значения хэндлов). Сбрасывается в `write`, которому нужен `&mut self`.
+    cache_stale: Vec<AtomicBool>,
     kinds: Vec<BindingKind>,
     context: GpuContext,
 }
@@ -131,6 +135,7 @@ impl DescriptorRing {
             written: vec![0; slot_count],
             current: vec![vec![None; kinds.len()]; slot_count],
             bound_since_release: (0..slot_count).map(|_| AtomicBool::new(false)).collect(),
+            cache_stale: (0..slot_count).map(|_| AtomicBool::new(false)).collect(),
             kinds: kinds.to_vec(),
             context: context.clone(),
         })
@@ -161,6 +166,12 @@ impl DescriptorRing {
         let limits = self.context.descriptor_range_limits();
         for write in writes {
             validate_write(&self.kinds, write, limits)?;
+        }
+        // После `release_after_fence` «что записано» неизвестно: хэндл нового ресурса мог совпасть со значением
+        // хэндла уничтоженного (RADV: хэндл — адрес объекта драйвера), а набор хранит АДРЕС старой памяти.
+        // Пропустить запись «того же» хэндла значило бы читать освобождённую память (page fault, DEVICE_LOST).
+        if self.cache_stale[slot].swap(false, Ordering::AcqRel) {
+            self.current[slot].fill(None);
         }
         let unchanged = writes
             .iter()
@@ -237,6 +248,7 @@ impl DescriptorRing {
     pub(crate) fn release_after_fence(&self, slot: usize) -> Result<(), GpuError> {
         self.set_at(slot)?;
         self.bound_since_release[slot].store(false, Ordering::Release);
+        self.cache_stale[slot].store(true, Ordering::Release);
         Ok(())
     }
 
@@ -349,5 +361,36 @@ mod tests {
             "{:?}",
             context.validation_report()
         );
+    }
+
+    #[test]
+    fn release_after_fence_forgets_cached_writes_so_a_recreated_resource_with_the_same_handle_is_rewritten() {
+        let Some(context) = gpu_context_or_skip() else { return };
+        let mut ring = DescriptorRing::new(
+            &context,
+            &[BindingKind::ReadOnlyStorageBuffer],
+            vk::ShaderStageFlags::COMPUTE,
+            1,
+            "тест",
+        )
+        .unwrap();
+        let buffer = crate::device_buffer::DeviceBuffer::new(&context, 64).unwrap();
+        let write = [BindingWrite {
+            binding: 0,
+            resource: buffer.read_only_binding(),
+        }];
+        ring.write(0, &write).unwrap();
+        assert_eq!(ring.current[0][0], Some(buffer.read_only_binding()), "запись запомнена");
+        // Тот же ресурс без освобождения — пустая операция (кэш в силе).
+        ring.write(0, &write).unwrap();
+        assert!(!ring.cache_stale[0].load(Ordering::Acquire));
+        // Владелец подтвердил fence: «что записано» больше неизвестно — ресурс мог быть уничтожен, а его
+        // хэндл выдан новому буферу с другой памятью (так падал снимок: page fault на RADV).
+        ring.release_after_fence(0).unwrap();
+        assert!(ring.cache_stale[0].load(Ordering::Acquire));
+        // Следующая запись обязана дойти до Vulkan даже для «того же» хэндла: после неё кэш снова в силе.
+        ring.write(0, &write).unwrap();
+        assert!(!ring.cache_stale[0].load(Ordering::Acquire), "кэш сброшен записью");
+        assert_eq!(ring.current[0][0], Some(buffer.read_only_binding()));
     }
 }

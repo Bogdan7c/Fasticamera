@@ -192,6 +192,9 @@ pub struct ScreenReport {
     pub thumbnail: ThumbnailState,
     /// Наблюдаемое состояние экрана (панель, плашка, шаги EV, режим, затвор) на момент последнего кадра.
     pub state: ScreenStateSnapshot,
+    /// Настройки съёмки, которые экран применит к СЛЕДУЮЩЕМУ снимку (RAW, формат кадра…): сценарий `capture`
+    /// сверяет по ним, что значок RAW действительно переключился.
+    pub capture_settings: camera_screen::settings::CaptureSettings,
     /// Присутствие камеры глазами экрана.
     pub presence: CameraPresence,
     /// Целевой поворот значков по ориентации телефона, градусы по часовой.
@@ -358,6 +361,7 @@ impl CameraScreenSource {
             diagnostics: self.screen.diagnostics(),
             thumbnail: self.screen.state().thumbnail(),
             state: ScreenStateSnapshot::observe(self.screen.state()),
+            capture_settings: *self.screen.state().settings(),
             presence: self.screen.state().camera_presence(),
             icon_rotation_clockwise_degrees: self.screen.state().icon_rotation_clockwise_degrees(),
             effects: self.executor.counters(),

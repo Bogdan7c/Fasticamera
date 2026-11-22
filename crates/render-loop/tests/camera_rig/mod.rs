@@ -358,7 +358,12 @@ pub fn start_rig() -> Option<Rig> {
         diagnostics_poll_interval_ms: 20,
         ..RenderLoopConfig::default()
     };
-    let stream = RawFrameStream::new(RawFrameStreamConfig::default());
+    // Кольцо снимков выключено осознанно: тест про возврат кадров видоискателя, а кольцо (по умолчанию 12 кадров,
+    // решение 139) держит доли кадров, и камера получает их назад лишь при вытеснении. Кольцо проверяют `vulkan_still_*.rs`.
+    let stream = RawFrameStream::new(RawFrameStreamConfig {
+        snapshot_ring_max_frames: 0,
+        ..RawFrameStreamConfig::default()
+    });
     let log = Arc::new(EventLog::default());
     let imports_alive = Arc::new(AtomicUsize::new(0));
     let (factory_log, factory_alive) = (Arc::clone(&log), Arc::clone(&imports_alive));

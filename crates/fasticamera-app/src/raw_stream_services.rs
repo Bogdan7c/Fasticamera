@@ -135,6 +135,8 @@ impl RawStreamServices {
             } else {
                 config.snapshot_ring_max_frames
             },
+            // Удержания снимков считаются только при включённом кольце (`reader_max_images` это учитывает).
+            snapshot_capture_holds: config.snapshot_capture_holds,
             lossless: 0,
             slack: config.pool_slack,
         }

@@ -80,7 +80,11 @@ pub enum ScreenAction {
     ThumbnailTapped,
     /// Снимок фактов камеры.
     CameraFactsChanged(CameraFacts),
-    /// Итог снимка от сервиса съёмки.
+    /// Кадр снимка захвачен (фаза 1, решение 140): затвор свободен и можно снимать снова, пока снимок
+    /// сохраняется. Итог сохранения придёт отдельно (`CaptureFinished`).
+    CaptureSecured { request: ShotRequestId },
+    /// Итог снимка от сервиса съёмки (фаза 2): для снимка в `Capturing` (ошибка до захвата освобождает
+    /// затвор) и для уже захваченного, сохраняемого.
     CaptureFinished {
         request: ShotRequestId,
         outcome: CaptureOutcome,

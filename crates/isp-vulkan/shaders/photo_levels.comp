@@ -1,0 +1,30 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Проявление снимка, проход 0 «уровни и баланс» для ПОЛОСЫ: сырые отсчёты u16 из буфера захвата → мозаика f32.
+// Формулы — те же, что у стенда V4 (`quality_levels_main.glsl`): включаем его как есть, меняется только
+// источник отсчётов. Буфер захвата — плотные строки u16 little-endian по полезной области (по два отсчёта в слове).
+//
+// Push-константы (раскладка `PlaneGeometry`, числа-индексы < 2^24 передаются как f32 — точно):
+//   width/height — размер области полосы (ореол включён); cfa_code — раскладка;
+//   pass_parameters.x — левый край области в буфере захвата, .y — верхний край, .z — ширина буфера, отсчёты.
+// Левый и верхний края чётные, поэтому позиция в ячейке 2x2 и цвет фильтра считаются от начала области так же,
+// как от начала всего кадра.
+
+#define FRAME_PARAMS_BINDING 1
+#include "quality_frame_params.glsl"
+
+layout(set = 0, binding = 0, std430) readonly buffer CapturedSamples {
+    uint words[];
+} captured;
+
+// Прототип: тело — после включения общей части (там объявлены push-константы `geometry`).
+uint raw_at(uint frame_x, uint frame_y);
+
+#include "quality_levels_main.glsl"
+
+uint raw_at(uint frame_x, uint frame_y) {
+    uint column = frame_x + uint(geometry.pass_parameters.x);
+    uint row = frame_y + uint(geometry.pass_parameters.y);
+    uint sample_index = row * uint(geometry.pass_parameters.z) + column;
+    return (captured.words[sample_index >> 1u] >> ((sample_index & 1u) * 16u)) & 0xFFFFu;
+}

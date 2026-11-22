@@ -110,6 +110,7 @@ class MainActivity : Activity() {
         // onCreate мог упасть раньше, чем создал платформу: тогда отключать нечего.
         if (::platform.isInitialized) {
             ShellBridge.nativeDetach(platform)
+            platform.release()
         }
         super.onDestroy()
     }

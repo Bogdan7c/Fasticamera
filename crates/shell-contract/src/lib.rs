@@ -22,7 +22,8 @@
 //! * [`diagnostics`] — счётчики шва для smoke-проверок;
 //! * [`sync_fence`] — владение sync_fd: fence ожидания перед GPU и fence освобождения после GPU;
 //! * [`hardware_buffer`] — заимствованный `AHardwareBuffer` кадра камеры для импорта в GPU без копии;
-//! * [`power`] — показания батареи (ток, заряд, температура) для замера цены стадий ISP.
+//! * [`power`] — показания батареи (ток, заряд, температура) для замера цены стадий ISP;
+//! * [`still_media`] — сервисы снимка: хранилище фото, кодер HEIF с поверхностью, JPEG, звук затвора.
 
 pub mod clock;
 pub mod commands;
@@ -39,6 +40,7 @@ pub mod orientation;
 pub mod performance_hint;
 pub mod permission;
 pub mod power;
+pub mod still_media;
 pub mod surface;
 pub mod sync_fence;
 pub mod system_gesture;

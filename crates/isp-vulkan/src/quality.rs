@@ -17,13 +17,13 @@
 //!
 //! Сборка всего вместе — [`VideoHeadroomWorkload`].
 
-mod config;
-mod demosaic;
+pub(crate) mod config;
+pub(crate) mod demosaic;
 mod error;
-mod frame_params;
-mod input;
-mod pass;
-mod planes;
+pub(crate) mod frame_params;
+pub(crate) mod input;
+pub(crate) mod pass;
+pub(crate) mod planes;
 mod stages;
 mod temporal;
 #[cfg(test)]

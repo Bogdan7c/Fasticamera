@@ -11,6 +11,7 @@ use crate::effect::Effect;
 use crate::facts::{CameraFacts, CameraPresence, FocusPhase};
 use crate::focus::{CameraPointMatch, FocusIndicator, FocusOrigin, LockState};
 use crate::outcome::ActionOutcome;
+use crate::state::PanelState;
 
 pub(super) fn on_facts_changed(ctx: &mut Ctx<'_>, facts: CameraFacts) -> ActionOutcome {
     let framing_before = ctx.state.framing_intent();
@@ -22,6 +23,7 @@ pub(super) fn on_facts_changed(ctx: &mut Ctx<'_>, facts: CameraFacts) -> ActionO
     } else {
         apply_not_live(ctx);
     }
+    close_card_of_vanished_tool(ctx);
     zoom::on_facts(ctx, &previous);
     // Каталог или значение зума по фактам поменяли кадрирование: рендер получает его сразу (без намерения
     // объектива — значение уже действует в камере).
@@ -31,6 +33,16 @@ pub(super) fn on_facts_changed(ctx: &mut Ctx<'_>, facts: CameraFacts) -> ActionO
         ctx.emit(Effect::Viewfinder(framing_after));
     }
     ActionOutcome::Applied
+}
+
+/// Карточка инструмента, которого у камеры больше нет (вспышка пропала), закрывается: показывать варианты
+/// несуществующей возможности нельзя (инвариант 6). Меню Controls перестраивается виджетом само.
+fn close_card_of_vanished_tool(ctx: &mut Ctx<'_>) {
+    if let PanelState::Submenu(tool) = ctx.state.panel
+        && !ctx.state.is_tool_available(tool)
+    {
+        ctx.state.panel = PanelState::Closed;
+    }
 }
 
 /// Камеры нет (стартует или недоступна): индикатор и плашка скрыты, отсчёт таймера отменён,

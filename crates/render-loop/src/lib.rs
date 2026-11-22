@@ -12,6 +12,8 @@ pub mod camera_diagnostics;
 pub mod config;
 pub mod mailbox;
 pub mod pacing;
+pub mod still;
+pub mod still_diagnostics;
 pub mod surface_state;
 pub mod thread;
 pub mod ui_overlay;

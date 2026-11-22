@@ -62,10 +62,10 @@ pub struct ScreenProbe {
 }
 
 impl ScreenProbe {
-    /// Снимок по отчёту экрана и статусу движка. `capture_requests` — длина журнала фейк-снимков.
+    /// Снимок по отчёту экрана и статусу движка. `capture_requests` — число принятых запросов снимка (не зависит от режима: фейк или настоящая служба).
     pub fn read(screen: &CameraScreenService, status: &CameraStatus) -> Result<Self, ProbeUnavailable> {
         let report = screen.report().ok_or(ProbeUnavailable::NoScreenReport)?;
-        Ok(Self::from_parts(&report, status, screen.capture_journal().len() as u64))
+        Ok(Self::from_parts(&report, status, screen.capture_requests_accepted()))
     }
 
     /// Сборка из готовых частей (отдельно от сервиса — чтобы проверять без маршрутизатора).

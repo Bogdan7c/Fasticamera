@@ -14,6 +14,8 @@ use camera_screen::{ScreenConfig, ScreenConfigError};
 use serde::{Deserialize, Serialize};
 use ui_core::time::MotionPreference;
 
+use crate::camera_screen_capture::FakeCaptureTiming;
+
 /// Предел задержки фейк-снимка: дольше минуты ждать ответ фейка нет смысла (скорее всего опечатка в единицах).
 const MAX_FAKE_CAPTURE_DELAY_MS: u64 = 60_000;
 
@@ -88,9 +90,13 @@ pub struct CameraScreenConfig {
     /// Гравитацию отдаём экрану раз в N кадров рендера (датчик быстрее глаза, уровню хватает 30 Гц).
     /// [estimate] 4: 120 Гц → 30 Гц.
     pub gravity_every_n_frames: u32,
-    /// Через сколько мс фейк-сервис снимка (настоящий — сессия 14) отвечает `CaptureFinished(Saved)`.
-    /// [estimate] 400 мс: заметная для затемнения экрана пауза. 0 — ответ сразу (тесты).
+    /// Через сколько мс фейк-сервис снимка (настоящий — сессия 14) отвечает `CaptureFinished(Saved)` (вторая
+    /// фаза: сохранён). [estimate] 400 мс: заметная для затемнения экрана пауза. 0 — ответ сразу (тесты).
     pub fake_capture_delay_ms: u64,
+    /// Через сколько мс фейк отвечает `CaptureSecured` (первая фаза: кадр захвачен, затвор свободен, решение 140).
+    /// [estimate] 60 мс (≈ 4 кадра): настоящий захват берёт готовый кадр из кольца за десятки мс. Больше
+    /// `fake_capture_delay_ms` не бывает: фейк зажимает срок до срока сохранения. 0 — захват сразу.
+    pub fake_capture_secured_delay_ms: u64,
     /// Сколько последних запросов снимка помнит журнал фейка; старые вытесняются со счётчиком. [estimate] 64:
     /// сценарию `screen` нужны единицы, а процесс живёт неделями.
     pub fake_capture_journal_capacity: usize,
@@ -111,6 +117,7 @@ impl Default for CameraScreenConfig {
             input_queue_capacity: 256,
             gravity_every_n_frames: 4,
             fake_capture_delay_ms: 400,
+            fake_capture_secured_delay_ms: 60,
             fake_capture_journal_capacity: 64,
             reinstall: ScreenReinstallConfig::default(),
             report_min_interval_ms: 50,
@@ -127,6 +134,8 @@ pub enum CameraScreenConfigError {
     GravityEveryNFrames,
     #[error("camera_screen.fake_capture_delay_ms = {value}: не больше {MAX_FAKE_CAPTURE_DELAY_MS}")]
     FakeCaptureDelay { value: u64 },
+    #[error("camera_screen.fake_capture_secured_delay_ms = {value}: не больше {MAX_FAKE_CAPTURE_DELAY_MS}")]
+    FakeCaptureSecuredDelay { value: u64 },
     #[error("camera_screen.fake_capture_journal_capacity = {value}: нужно от 1 до {MAX_FAKE_CAPTURE_JOURNAL_CAPACITY}")]
     FakeCaptureJournalCapacity { value: usize },
     #[error("camera_screen.reinstall.max_attempts = {value}: нужно от 1 до {MAX_REINSTALL_ATTEMPTS}")]
@@ -155,6 +164,11 @@ impl CameraScreenConfig {
         if self.fake_capture_delay_ms > MAX_FAKE_CAPTURE_DELAY_MS {
             return Err(CameraScreenConfigError::FakeCaptureDelay {
                 value: self.fake_capture_delay_ms,
+            });
+        }
+        if self.fake_capture_secured_delay_ms > MAX_FAKE_CAPTURE_DELAY_MS {
+            return Err(CameraScreenConfigError::FakeCaptureSecuredDelay {
+                value: self.fake_capture_secured_delay_ms,
             });
         }
         if self.fake_capture_journal_capacity == 0
@@ -193,9 +207,17 @@ impl CameraScreenConfig {
         Ok(())
     }
 
-    /// Задержка фейк-снимка как `Duration`.
+    /// Задержка итога `Saved` фейк-снимка как `Duration` (вторая фаза).
     pub fn fake_capture_delay(&self) -> Duration {
         Duration::from_millis(self.fake_capture_delay_ms)
+    }
+
+    /// Сроки двух фаз фейк-снимка как `Duration`.
+    pub fn fake_capture_timing(&self) -> FakeCaptureTiming {
+        FakeCaptureTiming {
+            secured_after: Duration::from_millis(self.fake_capture_secured_delay_ms),
+            saved_after: Duration::from_millis(self.fake_capture_delay_ms),
+        }
     }
 }
 

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!--
+            Только debug-сборка: проверка smoke-сценария `capture` «HEIF декодируется системным ImageDecoder».
+            exported: приёмник вызывает скрипт ПК (`adb shell am broadcast -n <пакет>/dev.fasticamera.DebugImageDecodeReceiver`).
+            Release-сборка приёмника не содержит.
+        -->
+        <receiver
+            android:name="dev.fasticamera.DebugImageDecodeReceiver"
+            android:exported="true" />
+    </application>
+</manifest>

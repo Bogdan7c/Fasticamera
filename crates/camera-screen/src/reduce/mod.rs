@@ -31,8 +31,14 @@ mod exposure_tests;
 #[path = "facts_tests.rs"]
 mod facts_tests;
 #[cfg(test)]
+#[path = "flash_tests.rs"]
+mod flash_tests;
+#[cfg(test)]
 #[path = "menu_tests.rs"]
 mod menu_tests;
+#[cfg(test)]
+#[path = "saving_tests.rs"]
+mod saving_tests;
 #[cfg(test)]
 #[path = "sensors_tests.rs"]
 mod sensors_tests;
@@ -211,6 +217,7 @@ fn dispatch_action(ctx: &mut Ctx<'_>, action: ScreenAction) -> ActionOutcome {
         ScreenAction::ShutterTapped { at } => shutter::on_shutter_button(ctx, at),
         ScreenAction::VolumeKey { phase, at } => shutter::on_volume_key(ctx, phase, at),
         ScreenAction::ThumbnailTapped => shutter::on_thumbnail_tapped(ctx),
+        ScreenAction::CaptureSecured { request } => shutter::on_capture_secured(ctx, request),
         ScreenAction::CaptureFinished { request, outcome } => shutter::on_capture_finished(ctx, request, outcome),
         ScreenAction::CameraFactsChanged(facts) => facts::on_facts_changed(ctx, facts),
         ScreenAction::DeviceOrientationChanged(orientation) => sensors::on_orientation(ctx, orientation),

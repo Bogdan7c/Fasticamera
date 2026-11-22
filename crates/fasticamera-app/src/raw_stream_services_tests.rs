@@ -83,4 +83,21 @@ fn pool_plan_upper_bound_follows_the_stream_config() {
         },
     );
     assert_eq!(with_ring.pool_plan_upper_bound().snapshot_ring, 30);
+    // Удержания снимков входят в maxImages только вместе с кольцом (решение 139).
+    assert_eq!(with_ring.pool_plan_upper_bound().snapshot_capture_holds, 2);
+    assert_eq!(
+        with_ring.pool_plan_upper_bound().reader_max_images(),
+        4 + 3 + 30 + 2 + 1
+    );
+
+    // Решение 139: по умолчанию кольцо включено, 12 кадров + 2 удержания снимков.
+    let defaults = RawStreamServices::new(
+        Arc::new(NoStreamCounters),
+        CpuAccessProbe::disarmed(),
+        Arc::new(SystemClocks),
+        RawFrameStreamConfig::default(),
+    )
+    .pool_plan_upper_bound();
+    assert_eq!((defaults.snapshot_ring, defaults.snapshot_capture_holds), (12, 2));
+    assert_eq!(defaults.reader_max_images(), 4 + 2 + 12 + 2 + 1);
 }

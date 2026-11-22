@@ -43,6 +43,7 @@ mod placement;
 mod session;
 mod settings;
 mod statistics_schedule;
+mod still;
 mod submissions;
 mod ui_state;
 mod viewfinder_stats;
@@ -66,6 +67,9 @@ pub(super) use self::headroom_stats::HeadroomLiveState;
 pub(super) use self::pipelines::CameraPipelines;
 pub(super) use self::session::{CameraDrawError, CameraSession, CameraSessionFailure, CameraSessionParts};
 pub(super) use self::settings::ViewfinderSettings;
+pub(super) use self::still::{
+    GpuMaker, StillDiagnostics, StillEngine, StillFeed, SystemStillClock, VulkanStillGpu, VulkanStillSettings,
+};
 pub(super) use self::ui_state::{UiOverlayFrame, UiOverlayState};
 pub(super) use self::viewfinder_stats::ViewfinderStats;
 pub(super) use self::white_balance::{SceneWhiteMemory, WhiteBalanceParts};
@@ -115,12 +119,33 @@ pub trait CameraFrameImporter: Send {
 pub type CameraImporterFactory =
     Box<dyn Fn(&GpuContext) -> Result<Box<dyn CameraFrameImporter>, CameraImportError> + Send>;
 
+/// Фабрика импортёра, общая для показа и снимков (сессия 14): снимок создаёт свой импортёр тем же способом, что
+/// показ (серии сабмитов у импортёров независимы, жизнь импорта по серии не конфликтует с видоискателем).
+#[derive(Clone)]
+pub struct SharedImporterFactory(Arc<std::sync::Mutex<CameraImporterFactory>>);
+
+impl SharedImporterFactory {
+    /// Оборачивает фабрику для совместного использования.
+    pub fn new(factory: CameraImporterFactory) -> Self {
+        Self(Arc::new(std::sync::Mutex::new(factory)))
+    }
+
+    /// Создаёт новый импортёр для контекста `context`.
+    pub fn make(&self, context: &GpuContext) -> Result<Box<dyn CameraFrameImporter>, CameraImportError> {
+        let factory = self
+            .0
+            .lock()
+            .map_err(|_| CameraImportError::Platform("фабрика импортёров отравлена паникой".to_owned()))?;
+        (factory)(context)
+    }
+}
+
 /// Откуда бэкенд берёт кадры камеры вместо тестового паттерна.
 pub struct CameraFeed {
     /// Видоискатель потока кадров (общий для всех присоединений surface).
     pub(super) frames: Arc<ViewfinderFrames>,
-    /// Создаёт импортёр под каждую surface.
-    pub(super) make_importer: CameraImporterFactory,
+    /// Создаёт импортёр под каждую surface (и для снимков).
+    pub(super) make_importer: SharedImporterFactory,
 }
 
 impl CameraFeed {
@@ -128,7 +153,7 @@ impl CameraFeed {
     pub fn new(frames: ViewfinderFrames, make_importer: CameraImporterFactory) -> Self {
         Self {
             frames: Arc::new(frames),
-            make_importer,
+            make_importer: SharedImporterFactory::new(make_importer),
         }
     }
 }

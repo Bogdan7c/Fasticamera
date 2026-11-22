@@ -366,19 +366,40 @@ pub fn test_continuity(reveal_exposure: RevealExposureCheck) -> ContinuityConfig
     }
 }
 
+/// Снимки в стенде (сессия 14): настройки движка снимков и размер кольца камеры.
+#[derive(Debug, Clone, Copy)]
+pub struct StillSetup {
+    pub config: render_loop::config::StillDevelopConfig,
+    /// Потолок кадров кольца снимков (0 — кольцо выключено).
+    pub ring_frames: u32,
+}
+
 impl Rig {
     pub fn new(continuity: ContinuityConfig, with_auto_exposure: bool) -> Option<Self> {
+        // Кольцо снимков выключено: стенды непрерывности про видоискатель (кольцо держало бы доли кадров серий и
+        // хаб возвращал бы кадры позже; поведение кольца проверяют `vulkan_still_*.rs`).
+        Self::with_stills(continuity, with_auto_exposure, None)
+    }
+
+    /// Стенд со снимками (`Some`) или без них (`None`: кольцо выключено, как в стендах видоискателя).
+    pub fn with_stills(
+        continuity: ContinuityConfig,
+        with_auto_exposure: bool,
+        stills: Option<StillSetup>,
+    ) -> Option<Self> {
         let render_config = RenderLoopConfig {
             display_color: DisplayColorConfig::SrgbOnly,
             viewfinder: ViewfinderConfig {
                 continuity,
                 ..ViewfinderConfig::default()
             },
+            still: stills.map_or_else(Default::default, |setup| setup.config),
             ..RenderLoopConfig::default()
         };
         render_config.validate().expect("конфиг корректен");
         let stream = RawFrameStream::new(RawFrameStreamConfig {
             viewfinder_pacing: raw_frame_stream::ViewfinderPacing::LatestWins,
+            snapshot_ring_max_frames: stills.map_or(0, |setup| setup.ring_frames),
             ..RawFrameStreamConfig::default()
         });
         let scene: Scene = Arc::default();
@@ -398,6 +419,11 @@ impl Rig {
             }),
             directives,
         )?;
+        let backend = if stills.is_some() {
+            backend.with_still_capture(stream.snapshot_ring())
+        } else {
+            backend
+        };
         let exposure_directives = DirectiveSlot::new();
         let mut backend = if with_auto_exposure {
             backend.with_auto_exposure(AutoExposureLinks {

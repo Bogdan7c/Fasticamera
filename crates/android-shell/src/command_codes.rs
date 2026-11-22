@@ -12,6 +12,7 @@ pub const OPEN_SYSTEM_GALLERY: i32 = 3;
 pub const KEEP_SCREEN_ON: i32 = 4;
 pub const SHOW_OPERATOR_PROMPT: i32 = 5;
 pub const CLEAR_OPERATOR_PROMPT: i32 = 6;
+pub const PLAY_SHUTTER_SOUND: i32 = 7;
 
 /// Код вида подсказки для `ShellPlatform.showOperatorPrompt(…, kind)`; Kotlin по нему выбирает цвет.
 /// Контракт с Kotlin: те же числа — константы `ShellPlatform.PROMPT_KIND_*`.
@@ -33,6 +34,7 @@ pub fn platform_command_from_code(code: i32) -> Option<PlatformCommand> {
         KEEP_SCREEN_ON => Some(PlatformCommand::KeepScreenOn),
         SHOW_OPERATOR_PROMPT => Some(PlatformCommand::ShowOperatorPrompt),
         CLEAR_OPERATOR_PROMPT => Some(PlatformCommand::ClearOperatorPrompt),
+        PLAY_SHUTTER_SOUND => Some(PlatformCommand::PlayShutterSound),
         _ => None,
     }
 }
@@ -50,6 +52,7 @@ mod tests {
             KEEP_SCREEN_ON,
             SHOW_OPERATOR_PROMPT,
             CLEAR_OPERATOR_PROMPT,
+            PLAY_SHUTTER_SOUND,
         ]
         .into_iter()
         .map(platform_command_from_code)
@@ -63,6 +66,7 @@ mod tests {
                 Some(PlatformCommand::KeepScreenOn),
                 Some(PlatformCommand::ShowOperatorPrompt),
                 Some(PlatformCommand::ClearOperatorPrompt),
+                Some(PlatformCommand::PlayShutterSound),
             ]
         );
     }
@@ -76,6 +80,7 @@ mod tests {
             KEEP_SCREEN_ON,
             SHOW_OPERATOR_PROMPT,
             CLEAR_OPERATOR_PROMPT,
+            PLAY_SHUTTER_SOUND,
         ];
         let unique: std::collections::HashSet<_> = codes.iter().collect();
         assert_eq!(unique.len(), codes.len());

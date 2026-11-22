@@ -3,7 +3,7 @@
 #
 #   scripts/device-smoke.sh [--variant debug|release] [--no-build] [--timeout SEC] [--artifacts-dir DIR]
 #                           [--stages LIST] [--ab-window-ms MS] [--endurance-ms MS] [--exposure-controller own|vendor]
-#                           [--neutral-card] <сценарий>
+#                           [--neutral-card] [--keep-captures] <сценарий>
 #
 # Сценарии (--timeout в скобках): hello, panic (debug), lifecycle, permission (60), motion, platform,
 # render (120), render-lifecycle (400), ahb-import и gpu-fence (60); камера: camera-catalog (30, сверка с
@@ -32,6 +32,11 @@
 # обратно повышением тёплой без переоткрытия, затем «не нужно»; по каждому шагу — время до готовности тёплой и до смены объектива,
 # частота обеих задних камер (порог 55 к/с), счётчики потока кадров (кадры тёплой, leaked_leases = 0), отказов тёплой 0, после
 # отпуска ни одной тёплой; скрипт ничего не нажимает, телефон разблокирован, экран не трогать).
+# Снимок 14: capture (150; снимок на настоящем экране без скрипта-нажимателя: один HEIF, HEIF + DNG и серия из 10 нажатий по 100 мс; по каждому
+# снимку — время «нажатие → кадр захвачен → сохранено», адреса файлов; сервис снимка обязан быть НАСТОЯЩИМ (запасной фейк — провал).
+# После результата скрипт ПК проверяет каждый файл (MediaStore: is_pending 0, DCIM/Camera/, MIME, размеры; heif-info, DNG, exiftool/rawpy,
+# системный ImageDecoder в debug-сборке) и УДАЛЯЕТ с телефона только файлы этого прогона; --keep-captures оставляет их владельцу.
+# Телефон разблокирован, экран не трогать).
 # Шаги на телефоне — scripts/smoke_driver.py, ожидания — smoke_wait.py, smoke_checks*.py.
 # raw-stream*, viewfinder, glass и 3a снимают два скриншота на стадии viewfinder_live (3a — awb_ready, glass — glass_live) в каталог артефактов ВНЕ
 # репозитория: --artifacts-dir DIR либо свежий `mktemp -d` (путь печатается).
@@ -53,7 +58,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
 usage() {
-    sed -n '2,50p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,54p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
 }
 
 variant="debug"
@@ -65,6 +70,7 @@ ab_window_ms=""
 endurance_ms=""
 exposure_controller=""
 neutral_card=false
+keep_captures=false
 scenario=""
 
 while [[ $# -gt 0 ]]; do
@@ -78,6 +84,7 @@ while [[ $# -gt 0 ]]; do
         --endurance-ms) endurance_ms="${2:-}"; shift 2 ;;
         --exposure-controller) exposure_controller="${2:-}"; shift 2 ;;
         --neutral-card) neutral_card=true; shift ;;
+        --keep-captures) keep_captures=true; shift ;;
         -h|--help) usage; exit "$EXIT_OK" ;;
         -*) log_error "неизвестный аргумент: $1"; usage; exit "$EXIT_USAGE" ;;
         *)
@@ -132,6 +139,10 @@ if [[ -n "$exposure_controller" && ! "$exposure_controller" =~ ^(own|vendor)$ ]]
 fi
 if [[ "$neutral_card" == true && "$scenario" != "viewfinder" && "$scenario" != "3a" ]]; then
     log_error "--neutral-card имеет смысл только для viewfinder и 3a"
+    exit "$EXIT_USAGE"
+fi
+if [[ "$keep_captures" == true && "$scenario" != "capture" ]]; then
+    log_error "--keep-captures имеет смысл только для capture"
     exit "$EXIT_USAGE"
 fi
 if [[ ! "$timeout_seconds" =~ ^[0-9]+$ ]]; then
@@ -192,6 +203,9 @@ start_activity "$serial" "$package" -e scenario "$scenario" ${stages:+-e stages 
 wait_options=()
 if [[ "$neutral_card" == true ]]; then
     wait_options+=(--neutral-card)
+fi
+if [[ "$keep_captures" == true ]]; then
+    wait_options+=(--keep-captures)
 fi
 log_step "ожидание FASTICAMERA_RESULT сценария $scenario (до $timeout_seconds с)"
 # Без exec: после проверки надо отработать ловушку восстановления разрешения.

@@ -100,8 +100,13 @@ fn rig_or_skip(
         ..RenderLoopConfig::default()
     };
     // Кадры идут по одному на показ: `LatestWins` выдаёт кадр сразу, без буфера с запасом.
+    // Кольцо снимков здесь выключено осознанно: стенд про видоискатель и AWB, а кольцо (по умолчанию 12 кадров,
+    // решение 139) держит доли кадров, в том числе кадров серии, и камера получает их назад лишь по мере
+    // вытеснения. Тест «кадры серии возвращены камере» без выключения падал бы из-за кольца, а не из-за
+    // видоискателя. Поведение кольца со снимками проверяют `vulkan_still_*.rs`.
     let stream = RawFrameStream::new(RawFrameStreamConfig {
         viewfinder_pacing: raw_frame_stream::ViewfinderPacing::LatestWins,
+        snapshot_ring_max_frames: 0,
         ..RawFrameStreamConfig::default()
     });
     let mut backend = headless_camera_backend_with_directives_or_skip(

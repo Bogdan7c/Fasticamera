@@ -161,6 +161,12 @@ impl HubState {
             viewfinder: self.config.viewfinder_pool_cells(),
             pending_pairs: self.config.max_pending_frames,
             snapshot_ring: u32::try_from(ring_capacity).unwrap_or(u32::MAX),
+            // Удержания снимков нужны только при включённом кольце.
+            snapshot_capture_holds: if ring_capacity == 0 {
+                0
+            } else {
+                self.config.snapshot_capture_holds
+            },
             lossless: u32::try_from(lossless_total).unwrap_or(u32::MAX),
             slack: self.config.pool_slack,
         }

@@ -1,6 +1,7 @@
 package dev.fasticamera
 
 import android.content.Intent
+import android.os.Build
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -51,6 +52,8 @@ data class NativeConfig(
         val json = JSONObject()
             .put("build_type", buildType)
             .put("log_filter", logFilter)
+            // Паспорт телефона для Exif/DNG (`Make`/`Model`): Rust сам ничего не хардкодит (секция `device`).
+            .put("device", JSONObject().put("make", Build.MANUFACTURER).put("model", Build.MODEL))
         // Частичные секции: остальные поля camera.* Rust берёт по умолчанию.
         val scenarios = JSONObject()
         stageBudgetRows?.let { rows ->

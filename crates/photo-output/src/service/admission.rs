@@ -1,0 +1,147 @@
+//! Допуск снимков: не больше `max_pending_stills` одновременно ждут сохранения (решение 140).
+//!
+//! Владелец учёта — [`StillAdmission`]. Слот выдаётся билетом [`AdmissionTicket`] и освобождается
+//! РОВНО один раз: когда билет уничтожен. Служба держит билет до итоговой фазы снимка (Saved/Failed),
+//! а если приложение взяло билет и не передало службе (например, не ушёл план рендеру), билет
+//! освободит слот при выбрасывании. Поэтому «утечка» слота невозможна без утечки самого билета.
+
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+use still_contract::phase::StillFailure;
+use still_contract::plan::StillId;
+
+/// Почему снимок не допущен. Отказ ничего не трогает: уже снятые снимки идут своим путём.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum AdmissionRefused {
+    /// Ждущих снимков уже `limit` (решение 140).
+    #[error("ждущих снимков уже {limit}")]
+    QueueFull { limit: usize },
+    /// Номер снимка уже в работе: номера сквозные, повтор — ошибка вызывающего.
+    #[error("снимок {0:?} уже в работе")]
+    DuplicateId(StillId),
+    /// Служба остановлена или останавливается.
+    #[error("служба снимков остановлена")]
+    ServiceStopped,
+}
+
+impl From<AdmissionRefused> for StillFailure {
+    fn from(refused: AdmissionRefused) -> Self {
+        match refused {
+            AdmissionRefused::QueueFull { .. } => Self::QueueFull,
+            AdmissionRefused::ServiceStopped => Self::ServiceUnavailable,
+            AdmissionRefused::DuplicateId(_) => Self::Develop(refused.to_string()),
+        }
+    }
+}
+
+/// Список снимков в работе и признак «служба закрыта» под одним замком.
+#[derive(Default)]
+struct AdmissionBook {
+    admitted: HashSet<StillId>,
+    closed: bool,
+}
+
+/// Владелец учёта допуска.
+pub struct StillAdmission {
+    limit: usize,
+    book: Mutex<AdmissionBook>,
+    accepted: AtomicU64,
+    refused: AtomicU64,
+}
+
+impl StillAdmission {
+    pub fn new(limit: usize) -> Arc<Self> {
+        Arc::new(Self {
+            limit,
+            book: Mutex::new(AdmissionBook::default()),
+            accepted: AtomicU64::new(0),
+            refused: AtomicU64::new(0),
+        })
+    }
+
+    fn book(&self) -> MutexGuard<'_, AdmissionBook> {
+        // Замок держат только короткие операции над множеством; отравление не ломает его целостность.
+        self.book.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Выдаёт билет на снимок `id` или отказывает.
+    pub fn try_admit(self: &Arc<Self>, id: StillId) -> Result<AdmissionTicket, AdmissionRefused> {
+        let verdict = {
+            let mut book = self.book();
+            if book.closed {
+                Err(AdmissionRefused::ServiceStopped)
+            } else if book.admitted.contains(&id) {
+                Err(AdmissionRefused::DuplicateId(id))
+            } else if book.admitted.len() >= self.limit {
+                Err(AdmissionRefused::QueueFull { limit: self.limit })
+            } else {
+                book.admitted.insert(id);
+                Ok(())
+            }
+        };
+        match verdict {
+            Ok(()) => {
+                self.accepted.fetch_add(1, Ordering::Relaxed);
+                Ok(AdmissionTicket {
+                    id,
+                    admission: Arc::clone(self),
+                })
+            }
+            Err(refused) => {
+                self.refused.fetch_add(1, Ordering::Relaxed);
+                Err(refused)
+            }
+        }
+    }
+
+    /// Закрывает допуск: новые снимки получают [`AdmissionRefused::ServiceStopped`].
+    pub fn close(&self) {
+        self.book().closed = true;
+    }
+
+    /// Сколько снимков сейчас ждут сохранения.
+    pub fn pending_count(&self) -> usize {
+        self.book().admitted.len()
+    }
+
+    /// Сколько снимков допущено за всё время.
+    pub fn accepted_total(&self) -> u64 {
+        self.accepted.load(Ordering::Relaxed)
+    }
+
+    /// Сколько отказов выдано за всё время.
+    pub fn refused_total(&self) -> u64 {
+        self.refused.load(Ordering::Relaxed)
+    }
+
+    fn release(&self, id: StillId) {
+        self.book().admitted.remove(&id);
+    }
+}
+
+/// Билет на один слот допуска. Слот освобождается при уничтожении билета (ровно один раз).
+#[must_use = "билет держит слот допуска; без него снимок не учитывается"]
+pub struct AdmissionTicket {
+    id: StillId,
+    admission: Arc<StillAdmission>,
+}
+
+impl AdmissionTicket {
+    pub fn still_id(&self) -> StillId {
+        self.id
+    }
+}
+
+impl Drop for AdmissionTicket {
+    fn drop(&mut self) {
+        self.admission.release(self.id);
+    }
+}
+
+impl std::fmt::Debug for AdmissionTicket {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("AdmissionTicket").field("id", &self.id).finish()
+    }
+}

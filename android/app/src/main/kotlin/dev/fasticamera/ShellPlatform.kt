@@ -31,6 +31,31 @@ class ShellPlatform(private val activity: Activity, private val promptView: Oper
     private val touchFeedback: VibrationAttributes =
         VibrationAttributes.createForUsage(VibrationAttributes.USAGE_TOUCH)
 
+    // Сервисы снимка (сессия 14): только обёртки над API платформы, живут вместе с Activity.
+    // Контекст приложения, а не Activity: запись снимка не должна держать Activity в памяти.
+    private val mediaStore = StillMediaStore(activity.applicationContext).also { it.startOrphanSweepOnce() }
+    private val heifEncoder = StillHeifEncoder(mediaStore)
+    private val jpegCompressor = StillJpegCompressor()
+    private val shutterSound = StillShutterSound()
+
+    /** Хранилище фото снимка (Rust: `still_media_store`). */
+    fun stillMediaStore(): StillMediaStore = mediaStore
+
+    /** Фабрика кодеров HEIF снимка (Rust: `still_heif_encoder`). */
+    fun stillHeifEncoder(): StillHeifEncoder = heifEncoder
+
+    /** Сжатие JPEG снимка (Rust: `still_jpeg`). */
+    fun stillJpegCompressor(): StillJpegCompressor = jpegCompressor
+
+    /**
+     * Звук затвора. Вызывается с потока `fasticamera-platform`; исключение уходит в Rust как отказ
+     * команды [COMMAND_PLAY_SHUTTER_SOUND] (`PlatformCommandFailed`).
+     */
+    fun playShutterSound() = shutterSound.play()
+
+    /** Отпускает ресурсы, не зависящие от сборщика мусора (Activity уничтожается). */
+    fun release() = shutterSound.release()
+
     fun hasVibrator(): Boolean = vibrator.hasVibrator()
 
     fun hasAmplitudeControl(): Boolean = vibrator.hasAmplitudeControl()
@@ -132,6 +157,7 @@ class ShellPlatform(private val activity: Activity, private val promptView: Oper
         const val COMMAND_KEEP_SCREEN_ON = 4
         const val COMMAND_SHOW_OPERATOR_PROMPT = 5
         const val COMMAND_CLEAR_OPERATOR_PROMPT = 6
+        const val COMMAND_PLAY_SHUTTER_SOUND = 7
 
         /** Версия раскладки `readBatterySnapshot` — контракт с `BATTERY_SNAPSHOT_LAYOUT_VERSION` в Rust. */
         const val BATTERY_SNAPSHOT_LAYOUT_VERSION = 1L

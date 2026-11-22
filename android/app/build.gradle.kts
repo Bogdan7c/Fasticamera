@@ -76,6 +76,12 @@ android {
     }
 }
 
+dependencies {
+    // Кодер HEIF снимка с входной поверхностью (решение 142; `StillHeifEncoder.kt`).
+    // 1.2.0 — последняя стабильная на Google Maven (проба сессии 14); Apache-2.0, Google/AndroidX.
+    implementation("androidx.heifwriter:heifwriter:1.2.0")
+}
+
 /**
  * Сборка нативной библиотеки `libfasticamera.so` через cargo-ndk для одного варианта APK.
  * Результат подключается к APK как сгенерированный каталог jniLibs через Variant API —

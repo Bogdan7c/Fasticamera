@@ -433,6 +433,8 @@ fn run_viewfinder_on(
     (harness, result)
 }
 
+#[path = "event_router_capture_tests.rs"]
+mod capture;
 #[path = "event_router_glass_tests.rs"]
 mod glass;
 #[path = "event_router_viewfinder_latency_tests.rs"]

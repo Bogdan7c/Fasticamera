@@ -29,7 +29,7 @@ impl PresentationSurface {
     /// Создаёт `VkSurfaceKHR` поверх этой поверхности.
     ///
     /// Профиль контекста должен включать нужное расширение instance, иначе — `ExtensionNotEnabled`.
-    pub(super) fn create_vulkan_surface(&self, context: &GpuContext) -> Result<OwnedSurface, SwapchainError> {
+    pub(crate) fn create_vulkan_surface(&self, context: &GpuContext) -> Result<OwnedSurface, SwapchainError> {
         let raw_surface = match self {
             #[cfg(target_os = "android")]
             PresentationSurface::Android(native) => {
@@ -58,13 +58,13 @@ impl PresentationSurface {
 }
 
 /// Живой снимок возможностей surface: возможности и список форматов.
-pub(super) struct SurfaceQuery {
-    pub(super) capabilities: vk::SurfaceCapabilitiesKHR,
-    pub(super) formats: Vec<vk::SurfaceFormatKHR>,
+pub(crate) struct SurfaceQuery {
+    pub(crate) capabilities: vk::SurfaceCapabilitiesKHR,
+    pub(crate) formats: Vec<vk::SurfaceFormatKHR>,
 }
 
 /// Спрашивает у драйвера возможности surface и проверяет, что очередь контекста умеет показывать на ней.
-pub(super) fn query_surface(context: &GpuContext, surface: &OwnedSurface) -> Result<SurfaceQuery, SwapchainError> {
+pub(crate) fn query_surface(context: &GpuContext, surface: &OwnedSurface) -> Result<SurfaceQuery, SwapchainError> {
     let loader = context.surface_loader()?;
     let physical_device = context.physical_device();
     // SAFETY: physical_device и surface принадлежат одному instance; обе сущности живы (владеем).

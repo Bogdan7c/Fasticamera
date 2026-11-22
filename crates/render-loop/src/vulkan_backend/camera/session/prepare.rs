@@ -29,6 +29,7 @@ use crate::viewfinder::{AwbFrameIdentity, FrameCropReport, ViewfinderPainter};
 use crate::vulkan_backend::camera::SubmissionSerial;
 use crate::vulkan_backend::camera::lease::FrameChange;
 use crate::vulkan_backend::camera::pipelines::IspPresentation;
+use crate::vulkan_backend::camera::still::FrameStillParams;
 
 impl CameraSession {
     /// Решает, что рисовать в этом кадре.
@@ -122,6 +123,15 @@ impl CameraSession {
             lease.release_unused();
             return self.prepare_isp_without_new_frame(now, StreamEvent::Unpresentable);
         }
+        // Снимок повторит то, с чем обработан этот кадр (белая и подтяжка `k`, решение 72).
+        self.still_feed.note_frame_params(
+            lease.passport().sensor_timestamp,
+            FrameStillParams {
+                stream: std::sync::Arc::clone(&lease.passport().stream),
+                white: plan.white,
+                gain: exposure_gain,
+            },
+        );
         let stream = &lease.passport().stream;
         // Кадрирование — для камеры ЭТОГО кадра (по паспорту его потока), а не «текущей»: кадр старой камеры,
         // ещё идущий через ISP во время переключения, не получает кадрирование новой (нет скачка на кадр).

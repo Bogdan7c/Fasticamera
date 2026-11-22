@@ -16,6 +16,7 @@ use camera_contract::stream::{InvalidFrameRate, ReadoutAspect, StreamMode, Targe
 use serde::{Deserialize, Serialize};
 
 use crate::ae_trace_scenario_config::{AeTraceScenarioConfig, AeTraceScenarioConfigError};
+use crate::capture_scenario_config::{CaptureScenarioConfig, CaptureScenarioConfigError};
 use crate::glass_scenario_config::{GlassScenarioConfig, GlassScenarioConfigError};
 use crate::power_measurement::config::{PowerMeasurementConfig, PowerMeasurementConfigError};
 use crate::raw_stream_scenario_config::{RawStreamScenarioConfig, RawStreamScenarioConfigError};
@@ -283,6 +284,8 @@ pub struct CameraScenarioConfig {
     pub screen: ScreenScenarioConfig,
     /// Сценарий `zoom` (сессия 13): переключение объективов и зум на настоящем экране камеры.
     pub zoom: ZoomScenarioConfig,
+    /// Сценарий `capture` (сессия 14): снимок на настоящем экране камеры, HEIF/DNG, серия быстрых нажатий.
+    pub capture: CaptureScenarioConfig,
 }
 
 fn step(
@@ -341,6 +344,7 @@ impl Default for CameraScenarioConfig {
             glass: GlassScenarioConfig::default(),
             screen: ScreenScenarioConfig::default(),
             zoom: ZoomScenarioConfig::default(),
+            capture: CaptureScenarioConfig::default(),
         }
     }
 }
@@ -372,6 +376,8 @@ pub enum CameraScenarioConfigError {
     Screen(#[from] ScreenScenarioConfigError),
     #[error("{0}")]
     Zoom(#[from] ZoomScenarioConfigError),
+    #[error("{0}")]
+    Capture(#[from] CaptureScenarioConfigError),
     #[error("ID камеры: {0}")]
     InvalidCameraId(#[from] EmptyCameraId),
     #[error(
@@ -427,6 +433,7 @@ impl CameraScenarioConfig {
         self.glass.validate()?;
         self.screen.validate()?;
         self.zoom.validate()?;
+        self.capture.validate()?;
         Ok(())
     }
 }

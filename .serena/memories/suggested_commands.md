@@ -43,6 +43,12 @@
 - Golden экрана: `cargo test -p fasticamera-app --all-features --test camera_screen_golden` (10 состояний, эталоны `test-assets/camera-screen/golden/`, хранение 6× уменьшено); перегенерация `FASTICAMERA_UPDATE_GOLDEN=1`, PNG полного кадра — `FASTICAMERA_GOLDEN_PREVIEW_DIR=<вне репо>`.
 - Логика экрана без GPU: `cargo test -p camera-screen`.
 
+## Снимок (сессия 14)
+- Smoke: `scripts/device-smoke.sh [--variant release] [--keep-captures] capture` — одиночный HEIF, HEIF + DNG, серия 10 нажатий; проверка файлов в MediaStore (`content query`, `heif-info`, `ImageDecoder` через debug-приёмник, `exiftool`/rawpy при наличии) и удаление своих файлов (`--keep-captures` — оставить для глаз). Первый прогон — 14c.
+- DNG: `cargo run -p photo-output --example dng_from_capture -- <run_dir> <out.dng>`; сверка с `DngCreator` — `~/.cache/fasticamera/isp-reference-venv/bin/python -I tools/dng-check/compare_with_dngcreator.py <run_dir>...`; валидаторы вне репо в `~/.cache/fasticamera/tools/` (exiftool 13.64; `dng_validate` — `tools/dng-check/build_dng_validate.sh`). Подробности — `tools/dng-check/README.md`.
+- Зонд цвета HEIF: `cd tools/device-probe && python3 pc/probe.py install control && python3 pc/probe.py run control heif [sizes=4096x3072,1024x768]` (native-crate зонда исключён из корневого workspace — `exclude` в `Cargo.toml`, 14).
+- GPU-тесты снимка: `cargo test -p isp-vulkan --test photo_*`, `cargo test -p render-loop --test vulkan_still_develop --test vulkan_still_lifecycle`.
+
 ## Эталоны ISP (сессия 06, только ПК)
 - Venv вне системы: `uv venv ~/.cache/fasticamera/isp-reference-venv && uv pip install --python ~/.cache/fasticamera/isp-reference-venv/bin/python rawpy numpy scipy pillow colour-science colour-hdri colour-demosaicing`. Запуск скриптов — всегда `.../isp-reference-venv/bin/python -I`.
 - Фикстуры `test-assets/isp-model/` (README там): `tools/isp-reference/make_demosaic_fixtures.py`; реальные кропы — `make_real_crops.py --capture-dir ~/fasticamera-captures/c7-reference/captures/204802-f42af9 --stem 2_lamp --out-dir test-assets/isp-model [--full-frame-dir <вне репо>]` (детерминирован: побайтно тот же вывод).

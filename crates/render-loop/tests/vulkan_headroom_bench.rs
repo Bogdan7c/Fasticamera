@@ -230,8 +230,11 @@ fn start() -> Option<Bench> {
     };
     // Тест проверяет путь кадра «первый же vsync», а не политику видоискателя: `LatestWins`
     // выдаёт одиночный кадр сразу (буфер с запасом ждал бы второй — см. raw-frame-stream и стенд).
+    // Кольцо снимков выключено осознанно: тест про возврат кадров видоискателя, а кольцо (по умолчанию 12 кадров,
+    // решение 139) держит доли кадров, и камера получает их назад лишь при вытеснении. Кольцо проверяют `vulkan_still_*.rs`.
     let stream = RawFrameStream::new(RawFrameStreamConfig {
         viewfinder_pacing: raw_frame_stream::ViewfinderPacing::LatestWins,
+        snapshot_ring_max_frames: 0,
         ..RawFrameStreamConfig::default()
     });
     let backend = headless_camera_backend_or_skip(

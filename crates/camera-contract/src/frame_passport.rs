@@ -63,6 +63,22 @@ pub struct FrameSequence(pub u64);
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct ColorCorrectionGains(pub [f32; 4]);
 
+/// Модель шума одного канала CFA: дисперсия шума `σ² = scale·x + offset`, где `x` — сигнал,
+/// нормированный в `[0, 1]` между чёрным и белым уровнем (Camera2 `SENSOR_NOISE_PROFILE`,
+/// DNG 1.7 тег `NoiseProfile` 51041 — та же модель).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct NoiseModelCoefficients {
+    /// Коэффициент S (зависит от сигнала: фотонный шум).
+    pub scale: f64,
+    /// Коэффициент O (постоянная часть: шум чтения).
+    pub offset: f64,
+}
+
+/// Профиль шума кадра: пара коэффициентов на каждый канал CFA в порядке HAL
+/// (Camera2: по каналам цветового фильтра, как `SENSOR_BLACK_LEVEL_PATTERN`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct NoiseProfile(pub [NoiseModelCoefficients; 4]);
+
 /// Цветовые подсказки из результата запроса. `None` — HAL ключ не отдал.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize)]
 pub struct CaptureColorHints {
@@ -73,6 +89,8 @@ pub struct CaptureColorHints {
     pub color_gains: Option<ColorCorrectionGains>,
     /// `ACAMERA_SENSOR_NEUTRAL_COLOR_POINT`: нейтральный цвет в пространстве сенсора (для DNG).
     pub neutral_color_point: Option<[Rational; 3]>,
+    /// `ACAMERA_SENSOR_NOISE_PROFILE`: модель шума этого кадра (для DNG `NoiseProfile`).
+    pub noise_profile: Option<NoiseProfile>,
 }
 
 /// Полные покадровые метаданные: то, что движок знает о результате, плюс цветовые подсказки.
@@ -96,6 +114,11 @@ pub enum MissingCaptureMeta {
 /// Покадровая часть паспорта.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "state")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "паспорт кадра копируется по значению (Copy) и живёт в лизинге один на кадр: 264 байта без \
+              кучи дешевле Box на каждый кадр 60 раз в секунду; разница вариантов — профиль шума (сессия 14)"
+)]
 pub enum FrameCaptureMeta {
     /// Результат с той же меткой сенсора, что у буфера.
     Paired(FrameCaptureDetails),
