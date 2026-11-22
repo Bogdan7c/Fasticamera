@@ -19,6 +19,12 @@ fn entry(seq: u64, request: u64, still: u64, at: Instant, kind: PhaseKind) -> Ph
     }
 }
 
+fn no_clock() -> ClockBridge {
+    ClockBridge::Unavailable {
+        reason: "в этом тесте часы не нужны".to_owned(),
+    }
+}
+
 fn saved(primary: &str, raw: Option<&str>) -> PhaseKind {
     PhaseKind::Saved {
         primary: primary.to_owned(),
@@ -92,7 +98,7 @@ fn a_saved_shot_gets_both_addresses_both_latencies_and_the_request_format() {
         ..shot(4)
     };
 
-    let record = shot_record(3, "single_heif_dng", true, &request, pressed, &book);
+    let record = shot_record(3, "single_heif_dng", true, &request, pressed, &book, &no_clock());
 
     assert_eq!(record.number, 3);
     assert_eq!(record.request, 4);
@@ -129,7 +135,7 @@ fn a_failed_shot_keeps_the_service_text_and_has_no_save_time() {
         0,
     );
 
-    let record = shot_record(1, "single_heif", false, &shot(9), pressed, &book);
+    let record = shot_record(1, "single_heif", false, &shot(9), pressed, &book, &no_clock());
 
     assert_eq!(
         record.outcome,
@@ -147,8 +153,8 @@ fn an_unfinished_shot_says_whether_the_frame_was_at_least_captured() {
     let mut book = PhaseBook::default();
     book.extend(vec![entry(1, 2, 20, pressed, PhaseKind::Secured)], 0);
 
-    let captured = shot_record(1, "burst", false, &shot(2), pressed, &book);
-    let silent = shot_record(2, "burst", false, &shot(3), pressed, &book);
+    let captured = shot_record(1, "burst", false, &shot(2), pressed, &book, &no_clock());
+    let silent = shot_record(2, "burst", false, &shot(3), pressed, &book, &no_clock());
 
     assert_eq!(captured.outcome, ShotOutcome::Unfinished { secured: true });
     assert_eq!(silent.outcome, ShotOutcome::Unfinished { secured: false });
@@ -173,4 +179,67 @@ fn aspect_names_cover_every_ratio() {
     assert_eq!(aspect_name(AspectRatio::FourByThree), "4:3");
     assert_eq!(aspect_name(AspectRatio::SixteenByNine), "16:9");
     assert_eq!(aspect_name(AspectRatio::Square), "1:1");
+}
+
+#[test]
+fn a_shot_takes_the_frame_choice_of_its_own_still_and_never_of_a_neighbour() {
+    use camera_contract::capture_result::SensorTimestamp;
+    use shell_contract::clock::{BoottimeNanos, MonotonicNanos};
+    use still_contract::frame_choice::{FrameChoice, SubstitutionReason};
+
+    use super::super::capture_frame_timing::FrameChoiceView;
+    use crate::clock_offset::ClockOffset;
+    use crate::still_choice_log::ChoiceEntry;
+
+    let pressed = Instant::now();
+    let mut book = PhaseBook::default();
+    book.extend(
+        vec![
+            entry(1, 1, 10, pressed, PhaseKind::Secured),
+            entry(2, 2, 20, pressed, PhaseKind::Secured),
+        ],
+        0,
+    );
+    // Снимок 10 — ровно показанный кадр, снимок 20 — замена из-за вытеснения; у запроса 3 снимка службы ещё нет.
+    let press_nanos = 9_000_000_000_i64;
+    let sensor = |before_ms: i64| SensorTimestamp::from_nanos(press_nanos + 500 - before_ms * 1_000_000);
+    book.absorb_choices(vec![
+        ChoiceEntry {
+            still: StillId(10),
+            choice: FrameChoice::ShownAtPress {
+                sensor_timestamp: sensor(80),
+                shown_at: MonotonicNanos::from_nanos(press_nanos - 5_000_000),
+            },
+        },
+        ChoiceEntry {
+            still: StillId(20),
+            choice: FrameChoice::Substituted {
+                sensor_timestamp: sensor(120),
+                wanted: None,
+                reason: SubstitutionReason::ShownFrameEvicted,
+            },
+        },
+    ]);
+    let clock = ClockBridge::Available(ClockOffset::between(
+        BoottimeNanos::from_nanos(press_nanos + 500),
+        MonotonicNanos::from_nanos(press_nanos),
+    ));
+    let request = |id: u64| ShotRequest {
+        pressed_at: MonotonicNanos::from_nanos(press_nanos),
+        ..shot(id)
+    };
+
+    let first = shot_record(1, "burst", false, &request(1), pressed, &book, &clock);
+    let second = shot_record(2, "burst", false, &request(2), pressed, &book, &clock);
+    let third = shot_record(3, "burst", false, &request(3), pressed, &book, &clock);
+
+    assert_eq!(first.frame.frame_choice, FrameChoiceView::Exact);
+    assert_eq!(first.frame.press_to_frame_ms, Some(80.0));
+    assert_eq!(first.frame.shown_before_press_ms, Some(5.0));
+    assert!(second.frame.is_evicted_substitution());
+    assert_eq!(second.frame.press_to_frame_ms, Some(120.0));
+    assert!(
+        !third.frame.choice_known(),
+        "у запроса без снимка службы чужой выбор не подставляется"
+    );
 }

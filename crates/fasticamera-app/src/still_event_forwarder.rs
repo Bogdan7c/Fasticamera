@@ -9,12 +9,15 @@
 //! без итога проявления — по `develop_timeout_ms` (`Failed` ровно один раз, поздние события считаются
 //! `late_events` и игнорируются). Дважды экрану итог не доставится: таблица снимает запись на первом итоге.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use photo_output::service::{DevelopSubmitError, StillServiceHandle};
 use render_loop::still::StillEventSink;
 use serde::Serialize;
 use still_contract::develop::DevelopEvent;
+
+use crate::still_choice_log::{DEFAULT_CHOICE_LOG_CAPACITY, StillChoiceLog};
 
 const LOG_TARGET: &str = "fasticamera::still::events";
 
@@ -32,6 +35,8 @@ pub struct ForwarderCounters {
 /// Пересылка событий рендера в службу записи.
 pub struct DevelopEventForwarder {
     handle: StillServiceHandle,
+    /// Выборы кадра из `Secured`: служба их не получает, а диагностика («снимок без задержки») читает отсюда.
+    choices: Arc<StillChoiceLog>,
     forwarded: AtomicU64,
     rejected_queue_full: AtomicU64,
     rejected_service_stopped: AtomicU64,
@@ -41,6 +46,7 @@ impl DevelopEventForwarder {
     pub fn new(handle: StillServiceHandle) -> Self {
         Self {
             handle,
+            choices: Arc::new(StillChoiceLog::new(DEFAULT_CHOICE_LOG_CAPACITY)),
             forwarded: AtomicU64::new(0),
             rejected_queue_full: AtomicU64::new(0),
             rejected_service_stopped: AtomicU64::new(0),
@@ -51,6 +57,11 @@ impl DevelopEventForwarder {
     /// ответа не возвращает).
     pub fn forward(&self, event: DevelopEvent) -> Result<(), DevelopSubmitError> {
         let id = event.id();
+        // Выбор кадра запоминаем ДО передачи службе и независимо от её ответа: он нужен диагностике даже тогда,
+        // когда очередь службы полна и событие потеряно.
+        if let DevelopEvent::Secured { facts, .. } = &event {
+            self.choices.record(facts.id, facts.choice);
+        }
         match self.handle.submit_develop_event(event) {
             Ok(()) => {
                 self.forwarded.fetch_add(1, Ordering::Relaxed);
@@ -67,6 +78,11 @@ impl DevelopEventForwarder {
                 Err(DevelopSubmitError::ServiceStopped)
             }
         }
+    }
+
+    /// Журнал выборов кадра (читает диагностика; запись — только этот форвардер).
+    pub fn choice_log(&self) -> Arc<StillChoiceLog> {
+        Arc::clone(&self.choices)
     }
 
     pub fn counters(&self) -> ForwarderCounters {

@@ -22,10 +22,13 @@ use camera_screen::ScreenAction;
 use camera_screen::settings::RawCapture;
 use camera_screen::tools::ToolId;
 use render_loop::still::StillCommandLog;
+use render_loop::still_diagnostics::StillDiagnostics;
 use render_loop::viewfinder::ViewfinderDiagnostics;
 
+use super::capture_frame_timing::ClockBridge;
 use super::capture_observation::{CaptureObservation, LiveCounters, SubmitCounts};
 use super::capture_plan::planned_steps;
+use super::capture_render_still::StillDiagnosticsDelta;
 use super::capture_report::{CaptureObservationReport, RenderStillDelta};
 use super::capture_runner::{CaptureRunner, RunnerState};
 use super::capture_verdict::evaluate_capture;
@@ -59,7 +62,13 @@ struct Stepping {
     runner: CaptureRunner,
     /// Курсор журнала итогов: всё, что до него, к прогону не относится.
     cursor: PhaseCursor,
-    render_before: Option<StillCommandLog>,
+    render_before: Option<RenderStillSnapshot>,
+}
+
+/// Что рендер сообщил о снимках в один момент: учёт команд и (если бэкенд публикует) диагностика снимков.
+struct RenderStillSnapshot {
+    commands: StillCommandLog,
+    diagnostics: Option<StillDiagnostics>,
 }
 
 struct CaptureRun {
@@ -191,7 +200,7 @@ impl ObservingScenario for CaptureScenario {
                     run.phase = Phase::Stepping(Box::new(Stepping {
                         runner: CaptureRunner::new(run.config.clone(), planned_steps(), context.now),
                         cursor: context.camera_screen.capture_phase_cursor_now(),
-                        render_before: still_commands(context),
+                        render_before: still_snapshot(context),
                     }));
                 }
                 ScenarioStep::Continue
@@ -200,6 +209,9 @@ impl ObservingScenario for CaptureScenario {
                 let batch = context.camera_screen.capture_phases_after(stepping.cursor);
                 stepping.cursor = batch.cursor_after(stepping.cursor);
                 stepping.runner.absorb_phases(batch.entries, batch.lost_entries);
+                stepping
+                    .runner
+                    .absorb_choices(context.camera_screen.capture_frame_choices());
                 let journal = context.camera_screen.capture_journal();
                 let observation = CaptureObservation {
                     now: context.now,
@@ -213,6 +225,7 @@ impl ObservingScenario for CaptureScenario {
                     journal: &journal,
                     live: live_counters(viewfinder, &presentation, context),
                     mode_is_real: context.camera_screen.capture_diagnostics().mode == CaptureMode::Real,
+                    clock: clock_bridge(context),
                 };
                 let tick = stepping.runner.tick(&observation);
                 for action in tick.injections {
@@ -274,7 +287,7 @@ impl CaptureScenario {
         let Some(run) = self.run.take() else {
             return ScenarioStep::Continue;
         };
-        let render_after = still_commands(context);
+        let render_after = still_snapshot(context);
         let restore_failure = restore_raw_if_left_on(&run, context);
         let report = observation_of(run, context, run_failure.or(restore_failure), render_after);
         emit_details(context, "detail_capture", report.detail_items());
@@ -310,11 +323,33 @@ fn not_real_reason(mode: &CaptureMode) -> String {
     }
 }
 
-/// Учёт команд снимка в рендере; `None` — рендер недоступен.
-fn still_commands(context: &ScenarioContext<'_>) -> Option<StillCommandLog> {
+/// Учёт команд снимка и диагностика снимков в рендере; `None` — рендер недоступен.
+fn still_snapshot(context: &ScenarioContext<'_>) -> Option<RenderStillSnapshot> {
     match context.gpu.render.observe() {
-        RenderObservation::Live { status, .. } => Some(status.still_commands),
+        RenderObservation::Live { status, .. } => Some(RenderStillSnapshot {
+            commands: status.still_commands,
+            diagnostics: backend_still_diagnostics(&status),
+        }),
         RenderObservation::Unavailable { .. } => None,
+    }
+}
+
+/// Диагностика снимков бэкенда рендера из снимка статуса.
+///
+/// `None` — бэкенд рендера снимков не ведёт (тестовый паттерн, fake): отчёт честно пишет «рендер не публикует
+/// диагностику снимков», вердикт судит по журналу выбора кадров.
+fn backend_still_diagnostics(status: &render_loop::thread::RenderStatus) -> Option<StillDiagnostics> {
+    status.backend.still.clone()
+}
+
+/// Свежее смещение часов `BOOTTIME − MONOTONIC`: по нему метка сенсора выбранного кадра переводится в момент
+/// нажатия. Ошибка чтения — значение (задержка тогда честно `null` с причиной), а не провал прогона.
+fn clock_bridge(context: &ScenarioContext<'_>) -> ClockBridge {
+    match context.camera.raw_stream().sample_clock_offset() {
+        Ok(offset) => ClockBridge::Available(offset),
+        Err(error) => ClockBridge::Unavailable {
+            reason: error.to_string(),
+        },
     }
 }
 
@@ -340,7 +375,7 @@ fn live_counters(
 }
 
 /// Приращение учёта рендера за прогон.
-fn render_delta(before: Option<StillCommandLog>, after: Option<StillCommandLog>) -> Option<RenderStillDelta> {
+fn render_delta(before: Option<&StillCommandLog>, after: Option<&StillCommandLog>) -> Option<RenderStillDelta> {
     let (before, after) = (before?, after?);
     Some(RenderStillDelta {
         begins_accepted: after.begins_accepted.saturating_sub(before.begins_accepted),
@@ -356,7 +391,7 @@ fn observation_of(
     run: CaptureRun,
     context: &ScenarioContext<'_>,
     run_failure: Option<String>,
-    render_after: Option<StillCommandLog>,
+    render_after: Option<RenderStillSnapshot>,
 ) -> CaptureObservationReport {
     let planned = planned_steps();
     let (records, render_before) = match run.phase {
@@ -397,8 +432,17 @@ fn observation_of(
         mode_at_start: run.mode_at_start,
         mode_at_end: context.camera_screen.capture_diagnostics().mode,
         phase_entries_lost,
-        render_still: render_delta(render_before, render_after),
-        render_still_detail: None,
+        render_still: render_delta(
+            render_before.as_ref().map(|snapshot| &snapshot.commands),
+            render_after.as_ref().map(|snapshot| &snapshot.commands),
+        ),
+        render_still_detail: match (
+            render_before.and_then(|snapshot| snapshot.diagnostics),
+            render_after.and_then(|snapshot| snapshot.diagnostics),
+        ) {
+            (Some(before), Some(after)) => Some(StillDiagnosticsDelta::between(&before, &after)),
+            _ => None,
+        },
         full_frame: run.config.full_frame,
     }
 }

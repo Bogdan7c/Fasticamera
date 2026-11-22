@@ -72,6 +72,7 @@ pub mod scenario;
 pub mod screen_scenario_config;
 pub mod still_camera_catalog;
 pub mod still_capture_service;
+pub mod still_choice_log;
 pub mod still_event_forwarder;
 pub mod still_phase_log;
 pub mod still_render_port;

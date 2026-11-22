@@ -22,6 +22,7 @@ use crate::camera_screen_config::CameraScreenConfig;
 use crate::camera_screen_service::SilentShutterSound;
 use crate::capture_switch::SwitchableCaptureService;
 use crate::still_capture_service::CaptureCounters;
+use crate::still_choice_log::ChoiceEntry;
 use crate::still_event_forwarder::ForwarderCounters;
 use crate::still_phase_log::{PhaseBatch, PhaseCursor};
 use crate::still_screen_ledger::LedgerCounters;
@@ -90,6 +91,9 @@ pub trait CaptureMonitor: Send + Sync {
     /// Курсор «сейчас»: фазы, записанные до него, читателю не нужны.
     fn phase_cursor_now(&self) -> PhaseCursor;
 
+    /// Какие кадры выбрал рендер для снимков (хранимые, ограниченный журнал). У фейка рендера нет — пусто.
+    fn frame_choices(&self) -> Vec<ChoiceEntry>;
+
     /// Сколько запросов снимка принято за процесс (не ограничено журналом; не зависит от режима).
     fn accepted_total(&self) -> u64;
 }
@@ -127,6 +131,10 @@ impl CaptureMonitor for FakeMonitor {
 
     fn phase_cursor_now(&self) -> PhaseCursor {
         PhaseCursor::default()
+    }
+
+    fn frame_choices(&self) -> Vec<ChoiceEntry> {
+        Vec::new()
     }
 }
 
@@ -290,6 +298,11 @@ impl CaptureBackend {
     /// Курсор «сейчас» журнала итогов.
     pub fn phase_cursor_now(&self) -> PhaseCursor {
         self.monitor.phase_cursor_now()
+    }
+
+    /// Выборы кадра настоящих снимков (кого рендер взял для каждого `StillId`).
+    pub fn frame_choices(&self) -> Vec<ChoiceEntry> {
+        self.monitor.frame_choices()
     }
 }
 

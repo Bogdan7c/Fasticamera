@@ -144,6 +144,8 @@ impl RuntimeConfig {
         parsed.device.validate()?;
         // Предел очереди и сроки экрана со службой — конфиги двух crate-ов: согласуются здесь.
         parsed.photo.validate(&parsed.camera_screen.screen.capture)?;
+        // Срок цели рендера против очереди кодеров службы: тоже конфиги двух crate-ов.
+        parsed.photo.validate_against_render(&parsed.render.still)?;
         // Бюджет ожиданий GPU потока рендера обязан быть меньше ожидания квитанции оболочкой:
         // иначе `surfaceDestroyed` отпустит главный поток по таймауту раньше подтверждения.
         // Конфиги разных crate-ов, поэтому согласованность проверяется здесь, на стыке.

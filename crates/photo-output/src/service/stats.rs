@@ -23,6 +23,9 @@ pub(super) struct StillCounters {
     raw_lost_after_primary_published: AtomicU64,
     exif_build_failures: AtomicU64,
     worker_panics: AtomicU64,
+    encoder_offers_deferred: AtomicU64,
+    /// Сколько кодеров HEIF открыто сейчас (датчик, а не счётчик: растёт и падает).
+    encoders_open_now: AtomicU64,
 }
 
 impl StillCounters {
@@ -77,6 +80,26 @@ impl StillCounters {
         self.worker_panics.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Цель кодера снимку не выдана сразу: все места под кодеры заняты, снимок встал в очередь.
+    pub(super) fn record_encoder_offer_deferred(&self) {
+        self.encoder_offers_deferred.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Открыт ещё один кодер (вызывает только `EncoderSlot`).
+    pub(super) fn encoder_opened(&self) {
+        self.encoders_open_now.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Кодер закрыт (вызывает только `EncoderSlot`).
+    pub(super) fn encoder_closed(&self) {
+        self.encoders_open_now.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    /// Сколько кодеров открыто сейчас.
+    pub(super) fn open_encoders(&self) -> u64 {
+        self.encoders_open_now.load(Ordering::Acquire)
+    }
+
     pub(super) fn snapshot(&self, admission: &StillAdmission) -> StillServiceStats {
         let load = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
         StillServiceStats {
@@ -94,6 +117,8 @@ impl StillCounters {
             raw_lost_after_primary_published: load(&self.raw_lost_after_primary_published),
             exif_build_failures: load(&self.exif_build_failures),
             worker_panics: load(&self.worker_panics),
+            encoder_offers_deferred: load(&self.encoder_offers_deferred),
+            encoders_open_now: load(&self.encoders_open_now),
             admission_refusals: admission.refused_total(),
             pending_now: u64::try_from(admission.pending_count()).unwrap_or(u64::MAX),
         }
@@ -127,6 +152,10 @@ pub struct StillServiceStats {
     pub exif_build_failures: u64,
     /// Паники рабочего потока (после паники служба остановлена, живые снимки сорваны).
     pub worker_panics: u64,
+    /// Сколько раз цель кодера выдана не сразу, а из очереди (все `max_open_encoders` мест были заняты).
+    pub encoder_offers_deferred: u64,
+    /// Сколько кодеров HEIF открыто прямо сейчас (не больше `max_open_encoders`).
+    pub encoders_open_now: u64,
     /// Отказы допуска (очередь полна, повтор номера, служба остановлена).
     pub admission_refusals: u64,
     /// Сколько снимков ждут сохранения прямо сейчас.

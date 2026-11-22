@@ -65,6 +65,7 @@ pub fn presenting_status() -> RenderStatus {
             known_deviations: Default::default(),
             camera: None,
             viewfinder: None,
+            still: None,
         },
         frame_rate_request: Some(shell_contract::commands::FrameRateOutcome::Applied),
         screen_wake: render_loop::thread::ScreenWakeStatus {

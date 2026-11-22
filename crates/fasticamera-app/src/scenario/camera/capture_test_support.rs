@@ -14,17 +14,39 @@
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
+use camera_contract::capture_result::SensorTimestamp;
 use camera_screen::ScreenAction;
 use camera_screen::settings::RawCapture;
 use camera_screen::shutter::{PrimaryFormat, ShotRequest, ShotRequestId};
-use shell_contract::clock::MonotonicNanos;
+use shell_contract::clock::{BoottimeNanos, MonotonicNanos};
+use still_contract::frame_choice::{FrameChoice, SubstitutionReason};
 use still_contract::plan::StillId;
 
+use super::capture_frame_timing::ClockBridge;
 use super::capture_observation::{CaptureObservation, LiveCounters, SubmitCounts};
 use super::capture_runner::{CaptureRunner, RunnerState};
 use crate::capture_scenario_config::CaptureScenarioConfig;
+use crate::clock_offset::ClockOffset;
+use crate::still_choice_log::ChoiceEntry;
 use crate::still_phase_log::{PhaseEntry, PhaseKind};
 use crate::still_test_support::shot;
+
+/// BOOTTIME впереди MONOTONIC в мире стенда (телефон проспал): метки сенсора без моста часов — мусор.
+pub const WORLD_BOOT_AHEAD_NANOS: i64 = 1_000_000_000_000;
+
+/// Какой кадр «выбирает рендер» мира для нажатия.
+#[derive(Clone, Copy)]
+pub enum ChoicePolicy {
+    /// Ровно показанный кадр: экспозиция началась за `latency_ms` до нажатия, кадр показан за `shown_ms` до него.
+    Exact { latency_ms: i64, shown_ms: i64 },
+    /// Замена: кадр с началом экспозиции за `latency_ms` до нажатия.
+    Substituted {
+        latency_ms: i64,
+        reason: SubstitutionReason,
+    },
+    /// Рендер выбора не сообщил (журнал пуст).
+    Missing,
+}
 
 /// Как мир отвечает на нажатия.
 #[derive(Clone)]
@@ -45,6 +67,8 @@ pub struct Behaviour {
     pub never_saves: bool,
     /// Запросы с номером больше этого получают только «кадр захвачен», итога нет.
     pub no_result_after_request: Option<u64>,
+    /// Какой кадр выбирает «рендер» мира.
+    pub choice: ChoicePolicy,
 }
 
 impl Default for Behaviour {
@@ -58,6 +82,11 @@ impl Default for Behaviour {
             silent_service: false,
             never_saves: false,
             no_result_after_request: None,
+            // Типичные числа телефона: кадр показан через ≈ 80 мс после начала выдержки.
+            choice: ChoicePolicy::Exact {
+                latency_ms: 80,
+                shown_ms: 10,
+            },
         }
     }
 }
@@ -67,6 +96,12 @@ struct PendingPhase {
     request: u64,
     still: u64,
     kind: PhaseKind,
+}
+
+/// Выбор кадра, который рендер сообщает вместе с «кадр захвачен».
+struct PendingChoice {
+    due: Duration,
+    entry: ChoiceEntry,
 }
 
 /// Мир: экран + служба записи.
@@ -87,6 +122,9 @@ pub struct World {
     secured_until: Duration,
     next_request: u64,
     pending: Vec<PendingPhase>,
+    pending_choices: Vec<PendingChoice>,
+    /// Выборы, уже записанные «рендером» (журнал форвардера: копится, как настоящий).
+    pub choices: Vec<ChoiceEntry>,
 }
 
 impl World {
@@ -106,6 +144,34 @@ impl World {
             secured_until: Duration::ZERO,
             next_request: 1,
             pending: Vec::new(),
+            pending_choices: Vec::new(),
+            choices: Vec::new(),
+        }
+    }
+
+    /// Мост часов мира.
+    pub fn clock(&self) -> ClockBridge {
+        ClockBridge::Available(ClockOffset::between(
+            BoottimeNanos::from_nanos(WORLD_BOOT_AHEAD_NANOS),
+            MonotonicNanos::from_nanos(0),
+        ))
+    }
+
+    fn choice_for(&self, pressed_at: MonotonicNanos) -> Option<FrameChoice> {
+        let sensor = |latency_ms: i64| {
+            SensorTimestamp::from_nanos(pressed_at.as_nanos() + WORLD_BOOT_AHEAD_NANOS - latency_ms * 1_000_000)
+        };
+        match self.behaviour.choice {
+            ChoicePolicy::Exact { latency_ms, shown_ms } => Some(FrameChoice::ShownAtPress {
+                sensor_timestamp: sensor(latency_ms),
+                shown_at: MonotonicNanos::from_nanos(pressed_at.as_nanos() - shown_ms * 1_000_000),
+            }),
+            ChoicePolicy::Substituted { latency_ms, reason } => Some(FrameChoice::Substituted {
+                sensor_timestamp: sensor(latency_ms),
+                wanted: None,
+                reason,
+            }),
+            ChoicePolicy::Missing => None,
         }
     }
 
@@ -162,6 +228,15 @@ impl World {
             still,
             kind: PhaseKind::Secured,
         });
+        if let Some(choice) = self.choice_for(at) {
+            self.pending_choices.push(PendingChoice {
+                due: self.elapsed + self.behaviour.secured_after,
+                entry: ChoiceEntry {
+                    still: StillId(still),
+                    choice,
+                },
+            });
+        }
         let no_result = self.behaviour.never_saves
             || self
                 .behaviour
@@ -187,6 +262,15 @@ impl World {
             still,
             kind,
         });
+    }
+
+    /// Выборы кадра, о которых рендер уже сообщил (вместе с «кадр захвачен»).
+    fn due_choices(&mut self) -> Vec<ChoiceEntry> {
+        let (due, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_choices)
+            .into_iter()
+            .partition(|choice| choice.due <= self.elapsed);
+        self.pending_choices = later;
+        due.into_iter().map(|choice| choice.entry).collect()
     }
 
     /// Фазы, срок которых настал, как записи журнала.
@@ -217,6 +301,9 @@ pub fn drive(runner: &mut CaptureRunner, world: &mut World, tick: Duration, limi
     while world.elapsed <= limit {
         let entries = world.due_entries(&mut seq);
         runner.absorb_phases(entries, 0);
+        let due_choices = world.due_choices();
+        world.choices.extend(due_choices);
+        runner.absorb_choices(world.choices.clone());
         let journal = world.journal.clone();
         let observation = CaptureObservation {
             now: world.now(),
@@ -227,6 +314,7 @@ pub fn drive(runner: &mut CaptureRunner, world: &mut World, tick: Duration, limi
             journal: &journal,
             live: world.live,
             mode_is_real: world.mode_is_real,
+            clock: world.clock(),
         };
         let outcome = runner.tick(&observation);
         for action in outcome.injections {

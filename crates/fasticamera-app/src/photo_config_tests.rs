@@ -141,3 +141,61 @@ fn default_screen_and_service_timeouts_leave_a_margin() {
     assert!(u64::from(screen.capture_timeout_ms) >= service.capture_timeout_ms + 500);
     assert!(u64::from(screen.saving_timeout_ms) >= service.develop_timeout_ms + service.heif_finish_timeout_ms + 5_000);
 }
+
+#[test]
+fn defaults_pass_the_render_timeout_check() {
+    // Умолчания двух crate-ов согласованы: ломается, если кто-то уменьшит срок цели рендера или
+    // поднимет очередь службы, не пересчитав второе.
+    PhotoConfig::default()
+        .validate_against_render(&StillDevelopConfig::default())
+        .unwrap();
+}
+
+#[test]
+fn render_target_timeout_below_queue_wait_is_rejected() {
+    let render = StillDevelopConfig {
+        target_timeout_ms: 10_000,
+        ..StillDevelopConfig::default()
+    };
+    // 9 снимков впереди × 2 с = 18 с ожидания последнего; 10 с не хватает.
+    assert_eq!(
+        PhotoConfig::default().validate_against_render(&render),
+        Err(PhotoConfigError::RenderTargetTimeoutBelowQueueWait {
+            render_ms: 10_000,
+            queue_wait_ms: 18_000,
+            pending: 10,
+        })
+    );
+}
+
+#[test]
+fn shorter_service_queue_needs_a_shorter_render_wait() {
+    // Три ждущих снимка: впереди двое, ждать 4 с; 5 с хватает.
+    let config = PhotoConfig {
+        service: StillServiceConfig {
+            max_pending_stills: 3,
+            ..StillServiceConfig::default()
+        },
+        ..PhotoConfig::default()
+    };
+    let render = StillDevelopConfig {
+        target_timeout_ms: 5_000,
+        ..StillDevelopConfig::default()
+    };
+    assert_eq!(config.validate_against_render(&render), Ok(()));
+}
+
+#[test]
+fn render_target_timeout_not_below_service_develop_timeout_is_rejected() {
+    let render = StillDevelopConfig {
+        target_timeout_ms: 30_000,
+        ..StillDevelopConfig::default()
+    };
+    assert_eq!(
+        PhotoConfig::default().validate_against_render(&render),
+        Err(PhotoConfigError::RenderTargetTimeoutNotBelowService {
+            render_ms: 30_000,
+            service_ms: 30_000,
+        })
+    );
+}

@@ -6,8 +6,11 @@
 //!   ([`StillServiceHandle::begin_still`]); слот освобождается при итоговой фазе снимка;
 //! * рендер присылает события [`DevelopEvent`](still_contract::develop::DevelopEvent) через
 //!   [`StillServiceHandle::submit_develop_event`] — это очередь с пределом, переполнение — явная
-//!   ошибка, рендер никогда не ждёт;
-//! * рабочий поток открывает черновики и кодеры через сервисы оболочки, отвечает рендеру целью
+//!   ошибка, рендер никогда не ждёт. Фаза `Secured` уходит экрану в момент приёма события на
+//!   потоке вызывающего (решение 140): рабочий поток занят файлами прошлых снимков и «кадр
+//!   захвачен» задерживать не должен. Сроки снимков считаются от момента прихода команды в службу;
+//! * рабочий поток открывает черновики и кодеры (не больше `max_open_encoders` одновременно, цель
+//!   остальным выдаётся по очереди `Secured`) через сервисы оболочки, отвечает рендеру целью
 //!   ([`PrimaryTargetSink`]), пишет DNG, публикует файлы и сообщает фазы ([`StillPhaseSink`]);
 //! * запись форматов (DNG, Exif, вставка Exif в JPEG) спрятана за [`StillFileFormats`]: служба
 //!   отвечает за порядок и учёт, а байты проверяют тесты самих форматов.
@@ -32,9 +35,10 @@ use std::thread::JoinHandle;
 
 use shell_contract::still_media::{HeifEncoderService, JpegCompressor, MediaStoreService};
 use still_contract::develop::DevelopEvent;
+use still_contract::phase::StillPhase;
 use still_contract::plan::StillId;
 
-pub use admission::{AdmissionRefused, AdmissionTicket, StillAdmission};
+pub use admission::{AdmissionRefused, AdmissionTicket, SecuredAnnouncement, StillAdmission};
 pub use config::{StillConfigError, StillServiceConfig};
 pub use formats::{PhotoFileFormats, StillFileFormats};
 pub use ports::{CameraCatalog, PrimaryTargetSink, RenderUnavailable, StillPhaseSink, WallClock};
@@ -100,6 +104,8 @@ pub struct StillServiceHandle {
     inbox: Arc<Inbox>,
     admission: Arc<StillAdmission>,
     counters: Arc<StillCounters>,
+    /// Приёмник фаз: сюда с потока вызывающего уходит только `Secured` (остальное — с рабочего потока).
+    phases: Arc<dyn StillPhaseSink>,
 }
 
 impl StillServiceHandle {
@@ -115,7 +121,18 @@ impl StillServiceHandle {
     }
 
     /// Событие проявления от рендера. Не блокирует.
+    ///
+    /// `Secured` сначала объявляется экрану прямо здесь (один раз на снимок, пока слот занят), и только
+    /// потом событие встаёт в очередь рабочего потока. Объявление ДО постановки, а не после: иначе
+    /// быстрый рабочий поток мог бы закончить снимок раньше, чем «кадр захвачен» дошёл бы до экрана.
+    /// Если очередь потом откажет, снимок всё равно получит итог (срыв по сроку захвата), так что
+    /// «Secured без итога» невозможен.
     pub fn submit_develop_event(&self, event: DevelopEvent) -> Result<(), DevelopSubmitError> {
+        if let DevelopEvent::Secured { facts, .. } = &event {
+            let id = facts.id;
+            self.admission
+                .announce_secured(id, || self.phases.report_phase(StillPhase::Secured { id }));
+        }
         self.inbox.push_event(event).map_err(|rejection| match rejection {
             InboxRejection::Full => {
                 self.counters.record_rejected_event();
@@ -153,6 +170,7 @@ impl StillService {
         let (command_sender, command_receiver) = mpsc::channel();
         let inbox = Arc::new(Inbox::new(command_sender, config.event_queue_capacity));
         let shutdown_timeout = config.shutdown_timeout();
+        let phases = Arc::clone(&deps.phases);
         let worker = Worker::new(
             config,
             deps,
@@ -174,6 +192,7 @@ impl StillService {
                 inbox,
                 admission,
                 counters,
+                phases,
             },
             worker: Some(WorkerThread { join, finished }),
             shutdown_timeout,

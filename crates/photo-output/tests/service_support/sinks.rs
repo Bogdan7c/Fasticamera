@@ -16,6 +16,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[derive(Default)]
 pub struct PhaseCollector {
     phases: Mutex<Vec<StillPhase>>,
+    /// Момент прихода каждой фазы (тот же порядок, что у `phases`; пишется под замком `phases`).
+    stamps: Mutex<Vec<Instant>>,
     changed: Condvar,
     /// Имена потоков, из которых приходили фазы.
     threads: Mutex<Vec<Option<String>>>,
@@ -27,7 +29,11 @@ pub struct PhaseCollector {
 impl StillPhaseSink for PhaseCollector {
     fn report_phase(&self, phase: StillPhase) {
         lock(&self.threads).push(std::thread::current().name().map(str::to_owned));
-        lock(&self.phases).push(phase);
+        {
+            let mut phases = lock(&self.phases);
+            phases.push(phase);
+            lock(&self.stamps).push(Instant::now());
+        }
         self.changed.notify_all();
         let mut held = lock(&self.held);
         while *held {
@@ -69,6 +75,15 @@ impl PhaseCollector {
         }
     }
 
+    /// Момент, когда пришла фаза `Secured` снимка (`None` — ещё не пришла).
+    pub fn secured_at(&self, id: StillId) -> Option<Instant> {
+        let phases = lock(&self.phases);
+        let index = phases
+            .iter()
+            .position(|phase| matches!(phase, StillPhase::Secured { id: secured } if *secured == id))?;
+        lock(&self.stamps).get(index).copied()
+    }
+
     pub fn all(&self) -> Vec<StillPhase> {
         lock(&self.phases).clone()
     }
@@ -104,6 +119,8 @@ impl PhaseCollector {
 #[derive(Default)]
 pub struct TargetCollector {
     offers: Mutex<Vec<PrimaryTargetOffer>>,
+    /// Номера снимков в порядке выдачи предложений (не очищается при `wait_offer`).
+    history: Mutex<Vec<StillId>>,
     changed: Condvar,
     reject_all: Mutex<bool>,
 }
@@ -113,6 +130,7 @@ impl PrimaryTargetSink for TargetCollector {
         if *lock(&self.reject_all) {
             return Err(RenderUnavailable);
         }
+        lock(&self.history).push(offer.id());
         lock(&self.offers).push(offer);
         self.changed.notify_all();
         Ok(())
@@ -141,6 +159,11 @@ impl TargetCollector {
                 .unwrap_or_else(PoisonError::into_inner)
                 .0;
         }
+    }
+
+    /// В каком порядке рендеру выдавали предложения.
+    pub fn offer_order(&self) -> Vec<StillId> {
+        lock(&self.history).clone()
     }
 
     pub fn count(&self) -> usize {

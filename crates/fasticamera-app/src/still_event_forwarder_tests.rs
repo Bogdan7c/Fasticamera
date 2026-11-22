@@ -138,3 +138,30 @@ fn accepted_events_are_counted_and_reach_the_service() {
     assert_eq!(real.events.forwarded, 1);
     assert_eq!(real.events.rejected_queue_full, 0);
 }
+
+#[test]
+fn secured_event_leaves_its_frame_choice_in_the_log_even_when_the_service_rejects_it() {
+    let rig = StillRig::start();
+    let forwarder = DevelopEventForwarder::new(rig.service.handle());
+    assert_eq!(rig.service.shutdown(), photo_output::service::ShutdownReport::Stopped);
+    let facts = facts_for(StillId(5));
+    let expected = facts.choice;
+
+    let result = forwarder.forward(DevelopEvent::Secured { facts, raw: None });
+
+    assert_eq!(result, Err(DevelopSubmitError::ServiceStopped));
+    assert_eq!(forwarder.choice_log().choice_of(StillId(5)), Some(expected));
+}
+
+#[test]
+fn events_without_a_chosen_frame_leave_the_choice_log_untouched() {
+    let rig = StillRig::start();
+    let forwarder = DevelopEventForwarder::new(rig.service.handle());
+
+    let _ = forwarder.forward(DevelopEvent::NotSecured {
+        id: StillId(6),
+        reason: NoFrameReason::RingEmpty,
+    });
+
+    assert!(forwarder.choice_log().snapshot().is_empty());
+}

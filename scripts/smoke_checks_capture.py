@@ -4,7 +4,8 @@
 грубая перепроверка сводки строки результата: все шаги плана выполнены, сервис снимка был НАСТОЯЩИМ и при старте, и в
 конце, ни один снимок не сорван и не остался без итога, адреса файлов не повторяются и их число сходится с числом
 снимков (HEIC + DNG там, где просили RAW), учёт серии сходится (нажатия = попытки + отказы экрана; принятое =
-сохранённое + сорванное + без итога), видоискатель не просел. Подробности (каждый снимок с временами, шаги, серия)
+сохранённое + сорванное + без итога), видоискатель не просел, выбор кадра известен у каждого снимка и задержка
+«нажатие → кадр» измерена (``frames``). Подробности (каждый снимок с временами, шаги, серия)
 лежат в строках ``detail_capture`` и печатаются как ``FASTICAMERA_DETAIL``.
 
 Файлы на телефоне проверяет и удаляет ``smoke_checks_capture_files.py`` (после результата, адреса — из сводки).
@@ -40,6 +41,7 @@ def check_capture(result: dict) -> list[str]:
     problems.extend(_mode_problems(report))
     problems.extend(_shots_problems(report))
     problems.extend(_burst_problems(report))
+    problems.extend(_frames_problems(report))
     if report.get("phase_entries_lost") != 0:
         problems.append(f"журнал итогов снимков переполнился: потеряно записей {report.get('phase_entries_lost')!r}")
     return problems
@@ -140,6 +142,30 @@ def _burst_problems(report: dict) -> list[str]:
     return problems
 
 
+def _frames_problems(report: dict) -> list[str]:
+    """«Снимок без задержки затвора»: выбор кадра известен у каждого снимка, показанный кадр не вытеснен из кольца,
+    задержка измерена. Пороги (доля точных, предел задержки) судит Rust по конфигу; здесь — только наличие и согласие чисел."""
+    frames = report.get("frames")
+    if not isinstance(frames, dict):
+        return [f"в сводке нет учёта выбора кадра (frames={frames!r})"]
+    counts = {key: frames.get(key) for key in ("exact", "subst", "evicted", "unknown")}
+    bad = [key for key, value in counts.items() if not _is_number(value)]
+    if bad:
+        return [f"в учёте выбора кадра нет чисел: {', '.join(bad)}"]
+    problems: list[str] = []
+    total = report.get("shots_total")
+    accounted = counts["exact"] + counts["subst"] + counts["unknown"]
+    if _is_number(total) and accounted != total:
+        problems.append(f"выбор кадра учтён у {accounted} снимков из {total}")
+    if counts["unknown"] != 0:
+        problems.append(f"выбор кадра неизвестен у снимков: {counts['unknown']}")
+    if counts["evicted"] != 0:
+        problems.append(f"показанный кадр вытеснен из кольца у {counts['evicted']} снимков (кольцо мелкое)")
+    if not _is_number(frames.get("p2f_max_ms")):
+        problems.append(f"задержка «нажатие → кадр» не измерена (p2f_max_ms={frames.get('p2f_max_ms')!r})")
+    return problems
+
+
 def capture_notes(result: dict) -> list[str]:
     """Пояснения прошедшего ``capture`` (не провал): времена снимков, отказы серии, интервалы, опоздавшие кадры."""
     report = result.get("report")
@@ -179,5 +205,11 @@ def capture_notes(result: dict) -> list[str]:
     render = report.get("render_still")
     if isinstance(render, dict):
         notes.append(f"capture: рендер принял команд снимка {render.get('begins_accepted')} (приращение за прогон)")
-    notes.append("capture: как выбран кадр (FrameChoice) в сводке нет: поле null до диагностики рендера")
+    frames = report.get("frames")
+    if isinstance(frames, dict):
+        notes.append(
+            f"capture: NOTE точно показанный кадр взят у {frames.get('exact')} снимков, замен {frames.get('subst')} "
+            f"(вытеснено из кольца {frames.get('evicted')}), доля точных {frames.get('share')}; задержка «нажатие → начало "
+            f"экспозиции кадра»: медиана {frames.get('p2f_p50_ms')} мс, максимум {frames.get('p2f_max_ms')} мс"
+        )
     return notes

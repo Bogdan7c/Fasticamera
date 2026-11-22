@@ -22,6 +22,18 @@ pub fn rest() -> ScreenDriver {
     ScreenDriver::new()
 }
 
+/// Покой 4:3 в том виде, в каком его показывает продукт до сессии 14d: камера не сообщила вспышку, значка вспышки
+/// в ряду над кадром нет (инвариант 6, решение 138). Остальные golden-кадры сняты со вспышкой (`driver::live_facts`).
+pub fn rest_without_flash() -> ScreenDriver {
+    let mut driver = ScreenDriver::new();
+    driver.act(ScreenAction::CameraFactsChanged(CameraFacts {
+        flash: camera_screen::FlashAvailability::Unavailable,
+        ..crate::driver::live_facts()
+    }));
+    driver.run(SETTLE_MS);
+    driver
+}
+
 /// Тап по центру кадра. Снимок через 400 мс: рамка уже появилась (пружина доехала), но ещё не потускнела
 /// (потускнение — через `dim_after_s` токенов, секунды).
 pub fn focus_frame_after_tap() -> (ScreenDriver, Point) {

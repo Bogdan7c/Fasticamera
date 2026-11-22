@@ -34,6 +34,7 @@ use crate::capture_backend::{
 };
 use crate::photo_config::PhotoConfig;
 use crate::still_capture_service::{StillCaptureParts, StillCaptureService};
+use crate::still_choice_log::ChoiceEntry;
 use crate::still_event_forwarder::DevelopEventForwarder;
 use crate::still_phase_log::{PhaseBatch, PhaseCursor};
 use crate::still_render_port::{RenderTargetRoute, StillRenderPort};
@@ -200,5 +201,9 @@ impl CaptureMonitor for RealMonitor {
 
     fn phase_cursor_now(&self) -> PhaseCursor {
         self.ledger.phase_log().cursor_now()
+    }
+
+    fn frame_choices(&self) -> Vec<ChoiceEntry> {
+        self.events.choice_log().snapshot()
     }
 }

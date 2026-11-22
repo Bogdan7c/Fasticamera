@@ -6,8 +6,10 @@ use still_contract::phase::StillPhase;
 
 use crate::exif::{CameraDescription, CaptureMoment};
 
-/// Приёмник фаз снимка (экран). Вызывается с рабочего потока службы: не блокируйся и не зови
-/// обратно в службу.
+/// Приёмник фаз снимка (экран). `Secured` приходит с потока, который вызвал `submit_develop_event`
+/// (рендер), итоги — с рабочего потока службы. Реализация обязана быть короткой и неблокирующей
+/// (только короткие замки и `try_send`): `Secured` вызывается под замком учёта допуска. Обратно в
+/// службу звать нельзя.
 pub trait StillPhaseSink: Send + Sync {
     fn report_phase(&self, phase: StillPhase);
 }

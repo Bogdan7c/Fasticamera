@@ -5,6 +5,7 @@
 //! игнорируются. Итог снимка фиксирует [`Worker::conclude`]: сначала учёт и освобождение слота
 //! допуска, потом фаза — чтобы приложение, увидев итог, сразу могло допустить следующий снимок.
 
+mod encoder_queue;
 mod finish;
 mod job;
 mod secure;
@@ -20,11 +21,12 @@ use still_contract::develop::{DevelopEvent, PrimaryTargetOffer};
 use still_contract::phase::{SavedStill, StillFailure, StillPhase};
 use still_contract::plan::StillId;
 
+use self::encoder_queue::EncoderQueue;
 use self::job::{Job, Stage};
 use super::StillServiceDeps;
 use super::admission::{AdmissionTicket, StillAdmission};
 use super::config::StillServiceConfig;
-use super::inbox::{Command, Inbox};
+use super::inbox::{ArrivedAt, Command, Inbox};
 use super::stats::StillCounters;
 use crate::exif::ExifInputs;
 
@@ -35,6 +37,8 @@ pub(super) struct Worker {
     admission: Arc<StillAdmission>,
     inbox: Arc<Inbox>,
     jobs: HashMap<StillId, Job>,
+    /// Снимки HEIF, ждущие места под кодер (см. `max_open_encoders`).
+    encoder_queue: EncoderQueue,
     /// Снимок, который поток обрабатывает прямо сейчас (снят из таблицы, итога ещё нет). Нужен
     /// только ради паники: раскрутка стека уничтожает его билет, и без этой записи снимок остался
     /// бы без итоговой фазы. [`Worker::conclude`] и [`Worker::put_job`] её сбрасывают.
@@ -56,6 +60,7 @@ impl Worker {
             admission,
             inbox,
             jobs: HashMap::new(),
+            encoder_queue: EncoderQueue::default(),
             in_flight: Cell::new(None),
         }
     }
@@ -74,7 +79,12 @@ impl Worker {
         self.stop_for_good(commands);
     }
 
-    /// Цикл команд: ждёт команду не дольше ближайшего срока, потом снимает просроченные снимки.
+    /// Цикл команд: ждёт команду не дольше ближайшего срока.
+    ///
+    /// Время сроков — момент ПРИХОДА команды в службу (`ArrivedAt`), а не момент, когда занятый поток
+    /// до неё дошёл: перед каждой командой снимаются снимки, чей срок вышел ДО её прихода, а команда,
+    /// пришедшая вовремя, обрабатывается даже если поток опоздал. По «сейчас» сроки судятся, только
+    /// когда очередь пуста (ожидание команды закончилось по таймеру).
     fn serve(&mut self, commands: &Receiver<Command>) {
         loop {
             let received = match self.nearest_deadline() {
@@ -82,15 +92,20 @@ impl Worker {
                 None => commands.recv().map_err(|_| RecvTimeoutError::Disconnected),
             };
             match received {
-                Ok(Command::BeginStill(ticket)) => self.begin_still(ticket),
-                Ok(Command::Develop(event)) => {
+                Ok(Command::BeginStill(ticket, arrived)) => {
+                    self.expire_overdue(arrived.0);
+                    self.begin_still(ticket, arrived);
+                }
+                Ok(Command::Develop(event, arrived)) => {
                     self.inbox.mark_event_taken();
-                    self.on_develop_event(event);
+                    self.expire_overdue(arrived.0);
+                    self.on_develop_event(event, arrived);
                 }
                 Ok(Command::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
-                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Timeout) => self.expire_overdue(Instant::now()),
             }
-            self.expire_overdue(Instant::now());
+            // Место под кодер могло освободиться на любом пути завершения снимка.
+            self.open_waiting_encoders();
         }
     }
 
@@ -98,9 +113,9 @@ impl Worker {
         self.jobs.values().map(|job| job.stage.deadline()).min()
     }
 
-    fn begin_still(&mut self, ticket: AdmissionTicket) {
+    fn begin_still(&mut self, ticket: AdmissionTicket, arrived: ArrivedAt) {
         let id = ticket.still_id();
-        let deadline = Instant::now() + self.config.capture_timeout();
+        let deadline = arrived.0 + self.config.capture_timeout();
         self.jobs.insert(
             id,
             Job {
@@ -110,9 +125,9 @@ impl Worker {
         );
     }
 
-    fn on_develop_event(&mut self, event: DevelopEvent) {
+    fn on_develop_event(&mut self, event: DevelopEvent, arrived: ArrivedAt) {
         match event {
-            DevelopEvent::Secured { facts, raw } => self.on_secured(facts, raw),
+            DevelopEvent::Secured { facts, raw } => self.on_secured(facts, raw, arrived.0),
             DevelopEvent::NotSecured { id, reason } => self.on_not_secured(id, reason),
             DevelopEvent::PrimaryRendered { id } => self.on_primary_rendered(id),
             DevelopEvent::PrimaryReadback { id, image } => self.on_primary_readback(id, &image),
@@ -186,7 +201,7 @@ impl Worker {
         self.deps.phases.report_phase(phase);
     }
 
-    /// Снимает снимки, у которых вышел срок.
+    /// Снимает снимки, у которых к моменту `now` вышел срок.
     fn expire_overdue(&mut self, now: Instant) {
         let overdue: Vec<StillId> = self
             .jobs
@@ -202,6 +217,8 @@ impl Worker {
             };
             self.counters.record_timeout();
             tracing::warn!(?id, %reason, "снимок сорван по сроку");
+            // Рендер мог ещё ждать цель этого снимка: отпускаем его сразу, а не по его сроку.
+            self.release_pending_target(id, &job.stage);
             self.fail_job(id, job, StillFailure::Develop(reason));
         }
     }
@@ -212,12 +229,12 @@ impl Worker {
         self.abandon_everything();
         for command in self.inbox.close_for_good(commands) {
             match command {
-                Command::BeginStill(ticket) => {
+                Command::BeginStill(ticket, _) => {
                     // Приложение успело отдать билет, но снимок так и не начался.
                     let id = ticket.still_id();
                     self.conclude(id, ticket, Err(StillFailure::ServiceUnavailable));
                 }
-                Command::Develop(event) => {
+                Command::Develop(event, _) => {
                     self.inbox.mark_event_taken();
                     self.counters.record_late_event();
                     if let DevelopEvent::Secured { facts, .. } = &event {
@@ -238,6 +255,7 @@ impl Worker {
         let ids: Vec<StillId> = self.jobs.keys().copied().collect();
         for id in ids {
             if let Some(job) = self.take_job(id) {
+                self.release_pending_target(id, &job.stage);
                 self.fail_job(id, job, StillFailure::ServiceUnavailable);
             }
         }

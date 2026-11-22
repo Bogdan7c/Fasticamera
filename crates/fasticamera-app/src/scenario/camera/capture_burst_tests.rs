@@ -4,6 +4,7 @@ use camera_screen::shutter::ShotRequestId;
 use still_contract::plan::StillId;
 
 use super::*;
+use crate::scenario::camera::capture_frame_timing::ClockBridge;
 use crate::scenario::camera::capture_observation::{PhaseBook, SubmitCounts};
 use crate::still_phase_log::{PhaseEntry, PhaseKind};
 use crate::still_test_support::shot;
@@ -36,6 +37,9 @@ fn observation<'a>(now: Instant, at_ms: i64, journal: &'a [ShotRequest], accepte
         journal,
         live: LiveCounters::default(),
         mode_is_real: true,
+        clock: ClockBridge::Unavailable {
+            reason: "в тесте серии часы не нужны".to_owned(),
+        },
     }
 }
 

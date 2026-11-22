@@ -62,6 +62,7 @@ def capture_report(**overrides: object) -> dict:
                            "black_frames_while_picture_expected": 0, "holds_started": 0, "live_frames_presented": 300},
         },
         "phase_entries_lost": 0,
+        "frames": {"exact": 12, "subst": 0, "evicted": 0, "unknown": 0, "share": 1.0, "p2f_max_ms": 92.4, "p2f_p50_ms": 81.0},
         "render_still": {"begins_accepted": 12},
         "full_frame": {"width_px": 4096, "height_px": 3072},
         "uris": uris,
@@ -85,10 +86,39 @@ class CaptureSummaryChecksTest(unittest.TestCase):
         joined = " ".join(verdict.notes)
         self.assertIn("«кадр захвачен» через 40 мс", joined)
         self.assertIn("отказал экран 0", joined)
-        self.assertIn("FrameChoice", joined)
+        self.assertIn("точно показанный кадр взят у 12 снимков", joined)
+        self.assertIn("доля точных 1.0", joined)
+        self.assertIn("медиана 81.0 мс, максимум 92.4 мс", joined)
 
     def problems(self, **overrides: object) -> list[str]:
         return smoke_checks_capture.check_capture(passed(capture_report(**overrides)))
+
+    def test_frame_choice_deviations_are_named(self) -> None:
+        healthy = {"exact": 12, "subst": 0, "evicted": 0, "unknown": 0, "share": 1.0, "p2f_max_ms": 92.4, "p2f_p50_ms": 81.0}
+        cases = {
+            "unknown": (dict(healthy, exact=11, unknown=1), "выбор кадра неизвестен у снимков: 1"),
+            "evicted": (dict(healthy, exact=11, subst=1, evicted=1), "вытеснен из кольца у 1 снимков"),
+            "not_measured": (dict(healthy, p2f_max_ms=None), "задержка «нажатие → кадр» не измерена"),
+            "not_counted": (dict(healthy, exact=10), "выбор кадра учтён у 10 снимков из 12"),
+        }
+        for name, (frames, needle) in cases.items():
+            with self.subTest(name):
+                problems = self.problems(frames=frames)
+                self.assertTrue(any(needle in problem for problem in problems), problems)
+        without = capture_report()
+        del without["frames"]
+        self.assertTrue(any("нет учёта выбора кадра" in problem for problem in smoke_checks_capture.check_capture(passed(without))))
+        garbage = self.problems(frames={"exact": "12"})
+        self.assertTrue(any("нет чисел" in problem for problem in garbage), garbage)
+
+    def test_a_substituting_but_otherwise_healthy_run_is_not_failed_by_the_script_and_the_note_names_the_replacements(self) -> None:
+        # Порог доли точных судит Rust; скрипт замены сам не проваливает, но называет их в NOTE.
+        frames = {"exact": 11, "subst": 1, "evicted": 0, "unknown": 0, "share": 0.917, "p2f_max_ms": 140.0, "p2f_p50_ms": 82.0}
+        verdict = verdict_of(capture_report(frames=frames))
+        self.assertEqual(verdict.exit_code, smoke_wait.EXIT_OK, verdict.message)
+        joined = " ".join(verdict.notes)
+        self.assertIn("замен 1", joined)
+        self.assertIn("доля точных 0.917", joined)
 
     def test_every_deviation_is_named(self) -> None:
         cases = {

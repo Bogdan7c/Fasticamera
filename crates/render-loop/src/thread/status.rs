@@ -69,6 +69,8 @@ pub struct BackendHealth {
     pub camera: Option<CameraStreamDiagnostics>,
     /// Видоискатель (рисовальщик, стадии ISP, время GPU, счётчики); `None` — камеры нет.
     pub viewfinder: Option<ViewfinderDiagnostics>,
+    /// Снимки (сессия 14): выборы кадра, захваты, проявления, итоги, потери GPU; `None` — снимков нет.
+    pub still: Option<crate::still_diagnostics::StillDiagnostics>,
 }
 
 impl BackendHealth {
@@ -83,6 +85,7 @@ impl BackendHealth {
             known_deviations: diagnostics.known_deviations.clone(),
             camera: diagnostics.camera.clone(),
             viewfinder: diagnostics.viewfinder.clone(),
+            still: diagnostics.still.clone(),
         }
     }
 }

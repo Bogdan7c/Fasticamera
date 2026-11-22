@@ -6,10 +6,17 @@
 
 use camera_screen::shutter::CaptureConfig;
 use photo_output::service::{StillConfigError, StillServiceConfig};
+use render_loop::config::StillDevelopConfig;
 use serde::{Deserialize, Serialize};
 
 /// Предел ёмкости журнала: больше — уже не «ограниченный журнал», а скрытая утечка памяти.
 const MAX_JOURNAL_CAPACITY: usize = 65_536;
+
+/// Сколько мс, по оценке, снимок впереди в очереди держит кодер, пока проявляется и завершается (`[estimate]`):
+/// проявление на телефоне ≈ 0,5 с, у верхней границы 1–2 с, плюс `finish` кодера HEIF. Верхняя граница — 2 с.
+/// Совпадает с `render_loop::config` (`still.rs`, `ESTIMATED_MS_PER_QUEUED_STILL`): отсюда выведено умолчание срока
+/// цели рендера. Пересмотреть по замеру на телефоне (14c).
+const ESTIMATED_MS_PER_QUEUED_STILL: u64 = 2_000;
 
 /// Секция `photo`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,6 +64,21 @@ pub enum PhotoConfigError {
         "camera_screen.screen.capture.saving_timeout_ms = {screen_ms} не больше photo.service.develop_timeout_ms + heif_finish_timeout_ms = {service_ms}"
     )]
     ScreenSavingTimeoutNotAboveService { screen_ms: u64, service_ms: u64 },
+    /// Служба выдаёт цель кодера по очереди (`max_open_encoders`), и последний ждущий снимок ждёт цель, пока
+    /// проявятся все впереди. Рендер обязан ждать цель не меньше этого худшего ожидания, иначе серия из полной
+    /// очереди теряла бы снимки по `TargetTimedOut`, хотя всё исправно.
+    #[error(
+        "render.still.target_timeout_ms = {render_ms} меньше худшего ожидания очереди {queue_wait_ms} мс (photo.service.max_pending_stills = {pending})"
+    )]
+    RenderTargetTimeoutBelowQueueWait {
+        render_ms: u64,
+        queue_wait_ms: u64,
+        pending: usize,
+    },
+    /// Рендер должен отказаться ждать цель РАНЬШЕ, чем служба сорвёт снимок по сроку проявления (правило
+    /// «экран > служба > рендер»): иначе служба успеет сорвать снимок, который рендер ещё честно ждёт.
+    #[error("render.still.target_timeout_ms = {render_ms} не меньше photo.service.develop_timeout_ms = {service_ms}")]
+    RenderTargetTimeoutNotBelowService { render_ms: u64, service_ms: u64 },
 }
 
 impl PhotoConfig {
@@ -94,6 +116,31 @@ impl PhotoConfig {
             return Err(PhotoConfigError::ScreenSavingTimeoutNotAboveService {
                 screen_ms: screen_saving_ms,
                 service_ms: service_saving_ms,
+            });
+        }
+        Ok(())
+    }
+
+    /// Сверка со срезом рендера (`render.still`): сроки трёх уровней — экран > служба > рендер — и ожидание цели
+    /// кодера в очереди. Зовётся при `initialize` рядом с [`PhotoConfig::validate`].
+    pub fn validate_against_render(&self, render: &StillDevelopConfig) -> Result<(), PhotoConfigError> {
+        let service = &self.service;
+        // Последний из ждущих снимков ждёт цель, пока проявятся и завершатся все впереди. Сколько из них
+        // держит место сразу, не влияет на худший случай: рендер проявляет строго по одному.
+        let ahead = u64::try_from(service.max_pending_stills.saturating_sub(1)).unwrap_or(u64::MAX);
+        let queue_wait_ms = ahead.saturating_mul(ESTIMATED_MS_PER_QUEUED_STILL);
+        let render_target_ms = u64::from(render.target_timeout_ms);
+        if render_target_ms < queue_wait_ms {
+            return Err(PhotoConfigError::RenderTargetTimeoutBelowQueueWait {
+                render_ms: render_target_ms,
+                queue_wait_ms,
+                pending: service.max_pending_stills,
+            });
+        }
+        if render_target_ms >= service.develop_timeout_ms {
+            return Err(PhotoConfigError::RenderTargetTimeoutNotBelowService {
+                render_ms: render_target_ms,
+                service_ms: service.develop_timeout_ms,
             });
         }
         Ok(())

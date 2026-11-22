@@ -166,7 +166,7 @@ fn jpeg_with_dng_publishes_both_files() {
 }
 
 #[test]
-fn service_works_on_its_own_named_thread() {
+fn secured_goes_out_on_the_callers_thread_and_the_result_on_the_service_thread() {
     let rig = Rig::start();
     rig.admit(5);
     rig.secure(5, PrimaryFormat::Heif, RawOutput::Skip);
@@ -174,11 +174,11 @@ fn service_works_on_its_own_named_thread() {
     rig.wait_final(5);
 
     let names = rig.phases.thread_names();
-    assert!(!names.is_empty());
-    assert!(
-        names.iter().all(|name| name.as_deref() == Some("fasticamera-still")),
-        "{names:?}"
-    );
+    assert_eq!(names.len(), 2, "Secured и итог: {names:?}");
+    // `Secured` не ждёт рабочего потока: его шлёт тот, кто передал событие (здесь — поток теста).
+    assert_ne!(names[0].as_deref(), Some("fasticamera-still"), "{names:?}");
+    // Итог (и всё платформенное) — только на потоке службы.
+    assert_eq!(names[1].as_deref(), Some("fasticamera-still"), "{names:?}");
 }
 
 /// Настоящие DNG/Exif/JPEG-Exif: тело `write_dng` приходит с пакетом форматов.

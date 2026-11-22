@@ -65,3 +65,18 @@ fn broken_photo_settings_are_reported_as_photo() {
     config.photo.slice_rows = 3;
     assert!(matches!(config.validate(), Err(StillConfigError::Photo(_))));
 }
+
+/// Верхняя оценка «снимок впереди держит кодер», мс (та же оценка в `fasticamera-app::photo_config`).
+const ESTIMATED_MS_PER_QUEUED_STILL: u32 = 2_000;
+
+#[test]
+fn default_target_timeout_covers_the_wait_of_the_last_queued_still() {
+    let config = StillDevelopConfig::default();
+    // Цель кодера выдаётся по мере освобождения мест: последний снимок очереди ждёт всех впереди.
+    let worst_wait_ms = (config.queue_capacity - 1) * ESTIMATED_MS_PER_QUEUED_STILL;
+    assert!(
+        config.target_timeout_ms >= worst_wait_ms,
+        "срок цели {} мс короче худшего ожидания очереди {worst_wait_ms} мс",
+        config.target_timeout_ms
+    );
+}

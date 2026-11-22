@@ -19,6 +19,7 @@ use super::capture_observation::{CaptureObservation, PhaseBook, SubmitCounts, sh
 use super::capture_plan::{PlannedStep, StepKind};
 use super::capture_report::{ShotOutcome, ShotRecord, StepRecord};
 use crate::capture_scenario_config::CaptureScenarioConfig;
+use crate::still_choice_log::ChoiceEntry;
 use crate::still_phase_log::PhaseEntry;
 
 /// Как идёт прогон.
@@ -95,6 +96,11 @@ impl CaptureRunner {
     /// Новые записи журнала итогов службы (звать перед тиком).
     pub fn absorb_phases(&mut self, entries: Vec<PhaseEntry>, lost: u64) {
         self.book.extend(entries, lost);
+    }
+
+    /// Выборы кадра из журнала рендера (звать перед тиком; повтор безвреден).
+    pub fn absorb_choices(&mut self, entries: Vec<ChoiceEntry>) {
+        self.book.absorb_choices(entries);
     }
 
     fn step(&self) -> Option<PlannedStep> {
@@ -289,6 +295,7 @@ impl CaptureRunner {
             request,
             pressed_at,
             &self.book,
+            &obs.clock,
         );
         match &record.outcome {
             ShotOutcome::Saved { .. } => {

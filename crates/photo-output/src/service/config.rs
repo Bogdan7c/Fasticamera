@@ -18,6 +18,11 @@ pub const DEFAULT_EVENT_QUEUE_CAPACITY: usize = 32;
 /// слот допуска освобождается, а не висит вечно, если рендер молчит. Обязан быть КОРОЧЕ срока захвата
 /// экрана (`camera_screen.screen.capture.capture_timeout_ms` 2 000): экран — страховка (проверяет приложение).
 pub const DEFAULT_CAPTURE_TIMEOUT_MS: u64 = 1_500;
+/// Сколько аппаратных кодеров HEIF службе можно держать открытыми одновременно. `[estimate]`: рендер
+/// проявляет снимки строго по одному, поэтому кодеру нужен один; второй — запас на перекрытие `finish`
+/// прошлого снимка и открытия следующего. Больше — риск памяти и лимита одновременных кодеров
+/// (`concurrent-instances`) на телефоне при серии из 10 ждущих снимков; пересмотреть по замеру 14c.
+pub const DEFAULT_MAX_OPEN_ENCODERS: usize = 2;
 /// Срок от `Secured` до итогового события рендера. `[estimate]`: проявление одного снимка 12 Мп
 /// порциями между кадрами видоискателя — порядка 1–2 с; ждущих до 10, рендер берёт их по очереди,
 /// поэтому последний ждёт до ~20 с. 30 с — запас, при котором срыв значит «рендер завис», а не «очередь».
@@ -43,9 +48,13 @@ pub struct StillServiceConfig {
     pub max_pending_stills: usize,
     /// Предел очереди событий рендера.
     pub event_queue_capacity: usize,
-    /// Срок ожидания кадра после допуска, мс.
+    /// Не больше стольких кодеров HEIF открыто одновременно: цель рендеру остальных выдаётся по мере
+    /// освобождения места, по порядку `Secured`. JPEG кодера не требует и не ограничен.
+    pub max_open_encoders: usize,
+    /// Срок ожидания кадра после допуска, мс. Считается от прихода билета в службу.
     pub capture_timeout_ms: u64,
-    /// Срок ожидания итога проявления после `Secured`, мс.
+    /// Срок ожидания итога проявления после `Secured`, мс. Считается от прихода `Secured` в службу и
+    /// включает ожидание места под кодер.
     pub develop_timeout_ms: u64,
     /// Срок `finish` кодера HEIF, мс.
     pub heif_finish_timeout_ms: u64,
@@ -62,6 +71,7 @@ impl Default for StillServiceConfig {
         Self {
             max_pending_stills: DEFAULT_MAX_PENDING_STILLS,
             event_queue_capacity: DEFAULT_EVENT_QUEUE_CAPACITY,
+            max_open_encoders: DEFAULT_MAX_OPEN_ENCODERS,
             capture_timeout_ms: DEFAULT_CAPTURE_TIMEOUT_MS,
             develop_timeout_ms: DEFAULT_DEVELOP_TIMEOUT_MS,
             heif_finish_timeout_ms: DEFAULT_HEIF_FINISH_TIMEOUT_MS,
@@ -90,6 +100,9 @@ impl StillServiceConfig {
         }
         if self.event_queue_capacity < 1 {
             return fail("event_queue_capacity", "должно быть не меньше 1");
+        }
+        if self.max_open_encoders < 1 {
+            return fail("max_open_encoders", "должно быть не меньше 1");
         }
         for (field, value) in [
             ("capture_timeout_ms", self.capture_timeout_ms),

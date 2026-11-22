@@ -1,5 +1,7 @@
 //! Отчёт `capture`: адреса файлов и их место в строке результата, укладывание в 4000 байт в худшем случае.
 
+use super::super::capture_frame_timing::FrameChoiceView;
+use super::super::capture_render_still::StillDiagnosticsDelta;
 use super::super::capture_test_support::healthy_report;
 use super::*;
 use crate::logging::record::LOGCAT_MAX_TEXT_BYTES;
@@ -44,21 +46,49 @@ fn the_summary_carries_the_uris_counts_and_the_burst_accounting() {
 }
 
 #[test]
-fn the_details_name_the_frame_choice_gap_and_keep_a_reserved_place_for_render_diagnostics() {
-    let items = healthy_report().detail_items();
+fn the_details_carry_the_frame_summary_the_render_diagnostics_place_and_per_shot_choice() {
+    let mut report = healthy_report();
+    let mut delta = StillDiagnosticsDelta::default();
+    delta.picks.exact = 12;
+    report.render_still_detail = Some(delta);
+    let items = report.detail_items();
 
-    assert_eq!(items[0]["frame_choice_note"], FRAME_CHOICE_NOTE);
-    assert!(items[0]["render_still_detail"].is_null());
-    assert!(
-        items[0]
-            .as_object()
-            .expect("объект")
-            .contains_key("render_still_detail")
-    );
-    // Затем шаги, серия и 12 снимков с null в поле выбора кадра.
+    assert_eq!(items[0]["frame_summary"]["exact"], 12);
+    assert_eq!(items[0]["frame_summary"]["max_press_to_frame_ms"], 80.0);
+    assert_eq!(items[0]["render_still_detail"]["picks"]["exact"], 12);
+    // Затем шаги, серия и 12 снимков с выбором кадра и задержкой.
     assert_eq!(items.len(), 1 + 3 + 1 + 12);
     let shot = items.last().expect("снимок");
-    assert!(shot["frame_choice"].is_null() && shot.as_object().expect("объект").contains_key("frame_choice"));
+    assert_eq!(shot["frame_choice"]["kind"], "exact");
+    assert_eq!(shot["press_to_frame_ms"], 80.0);
+    assert_eq!(shot["shown_before_press_ms"], 10.0);
+}
+
+#[test]
+fn the_summary_reports_the_exact_share_the_delay_and_a_substitution_reason_stays_in_the_details() {
+    let mut report = healthy_report();
+    report.shots[0].frame.frame_choice = FrameChoiceView::Substituted {
+        reason: still_contract::frame_choice::SubstitutionReason::ShownFrameEvicted,
+    };
+    let summary = report.summary();
+
+    assert_eq!(summary["frames"]["exact"], 11);
+    assert_eq!(summary["frames"]["evicted"], 1);
+    assert_eq!(summary["frames"]["p2f_max_ms"], 80.0);
+    assert!((summary["frames"]["share"].as_f64().unwrap() - 11.0 / 12.0).abs() < 1e-3);
+    let first = &report.detail_items()[1 + 3 + 1];
+    assert_eq!(first["frame_choice"]["reason"], "shown_frame_evicted");
+}
+
+#[test]
+fn a_healthy_summary_with_frame_numbers_still_fits_the_logcat_record() {
+    use super::super::result_budget::judge_within_budget;
+    let verdict = judge_within_budget(healthy_report().summary(), Vec::new());
+    let (line, _) = format_result_line(&ScenarioReport {
+        scenario: "capture".to_owned(),
+        outcome: verdict.outcome,
+    });
+    assert!(line.len() <= LOGCAT_MAX_TEXT_BYTES, "строка {} байт", line.len());
 }
 
 /// Худший случай: все 13 адресов длинные, у снимков сорванные тексты, режим — запасной фейк с длинной причиной.

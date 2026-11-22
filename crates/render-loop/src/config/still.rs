@@ -27,7 +27,11 @@ pub struct StillDevelopConfig {
     /// `PresentationTimingUnknown`. `[estimate]`: 80.
     pub presentation_wait_ms: u32,
     /// Сколько ждать от записи цель кодера после `Secured` (решение 140: снимок ждёт сохранения). Истекло —
-    /// `Failed(TargetTimedOut)`, снимок отпущен. `[estimate]`: 10 000 (запись открывает кодер и хранилище).
+    /// `Failed(TargetTimedOut)`, снимок отпущен. Запись отдаёт цель не сразу, а когда освободится место под кодер
+    /// (`photo.service.max_open_encoders`), поэтому последний из `queue_capacity` ждущих снимков ждёт цель, пока
+    /// проявятся и завершатся все впереди: ≈ (10 − 1) × 2 с = 18 с (2 с на снимок впереди: проявление ≈ 0,5 с на телефоне, до 1–2 с, плюс `finish`). `[estimate]`:
+    /// 20 000 (18 с и запас); короче срока записи на проявление (`photo.service.develop_timeout_ms` 30 000):
+    /// иначе запись сорвала бы снимок раньше, чем рендер перестал бы ждать цель.
     pub target_timeout_ms: u32,
     /// Сколько ждать копию RAW (один короткий compute-проход по 24 МиБ, на ПК и телефоне — единицы мс). Истекло —
     /// GPU снимков объявлен потерянным (fence завис), снимок получает `NotSecured(CaptureFailed)`, лизинг кадра
@@ -67,7 +71,7 @@ impl Default for StillDevelopConfig {
         Self {
             queue_capacity: 10,
             presentation_wait_ms: 80,
-            target_timeout_ms: 10_000,
+            target_timeout_ms: 20_000,
             capture_timeout_ms: 2_000,
             develop_timeout_ms: 30_000,
             max_slices_in_flight: 4,

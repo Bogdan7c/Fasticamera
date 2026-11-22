@@ -327,6 +327,11 @@ impl CameraScreenService {
         self.capture.phases_after(cursor)
     }
 
+    /// Выборы кадра настоящих снимков (для проверки «снимок без задержки» в сценарии `capture`).
+    pub fn capture_frame_choices(&self) -> Vec<crate::still_choice_log::ChoiceEntry> {
+        self.capture.frame_choices()
+    }
+
     /// Курсор «сейчас» журнала итогов снимков.
     pub fn capture_phase_cursor_now(&self) -> PhaseCursor {
         self.capture.phase_cursor_now()

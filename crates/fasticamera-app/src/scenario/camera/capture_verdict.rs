@@ -42,6 +42,7 @@ pub fn evaluate_capture(config: &CaptureScenarioConfig, report: &CaptureObservat
         None => {}
     }
     violations.extend(render_violations(report));
+    violations.extend(frame_violations(config, report));
     violations
 }
 
@@ -146,10 +147,19 @@ fn burst_violations(config: &CaptureScenarioConfig, burst: &BurstRecord) -> Vec<
     if burst.unfinished > 0 {
         violations.push(format!("серия: без итога осталось снимков {}", burst.unfinished));
     }
-    if burst.saved < plan.min_saved_shots {
+    // Все ПРИНЯТЫЕ нажатия обязаны быть сохранены (сорванные и без итога названы выше); отказывать можно только
+    // явно (экран: затвор занят / набор сохраняемых полон; служба: занята) и не больше `max_refused_presses`.
+    let refused = burst.refused_by_screen + burst.rejected_by_service;
+    if refused > u64::from(plan.max_refused_presses) {
         violations.push(format!(
-            "серия: сохранено {}, нужно не меньше {}",
-            burst.saved, plan.min_saved_shots
+            "серия: отказано нажатий {refused} (экран {}, служба {}), допустимо {}",
+            burst.refused_by_screen, burst.rejected_by_service, plan.max_refused_presses
+        ));
+    }
+    if u64::from(burst.saved) != burst.accepted_by_service {
+        violations.push(format!(
+            "серия: принято службой {}, а сохранено {}",
+            burst.accepted_by_service, burst.saved
         ));
     }
     let view = &burst.viewfinder;
@@ -202,6 +212,66 @@ fn render_violations(report: &CaptureObservationReport) -> Vec<String> {
         violations.push(format!(
             "рендер принял команд снимка {}, а службой принято {}",
             delta.begins_accepted, accepted
+        ));
+    }
+    violations
+}
+
+/// «Снимок без задержки затвора»: кадр был на экране, начало его экспозиции недалеко от нажатия, кольцо достаточно
+/// глубоко, GPU снимков не терялся.
+fn frame_violations(config: &CaptureScenarioConfig, report: &CaptureObservationReport) -> Vec<String> {
+    let mut violations = Vec::new();
+    let summary = report.frame_summary();
+    if !report.shots.is_empty() {
+        if summary.choices_unknown > 0 {
+            violations.push(format!(
+                "выбор кадра неизвестен у снимков: {} из {} (рендер не сообщил или журнал вытеснил)",
+                summary.choices_unknown,
+                report.shots.len()
+            ));
+        }
+        match summary.exact_share {
+            Some(share) if share < config.min_exact_frame_share => violations.push(format!(
+                "точно показанный кадр взят у {} из {} снимков (доля {share:.2}), нужна не меньше {:.2}",
+                summary.exact, summary.choices_known, config.min_exact_frame_share
+            )),
+            _ => {}
+        }
+        match summary.max_press_to_frame_ms {
+            Some(max) if max > config.max_press_to_frame_ms => violations.push(format!(
+                "задержка «нажатие → начало экспозиции кадра» до {max:.1} мс (медиана {}), допустимо {:.1}",
+                summary
+                    .p50_press_to_frame_ms
+                    .map_or_else(|| "?".to_owned(), |value| format!("{value:.1}")),
+                config.max_press_to_frame_ms
+            )),
+            Some(_) => {}
+            None => violations.push(format!(
+                "задержку нажатия не измерили ни у одного снимка: {}",
+                summary
+                    .delay_unavailable_reason
+                    .as_deref()
+                    .unwrap_or("причина не названа")
+            )),
+        }
+    }
+    // Вытеснение показанного кадра из кольца — недостаточная глубина кольца (решение 139): берём большее из
+    // журнала выбора и счётчиков рендера, чтобы не пропустить, если один из источников недоступен.
+    let evicted_by_render = report
+        .render_still_detail
+        .map_or(0, |delta| delta.picks.substituted_evicted);
+    let evicted = u64::from(summary.substituted_evicted).max(evicted_by_render);
+    if evicted > 0 {
+        violations.push(format!(
+            "показанный кадр вытеснен из кольца у {evicted} снимков: кольцо мелкое (решение 139)"
+        ));
+    }
+    if let Some(delta) = report.render_still_detail
+        && delta.gpu_lost > 0
+    {
+        violations.push(format!(
+            "рендер: GPU снимков объявлен потерянным {} раз (по сроку {})",
+            delta.gpu_lost, delta.gpu_lost_by_deadline
         ));
     }
     violations

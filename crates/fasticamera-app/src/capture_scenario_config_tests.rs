@@ -60,3 +60,38 @@ fn unknown_fields_are_rejected_when_parsing_json() {
     assert_eq!(parsed.burst.presses, 3);
     assert_eq!(parsed.burst.interval_ms, 100, "незаданное берётся из умолчаний");
 }
+
+#[test]
+fn frame_thresholds_must_be_sane_and_the_refusal_cap_must_leave_room_for_a_saved_shot() {
+    let cases: [(&str, Breaker); 4] = [
+        ("share above one", |config| config.min_exact_frame_share = 1.5),
+        ("share is nan", |config| config.min_exact_frame_share = f64::NAN),
+        ("zero delay limit", |config| config.max_press_to_frame_ms = 0.0),
+        ("infinite delay limit", |config| {
+            config.max_press_to_frame_ms = f64::INFINITY
+        }),
+    ];
+    for (name, break_it) in cases {
+        let mut config = CaptureScenarioConfig::default();
+        break_it(&mut config);
+        assert!(
+            matches!(config.validate(), Err(CaptureScenarioConfigError::OutOfRange { .. })),
+            "{name}"
+        );
+    }
+    let mut config = CaptureScenarioConfig::default();
+    config.burst.max_refused_presses = config.burst.presses;
+    assert_eq!(
+        config.validate(),
+        Err(CaptureScenarioConfigError::RefusalsCoverWholeBurst {
+            refused: 10,
+            presses: 10
+        })
+    );
+}
+
+#[test]
+fn the_retired_min_saved_shots_field_is_rejected_instead_of_silently_ignored() {
+    let error = serde_json::from_str::<CaptureScenarioConfig>(r#"{"burst":{"min_saved_shots":1}}"#).unwrap_err();
+    assert!(error.to_string().contains("min_saved_shots"), "{error}");
+}

@@ -562,6 +562,29 @@ fn camera_unavailable() {
 }
 
 #[test]
+fn rest_without_flash() {
+    with_rig(|rig| {
+        let rest = states::rest();
+        let driver = states::rest_without_flash();
+        // Со вспышкой значок есть, без неё — его нет в списке рисования, остальной ряд на месте.
+        assert!(
+            rest.icon_center_px(IconId::FlashOff).is_some(),
+            "в эталоне со вспышкой значок есть"
+        );
+        assert!(
+            driver.icon_center_px(IconId::FlashOff).is_none(),
+            "без вспышки значка нет"
+        );
+        assert!(
+            driver.icon_center_px(IconId::FlashOn).is_none(),
+            "без вспышки значка нет"
+        );
+        let snapshot = render(rig, &driver);
+        check_golden("rest_without_flash", &snapshot);
+    });
+}
+
+#[test]
 fn landscape_left() {
     with_rig(|rig| {
         let rest = render(rig, &states::rest());

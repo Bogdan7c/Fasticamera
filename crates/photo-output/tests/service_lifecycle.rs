@@ -146,18 +146,21 @@ fn shutdown_with_unfinished_still_fails_it_and_removes_drafts() {
 fn ticket_handed_over_during_shutdown_still_gets_a_final_phase() {
     let rig = Rig::start();
     rig.admit(1);
-    // Рабочий поток застревает в приёмнике фаз: `Shutdown` встанет в очередь за его работой.
-    rig.phases.hold();
+    // Рабочий поток застревает в хранилище: `Shutdown` встанет в очередь за его работой.
+    rig.store.create_gate.close();
     rig.send(DevelopEvent::Secured {
         facts: service_support::facts_for(1, PrimaryFormat::Heif, RawOutput::Skip),
         raw: None,
     });
-    rig.phases.wait_secured(StillId(1), service_support::WAIT);
+    service_support::wait_until("рабочий поток застрял в хранилище", || {
+        rig.store.create_calls() == 1
+    });
     let late_ticket = rig.handle.try_admit(StillId(2)).unwrap();
     let Rig {
         service,
         handle,
         phases,
+        store,
         ..
     } = rig;
     let stopper = std::thread::spawn(move || service.shutdown());
@@ -169,7 +172,7 @@ fn ticket_handed_over_during_shutdown_still_gets_a_final_phase() {
 
     // Билет попадает в очередь уже ПОСЛЕ `Shutdown`: раньше он так и пропадал без итога.
     let handed_over = handle.begin_still(late_ticket);
-    phases.release();
+    store.create_gate.open();
 
     assert_eq!(stopper.join().unwrap(), ShutdownReport::Stopped);
     assert_eq!(
@@ -248,6 +251,13 @@ fn config_validation_rejects_each_bad_value() {
             },
         ),
         (
+            "max_open_encoders",
+            StillServiceConfig {
+                max_open_encoders: 0,
+                ..fast_config()
+            },
+        ),
+        (
             "capture_timeout_ms",
             StillServiceConfig {
                 capture_timeout_ms: 0,
@@ -314,6 +324,7 @@ fn config_defaults_match_decision_140_and_unknown_fields_are_rejected() {
     let defaults = StillServiceConfig::default();
     assert_eq!(defaults.max_pending_stills, 10);
     assert_eq!(defaults.media_directory, "DCIM/Camera");
+    assert_eq!(defaults.max_open_encoders, 2);
 
     let parsed: StillServiceConfig = serde_json::from_str(r#"{"max_pending_stills": 3}"#).unwrap();
     assert_eq!(parsed.max_pending_stills, 3);

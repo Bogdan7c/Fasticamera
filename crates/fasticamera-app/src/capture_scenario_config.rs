@@ -35,10 +35,12 @@ pub struct BurstPlan {
     pub interval_ms: u64,
     /// Сколько ждать итогов всех принятых снимков серии после последнего нажатия, мс. `[estimate]` 30 000.
     pub drain_timeout_ms: u64,
-    /// Наименьшее число СОХРАНЁННЫХ снимков серии. Остальное — явный отказ (экран занят, очередь полна), он
-    /// считается и показывается в отчёте. `[estimate]` 1: решение о том, сколько отказов терпимо при 100 мс,
-    /// принимает владелец после первых цифр 14c.
-    pub min_saved_shots: u32,
+    /// Сколько нажатий серии может быть отклонено явным отказом (затвор занят `ShutterBusy` или набор сохраняемых
+    /// полон `SavingQueueFull`; отказ службы считается так же). Все ПРИНЯТЫЕ нажатия обязаны быть сохранены — это
+    /// проверяется отдельно и порогом не смягчается. `[estimate]` 3: при шаге 100 мс затвор занят до «кадр
+    /// захвачен» (десятки мс), а набор сохраняемых вмещает 10 (решение 140), поэтому лишний отказ — редкость;
+    /// владелец уточнит число после первых цифр 14c.
+    pub max_refused_presses: u32,
     /// Сколько кадров видоискателя может быть выброшено переполнением джиттер-буфера за серию (`pacing.jitter_overflow`).
     /// `[estimate]` 1: дрейф часов камеры против экрана даёт ≈ 1 кадр за оборот фазы (решение 53), снимок его не растит.
     pub max_jitter_overflow: u64,
@@ -53,7 +55,7 @@ impl Default for BurstPlan {
             presses: 10,
             interval_ms: 100,
             drain_timeout_ms: 30_000,
-            min_saved_shots: 1,
+            max_refused_presses: 3,
             max_jitter_overflow: 1,
             max_pool_exhausted: 0,
         }
@@ -82,6 +84,15 @@ pub struct CaptureScenarioConfig {
     pub burst: BurstPlan,
     /// Полный кадр основной камеры (для сверки размеров файлов на ПК).
     pub full_frame: FullFrameSize,
+    /// Наименьшая доля снимков, у которых взят РОВНО показанный кадр (`FrameChoice::ShownAtPress`), от снимков с
+    /// известным выбором. `[estimate]` 0,9: на телефоне записи показа драйвера есть всегда, но редкий снимок может
+    /// уйти на оценку (`PresentationTimingUnknown`); 1 из 12 допустим, больше — признак неработающего доказательства.
+    pub min_exact_frame_share: f64,
+    /// Наибольшая задержка «нажатие → начало экспозиции выбранного кадра», мс. `[estimate]` 150: кадр виден на экране
+    /// через 67–90 мс после начала выдержки (задержка «сенсор → дисплей», сценарии `raw-stream`/`viewfinder`), нажатие
+    /// сценария приходится на момент показа кадра, живой палец добавляет до периода кадра камеры (≈ 17–33 мс);
+    /// 90 + 33 + запас на тик и джиттер часов ≈ 150. Это порог «без заметной задержки затвора», а не рекорд.
+    pub max_press_to_frame_ms: f64,
 }
 
 impl Default for CaptureScenarioConfig {
@@ -95,15 +106,25 @@ impl Default for CaptureScenarioConfig {
             pause_between_steps_ms: 500,
             burst: BurstPlan::default(),
             full_frame: FullFrameSize::default(),
+            min_exact_frame_share: 0.9,
+            max_press_to_frame_ms: 150.0,
         }
     }
 }
 
 /// Неверная секция `camera.scenarios.capture`.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum CaptureScenarioConfigError {
     #[error("capture.{field} должно быть больше нуля")]
     Zero { field: &'static str },
+    #[error("capture.{field} = {value} вне допустимого диапазона: {expected}")]
+    OutOfRange {
+        field: &'static str,
+        value: f64,
+        expected: &'static str,
+    },
+    #[error("capture.burst.max_refused_presses ({refused}) должно быть меньше числа нажатий ({presses})")]
+    RefusalsCoverWholeBurst { refused: u32, presses: u32 },
     #[error("capture.secured_timeout_ms ({secured}) не должно быть больше saved_timeout_ms ({saved})")]
     SecuredAfterSaved { secured: u64, saved: u64 },
 }
@@ -119,7 +140,6 @@ impl CaptureScenarioConfig {
             ("burst.presses", u64::from(self.burst.presses)),
             ("burst.interval_ms", self.burst.interval_ms),
             ("burst.drain_timeout_ms", self.burst.drain_timeout_ms),
-            ("burst.min_saved_shots", u64::from(self.burst.min_saved_shots)),
             ("full_frame.width_px", u64::from(self.full_frame.width_px)),
             ("full_frame.height_px", u64::from(self.full_frame.height_px)),
         ] {
@@ -131,6 +151,27 @@ impl CaptureScenarioConfig {
             return Err(CaptureScenarioConfigError::SecuredAfterSaved {
                 secured: self.secured_timeout_ms,
                 saved: self.saved_timeout_ms,
+            });
+        }
+        if !(self.min_exact_frame_share.is_finite() && (0.0..=1.0).contains(&self.min_exact_frame_share)) {
+            return Err(CaptureScenarioConfigError::OutOfRange {
+                field: "min_exact_frame_share",
+                value: self.min_exact_frame_share,
+                expected: "число от 0 до 1",
+            });
+        }
+        if !(self.max_press_to_frame_ms.is_finite() && self.max_press_to_frame_ms > 0.0) {
+            return Err(CaptureScenarioConfigError::OutOfRange {
+                field: "max_press_to_frame_ms",
+                value: self.max_press_to_frame_ms,
+                expected: "конечное число больше 0",
+            });
+        }
+        // Если отказать можно все нажатия, серия, не сохранившая ни одного снимка, прошла бы проверку.
+        if self.burst.max_refused_presses >= self.burst.presses {
+            return Err(CaptureScenarioConfigError::RefusalsCoverWholeBurst {
+                refused: self.burst.max_refused_presses,
+                presses: self.burst.presses,
             });
         }
         Ok(())

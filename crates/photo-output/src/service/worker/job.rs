@@ -2,11 +2,12 @@
 
 use std::time::Instant;
 
-use shell_contract::still_media::{HeifSurfaceEncoder, PendingMedia};
+use shell_contract::still_media::PendingMedia;
 use still_contract::shot::StillFrameFacts;
 
 use super::super::admission::AdmissionTicket;
 use super::super::stats::StillCounters;
+use super::encoder_queue::EncoderSeat;
 use crate::exif::{CameraDescription, CaptureMoment};
 
 /// Черновик файла в хранилище.
@@ -22,7 +23,7 @@ pub(super) struct Job {
 pub(super) enum Stage {
     /// Допуск выдан, кадра от рендера ещё нет.
     AwaitingCapture { deadline: Instant },
-    /// Кадр захвачен: черновики и кодер открыты, ждём итог проявления.
+    /// Кадр захвачен: черновики открыты (кодер — когда найдётся место), ждём итог проявления.
     Developing(Box<Developing>),
 }
 
@@ -35,7 +36,7 @@ impl Stage {
     }
 }
 
-/// Ресурсы снимка после `Secured`.
+/// Ресурсы снимка после `Secured` (кодер HEIF может ещё ждать свободного места).
 pub(super) struct Developing {
     pub(super) deadline: Instant,
     pub(super) facts: Box<StillFrameFacts>,
@@ -45,8 +46,8 @@ pub(super) struct Developing {
     pub(super) primary: Draft,
     /// Черновик DNG, если он в плане.
     pub(super) raw: Option<Draft>,
-    /// Открытый кодер HEIF; `None` для JPEG.
-    pub(super) encoder: Option<Box<dyn HeifSurfaceEncoder>>,
+    /// Место снимка под кодер HEIF (для JPEG кодера нет).
+    pub(super) encoder: EncoderSeat,
 }
 
 impl Developing {
@@ -55,7 +56,8 @@ impl Developing {
         let Self {
             encoder, primary, raw, ..
         } = self;
-        if let Some(encoder) = encoder {
+        // Ждущий кодера снимок ничего не открывал; открытый кодер прерывается и освобождает место.
+        if let EncoderSeat::Open(encoder) = encoder {
             encoder.abort();
         }
         discard_draft(counters, primary);

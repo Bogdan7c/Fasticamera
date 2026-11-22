@@ -16,6 +16,7 @@ use still_contract::plan::{PrimaryFormat, StillId};
 use still_contract::shot::Rgba8Image;
 
 use super::Worker;
+use super::encoder_queue::EncoderSeat;
 use super::job::{Developing, Draft, Job, discard_draft};
 use crate::exif::{CameraDescription, CaptureMoment, ExifInputs, RotationCarrier};
 use still_contract::shot::StillFrameFacts;
@@ -63,7 +64,8 @@ impl Worker {
         let Developing {
             encoder, primary, raw, ..
         } = developing;
-        let Some(encoder) = encoder else {
+        let EncoderSeat::Open(encoder) = encoder else {
+            // Рендер прислал итог, хотя кодер ему не выдавали (нарушение протокола).
             self.discard_both(primary, raw);
             return Err(StillFailure::Encode("кодер HEIF не открыт".to_owned()));
         };

@@ -208,6 +208,49 @@ struct RenderBehaviour {
     secure_delay_ms: u64,
     /// Номера планов (с 1), которые срываются ошибкой GPU после захвата.
     failing_plans: BTreeSet<usize>,
+    /// Какой кадр «выбирает рендер»: честный, с настоящими часами (см. [`ResponderChoice`]).
+    choice: ResponderChoice,
+}
+
+/// Выбор кадра ответчика рендера. Метка сенсора строится от НАСТОЯЩИХ часов процесса и момента нажатия плана, а не
+/// константой: тогда сценарий, переводящий её через измеренное смещение часов, получает ту задержку, что задана здесь.
+#[derive(Clone, Copy)]
+struct ResponderChoice {
+    /// Сколько мс назад (до нажатия) началась экспозиция выбранного кадра.
+    latency_ms: i64,
+    /// `None` — ровно показанный кадр; `Some(причина)` — замена.
+    substituted: Option<still_contract::frame_choice::SubstitutionReason>,
+}
+
+impl Default for ResponderChoice {
+    fn default() -> Self {
+        Self {
+            latency_ms: 80,
+            substituted: None,
+        }
+    }
+}
+
+impl ResponderChoice {
+    /// Выбор для плана: метка сенсора = нажатие в шкале BOOTTIME − задержка.
+    fn for_press(self, pressed_at: shell_contract::clock::MonotonicNanos) -> still_contract::frame_choice::FrameChoice {
+        use crate::clock_offset::{ClockOffsetSource, SystemClocks};
+        let offset = SystemClocks.sample_offset().expect("системные часы читаются");
+        let sensor_timestamp = camera_contract::capture_result::SensorTimestamp::from_nanos(
+            offset.monotonic_to_boottime(pressed_at).as_nanos() - self.latency_ms * 1_000_000,
+        );
+        match self.substituted {
+            None => still_contract::frame_choice::FrameChoice::ShownAtPress {
+                sensor_timestamp,
+                shown_at: shell_contract::clock::MonotonicNanos::from_nanos(pressed_at.as_nanos() - 10_000_000),
+            },
+            Some(reason) => still_contract::frame_choice::FrameChoice::Substituted {
+                sensor_timestamp,
+                wanted: None,
+                reason,
+            },
+        }
+    }
 }
 
 struct StillResponder {
@@ -233,6 +276,9 @@ impl StillResponder {
                     render.update(|status| status.still_commands.begins_accepted += 1);
                     let mut facts = facts_for(plan.id);
                     facts.outputs = plan.outputs;
+                    let choice = behaviour.choice.for_press(plan.press.at);
+                    facts.sensor_timestamp = choice.sensor_timestamp();
+                    facts.choice = choice;
                     let raw = (plan.outputs.raw == RawOutput::Dng).then(|| {
                         RawSamples16::new(PixelSize::new(16, 12), Arc::new(OwnedPixels(vec![7; 16 * 12 * 2])))
                             .expect("размер совпал")
@@ -483,12 +529,16 @@ fn the_detail_lines_hold_every_shot_with_its_times_and_the_reserved_render_place
         .into_iter()
         .flat_map(|stage| stage["items"].as_array().cloned().unwrap_or_default())
         .collect();
+    // Выбор кадра дошёл от рендера до отчёта: ровно показанный кадр, задержка ≈ заданных 80 мс (допуск на смещение часов).
+    assert_eq!(items[0]["frame_summary"]["exact"], 12);
+    let max_delay = items[0]["frame_summary"]["max_press_to_frame_ms"]
+        .as_f64()
+        .expect("задержка измерена");
+    assert!((79.0..=81.0).contains(&max_delay), "{}", items[0]);
     assert!(
-        items[0]["frame_choice_note"]
-            .as_str()
-            .is_some_and(|note| note.contains("FrameChoice"))
+        items[0]["render_still_detail"].is_null(),
+        "рендер ПК диагностику снимков не публикует"
     );
-    assert!(items[0]["render_still_detail"].is_null());
     let shots: Vec<&serde_json::Value> = items.iter().filter(|item| item["request"].is_u64()).collect();
     assert_eq!(shots.len(), 12);
     for shot in shots {
@@ -496,7 +546,10 @@ fn the_detail_lines_hold_every_shot_with_its_times_and_the_reserved_render_place
             shot["secured_after_ms"].is_u64() && shot["saved_after_ms"].is_u64(),
             "{shot}"
         );
-        assert!(shot["frame_choice"].is_null());
+        assert_eq!(shot["frame_choice"]["kind"], "exact", "{shot}");
+        let delay = shot["press_to_frame_ms"].as_f64().expect("задержка снимка");
+        assert!((79.0..=81.0).contains(&delay), "{shot}");
+        assert_eq!(shot["shown_before_press_ms"], 10.0);
     }
 }
 
@@ -598,6 +651,47 @@ fn a_failure_with_raw_switched_on_hands_the_setting_back_off() {
 }
 
 #[test]
+fn a_render_that_substitutes_the_frame_fails_the_run_naming_the_share_and_the_evicted_ring() {
+    let render = RenderBehaviour {
+        choice: ResponderChoice {
+            latency_ms: 80,
+            substituted: Some(still_contract::frame_choice::SubstitutionReason::ShownFrameEvicted),
+        },
+        ..RenderBehaviour::default()
+    };
+
+    let run = run_capture(capture_config(|_| {}), real_stand(), render, Picture::Live);
+
+    assert_eq!(run.result["status"], "failed", "{}", run.result);
+    let error = run.result["error"].as_str().expect("текст ошибки");
+    assert!(error.contains("точно показанный кадр взят у 0 из 12"), "{error}");
+    assert!(error.contains("вытеснен из кольца у 12"), "{error}");
+    assert_eq!(run.result["report"]["frames"]["evicted"], 12);
+}
+
+#[test]
+fn a_render_that_picks_a_frame_far_in_the_past_fails_the_run_with_the_measured_delay() {
+    let render = RenderBehaviour {
+        choice: ResponderChoice {
+            latency_ms: 400,
+            substituted: None,
+        },
+        ..RenderBehaviour::default()
+    };
+
+    let run = run_capture(capture_config(|_| {}), real_stand(), render, Picture::Live);
+
+    assert_eq!(run.result["status"], "failed", "{}", run.result);
+    let error = run.result["error"].as_str().expect("текст ошибки");
+    assert!(
+        error.contains("задержка «нажатие → начало экспозиции кадра» до 40"),
+        "{error}"
+    );
+    let max_delay = run.result["report"]["frames"]["p2f_max_ms"].as_f64().expect("задержка");
+    assert!((399.0..=401.0).contains(&max_delay), "{max_delay}");
+}
+
+#[test]
 fn a_slow_capture_makes_the_screen_refuse_extra_burst_presses_and_the_accounting_still_closes() {
     // «Кадр захвачен» приходит через 250 мс, нажатия идут каждые 100 мс: затвор занят, экран отказывает сам.
     let render = RenderBehaviour {
@@ -605,7 +699,9 @@ fn a_slow_capture_makes_the_screen_refuse_extra_burst_presses_and_the_accounting
         ..RenderBehaviour::default()
     };
 
-    let run = run_capture(capture_config(|_| {}), real_stand(), render, Picture::Live);
+    // Отказов экрана тут десять минус принятые: порог (по умолчанию 3) поднят, чтобы судить именно учёт.
+    let config = capture_config(|capture| capture.burst.max_refused_presses = 9);
+    let run = run_capture(config, real_stand(), render, Picture::Live);
 
     assert_eq!(run.result["status"], "passed", "{}", run.result);
     let burst = &run.result["report"]["burst"];

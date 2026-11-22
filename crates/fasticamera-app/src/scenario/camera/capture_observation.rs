@@ -3,14 +3,19 @@
 //! Исполнитель шагов (`capture_runner`, `capture_burst`) — чистый автомат над этими срезами: ему не нужны ни
 //! маршрутизатор, ни экран, и его можно гонять в тестах по заранее заготовленным наблюдениям.
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 use camera_screen::settings::{AspectRatio, RawCapture};
 use camera_screen::shutter::{PrimaryFormat, ShotRequest};
 use serde::Serialize;
 use shell_contract::clock::MonotonicNanos;
+use still_contract::frame_choice::FrameChoice;
+use still_contract::plan::StillId;
 
+use super::capture_frame_timing::{ClockBridge, FrameTiming};
 use super::capture_report::{ShotOutcome, ShotRecord};
+use crate::still_choice_log::ChoiceEntry;
 use crate::still_phase_log::{PhaseEntry, PhaseKind};
 
 /// Накопительные счётчики видоискателя, важные для «без пропусков во время серии».
@@ -99,6 +104,8 @@ pub struct CaptureObservation<'a> {
     pub live: LiveCounters,
     /// Сервис снимка настоящий (иначе прогон теряет смысл).
     pub mode_is_real: bool,
+    /// Мост часов `BOOTTIME`↔`MONOTONIC` для перевода метки сенсора в момент нажатия.
+    pub clock: ClockBridge,
 }
 
 /// Собранные фазы службы записи за прогон (дополняется порциями журнала).
@@ -106,9 +113,22 @@ pub struct CaptureObservation<'a> {
 pub struct PhaseBook {
     entries: Vec<PhaseEntry>,
     lost: u64,
+    /// Какой кадр выбрал рендер для каждого снимка (по номеру снимка службы).
+    choices: HashMap<StillId, FrameChoice>,
 }
 
 impl PhaseBook {
+    /// Запоминает выборы кадра из журнала форвардера (повтор той же записи безвреден).
+    pub fn absorb_choices(&mut self, entries: Vec<ChoiceEntry>) {
+        for entry in entries {
+            self.choices.insert(entry.still, entry.choice);
+        }
+    }
+
+    pub fn choice_of(&self, still: StillId) -> Option<FrameChoice> {
+        self.choices.get(&still).copied()
+    }
+
     pub fn extend(&mut self, new_entries: Vec<PhaseEntry>, lost: u64) {
         self.entries.extend(new_entries);
         self.lost += lost;
@@ -157,6 +177,7 @@ pub fn shot_record(
     request: &ShotRequest,
     pressed_at: Instant,
     book: &PhaseBook,
+    clock: &ClockBridge,
 ) -> ShotRecord {
     let secured = book.secured_of(request.request.0);
     let terminal = book.terminal_of(request.request.0);
@@ -172,12 +193,20 @@ pub fn shot_record(
             secured: secured.is_some(),
         },
     };
+    let still = secured.or(terminal).map(|entry| entry.still);
+    let (choice, unknown_why) = match still {
+        Some(still) => (
+            book.choice_of(still),
+            "рендер не сообщил выбор этого снимка (нет захвата) или журнал его вытеснил",
+        ),
+        None => (None, "служба не назвала номер снимка"),
+    };
     let saved_at = terminal.filter(|entry| matches!(entry.kind, PhaseKind::Saved { .. }));
     ShotRecord {
         number,
         step,
         request: request.request.0,
-        still: secured.or(terminal).map(|entry| entry.still.0),
+        still: still.map(|id| id.0),
         raw_expected,
         raw_requested: request.raw == RawCapture::On,
         format: match request.primary_format {
@@ -189,7 +218,7 @@ pub fn shot_record(
         secured_after_ms: secured.map(|entry| millis_between(pressed_at, entry.at)),
         saved_after_ms: saved_at.map(|entry| millis_between(pressed_at, entry.at)),
         outcome,
-        frame_choice: None,
+        frame: FrameTiming::of(choice, unknown_why, request.pressed_at, clock),
     }
 }
 

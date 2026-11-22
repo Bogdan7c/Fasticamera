@@ -5,9 +5,10 @@ use std::time::Duration;
 
 use camera_screen::settings::RawCapture;
 
+use super::super::capture_frame_timing::FrameChoiceView;
 use super::super::capture_plan::planned_steps;
 use super::super::capture_report::ShotOutcome;
-use super::super::capture_test_support::{Behaviour, World, drive, fast_config};
+use super::super::capture_test_support::{Behaviour, ChoicePolicy, World, drive, fast_config};
 use super::*;
 
 const TICK: Duration = Duration::from_millis(10);
@@ -65,7 +66,17 @@ fn a_healthy_run_takes_one_heif_then_heif_with_dng_then_a_burst_and_leaves_raw_o
     assert_eq!(records.shots[0].aspect, "4:3");
     assert_eq!(records.shots[0].zoom_milli, 1_000);
     assert_eq!(records.shots[0].format, "heif");
-    assert!(records.shots.iter().all(|shot| shot.frame_choice.is_none()));
+    // Рендер мира выбирает ровно показанный кадр: нажатие − начало экспозиции = 80 мс, показан за 10 мс до нажатия.
+    for shot in &records.shots {
+        assert_eq!(
+            shot.frame.frame_choice,
+            FrameChoiceView::Exact,
+            "снимок {}",
+            shot.number
+        );
+        assert_eq!(shot.frame.press_to_frame_ms, Some(80.0), "снимок {}", shot.number);
+        assert_eq!(shot.frame.shown_before_press_ms, Some(10.0), "снимок {}", shot.number);
+    }
 }
 
 #[test]
@@ -270,4 +281,35 @@ fn losing_the_real_service_mid_run_fails_the_run() {
         "{state:?}"
     );
     assert_eq!(world.presses, 0, "до нажатий дело не дошло");
+}
+
+#[test]
+fn a_substituting_render_shows_up_in_every_shot_with_its_reason_and_no_shown_time() {
+    let (_world, state, records) = run(Behaviour {
+        choice: ChoicePolicy::Substituted {
+            latency_ms: 130,
+            reason: still_contract::frame_choice::SubstitutionReason::ShownFrameEvicted,
+        },
+        ..Behaviour::default()
+    });
+
+    assert_eq!(state, RunnerState::AllDone);
+    for shot in &records.shots {
+        assert!(shot.frame.is_evicted_substitution(), "снимок {}", shot.number);
+        assert_eq!(shot.frame.press_to_frame_ms, Some(130.0));
+        assert_eq!(shot.frame.shown_before_press_ms, None);
+    }
+}
+
+#[test]
+fn a_render_that_never_reports_a_choice_leaves_every_shot_unknown_without_inventing_numbers() {
+    let (_world, _state, records) = run(Behaviour {
+        choice: ChoicePolicy::Missing,
+        ..Behaviour::default()
+    });
+
+    for shot in &records.shots {
+        assert!(!shot.frame.choice_known(), "снимок {}", shot.number);
+        assert_eq!(shot.frame.press_to_frame_ms, None);
+    }
 }

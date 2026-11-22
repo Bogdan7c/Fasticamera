@@ -80,3 +80,17 @@ fn screen_timeouts_not_above_service_timeouts_are_rejected_at_the_junction() {
         "{saving}"
     );
 }
+
+#[test]
+fn render_target_timeout_is_checked_against_the_service_queue_at_the_junction() {
+    // Рендер ждёт цель 10 с, а десятый снимок очереди ждёт её ≈ 18 с: конфиг отвергается целиком.
+    let error =
+        RuntimeConfig::from_json(&config_with(r#","render":{"still":{"target_timeout_ms":10000}}"#)).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            ConfigError::Photo(PhotoConfigError::RenderTargetTimeoutBelowQueueWait { .. })
+        ),
+        "{error}"
+    );
+}

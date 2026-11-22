@@ -5,7 +5,7 @@
 //! а если приложение взяло билет и не передало службе (например, не ушёл план рендеру), билет
 //! освободит слот при выбрасывании. Поэтому «утечка» слота невозможна без утечки самого билета.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -36,11 +36,29 @@ impl From<AdmissionRefused> for StillFailure {
     }
 }
 
+/// Что учёт знает об одном допущенном снимке.
+#[derive(Default)]
+struct AdmittedStill {
+    /// Фаза `Secured` экрану уже отправлена (второй раз её не шлёт никто).
+    secured_announced: bool,
+}
+
 /// Список снимков в работе и признак «служба закрыта» под одним замком.
 #[derive(Default)]
 struct AdmissionBook {
-    admitted: HashSet<StillId>,
+    admitted: HashMap<StillId, AdmittedStill>,
     closed: bool,
+}
+
+/// Чем кончилась попытка объявить «кадр захвачен».
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecuredAnnouncement {
+    /// Снимок в работе, фаза отправлена.
+    Announced,
+    /// Фаза по этому снимку уже отправлялась (повторный `Secured`).
+    AlreadyAnnounced,
+    /// Снимок не в работе: слот уже освобождён (итог был) или номер не допускался.
+    NotPending,
 }
 
 /// Владелец учёта допуска.
@@ -72,12 +90,12 @@ impl StillAdmission {
             let mut book = self.book();
             if book.closed {
                 Err(AdmissionRefused::ServiceStopped)
-            } else if book.admitted.contains(&id) {
+            } else if book.admitted.contains_key(&id) {
                 Err(AdmissionRefused::DuplicateId(id))
             } else if book.admitted.len() >= self.limit {
                 Err(AdmissionRefused::QueueFull { limit: self.limit })
             } else {
-                book.admitted.insert(id);
+                book.admitted.insert(id, AdmittedStill::default());
                 Ok(())
             }
         };
@@ -94,6 +112,25 @@ impl StillAdmission {
                 Err(refused)
             }
         }
+    }
+
+    /// Объявляет «кадр захвачен»: вызывает `report` ровно один раз за снимок, пока его слот занят.
+    ///
+    /// `report` выполняется ПОД замком учёта. Это нужно ради порядка: слот освобождается раньше
+    /// итоговой фазы (см. `Worker::conclude`), поэтому итог снимка не может обогнать уже начатую
+    /// отправку `Secured` — он ждёт замка. Цена: `report` обязан быть коротким и не звать службу
+    /// обратно (контракт `StillPhaseSink`).
+    pub fn announce_secured(&self, id: StillId, report: impl FnOnce()) -> SecuredAnnouncement {
+        let mut book = self.book();
+        let Some(entry) = book.admitted.get_mut(&id) else {
+            return SecuredAnnouncement::NotPending;
+        };
+        if entry.secured_announced {
+            return SecuredAnnouncement::AlreadyAnnounced;
+        }
+        entry.secured_announced = true;
+        report();
+        SecuredAnnouncement::Announced
     }
 
     /// Закрывает допуск: новые снимки получают [`AdmissionRefused::ServiceStopped`].

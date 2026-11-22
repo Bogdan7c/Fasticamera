@@ -8,6 +8,8 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::capture_burst::BurstRecord;
+use super::capture_frame_timing::{FrameSummary, FrameTiming};
+use super::capture_render_still::StillDiagnosticsDelta;
 use super::detail::to_value;
 use crate::capture_backend::CaptureMode;
 use crate::capture_scenario_config::FullFrameSize;
@@ -49,9 +51,9 @@ pub struct ShotRecord {
     /// От нажатия до «сохранено», мс.
     pub saved_after_ms: Option<u64>,
     pub outcome: ShotOutcome,
-    /// Как выбран кадр (`FrameChoice`: точный или замена с причиной). Службы записи пока не отдаёт его приложению
-    /// (он живёт в событии проявления), поэтому `null`; причина — `frame_choice_note` отчёта.
-    pub frame_choice: Option<Value>,
+    /// Какой кадр взят и с какой задержкой (`frame_choice`, `press_to_frame_ms`, `shown_before_press_ms`).
+    #[serde(flatten)]
+    pub frame: FrameTiming,
 }
 
 /// Итог одного шага плана.
@@ -92,18 +94,19 @@ pub struct CaptureObservationReport {
     pub phase_entries_lost: u64,
     /// Приращение учёта команд снимка в рендере; `None` — рендер не прочитан.
     pub render_still: Option<RenderStillDelta>,
-    /// Место под подробную диагностику снимков рендера (кольцо кадров, выбор, проявление): её добавит главный
-    /// агент, когда рендер начнёт её публиковать. Пока всегда `None`.
-    pub render_still_detail: Option<Value>,
+    /// Приращение диагностики снимков рендера за прогон (`backend.still`): выбор кадра по причинам, потеря GPU,
+    /// отказы. `None` — рендер недоступен или не публикует диагностику снимков.
+    pub render_still_detail: Option<StillDiagnosticsDelta>,
     /// Полный кадр основной камеры из конфига: ПК по нему ждёт размеры файлов 4:3 при 1×.
     pub full_frame: FullFrameSize,
 }
 
-/// Пояснение к `ShotRecord::frame_choice`.
-pub const FRAME_CHOICE_NOTE: &str =
-    "служба записи не отдаёт FrameChoice приложению: поле null до диагностики рендера (14c)";
-
 impl CaptureObservationReport {
+    /// Сводка «снимок без задержки» по снимкам прогона.
+    pub fn frame_summary(&self) -> FrameSummary {
+        FrameSummary::of(self.shots.iter().map(|shot| &shot.frame))
+    }
+
     /// Сколько снимков сохранено.
     pub fn saved_count(&self) -> usize {
         self.shots
@@ -139,6 +142,7 @@ impl CaptureObservationReport {
             "shots": self.shots.iter().map(compact_shot).collect::<Vec<_>>(),
             "burst": self.burst.as_ref().map(BurstRecord::summary),
             "phase_entries_lost": self.phase_entries_lost,
+            "frames": self.frame_summary().compact(),
             "render_still": self.render_still.map(|delta| to_value(&delta)),
             "full_frame": to_value(&self.full_frame),
             "uris": self.uris(),
@@ -150,8 +154,8 @@ impl CaptureObservationReport {
         let mut items = vec![json!({
             "run_failure": self.run_failure,
             "unfinished": self.unfinished,
-            "frame_choice_note": FRAME_CHOICE_NOTE,
-            "render_still_detail": self.render_still_detail,
+            "frame_summary": to_value(&self.frame_summary()),
+            "render_still_detail": self.render_still_detail.as_ref().map(to_value),
         })];
         items.extend(self.steps.iter().map(to_value));
         items.extend(self.burst.iter().map(to_value));

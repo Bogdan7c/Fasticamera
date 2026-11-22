@@ -148,12 +148,40 @@ fn burst_accounting_must_add_up_and_every_failure_is_named() {
     });
     assert!(has(&failed, "серия: сорвалось снимков 1"), "{failed:?}");
 
-    let too_few = violations_of(|report| {
+    // Принято меньше, чем нажато: явные отказы допустимы, пока их не больше порога (`max_refused_presses` = 3).
+    let tolerated = violations_of(|report| {
         let burst = report.burst.as_mut().unwrap();
-        burst.saved = 0;
-        burst.accepted_by_service = 0;
+        burst.refused_by_screen = 3;
+        burst.screen_actions_rejected = 3;
+        burst.accepted_by_service = 7;
+        burst.submitted = 7;
+        burst.saved = 7;
+        report.shots.truncate(9);
     });
-    assert!(has(&too_few, "сохранено 0, нужно не меньше 1"), "{too_few:?}");
+    assert!(!has(&tolerated, "отказано нажатий"), "{tolerated:?}");
+
+    let too_many = violations_of(|report| {
+        let burst = report.burst.as_mut().unwrap();
+        burst.refused_by_screen = 3;
+        burst.rejected_by_service = 1;
+        burst.screen_actions_rejected = 3;
+    });
+    assert!(
+        has(&too_many, "отказано нажатий 4 (экран 3, служба 1), допустимо 3"),
+        "{too_many:?}"
+    );
+
+    // Все принятые обязаны быть сохранены, даже если отказов в пределах порога.
+    let accepted_not_saved = violations_of(|report| {
+        let burst = report.burst.as_mut().unwrap();
+        burst.accepted_by_service = 10;
+        burst.saved = 9;
+        burst.unfinished = 1;
+    });
+    assert!(
+        has(&accepted_not_saved, "принято службой 10, а сохранено 9"),
+        "{accepted_not_saved:?}"
+    );
 }
 
 #[test]
@@ -243,4 +271,113 @@ fn a_run_with_a_failed_single_step_is_judged_on_the_runner_failure_without_extra
         "{violations:?}"
     );
     assert!(!has(&violations, "учёта нет"), "{violations:?}");
+}
+
+// ---- «Снимок без задержки затвора» ----------------------------------------------------------------------------
+
+use super::super::capture_frame_timing::FrameChoiceView;
+use super::super::capture_render_still::StillDiagnosticsDelta;
+use still_contract::frame_choice::SubstitutionReason;
+
+fn substitute(shot: &mut super::super::capture_report::ShotRecord, reason: SubstitutionReason) {
+    shot.frame.frame_choice = FrameChoiceView::Substituted { reason };
+    shot.frame.shown_before_press_ms = None;
+}
+
+#[test]
+fn a_healthy_run_has_exact_frames_with_the_expected_delay() {
+    let report = healthy_report();
+    let summary = report.frame_summary();
+    assert_eq!((summary.exact, summary.choices_unknown), (12, 0));
+    assert_eq!(summary.max_press_to_frame_ms, Some(80.0));
+}
+
+#[test]
+fn too_few_exact_frames_fail_with_the_share_and_the_threshold() {
+    // Порог 0,9: 12 снимков, 2 замены → доля 0,83.
+    let violations = violations_of(|report| {
+        substitute(&mut report.shots[0], SubstitutionReason::PresentationTimingUnknown);
+        substitute(&mut report.shots[1], SubstitutionReason::PresentationTimingUnknown);
+    });
+    assert!(
+        has(&violations, "взят у 10 из 12 снимков (доля 0.83), нужна не меньше 0.90"),
+        "{violations:?}"
+    );
+    // Одна замена из 12 — 0,92: в пределах порога.
+    let within =
+        violations_of(|report| substitute(&mut report.shots[0], SubstitutionReason::PresentationTimingUnknown));
+    assert!(within.is_empty(), "{within:?}");
+}
+
+#[test]
+fn a_late_frame_fails_with_the_max_the_median_and_the_limit() {
+    let violations = violations_of(|report| report.shots[3].frame.press_to_frame_ms = Some(212.5));
+    assert!(
+        has(&violations, "до 212.5 мс (медиана 80.0), допустимо 150.0"),
+        "{violations:?}"
+    );
+    // Ровно на пороге — не нарушение.
+    let at_limit = violations_of(|report| report.shots[3].frame.press_to_frame_ms = Some(150.0));
+    assert!(at_limit.is_empty(), "{at_limit:?}");
+}
+
+#[test]
+fn a_run_whose_delay_was_never_measured_fails_with_the_clock_reason() {
+    let violations = violations_of(|report| {
+        for shot in &mut report.shots {
+            shot.frame.press_to_frame_ms = None;
+            shot.frame.press_to_frame_unavailable = Some("нет смещения часов: errno 1".to_owned());
+        }
+    });
+    assert!(
+        has(
+            &violations,
+            "задержку нажатия не измерили ни у одного снимка: нет смещения часов: errno 1"
+        ),
+        "{violations:?}"
+    );
+}
+
+#[test]
+fn shots_without_a_known_choice_are_named_not_silently_skipped() {
+    let violations = violations_of(|report| {
+        report.shots[0].frame = super::super::capture_frame_timing::FrameTiming::of(
+            None,
+            "нет записи",
+            shell_contract::clock::MonotonicNanos::from_nanos(0),
+            &super::super::capture_frame_timing::ClockBridge::Unavailable { reason: "x".to_owned() },
+        );
+    });
+    assert!(
+        has(&violations, "выбор кадра неизвестен у снимков: 1 из 12"),
+        "{violations:?}"
+    );
+}
+
+#[test]
+fn an_evicted_shown_frame_fails_the_ring_depth_check_from_either_source() {
+    let by_journal = violations_of(|report| substitute(&mut report.shots[0], SubstitutionReason::ShownFrameEvicted));
+    assert!(has(&by_journal, "вытеснен из кольца у 1 снимков"), "{by_journal:?}");
+
+    let by_render = violations_of(|report| {
+        let mut delta = StillDiagnosticsDelta::default();
+        delta.picks.substituted_evicted = 2;
+        report.render_still_detail = Some(delta);
+    });
+    assert!(has(&by_render, "вытеснен из кольца у 2 снимков"), "{by_render:?}");
+}
+
+#[test]
+fn a_lost_still_gpu_fails_the_run() {
+    let violations = violations_of(|report| {
+        report.render_still_detail = Some(StillDiagnosticsDelta {
+            gpu_lost: 1,
+            gpu_lost_by_deadline: 1,
+            ..StillDiagnosticsDelta::default()
+        });
+    });
+    assert!(
+        has(&violations, "GPU снимков объявлен потерянным 1 раз (по сроку 1)"),
+        "{violations:?}"
+    );
 }

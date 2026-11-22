@@ -8,17 +8,31 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::sync::{Mutex, PoisonError};
+use std::time::Instant;
 
 use still_contract::develop::DevelopEvent;
 
 use super::admission::AdmissionTicket;
 
+/// Момент, когда команда попала в очередь службы. Сроки снимков судятся по нему, а не по моменту,
+/// когда занятый рабочий поток дошёл до команды: иначе медленная запись файлов прошлого снимка
+/// заваливала бы следующие по сроку, хотя они пришли вовремя.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct ArrivedAt(pub(super) Instant);
+
+impl ArrivedAt {
+    /// Метка «сейчас» (ставится под замком очереди прямо перед отправкой: порядок меток = порядок очереди).
+    fn now() -> Self {
+        Self(Instant::now())
+    }
+}
+
 /// Команда рабочему потоку.
 pub(super) enum Command {
     /// Снимок допущен: служба берёт билет и начинает ждать кадр.
-    BeginStill(AdmissionTicket),
+    BeginStill(AdmissionTicket, ArrivedAt),
     /// Событие проявления от рендера.
-    Develop(DevelopEvent),
+    Develop(DevelopEvent, ArrivedAt),
     /// Остановиться: незаконченные снимки срываются.
     Shutdown,
 }
@@ -66,10 +80,12 @@ impl Inbox {
             self.queued_events.fetch_sub(1, Ordering::AcqRel);
             return Err(InboxRejection::Full);
         }
-        self.sender.send(Command::Develop(event)).map_err(|_| {
-            self.queued_events.fetch_sub(1, Ordering::AcqRel);
-            InboxRejection::Stopped
-        })
+        self.sender
+            .send(Command::Develop(event, ArrivedAt::now()))
+            .map_err(|_| {
+                self.queued_events.fetch_sub(1, Ordering::AcqRel);
+                InboxRejection::Stopped
+            })
     }
 
     /// Рабочий поток вынул событие из очереди: место освобождается.
@@ -84,7 +100,7 @@ impl Inbox {
             return Err(InboxRejection::Stopped);
         }
         self.sender
-            .send(Command::BeginStill(ticket))
+            .send(Command::BeginStill(ticket, ArrivedAt::now()))
             .map_err(|_| InboxRejection::Stopped)
     }
 

@@ -47,8 +47,10 @@ mod ae_trace_verdict;
 mod backend_summary;
 mod capture;
 mod capture_burst;
+mod capture_frame_timing;
 mod capture_observation;
 mod capture_plan;
+mod capture_render_still;
 mod capture_report;
 mod capture_runner;
 #[cfg(test)]

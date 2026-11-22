@@ -3,8 +3,8 @@
 use std::ffi::c_void;
 use std::io::Write;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use camera_contract::ids::CameraId;
@@ -21,6 +21,57 @@ use shell_contract::surface::{NativeSurface, PlatformWindow, SurfaceGeneration};
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Искусственная задержка платформенного вызова (изображает медленный диск и кодер).
+#[derive(Default)]
+pub struct Latency(Mutex<Duration>);
+
+impl Latency {
+    pub fn set(&self, delay: Duration) {
+        *lock(&self.0) = delay;
+    }
+
+    /// Блокирует вызывающий поток на заданное время (ничего, если задержка не включена).
+    fn stall(&self) {
+        let delay = *lock(&self.0);
+        if !delay.is_zero() {
+            std::thread::sleep(delay);
+        }
+    }
+}
+
+/// Задвижка: пока закрыта, вызов платформы стоит (изображает зависший вызов). Открыта по умолчанию.
+pub struct Gate {
+    closed: Mutex<bool>,
+    opened: Condvar,
+}
+
+impl Default for Gate {
+    fn default() -> Self {
+        Self {
+            closed: Mutex::new(false),
+            opened: Condvar::new(),
+        }
+    }
+}
+
+impl Gate {
+    pub fn close(&self) {
+        *lock(&self.closed) = true;
+    }
+
+    pub fn open(&self) {
+        *lock(&self.closed) = false;
+        self.opened.notify_all();
+    }
+
+    fn pass(&self) {
+        let mut closed = lock(&self.closed);
+        while *closed {
+            closed = self.opened.wait(closed).unwrap_or_else(PoisonError::into_inner);
+        }
+    }
 }
 
 /// Что стало с черновиком.
@@ -88,9 +139,20 @@ pub struct FakeStore {
     fail_create_extension: Mutex<Option<String>>,
     fail_publish_extension: Mutex<Option<String>>,
     panic_on_create: AtomicBool,
+    /// Задержка `create_pending`.
+    pub create_latency: Latency,
+    /// Пока закрыта, `create_pending` стоит (рабочий поток службы «завис» в платформе).
+    pub create_gate: Gate,
+    /// Сколько раз вызвали `create_pending` (считается ДО ожидания у задвижки).
+    create_calls: AtomicUsize,
 }
 
 impl FakeStore {
+    /// Сколько раз платформу уже просили создать черновик (в том числе застрявшие у задвижки).
+    pub fn create_calls(&self) -> usize {
+        self.create_calls.load(Ordering::SeqCst)
+    }
+
     /// Следующее создание черновика паникует (изображает баг в платформенном слое).
     pub fn panic_on_create(&self) {
         self.panic_on_create.store(true, Ordering::SeqCst);
@@ -109,6 +171,9 @@ impl FakeStore {
 
 impl MediaStoreService for FakeStore {
     fn create_pending(&self, request: &PendingMediaRequest) -> Result<Box<dyn PendingMedia>, MediaStoreError> {
+        self.create_calls.fetch_add(1, Ordering::SeqCst);
+        self.create_gate.pass();
+        self.create_latency.stall();
         assert!(
             !self.panic_on_create.load(Ordering::SeqCst),
             "тест: паника платформенного слоя"
@@ -207,6 +272,42 @@ pub struct FakeHeif {
     fail_open: AtomicBool,
     withhold_surface: AtomicBool,
     fail_finish: AtomicBool,
+    /// Задержка `open`.
+    pub open_latency: Latency,
+    /// Задержка `finish`.
+    pub finish_latency: Latency,
+    /// Сколько кодеров открыто сейчас и сколько было открыто одновременно за всё время.
+    gauge: Arc<EncoderGauge>,
+}
+
+/// Учёт одновременно открытых кодеров.
+#[derive(Default)]
+pub struct EncoderGauge {
+    open_now: AtomicUsize,
+    peak: AtomicUsize,
+}
+
+impl EncoderGauge {
+    fn opened(&self) {
+        let now = self.open_now.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(now, Ordering::SeqCst);
+    }
+
+    fn closed(&self) {
+        self.open_now.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl FakeHeif {
+    /// Сколько кодеров открыто прямо сейчас.
+    pub fn open_now(&self) -> usize {
+        self.gauge.open_now.load(Ordering::SeqCst)
+    }
+
+    /// Наибольшее число одновременно открытых кодеров за всё время.
+    pub fn peak_open(&self) -> usize {
+        self.gauge.peak.load(Ordering::SeqCst)
+    }
 }
 
 impl FakeHeif {
@@ -238,11 +339,15 @@ impl HeifEncoderService for FakeHeif {
         target: &dyn PendingMedia,
         settings: &HeifEncodeSettings,
     ) -> Result<Box<dyn HeifSurfaceEncoder>, EncodeError> {
+        self.open_latency.stall();
         if self.fail_open.load(Ordering::SeqCst) {
             return Err(EncodeError::Platform("кодер занят".to_owned()));
         }
         lock(&self.opens).push((settings.clone(), target.uri().to_owned()));
+        self.gauge.opened();
         Ok(Box::new(FakeEncoder {
+            gauge: Arc::clone(&self.gauge),
+            finish_delay: *lock(&self.finish_latency.0),
             surface: (!self.withhold_surface.load(Ordering::SeqCst))
                 .then(|| NativeSurface::new(SurfaceGeneration::new(1), Box::new(FakeWindow))),
             events: Arc::clone(&self.events),
@@ -252,6 +357,8 @@ impl HeifEncoderService for FakeHeif {
 }
 
 struct FakeEncoder {
+    gauge: Arc<EncoderGauge>,
+    finish_delay: Duration,
     surface: Option<NativeSurface>,
     events: Arc<Mutex<Vec<EncoderEvent>>>,
     finish_fails: bool,
@@ -263,6 +370,9 @@ impl HeifSurfaceEncoder for FakeEncoder {
     }
 
     fn finish(self: Box<Self>, timeout: Duration) -> Result<(), EncodeError> {
+        if !self.finish_delay.is_zero() {
+            std::thread::sleep(self.finish_delay);
+        }
         lock(&self.events).push(EncoderEvent::Finished(timeout));
         if self.finish_fails {
             return Err(EncodeError::TimedOut(timeout));
@@ -272,6 +382,13 @@ impl HeifSurfaceEncoder for FakeEncoder {
 
     fn abort(self: Box<Self>) {
         lock(&self.events).push(EncoderEvent::Aborted);
+    }
+}
+
+impl Drop for FakeEncoder {
+    fn drop(&mut self) {
+        // Кодер закрыт (`finish`/`abort` съедают `self`): место освобождается ровно здесь.
+        self.gauge.closed();
     }
 }
 
@@ -325,6 +442,8 @@ pub struct FakeFormats {
     fail_exif: AtomicBool,
     exif_carriers: Mutex<Vec<RotationCarrier>>,
     dng_models: Mutex<Vec<String>>,
+    /// Задержка `write_dng` (запись ≈ 25 МБ).
+    pub dng_latency: Latency,
 }
 
 impl FakeFormats {
@@ -358,6 +477,7 @@ impl FakeFormats {
 
 impl StillFileFormats for FakeFormats {
     fn write_dng(&self, inputs: &DngInputs<'_>, out: &mut dyn Write) -> Result<(), DngError> {
+        self.dng_latency.stall();
         lock(&self.dng_models).push(inputs.camera.model.clone());
         if self.fail_dng.load(Ordering::SeqCst) {
             return Err(DngError::InvalidInput("тест: кадр не годится".to_owned()));

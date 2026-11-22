@@ -202,7 +202,7 @@ impl BurstState {
                 .map_or(self.started, |mark| mark.instant);
             let number = first_number.saturating_add(u32::try_from(offset).unwrap_or(u32::MAX));
             // Серия снимает без RAW: экран обязан был вернуть настройку после шага «HEIF + DNG».
-            shots.push(shot_record(number, step, false, request, pressed_at, book));
+            shots.push(shot_record(number, step, false, request, pressed_at, book, &obs.clock));
         }
         let count = |wanted: fn(&ShotOutcome) -> bool| -> u32 {
             u32::try_from(shots.iter().filter(|shot| wanted(&shot.outcome)).count()).unwrap_or(u32::MAX)

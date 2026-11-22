@@ -97,13 +97,16 @@ fn event_queue_overflow_is_an_explicit_error_not_a_block() {
         ..fast_config()
     });
     rig.admit(1);
-    // Получатель фаз «застрял»: рабочий поток встаёт внутри `report_phase(Secured)`.
-    rig.phases.hold();
+    // Хранилище «зависло»: рабочий поток встаёт внутри `create_pending` при обработке `Secured`.
+    rig.store.create_gate.close();
     rig.send(DevelopEvent::Secured {
         facts: service_support::facts_for(1, PrimaryFormat::Heif, RawOutput::Skip),
         raw: None,
     });
-    rig.phases.wait_secured(StillId(1), service_support::WAIT);
+    service_support::wait_until(
+        "рабочий поток взял Secured и застрял в хранилище",
+        || rig.store.create_calls() == 1,
+    );
 
     // Одно событие помещается в очередь, второе — отказ, и вызов вернулся сразу.
     let first = rig
@@ -116,6 +119,33 @@ fn event_queue_overflow_is_an_explicit_error_not_a_block() {
     assert_eq!(first, Ok(()));
     assert_eq!(second, Err(DevelopSubmitError::QueueFull));
     assert_eq!(rig.handle.stats().rejected_events, 1);
-    rig.phases.release();
+    rig.store.create_gate.open();
     rig.wait_final(1);
+}
+
+#[test]
+fn announce_secured_runs_the_report_once_and_only_while_the_slot_is_held() {
+    use photo_output::service::{SecuredAnnouncement, StillAdmission};
+    use std::cell::Cell;
+
+    let admission = StillAdmission::new(3);
+    let reports = Cell::new(0);
+    let announce = |id: u64| admission.announce_secured(StillId(id), || reports.set(reports.get() + 1));
+
+    // Номер не допускался: фазы нет, отчёт не вызван.
+    assert_eq!(announce(1), SecuredAnnouncement::NotPending);
+    assert_eq!(reports.get(), 0);
+
+    let ticket = admission.try_admit(StillId(1)).unwrap();
+    assert_eq!(announce(1), SecuredAnnouncement::Announced);
+    assert_eq!(announce(1), SecuredAnnouncement::AlreadyAnnounced);
+    assert_eq!(reports.get(), 1, "отчёт вызван ровно один раз");
+    // Объявление не владеет учётом: слот и счётчики допуска не тронуты.
+    assert_eq!((admission.pending_count(), admission.accepted_total()), (1, 1));
+
+    // Слот освобождён (итог снимка был): поздний Secured фазы не порождает.
+    drop(ticket);
+    assert_eq!(announce(1), SecuredAnnouncement::NotPending);
+    assert_eq!(reports.get(), 1);
+    assert_eq!((admission.pending_count(), admission.refused_total()), (0, 0));
 }
