@@ -10,6 +10,7 @@ use camera_contract::flash::FlashShotId;
 use camera_core::flash_status::FlashStillReport;
 use camera_screen::settings::{AspectRatio, FlashMode, RawCapture};
 use camera_screen::shutter::{PrimaryFormat, ShotRequest};
+use camera_screen::thumbnail::PictureTiming;
 use serde::Serialize;
 use shell_contract::clock::MonotonicNanos;
 use still_contract::frame_choice::FrameChoice;
@@ -163,9 +164,25 @@ pub struct PhaseBook {
     flash_routes: HashMap<StillId, FlashRouteEntry>,
     /// Итоги камеры по снимкам со вспышкой (по номеру снимка со вспышкой), 14d.
     flash_reports: HashMap<FlashShotId, FlashStillReport>,
+    /// Замер «нажатие → картинка» по номеру запроса экрана (14g): экран помнит только последний, поэтому
+    /// записываем каждый, как только он появился.
+    picture_timings: HashMap<u64, PictureTiming>,
 }
 
 impl PhaseBook {
+    /// Запоминает замер последней показанной картинки (повтор того же замера безвреден).
+    pub fn absorb_picture_timing(&mut self, timing: Option<PictureTiming>) {
+        if let Some(timing) = timing.filter(|timing| timing.shown_at.is_some()) {
+            self.picture_timings.insert(timing.shot.0, timing);
+        }
+    }
+
+    /// «Нажатие → картинка», мс (целые, округление вниз), если картинку этого снимка показали.
+    pub fn press_to_thumbnail_ms_of(&self, request: u64) -> Option<u64> {
+        let milliseconds = self.picture_timings.get(&request)?.press_to_picture_ms()?;
+        Some(milliseconds.max(0.0) as u64)
+    }
+
     /// Запоминает выборы кадра из журнала форвардера (повтор той же записи безвреден).
     pub fn absorb_choices(&mut self, entries: Vec<ChoiceEntry>) {
         for entry in entries {
@@ -301,6 +318,8 @@ pub fn shot_record(
         zoom_milli: (request.framing.ratio.value() * 1000.0).round().max(0.0) as u32,
         secured_after_ms: secured.map(|entry| millis_between(pressed_at, entry.at)),
         saved_after_ms: saved_at.map(|entry| millis_between(pressed_at, entry.at)),
+        // Картинку рисуют кадром ПОСЛЕ «сохранено»: время дописывает исполнитель в конце прогона.
+        press_to_thumbnail_ms: None,
         outcome,
         frame: FrameTiming::of(choice, unknown_why, request.pressed_at, clock),
     }

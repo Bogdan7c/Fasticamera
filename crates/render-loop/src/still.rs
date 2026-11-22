@@ -16,11 +16,20 @@ use camera_contract::flash::FlashStillFailure;
 use serde::Serialize;
 use still_contract::develop::{DevelopEvent, PrimaryTargetOffer};
 use still_contract::plan::{StillId, StillPlan};
+use still_contract::thumbnail::StillThumbnail;
 
 /// Куда рендер отдаёт события проявления. Реализация не блокирует поток рендера (инвариант 4 README):
 /// только постановка в очередь; переполнение — забота реализации (учёт), не ожидание.
 pub trait StillEventSink: Send + Sync {
+    /// Событие протокола проявления (ровно один итог на `Begin`, см. доку модуля).
     fn deliver(&self, event: DevelopEvent);
+
+    /// Миниатюра снимка (14g): маленькая копия в обычной памяти. НЕ итог снимка и не часть протокола
+    /// «ровно один итог»: приходит не больше одного раза на снимок и всегда РАНЬШЕ его итога
+    /// (рендер шлёт её до `PrimaryRendered`/`PrimaryReadback`), а может не прийти вовсе (сбой
+    /// уменьшения — снимок от этого не срывается). Метод обязательный: приёмник, которому миниатюра не
+    /// нужна, обязан явно решить, что с ней делать (учёт), а не потерять её молча.
+    fn deliver_thumbnail(&self, thumbnail: StillThumbnail);
 }
 
 /// Начать снимок.

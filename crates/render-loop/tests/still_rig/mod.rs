@@ -48,20 +48,48 @@ use shell_contract::clock::MonotonicNanos;
 use shell_contract::orientation::DeviceOrientation;
 use still_contract::develop::DevelopEvent;
 use still_contract::plan::{FrameSelection, PrimaryFormat, RawOutput, ShutterPress, StillId, StillOutputs, StillPlan};
+use still_contract::shot::StillRotation;
+use still_contract::thumbnail::StillThumbnail;
 
 /// Приёмник событий снимка.
 #[derive(Default)]
-pub struct Sink(pub Mutex<Vec<DevelopEvent>>);
+pub struct Sink(
+    pub Mutex<Vec<DevelopEvent>>,
+    pub Mutex<Vec<StillThumbnail>>,
+    /// Сколько миниатюр уже было у приёмника в момент прихода каждого итогового события (14g: миниатюра раньше итога).
+    pub Mutex<Vec<usize>>,
+);
 
 impl StillEventSink for Sink {
     fn deliver(&self, event: DevelopEvent) {
+        if event.is_final() {
+            let thumbnails_so_far = self.1.lock().unwrap_or_else(PoisonError::into_inner).len();
+            self.2
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(thumbnails_so_far);
+        }
         self.0.lock().unwrap_or_else(PoisonError::into_inner).push(event);
+    }
+
+    fn deliver_thumbnail(&self, thumbnail: StillThumbnail) {
+        self.1.lock().unwrap_or_else(PoisonError::into_inner).push(thumbnail);
     }
 }
 
 impl Sink {
     pub fn events(&self) -> std::sync::MutexGuard<'_, Vec<DevelopEvent>> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Миниатюры, пришедшие приёмнику (копии).
+    pub fn thumbnails(&self) -> Vec<StillThumbnail> {
+        self.1.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// Сколько миниатюр было у приёмника в момент итога (пусто, пока итога нет).
+    pub fn thumbnails_before_final(&self) -> Vec<usize> {
+        self.2.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
     pub fn finals(&self) -> usize {
@@ -341,6 +369,7 @@ pub fn photo_pipeline_rgba(
             params,
             crop: camera_contract::geometry::PixelRect { left: 0, top: 0, size },
             readback: RgbaReadback::NotNeeded,
+            rotation: StillRotation::None,
         })
         .expect("начало");
     loop {

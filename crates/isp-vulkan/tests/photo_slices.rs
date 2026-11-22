@@ -25,6 +25,7 @@ use photo_support::{
 use quality_support::{
     assert_no_validation_errors, extent, gpu_context_or_skip, max_rgb_difference, read_rgb, upload_plane,
 };
+use still_contract::shot::StillRotation;
 
 /// Линейный RGB камеры из проявителя совпадает с эталоном CPU бит в бит (как у стенда V4).
 const LINEAR_TOLERANCE: f32 = 0.0;
@@ -51,9 +52,13 @@ fn develop_collecting_linear(
         params: &frame.params,
         crop,
         readback: RgbaReadback::NotNeeded,
+        rotation: StillRotation::None,
     };
     let developed = develop_with(context, &mut developer, &request, |developer, slice_index| {
-        let slice = plan.slices[slice_index];
+        // Последний шаг — отделка (миниатюра, копии): плоскостей полосы у неё нет.
+        let Some(slice) = plan.slices.get(slice_index).copied() else {
+            return;
+        };
         let pixels = (plan.region_width * slice.region_rows) as usize;
         let planes = read_planes(developer.linear_rgb_planes().unwrap(), pixels);
         // Выходные строки полосы, колонки окна вывода.
@@ -156,6 +161,7 @@ fn all_slices_recorded_into_one_command_buffer_without_waiting_equal_slice_by_sl
         params: &frame.params,
         crop,
         readback: RgbaReadback::ForJpeg,
+        rotation: StillRotation::None,
     };
     let mut slow = developer_for(&context, 14, 96);
     let slice_by_slice = develop_with(&context, &mut slow, &request, |_, _| {});
@@ -178,6 +184,7 @@ fn all_slices_recorded_into_one_command_buffer_without_waiting_equal_slice_by_sl
         }
     })
     .unwrap();
+    // Шаги записи: все полосы вывода и шаг отделки (`slice_count` их и считает).
     assert_eq!(recorded, start.slice_count);
     fast.note_slice_submitted(&run.work).unwrap();
     for _ in 0..recorded {

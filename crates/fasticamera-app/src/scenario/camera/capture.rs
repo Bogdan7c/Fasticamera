@@ -218,6 +218,7 @@ impl ObservingScenario for CaptureScenario {
                 stepping
                     .runner
                     .absorb_choices(context.camera_screen.capture_frame_choices());
+                stepping.runner.absorb_picture_timing(report.thumbnail_timing);
                 stepping.runner.absorb_flash(
                     context.camera_screen.capture_flash_routes(),
                     context.camera_screen.capture_flash_reports(),

@@ -196,6 +196,16 @@ impl ScreenDriver {
         self.run(FRAME_STEP_MS);
     }
 
+    /// «Сохранено» вместе с картинкой миниатюры (так их доставляет учёт снимков приложения, 14g) и кадр после.
+    pub fn save_with_picture(
+        &mut self,
+        request: camera_screen::shutter::ShotRequestId,
+        picture: ui_draw::picture::UiPicture,
+    ) {
+        self.screen.handle_saved_with_picture(request, picture);
+        self.run(FRAME_STEP_MS);
+    }
+
     fn send(&mut self, action: ScreenAction) {
         self.screen.handle_action(action);
         self.frame();

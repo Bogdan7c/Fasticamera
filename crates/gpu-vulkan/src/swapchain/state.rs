@@ -494,7 +494,10 @@ impl TargetState {
             PlanOutcome::ZeroExtent => return Ok(RecreateOutcome::Deferred(ZeroExtentReason::ZeroExtent)),
         };
 
+        // Формат поверхности Vulkan — это пара «формат картинок + цветовое пространство» (`VkSurfaceFormatKHR`).
+        // Смена любой половины требует пересоздать рисование: UI зашивает основные цвета экрана в конвейер (14g).
         let previous_format = self.plan().surface_format.format;
+        let previous_color_space = self.plan().display_color_space;
         // `create` помечает старый swapchain retired (он становится таким при любом исходе). Если
         // что-то ниже сорвётся, новый swapchain будет отброшен, а retired старый останется текущим:
         // в следующую попытку он уже не пойдёт как `oldSwapchain` (передастся null).
@@ -518,7 +521,8 @@ impl TargetState {
         self.recreation_count += 1;
         self.needs_recreate = false;
         Ok(RecreateOutcome::Recreated {
-            format_changed: previous_format != plan.surface_format.format,
+            format_changed: previous_format != plan.surface_format.format
+                || previous_color_space != plan.display_color_space,
         })
     }
 

@@ -59,6 +59,7 @@ use crate::config::ScreenConfig;
 use crate::effect::Effect;
 use crate::outcome::ActionOutcome;
 use crate::reduce::reduce;
+use crate::shutter::{CaptureOutcome, ShotRequestId};
 use crate::state::ScreenState;
 use crate::widget::capture_blink::CaptureBlinkWidget;
 use crate::widget::error::WidgetError;
@@ -69,6 +70,7 @@ use effect_queue::{EffectQueue, PushOutcome};
 use error::FrameBuildError;
 use stage::Stage;
 use system_gesture_filter::{SystemGestureFilter, TouchAdmission};
+use ui_draw::picture::UiPicture;
 
 /// Сколько раз за кадр повторяется «синхронизация → события элементов → действия». Действие элемента меняет
 /// состояние, а оно — другие элементы; три прохода покрывают цепочку «шкала → EV → «солнце»/панель».
@@ -211,6 +213,20 @@ impl CameraScreen {
         self.apply(action);
     }
 
+    /// Итог «сохранён» вместе с картинкой миниатюры (14g). Картинка и итог входят в экран ОДНИМ вызовом:
+    /// частичной доставки (картинка без итога или итог без картинки) не бывает. Редьюсер остаётся чистым:
+    /// пиксели попадают в состояние через «входящий» ящик трекера миниатюры, а сам итог идёт обычным
+    /// `CaptureFinished(Saved)`. Итог, отвергнутый как устаревший, картинку не ставит (учёт в диагностике).
+    pub fn handle_saved_with_picture(&mut self, request: ShotRequestId, picture: UiPicture) {
+        self.state.thumbnail_tracker.stage_incoming(request, picture);
+        self.apply(ScreenAction::CaptureFinished {
+            request,
+            outcome: CaptureOutcome::Saved,
+        });
+        // Ящик обязан быть пуст и при отказе редьюсера: ненужная картинка не должна дожить до чужого итога.
+        self.state.thumbnail_tracker.discard_incoming();
+    }
+
     /// Эффекты, накопленные с прошлого вызова (исполняет приложение).
     pub fn drain_effects(&mut self) -> Vec<Effect> {
         self.effects.drain()
@@ -256,6 +272,7 @@ impl CameraScreen {
         snapshot.effects_queued = self.effects.queued();
         snapshot.effects_overflowed = self.effects.overflowed();
         snapshot.standby_demand_transitions = self.state.zoom().standby_transitions();
+        snapshot.thumbnail = self.state.thumbnail_counters();
         if let Some(stage) = &self.stage {
             snapshot.echo_events_suppressed = stage.echo_suppressed();
             snapshot.ignored_sun_pans = stage.focus().ignored_sun_pans();
@@ -556,6 +573,9 @@ mod screen_tests;
 #[cfg(test)]
 #[path = "screen_text_cache_tests.rs"]
 mod screen_text_cache_tests;
+#[cfg(test)]
+#[path = "screen_thumbnail_tests.rs"]
+mod screen_thumbnail_tests;
 #[cfg(test)]
 #[path = "screen_zoom_flip_tests.rs"]
 mod screen_zoom_flip_tests;

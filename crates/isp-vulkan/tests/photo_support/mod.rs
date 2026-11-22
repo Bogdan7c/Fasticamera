@@ -313,6 +313,7 @@ pub fn develop(
             params: &frame.params,
             crop,
             readback,
+            rotation: still_contract::shot::StillRotation::None,
         },
         |_, _| {},
     )

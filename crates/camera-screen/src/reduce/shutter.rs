@@ -9,7 +9,7 @@ use crate::action::KeyPhase;
 use crate::effect::Effect;
 use crate::facts::CameraPresence;
 use crate::outcome::{ActionOutcome, NoChangeReason, Rejection};
-use crate::shutter::{CaptureOutcome, ShotRequest, ShotRequestId, ShutterState, ThumbnailState};
+use crate::shutter::{CaptureOutcome, ShotRequest, ShotRequestId, ShutterState};
 use crate::state::{ScreenState, ShutterVisibility};
 use crate::time::{deadline_after, deadline_after_seconds, has_reached};
 
@@ -83,6 +83,8 @@ pub(super) fn request_capture(ctx: &mut Ctx<'_>, pressed_at: MonotonicNanos) {
     let request = ctx.state.allocate_shot_request();
     ctx.state.shutter = ShutterState::Capturing { request };
     ctx.state.capture_deadline = Some(deadline_after(pressed_at, ctx.config.capture.capture_timeout_ms));
+    // Момент нажатия нужен позже, когда снимок сохранится: замер «нажатие → картинка».
+    ctx.state.thumbnail_tracker.note_press(request, pressed_at);
     let shot = ShotRequest {
         request,
         pressed_at,
@@ -125,8 +127,15 @@ pub(super) fn on_capture_finished(ctx: &mut Ctx<'_>, request: ShotRequestId, out
     }
     match outcome {
         // Миниатюра — последний СОХРАНЁННЫЙ по порядку прихода итогов, а не по порядку нажатий.
-        CaptureOutcome::Saved => ctx.state.thumbnail = ThumbnailState::Last { shot: request },
-        CaptureOutcome::Failed(_) => ctx.emit(Effect::Haptic(HapticPattern::Error)),
+        CaptureOutcome::Saved => {
+            let state = &mut *ctx.state;
+            state.thumbnail = state.thumbnail_tracker.on_saved(request, &state.thumbnail);
+        }
+        CaptureOutcome::Failed(_) => {
+            // Прежняя миниатюра остаётся как была: проваленный снимок картинки не ставит.
+            ctx.state.thumbnail_tracker.on_failed(request);
+            ctx.emit(Effect::Haptic(HapticPattern::Error));
+        }
     }
     ActionOutcome::Applied
 }

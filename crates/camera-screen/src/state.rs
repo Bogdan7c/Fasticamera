@@ -25,6 +25,7 @@ use crate::outcome::RejectionCounters;
 use crate::saving::SavingShots;
 use crate::settings::{CaptureSettings, FlashMode, TimerSetting};
 use crate::shutter::{ShotRequestId, ShutterState, ThumbnailState};
+use crate::thumbnail::{PictureTiming, ThumbnailBlend, ThumbnailCounters, ThumbnailTracker};
 use crate::tools::ToolId;
 use crate::viewfinder_map::{MappingError, MirrorMode, StreamGeometry, ViewfinderMapping};
 use crate::zoom::ZoomState;
@@ -98,6 +99,8 @@ pub struct ScreenState {
     pub(crate) level: LevelReading,
     pub(crate) shutter: ShutterState,
     pub(crate) thumbnail: ThumbnailState,
+    /// Картинка миниатюры, растворение и замер «нажатие → картинка» (14g).
+    pub(crate) thumbnail_tracker: ThumbnailTracker,
     pub(crate) next_request: u64,
     /// Срок, после которого ждать `CaptureSecured` бессмысленно (`CaptureConfig::capture_timeout_ms`); `Some`
     /// только пока затвор в `Capturing`.
@@ -137,6 +140,11 @@ impl ScreenState {
             level: LevelReading::Unknown,
             shutter: ShutterState::Idle,
             thumbnail: ThumbnailState::Empty,
+            thumbnail_tracker: ThumbnailTracker::new(
+                config.capture.thumbnail_fade_ms,
+                // Нажатий без итога бывает не больше «сохраняемых + один ждущий захвата»; запас на потерянные.
+                config.capture.max_saving_shots.saturating_add(2),
+            ),
             next_request: 1,
             capture_deadline: None,
             saving: SavingShots::new(config.capture.max_saving_shots),
@@ -226,8 +234,28 @@ impl ScreenState {
         self.shutter
     }
 
+    /// Последний сохранённый снимок (клон: картинка за `Arc`, пиксели не копируются).
     pub fn thumbnail(&self) -> ThumbnailState {
-        self.thumbnail
+        self.thumbnail.clone()
+    }
+
+    /// То же без клона: для рисования.
+    pub(crate) fn thumbnail_ref(&self) -> &ThumbnailState {
+        &self.thumbnail
+    }
+
+    /// Что рисовать в круге миниатюры в момент `now` (старая картинка под новой и прозрачность новой).
+    pub fn thumbnail_blend(&self, now: MonotonicNanos) -> ThumbnailBlend<'_> {
+        self.thumbnail_tracker.blend(now)
+    }
+
+    /// Времена последней показанной картинки (замер «нажатие → картинка»).
+    pub fn picture_timing(&self) -> Option<PictureTiming> {
+        self.thumbnail_tracker.timing()
+    }
+
+    pub fn thumbnail_counters(&self) -> ThumbnailCounters {
+        self.thumbnail_tracker.counters()
     }
 
     pub fn level(&self) -> LevelReading {

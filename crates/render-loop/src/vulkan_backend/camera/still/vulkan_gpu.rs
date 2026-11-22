@@ -37,11 +37,11 @@ use gpu_vulkan::sync::{GpuReleaseFence, import_wait_fence};
 use isp_model::params::IspParams;
 use isp_vulkan::photo::{
     DevelopRequest, DevelopTargets, DevelopedPhoto, PendingRawCapture, PhotoConfig, PhotoDeveloper, PhotoError,
-    RawCapture, RawCapturer, RgbaReadback, SliceOutcome,
+    RawCapture, RawCapturer, RgbaReadback, SliceOutcome, ThumbnailOutcome,
 };
 use raw_frame_stream::RawFrameLease;
 use shell_contract::surface::NativeSurface;
-use still_contract::shot::{RawSamples16, Rgba8Image};
+use still_contract::shot::{RawSamples16, Rgba8Image, StillRotation};
 
 use super::gpu::{
     AbandonReport, CapturePoll, DevelopProgress, DevelopStart, PresentProgress, PresentRefusal, StillGpu,
@@ -113,6 +113,7 @@ struct PendingDevelop {
     params: IspParams,
     crop: PixelRect,
     readback: RgbaReadback,
+    rotation: StillRotation,
 }
 
 impl DevelopJob {
@@ -295,6 +296,7 @@ impl VulkanStillGpu {
             params: &pending.params,
             crop: pending.crop,
             readback: pending.readback,
+            rotation: pending.rotation,
         };
         match self.developer.begin_with_targets(&request, targets) {
             Ok(start) => {
@@ -496,6 +498,7 @@ impl StillGpu for VulkanStillGpu {
                     params: request.params,
                     crop: request.crop,
                     readback: request.readback,
+                    rotation: request.rotation,
                 })
                 .map_err(|error| error.to_string())?;
             self.develop = Some(DevelopJob::new(start.slice_count));
@@ -508,13 +511,20 @@ impl StillGpu for VulkanStillGpu {
                 params: request.params,
                 crop: request.crop,
                 readback: request.readback,
+                rotation: request.rotation,
             })
             .map_err(|error| error.to_string())?;
         // Цели (≈ 48 МБ картинки и, для JPEG, ещё ≈ 48 МБ копии) выделяет мастерская; первая полоса — когда готовы.
         let (context, image_size, readback) = (self.context.clone(), request.crop.size, request.readback);
+        // План миниатюры считается здесь (на потоке рендера, без GPU): мастерской достаётся готовый.
+        let thumbnail = self
+            .settings
+            .photo
+            .thumbnail_plan(image_size, request.rotation)
+            .map_err(|error| error.to_string())?;
         let targets = workshop
             .submit("цели проявления", move || {
-                DevelopTargets::allocate(&context, image_size, readback)
+                DevelopTargets::allocate(&context, image_size, readback, thumbnail)
             })
             .map_err(|error| format!("цели проявления не заказаны: {error}"))?;
         self.pending_develop = Some(PendingDevelop {
@@ -523,6 +533,7 @@ impl StillGpu for VulkanStillGpu {
             params: request.params.clone(),
             crop: request.crop,
             readback: request.readback,
+            rotation: request.rotation,
         });
         Ok(())
     }
@@ -579,6 +590,9 @@ impl StillGpu for VulkanStillGpu {
                         Some(SliceOutcome::Recorded { remaining }) => remaining,
                         Some(SliceOutcome::Finished) | None => 0,
                     };
+                    // Только отладка: полосы ставятся на ленту событий рядом с выбросами видоискателя
+                    // (`remaining = 0` — шаг отделки: миниатюра и копии, отдельный шаг на свой кадр, 14g).
+                    tracing::debug!(target: super::LOG_TARGET, remaining = job.slices_left, "полоса проявления отправлена");
                     submitted_now += 1;
                 }
                 Err(SubmitError::CapacityExhausted { .. }) => break,
@@ -608,6 +622,10 @@ impl StillGpu for VulkanStillGpu {
 
     fn take_readback(&self, image: &mut DevelopedPhoto) -> Option<Rgba8Image> {
         image.take_host_rgba8()
+    }
+
+    fn take_thumbnail(&self, image: &mut DevelopedPhoto) -> ThumbnailOutcome {
+        image.take_thumbnail()
     }
 
     fn present_start(&mut self, image: &DevelopedPhoto, surface: NativeSurface) -> Result<(), PresentRefusal> {

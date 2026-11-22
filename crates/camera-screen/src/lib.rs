@@ -37,6 +37,7 @@ pub mod screen;
 pub mod settings;
 pub mod shutter;
 mod state;
+pub mod thumbnail;
 mod time;
 pub mod tools;
 pub mod viewfinder_map;

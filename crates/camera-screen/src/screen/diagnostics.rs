@@ -62,4 +62,6 @@ pub struct ScreenDiagnostics {
     pub text_layouts: u64,
     /// Очистки кэша раскладки текста из-за переполнения.
     pub text_cache_evictions: u64,
+    /// Миниатюра последнего снимка (14g): сколько картинок показано и что потеряно.
+    pub thumbnail: crate::thumbnail::ThumbnailCounters,
 }

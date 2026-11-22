@@ -64,7 +64,10 @@ fn volume_key_with_the_real_still_service_ends_in_a_published_file_and_a_thumbna
     let report = harness.router.camera_screen().report().expect("отчёт");
     assert_eq!(
         report.thumbnail,
-        ThumbnailState::Last { shot: screen_request },
+        ThumbnailState::Last {
+            shot: screen_request,
+            picture: None
+        },
         "CaptureFinished(Saved) от настоящей службы дошёл до редьюсера экрана под ЕГО номером запроса"
     );
     let diagnostics = harness.router.camera_screen().capture_diagnostics();

@@ -8,6 +8,10 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+mod primaries;
+
+pub use primaries::{DisplayPrimaries, Matrix3, srgb_decode, srgb_encode, srgb_picture_to_display};
+
 /// Прозрачность вне диапазона 0..1 или не число.
 #[derive(Debug, Clone, Copy, PartialEq, Error)]
 #[error("прозрачность должна быть числом от 0 до 1, получено {0}")]

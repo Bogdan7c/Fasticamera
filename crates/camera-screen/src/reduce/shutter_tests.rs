@@ -200,7 +200,13 @@ fn saved_shot_returns_to_idle_and_fills_the_thumbnail() {
     assert_eq!(done.outcome, ActionOutcome::Applied);
     assert!(done.effects.is_empty());
     assert_eq!(screen.state.shutter(), ShutterState::Idle);
-    assert_eq!(screen.state.thumbnail(), ThumbnailState::Last { shot: first_request() });
+    assert_eq!(
+        screen.state.thumbnail(),
+        ThumbnailState::Last {
+            shot: first_request(),
+            picture: None
+        }
+    );
     // Следующий снимок получает новый номер и снова доходит до запроса.
     let next = screen.step(ScreenAction::ShutterTapped { at: at_ms(100) });
     assert!(
@@ -225,7 +231,13 @@ fn failed_shot_returns_to_idle_with_error_haptic_and_keeps_the_old_thumbnail() {
 
     assert_eq!(failed.effects, [Effect::Haptic(HapticPattern::Error)]);
     assert_eq!(screen.state.shutter(), ShutterState::Idle);
-    assert_eq!(screen.state.thumbnail(), ThumbnailState::Last { shot: first_request() });
+    assert_eq!(
+        screen.state.thumbnail(),
+        ThumbnailState::Last {
+            shot: first_request(),
+            picture: None
+        }
+    );
 }
 
 #[test]
@@ -364,7 +376,13 @@ fn full_flow_tap_shutter_to_saved_thumbnail_reaches_every_stage() {
         outcome: CaptureOutcome::Saved,
     });
     assert_eq!(screen.state.shutter(), ShutterState::Idle);
-    assert_eq!(screen.state.thumbnail(), ThumbnailState::Last { shot: request.request });
+    assert_eq!(
+        screen.state.thumbnail(),
+        ThumbnailState::Last {
+            shot: request.request,
+            picture: None
+        }
+    );
     assert_eq!(screen.state.rejections().total(), 0);
 }
 
@@ -438,7 +456,13 @@ fn a_capture_finished_in_time_is_not_counted_as_lost_by_later_ticks() {
     });
     screen.step(ScreenAction::Tick(at_ms(10 * 60_000)));
     assert_eq!(screen.state.lost_captures(), 0);
-    assert_eq!(screen.state.thumbnail(), ThumbnailState::Last { shot: first_request() });
+    assert_eq!(
+        screen.state.thumbnail(),
+        ThumbnailState::Last {
+            shot: first_request(),
+            picture: None
+        }
+    );
 }
 
 #[test]

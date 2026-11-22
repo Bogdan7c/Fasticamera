@@ -27,10 +27,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 use std::sync::{Arc, Weak};
 
+use camera_screen::shutter::ShotRequestId;
 use camera_screen::{KeyPhase as ScreenKeyPhase, ScreenAction, ScreenTouch};
 use shell_contract::hardware_key::{HardwareKey, HardwareKeyEvent, KeyPhase as ShellKeyPhase};
 use shell_contract::system_gesture::SystemGestureZones;
 use shell_contract::touch::TouchSample;
+use ui_draw::picture::UiPicture;
 
 /// Клавиша громкости → действие экрана. Первое нажатие — `Pressed` (затвор), автоповтор удержания — `Repeated`
 /// (в v1 без действия), отпускание — `Released`. Обе клавиши громкости равнозначны (`scope-v1.md`).
@@ -52,6 +54,11 @@ pub enum ScreenInput {
     Touch(ScreenTouch),
     /// Действие над экраном (клавиша, ориентация, итог снимка…).
     Action(ScreenAction),
+    /// Итог «сохранён» ВМЕСТЕ с картинкой миниатюры (14g, решение 154): одно сообщение, поэтому частичной
+    /// доставки (картинка без итога или итог без картинки) быть не может. Идёт той же очередью и под тем же
+    /// правилом эпохи, что остальные итоги снимка. Пикселей в `ScreenAction` нет: экран кладёт картинку
+    /// в состояние через `CameraScreen::handle_saved_with_picture`.
+    SavedWithPicture { request: ShotRequestId, picture: UiPicture },
     /// Новые зоны обязательных системных жестов: настройка фильтра входа экрана, не действие редьюсера
     /// (зоны не часть состояния экрана — они лишь решают, какие касания до него доходят).
     SystemGestureZones(SystemGestureZones),
@@ -171,6 +178,11 @@ impl ScreenInputInjector {
     /// Кладёт действие в очередь без ожидания.
     pub fn inject(&self, action: ScreenAction) -> InputDelivery {
         self.send_counted_as_action(ScreenInput::Action(action))
+    }
+
+    /// Кладёт в очередь итог «сохранён» с картинкой миниатюры одним сообщением. В счётчиках идёт вместе с действиями.
+    pub fn inject_saved_with_picture(&self, request: ShotRequestId, picture: UiPicture) -> InputDelivery {
+        self.send_counted_as_action(ScreenInput::SavedWithPicture { request, picture })
     }
 
     /// Кладёт в очередь образец касания (для сценариев, которые водят пальцем по экрану сами).

@@ -16,6 +16,8 @@ use gpu_vulkan::rgba8_image::Rgba8StorageImage;
 
 use super::developed::RgbaReadback;
 use super::error::PhotoError;
+use super::thumbnail::ThumbnailPlan;
+use super::thumbnail_pass::ThumbnailTargets;
 
 /// Выделенные цели одного проявления.
 #[derive(Debug)]
@@ -23,12 +25,22 @@ pub struct DevelopTargets {
     pub(crate) image: Arc<Rgba8StorageImage>,
     /// Копия в память процессора: есть ровно тогда, когда её просили (`RgbaReadback::ForJpeg`).
     pub(crate) readback: Option<HostReadbackBuffer>,
+    /// Миниатюра: цели есть при ЛЮБОМ `RgbaReadback` (у HEIF копии основной картинки нет, а миниатюра нужна).
+    /// Сбой их выделения проявку не ломает (миниатюры не будет).
+    pub(crate) thumbnail: ThumbnailTargets,
 }
 
 impl DevelopTargets {
     /// Выделяет цели под снимок размера `image_size` (размер области снимка, `DevelopRequest::crop.size`).
     /// Только память и объекты Vulkan, без команд GPU: годится для любого потока.
-    pub fn allocate(context: &GpuContext, image_size: PixelSize, readback: RgbaReadback) -> Result<Self, PhotoError> {
+    ///
+    /// `thumbnail` — план миниатюры ([`super::PhotoConfig::thumbnail_plan`] от размера снимка и поворота).
+    pub fn allocate(
+        context: &GpuContext,
+        image_size: PixelSize,
+        readback: RgbaReadback,
+        thumbnail: ThumbnailPlan,
+    ) -> Result<Self, PhotoError> {
         let image = Arc::new(Rgba8StorageImage::new(
             context,
             vk::Extent2D {
@@ -40,11 +52,21 @@ impl DevelopTargets {
             RgbaReadback::NotNeeded => None,
             RgbaReadback::ForJpeg => Some(HostReadbackBuffer::new(context, image.packed_size_bytes())?),
         };
-        Ok(Self { image, readback })
+        let thumbnail = ThumbnailTargets::allocate(context, thumbnail);
+        Ok(Self {
+            image,
+            readback,
+            thumbnail,
+        })
     }
 
     /// Подходят ли цели запросу: размер картинки и наличие копии совпадают с тем, что нужно проявлению.
-    pub(crate) fn mismatch_with(&self, image_size: PixelSize, readback: RgbaReadback) -> Option<String> {
+    pub(crate) fn mismatch_with(
+        &self,
+        image_size: PixelSize,
+        readback: RgbaReadback,
+        thumbnail: ThumbnailPlan,
+    ) -> Option<String> {
         let extent = self.image.extent();
         if (extent.width, extent.height) != (image_size.width, image_size.height) {
             return Some(format!(
@@ -57,6 +79,12 @@ impl DevelopTargets {
             return Some(format!(
                 "копия в память: нужна {wants_readback}, в целях {}",
                 self.readback.is_some()
+            ));
+        }
+        if self.thumbnail.plan() != thumbnail {
+            return Some(format!(
+                "план миниатюры целей {:?}, а проявке нужен {thumbnail:?}",
+                self.thumbnail.plan()
             ));
         }
         None

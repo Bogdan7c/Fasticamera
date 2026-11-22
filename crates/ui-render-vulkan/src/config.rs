@@ -5,10 +5,16 @@ use ash::vk;
 use gpu_vulkan::color_target::ColorTargetFormat;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use ui_draw::color::DisplayPrimaries;
 
 /// Сколько уровней пирамиды умеют шейдеры стекла: по одной привязке сэмплера на уровень
 /// (`ui_glass_data.glsl`). Инженерный предел: 6 уровней = размытие до 2⁶ = 64 px на тексель, больше стилю не нужно.
 pub const MAX_PYRAMID_LEVELS: u32 = 6;
+
+/// Сколько сэмплеров картинок объявлено в шейдере `ui_image.frag`: по одной привязке на текстуру, число — часть
+/// шейдера (GLSL не умеет массив привязок разной длины без индексирования дескрипторов). Инженерный предел:
+/// кадру камеры нужно две картинки (кроссфейд миниатюры), четыре — запас.
+pub const MAX_IMAGE_BINDINGS: u32 = 4;
 
 /// Ошибка настроек.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -28,6 +34,12 @@ pub enum ConfigError {
         /// Заданное число.
         levels: u32,
     },
+    /// Картинок в кадре больше, чем сэмплеров в шейдере.
+    #[error("max_images {max_images} больше числа сэмплеров шейдера {MAX_IMAGE_BINDINGS}")]
+    ImagesAboveBindings {
+        /// Заданное число.
+        max_images: u32,
+    },
 }
 
 /// Пределы одного кадра. Превышение — честная ошибка кадра со счётчиком (`UiRenderError::LimitExceeded`),
@@ -42,6 +54,12 @@ pub struct UiRenderLimits {
     /// Групп стекла в кадре. `[estimate]`: 6–10 элементов в типичном кадре; 32 групп с запасом.
     /// Членов в группе не больше `MAX_GLASS_GROUP_MEMBERS`, поэтому буфер членов — `групп × 16`.
     pub max_glass_groups: u32,
+    /// Элементов-картинок в кадре (1..=`MAX_IMAGE_BINDINGS`); картинок разных не больше этого числа.
+    /// `[estimate]`: кроссфейд миниатюры снимка держит на экране две (старую и новую).
+    pub max_images: u32,
+    /// Наибольшая сторона картинки источника, px. Больше — честный отказ кадра (`PictureTooLarge`): картинка
+    /// целиком живёт в видеопамяти и копируется в кадре. `[estimate]`: миниатюра ≈ 256 px, запас ×4.
+    pub max_image_side_px: u32,
 }
 
 impl Default for UiRenderLimits {
@@ -50,6 +68,8 @@ impl Default for UiRenderLimits {
             max_shape_instances: 512,
             max_glyph_instances: 1024,
             max_glass_groups: 32,
+            max_images: 2,
+            max_image_side_px: 1024,
         }
     }
 }
@@ -61,10 +81,17 @@ impl UiRenderLimits {
             ("max_shape_instances", self.max_shape_instances),
             ("max_glyph_instances", self.max_glyph_instances),
             ("max_glass_groups", self.max_glass_groups),
+            ("max_images", self.max_images),
+            ("max_image_side_px", self.max_image_side_px),
         ] {
             if value == 0 {
                 return Err(ConfigError::ZeroLimit { field });
             }
+        }
+        if self.max_images > MAX_IMAGE_BINDINGS {
+            return Err(ConfigError::ImagesAboveBindings {
+                max_images: self.max_images,
+            });
         }
         Ok(())
     }
@@ -126,6 +153,23 @@ impl BackdropPyramidConfig {
     }
 }
 
+/// Кэш текстур картинок.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PictureCacheConfig {
+    /// Через сколько записанных кадров без использования картинка вытесняется из видеопамяти (0 — сразу
+    /// после первого кадра без неё). `[estimate]`: 300 кадров ≈ 5 с при 60 Гц — переключение миниатюры туда-обратно
+    /// не перезагружает картинку, а забытая освобождает память.
+    pub idle_frames_before_eviction: u32,
+}
+
+impl Default for PictureCacheConfig {
+    fn default() -> Self {
+        Self {
+            idle_frames_before_eviction: 300,
+        }
+    }
+}
+
 /// Настройки рендера UI.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct UiRendererConfig {
@@ -137,6 +181,11 @@ pub struct UiRendererConfig {
     pub limits: UiRenderLimits,
     /// Пирамида размытия фона.
     pub pyramid: BackdropPyramidConfig,
+    /// Основные цвета экрана: в них шейдер переводит картинки sRGB. Фиксированы на жизнь рендера (константа
+    /// специализации конвейера): сменился охват экрана — рендер создаётся заново, как при смене формата.
+    pub display_primaries: DisplayPrimaries,
+    /// Кэш текстур картинок.
+    pub pictures: PictureCacheConfig,
 }
 
 impl UiRendererConfig {
@@ -147,6 +196,8 @@ impl UiRendererConfig {
             frame_slots,
             limits: UiRenderLimits::default(),
             pyramid: BackdropPyramidConfig::default(),
+            display_primaries: DisplayPrimaries::Srgb,
+            pictures: PictureCacheConfig::default(),
         }
     }
 
@@ -177,6 +228,16 @@ mod tests {
             config.validate(),
             Err(ConfigError::ZeroLimit {
                 field: "max_glass_groups"
+            })
+        );
+        config.limits = UiRenderLimits {
+            max_images: MAX_IMAGE_BINDINGS + 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            config.validate(),
+            Err(ConfigError::ImagesAboveBindings {
+                max_images: MAX_IMAGE_BINDINGS + 1
             })
         );
         for levels in [0, MAX_PYRAMID_LEVELS + 1] {

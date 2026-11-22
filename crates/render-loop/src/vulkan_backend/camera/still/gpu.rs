@@ -18,10 +18,10 @@
 use camera_contract::frame_passport::StreamPassport;
 use camera_contract::geometry::PixelRect;
 use isp_model::params::IspParams;
-use isp_vulkan::photo::RgbaReadback;
+use isp_vulkan::photo::{RgbaReadback, ThumbnailOutcome};
 use raw_frame_stream::RawFrameLease;
 use shell_contract::surface::NativeSurface;
-use still_contract::shot::{RawSamples16, Rgba8Image};
+use still_contract::shot::{RawSamples16, Rgba8Image, StillRotation};
 
 /// Итог опроса копии RAW.
 #[derive(Debug)]
@@ -47,6 +47,9 @@ pub struct DevelopStart<'a, Raw> {
     pub crop: PixelRect,
     /// Нужна ли копия готовой картинки в память (JPEG).
     pub readback: RgbaReadback,
+    /// Поворот снимка (`StillFrameFacts::rotation`): пиксели основной картинки не вращаются, миниатюра пишется
+    /// уже повёрнутой «как покажет галерея» (14g).
+    pub rotation: StillRotation,
 }
 
 /// Где проявление.
@@ -123,6 +126,9 @@ pub trait StillGpu: Send + Sized {
     fn develop_advance(&mut self, max_new_slices: u32) -> DevelopProgress<Self::Image>;
     /// Забирает копию картинки в памяти (если просили `RgbaReadback::ForJpeg`).
     fn take_readback(&self, image: &mut Self::Image) -> Option<Rgba8Image>;
+    /// Забирает миниатюру проявленной картинки (14g): байты в ОБЫЧНОЙ памяти, без объектов GPU. Отдаёт один раз;
+    /// нет миниатюры (сбой уменьшения) — `Unavailable` с причиной, на итог снимка это не влияет.
+    fn take_thumbnail(&self, image: &mut Self::Image) -> ThumbnailOutcome;
 
     /// Начинает показ картинки в поверхность кодера. Поверхность принимается в любом случае.
     fn present_start(&mut self, image: &Self::Image, surface: NativeSurface) -> Result<(), PresentRefusal>;

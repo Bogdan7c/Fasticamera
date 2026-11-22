@@ -5,9 +5,11 @@ use std::sync::Arc;
 use camera_contract::geometry::{PixelRect, PixelSize};
 use gpu_vulkan::rgba8_image::Rgba8StorageImage;
 use isp_model::params::IspParams;
-use still_contract::shot::Rgba8Image;
+use still_contract::shot::{Rgba8Image, StillRotation};
 
 use super::capture::RawCapture;
+use super::thumbnail::ThumbnailOutcome;
+use super::thumbnail_pass::ThumbnailSlot;
 
 /// Нужна ли копия готовой картинки в память процессора (для JPEG).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,12 +31,17 @@ pub struct DevelopRequest<'a> {
     pub crop: PixelRect,
     /// Нужна ли копия в память процессора.
     pub readback: RgbaReadback,
+    /// Поворот снимка по часовой стрелке (`StillFrameFacts::rotation`): пиксели основной картинки НЕ вращаются
+    /// (поворот несёт тег файла), но миниатюра пишется уже повёрнутой «как покажет галерея».
+    pub rotation: StillRotation,
 }
 
 /// Что известно сразу после начала проявления.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DevelopmentStart {
-    /// Сколько полос придётся записать (столько раз звать `record_next_slice` до `Finished`).
+    /// Сколько ШАГОВ записи придётся сделать (столько раз звать `record_next_slice` до `Finished`): полосы вывода
+    /// плюс один завершающий шаг отделки (миниатюра и копии картинки, 14g — отдельный шаг, чтобы он попал в
+    /// свой кадр видоискателя). Последний шаг — отделка: его доказательство запечатывает буферы хоста.
     pub slice_count: usize,
     /// Размер картинки снимка.
     pub image_size: PixelSize,
@@ -60,6 +67,7 @@ pub struct DevelopedPhoto {
     pub(crate) image: Arc<Rgba8StorageImage>,
     pub(crate) size: PixelSize,
     pub(crate) host_rgba8: Option<Rgba8Image>,
+    pub(crate) thumbnail: ThumbnailSlot,
 }
 
 impl std::fmt::Debug for DevelopedPhoto {
@@ -95,5 +103,11 @@ impl DevelopedPhoto {
     /// Забирает картинку для JPEG (оставляя `None`).
     pub fn take_host_rgba8(&mut self) -> Option<Rgba8Image> {
         self.host_rgba8.take()
+    }
+
+    /// Забирает миниатюру (ОДИН раз): байты копируются в обычную память, объектов GPU после вызова миниатюра не
+    /// держит. Нет миниатюры — [`ThumbnailOutcome::Unavailable`] с причиной (проявка от этого не страдает).
+    pub fn take_thumbnail(&mut self) -> ThumbnailOutcome {
+        self.thumbnail.take()
     }
 }

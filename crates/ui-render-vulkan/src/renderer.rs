@@ -6,10 +6,12 @@
 //! «чтение → запись» ступеней). Цель, командный буфер, fence и подложку держит вызывающий.
 //!
 //! # Порядок `record_frame`
-//! 1. Все проверки и упаковка — ДО команд (ошибка не оставляет следов в цели и пирамиде).
+//! 1. Все проверки и упаковка (в том числе пределы картинок) — ДО команд (ошибка не оставляет следов в цели и пирамиде).
 //! 2. Если есть стекло: ступени под логический размер; при смене ключа фона — барьер чтения фона и перестройка.
-//! 3. Загрузка буферов слота и запись привязок (повтор тех же ресурсов — пустая операция).
-//! 4. `record_between_color_passes`, затем один проход `Preserve`: пакеты по порядку списка.
+//! 3. Картинки: память под новые выделяется ДО первой команды, копии пишутся в команды кадра сразу после метки
+//!    `Start` (вне проходов), кэш и отложенное освобождение — `picture_cache`.
+//! 4. Загрузка буферов слота и запись привязок (повтор тех же ресурсов — пустая операция).
+//! 5. `record_between_color_passes`, затем один проход `Preserve`: пакеты по порядку списка.
 
 use ash::vk;
 use gpu_vulkan::color_target::ColorTargetPreviousUse;
@@ -22,12 +24,13 @@ use gpu_vulkan::source_window::SourceWindow;
 use ui_draw::atlas::sdf_atlas;
 use ui_draw::geometry::PxSize;
 
-use crate::config::{MAX_PYRAMID_LEVELS, UiRendererConfig};
+use crate::config::{MAX_IMAGE_BINDINGS, MAX_PYRAMID_LEVELS, UiRendererConfig};
 use crate::counters::UiRenderCounters;
 use crate::error::UiRenderError;
 use crate::frame::{BackdropInput, FrameMarker, PyramidOutcome, UiFrame, UiFrameReport};
 use crate::pack::FramePush;
-use crate::pipelines::{GLASS_FIRST_PYRAMID_BINDING, UiPipelines};
+use crate::picture_cache::PictureCache;
+use crate::pipelines::{GLASS_FIRST_PYRAMID_BINDING, IMAGE_FIRST_SAMPLER_BINDING, UiPipelines};
 use crate::plan::{Batch, BatchKind, FramePlan, build_plan};
 use crate::pyramid::{Pyramid, PyramidKey, RebuildSource};
 use crate::slots::SlotBuffers;
@@ -58,6 +61,8 @@ pub struct UiRenderer {
     slot_in_flight: Vec<bool>,
     pyramid: Option<LivePyramid>,
     retired: Vec<RetiredPyramid>,
+    /// Текстуры картинок: загрузка в команды кадра, вытеснение, отложенное освобождение.
+    pictures: PictureCache,
     counters: UiRenderCounters,
 }
 
@@ -90,6 +95,7 @@ impl UiRenderer {
             },
             atlas_data.texels,
         )?;
+        let pictures = PictureCache::new(context, config.pictures)?;
         let mut slot_buffers = Vec::with_capacity(config.frame_slots);
         for slot in 0..config.frame_slots {
             let buffers = SlotBuffers::new(context, &config.limits)?;
@@ -114,6 +120,14 @@ impl UiRenderer {
                     },
                 ],
             )?;
+            // Картинок ещё нет: все сэмплеры смотрят в заглушку, чтобы набор был валиден. Реальные текстуры кадра
+            // записываются перед рисованием (`upload_and_bind_slot`).
+            let mut image_writes = vec![BindingWrite {
+                binding: 0,
+                resource: buffers.images.binding(),
+            }];
+            image_writes.extend(sampler_writes(&pictures.bindings_for(&[])));
+            pipelines.image.bind(slot, &image_writes)?;
             slot_buffers.push(buffers);
         }
         Ok(Self {
@@ -125,6 +139,7 @@ impl UiRenderer {
             slot_in_flight: vec![false; config.frame_slots],
             pyramid: None,
             retired: Vec::new(),
+            pictures,
             counters: UiRenderCounters::default(),
         })
     }
@@ -132,6 +147,11 @@ impl UiRenderer {
     /// Счётчики диагностики.
     pub fn counters(&self) -> UiRenderCounters {
         self.counters
+    }
+
+    /// Сколько картинок сейчас лежит в видеопамяти (диагностика и тесты вытеснения).
+    pub fn cached_picture_count(&self) -> usize {
+        self.pictures.cached_pictures()
     }
 
     /// Настройки, с которыми создан рендер.
@@ -147,6 +167,7 @@ impl UiRenderer {
         self.pipelines.shape.release_slot_after_fence(slot)?;
         self.pipelines.glyph.release_slot_after_fence(slot)?;
         self.pipelines.glass.release_slot_after_fence(slot)?;
+        self.pipelines.image.release_slot_after_fence(slot)?;
         self.pipelines.blur_from_backdrop.release_slot_after_fence(slot)?;
         for stage in 0..level_stages {
             self.pipelines
@@ -154,11 +175,36 @@ impl UiRenderer {
                 .release_slot_after_fence(slot * level_stages + stage)?;
         }
         self.slot_in_flight[slot] = false;
+        // Staging копий и вытесненные текстуры, ждавшие этот слот, больше GPU не нужны.
+        self.pictures.release_slot_after_fence(slot);
         // Прежние ступени больше не нужны, когда освобождены все слоты, что были в полёте при их выводе из работы.
         for retired in &mut self.retired {
             retired.waiting_slots.retain(|waiting| *waiting != slot);
         }
         self.retired.retain(|retired| !retired.waiting_slots.is_empty());
+        Ok(())
+    }
+
+    /// Успешно записанный кадр слота `slot` НЕ отправлен (сбой сабмита, смена поколения цели): буфер кадра
+    /// пошёл на выброс, и всё, что он должен был сделать на GPU, не сделано. Поэтому:
+    /// * картинки, загруженные этим кадром, выбрасываются из кэша — иначе следующий кадр рисовал бы текстуру,
+    ///   в которую копия так и не легла (счётчик `pictures_discarded_unsubmitted`);
+    /// * содержимому пирамиды, перестроенной этим кадром, верить нельзя — как после ошибки `Gpu`.
+    ///
+    /// Сам слот освобождает обычный `release_slot_after_fence`, когда кольцо выдаст его снова.
+    pub fn frame_not_submitted(&mut self, slot: usize) -> Result<(), UiRenderError> {
+        self.check_slot_range(slot)?;
+        let others: Vec<usize> = self
+            .slots_in_flight()
+            .into_iter()
+            .filter(|in_flight| *in_flight != slot)
+            .collect();
+        let discarded = self.pictures.frame_not_submitted(slot, &others);
+        self.counters.pictures_discarded_unsubmitted += u64::from(discarded);
+        if let Some(live) = self.pyramid.as_mut() {
+            live.key = None;
+            live.rendered_once = false;
+        }
         Ok(())
     }
 
@@ -190,7 +236,12 @@ impl UiRenderer {
         match self.record_frame_inner(command_buffer, slot, target, frame, mark) {
             Ok(report) => {
                 self.slot_in_flight[slot] = true;
+                let evicted = self.pictures.finish_frame(slot, self.slots_in_flight());
+                self.counters.picture_evictions += u64::from(evicted);
                 self.counters.frames_recorded += 1;
+                self.counters.images_drawn += u64::from(report.image_instances);
+                self.counters.picture_uploads += u64::from(report.picture_uploads);
+                self.counters.picture_cache_hits += u64::from(report.picture_cache_hits);
                 self.counters.draw_calls += u64::from(report.draw_calls);
                 self.counters.shape_instances += u64::from(report.shape_instances);
                 self.counters.glyph_instances += u64::from(report.glyph_instances);
@@ -207,6 +258,9 @@ impl UiRenderer {
                 if matches!(error, UiRenderError::LimitExceeded { .. }) {
                     self.counters.limit_overflows += 1;
                 }
+                if matches!(error, UiRenderError::PictureTooLarge { .. }) {
+                    self.counters.pictures_rejected += 1;
+                }
                 if matches!(error, UiRenderError::Gpu(_)) {
                     // Ошибка GPU случается ПОСЛЕ начала записи команд, а вызывающий может отправить
                     // частично записанный буфер. Поэтому:
@@ -221,9 +275,20 @@ impl UiRenderer {
                     }
                     self.slot_in_flight[slot] = true;
                 }
+                // Копии картинок, записанные в этот кадр, могли не выполниться: текстуры выбрасываются из кэша.
+                // До записи команд (все ошибки кроме `Gpu`) кэш не тронут — вызов ничего не меняет.
+                let waiting = self.slots_in_flight();
+                self.pictures.abort_frame(&waiting);
                 Err(error)
             }
         }
+    }
+
+    /// Слоты, чьи буферы и наборы GPU ещё может читать.
+    fn slots_in_flight(&self) -> Vec<usize> {
+        (0..self.config.frame_slots)
+            .filter(|index| self.slot_in_flight[*index])
+            .collect()
     }
 
     fn check_slot_range(&self, slot: usize) -> Result<(), UiRenderError> {
@@ -293,12 +358,16 @@ impl UiRenderer {
     ) -> Result<UiFrameReport, UiRenderError> {
         let logical = self.check_frame(slot, &target, frame)?;
         let plan = build_plan(frame.draw_list, &self.config.limits)?;
+        // Память под новые картинки и их staging — до первой команды (ошибка здесь не оставляет следов в буфере).
+        let (staged_uploads, picture_cache_hits) = self.pictures.stage_missing(&self.context, &plan.pictures)?;
         let quarter_turns = frame
             .surface_transform
             .quarter_turns()
             .map_err(UiRenderError::UnsupportedSurfaceTransform)?;
 
         mark(FrameMarker::Start, command_buffer);
+        // Копии новых картинок — в команды кадра, до всех проходов (внутри динамического рендеринга копии запрещены).
+        let picture_uploads = self.pictures.record_staged_uploads(command_buffer, staged_uploads)?;
         let outcome = if plan.has_glass() {
             self.ensure_pyramid_current(command_buffer, slot, logical, frame)?
         } else {
@@ -327,6 +396,9 @@ impl UiRenderer {
             shape_instances: plan.shape_count,
             glyph_instances: plan.glyph_count,
             glass_groups: plan.group_count,
+            image_instances: plan.image_count,
+            picture_uploads,
+            picture_cache_hits,
         })
     }
 
@@ -411,10 +483,19 @@ impl UiRenderer {
             (&mut buffers.glyphs, &plan.glyph_bytes),
             (&mut buffers.groups, &plan.group_bytes),
             (&mut buffers.members, &plan.member_bytes),
+            (&mut buffers.images, &plan.image_bytes),
         ] {
             if !bytes.is_empty() {
                 buffer.write_bytes(0, bytes)?;
             }
+        }
+        if plan.image_count > 0 {
+            let mut image_writes = vec![BindingWrite {
+                binding: 0,
+                resource: self.slot_buffers[slot].images.binding(),
+            }];
+            image_writes.extend(sampler_writes(&self.pictures.bindings_for(&plan.pictures)));
+            self.pipelines.image.bind(slot, &image_writes)?;
         }
         if !plan.has_glass() {
             return Ok(());
@@ -509,6 +590,7 @@ impl UiRenderer {
             BatchKind::Shape => &self.pipelines.shape,
             BatchKind::Glyph => &self.pipelines.glyph,
             BatchKind::Glass => &self.pipelines.glass,
+            BatchKind::Image => &self.pipelines.image,
         };
         let push = self
             .frame_push(quarter_turns, target, frame, batch.first_instance)
@@ -525,4 +607,16 @@ impl UiRenderer {
         )?;
         Ok(())
     }
+}
+
+/// Записи привязок сэмплеров картинок: ресурсы по порядку начиная с `IMAGE_FIRST_SAMPLER_BINDING`.
+fn sampler_writes(resources: &[DescriptorResource]) -> Vec<BindingWrite> {
+    debug_assert_eq!(resources.len(), MAX_IMAGE_BINDINGS as usize);
+    (IMAGE_FIRST_SAMPLER_BINDING..)
+        .zip(resources)
+        .map(|(binding, resource)| BindingWrite {
+            binding,
+            resource: *resource,
+        })
+        .collect()
 }

@@ -105,10 +105,12 @@ fn interior_crop_develops_only_crop_plus_halo_not_the_whole_frame() {
             params: &frame.params,
             crop: crop_in_buffer(gpu_frame.valid_area, left, top, width, height),
             readback: RgbaReadback::NotNeeded,
+            rotation: still_contract::shot::StillRotation::None,
         })
         .unwrap();
-    // 20 строк в полосах по 16 → 2 полосы; область по ширине — crop + ореол с двух сторон, не весь кадр (128).
-    assert_eq!(start.slice_count, 2);
+    // 20 строк в полосах по 16 → 2 полосы вывода + 1 шаг отделки (миниатюра и копии, 14g) = 3 шага записи;
+    // область по ширине — crop + ореол с двух сторон, не весь кадр (128).
+    assert_eq!(start.slice_count, 3);
     assert_eq!(start.image_size, PixelSize::new(width, height));
     assert_eq!(start.widest_region.width, width + 2 * DEMOSAIC_HALO);
     assert!(start.widest_region.width < WIDTH);

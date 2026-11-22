@@ -1,8 +1,10 @@
 # Завершение задачи
 
-1. `cargo fmt --all`.
-2. `scripts/ci-checks.sh all` = 0 (fmt, clippy host+android × без фич/все фичи, тесты × без фич/все фичи, тесты скриптов, guardrail, ratchet, оба APK).
-3. Если менялся Rust/Android-путь и телефон подключён: `scripts/device-smoke.sh hello` и `scripts/device-smoke.sh --no-build panic` (debug), при необходимости `--variant release hello`.
+**Порядок (слово владельца, 14g): телефон ДО CI.** Сначала точечные ПК-проверки затронутых crate-ов, потом приёмка на телефоне и все фиксы по ней, и только потом ОДИН прогон полного CI перед коммитом — иначе каждая правка по провалу на телефоне гоняет CI заново.
+
+1. `cargo fmt --all`; clippy `-D warnings` и `cargo test` затронутых crate-ов.
+2. Если менялся Rust/Android-путь и телефон подключён: сценарии сессии на телефоне (release для замеров, debug для validation), при необходимости `scripts/device-smoke.sh hello` / `--no-build panic`. Провал → фикс → снова телефон.
+3. `scripts/ci-checks.sh all` = 0 (fmt, clippy host+android × без фич/все фичи, тесты × без фич/все фичи, тесты скриптов, guardrail, ratchet, оба APK) — один раз, после зелёного телефона.
 4. Фикс/оптимизация — тест, который падает без фикса; проверить временным откатом.
 5. Новый crate → запись в `scripts/crate-boundaries.toml`; новый внешний крейт → зрелость/авторы/лицензия в отчёте сессии.
 6. Self-review диффа; обновить Serena memories, если поменялись границы, API, команды, инварианты.

@@ -240,6 +240,10 @@ pub struct StillDiagnostics {
     pub gpu_lost: u64,
     /// Из них по сроку (`capture_timeout_ms` / `develop_timeout_ms` / `encoder_present_timeout_ms`).
     pub gpu_lost_by_deadline: u64,
+    /// Миниатюры (14g): отправлены приёмнику (строго до итога снимка) / не вышли (причина — в логе
+    /// `fasticamera::render::still`). Снимок без миниатюры остаётся удачным: итог от неё не зависит.
+    pub thumbnails_delivered: u64,
+    pub thumbnails_unavailable: u64,
     /// Сколько раз GPU заранее (до нажатия) создать не удалось.
     pub gpu_prewarm_failures: u64,
     /// Снимков в очереди сейчас.

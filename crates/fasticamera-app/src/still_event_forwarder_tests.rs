@@ -7,18 +7,33 @@
     reason = "в тестах падение — способ сообщить о провале"
 )]
 
+use std::sync::Arc;
+
+use camera_contract::geometry::PixelSize;
 use camera_screen::ScreenAction;
 use camera_screen::shutter::{CaptureFailureReason, CaptureOutcome, ShotRequestId};
 use shell_contract::clock::MonotonicNanos;
 use still_contract::frame_choice::NoFrameReason;
 use still_contract::plan::StillId;
+use still_contract::thumbnail::StillThumbnail;
 
+use crate::camera_screen_capture::CaptureCompletionSlot;
 use crate::camera_screen_input::ScreenInput;
 use crate::photo_config::PhotoConfig;
 use crate::still_event_forwarder::DevelopEventForwarder;
+use crate::still_screen_ledger::{StillScreenLedger, StillThumbnailSink};
 use crate::still_test_support::{RenderMode, StillRig, facts_for, shot, wait_until};
 use photo_output::service::DevelopSubmitError;
 use still_contract::develop::DevelopEvent;
+
+/// Таблица без экрана: тестам пересылки событий она нужна только как приёмник миниатюр.
+fn standalone_ledger() -> Arc<StillScreenLedger> {
+    Arc::new(StillScreenLedger::new(Arc::new(CaptureCompletionSlot::default()), 8))
+}
+
+fn forwarder_for(rig: &StillRig, ledger: &Arc<StillScreenLedger>) -> DevelopEventForwarder {
+    DevelopEventForwarder::new(rig.service.handle(), Arc::clone(ledger) as Arc<dyn StillThumbnailSink>)
+}
 
 fn finished_camera(request: u64) -> ScreenInput {
     ScreenInput::Action(ScreenAction::CaptureFinished {
@@ -108,7 +123,7 @@ fn full_service_queue_loses_the_event_counts_it_and_the_term_ends_the_still_exac
 #[test]
 fn stopped_service_rejects_events_with_its_own_counter() {
     let rig = StillRig::start();
-    let forwarder = DevelopEventForwarder::new(rig.service.handle());
+    let forwarder = forwarder_for(&rig, &standalone_ledger());
     assert_eq!(rig.service.shutdown(), photo_output::service::ShutdownReport::Stopped);
 
     let result = forwarder.forward(DevelopEvent::NotSecured {
@@ -142,7 +157,7 @@ fn accepted_events_are_counted_and_reach_the_service() {
 #[test]
 fn secured_event_leaves_its_frame_choice_in_the_log_even_when_the_service_rejects_it() {
     let rig = StillRig::start();
-    let forwarder = DevelopEventForwarder::new(rig.service.handle());
+    let forwarder = forwarder_for(&rig, &standalone_ledger());
     assert_eq!(rig.service.shutdown(), photo_output::service::ShutdownReport::Stopped);
     let facts = facts_for(StillId(5));
     let expected = facts.choice;
@@ -156,7 +171,7 @@ fn secured_event_leaves_its_frame_choice_in_the_log_even_when_the_service_reject
 #[test]
 fn events_without_a_chosen_frame_leave_the_choice_log_untouched() {
     let rig = StillRig::start();
-    let forwarder = DevelopEventForwarder::new(rig.service.handle());
+    let forwarder = forwarder_for(&rig, &standalone_ledger());
 
     let _ = forwarder.forward(DevelopEvent::NotSecured {
         id: StillId(6),
@@ -164,4 +179,22 @@ fn events_without_a_chosen_frame_leave_the_choice_log_untouched() {
     });
 
     assert!(forwarder.choice_log().snapshot().is_empty());
+}
+
+#[test]
+fn a_thumbnail_from_the_render_goes_to_the_ledger_and_not_to_the_service() {
+    let rig = StillRig::start();
+    let ledger = standalone_ledger();
+    let forwarder = forwarder_for(&rig, &ledger);
+    ledger.register(StillId(4), ShotRequestId(1), ledger.current_screen_epoch());
+    let thumbnail = StillThumbnail::new(StillId(4), PixelSize::new(2, 1), vec![5; 8]).unwrap();
+
+    render_loop::still::StillEventSink::deliver_thumbnail(&forwarder, thumbnail);
+
+    let ledger_counters = ledger.counters();
+    assert_eq!(
+        ledger_counters.thumbnails_held, 1,
+        "миниатюра у учёта снимков: {ledger_counters:?}"
+    );
+    assert_eq!(forwarder.counters().forwarded, 0, "служба записи миниатюру не получает");
 }

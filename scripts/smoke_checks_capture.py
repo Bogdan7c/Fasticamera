@@ -225,6 +225,7 @@ def capture_notes(result: dict) -> list[str]:
                 notes.append(
                     f"capture: снимок {shot.get('n')} ({shot.get('step')}): «кадр захвачен» через {shot.get('secured_ms')} мс, "
                     f"«сохранено» через {shot.get('saved_ms')} мс от нажатия"
+                    f"{_thumbnail_note(shot)}"
                 )
         burst_times = [shot.get("saved_ms") for shot in shots if isinstance(shot, dict) and shot.get("step") == "burst" and _is_number(shot.get("saved_ms"))]
         if burst_times:
@@ -260,6 +261,21 @@ def capture_notes(result: dict) -> list[str]:
             f"экспозиции кадра»: медиана {frames.get('p2f_p50_ms')} мс, максимум {frames.get('p2f_max_ms')} мс"
         )
     return notes
+
+
+def _thumbnail_note(shot: dict) -> str:
+    """Замер «нажатие → картинка в миниатюре» (14g): только наблюдение, не условие прохождения.
+
+    Ключ ``thumb_ms`` — сокращение ``press_to_thumbnail_ms`` из ``compact_shot`` (строка результата ограничена
+    4000 байтами, поэтому в сводке замер только у одиночных снимков; у снимков серии он лежит в строках
+    ``detail_capture`` под полным именем поля).
+    Нет ключа — картинку не нарисовали (вытеснена следующим снимком, пришла без картинки или прогон кончился
+    раньше следующего кадра); для iOS эталон ≈ 300 мс (``docs/ios-camera/motion.md``).
+    """
+    thumb_ms = shot.get("thumb_ms")
+    if not _is_number(thumb_ms):
+        return "; картинка в миниатюре не нарисована (или не успела до конца прогона)"
+    return f"; картинка в миниатюре через {thumb_ms} мс от нажатия"
 
 
 def _flash_notes(report: dict) -> list[str]:

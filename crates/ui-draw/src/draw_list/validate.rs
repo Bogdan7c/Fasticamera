@@ -4,7 +4,7 @@ use crate::color::DisplayColor;
 use crate::draw_list::DrawList;
 use crate::draw_list::error::DrawListError;
 use crate::draw_list::glass_group::{GlassGroupItem, GlassMember, MAX_GLASS_GROUP_MEMBERS};
-use crate::draw_list::items::{DrawItem, IconItem, ShapeItem, TextItem};
+use crate::draw_list::items::{DrawItem, IconItem, ImageItem, ShapeItem, TextItem};
 use crate::glass::GlassParamsPx;
 use crate::transform::Affine2;
 
@@ -18,6 +18,7 @@ impl DrawList {
                 DrawItem::Glass(group) => validate_glass_group(index, group)?,
                 DrawItem::Text(text) => validate_text(index, text)?,
                 DrawItem::Icon(icon) => validate_icon(index, icon)?,
+                DrawItem::Image(image) => validate_image(index, image)?,
             }
         }
         Ok(())
@@ -151,4 +152,20 @@ fn validate_glass_params(item: usize, params: &GlassParamsPx) -> Result<(), Draw
     }
     check_unit(item, "params.tint_level", params.tint_level)?;
     check_unit(item, "params.dimming.max_alpha", params.dimming.max_alpha)
+}
+
+fn validate_image(item: usize, image: &ImageItem) -> Result<(), DrawListError> {
+    check_transform(item, &image.transform)?;
+    // Пиксели проверены при сборке `UiPicture` (размер ≠ 0, длина буфера); здесь — только рамка.
+    // Рамка нулевого размера бессмысленна: картинке некуда лечь.
+    check_non_negative(item, "size_px.width", image.size_px.width)?;
+    check_non_negative(item, "size_px.height", image.size_px.height)?;
+    if image.size_px.width == 0.0 || image.size_px.height == 0.0 {
+        return Err(DrawListError::InvalidSize {
+            item,
+            field: "size_px",
+            value: 0.0,
+        });
+    }
+    Ok(())
 }

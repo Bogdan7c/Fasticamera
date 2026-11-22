@@ -5,6 +5,7 @@ use crate::draw_list::glass_group::GlassGroupItem;
 use crate::geometry::{PxRect, PxSize};
 use crate::glass::ShadowParamsPx;
 use crate::icons::IconId;
+use crate::picture::UiPicture;
 use crate::shape::ShapeGeometry;
 use crate::text::TextRun;
 use crate::transform::Affine2;
@@ -47,6 +48,36 @@ pub struct IconItem {
     pub opacity: Opacity,
 }
 
+/// Как картинка ложится в рамку элемента.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageFit {
+    /// Заполнить рамку целиком, сохранив пропорции: картинка масштабируется так, чтобы закрыть рамку,
+    /// лишнее по длинной стороне обрезается поровну с двух краёв (центр картинки = центр рамки).
+    Cover,
+}
+
+/// Форма, которой картинка обрезается внутри рамки.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageClip {
+    /// Круг, вписанный в рамку: диаметр = меньшая сторона `size_px`, центр = центр рамки.
+    /// Край сглаживается тем же покрытием, что у фигур.
+    Circle,
+}
+
+/// Картинка (14g: миниатюра снимка). Локальная рамка размера `size_px` с центром в (0,0); пиксели
+/// источника — в [`UiPicture`], перевод их кодировки в цвет экрана — забота рендера и его эталона.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImageItem {
+    pub picture: UiPicture,
+    /// Локальные координаты (центр рамки = 0) → пиксели экрана. Поворот картинки (значки по ориентации
+    /// телефона) задаётся здесь же.
+    pub transform: Affine2,
+    pub size_px: PxSize,
+    pub fit: ImageFit,
+    pub clip: ImageClip,
+    pub opacity: Opacity,
+}
+
 /// Элемент списка рисования.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DrawItem {
@@ -54,6 +85,7 @@ pub enum DrawItem {
     Glass(GlassGroupItem),
     Text(TextItem),
     Icon(IconItem),
+    Image(ImageItem),
 }
 
 impl DrawItem {
@@ -66,6 +98,7 @@ impl DrawItem {
             DrawItem::Glass(item) => item.bounds_px(),
             DrawItem::Text(item) => crate::draw_list::bounds::text_bounds(item),
             DrawItem::Icon(item) => crate::draw_list::bounds::icon_bounds(item),
+            DrawItem::Image(item) => crate::draw_list::bounds::image_bounds(item),
         }
     }
 }

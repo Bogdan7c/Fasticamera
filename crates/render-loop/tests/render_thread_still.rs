@@ -27,16 +27,21 @@ use shell_contract::orientation::DeviceOrientation;
 use still_contract::develop::{DevelopEvent, PrimaryTarget, PrimaryTargetOffer};
 use still_contract::frame_choice::NoFrameReason;
 use still_contract::plan::{FrameSelection, PrimaryFormat, RawOutput, ShutterPress, StillId, StillOutputs, StillPlan};
+use still_contract::thumbnail::StillThumbnail;
 use support::{FakeBackend, FakeClock, FakeCommands, Journal, Probe, fake_surface, wait_until};
 
 const DEADLINE: Duration = Duration::from_secs(5);
 
 #[derive(Default)]
-struct Sink(Mutex<Vec<DevelopEvent>>);
+struct Sink(Mutex<Vec<DevelopEvent>>, Mutex<Vec<StillThumbnail>>);
 
 impl StillEventSink for Sink {
     fn deliver(&self, event: DevelopEvent) {
         self.0.lock().unwrap_or_else(PoisonError::into_inner).push(event);
+    }
+
+    fn deliver_thumbnail(&self, thumbnail: StillThumbnail) {
+        self.1.lock().unwrap_or_else(PoisonError::into_inner).push(thumbnail);
     }
 }
 

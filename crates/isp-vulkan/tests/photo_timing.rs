@@ -112,13 +112,37 @@ fn phone_frame_in_slices_is_correct_and_timings_are_reported() {
     let (captured, gpu_frame) = captured_for_development.unwrap();
     let mut developer = developer_for(&context, SLICE_ROWS, WIDTH);
     let crop = crop_in_buffer(gpu_frame.valid_area, 0, 0, WIDTH, HEIGHT);
-    let developed = develop(
+    let mut developed = develop(
         &context,
         &mut developer,
         &captured,
         &frame,
         crop,
         RgbaReadback::NotNeeded,
+    );
+    // Миниатюра кадра 12 Мп (ненаправленное уменьшение ≈ 16:1, дробей нет) равна эталону от полной картинки.
+    let began = Instant::now();
+    let isp_vulkan::photo::ThumbnailOutcome::Ready { size, rgba } = developed.photo.take_thumbnail() else {
+        panic!("миниатюра кадра 12 Мп обязана быть");
+    };
+    let (want_size, want) = isp_vulkan::photo::reference_thumbnail(
+        &developed.image_rgba,
+        PixelSize::new(WIDTH, HEIGHT),
+        still_contract::shot::StillRotation::None,
+        PhotoConfig::default().thumbnail_long_side_px,
+    )
+    .unwrap();
+    assert_eq!((size, want_size), (PixelSize::new(256, 192), PixelSize::new(256, 192)));
+    let worst = rgba
+        .iter()
+        .zip(&want)
+        .map(|(got, want)| got.abs_diff(*want))
+        .max()
+        .unwrap();
+    assert!(worst <= 1, "миниатюра 12 Мп против эталона: {worst} градаций");
+    println!(
+        "эталон миниатюры 12 Мп на CPU посчитан за {:.0} мс",
+        millis(began.elapsed())
     );
     let total: Duration = developed.slice_times.iter().sum();
     let slowest = developed.slice_times.iter().max().copied().unwrap();
@@ -132,7 +156,8 @@ fn phone_frame_in_slices_is_correct_and_timings_are_reported() {
         millis(total) / developed.slice_times.len() as f64,
         developer.plane_memory_bytes() as f64 / (1 << 20) as f64,
     );
-    assert_eq!(developed.slice_times.len(), 12);
+    // 12 полос вывода по 256 строк + шаг отделки (миниатюра, переход, копии; 14g).
+    assert_eq!(developed.slice_times.len(), 13);
     assert_eq!(developed.image_rgba.len(), (WIDTH * HEIGHT * 4) as usize);
 
     // Середина кадра через границу полос (строка 1536 = 6 × 256) против эталона на подкадре 256×256: пиксели
@@ -251,6 +276,7 @@ fn phone_frame_timings_without_validation_layer() {
         let mut totals = Vec::new();
         let mut slowest = Duration::ZERO;
         let mut slices = 0;
+        let (mut first_slice_times, mut last_slice_times) = (Vec::new(), Vec::new());
         // Начало проявки на CPU (картинка 48 МиБ, uniform, привязки; для JPEG ещё буфер 48 МиБ с обнулением).
         for readback in [RgbaReadback::NotNeeded, RgbaReadback::ForJpeg] {
             let began = Instant::now();
@@ -260,6 +286,7 @@ fn phone_frame_timings_without_validation_layer() {
                     params: &frame.params,
                     crop,
                     readback,
+                    rotation: still_contract::shot::StillRotation::None,
                 })
                 .unwrap();
             let begin_time = began.elapsed();
@@ -279,6 +306,11 @@ fn phone_frame_timings_without_validation_layer() {
                 RgbaReadback::NotNeeded,
             );
             totals.push(developed.slice_times.iter().sum::<Duration>());
+            // Первая и последняя полосы одной геометрии (ореол с одной стороны); миниатюра — только в последней.
+            // Последний шаг — отделка; последняя полоса вывода — перед ним (той же геометрии, что первая).
+            let output_slices = developed.slice_times.len() - 1;
+            first_slice_times.push(developed.slice_times[output_slices - 1]);
+            last_slice_times.push(developed.slice_times[output_slices]);
             slowest = slowest.max(developed.slice_times.iter().max().copied().unwrap());
             slices = developed.slice_times.len();
             assert_eq!(developed.image_rgba.len(), (WIDTH * HEIGHT * 4) as usize);
@@ -291,6 +323,15 @@ fn phone_frame_timings_without_validation_layer() {
                 ),
             }
         }
+        first_slice_times.sort();
+        last_slice_times.sort();
+        println!(
+            "без validation: полоса {slice_rows}: последняя полоса вывода {:.2} мс, шаг отделки (миниатюра 256 px, переход, без копии JPEG) {:.2} мс \
+             (медианы из 3, отправка + fence): отделка − полоса ≈ {:.2} мс",
+            millis(first_slice_times[1]),
+            millis(last_slice_times[1]),
+            millis(last_slice_times[1]) - millis(first_slice_times[1]),
+        );
         totals.sort();
         println!(
             "без validation: проявление, полоса {slice_rows}: {slices} полос, всего {:.1} мс (медиана из 3), самая долгая полоса {:.1} мс, плоскости {:.1} МиБ",

@@ -162,6 +162,16 @@ impl FakeRenderPort {
         sink.deliver(event);
     }
 
+    /// Рендер «отдаёт миниатюру» снимка `id` тем же приёмником, что и события (14g): раньше итога снимка.
+    pub fn emit_thumbnail(&self, id: StillId, thumbnail: still_contract::thumbnail::StillThumbnail) {
+        let sink = lock(&self.sinks)
+            .iter()
+            .find(|(sink_id, _)| *sink_id == id)
+            .map(|(_, sink)| Arc::clone(sink))
+            .expect("рендер не получал Begin для этого снимка");
+        sink.deliver_thumbnail(thumbnail);
+    }
+
     /// Ждёт цель основной картинки для снимка и говорит, что это чтение в память.
     pub fn wait_readback_target(&self, id: StillId) {
         wait_until(

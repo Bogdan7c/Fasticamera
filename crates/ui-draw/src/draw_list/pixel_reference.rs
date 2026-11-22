@@ -8,21 +8,23 @@ use crate::draw_list::{GlassGroupItem, ShapeItem};
 use crate::geometry::PxPoint;
 use crate::glass::reference::{GlassPixelInput, shade_glass_with_shadow};
 use crate::light::LightDirection;
+use crate::shape::ShapeGeometry;
 use crate::shape::{corrected_distance, coverage, over, shadow_falloff, shadow_probe_point};
 use crate::transform::{Affine2, AffineError};
 
 /// Расстояния фигуры в точке экрана.
-struct ShapeDistances {
+pub(super) struct ShapeDistances {
     /// Исправленное расстояние в пикселях экрана (внутри < 0).
-    screen_px: f32,
+    pub(super) screen_px: f32,
     /// То же в локальных единицах фигуры (нужно обводке: её ширина задана в локальных px).
-    local: f32,
+    pub(super) local: f32,
     /// Длина экранного градиента локальной нормали (1/масштаб): локальные единицы → экранные.
-    gradient_length: f32,
+    pub(super) gradient_length: f32,
 }
 
-fn shape_distances(item: &ShapeItem, inverse: &Affine2, screen_point: PxPoint) -> ShapeDistances {
-    let sample = corrected_distance(&item.geometry, inverse.apply_point(screen_point));
+/// Расстояния геометрии `geometry`, чьё преобразование «локальные → экран» обратно `inverse`, в точке экрана.
+pub(super) fn shape_distances(geometry: &ShapeGeometry, inverse: &Affine2, screen_point: PxPoint) -> ShapeDistances {
+    let sample = corrected_distance(geometry, inverse.apply_point(screen_point));
     let gradient = inverse.apply_gradient(sample.normal_out);
     match gradient.normalized() {
         Some(_) => ShapeDistances {
@@ -59,7 +61,7 @@ pub fn shade_shape_pixel(
     aa_width_px: f32,
 ) -> Result<PremultipliedColor, AffineError> {
     let inverse = item.transform.inverse()?;
-    let here = shape_distances(item, &inverse, screen_point);
+    let here = shape_distances(&item.geometry, &inverse, screen_point);
     let mut color = premultiplied_scaled(item.fill, coverage(here.screen_px, aa_width_px));
     if let Some(stroke) = item.stroke.filter(|stroke| stroke.width_px > 0.0) {
         let stroke_distance = (here.local.abs() - 0.5 * stroke.width_px) / here.gradient_length;
@@ -67,7 +69,11 @@ pub fn shade_shape_pixel(
         color = over(stroke_layer, color);
     }
     if let Some(shadow) = item.shadow.filter(|shadow| shadow.alpha > 0.0) {
-        let shifted = shape_distances(item, &inverse, shadow_probe_point(screen_point, shadow.offset_px));
+        let shifted = shape_distances(
+            &item.geometry,
+            &inverse,
+            shadow_probe_point(screen_point, shadow.offset_px),
+        );
         let falloff = shadow_falloff(shifted.screen_px, shadow.radius_px, aa_width_px);
         let shadow_layer = PremultipliedColor {
             r: 0.0,

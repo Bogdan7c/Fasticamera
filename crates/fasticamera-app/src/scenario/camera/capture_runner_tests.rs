@@ -410,3 +410,37 @@ fn a_render_that_never_reports_a_choice_leaves_every_shot_unknown_without_invent
         assert_eq!(shot.frame.press_to_frame_ms, None);
     }
 }
+
+#[test]
+fn the_press_to_thumbnail_time_lands_only_in_the_shots_whose_picture_was_actually_drawn() {
+    use camera_screen::shutter::ShotRequestId;
+    use camera_screen::thumbnail::PictureTiming;
+    use shell_contract::clock::MonotonicNanos;
+
+    let mut world = World::new(Behaviour::default());
+    let mut runner = CaptureRunner::new(fast_config(), planned_steps(), world.now());
+    let state = drive(&mut runner, &mut world, TICK, LIMIT);
+    assert_eq!(state, RunnerState::AllDone);
+    let timing = |request: u64, shown_ms: i64| PictureTiming {
+        shot: ShotRequestId(request),
+        pressed_at: MonotonicNanos::from_nanos(1_000_000_000),
+        shown_at: Some(MonotonicNanos::from_nanos((1_000 + shown_ms) * 1_000_000)),
+    };
+    // Экран показал картинки снимков 1 и 3; снимок 2 вытеснен следующим и не рисовался; 4-й ещё не показан.
+    runner.absorb_picture_timing(Some(timing(1, 310)));
+    runner.absorb_picture_timing(Some(timing(3, 455)));
+    runner.absorb_picture_timing(Some(PictureTiming {
+        shown_at: None,
+        ..timing(4, 0)
+    }));
+
+    let records = runner.into_records();
+
+    let by_request: Vec<(u64, Option<u64>)> = records
+        .shots
+        .iter()
+        .take(4)
+        .map(|shot| (shot.request, shot.press_to_thumbnail_ms))
+        .collect();
+    assert_eq!(by_request, [(1, Some(310)), (2, None), (3, Some(455)), (4, None)]);
+}

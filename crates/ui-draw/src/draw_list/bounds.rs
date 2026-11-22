@@ -1,7 +1,7 @@
 //! Границы элементов: охватывающий прямоугольник преобразованной локальной рамки.
 
-use crate::draw_list::items::{IconItem, ShapeItem, TextItem};
-use crate::geometry::{PxPoint, PxRect};
+use crate::draw_list::items::{IconItem, ImageItem, ShapeItem, TextItem};
+use crate::geometry::{PxPoint, PxRect, PxSize};
 use crate::transform::Affine2;
 
 /// Охватывающий прямоугольник локального `rect` после преобразования (четыре угла).
@@ -54,5 +54,19 @@ pub(crate) fn text_bounds(item: &TextItem) -> Option<PxRect> {
 
 pub(crate) fn icon_bounds(item: &IconItem) -> Option<PxRect> {
     let local = PxRect::from_center(PxPoint::ORIGIN, item.size_px);
+    transformed_bounds(&item.transform, &local)
+}
+
+/// Картинка закрашивает не больше своей рамки (круг вписан в неё); запас в 1 px — под сглаживание края,
+/// как у фигур.
+pub(crate) fn image_bounds(item: &ImageItem) -> Option<PxRect> {
+    let antialias_margin_px = 1.0;
+    let local = PxRect::from_center(
+        PxPoint::ORIGIN,
+        PxSize {
+            width: item.size_px.width + 2.0 * antialias_margin_px,
+            height: item.size_px.height + 2.0 * antialias_margin_px,
+        },
+    );
     transformed_bounds(&item.transform, &local)
 }

@@ -20,6 +20,9 @@ struct IdleSink;
 
 impl render_loop::still::StillEventSink for IdleSink {
     fn deliver(&self, _event: still_contract::develop::DevelopEvent) {}
+
+    // Тест порта рендера миниатюры не проверяет: снимки здесь до проявления не доходят.
+    fn deliver_thumbnail(&self, _thumbnail: still_contract::thumbnail::StillThumbnail) {}
 }
 
 fn begin_command(id: u64) -> StillCommand {

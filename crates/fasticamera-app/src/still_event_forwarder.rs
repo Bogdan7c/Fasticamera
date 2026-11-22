@@ -18,6 +18,7 @@ use serde::Serialize;
 use still_contract::develop::DevelopEvent;
 
 use crate::still_choice_log::{DEFAULT_CHOICE_LOG_CAPACITY, StillChoiceLog};
+use crate::still_screen_ledger::StillThumbnailSink;
 
 const LOG_TARGET: &str = "fasticamera::still::events";
 
@@ -35,6 +36,8 @@ pub struct ForwarderCounters {
 /// Пересылка событий рендера в службу записи.
 pub struct DevelopEventForwarder {
     handle: StillServiceHandle,
+    /// Хозяин миниатюр (учёт снимков): рендер отдаёт миниатюру раньше итога, держит её учёт до «сохранено» (14g).
+    thumbnails: Arc<dyn StillThumbnailSink>,
     /// Выборы кадра из `Secured`: служба их не получает, а диагностика («снимок без задержки») читает отсюда.
     choices: Arc<StillChoiceLog>,
     forwarded: AtomicU64,
@@ -43,9 +46,10 @@ pub struct DevelopEventForwarder {
 }
 
 impl DevelopEventForwarder {
-    pub fn new(handle: StillServiceHandle) -> Self {
+    pub fn new(handle: StillServiceHandle, thumbnails: Arc<dyn StillThumbnailSink>) -> Self {
         Self {
             handle,
+            thumbnails,
             choices: Arc::new(StillChoiceLog::new(DEFAULT_CHOICE_LOG_CAPACITY)),
             forwarded: AtomicU64::new(0),
             rejected_queue_full: AtomicU64::new(0),
@@ -98,6 +102,12 @@ impl StillEventSink for DevelopEventForwarder {
     fn deliver(&self, event: DevelopEvent) {
         // Причина отказа уже записана в счётчик и лог внутри `forward`; рендеру ответ не нужен.
         let _delivery = self.forward(event);
+    }
+
+    fn deliver_thumbnail(&self, thumbnail: still_contract::thumbnail::StillThumbnail) {
+        // Служба записи миниатюру не получает: она не итог снимка. Хозяин картинки — учёт снимков, он
+        // отдаст её экрану вместе с «сохранено» (или выбросит со счётчиком). Не блокирует: короткий замок таблицы.
+        self.thumbnails.hold_thumbnail(thumbnail);
     }
 }
 

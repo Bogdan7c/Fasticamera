@@ -329,6 +329,9 @@ mod tests {
             shape_instances: 0,
             glyph_instances: 0,
             glass_groups: 1,
+            image_instances: 0,
+            picture_uploads: 0,
+            picture_cache_hits: 0,
         };
         state.note_drawn(&report(PyramidOutcome::Rebuilt));
         state.note_drawn(&report(PyramidOutcome::Reused));

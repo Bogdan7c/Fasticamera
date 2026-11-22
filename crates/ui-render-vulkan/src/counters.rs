@@ -23,4 +23,16 @@ pub struct UiRenderCounters {
     pub glyph_instances: u64,
     /// Групп стекла нарисовано.
     pub glass_groups: u64,
+    /// Элементов-картинок нарисовано.
+    pub images_drawn: u64,
+    /// Картинок загружено в видеопамять (запись копии в команды кадра).
+    pub picture_uploads: u64,
+    /// Картинок взято из кэша без загрузки.
+    pub picture_cache_hits: u64,
+    /// Картинок вытеснено из кэша (память отдана после fence слотов, что их могли читать).
+    pub picture_evictions: u64,
+    /// Кадров отвергнуто из-за слишком большой картинки.
+    pub pictures_rejected: u64,
+    /// Картинок выброшено из кэша, потому что кадр с их загрузкой записан, но не отправлен (`frame_not_submitted`).
+    pub pictures_discarded_unsubmitted: u64,
 }

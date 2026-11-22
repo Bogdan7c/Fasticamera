@@ -11,6 +11,7 @@
 
 pub mod image;
 pub mod mirror;
+pub mod pictures;
 
 use ash::vk;
 use gpu_vulkan::color_target::{

@@ -26,6 +26,14 @@ use photo_support::{
     into_gpu_error, upload, zone_plate_frame,
 };
 use quality_support::{assert_no_validation_errors, gpu_context_or_skip};
+use still_contract::shot::StillRotation;
+
+/// План миниатюры при конфиге по умолчанию и без поворота (цели проявки заказываются под него).
+fn plan_for(size: PixelSize) -> isp_vulkan::photo::ThumbnailPlan {
+    PhotoConfig::default()
+        .thumbnail_plan(size, StillRotation::None)
+        .unwrap()
+}
 
 const WIDTH: u32 = 64;
 const HEIGHT: u32 = 48;
@@ -95,6 +103,7 @@ fn calls_out_of_order_are_explicit_errors_and_do_not_corrupt_the_development() {
         params: &frame.params,
         crop,
         readback: RgbaReadback::NotNeeded,
+        rotation: StillRotation::None,
     };
     // Настоящее доказательство завершения (пустая работа): подтверждать им при отсутствии записанных полос нельзя.
     let spare_proof = run_one_shot_blocking(&context, |_| Ok(())).unwrap();
@@ -111,7 +120,8 @@ fn calls_out_of_order_are_explicit_errors_and_do_not_corrupt_the_development() {
     developer.cancel().unwrap();
 
     let start = developer.begin(&request).unwrap();
-    assert_eq!(start.slice_count, 2);
+    // Шагов записи: 2 полосы вывода + шаг отделки (миниатюра и копии, 14g).
+    assert_eq!(start.slice_count, 3);
     assert!(
         matches!(developer.begin(&request), Err(PhotoError::Busy { .. })),
         "вторая проявка сразу"
@@ -135,7 +145,7 @@ fn calls_out_of_order_are_explicit_errors_and_do_not_corrupt_the_development() {
         Ok(())
     })
     .unwrap();
-    assert_eq!(outcome, Some(SliceOutcome::Recorded { remaining: 1 }));
+    assert_eq!(outcome, Some(SliceOutcome::Recorded { remaining: 2 }));
     assert!(matches!(developer.cancel(), Err(PhotoError::Busy { .. })));
     assert!(matches!(developer.finish(), Err(PhotoError::OutOfOrder { .. })));
     developer.note_slice_submitted(&first_run.work).unwrap();
@@ -148,6 +158,19 @@ fn calls_out_of_order_are_explicit_errors_and_do_not_corrupt_the_development() {
         "подтверждено дважды"
     );
 
+    // Вторая (последняя) полоса вывода: осталась отделка, проявку закончить нельзя.
+    let second_run = run_one_shot_blocking_traced(&context, |command_buffer| {
+        outcome = Some(developer.record_next_slice(command_buffer).map_err(into_gpu_error)?);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(outcome, Some(SliceOutcome::Recorded { remaining: 1 }));
+    developer.note_slice_submitted(&second_run.work).unwrap();
+    developer.slice_completed(&second_run.proof).unwrap();
+    assert!(
+        matches!(developer.finish(), Err(PhotoError::OutOfOrder { .. })),
+        "полосы вывода подтверждены, но шаг отделки не записан"
+    );
     let last_run = run_one_shot_blocking_traced(&context, |command_buffer| {
         outcome = Some(developer.record_next_slice(command_buffer).map_err(into_gpu_error)?);
         Ok(())
@@ -192,6 +215,7 @@ fn finish_with_host_copy_refuses_when_the_writing_work_was_not_reported() {
             params: &frame.params,
             crop,
             readback: RgbaReadback::ForJpeg,
+            rotation: StillRotation::None,
         })
         .unwrap();
     for _ in 0..start.slice_count {
@@ -250,6 +274,7 @@ fn bad_requests_are_refused_without_leaving_a_development_or_objects() {
             params: &frame.params,
             crop,
             readback: RgbaReadback::ForJpeg,
+            rotation: StillRotation::None,
         });
         assert!(
             matches!(result, Err(PhotoError::InvalidInput { .. })),
@@ -270,6 +295,7 @@ fn bad_requests_are_refused_without_leaving_a_development_or_objects() {
             params,
             crop,
             readback: RgbaReadback::NotNeeded,
+            rotation: StillRotation::None,
         });
         assert!(
             matches!(result, Err(PhotoError::UnsupportedParams { .. })),
@@ -286,6 +312,7 @@ fn bad_requests_are_refused_without_leaving_a_development_or_objects() {
         params: &frame.params,
         crop: crop_in_buffer(area, 0, 0, WIDTH, HEIGHT),
         readback: RgbaReadback::NotNeeded,
+        rotation: StillRotation::None,
     });
     assert!(matches!(result, Err(PhotoError::InvalidInput { .. })), "{result:?}");
 
@@ -329,6 +356,7 @@ fn finished_development_returns_all_objects_but_the_photo_and_a_dropped_busy_dev
                 params: &frame.params,
                 crop,
                 readback: RgbaReadback::NotNeeded,
+                rotation: StillRotation::None,
             })
             .unwrap();
         run_one_shot_blocking(&context, |command_buffer| {
@@ -355,7 +383,12 @@ fn targets_allocated_on_another_thread_develop_the_same_picture_as_begin() {
 
     let worker_context = context.clone();
     let targets = std::thread::spawn(move || {
-        DevelopTargets::allocate(&worker_context, PixelSize::new(33, 29), RgbaReadback::ForJpeg)
+        DevelopTargets::allocate(
+            &worker_context,
+            PixelSize::new(33, 29),
+            RgbaReadback::ForJpeg,
+            plan_for(PixelSize::new(33, 29)),
+        )
     })
     .join()
     .unwrap()
@@ -365,6 +398,7 @@ fn targets_allocated_on_another_thread_develop_the_same_picture_as_begin() {
         params: &frame.params,
         crop,
         readback: RgbaReadback::ForJpeg,
+        rotation: StillRotation::None,
     };
     let prepared = develop_with_targets(&context, &mut developer, &request, targets);
     assert_eq!(prepared.image_rgba, reference.image_rgba, "та же картинка бит-в-бит");
@@ -390,21 +424,38 @@ fn targets_that_do_not_fit_the_request_are_refused_without_starting_a_developmen
         params: &frame.params,
         crop,
         readback,
+        rotation: StillRotation::None,
     };
     // Не тот размер картинки.
-    let wrong_size = DevelopTargets::allocate(&context, PixelSize::new(30, 24), RgbaReadback::NotNeeded).unwrap();
+    let wrong_size = DevelopTargets::allocate(
+        &context,
+        PixelSize::new(30, 24),
+        RgbaReadback::NotNeeded,
+        plan_for(PixelSize::new(30, 24)),
+    )
+    .unwrap();
     let error = developer
         .begin_with_targets(&request(RgbaReadback::NotNeeded), wrong_size)
         .unwrap_err();
     assert!(matches!(error, PhotoError::InvalidInput { .. }), "{error:?}");
     assert!(!developer.is_developing());
     // Копия для JPEG нужна, а в целях её нет — и наоборот.
-    let no_copy = DevelopTargets::allocate(&context, crop.size, RgbaReadback::NotNeeded).unwrap();
+    let no_copy = DevelopTargets::allocate(&context, crop.size, RgbaReadback::NotNeeded, plan_for(crop.size)).unwrap();
     assert!(matches!(
         developer.begin_with_targets(&request(RgbaReadback::ForJpeg), no_copy),
         Err(PhotoError::InvalidInput { .. })
     ));
-    let extra_copy = DevelopTargets::allocate(&context, crop.size, RgbaReadback::ForJpeg).unwrap();
+    // План миниатюры другой (цели под поворот на 90°, а проявка без поворота): размеры миниатюры не сходятся.
+    let turned_plan = PhotoConfig::default()
+        .thumbnail_plan(crop.size, StillRotation::Clockwise90)
+        .unwrap();
+    let wrong_thumbnail = DevelopTargets::allocate(&context, crop.size, RgbaReadback::NotNeeded, turned_plan).unwrap();
+    assert!(matches!(
+        developer.begin_with_targets(&request(RgbaReadback::NotNeeded), wrong_thumbnail),
+        Err(PhotoError::InvalidInput { .. })
+    ));
+    assert!(!developer.is_developing());
+    let extra_copy = DevelopTargets::allocate(&context, crop.size, RgbaReadback::ForJpeg, plan_for(crop.size)).unwrap();
     assert!(matches!(
         developer.begin_with_targets(&request(RgbaReadback::NotNeeded), extra_copy),
         Err(PhotoError::InvalidInput { .. })
@@ -423,4 +474,125 @@ fn targets_that_do_not_fit_the_request_are_refused_without_starting_a_developmen
     assert!(matches!(checked, Err(PhotoError::InvalidInput { .. })), "{checked:?}");
     assert!(developer.check_request(&request(RgbaReadback::NotNeeded)).is_ok());
     assert_no_validation_errors(&context);
+}
+
+/// Состояние после записи всех полос вывода и подтверждения их fence-ов, но до шага отделки (общий кусок двух
+/// тестов отделки): миниатюра и копия ещё не записаны.
+struct AfterOutputSlices {
+    context: gpu_vulkan::context::GpuContext,
+    developer: PhotoDeveloper,
+    output_run: gpu_vulkan::kit_test_support::BlockingRun,
+    output_steps: usize,
+}
+
+fn develop_output_slices_in_one_buffer() -> Option<AfterOutputSlices> {
+    let context = gpu_context_or_skip()?;
+    let mut capturer = RawCapturer::new(&context, &PhotoConfig::default()).unwrap();
+    let frame = zone_plate_frame(WIDTH, HEIGHT, BayerPattern::BGGR);
+    let gpu_frame = upload(&context, &frame.raw, SourceKind::Raw10, Placement::PADDED);
+    let captured = capture(&context, &mut capturer, &gpu_frame);
+    let mut developer = developer_for(&context, 16, WIDTH);
+    let crop = crop_in_buffer(gpu_frame.valid_area, 0, 0, WIDTH, HEIGHT);
+    let start = developer
+        .begin(&DevelopRequest {
+            raw: &captured,
+            params: &frame.params,
+            crop,
+            readback: RgbaReadback::ForJpeg,
+            rotation: StillRotation::None,
+        })
+        .unwrap();
+    // Полос вывода столько, сколько строк кадра в полосах по 16; ещё один шаг записи — отделка.
+    let output_steps = start.slice_count - 1;
+    assert_eq!(
+        output_steps,
+        (HEIGHT as usize).div_ceil(16),
+        "шаги = полосы вывода + отделка"
+    );
+    let output_run = run_one_shot_blocking_traced(&context, |command_buffer| {
+        for step in 0..output_steps {
+            let outcome = developer.record_next_slice(command_buffer).map_err(into_gpu_error)?;
+            assert_eq!(
+                outcome,
+                SliceOutcome::Recorded {
+                    remaining: start.slice_count - step - 1
+                }
+            );
+        }
+        Ok(())
+    })
+    .unwrap();
+    // Все полосы вывода записаны в буфер, но проявка не закончена: остался шаг отделки.
+    developer.note_slice_submitted(&output_run.work).unwrap();
+    for _ in 0..output_steps {
+        developer.slice_completed(&output_run.proof).unwrap();
+    }
+    assert!(
+        matches!(developer.finish(), Err(PhotoError::OutOfOrder { .. })),
+        "без шага отделки проявка не заканчивается: копии не записаны"
+    );
+    Some(AfterOutputSlices {
+        context,
+        developer,
+        output_run,
+        output_steps,
+    })
+}
+
+/// Миниатюра и копия для JPEG записываются ОТДЕЛЬНЫМ шагом, не в последней полосе вывода: после полос вывода
+/// шаг отделки в своём командном буфере доводит проявку до конца, и миниатюра равна эталону картинки.
+#[test]
+fn thumbnail_and_host_copy_come_from_their_own_finishing_step() {
+    let Some(mut state) = develop_output_slices_in_one_buffer() else {
+        return;
+    };
+    let finishing = run_one_shot_blocking_traced(&state.context, |command_buffer| {
+        let outcome = state
+            .developer
+            .record_next_slice(command_buffer)
+            .map_err(into_gpu_error)?;
+        assert_eq!(outcome, SliceOutcome::Recorded { remaining: 0 });
+        Ok(())
+    })
+    .unwrap();
+    state.developer.note_slice_submitted(&finishing.work).unwrap();
+    state.developer.slice_completed(&finishing.proof).unwrap();
+    let mut photo = state.developer.finish().unwrap();
+    let image = photo.gpu_image().read_back_blocking().unwrap();
+    let host = photo.host_rgba8().expect("копия для JPEG запрошена");
+    assert_eq!(host.rgba_bytes(), image.as_slice(), "копия записана шагом отделки");
+    let isp_vulkan::photo::ThumbnailOutcome::Ready { size, rgba } = photo.take_thumbnail() else {
+        panic!("миниатюра обязана быть");
+    };
+    let (want_size, want) =
+        isp_vulkan::photo::reference_thumbnail(&image, PixelSize::new(WIDTH, HEIGHT), StillRotation::None, 256)
+            .unwrap();
+    assert_eq!(size, want_size);
+    assert!(rgba.iter().zip(&want).all(|(got, want)| got.abs_diff(*want) <= 1));
+    assert_eq!(state.output_steps, 3);
+    assert_no_validation_errors(&state.context);
+}
+
+/// Буферы хоста запечатываются доказательством ШАГА ОТДЕЛКИ: доказательство командного буфера полос вывода их не
+/// запечатывает. Если бы копии лежали в последней полосе вывода, оно подошло бы, и тест не упал бы.
+#[test]
+fn host_copy_is_not_sealed_by_the_proof_of_the_output_slices() {
+    let Some(mut state) = develop_output_slices_in_one_buffer() else {
+        return;
+    };
+    let finishing = run_one_shot_blocking_traced(&state.context, |command_buffer| {
+        state
+            .developer
+            .record_next_slice(command_buffer)
+            .map_err(into_gpu_error)?;
+        Ok(())
+    })
+    .unwrap();
+    // Отметка работы отделки подменена работой полос вывода (как если бы копии записала последняя полоса).
+    state.developer.note_slice_submitted(&state.output_run.work).unwrap();
+    state.developer.slice_completed(&finishing.proof).unwrap();
+    assert!(
+        matches!(state.developer.finish(), Err(PhotoError::SealRefused { .. })),
+        "доказательство отделки не подходит к буферу, отмеченному работой полос вывода"
+    );
 }

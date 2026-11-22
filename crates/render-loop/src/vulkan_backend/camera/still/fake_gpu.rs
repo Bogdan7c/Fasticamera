@@ -16,6 +16,7 @@ use camera_contract::capture_result::SensorTimestamp;
 use camera_contract::frame_passport::StreamPassport;
 use camera_contract::geometry::PixelSize;
 use gpu_vulkan::sync::GpuReleaseFence;
+use isp_vulkan::photo::{ThumbnailOutcome, ThumbnailUnavailable};
 use raw_frame_stream::RawFrameLease;
 use shell_contract::surface::NativeSurface;
 use still_contract::shot::{OwnedPixels, RawSamples16, Rgba8Image};
@@ -58,6 +59,14 @@ pub struct FakeGpuState {
     pub capture_forever: bool,
     /// Проявление никогда не завершается (зависший fence).
     pub develop_forever: bool,
+    /// Миниатюра у проявленной картинки не получилась (сбой уменьшения): итог снимка от этого не зависит.
+    pub thumbnail_fails: bool,
+    /// Сколько миниатюр сделано (номер миниатюры заполняет её байты: миниатюры разных снимков различимы).
+    pub thumbnails_made: u8,
+    /// Сколько раз движок забрал миниатюру.
+    pub thumbnails_taken: u32,
+    /// Поворот каждого начатого проявления (движок берёт его из фактов кадра).
+    pub develop_rotations: Vec<still_contract::shot::StillRotation>,
     /// Порядок значимых событий GPU и картинок: проверяет, что картинка не уничтожена под GPU.
     pub events: Vec<&'static str>,
     /// Сколько раз GPU объявили потерянным.
@@ -122,8 +131,13 @@ pub struct FakeRaw {
     pub marker: Arc<Vec<u8>>,
 }
 
+/// Размер миниатюры поддельного GPU.
+pub const FAKE_THUMBNAIL_SIZE: PixelSize = PixelSize::new(4, 3);
+const FAKE_THUMBNAIL_BYTES: usize = 4 * 3 * 4;
+
 pub struct FakeImage {
     pub readback: Option<Rgba8Image>,
+    pub thumbnail: Option<ThumbnailOutcome>,
     state: SharedState,
 }
 
@@ -231,8 +245,9 @@ impl StillGpu for FakeGpu {
         .map_err(|error| error.to_string())
     }
 
-    fn develop_start(&mut self, _request: DevelopStart<'_, FakeRaw>) -> Result<(), String> {
+    fn develop_start(&mut self, request: DevelopStart<'_, FakeRaw>) -> Result<(), String> {
         let mut state = self.lock();
+        state.develop_rotations.push(request.rotation);
         state.costs.spend(state.costs.develop_start);
         assert!(
             !state.flight.develop,
@@ -270,8 +285,18 @@ impl StillGpu for FakeGpu {
                 let bytes = FRAME_SIZE.width as usize * FRAME_SIZE.height as usize * 4;
                 Rgba8Image::new(FRAME_SIZE, Arc::new(OwnedPixels(vec![9; bytes]))).expect("размер картинки")
             });
+            state.thumbnails_made += 1;
+            let thumbnail = if state.thumbnail_fails {
+                ThumbnailOutcome::Unavailable(ThumbnailUnavailable::PipelineMissing)
+            } else {
+                ThumbnailOutcome::Ready {
+                    size: FAKE_THUMBNAIL_SIZE,
+                    rgba: vec![state.thumbnails_made; FAKE_THUMBNAIL_BYTES],
+                }
+            };
             return DevelopProgress::Done(FakeImage {
                 readback,
+                thumbnail: Some(thumbnail),
                 state: Arc::clone(&self.state),
             });
         }
@@ -280,6 +305,14 @@ impl StillGpu for FakeGpu {
 
     fn take_readback(&self, image: &mut FakeImage) -> Option<Rgba8Image> {
         image.readback.take()
+    }
+
+    fn take_thumbnail(&self, image: &mut FakeImage) -> ThumbnailOutcome {
+        self.lock().thumbnails_taken += 1;
+        image
+            .thumbnail
+            .take()
+            .unwrap_or(ThumbnailOutcome::Unavailable(ThumbnailUnavailable::AlreadyTaken))
     }
 
     fn present_start(&mut self, _image: &FakeImage, _surface: NativeSurface) -> Result<(), PresentRefusal> {

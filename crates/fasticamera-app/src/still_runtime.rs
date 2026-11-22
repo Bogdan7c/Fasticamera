@@ -41,7 +41,7 @@ use crate::still_choice_log::ChoiceEntry;
 use crate::still_event_forwarder::DevelopEventForwarder;
 use crate::still_phase_log::{PhaseBatch, PhaseCursor};
 use crate::still_render_port::{RenderTargetRoute, StillRenderPort};
-use crate::still_screen_ledger::StillScreenLedger;
+use crate::still_screen_ledger::{StillScreenLedger, StillThumbnailSink};
 
 /// Откуда диагностика берёт итог уборки осиротевших черновиков (на телефоне — MediaStore-сервис оболочки).
 pub trait OrphanSweepSource: Send + Sync {
@@ -98,7 +98,10 @@ impl StillRuntime {
         // С этого момента срыв вспышки от камеры доходит до рендера. Снимок без запущенной службы невозможен,
         // поэтому до привязки итогов вспышки не бывает.
         deps.flash_relay.bind_render(Arc::clone(&deps.render));
-        let events = Arc::new(DevelopEventForwarder::new(handle.clone()));
+        let events = Arc::new(DevelopEventForwarder::new(
+            handle.clone(),
+            Arc::clone(&ledger) as Arc<dyn StillThumbnailSink>,
+        ));
         let capture = Arc::new(StillCaptureService::new(StillCaptureParts {
             service: handle.clone(),
             render: deps.render,

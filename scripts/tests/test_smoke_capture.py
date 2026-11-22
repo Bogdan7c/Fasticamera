@@ -110,6 +110,17 @@ class CaptureSummaryChecksTest(unittest.TestCase):
         self.assertIn("доля точных 1.0", joined)
         self.assertIn("медиана 81.0 мс, максимум 92.4 мс", joined)
 
+    def test_the_press_to_thumbnail_time_is_an_observation_not_a_gate(self) -> None:
+        report = capture_report()
+        report["shots"][0]["thumb_ms"] = 310
+        verdict = verdict_of(report)
+        self.assertEqual(verdict.exit_code, smoke_wait.EXIT_OK, verdict.message)
+        self.assertIn("картинка в миниатюре через 310 мс от нажатия", " ".join(verdict.notes))
+        # Без замера (картинку не нарисовали) прогон тоже проходит, но об этом сказано явно.
+        silent = verdict_of(capture_report())
+        self.assertEqual(silent.exit_code, smoke_wait.EXIT_OK, silent.message)
+        self.assertIn("картинка в миниатюре не нарисована", " ".join(silent.notes))
+
     def problems(self, **overrides: object) -> list[str]:
         return smoke_checks_capture.check_capture(passed(capture_report(**overrides)))
 

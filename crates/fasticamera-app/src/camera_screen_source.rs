@@ -21,7 +21,8 @@ use std::time::Duration;
 use camera_contract::ids::LensFacing;
 use camera_screen::focus::FocusIndicator;
 use camera_screen::modes::CaptureMode;
-use camera_screen::shutter::{ShutterState, ThumbnailState};
+use camera_screen::shutter::{ShotRequestId, ShutterState, ThumbnailState};
+use camera_screen::thumbnail::PictureTiming;
 use camera_screen::{
     CameraPresence, CameraScreen, PanelState, ScreenAction, ScreenDiagnostics, ScreenState, ShutterVisibility,
 };
@@ -188,8 +189,11 @@ impl ScreenStateSnapshot {
 pub struct ScreenReport {
     /// Диагностика самого экрана (жесты, действия, эффекты, кадры).
     pub diagnostics: ScreenDiagnostics,
-    /// Последний снимок для миниатюры.
+    /// Последний снимок для миниатюры (с картинкой, если она пришла).
     pub thumbnail: ThumbnailState,
+    /// Замер «нажатие → картинка» последней показанной картинки (14g): момент нажатия и время кадра, на котором
+    /// картинку впервые нарисовали; `None` — картинки с известным нажатием ещё не было.
+    pub thumbnail_timing: Option<PictureTiming>,
     /// Наблюдаемое состояние экрана (панель, плашка, шаги EV, режим, затвор) на момент последнего кадра.
     pub state: ScreenStateSnapshot,
     /// Настройки съёмки, которые экран применит к СЛЕДУЮЩЕМУ снимку (RAW, формат кадра…): сценарий `capture`
@@ -260,6 +264,8 @@ pub struct CameraScreenSource {
     report_min_interval: Duration,
     /// Время кадра последней публикации отчёта; `None` — ещё не публиковали.
     last_published_at: Option<MonotonicNanos>,
+    /// Снимок, чьё «миниатюра показана» уже записано в лог: строка идёт один раз на картинку.
+    logged_picture_shot: Option<ShotRequestId>,
 }
 
 /// Что случилось в кадре: из этого решается, публиковать ли отчёт немедленно.
@@ -268,11 +274,13 @@ struct FrameActivity {
     input_applied: bool,
     facts_changed: bool,
     effects_executed: bool,
+    /// Картинка миниатюры впервые попала на кадр: отчёт с замером нужен сразу, а не по интервалу.
+    picture_shown: bool,
 }
 
 impl FrameActivity {
     fn any(self) -> bool {
-        self.input_applied || self.facts_changed || self.effects_executed
+        self.input_applied || self.facts_changed || self.effects_executed || self.picture_shown
     }
 }
 
@@ -290,6 +298,7 @@ impl CameraScreenSource {
             gravity_samples_sent: 0,
             report_min_interval: parts.report_min_interval,
             last_published_at: None,
+            logged_picture_shot: None,
         }
     }
 
@@ -301,6 +310,9 @@ impl CameraScreenSource {
             match input {
                 ScreenInput::Touch(touch) => self.screen.handle_touch(touch),
                 ScreenInput::Action(action) => self.screen.handle_action(action),
+                ScreenInput::SavedWithPicture { request, picture } => {
+                    self.screen.handle_saved_with_picture(request, picture);
+                }
                 ScreenInput::SystemGestureZones(zones) => self.screen.set_system_gesture_zones(zones),
             }
         }
@@ -342,6 +354,25 @@ impl CameraScreenSource {
         true
     }
 
+    /// Шаг 4б: картинка миниатюры впервые нарисована — одна строка лога «нажатие → картинка».
+    /// Лог здесь, а не в экране: `camera-screen` без ввода-вывода. `true` — строка записана в этом кадре.
+    fn log_picture_if_just_shown(&mut self) -> bool {
+        let Some(timing) = self.screen.state().picture_timing() else {
+            return false;
+        };
+        if timing.shown_at.is_none() || self.logged_picture_shot == Some(timing.shot) {
+            return false;
+        }
+        self.logged_picture_shot = Some(timing.shot);
+        tracing::info!(
+            target: "fasticamera::camera_screen",
+            shot = ?timing.shot,
+            press_to_picture_ms = timing.press_to_picture_ms(),
+            "миниатюра показана"
+        );
+        true
+    }
+
     /// Пора ли публиковать отчёт: есть события кадра, это первая публикация или вышел интервал по часам кадров.
     fn report_is_due(&self, now: MonotonicNanos, activity: FrameActivity) -> bool {
         if activity.any() {
@@ -360,6 +391,7 @@ impl CameraScreenSource {
         self.board.publish(ScreenReport {
             diagnostics: self.screen.diagnostics(),
             thumbnail: self.screen.state().thumbnail(),
+            thumbnail_timing: self.screen.state().picture_timing(),
             state: ScreenStateSnapshot::observe(self.screen.state()),
             capture_settings: *self.screen.state().settings(),
             presence: self.screen.state().camera_presence(),
@@ -392,6 +424,7 @@ impl UiFrameSource for CameraScreenSource {
         activity.facts_changed = self.sync_camera_facts();
         self.feed_gravity();
         let frame = self.screen.produce_frame(request);
+        activity.picture_shown = self.log_picture_if_just_shown();
         // Эффекты исполняем и при отказе кадра: действие пользователя (например, тап по затвору) уже случилось.
         activity.effects_executed = self.run_effects();
         if self.report_is_due(request.present_time, activity) {

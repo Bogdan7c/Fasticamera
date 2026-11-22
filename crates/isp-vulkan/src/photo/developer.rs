@@ -44,9 +44,12 @@ use super::capture::RawCapture;
 use super::config::PhotoConfig;
 use super::developed::{DevelopRequest, DevelopedPhoto, DevelopmentStart, SliceOutcome};
 use super::error::PhotoError;
+use super::finishing;
 use super::pixels::{GpuPixels, seal_or_leak};
 use super::slicing::{DevelopmentPlan, SlicePlan, max_region_rows, plan_development};
 use super::targets::DevelopTargets;
+use super::thumbnail::ThumbnailPlan;
+use super::thumbnail_pass::{ThumbnailJob, ThumbnailPass};
 use crate::quality::demosaic::{MenonPass, create_pass_pipelines};
 use crate::quality::frame_params::{
     CfaCode, FRAME_PARAMETERS_BYTES, SourceAddressing, check_supported, frame_parameter_bytes,
@@ -126,9 +129,16 @@ impl PhotoDeveloper {
             local,
             1,
         )?;
+        // Миниатюра необязательна: нет пайплайна — снимки проявляются без неё (причина — в `ThumbnailOutcome`).
+        let thumbnail_pass = ThumbnailPass::new(context, local)
+            .inspect_err(|error| {
+                tracing::warn!(target: "fasticamera::isp", %error, "пайплайн миниатюры не создан: снимки без миниатюры");
+            })
+            .ok();
         Ok(Self {
             parts: Some(Box::new(DeveloperParts {
                 job: None,
+                thumbnail_pass,
                 output,
                 menon,
                 levels,
@@ -148,8 +158,10 @@ impl PhotoDeveloper {
     pub fn begin(&mut self, request: &DevelopRequest<'_>) -> Result<DevelopmentStart, PhotoError> {
         // Сначала вход (те же отказы `Busy`/`InvalidInput`, что и раньше), только потом — выделение целей.
         self.check_request(request)?;
-        let context = self.parts_mut()?.context.clone();
-        let targets = DevelopTargets::allocate(&context, request.crop.size, request.readback)?;
+        let parts = self.parts_mut()?;
+        let thumbnail = parts.thumbnail_plan_for(request)?;
+        let context = parts.context.clone();
+        let targets = DevelopTargets::allocate(&context, request.crop.size, request.readback, thumbnail)?;
         self.begin_with_targets(request, targets)
     }
 
@@ -169,10 +181,12 @@ impl PhotoDeveloper {
         request: &DevelopRequest<'_>,
         targets: DevelopTargets,
     ) -> Result<DevelopmentStart, PhotoError> {
-        if let Some(mismatch) = targets.mismatch_with(request.crop.size, request.readback) {
+        let parts = self.parts_mut()?;
+        let thumbnail = parts.thumbnail_plan_for(request)?;
+        if let Some(mismatch) = targets.mismatch_with(request.crop.size, request.readback, thumbnail) {
             return Err(PhotoError::InvalidInput { what: mismatch });
         }
-        self.parts_mut()?.begin(request, targets)
+        parts.begin(request, targets)
     }
 
     /// Записывает следующую полосу в `command_buffer` (состояние записи, вне рендеринга). Все проверки — до
@@ -184,8 +198,8 @@ impl PhotoDeveloper {
     }
 
     /// Сообщает проявителю, какой отправленной работой записана очередная полоса (сразу после
-    /// `OneShotSubmitter::submit` с `record_next_slice`, вернувшим `Recorded`). Копия в буфер чтения хоста
-    /// записана в ПОСЛЕДНЕЙ полосе; последняя отметка и есть связь «буфер ↔ работа», по которой `finish`
+    /// `OneShotSubmitter::submit` с `record_next_slice`, вернувшим `Recorded`). Копии в буферы хоста (снимок для
+    /// JPEG, миниатюра) записаны в ПОСЛЕДНЕМ шаге (отделке); последняя отметка и есть связь «буфер ↔ работа», по которой `finish`
     /// проверяет доказательство. Пропущенная отметка последней полосы — отказ `finish` (`SealRefused`).
     pub fn note_slice_submitted(&mut self, work: &SubmittedWork) -> Result<(), PhotoError> {
         self.parts_mut()?.note_slice_submitted(work)
@@ -253,6 +267,8 @@ impl Drop for PhotoDeveloper {
 /// наборы дескрипторов) → проходы → плоскости.
 struct DeveloperParts {
     job: Option<Job>,
+    /// Пайплайн миниатюры; `None` — не создался (проявка идёт без миниатюры).
+    thumbnail_pass: Option<ThumbnailPass>,
     output: QualityPass,
     menon: Vec<(MenonPass, QualityPass)>,
     levels: QualityPass,
@@ -269,6 +285,8 @@ struct Job {
     cfa: CfaCode,
     image: Arc<Rgba8StorageImage>,
     readback: Option<HostReadbackBuffer>,
+    /// Миниатюра: записывается в последнюю полосу, печатается тем же доказательством.
+    thumbnail: ThumbnailJob,
     /// Uniform-параметры кадра: на них ссылается набор дескрипторов, пока GPU не закончит.
     _parameters: HostBuffer,
     /// Сколько полос записано (индекс следующей).
@@ -282,6 +300,11 @@ struct Job {
 }
 
 impl DeveloperParts {
+    /// План миниатюры запроса при конфиге проявителя.
+    fn thumbnail_plan_for(&self, request: &DevelopRequest<'_>) -> Result<ThumbnailPlan, PhotoError> {
+        self.config.thumbnail_plan(request.crop.size, request.rotation)
+    }
+
     fn has_unconfirmed_slices(&self) -> bool {
         self.job.as_ref().is_some_and(|job| job.unconfirmed > 0)
     }
@@ -351,7 +374,11 @@ impl DeveloperParts {
         )?;
         parameters.write_bytes(0, &frame_parameter_bytes(request.params, source))?;
         // Цели выделены заранее (`DevelopTargets`) и уже проверены на размер (`plan.crop_size == crop.size`).
-        let DevelopTargets { image, readback } = targets;
+        let DevelopTargets {
+            image,
+            readback,
+            thumbnail,
+        } = targets;
         if let Err(error) = self.bind_job_resources(request.raw, &parameters, &image) {
             // Ресурсы проявки (картинка, uniform) сейчас уничтожатся, а наборы могли запомнить их хэндлы: сброс
             // запомненного обязателен (см. `DescriptorRing::release_after_fence`). Наборы ни в одном
@@ -360,8 +387,10 @@ impl DeveloperParts {
             return Err(error);
         }
 
+        let thumbnail = ThumbnailJob::begin(thumbnail, self.thumbnail_pass.as_mut(), &image, cfa);
         let start = DevelopmentStart {
-            slice_count: plan.slices.len(),
+            // Шагов записи: полосы вывода + один шаг отделки (миниатюра и копии, см. `finishing`).
+            slice_count: plan.slices.len() + 1,
             image_size: plan.crop_size,
             widest_region: PixelSize::new(
                 plan.region_width,
@@ -374,6 +403,7 @@ impl DeveloperParts {
             cfa,
             image,
             readback,
+            thumbnail,
             _parameters: parameters,
             recorded: 0,
             unconfirmed: 0,
@@ -428,15 +458,29 @@ impl DeveloperParts {
                 what: "record_next_slice без активной проявки (begin)",
             });
         };
+        let step_count = job.plan.slices.len() + 1;
         let Some(slice) = job.plan.slices.get(job.recorded).copied() else {
-            return Ok(SliceOutcome::Finished);
+            if job.recorded >= step_count {
+                return Ok(SliceOutcome::Finished);
+            }
+            // Полосы кончились, осталась отделка: миниатюра и копии отдельным шагом (14g, свой кадр видоискателя).
+            finishing::record_finishing_step(
+                &self.context,
+                command_buffer,
+                finishing::FinishingParts {
+                    image: &job.image,
+                    readback: job.readback.as_ref(),
+                    thumbnail: &job.thumbnail,
+                    thumbnail_pass: self.thumbnail_pass.as_ref(),
+                },
+            )?;
+            return self.note_step_recorded();
         };
         let pushes = SlicePushes::new(&job.plan, &slice, job.cfa, job.raw.size().width);
         self.check_slice(&pushes)?;
 
         // --- Команды (все проверки пройдены) ---
         let is_first = job.recorded == 0;
-        let is_last = job.recorded + 1 == job.plan.slices.len();
         if is_first {
             job.image.record_prepare_for_compute_write(command_buffer);
         }
@@ -449,14 +493,11 @@ impl DeveloperParts {
         }
         record_compute_pass_dependency(&self.context, command_buffer);
         self.output.record(command_buffer, SLOT, &pushes.output)?;
-        if is_last {
-            // Картинка готова: отдаём копирующим командам (surface кодера HEIF, буфер JPEG).
-            job.image.record_compute_write_to_transfer_read(command_buffer);
-            if let Some(readback) = &job.readback {
-                job.image.record_copy_to_host_readback(command_buffer, readback)?;
-            }
-        }
+        self.note_step_recorded()
+    }
 
+    /// Шаг записан в командный буфер: учёт (индекс следующего, ждущие fence) и сколько шагов осталось.
+    fn note_step_recorded(&mut self) -> Result<SliceOutcome, PhotoError> {
         let Some(job) = self.job.as_mut() else {
             return Err(PhotoError::OutOfOrder {
                 what: "проявка пропала во время записи полосы",
@@ -465,7 +506,7 @@ impl DeveloperParts {
         job.recorded += 1;
         job.unconfirmed += 1;
         Ok(SliceOutcome::Recorded {
-            remaining: job.plan.slices.len() - job.recorded,
+            remaining: job.plan.slices.len() + 1 - job.recorded,
         })
     }
 
@@ -488,6 +529,7 @@ impl DeveloperParts {
         if let Some(readback) = job.readback.as_mut() {
             readback.mark_written_by(work);
         }
+        job.thumbnail.mark_written_by(work);
         Ok(())
     }
 
@@ -513,7 +555,7 @@ impl DeveloperParts {
                 what: "finish без активной проявки",
             });
         };
-        if job.recorded < job.plan.slices.len() {
+        if job.recorded < job.plan.slices.len() + 1 {
             return Err(PhotoError::OutOfOrder {
                 what: "finish: записаны не все полосы",
             });
@@ -530,6 +572,7 @@ impl DeveloperParts {
             });
         };
         let size = job.plan.crop_size;
+        let thumbnail = job.thumbnail.seal(job.last_proof.as_ref());
         let host_rgba8 = match job.readback {
             Some(readback) => {
                 // Копия записана в последней полосе, её завершение подтверждено (unconfirmed == 0) доказательством.
@@ -551,6 +594,7 @@ impl DeveloperParts {
             image: job.image,
             size,
             host_rgba8,
+            thumbnail,
         })
     }
 
@@ -572,6 +616,9 @@ impl DeveloperParts {
     fn release_descriptor_slots(&self) -> Result<(), PhotoError> {
         self.levels.release_slot_after_fence(SLOT)?;
         self.output.release_slot_after_fence(SLOT)?;
+        if let Some(pass) = &self.thumbnail_pass {
+            pass.release_slot_after_fence()?;
+        }
         for (_, pass) in &self.menon {
             pass.release_slot_after_fence(SLOT)?;
         }

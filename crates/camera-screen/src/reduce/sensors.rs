@@ -32,6 +32,8 @@ pub(super) fn on_tick(ctx: &mut Ctx<'_>, now: MonotonicNanos) -> ActionOutcome {
     // Итог проверки (`LockWaitCheck`) не нужен: снятое ожидание видно по изменению состояния.
     ctx.state.focus.expire_lock_wait(now);
     zoom::on_tick(ctx, now);
+    // Первый кадр с новой картинкой миниатюры защёлкивает начало растворения.
+    ctx.state.thumbnail_tracker.on_tick(now);
     ActionOutcome::Applied
 }
 

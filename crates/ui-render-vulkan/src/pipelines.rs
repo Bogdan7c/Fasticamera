@@ -1,22 +1,38 @@
 //! Конвейеры рендера UI: фигуры, глифы, стекло (в цель показа) и две ступени пирамиды (в её формат).
 
-use gpu_vulkan::compute::BindingKind;
+use gpu_vulkan::compute::{BindingKind, SpecializationConstant};
 use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::error::GpuError;
 use gpu_vulkan::raster::{BlendMode, RasterPipeline, RasterPipelineDesc};
 
-use crate::config::{MAX_PYRAMID_LEVELS, UiRendererConfig};
+use crate::config::{MAX_IMAGE_BINDINGS, MAX_PYRAMID_LEVELS, UiRendererConfig};
 use crate::pack::{BLUR_PUSH_BYTES, FRAME_PUSH_BYTES};
 use crate::shaders::blobs;
+use ui_draw::color::DisplayPrimaries;
 
 /// Привязки конвейера стекла: группы, члены, фон полного разрешения, затем уровни пирамиды 1..=6.
 pub(crate) const GLASS_FIRST_PYRAMID_BINDING: u32 = 3;
+
+/// Привязки конвейера картинок: экземпляры, затем `MAX_IMAGE_BINDINGS` сэмплеров (`ui_image.frag`).
+pub(crate) const IMAGE_FIRST_SAMPLER_BINDING: u32 = 1;
+
+/// Идентификатор константы специализации «основные цвета экрана» в `ui_image.frag`.
+const DISPLAY_PRIMARIES_CONSTANT_ID: u32 = 0;
+
+/// Значение константы специализации для основных цветов экрана (соответствует `DISPLAY_PRIMARIES` в шейдере).
+fn primaries_code(primaries: DisplayPrimaries) -> u32 {
+    match primaries {
+        DisplayPrimaries::Srgb => 0,
+        DisplayPrimaries::DisplayP3 => 1,
+    }
+}
 
 /// Все конвейеры рендера.
 pub(crate) struct UiPipelines {
     pub shape: RasterPipeline,
     pub glyph: RasterPipeline,
     pub glass: RasterPipeline,
+    pub image: RasterPipeline,
     /// Первая ступень пирамиды: фон → уровень 1. Набор на слот кадра (фон меняется).
     pub blur_from_backdrop: RasterPipeline,
     /// Остальные ступени: уровень k−1 → k. Набор на (слот кадра, ступень): `frame_slot * stages + stage`.
@@ -75,6 +91,27 @@ impl UiPipelines {
             &glass_bindings(),
         )?;
 
+        let image_specialization = [SpecializationConstant {
+            constant_id: DISPLAY_PRIMARIES_CONSTANT_ID,
+            value: primaries_code(config.display_primaries),
+        }];
+        let mut image_bindings = vec![BindingKind::ReadOnlyStorageBuffer];
+        image_bindings.extend((0..MAX_IMAGE_BINDINGS).map(|_| BindingKind::CombinedImageSampler));
+        let image = RasterPipeline::new(
+            context,
+            &RasterPipelineDesc {
+                label: "ui-image",
+                vertex_spirv: blobs::UI_IMAGE_VERT,
+                fragment_spirv: blobs::UI_IMAGE_FRAG,
+                bindings: &image_bindings,
+                push_constant_bytes: FRAME_PUSH_BYTES,
+                specialization: &image_specialization,
+                color_format: config.target_format,
+                blend: BlendMode::PremultipliedAlpha,
+                frame_slots: config.frame_slots,
+            },
+        )?;
+
         let pyramid_format = config.pyramid.format.color_target_format().vk_format();
         let level_stages = (config.pyramid.levels as usize).saturating_sub(1).max(1);
         let blur_pipeline = |label: &'static str, fragment: &'static [u8], frame_slots: usize| {
@@ -107,6 +144,7 @@ impl UiPipelines {
             shape,
             glyph,
             glass,
+            image,
             blur_from_backdrop,
             blur_from_level,
             level_stages,

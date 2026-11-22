@@ -38,6 +38,7 @@ use shell_contract::orientation::DeviceOrientation;
 use shell_contract::surface::{NativeSurface, PlatformWindow, SurfaceGeneration};
 use still_contract::develop::DevelopEvent;
 use still_contract::plan::{FrameSelection, PrimaryFormat, RawOutput, ShutterPress, StillId, StillOutputs, StillPlan};
+use still_contract::thumbnail::StillThumbnail;
 
 use super::engine::{GpuMaker, StillClock, StillEngine};
 use super::feed::{FrameStillParams, ShownNow, StillFeed, StillFeedRecorder};
@@ -334,15 +335,52 @@ impl StreamRig {
 // ---- приёмник событий ----
 
 #[derive(Default)]
-pub struct Sink(pub Mutex<Vec<DevelopEvent>>);
+pub struct Sink(
+    pub Mutex<Vec<DevelopEvent>>,
+    pub Mutex<Vec<StillThumbnail>>,
+    /// Порядок прихода: `Arrival::Thumbnail` и события протокола (миниатюра обязана быть раньше итога).
+    pub Mutex<Vec<Arrival>>,
+);
+
+/// Что пришло приёмнику (для проверки порядка).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arrival {
+    Thumbnail(StillId),
+    Event { id: StillId, is_final: bool },
+}
 
 impl StillEventSink for Sink {
     fn deliver(&self, event: DevelopEvent) {
+        self.2
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Arrival::Event {
+                id: event.id(),
+                is_final: event.is_final(),
+            });
         self.0.lock().unwrap_or_else(PoisonError::into_inner).push(event);
+    }
+
+    fn deliver_thumbnail(&self, thumbnail: StillThumbnail) {
+        self.2
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Arrival::Thumbnail(thumbnail.id()));
+        self.1.lock().unwrap_or_else(PoisonError::into_inner).push(thumbnail);
     }
 }
 
 impl Sink {
+    /// Миниатюры, пришедшие приёмнику (забирает).
+    pub fn take_thumbnails(&self) -> Vec<StillThumbnail> {
+        std::mem::take(&mut *self.1.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// Порядок прихода (копия).
+    pub fn arrivals(&self) -> Vec<Arrival> {
+        self.2.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
     pub fn take(&self) -> Vec<DevelopEvent> {
         std::mem::take(&mut *self.0.lock().unwrap_or_else(PoisonError::into_inner))
     }

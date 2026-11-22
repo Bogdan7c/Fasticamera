@@ -59,7 +59,13 @@ fn secured_frame_frees_the_shutter_and_the_next_shot_starts_while_the_first_is_s
     let saved = finish(&mut screen, first.request, CaptureOutcome::Saved);
     assert_eq!(saved.outcome, ActionOutcome::Applied);
     assert_eq!(screen.state.shutter(), ShutterState::Capturing { request: id(2) });
-    assert_eq!(screen.state.thumbnail(), ThumbnailState::Last { shot: id(1) });
+    assert_eq!(
+        screen.state.thumbnail(),
+        ThumbnailState::Last {
+            shot: id(1),
+            picture: None
+        }
+    );
     assert_eq!(screen.state.saving_shots(), 0);
 }
 
@@ -133,11 +139,20 @@ fn thumbnail_shows_the_shot_saved_last_not_the_one_pressed_last() {
     secure(&mut screen, second.request);
 
     finish(&mut screen, second.request, CaptureOutcome::Saved);
-    assert_eq!(screen.state.thumbnail(), ThumbnailState::Last { shot: id(2) });
+    assert_eq!(
+        screen.state.thumbnail(),
+        ThumbnailState::Last {
+            shot: id(2),
+            picture: None
+        }
+    );
     finish(&mut screen, first.request, CaptureOutcome::Saved);
     assert_eq!(
         screen.state.thumbnail(),
-        ThumbnailState::Last { shot: id(1) },
+        ThumbnailState::Last {
+            shot: id(1),
+            picture: None
+        },
         "первым нажатый сохранился позже — он и в миниатюре"
     );
 }
@@ -301,7 +316,13 @@ fn camera_loss_abandons_only_the_capturing_shot_not_the_saving_ones() {
     assert_eq!(screen.state.lost_captures(), 1, "потерян только снимок в захвате");
     assert_eq!(screen.state.saving_shots(), 1, "захваченный сохраняется и без камеры");
     finish(&mut screen, first.request, CaptureOutcome::Saved);
-    assert_eq!(screen.state.thumbnail(), ThumbnailState::Last { shot: first.request });
+    assert_eq!(
+        screen.state.thumbnail(),
+        ThumbnailState::Last {
+            shot: first.request,
+            picture: None
+        }
+    );
 }
 
 #[test]

@@ -1,9 +1,13 @@
 //! Конфиг проявления снимка: serde, `deny_unknown_fields`, значения по умолчанию с источником.
 
+use camera_contract::geometry::PixelSize;
 use gpu_vulkan::compute::LocalSize;
 use serde::{Deserialize, Serialize};
 
+use still_contract::shot::StillRotation;
+
 use super::error::PhotoError;
+use super::thumbnail::ThumbnailPlan;
 use crate::quality::WorkgroupSizeConfig;
 use crate::quality::config::validate_workgroup;
 
@@ -11,6 +15,13 @@ use crate::quality::config::validate_workgroup;
 /// чтобы память и время одного сабмита были ограничены. 4096 строк покрывают любой кадр телефона целиком
 /// (проверка паритета «одна полоса = весь кадр» этим пользуется).
 const MAX_SLICE_ROWS: u32 = 4096;
+
+/// Длинная сторона миниатюры по умолчанию. `[estimate]`: кружок экрана 150–200 px при плотности ≈ 3 px/pt
+/// даёт ≈ 200 px по стороне; 256 px оставляют запас на запись «глубже» и стоят ≈ 0,2 МБ памяти (решение 155).
+const DEFAULT_THUMBNAIL_LONG_SIDE_PX: u32 = 256;
+/// Границы `thumbnail_long_side_px`: меньше — не разглядеть, больше — это уже не «маленькая копия в обычной
+/// памяти» (1024² × 4 Б = 4 МБ, а экрану нужно лишь на кружок).
+const THUMBNAIL_LONG_SIDE_RANGE: std::ops::RangeInclusive<u32> = 16..=1024;
 
 /// Настройки проявления снимка.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -22,6 +33,9 @@ pub struct PhotoConfig {
     pub slice_rows: u32,
     /// Размер рабочей группы всех проходов (как у стенда V4).
     pub workgroup_size: WorkgroupSizeConfig,
+    /// Длинная сторона миниатюры снимка, пиксели: 16…1024 (решение 155). Миниатюра — маленькая копия для экрана
+    /// камеры (кружок в углу), уменьшается на GPU внутри последней полосы проявки и уходит в обычную память.
+    pub thumbnail_long_side_px: u32,
 }
 
 impl Default for PhotoConfig {
@@ -32,6 +46,7 @@ impl Default for PhotoConfig {
         Self {
             slice_rows: 256,
             workgroup_size: WorkgroupSizeConfig::default(),
+            thumbnail_long_side_px: DEFAULT_THUMBNAIL_LONG_SIDE_PX,
         }
     }
 }
@@ -47,8 +62,23 @@ impl PhotoConfig {
                 ),
             });
         }
+        if !THUMBNAIL_LONG_SIDE_RANGE.contains(&self.thumbnail_long_side_px) {
+            return Err(PhotoError::InvalidConfig {
+                what: format!(
+                    "thumbnail_long_side_px {}: нужно {}..={}",
+                    self.thumbnail_long_side_px,
+                    THUMBNAIL_LONG_SIDE_RANGE.start(),
+                    THUMBNAIL_LONG_SIDE_RANGE.end()
+                ),
+            });
+        }
         self.local_size()?;
         Ok(())
+    }
+
+    /// План миниатюры снимка `image_size` с поворотом `rotation` при этом конфиге.
+    pub fn thumbnail_plan(&self, image_size: PixelSize, rotation: StillRotation) -> Result<ThumbnailPlan, PhotoError> {
+        ThumbnailPlan::new(image_size, rotation, self.thumbnail_long_side_px)
     }
 
     /// Размер рабочей группы как `LocalSize` (ноль и больше 1024 нитей — ошибка конфига).
@@ -96,6 +126,36 @@ mod tests {
             };
             assert!(config.validate().is_ok(), "slice_rows {slice_rows}");
         }
+    }
+
+    #[test]
+    fn thumbnail_long_side_is_range_checked_and_defaults_to_256() {
+        assert_eq!(PhotoConfig::default().thumbnail_long_side_px, 256);
+        for thumbnail_long_side_px in [0, 15, 1025, 4096] {
+            let config = PhotoConfig {
+                thumbnail_long_side_px,
+                ..PhotoConfig::default()
+            };
+            assert!(
+                matches!(config.validate(), Err(PhotoError::InvalidConfig { .. })),
+                "thumbnail_long_side_px {thumbnail_long_side_px}"
+            );
+        }
+        for thumbnail_long_side_px in [16, 256, 1024] {
+            let config = PhotoConfig {
+                thumbnail_long_side_px,
+                ..PhotoConfig::default()
+            };
+            assert!(
+                config.validate().is_ok(),
+                "thumbnail_long_side_px {thumbnail_long_side_px}"
+            );
+        }
+        let partial: PhotoConfig = serde_json::from_str(r#"{"thumbnail_long_side_px": 128}"#).unwrap();
+        let plan = partial
+            .thumbnail_plan(PixelSize::new(4000, 3000), StillRotation::None)
+            .unwrap();
+        assert_eq!(plan.size(), PixelSize::new(128, 96));
     }
 
     #[test]

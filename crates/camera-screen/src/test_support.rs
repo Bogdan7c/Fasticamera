@@ -97,6 +97,22 @@ impl Screen {
         transition
     }
 
+    /// Итог «сохранён» с картинкой — так же, как делает фасад экрана (`handle_saved_with_picture`): картинка во
+    /// «входящий» ящик, обычный `CaptureFinished(Saved)`, ящик очищается.
+    pub(crate) fn finish_saved_with_picture(
+        &mut self,
+        request: crate::shutter::ShotRequestId,
+        picture: ui_draw::picture::UiPicture,
+    ) -> ScreenTransition {
+        self.state.thumbnail_tracker.stage_incoming(request, picture);
+        let transition = self.step(ScreenAction::CaptureFinished {
+            request,
+            outcome: crate::shutter::CaptureOutcome::Saved,
+        });
+        self.state.thumbnail_tracker.discard_incoming();
+        transition
+    }
+
     /// Центр кадра выбранного соотношения, pt.
     pub(crate) fn frame_center(&self, aspect: AspectRatio) -> Point {
         self.state.layout().expect("раскладка").frame_rect(aspect).center()
@@ -112,6 +128,12 @@ impl Screen {
         let point = self.current_frame_center();
         self.step(ScreenAction::ViewfinderTapped { point, at })
     }
+}
+
+/// Картинка 4×3 px, залитая одним значением `seed`: у разных `seed` разные пиксели и разные номера версий.
+pub(crate) fn test_picture(seed: u8) -> ui_draw::picture::UiPicture {
+    use ui_draw::picture::{PictureEncoding, PictureSize, UiPicture};
+    UiPicture::from_rgba8(PictureSize::new(4, 3), PictureEncoding::Srgb, vec![seed; 4 * 3 * 4]).expect("размер сошёлся")
 }
 
 /// Команда рендеру без зума и без каталога камер (до сессии 13 кадрирование было только таким).

@@ -133,8 +133,10 @@ impl RenderRig {
             },
         )
         .expect("цель экрана");
-        let renderer =
-            UiRenderer::new(context, &UiRendererConfig::new(format.vk_format(), FRAME_SLOTS)).expect("рендер UI");
+        // Основные цвета — как у экрана приложения (Display P3): картинки UI (миниатюра, 14g) переводятся в них.
+        let mut renderer_config = UiRendererConfig::new(format.vk_format(), FRAME_SLOTS);
+        renderer_config.display_primaries = ui_draw::color::DisplayPrimaries::DisplayP3;
+        let renderer = UiRenderer::new(context, &renderer_config).expect("рендер UI");
         let backdrop_extent = vk::Extent2D {
             width: WIDTH_PX,
             height: BACKDROP_HEIGHT_PX,

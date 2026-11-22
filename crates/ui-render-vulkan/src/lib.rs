@@ -12,14 +12,15 @@
 //!
 //! # Как устроен кадр
 //! Пирамида размытия фона (dual Kawase, фрагментные проходы) строится только при смене ключа фона; затем один
-//! проход UI с `Preserve` поверх композитора: фигуры, глифы и иконки (SDF-атлас), стекло — каждый элемент в
-//! своих границах, без полноэкранных проходов.
+//! проход UI с `Preserve` поверх композитора: фигуры, глифы и иконки (SDF-атлас), картинки (кэш текстур,
+//! загрузка в команды кадра без ожиданий), стекло — каждый элемент в своих границах, без полноэкранных проходов.
 
 pub mod config;
 pub mod counters;
 pub mod error;
 pub mod frame;
 mod pack;
+mod picture_cache;
 mod pipelines;
 mod plan;
 mod pyramid;
@@ -29,7 +30,8 @@ mod slots;
 pub mod testing;
 
 pub use config::{
-    BackdropPyramidConfig, ConfigError, MAX_PYRAMID_LEVELS, PyramidFormat, UiRenderLimits, UiRendererConfig,
+    BackdropPyramidConfig, ConfigError, MAX_IMAGE_BINDINGS, MAX_PYRAMID_LEVELS, PictureCacheConfig, PyramidFormat,
+    UiRenderLimits, UiRendererConfig,
 };
 pub use counters::UiRenderCounters;
 pub use error::{LimitKind, UiRenderError};

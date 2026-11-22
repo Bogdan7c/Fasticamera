@@ -427,6 +427,11 @@ impl CameraSession {
                     lease.release_unused();
                 }
                 drop(camera_wait);
+                // Записанная, но не выполненная работа UI (загрузки картинок) должна быть забыта: иначе
+                // следующий кадр возьмёт из кэша текстуру, в которую копия не легла (14g).
+                if let Err(error) = pipelines.note_frame_not_submitted(slot) {
+                    tracing::warn!(target: LOG_TARGET, %error, slot, "рендер UI не принял отказ отправки кадра");
+                }
                 self.bench
                     .finish_frame(slot, BenchSubmit::NotSubmitted, self.viewfinder.headroom_mut());
                 self.note_slot_frame(slot, None);

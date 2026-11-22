@@ -101,6 +101,37 @@ fn the_summary_reports_the_exact_share_the_delay_and_a_substitution_reason_stays
 }
 
 #[test]
+fn the_press_to_thumbnail_time_is_in_the_summary_only_for_shots_that_have_it() {
+    let mut report = healthy_report();
+    report.shots[0].press_to_thumbnail_ms = Some(310);
+    report.shots[1].press_to_thumbnail_ms = None;
+    let burst = report
+        .shots
+        .iter()
+        .position(|shot| shot.step == STEP_BURST)
+        .expect("в отчёте есть серия");
+    report.shots[burst].press_to_thumbnail_ms = Some(777);
+
+    let summary = report.summary();
+
+    assert_eq!(summary["shots"][0]["thumb_ms"], 310);
+    assert!(summary["shots"][1].get("thumb_ms").is_none(), "нет замера — нет ключа");
+    assert!(
+        summary["shots"][burst].get("thumb_ms").is_none(),
+        "снимки серии в сводку не идут (строка результата ограничена)"
+    );
+    let details = report.detail_items();
+    assert!(
+        details.iter().any(|item| item["press_to_thumbnail_ms"] == 310),
+        "в подробностях полное имя поля"
+    );
+    assert!(
+        details.iter().any(|item| item["press_to_thumbnail_ms"] == 777),
+        "замер снимка серии лежит в подробностях"
+    );
+}
+
+#[test]
 fn a_healthy_summary_with_frame_numbers_still_fits_the_logcat_record() {
     use super::super::result_budget::judge_within_budget;
     let verdict = judge_within_budget(healthy_report().summary(), Vec::new());
@@ -128,6 +159,9 @@ fn the_worst_case_result_line_with_thirteen_long_uris_fits_the_logcat_record() {
             primary: long_uri(index),
             raw: (index == 1).then(|| long_uri(100 + index)),
         };
+        // Замер «нажатие → картинка» (14g) есть у каждого снимка: в сводку из них попадают одиночные, и они обязаны
+        // уместиться в запись даже в худшем случае.
+        shot.press_to_thumbnail_ms = Some(1_234);
     }
     report.mode_at_start = CaptureMode::FakeFallback {
         reason: "отказ драйвера при записи прохода ".repeat(40),

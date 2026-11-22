@@ -9,6 +9,7 @@ use camera_contract::zoom::ZoomFraming;
 use serde::{Deserialize, Serialize};
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::orientation::DeviceOrientation;
+use ui_draw::picture::UiPicture;
 // Переэкспорт: `PrimaryFormat` — тип поля `ShotRequest::primary_format`, приложению не нужна своя зависимость от словаря снимка.
 pub use still_contract::plan::PrimaryFormat;
 use thiserror::Error;
@@ -113,14 +114,21 @@ pub enum CaptureOutcome {
     Failed(CaptureFailureReason),
 }
 
-/// Последний снимок для миниатюры (картинку даст сервис снимка позже, сессия 14).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Последний сохранённый снимок для миниатюры (14g: с настоящей картинкой).
+///
+/// Не `Copy`: картинка — общий хэндл с пикселями (`Arc`), клон дешёвый. Растворение старой картинки в новую
+/// держит [`crate::thumbnail::ThumbnailTracker`], а не это состояние.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ThumbnailState {
-    /// Снимков за эту сессию ещё нет.
+    /// Снимков за эту сессию ещё нет (до первого снимка миниатюра пустая, решение 156).
     #[default]
     Empty,
     /// Есть последний снимок.
-    Last { shot: ShotRequestId },
+    Last {
+        shot: ShotRequestId,
+        /// Картинка снимка; `None` — «сохранено» пришло без неё (сбой уменьшения, фейк-сервис): в круге серый диск.
+        picture: Option<UiPicture>,
+    },
 }
 
 /// Ожидание и ёмкость двух фаз снимка (решение 140) и формат основной картинки.
@@ -146,6 +154,10 @@ pub struct CaptureConfig {
     pub max_saving_shots: usize,
     /// Формат основной картинки. `[doc]` решение 11: HEIF по умолчанию; выбор в настройках — сессия 16.
     pub primary_format: PrimaryFormat,
+    /// Длительность перекрёстного растворения миниатюры при смене картинки, мс. `[measured]` 150 мс —
+    /// середина замера 0,13–0,17 с (`docs/ios-camera/motion.md`, «Миниатюра после снимка»; без масштаба и
+    /// пружины). Кривая линейная `[estimate]`: замером она не снята.
+    pub thumbnail_fade_ms: u32,
 }
 
 impl Default for CaptureConfig {
@@ -155,6 +167,7 @@ impl Default for CaptureConfig {
             saving_timeout_ms: 45_000,
             max_saving_shots: 10,
             primary_format: PrimaryFormat::Heif,
+            thumbnail_fade_ms: 150,
         }
     }
 }
@@ -168,6 +181,8 @@ pub enum CaptureConfigError {
     ZeroSavingTimeout,
     #[error("ёмкость набора сохраняемых снимков должна быть не меньше 1")]
     ZeroSavingCapacity,
+    #[error("длительность растворения миниатюры должна быть больше нуля")]
+    ZeroThumbnailFade,
 }
 
 impl CaptureConfig {
@@ -180,6 +195,9 @@ impl CaptureConfig {
         }
         if self.max_saving_shots == 0 {
             return Err(CaptureConfigError::ZeroSavingCapacity);
+        }
+        if self.thumbnail_fade_ms == 0 {
+            return Err(CaptureConfigError::ZeroThumbnailFade);
         }
         Ok(())
     }

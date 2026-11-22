@@ -3,7 +3,8 @@
 //! Что здесь живёт:
 //! * [`UiPass`] — ленивый владелец `UiRenderer`: без установленного источника рендер НЕ создаётся
 //!   (UI по умолчанию выключен, кадр видоискателя идёт как до сессии 11); создаётся на первом кадре с
-//!   источником; пересоздаётся (лениво) при смене формата цели; слоты отпускаются по fence слота кадра;
+//!   источником; пересоздаётся (лениво) при смене формата цели и цветового пространства дисплея (картинки UI
+//!   переводятся в основные цвета экрана — они зашиты в конвейер); слоты отпускаются по fence слота кадра;
 //! * [`CameraPipelines::record_ui_overlay`] — запись UI одного кадра: источник → список рисования → фон
 //!   (живой видоискатель или чёрный) → `record_frame_marked` в цель кадра → метка «UI готов».
 //!
@@ -20,9 +21,9 @@ use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::error::GpuError;
 use gpu_vulkan::gpu_timing::TimestampStage;
 use gpu_vulkan::raster::ColorAttachment;
-use gpu_vulkan::swapchain::DisplayTargetInfo;
+use gpu_vulkan::swapchain::{DisplayColorSpace, DisplayTargetInfo};
 use ui_core::input::{PointScale, PointScaleRule};
-use ui_draw::color::DisplayColor;
+use ui_draw::color::{DisplayColor, DisplayPrimaries};
 use ui_draw::frame_source::{BackdropContinuity, UiFrameRequest};
 use ui_draw::geometry::{PxPoint, PxRect, PxSize};
 use ui_render_vulkan::{BackdropInput, BackdropPlacement, UiFrame, UiRenderError, UiRenderer, UiRendererConfig};
@@ -38,6 +39,8 @@ pub(super) struct UiPass {
     config: UiOverlayConfig,
     target_format: vk::Format,
     frame_slots: usize,
+    /// Основные цвета дисплея, под которые создан (или будет создан) рендер.
+    display_primaries: DisplayPrimaries,
     /// `None` — рендер ещё не нужен (источника не было) или сброшен сменой формата цели.
     renderer: Option<UiRenderer>,
 }
@@ -50,6 +53,7 @@ impl UiPass {
             config: *config,
             target_format: target.format,
             frame_slots: target.frames_in_flight,
+            display_primaries: primaries_of(target.display_color_space),
             renderer: None,
         }
     }
@@ -60,6 +64,12 @@ impl UiPass {
         self.renderer = None;
         self.target_format = target.format;
         self.frame_slots = target.frames_in_flight;
+        self.display_primaries = primaries_of(target.display_color_space);
+    }
+
+    /// Совпадают ли основные цвета дисплея кадра с теми, под которые создан рендер.
+    fn matches_display(&self, display_color_space: DisplayColorSpace) -> bool {
+        self.display_primaries == primaries_of(display_color_space)
     }
 
     /// Fence слота пройден: буферы и наборы дескрипторов слота рендера UI снова можно переписывать.
@@ -71,12 +81,21 @@ impl UiPass {
         }
     }
 
+    /// Записанный кадр слота не отправлен: рендер UI выбрасывает то, что этот кадр загрузил (без рендера — нечего).
+    pub(super) fn frame_not_submitted(&mut self, slot: usize) -> Result<(), UiRenderError> {
+        match self.renderer.as_mut() {
+            Some(renderer) => renderer.frame_not_submitted(slot),
+            None => Ok(()),
+        }
+    }
+
     /// Гарантирует, что рендер создан под текущий формат цели.
     fn ensure_renderer(&mut self) -> Result<&mut UiRenderer, UiRenderError> {
         if self.renderer.is_none() {
             let mut config = UiRendererConfig::new(self.target_format, self.frame_slots);
             config.limits = self.config.limits;
             config.pyramid = self.config.pyramid;
+            config.display_primaries = self.display_primaries;
             self.renderer = Some(UiRenderer::new(&self.context, &config)?);
         }
         self.renderer.as_mut().ok_or_else(|| {
@@ -85,6 +104,15 @@ impl UiPass {
                 what: "рендер UI не создан".to_owned(),
             })
         })
+    }
+}
+
+/// Основные цвета UI-картинок для цветового пространства дисплея (нейтральный тип gpu-vulkan → тип ui-draw:
+/// сам `ui-draw` GPU не знает).
+fn primaries_of(display_color_space: DisplayColorSpace) -> DisplayPrimaries {
+    match display_color_space {
+        DisplayColorSpace::Srgb => DisplayPrimaries::Srgb,
+        DisplayColorSpace::DisplayP3 => DisplayPrimaries::DisplayP3,
     }
 }
 
@@ -148,6 +176,14 @@ impl CameraPipelines {
         if let Err(error) = self.ui.ensure_renderer() {
             tracing::error!(target: LOG_TARGET, %error, "рендер UI не создан: источник снят");
             ui.state.reject_source_after_setup_failure(&error);
+            return 0;
+        }
+        // Рендер зашит под основные цвета дисплея. Пересоздать его посреди кадра нельзя (кадры в полёте ссылаются на
+        // конвейеры), а рисовать картинки в чужом охвате — значит показывать неверные цвета: честный пропуск кадра UI.
+        if !self.ui.matches_display(frame.display_color_space) {
+            ui.state.note_frame_skipped(
+                "цветовое пространство дисплея сменилось: рендер UI пересоздаётся при смене формата цели",
+            );
             return 0;
         }
         let logical_px = PxSize::new(logical.width as f32, logical.height as f32);

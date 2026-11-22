@@ -111,6 +111,11 @@ impl CaptureRunner {
         self.book.extend(entries, lost);
     }
 
+    /// Замер «нажатие → картинка» миниатюры, который экран показывает сейчас (звать перед тиком; повтор безвреден).
+    pub fn absorb_picture_timing(&mut self, timing: Option<camera_screen::thumbnail::PictureTiming>) {
+        self.book.absorb_picture_timing(timing);
+    }
+
     /// Маршруты сервиса и итоги камеры по вспышке (звать перед тиком; повтор безвреден).
     pub fn absorb_flash(&mut self, routes: Vec<FlashRouteEntry>, reports: Vec<FlashStillReport>) {
         self.book.absorb_flash(routes, reports);
@@ -388,9 +393,13 @@ impl CaptureRunner {
     pub fn into_records(self) -> RunnerRecords {
         let reached = self.steps_done.len();
         let unfinished = self.steps.iter().skip(reached).map(|step| step.name).collect();
+        let mut shots = self.shots;
+        for shot in &mut shots {
+            shot.press_to_thumbnail_ms = self.book.press_to_thumbnail_ms_of(shot.request);
+        }
         RunnerRecords {
             steps: self.steps_done,
-            shots: self.shots,
+            shots,
             burst: self.burst,
             unfinished,
             failure: self.failure,

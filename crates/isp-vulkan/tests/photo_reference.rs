@@ -100,7 +100,8 @@ fn real_crops_match_reference_through_raw16_and_raw10_in_one_and_many_slices() {
                     crop,
                     RgbaReadback::NotNeeded,
                 );
-                let expected_slices = if slice_rows == 4096 { 1 } else { 3 };
+                // Шаги записи: полосы вывода (1 или 3) и один шаг отделки (миниатюра, переход, копии; 14g).
+                let expected_slices = if slice_rows == 4096 { 1 + 1 } else { 3 + 1 };
                 assert_eq!(developed.slice_times.len(), expected_slices);
                 assert_matches_reference(
                     &format!("{name}/{kind:?}/slices={slice_rows}"),

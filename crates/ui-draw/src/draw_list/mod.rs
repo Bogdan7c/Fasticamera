@@ -8,11 +8,13 @@
 //! * `items`  — типы элементов и их границы [`DrawItem::bounds_px`];
 //! * `error`  — [`DrawListError`] и [`DrawList::validate`];
 //! * `glass_group`  — группа стекла, поле слитой формы, нажатие группы;
-//! * `pixel_reference` — эталонный цвет пикселя фигуры и группы стекла (для паритета рендера).
+//! * `pixel_reference` — эталонный цвет пикселя фигуры и группы стекла (для паритета рендера);
+//! * `image_reference` — эталонный цвет пикселя картинки (обрезка кругом, `Cover`, перевод цвета).
 
 mod bounds;
 mod error;
 mod glass_group;
+mod image_reference;
 mod items;
 mod pixel_reference;
 mod validate;
@@ -21,7 +23,8 @@ use crate::light::LightDirection;
 
 pub use error::DrawListError;
 pub use glass_group::{GlassGroupItem, GlassMember, GroupField, MAX_GLASS_GROUP_MEMBERS, PressState};
-pub use items::{DrawItem, IconItem, ShapeItem, StrokeStyle, TextItem};
+pub use image_reference::{clip_geometry, cover_uv_scale, shade_image_pixel};
+pub use items::{DrawItem, IconItem, ImageClip, ImageFit, ImageItem, ShapeItem, StrokeStyle, TextItem};
 pub use pixel_reference::{shade_glass_group_pixel, shade_shape_pixel};
 
 /// Список рисования одного кадра.

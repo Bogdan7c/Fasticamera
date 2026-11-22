@@ -23,6 +23,8 @@ use ui_draw::geometry::PxSize;
 
 #[path = "event_router_camera_screen_still_tests.rs"]
 mod real_still;
+#[path = "event_router_camera_screen_thumbnail_tests.rs"]
+mod real_thumbnail;
 
 use super::*;
 use crate::camera_config::CameraConfig;
@@ -95,6 +97,11 @@ impl RenderClock {
 
     /// Один кадр рендера установленным источником UI.
     fn frame(&mut self, harness: &Harness) {
+        let _list = self.frame_list(harness);
+    }
+
+    /// Один кадр, и список рисования, который экран отдал рендеру (для проверок «что нарисовано»).
+    fn frame_list(&mut self, harness: &Harness) -> DrawList {
         self.now_ms += FRAME_MS;
         let request = UiFrameRequest {
             present_time: self.time(),
@@ -106,7 +113,7 @@ impl RenderClock {
             .control
             .produce_ui_frame(&request)
             .expect("источник UI установлен");
-        produced.expect("кадр экрана построен");
+        produced.expect("кадр экрана построен")
     }
 
     fn frames(&mut self, harness: &Harness, count: usize) {
@@ -270,7 +277,9 @@ fn the_volume_key_takes_a_shot_and_the_result_comes_back_to_the_screen() {
     assert_eq!(
         report.thumbnail,
         ThumbnailState::Last {
-            shot: journal[0].request
+            shot: journal[0].request,
+            // Фейк-сервис отвечает без картинки: в круге серый диск (14g, осознанно).
+            picture: None,
         },
         "CaptureFinished(Saved) вернулся в экран: миниатюра указывает на этот снимок"
     );

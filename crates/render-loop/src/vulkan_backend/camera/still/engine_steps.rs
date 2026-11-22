@@ -516,6 +516,7 @@ impl<G: StillGpu> StillEngine<G> {
             params: isp_params,
             crop: inputs.facts.crop,
             readback,
+            rotation: inputs.facts.rotation,
         });
         self.record_step_cpu(StillStep::DevelopBegin, begin_started);
         match started {
@@ -585,6 +586,9 @@ impl<G: StillGpu> StillEngine<G> {
                 self.counters
                     .develop_wall
                     .observe(now.saturating_duration_since(started).as_secs_f64() * 1_000.0);
+                // Миниатюра строго раньше итога (14g): после `deliver_developed` итог уже может уйти.
+                let mut image = image;
+                self.deliver_thumbnail_before_final(&mut entry, &mut image);
                 self.deliver_developed(entry, target, image)
             }
         }

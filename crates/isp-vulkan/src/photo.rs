@@ -13,6 +13,12 @@
 //! [`PhotoDeveloper::finish`] → [`DevelopedPhoto`]. Каждой полосе нужен ореол ([`slicing::DEMOSAIC_HALO`]),
 //! чтобы результат был бит-в-бит равен проявлению целого кадра. Правило квантования — [`quantize`].
 //!
+//! # Миниатюра (14g, [`thumbnail`])
+//! В ПОСЛЕДНЕЙ полосе, в том же командном буфере, готовая картинка уменьшается на GPU до `thumbnail_long_side_px`
+//! (усреднение по площади в линейном свете, поворот «как покажет галерея») и копируется в буфер хоста; печатается
+//! тем же доказательством, что и снимок. [`DevelopedPhoto::take_thumbnail`] отдаёт байты в обычной памяти. Сбой
+//! миниатюры проявку не ломает ([`ThumbnailUnavailable`]).
+//!
 //! # Владельцы и границы
 //! * кадр камеры: рендер (лизинг); этот модуль только читает его в `record_capture`;
 //! * буфер сырых отсчётов: [`RawCapture`] (общий владелец, держит буфер живым);
@@ -24,10 +30,13 @@ mod config;
 pub mod developed;
 pub mod developer;
 mod error;
+mod finishing;
 mod pixels;
 pub mod quantize;
 pub mod slicing;
 mod targets;
+pub mod thumbnail;
+mod thumbnail_pass;
 
 pub use self::capture::{PendingRawCapture, RawCapture, RawCapturer};
 pub use self::config::PhotoConfig;
@@ -37,3 +46,5 @@ pub use self::error::PhotoError;
 pub use self::quantize::quantize_display_encoded;
 pub use self::slicing::{DEMOSAIC_HALO, DevelopmentPlan, SlicePlan, max_region_rows, plan_development};
 pub use self::targets::DevelopTargets;
+pub use self::thumbnail::{ThumbnailOutcome, ThumbnailPlan, ThumbnailUnavailable, reference_thumbnail, rotated_size};
+pub use self::thumbnail_pass::ThumbnailTargets;

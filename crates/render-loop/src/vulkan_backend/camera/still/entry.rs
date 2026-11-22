@@ -15,6 +15,7 @@ use still_contract::develop::{DevelopEvent, DevelopFailure, PrimaryTarget};
 use still_contract::frame_choice::NoFrameReason;
 use still_contract::plan::StillPlan;
 use still_contract::shot::{Rgba8Image, StillFrameFacts};
+use still_contract::thumbnail::StillThumbnail;
 
 use super::choice::ShownAt;
 use super::gpu::StillGpu;
@@ -134,6 +135,8 @@ pub struct StillEntry<G: StillGpu> {
     secured: bool,
     /// Кадр со вспышкой этой записи уже найден в кольце и посчитан (повторные находки не считаются).
     flash_frame_found: bool,
+    /// Миниатюра уже отправлена приёмнику (не больше одной на снимок, 14g).
+    thumbnail_delivered: bool,
 }
 
 impl<G: StillGpu> StillEntry<G> {
@@ -144,6 +147,7 @@ impl<G: StillGpu> StillEntry<G> {
             events: Some(events),
             secured: false,
             flash_frame_found: false,
+            thumbnail_delivered: false,
         }
     }
 
@@ -167,6 +171,20 @@ impl<G: StillGpu> StillEntry<G> {
             events.deliver(event);
         }
         self.secured = true;
+    }
+
+    /// Отправляет миниатюру приёмнику: не больше одной на снимок и только до итога (после итога `events`
+    /// уже нет). `true` — отправлена сейчас; `false` — уже была отправлена или итог выдан (повторов не будет).
+    pub fn deliver_thumbnail(&mut self, thumbnail: StillThumbnail) -> bool {
+        if self.thumbnail_delivered {
+            return false;
+        }
+        let Some(events) = &self.events else {
+            return false;
+        };
+        events.deliver_thumbnail(thumbnail);
+        self.thumbnail_delivered = true;
+        true
     }
 
     /// Доставляет итог и забирает запись: больше событий у снимка не будет.

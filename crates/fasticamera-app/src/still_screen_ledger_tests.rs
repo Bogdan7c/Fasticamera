@@ -270,3 +270,6 @@ fn a_phase_for_a_stale_screen_is_still_logged_because_the_file_exists_regardless
         "экрану фаза не доставлена, но файл учтён"
     );
 }
+
+#[path = "still_screen_ledger_thumbnail_tests.rs"]
+mod thumbnails;

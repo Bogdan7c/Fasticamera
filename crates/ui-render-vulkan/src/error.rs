@@ -5,6 +5,7 @@ use ash::vk;
 use gpu_vulkan::error::GpuError;
 use thiserror::Error;
 use ui_draw::draw_list::DrawListError;
+use ui_draw::picture::{PictureSize, PictureVersion};
 
 use crate::config::ConfigError;
 
@@ -17,6 +18,8 @@ pub enum LimitKind {
     GlyphInstances,
     /// Группы стекла.
     GlassGroups,
+    /// Элементы-картинки.
+    Images,
 }
 
 impl std::fmt::Display for LimitKind {
@@ -25,6 +28,7 @@ impl std::fmt::Display for LimitKind {
             Self::ShapeInstances => "фигур",
             Self::GlyphInstances => "глифов и иконок",
             Self::GlassGroups => "групп стекла",
+            Self::Images => "картинок",
         })
     }
 }
@@ -87,6 +91,16 @@ pub enum UiRenderError {
         /// Сколько в кадре.
         requested: usize,
         /// Предел из настроек.
+        limit: u32,
+    },
+    /// Картинка источника больше допустимой стороны (`limits.max_image_side_px`): в видеопамять не берётся.
+    #[error("картинка {version:?} {size:?} длиннее предела {limit} px по стороне")]
+    PictureTooLarge {
+        /// Номер картинки.
+        version: PictureVersion,
+        /// Размер источника.
+        size: PictureSize,
+        /// Предел стороны из настроек.
         limit: u32,
     },
     /// Сбой GPU-набора (создание объектов, запись команд). Командный буфер после него годится только на выброс.

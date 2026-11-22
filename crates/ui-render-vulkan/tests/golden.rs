@@ -17,11 +17,12 @@ use ash::vk;
 use gpu_vulkan::color_target::ColorTargetFormat;
 use gpu_vulkan::test_pattern::SurfaceTransform;
 use support::image::{decode_pam, encode_pam, encode_png};
+use support::pictures::{gradient_picture, image_item};
 use support::{
     Rig, assert_no_validation_errors, empty_list, full_screen_placement, glass_group, gpu_context_or_skip, shape,
     shape_item,
 };
-use ui_draw::color::{DisplayColor, Opacity};
+use ui_draw::color::{DisplayColor, DisplayPrimaries, Opacity};
 use ui_draw::draw_list::{DrawItem, DrawList, GlassGroupItem, IconItem, StrokeStyle, TextItem};
 use ui_draw::geometry::{PxPoint, PxSize};
 use ui_draw::glass::{GlassStyle, ShadowParamsPx};
@@ -292,4 +293,48 @@ fn golden_glass_over_black() {
     let mut list = empty_list();
     button_pair(&mut list, false);
     render_scene("glass_absent", &list, Background::Absent(DisplayColor::BLACK));
+}
+
+/// Картинки: две миниатюры (перекрёстное затухание старой и новой) над цветной капсулой, экран Display P3.
+/// Крупная неквадратная картинка обрезана кругом (Cover), вторая повёрнута на 90° и полупрозрачна.
+#[test]
+fn golden_image() {
+    let Some(context) = gpu_context_or_skip() else { return };
+    let mut rig = Rig::with_config(
+        &context,
+        (WIDTH, HEIGHT),
+        SurfaceTransform::Identity,
+        ColorTargetFormat::A2B10G10R10Unorm,
+        |config| config.display_primaries = DisplayPrimaries::DisplayP3,
+    );
+    let wide = gradient_picture(24, 16);
+    let tall = gradient_picture(10, 20);
+    let mut list = empty_list();
+    list.items.push(shape(shape_item(
+        ShapeGeometry::Capsule {
+            size: PxSize::new(300.0, 50.0),
+        },
+        Affine2::translate(180.0, 120.0),
+        DisplayColor::rgb(0.85, 0.25, 0.2),
+    )));
+    list.items.push(DrawItem::Image(image_item(
+        &wide,
+        (150.0, 110.0),
+        Affine2::translate(120.0, 120.0),
+        1.0,
+    )));
+    list.items.push(DrawItem::Image(image_item(
+        &tall,
+        (110.0, 150.0),
+        Affine2::rotate(std::f32::consts::FRAC_PI_2).then(Affine2::translate(230.0, 120.0)),
+        0.6,
+    )));
+    let backdrop = BackdropInput::Absent {
+        fill: DisplayColor::rgb(0.2, 0.2, 0.25),
+    };
+    let (result, pixels) = rig.render_with_clear(&list, backdrop, [0.2, 0.2, 0.25, 1.0]);
+    result.unwrap();
+    check_golden("image", &pixels);
+    drop((rig, list, wide, tall));
+    assert_no_validation_errors(&context);
 }

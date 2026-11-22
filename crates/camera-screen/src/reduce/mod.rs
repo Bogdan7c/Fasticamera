@@ -49,6 +49,9 @@ mod shutter_tests;
 #[path = "standby_tests.rs"]
 mod standby_tests;
 #[cfg(test)]
+#[path = "thumbnail_tests.rs"]
+mod thumbnail_tests;
+#[cfg(test)]
 #[path = "viewfinder_tests.rs"]
 mod viewfinder_tests;
 #[cfg(test)]

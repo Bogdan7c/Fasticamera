@@ -28,11 +28,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 use ui_draw::color::Opacity;
-use ui_draw::draw_list::{DrawItem, DrawList, GlassGroupItem, GlassMember, PressState};
+use ui_draw::draw_list::{DrawItem, DrawList, GlassGroupItem, GlassMember, ImageClip, ImageFit, ImageItem, PressState};
 use ui_draw::frame_source::{UiFrameError, UiFrameRequest, UiFrameSource};
 use ui_draw::geometry::PxSize;
 use ui_draw::glass::GlassStyle;
 use ui_draw::light::LightDirection;
+use ui_draw::picture::{PictureEncoding, PictureSize, UiPicture};
 use ui_draw::shape::ShapeGeometry;
 use ui_draw::transform::Affine2;
 
@@ -134,6 +135,76 @@ pub fn glass_list(request: &UiFrameRequest, groups: u64) -> DrawList {
         }));
     }
     list
+}
+
+// ---- источник кадра UI с картинкой (14g) ----
+
+/// Что отдаёт источник с картинкой: картинку можно подменить на лету (или убрать — тогда список пуст).
+#[derive(Default)]
+pub struct PictureProbe {
+    pub picture: Mutex<Option<UiPicture>>,
+    pub calls: AtomicU64,
+}
+
+impl PictureProbe {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    pub fn show(&self, picture: Option<UiPicture>) {
+        *self.picture.lock().unwrap_or_else(PoisonError::into_inner) = picture;
+    }
+}
+
+/// Источник: круглая миниатюра по центру экрана (если картинка задана), больше ничего.
+pub struct PictureSource {
+    probe: Arc<PictureProbe>,
+}
+
+impl UiFrameSource for PictureSource {
+    fn name(&self) -> &'static str {
+        "picture-test"
+    }
+
+    fn produce_frame(&mut self, request: &UiFrameRequest) -> Result<DrawList, UiFrameError> {
+        self.probe.calls.fetch_add(1, Ordering::SeqCst);
+        let mut list = DrawList::new(LightDirection::from_angle_degrees(45.0));
+        let picture = self
+            .probe
+            .picture
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(picture) = picture {
+            let side = request.logical_size.width * 0.4;
+            list.items.push(DrawItem::Image(ImageItem {
+                picture,
+                transform: Affine2::translate(request.logical_size.width * 0.5, request.logical_size.height * 0.5),
+                size_px: PxSize::new(side, side * 0.75),
+                fit: ImageFit::Cover,
+                clip: ImageClip::Circle,
+                opacity: Opacity::OPAQUE,
+            }));
+        }
+        Ok(list)
+    }
+}
+
+/// Картинка-градиент `width × height` (разные пиксели, чтобы это была не «пустая» текстура).
+pub fn test_picture(width: u32, height: u32) -> UiPicture {
+    let mut bytes = Vec::new();
+    for y in 0..height {
+        for x in 0..width {
+            bytes.extend_from_slice(&[(x * 255 / (width - 1)) as u8, (y * 255 / (height - 1)) as u8, 128, 255]);
+        }
+    }
+    UiPicture::from_rgba8(PictureSize::new(width, height), PictureEncoding::Srgb, bytes).expect("картинка")
+}
+
+pub fn install_picture_command(probe: &Arc<PictureProbe>) -> UiOverlayCommand {
+    UiOverlayCommand::Install(Box::new(PictureSource {
+        probe: Arc::clone(probe),
+    }))
 }
 
 pub fn install_command(probe: &Arc<SourceProbe>) -> UiOverlayCommand {
@@ -312,6 +383,17 @@ impl Harness {
             self.backend.apply_ui_overlay_command(install_command(probe)),
             UiOverlayOutcome::Applied
         );
+    }
+
+    pub fn install_pictures(&mut self, probe: &Arc<PictureProbe>) {
+        assert_eq!(
+            self.backend.apply_ui_overlay_command(install_picture_command(probe)),
+            UiOverlayOutcome::Applied
+        );
+    }
+
+    pub fn live_objects(&self) -> gpu_vulkan::live_objects::LiveObjectSnapshot {
+        self.backend.context().live_objects()
     }
 
     pub fn remove(&mut self) -> UiOverlayOutcome {

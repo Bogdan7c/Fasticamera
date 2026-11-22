@@ -18,6 +18,7 @@ mod driver;
 mod golden_files;
 mod render_rig;
 mod states;
+mod thumbnail_goldens;
 mod zoom_goldens;
 mod zoom_states;
 

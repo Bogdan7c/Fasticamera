@@ -19,6 +19,8 @@
 //!   с 1 заново, и ответ старого экрана «закрыл» бы чужой снимок с тем же номером (или занял бы место в очереди и
 //!   дал ложный `Busy`). Поэтому при смене экрана (`attach`/`detach`) такие ответы снимаются со счётчиком;
 //!   журнал запросов сохраняется (для отчётов сценария);
+//! * фейк отвечает БЕЗ картинки миниатюры (14g): `CaptureFinished(Saved)` обычным действием, и экран рисует серый
+//!   диск «снимок есть». Это осознанно: у фейка нет пикселей, а сценарии с фейком проверяют экран, не миниатюру;
 //! * ответ идёт в ТЕКУЩИЙ экран: канал входа создаётся заново при каждой установке экрана, поэтому адрес ответа
 //!   лежит в общей ячейке [`CaptureCompletionSlot`], которую сервис экрана переставляет при установке.
 
@@ -30,6 +32,7 @@ use std::time::Duration;
 use camera_screen::ScreenAction;
 use camera_screen::shutter::{CaptureOutcome, ShotRequest, ShotRequestId};
 use shell_contract::clock::MonotonicNanos;
+use ui_draw::picture::UiPicture;
 
 use crate::camera_screen_input::{InputDelivery, ScreenInputInjector};
 
@@ -105,6 +108,26 @@ impl CaptureCompletionSlot {
     /// Доставка ответа, обещанного в эпохе `epoch`: чужая эпоха (экран сменился) — ответ НЕ доставляется,
     /// иначе он закрыл бы снимок нового экрана с тем же номером. Сверка и копия адреса — под одним замком.
     pub(crate) fn deliver_in_epoch(&self, epoch: u64, action: ScreenAction) -> EpochDelivery {
+        self.deliver_message_in_epoch(epoch, |injector| injector.inject(action))
+    }
+
+    /// Доставка итога «сохранён» с картинкой (14g) под тем же правилом эпохи: сообщение одно, поэтому картинка
+    /// и итог доходят до экрана вместе или не доходят вообще.
+    pub(crate) fn deliver_saved_with_picture_in_epoch(
+        &self,
+        epoch: u64,
+        request: ShotRequestId,
+        picture: UiPicture,
+    ) -> EpochDelivery {
+        self.deliver_message_in_epoch(epoch, |injector| injector.inject_saved_with_picture(request, picture))
+    }
+
+    /// Общая часть доставки в эпоху: сверка эпохи и копия адреса — под одним замком, отправка — без него.
+    fn deliver_message_in_epoch(
+        &self,
+        epoch: u64,
+        send: impl FnOnce(&ScreenInputInjector) -> InputDelivery,
+    ) -> EpochDelivery {
         let target = {
             let target = self.lock();
             if self.current_epoch() != epoch {
@@ -112,10 +135,12 @@ impl CaptureCompletionSlot {
             }
             target.clone()
         };
-        match Self::inject(target, action) {
-            CompletionDelivery::Delivered => EpochDelivery::Delivered,
-            CompletionDelivery::NoScreen => EpochDelivery::NoScreen,
-            CompletionDelivery::Lost => EpochDelivery::Lost,
+        match target {
+            None => EpochDelivery::NoScreen,
+            Some(injector) => match send(&injector) {
+                InputDelivery::Queued => EpochDelivery::Delivered,
+                InputDelivery::Overflowed | InputDelivery::ReceiverGone => EpochDelivery::Lost,
+            },
         }
     }
 

@@ -1,9 +1,15 @@
 //! [`SampledTexture`] — неизменяемая текстура, которую шейдеры только читают сэмплером (атлас SDF-глифов
-//! UI). Данные загружаются один раз при создании; дальше текстура в `SHADER_READ_ONLY_OPTIMAL` навсегда.
+//! UI, картинки UI). Данные загружаются один раз; дальше текстура в `SHADER_READ_ONLY_OPTIMAL` навсегда.
 //!
-//! Загрузка — блокирующая разовая отправка через staging-буфер: это путь ИНИЦИАЛИЗАЦИИ, а не кадра
-//! (на горячем пути ожиданий GPU быть не должно). Все проверки (размер, длина данных, возможности
-//! формата) идут до создания объектов Vulkan.
+//! Два способа загрузки:
+//! * [`SampledTexture::upload`] — блокирующая разовая отправка через staging-буфер: путь ИНИЦИАЛИЗАЦИИ,
+//!   а не кадра (на горячем пути ожиданий GPU быть не должно);
+//! * [`SampledTexture::allocate_for_recorded_upload`] → [`PendingUploadTexture::record_upload_from`] —
+//!   копия ЗАПИСЫВАЕТСЯ в командный буфер кадра, ничего не ждёт. Путь кадра (картинки UI, сессия 14g).
+//!   Копии вне динамического рендеринга нельзя, поэтому вызывающий записывает загрузку до проходов.
+//!
+//! Все проверки (размер, длина данных, возможности формата) идут до создания объектов Vulkan и до
+//! первой записанной команды.
 //!
 //! Раскладка готова для чтения стадиями `FRAGMENT` и `COMPUTE` (барьер завершает загрузку для обеих);
 //! привязывается как [`crate::compute::BindingKind::CombinedImageSampler`] с
@@ -58,11 +64,16 @@ pub struct TextureDesc {
     pub label: &'static str,
 }
 
-/// Текстура с памятью GPU. Порядок полей = порядок уничтожения: представление → картинка → память.
-pub struct SampledTexture {
+/// Объекты текстуры. Порядок полей = порядок уничтожения: представление → картинка → память.
+struct TextureObjects {
     view: OwnedImageView,
-    _image: OwnedImage,
+    image: OwnedImage,
     _memory: OwnedDeviceMemory,
+}
+
+/// Текстура с памятью GPU.
+pub struct SampledTexture {
+    objects: TextureObjects,
     extent: vk::Extent2D,
     format: TextureFormat,
 }
@@ -77,76 +88,65 @@ impl std::fmt::Debug for SampledTexture {
     }
 }
 
+/// Текстура, у которой ещё нет содержимого: память выделена, загрузка не записана. Читать её нельзя;
+/// единственное, что с ней можно сделать, — записать загрузку ([`Self::record_upload_from`]) и получить
+/// [`SampledTexture`]. Брошенная без записи — просто уничтожается (GPU её не видел).
+pub struct PendingUploadTexture {
+    objects: TextureObjects,
+    desc: TextureDesc,
+    context: GpuContext,
+}
+
+impl std::fmt::Debug for PendingUploadTexture {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "PendingUploadTexture({}x{}, {:?})",
+            self.desc.extent.width, self.desc.extent.height, self.desc.format
+        )
+    }
+}
+
+impl TextureDesc {
+    /// Сколько байт данных (и staging-буфера) нужно текстуре: `ширина · высота · байт на тексель`.
+    pub fn texel_bytes(&self) -> u64 {
+        expected_texel_bytes(self)
+    }
+}
+
 impl SampledTexture {
     /// Создаёт текстуру и загружает `texels` (построчно сверху вниз, плотно, `ширина·высота·байт` на
-    /// тексель). Неверный размер или длина данных — `InvalidArgument`, формат без нужных возможностей —
-    /// `Unsupported`; в обоих случаях ни один объект Vulkan не создаётся.
+    /// тексель) БЛОКИРУЮЩЕЙ отправкой. Неверный размер или длина данных — `InvalidArgument`, формат без
+    /// нужных возможностей — `Unsupported`; в обоих случаях ни один объект Vulkan не создаётся.
     pub fn upload(context: &GpuContext, desc: &TextureDesc, texels: &[u8]) -> Result<Self, GpuError> {
         validate_upload(context, desc, texels.len())?;
-        let vk::Extent2D { width, height } = desc.extent;
-        let vk_format = desc.format.vk_format();
-        let device = context.device();
-
+        let objects = create_objects(context, desc)?;
         let mut staging = HostBuffer::new(context, texels.len() as u64, HostBufferUsage::ReadOnlyStorage)?;
         staging.write_bytes(0, texels)?;
-
-        let image_info = vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_2D)
-            .format(vk_format)
-            .extent(vk::Extent3D {
-                width,
-                height,
-                depth: 1,
-            })
-            .mip_levels(1)
-            .array_layers(1)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .tiling(vk::ImageTiling::OPTIMAL)
-            .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .initial_layout(vk::ImageLayout::UNDEFINED);
-        // SAFETY: устройство валидно; image_info — живая локальная структура.
-        let image = OwnedImage::from_raw(
-            context,
-            run_step(
-                unsafe { device.create_image(&image_info, None) },
-                "vkCreateImage(SampledTexture)",
-            )?,
-        );
-        // SAFETY: картинка только что создана этим устройством.
-        let requirements = unsafe { device.get_image_memory_requirements(image.handle()) };
-        let memory = context.allocate_memory(requirements, MemoryLocation::DeviceLocal, "SampledTexture")?;
-        // SAFETY: память подобрана по требованиям картинки и ещё не привязана; смещение 0.
-        run_step(
-            unsafe { device.bind_image_memory(image.handle(), memory.handle(), 0) },
-            "vkBindImageMemory(SampledTexture)",
-        )?;
-        let view_info = vk::ImageViewCreateInfo::default()
-            .image(image.handle())
-            .view_type(vk::ImageViewType::TYPE_2D)
-            .format(vk_format)
-            .subresource_range(vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: 1,
-                base_array_layer: 0,
-                layer_count: 1,
-            });
-        // SAFETY: картинка с привязанной памятью; формат совпадает.
-        let view = OwnedImageView::from_raw(
-            context,
-            run_step(
-                unsafe { device.create_image_view(&view_info, None) },
-                "vkCreateImageView(SampledTexture)",
-            )?,
-        );
-        record_upload(context, &staging, image.handle(), desc.extent)?;
+        let device = context.device();
+        context.run_one_shot(|command_buffer| {
+            record_upload_commands(device, command_buffer, &staging, objects.image.handle(), desc.extent);
+            Ok(())
+        })?;
         Ok(Self {
-            view,
-            _image: image,
-            _memory: memory,
+            objects,
             extent: desc.extent,
             format: desc.format,
+        })
+    }
+
+    /// Выделяет текстуру без содержимого под загрузку, записанную в командный буфер кадра (без ожиданий).
+    /// Проверки описания — до создания объектов; длину данных проверит [`PendingUploadTexture::record_upload_from`].
+    pub fn allocate_for_recorded_upload(
+        context: &GpuContext,
+        desc: &TextureDesc,
+    ) -> Result<PendingUploadTexture, GpuError> {
+        validate_extent(context, desc)?;
+        validate_format(context, desc)?;
+        Ok(PendingUploadTexture {
+            objects: create_objects(context, desc)?,
+            desc: *desc,
+            context: context.clone(),
         })
     }
 
@@ -163,7 +163,7 @@ impl SampledTexture {
     /// Представление для чтения (раскладка `SHADER_READ_ONLY_OPTIMAL`, всегда).
     pub fn sampled_view(&self) -> SampledImageView {
         SampledImageView {
-            view: self.view.handle(),
+            view: self.objects.view.handle(),
             extent: self.extent,
             format: self.format.vk_format(),
         }
@@ -172,22 +172,67 @@ impl SampledTexture {
     /// Ресурс для привязки `CombinedImageSampler` / `SampledImage`.
     pub fn read_only_binding(&self) -> DescriptorResource {
         DescriptorResource::ReadOnlyImage {
-            view: self.view.handle(),
+            view: self.objects.view.handle(),
         }
+    }
+}
+
+impl PendingUploadTexture {
+    /// Записывает в `command_buffer` загрузку из `staging` (плотные строки, `desc.texel_bytes()` байт с
+    /// начала): барьер `UNDEFINED → TRANSFER_DST`, копия, барьер `→ SHADER_READ_ONLY_OPTIMAL` для
+    /// фрагментного и compute-шейдера. Командный буфер — в состоянии записи, ВНЕ динамического рендеринга.
+    ///
+    /// Ничего не ждёт. Вызывающий обязан: отправить этот буфер раньше любого, который читает текстуру, и
+    /// держать `staging` живым, пока fence отправки не пройден (память текстуры и staging GPU читает/пишет
+    /// до этого момента). Проверки (usage и размер staging) — до первой команды: при ошибке буфер нетронут.
+    pub fn record_upload_from(
+        self,
+        command_buffer: vk::CommandBuffer,
+        staging: &HostBuffer,
+    ) -> Result<SampledTexture, GpuError> {
+        if staging.usage() != HostBufferUsage::ReadOnlyStorage {
+            return Err(GpuError::InvalidArgument {
+                what: format!(
+                    "{}: staging-буфер с usage {:?} не годится источником копии (нужен ReadOnlyStorage)",
+                    self.desc.label,
+                    staging.usage()
+                ),
+            });
+        }
+        let expected = self.desc.texel_bytes();
+        if staging.size_bytes() < expected {
+            return Err(GpuError::InvalidArgument {
+                what: format!(
+                    "{}: в staging-буфере {} байт, для {}x{} {:?} нужно {expected}",
+                    self.desc.label,
+                    staging.size_bytes(),
+                    self.desc.extent.width,
+                    self.desc.extent.height,
+                    self.desc.format
+                ),
+            });
+        }
+        record_upload_commands(
+            self.context.device(),
+            command_buffer,
+            staging,
+            self.objects.image.handle(),
+            self.desc.extent,
+        );
+        Ok(SampledTexture {
+            objects: self.objects,
+            extent: self.desc.extent,
+            format: self.desc.format,
+        })
     }
 }
 
 /// Проверки до создания объектов: размер, длина данных, возможности формата.
 fn validate_upload(context: &GpuContext, desc: &TextureDesc, texel_bytes_len: usize) -> Result<(), GpuError> {
-    let limit = context.max_image_dimension_2d();
-    let vk::Extent2D { width, height } = desc.extent;
-    if width == 0 || height == 0 || width > limit || height > limit {
-        return Err(GpuError::InvalidArgument {
-            what: format!("{}: размер текстуры {width}x{height} вне 1..={limit}", desc.label),
-        });
-    }
+    validate_extent(context, desc)?;
     let expected = expected_texel_bytes(desc);
     if texel_bytes_len as u64 != expected {
+        let vk::Extent2D { width, height } = desc.extent;
         return Err(GpuError::InvalidArgument {
             what: format!(
                 "{}: данных {texel_bytes_len} байт, для {width}x{height} {:?} нужно {expected}",
@@ -195,6 +240,23 @@ fn validate_upload(context: &GpuContext, desc: &TextureDesc, texel_bytes_len: us
             ),
         });
     }
+    validate_format(context, desc)
+}
+
+/// Размер текстуры: оба измерения > 0 и в пределах устройства.
+fn validate_extent(context: &GpuContext, desc: &TextureDesc) -> Result<(), GpuError> {
+    let limit = context.max_image_dimension_2d();
+    let vk::Extent2D { width, height } = desc.extent;
+    if width == 0 || height == 0 || width > limit || height > limit {
+        return Err(GpuError::InvalidArgument {
+            what: format!("{}: размер текстуры {width}x{height} вне 1..={limit}", desc.label),
+        });
+    }
+    Ok(())
+}
+
+/// Формат умеет: чтение сэмплером, линейную фильтрацию и приём копии.
+fn validate_format(context: &GpuContext, desc: &TextureDesc) -> Result<(), GpuError> {
     let required = vk::FormatFeatureFlags::SAMPLED_IMAGE
         | vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR
         | vk::FormatFeatureFlags::TRANSFER_DST;
@@ -212,19 +274,83 @@ fn validate_upload(context: &GpuContext, desc: &TextureDesc, texel_bytes_len: us
     Ok(())
 }
 
+/// Создаёт картинку, память и представление (без содержимого; раскладка `UNDEFINED`).
+fn create_objects(context: &GpuContext, desc: &TextureDesc) -> Result<TextureObjects, GpuError> {
+    let vk::Extent2D { width, height } = desc.extent;
+    let vk_format = desc.format.vk_format();
+    let device = context.device();
+    let image_info = vk::ImageCreateInfo::default()
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(vk_format)
+        .extent(vk::Extent3D {
+            width,
+            height,
+            depth: 1,
+        })
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(vk::ImageTiling::OPTIMAL)
+        .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .initial_layout(vk::ImageLayout::UNDEFINED);
+    // SAFETY: устройство валидно; image_info — живая локальная структура.
+    let image = OwnedImage::from_raw(
+        context,
+        run_step(
+            unsafe { device.create_image(&image_info, None) },
+            "vkCreateImage(SampledTexture)",
+        )?,
+    );
+    // SAFETY: картинка только что создана этим устройством.
+    let requirements = unsafe { device.get_image_memory_requirements(image.handle()) };
+    let memory = context.allocate_memory(requirements, MemoryLocation::DeviceLocal, "SampledTexture")?;
+    // SAFETY: память подобрана по требованиям картинки и ещё не привязана; смещение 0.
+    run_step(
+        unsafe { device.bind_image_memory(image.handle(), memory.handle(), 0) },
+        "vkBindImageMemory(SampledTexture)",
+    )?;
+    let view_info = vk::ImageViewCreateInfo::default()
+        .image(image.handle())
+        .view_type(vk::ImageViewType::TYPE_2D)
+        .format(vk_format)
+        .subresource_range(vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        });
+    // SAFETY: картинка с привязанной памятью; формат совпадает.
+    let view = OwnedImageView::from_raw(
+        context,
+        run_step(
+            unsafe { device.create_image_view(&view_info, None) },
+            "vkCreateImageView(SampledTexture)",
+        )?,
+    );
+    Ok(TextureObjects {
+        view,
+        image,
+        _memory: memory,
+    })
+}
+
 /// Сколько байт данных нужно описанию (`ширина · высота · байт на тексель`, в `u64` без переполнения).
 fn expected_texel_bytes(desc: &TextureDesc) -> u64 {
     u64::from(desc.extent.width) * u64::from(desc.extent.height) * u64::from(desc.format.bytes_per_texel())
 }
 
-/// Копирует staging в картинку одной блокирующей отправкой и оставляет её в `SHADER_READ_ONLY_OPTIMAL`.
-fn record_upload(
-    context: &GpuContext,
+/// Записывает в `command_buffer` копию staging → картинка и оставляет картинку в `SHADER_READ_ONLY_OPTIMAL`.
+/// Барьеры: `UNDEFINED → TRANSFER_DST`, затем `TRANSFER_DST → SHADER_READ_ONLY` (читают фрагментный и compute).
+/// Вызывающий проверил: буфер в состоянии записи вне рендеринга, staging вмещает `width·height·texel` байт.
+fn record_upload_commands(
+    device: &ash::Device,
+    command_buffer: vk::CommandBuffer,
     staging: &HostBuffer,
     image: vk::Image,
     extent: vk::Extent2D,
-) -> Result<(), GpuError> {
-    let device = context.device();
+) {
     let to_transfer_dst = ImageScope {
         layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
         stage: vk::PipelineStageFlags2::COPY,
@@ -245,34 +371,31 @@ fn record_upload(
         access: vk::AccessFlags2::TRANSFER_WRITE,
         ..to_transfer_dst
     };
-    context.run_one_shot(|command_buffer| {
-        record_image_barrier(device, command_buffer, image, uninitialized, to_transfer_dst);
-        let region = vk::BufferImageCopy::default()
-            .image_subresource(vk::ImageSubresourceLayers {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                mip_level: 0,
-                base_array_layer: 0,
-                layer_count: 1,
-            })
-            .image_extent(vk::Extent3D {
-                width: extent.width,
-                height: extent.height,
-                depth: 1,
-            });
-        // SAFETY: командный буфер в состоянии записи; картинка в TRANSFER_DST_OPTIMAL (барьер выше);
-        // staging вмещает width·height·texel байт плотными строками (проверено в `validate_upload`).
-        unsafe {
-            device.cmd_copy_buffer_to_image(
-                command_buffer,
-                staging.buffer_handle(),
-                image,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                &[region],
-            );
-        }
-        record_image_barrier(device, command_buffer, image, copy_written, ready_for_shaders);
-        Ok(())
-    })
+    record_image_barrier(device, command_buffer, image, uninitialized, to_transfer_dst);
+    let region = vk::BufferImageCopy::default()
+        .image_subresource(vk::ImageSubresourceLayers {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            mip_level: 0,
+            base_array_layer: 0,
+            layer_count: 1,
+        })
+        .image_extent(vk::Extent3D {
+            width: extent.width,
+            height: extent.height,
+            depth: 1,
+        });
+    // SAFETY: командный буфер в состоянии записи; картинка в TRANSFER_DST_OPTIMAL (барьер выше);
+    // staging вмещает width·height·texel байт плотными строками (проверено вызывающим).
+    unsafe {
+        device.cmd_copy_buffer_to_image(
+            command_buffer,
+            staging.buffer_handle(),
+            image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &[region],
+        );
+    }
+    record_image_barrier(device, command_buffer, image, copy_written, ready_for_shaders);
 }
 
 #[cfg(test)]

@@ -37,6 +37,7 @@ pub mod engine;
 mod engine_present;
 mod engine_steps;
 mod engine_surface;
+mod engine_thumbnail;
 pub mod entry;
 pub mod facts;
 pub mod feed;
@@ -62,6 +63,8 @@ mod engine_queue_tests;
 mod engine_surface_tests;
 #[cfg(test)]
 mod engine_tests;
+#[cfg(test)]
+mod engine_thumbnail_tests;
 #[cfg(test)]
 mod fake_gpu;
 #[cfg(test)]

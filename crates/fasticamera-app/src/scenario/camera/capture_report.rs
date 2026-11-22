@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use super::capture_burst::BurstRecord;
 use super::capture_flash_record::FlashShotRecord;
 use super::capture_frame_timing::{FrameSummary, FrameTiming};
+use super::capture_plan::STEP_BURST;
 use super::capture_render_still::StillDiagnosticsDelta;
 use super::detail::to_value;
 use crate::capture_backend::CaptureMode;
@@ -57,6 +58,10 @@ pub struct ShotRecord {
     pub secured_after_ms: Option<u64>,
     /// От нажатия до «сохранено», мс.
     pub saved_after_ms: Option<u64>,
+    /// От нажатия до первого кадра, на котором в миниатюре нарисована картинка этого снимка (14g), мс. Это
+    /// НАБЛЮДЕНИЕ, не условие прохождения: `None` — картинку так и не нарисовали (её вытеснил более поздний
+    /// снимок, миниатюра пришла без картинки или прогон кончился раньше следующего кадра).
+    pub press_to_thumbnail_ms: Option<u64>,
     pub outcome: ShotOutcome,
     /// Какой кадр взят и с какой задержкой (`frame_choice`, `press_to_frame_ms`, `shown_before_press_ms`).
     #[serde(flatten)]
@@ -196,6 +201,13 @@ fn compact_shot(shot: &ShotRecord) -> Value {
     // выключена, нет `choice` — взят ровно показанный кадр (`exact`). Остальное (режим, кадр вспышки, замена,
     // неизвестный выбор, итог камеры: выдержка, ISO, доля света) называется явно.
     if let Some(object) = compact.as_object_mut() {
+        // Короткий ключ (`thumb_ms`) — по той же причине, что и умолчания: строка результата ограничена 4000 байтами,
+        // а худший случай (`result_budget`) занимает почти весь запас. Поэтому в сводке замер только у одиночных
+        // снимков; у снимков серии (их десять) он лежит в подробностях `detail_capture` под полным именем поля
+        // `press_to_thumbnail_ms` — у каждого снимка по порядку.
+        if let Some(thumbnail_ms) = shot.press_to_thumbnail_ms.filter(|_| shot.step != STEP_BURST) {
+            object.insert("thumb_ms".to_owned(), json!(thumbnail_ms));
+        }
         if shot.format != "heif" {
             object.insert("fmt".to_owned(), json!(shot.format));
         }
