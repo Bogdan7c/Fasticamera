@@ -91,8 +91,13 @@ impl SubmitCounts {
 /// Что исполнитель шагов видит на одном тике.
 pub struct CaptureObservation<'a> {
     pub now: Instant,
-    /// Время последнего показанного кадра рендера (часы MONOTONIC): метка нажатия — по ней служба выбирает кадр.
-    pub render_now: MonotonicNanos,
+    /// Момент этого тика сценария по `CLOCK_MONOTONIC` — метка нажатия, как `MotionEvent.getEventTime()`
+    /// у настоящего касания: по ней рендер ищет кадр, стоявший на экране в момент нажатия.
+    ///
+    /// Не время последнего показанного кадра: пока рендер занят проявлением, снимок его диагностики
+    /// стоит на месте, и несколько нажатий с разницей 100 мс получали одну и ту же старую метку (14c) —
+    /// рендер искал кадр, показанный за 100–300 мс до нажатия, и не находил его в кольце.
+    pub press_time: MonotonicNanos,
     /// Что экран применит к следующему снимку.
     pub raw_setting: RawCapture,
     /// Всего отказов редьюсера экрана (накопительно). Во время шагов экран получает только нажатия затвора и
@@ -106,6 +111,39 @@ pub struct CaptureObservation<'a> {
     pub mode_is_real: bool,
     /// Мост часов `BOOTTIME`↔`MONOTONIC` для перевода метки сенсора в момент нажатия.
     pub clock: ClockBridge,
+    /// Времена кадра рендера на этот тик (окно последних кадров).
+    pub render_frame_timing: RenderFrameTiming,
+}
+
+/// Сводка окна времён кадра рендера, мс (p50/p95/наибольшее по последним кадрам окна диагностики показа).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct TimingSummaryMs {
+    pub samples: usize,
+    pub p50_ms: f64,
+    pub p95_ms: f64,
+    pub max_ms: f64,
+}
+
+impl TimingSummaryMs {
+    pub fn from_summary(summary: &render_loop::thread::DurationSummary) -> Self {
+        let millis = |duration: std::time::Duration| duration.as_secs_f64() * 1_000.0;
+        Self {
+            samples: summary.samples,
+            p50_ms: millis(summary.p50),
+            p95_ms: millis(summary.p95),
+            max_ms: millis(summary.max),
+        }
+    }
+}
+
+/// Куда уходит время кадра видоискателя на потоке рендера (окно последних кадров): ждал ли поток GPU
+/// (`acquire_wait` — fence слота и картинка swapchain) или стоял в своей работе до сабмита (`latch_to_submit`),
+/// и сколько кадр стоил на GPU. Вход 14c: чем вызваны выброшенные кадры в серии.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize)]
+pub struct RenderFrameTiming {
+    pub acquire_wait: Option<TimingSummaryMs>,
+    pub latch_to_submit: Option<TimingSummaryMs>,
+    pub frame_gpu: Option<TimingSummaryMs>,
 }
 
 /// Собранные фазы службы записи за прогон (дополняется порциями журнала).

@@ -95,3 +95,26 @@ fn the_retired_min_saved_shots_field_is_rejected_instead_of_silently_ignored() {
     let error = serde_json::from_str::<CaptureScenarioConfig>(r#"{"burst":{"min_saved_shots":1}}"#).unwrap_err();
     assert!(error.to_string().contains("min_saved_shots"), "{error}");
 }
+
+#[test]
+fn the_burst_drop_share_must_be_a_fraction() {
+    // Решение 147: порог выброшенных кадров серии — доля 0..=1, а не счётчик.
+    assert_eq!(CaptureScenarioConfig::default().burst.max_jitter_overflow_share, 0.15);
+    for bad in [-0.01, 1.01, f64::NAN, f64::INFINITY] {
+        let mut config = CaptureScenarioConfig::default();
+        config.burst.max_jitter_overflow_share = bad;
+        assert!(
+            matches!(
+                config.validate(),
+                Err(CaptureScenarioConfigError::OutOfRange {
+                    field: "burst.max_jitter_overflow_share",
+                    ..
+                })
+            ),
+            "{bad}"
+        );
+    }
+    let mut edge = CaptureScenarioConfig::default();
+    edge.burst.max_jitter_overflow_share = 1.0;
+    assert_eq!(edge.validate(), Ok(()));
+}

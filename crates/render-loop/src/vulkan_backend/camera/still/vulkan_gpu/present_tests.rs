@@ -8,6 +8,7 @@
     reason = "в тестах падение и есть способ сообщить о провале; хелперы вне #[test] clippy не считает тестовым кодом"
 )]
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ash::vk;
@@ -19,6 +20,7 @@ use gpu_vulkan::rgba8_image::Rgba8StorageImage;
 use gpu_vulkan::validation::ValidationMode;
 use shell_contract::surface::NativeSurface;
 
+use super::super::workshop::StillWorkshop;
 use super::PresentChannel;
 use crate::vulkan_backend::camera::still::gpu::PresentProgress;
 use crate::vulkan_backend::camera::still::test_support::fake_encoder_surface;
@@ -41,7 +43,7 @@ fn context_or_skip() -> Option<GpuContext> {
 }
 
 /// Картинка в раскладке, из которой её читает показ (как после проявления).
-fn ready_image(context: &GpuContext) -> Rgba8StorageImage {
+fn ready_image(context: &GpuContext) -> Arc<Rgba8StorageImage> {
     let image = Rgba8StorageImage::new(context, vk::Extent2D { width: 64, height: 48 }).unwrap();
     run_one_shot_blocking(context, |command_buffer| {
         image.record_prepare_for_compute_write(command_buffer);
@@ -49,7 +51,7 @@ fn ready_image(context: &GpuContext) -> Rgba8StorageImage {
         Ok(())
     })
     .unwrap();
-    image
+    Arc::new(image)
 }
 
 fn surface() -> NativeSurface {
@@ -78,6 +80,17 @@ fn poll_until_finished(channel: &mut PresentChannel, submitter: &mut OneShotSubm
 
 #[test]
 fn a_tracked_present_finishes_by_polling_and_returns_every_object() {
+    // Без мастерской (поток не запустился) — подключение прямо в `start`, как до 14c.
+    tracked_present_round_trip(None);
+}
+
+#[test]
+fn with_the_workshop_the_target_is_attached_off_thread_and_the_present_still_finishes() {
+    let workshop = StillWorkshop::start().unwrap();
+    tracked_present_round_trip(Some(&workshop));
+}
+
+fn tracked_present_round_trip(workshop: Option<&StillWorkshop>) {
     let Some(context) = context_or_skip() else { return };
     let baseline = context.live_objects();
     {
@@ -89,7 +102,9 @@ fn a_tracked_present_finishes_by_polling_and_returns_every_object() {
             PresentProgress::Idle,
             "нет показа — нет ответа"
         );
-        channel.start(&context, &mut submitter, &image, surface()).unwrap();
+        channel
+            .start(&context, &mut submitter, &image, surface(), workshop)
+            .unwrap();
         assert!(channel.in_flight());
         assert_eq!(poll_until_finished(&mut channel, &mut submitter), PresentProgress::Done);
         assert!(!channel.in_flight());
@@ -119,7 +134,9 @@ fn without_present_fences_the_present_completes_at_once_and_the_target_waits_for
         let mut channel = PresentChannel::new(2);
         channel.inject_untracked_presents();
         for round in 1..=2 {
-            channel.start(&context, &mut submitter, &image, surface()).unwrap();
+            channel
+                .start(&context, &mut submitter, &image, surface(), None)
+                .unwrap();
             assert_eq!(poll_until_finished(&mut channel, &mut submitter), PresentProgress::Done);
             assert_eq!(channel.retired_len(), round, "цель отложена, а не разобрана ожиданием");
         }
@@ -155,7 +172,9 @@ fn retired_targets_beyond_the_capacity_are_leaked_with_accounting_not_destroyed(
         let mut channel = PresentChannel::new(1);
         channel.inject_untracked_presents();
         for _ in 0..2 {
-            channel.start(&context, &mut submitter, &image, surface()).unwrap();
+            channel
+                .start(&context, &mut submitter, &image, surface(), None)
+                .unwrap();
             assert_eq!(poll_until_finished(&mut channel, &mut submitter), PresentProgress::Done);
         }
         assert_eq!(channel.retired_len(), 1, "держим не больше ёмкости");
@@ -166,4 +185,61 @@ fn retired_targets_beyond_the_capacity_are_leaked_with_accounting_not_destroyed(
         context.live_objects().total() > baseline.total(),
         "вытесненная цель осталась в учтённой утечке (видна в живых объектах)"
     );
+}
+
+#[test]
+fn a_stop_while_the_workshop_is_attaching_takes_the_unused_target_apart() {
+    let Some(context) = context_or_skip() else { return };
+    let baseline = context.live_objects();
+    {
+        let workshop = StillWorkshop::start().unwrap();
+        let image = ready_image(&context);
+        let mut submitter = OneShotSubmitter::new(&context, 4).unwrap();
+        let mut channel = PresentChannel::new(2);
+        channel
+            .start(&context, &mut submitter, &image, surface(), Some(&workshop))
+            .unwrap();
+        // Сразу остановка, без единого опроса: цель (готовая или ещё подключаемая) не получила ни одной копии.
+        // Остановка не ждёт мастерскую: готовую цель разбирает сама, неготовую — мастерская, когда подключит.
+        let started = Instant::now();
+        channel.settle_after_idle(&mut submitter);
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "остановка ждала подключение цели"
+        );
+        assert!(!channel.in_flight(), "после остановки в полёте ничего нет");
+        assert_eq!(channel.poll(&mut submitter), PresentProgress::Idle);
+    }
+    context.wait_idle().unwrap();
+    // Неиспользованная цель разобрана (здесь или на потоке мастерской), а не брошена в утечку.
+    let deadline = Instant::now() + EVENTUALLY;
+    while context.live_objects().total() != baseline.total() {
+        assert!(Instant::now() < deadline, "неиспользованная цель кодера не разобрана");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(
+        context.validation_report().errors,
+        0,
+        "{:?}",
+        context.validation_report()
+    );
+}
+
+#[test]
+fn a_second_start_while_attaching_is_refused_and_the_first_present_survives() {
+    let Some(context) = context_or_skip() else { return };
+    let workshop = StillWorkshop::start().unwrap();
+    let image = ready_image(&context);
+    let mut submitter = OneShotSubmitter::new(&context, 4).unwrap();
+    let mut channel = PresentChannel::new(2);
+    channel
+        .start(&context, &mut submitter, &image, surface(), Some(&workshop))
+        .unwrap();
+    let refusal = channel
+        .start(&context, &mut submitter, &image, surface(), Some(&workshop))
+        .unwrap_err();
+    assert!(refusal.0.contains("уже идёт"), "{refusal:?}");
+    assert_eq!(poll_until_finished(&mut channel, &mut submitter), PresentProgress::Done);
+    channel.settle_after_idle(&mut submitter);
+    context.wait_idle().unwrap();
 }

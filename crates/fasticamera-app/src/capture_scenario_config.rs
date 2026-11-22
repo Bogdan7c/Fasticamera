@@ -41,9 +41,12 @@ pub struct BurstPlan {
     /// захвачен» (десятки мс), а набор сохраняемых вмещает 10 (решение 140), поэтому лишний отказ — редкость;
     /// владелец уточнит число после первых цифр 14c.
     pub max_refused_presses: u32,
-    /// Сколько кадров видоискателя может быть выброшено переполнением джиттер-буфера за серию (`pacing.jitter_overflow`).
-    /// `[estimate]` 1: дрейф часов камеры против экрана даёт ≈ 1 кадр за оборот фазы (решение 53), снимок его не растит.
-    pub max_jitter_overflow: u64,
+    /// Наибольшая доля кадров видоискателя, выброшенных переполнением джиттер-буфера за серию:
+    /// `выброшено / (выброшено + показано)`. `[measured]` 0,15 (решение 147): на горячем телефоне (решение 145) пока
+    /// снимки проявляются и пишутся в HEIF, теряется 4–13 % кадров — нагрузка всей системы (кодер, память, запись),
+    /// не блокировки потока рендера (их снял 14c, решение 144); без снимков — 1 кадр из 3603. Порог ловит возврат
+    /// блокировок (до 14c доля доходила до ≈ 13–16 % при отказах затвора), а цену системы разбирают 16a/17.
+    pub max_jitter_overflow_share: f64,
     /// Сколько раз пул кадров камеры может исчерпаться за серию (`dropped_pool_exhausted`). Любое исчерпание —
     /// ошибка расчёта пула. `[doc]` 0.
     pub max_pool_exhausted: u64,
@@ -56,7 +59,7 @@ impl Default for BurstPlan {
             interval_ms: 100,
             drain_timeout_ms: 30_000,
             max_refused_presses: 3,
-            max_jitter_overflow: 1,
+            max_jitter_overflow_share: 0.15,
             max_pool_exhausted: 0,
         }
     }
@@ -157,6 +160,15 @@ impl CaptureScenarioConfig {
             return Err(CaptureScenarioConfigError::OutOfRange {
                 field: "min_exact_frame_share",
                 value: self.min_exact_frame_share,
+                expected: "число от 0 до 1",
+            });
+        }
+        if !(self.burst.max_jitter_overflow_share.is_finite()
+            && (0.0..=1.0).contains(&self.burst.max_jitter_overflow_share))
+        {
+            return Err(CaptureScenarioConfigError::OutOfRange {
+                field: "burst.max_jitter_overflow_share",
+                value: self.burst.max_jitter_overflow_share,
                 expected: "число от 0 до 1",
             });
         }

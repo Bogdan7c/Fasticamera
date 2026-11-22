@@ -202,6 +202,12 @@ impl ViewfinderCell {
         while self.queue.len() > capacity {
             let Some(oldest) = self.queue.pop_front() else { break };
             StreamAccounting::bump(&accounting.dropped_jitter_overflow);
+            // Только отладка (14c): момент каждого выброса сверяется по логу с работой снимка и т. п.
+            tracing::debug!(
+                target: "fasticamera::raw_stream",
+                queued = self.queue.len(),
+                "кадр видоискателя выброшен джиттер-буфером"
+            );
             deferred.release_unused_later(oldest);
         }
     }

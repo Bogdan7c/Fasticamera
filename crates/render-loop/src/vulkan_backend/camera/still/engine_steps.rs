@@ -23,6 +23,7 @@ use super::feed::ShownContent;
 use super::gpu::{CapturePoll, DevelopProgress, DevelopStart, StillGpu};
 use super::params_history::ParamsLookup;
 use super::present_log::{PressResolution, Unprovable};
+use super::step_timing::StillStep;
 use crate::vulkan_backend::camera::isp_params::{IspParamsCache, ParamsOutcome};
 use raw_frame_stream::RingPickRequest;
 use std::time::Instant;
@@ -42,13 +43,16 @@ impl<G: StillGpu> StillEngine<G> {
         if self.queue.is_empty() {
             return;
         }
-        let now = self.clock.now();
-        self.step_choosing(now);
-        self.step_capture_poll(now);
-        self.step_capture_start();
-        self.step_target_timeouts(now);
-        self.step_develop(now);
-        self.step_present(now);
+        // Каждый шаг замеряется (`StillStepCpu`): всё, что он держит поток рендера, ждёт кадр видоискателя.
+        self.timed(StillStep::Advance, |engine| {
+            let now = engine.clock.now();
+            engine.timed(StillStep::Choosing, |engine| engine.step_choosing(now));
+            engine.timed(StillStep::CapturePoll, |engine| engine.step_capture_poll(now));
+            engine.timed(StillStep::CaptureStart, StillEngine::step_capture_start);
+            engine.step_target_timeouts(now);
+            engine.timed(StillStep::Develop, |engine| engine.step_develop(now));
+            engine.timed(StillStep::Present, |engine| engine.step_present(now));
+        });
     }
 
     /// Применяет `step` ко всем записям со стадией, подходящей `is_stage`, сохраняя порядок очереди.
@@ -476,12 +480,14 @@ impl<G: StillGpu> StillEngine<G> {
             );
             return None;
         };
+        let begin_started = self.clock.now();
         let started = gpu.develop_start(DevelopStart {
             raw: &inputs.raw,
             params: isp_params,
             crop: inputs.facts.crop,
             readback,
         });
+        self.record_step_cpu(StillStep::DevelopBegin, begin_started);
         match started {
             Ok(()) => {
                 self.counters.developments_started += 1;

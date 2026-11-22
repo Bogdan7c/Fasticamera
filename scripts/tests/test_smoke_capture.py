@@ -494,6 +494,22 @@ class CleanupTest(unittest.TestCase):
         self.assertEqual(" ".join(outcome.notes).count("не по шаблону имён приложения"), 3)
         self.assertEqual(len(phone.deletes()), 10)
 
+    def test_a_file_renamed_by_the_oneplus_gallery_is_still_ours_and_deleted(self) -> None:
+        # 14c: галерея OnePlus переименовывает наш снимок «…_886.HEIC» в «…_0886.HEIC» (файл и владелец те же).
+        phone = self.phone_with_files()
+        renamed = capture_report()["uris"][0]
+        phone.add(renamed, name="IMG_20261122_065359_0880.HEIC")
+        outcome = self.clean(phone)
+        self.assertIn(renamed, phone.deletes())
+        self.assertNotIn("не по шаблону", " ".join(outcome.notes))
+        # Пять цифр миллисекунд или ведущая не-ноль — по-прежнему чужое имя.
+        phone = self.phone_with_files()
+        for number, name in ((1003, "IMG_20261122_065359_00880.HEIC"), (1004, "IMG_20261122_065359_1880.HEIC")):
+            phone.add(f"{IMAGES}{number}", name=name)
+        outcome = self.clean(phone)
+        for number in (1003, 1004):
+            self.assertNotIn(f"{IMAGES}{number}", phone.deletes())
+
     def test_the_generic_file_address_form_is_never_queried_or_deleted(self) -> None:
         phone = self.phone_with_files()
         report = capture_report(uris=["content://media/external/file/1000", "content://media/external_primary/file/1001"])

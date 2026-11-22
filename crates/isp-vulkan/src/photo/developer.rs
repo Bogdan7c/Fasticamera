@@ -42,10 +42,11 @@ use still_contract::shot::Rgba8Image;
 
 use super::capture::RawCapture;
 use super::config::PhotoConfig;
-use super::developed::{DevelopRequest, DevelopedPhoto, DevelopmentStart, RgbaReadback, SliceOutcome};
+use super::developed::{DevelopRequest, DevelopedPhoto, DevelopmentStart, SliceOutcome};
 use super::error::PhotoError;
 use super::pixels::{GpuPixels, seal_or_leak};
 use super::slicing::{DevelopmentPlan, SlicePlan, max_region_rows, plan_development};
+use super::targets::DevelopTargets;
 use crate::quality::demosaic::{MenonPass, create_pass_pipelines};
 use crate::quality::frame_params::{
     CfaCode, FRAME_PARAMETERS_BYTES, SourceAddressing, check_supported, frame_parameter_bytes,
@@ -145,7 +146,33 @@ impl PhotoDeveloper {
     /// Ошибка не оставляет активной проявки. Пока проявка не завершена ([`Self::finish`]) или не отменена
     /// ([`Self::cancel`]), повторный `begin` — `Busy`.
     pub fn begin(&mut self, request: &DevelopRequest<'_>) -> Result<DevelopmentStart, PhotoError> {
-        self.parts_mut()?.begin(request)
+        // Сначала вход (те же отказы `Busy`/`InvalidInput`, что и раньше), только потом — выделение целей.
+        self.check_request(request)?;
+        let context = self.parts_mut()?.context.clone();
+        let targets = DevelopTargets::allocate(&context, request.crop.size, request.readback)?;
+        self.begin_with_targets(request, targets)
+    }
+
+    /// Проверяет запрос так же, как `begin` (занятость, параметры, область снимка, план полос), но ничего не
+    /// выделяет и не меняет: вызывающий узнаёт об отказе ДО того, как закажет цели на другом потоке.
+    pub fn check_request(&self, request: &DevelopRequest<'_>) -> Result<(), PhotoError> {
+        let parts = self.parts.as_deref().ok_or(PhotoError::OutOfOrder {
+            what: "проявитель уже уничтожается",
+        })?;
+        parts.plan_for(request).map(|_| ())
+    }
+
+    /// То же, но цели (картинка и копия для JPEG) выделены заранее, возможно на другом потоке
+    /// ([`DevelopTargets::allocate`]): здесь — только проверка, что они подходят запросу, и привязки.
+    pub fn begin_with_targets(
+        &mut self,
+        request: &DevelopRequest<'_>,
+        targets: DevelopTargets,
+    ) -> Result<DevelopmentStart, PhotoError> {
+        if let Some(mismatch) = targets.mismatch_with(request.crop.size, request.readback) {
+            return Err(PhotoError::InvalidInput { what: mismatch });
+        }
+        self.parts_mut()?.begin(request, targets)
     }
 
     /// Записывает следующую полосу в `command_buffer` (состояние записи, вне рендеринга). Все проверки — до
@@ -259,7 +286,22 @@ impl DeveloperParts {
         self.job.as_ref().is_some_and(|job| job.unconfirmed > 0)
     }
 
-    fn begin(&mut self, request: &DevelopRequest<'_>) -> Result<DevelopmentStart, PhotoError> {
+    fn begin(&mut self, request: &DevelopRequest<'_>, targets: DevelopTargets) -> Result<DevelopmentStart, PhotoError> {
+        let plan = self.plan_for(request)?;
+        let valid = request.raw.valid_area();
+        let cfa = CfaCode::from_pattern(request.params.pattern);
+        // Левый/верхний край адресации не нужен: области полос задаются push-константами; шаг строки — только
+        // для порядка (шейдер уровней берёт ширину буфера захвата из push-констант).
+        let source = SourceAddressing {
+            left: 0,
+            top: 0,
+            row_stride_bytes: valid.width.saturating_mul(2),
+        };
+        self.begin_planned(request, targets, plan, cfa, source)
+    }
+
+    /// Проверка входа и план полос (без выделений и без изменения состояния).
+    fn plan_for(&self, request: &DevelopRequest<'_>) -> Result<DevelopmentPlan, PhotoError> {
         if self.job.is_some() {
             return Err(PhotoError::Busy {
                 what: "предыдущая проявка не завершена (finish или cancel)",
@@ -290,31 +332,26 @@ impl DeveloperParts {
                 ),
             });
         }
-        let cfa = CfaCode::from_pattern(request.params.pattern);
-        // Левый/верхний край адресации не нужен: области полос задаются push-константами; шаг строки — только
-        // для порядка (шейдер уровней берёт ширину буфера захвата из push-констант).
-        let source = SourceAddressing {
-            left: 0,
-            top: 0,
-            row_stride_bytes: valid.width.saturating_mul(2),
-        };
+        Ok(plan)
+    }
+
+    /// Начало проверенной проявки: uniform-параметры, привязки, задание.
+    fn begin_planned(
+        &mut self,
+        request: &DevelopRequest<'_>,
+        targets: DevelopTargets,
+        plan: DevelopmentPlan,
+        cfa: CfaCode,
+        source: SourceAddressing,
+    ) -> Result<DevelopmentStart, PhotoError> {
         let mut parameters = HostBuffer::new(
             &self.context,
             FRAME_PARAMETERS_BYTES,
             HostBufferUsage::UniformParameters,
         )?;
         parameters.write_bytes(0, &frame_parameter_bytes(request.params, source))?;
-        let image = Arc::new(Rgba8StorageImage::new(
-            &self.context,
-            vk::Extent2D {
-                width: plan.crop_size.width,
-                height: plan.crop_size.height,
-            },
-        )?);
-        let readback = match request.readback {
-            RgbaReadback::NotNeeded => None,
-            RgbaReadback::ForJpeg => Some(HostReadbackBuffer::new(&self.context, image.packed_size_bytes())?),
-        };
+        // Цели выделены заранее (`DevelopTargets`) и уже проверены на размер (`plan.crop_size == crop.size`).
+        let DevelopTargets { image, readback } = targets;
         if let Err(error) = self.bind_job_resources(request.raw, &parameters, &image) {
             // Ресурсы проявки (картинка, uniform) сейчас уничтожатся, а наборы могли запомнить их хэндлы: сброс
             // запомненного обязателен (см. `DescriptorRing::release_after_fence`). Наборы ни в одном

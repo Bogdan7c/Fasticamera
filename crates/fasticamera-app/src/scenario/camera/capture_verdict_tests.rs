@@ -189,7 +189,9 @@ fn a_burst_that_drops_viewfinder_frames_fails_with_the_counter() {
     let violations = violations_of(|report| {
         let view = &mut report.burst.as_mut().unwrap().viewfinder;
         view.pool_exhausted = 1;
-        view.jitter_overflow = 2;
+        // 20 выброшенных на 80 показанных — доля 0,2 > 0,15 (решение 147).
+        view.jitter_overflow = 20;
+        view.live_frames_presented = 80;
         view.black_frames_while_picture_expected = 1;
         view.holds_started = 1;
         view.late_frames = 500; // опоздавшие кадры — только число, не провал
@@ -199,7 +201,10 @@ fn a_burst_that_drops_viewfinder_frames_fails_with_the_counter() {
         "{violations:?}"
     );
     assert!(
-        has(&violations, "выброшено кадров джиттер-буфером 2 (допустимо 1)"),
+        has(
+            &violations,
+            "выброшено джиттер-буфером 20 из 100 кадров (доля 0.200), допустимо 0.15"
+        ),
         "{violations:?}"
     );
     assert!(
@@ -211,9 +216,27 @@ fn a_burst_that_drops_viewfinder_frames_fails_with_the_counter() {
         !has(&violations, "опоздавших") && !has(&violations, "late"),
         "{violations:?}"
     );
-    // Один выброшенный кадр в пределах допуска — не нарушение.
-    let within = violations_of(|report| report.burst.as_mut().unwrap().viewfinder.jitter_overflow = 1);
+    // Доля ровно на пороге — не нарушение (15 из 100).
+    let within = violations_of(|report| {
+        let view = &mut report.burst.as_mut().unwrap().viewfinder;
+        view.jitter_overflow = 15;
+        view.live_frames_presented = 85;
+    });
     assert!(within.is_empty(), "{within:?}");
+    // Чуть выше порога — нарушение (16 из 100).
+    let above = violations_of(|report| {
+        let view = &mut report.burst.as_mut().unwrap().viewfinder;
+        view.jitter_overflow = 16;
+        view.live_frames_presented = 84;
+    });
+    assert!(has(&above, "доля 0.160"), "{above:?}");
+    // Ни одного кадра за серию — доля не считается (деления на ноль нет).
+    let empty = violations_of(|report| {
+        let view = &mut report.burst.as_mut().unwrap().viewfinder;
+        view.jitter_overflow = 0;
+        view.live_frames_presented = 0;
+    });
+    assert!(!has(&empty, "джиттер"), "{empty:?}");
 }
 
 #[test]

@@ -10,6 +10,43 @@
 
 use std::collections::BTreeMap;
 
+/// Порядок байт файла, объявленный заголовком (`II` или `MM`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Order {
+    Little,
+    Big,
+}
+
+impl Order {
+    pub fn u16(self, bytes: [u8; 2]) -> u16 {
+        match self {
+            Self::Little => u16::from_le_bytes(bytes),
+            Self::Big => u16::from_be_bytes(bytes),
+        }
+    }
+
+    pub fn u32(self, bytes: [u8; 4]) -> u32 {
+        match self {
+            Self::Little => u32::from_le_bytes(bytes),
+            Self::Big => u32::from_be_bytes(bytes),
+        }
+    }
+
+    pub fn i32(self, bytes: [u8; 4]) -> i32 {
+        match self {
+            Self::Little => i32::from_le_bytes(bytes),
+            Self::Big => i32::from_be_bytes(bytes),
+        }
+    }
+
+    pub fn f64(self, bytes: [u8; 8]) -> f64 {
+        match self {
+            Self::Little => f64::from_le_bytes(bytes),
+            Self::Big => f64::from_be_bytes(bytes),
+        }
+    }
+}
+
 /// Разобранное поле IFD.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedEntry {
@@ -20,6 +57,8 @@ pub struct ParsedEntry {
     pub bytes: Vec<u8>,
     /// Смещение значения, если оно лежало вне поля.
     pub out_of_line_offset: Option<u32>,
+    /// Порядок байт файла: по нему разбираются числа значения.
+    pub order: Order,
 }
 
 impl ParsedEntry {
@@ -29,14 +68,14 @@ impl ParsedEntry {
 
     pub fn shorts(&self) -> Vec<u16> {
         assert_eq!(self.type_code, 3, "тег {} не SHORT", self.tag);
-        self.bytes.chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect()
+        self.bytes.chunks(2).map(|c| self.order.u16([c[0], c[1]])).collect()
     }
 
     pub fn longs(&self) -> Vec<u32> {
         assert_eq!(self.type_code, 4, "тег {} не LONG", self.tag);
         self.bytes
             .chunks(4)
-            .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+            .map(|c| self.order.u32(c.try_into().unwrap()))
             .collect()
     }
 
@@ -53,8 +92,8 @@ impl ParsedEntry {
             .chunks(8)
             .map(|c| {
                 (
-                    u32::from_le_bytes(c[..4].try_into().unwrap()),
-                    u32::from_le_bytes(c[4..].try_into().unwrap()),
+                    self.order.u32(c[..4].try_into().unwrap()),
+                    self.order.u32(c[4..].try_into().unwrap()),
                 )
             })
             .collect()
@@ -73,8 +112,8 @@ impl ParsedEntry {
             .chunks(8)
             .map(|c| {
                 (
-                    i32::from_le_bytes(c[..4].try_into().unwrap()),
-                    i32::from_le_bytes(c[4..].try_into().unwrap()),
+                    self.order.i32(c[..4].try_into().unwrap()),
+                    self.order.i32(c[4..].try_into().unwrap()),
                 )
             })
             .collect()
@@ -91,7 +130,7 @@ impl ParsedEntry {
         assert_eq!(self.type_code, 12, "тег {} не DOUBLE", self.tag);
         self.bytes
             .chunks(8)
-            .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+            .map(|c| self.order.f64(c.try_into().unwrap()))
             .collect()
     }
 }
@@ -121,6 +160,8 @@ impl ParsedIfd {
 /// Разобранный файл.
 pub struct ParsedTiff<'a> {
     pub bytes: &'a [u8],
+    /// Порядок байт из заголовка.
+    pub order: Order,
 }
 
 fn type_size(type_code: u16) -> usize {
@@ -134,14 +175,26 @@ fn type_size(type_code: u16) -> usize {
 }
 
 impl<'a> ParsedTiff<'a> {
-    /// Проверяет заголовок `II*\0`.
+    /// Проверяет заголовок `II*\0` или `MM\0*` и запоминает порядок байт.
     pub fn open(bytes: &'a [u8]) -> Self {
-        assert_eq!(&bytes[..4], b"II*\0", "не TIFF little-endian");
-        Self { bytes }
+        let order = match &bytes[..4] {
+            b"II*\0" => Order::Little,
+            b"MM\0*" => Order::Big,
+            other => panic!("не заголовок TIFF: {other:?}"),
+        };
+        Self { bytes, order }
+    }
+
+    fn u16_at(&self, at: usize) -> u16 {
+        self.order.u16(self.bytes[at..at + 2].try_into().unwrap())
+    }
+
+    fn u32_at(&self, at: usize) -> u32 {
+        self.order.u32(self.bytes[at..at + 4].try_into().unwrap())
     }
 
     pub fn first_ifd(&self) -> ParsedIfd {
-        self.ifd_at(u32::from_le_bytes(self.bytes[4..8].try_into().unwrap()))
+        self.ifd_at(self.u32_at(4))
     }
 
     /// Каталог, на который указывает LONG-поле (Exif IFD и подобные).
@@ -156,25 +209,25 @@ impl<'a> ParsedTiff<'a> {
     pub fn ifd_at(&self, offset: u32) -> ParsedIfd {
         assert_eq!(offset % 2, 0, "IFD на нечётном адресе {offset}");
         let start = offset as usize;
-        let count = u16::from_le_bytes(self.bytes[start..start + 2].try_into().unwrap()) as usize;
+        let count = self.u16_at(start) as usize;
         assert!(count > 0, "пустой IFD");
         let mut entries = BTreeMap::new();
         let mut previous_tag = None;
         for index in 0..count {
             let at = start + 2 + index * 12;
             let raw = &self.bytes[at..at + 12];
-            let tag = u16::from_le_bytes([raw[0], raw[1]]);
+            let tag = self.u16_at(at);
             if let Some(previous) = previous_tag {
                 assert!(tag > previous, "теги не по возрастанию: {previous} затем {tag}");
             }
             previous_tag = Some(tag);
-            let type_code = u16::from_le_bytes([raw[2], raw[3]]);
-            let value_count = u32::from_le_bytes(raw[4..8].try_into().unwrap());
+            let type_code = self.u16_at(at + 2);
+            let value_count = self.u32_at(at + 4);
             let byte_len = type_size(type_code) * value_count as usize;
             let (value_bytes, out_of_line_offset) = if byte_len <= 4 {
                 (raw[8..8 + byte_len].to_vec(), None)
             } else {
-                let value_offset = u32::from_le_bytes(raw[8..12].try_into().unwrap());
+                let value_offset = self.u32_at(at + 8);
                 assert_eq!(value_offset % 2, 0, "значение тега {tag} на нечётном адресе");
                 let from = value_offset as usize;
                 (self.bytes[from..from + byte_len].to_vec(), Some(value_offset))
@@ -187,6 +240,7 @@ impl<'a> ParsedTiff<'a> {
                     count: value_count,
                     bytes: value_bytes,
                     out_of_line_offset,
+                    order: self.order,
                 },
             );
         }
@@ -194,7 +248,7 @@ impl<'a> ParsedTiff<'a> {
         ParsedIfd {
             offset,
             entries,
-            next_offset: u32::from_le_bytes(self.bytes[next_at..next_at + 4].try_into().unwrap()),
+            next_offset: self.u32_at(next_at),
         }
     }
 

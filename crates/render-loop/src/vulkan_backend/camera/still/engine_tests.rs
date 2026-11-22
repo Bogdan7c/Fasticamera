@@ -273,6 +273,52 @@ fn encoder_surface_target_ends_with_one_rendered_event() {
 }
 
 #[test]
+fn render_thread_cost_of_each_still_step_is_recorded_with_its_maximum() {
+    // 14c: в серии видоискатель терял кадры; шаги движка идут на потоке рендера, их цена — в `step_cpu`.
+    let (mut rig, _) = proven_rig();
+    rig.engine.advance();
+    assert_eq!(
+        rig.engine.diagnostics().step_cpu.advance.count,
+        0,
+        "пустая очередь — шаг не идёт и не замеряется"
+    );
+    {
+        let mut gpu = rig.gpu.lock().unwrap();
+        gpu.costs.clock = Some(rig.clock.clone());
+        gpu.costs.develop_start = Duration::from_millis(20);
+        gpu.costs.present_start = Duration::from_millis(35);
+    }
+    let sink = rig.begin(plan(1, 25));
+    rig.run(3);
+    rig.engine
+        .apply_command(StillCommand::Target(PrimaryTargetOffer::Ready {
+            id: StillId(1),
+            target: PrimaryTarget::EncoderSurface(fake_encoder_surface()),
+        }));
+    rig.run(10);
+    assert!(
+        sink.take()
+            .iter()
+            .any(|event| matches!(event, DevelopEvent::PrimaryRendered { .. }))
+    );
+
+    let timings = rig.engine.diagnostics().step_cpu;
+    assert_eq!(timings.develop_begin.count, 1, "проявление запущено один раз");
+    assert!((timings.develop_begin.max_ms - 20.0).abs() < 1e-6, "{timings:?}");
+    assert_eq!(timings.encoder_present_start.count, 1, "показ в кодер запущен один раз");
+    assert!(
+        (timings.encoder_present_start.max_ms - 35.0).abs() < 1e-6,
+        "{timings:?}"
+    );
+    // Объемлющие шаги включают вложенную цену, а не теряют её.
+    assert!(timings.develop.max_ms >= 20.0 - 1e-6, "{timings:?}");
+    assert!(timings.advance.max_ms >= 35.0 - 1e-6, "{timings:?}");
+    assert!(timings.choosing.count > 0 && timings.capture_start.count > 0);
+    // Общий замер `develop_advance` не путается с запуском проявления.
+    assert!(rig.engine.diagnostics().develop_step_cpu.max_ms < 20.0, "{timings:?}");
+}
+
+#[test]
 fn target_unavailable_ends_with_the_contract_failure_and_no_second_event() {
     let (mut rig, _) = proven_rig();
     let sink = rig.begin(plan(1, 25));

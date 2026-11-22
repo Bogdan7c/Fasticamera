@@ -10,7 +10,7 @@ use std::time::Duration;
 use camera_contract::geometry::PixelSize;
 use still_contract::shot::{StillFrameFacts, StillRotation};
 
-use crate::tiff::{Ifd, TiffFile, TiffValue, unsigned_rational};
+use crate::tiff::{ByteOrder, Ifd, TiffFile, TiffValue, unsigned_rational};
 
 mod calendar;
 
@@ -53,7 +53,11 @@ pub struct CaptureMoment {
 pub enum RotationCarrier {
     /// Поворот несёт тег Exif `Orientation` (JPEG: пиксели лежат как у датчика).
     ExifOrientationTag,
-    /// Поворот несёт контейнер (HEIF: `irot` из `HeifWriter.setRotation`); в Exif `Orientation = 1`.
+    /// Поворот несёт контейнер (HEIF: `irot` из `HeifWriter.setRotation`); тега `Orientation` в Exif НЕТ.
+    ///
+    /// Не `Orientation = 1`, а именно отсутствие тега: платформенный `ExifInterface` (через него
+    /// MediaStore заполняет столбец `orientation`) ставит поворот из `irot`, а затем перезаписывает его
+    /// тегом Exif, если тот есть. С `Orientation = 1` галерея считала снимок неповёрнутым (14c, телефон).
     ContainerTransform,
 }
 
@@ -210,14 +214,13 @@ fn greatest_common_divisor(mut first: u32, mut second: u32) -> u32 {
     first.max(1)
 }
 
-/// Поля IFD0, общие для Exif-блока и DNG (`orientation` — готовое значение тега): ориентация, производитель, модель, программа, время файла (`OffsetTime` живёт в Exif IFD).
+/// Поля IFD0, общие для Exif-блока и DNG: производитель, модель, программа, время файла (`OffsetTime`
+/// живёт в Exif IFD). Тег `Orientation` ставит вызывающий: где живёт поворот, знает только он.
 pub(crate) fn fill_image_description_fields(
     ifd: &mut Ifd,
     camera: &CameraDescription,
-    orientation: u16,
     timestamps: Option<&ExifTimestamps>,
 ) {
-    ifd.set(tag::ORIENTATION, TiffValue::short(orientation));
     ifd.set(tag::MAKE, TiffValue::Ascii(ascii_text(&camera.make)));
     ifd.set(tag::MODEL, TiffValue::Ascii(ascii_text(&camera.model)));
     ifd.set(tag::SOFTWARE, TiffValue::Ascii(ascii_text(&camera.software)));
@@ -269,6 +272,12 @@ pub(crate) fn capture_exif_ifd(
 
 /// Собирает блок Exif как поток TIFF (без заголовка `Exif\0\0`): IFD0 + Exif IFD.
 ///
+/// Порядок байт — big-endian (`MM`), а не `II`, как у DNG. Причина — платформенный `ExifInterface`
+/// Android 16 (им MediaStore читает размеры и поворот HEIF): размеры и поворот из контейнера он
+/// кладёт числами в порядке `MM`, а читает их потом в порядке байт блока Exif. С блоком `II` MediaStore
+/// записывал снимок 4096×3072 как 16×12 (0x1000 → 0x0010), а поворот терял. Проверено на телефоне в
+/// 14c: тот же HEIF с блоком `MM` индексируется верно. `MM` — и самый распространённый порядок у камер.
+///
 /// Ошибка раскладки возвращается вызывающему: он решает, что делать с файлом (служба пишет снимок
 /// без Exif, считает и логирует сбой).
 pub fn build_exif_tiff(inputs: &ExifInputs<'_>) -> Result<Vec<u8>, ExifError> {
@@ -291,12 +300,17 @@ pub fn build_exif_tiff(inputs: &ExifInputs<'_>) -> Result<Vec<u8>, ExifError> {
     exif_ifd.set(tag::PIXEL_Y_DIMENSION, TiffValue::long(inputs.pixel_size.height));
 
     let mut ifd0 = Ifd::new();
-    let orientation = match inputs.rotation_carrier {
-        RotationCarrier::ExifOrientationTag => orientation_value(inputs.facts.rotation),
-        // Поворот уже несёт контейнер: в Exif «без поворота», иначе читатель повернёт дважды.
-        RotationCarrier::ContainerTransform => orientation_value(StillRotation::None),
-    };
-    fill_image_description_fields(&mut ifd0, inputs.camera, orientation, timestamps.as_ref());
+    match inputs.rotation_carrier {
+        RotationCarrier::ExifOrientationTag => {
+            ifd0.set(
+                tag::ORIENTATION,
+                TiffValue::short(orientation_value(inputs.facts.rotation)),
+            );
+        }
+        // Поворот уже несёт контейнер: тега нет вовсе (см. `RotationCarrier::ContainerTransform`).
+        RotationCarrier::ContainerTransform => {}
+    }
+    fill_image_description_fields(&mut ifd0, inputs.camera, timestamps.as_ref());
     // Обязательные для Exif-JPEG поля IFD0, не относящиеся к DNG.
     let resolution = TiffValue::Rational(vec![(DEFAULT_RESOLUTION_DPI, 1)]);
     ifd0.set(tag::X_RESOLUTION, resolution.clone());
@@ -306,6 +320,6 @@ pub fn build_exif_tiff(inputs: &ExifInputs<'_>) -> Result<Vec<u8>, ExifError> {
     ifd0.set(tag::EXIF_IFD_POINTER, TiffValue::ifd(exif_ifd));
 
     let mut bytes = Vec::new();
-    TiffFile::new(ifd0).write(&mut bytes)?;
+    TiffFile::with_byte_order(ifd0, ByteOrder::BigEndian).write(&mut bytes)?;
     Ok(bytes)
 }

@@ -13,7 +13,7 @@ use still_contract::shot::{RawSamples16, StillFrameFacts, StillRotation};
 use support::still_fixture::{
     camera_description, capture_moment, main_camera_calibration, main_camera_stream, still_facts, synthetic_raw,
 };
-use support::tiff_reader::{ParsedIfd, ParsedTiff};
+use support::tiff_reader::{Order, ParsedIfd, ParsedTiff};
 
 const RAW_SIZE: PixelSize = PixelSize::new(16, 12);
 
@@ -80,6 +80,11 @@ fn ifd0_carries_the_whole_expected_tag_set_with_values_from_passport_and_facts()
     let facts = facts_at(0, 0);
     let bytes = dng_bytes(&facts);
     let tiff = ParsedTiff::open(&bytes);
+    assert_eq!(
+        tiff.order,
+        Order::Little,
+        "DNG — little-endian, как отсчёты кадра и `DngCreator`"
+    );
     let ifd = tiff.first_ifd();
 
     // Полный набор тегов: ничего лишнего (без миниатюры, без SubIFD) и ничего не потеряно.

@@ -222,8 +222,8 @@ fn build_ifd0(inputs: &DngInputs<'_>, rows_per_strip: u32) -> Result<Ifd, DngErr
     ifd.set(tags::ROWS_PER_STRIP, TiffValue::long(rows_per_strip));
     ifd.set(tags::PLANAR_CONFIGURATION, TiffValue::short(1));
     // Для DNG поворот всегда несёт тег `Orientation` (контейнера с поворотом у DNG нет).
-    let orientation = orientation_value(facts.rotation);
-    fill_image_description_fields(&mut ifd, inputs.camera, orientation, timestamps.as_ref());
+    ifd.set(tags::ORIENTATION, TiffValue::short(orientation_value(facts.rotation)));
+    fill_image_description_fields(&mut ifd, inputs.camera, timestamps.as_ref());
     ifd.set(
         tags::EXIF_IFD_POINTER,
         TiffValue::ifd(capture_exif_ifd(facts, inputs.camera, timestamps.as_ref())),

@@ -135,6 +135,32 @@ impl OutcomeCounters {
     }
 }
 
+/// CPU потока рендера на шаги движка снимков, мс (часы потока рендера; наблюдение — один вызов шага).
+///
+/// Шаги движка идут на потоке рендера сразу после показа кадра видоискателя: всё, что шаг держит поток,
+/// следующий кадр видоискателя ждёт. Наибольшее значение здесь — прямая цена снимка для видоискателя
+/// (14c: в серии видоискатель терял ≈ 40 кадров, а «кадр захвачен» опаздывал на ≈ 110 мс на снимок).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub struct StillStepCpu {
+    /// Весь шаг движка за один кадр (сумма шагов ниже и мелочь между ними).
+    pub advance: DurationStat,
+    /// Выбор кадра: записи показа, кольцо.
+    pub choosing: DurationStat,
+    /// Опрос готовности копий RAW: возврат буфера камере, подготовка буфера следующей копии.
+    pub capture_poll: DurationStat,
+    /// Запуск копий RAW: импорт буфера камеры, отправка.
+    pub capture_start: DurationStat,
+    /// Проявление: запуск (картинка снимка), полосы, передача готовой картинки.
+    pub develop: DurationStat,
+    /// Показы в кодер: запуск ожидающих и опрос идущих.
+    pub present: DurationStat,
+    /// Из `develop`: только запуск проявления (`develop_start` — картинка, параметры, дескрипторы).
+    pub develop_begin: DurationStat,
+    /// Из `develop`/`present`: только запуск показа в кодер (`present_start` — поверхность, swapchain,
+    /// получение картинки, blit, показ).
+    pub encoder_present_start: DurationStat,
+}
+
 /// Диагностика снимков.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct StillDiagnostics {
@@ -187,4 +213,6 @@ pub struct StillDiagnostics {
     pub develop_wall: DurationStat,
     /// CPU, потраченный потоком рендера на один шаг проявления (`develop_advance`): цена снимка для кадра.
     pub develop_step_cpu: DurationStat,
+    /// CPU потока рендера по шагам движка снимков.
+    pub step_cpu: StillStepCpu,
 }

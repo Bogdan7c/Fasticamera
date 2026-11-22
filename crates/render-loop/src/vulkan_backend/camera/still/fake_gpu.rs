@@ -10,6 +10,7 @@
 )]
 
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use camera_contract::capture_result::SensorTimestamp;
 use camera_contract::frame_passport::StreamPassport;
@@ -39,6 +40,8 @@ pub struct FakeGpuState {
     pub present_polls_needed: u32,
     pub present_polls_done: u32,
     pub fail_present_start: bool,
+    /// Показ принят, но подключение цели срывается позже — на опросе (как отказ мастерской, решение 144).
+    pub fail_present_on_poll: bool,
     pub present_forever: bool,
     pub abandon_idle: bool,
     /// Опрос fence копии не удаётся (исход на GPU неизвестен): `capture_poll` отвечает `Lost`.
@@ -73,6 +76,25 @@ pub struct FakeGpuState {
     /// Лизинг копии: живёт, пока копия не готова.
     pub lease: Option<RawFrameLease>,
     pub readback_available: bool,
+    /// Сколько «стоят» вызовы на часах движка: поддельный GPU сдвигает ручные часы внутри вызова.
+    pub costs: CallCosts,
+}
+
+/// Цена вызовов поддельного GPU на ручных часах движка (замер `StillStepCpu`).
+#[derive(Default)]
+pub struct CallCosts {
+    /// Часы движка; `None` — вызовы мгновенны.
+    pub clock: Option<super::test_support::ManualClock>,
+    pub develop_start: Duration,
+    pub present_start: Duration,
+}
+
+impl CallCosts {
+    fn spend(&self, cost: Duration) {
+        if let Some(clock) = &self.clock {
+            clock.advance(cost);
+        }
+    }
 }
 
 #[derive(Default, Clone, Copy)]
@@ -205,6 +227,7 @@ impl StillGpu for FakeGpu {
 
     fn develop_start(&mut self, _request: DevelopStart<'_, FakeRaw>) -> Result<(), String> {
         let mut state = self.lock();
+        state.costs.spend(state.costs.develop_start);
         assert!(
             !state.flight.develop,
             "движок начал второе проявление при идущем первом"
@@ -255,6 +278,7 @@ impl StillGpu for FakeGpu {
 
     fn present_start(&mut self, _image: &FakeImage, _surface: NativeSurface) -> Result<(), PresentRefusal> {
         let mut state = self.lock();
+        state.costs.spend(state.costs.present_start);
         if state.fail_present_start {
             return Err(PresentRefusal("поверхность кодера отвергнута".to_owned()));
         }
@@ -272,6 +296,10 @@ impl StillGpu for FakeGpu {
         if state.lose_present {
             state.flight.present = false;
             return PresentProgress::Lost("опрос показа не удался".to_owned());
+        }
+        if state.fail_present_on_poll {
+            state.flight.present = false;
+            return PresentProgress::Failed("поверхность кодера: подключение отвергнуто".to_owned());
         }
         if state.present_forever || state.present_polls_done < state.present_polls_needed {
             state.present_polls_done += 1;

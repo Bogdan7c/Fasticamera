@@ -118,7 +118,13 @@ enum Picture {
     Live,
     /// Стартовый чёрный экран: камера идёт, кадры не показываются.
     NeverLive,
+    /// Несколько живых кадров, затем снимок диагностики рендера замирает (поток рендера занят
+    /// проявлением — так было на телефоне в 14c): последний `present_time` больше не двигается.
+    FrozenAfterLive,
 }
+
+/// Сколько живых кадров публикует `Picture::FrozenAfterLive`, прежде чем замереть.
+const FROZEN_AFTER_LIVE_FRAMES: u64 = 20;
 
 struct LiveRing {
     stop: Arc<AtomicBool>,
@@ -140,8 +146,13 @@ impl LiveRing {
                     thread::sleep(Duration::from_millis(1));
                     continue;
                 };
+                if picture == Picture::FrozenAfterLive && live_frames >= FROZEN_AFTER_LIVE_FRAMES {
+                    // Диагностика замерла: снимок статуса больше не обновляется.
+                    thread::sleep(Duration::from_millis(FRAME_MS));
+                    continue;
+                }
                 let record = match (status.lens.active.as_ref(), picture) {
-                    (Some(active), Picture::Live) => {
+                    (Some(active), Picture::Live | Picture::FrozenAfterLive) => {
                         live_frames += 1;
                         let framing = camera_contract::zoom::ZoomFraming {
                             aspect: camera_contract::viewfinder_crop::CropAspect::SensorNative,
@@ -594,6 +605,35 @@ fn a_plain_fake_is_refused_too() {
             .contains("не настоящий"),
         "{}",
         run.result
+    );
+}
+
+#[test]
+fn burst_presses_carry_their_own_moment_even_when_the_render_snapshot_is_frozen() {
+    // 14c, телефон: метка нажатия бралась из последнего показанного кадра рендера; пока рендер занят
+    // проявлением, снимок стоит, и нажатия через 100 мс получали одну и ту же старую метку — рендер искал
+    // кадр за 100–300 мс до нажатия и не находил его в кольце. Метка обязана быть моментом самого нажатия.
+    let run = run_capture(
+        capture_config(|_| {}),
+        real_stand(),
+        RenderBehaviour::default(),
+        Picture::FrozenAfterLive,
+    );
+
+    let journal = run.harness.router.camera_screen().capture_journal();
+    let mut presses: Vec<i64> = journal.iter().map(|request| request.pressed_at.as_nanos()).collect();
+    assert!(
+        presses.len() >= 5,
+        "сценарий дошёл до серии: {} нажатий; {}",
+        presses.len(),
+        run.result
+    );
+    presses.sort_unstable();
+    let gaps_ms: Vec<i64> = presses.windows(2).map(|pair| (pair[1] - pair[0]) / 1_000_000).collect();
+    // Нажатия сценария разнесены минимум на интервал серии (100 мс) минус дрожь тика.
+    assert!(
+        gaps_ms.iter().all(|gap| *gap >= 90),
+        "метки нажатий повторяются или слиплись: {gaps_ms:?}"
     );
 }
 

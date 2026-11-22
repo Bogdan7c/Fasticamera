@@ -1,12 +1,19 @@
 //! Показ картинки снимка в поверхность кодера на стороне GPU: задание в полёте и цели, чей показ нельзя отследить.
 //!
+//! # Подключение цели — в мастерской (решение 144)
+//! Подключение Vulkan к поверхности кодера (`EncoderInputTarget::attach`: поверхность + swapchain) на Adreno
+//! стоит 67–104 мс CPU (14c), поэтому оно идёт на потоке мастерской ([`super::workshop`]), а канал опрашивает
+//! билет без ожидания (стадия `Attaching`). Картинка снимка всё это время держится каналом (`Arc`): копия в
+//! swapchain запускается, когда цель готова, — на потоке рендера, за единицы мс. Без мастерской (поток не
+//! запустился) цель подключается прямо в `start`, как до 14c.
+//!
 //! # Поток рендера не ждёт
 //! Цель кодера ([`EncoderInputTarget`]) нельзя уничтожать, пока движок показа не закончил с её swapchain. Раньше
 //! разбор цели ждал показ (`wait_presents_done`, при отсутствии `VK_EXT_swapchain_maintenance1` — `vkDeviceWaitIdle`
 //! без срока) прямо в `present_poll` на потоке рендера. Теперь:
 //!
 //! ```text
-//! CopyRunning ──(fence копии)──▶ try_detach ──▶ Detached            → Done
+//! Attaching ──(билет мастерской)──▶ CopyRunning ──(fence копии)──▶ try_detach ──▶ Detached → Done
 //!                                    │  └─────▶ PresentsPending ──(следующий кадр: опрос fence-ов показа)──┐
 //!                                    │                  ▲──────────────────────────────────────────────────┘
 //!                                    └────────▶ DeviceWideWaitRequired → отложена (`retired`), показ считается
@@ -19,6 +26,8 @@
 //! `Rendered`, а цель остаётся в `retired` до остановки GPU снимков ([`PresentChannel::settle_after_idle`]: там GPU
 //! простаивает, ограниченное ожидание допустимо) либо, сверх `retired_present_capacity`, — в учтённой утечке.
 
+use std::sync::Arc;
+
 use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::encoder_input::{DetachProgress, EncoderAttachError, EncoderDetachError, EncoderInputTarget};
 use gpu_vulkan::encoder_input::{PresentOnceError, SubmittedButNotPresented};
@@ -28,6 +37,19 @@ use gpu_vulkan::swapchain::PresentationSurface;
 use shell_contract::surface::NativeSurface;
 
 use super::super::gpu::{PresentProgress, PresentRefusal};
+use super::workshop::{StillWorkshop, Ticket, TicketPoll};
+
+/// Итог подключения цели кодера в мастерской.
+type AttachResult = Result<EncoderInputTarget, EncoderAttachError>;
+
+/// Цель кодера подключается в мастерской; картинка ждёт копии в swapchain.
+struct AttachingJob {
+    ticket: Ticket<AttachResult>,
+    /// Картинка снимка: живёт до конца показа (копия запустится, когда цель готова).
+    image: Arc<Rgba8StorageImage>,
+    /// ПК-стенд: окно держится до конца показа (см. `PresentJob::_held_window`).
+    held_window: Option<NativeSurface>,
+}
 
 /// Что известно о показе в задании.
 enum PresentStage {
@@ -63,8 +85,10 @@ struct RetiredTarget {
     _held_window: Option<NativeSurface>,
 }
 
-/// Канал показа в кодер: одно задание в полёте и отложенные цели.
+/// Канал показа в кодер: одно задание в полёте (подключение или показ) и отложенные цели.
 pub(super) struct PresentChannel {
+    /// Цель подключается в мастерской (до копии в swapchain).
+    attaching: Option<AttachingJob>,
     job: Option<PresentJob>,
     retired: Vec<RetiredTarget>,
     /// Сколько отложенных целей держать; сверх — самая старая в учтённой утечке.
@@ -77,6 +101,7 @@ pub(super) struct PresentChannel {
 impl PresentChannel {
     pub(super) fn new(retired_capacity: usize) -> Self {
         Self {
+            attaching: None,
             job: None,
             retired: Vec::new(),
             retired_capacity,
@@ -97,31 +122,66 @@ impl PresentChannel {
         self.retired.len()
     }
 
-    /// Идёт ли показ (задание в полёте).
+    /// Идёт ли показ (задание в полёте: подключение цели или показ).
     pub(super) fn in_flight(&self) -> bool {
-        self.job.is_some()
+        self.attaching.is_some() || self.job.is_some()
     }
 
     /// Запускает показ `image` в `surface`. Поверхность принимается в любом случае.
+    ///
+    /// С мастерской (`workshop`) цель подключается на её потоке, а копия запустится из [`Self::poll`];
+    /// без неё — подключение и копия прямо здесь.
     pub(super) fn start(
         &mut self,
         context: &GpuContext,
         submitter: &mut OneShotSubmitter,
-        image: &Rgba8StorageImage,
+        image: &Arc<Rgba8StorageImage>,
         surface: NativeSurface,
+        workshop: Option<&StillWorkshop>,
     ) -> Result<(), PresentRefusal> {
-        if self.job.is_some() {
+        if self.in_flight() {
             return Err(PresentRefusal("показ в кодер уже идёт".to_owned()));
         }
         let (presentation, held_window) = presentation_for_encoder(surface);
         let extent = image.extent();
-        let mut target = match EncoderInputTarget::attach(context, presentation, extent) {
+        let Some(workshop) = workshop else {
+            let attached = EncoderInputTarget::attach(context, presentation, extent);
+            return self.present_attached(submitter, attached, image, held_window);
+        };
+        let attach_context = context.clone();
+        let ticket = workshop
+            .submit_or_dispose(
+                "цель кодера",
+                move || EncoderInputTarget::attach(&attach_context, presentation, extent),
+                // Билет брошен (остановка, потеря GPU): в цель ничего не отправлено, мастерская разберёт её сама.
+                dispose_unused_attach,
+            )
+            // Отказ мастерской уничтожил работу вместе с поверхностью: кодер получит сбой записи.
+            .map_err(|error| PresentRefusal(format!("поверхность кодера не подключена: {error}")))?;
+        self.attaching = Some(AttachingJob {
+            ticket,
+            image: Arc::clone(image),
+            held_window,
+        });
+        Ok(())
+    }
+
+    /// Цель подключена (или нет): копия картинки в swapchain и показ, задание — в полёт.
+    fn present_attached(
+        &mut self,
+        submitter: &mut OneShotSubmitter,
+        attached: AttachResult,
+        image: &Rgba8StorageImage,
+        held_window: Option<NativeSurface>,
+    ) -> Result<(), PresentRefusal> {
+        let mut target = match attached {
             Ok(target) => target,
             Err(EncoderAttachError { error, surface }) => {
                 release_encoder_surface(surface);
                 return Err(PresentRefusal(format!("поверхность кодера: {error}")));
             }
         };
+        tracing::info!(target: super::super::LOG_TARGET, info = ?target.info(), "цель кодера подключена");
         #[cfg(feature = "fault-injection")]
         if self.untracked_presents {
             target.force_device_wide_wait_for_test();
@@ -157,6 +217,9 @@ impl PresentChannel {
 
     /// Опрос показа без ожидания.
     pub(super) fn poll(&mut self, submitter: &mut OneShotSubmitter) -> PresentProgress {
+        if let Some(attaching) = self.attaching.take() {
+            return self.poll_attaching(submitter, attaching);
+        }
         let Some(job) = self.job.take() else {
             return PresentProgress::Idle;
         };
@@ -224,8 +287,36 @@ impl PresentChannel {
         }
     }
 
+    /// Подключение в мастерской: билет без ожидания; готовая цель — сразу копия и показ (на этом кадре).
+    fn poll_attaching(&mut self, submitter: &mut OneShotSubmitter, attaching: AttachingJob) -> PresentProgress {
+        let AttachingJob {
+            ticket,
+            image,
+            held_window,
+        } = attaching;
+        match ticket.poll() {
+            TicketPoll::Pending => {
+                self.attaching = Some(AttachingJob {
+                    ticket,
+                    image,
+                    held_window,
+                });
+                PresentProgress::Pending
+            }
+            TicketPoll::Ready(attached) => match self.present_attached(submitter, attached, &image, held_window) {
+                Ok(()) => PresentProgress::Pending,
+                // На GPU ничего не ушло (или копия не отправлена): картинку можно уничтожать.
+                Err(PresentRefusal(reason)) => PresentProgress::Failed(reason),
+            },
+            // Работа мастерской упала: цель (если была) и поверхность уничтожены на её потоке, GPU не тронут.
+            TicketPoll::NoResult => PresentProgress::Failed("подключение цели кодера не дало результата".to_owned()),
+        }
+    }
+
     /// GPU потерян: цель и отложенные цели остаются в учтённой утечке (`Drop` цели не уничтожает объекты показа).
+    /// Подключение в мастерской бросается: готовая цель, если появится, уничтожится на потоке мастерской.
     pub(super) fn declare_lost(&mut self) {
+        self.attaching = None;
         self.job = None;
         self.retired.clear();
     }
@@ -236,7 +327,16 @@ impl PresentChannel {
     }
 
     /// Остановка после `drain`: GPU простаивает, цели разбираются (ограниченное ожидание допустимо).
+    /// Подключение в мастерской НЕ ждётся (бюджет квитанции освобождения surface): готовая цель разбирается
+    /// здесь, не готовая — мастерской, когда подключится (`dispose_unused_attach`).
     pub(super) fn settle_after_idle(&mut self, submitter: &mut OneShotSubmitter) {
+        if let Some(attaching) = self.attaching.take() {
+            match attaching.ticket.poll() {
+                TicketPoll::Ready(attached) => dispose_unused_attach(attached),
+                // Брошенный билет: результат разберёт поток мастерской.
+                TicketPoll::Pending | TicketPoll::NoResult => {}
+            }
+        }
         if let Some(job) = self.job.take() {
             let PresentJob { target, stage, .. } = job;
             let proof = match stage {
@@ -285,6 +385,15 @@ impl PresentChannel {
                 tracing::warn!(target: "fasticamera::render::still", %error, "цель кодера не разобрана после отказа");
             }
         }
+    }
+}
+
+/// Разбор цели, в которую ничего не отправлялось (подключение пришло, когда показ уже не нужен). Зовётся на
+/// потоке рендера при остановке или на потоке мастерской для брошенного билета.
+fn dispose_unused_attach(attached: AttachResult) {
+    match attached {
+        Ok(target) => detach_blocking(target, TeardownProof::NeverSubmitted),
+        Err(EncoderAttachError { surface, .. }) => release_encoder_surface(surface),
     }
 }
 

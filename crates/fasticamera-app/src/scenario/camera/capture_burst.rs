@@ -18,7 +18,9 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use shell_contract::clock::MonotonicNanos;
 
-use super::capture_observation::{CaptureObservation, LiveCounters, LiveDelta, PhaseBook, SubmitCounts, shot_record};
+use super::capture_observation::{
+    CaptureObservation, LiveCounters, LiveDelta, PhaseBook, RenderFrameTiming, SubmitCounts, shot_record,
+};
 use super::capture_report::{ShotOutcome, ShotRecord};
 use super::detail::to_value;
 use crate::capture_scenario_config::BurstPlan;
@@ -77,6 +79,8 @@ pub struct BurstRecord {
     pub max_press_gap_ms: Option<u64>,
     /// Приращения счётчиков видоискателя за серию (от первого нажатия до итогов).
     pub viewfinder: LiveDelta,
+    /// Времена кадра рендера в конце серии (окно последних кадров: проявление серии ещё идёт).
+    pub render_frame_timing: RenderFrameTiming,
 }
 
 impl BurstRecord {
@@ -156,9 +160,9 @@ impl BurstState {
     pub fn tick(&mut self, obs: &CaptureObservation<'_>, book: &PhaseBook) -> (Vec<ScreenAction>, BurstProgress) {
         let mut injections = Vec::new();
         if !self.all_pressed() && obs.now >= self.next_press_at {
-            injections.push(ScreenAction::ShutterTapped { at: obs.render_now });
+            injections.push(ScreenAction::ShutterTapped { at: obs.press_time });
             self.marks.push(PressMark {
-                at: obs.render_now,
+                at: obs.press_time,
                 instant: obs.now,
                 request: None,
             });
@@ -230,6 +234,7 @@ impl BurstState {
             min_press_gap_ms: gaps.iter().copied().min(),
             max_press_gap_ms: gaps.iter().copied().max(),
             viewfinder: obs.live.delta_since(self.baselines.live),
+            render_frame_timing: obs.render_frame_timing,
         };
         (record, shots)
     }

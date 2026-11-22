@@ -12,6 +12,7 @@ use still_contract::develop::DevelopFailure;
 use super::engine::StillEngine;
 use super::entry::{Stage, StillEntry, StillOutcome};
 use super::gpu::{PresentProgress, StillGpu};
+use super::step_timing::StillStep;
 
 impl<G: StillGpu> StillEngine<G> {
     /// Запускает показ картинки в поверхность кодера и переводит запись в `Presenting`.
@@ -28,7 +29,10 @@ impl<G: StillGpu> StillEngine<G> {
             );
             return None;
         };
-        match gpu.present_start(&image, surface) {
+        let present_started = self.clock.now();
+        let started = gpu.present_start(&image, surface);
+        self.record_step_cpu(StillStep::EncoderPresentStart, present_started);
+        match started {
             Ok(()) => {
                 self.counters.encoder_presents_started += 1;
                 let deadline =

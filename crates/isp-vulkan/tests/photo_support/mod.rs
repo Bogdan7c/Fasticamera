@@ -243,9 +243,30 @@ pub fn develop_with(
     context: &GpuContext,
     developer: &mut PhotoDeveloper,
     request: &DevelopRequest<'_>,
-    mut after_slice: impl FnMut(&PhotoDeveloper, usize),
+    after_slice: impl FnMut(&PhotoDeveloper, usize),
 ) -> Developed {
     let start = developer.begin(request).unwrap();
+    drive_slices(context, developer, start, after_slice)
+}
+
+/// То же, но цели проявления выделены заранее (`DevelopTargets::allocate`, возможно на другом потоке).
+pub fn develop_with_targets(
+    context: &GpuContext,
+    developer: &mut PhotoDeveloper,
+    request: &DevelopRequest<'_>,
+    targets: isp_vulkan::photo::DevelopTargets,
+) -> Developed {
+    let start = developer.begin_with_targets(request, targets).unwrap();
+    drive_slices(context, developer, start, |_, _| {})
+}
+
+/// Полосы проявки по одной (каждая — свой сабмит с ожиданием), потом `finish` и чтение картинки.
+fn drive_slices(
+    context: &GpuContext,
+    developer: &mut PhotoDeveloper,
+    start: isp_vulkan::photo::DevelopmentStart,
+    mut after_slice: impl FnMut(&PhotoDeveloper, usize),
+) -> Developed {
     let mut slice_times = Vec::new();
     loop {
         let mut outcome = None;

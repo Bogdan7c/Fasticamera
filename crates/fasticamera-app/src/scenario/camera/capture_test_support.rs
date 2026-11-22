@@ -179,8 +179,8 @@ impl World {
         self.base + self.elapsed
     }
 
-    /// Метка кадра рендера на текущий момент (одна шкала со временем мира; на тик — новая).
-    pub fn render_now(&self) -> MonotonicNanos {
+    /// Момент `CLOCK_MONOTONIC` на текущий тик (одна шкала со временем мира; на тик — новая).
+    pub fn press_time(&self) -> MonotonicNanos {
         MonotonicNanos::from_nanos(1_000_000_000 + i64::try_from(self.elapsed.as_nanos()).unwrap())
     }
 
@@ -307,7 +307,7 @@ pub fn drive(runner: &mut CaptureRunner, world: &mut World, tick: Duration, limi
         let journal = world.journal.clone();
         let observation = CaptureObservation {
             now: world.now(),
-            render_now: world.render_now(),
+            press_time: world.press_time(),
             raw_setting: world.raw,
             actions_rejected: world.actions_rejected,
             submit: world.submit,
@@ -315,6 +315,7 @@ pub fn drive(runner: &mut CaptureRunner, world: &mut World, tick: Duration, limi
             live: world.live,
             mode_is_real: world.mode_is_real,
             clock: world.clock(),
+            render_frame_timing: Default::default(),
         };
         let outcome = runner.tick(&observation);
         for action in outcome.injections {

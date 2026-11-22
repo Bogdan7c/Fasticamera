@@ -230,10 +230,10 @@ impl CaptureRunner {
         let last_request = obs.journal.iter().map(|request| request.request.0).max().unwrap_or(0);
         match step.kind {
             StepKind::Single { .. } => {
-                injections.push(ScreenAction::ShutterTapped { at: obs.render_now });
+                injections.push(ScreenAction::ShutterTapped { at: obs.press_time });
                 self.stage = Stage::AwaitShot(SingleShot {
                     pressed_at: obs.now,
-                    at: obs.render_now,
+                    at: obs.press_time,
                     last_request_before: last_request,
                     submit_before: obs.submit,
                     actions_rejected_before: obs.actions_rejected,

@@ -145,7 +145,7 @@ impl RawCapturer {
     /// без `prepare` `record_capture` выделяет буфер сам — медленнее, но верно. Подготовленный буфер другого
     /// размера отбрасывается при следующем `prepare`/`record_capture`.
     pub fn prepare(&mut self, valid_size: PixelSize) -> Result<(), PhotoError> {
-        let size_bytes = u64::from(valid_size.width) * u64::from(valid_size.height) * BYTES_PER_SAMPLE;
+        let size_bytes = Self::buffer_bytes(valid_size);
         if self
             .prepared
             .as_ref()
@@ -156,6 +156,18 @@ impl RawCapturer {
         self.prepared = None;
         self.prepared = Some(HostReadbackBuffer::new(&self.context, size_bytes)?);
         Ok(())
+    }
+
+    /// Размер буфера захвата под полезную область `valid_size`, байт (u16 на отсчёт).
+    pub fn buffer_bytes(valid_size: PixelSize) -> u64 {
+        u64::from(valid_size.width) * u64::from(valid_size.height) * BYTES_PER_SAMPLE
+    }
+
+    /// Принимает буфер, выделенный вне захватчика (`HostReadbackBuffer::new` на другом потоке, размер —
+    /// [`Self::buffer_bytes`]): так выделение и обнуление 24 МиБ уходят с потока рендера (решение 144).
+    /// Прежний подготовленный буфер заменяется; буфер не того размера `record_capture` отбросит сам.
+    pub fn install_prepared(&mut self, buffer: HostReadbackBuffer) {
+        self.prepared = Some(buffer);
     }
 
     /// Занят ли захватчик заранее выделенным буфером (диагностика и тесты).
@@ -194,7 +206,7 @@ impl RawCapturer {
             height: valid_area.height,
         };
         let addressing = source_addressing(source, valid_area, extent)?;
-        let size_bytes = u64::from(valid_area.width) * u64::from(valid_area.height) * BYTES_PER_SAMPLE;
+        let size_bytes = Self::buffer_bytes(PixelSize::new(valid_area.width, valid_area.height));
         // Заранее выделенный буфер (если подошёл по размеру) избавляет путь затвора от выделения и обнуления.
         let destination = match self.prepared.take() {
             Some(buffer) if buffer.size_bytes() == size_bytes => buffer,

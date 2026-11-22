@@ -30,7 +30,7 @@ fn baselines() -> BurstBaselines {
 fn observation<'a>(now: Instant, at_ms: i64, journal: &'a [ShotRequest], accepted: u64) -> CaptureObservation<'a> {
     CaptureObservation {
         now,
-        render_now: MonotonicNanos::from_nanos(at_ms * 1_000_000),
+        press_time: MonotonicNanos::from_nanos(at_ms * 1_000_000),
         raw_setting: camera_screen::settings::RawCapture::Off,
         actions_rejected: 0,
         submit: SubmitCounts { accepted, rejected: 0 },
@@ -40,6 +40,7 @@ fn observation<'a>(now: Instant, at_ms: i64, journal: &'a [ShotRequest], accepte
         clock: ClockBridge::Unavailable {
             reason: "в тесте серии часы не нужны".to_owned(),
         },
+        render_frame_timing: Default::default(),
     }
 }
 

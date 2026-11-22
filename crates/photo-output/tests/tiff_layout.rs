@@ -3,8 +3,14 @@
 
 mod support;
 
-use photo_output::tiff::{Ifd, TiffError, TiffFile, TiffValue, signed_rational, unsigned_rational};
-use support::tiff_reader::ParsedTiff;
+use photo_output::tiff::{ByteOrder, Ifd, TiffError, TiffFile, TiffValue, signed_rational, unsigned_rational};
+use support::tiff_reader::{Order, ParsedTiff};
+
+/// Оба порядка байт писателя и что читатель обязан увидеть в заголовке.
+const BOTH_ORDERS: [(ByteOrder, Order); 2] = [
+    (ByteOrder::LittleEndian, Order::Little),
+    (ByteOrder::BigEndian, Order::Big),
+];
 
 fn write(file: &TiffFile<'_>) -> Vec<u8> {
     let mut bytes = Vec::new();
@@ -15,6 +21,12 @@ fn write(file: &TiffFile<'_>) -> Vec<u8> {
 
 #[test]
 fn every_value_type_survives_a_round_trip_inline_and_out_of_line() {
+    for (byte_order, expected_order) in BOTH_ORDERS {
+        every_value_type_round_trip(byte_order, expected_order);
+    }
+}
+
+fn every_value_type_round_trip(byte_order: ByteOrder, expected_order: Order) {
     let mut ifd = Ifd::new();
     // Порядок вставки нарочно не по возрастанию тегов.
     ifd.set(500, TiffValue::Double(vec![1.5, -2.25]));
@@ -29,8 +41,9 @@ fn every_value_type_survives_a_round_trip_inline_and_out_of_line() {
     ifd.set(402, TiffValue::Undefined(b"0232".to_vec()));
     ifd.set(403, TiffValue::Long(vec![u32::MAX, 0]));
 
-    let bytes = write(&TiffFile::new(ifd));
+    let bytes = write(&TiffFile::with_byte_order(ifd, byte_order));
     let tiff = ParsedTiff::open(&bytes);
+    assert_eq!(tiff.order, expected_order, "заголовок объявляет выбранный порядок");
     let parsed = tiff.first_ifd();
 
     assert_eq!(
@@ -73,6 +86,12 @@ fn out_of_line_values_are_word_aligned_even_after_odd_sized_values() {
 
 #[test]
 fn nested_ifd_sub_ifds_and_next_ifd_are_reachable_from_their_pointers() {
+    for (byte_order, _) in BOTH_ORDERS {
+        nested_ifds_round_trip(byte_order);
+    }
+}
+
+fn nested_ifds_round_trip(byte_order: ByteOrder) {
     let mut exif = Ifd::new();
     exif.set(33434, TiffValue::Rational(vec![(1, 100)]));
     let mut sub_a = Ifd::new();
@@ -88,7 +107,7 @@ fn nested_ifd_sub_ifds_and_next_ifd_are_reachable_from_their_pointers() {
     root.set(256, TiffValue::long(1));
     root.set_next(second);
 
-    let bytes = write(&TiffFile::new(root));
+    let bytes = write(&TiffFile::with_byte_order(root, byte_order));
     let tiff = ParsedTiff::open(&bytes);
     let first = tiff.first_ifd();
 
@@ -126,6 +145,29 @@ fn strips_are_streamed_after_metadata_with_correct_offsets_even_for_odd_lengths(
     assert_eq!(&bytes[offsets[2] as usize..][..3], &strip_c[..]);
     assert!(offsets.iter().all(|offset| offset % 2 == 0));
     assert_eq!(tiff.strip_data(&parsed), [strip_a, strip_b, strip_c].concat());
+}
+
+#[test]
+fn default_file_is_little_endian_like_dng() {
+    let bytes = write(&TiffFile::new(Ifd::new().set(256, TiffValue::long(1)).clone()));
+    assert_eq!(&bytes[..4], b"II*\0");
+}
+
+#[test]
+fn big_endian_file_stores_every_number_most_significant_byte_first() {
+    // Сырые байты, а не круговой тест: читатель с той же ошибкой порядка не заметил бы её.
+    let mut ifd = Ifd::new();
+    ifd.set(0x0102, TiffValue::long(0x0A0B_0C0D));
+    let bytes = write(&TiffFile::with_byte_order(ifd, ByteOrder::BigEndian));
+
+    assert_eq!(&bytes[..4], b"MM\0*", "заголовок MM и число 42 старшим байтом вперёд");
+    assert_eq!(&bytes[4..8], &[0, 0, 0, 8], "первый IFD сразу после заголовка");
+    assert_eq!(&bytes[8..10], &[0, 1], "в IFD одно поле");
+    assert_eq!(&bytes[10..12], &[0x01, 0x02], "тег");
+    assert_eq!(&bytes[12..14], &[0, 4], "тип LONG");
+    assert_eq!(&bytes[14..18], &[0, 0, 0, 1], "счётчик");
+    assert_eq!(&bytes[18..22], &[0x0A, 0x0B, 0x0C, 0x0D], "значение в поле");
+    assert_eq!(&bytes[22..26], &[0, 0, 0, 0], "следующего IFD нет");
 }
 
 #[test]

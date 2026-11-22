@@ -4,7 +4,7 @@
 //! выбор кадра по видам и причинам замены, потеря GPU снимков, отказы до захвата, итоги. Это независимая от журнала
 //! выборов сверка: журнал говорит «что выбрано для каждого снимка», счётчики рендера — «что рендер учёл».
 
-use render_loop::still_diagnostics::StillDiagnostics;
+use render_loop::still_diagnostics::{StillDiagnostics, StillStepCpu};
 use serde::Serialize;
 
 /// Выбор кадра: приращения по видам.
@@ -38,6 +38,10 @@ pub struct StillDiagnosticsDelta {
     /// Точные выборы: сколько снимок стоял на экране до нажатия — число наблюдений и среднее, мс.
     pub exact_press_after_shown_count: u64,
     pub exact_press_after_shown_mean_ms: Option<f64>,
+    /// CPU потока рендера по шагам движка снимков — НАКОПЛЕННОЕ за жизнь бэкенда (наибольшее из разности
+    /// не вычесть). Сценарий идёт в свежем процессе, поэтому это и есть цена снимков прогона: вход 14c
+    /// для вопроса «что держит поток рендера, пока видоискатель теряет кадры».
+    pub step_cpu: StillStepCpu,
 }
 
 impl StillDiagnosticsDelta {
@@ -110,6 +114,7 @@ impl StillDiagnosticsDelta {
             completed: sub(ao.rendered + ao.readback, bo.rendered + bo.readback),
             exact_press_after_shown_count: shown_count,
             exact_press_after_shown_mean_ms: (shown_count > 0).then(|| shown_total_ms / shown_count as f64),
+            step_cpu: after.step_cpu,
         }
     }
 }

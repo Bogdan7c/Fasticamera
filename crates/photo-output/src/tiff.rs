@@ -1,6 +1,8 @@
-//! Минимальный писатель TIFF 6.0 (Adobe, 1992) в порядке байт little-endian (`II*\0`).
+//! Минимальный писатель TIFF 6.0 (Adobe, 1992) в любом из двух порядков байт TIFF ([`ByteOrder`]).
 //!
 //! Нужен трём потребителям: DNG (`crate::dng`), блок Exif для HEIF/JPEG (`crate::exif`) и их тестам.
+//! Порядок байт выбирает потребитель: DNG — little-endian `II` (отсчёты кадра уже лежат в нём, как у
+//! `DngCreator`), Exif — big-endian `MM` (причина — в `crate::exif`).
 //! Писатель умеет ровно то, что нужно им, и ничего лишнего:
 //! * IFD с полями, отсортированными по возрастанию тега (TIFF 6.0, раздел 2: «Image File Directory»);
 //! * типы BYTE / ASCII / SHORT / LONG / RATIONAL / UNDEFINED / SRATIONAL / DOUBLE;
@@ -18,7 +20,7 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 
-/// Длина заголовка TIFF: `II`, число 42, смещение первого IFD (TIFF 6.0, раздел 2).
+/// Длина заголовка TIFF: `II`/`MM`, число 42, смещение первого IFD (TIFF 6.0, раздел 2).
 const HEADER_LEN: usize = 8;
 /// Максимум полей в IFD: счётчик — `SHORT`.
 const MAX_ENTRIES_PER_IFD: usize = u16::MAX as usize;
@@ -37,6 +39,57 @@ const TYPE_RATIONAL: u16 = 5;
 const TYPE_UNDEFINED: u16 = 7;
 const TYPE_SRATIONAL: u16 = 10;
 const TYPE_DOUBLE: u16 = 12;
+
+/// Порядок байт всех многобайтовых чисел файла (TIFF 6.0, раздел 2, «Image File Header»).
+///
+/// Порядок один на весь файл: его объявляют два первых байта заголовка, и читатель по ним разбирает
+/// и поля IFD, и значения. Байтовые типы (BYTE, ASCII, UNDEFINED) и полосы изображения писатель не
+/// переставляет: полосы — чужие байты, их порядок обязан совпадать с объявленным (забота вызывающего).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ByteOrder {
+    /// `II` («Intel»): младший байт первым.
+    LittleEndian,
+    /// `MM` («Motorola»): старший байт первым.
+    BigEndian,
+}
+
+impl ByteOrder {
+    /// Два байта заголовка, объявляющие порядок.
+    fn header_marker(self) -> &'static [u8; 2] {
+        match self {
+            Self::LittleEndian => b"II",
+            Self::BigEndian => b"MM",
+        }
+    }
+
+    fn u16_bytes(self, value: u16) -> [u8; 2] {
+        match self {
+            Self::LittleEndian => value.to_le_bytes(),
+            Self::BigEndian => value.to_be_bytes(),
+        }
+    }
+
+    fn u32_bytes(self, value: u32) -> [u8; 4] {
+        match self {
+            Self::LittleEndian => value.to_le_bytes(),
+            Self::BigEndian => value.to_be_bytes(),
+        }
+    }
+
+    fn i32_bytes(self, value: i32) -> [u8; 4] {
+        match self {
+            Self::LittleEndian => value.to_le_bytes(),
+            Self::BigEndian => value.to_be_bytes(),
+        }
+    }
+
+    fn f64_bytes(self, value: f64) -> [u8; 8] {
+        match self {
+            Self::LittleEndian => value.to_le_bytes(),
+            Self::BigEndian => value.to_be_bytes(),
+        }
+    }
+}
 
 /// Почему TIFF не записан.
 #[derive(Debug, thiserror::Error)]
@@ -105,8 +158,8 @@ impl TiffValue {
         Self::Ifd(Box::new(ifd))
     }
 
-    /// Кодирует значение: (тип, счётчик, байты little-endian). Вложенные IFD здесь не кодируются.
-    fn encode_plain(&self, tag: u16) -> Result<(u16, u32, Vec<u8>), TiffError> {
+    /// Кодирует значение: (тип, счётчик, байты в порядке `order`). Вложенные IFD здесь не кодируются.
+    fn encode_plain(&self, tag: u16, order: ByteOrder) -> Result<(u16, u32, Vec<u8>), TiffError> {
         let (type_code, count, bytes): (u16, usize, Vec<u8>) = match self {
             Self::Byte(values) => (TYPE_BYTE, values.len(), values.clone()),
             Self::Ascii(text) => {
@@ -121,12 +174,12 @@ impl TiffValue {
             Self::Short(values) => (
                 TYPE_SHORT,
                 values.len(),
-                values.iter().flat_map(|value| value.to_le_bytes()).collect(),
+                values.iter().flat_map(|value| order.u16_bytes(*value)).collect(),
             ),
             Self::Long(values) => (
                 TYPE_LONG,
                 values.len(),
-                values.iter().flat_map(|value| value.to_le_bytes()).collect(),
+                values.iter().flat_map(|value| order.u32_bytes(*value)).collect(),
             ),
             Self::Rational(values) => (
                 TYPE_RATIONAL,
@@ -134,7 +187,10 @@ impl TiffValue {
                 values
                     .iter()
                     .flat_map(|(numerator, denominator)| {
-                        numerator.to_le_bytes().into_iter().chain(denominator.to_le_bytes())
+                        order
+                            .u32_bytes(*numerator)
+                            .into_iter()
+                            .chain(order.u32_bytes(*denominator))
                     })
                     .collect(),
             ),
@@ -144,14 +200,17 @@ impl TiffValue {
                 values
                     .iter()
                     .flat_map(|(numerator, denominator)| {
-                        numerator.to_le_bytes().into_iter().chain(denominator.to_le_bytes())
+                        order
+                            .i32_bytes(*numerator)
+                            .into_iter()
+                            .chain(order.i32_bytes(*denominator))
                     })
                     .collect(),
             ),
             Self::Double(values) => (
                 TYPE_DOUBLE,
                 values.len(),
-                values.iter().flat_map(|value| value.to_le_bytes()).collect(),
+                values.iter().flat_map(|value| order.f64_bytes(*value)).collect(),
             ),
             Self::Undefined(values) => (TYPE_UNDEFINED, values.len(), values.clone()),
             Self::Ifd(_) | Self::SubIfds(_) => return Err(TiffError::EmptyValue(tag)),
@@ -203,17 +262,25 @@ impl Ifd {
     }
 }
 
-/// Файл TIFF: корневой IFD и полосы изображения (срезы чужих байт, не копируются).
+/// Файл TIFF: корневой IFD, порядок байт и полосы изображения (срезы чужих байт, не копируются).
 #[derive(Debug, Clone)]
 pub struct TiffFile<'a> {
     root: Ifd,
+    byte_order: ByteOrder,
     strips: Vec<&'a [u8]>,
 }
 
 impl<'a> TiffFile<'a> {
+    /// Файл в порядке little-endian (`II`) — так пишется DNG.
     pub fn new(root: Ifd) -> Self {
+        Self::with_byte_order(root, ByteOrder::LittleEndian)
+    }
+
+    /// Файл в явно выбранном порядке байт.
+    pub fn with_byte_order(root: Ifd, byte_order: ByteOrder) -> Self {
         Self {
             root,
+            byte_order,
             strips: Vec::new(),
         }
     }
@@ -255,9 +322,10 @@ impl<'a> TiffFile<'a> {
             });
         }
 
-        out.write_all(b"II")?;
-        out.write_all(&42u16.to_le_bytes())?;
-        out.write_all(&(HEADER_LEN as u32).to_le_bytes())?;
+        let order = self.byte_order;
+        out.write_all(order.header_marker())?;
+        out.write_all(&order.u16_bytes(42))?;
+        out.write_all(&order.u32_bytes(HEADER_LEN as u32))?;
         out.write_all(&metadata)?;
         write_padding(out, strips_start - (HEADER_LEN + metadata.len()))?;
         for strip in &self.strips {
@@ -279,7 +347,10 @@ impl<'a> TiffFile<'a> {
             root.set(TAG_STRIP_OFFSETS, TiffValue::Long(strip_offsets.to_vec()));
             root.set(TAG_STRIP_BYTE_COUNTS, TiffValue::Long(counts));
         }
-        let mut encoder = Encoder { buffer: Vec::new() };
+        let mut encoder = Encoder {
+            buffer: Vec::new(),
+            order: self.byte_order,
+        };
         encoder.encode_ifd(&root)?;
         Ok(encoder.buffer)
     }
@@ -289,6 +360,8 @@ impl<'a> TiffFile<'a> {
 /// `HEADER_LEN + индекс в буфере`. Первый IFD начинается ровно по смещению 8 (его адрес в заголовке).
 struct Encoder {
     buffer: Vec<u8>,
+    /// Порядок байт файла: в нём кодируются счётчики, теги, типы, смещения и значения.
+    order: ByteOrder,
 }
 
 impl Encoder {
@@ -315,7 +388,7 @@ impl Encoder {
         let block_start = self.buffer.len();
         // Блок каталога: счётчик (2) + поля (12 каждое) + указатель на следующий IFD (4).
         self.buffer.resize(block_start + 2 + 12 * count + 4, 0);
-        self.buffer[block_start..block_start + 2].copy_from_slice(&(count as u16).to_le_bytes());
+        self.buffer[block_start..block_start + 2].copy_from_slice(&self.order.u16_bytes(count as u16));
 
         for (index, (tag, value)) in ifd.entries.iter().enumerate() {
             let (type_code, value_count, payload) = self.encode_value(*tag, value)?;
@@ -329,19 +402,19 @@ impl Encoder {
                 self.align();
                 let offset = self.position()?;
                 self.buffer.extend_from_slice(&payload);
-                offset.to_le_bytes()
+                self.order.u32_bytes(offset)
             };
             let entry = &mut self.buffer[entry_start..entry_start + 12];
-            entry[0..2].copy_from_slice(&tag.to_le_bytes());
-            entry[2..4].copy_from_slice(&type_code.to_le_bytes());
-            entry[4..8].copy_from_slice(&value_count.to_le_bytes());
+            entry[0..2].copy_from_slice(&self.order.u16_bytes(*tag));
+            entry[2..4].copy_from_slice(&self.order.u16_bytes(type_code));
+            entry[4..8].copy_from_slice(&self.order.u32_bytes(value_count));
             entry[8..12].copy_from_slice(&value_field);
         }
 
         if let Some(next) = &ifd.next {
             let next_offset = self.encode_ifd(next)?;
             let pointer_at = block_start + 2 + 12 * count;
-            self.buffer[pointer_at..pointer_at + 4].copy_from_slice(&next_offset.to_le_bytes());
+            self.buffer[pointer_at..pointer_at + 4].copy_from_slice(&self.order.u32_bytes(next_offset));
         }
         Ok(ifd_offset)
     }
@@ -351,7 +424,7 @@ impl Encoder {
         match value {
             TiffValue::Ifd(child) => {
                 let offset = self.encode_ifd(child)?;
-                Ok((TYPE_LONG, 1, offset.to_le_bytes().to_vec()))
+                Ok((TYPE_LONG, 1, self.order.u32_bytes(offset).to_vec()))
             }
             TiffValue::SubIfds(children) => {
                 if children.is_empty() {
@@ -359,12 +432,13 @@ impl Encoder {
                 }
                 let mut bytes = Vec::with_capacity(children.len() * 4);
                 for child in children {
-                    bytes.extend_from_slice(&self.encode_ifd(child)?.to_le_bytes());
+                    let child_offset = self.encode_ifd(child)?;
+                    bytes.extend_from_slice(&self.order.u32_bytes(child_offset));
                 }
                 let count = u32::try_from(children.len()).map_err(|_| TiffError::TooLarge)?;
                 Ok((TYPE_LONG, count, bytes))
             }
-            plain => plain.encode_plain(tag),
+            plain => plain.encode_plain(tag, self.order),
         }
     }
 }

@@ -243,6 +243,50 @@ fn gpu_failures_end_with_exactly_one_event_on_every_stage() {
 }
 
 #[test]
+fn an_encoder_attach_failing_later_on_poll_ends_like_a_refused_start_and_spares_the_next_still() {
+    // Правило 6: с мастерской (решение 144) отказ подключения цели приходит не из `present_start`, а из опроса.
+    // Итог снимка обязан быть тем же (`Failed(Gpu)`, ровно один), GPU не объявляется потерянным, следующий
+    // снимок проходит.
+    let (mut rig, _) = proven_rig(StillDevelopConfig::default());
+    rig.gpu.lock().unwrap().fail_present_on_poll = true;
+    let failing = rig.begin(plan(1, 25));
+    rig.run(3);
+    rig.engine
+        .apply_command(StillCommand::Target(PrimaryTargetOffer::Ready {
+            id: StillId(1),
+            target: PrimaryTarget::EncoderSurface(fake_encoder_surface()),
+        }));
+    rig.run(10);
+    let events = failing.take();
+    assert!(matches!(
+        events.last(),
+        Some(DevelopEvent::Failed {
+            failure: DevelopFailure::Gpu(_),
+            ..
+        })
+    ));
+    assert_eq!(events.iter().filter(|event| event.is_final()).count(), 1);
+    let diagnostics = rig.engine.diagnostics();
+    assert_eq!(diagnostics.gpu_lost, 0, "сбой подключения — не потеря GPU");
+    assert_eq!(diagnostics.encoder_presents_completed, 0);
+    assert_eq!(*rig.made_gpus.lock().unwrap(), 1, "GPU снимков не пересоздавался");
+
+    rig.gpu.lock().unwrap().fail_present_on_poll = false;
+    let next = rig.begin(plan(2, 35));
+    rig.run(3);
+    rig.engine
+        .apply_command(StillCommand::Target(PrimaryTargetOffer::Ready {
+            id: StillId(2),
+            target: PrimaryTarget::EncoderSurface(fake_encoder_surface()),
+        }));
+    rig.run(10);
+    assert!(matches!(
+        next.take().last(),
+        Some(DevelopEvent::PrimaryRendered { id: StillId(2) })
+    ));
+}
+
+#[test]
 fn a_stuck_encoder_present_fails_that_still_and_resets_the_gpu_for_the_rest() {
     let config = StillDevelopConfig {
         encoder_present_timeout_ms: 200,

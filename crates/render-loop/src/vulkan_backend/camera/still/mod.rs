@@ -39,6 +39,7 @@ mod gpu_loss;
 pub mod params_history;
 pub mod present_log;
 pub mod rotation;
+mod step_timing;
 pub mod vulkan_gpu;
 
 #[cfg(test)]

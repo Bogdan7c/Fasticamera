@@ -50,6 +50,11 @@ use camera_painter::create_camera_painter;
 
 const LOG_TARGET: &str = "fasticamera::render::vulkan";
 
+/// С какой длительности «захват → сабмит» кадр видоискателя пишется в лог отладки (две длины кадра 60 Гц).
+/// Только диагностика (14c): по моментам долгих кадров ищется, с чем они совпадают (работы мастерской
+/// снимка и т. п.); на поведение порог не влияет.
+const SLOW_FRAME_DEBUG_LOG_THRESHOLD: Duration = Duration::from_micros(33_333);
+
 /// Итог освобождения показа.
 #[derive(Debug)]
 pub(super) struct ReleaseReport {
@@ -294,6 +299,17 @@ impl AttachedDisplay {
             cpu_timing.latch_wait = elapsed_between(acquire_finished, latch_moment).unwrap_or(Duration::ZERO);
             cpu_timing.latch_result = latch_result;
             cpu_timing.latch_to_submit = elapsed_between(latch_moment, submitted);
+            if let (Some(cost), Some(latch), Some(submitted)) = (cpu_timing.latch_to_submit, latch_moment, submitted)
+                && cost >= SLOW_FRAME_DEBUG_LOG_THRESHOLD
+            {
+                tracing::debug!(
+                    target: LOG_TARGET,
+                    latch_ns = latch.as_nanos(),
+                    submitted_ns = submitted.as_nanos(),
+                    cost_ms = cost.as_secs_f64() * 1_000.0,
+                    "долгий кадр видоискателя: захват → сабмит"
+                );
+            }
         }
         outcome
     }

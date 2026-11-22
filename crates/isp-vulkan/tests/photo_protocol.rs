@@ -19,11 +19,11 @@ use isp_model::cfa::BayerPattern;
 use isp_model::demosaic::DemosaicMethod;
 use isp_model::params::IspParamsVersion;
 use isp_vulkan::photo::{
-    DevelopRequest, PhotoConfig, PhotoDeveloper, PhotoError, RawCapturer, RgbaReadback, SliceOutcome,
+    DevelopRequest, DevelopTargets, PhotoConfig, PhotoDeveloper, PhotoError, RawCapturer, RgbaReadback, SliceOutcome,
 };
 use photo_support::{
-    Placement, SourceKind, capture, compare_rgba, crop_in_buffer, develop, developer_for, into_gpu_error, upload,
-    zone_plate_frame,
+    Placement, SourceKind, capture, compare_rgba, crop_in_buffer, develop, develop_with_targets, developer_for,
+    into_gpu_error, upload, zone_plate_frame,
 };
 use quality_support::{assert_no_validation_errors, gpu_context_or_skip};
 
@@ -338,5 +338,89 @@ fn finished_development_returns_all_objects_but_the_photo_and_a_dropped_busy_dev
         .unwrap();
     }
     assert_ne!(context.live_objects(), baseline, "утечка видна в учёте живых объектов");
+    assert_no_validation_errors(&context);
+}
+
+#[test]
+fn targets_allocated_on_another_thread_develop_the_same_picture_as_begin() {
+    // Решение 144: картинку и копию для JPEG выделяет мастерская снимка (другой поток), рендер только привязывает.
+    let Some(context) = gpu_context_or_skip() else { return };
+    let mut capturer = RawCapturer::new(&context, &PhotoConfig::default()).unwrap();
+    let frame = zone_plate_frame(WIDTH, HEIGHT, BayerPattern::BGGR);
+    let gpu_frame = upload(&context, &frame.raw, SourceKind::Raw10, Placement::PADDED);
+    let captured = capture(&context, &mut capturer, &gpu_frame);
+    let mut developer = developer_for(&context, 16, WIDTH);
+    let crop = crop_in_buffer(gpu_frame.valid_area, 7, 5, 33, 29);
+    let reference = develop(&context, &mut developer, &captured, &frame, crop, RgbaReadback::ForJpeg);
+
+    let worker_context = context.clone();
+    let targets = std::thread::spawn(move || {
+        DevelopTargets::allocate(&worker_context, PixelSize::new(33, 29), RgbaReadback::ForJpeg)
+    })
+    .join()
+    .unwrap()
+    .unwrap();
+    let request = DevelopRequest {
+        raw: &captured,
+        params: &frame.params,
+        crop,
+        readback: RgbaReadback::ForJpeg,
+    };
+    let prepared = develop_with_targets(&context, &mut developer, &request, targets);
+    assert_eq!(prepared.image_rgba, reference.image_rgba, "та же картинка бит-в-бит");
+    assert_eq!(
+        prepared.photo.host_rgba8().map(|copy| copy.rgba_bytes().to_vec()),
+        reference.photo.host_rgba8().map(|copy| copy.rgba_bytes().to_vec()),
+        "та же копия для JPEG"
+    );
+    assert_no_validation_errors(&context);
+}
+
+#[test]
+fn targets_that_do_not_fit_the_request_are_refused_without_starting_a_development() {
+    let Some(context) = gpu_context_or_skip() else { return };
+    let mut capturer = RawCapturer::new(&context, &PhotoConfig::default()).unwrap();
+    let frame = zone_plate_frame(WIDTH, HEIGHT, BayerPattern::BGGR);
+    let gpu_frame = upload(&context, &frame.raw, SourceKind::Raw10, Placement::PADDED);
+    let captured = capture(&context, &mut capturer, &gpu_frame);
+    let mut developer = developer_for(&context, 16, WIDTH);
+    let crop = crop_in_buffer(gpu_frame.valid_area, 0, 0, 32, 24);
+    let request = |readback| DevelopRequest {
+        raw: &captured,
+        params: &frame.params,
+        crop,
+        readback,
+    };
+    // Не тот размер картинки.
+    let wrong_size = DevelopTargets::allocate(&context, PixelSize::new(30, 24), RgbaReadback::NotNeeded).unwrap();
+    let error = developer
+        .begin_with_targets(&request(RgbaReadback::NotNeeded), wrong_size)
+        .unwrap_err();
+    assert!(matches!(error, PhotoError::InvalidInput { .. }), "{error:?}");
+    assert!(!developer.is_developing());
+    // Копия для JPEG нужна, а в целях её нет — и наоборот.
+    let no_copy = DevelopTargets::allocate(&context, crop.size, RgbaReadback::NotNeeded).unwrap();
+    assert!(matches!(
+        developer.begin_with_targets(&request(RgbaReadback::ForJpeg), no_copy),
+        Err(PhotoError::InvalidInput { .. })
+    ));
+    let extra_copy = DevelopTargets::allocate(&context, crop.size, RgbaReadback::ForJpeg).unwrap();
+    assert!(matches!(
+        developer.begin_with_targets(&request(RgbaReadback::NotNeeded), extra_copy),
+        Err(PhotoError::InvalidInput { .. })
+    ));
+    assert!(!developer.is_developing());
+    // Проверка запроса без выделений: негодная область отвергается ДО заказа целей.
+    let outside = PixelRect {
+        left: gpu_frame.valid_area.left + 60,
+        top: gpu_frame.valid_area.top,
+        size: PixelSize::new(8, 8),
+    };
+    let checked = developer.check_request(&DevelopRequest {
+        crop: outside,
+        ..request(RgbaReadback::NotNeeded)
+    });
+    assert!(matches!(checked, Err(PhotoError::InvalidInput { .. })), "{checked:?}");
+    assert!(developer.check_request(&request(RgbaReadback::NotNeeded)).is_ok());
     assert_no_validation_errors(&context);
 }

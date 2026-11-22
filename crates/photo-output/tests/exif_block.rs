@@ -7,7 +7,7 @@ use camera_contract::geometry::{PixelRect, PixelSize};
 use photo_output::exif::{CaptureMoment, ExifInputs, RotationCarrier, build_exif_tiff};
 use still_contract::shot::StillRotation;
 use support::still_fixture::{camera_description, capture_moment, main_camera_stream, still_facts};
-use support::tiff_reader::{ParsedIfd, ParsedTiff};
+use support::tiff_reader::{Order, ParsedIfd, ParsedTiff};
 
 fn exif_for(moment: CaptureMoment, rotation: StillRotation) -> Vec<u8> {
     let area = PixelRect {
@@ -234,8 +234,28 @@ fn long_exposure_uses_millisecond_fraction_and_non_ascii_text_is_replaced() {
 }
 
 #[test]
-fn container_carried_rotation_keeps_exif_orientation_at_one() {
-    // HEIF: поворот уже лежит в `irot` контейнера; Orientation ≠ 1 заставил бы читателя повернуть дважды.
+fn block_is_big_endian_so_android_reads_heif_size_and_rotation_right() {
+    // 14c, телефон: с блоком `II` MediaStore записал HEIF 4096×3072 как 16×12 — `ExifInterface`
+    // кладёт размер из контейнера числом `MM`, а читает его в порядке блока. Сверяем сырые байты.
+    let bytes = exif_for(capture_moment(), StillRotation::None);
+    assert_eq!(&bytes[..4], b"MM\0*", "блок Exif — big-endian");
+    let tiff = ParsedTiff::open(&bytes);
+    assert_eq!(tiff.order, Order::Big);
+    let exif = exif_ifd(&tiff, &tiff.first_ifd());
+    let width = exif.entry(40962);
+    assert_eq!(
+        width.bytes(),
+        &[0, 0, 0x0F, 0xA0],
+        "PixelXDimension 4000 старшим байтом вперёд"
+    );
+    assert_eq!(width.longs(), vec![4000]);
+    assert_eq!(exif.entry(40963).longs(), vec![3000]);
+}
+
+#[test]
+fn container_carried_rotation_leaves_no_orientation_tag() {
+    // HEIF: поворот уже лежит в `irot` контейнера. Тега нет вовсе: с `Orientation = 1` платформенный
+    // `ExifInterface` перезаписывал поворот из `irot`, и MediaStore считал снимок неповёрнутым (14c).
     let area = PixelRect {
         left: 0,
         top: 0,
@@ -258,6 +278,7 @@ fn container_carried_rotation_keeps_exif_orientation_at_one() {
         })
         .unwrap();
         let ifd0 = ParsedTiff::open(&bytes).first_ifd();
-        assert_eq!(ifd0.entry(274).shorts(), vec![1], "{rotation:?}");
+        assert!(ifd0.maybe(274).is_none(), "{rotation:?}: Orientation не пишется");
+        assert_eq!(ifd0.entry(271).ascii(), "OnePlus", "остальные поля IFD0 на месте");
     }
 }

@@ -26,7 +26,7 @@ use render_loop::still_diagnostics::StillDiagnostics;
 use render_loop::viewfinder::ViewfinderDiagnostics;
 
 use super::capture_frame_timing::ClockBridge;
-use super::capture_observation::{CaptureObservation, LiveCounters, SubmitCounts};
+use super::capture_observation::{CaptureObservation, LiveCounters, RenderFrameTiming, SubmitCounts, TimingSummaryMs};
 use super::capture_plan::planned_steps;
 use super::capture_render_still::StillDiagnosticsDelta;
 use super::capture_report::{CaptureObservationReport, RenderStillDelta};
@@ -41,6 +41,7 @@ use crate::camera_screen_input::{InputDelivery, ScreenInputInjector};
 use crate::camera_screen_service::CameraScreenPolicy;
 use crate::capture_backend::CaptureMode;
 use crate::capture_scenario_config::CaptureScenarioConfig;
+use crate::clock_offset::monotonic_now;
 use crate::gpu_services::RenderObservation;
 use crate::scenario::observing::{
     ObservedEvent, ObservingScenario, ScenarioContext, ScenarioStep, failed, stage_fields,
@@ -170,8 +171,13 @@ impl ObservingScenario for CaptureScenario {
             return self.wait_or_time_out(context, "экран камеры ещё не нарисовал кадр");
         };
         let frames = &viewfinder.continuity.recent_frames;
-        let Some(render_now) = frames.last().map(|frame| frame.present_time) else {
+        if frames.is_empty() {
             return self.wait_or_time_out(context, "рендер ещё не показал ни одного кадра");
+        }
+        // Метка нажатия — текущий момент CLOCK_MONOTONIC, как у настоящего касания (см. `press_time`).
+        let press_time = match monotonic_now() {
+            Ok(now) => now,
+            Err(error) => return self.finish(context, Some(format!("часы CLOCK_MONOTONIC: {error}"))),
         };
         match &mut run.phase {
             Phase::Preparing { started_at } => {
@@ -215,7 +221,7 @@ impl ObservingScenario for CaptureScenario {
                 let journal = context.camera_screen.capture_journal();
                 let observation = CaptureObservation {
                     now: context.now,
-                    render_now,
+                    press_time,
                     raw_setting: report.capture_settings.raw,
                     actions_rejected: report.diagnostics.actions_rejected,
                     submit: SubmitCounts {
@@ -226,6 +232,7 @@ impl ObservingScenario for CaptureScenario {
                     live: live_counters(viewfinder, &presentation, context),
                     mode_is_real: context.camera_screen.capture_diagnostics().mode == CaptureMode::Real,
                     clock: clock_bridge(context),
+                    render_frame_timing: render_frame_timing(&presentation),
                 };
                 let tick = stepping.runner.tick(&observation);
                 for action in tick.injections {
@@ -350,6 +357,16 @@ fn clock_bridge(context: &ScenarioContext<'_>) -> ClockBridge {
         Err(error) => ClockBridge::Unavailable {
             reason: error.to_string(),
         },
+    }
+}
+
+/// Окна времён кадра рендера из диагностики показа (`present_target`).
+fn render_frame_timing(presentation: &crate::camera_presentation::CameraPresentation) -> RenderFrameTiming {
+    let target = &presentation.present_target;
+    RenderFrameTiming {
+        acquire_wait: target.acquire_wait.as_ref().map(TimingSummaryMs::from_summary),
+        latch_to_submit: target.latch_to_submit.as_ref().map(TimingSummaryMs::from_summary),
+        frame_gpu: target.frame_gpu_time.as_ref().map(TimingSummaryMs::from_summary),
     }
 }
 

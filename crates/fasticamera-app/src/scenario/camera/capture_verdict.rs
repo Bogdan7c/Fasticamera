@@ -5,6 +5,7 @@
 use std::collections::BTreeSet;
 
 use super::capture_burst::BurstRecord;
+use super::capture_observation::LiveDelta;
 use super::capture_plan::{STEP_BURST, STEP_SINGLE_HEIF, STEP_SINGLE_HEIF_DNG};
 use super::capture_report::{CaptureObservationReport, ShotOutcome, ShotRecord};
 use crate::capture_backend::CaptureMode;
@@ -170,11 +171,6 @@ fn burst_violations(config: &CaptureScenarioConfig, burst: &BurstRecord) -> Vec<
             plan.max_pool_exhausted,
         ),
         (
-            "выброшено кадров джиттер-буфером",
-            view.jitter_overflow,
-            plan.max_jitter_overflow,
-        ),
-        (
             "чёрных кадров, где ждали картинку",
             view.black_frames_while_picture_expected,
             0,
@@ -186,7 +182,26 @@ fn burst_violations(config: &CaptureScenarioConfig, burst: &BurstRecord) -> Vec<
             violations.push(format!("серия, видоискатель: {what} {actual} (допустимо {limit})"));
         }
     }
+    if let Some(violation) = jitter_overflow_share_violation(view, plan.max_jitter_overflow_share) {
+        violations.push(violation);
+    }
     violations
+}
+
+/// Доля кадров видоискателя, выброшенных джиттер-буфером за серию, сверх порога (решение 147). Ни одного кадра за
+/// серию — доля 0 (провал «видоискатель встал» ловят другие проверки).
+fn jitter_overflow_share_violation(view: &LiveDelta, max_share: f64) -> Option<String> {
+    let dropped = view.jitter_overflow;
+    let total = dropped.saturating_add(view.live_frames_presented);
+    if total == 0 {
+        return None;
+    }
+    let share = dropped as f64 / total as f64;
+    (share > max_share).then(|| {
+        format!(
+            "серия, видоискатель: выброшено джиттер-буфером {dropped} из {total} кадров (доля {share:.3}), допустимо {max_share}"
+        )
+    })
 }
 
 /// Рендер принял столько команд снимка, сколько принято службой, и ничего не потерял.

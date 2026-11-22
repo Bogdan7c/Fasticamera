@@ -25,15 +25,18 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 use camera_contract::frame_passport::StreamPassport;
-use camera_contract::geometry::PixelRect;
+use camera_contract::geometry::{PixelRect, PixelSize};
 use gpu_vulkan::context::GpuContext;
+use gpu_vulkan::error::GpuError;
 use gpu_vulkan::hardware_buffer_cache::queue_handoff::ConsumerStage;
+use gpu_vulkan::host_readback::HostReadbackBuffer;
 use gpu_vulkan::one_shot_queue::{DrainOutcome, OneShotSubmitter, SubmitError, SubmittedWork, WorkStatus};
 use gpu_vulkan::raw_mosaic_preview::ValidArea;
 use gpu_vulkan::sync::{GpuReleaseFence, import_wait_fence};
+use isp_model::params::IspParams;
 use isp_vulkan::photo::{
-    DevelopRequest, DevelopedPhoto, PendingRawCapture, PhotoConfig, PhotoDeveloper, PhotoError, RawCapture,
-    RawCapturer, SliceOutcome,
+    DevelopRequest, DevelopTargets, DevelopedPhoto, PendingRawCapture, PhotoConfig, PhotoDeveloper, PhotoError,
+    RawCapture, RawCapturer, RgbaReadback, SliceOutcome,
 };
 use raw_frame_stream::RawFrameLease;
 use shell_contract::surface::NativeSurface;
@@ -45,8 +48,10 @@ use super::gpu::{
 use crate::config::StillDevelopConfig;
 use crate::vulkan_backend::camera::{CameraFrameImporter, SharedImporterFactory, SubmissionSerial};
 use present::PresentChannel;
+use workshop::{StillWorkshop, Ticket, TicketPoll};
 
 mod present;
+mod workshop;
 
 /// Слотов одноразовой очереди, зарезервированных вне проявления: копия RAW (1) и показ в кодер (1). Проявление
 /// ограничено `max_slices_in_flight`, поэтому занять эти слоты не может (второй затвор во время проявления
@@ -100,6 +105,25 @@ struct DevelopJob {
     failure: Option<String>,
 }
 
+/// Проявление, чьи цели (картинка, копия для JPEG) выделяет мастерская: всё, что нужно для `begin_with_targets`.
+struct PendingDevelop {
+    targets: Ticket<Result<DevelopTargets, PhotoError>>,
+    raw: RawCapture,
+    params: IspParams,
+    crop: PixelRect,
+    readback: RgbaReadback,
+}
+
+impl DevelopJob {
+    fn new(slice_count: usize) -> Self {
+        Self {
+            slices_left: slice_count,
+            in_flight: VecDeque::new(),
+            failure: None,
+        }
+    }
+}
+
 /// GPU снимков под один поток кадров.
 pub struct VulkanStillGpu {
     context: GpuContext,
@@ -114,6 +138,14 @@ pub struct VulkanStillGpu {
     capture: Option<CaptureJob>,
     develop: Option<DevelopJob>,
     present: PresentChannel,
+    /// Мастерская снимка (решение 144): подключение цели кодера и буфер следующей копии RAW — не на потоке
+    /// рендера. `None` — поток не запустился: та же работа идёт на потоке рендера, как до 14c (медленнее, но верно).
+    /// `Drop` мастерскую не ждёт: начатая работа доделывается на её потоке (см. `workshop`).
+    workshop: Option<StillWorkshop>,
+    /// Проявление ждёт свои цели из мастерской (до первой полосы).
+    pending_develop: Option<PendingDevelop>,
+    /// Буфер следующей копии RAW готовится в мастерской.
+    next_capture_buffer: Option<Ticket<Result<HostReadbackBuffer, GpuError>>>,
     /// GPU объявлен потерянным ([`StillGpu::declare_lost`]): дальше им пользоваться нельзя.
     lost: bool,
 }
@@ -137,6 +169,11 @@ impl VulkanStillGpu {
         capturer
             .prepare(stream.valid_area.size)
             .map_err(|error| error.to_string())?;
+        let workshop = StillWorkshop::start()
+            .inspect_err(|error| {
+                tracing::warn!(target: super::LOG_TARGET, %error, "без мастерской: подготовка снимка — на потоке рендера");
+            })
+            .ok();
         Ok(Self {
             context: context.clone(),
             settings,
@@ -149,6 +186,9 @@ impl VulkanStillGpu {
             capture: None,
             develop: None,
             present: PresentChannel::new(settings.retired_present_capacity),
+            workshop,
+            pending_develop: None,
+            next_capture_buffer: None,
             lost: false,
         })
     }
@@ -207,7 +247,86 @@ impl VulkanStillGpu {
                 tracing::warn!(target: super::LOG_TARGET, %error, "проявление не отменилось при остановке");
             }
         }
+        // Проявление, не дождавшееся целей, на GPU ничего не отправляло: просто бросаем.
+        self.pending_develop = None;
         self.present.settle_after_idle(&mut self.submitter);
+    }
+
+    /// Цели проявления из мастерской (без ожидания): готовы — проявление начинается (`None`: дальше обычный шаг
+    /// с полосами), не готовы — `Some(InFlight)`, сбой — `Some(Failed)`. GPU цели ещё не видел: при сбое их можно
+    /// уничтожать сразу.
+    fn begin_when_targets_ready(&mut self, pending: PendingDevelop) -> Option<DevelopProgress<DevelopedPhoto>> {
+        let targets = match pending.targets.poll() {
+            TicketPoll::Pending => {
+                self.pending_develop = Some(pending);
+                return Some(DevelopProgress::InFlight { submitted_now: 0 });
+            }
+            TicketPoll::Ready(Ok(targets)) => targets,
+            TicketPoll::Ready(Err(error)) => {
+                return Some(DevelopProgress::Failed(format!("цели проявления: {error}")));
+            }
+            TicketPoll::NoResult => {
+                return Some(DevelopProgress::Failed(
+                    "выделение целей проявления не дало результата".to_owned(),
+                ));
+            }
+        };
+        let request = DevelopRequest {
+            raw: &pending.raw,
+            params: &pending.params,
+            crop: pending.crop,
+            readback: pending.readback,
+        };
+        match self.developer.begin_with_targets(&request, targets) {
+            Ok(start) => {
+                self.develop = Some(DevelopJob::new(start.slice_count));
+                None
+            }
+            Err(error) => Some(DevelopProgress::Failed(error.to_string())),
+        }
+    }
+
+    /// Буфер следующей копии RAW: в мастерской, если она есть, иначе здесь же (поток рендера, как до 14c).
+    fn request_next_capture_buffer(&mut self, valid_size: PixelSize) {
+        let Some(workshop) = self.workshop.as_ref() else {
+            if let Err(error) = self.capturer.prepare(valid_size) {
+                tracing::warn!(target: super::LOG_TARGET, %error, "буфер следующей копии не подготовлен");
+            }
+            return;
+        };
+        let context = self.context.clone();
+        let size_bytes = RawCapturer::buffer_bytes(valid_size);
+        match workshop.submit("буфер копии RAW", move || {
+            HostReadbackBuffer::new(&context, size_bytes)
+        }) {
+            Ok(ticket) => self.next_capture_buffer = Some(ticket),
+            Err(error) => tracing::warn!(target: super::LOG_TARGET, %error, "буфер следующей копии не заказан"),
+        }
+    }
+
+    /// Забирает готовый буфер следующей копии из мастерской (без ожидания). Не успел — копия выделит буфер сама
+    /// на потоке рендера (верно, но медленно: это видно в логе).
+    fn collect_next_capture_buffer(&mut self) {
+        let Some(ticket) = self.next_capture_buffer.take() else {
+            return;
+        };
+        match ticket.poll() {
+            TicketPoll::Ready(Ok(buffer)) => self.capturer.install_prepared(buffer),
+            TicketPoll::Ready(Err(error)) => {
+                tracing::warn!(target: super::LOG_TARGET, %error, "мастерская не выделила буфер копии RAW");
+            }
+            TicketPoll::Pending => {
+                tracing::warn!(
+                    target: super::LOG_TARGET,
+                    "буфер копии RAW из мастерской не успел к снимку: выделение на потоке рендера"
+                );
+                // Билет не нужен этому снимку, но готовый буфер пригодится следующему.
+                self.next_capture_buffer = Some(ticket);
+            }
+            TicketPoll::NoResult => {
+                tracing::warn!(target: super::LOG_TARGET, "работа мастерской с буфером копии RAW упала");
+            }
+        }
     }
 }
 
@@ -224,7 +343,7 @@ impl StillGpu for VulkanStillGpu {
     }
 
     fn develop_in_flight(&self) -> bool {
-        self.develop.is_some()
+        self.develop.is_some() || self.pending_develop.is_some()
     }
 
     fn present_in_flight(&self) -> bool {
@@ -241,6 +360,7 @@ impl StillGpu for VulkanStillGpu {
             return self.refuse_capture(lease, serial, "копия RAW уже идёт".to_owned());
         }
         let area = Self::valid_area(lease.passport().stream.valid_area);
+        self.collect_next_capture_buffer();
         let Some(importer) = self.importer.as_mut() else {
             return self.refuse_capture(lease, serial, "импортёр снимков остановлен".to_owned());
         };
@@ -322,10 +442,8 @@ impl StillGpu for VulkanStillGpu {
                 }
                 match completed {
                     Ok(raw) => {
-                        // Буфер для следующей копии — заранее, вне пути затвора.
-                        if let Err(error) = self.capturer.prepare(raw.size()) {
-                            tracing::warn!(target: super::LOG_TARGET, %error, "буфер следующей копии не подготовлен");
-                        }
+                        // Буфер для следующей копии — заранее, вне пути затвора (и вне потока рендера).
+                        self.request_next_capture_buffer(raw.size());
                         CapturePoll::Ready(raw)
                     }
                     Err(error) => CapturePoll::Failed(error.to_string()),
@@ -347,27 +465,55 @@ impl StillGpu for VulkanStillGpu {
     }
 
     fn develop_start(&mut self, request: DevelopStart<'_, RawCapture>) -> Result<(), String> {
-        if self.develop.is_some() {
+        if self.develop_in_flight() {
             return Err("проявление уже идёт".to_owned());
         }
-        let start = self
-            .developer
-            .begin(&DevelopRequest {
+        let Some(workshop) = self.workshop.as_ref() else {
+            // Без мастерской цели выделяются здесь же, на потоке рендера (как до 14c).
+            let start = self
+                .developer
+                .begin(&DevelopRequest {
+                    raw: request.raw,
+                    params: request.params,
+                    crop: request.crop,
+                    readback: request.readback,
+                })
+                .map_err(|error| error.to_string())?;
+            self.develop = Some(DevelopJob::new(start.slice_count));
+            return Ok(());
+        };
+        // Отказ по входу — сразу, как до мастерской (а не через опрос): цели под негодный запрос не заказываем.
+        self.developer
+            .check_request(&DevelopRequest {
                 raw: request.raw,
                 params: request.params,
                 crop: request.crop,
                 readback: request.readback,
             })
             .map_err(|error| error.to_string())?;
-        self.develop = Some(DevelopJob {
-            slices_left: start.slice_count,
-            in_flight: VecDeque::new(),
-            failure: None,
+        // Цели (≈ 48 МБ картинки и, для JPEG, ещё ≈ 48 МБ копии) выделяет мастерская; первая полоса — когда готовы.
+        let (context, image_size, readback) = (self.context.clone(), request.crop.size, request.readback);
+        let targets = workshop
+            .submit("цели проявления", move || {
+                DevelopTargets::allocate(&context, image_size, readback)
+            })
+            .map_err(|error| format!("цели проявления не заказаны: {error}"))?;
+        self.pending_develop = Some(PendingDevelop {
+            targets,
+            raw: request.raw.clone(),
+            params: request.params.clone(),
+            crop: request.crop,
+            readback: request.readback,
         });
         Ok(())
     }
 
     fn develop_advance(&mut self, max_new_slices: u32) -> DevelopProgress<DevelopedPhoto> {
+        if let Some(pending) = self.pending_develop.take()
+            && let Some(progress) = self.begin_when_targets_ready(pending)
+        {
+            return progress;
+        }
         let Some(mut job) = self.develop.take() else {
             return DevelopProgress::Idle;
         };
@@ -446,8 +592,13 @@ impl StillGpu for VulkanStillGpu {
     }
 
     fn present_start(&mut self, image: &DevelopedPhoto, surface: NativeSurface) -> Result<(), PresentRefusal> {
-        self.present
-            .start(&self.context, &mut self.submitter, image.gpu_image(), surface)
+        self.present.start(
+            &self.context,
+            &mut self.submitter,
+            image.gpu_image(),
+            surface,
+            self.workshop.as_ref(),
+        )
     }
 
     fn present_poll(&mut self) -> PresentProgress {
@@ -462,6 +613,8 @@ impl StillGpu for VulkanStillGpu {
             drop(job.lease);
         }
         self.develop = None;
+        // Цели, которых GPU ещё не видел: уничтожаются где угодно (здесь или на потоке мастерской).
+        self.pending_develop = None;
         self.present.declare_lost();
         if let Some(importer) = self.importer.take() {
             std::mem::forget(importer);
@@ -484,6 +637,8 @@ impl StillGpu for VulkanStillGpu {
             }
             self.present.abandon_leaking();
             self.develop = None;
+            // Цели, которых GPU ещё не видел: уничтожаются где угодно (здесь или на потоке мастерской).
+            self.pending_develop = None;
             if let Some(importer) = self.importer.take() {
                 std::mem::forget(importer);
             }

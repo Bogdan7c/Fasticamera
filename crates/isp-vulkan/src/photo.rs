@@ -27,6 +27,7 @@ mod error;
 mod pixels;
 pub mod quantize;
 pub mod slicing;
+mod targets;
 
 pub use self::capture::{PendingRawCapture, RawCapture, RawCapturer};
 pub use self::config::PhotoConfig;
@@ -35,3 +36,4 @@ pub use self::developer::PhotoDeveloper;
 pub use self::error::PhotoError;
 pub use self::quantize::quantize_display_encoded;
 pub use self::slicing::{DEMOSAIC_HALO, DevelopmentPlan, SlicePlan, max_region_rows, plan_development};
+pub use self::targets::DevelopTargets;

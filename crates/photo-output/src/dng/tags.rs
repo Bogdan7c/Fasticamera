@@ -10,6 +10,8 @@ pub const PHOTOMETRIC_INTERPRETATION: u16 = 262;
 pub const SAMPLES_PER_PIXEL: u16 = 277;
 pub const ROWS_PER_STRIP: u16 = 278;
 pub const PLANAR_CONFIGURATION: u16 = 284;
+/// Поворот картинки (TIFF 6.0, раздел 8): у DNG поворот несёт только этот тег.
+pub const ORIENTATION: u16 = 274;
 pub const EXIF_IFD_POINTER: u16 = 34665;
 
 // CFA (TIFF-EP, раздел 3.2; DNG 1.7.1.0 CFAPlaneColor/CFALayout).
