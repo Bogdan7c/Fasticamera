@@ -22,6 +22,7 @@
 //! намеренно утекают (импортёр, лизинг, проявитель), см. [`StillGpu::abandon`].
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::time::Duration;
 
 use camera_contract::frame_passport::StreamPassport;
@@ -140,8 +141,10 @@ pub struct VulkanStillGpu {
     present: PresentChannel,
     /// Мастерская снимка (решение 144): подключение цели кодера и буфер следующей копии RAW — не на потоке
     /// рендера. `None` — поток не запустился: та же работа идёт на потоке рендера, как до 14c (медленнее, но верно).
-    /// `Drop` мастерскую не ждёт: начатая работа доделывается на её потоке (см. `workshop`).
-    workshop: Option<StillWorkshop>,
+    /// Общая на все GPU снимков одного движка (создаёт `maker`): GPU пересоздаётся при смене потока или потере,
+    /// а мастерская живёт, пока жив движок. Поэтому её `Drop` (с ожиданием начатой работы) случается только при
+    /// разборе движка, а не на потоке рендера посреди кадров или при отсоединении surface.
+    workshop: Option<Arc<StillWorkshop>>,
     /// Проявление ждёт свои цели из мастерской (до первой полосы).
     pending_develop: Option<PendingDevelop>,
     /// Буфер следующей копии RAW готовится в мастерской.
@@ -151,13 +154,34 @@ pub struct VulkanStillGpu {
 }
 
 impl VulkanStillGpu {
+    /// Фабрика GPU снимков для движка: запускает мастерскую снимка ОДИН раз (решение 144) и отдаёт её каждому
+    /// создаваемому GPU. Мастерская живёт, пока жива фабрика (то есть движок): её поток не переживает владельца
+    /// и не разбирает Vulkan при выходе процесса (14c: отпущенный поток с последним клоном `GpuContext` ронял
+    /// процесс тестов SIGSEGV на выходе).
+    pub fn maker(
+        context: &GpuContext,
+        settings: VulkanStillSettings,
+        importers: &SharedImporterFactory,
+    ) -> super::engine::GpuMaker<Self> {
+        let workshop = StillWorkshop::start()
+            .inspect_err(|error| {
+                tracing::warn!(target: super::LOG_TARGET, %error, "без мастерской: подготовка снимка — на потоке рендера");
+            })
+            .ok()
+            .map(Arc::new);
+        let (context, importers) = (context.clone(), importers.clone());
+        Box::new(move |stream| Self::new(&context, settings, &importers, stream, workshop.clone()))
+    }
+
     /// Создаёт GPU снимков под поток `stream`: очередь работ, захватчик, проявитель, импортёр. Выделяет буфер
-    /// копии заранее (миллисекунды CPU), чтобы путь затвора его не выделял.
-    pub fn new(
+    /// копии заранее (миллисекунды CPU), чтобы путь затвора его не выделял. `workshop` — мастерская движка
+    /// (`None` — подготовка на потоке рендера).
+    fn new(
         context: &GpuContext,
         settings: VulkanStillSettings,
         importers: &SharedImporterFactory,
         stream: &StreamPassport,
+        workshop: Option<Arc<StillWorkshop>>,
     ) -> Result<Self, String> {
         let max_valid_width = stream.valid_area.size.width;
         let submitter =
@@ -169,11 +193,6 @@ impl VulkanStillGpu {
         capturer
             .prepare(stream.valid_area.size)
             .map_err(|error| error.to_string())?;
-        let workshop = StillWorkshop::start()
-            .inspect_err(|error| {
-                tracing::warn!(target: super::LOG_TARGET, %error, "без мастерской: подготовка снимка — на потоке рендера");
-            })
-            .ok();
         Ok(Self {
             context: context.clone(),
             settings,
@@ -597,7 +616,7 @@ impl StillGpu for VulkanStillGpu {
             &mut self.submitter,
             image.gpu_image(),
             surface,
-            self.workshop.as_ref(),
+            self.workshop.as_deref(),
         )
     }
 

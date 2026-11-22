@@ -262,11 +262,8 @@ impl VulkanDisplayBackend {
             tracing::warn!(target: LOG_TARGET, "снимки включены без источника кадров камеры: игнорируются");
             return self;
         };
-        let importers = feed.make_importer.clone();
-        let context = self.context.clone();
         let settings = VulkanStillSettings::from_config(&self.config.still, self.config.teardown_timeout);
-        let maker: GpuMaker<VulkanStillGpu> =
-            Box::new(move |stream| VulkanStillGpu::new(&context, settings, &importers, stream));
+        let maker: GpuMaker<VulkanStillGpu> = VulkanStillGpu::maker(&self.context, settings, &feed.make_importer);
         self.still = Some(StillEngine::new(
             self.config.still,
             self.config.viewfinder.tone,

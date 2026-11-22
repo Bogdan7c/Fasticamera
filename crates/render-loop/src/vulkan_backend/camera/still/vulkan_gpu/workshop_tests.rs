@@ -1,6 +1,6 @@
 //! Тесты мастерской снимка: работа идёт НЕ на вызывающем потоке, опрос не ждёт, у каждой работы ровно один
-//! итог (результат или `NoResult`), падение одной работы не ломает следующие, остановка не ждёт и пропускает
-//! не начатое, а брошенный результат разбирается на потоке мастерской.
+//! итог (результат или `NoResult`), падение одной работы не ломает следующие, остановка ждёт только начатую
+//! работу и пропускает не начатое, а брошенный результат разбирается на потоке мастерской.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, reason = "тесты")]
 
@@ -102,7 +102,7 @@ fn jobs_run_one_at_a_time_in_submission_order() {
 }
 
 #[test]
-fn drop_does_not_wait_skips_queued_work_and_disposes_the_orphaned_result() {
+fn drop_waits_only_for_started_work_skips_queued_work_and_disposes_the_orphaned_result() {
     let workshop = StillWorkshop::start().unwrap();
     let release = Arc::new(AtomicBool::new(false));
     let disposed = Arc::new(AtomicBool::new(false));
@@ -129,24 +129,22 @@ fn drop_does_not_wait_skips_queued_work_and_disposes_the_orphaned_result() {
         .unwrap();
     // Дождаться, пока первая работа начнётся (иначе остановка пропустила бы и её).
     thread::sleep(Duration::from_millis(20));
-
-    // Остановка не ждёт идущую работу (поток рендера не должен стоять на подключении цели кодера).
-    let started = Instant::now();
-    drop(workshop);
-    assert!(
-        started.elapsed() < Duration::from_millis(50),
-        "Drop ждал работу мастерской"
-    );
     // Билет брошен до конца работы: результат уходит в `dispose` на потоке мастерской.
     drop(running);
-    release.store(true, Ordering::SeqCst);
-    let deadline = Instant::now() + EVENTUALLY;
-    while !disposed.load(Ordering::SeqCst) {
-        assert!(Instant::now() < deadline, "брошенный результат не разобран");
-        thread::sleep(Duration::from_millis(1));
-    }
+    // Отпустить работу чуть позже, чем начнётся `Drop`: `Drop` обязан дождаться именно её.
+    let releaser = {
+        let release = Arc::clone(&release);
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(30));
+            release.store(true, Ordering::SeqCst);
+        })
+    };
+    drop(workshop);
+    releaser.join().unwrap();
+    // К концу `Drop` начатая работа доделана и брошенный результат разобран; поток мастерской завершён.
+    assert!(disposed.load(Ordering::SeqCst), "Drop вернулся раньше начатой работы");
     // Работа, не начатая к остановке, не выполняется: её билет видит `NoResult`.
-    assert!(matches!(poll_until_done(&queued), TicketPoll::NoResult));
+    assert!(matches!(queued.poll(), TicketPoll::NoResult));
     assert!(
         !queued_ran.load(Ordering::SeqCst),
         "не начатая работа выполнилась после остановки"

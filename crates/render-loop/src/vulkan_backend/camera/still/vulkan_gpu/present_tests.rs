@@ -243,3 +243,60 @@ fn a_second_start_while_attaching_is_refused_and_the_first_present_survives() {
     channel.settle_after_idle(&mut submitter);
     context.wait_idle().unwrap();
 }
+
+#[test]
+fn a_busy_workshop_never_holds_the_render_thread_on_start_or_stop() {
+    // Решение 144: поток рендера мастерскую не ждёт. Мастерская занята «воротами» дольше, чем любой ответ
+    // канала: подключение цели ещё даже не началось, а `start` и остановка обязаны вернуться сразу; после
+    // открытия ворот брошенную цель мастерская разбирает сама (объекты GPU возвращаются).
+    let Some(context) = context_or_skip() else { return };
+    let baseline = context.live_objects();
+    let gate_open = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let workshop = StillWorkshop::start().unwrap();
+        let worker_gate = std::sync::Arc::clone(&gate_open);
+        let _gate = workshop
+            .submit("ворота", move || {
+                while !worker_gate.load(std::sync::atomic::Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            })
+            .unwrap();
+        let image = ready_image(&context);
+        let mut submitter = OneShotSubmitter::new(&context, 4).unwrap();
+        let mut channel = PresentChannel::new(2);
+
+        let started = Instant::now();
+        channel
+            .start(&context, &mut submitter, &image, surface(), Some(&workshop))
+            .unwrap();
+        assert_eq!(
+            channel.poll(&mut submitter),
+            PresentProgress::Pending,
+            "подключение ещё в очереди"
+        );
+        channel.settle_after_idle(&mut submitter);
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "поток рендера ждал занятую мастерскую: {:?}",
+            started.elapsed()
+        );
+        assert!(!channel.in_flight());
+        // Разбор движка (последний владелец мастерской) ждёт только начатую работу — ворота.
+        gate_open.store(true, std::sync::atomic::Ordering::SeqCst);
+        drop(workshop);
+    }
+    context.wait_idle().unwrap();
+    // Подключение после остановки пропущено (очередь закрыта до его начала) — объектов цели не появилось.
+    let deadline = Instant::now() + EVENTUALLY;
+    while context.live_objects().total() != baseline.total() {
+        assert!(Instant::now() < deadline, "объекты GPU не вернулись после остановки");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(
+        context.validation_report().errors,
+        0,
+        "{:?}",
+        context.validation_report()
+    );
+}
