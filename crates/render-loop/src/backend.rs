@@ -12,7 +12,7 @@ use shell_contract::clock::MonotonicNanos;
 
 use crate::camera_diagnostics::CameraStreamDiagnostics;
 use crate::config::LateLatchMode;
-use crate::still::{StillCommand, StillCommandOutcome};
+use crate::still::{StillCommand, StillCommandOutcome, StillWorkload};
 use crate::still_diagnostics::StillDiagnostics;
 use crate::thread::{SleepUntil, SleepUntilOutcome, SystemMonotonicTimer, sleep_until};
 use crate::ui_overlay::{UiOverlayCommand, UiOverlayOutcome};
@@ -331,6 +331,20 @@ pub trait DisplayBackend: Send + 'static {
     }
 
     /// Продвигает незаконченные снимки: опрос fence-ов, следующая полоса проявления, итоговые события.
-    /// Поток зовёт на каждом показанном кадре после показа. По умолчанию снимков нет — ничего.
+    /// Поток зовёт на каждом показанном кадре после показа, а без показа (surface нет или пауза) — по таймеру,
+    /// пока [`DisplayBackend::still_workload`] отвечает `Unfinished` (решение 150). Шаг не ждёт GPU: только опрос.
+    /// По умолчанию снимков нет — ничего.
     fn advance_stills(&mut self) {}
+
+    /// Есть ли снимки, ждущие итога. Поток рендера по этому ответу решает, будить ли себя без показа.
+    /// Метод только читает состояние. По умолчанию снимков нет — `Idle`.
+    fn still_workload(&self) -> StillWorkload {
+        StillWorkload::Idle
+    }
+
+    /// Поток рендера неисправен: двигать снимки больше некому, каждый незаконченный снимок должен получить итог
+    /// сейчас (захваченный — `Failed(Abandoned)`, не захваченный — `NotSecured`). Ожидание GPU ограничено
+    /// реализацией. Это НЕ реакция на пропажу surface: без surface захваченные снимки доводятся до файла.
+    /// По умолчанию снимков нет — ничего.
+    fn abandon_stills(&mut self) {}
 }

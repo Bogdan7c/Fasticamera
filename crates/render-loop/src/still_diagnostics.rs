@@ -192,6 +192,11 @@ pub struct StillDiagnostics {
     /// Снимки, брошенные при отсоединении, остановке или сбое: до захвата / после.
     pub abandoned_before_capture: u64,
     pub abandoned_after_capture: u64,
+    /// Снимки, которые пережили отсоединение surface и доводились без экрана (копия RAW в полёте или уже
+    /// захвачены; решение 146). Считается в момент отсоединения, итог каждого — в `outcomes`.
+    pub continued_without_surface: u64,
+    /// GPU снимков освобождён без surface, когда очередь опустела (память фонового процесса не держится).
+    pub gpu_released_without_surface: u64,
     /// GPU снимков создан / не создался / оставлен в утечку при остановке (GPU не освободился).
     pub gpu_created: u64,
     pub gpu_leaked_on_abandon: u64,

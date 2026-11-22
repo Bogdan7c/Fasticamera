@@ -10,6 +10,11 @@ fn defaults_are_valid_and_carry_the_owner_decisions() {
     // Решение 140: очередь ждущих снимков — 10; решение 137: одна полоса на кадр видоискателя.
     assert_eq!(config.queue_capacity, 10);
     assert_eq!(config.slices_per_frame, 1);
+    // Решение 150: без экрана снимки шагают с периодом кадра 60 Гц (решение 36) — темп тот же, что с экраном.
+    assert_eq!(
+        config.step_interval_without_display(),
+        std::time::Duration::from_millis(16)
+    );
 }
 
 #[test]
@@ -32,7 +37,7 @@ fn unknown_keys_are_rejected() {
 #[test]
 fn every_field_is_checked_with_its_own_name() {
     type Break = fn(&mut StillDevelopConfig);
-    let cases: [(&str, Break); 11] = [
+    let cases: [(&str, Break); 13] = [
         ("queue_capacity", |c| c.queue_capacity = 0),
         ("presentation_wait_ms", |c| {
             c.presentation_wait_ms = MAX_STILL_WAIT_MS + 1
@@ -44,6 +49,12 @@ fn every_field_is_checked_with_its_own_name() {
         ("max_slices_in_flight", |c| c.max_slices_in_flight = 0),
         ("retired_present_capacity", |c| c.retired_present_capacity = 0),
         ("slices_per_frame", |c| c.slices_per_frame = 0),
+        ("step_interval_without_display_ms", |c| {
+            c.step_interval_without_display_ms = 0
+        }),
+        ("step_interval_without_display_ms", |c| {
+            c.step_interval_without_display_ms = MAX_STEP_INTERVAL_WITHOUT_DISPLAY_MS + 1
+        }),
         ("frame_params_capacity", |c| c.frame_params_capacity = 0),
         ("present_log_capacity", |c| {
             c.present_log_capacity = MAX_STILL_LOG_CAPACITY + 1

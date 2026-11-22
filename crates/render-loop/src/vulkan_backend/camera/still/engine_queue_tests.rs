@@ -328,53 +328,6 @@ fn a_stuck_encoder_present_fails_that_still_and_resets_the_gpu_for_the_rest() {
 }
 
 #[test]
-fn detach_abandons_every_stage_with_one_final_each_and_leaks_nothing() {
-    let (mut rig, _) = proven_rig(StillDevelopConfig::default());
-    // 1: захвачен, цели нет; 2: нажатие позже всех записей драйвера — ещё выбирает кадр; 3: проявляется.
-    let waiting_target = rig.begin(plan(1, 25));
-    rig.run(3);
-    let before_capture = rig.begin(plan(2, 75));
-    let developing = rig.begin(plan(3, 35));
-    rig.run(3);
-    offer_readback(&mut rig, 3);
-    rig.run(2);
-    assert_eq!(
-        rig.gpu.lock().unwrap().developments_started,
-        1,
-        "третий снимок проявляется"
-    );
-    let sinks = [Arc::clone(&waiting_target), before_capture, developing];
-    rig.engine.on_detach();
-    let mut total_finals = 0;
-    for (index, sink) in sinks.iter().enumerate() {
-        let id = index as u64 + 1;
-        let count = sink.finals_for(StillId(id));
-        total_finals += count;
-        assert_eq!(count, 1, "снимок {id}: ровно один итог при отсоединении");
-    }
-    assert_eq!(total_finals, 3);
-    // Снимок, уже получивший Secured, — Failed(Abandoned); не получивший — NotSecured.
-    let last = |index: usize| {
-        sinks[index]
-            .0
-            .lock()
-            .unwrap()
-            .last()
-            .map(|event| format!("{event:?}"))
-            .unwrap_or_default()
-    };
-    assert!(last(0).contains("Abandoned"), "{}", last(0));
-    assert!(last(1).contains("NotSecured"), "{}", last(1));
-    assert!(last(2).contains("Abandoned"), "{}", last(2));
-    assert_eq!(rig.engine.queue_len(), 0);
-    assert!(!rig.engine.has_gpu(), "после отсоединения GPU снимков не остаётся");
-    let diagnostics = rig.engine.diagnostics();
-    assert_eq!(diagnostics.outcomes.total(), 3);
-    assert!(diagnostics.abandoned_after_capture >= 1);
-    assert_eq!(rig.stream.stream.counters().leaked_leases, 0);
-}
-
-#[test]
 fn dropping_the_engine_delivers_finals_and_a_busy_gpu_is_leaked_not_destroyed() {
     let (mut rig, _) = proven_rig(StillDevelopConfig::default());
     rig.gpu.lock().unwrap().abandon_idle = false;

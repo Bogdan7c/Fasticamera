@@ -1,5 +1,6 @@
-//! Жизненный цикл снимков на настоящем бэкенде: отсоединение посреди проявления, уничтожение бэкенда, вытесненный
-//! из кольца кадр и HEIF-путь (картинка в поверхность кодера, `PresentationSurface::Headless` на ПК).
+//! Жизненный цикл снимков на настоящем бэкенде: отсоединение посреди проявления (снимок доводится без экрана,
+//! сессия 14e), уничтожение бэкенда, вытесненный из кольца кадр и HEIF-путь (картинка в поверхность кодера,
+//! `PresentationSurface::Headless` на ПК).
 
 #![cfg(not(target_os = "android"))]
 #![allow(
@@ -19,7 +20,7 @@ use camera_contract::geometry::PixelSize;
 use isp_vulkan::photo::PhotoConfig;
 use render_loop::backend::DisplayBackend;
 use render_loop::config::StillDevelopConfig;
-use render_loop::still::{StillCommand, StillCommandOutcome};
+use render_loop::still::{StillCommand, StillCommandOutcome, StillWorkload};
 use still_contract::develop::{DevelopEvent, DevelopFailure, PrimaryTarget, PrimaryTargetOffer};
 use still_contract::frame_choice::{FrameChoice, NoFrameReason, SubstitutionReason};
 use still_contract::plan::StillId;
@@ -47,17 +48,20 @@ fn sliced() -> StillDevelopConfig {
     }
 }
 
+/// Сколько шагов снимков без экрана ждать итога (поток рендера шагает по таймеру; здесь — вручную с паузой).
+const STEPS_WITHOUT_SURFACE: usize = 2_000;
+
 #[test]
-fn detach_in_the_middle_of_development_abandons_the_still_and_leaks_nothing() {
+fn detach_in_the_middle_of_development_keeps_the_heif_going_to_the_encoder_and_leaks_nothing() {
     let Some(mut bench) = setup(sliced(), 12) else {
         return;
     };
     bench.frames(10);
     bench.inject_timings();
-    let developing = bench.begin(plan(1, press_during(3), JPEG));
-    let choosing = bench.begin(plan(2, press_during(9), JPEG));
+    let developing = bench.begin(plan(1, press_during(3), HEIF));
     assert!(bench.frames_until(30, || developing.has_secured()));
-    offer(&mut bench, 1, PrimaryTarget::Readback);
+    let journal = Arc::new(Journal::default());
+    offer(&mut bench, 1, PrimaryTarget::EncoderSurface(fake_surface(&journal, 77)));
     // Проявление началось, но не закончилось.
     for _ in 0..30 {
         if bench
@@ -78,26 +82,55 @@ fn detach_in_the_middle_of_development_abandons_the_still_and_leaks_nothing() {
             .is_some_and(|d| d.slices_submitted > 0)
     );
     assert_eq!(developing.finals(), 0, "проявление ещё идёт");
+    // Нажат прямо перед пропажей экрана: ещё доказывает, какой кадр был на экране, — ему экран нужен.
+    let choosing = bench.begin(plan(2, press_during(9), JPEG));
 
     assert!(bench.rig.backend.detach().is_some(), "окно возвращено");
-    for sink in [&developing, &choosing] {
-        assert_eq!(sink.finals(), 1, "ровно один итог при отсоединении");
+    assert_eq!(developing.finals(), 0, "захваченный снимок не брошен вместе с экраном");
+    assert_eq!(choosing.finals(), 1, "не захваченный — ровно один итог сразу");
+    assert!(
+        matches!(
+            choosing.events().last(),
+            Some(DevelopEvent::NotSecured {
+                reason: NoFrameReason::RendererStopped,
+                ..
+            })
+        ),
+        "{:?}",
+        choosing.events()
+    );
+    assert_eq!(bench.rig.backend.still_workload(), StillWorkload::Unfinished);
+
+    // Экрана нет, кадров видоискателя нет: шаги — как у потока рендера по таймеру.
+    for _ in 0..STEPS_WITHOUT_SURFACE {
+        if developing.finals() == 1 {
+            break;
+        }
+        bench.rig.backend.advance_stills();
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
-    assert!(matches!(
-        developing.events().last(),
-        Some(DevelopEvent::Failed {
-            failure: DevelopFailure::Abandoned,
-            ..
-        })
-    ));
-    assert!(matches!(
-        choosing.events().last(),
-        Some(DevelopEvent::NotSecured { .. }) | Some(DevelopEvent::Secured { .. })
-    ));
+    assert_eq!(developing.finals(), 1, "{:?}", developing.events());
+    assert!(
+        matches!(
+            developing.events().last(),
+            Some(DevelopEvent::PrimaryRendered { id: StillId(1) })
+        ),
+        "снимок нарисован в поверхность кодера без экрана: {:?}",
+        developing.events().last()
+    );
+    assert_eq!(bench.rig.backend.still_workload(), StillWorkload::Idle);
     let still = bench.rig.backend.still_diagnostics().expect("снимки");
-    assert_eq!(still.outcomes.total(), 2);
-    assert_eq!(still.outcomes.failed_abandoned + still.outcomes.not_secured, 2);
-    assert_eq!(still.gpu_leaked_on_abandon, 0, "GPU освободился в срок");
+    assert_eq!(
+        (still.encoder_presents_started, still.encoder_presents_completed),
+        (1, 1)
+    );
+    assert_eq!(still.continued_without_surface, 1);
+    assert_eq!(
+        still.gpu_released_without_surface, 1,
+        "опустевшая очередь без экрана отпустила GPU"
+    );
+    assert_eq!(still.outcomes.failed_abandoned, 0);
+    assert_eq!(still.gpu_leaked_on_abandon, 0);
     developing.events().clear();
     choosing.events().clear();
     bench.rig.stream.producer().end_stream(bench.epoch);
@@ -107,7 +140,7 @@ fn detach_in_the_middle_of_development_abandons_the_still_and_leaks_nothing() {
     assert_eq!(
         bench.rig.backend.context().live_objects().total(),
         bench.rig.baseline.total(),
-        "объектов GPU снимков после отсоединения нет"
+        "без экрана и без снимков объектов GPU снимков нет"
     );
 }
 

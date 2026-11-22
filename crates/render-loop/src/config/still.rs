@@ -14,6 +14,8 @@ pub const MAX_STILL_QUEUE_CAPACITY: u32 = 64;
 pub const MAX_SLICES_PER_FRAME: u32 = 64;
 /// Наибольшая ёмкость журналов кадров (показы, параметры): больше — расход памяти без пользы.
 pub const MAX_STILL_LOG_CAPACITY: u32 = 4_096;
+/// Наибольший шаг снимков без экрана, мс (секунда): реже — проявление серии растянулось бы на минуты.
+pub const MAX_STEP_INTERVAL_WITHOUT_DISPLAY_MS: u32 = 1_000;
 
 /// Секция `still` конфига потока рендера.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -53,6 +55,11 @@ pub struct StillDevelopConfig {
     /// Сколько ждать завершения показа в поверхность кодера (GPU-копия и present). Истекло — `Failed(Gpu)`.
     /// `[estimate]`: 5 000.
     pub encoder_present_timeout_ms: u32,
+    /// Как часто поток рендера будит себя и двигает снимки, пока показа нет (surface отпущена или пауза), а снимки
+    /// ждут итога (решение 150). На каждом шаге — те же `slices_per_frame` полос, что на показанном кадре, поэтому
+    /// темп проявления без экрана тот же, что с ним. Снимков нет — поток спит на ящике без срока. `[estimate]`: 16
+    /// (≈ период кадра при 60 Гц, решение 36).
+    pub step_interval_without_display_ms: u32,
     /// Сколько полос проявления отправлять на один показанный кадр видоискателя (решение 137: нарезка GPU).
     /// 1 — самое бережное к видоискателю; больше — снимок готов быстрее, но кадр видоискателя может опоздать.
     pub slices_per_frame: u32,
@@ -77,6 +84,7 @@ impl Default for StillDevelopConfig {
             max_slices_in_flight: 4,
             retired_present_capacity: 2,
             encoder_present_timeout_ms: 5_000,
+            step_interval_without_display_ms: 16,
             slices_per_frame: 1,
             frame_params_capacity: 48,
             present_log_capacity: 256,
@@ -106,9 +114,14 @@ pub enum StillConfigError {
 }
 
 impl StillDevelopConfig {
+    /// Шаг снимков без экрана как длительность (поток рендера ждёт ящик не дольше этого).
+    pub fn step_interval_without_display(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(u64::from(self.step_interval_without_display_ms))
+    }
+
     /// Проверяет секцию до создания объектов GPU.
     pub fn validate(&self) -> Result<(), StillConfigError> {
-        let ranges: [(&'static str, u32, u32, u32); 10] = [
+        let ranges: [(&'static str, u32, u32, u32); 11] = [
             ("queue_capacity", self.queue_capacity, 1, MAX_STILL_QUEUE_CAPACITY),
             ("presentation_wait_ms", self.presentation_wait_ms, 1, MAX_STILL_WAIT_MS),
             ("target_timeout_ms", self.target_timeout_ms, 1, MAX_STILL_WAIT_MS),
@@ -133,6 +146,12 @@ impl StillDevelopConfig {
                 MAX_STILL_QUEUE_CAPACITY,
             ),
             ("slices_per_frame", self.slices_per_frame, 1, MAX_SLICES_PER_FRAME),
+            (
+                "step_interval_without_display_ms",
+                self.step_interval_without_display_ms,
+                1,
+                MAX_STEP_INTERVAL_WITHOUT_DISPLAY_MS,
+            ),
             (
                 "frame_params_capacity",
                 self.frame_params_capacity,

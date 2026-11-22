@@ -39,7 +39,7 @@ use crate::backend::{
     PastPresentation, PresentOutcome,
 };
 use crate::camera_diagnostics::CameraStreamDiagnostics;
-use crate::still::{StillCommand, StillCommandOutcome};
+use crate::still::{StillCommand, StillCommandOutcome, StillWorkload};
 use crate::ui_overlay::{UiOverlayCommand, UiOverlayOutcome};
 use crate::viewfinder::{
     AutoExposureLinks, AwbStatisticsFeed, AwbStatisticsReader, ViewfinderCommand, ViewfinderCommandOutcome,
@@ -416,7 +416,8 @@ impl DisplayBackend for VulkanDisplayBackend {
     }
 
     fn detach(&mut self) -> Option<NativeSurface> {
-        // Surface уходит: каждый незаконченный снимок получает итог, объекты GPU снимков освобождаются до цепочки.
+        // Surface уходит: не захваченные снимки получают итог, захваченные доводятся без экрана (решение 150).
+        // GPU снимков здесь не ждётся — бюджет квитанции освобождения тратится только на цепочку показа.
         if let Some(still) = self.still.as_mut() {
             still.on_detach();
         }
@@ -513,8 +514,8 @@ impl DisplayBackend for VulkanDisplayBackend {
     fn apply_still_command(&mut self, command: StillCommand) -> StillCommandOutcome {
         let attached = self.attached.is_some();
         match self.still.as_mut() {
-            // Снимку без surface некуда деваться: очередь двигается только на показанных кадрах, и `Begin` ждал бы
-            // до следующего attach. Итог — сразу (`RendererStopped`), а не после.
+            // Снимок берёт кадр, бывший на экране в момент нажатия; без surface экрана нет — итог сразу
+            // (`RendererStopped`). Цель кодера (`Target`) без surface принимается: захваченный снимок её ждёт.
             Some(still) => match command {
                 StillCommand::Begin(begin) if !attached => {
                     still.refuse_begin_without_surface(begin);
@@ -534,6 +535,16 @@ impl DisplayBackend for VulkanDisplayBackend {
             still.ingest_feed(feed);
         }
         still.advance();
+    }
+
+    fn still_workload(&self) -> StillWorkload {
+        self.still.as_ref().map_or(StillWorkload::Idle, StillEngine::workload)
+    }
+
+    fn abandon_stills(&mut self) {
+        if let Some(still) = self.still.as_mut() {
+            still.abandon_all();
+        }
     }
 
     fn apply_ui_overlay_command(&mut self, command: UiOverlayCommand) -> UiOverlayOutcome {

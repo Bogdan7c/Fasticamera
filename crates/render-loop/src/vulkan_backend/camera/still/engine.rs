@@ -2,7 +2,8 @@
 //!
 //! # Кто чем владеет
 //! * движок — очередь снимков ([`StillEntry`]), журнал показов, историю параметров кадров, счётчики;
-//! * [`StillGpu`] — железо (создаётся лениво через [`GpuMaker`], живёт, пока есть surface);
+//! * [`StillGpu`] — железо (создаётся лениво через [`GpuMaker`]; живёт, пока есть surface ИЛИ недоделанные снимки:
+//!   без surface захваченные снимки доводятся до файла, решение 150, см. `engine_surface`);
 //! * кольцо снимков — источник кадров (`SnapshotRingFrames`, неразрушающий `pick`).
 //!
 //! # Инварианты
@@ -13,6 +14,9 @@
 //!    объекты остаются в учтённой утечке (`gpu_loss`), а не уничтожаются.
 //! 3. Один снимок копируется и один проявляется за раз (память); полос на кадр не больше `slices_per_frame`.
 //! 4. Лизинг кадра кольца у движка живёт только внутри `start_capture`: дальше им владеет GPU до fence копии.
+//! 5. Пропажа surface не бросает снимки, у которых уже есть объекты GPU или своя копия RAW: они доводятся шагами
+//!    по таймеру потока рендера. Бросаются только те, кому нужен экран (выбор кадра, изъятие из кольца), — честным
+//!    `NotSecured(RendererStopped)`, без ожидания GPU (`engine_surface`).
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -23,6 +27,7 @@ use still_contract::develop::{DevelopFailure, PrimaryTargetOffer};
 use still_contract::frame_choice::NoFrameReason;
 
 use super::diagnostics::StillDiagnostics;
+use super::engine_surface::SurfaceLink;
 use super::entry::{EstimateBasis, Stage, StillEntry, StillOutcome};
 use super::feed::StillFeed;
 use super::gpu::StillGpu;
@@ -67,6 +72,8 @@ pub struct StillEngine<G: StillGpu> {
     pub(super) current_stream: Option<Arc<StreamPassport>>,
     /// Поток, для которого создание GPU заранее уже не удалось (повторять до смены потока незачем).
     pub(super) prewarm_failed_for: Option<Arc<StreamPassport>>,
+    /// Есть ли у видоискателя surface: без неё опустевшая очередь освобождает GPU снимков (`engine_surface`).
+    pub(super) surface: SurfaceLink,
     pub(super) counters: StillDiagnostics,
 }
 
@@ -93,6 +100,8 @@ impl<G: StillGpu> StillEngine<G> {
             params_history: FrameParamsHistory::new(params_capacity),
             current_stream: None,
             prewarm_failed_for: None,
+            // До первой ленты видоискателя surface у движка не было: так честнее, чем «присоединена».
+            surface: SurfaceLink::Detached,
             counters: StillDiagnostics::default(),
         }
     }
@@ -111,9 +120,9 @@ impl<G: StillGpu> StillEngine<G> {
         }
     }
 
-    /// Отказ `Begin`, пришедшему без присоединённой surface: у снимка нет потока рендера с показами и GPU, а
-    /// очередь двигается только на показанных кадрах (`advance` после показа) — запись ждала бы до следующего
-    /// attach. Итог тот же, что у снимка, брошенного отсоединением: `NotSecured(RendererStopped)`, ровно один.
+    /// Отказ `Begin`, пришедшему без присоединённой surface: снимок берёт кадр, бывший НА ЭКРАНЕ в момент нажатия,
+    /// а экрана нет — выбирать нечего. Итог тот же, что у не захваченного снимка при отсоединении:
+    /// `NotSecured(RendererStopped)`, ровно один.
     pub fn refuse_begin_without_surface(&mut self, begin: StillBegin) {
         self.counters.begins += 1;
         self.counters.refusals.begin_without_surface += 1;
@@ -182,6 +191,8 @@ impl<G: StillGpu> StillEngine<G> {
 
     /// Принимает ленту видоискателя за кадр (показы и параметры обработанных кадров).
     pub fn ingest_feed(&mut self, feed: StillFeed) {
+        // Лента приходит только от присоединённой сессии видоискателя: surface снова есть.
+        self.surface = SurfaceLink::Attached;
         if feed.presents_restarted {
             self.present_log.restart();
         }
@@ -228,7 +239,8 @@ impl<G: StillGpu> StillEngine<G> {
 
     // ---- остановка ----
 
-    /// Бросает все незаконченные снимки: surface отпущена, поток останавливается или GPU пересоздаётся.
+    /// Бросает все незаконченные снимки: поток рендера останавливается или неисправен (бэкенд уничтожается,
+    /// `DisplayBackend::abandon_stills`). Пропажа surface сюда НЕ ведёт (`engine_surface::on_detach`).
     ///
     /// Порядок: сначала GPU (ограниченное ожидание всей отправленной работы), потом итоги записям. Если GPU не
     /// освободился за срок, объекты GPU снимков намеренно утекают (соглашение crate): память, в которую ещё может
@@ -263,15 +275,6 @@ impl<G: StillGpu> StillEngine<G> {
         {
             std::mem::forget(gpu);
         }
-    }
-
-    /// Surface отпущена: снимки брошены, GPU и ленты забыты (после отсоединения живых объектов GPU снимков нет).
-    pub fn on_detach(&mut self) {
-        self.abandon_all();
-        self.present_log.restart();
-        self.params_history.clear();
-        self.current_stream = None;
-        self.prewarm_failed_for = None;
     }
 
     // ---- диагностика ----

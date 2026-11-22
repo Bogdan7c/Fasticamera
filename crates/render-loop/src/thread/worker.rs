@@ -36,6 +36,7 @@ use crate::ui_overlay::{UiOverlayCommand, UiOverlayOutcome};
 use crate::viewfinder::{ViewfinderCommand, ViewfinderCommandOutcome};
 
 mod frame_accounting;
+mod still_steps;
 
 const LOG_TARGET: &str = "fasticamera::render";
 
@@ -144,11 +145,13 @@ impl<B: DisplayBackend, C: FrameClock> RenderWorker<B, C> {
 
     /// Одна итерация: забрать ящик, обработать события, нарисовать кадр, опубликовать статус.
     fn run_iteration(&mut self, commands: &dyn ShellCommands) -> LoopStep {
-        // Без показа спим на ящике сколько нужно; во время показа только заглядываем в него.
+        // Во время показа только заглядываем в ящик. Без показа спим на нём: без срока, если снимков нет, и не дольше
+        // шага снимков, если они ждут итога (решение 150, `still_steps`).
         let batch = if self.machine.should_present() {
             self.receiver.take_pending()
         } else {
-            self.receiver.wait_for_events(None)
+            let limit = self.wait_limit_without_presentation();
+            self.receiver.wait_for_events(limit)
         };
         // Для каждого события знаем, лежит ли после него в пакете уничтожение surface.
         let destroy_after: Vec<bool> = destroy_follows_flags(&batch.events);
@@ -162,6 +165,8 @@ impl<B: DisplayBackend, C: FrameClock> RenderWorker<B, C> {
         }
         if self.machine.should_present() {
             self.present_next_frame();
+        } else {
+            self.advance_stills_without_presentation();
         }
         self.publish();
         self.sync_screen_wake(commands);
@@ -634,6 +639,11 @@ impl<B: DisplayBackend, C: FrameClock> RenderWorker<B, C> {
             tracing::error!(target: LOG_TARGET, "detach после неисправности тоже упал");
         }
         self.account_detach_after_fault(detach_panicked);
+        // Неисправный поток бэкенд больше не двигает: снимки, пережившие detach (захваченные), получают итог сейчас,
+        // а не висят до остановки потока. Ещё одна паника здесь тоже гасится — остаётся запасной итог `Drop`.
+        if catch_unwind(AssertUnwindSafe(|| self.backend.abandon_stills())).is_err() {
+            tracing::error!(target: LOG_TARGET, "отказ от снимков после неисправности тоже упал");
+        }
     }
 
     /// Учёт detach, выполненного на пути неисправности. Обычный опрос диагностики после

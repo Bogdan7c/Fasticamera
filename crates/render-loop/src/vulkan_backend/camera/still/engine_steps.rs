@@ -38,7 +38,8 @@ enum GpuReadiness {
 
 impl<G: StillGpu> StillEngine<G> {
     /// Шаг на один показанный кадр видоискателя. Вызывается после показа кадра (полосы снимка встают в очередь GPU
-    /// за кадром видоискателя, а не перед ним).
+    /// за кадром видоискателя, а не перед ним), а без показа — по таймеру потока рендера (решение 150). Шаги без
+    /// экрана те же: выбор и изъятие кадра к этому моменту уже брошены отсоединением (`engine_surface`).
     pub fn advance(&mut self) {
         if self.queue.is_empty() {
             return;
@@ -53,10 +54,12 @@ impl<G: StillGpu> StillEngine<G> {
             engine.timed(StillStep::Develop, |engine| engine.step_develop(now));
             engine.timed(StillStep::Present, |engine| engine.step_present(now));
         });
+        // Последний снимок без экрана получил итог: GPU снимков больше не нужен фоновому процессу.
+        self.release_gpu_if_drained_without_surface();
     }
 
     /// Применяет `step` ко всем записям со стадией, подходящей `is_stage`, сохраняя порядок очереди.
-    fn for_each_in_stage(
+    pub(super) fn for_each_in_stage(
         &mut self,
         is_stage: fn(&Stage<G>) -> bool,
         mut step: impl FnMut(&mut Self, StillEntry<G>) -> Option<StillEntry<G>>,
@@ -603,15 +606,9 @@ impl<G: StillGpu> StillEngine<G> {
                 return GpuReadiness::Busy;
             }
         }
-        // GPU простаивает (или его нет): старый уничтожается, новый создаётся под этот поток. Остановка нужна,
-        // чтобы отложенные цели кодера и прочее разобралось по правилам остановки, а не выброшенным `Drop`.
-        if let Some(mut old) = self.gpu.take() {
-            if old.abandon().gpu_idle {
-                drop(old);
-            } else {
-                self.counters.gpu_leaked_on_abandon += 1;
-                std::mem::forget(old);
-            }
+        // GPU простаивает (или его нет): старый разбирается (`retire_gpu`), новый создаётся под этот поток.
+        if let Some(old) = self.gpu.take() {
+            self.retire_gpu(old);
         }
         match (self.maker)(stream) {
             Ok(gpu) => {

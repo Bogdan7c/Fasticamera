@@ -17,13 +17,16 @@
 //!   плана, нейтраль DNG, поворот);
 //! * [`gpu`] — узкая граница GPU; [`vulkan_gpu`] — настоящая реализация, поддельная — в тестах;
 //! * [`entry`], [`engine`], [`engine_steps`] — очередь, итоги («ровно один на снимок»), шаги на кадр;
+//! * `engine_surface` — жизнь без surface: что бросается при отсоединении, что доводится, когда отпускается GPU;
 //! * [`diagnostics`] — счётчики.
 //!
 //! # Инварианты
 //! 1. Каждый принятый `Begin` кончается РОВНО одним итоговым событием (см. `entry`).
 //! 2. `ShownAtPress` строится только из доказанной записи драйвера, иначе `PresentationTimingUnknown`.
 //! 3. Поток рендера не ждёт GPU снимков (опрос), кроме ограниченного ожидания при остановке.
-//! 4. После отсоединения surface объектов GPU снимков не остаётся; очередь и счётчики живут на уровне бэкенда.
+//! 4. Пропажа surface не бросает захваченные снимки (решения 146, 150): они доводятся без экрана по таймеру потока
+//!    рендера, бросаются только не захваченные (`engine_surface`). Когда без surface очередь опустела, объектов GPU
+//!    снимков не остаётся; очередь и счётчики живут на уровне бэкенда.
 //! 5. Часы не смешиваются: нажатие и показ — `MONOTONIC`, метки сенсора — `BOOTTIME`.
 
 pub mod choice;
@@ -31,6 +34,7 @@ pub mod diagnostics;
 pub mod engine;
 mod engine_present;
 mod engine_steps;
+mod engine_surface;
 pub mod entry;
 pub mod facts;
 pub mod feed;
@@ -46,6 +50,8 @@ pub mod vulkan_gpu;
 mod engine_loss_tests;
 #[cfg(test)]
 mod engine_queue_tests;
+#[cfg(test)]
+mod engine_surface_tests;
 #[cfg(test)]
 mod engine_tests;
 #[cfg(test)]
