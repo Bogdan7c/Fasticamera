@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
@@ -47,7 +48,7 @@ use raw_frame_stream::{
 };
 use render_loop::backend::{DisplayBackend, FrameTiming, PresentOutcome, PresentTarget};
 use render_loop::config::{
-    ContinuityConfig, DisplayColorConfig, RenderLoopConfig, RevealExposureCheck, ViewfinderConfig,
+    ContinuityConfig, DisplayColorConfig, RenderLoopConfig, RevealExposureCheck, ScopesConfig, ViewfinderConfig,
 };
 use render_loop::ui_overlay::UiOverlayCommand;
 use render_loop::viewfinder::{
@@ -251,6 +252,9 @@ pub struct SceneImporter {
     pub scene: Scene,
     pub entries: HashMap<i64, (SyntheticRaw16, u64)>,
     pub counters: ImportCacheCounters,
+    /// Несимметричная сцена: наклон яркости по x И по y (зеркало меняет картинку при любом повороте сенсора).
+    /// Читается при импорте кадра: ставится ДО `offer`.
+    pub asymmetric: Arc<AtomicBool>,
 }
 
 impl CameraFrameImporter for SceneImporter {
@@ -274,7 +278,16 @@ impl CameraFrameImporter for SceneImporter {
             .ok_or_else(|| CameraImportError::Platform(format!("неизвестный кадр {sensor_ts}")))?;
         let size = lease.passport().stream.buffer_size;
         let texels: Vec<u16> = (0..size.height)
-            .flat_map(|y| (0..size.width).map(move |x| bggr_sample(cell, x, y)))
+            .flat_map(|y| (0..size.width).map(move |x| (x, y)))
+            .map(|(x, y)| {
+                let value = bggr_sample(cell, x, y);
+                if !self.asymmetric.load(Ordering::Relaxed) {
+                    return value;
+                }
+                // Усиление 0,3…1,0 по сумме координат: диагональный градиент над чёрным уровнем.
+                let gain = 0.3 + 0.7 * (x + y) as f32 / (size.width + size.height) as f32;
+                BLACK_LEVEL + (f32::from(value.saturating_sub(BLACK_LEVEL)) * gain).round() as u16
+            })
             .collect();
         let source = SyntheticRaw16::new(&self.context, size.width, size.height, &texels)?;
         let mosaic = source.source();
@@ -345,6 +358,8 @@ pub struct Rig {
     pub with_exposure: bool,
     /// Ящик указаний нашему AE (пишет «движок» теста): без AE пустой и ни на что не влияет.
     pub exposure_directives: DirectiveSlot<camera_contract::auto_exposure::ExposureDirective>,
+    /// Несимметричная сцена импортёра (`SceneImporter::asymmetric`).
+    pub asymmetric: Arc<AtomicBool>,
     pub _journal: Arc<Journal>,
 }
 
@@ -389,10 +404,21 @@ impl Rig {
         with_auto_exposure: bool,
         stills: Option<StillSetup>,
     ) -> Option<Self> {
+        Self::with_stills_and_scopes(continuity, with_auto_exposure, stills, ScopesConfig::default())
+    }
+
+    /// Стенд со снимками (или без) и настройками цветовых приборов `scopes` (малая модель в тестах приборов).
+    pub fn with_stills_and_scopes(
+        continuity: ContinuityConfig,
+        with_auto_exposure: bool,
+        stills: Option<StillSetup>,
+        scopes: ScopesConfig,
+    ) -> Option<Self> {
         let render_config = RenderLoopConfig {
             display_color: DisplayColorConfig::SrgbOnly,
             viewfinder: ViewfinderConfig {
                 continuity,
+                scopes,
                 ..ViewfinderConfig::default()
             },
             still: stills.map_or_else(Default::default, |setup| setup.config),
@@ -406,6 +432,8 @@ impl Rig {
         });
         let scene: Scene = Arc::default();
         let importer_scene = Arc::clone(&scene);
+        let asymmetric = Arc::new(AtomicBool::new(false));
+        let importer_asymmetric = Arc::clone(&asymmetric);
         let directives = DirectiveSlot::new();
         directives.publish(manual_white_directive());
         let backend = headless_camera_backend_with_directives_or_skip(
@@ -417,6 +445,7 @@ impl Rig {
                     scene: Arc::clone(&importer_scene),
                     entries: HashMap::new(),
                     counters: ImportCacheCounters::default(),
+                    asymmetric: Arc::clone(&importer_asymmetric),
                 }))
             }),
             directives,
@@ -456,6 +485,7 @@ impl Rig {
             next_sequence: 1,
             with_exposure: with_auto_exposure,
             exposure_directives,
+            asymmetric,
             _journal: journal,
         })
     }

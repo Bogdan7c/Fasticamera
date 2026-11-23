@@ -4,13 +4,16 @@
 //! # Жизненный цикл
 //! Создаётся ОДИН раз, когда приборы открываются (render-loop создаёт между кадрами и бросает, когда закрываются:
 //! закрытые приборы ничего не стоят). Картинку под размер запроса можно подготовить заранее
-//! ([`ColorScopes::prepare_picture`]), чтобы запись кадра объектов GPU не создавала. Пайплайны ВСЕХ приборов строятся в [`ColorScopes::new`]; смена прибора,
-//! осей вектороскопа и размера картинки позже пайплайнов не создаёт — меняется только выбор шейдера и данные.
+//! ([`ColorScopes::prepare_picture`]), и это ОБЯЗАТЕЛЬНО: [`ColorScopes::record`] картинку не создаёт никогда
+//! (иначе аллокация попала бы внутрь кадра и порвала vsync) и без подготовленной картинки нужного размера
+//! отказывает ошибкой [`ScopeError::PictureNotPrepared`] ДО первой команды. Пайплайны ВСЕХ приборов строятся в
+//! [`ColorScopes::new`]; смена прибора, осей вектороскопа и размера картинки позже пайплайнов не создаёт — меняется
+//! только выбор шейдера и данные.
 //!
 //! # Кадр ([`ColorScopes::record`])
-//! 1. Все проверки (слот, настройки, вход, прибор, вместимость буфера, сборка параметров, лимиты dispatch, привязки)
-//!    — ДО первой команды И ДО смены состояния: при ошибке командный буфер не тронут, действующая картинка остаётся на
-//!    месте, счётчики диагностики не растут (новая картинка принимается только после всех проверок).
+//! 1. Все проверки (слот, настройки, вход, прибор, вместимость буфера, готовность картинки, сборка параметров,
+//!    лимиты dispatch, привязки) — ДО первой команды И ДО смены состояния: при ошибке командный буфер не тронут,
+//!    действующая картинка остаётся на месте, счётчики диагностики не растут.
 //! 2. Метки времени → обнуление счётчиков (`vkCmdFillBuffer`, ждёт чтений прошлого кадра) → накопление
 //!    (`atomicAdd`) → барьер compute→compute → барьер картинки «прошлое чтение → запись» → показ →
 //!    барьер «запись compute → чтение фрагментным шейдером».
@@ -145,9 +148,6 @@ struct CheckedFrame {
     push: [u8; SAMPLING_PUSH_BYTES as usize],
     accumulate_groups: WorkgroupCount,
     render_groups: WorkgroupCount,
-    /// Картинка нужного размера, созданная проверками, если действующей нет или она другого размера. Принимается
-    /// владельцем ([`ColorScopes::adopt_picture`]) только после того, как ВСЕ проверки пройдены.
-    new_picture: Option<PictureTarget>,
 }
 
 impl ColorScopes {
@@ -257,26 +257,29 @@ impl ColorScopes {
     }
 
     /// Записывает кадр приборов в `command_buffer` (вне динамического рендеринга). См. описание модуля и
-    /// контракт [`ScopeInput`].
+    /// контракт [`ScopeInput`]. Объектов GPU не создаёт: картинка размера `frame.picture_size` должна быть
+    /// подготовлена [`Self::prepare_picture`], иначе — [`ScopeError::PictureNotPrepared`] и ничего не записано.
     pub fn record(
         &mut self,
         command_buffer: vk::CommandBuffer,
         frame: &ScopeFrame<'_>,
     ) -> Result<RecordedScope, ScopeError> {
         // --- Проверки: до первой команды и до любой смены состояния картинки и счётчиков ---
-        let mut checked = self.check_frame(frame)?;
-        // --- Все проверки пройдены: новая картинка (если нужна) становится действующей ---
+        let checked = self.check_frame(frame)?;
+        // Картинка уже подготовлена `prepare_picture`: запись объектов GPU не создаёт и картинку не меняет.
         let serial = self.next_serial;
-        self.adopt_picture(checked.new_picture.take(), serial);
         let CheckedFrame {
             slot,
             plan,
             push,
             accumulate_groups,
             render_groups,
-            ..
         } = checked;
         let accumulate_enabled = !accumulate_groups.is_empty();
+        // С этого места в командный буфер пишутся команды с картинкой: немедленно её уже не уничтожить.
+        if let Some(picture) = self.picture.as_mut() {
+            picture.note_referenced_by_commands();
+        }
         let picture = self.picture.as_ref().ok_or_else(|| ScopeError::InvalidConfig {
             what: "картинка прибора не создана (внутренняя ошибка порядка вызовов)".to_owned(),
         })?;
@@ -344,7 +347,16 @@ impl ColorScopes {
         frame.settings.validate()?;
         let input = check_input(&frame.input)?;
         let plan = self.plan_rule(frame)?;
-        let new_picture = self.picture_candidate(frame.picture_size)?;
+        // Картинка под размер кадра обязана быть подготовлена заранее: создание объекта GPU внутри записи кадра
+        // рвёт vsync, поэтому `record` её не создаёт никогда (контракт «запись не аллоцирует»).
+        let picture = self
+            .picture
+            .as_ref()
+            .filter(|prepared| prepared.size() == frame.picture_size)
+            .ok_or_else(|| ScopeError::PictureNotPrepared {
+                requested: frame.picture_size,
+                prepared: self.picture.as_ref().map(PictureTarget::size),
+            })?;
         let stride = frame.settings.sample_stride;
         let samples_x = stride.samples_along(input.content.width);
         let samples_y = stride.samples_along(input.content.height);
@@ -389,16 +401,6 @@ impl ColorScopes {
         if accumulate_enabled {
             accumulate_pipeline.check_dispatch(slot, SAMPLING_PUSH_BYTES as usize, accumulate_groups)?;
         }
-        // Картинка, которой пишет показ: новая (ещё не принятая) или действующая.
-        let picture = match (&new_picture, &self.picture) {
-            (Some(candidate), _) => candidate,
-            (None, Some(current)) => current,
-            (None, None) => {
-                return Err(ScopeError::InvalidConfig {
-                    what: "картинка прибора не создана (внутренняя ошибка порядка вызовов)".to_owned(),
-                });
-            }
-        };
         self.render_pipeline.bind(
             slot,
             &[
@@ -424,7 +426,6 @@ impl ColorScopes {
             push,
             accumulate_groups,
             render_groups,
-            new_picture,
         })
     }
 
@@ -510,8 +511,12 @@ impl ColorScopes {
         PictureTarget::new(&self.context, size).map(Some)
     }
 
-    /// Принимает картинку, созданную [`Self::picture_candidate`]: прежняя (другого размера) уходит в отложенное
-    /// уничтожение с номером записи `serial`. Единственное место, где меняется картинка и растёт счётчик замен.
+    /// Принимает картинку, созданную [`Self::picture_candidate`]. Единственное место, где меняется картинка и растёт
+    /// счётчик замен. Прежняя картинка (другого размера) уходит двумя путями:
+    /// * на неё ещё НИКТО не записывал команд: ни одна команда на неё не ссылается, поэтому
+    ///   она уничтожается сразу. Так серия смен размера без единой записи не копит выведенные картинки;
+    /// * её записывал проход (после чего её мог читать UI): она уходит в отложенное уничтожение с номером записи `serial` и
+    ///   освобождается, когда завершится запись с номером не меньше (`release_slot_after_fence`).
     fn adopt_picture(&mut self, new_picture: Option<PictureTarget>, serial: RecordSerial) -> PictureChange {
         let Some(created) = new_picture else {
             return PictureChange::Unchanged;
@@ -526,7 +531,10 @@ impl ColorScopes {
             to = ?size,
             "картинка прибора пересоздана под новый размер"
         );
-        self.retired_pictures.retire(previous, serial);
+        if previous.is_referenced_by_commands() {
+            self.retired_pictures.retire(previous, serial);
+        }
+        // Иначе `previous` уничтожается здесь же: команд с ней нет ни в одном слоте.
         self.pass_counters.picture_recreations += 1;
         PictureChange::Replaced
     }

@@ -105,6 +105,17 @@ pub(super) struct ScopeRecordInput<'a> {
     pub record_compute_read_barrier: &'a dyn Fn(vk::CommandBuffer),
 }
 
+/// Что про новый кадр решает запись приборов (см. [`CameraPipelines::record_scopes_for_frame`]).
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ScopedFrameFacts {
+    /// Что реально ляжет на экран: мерится только живое изображение (решение 189).
+    pub show: ShowFrameAs,
+    /// Номер сабмита кадра (для подложки изображения, из которой берётся барьер чтения).
+    pub submission: gpu_vulkan::backdrop::SubmissionSerial,
+    /// Зеркало изображения этого кадра при показе.
+    pub mirror: gpu_vulkan::source_window::HorizontalMirror,
+}
+
 /// Почему приборы заблокированы до смены запроса или формата цели.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Blockage {
@@ -189,11 +200,14 @@ impl ScopePass {
         }
     }
 
-    /// Готовит набор объектов GPU и картинку под размер текущего запроса МЕЖДУ кадрами (см. инвариант 5). Ничего не
-    /// делает, если запроса нет, приборы заблокированы или всё уже готово. Отказ создания блокирует приборы до смены
-    /// запроса и сообщается один раз.
-    pub(super) fn prepare_between_frames(&mut self) {
-        let Some(request) = self.demand else {
+    /// Готовит набор объектов GPU и картинку под размер запроса `demand` МЕЖДУ кадрами (см. инвариант 5). Запрос
+    /// передаётся ЯВНО и первым делом становится действующим ([`Self::set_demand`]): строить объекты по закэшированному
+    /// запросу нельзя, он мог устареть (источник UI ушёл, запрос отозван), а закрытые приборы ничего не стоят. Нет
+    /// запроса — набор выводится, и ничего не создаётся. Ничего не делает, если приборы заблокированы или всё уже
+    /// готово. Отказ создания блокирует приборы до смены запроса и сообщается один раз.
+    pub(super) fn prepare_between_frames(&mut self, demand: Option<ScopeRequest>) {
+        self.set_demand(demand);
+        let Some(request) = demand else {
             return;
         };
         if self.blocked.is_some() {
@@ -379,8 +393,9 @@ impl ScopePass {
         }
     }
 
-    /// Новый формат цели: вызывающий уже дождался GPU, поэтому всё освобождается сразу. Запрос остаётся: набор
-    /// поднимет [`Self::prepare_between_frames`], который вызывающий зовёт сразу после.
+    /// Новый формат цели: вызывающий уже дождался GPU, поэтому всё освобождается сразу. Закэшированный запрос
+    /// остаётся, но набор по нему здесь не поднимается: его поднимет [`Self::prepare_between_frames`] со СВЕЖИМ
+    /// запросом владельца настроек, которого вызывающий зовёт сразу после пересоздания.
     pub(super) fn reset_for_format(&mut self) {
         let released = self.retiring.len() + usize::from(self.live.is_some());
         self.retiring.clear();
@@ -389,6 +404,9 @@ impl ScopePass {
         self.resolved = None;
         self.blocked = None;
         self.reported_failure = None;
+        // Счёт «каждый N-й кадр» начинается заново: первый кадр после пересоздания цели считается всегда (иначе
+        // кадры сразу после смены формата попадали бы в прежнюю фазу прореживания, и прибор молчал бы до N кадров).
+        self.new_frames_since_open = 0;
         self.events.counters.resources_released += released as u64;
     }
 
@@ -510,10 +528,12 @@ impl CameraPipelines {
         self.scopes.set_demand(demand);
     }
 
-    /// Готовит объекты приборов под текущее желание экрана МЕЖДУ кадрами (создание набора и картинки не должно
-    /// происходить внутри кадра). Зовёт владелец цепочки после команды, подключения, смены формата и конца кадра.
-    pub fn prepare_scopes_between_frames(&mut self) {
-        self.scopes.prepare_between_frames();
+    /// Делает `demand` действующим желанием о приборах и готовит объекты под него МЕЖДУ кадрами (создание набора и
+    /// картинки не должно происходить внутри кадра). Желание вычисляет ВЛАДЕЛЕЦ настроек и источника UI
+    /// (`ViewfinderSettings::effective_scope_demand`) и передаёт сюда каждый раз: закэшированному запросу доверять
+    /// нельзя. Зовёт владелец цепочки после команды, подключения, смены формата, ухода источника UI и конца кадра.
+    pub fn prepare_scopes_between_frames(&mut self, demand: Option<ScopeRequest>) {
+        self.scopes.prepare_between_frames(demand);
     }
 
     /// Факт об устройстве для диагностики приборов: управление округлением и денормалями f32.
@@ -546,10 +566,23 @@ impl CameraPipelines {
     /// Записывает приборы НОВОГО кадра сразу после ISP (между записью ISP и компоновкой). Только для кадра, который
     /// реально лёг на экран живым и чей ISP записан: решение 189 — меряется показанная картинка.
     pub(super) fn record_scopes_for_new_frame(&mut self, frame: &FrameTarget, input: &NewIspFrame<'_>) {
+        self.record_scopes_for_frame(
+            frame,
+            &ScopedFrameFacts {
+                show: input.show,
+                submission: input.submission,
+                mirror: input.mirror,
+            },
+        );
+    }
+
+    /// То же, что [`Self::record_scopes_for_new_frame`], но по тому, что решает запись приборов (показ, номер сабмита,
+    /// зеркало): решение «мерить или нет и что считать пропуском» не зависит от остальных полей кадра ISP.
+    pub(super) fn record_scopes_for_frame(&mut self, frame: &FrameTarget, facts: &ScopedFrameFacts) {
         if self.scopes.demand().is_none() {
             return;
         }
-        if !matches!(input.show, ShowFrameAs::Live) {
+        if !matches!(facts.show, ShowFrameAs::Live) {
             self.scopes.note_frame_not_shown();
             return;
         }
@@ -558,7 +591,7 @@ impl CameraPipelines {
             return;
         };
         // Серийный номер подложки нужен только для её проверки готовности; барьер им не пользуется.
-        let Some(backdrop) = self.isp.backdrop_source(input.submission) else {
+        let Some(backdrop) = self.isp.backdrop_source(facts.submission) else {
             self.scopes.note_frame_without_input();
             return;
         };
@@ -567,7 +600,7 @@ impl CameraPipelines {
             frame_slot: frame.ring_slot,
             view: image.sampled_view(),
             // То же окно, что у компоновщика: содержимое кадра и зеркало этого кадра.
-            window: image.content_window().with_mirror(input.mirror),
+            window: image.content_window().with_mirror(facts.mirror),
             gamut: gamut_of(image.color_space()),
             record_compute_read_barrier: &|command_buffer| {
                 backdrop.record_read_barrier(

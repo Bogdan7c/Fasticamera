@@ -64,6 +64,7 @@ fn compare_scopes_on_viewfinder_output(
                 ..base_settings.clone()
             };
             for (rule_name, rule) in &rules {
+                scopes.prepare_picture(picture_size(160, 96)).unwrap();
                 let mut outcome = None;
                 run_one_shot_blocking(context, |command_buffer| {
                     source.record_acquire_for(context, command_buffer, ConsumerStage::Compute);

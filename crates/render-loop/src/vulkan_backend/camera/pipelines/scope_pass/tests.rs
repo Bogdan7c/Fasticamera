@@ -135,7 +135,7 @@ fn a_persistent_creation_failure_is_reported_once_per_demand_and_shown_as_failed
     let warnings = warnings_during(|| {
         pass.set_demand(Some(request(160, 96)));
         for _ in 0..6 {
-            pass.prepare_between_frames();
+            pass.prepare_between_frames(pass.demand());
             record_with(&mut pass, view);
         }
     });
@@ -166,8 +166,8 @@ fn a_persistent_creation_failure_is_reported_once_per_demand_and_shown_as_failed
     // Новый запрос — новая попытка и новое сообщение; закрытие приборов снимает блокировку.
     let warnings_after_change = warnings_during(|| {
         pass.set_demand(Some(request(200, 120)));
-        pass.prepare_between_frames();
-        pass.prepare_between_frames();
+        pass.prepare_between_frames(pass.demand());
+        pass.prepare_between_frames(pass.demand());
     });
     assert_eq!(
         warnings_after_change, 1,
@@ -184,7 +184,7 @@ fn a_pre_command_rejection_keeps_the_last_picture_and_a_repeated_one_is_reported
     let config = ScopesConfig::default();
     let mut pass = ScopePass::new(&context, FRAME_SLOTS, &config);
     pass.set_demand(Some(request(160, 96)));
-    pass.prepare_between_frames();
+    pass.prepare_between_frames(pass.demand());
     assert_eq!(pass.residency().resources, ScopeResources::Live);
     // Картинка прошлой успешной записи (эту запись здесь не делаем: проверяется судьба картинки при отказе).
     let last_picture = SampledImageView {
@@ -238,7 +238,7 @@ fn a_frame_before_the_set_is_prepared_is_skipped_and_counted_without_creating_gp
     assert_eq!(pass.residency().resources, ScopeResources::Absent);
 
     // Подготовка поднимает набор и картинку; запрос другого размера снова требует подготовки.
-    pass.prepare_between_frames();
+    pass.prepare_between_frames(pass.demand());
     assert_eq!(pass.residency().resources, ScopeResources::Live);
     assert!(
         context.live_objects().count(LiveObjectKind::Image) > before.count(LiveObjectKind::Image),
@@ -253,11 +253,11 @@ fn a_frame_before_the_set_is_prepared_is_skipped_and_counted_without_creating_gp
         Vec::new(),
         "запись при смене размера объектов не создаёт"
     );
-    pass.prepare_between_frames();
+    pass.prepare_between_frames(pass.demand());
     assert_eq!(
         context.live_objects().count(LiveObjectKind::Image),
-        prepared.count(LiveObjectKind::Image) + 1,
-        "новая картинка создана подготовкой (прежняя ждёт завершения GPU)"
+        prepared.count(LiveObjectKind::Image),
+        "новая картинка создана подготовкой, а прежняя (её никто не записывал) уничтожена сразу"
     );
 }
 
@@ -275,4 +275,41 @@ fn frames_without_input_are_counted_only_while_scopes_are_requested() {
     pass.note_frame_without_input();
     pass.note_frame_without_input();
     assert_eq!(counters_of(&mut pass).counters.frames_skipped_no_input, 2);
+}
+
+/// После пересоздания цели под новый формат счёт «каждый N-й кадр» начинается заново: первый кадр после пересоздания
+/// считается всегда. Без сброса он попал бы в прежнюю фазу прореживания, и прибор молчал бы до N кадров.
+#[test]
+fn the_cadence_restarts_after_a_format_rebuild_so_the_first_frame_after_it_is_measured() {
+    let Some(context) = context_or_skip() else { return };
+    let config = ScopesConfig {
+        every_nth_frame: 3,
+        ..ScopesConfig::default()
+    };
+    let mut pass = ScopePass::new(&context, FRAME_SLOTS, &config);
+    // Вход заведомо отвергается проверкой записи (формат не 10-бит и не fp16): отказ после прохождения прореживания
+    // — наблюдаемый признак того, что кадр дошёл до прибора, а не был пропущен по каденции.
+    let view = input_view(vk::Format::R8G8B8A8_UNORM);
+    pass.prepare_between_frames(Some(request(160, 96)));
+    // Кадр 1 считается, кадр 2 пропущен по каденции (счёт «с открытия» равен 2 из 3).
+    record_with(&mut pass, view);
+    record_with(&mut pass, view);
+    let before = counters_of(&mut pass).counters;
+    assert_eq!(before.frames_skipped_by_cadence, 1, "второй кадр пропущен по каденции");
+    assert_eq!(before.record_failures, 1, "первый кадр дошёл до прибора");
+
+    pass.reset_for_format();
+    pass.prepare_between_frames(Some(request(160, 96)));
+    counters_of(&mut pass);
+    // Первый кадр после пересоздания: в старой фазе он был бы третьим (счёт 2 из 3: пропуск), в новой — первый.
+    record_with(&mut pass, view);
+    let after = counters_of(&mut pass).counters;
+    assert_eq!(
+        after.frames_skipped_by_cadence, 0,
+        "первый кадр после пересоздания не пропущен по каденции"
+    );
+    assert_eq!(
+        after.record_failures, 1,
+        "он дошёл до прибора (отказ проверки входа — признак)"
+    );
 }

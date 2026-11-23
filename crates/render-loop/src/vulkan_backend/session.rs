@@ -474,7 +474,7 @@ impl AttachedDisplay {
     /// Новый пайплайн под новый формат (для камеры пересоздаётся только предпросмотр, сессия живёт дальше). Старый уничтожается, когда цель дождалась СВОИХ сабмитов
     /// (fence'ы кольца, с таймаутом): `vkDeviceWaitIdle` на весь GPU не нужен и не ограничен по
     /// времени. Показы на пайплайн не ссылаются, поэтому их ждать не требуется.
-    fn rebuild_painter(&mut self) -> Result<(), BackendError> {
+    pub(super) fn rebuild_painter(&mut self) -> Result<(), BackendError> {
         let chain = self.chain.as_mut().ok_or_else(|| chain_missing("rebuild_painter"))?;
         let info = chain
             .target
@@ -493,8 +493,9 @@ impl AttachedDisplay {
                 pipelines
                     .rebuild_for_format(&info)
                     .map_err(|error| gpu_backend_error("rebuild_camera_pipelines", &error))?;
-                // Объекты приборов сброшены вместе с форматом: поднимаем их сейчас, а не внутри первого кадра.
-                pipelines.prepare_scopes_between_frames();
+                // Объекты приборов сброшены вместе с форматом. Поднимает их владелец цепочки по СВЕЖЕМУ запросу
+                // (`prepare_scopes_between_frames` после `resize`): здесь запрос взять неоткуда, а закэшированный
+                // мог устареть.
             }
         }
         Ok(())
@@ -543,8 +544,7 @@ impl AttachedDisplay {
     /// картинки не должно происходить внутри записи кадра. Без камеры ничего не делает.
     pub(super) fn prepare_scopes(&mut self, demand: Option<scope_contract::ScopeRequest>) {
         if let Some(Painter::Camera { pipelines, .. }) = self.chain.as_mut().map(|chain| &mut chain.painter) {
-            pipelines.set_scope_demand(demand);
-            pipelines.prepare_scopes_between_frames();
+            pipelines.prepare_scopes_between_frames(demand);
         }
     }
 

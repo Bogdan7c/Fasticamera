@@ -315,6 +315,9 @@ fn fake_kind_errors_are_reported_before_any_command() {
             picture_size: picture_size(64, 32),
             frame_slot: 0,
         };
+        scopes
+            .prepare_picture(frame.picture_size)
+            .expect("картинка подготовлена");
         let mut outcome = None;
         run_one_shot_blocking(&context, |command_buffer| {
             outcome = Some(scopes.record(command_buffer, &frame).map(|_| ()));

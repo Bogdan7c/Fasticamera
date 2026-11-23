@@ -3,6 +3,8 @@
 //!   проходов не пишет; `Install` → `Show` → проходы; снятие источника отзывает запрос;
 //! * объекты GPU приборов готовятся МЕЖДУ кадрами: запись кадра не создаёт ни одного объекта GPU, а первый кадр после
 //!   подготовки уже пишет проход;
+//! * уход источника UI отзывает запрос в `ScopePass` СРАЗУ (без кадров), и пересоздание под новый формат цели после
+//!   этого не строит приборы по устаревшему запросу;
 //! * диагностика показывает факт устройства об округлении и денормалях f32.
 
 #![cfg(not(target_os = "android"))]
@@ -23,7 +25,7 @@ use render_loop::viewfinder::{ScopeResources, ViewfinderCommandOutcome};
 use scope_contract::{ScopeIntent, ScopeKind, VectorscopeAxes};
 use scope_rig::{
     FRAMES_TO_FLUSH_SLOTS, IdleSource, WARM_UP_FRAMES, apply_scopes, flush_frames, install, object_differences,
-    request, scopes_of, start, start_without_ui, waveform,
+    pipeline_objects, request, scopes_of, start, start_without_ui, waveform,
 };
 use viewfinder_rig::{neutral_gray, reddish};
 
@@ -167,5 +169,101 @@ fn diagnostics_expose_the_device_float_controls_as_a_fact() {
         reported.rounding_mode_rte,
         "устройство не поддерживает shaderRoundingModeRTEFloat32: допущение паритета не проверить"
     );
+    bench.finish();
+}
+
+/// Уход источника UI сразу отзывает запрос и в `ScopePass`: пауза (кадров нет) не держит набор «живым».
+#[test]
+fn removing_the_ui_source_retires_the_live_scope_set_at_once_even_when_no_frame_follows() {
+    let scenes = vec![neutral_gray(); WARM_UP_FRAMES + 4 + FRAMES_TO_FLUSH_SLOTS];
+    let Some(mut bench) = start(&scenes) else { return };
+    flush_frames(&mut bench, WARM_UP_FRAMES);
+    assert_eq!(
+        apply_scopes(&mut bench, ScopeIntent::Show(waveform())),
+        ViewfinderCommandOutcome::Applied
+    );
+    flush_frames(&mut bench, 2);
+    let computing = scopes_of(&mut bench);
+    assert_eq!(computing.residency.resources, ScopeResources::Live);
+    assert!(computing.residency.accumulator_pipelines > 0, "набор приборов построен");
+
+    // Источник снят, ни одного кадра после этого не рисуется.
+    assert_eq!(
+        bench.backend.apply_ui_overlay_command(UiOverlayCommand::Remove),
+        render_loop::ui_overlay::UiOverlayOutcome::Applied
+    );
+    let paused = scopes_of(&mut bench);
+    assert_eq!(paused.requested, None, "запрос отозван");
+    assert!(
+        matches!(
+            paused.residency.resources,
+            ScopeResources::Retiring | ScopeResources::Absent
+        ),
+        "набор выведен сразу, а не жив до следующего кадра: {:?}",
+        paused.residency
+    );
+    assert_eq!(paused.residency.accumulator_pipelines, 0, "действующего набора нет");
+    // Кадры освобождают слоты: набор доживает ровно до конца кадров в полёте и уничтожается.
+    flush_frames(&mut bench, FRAMES_TO_FLUSH_SLOTS);
+    let released = scopes_of(&mut bench);
+    assert_eq!(released.residency.resources, ScopeResources::Absent);
+    assert_eq!(
+        released.counters.resources_created,
+        released.counters.resources_released
+    );
+    assert_eq!(released.counters.passes_recorded, computing.counters.passes_recorded);
+    bench.finish();
+}
+
+/// Пересоздание под новый формат цели берёт запрос у владельца настроек, а не из закэшированного: после ухода
+/// источника UI оно не строит набор приборов и картинку.
+#[test]
+fn a_format_rebuild_right_after_the_ui_source_left_builds_no_scope_objects() {
+    let scenes = vec![neutral_gray(); WARM_UP_FRAMES + 4 + FRAMES_TO_FLUSH_SLOTS];
+    let Some(mut bench) = start(&scenes) else { return };
+    flush_frames(&mut bench, WARM_UP_FRAMES);
+    // Объекты без приборов: исходный уровень (ISP, компоновщик, UI уже построены).
+    let pipelines_without_scopes = pipeline_objects(&bench);
+    assert_eq!(
+        apply_scopes(&mut bench, ScopeIntent::Show(waveform())),
+        ViewfinderCommandOutcome::Applied
+    );
+    flush_frames(&mut bench, 2);
+    assert!(
+        pipeline_objects(&bench) > pipelines_without_scopes,
+        "приборы построили свои пайплайны"
+    );
+    bench.backend.apply_ui_overlay_command(UiOverlayCommand::Remove);
+    let before_rebuild = scopes_of(&mut bench);
+
+    // Пересоздание цели ДО любого кадра после ухода источника: кадр ещё не успел бы обновить запрос сам.
+    bench
+        .backend
+        .rebuild_for_format_change_for_tests()
+        .expect("пересоздание под формат");
+    let after_rebuild = scopes_of(&mut bench);
+    assert_eq!(
+        after_rebuild.counters.resources_created, before_rebuild.counters.resources_created,
+        "набор приборов не создавался по устаревшему запросу"
+    );
+    assert_eq!(after_rebuild.residency.resources, ScopeResources::Absent);
+    assert_eq!(after_rebuild.requested, None);
+    assert!(
+        pipeline_objects(&bench) <= pipelines_without_scopes,
+        "пайплайнов приборов нет: {} против исходных {pipelines_without_scopes}",
+        pipeline_objects(&bench)
+    );
+
+    // Источник вернулся и снова просит прибор: набор поднимается заново (запрос не потерян, а свежий).
+    install(&mut bench, Box::new(IdleSource));
+    assert_eq!(
+        apply_scopes(&mut bench, ScopeIntent::Show(waveform())),
+        ViewfinderCommandOutcome::Applied
+    );
+    bench
+        .backend
+        .rebuild_for_format_change_for_tests()
+        .expect("пересоздание под формат");
+    assert_eq!(scopes_of(&mut bench).residency.resources, ScopeResources::Live);
     bench.finish();
 }

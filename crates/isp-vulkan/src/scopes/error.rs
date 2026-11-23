@@ -2,6 +2,7 @@
 
 use ash::vk;
 use gpu_vulkan::error::GpuError;
+use scope_contract::ScopeImageSize;
 use scope_model::ScopeSettingsError;
 
 use super::rule::AccumulatorId;
@@ -22,6 +23,17 @@ pub enum ScopeError {
         slot: usize,
         /// Число слотов.
         slots: usize,
+    },
+    /// Картинка прибора нужного размера не подготовлена: запись кадра объектов GPU не создаёт, картинку заранее
+    /// готовит `ColorScopes::prepare_picture` (между кадрами).
+    #[error(
+        "картинка прибора {requested:?} не подготовлена (готова: {prepared:?}); вызовите prepare_picture до записи"
+    )]
+    PictureNotPrepared {
+        /// Размер, который просит кадр.
+        requested: ScopeImageSize,
+        /// Размер действующей картинки (`None` — картинки нет).
+        prepared: Option<ScopeImageSize>,
     },
     /// Настройки модели приборов недопустимы.
     #[error("настройки приборов: {0}")]

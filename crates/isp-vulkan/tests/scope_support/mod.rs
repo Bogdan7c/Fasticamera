@@ -403,6 +403,8 @@ pub fn run_scope_frame(
     scopes: &mut ColorScopes,
     frame: &ScopeFrame<'_>,
 ) -> Result<(RecordedScope, ScopeSlotReport), ScopeError> {
+    // Картинку готовит владелец между кадрами: сама запись её не создаёт (иначе `PictureNotPrepared`).
+    scopes.prepare_picture(frame.picture_size)?;
     let mut outcome = None;
     run_one_shot_blocking(context, |command_buffer| {
         outcome = Some(scopes.record(command_buffer, frame));

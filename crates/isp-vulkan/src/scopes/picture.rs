@@ -28,6 +28,8 @@ pub(super) struct PictureTarget {
     size: ScopeImageSize,
     /// Последнее использование в порядке записи команд: перед следующей записью ждём чтений.
     current_use: StorageImagePreviousUse,
+    /// Начинали ли команды записываться с этой картинкой (см. [`PictureTarget::is_referenced_by_commands`]).
+    referenced_by_commands: bool,
 }
 
 impl std::fmt::Debug for PictureTarget {
@@ -58,6 +60,7 @@ impl PictureTarget {
             storage,
             size,
             current_use: StorageImagePreviousUse::NotUsedYet,
+            referenced_by_commands: false,
         })
     }
 
@@ -79,6 +82,18 @@ impl PictureTarget {
 
     pub(super) fn current_use(&self) -> StorageImagePreviousUse {
         self.current_use
+    }
+
+    /// Ссылается ли на картинку хоть одна записанная команда. Пока нет (картинку только подготовили), уничтожить её
+    /// можно немедленно (см. `ColorScopes::adopt_picture`).
+    pub(super) fn is_referenced_by_commands(&self) -> bool {
+        self.referenced_by_commands
+    }
+
+    /// Запись кадра начинает писать команды с этой картинкой (отмечается ДО первой команды: ошибка GPU посреди записи
+    /// оставляет в буфере частичные команды, и картинку уже нельзя уничтожать немедленно).
+    pub(super) fn note_referenced_by_commands(&mut self) {
+        self.referenced_by_commands = true;
     }
 
     /// После записи команд: картинка отдана фрагментному читателю (раскладка `SHADER_READ_ONLY_OPTIMAL`).

@@ -39,9 +39,9 @@ const SKIP_ENV: &str = "FASTICAMERA_SKIP_GPU_TESTS";
 /// Цель 100×200 (портрет, без поворота).
 const TARGET_WIDTH: u32 = 100;
 const TARGET_HEIGHT: u32 = 200;
-const BLACK: [u8; 4] = [0, 0, 0, 255];
+pub(super) const BLACK: [u8; 4] = [0, 0, 0, 255];
 
-fn context_or_skip() -> Option<GpuContext> {
+pub(super) fn context_or_skip() -> Option<GpuContext> {
     match GpuContext::new(&GpuContextConfig::new(DeviceProfile::Headless, ValidationMode::FULL)) {
         Ok(context) => Some(context),
         Err(error) => {
@@ -56,13 +56,18 @@ fn context_or_skip() -> Option<GpuContext> {
 }
 
 /// Стенд: настоящие конвейеры показа камеры + читаемая цель.
-struct Stand {
-    pipelines: CameraPipelines,
-    target: OffscreenTarget,
+pub(super) struct Stand {
+    pub(super) pipelines: CameraPipelines,
+    pub(super) target: OffscreenTarget,
 }
 
 impl Stand {
     fn new(context: &GpuContext) -> Self {
+        Self::with_scopes(context, &crate::config::ScopesConfig::default())
+    }
+
+    /// Стенд с настройками цветовых приборов `scopes` (маленькая модель, прореживание).
+    pub(super) fn with_scopes(context: &GpuContext, scopes: &crate::config::ScopesConfig) -> Self {
         let info = DisplayTargetInfo {
             format: OffscreenTarget::FORMAT,
             color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
@@ -89,7 +94,7 @@ impl Stand {
                 &info,
                 &ViewfinderIspConfig::default(),
                 &UiOverlayConfig::default(),
-                &crate::config::ScopesConfig::default(),
+                scopes,
             )
             .expect("конвейеры показа камеры"),
             target: OffscreenTarget::new(context, TARGET_WIDTH, TARGET_HEIGHT).expect("offscreen-цель"),
@@ -97,7 +102,7 @@ impl Stand {
     }
 
     /// Один кадр: запись в цель замыканием, затем подтверждение fence слота и чтение пикселей.
-    fn frame(
+    pub(super) fn frame(
         &mut self,
         record: impl FnOnce(&mut CameraPipelines, &FrameTarget) -> Result<(), gpu_vulkan::error::GpuError>,
     ) -> Rgba8Image {
@@ -151,11 +156,11 @@ fn quadrant_texture(context: &GpuContext, width: u32, height: u32) -> SampledTex
     .expect("текстура загружена")
 }
 
-fn rect(left: f32, top: f32, width: f32, height: f32) -> EffectivePlacement {
+pub(super) fn rect(left: f32, top: f32, width: f32, height: f32) -> EffectivePlacement {
     EffectivePlacement::ScreenRect(NormalizedScreenRect::new(left, top, width, height).expect("прямоугольник"))
 }
 
-fn pixel(image: &Rgba8Image, x: u32, y: u32) -> [u8; 4] {
+pub(super) fn pixel(image: &Rgba8Image, x: u32, y: u32) -> [u8; 4] {
     image.pixel(x, y).expect("пиксель внутри цели")
 }
 

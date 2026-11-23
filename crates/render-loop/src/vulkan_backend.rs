@@ -131,7 +131,9 @@ pub struct VulkanDisplayBackend {
 impl VulkanDisplayBackend {
     /// Источник UI ушёл (снят, заменён, сломался) — запрос цветовых приборов отзывается: картинку прибора рисовать
     /// некому, а считать её впустую нельзя (инвариант «закрытые приборы ничего не стоят»). Отзыв идёт через владельца
-    /// запроса (`ViewfinderSettings`), затем свежие настройки уходят в живую сессию показа.
+    /// запроса (`ViewfinderSettings`), затем свежие настройки уходят в живую сессию показа, а СВЕЖИЙ запрос (без
+    /// источника — «закрыто») сразу попадает в `ScopePass`: набор выводится сейчас, а не на следующем кадре (кадров
+    /// может не быть: пауза), и никакой путь подготовки не построит объекты по устаревшему запросу.
     fn withdraw_scopes_if_ui_source_left(&mut self) {
         if !self.ui_overlay.take_source_lifetime_ended() {
             return;
@@ -142,6 +144,7 @@ impl VulkanDisplayBackend {
                 display.apply_viewfinder_settings(self.viewfinder_settings.clone());
             }
         }
+        self.prepare_scopes_between_frames();
     }
 
     /// Готовит объекты цветовых приборов МЕЖДУ кадрами (набор GPU и картинка под размер запроса), а не внутри записи
@@ -351,6 +354,22 @@ impl VulkanDisplayBackend {
         }
     }
 
+    /// Пересоздаёт всё, что зависит от формата цели, как при смене формата в `resize` (тестовый шов, фича
+    /// `test-support`: на headless-стенде формат цели не меняется, а путь пересоздания должен проверяться). Затем
+    /// тот же шаг, что в `resize`: объекты приборов поднимаются по свежему запросу.
+    #[cfg(feature = "test-support")]
+    pub fn rebuild_for_format_change_for_tests(&mut self) -> Result<(), BackendError> {
+        let rebuilt = match self.attached.as_mut() {
+            Some(display) => display.rebuild_painter(),
+            None => Err(BackendError {
+                operation: "rebuild_for_format_change_for_tests".to_owned(),
+                reason: "surface не присоединена".to_owned(),
+            }),
+        };
+        self.prepare_scopes_between_frames();
+        rebuilt
+    }
+
     /// Счётчики цветового прибора последней записи (тестовый шов, фича `test-support`). `Ok(None)` — нет surface,
     /// камеры или набора объектов приборов.
     #[cfg(feature = "test-support")]
@@ -468,13 +487,16 @@ impl DisplayBackend for VulkanDisplayBackend {
     }
 
     fn resize(&mut self, size: SurfaceSize) -> Result<(), BackendError> {
-        match self.attached.as_mut() {
+        let resized = match self.attached.as_mut() {
             Some(display) => display.resize(size),
             None => Err(BackendError {
                 operation: "resize".to_owned(),
                 reason: "surface не присоединена".to_owned(),
             }),
-        }
+        };
+        // Смена формата цели сбросила объекты приборов: поднимаем их по свежему запросу, до первого кадра.
+        self.prepare_scopes_between_frames();
+        resized
     }
 
     fn render_and_present(&mut self, timing: FrameTiming) -> PresentOutcome {

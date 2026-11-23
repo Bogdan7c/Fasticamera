@@ -16,7 +16,7 @@ use gpu_vulkan::kit_test_support::run_one_shot_blocking;
 use gpu_vulkan::live_objects::LiveObjectKind;
 use gpu_vulkan::source_window::{HorizontalMirror, SourceWindow};
 use gpu_vulkan::storage_image::StorageFormatPolicy;
-use isp_vulkan::scopes::{ColorScopes, ColorScopesConfig, ScopeError, ScopeFrame, ScopeInput};
+use isp_vulkan::scopes::{ColorScopes, ColorScopesConfig, PictureChange, ScopeError, ScopeFrame, ScopeInput};
 use scope_model::{SampleStride, ScopeModelSettings, ScopeRule};
 use scope_support::{
     Scene, all_scenes, assert_no_validation_errors, bars75_scene, counters_delta, cpu_counters, gpu_context_or_skip,
@@ -106,6 +106,11 @@ fn picture_size_change_recreates_only_the_picture_and_retires_the_old_one_until_
     // `run_scope_frame` сразу подтверждает fence, поэтому ожидание старой картинки видно только через ручную запись.
     let (first, _) = run_scope_frame(&context, &mut scopes, &frame_of(picture_size(160, 96))).unwrap();
     let images_before = context.live_objects().count(LiveObjectKind::Image);
+    assert_eq!(
+        scopes.prepare_picture(picture_size(200, 120)).unwrap(),
+        PictureChange::Replaced,
+        "новая картинка готовится между кадрами"
+    );
     let mut recorded = None;
     run_one_shot_blocking(&context, |command_buffer| {
         recorded = Some(scopes.record(command_buffer, &frame_of(picture_size(200, 120))));
@@ -260,6 +265,8 @@ fn rejected_frames_record_no_commands_and_change_nothing() {
     let counters_before = scopes.pass_counters();
 
     let try_frame = |scopes: &mut ColorScopes, frame: &ScopeFrame<'_>| -> Result<(), ScopeError> {
+        // Отказ проверки записи не зависит от подготовки картинки: готовим её заранее, как владелец.
+        scopes.prepare_picture(frame.picture_size)?;
         let mut outcome = None;
         run_one_shot_blocking(&context, |command_buffer| {
             outcome = Some(scopes.record(command_buffer, frame).map(|_| ()));
@@ -368,6 +375,7 @@ fn a_slot_must_be_released_after_its_fence_before_binding_another_input() {
         picture_size: picture_size(160, 96),
         frame_slot: 0,
     };
+    scopes.prepare_picture(picture_size(160, 96)).unwrap();
     let mut outcome = None;
     run_one_shot_blocking(&context, |command_buffer| {
         scopes.record(command_buffer, &frame_of(&first)).unwrap();
