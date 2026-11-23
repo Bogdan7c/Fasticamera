@@ -24,6 +24,7 @@ use isp_model::color::matrix::Matrix3;
 use isp_model::color::oklab_working::OklabWorkspace;
 use isp_model::color::working_space::WORKING_PRIMARIES;
 use isp_model::demosaic::DemosaicMethod;
+use isp_model::exposure::ExposureGain;
 use isp_model::image::{DisplayGamut, RawMosaic};
 use isp_model::look::LookControls;
 use isp_model::look::color::LookColorParams;
@@ -42,7 +43,9 @@ use support::{assets_dir, real_capture::load_real_capture};
 
 /// Серый сцены, который основы по умолчанию переводят в серый экрана 0,20 (одинаков у AgX, ACES и filmic).
 const SCENE_MIDDLE_GRAY: f64 = 0.075;
-/// Подтяжка AE на ±½ ступени: сцена умножается на `k`, и серый попадает на экран выше/ниже серого экрана.
+/// Остаточная подтяжка AE `k` на ±½ ступени (решение 72), как в продукте: кадр снят на `1/k` темнее цели
+/// (выдержка ещё не дошла), а основа тона с `with_exposure_gain(k)` дотягивает его до цели. Серый сцены при этом
+/// остаётся на сером экрана, поэтому зоны колёс обязаны вести себя одинаково при любой подтяжке.
 const AE_NUDGES: [f64; 3] = [std::f64::consts::FRAC_1_SQRT_2, 1.0, std::f64::consts::SQRT_2];
 /// Оттенки OKLCh: синий и оранжевый.
 const BLUE_HUE: f32 = 265.0;
@@ -53,7 +56,8 @@ const ORANGE_HUE: f32 = 60.0;
 /// Основа тона + всё, что нужно, чтобы прогнать серый патч сцены до вывода sRGB.
 struct Rig {
     name: &'static str,
-    base: Box<dyn WorkingToneBase>,
+    /// Основа для каждой подтяжки из [`AE_NUDGES`] (тот же порядок).
+    bases: Vec<Box<dyn WorkingToneBase>>,
     srgb_to_working: Matrix3,
     to_lab: DisplayToLab,
     output_oklab: OklabWorkspace,
@@ -82,22 +86,37 @@ arc_base!(AgxShared, AgxBase);
 arc_base!(AcesShared, AcesBase);
 arc_base!(FilmicShared, FilmicBase);
 
+/// Основы одной модели для каждой подтяжки AE (`with_exposure_gain`, как делает `IspParams::resolve`).
+fn bases_for_every_nudge(build: impl Fn(ExposureGain) -> Box<dyn WorkingToneBase>) -> Vec<Box<dyn WorkingToneBase>> {
+    AE_NUDGES
+        .iter()
+        .map(|&nudge| build(ExposureGain::new(nudge as f32).unwrap()))
+        .collect()
+}
+
 fn rigs() -> Vec<Rig> {
     let gamut = DisplayGamut::Srgb;
-    let bases: [(&'static str, Box<dyn WorkingToneBase>); 3] = [
+    let models: [(&'static str, Vec<Box<dyn WorkingToneBase>>); 3] = [
         (
             "agx",
-            Box::new(AgxShared(AgxBase::resolve(&AgxSettings::default(), gamut).unwrap())),
+            bases_for_every_nudge(|gain| {
+                let settings = AgxSettings::default().with_exposure_gain(gain);
+                Box::new(AgxShared(AgxBase::resolve(&settings, gamut).unwrap()))
+            }),
         ),
         (
             "aces",
-            Box::new(AcesShared(AcesBase::resolve(&AcesSettings::default(), gamut).unwrap())),
+            bases_for_every_nudge(|gain| {
+                let settings = AcesSettings::default().with_exposure_gain(gain);
+                Box::new(AcesShared(AcesBase::resolve(&settings, gamut).unwrap()))
+            }),
         ),
         (
             "filmic",
-            Box::new(FilmicShared(
-                FilmicBase::resolve(&FilmicSettings::default(), gamut).unwrap(),
-            )),
+            bases_for_every_nudge(|gain| {
+                let settings = FilmicSettings::default().with_exposure_gain(gain);
+                Box::new(FilmicShared(FilmicBase::resolve(&settings, gamut).unwrap()))
+            }),
         ),
     ];
     let srgb_to_working = WORKING_PRIMARIES
@@ -106,11 +125,11 @@ fn rigs() -> Vec<Rig> {
         .inverse()
         .unwrap()
         .mul(&Primaries::SRGB.rgb_to_xyz().unwrap());
-    bases
+    models
         .into_iter()
-        .map(|(name, base)| Rig {
+        .map(|(name, bases)| Rig {
             name,
-            base,
+            bases,
             srgb_to_working,
             to_lab: DisplayToLab::new(gamut).unwrap(),
             output_oklab: OklabWorkspace::new(&Primaries::SRGB).unwrap(),
@@ -119,16 +138,27 @@ fn rigs() -> Vec<Rig> {
 }
 
 impl Rig {
-    /// Серый патч сцены `ev` ступеней от среднего серого, подтяжка AE `nudge` → линейный выход sRGB.
-    /// `look` — стадия цвета вида (колёса) между основой и `to_output`; `None` — вида нет вовсе.
+    /// Серый патч сцены `ev` ступеней от среднего серого, снятый с подтяжкой AE `nudge` (кадр на `1/k` темнее,
+    /// основа дотягивает на `k`) → линейный выход sRGB. `look` — стадия цвета вида (колёса) между основой и
+    /// `to_output`; `None` — вида нет вовсе.
     fn render_grey(&self, ev: f64, nudge: f64, look: Option<&LookColorParams>) -> [f32; 3] {
-        let level = SCENE_MIDDLE_GRAY * ev.exp2() * nudge;
+        let base = self.base_for(nudge);
+        let level = SCENE_MIDDLE_GRAY * ev.exp2() / nudge;
         let scene = self.srgb_to_working.apply([level; 3]).map(|channel| channel as f32);
-        let mut display = self.base.map_scene_pixel(scene, 1.0);
+        let mut display = base.map_scene_pixel(scene, 1.0);
         if let Some(look) = look {
             display = look.apply(display);
         }
-        self.base.to_output(display)
+        base.to_output(display)
+    }
+
+    /// Основа, собранная под подтяжку `nudge` (одно из [`AE_NUDGES`]).
+    fn base_for(&self, nudge: f64) -> &dyn WorkingToneBase {
+        let index = AE_NUDGES
+            .iter()
+            .position(|&candidate| candidate == nudge)
+            .expect("подтяжка из AE_NUDGES");
+        self.bases[index].as_ref()
     }
 
     fn oklab(&self, output: [f32; 3]) -> [f32; 3] {
@@ -200,12 +230,6 @@ const ALL_PATCHES: [f64; 6] = [-6.0, -4.0, -3.0, 0.0, 1.5, 2.5];
 /// Незаметная разница: ΔE2000 ниже 0,05 (порог видимости 1,0 — в 20 раз выше).
 const UNTOUCHED_DELTA_E: f64 = 0.05;
 
-/// Ступени патча на экране относительно серого экрана: подтяжка AE `k` сдвигает патч на `log2(k)` ступеней.
-/// Серый экрана (пивот колёс) лежит на 0 такой шкалы: сцена `0 EV` при `k = 1` попадает точно в него.
-fn effective_ev(ev: f64, nudge: f64) -> f64 {
-    ev + nudge.log2()
-}
-
 #[test]
 fn lift_toward_blue_tints_only_the_shadows_below_display_grey() {
     let mut tinted_patches = 0;
@@ -216,7 +240,8 @@ fn lift_toward_blue_tints_only_the_shadows_below_display_grey() {
             for ev in ALL_PATCHES {
                 let (delta_e, _, delta_b, _) = shift(&rig, ev, nudge, &lift);
                 let label = format!("{} k={nudge:.2} {ev:+}EV", rig.name);
-                if effective_ev(ev, nudge) >= 0.0 {
+                // Подтяжка держит серый сцены на сером экрана: правило зон одно при любой подтяжке.
+                if ev >= 0.0 {
                     // На сером экрана и светлее Lift ровно ноль: ни цвета, ни света.
                     assert!(delta_e < UNTOUCHED_DELTA_E, "{label}: Lift тронул ΔE {delta_e}");
                 } else if SHADOW_PATCHES.contains(&ev) {
@@ -244,7 +269,7 @@ fn gain_toward_orange_warms_only_the_highlights_above_display_grey() {
             for ev in ALL_PATCHES {
                 let (delta_e, delta_a, delta_b, _) = shift(&rig, ev, nudge, &gain);
                 let label = format!("{} k={nudge:.2} {ev:+}EV", rig.name);
-                if effective_ev(ev, nudge) <= 0.0 {
+                if ev <= 0.0 {
                     assert!(delta_e < UNTOUCHED_DELTA_E, "{label}: Gain тронул ΔE {delta_e}");
                 } else if HIGHLIGHT_PATCHES.contains(&ev) {
                     // Оранжевый = +a и +b: света теплеют.
@@ -267,9 +292,8 @@ fn gamma_moves_the_middle_and_barely_touches_deep_shadow_and_near_white() {
     for rig in rigs() {
         let gamma = look_with(WheelZone::Gamma, wheel(BLUE_HUE, 1.0, 0.0));
         for nudge in AE_NUDGES {
-            // Середина — тот патч, что лёг ближе всего к серому экрана при этой подтяжке.
-            let middle_ev = -nudge.log2();
-            let middle = shift(&rig, middle_ev, nudge, &gamma).0;
+            // Середина — серый сцены: подтяжка держит его ровно на сером экрана.
+            let middle = shift(&rig, 0.0, nudge, &gamma).0;
             let deep_shadow = shift(&rig, DEEP_SHADOW_EV, nudge, &gamma).0;
             let near_white = shift(&rig, NEAR_WHITE_EV, nudge, &gamma).0;
             eprintln!(
