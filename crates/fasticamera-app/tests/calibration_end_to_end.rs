@@ -13,6 +13,9 @@
 //! * режим CALIBRATE просит у рендера прибор по раскладке (размер, взгляд по ориентации), выход его скрывает;
 //!   свежий экран после переустановки источника просит прибор заново.
 //!
+//! * приборы по пути «действие экрана → кадр видоискателя → картинка прибора»: счётчики GPU равны эталону
+//!   `scope_model::accumulate` по показанному кадру того же такта, следуют за ручкой и за видом прибора (решение 190).
+//!
 //! Стенд — `calibration_rig` (общий для файла), стенд подставной камеры и эталона — файл `render-loop`.
 
 #![cfg(not(target_os = "android"))]
@@ -35,8 +38,11 @@ use calibration_rig::{AcceptingPersistence, CalibrationRig, FailingPersistence, 
 use camera_screen::modes::CaptureMode;
 use camera_screen::{ProblemKind, ScreenAction};
 use look_contract::{GlobalKnob, LookControl, LookKnob, LookProblemKind, LookSettings, PresetId, ToneBaseModel};
+use render_loop::backend::DisplayBackend;
+use render_loop::config::RenderLoopConfig;
 use render_loop::config::ToneBaseChoice;
-use scope_contract::ScopeIntent;
+use scope_contract::{ScopeIntent, ScopeKind, ScopeRequest};
+use scope_model::{HorizontalOrder, ResolvedScope, ScopeCounters, ScopeRule, ShownCodes, accumulate};
 use shell_contract::orientation::DeviceOrientation;
 use shell_contract::text_input::{TextInputOutcome, TextInputResult};
 use viewfinder_rig::reddish;
@@ -419,6 +425,118 @@ fn a_fresh_screen_releases_the_clean_view_the_previous_screen_held() {
         ToneBaseChoice::Agx,
         &edited,
         "свежий экран: рендер не остался на нейтрали",
+    );
+    rig.finish();
+}
+
+/// Счётчики, которые насчитал GPU в последнем проходе прибора.
+fn gpu_scope_counters(rig: &CalibrationRig) -> ScopeCounters {
+    rig.bench.backend.context().wait_idle().expect("wait_idle");
+    rig.bench
+        .backend
+        .read_scope_counters()
+        .expect("чтение счётчиков приборов")
+        .expect("набор приборов есть и проход записан")
+}
+
+/// Эталон `scope_model::accumulate` по картинке видоискателя, прочитанной с GPU: то, что показано в ЭТОМ кадре,
+/// с видом, размером и осями ровно из запроса, который отправил экран.
+fn cpu_scope_counters(rig: &CalibrationRig, request: &ScopeRequest) -> ScopeCounters {
+    rig.bench.backend.context().wait_idle().expect("wait_idle");
+    let image = rig
+        .bench
+        .backend
+        .read_viewfinder_image()
+        .expect("чтение изображения видоискателя")
+        .expect("изображение видоискателя есть");
+    let shown = ShownCodes::from_display_rgba(image.width, image.height, &image.pixels, HorizontalOrder::AsStored)
+        .expect("коды");
+    let model = RenderLoopConfig::default().viewfinder.scopes.model;
+    let rule = ResolvedScope::resolve(request, &model, isp_model::image::DisplayGamut::Srgb).expect("правило");
+    accumulate(&shown, model.sample_stride, &rule as &dyn ScopeRule).expect("эталон")
+}
+
+/// Запрос прибора, который рендер держит прямо сейчас (его собственная диагностика), а не запись команд стенда.
+fn live_scope_request(rig: &mut CalibrationRig) -> ScopeRequest {
+    rig.scope_requested_at_the_render()
+        .expect("рендер держит запрос прибора")
+}
+
+/// Сквозной путь приборов в разделе калибровки: действие экрана → экран → исполнитель → команда рендеру → кадр
+/// видоискателя → проход прибора на GPU. Видоискатель стенда не получает «место кадра» (`SetFraming`: кадр 64×48
+/// слишком мал для кропа экрана, см. `calibration_rig`); прибор меряет то, что показывает рендер, поэтому для
+/// проверки сквозного пути это не важно. Сюжет красноватый, не серый: ручка насыщенности реально двигает счётчики.
+#[test]
+fn calibrate_scope_counters_equal_the_cpu_reference_of_the_shown_frame_and_follow_the_knob_and_the_scope_kind() {
+    let Some(mut rig) = CalibrationRig::start(library_over(Box::new(AcceptingPersistence)), reddish()) else {
+        return;
+    };
+
+    // 1. Вход в CALIBRATE: рендер получил запрос прибора по раскладке экрана и держит его.
+    rig.send(ScreenAction::ModeSelected(CaptureMode::Calibrate));
+    rig.frames(4);
+    let ScopeIntent::Show(sent) = *rig.scope_intents.last().expect("экран просил прибор") else {
+        panic!("ожидалось «показать»: {:?}", rig.scope_intents);
+    };
+    let request = live_scope_request(&mut rig);
+    assert_eq!(request, sent, "рендер держит ровно тот запрос, что отправил экран");
+    let diagnostics = rig
+        .bench
+        .backend
+        .diagnostics()
+        .viewfinder
+        .expect("диагностика видоискателя")
+        .scopes;
+    assert!(
+        diagnostics.counters.passes_recorded > 0,
+        "проход прибора записан: {diagnostics:?}"
+    );
+
+    // 2. Счётчики GPU = эталон по показанному кадру этого же такта.
+    let before_drag = gpu_scope_counters(&rig);
+    let reference_before_drag = cpu_scope_counters(&rig, &request);
+    assert_eq!(before_drag, reference_before_drag, "до ручки: GPU разошёлся с эталоном");
+    assert!(reference_before_drag.total() > 0, "прибор что-то сосчитал");
+
+    // 3. Тяга ручки: показанный кадр меняется, прибор следует за ним (решение 190).
+    let preset = preset_settings(&rig);
+    rig.send(ScreenAction::KnobDragged {
+        knob: GlobalKnob::Saturation,
+        value: knob(0.9),
+    });
+    rig.frames(4);
+    rig.assert_shows(
+        ToneBaseChoice::Agx,
+        &preset.with_knob(GlobalKnob::Saturation, knob(0.9)),
+        "после тяги ручки показан правленый вид",
+    );
+    assert_eq!(live_scope_request(&mut rig), request, "вид прибора ручка не трогала");
+    let after_drag = gpu_scope_counters(&rig);
+    assert_eq!(
+        after_drag,
+        cpu_scope_counters(&rig, &request),
+        "после ручки: GPU разошёлся с эталоном нового кадра"
+    );
+    assert_ne!(
+        after_drag, before_drag,
+        "ручка сдвинула счётчики: прибор следует за видом"
+    );
+
+    // 4. Смена вида прибора на экране: рендер получает новый запрос, счётчики считаются по нему.
+    rig.send(ScreenAction::ScopeKindSelected(ScopeKind::RgbParade));
+    rig.frames(4);
+    let parade = live_scope_request(&mut rig);
+    assert_eq!(parade.kind, ScopeKind::RgbParade, "рендер держит запрос парада");
+    assert_ne!(parade, request, "запрос сменился");
+    let parade_gpu = gpu_scope_counters(&rig);
+    assert_eq!(
+        parade_gpu,
+        cpu_scope_counters(&rig, &parade),
+        "парад: GPU разошёлся с эталоном парада"
+    );
+    assert_ne!(
+        parade_gpu, after_drag,
+        "парад считает иначе, чем прежний вид (кадр тот же)"
     );
     rig.finish();
 }
