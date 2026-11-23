@@ -22,14 +22,14 @@ use isp_model::image::DisplayGamut;
 
 use super::*;
 
-fn calibration() -> Vec<ColorCalibrationSet> {
+pub(super) fn calibration() -> Vec<ColorCalibrationSet> {
     match main_wide_camera().capabilities.raw {
         RawSupport::Supported(info) => info.color_calibration,
         RawSupport::NotSupported => panic!("в образце основной камеры есть RAW"),
     }
 }
 
-fn stream(color_calibration: Vec<ColorCalibrationSet>) -> Arc<StreamPassport> {
+pub(super) fn stream(color_calibration: Vec<ColorCalibrationSet>) -> Arc<StreamPassport> {
     Arc::new(StreamPassport {
         camera: camera_id("2"),
         raw_format: RawFormat::Raw16,
@@ -40,6 +40,10 @@ fn stream(color_calibration: Vec<ColorCalibrationSet>) -> Arc<StreamPassport> {
             top: 0,
             size: PixelSize::new(64, 48),
         },
+        sensor_area: camera_contract::lens_shading::ValidAreaOnSensor::whole_active_array(PixelSize::new(64, 48)),
+        lens_shading: camera_contract::lens_shading::LensShadingCalibrationState::NotCalibrated(
+            camera_contract::lens_shading::NotCalibratedReason::NoCalibrationForCamera,
+        ),
         mosaic: MosaicPattern {
             kind: MosaicKind::Bayer,
             layout: CfaLayout::Bggr,
@@ -59,10 +63,10 @@ fn stream(color_calibration: Vec<ColorCalibrationSet>) -> Arc<StreamPassport> {
 }
 
 /// Дневной свет и тёплая лампа (≈ 2856 К, точка A) — две заведомо разные белые.
-const DAYLIGHT: Chromaticity = Chromaticity::D65;
+pub(super) const DAYLIGHT: Chromaticity = Chromaticity::D65;
 const WARM_LAMP: Chromaticity = Chromaticity { x: 0.44757, y: 0.40745 };
 
-fn frame(stream: &Arc<StreamPassport>, capture: FrameCaptureMeta) -> RawFramePassport {
+pub(super) fn frame(stream: &Arc<StreamPassport>, capture: FrameCaptureMeta) -> RawFramePassport {
     RawFramePassport {
         stream: Arc::clone(stream),
         sequence: FrameSequence(1),
@@ -86,7 +90,7 @@ fn paired(color: CaptureColorHints) -> FrameCaptureMeta {
     })
 }
 
-fn plain() -> FrameCaptureMeta {
+pub(super) fn plain() -> FrameCaptureMeta {
     paired(CaptureColorHints::default())
 }
 

@@ -1,0 +1,30 @@
+{
+  "format_version": 1,
+  "width": 256,
+  "height": 192,
+  "channels": 1,
+  "sample_type": "u16le",
+  "data_file": "flat-field-main-heldout.bin",
+  "description": "Плоское поле основной камеры (main43), уменьшенный сенсор 256x192, отложен от калибровки затенения",
+  "generator": "tools/device-probe/pc/shading_calibrate.py --write-fixture <каталог прогонов>/064406-0515d0/main43.json --fixture-dir test-assets/isp-model --fixture-name flat-field-main-heldout",
+  "extra": {
+    "cfa_arrangement": "BGGR",
+    "cfa_arrangement_code": 3,
+    "black_level_per_position": [
+      64.0625,
+      64.0625,
+      64.0625,
+      64.0625
+    ],
+    "black_level_note": "динамический чёрный (среднее по кадрам), порядок позиций буфера: (0,0), (0,1), (1,0), (1,1)",
+    "white_level": 1023.0,
+    "source_run": "064406-0515d0",
+    "source_mode": "main43",
+    "scaled_from_active_array": {
+      "width": 4096,
+      "height": 3072
+    },
+    "block_size_px": 32,
+    "note": "Отложен от калибровки затенения (14f): в подгонку lens-shading.json не входил. Ячейка 2x2 = средние блока 32x32 по 4 позициям CFA буфера, чёрный не вычтен."
+  }
+}

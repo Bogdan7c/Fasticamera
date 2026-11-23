@@ -50,8 +50,8 @@ class FlashAnalysisTest {
         assertFalse(FlashAnalysis.isLit(RawBandProfile(120.0, DoubleArray(4), 0.0), ambient)) // +20% < порога 25%
         assertTrue(FlashAnalysis.isLit(RawBandProfile(130.0, DoubleArray(4), 0.0), ambient))
         val darkAmbient = Ambient(0.0, DoubleArray(4))
-        assertFalse(FlashAnalysis.isLit(RawBandProfile(4.0, DoubleArray(4), 0.0), darkAmbient)) // < 5 единиц
-        assertTrue(FlashAnalysis.isLit(RawBandProfile(6.0, DoubleArray(4), 0.0), darkAmbient))
+        assertFalse(FlashAnalysis.isLit(RawBandProfile(0.5, DoubleArray(4), 0.0), darkAmbient)) // < порога 1 единица (LIT_MIN_DELTA_DN)
+        assertTrue(FlashAnalysis.isLit(RawBandProfile(1.5, DoubleArray(4), 0.0), darkAmbient))
     }
 
     @Test

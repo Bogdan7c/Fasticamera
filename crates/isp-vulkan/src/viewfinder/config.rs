@@ -9,6 +9,7 @@ use isp_model::statistics::AwbStatisticsSettings;
 
 use super::awb_reduction::AwbReductionPolicy;
 use super::error::ViewfinderError;
+use crate::lens_shading_map::LensShadingMapLimits;
 
 /// Предпочтение формата изображения видоискателя (зеркало `StorageFormatPolicy` для конфига).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -76,9 +77,12 @@ pub struct ViewfinderIspConfig {
     /// Формат изображения видоискателя.
     pub storage_format: ViewfinderStorageFormat,
     /// Сколько вариантов пайплайна (набор стадий × формат × источник) держать одновременно.
-    /// По умолчанию 12: продукт + 8 A/B-вариантов «без одной стадии» + запас; при переполнении
+    /// По умолчанию 12: продукт + 9 A/B-вариантов «без одной стадии» + запас; при переполнении
     /// давно не использованный вариант уходит в отложенное уничтожение.
     pub pipeline_variant_capacity: usize,
+    /// Наибольшая карта коррекции виньетирования, под которую выделяются буферы слотов. Карта больше —
+    /// явная ошибка кадра (`ViewfinderError::LensShadingMap`), а не молчаливый пропуск коррекции.
+    pub lens_shading_map: LensShadingMapLimits,
 }
 
 impl Default for ViewfinderIspConfig {
@@ -90,6 +94,7 @@ impl Default for ViewfinderIspConfig {
             awb_reduction: AwbReductionPolicy::default(),
             storage_format: ViewfinderStorageFormat::default(),
             pipeline_variant_capacity: 12,
+            lens_shading_map: LensShadingMapLimits::default(),
         }
     }
 }
@@ -111,6 +116,7 @@ impl ViewfinderIspConfig {
         if self.pipeline_variant_capacity == 0 {
             return invalid("pipeline_variant_capacity должен быть ≥ 1".to_owned());
         }
+        self.lens_shading_map.validate()?;
         let settings = self.awb_statistics;
         if settings.grid.columns == 0 || settings.grid.rows == 0 {
             return invalid(format!("пустая сетка статистики AWB {:?}", settings.grid));

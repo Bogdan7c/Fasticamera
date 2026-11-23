@@ -50,6 +50,7 @@ use super::slicing::{DevelopmentPlan, SlicePlan, max_region_rows, plan_developme
 use super::targets::DevelopTargets;
 use super::thumbnail::ThumbnailPlan;
 use super::thumbnail_pass::{ThumbnailJob, ThumbnailPass};
+use crate::lens_shading_map::{LensShadingMapBuffer, check_lens_shading_step};
 use crate::quality::demosaic::{MenonPass, create_pass_pipelines};
 use crate::quality::frame_params::{
     CfaCode, FRAME_PARAMETERS_BYTES, SourceAddressing, check_supported, frame_parameter_bytes,
@@ -61,11 +62,12 @@ use crate::shaders::blobs;
 /// Единственный слот наборов дескрипторов: проявление одно за раз.
 const SLOT: usize = 0;
 
-/// Привязки шейдера уровней: сырые отсчёты (чтение), uniform кадра, мозаика (запись).
-const LEVELS_BINDINGS: [BindingKind; 3] = [
+/// Привязки шейдера уровней: сырые отсчёты (чтение), uniform кадра, мозаика (запись), карта виньетирования.
+const LEVELS_BINDINGS: [BindingKind; 4] = [
     BindingKind::ReadOnlyStorageBuffer,
     BindingKind::UniformBuffer,
     BindingKind::ReadWriteStorageBuffer,
+    BindingKind::ReadOnlyStorageBuffer,
 ];
 
 /// Привязки выходного шейдера: R, G, B (чтение), uniform кадра, картинка снимка (запись).
@@ -289,6 +291,8 @@ struct Job {
     thumbnail: ThumbnailJob,
     /// Uniform-параметры кадра: на них ссылается набор дескрипторов, пока GPU не закончит.
     _parameters: HostBuffer,
+    /// Карта виньетирования проявки (над полезной областью кадра): на неё тоже ссылается набор уровней.
+    _lens_shading_map: LensShadingMapBuffer,
     /// Сколько полос записано (индекс следующей).
     recorded: usize,
     /// Сколько записанных полос ещё не подтверждено fence-ом.
@@ -331,6 +335,12 @@ impl DeveloperParts {
             });
         }
         check_supported(request.params)?;
+        // Карта виньетирования помещается в буфер проявки — отказ тот же `begin`/`check_request`, до выделений.
+        check_lens_shading_step(
+            &request.params.lens_shading,
+            request.raw.size(),
+            self.config.lens_shading_map,
+        )?;
         let valid = request.raw.valid_area();
         // Область снимка — в координатах буфера кадра; план считается в координатах полезной области.
         let crop_in_valid = PixelRect {
@@ -373,13 +383,18 @@ impl DeveloperParts {
             HostBufferUsage::UniformParameters,
         )?;
         parameters.write_bytes(0, &frame_parameter_bytes(request.params, source))?;
+        // Карта лежит над ПОЛЕЗНОЙ областью кадра (размер — размер захваченного буфера), а полосы адресуют её
+        // абсолютными координатами (смещение области полосы — push-константы). Карта больше буфера — отказ
+        // `begin` до выделения чего-либо ещё.
+        let mut lens_shading_map = LensShadingMapBuffer::new(&self.context, self.config.lens_shading_map)?;
+        lens_shading_map.prepare(&request.params.lens_shading, request.raw.size())?;
         // Цели выделены заранее (`DevelopTargets`) и уже проверены на размер (`plan.crop_size == crop.size`).
         let DevelopTargets {
             image,
             readback,
             thumbnail,
         } = targets;
-        if let Err(error) = self.bind_job_resources(request.raw, &parameters, &image) {
+        if let Err(error) = self.bind_job_resources(request.raw, &parameters, &lens_shading_map, &image) {
             // Ресурсы проявки (картинка, uniform) сейчас уничтожатся, а наборы могли запомнить их хэндлы: сброс
             // запомненного обязателен (см. `DescriptorRing::release_after_fence`). Наборы ни в одном
             // отправленном буфере не использовались, поэтому освободить их можно сразу.
@@ -405,6 +420,7 @@ impl DeveloperParts {
             readback,
             thumbnail,
             _parameters: parameters,
+            _lens_shading_map: lens_shading_map,
             recorded: 0,
             unconfirmed: 0,
             last_proof: None,
@@ -417,6 +433,7 @@ impl DeveloperParts {
         &mut self,
         raw: &RawCapture,
         parameters: &HostBuffer,
+        lens_shading_map: &LensShadingMapBuffer,
         image: &Rgba8StorageImage,
     ) -> Result<(), PhotoError> {
         self.levels.bind(
@@ -433,6 +450,10 @@ impl DeveloperParts {
                 BindingWrite {
                     binding: 2,
                     resource: self.planes.mosaic().read_write_binding(),
+                },
+                BindingWrite {
+                    binding: 3,
+                    resource: lens_shading_map.binding(),
                 },
             ],
         )?;

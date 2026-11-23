@@ -36,6 +36,7 @@ use raw_frame_stream::RawFrameProducer;
 use crate::config::AndroidCameraConfig;
 use crate::cpu_access_probe::CpuAccessProbe;
 use crate::diagnostics::BackendDiagnostics;
+use camera_contract::lens_shading::LensShadingCalibrations;
 
 pub use backend::AndroidCameraBackend;
 
@@ -53,15 +54,27 @@ pub struct AndroidBackendParts {
 /// Строит фабрику бэкенда на Camera2 NDK. Менеджер Camera2 создаётся **на потоке камеры**, внутри
 /// вызова фабрики; неверный конфиг приводит к ошибке фабрики, а не к панике.
 ///
+/// `lens_shading` — наши калибровки виньетирования камер устройства (из профиля устройства, не из конфига Kotlin).
 /// `producer` — вход потока кадров (`RawFrameStream::producer()`): через него камера отдаёт
 /// кадры в лизинг и сообщает результаты запросов.
-pub fn backend_factory(config: AndroidCameraConfig, producer: RawFrameProducer) -> AndroidBackendParts {
+pub fn backend_factory(
+    config: AndroidCameraConfig,
+    lens_shading: LensShadingCalibrations,
+    producer: RawFrameProducer,
+) -> AndroidBackendParts {
     let diagnostics = Arc::new(BackendDiagnostics::new(config.failure_history_capacity));
     let backend_diagnostics = Arc::clone(&diagnostics);
     let cpu_access_probe = CpuAccessProbe::disarmed();
     let backend_probe = cpu_access_probe.clone();
     let factory: BackendFactory = Box::new(move |events: BackendEventSink| {
-        let backend = AndroidCameraBackend::new(config, events, backend_diagnostics, producer, backend_probe)?;
+        let backend = AndroidCameraBackend::new(
+            config,
+            lens_shading,
+            events,
+            backend_diagnostics,
+            producer,
+            backend_probe,
+        )?;
         Ok(Box::new(backend) as Box<dyn camera_core::backend::CameraBackend>)
     });
     AndroidBackendParts {

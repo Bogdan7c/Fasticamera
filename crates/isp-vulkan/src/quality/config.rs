@@ -5,6 +5,7 @@ use gpu_vulkan::storage_image::StorageFormatPolicy;
 use serde::{Deserialize, Serialize};
 
 use super::error::QualityError;
+use crate::lens_shading_map::LensShadingMapLimits;
 
 /// Наибольшее число нитей в рабочей группе, которое конфиг разрешает (проверка без GPU). 1024 —
 /// `maxComputeWorkGroupInvocations` и Adreno 740 (vkjson телефона), и RADV; спецификация гарантирует лишь
@@ -120,6 +121,8 @@ pub struct VideoHeadroomConfig {
     pub workgroup_size: WorkgroupSizeConfig,
     /// Временной шумодав.
     pub temporal_denoise: TemporalDenoiseConfig,
+    /// Наибольшая карта коррекции виньетирования (буфер на слот кадра). Карта больше — ошибка кадра.
+    pub lens_shading_map: LensShadingMapLimits,
 }
 
 impl Default for VideoHeadroomConfig {
@@ -129,6 +132,7 @@ impl Default for VideoHeadroomConfig {
             output_format: QualityOutputFormat::default(),
             workgroup_size: WorkgroupSizeConfig::default(),
             temporal_denoise: TemporalDenoiseConfig::default(),
+            lens_shading_map: LensShadingMapLimits::default(),
         }
     }
 }
@@ -142,6 +146,7 @@ impl VideoHeadroomConfig {
             });
         }
         self.local_size()?;
+        self.lens_shading_map.validate()?;
         self.temporal_denoise.validate()
     }
 

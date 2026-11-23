@@ -158,6 +158,10 @@ fn stream_passport() -> StreamPassport {
             top: 0,
             size: FRAME_SIZE,
         },
+        sensor_area: camera_contract::lens_shading::ValidAreaOnSensor::whole_active_array(FRAME_SIZE),
+        lens_shading: camera_contract::lens_shading::LensShadingCalibrationState::NotCalibrated(
+            camera_contract::lens_shading::NotCalibratedReason::NoCalibrationForCamera,
+        ),
         mosaic: MosaicPattern {
             kind: MosaicKind::Bayer,
             layout: CfaLayout::Bggr,

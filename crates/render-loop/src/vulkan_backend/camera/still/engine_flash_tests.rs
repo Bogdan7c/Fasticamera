@@ -444,6 +444,7 @@ fn a_flash_frame_met_again_while_the_gpu_is_busy_is_counted_once_and_the_deadlin
     // проявлением другого снимка: кадр возвращается в кольцо и находится заново на каждом шаге.
     let larger = Arc::new(StreamPassport {
         buffer_size: PixelSize::new(128, 96),
+        sensor_area: camera_contract::lens_shading::ValidAreaOnSensor::whole_active_array(PixelSize::new(128, 96)),
         valid_area: PixelRect {
             left: 0,
             top: 0,

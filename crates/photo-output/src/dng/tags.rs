@@ -39,6 +39,7 @@ pub const CALIBRATION_ILLUMINANT_1: u16 = 50778;
 pub const CALIBRATION_ILLUMINANT_2: u16 = 50779;
 pub const FORWARD_MATRIX_1: u16 = 50964;
 pub const FORWARD_MATRIX_2: u16 = 50965;
+pub const OPCODE_LIST_2: u16 = 51009;
 pub const NOISE_PROFILE: u16 = 51041;
 
 /// `PhotometricInterpretation` = 32803: CFA (DNG 1.7.1.0, TIFF-EP).

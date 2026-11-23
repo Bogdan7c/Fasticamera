@@ -24,6 +24,7 @@ use crate::frame_rate_plan::plan_frame_rate;
 use crate::request_plan::{RequestInputs, plan_request, plan_session_parameters};
 use crate::result_routing::CaptureRole;
 use crate::stream_passport::build_stream_passport;
+use camera_contract::lens_shading::LensShadingCalibrations;
 
 use super::{CameraRecord, LOG_TARGET};
 use crate::android::callbacks::SessionStateContext;
@@ -34,6 +35,8 @@ use crate::android::session::{ActiveSession, SessionSpec};
 /// Всё, что сборке сессии нужно от бэкенда, кроме устройства (у каждой линии оно своё).
 pub(super) struct SessionEnv<'a> {
     pub config: &'a AndroidCameraConfig,
+    /// Калибровки виньетирования устройства для паспорта потока.
+    pub lens_shading: &'a LensShadingCalibrations,
     pub catalog: &'a HashMap<CameraId, CameraRecord>,
     pub events: &'a BackendEventSink,
     pub diagnostics: &'a Arc<BackendDiagnostics>,
@@ -92,13 +95,14 @@ pub(super) fn build_session(
 
     // Паспорт постоянной части: без него поток кадров не стартует (RAW не поддержан / полоса 16:9
     // не помещается — это отказ режима, а не сбой платформы).
-    let passport = build_stream_passport(stream, &record.descriptor.capabilities, mechanism).map_err(|error| {
-        ConfigureFailure::Backend(BackendFailure {
-            operation: "build_stream_passport",
-            code: 0,
-            detail: error.to_string(),
-        })
-    })?;
+    let passport = build_stream_passport(stream, &record.descriptor.capabilities, mechanism, env.lens_shading)
+        .map_err(|error| {
+            ConfigureFailure::Backend(BackendFailure {
+                operation: "build_stream_passport",
+                code: 0,
+                detail: error.to_string(),
+            })
+        })?;
     let reader = RawReader::create(ReaderSpec {
         epoch_kind: match role {
             CaptureRole::Primary => ReaderEpochKind::Shown,

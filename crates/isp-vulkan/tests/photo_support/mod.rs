@@ -26,7 +26,7 @@ use isp_model::color::dng::CameraNeutral;
 use isp_model::demosaic::DemosaicMethod;
 use isp_model::exposure::ExposureGain;
 use isp_model::image::{DisplayGamut, RawMosaic};
-use isp_model::params::{FrameInputs, IspParams, LensShadingMapInput, ProcessingControls};
+use isp_model::params::{FrameInputs, IspParams, ProcessingControls};
 use isp_model::pipeline::{ReferenceRun, run_reference};
 use isp_model::sensor::SensorDescription;
 use isp_model::test_patterns::zone_plate;
@@ -55,7 +55,6 @@ impl SourceFrame {
     pub fn with_exposure_ev(&self, ev: f32) -> SourceFrame {
         let frame = FrameInputs {
             levels: self.sensor.static_levels(),
-            lens_shading_map: LensShadingMapInput::NotProvided,
         };
         let mut controls = ProcessingControls::with_defaults(self.neutral, DemosaicMethod::Quality, DisplayGamut::Srgb);
         controls.exposure_gain = ExposureGain::from_ev(ev).unwrap();
@@ -69,10 +68,25 @@ impl SourceFrame {
     }
 }
 
+impl SourceFrame {
+    /// Тот же кадр с картой коррекции виньетирования `map` (карта над полезной областью кадра).
+    pub fn with_lens_shading(&self, map: &std::sync::Arc<isp_model::lens_shading::LensShadingGainMap>) -> SourceFrame {
+        SourceFrame {
+            name: format!("{}+shading", self.name),
+            raw: self.raw.clone(),
+            params: IspParams {
+                lens_shading: isp_model::lens_shading::LensShadingStep::Apply(std::sync::Arc::clone(map)),
+                ..self.params.clone()
+            },
+            sensor: self.sensor.clone(),
+            neutral: self.neutral,
+        }
+    }
+}
+
 pub fn params_for(sensor: &SensorDescription, neutral: CameraNeutral) -> IspParams {
     let frame = FrameInputs {
         levels: sensor.static_levels(),
-        lens_shading_map: LensShadingMapInput::NotProvided,
     };
     let controls = ProcessingControls::with_defaults(neutral, DemosaicMethod::Quality, DisplayGamut::Srgb);
     IspParams::resolve(sensor, &frame, &controls).unwrap()

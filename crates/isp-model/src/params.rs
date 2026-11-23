@@ -2,7 +2,7 @@
 //!
 //! Разделение ответственности:
 //! - [`SensorDescription`] — постоянное на сессию (мозаика, уровни, DNG-профиль, вендор);
-//! - [`FrameInputs`] — факты конкретного кадра (динамические уровни, карта виньетирования);
+//! - [`FrameInputs`] — факты конкретного кадра (динамические уровни);
 //! - [`ProcessingControls`] — решения: баланс белого (3A, сессия 08), демозаик, гамма выхода,
 //!   сжатие охвата, тон.
 //!
@@ -18,7 +18,7 @@ use crate::demosaic::DemosaicMethod;
 pub use crate::exposure::{ExposureGain, InvalidExposureGain, LuminanceWeights};
 use crate::gamut::{GamutCompression, GamutCompressionSettings, InvalidGamutCompression};
 use crate::image::DisplayGamut;
-use crate::lens_shading::{LensShadingGainMap, LensShadingStep};
+use crate::lens_shading::{LensShadingControl, LensShadingStep};
 use crate::levels::{InvalidLevels, NormalizationLevels};
 use crate::sensor::SensorDescription;
 use crate::tone::{InvalidToneCurve, ToneCurve, ToneCurveSettings};
@@ -30,31 +30,22 @@ use camera_contract::frame_passport::CaptureColorHints;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct IspParamsVersion(pub u32);
 
-/// Текущая версия: 1 — первая модель (сессия 06).
-pub const CURRENT_ISP_PARAMS_VERSION: IspParamsVersion = IspParamsVersion(1);
-
-/// Есть ли у кадра карта виньетирования.
-#[derive(Debug, Clone, PartialEq)]
-pub enum LensShadingMapInput {
-    /// Карта не пришла (на OnePlus 11 она и не нужна: вендор уже применил коррекцию).
-    NotProvided,
-    Provided(LensShadingGainMap),
-}
+/// Текущая версия: 1 — первая модель (сессия 06); 2 — виньетирование по нашей калибровке
+/// (карта потока в `LensShadingStep::Apply`, сила коррекции в управлении).
+pub const CURRENT_ISP_PARAMS_VERSION: IspParamsVersion = IspParamsVersion(2);
 
 /// Факты конкретного кадра.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FrameInputs {
     pub levels: NormalizationLevels,
-    pub lens_shading_map: LensShadingMapInput,
 }
 
 impl FrameInputs {
-    /// Факты кадра из цветовых подсказок результата запроса. Карта виньетирования в паспорт
-    /// кадра пока не входит (00 C3: на нашем телефоне она не нужна), поэтому `NotProvided`.
+    /// Факты кадра из цветовых подсказок результата запроса. Карту виньетирования HAL не берём:
+    /// коррекция идёт по нашей калибровке потока (она в описании сенсора).
     pub fn from_capture_hints(sensor: &SensorDescription, hints: &CaptureColorHints) -> Result<Self, InvalidLevels> {
         Ok(Self {
             levels: sensor.frame_levels(hints)?,
-            lens_shading_map: LensShadingMapInput::NotProvided,
         })
     }
 }
@@ -71,6 +62,9 @@ pub struct ProcessingControls {
     /// Остаточная экспозиционная подтяжка (наш AE, 08a): применяется через тон, белый сенсора
     /// остаётся белым (см. [`crate::exposure`]). [`ExposureGain::UNITY`] — без подтяжки.
     pub exposure_gain: ExposureGain,
+    /// Коррекция виньетирования: выключена или с силой 0…1 (по умолчанию полная). Сила — покадровое
+    /// управление: политика «ослаблять при слабом свете» (бэклог) сможет менять её от кадра к кадру.
+    pub lens_shading: LensShadingControl,
 }
 
 impl ProcessingControls {
@@ -83,6 +77,7 @@ impl ProcessingControls {
             gamut_compression: GamutCompressionSettings::default(),
             tone: ToneCurveSettings::default(),
             exposure_gain: ExposureGain::UNITY,
+            lens_shading: LensShadingControl::default(),
         }
     }
 }
@@ -156,15 +151,11 @@ impl IspParams {
         controls: &ProcessingControls,
     ) -> Result<Self, ResolveError> {
         let white_balance = WhiteBalanceGains::from_camera_neutral(controls.white_balance);
-        let lens_shading_map = match &frame.lens_shading_map {
-            LensShadingMapInput::NotProvided => None,
-            LensShadingMapInput::Provided(map) => Some(map.clone()),
-        };
         Ok(Self {
             version: CURRENT_ISP_PARAMS_VERSION,
             pattern: sensor.pattern(),
             levels: frame.levels,
-            lens_shading: LensShadingStep::decide(sensor.vendor_lens_shading(), lens_shading_map),
+            lens_shading: LensShadingStep::decide(sensor.lens_shading_map(), controls.lens_shading),
             white_balance,
             demosaic: controls.demosaic,
             color: resolve_color(sensor, controls, &white_balance)?,

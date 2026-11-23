@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
 use android_shell::android::{AndroidPerformanceHints, AndroidShellServices, ShellInstallError, ThermalListenerState};
+use camera_contract::lens_shading::LensShadingCalibrations;
 use gpu_vulkan::validation::ValidationMode;
 use raw_frame_stream::RawFrameStream;
 use render_loop::config::RenderLoopConfig;
@@ -39,6 +40,7 @@ use crate::event_router::{EventRouter, LogcatScenarioOutput, RouterParts, Scenar
 use crate::flash_still_relay::FlashStillRelay;
 use crate::gpu_services::{GpuServices, ValidationState};
 use crate::jni_boundary::run_guarded;
+use crate::lens_shading_profile::{LensShadingProfileError, embedded_lens_shading};
 use crate::raw_stream_wiring::{RawStreamCreation, create_raw_stream, observe_stream};
 use crate::render_wiring::RenderRuntime;
 use crate::runtime_config::RuntimeConfig;
@@ -71,6 +73,8 @@ pub enum ShellWiringError {
     ThermalPolicy(#[from] ThermalPolicyConfigError),
     #[error("поток маршрутизатора не создан: {0}")]
     RouterThread(std::io::Error),
+    #[error("профиль калибровки виньетирования: {0}")]
+    LensShadingProfile(#[from] LensShadingProfileError),
 }
 
 /// Ставит оболочку один раз на процесс; повторный вызов — no-op. `package_name` — имя пакета процесса
@@ -85,6 +89,9 @@ pub fn ensure_installed(config: &RuntimeConfig, package_name: PackageName) -> Re
     let validation = config.validation_mode();
     // Поток кадров один на процесс: его концы получают и рендер (видоискатель), и камера (производитель).
     let raw_stream = create_raw_stream(&config.camera().raw_stream);
+    // Калибровка виньетирования вшита в сборку и сверяется с телефоном (`device.make/model`): битый профиль
+    // останавливает запуск явной ошибкой, чужой телефон — пустой набор с записью в лог.
+    let lens_shading = embedded_lens_shading(config.device())?;
     // Ящики связи камеры с рендером один набор на процесс: AWB и наш AE. Камера получает свою половину,
     // рендер — свою (клоны делят состояние).
     let mut links = CameraLinks {
@@ -108,7 +115,7 @@ pub fn ensure_installed(config: &RuntimeConfig, package_name: PackageName) -> Re
         render.control,
     );
     let flash_relay = Arc::clone(&links.flash_relay);
-    let camera = start_android_camera(config.camera(), &raw_stream, links);
+    let camera = start_android_camera(config.camera(), lens_shading, &raw_stream, links);
     // Снимок: настоящая служба, если есть рендер, камера и паспорт телефона; иначе явный запасной фейк.
     let still = assemble_still(config, &services, render.still, &camera, flash_relay);
     let (router, starter) = EventRouter::new(RouterParts {
@@ -217,8 +224,13 @@ fn try_start_render(
 
 /// Поднимает поток камеры на бэкенде Camera2 NDK. Менеджер Camera2 создаётся уже на потоке камеры;
 /// отказ запуска — сервис «камера недоступна: причина» (приложение живёт дальше).
-fn start_android_camera(config: &CameraConfig, raw_stream: &RawStreamCreation, links: CameraLinks) -> CameraServices {
-    let parts = camera_android::backend_factory(config.android.clone(), raw_stream.stream.producer());
+fn start_android_camera(
+    config: &CameraConfig,
+    lens_shading: LensShadingCalibrations,
+    raw_stream: &RawStreamCreation,
+    links: CameraLinks,
+) -> CameraServices {
+    let parts = camera_android::backend_factory(config.android.clone(), lens_shading, raw_stream.stream.producer());
     start_camera_with_links(
         config,
         CameraBackendParts {

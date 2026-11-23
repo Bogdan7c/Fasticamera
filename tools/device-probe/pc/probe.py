@@ -47,6 +47,8 @@ RUNTIME_PERMISSIONS = ["android.permission.CAMERA", "android.permission.RECORD_A
 DEFAULT_OUTPUT_DIR = Path(os.environ.get("FASTICAMERA_PROBE_OUT", Path.home() / "fasticamera-captures" / "probe-runs"))
 DEFAULT_JAVA_HOME = os.environ.get("JAVA_HOME", "/usr/lib/jvm/java-21-openjdk")
 DEFAULT_RUN_TIMEOUT_S = 120
+# Сценарии, которым двух минут мало: shading (прогрев + подбор экспозиции + 6 фаз, на каждый кадр CPU-распаковка 12,6 Мпикс).
+SCENARIO_TIMEOUT_S = {"shading": 600}
 POLL_INTERVAL_S = 1.0
 
 
@@ -428,7 +430,7 @@ def main() -> int:
     run_parser.add_argument("scenario")
     run_parser.add_argument("params", nargs="*")
     run_parser.add_argument("--label")
-    run_parser.add_argument("--timeout", type=int, default=DEFAULT_RUN_TIMEOUT_S)
+    run_parser.add_argument("--timeout", type=int, default=None, help="секунды; по умолчанию зависит от сценария")
     matrix_parser = sub.add_parser("matrix")
     matrix_parser.add_argument("flavor", choices=FLAVOR_PACKAGES)
     matrix_parser.add_argument("file", type=Path)
@@ -462,7 +464,8 @@ def main() -> int:
             pull_align(args.flavor, args.run_id, args.destination)
         elif args.command == "run":
             params = parse_params(args.params)
-            result = run_scenario(args.flavor, args.scenario, params, args.timeout)
+            timeout_s = args.timeout or SCENARIO_TIMEOUT_S.get(args.scenario, DEFAULT_RUN_TIMEOUT_S)
+            result = run_scenario(args.flavor, args.scenario, params, timeout_s)
             path = save_run(result, args.flavor, args.scenario, params, args.label)
             print_run_summary(result)
             print(f"сохранено: {path}")

@@ -8,6 +8,7 @@ use still_contract::shot::StillRotation;
 
 use super::error::PhotoError;
 use super::thumbnail::ThumbnailPlan;
+use crate::lens_shading_map::LensShadingMapLimits;
 use crate::quality::WorkgroupSizeConfig;
 use crate::quality::config::validate_workgroup;
 
@@ -36,6 +37,8 @@ pub struct PhotoConfig {
     /// Длинная сторона миниатюры снимка, пиксели: 16…1024 (решение 155). Миниатюра — маленькая копия для экрана
     /// камеры (кружок в углу), уменьшается на GPU внутри последней полосы проявки и уходит в обычную память.
     pub thumbnail_long_side_px: u32,
+    /// Наибольшая карта коррекции виньетирования (буфер на проявку). Карта больше — `begin` отказывает.
+    pub lens_shading_map: LensShadingMapLimits,
 }
 
 impl Default for PhotoConfig {
@@ -47,6 +50,7 @@ impl Default for PhotoConfig {
             slice_rows: 256,
             workgroup_size: WorkgroupSizeConfig::default(),
             thumbnail_long_side_px: DEFAULT_THUMBNAIL_LONG_SIDE_PX,
+            lens_shading_map: LensShadingMapLimits::default(),
         }
     }
 }
@@ -73,6 +77,7 @@ impl PhotoConfig {
             });
         }
         self.local_size()?;
+        self.lens_shading_map.validate()?;
         Ok(())
     }
 

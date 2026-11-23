@@ -5,10 +5,11 @@
 //! а не с допуском: при одинаковых нормированных отсчётах суммы обязаны совпасть до единицы.
 //!
 //! # Вход
-//! Нормированная мозаика после уровней и ДО баланса белого ([`CameraMosaic`]): чёрный 0,
-//! белый сенсора 1, значения могут быть > 1 (уровни сверху не обрезают). Виньетирование на
-//! OnePlus 11 применяет HAL, поэтому стадия коррекции пропущена и эти значения — ровно то, что
-//! шейдер держит сразу после уровней.
+//! Нормированная мозаика после уровней И после коррекции виньетирования, но ДО баланса белого
+//! ([`ShadingCorrectedMosaic`]): чёрный 0, белый сенсора 1, значения могут быть > 1 (уровни сверху
+//! не обрезают). Статистика берётся после нашей коррекции, иначе темные углы тянули бы оценку
+//! цвета; если стадия пропущена (нет калибровки или выключена), мозаика равна нормированной.
+//! Это ровно то, что шейдер держит сразу после стадии виньетирования.
 //!
 //! # Единица — ячейка 2×2 (суперпиксель)
 //! Ячейка `(sx, sy)` — пиксели `(2·sx … 2·sx+1, 2·sy … 2·sy+1)`; цвет каждого из четырёх
@@ -47,7 +48,7 @@
 use camera_contract::geometry::PixelSize;
 
 use crate::cfa::RgbChannel;
-use crate::image::CameraMosaic;
+use crate::image::ShadingCorrectedMosaic;
 
 /// Верхнее значение квантованного отсчёта: 12 бит (см. модуль).
 pub const QUANT_MAX: u32 = 4095;
@@ -289,9 +290,10 @@ pub const fn cells_size(mosaic_size: PixelSize) -> PixelSize {
     PixelSize::new(mosaic_size.width / 2, mosaic_size.height / 2)
 }
 
-/// Эталон: статистика AWB по нормированной мозаике до баланса белого (контракт — см. модуль).
+/// Эталон: статистика AWB по мозаике после уровней и коррекции виньетирования, до баланса белого
+/// (контракт — см. модуль).
 pub fn compute_awb_statistics(
-    mosaic: &CameraMosaic,
+    mosaic: &ShadingCorrectedMosaic,
     settings: &AwbStatisticsSettings,
 ) -> Result<AwbStatistics, InvalidAwbStatistics> {
     settings.check_for_mosaic(mosaic.size())?;
@@ -317,7 +319,12 @@ const CELL_OFFSETS: [(u32, u32); 4] = [(0, 0), (1, 0), (0, 1), (1, 1)];
 
 /// Добавляет ячейку `(cell_x, cell_y)` в плитку: пересвеченная только считается, остальная
 /// квантуется в суммы своих каналов.
-fn accumulate_cell(tile: &mut AwbTile, mosaic: &CameraMosaic, (cell_x, cell_y): (u32, u32), saturation_threshold: f32) {
+fn accumulate_cell(
+    tile: &mut AwbTile,
+    mosaic: &ShadingCorrectedMosaic,
+    (cell_x, cell_y): (u32, u32),
+    saturation_threshold: f32,
+) {
     let pattern = mosaic.pattern();
     // Отсчёт и его цвет по раскладке CFA: какой из четырёх — красный, решает только `pattern`.
     let samples = CELL_OFFSETS.map(|(offset_x, offset_y)| {

@@ -4,6 +4,8 @@
 // Пиксель i (0..3) группы = (byte_i << 2) | ((byte_4 >> (2*i)) & 3) — формат Android RAW10.
 
 #define FRAME_PARAMS_BINDING 1
+// Буфер карты виньетирования (lens_shading.glsl): привязка 3.
+#define LENS_SHADING_MAP_BINDING 3
 #include "quality_frame_params.glsl"
 
 layout(set = 0, binding = 0, std430) readonly buffer PackedFrame {
@@ -24,3 +26,8 @@ uint raw_at(uint frame_x, uint frame_y) {
 }
 
 #include "quality_levels_main.glsl"
+
+// Координаты в полезной области: плоскость — вся полезная область.
+uvec2 valid_area_pixel(uint x, uint y) {
+    return uvec2(x, y);
+}

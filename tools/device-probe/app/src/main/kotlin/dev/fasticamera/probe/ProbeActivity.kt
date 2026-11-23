@@ -23,6 +23,7 @@ import dev.fasticamera.probe.scenario.PlatformScenario
 import dev.fasticamera.probe.scenario.ProbeScenario
 import dev.fasticamera.probe.scenario.ScenarioArgs
 import dev.fasticamera.probe.scenario.ScenarioContext
+import dev.fasticamera.probe.scenario.ShadingScenario
 import dev.fasticamera.probe.scenario.StreamScenario
 import dev.fasticamera.probe.scenario.ThreeAScenario
 import dev.fasticamera.probe.scenario.VulkanImportScenario
@@ -134,6 +135,7 @@ class ProbeActivity : Activity() {
         "flash" -> FlashScenario()
         "dual" -> DualScenario()
         "heif" -> HeifScenario()
+        "shading" -> ShadingScenario()
         else -> null
     }
 

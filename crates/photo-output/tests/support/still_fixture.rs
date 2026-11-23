@@ -25,6 +25,7 @@ use camera_contract::three_a::{RequestOrigin, ThreeAResultState};
 use photo_output::exif::{CameraDescription, CaptureMoment, LensDescription};
 use shell_contract::clock::MonotonicNanos;
 use still_contract::frame_choice::FrameChoice;
+use still_contract::lens_shading::{AppliedLensShading, LensShadingNotAppliedReason};
 use still_contract::plan::{PrimaryFormat, RawOutput, StillId, StillOutputs};
 use still_contract::shot::{AsShotNeutral, DigitalGainEv, OwnedPixels, RawSamples16, StillFrameFacts, StillRotation};
 
@@ -71,6 +72,10 @@ pub fn main_camera_stream(valid_area: PixelRect) -> StreamPassport {
         buffer_size: PixelSize::new(4096, 3072),
         readout: ReadoutAspect::FourByThree,
         valid_area,
+        sensor_area: camera_contract::lens_shading::ValidAreaOnSensor::whole_active_array(PixelSize::new(4096, 3072)),
+        lens_shading: camera_contract::lens_shading::LensShadingCalibrationState::NotCalibrated(
+            camera_contract::lens_shading::NotCalibratedReason::NoCalibrationForCamera,
+        ),
         mosaic: MosaicPattern {
             kind: MosaicKind::Bayer,
             layout: raw_info.cfa,
@@ -116,6 +121,7 @@ pub fn still_facts(stream: StreamPassport, crop: PixelRect) -> StillFrameFacts {
         rotation: StillRotation::Clockwise90,
         neutral: AsShotNeutral([0.515625, 1.0, 0.4990234375]),
         digital_gain: DigitalGainEv(0.25),
+        lens_shading: AppliedLensShading::NotApplied(LensShadingNotAppliedReason::NotCalibrated),
     }
 }
 

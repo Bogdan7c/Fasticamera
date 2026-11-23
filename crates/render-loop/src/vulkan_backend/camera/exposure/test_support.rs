@@ -46,6 +46,10 @@ pub(in crate::vulkan_backend::camera) fn stream_of(readout: ReadoutAspect, valid
             top: 0,
             size: PixelSize::new(BUFFER.width, valid_height),
         },
+        sensor_area: camera_contract::lens_shading::ValidAreaOnSensor::whole_active_array(BUFFER),
+        lens_shading: camera_contract::lens_shading::LensShadingCalibrationState::NotCalibrated(
+            camera_contract::lens_shading::NotCalibratedReason::NoCalibrationForCamera,
+        ),
         mosaic: MosaicPattern {
             kind: MosaicKind::Bayer,
             layout: CfaLayout::Bggr,

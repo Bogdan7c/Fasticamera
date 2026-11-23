@@ -2,15 +2,19 @@
 //!
 //! Источник истины — паспорт потока ([`StreamPassport`]: мозаика, статические уровни, флаги
 //! вендорской обработки) и калибровка цвета из характеристик камеры
-//! ([`ColorCalibrationSet`], DNG-матрицы HAL). Покадровое (динамические уровни, нейтраль)
+//! ([`ColorCalibrationSet`], DNG-матрицы HAL), плюс наша калибровка виньетирования из паспорта. Покадровое (динамические уровни, нейтраль)
 //! приходит отдельно, через [`crate::params::FrameInputs`].
+
+use std::sync::Arc;
 
 use camera_contract::capabilities::{ColorCalibrationSet, LensShading};
 use camera_contract::frame_passport::{CaptureColorHints, StreamPassport};
+use camera_contract::lens_shading::LensShadingCalibrationState;
 use camera_contract::raw_format::{MosaicKind, MosaicPattern};
 
 use crate::cfa::{BayerPattern, UnsupportedCfa};
 use crate::color::dng::{ColorProfileError, DngColorProfile};
+use crate::lens_shading::{CorrectionStrength, LensShadingGainMap, StreamMapError};
 use crate::levels::{InvalidLevels, NormalizationLevels};
 
 /// Сенсор нельзя описать для эталона.
@@ -24,6 +28,8 @@ pub enum SensorDescriptionError {
     Levels(#[from] InvalidLevels),
     #[error("цветовой профиль: {0}")]
     ColorProfile(#[from] ColorProfileError),
+    #[error("карта виньетирования потока: {0}")]
+    LensShading(#[from] StreamMapError),
 }
 
 /// Постоянное на сессию описание сенсора.
@@ -33,9 +39,13 @@ pub struct SensorDescription {
     static_levels: NormalizationLevels,
     color_profile: DngColorProfile,
     vendor_lens_shading: LensShading,
+    /// Карта нашей коррекции виньетирования над полезной областью потока (полной силы); `None` —
+    /// у потока нет калибровки. Строится один раз на поток, дальше делится через `Arc`.
+    lens_shading: Option<Arc<LensShadingGainMap>>,
 }
 
 impl SensorDescription {
+    /// Описание без калибровки виньетирования (тесты, стенды без паспорта потока).
     pub fn new(
         pattern: BayerPattern,
         static_levels: NormalizationLevels,
@@ -47,6 +57,7 @@ impl SensorDescription {
             static_levels,
             color_profile,
             vendor_lens_shading,
+            lens_shading: None,
         }
     }
 
@@ -55,11 +66,21 @@ impl SensorDescription {
         passport: &StreamPassport,
         color_calibration: &[ColorCalibrationSet],
     ) -> Result<Self, SensorDescriptionError> {
+        let lens_shading = match &passport.lens_shading {
+            LensShadingCalibrationState::Calibrated(calibration) => Some(Arc::new(LensShadingGainMap::for_stream(
+                calibration,
+                &passport.sensor_area,
+                passport.valid_area.size,
+                CorrectionStrength::FULL,
+            )?)),
+            LensShadingCalibrationState::NotCalibrated(_) => None,
+        };
         Ok(Self {
             pattern: bayer_pattern(passport.mosaic)?,
             static_levels: NormalizationLevels::from_sensor_levels(&passport.static_levels)?,
             color_profile: DngColorProfile::from_calibration_sets(color_calibration)?,
             vendor_lens_shading: passport.vendor_processing.lens_shading,
+            lens_shading,
         })
     }
 
@@ -75,7 +96,14 @@ impl SensorDescription {
         &self.color_profile
     }
 
-    /// Применил ли вендор виньетирование к RAW (решает стадия 2).
+    /// Карта нашей коррекции виньетирования потока (полной силы); `None` — калибровки нет.
+    /// `Arc` общий для всех кадров потока: видоискатель и снимок получают ту же карту.
+    pub fn lens_shading_map(&self) -> Option<&Arc<LensShadingGainMap>> {
+        self.lens_shading.as_ref()
+    }
+
+    /// Факт из характеристик: вендор применил коррекцию виньетирования ЧАСТИЧНО. Нашу стадию он
+    /// не отключает (её решает наличие калибровки), нужен для диагностики.
     pub fn vendor_lens_shading(&self) -> LensShading {
         self.vendor_lens_shading
     }

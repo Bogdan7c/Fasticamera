@@ -11,7 +11,7 @@ use crate::image::{
     CameraMosaic, DisplayEncodedImage, DisplayLinearImage, LinearCameraRgb, RawMosaic, SceneInGamutImage,
     SceneLinearImage, ShadingCorrectedMosaic, WhiteBalancedMosaic, XyzD50Image,
 };
-use crate::lens_shading::{LensShadingOutcome, apply_lens_shading};
+use crate::lens_shading::{LensShadingOutcome, LensShadingSampling, apply_lens_shading_with};
 use crate::levels::normalize_levels;
 use crate::params::IspParams;
 use crate::tone::apply_tone_curve;
@@ -30,7 +30,9 @@ pub enum PipelineError {
 pub struct ReferenceRun {
     /// 1. Уровни.
     pub normalized: CameraMosaic,
-    /// 2. Виньетирование (или копия стадии 1 с причиной пропуска).
+    /// 2. Виньетирование по нашей калибровке (или копия стадии 1 с причиной пропуска).
+    ///
+    /// Именно эта мозаика — вход статистики AWB (`statistics::compute_awb_statistics`).
     pub lens_shading: LensShadingOutcome,
     pub shading_corrected: ShadingCorrectedMosaic,
     /// 3. Баланс белого и обрезка пересвета.
@@ -57,7 +59,13 @@ pub fn run_reference(raw: &RawMosaic, params: &IspParams) -> Result<ReferenceRun
         });
     }
     let normalized = normalize_levels(raw, &params.levels);
-    let (shading_corrected, lens_shading) = apply_lens_shading(&normalized, &params.lens_shading);
+    // Мозаика целиком — вся полезная область (начало в нуле, чётное). Видоискатель (Preview) берёт усиление по
+    // ячейке, остальные демозаики — по отсчёту (см. `LensShadingSampling`).
+    let (shading_corrected, lens_shading) = apply_lens_shading_with(
+        &normalized,
+        &params.lens_shading,
+        LensShadingSampling::for_demosaic(params.demosaic),
+    );
     let white_balanced = apply_white_balance(&shading_corrected, &params.white_balance);
     let camera_rgb = demosaic(&white_balanced, params.demosaic);
     let xyz_d50 = camera_rgb_to_xyz_d50(&camera_rgb, params.color.camera_to_xyz_d50());

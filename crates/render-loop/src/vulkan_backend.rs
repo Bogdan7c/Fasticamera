@@ -264,14 +264,17 @@ impl VulkanDisplayBackend {
         };
         let settings = VulkanStillSettings::from_config(&self.config.still, self.config.teardown_timeout);
         let maker: GpuMaker<VulkanStillGpu> = VulkanStillGpu::maker(&self.context, settings, &feed.make_importer);
-        self.still = Some(StillEngine::new(
-            self.config.still,
-            self.config.viewfinder.tone,
-            ResidualGainLimits::of(&self.config.viewfinder.auto_exposure),
-            ring,
-            maker,
-            Box::new(SystemStillClock),
-        ));
+        self.still = Some(
+            StillEngine::new(
+                self.config.still,
+                self.config.viewfinder.tone,
+                ResidualGainLimits::of(&self.config.viewfinder.auto_exposure),
+                ring,
+                maker,
+                Box::new(SystemStillClock),
+            )
+            .with_lens_shading(self.config.viewfinder.lens_shading.control()),
+        );
         self
     }
 

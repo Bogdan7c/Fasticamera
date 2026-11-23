@@ -3,11 +3,14 @@
 //! Нужен для сверки с платформенным `DngCreator` (`tools/dng-check/compare_with_dngcreator.py`).
 //!
 //! Запуск: `cargo run -p photo-output --example dng_from_capture -- <каталог_прогона> <выход.dng>
-//! [--section stream_frame|still_frame]`
+//! [--section stream_frame|still_frame] [--raw16 <файл.raw16>] [--lens-shading <lens-shading.json>]`
 //!
 //! `--section` выбирает, чей паспорт читать: `stream_frame` (по умолчанию, кадр потока, которому принадлежит
 //! `*.stream.raw16`) или `still_frame` (кадр, из которого платформа сделала свой `*.dng`; нужен, чтобы
 //! собрать DNG с метаданными платформенного, подложив его же пиксели).
+//!
+//! `--raw16` подменяет отсчёты (для сверки на снятом приложением плоском поле); `--lens-shading` кладёт в DNG
+//! `OpcodeList2` с картой виньетирования камеры из профиля устройства (`tools/dng-check/lens_shading_e2e.py`).
 //!
 //! Допущения примера: нейтраль берётся из паспорта (`neutral_color_point` — подсказка HAL, у зонда нашего
 //! AWB нет), кадрирование — весь кадр, поворот 0, цифровая подтяжка 0, время — время изменения файла (UTC).
@@ -33,6 +36,7 @@ use camera_contract::frame_passport::{
 };
 use camera_contract::geometry::{PixelRect, PixelSize, SensorOrientation};
 use camera_contract::ids::CameraId;
+use camera_contract::lens_shading::LensShadingGainGrid;
 use camera_contract::raw_format::{CfaLayout, MosaicKind, MosaicPattern, RawFormat};
 use camera_contract::stream::{FrameRateMechanism, ReadoutAspect, TargetFrameRate};
 use camera_contract::three_a::{RequestOrigin, ThreeAResultState};
@@ -41,6 +45,7 @@ use photo_output::exif::{CameraDescription, CaptureMoment, LensDescription};
 use serde_json::Value;
 use shell_contract::clock::MonotonicNanos;
 use still_contract::frame_choice::FrameChoice;
+use still_contract::lens_shading::{AppliedLensShading, LensShadingNotAppliedReason};
 use still_contract::plan::{PrimaryFormat, RawOutput, StillId, StillOutputs};
 use still_contract::shot::{AsShotNeutral, DigitalGainEv, OwnedPixels, RawSamples16, StillFrameFacts, StillRotation};
 
@@ -52,18 +57,14 @@ const MATRIX_DENOMINATORS: [i32; 7] = [128, 256, 1024, 10_000, 65_536, 100_000, 
 const MATRIX_EXACT_TOLERANCE: f64 = 1e-9;
 
 fn main() {
-    let mut args = std::env::args().skip(1);
-    let run_dir = PathBuf::from(args.next().expect("первый аргумент — каталог прогона"));
-    let output = PathBuf::from(args.next().expect("второй аргумент — выходной .dng"));
+    let options = CommandLine::parse(std::env::args().skip(1));
+    let run_dir = options.run_dir;
+    let output = options.output;
 
     let raw_path = single_file_with_suffix(&run_dir, ".stream.raw16");
     let passport_path = single_file_with_suffix(&run_dir, ".passport.json");
     let passport: Value = serde_json::from_slice(&std::fs::read(&passport_path).unwrap()).unwrap();
-    let section = match (args.next().as_deref(), args.next()) {
-        (Some("--section"), Some(name)) => name,
-        (None, None) => "stream_frame".to_owned(),
-        other => panic!("ожидали `--section <имя>` или ничего, получили {other:?}"),
-    };
+    let section = options.section;
     let frame = &passport[section.as_str()];
 
     let file_name = raw_path.file_name().unwrap().to_string_lossy().into_owned();
@@ -71,7 +72,8 @@ fn main() {
     let camera_id = file_name.split('_').next().unwrap().to_owned();
 
     let (array_width, array_height) = parse_size(frame["sensor"]["pixel_array"].as_str().unwrap());
-    let raw_bytes = std::fs::read(&raw_path).unwrap();
+    // `--raw16` подменяет отсчёты кадра потока (например, плоское поле, снятое приложением): паспорт остаётся прогона.
+    let raw_bytes = std::fs::read(options.raw16_override.as_ref().unwrap_or(&raw_path)).unwrap();
     // Размер буфера: обычно равен `pixel_array`; у фронтальной камеры RAW идёт с биннингом 2×2
     // (`raw_binning_factor_used`), и буфер вдвое меньше по каждой стороне.
     let (width, height) = if raw_bytes.len() == (array_width * array_height * 2) as usize {
@@ -87,7 +89,13 @@ fn main() {
     let size = PixelSize::new(width, height);
     let raw = RawSamples16::new(size, Arc::new(OwnedPixels(raw_bytes))).expect("размер raw16 не совпал с pixel_array");
 
-    let facts = facts_from_passport(frame, &camera_id, size);
+    let mut facts = facts_from_passport(frame, &camera_id, size);
+    if let Some(profile_path) = &options.lens_shading_profile {
+        // Описываем в DNG ту же поправку, которую применил бы снимок приложения (карта = калибровка камеры
+        // над полезной областью; здесь полезная область — вся активная, значит пересчёта нет).
+        facts.lens_shading =
+            AppliedLensShading::Applied(Arc::new(read_lens_shading_grid(profile_path, &camera_id, size)));
+    }
     let modified = std::fs::metadata(&raw_path).unwrap().modified().unwrap();
     let utc_millis = i64::try_from(
         modified
@@ -125,6 +133,80 @@ fn main() {
     )
     .unwrap();
     println!("записан {} ({}×{})", output.display(), width, height);
+}
+
+/// Разобранная командная строка примера.
+struct CommandLine {
+    run_dir: PathBuf,
+    output: PathBuf,
+    /// Чей паспорт читать (`stream_frame` / `still_frame`).
+    section: String,
+    /// Файл `raw16` вместо `*.stream.raw16` прогона.
+    raw16_override: Option<PathBuf>,
+    /// Профиль калибровки виньетирования (`device-profiles/<устройство>/lens-shading.json`).
+    lens_shading_profile: Option<PathBuf>,
+}
+
+impl CommandLine {
+    fn parse(mut args: impl Iterator<Item = String>) -> Self {
+        let run_dir = PathBuf::from(args.next().expect("первый аргумент — каталог прогона"));
+        let output = PathBuf::from(args.next().expect("второй аргумент — выходной .dng"));
+        let mut parsed = Self {
+            run_dir,
+            output,
+            section: "stream_frame".to_owned(),
+            raw16_override: None,
+            lens_shading_profile: None,
+        };
+        while let Some(flag) = args.next() {
+            let value = args.next().unwrap_or_else(|| panic!("у флага {flag} нет значения"));
+            match flag.as_str() {
+                "--section" => parsed.section = value,
+                "--raw16" => parsed.raw16_override = Some(PathBuf::from(value)),
+                "--lens-shading" => parsed.lens_shading_profile = Some(PathBuf::from(value)),
+                other => panic!("неизвестный флаг {other}"),
+            }
+        }
+        parsed
+    }
+}
+
+/// Сетка усилений камеры `camera_id` из профиля калибровки; размер активной области обязан совпасть с кадром.
+fn read_lens_shading_grid(profile_path: &Path, camera_id: &str, size: PixelSize) -> LensShadingGainGrid {
+    let profile: Value = serde_json::from_slice(&std::fs::read(profile_path).unwrap()).unwrap();
+    let camera = profile["cameras"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|camera| camera["camera_id"].as_str() == Some(camera_id))
+        .unwrap_or_else(|| panic!("в профиле нет камеры {camera_id}"));
+    let array = &camera["active_array"];
+    assert_eq!(
+        (array["width"].as_u64().unwrap(), array["height"].as_u64().unwrap()),
+        (u64::from(size.width), u64::from(size.height)),
+        "калибровка снята для другой активной области: нужен пересчёт, пример его не делает"
+    );
+    let grid = &camera["grid"];
+    let points = grid["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|point| {
+            let gains: [f32; 4] = numbers(point)
+                .into_iter()
+                .map(|gain| gain as f32)
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap();
+            gains
+        })
+        .collect();
+    LensShadingGainGrid::new(
+        grid["columns"].as_u64().unwrap() as u32,
+        grid["rows"].as_u64().unwrap() as u32,
+        points,
+    )
+    .unwrap()
 }
 
 fn single_file_with_suffix(dir: &Path, suffix: &str) -> PathBuf {
@@ -217,6 +299,10 @@ fn facts_from_passport(frame: &Value, camera_id: &str, size: PixelSize) -> Still
         buffer_size: size,
         readout: ReadoutAspect::FourByThree,
         valid_area: area,
+        sensor_area: camera_contract::lens_shading::ValidAreaOnSensor::whole_active_array(size),
+        lens_shading: camera_contract::lens_shading::LensShadingCalibrationState::NotCalibrated(
+            camera_contract::lens_shading::NotCalibratedReason::NoCalibrationForCamera,
+        ),
         mosaic: MosaicPattern {
             kind: MosaicKind::Bayer,
             layout: cfa_layout(sensor["cfa"].as_i64().unwrap()),
@@ -293,5 +379,6 @@ fn facts_from_passport(frame: &Value, camera_id: &str, size: PixelSize) -> Still
         rotation: StillRotation::None,
         neutral: AsShotNeutral(neutral),
         digital_gain: DigitalGainEv(0.0),
+        lens_shading: AppliedLensShading::NotApplied(LensShadingNotAppliedReason::NotCalibrated),
     }
 }

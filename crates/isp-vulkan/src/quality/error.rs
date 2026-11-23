@@ -3,6 +3,8 @@
 
 use gpu_vulkan::error::GpuError;
 
+use crate::lens_shading_map::{LensShadingMapBufferError, LensShadingMapError};
+
 /// Ошибка качественного конвейера полного кадра.
 #[derive(Debug, thiserror::Error)]
 pub enum QualityError {
@@ -21,10 +23,23 @@ pub enum QualityError {
         /// Что именно не так.
         what: String,
     },
+    /// Карта коррекции виньетирования не помещается в буфер или область слишком мала: коррекция не
+    /// применяется молча, кадр отвергается.
+    #[error("карта виньетирования: {0}")]
+    LensShadingMap(#[from] LensShadingMapError),
     /// Параметры обработки требуют того, чего GPU-конвейер не умеет (честный отказ вместо догадки).
     #[error("параметры обработки не поддержаны качественным конвейером: {what}")]
     UnsupportedParams {
         /// Что именно не поддержано.
         what: String,
     },
+}
+
+impl From<LensShadingMapBufferError> for QualityError {
+    fn from(error: LensShadingMapBufferError) -> Self {
+        match error {
+            LensShadingMapBufferError::Map(map) => Self::LensShadingMap(map),
+            LensShadingMapBufferError::Gpu(gpu) => Self::Gpu(gpu),
+        }
+    }
 }

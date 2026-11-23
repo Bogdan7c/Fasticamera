@@ -54,6 +54,7 @@ pub mod gpu_services;
 #[cfg(test)]
 mod gpu_test_support;
 pub mod jni_boundary;
+pub mod lens_shading_profile;
 pub mod logging;
 #[cfg(test)]
 mod operator_prompt_fake;

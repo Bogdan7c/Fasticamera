@@ -31,15 +31,25 @@ use gpu_vulkan::swapchain::DisplayColorSpace;
 use gpu_vulkan::validation::ValidationMode;
 use isp_model::cfa::BayerPattern;
 use isp_model::color::dng::CameraNeutral;
+use isp_model::color::stage::{camera_rgb_to_xyz_d50, xyz_d50_to_scene_linear};
 use isp_model::demosaic::DemosaicMethod;
+use isp_model::demosaic::demosaic;
 use isp_model::gamut::GamutCompressionSettings;
+use isp_model::gamut::compress_to_display_gamut;
+use isp_model::image::ShadingCorrectedMosaic;
 use isp_model::image::{DisplayGamut, RawMosaic};
+use isp_model::lens_shading::LensShadingControl;
+use isp_model::lens_shading::{CropInValidArea, LensShadingSampling, apply_lens_shading_sampled};
 use isp_model::levels::NormalizationLevels;
-use isp_model::params::{ExposureGain, FrameInputs, IspParams, LensShadingMapInput, ProcessingControls};
+use isp_model::levels::normalize_levels;
+use isp_model::params::{ExposureGain, FrameInputs, IspParams, ProcessingControls};
 use isp_model::pipeline::{ReferenceRun, run_reference};
 use isp_model::sensor::SensorDescription;
-use isp_model::statistics::{AwbStatisticsSettings, TileGrid};
+use isp_model::statistics::{AwbStatisticsSettings, TileGrid, cells_size, quantize_sample, tile_of_cell};
 use isp_model::tone::ToneCurveSettings;
+use isp_model::tone::apply_tone_curve;
+use isp_model::transfer::encode_display;
+use isp_model::white_balance::apply_white_balance;
 use isp_vulkan::viewfinder::{
     IspStageSet, OutputAllocation, ViewfinderFrame, ViewfinderGeometry, ViewfinderIsp, ViewfinderIspConfig,
     ViewfinderSlotReport, ViewfinderStorageFormat,
@@ -228,10 +238,7 @@ impl ParamsSpec {
             *calibrated.color_profile(),
             LensShading::AppliedByVendor,
         );
-        let frame = FrameInputs {
-            levels,
-            lens_shading_map: LensShadingMapInput::NotProvided,
-        };
+        let frame = FrameInputs { levels };
         let controls = ProcessingControls {
             white_balance: CameraNeutral::new(self.neutral).unwrap(),
             demosaic: DemosaicMethod::Preview,
@@ -239,6 +246,7 @@ impl ParamsSpec {
             gamut_compression: self.gamut_compression,
             tone: self.tone,
             exposure_gain: ExposureGain::UNITY,
+            lens_shading: LensShadingControl::default(),
         };
         IspParams::resolve(&sensor, &frame, &controls).unwrap()
     }
@@ -380,6 +388,65 @@ pub fn reference_upright(
     params: &IspParams,
 ) -> UprightReference {
     let run = run_reference(&raw.mosaic(crop), params).unwrap();
+    upright_from_run(run, orientation)
+}
+
+/// Эталон с учётом того, где кадрирование лежит в полезной области: коррекция виньетирования берёт
+/// усиление по координатам ПОЛЕЗНОЙ области (`apply_lens_shading_sampled`; выборка — по демозаику: Preview — по ячейке), а не по координатам кропа. Остальные
+/// стадии — те же функции, что у `run_reference` (его тело повторено здесь, потому что `run_reference`
+/// всегда считает мозаику целой полезной областью); при `crop == valid_area` результат совпадает с
+/// `reference_upright` (проверяет `tests/viewfinder_lens_shading.rs`).
+pub fn reference_upright_in_valid_area(
+    raw: &RawFrame,
+    valid_area: PixelRect,
+    crop: PixelRect,
+    orientation: SensorOrientation,
+    params: &IspParams,
+) -> UprightReference {
+    let sampling = LensShadingSampling::for_demosaic(params.demosaic);
+    reference_upright_in_valid_area_sampled(raw, valid_area, crop, orientation, params, sampling)
+}
+
+/// То же с явной выборкой усиления (тест различимости: видоискатель берёт усиление по ячейке, не по отсчёту).
+pub fn reference_upright_in_valid_area_sampled(
+    raw: &RawFrame,
+    valid_area: PixelRect,
+    crop: PixelRect,
+    orientation: SensorOrientation,
+    params: &IspParams,
+    sampling: LensShadingSampling,
+) -> UprightReference {
+    let mosaic = raw.mosaic(crop);
+    let normalized = normalize_levels(&mosaic, &params.levels);
+    let place = CropInValidArea::at(crop.left - valid_area.left, crop.top - valid_area.top, valid_area.size).unwrap();
+    let (shading_corrected, lens_shading) =
+        apply_lens_shading_sampled(&normalized, &params.lens_shading, place, sampling).unwrap();
+    let white_balanced = apply_white_balance(&shading_corrected, &params.white_balance);
+    let camera_rgb = demosaic(&white_balanced, params.demosaic);
+    let xyz_d50 = camera_rgb_to_xyz_d50(&camera_rgb, params.color.camera_to_xyz_d50());
+    let scene_linear = xyz_d50_to_scene_linear(&xyz_d50, params.color.xyz_d50_to_scene(), params.color.gamut());
+    let scene_in_gamut = compress_to_display_gamut(&scene_linear, &params.gamut_compression);
+    let display_linear = apply_tone_curve(&scene_in_gamut, &params.tone);
+    let display_encoded = encode_display(&display_linear);
+    upright_from_run(
+        ReferenceRun {
+            normalized,
+            lens_shading,
+            shading_corrected,
+            white_balanced,
+            camera_rgb,
+            xyz_d50,
+            scene_linear,
+            scene_in_gamut,
+            display_linear,
+            display_encoded,
+        },
+        orientation,
+    )
+}
+
+/// Поворачивает итог эталона в прямую ориентацию.
+fn upright_from_run(run: ReferenceRun, orientation: SensorOrientation) -> UprightReference {
     let encoded = &run.display_encoded;
     let (cells_width, cells_height) = (encoded.size().width, encoded.size().height);
     let turns = orientation.quarter_turns_clockwise();
@@ -470,4 +537,43 @@ pub fn extent(run: &ViewfinderRun) -> vk::Extent2D {
         width: run.width,
         height: run.height,
     }
+}
+
+/// Ячейки, где ±`ulps` ULP нормированного отсчёта меняют квантование (`quantization`) или пересвет.
+#[derive(Default, Clone, Copy)]
+pub struct BoundaryCells {
+    pub quantization: u32,
+    pub saturation: u32,
+}
+
+pub fn boundary_cells(
+    normalized: &ShadingCorrectedMosaic,
+    settings: &AwbStatisticsSettings,
+    ulps: u32,
+) -> Vec<BoundaryCells> {
+    let grid = settings.grid;
+    let cells = cells_size(normalized.size());
+    let mut per_tile = vec![BoundaryCells::default(); (grid.columns * grid.rows) as usize];
+    for cell_y in 0..cells.height {
+        for cell_x in 0..cells.width {
+            let (column, row) = tile_of_cell(cell_x, cell_y, cells, grid);
+            let tile = &mut per_tile[(row * grid.columns + column) as usize];
+            let mut quantization = false;
+            let mut saturation = false;
+            for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                let value = normalized.sample(cell_x * 2 + dx, cell_y * 2 + dy);
+                for neighbour in [
+                    f32::from_bits(value.to_bits().saturating_sub(ulps)),
+                    f32::from_bits(value.to_bits() + ulps),
+                ] {
+                    quantization |= quantize_sample(neighbour) != quantize_sample(value);
+                    let threshold = settings.saturation_threshold;
+                    saturation |= (neighbour < threshold) != (value < threshold);
+                }
+            }
+            tile.quantization += u32::from(quantization);
+            tile.saturation += u32::from(saturation);
+        }
+    }
+    per_tile
 }

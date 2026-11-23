@@ -18,6 +18,8 @@ class ScenarioArgs(private val values: Map<String, String>) {
 
     fun intOrNull(name: String): Int? = string(name)?.let { raw -> parseOrThrow(name, raw) { it.toInt() } }
 
+    fun double(name: String, default: Double): Double = parse(name, default) { it.toDouble() }
+
     fun long(name: String, default: Long): Long = parse(name, default) { it.toLong() }
 
     fun longOrNull(name: String): Long? = string(name)?.let { raw -> parseOrThrow(name, raw) { it.toLong() } }

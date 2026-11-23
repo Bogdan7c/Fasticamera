@@ -20,7 +20,7 @@ mod support;
 use isp_model::demosaic::DemosaicMethod;
 use isp_model::image::DisplayGamut;
 use isp_model::metrics::{delta_e_2000, display_linear_to_lab, max_abs_difference};
-use isp_model::params::{FrameInputs, IspParams, LensShadingMapInput, ProcessingControls};
+use isp_model::params::{FrameInputs, IspParams, ProcessingControls};
 use isp_model::pipeline::{ReferenceRun, run_reference};
 use support::load_asset;
 use support::real_capture::{RealCapture, load_real_capture};
@@ -34,7 +34,6 @@ fn crop_name(crop: &str) -> String {
 fn run(capture: &RealCapture, gamut: DisplayGamut) -> ReferenceRun {
     let frame = FrameInputs {
         levels: capture.sensor.static_levels(),
-        lens_shading_map: LensShadingMapInput::NotProvided,
     };
     let controls = ProcessingControls::with_defaults(capture.neutral, DemosaicMethod::Quality, gamut);
     let params = IspParams::resolve(&capture.sensor, &frame, &controls).unwrap();

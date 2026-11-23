@@ -56,6 +56,8 @@ pub mod vulkan_gpu;
 #[cfg(test)]
 mod engine_flash_tests;
 #[cfg(test)]
+mod engine_lens_shading_tests;
+#[cfg(test)]
 mod engine_loss_tests;
 #[cfg(test)]
 mod engine_queue_tests;

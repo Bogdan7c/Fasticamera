@@ -24,7 +24,14 @@ pub(crate) struct LevelsStage {
 
 impl LevelsStage {
     pub(crate) fn new(context: &GpuContext, local: LocalSize, frame_slots: usize) -> Result<Self, GpuError> {
-        let bindings = |source: BindingKind| [source, BindingKind::UniformBuffer, BindingKind::ReadWriteStorageBuffer];
+        let bindings = |source: BindingKind| {
+            [
+                source,
+                BindingKind::UniformBuffer,
+                BindingKind::ReadWriteStorageBuffer,
+                BindingKind::ReadOnlyStorageBuffer,
+            ]
+        };
         Ok(Self {
             raw16: QualityPass::new(
                 context,
@@ -51,13 +58,14 @@ impl LevelsStage {
         self.raw10.release_slot_after_fence(frame_slot)
     }
 
-    /// Привязывает кадр, uniform слота и мозаику и проверяет dispatch — БЕЗ записи команд (звать до
+    /// Привязывает кадр, uniform слота, карту виньетирования слота и мозаику и проверяет dispatch — БЕЗ записи команд (звать до
     /// первой команды кадра). Возвращает подготовленный проход для [`Self::record`].
     pub(crate) fn bind_and_check(
         &mut self,
         frame_slot: usize,
         source: &MosaicSource,
         frame_parameters: DescriptorResource,
+        lens_shading_map: DescriptorResource,
         mosaic: &DeviceBuffer,
         push: &PassPushConstants,
     ) -> Result<(), GpuError> {
@@ -76,6 +84,10 @@ impl LevelsStage {
                 BindingWrite {
                     binding: 2,
                     resource: mosaic.read_write_binding(),
+                },
+                BindingWrite {
+                    binding: 3,
+                    resource: lens_shading_map,
                 },
             ],
         )?;

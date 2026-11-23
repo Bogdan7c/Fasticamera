@@ -28,7 +28,7 @@ use gpu_vulkan::raw_mosaic_preview::synthetic::SyntheticRaw16;
 use gpu_vulkan::raw_mosaic_preview::{MosaicSource, ValidArea};
 use isp_model::demosaic::DemosaicMethod;
 use isp_model::image::DisplayGamut;
-use isp_model::params::{FrameInputs, IspParams, LensShadingMapInput, ProcessingControls};
+use isp_model::params::{FrameInputs, IspParams, ProcessingControls};
 use isp_support::real_capture::load_real_capture;
 use isp_vulkan::quality::{
     HeadroomPass, HeadroomRecordOutcome, HeadroomTimingCollect, HeadroomTimings, HistoryUse, QualityError,
@@ -44,7 +44,6 @@ fn params(demosaic: DemosaicMethod) -> IspParams {
     let capture = load_real_capture(&isp_support::assets_dir(), "real-main-lamp-gray-tile");
     let frame = FrameInputs {
         levels: capture.sensor.static_levels(),
-        lens_shading_map: LensShadingMapInput::NotProvided,
     };
     let controls = ProcessingControls::with_defaults(capture.neutral, demosaic, DisplayGamut::Srgb);
     IspParams::resolve(&capture.sensor, &frame, &controls).unwrap()

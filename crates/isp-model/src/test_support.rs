@@ -7,8 +7,12 @@ use camera_contract::capabilities::{
 use camera_contract::fixtures::camera_id;
 use camera_contract::frame_passport::StreamPassport;
 use camera_contract::geometry::{PixelRect, PixelSize, SensorOrientation};
+use camera_contract::lens_shading::{
+    GAIN_CHANNELS, LensShadingCalibration, LensShadingCalibrationState, LensShadingGainGrid, ValidAreaOnSensor,
+};
 use camera_contract::raw_format::{CfaLayout, MosaicKind, MosaicPattern, RawFormat};
 use camera_contract::stream::{FrameRateMechanism, ReadoutAspect, TargetFrameRate};
+use std::sync::Arc;
 
 use crate::color::dng::CameraNeutral;
 
@@ -72,6 +76,10 @@ pub(crate) fn main_camera_passport() -> StreamPassport {
             top: 0,
             size: buffer_size,
         },
+        sensor_area: camera_contract::lens_shading::ValidAreaOnSensor::whole_active_array(buffer_size),
+        lens_shading: camera_contract::lens_shading::LensShadingCalibrationState::NotCalibrated(
+            camera_contract::lens_shading::NotCalibratedReason::NoCalibrationForCamera,
+        ),
         mosaic: MosaicPattern {
             kind: MosaicKind::Bayer,
             layout: CfaLayout::Bggr,
@@ -91,4 +99,68 @@ pub(crate) fn main_camera_passport() -> StreamPassport {
         frame_rate_mechanism: FrameRateMechanism::HalDefault,
         color_calibration: main_camera_calibration(),
     }
+}
+
+/// Активная область основной камеры OnePlus 11.
+pub(crate) const MAIN_ACTIVE_ARRAY: PixelSize = PixelSize::new(4096, 3072);
+
+/// Углы поля усилений по каналам `[R, G_even, G_odd, B]`, в порядке «левый верх, правый верх,
+/// левый низ, правый низ». Все углы разные и в разных каналах — перестановка осей, каналов или углов
+/// сразу ломает тест (углы 2,2–3 EV темнее центра, как у настоящего телефона).
+pub(crate) const ASYMMETRIC_CORNER_GAINS: [[f64; 4]; GAIN_CHANNELS] = [
+    [3.2, 1.6, 2.4, 4.5],
+    [2.9, 1.5, 2.2, 4.0],
+    [3.0, 1.55, 2.25, 4.2],
+    [3.6, 1.8, 2.7, 5.0],
+];
+
+/// Билинейное поле усилений канала `channel` в пикселе `(x, y)` активной области (в f64): независимый
+/// от кода ISP оракул для геометрических тестов — билинейное поле пересчёт сетки воспроизводит точно.
+pub(crate) fn corner_field_gain(channel: usize, x: f64, y: f64, active: PixelSize) -> f64 {
+    let [top_left, top_right, bottom_left, bottom_right] = ASYMMETRIC_CORNER_GAINS[channel];
+    let u = x / f64::from(active.width - 1);
+    let v = y / f64::from(active.height - 1);
+    (top_left * (1.0 - u) + top_right * u) * (1.0 - v) + (bottom_left * (1.0 - u) + bottom_right * u) * v
+}
+
+/// Калибровка камеры «2» на сетке `columns × rows`: узлы лежат на билинейном поле углов.
+pub(crate) fn asymmetric_calibration(columns: u32, rows: u32) -> LensShadingCalibration {
+    let mut points = Vec::new();
+    for row in 0..rows {
+        for column in 0..columns {
+            let x = f64::from(MAIN_ACTIVE_ARRAY.width - 1) * f64::from(column) / f64::from(columns - 1);
+            let y = f64::from(MAIN_ACTIVE_ARRAY.height - 1) * f64::from(row) / f64::from(rows - 1);
+            let mut gains = [1.0_f32; GAIN_CHANNELS];
+            for (channel, gain) in gains.iter_mut().enumerate() {
+                *gain = corner_field_gain(channel, x, y, MAIN_ACTIVE_ARRAY) as f32;
+            }
+            points.push(gains);
+        }
+    }
+    LensShadingCalibration {
+        camera: camera_id("2"),
+        active_array: MAIN_ACTIVE_ARRAY,
+        grid: match LensShadingGainGrid::new(columns, rows, points) {
+            Ok(grid) => grid,
+            Err(error) => panic!("синтетическая сетка валидна: {error}"),
+        },
+    }
+}
+
+/// Паспорт основной камеры с нашей калибровкой: буфер `buffer_size`, полезная область — прямоугольник
+/// `area` активной области (буфер меньше области — биннинг).
+pub(crate) fn calibrated_passport(buffer_size: PixelSize, area: PixelRect) -> StreamPassport {
+    let mut passport = main_camera_passport();
+    passport.buffer_size = buffer_size;
+    passport.valid_area = PixelRect {
+        left: 0,
+        top: 0,
+        size: buffer_size,
+    };
+    passport.sensor_area = match ValidAreaOnSensor::new(MAIN_ACTIVE_ARRAY, area) {
+        Ok(area) => area,
+        Err(error) => panic!("прямоугольник в активной области: {error}"),
+    };
+    passport.lens_shading = LensShadingCalibrationState::Calibrated(Arc::new(asymmetric_calibration(33, 25)));
+    passport
 }

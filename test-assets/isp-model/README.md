@@ -76,3 +76,22 @@ colour-demosaicing 0.2.7 (BSD-3-Clause), `demosaicing_CFA_Bayer_Menon2007(CFA, p
 
 Тест: `crates/isp-model/tests/white_point_reference.rs` (допуски и их причины — у констант теста).
 Знак Duv — по CIE (плюс — выше кривой Планка, к зелёному). Размер ≈ 17 КБ.
+
+## Плоское поле основной камеры (сессия 14f)
+
+Эталон для проверки калибровки затенения `device-profiles/oneplus-cph2447/lens-shading.json`.
+
+| Файл | Содержимое |
+|---|---|
+| `flat-field-main-heldout.{json,bin}` | u16le, 256x192, один канал: «уменьшенный сенсор» основной камеры (режим `main43`, активный массив 4096x3072, прогон `064406-0515d0`). Ячейка 2x2 (i, j) хранит четыре средних блока 32x32 (по 16 кадрам) блока (i, j) в ИХ позициях CFA буфера, то есть фаза CFA как у буфера (BGGR). Чёрный НЕ вычтен: динамический чёрный по позициям, белый уровень, CFA, исходный прогон и `scaled_from_active_array` — в `extra` манифеста |
+
+Отложен от калибровки: в подгонку `lens-shading.json` не входил, поэтому на нём честно проверяется, что таблица выравнивает НЕ виденное поле.
+Размер ≈ 98 КБ.
+
+Перегенерация (из корня репозитория; прогон лежит вне репозитория):
+
+```
+~/.cache/fasticamera/isp-reference-venv/bin/python -I tools/device-probe/pc/shading_calibrate.py \
+    --write-fixture ~/fasticamera-captures/14f/led-dg/captures/064406-0515d0/main43.json \
+    --fixture-dir test-assets/isp-model --fixture-name flat-field-main-heldout
+```

@@ -17,6 +17,11 @@
 //! при создании сессии показа (`with_tone`) и в ключ пересчёта не входят. Средний серый сцены в них не
 //! входит никогда: это цель AE (`base_scene_middle_gray`), см. `config::tone`.
 //!
+//! # Виньетирование
+//! Карта коррекции строится по калибровке из паспорта потока ОДИН раз вместе с описанием сенсора и живёт в нём
+//! как `Arc`: видоискатель и снимок одного потока получают ту же карту. Режим и сила коррекции
+//! (`viewfinder.lens_shading`) входят в ключ пересчёта: их смена пересчитывает параметры.
+//!
 //! # Привязка к потоку
 //! Подсказки и параметры — данные КАДРОВ одного потока, поэтому годятся только для потока, из
 //! кадров которого получены. Поток = сессия камеры = один `Arc<StreamPassport>` (лизинг создаёт его
@@ -39,6 +44,7 @@ use isp_model::color::chromaticity::Chromaticity;
 use isp_model::demosaic::DemosaicMethod;
 use isp_model::exposure::ExposureGain;
 use isp_model::image::DisplayGamut;
+use isp_model::lens_shading::LensShadingControl;
 use isp_model::params::{FrameInputs, IspParams, ProcessingControls};
 use isp_model::sensor::SensorDescription;
 use isp_model::tone::ToneCurveSettings;
@@ -120,6 +126,9 @@ struct ResolvedInputs {
     /// Остаточная подтяжка нашего AE (часть `IspParams` кадра: снимок повторяет её, решение владельца 1 сессии 08a).
     /// Точное сравнение: единичная подтяжка не меняет ключ, а значит и старый путь бит-в-бит.
     exposure_gain: ExposureGain,
+    /// Управление виньетированием, под которое посчитаны параметры: смена режима или силы пересчитывает их
+    /// (сила — покадровое управление, позже её сможет менять политика «ослаблять при слабом свете»).
+    lens_shading: LensShadingControl,
 }
 
 /// Всё, что выведено из кадров ОДНОГО потока (см. «Привязка к потоку»).
@@ -142,13 +151,16 @@ impl StreamBoundState {
     }
 }
 
-/// Входы обработки, постоянные на жизнь кэша (в ключ пересчёта не входят).
+/// Входы обработки, постоянные на жизнь кэша. Тон в ключ пересчёта не входит; управление виньетированием
+/// входит (копия лежит в `ResolvedInputs`): его можно сменить на ходу.
 #[derive(Debug, Clone, Copy)]
 struct ProcessingRecipe {
     /// Каким демозаиком будут считаться кадры (видоискатель — `Preview`, стенд V4 — `Quality`).
     demosaic: DemosaicMethod,
     /// Настройки кривой тона до подтяжки AE: ручки `viewfinder.tone` поверх умолчания `isp-model`.
     tone: ToneCurveSettings,
+    /// Коррекция виньетирования (`viewfinder.lens_shading`): по умолчанию полная.
+    lens_shading: LensShadingControl,
 }
 
 /// Кэш параметров ISP одной сессии показа.
@@ -174,6 +186,7 @@ impl IspParamsCache {
             recipe: ProcessingRecipe {
                 demosaic,
                 tone: ViewfinderToneConfig::default().curve_settings(),
+                lens_shading: LensShadingControl::default(),
             },
             sensor: None,
             bound: None,
@@ -192,6 +205,32 @@ impl IspParamsCache {
             bound: None,
             ..self
         }
+    }
+
+    /// Тот же кэш с управлением виньетированием из конфига (`viewfinder.lens_shading`); как `with_tone`,
+    /// вызывается до первого кадра.
+    pub fn with_lens_shading(self, lens_shading: LensShadingControl) -> Self {
+        Self {
+            recipe: ProcessingRecipe {
+                lens_shading,
+                ..self.recipe
+            },
+            bound: None,
+            ..self
+        }
+    }
+
+    /// Меняет управление виньетированием на ходу: следующий `prepare` пересчитает параметры потока (ключ кэша
+    /// содержит управление), подсказки кадров остаются.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "шов под политику «ослаблять при слабом свете» (бэклог): пока сила задаётся конфигом"
+        )
+    )]
+    pub fn set_lens_shading(&mut self, lens_shading: LensShadingControl) {
+        self.recipe.lens_shading = lens_shading;
     }
 
     /// Действующие параметры текущего потока (`None` — в этом потоке ещё ни разу не посчитаны).
@@ -287,6 +326,7 @@ impl StreamBoundState {
             dynamic_white_level: hints.dynamic_white_level,
             gamut,
             exposure_gain,
+            lens_shading: recipe.lens_shading,
         };
         if self.current.as_ref().is_some_and(|(current, _)| *current == inputs) {
             return Ok(ParamsOutcome::Unchanged);
@@ -302,6 +342,7 @@ impl StreamBoundState {
         let controls = ProcessingControls {
             tone: recipe.tone,
             exposure_gain,
+            lens_shading: recipe.lens_shading,
             ..ProcessingControls::with_defaults(camera_neutral, recipe.demosaic, gamut)
         };
         let params =
@@ -348,3 +389,7 @@ fn sensor_for<'a>(
 #[cfg(test)]
 #[path = "isp_params_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "isp_params_lens_shading_tests.rs"]
+mod lens_shading_tests;

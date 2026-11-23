@@ -8,7 +8,11 @@ fn defaults_are_valid_and_cover_every_stage_plus_whole_viewfinder() {
     let config = ViewfinderScenarioConfig::default();
     config.validate().expect("значения по умолчанию верны");
     let rows = &config.stage_budget.rows;
-    assert_eq!(rows.len(), 9, "8 стадий + весь видоискатель: {rows:?}");
+    assert_eq!(
+        rows.len(),
+        IspStage::ALL.len() + 1,
+        "все стадии + весь видоискатель: {rows:?}"
+    );
     assert_eq!(rows.last(), Some(&StageBudgetRowSetting::WholeViewfinder));
     let stages: Vec<IspStage> = rows
         .iter()

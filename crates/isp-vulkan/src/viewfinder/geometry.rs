@@ -102,6 +102,8 @@ impl ViewfinderGeometry {
 /// Проверенная геометрия — то, что уходит в uniform-блок.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CheckedGeometry {
+    /// Полезная область в пикселях буфера (над ней лежит карта виньетирования).
+    pub valid_area: PixelRect,
     /// Кадрирование в пикселях буфера.
     pub crop: PixelRect,
     /// Размер выхода (содержимого кадра).
@@ -156,6 +158,7 @@ pub(crate) fn check_geometry(
         )));
     }
     Ok(CheckedGeometry {
+        valid_area,
         crop,
         output,
         allocation,

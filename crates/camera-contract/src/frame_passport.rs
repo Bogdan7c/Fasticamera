@@ -19,6 +19,7 @@ use crate::capabilities::{ColorCalibrationSet, Rational, SensorLevels, VendorPro
 use crate::capture_result::{CaptureResultMeta, SensorTimestamp};
 use crate::geometry::{PixelRect, PixelSize, SensorOrientation};
 use crate::ids::CameraId;
+use crate::lens_shading::{LensShadingCalibrationState, ValidAreaOnSensor};
 use crate::raw_format::{MosaicPattern, RawFormat};
 use crate::stream::{FrameRateMechanism, ReadoutAspect, TargetFrameRate};
 
@@ -33,10 +34,19 @@ pub struct StreamPassport {
     /// Где в буфере настоящие данные. 16:9@60 основной: строки 0–2303 из 3072, ниже нули
     /// (00 C2) — ISP обязан читать только эту область.
     pub valid_area: PixelRect,
+    /// Где полезная область буфера лежит на активной области сенсора. Единственный владелец
+    /// геометрии «поток → сенсор»: 4:3 — вся активная область, 16:9 — центральная полоса
+    /// (измерено: отношение RAW 16:9 к RAW 4:3 постоянно 1,01–1,02 по полю). Калибровка
+    /// виньетирования переводится в координаты потока именно по этому полю.
+    pub sensor_area: ValidAreaOnSensor,
     pub mosaic: MosaicPattern,
     /// Статические уровни из характеристик; динамические (если HAL отдаёт) — в покадровой части.
     pub static_levels: SensorLevels,
+    /// Факты о вендорской обработке. `lens_shading` здесь значит «частично скорректировано
+    /// вендором» и нашу коррекцию НЕ отключает: стадией управляет [`Self::lens_shading`].
     pub vendor_processing: VendorProcessingFlags,
+    /// Наша калибровка виньетирования этой камеры (или причина, почему её нет).
+    pub lens_shading: LensShadingCalibrationState,
     pub sensor_orientation: SensorOrientation,
     /// Частота, которая реально сконфигурирована (после возможного отката 4:3@60 → 30).
     pub frame_rate: TargetFrameRate,

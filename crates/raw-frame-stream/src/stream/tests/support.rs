@@ -229,6 +229,10 @@ pub(super) fn passport(raw_format: RawFormat, buffer_size: PixelSize) -> StreamP
             top: 0,
             size: buffer_size,
         },
+        sensor_area: camera_contract::lens_shading::ValidAreaOnSensor::whole_active_array(buffer_size),
+        lens_shading: camera_contract::lens_shading::LensShadingCalibrationState::NotCalibrated(
+            camera_contract::lens_shading::NotCalibratedReason::NoCalibrationForCamera,
+        ),
         mosaic: MosaicPattern {
             kind: MosaicKind::Bayer,
             layout: CfaLayout::Bggr,

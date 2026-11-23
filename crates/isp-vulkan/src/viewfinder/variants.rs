@@ -50,6 +50,7 @@ pub(crate) const BINDING_SOURCE: u32 = 0;
 pub(crate) const BINDING_PARAMETERS: u32 = 1;
 pub(crate) const BINDING_OUTPUT: u32 = 2;
 pub(crate) const BINDING_AWB_TILES: u32 = 3;
+pub(crate) const BINDING_LENS_SHADING_MAP: u32 = 4;
 
 /// SPIR-V варианта под источник, формат выхода и способ сведения AWB (суффикс `_SUBGROUP` — с быстрым
 /// путём `subgroupAdd`; его можно создавать только на устройстве с арифметикой subgroup в compute).
@@ -184,6 +185,7 @@ impl VariantCache {
             BindingKind::UniformBuffer,
             BindingKind::StorageImageWrite,
             BindingKind::ReadWriteStorageBuffer,
+            BindingKind::ReadOnlyStorageBuffer,
         ];
         Ok(ComputePipeline::new(
             context,

@@ -18,7 +18,7 @@ use still_contract::frame_choice::{FrameChoice, NoFrameReason};
 use super::choice::{PickDetail, ShownAt, TranslatedPick, translate_pick};
 use super::engine::StillEngine;
 use super::entry::{DevelopInputs, EstimateBasis, PickPlan, Stage, StillEntry, StillOutcome};
-use super::facts::{FactsRefusal, build_facts};
+use super::facts::{FactsRefusal, applied_lens_shading, build_facts};
 use super::feed::ShownContent;
 use super::gpu::{CapturePoll, DevelopProgress, DevelopStart, StillGpu};
 use super::present_log::{PressResolution, Unprovable};
@@ -302,7 +302,25 @@ impl<G: StillGpu> StillEngine<G> {
                 self.viewfinder_params_for(passport)?
             }
         };
-        let facts = match build_facts(&entry.plan, passport, choice, &params) {
+        // Параметры снимка: Quality-демозаик, охват sRGB (решение 142) независимо от охвата экрана, тон — тот же,
+        // что у видоискателя (`viewfinder.tone`). Годятся только свежепосчитанные: «прежние после отказа» — чужие.
+        // Считаются ДО фактов: решение стадии виньетирования из этих же параметров уходит в факты (DNG
+        // описывает ту поправку, что применена к картинке, решение 8).
+        let mut cache = IspParamsCache::for_demosaic(isp_model::demosaic::DemosaicMethod::Quality)
+            .with_tone(self.tone)
+            .with_lens_shading(self.lens_shading);
+        let decision = cache.prepare_with_exposure_gain(passport, params.white, params.gain, DisplayGamut::Srgb);
+        let resolved = match decision.outcome {
+            ParamsOutcome::Resolved | ParamsOutcome::Unchanged => cache.current(),
+            ParamsOutcome::ReusedAfterFailure(_) | ParamsOutcome::Unavailable(_) => None,
+        };
+        let Some(isp_params) = resolved else {
+            self.counters.params.unresolved += 1;
+            return Err(NoFrameReason::FrameUnusable);
+        };
+        let facts = applied_lens_shading(&isp_params.lens_shading)
+            .and_then(|lens_shading| build_facts(&entry.plan, passport, choice, &params, lens_shading));
+        let facts = match facts {
             Ok(facts) => facts,
             Err(refusal) => {
                 match refusal {
@@ -315,17 +333,7 @@ impl<G: StillGpu> StillEngine<G> {
                 return Err(NoFrameReason::FrameUnusable);
             }
         };
-        // Параметры снимка: Quality-демозаик, охват sRGB (решение 142) независимо от охвата экрана, тон — тот же,
-        // что у видоискателя (`viewfinder.tone`). Годятся только свежепосчитанные: «прежние после отказа» — чужие.
-        let mut cache = IspParamsCache::for_demosaic(isp_model::demosaic::DemosaicMethod::Quality).with_tone(self.tone);
-        let decision = cache.prepare_with_exposure_gain(passport, params.white, params.gain, DisplayGamut::Srgb);
-        match decision.outcome {
-            ParamsOutcome::Resolved | ParamsOutcome::Unchanged => Ok((Box::new(facts), Box::new(cache))),
-            ParamsOutcome::ReusedAfterFailure(_) | ParamsOutcome::Unavailable(_) => {
-                self.counters.params.unresolved += 1;
-                Err(NoFrameReason::FrameUnusable)
-            }
-        }
+        Ok((Box::new(facts), Box::new(cache)))
     }
 
     fn count_no_frame(&mut self, reason: NoFrameReason, detail: PickDetail) {

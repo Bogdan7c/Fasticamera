@@ -6,6 +6,8 @@
 //! `ActiveArea` с маскированными пикселями, 1.2+ опций, нестандартных `CFALayout` и т. п. — мы ничего
 //! из этого не пишем, а лишнее повышение запрещено («writers should not increase … higher than
 //! otherwise required»). Так же пишет и платформенный `DngCreator`.
+//! Исключение — кадр с применённой коррекцией виньетирования: тогда пишется `OpcodeList2` с `GainMap`
+//! (опкод версии 1.3.0.0), и `DNGBackwardVersion` поднимается до 1.3.0.0 (см. модуль `opcodes`).
 //!
 //! Договор с модулем `service` — типы и сигнатуры ниже.
 
@@ -22,6 +24,7 @@ use crate::exif::{
 use crate::tiff::{Ifd, TiffError, TiffFile, TiffValue, signed_rational, unsigned_rational};
 
 mod cfa;
+mod opcodes;
 mod profile;
 mod tags;
 
@@ -84,6 +87,8 @@ const BLACK_LEVEL_DENOMINATOR: u32 = 1024;
 const DNG_VERSION: [u8; 4] = [1, 4, 0, 0];
 /// `DNGBackwardVersion` 1.1.0.0 (см. шапку модуля).
 const DNG_BACKWARD_VERSION: [u8; 4] = [1, 1, 0, 0];
+/// `DNGBackwardVersion` 1.3.0.0: нужен, когда в файле есть опкод `GainMap` версии 1.3.0.0.
+const DNG_BACKWARD_VERSION_WITH_OPCODES: [u8; 4] = opcodes::GAIN_MAP_OPCODE_VERSION;
 /// `CFALayout` = 1: прямоугольная сетка (DNG 1.7.1.0, CFALayout).
 const CFA_LAYOUT_RECTANGULAR: u16 = 1;
 /// Сжатия нет (TIFF 6.0, `Compression` = 1).
@@ -231,10 +236,17 @@ fn build_ifd0(inputs: &DngInputs<'_>, rows_per_strip: u32) -> Result<Ifd, DngErr
 
     // Версии DNG и модель камеры.
     ifd.set(tags::DNG_VERSION, TiffValue::Byte(DNG_VERSION.to_vec()));
-    ifd.set(
-        tags::DNG_BACKWARD_VERSION,
-        TiffValue::Byte(DNG_BACKWARD_VERSION.to_vec()),
-    );
+    // Коррекция виньетирования, применённая к кадру, едет описанием; без неё список не пишется.
+    let backward_version = match facts.lens_shading.grid() {
+        Some(grid) => {
+            let list = opcodes::gain_map_opcode_list(grid, image_quad, size)
+                .map_err(|error| DngError::InvalidInput(format!("карта виньетирования: {error}")))?;
+            ifd.set(tags::OPCODE_LIST_2, TiffValue::Undefined(list));
+            DNG_BACKWARD_VERSION_WITH_OPCODES
+        }
+        None => DNG_BACKWARD_VERSION,
+    };
+    ifd.set(tags::DNG_BACKWARD_VERSION, TiffValue::Byte(backward_version.to_vec()));
     ifd.set(
         tags::UNIQUE_CAMERA_MODEL,
         TiffValue::Ascii(ascii_text(&inputs.camera.unique_camera_model)),

@@ -114,6 +114,12 @@ mod tests {
                 top: 0,
                 size: PixelSize::new(4096, 2304),
             },
+            sensor_area: camera_contract::lens_shading::ValidAreaOnSensor::whole_active_array(PixelSize::new(
+                4096, 3072,
+            )),
+            lens_shading: camera_contract::lens_shading::LensShadingCalibrationState::NotCalibrated(
+                camera_contract::lens_shading::NotCalibratedReason::NoCalibrationForCamera,
+            ),
             mosaic: MosaicPattern { kind, layout },
             static_levels: SensorLevels {
                 black_level_pattern: [64, 65, 66, 67],

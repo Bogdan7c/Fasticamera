@@ -3,6 +3,7 @@
 
 use gpu_vulkan::error::GpuError;
 
+use crate::lens_shading_map::{LensShadingMapBufferError, LensShadingMapError};
 use crate::quality::QualityError;
 
 /// Ошибка проявления снимка.
@@ -29,6 +30,10 @@ pub enum PhotoError {
         /// Что именно не поддержано.
         what: String,
     },
+    /// Карта коррекции виньетирования не помещается в буфер или область слишком мала: коррекция не
+    /// применяется молча, проявка отвергается.
+    #[error("карта виньетирования: {0}")]
+    LensShadingMap(#[from] LensShadingMapError),
     /// Предыдущая операция того же владельца ещё не завершена: два захвата или две проявки сразу делать нельзя.
     #[error("занято: {what}")]
     Busy {
@@ -59,6 +64,16 @@ impl From<QualityError> for PhotoError {
             QualityError::InvalidConfig { what } => Self::InvalidConfig { what },
             QualityError::InvalidInput { what } => Self::InvalidInput { what },
             QualityError::UnsupportedParams { what } => Self::UnsupportedParams { what },
+            QualityError::LensShadingMap(map) => Self::LensShadingMap(map),
+        }
+    }
+}
+
+impl From<LensShadingMapBufferError> for PhotoError {
+    fn from(error: LensShadingMapBufferError) -> Self {
+        match error {
+            LensShadingMapBufferError::Map(map) => Self::LensShadingMap(map),
+            LensShadingMapBufferError::Gpu(gpu) => Self::Gpu(gpu),
         }
     }
 }

@@ -8,11 +8,18 @@
 //!   (`ZoomFraming::crop_for_camera`), камера — ТОГО кадра, который снимается.
 //! * Нейтраль DNG — по нашей белой точке и DNG-профилю потока (`neutral_for_white`), НЕ подсказка HAL (решение 9).
 //! * `DigitalGainEv` — `log2 k` (подтяжка видоискателя этого кадра).
+//! * Виньетирование — решение стадии ISP из ТЕХ ЖЕ параметров, которыми проявляется снимок
+//!   ([`applied_lens_shading`]): DNG описывает ровно ту поправку, что применена к картинке (решение 8).
+
+use std::sync::Arc;
 
 use camera_contract::frame_passport::RawFramePassport;
 use camera_contract::geometry::PixelRect;
+use camera_contract::lens_shading::LensShadingGainGrid;
+use isp_model::lens_shading::{LensShadingSkipReason, LensShadingStep};
 use isp_model::sensor::SensorDescription;
 use still_contract::frame_choice::FrameChoice;
+use still_contract::lens_shading::{AppliedLensShading, LensShadingNotAppliedReason};
 use still_contract::plan::StillPlan;
 use still_contract::shot::{AsShotNeutral, DigitalGainEv, StillFrameFacts};
 
@@ -31,17 +38,37 @@ pub enum FactsRefusal {
     /// Кадрирование не построилось по полезной области.
     #[error("кадрирование: {0}")]
     Crop(String),
-    /// Описание сенсора или нейтраль не построились.
+    /// Описание сенсора, нейтраль или карта виньетирования не построились (счётчик `facts_color`).
     #[error("цвет кадра: {0}")]
     Color(String),
 }
 
-/// Собирает факты кадра. `passport` — паспорт кадра выбранного лизинга.
+/// Что применила стадия виньетирования в параметрах ISP снимка. Карта копируется в сетку контракта
+/// (33×25 точек — копия дёшева), чтобы `still-contract` не зависел от `isp-model`.
+pub fn applied_lens_shading(step: &LensShadingStep) -> Result<AppliedLensShading, FactsRefusal> {
+    match step {
+        LensShadingStep::Apply(map) => {
+            let grid = LensShadingGainGrid::new(map.columns(), map.rows(), map.points().to_vec())
+                .map_err(|error| FactsRefusal::Color(format!("карта виньетирования: {error}")))?;
+            Ok(AppliedLensShading::Applied(Arc::new(grid)))
+        }
+        LensShadingStep::Skip(LensShadingSkipReason::NotCalibrated) => Ok(AppliedLensShading::NotApplied(
+            LensShadingNotAppliedReason::NotCalibrated,
+        )),
+        LensShadingStep::Skip(LensShadingSkipReason::DisabledByControl) => Ok(AppliedLensShading::NotApplied(
+            LensShadingNotAppliedReason::DisabledByControl,
+        )),
+    }
+}
+
+/// Собирает факты кадра. `passport` — паспорт кадра выбранного лизинга; `lens_shading` — решение стадии
+/// виньетирования из параметров, которыми кадр проявляется (см. [`applied_lens_shading`]).
 pub fn build_facts(
     plan: &StillPlan,
     passport: &RawFramePassport,
     choice: FrameChoice,
     params: &FrameStillParams,
+    lens_shading: AppliedLensShading,
 ) -> Result<StillFrameFacts, FactsRefusal> {
     let capture = passport
         .capture
@@ -76,6 +103,7 @@ pub fn build_facts(
         rotation: still_rotation(stream.sensor_orientation, group.facing, plan.orientation),
         neutral: AsShotNeutral(normalized_to_maximum(neutral.values())),
         digital_gain: DigitalGainEv(params.gain.ev()),
+        lens_shading,
     })
 }
 

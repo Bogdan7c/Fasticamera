@@ -478,8 +478,10 @@ fn viewfinder_smoke_passes_on_a_healthy_isp_and_reports_gpu_time_color_space_awb
     assert_eq!(report["look"]["display_color_space"], "display_p3");
     assert_eq!(report["look"]["painter"], "isp");
     assert_eq!(
-        report["gpu_time"]["isp_dispatch"]["p50_ms"], 1.8,
-        "8 стадий: 1 + 8 × 0,1 мс"
+        report["gpu_time"]["isp_dispatch"]["p50_ms"],
+        isp_micros(IspStageSet::ALL) as f64 / 1_000.0,
+        "все {} стадий: 1 + N × 0,1 мс",
+        IspStage::ALL.len()
     );
     assert!(report["awb_published"].as_u64().expect("AWB") > 0);
     assert_eq!(report["cpu_copies"], 0);

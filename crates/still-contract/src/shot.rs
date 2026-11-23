@@ -13,6 +13,7 @@ use camera_contract::geometry::{PixelRect, PixelSize};
 use serde::Serialize;
 
 use crate::frame_choice::FrameChoice;
+use crate::lens_shading::AppliedLensShading;
 use crate::plan::{StillId, StillOutputs};
 
 /// Поворот по часовой стрелке, который нужно применить к картинке в ориентации сенсора, чтобы она
@@ -84,6 +85,9 @@ pub struct StillFrameFacts {
     pub rotation: StillRotation,
     pub neutral: AsShotNeutral,
     pub digital_gain: DigitalGainEv,
+    /// Коррекция виньетирования, применённая к проявленному кадру (из тех же параметров ISP, что проявили
+    /// снимок). DNG описывает её `OpcodeList2`, не трогая сырые отсчёты (решение 8).
+    pub lens_shading: AppliedLensShading,
 }
 
 impl StillFrameFacts {

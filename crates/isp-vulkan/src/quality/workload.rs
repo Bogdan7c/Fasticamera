@@ -16,6 +16,7 @@
 //! переписывать, только когда fence последнего сабмита слота сигнален (контракт вызывающего).
 
 use ash::vk;
+use camera_contract::geometry::PixelSize;
 use gpu_vulkan::compute::{BindingKind, DescriptorResource};
 use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::device_buffer::record_compute_pass_dependency;
@@ -33,6 +34,7 @@ use super::planes::QualityPlanes;
 use super::stages::{LevelsStage, OutputStage};
 use super::temporal::{HistoryUse, TemporalDenoise};
 use super::timing::{FRAME_START_POINT, HeadroomPass, HeadroomTimingCollect, point_labels, timings_from_collect};
+use crate::lens_shading_map::LensShadingMapBuffer;
 
 /// Итог записи кадра.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +59,8 @@ pub struct VideoHeadroomWorkload {
     temporal: Option<TemporalDenoise>,
     demosaic: QualityDemosaic,
     frame_parameters: Vec<HostBuffer>,
+    /// Карта виньетирования по слотам кадра (пишется, только когда карта изменилась).
+    lens_shading_maps: Vec<LensShadingMapBuffer>,
     config: VideoHeadroomConfig,
     context: GpuContext,
 }
@@ -95,6 +99,9 @@ impl VideoHeadroomWorkload {
         let frame_parameters = (0..slots)
             .map(|_| HostBuffer::new(context, FRAME_PARAMETERS_BYTES, HostBufferUsage::UniformParameters))
             .collect::<Result<Vec<_>, _>>()?;
+        let lens_shading_maps = (0..slots)
+            .map(|_| LensShadingMapBuffer::new(context, config.lens_shading_map))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             timestamps: GpuTimestamps::new(context, slots, &point_labels())?,
             output: OutputStage::new(context, local, slots)?,
@@ -102,6 +109,7 @@ impl VideoHeadroomWorkload {
             temporal,
             demosaic,
             frame_parameters,
+            lens_shading_maps,
             config: *config,
             context: context.clone(),
         })
@@ -170,11 +178,17 @@ impl VideoHeadroomWorkload {
         let parameters = &mut self.frame_parameters[frame_slot];
         parameters.write_bytes(0, &frame_parameter_bytes(input.params, addressing))?;
         let parameters_binding = parameters.binding();
+        // Карта больше буфера — ошибка кадра ДО команд (не молчаливый пропуск коррекции). Полезная область
+        // конвейера — вся плоскость (`source_addressing` проверил, что размеры совпадают).
+        let shading_map = &mut self.lens_shading_maps[frame_slot];
+        shading_map.prepare(&input.params.lens_shading, PixelSize::new(extent.width, extent.height))?;
+        let shading_binding = shading_map.binding();
         let levels_push = PassPushConstants::geometry(extent, cfa);
         self.levels.bind_and_check(
             frame_slot,
             input.source,
             parameters_binding,
+            shading_binding,
             self.demosaic.planes().mosaic(),
             &levels_push,
         )?;

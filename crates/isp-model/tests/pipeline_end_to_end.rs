@@ -19,7 +19,7 @@ use isp_model::color::dng::CameraNeutral;
 use isp_model::demosaic::DemosaicMethod;
 use isp_model::image::{DisplayGamut, RawMosaic};
 use isp_model::metrics::display_linear_to_lab;
-use isp_model::params::{FrameInputs, IspParams, LensShadingMapInput, ProcessingControls};
+use isp_model::params::{FrameInputs, IspParams, ProcessingControls};
 use isp_model::pipeline::{ReferenceRun, run_reference};
 use isp_model::sensor::SensorDescription;
 use isp_model::transfer::srgb_encode;
@@ -64,7 +64,6 @@ fn process(
     let sensor = calibrated_sensor();
     let frame = FrameInputs {
         levels: sensor.static_levels(),
-        lens_shading_map: LensShadingMapInput::NotProvided,
     };
     let controls = ProcessingControls::with_defaults(CameraNeutral::new(neutral).unwrap(), demosaic, gamut);
     let params = IspParams::resolve(&sensor, &frame, &controls).unwrap();

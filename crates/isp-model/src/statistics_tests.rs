@@ -5,7 +5,8 @@ use super::{
     TileCountMismatch, TileGrid, compute_awb_statistics, quantize_sample, tile_of_cell,
 };
 use crate::cfa::{BayerPattern, RgbChannel};
-use crate::image::{CameraMosaic, Mosaic, RawMosaic, mosaic_stage};
+use crate::image::{Mosaic, RawMosaic, ShadingCorrectedMosaic, mosaic_stage};
+use crate::lens_shading::{LensShadingSkipReason, LensShadingStep, apply_lens_shading};
 use crate::levels::{NormalizationLevels, normalize_levels};
 
 /// Цвет ячейки 2×2: красный, два зелёных (в порядке позиций квадрата) и синий.
@@ -32,7 +33,7 @@ fn mosaic_from_cells(
     pattern: BayerPattern,
     cells: PixelSize,
     color_of_cell: impl Fn(u32, u32) -> CellColor,
-) -> CameraMosaic {
+) -> ShadingCorrectedMosaic {
     let size = PixelSize::new(cells.width * 2, cells.height * 2);
     let mut samples = vec![0.0; size.pixel_count() as usize];
     for y in 0..size.height {
@@ -51,7 +52,7 @@ fn mosaic_from_cells(
             };
         }
     }
-    Mosaic::from_samples(size, pattern, samples, mosaic_stage::Normalized).unwrap()
+    Mosaic::from_samples(size, pattern, samples, mosaic_stage::ShadingCorrected).unwrap()
 }
 
 fn settings(columns: u32, rows: u32, saturation_threshold: f32) -> AwbStatisticsSettings {
@@ -90,7 +91,7 @@ fn known_mosaic_gives_hand_computed_sums() {
         PixelSize::new(4, 4),
         BayerPattern::RGGB,
         samples,
-        mosaic_stage::Normalized,
+        mosaic_stage::ShadingCorrected,
     )
     .unwrap();
     let statistics = compute_awb_statistics(&mosaic, &settings(2, 1, 0.95)).unwrap();
@@ -128,8 +129,14 @@ fn red_and_blue_follow_the_cfa_layout() {
     // в BGGR — позиция 3: суммы R и B обязаны поменяться местами.
     let samples = vec![0.5, 0.25, 0.25, 0.125];
     let size = PixelSize::new(2, 2);
-    let rggb = Mosaic::from_samples(size, BayerPattern::RGGB, samples.clone(), mosaic_stage::Normalized).unwrap();
-    let bggr = Mosaic::from_samples(size, BayerPattern::BGGR, samples, mosaic_stage::Normalized).unwrap();
+    let rggb = Mosaic::from_samples(
+        size,
+        BayerPattern::RGGB,
+        samples.clone(),
+        mosaic_stage::ShadingCorrected,
+    )
+    .unwrap();
+    let bggr = Mosaic::from_samples(size, BayerPattern::BGGR, samples, mosaic_stage::ShadingCorrected).unwrap();
     let grid = settings(1, 1, 0.95);
     let rggb_tile = compute_awb_statistics(&rggb, &grid).unwrap().tiles()[0];
     let bggr_tile = compute_awb_statistics(&bggr, &grid).unwrap().tiles()[0];
@@ -257,7 +264,10 @@ fn statistics_of_levels_output_match_raw_counts() {
     let raw_samples: Vec<u16> = (0..16).map(|index| 100 + index * 37).collect();
     let raw = RawMosaic::new(PixelSize::new(4, 4), BayerPattern::GBRG, raw_samples.clone()).unwrap();
     let levels = NormalizationLevels::new([0.0; 4], 4095.0).unwrap();
-    let statistics = compute_awb_statistics(&normalize_levels(&raw, &levels), &settings(1, 1, 0.95)).unwrap();
+    // Стадия виньетирования пропущена (нет калибровки): мозаика не меняется.
+    let skipped = LensShadingStep::Skip(LensShadingSkipReason::NotCalibrated);
+    let (shading_corrected, _) = apply_lens_shading(&normalize_levels(&raw, &levels), &skipped);
+    let statistics = compute_awb_statistics(&shading_corrected, &settings(1, 1, 0.95)).unwrap();
     let raw_sum_of = |channel: RgbChannel| -> u32 {
         (0..16u32)
             .filter(|&index| BayerPattern::GBRG.channel_at(index % 4, index / 4) == channel)

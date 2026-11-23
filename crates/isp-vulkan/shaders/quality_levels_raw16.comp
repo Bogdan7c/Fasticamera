@@ -4,6 +4,8 @@
 // Проход 0 для RAW16: кадр — картинка R16_UINT (texelFetch без сэмплера).
 
 #define FRAME_PARAMS_BINDING 1
+// Буфер карты виньетирования (lens_shading.glsl): привязка 3.
+#define LENS_SHADING_MAP_BINDING 3
 #include "quality_frame_params.glsl"
 
 layout(set = 0, binding = 0) uniform utexture2D raw_frame;
@@ -13,3 +15,8 @@ uint raw_at(uint frame_x, uint frame_y) {
 }
 
 #include "quality_levels_main.glsl"
+
+// Координаты в полезной области: плоскость — вся полезная область.
+uvec2 valid_area_pixel(uint x, uint y) {
+    return uvec2(x, y);
+}

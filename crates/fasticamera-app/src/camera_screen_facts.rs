@@ -31,6 +31,7 @@ use camera_contract::availability::CameraUnavailableReason;
 use camera_contract::capabilities::CameraCapabilities;
 use camera_contract::geometry::SensorOrientation;
 use camera_contract::ids::CameraId;
+use camera_contract::lens_shading::LensShadingCalibrations;
 use camera_contract::stream::ConfiguredStream;
 use camera_contract::three_a::ExposureCompensationSupport;
 use camera_core::state::FatalCause;
@@ -262,7 +263,13 @@ impl StreamGeometryCache {
         stream: &ConfiguredStream,
         capabilities: &CameraCapabilities,
     ) -> Result<StreamGeometry, PassportError> {
-        let passport = build_stream_passport(&stream.stream, capabilities, stream.frame_rate_mechanism)?;
+        // Экрану нужна только геометрия потока: калибровка виньетирования ему не нужна, набор пуст.
+        let passport = build_stream_passport(
+            &stream.stream,
+            capabilities,
+            stream.frame_rate_mechanism,
+            &LensShadingCalibrations::none(),
+        )?;
         Ok(StreamGeometry {
             valid_area: passport.valid_area,
             active_array_size: capabilities.active_array.size,

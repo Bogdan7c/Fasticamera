@@ -162,6 +162,10 @@ pub fn passport(camera: &str, size: PixelSize) -> StreamPassport {
         buffer_size: size,
         readout: ReadoutAspect::FourByThree,
         valid_area: PixelRect { left: 0, top: 0, size },
+        sensor_area: camera_contract::lens_shading::ValidAreaOnSensor::whole_active_array(size),
+        lens_shading: camera_contract::lens_shading::LensShadingCalibrationState::NotCalibrated(
+            camera_contract::lens_shading::NotCalibratedReason::NoCalibrationForCamera,
+        ),
         mosaic: MosaicPattern {
             kind: MosaicKind::Bayer,
             layout: CfaLayout::Bggr,

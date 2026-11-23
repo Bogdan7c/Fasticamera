@@ -32,6 +32,10 @@ fn passport(readout: ReadoutAspect, valid_height: u32) -> StreamPassport {
             top: 0,
             size: PixelSize::new(BUFFER.width, valid_height),
         },
+        sensor_area: camera_contract::lens_shading::ValidAreaOnSensor::whole_active_array(BUFFER),
+        lens_shading: camera_contract::lens_shading::LensShadingCalibrationState::NotCalibrated(
+            camera_contract::lens_shading::NotCalibratedReason::NoCalibrationForCamera,
+        ),
         mosaic: MosaicPattern {
             kind: MosaicKind::Bayer,
             layout: CfaLayout::Rggb,

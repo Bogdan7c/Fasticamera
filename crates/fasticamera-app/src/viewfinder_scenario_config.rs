@@ -23,6 +23,8 @@ use crate::viewfinder_latency_profile::{
 #[serde(rename_all = "snake_case")]
 pub enum IspStageSetting {
     Levels,
+    /// Коррекция виньетирования своей таблицей (14f); идёт сразу после уровней.
+    LensShading,
     WhiteBalance,
     Demosaic,
     Color,
@@ -34,8 +36,9 @@ pub enum IspStageSetting {
 
 impl IspStageSetting {
     /// Все стадии в порядке прохода.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Levels,
+        Self::LensShading,
         Self::WhiteBalance,
         Self::Demosaic,
         Self::Color,
@@ -48,6 +51,7 @@ impl IspStageSetting {
     pub fn to_stage(self) -> IspStage {
         match self {
             Self::Levels => IspStage::Levels,
+            Self::LensShading => IspStage::LensShading,
             Self::WhiteBalance => IspStage::WhiteBalance,
             Self::Demosaic => IspStage::Demosaic,
             Self::Color => IspStage::Color,
@@ -62,6 +66,7 @@ impl IspStageSetting {
     pub fn name(self) -> &'static str {
         match self {
             Self::Levels => "levels",
+            Self::LensShading => "lens_shading",
             Self::WhiteBalance => "white_balance",
             Self::Demosaic => "demosaic",
             Self::Color => "color",

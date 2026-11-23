@@ -4,6 +4,7 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.params.ColorSpaceTransform
+import dev.fasticamera.probe.camera.shading.LensShadingGains
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -77,6 +78,8 @@ object RawPassport {
             JSONObject().put("columns", map.columnCount).put("rows", map.rowCount)
                 .put("center_gain_g", map.getGainFactor(1, map.columnCount / 2, map.rowCount / 2))
                 .put("corner_gain_g", map.getGainFactor(1, 0, 0))
+                // Полная карта: row-major, в каждой точке [R, G_even, G_odd, B] (порядок Camera2).
+                .put("gains", JSONArray(LensShadingGains.flatten(map).toList()))
         })
         .put("focus_distance", result.get(CaptureResult.LENS_FOCUS_DISTANCE))
         .put("aperture", result.get(CaptureResult.LENS_APERTURE))

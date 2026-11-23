@@ -7,13 +7,13 @@
 //!
 //! # Цепочка
 //! ```text
-//! RawMosaic (u16) ──levels──▶ CameraMosaic ──lens_shading (если вендор не применил)──▶ ShadingCorrectedMosaic
+//! RawMosaic (u16) ──levels──▶ CameraMosaic ──lens_shading (наша калибровка камеры)──▶ ShadingCorrectedMosaic
 //!   ──white_balance──▶ WhiteBalancedMosaic ──demosaic (Preview 2×2 | Quality Menon 2007)──▶ LinearCameraRgb
 //!   ──color: камера → XYZ D50 (матрицы DNG)──▶ XyzD50Image ──Bradford + основные цвета экрана──▶ SceneLinearImage
 //!   ──gamut: мягко в охват экрана──▶ SceneInGamutImage ──tone (S-кривая, сохранение оттенка)──▶ DisplayLinearImage
 //!   ──transfer (sRGB OETF)──▶ DisplayEncodedImage
 //! ```
-//! Сбоку от цепочки: [`statistics`] — суммы каналов по плиткам из `CameraMosaic` для нашего
+//! Сбоку от цепочки: [`statistics`] — суммы каналов по плиткам из `ShadingCorrectedMosaic` для нашего
 //! AWB (08), целочисленный контракт для точной сверки с GPU-видоискателем.
 //!
 //! Типы стадий не дают подать изображение не в ту функцию — это проверяется компилятором:
@@ -59,8 +59,9 @@
 //!
 //! # Инварианты
 //! 1. Без Android и GPU (guardrail `neutral-no-platform`).
-//! 2. Вендорскую обработку не повторяем: виньетирование, применённое HAL, второй раз не
-//!    корректируется (README, инвариант 2).
+//! 2. Виньетирование HAL частичное (`LENS_SHADING_APPLIED = true` значит «не полностью»): углы RAW
+//!    на 2,2–3 EV темнее центра, поэтому стадия 2 корректирует по нашей статичной калибровке
+//!    камеры; карту HAL не используем. Усиление в углах поднимает и шум — см. [`shading_noise`].
 //! 3. Константы алгоритмов — со ссылкой на источник; настраиваемое — в параметрах, не в коде.
 
 pub mod cfa;
@@ -75,6 +76,9 @@ pub mod metrics;
 pub mod params;
 pub mod pipeline;
 pub mod sensor;
+pub mod shading_noise;
+#[cfg(test)]
+mod shading_pipeline_tests;
 pub mod statistics;
 pub mod test_patterns;
 #[cfg(test)]

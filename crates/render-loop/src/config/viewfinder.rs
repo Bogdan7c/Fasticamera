@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::auto_exposure::{AutoExposureConfig, AutoExposureConfigError};
 use super::continuity::{ContinuityConfig, ContinuityConfigError};
+use super::lens_shading::ViewfinderLensShadingConfig;
 use super::tone::{ToneConfigError, ViewfinderToneConfig};
 use super::white_balance::{WhiteBalanceConfig, WhiteBalanceConfigError};
 use crate::viewfinder::ViewfinderPainter;
@@ -126,6 +127,9 @@ pub struct ViewfinderConfig {
     /// Ручки тона видоискателя до 14a: контраст и средние тона экрана (сессия 12b, решение 98). Средний серый
     /// сцены — цель AE — сюда не входит (см. `config::tone`).
     pub tone: ViewfinderToneConfig,
+    /// Коррекция виньетирования по нашей калибровке камеры (сессия 14f): режим и сила. Видоискатель и снимок
+    /// читают одну секцию. По умолчанию — всегда полная коррекция.
+    pub lens_shading: ViewfinderLensShadingConfig,
     /// Удержание последнего кадра при смене объектива (сессия 13): сроки и условие показа нового потока.
     pub continuity: ContinuityConfig,
 }
@@ -142,6 +146,7 @@ impl Default for ViewfinderConfig {
             white_balance: WhiteBalanceConfig::default(),
             auto_exposure: AutoExposureConfig::default(),
             tone: ViewfinderToneConfig::default(),
+            lens_shading: ViewfinderLensShadingConfig::default(),
             continuity: ContinuityConfig::default(),
         }
     }

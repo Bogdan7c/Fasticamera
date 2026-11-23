@@ -39,6 +39,7 @@ use gpu_vulkan::swapchain::{
     SwapchainError, SyncedPresent,
 };
 use gpu_vulkan::sync::{ExportableSemaphore, GpuReleaseFence, WaitSemaphore};
+use isp_model::lens_shading::LensShadingControl;
 use isp_vulkan::viewfinder::ViewfinderGeometry;
 use raw_frame_stream::{RawFrameLease, ViewfinderFrames};
 use std::sync::Arc;
@@ -156,6 +157,8 @@ pub struct CameraSessionParts<'a> {
     pub headroom: HeadroomBenchParts,
     /// Ручки тона видоискателя (`viewfinder.tone`, уже проверены при старте).
     pub tone: ViewfinderToneConfig,
+    /// Коррекция виньетирования (`viewfinder.lens_shading`).
+    pub lens_shading: LensShadingControl,
     /// Удержание последнего кадра при смене объектива (`viewfinder.continuity`, уже проверено при старте).
     pub continuity: ContinuityConfig,
 }
@@ -218,6 +221,7 @@ impl CameraSession {
             auto_exposure,
             headroom,
             tone,
+            lens_shading,
             continuity,
         } = parts;
         let importer = match make_importer.make(context) {
@@ -271,7 +275,9 @@ impl CameraSession {
             stats: CameraStreamDiagnostics::default(),
             history_capacity,
             settings,
-            params: IspParamsCache::default().with_tone(tone),
+            params: IspParamsCache::default()
+                .with_tone(tone)
+                .with_lens_shading(lens_shading),
 
             viewfinder,
             awb_feed,

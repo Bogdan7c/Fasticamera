@@ -14,7 +14,7 @@ use isp_model::color::temperature::calibration_illuminant_temperature;
 use isp_model::demosaic::DemosaicMethod;
 use isp_model::image::DisplayGamut;
 use isp_model::levels::NormalizationLevels;
-use isp_model::params::{FrameInputs, IspParams, LensShadingMapInput, ProcessingControls};
+use isp_model::params::{FrameInputs, IspParams, ProcessingControls};
 use isp_model::sensor::SensorDescription;
 
 fn matrix(values: [f64; 9]) -> Matrix3 {
@@ -56,10 +56,7 @@ pub(crate) fn quality_params(pattern: BayerPattern) -> IspParams {
     .expect("DNG-профиль");
     let levels = NormalizationLevels::new([64.0, 64.0, 64.0, 64.0], 1023.0).expect("уровни");
     let sensor = SensorDescription::new(pattern, levels, profile, LensShading::AppliedByVendor);
-    let frame = FrameInputs {
-        levels,
-        lens_shading_map: LensShadingMapInput::NotProvided,
-    };
+    let frame = FrameInputs { levels };
     let neutral = CameraNeutral::new([0.515625, 1.0, 0.4990234375]).expect("нейтраль");
     let controls = ProcessingControls::with_defaults(neutral, DemosaicMethod::Quality, DisplayGamut::Srgb);
     IspParams::resolve(&sensor, &frame, &controls).expect("параметры кадра")

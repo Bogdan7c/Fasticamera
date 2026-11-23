@@ -22,6 +22,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use camera_contract::frame_passport::StreamPassport;
+use isp_model::lens_shading::LensShadingControl;
 use raw_frame_stream::SnapshotRingFrames;
 use still_contract::develop::{DevelopFailure, PrimaryTargetOffer};
 use still_contract::frame_choice::NoFrameReason;
@@ -62,6 +63,8 @@ pub struct StillEngine<G: StillGpu> {
     pub(super) config: StillDevelopConfig,
     /// Ручки тона видоискателя: снимок проявляется тем же тоном (`viewfinder.tone`).
     pub(super) tone: ViewfinderToneConfig,
+    /// Коррекция виньетирования: снимок использует ту же секцию, что видоискатель (`viewfinder.lens_shading`).
+    pub(super) lens_shading: LensShadingControl,
     pub(super) ring: SnapshotRingFrames,
     pub(super) clock: Box<dyn StillClock>,
     pub(super) maker: GpuMaker<G>,
@@ -84,6 +87,14 @@ pub struct StillEngine<G: StillGpu> {
 }
 
 impl<G: StillGpu> StillEngine<G> {
+    /// Тот же движок с управлением виньетированием из конфига (`viewfinder.lens_shading`): снимок проявляется
+    /// с той же коррекцией, что видоискатель. Вызывается при создании, до первого снимка.
+    #[must_use]
+    pub fn with_lens_shading(mut self, lens_shading: LensShadingControl) -> Self {
+        self.lens_shading = lens_shading;
+        self
+    }
+
     /// Движок поверх кольца снимков. GPU создаётся лениво через `maker`.
     pub fn new(
         config: StillDevelopConfig,
@@ -98,6 +109,7 @@ impl<G: StillGpu> StillEngine<G> {
         Self {
             config,
             tone,
+            lens_shading: LensShadingControl::default(),
             ring,
             clock,
             maker,

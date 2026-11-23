@@ -8,6 +8,8 @@ use isp_model::image::DisplayGamut;
 use isp_model::params::IspParamsVersion;
 use isp_model::statistics::{InvalidAwbStatistics, TileCountMismatch};
 
+use crate::lens_shading_map::{LensShadingMapBufferError, LensShadingMapError};
+
 /// Почему кадр нельзя обработать (или объект нельзя создать).
 #[derive(Debug, PartialEq, thiserror::Error)]
 pub enum ViewfinderError {
@@ -48,6 +50,10 @@ pub enum ViewfinderError {
     /// Буфер статистики прочитан не того размера (внутренняя ошибка).
     #[error("статистика AWB: {0}")]
     AwbTileCount(#[from] TileCountMismatch),
+    /// Карта коррекции виньетирования не помещается в буфер или область слишком мала: коррекция не
+    /// применяется молча, кадр отвергается.
+    #[error("карта виньетирования: {0}")]
+    LensShadingMap(#[from] LensShadingMapError),
     /// Конфигурация не имеет смысла.
     #[error("конфигурация видоискателя: {what}")]
     InvalidConfig {
@@ -65,6 +71,15 @@ pub enum ViewfinderError {
     /// Ошибка GPU-набора.
     #[error("GPU: {0}")]
     Gpu(#[from] GpuError),
+}
+
+impl From<LensShadingMapBufferError> for ViewfinderError {
+    fn from(error: LensShadingMapBufferError) -> Self {
+        match error {
+            LensShadingMapBufferError::Map(map) => Self::LensShadingMap(map),
+            LensShadingMapBufferError::Gpu(gpu) => Self::Gpu(gpu),
+        }
+    }
 }
 
 impl ViewfinderError {

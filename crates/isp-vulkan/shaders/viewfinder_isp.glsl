@@ -1,9 +1,10 @@
 // ISP видоискателя (сессия 07): ОДИН слитый compute-проход RAW → изображение видоискателя.
 //
 // Формулы — эталон `isp-model` (вариант Preview), стадия за стадией, в том же порядке и в f32:
-//   уровни → баланс белого + обрезка → демозаик 2×2 → камера→XYZ D50 → XYZ→экран (два отдельных
+//   уровни → коррекция виньетирования (lens_shading.glsl) → баланс белого + обрезка → демозаик 2×2 → камера→XYZ D50 → XYZ→экран (два отдельных
 //   произведения, как на CPU) → сжатие охвата → тон с сохранением оттенка → OETF sRGB
-// плюс статистика AWB (суммы по плиткам, контракт `isp_model::statistics`) в том же проходе.
+// плюс статистика AWB (суммы по плиткам, контракт `isp_model::statistics`) в том же проходе. Статистика
+// считается ПОСЛЕ коррекции виньетирования и до баланса белого (контракт isp-model).
 //
 // Одна нить = один пиксель ВЫХОДА = одна ячейка CFA 2×2 кадрирования. Выход прямой (upright): нить
 // по координатам выхода находит ячейку сенсора обратным поворотом (ориентация сенсора).
@@ -29,6 +30,7 @@ layout(constant_id = 6) const bool STAGE_GAMUT_COMPRESSION = true;
 layout(constant_id = 7) const bool STAGE_TONE = true;
 layout(constant_id = 8) const bool STAGE_OETF = true;
 layout(constant_id = 9) const bool STAGE_AWB_STATISTICS = true;
+layout(constant_id = 10) const bool STAGE_LENS_SHADING = true;
 
 // --- Параметры кадра (std140, только 32-битные типы: у Adreno 740 нет 16-битного доступа к uniform) ---
 layout(set = 0, binding = 1, std140) uniform ViewfinderParameters {
@@ -45,7 +47,12 @@ layout(set = 0, binding = 1, std140) uniform ViewfinderParameters {
     uvec4 output_geometry;         // x, y — размер выхода; z — поворот сенсора (четверти по часовой); w — шаг строки RAW10, байт
     uvec4 channel_of_position;     // цвет позиции ячейки: 0 — красный, 1 — зелёный, 2 — синий
     uvec4 awb_grid;                // x — столбцов плиток, y — строк плиток
+    uvec4 lens_shading_origin;     // x, y — левый верхний угол полезной области в пикселях буфера (чётный)
 } parameters;
+
+// --- Карта коррекции виньетирования (storage-буфер слота, привязка 4; раскладка — lens_shading.glsl) ---
+#define LENS_SHADING_MAP_BINDING 4
+#include "lens_shading.glsl"
 
 // --- Статистика AWB: плитки по 5 u32 {sum_r, sum_g, sum_b, used_cells, saturated_cells} (isp-model AwbTile) ---
 layout(set = 0, binding = 3, std430) buffer AwbTiles {
@@ -116,6 +123,35 @@ float normalize_sample(uint raw_value, uint position) {
         return normalized;
     }
     return float(raw_value) / parameters.levels_misc.x;
+}
+
+// ===== Стадия 2: коррекция виньетирования (isp_model::lens_shading) ================================
+
+// Умножает четыре отсчёта ячейки на усиление карты — ОДНА билинейная выборка на ячейку в её центре
+// `(x0 + 0,5; y0 + 0,5)` (`isp_model::lens_shading::LensShadingSampling::PerCellCentre`), канал карты —
+// свой у каждого отсчёта. Видоискатель отдаёт один пиксель на ячейку, так что покадровая выборка четырёх
+// отсчётов даёт разницу долей процента (меряется тестом на настоящей калибровке) за вчетверо большую цену.
+// `cell_origin` — левый верхний пиксель ячейки в буфере СЕНСОРА (до любого поворота выхода: нить уже нашла
+// ячейку обратным поворотом, а карта лежит над полезной областью в осях сенсора). Начало полезной области
+// и кадрирования чётные (проверяет Rust: геометрия кратна ячейке 2×2), поэтому ячейка начинается с чётных
+// координат полезной области, а строка отсчёта позиции p в полезной области — чётная при p < 2, нечётная иначе.
+// `sample_count` — сколько позиций реально прочитано (без демозаика и статистики — одна). Выключено
+// (константа) или в буфере заглушка «пропуск» — значения как есть.
+vec4 apply_lens_shading(vec4 normalized, uvec2 cell_origin, uint sample_count) {
+    if (!STAGE_LENS_SHADING || !lens_shading_enabled()) {
+        return normalized;
+    }
+    uvec2 valid_origin = cell_origin - parameters.lens_shading_origin.xy;
+    vec4 gains = lens_shading_gains(lens_shading_axis_cell_centre_x(valid_origin.x),
+                                    lens_shading_axis_cell_centre_y(valid_origin.y));
+    vec4 corrected = normalized;
+    for (uint position = 0u; position < sample_count; ++position) {
+        uint row = position >> 1u;
+        uint map_channel = lens_shading_map_channel(parameters.channel_of_position[position], valid_origin.y + row);
+        precise float shaded = normalized[position] * gains[map_channel];
+        corrected[position] = shaded;
+    }
+    return corrected;
 }
 
 // ===== Статистика AWB (isp_model::statistics) =====================================================
@@ -457,6 +493,8 @@ void main() {
             normalized[2] = normalize_sample(read_raw(origin.x, origin.y + 1u), 2u);
             normalized[3] = normalize_sample(read_raw(origin.x + 1u, origin.y + 1u), 3u);
         }
+        // Коррекция виньетирования — до статистики AWB и до баланса белого (порядок эталона).
+        normalized = apply_lens_shading(normalized, origin, needs_whole_cell ? 4u : 1u);
     }
 
     if (STAGE_AWB_STATISTICS) {

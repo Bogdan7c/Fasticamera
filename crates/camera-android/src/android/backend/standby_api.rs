@@ -123,6 +123,7 @@ impl StandbyCamera for AndroidCameraBackend {
         }
         let env = SessionEnv {
             config: &self.config,
+            lens_shading: &self.lens_shading,
             catalog: &self.catalog,
             events: &self.events,
             diagnostics: &self.diagnostics,

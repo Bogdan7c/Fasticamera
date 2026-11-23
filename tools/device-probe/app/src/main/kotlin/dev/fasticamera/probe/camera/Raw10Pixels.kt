@@ -31,4 +31,27 @@ object Raw10Pixels {
         val low = (lowByte shr (indexInGroup * LOW_BITS_PER_PIXEL)) and LOW_BITS_MASK
         return (high shl LOW_BITS_PER_PIXEL) or low
     }
+
+    /**
+     * Распаковывает одну строку RAW10 ([packedRow] — байты строки, без паддинга) в [output] начиная с [outputOffset].
+     * Массовый вариант [read]: на 12,6 Мпикс поштучное чтение из ByteBuffer было бы слишком медленным.
+     */
+    fun unpackRow(packedRow: ByteArray, width: Int, output: ShortArray, outputOffset: Int) {
+        require(width % PIXELS_PER_GROUP == 0) { "ширина $width не кратна $PIXELS_PER_GROUP" }
+        require(packedRow.size >= width / PIXELS_PER_GROUP * BYTES_PER_GROUP) { "строка ${packedRow.size} байт короче ширины $width" }
+        var packedIndex = 0
+        var outputIndex = outputOffset
+        repeat(width / PIXELS_PER_GROUP) {
+            val lowByte = packedRow[packedIndex + PIXELS_PER_GROUP].toInt() and BYTE_MASK
+            for (pixel in 0 until PIXELS_PER_GROUP) {
+                val high = packedRow[packedIndex + pixel].toInt() and BYTE_MASK
+                val low = (lowByte shr (pixel * LOW_BITS_PER_PIXEL)) and LOW_BITS_MASK
+                output[outputIndex++] = ((high shl LOW_BITS_PER_PIXEL) or low).toShort()
+            }
+            packedIndex += BYTES_PER_GROUP
+        }
+    }
+
+    /** Байт упакованной строки RAW10 без паддинга для ширины [width]. */
+    fun packedRowBytes(width: Int): Int = width / PIXELS_PER_GROUP * BYTES_PER_GROUP
 }

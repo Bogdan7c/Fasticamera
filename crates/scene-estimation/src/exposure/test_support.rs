@@ -18,7 +18,7 @@ use isp_model::demosaic::DemosaicMethod;
 use isp_model::exposure::LuminanceWeights;
 use isp_model::image::DisplayGamut;
 use isp_model::levels::NormalizationLevels;
-use isp_model::params::{FrameInputs, IspParams, LensShadingMapInput, ProcessingControls};
+use isp_model::params::{FrameInputs, IspParams, ProcessingControls};
 use isp_model::sensor::SensorDescription;
 use isp_model::statistics::{AwbStatistics, AwbTile, TileGrid, quantize_sample};
 
@@ -131,10 +131,7 @@ pub(super) fn isp_params_for(neutral: CameraNeutral) -> IspParams {
         color_profile(),
         LensShading::AppliedByVendor,
     );
-    let frame = FrameInputs {
-        levels,
-        lens_shading_map: LensShadingMapInput::NotProvided,
-    };
+    let frame = FrameInputs { levels };
     let controls = ProcessingControls::with_defaults(neutral, DemosaicMethod::Quality, DisplayGamut::Srgb);
     IspParams::resolve(&sensor, &frame, &controls).unwrap()
 }

@@ -2,12 +2,11 @@
 //!
 //! Чистая логика без Vulkan: GPU получает ровно те f32, что эталон `isp-model` подставляет в формулы
 //! (усиления, матрицы, параметры охвата и тона уже разрешены на CPU в `IspParams::resolve`).
-//! Здесь же — честные отказы: параметры не той версии, не тот демозаик, виньетирование, которое GPU
-//! пока не применяет.
+//! Здесь же — честные отказы: параметры не той версии, не тот демозаик. Карта виньетирования
+//! (`params.lens_shading`) уходит в отдельный буфер (`crate::lens_shading_map`), а не в этот блок.
 
 use isp_model::cfa::BayerPattern;
 use isp_model::demosaic::DemosaicMethod;
-use isp_model::lens_shading::LensShadingStep;
 use isp_model::params::{CURRENT_ISP_PARAMS_VERSION, IspParams};
 
 use super::error::QualityError;
@@ -80,12 +79,6 @@ pub(crate) fn check_supported(params: &IspParams) -> Result<(), QualityError> {
                 "демозаик {:?}: качественный конвейер считает только Quality",
                 params.demosaic
             ),
-        });
-    }
-    if let LensShadingStep::Apply(_) = params.lens_shading {
-        return Err(QualityError::UnsupportedParams {
-            what: "карта виньетирования: GPU-конвейер её пока не применяет (на OnePlus 11 это делает вендор)"
-                .to_owned(),
         });
     }
     Ok(())

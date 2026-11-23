@@ -19,6 +19,7 @@
 //! | 14 | 224 | uvec4 | ширина и высота выхода, поворот сенсора (четверти по часовой), шаг строки RAW10 (байт) |
 //! | 15 | 240 | uvec4 | цвет позиции ячейки: 0 — R, 1 — G, 2 — B |
 //! | 16 | 256 | uvec4 | столбцы и строки сетки AWB, 0, 0 |
+//! | 17 | 272 | uvec4 | левый верхний угол полезной области в пикселях буфера (x, y), 0, 0 — смещение координат карты виньетирования |
 //!
 //! Все числа — ровно те f32, что использует эталон (`ToneCurve::parameters`,
 //! `GamutCompression::parameters`, `PixelMatrix::rows`): шейдер ничего не пересчитывает из настроек.
@@ -28,7 +29,6 @@ use gpu_vulkan::swapchain::DisplayColorSpace;
 use isp_model::cfa::{CfaCell, RgbChannel};
 use isp_model::demosaic::DemosaicMethod;
 use isp_model::image::DisplayGamut;
-use isp_model::lens_shading::LensShadingStep;
 use isp_model::params::{CURRENT_ISP_PARAMS_VERSION, IspParams};
 use isp_model::statistics::AwbStatisticsSettings;
 use isp_model::white_balance::SENSOR_CLIP_LEVEL;
@@ -36,8 +36,8 @@ use isp_model::white_balance::SENSOR_CLIP_LEVEL;
 use super::error::ViewfinderError;
 use super::geometry::CheckedGeometry;
 
-/// Размер uniform-блока: 17 строк по 16 байт.
-pub const VIEWFINDER_UNIFORM_BYTES: usize = 17 * 16;
+/// Размер uniform-блока: 18 строк по 16 байт.
+pub const VIEWFINDER_UNIFORM_BYTES: usize = 18 * 16;
 
 /// Позиций в ячейке CFA 2×2.
 const CELL_POSITIONS: usize = 4;
@@ -50,8 +50,9 @@ pub fn gamut_for_display(color_space: DisplayColorSpace) -> DisplayGamut {
     }
 }
 
-/// Проверяет, что параметры собраны для этого прохода: та же версия модели, демозаик Preview,
-/// без коррекции виньетирования картой (на OnePlus 11 её делает вендор) и гамма цели показа.
+/// Проверяет, что параметры собраны для этого прохода: та же версия модели, демозаик Preview и гамма цели
+/// показа. Коррекция виньетирования (`params.lens_shading`) допустима в обоих видах; карту, которая не
+/// поместится в буфер, отвергает подготовка буфера карты.
 pub(crate) fn check_params(params: &IspParams, display: DisplayColorSpace) -> Result<(), ViewfinderError> {
     if params.version != CURRENT_ISP_PARAMS_VERSION {
         return Err(ViewfinderError::ParamsVersionMismatch {
@@ -62,11 +63,6 @@ pub(crate) fn check_params(params: &IspParams, display: DisplayColorSpace) -> Re
     if params.demosaic != DemosaicMethod::Preview {
         return Err(ViewfinderError::UnsupportedParams {
             what: "видоискатель делает только демозаик Preview (2×2)",
-        });
-    }
-    if matches!(params.lens_shading, LensShadingStep::Apply(_)) {
-        return Err(ViewfinderError::UnsupportedParams {
-            what: "коррекция виньетирования картой в видоискателе не реализована (вендор OnePlus 11 применяет её сам)",
         });
     }
     let expected = gamut_for_display(display);
@@ -120,6 +116,8 @@ pub(crate) fn pack_uniforms(
     ]);
     writer.uvec4(position_channels(params).map(|channel| channel.index() as u32));
     writer.uvec4([awb.grid.columns, awb.grid.rows, 0, 0]);
+    // Карта виньетирования лежит над полезной областью, а шейдер адресует пиксели буфера: смещение между ними.
+    writer.uvec4([geometry.valid_area.left, geometry.valid_area.top, 0, 0]);
     writer.finish()
 }
 

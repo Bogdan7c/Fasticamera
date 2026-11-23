@@ -94,7 +94,7 @@ pub struct RefusalCounters {
     pub facts_camera_not_in_catalog: u64,
     /// Кадрирование не построилось.
     pub facts_crop: u64,
-    /// Цвет кадра (сенсор, нейтраль) не построился.
+    /// Цвет кадра (сенсор, нейтраль, карта виньетирования) не построился.
     pub facts_color: u64,
     /// GPU снимков не создался.
     pub gpu_unavailable: u64,

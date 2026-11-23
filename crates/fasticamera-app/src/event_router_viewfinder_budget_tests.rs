@@ -29,11 +29,10 @@ fn stage_budget_measures_each_row_applies_stage_sets_and_restores_the_product() 
     assert_eq!(table.len(), 3, "две строки + «камера без ISP»: {table:?}");
     assert!(table[0].starts_with("tone | 0.10 / 0.10 | 20.0"), "{table:?}");
     assert!(table[0].ends_with("| measured"), "{table:?}");
-    // Весь видоискатель: кадр ISP 1,8 + 0,6 мс против мозаики 0,7 мс.
-    assert!(
-        table[1].starts_with("whole_viewfinder | 1.70 / 1.70 | 20.0"),
-        "{table:?}"
-    );
+    // Весь видоискатель: кадр ISP (1 мс + 0,1 мс на стадию) + 0,6 мс против мозаики 0,7 мс.
+    let whole_viewfinder_ms = (isp_micros(IspStageSet::ALL) + 600 - 700) as f64 / 1_000.0;
+    let whole_viewfinder_row = format!("whole_viewfinder | {whole_viewfinder_ms:.2} / {whole_viewfinder_ms:.2} | 20.0");
+    assert!(table[1].starts_with(&whole_viewfinder_row), "{table:?}");
     assert!(
         table[2].starts_with("camera_without_isp | 0.70 / 1.00 | 500.0"),
         "{table:?}"
@@ -137,7 +136,9 @@ fn endurance_records_every_minute_and_reports_no_throttling_on_a_calm_run() {
     let isp = stages_named(&harness, "minute")[0]["isp_median_ms"]
         .as_f64()
         .expect("ISP");
-    assert!((isp - 1.8).abs() < 1e-9, "{isp}");
+    // Медиана ISP за минуту: 1 мс + 0,1 мс на каждую стадию из списка продукта.
+    let expected_isp_ms = isp_micros(IspStageSet::ALL) as f64 / 1_000.0;
+    assert!((isp - expected_isp_ms).abs() < 1e-9, "{isp} вместо {expected_isp_ms}");
     assert_fits_logcat(&harness, &result);
 }
 

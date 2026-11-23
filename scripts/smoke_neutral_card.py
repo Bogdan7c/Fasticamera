@@ -13,6 +13,12 @@ sRGB / Display P3 (она общая), яркость Y берётся с коэ
 ``log2(Y / display_middle_gray)`` ступеней (EV). Допущение: карта нейтральная (R≈G≈B), поэтому тег
 цветового пространства скриншота на уровень не влияет.
 
+Ровность поля (виньетирование). С 14f ISP полностью исправляет затенение объектива (lens shading): плоская карта
+на весь кадр обязана выйти ровной от центра к углам. Проверка меряет четыре угловые области внутри кадра 4:3
+видоискателя (его положение на экране и размеры областей — ``[neutral_card.flatness]``), линеаризует каждую так же,
+как центр, и считает ``EV = log2(Y_угла / Y_центра)``. Падает, если какой-то угол отклонился больше допуска или
+среднее ``|EV|`` по четырём углам больше допуска; сообщение называет угол.
+
 Пороги и размер области — секция ``[neutral_card]`` в ``smoke_screen.toml`` (менять там, не в коде).
 """
 
@@ -27,6 +33,32 @@ import smoke_screen
 
 
 @dataclass(frozen=True)
+class FlatnessThresholds:
+    """Ровность поля по углам кадра (см. ``smoke_screen.toml``, секция ``[neutral_card.flatness]``)."""
+
+    screen_width_pt: float
+    frame_top_pt: float
+    frame_bottom_pt: float
+    corner_inset_fraction: float
+    corner_region_fraction: float
+    max_corner_ev: float
+    max_mean_ev: float
+
+    def __post_init__(self) -> None:
+        if self.screen_width_pt <= 0:
+            raise smoke_screen.ScreenError("screen_width_pt должна быть положительной")
+        if not 0 <= self.frame_top_pt < self.frame_bottom_pt:
+            raise smoke_screen.ScreenError("кадр видоискателя: ждём 0 <= frame_top_pt < frame_bottom_pt")
+        if self.corner_inset_fraction < 0 or self.corner_region_fraction <= 0:
+            raise smoke_screen.ScreenError("отступ угла не может быть отрицательным, а размер области — нулевым")
+        # Угловые квадраты слева и справа не должны перекрываться друг с другом (а значит, и с центром кадра).
+        if 2 * (self.corner_inset_fraction + self.corner_region_fraction) >= 1.0:
+            raise smoke_screen.ScreenError("угловые области перекрываются: уменьшите отступ или размер")
+        if self.max_corner_ev <= 0 or self.max_mean_ev <= 0:
+            raise smoke_screen.ScreenError("допуски ровности (EV) должны быть положительными")
+
+
+@dataclass(frozen=True)
 class NeutralCardThresholds:
     """Пороги проверки (см. ``smoke_screen.toml``, секция ``[neutral_card]``)."""
 
@@ -36,6 +68,7 @@ class NeutralCardThresholds:
     display_middle_gray: float
     max_middle_gray_error_ev: float
     p3_luminance_coefficients: tuple[float, float, float]
+    flatness: FlatnessThresholds
 
     def __post_init__(self) -> None:
         if not 0.0 < self.region_fraction <= 1.0:
@@ -54,6 +87,7 @@ def parse_thresholds(text: str) -> NeutralCardThresholds:
     """Пороги из текста TOML; нет секции или ключа — ``ScreenError`` с именем."""
     try:
         section = tomllib.loads(text)["neutral_card"]
+        flat = section["flatness"]
         return NeutralCardThresholds(
             region_fraction=float(section["region_fraction"]),
             max_relative_chroma=float(section["max_relative_chroma"]),
@@ -61,6 +95,15 @@ def parse_thresholds(text: str) -> NeutralCardThresholds:
             display_middle_gray=float(section["display_middle_gray"]),
             max_middle_gray_error_ev=float(section["max_middle_gray_error_ev"]),
             p3_luminance_coefficients=tuple(float(c) for c in section["p3_luminance_coefficients"]),  # type: ignore[arg-type]
+            flatness=FlatnessThresholds(
+                screen_width_pt=float(flat["screen_width_pt"]),
+                frame_top_pt=float(flat["frame_top_pt"]),
+                frame_bottom_pt=float(flat["frame_bottom_pt"]),
+                corner_inset_fraction=float(flat["corner_inset_fraction"]),
+                corner_region_fraction=float(flat["corner_region_fraction"]),
+                max_corner_ev=float(flat["max_corner_ev"]),
+                max_mean_ev=float(flat["max_mean_ev"]),
+            ),
         )
     except tomllib.TOMLDecodeError as error:
         raise smoke_screen.ScreenError(f"smoke_screen.toml: не TOML ({error})") from error
@@ -72,11 +115,14 @@ def load_thresholds(path: Path = smoke_screen.THRESHOLDS_FILE) -> NeutralCardThr
     return parse_thresholds(path.read_text(encoding="utf-8"))
 
 
-def center_mean_rgb(screenshot: smoke_screen.Screenshot, region_fraction: float) -> tuple[float, float, float]:
-    """Средние R, G, B квадратной области в центре экрана (сторона — доля меньшей стороны экрана)."""
-    side = max(1, int(min(screenshot.width, screenshot.height) * region_fraction))
-    left = (screenshot.width - side) // 2
-    top = (screenshot.height - side) // 2
+def region_mean_rgb(
+    screenshot: smoke_screen.Screenshot, left: int, top: int, side: int
+) -> tuple[float, float, float]:
+    """Средние R, G, B квадрата ``side`` x ``side`` с левым верхним углом ``(left, top)`` (пиксели экрана)."""
+    if side < 1 or left < 0 or top < 0 or left + side > screenshot.width or top + side > screenshot.height:
+        raise smoke_screen.ScreenError(
+            f"область {side}x{side} в ({left}, {top}) выходит за экран {screenshot.width}x{screenshot.height}"
+        )
     totals = [0, 0, 0]
     row_bytes = screenshot.width * 4
     for row in range(top, top + side):
@@ -87,6 +133,14 @@ def center_mean_rgb(screenshot: smoke_screen.Screenshot, region_fraction: float)
                 totals[channel] += screenshot.rgba[offset + channel]
     count = side * side
     return (totals[0] / count, totals[1] / count, totals[2] / count)
+
+
+def center_mean_rgb(screenshot: smoke_screen.Screenshot, region_fraction: float) -> tuple[float, float, float]:
+    """Средние R, G, B квадратной области в центре экрана (сторона — доля меньшей стороны экрана)."""
+    side = max(1, int(min(screenshot.width, screenshot.height) * region_fraction))
+    left = (screenshot.width - side) // 2
+    top = (screenshot.height - side) // 2
+    return region_mean_rgb(screenshot, left, top, side)
 
 
 def relative_chroma(rgb: tuple[float, float, float]) -> float:
@@ -123,6 +177,65 @@ def middle_gray_error_ev(luminance: float, target: float) -> float:
     return math.log2(luminance / target)
 
 
+CORNER_NAMES = ("левый верхний", "правый верхний", "левый нижний", "правый нижний")
+"""Порядок углов в ``corner_origins`` и в отчёте."""
+
+
+def corner_origins(screenshot: smoke_screen.Screenshot, flatness: FlatnessThresholds) -> tuple[list[tuple[int, int]], int]:
+    """Левые верхние точки четырёх угловых квадратов (в порядке ``CORNER_NAMES``) и сторона квадрата, пиксели.
+
+    Кадр видоискателя занимает всю ширину экрана, по вертикали — от ``frame_top_pt`` до ``frame_bottom_pt``
+    (pt переводятся в пиксели масштабом ширины экрана). Отступ и сторона — доли ширины кадра, поэтому углы
+    лежат внутри кадра, а не на его краю, где виньетка и край окна дают лишний шум.
+    """
+    scale = screenshot.width / flatness.screen_width_pt
+    frame_top = round(flatness.frame_top_pt * scale)
+    frame_bottom = round(flatness.frame_bottom_pt * scale)
+    inset = round(screenshot.width * flatness.corner_inset_fraction)
+    side = max(1, round(screenshot.width * flatness.corner_region_fraction))
+    left_x = inset
+    right_x = screenshot.width - inset - side
+    top_y = frame_top + inset
+    bottom_y = frame_bottom - inset - side
+    return ([(left_x, top_y), (right_x, top_y), (left_x, bottom_y), (right_x, bottom_y)], side)
+
+
+def corner_ev_against_center(
+    screenshot: smoke_screen.Screenshot, thresholds: NeutralCardThresholds, center_luminance: float
+) -> list[float]:
+    """``EV = log2(Y_угла / Y_центра)`` по четырём углам (порядок ``CORNER_NAMES``); чёрный угол — минус бесконечность."""
+    origins, side = corner_origins(screenshot, thresholds.flatness)
+    result: list[float] = []
+    for left, top in origins:
+        rgb = region_mean_rgb(screenshot, left, top, side)
+        luminance = display_luminance(rgb, thresholds.p3_luminance_coefficients)
+        result.append(middle_gray_error_ev(luminance, center_luminance))
+    return result
+
+
+def analyze_flatness(
+    screenshot: smoke_screen.Screenshot, thresholds: NeutralCardThresholds, center_luminance: float, label: str
+) -> smoke_screen.ScreenAnalysis:
+    """Углы кадра против центра: нарушения (с именем угла) и строка с числами."""
+    flatness = thresholds.flatness
+    evs = corner_ev_against_center(screenshot, thresholds, center_luminance)
+    mean_abs_ev = sum(abs(ev) for ev in evs) / len(evs)
+    corners = ", ".join(f"{name} {ev:+.2f}" for name, ev in zip(CORNER_NAMES, evs))
+    note = (
+        f"ровность поля ({label}): углы к центру, EV: {corners}; среднее |EV| {mean_abs_ev:.2f} "
+        f"(допуски: угол ±{flatness.max_corner_ev}, среднее {flatness.max_mean_ev})"
+    )
+    problems = [
+        f"поле не ровное ({label}): {name} угол {ev:+.2f} EV к центру ({'темнее' if ev < 0 else 'светлее'}), "
+        f"допуск ±{flatness.max_corner_ev} EV"
+        for name, ev in zip(CORNER_NAMES, evs)
+        if abs(ev) > flatness.max_corner_ev
+    ]
+    if mean_abs_ev > flatness.max_mean_ev:
+        problems.append(f"поле не ровное ({label}): среднее |EV| углов {mean_abs_ev:.2f} > {flatness.max_mean_ev}")
+    return smoke_screen.ScreenAnalysis(problems, [note])
+
+
 def analyze_neutral_card(
     screenshot: smoke_screen.Screenshot, thresholds: NeutralCardThresholds, label: str
 ) -> smoke_screen.ScreenAnalysis:
@@ -150,7 +263,18 @@ def analyze_neutral_card(
             f"уровень карты не на среднем сером ({label}): {error_ev:+.2f} EV ({direction} цели {thresholds.display_middle_gray}), "
             f"допуск ±{thresholds.max_middle_gray_error_ev} EV"
         )
-    return smoke_screen.ScreenAnalysis(problems, [note])
+    notes = [note]
+    # Ровность судим, только когда центр достаточно светлый: у чёрного центра отношение «угол / центр» бессмысленно.
+    if mean >= thresholds.min_mean_level:
+        try:
+            flat = analyze_flatness(screenshot, thresholds, luminance, label)
+        except smoke_screen.ScreenError as error:
+            # Кадр не помещается в скриншот: говорим прямо, а нарушения цвета и уровня выше не теряем.
+            problems.append(f"ровность поля не измерена ({label}): {error}")
+        else:
+            problems.extend(flat.problems)
+            notes.extend(flat.notes)
+    return smoke_screen.ScreenAnalysis(problems, notes)
 
 
 def neutral_card_post_check(

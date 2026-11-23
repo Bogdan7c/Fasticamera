@@ -51,6 +51,7 @@ pub(super) fn create_camera_painter(
                 mode: headroom_mode,
             },
             tone: config.viewfinder.tone,
+            lens_shading: config.viewfinder.lens_shading.control(),
             continuity: config.viewfinder.continuity,
         },
     )

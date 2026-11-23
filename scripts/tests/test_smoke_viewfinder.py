@@ -345,12 +345,17 @@ class DriverStepsTest(unittest.TestCase):
 THRESHOLDS = smoke_neutral_card.NeutralCardThresholds(
     region_fraction=0.2, max_relative_chroma=0.08, min_mean_level=20.0,
     display_middle_gray=0.20, max_middle_gray_error_ev=0.2, p3_luminance_coefficients=(0.2290, 0.6917, 0.0793),
+    flatness=smoke_neutral_card.FlatnessThresholds(
+        screen_width_pt=440.0, frame_top_pt=186.0, frame_bottom_pt=772.7,
+        corner_inset_fraction=0.05, corner_region_fraction=0.08, max_corner_ev=0.25, max_mean_ev=0.15,
+    ),
 )
 
 
 def card(rgb: tuple[int, int, int]):
-    """Экран: серая «карта» цвета ``rgb`` в центре, вокруг — насыщенно-красная сцена (в область не входит)."""
-    return lambda x, y: rgb if 15 <= x < 25 and 40 <= y < 60 else (200, 30, 30)
+    """Экран: серая «карта» ``rgb`` в центре, рядом с центром — насыщенно-красная полоса (в область центра не
+    входит); углы кадра и всё вне полосы — цвета карты, чтобы проверка ровности поля не мешала этим тестам."""
+    return lambda x, y: (200, 30, 30) if 30 <= y < 64 and not 15 <= x < 25 else rgb
 
 
 class NeutralCardTest(unittest.TestCase):

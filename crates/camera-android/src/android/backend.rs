@@ -27,6 +27,8 @@ use camera_core::request_controls::{AfTrigger, RequestControls};
 use raw_frame_stream::RawFrameProducer;
 
 use crate::characteristics::{CharacteristicsError, parse_characteristics};
+use camera_contract::lens_shading::LensShadingCalibrations;
+
 use crate::config::AndroidCameraConfig;
 use crate::context_leak::leak_contexts_for_process_lifetime;
 use crate::cpu_access_probe::CpuAccessProbe;
@@ -68,6 +70,8 @@ struct CameraRecord {
 /// Бэкенд камеры на Camera2 NDK.
 pub struct AndroidCameraBackend {
     config: AndroidCameraConfig,
+    /// Наши калибровки виньетирования устройства: уходят в паспорта потоков (не в Kotlin-конфиг).
+    lens_shading: LensShadingCalibrations,
     diagnostics: Arc<BackendDiagnostics>,
     events: BackendEventSink,
     /// Вход потока кадров: сюда уходят кадры и результаты запросов (лизинг, сессия 05).
@@ -98,6 +102,7 @@ impl AndroidCameraBackend {
     /// Создаёт бэкенд на потоке камеры: менеджер Camera2 и колбэки доступности.
     pub fn new(
         config: AndroidCameraConfig,
+        lens_shading: LensShadingCalibrations,
         events: BackendEventSink,
         diagnostics: Arc<BackendDiagnostics>,
         producer: RawFrameProducer,
@@ -123,6 +128,7 @@ impl AndroidCameraBackend {
         };
         Ok(Self {
             config,
+            lens_shading,
             retired_readers: Arc::new(RetiredReaders::new(Arc::clone(&diagnostics))),
             diagnostics,
             events,
@@ -192,6 +198,7 @@ impl AndroidCameraBackend {
         };
         let env = SessionEnv {
             config: &self.config,
+            lens_shading: &self.lens_shading,
             catalog: &self.catalog,
             events: &self.events,
             diagnostics: &self.diagnostics,

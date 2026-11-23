@@ -36,7 +36,7 @@ use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::storage_image::StorageImageFormat;
 use isp_model::demosaic::DemosaicMethod;
 use isp_model::image::DisplayGamut;
-use isp_model::params::{FrameInputs, IspParams, LensShadingMapInput, ProcessingControls};
+use isp_model::params::{FrameInputs, IspParams, ProcessingControls};
 use isp_model::test_patterns::color_bars;
 use isp_vulkan::viewfinder::{OutputAllocation, ViewfinderGeometry, ViewfinderStorageFormat};
 use viewfinder_support::{
@@ -173,7 +173,6 @@ fn real_crops_match_reference_within_tolerance() {
             isp_support::real_capture::load_real_capture(&isp_support::assets_dir(), &format!("real-main-lamp-{crop}"));
         let frame = FrameInputs {
             levels: capture.sensor.static_levels(),
-            lens_shading_map: LensShadingMapInput::NotProvided,
         };
         let controls =
             ProcessingControls::with_defaults(capture.neutral, DemosaicMethod::Preview, DisplayGamut::DisplayP3);

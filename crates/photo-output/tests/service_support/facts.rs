@@ -12,6 +12,7 @@ use camera_contract::stream::{FrameRateMechanism, ReadoutAspect, TargetFrameRate
 use camera_contract::three_a::{RequestOrigin, ThreeAResultState};
 use shell_contract::clock::MonotonicNanos;
 use still_contract::frame_choice::FrameChoice;
+use still_contract::lens_shading::{AppliedLensShading, LensShadingNotAppliedReason};
 use still_contract::plan::{PrimaryFormat, RawOutput, StillId, StillOutputs};
 use still_contract::shot::{
     AsShotNeutral, DigitalGainEv, OwnedPixels, RawSamples16, Rgba8Image, StillFrameFacts, StillRotation,
@@ -34,6 +35,10 @@ pub fn facts_for(id: u64, primary: PrimaryFormat, raw: RawOutput) -> Box<StillFr
             top: 0,
             size: buffer_size,
         },
+        sensor_area: camera_contract::lens_shading::ValidAreaOnSensor::whole_active_array(buffer_size),
+        lens_shading: camera_contract::lens_shading::LensShadingCalibrationState::NotCalibrated(
+            camera_contract::lens_shading::NotCalibratedReason::NoCalibrationForCamera,
+        ),
         mosaic: MosaicPattern {
             kind: MosaicKind::Bayer,
             layout: CfaLayout::Bggr,
@@ -81,6 +86,7 @@ pub fn facts_for(id: u64, primary: PrimaryFormat, raw: RawOutput) -> Box<StillFr
         rotation: StillRotation::Clockwise90,
         neutral: AsShotNeutral([0.5, 1.0, 0.6]),
         digital_gain: DigitalGainEv(0.0),
+        lens_shading: AppliedLensShading::NotApplied(LensShadingNotAppliedReason::NotCalibrated),
     })
 }
 

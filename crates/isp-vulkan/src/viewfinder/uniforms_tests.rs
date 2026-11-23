@@ -2,8 +2,10 @@ use ash::vk;
 use camera_contract::geometry::PixelSize;
 use isp_model::cfa::BayerPattern;
 use isp_model::demosaic::DemosaicMethod;
-use isp_model::lens_shading::LensShadingGainMap;
-use isp_model::params::{FrameInputs, IspParamsVersion, LensShadingMapInput, ProcessingControls};
+use std::sync::Arc;
+
+use isp_model::lens_shading::{LensShadingGainMap, LensShadingStep};
+use isp_model::params::{FrameInputs, IspParamsVersion, ProcessingControls};
 use isp_model::statistics::TileGrid;
 
 use super::*;
@@ -15,7 +17,6 @@ fn real_params(gamut: DisplayGamut, demosaic: DemosaicMethod) -> IspParams {
     let capture = support::real_capture::load_real_capture(&support::assets_dir(), "real-main-lamp-gray-tile");
     let frame = FrameInputs {
         levels: capture.sensor.static_levels(),
-        lens_shading_map: LensShadingMapInput::NotProvided,
     };
     let controls = ProcessingControls::with_defaults(capture.neutral, demosaic, gamut);
     IspParams::resolve(&capture.sensor, &frame, &controls).unwrap()
@@ -23,6 +24,11 @@ fn real_params(gamut: DisplayGamut, demosaic: DemosaicMethod) -> IspParams {
 
 fn geometry() -> CheckedGeometry {
     CheckedGeometry {
+        valid_area: PixelRect {
+            left: 2,
+            top: 2,
+            size: PixelSize::new(60, 40),
+        },
         crop: PixelRect {
             left: 2,
             top: 4,
@@ -101,10 +107,16 @@ fn layout_matches_documented_offsets() {
     assert_eq!(words(224), [10, 20, 1, 64]);
     assert_eq!(words(240), [2, 1, 1, 0], "цвета позиций BGGR");
     assert_eq!(words(256), [6, 3, 0, 0]);
+    assert_eq!(
+        words(272),
+        [2, 2, 0, 0],
+        "смещение полезной области для карты виньетирования"
+    );
+    assert_eq!(bytes.len(), 18 * 16);
 }
 
 #[test]
-fn params_for_another_model_gamut_demosaic_or_shading_are_rejected() {
+fn params_for_another_model_or_gamut_are_rejected() {
     let params = real_params(DisplayGamut::DisplayP3, DemosaicMethod::Preview);
     assert_eq!(check_params(&params, DisplayColorSpace::DisplayP3), Ok(()));
     assert!(matches!(
@@ -119,16 +131,18 @@ fn params_for_another_model_gamut_demosaic_or_shading_are_rejected() {
         check_params(&quality, DisplayColorSpace::DisplayP3),
         Err(ViewfinderError::UnsupportedParams { .. })
     ));
-    let mut old = params.clone();
+    let mut old = params;
     old.version = IspParamsVersion(0);
     assert!(matches!(
         check_params(&old, DisplayColorSpace::DisplayP3),
         Err(ViewfinderError::ParamsVersionMismatch { .. })
     ));
-    let mut shaded = params;
-    shaded.lens_shading = LensShadingStep::Apply(LensShadingGainMap::new(2, 2, vec![[1.0; 4]; 4]).unwrap());
-    assert!(matches!(
-        check_params(&shaded, DisplayColorSpace::DisplayP3),
-        Err(ViewfinderError::UnsupportedParams { .. })
-    ));
+}
+
+#[test]
+fn lens_shading_map_in_params_is_accepted() {
+    // Раньше проверка отказывала на `Apply`; теперь карта — штатная часть параметров кадра.
+    let mut shaded = real_params(DisplayGamut::DisplayP3, DemosaicMethod::Preview);
+    shaded.lens_shading = LensShadingStep::Apply(Arc::new(LensShadingGainMap::new(2, 2, vec![[1.0; 4]; 4]).unwrap()));
+    assert_eq!(check_params(&shaded, DisplayColorSpace::DisplayP3), Ok(()));
 }

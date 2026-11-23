@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 mod adpf;
 mod auto_exposure;
 mod continuity;
+mod lens_shading;
 mod present_target;
 mod still;
 mod tone;
@@ -23,6 +24,7 @@ pub use adpf::{AdpfConfig, AdpfConfigError, AdpfMode, MAX_ADPF_GPU_WAIT_FRAMES, 
 
 pub use auto_exposure::{AutoExposureConfig, AutoExposureConfigError};
 pub use continuity::{ContinuityConfig, ContinuityConfigError, RevealExposureCheck};
+pub use lens_shading::{LensShadingMode, ViewfinderLensShadingConfig};
 pub use still::{StillConfigError, StillDevelopConfig};
 pub use tone::{ToneConfigError, ViewfinderToneConfig};
 pub use ui_overlay::{UiOverlayConfig, UiOverlayConfigError};

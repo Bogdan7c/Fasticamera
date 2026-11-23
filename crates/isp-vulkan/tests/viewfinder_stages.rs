@@ -9,10 +9,13 @@
     reason = "в тестах падение и есть способ сообщить о провале"
 )]
 
+mod lens_shading_support;
 mod viewfinder_support;
 
 use camera_contract::geometry::{PixelSize, SensorOrientation};
 use isp_model::cfa::{CfaCell, RgbChannel};
+use isp_model::image::{Mosaic, ShadingCorrectedMosaic, mosaic_stage};
+use isp_model::lens_shading::{LensShadingSampling, apply_lens_shading_with};
 use isp_model::levels::normalize_sample;
 use isp_model::params::IspParams;
 use isp_model::test_patterns::color_bars;
@@ -29,10 +32,24 @@ const HEIGHT: u32 = 32;
 /// Допуск ошибки вычислений сверх шага хранения fp16 (обоснование — `viewfinder_parity.rs`).
 const MATH_EXCESS_TOLERANCE: f32 = 1.0e-5;
 
+/// Усиления виньетирования на каждый отсчёт кадра (видоискатель — по центру ячейки): эталон применяется к
+/// мозаике из единиц, и результат `1,0 · gain` — это точно `gain`.
+fn shading_gains(raw: &RawFrame, params: &IspParams) -> ShadingCorrectedMosaic {
+    let ones = Mosaic::from_samples(
+        PixelSize::new(raw.width, raw.height),
+        raw.pattern,
+        vec![1.0; (raw.width * raw.height) as usize],
+        mosaic_stage::Normalized,
+    )
+    .unwrap();
+    apply_lens_shading_with(&ones, &params.lens_shading, LensShadingSampling::PerCellCentre).0
+}
+
 /// Эмуляция прохода на CPU с семантикой выключенных стадий (таблица в `viewfinder::stages`).
 /// Все стадии включены — ровно `isp_model::pipeline::run_reference` (проверяется отдельно).
 fn emulate(raw: &RawFrame, params: &IspParams, stages: IspStageSet) -> Vec<[f32; 3]> {
     let on = |stage| stages.contains(stage);
+    let shading = shading_gains(raw, params);
     let gains = params.white_balance.as_array();
     let mut pixels = Vec::new();
     for cell_y in 0..raw.height / 2 {
@@ -48,10 +65,15 @@ fn emulate(raw: &RawFrame, params: &IspParams, stages: IspStageSet) -> Vec<[f32;
                 } else {
                     f32::from(value) / params.levels.white()
                 };
-                balanced[position] = if on(IspStage::WhiteBalance) {
-                    (normalized * gains[channel.index()]).min(SENSOR_CLIP_LEVEL)
+                let shaded = if on(IspStage::LensShading) {
+                    normalized * shading.sample(x, y)
                 } else {
                     normalized
+                };
+                balanced[position] = if on(IspStage::WhiteBalance) {
+                    (shaded * gains[channel.index()]).min(SENSOR_CLIP_LEVEL)
+                } else {
+                    shaded
                 };
                 channels[position] = channel;
             }
@@ -113,7 +135,8 @@ fn excess_over_storage(run: &ViewfinderRun, expected: &[[f32; 3]]) -> f32 {
 fn each_stage_off_variant_runs_and_changes_output_as_documented() {
     let Some(context) = gpu_context_or_skip() else { return };
     let spec = ParamsSpec::default();
-    let params = spec.build();
+    // Карта виньетирования в параметрах: иначе стадия «виньетирование» была бы пропущена решением кадра, а не набором.
+    let params = lens_shading_support::with_map(&spec.build(), &lens_shading_support::asymmetric_map(5, 4));
     // Цветные полосы с пересветом в нижних строках: каждая стадия здесь что-то делает.
     let bars = color_bars(PixelSize::new(WIDTH, HEIGHT), 1.0).unwrap();
     let raw = RawFrame::from_linear(WIDTH, HEIGHT, spec.pattern, spec.levels(), |x, y, channel| {

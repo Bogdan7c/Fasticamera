@@ -7,10 +7,14 @@
 // Push-константы (раскладка `PlaneGeometry`, числа-индексы < 2^24 передаются как f32 — точно):
 //   width/height — размер области полосы (ореол включён); cfa_code — раскладка;
 //   pass_parameters.x — левый край области в буфере захвата, .y — верхний край, .z — ширина буфера, отсчёты.
+// Буфер захвата — ПОЛЕЗНАЯ область кадра, поэтому (левый, верхний край) области — её смещение в полезной области
+// (для карты виньетирования; размер полезной области лежит в заголовке карты).
 // Левый и верхний края чётные, поэтому позиция в ячейке 2x2 и цвет фильтра считаются от начала области так же,
 // как от начала всего кадра.
 
 #define FRAME_PARAMS_BINDING 1
+// Буфер карты виньетирования (lens_shading.glsl): привязка 3.
+#define LENS_SHADING_MAP_BINDING 3
 #include "quality_frame_params.glsl"
 
 layout(set = 0, binding = 0, std430) readonly buffer CapturedSamples {
@@ -27,4 +31,10 @@ uint raw_at(uint frame_x, uint frame_y) {
     uint row = frame_y + uint(geometry.pass_parameters.y);
     uint sample_index = row * uint(geometry.pass_parameters.z) + column;
     return (captured.words[sample_index >> 1u] >> ((sample_index & 1u) * 16u)) & 0xFFFFu;
+}
+
+// Координаты в полезной области кадра: область полосы лежит в ней со смещением (левый и верхний края
+// области — pass_parameters.x и .y, оба чётные, поэтому цвет фильтра и чётность строки не меняются).
+uvec2 valid_area_pixel(uint x, uint y) {
+    return uvec2(x + uint(geometry.pass_parameters.x), y + uint(geometry.pass_parameters.y));
 }

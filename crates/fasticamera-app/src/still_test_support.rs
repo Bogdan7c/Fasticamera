@@ -44,6 +44,7 @@ use shell_contract::still_media::{
 };
 use still_contract::develop::{DevelopEvent, PrimaryTarget};
 use still_contract::frame_choice::FrameChoice;
+use still_contract::lens_shading::{AppliedLensShading, LensShadingNotAppliedReason};
 use still_contract::plan::{StillId, StillOutputs, StillPlan};
 use still_contract::shot::{AsShotNeutral, DigitalGainEv, OwnedPixels, Rgba8Image, StillFrameFacts, StillRotation};
 
@@ -440,6 +441,10 @@ pub fn facts_for(id: StillId) -> Box<StillFrameFacts> {
             top: 0,
             size: RAW_SIZE,
         },
+        sensor_area: camera_contract::lens_shading::ValidAreaOnSensor::whole_active_array(RAW_SIZE),
+        lens_shading: camera_contract::lens_shading::LensShadingCalibrationState::NotCalibrated(
+            camera_contract::lens_shading::NotCalibratedReason::NoCalibrationForCamera,
+        ),
         mosaic: MosaicPattern {
             kind: MosaicKind::Bayer,
             layout: CfaLayout::Bggr,
@@ -489,6 +494,7 @@ pub fn facts_for(id: StillId) -> Box<StillFrameFacts> {
         rotation: StillRotation::Clockwise90,
         neutral: AsShotNeutral([0.5, 1.0, 0.6]),
         digital_gain: DigitalGainEv(0.0),
+        lens_shading: AppliedLensShading::NotApplied(LensShadingNotAppliedReason::NotCalibrated),
     })
 }
 

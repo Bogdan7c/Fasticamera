@@ -31,17 +31,17 @@ mod viewfinder_support;
 
 use camera_contract::geometry::{PixelRect, PixelSize, SensorOrientation};
 use isp_model::cfa::BayerPattern;
-use isp_model::image::CameraMosaic;
+use isp_model::image::ShadingCorrectedMosaic;
 use isp_model::statistics::{
-    AwbStatistics, AwbStatisticsSettings, TileGrid, cells_size, compute_awb_statistics, quantize_sample, tile_of_cell,
+    AwbStatistics, TileGrid, cells_size, compute_awb_statistics, quantize_sample, tile_of_cell,
 };
 use isp_vulkan::viewfinder::{
     AwbReduction, AwbReductionPolicy, OutputAllocation, ViewfinderGeometry, ViewfinderIsp, ViewfinderIspConfig,
     ViewfinderStorageFormat, WorkgroupSizeConfig,
 };
 use viewfinder_support::{
-    ParamsSpec, RawFrame, RunRequest, assert_no_validation_errors, gpu_context_or_skip, reference_upright,
-    run_viewfinder, test_config,
+    ParamsSpec, RawFrame, RunRequest, assert_no_validation_errors, boundary_cells, gpu_context_or_skip,
+    reference_upright, run_viewfinder, test_config,
 };
 
 const WIDTH: u32 = 64;
@@ -105,7 +105,7 @@ fn gpu_statistics(
     raw: &RawFrame,
     spec: &ParamsSpec,
     geometry: ViewfinderGeometry,
-) -> (AwbStatistics, CameraMosaic) {
+) -> (AwbStatistics, ShadingCorrectedMosaic) {
     let params = spec.build();
     let request = RunRequest {
         geometry,
@@ -113,7 +113,7 @@ fn gpu_statistics(
     };
     let run = run_viewfinder(context, config, &request);
     let reference = reference_upright(raw, geometry.crop, geometry.sensor_orientation, &params);
-    (run.report.awb_statistics.unwrap(), reference.run.normalized)
+    (run.report.awb_statistics.unwrap(), reference.run.shading_corrected)
 }
 
 fn whole(raw: &RawFrame, orientation: SensorOrientation) -> ViewfinderGeometry {
@@ -218,41 +218,6 @@ fn statistics_equal_reference_exactly_when_level_division_is_exact() {
         }
     }
     assert_no_validation_errors(&context);
-}
-
-/// Ячейки, где ±`ulps` ULP нормированного отсчёта меняют квантование (`quantization`) или пересвет.
-#[derive(Default, Clone, Copy)]
-struct BoundaryCells {
-    quantization: u32,
-    saturation: u32,
-}
-
-fn boundary_cells(normalized: &CameraMosaic, settings: &AwbStatisticsSettings, ulps: u32) -> Vec<BoundaryCells> {
-    let grid = settings.grid;
-    let cells = cells_size(normalized.size());
-    let mut per_tile = vec![BoundaryCells::default(); (grid.columns * grid.rows) as usize];
-    for cell_y in 0..cells.height {
-        for cell_x in 0..cells.width {
-            let (column, row) = tile_of_cell(cell_x, cell_y, cells, grid);
-            let tile = &mut per_tile[(row * grid.columns + column) as usize];
-            let mut quantization = false;
-            let mut saturation = false;
-            for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-                let value = normalized.sample(cell_x * 2 + dx, cell_y * 2 + dy);
-                for neighbour in [
-                    f32::from_bits(value.to_bits().saturating_sub(ulps)),
-                    f32::from_bits(value.to_bits() + ulps),
-                ] {
-                    quantization |= quantize_sample(neighbour) != quantize_sample(value);
-                    let threshold = settings.saturation_threshold;
-                    saturation |= (neighbour < threshold) != (value < threshold);
-                }
-            }
-            tile.quantization += u32::from(quantization);
-            tile.saturation += u32::from(saturation);
-        }
-    }
-    per_tile
 }
 
 /// Все значения RAW от чёрного до белого без самого белого (64…1022) по кругу, в разных позициях CFA.

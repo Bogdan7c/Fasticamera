@@ -1,16 +1,19 @@
+use std::sync::Arc;
+
 use camera_contract::capabilities::LensShading;
 use camera_contract::frame_passport::CaptureColorHints;
+use camera_contract::geometry::{PixelRect, PixelSize};
 
-use super::{
-    CURRENT_ISP_PARAMS_VERSION, FrameInputs, IspParams, LensShadingMapInput, ProcessingControls, ResolveError,
-};
+use super::{CURRENT_ISP_PARAMS_VERSION, FrameInputs, IspParams, ProcessingControls, ResolveError};
 use crate::color::chromaticity::Chromaticity;
 use crate::color::dng::CameraNeutral;
 use crate::demosaic::DemosaicMethod;
 use crate::image::DisplayGamut;
-use crate::lens_shading::{LensShadingGainMap, LensShadingSkipReason, LensShadingStep};
+use crate::lens_shading::{CorrectionStrength, LensShadingControl, LensShadingSkipReason, LensShadingStep};
 use crate::sensor::SensorDescription;
-use crate::test_support::{lamp_neutral, main_camera_calibration, main_camera_passport};
+use crate::test_support::{
+    MAIN_ACTIVE_ARRAY, calibrated_passport, lamp_neutral, main_camera_calibration, main_camera_passport,
+};
 use crate::tone::{InvalidToneCurve, ToneCurveSettings};
 
 fn main_sensor() -> SensorDescription {
@@ -82,21 +85,66 @@ fn params_carry_version_pattern_levels_and_choices() {
     assert_eq!(params.color.gamut(), DisplayGamut::Srgb);
 }
 
-#[test]
-fn vendor_corrected_shading_is_skipped_even_when_map_is_provided() {
-    let sensor = main_sensor();
-    assert_eq!(sensor.vendor_lens_shading(), LensShading::AppliedByVendor);
-    let map = LensShadingGainMap::new(2, 2, vec![[2.0; 4]; 4]).unwrap();
-    let frame = FrameInputs {
-        levels: sensor.static_levels(),
-        lens_shading_map: LensShadingMapInput::Provided(map),
-    };
-    let controls = ProcessingControls::with_defaults(lamp_neutral(), DemosaicMethod::Preview, DisplayGamut::Srgb);
-    let params = IspParams::resolve(&sensor, &frame, &controls).unwrap();
-    assert_eq!(
-        params.lens_shading,
-        LensShadingStep::Skip(LensShadingSkipReason::VendorAlreadyApplied)
+fn calibrated_sensor() -> SensorDescription {
+    let passport = calibrated_passport(
+        PixelSize::new(64, 48),
+        PixelRect {
+            left: 0,
+            top: 0,
+            size: MAIN_ACTIVE_ARRAY,
+        },
     );
+    SensorDescription::from_stream_passport(&passport, &main_camera_calibration()).unwrap()
+}
+
+fn resolve_shading(sensor: &SensorDescription, control: LensShadingControl) -> LensShadingStep {
+    let frame = FrameInputs::from_capture_hints(sensor, &CaptureColorHints::default()).unwrap();
+    let controls = ProcessingControls {
+        lens_shading: control,
+        ..ProcessingControls::with_defaults(lamp_neutral(), DemosaicMethod::Preview, DisplayGamut::Srgb)
+    };
+    IspParams::resolve(sensor, &frame, &controls).unwrap().lens_shading
+}
+
+#[test]
+fn vendor_flag_does_not_gate_our_correction_calibration_does() {
+    // Паспорт сообщает «вендор применил частично», но калибровка есть — коррекция включается.
+    let sensor = calibrated_sensor();
+    assert_eq!(sensor.vendor_lens_shading(), LensShading::AppliedByVendor);
+    let step = resolve_shading(&sensor, LensShadingControl::default());
+    let LensShadingStep::Apply(map) = step else {
+        panic!("ожидали Apply, получили {step:?}");
+    };
+    assert!(
+        Arc::ptr_eq(&map, sensor.lens_shading_map().unwrap()),
+        "карта потока общая"
+    );
+    // Без калибровки (тот же флаг вендора) стадия пропускается с причиной.
+    assert_eq!(
+        resolve_shading(&main_sensor(), LensShadingControl::default()),
+        LensShadingStep::Skip(LensShadingSkipReason::NotCalibrated)
+    );
+}
+
+#[test]
+fn lens_shading_control_changes_the_resolved_step() {
+    let sensor = calibrated_sensor();
+    assert_eq!(
+        resolve_shading(&sensor, LensShadingControl::Disabled),
+        LensShadingStep::Skip(LensShadingSkipReason::DisabledByControl)
+    );
+    let full = resolve_shading(&sensor, LensShadingControl::Enabled(CorrectionStrength::FULL));
+    let half = resolve_shading(
+        &sensor,
+        LensShadingControl::Enabled(CorrectionStrength::new(0.5).unwrap()),
+    );
+    let (LensShadingStep::Apply(full_map), LensShadingStep::Apply(half_map)) = (full, half) else {
+        panic!("обе силы включают стадию");
+    };
+    assert_ne!(full_map, half_map, "смена силы меняет параметры");
+    let (full_gain, half_gain) = (full_map.points()[0][0], half_map.points()[0][0]);
+    assert!(full_gain > 1.0, "угол калибровки светлее центра: {full_gain}");
+    assert_eq!(half_gain, 1.0 + (full_gain - 1.0) * 0.5);
 }
 
 #[test]
