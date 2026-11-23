@@ -22,6 +22,14 @@
 //! как `Arc`: видоискатель и снимок одного потока получают ту же карту. Режим и сила коррекции
 //! (`viewfinder.lens_shading`) входят в ключ пересчёта: их смена пересчитывает параметры.
 //!
+//! # Вид картинки (ручки и пресет)
+//! Значения вида (`LookSettings`, решение 178) входят в ключ пересчёта: смена вида пересчитывает параметры на
+//! следующем кадре, повтор тех же значений — нет. Вид не касается статистики AE и AWB (они меряют честную базу,
+//! инвариант 1) и не меняет описание сенсора. Снимок строит свой кэш и берёт вид из плана снимка, а не из
+//! видоискателя (`with_look`, инвариант 3). Модель вида (`viewfinder.look_model`: как ручки переводятся в формулы)
+//! постоянна на жизнь кэша (`with_look_model`), как тон. Вид входит в `ProcessingControls` в одном месте —
+//! [`processing_look`]; сами формулы разрешает `IspParams::resolve`.
+//!
 //! # Привязка к потоку
 //! Подсказки и параметры — данные КАДРОВ одного потока, поэтому годятся только для потока, из
 //! кадров которого получены. Поток = сессия камеры = один `Arc<StreamPassport>` (лизинг создаёт его
@@ -45,11 +53,24 @@ use isp_model::demosaic::DemosaicMethod;
 use isp_model::exposure::ExposureGain;
 use isp_model::image::DisplayGamut;
 use isp_model::lens_shading::LensShadingControl;
+use isp_model::look::LookControls;
+use isp_model::look::model::LookModelSettings;
 use isp_model::params::{FrameInputs, IspParams, ProcessingControls};
 use isp_model::sensor::SensorDescription;
 use isp_model::tone::ToneCurveSettings;
+use isp_model::tone::base::ToneBase;
+use look_contract::LookSettings;
 
 use crate::config::ViewfinderToneConfig;
+
+/// Изменился ли вид картинки после [`IspParamsCache::set_look`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LookChange {
+    /// Значения другие: параметры будут пересчитаны на следующем кадре.
+    Changed,
+    /// Те же значения: ничего не изменилось, лишнего пересчёта не будет.
+    Unchanged,
+}
 
 /// Откуда взяты подсказки кадра.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,6 +150,9 @@ struct ResolvedInputs {
     /// Управление виньетированием, под которое посчитаны параметры: смена режима или силы пересчитывает их
     /// (сила — покадровое управление, позже её сможет менять политика «ослаблять при слабом свете»).
     lens_shading: LensShadingControl,
+    /// Вид картинки, под который посчитаны параметры: смена значений пересчитывает их (сравнение по значениям,
+    /// а не по указателю: повторная команда с теми же ручками не должна вызывать пересчёт).
+    look: Arc<LookSettings>,
 }
 
 /// Всё, что выведено из кадров ОДНОГО потока (см. «Привязка к потоку»).
@@ -151,16 +175,23 @@ impl StreamBoundState {
     }
 }
 
-/// Входы обработки, постоянные на жизнь кэша. Тон в ключ пересчёта не входит; управление виньетированием
-/// входит (копия лежит в `ResolvedInputs`): его можно сменить на ходу.
-#[derive(Debug, Clone, Copy)]
+/// Входы обработки. Тон в ключ пересчёта не входит и постоянен на жизнь кэша; управление виньетированием и вид
+/// картинки входят (копии лежат в `ResolvedInputs`): их можно сменить на ходу.
+#[derive(Debug, Clone)]
 struct ProcessingRecipe {
     /// Каким демозаиком будут считаться кадры (видоискатель — `Preview`, стенд V4 — `Quality`).
     demosaic: DemosaicMethod,
     /// Настройки кривой тона до подтяжки AE: ручки `viewfinder.tone` поверх умолчания `isp-model`.
     tone: ToneCurveSettings,
+    /// Основа тона из того же конфига (`viewfinder.tone.base`): видоискатель и снимок разрешают одну и ту же.
+    tone_base: ToneBase,
     /// Коррекция виньетирования (`viewfinder.lens_shading`): по умолчанию полная.
     lens_shading: LensShadingControl,
+    /// Вид картинки (решение 178): у видоискателя меняется командой `SetLook`, у снимка задан планом.
+    look: Arc<LookSettings>,
+    /// Модель вида (`viewfinder.look_model`): правила перевода ручек в формулы, одна на видоискатель и снимок.
+    /// Постоянна на жизнь кэша (как тон), поэтому в ключ пересчёта не входит.
+    look_model: Arc<LookModelSettings>,
 }
 
 /// Кэш параметров ISP одной сессии показа.
@@ -186,7 +217,10 @@ impl IspParamsCache {
             recipe: ProcessingRecipe {
                 demosaic,
                 tone: ViewfinderToneConfig::default().curve_settings(),
+                tone_base: ViewfinderToneConfig::default().tone_base(),
                 lens_shading: LensShadingControl::default(),
+                look: Arc::new(LookSettings::NEUTRAL),
+                look_model: Arc::new(LookModelSettings::default()),
             },
             sensor: None,
             bound: None,
@@ -200,6 +234,7 @@ impl IspParamsCache {
         Self {
             recipe: ProcessingRecipe {
                 tone: tone.curve_settings(),
+                tone_base: tone.tone_base(),
                 ..self.recipe
             },
             bound: None,
@@ -218,6 +253,43 @@ impl IspParamsCache {
             bound: None,
             ..self
         }
+    }
+
+    /// Тот же кэш с видом картинки; как `with_tone`, вызывается до первого кадра (сессия видоискателя берёт вид из
+    /// настроек, снимок — из плана снимка).
+    pub fn with_look(self, look: Arc<LookSettings>) -> Self {
+        Self {
+            recipe: ProcessingRecipe { look, ..self.recipe },
+            bound: None,
+            ..self
+        }
+    }
+
+    /// Тот же кэш с моделью вида из конфига (`viewfinder.look_model`); как `with_tone`, вызывается до первого кадра.
+    pub fn with_look_model(self, look_model: Arc<LookModelSettings>) -> Self {
+        Self {
+            recipe: ProcessingRecipe {
+                look_model,
+                ..self.recipe
+            },
+            bound: None,
+            ..self
+        }
+    }
+
+    /// Меняет вид картинки на ходу (команда `SetLook`): следующий `prepare` пересчитает параметры потока, если
+    /// значения действительно другие; подсказки кадров остаются. Возвращает, изменился ли вид.
+    pub fn set_look(&mut self, look: Arc<LookSettings>) -> LookChange {
+        if *self.recipe.look == *look {
+            return LookChange::Unchanged;
+        }
+        self.recipe.look = look;
+        LookChange::Changed
+    }
+
+    /// Вид, под который кэш считает параметры сейчас.
+    pub fn look(&self) -> &LookSettings {
+        &self.recipe.look
     }
 
     /// Меняет управление виньетированием на ходу: следующий `prepare` пересчитает параметры потока (ключ кэша
@@ -297,6 +369,23 @@ impl IspParamsCache {
     }
 }
 
+/// Единственное место, где вид картинки входит во входы обработки кадра (решение 178).
+///
+/// Видоискатель и снимок проходят здесь одной дорогой: `look` — значения ручек (у видоискателя — последняя
+/// команда `SetLook`, у снимка — план на момент нажатия), `model` — правила перевода ручек в формулы. Сами формулы
+/// (ручки тона на кривой основы, сдвиг белого для рисования, цвет вида в OKLab) разрешает `IspParams::resolve`:
+/// AE и статистика при этом остаются на честной нейтрали AWB.
+fn processing_look(
+    controls: ProcessingControls,
+    look: &LookSettings,
+    model: &Arc<LookModelSettings>,
+) -> ProcessingControls {
+    ProcessingControls {
+        look: LookControls::new(look.clone(), Arc::clone(model)),
+        ..controls
+    }
+}
+
 /// Состояние потока кадра: кадр другого потока (другой `Arc`) начинает его с чистого листа.
 fn bind_to_stream<'a>(
     bound: &'a mut Option<StreamBoundState>,
@@ -327,6 +416,7 @@ impl StreamBoundState {
             gamut,
             exposure_gain,
             lens_shading: recipe.lens_shading,
+            look: Arc::clone(&recipe.look),
         };
         if self.current.as_ref().is_some_and(|(current, _)| *current == inputs) {
             return Ok(ParamsOutcome::Unchanged);
@@ -341,10 +431,12 @@ impl StreamBoundState {
             .map_err(|error| ParamsFailure::InvalidNeutral(error.to_string()))?;
         let controls = ProcessingControls {
             tone: recipe.tone,
+            tone_base: recipe.tone_base,
             exposure_gain,
             lens_shading: recipe.lens_shading,
             ..ProcessingControls::with_defaults(camera_neutral, recipe.demosaic, gamut)
         };
+        let controls = processing_look(controls, &recipe.look, &recipe.look_model);
         let params =
             IspParams::resolve(sensor, &frame, &controls).map_err(|error| ParamsFailure::Resolve(error.to_string()))?;
         self.current = Some((inputs, params));
@@ -393,3 +485,7 @@ mod tests;
 #[cfg(test)]
 #[path = "isp_params_lens_shading_tests.rs"]
 mod lens_shading_tests;
+
+#[cfg(test)]
+#[path = "isp_params_look_tests.rs"]
+mod look_tests;

@@ -16,6 +16,7 @@
 //!   (разовые GPU-проверки на `gpu-vulkan`) и приёмник `logging::logcat_sink`.
 
 pub mod ae_trace_scenario_config;
+pub mod app_directory;
 pub mod auto_exposure_link;
 pub mod build_info;
 pub mod camera_config;
@@ -56,6 +57,11 @@ mod gpu_test_support;
 pub mod jni_boundary;
 pub mod lens_shading_profile;
 pub mod logging;
+pub mod look_effects;
+pub mod look_service;
+pub mod look_startup;
+#[cfg(test)]
+mod look_test_support;
 #[cfg(test)]
 mod operator_prompt_fake;
 #[cfg(test)]

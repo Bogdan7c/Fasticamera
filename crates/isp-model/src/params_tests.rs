@@ -10,6 +10,7 @@ use crate::color::dng::CameraNeutral;
 use crate::demosaic::DemosaicMethod;
 use crate::image::DisplayGamut;
 use crate::lens_shading::{CorrectionStrength, LensShadingControl, LensShadingSkipReason, LensShadingStep};
+use crate::output::{OutputBitDepth, OutputProfile, OutputRendering, UnsupportedOutputProfile};
 use crate::sensor::SensorDescription;
 use crate::test_support::{
     MAIN_ACTIVE_ARRAY, calibrated_passport, lamp_neutral, main_camera_calibration, main_camera_passport,
@@ -26,7 +27,7 @@ fn resolve_for(neutral: CameraNeutral, gamut: DisplayGamut) -> IspParams {
     IspParams::resolve(
         &sensor,
         &frame,
-        &ProcessingControls::with_defaults(neutral, DemosaicMethod::Quality, gamut),
+        &ProcessingControls::with_defaults(neutral, DemosaicMethod::Quality, gamut).with_legacy_tone(),
     )
     .unwrap()
 }
@@ -85,6 +86,60 @@ fn params_carry_version_pattern_levels_and_choices() {
     assert_eq!(params.color.gamut(), DisplayGamut::Srgb);
 }
 
+fn resolve_with_profile(profile: OutputProfile) -> Result<IspParams, ResolveError> {
+    let sensor = main_sensor();
+    let frame = FrameInputs::from_capture_hints(&sensor, &CaptureColorHints::default()).unwrap();
+    let controls = ProcessingControls::with_defaults(lamp_neutral(), DemosaicMethod::Quality, DisplayGamut::Srgb)
+        .with_output_profile(profile);
+    IspParams::resolve(&sensor, &frame, &controls)
+}
+
+#[test]
+fn params_carry_the_output_profile_and_derive_the_output_gamut_from_it() {
+    for (profile, gamut) in [
+        (OutputProfile::srgb(), DisplayGamut::Srgb),
+        (OutputProfile::display_p3(), DisplayGamut::DisplayP3),
+    ] {
+        let params = resolve_with_profile(profile).unwrap();
+        assert_eq!(params.output_profile, profile);
+        assert_eq!(params.color.gamut(), gamut);
+    }
+    // Разные профили дают разные матрицы «XYZ → цвета выхода»: охват действительно берётся из профиля.
+    let srgb = resolve_with_profile(OutputProfile::srgb()).unwrap();
+    let display_p3 = resolve_with_profile(OutputProfile::display_p3()).unwrap();
+    assert_ne!(srgb.color.xyz_d50_to_scene(), display_p3.color.xyz_d50_to_scene());
+}
+
+#[test]
+fn with_defaults_gamut_is_the_sdr_profile_of_that_gamut() {
+    let sensor = main_sensor();
+    let frame = FrameInputs::from_capture_hints(&sensor, &CaptureColorHints::default()).unwrap();
+    let by_gamut = ProcessingControls::with_defaults(lamp_neutral(), DemosaicMethod::Quality, DisplayGamut::DisplayP3);
+    let by_profile = by_gamut.clone().with_output_profile(OutputProfile::display_p3());
+    assert_eq!(
+        IspParams::resolve(&sensor, &frame, &by_gamut).unwrap(),
+        IspParams::resolve(&sensor, &frame, &by_profile).unwrap()
+    );
+}
+
+#[test]
+fn unsupported_output_profiles_are_refused_with_a_distinct_error() {
+    for rendering in [OutputRendering::SceneLog, OutputRendering::Hdr] {
+        assert_eq!(
+            resolve_with_profile(OutputProfile::display_p3().with_rendering(rendering)),
+            Err(ResolveError::OutputProfile(UnsupportedOutputProfile::Rendering(
+                rendering
+            )))
+        );
+    }
+    assert_eq!(
+        resolve_with_profile(OutputProfile::srgb().with_bit_depth(OutputBitDepth::Ten)),
+        Err(ResolveError::OutputProfile(UnsupportedOutputProfile::BitDepth(
+            OutputBitDepth::Ten
+        )))
+    );
+}
+
 fn calibrated_sensor() -> SensorDescription {
     let passport = calibrated_passport(
         PixelSize::new(64, 48),
@@ -102,6 +157,7 @@ fn resolve_shading(sensor: &SensorDescription, control: LensShadingControl) -> L
     let controls = ProcessingControls {
         lens_shading: control,
         ..ProcessingControls::with_defaults(lamp_neutral(), DemosaicMethod::Preview, DisplayGamut::Srgb)
+            .with_legacy_tone()
     };
     IspParams::resolve(sensor, &frame, &controls).unwrap().lens_shading
 }
@@ -151,7 +207,8 @@ fn lens_shading_control_changes_the_resolved_step() {
 fn invalid_tone_settings_surface_as_resolve_error() {
     let sensor = main_sensor();
     let frame = FrameInputs::from_capture_hints(&sensor, &CaptureColorHints::default()).unwrap();
-    let mut controls = ProcessingControls::with_defaults(lamp_neutral(), DemosaicMethod::Preview, DisplayGamut::Srgb);
+    let mut controls = ProcessingControls::with_defaults(lamp_neutral(), DemosaicMethod::Preview, DisplayGamut::Srgb)
+        .with_legacy_tone();
     controls.tone = ToneCurveSettings {
         contrast: -1.0,
         ..ToneCurveSettings::default()

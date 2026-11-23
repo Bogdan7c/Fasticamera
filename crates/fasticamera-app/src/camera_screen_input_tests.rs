@@ -125,6 +125,21 @@ fn overflowed_actions_are_counted_without_owing_a_gap() {
 }
 
 #[test]
+fn look_intents_overflow_like_any_other_action_and_are_counted() {
+    // Намерение по виду идёт тем же каналом действий: полная очередь — счётчик потерь, а не особый путь.
+    let (sender, mut receiver) = screen_input_channel(1);
+    let first = ScreenAction::Look(look_contract::LookIntent::DiscardEdits);
+    let second = ScreenAction::Look(look_contract::LookIntent::SetLook(
+        crate::look_test_support::contrast_look(0.5),
+    ));
+    assert_eq!(sender.send_action(first.clone()), InputDelivery::Queued);
+    assert_eq!(sender.send_action(second), InputDelivery::Overflowed);
+    assert!(!sender.owes_gap(), "потеря намерения жесты не ломает");
+    assert_eq!(drain(&mut receiver), vec![ScreenInput::Action(first)]);
+    assert_eq!(sender.stats().overflowed_actions, 1);
+}
+
+#[test]
 fn injector_clone_feeds_the_same_queue_and_counters() {
     let (sender, mut receiver) = screen_input_channel(4);
     let injector = sender.injector();

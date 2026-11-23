@@ -9,6 +9,8 @@ publish.workspace = true
 
 [dependencies]
 camera-contract.workspace = true
+# Значения вида картинки на момент нажатия — часть плана снимка (инвариант 3, решение 99).
+look-contract.workspace = true
 shell-contract.workspace = true
 serde.workspace = true
 thiserror.workspace = true

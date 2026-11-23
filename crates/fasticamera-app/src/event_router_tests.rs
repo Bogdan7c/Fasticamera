@@ -368,6 +368,7 @@ fn build_harness_with_camera(
             ..Default::default()
         },
         capture: crate::capture_backend::CaptureWiring::Fake,
+        look: None,
     });
     Harness {
         router,

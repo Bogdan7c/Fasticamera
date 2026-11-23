@@ -5,7 +5,8 @@
 //!
 //! ```text
 //! cargo run -p isp-model --release --example render_capture -- <каталог> full-main-lamp out.ppm \
-//!     [--demosaic preview|quality] [--gamut srgb|display-p3] [--scene-middle-gray 0.09] [--contrast 1.35]
+//!     [--demosaic preview|quality] [--gamut srgb|display-p3] [--scene-middle-gray 0.09] [--contrast 1.35] \
+//!     [--tone-base legacy|agx|aces|filmic]
 //! ```
 //!
 //! Это инструмент разработчика, не часть продукта: ошибки ввода — паника с понятным текстом.
@@ -27,7 +28,11 @@ use std::time::Instant;
 use isp_model::demosaic::DemosaicMethod;
 use isp_model::image::DisplayGamut;
 use isp_model::params::{FrameInputs, IspParams, ProcessingControls};
-use isp_model::pipeline::run_reference;
+use isp_model::pipeline::run_reference_encoded;
+use isp_model::tone::aces::AcesSettings;
+use isp_model::tone::agx_settings::AgxSettings;
+use isp_model::tone::base::ToneBase;
+use isp_model::tone::filmic::FilmicSettings;
 use support::real_capture::load_real_capture;
 
 /// Аргументы командной строки.
@@ -39,6 +44,16 @@ struct RenderArgs {
     gamut: DisplayGamut,
     scene_middle_gray: Option<f32>,
     contrast: Option<f32>,
+    tone_base: ToneBaseChoice,
+}
+
+/// Основа тона с командной строки.
+#[derive(Clone, Copy)]
+enum ToneBaseChoice {
+    Legacy,
+    Agx,
+    Aces,
+    Filmic,
 }
 
 fn parse_args() -> RenderArgs {
@@ -47,6 +62,7 @@ fn parse_args() -> RenderArgs {
     let mut gamut = DisplayGamut::Srgb;
     let mut scene_middle_gray = None;
     let mut contrast = None;
+    let mut tone_base = ToneBaseChoice::Legacy;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut value = || args.next().unwrap_or_else(|| panic!("у {arg} нет значения"));
@@ -66,6 +82,15 @@ fn parse_args() -> RenderArgs {
                 }
             }
             "--scene-middle-gray" => scene_middle_gray = Some(value().parse().expect("число")),
+            "--tone-base" => {
+                tone_base = match value().as_str() {
+                    "legacy" => ToneBaseChoice::Legacy,
+                    "agx" => ToneBaseChoice::Agx,
+                    "aces" => ToneBaseChoice::Aces,
+                    "filmic" => ToneBaseChoice::Filmic,
+                    other => panic!("основа {other}: ожидалось legacy, agx, aces или filmic"),
+                }
+            }
             "--contrast" => contrast = Some(value().parse().expect("число")),
             _ => positional.push(arg),
         }
@@ -80,6 +105,7 @@ fn parse_args() -> RenderArgs {
         gamut,
         scene_middle_gray,
         contrast,
+        tone_base,
     }
 }
 
@@ -96,6 +122,20 @@ fn write_ppm16(path: &PathBuf, width: u32, height: u32, pixels: &[[f32; 3]]) {
     }
 }
 
+/// Средняя насыщенность HSV `(max − min)/max` по пикселям с max > 0.
+fn mean_hsv_saturation(pixels: &[[f32; 3]]) -> f64 {
+    let (sum, count) = pixels.iter().fold((0.0_f64, 0_u64), |(sum, count), pixel| {
+        let max = pixel[0].max(pixel[1]).max(pixel[2]);
+        let min = pixel[0].min(pixel[1]).min(pixel[2]);
+        if max > 0.0 {
+            (sum + f64::from((max - min) / max), count + 1)
+        } else {
+            (sum, count)
+        }
+    });
+    sum / count.max(1) as f64
+}
+
 fn main() {
     let args = parse_args();
     let capture = load_real_capture(&args.dir, &args.name);
@@ -109,12 +149,22 @@ fn main() {
     if let Some(contrast) = args.contrast {
         controls.tone.contrast = contrast;
     }
-    let params = IspParams::resolve(&capture.sensor, &frame, &controls).expect("параметры");
+    let base = match args.tone_base {
+        ToneBaseChoice::Legacy => ToneBase::Legacy,
+        ToneBaseChoice::Agx => ToneBase::Agx(AgxSettings::default()),
+        ToneBaseChoice::Aces => ToneBase::Aces(AcesSettings::default()),
+        ToneBaseChoice::Filmic => ToneBase::Filmic(FilmicSettings::default()),
+    };
+    let params = IspParams::resolve_with_base(&capture.sensor, &frame, &controls, &base).expect("параметры");
     let started = Instant::now();
-    let run = run_reference(&capture.raw, &params).expect("конвейер");
+    let encoded = run_reference_encoded(&capture.raw, &params).expect("конвейер");
     let elapsed = started.elapsed();
-    let size = run.display_encoded.size();
-    write_ppm16(&args.output, size.width, size.height, run.display_encoded.pixels());
+    let size = encoded.size();
+    write_ppm16(&args.output, size.width, size.height, encoded.pixels());
+    println!(
+        "средняя насыщенность HSV выхода: {:.4}",
+        mean_hsv_saturation(encoded.pixels())
+    );
     println!(
         "{}×{} {:?} {:?}: белая точка {:?}, {:.0} K, {:?}; эталон {:.2} с",
         size.width,

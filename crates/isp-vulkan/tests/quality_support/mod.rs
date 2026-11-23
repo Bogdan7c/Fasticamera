@@ -16,8 +16,18 @@ use ash::vk;
 use gpu_vulkan::context::{GpuContext, GpuContextConfig};
 use gpu_vulkan::device::DeviceProfile;
 use gpu_vulkan::device_buffer::DeviceBuffer;
+use gpu_vulkan::frame_sink::{FrameSink, OffscreenFrameSink, OffscreenFrameSinkDesc};
+use gpu_vulkan::hardware_buffer_cache::queue_handoff::ConsumerStage;
+use gpu_vulkan::kit_test_support::{read_storage_image_rgba, run_one_shot_blocking};
+use gpu_vulkan::raw_mosaic_preview::{MosaicSource, ValidArea};
 use gpu_vulkan::validation::ValidationMode;
+use isp_model::image::RawMosaic;
+use isp_model::params::IspParams;
 use isp_vulkan::quality::LinearRgbPlanes;
+use isp_vulkan::quality::{
+    HeadroomRecordOutcome, QualityError, QualityOutputFormat, StreamGeneration, TemporalDenoiseConfig, VideoFrameInput,
+    VideoHeadroomConfig, VideoHeadroomWorkload,
+};
 
 const SKIP_ENV: &str = "FASTICAMERA_SKIP_GPU_TESTS";
 
@@ -118,5 +128,95 @@ impl NoiseSource {
         let first = self.uniform().max(1e-7);
         let second = self.uniform();
         (-2.0 * first.ln()).sqrt() * (2.0 * std::f32::consts::PI * second).cos()
+    }
+}
+
+pub fn workload_config() -> VideoHeadroomConfig {
+    VideoHeadroomConfig {
+        frame_slots: 1,
+        output_format: QualityOutputFormat::HalfFloat,
+        temporal_denoise: TemporalDenoiseConfig {
+            enabled: false,
+            ..TemporalDenoiseConfig::default()
+        },
+        ..VideoHeadroomConfig::default()
+    }
+}
+
+pub fn sink(context: &GpuContext, width: u32, height: u32) -> OffscreenFrameSink {
+    OffscreenFrameSink::new(
+        context,
+        &OffscreenFrameSinkDesc {
+            extent: extent(width, height),
+            format_policy: QualityOutputFormat::HalfFloat.storage_policy(),
+            frame_slots: 1,
+            reader: ConsumerStage::Compute,
+        },
+    )
+    .unwrap()
+}
+
+/// Записывает и выполняет один кадр; возвращает (линейный RGB, сигнал экрана) с GPU.
+pub fn run_gpu(
+    context: &GpuContext,
+    source: &MosaicSource,
+    params: &IspParams,
+    valid_area: ValidArea,
+) -> (Vec<[f32; 3]>, Vec<[f32; 3]>) {
+    let size = extent(valid_area.width, valid_area.height);
+    let mut workload = VideoHeadroomWorkload::new(context, size, &workload_config()).unwrap();
+    let mut frame_sink = sink(context, size.width, size.height);
+    let input = VideoFrameInput {
+        source,
+        params,
+        valid_area,
+        stream: StreamGeneration(1),
+        sequence: 1,
+        presentation_time_ns: 0,
+    };
+    let mut outcome = None;
+    run_one_shot_blocking(context, |command_buffer| {
+        outcome = Some(
+            workload
+                .record(command_buffer, 0, &input, &mut frame_sink)
+                .map_err(|error| match error {
+                    QualityError::Gpu(gpu) => gpu,
+                    other => panic!("запись кадра: {other}"),
+                })?,
+        );
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(outcome, Some(HeadroomRecordOutcome::Recorded { history: None }));
+    frame_sink.after_submit(0).unwrap();
+    let linear = read_rgb(workload.planes().linear_rgb());
+    let image = frame_sink.image(0).unwrap();
+    let display = read_storage_image_rgba(image, frame_sink.last_use(0).unwrap())
+        .unwrap()
+        .into_iter()
+        .map(|pixel| [pixel[0], pixel[1], pixel[2]])
+        .collect();
+    (linear, display)
+}
+
+/// Кадр-источник больше полезной области: полезная область с отступом 2/2 (проверка адресации).
+pub fn padded_frame(raw: &RawMosaic, padding_value: u16) -> (Vec<u16>, u32, u32) {
+    let (width, height) = (raw.size().width, raw.size().height);
+    let (frame_width, frame_height) = (width + 4, height + 4);
+    let mut frame = vec![padding_value; (frame_width * frame_height) as usize];
+    for y in 0..height {
+        for x in 0..width {
+            frame[((y + 2) * frame_width + x + 2) as usize] = raw.sample(x, y);
+        }
+    }
+    (frame, frame_width, frame_height)
+}
+
+pub fn area_of(raw: &RawMosaic) -> ValidArea {
+    ValidArea {
+        left: 2,
+        top: 2,
+        width: raw.size().width,
+        height: raw.size().height,
     }
 }

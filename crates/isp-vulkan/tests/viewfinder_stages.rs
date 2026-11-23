@@ -169,6 +169,14 @@ fn each_stage_off_variant_runs_and_changes_output_as_documented() {
         if stage == IspStage::AwbStatistics {
             assert_eq!(run.pixels, product.pixels, "статистика не влияет на картинку");
             assert_eq!(run.report.awb_statistics, None, "выключенная статистика не отдаётся");
+        } else if matches!(stage, IspStage::LookColor | IspStage::LookLut) {
+            // Вид нейтрален (ручки в нуле, таблицы нет): стадиям вида резать нечего — картинка не меняется.
+            assert_eq!(run.pixels, product.pixels, "при нейтральном виде {stage:?} пуста");
+            assert!(run.report.awb_statistics.is_some());
+        } else if stage == IspStage::OutputGamutCompression {
+            // Стадия принадлежит основе AgX: у прежней основы её нет в проходе, картинка не меняется.
+            assert_eq!(run.pixels, product.pixels, "у прежней основы {stage:?} пуста");
+            assert!(run.report.awb_statistics.is_some());
         } else {
             assert_ne!(run.pixels, product.pixels, "без {stage:?} картинка обязана измениться");
             assert!(run.report.awb_statistics.is_some());

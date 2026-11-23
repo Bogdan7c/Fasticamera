@@ -65,7 +65,8 @@ fn process(
     let frame = FrameInputs {
         levels: sensor.static_levels(),
     };
-    let controls = ProcessingControls::with_defaults(CameraNeutral::new(neutral).unwrap(), demosaic, gamut);
+    let controls =
+        ProcessingControls::with_defaults(CameraNeutral::new(neutral).unwrap(), demosaic, gamut).with_legacy_tone();
     let params = IspParams::resolve(&sensor, &frame, &controls).unwrap();
     (run_reference(raw, &params).unwrap(), params)
 }

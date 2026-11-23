@@ -464,9 +464,12 @@ fn resolve_failure_after_a_gamut_change_does_not_reuse_params_of_the_other_gamut
 /// (цель AE) превращается на экране в середину ИЗ КОНФИГА. Цель AE при этом не сдвигается.
 #[test]
 fn tone_knobs_from_the_config_reach_the_resolved_params_without_moving_the_ae_target() {
+    // Прежняя основа: тест про кривую `params.tone`; AgX с теми же ручками — в соседнем тесте.
     let tone = crate::config::ViewfinderToneConfig {
+        base: crate::config::ToneBaseChoice::Legacy,
         contrast: 1.8,
         display_middle_gray: 0.24,
+        ..crate::config::ViewfinderToneConfig::default()
     };
     let stream = stream(calibration());
     let mut cache = IspParamsCache::default().with_tone(tone);
@@ -479,5 +482,106 @@ fn tone_knobs_from_the_config_reach_the_resolved_params_without_moving_the_ae_ta
         IspParamsCache::base_scene_middle_gray(),
         isp_model::tone::ToneCurveSettings::default().scene_middle_gray,
         "цель AE не ручка тона"
+    );
+}
+
+/// Основа AgX доходит до параметров кадра ОДНОЙ и той же для видоискателя (Preview, охват экрана) и снимка
+/// (Quality, sRGB): числа кривой совпадают, ручки конфига лежат на AgX (серый экрана, наклон пропорционально
+/// контрасту), белый точки включён (`PerPoint`), цель AE не сдвинулась.
+#[test]
+fn viewfinder_and_still_caches_resolve_the_same_agx_base_from_the_config() {
+    use isp_model::tone::base::{ResolvedToneBase, WhitePolicy};
+    let tone = crate::config::ViewfinderToneConfig {
+        contrast: 2.0 * isp_model::tone::ToneCurveSettings::default().contrast,
+        display_middle_gray: 0.24,
+        ..crate::config::ViewfinderToneConfig::default()
+    };
+    let stream = stream(calibration());
+    let curve_of = |demosaic: DemosaicMethod, gamut: DisplayGamut| {
+        let mut cache = IspParamsCache::for_demosaic(demosaic).with_tone(tone);
+        cache.prepare(&frame(&stream, plain()), DAYLIGHT, gamut);
+        let params = cache.current().expect("параметры есть");
+        assert_eq!(params.white_policy, WhitePolicy::PerPoint, "AgX берёт свой белый точки");
+        let ResolvedToneBase::Agx(base) = &params.tone_base else {
+            panic!("умолчание конфига — основа AgX");
+        };
+        let numbers = base.parameters();
+        (
+            numbers.grey,
+            numbers.gray_output,
+            numbers.gamma,
+            numbers.slope,
+            numbers.shoulder_scale,
+        )
+    };
+    let viewfinder = curve_of(DemosaicMethod::Preview, DisplayGamut::DisplayP3);
+    let still = curve_of(DemosaicMethod::Quality, DisplayGamut::Srgb);
+    assert_eq!(viewfinder, still, "снимок и видоискатель — одна кривая");
+    let model = isp_model::tone::agx_settings::AgxSettings::default();
+    assert_eq!(viewfinder.0, model.scene_middle_gray, "цель AE на месте");
+    assert_eq!(viewfinder.3, 2.0 * model.slope, "наклон пропорционален контрасту");
+    let display_at_grey = viewfinder.1.powf(viewfinder.2);
+    assert!(
+        (display_at_grey - 0.24).abs() < 1e-5,
+        "серый экрана из конфига: {display_at_grey}"
+    );
+}
+
+/// Выбор `legacy` в конфиге возвращает прежнюю основу и обрезку по белому сенсора (параметры — как до 14a).
+#[test]
+fn legacy_choice_in_the_config_resolves_the_legacy_base_for_both_caches() {
+    use isp_model::tone::base::{ResolvedToneBase, WhitePolicy};
+    let tone = crate::config::ViewfinderToneConfig {
+        base: crate::config::ToneBaseChoice::Legacy,
+        ..crate::config::ViewfinderToneConfig::default()
+    };
+    let stream = stream(calibration());
+    for demosaic in [DemosaicMethod::Preview, DemosaicMethod::Quality] {
+        let mut cache = IspParamsCache::for_demosaic(demosaic).with_tone(tone);
+        cache.prepare(&frame(&stream, plain()), DAYLIGHT, DisplayGamut::Srgb);
+        let params = cache.current().expect("параметры есть");
+        assert_eq!(params.tone_base, ResolvedToneBase::Legacy, "{demosaic:?}");
+        assert_eq!(params.white_policy, WhitePolicy::SensorLevel, "{demosaic:?}");
+    }
+}
+
+/// ACES и filmic из конфига доходят до параметров кадра обоих кэшей (видоискатель и снимок) ОДНОЙ моделью со своим
+/// белым точки, а цель AE остаётся прежней: смена `base` не меняет экспозицию.
+#[test]
+fn aces_and_filmic_choices_in_the_config_resolve_the_same_model_for_both_caches() {
+    use isp_model::tone::base::{ResolvedToneBase, WhitePolicy};
+    use isp_model::tone::knobs::ToneModelKind;
+    let stream = stream(calibration());
+    for (choice, kind) in [
+        (crate::config::ToneBaseChoice::Aces, ToneModelKind::Aces),
+        (crate::config::ToneBaseChoice::Filmic, ToneModelKind::Filmic),
+    ] {
+        let tone = crate::config::ViewfinderToneConfig {
+            base: choice,
+            ..crate::config::ViewfinderToneConfig::default()
+        };
+        let mut seen = Vec::new();
+        for (demosaic, gamut) in [
+            (DemosaicMethod::Preview, DisplayGamut::DisplayP3),
+            (DemosaicMethod::Quality, DisplayGamut::Srgb),
+        ] {
+            let mut cache = IspParamsCache::for_demosaic(demosaic).with_tone(tone);
+            cache.prepare(&frame(&stream, plain()), DAYLIGHT, gamut);
+            let params = cache.current().expect("параметры есть");
+            assert_eq!(params.tone_base.kind(), kind, "{demosaic:?}");
+            assert_eq!(
+                params.white_policy,
+                WhitePolicy::PerPoint,
+                "{kind:?} берёт свой белый точки"
+            );
+            assert!(!matches!(params.tone_base, ResolvedToneBase::Legacy));
+            seen.push(params.tone_base.kind());
+        }
+        assert_eq!(seen[0], seen[1], "снимок и видоискатель — одна модель");
+    }
+    assert_eq!(
+        IspParamsCache::base_scene_middle_gray(),
+        isp_model::tone::ToneCurveSettings::default().scene_middle_gray,
+        "цель AE не зависит от модели"
     );
 }

@@ -8,6 +8,8 @@
 //!   движка — промежуточные значения колеса и щипка не копятся;
 //! * `Viewfinder` → команда рендеру `SetFraming` через [`RenderControl`] (решение 93: место кадра решает экран);
 //! * `Capture` → [`CaptureService`] (фейк до сессии 14), запрос передаётся целиком (с моментом нажатия);
+//! * `Look` → [`LookEffects`] (отдельный модуль): библиотека пресетов, команда `SetLook` рендеру, запись файла
+//!   отдельным потоком; запрос снимка (`Capture`) получает значения вида НА МОМЕНТ обработки эффекта;
 //! * `PlayShutterSound` → [`ShutterSoundService`]: отказ (`NotAttached`, `Backpressure`) — счётчик, не ошибка экрана.
 //!
 //! Исполнитель живёт на ПОТОКЕ РЕНДЕРА (внутри источника UI) и ничего не ждёт: всё — постановка в ограниченные
@@ -26,6 +28,7 @@ use camera_contract::zoom::{LensIntent, LensIntentChannel, StandbyDemand, ZoomGe
 use camera_core::{CameraHandle, CommandId, CommandRejected};
 use camera_screen::shutter::{CaptureFailureReason, CaptureOutcome, ShotRequest};
 use camera_screen::{Effect, FramingIntent, ScreenAction, ScreenCameraIntent};
+use look_contract::LookIntent;
 use render_loop::viewfinder::{
     FramingCrop, FramingDestination, NormalizedScreenRect, ViewfinderCommand, ViewfinderFraming,
 };
@@ -35,6 +38,8 @@ use shell_contract::haptics::{HapticOutcome, HapticPattern, HapticsService};
 use shell_contract::still_media::ShutterSoundService;
 
 use crate::camera_screen_capture::{CaptureService, SubmitOutcome, SubmitRejection};
+use crate::look_effects::{LookCounters, LookEffects};
+use crate::look_service::LookHandle;
 use crate::viewfinder_control::{ControlDelivery, RenderAdjustment, RenderControl};
 
 const LOG_TARGET: &str = "fasticamera::camera_screen";
@@ -237,6 +242,8 @@ pub struct EffectCounters {
     pub capture: CaptureCounters,
     pub shutter_sound: ShutterSoundCounters,
     pub lens: LensCounters,
+    /// Вид картинки и пресеты (решение 178): отказы библиотеки, доставка рендеру, запись файла.
+    pub look: LookCounters,
 }
 
 /// Сервисы, которым адресованы эффекты (собираются композицией один раз на экран).
@@ -250,11 +257,17 @@ pub struct EffectTargets {
     pub shutter_sound: Arc<dyn ShutterSoundService>,
     /// Ящик намерений объектива: тот же клон, что у движка камеры (`CameraServices::lens_intents`).
     pub lens: LensIntentChannel,
+    /// Библиотека пресетов вида: общая на процесс ручка, а не копия экрана (экран переставляется, пресеты живут).
+    /// `None` — в сборке нет хранилища пресетов (ПК-сценарии, тесты): намерения по виду считаются и отбрасываются.
+    pub look: Option<LookHandle>,
 }
 
 /// Исполнитель эффектов.
 pub struct EffectExecutor {
     targets: EffectTargets,
+    /// Намерения по виду картинки: библиотека пресетов, команда рендеру, запись файла. Счётчики — свои, в
+    /// [`EffectCounters::look`] они подставляются при чтении.
+    look: LookEffects,
     counters: EffectCounters,
     /// Время показа текущего кадра UI (часы потока рендера): им фейк-сервис снимка отсчитывает задержку ответа.
     frame_time: MonotonicNanos,
@@ -276,6 +289,7 @@ impl Drop for EffectExecutor {
 impl EffectExecutor {
     pub fn new(targets: EffectTargets) -> Self {
         Self {
+            look: LookEffects::new(targets.look.clone()),
             targets,
             counters: EffectCounters::default(),
             frame_time: MonotonicNanos::from_nanos(0),
@@ -288,6 +302,8 @@ impl EffectExecutor {
     pub fn begin_frame(&mut self, now: MonotonicNanos) {
         self.frame_time = now;
         self.targets.capture.poll_completions(now);
+        // Итоги записи файла пресетов: считаем и громко логируем сбои, рендер диск не ждёт.
+        self.look.poll_save_outcomes();
     }
 
     /// Ждёт ли желаемое EV досылки (диагностика и тесты).
@@ -319,7 +335,10 @@ impl EffectExecutor {
     }
 
     pub fn counters(&self) -> EffectCounters {
-        self.counters
+        EffectCounters {
+            look: self.look.counters(),
+            ..self.counters
+        }
     }
 
     /// Исполняет эффекты по порядку. Возвращает действия, которые нужно вернуть экрану (отвергнутый снимок).
@@ -332,6 +351,7 @@ impl EffectExecutor {
                 Effect::OpenSystemGallery => self.open_gallery(),
                 Effect::Viewfinder(intent) => self.place_viewfinder(intent),
                 Effect::Lens(intent) => self.publish_lens_intent(intent),
+                Effect::Look(intent) => self.run_look_intent(intent),
                 Effect::Capture(request) => feedback.extend(self.submit_capture(request)),
                 Effect::PlayShutterSound => self.play_shutter_sound(),
             }
@@ -379,6 +399,11 @@ impl EffectExecutor {
                 }
             }
         }
+    }
+
+    /// Намерение по виду: библиотека применяет, рендеру уходит новый вид, файл просится на запись.
+    fn run_look_intent(&mut self, intent: LookIntent) {
+        self.look.run_intent(intent, self.targets.render.as_ref());
     }
 
     fn play_haptic(&mut self, pattern: HapticPattern) {
@@ -472,7 +497,10 @@ impl EffectExecutor {
     fn submit_capture(&mut self, request: ShotRequest) -> Option<ScreenAction> {
         let counters = &mut self.counters.capture;
         let request_id = request.request;
-        let rejection = match self.targets.capture.submit(request, self.frame_time) {
+        // Вид — значения на момент нажатия, а не ссылка на пресет (инвариант 3): намерения вида, обработанные раньше
+        // в этом же кадре, уже учтены, а поздние запрос не меняют.
+        let look = self.look.current_look();
+        let rejection = match self.targets.capture.submit(request, look, self.frame_time) {
             SubmitOutcome::Accepted => {
                 counters.accepted += 1;
                 return None;

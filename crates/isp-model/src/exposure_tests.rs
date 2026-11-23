@@ -29,7 +29,8 @@ fn neutral_for(sensor: &SensorDescription, kelvin: f64) -> CameraNeutral {
 fn resolve_with(neutral: CameraNeutral, gain: ExposureGain) -> IspParams {
     let sensor = main_sensor();
     let frame = FrameInputs::from_capture_hints(&sensor, &CaptureColorHints::default()).unwrap();
-    let mut controls = ProcessingControls::with_defaults(neutral, DemosaicMethod::Quality, DisplayGamut::Srgb);
+    let mut controls =
+        ProcessingControls::with_defaults(neutral, DemosaicMethod::Quality, DisplayGamut::Srgb).with_legacy_tone();
     controls.exposure_gain = gain;
     IspParams::resolve(&sensor, &frame, &controls).unwrap()
 }

@@ -21,6 +21,8 @@ ui-kit.workspace = true
 ui-draw.workspace = true
 # Словарь снимка: формат основной картинки (`PrimaryFormat`) в запросе снимка и в конфиге экрана (решение 143).
 still-contract.workspace = true
+# Словарь вида картинки: намерения экрана (`LookIntent`) — экран только шлёт их наружу (решение 178).
+look-contract.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 

@@ -9,7 +9,10 @@
 //! рисовальщик (строка «камера без ISP» = отладочная мозаика 05) без перезапуска показа.
 
 use camera_contract::viewfinder_crop::{CropAspect, ViewfinderCrop};
+use std::sync::Arc;
+
 use isp_vulkan::viewfinder::IspStageSet;
+use look_contract::LookSettings;
 use serde::{Deserialize, Serialize};
 
 use super::framing::ViewfinderFraming;
@@ -44,6 +47,10 @@ pub enum ViewfinderCommand {
     /// Включить или выключить стенд «запас под видео» (V4, см. [`super::headroom`]). Не продукт:
     /// включается только на время замера; видоискатель при этом работает как обычно.
     SetHeadroomBench(HeadroomBench),
+    /// Вид картинки видоискателя: ВСЕ значения ручек разом (решение 178), а не «что поменялось». Значения
+    /// общие (`Arc`): исполнитель эффектов держит копию у себя, команда ничего не копирует по дороге.
+    /// Повтор тех же значений — `AlreadyInEffect`. Снимок эту команду не использует: он берёт вид из плана.
+    SetLook(Arc<LookSettings>),
 }
 
 /// Чем закончилась команда.

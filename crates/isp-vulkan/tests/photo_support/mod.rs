@@ -56,10 +56,52 @@ impl SourceFrame {
         let frame = FrameInputs {
             levels: self.sensor.static_levels(),
         };
-        let mut controls = ProcessingControls::with_defaults(self.neutral, DemosaicMethod::Quality, DisplayGamut::Srgb);
+        let mut controls = ProcessingControls::with_defaults(self.neutral, DemosaicMethod::Quality, DisplayGamut::Srgb)
+            .with_legacy_tone();
         controls.exposure_gain = ExposureGain::from_ev(ev).unwrap();
         SourceFrame {
             name: format!("{}+{ev}EV", self.name),
+            raw: self.raw.clone(),
+            params: IspParams::resolve(&self.sensor, &frame, &controls).unwrap(),
+            sensor: self.sensor.clone(),
+            neutral: self.neutral,
+        }
+    }
+}
+
+impl SourceFrame {
+    /// Тот же кадр с основой тона `base` (параметры пересчитаны; карта виньетирования сбрасывается — ставьте её после).
+    pub fn with_tone_base(&self, base: isp_model::tone::base::ToneBase) -> SourceFrame {
+        self.with_tone_base_and_look(base, isp_model::look::LookControls::default())
+    }
+
+    /// Тот же кадр с основой тона `base` и видом картинки `look` (значения решены в `IspParams`; карта виньетирования
+    /// сбрасывается — ставьте её после).
+    pub fn with_tone_base_and_look(
+        &self,
+        base: isp_model::tone::base::ToneBase,
+        look: isp_model::look::LookControls,
+    ) -> SourceFrame {
+        let frame = FrameInputs {
+            levels: self.sensor.static_levels(),
+        };
+        let controls = ProcessingControls {
+            tone_base: base,
+            look,
+            ..ProcessingControls::with_defaults(self.neutral, DemosaicMethod::Quality, DisplayGamut::Srgb)
+                .with_legacy_tone()
+        };
+        SourceFrame {
+            name: format!(
+                "{}+{}",
+                self.name,
+                match base {
+                    isp_model::tone::base::ToneBase::Legacy => "legacy",
+                    isp_model::tone::base::ToneBase::Agx(_) => "agx",
+                    isp_model::tone::base::ToneBase::Aces(_) => "aces",
+                    isp_model::tone::base::ToneBase::Filmic(_) => "filmic",
+                }
+            ),
             raw: self.raw.clone(),
             params: IspParams::resolve(&self.sensor, &frame, &controls).unwrap(),
             sensor: self.sensor.clone(),
@@ -88,7 +130,8 @@ pub fn params_for(sensor: &SensorDescription, neutral: CameraNeutral) -> IspPara
     let frame = FrameInputs {
         levels: sensor.static_levels(),
     };
-    let controls = ProcessingControls::with_defaults(neutral, DemosaicMethod::Quality, DisplayGamut::Srgb);
+    let controls =
+        ProcessingControls::with_defaults(neutral, DemosaicMethod::Quality, DisplayGamut::Srgb).with_legacy_tone();
     IspParams::resolve(sensor, &frame, &controls).unwrap()
 }
 
@@ -107,6 +150,12 @@ pub fn real_frame(name: &str) -> SourceFrame {
 
 /// Синтетическая зонная пластинка заданного размера и раскладки CFA (цвета серые, как в тестах V4).
 pub fn zone_plate_frame(width: u32, height: u32, pattern: BayerPattern) -> SourceFrame {
+    zone_plate_frame_at_level(width, height, pattern, 0.6)
+}
+
+/// Зонная пластинка с множителем света `level` (> 1 — часть кадра в насыщении сенсора: под основой AgX это свет
+/// выше общего белого, где работает свой белый точки).
+pub fn zone_plate_frame_at_level(width: u32, height: u32, pattern: BayerPattern, level: f64) -> SourceFrame {
     let calibration = load_real_capture(&isp_support::assets_dir(), "real-main-lamp-gray-tile");
     let scene = zone_plate(PixelSize::new(width, height), 0.5).unwrap();
     let sensor = SensorDescription::new(
@@ -122,7 +171,7 @@ pub fn zone_plate_frame(width: u32, height: u32, pattern: BayerPattern) -> Sourc
         .flat_map(|y| (0..width).map(move |x| (x, y)))
         .map(|(x, y)| {
             let channel = pattern.channel_at(x, y).index();
-            let light = f64::from(scene.pixel(x, y)[channel]) * 0.6 * neutral[channel];
+            let light = (f64::from(scene.pixel(x, y)[channel]) * level * neutral[channel]).min(1.0);
             let black = f64::from(levels.black_pattern()[(y as usize % 2) * 2 + x as usize % 2]);
             (black + light * (f64::from(levels.white()) - black)).round() as u16
         })
@@ -353,6 +402,23 @@ pub fn developer_for(context: &GpuContext, slice_rows: u32, max_width: u32) -> P
 /// Эталон RGBA8 всего кадра: `display_encoded` эталона, квантованный правилом снимка; альфа 255.
 pub fn reference_rgba(run: &ReferenceRun) -> Vec<u8> {
     run.display_encoded
+        .pixels()
+        .iter()
+        .flat_map(|pixel| {
+            [
+                quantize_display_encoded(pixel[0]),
+                quantize_display_encoded(pixel[1]),
+                quantize_display_encoded(pixel[2]),
+                255,
+            ]
+        })
+        .collect()
+}
+
+/// Эталон RGBA8 кадра при ЛЮБОЙ основе тона (то же квантование, что у [`reference_rgba`]).
+pub fn reference_rgba_any_base(frame: &SourceFrame) -> Vec<u8> {
+    let encoded = isp_model::pipeline::run_reference_encoded(&frame.raw, &frame.params).unwrap();
+    encoded
         .pixels()
         .iter()
         .flat_map(|pixel| {

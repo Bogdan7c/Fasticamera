@@ -4,7 +4,10 @@
 //! накопительные за жизнь бэкенда (переживают пересоздание surface), окна времени GPU —
 //! скользящие (последние `viewfinder.gpu_time_window_frames` замеров).
 
+use std::sync::Arc;
+
 use isp_vulkan::viewfinder::IspStageSet;
+use look_contract::LookSettings;
 
 use super::auto_exposure::AutoExposureDiagnostics;
 use super::continuity::ContinuityDiagnostics;
@@ -123,6 +126,9 @@ pub struct ViewfinderDiagnostics {
     pub painter: ViewfinderPainter,
     /// Включённые стадии ISP.
     pub stages: IspStageSet,
+    /// Вид картинки, действующий на видоискателе (решение 178): по нему сквозной тест видит, что стартовый вид
+    /// дошёл до рендера с первого кадра, а команда `SetLook` применилась.
+    pub look: Arc<LookSettings>,
     /// Действующее место видоискателя на экране: правило конфига или прямоугольник из `SetFraming`
     /// (по нему smoke видит, что команда экрана камеры дошла до рендера).
     pub placement: EffectivePlacement,

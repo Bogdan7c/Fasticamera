@@ -59,6 +59,7 @@ use crate::camera_screen_source::{CameraScreenSource, GravityLink, ScreenBoard, 
 use crate::camera_service::CameraServices;
 use crate::capture_backend::{CaptureBackend, CaptureDiagnostics};
 use crate::gpu_services::{GpuServices, RenderObservation};
+use crate::look_service::LookHandle;
 use crate::scenario::observing::ShellServices;
 use crate::still_phase_log::{PhaseBatch, PhaseCursor};
 use crate::viewfinder_control::ControlDelivery;
@@ -247,6 +248,9 @@ pub struct CameraScreenService {
     /// Последние зоны системных жестов от платформы. Платформа шлёт их только при изменении (обычно один раз,
     /// до установки экрана), а экран ставится и переставляется — свежий экран получает их сразу при установке.
     system_gesture_zones: SystemGestureZones,
+    /// Библиотека пресетов вида: ставится один раз при сборке приложения и переживает пересборку экрана
+    /// (`None` — в сборке нет хранилища пресетов).
+    look: Option<LookHandle>,
 }
 
 impl CameraScreenService {
@@ -275,7 +279,15 @@ impl CameraScreenService {
             recovery: RecoveryPlan::default(),
             recovery_counters: RecoveryCounters::default(),
             system_gesture_zones: SystemGestureZones::NONE,
+            look: None,
         }
+    }
+
+    /// Тот же сервис с библиотекой пресетов вида: каждый экран, который он поставит, получит ту же ручку.
+    #[must_use]
+    pub fn with_look(mut self, look: LookHandle) -> Self {
+        self.look = Some(look);
+        self
     }
 
     // ---- Диагностика (для сценариев и тестов) -------------------------------------------------------------
@@ -617,6 +629,7 @@ impl CameraScreenService {
             capture: self.capture.service(),
             shutter_sound: self.capture.shutter_sound(),
             lens: env.camera.lens_intents().clone(),
+            look: self.look.clone(),
         });
         let source = CameraScreenSource::new(ScreenSourceParts {
             screen,

@@ -34,6 +34,8 @@ render-loop.workspace = true
 shell-contract.workspace = true
 # Словарь снимка: план, события проявления, фазы.
 still-contract.workspace = true
+look-contract.workspace = true
+look-presets.workspace = true
 # Демо-сцена стекла (сессия 11): сцена, элементы и словарь рисования.
 ui-core.workspace = true
 ui-draw.workspace = true
@@ -56,6 +58,10 @@ shell-contract = { workspace = true, features = ["fake-power-source"] }
 ash.workspace = true
 gpu-vulkan = { workspace = true, features = ["test-support"] }
 ui-render-vulkan = { workspace = true, features = ["test-support"] }
+# Сквозной тест вида (14a): настоящий бэкенд показа на ПК с подставной камерой (стенд `render-loop/tests/viewfinder_rig`)
+# и эталон `isp-model`; readback изображения видоискателя включает `test-support` render-loop.
+isp-model.workspace = true
+render-loop = { workspace = true, features = ["test-support"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni.workspace = true

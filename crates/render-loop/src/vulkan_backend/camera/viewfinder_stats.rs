@@ -170,6 +170,7 @@ impl ViewfinderStats {
         ViewfinderDiagnostics {
             painter: settings.painter,
             stages: settings.stages,
+            look: std::sync::Arc::clone(&settings.look),
             placement: settings.effective_placement(),
             display_color_space: self.display_color_space,
             storage: self.storage,

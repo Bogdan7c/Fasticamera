@@ -66,6 +66,7 @@ fn viewfinder_diagnostics() -> ViewfinderDiagnostics {
             render_loop::config::ViewfinderPlacement::default(),
         ),
         stages: IspStageSet::ALL,
+        look: std::sync::Arc::new(look_contract::LookSettings::NEUTRAL),
         display_color_space: Some(ViewfinderColorSpace::DisplayP3),
         storage: Some(ViewfinderStorage::TenBitUnorm),
         output_extent: Some(ViewfinderExtent {

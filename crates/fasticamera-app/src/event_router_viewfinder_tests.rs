@@ -92,7 +92,10 @@ fn effective(adjustments: &[RenderAdjustment]) -> Effective {
             RenderAdjustment::Viewfinder(ViewfinderCommand::SetPainter(painter)) => current.painter = *painter,
             RenderAdjustment::Viewfinder(ViewfinderCommand::SetIspStages(stages)) => current.stages = *stages,
             RenderAdjustment::Viewfinder(ViewfinderCommand::SetHeadroomBench(bench)) => current.bench = *bench,
-            RenderAdjustment::Viewfinder(ViewfinderCommand::SetCrop(_) | ViewfinderCommand::SetFraming(_)) => {}
+            // Место и вид — настройки продукта, сценарий их не трогает и не откатывает.
+            RenderAdjustment::Viewfinder(
+                ViewfinderCommand::SetCrop(_) | ViewfinderCommand::SetFraming(_) | ViewfinderCommand::SetLook(_),
+            ) => {}
             RenderAdjustment::PresentTarget(setting) => {
                 current.selection = PresentTargetSelection {
                     policy: setting.policy,
@@ -128,6 +131,7 @@ fn fresh_viewfinder() -> ViewfinderDiagnostics {
             render_loop::config::ViewfinderPlacement::default(),
         ),
         stages: IspStageSet::ALL,
+        look: std::sync::Arc::new(look_contract::LookSettings::NEUTRAL),
         display_color_space: Some(ViewfinderColorSpace::DisplayP3),
         storage: Some(ViewfinderStorage::TenBitUnorm),
         output_extent: Some(ViewfinderExtent {
@@ -371,6 +375,12 @@ fn short_config(tune: impl FnOnce(&mut ViewfinderScenarioConfig, &mut PowerMeasu
     // Короткое окно: кадров ~18, ±1 кадр на краях окна — до 6 %.
     viewfinder.smoke.frame_rate_tolerance = 0.2;
     viewfinder.latency.window_ms = 200;
+    // Порог «профили различаются по к/с» обязан быть больше кванта измерения: в окне 200 мс один кадр на краю
+    // окна — это 1 / 0,2 с = 5 к/с. С продуктовым порогом 0,5 к/с (он рассчитан на окна в десятки секунд)
+    // зеркальный источник на 60 к/с давал ±0,8 к/с от дрожания границы окна и вердикт «лучше/хуже» вместо
+    // «разницы нет» (~10 % прогонов под нагрузкой). Порог = один кадр на окно.
+    // 5 к/с = один кадр на окно 200 мс (выше); меняешь окно — меняй и порог.
+    viewfinder.latency.min_fps_delta = 5.0;
     viewfinder.latency.warmup_ms = 50;
     viewfinder.latency.min_samples_per_window = 3;
     viewfinder.headroom.duration_ms = 400;

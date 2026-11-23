@@ -34,7 +34,7 @@ fn at_ms(ms: i64) -> MonotonicNanos {
 
 /// Запрос в момент 0 (для тестов с нулевой задержкой время не важно).
 fn submit_at_zero(service: &FakeCaptureService, request: ShotRequest) -> SubmitOutcome {
-    service.submit(request, at_ms(0))
+    service.submit(request, look_contract::LookSettings::NEUTRAL, at_ms(0))
 }
 
 fn secured(id: u64) -> ScreenInput {
@@ -85,7 +85,10 @@ fn delayed_answer_arrives_only_when_the_frame_clock_passes_the_delay_and_spawns_
     slot.attach(sender.injector());
     let service = FakeCaptureService::new(saved_after(Duration::from_millis(120)), 8, Arc::clone(&slot));
 
-    assert_eq!(service.submit(shot(1), at_ms(1_000)), SubmitOutcome::Accepted);
+    assert_eq!(
+        service.submit(shot(1), look_contract::LookSettings::NEUTRAL, at_ms(1_000)),
+        SubmitOutcome::Accepted
+    );
     assert_eq!(service.journal(), vec![shot(1)], "запрос в журнале сразу");
     // Часы кадров не дошли до срока (1000 + 120): ответа нет, сколько бы реального времени ни прошло.
     service.poll_completions(at_ms(1_119));
@@ -111,8 +114,8 @@ fn several_delayed_requests_are_answered_in_order_as_their_deadlines_pass() {
     let slot = Arc::new(CaptureCompletionSlot::default());
     slot.attach(sender.injector());
     let service = FakeCaptureService::new(saved_after(Duration::from_millis(100)), 8, Arc::clone(&slot));
-    service.submit(shot(1), at_ms(0));
-    service.submit(shot(2), at_ms(50));
+    service.submit(shot(1), look_contract::LookSettings::NEUTRAL, at_ms(0));
+    service.submit(shot(2), look_contract::LookSettings::NEUTRAL, at_ms(50));
 
     service.poll_completions(at_ms(100));
     assert_eq!(drain(&mut receiver), vec![secured(1), saved(1)]);
@@ -126,7 +129,10 @@ fn the_journal_is_bounded_and_counts_evicted_entries() {
     let slot = Arc::new(CaptureCompletionSlot::default());
     let service = FakeCaptureService::new(saved_after(Duration::ZERO), 3, Arc::clone(&slot));
     for id in 1..=5 {
-        assert_eq!(service.submit(shot(id), at_ms(0)), SubmitOutcome::Accepted);
+        assert_eq!(
+            service.submit(shot(id), look_contract::LookSettings::NEUTRAL, at_ms(0)),
+            SubmitOutcome::Accepted
+        );
     }
     assert_eq!(
         service.journal(),
@@ -141,17 +147,26 @@ fn the_journal_is_bounded_and_counts_evicted_entries() {
 fn a_full_pending_queue_rejects_the_request_as_busy_without_journaling_it() {
     let slot = Arc::new(CaptureCompletionSlot::default());
     let service = FakeCaptureService::new(saved_after(Duration::from_millis(100)), 2, Arc::clone(&slot));
-    assert_eq!(service.submit(shot(1), at_ms(0)), SubmitOutcome::Accepted);
-    assert_eq!(service.submit(shot(2), at_ms(0)), SubmitOutcome::Accepted);
     assert_eq!(
-        service.submit(shot(3), at_ms(0)),
+        service.submit(shot(1), look_contract::LookSettings::NEUTRAL, at_ms(0)),
+        SubmitOutcome::Accepted
+    );
+    assert_eq!(
+        service.submit(shot(2), look_contract::LookSettings::NEUTRAL, at_ms(0)),
+        SubmitOutcome::Accepted
+    );
+    assert_eq!(
+        service.submit(shot(3), look_contract::LookSettings::NEUTRAL, at_ms(0)),
         SubmitOutcome::Rejected(SubmitRejection::Busy)
     );
     assert_eq!(service.journal(), vec![shot(1), shot(2)]);
     assert_eq!(service.counters().rejected_pending_full, 1);
     // После ответов очередь освободилась.
     service.poll_completions(at_ms(100));
-    assert_eq!(service.submit(shot(4), at_ms(100)), SubmitOutcome::Accepted);
+    assert_eq!(
+        service.submit(shot(4), look_contract::LookSettings::NEUTRAL, at_ms(100)),
+        SubmitOutcome::Accepted
+    );
 }
 
 #[test]
@@ -227,13 +242,19 @@ fn reply_owed_to_a_replaced_screen_is_dropped_and_does_not_complete_the_new_scre
     let service = FakeCaptureService::new(saved_after(Duration::from_millis(100)), 8, Arc::clone(&slot));
     let (old_sender, mut old_receiver) = screen_input_channel(4);
     slot.attach(old_sender.injector());
-    assert_eq!(service.submit(shot(1), at_ms(0)), SubmitOutcome::Accepted);
+    assert_eq!(
+        service.submit(shot(1), look_contract::LookSettings::NEUTRAL, at_ms(0)),
+        SubmitOutcome::Accepted
+    );
 
     // Экран переустановлен до ответа; новый экран нумерует снимки с 1 и снимает «свой» снимок id=1 позже.
     slot.detach();
     let (new_sender, mut new_receiver) = screen_input_channel(4);
     slot.attach(new_sender.injector());
-    assert_eq!(service.submit(shot(1), at_ms(50)), SubmitOutcome::Accepted);
+    assert_eq!(
+        service.submit(shot(1), look_contract::LookSettings::NEUTRAL, at_ms(50)),
+        SubmitOutcome::Accepted
+    );
 
     // Срок старого ответа (100) наступил, срок нового (150) — нет: новый экран не должен получить ничего.
     service.poll_completions(at_ms(120));
@@ -277,12 +298,18 @@ fn stale_replies_do_not_occupy_the_queue_and_cause_a_false_busy_for_the_new_scre
     let service = FakeCaptureService::new(saved_after(Duration::from_millis(100)), 1, Arc::clone(&slot));
     let (old_sender, _old_receiver) = screen_input_channel(4);
     slot.attach(old_sender.injector());
-    assert_eq!(service.submit(shot(1), at_ms(0)), SubmitOutcome::Accepted);
+    assert_eq!(
+        service.submit(shot(1), look_contract::LookSettings::NEUTRAL, at_ms(0)),
+        SubmitOutcome::Accepted
+    );
 
     let (new_sender, _new_receiver) = screen_input_channel(4);
     slot.attach(new_sender.injector());
     // Ёмкость очереди 1: без снятия чужого ответа новый снимок получил бы ложный `Busy`.
-    assert_eq!(service.submit(shot(1), at_ms(10)), SubmitOutcome::Accepted);
+    assert_eq!(
+        service.submit(shot(1), look_contract::LookSettings::NEUTRAL, at_ms(10)),
+        SubmitOutcome::Accepted
+    );
     let counters = service.counters();
     assert_eq!(counters.rejected_pending_full, 0);
     assert_eq!(
@@ -297,7 +324,7 @@ fn replies_of_the_current_screen_are_not_dropped_by_polling() {
     let service = FakeCaptureService::new(saved_after(Duration::from_millis(100)), 8, Arc::clone(&slot));
     let (sender, mut receiver) = screen_input_channel(4);
     slot.attach(sender.injector());
-    service.submit(shot(3), at_ms(0));
+    service.submit(shot(3), look_contract::LookSettings::NEUTRAL, at_ms(0));
     service.poll_completions(at_ms(50));
     service.poll_completions(at_ms(100));
     assert_eq!(drain(&mut receiver), vec![secured(3), saved(3)]);
@@ -314,7 +341,10 @@ fn the_frame_is_secured_first_and_saved_later_each_on_its_own_deadline() {
         saved_after: Duration::from_millis(400),
     };
     let service = FakeCaptureService::new(timing, 8, Arc::clone(&slot));
-    assert_eq!(service.submit(shot(1), at_ms(1_000)), SubmitOutcome::Accepted);
+    assert_eq!(
+        service.submit(shot(1), look_contract::LookSettings::NEUTRAL, at_ms(1_000)),
+        SubmitOutcome::Accepted
+    );
 
     service.poll_completions(at_ms(1_059));
     assert_eq!(drain(&mut receiver), Vec::<ScreenInput>::new());
@@ -342,8 +372,8 @@ fn the_second_shot_is_secured_while_the_first_is_still_saving_and_phases_do_not_
         saved_after: Duration::from_millis(400),
     };
     let service = FakeCaptureService::new(timing, 8, Arc::clone(&slot));
-    service.submit(shot(1), at_ms(0));
-    service.submit(shot(2), at_ms(100));
+    service.submit(shot(1), look_contract::LookSettings::NEUTRAL, at_ms(0));
+    service.submit(shot(2), look_contract::LookSettings::NEUTRAL, at_ms(100));
 
     // К 200 мс первый захвачен, второй захвачен (160), но ни один не сохранён: `Secured` второго не ждёт `Saved` первого.
     service.poll_completions(at_ms(200));
@@ -363,7 +393,7 @@ fn the_capture_phase_never_lags_behind_the_saving_phase() {
         saved_after: Duration::from_millis(100),
     };
     let service = FakeCaptureService::new(timing, 8, Arc::clone(&slot));
-    service.submit(shot(1), at_ms(0));
+    service.submit(shot(1), look_contract::LookSettings::NEUTRAL, at_ms(0));
 
     service.poll_completions(at_ms(100));
 
@@ -385,7 +415,7 @@ fn a_capture_with_zero_secured_delay_is_secured_at_once_and_saved_later() {
     };
     let service = FakeCaptureService::new(timing, 8, Arc::clone(&slot));
 
-    service.submit(shot(1), at_ms(0));
+    service.submit(shot(1), look_contract::LookSettings::NEUTRAL, at_ms(0));
     assert_eq!(drain(&mut receiver), vec![secured(1)], "захват без задержки");
     service.poll_completions(at_ms(50));
     assert_eq!(drain(&mut receiver), vec![saved(1)]);
@@ -399,14 +429,23 @@ fn busy_counts_shots_waiting_for_the_result_not_individual_answers() {
         saved_after: Duration::from_millis(100),
     };
     let service = FakeCaptureService::new(timing, 2, Arc::clone(&slot));
-    assert_eq!(service.submit(shot(1), at_ms(0)), SubmitOutcome::Accepted);
-    assert_eq!(service.submit(shot(2), at_ms(0)), SubmitOutcome::Accepted);
+    assert_eq!(
+        service.submit(shot(1), look_contract::LookSettings::NEUTRAL, at_ms(0)),
+        SubmitOutcome::Accepted
+    );
+    assert_eq!(
+        service.submit(shot(2), look_contract::LookSettings::NEUTRAL, at_ms(0)),
+        SubmitOutcome::Accepted
+    );
     // Захваты прошли, итогов ещё нет: оба снимка всё ещё ждут сохранения.
     service.poll_completions(at_ms(10));
     assert_eq!(
-        service.submit(shot(3), at_ms(10)),
+        service.submit(shot(3), look_contract::LookSettings::NEUTRAL, at_ms(10)),
         SubmitOutcome::Rejected(SubmitRejection::Busy)
     );
     service.poll_completions(at_ms(100));
-    assert_eq!(service.submit(shot(3), at_ms(100)), SubmitOutcome::Accepted);
+    assert_eq!(
+        service.submit(shot(3), look_contract::LookSettings::NEUTRAL, at_ms(100)),
+        SubmitOutcome::Accepted
+    );
 }

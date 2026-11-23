@@ -243,6 +243,19 @@ impl LensShadingGainMap {
         }
     }
 
+    /// Усиления всех четырёх каналов карты `[R, G_even, G_odd, B]` в точке пикселя `(x, y)` полезной области:
+    /// выборка та же, что у [`Self::gain_at`] (канал на положение точки не влияет). Нужна своему белому точки
+    /// ([`crate::white_level`], решение 177).
+    pub(crate) fn channel_gains_at(
+        &self,
+        position: (u32, u32),
+        valid_area: PixelSize,
+        scales: GridScales,
+        sampling: LensShadingSampling,
+    ) -> [f32; GAIN_CHANNELS] {
+        std::array::from_fn(|channel| self.gain_at(position, valid_area, scales, channel, sampling))
+    }
+
     /// Усиление для пикселя `(x, y)` полезной области `valid_area` в канале карты `map_channel`; точку на сетке
     /// выбирает `sampling` (см. [`LensShadingSampling`]).
     fn gain_at(
@@ -448,6 +461,16 @@ pub enum InvalidCrop {
 }
 
 impl CropInValidArea {
+    /// Размер полезной области, внутри которой лежит вырезка.
+    pub(crate) fn valid_area_size(&self) -> PixelSize {
+        self.valid_area_size
+    }
+
+    /// Отсчёт `(x, y)` вырезки → пиксель полезной области (карта усилений задана над ней).
+    pub(crate) fn valid_area_position(self, x: u32, y: u32) -> (u32, u32) {
+        (self.left + x, self.top + y)
+    }
+
     /// Мозаика — вся полезная область (начало в нуле).
     pub fn whole(valid_area_size: PixelSize) -> Self {
         Self {

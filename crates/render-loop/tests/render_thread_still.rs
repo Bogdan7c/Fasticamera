@@ -69,6 +69,7 @@ fn plan(id: u64) -> StillPlan {
             primary: PrimaryFormat::Jpeg,
             raw: RawOutput::Skip,
         },
+        look: look_contract::LookSettings::NEUTRAL,
     }
 }
 

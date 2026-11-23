@@ -3,7 +3,10 @@
 
 use gpu_vulkan::error::GpuError;
 
+use crate::frame_style::FrameStyleError;
 use crate::lens_shading_map::{LensShadingMapBufferError, LensShadingMapError};
+use crate::look::LookLutError;
+use crate::look::lut_buffer::LookLutBufferError;
 use crate::quality::QualityError;
 
 /// Ошибка проявления снимка.
@@ -34,6 +37,12 @@ pub enum PhotoError {
     /// применяется молча, проявка отвергается.
     #[error("карта виньетирования: {0}")]
     LensShadingMap(#[from] LensShadingMapError),
+    /// Профиль выхода (Log, HDR, 10 бит) ещё не считается: кадр отвергается, а не рисуется другим профилем.
+    #[error("{0}")]
+    UnsupportedOutputProfile(#[from] isp_model::output::UnsupportedOutputProfile),
+    /// Таблица вида (LUT) не помещается в буфер: вид не применяется молча, кадр отвергается.
+    #[error("таблица вида: {0}")]
+    LookLut(#[from] LookLutError),
     /// Предыдущая операция того же владельца ещё не завершена: два захвата или две проявки сразу делать нельзя.
     #[error("занято: {what}")]
     Busy {
@@ -65,6 +74,8 @@ impl From<QualityError> for PhotoError {
             QualityError::InvalidInput { what } => Self::InvalidInput { what },
             QualityError::UnsupportedParams { what } => Self::UnsupportedParams { what },
             QualityError::LensShadingMap(map) => Self::LensShadingMap(map),
+            QualityError::LookLut(lut) => Self::LookLut(lut),
+            QualityError::UnsupportedOutputProfile(profile) => Self::UnsupportedOutputProfile(profile),
         }
     }
 }
@@ -75,5 +86,39 @@ impl From<LensShadingMapBufferError> for PhotoError {
             LensShadingMapBufferError::Map(map) => Self::LensShadingMap(map),
             LensShadingMapBufferError::Gpu(gpu) => Self::Gpu(gpu),
         }
+    }
+}
+
+impl From<FrameStyleError> for PhotoError {
+    fn from(error: FrameStyleError) -> Self {
+        match error {
+            FrameStyleError::Look(look) => Self::from(look),
+            FrameStyleError::Gpu(gpu) => Self::Gpu(gpu),
+        }
+    }
+}
+
+impl From<LookLutBufferError> for PhotoError {
+    fn from(error: LookLutBufferError) -> Self {
+        match error {
+            LookLutBufferError::Lut(lut) => Self::LookLut(lut),
+            LookLutBufferError::Gpu(gpu) => Self::Gpu(gpu),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use isp_model::output::{OutputRendering, UnsupportedOutputProfile};
+
+    use super::*;
+
+    /// Отказ по профилю выхода от общей проверки качественного пути доходит до снимка своим вариантом, а не
+    /// общим `UnsupportedParams`.
+    #[test]
+    fn unsupported_output_profile_keeps_its_variant_on_the_way_to_photo_error() {
+        let refusal = UnsupportedOutputProfile::Rendering(OutputRendering::Hdr);
+        let photo = PhotoError::from(QualityError::UnsupportedOutputProfile(refusal));
+        assert!(matches!(photo, PhotoError::UnsupportedOutputProfile(error) if error == refusal));
     }
 }

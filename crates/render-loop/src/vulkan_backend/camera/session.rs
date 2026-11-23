@@ -40,6 +40,7 @@ use gpu_vulkan::swapchain::{
 };
 use gpu_vulkan::sync::{ExportableSemaphore, GpuReleaseFence, WaitSemaphore};
 use isp_model::lens_shading::LensShadingControl;
+use isp_model::look::model::LookModelSettings;
 use isp_vulkan::viewfinder::ViewfinderGeometry;
 use raw_frame_stream::{RawFrameLease, ViewfinderFrames};
 use std::sync::Arc;
@@ -159,6 +160,8 @@ pub struct CameraSessionParts<'a> {
     pub tone: ViewfinderToneConfig,
     /// Коррекция виньетирования (`viewfinder.lens_shading`).
     pub lens_shading: LensShadingControl,
+    /// Модель вида картинки (`viewfinder.look_model`, уже проверена при старте).
+    pub look_model: Arc<LookModelSettings>,
     /// Удержание последнего кадра при смене объектива (`viewfinder.continuity`, уже проверено при старте).
     pub continuity: ContinuityConfig,
 }
@@ -222,6 +225,7 @@ impl CameraSession {
             headroom,
             tone,
             lens_shading,
+            look_model,
             continuity,
         } = parts;
         let importer = match make_importer.make(context) {
@@ -263,6 +267,12 @@ impl CameraSession {
                 }));
             }
         };
+        // Вид действует с первого кадра: стартовые значения лежат в настройках, которые собрал бэкенд.
+        let params = IspParamsCache::default()
+            .with_tone(tone)
+            .with_lens_shading(lens_shading)
+            .with_look_model(look_model)
+            .with_look(Arc::clone(&settings.look));
         Ok(Self {
             frames,
             importer,
@@ -275,10 +285,7 @@ impl CameraSession {
             stats: CameraStreamDiagnostics::default(),
             history_capacity,
             settings,
-            params: IspParamsCache::default()
-                .with_tone(tone)
-                .with_lens_shading(lens_shading),
-
+            params,
             viewfinder,
             awb_feed,
             white,
@@ -311,6 +318,9 @@ impl CameraSession {
         let mut diagnostics =
             self.viewfinder
                 .snapshot(&self.settings, self.bench.live_state(), self.white.diagnostics());
+        // Вид берётся из кэша параметров, а не из копии настроек: так диагностика показывает то, под что реально
+        // считаются параметры кадра, и потерянная пересылка вида в кэш не прячется.
+        diagnostics.look = Arc::new(self.params.look().clone());
         diagnostics.auto_exposure = self.exposure.as_ref().map(ExposureRunner::diagnostics);
         diagnostics.continuity.holding = self.continuity.is_holding();
         diagnostics
@@ -324,6 +334,10 @@ impl CameraSession {
         }
         if settings.headroom != self.settings.headroom {
             self.bench.set_mode(settings.headroom, self.viewfinder.headroom_mut());
+        }
+        if settings.look != self.settings.look {
+            // Смена значений вида: параметры пересчитаются на следующем кадре (ключ кэша содержит вид).
+            self.params.set_look(Arc::clone(&settings.look));
         }
         self.settings = settings;
     }

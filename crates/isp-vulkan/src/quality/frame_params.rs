@@ -8,11 +8,12 @@
 use isp_model::cfa::BayerPattern;
 use isp_model::demosaic::DemosaicMethod;
 use isp_model::params::{CURRENT_ISP_PARAMS_VERSION, IspParams};
+use isp_model::tone::base::WhitePolicy;
 
 use super::error::QualityError;
 
-/// Размер блока, байт (8 полей vec4 + 2 массива по 3 vec4 = 12 vec4).
-pub(crate) const FRAME_PARAMETERS_BYTES: u64 = 192;
+/// Размер блока, байт (8 полей vec4 + 2 массива по 3 vec4 + политика белого + начало окна вывода = 14 vec4).
+pub(crate) const FRAME_PARAMETERS_BYTES: u64 = 224;
 
 /// Смещения полей блока std140, байт (порядок — как в GLSL).
 mod offset {
@@ -24,6 +25,8 @@ mod offset {
     pub(super) const GAMUT_THRESHOLD_POWER: usize = 144;
     pub(super) const GAMUT_SCALE: usize = 160;
     pub(super) const TONE: usize = 176;
+    pub(super) const WHITE_POLICY: usize = 192;
+    pub(super) const OUTPUT_ORIGIN: usize = 208;
 }
 
 /// Код раскладки CFA для шейдера (таблица `CHANNELS` в `quality_common.glsl`).
@@ -63,6 +66,29 @@ pub(crate) struct SourceAddressing {
     pub row_stride_bytes: u32,
 }
 
+/// Позиция левого верхнего пикселя картинки на выходе в ПОЛЕЗНОЙ области кадра (нужна, чтобы выходной проход
+/// нашёл белый точки по карте виньетирования). Стенд видео выводит всю полезную область — [`Self::WHOLE_FRAME`];
+/// проявление снимка по полосам — позиция области снимка.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OutputWindowOrigin {
+    pub left: u32,
+    pub top: u32,
+}
+
+impl OutputWindowOrigin {
+    /// Выход — вся полезная область: пиксель плоскости и пиксель полезной области — одно и то же.
+    pub(crate) const WHOLE_FRAME: Self = Self { left: 0, top: 0 };
+}
+
+/// Слово «политика белого» для шейдера (зеркало `frame.white_policy.x`): 0 — обрезка по 1,0, 1 — по своему
+/// белому точки.
+fn white_policy_word(policy: WhitePolicy) -> u32 {
+    match policy {
+        WhitePolicy::SensorLevel => 0,
+        WhitePolicy::PerPoint => 1,
+    }
+}
+
 /// Проверяет, что параметры подходят качественному конвейеру.
 pub(crate) fn check_supported(params: &IspParams) -> Result<(), QualityError> {
     if params.version != CURRENT_ISP_PARAMS_VERSION {
@@ -81,17 +107,27 @@ pub(crate) fn check_supported(params: &IspParams) -> Result<(), QualityError> {
             ),
         });
     }
+    // Профиль выхода, который GPU не считает (Log, HDR), — отказ ДО записи, а не молчаливый sRGB; проверку делят
+    // стенд и снимок.
+    params.output_profile.check_supported()?;
     Ok(())
 }
 
 /// Собирает байты блока. Параметры должны пройти [`check_supported`].
-pub(crate) fn frame_parameter_bytes(params: &IspParams, source: SourceAddressing) -> Vec<u8> {
+pub(crate) fn frame_parameter_bytes(
+    params: &IspParams,
+    source: SourceAddressing,
+    output_origin: OutputWindowOrigin,
+) -> Vec<u8> {
     let mut bytes = vec![0_u8; FRAME_PARAMETERS_BYTES as usize];
     let mut put_u32 = |at: usize, values: [u32; 4]| write_words(&mut bytes, at, values.map(u32::to_ne_bytes));
     put_u32(
         offset::SOURCE_AREA,
         [source.left, source.top, source.row_stride_bytes, 0],
     );
+
+    put_u32(offset::WHITE_POLICY, [white_policy_word(params.white_policy), 0, 0, 0]);
+    put_u32(offset::OUTPUT_ORIGIN, [output_origin.left, output_origin.top, 0, 0]);
 
     let gains = params.white_balance.as_array();
     let gamut = params.gamut_compression.parameters();
@@ -165,7 +201,8 @@ mod tests {
             top: 4,
             row_stride_bytes: 5120,
         };
-        let bytes = frame_parameter_bytes(&params, source);
+        let origin = OutputWindowOrigin { left: 6, top: 10 };
+        let bytes = frame_parameter_bytes(&params, source, origin);
         assert_eq!(bytes.len() as u64, FRAME_PARAMETERS_BYTES);
         assert_eq!([u32_at(&bytes, 0), u32_at(&bytes, 4), u32_at(&bytes, 8)], [8, 4, 5120]);
         assert_eq!(float_at(&bytes, 16), params.levels.black_pattern()[0]);
@@ -183,6 +220,8 @@ mod tests {
         let tone = params.tone.parameters();
         assert_eq!(float_at(&bytes, 176), tone.contrast);
         assert_eq!(float_at(&bytes, 188), tone.hue_preservation);
+        assert_eq!(u32_at(&bytes, 192), 0, "прежняя основа — обрезка по 1,0");
+        assert_eq!([u32_at(&bytes, 208), u32_at(&bytes, 212)], [6, 10]);
     }
 
     #[test]
@@ -208,5 +247,38 @@ mod tests {
             check_supported(&params),
             Err(QualityError::UnsupportedParams { .. })
         ));
+    }
+
+    #[test]
+    fn unsupported_output_profiles_are_refused_before_recording() {
+        use isp_model::output::{OutputBitDepth, OutputProfile, OutputRendering, UnsupportedOutputProfile};
+        let supported = quality_params(BayerPattern::RGGB);
+        for (profile, expected) in [
+            (
+                OutputProfile::srgb().with_rendering(OutputRendering::SceneLog),
+                UnsupportedOutputProfile::Rendering(OutputRendering::SceneLog),
+            ),
+            (
+                OutputProfile::srgb().with_rendering(OutputRendering::Hdr),
+                UnsupportedOutputProfile::Rendering(OutputRendering::Hdr),
+            ),
+            (
+                OutputProfile::srgb().with_bit_depth(OutputBitDepth::Ten),
+                UnsupportedOutputProfile::BitDepth(OutputBitDepth::Ten),
+            ),
+        ] {
+            let params = IspParams {
+                output_profile: profile,
+                ..supported.clone()
+            };
+            assert!(
+                matches!(
+                    check_supported(&params),
+                    Err(QualityError::UnsupportedOutputProfile(error)) if error == expected
+                ),
+                "{profile:?}"
+            );
+        }
+        assert!(check_supported(&supported).is_ok());
     }
 }

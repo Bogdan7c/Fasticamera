@@ -24,16 +24,16 @@ use camera_contract::fixtures::camera_id;
 use camera_contract::frame_passport::CaptureColorHints;
 
 /// Буфер — сенсор, смотящий через биннинг 16×: 256×192 покрывает все 4096×3072.
-const BUFFER: PixelSize = PixelSize::new(256, 192);
-const BINNING: f64 = 16.0;
-const BLACK: u32 = 64;
-const WHITE: u32 = 4095;
+pub(crate) const BUFFER: PixelSize = PixelSize::new(256, 192);
+pub(crate) const BINNING: f64 = 16.0;
+pub(crate) const BLACK: u32 = 64;
+pub(crate) const WHITE: u32 = 4095;
 /// Сила виньетирования по каналам `[R, G_even, G_odd, B]`: в углу усиление `1 + k` (до ~3 EV).
 const VIGNETTE_K: [f64; GAIN_CHANNELS] = [5.0, 4.2, 4.5, 6.0];
 
 /// Радиальное усиление канала в пикселе `(x, y)` активной области. Центр сдвинут (0,45; 0,55), чтобы
 /// тёмные углы были разными и перестановка осей ломала тест.
-fn vignette_gain(channel: usize, x: f64, y: f64) -> f64 {
+pub(crate) fn vignette_gain(channel: usize, x: f64, y: f64) -> f64 {
     let u = (x - 0.45 * f64::from(MAIN_ACTIVE_ARRAY.width)) / (0.55 * f64::from(MAIN_ACTIVE_ARRAY.width));
     let v = (y - 0.55 * f64::from(MAIN_ACTIVE_ARRAY.height)) / (0.55 * f64::from(MAIN_ACTIVE_ARRAY.height));
     1.0 + VIGNETTE_K[channel] * (u * u + v * v) / 2.0
@@ -61,7 +61,7 @@ fn radial_calibration() -> LensShadingCalibration {
     }
 }
 
-fn passport() -> StreamPassport {
+pub(crate) fn passport() -> StreamPassport {
     let mut passport = calibrated_passport(
         BUFFER,
         PixelRect {
@@ -110,6 +110,7 @@ fn params(sensor: &SensorDescription, control: LensShadingControl) -> IspParams 
             DemosaicMethod::Preview,
             crate::image::DisplayGamut::Srgb,
         )
+        .with_legacy_tone()
     };
     IspParams::resolve(sensor, &frame, &controls).unwrap()
 }

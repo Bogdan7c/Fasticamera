@@ -14,6 +14,7 @@ use gpu_vulkan::storage_image::StorageImageFormat;
 use super::frame_params::CfaCode;
 use super::pass::{PassPushConstants, QualityPass};
 use super::planes::LinearRgbPlanes;
+use crate::frame_style::FrameStyleBindings;
 use crate::shaders::blobs;
 
 /// Проход 0 для обоих видов кадра (RAW16 — картинка, RAW10 — упакованный буфер).
@@ -119,14 +120,55 @@ pub(crate) struct OutputStage {
     half_float: QualityPass,
 }
 
-/// Привязки выходного прохода: R, G, B (чтение), uniform кадра, цель.
-const OUTPUT_BINDINGS: [BindingKind; 5] = [
+/// Привязки выходного прохода (номера — зеркало `quality_output_main.glsl`): R, G, B (чтение), uniform кадра,
+/// цель, блок основы тона (`ToneBaseParameters`, привязка 5), карта виньетирования (привязка 6, белый точки AgX),
+/// блок цвета вида (`LookParameters`, привязка 7) и таблица вида (привязка 8).
+/// Общие для стенда видео и проявления снимка: оба берут шейдер из `quality_output_main.glsl`.
+pub(crate) const OUTPUT_BINDINGS: [BindingKind; 9] = [
     BindingKind::ReadOnlyStorageBuffer,
     BindingKind::ReadOnlyStorageBuffer,
     BindingKind::ReadOnlyStorageBuffer,
     BindingKind::UniformBuffer,
     BindingKind::StorageImageWrite,
+    BindingKind::UniformBuffer,
+    BindingKind::ReadOnlyStorageBuffer,
+    BindingKind::UniformBuffer,
+    BindingKind::ReadOnlyStorageBuffer,
 ];
+
+/// Ресурсы слота кадра, которые читает выходной проход, кроме плоскостей и цели.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct OutputUniforms {
+    /// Uniform кадра (`FrameParameters`).
+    pub frame_parameters: DescriptorResource,
+    /// Ресурсы стиля: основа тона, цвет вида, таблица вида (готовит `FrameStyleBuffers`).
+    pub style: FrameStyleBindings,
+    /// Карта виньетирования слота (по ней считается белый точки).
+    pub lens_shading_map: DescriptorResource,
+}
+
+/// Привязки выходного прохода по номерам [`OUTPUT_BINDINGS`]: одна запись списка на всех (стенд и снимок).
+pub(crate) fn output_binding_writes(
+    input: LinearRgbPlanes<'_>,
+    uniforms: OutputUniforms,
+    target: DescriptorResource,
+) -> Vec<BindingWrite> {
+    let resources = [
+        input.red.read_only_binding(),
+        input.green.read_only_binding(),
+        input.blue.read_only_binding(),
+        uniforms.frame_parameters,
+        target,
+        uniforms.style.tone_base,
+        uniforms.lens_shading_map,
+        uniforms.style.look,
+        uniforms.style.look_lut,
+    ];
+    (0_u32..)
+        .zip(resources)
+        .map(|(binding, resource)| BindingWrite { binding, resource })
+        .collect()
+}
 
 impl OutputStage {
     pub(crate) fn new(context: &GpuContext, local: LocalSize, frame_slots: usize) -> Result<Self, GpuError> {
@@ -172,7 +214,7 @@ impl OutputStage {
         command_buffer: vk::CommandBuffer,
         frame_slot: usize,
         input: LinearRgbPlanes<'_>,
-        frame_parameters: DescriptorResource,
+        uniforms: OutputUniforms,
         target: &FrameSinkTarget,
         extent: vk::Extent2D,
     ) -> Result<(), GpuError> {
@@ -180,17 +222,7 @@ impl OutputStage {
             StorageImageFormat::A2B10G10R10Unorm => &mut self.ten_bit,
             StorageImageFormat::Rgba16Float => &mut self.half_float,
         };
-        let resources = [
-            input.red.read_only_binding(),
-            input.green.read_only_binding(),
-            input.blue.read_only_binding(),
-            frame_parameters,
-            target.storage,
-        ];
-        let writes: Vec<BindingWrite> = (0_u32..)
-            .zip(resources)
-            .map(|(binding, resource)| BindingWrite { binding, resource })
-            .collect();
+        let writes = output_binding_writes(input, uniforms, target.storage);
         pass.bind(frame_slot, &writes)?;
         pass.record(command_buffer, frame_slot, &output_push(extent))
     }

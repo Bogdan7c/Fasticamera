@@ -253,6 +253,14 @@ pub struct Harness {
 impl Harness {
     /// Бэкенд камеры с UI-конфигом `ui_config`, поток кадров начат, surface ещё не присоединена.
     pub fn start(ui_config: UiOverlayConfig) -> Option<Self> {
+        Self::start_with_initial_look(ui_config, None)
+    }
+
+    /// То же, что [`Self::start`], но стартовый вид картинки передаётся бэкенду при сборке (как делает приложение).
+    pub fn start_with_initial_look(
+        ui_config: UiOverlayConfig,
+        initial_look: Option<Arc<look_contract::LookSettings>>,
+    ) -> Option<Self> {
         let render_config = RenderLoopConfig {
             ui_overlay: ui_config,
             ..RenderLoopConfig::default()
@@ -281,6 +289,10 @@ impl Harness {
             }),
             directives,
         )?;
+        let backend = match initial_look {
+            Some(look) => backend.with_initial_look(look),
+            None => backend,
+        };
         let baseline = backend.context().live_objects();
         let epoch = stream.producer().begin_stream(Arc::new(stream_passport())).epoch;
         Some(Self {

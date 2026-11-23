@@ -4,6 +4,7 @@
 use camera_contract::control::ExposureBias;
 use camera_contract::three_a::SensorPoint;
 use camera_contract::zoom::LensIntent;
+use look_contract::LookIntent;
 use shell_contract::haptics::HapticPattern;
 
 use crate::layout::FramingIntent;
@@ -45,4 +46,7 @@ pub enum Effect {
     /// «последнее побеждает» (`LensIntentChannel`), а НЕ в очередь команд камеры: промежуточные значения колеса
     /// и щипка не должны копиться. Экран не выбирает камеру — это делает движок с гистерезисом.
     Lens(LensIntent),
+    /// Намерение по виду картинки и пресетам (решение 178). Исполнитель эффектов на потоке рендера отдаёт его
+    /// библиотеке пресетов, шлёт новый вид рендеру и просит записать файл; экран к ним не прикасается.
+    Look(LookIntent),
 }

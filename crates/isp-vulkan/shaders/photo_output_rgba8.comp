@@ -45,11 +45,12 @@ void main() {
         return;
     }
     uint index = region_y * geometry.width + region_x;
-    vec3 camera_rgb = vec3(linear_red.values[index], linear_green.values[index], linear_blue.values[index]);
-    vec3 xyz_d50 = apply_matrix(frame.camera_to_xyz, camera_rgb);
-    vec3 scene_linear = apply_matrix(frame.xyz_to_scene, xyz_d50);
-    vec3 display_linear = apply_tone(compress_gamut(scene_linear));
-    vec3 encoded = vec3(encode_srgb(display_linear.x), encode_srgb(display_linear.y), encode_srgb(display_linear.z));
+    // Координаты пикселя в полезной области кадра (для белого точки по карте виньетирования): окно вывода
+    // начинается в позиции `frame.output_origin` (область снимка), строки считаются от первой строки окна.
+    uvec2 valid_pixel = uvec2(
+        frame.output_origin.x + (region_x - window_left),
+        frame.output_origin.y + destination_row + (region_y - first_row));
+    vec3 encoded = encoded_pixel(index, valid_pixel);
     precise float red = floor(clamp(encoded.x, 0.0, 1.0) * 255.0 + 0.5);
     precise float green = floor(clamp(encoded.y, 0.0, 1.0) * 255.0 + 0.5);
     precise float blue = floor(clamp(encoded.z, 0.0, 1.0) * 255.0 + 0.5);

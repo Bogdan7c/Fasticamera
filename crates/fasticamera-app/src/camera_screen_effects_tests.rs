@@ -23,6 +23,8 @@ use shell_contract::surface::SurfaceSize;
 use super::*;
 use crate::gpu_test_support::RecordingRenderControl;
 
+#[path = "camera_screen_effects_look_tests.rs"]
+mod look;
 #[path = "camera_screen_effects_shot_tests.rs"]
 mod shot_and_sound;
 #[path = "camera_screen_effects_standby_tests.rs"]
@@ -81,11 +83,13 @@ impl ShellCommands for FakeCommands {
 struct StubCapture {
     outcome: SubmitOutcome,
     requests: Mutex<Vec<ShotRequest>>,
+    looks: Mutex<Vec<look_contract::LookSettings>>,
 }
 
 impl CaptureService for StubCapture {
-    fn submit(&self, request: ShotRequest, _now: MonotonicNanos) -> SubmitOutcome {
+    fn submit(&self, request: ShotRequest, look: look_contract::LookSettings, _now: MonotonicNanos) -> SubmitOutcome {
         self.requests.lock().expect("замок").push(request);
+        self.looks.lock().expect("замок").push(look);
         self.outcome
     }
 }
@@ -136,6 +140,7 @@ struct Behavior {
     gallery: CommandOutcome,
     capture: SubmitOutcome,
     shutter_sound: CommandOutcome,
+    look: Option<crate::look_service::LookHandle>,
 }
 
 impl Default for Behavior {
@@ -146,6 +151,7 @@ impl Default for Behavior {
             gallery: CommandOutcome::Queued,
             capture: SubmitOutcome::Accepted,
             shutter_sound: CommandOutcome::Queued,
+            look: None,
         }
     }
 }
@@ -171,6 +177,7 @@ fn build_executor_with_capture(
     let capture = Arc::new(StubCapture {
         outcome: behavior.capture,
         requests: Mutex::default(),
+        looks: Mutex::default(),
     });
     let shutter_sound = Arc::new(FakeShutterSound {
         outcome: behavior.shutter_sound,
@@ -190,6 +197,7 @@ fn build_executor_with_capture(
         capture: capture_override.unwrap_or_else(|| capture.clone()),
         shutter_sound: shutter_sound.clone(),
         lens: lens.clone(),
+        look: behavior.look,
     });
     (
         executor,

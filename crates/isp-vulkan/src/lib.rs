@@ -13,12 +13,22 @@
 //! Коррекция виньетирования по карте усилений (`isp_model::lens_shading`) — одна реализация шейдера
 //! (`shaders/lens_shading.glsl`) для всех трёх конвейеров; карта лежит в host-буфере ([`lens_shading_map`]).
 //!
+//! Основа тона (любая модель: прежняя, AgX, дальше ACES, filmic) — один общий uniform-блок `ToneBaseParameters`
+//! (`shaders/tone_base.glsl`, упаковщики по моделям — `tone_base/`), слой вида (цвет вида, таблица LUT) — один общий
+//! GLSL-файл `shaders/look_stage.glsl` и упаковщик [`look`]: те же формулы в слитом проходе видоискателя и в выходном
+//! проходе качественного конвейера и снимка. Ресурсы стиля кадра держит `frame_style` (три пути берут их одним вызовом).
+//!
 //! Crate не владеет кадрами камеры (только заимствует импортированный источник на время записи
 //! команд) и ничего не знает о камере, кроме паспорта; Vulkan — только через публичный набор
 //! `gpu-vulkan` (решение владельца в 07: никакого сырого `ash::Device`).
 
+pub(crate) mod frame_style;
 pub mod lens_shading_map;
+pub mod look;
 pub mod photo;
 pub mod quality;
 pub mod shaders;
+pub(crate) mod std140;
+pub(crate) mod tone_base;
+
 pub mod viewfinder;

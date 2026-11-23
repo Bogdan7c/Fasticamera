@@ -15,6 +15,7 @@
 //! ```
 
 use crate::image::{DisplayEncodedImage, DisplayLinearImage, space};
+use crate::output::OutputTransfer;
 
 /// Порог линейного участка на стороне света (IEC 61966-2-1).
 const LINEAR_SEGMENT_LIMIT: f32 = 0.003_130_8;
@@ -52,10 +53,13 @@ pub fn srgb_decode(encoded: f32) -> f32 {
     }
 }
 
-/// Стадия 7: свет экрана → закодированный сигнал той же гаммы.
-pub fn encode_display(image: &DisplayLinearImage) -> DisplayEncodedImage {
+/// Стадия 7: свет экрана → закодированный сигнал той же гаммы кривой профиля выхода `transfer`
+/// ([`crate::output::OutputProfile::transfer`]); выбор кривой — в [`OutputTransfer::encode`].
+pub fn encode_display(image: &DisplayLinearImage, transfer: OutputTransfer) -> DisplayEncodedImage {
     let gamut = image.space().gamut;
-    image.map_into(space::DisplayEncoded { gamut }, |pixel| pixel.map(srgb_encode))
+    image.map_into(space::DisplayEncoded { gamut }, |pixel| {
+        pixel.map(|channel| transfer.encode(channel))
+    })
 }
 
 #[cfg(test)]

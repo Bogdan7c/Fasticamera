@@ -18,6 +18,7 @@ use super::error::ViewfinderError;
 use super::retirement::RecordSerial;
 use super::stages::IspStageSet;
 use crate::shaders::blobs;
+use crate::tone_base::ToneBaseKind;
 
 /// Вид входа шейдера (разный тип привязки 0 — разный SPIR-V).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -43,6 +44,8 @@ pub(crate) struct VariantKey {
     pub source: SourceKind,
     pub format: StorageImageFormat,
     pub stages: IspStageSet,
+    /// Основа тона: другая модель — другой вариант (specialization-константа `TONE_BASE_MODEL`).
+    pub tone_base: ToneBaseKind,
 }
 
 /// Привязки набора дескрипторов (номер = позиция; зеркало `viewfinder_isp.glsl`).
@@ -51,6 +54,11 @@ pub(crate) const BINDING_PARAMETERS: u32 = 1;
 pub(crate) const BINDING_OUTPUT: u32 = 2;
 pub(crate) const BINDING_AWB_TILES: u32 = 3;
 pub(crate) const BINDING_LENS_SHADING_MAP: u32 = 4;
+pub(crate) const BINDING_TONE_BASE: u32 = 5;
+pub(crate) const BINDING_LOOK: u32 = 6;
+pub(crate) const BINDING_LOOK_LUT: u32 = 7;
+/// `constant_id` выбора модели основы тона в шейдере (стадии занимают 2…11 и 13…14).
+const TONE_BASE_CONSTANT_ID: u32 = 12;
 
 /// SPIR-V варианта под источник, формат выхода и способ сведения AWB (суффикс `_SUBGROUP` — с быстрым
 /// путём `subgroupAdd`; его можно создавать только на устройстве с арифметикой subgroup в compute).
@@ -180,11 +188,18 @@ impl VariantCache {
             },
         ];
         specialization.extend(key.stages.specialization_constants());
+        specialization.push(SpecializationConstant {
+            constant_id: TONE_BASE_CONSTANT_ID,
+            value: key.tone_base.model_id(),
+        });
         let bindings = [
             source_binding_kind(key.source),
             BindingKind::UniformBuffer,
             BindingKind::StorageImageWrite,
             BindingKind::ReadWriteStorageBuffer,
+            BindingKind::ReadOnlyStorageBuffer,
+            BindingKind::UniformBuffer,
+            BindingKind::UniformBuffer,
             BindingKind::ReadOnlyStorageBuffer,
         ];
         Ok(ComputePipeline::new(

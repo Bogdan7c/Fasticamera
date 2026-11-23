@@ -3,6 +3,10 @@
 // Формулы — эталон `isp-model` (вариант Preview), стадия за стадией, в том же порядке и в f32:
 //   уровни → коррекция виньетирования (lens_shading.glsl) → баланс белого + обрезка → демозаик 2×2 → камера→XYZ D50 → XYZ→экран (два отдельных
 //   произведения, как на CPU) → сжатие охвата → тон с сохранением оттенка → OETF sRGB
+// Это прежняя основа. Основа AgX (specialization TONE_BASE_MODEL = 1, tone_base_agx.glsl): обрезка баланса по своему белому
+// точки L, XYZ→W (Rec. 2020) → вход → AgX (inset, кривая, outset) → W→цвета экрана → мягкое сжатие охвата → OETF.
+// Основа filmic (TONE_BASE_MODEL = 3, tone_base_filmic.glsl): те же шаги, но вместо AgX — норма пикселя → кривая → обесцвечивание
+// в светах → вписывание в охват выхода.
 // плюс статистика AWB (суммы по плиткам, контракт `isp_model::statistics`) в том же проходе. Статистика: ПЕРЕСВЕТ
 // ячейки судится по нормированному отсчёту ДО виньетирования (пересвечивает сенсор, а не наше усиление),
 // СУММЫ — по скорректированному (после виньетирования, до баланса белого) с потолком `headroom`, не 1.
@@ -32,6 +36,15 @@ layout(constant_id = 7) const bool STAGE_TONE = true;
 layout(constant_id = 8) const bool STAGE_OETF = true;
 layout(constant_id = 9) const bool STAGE_AWB_STATISTICS = true;
 layout(constant_id = 10) const bool STAGE_LENS_SHADING = true;
+layout(constant_id = 11) const bool STAGE_OUTPUT_GAMUT_COMPRESSION = true;
+// Слой вида (решения 98, 99, 176): стадии над светом экрана после основы тона. Нейтраль цвета — флаг в uniform
+// (не константа: первое касание ручки не меняет вариант); таблица — вариант шейдера «с ней / без» (константа).
+layout(constant_id = 13) const bool STAGE_LOOK_COLOR = true;
+layout(constant_id = 14) const bool STAGE_LOOK_LUT = true;
+// Модель основы тона (не стадия, а выбор формулы: другая модель — другой вариант пайплайна, решения 176, 182).
+// 0 — прежняя кривая и обрезка по 1,0; 1 — AgX в рабочем пространстве Rec. 2020 со своим белым точки (решение 177).
+// Номера моделей — `TONE_MODEL_*` в `tone_base.glsl` (зеркало `ToneBaseKind::model_id` в Rust).
+layout(constant_id = 12) const uint TONE_BASE_MODEL = 0u;
 
 // --- Параметры кадра (std140, только 32-битные типы: у Adreno 740 нет 16-битного доступа к uniform) ---
 layout(set = 0, binding = 1, std140) uniform ViewfinderParameters {
@@ -54,6 +67,18 @@ layout(set = 0, binding = 1, std140) uniform ViewfinderParameters {
 // --- Карта коррекции виньетирования (storage-буфер слота, привязка 4; раскладка — lens_shading.glsl) ---
 #define LENS_SHADING_MAP_BINDING 4
 #include "lens_shading.glsl"
+// Блок основы тона (uniform `ToneBaseParameters`, привязка 5; раскладка — `src/tone_base/mod.rs`). Блок привязан
+// всегда: у прежней основы шейдер читает из него только баланс белого.
+#define TONE_BASE_PARAMS_BINDING 5
+#include "tone_base_agx.glsl"
+#include "tone_base_aces.glsl"
+#include "tone_base_filmic.glsl"
+// Слой вида: блок цвета (привязка 6) и таблица (привязка 7); раскладки — `src/look/`.
+#define LOOK_PARAMS_BINDING 6
+#define LOOK_LUT_BINDING 7
+#include "look_stage.glsl"
+// Общий хвост цвета (охват, тон, OETF): те же формулы, что в выходном проходе качественного пути и снимка.
+#include "color_tail.glsl"
 
 // --- Статистика AWB: плитки по 5 u32 {sum_r, sum_g, sum_b, used_cells, saturated_cells} (isp-model AwbTile) ---
 layout(set = 0, binding = 3, std430) buffer AwbTiles {
@@ -83,13 +108,6 @@ const uint NO_TILE = 0xFFFFFFFFu;
 shared uint awb_window_origin_x;
 shared uint awb_window_origin_y;
 shared uint awb_window_sums[AWB_LOCAL_WORDS];
-
-// sRGB OETF (IEC 61966-2-1), как isp_model::transfer::srgb_encode.
-const float OETF_LINEAR_LIMIT = 0.0031308;
-const float OETF_LINEAR_SLOPE = 12.92;
-const float OETF_POWER_SCALE = 1.055;
-const float OETF_POWER_OFFSET = 0.055;
-const float OETF_INVERSE_EXPONENT = 1.0 / 2.4;
 
 // Значение RAW пикселя (x, y) в координатах буфера; тело — в `viewfinder_source_*.glsl`.
 uint read_raw(uint x, uint y);
@@ -138,13 +156,24 @@ float normalize_sample(uint raw_value, uint position) {
 // координат полезной области, а строка отсчёта позиции p в полезной области — чётная при p < 2, нечётная иначе.
 // `sample_count` — сколько позиций реально прочитано (без демозаика и статистики — одна). Выключено
 // (константа) или в буфере заглушка «пропуск» — значения как есть.
-vec4 apply_lens_shading(vec4 normalized, uvec2 cell_origin, uint sample_count) {
+// Усиления четырёх каналов карты в центре ячейки считаются ОДИН раз (`cell_lens_shading_gains`): они же дают
+// свой белый точки (решение 177). Нет коррекции — все четыре равны 1.
+vec4 cell_lens_shading_gains(uvec2 cell_origin) {
+    if (!STAGE_LENS_SHADING || !lens_shading_enabled()) {
+        return vec4(1.0);
+    }
+    uvec2 valid_origin = cell_origin - parameters.lens_shading_origin.xy;
+    return lens_shading_gains(lens_shading_axis_cell_centre_x(valid_origin.x),
+                              lens_shading_axis_cell_centre_y(valid_origin.y));
+}
+
+// Умножает отсчёты ячейки на усиления карты в её центре (`gains` — результат `cell_lens_shading_gains`), канал
+// карты — свой у каждого отсчёта. Коррекция выключена — значения как есть.
+vec4 apply_lens_shading(vec4 normalized, uvec2 cell_origin, uint sample_count, vec4 gains) {
     if (!STAGE_LENS_SHADING || !lens_shading_enabled()) {
         return normalized;
     }
     uvec2 valid_origin = cell_origin - parameters.lens_shading_origin.xy;
-    vec4 gains = lens_shading_gains(lens_shading_axis_cell_centre_x(valid_origin.x),
-                                    lens_shading_axis_cell_centre_y(valid_origin.y));
     vec4 corrected = normalized;
     for (uint position = 0u; position < sample_count; ++position) {
         uint row = position >> 1u;
@@ -335,12 +364,18 @@ void accumulate_awb_statistics(bool inside, uvec2 cell, vec4 normalized, vec4 co
 
 // ===== Стадии 3–4: баланс белого и демозаик =======================================================
 
-// min(v · gain, clip) — isp_model::white_balance. Выключено: значение как есть (ни усиления, ни обрезки).
-vec4 apply_white_balance(vec4 normalized) {
+// Уровень обрезки после баланса: у прежней основы — общий (isp_model::white_balance::SENSOR_CLIP_LEVEL), у AgX —
+// свой белый точки (`white_level`, isp_model::white_level).
+float white_clip_level(float white_level) {
+    return TONE_BASE_MODEL != TONE_MODEL_LEGACY ? white_level : parameters.levels_misc.y;
+}
+
+// min(v · gain, clip) — isp_model::white_balance / white_level. Выключено: значение как есть (ни усиления, ни обрезки).
+vec4 apply_white_balance(vec4 normalized, float clip_level) {
     if (!STAGE_WHITE_BALANCE) {
         return normalized;
     }
-    return min(normalized * parameters.white_balance_gain, vec4(parameters.levels_misc.y));
+    return min(normalized * parameters.white_balance_gain, vec4(clip_level));
 }
 
 // Суперпиксель 2×2: R и B — отсчёты своих позиций, G — среднее двух зелёных (isp_model superpixel).
@@ -379,49 +414,39 @@ vec3 apply_color(vec3 camera_rgb) {
                 dot(parameters.xyz_to_display[2].xyz, xyz));
 }
 
-// ===== Стадия 6а: сжатие охвата (isp_model::gamut::GamutCompression::compress_pixel) ==============
-
-float compress_distance(uint channel, float distance) {
-    float threshold = parameters.gamut_threshold_power[channel];
-    if (distance < threshold) {
-        return distance;
+// Цвет для основы AgX: те же две матрицы подряд, но вторая — XYZ D50 → рабочее пространство W (Rec. 2020), а не
+// сразу цвета экрана. Выключено: RGB камеры идёт дальше как свет сцены в W.
+vec3 apply_color_working(vec3 camera_rgb) {
+    if (!STAGE_COLOR) {
+        return camera_rgb;
     }
-    float scale = parameters.gamut_scale_inverse_power[channel];
-    float power = parameters.gamut_threshold_power.w;
-    float inverse_power = parameters.gamut_scale_inverse_power.w;
-    float normalized = (distance - threshold) / scale;
-    return threshold + scale * normalized / pow(1.0 + pow(normalized, power), inverse_power);
+    vec3 xyz = vec3(dot(parameters.camera_to_xyz[0].xyz, camera_rgb),
+                    dot(parameters.camera_to_xyz[1].xyz, camera_rgb),
+                    dot(parameters.camera_to_xyz[2].xyz, camera_rgb));
+    if (TONE_BASE_MODEL == TONE_MODEL_FILMIC) {
+        return filmic_apply_matrix(FILMIC_ROW_XYZ_D50_TO_WORKING, xyz);
+    }
+    if (TONE_BASE_MODEL == TONE_MODEL_ACES) {
+        return aces_apply_matrix(ACES_ROW_XYZ_D50_TO_WORKING, xyz);
+    }
+    return agx_apply_matrix(AGX_ROW_XYZ_D50_TO_WORKING, xyz);
 }
+
+// ===== Стадии 6а, 6б, 7: охват, тон, OETF =========================================================
+// Формулы — в общем `color_tail.glsl` (isp_model::gamut / tone / transfer); здесь только выключатели
+// стадий и выбор параметров из uniform-блока видоискателя.
 
 // Выключено: свет как есть (отрицательные каналы потом обнулит тон или OETF).
 vec3 compress_gamut(vec3 scene) {
     if (!STAGE_GAMUT_COMPRESSION) {
         return scene;
     }
-    if (any(isnan(scene))) {
-        return vec3(0.0);
-    }
-    float achromatic = max(max(scene.r, scene.g), scene.b);
-    if (achromatic <= 0.0) {
-        return vec3(0.0);
-    }
-    vec3 compressed;
-    for (uint channel = 0u; channel < 3u; ++channel) {
-        float distance = (achromatic - scene[channel]) / achromatic;
-        float compressed_distance = compress_distance(channel, distance);
-        compressed[channel] = max(achromatic - compressed_distance * achromatic, 0.0);
-    }
-    return compressed;
-}
-
-// ===== Стадия 6б: тон (isp_model::tone::ToneCurve::map_pixel) =====================================
-
-float tone_channel(float scene) {
-    if (isnan(scene) || scene <= 0.0) {
-        return 0.0;
-    }
-    float powered = pow(scene, parameters.tone.x);
-    return min(powered / (powered + parameters.tone.y) * parameters.tone.z, 1.0);
+    return color_tail_compress_gamut(
+        scene,
+        parameters.gamut_threshold_power.xyz,
+        parameters.gamut_scale_inverse_power.xyz,
+        parameters.gamut_threshold_power.w,
+        parameters.gamut_scale_inverse_power.w);
 }
 
 // Выключено: свет сцены идёт на экран как есть (без S-кривой и без сохранения оттенка).
@@ -429,41 +454,107 @@ vec3 apply_tone(vec3 scene) {
     if (!STAGE_TONE) {
         return scene;
     }
-    if (any(isnan(scene))) {
-        return vec3(0.0);
-    }
-    vec3 display = vec3(tone_channel(scene.r), tone_channel(scene.g), tone_channel(scene.b));
-    // Порядок каналов по убыванию, при равенстве — R, G, B (устойчивая сортировка эталона):
-    // максимум — первый из наибольших, минимум — последний из наименьших.
-    uint max_channel = 0u;
-    if (scene.g > scene[max_channel]) { max_channel = 1u; }
-    if (scene.b > scene[max_channel]) { max_channel = 2u; }
-    uint min_channel = 2u;
-    if (scene.g < scene[min_channel]) { min_channel = 1u; }
-    if (scene.r < scene[min_channel]) { min_channel = 0u; }
-    uint middle_channel = 3u - max_channel - min_channel;
-    float input_span = scene[max_channel] - scene[min_channel];
-    float hue_preservation = parameters.tone.w;
-    if (input_span <= 0.0 || hue_preservation <= 0.0) {
-        return display;
-    }
-    float middle_share = (scene[middle_channel] - scene[min_channel]) / input_span;
-    float restored_middle = display[min_channel] + middle_share * (display[max_channel] - display[min_channel]);
-    display[middle_channel] += hue_preservation * (restored_middle - display[middle_channel]);
-    return display;
+    return color_tail_apply_tone(scene, parameters.tone);
 }
 
-// ===== Стадия 7: OETF =============================================================================
+// ----- Основа AgX: те же стадии 6а, 6б (+ новая «выходное сжатие охвата») в своих формулах `tone_base_agx.glsl` -----
 
-float srgb_encode(float linear_light) {
-    if (isnan(linear_light)) {
-        return 0.0;
+// 6а (AgX): вход в W — обрезка нулём или мягкое сжатие. Выключено: свет как есть.
+vec3 apply_agx_input(vec3 working_scene) {
+    if (!STAGE_GAMUT_COMPRESSION) {
+        return working_scene;
     }
-    float clamped = clamp(linear_light, 0.0, 1.0);
-    if (clamped <= OETF_LINEAR_LIMIT) {
-        return OETF_LINEAR_SLOPE * clamped;
+    return agx_apply_input(working_scene);
+}
+
+// 6б (AgX): inset → кривая со своим белым → outset. Выключено: свет как есть (без кривой).
+vec3 apply_agx_tone(vec3 entering, float white_level) {
+    if (!STAGE_TONE) {
+        return entering;
     }
-    return OETF_POWER_SCALE * pow(clamped, OETF_INVERSE_EXPONENT) - OETF_POWER_OFFSET;
+    return agx_apply_base(entering, white_level);
+}
+
+// 6в (AgX): W → цвета экрана, мягкое сжатие охвата выхода, обрезка 0…1. Выключено сжатие охвата — только
+// матрица и обрезка (цена сжатия видна по A/B).
+vec3 apply_agx_output(vec3 display_working) {
+    vec3 output_color = agx_working_to_output(display_working);
+    if (STAGE_OUTPUT_GAMUT_COMPRESSION) {
+        output_color = agx_compress_output_gamut(output_color);
+    }
+    return agx_clamp_output(output_color);
+}
+
+// ----- Основа filmic: те же стадии 6а, 6б, 6в в формулах `tone_base_filmic.glsl` -----
+
+// 6а (filmic): вход в W — обрезка нулём или мягкое сжатие. Выключено: свет как есть.
+vec3 apply_filmic_input(vec3 working_scene) {
+    if (!STAGE_GAMUT_COMPRESSION) {
+        return working_scene;
+    }
+    return filmic_apply_input(working_scene);
+}
+
+// 6б (filmic): норма → кривая со своим белым → обесцвечивание → вписывание. Выключено: свет как есть (без кривой).
+vec3 apply_filmic_tone(vec3 entering, float white_level) {
+    if (!STAGE_TONE) {
+        return entering;
+    }
+    return filmic_apply_base(entering, white_level);
+}
+
+// 6в (filmic): W → цвета экрана, мягкое сжатие охвата выхода, обрезка 0…1 (выключено сжатие — только матрица и обрезка).
+vec3 apply_filmic_output(vec3 display_working) {
+    vec3 output_color = filmic_working_to_output(display_working);
+    if (STAGE_OUTPUT_GAMUT_COMPRESSION) {
+        output_color = filmic_compress_output_gamut(output_color);
+    }
+    return filmic_clamp_output(output_color);
+}
+
+// ----- Основа ACES: те же стадии 6а, 6б, 6в в своих формулах `tone_base_aces.glsl` -----
+
+// 6а (ACES): вход в W — обрезка нулём или мягкое сжатие. Выключено: свет как есть.
+vec3 apply_aces_input(vec3 working_scene) {
+    if (!STAGE_GAMUT_COMPRESSION) {
+        return working_scene;
+    }
+    return aces_apply_input(working_scene);
+}
+
+// 6б (ACES): RRT и выходное преобразование со своим белым. Выключено: свет как есть (без кривой).
+vec3 apply_aces_tone(vec3 entering, float white_level) {
+    if (!STAGE_TONE) {
+        return entering;
+    }
+    return aces_apply_base(entering, white_level);
+}
+
+// 6в (ACES): W → цвета экрана, мягкое сжатие охвата выхода, обрезка 0…1 (как у AgX).
+vec3 apply_aces_output(vec3 display_working) {
+    vec3 output_color = aces_working_to_output(display_working);
+    if (STAGE_OUTPUT_GAMUT_COMPRESSION) {
+        output_color = aces_compress_output_gamut(output_color);
+    }
+    return aces_clamp_output(output_color);
+}
+
+// ----- Слой вида (общий для обеих основ): цвет, затем таблица -----
+
+// Цвет вида: выключено набором — свет как есть. Нейтральный вид пропускается флагом в uniform (внутри функции).
+vec3 apply_look_color(vec3 display_working) {
+    if (!STAGE_LOOK_COLOR) {
+        return display_working;
+    }
+    return look_apply_color(display_working);
+}
+
+// Таблица вида: вариант шейдера без неё вырезает код целиком (константа), с ней — заголовок буфера тоже проверяется.
+vec3 apply_look_lut(vec3 display_working) {
+    if (!STAGE_LOOK_LUT) {
+        return display_working;
+    }
+    return look_apply_lut(display_working);
 }
 
 // Выключено: линейный свет пишется как есть (UNORM-картинка обрежет его до 0…1 сама).
@@ -471,7 +562,7 @@ vec3 apply_oetf(vec3 display_linear) {
     if (!STAGE_OETF) {
         return display_linear;
     }
-    return vec3(srgb_encode(display_linear.r), srgb_encode(display_linear.g), srgb_encode(display_linear.b));
+    return color_tail_encode_output(display_linear);
 }
 
 // ===== Проход =====================================================================================
@@ -490,6 +581,8 @@ void main() {
     // виньетирования (суммы AWB и дальнейшая картинка).
     vec4 normalized = vec4(0.0);
     vec4 corrected = vec4(0.0);
+    // Усиления карты в центре ячейки (1, если коррекции нет): дают и коррекцию отсчётов, и свой белый точки.
+    vec4 shading_gains = vec4(1.0);
     if (inside) {
         cell = cell_of_output(upright, parameters.output_geometry.z, cells_width, cells_height);
         uvec2 origin = parameters.crop.xy + cell * 2u;
@@ -502,7 +595,8 @@ void main() {
             normalized[3] = normalize_sample(read_raw(origin.x + 1u, origin.y + 1u), 3u);
         }
         // Коррекция виньетирования — до баланса белого (порядок эталона); исходные отсчёты остаются для пересвета.
-        corrected = apply_lens_shading(normalized, origin, needs_whole_cell ? 4u : 1u);
+        shading_gains = cell_lens_shading_gains(origin);
+        corrected = apply_lens_shading(normalized, origin, needs_whole_cell ? 4u : 1u, shading_gains);
     }
 
     if (STAGE_AWB_STATISTICS) {
@@ -512,7 +606,23 @@ void main() {
         return;
     }
 
-    vec3 camera_rgb = demosaic_cell(apply_white_balance(corrected));
-    vec3 display_linear = apply_tone(compress_gamut(apply_color(camera_rgb)));
+    // Свой белый точки L: у AgX — уровень обрезки после баланса и вход кривой; у прежней основы не читается.
+    float white_level = lens_shading_white_level(shading_gains, tone_base_white_balance());
+    vec3 camera_rgb = demosaic_cell(apply_white_balance(corrected, white_clip_level(white_level)));
+    vec3 display_linear;
+    if (TONE_BASE_MODEL == TONE_MODEL_AGX) {
+        vec3 shaped = apply_agx_tone(apply_agx_input(apply_color_working(camera_rgb)), white_level);
+        // Вид в W после основы; значения вне 0…1 принимает выходное сжатие охвата.
+        display_linear = apply_agx_output(apply_look_lut(apply_look_color(shaped)));
+    } else if (TONE_BASE_MODEL == TONE_MODEL_FILMIC) {
+        vec3 shaped = apply_filmic_tone(apply_filmic_input(apply_color_working(camera_rgb)), white_level);
+        display_linear = apply_filmic_output(apply_look_lut(apply_look_color(shaped)));
+    } else if (TONE_BASE_MODEL == TONE_MODEL_ACES) {
+        vec3 shaped = apply_aces_tone(apply_aces_input(apply_color_working(camera_rgb)), white_level);
+        display_linear = apply_aces_output(apply_look_lut(apply_look_color(shaped)));
+    } else {
+        // Прежняя основа: W = цвета выхода; вид над светом после S-кривой, 0…1 обрежет OETF.
+        display_linear = apply_look_lut(apply_look_color(apply_tone(compress_gamut(apply_color(camera_rgb)))));
+    }
     imageStore(viewfinder_image, ivec2(upright), vec4(apply_oetf(display_linear), 1.0));
 }

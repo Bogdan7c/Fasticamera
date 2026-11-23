@@ -24,7 +24,7 @@ impl CountingService {
 }
 
 impl CaptureService for CountingService {
-    fn submit(&self, _request: ShotRequest, _now: MonotonicNanos) -> SubmitOutcome {
+    fn submit(&self, _request: ShotRequest, _look: look_contract::LookSettings, _now: MonotonicNanos) -> SubmitOutcome {
         self.submits.fetch_add(1, Ordering::SeqCst);
         self.answer
     }
@@ -43,7 +43,7 @@ fn without_a_substitute_every_request_goes_to_the_primary_service_and_its_answer
     let primary = CountingService::new(SubmitOutcome::Rejected(SubmitRejection::Busy));
     let switch = SwitchableCaptureService::new(Arc::clone(&primary) as Arc<dyn CaptureService>);
 
-    let outcome = switch.submit(shot(1), now());
+    let outcome = switch.submit(shot(1), look_contract::LookSettings::NEUTRAL, now());
 
     assert_eq!(outcome, SubmitOutcome::Rejected(SubmitRejection::Busy));
     assert_eq!(primary.submits.load(Ordering::SeqCst), 1);
@@ -56,9 +56,9 @@ fn a_substitute_takes_the_requests_and_the_primary_gets_none_until_restore() {
     let switch = SwitchableCaptureService::new(Arc::clone(&primary) as Arc<dyn CaptureService>);
 
     switch.substitute(Arc::clone(&fake) as Arc<dyn CaptureService>);
-    let during = switch.submit(shot(1), now());
+    let during = switch.submit(shot(1), look_contract::LookSettings::NEUTRAL, now());
     assert!(switch.restore(), "подстановка была");
-    let after = switch.submit(shot(2), now());
+    let after = switch.submit(shot(2), look_contract::LookSettings::NEUTRAL, now());
 
     assert_eq!(during, SubmitOutcome::Rejected(SubmitRejection::ServiceUnavailable));
     assert_eq!(after, SubmitOutcome::Accepted);
@@ -78,7 +78,10 @@ fn restore_without_a_substitute_changes_nothing_and_says_so() {
 
     assert!(!switch.restore());
 
-    assert_eq!(switch.submit(shot(1), now()), SubmitOutcome::Accepted);
+    assert_eq!(
+        switch.submit(shot(1), look_contract::LookSettings::NEUTRAL, now()),
+        SubmitOutcome::Accepted
+    );
     assert_eq!(primary.submits.load(Ordering::SeqCst), 1);
 }
 

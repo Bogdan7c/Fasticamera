@@ -25,6 +25,12 @@
 use super::chromaticity::Chromaticity;
 use super::temperature::{ISOTEMPERATURE_LINES, Kelvin, TableRange, locate_mired, ucs_from_chromaticity};
 
+/// Наибольшие майреды таблицы Робертсона (самая красная линия, ≈ 1667 К): дальше перевод температуры в цветность
+/// невозможен. Нужна тем, кто сдвигает белую по майредам и обязан не выйти за таблицу.
+pub fn table_mired_limit() -> f64 {
+    ISOTEMPERATURE_LINES[LAST_LINE_INDEX].mired
+}
+
 /// Знаковое расстояние от кривой Планка в CIE 1960 UCS; плюс — выше кривой (к зелёному).
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Duv(pub f64);

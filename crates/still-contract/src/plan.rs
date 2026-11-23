@@ -6,6 +6,7 @@
 
 use camera_contract::flash::FlashShotId;
 use camera_contract::zoom::ZoomFraming;
+use look_contract::LookSettings;
 use serde::Serialize;
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::orientation::DeviceOrientation;
@@ -102,4 +103,8 @@ pub struct StillPlan {
     /// Как держали телефон в момент нажатия: определяет тег поворота файлов (пиксели не вращаются).
     pub orientation: DeviceOrientation,
     pub outputs: StillOutputs,
+    /// Значения вида картинки НА МОМЕНТ НАЖАТИЯ (инвариант 3, решение 99): сами значения ручек, а не ссылка на
+    /// пресет. Правка ручек или пресета после нажатия снимок не меняет. Проявление HEIF/JPEG применяет их,
+    /// включая кадр со вспышкой; DNG вид не получает (инвариант 5).
+    pub look: LookSettings,
 }

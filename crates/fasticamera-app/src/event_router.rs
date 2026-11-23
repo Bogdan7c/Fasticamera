@@ -28,6 +28,7 @@ use crate::capture_backend::CaptureWiring;
 use crate::gpu_services::GpuServices;
 use crate::jni_boundary::run_guarded;
 use crate::logging::{LogPriority, emit_unfiltered};
+use crate::look_service::LookHandle;
 use crate::render_route::RenderRoute;
 use crate::result_echo::{EchoDue, ResultEcho};
 use crate::result_line::{emit_stage_line, format_result_line};
@@ -103,6 +104,8 @@ pub struct RouterParts {
     /// Кто снимает для экрана: фейк по замыслу или готовый набор composition root (настоящая служба снимков,
     /// либо фейк-запасной с причиной).
     pub capture: CaptureWiring,
+    /// Библиотека пресетов вида, открытая при старте процесса (`None` — сборка без хранилища пресетов).
+    pub look: Option<LookHandle>,
 }
 
 /// Итог одного шага маршрутизатора.
@@ -149,7 +152,11 @@ impl EventRouter {
             camera: parts.camera,
             camera_screen: {
                 let capture = parts.capture.into_backend(&parts.camera_screen);
-                CameraScreenService::with_capture(parts.camera_screen, capture)
+                let service = CameraScreenService::with_capture(parts.camera_screen, capture);
+                match parts.look {
+                    Some(look) => service.with_look(look),
+                    None => service,
+                }
             },
             display: DisplayState::default(),
             arrivals,

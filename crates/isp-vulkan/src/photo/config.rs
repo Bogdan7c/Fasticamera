@@ -9,6 +9,7 @@ use still_contract::shot::StillRotation;
 use super::error::PhotoError;
 use super::thumbnail::ThumbnailPlan;
 use crate::lens_shading_map::LensShadingMapLimits;
+use crate::look::LookLutLimits;
 use crate::quality::WorkgroupSizeConfig;
 use crate::quality::config::validate_workgroup;
 
@@ -39,6 +40,8 @@ pub struct PhotoConfig {
     pub thumbnail_long_side_px: u32,
     /// Наибольшая карта коррекции виньетирования (буфер на проявку). Карта больше — `begin` отказывает.
     pub lens_shading_map: LensShadingMapLimits,
+    /// Наибольшая таблица вида (LUT; буфер на проявку). Таблица больше — `begin` отказывает.
+    pub look_lut: LookLutLimits,
 }
 
 impl Default for PhotoConfig {
@@ -51,6 +54,7 @@ impl Default for PhotoConfig {
             workgroup_size: WorkgroupSizeConfig::default(),
             thumbnail_long_side_px: DEFAULT_THUMBNAIL_LONG_SIDE_PX,
             lens_shading_map: LensShadingMapLimits::default(),
+            look_lut: LookLutLimits::default(),
         }
     }
 }
@@ -78,6 +82,7 @@ impl PhotoConfig {
         }
         self.local_size()?;
         self.lens_shading_map.validate()?;
+        self.look_lut.validate()?;
         Ok(())
     }
 

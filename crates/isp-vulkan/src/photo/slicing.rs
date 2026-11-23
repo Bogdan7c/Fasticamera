@@ -81,6 +81,23 @@ pub struct DevelopmentPlan {
     pub slices: Vec<SlicePlan>,
 }
 
+impl DevelopmentPlan {
+    /// Область снимка в координатах полезной области кадра — ровно та, по которой построен план. Выходной проход
+    /// по ней находит координаты пикселя в полезной области (белый точки читается из карты виньетирования).
+    pub fn crop_in_valid_area(&self) -> PixelRect {
+        // Первая полоса начинается с первой строки снимка; полос нет только у пустого снимка, а он отвергнут.
+        let top = self
+            .slices
+            .first()
+            .map_or(0, |slice| slice.region_top + slice.first_output_row);
+        PixelRect {
+            left: self.region_left + self.window_left,
+            top,
+            size: self.crop_size,
+        }
+    }
+}
+
 /// Наибольшее число строк области полосы высотой `slice_rows`: полоса + ореол с двух сторон + по одной строке
 /// выравнивания на чётную границу с каждой стороны. Столько строк должны вмещать плоскости.
 pub fn max_region_rows(slice_rows: u32) -> u32 {
@@ -229,6 +246,7 @@ mod tests {
                 let crop = rect(left, top, width, height);
                 let plan = plan_development(VALID, crop, slice_rows).unwrap();
                 assert_plan_invariants(VALID, crop, slice_rows, &plan);
+                assert_eq!(plan.crop_in_valid_area(), crop, "план хранит исходную область снимка");
             }
         }
     }

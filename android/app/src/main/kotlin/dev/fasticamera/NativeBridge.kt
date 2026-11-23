@@ -14,11 +14,14 @@ object NativeBridge {
     }
 
     /**
-     * Передать конфиг и имя пакета процесса нативной части (один раз на процесс). Имя пакета нужно Rust для
-     * датчиков с первого кадра (решение 106), поэтому приходит здесь, а не при подключении Activity.
+     * Передать конфиг, имя пакета и папку приложения нативной части (один раз на процесс). Имя пакета нужно Rust для
+     * датчиков с первого кадра (решение 106), поэтому приходит здесь, а не при подключении Activity. Папка приложения
+     * (`filesDir.absolutePath`) нужна хранилищу пресетов вида (решение 99): начальный вид действует с первого кадра,
+     * поэтому файл открывается ДО старта рендера. Rust проверяет, что путь абсолютный и каталог существует;
+     * иначе `status: failed` с причиной.
      * Ответ: `{"status": "initialized" | "already_initialized" | "failed", ...}`.
      */
-    @JvmStatic external fun initialize(configJson: String, packageName: String): String
+    @JvmStatic external fun initialize(configJson: String, packageName: String, appDirectory: String): String
 
     /**
      * Выполнить smoke-сценарий по имени. Ответ: `{"scenario": ..., "status": "passed" | "failed" | "panicked", ...}`

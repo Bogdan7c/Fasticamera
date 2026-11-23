@@ -57,7 +57,11 @@ fn full_service_queue_loses_the_event_counts_it_and_the_term_ends_the_still_exac
     config.service.capture_timeout_ms = 300;
     let mut rig = StillRig::start_with(config, RenderMode::Accepting);
     for request in 1..=3 {
-        rig.capture.submit(shot(request), MonotonicNanos::from_nanos(0));
+        rig.capture.submit(
+            shot(request),
+            look_contract::LookSettings::NEUTRAL,
+            MonotonicNanos::from_nanos(0),
+        );
     }
     // Рабочий поток службы застревает в платформенном вызове (создание черновика) — очередь событий не разбирается.
     rig.store.block_creation();
@@ -139,7 +143,11 @@ fn stopped_service_rejects_events_with_its_own_counter() {
 #[test]
 fn accepted_events_are_counted_and_reach_the_service() {
     let mut rig = StillRig::start();
-    rig.capture.submit(shot(1), MonotonicNanos::from_nanos(0));
+    rig.capture.submit(
+        shot(1),
+        look_contract::LookSettings::NEUTRAL,
+        MonotonicNanos::from_nanos(0),
+    );
     rig.render.emit(
         StillId(1),
         DevelopEvent::NotSecured {

@@ -39,7 +39,7 @@ use isp_model::color::white_point::{CctDuv, Duv, chromaticity_from_cct_duv};
 use isp_model::demosaic::DemosaicMethod;
 use isp_model::image::{DisplayGamut, RawMosaic};
 use isp_model::params::{FrameInputs, IspParams, ProcessingControls};
-use isp_model::pipeline::run_reference;
+use isp_model::pipeline::run_reference_encoded;
 use isp_model::sensor::SensorDescription;
 use isp_model::tone::ToneCurveSettings;
 use raw_frame_stream::{
@@ -206,15 +206,13 @@ pub fn reference_color(passport: &StreamPassport, cell: CellValues) -> [f32; 3] 
     let neutral = CameraNeutral::new(scene_neutral()).expect("нейтраль");
     let controls = ProcessingControls {
         tone: ToneCurveSettings::default(),
+        tone_base: render_loop::config::ViewfinderToneConfig::default().tone_base(),
         ..ProcessingControls::with_defaults(neutral, DemosaicMethod::Preview, DisplayGamut::Srgb)
     };
     let params = IspParams::resolve(&sensor, &frame, &controls).expect("параметры");
     let samples = (0..16).map(|index| bggr_sample(cell, index % 4, index / 4)).collect();
     let raw = RawMosaic::new(PixelSize::new(4, 4), BayerPattern::BGGR, samples).expect("мозаика");
-    run_reference(&raw, &params)
-        .expect("эталон")
-        .display_encoded
-        .pixel(0, 0)
+    run_reference_encoded(&raw, &params).expect("эталон").pixel(0, 0)
 }
 
 // ---- поддельный производитель и импортёр ----

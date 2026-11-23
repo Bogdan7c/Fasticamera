@@ -10,6 +10,7 @@
 //! всё равно ошибка.
 
 use android_shell::config::{ShellConfig, ShellConfigError, ValidatedShellConfig};
+use look_presets::PresetStoreConfig;
 use render_loop::config::{ConfigError as RenderConfigError, RenderLoopConfig};
 use serde::{Deserialize, Serialize};
 use shell_contract::thermal_policy::{ThermalPolicy, ThermalPolicyConfig, ThermalPolicyConfigError};
@@ -110,6 +111,9 @@ struct RuntimeConfigJson {
     /// Служба записи снимков (сессия 14).
     #[serde(default)]
     photo: PhotoConfig,
+    /// Хранилище пресетов вида (решения 99, 178): имя файла, встроенные пресеты, очередь итогов записи.
+    #[serde(default)]
+    look_presets: PresetStoreConfig,
 }
 
 /// Проверенный конфиг нативной части.
@@ -127,6 +131,7 @@ pub struct RuntimeConfig {
     camera_screen: CameraScreenConfig,
     device: DeviceConfig,
     photo: PhotoConfig,
+    look_presets: PresetStoreConfig,
 }
 
 impl RuntimeConfig {
@@ -142,6 +147,9 @@ impl RuntimeConfig {
         parsed.camera.validate()?;
         parsed.camera_screen.validate()?;
         parsed.device.validate()?;
+        // Имена и значения встроенных пресетов проверяются здесь, а не при открытии файла: опечатка в конфиге
+        // отвергает запуск сразу, а не молча ломает пресеты.
+        parsed.look_presets.builtin_catalog()?;
         // Предел очереди и сроки экрана со службой — конфиги двух crate-ов: согласуются здесь.
         parsed.photo.validate(&parsed.camera_screen.screen.capture)?;
         // Срок цели рендера против очереди кодеров службы: тоже конфиги двух crate-ов.
@@ -174,6 +182,7 @@ impl RuntimeConfig {
             camera_screen: parsed.camera_screen,
             device: parsed.device,
             photo: parsed.photo,
+            look_presets: parsed.look_presets,
         })
     }
 
@@ -232,6 +241,11 @@ impl RuntimeConfig {
         &self.photo
     }
 
+    /// Хранилище пресетов вида: файл, встроенные пресеты, очередь итогов записи (решение 99).
+    pub fn look_presets(&self) -> &PresetStoreConfig {
+        &self.look_presets
+    }
+
     /// Режим validation слоя Vulkan: секция `gpu` с учётом типа сборки.
     pub fn validation_mode(&self) -> gpu_vulkan::validation::ValidationMode {
         self.gpu.validation_mode(self.build_type)
@@ -263,6 +277,8 @@ pub enum ConfigError {
     Device(#[from] DeviceIdentityError),
     #[error("неверные настройки службы снимков: {0}")]
     Photo(#[from] PhotoConfigError),
+    #[error("неверные настройки хранилища пресетов вида: {0}")]
+    LookPresets(#[from] look_presets::ConfigError),
     #[error(
         "render.release_receipt_budget_ms ({render_budget_ms}) должен быть меньше shell.surface_release_timeout_ms ({shell_timeout_ms})"
     )]
@@ -275,6 +291,10 @@ pub enum ConfigError {
 #[cfg(test)]
 #[path = "runtime_config_photo_tests.rs"]
 mod photo_tests;
+
+#[cfg(test)]
+#[path = "runtime_config_look_tests.rs"]
+mod look_tests;
 
 #[cfg(test)]
 mod tests {
@@ -406,6 +426,32 @@ mod tests {
         )
         .expect_err("контраст строкой");
         assert!(matches!(not_a_number, ConfigError::Malformed(_)), "{not_a_number}");
+    }
+
+    /// Модель основы тона приходит из Kotlin как `render.viewfinder.tone.base` (intent-параметр `tone_base`,
+    /// решение 182): известное имя (все четыре модели считаются на GPU) доходит до конфига рендера, неизвестное —
+    /// отказ initialize с полем в ошибке.
+    #[test]
+    fn tone_base_extra_selects_the_model_and_an_unknown_value_fails_the_start() {
+        use render_loop::config::ToneBaseChoice;
+        let json = |base: &str| {
+            format!(
+                r#"{{"build_type":"release","log_filter":"info","render":{{"viewfinder":{{"tone":{{"base":"{base}"}}}}}}}}"#
+            )
+        };
+        for (name, expected) in [
+            ("agx", ToneBaseChoice::Agx),
+            ("aces", ToneBaseChoice::Aces),
+            ("filmic", ToneBaseChoice::Filmic),
+            ("legacy", ToneBaseChoice::Legacy),
+        ] {
+            let config = RuntimeConfig::from_json(&json(name)).expect("поддержанная модель");
+            assert_eq!(config.render().viewfinder.tone.base, expected, "{name}");
+        }
+        // Неизвестное имя: Rust отвергает его громко, в ошибке видно, что не так с полем `base`.
+        let unknown = RuntimeConfig::from_json(&json("reinhard")).expect_err("неизвестная модель");
+        assert!(matches!(unknown, ConfigError::Malformed(_)), "{unknown}");
+        assert!(unknown.to_string().contains("reinhard"), "{unknown}");
     }
 
     #[test]

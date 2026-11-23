@@ -4,6 +4,8 @@
 //   balanced = min(linear · gain[цвет фильтра], 1)
 // Между ними — коррекция виньетирования (isp_model::lens_shading, shaders/lens_shading.glsl):
 //   shaded = linear · gain(пиксель полезной области, канал карты); balanced = min(shaded · gain_wb, 1)
+// Основа AgX (frame.white_policy.x = 1, решение 177): обрезка не по 1, а по своему белому точки
+//   L = min_c(g_c · wb_c) по четырём каналам CFA (isp_model::white_level::WhiteLevelField::level_at, выборка по отсчёту).
 // Карта выключена (в буфере заглушка «пропуск») — shaded = linear без умножения: вывод бит в бит прежний.
 // Включающий файл до #include определяет uint raw_at(uint frame_x, uint frame_y) — отсчёт RAW в
 // координатах всего кадра, и ПОСЛЕ #include — `uvec2 valid_area_pixel(uint x, uint y)`: координаты в
@@ -34,12 +36,19 @@ void main() {
     precise float linear = divide_correctly_rounded(max(float(raw) - black, 0.0), range);
     uint color = channel_at(x, y);
     precise float shaded = linear;
+    // Усиления четырёх каналов карты в точке отсчёта (1, если коррекции нет): они же дают свой белый точки.
+    vec4 map_gains = vec4(1.0);
     if (lens_shading_enabled()) {
         uvec2 valid_pixel = valid_area_pixel(x, y);
-        precise float shading_gain = lens_shading_gain_at(valid_pixel, lens_shading_map_channel(color, valid_pixel.y));
+        map_gains = lens_shading_gains(lens_shading_axis_x(valid_pixel.x), lens_shading_axis_y(valid_pixel.y));
+        precise float shading_gain = map_gains[lens_shading_map_channel(color, valid_pixel.y)];
         shaded = linear * shading_gain;
     }
     float gain = frame.white_and_gains[1u + color];
-    precise float balanced = min(shaded * gain, 1.0);
+    float clip_level = 1.0;
+    if (frame.white_policy.x != 0u) {
+        clip_level = lens_shading_white_level(map_gains, frame.white_and_gains.yzw);
+    }
+    precise float balanced = min(shaded * gain, clip_level);
     mosaic.values[y * geometry.width + x] = balanced;
 }

@@ -17,7 +17,7 @@
 
 use ash::vk;
 use camera_contract::geometry::PixelSize;
-use gpu_vulkan::compute::{BindingKind, DescriptorResource};
+use gpu_vulkan::compute::BindingKind;
 use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::device_buffer::record_compute_pass_dependency;
 use gpu_vulkan::frame_sink::{FrameSink, FrameSinkDescription, FrameSinkGrant, FrameSinkStamp, FrameSinkTarget};
@@ -27,13 +27,16 @@ use gpu_vulkan::host_buffer::{HostBuffer, HostBufferUsage};
 use super::config::VideoHeadroomConfig;
 use super::demosaic::{MenonPass, QualityDemosaic};
 use super::error::QualityError;
-use super::frame_params::{CfaCode, FRAME_PARAMETERS_BYTES, check_supported, frame_parameter_bytes};
+use super::frame_params::{
+    CfaCode, FRAME_PARAMETERS_BYTES, OutputWindowOrigin, check_supported, frame_parameter_bytes,
+};
 use super::input::{VideoFrameInput, source_addressing};
 use super::pass::PassPushConstants;
 use super::planes::QualityPlanes;
-use super::stages::{LevelsStage, OutputStage};
+use super::stages::{LevelsStage, OutputStage, OutputUniforms};
 use super::temporal::{HistoryUse, TemporalDenoise};
 use super::timing::{FRAME_START_POINT, HeadroomPass, HeadroomTimingCollect, point_labels, timings_from_collect};
+use crate::frame_style::FrameStyleBuffers;
 use crate::lens_shading_map::LensShadingMapBuffer;
 
 /// Итог записи кадра.
@@ -59,6 +62,8 @@ pub struct VideoHeadroomWorkload {
     temporal: Option<TemporalDenoise>,
     demosaic: QualityDemosaic,
     frame_parameters: Vec<HostBuffer>,
+    /// Стиль кадра по слотам (основа тона, цвет вида, таблица вида): блоки пишутся каждый кадр, таблица — при смене.
+    style_buffers: Vec<FrameStyleBuffers>,
     /// Карта виньетирования по слотам кадра (пишется, только когда карта изменилась).
     lens_shading_maps: Vec<LensShadingMapBuffer>,
     config: VideoHeadroomConfig,
@@ -99,6 +104,9 @@ impl VideoHeadroomWorkload {
         let frame_parameters = (0..slots)
             .map(|_| HostBuffer::new(context, FRAME_PARAMETERS_BYTES, HostBufferUsage::UniformParameters))
             .collect::<Result<Vec<_>, _>>()?;
+        let style_buffers = (0..slots)
+            .map(|_| FrameStyleBuffers::new(context, config.look_lut))
+            .collect::<Result<Vec<_>, _>>()?;
         let lens_shading_maps = (0..slots)
             .map(|_| LensShadingMapBuffer::new(context, config.lens_shading_map))
             .collect::<Result<Vec<_>, _>>()?;
@@ -109,6 +117,7 @@ impl VideoHeadroomWorkload {
             temporal,
             demosaic,
             frame_parameters,
+            style_buffers,
             lens_shading_maps,
             config: *config,
             context: context.clone(),
@@ -176,8 +185,15 @@ impl VideoHeadroomWorkload {
         let cfa = CfaCode::from_pattern(input.params.pattern);
         // Uniform и наборы слота свободны от GPU — контракт слота; это ещё не команды.
         let parameters = &mut self.frame_parameters[frame_slot];
-        parameters.write_bytes(0, &frame_parameter_bytes(input.params, addressing))?;
+        parameters.write_bytes(
+            0,
+            &frame_parameter_bytes(input.params, addressing, OutputWindowOrigin::WHOLE_FRAME),
+        )?;
         let parameters_binding = parameters.binding();
+        // Основа тона, цвет вида и таблица слота; таблица больше буфера — ошибка кадра ДО команд.
+        let style = &mut self.style_buffers[frame_slot];
+        style.prepare(input.params)?;
+        let style_bindings = style.bindings();
         // Карта больше буфера — ошибка кадра ДО команд (не молчаливый пропуск коррекции). Полезная область
         // конвейера — вся плоскость (`source_addressing` проверил, что размеры совпадают).
         let shading_map = &mut self.lens_shading_maps[frame_slot];
@@ -211,7 +227,11 @@ impl VideoHeadroomWorkload {
             frame_slot,
             input,
             &levels_push,
-            parameters_binding,
+            OutputUniforms {
+                frame_parameters: parameters_binding,
+                style: style_bindings,
+                lens_shading_map: shading_binding,
+            },
             &target,
         );
         match recorded {
@@ -258,7 +278,7 @@ impl VideoHeadroomWorkload {
         frame_slot: usize,
         input: &VideoFrameInput<'_>,
         levels_push: &PassPushConstants,
-        parameters_binding: DescriptorResource,
+        output_uniforms: OutputUniforms,
         target: &FrameSinkTarget,
     ) -> Result<Option<HistoryUse>, QualityError> {
         let extent = self.extent();
@@ -300,7 +320,7 @@ impl VideoHeadroomWorkload {
             None => self.demosaic.planes().linear_rgb(),
         };
         self.output
-            .record(command_buffer, frame_slot, linear, parameters_binding, target, extent)?;
+            .record(command_buffer, frame_slot, linear, output_uniforms, target, extent)?;
         self.mark_pass_done(command_buffer, frame_slot, HeadroomPass::Output)?;
         Ok(history)
     }

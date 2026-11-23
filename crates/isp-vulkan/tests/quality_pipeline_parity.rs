@@ -16,13 +16,9 @@ mod lens_shading_support;
 mod quality_support;
 
 use camera_contract::geometry::PixelSize;
-use gpu_vulkan::context::GpuContext;
-use gpu_vulkan::frame_sink::{FrameSink, OffscreenFrameSink, OffscreenFrameSinkDesc};
-use gpu_vulkan::hardware_buffer_cache::queue_handoff::ConsumerStage;
-use gpu_vulkan::kit_test_support::{read_storage_image_rgba, run_one_shot_blocking};
+use gpu_vulkan::kit_test_support::run_one_shot_blocking;
 use gpu_vulkan::raw_mosaic_preview::reference::pack_raw10;
 use gpu_vulkan::raw_mosaic_preview::synthetic::{SyntheticRaw10, SyntheticRaw16};
-use gpu_vulkan::raw_mosaic_preview::{MosaicSource, ValidArea};
 use isp_model::cfa::BayerPattern;
 use isp_model::color::dng::CameraNeutral;
 use isp_model::demosaic::DemosaicMethod;
@@ -33,11 +29,13 @@ use isp_model::sensor::SensorDescription;
 use isp_model::test_patterns::zone_plate;
 use isp_support::real_capture::load_real_capture;
 use isp_vulkan::quality::{
-    HeadroomRecordOutcome, QualityError, QualityOutputFormat, StreamGeneration, TemporalDenoiseConfig, VideoFrameInput,
-    VideoHeadroomConfig, VideoHeadroomWorkload,
+    QualityError, StreamGeneration, VideoFrameInput, VideoHeadroomConfig, VideoHeadroomWorkload,
 };
 use lens_shading_support::{asymmetric_map, skipped, with_map};
-use quality_support::{assert_no_validation_errors, extent, gpu_context_or_skip, max_rgb_difference, read_rgb};
+use quality_support::{
+    area_of, assert_no_validation_errors, extent, gpu_context_or_skip, max_rgb_difference, padded_frame, run_gpu, sink,
+    workload_config,
+};
 
 /// Допуск линейного RGB камеры (уровни + баланс + демозаик, f32): НОЛЬ — бит в бит. Деление в уровнях
 /// идёт через `divide_correctly_rounded` (без него OpFDiv ошибался на 1 ULP у части отсчётов, и это
@@ -50,74 +48,6 @@ const LINEAR_TOLERANCE: f32 = 0.0;
 /// его точность наследуется от `exp2(y·log2 x)` (несколько ULP f32, ниже 1e-5 на выходе). Допуск 1e-3 —
 /// четверть шага 8-битного выхода: ловит ошибку любой формулы (неверная матрица или кривая дают ≥ 1e-2).
 const DISPLAY_TOLERANCE: f32 = 1e-3;
-
-fn workload_config() -> VideoHeadroomConfig {
-    VideoHeadroomConfig {
-        frame_slots: 1,
-        output_format: QualityOutputFormat::HalfFloat,
-        temporal_denoise: TemporalDenoiseConfig {
-            enabled: false,
-            ..TemporalDenoiseConfig::default()
-        },
-        ..VideoHeadroomConfig::default()
-    }
-}
-
-fn sink(context: &GpuContext, width: u32, height: u32) -> OffscreenFrameSink {
-    OffscreenFrameSink::new(
-        context,
-        &OffscreenFrameSinkDesc {
-            extent: extent(width, height),
-            format_policy: QualityOutputFormat::HalfFloat.storage_policy(),
-            frame_slots: 1,
-            reader: ConsumerStage::Compute,
-        },
-    )
-    .unwrap()
-}
-
-/// Записывает и выполняет один кадр; возвращает (линейный RGB, сигнал экрана) с GPU.
-fn run_gpu(
-    context: &GpuContext,
-    source: &MosaicSource,
-    params: &IspParams,
-    valid_area: ValidArea,
-) -> (Vec<[f32; 3]>, Vec<[f32; 3]>) {
-    let size = extent(valid_area.width, valid_area.height);
-    let mut workload = VideoHeadroomWorkload::new(context, size, &workload_config()).unwrap();
-    let mut frame_sink = sink(context, size.width, size.height);
-    let input = VideoFrameInput {
-        source,
-        params,
-        valid_area,
-        stream: StreamGeneration(1),
-        sequence: 1,
-        presentation_time_ns: 0,
-    };
-    let mut outcome = None;
-    run_one_shot_blocking(context, |command_buffer| {
-        outcome = Some(
-            workload
-                .record(command_buffer, 0, &input, &mut frame_sink)
-                .map_err(|error| match error {
-                    QualityError::Gpu(gpu) => gpu,
-                    other => panic!("запись кадра: {other}"),
-                })?,
-        );
-        Ok(())
-    })
-    .unwrap();
-    assert_eq!(outcome, Some(HeadroomRecordOutcome::Recorded { history: None }));
-    frame_sink.after_submit(0).unwrap();
-    let linear = read_rgb(workload.planes().linear_rgb());
-    let image = frame_sink.image(0).unwrap();
-    let display = read_storage_image_rgba(image, frame_sink.last_use(0).unwrap())
-        .unwrap()
-        .into_iter()
-        .map(|pixel| [pixel[0], pixel[1], pixel[2]])
-        .collect();
-    (linear, display)
-}
 
 fn assert_parity(name: &str, run: &ReferenceRun, linear: &[[f32; 3]], display: &[[f32; 3]]) {
     let width = run.camera_rgb.size().width;
@@ -149,30 +79,9 @@ fn params_for(sensor: &SensorDescription, neutral: CameraNeutral) -> IspParams {
     let frame = FrameInputs {
         levels: sensor.static_levels(),
     };
-    let controls = ProcessingControls::with_defaults(neutral, DemosaicMethod::Quality, DisplayGamut::Srgb);
+    let controls =
+        ProcessingControls::with_defaults(neutral, DemosaicMethod::Quality, DisplayGamut::Srgb).with_legacy_tone();
     IspParams::resolve(sensor, &frame, &controls).unwrap()
-}
-
-/// Кадр-источник больше полезной области: полезная область с отступом 2/2 (проверка адресации).
-fn padded_frame(raw: &RawMosaic, padding_value: u16) -> (Vec<u16>, u32, u32) {
-    let (width, height) = (raw.size().width, raw.size().height);
-    let (frame_width, frame_height) = (width + 4, height + 4);
-    let mut frame = vec![padding_value; (frame_width * frame_height) as usize];
-    for y in 0..height {
-        for x in 0..width {
-            frame[((y + 2) * frame_width + x + 2) as usize] = raw.sample(x, y);
-        }
-    }
-    (frame, frame_width, frame_height)
-}
-
-fn area_of(raw: &RawMosaic) -> ValidArea {
-    ValidArea {
-        left: 2,
-        top: 2,
-        width: raw.size().width,
-        height: raw.size().height,
-    }
 }
 
 #[test]

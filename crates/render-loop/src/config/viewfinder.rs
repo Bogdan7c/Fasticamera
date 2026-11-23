@@ -5,6 +5,7 @@
 //! потому, что те не читаются serde (словарь камеры только пишет JSON); перевод — методами `to_*`.
 
 use camera_contract::viewfinder_crop::{CropAspect, ViewfinderCrop, ZoomFactor};
+use isp_model::look::model::LookModelSettings;
 use isp_vulkan::quality::VideoHeadroomConfig;
 use isp_vulkan::viewfinder::ViewfinderIspConfig;
 use serde::{Deserialize, Serialize};
@@ -130,6 +131,10 @@ pub struct ViewfinderConfig {
     /// Коррекция виньетирования по нашей калибровке камеры (сессия 14f): режим и сила. Видоискатель и снимок
     /// читают одну секцию. По умолчанию — всегда полная коррекция.
     pub lens_shading: ViewfinderLensShadingConfig,
+    /// Модель вида картинки (14a): как ручки вида переводятся в формулы — диапазоны, полосы оттенка, кожа,
+    /// предел LUT (`isp-model::look::model`). Значения ручек сюда не входят: они приходят командой `SetLook`
+    /// и в плане снимка. Видоискатель и снимок разрешают вид по ОДНОЙ модели.
+    pub look_model: LookModelSettings,
     /// Удержание последнего кадра при смене объектива (сессия 13): сроки и условие показа нового потока.
     pub continuity: ContinuityConfig,
 }
@@ -147,6 +152,7 @@ impl Default for ViewfinderConfig {
             auto_exposure: AutoExposureConfig::default(),
             tone: ViewfinderToneConfig::default(),
             lens_shading: ViewfinderLensShadingConfig::default(),
+            look_model: LookModelSettings::default(),
             continuity: ContinuityConfig::default(),
         }
     }
@@ -166,6 +172,12 @@ impl ViewfinderConfig {
         self.continuity.validate()?;
         // Тон проверяется на краях подтяжки ЭТОГО конфига AE (поэтому после проверки AE).
         self.tone.validate(self.auto_exposure.controller.max_residual_ev)?;
+        // Модель вида — после тона: края ручек тона проверяются на выбранной основе и тех же краях подтяжки AE.
+        super::look::validate_look_model(
+            &self.look_model,
+            &self.tone,
+            self.auto_exposure.controller.max_residual_ev,
+        )?;
         let with_any_valid_slots = ViewfinderIspConfig {
             frame_slots: 1,
             ..self.isp
@@ -215,6 +227,9 @@ pub enum ViewfinderConfigError {
     /// Ручки тона отвергнуты.
     #[error(transparent)]
     Tone(#[from] ToneConfigError),
+    /// Модель вида не годится (сама или на краях ручек тона).
+    #[error(transparent)]
+    LookModel(#[from] super::LookConfigError),
     /// Сроки удержания кадра отвергнуты.
     #[error(transparent)]
     Continuity(#[from] ContinuityConfigError),

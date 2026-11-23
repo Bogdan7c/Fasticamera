@@ -18,7 +18,7 @@ fn real_params(gamut: DisplayGamut, demosaic: DemosaicMethod) -> IspParams {
     let frame = FrameInputs {
         levels: capture.sensor.static_levels(),
     };
-    let controls = ProcessingControls::with_defaults(capture.neutral, demosaic, gamut);
+    let controls = ProcessingControls::with_defaults(capture.neutral, demosaic, gamut).with_legacy_tone();
     IspParams::resolve(&capture.sensor, &frame, &controls).unwrap()
 }
 
@@ -138,6 +138,66 @@ fn params_for_another_model_or_gamut_are_rejected() {
         check_params(&old, DisplayColorSpace::DisplayP3),
         Err(ViewfinderError::ParamsVersionMismatch { .. })
     ));
+}
+
+/// Профиль выхода, который GPU не считает (Log, HDR, 10 бит), отвергается различимой ошибкой ДО записи кадра, а
+/// поддержанные профили проходят с любым из двух охватов.
+#[test]
+fn unsupported_output_profiles_are_rejected_by_the_params_check() {
+    use isp_model::output::{OutputBitDepth, OutputProfile, OutputRendering, UnsupportedOutputProfile};
+    let supported = real_params(DisplayGamut::DisplayP3, DemosaicMethod::Preview);
+    for (profile, expected) in [
+        (
+            OutputProfile::display_p3().with_rendering(OutputRendering::SceneLog),
+            UnsupportedOutputProfile::Rendering(OutputRendering::SceneLog),
+        ),
+        (
+            OutputProfile::display_p3().with_rendering(OutputRendering::Hdr),
+            UnsupportedOutputProfile::Rendering(OutputRendering::Hdr),
+        ),
+        (
+            OutputProfile::display_p3().with_bit_depth(OutputBitDepth::Ten),
+            UnsupportedOutputProfile::BitDepth(OutputBitDepth::Ten),
+        ),
+    ] {
+        // Параметры нельзя разрешить с таким профилем, поэтому подменяем профиль у разрешённых вручную: GPU-проверка
+        // обязана отвергнуть и такой кадр (защита от параметров, собранных мимо `resolve`).
+        let params = IspParams {
+            output_profile: profile,
+            ..supported.clone()
+        };
+        assert_eq!(
+            check_params(&params, DisplayColorSpace::DisplayP3),
+            Err(ViewfinderError::UnsupportedOutputProfile(expected))
+        );
+    }
+    assert_eq!(check_params(&supported, DisplayColorSpace::DisplayP3), Ok(()));
+}
+
+/// Видоискатель принимает параметры кадра с любой из моделей основы тона: отказа «модель не поддержана на GPU»
+/// больше нет (проверка параметров не зависит от выбранной модели).
+#[test]
+fn every_tone_base_model_passes_the_params_check() {
+    use isp_model::tone::aces::AcesSettings;
+    use isp_model::tone::base::ToneBase;
+    use isp_model::tone::filmic::FilmicSettings;
+    let capture = support::real_capture::load_real_capture(&support::assets_dir(), "real-main-lamp-gray-tile");
+    let frame = FrameInputs {
+        levels: capture.sensor.static_levels(),
+    };
+    for base in [
+        ToneBase::Legacy,
+        ToneBase::Agx(isp_model::tone::agx_settings::AgxSettings::default()),
+        ToneBase::Aces(AcesSettings::default()),
+        ToneBase::Filmic(FilmicSettings::default()),
+    ] {
+        let controls = ProcessingControls {
+            tone_base: base,
+            ..ProcessingControls::with_defaults(capture.neutral, DemosaicMethod::Preview, DisplayGamut::DisplayP3)
+        };
+        let params = IspParams::resolve(&capture.sensor, &frame, &controls).unwrap();
+        assert_eq!(check_params(&params, DisplayColorSpace::DisplayP3), Ok(()));
+    }
 }
 
 #[test]

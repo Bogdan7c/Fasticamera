@@ -8,7 +8,10 @@ use isp_model::image::DisplayGamut;
 use isp_model::params::IspParamsVersion;
 use isp_model::statistics::{InvalidAwbStatistics, TileCountMismatch};
 
+use crate::frame_style::FrameStyleError;
 use crate::lens_shading_map::{LensShadingMapBufferError, LensShadingMapError};
+use crate::look::LookLutError;
+use crate::look::lut_buffer::LookLutBufferError;
 
 /// Почему кадр нельзя обработать (или объект нельзя создать).
 #[derive(Debug, PartialEq, thiserror::Error)]
@@ -54,6 +57,12 @@ pub enum ViewfinderError {
     /// применяется молча, кадр отвергается.
     #[error("карта виньетирования: {0}")]
     LensShadingMap(#[from] LensShadingMapError),
+    /// Профиль выхода (Log, HDR, 10 бит) ещё не считается: кадр отвергается, а не рисуется другим профилем.
+    #[error("{0}")]
+    UnsupportedOutputProfile(#[from] isp_model::output::UnsupportedOutputProfile),
+    /// Таблица вида (LUT) не помещается в буфер: вид не применяется молча, кадр отвергается.
+    #[error("таблица вида: {0}")]
+    LookLut(#[from] LookLutError),
     /// Конфигурация не имеет смысла.
     #[error("конфигурация видоискателя: {what}")]
     InvalidConfig {
@@ -78,6 +87,24 @@ impl From<LensShadingMapBufferError> for ViewfinderError {
         match error {
             LensShadingMapBufferError::Map(map) => Self::LensShadingMap(map),
             LensShadingMapBufferError::Gpu(gpu) => Self::Gpu(gpu),
+        }
+    }
+}
+
+impl From<FrameStyleError> for ViewfinderError {
+    fn from(error: FrameStyleError) -> Self {
+        match error {
+            FrameStyleError::Look(look) => Self::from(look),
+            FrameStyleError::Gpu(gpu) => Self::Gpu(gpu),
+        }
+    }
+}
+
+impl From<LookLutBufferError> for ViewfinderError {
+    fn from(error: LookLutBufferError) -> Self {
+        match error {
+            LookLutBufferError::Lut(lut) => Self::LookLut(lut),
+            LookLutBufferError::Gpu(gpu) => Self::Gpu(gpu),
         }
     }
 }

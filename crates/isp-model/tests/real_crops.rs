@@ -35,7 +35,8 @@ fn run(capture: &RealCapture, gamut: DisplayGamut) -> ReferenceRun {
     let frame = FrameInputs {
         levels: capture.sensor.static_levels(),
     };
-    let controls = ProcessingControls::with_defaults(capture.neutral, DemosaicMethod::Quality, gamut);
+    let controls =
+        ProcessingControls::with_defaults(capture.neutral, DemosaicMethod::Quality, gamut).with_legacy_tone();
     let params = IspParams::resolve(&capture.sensor, &frame, &controls).unwrap();
     run_reference(&capture.raw, &params).unwrap()
 }

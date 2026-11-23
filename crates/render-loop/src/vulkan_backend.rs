@@ -221,6 +221,7 @@ impl VulkanDisplayBackend {
                 placement: config.viewfinder.placement,
                 destination: crate::viewfinder::FramingDestination::Configured,
                 headroom: crate::viewfinder::HeadroomBench::Disabled,
+                look: std::sync::Arc::new(look_contract::LookSettings::NEUTRAL),
             }
         });
         let viewfinder_stats = Some(ViewfinderStats::new(config.viewfinder.gpu_time_window_frames));
@@ -253,6 +254,15 @@ impl VulkanDisplayBackend {
         self
     }
 
+    /// Стартовый вид картинки видоискателя (решение 178): композиция отдаёт значения активного пресета ПРИ СБОРКЕ,
+    /// поэтому первый же кадр рисуется с ними, а не с нейтралью до первой команды `SetLook`. Дальше вид меняется
+    /// командами. Снимок этих значений не читает: он берёт вид из плана снимка.
+    #[must_use]
+    pub fn with_initial_look(mut self, look: std::sync::Arc<look_contract::LookSettings>) -> Self {
+        self.viewfinder_settings.look = look;
+        self
+    }
+
     /// Включает снимки без задержки затвора (сессия 14): композиция отдаёт потребителя кольца снимков того же
     /// потока, что и видоискатель. Добавочный способ, как `with_auto_exposure`: без вызова (или без источника
     /// кадров камеры) снимков нет. Настройки — `VulkanBackendConfig::still`.
@@ -273,7 +283,8 @@ impl VulkanDisplayBackend {
                 maker,
                 Box::new(SystemStillClock),
             )
-            .with_lens_shading(self.config.viewfinder.lens_shading.control()),
+            .with_lens_shading(self.config.viewfinder.lens_shading.control())
+            .with_look_model(std::sync::Arc::new(self.config.viewfinder.look_model.clone())),
         );
         self
     }

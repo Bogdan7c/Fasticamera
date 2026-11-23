@@ -33,6 +33,11 @@ import org.json.JSONObject
  * есть строкой: Rust отвергает её при initialize громко, а не берёт молча умолчание. Пределы (контраст > 0,
  * середина в 0…1, кривая строится при подтяжке AE) проверяет Rust.
  *
+ * `toneBase` — модель основы тона на один запуск (intent-параметр `tone_base`, поле `render.viewfinder.tone.base`,
+ * сессия 14a, решение 182): `agx`, `aces`, `filmic` или `legacy`. Kotlin значение не разбирает, а передаёт строкой как
+ * есть; неизвестное имя и модель, которой ещё нет на GPU, Rust отвергает при initialize громко (ошибка называет поле
+ * `viewfinder.tone`), а не берёт молча умолчание.
+ *
  * `untrustedOpticalAxisCameras` — ID камер, чьей оптической оси из калибровки HAL верить нельзя (профиль
  * телефона из `fasticamera.zoom.untrustedOpticalAxisCameras`, поле `camera.engine.zoom.untrusted_optical_axis_cameras`).
  * Пустой список в JSON не попадает: Rust берёт пустое умолчание. ID проверяет Rust.
@@ -46,6 +51,7 @@ data class NativeConfig(
     val exposureController: String? = null,
     val toneContrast: String? = null,
     val toneDisplayMiddleGray: String? = null,
+    val toneBase: String? = null,
     val untrustedOpticalAxisCameras: List<String> = emptyList(),
 ) {
     fun toJson(): String {
@@ -82,6 +88,8 @@ data class NativeConfig(
         val tone = JSONObject()
         toneContrast?.let { value -> tone.put("contrast", numberOrRaw(value)) }
         toneDisplayMiddleGray?.let { value -> tone.put("display_middle_gray", numberOrRaw(value)) }
+        // Имя модели — строкой как есть: проверяет Rust (неизвестное имя — отказ initialize).
+        toneBase?.let { value -> tone.put("base", value.trim()) }
         if (tone.length() > 0) {
             // Частичная секция: остальные поля render.* Rust берёт по умолчанию.
             json.put("render", JSONObject().put("viewfinder", JSONObject().put("tone", tone)))
@@ -114,6 +122,9 @@ data class NativeConfig(
         /** Intent-параметр со средним серым экрана, линейная яркость 0…1 (строка с числом, проверяет Rust). */
         const val EXTRA_TONE_DISPLAY_MIDDLE_GRAY = "tone_display_middle_gray"
 
+        /** Intent-параметр с моделью основы тона: `agx`, `aces`, `filmic` или `legacy` (проверяет Rust). */
+        const val EXTRA_TONE_BASE = "tone_base"
+
         fun fromIntent(intent: Intent): NativeConfig = NativeConfig(
             buildType = BuildConfig.BUILD_TYPE,
             logFilter = intent.getStringExtra(EXTRA_LOG_FILTER) ?: BuildConfig.LOG_FILTER,
@@ -131,6 +142,7 @@ data class NativeConfig(
             // Нет параметра — null, секция тона в JSON не попадает, Rust берёт умолчание.
             toneContrast = intent.getStringExtra(EXTRA_TONE_CONTRAST),
             toneDisplayMiddleGray = intent.getStringExtra(EXTRA_TONE_DISPLAY_MIDDLE_GRAY),
+            toneBase = intent.getStringExtra(EXTRA_TONE_BASE),
             // Профиль телефона из gradle.properties: пустая строка — список пуст.
             untrustedOpticalAxisCameras = BuildConfig.UNTRUSTED_OPTICAL_AXIS_CAMERAS
                 .split(',')

@@ -8,6 +8,7 @@ use gpu_vulkan::swapchain::{ColorDepthPreference, DisplayColorPreference, Displa
 use gpu_vulkan::validation::ValidationMode;
 
 use super::present_time::PresentTimePolicy;
+use crate::config::look_lut;
 use crate::config::{DisplayColorConfig, RenderLoopConfig, StillDevelopConfig, UiOverlayConfig, ViewfinderConfig};
 
 /// Параметры [`super::VulkanDisplayBackend`].
@@ -67,6 +68,8 @@ impl VulkanBackendConfig {
     /// Неверное `frames_in_flight` (0 или больше предела gpu-vulkan) — `InvalidArgument`.
     pub fn from_render_config(config: &RenderLoopConfig, validation: ValidationMode) -> Result<Self, GpuError> {
         let frames_in_flight = FramesInFlight::new(usize::try_from(config.frames_in_flight).unwrap_or(usize::MAX))?;
+        // Предел таблицы вида — один источник (модель вида): видоискатель, стенд и снимок получают его одинаково.
+        let (viewfinder, still) = look_lut::apply_single_source(&config.viewfinder, &config.still);
         Ok(Self {
             validation,
             frames_in_flight,
@@ -82,9 +85,9 @@ impl VulkanBackendConfig {
                 DisplayColorConfig::PreferDisplayP3 => DisplayColorPreference::PreferDisplayP3,
                 DisplayColorConfig::SrgbOnly => DisplayColorPreference::SrgbOnly,
             },
-            viewfinder: config.viewfinder.clone(),
+            viewfinder,
             ui_overlay: config.ui_overlay,
-            still: config.still,
+            still,
         })
     }
 
@@ -114,6 +117,32 @@ impl VulkanBackendConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Предел таблицы вида один: `look_model.max_lut_size` попадает в буферы видоискателя, стенда V4 и снимка.
+    #[test]
+    fn look_lut_limit_of_the_model_reaches_viewfinder_bench_and_still_buffers() {
+        let mut render = RenderLoopConfig::default();
+        render.viewfinder.look_model.max_lut_size = 17;
+        // Владелец меняет только предел модели: остальные три поля не заданы (умолчание) — это не конфликт...
+        render.validate().expect("предел модели без своих чисел в трёх местах");
+        // ...а своё число в одном из них, не равное модели, — отказ конфига, не молчаливая подмена.
+        let mut conflicting = render.clone();
+        conflicting.still.photo.look_lut.max_size = 9;
+        assert!(matches!(
+            conflicting.validate(),
+            Err(crate::config::ConfigError::LookLutLimit(_))
+        ));
+        let config = VulkanBackendConfig::from_render_config(&render, ValidationMode::Disabled).expect("конфиг");
+        assert_eq!(config.viewfinder.isp.look_lut.max_size, 17);
+        assert_eq!(config.viewfinder.headroom_bench.look_lut.max_size, 17);
+        assert_eq!(config.still.photo.look_lut.max_size, 17);
+        // Согласованное явное значение (во всех трёх местах то же число, что в модели) тоже проходит.
+        let mut explicit = render.clone();
+        explicit.viewfinder.isp.look_lut.max_size = 17;
+        explicit.viewfinder.headroom_bench.look_lut.max_size = 17;
+        explicit.still.photo.look_lut.max_size = 17;
+        explicit.validate().expect("согласованный предел");
+    }
 
     #[test]
     fn config_is_taken_from_render_loop_config() {

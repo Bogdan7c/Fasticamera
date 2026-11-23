@@ -27,6 +27,16 @@
 //! `max` и `min` — с выхода по каналам. Параметр `hue_preservation` (0…1) смешивает
 //! «чисто по каналам» (0) и «оттенок сохранён» (1).
 
+pub mod aces;
+pub mod agx;
+pub mod agx_hue;
+pub mod agx_settings;
+pub mod base;
+pub mod filmic;
+pub mod knobs;
+pub mod working_io;
+pub mod working_stage;
+
 use crate::exposure::ExposureGain;
 use crate::image::{DisplayLinearImage, SceneInGamutImage, space};
 
@@ -254,3 +264,7 @@ pub fn apply_tone_curve(image: &SceneInGamutImage, curve: &ToneCurve) -> Display
 #[cfg(test)]
 #[path = "tone_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tone/agx_color_tests.rs"]
+mod agx_color_tests;

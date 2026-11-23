@@ -20,36 +20,10 @@ use isp_vulkan::photo::PhotoConfig;
 use render_loop::backend::DisplayBackend;
 use render_loop::config::StillDevelopConfig;
 use shell_contract::orientation::DeviceOrientation;
-use still_contract::develop::{DevelopEvent, PrimaryTarget, PrimaryTargetOffer};
+use still_contract::develop::DevelopEvent;
 use still_contract::frame_choice::{FrameChoice, NoFrameReason, SubstitutionReason};
-use still_contract::plan::StillId;
 use still_contract::shot::StillRotation;
-use still_rig::{JPEG, JPEG_AND_DNG, StillBench, plan, press_during, raw_bytes, setup, shown_at};
-
-use render_loop::still::StillCommand;
-
-/// Метка и номер ячейки показанного кадра `shown` (по журналу показов видоискателя).
-fn shown_frame(bench: &mut StillBench, shown: usize) -> (i64, usize) {
-    let camera = bench.rig.backend.diagnostics().camera.expect("диагностика камеры");
-    let nanos = camera.present_history[shown].sensor_timestamp_nanos;
-    // Метки кадров стенда идут с шагом 16 666 667 нс от 1 000 000 000.
-    let index = ((nanos - 1_000_000_000) / 16_666_667) as usize;
-    (nanos, index)
-}
-
-fn offer_readback(bench: &mut StillBench, id: u64) {
-    let outcome = bench
-        .rig
-        .backend
-        .apply_still_command(StillCommand::Target(PrimaryTargetOffer::Ready {
-            id: StillId(id),
-            target: PrimaryTarget::Readback,
-        }));
-    assert!(
-        matches!(outcome, render_loop::still::StillCommandOutcome::Accepted),
-        "{outcome:?}"
-    );
-}
+use still_rig::{JPEG, JPEG_AND_DNG, offer_readback, plan, press_during, raw_bytes, setup, shown_at, shown_frame};
 
 fn normalized(neutral: [f64; 3]) -> [f64; 3] {
     let maximum = neutral.iter().copied().fold(f64::MIN_POSITIVE, f64::max);

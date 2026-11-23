@@ -10,6 +10,7 @@ use ui_core::geometry::Point;
 
 use camera_contract::control::ExposureBias;
 use camera_contract::zoom::ZoomRatio;
+use look_contract::LookIntent;
 
 use crate::facts::CameraFacts;
 use crate::modes::CaptureMode;
@@ -118,4 +119,9 @@ pub enum ScreenAction {
     ZoomPinchEnded { at: MonotonicNanos },
     /// Кнопка переворота: фронтальная ↔ задняя камера.
     FlipCameraRequested { at: MonotonicNanos },
+    /// Намерение по виду картинки и пресетам (решение 178): «вид = эти значения», «выбрать пресет»,
+    /// «сохранить как…». Экран ничего не считает и не пишет на диск — он пересылает намерение исполнителю
+    /// эффектов ([`crate::Effect::Look`]), который владеет библиотекой пресетов. Состояние экрана не меняется:
+    /// истина о виде живёт в библиотеке, а не в экране (виджеты ручек — сессия 14b).
+    Look(LookIntent),
 }

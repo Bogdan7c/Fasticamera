@@ -13,6 +13,8 @@ mod adpf;
 mod auto_exposure;
 mod continuity;
 mod lens_shading;
+mod look;
+pub(crate) mod look_lut;
 mod present_target;
 mod still;
 mod tone;
@@ -25,8 +27,10 @@ pub use adpf::{AdpfConfig, AdpfConfigError, AdpfMode, MAX_ADPF_GPU_WAIT_FRAMES, 
 pub use auto_exposure::{AutoExposureConfig, AutoExposureConfigError};
 pub use continuity::{ContinuityConfig, ContinuityConfigError, RevealExposureCheck};
 pub use lens_shading::{LensShadingMode, ViewfinderLensShadingConfig};
+pub use look::LookConfigError;
+pub use look_lut::{LookLutLimitConflict, look_lut_limits};
 pub use still::{StillConfigError, StillDevelopConfig};
-pub use tone::{ToneConfigError, ViewfinderToneConfig};
+pub use tone::{ToneBaseChoice, ToneConfigError, ViewfinderToneConfig};
 pub use ui_overlay::{UiOverlayConfig, UiOverlayConfigError};
 pub use viewfinder::{
     CropAspectConfig, DisplayColorConfig, MAX_VIEWFINDER_GPU_TIME_WINDOW_FRAMES, ViewfinderConfig,
@@ -98,6 +102,9 @@ pub enum ConfigError {
     /// Ошибка в секции снимка.
     #[error(transparent)]
     Still(#[from] StillConfigError),
+    /// Предел таблицы вида задан не в модели вида и расходится с ней.
+    #[error(transparent)]
+    LookLutLimit(#[from] LookLutLimitConflict),
 }
 
 /// Наименьшая допустимая `preferred_frame_rate_hz`, Гц. Реальные режимы экрана — 24..=240.
@@ -286,6 +293,8 @@ impl RenderLoopConfig {
         self.adpf.validate()?;
         self.ui_overlay.validate()?;
         self.still.validate()?;
+        // Предел таблицы вида один на видоискатель, стенд и снимок (модель вида), а не три независимых числа.
+        look_lut::validate_single_source(&self.viewfinder, &self.still)?;
         Ok(())
     }
 

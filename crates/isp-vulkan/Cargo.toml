@@ -25,6 +25,8 @@ camera-contract = { workspace = true, features = ["fixtures"] }
 # Синтетические RAW-источники, readback и одноразовые сабмиты для ПК-тестов паритета.
 gpu-vulkan = { workspace = true, features = ["test-support"] }
 serde_json.workspace = true
+# Значения ручек вида для тестов цвета вида и таблицы (словарь без логики; в нормальные зависимости не входит).
+look-contract.workspace = true
 
 [lints]
 workspace = true

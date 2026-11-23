@@ -14,8 +14,10 @@ use isp_model::color::temperature::calibration_illuminant_temperature;
 use isp_model::demosaic::DemosaicMethod;
 use isp_model::image::DisplayGamut;
 use isp_model::levels::NormalizationLevels;
+use isp_model::look::LookControls;
 use isp_model::params::{FrameInputs, IspParams, ProcessingControls};
 use isp_model::sensor::SensorDescription;
+use isp_model::tone::base::ToneBase;
 
 fn matrix(values: [f64; 9]) -> Matrix3 {
     Matrix3::from_rows([
@@ -36,8 +38,18 @@ fn calibration(illuminant: ReferenceIlluminant, color_matrix: [f64; 9], diagonal
     }
 }
 
-/// Параметры `Quality` для раскладки `pattern` (уровни RAW10 64/1023, нейтраль «лампа», sRGB).
+/// Параметры `Quality` для раскладки `pattern` (уровни RAW10 64/1023, нейтраль «лампа», sRGB), прежняя основа тона.
 pub(crate) fn quality_params(pattern: BayerPattern) -> IspParams {
+    quality_params_with_base(pattern, ToneBase::Legacy)
+}
+
+/// Те же параметры с выбранной основой тона.
+pub(crate) fn quality_params_with_base(pattern: BayerPattern, tone_base: ToneBase) -> IspParams {
+    quality_params_with_look(pattern, tone_base, LookControls::default())
+}
+
+/// Те же параметры с выбранной основой тона и видом картинки.
+pub(crate) fn quality_params_with_look(pattern: BayerPattern, tone_base: ToneBase, look: LookControls) -> IspParams {
     let profile = DngColorProfile::new(
         calibration(
             ReferenceIlluminant::D65,
@@ -58,6 +70,10 @@ pub(crate) fn quality_params(pattern: BayerPattern) -> IspParams {
     let sensor = SensorDescription::new(pattern, levels, profile, LensShading::AppliedByVendor);
     let frame = FrameInputs { levels };
     let neutral = CameraNeutral::new([0.515625, 1.0, 0.4990234375]).expect("нейтраль");
-    let controls = ProcessingControls::with_defaults(neutral, DemosaicMethod::Quality, DisplayGamut::Srgb);
+    let controls = ProcessingControls {
+        tone_base,
+        look,
+        ..ProcessingControls::with_defaults(neutral, DemosaicMethod::Quality, DisplayGamut::Srgb)
+    };
     IspParams::resolve(&sensor, &frame, &controls).expect("параметры кадра")
 }

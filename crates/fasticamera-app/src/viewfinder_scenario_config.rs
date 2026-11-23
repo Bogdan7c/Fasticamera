@@ -30,13 +30,19 @@ pub enum IspStageSetting {
     Color,
     GamutCompression,
     Tone,
+    /// Цвет вида (насыщенность, сочность, полосы оттенка) над светом экрана после основы (14a).
+    LookColor,
+    /// Таблица вида (LUT; 14a): тетраэдральная выборка по буферу.
+    LookLut,
+    /// Мягкое сжатие охвата выхода основы AgX (у прежней основы стадия пуста, цена нулевая).
+    OutputGamutCompression,
     Oetf,
     AwbStatistics,
 }
 
 impl IspStageSetting {
     /// Все стадии в порядке прохода.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 12] = [
         Self::Levels,
         Self::LensShading,
         Self::WhiteBalance,
@@ -44,6 +50,9 @@ impl IspStageSetting {
         Self::Color,
         Self::GamutCompression,
         Self::Tone,
+        Self::LookColor,
+        Self::LookLut,
+        Self::OutputGamutCompression,
         Self::Oetf,
         Self::AwbStatistics,
     ];
@@ -57,6 +66,9 @@ impl IspStageSetting {
             Self::Color => IspStage::Color,
             Self::GamutCompression => IspStage::GamutCompression,
             Self::Tone => IspStage::Tone,
+            Self::LookColor => IspStage::LookColor,
+            Self::LookLut => IspStage::LookLut,
+            Self::OutputGamutCompression => IspStage::OutputGamutCompression,
             Self::Oetf => IspStage::Oetf,
             Self::AwbStatistics => IspStage::AwbStatistics,
         }
@@ -72,6 +84,9 @@ impl IspStageSetting {
             Self::Color => "color",
             Self::GamutCompression => "gamut_compression",
             Self::Tone => "tone",
+            Self::LookColor => "look_color",
+            Self::LookLut => "look_lut",
+            Self::OutputGamutCompression => "output_gamut_compression",
             Self::Oetf => "oetf",
             Self::AwbStatistics => "awb_statistics",
         }

@@ -34,6 +34,8 @@ ui-draw = { path = "crates/ui-draw" }
 camera-screen = { path = "crates/camera-screen" }
 ui-render-vulkan = { path = "crates/ui-render-vulkan" }
 still-contract = { path = "crates/still-contract" }
+look-contract = { path = "crates/look-contract" }
+look-presets = { path = "crates/look-presets" }
 photo-output = { path = "crates/photo-output" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

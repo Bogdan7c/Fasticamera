@@ -149,6 +149,7 @@ name = "camera-screen"
 version = "0.1.0"
 dependencies = [
  "camera-contract",
+ "look-contract",
  "serde",
  "serde_json",
  "shell-contract",
@@ -216,9 +217,12 @@ dependencies = [
  "camera-core",
  "camera-screen",
  "gpu-vulkan",
+ "isp-model",
  "isp-vulkan",
  "jni",
  "libc",
+ "look-contract",
+ "look-presets",
  "photo-output",
  "raw-frame-stream",
  "render-loop",
@@ -285,6 +289,7 @@ name = "isp-model"
 version = "0.1.0"
 dependencies = [
  "camera-contract",
+ "look-contract",
  "serde",
  "serde_json",
  "thiserror",
@@ -298,6 +303,7 @@ dependencies = [
  "camera-contract",
  "gpu-vulkan",
  "isp-model",
+ "look-contract",
  "serde",
  "serde_json",
  "still-contract",
@@ -408,6 +414,26 @@ name = "log"
 version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
+
+[[package]]
+name = "look-contract"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "look-presets"
+version = "0.1.0"
+dependencies = [
+ "look-contract",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tracing",
+]
 
 [[package]]
 name = "memchr"
@@ -566,6 +592,7 @@ dependencies = [
  "isp-model",
  "isp-vulkan",
  "libc",
+ "look-contract",
  "raw-frame-stream",
  "render-loop",
  "scene-estimation",
@@ -734,6 +761,7 @@ name = "still-contract"
 version = "0.1.0"
 dependencies = [
  "camera-contract",
+ "look-contract",
  "serde",
  "serde_json",
  "shell-contract",

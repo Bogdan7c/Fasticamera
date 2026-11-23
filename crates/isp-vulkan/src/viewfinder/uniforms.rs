@@ -35,6 +35,7 @@ use isp_model::white_balance::SENSOR_CLIP_LEVEL;
 
 use super::error::ViewfinderError;
 use super::geometry::CheckedGeometry;
+use crate::std140::Std140Writer;
 
 /// Размер uniform-блока: 18 строк по 16 байт.
 pub const VIEWFINDER_UNIFORM_BYTES: usize = 18 * 16;
@@ -72,6 +73,8 @@ pub(crate) fn check_params(params: &IspParams, display: DisplayColorSpace) -> Re
             display,
         });
     }
+    // Профиль выхода, который GPU не считает (Log, HDR), — отказ кадра ДО записи, а не молчаливый sRGB.
+    params.output_profile.check_supported()?;
     Ok(())
 }
 
@@ -118,7 +121,7 @@ pub(crate) fn pack_uniforms(
     writer.uvec4([awb.grid.columns, awb.grid.rows, 0, 0]);
     // Карта виньетирования лежит над полезной областью, а шейдер адресует пиксели буфера: смещение между ними.
     writer.uvec4([geometry.valid_area.left, geometry.valid_area.top, 0, 0]);
-    writer.finish()
+    writer.finish::<VIEWFINDER_UNIFORM_BYTES>()
 }
 
 /// Цвет каждой позиции ячейки 2×2 (порядок строк). Кадрирование начинается с чётного пикселя,
@@ -129,32 +132,6 @@ fn position_channels(params: &IspParams) -> [RgbChannel; CELL_POSITIONS] {
 
 fn rect_words(rect: PixelRect) -> [u32; 4] {
     [rect.left, rect.top, rect.size.width, rect.size.height]
-}
-
-/// Последовательная запись строк std140 по 16 байт.
-#[derive(Default)]
-struct Std140Writer {
-    bytes: Vec<u8>,
-}
-
-impl Std140Writer {
-    fn vec4(&mut self, values: [f32; 4]) {
-        self.bytes.extend(values.iter().flat_map(|value| value.to_ne_bytes()));
-    }
-
-    fn uvec4(&mut self, values: [u32; 4]) {
-        self.bytes.extend(values.iter().flat_map(|value| value.to_ne_bytes()));
-    }
-
-    /// Готовый блок. Число строк фиксировано кодом `pack_uniforms`; несовпадение — ошибка в этом
-    /// модуле, которую ловит тест `layout_matches_documented_offsets` (в проде лишние байты не пишутся,
-    /// недостающие остаются нулями).
-    fn finish(self) -> [u8; VIEWFINDER_UNIFORM_BYTES] {
-        let mut block = [0_u8; VIEWFINDER_UNIFORM_BYTES];
-        let length = self.bytes.len().min(VIEWFINDER_UNIFORM_BYTES);
-        block[..length].copy_from_slice(&self.bytes[..length]);
-        block
-    }
 }
 
 #[cfg(test)]

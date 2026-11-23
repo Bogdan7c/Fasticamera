@@ -21,6 +21,8 @@ roles = ["platform_neutral", "android_platform", "gpu", "output", "composition_r
 "camera-screen" = "platform_neutral"
 "raw-frame-stream" = "platform_neutral"
 "still-contract" = "platform_neutral"
+"look-contract" = "platform_neutral"
+"look-presets" = "platform_neutral"
 "camera-ndk-sys" = "android_platform"
 "camera-android" = "android_platform"
 "android-shell" = "android_platform"
@@ -80,7 +82,35 @@ forbid = [
   "scene-estimation", "render-loop", "gpu-vulkan", "ui-core", "ui-kit", "ui-draw", "ui-render-vulkan",
   "camera-screen", "photo-output", "android-shell",
 ]
-reason = "still-contract — словарь снимка без логики: видит только словари camera-contract и shell-contract, решение 143"
+reason = "still-contract — словарь снимка без логики: видит только словари camera-contract, shell-contract и look-contract (значения вида на момент нажатия в плане снимка), решения 143 и 178"
+
+[[rules]]
+id = "look-contract-is-leaf"
+applies_to_crates = ["look-contract"]
+forbid = []
+forbid_other_crates = true
+reason = "look-contract — словарь вида картинки без логики и без зависимостей от других crate-ов проекта (лист, как camera-contract), решение 178"
+
+[[rules]]
+id = "look-presets-vocabulary-only"
+applies_to_crates = ["look-presets"]
+forbid = [
+  "camera-contract", "shell-contract", "still-contract", "camera-core", "camera-android", "camera-ndk-sys",
+  "raw-frame-stream", "isp-model", "isp-vulkan", "scene-estimation", "render-loop", "gpu-vulkan", "ui-core",
+  "ui-kit", "ui-draw", "ui-render-vulkan", "camera-screen", "photo-output", "android-shell",
+]
+reason = "look-presets — хранилище пресетов: видит только словарь look-contract, решение 178"
+
+[[rules]]
+id = "look-presets-only-for-app"
+applies_to_crates = [
+  "camera-contract", "shell-contract", "still-contract", "look-contract", "camera-core", "camera-android",
+  "camera-ndk-sys", "raw-frame-stream", "isp-model", "isp-vulkan", "scene-estimation", "render-loop",
+  "gpu-vulkan", "ui-core", "ui-kit", "ui-draw", "ui-render-vulkan", "camera-screen", "photo-output",
+  "android-shell",
+]
+forbid = ["look-presets"]
+reason = "хранилище пресетов (файл, поток записи) видит только сборка приложения fasticamera-app, решение 178"
 
 [[rules]]
 id = "ui-core-mechanics-only"

@@ -54,7 +54,11 @@ fn backend_of(
 #[test]
 fn plain_fake_reports_fake_mode_and_counts_submitted_requests() {
     let backend = CaptureBackend::fake(&screen_config());
-    backend.service().submit(shot(1), MonotonicNanos::from_nanos(0));
+    backend.service().submit(
+        shot(1),
+        look_contract::LookSettings::NEUTRAL,
+        MonotonicNanos::from_nanos(0),
+    );
 
     let diagnostics = backend.diagnostics();
 
@@ -107,7 +111,11 @@ fn healthy_start_gives_the_real_mode_with_service_counters_and_sweep_report() {
         Ok(deps()),
     ));
     let service = service.expect("служба поднята и принадлежит обвязке");
-    backend.service().submit(shot(1), MonotonicNanos::from_nanos(0));
+    backend.service().submit(
+        shot(1),
+        look_contract::LookSettings::NEUTRAL,
+        MonotonicNanos::from_nanos(0),
+    );
 
     let diagnostics = backend.diagnostics();
 
@@ -169,10 +177,18 @@ fn a_real_backend_sends_shots_to_a_scenario_fake_and_the_real_service_returns_af
     let executor_view = backend.service();
 
     let substitution = backend.substitute_fake_for_scenario("screen", &screen_config());
-    let during = executor_view.submit(shot(1), MonotonicNanos::from_nanos(0));
+    let during = executor_view.submit(
+        shot(1),
+        look_contract::LookSettings::NEUTRAL,
+        MonotonicNanos::from_nanos(0),
+    );
     let diagnostics_during = backend.diagnostics();
     let restored = backend.restore_after_scenario();
-    let after = executor_view.submit(shot(2), MonotonicNanos::from_nanos(0));
+    let after = executor_view.submit(
+        shot(2),
+        look_contract::LookSettings::NEUTRAL,
+        MonotonicNanos::from_nanos(0),
+    );
 
     assert_eq!(substitution, FakeSubstitution::Substituted);
     assert_eq!(during, crate::camera_screen_capture::SubmitOutcome::Accepted);
@@ -202,7 +218,11 @@ fn the_scenario_fake_keeps_its_own_journal_and_counter_apart_from_the_real_one()
         Ok(deps()),
     ));
     backend.substitute_fake_for_scenario("screen", &screen_config());
-    backend.service().submit(shot(7), MonotonicNanos::from_nanos(0));
+    backend.service().submit(
+        shot(7),
+        look_contract::LookSettings::NEUTRAL,
+        MonotonicNanos::from_nanos(0),
+    );
 
     assert_eq!(backend.accepted_total(), 1);
     assert_eq!(

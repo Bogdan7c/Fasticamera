@@ -50,13 +50,15 @@ use super::slicing::{DevelopmentPlan, SlicePlan, max_region_rows, plan_developme
 use super::targets::DevelopTargets;
 use super::thumbnail::ThumbnailPlan;
 use super::thumbnail_pass::{ThumbnailJob, ThumbnailPass};
+use crate::frame_style::{FrameStyleBuffers, check_style_fits};
 use crate::lens_shading_map::{LensShadingMapBuffer, check_lens_shading_step};
 use crate::quality::demosaic::{MenonPass, create_pass_pipelines};
 use crate::quality::frame_params::{
-    CfaCode, FRAME_PARAMETERS_BYTES, SourceAddressing, check_supported, frame_parameter_bytes,
+    CfaCode, FRAME_PARAMETERS_BYTES, OutputWindowOrigin, SourceAddressing, check_supported, frame_parameter_bytes,
 };
 use crate::quality::pass::{PassPushConstants, QualityPass};
 use crate::quality::planes::{LinearRgbPlanes, QualityPlanes};
+use crate::quality::stages::{OUTPUT_BINDINGS, OutputUniforms, output_binding_writes};
 use crate::shaders::blobs;
 
 /// Единственный слот наборов дескрипторов: проявление одно за раз.
@@ -68,15 +70,6 @@ const LEVELS_BINDINGS: [BindingKind; 4] = [
     BindingKind::UniformBuffer,
     BindingKind::ReadWriteStorageBuffer,
     BindingKind::ReadOnlyStorageBuffer,
-];
-
-/// Привязки выходного шейдера: R, G, B (чтение), uniform кадра, картинка снимка (запись).
-const OUTPUT_BINDINGS: [BindingKind; 5] = [
-    BindingKind::ReadOnlyStorageBuffer,
-    BindingKind::ReadOnlyStorageBuffer,
-    BindingKind::ReadOnlyStorageBuffer,
-    BindingKind::UniformBuffer,
-    BindingKind::StorageImageWrite,
 ];
 
 /// Проявитель снимка. Живёт долго (пайплайны и плоскости создаются один раз); проявляет одну картинку за раз.
@@ -291,6 +284,8 @@ struct Job {
     thumbnail: ThumbnailJob,
     /// Uniform-параметры кадра: на них ссылается набор дескрипторов, пока GPU не закончит.
     _parameters: HostBuffer,
+    /// Основа тона, цвет вида и таблица вида проявки: на них тоже ссылается набор выхода.
+    _style: FrameStyleBuffers,
     /// Карта виньетирования проявки (над полезной областью кадра): на неё тоже ссылается набор уровней.
     _lens_shading_map: LensShadingMapBuffer,
     /// Сколько полос записано (индекс следующей).
@@ -341,6 +336,8 @@ impl DeveloperParts {
             request.raw.size(),
             self.config.lens_shading_map,
         )?;
+        // Таблица вида помещается в буфер проявки — тот же отказ до выделений.
+        check_style_fits(request.params, self.config.look_lut)?;
         let valid = request.raw.valid_area();
         // Область снимка — в координатах буфера кадра; план считается в координатах полезной области.
         let crop_in_valid = PixelRect {
@@ -382,7 +379,17 @@ impl DeveloperParts {
             FRAME_PARAMETERS_BYTES,
             HostBufferUsage::UniformParameters,
         )?;
-        parameters.write_bytes(0, &frame_parameter_bytes(request.params, source))?;
+        // Выходной проход находит координаты пикселя в полезной области по началу области снимка (белый точки).
+        let crop_origin = plan.crop_in_valid_area();
+        let output_origin = OutputWindowOrigin {
+            left: crop_origin.left,
+            top: crop_origin.top,
+        };
+        parameters.write_bytes(0, &frame_parameter_bytes(request.params, source, output_origin))?;
+        // Стиль проявки: основа тона, цвет вида и таблица. Таблица больше буфера — отказ `begin` до выделения
+        // чего-либо ещё.
+        let mut style = FrameStyleBuffers::new(&self.context, self.config.look_lut)?;
+        style.prepare(request.params)?;
         // Карта лежит над ПОЛЕЗНОЙ областью кадра (размер — размер захваченного буфера), а полосы адресуют её
         // абсолютными координатами (смещение области полосы — push-константы). Карта больше буфера — отказ
         // `begin` до выделения чего-либо ещё.
@@ -394,7 +401,7 @@ impl DeveloperParts {
             readback,
             thumbnail,
         } = targets;
-        if let Err(error) = self.bind_job_resources(request.raw, &parameters, &lens_shading_map, &image) {
+        if let Err(error) = self.bind_job_resources(request.raw, &parameters, &style, &lens_shading_map, &image) {
             // Ресурсы проявки (картинка, uniform) сейчас уничтожатся, а наборы могли запомнить их хэндлы: сброс
             // запомненного обязателен (см. `DescriptorRing::release_after_fence`). Наборы ни в одном
             // отправленном буфере не использовались, поэтому освободить их можно сразу.
@@ -420,6 +427,7 @@ impl DeveloperParts {
             readback,
             thumbnail,
             _parameters: parameters,
+            _style: style,
             _lens_shading_map: lens_shading_map,
             recorded: 0,
             unconfirmed: 0,
@@ -433,6 +441,7 @@ impl DeveloperParts {
         &mut self,
         raw: &RawCapture,
         parameters: &HostBuffer,
+        style: &FrameStyleBuffers,
         lens_shading_map: &LensShadingMapBuffer,
         image: &Rgba8StorageImage,
     ) -> Result<(), PhotoError> {
@@ -457,18 +466,12 @@ impl DeveloperParts {
                 },
             ],
         )?;
-        let linear = self.planes.linear_rgb();
-        let resources = [
-            linear.red.read_only_binding(),
-            linear.green.read_only_binding(),
-            linear.blue.read_only_binding(),
-            parameters.binding(),
-            image.storage_binding(),
-        ];
-        let writes: Vec<BindingWrite> = (0_u32..)
-            .zip(resources)
-            .map(|(binding, resource)| BindingWrite { binding, resource })
-            .collect();
+        let uniforms = OutputUniforms {
+            frame_parameters: parameters.binding(),
+            style: style.bindings(),
+            lens_shading_map: lens_shading_map.binding(),
+        };
+        let writes = output_binding_writes(self.planes.linear_rgb(), uniforms, image.storage_binding());
         self.output.bind(SLOT, &writes)?;
         Ok(())
     }

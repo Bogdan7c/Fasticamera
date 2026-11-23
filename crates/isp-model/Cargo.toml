@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 camera-contract.workspace = true
+look-contract.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 

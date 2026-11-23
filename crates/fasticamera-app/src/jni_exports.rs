@@ -16,6 +16,8 @@ use jni::{Env, JavaVM, NativeMethod, jni_str, native_method};
 
 use android_shell::package_name::PackageName;
 
+use crate::app_directory::AppDirectory;
+
 use crate::jni_boundary::run_guarded;
 use crate::logging::{LogPriority, emit_unfiltered};
 use crate::result_line::emit_result_line;
@@ -27,7 +29,7 @@ const NATIVE_BRIDGE_CLASS: &jni::strings::JNIStr = jni_str!("dev/fasticamera/Nat
 
 const NATIVE_BRIDGE_METHODS: &[NativeMethod] = &[
     native_method! {
-        static fn initialize(config_json: JString, package_name: JString) -> JString,
+        static fn initialize(config_json: JString, package_name: JString, app_directory: JString) -> JString,
         error_policy = ThrowRuntimeExAndDefault,
     },
     native_method! {
@@ -68,30 +70,32 @@ fn register_all_natives(env: &mut Env<'_>) -> jni::errors::Result<()> {
     android_shell::android::register_natives(env)
 }
 
-/// `external fun initialize(configJson: String, packageName: String): String` — JSON `InitReport`.
-/// Принимает конфиг и имя пакета процесса, ставит логирование, затем оболочку и маршрутизатор событий.
-/// Имя пакета нужно оболочке для датчиков с первого кадра (решение 106), поэтому приходит здесь, а не при
-/// подключении Activity.
+/// `external fun initialize(configJson: String, packageName: String, appDirectory: String): String` — JSON
+/// `InitReport`. Принимает конфиг, имя пакета процесса и папку приложения, ставит логирование, затем оболочку и
+/// маршрутизатор событий. Имя пакета нужно оболочке для датчиков с первого кадра (решение 106), поэтому приходит
+/// здесь, а не при подключении Activity. Папка приложения (`filesDir`) нужна хранилищу пресетов вида (решение 99)
+/// ДО старта рендера: начальный вид действует с первого кадра.
 fn initialize<'local>(
     env: &mut Env<'local>,
     _class: JClass<'local>,
     config_json: JString<'local>,
     package_name: JString<'local>,
+    app_directory: JString<'local>,
 ) -> jni::errors::Result<JString<'local>> {
     let config_json = config_json.try_to_string(env)?;
     let package_name = package_name.try_to_string(env)?;
-    let report = run_guarded(|| initialize_runtime_and_shell(&config_json, package_name)).unwrap_or_else(|panic| {
-        InitReport::Failed {
+    let app_directory = app_directory.try_to_string(env)?;
+    let report = run_guarded(|| initialize_runtime_and_shell(&config_json, package_name, app_directory))
+        .unwrap_or_else(|panic| InitReport::Failed {
             error: panic.log_text(),
-        }
-    });
+        });
     // InitReport — enum из строк, сериализация не падает; запасной JSON — на невозможный сбой.
     let json = serde_json::to_string(&report)
         .unwrap_or_else(|_| r#"{"status":"failed","error":"init_report_serialization"}"#.to_owned());
     env.new_string(json)
 }
 
-fn initialize_runtime_and_shell(config_json: &str, package_name: String) -> InitReport {
+fn initialize_runtime_and_shell(config_json: &str, package_name: String, app_directory: String) -> InitReport {
     let report = process_runtime().initialize(config_json);
     if matches!(report, InitReport::Failed { .. }) {
         return report;
@@ -109,8 +113,17 @@ fn initialize_runtime_and_shell(config_json: &str, package_name: String) -> Init
             };
         }
     };
+    // Каталог проверяется различимой ошибкой, а не первой неудачной записью пресетов: его нет — запуск отвергнут.
+    let app_directory = match AppDirectory::new(app_directory) {
+        Ok(directory) => directory,
+        Err(error) => {
+            return InitReport::Failed {
+                error: format!("папка приложения не годится: {error}"),
+            };
+        }
+    };
     // Повторный initialize (новая Activity в том же процессе) не ставит оболочку второй раз.
-    match shell_wiring::ensure_installed(config, package_name) {
+    match shell_wiring::ensure_installed(config, package_name, &app_directory) {
         Ok(()) => report,
         Err(error) => InitReport::Failed {
             error: format!("оболочка не установлена: {error}"),

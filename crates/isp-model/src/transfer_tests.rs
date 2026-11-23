@@ -2,6 +2,7 @@ use camera_contract::geometry::PixelSize;
 
 use super::{encode_display, srgb_decode, srgb_encode};
 use crate::image::{DisplayGamut, DisplayLinearImage, space};
+use crate::output::OutputTransfer;
 
 #[test]
 fn known_points_of_srgb_curve() {
@@ -45,7 +46,7 @@ fn encode_display_keeps_gamut_and_encodes_each_channel() {
         },
     )
     .unwrap();
-    let encoded = encode_display(&image);
+    let encoded = encode_display(&image, OutputTransfer::Srgb);
     assert_eq!(encoded.space().gamut, DisplayGamut::DisplayP3);
     let [red, green, blue] = encoded.pixel(0, 0);
     assert_eq!(red, 0.0);

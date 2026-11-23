@@ -41,13 +41,16 @@ use isp_model::lens_shading::LensShadingControl;
 use isp_model::lens_shading::{CropInValidArea, LensShadingSampling, apply_lens_shading_sampled};
 use isp_model::levels::NormalizationLevels;
 use isp_model::levels::normalize_levels;
+use isp_model::look::stage::apply_look;
+use isp_model::output::OutputProfile;
 use isp_model::params::{ExposureGain, FrameInputs, IspParams, ProcessingControls};
-use isp_model::pipeline::{ReferenceRun, run_reference};
+use isp_model::pipeline::{ReferenceRun, run_reference, run_reference_encoded};
 use isp_model::sensor::SensorDescription;
 use isp_model::statistics::{
     AwbStatistics, AwbStatisticsInput, AwbStatisticsSettings, TileGrid, cells_size, compute_awb_statistics,
     quantize_sample_with_headroom, tile_of_cell,
 };
+use isp_model::test_patterns::color_bars;
 use isp_model::tone::ToneCurveSettings;
 use isp_model::tone::apply_tone_curve;
 use isp_model::transfer::encode_display;
@@ -202,6 +205,8 @@ pub struct ParamsSpec {
     pub gamut: DisplayGamut,
     pub tone: ToneCurveSettings,
     pub gamut_compression: GamutCompressionSettings,
+    /// Основа тона (по умолчанию прежняя: старые тесты остаются бит в бит).
+    pub tone_base: isp_model::tone::base::ToneBase,
 }
 
 impl Default for ParamsSpec {
@@ -214,6 +219,7 @@ impl Default for ParamsSpec {
             gamut: DisplayGamut::DisplayP3,
             tone: ToneCurveSettings::default(),
             gamut_compression: GamutCompressionSettings::default(),
+            tone_base: isp_model::tone::base::ToneBase::Legacy,
         }
     }
 }
@@ -231,6 +237,21 @@ impl ParamsSpec {
     }
 
     pub fn build(&self) -> IspParams {
+        self.build_with_look(isp_model::look::LookControls::default())
+    }
+
+    /// Те же параметры с видом картинки `look` (ручки цвета, теплота, таблица): значения решены в `IspParams`.
+    pub fn build_with_look(&self, look: isp_model::look::LookControls) -> IspParams {
+        self.build_with_look_and_exposure(look, ExposureGain::UNITY)
+    }
+
+    /// Те же параметры с видом `look` и подтяжкой AE `exposure_gain` (серый сцены модели делится на неё): нужна краевым
+    /// тестам ручек тона.
+    pub fn build_with_look_and_exposure(
+        &self,
+        look: isp_model::look::LookControls,
+        exposure_gain: ExposureGain,
+    ) -> IspParams {
         let calibrated =
             isp_support::real_capture::load_real_capture(&isp_support::assets_dir(), "real-main-lamp-gray-tile").sensor;
         let levels = NormalizationLevels::new(self.black, self.white).unwrap();
@@ -244,11 +265,13 @@ impl ParamsSpec {
         let controls = ProcessingControls {
             white_balance: CameraNeutral::new(self.neutral).unwrap(),
             demosaic: DemosaicMethod::Preview,
-            output_gamut: self.gamut,
+            output_profile: OutputProfile::sdr(self.gamut),
             gamut_compression: self.gamut_compression,
             tone: self.tone,
-            exposure_gain: ExposureGain::UNITY,
+            exposure_gain,
             lens_shading: LensShadingControl::default(),
+            tone_base: self.tone_base,
+            look,
         };
         IspParams::resolve(&sensor, &frame, &controls).unwrap()
     }
@@ -360,6 +383,36 @@ pub fn record_and_submit(
     .unwrap();
 }
 
+/// Пытается записать кадр в слот `slot` и отдаёт итог `record` как есть (для проверки отказов ДО команд: команд
+/// при отказе нет, отправка пустая).
+pub fn try_record(
+    context: &GpuContext,
+    isp: &mut ViewfinderIsp,
+    request: &RunRequest<'_>,
+    source: &MosaicSource,
+    slot: usize,
+) -> Result<(), isp_vulkan::viewfinder::ViewfinderError> {
+    let mut outcome = None;
+    run_one_shot_blocking(context, |command_buffer| {
+        outcome = Some(isp.record(
+            command_buffer,
+            &ViewfinderFrame {
+                source,
+                params: request.params,
+                geometry: request.geometry,
+                display_color_space: request.display,
+                stages: request.stages,
+                frame: BackdropFrameNumber(1),
+                frame_slot: slot,
+                reader: ConsumerStage::Fragment,
+            },
+        ));
+        Ok(())
+    })
+    .unwrap();
+    outcome.expect("замыкание отправки вызвано").map(|_| ())
+}
+
 /// Читает изображение и итоги слота (после блокирующей отправки fence уже сигнален).
 pub fn readback(isp: &mut ViewfinderIsp, slot: usize) -> ViewfinderRun {
     let report = isp.collect(slot).unwrap();
@@ -433,8 +486,11 @@ pub fn reference_upright_in_valid_area_sampled(
     let xyz_d50 = camera_rgb_to_xyz_d50(&camera_rgb, params.color.camera_to_xyz_d50());
     let scene_linear = xyz_d50_to_scene_linear(&xyz_d50, params.color.xyz_d50_to_scene(), params.color.gamut());
     let scene_in_gamut = compress_to_display_gamut(&scene_linear, &params.gamut_compression);
-    let display_linear = apply_tone_curve(&scene_in_gamut, &params.tone);
-    let display_encoded = encode_display(&display_linear);
+    let toned = apply_tone_curve(&scene_in_gamut, &params.tone);
+    // Вид картинки в `W` = цвета выхода; значения вне [0, 1] обрезает кодирование (`srgb_encode`), как и у
+    // `run_reference`, где обрезка стоит перед ним.
+    let display_linear = apply_look(&toned, &params.look);
+    let display_encoded = encode_display(&display_linear, params.output_profile.transfer());
     upright_from_run(
         ReferenceRun {
             normalized,
@@ -452,9 +508,41 @@ pub fn reference_upright_in_valid_area_sampled(
     )
 }
 
+/// Итог эталона любой основы тона (без стадий): закодированные пиксели выхода в прямой ориентации.
+pub struct UprightPixels {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<[f32; 3]>,
+}
+
+/// Эталон ЛЮБОЙ основы тона (`run_reference_encoded`) по кадрированию, повёрнутый в прямую ориентацию. Стадии
+/// не отдаются: для прежней основы с ними есть [`reference_upright`].
+pub fn reference_upright_encoded(
+    raw: &RawFrame,
+    crop: PixelRect,
+    orientation: SensorOrientation,
+    params: &IspParams,
+) -> UprightPixels {
+    let encoded = run_reference_encoded(&raw.mosaic(crop), params).unwrap();
+    upright_pixels(&encoded, orientation)
+}
+
 /// Поворачивает итог эталона в прямую ориентацию.
 fn upright_from_run(run: ReferenceRun, orientation: SensorOrientation) -> UprightReference {
-    let encoded = &run.display_encoded;
+    let pixels = upright_pixels(&run.display_encoded, orientation);
+    UprightReference {
+        width: pixels.width,
+        height: pixels.height,
+        pixels: pixels.pixels,
+        run,
+    }
+}
+
+/// Поворот закодированного изображения в прямую ориентацию.
+pub(super) fn upright_pixels(
+    encoded: &isp_model::image::DisplayEncodedImage,
+    orientation: SensorOrientation,
+) -> UprightPixels {
     let (cells_width, cells_height) = (encoded.size().width, encoded.size().height);
     let turns = orientation.quarter_turns_clockwise();
     let (width, height) = if turns % 2 == 1 {
@@ -476,12 +564,7 @@ fn upright_from_run(run: ReferenceRun, orientation: SensorOrientation) -> Uprigh
             pixels.push(encoded.pixel(sensor_x, sensor_y));
         }
     }
-    UprightReference {
-        width,
-        height,
-        pixels,
-        run,
-    }
+    UprightPixels { width, height, pixels }
 }
 
 /// Паритет GPU против эталона.
@@ -510,15 +593,16 @@ pub fn storage_step(format: StorageImageFormat, value: f32) -> f32 {
 }
 
 pub fn parity(gpu: &ViewfinderRun, reference: &UprightReference) -> Parity {
-    assert_eq!(
-        (gpu.width, gpu.height),
-        (reference.width, reference.height),
-        "размер выхода"
-    );
+    parity_with_pixels(gpu, reference.width, reference.height, &reference.pixels)
+}
+
+/// Паритет GPU против эталона, заданного пикселями (любая основа тона).
+pub fn parity_with_pixels(gpu: &ViewfinderRun, width: u32, height: u32, reference_pixels: &[[f32; 3]]) -> Parity {
+    assert_eq!((gpu.width, gpu.height), (width, height), "размер выхода");
     let mut max_abs = 0.0_f32;
     let mut math_excess = 0.0_f32;
     let mut over = 0_usize;
-    for (gpu_pixel, reference_pixel) in gpu.pixels.iter().zip(&reference.pixels) {
+    for (gpu_pixel, reference_pixel) in gpu.pixels.iter().zip(reference_pixels) {
         let mut worst = 0.0_f32;
         for channel in 0..3 {
             let difference = (gpu_pixel[channel] - reference_pixel[channel]).abs();
@@ -533,7 +617,7 @@ pub fn parity(gpu: &ViewfinderRun, reference: &UprightReference) -> Parity {
     }
     Parity {
         max_abs,
-        over_one_lsb: over as f64 / reference.pixels.len() as f64,
+        over_one_lsb: over as f64 / reference_pixels.len() as f64,
         math_excess: math_excess.max(0.0),
     }
 }
@@ -600,3 +684,11 @@ pub fn boundary_cells(run: &ReferenceRun, settings: &AwbStatisticsSettings, ulps
     }
     per_tile
 }
+
+#[allow(unused_imports, reason = "каждый тестовый бинарь использует свою часть помощников")]
+mod reference_agx;
+mod scenes;
+#[allow(unused_imports, reason = "каждый тестовый бинарь использует свою часть помощников")]
+pub use reference_agx::*;
+#[allow(unused_imports, reason = "каждый тестовый бинарь использует свою часть помощников")]
+pub use scenes::*;

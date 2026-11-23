@@ -12,8 +12,11 @@
 //! | [`IspStage::WhiteBalance`] | без усилений и без обрезки пересвета |
 //! | [`IspStage::Demosaic`] | отсчёт позиции 0 ячейки во все три канала (без статистики читается один отсчёт вместо четырёх) |
 //! | [`IspStage::Color`] | RGB камеры идёт дальше как свет экрана (без обеих матриц) |
-//! | [`IspStage::GamutCompression`] | свет как есть (отрицательные каналы обнулит тон или OETF) |
+//! | [`IspStage::GamutCompression`] | свет как есть (отрицательные каналы обнулит тон или OETF); у основы AgX — вход в рабочее пространство без обрезки и сжатия |
 //! | [`IspStage::Tone`] | свет сцены как есть (без S-кривой и сохранения оттенка) |
+//! | [`IspStage::LookColor`] | цвет вида (насыщенность, сочность, полосы) не применяется: при нейтральном виде картинка не меняется (стадия и так пропущена флагом в блоке) |
+//! | [`IspStage::LookLut`] | таблица вида не применяется (и вариант шейдера без неё: набор без этой стадии — тот же, что даёт кадр без таблицы) |
+//! | [`IspStage::OutputGamutCompression`] | только у основы AgX: матрица в цвета экрана и обрезка без мягкого сжатия охвата выхода (у прежней основы стадии нет — ничего не меняется) |
 //! | [`IspStage::Oetf`] | линейный свет пишется как есть (UNORM-картинка обрежет до 0…1) |
 //! | [`IspStage::AwbStatistics`] | статистика не считается (ни shared-памяти, ни атомиков), `collect` вернёт `None` |
 //!
@@ -39,8 +42,17 @@ pub enum IspStage {
     Color,
     /// Мягкое сжатие охвата.
     GamutCompression,
-    /// Тон-кривая с сохранением оттенка.
+    /// Тон-кривая с сохранением оттенка (у основы AgX — inset, кривая и outset).
     Tone,
+    /// Цвет вида: насыщенность, сочность, полосы оттенка в OKLab/OKLCh над светом экрана после основы. Нейтральные
+    /// ручки пропускают стадию флагом в uniform (не константой: первое касание ручки не меняет вариант pipeline),
+    /// а выключатель набора — A/B-замер цены стадии.
+    LookColor,
+    /// Таблица вида (LUT): тетраэдральная выборка по storage-буферу. Вариант шейдера «с таблицей / без» — эта
+    /// константа; кадр без таблицы в параметрах вырезает стадию ([`IspStageSet::resolved_for_look_lut`]).
+    LookLut,
+    /// Мягкое сжатие охвата цветов выхода после основы AgX. У прежней основы — пустая стадия (её нет в проходе).
+    OutputGamutCompression,
     /// Кривая передачи sRGB.
     Oetf,
     /// Статистика для AWB по плиткам.
@@ -49,7 +61,7 @@ pub enum IspStage {
 
 impl IspStage {
     /// Все стадии в порядке прохода.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 12] = [
         Self::Levels,
         Self::LensShading,
         Self::WhiteBalance,
@@ -57,12 +69,16 @@ impl IspStage {
         Self::Color,
         Self::GamutCompression,
         Self::Tone,
+        Self::LookColor,
+        Self::LookLut,
+        Self::OutputGamutCompression,
         Self::Oetf,
         Self::AwbStatistics,
     ];
 
     /// `constant_id` выключателя в шейдере (0 и 1 — размер рабочей группы). Номера не зависят от порядка
-    /// прохода: стадия, добавленная позже, берёт следующий свободный (виньетирование — 10).
+    /// прохода: стадия, добавленная позже, берёт следующий свободный (виньетирование — 10, выходное сжатие охвата — 11;
+    /// 12 занят выбором основы тона, он не стадия — см. [`crate::tone_base`]; цвет вида — 13, таблица вида — 14).
     pub const fn specialization_constant_id(self) -> u32 {
         match self {
             Self::Levels => 2,
@@ -74,6 +90,9 @@ impl IspStage {
             Self::Oetf => 8,
             Self::AwbStatistics => 9,
             Self::LensShading => 10,
+            Self::OutputGamutCompression => 11,
+            Self::LookColor => 13,
+            Self::LookLut => 14,
         }
     }
 
@@ -92,7 +111,9 @@ pub struct IspStageSet(u16);
 
 impl IspStageSet {
     /// Все стадии — продукт.
-    pub const ALL: Self = Self(0x1FF);
+    /// Биты — `constant_id − 2`: ids 2…11 дают 0x3FF, id 12 (основа тона, не стадия) бит не занимает, ids 13 и 14
+    /// дают биты 11 и 12.
+    pub const ALL: Self = Self(0x3FF | (1 << 11) | (1 << 12));
 
     /// Набор без указанной стадии (для A/B-замера её цены).
     pub const fn without(self, stage: IspStage) -> Self {
@@ -113,13 +134,23 @@ impl IspStageSet {
         }
     }
 
+    /// Набор с учётом таблицы в параметрах вида: кадр без таблицы вырезает стадию [`IspStage::LookLut`] из прохода
+    /// (вариант шейдера «без таблицы»), остальные стадии не меняются. Решение набора не перекрывается: набор без
+    /// стадии остаётся без неё и при готовой таблице.
+    pub fn resolved_for_look_lut(self, look: &isp_model::look::LookParams) -> Self {
+        match look.lut {
+            Some(_) => self,
+            None => self.without(IspStage::LookLut),
+        }
+    }
+
     /// Включена ли стадия.
     pub const fn contains(self, stage: IspStage) -> bool {
         self.0 & stage.bit() != 0
     }
 
     /// Specialization-константы выключателей (булевы константы GLSL — 32-битные 0/1).
-    pub fn specialization_constants(self) -> [SpecializationConstant; 9] {
+    pub fn specialization_constants(self) -> [SpecializationConstant; 12] {
         IspStage::ALL.map(|stage| SpecializationConstant {
             constant_id: stage.specialization_constant_id(),
             value: u32::from(self.contains(stage)),
@@ -167,6 +198,39 @@ mod tests {
     }
 
     #[test]
+    fn look_lut_stage_is_cut_only_when_the_params_have_no_table() {
+        use isp_model::color::chromaticity::Primaries;
+        use isp_model::look::lut::LookLut;
+        use isp_model::look::{LookControls, LookParams};
+
+        let without = LookParams::resolve(&LookControls::default(), &Primaries::SRGB).unwrap();
+        let with = LookParams::resolve(
+            &LookControls::default().with_lut(LookLut::identity(3, 65).unwrap()),
+            &Primaries::SRGB,
+        )
+        .unwrap();
+        // Нет таблицы — вариант шейдера «без неё»; остальные стадии (в том числе цвет вида) на месте.
+        let cut = IspStageSet::ALL.resolved_for_look_lut(&without);
+        assert_eq!(cut, IspStageSet::ALL.without(IspStage::LookLut));
+        assert!(cut.contains(IspStage::LookColor));
+        // Есть таблица — набор не меняется.
+        assert_eq!(IspStageSet::ALL.resolved_for_look_lut(&with), IspStageSet::ALL);
+        // Решение набора не перекрывается: A/B-набор без стадии остаётся без неё и при таблице в параметрах.
+        let ab_set = IspStageSet::ALL.without(IspStage::LookLut);
+        assert_eq!(ab_set.resolved_for_look_lut(&with), ab_set);
+        // Константы специализации: таблица — 14, цвет вида — 13; значение следует набору.
+        let constants = cut.specialization_constants();
+        let value_of = |id: u32| {
+            constants
+                .iter()
+                .find(|constant| constant.constant_id == id)
+                .map(|c| c.value)
+        };
+        assert_eq!(value_of(14), Some(0));
+        assert_eq!(value_of(13), Some(1));
+    }
+
+    #[test]
     fn all_mask_covers_exactly_the_stage_bits() {
         // Ни одна стадия не теряется в маске и в ней нет лишних бит: добавление стадии без обновления ALL
         // (например, при переходе за 8 бит) поймает этот тест.
@@ -187,7 +251,7 @@ mod tests {
         let ids: Vec<u32> = constants.iter().map(|constant| constant.constant_id).collect();
         assert_eq!(
             ids,
-            vec![2, 10, 3, 4, 5, 6, 7, 8, 9],
+            vec![2, 10, 3, 4, 5, 6, 7, 13, 14, 11, 8, 9],
             "зеркало constant_id в viewfinder_isp.glsl, в порядке IspStage::ALL"
         );
         for constant in constants {

@@ -3,7 +3,10 @@
 
 use gpu_vulkan::error::GpuError;
 
+use crate::frame_style::FrameStyleError;
 use crate::lens_shading_map::{LensShadingMapBufferError, LensShadingMapError};
+use crate::look::LookLutError;
+use crate::look::lut_buffer::LookLutBufferError;
 
 /// Ошибка качественного конвейера полного кадра.
 #[derive(Debug, thiserror::Error)]
@@ -27,6 +30,12 @@ pub enum QualityError {
     /// применяется молча, кадр отвергается.
     #[error("карта виньетирования: {0}")]
     LensShadingMap(#[from] LensShadingMapError),
+    /// Профиль выхода (Log, HDR, 10 бит) ещё не считается: кадр отвергается, а не рисуется другим профилем.
+    #[error("{0}")]
+    UnsupportedOutputProfile(#[from] isp_model::output::UnsupportedOutputProfile),
+    /// Таблица вида (LUT) не помещается в буфер: вид не применяется молча, кадр отвергается.
+    #[error("таблица вида: {0}")]
+    LookLut(#[from] LookLutError),
     /// Параметры обработки требуют того, чего GPU-конвейер не умеет (честный отказ вместо догадки).
     #[error("параметры обработки не поддержаны качественным конвейером: {what}")]
     UnsupportedParams {
@@ -40,6 +49,24 @@ impl From<LensShadingMapBufferError> for QualityError {
         match error {
             LensShadingMapBufferError::Map(map) => Self::LensShadingMap(map),
             LensShadingMapBufferError::Gpu(gpu) => Self::Gpu(gpu),
+        }
+    }
+}
+
+impl From<FrameStyleError> for QualityError {
+    fn from(error: FrameStyleError) -> Self {
+        match error {
+            FrameStyleError::Look(look) => Self::from(look),
+            FrameStyleError::Gpu(gpu) => Self::Gpu(gpu),
+        }
+    }
+}
+
+impl From<LookLutBufferError> for QualityError {
+    fn from(error: LookLutBufferError) -> Self {
+        match error {
+            LookLutBufferError::Lut(lut) => Self::LookLut(lut),
+            LookLutBufferError::Gpu(gpu) => Self::Gpu(gpu),
         }
     }
 }

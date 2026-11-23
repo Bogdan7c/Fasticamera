@@ -11,6 +11,7 @@ use isp_model::statistics::{AwbStatisticsSettings, MAX_SUPPORTED_MOSAIC};
 use super::awb_reduction::AwbReductionPolicy;
 use super::error::ViewfinderError;
 use crate::lens_shading_map::LensShadingMapLimits;
+use crate::look::LookLutLimits;
 
 /// Предпочтение формата изображения видоискателя (зеркало `StorageFormatPolicy` для конфига).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -99,12 +100,15 @@ pub struct ViewfinderIspConfig {
     /// Формат изображения видоискателя.
     pub storage_format: ViewfinderStorageFormat,
     /// Сколько вариантов пайплайна (набор стадий × формат × источник) держать одновременно.
-    /// По умолчанию 12: продукт + 9 A/B-вариантов «без одной стадии» + запас; при переполнении
+    /// По умолчанию 14: продукт + 12 A/B-вариантов «без одной стадии» (по числу стадий `IspStage`) + запас; при переполнении
     /// давно не использованный вариант уходит в отложенное уничтожение.
     pub pipeline_variant_capacity: usize,
     /// Наибольшая карта коррекции виньетирования, под которую выделяются буферы слотов. Карта больше —
     /// явная ошибка кадра (`ViewfinderError::LensShadingMap`), а не молчаливый пропуск коррекции.
     pub lens_shading_map: LensShadingMapLimits,
+    /// Наибольшая таблица вида (LUT), под которую выделяются буферы слотов. Таблица больше — явная ошибка кадра
+    /// (`ViewfinderError::LookLut`), а не молчаливый пропуск.
+    pub look_lut: LookLutLimits,
     /// Наибольший кадр: при создании проверяется, что сетка и запас сумм AWB не переполнят u32 ни на каком кадре
     /// не больше этого (явная ошибка `ViewfinderError::AwbStatistics`, а не молчаливое переполнение на кадре).
     pub largest_mosaic: LargestMosaicConfig,
@@ -118,8 +122,9 @@ impl Default for ViewfinderIspConfig {
             awb_statistics: AwbStatisticsSettings::default(),
             awb_reduction: AwbReductionPolicy::default(),
             storage_format: ViewfinderStorageFormat::default(),
-            pipeline_variant_capacity: 12,
+            pipeline_variant_capacity: 14,
             lens_shading_map: LensShadingMapLimits::default(),
+            look_lut: LookLutLimits::default(),
             largest_mosaic: LargestMosaicConfig::default(),
         }
     }
@@ -143,6 +148,7 @@ impl ViewfinderIspConfig {
             return invalid("pipeline_variant_capacity должен быть ≥ 1".to_owned());
         }
         self.lens_shading_map.validate()?;
+        self.look_lut.validate()?;
         let settings = self.awb_statistics;
         if settings.grid.columns == 0 || settings.grid.rows == 0 {
             return invalid(format!("пустая сетка статистики AWB {:?}", settings.grid));

@@ -33,7 +33,9 @@ use gpu_vulkan::hardware_buffer_cache::ImportCacheCounters;
 use gpu_vulkan::sync::GpuWaitFence;
 use raw_frame_stream::{OfferedFrame, RawFrameStream, RawFrameStreamConfig, StreamEpoch};
 use render_loop::backend::{DisplayBackend, FrameTiming, PresentOutcome, PresentTarget};
-use render_loop::config::{DisplayColorConfig, RenderLoopConfig, ViewfinderConfig, WhiteBalanceConfig};
+use render_loop::config::{
+    DisplayColorConfig, RenderLoopConfig, ToneBaseChoice, ViewfinderConfig, ViewfinderToneConfig, WhiteBalanceConfig,
+};
 use render_loop::vulkan_backend::{ViewfinderReadback, VulkanDisplayBackend};
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::surface::SurfaceSize;
@@ -95,6 +97,13 @@ fn rig_or_skip(
         display_color: DisplayColorConfig::SrgbOnly,
         viewfinder: ViewfinderConfig {
             white_balance,
+            // Стенд проверяет баланс белого, а не тон: цветность плитки меряется на прежней S-кривой, у которой
+            // нет сжатия плеча у белого (плечо AgX размывает цвет светлой плитки и занижает разброс каналов).
+            // Основы по умолчанию (AgX и др.) проверяют тестами тона и паритета.
+            tone: ViewfinderToneConfig {
+                base: ToneBaseChoice::Legacy,
+                ..ViewfinderToneConfig::default()
+            },
             ..ViewfinderConfig::default()
         },
         ..RenderLoopConfig::default()

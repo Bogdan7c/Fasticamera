@@ -308,7 +308,11 @@ impl<G: StillGpu> StillEngine<G> {
         // описывает ту поправку, что применена к картинке, решение 8).
         let mut cache = IspParamsCache::for_demosaic(isp_model::demosaic::DemosaicMethod::Quality)
             .with_tone(self.tone)
-            .with_lens_shading(self.lens_shading);
+            .with_lens_shading(self.lens_shading)
+            .with_look_model(Arc::clone(&self.look_model))
+            // Вид — значения НА МОМЕНТ НАЖАТИЯ из плана снимка (инвариант 3), а не текущий вид видоискателя; для кадра
+            // со вспышкой тоже: параметры вспышки (белая, подтяжка) выше этого не меняют.
+            .with_look(Arc::new(entry.plan.look.clone()));
         let decision = cache.prepare_with_exposure_gain(passport, params.white, params.gain, DisplayGamut::Srgb);
         let resolved = match decision.outcome {
             ParamsOutcome::Resolved | ParamsOutcome::Unchanged => cache.current(),

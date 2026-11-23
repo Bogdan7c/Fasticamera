@@ -13,6 +13,23 @@
 //!   ──gamut: мягко в охват экрана──▶ SceneInGamutImage ──tone (S-кривая, сохранение оттенка)──▶ DisplayLinearImage
 //!   ──transfer (sRGB OETF)──▶ DisplayEncodedImage
 //! ```
+//! Это прежняя основа тона ([`tone::base::ToneBase::Legacy`], по умолчанию). Основа AgX (решения 101, 176, 177)
+//! идёт иначе: цвет сразу в линейный Rec. 2020, обрезка пересвета — по своему белому каждой точки
+//! ([`white_level`]), тон формируется в Rec. 2020, цвета выхода — последним шагом:
+//! ```text
+//! ShadingCorrectedMosaic ──white_level: min(отсчёт·wb, L(pos))──▶ WhiteBalancedMosaic ──demosaic──▶ LinearCameraRgb
+//!   ──камера → XYZ D50──▶ XyzD50Image ──Брэдфорд + Rec. 2020──▶ WorkingSceneImage
+//!   ──tone::agx: вход, inset, log2, S-кривая до белого L, outset──▶ WorkingDisplayImage
+//!   ──W → цвета выхода, мягкое сжатие охвата, обрезка 0…1──▶ DisplayLinearImage ──transfer──▶ DisplayEncodedImage
+//! ```
+//! Вид картинки ([`look`], решения 98, 99, 178) — после основы, в том же рабочем пространстве `W`:
+//! ```text
+//!   ... ──основа (AgX | старая)──▶ свет экрана в W ──look::color (насыщенность, сочность, полосы; OKLab)──▶
+//!   ──look::lut (задел, тетраэдры)──▶ дальше как выше (AgX: W → цвета выхода; старая: обрезка 0…1)
+//! ```
+//! Теплота и оттенок сдвигают белую точку только для рисования ([`look::white`]), ручки тона идут через единый шов
+//! модели основы ([`tone::knobs`]). Нейтральный вид — выход основы бит в бит.
+//! Прогон: [`pipeline::run_reference_working`] (прежняя основа — [`pipeline::run_reference`]).
 //! Сбоку от цепочки: [`statistics`] — суммы каналов по плиткам из `ShadingCorrectedMosaic` для нашего
 //! AWB (08), целочисленный контракт для точной сверки с GPU-видоискателем.
 //!
@@ -36,17 +53,25 @@
 //! ```
 //!
 //! ```compile_fail
-//! # use isp_model::{image::SceneLinearImage, transfer};
+//! # use isp_model::{image::SceneLinearImage, output::OutputTransfer, transfer};
 //! // Кривую передачи нельзя применить к сцене до тона: сначала тон-кривая.
 //! fn wrong(scene: SceneLinearImage) {
-//!     let _ = transfer::encode_display(&scene);
+//!     let _ = transfer::encode_display(&scene, OutputTransfer::Srgb);
 //! }
 //! ```
 //!
 //! ```
-//! # use isp_model::{image::DisplayLinearImage, transfer};
+//! # use isp_model::{image::DisplayLinearImage, output::OutputTransfer, transfer};
 //! fn right(display: DisplayLinearImage) {
-//!     let _ = transfer::encode_display(&display);
+//!     let _ = transfer::encode_display(&display, OutputTransfer::Srgb);
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! # use isp_model::{image::WorkingSceneImage, output::OutputTransfer, transfer};
+//! // Сцену в Rec. 2020 нельзя кодировать кривой передачи до основы тона и перевода в цвета выхода.
+//! fn wrong(scene: WorkingSceneImage) {
+//!     let _ = transfer::encode_display(&scene, OutputTransfer::Srgb);
 //! }
 //! ```
 //!
@@ -72,7 +97,9 @@ pub mod gamut;
 pub mod image;
 pub mod lens_shading;
 pub mod levels;
+pub mod look;
 pub mod metrics;
+pub mod output;
 pub mod params;
 pub mod pipeline;
 pub mod sensor;
@@ -86,3 +113,4 @@ mod test_support;
 pub mod tone;
 pub mod transfer;
 pub mod white_balance;
+pub mod white_level;

@@ -59,7 +59,11 @@ fn shutter_press_hands_the_render_a_plan_built_from_the_shot_request() {
     let mut request = shot(4);
     request.raw = RawCapture::On;
 
-    let outcome = rig.capture.submit(request.clone(), MonotonicNanos::from_nanos(0));
+    let outcome = rig.capture.submit(
+        request.clone(),
+        look_contract::LookSettings::NEUTRAL,
+        MonotonicNanos::from_nanos(0),
+    );
 
     assert_eq!(outcome, SubmitOutcome::Accepted);
     let plans = rig.render.plans();
@@ -78,11 +82,41 @@ fn shutter_press_hands_the_render_a_plan_built_from_the_shot_request() {
 }
 
 #[test]
+fn the_plan_carries_exactly_the_look_values_the_request_was_submitted_with() {
+    // Инвариант 3: значения вида идут в план как есть, на момент нажатия; DNG-флаг экрана на них не влияет.
+    let rig = StillRig::start();
+    let look = crate::look_test_support::contrast_look(0.5);
+
+    rig.capture.submit(shot(1), look.clone(), MonotonicNanos::from_nanos(0));
+    rig.capture.submit(
+        shot(2),
+        look_contract::LookSettings::NEUTRAL,
+        MonotonicNanos::from_nanos(0),
+    );
+
+    let plans = rig.render.plans();
+    assert_eq!(plans[0].look, look);
+    assert_eq!(
+        plans[1].look,
+        look_contract::LookSettings::NEUTRAL,
+        "второй снимок — свои значения"
+    );
+}
+
+#[test]
 fn still_numbers_are_process_wide_and_independent_of_screen_request_numbers() {
     let rig = StillRig::start();
     // У экрана номера запросов идут своим порядком (здесь 9 и 2), у службы — сквозные 1, 2.
-    rig.capture.submit(shot(9), MonotonicNanos::from_nanos(0));
-    rig.capture.submit(shot(2), MonotonicNanos::from_nanos(0));
+    rig.capture.submit(
+        shot(9),
+        look_contract::LookSettings::NEUTRAL,
+        MonotonicNanos::from_nanos(0),
+    );
+    rig.capture.submit(
+        shot(2),
+        look_contract::LookSettings::NEUTRAL,
+        MonotonicNanos::from_nanos(0),
+    );
     let ids: Vec<StillId> = rig.render.plans().iter().map(|plan| plan.id).collect();
     assert_eq!(ids, vec![StillId(1), StillId(2)]);
 }
@@ -91,7 +125,11 @@ fn still_numbers_are_process_wide_and_independent_of_screen_request_numbers() {
 fn render_events_become_secured_then_saved_with_the_same_request_number_and_a_file() {
     let mut rig = StillRig::start();
     assert_eq!(
-        rig.capture.submit(shot(5), MonotonicNanos::from_nanos(0)),
+        rig.capture.submit(
+            shot(5),
+            look_contract::LookSettings::NEUTRAL,
+            MonotonicNanos::from_nanos(0)
+        ),
         SubmitOutcome::Accepted
     );
 
@@ -119,12 +157,20 @@ fn eleventh_press_with_ten_waiting_is_refused_at_once_and_the_ten_are_untouched(
     let mut rig = StillRig::start();
     for request in 1..=10 {
         assert_eq!(
-            rig.capture.submit(shot(request), MonotonicNanos::from_nanos(0)),
+            rig.capture.submit(
+                shot(request),
+                look_contract::LookSettings::NEUTRAL,
+                MonotonicNanos::from_nanos(0)
+            ),
             SubmitOutcome::Accepted
         );
     }
 
-    let eleventh = rig.capture.submit(shot(11), MonotonicNanos::from_nanos(0));
+    let eleventh = rig.capture.submit(
+        shot(11),
+        look_contract::LookSettings::NEUTRAL,
+        MonotonicNanos::from_nanos(0),
+    );
 
     assert_eq!(eleventh, SubmitOutcome::Rejected(SubmitRejection::Busy));
     assert_eq!(rig.render.plans().len(), 10, "рендер об 11-м не знает");
@@ -142,7 +188,11 @@ fn eleventh_press_with_ten_waiting_is_refused_at_once_and_the_ten_are_untouched(
         rig.service.stats().pending_now == 9
     });
     assert_eq!(
-        rig.capture.submit(shot(12), MonotonicNanos::from_nanos(0)),
+        rig.capture.submit(
+            shot(12),
+            look_contract::LookSettings::NEUTRAL,
+            MonotonicNanos::from_nanos(0)
+        ),
         SubmitOutcome::Accepted
     );
 }
@@ -150,7 +200,11 @@ fn eleventh_press_with_ten_waiting_is_refused_at_once_and_the_ten_are_untouched(
 #[test]
 fn replacing_the_screen_drops_phases_of_the_old_one_and_counts_them() {
     let mut rig = StillRig::start();
-    rig.capture.submit(shot(1), MonotonicNanos::from_nanos(0));
+    rig.capture.submit(
+        shot(1),
+        look_contract::LookSettings::NEUTRAL,
+        MonotonicNanos::from_nanos(0),
+    );
     // Экран переустановлен до того, как снимок проявился: у нового экрана свой номер 1 — другой снимок.
     rig.reinstall_screen();
 
@@ -173,7 +227,11 @@ fn replacing_the_screen_drops_phases_of_the_old_one_and_counts_them() {
 fn render_gone_fails_the_still_and_frees_the_admission_slot() {
     let mut rig = StillRig::start_with(PhotoConfig::default(), RenderMode::Gone);
 
-    let outcome = rig.capture.submit(shot(3), MonotonicNanos::from_nanos(0));
+    let outcome = rig.capture.submit(
+        shot(3),
+        look_contract::LookSettings::NEUTRAL,
+        MonotonicNanos::from_nanos(0),
+    );
 
     assert_eq!(
         outcome,
@@ -197,7 +255,11 @@ fn render_gone_fails_the_still_and_frees_the_admission_slot() {
 fn unavailable_render_also_fails_the_still_without_hanging() {
     let mut rig = StillRig::start_with(PhotoConfig::default(), RenderMode::Unavailable);
     assert_eq!(
-        rig.capture.submit(shot(1), MonotonicNanos::from_nanos(0)),
+        rig.capture.submit(
+            shot(1),
+            look_contract::LookSettings::NEUTRAL,
+            MonotonicNanos::from_nanos(0)
+        ),
         SubmitOutcome::Accepted
     );
     assert_eq!(
@@ -212,7 +274,11 @@ fn unavailable_render_also_fails_the_still_without_hanging() {
 #[test]
 fn not_secured_frame_reaches_the_screen_as_a_camera_failure() {
     let mut rig = StillRig::start();
-    rig.capture.submit(shot(6), MonotonicNanos::from_nanos(0));
+    rig.capture.submit(
+        shot(6),
+        look_contract::LookSettings::NEUTRAL,
+        MonotonicNanos::from_nanos(0),
+    );
     rig.render.emit(
         StillId(1),
         DevelopEvent::NotSecured {
@@ -230,7 +296,11 @@ fn not_secured_frame_reaches_the_screen_as_a_camera_failure() {
 #[test]
 fn render_failure_after_secured_still_ends_with_exactly_one_finished() {
     let mut rig = StillRig::start();
-    rig.capture.submit(shot(2), MonotonicNanos::from_nanos(0));
+    rig.capture.submit(
+        shot(2),
+        look_contract::LookSettings::NEUTRAL,
+        MonotonicNanos::from_nanos(0),
+    );
     rig.render.emit(
         StillId(1),
         DevelopEvent::Secured {
@@ -278,7 +348,11 @@ fn stopped_service_refuses_the_press_and_leaves_nothing_behind() {
     } = StillRig::start();
     assert_eq!(service.shutdown(), photo_output::service::ShutdownReport::Stopped);
 
-    let outcome = capture.submit(shot(1), MonotonicNanos::from_nanos(0));
+    let outcome = capture.submit(
+        shot(1),
+        look_contract::LookSettings::NEUTRAL,
+        MonotonicNanos::from_nanos(0),
+    );
 
     assert_eq!(outcome, SubmitOutcome::Rejected(SubmitRejection::ServiceUnavailable));
     assert!(render.plans().is_empty(), "рендеру о снимке не сообщали");
@@ -292,7 +366,11 @@ fn journal_is_bounded_and_the_accepted_count_is_not() {
     };
     let rig = StillRig::start_with(config, RenderMode::Accepting);
     for request in 1..=3 {
-        rig.capture.submit(shot(request), MonotonicNanos::from_nanos(0));
+        rig.capture.submit(
+            shot(request),
+            look_contract::LookSettings::NEUTRAL,
+            MonotonicNanos::from_nanos(0),
+        );
     }
     let journal: Vec<ShotRequestId> = rig.backend.journal().iter().map(|entry| entry.request).collect();
     assert_eq!(

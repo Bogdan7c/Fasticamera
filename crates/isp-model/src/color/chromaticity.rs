@@ -73,6 +73,16 @@ impl Primaries {
         white: Chromaticity::D65,
     };
 
+    /// Rec. 2020 (ITU-R BT.2020-2, таблица 4) и D65: широкое рабочее пространство AgX и ручек вида
+    /// (решение 176). Основные цвета лежат на спектральном локусе, поэтому у реальных цветов сцены
+    /// отрицательных компонент здесь почти нет.
+    pub const REC_2020: Self = Self {
+        red: Chromaticity { x: 0.708, y: 0.292 },
+        green: Chromaticity { x: 0.170, y: 0.797 },
+        blue: Chromaticity { x: 0.131, y: 0.046 },
+        white: Chromaticity::D65,
+    };
+
     /// Матрица линейный RGB → XYZ по SMPTE RP 177 (приложение B).
     ///
     /// Столбцы — XYZ основных цветов (Y = 1), масштабированные коэффициентами
@@ -138,7 +148,11 @@ pub fn bradford_adaptation(
 ///
 /// Белая D50 уходит ровно в RGB (1, 1, 1) — серое остаётся серым.
 pub fn xyz_d50_to_scene_linear(gamut: DisplayGamut) -> Result<Matrix3, SingularMatrix> {
-    let primaries = gamut.primaries();
+    xyz_d50_to_linear_rgb(&gamut.primaries())
+}
+
+/// Та же матрица для произвольных основных цветов (рабочее пространство Rec. 2020 и гаммы экрана).
+pub fn xyz_d50_to_linear_rgb(primaries: &Primaries) -> Result<Matrix3, SingularMatrix> {
     let display_to_xyz = primaries.rgb_to_xyz()?;
     let adaptation = bradford_adaptation(Chromaticity::D50, primaries.white)?;
     Ok(display_to_xyz.inverse()?.mul(&adaptation))

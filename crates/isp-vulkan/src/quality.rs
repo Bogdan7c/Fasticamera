@@ -24,10 +24,10 @@ pub(crate) mod frame_params;
 pub(crate) mod input;
 pub(crate) mod pass;
 pub(crate) mod planes;
-mod stages;
+pub(crate) mod stages;
 mod temporal;
 #[cfg(test)]
-mod test_params;
+pub(crate) mod test_params;
 mod timing;
 mod workload;
 

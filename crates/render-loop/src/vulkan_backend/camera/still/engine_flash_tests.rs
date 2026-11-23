@@ -185,6 +185,28 @@ fn the_flash_frame_arriving_later_is_secured_with_its_shot_plan_gain_and_the_led
 }
 
 #[test]
+fn the_flash_frame_is_developed_with_the_look_from_its_plan() {
+    // Вид кадра со вспышкой — значения плана на момент нажатия, как у обычного снимка (инвариант 3).
+    let mut rig = flash_rig(Some(Facts::good()));
+    let look = look_contract::LookSettings {
+        warmth: look_contract::LookKnob::new(0.75).unwrap(),
+        ..look_contract::LookSettings::NEUTRAL
+    };
+    let sink = rig.begin(StillPlan {
+        look: look.clone(),
+        ..flash_plan(1)
+    });
+    rig.stream.offer_flash_still(SHOT.0, FIRED);
+    rig.run(3);
+    assert_eq!(sink.len(), 1, "кадр вспышки захвачен");
+
+    match &rig.engine.queue[0].stage {
+        super::entry::Stage::AwaitingTarget { inputs, .. } => assert_eq!(inputs.params.look(), &look),
+        _ => panic!("снимок должен ждать цель кодера"),
+    }
+}
+
+#[test]
 fn the_residual_gain_is_rounded_and_limited_like_the_viewfinder_gain() {
     // План на 1 EV выше кадра: предел подтяжки видоискателя 0,5 EV.
     let mut rig = flash_rig(Some(Facts {

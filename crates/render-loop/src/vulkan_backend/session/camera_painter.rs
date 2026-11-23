@@ -52,6 +52,7 @@ pub(super) fn create_camera_painter(
             },
             tone: config.viewfinder.tone,
             lens_shading: config.viewfinder.lens_shading.control(),
+            look_model: Arc::new(config.viewfinder.look_model.clone()),
             continuity: config.viewfinder.continuity,
         },
     )

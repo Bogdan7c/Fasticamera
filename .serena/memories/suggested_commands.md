@@ -57,3 +57,10 @@
 - Фикстуры `test-assets/isp-model/` (README там): `tools/isp-reference/make_demosaic_fixtures.py`; реальные кропы — `make_real_crops.py --capture-dir ~/fasticamera-captures/c7-reference/captures/204802-f42af9 --stem 2_lamp --out-dir test-assets/isp-model [--full-frame-dir <вне репо>]` (детерминирован: побайтно тот же вывод).
 - Посмотреть картинку эталоном: `cargo run -p isp-model --release --example render_capture -- <каталог> full-main-lamp out.ppm [--demosaic preview|quality] [--gamut srgb|display-p3] [--scene-middle-gray X] [--contrast X]` (~4 с на 12 Мп).
 - Тесты эталона: `cargo test -p isp-model` (интеграционные: `demosaic_parity`, `demosaic_quality`, `pipeline_end_to_end`, `real_crops`).
+
+## Вид картинки (сессия 14a)
+- Модель основы на один запуск: `adb shell am start -S -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -n dev.fasticamera/dev.fasticamera.MainActivity -e tone_base aces` (`agx|aces|filmic|legacy`; вместе с `-e tone_contrast`/`-e tone_display_middle_gray`); неверное значение — отказ initialize с полем.
+- Эталон картинки с моделью: `cargo run -p isp-model --release --example render_capture -- <каталог> full-main-lamp out.ppm --tone-base agx|aces|filmic|legacy` (печатает среднюю насыщенность HSV).
+- Паритет моделей и вида на GPU: `cargo test -p isp-vulkan --all-features --test viewfinder_agx_parity --test viewfinder_aces_parity --test viewfinder_filmic_parity --test viewfinder_look_parity` (и `quality_*`, `photo_*` аналоги).
+- Сквозные тесты вида: `cargo test -p render-loop --all-features --test vulkan_look_picture --test vulkan_still_look --test vulkan_look_command`; `cargo test -p fasticamera-app --all-features --test look_end_to_end`.
+- Пресеты: `cargo test -p look-contract -p look-presets`.

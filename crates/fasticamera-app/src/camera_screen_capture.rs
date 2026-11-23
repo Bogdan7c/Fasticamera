@@ -31,6 +31,7 @@ use std::time::Duration;
 
 use camera_screen::ScreenAction;
 use camera_screen::shutter::{CaptureOutcome, ShotRequest, ShotRequestId};
+use look_contract::LookSettings;
 use shell_contract::clock::MonotonicNanos;
 use ui_draw::picture::UiPicture;
 
@@ -56,8 +57,10 @@ pub enum SubmitOutcome {
 
 /// Сервис снимка. Не блокирует: ставит запрос и возвращается.
 pub trait CaptureService: Send + Sync {
-    /// Ставит запрос. `now` — время показа текущего кадра UI (часы потока рендера).
-    fn submit(&self, request: ShotRequest, now: MonotonicNanos) -> SubmitOutcome;
+    /// Ставит запрос. `look` — значения вида картинки НА МОМЕНТ НАЖАТИЯ (инвариант 3): их ставит исполнитель эффектов
+    /// из библиотеки пресетов, экран о виде не знает. Сервис кладёт их в план снимка как есть. `now` — время показа
+    /// текущего кадра UI (часы потока рендера).
+    fn submit(&self, request: ShotRequest, look: LookSettings, now: MonotonicNanos) -> SubmitOutcome;
 
     /// Кадровый тик: сервис выдаёт ответы, чей срок к `now` настал. Вызывает источник UI в начале КАЖДОГО кадра.
     /// По умолчанию ничего (настоящий сервис отвечает своим путём).
@@ -359,7 +362,8 @@ fn complete(slot: &CaptureCompletionSlot, counters: &CounterCells, request: Shot
 }
 
 impl CaptureService for FakeCaptureService {
-    fn submit(&self, request: ShotRequest, now: MonotonicNanos) -> SubmitOutcome {
+    fn submit(&self, request: ShotRequest, _look: LookSettings, now: MonotonicNanos) -> SubmitOutcome {
+        // Фейк вид не проявляет (картинки нет): значения ручек ему не нужны.
         // Каждый снимок виден в logcat: без этого «миниатюра появилась» на телефоне нельзя связать
         // с конкретным нажатием (затвор, громкость, таймер) — снимки редки, лог не шумит.
         tracing::info!(target: "fasticamera::camera_screen", request = ?request.request, pressed_at = ?request.pressed_at, "фейк-снимок принят");

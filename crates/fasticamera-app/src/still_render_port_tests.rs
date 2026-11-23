@@ -27,7 +27,12 @@ impl render_loop::still::StillEventSink for IdleSink {
 
 fn begin_command(id: u64) -> StillCommand {
     StillCommand::Begin(StillBegin {
-        plan: crate::still_capture_service::plan_from_shot(StillId(id), &shot(1), FrameSelection::ShownAtPress),
+        plan: crate::still_capture_service::plan_from_shot(
+            StillId(id),
+            &shot(1),
+            look_contract::LookSettings::NEUTRAL,
+            FrameSelection::ShownAtPress,
+        ),
         events: Arc::new(IdleSink),
     })
 }

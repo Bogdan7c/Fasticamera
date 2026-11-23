@@ -4,7 +4,10 @@
 //! получает копию после каждой применённой команды. Здесь только правило «что меняет команда»
 //! (чистая логика, проверяется без GPU).
 
+use std::sync::Arc;
+
 use isp_vulkan::viewfinder::IspStageSet;
+use look_contract::LookSettings;
 
 use crate::config::{ViewfinderConfig, ViewfinderConfigError, ViewfinderPlacement};
 use crate::viewfinder::{
@@ -27,6 +30,9 @@ pub struct ViewfinderSettings {
     pub destination: FramingDestination,
     /// Стенд «запас под видео» (V4): на старте всегда выключен, включается только командой.
     pub headroom: HeadroomBench,
+    /// Вид картинки (решение 178). Стартовое значение задаёт сборка приложения (`with_initial_look`), чтобы оно
+    /// действовало с первого кадра; дальше меняется командой `SetLook`.
+    pub look: Arc<LookSettings>,
 }
 
 impl ViewfinderSettings {
@@ -39,6 +45,7 @@ impl ViewfinderSettings {
             placement: config.placement,
             destination: FramingDestination::Configured,
             headroom: HeadroomBench::Disabled,
+            look: Arc::new(LookSettings::NEUTRAL),
         })
     }
 
@@ -65,6 +72,7 @@ impl ViewfinderSettings {
                 self.destination = framing.destination;
             }
             ViewfinderCommand::SetHeadroomBench(mode) => self.headroom = mode,
+            ViewfinderCommand::SetLook(look) => self.look = look,
         }
         if *self == before {
             ViewfinderCommandOutcome::AlreadyInEffect
@@ -120,6 +128,53 @@ mod tests {
             ViewfinderCommandOutcome::Applied
         );
         assert_eq!(settings.headroom, HeadroomBench::Disabled);
+    }
+
+    #[test]
+    fn look_starts_neutral_and_set_look_applies_once_then_is_already_in_effect() {
+        let mut settings = defaults();
+        assert!(settings.look.is_neutral(), "без команды вид — нейтраль");
+        let warm = Arc::new(LookSettings {
+            warmth: look_contract::LookKnob::new(0.5).expect("ручка в диапазоне"),
+            ..LookSettings::NEUTRAL
+        });
+
+        assert_eq!(
+            settings.apply(ViewfinderCommand::SetLook(Arc::clone(&warm))),
+            ViewfinderCommandOutcome::Applied
+        );
+        assert_eq!(settings.look, warm);
+        // Те же значения в другом `Arc`: повторная команда экрана ничего не меняет.
+        let same_values = Arc::new((*warm).clone());
+        assert_eq!(
+            settings.apply(ViewfinderCommand::SetLook(same_values)),
+            ViewfinderCommandOutcome::AlreadyInEffect
+        );
+        assert_eq!(
+            settings.apply(ViewfinderCommand::SetLook(Arc::new(LookSettings::NEUTRAL))),
+            ViewfinderCommandOutcome::Applied,
+            "возврат к нейтрали — тоже изменение"
+        );
+        assert!(settings.look.is_neutral());
+    }
+
+    #[test]
+    fn set_look_touches_nothing_but_the_look() {
+        let mut settings = defaults();
+        let before = settings.clone();
+        settings.apply(ViewfinderCommand::SetLook(Arc::new(LookSettings {
+            contrast: look_contract::LookKnob::new(-0.25).expect("ручка в диапазоне"),
+            ..LookSettings::NEUTRAL
+        })));
+
+        assert_eq!(
+            ViewfinderSettings {
+                look: before.look.clone(),
+                ..settings
+            },
+            before,
+            "рисовальщик, стадии, кадрирование и место остались прежними"
+        );
     }
 
     #[test]

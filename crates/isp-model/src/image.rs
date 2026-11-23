@@ -253,6 +253,16 @@ pub mod space {
         pub gamut: DisplayGamut,
     }
 
+    /// Линейный свет сцены в рабочем пространстве формирования картинки — Rec. 2020 (D65), решение 176.
+    /// Не сжат тоном; вне охвата Rec. 2020 возможны отрицательные компоненты.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct WorkingScene;
+
+    /// Линейный свет экрана после основы AgX, ещё в рабочем пространстве Rec. 2020: 0…1 по смыслу,
+    /// но матрица «наружу» может дать небольшой выход за 0…1 — его убирает перевод в цвета выхода.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct WorkingDisplay;
+
     /// Линейный свет экрана после тона: 0…1, внутри гаммы.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct DisplayLinear {
@@ -278,6 +288,10 @@ pub struct RgbImage<S> {
 pub type LinearCameraRgb = RgbImage<space::CameraRgb>;
 /// Цвет камеры → XYZ D50 → адаптация к экрану.
 pub type XyzD50Image = RgbImage<space::XyzD50>;
+/// Сцена в рабочем пространстве Rec. 2020 → основа AgX.
+pub type WorkingSceneImage = RgbImage<space::WorkingScene>;
+/// После основы AgX, в рабочем пространстве → цвета выхода.
+pub type WorkingDisplayImage = RgbImage<space::WorkingDisplay>;
 /// Сцена в основных цветах экрана → сжатие охвата.
 pub type SceneLinearImage = RgbImage<space::SceneLinear>;
 /// Сцена внутри охвата → тон.

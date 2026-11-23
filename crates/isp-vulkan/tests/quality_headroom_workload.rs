@@ -45,7 +45,7 @@ fn params(demosaic: DemosaicMethod) -> IspParams {
     let frame = FrameInputs {
         levels: capture.sensor.static_levels(),
     };
-    let controls = ProcessingControls::with_defaults(capture.neutral, demosaic, DisplayGamut::Srgb);
+    let controls = ProcessingControls::with_defaults(capture.neutral, demosaic, DisplayGamut::Srgb).with_legacy_tone();
     IspParams::resolve(&capture.sensor, &frame, &controls).unwrap()
 }
 
@@ -319,6 +319,54 @@ fn disabled_denoise_skips_its_pass_and_invalid_input_records_nothing() {
         Ok(())
     })
     .unwrap();
+    assert_no_validation_errors(&context);
+}
+
+/// Стенд записывает кадр с любой моделью основы тона (прежняя, AgX, ACES, filmic): запись удаётся и даёт замер
+/// времени. Отказа «модель не поддержана на GPU» нет, кадр ACES не подменяется AgX (картинки моделей различны).
+#[test]
+fn the_workload_records_a_frame_with_every_tone_base() {
+    use isp_model::tone::aces::AcesSettings;
+    use isp_model::tone::agx_settings::AgxSettings;
+    use isp_model::tone::base::ToneBase;
+    use isp_model::tone::filmic::FilmicSettings;
+    let Some(context) = gpu_context_or_skip() else { return };
+    let (width, height) = (64, 32);
+    let config = VideoHeadroomConfig::default();
+    let mut workload = VideoHeadroomWorkload::new(&context, extent(width, height), &config).unwrap();
+    let mut frame_sink = sink(&context, width, height, config.frame_slots);
+    let raw = SyntheticRaw16::new(&context, width + 2, height + 2, &synthetic_raw(width + 2, height + 2)).unwrap();
+    let source: MosaicSource = raw.source();
+    let capture = load_real_capture(&isp_support::assets_dir(), "real-main-lamp-gray-tile");
+    let frame = FrameInputs {
+        levels: capture.sensor.static_levels(),
+    };
+    let params_with = |base: ToneBase| {
+        let controls = ProcessingControls {
+            tone_base: base,
+            ..ProcessingControls::with_defaults(capture.neutral, DemosaicMethod::Quality, DisplayGamut::Srgb)
+        };
+        IspParams::resolve(&capture.sensor, &frame, &controls).unwrap()
+    };
+    for (name, base) in [
+        ("прежняя", ToneBase::Legacy),
+        ("AgX", ToneBase::Agx(AgxSettings::default())),
+        ("ACES", ToneBase::Aces(AcesSettings::default())),
+        ("filmic", ToneBase::Filmic(FilmicSettings::default())),
+    ] {
+        let params = params_with(base);
+        let outcome = run_frame(
+            &context,
+            &mut workload,
+            &mut frame_sink,
+            0,
+            &frame_input(&source, &params, full_area(width, height)),
+        );
+        assert!(
+            matches!(outcome, HeadroomRecordOutcome::Recorded { .. }),
+            "{name}: {outcome:?}"
+        );
+    }
     assert_no_validation_errors(&context);
 }
 

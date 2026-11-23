@@ -148,6 +148,17 @@ vec4 lens_shading_gains(LensShadingAxis axis_x, LensShadingAxis axis_y) {
                               axis_x, axis_y);
 }
 
+// Белый точки L (isp_model::white_level::WhiteLevelField::level_at, решение 177): наименьшее из «усиление карты ·
+// усиление баланса» по четырём каналам CFA [R, G_even, G_odd, B]; `balance` — усиления баланса R, G, B.
+// Без коррекции передают `gains = vec4(1.0)`: ответ — наименьшее усиление баланса (то же, что у эталона).
+float lens_shading_white_level(vec4 gains, vec3 balance) {
+    precise float red = gains[LENS_SHADING_CHANNEL_RED] * balance.x;
+    precise float green_even = gains[LENS_SHADING_CHANNEL_GREEN_EVEN] * balance.y;
+    precise float green_odd = gains[LENS_SHADING_CHANNEL_GREEN_ODD] * balance.y;
+    precise float blue = gains[LENS_SHADING_CHANNEL_BLUE] * balance.z;
+    return min(min(min(red, green_even), green_odd), blue);
+}
+
 // Усиление для одного отсчёта по его координате в полезной области (выборка «по отсчёту»).
 float lens_shading_gain_at(uvec2 valid_pixel, uint map_channel) {
     return lens_shading_gains(lens_shading_axis_x(valid_pixel.x), lens_shading_axis_y(valid_pixel.y))[map_channel];

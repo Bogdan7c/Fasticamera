@@ -26,10 +26,12 @@ use super::stages::{IspStage, IspStageSet};
 use super::statistics::AwbTileBuffers;
 use super::uniforms::{VIEWFINDER_UNIFORM_BYTES, check_params, pack_uniforms};
 use super::variants::{
-    BINDING_AWB_TILES, BINDING_LENS_SHADING_MAP, BINDING_OUTPUT, BINDING_PARAMETERS, BINDING_SOURCE, SourceKind,
-    VariantCache, VariantKey,
+    BINDING_AWB_TILES, BINDING_LENS_SHADING_MAP, BINDING_LOOK, BINDING_LOOK_LUT, BINDING_OUTPUT, BINDING_PARAMETERS,
+    BINDING_SOURCE, BINDING_TONE_BASE, SourceKind, VariantCache, VariantKey,
 };
+use crate::frame_style::FrameStyleBuffers;
 use crate::lens_shading_map::LensShadingMapBuffer;
+use crate::tone_base::ToneBaseKind;
 
 /// Имена точек меток времени: начало и конец dispatch ISP.
 const TIMESTAMP_POINTS: [&str; 2] = ["isp-start", "isp-end"];
@@ -110,6 +112,9 @@ pub struct ViewfinderIsp {
     retired_images: RetirementQueue<ViewfinderImage>,
     retired_pipelines: RetirementQueue<ComputePipeline>,
     uniform_buffers: Vec<HostBuffer>,
+    /// Стиль кадра по слотам: блок основы тона (пишется каждый кадр: мал, меняется с подтяжкой AE), блок цвета вида
+    /// и таблица вида (пишется, только когда сменилась).
+    style_buffers: Vec<FrameStyleBuffers>,
     /// Карта виньетирования по слотам: пишется, только когда карта (или полезная область) изменилась.
     lens_shading_maps: Vec<LensShadingMapBuffer>,
     awb_buffers: AwbTileBuffers,
@@ -158,6 +163,9 @@ impl ViewfinderIsp {
                 )
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let style_buffers = (0..config.frame_slots)
+            .map(|_| FrameStyleBuffers::new(context, config.look_lut))
+            .collect::<Result<Vec<_>, _>>()?;
         let lens_shading_maps = (0..config.frame_slots)
             .map(|_| LensShadingMapBuffer::new(context, config.lens_shading_map))
             .collect::<Result<Vec<_>, _>>()?;
@@ -172,6 +180,7 @@ impl ViewfinderIsp {
             retired_images: RetirementQueue::default(),
             retired_pipelines: RetirementQueue::default(),
             uniform_buffers,
+            style_buffers,
             lens_shading_maps,
             awb_buffers: AwbTileBuffers::new(context, config.frame_slots, config.awb_statistics.grid)?,
             timestamps: GpuTimestamps::new(context, config.frame_slots, &TIMESTAMP_POINTS)?,
@@ -273,17 +282,24 @@ impl ViewfinderIsp {
             what: "изображение не создано (внутренняя ошибка порядка вызовов)".to_owned(),
         })?;
         // «Пропуск» виньетирования в параметрах вырезает стадию из прохода (константа специализации).
-        let stages = frame.stages.resolved_for_lens_shading(&frame.params.lens_shading);
+        let stages = frame
+            .stages
+            .resolved_for_lens_shading(&frame.params.lens_shading)
+            .resolved_for_look_lut(&frame.params.look);
         let key = VariantKey {
             source: SourceKind::of(frame.source),
             format: image.format(),
             stages,
+            tone_base: ToneBaseKind::of(frame.params),
         };
         if let Some(evicted) = self.variants.prepare(&self.context, key, serial)? {
             self.retired_pipelines.retire(evicted, serial);
         }
         let uniforms = pack_uniforms(frame.params, &geometry, &self.config.awb_statistics);
         self.uniform_buffers[slot].write_bytes(0, &uniforms)?;
+        // Основа тона, цвет вида и таблица: таблица больше буфера — ошибка кадра ДО команд.
+        self.style_buffers[slot].prepare(frame.params)?;
+        let style = self.style_buffers[slot].bindings();
         // Карта больше буфера — ошибка кадра ДО команд; карта не изменилась — буфер не пишется.
         self.lens_shading_maps[slot].prepare(&frame.params.lens_shading, geometry.valid_area.size)?;
         let writes = [
@@ -306,6 +322,18 @@ impl ViewfinderIsp {
             BindingWrite {
                 binding: BINDING_LENS_SHADING_MAP,
                 resource: self.lens_shading_maps[slot].binding(),
+            },
+            BindingWrite {
+                binding: BINDING_TONE_BASE,
+                resource: style.tone_base,
+            },
+            BindingWrite {
+                binding: BINDING_LOOK,
+                resource: style.look,
+            },
+            BindingWrite {
+                binding: BINDING_LOOK_LUT,
+                resource: style.look_lut,
             },
         ];
         let pipeline = self.variants.pipeline_mut(&key)?;

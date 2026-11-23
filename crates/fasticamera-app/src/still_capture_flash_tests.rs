@@ -30,9 +30,11 @@ fn shot_with_flash(request: u64, mode: FlashMode) -> ShotRequest {
 }
 
 fn press(rig: &StillRig, mode: FlashMode) {
-    let outcome = rig
-        .capture
-        .submit(shot_with_flash(1, mode), MonotonicNanos::from_nanos(0));
+    let outcome = rig.capture.submit(
+        shot_with_flash(1, mode),
+        look_contract::LookSettings::NEUTRAL,
+        MonotonicNanos::from_nanos(0),
+    );
     assert_eq!(outcome, SubmitOutcome::Accepted);
 }
 
@@ -175,4 +177,21 @@ fn camera_failure_from_the_relay_reaches_the_render_with_the_id_the_service_gave
         rig.render.flash_failures(),
         vec![(StillId(1), FlashStillFailure::PreflashNotMeasured)]
     );
+}
+
+#[test]
+fn a_flash_still_carries_the_look_of_the_press_in_its_plan() {
+    let rig = StillRig::start();
+    let look = crate::look_test_support::contrast_look(-0.5);
+
+    let outcome = rig.capture.submit(
+        shot_with_flash(1, FlashMode::On),
+        look.clone(),
+        MonotonicNanos::from_nanos(0),
+    );
+
+    assert_eq!(outcome, SubmitOutcome::Accepted);
+    let plan = &rig.render.plans()[0];
+    assert_eq!(plan.selection, FrameSelection::FlashFrame { shot: FlashShotId(1) });
+    assert_eq!(plan.look, look, "кадр со вспышкой проявляется видом момента нажатия");
 }

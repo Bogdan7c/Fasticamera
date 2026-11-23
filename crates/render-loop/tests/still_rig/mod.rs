@@ -35,7 +35,7 @@ use isp_model::demosaic::DemosaicMethod;
 use isp_model::exposure::ExposureGain;
 use isp_model::image::{DisplayGamut, RawMosaic};
 use isp_model::params::{FrameInputs, IspParams, ProcessingControls};
-use isp_model::pipeline::run_reference;
+use isp_model::pipeline::run_reference_encoded;
 use isp_model::sensor::SensorDescription;
 use isp_vulkan::photo::{
     DevelopRequest, PhotoConfig, PhotoDeveloper, RawCapturer, RgbaReadback, SliceOutcome, quantize_display_encoded,
@@ -46,7 +46,7 @@ use render_loop::config::{StillDevelopConfig, ViewfinderToneConfig};
 use render_loop::still::{StillBegin, StillCommand, StillCommandOutcome, StillEventSink};
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::orientation::DeviceOrientation;
-use still_contract::develop::DevelopEvent;
+use still_contract::develop::{DevelopEvent, PrimaryTarget, PrimaryTargetOffer};
 use still_contract::plan::{FrameSelection, PrimaryFormat, RawOutput, ShutterPress, StillId, StillOutputs, StillPlan};
 use still_contract::shot::StillRotation;
 use still_contract::thumbnail::StillThumbnail;
@@ -150,6 +150,7 @@ pub fn plan(id: u64, press: MonotonicNanos, outputs: StillOutputs) -> StillPlan 
         },
         orientation: DeviceOrientation::Portrait,
         outputs,
+        look: look_contract::LookSettings::NEUTRAL,
     }
 }
 
@@ -289,12 +290,25 @@ pub fn raw_bytes(cell: CellValues, size: PixelSize) -> Vec<u8> {
 
 /// Параметры ISP снимка так, как их собирает рендер: Quality, охват sRGB, тон видоискателя, нейтраль нашей белой.
 pub fn expected_params(passport: &StreamPassport) -> (IspParams, SensorDescription) {
+    expected_params_with_look(passport, &look_contract::LookSettings::NEUTRAL)
+}
+
+/// То же с видом `look` (модель вида — умолчание, как у стенда): параметры снимка, сделанного с этим видом.
+pub fn expected_params_with_look(
+    passport: &StreamPassport,
+    look: &look_contract::LookSettings,
+) -> (IspParams, SensorDescription) {
     let sensor = SensorDescription::from_stream_passport(passport, &passport.color_calibration).expect("сенсор");
     let frame = FrameInputs::from_capture_hints(&sensor, &capture_hints()).expect("уровни");
     let neutral = CameraNeutral::new(scene_neutral()).expect("нейтраль");
     let controls = ProcessingControls {
         tone: ViewfinderToneConfig::default().curve_settings(),
+        tone_base: ViewfinderToneConfig::default().tone_base(),
         exposure_gain: ExposureGain::UNITY,
+        look: isp_model::look::LookControls::new(
+            look.clone(),
+            Arc::new(isp_model::look::model::LookModelSettings::default()),
+        ),
         ..ProcessingControls::with_defaults(neutral, DemosaicMethod::Quality, DisplayGamut::Srgb)
     };
     (
@@ -309,9 +323,8 @@ pub fn reference_rgba(params: &IspParams, cell: CellValues, size: PixelSize) -> 
         .flat_map(|y| (0..size.width).map(move |x| bggr_sample(cell, x, y)))
         .collect();
     let raw = RawMosaic::new(size, BayerPattern::BGGR, samples).expect("мозаика");
-    run_reference(&raw, params)
+    run_reference_encoded(&raw, params)
         .expect("эталон")
-        .display_encoded
         .pixels()
         .iter()
         .flat_map(|pixel| {
@@ -395,4 +408,25 @@ pub fn photo_pipeline_rgba(
     }
     let photo = developer.finish().expect("снимок");
     photo.gpu_image().read_back_blocking().expect("чтение картинки")
+}
+
+/// Метка и номер ячейки показанного кадра `shown` (по журналу показов видоискателя).
+pub fn shown_frame(bench: &mut StillBench, shown: usize) -> (i64, usize) {
+    let camera = bench.rig.backend.diagnostics().camera.expect("диагностика камеры");
+    let nanos = camera.present_history[shown].sensor_timestamp_nanos;
+    // Метки кадров стенда идут с шагом 16 666 667 нс от 1 000 000 000.
+    let index = ((nanos - 1_000_000_000) / 16_666_667) as usize;
+    (nanos, index)
+}
+
+/// Предлагает цель «картинка в память» для снимка `id`.
+pub fn offer_readback(bench: &mut StillBench, id: u64) {
+    let outcome = bench
+        .rig
+        .backend
+        .apply_still_command(StillCommand::Target(PrimaryTargetOffer::Ready {
+            id: StillId(id),
+            target: PrimaryTarget::Readback,
+        }));
+    assert!(matches!(outcome, StillCommandOutcome::Accepted), "{outcome:?}");
 }

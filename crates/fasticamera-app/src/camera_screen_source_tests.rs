@@ -226,7 +226,7 @@ impl ShellCommands for QuietCommands {
 struct NoCapture;
 
 impl CaptureService for NoCapture {
-    fn submit(&self, _request: ShotRequest, _now: MonotonicNanos) -> SubmitOutcome {
+    fn submit(&self, _request: ShotRequest, _look: look_contract::LookSettings, _now: MonotonicNanos) -> SubmitOutcome {
         SubmitOutcome::Accepted
     }
 }
@@ -269,6 +269,7 @@ fn an_exposure_bias_refused_by_a_full_camera_queue_is_resent_by_the_source_on_la
             capture: Arc::new(NoCapture),
             shutter_sound: Arc::new(crate::camera_screen_service::SilentShutterSound::default()),
             lens: camera_contract::zoom::LensIntentChannel::new(),
+            look: None,
         }),
         board: Arc::clone(&board),
         report_min_interval: Duration::ZERO,
@@ -310,6 +311,68 @@ fn an_exposure_bias_refused_by_a_full_camera_queue_is_resent_by_the_source_on_la
     // Принято — больше не досылается.
     source.produce_frame(&frame_request(64)).expect("кадр");
     assert_eq!(intents(&received).len(), 2);
+}
+
+/// Сквозной путь вида на ПК без GPU: действие экрана → редьюсер → эффект → библиотека → команда рендеру, и запрос
+/// снимка получает вид на момент нажатия (решение 178, инварианты 3 и 4).
+#[test]
+fn a_look_action_travels_from_the_screen_to_the_render_and_into_the_shot_request() {
+    let render = RecordingRenderControl::new();
+    let stub = crate::look_test_support::StubPersistence::accepting();
+    let (sender, receiver) = screen_input_channel(16);
+    let board = Arc::new(ScreenBoard::default());
+    let mut source = CameraScreenSource::new(ScreenSourceParts {
+        screen: CameraScreen::new(
+            ScreenConfig::default(),
+            ui_kit::tokens::UiKitTokens::default(),
+            ui_core::time::MotionPreference::Full,
+        )
+        .expect("экран"),
+        input: receiver,
+        facts: Box::new(LiveFacts),
+        gravity: GravityLink::Unavailable {
+            reason: "тест".to_owned(),
+        },
+        executor: EffectExecutor::new(EffectTargets {
+            camera: Box::new(SwitchablePort {
+                outcome: Arc::new(Mutex::new(CameraIntentOutcome::NoEngine)),
+                received: Arc::default(),
+            }),
+            haptics: Arc::new(QuietHaptics),
+            commands: Arc::new(QuietCommands),
+            render: render.clone(),
+            capture: Arc::new(NoCapture),
+            shutter_sound: Arc::new(crate::camera_screen_service::SilentShutterSound::default()),
+            lens: camera_contract::zoom::LensIntentChannel::new(),
+            look: Some(crate::look_test_support::handle_with(stub.clone())),
+        }),
+        board: Arc::clone(&board),
+        report_min_interval: Duration::ZERO,
+    });
+    source.produce_frame(&frame_request(16)).expect("кадр");
+
+    let wanted = crate::look_test_support::contrast_look(0.5);
+    sender.send_action(ScreenAction::Look(look_contract::LookIntent::SetLook(wanted.clone())));
+    source.produce_frame(&frame_request(32)).expect("кадр");
+
+    let sent: Vec<_> = render
+        .recorded()
+        .into_iter()
+        .filter_map(|adjustment| match adjustment {
+            crate::viewfinder_control::RenderAdjustment::Viewfinder(
+                render_loop::viewfinder::ViewfinderCommand::SetLook(look),
+            ) => Some((*look).clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        sent,
+        vec![wanted.clone()],
+        "рендер получил значения, которые прислал экран"
+    );
+    assert_eq!(stub.requested().len(), 1, "и файл попросили записать");
+    let report = board.latest().expect("отчёт");
+    assert_eq!(report.effects.look.look_changed, 1, "отчёт экрана несёт счётчики вида");
 }
 
 /// Экран с каталогом зума OnePlus 11 и основной камерой: зум-действия принимаются.
@@ -406,6 +469,7 @@ fn dropping_the_source_releases_the_warm_demand_the_screen_left_in_the_lens_slot
             capture: Arc::new(NoCapture),
             shutter_sound: Arc::new(crate::camera_screen_service::SilentShutterSound::default()),
             lens: lens.clone(),
+            look: None,
         }),
         board: Arc::new(ScreenBoard::default()),
         report_min_interval: Duration::ZERO,

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::error::QualityError;
 use crate::lens_shading_map::LensShadingMapLimits;
+use crate::look::LookLutLimits;
 
 /// Наибольшее число нитей в рабочей группе, которое конфиг разрешает (проверка без GPU). 1024 —
 /// `maxComputeWorkGroupInvocations` и Adreno 740 (vkjson телефона), и RADV; спецификация гарантирует лишь
@@ -123,6 +124,8 @@ pub struct VideoHeadroomConfig {
     pub temporal_denoise: TemporalDenoiseConfig,
     /// Наибольшая карта коррекции виньетирования (буфер на слот кадра). Карта больше — ошибка кадра.
     pub lens_shading_map: LensShadingMapLimits,
+    /// Наибольшая таблица вида (LUT; буфер на слот кадра). Таблица больше — ошибка кадра.
+    pub look_lut: LookLutLimits,
 }
 
 impl Default for VideoHeadroomConfig {
@@ -133,6 +136,7 @@ impl Default for VideoHeadroomConfig {
             workgroup_size: WorkgroupSizeConfig::default(),
             temporal_denoise: TemporalDenoiseConfig::default(),
             lens_shading_map: LensShadingMapLimits::default(),
+            look_lut: LookLutLimits::default(),
         }
     }
 }
@@ -147,6 +151,7 @@ impl VideoHeadroomConfig {
         }
         self.local_size()?;
         self.lens_shading_map.validate()?;
+        self.look_lut.validate()?;
         self.temporal_denoise.validate()
     }
 
