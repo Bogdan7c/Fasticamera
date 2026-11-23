@@ -7,7 +7,7 @@ use render_loop::viewfinder::ViewfinderCommand;
 
 use super::*;
 use crate::gpu_test_support::RecordingRenderControl;
-use crate::look_test_support::{StubPersistence, contrast_look, handle_with};
+use crate::look_test_support::{StubPersistence, contrast_look, handle_with, wheels_look};
 use crate::viewfinder_control::RenderAdjustment;
 
 /// Порт рендера с заданным итогом доставки.
@@ -246,4 +246,52 @@ fn a_closed_writer_is_counted_but_the_look_still_reaches_the_render() {
 
     assert_eq!(effects.counters().save_requests.replaced_pending, 1);
     assert_eq!(set_looks(&render).len(), 1);
+}
+
+#[test]
+fn color_wheels_live_in_a_saved_preset_and_come_back_to_the_render_when_it_is_selected_again() {
+    let stub = StubPersistence::accepting();
+    let mut effects = effects_with(&stub);
+    let render = RecordingRenderControl::new();
+    let wheels = wheels_look();
+    assert!(!wheels.wheels.is_neutral(), "вид теста действительно с колёсами");
+
+    // Колёса крутятся и сохраняются в новый пресет вместе с ручками.
+    effects.run_intent(LookIntent::SetLook(wheels.clone()), render.as_ref());
+    effects.run_intent(
+        LookIntent::SaveAsNewPreset(PresetName::new("Wheels").expect("имя")),
+        render.as_ref(),
+    );
+    let saved = handle_active(&effects);
+    assert!(
+        matches!(saved, PresetId::User(_)),
+        "активен новый пользовательский пресет"
+    );
+
+    // Уход на «Честный» гасит колёса, возврат на свой пресет отдаёт рендеру те же колёса.
+    effects.run_intent(
+        LookIntent::SelectPreset(PresetId::Builtin(BuiltinPreset::Honest)),
+        render.as_ref(),
+    );
+    assert!(
+        effects.current_look().wheels.is_neutral(),
+        "у «Честного» колёса нейтральны"
+    );
+    effects.run_intent(LookIntent::SelectPreset(saved), render.as_ref());
+
+    let sent = set_looks(&render);
+    assert_eq!(
+        sent,
+        vec![wheels.clone(), LookSettings::NEUTRAL, wheels.clone()],
+        "рендер получил колёса, нейтраль и снова те же колёса"
+    );
+    assert_eq!(sent[2].wheels, wheels.wheels);
+    assert_eq!(effects.current_look(), wheels);
+    // В файле пресет лежит вместе с колёсами: последняя просьба записи — снимок библиотеки с этим пресетом.
+    let last_snapshot = stub.requested().pop().expect("просьба записи");
+    assert_eq!(last_snapshot.user_presets.len(), 1);
+    assert_eq!(
+        last_snapshot.user_presets[0].settings.wheels, wheels.wheels,
+        "колёса в записанном пресете"
+    );
 }

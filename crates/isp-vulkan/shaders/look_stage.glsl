@@ -25,7 +25,7 @@
 #include "oklab_working.glsl"
 
 // Число строк блока (зеркало `LOOK_ROWS` в Rust).
-#define LOOK_ROWS 31
+#define LOOK_ROWS 36
 
 layout(set = 0, binding = LOOK_PARAMS_BINDING, std140) uniform LookParameters {
     vec4 rows[LOOK_ROWS];
@@ -45,12 +45,15 @@ const uint LOOK_ROW_BAND_CENTERS = 15u;
 const uint LOOK_ROW_BAND_HUE_SHIFT = 19u;
 const uint LOOK_ROW_BAND_CHROMA = 23u;
 const uint LOOK_ROW_BAND_LIGHTNESS = 27u;
+const uint LOOK_ROW_WHEELS = 31u;      // x — колёса включены, y — L_g, z — 1/L_g, w — 1/(1 − L_g); 32–35: lift, gamma, gain, offset (ΔL, Δa, Δb)
 const uint LOOK_MAX_BANDS = 16u;
 
 // Малая добавка в знаменатель направления кожи (для c → 0), не порог.
 const float LOOK_DIRECTION_EPSILON = 1e-6;
 const float LOOK_PI = 3.14159265358979323846;
 const float LOOK_TAU = 6.28318530717958647692;
+
+#include "look_wheels.glsl"
 
 // ----- Цвет вида -------------------------------------------------------------------------------------------
 
@@ -122,6 +125,10 @@ vec3 look_apply_color(vec3 working_rgb) {
     vec4 chroma_numbers = look.rows[LOOK_ROW_CHROMA];
     OklabMatrices oklab = look_oklab();
     vec3 lab = oklab_to_lab(oklab, working_rgb);
+    // Колёса по зонам — первый шаг после перевода в OKLab (как в `LookColorParams::apply`); нейтральные пропущены.
+    if (look.rows[LOOK_ROW_WHEELS].x >= 0.5) {
+        lab = look_apply_wheels(lab);
+    }
     float lightness = lab.x;
     float a = lab.y;
     float b = lab.z;

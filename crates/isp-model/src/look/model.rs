@@ -8,6 +8,7 @@ use look_contract::HueBandId;
 use serde::{Deserialize, Serialize};
 
 use super::bands::MAX_LOOK_BANDS;
+use super::wheels::{InvalidWheelModel, WheelModelSettings};
 
 /// Полоса оттенка модели: имя и центр на круге OKLCh.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -79,6 +80,8 @@ pub struct LookModelSettings {
     pub band_luminance_range: f32,
     /// Предел размера LUT: узлов на ось (`LookLut::new`). `[estimate]`.
     pub max_lut_size: u32,
+    /// Колёса цвета по зонам: сила на краю и граница зон (решение 191).
+    pub wheels: WheelModelSettings,
 }
 
 impl Default for LookModelSettings {
@@ -118,6 +121,7 @@ impl Default for LookModelSettings {
             band_saturation_range: 0.8,
             band_luminance_range: 0.35,
             max_lut_size: 65,
+            wheels: WheelModelSettings::default(),
         }
     }
 }
@@ -148,6 +152,8 @@ pub enum InvalidLookModel {
     LutLimit { value: u32, max: u32 },
     #[error("таблица {size} узлов на ось больше предела модели {max}")]
     LutLargerThanLimit { size: u32, max: u32 },
+    #[error("колёса цвета: {0}")]
+    Wheels(#[from] InvalidWheelModel),
 }
 
 /// Наименьший зазор между центрами полос, градусы (между ближе окна вырождаются).
@@ -187,7 +193,9 @@ impl LookModelSettings {
                 max: MAX_LUT_SIZE_LIMIT,
             });
         }
-        self.validate_bands()
+        self.validate_bands()?;
+        self.wheels.validate()?;
+        Ok(())
     }
 
     fn validate_bands(&self) -> Result<(), InvalidLookModel> {

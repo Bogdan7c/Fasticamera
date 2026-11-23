@@ -5,7 +5,7 @@ use look_contract::{LookIntent, LookSettings};
 
 use super::*;
 use crate::look_service::LookHandle;
-use crate::look_test_support::{StubPersistence, contrast_look, handle_with};
+use crate::look_test_support::{StubPersistence, contrast_look, handle_with, wheels_look};
 use crate::viewfinder_control::RenderAdjustment;
 
 fn behavior_with_library(stub: &StubPersistence) -> (Behavior, LookHandle) {
@@ -127,4 +127,26 @@ fn write_outcomes_are_polled_on_every_frame_and_counted() {
     executor.begin_frame(MonotonicNanos::from_nanos(16_000_000));
 
     assert_eq!(executor.counters().look.writes.saved, 1);
+}
+
+#[test]
+fn the_shot_request_carries_the_color_wheels_of_the_press_moment() {
+    let stub = StubPersistence::accepting();
+    let (behavior, handle) = behavior_with_library(&stub);
+    let (mut executor, rig) = build_executor(behavior);
+
+    // Колёса → нажатие → правка вида без колёс: снимок обязан взять колёса момента нажатия.
+    executor.execute(vec![
+        Effect::Look(LookIntent::SetLook(wheels_look())),
+        Effect::Capture(shot(1)),
+        Effect::Look(LookIntent::SetLook(LookSettings::NEUTRAL)),
+    ]);
+
+    let looks = captured_looks(&rig);
+    assert_eq!(looks, vec![wheels_look()]);
+    assert!(!looks[0].wheels.is_neutral(), "в запрос снимка попали колёса");
+    assert!(
+        handle.active_settings().wheels.is_neutral(),
+        "а вид после нажатия уже без колёс"
+    );
 }

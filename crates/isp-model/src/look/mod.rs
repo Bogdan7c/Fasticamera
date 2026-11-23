@@ -11,8 +11,9 @@
 //!    сглаживание AWB и белая вспышки видят НЕсдвинутую точку.
 //! 2. **Контраст, средние тона, тени, света** → [`ToneKnobAmounts`]: через единый шов модели основы
 //!    ([`crate::tone::knobs`]); вторая кривая не добавляется.
-//! 3. **Насыщенность, сочность, полосы** → [`color::LookColorParams`]: стадия в OKLab рабочего пространства `W`
-//!    после основы; нейтраль — пропуск стадии флагом (`None`).
+//! 3. **Колёса цвета по зонам, насыщенность, сочность, полосы** → [`color::LookColorParams`]: стадия в OKLab
+//!    рабочего пространства `W` после основы; колёса ([`wheels::LookWheels`]) — её первый шаг; нейтраль — пропуск
+//!    стадии флагом (`None`), нейтральные колёса — пропуск своего шага (`wheels: None`).
 //! 4. **LUT** → [`lut::LookLut`]: после цвета вида, до перевода в цвета выхода.
 //!
 //! Стадии 3 и 4 и сдвиг белой не знают, какая модель основы выбрана: от неё берётся только рабочее
@@ -24,6 +25,7 @@ pub mod lut;
 pub mod model;
 pub mod stage;
 pub mod validation;
+pub mod wheels;
 pub mod white;
 
 use std::sync::Arc;
@@ -41,8 +43,8 @@ use white::{WhiteShift, WhiteShiftLimit};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LookParamsVersion(pub u32);
 
-/// Текущая версия [`LookParams`]: 1 — первая модель (14a).
-pub const CURRENT_LOOK_PARAMS_VERSION: LookParamsVersion = LookParamsVersion(1);
+/// Текущая версия [`LookParams`]: 1 — первая модель (14a), 2 — колёса цвета по зонам в стадии цвета (14i).
+pub const CURRENT_LOOK_PARAMS_VERSION: LookParamsVersion = LookParamsVersion(2);
 
 /// Входы вида в обработку кадра: значения ручек, модель вида и (опционально) таблица.
 ///

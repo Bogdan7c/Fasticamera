@@ -14,6 +14,8 @@ serde.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+# Тест «приборы видят колёса цвета» строит значения вида словарём, как экран (решение 191).
+look-contract.workspace = true
 serde_json.workspace = true
 
 [lints]

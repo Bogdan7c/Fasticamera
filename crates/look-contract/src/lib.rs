@@ -1,4 +1,4 @@
-//! Нейтральный словарь вида картинки Fasticamera (решения 98, 99, 178).
+//! Нейтральный словарь вида картинки Fasticamera (решения 98, 99, 178; колёса цвета — 186, 191).
 //!
 //! Здесь только типы и проверка значений, никакой логики вида: формулы живут в `isp-model`,
 //! хранилище пресетов — в `look-presets`, экран только шлёт [`LookIntent`].
@@ -14,6 +14,7 @@ mod intent;
 mod knob;
 mod preset;
 mod settings;
+mod wheels;
 
 pub use active::{ActiveLook, EditState};
 pub use bands::{BandAdjustment, BandAdjustments, BandAdjustmentsError, HueBandId, HueBandIdError};
@@ -22,3 +23,4 @@ pub use intent::LookIntent;
 pub use knob::{LookKnob, LookKnobError};
 pub use preset::{BuiltinPreset, PRESET_NAME_MAX_CHARS, PresetId, PresetName, PresetNameError, UserPresetId};
 pub use settings::LookSettings;
+pub use wheels::{ColorWheel, ColorWheels, WheelPush, WheelPushError, WheelZone};

@@ -664,6 +664,7 @@ name = "scope-model"
 version = "0.1.0"
 dependencies = [
  "isp-model",
+ "look-contract",
  "scope-contract",
  "serde",
  "serde_json",

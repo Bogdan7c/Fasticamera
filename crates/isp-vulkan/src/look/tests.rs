@@ -6,7 +6,9 @@ use isp_model::look::lut::LookLut;
 use isp_model::look::model::LookModelSettings;
 use isp_model::tone::agx_settings::AgxSettings;
 use isp_model::tone::base::ToneBase;
-use look_contract::{BandAdjustment, BandAdjustments, LookKnob, LookSettings};
+use look_contract::{
+    BandAdjustment, BandAdjustments, ColorWheel, ColorWheels, LookKnob, LookSettings, WheelPush, WheelZone,
+};
 
 use super::*;
 use crate::quality::test_params::quality_params_with_look;
@@ -143,4 +145,139 @@ fn lut_in_params_does_not_change_the_colour_block() {
     let params = quality_params_with_look(BayerPattern::RGGB, ToneBase::Agx(AgxSettings::default()), controls);
     assert!(params.look.lut.is_some());
     assert!(pack_look_uniforms(&params).iter().all(|byte| *byte == 0));
+}
+
+/// Параметры качественного пути с настройками вида `settings` и моделью по умолчанию.
+fn params_for(settings: LookSettings) -> IspParams {
+    let controls = LookControls::new(settings, Arc::new(LookModelSettings::default()));
+    quality_params_with_look(BayerPattern::RGGB, ToneBase::Agx(AgxSettings::default()), controls)
+}
+
+fn wheel(hue_degrees: f32, strength: f32, ring: f32) -> ColorWheel {
+    ColorWheel {
+        push: WheelPush::from_hue_degrees(hue_degrees, strength).expect("толчок в круге"),
+        ring: knob(ring),
+    }
+}
+
+/// Строки 31–35 блока (колёса) как массив строк.
+fn wheel_rows(bytes: &[u8]) -> [[f32; 4]; 5] {
+    [31, 32, 33, 34, 35].map(|row| row_at(bytes, row))
+}
+
+#[test]
+fn block_has_a_row_for_every_wheel_and_the_shader_agrees_on_the_row_count() {
+    assert_eq!(LOOK_ROWS, 36);
+    let shader = include_str!("../../shaders/look_stage.glsl");
+    assert!(
+        shader.contains(&format!("#define LOOK_ROWS {LOOK_ROWS}\n")),
+        "число строк блока в GLSL разошлось с Rust"
+    );
+    assert!(
+        shader.contains("const uint LOOK_ROW_WHEELS = 31u;"),
+        "строка колёс в GLSL не 31"
+    );
+}
+
+#[test]
+fn wheels_pack_the_resolved_numbers_into_their_own_rows_in_lift_gamma_gain_offset_order() {
+    let wheels = ColorWheels::NEUTRAL
+        .with_wheel(WheelZone::Lift, wheel(30.0, 0.9, 0.5))
+        .with_wheel(WheelZone::Gamma, wheel(120.0, 0.4, -0.3))
+        .with_wheel(WheelZone::Gain, wheel(250.0, 0.7, 1.0))
+        .with_wheel(WheelZone::Offset, wheel(330.0, 0.2, -1.0));
+    let params = params_for(LookSettings {
+        wheels,
+        ..LookSettings::NEUTRAL
+    });
+    let resolved = params
+        .look
+        .color
+        .expect("колёса тронуты — цвет включён")
+        .wheels
+        .expect("колёса не нейтральны");
+    let bytes = pack_look_uniforms(&params);
+    assert_eq!(
+        row_at(&bytes, 0),
+        [1.0, 0.0, 0.0, 0.0],
+        "колёса одни: флаг цвета 1, полос нет"
+    );
+    assert_eq!(
+        row_at(&bytes, 31),
+        [
+            1.0,
+            resolved.pivot_lightness,
+            resolved.shadow_window_scale,
+            resolved.highlight_window_scale
+        ]
+    );
+    for (row, shift) in [
+        (32, resolved.lift),
+        (33, resolved.gamma),
+        (34, resolved.gain),
+        (35, resolved.offset),
+    ] {
+        assert_eq!(row_at(&bytes, row), [shift[0], shift[1], shift[2], 0.0], "строка {row}");
+    }
+    // Колёса разные: перепутанные строки не пройдут (и сами числа не нулевые).
+    let rows = wheel_rows(&bytes);
+    for first in 1..5 {
+        for second in first + 1..5 {
+            assert_ne!(rows[first], rows[second], "строки {first} и {second} совпали");
+        }
+        assert_ne!(rows[first][..3], [0.0; 3], "строка {first} пустая");
+    }
+    // Кольцо Lift +0,5 → ΔL положительна, Gamma −0,3 → отрицательна: знак попал в свой слот.
+    assert!(rows[1][0] > 0.0 && rows[2][0] < 0.0 && rows[3][0] > 0.0 && rows[4][0] < 0.0);
+}
+
+#[test]
+fn wheel_zero_pushes_leave_the_zone_row_zero_while_other_zones_keep_their_numbers() {
+    // Только Gain тронут: остальные три строки зон — нули, окно зон включено.
+    let params = params_for(LookSettings {
+        wheels: ColorWheels::NEUTRAL.with_wheel(WheelZone::Gain, wheel(90.0, 1.0, 0.0)),
+        ..LookSettings::NEUTRAL
+    });
+    let bytes = pack_look_uniforms(&params);
+    let rows = wheel_rows(&bytes);
+    assert_eq!(rows[0][0], 1.0);
+    assert_eq!(rows[1], [0.0; 4], "Lift не тронут");
+    assert_eq!(rows[2], [0.0; 4], "Gamma не тронута");
+    assert_ne!(rows[3], [0.0; 4], "Gain тронут");
+    assert_eq!(rows[4], [0.0; 4], "Offset не тронут");
+}
+
+#[test]
+fn neutral_wheels_pack_zero_rows_and_leave_the_colour_rows_exactly_as_without_wheels() {
+    let saturation_only = LookSettings {
+        saturation: knob(0.6),
+        ..LookSettings::NEUTRAL
+    };
+    let plain = pack_look_uniforms(&params_for(saturation_only.clone()));
+    assert!(
+        wheel_rows(&plain).iter().all(|row| *row == [0.0; 4]),
+        "нейтральные колёса — нули"
+    );
+    assert_eq!(row_at(&plain, 0)[0], 1.0, "цвет включён насыщенностью");
+
+    // Колёса тронули и вернули в нейтраль: блок бит в бит как у вида, где их не трогали.
+    let touched_then_reset = LookSettings {
+        wheels: ColorWheels::NEUTRAL
+            .with_wheel(WheelZone::Lift, wheel(30.0, 1.0, 1.0))
+            .with_wheel(WheelZone::Lift, ColorWheel::NEUTRAL),
+        ..saturation_only.clone()
+    };
+    assert_eq!(pack_look_uniforms(&params_for(touched_then_reset)), plain);
+
+    // Строки 0–30 с колёсами те же, что без них: колёса их не трогают.
+    let with_wheels = pack_look_uniforms(&params_for(LookSettings {
+        wheels: ColorWheels::NEUTRAL.with_wheel(WheelZone::Gain, wheel(200.0, 0.8, 0.4)),
+        ..saturation_only
+    }));
+    assert_eq!(
+        with_wheels[..31 * 16],
+        plain[..31 * 16],
+        "строки 0–30 изменились из-за колёс"
+    );
+    assert_ne!(with_wheels[31 * 16..], plain[31 * 16..]);
 }

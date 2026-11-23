@@ -27,8 +27,11 @@
 //! | 19–22 | сдвиг оттенка полосы, радианы |
 //! | 23–26 | множитель цветности полосы (1 — нейтраль) |
 //! | 27–30 | множитель светлоты полосы (1 — нейтраль) |
+//! | 31 | колёса по зонам: x — включены (1.0) или нейтральны (0.0), y — `L_g` (светлота серого экрана), z — `1/L_g`, w — `1/(1 − L_g)` |
+//! | 32–35 | сдвиги зон колёс `(ΔL, Δa, Δb, 0)`: Lift, Gamma, Gain, Offset (по порядку строк) |
 //!
-//! Нейтральный вид кладёт нули во все строки: шейдер их не читает.
+//! Нейтральный вид кладёт нули во все строки: шейдер их не читает. Нейтральные колёса (`wheels: None`) — нули в
+//! строках 31–35 при любом цвете; флаг цвета (строка 0) остаётся 1, если тронуто что-то ещё или сами колёса.
 //!
 //! # LUT
 //! Таблица лежит в отдельном storage-буфере ([`lut_buffer`]), потому что блок uniform для неё мал; в видоискателе
@@ -40,18 +43,22 @@ pub(crate) mod lut_buffer;
 pub use lut_buffer::{LookLutError, LookLutLimits};
 
 use isp_model::look::bands::MAX_LOOK_BANDS;
+use isp_model::look::wheels::LookWheels;
 use isp_model::params::IspParams;
 
 use crate::std140::Std140Writer;
 
 /// Число строк блока (зеркало `LOOK_ROWS` в `look_stage.glsl`).
-pub(crate) const LOOK_ROWS: usize = 31;
+pub(crate) const LOOK_ROWS: usize = 36;
 
 /// Размер блока в байтах.
 pub(crate) const LOOK_UNIFORM_BYTES: usize = LOOK_ROWS * 16;
 
 /// Сколько `vec4` занимают [`MAX_LOOK_BANDS`] чисел (по четыре в строке).
 const BAND_ROWS_PER_ARRAY: usize = MAX_LOOK_BANDS / 4;
+
+/// Строк колёс: одна с окном зон и по одной на Lift, Gamma, Gain, Offset.
+const WHEEL_ROWS: usize = 5;
 
 /// Собирает байты блока `LookParameters` по разрешённому цвету вида (раскладка — таблица модуля).
 pub(crate) fn pack_look_uniforms(params: &IspParams) -> [u8; LOOK_UNIFORM_BYTES] {
@@ -96,9 +103,32 @@ pub(crate) fn pack_look_uniforms(params: &IspParams) -> [u8; LOOK_UNIFORM_BYTES]
                     }
                 }
             }
+            write_wheels(&mut writer, color.wheels.as_ref());
         }
     }
     writer.finish::<LOOK_UNIFORM_BYTES>()
+}
+
+/// Пишет пять строк колёс (31–35); нейтральные колёса (`None`) — нули, шейдер их не читает.
+fn write_wheels(writer: &mut Std140Writer, wheels: Option<&LookWheels>) {
+    match wheels {
+        None => {
+            for _ in 0..WHEEL_ROWS {
+                writer.vec4([0.0; 4]);
+            }
+        }
+        Some(wheels) => {
+            writer.vec4([
+                1.0,
+                wheels.pivot_lightness,
+                wheels.shadow_window_scale,
+                wheels.highlight_window_scale,
+            ]);
+            for [lightness, chroma_a, chroma_b] in [wheels.lift, wheels.gamma, wheels.gain, wheels.offset] {
+                writer.vec4([lightness, chroma_a, chroma_b, 0.0]);
+            }
+        }
+    }
 }
 
 /// Пишет массив из [`MAX_LOOK_BANDS`] чисел четырьмя строками `vec4`.

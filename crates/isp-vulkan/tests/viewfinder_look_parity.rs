@@ -3,6 +3,7 @@
 //! Допуски — действующие: max |Δ| ≤ ½ LSB 10-битного выхода + 1e-5, ноль пикселей хуже 1 LSB (`assert_viewfinder_parity`).
 //!
 //! Что проверяется сверх паритета:
+//! * колёса цвета по зонам (Lift, Gamma, Gain, Offset): каждое отдельно, все вместе с цветом и полосой, края колец;
 //! * вид действительно меняет картинку (иначе совпадение с эталоном ничего бы не доказывало);
 //! * нейтральный вид — бит в бит основа (стадия пропущена флагом, а не «нулевой» формулой);
 //! * переключение «нейтрален ↔ не нейтрален» НЕ меняет вариант pipeline (первое касание ручки не создаёт pipeline);
@@ -27,8 +28,11 @@ use isp_model::tone::agx_settings::AgxSettings;
 use isp_model::tone::base::ToneBase;
 use isp_vulkan::look::LookLutLimits;
 use isp_vulkan::viewfinder::{IspStage, IspStageSet, ViewfinderError, ViewfinderIsp, ViewfinderStorageFormat};
-use look_contract::LookSettings;
-use look_support::{all_bands, band, bands, controls, identity_lut, knob, known_lut, saturation_vibrance, with_lut};
+use look_contract::{LookSettings, WheelZone};
+use look_support::{
+    all_bands, all_wheels, band, bands, controls, identity_lut, knob, known_lut, saturation_vibrance,
+    single_wheel_look, wheel, wheels_look, wheels_parity_cases, with_lut,
+};
 use viewfinder_support::{
     HEIGHT_OF_SYNTHETIC_SCENES as HEIGHT, ParamsSpec, RawFrame, RunRequest, WIDTH_OF_SYNTHETIC_SCENES as WIDTH,
     assert_no_validation_errors, assert_viewfinder_parity, gpu_context_or_skip, reference_upright_encoded,
@@ -250,8 +254,19 @@ fn neutral_look_is_bit_identical_to_the_base_and_switching_does_not_change_the_p
         let mut isp = ViewfinderIsp::new(&context, &config).unwrap();
         let gpu_source = viewfinder_support::GpuSource::new(&context, &raw, viewfinder_support::SourceLayout::Raw16);
         let source = gpu_source.source();
+        // нейтраль → цвет → цвет+колёса → цвет → только колёса → нейтраль: один pipeline, ни одна стадия не
+        // «залипает» в uniform между кадрами.
+        let colour_and_wheels = spec.build_with_look(controls(LookSettings {
+            wheels: all_wheels(),
+            saturation: knob(0.7),
+            vibrance: knob(0.5),
+            ..LookSettings::NEUTRAL
+        }));
+        let wheels_only = spec.build_with_look(wheels_look(all_wheels()));
+        assert!(wheels_only.look.color.is_some(), "колёса сами включают стадию цвета");
+        let sequence = [&neutral, &touched, &colour_and_wheels, &touched, &wheels_only, &neutral];
         let mut runs = Vec::new();
-        for (frame, params) in [&neutral, &touched, &neutral].into_iter().enumerate() {
+        for (frame, params) in sequence.into_iter().enumerate() {
             viewfinder_support::record_and_submit(
                 &context,
                 &mut isp,
@@ -263,8 +278,20 @@ fn neutral_look_is_bit_identical_to_the_base_and_switching_does_not_change_the_p
             runs.push(viewfinder_support::readback(&mut isp, frame % 2));
         }
         assert_ne!(runs[0].pixels, runs[1].pixels, "{base_name}: вид не изменил картинку");
+        assert_ne!(
+            runs[1].pixels, runs[2].pixels,
+            "{base_name}: колёса не изменили картинку"
+        );
+        assert_ne!(
+            runs[0].pixels, runs[4].pixels,
+            "{base_name}: колёса без цвета не изменили картинку"
+        );
         assert_eq!(
-            runs[0].pixels, runs[2].pixels,
+            runs[1].pixels, runs[3].pixels,
+            "{base_name}: после колёс вид без колёс не вернулся бит-в-бит (строки колёс залипли)"
+        );
+        assert_eq!(
+            runs[0].pixels, runs[5].pixels,
             "{base_name}: возврат к нейтрали не бит-в-бит"
         );
         assert_eq!(
@@ -274,7 +301,7 @@ fn neutral_look_is_bit_identical_to_the_base_and_switching_does_not_change_the_p
         assert_eq!(
             isp.cached_pipeline_variants(),
             1,
-            "{base_name}: смена «нейтраль ↔ вид» создала новый вариант pipeline"
+            "{base_name}: смена «нейтраль ↔ вид ↔ колёса» создала новый вариант pipeline"
         );
     }
     assert_no_validation_errors(&context);
@@ -452,5 +479,76 @@ fn table_larger_than_the_buffer_is_an_explicit_error_and_the_isp_stays_usable() 
         result.math_excess <= viewfinder_support::MATH_EXCESS_TOLERANCE,
         "{result:?}"
     );
+    assert_no_validation_errors(&context);
+}
+
+#[test]
+fn colour_wheels_match_reference_on_every_zone_and_edge() {
+    let Some(context) = gpu_context_or_skip() else { return };
+    for (name, look) in wheels_parity_cases() {
+        assert_look_changes_the_picture(&name, &look);
+        let worst = assert_look_parity(&context, &name, &look);
+        eprintln!("{name}: худший max |Δ| fp16 = {worst:.3e}");
+    }
+    assert_no_validation_errors(&context);
+}
+
+/// Сколько зона вне колеса может сдвинуться «просто от прохода через OKLab» (перевод туда и обратно не бит-в-бит,
+/// но это доли шага fp16, а не оттенок): на два порядка меньше самого малого видимого сдвига зоны (0,02).
+const UNTOUCHED_ZONE_TOLERANCE: f32 = 2.0e-4;
+
+/// Серая шкала: слева тёмное, справа светлое; колёса красят зоны, а не весь кадр.
+#[test]
+fn lift_changes_the_dark_part_only_and_gain_the_bright_part_on_the_gpu() {
+    let Some(context) = gpu_context_or_skip() else { return };
+    for (base_name, base) in bases() {
+        let spec = spec(base, DisplayGamut::DisplayP3);
+        let gray_ramp = &synthetic_scenes(&spec)[0].1;
+        let config = test_config(ViewfinderStorageFormat::HalfFloatOnly);
+        let run = |look: LookControls| {
+            let params = spec.build_with_look(look);
+            run_viewfinder(
+                &context,
+                &config,
+                &RunRequest::whole_frame(gray_ramp, &params, spec.display()),
+            )
+        };
+        let neutral = run(LookControls::default());
+        // Выход закодирован (sRGB), и серый экрана (0,2 линейно) лежит уже на третьем столбце шкалы: тёмная часть —
+        // два первых столбца, светлая — последняя четверть кадра (выше серого с запасом).
+        let dark_columns = 0..2;
+        let bright_columns = neutral.width * 3 / 4..neutral.width;
+        let biggest_change = |other: &viewfinder_support::ViewfinderRun, columns: std::ops::Range<u32>| {
+            let mut biggest = 0.0_f32;
+            for y in 0..neutral.height {
+                for x in columns.clone() {
+                    let (left, right) = (neutral.pixel(x, y), other.pixel(x, y));
+                    for channel in 0..3 {
+                        biggest = biggest.max((left[channel] - right[channel]).abs());
+                    }
+                }
+            }
+            biggest
+        };
+        let lifted = run(single_wheel_look(WheelZone::Lift, wheel(0.0, 0.0, 1.0)));
+        assert!(
+            biggest_change(&lifted, dark_columns.clone()) > 0.02,
+            "{base_name}: Lift не осветлил тени"
+        );
+        assert!(
+            biggest_change(&lifted, bright_columns.clone()) < UNTOUCHED_ZONE_TOLERANCE,
+            "{base_name}: Lift тронул света (вес теней выше серого — ровно 0)"
+        );
+        // Кольцо −1: светлее белого у прежней основы кадр обрезается, и осветление света было бы не видно.
+        let gained = run(single_wheel_look(WheelZone::Gain, wheel(0.0, 0.0, -1.0)));
+        assert!(
+            biggest_change(&gained, bright_columns) > 0.02,
+            "{base_name}: Gain не затемнил света"
+        );
+        assert!(
+            biggest_change(&gained, dark_columns) < UNTOUCHED_ZONE_TOLERANCE,
+            "{base_name}: Gain тронул тени (вес светов ниже серого — ровно 0)"
+        );
+    }
     assert_no_validation_errors(&context);
 }

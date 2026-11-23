@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use look_contract::{LookKnob, LookSettings};
+use look_contract::{ColorWheel, ColorWheels, LookKnob, LookSettings, WheelPush, WheelZone};
 use look_presets::{LibrarySnapshot, PresetStoreConfig, SaveOutcome, SaveRequestOutcome};
 
 use crate::look_service::{LookHandle, LookPersistence, LookService, LookStartup};
@@ -65,6 +65,21 @@ pub(crate) fn knob(value: f32) -> LookKnob {
 pub(crate) fn contrast_look(value: f32) -> LookSettings {
     LookSettings {
         contrast: knob(value),
+        ..LookSettings::NEUTRAL
+    }
+}
+
+/// Вид только с колёсами: Lift к синему с тёмным кольцом, Gain к красному со светлым кольцом.
+/// Ручки (контраст, теплота и прочие) нейтральны: отличие вида от нейтрали — только колёса.
+pub(crate) fn wheels_look() -> LookSettings {
+    let wheel = |hue_degrees: f32, ring: f32| ColorWheel {
+        push: WheelPush::from_hue_degrees(hue_degrees, 0.8).expect("точка в круге"),
+        ring: knob(ring),
+    };
+    LookSettings {
+        wheels: ColorWheels::NEUTRAL
+            .with_wheel(WheelZone::Lift, wheel(265.0, -0.3))
+            .with_wheel(WheelZone::Gain, wheel(30.0, 0.5)),
         ..LookSettings::NEUTRAL
     }
 }

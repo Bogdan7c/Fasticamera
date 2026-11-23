@@ -27,7 +27,7 @@ use camera_screen::{Effect, ScreenAction, ScreenConfig, ScreenState, reduce};
 use fasticamera::look_effects::LookEffects;
 use fasticamera::look_service::LookHandle;
 use fasticamera::viewfinder_control::{ControlDelivery, RenderAdjustment, RenderControl};
-use look_contract::{LookIntent, LookKnob, LookSettings};
+use look_contract::{ColorWheel, ColorWheels, LookIntent, LookKnob, LookSettings, WheelPush, WheelZone};
 use look_presets::PresetStoreConfig;
 use render_loop::backend::DisplayBackend;
 use render_loop::config::{DisplayColorConfig, RenderLoopConfig};
@@ -58,8 +58,34 @@ fn warm_look() -> LookSettings {
     }
 }
 
+/// Вид только с колёсами: Offset (весь кадр) сильно к синему и светлее, ручки нейтральны.
+fn wheels_look() -> LookSettings {
+    LookSettings {
+        wheels: ColorWheels::NEUTRAL.with_wheel(
+            WheelZone::Offset,
+            ColorWheel {
+                push: WheelPush::from_hue_degrees(265.0, 1.0).expect("точка в круге"),
+                ring: LookKnob::new(0.5).expect("ручка в диапазоне"),
+            },
+        ),
+        ..LookSettings::NEUTRAL
+    }
+}
+
 #[test]
 fn a_screen_set_look_intent_changes_the_picture_the_viewfinder_shows_to_the_look_the_library_holds() {
+    assert_screen_look_reaches_the_shown_picture(warm_look());
+}
+
+#[test]
+fn a_screen_look_with_color_wheels_reaches_the_shown_picture_through_the_whole_chain() {
+    let look = wheels_look();
+    assert!(!look.wheels.is_neutral(), "вид теста действительно с колёсами");
+    assert_screen_look_reaches_the_shown_picture(look);
+}
+
+/// Экранное намерение `SetLook(look)` доходит до пикселей видоискателя и совпадает с эталоном этого вида.
+fn assert_screen_look_reaches_the_shown_picture(look: LookSettings) {
     let config = RenderLoopConfig {
         display_color: DisplayColorConfig::SrgbOnly,
         ..RenderLoopConfig::default()
@@ -80,7 +106,7 @@ fn a_screen_set_look_intent_changes_the_picture_the_viewfinder_shows_to_the_look
     let state = ScreenState::new(&screen_config).expect("состояние экрана");
     let transition = reduce(
         &state,
-        ScreenAction::Look(LookIntent::SetLook(warm_look())),
+        ScreenAction::Look(LookIntent::SetLook(look.clone())),
         &screen_config,
     );
     for effect in transition.effects {
@@ -90,7 +116,7 @@ fn a_screen_set_look_intent_changes_the_picture_the_viewfinder_shows_to_the_look
         }
     }
     let held = handle.active_settings();
-    assert_eq!(held, warm_look(), "библиотека держит значения намерения");
+    assert_eq!(held, look, "библиотека держит значения намерения");
     assert_ne!(held, before, "вид действительно сменился");
 
     // Кадр ДО доставки команды: рендер ещё рисует стартовый (нейтральный у бэкенда) вид.

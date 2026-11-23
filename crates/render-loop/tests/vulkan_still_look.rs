@@ -21,7 +21,7 @@ mod vulkan_support;
 use std::sync::Arc;
 
 use continuity_rig::{SIZE_A, finish};
-use look_contract::{LookKnob, LookSettings};
+use look_contract::{ColorWheel, ColorWheels, LookKnob, LookSettings, WheelPush, WheelZone};
 use render_loop::backend::DisplayBackend;
 use render_loop::config::StillDevelopConfig;
 use render_loop::viewfinder::{ViewfinderCommand, ViewfinderCommandOutcome};
@@ -152,6 +152,66 @@ fn a_still_is_developed_with_the_look_at_the_press_even_if_the_viewfinder_look_c
     assert!(
         worst_difference(&picture_two, &reference_rgba(&params_a, cell_two, SIZE_A)) > 8,
         "второй снимок не взял вид A видоискателя"
+    );
+
+    finish(&mut bench.rig, &[bench.epoch]);
+}
+
+/// Вид только с колёсами: тени и середина толкаются к синему, света и весь кадр — к красному, кольцо Gain светлит.
+fn wheels_look() -> LookSettings {
+    let push = |hue_degrees: f32, ring: f32| ColorWheel {
+        push: WheelPush::from_hue_degrees(hue_degrees, 1.0).expect("точка в круге"),
+        ring: knob(ring),
+    };
+    LookSettings {
+        wheels: ColorWheels::NEUTRAL
+            .with_wheel(WheelZone::Lift, push(265.0, 0.0))
+            .with_wheel(WheelZone::Gamma, push(265.0, 0.0))
+            .with_wheel(WheelZone::Gain, push(30.0, 1.0))
+            .with_wheel(WheelZone::Offset, push(30.0, 0.0)),
+        ..LookSettings::NEUTRAL
+    }
+}
+
+#[test]
+fn a_still_carries_the_color_wheels_of_the_press_not_those_of_the_viewfinder() {
+    let Some(mut bench) = setup(StillDevelopConfig::default(), 12) else {
+        return;
+    };
+    bench.frames(10);
+    assert!(bench.inject_timings() >= 6);
+    let wheels = wheels_look();
+    assert!(!wheels.wheels.is_neutral(), "вид теста действительно с колёсами");
+
+    // Нажатие с колёсами, сразу после него видоискатель получает нейтральный вид (без колёс).
+    let (picture, cell) = take_still(&mut bench, 1, 3, &wheels, &LookSettings::NEUTRAL);
+    let (params_wheels, _) = expected_params_with_look(&bench.passport, &wheels);
+    let (params_neutral, _) = expected_params_with_look(&bench.passport, &LookSettings::NEUTRAL);
+    let reference_wheels = reference_rgba(&params_wheels, cell, SIZE_A);
+    let reference_neutral = reference_rgba(&params_neutral, cell, SIZE_A);
+    assert!(
+        worst_difference(&reference_wheels, &reference_neutral) > 8,
+        "эталон с колёсами почти не отличается от нейтрального: тест ничего не докажет"
+    );
+    assert!(
+        worst_difference(&picture, &reference_wheels) <= 1,
+        "снимок совпадает с эталоном колёс момента нажатия: {} LSB",
+        worst_difference(&picture, &reference_wheels)
+    );
+    assert!(
+        worst_difference(&picture, &reference_neutral) > 8,
+        "снимок не взял нейтральный вид видоискателя"
+    );
+
+    // Обратное: нажатие без колёс, видоискатель после него получает колёса, — снимок остаётся нейтральным.
+    let (picture_two, cell_two) = take_still(&mut bench, 2, 5, &LookSettings::NEUTRAL, &wheels);
+    assert!(
+        worst_difference(&picture_two, &reference_rgba(&params_neutral, cell_two, SIZE_A)) <= 1,
+        "снимок без колёс момента нажатия остаётся нейтральным"
+    );
+    assert!(
+        worst_difference(&picture_two, &reference_rgba(&params_wheels, cell_two, SIZE_A)) > 8,
+        "снимок не взял колёса видоискателя"
     );
 
     finish(&mut bench.rig, &[bench.epoch]);

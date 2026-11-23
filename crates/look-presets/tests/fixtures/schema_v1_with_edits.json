@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "next_id": 2,
+  "active": {
+    "user": 1
+  },
+  "edits": {
+    "contrast": -0.5,
+    "midtones": 0.0,
+    "shadows": 0.0,
+    "highlights": 0.0,
+    "saturation": 0.0,
+    "vibrance": 0.0,
+    "warmth": 0.0,
+    "tint": 0.0,
+    "bands": []
+  },
+  "user_presets": [
+    {
+      "id": 1,
+      "name": "Evening",
+      "settings": {
+        "contrast": 0.3,
+        "midtones": 0.0,
+        "shadows": 0.0,
+        "highlights": 0.0,
+        "saturation": 0.0,
+        "vibrance": 0.0,
+        "warmth": -0.25,
+        "tint": 0.0,
+        "bands": [
+          {
+            "band": "sky",
+            "hue": 0.4,
+            "saturation": 0.0,
+            "luminance": 0.0
+          }
+        ]
+      }
+    }
+  ]
+}

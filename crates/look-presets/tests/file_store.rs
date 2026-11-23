@@ -93,7 +93,7 @@ fn saved_file_has_documented_shape() {
     opened.library.save_as_new_preset(name("Mine")).unwrap();
     opened.store.save(&opened.library.snapshot()).unwrap();
     let json: Value = serde_json::from_slice(&fs::read(presets_file(dir.path())).unwrap()).unwrap();
-    assert_eq!(json["schema_version"], 1);
+    assert_eq!(json["schema_version"], 2);
     assert_eq!(json["next_id"], 2);
     assert_eq!(json["active"], json!({"user": 1}));
     assert_eq!(json["edits"], Value::Null);
@@ -162,9 +162,9 @@ fn missing_or_non_numeric_schema_version_goes_to_quarantine() {
 
 #[test]
 fn newer_schema_goes_to_quarantine_and_bytes_are_kept() {
-    let content = br#"{"schema_version":2,"future":"field"}"#;
+    let content = br#"{"schema_version":3,"future":"field"}"#;
     assert_quarantined("newer", content, |r| {
-        *r == CorruptionReason::NewerSchema { found: 2, supported: 1 }
+        *r == CorruptionReason::NewerSchema { found: 3, supported: 2 }
     });
 }
 
@@ -172,30 +172,32 @@ fn newer_schema_goes_to_quarantine_and_bytes_are_kept() {
 fn wrong_shape_and_bad_values_go_to_quarantine() {
     let base = |extra: &str| {
         format!(
-            r#"{{"schema_version":1,"next_id":1,"active":{{"builtin":"honest"}},"edits":null,"user_presets":[]{extra}}}"#
+            r#"{{"schema_version":2,"next_id":1,"active":{{"builtin":"honest"}},"edits":null,"user_presets":[]{extra}}}"#
         )
     };
     assert_quarantined("extra", base(r#","surprise":1"#).as_bytes(), |r| {
         matches!(r, CorruptionReason::InvalidShape(_))
     });
-    assert_quarantined("noactive", br#"{"schema_version":1,"next_id":1}"#, |r| {
+    assert_quarantined("noactive", br#"{"schema_version":2,"next_id":1}"#, |r| {
         matches!(r, CorruptionReason::InvalidShape(_))
     });
-    let out_of_range = br#"{"schema_version":1,"next_id":2,"active":{"user":1},"edits":null,
+    let out_of_range = br#"{"schema_version":2,"next_id":2,"active":{"user":1},"edits":null,
         "user_presets":[{"id":1,"name":"X","settings":{"contrast":9,"midtones":0,"shadows":0,
-        "highlights":0,"saturation":0,"vibrance":0,"warmth":0,"tint":0}}]}"#;
+        "highlights":0,"saturation":0,"vibrance":0,"warmth":0,"tint":0,
+        "wheels":{"lift":{"push":[0,0],"ring":0},"gamma":{"push":[0,0],"ring":0},"gain":{"push":[0,0],"ring":0},"offset":{"push":[0,0],"ring":0}}}}]}"#;
     assert_quarantined("range", out_of_range, |r| {
         matches!(r, CorruptionReason::InvalidShape(_))
     });
-    let bad_name = br#"{"schema_version":1,"next_id":2,"active":{"user":1},"edits":null,
+    let bad_name = br#"{"schema_version":2,"next_id":2,"active":{"user":1},"edits":null,
         "user_presets":[{"id":1,"name":"  ","settings":{"contrast":0,"midtones":0,"shadows":0,
-        "highlights":0,"saturation":0,"vibrance":0,"warmth":0,"tint":0}}]}"#;
+        "highlights":0,"saturation":0,"vibrance":0,"warmth":0,"tint":0,
+        "wheels":{"lift":{"push":[0,0],"ring":0},"gamma":{"push":[0,0],"ring":0},"gain":{"push":[0,0],"ring":0},"offset":{"push":[0,0],"ring":0}}}}]}"#;
     assert_quarantined("name", bad_name, |r| matches!(r, CorruptionReason::InvalidShape(_)));
 }
 
 #[test]
 fn invariant_violation_in_valid_json_goes_to_quarantine() {
-    let missing_active = br#"{"schema_version":1,"next_id":1,"active":{"user":5},"edits":null,"user_presets":[]}"#;
+    let missing_active = br#"{"schema_version":2,"next_id":1,"active":{"user":5},"edits":null,"user_presets":[]}"#;
     assert_quarantined("ghost", missing_active, |r| {
         *r == CorruptionReason::InvalidContent(SnapshotError::ActivePresetMissing(PresetId::User(UserPresetId(5))))
     });
@@ -230,7 +232,7 @@ fn stale_temp_file_from_interrupted_write_does_not_touch_main_file() {
 
     // Имитация обрыва: временный файл с обрезанным мусором лежит рядом.
     let temp = dir.path().join("look-presets.json.tmp");
-    fs::write(&temp, b"{\"schema_version\":1,\"next_id\"").unwrap();
+    fs::write(&temp, b"{\"schema_version\":2,\"next_id\"").unwrap();
 
     let reopened = open(dir.path());
     assert_eq!(reopened.outcome, LoadOutcome::Loaded { migrated_from: None });
@@ -331,10 +333,7 @@ fn test_migration_table_upgrades_v0_file_end_to_end() {
         br#"{"schema_version":0,"next_id":1,"preset":{"builtin":"honest"},"edits":null,"user_presets":[]}"#,
     )
     .unwrap();
-    let table = [Migration {
-        from_version: 0,
-        step: rename_preset_field,
-    }];
+    let table = v0_table();
     let opened = PresetFileStore::open(dir.path(), &PresetStoreConfig::default(), &table).unwrap();
     assert_eq!(opened.outcome, LoadOutcome::Loaded { migrated_from: Some(0) });
     assert_eq!(
@@ -429,11 +428,15 @@ fn normal_save_is_durable() {
 const V0_FILE: &[u8] =
     br#"{"schema_version":0,"next_id":1,"preset":{"builtin":"honest"},"edits":null,"user_presets":[]}"#;
 
-fn v0_table() -> [Migration; 1] {
-    [Migration {
-        from_version: 0,
-        step: rename_preset_field,
-    }]
+/// Тестовый шаг v0 → v1, дальше настоящий продуктовый v1 → v2: цепочка доводит файл до текущей схемы.
+fn v0_table() -> [Migration; 2] {
+    [
+        Migration {
+            from_version: 0,
+            step: rename_preset_field,
+        },
+        PRODUCT_MIGRATIONS[0],
+    ]
 }
 
 fn backup_files(dir: &Path) -> Vec<PathBuf> {

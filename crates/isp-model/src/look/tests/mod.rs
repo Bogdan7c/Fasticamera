@@ -5,6 +5,7 @@ mod color_tests;
 mod end_to_end_tests;
 mod model_tests;
 mod tone_tests;
+mod wheels_tests;
 mod white_tests;
 
 use look_contract::{BandAdjustment, BandAdjustments, HueBandId, LookKnob, LookSettings};

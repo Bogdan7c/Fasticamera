@@ -1,11 +1,14 @@
-//! Стадия «цвет вида»: насыщенность, сочность, полосы оттенка — в OKLab/OKLCh рабочего пространства `W`.
+//! Стадия «цвет вида»: колёса цвета по зонам, насыщенность, сочность, полосы оттенка — в OKLab/OKLCh рабочего
+//! пространства `W`.
 //!
 //! Работает над светом экрана (display-linear) ПОСЛЕ основы тона, до LUT; от модели основы не зависит
 //! (кроме выбора `W`: матрицы OKLab приходят готовыми, [`OklabWorkspace`]).
 //!
 //! # Формулы пикселя
 //! ```text
-//! (L, a, b) = OKLab(rgb);   c² = a² + b²
+//! (L, a, b) = OKLab(rgb)
+//! (L, a, b) = колёса(L, a, b)            — только если колёса тронуты (super::wheels; иначе шаг пропущен)
+//! c² = a² + b²
 //! M_sat   = 1 + k_sat·range_sat                          — множитель цветности (насыщенность)
 //! M_vib   = 1 + k_vib·range_vib · 1/(1 + c²/c_ref²) · (1 − p·skin)   — сочность
 //!   skin  = smoothstep((cosΔ − cos w)/(1 − cos w)),  cosΔ = (a·cos h₀ + b·sin h₀)/√(c² + ε²)
@@ -20,6 +23,10 @@
 //! исключение из решения 47). Серый: `c → 0` обнуляет `g`, поэтому полосы его не трогают, а множители цветности
 //! действуют на остаточные ~10⁻⁴ и ничего не красят.
 //!
+//! Колёса стоят первыми: сначала коррекция по зонам яркости, потом по цветам (насыщенность и полосы видят уже
+//! сдвинутый колёсами цвет). Без колёс операции стадии ровно те же, что до 14i: картинка с одной насыщенностью
+//! не меняется ни на бит.
+//!
 //! Нейтральные ручки цвета пропускают стадию целиком флагом ([`LookColorParams::resolve`] даёт `None`): OKLab туда и
 //! обратно не бит-в-бит.
 //!
@@ -30,6 +37,7 @@ use look_contract::LookSettings;
 
 use super::bands::{LookBands, resolve_bands};
 use super::model::LookModelSettings;
+use super::wheels::LookWheels;
 use crate::color::chromaticity::Primaries;
 use crate::color::matrix::SingularMatrix;
 use crate::color::oklab_working::OklabWorkspace;
@@ -58,6 +66,8 @@ pub struct LookColorParams {
     pub neutral_chroma_floor: f32,
     /// Полосы оттенка; `None` — стадия полос пропущена.
     pub bands: Option<LookBands>,
+    /// Колёса цвета по зонам; `None` — шаг колёс пропущен.
+    pub wheels: Option<LookWheels>,
 }
 
 /// Результат разрешения стадии: параметры (или пропуск) и неизвестные модели полосы.
@@ -78,9 +88,10 @@ impl LookColorParams {
         working: &Primaries,
     ) -> Result<ResolvedColor, SingularMatrix> {
         let resolved_bands = resolve_bands(model, &settings.bands);
+        let wheels = LookWheels::resolve(&settings.wheels, &model.wheels);
         let saturation_neutral = settings.saturation.is_neutral();
         let vibrance_neutral = settings.vibrance.is_neutral();
-        if saturation_neutral && vibrance_neutral && resolved_bands.bands.is_none() {
+        if saturation_neutral && vibrance_neutral && resolved_bands.bands.is_none() && wheels.is_none() {
             return Ok(ResolvedColor {
                 params: None,
                 unknown_band_ids: resolved_bands.unknown_band_ids,
@@ -97,6 +108,7 @@ impl LookColorParams {
             skin_protection: model.skin.protection,
             neutral_chroma_floor: model.neutral_chroma_floor,
             bands: resolved_bands.bands,
+            wheels,
         };
         Ok(ResolvedColor {
             params: Some(params),
@@ -114,7 +126,11 @@ impl LookColorParams {
 
     /// Применяет стадию к свету `W` одного пикселя (формулы модуля).
     pub fn apply(&self, working_rgb: [f32; 3]) -> [f32; 3] {
-        let [lightness, a, b] = self.oklab.to_lab(working_rgb);
+        let mut lab = self.oklab.to_lab(working_rgb);
+        if let Some(wheels) = &self.wheels {
+            lab = wheels.apply(lab);
+        }
+        let [lightness, a, b] = lab;
         let chroma_squared = a * a + b * b;
 
         let reference_squared = self.vibrance_chroma_reference * self.vibrance_chroma_reference;

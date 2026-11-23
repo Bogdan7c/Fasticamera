@@ -20,7 +20,9 @@ use isp_model::sensor::SensorDescription;
 use isp_model::look::LookControls;
 use isp_model::look::lut::LookLut;
 use isp_model::look::model::LookModelSettings;
-use look_contract::{BandAdjustment, BandAdjustments, LookKnob, LookSettings};
+use look_contract::{
+    BandAdjustment, BandAdjustments, ColorWheel, ColorWheels, LookKnob, LookSettings, WheelPush, WheelZone,
+};
 
 /// Ручка со значением `value` ∈ [−1, 1].
 pub fn knob(value: f32) -> LookKnob {
@@ -196,4 +198,71 @@ pub fn gray_ramp_mosaic(sensor: &SensorDescription, neutral: CameraNeutral, widt
         })
         .collect();
     RawMosaic::new(PixelSize::new(width, height), pattern, samples).unwrap()
+}
+
+/// Колесо: толчок цвета в сторону `hue_degrees` силой `strength` (0…1) и кольцо яркости `ring` (−1…1).
+pub fn wheel(hue_degrees: f32, strength: f32, ring: f32) -> ColorWheel {
+    ColorWheel {
+        push: WheelPush::from_hue_degrees(hue_degrees, strength).unwrap(),
+        ring: knob(ring),
+    }
+}
+
+/// Вид только с колёсами `wheels`.
+pub fn wheels_look(wheels: ColorWheels) -> LookControls {
+    controls(LookSettings {
+        wheels,
+        ..LookSettings::NEUTRAL
+    })
+}
+
+/// Вид, в котором тронуто одно колесо зоны `zone`.
+pub fn single_wheel_look(zone: WheelZone, wheel: ColorWheel) -> LookControls {
+    wheels_look(ColorWheels::NEUTRAL.with_wheel(zone, wheel))
+}
+
+/// Все четыре колеса сразу, каждое со своим цветом и кольцом.
+pub fn all_wheels() -> ColorWheels {
+    ColorWheels::NEUTRAL
+        .with_wheel(WheelZone::Lift, wheel(30.0, 0.9, 0.6))
+        .with_wheel(WheelZone::Gamma, wheel(150.0, 0.7, -0.4))
+        .with_wheel(WheelZone::Gain, wheel(270.0, 0.8, 0.5))
+        .with_wheel(WheelZone::Offset, wheel(330.0, 0.5, -0.3))
+}
+
+/// Виды паритета колёс (общие для видоискателя, качественного пути и снимка): каждое колесо отдельно с сильным
+/// толчком и кольцом, все четыре вместе с насыщенностью и полосой, кольца на краях ±1 (без толчка и с ним).
+pub fn wheels_parity_cases() -> Vec<(String, LookControls)> {
+    let mut cases = Vec::new();
+    for (zone, name, hue) in [
+        (WheelZone::Lift, "Lift", 30.0),
+        (WheelZone::Gamma, "Gamma", 150.0),
+        (WheelZone::Gain, "Gain", 270.0),
+        (WheelZone::Offset, "Offset", 330.0),
+    ] {
+        cases.push((
+            format!("колесо {name}: толчок+кольцо"),
+            single_wheel_look(zone, wheel(hue, 1.0, 1.0)),
+        ));
+        cases.push((
+            format!("колесо {name}: кольцо +1"),
+            single_wheel_look(zone, wheel(0.0, 0.0, 1.0)),
+        ));
+        cases.push((
+            format!("колесо {name}: кольцо −1 и толчок"),
+            single_wheel_look(zone, wheel(hue + 180.0, 1.0, -1.0)),
+        ));
+    }
+    cases.push(("четыре колеса".to_owned(), wheels_look(all_wheels())));
+    cases.push((
+        "четыре колеса + насыщенность + полоса".to_owned(),
+        controls(LookSettings {
+            wheels: all_wheels(),
+            saturation: knob(0.5),
+            vibrance: knob(0.3),
+            bands: BandAdjustments::new(vec![band(1, 0.6, -0.4, 0.3)]).unwrap(),
+            ..LookSettings::NEUTRAL
+        }),
+    ));
+    cases
 }
