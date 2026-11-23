@@ -24,9 +24,12 @@ use gpu_vulkan::raster::ColorAttachment;
 use gpu_vulkan::swapchain::{DisplayColorSpace, DisplayTargetInfo};
 use ui_core::input::{PointScale, PointScaleRule};
 use ui_draw::color::{DisplayColor, DisplayPrimaries};
+use ui_draw::draw_list::LiveImage;
 use ui_draw::frame_source::{BackdropContinuity, UiFrameRequest};
 use ui_draw::geometry::{PxPoint, PxRect, PxSize};
-use ui_render_vulkan::{BackdropInput, BackdropPlacement, UiFrame, UiRenderError, UiRenderer, UiRendererConfig};
+use ui_render_vulkan::{
+    BackdropInput, BackdropPlacement, LiveImageInput, LiveImages, UiFrame, UiRenderError, UiRenderer, UiRendererConfig,
+};
 
 use super::super::ui_state::UiOverlayFrame;
 use super::super::viewfinder_stats::FRAME_POINT_UI_DONE;
@@ -233,11 +236,24 @@ impl CameraPipelines {
             },
         };
 
+        // Живые картинки кадра: картинка цветового прибора (14h), если она записана хотя бы раз. Это верно и для кадра
+        // перекомпоновки: картинка последнего нового кадра остаётся валидной и в раскладке «чтение фрагментом».
+        let scope_entries;
+        let live_images = match self.scopes.picture_for_ui() {
+            Some(view) => {
+                scope_entries = [(LiveImage::ColorScope, LiveImageInput { view })];
+                // Слот держит набор приборов, пока GPU не закончит этот кадр.
+                self.scopes.note_picture_handed_to_ui(frame.ring_slot);
+                LiveImages::new(&scope_entries)
+            }
+            None => LiveImages::none(),
+        };
         let ui_frame = UiFrame {
             draw_list: &draw_list,
             logical_size: logical_px,
             surface_transform: frame.transform,
             backdrop,
+            live_images,
         };
         let target = ColorAttachment::from_display_target(frame.pattern_target, frame.format);
         let recorded = match self.ui.renderer.as_mut() {

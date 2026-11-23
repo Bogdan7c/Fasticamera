@@ -20,6 +20,7 @@ pub mod control;
 pub mod diagnostics;
 pub mod framing;
 pub mod headroom;
+pub mod scope_diagnostics;
 pub mod white_balance;
 
 pub use auto_exposure::{AutoExposureCounters, AutoExposureDiagnostics, AutoExposureLinks};
@@ -39,4 +40,5 @@ pub use framing::{
     EffectivePlacement, FramingCrop, FramingDestination, NormalizedScreenRect, ScreenRectError, ViewfinderFraming,
 };
 pub use headroom::{HeadroomBench, HeadroomBenchDiagnostics, HeadroomPassTime};
+pub use scope_diagnostics::{ScopeCounters, ScopeDiagnostics, ScopeEvents, ScopeResidency, ScopeResources};
 pub use white_balance::{ColdStartState, EstimateReading, WhiteBalanceDiagnostics, WhiteDelta, WhiteReading};

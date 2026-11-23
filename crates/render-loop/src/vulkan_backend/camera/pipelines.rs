@@ -42,11 +42,12 @@ use isp_vulkan::viewfinder::{
 
 use super::placement::{PlaneSize, logical_target_size, resolve_destination};
 use super::viewfinder_stats::{FRAME_POINT_COMPOSE_DONE, FRAME_POINT_ISP_DONE, FRAME_POINT_START, FRAME_POINTS};
-use crate::config::UiOverlayConfig;
+use crate::config::{ScopesConfig, UiOverlayConfig};
 use crate::viewfinder::EffectivePlacement;
 
 mod frame_target;
 mod held;
+mod scope_pass;
 #[cfg(test)]
 mod screen_tests;
 mod ui_pass;
@@ -54,6 +55,7 @@ mod ui_pass;
 pub use frame_target::FrameTarget;
 pub use held::ShowFrameAs;
 pub(in crate::vulkan_backend::camera) use held::mirror_of;
+use scope_pass::ScopePass;
 use ui_pass::UiPass;
 
 const LOG_TARGET: &str = "fasticamera::render::camera";
@@ -91,6 +93,8 @@ pub enum IspPresentation {
 /// Новый кадр для ISP.
 #[derive(Debug, Clone, Copy)]
 pub struct NewIspFrame<'a> {
+    /// Номер сабмита этого кадра (для подложки изображения, из которой приборы берут барьер чтения).
+    pub submission: gpu_vulkan::backdrop::SubmissionSerial,
     /// Кадр камеры (ещё в собственности камеры: приём записывается здесь).
     pub source: &'a MosaicSource,
     /// Параметры ISP.
@@ -159,6 +163,8 @@ pub struct CameraPipelines {
     frame_timestamps: GpuTimestamps,
     /// Рендер UI поверх видоискателя: создаётся лениво при первом кадре с установленным источником.
     ui: UiPass,
+    /// Цветовые приборы (14h): объекты GPU создаются по запросу экрана МЕЖДУ кадрами и уходят вместе с ним.
+    scopes: ScopePass,
     /// Удержанный кадр и зеркало живого изображения (сессия 13).
     view: held::ViewState,
     context: GpuContext,
@@ -172,6 +178,7 @@ impl CameraPipelines {
         target: &DisplayTargetInfo,
         isp_config: &ViewfinderIspConfig,
         ui_config: &UiOverlayConfig,
+        scopes_config: &ScopesConfig,
     ) -> Result<Self, CameraPipelinesError> {
         let (target_format, frames_in_flight) = (target.format, target.frames_in_flight);
         let isp_config = ViewfinderIspConfig {
@@ -184,6 +191,7 @@ impl CameraPipelines {
             compositor: ImageCompositor::new(context, target_format, frames_in_flight)?,
             frame_timestamps: GpuTimestamps::new(context, frames_in_flight, &FRAME_POINTS)?,
             ui: UiPass::new(context, target, ui_config),
+            scopes: ScopePass::new(context, frames_in_flight, scopes_config),
             view: held::ViewState::default(),
             context: context.clone(),
         })
@@ -196,6 +204,7 @@ impl CameraPipelines {
         self.preview = RawMosaicPreview::new(&self.context, target.format, target.frames_in_flight)?;
         self.compositor = ImageCompositor::new(&self.context, target.format, target.frames_in_flight)?;
         self.ui.reset_for_format(target);
+        self.scopes.reset_for_format();
         Ok(())
     }
 
@@ -207,6 +216,8 @@ impl CameraPipelines {
     /// Итоги слота: вызывать для КАЖДОГО слота, выданного кольцом (его fence пройден). Заодно ISP
     /// уничтожает выведенные из обращения объекты. Никогда не ждёт GPU.
     pub fn collect_slot(&mut self, slot: usize) -> SlotCollection {
+        // Слот собран: приборы освобождают его у своих наборов и уничтожают выведенные, которые больше никто не читает.
+        self.scopes.collect_slot(slot);
         SlotCollection {
             isp: self.isp.collect(slot),
             frame: self.frame_timestamps.try_collect(slot),
@@ -221,6 +232,7 @@ impl CameraPipelines {
     /// записанную, но не выполненную работу (загрузки картинок UI, 14g), её забывают. Сам слот освобождается
     /// обычным `collect_slot`, когда кольцо выдаст его снова.
     pub fn note_frame_not_submitted(&mut self, slot: usize) -> Result<(), ui_render_vulkan::UiRenderError> {
+        self.scopes.frame_not_submitted(slot);
         self.ui.frame_not_submitted(slot)
     }
 
@@ -273,6 +285,9 @@ impl CameraPipelines {
         if isp.is_ok() {
             // Картинка ISP теперь содержит кадр с этим зеркалом (перекомпоновка зеркалит её так же).
             self.view.live_mirror = input.mirror;
+            // Приборы читают изображение, которое сейчас ляжет на экран (решение 190: тот же командный буфер).
+            // Их время входит в отрезок «компоновка» диагностики; своё время GPU у приборов есть в `scopes.gpu_time`.
+            self.record_scopes_for_new_frame(frame, input);
         }
         let screen = match (&isp, input.show) {
             (Ok(()), ShowFrameAs::Live) => self.compose_or_black(frame, placement),

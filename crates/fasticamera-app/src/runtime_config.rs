@@ -295,6 +295,9 @@ mod photo_tests;
 #[cfg(test)]
 #[path = "runtime_config_look_tests.rs"]
 mod look_tests;
+#[cfg(test)]
+#[path = "runtime_config_scopes_tests.rs"]
+mod scopes_tests;
 
 #[cfg(test)]
 mod tests {

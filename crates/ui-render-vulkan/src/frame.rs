@@ -6,6 +6,8 @@ use ui_draw::color::DisplayColor;
 use ui_draw::draw_list::DrawList;
 use ui_draw::geometry::{PxRect, PxSize};
 
+use crate::live_images::LiveImages;
+
 /// Где картинка фона лежит на ЛОГИЧЕСКОМ экране — так, как её разместил композитор (letterbox, масштаб).
 /// Вне прямоугольника фон чёрный: стекло видит то же, что видит глаз под ним.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -42,6 +44,8 @@ pub struct UiFrame<'a> {
     pub surface_transform: SurfaceTransform,
     /// Фон под стеклом.
     pub backdrop: BackdropInput<'a>,
+    /// Живые картинки кадра с GPU (приборы цвета); [`LiveImages::none`], если их нет.
+    pub live_images: LiveImages<'a>,
 }
 
 /// Что случилось с пирамидой размытия в этом кадре.
@@ -70,6 +74,10 @@ pub struct UiFrameReport {
     pub glass_groups: u32,
     /// Элементов-картинок в кадре.
     pub image_instances: u32,
+    /// Из них нарисовано живых картинок (источник `ImageSource::Live`, найден в таблице кадра).
+    pub live_images_drawn: u32,
+    /// Элементов с живой картинкой, которой на кадре НЕТ: не нарисованы и в `image_instances` не входят.
+    pub live_images_missing: u32,
     /// Картинок, загруженных в видеопамять в ЭТОМ кадре (копия записана в его команды).
     pub picture_uploads: u32,
     /// Картинок кадра, найденных в кэше (загрузки не было).

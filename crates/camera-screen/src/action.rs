@@ -11,6 +11,7 @@ use ui_core::geometry::Point;
 use camera_contract::control::ExposureBias;
 use camera_contract::zoom::ZoomRatio;
 use look_contract::LookIntent;
+use scope_contract::ScopeIntent;
 
 use crate::facts::CameraFacts;
 use crate::modes::CaptureMode;
@@ -124,4 +125,8 @@ pub enum ScreenAction {
     /// эффектов ([`crate::Effect::Look`]), который владеет библиотекой пресетов. Состояние экрана не меняется:
     /// истина о виде живёт в библиотеке, а не в экране (виджеты ручек — сессия 14b).
     Look(LookIntent),
+    /// Намерение по цветовому прибору (решение 183): «показать такой-то» или «скрыть». Экран ничего не считает и
+    /// не хранит: состояние прибора живёт у рендера, раздел калибровки с раскладкой придёт в 14b. Уходит наружу
+    /// одним эффектом ([`crate::Effect::Scopes`]).
+    Scopes(ScopeIntent),
 }

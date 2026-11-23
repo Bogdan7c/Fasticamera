@@ -139,7 +139,7 @@ impl ThumbnailWidget {
         let blend = ctx.state.thumbnail_blend(ctx.now);
         let image = |source: &UiPicture, opacity: f32| -> Result<DrawItem, WidgetError> {
             Ok(DrawItem::Image(ImageItem {
-                picture: source.clone(),
+                source: source.clone().into(),
                 transform,
                 size_px: PxSize::new(diameter, diameter),
                 fit: ImageFit::Cover,

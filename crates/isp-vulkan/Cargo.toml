@@ -16,17 +16,26 @@ gpu-vulkan.workspace = true
 isp-model.workspace = true
 # Словарь снимка: хранилище пикселей `PixelStorage`, `RawSamples16`, `Rgba8Image` (сессия 14, пакет P3).
 still-contract.workspace = true
+# Цветовые приборы (14h): словарь (размер картинки) и CPU-эталон (правила, сетки, показ), с которым GPU сверяется.
+scope-contract.workspace = true
+scope-model.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# Свой же crate с фичей test-support: чтение счётчиков и картинки приборов в тестах (как у gpu-vulkan).
+isp-vulkan = { path = ".", features = ["test-support"] }
 camera-contract = { workspace = true, features = ["fixtures"] }
 # Синтетические RAW-источники, readback и одноразовые сабмиты для ПК-тестов паритета.
 gpu-vulkan = { workspace = true, features = ["test-support"] }
 serde_json.workspace = true
 # Значения ручек вида для тестов цвета вида и таблицы (словарь без логики; в нормальные зависимости не входит).
 look-contract.workspace = true
+
+[features]
+# Блокирующее чтение счётчиков и картинки приборов (`scopes::test_support`) для ПК-тестов. В боевые сборки НЕ включается.
+test-support = ["gpu-vulkan/test-support"]
 
 [lints]
 workspace = true

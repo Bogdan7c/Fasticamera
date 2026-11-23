@@ -30,7 +30,9 @@ use ui_draw::glass::GlassStyle;
 use ui_draw::light::LightDirection;
 use ui_draw::shape::ShapeGeometry;
 use ui_draw::transform::Affine2;
-use ui_render_vulkan::{BackdropInput, UiFrame, UiFrameReport, UiRenderError, UiRenderer, UiRendererConfig};
+use ui_render_vulkan::{
+    BackdropInput, LiveImages, UiFrame, UiFrameReport, UiRenderError, UiRenderer, UiRendererConfig,
+};
 
 const SKIP_ENV: &str = "FASTICAMERA_SKIP_GPU_TESTS";
 
@@ -123,11 +125,22 @@ impl Rig {
     }
 
     pub fn frame<'a>(&self, draw_list: &'a DrawList, backdrop: BackdropInput<'a>) -> UiFrame<'a> {
+        self.frame_with_live(draw_list, backdrop, LiveImages::none())
+    }
+
+    /// Кадр с таблицей живых картинок (приборы цвета 14h).
+    pub fn frame_with_live<'a>(
+        &self,
+        draw_list: &'a DrawList,
+        backdrop: BackdropInput<'a>,
+        live_images: LiveImages<'a>,
+    ) -> UiFrame<'a> {
         UiFrame {
             draw_list,
             logical_size: self.logical,
             surface_transform: self.transform,
             backdrop,
+            live_images,
         }
     }
 
@@ -138,9 +151,20 @@ impl Rig {
         backdrop: BackdropInput<'_>,
         clear: [f32; 4],
     ) -> (Result<UiFrameReport, UiRenderError>, Vec<[f32; 4]>) {
+        self.render_with_live_images(draw_list, backdrop, clear, LiveImages::none())
+    }
+
+    /// То же с таблицей живых картинок кадра.
+    pub fn render_with_live_images(
+        &mut self,
+        draw_list: &DrawList,
+        backdrop: BackdropInput<'_>,
+        clear: [f32; 4],
+        live_images: LiveImages<'_>,
+    ) -> (Result<UiFrameReport, UiRenderError>, Vec<[f32; 4]>) {
         let slot = self.next_slot;
         self.next_slot = (self.next_slot + 1) % self.renderer.config().frame_slots;
-        let frame = self.frame(draw_list, backdrop);
+        let frame = self.frame_with_live(draw_list, backdrop, live_images);
         let mut outcome = None;
         let renderer = &mut self.renderer;
         let target = &self.target;

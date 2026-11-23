@@ -81,6 +81,7 @@ pub mod result_line;
 pub mod runtime;
 pub mod runtime_config;
 pub mod scenario;
+pub mod scope_effects;
 pub mod screen_scenario_config;
 pub mod still_camera_catalog;
 pub mod still_capture_service;

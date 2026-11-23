@@ -19,6 +19,7 @@ pub mod config;
 pub mod counters;
 pub mod error;
 pub mod frame;
+mod live_images;
 mod pack;
 mod picture_cache;
 mod pipelines;
@@ -28,6 +29,8 @@ mod renderer;
 mod slots;
 #[cfg(feature = "test-support")]
 pub mod testing;
+#[cfg(feature = "test-support")]
+pub mod testing_live;
 
 pub use config::{
     BackdropPyramidConfig, ConfigError, MAX_IMAGE_BINDINGS, MAX_PYRAMID_LEVELS, PictureCacheConfig, PyramidFormat,
@@ -36,6 +39,7 @@ pub use config::{
 pub use counters::UiRenderCounters;
 pub use error::{LimitKind, UiRenderError};
 pub use frame::{BackdropInput, BackdropPlacement, FrameMarker, PyramidOutcome, UiFrame, UiFrameReport};
+pub use live_images::{LiveImageInput, LiveImages};
 pub use renderer::UiRenderer;
 
 /// Вшитые SPIR-V шейдеры (генерирует `build.rs`).
@@ -46,7 +50,7 @@ pub(crate) mod shaders {
         not(feature = "test-support"),
         expect(
             dead_code,
-            reason = "тестовый шейдер синтетического фона используется только с test-support"
+            reason = "тестовые шейдеры синтетических подложек и живых картинок используются только с test-support"
         )
     )]
     pub(crate) mod blobs {

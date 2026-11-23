@@ -22,13 +22,19 @@ pub(super) fn create_camera_painter(
     info: &gpu_vulkan::swapchain::DisplayTargetInfo,
     camera: CameraAttach<'_>,
 ) -> Result<Painter, AttachError> {
-    let pipelines =
-        CameraPipelines::new(context, info, &config.viewfinder.isp, &config.ui_overlay).map_err(|error| {
-            AttachError::SwapchainFailed(BackendError {
-                operation: "create_camera_pipelines".to_owned(),
-                reason: error.to_string(),
-            })
-        })?;
+    let pipelines = CameraPipelines::new(
+        context,
+        info,
+        &config.viewfinder.isp,
+        &config.ui_overlay,
+        &config.viewfinder.scopes,
+    )
+    .map_err(|error| {
+        AttachError::SwapchainFailed(BackendError {
+            operation: "create_camera_pipelines".to_owned(),
+            reason: error.to_string(),
+        })
+    })?;
     let stats = camera
         .stats
         .take()

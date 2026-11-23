@@ -138,9 +138,12 @@ fn an_oversized_picture_fails_the_ui_frame_honestly_and_allocates_nothing_while_
     );
     let error = ui.last_error.clone().expect("причина сохранена");
     assert!(error.contains("1024"), "в причине указан предел: {error}");
+    // Сравниваются только виды, из которых состоит картинка: пул fence-ов показа растёт лениво по
+    // таймингу движка показа (`PresentFencePool::begin_present`) и к картинке не относится — полный
+    // снимок давал плавающее падение (≈ 1 из 40 прогонов и до 14h).
     assert_eq!(
-        harness.live_objects(),
-        before,
+        picture_object_growth(&harness.live_objects(), &before),
+        [0; 4],
         "память под отвергнутую картинку не выделялась"
     );
     assert!(

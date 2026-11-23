@@ -1,0 +1,20 @@
+[package]
+name = "scope-model"
+description = "Эталон цветовых приборов Fasticamera на CPU: правила попадания (waveform, RGB parade, vectorscope), счётчики, правило показа (решения 183, 188–190)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+isp-model.workspace = true
+scope-contract.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

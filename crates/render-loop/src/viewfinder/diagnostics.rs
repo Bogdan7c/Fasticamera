@@ -14,6 +14,7 @@ use super::continuity::ContinuityDiagnostics;
 use super::control::ViewfinderPainter;
 use super::framing::EffectivePlacement;
 use super::headroom::HeadroomBenchDiagnostics;
+use super::scope_diagnostics::ScopeDiagnostics;
 use super::white_balance::WhiteBalanceDiagnostics;
 use crate::thread::DurationSummary;
 use crate::ui_overlay::UiOverlayDiagnostics;
@@ -153,4 +154,6 @@ pub struct ViewfinderDiagnostics {
     pub ui_overlay: UiOverlayDiagnostics,
     /// Непрерывность картинки при смене объектива (сессия 13): удержания, метки кадров, кадрирование кадров.
     pub continuity: ContinuityDiagnostics,
+    /// Цветовые приборы (14h): запрос, объекты GPU, счётчики, время GPU, отзывы запроса.
+    pub scopes: ScopeDiagnostics,
 }

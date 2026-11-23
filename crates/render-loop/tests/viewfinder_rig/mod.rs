@@ -427,13 +427,23 @@ pub struct ViewfinderBench {
 impl ViewfinderBench {
     /// Бэкенд с ручной точкой белого (эталон — чистая функция паспорта). `None` — GPU осознанно пропущен.
     pub fn start(render_config: &RenderLoopConfig, scene: CellValues, frames: usize) -> Option<Self> {
+        Self::start_with_scenes(render_config, &vec![scene; frames])
+    }
+
+    /// То же, но кадр номер `i` показывает сюжет `scenes[i]`: сквозные тесты приборов отличают «прибор измерил
+    /// именно этот кадр» от «прибор измерил какой-то из кадров».
+    pub fn start_with_scenes(render_config: &RenderLoopConfig, scenes: &[CellValues]) -> Option<Self> {
         // `LatestWins`: одиночный кадр показывается сразу; кольцо снимков выключено (тесты про видоискатель).
         let stream = RawFrameStream::new(RawFrameStreamConfig {
             viewfinder_pacing: raw_frame_stream::ViewfinderPacing::LatestWins,
             snapshot_ring_max_frames: 0,
             ..RawFrameStreamConfig::default()
         });
-        let cells: HashMap<i64, CellValues> = (0..frames).map(|index| (frame_timestamp(index), scene)).collect();
+        let cells: HashMap<i64, CellValues> = scenes
+            .iter()
+            .enumerate()
+            .map(|(index, scene)| (frame_timestamp(index), *scene))
+            .collect();
         let directives = DirectiveSlot::new();
         directives.publish(manual_white_directive());
         let mut backend = headless_camera_backend_with_directives_or_skip(
@@ -479,6 +489,16 @@ impl ViewfinderBench {
         );
         self.shown_frames += 1;
         self.frame_index = present_until_processed(&mut self.backend, self.frame_index, self.shown_frames);
+    }
+
+    /// Рисует ровно один кадр показа без нового кадра камеры (перекомпоновка): тесты, которым важно состояние
+    /// между соседними кадрами (выведенные объекты ждут освобождения слотов).
+    pub fn present_one_recompose_frame(&mut self) {
+        assert_eq!(
+            self.backend.render_and_present(timing(self.frame_index)),
+            PresentOutcome::Presented
+        );
+        self.frame_index += 1;
     }
 
     /// Останавливает поток, отсоединяет окно и проверяет, что утечек лизингов и ошибок validation нет.

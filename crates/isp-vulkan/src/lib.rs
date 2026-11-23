@@ -27,6 +27,7 @@ pub mod lens_shading_map;
 pub mod look;
 pub mod photo;
 pub mod quality;
+pub mod scopes;
 pub mod shaders;
 pub(crate) mod std140;
 pub(crate) mod tone_base;

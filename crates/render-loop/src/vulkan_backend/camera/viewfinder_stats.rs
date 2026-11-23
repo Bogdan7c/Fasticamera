@@ -18,8 +18,8 @@ use super::settings::ViewfinderSettings;
 use crate::thread::RollingDurations;
 use crate::ui_overlay::UiOverlayDiagnostics;
 use crate::viewfinder::{
-    ContinuityStats, ViewfinderColorSpace, ViewfinderCounters, ViewfinderDiagnostics, ViewfinderExtent,
-    ViewfinderGpuTimes, ViewfinderStorage, WhiteBalanceDiagnostics,
+    ContinuityStats, ScopeCounters, ScopeDiagnostics, ScopeEvents, ViewfinderColorSpace, ViewfinderCounters,
+    ViewfinderDiagnostics, ViewfinderExtent, ViewfinderGpuTimes, ViewfinderStorage, WhiteBalanceDiagnostics,
 };
 
 /// Точка «начало команд кадра видоискателя».
@@ -57,6 +57,10 @@ pub struct ViewfinderStats {
     headroom: HeadroomBenchStats,
     /// Непрерывность картинки при смене объектива (сессия 13).
     continuity: ContinuityStats,
+    /// Цветовые приборы (14h): счётчики и окно времени GPU. Копятся здесь, а не в цепочке показа: цепочка (и её
+    /// объекты GPU) пересоздаётся, а диагностика обязана это пережить.
+    scope_counters: ScopeCounters,
+    scope_gpu: RollingDurations,
 }
 
 impl ViewfinderStats {
@@ -73,6 +77,16 @@ impl ViewfinderStats {
             output_extent: None,
             headroom: HeadroomBenchStats::new(window_frames),
             continuity: ContinuityStats::default(),
+            scope_counters: ScopeCounters::default(),
+            scope_gpu: RollingDurations::new(window_frames),
+        }
+    }
+
+    /// Учитывает приращения приборов, которые отдала цепочка показа (запись кадра или сбор слота).
+    pub fn note_scope_events(&mut self, events: &ScopeEvents) {
+        self.scope_counters.absorb(&events.counters);
+        for nanos in &events.gpu_times_ns {
+            self.scope_gpu.push(Duration::from_nanos(*nanos));
         }
     }
 
@@ -190,6 +204,13 @@ impl ViewfinderStats {
             ui_overlay: UiOverlayDiagnostics::default(),
             // Идёт ли удержание, знает только сессия показа: она дописывает поле `holding` сама.
             continuity: self.continuity.snapshot(false),
+            // Объекты GPU приборов знает только цепочка показа, число отзывов — бэкенд: они дописывают свои поля.
+            scopes: ScopeDiagnostics {
+                requested: settings.scopes,
+                counters: self.scope_counters.clone(),
+                gpu_time: self.scope_gpu.summary(),
+                ..ScopeDiagnostics::default()
+            },
         }
     }
 }

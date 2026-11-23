@@ -1,0 +1,24 @@
+#version 450
+// Тестовая живая картинка (только feature test-support): заполняет RGBA16F узором с ПРЯМОЙ альфой.
+// Формулы дублируются в `src/testing_live.rs::pattern_texel` (эталон CPU): менять только вместе.
+//   R = x / ширина, G = y / высота, B = шахматка (0.75 / 0.25), A = 1 − x / (2 · ширина).
+// На размерах-степенях двойки (16×8) все значения точно представимы в fp16.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D target_image;
+
+layout(push_constant) uniform FillParams {
+    uint width;
+    uint height;
+} fill;
+
+void main() {
+    uvec2 position = gl_GlobalInvocationID.xy;
+    if (position.x >= fill.width || position.y >= fill.height) {
+        return;
+    }
+    float red = float(position.x) / float(fill.width);
+    float green = float(position.y) / float(fill.height);
+    float blue = ((position.x + position.y) % 2u == 0u) ? 0.75 : 0.25;
+    float alpha = 1.0 - float(position.x) / (2.0 * float(fill.width));
+    imageStore(target_image, ivec2(position), vec4(red, green, blue, alpha));
+}

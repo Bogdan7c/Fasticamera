@@ -5,7 +5,9 @@ use gpu_vulkan::color_target::{ColorTargetPreviousUse, ContentOnPrepare};
 use gpu_vulkan::kit_test_support::{read_color_target_rgba, run_one_shot_blocking};
 use gpu_vulkan::raster::{AttachmentLoad, RasterPass};
 use ui_draw::color::{DisplayPrimaries, Opacity};
-use ui_draw::draw_list::{DrawItem, DrawList, ImageClip, ImageFit, ImageItem, shade_image_pixel};
+use ui_draw::draw_list::{
+    DrawItem, DrawList, ImageClip, ImageFit, ImageItem, LiveImageTexels, shade_image_pixel_with_live,
+};
 use ui_draw::geometry::{PxPoint, PxSize};
 use ui_draw::picture::{PictureEncoding, PictureSize, UiPicture};
 use ui_draw::transform::Affine2;
@@ -39,7 +41,7 @@ pub fn flat_picture(width: u32, height: u32, rgba: [u8; 4]) -> UiPicture {
 /// Элемент-картинка в рамке `frame`, с заданным преобразованием и прозрачностью.
 pub fn image_item(picture: &UiPicture, frame: (f32, f32), transform: Affine2, opacity: f32) -> ImageItem {
     ImageItem {
-        picture: picture.clone(),
+        source: picture.clone().into(),
         transform,
         size_px: PxSize::new(frame.0, frame.1),
         fit: ImageFit::Cover,
@@ -56,6 +58,18 @@ pub fn render_with_images(
     clear: [f32; 4],
     primaries: DisplayPrimaries,
 ) -> Vec<[f32; 4]> {
+    render_with_images_and_live(list, width, height, clear, primaries, None)
+}
+
+/// То же с пикселями живой картинки (`None` — живой картинки на кадре нет: такие элементы ничего не рисуют).
+pub fn render_with_images_and_live(
+    list: &DrawList,
+    width: u32,
+    height: u32,
+    clear: [f32; 4],
+    primaries: DisplayPrimaries,
+    live: Option<&LiveImageTexels<'_>>,
+) -> Vec<[f32; 4]> {
     let mut pixels = Vec::with_capacity((width * height) as usize);
     for y in 0..height {
         for x in 0..width {
@@ -65,7 +79,7 @@ pub fn render_with_images(
                 color = match item {
                     DrawItem::Shape(shape) => over(color, shape_pixel(shape, point)),
                     DrawItem::Image(image) => {
-                        let shaded = shade_image_pixel(image, point, primaries, 1.0).unwrap();
+                        let shaded = shade_image_pixel_with_live(image, point, primaries, 1.0, live).unwrap();
                         over(color, [shaded.r, shaded.g, shaded.b, shaded.a])
                     }
                     other => panic!("CPU-рендер не умеет {other:?}"),

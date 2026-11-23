@@ -240,6 +240,8 @@ impl UiRenderer {
                 self.counters.picture_evictions += u64::from(evicted);
                 self.counters.frames_recorded += 1;
                 self.counters.images_drawn += u64::from(report.image_instances);
+                self.counters.live_images_drawn += u64::from(report.live_images_drawn);
+                self.counters.live_images_missing += u64::from(report.live_images_missing);
                 self.counters.picture_uploads += u64::from(report.picture_uploads);
                 self.counters.picture_cache_hits += u64::from(report.picture_cache_hits);
                 self.counters.draw_calls += u64::from(report.draw_calls);
@@ -357,9 +359,9 @@ impl UiRenderer {
         mark: &mut dyn FnMut(FrameMarker, vk::CommandBuffer),
     ) -> Result<UiFrameReport, UiRenderError> {
         let logical = self.check_frame(slot, &target, frame)?;
-        let plan = build_plan(frame.draw_list, &self.config.limits)?;
+        let plan = build_plan(frame.draw_list, &self.config.limits, frame.live_images)?;
         // Память под новые картинки и их staging — до первой команды (ошибка здесь не оставляет следов в буфере).
-        let (staged_uploads, picture_cache_hits) = self.pictures.stage_missing(&self.context, &plan.pictures)?;
+        let (staged_uploads, picture_cache_hits) = self.pictures.stage_missing(&self.context, plan.pictures())?;
         let quarter_turns = frame
             .surface_transform
             .quarter_turns()
@@ -397,6 +399,8 @@ impl UiRenderer {
             glyph_instances: plan.glyph_count,
             glass_groups: plan.group_count,
             image_instances: plan.image_count,
+            live_images_drawn: plan.live_images_drawn,
+            live_images_missing: plan.live_images_missing,
             picture_uploads,
             picture_cache_hits,
         })
@@ -494,7 +498,7 @@ impl UiRenderer {
                 binding: 0,
                 resource: self.slot_buffers[slot].images.binding(),
             }];
-            image_writes.extend(sampler_writes(&self.pictures.bindings_for(&plan.pictures)));
+            image_writes.extend(sampler_writes(&self.pictures.bindings_for(&plan.sampler_slots)));
             self.pipelines.image.bind(slot, &image_writes)?;
         }
         if !plan.has_glass() {

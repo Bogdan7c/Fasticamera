@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use isp_vulkan::viewfinder::IspStageSet;
 use look_contract::LookSettings;
+use scope_contract::{ScopeIntent, ScopeRequest};
 
+use super::ui_state::UiSourcePresence;
 use crate::config::{ViewfinderConfig, ViewfinderConfigError, ViewfinderPlacement};
 use crate::viewfinder::{
     EffectivePlacement, FramingCrop, FramingDestination, HeadroomBench, ViewfinderCommand, ViewfinderCommandOutcome,
@@ -33,6 +35,25 @@ pub struct ViewfinderSettings {
     /// Вид картинки (решение 178). Стартовое значение задаёт сборка приложения (`with_initial_look`), чтобы оно
     /// действовало с первого кадра; дальше меняется командой `SetLook`.
     pub look: Arc<LookSettings>,
+    /// Какой цветовой прибор просит экран (14h). `None` — приборы закрыты: проход не записывается, объекты GPU
+    /// освобождены. Единственный владелец запроса; цепочка показа получает его копией вместе с остальными настройками.
+    /// Запрос действует, пока установлен источник UI: уход источника отзывает его ([`Self::withdraw_scopes`]).
+    pub scopes: Option<ScopeRequest>,
+    /// Наибольшая сторона картинки прибора, которую принимает команда `Scopes` (из конфига, пикселей).
+    pub scope_picture_side_limit_px: u32,
+}
+
+/// Причина отказа `Scopes(Show)` без источника UI.
+pub const SCOPE_SHOW_WITHOUT_UI_SOURCE: &str =
+    "приборы нужны только для UI: источник кадра UI не установлен (сначала Install, потом Show)";
+
+/// Итог отзыва запроса приборов самим рендером ([`ViewfinderSettings::withdraw_scopes`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScopeWithdrawal {
+    /// Запрос был и снят: цепочке показа нужны свежие настройки.
+    Withdrawn,
+    /// Приборы и так были закрыты: ничего не изменилось.
+    NothingToWithdraw,
 }
 
 impl ViewfinderSettings {
@@ -46,7 +67,57 @@ impl ViewfinderSettings {
             destination: FramingDestination::Configured,
             headroom: HeadroomBench::Disabled,
             look: Arc::new(LookSettings::NEUTRAL),
+            scopes: None,
+            scope_picture_side_limit_px: config.scopes.max_picture_side_px,
         })
+    }
+
+    /// Отзывает запрос приборов, не дожидаясь команды экрана: источник UI, которому показывали картинку прибора,
+    /// ушёл (снят, заменён новым, сломался), а новый экран начинает без приборов. Владелец запроса — эти настройки,
+    /// поэтому снимает его он, а не соседний модуль через поле.
+    pub fn withdraw_scopes(&mut self) -> ScopeWithdrawal {
+        match self.scopes.take() {
+            Some(_) => ScopeWithdrawal::Withdrawn,
+            None => ScopeWithdrawal::NothingToWithdraw,
+        }
+    }
+
+    /// Почему намерение о приборах неисполнимо при этих настройках (`None` — исполнимо). Закрыть приборы можно всегда.
+    pub fn scope_rejection_reason(&self, intent: &ScopeIntent) -> Option<String> {
+        let ScopeIntent::Show(request) = intent else {
+            return None;
+        };
+        let (width, height) = (request.image_size.width(), request.image_size.height());
+        let limit = self.scope_picture_side_limit_px;
+        (width > limit || height > limit)
+            .then(|| format!("картинка прибора {width}×{height}: сторона больше предела {limit} (viewfinder.scopes)"))
+    }
+
+    /// Какой прибор реально считать на кадре: запрос экрана, но только пока приборы кому-то показывать — рисовальщик
+    /// ISP (отладочная мозаика приборов не знает) И установленный источник UI. Это ЕДИНСТВЕННОЕ место решения
+    /// «считать ли приборы»: тот же источник UI решает, рисуется ли картинка прибора, поэтому счёт и показ не
+    /// расходятся (инвариант «закрытые приборы ничего не стоят», решение 190).
+    pub fn effective_scope_demand(&self, ui_source: UiSourcePresence) -> Option<ScopeRequest> {
+        match (self.painter, ui_source) {
+            (ViewfinderPainter::Isp, UiSourcePresence::Installed) => self.scopes,
+            _ => None,
+        }
+    }
+
+    /// Как [`Self::apply`], но с учётом источника UI: `Scopes(Show)` без источника — `Rejected` (считать приборы
+    /// некому показывать). Экран обязан слать `Show` ПОСЛЕ установки своего источника (см. `ViewfinderCommand::Scopes`).
+    /// `Hide` принимается всегда.
+    pub fn apply_with_ui_source(
+        &mut self,
+        command: ViewfinderCommand,
+        ui_source: UiSourcePresence,
+    ) -> ViewfinderCommandOutcome {
+        if matches!(command, ViewfinderCommand::Scopes(ScopeIntent::Show(_))) && ui_source == UiSourcePresence::Absent {
+            return ViewfinderCommandOutcome::Rejected {
+                reason: SCOPE_SHOW_WITHOUT_UI_SOURCE.to_owned(),
+            };
+        }
+        self.apply(command)
     }
 
     /// Действующее место видоискателя: прямоугольник из команды или правило конфига. Единственный
@@ -58,6 +129,11 @@ impl ViewfinderSettings {
     /// Применяет команду. Отвергнутая команда настроек не меняет.
     pub fn apply(&mut self, command: ViewfinderCommand) -> ViewfinderCommandOutcome {
         if let Some(reason) = command.rejection_reason() {
+            return ViewfinderCommandOutcome::Rejected { reason };
+        }
+        if let ViewfinderCommand::Scopes(intent) = &command
+            && let Some(reason) = self.scope_rejection_reason(intent)
+        {
             return ViewfinderCommandOutcome::Rejected { reason };
         }
         let before = self.clone();
@@ -73,6 +149,8 @@ impl ViewfinderSettings {
             }
             ViewfinderCommand::SetHeadroomBench(mode) => self.headroom = mode,
             ViewfinderCommand::SetLook(look) => self.look = look,
+            ViewfinderCommand::Scopes(ScopeIntent::Show(request)) => self.scopes = Some(request),
+            ViewfinderCommand::Scopes(ScopeIntent::Hide) => self.scopes = None,
         }
         if *self == before {
             ViewfinderCommandOutcome::AlreadyInEffect
@@ -324,6 +402,109 @@ mod tests {
             settings.effective_placement(),
             EffectivePlacement::ScreenRect(upper_half()),
             "SetCrop меняет только кадрирование"
+        );
+    }
+
+    fn scope_request(kind: scope_contract::ScopeKind, width: u32, height: u32) -> ScopeRequest {
+        ScopeRequest {
+            kind,
+            vectorscope_axes: scope_contract::VectorscopeAxes::YCbCrBt709,
+            image_size: scope_contract::ScopeImageSize::try_new(width, height).expect("размер"),
+        }
+    }
+
+    #[test]
+    fn scopes_show_replaces_the_request_hide_clears_it_and_repeats_are_already_in_effect() {
+        let mut settings = defaults();
+        assert_eq!(settings.scopes, None, "приборы по умолчанию закрыты");
+        assert_eq!(
+            settings.apply(ViewfinderCommand::Scopes(ScopeIntent::Hide)),
+            ViewfinderCommandOutcome::AlreadyInEffect,
+            "скрыть закрытое — ничего"
+        );
+        let waveform = scope_request(scope_contract::ScopeKind::Waveform, 400, 300);
+        let parade = scope_request(scope_contract::ScopeKind::RgbParade, 400, 300);
+        assert_eq!(
+            settings.apply(ViewfinderCommand::Scopes(ScopeIntent::Show(waveform))),
+            ViewfinderCommandOutcome::Applied
+        );
+        assert_eq!(settings.scopes, Some(waveform));
+        assert_eq!(
+            settings.apply(ViewfinderCommand::Scopes(ScopeIntent::Show(waveform))),
+            ViewfinderCommandOutcome::AlreadyInEffect
+        );
+        assert_eq!(
+            settings.apply(ViewfinderCommand::Scopes(ScopeIntent::Show(parade))),
+            ViewfinderCommandOutcome::Applied
+        );
+        assert_eq!(settings.scopes, Some(parade), "Show заменяет запрос целиком");
+        assert_eq!(
+            settings.apply(ViewfinderCommand::Scopes(ScopeIntent::Hide)),
+            ViewfinderCommandOutcome::Applied
+        );
+        assert_eq!(settings.scopes, None);
+    }
+
+    #[test]
+    fn oversized_scope_picture_is_rejected_and_changes_nothing() {
+        let mut settings = defaults();
+        let limit = settings.scope_picture_side_limit_px;
+        let shown = scope_request(scope_contract::ScopeKind::Waveform, 400, 300);
+        settings.apply(ViewfinderCommand::Scopes(ScopeIntent::Show(shown)));
+        let before = settings.clone();
+        for oversized in [
+            scope_request(scope_contract::ScopeKind::Waveform, limit + 1, 10),
+            scope_request(scope_contract::ScopeKind::Waveform, 10, limit + 1),
+        ] {
+            let outcome = settings.apply(ViewfinderCommand::Scopes(ScopeIntent::Show(oversized)));
+            assert!(
+                matches!(&outcome, ViewfinderCommandOutcome::Rejected { reason } if reason.contains(&limit.to_string())),
+                "{outcome:?}"
+            );
+            assert_eq!(settings, before, "отвергнутая команда прежний запрос не трогает");
+        }
+        let at_limit = scope_request(scope_contract::ScopeKind::Waveform, limit, limit);
+        assert_eq!(
+            settings.apply(ViewfinderCommand::Scopes(ScopeIntent::Show(at_limit))),
+            ViewfinderCommandOutcome::Applied,
+            "ровно предел допустим"
+        );
+    }
+
+    #[test]
+    fn scope_commands_touch_nothing_but_the_scope_request() {
+        let mut settings = defaults();
+        let before = settings.clone();
+        settings.apply(ViewfinderCommand::Scopes(ScopeIntent::Show(scope_request(
+            scope_contract::ScopeKind::Vectorscope,
+            200,
+            200,
+        ))));
+        assert_eq!(
+            ViewfinderSettings {
+                scopes: None,
+                ..settings
+            },
+            before,
+            "вид, рисовальщик, стадии, кадрирование и место остались прежними"
+        );
+    }
+
+    #[test]
+    fn withdrawal_clears_only_a_present_request() {
+        let mut settings = defaults();
+        assert_eq!(settings.withdraw_scopes(), ScopeWithdrawal::NothingToWithdraw);
+        settings.apply(ViewfinderCommand::Scopes(ScopeIntent::Show(scope_request(
+            scope_contract::ScopeKind::Waveform,
+            100,
+            100,
+        ))));
+        assert_eq!(settings.withdraw_scopes(), ScopeWithdrawal::Withdrawn);
+        assert_eq!(settings.scopes, None);
+        assert_eq!(
+            settings.apply(ViewfinderCommand::Scopes(ScopeIntent::Hide)),
+            ViewfinderCommandOutcome::AlreadyInEffect,
+            "после отзыва скрывать нечего"
         );
     }
 }

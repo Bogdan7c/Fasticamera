@@ -92,9 +92,12 @@ fn effective(adjustments: &[RenderAdjustment]) -> Effective {
             RenderAdjustment::Viewfinder(ViewfinderCommand::SetPainter(painter)) => current.painter = *painter,
             RenderAdjustment::Viewfinder(ViewfinderCommand::SetIspStages(stages)) => current.stages = *stages,
             RenderAdjustment::Viewfinder(ViewfinderCommand::SetHeadroomBench(bench)) => current.bench = *bench,
-            // Место и вид — настройки продукта, сценарий их не трогает и не откатывает.
+            // Место, вид и приборы — настройки продукта, сценарий их не трогает и не откатывает.
             RenderAdjustment::Viewfinder(
-                ViewfinderCommand::SetCrop(_) | ViewfinderCommand::SetFraming(_) | ViewfinderCommand::SetLook(_),
+                ViewfinderCommand::SetCrop(_)
+                | ViewfinderCommand::SetFraming(_)
+                | ViewfinderCommand::SetLook(_)
+                | ViewfinderCommand::Scopes(_),
             ) => {}
             RenderAdjustment::PresentTarget(setting) => {
                 current.selection = PresentTargetSelection {
@@ -132,6 +135,8 @@ fn fresh_viewfinder() -> ViewfinderDiagnostics {
         ),
         stages: IspStageSet::ALL,
         look: std::sync::Arc::new(look_contract::LookSettings::NEUTRAL),
+        // Приборы закрыты: эти тесты их не касаются.
+        scopes: Default::default(),
         display_color_space: Some(ViewfinderColorSpace::DisplayP3),
         storage: Some(ViewfinderStorage::TenBitUnorm),
         output_extent: Some(ViewfinderExtent {

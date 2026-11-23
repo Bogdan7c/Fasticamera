@@ -48,6 +48,8 @@ impl CameraSession {
         if let Err(error) = collected.ui {
             tracing::warn!(target: LOG_TARGET, %error, slot, "слот рендера UI не освобождён");
         }
+        // Приборы освободили слот внутри `pipelines.collect_slot`: их приращения уходят в статистику видоискателя.
+        self.note_scope_events(&pipelines.take_scope_events());
         let slot_frame_index = self.slot_frame_indices.get(slot).copied().flatten();
         match collected.frame {
             Ok(frame_time) => {
@@ -64,6 +66,13 @@ impl CameraSession {
                 self.viewfinder.counters_mut().gpu_timing_failures += 1;
                 tracing::warn!(target: LOG_TARGET, %error, slot, "метки кадра видоискателя не собраны");
             }
+        }
+    }
+
+    /// Учитывает приращения цветовых приборов, которые накопила цепочка показа.
+    pub(crate) fn note_scope_events(&mut self, events: &crate::viewfinder::ScopeEvents) {
+        if !events.is_empty() {
+            self.viewfinder.note_scope_events(events);
         }
     }
 

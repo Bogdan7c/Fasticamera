@@ -16,6 +16,7 @@ mod lens_shading;
 mod look;
 pub(crate) mod look_lut;
 mod present_target;
+mod scopes;
 mod still;
 mod tone;
 mod ui_overlay;
@@ -29,6 +30,7 @@ pub use continuity::{ContinuityConfig, ContinuityConfigError, RevealExposureChec
 pub use lens_shading::{LensShadingMode, ViewfinderLensShadingConfig};
 pub use look::LookConfigError;
 pub use look_lut::{LookLutLimitConflict, look_lut_limits};
+pub use scopes::{MAX_SCOPES_EVERY_NTH_FRAME, ScopesConfig, ScopesConfigError};
 pub use still::{StillConfigError, StillDevelopConfig};
 pub use tone::{ToneBaseChoice, ToneConfigError, ViewfinderToneConfig};
 pub use ui_overlay::{UiOverlayConfig, UiOverlayConfigError};

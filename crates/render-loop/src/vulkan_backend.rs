@@ -121,12 +121,41 @@ pub struct VulkanDisplayBackend {
     /// Источник кадра UI и счётчики UI-прохода (сессия 11): переживают пересоздание surface. Рендер UI
     /// (объекты GPU) живёт в пайплайнах цепочки показа и создаётся только при установленном источнике.
     ui_overlay: UiOverlayState,
+    /// Сколько раз запрос приборов отозван из-за ухода источника UI (диагностика; живёт дольше цепочки показа).
+    scope_withdrawals: u64,
     /// Движок снимков (сессия 14): выбор кадра «что было на экране», очередь, проявление. `None` — снимков нет,
     /// команды снимка завершаются честным `NotSecured` (поток рендера сам).
     still: Option<StillEngine<VulkanStillGpu>>,
 }
 
 impl VulkanDisplayBackend {
+    /// Источник UI ушёл (снят, заменён, сломался) — запрос цветовых приборов отзывается: картинку прибора рисовать
+    /// некому, а считать её впустую нельзя (инвариант «закрытые приборы ничего не стоят»). Отзыв идёт через владельца
+    /// запроса (`ViewfinderSettings`), затем свежие настройки уходят в живую сессию показа.
+    fn withdraw_scopes_if_ui_source_left(&mut self) {
+        if !self.ui_overlay.take_source_lifetime_ended() {
+            return;
+        }
+        if self.viewfinder_settings.withdraw_scopes() == camera::ScopeWithdrawal::Withdrawn {
+            self.scope_withdrawals += 1;
+            if let Some(display) = self.attached.as_mut() {
+                display.apply_viewfinder_settings(self.viewfinder_settings.clone());
+            }
+        }
+    }
+
+    /// Готовит объекты цветовых приборов МЕЖДУ кадрами (набор GPU и картинка под размер запроса), а не внутри записи
+    /// кадра: создание пайплайнов в кадре рвёт vsync (то же правило, что у рендера UI). Зовётся после команды,
+    /// подключения и конца кадра; когда готовить нечего, стоит несколько сравнений.
+    fn prepare_scopes_between_frames(&mut self) {
+        let demand = self
+            .viewfinder_settings
+            .effective_scope_demand(self.ui_overlay.source_presence());
+        if let Some(display) = self.attached.as_mut() {
+            display.prepare_scopes(demand);
+        }
+    }
+
     /// Создать рендер UI сразу при установке источника — МЕЖДУ кадрами, а не в первом кадре с UI:
     /// конвейеры и загрузка атласа (блокирующая) заняли бы время записи кадра и сорвали бы его vsync
     /// (ревью сессии 11). Цели показа ещё нет (surface не прикреплён) — рендер создастся лениво в
@@ -222,6 +251,8 @@ impl VulkanDisplayBackend {
                 destination: crate::viewfinder::FramingDestination::Configured,
                 headroom: crate::viewfinder::HeadroomBench::Disabled,
                 look: std::sync::Arc::new(look_contract::LookSettings::NEUTRAL),
+                scopes: None,
+                scope_picture_side_limit_px: config.viewfinder.scopes.max_picture_side_px,
             }
         });
         let viewfinder_stats = Some(ViewfinderStats::new(config.viewfinder.gpu_time_window_frames));
@@ -241,6 +272,7 @@ impl VulkanDisplayBackend {
             scene_white: SceneWhiteMemory::default(),
             auto_exposure: None,
             ui_overlay,
+            scope_withdrawals: 0,
             still: None,
         })
     }
@@ -319,6 +351,27 @@ impl VulkanDisplayBackend {
         }
     }
 
+    /// Счётчики цветового прибора последней записи (тестовый шов, фича `test-support`). `Ok(None)` — нет surface,
+    /// камеры или набора объектов приборов.
+    #[cfg(feature = "test-support")]
+    pub fn read_scope_counters(&self) -> Result<Option<scope_model::ScopeCounters>, isp_vulkan::scopes::ScopeError> {
+        match self.attached.as_ref() {
+            Some(display) => display.read_scope_counters(),
+            None => Ok(None),
+        }
+    }
+
+    /// Картинка цветового прибора последней записи (тестовый шов, фича `test-support`).
+    #[cfg(feature = "test-support")]
+    pub fn read_scope_picture(
+        &self,
+    ) -> Result<Option<isp_vulkan::scopes::PictureReadback>, isp_vulkan::scopes::ScopeError> {
+        match self.attached.as_ref() {
+            Some(display) => display.read_scope_picture(),
+            None => Ok(None),
+        }
+    }
+
     /// Читает содержимое удержанного кадра присоединённой surface (тестовый шов, фича `test-support`).
     /// `Ok(None)` — нет surface, камеры или удержания.
     #[cfg(feature = "test-support")]
@@ -335,6 +388,7 @@ impl VulkanDisplayBackend {
         if let Some(mut live) = self.attached.as_mut().and_then(AttachedDisplay::viewfinder_diagnostics) {
             // UI-проход принадлежит бэкенду, а не сессии: его счётчики дописываются здесь.
             live.ui_overlay = self.ui_overlay.snapshot();
+            live.scopes.withdrawals = self.scope_withdrawals;
             return Some(live);
         }
         let settings = self.viewfinder_settings.clone();
@@ -348,6 +402,7 @@ impl VulkanDisplayBackend {
             WhiteBalanceDiagnostics::idle(self.config.viewfinder.white_balance.statistics_every_n_frames),
         );
         snapshot.ui_overlay = self.ui_overlay.snapshot();
+        snapshot.scopes.withdrawals = self.scope_withdrawals;
         Some(snapshot)
     }
 
@@ -407,6 +462,8 @@ impl DisplayBackend for VulkanDisplayBackend {
         });
         let display = AttachedDisplay::attach(&self.context, &self.config, presentation, held_surface, size, camera)?;
         self.attached = Some(display);
+        // Запрос приборов мог пережить предыдущую surface: объекты поднимаем до первого кадра новой.
+        self.prepare_scopes_between_frames();
         Ok(())
     }
 
@@ -421,13 +478,20 @@ impl DisplayBackend for VulkanDisplayBackend {
     }
 
     fn render_and_present(&mut self, timing: FrameTiming) -> PresentOutcome {
-        match self.attached.as_mut() {
+        let outcome = match self.attached.as_mut() {
             Some(display) => display.render_and_present(timing, &mut self.ui_overlay),
             None => PresentOutcome::Failed(BackendError {
                 operation: "render_and_present".to_owned(),
                 reason: "surface не присоединена".to_owned(),
             }),
-        }
+        };
+        // Источник UI мог уйти внутри кадра (паника, отказ создания рендера): запрос приборов отзывается со
+        // следующего кадра, этот уже записан.
+        self.withdraw_scopes_if_ui_source_left();
+        // Кадр отправлен: если набор приборов выведен (кадр не ушёл, ошибка GPU) или размер запроса изменился,
+        // поднимаем его до следующего кадра, а не внутри него.
+        self.prepare_scopes_between_frames();
+        outcome
     }
 
     fn detach(&mut self) -> Option<NativeSurface> {
@@ -517,11 +581,19 @@ impl DisplayBackend for VulkanDisplayBackend {
         if self.camera_feed.is_none() {
             return ViewfinderCommandOutcome::Unsupported;
         }
-        let outcome = self.viewfinder_settings.apply(command);
+        // Приборы нужны только для UI: `Show` без источника отвергается (контракт `ViewfinderCommand::Scopes`).
+        let outcome = self
+            .viewfinder_settings
+            .apply_with_ui_source(command, self.ui_overlay.source_presence());
+        if let ViewfinderCommandOutcome::Rejected { reason } = &outcome {
+            tracing::warn!(target: LOG_TARGET, %reason, "команда видоискателя отвергнута");
+        }
         if outcome == ViewfinderCommandOutcome::Applied
             && let Some(display) = self.attached.as_mut()
         {
             display.apply_viewfinder_settings(self.viewfinder_settings.clone());
+            // Показ приборов или смена размера картинки: объекты готовятся сейчас, между кадрами.
+            self.prepare_scopes_between_frames();
         }
         outcome
     }
@@ -570,6 +642,8 @@ impl DisplayBackend for VulkanDisplayBackend {
         }
         let installs_source = matches!(command, UiOverlayCommand::Install(_));
         let outcome = self.ui_overlay.apply(command);
+        // Снятие или замена источника отзывает запрос приборов: свежий экран начинается без них.
+        self.withdraw_scopes_if_ui_source_left();
         if installs_source && outcome == UiOverlayOutcome::Applied {
             self.prepare_ui_renderer_between_frames();
         }

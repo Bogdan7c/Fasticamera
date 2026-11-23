@@ -1,0 +1,12 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_samplerless_texture_functions : require
+// ТОЛЬКО ДЛЯ ТЕСТОВ: «подставной» прибор — гистограмма в одну строку. Показывает, что новый прибор
+// добавляется отдельным шейдером поверх `scope_accumulate_common.glsl`, без правки шейдеров и Rust-кода
+// настоящих приборов. Правило: столбец = (R + G + B) / слово[4] (делитель приходит параметром).
+#include "scope_accumulate_common.glsl"
+
+void scope_hits(uint shown_x, uvec3 code) {
+    uint divisor = parameters.words[WORD_RULE_FIRST];
+    scope_add_hit(0u, 0u, (code.x + code.y + code.z) / divisor);
+}

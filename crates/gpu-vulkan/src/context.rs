@@ -94,6 +94,23 @@ pub struct ShaderSixteenBitSupport {
     pub storage_buffer_16bit_access: bool,
 }
 
+/// Поведение 32-битной арифметики шейдеров по `VkPhysicalDeviceFloatControlsProperties` (Vulkan 1.2, ядро).
+///
+/// Это ФАКТЫ об устройстве для диагностики, не включение режимов: контекст не выставляет шейдерам
+/// `RoundingModeRTE`/`DenormPreserve`/`DenormFlushToZero`. Спецификация Vulkan не говорит, какое округление
+/// и какую обработку денормализованных чисел драйвер применяет по умолчанию, поэтому код, которому нужна
+/// побитовая воспроизводимость (цветовые приборы, 14h), опирается на предположение «по умолчанию —
+/// ближайшее чётное, денормалей на входе нет» и показывает эти факты рядом с отчётом.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Float32Controls {
+    /// `shaderRoundingModeRTEFloat32`: шейдер МОЖЕТ потребовать округление к ближайшему чётному для f32.
+    pub rounding_mode_rte: bool,
+    /// `shaderDenormPreserveFloat32`: шейдер может потребовать сохранять денормализованные f32.
+    pub denorm_preserve: bool,
+    /// `shaderDenormFlushToZeroFloat32`: шейдер может потребовать сброс денормализованных f32 в ноль.
+    pub denorm_flush_to_zero: bool,
+}
+
 /// Отчёт о возможностях созданного контекста (для диагностики и smoke-сценариев).
 #[derive(Debug, Clone)]
 pub struct GpuCapabilities {
@@ -119,6 +136,8 @@ pub struct GpuCapabilities {
     pub shader_16bit: ShaderSixteenBitSupport,
     /// Включена ли `hostQueryReset` (Vulkan 1.2): метки времени сбрасываются с CPU (`GpuTimestamps`).
     pub host_query_reset: bool,
+    /// Возможности управления округлением и денормалями f32 в шейдерах (факт об устройстве).
+    pub float32_controls: Float32Controls,
     /// Размер subgroup.
     pub subgroup_size: u32,
     /// Доступна ли арифметика subgroup (`GL_KHR_shader_subgroup_arithmetic`) в compute-шейдерах
@@ -339,6 +358,7 @@ impl GpuContext {
                 storage_buffer_16bit_access: chosen.candidate.features.storage_buffer_16bit_access,
             },
             host_query_reset: chosen.candidate.features.host_query_reset,
+            float32_controls: chosen.details.float32_controls,
             subgroup_size: chosen.details.subgroup_size,
             subgroup_arithmetic_in_compute: chosen.details.subgroup_arithmetic_in_compute,
             queue_family_index: selection.queue_family_index,

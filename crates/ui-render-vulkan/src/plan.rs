@@ -3,12 +3,14 @@
 //! Чистая логика без GPU. Все проверки (словарь, пределы) здесь — до первой записи команд, поэтому
 //! отвергнутый кадр не оставляет следов ни в цели, ни в пирамиде.
 
-use ui_draw::draw_list::{DrawItem, DrawList};
+use ash::vk;
+use ui_draw::draw_list::{DrawItem, DrawList, ImageSource, LiveImage};
 use ui_draw::picture::UiPicture;
 
 use crate::config::UiRenderLimits;
 use crate::error::{LimitKind, UiRenderError};
-use crate::pack::{pack_glass_group, pack_icon, pack_image, pack_shape, pack_text};
+use crate::live_images::LiveImages;
+use crate::pack::{ImageSamplerSlot, pack_glass_group, pack_icon, pack_image, pack_shape, pack_text};
 
 /// Вид пакета: каждому соответствует свой конвейер.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +30,16 @@ pub(crate) struct Batch {
     pub instance_count: u32,
 }
 
+/// Что лежит в одном сэмплере картинок кадра. Номер в списке [`FramePlan::sampler_slots`] = номер сэмплера
+/// в шейдере. Картинки из памяти и живые делят одни и те же `MAX_IMAGE_BINDINGS` привязок.
+#[derive(Debug, Clone)]
+pub(crate) enum SamplerSlot {
+    /// Картинка из памяти: текстуру даёт кэш ([`crate::picture_cache::PictureCache`]).
+    Picture(UiPicture),
+    /// Живая картинка с GPU: привязывается напрямую по представлению, без загрузки, кэша и вытеснения.
+    Live { image: LiveImage, view: vk::ImageView },
+}
+
 /// Готовый к загрузке кадр.
 #[derive(Debug, Default)]
 pub(crate) struct FramePlan {
@@ -36,32 +48,56 @@ pub(crate) struct FramePlan {
     pub group_bytes: Vec<u8>,
     pub member_bytes: Vec<u8>,
     pub image_bytes: Vec<u8>,
-    /// Разные картинки кадра в порядке первого появления: номер в списке = номер сэмплера в шейдере.
-    pub pictures: Vec<UiPicture>,
+    /// Разные источники картинок кадра в порядке первого появления: номер в списке = номер сэмплера в шейдере.
+    pub sampler_slots: Vec<SamplerSlot>,
     pub batches: Vec<Batch>,
     pub shape_count: u32,
     pub glyph_count: u32,
     pub group_count: u32,
+    /// Элементов-картинок в кадре (картинки из памяти и нарисованные живые).
     pub image_count: u32,
+    /// Из них живых картинок, найденных в таблице кадра.
+    pub live_images_drawn: u32,
+    /// Элементов с живой картинкой, которой в таблице нет: в план не попали.
+    pub live_images_missing: u32,
 }
 
 impl FramePlan {
+    /// Картинки из памяти, которые нужны кадру (для кэша текстур), в порядке сэмплеров.
+    pub(crate) fn pictures(&self) -> impl Iterator<Item = &UiPicture> {
+        self.sampler_slots.iter().filter_map(|slot| match slot {
+            SamplerSlot::Picture(picture) => Some(picture),
+            SamplerSlot::Live { .. } => None,
+        })
+    }
+
     /// Есть ли в кадре стекло (нужна ли пирамида размытия).
     pub(crate) fn has_glass(&self) -> bool {
         self.group_count > 0
     }
 
-    /// Номер сэмплера кадра для картинки: та же картинка (по версии) получает прежний номер.
-    fn texture_index_of(&mut self, picture: &UiPicture) -> usize {
-        if let Some(position) = self
-            .pictures
+    /// Номер сэмплера кадра для картинки из памяти: та же картинка (по версии) получает прежний номер.
+    fn sampler_of_picture(&mut self, picture: &UiPicture) -> usize {
+        let known = self
+            .sampler_slots
             .iter()
-            .position(|known| known.version() == picture.version())
-        {
-            return position;
-        }
-        self.pictures.push(picture.clone());
-        self.pictures.len() - 1
+            .position(|slot| matches!(slot, SamplerSlot::Picture(known) if known.version() == picture.version()));
+        known.unwrap_or_else(|| {
+            self.sampler_slots.push(SamplerSlot::Picture(picture.clone()));
+            self.sampler_slots.len() - 1
+        })
+    }
+
+    /// Номер сэмплера кадра для живой картинки: один сэмплер на картинку, сколько бы элементов её ни рисовало.
+    fn sampler_of_live(&mut self, image: LiveImage, view: vk::ImageView) -> usize {
+        let known = self
+            .sampler_slots
+            .iter()
+            .position(|slot| matches!(slot, SamplerSlot::Live { image: known, .. } if *known == image));
+        known.unwrap_or_else(|| {
+            self.sampler_slots.push(SamplerSlot::Live { image, view });
+            self.sampler_slots.len() - 1
+        })
     }
 
     fn push_batch(&mut self, kind: BatchKind, first_instance: u32, added: u32) {
@@ -80,7 +116,8 @@ impl FramePlan {
 }
 
 /// Сколько экземпляров каждого вида даст список (без упаковки).
-fn count_instances(list: &DrawList) -> InstanceCounts {
+/// Элементы с живой картинкой, которой на кадре нет, не считаются: они не будут нарисованы.
+fn count_instances(list: &DrawList, live: LiveImages<'_>) -> InstanceCounts {
     let mut counts = InstanceCounts::default();
     for item in &list.items {
         if item.bounds_px().is_none() {
@@ -91,10 +128,19 @@ fn count_instances(list: &DrawList) -> InstanceCounts {
             DrawItem::Glass(_) => counts.groups += 1,
             DrawItem::Text(text) => counts.glyphs += text.run.glyphs.len(),
             DrawItem::Icon(_) => counts.glyphs += 1,
-            DrawItem::Image(_) => counts.images += 1,
+            DrawItem::Image(image) => {
+                if live_image_is_available(&image.source, live) {
+                    counts.images += 1;
+                }
+            }
         }
     }
     counts
+}
+
+/// Можно ли рисовать источник на этом кадре: картинка из памяти — всегда, живая — если она в таблице.
+fn live_image_is_available(source: &ImageSource, live: LiveImages<'_>) -> bool {
+    source.live_image().is_none_or(|image| live.get(image).is_some())
 }
 
 /// Число экземпляров по видам.
@@ -110,13 +156,17 @@ struct InstanceCounts {
 fn check_picture_sizes(list: &DrawList, limits: &UiRenderLimits) -> Result<(), UiRenderError> {
     for item in &list.items {
         let DrawItem::Image(image) = item else { continue };
+        // Живые картинки не загружаются: их размер ограничен самим владельцем изображения.
+        let Some(picture) = image.source.as_picture() else {
+            continue;
+        };
         if item.bounds_px().is_none() {
             continue;
         }
-        let size = image.picture.size();
+        let size = picture.size();
         if size.width.max(size.height) > limits.max_image_side_px {
             return Err(UiRenderError::PictureTooLarge {
-                version: image.picture.version(),
+                version: picture.version(),
                 size,
                 limit: limits.max_image_side_px,
             });
@@ -135,9 +185,15 @@ fn check_limit(kind: LimitKind, requested: usize, limit: u32) -> Result<(), UiRe
 
 /// Строит план: проверяет словарь и пределы, упаковывает экземпляры, склеивает соседние элементы одного вида.
 /// Элементы без границ (пустой текст, пустая группа, нечисловая матрица) пропускаются: рисовать нечего.
-pub(crate) fn build_plan(list: &DrawList, limits: &UiRenderLimits) -> Result<FramePlan, UiRenderError> {
+/// Элемент с живой картинкой, которой нет в `live`, тоже пропускается (и считается в `live_images_missing`):
+/// это штатное состояние кадра (прибор ещё не посчитан или закрыт), а не ошибка списка.
+pub(crate) fn build_plan(
+    list: &DrawList,
+    limits: &UiRenderLimits,
+    live: LiveImages<'_>,
+) -> Result<FramePlan, UiRenderError> {
     list.validate()?;
-    let counts = count_instances(list);
+    let counts = count_instances(list, live);
     check_limit(LimitKind::ShapeInstances, counts.shapes, limits.max_shape_instances)?;
     check_limit(LimitKind::GlyphInstances, counts.glyphs, limits.max_glyph_instances)?;
     check_limit(LimitKind::GlassGroups, counts.groups, limits.max_glass_groups)?;
@@ -179,8 +235,24 @@ pub(crate) fn build_plan(list: &DrawList, limits: &UiRenderLimits) -> Result<Fra
                 plan.glyph_count += 1;
             }
             DrawItem::Image(image) => {
-                let texture_index = plan.texture_index_of(&image.picture);
-                pack_image(index, image, &bounds, texture_index, &mut plan.image_bytes)?;
+                let slot = match &image.source {
+                    ImageSource::Picture(picture) => ImageSamplerSlot {
+                        index: plan.sampler_of_picture(picture),
+                        source_size: picture.size(),
+                    },
+                    ImageSource::Live(live_image) => {
+                        let Some((input, size)) = live.get(*live_image) else {
+                            plan.live_images_missing += 1;
+                            continue;
+                        };
+                        plan.live_images_drawn += 1;
+                        ImageSamplerSlot {
+                            index: plan.sampler_of_live(*live_image, input.view.view),
+                            source_size: size,
+                        }
+                    }
+                };
+                pack_image(index, image, &bounds, slot, &mut plan.image_bytes)?;
                 plan.push_batch(BatchKind::Image, plan.image_count, 1);
                 plan.image_count += 1;
             }
@@ -196,7 +268,7 @@ mod tests {
     use super::*;
     use crate::pack::IMAGE_INSTANCE_BYTES;
     use ui_draw::color::{DisplayColor, Opacity};
-    use ui_draw::draw_list::{ImageClip, ImageFit, ImageItem, ShapeItem};
+    use ui_draw::draw_list::{ImageClip, ImageFit, ImageItem, ImageSource, ShapeItem};
     use ui_draw::geometry::PxSize;
     use ui_draw::light::LightDirection;
     use ui_draw::picture::{PictureEncoding, PictureSize};
@@ -214,7 +286,7 @@ mod tests {
 
     fn image(picture: &UiPicture) -> DrawItem {
         DrawItem::Image(ImageItem {
-            picture: picture.clone(),
+            source: picture.clone().into(),
             transform: Affine2::translate(30.0, 30.0),
             size_px: PxSize::new(20.0, 20.0),
             fit: ImageFit::Cover,
@@ -240,10 +312,10 @@ mod tests {
         list
     }
 
-    /// Номер сэмплера, записанный в `index`-м экземпляре картинки (последний `f32` экземпляра).
+    /// Номер сэмплера, записанный в `index`-м экземпляре картинки (`uv.w` — 20-й `f32` экземпляра).
     fn texture_index_of_instance(plan: &FramePlan, index: usize) -> f32 {
-        let end = (index + 1) * IMAGE_INSTANCE_BYTES;
-        f32::from_ne_bytes(plan.image_bytes[end - 4..end].try_into().unwrap())
+        let start = index * IMAGE_INSTANCE_BYTES + 19 * 4;
+        f32::from_ne_bytes(plan.image_bytes[start..start + 4].try_into().unwrap())
     }
 
     #[test]
@@ -255,6 +327,7 @@ mod tests {
                 max_images: 3,
                 ..Default::default()
             },
+            LiveImages::none(),
         )
         .unwrap();
         assert_eq!(
@@ -281,7 +354,8 @@ mod tests {
         assert_eq!((plan.image_count, plan.shape_count), (3, 1));
         assert_eq!(plan.image_bytes.len(), 3 * IMAGE_INSTANCE_BYTES);
         // Две разные картинки → два сэмплера; повтор первой берёт прежний номер.
-        assert_eq!(plan.pictures.len(), 2);
+        assert_eq!(plan.sampler_slots.len(), 2);
+        assert_eq!(plan.pictures().count(), 2);
         assert_eq!(
             [0, 1, 2].map(|index| texture_index_of_instance(&plan, index)),
             [0.0, 1.0, 0.0]
@@ -297,6 +371,7 @@ mod tests {
                 max_images: 2,
                 ..Default::default()
             },
+            LiveImages::none(),
         )
         .unwrap_err();
         assert!(
@@ -315,7 +390,12 @@ mod tests {
     #[test]
     fn oversized_picture_is_rejected_with_its_version_and_size() {
         let huge = picture(2000, 10);
-        let error = build_plan(&list(vec![shape(), image(&huge)]), &UiRenderLimits::default()).unwrap_err();
+        let error = build_plan(
+            &list(vec![shape(), image(&huge)]),
+            &UiRenderLimits::default(),
+            LiveImages::none(),
+        )
+        .unwrap_err();
         match error {
             UiRenderError::PictureTooLarge { version, size, limit } => {
                 assert_eq!(version, huge.version());
@@ -326,6 +406,147 @@ mod tests {
         }
         // Ровно на пределе — принимается.
         let edge = picture(1024, 4);
-        assert!(build_plan(&list(vec![image(&edge)]), &UiRenderLimits::default()).is_ok());
+        assert!(
+            build_plan(
+                &list(vec![image(&edge)]),
+                &UiRenderLimits::default(),
+                LiveImages::none()
+            )
+            .is_ok()
+        );
+    }
+
+    // ---- Живые картинки (14h) ----
+
+    fn scope_item() -> DrawItem {
+        DrawItem::Image(ImageItem {
+            source: ImageSource::Live(LiveImage::ColorScope),
+            transform: Affine2::translate(30.0, 30.0),
+            size_px: PxSize::new(40.0, 20.0),
+            fit: ImageFit::Stretch,
+            clip: ImageClip::None,
+            opacity: Opacity::OPAQUE,
+        })
+    }
+
+    fn scope_entry(raw_view: u64, width: u32, height: u32) -> (LiveImage, crate::live_images::LiveImageInput) {
+        use ash::vk::Handle;
+        (
+            LiveImage::ColorScope,
+            crate::live_images::LiveImageInput {
+                view: gpu_vulkan::storage_image::SampledImageView {
+                    view: vk::ImageView::from_raw(raw_view),
+                    extent: vk::Extent2D { width, height },
+                    format: vk::Format::R16G16B16A16_SFLOAT,
+                },
+            },
+        )
+    }
+
+    #[test]
+    fn present_live_image_shares_one_sampler_with_pictures_and_keeps_list_order() {
+        let first = picture(4, 4);
+        let entries = [scope_entry(11, 256, 128)];
+        let plan = build_plan(
+            &list(vec![image(&first), scope_item(), scope_item(), shape()]),
+            &UiRenderLimits {
+                max_images: 3,
+                ..Default::default()
+            },
+            LiveImages::new(&entries),
+        )
+        .unwrap();
+        // Картинка из памяти — сэмплер 0, прибор — сэмплер 1, второй элемент того же прибора — снова 1.
+        assert_eq!(plan.sampler_slots.len(), 2);
+        assert!(matches!(
+            plan.sampler_slots[1],
+            SamplerSlot::Live {
+                image: LiveImage::ColorScope,
+                ..
+            }
+        ));
+        assert_eq!(
+            [0, 1, 2].map(|index| texture_index_of_instance(&plan, index)),
+            [0.0, 1.0, 1.0]
+        );
+        assert_eq!(
+            (plan.image_count, plan.live_images_drawn, plan.live_images_missing),
+            (3, 2, 0)
+        );
+        assert_eq!(
+            plan.pictures().count(),
+            1,
+            "кэш текстур видит только картинки из памяти"
+        );
+    }
+
+    #[test]
+    fn missing_live_image_adds_no_instance_no_batch_and_no_sampler() {
+        let plan = build_plan(
+            &list(vec![shape(), scope_item(), shape()]),
+            &UiRenderLimits::default(),
+            LiveImages::none(),
+        )
+        .unwrap();
+        assert_eq!(
+            (plan.image_count, plan.live_images_drawn, plan.live_images_missing),
+            (0, 0, 1)
+        );
+        assert!(plan.image_bytes.is_empty() && plan.sampler_slots.is_empty());
+        assert_eq!(
+            plan.batches,
+            vec![Batch {
+                kind: BatchKind::Shape,
+                first_instance: 0,
+                instance_count: 2
+            }],
+            "фигуры по обе стороны отсутствующей картинки склеиваются в один вызов"
+        );
+    }
+
+    #[test]
+    fn missing_live_images_do_not_count_against_the_image_limit() {
+        let one = picture(4, 4);
+        let plan = build_plan(
+            &list(vec![scope_item(), image(&one), scope_item()]),
+            &UiRenderLimits {
+                max_images: 1,
+                ..Default::default()
+            },
+            LiveImages::none(),
+        )
+        .unwrap();
+        assert_eq!((plan.image_count, plan.live_images_missing), (1, 2));
+    }
+
+    #[test]
+    fn degenerate_live_extent_counts_as_missing() {
+        let entries = [scope_entry(5, 0, 64)];
+        let plan = build_plan(
+            &list(vec![scope_item()]),
+            &UiRenderLimits::default(),
+            LiveImages::new(&entries),
+        )
+        .unwrap();
+        assert_eq!((plan.image_count, plan.live_images_missing), (0, 1));
+    }
+
+    #[test]
+    fn live_cover_scale_follows_the_extent_reported_by_the_view() {
+        let entries = [scope_entry(5, 64, 16)];
+        let mut cover = scope_item();
+        if let DrawItem::Image(item) = &mut cover {
+            item.fit = ImageFit::Cover;
+            item.size_px = PxSize::new(20.0, 20.0);
+        }
+        let plan = build_plan(
+            &list(vec![cover]),
+            &UiRenderLimits::default(),
+            LiveImages::new(&entries),
+        )
+        .unwrap();
+        let float = |index: usize| f32::from_ne_bytes(plan.image_bytes[index * 4..index * 4 + 4].try_into().unwrap());
+        // Рамка 20×20 над источником 64×16: ограничивает высота (масштаб 20/16), по x 1/(1,25·64) = 1/80, по y 1/20.
+        assert_eq!((float(16), float(17)), (1.0 / 80.0, 1.0 / 20.0));
     }
 }

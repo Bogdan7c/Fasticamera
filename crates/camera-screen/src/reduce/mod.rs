@@ -17,6 +17,7 @@ mod exposure;
 mod facts;
 mod look;
 mod menu;
+mod scopes;
 mod sensors;
 mod shutter;
 mod viewfinder;
@@ -43,6 +44,9 @@ mod menu_tests;
 #[cfg(test)]
 #[path = "saving_tests.rs"]
 mod saving_tests;
+#[cfg(test)]
+#[path = "scopes_tests.rs"]
+mod scopes_tests;
 #[cfg(test)]
 #[path = "sensors_tests.rs"]
 mod sensors_tests;
@@ -242,5 +246,6 @@ fn dispatch_action(ctx: &mut Ctx<'_>, action: ScreenAction) -> ActionOutcome {
         ScreenAction::ZoomPinchEnded { at } => zoom::on_pinch_ended(ctx, at),
         ScreenAction::FlipCameraRequested { at } => zoom::on_flip(ctx, at),
         ScreenAction::Look(intent) => look::on_look(ctx, intent),
+        ScreenAction::Scopes(intent) => scopes::on_scopes(ctx, intent),
     }
 }

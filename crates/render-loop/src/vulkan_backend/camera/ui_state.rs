@@ -26,9 +26,22 @@ use crate::ui_overlay::{UiOverlayCommand, UiOverlayDiagnostics, UiOverlayOutcome
 
 const LOG_TARGET: &str = "fasticamera::render::ui";
 
+/// Есть ли установленный источник кадра UI. Одно значение управляет И рисованием UI, И тем, считаются ли приборы
+/// для него (инвариант «закрытые приборы ничего не стоят»: нет UI — считать некому показывать).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiSourcePresence {
+    /// Источник установлен: UI рисуется, приборам есть кому показывать картинку.
+    Installed,
+    /// Источника нет: UI не рисуется, приборы не считаются.
+    Absent,
+}
+
 /// Установленный источник и накопленная диагностика UI-прохода.
 pub struct UiOverlayState {
     source: Option<Box<dyn UiFrameSource>>,
+    /// Источник, которому показывали картинки (в том числе приборов), ушёл или заменён и это ещё никто не забрал
+    /// ([`Self::take_source_lifetime_ended`]).
+    source_lifetime_ended: bool,
     installs: u64,
     removals: u64,
     frames_drawn: u64,
@@ -37,6 +50,8 @@ pub struct UiOverlayState {
     limit_overflows: u64,
     pyramid_rebuilds: u64,
     pyramid_reuses: u64,
+    live_images_drawn: u64,
+    live_images_missing: u64,
     gpu_time: RollingDurations,
     last_error: Option<String>,
 }
@@ -46,6 +61,7 @@ impl UiOverlayState {
     pub fn new(gpu_time_window_frames: usize) -> Self {
         Self {
             source: None,
+            source_lifetime_ended: false,
             installs: 0,
             removals: 0,
             frames_drawn: 0,
@@ -54,6 +70,8 @@ impl UiOverlayState {
             limit_overflows: 0,
             pyramid_rebuilds: 0,
             pyramid_reuses: 0,
+            live_images_drawn: 0,
+            live_images_missing: 0,
             gpu_time: RollingDurations::new(gpu_time_window_frames),
             last_error: None,
         }
@@ -63,12 +81,15 @@ impl UiOverlayState {
     pub fn apply(&mut self, command: UiOverlayCommand) -> UiOverlayOutcome {
         match command {
             UiOverlayCommand::Install(source) => {
+                // Свежий экран начинает без приборов предыдущего (демонстрация и рисование — одно состояние).
+                self.source_lifetime_ended = true;
                 self.source = Some(source);
                 self.installs += 1;
                 UiOverlayOutcome::Applied
             }
             UiOverlayCommand::Remove => {
                 if self.source.take().is_some() {
+                    self.source_lifetime_ended = true;
                     self.removals += 1;
                     UiOverlayOutcome::Applied
                 } else {
@@ -78,9 +99,25 @@ impl UiOverlayState {
         }
     }
 
+    /// Забирает событие «источник UI ушёл или заменён» (снят командой, заменён новой установкой, снят после паники
+    /// или отказа создания рендера). Возвращает, было ли оно с прошлого вызова. Кто просил у UI картинки (например,
+    /// приборы), по нему отзывает свой запрос: рисовать их больше некому.
+    pub fn take_source_lifetime_ended(&mut self) -> bool {
+        std::mem::take(&mut self.source_lifetime_ended)
+    }
+
     /// Установлен ли источник (UI-проход включён).
     pub fn is_active(&self) -> bool {
-        self.source.is_some()
+        self.source_presence() == UiSourcePresence::Installed
+    }
+
+    /// Есть ли источник — в виде, понятном месту вызова (решение о приборах и о рисовании UI берётся отсюда).
+    pub fn source_presence(&self) -> UiSourcePresence {
+        if self.source.is_some() {
+            UiSourcePresence::Installed
+        } else {
+            UiSourcePresence::Absent
+        }
     }
 
     /// Просит у источника список рисования. Отказ источника считается (`source_failures`, `last_error`), UI
@@ -116,6 +153,7 @@ impl UiOverlayState {
     /// Снимает сломанный источник. Его `Drop` тоже может паниковать — и это не повод ронять показ.
     fn drop_broken_source(&mut self) {
         let broken = self.source.take();
+        self.source_lifetime_ended = true;
         if panic::catch_unwind(AssertUnwindSafe(move || drop(broken))).is_err() {
             tracing::error!(target: LOG_TARGET, "сломанный источник кадра UI паниковал и при уничтожении");
         }
@@ -124,6 +162,8 @@ impl UiOverlayState {
     /// Кадр UI записан в команды кадра.
     pub fn note_drawn(&mut self, report: &UiFrameReport) {
         self.frames_drawn += 1;
+        self.live_images_drawn += u64::from(report.live_images_drawn);
+        self.live_images_missing += u64::from(report.live_images_missing);
         match report.pyramid {
             PyramidOutcome::Rebuilt => self.pyramid_rebuilds += 1,
             PyramidOutcome::Reused => self.pyramid_reuses += 1,
@@ -150,6 +190,7 @@ impl UiOverlayState {
     /// попытку на каждом кадре нельзя: сбой создания (память, шейдеры) не лечится сам.
     pub fn reject_source_after_setup_failure(&mut self, error: &UiRenderError) {
         self.source = None;
+        self.source_lifetime_ended = true;
         self.note_frame_skipped(&format!("рендер UI не создан, источник снят: {error}"));
     }
 
@@ -175,6 +216,8 @@ impl UiOverlayState {
             limit_overflows: self.limit_overflows,
             pyramid_rebuilds: self.pyramid_rebuilds,
             pyramid_reuses: self.pyramid_reuses,
+            live_images_drawn: self.live_images_drawn,
+            live_images_missing: self.live_images_missing,
             gpu_time: self.gpu_time.summary(),
             last_error: self.last_error.clone(),
         }
@@ -330,6 +373,8 @@ mod tests {
             glyph_instances: 0,
             glass_groups: 1,
             image_instances: 0,
+            live_images_drawn: 0,
+            live_images_missing: 0,
             picture_uploads: 0,
             picture_cache_hits: 0,
         };
@@ -445,5 +490,61 @@ mod tests {
         state.note_frame_time(&TimestampCollect::NotReady);
         let time = state.snapshot().gpu_time.expect("замер есть");
         assert_eq!((time.samples, time.max), (1, Duration::from_micros(700)));
+    }
+
+    #[test]
+    fn every_way_the_source_goes_away_raises_the_lifetime_event_exactly_once() {
+        let mut state = UiOverlayState::new(8);
+        assert!(!state.take_source_lifetime_ended(), "ничего не было");
+        // Снятие без источника — не событие.
+        state.apply(UiOverlayCommand::Remove);
+        assert!(!state.take_source_lifetime_ended());
+        // Установка (и замена) — свежий экран.
+        install(&mut state, 0);
+        assert!(state.take_source_lifetime_ended(), "установка");
+        assert!(!state.take_source_lifetime_ended(), "событие забирается один раз");
+        install(&mut state, 0);
+        assert!(state.take_source_lifetime_ended(), "замена источника");
+        state.apply(UiOverlayCommand::Remove);
+        assert!(state.take_source_lifetime_ended(), "снятие");
+        // Паника источника.
+        state.apply(UiOverlayCommand::Install(Box::new(PanickingSource)));
+        state.take_source_lifetime_ended();
+        state.produce_draw_list(&request(1));
+        assert!(state.take_source_lifetime_ended(), "снят после паники");
+        // Отказ создания рендера.
+        install(&mut state, 0);
+        state.take_source_lifetime_ended();
+        state.reject_source_after_setup_failure(&UiRenderError::SlotOutOfRange { slot: 0, slots: 1 });
+        assert!(state.take_source_lifetime_ended(), "снят после отказа рендера");
+    }
+
+    #[test]
+    fn live_image_counters_accumulate_from_frame_reports() {
+        let mut state = UiOverlayState::new(8);
+        let report = |drawn, missing| UiFrameReport {
+            pyramid: PyramidOutcome::NotNeeded,
+            draw_calls: 0,
+            shape_instances: 0,
+            glyph_instances: 0,
+            glass_groups: 0,
+            image_instances: 0,
+            live_images_drawn: drawn,
+            live_images_missing: missing,
+            picture_uploads: 0,
+            picture_cache_hits: 0,
+        };
+        state.note_drawn(&report(1, 0));
+        state.note_drawn(&report(0, 2));
+        state.note_drawn(&report(1, 1));
+        let snapshot = state.snapshot();
+        assert_eq!(
+            (
+                snapshot.frames_drawn,
+                snapshot.live_images_drawn,
+                snapshot.live_images_missing
+            ),
+            (3, 2, 3)
+        );
     }
 }

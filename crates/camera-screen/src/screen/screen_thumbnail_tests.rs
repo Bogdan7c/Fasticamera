@@ -77,7 +77,8 @@ fn the_saved_picture_is_drawn_inside_the_glass_circle_at_86_percent_cover_clippe
     assert_eq!(shown.len(), 1);
     let image = shown[0];
     assert_eq!(
-        image.picture, picture,
+        image.source.as_picture(),
+        Some(&picture),
         "рисуется картинка именно этого снимка (те же пиксели)"
     );
     assert_eq!((image.fit, image.clip), (ImageFit::Cover, ImageClip::Circle));
@@ -160,13 +161,13 @@ fn a_second_picture_dissolves_over_the_first_with_exactly_two_images_and_the_old
 
     let shown = images(&list);
     assert_eq!(shown.len(), 2, "старая и новая — не больше двух");
-    assert_eq!(shown[0].picture, first);
+    assert_eq!(shown[0].source.as_picture(), Some(&first));
     assert_eq!(
         shown[0].opacity.get(),
         1.0,
         "старая полностью непрозрачна: стекло не просвечивает"
     );
-    assert_eq!(shown[1].picture, second);
+    assert_eq!(shown[1].source.as_picture(), Some(&second));
     assert!(near(shown[1].opacity.get(), 0.5, 1e-3));
 }
 
@@ -190,8 +191,8 @@ fn a_new_saved_during_a_fade_keeps_two_images_with_the_fading_in_picture_underne
 
     let shown = images(&list);
     assert_eq!(shown.len(), 2);
-    assert_eq!(shown[0].picture, second, "внизу та, что проявлялась");
-    assert_eq!(shown[1].picture, third);
+    assert_eq!(shown[0].source.as_picture(), Some(&second), "внизу та, что проявлялась");
+    assert_eq!(shown[1].source.as_picture(), Some(&third));
     assert!(near(shown[1].opacity.get(), 0.5, 1e-3), "растворение пошло заново");
 }
 

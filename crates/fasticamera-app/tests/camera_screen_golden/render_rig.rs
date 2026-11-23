@@ -172,6 +172,7 @@ impl RenderRig {
                 source: &source,
                 placement,
             },
+            live_images: ui_render_vulkan::LiveImages::none(),
         };
         let mut compositor =
             ImageCompositor::new(&self.context, self.target.format(), FRAME_SLOTS).expect("композитор");

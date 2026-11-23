@@ -30,6 +30,9 @@ shell-contract.workspace = true
 ui-core.workspace = true
 ui-draw.workspace = true
 ui-render-vulkan.workspace = true
+# Словарь и эталон цветовых приборов (14h): намерение экрана, правило прибора для `ColorScopes`, настройки модели.
+scope-contract.workspace = true
+scope-model.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -39,7 +42,7 @@ tracing.workspace = true
 fault-injection = ["gpu-vulkan/fault-injection"]
 # Тестовые швы чтения (readback изображения видоискателя в функциональных тестах). В боевые сборки НЕ включается.
 # (пробрасывается и в ui-render-vulkan: без неё его тестовый шейдер в сборке остаётся неиспользованной константой).
-test-support = ["gpu-vulkan/test-support", "ui-render-vulkan/test-support"]
+test-support = ["gpu-vulkan/test-support", "ui-render-vulkan/test-support", "isp-vulkan/test-support"]
 
 [dev-dependencies]
 camera-contract = { workspace = true, features = ["fixtures"] }

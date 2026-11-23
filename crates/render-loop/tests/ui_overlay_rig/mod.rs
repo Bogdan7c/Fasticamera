@@ -178,7 +178,7 @@ impl UiFrameSource for PictureSource {
         if let Some(picture) = picture {
             let side = request.logical_size.width * 0.4;
             list.items.push(DrawItem::Image(ImageItem {
-                picture,
+                source: picture.into(),
                 transform: Affine2::translate(request.logical_size.width * 0.5, request.logical_size.height * 0.5),
                 size_px: PxSize::new(side, side * 0.75),
                 fit: ImageFit::Cover,

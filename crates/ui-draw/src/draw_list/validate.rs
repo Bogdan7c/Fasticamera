@@ -169,3 +169,73 @@ fn validate_image(item: usize, image: &ImageItem) -> Result<(), DrawListError> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "тесты")]
+
+    use super::*;
+    use crate::color::Opacity;
+    use crate::draw_list::image_source::{ImageSource, LiveImage};
+    use crate::draw_list::items::{ImageClip, ImageFit};
+    use crate::geometry::PxSize;
+    use crate::light::LightDirection;
+
+    fn list_with(source: ImageSource, fit: ImageFit, clip: ImageClip, size: PxSize, transform: Affine2) -> DrawList {
+        let mut list = DrawList::new(LightDirection::from_angle_degrees(45.0));
+        list.items.push(DrawItem::Image(ImageItem {
+            source,
+            transform,
+            size_px: size,
+            fit,
+            clip,
+            opacity: Opacity::OPAQUE,
+        }));
+        list
+    }
+
+    #[test]
+    fn live_image_with_stretch_and_no_clip_is_valid() {
+        let scope = ImageSource::Live(LiveImage::ColorScope);
+        let size = PxSize::new(120.0, 80.0);
+        for (fit, clip) in [
+            (ImageFit::Stretch, ImageClip::None),
+            (ImageFit::Cover, ImageClip::Circle),
+            (ImageFit::Stretch, ImageClip::Circle),
+        ] {
+            let list = list_with(scope.clone(), fit, clip, size, Affine2::translate(10.0, 10.0));
+            assert_eq!(list.validate(), Ok(()), "{fit:?} {clip:?}");
+        }
+    }
+
+    #[test]
+    fn live_image_still_needs_a_real_frame_and_an_invertible_transform() {
+        let scope = ImageSource::Live(LiveImage::ColorScope);
+        let empty = list_with(
+            scope.clone(),
+            ImageFit::Stretch,
+            ImageClip::None,
+            PxSize::new(0.0, 80.0),
+            Affine2::IDENTITY,
+        );
+        assert!(matches!(
+            empty.validate(),
+            Err(DrawListError::InvalidSize {
+                item: 0,
+                field: "size_px",
+                ..
+            })
+        ));
+        let flat = list_with(
+            scope,
+            ImageFit::Stretch,
+            ImageClip::None,
+            PxSize::new(10.0, 10.0),
+            Affine2::scale(0.0, 1.0),
+        );
+        assert!(matches!(
+            flat.validate(),
+            Err(DrawListError::DegenerateTransform { item: 0, .. })
+        ));
+    }
+}

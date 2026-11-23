@@ -1,0 +1,4 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+layout(set = 0, binding = 0, rgb10_a2) uniform writeonly image2D target_image;
+#include "test_scope_fill.glsl"

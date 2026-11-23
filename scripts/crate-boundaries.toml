@@ -23,6 +23,8 @@ roles = ["platform_neutral", "android_platform", "gpu", "output", "composition_r
 "still-contract" = "platform_neutral"
 "look-contract" = "platform_neutral"
 "look-presets" = "platform_neutral"
+"scope-contract" = "platform_neutral"
+"scope-model" = "platform_neutral"
 "camera-ndk-sys" = "android_platform"
 "camera-android" = "android_platform"
 "android-shell" = "android_platform"
@@ -80,7 +82,7 @@ applies_to_crates = ["still-contract"]
 forbid = [
   "camera-core", "camera-android", "camera-ndk-sys", "raw-frame-stream", "isp-model", "isp-vulkan",
   "scene-estimation", "render-loop", "gpu-vulkan", "ui-core", "ui-kit", "ui-draw", "ui-render-vulkan",
-  "camera-screen", "photo-output", "android-shell",
+  "camera-screen", "photo-output", "android-shell", "scope-contract", "scope-model",
 ]
 reason = "still-contract — словарь снимка без логики: видит только словари camera-contract, shell-contract и look-contract (значения вида на момент нажатия в плане снимка), решения 143 и 178"
 
@@ -92,12 +94,41 @@ forbid_other_crates = true
 reason = "look-contract — словарь вида картинки без логики и без зависимостей от других crate-ов проекта (лист, как camera-contract), решение 178"
 
 [[rules]]
+id = "scope-contract-is-leaf"
+applies_to_crates = ["scope-contract"]
+forbid = []
+forbid_other_crates = true
+reason = "scope-contract — словарь цветовых приборов без логики и без зависимостей от других crate-ов проекта (лист), решение 188"
+
+[[rules]]
+id = "scope-model-reference-only"
+applies_to_crates = ["scope-model"]
+forbid = [
+  "shell-contract", "still-contract", "look-presets", "camera-core", "camera-android", "camera-ndk-sys",
+  "raw-frame-stream", "isp-vulkan", "scene-estimation", "render-loop", "gpu-vulkan", "ui-core", "ui-kit",
+  "ui-draw", "ui-render-vulkan", "camera-screen", "photo-output", "android-shell",
+]
+reason = "scope-model — эталон приборов на CPU: видит только словарь scope-contract и цветовую математику isp-model (коды экрана → свет, OKLab; словари camera-contract и look-contract приходят транзитивно через isp-model), решение 188"
+
+[[rules]]
+id = "scope-model-not-for-screen-or-ui"
+applies_to_crates = [
+  "camera-contract", "shell-contract", "still-contract", "look-contract", "look-presets", "scope-contract",
+  "camera-core", "camera-android", "camera-ndk-sys", "raw-frame-stream", "isp-model", "scene-estimation",
+  "gpu-vulkan", "ui-core", "ui-kit", "ui-draw", "ui-render-vulkan", "camera-screen", "photo-output",
+  "android-shell",
+]
+forbid = ["scope-model"]
+reason = "математику приборов видят только GPU-исполнитель (isp-vulkan), рендер и сборка; экран и UI шлют намерения и рисуют готовую картинку, решение 188"
+
+[[rules]]
 id = "look-presets-vocabulary-only"
 applies_to_crates = ["look-presets"]
 forbid = [
   "camera-contract", "shell-contract", "still-contract", "camera-core", "camera-android", "camera-ndk-sys",
   "raw-frame-stream", "isp-model", "isp-vulkan", "scene-estimation", "render-loop", "gpu-vulkan", "ui-core",
-  "ui-kit", "ui-draw", "ui-render-vulkan", "camera-screen", "photo-output", "android-shell",
+  "ui-kit", "ui-draw", "ui-render-vulkan", "camera-screen", "photo-output", "android-shell", "scope-contract",
+  "scope-model",
 ]
 reason = "look-presets — хранилище пресетов: видит только словарь look-contract, решение 178"
 
@@ -107,7 +138,7 @@ applies_to_crates = [
   "camera-contract", "shell-contract", "still-contract", "look-contract", "camera-core", "camera-android",
   "camera-ndk-sys", "raw-frame-stream", "isp-model", "isp-vulkan", "scene-estimation", "render-loop",
   "gpu-vulkan", "ui-core", "ui-kit", "ui-draw", "ui-render-vulkan", "camera-screen", "photo-output",
-  "android-shell",
+  "android-shell", "scope-contract", "scope-model",
 ]
 forbid = ["look-presets"]
 reason = "хранилище пресетов (файл, поток записи) видит только сборка приложения fasticamera-app, решение 178"

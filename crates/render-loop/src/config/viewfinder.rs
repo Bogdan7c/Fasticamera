@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use super::auto_exposure::{AutoExposureConfig, AutoExposureConfigError};
 use super::continuity::{ContinuityConfig, ContinuityConfigError};
 use super::lens_shading::ViewfinderLensShadingConfig;
+use super::scopes::{ScopesConfig, ScopesConfigError};
 use super::tone::{ToneConfigError, ViewfinderToneConfig};
 use super::white_balance::{WhiteBalanceConfig, WhiteBalanceConfigError};
 use crate::viewfinder::ViewfinderPainter;
@@ -137,6 +138,8 @@ pub struct ViewfinderConfig {
     pub look_model: LookModelSettings,
     /// Удержание последнего кадра при смене объектива (сессия 13): сроки и условие показа нового потока.
     pub continuity: ContinuityConfig,
+    /// Цветовые приборы (14h): настройки модели, «каждый N-й кадр», предел размера картинки прибора.
+    pub scopes: ScopesConfig,
 }
 
 impl Default for ViewfinderConfig {
@@ -154,6 +157,7 @@ impl Default for ViewfinderConfig {
             lens_shading: ViewfinderLensShadingConfig::default(),
             look_model: LookModelSettings::default(),
             continuity: ContinuityConfig::default(),
+            scopes: ScopesConfig::default(),
         }
     }
 }
@@ -170,6 +174,7 @@ impl ViewfinderConfig {
         self.white_balance.validate()?;
         self.auto_exposure.validate()?;
         self.continuity.validate()?;
+        self.scopes.validate()?;
         // Тон проверяется на краях подтяжки ЭТОГО конфига AE (поэтому после проверки AE).
         self.tone.validate(self.auto_exposure.controller.max_residual_ev)?;
         // Модель вида — после тона: края ручек тона проверяются на выбранной основе и тех же краях подтяжки AE.
@@ -233,6 +238,9 @@ pub enum ViewfinderConfigError {
     /// Сроки удержания кадра отвергнуты.
     #[error(transparent)]
     Continuity(#[from] ContinuityConfigError),
+    /// Настройки цветовых приборов отвергнуты.
+    #[error(transparent)]
+    Scopes(#[from] ScopesConfigError),
 }
 
 #[cfg(test)]

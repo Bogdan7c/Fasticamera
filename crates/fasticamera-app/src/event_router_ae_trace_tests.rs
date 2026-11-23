@@ -63,6 +63,8 @@ fn viewfinder_without_ae() -> ViewfinderDiagnostics {
         ),
         stages: IspStageSet::ALL,
         look: std::sync::Arc::new(look_contract::LookSettings::NEUTRAL),
+        // Приборы закрыты: эти тесты их не касаются.
+        scopes: Default::default(),
         display_color_space: Some(ViewfinderColorSpace::DisplayP3),
         storage: Some(ViewfinderStorage::TenBitUnorm),
         output_extent: Some(ViewfinderExtent {

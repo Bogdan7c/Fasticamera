@@ -11,7 +11,7 @@ mod shape;
 
 pub(crate) use glass::{GLASS_GROUP_BYTES, GLASS_MEMBER_BYTES, pack_glass_group};
 pub(crate) use glyph::{GLYPH_INSTANCE_BYTES, pack_icon, pack_text};
-pub(crate) use image::{IMAGE_INSTANCE_BYTES, pack_image};
+pub(crate) use image::{IMAGE_INSTANCE_BYTES, ImageSamplerSlot, pack_image};
 pub(crate) use push::{BLUR_PUSH_BYTES, BlurPush, FRAME_PUSH_BYTES, FramePush};
 pub(crate) use shape::{SHAPE_INSTANCE_BYTES, pack_shape};
 

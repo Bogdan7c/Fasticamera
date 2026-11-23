@@ -9,12 +9,14 @@
 //! * `error`  — [`DrawListError`] и [`DrawList::validate`];
 //! * `glass_group`  — группа стекла, поле слитой формы, нажатие группы;
 //! * `pixel_reference` — эталонный цвет пикселя фигуры и группы стекла (для паритета рендера);
-//! * `image_reference` — эталонный цвет пикселя картинки (обрезка кругом, `Cover`, перевод цвета).
+//! * `image_reference` — эталонный цвет пикселя картинки (обрезка кругом или прямоугольником, `Cover`/`Stretch`, перевод цвета);
+//! * `image_source` — источник пикселей: картинка из памяти или живая с GPU.
 
 mod bounds;
 mod error;
 mod glass_group;
 mod image_reference;
+mod image_source;
 mod items;
 mod pixel_reference;
 mod validate;
@@ -23,7 +25,8 @@ use crate::light::LightDirection;
 
 pub use error::DrawListError;
 pub use glass_group::{GlassGroupItem, GlassMember, GroupField, MAX_GLASS_GROUP_MEMBERS, PressState};
-pub use image_reference::{clip_geometry, cover_uv_scale, shade_image_pixel};
+pub use image_reference::{clip_geometry, fit_uv_scale, shade_image_pixel, shade_image_pixel_with_live};
+pub use image_source::{ImageColorSpace, ImageSource, LiveImage, LiveImageTexels, LiveImageTexelsError};
 pub use items::{DrawItem, IconItem, ImageClip, ImageFit, ImageItem, ShapeItem, StrokeStyle, TextItem};
 pub use pixel_reference::{shade_glass_group_pixel, shade_shape_pixel};
 

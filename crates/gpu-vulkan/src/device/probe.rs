@@ -6,6 +6,7 @@
 use ash::{Instance, ext, vk};
 
 use super::{DeviceCandidate, FeatureSupport, QueueFamilyReport};
+use crate::context::Float32Controls;
 use crate::error::{GpuInitError, init_step};
 
 /// Сведения об устройстве, которые не участвуют в выборе, но нужны отчёту о возможностях.
@@ -19,6 +20,8 @@ pub(crate) struct DeviceDetails {
     pub driver_id: vk::DriverId,
     /// Наносекунд на тик timestamp.
     pub timestamp_period_ns: f32,
+    /// Управление округлением и денормалями f32 (`VkPhysicalDeviceFloatControlsProperties`).
+    pub float32_controls: Float32Controls,
     /// Размер subgroup по умолчанию.
     pub subgroup_size: u32,
     /// Арифметика subgroup (`subgroupAdd` и др.) доступна в compute-шейдерах.
@@ -147,6 +150,11 @@ fn probe_device(instance: &Instance, physical_device: vk::PhysicalDevice) -> Res
             .unwrap_or_default(),
         driver_id: properties_12.driver_id,
         timestamp_period_ns: properties.limits.timestamp_period,
+        float32_controls: Float32Controls {
+            rounding_mode_rte: properties_12.shader_rounding_mode_rte_float32 == vk::TRUE,
+            denorm_preserve: properties_12.shader_denorm_preserve_float32 == vk::TRUE,
+            denorm_flush_to_zero: properties_12.shader_denorm_flush_to_zero_float32 == vk::TRUE,
+        },
         subgroup_size: properties_11.subgroup_size,
         // Модуль с capability GroupNonUniformArithmetic устройство принимает только при бите ARITHMETIC,
         // а сама операция в compute — только если compute есть среди поддерживаемых стадий subgroup.

@@ -45,6 +45,8 @@ use crate::thread::{MonotonicTimer, SleepUntilOutcome, SystemMonotonicTimer};
 use crate::viewfinder::{AwbStatisticsFeed, ViewfinderDiagnostics};
 
 mod camera_painter;
+#[cfg(feature = "test-support")]
+mod scope_readback;
 
 use camera_painter::create_camera_painter;
 
@@ -491,6 +493,8 @@ impl AttachedDisplay {
                 pipelines
                     .rebuild_for_format(&info)
                     .map_err(|error| gpu_backend_error("rebuild_camera_pipelines", &error))?;
+                // Объекты приборов сброшены вместе с форматом: поднимаем их сейчас, а не внутри первого кадра.
+                pipelines.prepare_scopes_between_frames();
             }
         }
         Ok(())
@@ -515,7 +519,14 @@ impl AttachedDisplay {
     /// Диагностика видоискателя (`None` — показывается тестовый паттерн).
     pub(super) fn viewfinder_diagnostics(&mut self) -> Option<ViewfinderDiagnostics> {
         match &mut self.chain.as_mut()?.painter {
-            Painter::Camera { session, .. } => Some(session.viewfinder_diagnostics()),
+            Painter::Camera { session, pipelines } => {
+                // Приращения приборов последних записанных кадров ещё в цепочке: забираем перед снимком.
+                session.note_scope_events(&pipelines.take_scope_events());
+                let mut diagnostics = session.viewfinder_diagnostics();
+                diagnostics.scopes.residency = pipelines.scope_residency();
+                diagnostics.scopes.float32_controls = pipelines.scope_float32_controls();
+                Some(diagnostics)
+            }
             Painter::TestPattern(_) => None,
         }
     }
@@ -525,6 +536,15 @@ impl AttachedDisplay {
         match self.chain.as_mut().map(|chain| &mut chain.painter) {
             Some(Painter::Camera { pipelines, .. }) => pipelines.prepare_ui_overlay(),
             _ => Ok(()),
+        }
+    }
+
+    /// Готовит объекты цветовых приборов МЕЖДУ кадрами под желание `demand` (см. `ScopePass`): создание набора и
+    /// картинки не должно происходить внутри записи кадра. Без камеры ничего не делает.
+    pub(super) fn prepare_scopes(&mut self, demand: Option<scope_contract::ScopeRequest>) {
+        if let Some(Painter::Camera { pipelines, .. }) = self.chain.as_mut().map(|chain| &mut chain.painter) {
+            pipelines.set_scope_demand(demand);
+            pipelines.prepare_scopes_between_frames();
         }
     }
 

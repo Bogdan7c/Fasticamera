@@ -31,8 +31,8 @@ pub struct DeviceBuffer {
     buffer: OwnedBuffer,
     _memory: OwnedDeviceMemory,
     size_bytes: u64,
-    /// Контекст нужен только блокирующим загрузке и чтению (тесты): сам буфер держит устройство через `Owned*`.
-    #[cfg(any(test, feature = "test-support"))]
+    /// Контекст нужен командам, которые буфер записывает сам (`record_clear_for_compute`), и блокирующим
+    /// загрузке и чтению (тесты): сам буфер держит устройство через `Owned*`.
     context: GpuContext,
 }
 
@@ -81,7 +81,6 @@ impl DeviceBuffer {
             buffer,
             _memory: memory,
             size_bytes,
-            #[cfg(any(test, feature = "test-support"))]
             context: context.clone(),
         })
     }
@@ -106,6 +105,67 @@ impl DeviceBuffer {
             buffer: self.buffer.handle(),
             range_bytes: self.size_bytes,
         }
+    }
+
+    /// Обнуляет первые `byte_count` байт буфера командой GPU (`vkCmdFillBuffer`) и делает нули видимыми
+    /// compute-шейдерам (накопление счётчиков начинается с нуля). Остальная часть буфера не меняется.
+    ///
+    /// `byte_count` — от 4 до размера буфера, кратно 4; иначе `InvalidArgument` ДО записи команд.
+    ///
+    /// Первая область барьера перед заливкой охватывает все более ранние compute-команды очереди (в том
+    /// числе прошлых сабмитов), поэтому прошлые записи и чтения этого буфера шейдерами закончены до
+    /// заливки (WAR достаточно зависимости исполнения: `srcAccessMask` — запись, чтения она покрывает).
+    /// Записывать вне динамического рендеринга.
+    pub fn record_clear_for_compute(&self, command_buffer: vk::CommandBuffer, byte_count: u64) -> Result<(), GpuError> {
+        validate_clear_size(byte_count, self.size_bytes)?;
+        let device = self.context.device();
+        let before_fill = self.whole_buffer_barrier(
+            (
+                vk::PipelineStageFlags2::COMPUTE_SHADER,
+                vk::AccessFlags2::SHADER_STORAGE_WRITE,
+            ),
+            (vk::PipelineStageFlags2::CLEAR, vk::AccessFlags2::TRANSFER_WRITE),
+        );
+        let after_fill = self.whole_buffer_barrier(
+            (vk::PipelineStageFlags2::CLEAR, vk::AccessFlags2::TRANSFER_WRITE),
+            (
+                vk::PipelineStageFlags2::COMPUTE_SHADER,
+                vk::AccessFlags2::SHADER_STORAGE_READ | vk::AccessFlags2::SHADER_STORAGE_WRITE,
+            ),
+        );
+        // SAFETY: командный буфер в состоянии записи вне рендеринга (контракт вызывающего); буфер создан с
+        // TRANSFER_DST; смещение 0 и размер (кратный 4, в пределах буфера) проверены выше; барьеры живут
+        // до конца вызова.
+        unsafe {
+            device.cmd_pipeline_barrier2(
+                command_buffer,
+                &vk::DependencyInfo::default().buffer_memory_barriers(&[before_fill]),
+            );
+            device.cmd_fill_buffer(command_buffer, self.buffer.handle(), 0, byte_count, 0);
+            device.cmd_pipeline_barrier2(
+                command_buffer,
+                &vk::DependencyInfo::default().buffer_memory_barriers(&[after_fill]),
+            );
+        }
+        Ok(())
+    }
+
+    /// Барьер всего буфера между двумя областями `(стадия, доступ)`.
+    fn whole_buffer_barrier(
+        &self,
+        (source_stage, source_access): (vk::PipelineStageFlags2, vk::AccessFlags2),
+        (destination_stage, destination_access): (vk::PipelineStageFlags2, vk::AccessFlags2),
+    ) -> vk::BufferMemoryBarrier2<'static> {
+        vk::BufferMemoryBarrier2::default()
+            .src_stage_mask(source_stage)
+            .src_access_mask(source_access)
+            .dst_stage_mask(destination_stage)
+            .dst_access_mask(destination_access)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .buffer(self.buffer.handle())
+            .offset(0)
+            .size(vk::WHOLE_SIZE)
     }
 
     /// Загружает `bytes` в начало буфера и ждёт завершения (разовая отправка с таймаутом контекста).
@@ -145,6 +205,16 @@ pub fn record_compute_pass_dependency(context: &GpuContext, command_buffer: vk::
     // SAFETY: командный буфер в состоянии записи вне динамического рендеринга (контракт вызывающего);
     // массив барьеров живёт до конца вызова.
     unsafe { context.device().cmd_pipeline_barrier2(command_buffer, &dependency) };
+}
+
+/// Проверка размера заливки — чистая функция (тестируется без GPU).
+fn validate_clear_size(byte_count: u64, buffer_bytes: u64) -> Result<(), GpuError> {
+    if byte_count == 0 || !byte_count.is_multiple_of(4) || byte_count > buffer_bytes {
+        return Err(GpuError::InvalidArgument {
+            what: format!("заливка {byte_count} байт в DeviceBuffer {buffer_bytes} байт: нужно 4..=размер, кратно 4"),
+        });
+    }
+    Ok(())
 }
 
 /// `maxStorageBufferRange` устройства.
@@ -321,6 +391,44 @@ mod tests {
         assert_eq!(validate_size(1024, 1024), Ok(()));
         // Плоскость f32 кадра 4096×2304 помещается в лимит Adreno 740 (128 МиБ).
         assert_eq!(validate_size(4096 * 2304 * 4, 134_217_728), Ok(()));
+    }
+
+    #[test]
+    fn clear_size_must_be_nonzero_word_multiple_within_buffer() {
+        assert!(validate_clear_size(0, 64).is_err(), "ноль");
+        assert!(validate_clear_size(6, 64).is_err(), "не кратно 4");
+        assert!(validate_clear_size(68, 64).is_err(), "больше буфера");
+        assert_eq!(validate_clear_size(4, 64), Ok(()));
+        assert_eq!(validate_clear_size(64, 64), Ok(()));
+    }
+
+    #[test]
+    fn clear_zeroes_only_the_requested_prefix_and_rejects_bad_sizes_without_commands() {
+        let Some(context) = gpu_context_or_skip() else { return };
+        let buffer = DeviceBuffer::new(&context, 256).unwrap();
+        let pattern: Vec<u8> = (0..256_u32).map(|index| (index % 250) as u8 + 1).collect();
+        buffer.upload_blocking(&pattern).unwrap();
+        context
+            .run_one_shot(|command_buffer| buffer.record_clear_for_compute(command_buffer, 96))
+            .unwrap();
+        let after = buffer.read_back_blocking().unwrap();
+        assert!(after[..96].iter().all(|&byte| byte == 0), "префикс обнулён");
+        assert_eq!(after[96..], pattern[96..], "хвост не тронут");
+        // Плохой размер — ошибка до команд: содержимое остаётся прежним.
+        context
+            .run_one_shot(|command_buffer| {
+                assert!(buffer.record_clear_for_compute(command_buffer, 0).is_err());
+                assert!(buffer.record_clear_for_compute(command_buffer, 260).is_err());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(buffer.read_back_blocking().unwrap(), after);
+        assert_eq!(
+            context.validation_report().errors,
+            0,
+            "{:?}",
+            context.validation_report()
+        );
     }
 
     #[test]

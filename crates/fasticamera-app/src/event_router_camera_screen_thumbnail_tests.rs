@@ -187,11 +187,19 @@ fn the_pixels_the_render_made_for_a_shot_end_up_in_the_screens_draw_list_after_s
         list.items.len()
     );
     assert_eq!(
-        shown[0].picture.rgba8(),
+        shown[0]
+            .source
+            .as_picture()
+            .expect("источник — картинка из памяти")
+            .rgba8(),
         pixels(10).as_slice(),
         "те же байты, что отдал рендер"
     );
-    let size = shown[0].picture.size();
+    let size = shown[0]
+        .source
+        .as_picture()
+        .expect("источник — картинка из памяти")
+        .size();
     assert_eq!((size.width, size.height), (THUMBNAIL_SIZE.width, THUMBNAIL_SIZE.height));
     assert_eq!(shown[0].opacity.get(), 1.0, "растворение закончилось");
     let counters = rig.ledger_counters();
@@ -217,7 +225,11 @@ fn of_two_shots_with_reversed_outcomes_the_one_saved_last_is_shown() {
     let shown = images(&list);
     assert_eq!(shown.len(), 1, "растворение закончилось: одна картинка");
     assert_eq!(
-        shown[0].picture.rgba8(),
+        shown[0]
+            .source
+            .as_picture()
+            .expect("источник — картинка из памяти")
+            .rgba8(),
         pixels(90).as_slice(),
         "показан снимок, сохранённый ПОСЛЕДНИМ"
     );
@@ -252,7 +264,11 @@ fn a_failed_shot_leaves_the_previous_picture_and_its_own_thumbnail_is_thrown_awa
     let shown = images(&list);
     assert_eq!(shown.len(), 1);
     assert_eq!(
-        shown[0].picture.rgba8(),
+        shown[0]
+            .source
+            .as_picture()
+            .expect("источник — картинка из памяти")
+            .rgba8(),
         pixels(10).as_slice(),
         "картинка первого снимка осталась"
     );
@@ -316,7 +332,14 @@ fn saved_while_the_screen_produced_no_frames_shows_the_picture_and_starts_the_fa
     let later = rig.clock.frame_list(&rig.harness);
     let shown = images(&later);
     assert_eq!(shown.len(), 1);
-    assert_eq!(shown[0].picture.rgba8(), pixels(33).as_slice());
+    assert_eq!(
+        shown[0]
+            .source
+            .as_picture()
+            .expect("источник — картинка из памяти")
+            .rgba8(),
+        pixels(33).as_slice()
+    );
     assert!(
         (shown[0].opacity.get() - 80.0 / 150.0).abs() < 1e-3,
         "{}",

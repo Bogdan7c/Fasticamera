@@ -23,6 +23,8 @@ ui-draw.workspace = true
 still-contract.workspace = true
 # Словарь вида картинки: намерения экрана (`LookIntent`) — экран только шлёт их наружу (решение 178).
 look-contract.workspace = true
+# Словарь приборов (14h): экран шлёт `ScopeIntent` наружу и ничего не считает (решение 183).
+scope-contract.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 

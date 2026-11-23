@@ -40,6 +40,7 @@ use shell_contract::still_media::ShutterSoundService;
 use crate::camera_screen_capture::{CaptureService, SubmitOutcome, SubmitRejection};
 use crate::look_effects::{LookCounters, LookEffects};
 use crate::look_service::LookHandle;
+use crate::scope_effects::{ScopeCounters, ScopeEffects};
 use crate::viewfinder_control::{ControlDelivery, RenderAdjustment, RenderControl};
 
 const LOG_TARGET: &str = "fasticamera::camera_screen";
@@ -244,6 +245,8 @@ pub struct EffectCounters {
     pub lens: LensCounters,
     /// Вид картинки и пресеты (решение 178): отказы библиотеки, доставка рендеру, запись файла.
     pub look: LookCounters,
+    /// Цветовые приборы (14h): доставка намерений рендеру.
+    pub scopes: ScopeCounters,
 }
 
 /// Сервисы, которым адресованы эффекты (собираются композицией один раз на экран).
@@ -268,6 +271,8 @@ pub struct EffectExecutor {
     /// Намерения по виду картинки: библиотека пресетов, команда рендеру, запись файла. Счётчики — свои, в
     /// [`EffectCounters::look`] они подставляются при чтении.
     look: LookEffects,
+    /// Намерения по цветовым приборам: команда рендеру и счётчики её доставки.
+    scopes: ScopeEffects,
     counters: EffectCounters,
     /// Время показа текущего кадра UI (часы потока рендера): им фейк-сервис снимка отсчитывает задержку ответа.
     frame_time: MonotonicNanos,
@@ -290,6 +295,7 @@ impl EffectExecutor {
     pub fn new(targets: EffectTargets) -> Self {
         Self {
             look: LookEffects::new(targets.look.clone()),
+            scopes: ScopeEffects::default(),
             targets,
             counters: EffectCounters::default(),
             frame_time: MonotonicNanos::from_nanos(0),
@@ -337,6 +343,7 @@ impl EffectExecutor {
     pub fn counters(&self) -> EffectCounters {
         EffectCounters {
             look: self.look.counters(),
+            scopes: self.scopes.counters(),
             ..self.counters
         }
     }
@@ -352,6 +359,7 @@ impl EffectExecutor {
                 Effect::Viewfinder(intent) => self.place_viewfinder(intent),
                 Effect::Lens(intent) => self.publish_lens_intent(intent),
                 Effect::Look(intent) => self.run_look_intent(intent),
+                Effect::Scopes(intent) => self.scopes.run_intent(intent, self.targets.render.as_ref()),
                 Effect::Capture(request) => feedback.extend(self.submit_capture(request)),
                 Effect::PlayShutterSound => self.play_shutter_sound(),
             }

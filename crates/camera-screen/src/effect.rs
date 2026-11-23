@@ -5,6 +5,7 @@ use camera_contract::control::ExposureBias;
 use camera_contract::three_a::SensorPoint;
 use camera_contract::zoom::LensIntent;
 use look_contract::LookIntent;
+use scope_contract::ScopeIntent;
 use shell_contract::haptics::HapticPattern;
 
 use crate::layout::FramingIntent;
@@ -49,4 +50,7 @@ pub enum Effect {
     /// Намерение по виду картинки и пресетам (решение 178). Исполнитель эффектов на потоке рендера отдаёт его
     /// библиотеке пресетов, шлёт новый вид рендеру и просит записать файл; экран к ним не прикасается.
     Look(LookIntent),
+    /// Показать или скрыть цветовой прибор (решения 183, 188–190). Исполнитель шлёт его рендеру командой
+    /// видоискателя; экран приборы не считает и не рисует, а запрос держит, пока открыт его раздел (виджет — 14b).
+    Scopes(ScopeIntent),
 }

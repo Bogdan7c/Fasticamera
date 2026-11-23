@@ -89,6 +89,7 @@ impl Stand {
                 &info,
                 &ViewfinderIspConfig::default(),
                 &UiOverlayConfig::default(),
+                &crate::config::ScopesConfig::default(),
             )
             .expect("конвейеры показа камеры"),
             target: OffscreenTarget::new(context, TARGET_WIDTH, TARGET_HEIGHT).expect("offscreen-цель"),

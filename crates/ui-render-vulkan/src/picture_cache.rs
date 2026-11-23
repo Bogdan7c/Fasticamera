@@ -36,6 +36,7 @@ use gpu_vulkan::sampled_texture::{PendingUploadTexture, SampledTexture, TextureD
 use ui_draw::picture::{PictureVersion, UiPicture};
 
 use crate::config::{MAX_IMAGE_BINDINGS, PictureCacheConfig};
+use crate::plan::SamplerSlot;
 
 /// Картинка в видеопамяти и когда её последний раз рисовали.
 struct CachedPicture {
@@ -117,28 +118,29 @@ impl PictureCache {
         self.entries.len()
     }
 
-    /// Ресурсы привязок сэмплеров кадра: картинки плана по номерам, остальное — заглушка. Всегда
-    /// `MAX_IMAGE_BINDINGS` штук; картинки плана обязаны быть в кэше (после `record_staged_uploads`).
-    pub(crate) fn bindings_for(&self, pictures: &[UiPicture]) -> Vec<DescriptorResource> {
+    /// Ресурсы привязок сэмплеров кадра по слотам плана: картинка из памяти — текстура кэша, живая картинка —
+    /// её представление напрямую (кэш её не знает: ни загрузки, ни вытеснения, ни отставки), остальное —
+    /// заглушка. Всегда `MAX_IMAGE_BINDINGS` штук; картинки из памяти обязаны быть в кэше
+    /// (после `record_staged_uploads`).
+    pub(crate) fn bindings_for(&self, slots: &[SamplerSlot]) -> Vec<DescriptorResource> {
         (0..MAX_IMAGE_BINDINGS as usize)
-            .map(|index| {
-                pictures
-                    .get(index)
-                    .and_then(|picture| self.entries.get(&picture.version()))
-                    .map_or_else(
-                        || self.placeholder.read_only_binding(),
-                        |cached| cached.texture.read_only_binding(),
-                    )
+            .map(|index| match slots.get(index) {
+                Some(SamplerSlot::Live { view, .. }) => DescriptorResource::ReadOnlyImage { view: *view },
+                Some(SamplerSlot::Picture(picture)) => self.entries.get(&picture.version()).map_or_else(
+                    || self.placeholder.read_only_binding(),
+                    |cached| cached.texture.read_only_binding(),
+                ),
+                None => self.placeholder.read_only_binding(),
             })
             .collect()
     }
 
     /// Шаг 1 (до первой команды): готовит загрузки для картинок плана, которых нет в кэше. Возвращает
     /// подготовленное и число попаданий в кэш; попавшим обновляется «последнее использование».
-    pub(crate) fn stage_missing(
+    pub(crate) fn stage_missing<'a>(
         &mut self,
         context: &GpuContext,
-        pictures: &[UiPicture],
+        pictures: impl IntoIterator<Item = &'a UiPicture>,
     ) -> Result<(Vec<StagedUpload>, u32), GpuError> {
         let mut staged = Vec::new();
         let mut hits = 0_u32;

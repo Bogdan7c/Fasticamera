@@ -4,8 +4,9 @@
 #include "ui_field.glsl"
 #include "ui_image_data.glsl"
 
-// Сэмплеры картинок кадра: по привязке на текстуру (число = `MAX_IMAGE_BINDINGS` в config.rs). Формат —
-// Rgba8Unorm, НЕ sRGB: выборка идёт по закодированным значениям источника. Неиспользуемые привязки
+// Сэмплеры картинок кадра: по привязке на текстуру (число = `MAX_IMAGE_BINDINGS` в config.rs). Формат картинок
+// из памяти — Rgba8Unorm, НЕ sRGB: выборка идёт по закодированным значениям источника; в привязку может лечь и
+// живая картинка с GPU (Rgba16Float, цвет экрана). Неиспользуемые привязки
 // держат текстуру-заглушку 1×1.
 layout(set = 0, binding = 1) uniform sampler2D picture_0;
 layout(set = 0, binding = 2) uniform sampler2D picture_1;
@@ -58,8 +59,8 @@ vec4 sample_picture(uint index, vec2 uv) {
     }
 }
 
-// Формулы — ui_draw::draw_list::shade_image_pixel: покрытие круга · билинейная выборка (закодированные
-// значения) · перевод в цвет экрана · предумножение на альфу источника × покрытие × прозрачность.
+// Формулы — ui_draw::draw_list::shade_image_pixel_with_live: покрытие формы обрезки · билинейная выборка (значения
+// источника) · перевод в цвет экрана (только sRGB-картинки) · предумножение на альфу источника × покрытие × прозрачность.
 void main() {
     ImageInstance image = instances[v_instance];
     ScreenField field = member_field_at(v_logical, image.inv0, image.inv1, image.geom);
@@ -70,6 +71,9 @@ void main() {
     vec2 uv = 0.5 + local * image.uv.xy;
     vec4 texel = sample_picture(uint(image.uv.w + 0.5), uv);
 
+    // Живая картинка (приборы цвета) уже в цвете экрана с прямой альфой: перевода нет, иначе на P3-экране
+    // цвет «переехал» бы второй раз. Остальное (предумножение на альфу · покрытие · прозрачность) общее.
+    vec3 display_rgb = (uint(image.source.x + 0.5) == COLOR_SPACE_DISPLAY_ENCODED) ? texel.rgb : picture_to_display(texel.rgb);
     float alpha = texel.a * clip_coverage * image.uv.z;
-    out_color = vec4(picture_to_display(texel.rgb) * alpha, alpha);
+    out_color = vec4(display_rgb * alpha, alpha);
 }

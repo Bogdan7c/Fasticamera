@@ -27,7 +27,7 @@ mod error;
 mod geometry;
 mod image;
 mod isp;
-mod retirement;
+pub(crate) mod retirement;
 mod stages;
 mod statistics;
 mod uniforms;

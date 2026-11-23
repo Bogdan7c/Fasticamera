@@ -61,6 +61,11 @@ impl CameraSession {
             tracing::warn!(target: LOG_TARGET, %error, "удержание без картинки: кадры будут чёрными");
             self.viewfinder.continuity_mut().counters_mut().holds_without_image += 1;
         }
+        // Желание экрана о приборах действует на КАЖДОМ кадре и любом содержимом (в том числе после «скрыть» на кадрах
+        // перекомпоновки и чёрных): так выведенные объекты приборов освобождаются по слотам без новых кадров камеры.
+        // Считаются приборы только пока их есть кому показывать: рисовальщик ISP (мозаика приборов не знает) и
+        // установленный источник UI — то же состояние, что решает рисование UI (`ui.state.is_active()` ниже).
+        pipelines.set_scope_demand(self.settings.effective_scope_demand(ui.state.source_presence()));
         let show = transition.map_or(ShowFrameAs::Live, TransitionFrame::show);
         let continuity = backdrop_of(transition, BackdropContinuity::Live);
         // Возврат прежнего кадра мозаики — в сабмите, который его заменяет или убирает с экрана.
@@ -145,6 +150,7 @@ impl CameraSession {
                 let recording = pipelines.record_new_frame(
                     &target,
                     &NewIspFrame {
+                        submission: gpu_vulkan::backdrop::SubmissionSerial(serial.0),
                         source,
                         params,
                         geometry: *geometry,

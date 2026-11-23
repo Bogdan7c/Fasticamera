@@ -144,6 +144,7 @@ fn typical_camera_frame_gpu_time_on_the_desktop_driver() {
                 source: &source,
                 placement,
             },
+            live_images: ui_render_vulkan::LiveImages::none(),
         };
         let slot = (frame_number % 2) as usize;
         let mut result = None;
