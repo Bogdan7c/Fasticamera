@@ -66,6 +66,8 @@ fn classify_tile(tile: &AwbTile, table: &CameraLocusTable, config: &EstimatorCon
     let red = tile.sum_r as f32 / used;
     let green = tile.sum_g as f32 / (2.0 * used);
     let blue = tile.sum_b as f32 / used;
+    // Уровень — после виньетирования: тёмный угол под усилением может дать среднее > 1. Такая плитка не годится для
+    // оценки цвета (`level > max_level`) и отбрасывается явно, а не обрезается до белого.
     let level = green / QUANT_SCALE;
     // Запись через отрицание: NaN тоже «непригоден» (как в GLSL `!(a >= b)`).
     if !(level >= config.min_level && level <= config.max_level) {

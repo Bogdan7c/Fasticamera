@@ -16,7 +16,7 @@ use crate::lens_shading::{CorrectionStrength, LensShadingControl};
 use crate::params::{FrameInputs, IspParams, ProcessingControls};
 use crate::pipeline::run_reference;
 use crate::sensor::SensorDescription;
-use crate::statistics::{AwbStatisticsSettings, TileGrid, compute_awb_statistics};
+use crate::statistics::{AwbStatisticsInput, AwbStatisticsSettings, TileGrid, compute_awb_statistics};
 use crate::test_support::{
     LAMP_NEUTRAL, MAIN_ACTIVE_ARRAY, calibrated_passport, lamp_neutral, main_camera_calibration,
 };
@@ -187,10 +187,15 @@ fn awb_statistics_after_shading_are_flat_across_a_vignetted_frame() {
     let settings = AwbStatisticsSettings {
         grid: TileGrid { columns: 4, rows: 3 },
         saturation_threshold: 0.95,
+        sum_headroom: 16.0,
     };
     let mean_green = |control| {
         let run = run_reference(&raw, &params(&sensor, control)).unwrap();
-        let statistics = compute_awb_statistics(&run.shading_corrected, &settings).unwrap();
+        let statistics = compute_awb_statistics(
+            AwbStatisticsInput::new(&run.normalized, &run.shading_corrected).unwrap(),
+            &settings,
+        )
+        .unwrap();
         let tiles = statistics.tiles();
         let per_tile: Vec<f64> = tiles
             .iter()

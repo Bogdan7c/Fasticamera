@@ -55,6 +55,7 @@ fn layout_matches_documented_offsets() {
     let awb = AwbStatisticsSettings {
         grid: TileGrid { columns: 6, rows: 3 },
         saturation_threshold: 0.9,
+        sum_headroom: 8.0,
     };
     let bytes = pack_uniforms(&params, &geometry(), &awb);
     let black = params.levels.black_pattern();

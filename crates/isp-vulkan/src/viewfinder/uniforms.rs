@@ -9,7 +9,7 @@
 //! | 0 | 0 | vec4 | чёрный уровень по позициям ячейки 2×2 (порядок строк, как `BLACK_LEVEL_PATTERN`) |
 //! | 1 | 16 | vec4 | `white − black` по позициям, посчитано здесь в f32 той же операцией, что в эталоне |
 //! | 2 | 32 | vec4 | усиление баланса белого для цвета каждой позиции |
-//! | 3 | 48 | vec4 | белый уровень, уровень обрезки после баланса, порог пересвета AWB, 0 |
+//! | 3 | 48 | vec4 | белый уровень, уровень обрезки после баланса, порог пересвета AWB, потолок сумм AWB (запас) |
 //! | 4–6 | 64 | vec4×3 | строки матрицы камера (после баланса) → XYZ D50, w = 0 |
 //! | 7–9 | 112 | vec4×3 | строки матрицы XYZ D50 → линейный свет экрана, w = 0 |
 //! | 10 | 160 | vec4 | порог сжатия охвата по каналам, w — степень `p` |
@@ -89,7 +89,7 @@ pub(crate) fn pack_uniforms(
     writer.vec4(black.map(|cell_black| white - cell_black));
     let gains = params.white_balance.as_array();
     writer.vec4(position_channels(params).map(|channel| gains[channel.index()]));
-    writer.vec4([white, SENSOR_CLIP_LEVEL, awb.saturation_threshold, 0.0]);
+    writer.vec4([white, SENSOR_CLIP_LEVEL, awb.saturation_threshold, awb.sum_headroom]);
     for row in params.color.camera_to_xyz_d50().rows {
         writer.vec4([row[0], row[1], row[2], 0.0]);
     }

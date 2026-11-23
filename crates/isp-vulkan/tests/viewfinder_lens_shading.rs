@@ -34,7 +34,6 @@ use gpu_vulkan::hardware_buffer_cache::queue_handoff::ConsumerStage;
 use gpu_vulkan::kit_test_support::run_one_shot_blocking;
 use isp_model::image::DisplayGamut;
 use isp_model::lens_shading::{CorrectionStrength, LensShadingGainMap, LensShadingSampling};
-use isp_model::statistics::compute_awb_statistics;
 use isp_model::transfer::srgb_decode;
 use isp_vulkan::lens_shading_map::{LensShadingMapError, LensShadingMapLimits};
 use isp_vulkan::viewfinder::{
@@ -44,8 +43,8 @@ use isp_vulkan::viewfinder::{
 use lens_shading_support::{asymmetric_map, identity_map, skipped, with_map};
 use viewfinder_support::{
     GpuSource, ParamsSpec, RawFrame, RunRequest, SourceLayout, assert_no_validation_errors, boundary_cells,
-    gpu_context_or_skip, parity, readback, record_and_submit, reference_upright, reference_upright_in_valid_area,
-    reference_upright_in_valid_area_sampled, run_viewfinder, test_config,
+    cpu_awb_statistics, gpu_context_or_skip, parity, readback, record_and_submit, reference_upright,
+    reference_upright_in_valid_area, reference_upright_in_valid_area_sampled, run_viewfinder, test_config,
 };
 
 /// Допуск ошибки математики сверх шага хранения (см. `viewfinder_parity.rs`).
@@ -224,13 +223,9 @@ fn per_cell_evaluation_matches_reference_at_grid_boundaries_and_edges_and_differ
             assert!((gpu_edge[channel] - cpu_edge[channel]).abs() <= HALF_LSB + MATH_EXCESS_TOLERANCE);
         }
         // Статистика AWB в том же допуске.
-        let cpu = compute_awb_statistics(&reference.run.shading_corrected, &config.awb_statistics).unwrap();
+        let cpu = cpu_awb_statistics(&reference.run, &config.awb_statistics);
         let gpu = run.report.awb_statistics.clone().unwrap();
-        let boundaries = boundary_cells(
-            &reference.run.shading_corrected,
-            &config.awb_statistics,
-            SHADED_BOUNDARY_ULPS,
-        );
+        let boundaries = boundary_cells(&reference.run, &config.awb_statistics, SHADED_BOUNDARY_ULPS);
         for ((gpu_tile, cpu_tile), boundary) in gpu.tiles().iter().zip(cpu.tiles()).zip(&boundaries) {
             assert_eq!(gpu_tile.used_cells, cpu_tile.used_cells, "{columns}x{rows}");
             assert!(
@@ -307,12 +302,8 @@ fn awb_statistics_are_computed_after_lens_shading_within_the_documented_bound() 
         let shaded_run = run_viewfinder(&context, &config, &request(&params));
         let gpu = shaded_run.report.awb_statistics.clone().unwrap();
         let reference = reference_upright_in_valid_area(&raw, valid, crop, orientation, &params);
-        let cpu = compute_awb_statistics(&reference.run.shading_corrected, &config.awb_statistics).unwrap();
-        let boundaries = boundary_cells(
-            &reference.run.shading_corrected,
-            &config.awb_statistics,
-            SHADED_BOUNDARY_ULPS,
-        );
+        let cpu = cpu_awb_statistics(&reference.run, &config.awb_statistics);
+        let boundaries = boundary_cells(&reference.run, &config.awb_statistics, SHADED_BOUNDARY_ULPS);
         for ((gpu_tile, cpu_tile), boundary) in gpu.tiles().iter().zip(cpu.tiles()).zip(&boundaries) {
             assert_eq!(boundary.saturation, 0, "сцена выбрана без отсчётов у порога пересвета");
             assert_eq!(gpu_tile.used_cells, cpu_tile.used_cells, "{orientation:?}");
@@ -344,6 +335,86 @@ fn awb_statistics_are_computed_after_lens_shading_within_the_documented_bound() 
             "{orientation:?}: статистика не видит коррекцию ({plain_sum} → {shaded_sum})"
         );
     }
+    assert_no_validation_errors(&context);
+}
+
+#[test]
+fn awb_judges_clipping_on_the_raw_sample_and_sums_corrected_values_above_white() {
+    let Some(context) = gpu_context_or_skip() else { return };
+    let spec = ParamsSpec::default();
+    let params = with_map(&spec.build(), &asymmetric_map(5, 4));
+    // Левая полоса 8 пикселей — настоящий пересвет сенсора (RAW на белом, нормированное 1,0); остальное — свет 0,8 (не пересвечен):
+    // под усилением до ×2,35 он даёт скорректированные значения до ~1,9 — выше порога пересвета 0,95 и выше белого.
+    let raw = RawFrame::from_linear(WIDTH, HEIGHT, spec.pattern, spec.levels(), |x, _, _| {
+        if x < 8 { 1.2 } else { 0.8 }
+    });
+    let config = test_config(ViewfinderStorageFormat::HalfFloatOnly);
+    let request = RunRequest::whole_frame(&raw, &params, spec.display());
+    let run = run_viewfinder(&context, &config, &request);
+    let gpu = run.report.awb_statistics.clone().unwrap();
+    let reference = reference_upright(&raw, raw.full_rect(), SensorOrientation::Degrees0, &params);
+    let cpu = cpu_awb_statistics(&reference.run, &config.awb_statistics);
+
+    // Эталон сам подтверждает постановку: в RAW пересвечена только полоса, после усиления есть значения > 1.
+    let cells_in_strip = (8 / 2) * (HEIGHT / 2);
+    assert_eq!(
+        cpu.totals().saturated_cells,
+        u64::from(cells_in_strip),
+        "эталон: пересвечена ровно полоса"
+    );
+    let corrected_max = reference
+        .run
+        .shading_corrected
+        .samples()
+        .iter()
+        .copied()
+        .fold(0.0_f32, f32::max);
+    assert!(corrected_max > 1.1, "{corrected_max}");
+    // Без исправления (пересвет по скорректированному) пересвечены были бы и ячейки справа, где 0,8 · усиление > 0,95.
+    let would_be_saturated = reference
+        .run
+        .shading_corrected
+        .samples()
+        .iter()
+        .zip(reference.run.normalized.samples())
+        .filter(|(corrected, raw)| **corrected >= 0.95 && **raw < 0.95)
+        .count();
+    assert!(
+        would_be_saturated > 0,
+        "постановка: усиление поднимает несжатый свет выше порога"
+    );
+
+    // GPU: те же флаги и суммы (с запасом выше белого) в той же границе округления, что у остальных AWB-тестов.
+    let boundaries = boundary_cells(&reference.run, &config.awb_statistics, SHADED_BOUNDARY_ULPS);
+    let mut brightest_mean = 0.0_f64;
+    for ((gpu_tile, cpu_tile), boundary) in gpu.tiles().iter().zip(cpu.tiles()).zip(&boundaries) {
+        assert_eq!(boundary.saturation, 0, "сцена без отсчётов у порога пересвета");
+        assert_eq!(gpu_tile.used_cells, cpu_tile.used_cells);
+        assert_eq!(gpu_tile.saturated_cells, cpu_tile.saturated_cells);
+        assert!(
+            gpu_tile.sum_r.abs_diff(cpu_tile.sum_r) <= boundary.quantization,
+            "{gpu_tile:?} {cpu_tile:?}"
+        );
+        assert!(
+            gpu_tile.sum_g.abs_diff(cpu_tile.sum_g) <= 2 * boundary.quantization,
+            "{gpu_tile:?} {cpu_tile:?}"
+        );
+        assert!(
+            gpu_tile.sum_b.abs_diff(cpu_tile.sum_b) <= boundary.quantization,
+            "{gpu_tile:?} {cpu_tile:?}"
+        );
+        if gpu_tile.used_cells > 0 {
+            let mean_green = f64::from(gpu_tile.sum_g) / (2.0 * f64::from(gpu_tile.used_cells) * 4095.0);
+            brightest_mean = brightest_mean.max(mean_green);
+        }
+    }
+    assert_eq!(
+        gpu.totals().saturated_cells,
+        u64::from(cells_in_strip),
+        "GPU: пересвечена ровно полоса"
+    );
+    // Среднее зелёного в плитке > 1: сумма не обрезана до белого.
+    assert!(brightest_mean > 1.0, "{brightest_mean}");
     assert_no_validation_errors(&context);
 }
 

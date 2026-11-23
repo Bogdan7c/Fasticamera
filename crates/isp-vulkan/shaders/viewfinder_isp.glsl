@@ -3,8 +3,9 @@
 // Формулы — эталон `isp-model` (вариант Preview), стадия за стадией, в том же порядке и в f32:
 //   уровни → коррекция виньетирования (lens_shading.glsl) → баланс белого + обрезка → демозаик 2×2 → камера→XYZ D50 → XYZ→экран (два отдельных
 //   произведения, как на CPU) → сжатие охвата → тон с сохранением оттенка → OETF sRGB
-// плюс статистика AWB (суммы по плиткам, контракт `isp_model::statistics`) в том же проходе. Статистика
-// считается ПОСЛЕ коррекции виньетирования и до баланса белого (контракт isp-model).
+// плюс статистика AWB (суммы по плиткам, контракт `isp_model::statistics`) в том же проходе. Статистика: ПЕРЕСВЕТ
+// ячейки судится по нормированному отсчёту ДО виньетирования (пересвечивает сенсор, а не наше усиление),
+// СУММЫ — по скорректированному (после виньетирования, до баланса белого) с потолком `headroom`, не 1.
 //
 // Одна нить = один пиксель ВЫХОДА = одна ячейка CFA 2×2 кадрирования. Выход прямой (upright): нить
 // по координатам выхода находит ячейку сенсора обратным поворотом (ориентация сенсора).
@@ -37,7 +38,7 @@ layout(set = 0, binding = 1, std140) uniform ViewfinderParameters {
     vec4 black_level;              // чёрный уровень по позициям ячейки 2×2 (порядок строк)
     vec4 level_range;              // white − black по позициям (посчитано на CPU в f32, как в эталоне)
     vec4 white_balance_gain;       // усиление баланса для цвета каждой позиции
-    vec4 levels_misc;              // x — белый уровень, y — уровень обрезки после баланса, z — порог пересвета AWB
+    vec4 levels_misc;              // x — белый уровень, y — уровень обрезки после баланса, z — порог пересвета AWB, w — потолок сумм AWB (запас)
     vec4 camera_to_xyz[3];         // строки матрицы камера (после баланса) → XYZ D50, w = 0
     vec4 xyz_to_display[3];        // строки матрицы XYZ D50 → линейный свет экрана, w = 0
     vec4 gamut_threshold_power;    // xyz — порог по каналам, w — степень колена p
@@ -156,15 +157,16 @@ vec4 apply_lens_shading(vec4 normalized, uvec2 cell_origin, uint sample_count) {
 
 // ===== Статистика AWB (isp_model::statistics) =====================================================
 
-// q = floor(clamp(v, 0, 1) · 4095 + 0,5): умножение и сложение — ОТДЕЛЬНЫЕ операции с округлением
+// q = floor(clamp(v, 0, headroom) · 4095 + 0,5), v — СКОРРЕКТИРОВАННЫЙ отсчёт (масштаб 4095 на единицу света
+// сохранён, потолок — запас `headroom` из конфига, а не белый): умножение и сложение — ОТДЕЛЬНЫЕ операции с округлением
 // (`precise` = NoContraction, без слияния в FMA), иначе значения у границы .5 округлялись бы иначе.
-uint quantize_awb_sample(float normalized) {
-    precise float scaled = clamp(normalized, 0.0, 1.0) * AWB_QUANT_SCALE;
+uint quantize_awb_sample(float corrected) {
+    precise float scaled = clamp(corrected, 0.0, parameters.levels_misc.w) * AWB_QUANT_SCALE;
     precise float rounded = floor(scaled + 0.5);
     return uint(rounded);
 }
 
-// Пересвет: !(v < порог) — NaN тоже исключает ячейку, как в эталоне.
+// Пересвет: !(v < порог) — NaN тоже исключает ячейку, как в эталоне. v — НОРМИРОВАННЫЙ отсчёт до виньетирования.
 bool is_saturated_sample(float normalized) {
     return !(normalized < parameters.levels_misc.z);
 }
@@ -179,9 +181,10 @@ uint awb_global_word(uvec2 tile, uint field) {
 }
 
 // Вклад одной ячейки в поля плитки: `sums_and_used` = {sum_r, sum_g, sum_b, used_cells}, `saturated` —
-// saturated_cells. Ячейка с пересветом хоть в одной позиции идёт только в saturated (isp_model). Нить вне
-// выхода (`inside` = false) даёт нули: так её можно складывать вместе со всеми без ветвления.
-void awb_cell_contribution(bool inside, vec4 normalized, out uvec4 sums_and_used, out uint saturated) {
+// saturated_cells. Ячейка с пересветом хоть в одной позиции ИСХОДНОГО (до виньетирования) отсчёта идёт только в
+// saturated (isp_model); суммы — по скорректированным отсчётам. Нить вне выхода (`inside` = false) даёт нули:
+// так её можно складывать вместе со всеми без ветвления.
+void awb_cell_contribution(bool inside, vec4 normalized, vec4 corrected, out uvec4 sums_and_used, out uint saturated) {
     sums_and_used = uvec4(0u);
     saturated = 0u;
     if (!inside) {
@@ -196,7 +199,7 @@ void awb_cell_contribution(bool inside, vec4 normalized, out uvec4 sums_and_used
         return;
     }
     for (uint position = 0u; position < 4u; ++position) {
-        sums_and_used[parameters.channel_of_position[position]] += quantize_awb_sample(normalized[position]);
+        sums_and_used[parameters.channel_of_position[position]] += quantize_awb_sample(corrected[position]);
     }
     sums_and_used[AWB_USED_CELLS] = 1u;
 }
@@ -234,10 +237,10 @@ uvec2 workgroup_single_tile(uint cells_width, uint cells_height) {
 // по одному глобальному atomicAdd на ненулевое поле. Ни shared-памяти, ни barrier(). Размер subgroup
 // не важен (любой, хоть меняющийся между dispatch-ами, SPIR-V 1.6): каждый subgroup добавляет ровно
 // свою сумму. Целые суммы u32 не зависят от порядка сложения — результат совпадает с эталоном бит в бит.
-void accumulate_awb_single_tile(bool inside, uvec2 tile, vec4 normalized) {
+void accumulate_awb_single_tile(bool inside, uvec2 tile, vec4 normalized, vec4 corrected) {
     uvec4 sums_and_used;
     uint saturated;
-    awb_cell_contribution(inside, normalized, sums_and_used, saturated);
+    awb_cell_contribution(inside, normalized, corrected, sums_and_used, saturated);
     uvec4 subgroup_sums_and_used = subgroupAdd(sums_and_used);
     uint subgroup_saturated = subgroupAdd(saturated);
     if (subgroupElect()) {
@@ -270,7 +273,8 @@ void add_to_awb_tile(uvec2 tile, uint field, uint value) {
 
 // Вклад ячейки в плитку: сначала в shared-окно группы, затем одна запись atomicAdd на ненулевое слово
 // окна. Вызывают ВСЕ нити группы (внутри barrier()), `inside` — нить внутри выхода.
-void accumulate_awb_window(bool inside, uvec2 cell, vec4 normalized, uint cells_width, uint cells_height) {
+void accumulate_awb_window(bool inside, uvec2 cell, vec4 normalized, vec4 corrected, uint cells_width,
+                           uint cells_height) {
     uint thread_index = gl_LocalInvocationIndex;
     uint thread_count = gl_WorkGroupSize.x * gl_WorkGroupSize.y;
     for (uint word = thread_index; word < AWB_LOCAL_WORDS; word += thread_count) {
@@ -293,7 +297,7 @@ void accumulate_awb_window(bool inside, uvec2 cell, vec4 normalized, uint cells_
     if (inside) {
         uvec4 sums_and_used;
         uint saturated;
-        awb_cell_contribution(inside, normalized, sums_and_used, saturated);
+        awb_cell_contribution(inside, normalized, corrected, sums_and_used, saturated);
         for (uint field = AWB_SUM_R; field <= AWB_USED_CELLS; ++field) {
             add_to_awb_tile(tile, field, sums_and_used[field]);
         }
@@ -317,15 +321,16 @@ void accumulate_awb_window(bool inside, uvec2 cell, vec4 normalized, uint cells_
 // Статистика AWB ячейки нити. Вызывают ВСЕ нити группы, включая нити вне выхода (они дают нули).
 // С арифметикой subgroup группа целиком в одной плитке (типично: плитки по 64×64 ячейки) идёт быстрым
 // путём; группа на стыке плиток (или вариант без subgroup) — через shared-окно.
-void accumulate_awb_statistics(bool inside, uvec2 cell, vec4 normalized, uint cells_width, uint cells_height) {
+void accumulate_awb_statistics(bool inside, uvec2 cell, vec4 normalized, vec4 corrected, uint cells_width,
+                               uint cells_height) {
 #ifdef AWB_SUBGROUP_REDUCTION
     uvec2 single_tile = workgroup_single_tile(cells_width, cells_height);
     if (single_tile.x != NO_TILE) {
-        accumulate_awb_single_tile(inside, single_tile, normalized);
+        accumulate_awb_single_tile(inside, single_tile, normalized, corrected);
         return;
     }
 #endif
-    accumulate_awb_window(inside, cell, normalized, cells_width, cells_height);
+    accumulate_awb_window(inside, cell, normalized, corrected, cells_width, cells_height);
 }
 
 // ===== Стадии 3–4: баланс белого и демозаик =======================================================
@@ -481,7 +486,10 @@ void main() {
     bool inside = upright.x < output_width && upright.y < output_height;
 
     uvec2 cell = uvec2(0u);
+    // normalized — после уровней, ДО виньетирования (по нему судится пересвет AWB); corrected — после
+    // виньетирования (суммы AWB и дальнейшая картинка).
     vec4 normalized = vec4(0.0);
+    vec4 corrected = vec4(0.0);
     if (inside) {
         cell = cell_of_output(upright, parameters.output_geometry.z, cells_width, cells_height);
         uvec2 origin = parameters.crop.xy + cell * 2u;
@@ -493,18 +501,18 @@ void main() {
             normalized[2] = normalize_sample(read_raw(origin.x, origin.y + 1u), 2u);
             normalized[3] = normalize_sample(read_raw(origin.x + 1u, origin.y + 1u), 3u);
         }
-        // Коррекция виньетирования — до статистики AWB и до баланса белого (порядок эталона).
-        normalized = apply_lens_shading(normalized, origin, needs_whole_cell ? 4u : 1u);
+        // Коррекция виньетирования — до баланса белого (порядок эталона); исходные отсчёты остаются для пересвета.
+        corrected = apply_lens_shading(normalized, origin, needs_whole_cell ? 4u : 1u);
     }
 
     if (STAGE_AWB_STATISTICS) {
-        accumulate_awb_statistics(inside, cell, normalized, cells_width, cells_height);
+        accumulate_awb_statistics(inside, cell, normalized, corrected, cells_width, cells_height);
     }
     if (!inside) {
         return;
     }
 
-    vec3 camera_rgb = demosaic_cell(apply_white_balance(normalized));
+    vec3 camera_rgb = demosaic_cell(apply_white_balance(corrected));
     vec3 display_linear = apply_tone(compress_gamut(apply_color(camera_rgb)));
     imageStore(viewfinder_image, ivec2(upright), vec4(apply_oetf(display_linear), 1.0));
 }

@@ -35,7 +35,8 @@ mod variants;
 
 pub use self::awb_reduction::{AwbReduction, AwbReductionPolicy, SubgroupArithmeticSupport};
 pub use self::config::{
-    MAX_FRAME_SLOTS, MAX_WORKGROUP_INVOCATIONS, ViewfinderIspConfig, ViewfinderStorageFormat, WorkgroupSizeConfig,
+    LargestMosaicConfig, MAX_FRAME_SLOTS, MAX_WORKGROUP_INVOCATIONS, ViewfinderIspConfig, ViewfinderStorageFormat,
+    WorkgroupSizeConfig,
 };
 pub use self::error::ViewfinderError;
 pub use self::geometry::{OutputAllocation, ViewfinderGeometry};

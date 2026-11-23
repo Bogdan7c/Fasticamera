@@ -36,7 +36,6 @@ use isp_model::demosaic::DemosaicMethod;
 use isp_model::demosaic::demosaic;
 use isp_model::gamut::GamutCompressionSettings;
 use isp_model::gamut::compress_to_display_gamut;
-use isp_model::image::ShadingCorrectedMosaic;
 use isp_model::image::{DisplayGamut, RawMosaic};
 use isp_model::lens_shading::LensShadingControl;
 use isp_model::lens_shading::{CropInValidArea, LensShadingSampling, apply_lens_shading_sampled};
@@ -45,7 +44,10 @@ use isp_model::levels::normalize_levels;
 use isp_model::params::{ExposureGain, FrameInputs, IspParams, ProcessingControls};
 use isp_model::pipeline::{ReferenceRun, run_reference};
 use isp_model::sensor::SensorDescription;
-use isp_model::statistics::{AwbStatisticsSettings, TileGrid, cells_size, quantize_sample, tile_of_cell};
+use isp_model::statistics::{
+    AwbStatistics, AwbStatisticsInput, AwbStatisticsSettings, TileGrid, cells_size, compute_awb_statistics,
+    quantize_sample_with_headroom, tile_of_cell,
+};
 use isp_model::tone::ToneCurveSettings;
 use isp_model::tone::apply_tone_curve;
 use isp_model::transfer::encode_display;
@@ -261,6 +263,11 @@ pub fn test_config(format: ViewfinderStorageFormat) -> ViewfinderIspConfig {
             ..AwbStatisticsSettings::default()
         },
         storage_format: format,
+        // Наибольший кадр тестов — плоское поле 256×192: даже сетка 1×1 на нём не переполняет суммы.
+        largest_mosaic: isp_vulkan::viewfinder::LargestMosaicConfig {
+            width: 256,
+            height: 192,
+        },
         ..ViewfinderIspConfig::default()
     }
 }
@@ -546,14 +553,28 @@ pub struct BoundaryCells {
     pub saturation: u32,
 }
 
-pub fn boundary_cells(
-    normalized: &ShadingCorrectedMosaic,
-    settings: &AwbStatisticsSettings,
-    ulps: u32,
-) -> Vec<BoundaryCells> {
+/// Эталонная статистика AWB для прогона эталона: пересвет — по нормированной мозаике, суммы — по скорректированной.
+pub fn cpu_awb_statistics(run: &ReferenceRun, settings: &AwbStatisticsSettings) -> AwbStatistics {
+    compute_awb_statistics(
+        AwbStatisticsInput::new(&run.normalized, &run.shading_corrected).unwrap(),
+        settings,
+    )
+    .unwrap()
+}
+
+/// Пограничные ячейки: пересвет судится по нормированному отсчёту ДО виньетирования, квантование — по
+/// скорректированному (с запасом суммы из настроек). ±`ulps` ULP соответствующего значения.
+pub fn boundary_cells(run: &ReferenceRun, settings: &AwbStatisticsSettings, ulps: u32) -> Vec<BoundaryCells> {
+    let (normalized, corrected) = (&run.normalized, &run.shading_corrected);
     let grid = settings.grid;
     let cells = cells_size(normalized.size());
     let mut per_tile = vec![BoundaryCells::default(); (grid.columns * grid.rows) as usize];
+    let shift = |value: f32| {
+        [
+            f32::from_bits(value.to_bits().saturating_sub(ulps)),
+            f32::from_bits(value.to_bits() + ulps),
+        ]
+    };
     for cell_y in 0..cells.height {
         for cell_x in 0..cells.width {
             let (column, row) = tile_of_cell(cell_x, cell_y, cells, grid);
@@ -561,14 +582,16 @@ pub fn boundary_cells(
             let mut quantization = false;
             let mut saturation = false;
             for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-                let value = normalized.sample(cell_x * 2 + dx, cell_y * 2 + dy);
-                for neighbour in [
-                    f32::from_bits(value.to_bits().saturating_sub(ulps)),
-                    f32::from_bits(value.to_bits() + ulps),
-                ] {
-                    quantization |= quantize_sample(neighbour) != quantize_sample(value);
-                    let threshold = settings.saturation_threshold;
-                    saturation |= (neighbour < threshold) != (value < threshold);
+                let (x, y) = (cell_x * 2 + dx, cell_y * 2 + dy);
+                let raw_value = normalized.sample(x, y);
+                let threshold = settings.saturation_threshold;
+                for neighbour in shift(raw_value) {
+                    saturation |= (neighbour < threshold) != (raw_value < threshold);
+                }
+                let value = corrected.sample(x, y);
+                let quantize = |sample| quantize_sample_with_headroom(sample, settings.sum_headroom);
+                for neighbour in shift(value) {
+                    quantization |= quantize(neighbour) != quantize(value);
                 }
             }
             tile.quantization += u32::from(quantization);

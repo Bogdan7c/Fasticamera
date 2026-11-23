@@ -31,17 +31,15 @@ mod viewfinder_support;
 
 use camera_contract::geometry::{PixelRect, PixelSize, SensorOrientation};
 use isp_model::cfa::BayerPattern;
-use isp_model::image::ShadingCorrectedMosaic;
-use isp_model::statistics::{
-    AwbStatistics, TileGrid, cells_size, compute_awb_statistics, quantize_sample, tile_of_cell,
-};
+use isp_model::pipeline::ReferenceRun;
+use isp_model::statistics::{AwbStatistics, TileGrid, cells_size, quantize_sample, tile_of_cell};
 use isp_vulkan::viewfinder::{
     AwbReduction, AwbReductionPolicy, OutputAllocation, ViewfinderGeometry, ViewfinderIsp, ViewfinderIspConfig,
     ViewfinderStorageFormat, WorkgroupSizeConfig,
 };
 use viewfinder_support::{
-    ParamsSpec, RawFrame, RunRequest, assert_no_validation_errors, boundary_cells, gpu_context_or_skip,
-    reference_upright, run_viewfinder, test_config,
+    ParamsSpec, RawFrame, RunRequest, assert_no_validation_errors, boundary_cells, cpu_awb_statistics,
+    gpu_context_or_skip, reference_upright, run_viewfinder, test_config,
 };
 
 const WIDTH: u32 = 64;
@@ -105,7 +103,7 @@ fn gpu_statistics(
     raw: &RawFrame,
     spec: &ParamsSpec,
     geometry: ViewfinderGeometry,
-) -> (AwbStatistics, ShadingCorrectedMosaic) {
+) -> (AwbStatistics, ReferenceRun) {
     let params = spec.build();
     let request = RunRequest {
         geometry,
@@ -113,7 +111,7 @@ fn gpu_statistics(
     };
     let run = run_viewfinder(context, config, &request);
     let reference = reference_upright(raw, geometry.crop, geometry.sensor_orientation, &params);
-    (run.report.awb_statistics.unwrap(), reference.run.shading_corrected)
+    (run.report.awb_statistics.unwrap(), reference.run)
 }
 
 fn whole(raw: &RawFrame, orientation: SensorOrientation) -> ViewfinderGeometry {
@@ -205,8 +203,8 @@ fn statistics_equal_reference_exactly_when_level_division_is_exact() {
         };
         for reduction in BOTH_REDUCTIONS {
             let config = config_with_reduction(&context, config(grid, workgroup), reduction);
-            let (gpu, normalized) = gpu_statistics(&context, &config, &raw, &spec, geometry);
-            let cpu = compute_awb_statistics(&normalized, &config.awb_statistics).unwrap();
+            let (gpu, run) = gpu_statistics(&context, &config, &raw, &spec, geometry);
+            let cpu = cpu_awb_statistics(&run, &config.awb_statistics);
             assert_eq!(gpu, cpu, "{grid:?} {workgroup:?} {orientation:?} {reduction:?}");
             let totals = gpu.totals();
             assert!(totals.saturated_cells > 0, "сцена содержит пересвет");
@@ -242,11 +240,10 @@ fn general_levels_stay_within_the_documented_rounding_bound() {
         if name == "развёртка уровней" {
             config.awb_statistics.saturation_threshold = 1.0;
         }
-        let (gpu, normalized) =
-            gpu_statistics(&context, &config, &raw, &spec, whole(&raw, SensorOrientation::Degrees0));
-        let cpu = compute_awb_statistics(&normalized, &config.awb_statistics).unwrap();
+        let (gpu, run) = gpu_statistics(&context, &config, &raw, &spec, whole(&raw, SensorOrientation::Degrees0));
+        let cpu = cpu_awb_statistics(&run, &config.awb_statistics);
         // 3 ULP — с запасом над 2,5 ULP OpFDiv.
-        let boundaries = boundary_cells(&normalized, &config.awb_statistics, 3);
+        let boundaries = boundary_cells(&run, &config.awb_statistics, 3);
         let mut differing_tiles = 0;
         for ((gpu_tile, cpu_tile), boundary) in gpu.tiles().iter().zip(cpu.tiles()).zip(&boundaries) {
             assert_eq!(gpu_tile.used_cells, cpu_tile.used_cells, "{name}");
@@ -432,8 +429,8 @@ fn single_tile_and_straddling_workgroups_match_reference_exactly_in_both_variant
         let mut results = Vec::new();
         for reduction in BOTH_REDUCTIONS {
             let config = config_with_reduction(&context, config(grid, workgroup), reduction);
-            let (gpu, normalized) = gpu_statistics(&context, &config, &raw, &spec, geometry);
-            let cpu = compute_awb_statistics(&normalized, &config.awb_statistics).unwrap();
+            let (gpu, run) = gpu_statistics(&context, &config, &raw, &spec, geometry);
+            let cpu = cpu_awb_statistics(&run, &config.awb_statistics);
             assert_eq!(
                 gpu, cpu,
                 "{crop:?} {grid:?} {workgroup:?} {orientation:?} {reduction:?} {paths:?}"

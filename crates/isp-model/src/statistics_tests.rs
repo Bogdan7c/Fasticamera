@@ -1,11 +1,12 @@
 use camera_contract::geometry::PixelSize;
 
 use super::{
-    AwbStatistics, AwbStatisticsSettings, AwbTile, AwbTotals, InvalidAwbStatistics, MAX_CELLS_PER_TILE, QUANT_MAX,
-    TileCountMismatch, TileGrid, compute_awb_statistics, quantize_sample, tile_of_cell,
+    AwbStatistics, AwbStatisticsInput, AwbStatisticsSettings, AwbTile, AwbTotals, DEFAULT_SUM_HEADROOM,
+    InvalidAwbStatistics, MAX_CELLS_PER_TILE, MAX_SUM_HEADROOM, QUANT_MAX, TileCountMismatch, TileGrid,
+    compute_awb_statistics, max_cells_per_tile, quantize_sample, quantize_sample_with_headroom, tile_of_cell,
 };
 use crate::cfa::{BayerPattern, RgbChannel};
-use crate::image::{Mosaic, RawMosaic, ShadingCorrectedMosaic, mosaic_stage};
+use crate::image::{CameraMosaic, Mosaic, RawMosaic, ShadingCorrectedMosaic, mosaic_stage};
 use crate::lens_shading::{LensShadingSkipReason, LensShadingStep, apply_lens_shading};
 use crate::levels::{NormalizationLevels, normalize_levels};
 
@@ -55,11 +56,55 @@ fn mosaic_from_cells(
     Mosaic::from_samples(size, pattern, samples, mosaic_stage::ShadingCorrected).unwrap()
 }
 
+/// Настройки с запасом суммы 1,0 (прежнее поведение: потолок — белый сенсора).
 fn settings(columns: u32, rows: u32, saturation_threshold: f32) -> AwbStatisticsSettings {
+    settings_with_headroom(columns, rows, saturation_threshold, 1.0)
+}
+
+fn settings_with_headroom(
+    columns: u32,
+    rows: u32,
+    saturation_threshold: f32,
+    sum_headroom: f32,
+) -> AwbStatisticsSettings {
     AwbStatisticsSettings {
         grid: TileGrid { columns, rows },
         saturation_threshold,
+        sum_headroom,
     }
+}
+
+/// Те же отсчёты как нормированная мозаика (виньетирования не было: до и после — одно и то же).
+fn as_normalized(mosaic: &ShadingCorrectedMosaic) -> CameraMosaic {
+    Mosaic::from_samples(
+        mosaic.size(),
+        mosaic.pattern(),
+        mosaic.samples().to_vec(),
+        mosaic_stage::Normalized,
+    )
+    .unwrap()
+}
+
+/// Статистика мозаики, в которой виньетирование ничего не изменило.
+fn statistics_of(
+    mosaic: &ShadingCorrectedMosaic,
+    settings: &AwbStatisticsSettings,
+) -> Result<AwbStatistics, InvalidAwbStatistics> {
+    let normalized = as_normalized(mosaic);
+    compute_awb_statistics(AwbStatisticsInput::new(&normalized, mosaic)?, settings)
+}
+
+/// Пара мозаик одного кадра: нормированная (`raw_level`) и скорректированная (`raw_level · gain`) — один цвет на всю
+/// мозаику `cells`, каждый канал со своим уровнем.
+fn gained_pair(cells: PixelSize, raw: CellColor, gain: f32) -> (CameraMosaic, ShadingCorrectedMosaic) {
+    let scale = |color: CellColor| CellColor {
+        red: color.red * gain,
+        greens: color.greens.map(|green| green * gain),
+        blue: color.blue * gain,
+    };
+    let normalized = as_normalized(&mosaic_from_cells(BayerPattern::RGGB, cells, |_, _| raw));
+    let corrected = mosaic_from_cells(BayerPattern::RGGB, cells, |_, _| scale(raw));
+    (normalized, corrected)
 }
 
 #[test]
@@ -94,7 +139,7 @@ fn known_mosaic_gives_hand_computed_sums() {
         mosaic_stage::ShadingCorrected,
     )
     .unwrap();
-    let statistics = compute_awb_statistics(&mosaic, &settings(2, 1, 0.95)).unwrap();
+    let statistics = statistics_of(&mosaic, &settings(2, 1, 0.95)).unwrap();
     // Плитка 0: ячейки (0,0) R=0,5 G=0,25+0,25 B=0,125 и (0,1) R=0,25 G=0,5+0,125 B=0,0.
     // q: 0,5→2048, 0,25→1024, 0,125→512, 0→0.
     assert_eq!(
@@ -138,8 +183,8 @@ fn red_and_blue_follow_the_cfa_layout() {
     .unwrap();
     let bggr = Mosaic::from_samples(size, BayerPattern::BGGR, samples, mosaic_stage::ShadingCorrected).unwrap();
     let grid = settings(1, 1, 0.95);
-    let rggb_tile = compute_awb_statistics(&rggb, &grid).unwrap().tiles()[0];
-    let bggr_tile = compute_awb_statistics(&bggr, &grid).unwrap().tiles()[0];
+    let rggb_tile = statistics_of(&rggb, &grid).unwrap().tiles()[0];
+    let bggr_tile = statistics_of(&bggr, &grid).unwrap().tiles()[0];
     assert_eq!((rggb_tile.sum_r, rggb_tile.sum_g, rggb_tile.sum_b), (2048, 2048, 512));
     assert_eq!((bggr_tile.sum_r, bggr_tile.sum_g, bggr_tile.sum_b), (512, 2048, 2048));
 }
@@ -154,7 +199,7 @@ fn every_bayer_layout_gives_the_same_sums_for_the_same_scene() {
         blue: 0.6 - 0.07 * cell_x as f32,
     };
     let grid = settings(3, 2, 0.95);
-    let expected = compute_awb_statistics(&mosaic_from_cells(BayerPattern::RGGB, cells, color_of_cell), &grid).unwrap();
+    let expected = statistics_of(&mosaic_from_cells(BayerPattern::RGGB, cells, color_of_cell), &grid).unwrap();
     // Плитка (0,0): tile_x = sx·3/6 и tile_y = sy·2/4 дают ячейки sx 0…1, sy 0…1.
     // Те же выражения f32, что в `color_of_cell`, — чтобы входы совпали бит в бит.
     let (red_column_0, red_column_1) = (0.05_f32 * 1.0, 0.05_f32 * 2.0);
@@ -170,7 +215,7 @@ fn every_bayer_layout_gives_the_same_sums_for_the_same_scene() {
         .sum();
     assert_eq!(expected.tile(0, 0).unwrap().sum_g, tile_green);
     for pattern in [BayerPattern::GRBG, BayerPattern::GBRG, BayerPattern::BGGR] {
-        let statistics = compute_awb_statistics(&mosaic_from_cells(pattern, cells, color_of_cell), &grid).unwrap();
+        let statistics = statistics_of(&mosaic_from_cells(pattern, cells, color_of_cell), &grid).unwrap();
         assert_eq!(statistics, expected, "{pattern:?}");
     }
 }
@@ -193,7 +238,7 @@ fn saturated_and_nan_cells_are_excluded_but_counted() {
     let mosaic = mosaic_from_cells(BayerPattern::GRBG, PixelSize::new(4, 1), |cell_x, _| {
         colors[cell_x as usize]
     });
-    let statistics = compute_awb_statistics(&mosaic, &settings(1, 1, 0.95)).unwrap();
+    let statistics = statistics_of(&mosaic, &settings(1, 1, 0.95)).unwrap();
     assert_eq!(
         statistics.tiles(),
         [AwbTile {
@@ -208,7 +253,7 @@ fn saturated_and_nan_cells_are_excluded_but_counted() {
     let below = mosaic_from_cells(BayerPattern::GRBG, PixelSize::new(1, 1), |_, _| {
         CellColor::uniform(0.1, 0.95_f32.next_down(), 0.1)
     });
-    let accepted = compute_awb_statistics(&below, &settings(1, 1, 0.95)).unwrap();
+    let accepted = statistics_of(&below, &settings(1, 1, 0.95)).unwrap();
     assert_eq!(
         (accepted.tiles()[0].used_cells, accepted.tiles()[0].saturated_cells),
         (1, 0)
@@ -228,7 +273,7 @@ fn tiles_on_non_divisible_sizes_follow_integer_formula() {
     let mosaic = mosaic_from_cells(BayerPattern::BGGR, cells, |cell_x, _| {
         CellColor::uniform(0.125 * (cell_x + 1) as f32, 0.25, 0.5)
     });
-    let statistics = compute_awb_statistics(&mosaic, &settings(2, 2, 0.95)).unwrap();
+    let statistics = statistics_of(&mosaic, &settings(2, 2, 0.95)).unwrap();
     // Квантованный красный столбцов 0…4: 0,125→512, 0,25→1024, 0,375→1536 (1535,625+0,5), 0,5→2048, 0,625→2559,375+0,5→2559.
     let red_of_columns = [512, 1024, 1536, 2048, 2559];
     let left_red: u32 = red_of_columns[..3].iter().sum();
@@ -267,7 +312,7 @@ fn statistics_of_levels_output_match_raw_counts() {
     // Стадия виньетирования пропущена (нет калибровки): мозаика не меняется.
     let skipped = LensShadingStep::Skip(LensShadingSkipReason::NotCalibrated);
     let (shading_corrected, _) = apply_lens_shading(&normalize_levels(&raw, &levels), &skipped);
-    let statistics = compute_awb_statistics(&shading_corrected, &settings(1, 1, 0.95)).unwrap();
+    let statistics = statistics_of(&shading_corrected, &settings(1, 1, 0.95)).unwrap();
     let raw_sum_of = |channel: RgbChannel| -> u32 {
         (0..16u32)
             .filter(|&index| BayerPattern::GBRG.channel_at(index % 4, index / 4) == channel)
@@ -290,7 +335,7 @@ fn worst_case_tile_at_the_limit_does_not_overflow() {
     let mosaic = mosaic_from_cells(BayerPattern::RGGB, cells, |_, _| {
         CellColor::uniform(almost_white, almost_white, almost_white)
     });
-    let statistics = compute_awb_statistics(&mosaic, &settings(1, 1, 1.0)).unwrap();
+    let statistics = statistics_of(&mosaic, &settings(1, 1, 1.0)).unwrap();
     let tile = statistics.tiles()[0];
     assert_eq!(tile.used_cells, MAX_CELLS_PER_TILE);
     assert_eq!(
@@ -361,7 +406,7 @@ fn invalid_settings_are_rejected_with_reason() {
     let mosaic = mosaic_from_cells(BayerPattern::RGGB, PixelSize::new(4, 4), |_, _| {
         CellColor::uniform(0.1, 0.1, 0.1)
     });
-    assert!(compute_awb_statistics(&mosaic, &settings(5, 2, 0.95)).is_err());
+    assert!(statistics_of(&mosaic, &settings(5, 2, 0.95)).is_err());
 }
 
 #[test]
@@ -395,4 +440,158 @@ fn settings_round_trip_through_config_and_reject_unknown_fields() {
     assert_eq!(serde_json::from_str::<AwbStatisticsSettings>(&text).unwrap(), defaults);
     let typo = r#"{"grid":{"columns":4,"rows":3},"saturation_threshhold":0.9}"#;
     assert!(serde_json::from_str::<AwbStatisticsSettings>(typo).is_err());
+}
+
+#[test]
+fn clipping_is_judged_on_the_raw_sample_and_sums_on_the_corrected_one() {
+    // Сырой отсчёт 0,3 (не пересвечен) под усилением ×5: после виньетирования 1,5 > порога 0,95 и > 1.
+    let cells = PixelSize::new(2, 2);
+    let (normalized, corrected) = gained_pair(cells, CellColor::uniform(0.3, 0.3, 0.3), 5.0);
+    let settings = settings_with_headroom(1, 1, 0.95, DEFAULT_SUM_HEADROOM);
+    let statistics =
+        compute_awb_statistics(AwbStatisticsInput::new(&normalized, &corrected).unwrap(), &settings).unwrap();
+    let tile = statistics.tiles()[0];
+    assert_eq!(
+        (tile.used_cells, tile.saturated_cells),
+        (4, 0),
+        "пересвета в RAW нет: {tile:?}"
+    );
+    // Сумма — по скорректированному значению 1,5 (а не обрезана до 1): 1,5 · 4095 + 0,5 → 6143.
+    let one = quantize_sample_with_headroom(1.5, DEFAULT_SUM_HEADROOM);
+    assert_eq!(one, 6143);
+    assert_eq!((tile.sum_r, tile.sum_g, tile.sum_b), (4 * one, 8 * one, 4 * one));
+}
+
+#[test]
+fn a_truly_clipped_raw_sample_is_still_saturated_even_when_the_gain_is_one() {
+    // Один отсчёт ячейки в RAW ≥ порога: ячейка исключена, а остальные ячейки (без пересвета) принимаются.
+    let cells = PixelSize::new(2, 1);
+    let clipped_cell = |cell_x: u32| {
+        if cell_x == 0 {
+            CellColor {
+                red: 0.2,
+                greens: [0.2, 0.97],
+                blue: 0.2,
+            }
+        } else {
+            CellColor::uniform(0.2, 0.2, 0.2)
+        }
+    };
+    let normalized = as_normalized(&mosaic_from_cells(BayerPattern::RGGB, cells, |cell_x, _| {
+        clipped_cell(cell_x)
+    }));
+    // Усиление ×1 (ничего не меняет) и ×3 у пересвеченной ячейки не должно ничего «лечить».
+    for gain in [1.0_f32, 3.0] {
+        let corrected = mosaic_from_cells(BayerPattern::RGGB, cells, |cell_x, _| {
+            let color = clipped_cell(cell_x);
+            CellColor {
+                red: color.red * gain,
+                greens: color.greens.map(|g| g * gain),
+                blue: color.blue * gain,
+            }
+        });
+        let settings = settings_with_headroom(1, 1, 0.95, DEFAULT_SUM_HEADROOM);
+        let statistics =
+            compute_awb_statistics(AwbStatisticsInput::new(&normalized, &corrected).unwrap(), &settings).unwrap();
+        let tile = statistics.tiles()[0];
+        assert_eq!((tile.used_cells, tile.saturated_cells), (1, 1), "усиление {gain}");
+    }
+}
+
+#[test]
+fn sums_clamp_at_the_headroom_not_at_white() {
+    let cells = PixelSize::new(1, 1);
+    let (normalized, corrected) = gained_pair(cells, CellColor::uniform(0.5, 0.5, 0.5), 100.0);
+    let statistics = compute_awb_statistics(
+        AwbStatisticsInput::new(&normalized, &corrected).unwrap(),
+        &settings_with_headroom(1, 1, 0.95, 16.0),
+    )
+    .unwrap();
+    let ceiling = 16 * QUANT_MAX;
+    let tile = statistics.tiles()[0];
+    assert_eq!((tile.sum_r, tile.sum_g, tile.sum_b), (ceiling, 2 * ceiling, ceiling));
+}
+
+#[test]
+fn inputs_of_different_size_are_rejected() {
+    let small = as_normalized(&mosaic_from_cells(BayerPattern::RGGB, PixelSize::new(2, 2), |_, _| {
+        CellColor::uniform(0.1, 0.1, 0.1)
+    }));
+    let large = mosaic_from_cells(BayerPattern::RGGB, PixelSize::new(4, 2), |_, _| {
+        CellColor::uniform(0.1, 0.1, 0.1)
+    });
+    assert!(matches!(
+        AwbStatisticsInput::new(&small, &large),
+        Err(InvalidAwbStatistics::InputSizeMismatch { .. })
+    ));
+}
+
+#[test]
+fn worst_case_tile_at_the_headroom_limit_does_not_overflow_and_one_cell_more_is_rejected() {
+    let headroom = DEFAULT_SUM_HEADROOM;
+    let limit = max_cells_per_tile(headroom);
+    let ceiling = 16 * QUANT_MAX;
+    assert_eq!(limit, u32::MAX / (2 * ceiling));
+    // Плитка ровно из `limit` ячеек, все отсчёты на потолке: суммы не переполняются (в отладке упало бы паникой).
+    let cells = PixelSize::new(limit, 1);
+    let normalized = as_normalized(&mosaic_from_cells(BayerPattern::RGGB, cells, |_, _| {
+        CellColor::uniform(0.1, 0.1, 0.1)
+    }));
+    let corrected = mosaic_from_cells(BayerPattern::RGGB, cells, |_, _| {
+        CellColor::uniform(100.0, 100.0, 100.0)
+    });
+    let settings = settings_with_headroom(1, 1, 0.95, headroom);
+    let statistics =
+        compute_awb_statistics(AwbStatisticsInput::new(&normalized, &corrected).unwrap(), &settings).unwrap();
+    assert_eq!(
+        u64::from(statistics.tiles()[0].sum_g),
+        u64::from(limit) * 2 * u64::from(ceiling)
+    );
+    // Одна ячейка сверх — явный отказ.
+    let over = PixelSize::new((limit + 1) * 2, 2);
+    assert_eq!(
+        settings.check_for_mosaic(over),
+        Err(InvalidAwbStatistics::TileTooLarge {
+            columns: 1,
+            rows: 1,
+            cells_per_tile: u64::from(limit) + 1,
+            max_cells: limit,
+        })
+    );
+}
+
+#[test]
+fn startup_check_covers_the_largest_supported_frame_and_validates_the_headroom() {
+    // Умолчания выдерживают наибольший кадр.
+    assert_eq!(
+        AwbStatisticsSettings::default().check_for_largest_supported_frame(),
+        Ok(())
+    );
+    // Слишком грубая сетка на наибольшем кадре — отказ при запуске, а не переполнение на кадре.
+    assert!(matches!(
+        settings_with_headroom(8, 6, 0.95, DEFAULT_SUM_HEADROOM).check_for_largest_supported_frame(),
+        Err(InvalidAwbStatistics::TileTooLarge { .. })
+    ));
+    // Сетка 8×6 при запасе 16 не выдерживает (плитка 512×512 ячеек), а при запасе 1 — выдерживает.
+    assert!(
+        settings_with_headroom(8, 6, 0.95, 1.0)
+            .check_for_largest_supported_frame()
+            .is_ok()
+    );
+    for headroom in [0.5, f32::NAN, f32::INFINITY, MAX_SUM_HEADROOM + 1.0] {
+        assert!(
+            matches!(
+                settings_with_headroom(32, 24, 0.95, headroom).check_for_mosaic(PixelSize::new(64, 48)),
+                Err(InvalidAwbStatistics::SumHeadroomOutOfRange { .. })
+            ),
+            "{headroom}"
+        );
+    }
+}
+
+#[test]
+fn config_without_headroom_gets_the_default_and_the_headroom_round_trips() {
+    let legacy = r#"{"grid":{"columns":4,"rows":3},"saturation_threshold":0.9}"#;
+    let parsed: AwbStatisticsSettings = serde_json::from_str(legacy).unwrap();
+    assert_eq!(parsed.sum_headroom, DEFAULT_SUM_HEADROOM);
 }

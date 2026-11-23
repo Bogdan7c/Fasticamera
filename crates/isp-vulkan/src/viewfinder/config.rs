@@ -3,9 +3,10 @@
 //! Значения по умолчанию и их источник — у каждого поля. Проверка — [`ViewfinderIspConfig::validate`]
 //! (зовётся из `ViewfinderIsp::new` до создания объектов Vulkan).
 
+use camera_contract::geometry::PixelSize;
 use gpu_vulkan::compute::LocalSize;
 use gpu_vulkan::storage_image::StorageFormatPolicy;
-use isp_model::statistics::AwbStatisticsSettings;
+use isp_model::statistics::{AwbStatisticsSettings, MAX_SUPPORTED_MOSAIC};
 
 use super::awb_reduction::AwbReductionPolicy;
 use super::error::ViewfinderError;
@@ -60,6 +61,27 @@ pub const MAX_WORKGROUP_INVOCATIONS: u32 = 1024;
 /// Верхняя граница слотов кадров: больше двух-трёх кадров в полёте видоискателю не нужно никогда.
 pub const MAX_FRAME_SLOTS: usize = 8;
 
+/// Наибольший кадр (мозаика RAW, пиксели), на котором ISP обязан работать: под него при создании проверяется,
+/// что суммы плиток статистики AWB не переполнят u32 (`AwbStatisticsSettings::check_for_mosaic`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LargestMosaicConfig {
+    /// Ширина, пиксели.
+    pub width: u32,
+    /// Высота, пиксели.
+    pub height: u32,
+}
+
+impl Default for LargestMosaicConfig {
+    /// `MAX_SUPPORTED_MOSAIC` (8192×6144): вдвое больше стороны сенсора OnePlus 11.
+    fn default() -> Self {
+        Self {
+            width: MAX_SUPPORTED_MOSAIC.width,
+            height: MAX_SUPPORTED_MOSAIC.height,
+        }
+    }
+}
+
 /// Конфигурация ISP видоискателя.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -83,6 +105,9 @@ pub struct ViewfinderIspConfig {
     /// Наибольшая карта коррекции виньетирования, под которую выделяются буферы слотов. Карта больше —
     /// явная ошибка кадра (`ViewfinderError::LensShadingMap`), а не молчаливый пропуск коррекции.
     pub lens_shading_map: LensShadingMapLimits,
+    /// Наибольший кадр: при создании проверяется, что сетка и запас сумм AWB не переполнят u32 ни на каком кадре
+    /// не больше этого (явная ошибка `ViewfinderError::AwbStatistics`, а не молчаливое переполнение на кадре).
+    pub largest_mosaic: LargestMosaicConfig,
 }
 
 impl Default for ViewfinderIspConfig {
@@ -95,6 +120,7 @@ impl Default for ViewfinderIspConfig {
             storage_format: ViewfinderStorageFormat::default(),
             pipeline_variant_capacity: 12,
             lens_shading_map: LensShadingMapLimits::default(),
+            largest_mosaic: LargestMosaicConfig::default(),
         }
     }
 }
@@ -125,6 +151,8 @@ impl ViewfinderIspConfig {
         if !(threshold.is_finite() && threshold > 0.0 && threshold <= 1.0) {
             return invalid(format!("порог пересвета AWB {threshold} вне (0, 1]"));
         }
+        // Запас сумм и переполнение u32 на наибольшем поддерживаемом кадре — явная ошибка при запуске.
+        settings.check_for_mosaic(PixelSize::new(self.largest_mosaic.width, self.largest_mosaic.height))?;
         Ok(())
     }
 
