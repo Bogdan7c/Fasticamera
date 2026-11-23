@@ -59,6 +59,14 @@ fn swipe_without_camera_effect() -> Expectation {
         .count(Metric::CameraIntents, Count::Exactly(0))
 }
 
+/// Свайп смены режима при точке фокуса, оставленной предыдущим шагом (`ev_probe_tap_closed`): смена режима снимает
+/// квадрат фокуса и отпускает точку камеры — ровно одно намерение камере.
+fn swipe_with_focus_point_release() -> Expectation {
+    Expectation::new()
+        .count(Metric::Pans, Count::Exactly(1))
+        .count(Metric::CameraIntents, Count::Exactly(1))
+}
+
 /// Нажатие круглой кнопки без команды камере.
 fn button_without_camera_effect() -> Expectation {
     Expectation::new()
@@ -239,14 +247,16 @@ fn mode_and_shutter_steps(plan: &ScreenTouchPlan) -> Vec<PlannedStep> {
     vec![
         PlannedStep {
             name: "modes_swipe_left",
-            purpose: "горизонтальный свайп справа налево распознан, режим остался Photo (он один), камере ничего",
+            purpose: "горизонтальный свайп справа налево перевёл карусель в Calibrate (режим справа от Photo); камере один \
+                      сброс точки фокуса: квадрат фокуса принадлежит старому кадру и при смене режима снимается",
             gesture: Gesture::swipe(plan.modes_swipe_left),
-            expect: swipe_without_camera_effect().state(StateCheck::Mode(ModeKind::Photo)),
+            expect: swipe_with_focus_point_release().state(StateCheck::Mode(ModeKind::Calibrate)),
             inferred: None,
         },
         PlannedStep {
             name: "modes_swipe_right",
-            purpose: "горизонтальный свайп слева направо распознан, режим остался Photo (он один), камере ничего",
+            purpose: "горизонтальный свайп слева направо вернул Photo (затвор и видоискатель на прежнем месте); точка фокуса \
+                      уже отпущена прежней сменой режима, камере ничего",
             gesture: Gesture::swipe(plan.modes_swipe_right),
             expect: swipe_without_camera_effect().state(StateCheck::Mode(ModeKind::Photo)),
             inferred: None,

@@ -13,14 +13,19 @@
 use std::sync::Arc;
 
 use camera_contract::ids::LensFacing;
+use camera_contract::viewfinder_crop::CropAspect;
 use camera_contract::zoom::{ZoomCatalog, ZoomFraming, ZoomRatio};
 use serde::{Deserialize, Serialize};
+use shell_contract::orientation::DeviceOrientation;
 use shell_contract::surface::SurfaceSize;
 use thiserror::Error;
 use ui_core::geometry::{Point, Rect, Size};
 use ui_core::input::{PointScale, PointScaleError, PointScaleRule};
 
+use crate::calibration::{CalibrationConfig, CalibrationLayout, CalibrationLayoutError};
+use crate::mode_behaviour::LayoutPolicy;
 use crate::settings::AspectRatio;
+use crate::widgets_config::BottomLayout;
 
 /// Числа раскладки в координатах эталонного iPhone (все в pt, привязка к низу — в [`ScreenLayout`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -128,6 +133,8 @@ pub struct FramingIntent {
 /// Раскладка кадров для конкретного размера surface.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScreenLayout {
+    /// Размер surface в пикселях: нужен, чтобы кадр «на весь экран» получил точное целое соотношение сторон.
+    surface: SurfaceSize,
     scale: PointScale,
     screen_size: Size,
     bottom_anchor_shift_pt: f64,
@@ -167,6 +174,7 @@ impl ScreenLayout {
         // 1:1 — `[estimate]` по центру кадра 4:3 (`layout.md` 2.1).
         let frame_square = Rect::centered_at(frame_4x3.center(), Size::new(width, width));
         let layout = Self {
+            surface,
             scale,
             screen_size,
             bottom_anchor_shift_pt: shift,
@@ -246,6 +254,56 @@ impl ScreenLayout {
             },
             destination: self.frame_rect_normalized(aspect),
         }
+    }
+
+    /// Весь экран как кадр видоискателя (режим «cover», решение 203), pt.
+    pub fn cover_frame_rect(&self) -> Rect {
+        Rect::new(Point::new(0.0, 0.0), self.screen_size)
+    }
+
+    /// Соотношение сторон кадра «на весь экран»: пиксели surface как целые числа (длинная : короткая; ориентацию
+    /// кадра задаёт сенсор, а не это значение).
+    pub fn cover_crop_aspect(&self) -> CropAspect {
+        let long = self.surface.width_px.max(self.surface.height_px);
+        let short = self.surface.width_px.min(self.surface.height_px);
+        CropAspect::LongToShort { long, short }
+    }
+
+    /// Команда рендеру для видоискателя на весь экран: входы той же формулы кадрирования, что и у обычного кадра
+    /// (`framing_intent`), но соотношение — экрана, а место — вся поверхность (решение 203: один видоискатель,
+    /// стекло ручек и прибора лежит поверх, чистая четверть — просто кусок большого кадра).
+    pub fn cover_framing_intent(
+        &self,
+        facing: LensFacing,
+        ratio: ZoomRatio,
+        catalog: Arc<ZoomCatalog>,
+    ) -> FramingIntent {
+        FramingIntent {
+            zoom: ZoomFraming {
+                aspect: self.cover_crop_aspect(),
+                facing,
+                ratio,
+                catalog,
+            },
+            destination: NormalizedScreenRect {
+                left: 0.0,
+                top: 0.0,
+                width: 1.0,
+                height: 1.0,
+            },
+        }
+    }
+
+    /// Раскладка раздела калибровки для политики режима и положения телефона. Единственное место, где она строится
+    /// (решение 93: геометрию держит `ScreenLayout`).
+    pub fn calibration_layout(
+        &self,
+        config: &CalibrationConfig,
+        bottom: &BottomLayout,
+        policy: LayoutPolicy,
+        device_orientation: DeviceOrientation,
+    ) -> Result<CalibrationLayout, CalibrationLayoutError> {
+        CalibrationLayout::build(self, config, bottom, policy, device_orientation)
     }
 
     /// Лежит ли точка (pt) внутри кадра выбранного соотношения.

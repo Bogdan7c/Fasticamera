@@ -102,6 +102,33 @@ impl From<PresetName> for String {
     }
 }
 
+/// Встроенный или свой пресет (для списка на экране).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresetKind {
+    /// Встроенный: не меняется и не удаляется.
+    Builtin,
+    /// Свой.
+    User,
+}
+
+/// Строка списка пресетов для экрана.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PresetEntry {
+    /// Идентификатор.
+    pub id: PresetId,
+    /// Отображаемое имя.
+    pub name: PresetName,
+    /// Встроенный или свой.
+    pub kind: PresetKind,
+}
+
+impl PresetEntry {
+    /// Встроенный ли пресет.
+    pub fn is_builtin(&self) -> bool {
+        self.kind == PresetKind::Builtin
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

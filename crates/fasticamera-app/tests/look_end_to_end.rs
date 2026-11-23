@@ -26,6 +26,7 @@ use std::sync::Mutex;
 use camera_screen::{Effect, ScreenAction, ScreenConfig, ScreenState, reduce};
 use fasticamera::look_effects::LookEffects;
 use fasticamera::look_service::LookHandle;
+use fasticamera::look_startup::catalog_environment;
 use fasticamera::viewfinder_control::{ControlDelivery, RenderAdjustment, RenderControl};
 use look_contract::{ColorWheel, ColorWheels, LookIntent, LookKnob, LookSettings, WheelPush, WheelZone};
 use look_presets::PresetStoreConfig;
@@ -96,7 +97,11 @@ fn assert_screen_look_reaches_the_shown_picture(look: LookSettings) {
     let tone = config.viewfinder.tone;
 
     // Библиотека пресетов приложения; до намерения активен её стартовый вид («Как глаз»).
-    let handle = LookHandle::in_memory(&PresetStoreConfig::default()).expect("библиотека пресетов");
+    let handle = LookHandle::in_memory(
+        &PresetStoreConfig::default(),
+        &catalog_environment(&RenderLoopConfig::default()),
+    )
+    .expect("библиотека пресетов");
     let before = handle.active_settings();
     let mut look_effects = LookEffects::new(Some(handle.clone()));
     let inbox = RecordingRenderInbox::default();

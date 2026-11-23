@@ -19,38 +19,38 @@
 //!   дошёл до `Closed` (`advance`).
 //! * Рисуется карточка поверх шторки (см. `Stage::draw`): стекло, затем содержимое.
 
-use ui_core::geometry::Rect;
 use ui_core::gesture::{GestureEvent, PanDirection, PanSpec, RecognizerSpec};
 use ui_core::id::NodeId;
 use ui_core::time::MonotonicNanos;
-use ui_draw::color::{DisplayColor, Opacity};
-use ui_draw::draw_list::{DrawItem, ShapeItem};
+use ui_draw::color::Opacity;
+use ui_draw::draw_list::DrawItem;
 use ui_draw::icons::IconId;
-use ui_draw::scene_bridge::NodePlacementPx;
-use ui_draw::shape::ShapeGeometry;
 use ui_draw::transform::Affine2;
 use ui_kit::panel_morph::{PanelMorph, PanelMorphSpec, PanelPhase};
 use ui_kit::tokens::{GlassRole, MotionToken, TextRoleKind};
-use ui_kit::view::{centered_icon, centered_text, panel_glass_group};
+use ui_kit::view::{centered_text, panel_glass_group};
 
-use super::button::{ButtonEvent, PressButton};
+use super::button::ButtonEvent;
+use super::chip_row::RowPaint;
 use super::error::{WidgetError, element};
 use super::exposure_ruler::ExposureRuler;
 use super::intent::{ButtonId, ScreenGesture};
 use super::kit::SceneKit;
 use super::layers::{DrawLayers, Layer, VisualIndex};
-use super::text_runs::TextRuns;
+use super::side_button::{IconTurn, SideButton, SideButtonLook};
+use super::text_runs::{TextRuns, displayable_text};
 use super::tool_card_content::{
     card_value, current_option, has_option_row, open_card_tool, option_entries, tool_title,
 };
 use super::tool_card_options::OptionRow;
+use super::tool_card_styles::{StylesRow, active_preset_name, styles_have_edits};
 use super::{Ctx, Outputs};
 use crate::action::ScreenAction;
 use crate::settings::CaptureSettings;
 use crate::tools::ToolId;
 
 /// Пружина морфа шторка → карточка и закрытия: без перелёта, ≈ 0,3 с `[measured: C t=37.8–38.1, 62.93–63.25]`.
-const MENU_MORPH_MOTION: MotionToken = MotionToken::CardMorph;
+pub(crate) const MENU_MORPH_MOTION: MotionToken = MotionToken::CardMorph;
 /// Пружина проявления карточки на месте (открытие со значка над кадром): ≈ 0,2 с `[measured: C t=47.93–48.12]`.
 /// Закрытие такой карточки идёт той же пружиной (одна пружина на морф): `[estimate]` 0,2 вместо измеренных 0,3 с.
 const STRIP_APPEAR_MOTION: MotionToken = MotionToken::CardAppear;
@@ -90,105 +90,8 @@ struct ShownCard {
     /// Крупное значение, собранное по `value_key`.
     value: String,
     value_key: ValueKey,
-}
-
-/// Как рисуется боковая кнопка в этом кадре.
-#[derive(Debug, Clone, Copy)]
-struct SideButtonLook {
-    icon: IconId,
-    /// Поворот значка (стрелка «‹» смотрит влево; «×» и «↻» не поворачиваются).
-    rotation: Affine2,
-    /// Прозрачность содержимого карточки из морфа.
-    content_alpha: f32,
-    /// Сдвиг содержимого карточки из морфа, px.
-    slide_px: f32,
-    /// Дополнительный множитель прозрачности (затемнение «сброса» при EV = 0); 1,0 — без затемнения.
-    extra_opacity: f32,
-}
-
-/// Круглая боковая кнопка: кнопка и узел значка (поворачивается по ориентации телефона).
-struct SideButton {
-    button: PressButton,
-    content: NodeId,
-}
-
-impl SideButton {
-    fn build(
-        kit: &mut SceneKit,
-        ctx: &Ctx<'_>,
-        card_node: NodeId,
-        card_rect: Rect,
-        (id, rect): (ButtonId, Rect),
-    ) -> Result<Self, WidgetError> {
-        let node = kit.add_node(card_node, "card_button", rect, card_rect)?;
-        let button = PressButton::attach(kit, id, node, rect, ctx)?;
-        let content = kit.add_rotating_content(node, "card_button_icon")?;
-        // Диск Ø 36 рисуется как есть, а попасть в него можно в квадрат ≥ 44 pt (HIG).
-        kit.ensure_min_touch_side(node, rect, ctx.geometry.config().card.button_touch_side_pt)?;
-        kit.set_interactive(node, false)?;
-        Ok(Self { button, content })
-    }
-
-    /// Чёрный диск и значок поверх.
-    fn draw(
-        &self,
-        ctx: &Ctx<'_>,
-        visuals: &VisualIndex,
-        layers: &mut DrawLayers,
-        look: SideButtonLook,
-    ) -> Result<(), WidgetError> {
-        let SideButtonLook {
-            icon,
-            rotation,
-            content_alpha,
-            slide_px,
-            extra_opacity,
-        } = look;
-        let (Some(button), Some(content)) = (visuals.placement(self.button.node()), visuals.placement(self.content))
-        else {
-            return Ok(());
-        };
-        let alpha = (button.opacity * content_alpha * extra_opacity).clamp(0.0, 1.0);
-        if alpha <= 0.0 {
-            return Ok(());
-        }
-        let opacity = Opacity::new(alpha)
-            .map_err(|_| WidgetError::Inconsistent("прозрачность кнопки карточки вне 0..1".to_owned()))?;
-        let card = &ctx.geometry.config().card;
-        let slide = Affine2::translate(0.0, slide_px);
-        layers.push(
-            Layer::Content,
-            DrawItem::Shape(ShapeItem {
-                geometry: ShapeGeometry::Circle {
-                    diameter: button.size.width.min(button.size.height),
-                },
-                transform: slide.then(button.transform),
-                fill: DisplayColor {
-                    a: card.button_disc_alpha,
-                    ..DisplayColor::BLACK
-                },
-                stroke: None,
-                shadow: None,
-                opacity,
-            }),
-        );
-        let content = NodePlacementPx {
-            transform: rotation.then(content.transform),
-            ..content
-        };
-        layers.push(
-            Layer::Content,
-            centered_icon(
-                icon,
-                card.button_icon_size_pt,
-                ctx.px,
-                slide.then(content.transform),
-                ctx.tokens.colors.text_primary,
-                opacity,
-            ),
-        );
-        Ok(())
-    }
+    /// Имя активного пресета, из которого собрано `value` (только STYLES): по нему видно, что имя сменилось.
+    value_source: String,
 }
 
 pub(crate) struct ToolCardWidget {
@@ -197,6 +100,8 @@ pub(crate) struct ToolCardWidget {
     right: SideButton,
     ruler: ExposureRuler,
     options: OptionRow,
+    /// Ряд имён пресетов карточки STYLES (решение 201).
+    styles: StylesRow,
     /// Морф рамки; `None`, пока карточка ни разу не открывалась или полностью закрылась.
     morph: Option<PanelMorph>,
     /// Вид текущего морфа (`Some` ровно тогда, когда есть `morph`).
@@ -221,19 +126,22 @@ impl ToolCardWidget {
         )?;
         let ruler = ExposureRuler::build(kit, ctx, node, card_rect)?;
         let options = OptionRow::build(kit, ctx, node, card_rect)?;
+        let widgets = &ctx.config.calibration.widgets;
+        let (styles_center, styles_width) = ctx.geometry.card_chip_row(widgets.chip_padding_pt);
+        let styles = StylesRow::build(kit, ctx, (node, card_rect), styles_center, styles_width)?;
         let left = SideButton::build(
             kit,
             ctx,
-            node,
-            card_rect,
+            (node, card_rect),
             (ButtonId::CardLeft, ctx.geometry.card_left_button()),
+            IconTurn::FollowsPhone,
         )?;
         let right = SideButton::build(
             kit,
             ctx,
-            node,
-            card_rect,
+            (node, card_rect),
             (ButtonId::CardRight, ctx.geometry.card_right_button()),
+            IconTurn::FollowsPhone,
         )?;
         kit.set_interactive(node, false)?;
         Ok(Self {
@@ -242,6 +150,7 @@ impl ToolCardWidget {
             right,
             ruler,
             options,
+            styles,
             morph: None,
             morph_style: None,
             open_wanted: false,
@@ -251,6 +160,7 @@ impl ToolCardWidget {
 
     pub(crate) fn handle_gesture(
         &mut self,
+        kit: &SceneKit,
         event: &GestureEvent<ScreenGesture>,
         out: &mut Outputs,
     ) -> Result<bool, WidgetError> {
@@ -263,11 +173,17 @@ impl ToolCardWidget {
             }
             ScreenGesture::Press(ButtonId::CardRight) => {
                 if self.right.button.handle(event.state, event.data, event.time)? == ButtonEvent::Activated {
-                    out.actions.push(ScreenAction::ExposureResetRequested);
+                    // Что значит «↻», решает инструмент карточки: сброс EV или возврат пресета к исходным значениям.
+                    match self.shown.as_ref().map(|shown| shown.tool) {
+                        Some(ToolId::Styles) => out.actions.push(ScreenAction::DiscardEditsTapped),
+                        _ => out.actions.push(ScreenAction::ExposureResetRequested),
+                    }
                 }
                 Ok(true)
             }
-            _ => Ok(self.options.handle_gesture(event, out)? || self.ruler.handle_gesture(event)?),
+            _ => Ok(self.options.handle_gesture(event, out)?
+                || self.styles.handle_gesture(kit, event, &mut out.actions)?
+                || self.ruler.handle_gesture(event)?),
         }
     }
 
@@ -354,11 +270,17 @@ impl ToolCardWidget {
         kit.set_interactive(self.left.button.node(), true)?;
         let is_exposure = tool == ToolId::Exposure;
         self.ruler.set_active(kit, is_exposure)?;
-        // «↻» при EV = 0 сбрасывать нечего: кнопка затемнена и не ловит касаний.
+        let is_styles = tool == ToolId::Styles;
+        // «↻» при EV = 0 (или без правок поверх пресета) сбрасывать нечего: кнопка затемнена и не ловит касаний.
         kit.set_interactive(
             self.right.button.node(),
-            is_exposure && ctx.state.exposure().steps() != 0,
+            (is_exposure && ctx.state.exposure().steps() != 0) || (is_styles && styles_have_edits(ctx.state)),
         )?;
+        if is_styles {
+            self.styles.sync(kit, ctx)?;
+        } else {
+            self.styles.stop_touches(kit)?;
+        }
         self.sync_options(kit, ctx, tool)
     }
 
@@ -369,15 +291,29 @@ impl ToolCardWidget {
             settings: *ctx.state.settings(),
             exposure_steps: ctx.state.exposure().steps(),
         };
-        let value = match self.shown.take() {
-            Some(previous) if previous.value_key == value_key => previous.value,
-            _ => card_value(ctx.state, ctx.config, tool),
+        // Имя активного пресета живёт в фактах, а не в настройках съёмки: оно может смениться (переименование,
+        // выбор из другого места), не тронув ключ. Поэтому у STYLES значение сверяется по самому имени.
+        let value_source = if tool == ToolId::Styles {
+            active_preset_name(ctx.state)
+        } else {
+            String::new()
+        };
+        let (value, value_source) = match self.shown.take() {
+            Some(previous)
+                if tool == ToolId::Styles && previous.tool == tool && previous.value_source == value_source =>
+            {
+                (previous.value, value_source)
+            }
+            _ if tool == ToolId::Styles => (displayable_text(ctx, &value_source), value_source),
+            Some(previous) if previous.value_key == value_key => (previous.value, value_source),
+            _ => (card_value(ctx.state, ctx.config, tool), value_source),
         };
         self.shown = Some(ShownCard {
             tool,
             left_face,
             value,
             value_key,
+            value_source,
         });
     }
 
@@ -402,6 +338,7 @@ impl ToolCardWidget {
         kit.set_interactive(self.left.button.node(), false)?;
         kit.set_interactive(self.right.button.node(), false)?;
         self.ruler.set_active(kit, false)?;
+        self.styles.stop_touches(kit)?;
         self.options.stop_touches(kit)
     }
 
@@ -416,6 +353,7 @@ impl ToolCardWidget {
                 self.morph_style = None;
                 self.shown = None;
                 self.options.forget_entries();
+                self.styles.forget();
             }
         }
     }
@@ -451,6 +389,9 @@ impl ToolCardWidget {
         self.draw_texts(ctx, layers, texts, shown, alpha, slide_px)?;
         if shown.tool == ToolId::Exposure {
             self.ruler.draw(ctx, visuals, layers, alpha, slide_px)?;
+        } else if shown.tool == ToolId::Styles {
+            self.styles
+                .draw(ctx, visuals, layers, texts, RowPaint { alpha, slide_px })?;
         } else {
             self.options.draw(
                 ctx,
@@ -519,8 +460,13 @@ impl ToolCardWidget {
                 extra_opacity: 1.0,
             },
         )?;
-        if shown.tool == ToolId::Exposure {
-            let dim = if ctx.state.exposure().steps() == 0 {
+        let reset_nothing_to_reset = match shown.tool {
+            ToolId::Exposure => Some(ctx.state.exposure().steps() == 0),
+            ToolId::Styles => Some(!styles_have_edits(ctx.state)),
+            _ => None,
+        };
+        if let Some(nothing_to_reset) = reset_nothing_to_reset {
+            let dim = if nothing_to_reset {
                 ctx.geometry.config().card.reset_dim_opacity
             } else {
                 1.0
@@ -552,5 +498,10 @@ impl ToolCardWidget {
 
     pub(crate) fn suppressed_echo_events(&self) -> u64 {
         self.ruler.suppressed_echo_events()
+    }
+
+    /// Имена пресетов, не поместившиеся в ряд карточки STYLES (диагностика).
+    pub(crate) fn overflowed_style_chips(&self) -> usize {
+        self.styles.overflowed_chips()
     }
 }

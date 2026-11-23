@@ -11,6 +11,8 @@
 //! * Факты камеры приходят нейтральным [`CameraFacts`]; зависимости от `camera-core` нет.
 //!
 //! # Карта модулей
+//! * [`mode_behaviour`] — поведение режима как данные (затвор, громкость, раскладка, видоискатель, калибровка);
+//!   [`calibration`] — раздел калибровки (выбор экрана и геометрия зон); [`look_view`] — факты о виде и плашка проблемы.
 //! * [`settings`], [`tools`], [`modes`] — настройки съёмки, инструменты как данные (М3), реестр режимов (М1).
 //! * [`shutter`] — машина состояний затвора (М2), запрос снимка; `saving` — набор снимков, ждущих сохранения.
 //! * [`focus`], [`exposure`], [`level`], [`orientation`] — фокус и блокировка, EV, уровень, поворот значков.
@@ -21,6 +23,7 @@
 //!   `widget` — по модулю на каждый виджет; [`widgets_config`] — числа их раскладки.
 
 pub mod action;
+pub mod calibration;
 pub mod config;
 pub mod effect;
 pub mod exposure;
@@ -28,6 +31,8 @@ pub mod facts;
 pub mod focus;
 pub mod layout;
 pub mod level;
+pub mod look_view;
+pub mod mode_behaviour;
 pub mod modes;
 pub mod orientation;
 pub mod outcome;
@@ -48,6 +53,11 @@ pub mod zoom_config;
 pub mod zoom_labels;
 
 pub use action::{KeyPhase, ScreenAction};
+pub use calibration::{
+    CalibrationConfig, CalibrationConfigError, CalibrationLayout, CalibrationLayoutConfig, CalibrationLayoutError,
+    CalibrationMenu, CalibrationMenuItem, CalibrationState, CalibrationZones, CleanViewState, DeleteConfirmation,
+    Naming, PendingText, TextFlow, ZoneFractions,
+};
 pub use config::{ScreenConfig, ScreenConfigError, ToolsConfig};
 pub use effect::{Effect, ScreenCameraIntent};
 pub use facts::{
@@ -55,6 +65,11 @@ pub use facts::{
     UnavailableReason,
 };
 pub use layout::{FramingIntent, LayoutConfig, LayoutError, NormalizedScreenRect, ScreenLayout};
+pub use look_view::{LookView, ProblemBanner, ProblemKind};
+pub use mode_behaviour::{
+    CalibrationAvailability, CalibrationSurface, LayoutPolicy, ModeBehaviour, ShutterPresence, ViewfinderPlacement,
+    VolumeKeyRole,
+};
 pub use outcome::{ActionOutcome, NoChangeReason, Rejection, RejectionCounters};
 pub use reduce::{ScreenTransition, reduce};
 pub use screen::{CameraScreen, GestureCounters, ScreenBuildError, ScreenDiagnostics, ScreenTouch};
@@ -72,6 +87,8 @@ mod layout_tests;
 #[cfg(test)]
 #[path = "level_tests.rs"]
 mod level_tests;
+#[cfg(test)]
+mod look_test_support;
 #[cfg(test)]
 #[path = "saving_unit_tests.rs"]
 mod saving_unit_tests;

@@ -20,6 +20,7 @@ use ui_kit::tokens::MotionToken;
 
 use super::diagnostics::GestureCounters;
 use crate::action::ScreenAction;
+use crate::widget::calibration::{CalibrationSection, SectionKey};
 use crate::widget::capture_blink::CaptureBlinkWidget;
 use crate::widget::controls_drawer::ControlsDrawerWidget;
 use crate::widget::countdown::CountdownWidget;
@@ -36,6 +37,7 @@ use crate::widget::level_indicator::LevelIndicatorWidget;
 use crate::widget::lock_banner::LockBannerWidget;
 use crate::widget::menu_button::MenuButtonWidget;
 use crate::widget::mode_carousel::ModeCarouselWidget;
+use crate::widget::problem_banner::ProblemBannerWidget;
 use crate::widget::shutter_button::ShutterWidget;
 use crate::widget::text_runs::TextRuns;
 use crate::widget::thumbnail::ThumbnailWidget;
@@ -52,6 +54,14 @@ pub(crate) struct Stage {
     geometry: Arc<ScreenGeometry>,
     surface: SurfaceSize,
     px_per_pt_bits: u32,
+    /// Узел-хозяин виджетов экрана PHOTO: в режиме с разделом калибровки он скрыт целиком (и рисование, и касания).
+    photo_root: NodeId,
+    /// Корень сцены (родитель раздела калибровки).
+    scene_root: NodeId,
+    /// Показан ли сейчас экран PHOTO (отличает «надо переключить» от «уже так»).
+    photo_shown: bool,
+    /// Раздел калибровки; `None` вне режима с разделом.
+    calibration: Option<CalibrationSection>,
     shutter: ShutterWidget,
     thumbnail: ThumbnailWidget,
     menu_button: MenuButtonWidget,
@@ -61,6 +71,8 @@ pub(crate) struct Stage {
     card: ToolCardWidget,
     focus: FocusIndicatorWidget,
     banner: LockBannerWidget,
+    /// Плашка проблемы пресетов: одна на весь экран, переживает пересборку раздела калибровки.
+    problem_banner: ProblemBannerWidget,
     flip: FlipButtonWidget,
     zoom_strip: ZoomStripWidget,
     zoom_wheel: ZoomWheelWidget,
@@ -92,25 +104,37 @@ impl Stage {
         // Порядок добавления = порядок наложения: видоискатель под всем, затем элементы снизу вверх.
         let viewfinder = Self::build_viewfinder(&mut kit, root)?;
         let focus = FocusIndicatorWidget::build(&mut kit, ctx, viewfinder)?;
-        let top_bar = TopBarWidget::build(&mut kit, ctx, root)?;
+        // Всё, что принадлежит экрану PHOTO, лежит под одним узлом: режим с разделом калибровки прячет его целиком,
+        // и затвор, лента зума, верхний ряд не ловят касаний там, где стоят колонка ручек и прибор.
+        let photo_root = kit.scene_mut().insert_child(root, "photo_root")?;
+        kit.scene_mut()
+            .set_placement(photo_root, Placement::Anchored(AnchorRule::fill_parent()))?;
+        // Сам узел касаний не ловит: пустое место экрана PHOTO принадлежит видоискателю под ним.
+        kit.set_pass_through(photo_root)?;
+        let top_bar = TopBarWidget::build(&mut kit, ctx, photo_root)?;
         // Колесо зума лежит под нижним рядом: затвор, миниатюра и капсула остаются нажимаемыми поверх него.
-        let zoom_wheel = ZoomWheelWidget::build(&mut kit, ctx, root)?;
-        let shutter = ShutterWidget::build(&mut kit, ctx, root)?;
-        let thumbnail = ThumbnailWidget::build(&mut kit, ctx, root)?;
-        let flip = FlipButtonWidget::build(&mut kit, ctx, root)?;
-        let carousel = ModeCarouselWidget::build(&mut kit, ctx, root)?;
-        let zoom_strip = ZoomStripWidget::build(&mut kit, ctx, root)?;
-        let menu_button = MenuButtonWidget::build(&mut kit, ctx, root)?;
-        let drawer = ControlsDrawerWidget::build(&mut kit, ctx, root)?;
+        let zoom_wheel = ZoomWheelWidget::build(&mut kit, ctx, photo_root)?;
+        let shutter = ShutterWidget::build(&mut kit, ctx, photo_root)?;
+        let thumbnail = ThumbnailWidget::build(&mut kit, ctx, photo_root)?;
+        let flip = FlipButtonWidget::build(&mut kit, ctx, photo_root)?;
+        let carousel = ModeCarouselWidget::build(&mut kit, ctx, photo_root)?;
+        let zoom_strip = ZoomStripWidget::build(&mut kit, ctx, photo_root)?;
+        let menu_button = MenuButtonWidget::build(&mut kit, ctx, photo_root)?;
+        let drawer = ControlsDrawerWidget::build(&mut kit, ctx, photo_root)?;
         // Карточка — над шторкой и в хит-тесте (шторка под ней ждёт «‹» и касаний не ловит).
-        let card = ToolCardWidget::build(&mut kit, ctx, root)?;
+        let card = ToolCardWidget::build(&mut kit, ctx, photo_root)?;
         let banner = LockBannerWidget::build(ctx)?;
+        let problem_banner = ProblemBannerWidget::build(ctx)?;
         kit.relayout_if_needed()?;
         Ok(Self {
             kit,
             geometry,
             surface,
             px_per_pt_bits: px_per_pt.to_bits(),
+            photo_root,
+            scene_root: root,
+            photo_shown: true,
+            calibration: None,
             shutter,
             thumbnail,
             menu_button,
@@ -120,6 +144,7 @@ impl Stage {
             card,
             focus,
             banner,
+            problem_banner,
             flip,
             zoom_strip,
             zoom_wheel,
@@ -208,7 +233,21 @@ impl Stage {
         ctx: &Ctx<'_>,
         out: &mut Outputs,
     ) -> Result<bool, WidgetError> {
+        // Тап-«страж» кнопки нужен только арбитражу: действие рождает её `Press` (у кнопок раздела — тоже).
+        if let ScreenGesture::ButtonTapGuard(_) = event.intent {
+            return Ok(true);
+        }
+        // Жест раздела калибровки после ухода раздела — это отмена его узлов: гасим, а не считаем «ничьим».
+        if event.intent.belongs_to_calibration() {
+            return match &mut self.calibration {
+                Some(section) => section.handle_gesture(&self.kit, ctx, event, out),
+                None => Ok(true),
+            };
+        }
+        // В режиме с разделом калибровки фокус, AE/AF Lock и зум не живут: тап, долгий тап и щипок по видоискателю пустые.
+        let calibrating = ctx.state.mode_behaviour().has_calibration_surface();
         match event.intent {
+            ScreenGesture::ViewfinderTap | ScreenGesture::ViewfinderLongPress if calibrating => return Ok(true),
             ScreenGesture::ViewfinderTap => {
                 if let (GestureState::Ended, GestureData::Tap { position, .. }) = (event.state, event.data) {
                     out.actions.push(ScreenAction::ViewfinderTapped {
@@ -227,12 +266,16 @@ impl Stage {
                 }
                 return Ok(true);
             }
+            // Свайпы видоискателя (смена режима, открытие меню) заданы в осях ПОВЕРХНОСТИ, а у раздела калибровки в альбоме
+            // они повёрнуты: здесь они не действуют, свайп режимов по чистой зоне принадлежит разделу (в глазных осях).
+            ScreenGesture::ModesPan | ScreenGesture::MenuOpenPan if calibrating => return Ok(true),
+            // Зума в разделе калибровки нет (`ModeBehaviour::camera_controls`): щипок гасим на месте, а не шлём
+            // действия, которые редьюсер всё равно отвергнет и посчитает отказами.
+            ScreenGesture::ViewfinderPinch if calibrating => return Ok(true),
             ScreenGesture::ViewfinderPinch => {
                 Self::route_pinch(event, out);
                 return Ok(true);
             }
-            // Тап-«страж» кнопки нужен только арбитражу: действие рождает её `Press`.
-            ScreenGesture::ButtonTapGuard(_) => return Ok(true),
             _ => {}
         }
         Ok(self.shutter.handle_gesture(event, out)?
@@ -240,11 +283,11 @@ impl Stage {
             || self.zoom_strip.handle_gesture(event, out)?
             || self.zoom_wheel.handle_gesture(event, out)?
             || self.thumbnail.handle_gesture(event, out)?
-            || self.menu_button.handle_gesture(event, out)?
-            || self.carousel.handle_gesture(event, ctx, out)?
+            || self.menu_button.handle_gesture(&self.kit, event, out)?
+            || self.carousel.handle_gesture(&self.kit, event, out)?
             || self.top_bar.handle_gesture(event, out)?
             || self.drawer.handle_gesture(event, out)?
-            || self.card.handle_gesture(event, out)?
+            || self.card.handle_gesture(&self.kit, event, out)?
             || self.focus.handle_gesture(event, ctx, out)?)
     }
 
@@ -275,6 +318,7 @@ impl Stage {
 
     /// Выравнивает элементы и узлы по состоянию экрана (программно, без эха действий).
     pub(crate) fn sync(&mut self, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
+        self.sync_calibration(ctx)?;
         self.shutter.sync(&mut self.kit, ctx)?;
         self.thumbnail.sync(&mut self.kit, ctx)?;
         self.flip.sync(&mut self.kit, ctx)?;
@@ -287,6 +331,7 @@ impl Stage {
         self.card.sync(&mut self.kit, ctx)?;
         self.focus.sync(&mut self.kit, ctx)?;
         self.banner.sync(ctx)?;
+        self.problem_banner.sync(ctx)?;
         // Поворот значков по ориентации: пружина `smooth`, рамки раскладки не меняются.
         self.kit.rotate_icons(
             ctx.state.icon_rotation_clockwise_degrees(),
@@ -294,6 +339,39 @@ impl Stage {
             ctx.now,
         )?;
         self.kit.relayout_if_needed()
+    }
+
+    /// Приводит раздел калибровки и видимость экрана PHOTO в соответствие с режимом: раздел строится, когда у
+    /// состояния появилась его раскладка, и пересобирается при смене ключа (поворот, размер, набор полос).
+    fn sync_calibration(&mut self, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
+        let wanted = SectionKey::of(ctx);
+        let rebuild = match (&self.calibration, &wanted) {
+            (Some(section), Some(key)) => section.key() != key,
+            (None, None) => false,
+            _ => true,
+        };
+        if rebuild {
+            if let Some(section) = self.calibration.take() {
+                section.retire(&mut self.kit)?;
+            }
+            if let Some(key) = wanted {
+                self.calibration = Some(CalibrationSection::build(&mut self.kit, ctx, self.scene_root, key)?);
+            }
+            self.kit.relayout_if_needed()?;
+        }
+        let photo_wanted = !ctx.state.mode_behaviour().has_calibration_surface();
+        if self.photo_shown != photo_wanted {
+            self.photo_shown = photo_wanted;
+            self.kit.set_shown(self.photo_root, photo_wanted)?;
+            if photo_wanted {
+                // `set_shown` возвращает обычную политику касаний; узлу-хозяину нужна «прозрачная».
+                self.kit.set_pass_through(self.photo_root)?;
+            }
+        }
+        if let Some(section) = &mut self.calibration {
+            section.sync(&mut self.kit, ctx)?;
+        }
+        Ok(())
     }
 
     /// Кадр элементов: пружины и события (хаптика, смена значения, выбор режима).
@@ -305,6 +383,10 @@ impl Stage {
         self.zoom_wheel.advance(ctx, out);
         self.focus.advance(ctx, out)?;
         self.banner.advance(ctx)?;
+        self.problem_banner.advance(ctx, out)?;
+        if let Some(section) = &mut self.calibration {
+            section.advance(ctx, out);
+        }
         Ok(())
     }
 
@@ -317,6 +399,9 @@ impl Stage {
     ) -> Result<Vec<DrawItem>, WidgetError> {
         let visuals = VisualIndex::of(self.kit.scene());
         let mut layers = DrawLayers::default();
+        if ctx.state.mode_behaviour().has_calibration_surface() {
+            return self.draw_calibration(ctx, &visuals, layers, blink, veil);
+        }
         FrameMaskWidget::draw(ctx, &mut layers)?;
         // Завеса перехода между камерами — первой над кадром: сетка и уровень лежат поверх размытия.
         veil.draw(ctx, &mut layers)?;
@@ -325,6 +410,9 @@ impl Stage {
         blink.draw(ctx, &mut layers)?;
         self.focus.draw(ctx, &mut layers)?;
         self.banner.draw(ctx, &mut layers, &mut self.texts)?;
+        self.problem_banner.draw(ctx, &mut layers, &mut self.texts, |size| {
+            Some(ProblemBannerWidget::photo_placement(ctx, size))
+        })?;
         // Колесо — до нижнего ряда: затвор и кнопки рисуются поверх его диска.
         self.zoom_wheel.draw(ctx, &visuals, &mut layers, &mut self.texts)?;
         self.zoom_strip.draw(ctx, &visuals, &mut layers, &mut self.texts)?;
@@ -357,6 +445,30 @@ impl Stage {
         Ok(layers.into_items())
     }
 
+    /// Список рисования режима с разделом калибровки: видоискатель на весь экран (его рисует рендер), поверх —
+    /// раздел. Рамка кадра, сетка, уровень, рамка фокуса, плашка Lock и вся нижняя зона PHOTO не рисуются.
+    fn draw_calibration(
+        &mut self,
+        ctx: &Ctx<'_>,
+        visuals: &VisualIndex,
+        mut layers: DrawLayers,
+        blink: &CaptureBlinkWidget,
+        veil: &TransitionVeil,
+    ) -> Result<Vec<DrawItem>, WidgetError> {
+        veil.draw(ctx, &mut layers)?;
+        blink.draw(ctx, &mut layers)?;
+        UnavailableNoticeWidget::draw(ctx, &mut layers, &mut self.texts)?;
+        if let Some(section) = &self.calibration {
+            section.draw(ctx, visuals, &mut layers, &mut self.texts)?;
+        }
+        // Плашка проблемы — в глазном пространстве раздела (у верха нижнего ряда), поверх раздела и его меню.
+        let section = self.calibration.as_ref();
+        self.problem_banner.draw(ctx, &mut layers, &mut self.texts, |size| {
+            section.and_then(|section| section.banner_placement(ctx, visuals, size))
+        })?;
+        Ok(layers.into_items())
+    }
+
     /// Счётчик вида жеста для диагностики.
     pub(crate) fn count_gesture(counters: &mut GestureCounters, event: &GestureEvent<ScreenGesture>) {
         if event.state == GestureState::Cancelled {
@@ -364,7 +476,10 @@ impl Stage {
             return;
         }
         match (event.intent, event.state) {
-            (ScreenGesture::ViewfinderTap | ScreenGesture::CapsuleTap, GestureState::Ended) => counters.taps += 1,
+            (
+                ScreenGesture::ViewfinderTap | ScreenGesture::CapsuleTap | ScreenGesture::CalibrationMenuScrimTap,
+                GestureState::Ended,
+            ) => counters.taps += 1,
             (ScreenGesture::ViewfinderLongPress, GestureState::Began) => counters.long_presses += 1,
             (
                 ScreenGesture::ModesPan
@@ -373,7 +488,15 @@ impl Stage {
                 | ScreenGesture::DrawerClosePan
                 | ScreenGesture::ExposureSliderPan
                 | ScreenGesture::ZoomStripPan
-                | ScreenGesture::ZoomWheelPan,
+                | ScreenGesture::ZoomWheelPan
+                | ScreenGesture::CalibrationRulerPan(_)
+                | ScreenGesture::CalibrationListPan
+                | ScreenGesture::CalibrationBasePan
+                | ScreenGesture::CalibrationScopePan
+                | ScreenGesture::CalibrationModesPan
+                | ScreenGesture::StyleChipsPan
+                | ScreenGesture::CalibrationChipsPan
+                | ScreenGesture::CalibrationMenuClosePan,
                 GestureState::Began,
             ) => counters.pans += 1,
             (ScreenGesture::ViewfinderPinch, GestureState::Began) => counters.pinches += 1,
@@ -385,6 +508,39 @@ impl Stage {
     /// Значения шкал EV, не ставшие величиной компенсации (диагностика).
     pub(crate) fn invalid_exposure_values(&self) -> u64 {
         self.card.invalid_bias_values() + self.focus.invalid_bias_values()
+    }
+
+    /// Центры (pt, поверхность) всех видимых узлов с подписью `label`, в порядке сборки (проба для тестов касаний).
+    #[cfg(test)]
+    pub(crate) fn node_centers(&self, label: &str) -> Vec<ui_core::geometry::Point> {
+        self.kit
+            .scene()
+            .tree()
+            .draw_order()
+            .into_iter()
+            .filter(|visual| visual.label == label)
+            .map(|visual| visual.to_screen.apply(visual.frame.center()))
+            .collect()
+    }
+
+    /// Раздел калибровки (проба для тестов).
+    #[cfg(test)]
+    pub(crate) fn calibration(&self) -> Option<&CalibrationSection> {
+        self.calibration.as_ref()
+    }
+
+    /// Значения ручек вида, не ставшие значениями (диагностика).
+    pub(crate) fn invalid_knob_values(&self) -> u64 {
+        self.calibration.as_ref().map_or(0, CalibrationSection::invalid_values)
+    }
+
+    /// Имена пресетов, не поместившиеся в ряды таблеток (диагностика): в карточке STYLES и в меню раздела.
+    pub(crate) fn overflowed_preset_chips(&self) -> u64 {
+        let menu = self
+            .calibration
+            .as_ref()
+            .map_or(0, CalibrationSection::overflowed_chips);
+        (self.card.overflowed_style_chips() + menu) as u64
     }
 
     pub(crate) fn text_layouts(&self) -> u64 {
@@ -414,5 +570,9 @@ impl Stage {
         self.card.suppressed_echo_events()
             + self.focus.suppressed_echo_events()
             + self.zoom_wheel.suppressed_echo_events()
+            + self
+                .calibration
+                .as_ref()
+                .map_or(0, CalibrationSection::suppressed_echo_events)
     }
 }

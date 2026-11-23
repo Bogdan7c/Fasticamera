@@ -7,6 +7,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::calibration::{CalibrationConfig, CalibrationConfigError};
 use crate::exposure::{ExposureConfig, ExposureConfigError};
 use crate::focus::{FocusConfig, FocusConfigError};
 use crate::layout::{LayoutConfig, LayoutError};
@@ -41,6 +42,8 @@ impl Default for ToolsConfig {
                 ToolId::Raw,
                 ToolId::Grid,
                 ToolId::Level,
+                // Быстрый выбор пресета (решение 201): пункт виден, только когда библиотека пресетов прислала факты.
+                ToolId::Styles,
             ],
         }
     }
@@ -69,6 +72,8 @@ pub struct ScreenConfig {
     pub widgets: WidgetLayoutConfig,
     /// Зум, лента кнопок, колесо, переходы между камерами (сессия 13).
     pub zoom: ZoomConfig,
+    /// Раздел калибровки: флаг режима, доли зон, оси вектороскопа, предел картинки прибора (14b).
+    pub calibration: CalibrationConfig,
 }
 
 /// Ошибка конфига экрана.
@@ -92,6 +97,8 @@ pub enum ScreenConfigError {
     Widgets(#[from] WidgetConfigError),
     #[error("зум: {0}")]
     Zoom(#[from] ZoomConfigError),
+    #[error("раздел калибровки: {0}")]
+    Calibration(#[from] CalibrationConfigError),
 }
 
 impl ScreenConfig {
@@ -106,6 +113,7 @@ impl ScreenConfig {
         self.tools.tool_set()?;
         self.widgets.validate()?;
         self.zoom.validate()?;
+        self.calibration.validate()?;
         Ok(())
     }
 }

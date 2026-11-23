@@ -36,11 +36,14 @@ use shell_contract::clock::MonotonicNanos;
 use shell_contract::commands::{CommandOutcome, ShellCommands};
 use shell_contract::haptics::{HapticOutcome, HapticPattern, HapticsService};
 use shell_contract::still_media::ShutterSoundService;
+use shell_contract::text_input::TextPurpose;
 
 use crate::camera_screen_capture::{CaptureService, SubmitOutcome, SubmitRejection};
 use crate::look_effects::{LookCounters, LookEffects};
 use crate::look_service::LookHandle;
 use crate::scope_effects::{ScopeCounters, ScopeEffects};
+use crate::text_effects::{TextEffects, TextRequestCounters};
+use crate::text_input_broker::TextInputBroker;
 use crate::viewfinder_control::{ControlDelivery, RenderAdjustment, RenderControl};
 
 const LOG_TARGET: &str = "fasticamera::camera_screen";
@@ -247,6 +250,8 @@ pub struct EffectCounters {
     pub look: LookCounters,
     /// Цветовые приборы (14h): доставка намерений рендеру.
     pub scopes: ScopeCounters,
+    /// Просьбы экрана спросить имя пресета (решение 197): исходы по видам.
+    pub text: TextRequestCounters,
 }
 
 /// Сервисы, которым адресованы эффекты (собираются композицией один раз на экран).
@@ -273,6 +278,8 @@ pub struct EffectExecutor {
     look: LookEffects,
     /// Намерения по цветовым приборам: команда рендеру и счётчики её доставки.
     scopes: ScopeEffects,
+    /// Просьбы «спроси имя»: брокер запросов текста и счётчики исходов.
+    text: TextEffects,
     counters: EffectCounters,
     /// Время показа текущего кадра UI (часы потока рендера): им фейк-сервис снимка отсчитывает задержку ответа.
     frame_time: MonotonicNanos,
@@ -296,11 +303,33 @@ impl EffectExecutor {
         Self {
             look: LookEffects::new(targets.look.clone()),
             scopes: ScopeEffects::default(),
+            text: TextEffects::default(),
             targets,
             counters: EffectCounters::default(),
             frame_time: MonotonicNanos::from_nanos(0),
             pending_exposure_bias: None,
         }
+    }
+
+    /// Подключает брокер запросов текста (решение 197): без него просьба экрана «спроси имя» получает
+    /// `TextRequestNotSent`. Брокер общий на процесс, как библиотека пресетов; приёмник его ответов ставит сервис экрана.
+    #[must_use]
+    pub fn with_text_input(mut self, broker: TextInputBroker) -> Self {
+        self.text = TextEffects::new(Some(broker));
+        self
+    }
+
+    /// Экран только что поставлен на рендер: показ вида приводится к действующему рецепту библиотеки (см.
+    /// [`LookEffects::release_clean_view_on_install`]). Зовёт источник UI на ПЕРВОМ кадре, уже на потоке рендера:
+    /// команда идёт после установки источника, а не до неё.
+    pub fn on_screen_installed(&mut self) {
+        self.look.release_clean_view_on_install(self.targets.render.as_ref());
+    }
+
+    /// Каждый кадр: если рендеру не удалось доставить вид (см. [`LookEffects::retry_if_render_unsure`]), повторяет.
+    /// Когда всё доставлено, ничего не шлёт и почти ничего не стоит.
+    pub fn retry_look_render_if_unsure(&mut self) {
+        self.look.retry_if_render_unsure(self.targets.render.as_ref());
     }
 
     /// Начало кадра UI: запоминает время показа и даёт сервису снимка выдать созревшие ответы.
@@ -310,6 +339,11 @@ impl EffectExecutor {
         self.targets.capture.poll_completions(now);
         // Итоги записи файла пресетов: считаем и громко логируем сбои, рендер диск не ждёт.
         self.look.poll_save_outcomes();
+    }
+
+    /// Последняя проблема вида (отказ библиотеки, сбой записи) для фактов экрана; `None` — проблем не было.
+    pub fn latest_look_problem(&self) -> Option<look_contract::LookProblem> {
+        self.look.latest_problem()
     }
 
     /// Ждёт ли желаемое EV досылки (диагностика и тесты).
@@ -344,6 +378,7 @@ impl EffectExecutor {
         EffectCounters {
             look: self.look.counters(),
             scopes: self.scopes.counters(),
+            text: self.text.counters(),
             ..self.counters
         }
     }
@@ -362,9 +397,18 @@ impl EffectExecutor {
                 Effect::Scopes(intent) => self.scopes.run_intent(intent, self.targets.render.as_ref()),
                 Effect::Capture(request) => feedback.extend(self.submit_capture(request)),
                 Effect::PlayShutterSound => self.play_shutter_sound(),
+                Effect::CleanView(view) => self.look.set_clean_view(view, self.targets.render.as_ref()),
+                Effect::RequestText { purpose, initial_text } => {
+                    feedback.push(self.request_text(purpose, initial_text));
+                }
             }
         }
         feedback
+    }
+
+    /// Просьба экрана «спроси имя»: исход возвращается экрану обратным действием (номер диалога или «не отправлено»).
+    fn request_text(&mut self, purpose: TextPurpose, initial_text: String) -> ScreenAction {
+        self.text.request(purpose, initial_text)
     }
 
     fn deliver_camera_intent(&mut self, intent: ScreenCameraIntent) {
@@ -507,7 +551,7 @@ impl EffectExecutor {
         let request_id = request.request;
         // Вид — значения на момент нажатия, а не ссылка на пресет (инвариант 3): намерения вида, обработанные раньше
         // в этом же кадре, уже учтены, а поздние запрос не меняют.
-        let look = self.look.current_look();
+        let look = self.look.current_recipe();
         let rejection = match self.targets.capture.submit(request, look, self.frame_time) {
             SubmitOutcome::Accepted => {
                 counters.accepted += 1;

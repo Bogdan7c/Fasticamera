@@ -13,8 +13,10 @@
 
 pub(crate) mod bottom_row;
 pub(crate) mod button;
+pub(crate) mod calibration;
 pub(crate) mod capture_blink;
 pub(crate) mod card_geometry;
+pub(crate) mod chip_row;
 pub(crate) mod controls_drawer;
 pub(crate) mod countdown;
 pub(crate) mod error;
@@ -32,12 +34,16 @@ pub(crate) mod level_indicator;
 pub(crate) mod lock_banner;
 pub(crate) mod menu_button;
 pub(crate) mod mode_carousel;
+pub(crate) mod problem_banner;
+pub(crate) mod sheet_view;
 pub(crate) mod shutter_button;
+pub(crate) mod side_button;
 pub(crate) mod text_runs;
 pub(crate) mod thumbnail;
 pub(crate) mod tool_card;
 pub(crate) mod tool_card_content;
 pub(crate) mod tool_card_options;
+pub(crate) mod tool_card_styles;
 pub(crate) mod top_bar;
 pub(crate) mod transition_veil;
 pub(crate) mod unavailable_notice;

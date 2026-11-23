@@ -4,9 +4,10 @@
 use camera_contract::control::ExposureBias;
 use camera_contract::three_a::SensorPoint;
 use camera_contract::zoom::LensIntent;
-use look_contract::LookIntent;
+use look_contract::{CleanView, LookIntent};
 use scope_contract::ScopeIntent;
 use shell_contract::haptics::HapticPattern;
+use shell_contract::text_input::TextPurpose;
 
 use crate::layout::FramingIntent;
 use crate::shutter::ShotRequest;
@@ -53,4 +54,16 @@ pub enum Effect {
     /// Показать или скрыть цветовой прибор (решения 183, 188–190). Исполнитель шлёт его рендеру командой
     /// видоискателя; экран приборы не считает и не рисует, а запрос держит, пока открыт его раздел (виджет — 14b).
     Scopes(ScopeIntent),
+    /// «Чистяк»: показать основу без вида или вернуть правки (решение 189). Идемпотентно: экран шлёт только
+    /// смену, повторных `ShowBase` без `ShowEdited` между ними не бывает.
+    CleanView(CleanView),
+    /// Попросить у оболочки короткий текст (имя пресета, решение 197). Номер запроса выдаёт приложение (брокер
+    /// ввода) и возвращает экрану действием `TextRequestIssued`; ответ придёт действием `TextInputFinished`.
+    /// Если запрос не удалось отправить — действие `TextRequestNotSent`.
+    RequestText {
+        /// Для чего текст (платформа выбирает заголовок диалога).
+        purpose: TextPurpose,
+        /// Что подставить в поле при показе (пусто — пустое поле).
+        initial_text: String,
+    },
 }

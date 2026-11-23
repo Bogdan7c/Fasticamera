@@ -13,12 +13,15 @@ use shell_contract::orientation::DeviceOrientation;
 use shell_contract::surface::SurfaceSize;
 use thiserror::Error;
 
+use crate::calibration::CalibrationState;
 use crate::config::{ScreenConfig, ScreenConfigError};
 use crate::exposure::ExposureState;
 use crate::facts::{CameraFacts, CameraPresence, FlashAvailability};
 use crate::focus::FocusState;
 use crate::layout::{FramingIntent, ScreenLayout};
 use crate::level::LevelReading;
+use crate::look_view::LookView;
+use crate::mode_behaviour::{ModeBehaviour, ShutterPresence, ViewfinderPlacement};
 use crate::modes::{CaptureMode, ModeDescriptor, ModeRegistry};
 use crate::orientation::icon_rotation_clockwise_degrees;
 use crate::outcome::RejectionCounters;
@@ -29,6 +32,8 @@ use crate::thumbnail::{PictureTiming, ThumbnailBlend, ThumbnailCounters, Thumbna
 use crate::tools::ToolId;
 use crate::viewfinder_map::{MappingError, MirrorMode, StreamGeometry, ViewfinderMapping};
 use crate::zoom::ZoomState;
+use look_contract::{LookFacts, PresetEntry};
+use ui_core::geometry::Rect;
 
 /// Открытая панель. Одновременно открыта не больше одной.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -119,13 +124,17 @@ pub struct ScreenState {
     pub(crate) surface: Option<SurfaceSize>,
     pub(crate) layout: Option<ScreenLayout>,
     pub(crate) rejections: RejectionCounters,
+    /// Что экран знает о виде картинки: факты от библиотеки пресетов и плашка проблемы (14b).
+    pub(crate) look: LookView,
+    /// Выбор экрана в разделе калибровки: прибор, полоса, меню, ввод имени, раскладка (14b).
+    pub(crate) calibration: CalibrationState,
 }
 
 impl ScreenState {
     /// Начальное состояние. Проверяет конфиг: невалидный конфиг не даёт создать экран.
     pub fn new(config: &ScreenConfig) -> Result<Self, ScreenConfigError> {
         config.validate()?;
-        let registry = ModeRegistry::implemented(config.tools.tool_set()?);
+        let registry = ModeRegistry::implemented(config.tools.tool_set()?, config.calibration.availability());
         Ok(Self {
             mode: registry.default_mode(),
             registry,
@@ -154,6 +163,8 @@ impl ScreenState {
             surface: None,
             layout: None,
             rejections: RejectionCounters::default(),
+            look: LookView::default(),
+            calibration: CalibrationState::new(&config.calibration),
         })
     }
 
@@ -297,6 +308,37 @@ impl ScreenState {
         self.registry.descriptors()
     }
 
+    /// Поведение текущего режима (данные реестра): затвор, громкость, раскладка, видоискатель, раздел калибровки.
+    pub fn mode_behaviour(&self) -> ModeBehaviour {
+        self.current_descriptor()
+            .map_or(ModeBehaviour::PHOTO, |descriptor| descriptor.behaviour)
+    }
+
+    /// Есть ли у текущего режима затвор. Виджет затвора рисует кнопку, только когда `Present`.
+    pub fn shutter_presence(&self) -> ShutterPresence {
+        self.mode_behaviour().shutter
+    }
+
+    /// Что экран знает о виде картинки (факты библиотеки пресетов и плашка проблемы).
+    pub fn look(&self) -> &LookView {
+        &self.look
+    }
+
+    /// Последние факты о виде; `None` — библиотеки пресетов нет (ручки отключены, список пресетов пуст).
+    pub fn look_facts(&self) -> Option<&LookFacts> {
+        self.look.facts()
+    }
+
+    /// Пресеты для карточки Styles и ряда имён раздела: сначала встроенные, затем свои; пусто без фактов.
+    pub fn preset_entries(&self) -> &[PresetEntry] {
+        self.look.facts().map_or(&[], |facts| facts.presets.as_slice())
+    }
+
+    /// Выбор экрана в разделе калибровки.
+    pub fn calibration(&self) -> &CalibrationState {
+        &self.calibration
+    }
+
     fn current_descriptor(&self) -> Option<&ModeDescriptor> {
         self.registry.descriptor(self.mode)
     }
@@ -343,8 +385,9 @@ impl ScreenState {
             | ToolId::Grid
             | ToolId::Level
             | ToolId::Live
-            | ToolId::Styles
             | ToolId::Night => true,
+            // Styles — быстрый выбор пресета (решение 201): без фактов о виде выбирать не из чего.
+            ToolId::Styles => self.look.facts().is_some(),
         }
     }
 
@@ -364,6 +407,12 @@ impl ScreenState {
             PanelState::Submenu(_) | PanelState::ExposurePanel => ShutterVisibility::RaisedAboveCard,
             PanelState::Closed => ShutterVisibility::Visible,
         }
+    }
+
+    /// Открыта ли какая-нибудь панель: меню Controls, карточка или меню раздела калибровки. Жесты по кадру при
+    /// открытой панели закрывают её, а не наводят фокус.
+    pub fn is_any_panel_open(&self) -> bool {
+        self.panel != PanelState::Closed || self.calibration.menu() != crate::calibration::CalibrationMenu::Closed
     }
 
     /// Открыта ли карточка инструмента (подменю или Exposure).
@@ -411,16 +460,30 @@ impl ScreenState {
         }
     }
 
-    /// Команда рендеру для текущего соотношения и зума; `None`, пока нет раскладки.
+    /// Команда рендеру для текущего места видоискателя и зума; `None`, пока нет раскладки. Место задаёт режим
+    /// (`ModeBehaviour::viewfinder`): кадр по соотношению сторон или весь экран.
     pub fn framing_intent(&self) -> Option<FramingIntent> {
-        self.layout.map(|layout| {
-            layout.framing_intent(
-                self.settings.aspect,
-                self.zoom.facing(),
-                self.zoom.ratio(),
-                self.zoom_catalog(),
-            )
-        })
+        self.layout.map(|layout| self.viewfinder_framing(&layout).0)
+    }
+
+    /// Единственное место, где режим выбирает, КУДА и С КАКИМ соотношением рисовать видоискатель: команда рендеру и
+    /// прямоугольник кадра в pt (для перевода тапов) берутся вместе, расходиться им нельзя (решение 93).
+    fn viewfinder_framing(&self, layout: &ScreenLayout) -> (FramingIntent, Rect) {
+        match self.mode_behaviour().viewfinder {
+            ViewfinderPlacement::FramedByAspect => (
+                layout.framing_intent(
+                    self.settings.aspect,
+                    self.zoom.facing(),
+                    self.zoom.ratio(),
+                    self.zoom_catalog(),
+                ),
+                layout.frame_rect(self.settings.aspect),
+            ),
+            ViewfinderPlacement::FullScreenCover => (
+                layout.cover_framing_intent(self.zoom.facing(), self.zoom.ratio(), self.zoom_catalog()),
+                layout.cover_frame_rect(),
+            ),
+        }
     }
 
     /// Кадрирование кадра **активной камеры** по общей с рендером формуле. Нет активной камеры (потока нет) —
@@ -445,13 +508,7 @@ impl ScreenState {
             .stream
             .as_ref()
             .ok_or(ViewfinderUnavailable::NoStreamGeometry)?;
-        let intent = layout.framing_intent(
-            self.settings.aspect,
-            self.zoom.facing(),
-            self.zoom.ratio(),
-            self.zoom_catalog(),
-        );
-        let frame = layout.frame_rect(self.settings.aspect);
+        let (intent, frame) = self.viewfinder_framing(layout);
         // Кадрирование и зеркало берутся из той же формулы, что считает рендер для кадра этой камеры
         // (решение 93). `StreamGeometry::mirror` от приложения при этом ИГНОРИРУЕТСЯ: два источника зеркала
         // дали бы двойное отражение (тап слева на фронталке ушёл бы не туда).

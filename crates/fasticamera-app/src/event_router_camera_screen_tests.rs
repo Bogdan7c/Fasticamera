@@ -25,6 +25,8 @@ use ui_draw::geometry::PxSize;
 mod real_still;
 #[path = "event_router_camera_screen_thumbnail_tests.rs"]
 mod real_thumbnail;
+#[path = "event_router_camera_screen_text_tests.rs"]
+mod text_dialog;
 
 use super::*;
 use crate::camera_config::CameraConfig;

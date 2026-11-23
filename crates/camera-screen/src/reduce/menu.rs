@@ -17,11 +17,18 @@ pub(super) fn on_mode_selected(ctx: &mut Ctx<'_>, mode: CaptureMode) -> ActionOu
         return on_open(ctx);
     }
     ctx.state.mode = mode;
+    super::mode_change::apply_mode_change(ctx);
     ActionOutcome::Applied
 }
 
 /// Открыть меню Controls (кнопка меню, свайп вверх, тап по текущему режиму).
+///
+/// Кнопка «шесть точек» одна на все режимы, а что она открывает, решает режим (`ModeBehaviour::calibration`):
+/// меню Controls или меню раздела калибровки.
 pub(super) fn on_open(ctx: &mut Ctx<'_>) -> ActionOutcome {
+    if ctx.state.mode_behaviour().has_calibration_surface() {
+        return super::calibration::open_menu(ctx);
+    }
     ctx.state.panel = PanelState::ControlsMenu;
     ActionOutcome::Applied
 }
@@ -30,6 +37,9 @@ pub(super) fn on_open(ctx: &mut Ctx<'_>) -> ActionOutcome {
 /// открытой значком над кадром). `[estimate]`: для карточки со значка жест не снят, берём то же закрытие,
 /// что у остальных панелей, чтобы жест не зависел от происхождения. Закрывать нечего — `NoChange`.
 pub(super) fn on_close(ctx: &mut Ctx<'_>) -> ActionOutcome {
+    if ctx.state.mode_behaviour().has_calibration_surface() {
+        return super::calibration::close_menu(ctx);
+    }
     if ctx.state.panel == PanelState::Closed {
         return ActionOutcome::NoChange(NoChangeReason::NothingToClose);
     }
@@ -64,6 +74,10 @@ pub(super) fn on_option_selected(ctx: &mut Ctx<'_>, option: ToolOption) -> Actio
     if ctx.state.panel != PanelState::Submenu(option.tool()) {
         return ActionOutcome::Rejected(Rejection::OptionNotInSubmenu);
     }
+    // Пресет карточки Styles — не настройка съёмки, а намерение по виду (решение 201).
+    if let ToolOption::Style(preset) = option {
+        return super::presets::on_preset_selected(ctx, preset);
+    }
     if !apply_option(ctx, option) {
         return ActionOutcome::Rejected(Rejection::UnsupportedOption);
     }
@@ -72,6 +86,9 @@ pub(super) fn on_option_selected(ctx: &mut Ctx<'_>, option: ToolOption) -> Actio
 
 /// Левая кнопка карточки («‹» из меню, «×» со значка) — для подменю и для панели Exposure.
 pub(super) fn on_submenu_back(ctx: &mut Ctx<'_>) -> ActionOutcome {
+    if ctx.state.mode_behaviour().has_calibration_surface() {
+        return super::calibration::menu_back(ctx);
+    }
     if ctx.state.is_tool_card_open() {
         ctx.state.panel = panel_after_card_left_button(ctx.state.card_origin);
     }
@@ -139,6 +156,8 @@ fn apply_option(ctx: &mut Ctx<'_>, option: ToolOption) -> bool {
         ToolOption::Aspect(aspect) => change_aspect(ctx, aspect),
         ToolOption::Grid(grid) => ctx.state.settings.grid = grid,
         ToolOption::Level(level) => ctx.state.settings.level = level,
+        // Обрабатывается в `on_option_selected` до этого вызова; сюда не доходит, отказ явный на всякий случай.
+        ToolOption::Style(_) => return false,
     }
     true
 }
@@ -152,13 +171,19 @@ fn change_aspect(ctx: &mut Ctx<'_>, aspect: AspectRatio) {
         return;
     }
     ctx.state.settings.aspect = aspect;
+    hide_focus_indicator_and_release_camera_point(ctx);
+    if let Some(intent) = ctx.state.framing_intent() {
+        ctx.emit(Effect::Viewfinder(intent));
+    }
+}
+
+/// Квадрат фокуса принадлежит прежнему месту кадра: его прячут, а если он был на экране, камере уходит
+/// `ResetPointOfInterest` (иначе камера держала бы точку, которой на экране уже нет).
+pub(super) fn hide_focus_indicator_and_release_camera_point(ctx: &mut Ctx<'_>) {
     let indicator_was_shown = ctx.state.focus.indicator() != crate::focus::FocusIndicator::Hidden;
     ctx.state.focus.hide();
     if indicator_was_shown {
         ctx.emit(Effect::Camera(ScreenCameraIntent::ResetPointOfInterest));
-    }
-    if let Some(intent) = ctx.state.framing_intent() {
-        ctx.emit(Effect::Viewfinder(intent));
     }
 }
 

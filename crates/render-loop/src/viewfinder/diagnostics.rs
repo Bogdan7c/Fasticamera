@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use isp_vulkan::viewfinder::IspStageSet;
-use look_contract::LookSettings;
+use look_contract::{LookSettings, ToneBaseModel};
 
 use super::auto_exposure::AutoExposureDiagnostics;
 use super::continuity::ContinuityDiagnostics;
@@ -130,6 +130,9 @@ pub struct ViewfinderDiagnostics {
     /// Вид картинки, действующий на видоискателе (решение 178): по нему сквозной тест видит, что стартовый вид
     /// дошёл до рендера с первого кадра, а команда `SetLook` применилась.
     pub look: Arc<LookSettings>,
+    /// Модель основы тона, под которую считаются параметры кадра (решение 195): по ней сквозной тест видит, что
+    /// стартовая основа дошла до рендера, а `SetToneBase` применилась. Берётся из кэша параметров, как `look`.
+    pub tone_base: ToneBaseModel,
     /// Действующее место видоискателя на экране: правило конфига или прямоугольник из `SetFraming`
     /// (по нему smoke видит, что команда экрана камеры дошла до рендера).
     pub placement: EffectivePlacement,

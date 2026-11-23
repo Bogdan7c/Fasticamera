@@ -248,6 +248,28 @@ impl<M: ValueModel + Clone> SnapScale<M> {
         })
     }
 
+    /// Показать шкалу ровно на `position_units` (в единицах модели, не округляя до шага). Нужна, когда значение
+    /// пришло снаружи и лежит МЕЖДУ шагами (пресет с 0,15 при шаге 0,1): `set_value` поставил бы его на шаг и
+    /// соврал бы о положении. Положение зажимается в пределы модели. Значение, которое сообщит шкала,
+    /// по-прежнему ступенчатое; событие `ValueChanged` рождается только при смене ступени, и это движение —
+    /// программное (хаптики нет, у экрана оно уходит в эхо).
+    pub fn show_position(
+        &mut self,
+        position_units: f64,
+        transition: ScrollTransition,
+        now: MonotonicNanos,
+    ) -> Result<(), ScaleError> {
+        let (lowest, highest) = self.model.position_range();
+        let target_offset = position_units.clamp(lowest, highest) * self.points_per_unit;
+        self.origin = EventOrigin::Program;
+        self.move_to(target_offset, transition, now)
+    }
+
+    /// Положение шкалы в единицах модели с учётом незавершённого движения (без округления до шага).
+    pub fn position_units(&self, now: MonotonicNanos) -> f64 {
+        self.position_at(now)
+    }
+
     /// Сменить пределы модели (другая камера). Положение значений не меняется. Если текущее
     /// положение оказалось вне новых пределов, значение немедленно становится крайним допустимым
     /// (событие `ValueChanged`), а сама шкала `Animated` — доезжает пружиной, `Immediate` — прыгает.

@@ -78,6 +78,9 @@ pub(crate) enum ToneBaseKind {
 }
 
 impl ToneBaseKind {
+    /// Все модели основы: по ним заготавливаются варианты пайплайна видоискателя (прогрев).
+    pub(crate) const ALL: [Self; 4] = [Self::Legacy, Self::Agx, Self::Aces, Self::Filmic];
+
     /// Модель, которую выбрали параметры кадра. Ветки явные, без `_ =>`: новая модель в `isp-model` не пройдёт
     /// молча (не соберётся), пока для неё нет варианта здесь и упаковщика в [`pack_tone_base_uniforms`].
     pub(crate) fn of(params: &IspParams) -> Self {

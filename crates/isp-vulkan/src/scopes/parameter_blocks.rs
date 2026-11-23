@@ -1,13 +1,14 @@
 //! Упаковка блоков параметров в байты буферов шейдеров (раскладка std430, как в шейдерах).
 //!
 //! Две раскладки:
-//! * блок накопления — `uint words[64]` (заголовок: столбцы, строки, плоскости, резерв; потом слова прибора)
+//! * блок накопления — `uint words[64]` (заголовок: столбцы, строки, плоскости, чтение картинки глазом; потом слова прибора)
 //!   и `float decode_table[1024]` (`scope_accumulate_common.glsl`);
 //! * блок показа — сетка и число примитивов, непрозрачности, цвета плоскостей, 48 примитивов
 //!   (`scope_render.comp`).
 //!
 //! Чистые функции без GPU: раскладку проверяют обычные тесты.
 
+use scope_contract::ScopeScan;
 use scope_model::{GraticulePrimitive, GridShape, MAX_GRATICULE_PRIMITIVES, RenderSettings};
 
 use super::error::ScopeError;
@@ -25,9 +26,27 @@ pub(super) const MAX_PLANES: usize = 3;
 /// Размер блока показа, байт: 6 векторов `vec4` заголовка + примитивы по два `vec4`.
 pub(super) const RENDER_BLOCK_BYTES: usize = (6 + MAX_GRATICULE_PRIMITIVES * 2) * 16;
 
-/// Слова блока накопления: заголовок формы сетки и слова прибора, добитые нулями до `PARAMETER_WORDS`.
+/// Коды чтения картинки глазом в слове 3 заголовка (`SCAN_*` в `scope_accumulate_common.glsl`).
+pub(super) const SCAN_CODE_UPRIGHT: u32 = 0;
+pub(super) const SCAN_CODE_ROTATED_CLOCKWISE: u32 = 1;
+pub(super) const SCAN_CODE_UPSIDE_DOWN: u32 = 2;
+pub(super) const SCAN_CODE_ROTATED_COUNTER_CLOCKWISE: u32 = 3;
+
+/// Слово шейдера для чтения картинки глазом. `match` без `_`: новый вариант не соберётся без своего кода.
+pub(super) fn scan_code(scan: ScopeScan) -> u32 {
+    match scan {
+        ScopeScan::Upright => SCAN_CODE_UPRIGHT,
+        ScopeScan::RotatedClockwise => SCAN_CODE_ROTATED_CLOCKWISE,
+        ScopeScan::UpsideDown => SCAN_CODE_UPSIDE_DOWN,
+        ScopeScan::RotatedCounterClockwise => SCAN_CODE_ROTATED_COUNTER_CLOCKWISE,
+    }
+}
+
+/// Слова блока накопления: заголовок (форма сетки, чтение глазом) и слова прибора, добитые нулями до
+/// `PARAMETER_WORDS`.
 pub(super) fn accumulate_words_bytes(
     grid: GridShape,
+    scan: ScopeScan,
     parameters: &AccumulateParameters<'_>,
 ) -> Result<Vec<u8>, ScopeError> {
     let rule_words = parameters.words.as_slice();
@@ -41,6 +60,7 @@ pub(super) fn accumulate_words_bytes(
     words[0] = grid.columns();
     words[1] = grid.rows();
     words[2] = grid.planes();
+    words[3] = scan_code(scan);
     words[HEADER_WORDS..HEADER_WORDS + rule_words.len()].copy_from_slice(rule_words);
     Ok(words.iter().flat_map(|word| word.to_ne_bytes()).collect())
 }
@@ -129,11 +149,37 @@ mod tests {
             words: rule_words,
             decode_table: None,
         };
-        let bytes = accumulate_words_bytes(grid, &parameters).unwrap();
+        let bytes = accumulate_words_bytes(grid, ScopeScan::Upright, &parameters).unwrap();
         assert_eq!(bytes.len(), ACCUMULATE_WORDS_BYTES);
         let words = words_of(&bytes);
         assert_eq!(&words[..6], &[7, 5, 3, 0, 11, 2.0_f32.to_bits()]);
         assert!(words[6..].iter().all(|&word| word == 0));
+    }
+
+    #[test]
+    fn scan_goes_to_header_word_three_without_touching_other_words() {
+        let grid = GridShape::try_new(7, 5, 3).unwrap();
+        let build = |scan| {
+            let mut rule_words = RuleWords::new();
+            rule_words.push_u32(11);
+            let parameters = AccumulateParameters {
+                words: rule_words,
+                decode_table: None,
+            };
+            words_of(&accumulate_words_bytes(grid, scan, &parameters).unwrap())
+        };
+        let upright = build(ScopeScan::Upright);
+        for (scan, expected_code) in [
+            (ScopeScan::Upright, 0),
+            (ScopeScan::RotatedClockwise, 1),
+            (ScopeScan::UpsideDown, 2),
+            (ScopeScan::RotatedCounterClockwise, 3),
+        ] {
+            let words = build(scan);
+            assert_eq!(words[3], expected_code, "{scan:?}");
+            assert_eq!(&words[..3], &upright[..3], "сетка не зависит от чтения");
+            assert_eq!(&words[4..], &upright[4..], "слова прибора не зависят от чтения");
+        }
     }
 
     #[test]
@@ -148,7 +194,7 @@ mod tests {
             decode_table: None,
         };
         assert_eq!(
-            accumulate_words_bytes(grid, &parameters),
+            accumulate_words_bytes(grid, ScopeScan::Upright, &parameters),
             Err(ScopeError::TooManyRuleWords {
                 words: RULE_WORD_CAPACITY + 1,
                 capacity: RULE_WORD_CAPACITY

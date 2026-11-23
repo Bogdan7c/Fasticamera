@@ -1,0 +1,257 @@
+//! Виджеты раздела калибровки (режим CALIBRATE, решения 185, 196–203).
+//!
+//! Раздел — ОДНА сборка под одним повёрнутым корнем (`SectionSpace`): слева колонка ручек на стекле, справа сверху
+//! чистая зона (ничего не рисуется и не ловит касаний — под ней живой видоискатель), справа снизу прибор на
+//! стекле, внизу ряд: капсула режимов и кнопка меню. Раскладка и поворот по ориентации телефона приходят от
+//! `CalibrationLayout`, раздел сам ничего не считает.
+//!
+//! # Жизненный цикл
+//! Раздел существует, пока у состояния есть раскладка раздела (режим CALIBRATE, известен размер surface), и
+//! пересобирается целиком при смене ключа [`SectionKey`]: раскладки (поворот телефона, размер) или набора полос
+//! (их точки строятся по фактам). Всё, что раздел показывает, берётся из фактов и выбора экрана, поэтому
+//! пересборка ничего не теряет, кроме положения прокрутки списка. Распознаватели удалённых узлов получают
+//! `Cancelled`, а «чистяк», оставшийся без пальца, сам отпускается (`ToneHeader::advance`).
+//!
+//! # Что придумано, а не измерено
+//! В эталоне Apple нет раздела калибровки (решение 96): колонка на стекле, строки ручек, «чистяк», точки полос,
+//! листание приборов — идиомы владельца и подгонка. Измерено только то, что взято у карточки Exposure: вид
+//! линейки и кнопки «↻» (яркая / 44 %). Числа вида — `CalibrationWidgetsConfig`.
+
+mod band_dots;
+mod clean_zone;
+mod control_view;
+mod host;
+mod knob_row;
+mod knobs_column;
+mod menu;
+mod paint;
+mod scope_panel;
+pub(crate) mod space;
+mod tone_header;
+
+use look_contract::HueBandId;
+use ui_core::geometry::Rect;
+use ui_core::gesture::GestureEvent;
+use ui_core::id::NodeId;
+
+use self::knobs_column::KnobsColumn;
+use self::menu::SectionMenu;
+use self::scope_panel::ScopePanel;
+use self::space::SectionSpace;
+use super::error::WidgetError;
+use super::intent::ScreenGesture;
+use super::kit::SceneKit;
+use super::layers::{DrawLayers, VisualIndex};
+use super::menu_button::{MenuButtonHome, MenuButtonWidget};
+use super::mode_carousel::{CarouselHome, ModeCarouselWidget};
+use super::text_runs::TextRuns;
+use super::{Ctx, Outputs};
+use crate::calibration::CalibrationLayout;
+
+/// От чего зависит устройство раздела: пока ключ тот же, узлы живут; изменился — раздел пересобирается.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SectionKey {
+    layout: CalibrationLayout,
+    bands: Vec<HueBandId>,
+}
+
+impl SectionKey {
+    /// Ключ по состоянию экрана; `None` — раздела сейчас нет (не тот режим или нет размера surface).
+    pub(crate) fn of(ctx: &Ctx<'_>) -> Option<Self> {
+        let layout = *ctx.state.calibration().layout()?;
+        let bands = ctx
+            .state
+            .look_facts()
+            .map(|facts| facts.bands.iter().map(|band| band.id.clone()).collect())
+            .unwrap_or_default();
+        Some(Self { layout, bands })
+    }
+}
+
+/// Сборка раздела калибровки.
+pub(crate) struct CalibrationSection {
+    key: SectionKey,
+    space: SectionSpace,
+    root: NodeId,
+    knobs: KnobsColumn,
+    scope: ScopePanel,
+    carousel: ModeCarouselWidget,
+    menu_button: MenuButtonWidget,
+    /// Меню «шесть точек» (шторка и карточки): лежит над всем остальным разделом.
+    menu: SectionMenu,
+}
+
+impl CalibrationSection {
+    /// Строит раздел по ключу внутри корня сцены `scene_root`.
+    pub(crate) fn build(
+        kit: &mut SceneKit,
+        ctx: &Ctx<'_>,
+        scene_root: NodeId,
+        key: SectionKey,
+    ) -> Result<Self, WidgetError> {
+        let screen = ctx.geometry.screen();
+        let space = SectionSpace::new(&key.layout, screen);
+        let root = kit.add_node(scene_root, "calibration_root", space.root_frame(), screen)?;
+        // Корень шире экрана (альбом) и сам не ловит касаний: чистая зона отдаёт их видоискателю под раскладкой.
+        kit.set_pass_through(root)?;
+        kit.jump_rotation_to(root, space.rotation_radians())?;
+        let root_frame = space.root_frame();
+        let zones = *key.layout.zones();
+        let bands = ctx.state.look_facts().map_or(&[][..], |facts| facts.bands.as_slice());
+        let knobs = KnobsColumn::build(
+            kit,
+            ctx,
+            &space,
+            (root, root_frame),
+            (space.scene_rect(zones.knobs), bands),
+        )?;
+        let scope = ScopePanel::build(kit, &space, (root, root_frame), space.scene_rect(zones.scope))?;
+        // Чистая зона: невидимый узел свайпа режимов в глазных осях (в альбоме жесты видоискателя идут в осях поверхности).
+        clean_zone::build_mode_swipe_zone(kit, &space, (root, root_frame), space.scene_rect(zones.clean_preview))?;
+        // Капсула раздела — тот же измеренный размер, что на экране PHOTO (221,4 × 48,9 pt): соседняя подпись
+        // видна у края и гаснет в окне капсулы.
+        let capsule_frame = Rect::centered_at(
+            space.scene_point(key.layout.carousel_center()),
+            ctx.geometry.capsule().size,
+        );
+        let carousel = ModeCarouselWidget::build_at(
+            kit,
+            ctx,
+            (root, root_frame),
+            CarouselHome::Section {
+                frame: capsule_frame,
+                space,
+            },
+        )?;
+        let menu_frame = Rect::centered_at(
+            space.scene_point(key.layout.menu_button_center()),
+            ctx.geometry.menu_button().size,
+        );
+        let menu_button = MenuButtonWidget::build_at(
+            kit,
+            ctx,
+            (root, root_frame),
+            MenuButtonHome::Section { frame: menu_frame },
+        )?;
+        // Меню строится последним: узлы идут в порядке наложения, и скрим с шторкой и карточкой лежат над ручками.
+        let menu = SectionMenu::build(kit, ctx, &space, (root, root_frame))?;
+        Ok(Self {
+            key,
+            space,
+            root,
+            knobs,
+            scope,
+            carousel,
+            menu_button,
+            menu,
+        })
+    }
+
+    /// Ключ, по которому построен раздел.
+    pub(crate) fn key(&self) -> &SectionKey {
+        &self.key
+    }
+
+    /// Убирает узлы раздела из сцены (идущие жесты получают `Cancelled`).
+    pub(crate) fn retire(self, kit: &mut SceneKit) -> Result<(), WidgetError> {
+        kit.remove_subtree(self.root)
+    }
+
+    /// Событие жеста → виджет раздела. `false` — событие не раздела.
+    pub(crate) fn handle_gesture(
+        &mut self,
+        kit: &SceneKit,
+        ctx: &Ctx<'_>,
+        event: &GestureEvent<ScreenGesture>,
+        out: &mut Outputs,
+    ) -> Result<bool, WidgetError> {
+        Ok(self.knobs.handle_gesture(kit, &self.space, ctx, event, out)?
+            || self.scope.handle_gesture(&self.space, ctx, event, out)
+            || self.carousel.handle_gesture(kit, event, out)?
+            || self.menu_button.handle_gesture(kit, event, out)?
+            || self.menu.handle_gesture(kit, event, out)?)
+    }
+
+    /// Выравнивает виджеты раздела по состоянию (без эха действий).
+    pub(crate) fn sync(&mut self, kit: &mut SceneKit, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
+        self.knobs.sync(kit, ctx)?;
+        self.carousel.sync(kit, ctx)?;
+        self.menu_button.sync(kit, ctx)?;
+        self.menu.sync(kit, ctx)
+    }
+
+    /// Кадр: события линеек, каруселей и «чистяка».
+    pub(crate) fn advance(&mut self, ctx: &Ctx<'_>, out: &mut Outputs) {
+        self.knobs.advance(ctx, out);
+        self.carousel.advance(out);
+        self.menu.advance(ctx);
+    }
+
+    pub(crate) fn draw(
+        &self,
+        ctx: &Ctx<'_>,
+        visuals: &VisualIndex,
+        layers: &mut DrawLayers,
+        texts: &mut TextRuns,
+    ) -> Result<(), WidgetError> {
+        self.knobs.draw(ctx, visuals, layers, texts)?;
+        self.scope.draw(ctx, visuals, layers, texts)?;
+        self.carousel.draw(ctx, visuals, layers)?;
+        self.menu_button.draw(ctx, visuals, layers, 1.0)?;
+        self.menu.draw(ctx, visuals, layers, texts)
+    }
+
+    /// Размещение плашки проблемы размера `size_pt` в глазном пространстве раздела: по центру ширины, прижата к
+    /// верху нижнего ряда или открытого меню (над ней — зоны ручек и прибора; чистая зона превью остаётся пустой,
+    /// решение 203).
+    /// `None`, пока у корня нет размещения.
+    pub(crate) fn banner_placement(
+        &self,
+        ctx: &Ctx<'_>,
+        visuals: &VisualIndex,
+        size_pt: ui_core::geometry::Size,
+    ) -> Option<ui_draw::scene_bridge::NodePlacementPx> {
+        let root_frame = self.space.root_frame();
+        let host = host::RootHost::of(ctx, visuals, self.root, root_frame.center())?;
+        let bottom_row = self.space.scene_rect(self.key.layout.zones().bottom_row);
+        // Открытое меню лежит над нижним рядом: плашка встаёт над его верхом, а не поверх шторки или карточки.
+        let anchor_y = self
+            .menu
+            .open_top(ctx.state.calibration().menu())
+            .map_or(bottom_row.min_y(), |menu_top| menu_top.min(bottom_row.min_y()));
+        let gap = ctx.config.calibration.widgets.problem_banner_gap_pt;
+        let center = ui_core::geometry::Point::new(root_frame.center().x, anchor_y - gap - size_pt.height / 2.0);
+        Some(ui_draw::scene_bridge::NodePlacementPx {
+            size: ui_draw::geometry::PxSize::new(ctx.px.px(size_pt.width), ctx.px.px(size_pt.height)),
+            transform: host.point(ctx, center, 0.0),
+            opacity: 1.0,
+        })
+    }
+
+    /// Имена пресетов, не поместившиеся в ряд меню (диагностика).
+    pub(crate) fn overflowed_chips(&self) -> usize {
+        self.menu.overflowed_chips()
+    }
+
+    /// Смещение прокрутки списка ручек, pt (проба для тестов).
+    #[cfg(test)]
+    pub(crate) fn scroll_offset(&self, now: ui_core::time::MonotonicNanos) -> f64 {
+        self.knobs.scroll_offset(now)
+    }
+
+    /// Положение линейки строки `slot` в шагах (проба для тестов).
+    #[cfg(test)]
+    pub(crate) fn row_position_steps(&self, slot: u8, now: ui_core::time::MonotonicNanos) -> Option<f64> {
+        self.knobs.row_position_steps(slot, now)
+    }
+
+    /// Сколько значений линеек не стали значениями вида (диагностика).
+    pub(crate) fn invalid_values(&self) -> u64 {
+        self.knobs.invalid_values()
+    }
+
+    /// Сколько событий значения погашено как эхо (диагностика).
+    pub(crate) fn suppressed_echo_events(&self) -> u64 {
+        self.knobs.suppressed_echo_events()
+    }
+}

@@ -101,6 +101,12 @@ fn no_step_is_left_inferred_and_the_state_steps_check_the_screen_directly() {
         find("modes_swipe_left")
             .expect
             .states()
+            .contains(&StateCheck::Mode(ModeKind::Calibrate))
+    );
+    assert!(
+        find("modes_swipe_right")
+            .expect
+            .states()
             .contains(&StateCheck::Mode(ModeKind::Photo))
     );
 }

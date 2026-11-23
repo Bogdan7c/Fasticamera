@@ -20,6 +20,7 @@ use shell_contract::motion::{
 use shell_contract::operator_prompt::{OperatorPrompt, OperatorPromptService};
 use shell_contract::power::{PowerSampleRing, PowerSampling, PowerSamplingRequest, PowerSource, PowerSourceError};
 use shell_contract::still_media::ShutterSoundService;
+use shell_contract::text_input::{TextInputService, TextRequest};
 use shell_contract::thermal::{HeadroomForecast, ThermalHeadroom, ThermalSource, ThermalSourceError, ThermalStatus};
 use shell_contract::vsync::{VsyncSlot, VsyncSource, VsyncSourceError, VsyncSubscription};
 
@@ -142,6 +143,14 @@ impl ShutterSoundService for AndroidShellServices {
     /// Отказ самой платформы приходит позже событием `PlatformCommandFailed(PlayShutterSound)`.
     fn play_shutter_sound(&self) -> CommandOutcome {
         self.enqueue_for_attached(PlatformCall::PlayShutterSound)
+    }
+}
+
+impl TextInputService for AndroidShellServices {
+    /// Диалог ввода текста: команда в очередь потока платформы, ответ придёт событием `ShellEvent::TextInput`
+    /// (сбой показа внутри Kotlin — тем же событием с итогом `Unavailable`).
+    fn request_text(&self, request: &TextRequest) -> CommandOutcome {
+        self.enqueue_for_attached(PlatformCall::RequestText(request.clone()))
     }
 }
 

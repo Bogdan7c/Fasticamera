@@ -1,4 +1,4 @@
-//! Нейтральный словарь вида картинки Fasticamera (решения 98, 99, 178; колёса цвета — 186, 191).
+//! Нейтральный словарь вида картинки Fasticamera (решения 98, 99, 178; колёса цвета — 186, 191; основа тона в пресете — 195).
 //!
 //! Здесь только типы и проверка значений, никакой логики вида: формулы живут в `isp-model`,
 //! хранилище пресетов — в `look-presets`, экран только шлёт [`LookIntent`].
@@ -9,18 +9,28 @@
 
 mod active;
 mod bands;
+mod control;
 mod error;
+mod facts;
 mod intent;
 mod knob;
 mod preset;
+mod recipe;
 mod settings;
+mod tone_base;
 mod wheels;
 
 pub use active::{ActiveLook, EditState};
 pub use bands::{BandAdjustment, BandAdjustments, BandAdjustmentsError, HueBandId, HueBandIdError};
+pub use control::{BandAxis, GlobalKnob, LookControl, WheelPart};
 pub use error::{PresetError, StorageFailure};
-pub use intent::LookIntent;
+pub use facts::{BandFacts, BandSwatch, LookFacts, LookProblem, LookProblemKind};
+pub use intent::{CleanView, LookIntent};
 pub use knob::{LookKnob, LookKnobError};
-pub use preset::{BuiltinPreset, PRESET_NAME_MAX_CHARS, PresetId, PresetName, PresetNameError, UserPresetId};
+pub use preset::{
+    BuiltinPreset, PRESET_NAME_MAX_CHARS, PresetEntry, PresetId, PresetKind, PresetName, PresetNameError, UserPresetId,
+};
+pub use recipe::LookRecipe;
 pub use settings::LookSettings;
+pub use tone_base::ToneBaseModel;
 pub use wheels::{ColorWheel, ColorWheels, WheelPush, WheelPushError, WheelZone};

@@ -10,8 +10,10 @@
 //! Валит запуск только то, что бывает лишь при кривом конфиге: он проверяется ещё в `RuntimeConfig::from_json`.
 
 use look_presets::{
-    ConfigError, LoadOutcome, PRODUCT_MIGRATIONS, PresetFileStore, PresetPersistence, PresetStoreConfig,
+    CatalogEnvironment, ConfigError, LoadOutcome, PRODUCT_MIGRATIONS, PresetFileStore, PresetPersistence,
+    PresetStoreConfig,
 };
+use render_loop::config::RenderLoopConfig;
 
 use crate::app_directory::AppDirectory;
 use crate::look_service::{LookHandle, LookPersistence, LookService, LookStartup, NoLookPersistence};
@@ -26,12 +28,32 @@ pub struct LookOpened {
     pub startup: LookStartup,
 }
 
+/// Окружение каталога пресетов из конфига рендера (решение 195): основа тона встроенных пресетов —
+/// `render.viewfinder.tone.base`, полосы оттенка — `render.viewfinder.look_model.bands`. Единственное место,
+/// где конфиг рендера читается ради пресетов.
+pub fn catalog_environment(render: &RenderLoopConfig) -> CatalogEnvironment {
+    CatalogEnvironment {
+        default_base: render.viewfinder.tone.base.into(),
+        band_ids: render
+            .viewfinder
+            .look_model
+            .bands
+            .iter()
+            .map(|band| band.id.clone())
+            .collect(),
+    }
+}
+
 /// Открывает хранилище пресетов в папке приложения.
 ///
 /// Не удалось поднять поток записи (ОС отказала в потоке) — работаем без записи: вид живёт до конца процесса,
 /// отказ громко в логе и виден как `closed` в счётчиках просьб записи. Это не причина терять экран камеры.
-pub fn open_look_service(directory: &AppDirectory, config: &PresetStoreConfig) -> Result<LookOpened, ConfigError> {
-    let opened = PresetFileStore::open(directory.path(), config, PRODUCT_MIGRATIONS)?;
+pub fn open_look_service(
+    directory: &AppDirectory,
+    config: &PresetStoreConfig,
+    environment: &CatalogEnvironment,
+) -> Result<LookOpened, ConfigError> {
+    let opened = PresetFileStore::open(directory.path(), config, environment, PRODUCT_MIGRATIONS)?;
     let startup = LookStartup::of_outcome(&opened.outcome);
     log_load_outcome(&opened.outcome, opened.store.path());
 

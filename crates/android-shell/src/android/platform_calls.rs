@@ -17,10 +17,12 @@ use jni::objects::{JObject, JValue};
 use jni::{Env, JavaVM, jni_sig, jni_str};
 use shell_contract::commands::{CommandOutcome, PlatformCommand, PlatformCommandFailure, ScreenWake};
 use shell_contract::operator_prompt::OperatorPrompt;
+use shell_contract::text_input::TextRequest;
 
 use super::runtime::ShellRuntime;
 use crate::command_codes::prompt_kind_code;
 use crate::haptic_plan::HapticRealization;
+use crate::text_input_wire::encode_text_request;
 
 /// Ёмкость локального кадра JNI на одну команду (массивы волны + строки исключения).
 const LOCAL_FRAME_CAPACITY: usize = 16;
@@ -36,6 +38,8 @@ pub enum PlatformCall {
     ClearOperatorPrompt,
     /// Звук затвора снимка (`ShellPlatform.playShutterSound`).
     PlayShutterSound,
+    /// Диалог ввода текста (`ShellPlatform.requestText`).
+    RequestText(TextRequest),
 }
 
 impl PlatformCall {
@@ -48,6 +52,7 @@ impl PlatformCall {
             PlatformCall::ShowOperatorPrompt(_) => PlatformCommand::ShowOperatorPrompt,
             PlatformCall::ClearOperatorPrompt => PlatformCommand::ClearOperatorPrompt,
             PlatformCall::PlayShutterSound => PlatformCommand::PlayShutterSound,
+            PlatformCall::RequestText(_) => PlatformCommand::RequestTextInput,
         }
     }
 }
@@ -144,6 +149,7 @@ fn invoke(env: &mut Env<'_>, platform: &JObject<'_>, call: &PlatformCall) -> jni
         PlatformCall::PlayShutterSound => {
             env.call_method(platform, jni_str!("playShutterSound"), jni_sig!("()V"), &[])?;
         }
+        PlatformCall::RequestText(request) => request_text(env, platform, request)?,
     }
     Ok(())
 }
@@ -161,6 +167,25 @@ fn show_operator_prompt(env: &mut Env<'_>, platform: &JObject<'_>, prompt: &Oper
             JValue::Object(&headline),
             JValue::Object(&detail),
             JValue::Int(prompt_kind_code(prompt.kind())),
+        ],
+    )?;
+    Ok(())
+}
+
+/// `ShellPlatform.requestText(id: Long, purpose: Int, initialText: String, maxChars: Int)`: номер запроса уходит
+/// теми же 64 битами, назначение — числом по таблице кодов, начальный текст — строкой JNI.
+fn request_text(env: &mut Env<'_>, platform: &JObject<'_>, request: &TextRequest) -> jni::errors::Result<()> {
+    let wire = encode_text_request(request);
+    let initial_text = env.new_string(&wire.initial_text)?;
+    env.call_method(
+        platform,
+        jni_str!("requestText"),
+        jni_sig!("(JILjava/lang/String;I)V"),
+        &[
+            JValue::Long(wire.id),
+            JValue::Int(wire.purpose_code),
+            JValue::Object(&initial_text),
+            JValue::Int(wire.max_chars),
         ],
     )?;
     Ok(())

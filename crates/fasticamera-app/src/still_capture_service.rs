@@ -38,7 +38,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use camera_contract::flash::FlashStillFailure;
 use camera_screen::settings::FlashMode;
 use camera_screen::shutter::ShotRequest;
-use look_contract::LookSettings;
+use look_contract::LookRecipe;
 use photo_output::service::{AdmissionRefused, StillServiceHandle};
 use render_loop::still::{StillBegin, StillCommand};
 use serde::Serialize;
@@ -60,7 +60,7 @@ const LOG_TARGET: &str = "fasticamera::still::capture";
 ///
 /// Какой кадр брать (показанный при нажатии или кадр со вспышкой) решает вызывающий ([`FlashRoute`]): план только
 /// переводит решение на язык рендера.
-pub fn plan_from_shot(id: StillId, request: &ShotRequest, look: LookSettings, selection: FrameSelection) -> StillPlan {
+pub fn plan_from_shot(id: StillId, request: &ShotRequest, look: LookRecipe, selection: FrameSelection) -> StillPlan {
     StillPlan {
         id,
         press: ShutterPress { at: request.pressed_at },
@@ -74,8 +74,10 @@ pub fn plan_from_shot(id: StillId, request: &ShotRequest, look: LookSettings, se
                 camera_screen::settings::RawCapture::On => RawOutput::Dng,
             },
         },
-        // Значения вида на момент нажатия: сервис их не выбирает и не копирует из библиотеки сам.
-        look,
+        // Рецепт вида на момент нажатия: сервис его не выбирает и не копирует из библиотеки сам. Ручки и основа
+        // кладутся в план раздельно (см. `StillPlan::tone_base`).
+        look: look.settings,
+        tone_base: look.base,
     }
 }
 
@@ -326,7 +328,7 @@ impl StillCaptureService {
 }
 
 impl CaptureService for StillCaptureService {
-    fn submit(&self, request: ShotRequest, look: LookSettings, _now: MonotonicNanos) -> SubmitOutcome {
+    fn submit(&self, request: ShotRequest, look: LookRecipe, _now: MonotonicNanos) -> SubmitOutcome {
         let id = self.next_id();
         let ticket = match self.service.try_admit(id) {
             Ok(ticket) => ticket,

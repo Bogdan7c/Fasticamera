@@ -29,11 +29,11 @@ use gpu_vulkan::live_objects::LiveObjectKind;
 use render_loop::backend::DisplayBackend;
 use render_loop::ui_overlay::{UiOverlayCommand, UiOverlayOutcome};
 use render_loop::viewfinder::{ScopeResources, ViewfinderCommandOutcome};
-use scope_contract::{ScopeIntent, ScopeKind, ScopeRequest, VectorscopeAxes};
+use scope_contract::{ScopeIntent, ScopeKind, ScopeRequest, ScopeScan, VectorscopeAxes};
 use scope_model::{HorizontalOrder, ResolvedScope, ScopeCounters, ScopeRule, ShownCodes, accumulate};
 use scope_rig::{
     FRAMES_TO_FLUSH_SLOTS, IdleSource, WARM_UP_FRAMES, apply_scopes, config, flush_frames, install, pipeline_objects,
-    request, scopes_of, settle, small_model, start, start_without_ui, waveform,
+    request, request_with_scan, scopes_of, settle, small_model, start, start_without_ui, waveform,
 };
 use ui_draw::color::Opacity;
 use ui_draw::draw_list::{DrawItem, DrawList, ImageClip, ImageFit, ImageItem, ImageSource, LiveImage};
@@ -269,6 +269,37 @@ fn kind_axes_and_size_switch_on_the_fly_without_new_pipelines_and_with_correct_c
         diagnostics.residency.accumulator_pipelines >= 2,
         "пайплайны накопления построены при создании"
     );
+    bench.finish();
+}
+
+#[test]
+fn scan_switch_on_the_fly_changes_only_parameters_and_counters_follow_the_cpu_reference() {
+    let scenes = vec![reddish(); WARM_UP_FRAMES + 10];
+    let Some(mut bench) = start(&scenes) else { return };
+    flush_frames(&mut bench, WARM_UP_FRAMES);
+    let mut pipelines_after_first = None;
+    let mut steps = 0_u64;
+    for kind in [ScopeKind::Waveform, ScopeKind::RgbParade] {
+        for scan in ScopeScan::ALL {
+            let scope = request_with_scan(kind, VectorscopeAxes::YCbCrBt709, scan, 160, 96);
+            apply_scopes(&mut bench, ScopeIntent::Show(scope));
+            bench.show_next_frame();
+            assert_eq!(gpu_counters(&bench), cpu_counters(&bench, &scope), "{kind:?} {scan:?}");
+            let pipelines = pipeline_objects(&bench);
+            assert_eq!(
+                *pipelines_after_first.get_or_insert(pipelines),
+                pipelines,
+                "{kind:?} {scan:?}: смена положения не строит пайплайнов"
+            );
+            steps += 1;
+        }
+    }
+    let diagnostics = scopes_of(&mut bench);
+    assert_eq!(
+        diagnostics.counters.resources_created, 1,
+        "набор приборов один на все смены положения"
+    );
+    assert_eq!(diagnostics.counters.passes_recorded, steps);
     bench.finish();
 }
 

@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use isp_vulkan::viewfinder::IspStageSet;
-use look_contract::LookSettings;
+use look_contract::{LookSettings, ToneBaseModel};
 use scope_contract::{ScopeIntent, ScopeRequest};
 
 use super::ui_state::UiSourcePresence;
@@ -35,6 +35,9 @@ pub struct ViewfinderSettings {
     /// Вид картинки (решение 178). Стартовое значение задаёт сборка приложения (`with_initial_look`), чтобы оно
     /// действовало с первого кадра; дальше меняется командой `SetLook`.
     pub look: Arc<LookSettings>,
+    /// Модель основы тона (решение 195: основа — часть вида). Стартует с `viewfinder.tone.base`, приложение
+    /// заменяет её основой активного рецепта (`with_initial_tone_base`), дальше меняется командой `SetToneBase`.
+    pub tone_base: ToneBaseModel,
     /// Какой цветовой прибор просит экран (14h). `None` — приборы закрыты: проход не записывается, объекты GPU
     /// освобождены. Единственный владелец запроса; цепочка показа получает его копией вместе с остальными настройками.
     /// Запрос действует, пока установлен источник UI: уход источника отзывает его ([`Self::withdraw_scopes`]).
@@ -67,6 +70,7 @@ impl ViewfinderSettings {
             destination: FramingDestination::Configured,
             headroom: HeadroomBench::Disabled,
             look: Arc::new(LookSettings::NEUTRAL),
+            tone_base: config.tone.base.into(),
             scopes: None,
             scope_picture_side_limit_px: config.scopes.max_picture_side_px,
         })
@@ -149,6 +153,7 @@ impl ViewfinderSettings {
             }
             ViewfinderCommand::SetHeadroomBench(mode) => self.headroom = mode,
             ViewfinderCommand::SetLook(look) => self.look = look,
+            ViewfinderCommand::SetToneBase(model) => self.tone_base = model,
             ViewfinderCommand::Scopes(ScopeIntent::Show(request)) => self.scopes = Some(request),
             ViewfinderCommand::Scopes(ScopeIntent::Hide) => self.scopes = None,
         }
@@ -234,6 +239,40 @@ mod tests {
             "возврат к нейтрали — тоже изменение"
         );
         assert!(settings.look.is_neutral());
+    }
+
+    #[test]
+    fn tone_base_starts_from_config_and_set_tone_base_applies_once_then_is_already_in_effect() {
+        let mut settings = defaults();
+        assert_eq!(settings.tone_base, ToneBaseModel::Agx, "без команды — основа конфига");
+        assert_eq!(
+            settings.apply(ViewfinderCommand::SetToneBase(ToneBaseModel::Aces)),
+            ViewfinderCommandOutcome::Applied
+        );
+        assert_eq!(settings.tone_base, ToneBaseModel::Aces);
+        assert_eq!(
+            settings.apply(ViewfinderCommand::SetToneBase(ToneBaseModel::Aces)),
+            ViewfinderCommandOutcome::AlreadyInEffect
+        );
+    }
+
+    #[test]
+    fn set_tone_base_touches_nothing_but_the_tone_base_and_leaves_the_look_alone() {
+        let mut settings = defaults();
+        settings.apply(ViewfinderCommand::SetLook(Arc::new(LookSettings {
+            contrast: look_contract::LookKnob::new(0.5).expect("ручка в диапазоне"),
+            ..LookSettings::NEUTRAL
+        })));
+        let before = settings.clone();
+        settings.apply(ViewfinderCommand::SetToneBase(ToneBaseModel::Legacy));
+        assert_eq!(
+            ViewfinderSettings {
+                tone_base: before.tone_base,
+                ..settings
+            },
+            before,
+            "вид, рисовальщик, стадии и кадрирование остались прежними"
+        );
     }
 
     #[test]
@@ -409,6 +448,7 @@ mod tests {
         ScopeRequest {
             kind,
             vectorscope_axes: scope_contract::VectorscopeAxes::YCbCrBt709,
+            scan: scope_contract::ScopeScan::Upright,
             image_size: scope_contract::ScopeImageSize::try_new(width, height).expect("размер"),
         }
     }

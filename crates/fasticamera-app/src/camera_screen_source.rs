@@ -4,6 +4,8 @@
 //! который на КАЖДОМ показанном кадре делает по порядку:
 //! 1. забирает вход из канала ([`ScreenInputReceiver`]): касания → `handle_touch`, действия → `handle_action`;
 //! 2. снимает факты камеры; шлёт `CameraFactsChanged` ТОЛЬКО при реальном изменении;
+//!    Факты о виде (список пресетов, ручки, проблема) идут тем же швом: [`LookFactsSource`] сравнивает снимок с
+//!    последним отправленным и шлёт `LookFactsChanged` ТОЛЬКО при изменении (без библиотеки пресетов фактов нет);
 //! 3. подаёт гравитацию (с прореживанием) → `GravityChanged`;
 //! 4. просит у экрана кадр (`produce_frame`);
 //! 5. забирает эффекты (`drain_effects`) и исполняет их ([`EffectExecutor`]); отвергнутый снимок возвращается
@@ -35,6 +37,7 @@ use crate::camera_screen_effects::{EffectCounters, EffectExecutor};
 use crate::camera_screen_facts::{CameraFactsSource, CameraFactsWatcher, FactsChange, FactsDiagnostics};
 use crate::camera_screen_gravity::{GravityFeed, GravityPoll};
 use crate::camera_screen_input::{ScreenInput, ScreenInputReceiver, ScreenInputStats};
+use crate::look_facts::{LookFactsChange, LookFactsSource};
 
 /// Имя источника в диагностике рендера (`UiOverlayDiagnostics::active_source`).
 pub const CAMERA_SCREEN_SOURCE_NAME: &str = "camera_screen";
@@ -87,6 +90,8 @@ pub enum ModeKind {
     Photo,
     Video,
     Portrait,
+    /// Раздел калибровки вида (14b): ручки, пресеты, приборы; затвора и меню Controls в нём нет.
+    Calibrate,
 }
 
 /// Показан ли элемент экрана (плашка блокировки, индикатор фокуса).
@@ -164,6 +169,7 @@ impl ScreenStateSnapshot {
                 CaptureMode::Photo => ModeKind::Photo,
                 CaptureMode::Video => ModeKind::Video,
                 CaptureMode::Portrait => ModeKind::Portrait,
+                CaptureMode::Calibrate => ModeKind::Calibrate,
             },
             shutter_placement: match state.shutter_visibility() {
                 ShutterVisibility::Visible => ShutterPlacement::Visible,
@@ -209,6 +215,10 @@ pub struct ScreenReport {
     pub input: ScreenInputStats,
     /// Сколько раз экрану отправлены изменившиеся факты камеры.
     pub facts_sent: u64,
+    /// Сколько раз экрану отправлены изменившиеся факты о виде.
+    pub look_facts_sent: u64,
+    /// Сколько раз факты о виде пересобирались (тихие кадры без правок его не двигают).
+    pub look_facts_rebuilds: u64,
     /// Счётчики источника фактов (сборка паспорта потока, потоки без паспорта).
     pub facts: FactsDiagnostics,
     /// Сколько показаний гравитации отдано экрану.
@@ -243,6 +253,9 @@ pub struct ScreenSourceParts {
     pub screen: CameraScreen,
     pub input: ScreenInputReceiver,
     pub facts: Box<dyn CameraFactsSource>,
+    /// Источник фактов о виде для экрана калибровки; `None` — в сборке нет библиотеки пресетов (экран фактов не
+    /// получает, ручки у него отключены).
+    pub look_facts: Option<LookFactsSource>,
     pub gravity: GravityLink,
     pub executor: EffectExecutor,
     pub board: Arc<ScreenBoard>,
@@ -256,12 +269,18 @@ pub struct CameraScreenSource {
     input: ScreenInputReceiver,
     facts: Box<dyn CameraFactsSource>,
     facts_watcher: CameraFactsWatcher,
+    look_facts: Option<LookFactsSource>,
     gravity: GravityLink,
     executor: EffectExecutor,
     board: Arc<ScreenBoard>,
     facts_sent: u64,
+    /// Сколько раз экрану отправлены изменившиеся факты о виде.
+    look_facts_sent: u64,
     gravity_samples_sent: u64,
     report_min_interval: Duration,
+    /// Экран ещё не прошёл первый кадр после установки: на нём исполнитель приводит показ вида к рецепту библиотеки
+    /// (см. [`EffectExecutor::on_screen_installed`]).
+    awaiting_first_frame: bool,
     /// Время кадра последней публикации отчёта; `None` — ещё не публиковали.
     last_published_at: Option<MonotonicNanos>,
     /// Снимок, чьё «миниатюра показана» уже записано в лог: строка идёт один раз на картинку.
@@ -291,15 +310,24 @@ impl CameraScreenSource {
             input: parts.input,
             facts: parts.facts,
             facts_watcher: CameraFactsWatcher::new(),
+            look_facts: parts.look_facts,
             gravity: parts.gravity,
             executor: parts.executor,
             board: parts.board,
             facts_sent: 0,
+            look_facts_sent: 0,
             gravity_samples_sent: 0,
             report_min_interval: parts.report_min_interval,
+            awaiting_first_frame: true,
             last_published_at: None,
             logged_picture_shot: None,
         }
+    }
+
+    /// Состояние экрана для чтения (диагностика и сквозные тесты: «что экран показывает о виде»). Менять экран
+    /// снаружи нельзя: он живёт на действиях из канала входа.
+    pub fn screen_state(&self) -> &ScreenState {
+        self.screen.state()
     }
 
     /// Шаг 1: вход из канала. Забираем всё, что накопилось к этому кадру (очередь ограничена конфигом).
@@ -327,6 +355,21 @@ impl CameraScreenSource {
             return true;
         }
         false
+    }
+
+    /// Шаг 2б: факты о виде — только если изменились (список пресетов, правки, основа, проблема).
+    fn sync_look_facts(&mut self) -> bool {
+        let Some(source) = &mut self.look_facts else {
+            return false;
+        };
+        match source.observe(self.executor.latest_look_problem()) {
+            LookFactsChange::Changed(facts) => {
+                self.look_facts_sent += 1;
+                self.screen.handle_action(ScreenAction::LookFactsChanged(facts));
+                true
+            }
+            LookFactsChange::Unchanged => false,
+        }
     }
 
     /// Шаг 3: гравитация с прореживанием.
@@ -399,6 +442,8 @@ impl CameraScreenSource {
             effects: self.executor.counters(),
             input: self.input.stats(),
             facts_sent: self.facts_sent,
+            look_facts_sent: self.look_facts_sent,
+            look_facts_rebuilds: self.look_facts.as_ref().map_or(0, LookFactsSource::rebuilds),
             facts: self.facts.diagnostics(),
             gravity_samples_sent: self.gravity_samples_sent,
             gravity_unavailable: match &self.gravity {
@@ -417,16 +462,28 @@ impl UiFrameSource for CameraScreenSource {
     fn produce_frame(&mut self, request: &UiFrameRequest) -> Result<DrawList, UiFrameError> {
         // Сначала часы кадра: созревший ответ фейк-снимка попадёт в вход ЭТОГО кадра.
         self.executor.begin_frame(request.present_time);
+        if self.awaiting_first_frame {
+            // Новый экран: рендеру — действующий вид библиотеки (прежний экран мог уйти с зажатым «чистяком»).
+            self.awaiting_first_frame = false;
+            self.executor.on_screen_installed();
+        }
+        // Если рендер не принял вид (установка, отпускание «чистяка»), повторяем, пока не примет.
+        self.executor.retry_look_render_if_unsure();
         let mut activity = FrameActivity {
             input_applied: self.apply_pending_input(),
             ..FrameActivity::default()
         };
         activity.facts_changed = self.sync_camera_facts();
+        activity.facts_changed |= self.sync_look_facts();
         self.feed_gravity();
         let frame = self.screen.produce_frame(request);
         activity.picture_shown = self.log_picture_if_just_shown();
         // Эффекты исполняем и при отказе кадра: действие пользователя (например, тап по затвору) уже случилось.
         activity.effects_executed = self.run_effects();
+        if activity.effects_executed {
+            // Эффекты кадра могли изменить библиотеку или породить проблему: экран узнаёт об этом сразу.
+            activity.facts_changed |= self.sync_look_facts();
+        }
         if self.report_is_due(request.present_time, activity) {
             self.publish_report(request.present_time);
         }

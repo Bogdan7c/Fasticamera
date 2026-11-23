@@ -9,20 +9,32 @@
 //!   последнего известного времени (время идёт и при отказе), и не выдаёт эффектов. Единственное
 //!   исключение — обработчик, который явно вызвал [`Ctx::keep_changes_despite_rejection`]
 //!   (невалидный размер surface сбрасывает раскладку).
+//! * Исключение второе: любое пользовательское действие, кроме подтверждающего тапа Delete, снимает взвод удаления
+//!   пресета даже при отказе и при итоге `NoChange` (отмена намерения «удалить» — не изменение значений экрана).
 //! * Входное состояние никогда не изменяется (работаем с копией).
 //! * Действие, которое ничего не изменило (не считая метки времени) и не выдало эффектов,
 //!   получает итог `NoChange`: `Tick` без видимых изменений — тоже `NoChange`.
 
+mod calibration;
 mod exposure;
 mod facts;
 mod look;
 mod menu;
+mod mode_change;
+mod mode_guard;
+mod presets;
 mod scopes;
 mod sensors;
 mod shutter;
 mod viewfinder;
 mod zoom;
 
+#[cfg(test)]
+#[path = "calibration_mode_tests.rs"]
+mod calibration_mode_tests;
+#[cfg(test)]
+#[path = "calibration_tests.rs"]
+mod calibration_tests;
 #[cfg(test)]
 #[path = "card_tests.rs"]
 mod card_tests;
@@ -41,6 +53,12 @@ mod look_tests;
 #[cfg(test)]
 #[path = "menu_tests.rs"]
 mod menu_tests;
+#[cfg(test)]
+#[path = "mode_guard_tests.rs"]
+mod mode_guard_tests;
+#[cfg(test)]
+#[path = "presets_tests.rs"]
+mod presets_tests;
 #[cfg(test)]
 #[path = "saving_tests.rs"]
 mod saving_tests;
@@ -115,6 +133,13 @@ pub fn reduce(state: &ScreenState, action: ScreenAction, config: &ScreenConfig) 
     if let Some(moment) = moment_of(&action) {
         next.last_time = next.last_time.max(moment);
     }
+    // Взвод удаления снимается ДО обработчика (он увидит `Idle`) и заново ПОСЛЕ отказа: отказ откатывает рабочую
+    // копию, но отменённое намерение «удалить» не должно воскреснуть от неудачного тапа по чему-то другому.
+    let disarm_delete = presets::should_disarm_delete(state, &action);
+    if disarm_delete {
+        next.calibration
+            .set_delete_confirmation(crate::calibration::DeleteConfirmation::Idle);
+    }
     let mut effects = Vec::new();
     let (outcome, keeps_changes_on_rejection) = {
         let mut ctx = Ctx {
@@ -135,7 +160,16 @@ pub fn reduce(state: &ScreenState, action: ScreenAction, config: &ScreenConfig) 
                 outcome,
             }
         }
-        ActionOutcome::Rejected(reason) => reject(state, reason, next.last_time),
+        ActionOutcome::Rejected(reason) => {
+            let mut rejected = reject(state, reason, next.last_time);
+            if disarm_delete {
+                rejected
+                    .state
+                    .calibration
+                    .set_delete_confirmation(crate::calibration::DeleteConfirmation::Idle);
+            }
+            rejected
+        }
         ActionOutcome::Applied if effects.is_empty() && is_unchanged_apart_from_time(state, &mut next) => {
             ScreenTransition {
                 state: next,
@@ -205,11 +239,16 @@ fn dispatch(ctx: &mut Ctx<'_>, action: ScreenAction) -> ActionOutcome {
     let outcome = dispatch_action(ctx, action);
     if !matches!(outcome, ActionOutcome::Rejected(_)) {
         zoom::sync_standby_demand(ctx);
+        // Режим, поворот, размер surface и выбор прибора вместе решают, какой запрос прибора нужен рендеру.
+        calibration::sync_after_action(ctx);
     }
     outcome
 }
 
 fn dispatch_action(ctx: &mut Ctx<'_>, action: ScreenAction) -> ActionOutcome {
+    if let Err(rejected) = mode_guard::require_camera_controls(ctx, &action) {
+        return rejected;
+    }
     match action {
         ScreenAction::ViewfinderTapped { point, at } => viewfinder::on_tap(ctx, point, at),
         ScreenAction::ViewfinderLongPressed { point, at } => viewfinder::on_long_press(ctx, point, at),
@@ -247,5 +286,29 @@ fn dispatch_action(ctx: &mut Ctx<'_>, action: ScreenAction) -> ActionOutcome {
         ScreenAction::FlipCameraRequested { at } => zoom::on_flip(ctx, at),
         ScreenAction::Look(intent) => look::on_look(ctx, intent),
         ScreenAction::Scopes(intent) => scopes::on_scopes(ctx, intent),
+        ScreenAction::LookFactsChanged(facts) => look::on_facts_changed(ctx, *facts),
+        ScreenAction::KnobDragged { knob, value } => calibration::on_knob_dragged(ctx, knob, value),
+        ScreenAction::BandKnobDragged { band, axis, value } => {
+            calibration::on_band_knob_dragged(ctx, band, axis, value)
+        }
+        ScreenAction::ToneBaseSelected(base) => calibration::on_tone_base_selected(ctx, base),
+        ScreenAction::ResetControlTapped(control) => calibration::on_reset_control(ctx, control),
+        ScreenAction::ScopeKindSelected(kind) => calibration::on_scope_kind_selected(ctx, kind),
+        ScreenAction::VectorscopeAxesSelected(axes) => calibration::on_axes_selected(ctx, axes),
+        ScreenAction::CleanViewPressed => calibration::on_clean_view_pressed(ctx),
+        ScreenAction::CleanViewReleased => calibration::on_clean_view_released(ctx),
+        ScreenAction::BandSelected(band) => calibration::on_band_selected(ctx, band),
+        ScreenAction::PresetSelected(preset) => presets::on_preset_selected(ctx, preset),
+        ScreenAction::DiscardEditsTapped => presets::on_discard_edits(ctx),
+        ScreenAction::OverwritePresetTapped => presets::on_overwrite_preset(ctx),
+        ScreenAction::CreatePresetTapped => presets::on_create_preset(ctx),
+        ScreenAction::RenamePresetTapped(preset) => presets::on_rename_preset(ctx, preset),
+        ScreenAction::DeletePresetTapped(preset) => presets::on_delete_preset(ctx, preset),
+        ScreenAction::TextRequestIssued { id } => presets::on_text_request_issued(ctx, id),
+        ScreenAction::TextRequestNotSent => presets::on_text_request_not_sent(ctx),
+        ScreenAction::TextInputFinished(result) => presets::on_text_input_finished(ctx, result),
+        ScreenAction::ProblemDismissed { number } => look::on_problem_dismissed(ctx, number),
+        ScreenAction::CalibrationMenuItemTapped(item) => calibration::on_menu_item_tapped(ctx, item),
+        ScreenAction::ScopeDemandLost => calibration::on_scope_demand_lost(ctx),
     }
 }

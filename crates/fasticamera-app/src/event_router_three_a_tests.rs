@@ -67,6 +67,7 @@ fn viewfinder_diagnostics() -> ViewfinderDiagnostics {
         ),
         stages: IspStageSet::ALL,
         look: std::sync::Arc::new(look_contract::LookSettings::NEUTRAL),
+        tone_base: look_contract::ToneBaseModel::Agx,
         // Приборы закрыты: эти тесты их не касаются.
         scopes: Default::default(),
         display_color_space: Some(ViewfinderColorSpace::DisplayP3),

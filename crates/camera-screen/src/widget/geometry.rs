@@ -27,6 +27,10 @@ pub(crate) struct ScreenGeometry {
     shutter_diameter_pt: f64,
     /// Длина риски линейки (токен `ruler.tick_length_pt`): по ней зона шкалы ставится на низ рисок.
     pub(super) ruler_tick_length_pt: f64,
+    /// Другая «поверхность» вместо экрана: глазной прямоугольник раздела калибровки в системе его корня. Рамки,
+    /// привязанные к низу и середине экрана (шторка, карточка), тогда встают у низа и середины этого
+    /// прямоугольника. `None` — обычный экран.
+    screen_override: Option<Rect>,
 }
 
 impl ScreenGeometry {
@@ -42,6 +46,16 @@ impl ScreenGeometry {
             zoom: zoom.clone(),
             shutter_diameter_pt: tokens.shutter.outer_diameter_pt,
             ruler_tick_length_pt: tokens.ruler.tick_length_pt,
+            screen_override: None,
+        }
+    }
+
+    /// Та же геометрия, но «экран» — прямоугольник `screen` (глазной прямоугольник раздела калибровки, в системе
+    /// корня раздела). Шторка и карточка раздела строятся теми же числами, что в PHOTO, но у его низа и середины.
+    pub(crate) fn in_screen(&self, screen: Rect) -> Self {
+        Self {
+            screen_override: Some(screen),
+            ..self.clone()
         }
     }
 
@@ -69,13 +83,19 @@ impl ScreenGeometry {
 
     /// Рамка у низа экрана: центр по x экрана, низ на `bottom_inset_pt` выше низа.
     pub(super) fn bottom_anchored(&self, width_pt: f64, height_pt: f64, bottom_inset_pt: f64) -> Rect {
-        let screen = self.layout.screen_size();
-        let bottom = screen.height - bottom_inset_pt;
-        Rect::from_xywh((screen.width - width_pt) * 0.5, bottom - height_pt, width_pt, height_pt)
+        let screen = self.screen();
+        let bottom = screen.max_y() - bottom_inset_pt;
+        Rect::from_xywh(
+            screen.min_x() + (screen.size.width - width_pt) * 0.5,
+            bottom - height_pt,
+            width_pt,
+            height_pt,
+        )
     }
 
     pub(crate) fn screen(&self) -> Rect {
-        Rect::new(Point::new(0.0, 0.0), self.layout.screen_size())
+        self.screen_override
+            .unwrap_or_else(|| Rect::new(Point::new(0.0, 0.0), self.layout.screen_size()))
     }
 
     pub(crate) fn frame(&self, aspect: AspectRatio) -> Rect {
@@ -129,8 +149,27 @@ impl ScreenGeometry {
 
     /// Круг пункта сетки меню (абсолютная рамка, pt): сетка центрирована по ширине шторки.
     pub(crate) fn menu_item(&self, slot: usize) -> Rect {
+        self.menu_item_in(self.sheet(), slot)
+    }
+
+    /// Шторка на `rows` рядов пунктов вместо полной сетки 3 × 3 (меню раздела калибровки: два пункта в один ряд, а
+    /// полная шторка 464 pt в альбомном глазном прямоугольнике 440 pt не помещается). Ширина, радиус и привязка к
+    /// низу — как у обычной шторки; высота — от верха до низа подписей последнего ряда плюс `bottom_padding_pt`.
+    pub(crate) fn sheet_for_rows(&self, rows: usize, bottom_padding_pt: f64) -> Rect {
         let sheet = &self.config.sheet;
-        let rect = self.sheet();
+        let last_row_offset = rows.saturating_sub(1) as f64 * sheet.row_pitch_pt;
+        let height = sheet.first_row_center_from_top_pt
+            + last_row_offset
+            + sheet.item_diameter_pt * 0.5
+            + sheet.caption_center_below_circle_pt
+            + bottom_padding_pt;
+        self.bottom_anchored(sheet.width_pt, height.min(sheet.height_pt), sheet.bottom_inset_pt)
+    }
+
+    /// Круг пункта `slot` в шторке `sheet_rect` (сетка центрирована по её ширине).
+    pub(crate) fn menu_item_in(&self, sheet_rect: Rect, slot: usize) -> Rect {
+        let sheet = &self.config.sheet;
+        let rect = sheet_rect;
         let columns = usize::from(sheet.columns.max(1));
         let (column, row) = (slot % columns, slot / columns);
         let grid_width = sheet.column_pitch_pt * (columns - 1) as f64 + sheet.item_diameter_pt;
@@ -145,10 +184,30 @@ impl ScreenGeometry {
         )
     }
 
+    /// Круг пункта `slot` из `count` в шторке `sheet_rect`: пункты стоят одним рядом (первый ряд сетки) и вместе
+    /// центрированы по ширине шторки — меню раздела калибровки с двумя пунктами не прижато к левому краю.
+    pub(crate) fn menu_item_centered_in(&self, sheet_rect: Rect, slot: usize, count: usize) -> Rect {
+        let sheet = &self.config.sheet;
+        let row_width = sheet.column_pitch_pt * count.saturating_sub(1) as f64 + sheet.item_diameter_pt;
+        let left = sheet_rect.min_x() + (sheet_rect.size.width - row_width) * 0.5;
+        let top = sheet_rect.min_y() + sheet.first_row_center_from_top_pt - sheet.item_diameter_pt * 0.5;
+        Rect::from_xywh(
+            left + slot as f64 * sheet.column_pitch_pt,
+            top,
+            sheet.item_diameter_pt,
+            sheet.item_diameter_pt,
+        )
+    }
+
     /// «Ручка» шторки: полоска по центру шторки на `handle_top_inset_pt` ниже её верха.
     pub(crate) fn sheet_handle(&self) -> Rect {
+        self.sheet_handle_in(self.sheet())
+    }
+
+    /// «Ручка» шторки `sheet_rect`.
+    pub(crate) fn sheet_handle_in(&self, sheet_rect: Rect) -> Rect {
         let sheet = &self.config.sheet;
-        let rect = self.sheet();
+        let rect = sheet_rect;
         Rect::from_xywh(
             rect.center().x - sheet.handle_width_pt * 0.5,
             rect.min_y() + sheet.handle_top_inset_pt,

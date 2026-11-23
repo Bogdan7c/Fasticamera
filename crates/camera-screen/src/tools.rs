@@ -6,6 +6,8 @@
 
 use thiserror::Error;
 
+use look_contract::PresetId;
+
 use crate::settings::{AspectRatio, FlashMode, GridSetting, LevelSetting, RawCapture, TimerSetting};
 
 /// Инструмент камеры.
@@ -21,7 +23,8 @@ pub enum ToolId {
     Level,
     /// Место под Live Photos (бэклог). Не реализовано, конфиг его отвергает.
     Live,
-    /// Место под Photographic Styles (photo+). Не реализовано.
+    /// Быстрый выбор пресета вида (решения 187, 201): нижняя карточка с именами пресетов. Пункт доступен, только
+    /// когда библиотека пресетов прислала факты о виде (`LookFacts`).
     Styles,
     /// Место под ночной режим (photo+). Не реализовано.
     Night,
@@ -30,7 +33,7 @@ pub enum ToolId {
 impl ToolId {
     /// Реализован ли инструмент в v1. Нереализованные нельзя положить в конфиг.
     pub const fn is_implemented(self) -> bool {
-        !matches!(self, ToolId::Live | ToolId::Styles | ToolId::Night)
+        !matches!(self, ToolId::Live | ToolId::Night)
     }
 
     /// Может ли инструмент стоять значком над кадром (`behavior.md` 2.2: вспышка, RAW, таймер, EV).
@@ -51,6 +54,9 @@ pub enum ToolOption {
     Aspect(AspectRatio),
     Grid(GridSetting),
     Level(LevelSetting),
+    /// Пресет в карточке Styles. Список вариантов динамический (берётся из `LookFacts::presets`), поэтому вариант
+    /// несёт идентификатор пресета, а не значение настройки съёмки.
+    Style(PresetId),
 }
 
 impl ToolOption {
@@ -63,6 +69,7 @@ impl ToolOption {
             ToolOption::Aspect(_) => ToolId::Aspect,
             ToolOption::Grid(_) => ToolId::Grid,
             ToolOption::Level(_) => ToolId::Level,
+            ToolOption::Style(_) => ToolId::Styles,
         }
     }
 }
@@ -90,6 +97,15 @@ pub struct ToolSet {
 }
 
 impl ToolSet {
+    /// Пустой набор: у режима нет ни значков, ни меню Controls (раздел калибровки живёт своим меню). Минует проверку
+    /// «меню не пусто» осознанно: она защищает режимы с меню Controls, а не режимы без него.
+    pub(crate) fn none() -> Self {
+        Self {
+            strip: Vec::new(),
+            menu: Vec::new(),
+        }
+    }
+
     /// Проверенный набор. Значки над кадром могут быть пустыми (пользователь убрал всё), меню — нет.
     pub fn new(strip: Vec<ToolId>, menu: Vec<ToolId>) -> Result<Self, ToolSetError> {
         check_unique_and_implemented(&strip)?;

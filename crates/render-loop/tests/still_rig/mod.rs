@@ -151,6 +151,7 @@ pub fn plan(id: u64, press: MonotonicNanos, outputs: StillOutputs) -> StillPlan 
         orientation: DeviceOrientation::Portrait,
         outputs,
         look: look_contract::LookSettings::NEUTRAL,
+        tone_base: look_contract::ToneBaseModel::Agx,
     }
 }
 
@@ -298,12 +299,21 @@ pub fn expected_params_with_look(
     passport: &StreamPassport,
     look: &look_contract::LookSettings,
 ) -> (IspParams, SensorDescription) {
+    expected_params_with_look_and_base(passport, look, ViewfinderToneConfig::default().tone_base())
+}
+
+/// То же с видом `look` и основой тона `tone_base` (решение 195: основа снимка — модель момента нажатия).
+pub fn expected_params_with_look_and_base(
+    passport: &StreamPassport,
+    look: &look_contract::LookSettings,
+    tone_base: isp_model::tone::base::ToneBase,
+) -> (IspParams, SensorDescription) {
     let sensor = SensorDescription::from_stream_passport(passport, &passport.color_calibration).expect("сенсор");
     let frame = FrameInputs::from_capture_hints(&sensor, &capture_hints()).expect("уровни");
     let neutral = CameraNeutral::new(scene_neutral()).expect("нейтраль");
     let controls = ProcessingControls {
         tone: ViewfinderToneConfig::default().curve_settings(),
-        tone_base: ViewfinderToneConfig::default().tone_base(),
+        tone_base,
         exposure_gain: ExposureGain::UNITY,
         look: isp_model::look::LookControls::new(
             look.clone(),

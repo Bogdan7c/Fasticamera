@@ -5,8 +5,11 @@
 mod common;
 
 use common::{contrast, name, new_library, with_sky_band};
-use look_contract::{BuiltinPreset, EditState, LookIntent, LookSettings, PresetError, PresetId, UserPresetId};
-use look_presets::{LibraryChange, LibrarySnapshot, PresetKind, PresetStoreConfig, SnapshotError, UserPreset};
+use look_contract::{
+    BuiltinPreset, EditState, LookIntent, LookRecipe, LookSettings, PresetError, PresetId, PresetKind, ToneBaseModel,
+    UserPresetId,
+};
+use look_presets::{LibraryChange, LibrarySnapshot, PresetStoreConfig, SnapshotError, UserPreset};
 
 const HONEST: PresetId = PresetId::Builtin(BuiltinPreset::Honest);
 const AS_EYE: PresetId = PresetId::Builtin(BuiltinPreset::AsEye);
@@ -21,9 +24,9 @@ fn fresh_library_starts_on_as_eye_with_config_values() {
     let active = library.active_look();
     assert_eq!(active.preset, AS_EYE);
     assert_eq!(active.edits, EditState::Clean);
-    assert_eq!(active.settings.contrast.get(), 0.2);
-    assert_eq!(active.settings.saturation.get(), 0.15);
-    assert_eq!(active.settings.vibrance.get(), 0.15);
+    assert_eq!(active.recipe.settings.contrast.get(), 0.2);
+    assert_eq!(active.recipe.settings.saturation.get(), 0.15);
+    assert_eq!(active.recipe.settings.vibrance.get(), 0.15);
 }
 
 #[test]
@@ -52,19 +55,19 @@ fn preset_list_has_builtins_first_then_user_in_creation_order() {
 fn honest_is_always_neutral_regardless_of_config() {
     let mut library = new_library();
     library.select_preset(HONEST).unwrap();
-    assert!(library.active_look().settings.is_neutral());
+    assert!(library.active_look().recipe.settings.is_neutral());
 }
 
 #[test]
 fn set_look_edits_on_top_and_matching_values_return_to_clean() {
     let mut library = new_library();
-    let preset_values = library.active_look().settings;
+    let preset_values = library.active_look().recipe.settings;
 
     let change = library.set_look(contrast(0.5)).unwrap();
     assert_eq!(change, LibraryChange::VisibleLookAndStoredState);
     let edited = library.active_look();
     assert_eq!(edited.edits, EditState::EditedOnTop);
-    assert_eq!(edited.settings.contrast.get(), 0.5);
+    assert_eq!(edited.recipe.settings.contrast.get(), 0.5);
     assert_eq!(edited.preset, AS_EYE, "пресет под правками не меняется");
 
     // Те же правки второй раз — ничего не изменилось.
@@ -74,7 +77,7 @@ fn set_look_edits_on_top_and_matching_values_return_to_clean() {
     let change = library.set_look(preset_values.clone()).unwrap();
     assert!(change.look_changed());
     assert_eq!(library.active_look().edits, EditState::Clean);
-    assert_eq!(library.active_look().settings, preset_values);
+    assert_eq!(library.active_look().recipe.settings, preset_values);
 }
 
 #[test]
@@ -110,7 +113,7 @@ fn save_as_new_captures_current_look_and_becomes_active_clean() {
     let active = library.active_look();
     assert_eq!(active.preset, user(1));
     assert_eq!(active.edits, EditState::Clean);
-    assert_eq!(active.settings, with_sky_band(0.3));
+    assert_eq!(active.recipe.settings, with_sky_band(0.3));
     assert_eq!(library.presets()[2].name.as_str(), "Sky pop");
 }
 
@@ -189,7 +192,7 @@ fn overwrite_stores_current_look_in_preset_and_activates_it() {
     // Уйти и вернуться: пресет хранит перезаписанные значения.
     library.select_preset(HONEST).unwrap();
     library.select_preset(user(1)).unwrap();
-    assert_eq!(library.active_look().settings.contrast.get(), -0.6);
+    assert_eq!(library.active_look().recipe.settings.contrast.get(), -0.6);
 }
 
 #[test]
@@ -202,7 +205,7 @@ fn overwrite_of_inactive_preset_activates_it_with_current_look() {
     assert_eq!(change, LibraryChange::StoredStateOnly);
     let active = library.active_look();
     assert_eq!(active.preset, user(1));
-    assert_eq!(active.settings.contrast.get(), 0.33);
+    assert_eq!(active.recipe.settings.contrast.get(), 0.33);
 }
 
 #[test]
@@ -224,7 +227,7 @@ fn deleting_active_preset_falls_back_to_as_eye_and_drops_edits() {
     assert_eq!(change, LibraryChange::VisibleLookAndStoredState);
     let active = library.active_look();
     assert_eq!((active.preset, active.edits), (AS_EYE, EditState::Clean));
-    assert_eq!(active.settings.contrast.get(), 0.2);
+    assert_eq!(active.recipe.settings.contrast.get(), 0.2);
     assert_eq!(library.presets().len(), 2);
 }
 
@@ -238,7 +241,7 @@ fn deleting_inactive_preset_keeps_look_and_edits() {
     assert_eq!(change, LibraryChange::StoredStateOnly);
     let active = library.active_look();
     assert_eq!((active.preset, active.edits), (HONEST, EditState::EditedOnTop));
-    assert_eq!(active.settings.contrast.get(), 0.1);
+    assert_eq!(active.recipe.settings.contrast.get(), 0.1);
 }
 
 #[test]
@@ -257,7 +260,7 @@ fn discard_edits_restores_preset_values_and_is_noop_when_clean() {
     assert_eq!(library.discard_edits().unwrap(), LibraryChange::Unchanged);
     library.set_look(contrast(0.9)).unwrap();
     assert!(library.discard_edits().unwrap().look_changed());
-    assert_eq!(library.active_look().settings.contrast.get(), 0.2);
+    assert_eq!(library.active_look().recipe.settings.contrast.get(), 0.2);
 }
 
 #[test]
@@ -274,12 +277,12 @@ fn apply_routes_every_intent() {
     library.apply(LookIntent::SetLook(contrast(-0.2))).unwrap();
     library.apply(LookIntent::OverwritePreset(UserPresetId(1))).unwrap();
     library.apply(LookIntent::SelectPreset(HONEST)).unwrap();
-    assert!(library.active_look().settings.is_neutral());
+    assert!(library.active_look().recipe.settings.is_neutral());
     library.apply(LookIntent::SelectPreset(user(1))).unwrap();
-    assert_eq!(library.active_look().settings.contrast.get(), -0.2);
+    assert_eq!(library.active_look().recipe.settings.contrast.get(), -0.2);
     library.apply(LookIntent::SetLook(contrast(0.8))).unwrap();
     library.apply(LookIntent::DiscardEdits).unwrap();
-    assert_eq!(library.active_look().settings.contrast.get(), -0.2);
+    assert_eq!(library.active_look().recipe.settings.contrast.get(), -0.2);
     library.apply(LookIntent::DeletePreset(UserPresetId(1))).unwrap();
     assert_eq!(library.active_look().preset, AS_EYE);
     assert_eq!(library.presets().len(), 2);
@@ -287,7 +290,11 @@ fn apply_routes_every_intent() {
 
 #[test]
 fn from_snapshot_roundtrip_and_rejects_broken_invariants() {
-    let catalog = || PresetStoreConfig::default().builtin_catalog().unwrap();
+    let catalog = || {
+        PresetStoreConfig::default()
+            .builtin_catalog(&common::environment())
+            .unwrap()
+    };
     let mut library = new_library();
     library.save_as_new_preset(name("Mine")).unwrap();
     library.set_look(contrast(0.6)).unwrap();
@@ -295,10 +302,14 @@ fn from_snapshot_roundtrip_and_rejects_broken_invariants() {
     let restored = look_presets::PresetLibrary::from_snapshot(catalog(), snapshot.clone()).unwrap();
     assert_eq!(restored.active_look(), library.active_look());
 
+    let neutral_recipe = || LookRecipe {
+        base: ToneBaseModel::Agx,
+        settings: LookSettings::NEUTRAL,
+    };
     let preset = |id: u64, label: &str| UserPreset {
         id: UserPresetId(id),
         name: name(label),
-        settings: LookSettings::NEUTRAL,
+        recipe: neutral_recipe(),
     };
     let broken = |mutate: &dyn Fn(&mut LibrarySnapshot)| {
         let mut broken = snapshot.clone();

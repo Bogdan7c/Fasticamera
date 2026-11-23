@@ -14,7 +14,9 @@
 //!
 //! # Тон
 //! Ручки тона (`viewfinder.tone`: контраст и средние тона экрана) постоянны на жизнь кэша: кэш получает их
-//! при создании сессии показа (`with_tone`) и в ключ пересчёта не входят. Средний серый сцены в них не
+//! при создании сессии показа (`with_tone`) и в ключ пересчёта не входят. Исключение — МОДЕЛЬ основы (решение 195:
+//! основа — часть вида): она меняется на ходу (`set_tone_base`), разрешается из тех же секций конфига
+//! (`ViewfinderToneConfig::tone_base_for`) и входит в ключ пересчёта. Средний серый сцены в них не
 //! входит никогда: это цель AE (`base_scene_middle_gray`), см. `config::tone`.
 //!
 //! # Виньетирование
@@ -59,7 +61,7 @@ use isp_model::params::{FrameInputs, IspParams, ProcessingControls};
 use isp_model::sensor::SensorDescription;
 use isp_model::tone::ToneCurveSettings;
 use isp_model::tone::base::ToneBase;
-use look_contract::LookSettings;
+use look_contract::{LookSettings, ToneBaseModel};
 
 use crate::config::ViewfinderToneConfig;
 
@@ -153,6 +155,8 @@ struct ResolvedInputs {
     /// Вид картинки, под который посчитаны параметры: смена значений пересчитывает их (сравнение по значениям,
     /// а не по указателю: повторная команда с теми же ручками не должна вызывать пересчёт).
     look: Arc<LookSettings>,
+    /// Основа тона, под которую посчитаны параметры: смена модели пересчитывает их на следующем кадре.
+    tone_base: ToneBase,
 }
 
 /// Всё, что выведено из кадров ОДНОГО потока (см. «Привязка к потоку»).
@@ -175,15 +179,20 @@ impl StreamBoundState {
     }
 }
 
-/// Входы обработки. Тон в ключ пересчёта не входит и постоянен на жизнь кэша; управление виньетированием и вид
-/// картинки входят (копии лежат в `ResolvedInputs`): их можно сменить на ходу.
+/// Входы обработки. Ручки тона в ключ пересчёта не входят и постоянны на жизнь кэша; управление виньетированием,
+/// вид картинки и модель основы входят (копии лежат в `ResolvedInputs`): их можно сменить на ходу.
 #[derive(Debug, Clone)]
 struct ProcessingRecipe {
     /// Каким демозаиком будут считаться кадры (видоискатель — `Preview`, стенд V4 — `Quality`).
     demosaic: DemosaicMethod,
     /// Настройки кривой тона до подтяжки AE: ручки `viewfinder.tone` поверх умолчания `isp-model`.
     tone: ToneCurveSettings,
-    /// Основа тона из того же конфига (`viewfinder.tone.base`): видоискатель и снимок разрешают одну и ту же.
+    /// Ручки и секции всех моделей основы из конфига: из них разрешается основа любой модели (`tone_base_for`).
+    tone_config: ViewfinderToneConfig,
+    /// Действующая модель основы: стартует с `viewfinder.tone.base`, дальше — запрос вида (`set_tone_base`).
+    tone_model: ToneBaseModel,
+    /// Разрешённая основа действующей модели (кэш `tone_config.tone_base_for(tone_model)`: считается при смене,
+    /// а не на кадре). Её копия лежит в `ResolvedInputs`.
     tone_base: ToneBase,
     /// Коррекция виньетирования (`viewfinder.lens_shading`): по умолчанию полная.
     lens_shading: LensShadingControl,
@@ -217,6 +226,8 @@ impl IspParamsCache {
             recipe: ProcessingRecipe {
                 demosaic,
                 tone: ViewfinderToneConfig::default().curve_settings(),
+                tone_config: ViewfinderToneConfig::default(),
+                tone_model: ViewfinderToneConfig::default().base.into(),
                 tone_base: ViewfinderToneConfig::default().tone_base(),
                 lens_shading: LensShadingControl::default(),
                 look: Arc::new(LookSettings::NEUTRAL),
@@ -234,12 +245,23 @@ impl IspParamsCache {
         Self {
             recipe: ProcessingRecipe {
                 tone: tone.curve_settings(),
+                tone_config: tone,
+                tone_model: tone.base.into(),
                 tone_base: tone.tone_base(),
                 ..self.recipe
             },
             bound: None,
             ..self
         }
+    }
+
+    /// Тот же кэш со стартовой моделью основы (активная основа библиотеки видов): вызывается ПОСЛЕ `with_tone` и до
+    /// первого кадра. Конфиг `viewfinder.tone.base` — лишь умолчание, пока приложение не назвало основу.
+    pub fn with_tone_base_model(self, model: ToneBaseModel) -> Self {
+        let mut cache = self;
+        cache.set_tone_base(model);
+        cache.bound = None;
+        cache
     }
 
     /// Тот же кэш с управлением виньетированием из конфига (`viewfinder.lens_shading`); как `with_tone`,
@@ -285,6 +307,22 @@ impl IspParamsCache {
         }
         self.recipe.look = look;
         LookChange::Changed
+    }
+
+    /// Меняет модель основы на ходу (команда `SetToneBase`): следующий `prepare` пересчитает параметры потока
+    /// (основа входит в ключ), подсказки кадров остаются. Возвращает, изменилась ли модель.
+    pub fn set_tone_base(&mut self, model: ToneBaseModel) -> LookChange {
+        if self.recipe.tone_model == model {
+            return LookChange::Unchanged;
+        }
+        self.recipe.tone_model = model;
+        self.recipe.tone_base = self.recipe.tone_config.tone_base_for(model);
+        LookChange::Changed
+    }
+
+    /// Модель основы, под которую кэш считает параметры сейчас.
+    pub fn tone_base_model(&self) -> ToneBaseModel {
+        self.recipe.tone_model
     }
 
     /// Вид, под который кэш считает параметры сейчас.
@@ -417,6 +455,7 @@ impl StreamBoundState {
             exposure_gain,
             lens_shading: recipe.lens_shading,
             look: Arc::clone(&recipe.look),
+            tone_base: recipe.tone_base,
         };
         if self.current.as_ref().is_some_and(|(current, _)| *current == inputs) {
             return Ok(ParamsOutcome::Unchanged);

@@ -24,6 +24,7 @@ fn show_request() -> ScopeIntent {
     ScopeIntent::Show(ScopeRequest {
         kind: ScopeKind::Vectorscope,
         vectorscope_axes: VectorscopeAxes::OklabAb,
+        scan: scope_contract::ScopeScan::Upright,
         image_size: ScopeImageSize::try_new(200, 100).expect("размер в пределах"),
     })
 }

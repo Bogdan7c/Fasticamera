@@ -261,6 +261,22 @@ impl Harness {
         ui_config: UiOverlayConfig,
         initial_look: Option<Arc<look_contract::LookSettings>>,
     ) -> Option<Self> {
+        Self::start_with_initial_style(ui_config, initial_look, None)
+    }
+
+    /// То же, но передаёт бэкенду при сборке стартовую модель основы тона (как делает приложение, решение 195).
+    pub fn start_with_initial_tone_base(
+        ui_config: UiOverlayConfig,
+        initial_tone_base: look_contract::ToneBaseModel,
+    ) -> Option<Self> {
+        Self::start_with_initial_style(ui_config, None, Some(initial_tone_base))
+    }
+
+    fn start_with_initial_style(
+        ui_config: UiOverlayConfig,
+        initial_look: Option<Arc<look_contract::LookSettings>>,
+        initial_tone_base: Option<look_contract::ToneBaseModel>,
+    ) -> Option<Self> {
         let render_config = RenderLoopConfig {
             ui_overlay: ui_config,
             ..RenderLoopConfig::default()
@@ -291,6 +307,10 @@ impl Harness {
         )?;
         let backend = match initial_look {
             Some(look) => backend.with_initial_look(look),
+            None => backend,
+        };
+        let backend = match initial_tone_base {
+            Some(model) => backend.with_initial_tone_base(model),
             None => backend,
         };
         let baseline = backend.context().live_objects();

@@ -14,6 +14,7 @@
     reason = "в тестах падение и есть способ сообщить о провале"
 )]
 
+mod calibration_goldens;
 mod driver;
 mod golden_files;
 mod render_rig;

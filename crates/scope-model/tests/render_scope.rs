@@ -15,6 +15,7 @@ fn request(kind: ScopeKind, axes: VectorscopeAxes) -> ScopeRequest {
     ScopeRequest {
         kind,
         vectorscope_axes: axes,
+        scan: scope_contract::ScopeScan::Upright,
         image_size: ScopeImageSize::try_new(64, 64).unwrap(),
     }
 }

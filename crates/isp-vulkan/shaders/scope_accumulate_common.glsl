@@ -1,8 +1,9 @@
 // Общая часть проходов накопления счётчиков цветовых приборов (решения 183, 188–190).
 //
 // Контракт «прибор = накопитель + правило попадания»: файл-прибор подключает ЭТОТ файл и определяет ОДНУ функцию
-//     void scope_hits(uint shown_x, uvec3 code)
-// которая сообщает попадания отсчёта через `scope_add_hit`. Всё остальное — обход отсчётов, зеркало, квантование
+//     void scope_hits(uint eye_x, uvec3 code)
+// которая сообщает попадания отсчёта через `scope_add_hit`. `eye_x` — положение отсчёта на ГОРИЗОНТАЛИ ГЛАЗА
+// (с учётом зеркала и положения телефона, см. `scan` ниже), а длина этой оси — глобальная `eye_extent`. Всё остальное — обход отсчётов, зеркало, квантование
 // значения экрана в код 0…1023, границы сетки, атомарное сложение — общее и не правится при добавлении прибора.
 //
 // Привязки (одинаковы у всех приборов; Rust-сторона — `isp-vulkan/src/scopes/accumulators.rs`):
@@ -20,7 +21,7 @@ layout(local_size_x_id = 0, local_size_y_id = 1) in;
 layout(set = 0, binding = 0) uniform texture2D shown_image;
 
 layout(set = 0, binding = 1, std430) readonly buffer ScopeParameters {
-    // Слова 0..2 — форма сетки (столбцы, строки, плоскости), 3 — резерв, с 4 — слова прибора.
+    // Слова 0..2 — форма сетки (столбцы, строки, плоскости), 3 — как глаз читает картинку (SCAN_*), с 4 — слова прибора.
     uint words[64];
     // Таблица «код 0…1023 → свет экрана» (нужна только приборам, которые её читают).
     float decode_table[1024];
@@ -44,6 +45,13 @@ layout(push_constant) uniform Sampling {
 const uint WORD_GRID_COLUMNS = 0u;
 const uint WORD_GRID_ROWS = 1u;
 const uint WORD_GRID_PLANES = 2u;
+// Как глаз читает показанную картинку слева направо (`ScopeScan` в scope-contract; коды — `scan_code` в
+// isp-vulkan/src/scopes/parameter_blocks.rs, их сверяет тест шейдерных литералов).
+const uint WORD_SCAN = 3u;
+const uint SCAN_UPRIGHT = 0u;                 // по столбцам слева направо
+const uint SCAN_ROTATED_CLOCKWISE = 1u;       // по строкам сверху вниз
+const uint SCAN_UPSIDE_DOWN = 2u;             // по столбцам справа налево
+const uint SCAN_ROTATED_COUNTER_CLOCKWISE = 3u; // по строкам снизу вверх
 // Первое слово прибора.
 const uint WORD_RULE_FIRST = 4u;
 
@@ -72,7 +80,20 @@ void scope_add_hit(uint plane, uint row, uint column) {
 }
 
 // Правило попадания прибора: определяется в файле прибора.
-void scope_hits(uint shown_x, uvec3 code);
+void scope_hits(uint eye_x, uvec3 code);
+
+// Длина оси «слева направо» для глаза: ширина или высота показанной картинки (ставится в main до scope_hits).
+uint eye_extent = 1u;
+
+// Положение отсчёта (shown_x, shown_y) показанной картинки на горизонтали глаза — то же, что
+// `SamplePosition::from_shown` в scope-model. Зеркало уже учтено в shown_x, поворот накладывается поверх.
+uint eye_position(uint shown_x, uint shown_y, uint scan) {
+    bool along_rows = scan == SCAN_ROTATED_CLOCKWISE || scan == SCAN_ROTATED_COUNTER_CLOCKWISE;
+    bool reversed = scan == SCAN_UPSIDE_DOWN || scan == SCAN_ROTATED_COUNTER_CLOCKWISE;
+    eye_extent = along_rows ? sampling.content_height : sampling.content_width;
+    uint along = along_rows ? shown_y : shown_x;
+    return reversed ? eye_extent - 1u - along : along;
+}
 
 float word_as_float(uint index) {
     return uintBitsToFloat(parameters.words[index]);
@@ -90,5 +111,6 @@ void main() {
     uint texel_x = sampling.mirrored != 0u ? sampling.content_width - 1u - shown_x : shown_x;
     vec4 texel = texelFetch(shown_image, ivec2(int(texel_x), int(shown_y)), 0);
     uvec3 code = uvec3(quantize_display_value(texel.r), quantize_display_value(texel.g), quantize_display_value(texel.b));
-    scope_hits(shown_x, code);
+    uint eye_x = eye_position(shown_x, shown_y, parameters.words[WORD_SCAN]);
+    scope_hits(eye_x, code);
 }

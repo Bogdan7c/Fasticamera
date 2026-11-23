@@ -183,6 +183,92 @@ fn label_count_must_match_the_carousel() {
 fn unsupported_character_in_a_label_is_reported_not_dropped() {
     let tokens = UiKitTokens::default();
     let painter = LabelPainter::new(&tokens.typography, px());
-    let result = CarouselLabels::layout(&painter, &["PHOTO", "ФОТО"]);
+    let result = CarouselLabels::layout(&painter, &["PHOTO", "写真"]);
     assert!(matches!(result, Err(ViewError::Text(_))));
+}
+
+mod window {
+    use ui_core::time::MotionPreference;
+    use ui_draw::color::Opacity;
+    use ui_draw::draw_list::DrawItem;
+    use ui_draw::transform::Affine2;
+    use ui_kit::carousel::{CarouselEntry, CarouselSpec, SnapCarousel};
+    use ui_kit::tokens::UiKitTokens;
+    use ui_kit::view::{CarouselLabels, LabelPainter, PxPerPt, carousel_items, carousel_items_in_window};
+
+    fn four_entry_carousel(tokens: &UiKitTokens) -> (SnapCarousel<u8>, CarouselLabels, PxPerPt) {
+        let px = PxPerPt::new(3.0).unwrap();
+        let painter = LabelPainter::new(&tokens.typography, px);
+        let labels = CarouselLabels::layout(&painter, &["AGX", "ACES", "FILMIC", "LEGACY"]).unwrap();
+        let entries: Vec<_> = (0..4u8)
+            .map(|index| CarouselEntry {
+                item: index,
+                width_points: f64::from(labels.advance_px(usize::from(index)).unwrap() / px.get()),
+            })
+            .collect();
+        let env = super::common::env(tokens, MotionPreference::Full);
+        let carousel = SnapCarousel::new(entries, &0u8, CarouselSpec::default(), &env, super::common::ms(0)).unwrap();
+        (carousel, labels, px)
+    }
+
+    #[test]
+    fn labels_outside_the_window_are_not_drawn_and_edge_labels_fade() {
+        let tokens = UiKitTokens::default();
+        let (carousel, labels, px) = four_entry_carousel(&tokens);
+        let host = Affine2::translate(0.0, 0.0);
+        let all = carousel_items(
+            host,
+            Opacity::OPAQUE,
+            &carousel,
+            super::common::ms(0),
+            &labels,
+            px,
+            &tokens.colors,
+        )
+        .unwrap();
+        assert_eq!(all.len(), 4, "без окна рисуются все подписи");
+        // Окно ±45 pt: AGX (центр) виден, соседи за краем.
+        let windowed = carousel_items_in_window(
+            host,
+            Opacity::OPAQUE,
+            &carousel,
+            super::common::ms(0),
+            &labels,
+            px,
+            &tokens.colors,
+            45.0,
+        )
+        .unwrap();
+        assert!(
+            windowed.len() < all.len(),
+            "подписи за окном выброшены: {} из {}",
+            windowed.len(),
+            all.len()
+        );
+        let opacities: Vec<f32> = windowed
+            .iter()
+            .map(|item| match item {
+                DrawItem::Text(text) => text.opacity.get(),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(opacities[0], 1.0, "выбранная подпись внутри окна непрозрачна");
+        assert!(
+            opacities.iter().skip(1).all(|o| *o < 1.0),
+            "подпись, вылезающая за край окна, гаснет: {opacities:?}"
+        );
+        // Бесконечное окно — то же, что нет окна.
+        let infinite = carousel_items_in_window(
+            host,
+            Opacity::OPAQUE,
+            &carousel,
+            super::common::ms(0),
+            &labels,
+            px,
+            &tokens.colors,
+            f64::INFINITY,
+        )
+        .unwrap();
+        assert_eq!(infinite, all);
+    }
 }

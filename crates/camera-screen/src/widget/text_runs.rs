@@ -74,3 +74,28 @@ impl TextRuns {
         self.evictions
     }
 }
+
+/// Текст пользователя (имя пресета), пригодный для рисования: символы вне запечённого набора (иероглифы,
+/// эмодзи) заменяются на «?». Имя вводит человек системной клавиатурой, а атлас — только ASCII, кириллица и
+/// несколько знаков (`bake.json`); без замены один такой символ ронял бы кадр целиком (`TextError::UnsupportedCharacter`).
+/// Замена — осознанная деградация вида, само имя в библиотеке пресетов не меняется.
+pub(crate) fn displayable_text(ctx: &Ctx<'_>, text: &str) -> String {
+    use ui_draw::text::TextError;
+    use ui_kit::view::ViewError;
+
+    let painter = LabelPainter::new(&ctx.tokens.typography, ctx.px);
+    let mut chars: Vec<char> = text.chars().collect();
+    // Каждая итерация чинит ровно один символ, поэтому больше `len` попыток не бывает.
+    for _ in 0..=chars.len() {
+        let candidate: String = chars.iter().collect();
+        match painter.layout(&candidate, TextRoleKind::CardOption) {
+            Err(ViewError::Text(TextError::UnsupportedCharacter { index, .. })) => match chars.get_mut(index) {
+                Some(slot) => *slot = '?',
+                None => break,
+            },
+            // Остальные ошибки (масштаб и т. п.) не про символы: их увидит сама раскладка при рисовании.
+            _ => return candidate,
+        }
+    }
+    chars.iter().collect()
+}

@@ -7,7 +7,7 @@ use ui_core::time::MotionPreference;
 use ui_core::tree::{NodeTransform, NodeVisual, UiTree};
 use ui_draw::color::Opacity;
 use ui_draw::draw_list::{DrawItem, DrawList, MAX_GLASS_GROUP_MEMBERS, PressState};
-use ui_draw::geometry::{PxPoint, PxSize};
+use ui_draw::geometry::{PxPoint, PxSize, PxVector};
 use ui_draw::icons::IconId;
 use ui_draw::light::LightDirection;
 use ui_draw::scene_bridge::{NodePlacementPx, node_placement_px};
@@ -19,10 +19,11 @@ use ui_kit::focus_frame::{FocusFrame, FocusFrameSpec};
 use ui_kit::panel_morph::{PanelMorph, PanelMorphSpec};
 use ui_kit::picker::LabelId;
 use ui_kit::shutter::{ShutterButton, ShutterLook};
-use ui_kit::tokens::{GlassRole, TextRoleKind, UiKitTokens};
+use ui_kit::tokens::{GlassRole, MotionToken, TextRoleKind, UiKitTokens};
 use ui_kit::view::{
     ButtonContent, GlassGroupBuilder, GlassShape, LabelPainter, PxPerPt, ViewError, banner_items, button_content_item,
-    centered_icon, focus_frame_items, measure_banner_pt, member_transform, panel_glass_group, shutter_items,
+    centered_icon, focus_frame_items, measure_banner_pt, member_transform, panel_glass_group, panel_glass_group_hosted,
+    shutter_items,
 };
 
 mod common;
@@ -544,6 +545,32 @@ fn panel_glass_follows_the_morph_frame_and_materialises_with_effect() {
         open.members[0].geometry.extent(),
         PxSize::new(382.0 * SCALE, 416.0 * SCALE)
     );
+}
+
+#[test]
+fn hosted_panel_glass_turns_with_its_host_and_keeps_the_frame_size() {
+    let tokens = tokens();
+    let spec = PanelMorphSpec::in_place(Rect::from_xywh(40.0, 100.0, 200.0, 80.0), 20.0, MotionToken::CardMorph);
+    let mut panel = PanelMorph::new(spec, &env(&tokens, MotionPreference::Full), ms(0)).unwrap();
+    panel.open(ms(0)).unwrap();
+    let snapshot = panel.snapshot(ms(3000));
+    let style = tokens.glass.style_for(GlassRole::Panel);
+    let plain = panel_glass_group(&snapshot, style, scale()).unwrap();
+    let turned_host = Affine2::rotate(std::f32::consts::FRAC_PI_2);
+    let turned = panel_glass_group_hosted(&snapshot, style, scale(), turned_host).unwrap();
+    // Центр панели переехал туда, куда хост переводит обычный центр.
+    let expected = turned_host.apply_point(centre_px(&plain.members[0].transform));
+    let actual = centre_px(&turned.members[0].transform);
+    assert_close(actual.x, expected.x, "центр x в хосте");
+    assert_close(actual.y, expected.y, "центр y в хосте");
+    // Размер формы тот же, а ось ширины повёрнута на четверть оборота: вектор «вправо» стал вектором «вниз».
+    assert_eq!(turned.members[0].geometry.extent(), plain.members[0].geometry.extent());
+    let along_width = turned.members[0].transform.apply_vector(PxVector { dx: 1.0, dy: 0.0 });
+    assert_close(along_width.dx, 0.0, "ось ширины после поворота: x");
+    assert_close(along_width.dy, 1.0, "ось ширины после поворота: y");
+    // Единичный хост даёт то же, что `panel_glass_group`.
+    let identity = panel_glass_group_hosted(&snapshot, style, scale(), Affine2::IDENTITY).unwrap();
+    assert_eq!(identity.members[0].transform, plain.members[0].transform);
 }
 
 // ---------- Всё вместе: экран из одних строителей ----------

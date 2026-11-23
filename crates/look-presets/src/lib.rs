@@ -18,12 +18,12 @@ pub mod migration;
 pub mod persistence;
 mod snapshot;
 
-pub use config::{AsEyeValues, BuiltinCatalog, BuiltinNames, ConfigError, PresetStoreConfig};
+pub use config::{AsEyeValues, BuiltinCatalog, BuiltinNames, CatalogEnvironment, ConfigError, PresetStoreConfig};
 pub use file::{
     CorruptionReason, LoadOutcome, OpenedPresets, PRE_MIGRATION_BACKUP_MARKER, PresetFileStore, QUARANTINE_FILE_MARKER,
     SaveCommit,
 };
-pub use library::{LibraryChange, PresetKind, PresetLibrary, PresetSummary};
+pub use library::{LibraryChange, PresetLibrary};
 pub use migration::{CURRENT_SCHEMA_VERSION, Migration, MigrationError, PRODUCT_MIGRATIONS, migrate_to_current};
 pub use persistence::{PersistenceStats, PresetPersistence, SaveOutcome, SaveRequestOutcome, SnapshotSink};
 pub use snapshot::{LibrarySnapshot, SnapshotError, UserPreset};

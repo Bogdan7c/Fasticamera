@@ -21,6 +21,27 @@ pub enum ButtonId {
     ZoomStop(u8),
     /// Кнопка переворота камеры.
     FlipCamera,
+    /// «↻» у органа управления раздела калибровки по номеру строки (0..8 — глобальные ручки, 8..11 — оси полосы,
+    /// 11 — основа тона).
+    CalibrationReset(u8),
+    /// Цветная точка полосы оттенка по номеру в ряду.
+    CalibrationBandDot(u8),
+    /// «Чистяк»: пока палец на кнопке, на превью и приборе основа без вида.
+    CleanView,
+    /// Кнопка меню «шесть точек» внутри раздела калибровки.
+    CalibrationMenu,
+    /// Таблетка с именем пресета в карточке Styles экрана PHOTO по номеру в ряду.
+    StyleChip(u8),
+    /// Пункт корня меню раздела калибровки по номеру слота.
+    CalibrationMenuItem(u8),
+    /// Левая кнопка карточки меню раздела: «‹» назад в корень.
+    CalibrationCardLeft,
+    /// Правая кнопка карточки меню раздела: «↻» сбросить правки пресета.
+    CalibrationCardRight,
+    /// Таблетка верхнего ряда карточки меню раздела (имена пресетов или стандарты осей) по номеру в ряду.
+    CalibrationChip(u8),
+    /// Таблетка ряда действий карточки пресетов (NEW / RENAME / SAVE / DELETE) по номеру в ряду.
+    CalibrationAction(u8),
 }
 
 /// Намерение жеста.
@@ -56,4 +77,55 @@ pub enum ScreenGesture {
     ZoomWheelPan,
     /// Нажатие на открытое колесо (палец лёг / поднят): держит колесо открытым.
     ZoomWheelPress,
+    /// Пан вдоль линейки ручки раздела калибровки (номер строки как у `ButtonId::CalibrationReset`).
+    CalibrationRulerPan(u8),
+    /// Пан по списку ручек (прокрутка в осях «глаза»).
+    CalibrationListPan,
+    /// Свайп по переключателю основы тона.
+    CalibrationBasePan,
+    /// Свайп по зоне прибора: смена прибора.
+    CalibrationScopePan,
+    /// Свайп по капсуле режимов внутри раздела калибровки.
+    CalibrationModesPan,
+    /// Тап по капсуле режимов внутри раздела калибровки.
+    CalibrationCapsuleTap,
+    /// Пан ряда имён пресетов в карточке Styles экрана PHOTO.
+    StyleChipsPan,
+    /// Пан верхнего ряда таблеток карточки меню раздела калибровки.
+    CalibrationChipsPan,
+    /// Тап мимо меню раздела: закрывает его (аналог решения 94).
+    CalibrationMenuScrimTap,
+    /// Пан по шторке или карточке меню раздела: вниз глазами — закрыть.
+    CalibrationMenuClosePan,
+}
+
+impl ScreenGesture {
+    /// Принадлежит ли жест разделу калибровки (его виджеты живут, только пока раздел показан; жесты, пришедшие
+    /// после ухода раздела, — это отмена, и экран гасит их сам).
+    pub fn belongs_to_calibration(self) -> bool {
+        match self {
+            ScreenGesture::CalibrationRulerPan(_)
+            | ScreenGesture::CalibrationListPan
+            | ScreenGesture::CalibrationBasePan
+            | ScreenGesture::CalibrationScopePan
+            | ScreenGesture::CalibrationModesPan
+            | ScreenGesture::CalibrationCapsuleTap
+            | ScreenGesture::CalibrationChipsPan
+            | ScreenGesture::CalibrationMenuScrimTap
+            | ScreenGesture::CalibrationMenuClosePan => true,
+            ScreenGesture::Press(button) | ScreenGesture::ButtonTapGuard(button) => matches!(
+                button,
+                ButtonId::CalibrationReset(_)
+                    | ButtonId::CalibrationBandDot(_)
+                    | ButtonId::CleanView
+                    | ButtonId::CalibrationMenu
+                    | ButtonId::CalibrationMenuItem(_)
+                    | ButtonId::CalibrationCardLeft
+                    | ButtonId::CalibrationCardRight
+                    | ButtonId::CalibrationChip(_)
+                    | ButtonId::CalibrationAction(_)
+            ),
+            _ => false,
+        }
+    }
 }

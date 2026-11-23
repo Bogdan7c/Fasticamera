@@ -49,6 +49,7 @@ fn request(width: u32, height: u32) -> ScopeRequest {
     ScopeRequest {
         kind: ScopeKind::Waveform,
         vectorscope_axes: VectorscopeAxes::YCbCrBt709,
+        scan: scope_contract::ScopeScan::Upright,
         image_size: ScopeImageSize::try_new(width, height).expect("размер"),
     }
 }

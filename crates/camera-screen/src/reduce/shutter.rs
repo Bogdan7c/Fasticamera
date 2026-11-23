@@ -8,6 +8,7 @@ use super::Ctx;
 use crate::action::KeyPhase;
 use crate::effect::Effect;
 use crate::facts::CameraPresence;
+use crate::mode_behaviour::VolumeKeyRole;
 use crate::outcome::{ActionOutcome, NoChangeReason, Rejection};
 use crate::shutter::{CaptureOutcome, ShotRequest, ShotRequestId, ShutterState};
 use crate::state::{ScreenState, ShutterVisibility};
@@ -29,6 +30,10 @@ pub(super) fn on_shutter_button(ctx: &mut Ctx<'_>, at: MonotonicNanos) -> Action
 /// (место под удержание: QuickTake, серия).
 pub(super) fn on_volume_key(ctx: &mut Ctx<'_>, phase: KeyPhase, at: MonotonicNanos) -> ActionOutcome {
     match phase {
+        // Роль клавиши — данные режима (решение 185: в разделе калибровки громкость не снимает).
+        KeyPhase::Pressed if ctx.state.mode_behaviour().volume_key == VolumeKeyRole::Ignored => {
+            ActionOutcome::NoChange(NoChangeReason::VolumeKeyIgnoredInMode)
+        }
         KeyPhase::Pressed => press(ctx, ShutterSource::VolumeKey, at),
         KeyPhase::Released | KeyPhase::Repeated => ActionOutcome::NoChange(NoChangeReason::KeyHoldNotSupported),
     }
@@ -37,6 +42,9 @@ pub(super) fn on_volume_key(ctx: &mut Ctx<'_>, phase: KeyPhase, at: MonotonicNan
 /// Кнопка затвора отвергается только под шторкой меню; при открытой карточке (`RaisedAboveCard`)
 /// затвор поднят, виден и снимает (решение 103).
 fn press(ctx: &mut Ctx<'_>, source: ShutterSource, at: MonotonicNanos) -> ActionOutcome {
+    if !ctx.state.mode_behaviour().has_shutter() {
+        return ActionOutcome::Rejected(Rejection::ShutterAbsentInMode);
+    }
     if source == ShutterSource::OnScreenButton && ctx.state.shutter_visibility() == ShutterVisibility::HiddenUnderDrawer
     {
         return ActionOutcome::Rejected(Rejection::ShutterHiddenByMenu);

@@ -38,6 +38,9 @@ class ShellPlatform(private val activity: Activity, private val promptView: Oper
     private val jpegCompressor = StillJpegCompressor()
     private val shutterSound = StillShutterSound()
 
+    /** Диалог ввода текста с системной клавиатурой (решение 197). */
+    private val textInput = TextInputDialog(activity)
+
     /** Хранилище фото снимка (Rust: `still_media_store`). */
     fun stillMediaStore(): StillMediaStore = mediaStore
 
@@ -52,6 +55,16 @@ class ShellPlatform(private val activity: Activity, private val promptView: Oper
      * команды [COMMAND_PLAY_SHUTTER_SOUND] (`PlatformCommandFailed`).
      */
     fun playShutterSound() = shutterSound.play()
+
+    /**
+     * Показывает диалог ввода текста; ответ уходит в Rust сам (`ShellBridge.nativeTextInputResult`), включая сбой
+     * показа, поэтому здесь отказ команды не используется.
+     */
+    fun requestText(id: Long, purpose: Int, initialText: String, maxChars: Int) =
+        onMainThread(COMMAND_REQUEST_TEXT_INPUT) { textInput.show(id, purpose, initialText, maxChars) }
+
+    /** Activity уходит с переднего плана: открытый диалог ввода закрывается как «отмена». Главный поток. */
+    fun cancelTextInput() = textInput.cancelOpenDialog()
 
     /** Отпускает ресурсы, не зависящие от сборщика мусора (Activity уничтожается). */
     fun release() = shutterSound.release()
@@ -158,6 +171,7 @@ class ShellPlatform(private val activity: Activity, private val promptView: Oper
         const val COMMAND_SHOW_OPERATOR_PROMPT = 5
         const val COMMAND_CLEAR_OPERATOR_PROMPT = 6
         const val COMMAND_PLAY_SHUTTER_SOUND = 7
+        const val COMMAND_REQUEST_TEXT_INPUT = 8
 
         /** Версия раскладки `readBatterySnapshot` — контракт с `BATTERY_SNAPSHOT_LAYOUT_VERSION` в Rust. */
         const val BATTERY_SNAPSHOT_LAYOUT_VERSION = 1L

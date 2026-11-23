@@ -3,6 +3,8 @@
 //! Новый прибор (гистограмма, «ложный цвет») = новая реализация [`ScopeRule`]; [`accumulate`] и
 //! счётчики не меняются. Тип прибора — данные (форма сетки + функция попадания), а не ветвление.
 
+use scope_contract::ScopeScan;
+
 use crate::codes::ShownCodes;
 use crate::grid::{GridShape, ScopeCounters};
 use crate::sampling::SampleStride;
@@ -18,19 +20,45 @@ pub struct Hit {
     pub column: u32,
 }
 
-/// Где стоит отсчёт на показанной картинке. Правилам waveform и parade нужен столбец картинки.
+/// Где стоит отсчёт НА ГОРИЗОНТАЛИ ГЛАЗА: правилам waveform и parade нужна не колонка поверхности, а
+/// положение вдоль оси сцены «слева направо» (см. [`ScopeScan`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SamplePosition {
-    /// Столбец отсчёта на показанной картинке (с учётом зеркала).
+    /// Координата отсчёта вдоль взгляда «слева направо» (с учётом зеркала картинки и поворота телефона).
     pub x: u32,
-    /// Ширина показанной картинки.
+    /// Длина этой оси на показанной картинке (ширина или высота поверхности — по повороту).
     pub picture_width: u32,
+}
+
+impl SamplePosition {
+    /// Положение отсчёта `(x, y)` ПОКАЗАННОЙ картинки `width × height` для того, кто читает её по `scan`.
+    ///
+    /// Показанная картинка уже зеркальна, если зеркален экран; поворот лишь описывает, как глаз её читает,
+    /// и накладывается поверх (зеркало → чтение).
+    pub fn from_shown(x: u32, y: u32, width: u32, height: u32, scan: ScopeScan) -> Self {
+        let (along, extent) = if scan.runs_along_surface_rows() {
+            (y, height)
+        } else {
+            (x, width)
+        };
+        let along = if scan.is_reversed() { extent - 1 - along } else { along };
+        Self {
+            x: along,
+            picture_width: extent,
+        }
+    }
 }
 
 /// Правило попадания прибора.
 pub trait ScopeRule {
     /// Форма сетки счётчиков.
     fn shape(&self) -> GridShape;
+
+    /// Как глаз читает показанную картинку слева направо. Прибору, которому положение не важно
+    /// (вектороскоп), оставляется чтение по умолчанию — результат от него не зависит.
+    fn scan(&self) -> ScopeScan {
+        ScopeScan::Upright
+    }
 
     /// Сообщает попадания (0…N) одного отсчёта. Ячейка вне `shape()` — ошибка правила: [`accumulate`]
     /// вернёт её, а не проглотит. «Нет попадания» (вектороскоп вне круга) — ноль вызовов `report`.
@@ -58,10 +86,7 @@ pub fn accumulate<R: ScopeRule + ?Sized>(
         for column_index in 0..stride.samples_along(picture.width()) {
             let x = stride.coordinate(column_index);
             let Some(code) = picture.pixel(x, y) else { continue };
-            let position = SamplePosition {
-                x,
-                picture_width: picture.width(),
-            };
+            let position = SamplePosition::from_shown(x, y, picture.width(), picture.height(), rule.scan());
             rule.hits(position, code, &mut |hit| {
                 if !counters.add_hit(hit.plane, hit.row, hit.column) && violation.is_none() {
                     violation = Some(hit);

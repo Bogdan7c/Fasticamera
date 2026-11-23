@@ -22,6 +22,7 @@ use crate::key_decode::{DecodedKey, KeyConsumption, RawKeyEvent, decode_key_even
 use crate::permission_answer::{RationaleVisibility, classify_permission_answer};
 use crate::surface_registry::frame_rate_outcome;
 use crate::system_gesture_decode::decode_system_gesture_zones;
+use crate::text_input_wire::decode_text_input_result;
 use crate::touch_decode::{DecodedMotion, decode_motion_event};
 
 /// Класс Kotlin с `external`-методами оболочки.
@@ -70,6 +71,10 @@ const SHELL_NATIVE_METHODS: &[NativeMethod] = &[
     },
     native_method! {
         static fn native_camera_permission_result(grant_results: jint[], should_show_rationale: bool),
+        error_policy = LogAndCountCallbackFailure,
+    },
+    native_method! {
+        static fn native_text_input_result(id: jlong, outcome_code: jint, text: JString),
         error_policy = LogAndCountCallbackFailure,
     },
     native_method! {
@@ -380,6 +385,36 @@ fn native_platform_command_failed<'local>(
                 "Kotlin сообщил об отказе неизвестной команды (контракт ShellPlatform.COMMAND_*)"
             );
         }
+    }
+    Ok(())
+}
+
+/// Ответ диалога ввода текста: `id` — номер запроса, `outcome_code` — `TextInputDialog.OUTCOME_*`, `text` — строка
+/// (только для «введено»; для остальных итогов Kotlin передаёт `null`). Главный поток не ждёт: событие уходит
+/// в очередь без блокировки. Нарушение контракта (неизвестный код, «введено» без текста) — лог и счётчик;
+/// запрос при этом остаётся без ответа до следующего запроса (его вытеснит новый).
+fn native_text_input_result<'local>(
+    env: &mut Env<'local>,
+    _class: JClass<'local>,
+    id: jlong,
+    outcome_code: jint,
+    text: JString<'local>,
+) -> jni::errors::Result<()> {
+    let Some(runtime) = runtime_or_warn("text_input_result") else {
+        return Ok(());
+    };
+    // null — «текста нет»: допустим для отмены и «недоступно», ошибка для «введено» (решает декодер).
+    let text = if text.is_null() {
+        None
+    } else {
+        Some(text.try_to_string(env)?)
+    };
+    match decode_text_input_result(id, outcome_code, text) {
+        Ok(result) => {
+            tracing::info!(target: "fasticamera::shell", id = result.id.0, "ответ диалога ввода текста");
+            runtime.send_event(ShellEvent::TextInput(result));
+        }
+        Err(error) => record_callback_failure(runtime, "text_input_result", &error),
     }
     Ok(())
 }

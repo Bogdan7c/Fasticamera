@@ -7,7 +7,7 @@ mod common;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use common::{TempDir, contrast, name, with_sky_band};
+use common::{TempDir, contrast, environment, name, with_sky_band};
 use look_contract::{BuiltinPreset, EditState, LookKnob, PresetError, PresetId, StorageFailure, UserPresetId};
 use look_presets::{
     CorruptionReason, LoadOutcome, Migration, MigrationError, OpenedPresets, PRE_MIGRATION_BACKUP_MARKER,
@@ -16,7 +16,8 @@ use look_presets::{
 use serde_json::{Value, json};
 
 fn open(dir: &Path) -> OpenedPresets {
-    PresetFileStore::open(dir, &PresetStoreConfig::default(), PRODUCT_MIGRATIONS).expect("конфиг по умолчанию валиден")
+    PresetFileStore::open(dir, &PresetStoreConfig::default(), &environment(), PRODUCT_MIGRATIONS)
+        .expect("конфиг по умолчанию валиден")
 }
 
 fn presets_file(dir: &Path) -> PathBuf {
@@ -42,7 +43,7 @@ fn assert_builtins_work(opened: &mut OpenedPresets) {
         .library
         .select_preset(PresetId::Builtin(BuiltinPreset::Honest))
         .unwrap();
-    assert!(opened.library.active_look().settings.is_neutral());
+    assert!(opened.library.active_look().recipe.settings.is_neutral());
 }
 
 #[test]
@@ -72,7 +73,7 @@ fn saved_state_survives_restart_with_active_edits_and_values() {
     let active = second.library.active_look();
     assert_eq!(active.preset, PresetId::User(UserPresetId(1)));
     assert_eq!(active.edits, EditState::EditedOnTop);
-    assert_eq!(active.settings.contrast.get(), -0.35);
+    assert_eq!(active.recipe.settings.contrast.get(), -0.35);
     let listed: Vec<String> = second
         .library
         .presets()
@@ -93,7 +94,8 @@ fn saved_file_has_documented_shape() {
     opened.library.save_as_new_preset(name("Mine")).unwrap();
     opened.store.save(&opened.library.snapshot()).unwrap();
     let json: Value = serde_json::from_slice(&fs::read(presets_file(dir.path())).unwrap()).unwrap();
-    assert_eq!(json["schema_version"], 2);
+    assert_eq!(json["schema_version"], 3);
+    assert_eq!(json["user_presets"][0]["base"], "agx");
     assert_eq!(json["next_id"], 2);
     assert_eq!(json["active"], json!({"user": 1}));
     assert_eq!(json["edits"], Value::Null);
@@ -109,6 +111,7 @@ fn save_into_unreachable_directory_is_storage_error() {
     let broken = PresetFileStore::open(
         &dir.path().join("does").join("not").join("exist"),
         &PresetStoreConfig::default(),
+        &environment(),
         PRODUCT_MIGRATIONS,
     )
     .unwrap();
@@ -162,9 +165,9 @@ fn missing_or_non_numeric_schema_version_goes_to_quarantine() {
 
 #[test]
 fn newer_schema_goes_to_quarantine_and_bytes_are_kept() {
-    let content = br#"{"schema_version":3,"future":"field"}"#;
+    let content = br#"{"schema_version":4,"future":"field"}"#;
     assert_quarantined("newer", content, |r| {
-        *r == CorruptionReason::NewerSchema { found: 3, supported: 2 }
+        *r == CorruptionReason::NewerSchema { found: 4, supported: 3 }
     });
 }
 
@@ -172,24 +175,24 @@ fn newer_schema_goes_to_quarantine_and_bytes_are_kept() {
 fn wrong_shape_and_bad_values_go_to_quarantine() {
     let base = |extra: &str| {
         format!(
-            r#"{{"schema_version":2,"next_id":1,"active":{{"builtin":"honest"}},"edits":null,"user_presets":[]{extra}}}"#
+            r#"{{"schema_version":3,"next_id":1,"active":{{"builtin":"honest"}},"edits":null,"user_presets":[]{extra}}}"#
         )
     };
     assert_quarantined("extra", base(r#","surprise":1"#).as_bytes(), |r| {
         matches!(r, CorruptionReason::InvalidShape(_))
     });
-    assert_quarantined("noactive", br#"{"schema_version":2,"next_id":1}"#, |r| {
+    assert_quarantined("noactive", br#"{"schema_version":3,"next_id":1}"#, |r| {
         matches!(r, CorruptionReason::InvalidShape(_))
     });
-    let out_of_range = br#"{"schema_version":2,"next_id":2,"active":{"user":1},"edits":null,
-        "user_presets":[{"id":1,"name":"X","settings":{"contrast":9,"midtones":0,"shadows":0,
+    let out_of_range = br#"{"schema_version":3,"next_id":2,"active":{"user":1},"edits":null,
+        "user_presets":[{"id":1,"name":"X","base":"agx","settings":{"contrast":9,"midtones":0,"shadows":0,
         "highlights":0,"saturation":0,"vibrance":0,"warmth":0,"tint":0,
         "wheels":{"lift":{"push":[0,0],"ring":0},"gamma":{"push":[0,0],"ring":0},"gain":{"push":[0,0],"ring":0},"offset":{"push":[0,0],"ring":0}}}}]}"#;
     assert_quarantined("range", out_of_range, |r| {
         matches!(r, CorruptionReason::InvalidShape(_))
     });
-    let bad_name = br#"{"schema_version":2,"next_id":2,"active":{"user":1},"edits":null,
-        "user_presets":[{"id":1,"name":"  ","settings":{"contrast":0,"midtones":0,"shadows":0,
+    let bad_name = br#"{"schema_version":3,"next_id":2,"active":{"user":1},"edits":null,
+        "user_presets":[{"id":1,"name":"  ","base":"agx","settings":{"contrast":0,"midtones":0,"shadows":0,
         "highlights":0,"saturation":0,"vibrance":0,"warmth":0,"tint":0,
         "wheels":{"lift":{"push":[0,0],"ring":0},"gamma":{"push":[0,0],"ring":0},"gain":{"push":[0,0],"ring":0},"offset":{"push":[0,0],"ring":0}}}}]}"#;
     assert_quarantined("name", bad_name, |r| matches!(r, CorruptionReason::InvalidShape(_)));
@@ -197,7 +200,7 @@ fn wrong_shape_and_bad_values_go_to_quarantine() {
 
 #[test]
 fn invariant_violation_in_valid_json_goes_to_quarantine() {
-    let missing_active = br#"{"schema_version":2,"next_id":1,"active":{"user":5},"edits":null,"user_presets":[]}"#;
+    let missing_active = br#"{"schema_version":3,"next_id":1,"active":{"user":5},"edits":null,"user_presets":[]}"#;
     assert_quarantined("ghost", missing_active, |r| {
         *r == CorruptionReason::InvalidContent(SnapshotError::ActivePresetMissing(PresetId::User(UserPresetId(5))))
     });
@@ -334,7 +337,7 @@ fn test_migration_table_upgrades_v0_file_end_to_end() {
     )
     .unwrap();
     let table = v0_table();
-    let opened = PresetFileStore::open(dir.path(), &PresetStoreConfig::default(), &table).unwrap();
+    let opened = PresetFileStore::open(dir.path(), &PresetStoreConfig::default(), &environment(), &table).unwrap();
     assert_eq!(opened.outcome, LoadOutcome::Loaded { migrated_from: Some(0) });
     assert_eq!(
         opened.library.active_look().preset,
@@ -369,7 +372,7 @@ fn invalid_config_is_rejected_before_touching_disk() {
         file_name: "a/b.json".into(),
         ..PresetStoreConfig::default()
     };
-    assert!(PresetFileStore::open(dir.path(), &config, PRODUCT_MIGRATIONS).is_err());
+    assert!(PresetFileStore::open(dir.path(), &config, &environment(), PRODUCT_MIGRATIONS).is_err());
     assert_eq!(fs::read(presets_file(dir.path())).unwrap(), b"garbage");
 }
 
@@ -381,7 +384,7 @@ fn knob_values_roundtrip_exactly() {
     opened.store.save(&opened.library.snapshot()).unwrap();
     let again = open(dir.path());
     assert_eq!(
-        again.library.active_look().settings.contrast,
+        again.library.active_look().recipe.settings.contrast,
         LookKnob::new(0.123_456_79).unwrap()
     );
 }
@@ -428,14 +431,15 @@ fn normal_save_is_durable() {
 const V0_FILE: &[u8] =
     br#"{"schema_version":0,"next_id":1,"preset":{"builtin":"honest"},"edits":null,"user_presets":[]}"#;
 
-/// Тестовый шаг v0 → v1, дальше настоящий продуктовый v1 → v2: цепочка доводит файл до текущей схемы.
-fn v0_table() -> [Migration; 2] {
+/// Тестовый шаг v0 → v1, дальше настоящие продуктовые v1 → v2 и v2 → v3: цепочка доводит файл до текущей схемы.
+fn v0_table() -> [Migration; 3] {
     [
         Migration {
             from_version: 0,
             step: rename_preset_field,
         },
         PRODUCT_MIGRATIONS[0],
+        PRODUCT_MIGRATIONS[1],
     ]
 }
 
@@ -453,7 +457,7 @@ fn backup_files(dir: &Path) -> Vec<PathBuf> {
 fn first_save_after_migration_leaves_a_byte_exact_copy_of_the_old_file() {
     let dir = TempDir::new("backup");
     fs::write(presets_file(dir.path()), V0_FILE).unwrap();
-    let opened = PresetFileStore::open(dir.path(), &PresetStoreConfig::default(), &v0_table()).unwrap();
+    let opened = PresetFileStore::open(dir.path(), &PresetStoreConfig::default(), &environment(), &v0_table()).unwrap();
     assert!(backup_files(dir.path()).is_empty(), "до записи копировать рано");
 
     opened.store.save(&opened.library.snapshot()).unwrap();
@@ -482,7 +486,7 @@ fn existing_backup_is_never_overwritten_a_suffix_is_added() {
     fs::write(presets_file(dir.path()), V0_FILE).unwrap();
     let earlier = dir.path().join("look-presets.json.pre-v0");
     fs::write(&earlier, b"earlier copy").unwrap();
-    let opened = PresetFileStore::open(dir.path(), &PresetStoreConfig::default(), &v0_table()).unwrap();
+    let opened = PresetFileStore::open(dir.path(), &PresetStoreConfig::default(), &environment(), &v0_table()).unwrap();
     opened.store.save(&opened.library.snapshot()).unwrap();
 
     assert_eq!(fs::read(&earlier).unwrap(), b"earlier copy");
@@ -499,7 +503,7 @@ fn failed_backup_refuses_the_save_and_keeps_the_old_file() {
     use std::os::unix::fs::PermissionsExt;
     let dir = TempDir::new("backup-fail");
     fs::write(presets_file(dir.path()), V0_FILE).unwrap();
-    let opened = PresetFileStore::open(dir.path(), &PresetStoreConfig::default(), &v0_table()).unwrap();
+    let opened = PresetFileStore::open(dir.path(), &PresetStoreConfig::default(), &environment(), &v0_table()).unwrap();
     fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o500)).unwrap();
     let writable_anyway = fs::File::create(dir.path().join("probe")).is_ok();
     let result = opened.store.save(&opened.library.snapshot());

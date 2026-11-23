@@ -7,13 +7,17 @@
 //!   «тихо» достроить недостающее serde не должен, это работа явного шага [`migrate_v1_to_v2`].
 //!   Так файл версии 2 без `wheels` — это порча (карантин), а не тихая нейтраль.
 //!
+//! - **v3** (сессия 14b, решения 195, 196) — основа тона стала частью пресета: у каждого пользовательского
+//!   пресета рядом с `settings` появилось обязательное поле `base`, а `edits` из «голых» значений ручек стал
+//!   рецептом `{"base": …, "settings": …}`. Поле обязательное намеренно (как `wheels` в v2).
+//!
 //! Файл старше текущей версии без шага в таблице считается непереносимым и уходит в карантин
 //! (решение 179); перед первой записью после миграции делается копия старого файла `.pre-v<N>`.
 
 use serde_json::{Value, json};
 
 /// Текущая версия схемы файла пресетов.
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 /// Имя поля с версией в корне JSON.
 pub(crate) const SCHEMA_VERSION_FIELD: &str = "schema_version";
@@ -49,14 +53,38 @@ pub struct Migration {
     pub step: fn(Value) -> Result<Value, MigrationError>,
 }
 
-/// Продуктовая таблица миграций: пока один шаг, v1 → v2 (колёса цвета).
-pub const PRODUCT_MIGRATIONS: &[Migration] = &[Migration {
-    from_version: 1,
-    step: migrate_v1_to_v2,
-}];
+/// Продуктовая таблица миграций: v1 → v2 (колёса цвета), v2 → v3 (основа тона в пресете).
+pub const PRODUCT_MIGRATIONS: &[Migration] = &[
+    Migration {
+        from_version: 1,
+        step: migrate_v1_to_v2,
+    },
+    Migration {
+        from_version: 2,
+        step: migrate_v2_to_v3,
+    },
+];
 
 /// Версия, из которой идёт шаг [`migrate_v1_to_v2`] (для текста ошибок).
 const V1: u32 = 1;
+
+/// Версия, из которой идёт шаг [`migrate_v2_to_v3`] (для текста ошибок).
+const V2: u32 = 2;
+
+/// Имя поля с основой тона в схеме 3.
+const BASE_FIELD: &str = "base";
+
+/// Имя поля со значениями ручек внутри рецепта и пресета.
+const SETTINGS_FIELD: &str = "settings";
+
+/// Основа, которую шаг v2 → v3 приписывает всем пресетам файла схемы 2, литералом в форме схемы 3.
+///
+/// Почему `"agx"`: пока писалась схема 2, основа выбиралась только конфигом рендера
+/// (`render.viewfinder.tone.base`), и её умолчание было AgX (`ToneBaseChoice::Agx`, `#[default]`):
+/// все виды, которые владелец сохранил в схеме 2, он видел именно на AgX. Литерал, а не живое умолчание:
+/// шаг обязан всегда выдавать ровно схему 3, даже если умолчание конфига потом сменится (тот же принцип,
+/// что у [`neutral_wheels_v2`]); тест сверяет литерал с живой сериализацией `ToneBaseModel::Agx`.
+const BASE_FOR_SCHEMA_2_FILES: &str = "agx";
 
 /// Имя нового поля с колёсами внутри `LookSettings`.
 const WHEELS_FIELD: &str = "wheels";
@@ -118,10 +146,52 @@ fn insert_neutral_wheels(settings: &mut Value, place: &str) -> Result<(), Migrat
 
 /// Ошибка шага v1 → v2 с причиной.
 fn step_failed(reason: impl Into<String>) -> MigrationError {
+    step_failed_from(V1, reason)
+}
+
+/// Ошибка шага «из версии `from_version`» с причиной.
+fn step_failed_from(from_version: u32, reason: impl Into<String>) -> MigrationError {
     MigrationError::StepFailed {
-        from_version: V1,
+        from_version,
         reason: reason.into(),
     }
+}
+
+/// Шаг v2 → v3: каждому пользовательскому пресету добавляет `base` рядом с `settings`, а `edits`
+/// (если там объект) оборачивает в рецепт `{"base": …, "settings": <прежние edits>}`.
+/// `edits: null` («правок нет») остаётся как есть.
+///
+/// Ошибки (все `StepFailed` из версии 2): `user_presets` нет или не массив; пресет не объект; `base`
+/// уже есть (в схеме 2 его быть не может, значит файл не схемы 2); у `edits` уже есть `base`.
+fn migrate_v2_to_v3(mut document: Value) -> Result<Value, MigrationError> {
+    let root = document.as_object_mut().ok_or(MigrationError::RootNotObject)?;
+
+    let presets = root
+        .get_mut("user_presets")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| step_failed_from(V2, "поле user_presets отсутствует или не массив"))?;
+    for (index, preset) in presets.iter_mut().enumerate() {
+        let object = preset
+            .as_object_mut()
+            .ok_or_else(|| step_failed_from(V2, format!("пресет №{index} не объект")))?;
+        if object.contains_key(BASE_FIELD) {
+            return Err(step_failed_from(
+                V2,
+                format!("у пресета №{index} уже есть base: файл не версии 2"),
+            ));
+        }
+        object.insert(BASE_FIELD.to_owned(), Value::from(BASE_FOR_SCHEMA_2_FILES));
+    }
+
+    // `edits: null` — правок нет, оборачивать нечего. Объект — прежние значения ручек: кладём их в рецепт.
+    if let Some(edits) = root.get_mut("edits").filter(|edits| edits.is_object()) {
+        if edits.get(BASE_FIELD).is_some() {
+            return Err(step_failed_from(V2, "в edits уже есть base: файл не версии 2"));
+        }
+        let settings = edits.take();
+        *edits = json!({ BASE_FIELD: BASE_FOR_SCHEMA_2_FILES, SETTINGS_FIELD: settings });
+    }
+    Ok(document)
 }
 
 /// Доводит документ версии `found_version` до [`CURRENT_SCHEMA_VERSION`].
@@ -205,12 +275,92 @@ mod tests {
         }
     }
 
+    /// Минимальный файл v2: один пресет и правки (колёса уже есть).
+    fn minimal_v2() -> Value {
+        json!({
+            "schema_version": 2,
+            "next_id": 2,
+            "active": {"user": 1},
+            "edits": {"contrast": -0.5, "bands": [], "wheels": neutral_wheels_v2()},
+            "user_presets": [
+                {"id": 1, "name": "A", "settings": {"contrast": 0.3, "bands": [], "wheels": neutral_wheels_v2()}},
+                {"id": 2, "name": "B", "settings": {"contrast": 0.6, "bands": [], "wheels": neutral_wheels_v2()}}
+            ]
+        })
+    }
+
+    fn step_reason_v2(result: Result<Value, MigrationError>) -> String {
+        match result {
+            Err(MigrationError::StepFailed {
+                from_version: 2,
+                reason,
+            }) => reason,
+            other => panic!("ждали StepFailed из v2, получили {other:?}"),
+        }
+    }
+
     #[test]
     fn product_chain_reaches_current_version_and_stamps_it() {
-        assert_eq!(CURRENT_SCHEMA_VERSION, 2);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 3);
         let migrated = migrate_to_current(minimal_v1(), 1, PRODUCT_MIGRATIONS).unwrap();
-        assert_eq!(migrated["schema_version"], 2);
+        assert_eq!(migrated["schema_version"], 3);
         assert_eq!(migrated["user_presets"][0]["settings"]["wheels"], neutral_wheels_v2());
+        assert_eq!(migrated["user_presets"][0]["base"], "agx");
+        assert_eq!(migrated["edits"]["base"], "agx");
+        assert_eq!(migrated["edits"]["settings"]["wheels"], neutral_wheels_v2());
+        let from_v2 = migrate_to_current(minimal_v2(), 2, PRODUCT_MIGRATIONS).unwrap();
+        assert_eq!(from_v2["schema_version"], 3);
+    }
+
+    #[test]
+    fn frozen_base_literal_matches_live_agx_serialization_today() {
+        let live = serde_json::to_value(look_contract::ToneBaseModel::Agx).unwrap();
+        assert_eq!(Value::from(BASE_FOR_SCHEMA_2_FILES), live);
+    }
+
+    #[test]
+    fn v2_step_adds_base_next_to_settings_and_wraps_edits() {
+        let migrated = migrate_v2_to_v3(minimal_v2()).unwrap();
+        for index in 0..2 {
+            assert_eq!(migrated["user_presets"][index]["base"], "agx");
+            assert_eq!(
+                migrated["user_presets"][index]["settings"],
+                minimal_v2()["user_presets"][index]["settings"],
+                "ручки пресета не тронуты"
+            );
+        }
+        assert_eq!(migrated["edits"]["base"], "agx");
+        assert_eq!(migrated["edits"]["settings"], minimal_v2()["edits"]);
+
+        let mut no_edits = minimal_v2();
+        no_edits["edits"] = Value::Null;
+        assert_eq!(migrate_v2_to_v3(no_edits).unwrap()["edits"], Value::Null);
+    }
+
+    #[test]
+    fn v2_step_changes_nothing_except_base_and_edits_wrapper() {
+        let mut migrated = migrate_v2_to_v3(minimal_v2()).unwrap();
+        for preset in migrated["user_presets"].as_array_mut().unwrap() {
+            preset.as_object_mut().unwrap().remove("base");
+        }
+        let wrapped = migrated["edits"].take();
+        migrated["edits"] = wrapped["settings"].clone();
+        assert_eq!(migrated, minimal_v2());
+    }
+
+    #[test]
+    fn v2_step_failures_are_distinguishable() {
+        let no_presets = step_reason_v2(migrate_v2_to_v3(json!({"edits": null})));
+        assert!(no_presets.contains("user_presets"), "{no_presets}");
+        let not_object = step_reason_v2(migrate_v2_to_v3(json!({"edits": null, "user_presets": [5]})));
+        assert!(not_object.contains("не объект"), "{not_object}");
+        let mut already = minimal_v2();
+        already["user_presets"][1]["base"] = json!("aces");
+        assert!(step_reason_v2(migrate_v2_to_v3(already)).contains("пресета №1 уже есть base"));
+        let mut edits_already = minimal_v2();
+        edits_already["edits"]["base"] = json!("aces");
+        assert!(step_reason_v2(migrate_v2_to_v3(edits_already)).contains("в edits уже есть base"));
+        assert_eq!(migrate_v2_to_v3(json!([])), Err(MigrationError::RootNotObject));
     }
 
     #[test]
@@ -315,9 +465,9 @@ mod tests {
 
     #[test]
     fn current_version_needs_no_steps() {
-        let document = json!({"schema_version": 2, "a": 1});
+        let document = json!({"schema_version": 3, "a": 1});
         assert_eq!(
-            migrate_to_current(document.clone(), 2, PRODUCT_MIGRATIONS),
+            migrate_to_current(document.clone(), 3, PRODUCT_MIGRATIONS),
             Ok(document)
         );
     }

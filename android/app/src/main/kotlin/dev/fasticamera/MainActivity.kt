@@ -102,6 +102,10 @@ class MainActivity : Activity() {
     }
 
     override fun onPause() {
+        // Диалог ввода текста не переживает уход с переднего плана: Rust получает «отмена».
+        if (::platform.isInitialized) {
+            platform.cancelTextInput()
+        }
         ShellBridge.nativePaused()
         super.onPause()
     }

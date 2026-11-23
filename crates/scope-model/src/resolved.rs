@@ -6,7 +6,7 @@
 //! ниже; чужие правила не трогаются.
 
 use isp_model::image::DisplayGamut;
-use scope_contract::{ScopeKind, ScopeRequest, VectorscopeAxes};
+use scope_contract::{ScopeKind, ScopeRequest, ScopeScan, VectorscopeAxes};
 
 use crate::grid::GridShape;
 use crate::oklab_rule::{OklabVectorscopeError, OklabVectorscopeRule};
@@ -55,8 +55,12 @@ impl ResolvedScope {
     ) -> Result<Self, ResolveError> {
         settings.validate()?;
         Ok(match request.kind {
-            ScopeKind::Waveform => Self::Waveform(WaveformRule::new(settings.trace_columns, settings.trace_levels)?),
-            ScopeKind::RgbParade => Self::RgbParade(ParadeRule::new(settings.trace_columns, settings.trace_levels)?),
+            ScopeKind::Waveform => Self::Waveform(
+                WaveformRule::new(settings.trace_columns, settings.trace_levels)?.with_scan(request.scan),
+            ),
+            ScopeKind::RgbParade => {
+                Self::RgbParade(ParadeRule::new(settings.trace_columns, settings.trace_levels)?.with_scan(request.scan))
+            }
             ScopeKind::Vectorscope => match request.vectorscope_axes {
                 VectorscopeAxes::YCbCrBt709 => Self::VectorscopeYCbCr(YCbCrVectorscopeRule::new(
                     settings.vectorscope_size,
@@ -97,6 +101,15 @@ impl ScopeRule for ResolvedScope {
             Self::RgbParade(rule) => rule.shape(),
             Self::VectorscopeYCbCr(rule) => rule.shape(),
             Self::VectorscopeOklab(rule) => rule.shape(),
+        }
+    }
+
+    fn scan(&self) -> ScopeScan {
+        match self {
+            Self::Waveform(rule) => rule.scan(),
+            Self::RgbParade(rule) => rule.scan(),
+            // Вектороскоп положения не меряет: поле запроса на него не влияет.
+            Self::VectorscopeYCbCr(_) | Self::VectorscopeOklab(_) => ScopeScan::Upright,
         }
     }
 

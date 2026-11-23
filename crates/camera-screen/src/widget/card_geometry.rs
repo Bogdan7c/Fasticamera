@@ -70,6 +70,15 @@ impl ScreenGeometry {
         )
     }
 
+    /// Ряд таблеток на месте ряда вариантов инструментов: центр и ширина окна (по бокам оставлено `side_inset_pt`).
+    pub(crate) fn card_chip_row(&self, side_inset_pt: f64) -> (Point, f64) {
+        let card = &self.config().card;
+        (
+            self.card_point(card.options_center),
+            (card.width_pt - 2.0 * side_inset_pt).max(0.0),
+        )
+    }
+
     /// Зона шкалы Exposure: вся ширина карточки; середина по высоте — середина рисок (их низ — `T + 129`).
     pub(crate) fn card_ruler(&self) -> Rect {
         let card = &self.config().card;

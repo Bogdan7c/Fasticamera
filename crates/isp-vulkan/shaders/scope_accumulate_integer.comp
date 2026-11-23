@@ -7,7 +7,7 @@
 #include "scope_accumulate_common.glsl"
 
 // Слова прибора (после общего заголовка):
-//   4  источник столбца: 0 — положение отсчёта `(x * columns) / width` (waveform, parade), 1 — проекция кода;
+//   4  источник столбца: 0 — положение отсчёта на горизонтали глаза `(x * columns) / extent` (waveform, parade), 1 — проекция кода;
 //   5  основа строки (int);          6  знак строки (int, ±1): row = основа + знак * значение проекции;
 //   7..11  проекция столбца: w0 w1 w2 offset shift;
 //   12..26 три проекции строки (по плоскостям): по 5 слов, как выше.
@@ -28,7 +28,7 @@ int projection_value(uint first_word, ivec3 code) {
     return (weight_r * code.x + weight_g * code.y + weight_b * code.z + offset) >> shift;
 }
 
-void scope_hits(uint shown_x, uvec3 code) {
+void scope_hits(uint eye_x, uvec3 code) {
     int columns = int(parameters.words[WORD_GRID_COLUMNS]);
     int rows = int(parameters.words[WORD_GRID_ROWS]);
     uint planes = parameters.words[WORD_GRID_PLANES];
@@ -37,7 +37,7 @@ void scope_hits(uint shown_x, uvec3 code) {
     int column;
     if (parameters.words[WORD_COLUMN_SOURCE] == 0u) {
         // x < 2^14, columns <= 2^12: произведение помещается в uint.
-        column = int((shown_x * uint(columns)) / sampling.content_width);
+        column = int((eye_x * uint(columns)) / eye_extent);
     } else {
         column = projection_value(WORD_COLUMN_PROJECTION, signed_code);
     }

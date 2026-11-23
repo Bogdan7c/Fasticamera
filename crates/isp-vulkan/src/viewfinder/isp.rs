@@ -17,7 +17,7 @@ use isp_model::params::IspParams;
 use isp_model::statistics::AwbStatistics;
 
 use super::awb_reduction::{AwbReduction, SubgroupArithmeticSupport};
-use super::config::ViewfinderIspConfig;
+use super::config::{ToneBasePrewarm, ViewfinderIspConfig};
 use super::error::ViewfinderError;
 use super::geometry::{ViewfinderGeometry, check_geometry};
 use super::image::ViewfinderImage;
@@ -27,7 +27,7 @@ use super::statistics::AwbTileBuffers;
 use super::uniforms::{VIEWFINDER_UNIFORM_BYTES, check_params, pack_uniforms};
 use super::variants::{
     BINDING_AWB_TILES, BINDING_LENS_SHADING_MAP, BINDING_LOOK, BINDING_LOOK_LUT, BINDING_OUTPUT, BINDING_PARAMETERS,
-    BINDING_SOURCE, BINDING_TONE_BASE, SourceKind, VariantCache, VariantKey,
+    BINDING_SOURCE, BINDING_TONE_BASE, PrewarmCounters, SourceKind, VariantCache, VariantKey,
 };
 use crate::frame_style::FrameStyleBuffers;
 use crate::lens_shading_map::LensShadingMapBuffer;
@@ -108,6 +108,8 @@ struct SlotState {
 /// * перед `Drop` GPU не исполняет команд с объектами ISP (как у остальных владельцев Vulkan).
 pub struct ViewfinderIsp {
     variants: VariantCache,
+    /// Счётчики прогрева вариантов (диагностика).
+    prewarm: PrewarmCounters,
     image: Option<ViewfinderImage>,
     retired_images: RetirementQueue<ViewfinderImage>,
     retired_pipelines: RetirementQueue<ComputePipeline>,
@@ -176,6 +178,7 @@ impl ViewfinderIsp {
                 config.frame_slots,
                 awb_reduction,
             ),
+            prewarm: PrewarmCounters::default(),
             image: None,
             retired_images: RetirementQueue::default(),
             retired_pipelines: RetirementQueue::default(),
@@ -251,6 +254,11 @@ impl ViewfinderIsp {
         self.variants.len()
     }
 
+    /// Счётчики прогрева вариантов по моделям основы (с создания ISP): сколько создано заранее и сколько не удалось.
+    pub fn tone_base_prewarm_counters(&self) -> PrewarmCounters {
+        self.prewarm
+    }
+
     /// Сколько объектов ждут завершения GPU перед уничтожением (изображения и пайплайны).
     pub fn retired_objects(&self) -> usize {
         self.retired_images.len() + self.retired_pipelines.len()
@@ -292,8 +300,15 @@ impl ViewfinderIsp {
             stages,
             tone_base: ToneBaseKind::of(frame.params),
         };
-        if let Some(evicted) = self.variants.prepare(&self.context, key, serial)? {
+        let prepared = self.variants.prepare(&self.context, key, serial)?;
+        if let Some(evicted) = prepared.evicted {
             self.retired_pipelines.retire(evicted, serial);
+        }
+        // Новый ключ — заготовить его же с другими моделями основы (если разрешено конфигом).
+        if prepared.created && self.config.tone_base_prewarm == ToneBasePrewarm::AllModels {
+            let report = self.variants.prewarm_other_tone_bases(&self.context, key, serial);
+            self.prewarm.created += report.created;
+            self.prewarm.failed += report.failed;
         }
         let uniforms = pack_uniforms(frame.params, &geometry, &self.config.awb_statistics);
         self.uniform_buffers[slot].write_bytes(0, &uniforms)?;

@@ -4,8 +4,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use look_contract::{BandAdjustment, BandAdjustments, HueBandId, LookKnob, LookSettings, PresetName};
-use look_presets::{PresetLibrary, PresetStoreConfig};
+use look_contract::{BandAdjustment, BandAdjustments, HueBandId, LookKnob, LookSettings, PresetName, ToneBaseModel};
+use look_presets::{CatalogEnvironment, PresetLibrary, PresetStoreConfig};
 
 /// Уникальный каталог в `std::env::temp_dir()`; убирается при `Drop`.
 pub struct TempDir {
@@ -66,9 +66,19 @@ pub fn with_sky_band(hue: f32) -> LookSettings {
     }
 }
 
+/// Окружение каталога для тестов: основа AgX (как умолчание конфига рендера) и полосы `sky`, `green`.
+pub fn environment() -> CatalogEnvironment {
+    CatalogEnvironment {
+        default_base: ToneBaseModel::Agx,
+        band_ids: ["sky", "green"]
+            .map(|raw| HueBandId::new(raw).expect("id валиден"))
+            .to_vec(),
+    }
+}
+
 pub fn new_library() -> PresetLibrary {
     let catalog = PresetStoreConfig::default()
-        .builtin_catalog()
+        .builtin_catalog(&environment())
         .expect("конфиг по умолчанию валиден");
     PresetLibrary::new(catalog)
 }

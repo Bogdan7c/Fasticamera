@@ -1,10 +1,10 @@
 //! Тесты сервиса вида: намерение → что изменилось → слать ли вид рендеру и просить ли запись файла.
 
-use look_contract::{BuiltinPreset, LookIntent, PresetError, PresetId, PresetName};
+use look_contract::{BuiltinPreset, LookIntent, LookRecipe, PresetError, PresetId, PresetName};
 use look_presets::{LibraryChange, PresetStoreConfig, SaveRequestOutcome};
 
 use super::*;
-use crate::look_test_support::{StubPersistence, contrast_look, handle_with};
+use crate::look_test_support::{StubPersistence, contrast_look, default_environment, handle_with};
 
 fn name(raw: &str) -> PresetName {
     PresetName::new(raw).expect("имя")
@@ -25,7 +25,13 @@ fn a_new_look_goes_to_the_render_and_to_the_file_with_the_same_values() {
     // В файл уходит снимок библиотеки именно с этими правками поверх активного пресета.
     let requested = stub.requested();
     assert_eq!(requested.len(), 1);
-    assert_eq!(requested[0].edits, Some(contrast_look(0.5)));
+    assert_eq!(
+        requested[0].edits,
+        Some(LookRecipe {
+            base: handle.active_recipe().base,
+            settings: contrast_look(0.5),
+        })
+    );
     assert_eq!(handle.active_settings(), contrast_look(0.5));
 }
 
@@ -91,7 +97,7 @@ fn a_rejected_intent_returns_the_distinct_error_and_leaves_state_and_file_alone(
 #[test]
 fn without_a_writer_the_request_is_reported_closed_and_the_look_still_applies() {
     let config = PresetStoreConfig::default();
-    let handle = LookHandle::in_memory(&config).expect("конфиг по умолчанию верен");
+    let handle = LookHandle::in_memory(&config, &default_environment()).expect("конфиг по умолчанию верен");
 
     let applied = handle
         .apply(LookIntent::SetLook(contrast_look(0.25)))
@@ -105,7 +111,40 @@ fn without_a_writer_the_request_is_reported_closed_and_the_look_still_applies() 
 #[test]
 fn a_fresh_library_starts_on_the_configured_startup_preset() {
     let config = PresetStoreConfig::default();
-    let handle = LookHandle::in_memory(&config).expect("конфиг по умолчанию верен");
+    let handle = LookHandle::in_memory(&config, &default_environment()).expect("конфиг по умолчанию верен");
 
     assert_eq!(handle.active_look().preset, PresetId::Builtin(BuiltinPreset::AsEye));
+}
+
+#[test]
+fn the_revision_moves_only_when_the_stored_state_changes() {
+    let handle = handle_with(StubPersistence::accepting());
+    let start = handle.revision();
+
+    handle
+        .apply(LookIntent::SetLook(contrast_look(0.5)))
+        .expect("применено");
+    let after_edit = handle.revision();
+    assert_eq!(after_edit, start + 1, "правка двигает номер");
+
+    handle
+        .apply(LookIntent::SetLook(contrast_look(0.5)))
+        .expect("применено");
+    assert_eq!(handle.revision(), after_edit, "то же значение: ничего не изменилось");
+
+    let rejected = handle.apply(LookIntent::RenamePreset {
+        preset: look_contract::UserPresetId(99),
+        name: name("Ghost"),
+    });
+    assert!(rejected.is_err());
+    assert_eq!(handle.revision(), after_edit, "отказ номер не двигает");
+
+    handle
+        .apply(LookIntent::SaveAsNewPreset(name("Mine")))
+        .expect("применено");
+    assert_eq!(
+        handle.revision(),
+        after_edit + 1,
+        "новый пресет (список изменился, вид тот же)"
+    );
 }

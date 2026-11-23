@@ -4,8 +4,8 @@
 //! касания» соблюдаются в одном месте.
 
 use ui_core::animator::{AnimatedProperty, AnimationRequest, PropertyKey, StartVelocity};
-use ui_core::geometry::{Insets, Rect};
-use ui_core::gesture::{RecognizerId, RecognizerSpec};
+use ui_core::geometry::{Insets, Point, Rect};
+use ui_core::gesture::{GestureData, RecognizerId, RecognizerSpec};
 use ui_core::id::NodeId;
 use ui_core::layout::{AnchorRule, AxisPlacement, Placement, ReferenceArea};
 use ui_core::scene::UiScene;
@@ -79,6 +79,16 @@ impl SceneKit {
         self.scene
             .set_placement(node, Placement::Anchored(AnchorRule::fill_parent()))?;
         self.rotating.push(node);
+        self.layout_dirty = true;
+        Ok(node)
+    }
+
+    /// Новый узел-содержимое на всю рамку хоста, который НЕ поворачивается по ориентации телефона: внутри раздела
+    /// калибровки значки поворачивает сам корень раздела.
+    pub(crate) fn add_fixed_content(&mut self, host: NodeId, label: &'static str) -> Result<NodeId, WidgetError> {
+        let node = self.scene.insert_child(host, label)?;
+        self.scene
+            .set_placement(node, Placement::Anchored(AnchorRule::fill_parent()))?;
         self.layout_dirty = true;
         Ok(node)
     }
@@ -241,6 +251,54 @@ impl SceneKit {
             },
         )?;
         Ok(())
+    }
+
+    /// Узел сам не ловит касания, но его дети ловят (раздел калибровки: корень шире экрана, чистая зона
+    /// превью обязана отдавать касания видоискателю под ним).
+    pub(crate) fn set_pass_through(&mut self, node: NodeId) -> Result<(), WidgetError> {
+        self.scene.set_hit_test_policy(node, HitTestPolicy::PassThrough)?;
+        Ok(())
+    }
+
+    /// Поворачивает узел вокруг центра его рамки сразу, без анимации (`radians` — по часовой на экране).
+    pub(crate) fn jump_rotation_to(&mut self, node: NodeId, radians: f64) -> Result<(), WidgetError> {
+        self.scene.set_property(node, AnimatedProperty::Rotation, radians)?;
+        Ok(())
+    }
+
+    /// Удаляет поддерево со жестами и анимациями (идущие жесты получают `Cancelled` со своим намерением).
+    pub(crate) fn remove_subtree(&mut self, node: NodeId) -> Result<(), WidgetError> {
+        self.scene.remove_subtree(node)?;
+        self.layout_dirty = true;
+        Ok(())
+    }
+
+    /// Точка экрана (pt) → точка в системе рамки узла (с учётом поворота, сдвига и прокрутки предков и самого
+    /// узла). `None` — преобразование вырождено или узла нет. Нужна кнопкам и тапам внутри повёрнутого и
+    /// прокручиваемого раздела: их рамки заданы в своей системе, а касание приходит в экранной.
+    pub(crate) fn point_in_node(&self, node: NodeId, screen_point: Point) -> Option<Point> {
+        let to_screen = self.scene.tree().to_screen_transform(node).ok()?;
+        Some(to_screen.inverse()?.apply(screen_point))
+    }
+
+    /// Те же данные жеста, но положение пальца переведено в систему рамки узла (`Press`, `Tap`, `Pan`).
+    /// Данные без положения возвращаются как есть; вырожденное преобразование — тоже как есть (кнопка тогда
+    /// просто не попадёт в свою зону, что безопаснее ложного срабатывания).
+    pub(crate) fn gesture_data_in_node(&self, node: NodeId, data: GestureData) -> GestureData {
+        let Some(position) = data.position() else {
+            return data;
+        };
+        let Some(local) = self.point_in_node(node, position) else {
+            return data;
+        };
+        match data {
+            GestureData::Press { .. } => GestureData::Press { position: local },
+            GestureData::Tap { tap_count, .. } => GestureData::Tap {
+                position: local,
+                tap_count,
+            },
+            other => other,
+        }
     }
 
     /// Пересчитать вёрстку, если рамки менялись.

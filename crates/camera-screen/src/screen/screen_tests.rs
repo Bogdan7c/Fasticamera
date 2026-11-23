@@ -173,7 +173,10 @@ fn vertical_pan_on_the_sun_sets_exposure_in_thirds_with_tick_haptics() {
 
 #[test]
 fn horizontal_swipe_with_one_mode_changes_nothing() {
-    let mut rig = Rig::new();
+    // Режим калибровки выключен флагом конфига: в карусели один PHOTO, свайпать некуда.
+    let mut config = crate::config::ScreenConfig::default();
+    config.calibration.enabled = false;
+    let mut rig = Rig::with(config, ui_core::time::MotionPreference::Full);
     let center = rig.frame_center();
     rig.drag(center, Point::new(center.x - 150.0, center.y), 160);
     rig.run(1200);

@@ -11,10 +11,14 @@
 //! Тогда ISP молча оставлял бы прежние параметры на каждом кадре. Поэтому при старте перебираются все
 //! крайние положения ручек тона × края подтяжки AE для выбранной основы и для обеих целей вывода
 //! (видоискатель — Display P3, снимок — sRGB). Плохая модель — ошибка запуска с понятной причиной.
+//!
+//! Основа проверяется ВСЯ четвёрка (agx, aces, filmic, legacy), а не выбранная в `viewfinder.tone.base`: основа —
+//! часть вида и переключается на ходу, поэтому действующей может стать любая.
 
 use isp_model::image::DisplayGamut;
 use isp_model::look::model::LookModelSettings;
 use isp_model::look::validation::{ToneEdgeError, validate_tone_edges};
+use look_contract::ToneBaseModel;
 
 use super::ViewfinderToneConfig;
 
@@ -27,19 +31,28 @@ pub(super) fn validate_look_model(
     tone: &ViewfinderToneConfig,
     max_residual_ev: f32,
 ) -> Result<(), LookConfigError> {
-    let base = tone.tone_base();
     let legacy = tone.curve_settings();
-    for gamut in CHECKED_OUTPUT_GAMUTS {
-        validate_tone_edges(model, &base, &legacy, gamut, max_residual_ev)
-            .map_err(|source| LookConfigError { gamut, source })?;
+    // ВСЕ модели, а не только выбранная в конфиге: основа — часть вида (решение 195) и меняется на ходу свайпом,
+    // поэтому любая модель может оказаться действующей. Ошибка запуска лучше, чем кадры без параметров после свайпа.
+    for base_model in ToneBaseModel::ALL {
+        let base = tone.tone_base_for(base_model);
+        for gamut in CHECKED_OUTPUT_GAMUTS {
+            validate_tone_edges(model, &base, &legacy, gamut, max_residual_ev).map_err(|source| LookConfigError {
+                base_model,
+                gamut,
+                source,
+            })?;
+        }
     }
     Ok(())
 }
 
 /// Модель вида не годится для этого конфига видоискателя.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
-#[error("viewfinder.look_model (цель вывода {gamut:?}): {source}")]
+#[error("viewfinder.look_model (основа {base_model:?}, цель вывода {gamut:?}): {source}")]
 pub struct LookConfigError {
+    /// Для какой модели основы модель вида не строится (проверяются все четыре).
+    pub base_model: ToneBaseModel,
     /// Для какой цели вывода модель не строится.
     pub gamut: DisplayGamut,
     /// Что именно не так.
@@ -57,10 +70,10 @@ mod tests {
         assert_eq!(validate_look_model(&LookModelSettings::default(), &tone, 0.5), Ok(()));
     }
 
-    /// Проверка идёт для ВЫБРАННОЙ модели: каждая модель с умолчаниями проходит, а сломанная на краю ручки
-    /// выбранная модель отвергается с ошибкой, которая называет модель и цель вывода.
+    /// Проверяются ВСЕ модели основы: умолчания проходят при любой выбранной в конфиге, а сломанная на краю ручки
+    /// секция НЕвыбранной модели отвергается при загрузке (её может выбрать свайп), с названием модели в ошибке.
     #[test]
-    fn the_selected_model_is_checked_at_the_knob_edges() {
+    fn every_base_model_is_checked_at_the_knob_edges_whichever_is_selected() {
         use super::super::ToneBaseChoice;
         use isp_model::tone::aces::AcesSettings;
         let model = LookModelSettings::default();
@@ -76,23 +89,21 @@ mod tests {
             };
             assert_eq!(validate_look_model(&model, &tone, 0.5), Ok(()), "{base:?}");
         }
-        // Тесная ось теней и света у ACES ломает кривую на краю ручки — но только если ACES выбрана.
+        // Тесная ось теней и света у ACES ломает кривую на краю ручки — и когда ACES выбрана, и когда нет.
         let narrow = AcesSettings {
             shape_width_ev: 0.5,
             ..AcesSettings::default()
         };
-        let selected = ViewfinderToneConfig {
-            base: ToneBaseChoice::Aces,
-            aces: narrow,
-            ..ViewfinderToneConfig::default()
-        };
-        let error = validate_look_model(&model, &selected, 0.5).expect_err("край ручки ломает ACES");
-        assert!(error.to_string().contains("основа ACES"), "{error}");
-        let not_selected = ViewfinderToneConfig {
-            aces: narrow,
-            ..ViewfinderToneConfig::default()
-        };
-        assert_eq!(validate_look_model(&model, &not_selected, 0.5), Ok(()));
+        for selected in [ToneBaseChoice::Aces, ToneBaseChoice::Agx] {
+            let tone = ViewfinderToneConfig {
+                base: selected,
+                aces: narrow,
+                ..ViewfinderToneConfig::default()
+            };
+            let error = validate_look_model(&model, &tone, 0.5).expect_err("край ручки ломает ACES");
+            assert_eq!(error.base_model, ToneBaseModel::Aces, "выбрана {selected:?}");
+            assert!(error.to_string().contains("основа ACES"), "{error}");
+        }
     }
 
     #[test]

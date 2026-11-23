@@ -32,7 +32,7 @@ fn shot_with_flash(request: u64, mode: FlashMode) -> ShotRequest {
 fn press(rig: &StillRig, mode: FlashMode) {
     let outcome = rig.capture.submit(
         shot_with_flash(1, mode),
-        look_contract::LookSettings::NEUTRAL,
+        crate::look_test_support::neutral_recipe(),
         MonotonicNanos::from_nanos(0),
     );
     assert_eq!(outcome, SubmitOutcome::Accepted);
@@ -186,7 +186,10 @@ fn a_flash_still_carries_the_look_of_the_press_in_its_plan() {
 
     let outcome = rig.capture.submit(
         shot_with_flash(1, FlashMode::On),
-        look.clone(),
+        look_contract::LookRecipe {
+            base: look_contract::ToneBaseModel::Aces,
+            settings: look.clone(),
+        },
         MonotonicNanos::from_nanos(0),
     );
 
@@ -194,4 +197,9 @@ fn a_flash_still_carries_the_look_of_the_press_in_its_plan() {
     let plan = &rig.render.plans()[0];
     assert_eq!(plan.selection, FrameSelection::FlashFrame { shot: FlashShotId(1) });
     assert_eq!(plan.look, look, "кадр со вспышкой проявляется видом момента нажатия");
+    assert_eq!(
+        plan.tone_base,
+        look_contract::ToneBaseModel::Aces,
+        "и основой момента нажатия (решение 195)"
+    );
 }

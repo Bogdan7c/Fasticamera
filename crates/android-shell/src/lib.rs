@@ -9,7 +9,7 @@
 //!   [`haptic_plan`], [`permission_answer`], [`orientation_classifier`], [`gravity_source`] (гравитация для блика: путь и фильтр), [`surface_registry`],
 //!   [`accounting`], [`thermal_codes`], [`command_codes`], [`vsync_timeline`],
 //!   [`battery_snapshot`] (разбор снимка батареи от Kotlin), [`power_pacing`] (сетка опроса),
-//!   [`still_pending_draft`] (черновик снимка: один итог), [`still_encode_input`] (вход кодеров HEIF/JPEG), [`platform_call_error`];
+//!   [`still_pending_draft`] (черновик снимка: один итог), [`still_encode_input`] (вход кодеров HEIF/JPEG), [`platform_call_error`], [`text_input_wire`] (провод диалога ввода текста);
 //! * только Android: модуль `android` — регистрация JNI-методов, safety-модули FFI
 //!   (`ANativeWindow`, `AMotionEvent`, датчики, тепло) и поток команд к Kotlin.
 //!
@@ -36,6 +36,7 @@ pub mod still_orphan_sweep;
 pub mod still_pending_draft;
 pub mod surface_registry;
 pub mod system_gesture_decode;
+pub mod text_input_wire;
 pub mod thermal_codes;
 pub mod touch_decode;
 pub mod vsync_timeline;

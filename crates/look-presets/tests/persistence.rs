@@ -7,7 +7,7 @@ mod common;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
-use common::{TempDir, name, new_library};
+use common::{TempDir, environment, name, new_library};
 use look_contract::{PresetError, StorageFailure};
 use look_presets::{
     LibrarySnapshot, LoadOutcome, PRODUCT_MIGRATIONS, PersistenceStats, PresetFileStore, PresetPersistence,
@@ -162,7 +162,13 @@ fn requests_after_close_are_refused_and_not_written() {
 #[test]
 fn real_file_receives_latest_snapshot_after_close() {
     let dir = TempDir::new("persist");
-    let mut opened = PresetFileStore::open(dir.path(), &PresetStoreConfig::default(), PRODUCT_MIGRATIONS).unwrap();
+    let mut opened = PresetFileStore::open(
+        dir.path(),
+        &PresetStoreConfig::default(),
+        &environment(),
+        PRODUCT_MIGRATIONS,
+    )
+    .unwrap();
     let mut persistence = PresetPersistence::spawn(opened.store, 8).unwrap();
     for label in ["One", "Two", "Three", "Four"] {
         opened.library.save_as_new_preset(name(label)).unwrap();
@@ -177,7 +183,13 @@ fn real_file_receives_latest_snapshot_after_close() {
     );
     assert!(stats.saved >= 1);
 
-    let reopened = PresetFileStore::open(dir.path(), &PresetStoreConfig::default(), PRODUCT_MIGRATIONS).unwrap();
+    let reopened = PresetFileStore::open(
+        dir.path(),
+        &PresetStoreConfig::default(),
+        &environment(),
+        PRODUCT_MIGRATIONS,
+    )
+    .unwrap();
     assert_eq!(reopened.outcome, LoadOutcome::Loaded { migrated_from: None });
     assert_eq!(
         reopened.library.snapshot(),
@@ -189,13 +201,25 @@ fn real_file_receives_latest_snapshot_after_close() {
 #[test]
 fn drop_flushes_pending_snapshot() {
     let dir = TempDir::new("drop");
-    let mut opened = PresetFileStore::open(dir.path(), &PresetStoreConfig::default(), PRODUCT_MIGRATIONS).unwrap();
+    let mut opened = PresetFileStore::open(
+        dir.path(),
+        &PresetStoreConfig::default(),
+        &environment(),
+        PRODUCT_MIGRATIONS,
+    )
+    .unwrap();
     {
         let persistence = PresetPersistence::spawn(opened.store, 8).unwrap();
         opened.library.save_as_new_preset(name("Persisted by drop")).unwrap();
         persistence.request_save(opened.library.snapshot());
     } // Drop дописывает запрос
-    let reopened = PresetFileStore::open(dir.path(), &PresetStoreConfig::default(), PRODUCT_MIGRATIONS).unwrap();
+    let reopened = PresetFileStore::open(
+        dir.path(),
+        &PresetStoreConfig::default(),
+        &environment(),
+        PRODUCT_MIGRATIONS,
+    )
+    .unwrap();
     assert_eq!(reopened.library.presets()[2].name.as_str(), "Persisted by drop");
 }
 
@@ -203,7 +227,8 @@ fn drop_flushes_pending_snapshot() {
 fn saving_to_missing_directory_surfaces_storage_error_via_outcomes() {
     let dir = TempDir::new("persistfail");
     let gone = dir.path().join("gone");
-    let opened = PresetFileStore::open(&gone, &PresetStoreConfig::default(), PRODUCT_MIGRATIONS).unwrap();
+    let opened =
+        PresetFileStore::open(&gone, &PresetStoreConfig::default(), &environment(), PRODUCT_MIGRATIONS).unwrap();
     let mut persistence = PresetPersistence::spawn(opened.store, 8).unwrap();
     persistence.request_save(opened.library.snapshot());
     persistence.close();
@@ -349,7 +374,13 @@ fn real_store_after_failed_quarantine_refuses_requests_up_front() {
     // Конструируем проще: на месте основного файла каталог -> read_snapshot даёт Unreadable.
     let dir = TempDir::new("refuse");
     std::fs::create_dir(dir.path().join("look-presets.json")).unwrap();
-    let opened = PresetFileStore::open(dir.path(), &PresetStoreConfig::default(), PRODUCT_MIGRATIONS).unwrap();
+    let opened = PresetFileStore::open(
+        dir.path(),
+        &PresetStoreConfig::default(),
+        &environment(),
+        PRODUCT_MIGRATIONS,
+    )
+    .unwrap();
     assert!(
         matches!(opened.outcome, LoadOutcome::Unreadable { .. }),
         "{:?}",

@@ -47,6 +47,7 @@ pub(super) fn on_surface_resized(ctx: &mut Ctx<'_>, size: SurfaceSize) -> Action
     let Ok(layout) = ScreenLayout::new(&ctx.config.layout, size) else {
         ctx.state.surface = None;
         ctx.state.layout = None;
+        ctx.state.calibration.set_layout(None);
         ctx.keep_changes_despite_rejection();
         return ActionOutcome::Rejected(Rejection::InvalidSurface);
     };

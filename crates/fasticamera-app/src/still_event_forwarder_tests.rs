@@ -59,7 +59,7 @@ fn full_service_queue_loses_the_event_counts_it_and_the_term_ends_the_still_exac
     for request in 1..=3 {
         rig.capture.submit(
             shot(request),
-            look_contract::LookSettings::NEUTRAL,
+            crate::look_test_support::neutral_recipe(),
             MonotonicNanos::from_nanos(0),
         );
     }
@@ -145,7 +145,7 @@ fn accepted_events_are_counted_and_reach_the_service() {
     let mut rig = StillRig::start();
     rig.capture.submit(
         shot(1),
-        look_contract::LookSettings::NEUTRAL,
+        crate::look_test_support::neutral_recipe(),
         MonotonicNanos::from_nanos(0),
     );
     rig.render.emit(

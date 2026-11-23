@@ -11,6 +11,8 @@
 
 use android_shell::config::{ShellConfig, ShellConfigError, ValidatedShellConfig};
 use look_presets::PresetStoreConfig;
+
+use crate::look_startup::catalog_environment;
 use render_loop::config::{ConfigError as RenderConfigError, RenderLoopConfig};
 use serde::{Deserialize, Serialize};
 use shell_contract::thermal_policy::{ThermalPolicy, ThermalPolicyConfig, ThermalPolicyConfigError};
@@ -149,7 +151,9 @@ impl RuntimeConfig {
         parsed.device.validate()?;
         // Имена и значения встроенных пресетов проверяются здесь, а не при открытии файла: опечатка в конфиге
         // отвергает запуск сразу, а не молча ломает пресеты.
-        parsed.look_presets.builtin_catalog()?;
+        parsed
+            .look_presets
+            .builtin_catalog(&catalog_environment(&parsed.render))?;
         // Предел очереди и сроки экрана со службой — конфиги двух crate-ов: согласуются здесь.
         parsed.photo.validate(&parsed.camera_screen.screen.capture)?;
         // Срок цели рендера против очереди кодеров службы: тоже конфиги двух crate-ов.

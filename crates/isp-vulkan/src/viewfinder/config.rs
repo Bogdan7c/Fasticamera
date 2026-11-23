@@ -35,6 +35,20 @@ impl ViewfinderStorageFormat {
     }
 }
 
+/// Заготавливать ли варианты пайплайна для ВСЕХ моделей основы тона (решение 195: основа переключается на ходу).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToneBasePrewarm {
+    /// При создании варианта для ключа сразу создаются варианты с тремя другими моделями основы: свайп основы
+    /// никогда не компилирует пайплайн посреди сессии. Стоит несколько миллисекунд CPU и память драйвера на
+    /// первом кадре (`[estimate]`: цену на телефоне меряет сессия 14j).
+    #[default]
+    AllModels,
+    /// Варианты создаются лениво, по одному, на первом кадре с такой основой (A/B-замеры стадий, тесты, где счёт
+    /// вариантов важен).
+    Off,
+}
+
 /// Размер рабочей группы (нитей по X и Y; одна нить — один пиксель выхода).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,6 +72,9 @@ impl Default for WorkgroupSizeConfig {
 /// осям, `maxComputeWorkGroupSize`) проверяется в `ViewfinderIsp::new` через `LocalSize::validate_for_device`:
 /// на устройстве с меньшим лимитом (спецификация гарантирует лишь 128) — чистая ошибка, а не UB.
 pub const MAX_WORKGROUP_INVOCATIONS: u32 = 1024;
+
+/// Число вариантов продукта: 4 набора стадий (виньетирование × таблица вида) × 4 модели основы тона.
+pub const DEFAULT_PIPELINE_VARIANT_CAPACITY: usize = 4 * 4;
 
 /// Верхняя граница слотов кадров: больше двух-трёх кадров в полёте видоискателю не нужно никогда.
 pub const MAX_FRAME_SLOTS: usize = 8;
@@ -99,10 +116,15 @@ pub struct ViewfinderIspConfig {
     pub awb_reduction: AwbReductionPolicy,
     /// Формат изображения видоискателя.
     pub storage_format: ViewfinderStorageFormat,
-    /// Сколько вариантов пайплайна (набор стадий × формат × источник) держать одновременно.
-    /// По умолчанию 14: продукт + 12 A/B-вариантов «без одной стадии» (по числу стадий `IspStage`) + запас; при переполнении
-    /// давно не использованный вариант уходит в отложенное уничтожение.
+    /// Сколько вариантов пайплайна (набор стадий × формат × источник × модель основы) держать одновременно.
+    /// По умолчанию [`DEFAULT_PIPELINE_VARIANT_CAPACITY`] (16): в продукте набор стадий принимает до 4 значений
+    /// (виньетирование «пропуск» или «применить» × таблица вида есть или нет), каждое — в четырёх моделях основы
+    /// (прогрев `tone_base_prewarm`); формат и источник у потока постоянны. Остальные A/B-варианты «без одной
+    /// стадии» живут по вытеснению: при переполнении давно не использованный вариант уходит в отложенное уничтожение.
     pub pipeline_variant_capacity: usize,
+    /// Прогрев вариантов всех моделей основы (по умолчанию включён). Прогрев занимает только свободные места кэша и
+    /// никогда не вытесняет вариант, которым рисуют.
+    pub tone_base_prewarm: ToneBasePrewarm,
     /// Наибольшая карта коррекции виньетирования, под которую выделяются буферы слотов. Карта больше —
     /// явная ошибка кадра (`ViewfinderError::LensShadingMap`), а не молчаливый пропуск коррекции.
     pub lens_shading_map: LensShadingMapLimits,
@@ -122,7 +144,8 @@ impl Default for ViewfinderIspConfig {
             awb_statistics: AwbStatisticsSettings::default(),
             awb_reduction: AwbReductionPolicy::default(),
             storage_format: ViewfinderStorageFormat::default(),
-            pipeline_variant_capacity: 14,
+            pipeline_variant_capacity: DEFAULT_PIPELINE_VARIANT_CAPACITY,
+            tone_base_prewarm: ToneBasePrewarm::default(),
             lens_shading_map: LensShadingMapLimits::default(),
             look_lut: LookLutLimits::default(),
             largest_mosaic: LargestMosaicConfig::default(),

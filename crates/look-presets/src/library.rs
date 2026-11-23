@@ -4,12 +4,13 @@
 //! - имена уникальны без учёта регистра и не совпадают с именами встроенных;
 //! - идентификаторы своих пресетов выдаются монотонно и не переиспользуются;
 //! - активный пресет всегда существует;
-//! - правки лежат только поверх активного пресета и всегда ОТЛИЧАЮТСЯ от его значений;
+//! - правки (рецепт: основа + ручки) лежат только поверх активного пресета и всегда ОТЛИЧАЮТСЯ от его рецепта;
 //! - операция с ошибкой не меняет состояние.
 
 use look_contract::{
-    ActiveLook, BuiltinPreset, EditState, LookIntent, LookSettings, PresetError, PresetId, PresetName, StorageFailure,
-    UserPresetId,
+    ActiveLook, BandAxis, BuiltinPreset, EditState, GlobalKnob, HueBandId, LookControl, LookIntent, LookKnob,
+    LookRecipe, LookSettings, PresetEntry, PresetError, PresetId, PresetKind, PresetName, StorageFailure,
+    ToneBaseModel, UserPresetId,
 };
 
 use crate::config::BuiltinCatalog;
@@ -37,33 +38,6 @@ impl LibraryChange {
     /// Нужно ли записать файл.
     pub fn needs_save(self) -> bool {
         self != Self::Unchanged
-    }
-}
-
-/// Встроенный или свой пресет (для списка на экране).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PresetKind {
-    /// Встроенный: не меняется и не удаляется.
-    Builtin,
-    /// Свой.
-    User,
-}
-
-/// Строка списка пресетов для экрана.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PresetSummary {
-    /// Идентификатор.
-    pub id: PresetId,
-    /// Отображаемое имя.
-    pub name: PresetName,
-    /// Встроенный или свой.
-    pub kind: PresetKind,
-}
-
-impl PresetSummary {
-    /// Встроенный ли пресет.
-    pub fn is_builtin(&self) -> bool {
-        self.kind == PresetKind::Builtin
     }
 }
 
@@ -105,27 +79,29 @@ impl PresetLibrary {
         match &self.state.edits {
             Some(edited) => ActiveLook {
                 preset: self.state.active,
-                settings: edited.clone(),
+                recipe: edited.clone(),
+                preset_recipe: self.active_preset_recipe(),
                 edits: EditState::EditedOnTop,
             },
             None => ActiveLook {
                 preset: self.state.active,
-                settings: self.active_preset_settings(),
+                recipe: self.active_preset_recipe(),
+                preset_recipe: self.active_preset_recipe(),
                 edits: EditState::Clean,
             },
         }
     }
 
     /// Список для экрана: сначала встроенные, затем свои в порядке создания.
-    pub fn presets(&self) -> Vec<PresetSummary> {
+    pub fn presets(&self) -> Vec<PresetEntry> {
         let builtin = [BuiltinPreset::Honest, BuiltinPreset::AsEye]
             .into_iter()
-            .map(|preset| PresetSummary {
+            .map(|preset| PresetEntry {
                 id: PresetId::Builtin(preset),
                 name: self.catalog.name_of(preset).clone(),
                 kind: PresetKind::Builtin,
             });
-        let user = self.state.user_presets.iter().map(|preset| PresetSummary {
+        let user = self.state.user_presets.iter().map(|preset| PresetEntry {
             id: PresetId::User(preset.id),
             name: preset.name.clone(),
             kind: PresetKind::User,
@@ -137,6 +113,10 @@ impl PresetLibrary {
     pub fn apply(&mut self, intent: LookIntent) -> Result<LibraryChange, PresetError> {
         match intent {
             LookIntent::SetLook(settings) => self.set_look(settings),
+            LookIntent::SetKnob { knob, value } => self.set_knob(knob, value),
+            LookIntent::SetBandAxis { band, axis, value } => self.set_band_axis(band, axis, value),
+            LookIntent::SetToneBase(base) => self.set_tone_base(base),
+            LookIntent::ResetControl(control) => self.reset_control(control),
             LookIntent::SelectPreset(preset) => self.select_preset(preset),
             LookIntent::SaveAsNewPreset(name) => self.save_as_new_preset(name),
             LookIntent::RenamePreset { preset, name } => self.rename_preset(PresetId::User(preset), name),
@@ -146,14 +126,73 @@ impl PresetLibrary {
         }
     }
 
-    /// «Вид = эти значения»: правки поверх активного. Совпало со значениями пресета → `Clean`.
+    /// «Ручки = эти значения»: правки поверх активного пресета, основа остаётся текущей.
+    /// Совпало с рецептом пресета → `Clean`.
     pub fn set_look(&mut self, settings: LookSettings) -> Result<LibraryChange, PresetError> {
         self.transaction(|library| {
-            library.state.edits = if settings == library.active_preset_settings() {
-                None
-            } else {
-                Some(settings)
-            };
+            let base = library.active_look().recipe.base;
+            library.set_edited_recipe(LookRecipe { base, settings });
+            Ok(())
+        })
+    }
+
+    /// «Эта ручка = это значение» поверх ТЕКУЩЕГО вида (с правками): остальные ручки, полосы и основа не трогаются.
+    /// Совпало с рецептом пресета → `Clean`. Два подряд намерения на разные ручки не теряют друг друга, потому что
+    /// каждое применяется к актуальному рецепту библиотеки, а не к устаревшим фактам экрана.
+    pub fn set_knob(&mut self, knob: GlobalKnob, value: LookKnob) -> Result<LibraryChange, PresetError> {
+        self.transaction(|library| {
+            let mut recipe = library.active_look().recipe;
+            recipe.settings = recipe.settings.with_knob(knob, value);
+            library.set_edited_recipe(recipe);
+            Ok(())
+        })
+    }
+
+    /// «Эта ось этой полосы = это значение» поверх текущего вида; другие оси и полосы целы. Полосы нет в каталоге →
+    /// `UnknownControl` (состояние не меняется).
+    pub fn set_band_axis(
+        &mut self,
+        band: HueBandId,
+        axis: BandAxis,
+        value: LookKnob,
+    ) -> Result<LibraryChange, PresetError> {
+        if !self.catalog.knows_band(&band) {
+            return Err(PresetError::UnknownControl(LookControl::Band { band, axis }));
+        }
+        self.transaction(|library| {
+            let mut recipe = library.active_look().recipe;
+            let adjustment = recipe.settings.bands.for_band(&band).with_axis(axis, value);
+            recipe.settings.bands = recipe.settings.bands.with_adjustment(adjustment);
+            library.set_edited_recipe(recipe);
+            Ok(())
+        })
+    }
+
+    /// Сменить основу тона поверх активного пресета (решение 195): ручки остаются текущими.
+    /// Вернули основу пресета и ручки тоже его → `Clean`.
+    pub fn set_tone_base(&mut self, base: ToneBaseModel) -> Result<LibraryChange, PresetError> {
+        self.transaction(|library| {
+            let settings = library.active_look().recipe.settings;
+            library.set_edited_recipe(LookRecipe { base, settings });
+            Ok(())
+        })
+    }
+
+    /// Вернуть один орган управления к значению активного ПРАВЛЕННОГО пресета, а не к нулю (решение 196).
+    ///
+    /// Различимые исходы: полосы нет в каталоге → `UnknownControl`; орган уже как у пресета →
+    /// `Unchanged` (файл писать не надо); иначе сброшен только он, остальные правки целы, а если он был
+    /// последним отличием — правок больше нет (`Clean`).
+    pub fn reset_control(&mut self, control: LookControl) -> Result<LibraryChange, PresetError> {
+        if let LookControl::Band { band, .. } = &control
+            && !self.catalog.knows_band(band)
+        {
+            return Err(PresetError::UnknownControl(control));
+        }
+        self.transaction(|library| {
+            let active = library.active_look();
+            let reset = active.recipe.with_control_from(&control, &active.preset_recipe);
+            library.set_edited_recipe(reset);
             Ok(())
         })
     }
@@ -178,8 +217,8 @@ impl PresetLibrary {
                 .next_id
                 .checked_add(1)
                 .ok_or(PresetError::Storage(StorageFailure::IdSpaceExhausted))?;
-            let settings = library.active_look().settings;
-            library.state.user_presets.push(UserPreset { id, name, settings });
+            let recipe = library.active_look().recipe;
+            library.state.user_presets.push(UserPreset { id, name, recipe });
             library.state.next_id = next_id;
             library.state.active = PresetId::User(id);
             library.state.edits = None;
@@ -204,9 +243,9 @@ impl PresetLibrary {
     pub fn overwrite_preset(&mut self, preset: PresetId) -> Result<LibraryChange, PresetError> {
         self.transaction(|library| {
             let id = library.require_user_preset(preset)?;
-            let current_look = library.active_look().settings;
+            let current_recipe = library.active_look().recipe;
             if let Some(target) = library.user_preset_mut(id) {
-                target.settings = current_look;
+                target.recipe = current_recipe;
             }
             library.state.active = PresetId::User(id);
             library.state.edits = None;
@@ -245,9 +284,9 @@ impl PresetLibrary {
     ) -> Result<LibraryChange, PresetError> {
         let mut candidate = self.clone();
         change(&mut candidate)?;
-        // «Видимый вид» — итоговые значения ручек: именно они уходят рендеру. Смена активного
+        // «Видимый вид» — итоговый рецепт (основа + ручки): именно он уходит рендеру. Смена активного
         // пресета или признака правок при тех же значениях картинку не меняет.
-        let look_changed = candidate.active_look().settings != self.active_look().settings;
+        let look_changed = candidate.active_look().recipe != self.active_look().recipe;
         let stored_changed = candidate.state != self.state;
         *self = candidate;
         Ok(match (look_changed, stored_changed) {
@@ -257,18 +296,27 @@ impl PresetLibrary {
         })
     }
 
-    /// Значения активного пресета без правок.
-    fn active_preset_settings(&self) -> LookSettings {
+    /// Записывает итоговый рецепт как правки поверх активного пресета; равный рецепту пресета → правок нет.
+    fn set_edited_recipe(&mut self, recipe: LookRecipe) {
+        self.state.edits = if recipe == self.active_preset_recipe() {
+            None
+        } else {
+            Some(recipe)
+        };
+    }
+
+    /// Рецепт активного пресета без правок.
+    fn active_preset_recipe(&self) -> LookRecipe {
         match self.state.active {
-            PresetId::Builtin(builtin) => self.catalog.settings_of(builtin),
+            PresetId::Builtin(builtin) => self.catalog.recipe_of(builtin),
             PresetId::User(id) => self
                 .state
                 .user_presets
                 .iter()
                 .find(|preset| preset.id == id)
-                .map(|preset| preset.settings.clone())
+                .map(|preset| preset.recipe.clone())
                 // Инвариант «активный существует» держит валидация и delete_preset.
-                .unwrap_or_default(),
+                .unwrap_or_else(|| self.catalog.recipe_of(self.catalog.startup_preset())),
         }
     }
 

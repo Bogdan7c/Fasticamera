@@ -59,9 +59,12 @@ use crate::camera_screen_source::{CameraScreenSource, GravityLink, ScreenBoard, 
 use crate::camera_service::CameraServices;
 use crate::capture_backend::{CaptureBackend, CaptureDiagnostics};
 use crate::gpu_services::{GpuServices, RenderObservation};
+use crate::look_facts::{LookFactsCatalog, LookFactsSource};
 use crate::look_service::LookHandle;
 use crate::scenario::observing::ShellServices;
 use crate::still_phase_log::{PhaseBatch, PhaseCursor};
+use crate::text_effects::TextResultToScreen;
+use crate::text_input_broker::TextInputBroker;
 use crate::viewfinder_control::ControlDelivery;
 
 const LOG_TARGET: &str = "fasticamera::camera_screen";
@@ -251,6 +254,9 @@ pub struct CameraScreenService {
     /// Библиотека пресетов вида: ставится один раз при сборке приложения и переживает пересборку экрана
     /// (`None` — в сборке нет хранилища пресетов).
     look: Option<LookHandle>,
+    /// Брокер запросов текста (решение 197): общий на процесс. Просьбы экрана идут через него, а приёмник его
+    /// ответов — канал входа ТЕКУЩЕГО экрана (ставится при установке). `None` — диалога ввода в сборке нет.
+    text_input: Option<TextInputBroker>,
 }
 
 impl CameraScreenService {
@@ -280,6 +286,7 @@ impl CameraScreenService {
             recovery_counters: RecoveryCounters::default(),
             system_gesture_zones: SystemGestureZones::NONE,
             look: None,
+            text_input: None,
         }
     }
 
@@ -288,6 +295,19 @@ impl CameraScreenService {
     pub fn with_look(mut self, look: LookHandle) -> Self {
         self.look = Some(look);
         self
+    }
+
+    /// Тот же сервис с брокером запросов текста: каждый экран, который он поставит, просит имя через него, а ответы
+    /// брокера идут в канал входа этого экрана.
+    #[must_use]
+    pub fn with_text_input(mut self, broker: TextInputBroker) -> Self {
+        self.text_input = Some(broker);
+        self
+    }
+
+    /// Подключает брокер к уже собранному сервису (маршрутизатор получает брокера после сборки).
+    pub(crate) fn set_text_input(&mut self, broker: TextInputBroker) {
+        self.text_input = Some(broker);
     }
 
     // ---- Диагностика (для сценариев и тестов) -------------------------------------------------------------
@@ -390,6 +410,7 @@ impl CameraScreenService {
         match env.gpu.install_product_ui_overlay(Box::new(source)) {
             ControlDelivery::Delivered => {
                 self.installs += 1;
+                self.attach_text_sink(&sender);
                 self.recovery.installed_at = Some(Instant::now());
                 self.board = Some(board);
                 self.installed = Some(InstalledScreen {
@@ -529,6 +550,14 @@ impl CameraScreenService {
         }
     }
 
+    /// Ответы диалога ввода идут в канал входа ТОЛЬКО что поставленного экрана (прежний приёмник заменяется).
+    /// Вызывается после успешной установки: не поставленному экрану приёмник не нужен.
+    fn attach_text_sink(&self, sender: &ScreenInputSender) {
+        if let Some(broker) = &self.text_input {
+            broker.set_sink(Arc::new(TextResultToScreen::new(sender.injector())));
+        }
+    }
+
     fn remember_input_stats(&mut self) {
         if let Some(installed) = &self.installed {
             self.last_input_stats = installed.sender.stats();
@@ -621,7 +650,7 @@ impl CameraScreenService {
                 GravityLink::Unavailable { reason }
             }
         };
-        let executor = EffectExecutor::new(EffectTargets {
+        let mut executor = EffectExecutor::new(EffectTargets {
             camera: camera_port,
             haptics: Arc::clone(&env.services.haptics),
             commands: Arc::clone(&env.services.commands),
@@ -631,10 +660,21 @@ impl CameraScreenService {
             lens: env.camera.lens_intents().clone(),
             look: self.look.clone(),
         });
+        if let Some(broker) = &self.text_input {
+            executor = executor.with_text_input(broker.clone());
+        }
+        // Факты о виде есть, только когда есть библиотека: каталог полос и проба ручек — из конфига рендера.
+        let look_facts = self.look.clone().map(|handle| {
+            LookFactsSource::new(
+                handle,
+                LookFactsCatalog::from_render_config(&env.gpu.render_config, &self.config.band_swatch),
+            )
+        });
         let source = CameraScreenSource::new(ScreenSourceParts {
             screen,
             input: receiver,
             facts,
+            look_facts,
             gravity,
             executor,
             board: Arc::clone(&board),

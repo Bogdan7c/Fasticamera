@@ -308,6 +308,9 @@ impl<G: StillGpu> StillEngine<G> {
         // описывает ту поправку, что применена к картинке, решение 8).
         let mut cache = IspParamsCache::for_demosaic(isp_model::demosaic::DemosaicMethod::Quality)
             .with_tone(self.tone)
+            // Основа — модель НА МОМЕНТ НАЖАТИЯ из плана (решение 195), а не `viewfinder.tone.base` и не основа
+            // видоискателя сейчас: после нажатия свайп основы снимок не меняет. Секции моделей берутся из конфига.
+            .with_tone_base_model(entry.plan.tone_base)
             .with_lens_shading(self.lens_shading)
             .with_look_model(Arc::clone(&self.look_model))
             // Вид — значения НА МОМЕНТ НАЖАТИЯ из плана снимка (инвариант 3), а не текущий вид видоискателя; для кадра

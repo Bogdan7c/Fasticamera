@@ -15,7 +15,7 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use camera_screen::shutter::ShotRequest;
-use look_contract::LookSettings;
+use look_contract::LookRecipe;
 use shell_contract::clock::MonotonicNanos;
 
 use crate::camera_screen_capture::{CaptureService, SubmitOutcome};
@@ -64,7 +64,7 @@ impl SwitchableCaptureService {
 }
 
 impl CaptureService for SwitchableCaptureService {
-    fn submit(&self, request: ShotRequest, look: LookSettings, now: MonotonicNanos) -> SubmitOutcome {
+    fn submit(&self, request: ShotRequest, look: LookRecipe, now: MonotonicNanos) -> SubmitOutcome {
         // Клон под замком, вызов — без него.
         let target = self.lock().active.clone().unwrap_or_else(|| Arc::clone(&self.primary));
         target.submit(request, look, now)

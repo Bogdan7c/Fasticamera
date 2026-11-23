@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use look_contract::{LookKnob, LookSettings};
+use look_contract::{LookKnob, LookSettings, ToneBaseModel};
 
 use super::tests::{DAYLIGHT, calibration, frame, plain, stream};
 use super::*;
@@ -139,4 +139,94 @@ fn the_look_really_reaches_the_frame_params_and_spares_metering() {
     }));
     assert_ne!(contrasty.tone_base, neutral.tone_base, "контраст меняет кривую основы");
     assert!(contrasty.look.color.is_none());
+}
+
+/// Каждая модель основы даёт свои разрешённые параметры: смена модели пересчитывает их ровно один раз, повтор той же
+/// модели — нет, возврат — снова пересчёт; подсказки кадров остаются (кадр без метаданных не теряет параметры).
+#[test]
+fn a_new_tone_base_model_recomputes_params_once_and_a_repeat_does_not() {
+    use isp_model::tone::base::ResolvedToneBase;
+    let stream = stream(calibration());
+    let frame = frame(&stream, plain());
+    let mut cache = IspParamsCache::default();
+    assert_eq!(cache.tone_base_model(), ToneBaseModel::Agx, "умолчание конфига");
+    assert_eq!(cache.prepare(&frame, DAYLIGHT, DisplayGamut::Srgb), resolved());
+    assert!(matches!(
+        cache.current().expect("параметры").tone_base,
+        ResolvedToneBase::Agx(_)
+    ));
+
+    assert_eq!(cache.set_tone_base(ToneBaseModel::Aces), LookChange::Changed);
+    assert_eq!(cache.prepare(&frame, DAYLIGHT, DisplayGamut::Srgb), resolved());
+    assert!(matches!(
+        cache.current().expect("параметры").tone_base,
+        ResolvedToneBase::Aces(_)
+    ));
+    assert_eq!(cache.set_tone_base(ToneBaseModel::Aces), LookChange::Unchanged);
+    assert_eq!(cache.prepare(&frame, DAYLIGHT, DisplayGamut::Srgb), unchanged());
+
+    assert_eq!(cache.set_tone_base(ToneBaseModel::Legacy), LookChange::Changed);
+    assert_eq!(cache.prepare(&frame, DAYLIGHT, DisplayGamut::Srgb), resolved());
+    assert!(matches!(
+        cache.current().expect("параметры").tone_base,
+        ResolvedToneBase::Legacy
+    ));
+}
+
+/// Смена основы не трогает вид, а смена вида — основу; стартовая основа действует с первого кадра.
+#[test]
+fn the_tone_base_and_the_look_are_independent_inputs() {
+    use isp_model::tone::base::ResolvedToneBase;
+    let stream = stream(calibration());
+    let mut cache = IspParamsCache::default()
+        .with_look(warm_look())
+        .with_tone_base_model(ToneBaseModel::Filmic);
+    assert_eq!(
+        cache.prepare(&frame(&stream, plain()), DAYLIGHT, DisplayGamut::Srgb),
+        resolved()
+    );
+    assert!(matches!(
+        cache.current().expect("параметры").tone_base,
+        ResolvedToneBase::Filmic(_)
+    ));
+    assert_eq!(cache.look(), warm_look().as_ref());
+
+    cache.set_tone_base(ToneBaseModel::Agx);
+    assert_eq!(cache.look(), warm_look().as_ref(), "смена основы не сбросила вид");
+    cache.set_look(Arc::new(LookSettings::NEUTRAL));
+    assert_eq!(
+        cache.tone_base_model(),
+        ToneBaseModel::Agx,
+        "смена вида не сбросила основу"
+    );
+}
+
+/// Основа любой модели берётся из секций конфига, а не из выбранной `base`: настройки ACES из конфига доходят до
+/// параметров, даже когда конфиг выбрал AgX.
+#[test]
+fn the_switched_base_uses_its_own_section_of_the_tone_config() {
+    use isp_model::tone::base::ResolvedToneBase;
+    let stream = stream(calibration());
+    let defaults = ViewfinderToneConfig::default();
+    let custom = ViewfinderToneConfig {
+        aces: isp_model::tone::aces::AcesSettings {
+            glow_gain: 0.0,
+            ..defaults.aces
+        },
+        ..defaults
+    };
+    let resolve_aces = |tone: ViewfinderToneConfig| {
+        let mut cache = IspParamsCache::default().with_tone(tone);
+        cache.set_tone_base(ToneBaseModel::Aces);
+        cache.prepare(&frame(&stream, plain()), DAYLIGHT, DisplayGamut::Srgb);
+        match &cache.current().expect("параметры").tone_base {
+            ResolvedToneBase::Aces(resolved) => resolved.clone(),
+            other => panic!("ожидалась ACES: {other:?}"),
+        }
+    };
+    assert_ne!(
+        resolve_aces(custom),
+        resolve_aces(defaults),
+        "секция ACES конфига не дошла"
+    );
 }

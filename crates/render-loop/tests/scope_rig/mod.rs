@@ -13,7 +13,7 @@ use render_loop::backend::DisplayBackend;
 use render_loop::config::{DisplayColorConfig, RenderLoopConfig, ScopesConfig, ViewfinderConfig};
 use render_loop::ui_overlay::{UiOverlayCommand, UiOverlayOutcome};
 use render_loop::viewfinder::{ScopeDiagnostics, ViewfinderCommand, ViewfinderCommandOutcome};
-use scope_contract::{ScopeImageSize, ScopeIntent, ScopeKind, ScopeRequest, VectorscopeAxes};
+use scope_contract::{ScopeImageSize, ScopeIntent, ScopeKind, ScopeRequest, ScopeScan, VectorscopeAxes};
 use scope_model::{SampleStride, ScopeModelSettings};
 use ui_draw::draw_list::DrawList;
 use ui_draw::frame_source::{UiFrameError, UiFrameRequest, UiFrameSource};
@@ -53,9 +53,21 @@ pub fn config() -> RenderLoopConfig {
 }
 
 pub fn request(kind: ScopeKind, axes: VectorscopeAxes, width: u32, height: u32) -> ScopeRequest {
+    request_with_scan(kind, axes, ScopeScan::Upright, width, height)
+}
+
+/// Запрос с явным чтением картинки глазом (положение телефона).
+pub fn request_with_scan(
+    kind: ScopeKind,
+    axes: VectorscopeAxes,
+    scan: ScopeScan,
+    width: u32,
+    height: u32,
+) -> ScopeRequest {
     ScopeRequest {
         kind,
         vectorscope_axes: axes,
+        scan,
         image_size: ScopeImageSize::try_new(width, height).expect("размер"),
     }
 }

@@ -13,11 +13,11 @@ use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use look_contract::{LookSettings, PresetError, PresetId, StorageFailure};
+use look_contract::{LookRecipe, PresetError, PresetId, StorageFailure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::config::{ConfigError, PresetStoreConfig};
+use crate::config::{CatalogEnvironment, ConfigError, PresetStoreConfig};
 use crate::library::PresetLibrary;
 use crate::migration::{CURRENT_SCHEMA_VERSION, Migration, MigrationError, SCHEMA_VERSION_FIELD, migrate_to_current};
 use crate::persistence::SnapshotSink;
@@ -115,14 +115,14 @@ pub enum SaveCommit {
 /// диагностики, как и [`QUARANTINE_FILE_MARKER`]).
 pub const PRE_MIGRATION_BACKUP_MARKER: &str = ".pre-v";
 
-/// Форма файла на диске (версия 1).
+/// Форма файла на диске (текущая схема, см. [`CURRENT_SCHEMA_VERSION`]).
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PresetFileDocument {
     schema_version: u32,
     next_id: u64,
     active: PresetId,
-    edits: Option<LookSettings>,
+    edits: Option<LookRecipe>,
     user_presets: Vec<UserPreset>,
 }
 
@@ -166,9 +166,10 @@ impl PresetFileStore {
     pub fn open(
         directory: &Path,
         config: &PresetStoreConfig,
+        environment: &CatalogEnvironment,
         migrations: &[Migration],
     ) -> Result<OpenedPresets, ConfigError> {
-        let catalog = config.builtin_catalog()?;
+        let catalog = config.builtin_catalog(environment)?;
         let path = directory.join(&config.file_name);
         let temp_path = directory.join(format!("{}{}", config.file_name, config.temp_file_suffix));
         let mut store = Self {

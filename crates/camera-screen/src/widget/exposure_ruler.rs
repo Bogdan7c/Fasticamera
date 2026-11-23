@@ -11,15 +11,12 @@ use ui_core::gesture::{GestureEvent, PanDirection, PanSpec, RecognizerSpec};
 use ui_core::id::NodeId;
 use ui_draw::scene_bridge::NodePlacementPx;
 use ui_draw::transform::Affine2;
-use ui_kit::drive::{GrowthDirection, ScrollTransition};
 use ui_kit::pan::PanUpdate;
-use ui_kit::scale::{ScaleSpec, SnapScale, TickVisibility};
+use ui_kit::ruler::{RulerControl, RulerSpec};
 use ui_kit::tokens::ScaleDensity;
-use ui_kit::value::{QuantizedLinear, ValueModel};
-use ui_kit::view::{MajorTickPeriod, ruler_items};
 
 use super::error::{WidgetError, element};
-use super::exposure_link::{FingerDrive, differs_from_state, exposure_model, linear_limits, state_value_ev};
+use super::exposure_link::{FingerDrive, exposure_model, linear_limits, state_value_ev};
 use super::intent::ScreenGesture;
 use super::kit::SceneKit;
 use super::layers::{DrawLayers, Layer, VisualIndex};
@@ -29,8 +26,10 @@ use ui_core::geometry::Rect;
 pub(crate) struct ExposureRuler {
     /// Узел зоны пана; его размещение отдаёт виду центр и протяжённость.
     node: NodeId,
-    scale: SnapScale<QuantizedLinear>,
-    finger: FingerDrive,
+    /// Линейка-ручка `ui-kit` (общая с ручками раздела калибровки): физика, затвор пальца и вид рисок.
+    ruler: RulerControl,
+    /// Перевод значений линейки в действия EV и счёт значений, не ставших компенсацией.
+    drive: FingerDrive,
 }
 
 impl ExposureRuler {
@@ -52,24 +51,21 @@ impl ExposureRuler {
             ScreenGesture::ExposureSliderPan,
         )?;
         kit.set_interactive(node, false)?;
-        let spec = ScaleSpec {
-            direction: GrowthDirection::FingerLeft,
-            density: ScaleDensity::Ruler,
-            ticks: TickVisibility::Visible,
-            ..ScaleSpec::default()
-        };
-        let scale = SnapScale::new(
-            exposure_model(ctx)?,
+        let ruler = RulerControl::new(
+            RulerSpec {
+                model: exposure_model(ctx)?,
+                density: ScaleDensity::Ruler,
+                major_every_steps: Self::major_tick_period(ctx)?,
+            },
             state_value_ev(ctx),
-            spec,
             &ctx.environment(rect.size.width),
             ctx.now,
         )
         .map_err(element("линейка EV"))?;
         Ok(Self {
             node,
-            scale,
-            finger: FingerDrive::default(),
+            ruler,
+            drive: FingerDrive::default(),
         })
     }
 
@@ -83,10 +79,7 @@ impl ExposureRuler {
             return Ok(false);
         }
         if let Some(update) = PanUpdate::from_gesture(event.state, event.data).map_err(element("пан EV"))? {
-            if matches!(update, PanUpdate::Began { .. }) {
-                self.finger.finger_took_over();
-            }
-            self.scale
+            self.ruler
                 .apply_pan(event.time, update)
                 .map_err(element("линейка EV"))?;
         }
@@ -96,26 +89,20 @@ impl ExposureRuler {
     /// Выравнивает линейку по состоянию: пределы камеры и значение (без эха и хаптики).
     pub(crate) fn sync(&mut self, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
         // Пределы камеры изменились: шкала переезжает на новые (значение шкалы остаётся).
-        if self.scale.model().limits() != &linear_limits(ctx) {
-            self.scale
-                .set_limits(linear_limits(ctx), ScrollTransition::Animated, ctx.now)
-                .map_err(element("линейка EV"))?;
-            self.finger.program_took_over();
-        }
-        // Шкала разошлась с состоянием, а палец её не держит: едем к состоянию.
-        if !self.finger.is_finger_driven() && differs_from_state(ctx, self.scale.value(ctx.now)) {
-            self.finger.program_took_over();
-            self.scale
-                .set_value(state_value_ev(ctx), ScrollTransition::Animated, ctx.now)
-                .map_err(element("линейка EV"))?;
-        }
+        self.ruler
+            .retarget_limits(linear_limits(ctx), ctx.now)
+            .map_err(element("линейка EV"))?;
+        // Шкала разошлась с состоянием, а палец её не держит: едем к состоянию (допуск — доля шага из конфига).
+        let tolerance = f64::from(ctx.config.exposure.step_ev) * ctx.geometry.config().card.state_match_tolerance_steps;
+        self.ruler
+            .follow_grid_value(state_value_ev(ctx), tolerance, ctx.now)
+            .map_err(element("линейка EV"))?;
         Ok(())
     }
 
     pub(crate) fn advance(&mut self, ctx: &Ctx<'_>, out: &mut Outputs) {
-        self.scale.advance(ctx.now);
-        let events = self.scale.drain_events();
-        self.finger.translate(events, ctx, out);
+        let routed = self.ruler.advance(ctx.now);
+        self.drive.apply_routed(routed, ctx, out);
     }
 
     /// Риски и жёлтая отметка. `content_alpha` и `slide_px` — прозрачность и сдвиг содержимого карточки.
@@ -137,21 +124,14 @@ impl ExposureRuler {
         };
         layers.extend(
             Layer::Content,
-            ruler_items(
-                &placement,
-                &self.scale,
-                ctx.now,
-                ctx.px,
-                &ctx.tokens.ruler,
-                self.major_tick_period(ctx)?,
-                &ctx.tokens.colors,
-            )?,
+            self.ruler
+                .items(&placement, ctx.now, ctx.px, &ctx.tokens.ruler, &ctx.tokens.colors)?,
         );
         Ok(())
     }
 
     /// Крупная риска — каждый целый EV: сколько шагов шкалы в одном EV, считается из шага конфига (1/3 → 3).
-    fn major_tick_period(&self, ctx: &Ctx<'_>) -> Result<MajorTickPeriod, WidgetError> {
+    fn major_tick_period(ctx: &Ctx<'_>) -> Result<NonZeroU32, WidgetError> {
         let steps_per_whole_ev = (1.0 / f64::from(ctx.config.exposure.step_ev)).round();
         let steps = u32::try_from(steps_per_whole_ev as i64)
             .ok()
@@ -162,19 +142,19 @@ impl ExposureRuler {
                     ctx.config.exposure.step_ev
                 ))
             })?;
-        Ok(MajorTickPeriod::every_steps(steps))
+        Ok(steps)
     }
 
     #[cfg(test)]
     pub(crate) fn value_ev(&self, now: ui_core::time::MonotonicNanos) -> f64 {
-        self.scale.value(now)
+        self.ruler.value(now)
     }
 
     pub(crate) fn invalid_bias_values(&self) -> u64 {
-        self.finger.invalid_bias_values()
+        self.drive.invalid_bias_values()
     }
 
     pub(crate) fn suppressed_echo_events(&self) -> u64 {
-        self.finger.suppressed_echo_events()
+        self.ruler.suppressed_echo_events()
     }
 }

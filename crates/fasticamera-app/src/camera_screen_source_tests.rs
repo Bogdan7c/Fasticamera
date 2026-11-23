@@ -226,7 +226,7 @@ impl ShellCommands for QuietCommands {
 struct NoCapture;
 
 impl CaptureService for NoCapture {
-    fn submit(&self, _request: ShotRequest, _look: look_contract::LookSettings, _now: MonotonicNanos) -> SubmitOutcome {
+    fn submit(&self, _request: ShotRequest, _look: look_contract::LookRecipe, _now: MonotonicNanos) -> SubmitOutcome {
         SubmitOutcome::Accepted
     }
 }
@@ -255,6 +255,7 @@ fn an_exposure_bias_refused_by_a_full_camera_queue_is_resent_by_the_source_on_la
         .expect("экран"),
         input: receiver,
         facts: Box::new(LiveFacts),
+        look_facts: None,
         gravity: GravityLink::Unavailable {
             reason: "тест".to_owned(),
         },
@@ -319,6 +320,7 @@ fn an_exposure_bias_refused_by_a_full_camera_queue_is_resent_by_the_source_on_la
 fn a_look_action_travels_from_the_screen_to_the_render_and_into_the_shot_request() {
     let render = RecordingRenderControl::new();
     let stub = crate::look_test_support::StubPersistence::accepting();
+    let library = crate::look_test_support::handle_with(stub.clone());
     let (sender, receiver) = screen_input_channel(16);
     let board = Arc::new(ScreenBoard::default());
     let mut source = CameraScreenSource::new(ScreenSourceParts {
@@ -330,6 +332,7 @@ fn a_look_action_travels_from_the_screen_to_the_render_and_into_the_shot_request
         .expect("экран"),
         input: receiver,
         facts: Box::new(LiveFacts),
+        look_facts: None,
         gravity: GravityLink::Unavailable {
             reason: "тест".to_owned(),
         },
@@ -344,13 +347,14 @@ fn a_look_action_travels_from_the_screen_to_the_render_and_into_the_shot_request
             capture: Arc::new(NoCapture),
             shutter_sound: Arc::new(crate::camera_screen_service::SilentShutterSound::default()),
             lens: camera_contract::zoom::LensIntentChannel::new(),
-            look: Some(crate::look_test_support::handle_with(stub.clone())),
+            look: Some(library.clone()),
         }),
         board: Arc::clone(&board),
         report_min_interval: Duration::ZERO,
     });
     source.produce_frame(&frame_request(16)).expect("кадр");
 
+    let library_start = library.active_settings();
     let wanted = crate::look_test_support::contrast_look(0.5);
     sender.send_action(ScreenAction::Look(look_contract::LookIntent::SetLook(wanted.clone())));
     source.produce_frame(&frame_request(32)).expect("кадр");
@@ -365,10 +369,12 @@ fn a_look_action_travels_from_the_screen_to_the_render_and_into_the_shot_request
             _ => None,
         })
         .collect();
+    // Первый кадр нового экрана приводит рендер к действующему виду библиотеки (экран мог прийти на смену
+    // экрану с зажатым «чистяком»), затем идут значения, которые прислал экран.
     assert_eq!(
         sent,
-        vec![wanted.clone()],
-        "рендер получил значения, которые прислал экран"
+        vec![library_start, wanted.clone()],
+        "рендер получил вид библиотеки при установке и значения, которые прислал экран"
     );
     assert_eq!(stub.requested().len(), 1, "и файл попросили записать");
     let report = board.latest().expect("отчёт");
@@ -458,6 +464,7 @@ fn dropping_the_source_releases_the_warm_demand_the_screen_left_in_the_lens_slot
         .expect("экран"),
         input: receiver,
         facts: Box::new(LiveFacts),
+        look_facts: None,
         gravity: GravityLink::Unavailable {
             reason: "тест".to_owned(),
         },
@@ -487,4 +494,67 @@ fn dropping_the_source_releases_the_warm_demand_the_screen_left_in_the_lens_slot
 
     let (_, latest) = lens.latest().expect("намерение");
     assert_eq!(latest, warm.with_standby(StandbyDemand::NotNeeded));
+}
+
+/// Тихие кадры экрана не пересобирают факты о виде: счётчик в диагностике стоит, правка двигает его ровно на один.
+#[test]
+fn quiet_frames_do_not_rebuild_look_facts_and_one_edit_rebuilds_once() {
+    let library = crate::look_test_support::handle_with(crate::look_test_support::StubPersistence::accepting());
+    let catalog = crate::look_facts::LookFactsCatalog::from_render_config(
+        &render_loop::config::RenderLoopConfig::default(),
+        &crate::look_facts::BandSwatchStyle::default(),
+    );
+    let (sender, receiver) = screen_input_channel(16);
+    let board = Arc::new(ScreenBoard::default());
+    let mut source = CameraScreenSource::new(ScreenSourceParts {
+        screen: CameraScreen::new(
+            ScreenConfig::default(),
+            ui_kit::tokens::UiKitTokens::default(),
+            ui_core::time::MotionPreference::Full,
+        )
+        .expect("экран"),
+        input: receiver,
+        facts: Box::new(LiveFacts),
+        look_facts: Some(crate::look_facts::LookFactsSource::new(library.clone(), catalog)),
+        gravity: GravityLink::Unavailable {
+            reason: "тест".to_owned(),
+        },
+        executor: EffectExecutor::new(EffectTargets {
+            camera: Box::new(SwitchablePort {
+                outcome: Arc::new(Mutex::new(CameraIntentOutcome::NoEngine)),
+                received: Arc::default(),
+            }),
+            haptics: Arc::new(QuietHaptics),
+            commands: Arc::new(QuietCommands),
+            render: RecordingRenderControl::new(),
+            capture: Arc::new(NoCapture),
+            shutter_sound: Arc::new(crate::camera_screen_service::SilentShutterSound::default()),
+            lens: camera_contract::zoom::LensIntentChannel::new(),
+            look: Some(library.clone()),
+        }),
+        board: Arc::clone(&board),
+        report_min_interval: Duration::ZERO,
+    });
+    source.produce_frame(&frame_request(16)).expect("кадр");
+    let after_first = board.latest().expect("отчёт");
+    assert_eq!(after_first.look_facts_sent, 1, "первые факты отданы экрану");
+    assert_eq!(after_first.look_facts_rebuilds, 1);
+
+    for frame in 2..=21 {
+        source.produce_frame(&frame_request(16 * frame)).expect("кадр");
+    }
+    assert_eq!(board.latest().expect("отчёт").look_facts_rebuilds, 1, "20 тихих кадров");
+
+    sender.send_action(ScreenAction::Look(look_contract::LookIntent::SetKnob {
+        knob: look_contract::GlobalKnob::Contrast,
+        value: crate::look_test_support::knob(0.3),
+    }));
+    source.produce_frame(&frame_request(400)).expect("кадр");
+    source.produce_frame(&frame_request(416)).expect("кадр");
+    let report = board.latest().expect("отчёт");
+    assert_eq!(report.look_facts_sent, 2, "правка дошла до экрана фактами");
+    assert_eq!(
+        report.look_facts_rebuilds, 2,
+        "правка — одна пересборка, а не две на кадр"
+    );
 }

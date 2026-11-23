@@ -70,10 +70,19 @@ pub fn small_settings() -> ScopeModelSettings {
 
 /// Четыре эталонных прибора + оба вектороскопа: (название, запрос, гамма).
 pub fn rule_cases(settings: &ScopeModelSettings) -> Vec<(&'static str, ResolvedScope)> {
+    rule_cases_for_scan(settings, scope_contract::ScopeScan::Upright)
+}
+
+/// Те же приборы при чтении картинки глазом `scan` (положение телефона).
+pub fn rule_cases_for_scan(
+    settings: &ScopeModelSettings,
+    scan: scope_contract::ScopeScan,
+) -> Vec<(&'static str, ResolvedScope)> {
     let size = ScopeImageSize::try_new(160, 96).unwrap();
     let request = |kind, vectorscope_axes| ScopeRequest {
         kind,
         vectorscope_axes,
+        scan,
         image_size: size,
     };
     let resolve = |request, gamut| ResolvedScope::resolve(&request, settings, gamut).unwrap();

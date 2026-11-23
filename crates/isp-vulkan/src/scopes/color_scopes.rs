@@ -495,7 +495,7 @@ impl ColorScopes {
         Ok(RulePlan {
             accumulator,
             grid,
-            words_bytes: accumulate_words_bytes(grid, &parameters)?,
+            words_bytes: accumulate_words_bytes(grid, rule.scan(), &parameters)?,
             decode_table_bytes: parameters.decode_table.map(decode_table_bytes),
             render_bytes: render_block_bytes(grid, &colors, &graticule, &frame.settings.render),
         })

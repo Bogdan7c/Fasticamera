@@ -13,6 +13,7 @@ use crate::orientation::DeviceOrientation;
 use crate::permission::CameraPermission;
 use crate::surface::{NativeSurface, SurfaceGeneration, SurfaceReleaseRequest, SurfaceSize};
 use crate::system_gesture::SystemGestureZones;
+use crate::text_input::TextInputResult;
 use crate::thermal::ThermalReading;
 use crate::touch::TouchSample;
 
@@ -55,6 +56,9 @@ pub enum ShellEvent {
     CameraPermission(CameraPermission),
     /// Платформа не смогла выполнить ранее принятую команду.
     PlatformCommandFailed(PlatformCommandFailure),
+    /// Ответ на запрос текста (диалог ввода): введено, отмена или диалог недоступен. Редкое событие, «критичное»
+    /// в очереди; потеря при полной очереди считается (запрос остаётся без ответа до нового запроса).
+    TextInput(TextInputResult),
 }
 
 /// Вид события без данных — для логов, отчётов и машин состояний сценариев.
@@ -74,6 +78,7 @@ pub enum ShellEventKind {
     ThermalStatus,
     CameraPermission,
     PlatformCommandFailed,
+    TextInput,
 }
 
 impl ShellEventKind {
@@ -93,6 +98,7 @@ impl ShellEventKind {
             ShellEventKind::ThermalStatus => "thermal_status",
             ShellEventKind::CameraPermission => "camera_permission",
             ShellEventKind::PlatformCommandFailed => "platform_command_failed",
+            ShellEventKind::TextInput => "text_input",
         }
     }
 }
@@ -113,6 +119,7 @@ impl ShellEvent {
             ShellEvent::ThermalStatus(_) => ShellEventKind::ThermalStatus,
             ShellEvent::CameraPermission(_) => ShellEventKind::CameraPermission,
             ShellEvent::PlatformCommandFailed(_) => ShellEventKind::PlatformCommandFailed,
+            ShellEvent::TextInput(_) => ShellEventKind::TextInput,
         }
     }
 }
@@ -137,6 +144,7 @@ mod tests {
             ShellEventKind::ThermalStatus,
             ShellEventKind::CameraPermission,
             ShellEventKind::PlatformCommandFailed,
+            ShellEventKind::TextInput,
         ] {
             assert_eq!(
                 serde_json::to_value(kind).expect("json"),

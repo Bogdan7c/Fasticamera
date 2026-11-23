@@ -123,6 +123,7 @@ pub fn plan(id: u64, press_ms: i64) -> StillPlan {
             raw: RawOutput::Skip,
         },
         look: look_contract::LookSettings::NEUTRAL,
+        tone_base: look_contract::ToneBaseModel::Agx,
     }
 }
 

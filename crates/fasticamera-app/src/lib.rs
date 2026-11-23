@@ -58,6 +58,7 @@ pub mod jni_boundary;
 pub mod lens_shading_profile;
 pub mod logging;
 pub mod look_effects;
+pub mod look_facts;
 pub mod look_service;
 pub mod look_startup;
 #[cfg(test)]
@@ -94,6 +95,8 @@ pub mod still_screen_ledger;
 #[cfg(test)]
 mod still_test_support;
 pub mod still_wall_clock;
+pub mod text_effects;
+pub mod text_input_broker;
 pub mod three_a_scenario_config;
 #[cfg(test)]
 mod three_a_test_hal;

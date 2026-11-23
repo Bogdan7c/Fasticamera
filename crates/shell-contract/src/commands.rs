@@ -78,6 +78,8 @@ pub enum PlatformCommand {
     ClearOperatorPrompt,
     /// Сыграть звук затвора (`MediaActionSound`).
     PlayShutterSound,
+    /// Показать диалог ввода текста (системная клавиатура).
+    RequestTextInput,
 }
 
 /// Отказ платформы выполнить ранее принятую команду.

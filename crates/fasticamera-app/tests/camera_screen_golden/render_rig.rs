@@ -39,6 +39,19 @@ pub struct ViewfinderRectPx {
 /// растягивается — для golden важна фиксированность картинки, а не её пропорции.
 const BACKDROP_HEIGHT_PX: u32 = 1440;
 
+/// Есть ли у кадра картинка цветового прибора (живая картинка `ColorScope`).
+///
+/// Настоящего прибора в стенде нет (его считает GPU-часть рендера, ее ловят сквозные тесты 14h). Для golden
+/// раздела калибровки вместо него подставляется детерминированная картинка — то же синтетическое «фото», что лежит
+/// под экраном: она показывает, что прибор лежит на своей зоне стеклянной панели, но не его рисунок.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScopeImage {
+    /// Картинки прибора нет: элемент не рисуется (так и для экрана PHOTO).
+    Absent,
+    /// Подставная картинка из синтетического «фото».
+    StandIn,
+}
+
 /// Снимок кадра: пиксели RGBA float 0..1, построчно сверху вниз, `WIDTH_PX × HEIGHT_PX`.
 pub struct Snapshot {
     pub pixels: Vec<[f32; 4]>,
@@ -154,6 +167,11 @@ impl RenderRig {
 
     /// Рисует список поверх «фото» в прямоугольнике `viewfinder` и читает цель обратно. Любая ошибка рендера — паника теста.
     pub fn render(&mut self, list: &DrawList, viewfinder: ViewfinderRectPx) -> Snapshot {
+        self.render_with_scope(list, viewfinder, ScopeImage::Absent)
+    }
+
+    /// То же, что [`Self::render`], но с картинкой прибора по `scope`.
+    pub fn render_with_scope(&mut self, list: &DrawList, viewfinder: ViewfinderRectPx, scope: ScopeImage) -> Snapshot {
         let slot = self.slot;
         self.slot = (self.slot + 1) % FRAME_SLOTS;
         let source: BackdropSource = self.backdrop.source(1);
@@ -164,6 +182,14 @@ impl RenderRig {
                 PxSize::new(viewfinder.width as f32, viewfinder.height as f32),
             ),
         };
+        let stand_in = [(
+            ui_draw::draw_list::LiveImage::ColorScope,
+            ui_render_vulkan::LiveImageInput { view: source.view() },
+        )];
+        let live_images = match scope {
+            ScopeImage::Absent => ui_render_vulkan::LiveImages::none(),
+            ScopeImage::StandIn => ui_render_vulkan::LiveImages::new(&stand_in),
+        };
         let frame = UiFrame {
             draw_list: list,
             logical_size: logical,
@@ -172,7 +198,7 @@ impl RenderRig {
                 source: &source,
                 placement,
             },
-            live_images: ui_render_vulkan::LiveImages::none(),
+            live_images,
         };
         let mut compositor =
             ImageCompositor::new(&self.context, self.target.format(), FRAME_SLOTS).expect("композитор");

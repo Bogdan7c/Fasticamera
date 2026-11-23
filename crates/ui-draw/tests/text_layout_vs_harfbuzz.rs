@@ -13,7 +13,10 @@ use std::str::FromStr;
 use ui_draw::text::{Figures, FontFace, TextError, TextStyle, layout_line};
 
 /// Подписи камеры из задания; «WAV» нужна ради кернинга.
-const CAMERA_LABELS: [&str; 21] = [
+const CAMERA_LABELS: [&str; 23] = [
+    // Имена пресетов владельца — по-русски (кириллица в атласе с 14b): кернинг пар тоже сверяется.
+    "Закат",
+    "Ёлка Утро",
     "PHOTO",
     "VIDEO",
     "AUTO",
@@ -190,9 +193,9 @@ fn tabular_digits_share_one_width_and_proportional_digits_do_not() {
 fn unsupported_characters_are_reported_with_their_character_index() {
     let style = style(FontFace::Regular, Figures::Proportional);
     assert_eq!(
-        layout_line("\u{436}", &style),
+        layout_line("\u{65e5}", &style),
         Err(TextError::UnsupportedCharacter {
-            ch: '\u{436}',
+            ch: '\u{65e5}',
             index: 0
         })
     );

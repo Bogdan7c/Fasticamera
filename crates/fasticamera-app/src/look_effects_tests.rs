@@ -111,6 +111,7 @@ fn a_rejected_intent_counts_its_own_kind_and_sends_nothing() {
             name_taken: 1,
             not_found: 2,
             builtin_is_read_only: 0,
+            unknown_control: 0,
             storage: 0,
         }
     );
@@ -131,7 +132,7 @@ fn selecting_the_other_builtin_preset_sends_its_values_not_the_old_ones() {
     );
 
     assert_eq!(set_looks(&render), vec![LookSettings::NEUTRAL], "«Честный» — нейтраль");
-    assert_eq!(effects.current_look(), LookSettings::NEUTRAL);
+    assert_eq!(effects.current_recipe().settings, LookSettings::NEUTRAL);
 }
 
 #[test]
@@ -189,7 +190,11 @@ fn counters_after_render_refusal(delivery: &FixedDelivery) -> LookCounters {
 
     effects.run_intent(LookIntent::SetLook(contrast_look(0.5)), delivery);
 
-    assert_eq!(effects.current_look(), contrast_look(0.5), "библиотека вид приняла");
+    assert_eq!(
+        effects.current_recipe().settings,
+        contrast_look(0.5),
+        "библиотека вид приняла"
+    );
     assert_eq!(stub.requested().len(), 1, "файл записывается и без доставки рендеру");
     effects.counters()
 }
@@ -232,7 +237,7 @@ fn without_a_library_intents_are_counted_and_dropped_and_the_look_is_neutral() {
 
     assert_eq!(effects.counters().without_library, 1);
     assert!(render.recorded().is_empty());
-    assert_eq!(effects.current_look(), LookSettings::NEUTRAL);
+    assert_eq!(effects.current_recipe().settings, LookSettings::NEUTRAL);
 }
 
 #[test]
@@ -274,7 +279,7 @@ fn color_wheels_live_in_a_saved_preset_and_come_back_to_the_render_when_it_is_se
         render.as_ref(),
     );
     assert!(
-        effects.current_look().wheels.is_neutral(),
+        effects.current_recipe().settings.wheels.is_neutral(),
         "у «Честного» колёса нейтральны"
     );
     effects.run_intent(LookIntent::SelectPreset(saved), render.as_ref());
@@ -286,12 +291,12 @@ fn color_wheels_live_in_a_saved_preset_and_come_back_to_the_render_when_it_is_se
         "рендер получил колёса, нейтраль и снова те же колёса"
     );
     assert_eq!(sent[2].wheels, wheels.wheels);
-    assert_eq!(effects.current_look(), wheels);
+    assert_eq!(effects.current_recipe().settings, wheels);
     // В файле пресет лежит вместе с колёсами: последняя просьба записи — снимок библиотеки с этим пресетом.
     let last_snapshot = stub.requested().pop().expect("просьба записи");
     assert_eq!(last_snapshot.user_presets.len(), 1);
     assert_eq!(
-        last_snapshot.user_presets[0].settings.wheels, wheels.wheels,
+        last_snapshot.user_presets[0].recipe.settings.wheels, wheels.wheels,
         "колёса в записанном пресете"
     );
 }

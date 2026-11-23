@@ -1,6 +1,7 @@
 //! М1 «реестр режимов съёмки» (`docs/ios-camera/feature-map.md`): карусель строится из реестра
 //! **реализованных** режимов (решения 80 и 83), добавление режима — новая запись, а не правка карусели.
 
+use crate::mode_behaviour::{CalibrationAvailability, ModeBehaviour};
 use crate::tools::ToolSet;
 
 /// Режим съёмки. Варианты кроме `Photo` — именованные места под будущие режимы: в реестр v1 они
@@ -12,6 +13,8 @@ pub enum CaptureMode {
     Video,
     /// Портрет (бэклог). Не реализовано.
     Portrait,
+    /// Калибровка вида: ручки, колёса, приборы и сборка пресета (решение 185). Из режима не снимают.
+    Calibrate,
 }
 
 /// Описание режима: что показать в карусели и какие инструменты у режима.
@@ -22,6 +25,8 @@ pub struct ModeDescriptor {
     pub label: &'static str,
     /// Значки над кадром и меню Controls этого режима.
     pub tools: ToolSet,
+    /// Поведение режима как данные: затвор, громкость, раскладка, видоискатель, раздел калибровки.
+    pub behaviour: ModeBehaviour,
 }
 
 /// Реестр режимов.
@@ -31,15 +36,24 @@ pub struct ModeRegistry {
 }
 
 impl ModeRegistry {
-    /// Реестр реализованных режимов v1: только Photo с набором инструментов из конфига.
-    pub fn implemented(photo_tools: ToolSet) -> Self {
-        Self {
-            descriptors: vec![ModeDescriptor {
-                mode: CaptureMode::Photo,
-                label: "PHOTO",
-                tools: photo_tools,
-            }],
+    /// Реестр реализованных режимов: Photo с набором инструментов из конфига и, если включено флагом конфига,
+    /// Calibrate справа от него. У Calibrate нет значков и меню Controls: его меню «шесть точек» — меню калибровки.
+    pub fn implemented(photo_tools: ToolSet, calibration: CalibrationAvailability) -> Self {
+        let mut descriptors = vec![ModeDescriptor {
+            mode: CaptureMode::Photo,
+            label: "PHOTO",
+            tools: photo_tools,
+            behaviour: ModeBehaviour::PHOTO,
+        }];
+        if calibration == CalibrationAvailability::Enabled {
+            descriptors.push(ModeDescriptor {
+                mode: CaptureMode::Calibrate,
+                label: "CALIBRATE",
+                tools: ToolSet::none(),
+                behaviour: ModeBehaviour::CALIBRATE,
+            });
         }
+        Self { descriptors }
     }
 
     /// Режимы в порядке карусели слева направо.

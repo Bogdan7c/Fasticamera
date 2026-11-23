@@ -49,6 +49,7 @@ use isp_model::tone::base::{InvalidToneBase, ToneBase};
 use isp_model::tone::filmic::{FilmicSettings, InvalidFilmic};
 use isp_model::tone::knobs::ToneModelKind;
 use isp_model::tone::{InvalidToneCurve, ToneCurve, ToneCurveSettings};
+use look_contract::ToneBaseModel;
 use serde::{Deserialize, Serialize};
 
 /// Какая основа тона формирует картинку видоискателя и снимка (см. модуль).
@@ -64,6 +65,19 @@ pub enum ToneBaseChoice {
     Filmic,
     /// Прежняя S-кривая: вариант сравнения до 14b.
     Legacy,
+}
+
+/// Основа конфига ↔ основа словаря вида (решение 195): модели те же, перечисление в словаре нужно экрану и
+/// файлу пресетов, которым конфиг рендера не виден. Единственное место соответствия.
+impl From<ToneBaseChoice> for ToneBaseModel {
+    fn from(choice: ToneBaseChoice) -> Self {
+        match choice {
+            ToneBaseChoice::Agx => Self::Agx,
+            ToneBaseChoice::Aces => Self::Aces,
+            ToneBaseChoice::Filmic => Self::Filmic,
+            ToneBaseChoice::Legacy => Self::Legacy,
+        }
+    }
 }
 
 impl ToneBaseChoice {
@@ -236,13 +250,21 @@ impl ViewfinderToneConfig {
         }
     }
 
-    /// Основа тона, которую выбрал конфиг: ОДНА точка правды для видоискателя и снимка.
+    /// Основа тона, которую выбрал конфиг (`base`): стартовая основа видоискателя и снимка, пока библиотека видов
+    /// не сообщила свою. Не дублирует разбор моделей: берёт [`Self::tone_base_for`].
     pub fn tone_base(&self) -> ToneBase {
-        match self.base {
-            ToneBaseChoice::Agx => ToneBase::Agx(self.agx_settings()),
-            ToneBaseChoice::Aces => ToneBase::Aces(self.aces_settings()),
-            ToneBaseChoice::Filmic => ToneBase::Filmic(self.filmic_settings()),
-            ToneBaseChoice::Legacy => ToneBase::Legacy,
+        self.tone_base_for(self.base.into())
+    }
+
+    /// Основа тона для модели `model` с её секцией настроек из этого конфига: ОДНА точка правды для видоискателя
+    /// и снимка (решение 195: основа — часть вида и меняется на ходу, поэтому разрешается по запросу, а не только
+    /// по `base`). Секции всех моделей лежат здесь же, поэтому смена модели не требует нового конфига.
+    pub fn tone_base_for(&self, model: ToneBaseModel) -> ToneBase {
+        match model {
+            ToneBaseModel::Agx => ToneBase::Agx(self.agx_settings()),
+            ToneBaseModel::Aces => ToneBase::Aces(self.aces_settings()),
+            ToneBaseModel::Filmic => ToneBase::Filmic(self.filmic_settings()),
+            ToneBaseModel::Legacy => ToneBase::Legacy,
         }
     }
 
@@ -443,6 +465,37 @@ mod tests {
             config.validate(DEFAULT_RESIDUAL_EV),
             Err(ToneConfigError::AgxUnusable { .. })
         ));
+    }
+
+    /// Основа любой модели разрешается из секций конфига независимо от выбранной `base`, а `tone_base()` — это
+    /// `tone_base_for(base)`: одна точка правды.
+    #[test]
+    fn tone_base_for_resolves_every_model_from_its_own_section_whichever_base_is_selected() {
+        let config = ViewfinderToneConfig {
+            base: ToneBaseChoice::Legacy,
+            aces: AcesSettings {
+                glow_gain: 0.0,
+                ..AcesSettings::default()
+            },
+            ..ViewfinderToneConfig::default()
+        };
+        for (model, kind) in [
+            (ToneBaseModel::Agx, ToneModelKind::Agx),
+            (ToneBaseModel::Aces, ToneModelKind::Aces),
+            (ToneBaseModel::Filmic, ToneModelKind::Filmic),
+            (ToneBaseModel::Legacy, ToneModelKind::Legacy),
+        ] {
+            assert_eq!(config.tone_base_for(model).kind(), kind, "{model:?}");
+        }
+        let ToneBase::Aces(aces) = config.tone_base_for(ToneBaseModel::Aces) else {
+            panic!("ожидалась ACES");
+        };
+        assert_eq!(aces, config.aces_settings(), "секция ACES конфига");
+        assert_eq!(
+            config.tone_base(),
+            ToneBase::Legacy,
+            "выбранная base — стартовая модель"
+        );
     }
 
     #[test]

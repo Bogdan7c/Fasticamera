@@ -5,7 +5,7 @@
     { "name": "semibold", "axes": { "wght": 600, "opsz": 14 } }
   ],
   "charset": {
-    "ranges": [{ "from": 32, "to": 126 }],
+    "ranges": [{ "from": 32, "to": 126 }, {"from": 1025, "to": 1025}, {"from": 1040, "to": 1103}, {"from": 1105, "to": 1105}],
     "extra": "×−–—°…·’“”±•ƒ"
   },
   "disabled_features": ["calt", "liga", "clig"],

@@ -246,6 +246,29 @@ impl CameraScreen {
         self.stage.as_ref().map(|stage| stage.focus().frame_phase())
     }
 
+    /// Центры видимых узлов сцены с подписью `label` в pt поверхности (проба для тестов касаний раздела).
+    #[cfg(test)]
+    pub(crate) fn node_centers(&self, label: &str) -> Vec<ui_core::geometry::Point> {
+        self.stage
+            .as_ref()
+            .map_or_else(Vec::new, |stage| stage.node_centers(label))
+    }
+
+    /// Положение линейки строки раздела `slot` в шагах (проба для тестов).
+    #[cfg(test)]
+    pub(crate) fn calibration_row_position_steps(&self, slot: u8) -> Option<f64> {
+        self.stage
+            .as_ref()?
+            .calibration()?
+            .row_position_steps(slot, self.clock.last)
+    }
+
+    /// Смещение прокрутки списка ручек, pt (проба для тестов).
+    #[cfg(test)]
+    pub(crate) fn calibration_scroll_offset(&self) -> Option<f64> {
+        Some(self.stage.as_ref()?.calibration()?.scroll_offset(self.clock.last))
+    }
+
     /// Значение шкалы панели Exposure, EV (проба для тестов «без эха»).
     #[cfg(test)]
     pub(crate) fn slider_value_ev(&self) -> f64 {
@@ -277,6 +300,8 @@ impl CameraScreen {
             snapshot.echo_events_suppressed = stage.echo_suppressed();
             snapshot.ignored_sun_pans = stage.focus().ignored_sun_pans();
             snapshot.invalid_exposure_values = stage.invalid_exposure_values();
+            snapshot.invalid_knob_values = stage.invalid_knob_values();
+            snapshot.preset_chips_overflowed = stage.overflowed_preset_chips();
             snapshot.text_layouts = stage.text_layouts();
             snapshot.text_cache_evictions = stage.text_cache_evictions();
         }
@@ -538,6 +563,18 @@ impl UiFrameSource for CameraScreen {
 #[path = "effect_queue_tests.rs"]
 mod effect_queue_tests;
 #[cfg(test)]
+#[path = "screen_calibration_bands_tests.rs"]
+mod screen_calibration_bands_tests;
+#[cfg(test)]
+#[path = "screen_calibration_menu_tests.rs"]
+mod screen_calibration_menu_tests;
+#[cfg(test)]
+#[path = "screen_calibration_section_tests.rs"]
+mod screen_calibration_section_tests;
+#[cfg(test)]
+#[path = "screen_calibration_tests.rs"]
+mod screen_calibration_tests;
+#[cfg(test)]
 #[path = "screen_card_close_tests.rs"]
 mod screen_card_close_tests;
 #[cfg(test)]
@@ -561,9 +598,15 @@ mod screen_interaction_tests;
 #[path = "screen_kit_tests.rs"]
 mod screen_kit_tests;
 #[cfg(test)]
+#[path = "screen_problem_banner_tests.rs"]
+mod screen_problem_banner_tests;
+#[cfg(test)]
 #[path = "screen_sheet_tests.rs"]
 mod screen_sheet_tests;
 
+#[cfg(test)]
+#[path = "screen_styles_card_tests.rs"]
+mod screen_styles_card_tests;
 #[cfg(test)]
 #[path = "screen_system_gesture_tests.rs"]
 mod screen_system_gesture_tests;

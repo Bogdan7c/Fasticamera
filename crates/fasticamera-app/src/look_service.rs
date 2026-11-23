@@ -12,10 +12,10 @@
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use look_contract::{ActiveLook, LookIntent, LookSettings, PresetError};
+use look_contract::{ActiveLook, LookIntent, LookRecipe, LookSettings, PresetEntry, PresetError};
 use look_presets::{
-    LibraryChange, LibrarySnapshot, LoadOutcome, PresetLibrary, PresetPersistence, PresetStoreConfig, SaveOutcome,
-    SaveRequestOutcome,
+    CatalogEnvironment, LibraryChange, LibrarySnapshot, LoadOutcome, PresetLibrary, PresetPersistence,
+    PresetStoreConfig, SaveOutcome, SaveRequestOutcome,
 };
 
 /// Шов к записи файла: просьба записать снимок и опрос итогов. Не блокирует на диске.
@@ -103,11 +103,25 @@ pub struct LookApplied {
     pub save_request: Option<SaveRequestOutcome>,
 }
 
+/// Всё, что экрану нужно знать о библиотеке за один раз: текущий вид и список пресетов. Снимается под ОДНИМ замком
+/// ручки, поэтому список и активный пресет не разойдутся (между двумя чтениями мог бы встрять чужой поток).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LookViewState {
+    /// Активный пресет, итоговый рецепт и рецепт пресета без правок.
+    pub active: ActiveLook,
+    /// Список пресетов: сначала встроенные, затем свои.
+    pub presets: Vec<PresetEntry>,
+}
+
 /// Библиотека пресетов вместе с каналом записи.
 pub struct LookService {
     library: PresetLibrary,
     persistence: Box<dyn LookPersistence>,
     startup: LookStartup,
+    /// Номер версии библиотеки: растёт на каждое намерение, что-либо изменившее (активный вид, список пресетов,
+    /// имена, правки). Владеет им сервис, потому что только он применяет намерения; наблюдатели фактов по нему дёшево
+    /// узнают «ничего не менялось» без пересборки снимка (см. `look_facts`).
+    revision: u64,
 }
 
 impl LookService {
@@ -117,12 +131,22 @@ impl LookService {
             library,
             persistence,
             startup,
+            revision: 0,
         }
     }
 
+    /// Номер версии библиотеки: меняется ровно тогда, когда изменилось сохраняемое состояние (а значит, и всё, что
+    /// видно экрану). Отказ библиотеки и «ничего не изменилось» номер не двигают.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
     /// Сервис только в памяти: встроенные пресеты из конфига, файла нет (ПК, тесты, сборка без папки приложения).
-    pub fn in_memory(config: &PresetStoreConfig) -> Result<Self, look_presets::ConfigError> {
-        let library = PresetLibrary::new(config.builtin_catalog()?);
+    pub fn in_memory(
+        config: &PresetStoreConfig,
+        environment: &CatalogEnvironment,
+    ) -> Result<Self, look_presets::ConfigError> {
+        let library = PresetLibrary::new(config.builtin_catalog(environment)?);
         Ok(Self::new(
             library,
             Box::new(NoLookPersistence),
@@ -134,9 +158,13 @@ impl LookService {
     /// не меняется. Просьба записать файл уходит здесь же, но диска не ждёт.
     pub fn apply(&mut self, intent: LookIntent) -> Result<LookApplied, PresetError> {
         let change = self.library.apply(intent)?;
+        if change.needs_save() {
+            // `needs_save` ⇔ изменилось сохраняемое состояние, из которого собираются все факты экрана.
+            self.revision += 1;
+        }
         let look_for_render = change
             .look_changed()
-            .then(|| Arc::new(self.library.active_look().settings));
+            .then(|| Arc::new(self.library.active_look().recipe.settings));
         let save_request = change
             .needs_save()
             .then(|| self.persistence.request_save(self.library.snapshot()));
@@ -152,9 +180,22 @@ impl LookService {
         self.library.active_look()
     }
 
+    /// Текущий вид и список пресетов одним снимком (см. [`LookViewState`]).
+    pub fn view_state(&self) -> LookViewState {
+        LookViewState {
+            active: self.library.active_look(),
+            presets: self.library.presets(),
+        }
+    }
+
     /// Итоговые значения ручек сейчас — то, что уходит рендеру и в запрос снимка.
     pub fn active_settings(&self) -> LookSettings {
-        self.library.active_look().settings
+        self.library.active_look().recipe.settings
+    }
+
+    /// Итоговый рецепт сейчас: основа тона и значения ручек.
+    pub fn active_recipe(&self) -> LookRecipe {
+        self.library.active_look().recipe
     }
 
     /// Забирает итоги записей файла.
@@ -183,8 +224,11 @@ impl LookHandle {
     }
 
     /// Ручка на сервис только в памяти (см. [`LookService::in_memory`]).
-    pub fn in_memory(config: &PresetStoreConfig) -> Result<Self, look_presets::ConfigError> {
-        LookService::in_memory(config).map(Self::new)
+    pub fn in_memory(
+        config: &PresetStoreConfig,
+        environment: &CatalogEnvironment,
+    ) -> Result<Self, look_presets::ConfigError> {
+        LookService::in_memory(config, environment).map(Self::new)
     }
 
     fn lock(&self) -> MutexGuard<'_, LookService> {
@@ -198,14 +242,29 @@ impl LookHandle {
         self.lock().apply(intent)
     }
 
+    /// См. [`LookService::revision`].
+    pub fn revision(&self) -> u64 {
+        self.lock().revision()
+    }
+
     /// См. [`LookService::active_look`].
     pub fn active_look(&self) -> ActiveLook {
         self.lock().active_look()
     }
 
+    /// См. [`LookService::view_state`].
+    pub fn view_state(&self) -> LookViewState {
+        self.lock().view_state()
+    }
+
     /// См. [`LookService::active_settings`].
     pub fn active_settings(&self) -> LookSettings {
         self.lock().active_settings()
+    }
+
+    /// См. [`LookService::active_recipe`].
+    pub fn active_recipe(&self) -> LookRecipe {
+        self.lock().active_recipe()
     }
 
     /// См. [`LookService::drain_save_outcomes`].

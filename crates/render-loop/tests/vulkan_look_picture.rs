@@ -19,7 +19,7 @@ mod vulkan_support;
 
 use std::sync::Arc;
 
-use look_contract::{BandAdjustment, BandAdjustments, HueBandId, LookKnob, LookSettings};
+use look_contract::{BandAdjustment, BandAdjustments, HueBandId, LookKnob, LookSettings, ToneBaseModel};
 use render_loop::backend::DisplayBackend;
 use render_loop::config::{
     DisplayColorConfig, RenderLoopConfig, ToneBaseChoice, ViewfinderConfig, ViewfinderToneConfig,
@@ -260,4 +260,100 @@ fn tone_bases_aces_and_filmic_reach_the_shown_picture_with_and_without_a_look() 
             &format!("{:?} против {:?}", window[0].0, window[1].0),
         );
     }
+}
+
+/// Смена основы на ходу (`SetToneBase`) меняет картинку на эталон НОВОЙ модели при любой основе конфига: конфиг —
+/// лишь стартовое умолчание. Параметры пересчитываются ровно один раз на смену, повтор — `AlreadyInEffect`.
+#[test]
+fn set_tone_base_switches_the_shown_picture_to_the_reference_of_the_new_model() {
+    let config = config_with_base(ToneBaseChoice::Agx);
+    let Some(mut bench) = ViewfinderBench::start(&config, muted_warm(), 8) else {
+        return;
+    };
+    let tone_for = |base| ViewfinderToneConfig {
+        base,
+        ..config.viewfinder.tone
+    };
+    let agx_reference = reference_color_with_look(
+        &bench.passport,
+        muted_warm(),
+        &tone_for(ToneBaseChoice::Agx),
+        &LookSettings::NEUTRAL,
+    );
+    let aces_reference = reference_color_with_look(
+        &bench.passport,
+        muted_warm(),
+        &tone_for(ToneBaseChoice::Aces),
+        &LookSettings::NEUTRAL,
+    );
+    let legacy_reference = reference_color_with_look(
+        &bench.passport,
+        muted_warm(),
+        &tone_for(ToneBaseChoice::Legacy),
+        &LookSettings::NEUTRAL,
+    );
+    assert_distinguishable(aces_reference, agx_reference, "ACES против AgX");
+    assert_distinguishable(legacy_reference, aces_reference, "прежняя против ACES");
+
+    bench.show_next_frame();
+    assert_image_color(&bench.backend, agx_reference, "стартовая основа конфига — AgX");
+    let resolved_before = bench
+        .backend
+        .diagnostics()
+        .viewfinder
+        .expect("видоискатель")
+        .counters
+        .params_resolved;
+
+    for (model, reference, name) in [
+        (ToneBaseModel::Aces, aces_reference, "ACES"),
+        (ToneBaseModel::Legacy, legacy_reference, "прежняя"),
+        (ToneBaseModel::Agx, agx_reference, "возврат к AgX"),
+    ] {
+        assert_eq!(
+            bench
+                .backend
+                .apply_viewfinder_command(ViewfinderCommand::SetToneBase(model)),
+            ViewfinderCommandOutcome::Applied,
+            "{name}"
+        );
+        bench.show_next_frame();
+        assert_image_color(&bench.backend, reference, name);
+        assert_eq!(
+            bench.backend.diagnostics().viewfinder.expect("видоискатель").tone_base,
+            model
+        );
+    }
+    let resolved_after = bench
+        .backend
+        .diagnostics()
+        .viewfinder
+        .expect("видоискатель")
+        .counters
+        .params_resolved;
+    assert_eq!(
+        resolved_after,
+        resolved_before + 3,
+        "каждая смена основы пересчитала параметры ровно один раз"
+    );
+
+    // Повтор той же основы: команда ничего не меняет, параметры не пересчитываются.
+    assert_eq!(
+        bench
+            .backend
+            .apply_viewfinder_command(ViewfinderCommand::SetToneBase(ToneBaseModel::Agx)),
+        ViewfinderCommandOutcome::AlreadyInEffect
+    );
+    bench.show_next_frame();
+    assert_eq!(
+        bench
+            .backend
+            .diagnostics()
+            .viewfinder
+            .expect("видоискатель")
+            .counters
+            .params_resolved,
+        resolved_after
+    );
+    bench.finish();
 }

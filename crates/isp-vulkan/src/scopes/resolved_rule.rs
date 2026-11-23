@@ -19,6 +19,7 @@
 //! 4 — предел сетки `size` (f32), 5 — масштаб, 6 — смещение центра, 7…15 — матрица «свет → LMS» по строкам,
 //! 16…18 и 19…21 — строки `a` и `b` матрицы `M2`; таблица декодирования — из правила.
 
+use scope_contract::ScopeScan;
 use scope_model::projection::IntegerProjection;
 use scope_model::{GraticulePrimitive, GridShape, RenderSettings, ResolvedScope, ScopeRule};
 
@@ -94,6 +95,10 @@ impl GpuScopeRule for ResolvedScope {
 
     fn grid(&self) -> GridShape {
         self.shape()
+    }
+
+    fn scan(&self) -> ScopeScan {
+        ScopeRule::scan(self)
     }
 
     fn accumulate_parameters(&self) -> Result<AccumulateParameters<'_>, ScopeError> {

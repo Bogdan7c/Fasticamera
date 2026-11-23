@@ -90,6 +90,23 @@ struct CachedVariant {
     last_used: RecordSerial,
 }
 
+/// Чем кончилась подготовка варианта ключа.
+pub(crate) struct PrepareOutcome {
+    /// Вариант создан сейчас (а не найден в кэше).
+    pub created: bool,
+    /// Вытесненный вариант: вызывающий обязан отдать его в отложенное уничтожение.
+    pub evicted: Option<ComputePipeline>,
+}
+
+/// Счётчики прогрева вариантов других моделей основы (результат одного прогрева и накопленная сумма в ISP).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PrewarmCounters {
+    /// Создано вариантов.
+    pub created: u64,
+    /// Не создано из-за ошибки создания пайплайна (кадр от этого не страдает, причина — в журнале).
+    pub failed: u64,
+}
+
 /// Ограниченный кэш вариантов.
 pub(crate) struct VariantCache {
     entries: HashMap<VariantKey, CachedVariant>,
@@ -127,10 +144,13 @@ impl VariantCache {
         context: &GpuContext,
         key: VariantKey,
         serial: RecordSerial,
-    ) -> Result<Option<ComputePipeline>, ViewfinderError> {
+    ) -> Result<PrepareOutcome, ViewfinderError> {
         if let Some(entry) = self.entries.get_mut(&key) {
             entry.last_used = serial;
-            return Ok(None);
+            return Ok(PrepareOutcome {
+                created: false,
+                evicted: None,
+            });
         }
         // Сначала создаём (ошибка — кэш не тронут), потом вытесняем.
         let pipeline = self.create(context, key)?;
@@ -146,7 +166,52 @@ impl VariantCache {
                 last_used: serial,
             },
         );
-        Ok(evicted)
+        Ok(PrepareOutcome { created: true, evicted })
+    }
+
+    /// Прогрев: создаёт варианты ключа `key` с остальными моделями основы, чтобы смена основы не компилировала
+    /// пайплайн на кадре. Занимает ТОЛЬКО свободные места кэша: прогрев не вытесняет ничего (ни вариант текущего
+    /// кадра, ни недавно использованные), а при нехватке места просто останавливается. Ошибка создания не роняет
+    /// кадр (рисуется вариантом `key`, он уже готов): она считается и пишется в журнал.
+    pub fn prewarm_other_tone_bases(
+        &mut self,
+        context: &GpuContext,
+        key: VariantKey,
+        serial: RecordSerial,
+    ) -> PrewarmCounters {
+        let mut report = PrewarmCounters::default();
+        for tone_base in ToneBaseKind::ALL {
+            let sibling = VariantKey { tone_base, ..key };
+            if self.entries.contains_key(&sibling) {
+                continue;
+            }
+            if self.entries.len() >= self.capacity {
+                break;
+            }
+            match self.create(context, sibling) {
+                Ok(pipeline) => {
+                    // `last_used` = серия текущей записи: прогретый вариант не старше только что использованного.
+                    self.entries.insert(
+                        sibling,
+                        CachedVariant {
+                            pipeline,
+                            last_used: serial,
+                        },
+                    );
+                    report.created += 1;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        target: "fasticamera::isp_viewfinder",
+                        %error,
+                        ?sibling,
+                        "прогрев варианта основы не удался: вариант будет создан на первом кадре с этой основой"
+                    );
+                    report.failed += 1;
+                }
+            }
+        }
+        report
     }
 
     /// Пайплайн подготовленного варианта.

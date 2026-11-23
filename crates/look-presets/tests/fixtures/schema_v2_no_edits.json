@@ -1,0 +1,55 @@
+{
+  "schema_version": 2,
+  "next_id": 2,
+  "active": {
+    "user": 1
+  },
+  "edits": null,
+  "user_presets": [
+    {
+      "id": 1,
+      "name": "Punchy",
+      "settings": {
+        "contrast": 0.6,
+        "midtones": 0.0,
+        "shadows": 0.0,
+        "highlights": 0.0,
+        "saturation": 0.0,
+        "vibrance": 0.0,
+        "warmth": 0.0,
+        "tint": 0.0,
+        "bands": [],
+        "wheels": {
+          "lift": {
+            "push": [
+              0.0,
+              0.0
+            ],
+            "ring": 0.0
+          },
+          "gamma": {
+            "push": [
+              0.0,
+              0.0
+            ],
+            "ring": 0.0
+          },
+          "gain": {
+            "push": [
+              0.0,
+              0.0
+            ],
+            "ring": 0.0
+          },
+          "offset": {
+            "push": [
+              0.0,
+              0.0
+            ],
+            "ring": 0.0
+          }
+        }
+      }
+    }
+  ]
+}

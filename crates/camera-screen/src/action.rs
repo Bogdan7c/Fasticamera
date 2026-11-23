@@ -10,9 +10,14 @@ use ui_core::geometry::Point;
 
 use camera_contract::control::ExposureBias;
 use camera_contract::zoom::ZoomRatio;
-use look_contract::LookIntent;
-use scope_contract::ScopeIntent;
+use look_contract::{
+    BandAxis, GlobalKnob, HueBandId, LookControl, LookFacts, LookIntent, LookKnob, PresetId, ToneBaseModel,
+    UserPresetId,
+};
+use scope_contract::{ScopeIntent, ScopeKind, VectorscopeAxes};
+use shell_contract::text_input::{TextInputResult, TextRequestId};
 
+use crate::calibration::CalibrationMenuItem;
 use crate::facts::CameraFacts;
 use crate::modes::CaptureMode;
 use crate::shutter::{CaptureOutcome, ShotRequestId};
@@ -129,4 +134,59 @@ pub enum ScreenAction {
     /// не хранит: состояние прибора живёт у рендера, раздел калибровки с раскладкой придёт в 14b. Уходит наружу
     /// одним эффектом ([`crate::Effect::Scopes`]).
     Scopes(ScopeIntent),
+
+    // ----- Раздел калибровки и пресеты (14b). Значения ручек экран не хранит: они берутся из `LookFacts`. -----
+    /// Новый снимок состояния вида от библиотеки пресетов (список пресетов, текущий рецепт, отличия от пресета,
+    /// полосы, неподдержанные ручки, проблема). Эффектов не порождает; проблема с новым серийным номером поднимает плашку.
+    LookFactsChanged(Box<LookFacts>),
+    /// Глобальная ручка потянута до значения. Уходит как `SetLook` с текущими настройками, где заменена одна ручка.
+    KnobDragged { knob: GlobalKnob, value: LookKnob },
+    /// Ось полосы оттенка потянута до значения.
+    BandKnobDragged {
+        band: HueBandId,
+        axis: BandAxis,
+        value: LookKnob,
+    },
+    /// Выбрана модель основы тона (свайп над ручками).
+    ToneBaseSelected(ToneBaseModel),
+    /// Тап по «↻» у органа управления: вернуть к значению пресета (решение 196). Тусклая «↻» — `NoChange`.
+    ResetControlTapped(LookControl),
+    /// Прибор выбран свайпом по нему.
+    ScopeKindSelected(ScopeKind),
+    /// Стандарт осей вектороскопа выбран в меню.
+    VectorscopeAxesSelected(VectorscopeAxes),
+    /// Кнопка «чистяк» нажата: показать основу без вида (решение 189).
+    CleanViewPressed,
+    /// Кнопка «чистяк» отпущена: вернуть вид с правками.
+    CleanViewReleased,
+    /// Выбрана полоса оттенка (точка в ряду цветов).
+    BandSelected(HueBandId),
+    /// Пресет выбран (ряд имён в разделе или карточка Styles в PHOTO).
+    PresetSelected(PresetId),
+    /// «↻» карточки Styles или кнопка Reset в меню пресетов: отбросить правки поверх пресета.
+    DiscardEditsTapped,
+    /// Кнопка Save: записать текущий вид в активный СВОЙ пресет (встроенный — отказ).
+    OverwritePresetTapped,
+    /// Кнопка New: спросить имя и сохранить текущий вид как новый пресет.
+    CreatePresetTapped,
+    /// Кнопка Rename: спросить новое имя для своего пресета.
+    RenamePresetTapped(UserPresetId),
+    /// Кнопка Delete: первый тап взводит, второй по тому же пресету удаляет; любое другое действие снимает взвод.
+    DeletePresetTapped(UserPresetId),
+    /// Приложение выдало номер запросу имени (обратная связь на `Effect::RequestText`, как номер снимка).
+    TextRequestIssued { id: TextRequestId },
+    /// Запрос имени отправить не удалось (платформа недоступна): диалога не будет.
+    TextRequestNotSent,
+    /// Ответ системной клавиатуры. Чужой или устаревший номер — `NoChange`.
+    TextInputFinished(TextInputResult),
+    /// Плашка проблемы с этим номером закрыта (истёк показ или тап по ней). Номер нужен, чтобы запоздалое закрытие
+    /// старой плашки не убрало новую, пришедшую в том же кадре (найдено ревью 14b).
+    ProblemDismissed {
+        /// Номер закрытой плашки (`ProblemBanner::number`).
+        number: u64,
+    },
+    /// Меню «шесть точек» раздела: тап по пункту корня.
+    CalibrationMenuItemTapped(CalibrationMenuItem),
+    /// Рендер потерял спрос на прибор (экран UI переустановлен, 14h): экран шлёт запрос заново.
+    ScopeDemandLost,
 }

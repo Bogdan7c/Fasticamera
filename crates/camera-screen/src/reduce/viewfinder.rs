@@ -22,13 +22,15 @@ enum TapTarget {
     Done(ActionOutcome),
 }
 
-/// Тап по видоискателю.
+/// Тап по видоискателю (только в режимах с управлением камерой).
 ///
 /// * Панель или меню открыты — тап лишь закрывает их, фокус не трогаем (`behavior.md` 2.6, решение 94).
 /// * Иначе — квадрат фокуса в точку тапа и `FocusAndExposeAt`. Команда сама снимает блокировку AE/AF
 ///   (док `CameraCommand::FocusAndExposeAt`), поэтому отдельный сброс не нужен; плашка «LOCK»
 ///   исчезнет, когда камера подтвердит `Unlocked`.
 pub(super) fn on_tap(ctx: &mut Ctx<'_>, point: Point, at: MonotonicNanos) -> ActionOutcome {
+    // Режим без управления камерой (CALIBRATE) сюда не попадает: его отсекает `mode_guard`. Меню калибровки
+    // закрывает тап по завесе (`ControlsMenuCloseRequested`), а не тап по кадру.
     if ctx.state.panel != PanelState::Closed {
         ctx.state.panel = PanelState::Closed;
         return ActionOutcome::Applied;
@@ -49,7 +51,7 @@ pub(super) fn on_tap(ctx: &mut Ctx<'_>, point: Point, at: MonotonicNanos) -> Act
 
 /// Долгий тап: блокировка AE/AF в точке. Плашка появится только по факту камеры `Locked`.
 pub(super) fn on_long_press(ctx: &mut Ctx<'_>, point: Point, at: MonotonicNanos) -> ActionOutcome {
-    if ctx.state.panel != PanelState::Closed {
+    if ctx.state.is_any_panel_open() {
         return ActionOutcome::NoChange(NoChangeReason::PanelOpen);
     }
     let sensor = match locate_target(ctx, point) {

@@ -10,7 +10,7 @@ use look_presets::{QUARANTINE_FILE_MARKER, SaveOutcome};
 
 use super::*;
 use crate::look_effects::LookEffects;
-use crate::look_test_support::contrast_look;
+use crate::look_test_support::{contrast_look, default_environment};
 
 static NEXT_DIRECTORY: AtomicU32 = AtomicU32::new(0);
 
@@ -42,12 +42,16 @@ fn wait_for_write(handle: &LookHandle) -> SaveOutcome {
 fn the_first_launch_has_no_file_and_starts_on_the_builtin_as_eye() {
     let (directory, path) = app_directory();
 
-    let opened = open_look_service(&directory, &PresetStoreConfig::default()).expect("открыто");
+    let opened = open_look_service(&directory, &PresetStoreConfig::default(), &default_environment()).expect("открыто");
 
     assert_eq!(opened.startup, LookStartup::NoFileYet);
     let active = opened.handle.active_look();
     assert_eq!(active.preset, PresetId::Builtin(BuiltinPreset::AsEye));
-    assert_ne!(active.settings, LookSettings::NEUTRAL, "«Как глаз» — не нейтраль");
+    assert_ne!(
+        active.recipe.settings,
+        LookSettings::NEUTRAL,
+        "«Как глаз» — не нейтраль"
+    );
     std::fs::remove_dir_all(path).expect("уборка");
 }
 
@@ -56,7 +60,7 @@ fn a_saved_look_survives_the_restart_with_the_same_values() {
     let (directory, path) = app_directory();
     let config = PresetStoreConfig::default();
     {
-        let opened = open_look_service(&directory, &config).expect("открыто");
+        let opened = open_look_service(&directory, &config, &default_environment()).expect("открыто");
         opened
             .handle
             .apply(LookIntent::SetLook(contrast_look(0.5)))
@@ -64,7 +68,7 @@ fn a_saved_look_survives_the_restart_with_the_same_values() {
         assert_eq!(wait_for_write(&opened.handle), SaveOutcome::Saved);
     }
 
-    let reopened = open_look_service(&directory, &config).expect("открыто снова");
+    let reopened = open_look_service(&directory, &config, &default_environment()).expect("открыто снова");
 
     assert_eq!(reopened.startup, LookStartup::Loaded);
     assert_eq!(reopened.handle.active_settings(), contrast_look(0.5));
@@ -78,7 +82,7 @@ fn a_corrupt_file_is_quarantined_builtins_work_and_the_fact_is_in_the_counters()
     let file = path.join(&config.file_name);
     std::fs::write(&file, b"{ this is not json").expect("испорченный файл");
 
-    let opened = open_look_service(&directory, &config).expect("открыто");
+    let opened = open_look_service(&directory, &config, &default_environment()).expect("открыто");
 
     assert_eq!(opened.startup, LookStartup::Quarantined);
     assert!(!file.exists(), "испорченный файл убран с пути");
@@ -116,11 +120,45 @@ fn a_config_with_a_broken_builtin_name_is_refused_with_a_distinct_error() {
     let mut config = PresetStoreConfig::default();
     config.builtin_names.honest = String::new();
 
-    let refused = open_look_service(&directory, &config);
+    let refused = open_look_service(&directory, &config, &default_environment());
 
     assert!(matches!(
         refused,
         Err(ConfigError::InvalidBuiltinName { field: "honest", .. })
     ));
     std::fs::remove_dir_all(path).expect("уборка");
+}
+
+/// Окружение каталога берёт основу и полосы из конфига рендера, и встроенные пресеты реально получают эту основу.
+#[test]
+fn catalog_environment_follows_render_config_and_reaches_builtin_presets() {
+    use render_loop::config::{RenderLoopConfig, ToneBaseChoice};
+
+    let mut render = RenderLoopConfig::default();
+    render.viewfinder.tone.base = ToneBaseChoice::Filmic;
+    let environment = catalog_environment(&render);
+    assert_eq!(environment.default_base, look_contract::ToneBaseModel::Filmic);
+    let expected_bands: Vec<_> = render
+        .viewfinder
+        .look_model
+        .bands
+        .iter()
+        .map(|band| band.id.clone())
+        .collect();
+    assert!(!expected_bands.is_empty(), "в конфиге по умолчанию полосы есть");
+    assert_eq!(environment.band_ids, expected_bands);
+
+    let handle = LookHandle::in_memory(&PresetStoreConfig::default(), &environment).expect("конфиг верен");
+    assert_eq!(handle.active_recipe().base, look_contract::ToneBaseModel::Filmic);
+    // Сброс полосы из конфига допустим, полосы вне конфига — нет.
+    let known = look_contract::LookControl::Band {
+        band: expected_bands[0].clone(),
+        axis: look_contract::BandAxis::Hue,
+    };
+    assert!(handle.apply(LookIntent::ResetControl(known)).is_ok());
+    let ghost = look_contract::LookControl::Band {
+        band: look_contract::HueBandId::new("ghost").unwrap(),
+        axis: look_contract::BandAxis::Hue,
+    };
+    assert!(handle.apply(LookIntent::ResetControl(ghost)).is_err());
 }

@@ -324,7 +324,7 @@ fn tapping_after_an_aspect_change_uses_the_new_frame_for_the_sensor_point() {
 fn only_implemented_modes_are_in_the_carousel_and_others_are_refused() {
     let mut screen = Screen::ready();
     let labels: Vec<&str> = screen.state.mode_carousel().iter().map(|mode| mode.label).collect();
-    assert_eq!(labels, ["PHOTO"]);
+    assert_eq!(labels, ["PHOTO", "CALIBRATE"]);
 
     let before = screen.state.clone();
     let video = screen.step(ScreenAction::ModeSelected(CaptureMode::Video));

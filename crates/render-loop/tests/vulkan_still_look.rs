@@ -21,13 +21,15 @@ mod vulkan_support;
 use std::sync::Arc;
 
 use continuity_rig::{SIZE_A, finish};
-use look_contract::{ColorWheel, ColorWheels, LookKnob, LookSettings, WheelPush, WheelZone};
+use look_contract::{ColorWheel, ColorWheels, LookKnob, LookSettings, ToneBaseModel, WheelPush, WheelZone};
 use render_loop::backend::DisplayBackend;
 use render_loop::config::StillDevelopConfig;
+use render_loop::config::{ToneBaseChoice, ViewfinderToneConfig};
 use render_loop::viewfinder::{ViewfinderCommand, ViewfinderCommandOutcome};
 use still_contract::develop::DevelopEvent;
 use still_rig::{
-    JPEG, StillBench, expected_params_with_look, offer_readback, plan, press_during, reference_rgba, setup, shown_frame,
+    JPEG, StillBench, expected_params_with_look, expected_params_with_look_and_base, offer_readback, plan,
+    press_during, reference_rgba, setup, shown_frame,
 };
 
 fn knob(value: f32) -> LookKnob {
@@ -214,5 +216,80 @@ fn a_still_carries_the_color_wheels_of_the_press_not_those_of_the_viewfinder() {
         "снимок не взял колёса видоискателя"
     );
 
+    finish(&mut bench.rig, &[bench.epoch]);
+}
+
+/// Снимок делается ПО ОСНОВЕ момента нажатия (решение 195, решение 8), а не по `viewfinder.tone.base` конфига и не по
+/// основе, которую видоискатель получил сразу после нажатия. Конфиг стенда — AgX; снимки просят ACES и «прежнюю».
+#[test]
+fn a_still_is_developed_on_the_tone_base_of_the_press_not_the_config_or_the_viewfinder() {
+    let Some(mut bench) = setup(StillDevelopConfig::default(), 12) else {
+        return;
+    };
+    bench.frames(10);
+    assert!(bench.inject_timings() >= 6);
+    assert_eq!(
+        ViewfinderToneConfig::default().base,
+        ToneBaseChoice::Agx,
+        "умолчание конфига — AgX"
+    );
+    let look = look_a();
+    let tone = ViewfinderToneConfig::default();
+
+    for (id, shown, base_at_press, base_after_press) in [
+        (1_u64, 3_usize, ToneBaseModel::Aces, ToneBaseModel::Filmic),
+        (2, 5, ToneBaseModel::Legacy, ToneBaseModel::Aces),
+    ] {
+        let (frame_index, picture) = {
+            let (_, frame_index) = shown_frame(&mut bench, shown);
+            let mut still = plan(id, press_during(shown), JPEG);
+            still.look = look.clone();
+            still.tone_base = base_at_press;
+            let sink = bench.begin(still);
+            // Видоискатель получает другую основу СРАЗУ после нажатия: снимок её не берёт.
+            let outcome = bench
+                .rig
+                .backend
+                .apply_viewfinder_command(ViewfinderCommand::SetToneBase(base_after_press));
+            assert!(
+                matches!(
+                    outcome,
+                    ViewfinderCommandOutcome::Applied | ViewfinderCommandOutcome::AlreadyInEffect
+                ),
+                "{outcome:?}"
+            );
+            assert!(bench.frames_until(30, || sink.has_secured()), "Secured не пришёл");
+            offer_readback(&mut bench, id);
+            assert!(bench.frames_until(60, || sink.finals() == 1), "итог снимка не пришёл");
+            let image = match sink.events().last() {
+                Some(DevelopEvent::PrimaryReadback { image, .. }) => image.clone(),
+                other => panic!("итог должен быть PrimaryReadback: {other:?}"),
+            };
+            let bytes = image.rgba_bytes().to_vec();
+            drop(image);
+            sink.events().clear();
+            (frame_index, bytes)
+        };
+        let cell = still_rig::cell(frame_index);
+        let (params_press, _) =
+            expected_params_with_look_and_base(&bench.passport, &look, tone.tone_base_for(base_at_press));
+        let (params_after, _) =
+            expected_params_with_look_and_base(&bench.passport, &look, tone.tone_base_for(base_after_press));
+        let reference_press = reference_rgba(&params_press, cell, SIZE_A);
+        let reference_after = reference_rgba(&params_after, cell, SIZE_A);
+        assert!(
+            worst_difference(&reference_press, &reference_after) > 8,
+            "{base_at_press:?} и {base_after_press:?} почти не различаются: тест ничего не докажет"
+        );
+        assert!(
+            worst_difference(&picture, &reference_press) <= 1,
+            "снимок {base_at_press:?} совпал с эталоном этой основы: {} LSB",
+            worst_difference(&picture, &reference_press)
+        );
+        assert!(
+            worst_difference(&picture, &reference_after) > 8,
+            "снимок не взял основу {base_after_press:?}, пришедшую видоискателю после нажатия"
+        );
+    }
     finish(&mut bench.rig, &[bench.epoch]);
 }

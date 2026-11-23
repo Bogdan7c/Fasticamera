@@ -22,6 +22,9 @@ pub enum ScaleDensity {
     Ruler,
     /// Дуговое колесо (зум): одна единица модели (октава) — длина дуги по кольцу рисок.
     Dial,
+    /// Линейка ручки вида раздела калибровки: одна единица модели — один шаг ручки (по умолчанию 0,1).
+    /// Отдельный токен, а не `Ruler`: шаг ручки и шаг 1/3 EV — разные величины, подгонять их порознь.
+    KnobRuler,
 }
 
 /// Числа раскладки элементов, pt.
@@ -40,6 +43,9 @@ pub struct DensityTokens {
     /// pt на единицу при [`ScaleDensity::Dial`]: единица модели — октава зума, её длина на кольце рисок.
     /// `[derived: R00 t=88.5–100]`: 14,2° на октаву × радиус кольца ≈ 230 pt ≈ 57 pt.
     pub dial_points_per_unit: f64,
+    /// pt на единицу при [`ScaleDensity::KnobRuler`]: один шаг ручки вида. `[estimate]` 20 — взято по аналогии с
+    /// линейкой Exposure (в эталоне Apple нет раздела калибровки, решение 96), подгоняется на телефоне.
+    pub knob_ruler_points_per_unit: f64,
     /// Радиус «магнита» опорного значения у непрерывной шкалы, pt. `[estimate]` — подгонка, не Apple.
     pub magnet_capture_points: f64,
     /// Радиус магнита у дугового колеса ([`ScaleDensity::Dial`]), pt. `[estimate]` 6 — подгонка, не Apple: при
@@ -62,6 +68,7 @@ impl Default for DensityTokens {
             sparse_points_per_unit: 48.0,
             ruler_points_per_unit: 20.0,
             dial_points_per_unit: 57.0,
+            knob_ruler_points_per_unit: 20.0,
             magnet_capture_points: 14.0,
             dial_magnet_capture_points: 6.0,
             carousel_item_gap_points: 35.4,
@@ -79,6 +86,7 @@ impl DensityTokens {
             ScaleDensity::Sparse => self.sparse_points_per_unit,
             ScaleDensity::Ruler => self.ruler_points_per_unit,
             ScaleDensity::Dial => self.dial_points_per_unit,
+            ScaleDensity::KnobRuler => self.knob_ruler_points_per_unit,
         }
     }
 
@@ -86,9 +94,11 @@ impl DensityTokens {
     pub fn magnet_capture(&self, density: ScaleDensity) -> f64 {
         match density {
             ScaleDensity::Dial => self.dial_magnet_capture_points,
-            ScaleDensity::Dense | ScaleDensity::Regular | ScaleDensity::Sparse | ScaleDensity::Ruler => {
-                self.magnet_capture_points
-            }
+            ScaleDensity::Dense
+            | ScaleDensity::Regular
+            | ScaleDensity::Sparse
+            | ScaleDensity::Ruler
+            | ScaleDensity::KnobRuler => self.magnet_capture_points,
         }
     }
 
@@ -100,6 +110,7 @@ impl DensityTokens {
             ("sparse_points_per_unit", self.sparse_points_per_unit),
             ("ruler_points_per_unit", self.ruler_points_per_unit),
             ("dial_points_per_unit", self.dial_points_per_unit),
+            ("knob_ruler_points_per_unit", self.knob_ruler_points_per_unit),
             ("magnet_capture_points", self.magnet_capture_points),
             ("dial_magnet_capture_points", self.dial_magnet_capture_points),
             ("carousel_item_gap_points", self.carousel_item_gap_points),

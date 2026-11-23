@@ -17,6 +17,7 @@
 //! * [`thermal`] и [`thermal_policy`] — показания тепла и единственный владелец тепловых решений;
 //! * [`haptics`], [`commands`] — намерения к платформе (вибрация, разрешение, частота кадров…);
 //! * [`operator_prompt`] — подсказка владельцу на экране (сигнал «сделай руками» вместо вибрации);
+//! * [`text_input`] — ввод короткого текста через системную клавиатуру (имя пресета, решение 197);
 //! * [`motion`] — гироскоп (кольцо последних секунд) и акселерометр для ориентации;
 //! * [`vsync`] — тики vsync и линии кадра платформы (пейсинг рендера);
 //! * [`diagnostics`] — счётчики шва для smoke-проверок;
@@ -44,6 +45,7 @@ pub mod still_media;
 pub mod surface;
 pub mod sync_fence;
 pub mod system_gesture;
+pub mod text_input;
 pub mod thermal;
 pub mod thermal_policy;
 pub mod touch;

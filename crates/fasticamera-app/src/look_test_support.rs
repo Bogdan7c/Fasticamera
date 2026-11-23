@@ -49,12 +49,21 @@ impl LookPersistence for StubPersistence {
 /// Ручка на библиотеку со встроенными пресетами из конфига по умолчанию и подставным хранилищем.
 pub(crate) fn handle_with(persistence: StubPersistence) -> LookHandle {
     let config = PresetStoreConfig::default();
-    let library = look_presets::PresetLibrary::new(config.builtin_catalog().expect("конфиг по умолчанию верен"));
+    let library = look_presets::PresetLibrary::new(
+        config
+            .builtin_catalog(&default_environment())
+            .expect("конфиг по умолчанию верен"),
+    );
     LookHandle::new(LookService::new(
         library,
         Box::new(persistence),
         LookStartup::InMemoryOnly,
     ))
+}
+
+/// Окружение каталога из конфига рендера по умолчанию: основа и полосы настоящие, не набранные руками.
+pub(crate) fn default_environment() -> look_presets::CatalogEnvironment {
+    crate::look_startup::catalog_environment(&render_loop::config::RenderLoopConfig::default())
 }
 
 pub(crate) fn knob(value: f32) -> LookKnob {
@@ -81,5 +90,13 @@ pub(crate) fn wheels_look() -> LookSettings {
             .with_wheel(WheelZone::Lift, wheel(265.0, -0.3))
             .with_wheel(WheelZone::Gain, wheel(30.0, 0.5)),
         ..LookSettings::NEUTRAL
+    }
+}
+
+/// Рецепт «чистый вид»: нейтральные ручки на основе по умолчанию (для тестов, где вид не важен).
+pub(crate) fn neutral_recipe() -> look_contract::LookRecipe {
+    look_contract::LookRecipe {
+        base: look_contract::ToneBaseModel::Agx,
+        settings: LookSettings::NEUTRAL,
     }
 }

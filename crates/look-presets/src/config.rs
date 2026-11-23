@@ -3,7 +3,10 @@
 //! Всё, что владелец может захотеть подкрутить без пересборки логики, живёт здесь.
 //! Стартовые числа помечены `[estimate]`: подбирает владелец глазами в 14b.
 
-use look_contract::{BuiltinPreset, LookKnob, LookKnobError, LookSettings, PresetName, PresetNameError};
+use look_contract::{
+    BuiltinPreset, HueBandId, LookKnob, LookKnobError, LookRecipe, LookSettings, PresetName, PresetNameError,
+    ToneBaseModel,
+};
 use serde::{Deserialize, Serialize};
 
 /// Ошибка проверки конфига; в тексте всегда есть имя поля.
@@ -128,6 +131,17 @@ impl AsEyeValues {
     }
 }
 
+/// То, что каталог узнаёт не из своего конфига, а от остальной системы (решение 195): у хранилища
+/// нет права решать, какая основа тона «по умолчанию» и какие полосы оттенка существуют, это знают
+/// конфиг рендера и модель вида. Структура, а не позиционные аргументы, чтобы вызов читался сам.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogEnvironment {
+    /// Основа тона встроенных пресетов («Честный», «Как глаз»): берётся из конфига рендера.
+    pub default_base: ToneBaseModel,
+    /// Идентификаторы полос оттенка модели вида: по ним отличается «нет такой полосы» от «полоса не тронута».
+    pub band_ids: Vec<HueBandId>,
+}
+
 /// Конфиг хранилища пресетов.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -180,7 +194,7 @@ impl PresetStoreConfig {
     }
 
     /// Проверяет конфиг и собирает каталог встроенных пресетов (имена и ручки тоже проверяются).
-    pub fn builtin_catalog(&self) -> Result<BuiltinCatalog, ConfigError> {
+    pub fn builtin_catalog(&self, environment: &CatalogEnvironment) -> Result<BuiltinCatalog, ConfigError> {
         self.validate()?;
         let honest_name =
             PresetName::new(&self.builtin_names.honest).map_err(|source| ConfigError::InvalidBuiltinName {
@@ -202,6 +216,8 @@ impl PresetStoreConfig {
             as_eye_name,
             as_eye_settings: self.as_eye.to_settings()?,
             startup_preset: self.startup_preset,
+            default_base: environment.default_base,
+            band_ids: environment.band_ids.clone(),
         })
     }
 }
@@ -214,6 +230,8 @@ pub struct BuiltinCatalog {
     as_eye_name: PresetName,
     as_eye_settings: LookSettings,
     startup_preset: BuiltinPreset,
+    default_base: ToneBaseModel,
+    band_ids: Vec<HueBandId>,
 }
 
 impl BuiltinCatalog {
@@ -225,12 +243,30 @@ impl BuiltinCatalog {
         }
     }
 
-    /// Значения встроенного. «Честный» — всегда нейтраль, не из конфига.
+    /// Значения ручек встроенного. «Честный» — всегда нейтраль, не из конфига.
     pub fn settings_of(&self, preset: BuiltinPreset) -> LookSettings {
         match preset {
             BuiltinPreset::Honest => LookSettings::NEUTRAL,
             BuiltinPreset::AsEye => self.as_eye_settings.clone(),
         }
+    }
+
+    /// Полный рецепт встроенного: основа по умолчанию из конфига рендера + значения ручек (решение 195).
+    pub fn recipe_of(&self, preset: BuiltinPreset) -> LookRecipe {
+        LookRecipe {
+            base: self.default_base,
+            settings: self.settings_of(preset),
+        }
+    }
+
+    /// Основа тона встроенных пресетов.
+    pub fn default_base(&self) -> ToneBaseModel {
+        self.default_base
+    }
+
+    /// Есть ли полоса оттенка с таким идентификатором в модели вида.
+    pub fn knows_band(&self, band: &HueBandId) -> bool {
+        self.band_ids.contains(band)
     }
 
     /// Пресет по умолчанию: активен без файла и после удаления активного своего.
@@ -248,11 +284,18 @@ impl BuiltinCatalog {
 mod tests {
     use super::*;
 
+    fn environment() -> CatalogEnvironment {
+        CatalogEnvironment {
+            default_base: ToneBaseModel::Aces,
+            band_ids: vec![HueBandId::new("sky").unwrap()],
+        }
+    }
+
     #[test]
     fn default_config_is_valid_with_expected_builtin_values() {
         let config = PresetStoreConfig::default();
         assert_eq!(config.validate(), Ok(()));
-        let catalog = config.builtin_catalog().unwrap();
+        let catalog = config.builtin_catalog(&environment()).unwrap();
         assert_eq!(catalog.name_of(BuiltinPreset::Honest).as_str(), "Honest");
         assert_eq!(catalog.name_of(BuiltinPreset::AsEye).as_str(), "Natural");
         assert!(catalog.settings_of(BuiltinPreset::Honest).is_neutral());
@@ -261,6 +304,25 @@ mod tests {
         assert_eq!(as_eye.saturation.get(), 0.15);
         assert_eq!(as_eye.vibrance.get(), 0.15);
         assert_eq!(catalog.startup_preset(), BuiltinPreset::AsEye);
+    }
+
+    #[test]
+    fn builtin_recipes_take_base_from_environment_and_settings_from_config() {
+        let catalog = PresetStoreConfig::default().builtin_catalog(&environment()).unwrap();
+        assert_eq!(catalog.default_base(), ToneBaseModel::Aces);
+        for preset in [BuiltinPreset::Honest, BuiltinPreset::AsEye] {
+            let recipe = catalog.recipe_of(preset);
+            assert_eq!(recipe.base, ToneBaseModel::Aces, "{preset:?}");
+            assert_eq!(recipe.settings, catalog.settings_of(preset), "{preset:?}");
+        }
+        assert!(catalog.recipe_of(BuiltinPreset::Honest).settings.is_neutral());
+    }
+
+    #[test]
+    fn catalog_knows_only_bands_from_environment() {
+        let catalog = PresetStoreConfig::default().builtin_catalog(&environment()).unwrap();
+        assert!(catalog.knows_band(&HueBandId::new("sky").unwrap()));
+        assert!(!catalog.knows_band(&HueBandId::new("ghost").unwrap()));
     }
 
     #[test]
@@ -288,7 +350,7 @@ mod tests {
             ..PresetStoreConfig::default()
         };
         assert!(matches!(
-            same_names.builtin_catalog(),
+            same_names.builtin_catalog(&environment()),
             Err(ConfigError::DuplicateBuiltinNames { .. })
         ));
         let empty_name = PresetStoreConfig {
@@ -298,7 +360,7 @@ mod tests {
             },
             ..PresetStoreConfig::default()
         };
-        let error = empty_name.builtin_catalog().unwrap_err();
+        let error = empty_name.builtin_catalog(&environment()).unwrap_err();
         assert!(error.to_string().contains("builtin_names.honest"), "{error}");
         let bad_knob = PresetStoreConfig {
             as_eye: AsEyeValues {
@@ -307,7 +369,7 @@ mod tests {
             },
             ..PresetStoreConfig::default()
         };
-        let error = bad_knob.builtin_catalog().unwrap_err();
+        let error = bad_knob.builtin_catalog(&environment()).unwrap_err();
         assert!(error.to_string().contains("as_eye.tint"), "{error}");
         assert!(
             ConfigError::ZeroOutcomeQueue
@@ -326,7 +388,7 @@ mod tests {
 
     #[test]
     fn builtin_names_are_reported_as_taken_in_any_case() {
-        let catalog = PresetStoreConfig::default().builtin_catalog().unwrap();
+        let catalog = PresetStoreConfig::default().builtin_catalog(&environment()).unwrap();
         assert!(catalog.is_builtin_name(&PresetName::new("honest").unwrap()));
         assert!(catalog.is_builtin_name(&PresetName::new("NATURAL").unwrap()));
         assert!(!catalog.is_builtin_name(&PresetName::new("Sunset").unwrap()));

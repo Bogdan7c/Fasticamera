@@ -22,12 +22,13 @@ use std::thread;
 use android_shell::android::{AndroidPerformanceHints, AndroidShellServices, ShellInstallError, ThermalListenerState};
 use camera_contract::lens_shading::LensShadingCalibrations;
 use gpu_vulkan::validation::ValidationMode;
-use look_contract::LookSettings;
+use look_contract::LookRecipe;
 use raw_frame_stream::RawFrameStream;
 use render_loop::config::RenderLoopConfig;
 use render_loop::thread::{RenderLoopParts, VsyncFrameClock};
 use render_loop::viewfinder::AutoExposureLinks;
 use render_loop::vulkan_backend::{VulkanBackendConfig, VulkanDisplayBackend};
+use shell_contract::text_input::TextInputService;
 use shell_contract::thermal_policy::{ThermalPolicy, ThermalPolicyConfigError};
 use shell_contract::vsync::VsyncSource;
 
@@ -43,12 +44,13 @@ use crate::flash_still_relay::FlashStillRelay;
 use crate::gpu_services::{GpuServices, ValidationState};
 use crate::jni_boundary::run_guarded;
 use crate::lens_shading_profile::{LensShadingProfileError, embedded_lens_shading};
-use crate::look_startup::open_look_service;
+use crate::look_startup::{catalog_environment, open_look_service};
 use crate::raw_stream_wiring::{RawStreamCreation, create_raw_stream, observe_stream};
 use crate::render_wiring::RenderRuntime;
 use crate::runtime_config::RuntimeConfig;
 use crate::scenario::observing::{ObservingScenario, PlatformFacts, ShellServices, ThermalListenerReport};
 use crate::still_android_wiring::assemble_still;
+use crate::text_input_broker::TextInputBroker;
 use crate::vulkan_diagnostics::VulkanGpuDiagnostics;
 
 /// Что остаётся у composition root после сборки: вход для наблюдающих сценариев.
@@ -96,7 +98,11 @@ pub fn ensure_installed(
     }
     // Пресеты вида открываются ДО рендера: начальный вид (активный пресет) обязан действовать с первого кадра
     // видоискателя, поэтому уходит бэкенду при сборке, а не командой после старта.
-    let look = open_look_service(app_directory, config.look_presets())?;
+    let look = open_look_service(
+        app_directory,
+        config.look_presets(),
+        &catalog_environment(config.render()),
+    )?;
     let thermal_policy = Arc::new(ThermalPolicy::new(config.thermal_policy())?);
     let handles = android_shell::android::install(config.shell(), package_name)?;
     let services = handles.services;
@@ -119,7 +125,9 @@ pub fn ensure_installed(
         &services,
         &raw_stream.stream,
         links.render_side(config.camera().exposure_controller),
-        Arc::new(look.handle.active_settings()),
+        // Стартовый рецепт — основа и ручки активного пресета из файла (решение 195): основа тоже действует с
+        // первого кадра, конфиг `viewfinder.tone.base` лишь умолчание встроенных пресетов библиотеки.
+        look.handle.active_recipe(),
     );
     // Камера узнаёт, есть ли у нашего AE рендер: без него она получит вендорский AE (с предупреждением).
     links.render_auto_exposure = render_auto_exposure;
@@ -147,6 +155,10 @@ pub fn ensure_installed(
         capture: still.capture,
         look: Some(look.handle),
     });
+    // Диалог ввода текста (решение 197): брокер ведёт запросы и ответы. Приёмник итогов подключит экран камеры
+    // (`TextInputBroker::set_sink`), пока его нет — ответы считаются и логируются.
+    let text_input = TextInputBroker::new(Arc::clone(&services) as Arc<dyn TextInputService>);
+    let router = router.with_text_input(text_input);
     thread::Builder::new()
         .name("fasticamera-router".to_owned())
         .spawn(move || {
@@ -183,7 +195,7 @@ fn start_render(
     services: &Arc<AndroidShellServices>,
     raw_stream: &RawFrameStream,
     links: RenderLinks,
-    initial_look: Arc<LookSettings>,
+    initial_look: LookRecipe,
 ) -> (RenderRuntime, RenderAutoExposure) {
     match try_start_render(render_config, validation, services, raw_stream, links, initial_look) {
         Ok(runtime) => (runtime, RenderAutoExposure::Connected),
@@ -200,7 +212,7 @@ fn try_start_render(
     services: &Arc<AndroidShellServices>,
     raw_stream: &RawFrameStream,
     links: RenderLinks,
-    initial_look: Arc<LookSettings>,
+    initial_look: LookRecipe,
 ) -> Result<RenderRuntime, String> {
     let RenderLinks {
         white_balance,
@@ -212,8 +224,9 @@ fn try_start_render(
     let backend =
         VulkanDisplayBackend::new_android_camera_preview(backend_config, raw_stream.viewfinder(), white_balance)
             .map_err(|error| format!("GPU не поднялся: {error}"))?
-            // Стартовый вид — активный пресет из файла: действует с первого кадра (решение 99).
-            .with_initial_look(initial_look);
+            // Стартовый вид — активный пресет из файла: ручки и основа действуют с первого кадра (решения 99, 195).
+            .with_initial_look(Arc::new(initial_look.settings))
+            .with_initial_tone_base(initial_look.base);
     // Наш AE (08a): рендер меряет сцену и пишет предложения движку, читает его указания. `None` —
     // у камеры вендорский AE (`camera.exposure_controller = "vendor"`, A/B): рендеру мерить нечего,
     // подтяжка ISP остаётся единичной.

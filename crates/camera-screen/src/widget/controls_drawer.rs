@@ -9,15 +9,12 @@
 
 use ui_core::gesture::{GestureEvent, GestureState, PanDirection, PanSpec, RecognizerSpec};
 use ui_core::id::NodeId;
-use ui_draw::color::{DisplayColor, Opacity};
-use ui_draw::draw_list::{DrawItem, ShapeItem};
-use ui_draw::geometry::PxSize;
+use ui_draw::draw_list::DrawItem;
 use ui_draw::icons::IconId;
-use ui_draw::shape::ShapeGeometry;
 use ui_draw::transform::Affine2;
 use ui_kit::panel_morph::{PanelMorph, PanelMorphSpec, PanelPhase, PanelSnapshot};
-use ui_kit::tokens::{GlassRole, MotionToken, TextRoleKind};
-use ui_kit::view::{centered_icon, centered_text, panel_glass_group};
+use ui_kit::tokens::{GlassRole, MotionToken};
+use ui_kit::view::panel_glass_group;
 
 use super::button::{ButtonEvent, PressButton};
 use super::error::{WidgetError, element};
@@ -25,6 +22,7 @@ use super::geometry::MAX_MENU_ITEMS;
 use super::intent::{ButtonId, ScreenGesture};
 use super::kit::SceneKit;
 use super::layers::{DrawLayers, Layer, VisualIndex};
+use super::sheet_view::{ItemFace, ItemNodes, ItemView, draw_menu_item, draw_sheet_handle};
 use super::text_runs::TextRuns;
 use super::tool_card_content::flash_icon;
 use super::tool_card_content::tool_title;
@@ -48,7 +46,7 @@ pub(crate) struct ControlsDrawerWidget {
 }
 
 /// Пружина открытия и закрытия шторки: без перелёта, ≈ 0,3 с (`[measured: C t=22.88–23.15]` ≈ 0,25 с).
-const SHEET_MOTION: MotionToken = MotionToken::CardMorph;
+pub(crate) const SHEET_MOTION: MotionToken = MotionToken::CardMorph;
 
 /// Включён ли инструмент (жёлтый круг): отличается от значения по умолчанию.
 fn tool_is_active(ctx: &Ctx<'_>, tool: ToolId) -> bool {
@@ -208,7 +206,12 @@ impl ControlsDrawerWidget {
             )?),
         );
         let content_alpha = sheet.content_opacity * uncovered;
-        self.draw_handle(ctx, layers, content_alpha);
+        draw_sheet_handle(
+            ctx,
+            layers,
+            ctx.geometry.sheet_handle(),
+            (Affine2::IDENTITY, content_alpha),
+        );
         self.draw_items(
             ctx,
             visuals,
@@ -217,32 +220,6 @@ impl ControlsDrawerWidget {
             content_alpha,
             ctx.px.px(sheet.content_offset_pt),
         )
-    }
-
-    /// «Ручка» шторки: белая полоска-капсула у её верха (только рисунок, жест закрытия — на всей шторке).
-    fn draw_handle(&self, ctx: &Ctx<'_>, layers: &mut DrawLayers, alpha: f32) {
-        let Ok(opacity) = Opacity::new(alpha.clamp(0.0, 1.0)) else {
-            return;
-        };
-        let sheet_config = &ctx.geometry.config().sheet;
-        let handle = ctx.geometry.sheet_handle();
-        let center = handle.center();
-        layers.push(
-            Layer::Content,
-            DrawItem::Shape(ShapeItem {
-                geometry: ShapeGeometry::Capsule {
-                    size: PxSize::new(ctx.px.px(handle.size.width), ctx.px.px(handle.size.height)),
-                },
-                transform: Affine2::translate(ctx.px.px(center.x), ctx.px.px(center.y)),
-                fill: DisplayColor {
-                    a: sheet_config.handle_alpha,
-                    ..ctx.tokens.colors.text_primary
-                },
-                stroke: None,
-                shadow: None,
-                opacity,
-            }),
-        );
     }
 
     fn draw_items(
@@ -257,8 +234,6 @@ impl ControlsDrawerWidget {
         if alpha <= 0.0 {
             return Ok(());
         }
-        let sheet_config = &ctx.geometry.config().sheet;
-        let colors = &ctx.tokens.colors;
         for item in &self.items {
             let (Some(tool), Some(button), Some(content)) = (
                 item.tool,
@@ -267,82 +242,40 @@ impl ControlsDrawerWidget {
             ) else {
                 continue;
             };
-            let item_alpha = (button.opacity * alpha).clamp(0.0, 1.0);
-            let opacity = Opacity::new(item_alpha)
-                .map_err(|_| WidgetError::Inconsistent("прозрачность пункта вне 0..1".to_owned()))?;
-            let active = tool_is_active(ctx, tool);
-            // Круг всегда чёрный полупрозрачный; «включённость» показывает только значок (`[measured: C t=30.0]`).
-            let fill = DisplayColor {
-                a: sheet_config.item_fill_alpha,
-                ..DisplayColor::BLACK
+            let face = match tool_icon(ctx, tool) {
+                Some(icon) => ItemFace::Icon(icon),
+                None => ItemFace::Text(tool_title(tool)),
             };
-            let slide = Affine2::translate(0.0, slide_px);
-            layers.push(
-                Layer::Content,
-                DrawItem::Shape(ShapeItem {
-                    geometry: ShapeGeometry::Circle {
-                        diameter: button.size.width.min(button.size.height),
-                    },
-                    transform: slide.then(button.transform),
-                    fill,
-                    stroke: None,
-                    shadow: None,
-                    opacity,
-                }),
-            );
-            let icon_color = if active {
-                colors.focus_yellow
-            } else {
-                colors.text_primary
+            let view = ItemView {
+                face,
+                caption: tool_title(tool),
+                highlighted: tool_is_active(ctx, tool),
             };
-            let content_host = slide.then(content.transform);
-            let settings = ctx.state.settings();
-            let icon = match tool {
-                ToolId::Flash => Some(flash_icon(settings.flash)),
-                ToolId::Timer => Some(IconId::Timer),
-                ToolId::Exposure => Some(IconId::Exposure),
-                ToolId::Aspect => Some(IconId::AspectRatio),
-                ToolId::Grid => Some(IconId::Grid),
-                ToolId::Level => Some(IconId::Level),
-                // RAW у iOS остаётся подписью внутри круга, не иконкой.
-                ToolId::Raw | ToolId::Live | ToolId::Styles | ToolId::Night => None,
-            };
-            match icon {
-                Some(icon) => layers.push(
-                    Layer::Content,
-                    centered_icon(
-                        icon,
-                        sheet_config.item_icon_size_pt,
-                        ctx.px,
-                        content_host,
-                        icon_color,
-                        opacity,
-                    ),
-                ),
-                None => {
-                    let run = texts.run(ctx, tool_title(tool), TextRoleKind::Caption)?;
-                    layers.push(Layer::Content, centered_text(run, content_host, icon_color, opacity));
-                }
-            }
-            // Подпись под кругом не поворачивается: она ставится от узла пункта, а не узла значка.
-            let caption = texts.run(ctx, tool_title(tool), TextRoleKind::ToolCaption)?;
-            let caption_shift = Affine2::translate(
-                0.0,
-                button.size.height * 0.5 + ctx.px.px(sheet_config.caption_center_below_circle_pt),
-            );
-            // Подписи ВСЕХ пунктов белые, чуть приглушённые (`[measured: R00 t=22.512]`), активный — не исключение.
-            let caption_opacity = Opacity::new((item_alpha * sheet_config.caption_alpha).clamp(0.0, 1.0))
-                .map_err(|_| WidgetError::Inconsistent("прозрачность подписи вне 0..1".to_owned()))?;
-            layers.push(
-                Layer::Content,
-                centered_text(
-                    caption,
-                    caption_shift.then(slide).then(button.transform),
-                    colors.text_primary,
-                    caption_opacity,
-                ),
-            );
+            draw_menu_item(
+                ctx,
+                layers,
+                texts,
+                ItemNodes { button, content },
+                view,
+                (alpha, slide_px),
+            )?;
         }
         Ok(())
+    }
+}
+
+/// Значок пункта; `None` — у инструмента значка нет, в круге стоит подпись.
+fn tool_icon(ctx: &Ctx<'_>, tool: ToolId) -> Option<IconId> {
+    let settings = ctx.state.settings();
+    match tool {
+        ToolId::Flash => Some(flash_icon(settings.flash)),
+        ToolId::Timer => Some(IconId::Timer),
+        ToolId::Exposure => Some(IconId::Exposure),
+        ToolId::Aspect => Some(IconId::AspectRatio),
+        ToolId::Grid => Some(IconId::Grid),
+        ToolId::Level => Some(IconId::Level),
+        // RAW у iOS остаётся подписью внутри круга, не значком. Для STYLES подходящего значка в наборе нет
+        // (палитра, фильтр): подпись в круге, а не новый рисунок.
+        ToolId::Raw | ToolId::Live | ToolId::Styles | ToolId::Night => None,
     }
 }

@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::kind::{ScopeKind, VectorscopeAxes};
+use crate::scan::ScopeScan;
 use crate::size::ScopeImageSize;
 
 /// Что показать: тип прибора, оси вектороскопа и размер картинки.
@@ -18,6 +19,9 @@ pub struct ScopeRequest {
     pub kind: ScopeKind,
     /// Стандарт осей вектороскопа.
     pub vectorscope_axes: VectorscopeAxes,
+    /// Как глаз читает показанную картинку слева направо (положение телефона): горизонталь waveform и
+    /// parade. Вектороскоп от поля не зависит; смена поля — только параметры, ресурсы не пересоздаются.
+    pub scan: ScopeScan,
     /// Размер картинки прибора в пикселях экрана.
     pub image_size: ScopeImageSize,
 }

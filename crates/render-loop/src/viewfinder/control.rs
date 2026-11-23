@@ -12,7 +12,7 @@ use camera_contract::viewfinder_crop::{CropAspect, ViewfinderCrop};
 use std::sync::Arc;
 
 use isp_vulkan::viewfinder::IspStageSet;
-use look_contract::LookSettings;
+use look_contract::{LookSettings, ToneBaseModel};
 use scope_contract::ScopeIntent;
 use serde::{Deserialize, Serialize};
 
@@ -52,6 +52,10 @@ pub enum ViewfinderCommand {
     /// общие (`Arc`): исполнитель эффектов держит копию у себя, команда ничего не копирует по дороге.
     /// Повтор тех же значений — `AlreadyInEffect`. Снимок эту команду не использует: он берёт вид из плана.
     SetLook(Arc<LookSettings>),
+    /// Модель основы тона видоискателя (решение 195: основа — часть вида, значения ручек её не содержат). Меняется
+    /// на ходу без паузы: варианты шейдера всех моделей заготовлены заранее (`viewfinder.isp.prewarm_tone_bases`).
+    /// Повтор той же модели — `AlreadyInEffect`. Снимок эту команду не использует: он берёт основу из плана.
+    SetToneBase(ToneBaseModel),
     /// Намерение экрана о цветовых приборах (14h): показать такой прибор такого размера или скрыть. `Show` заменяет
     /// прежний запрос целиком; `Hide` при закрытых приборах — `AlreadyInEffect`. Размер картинки сверх предела
     /// конфига (`viewfinder.scopes.max_picture_side_px`) — `Rejected` (предел знает только бэкенд, не эта проверка).

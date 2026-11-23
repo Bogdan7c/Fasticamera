@@ -1,4 +1,4 @@
-//! Миграция файла пресетов v1 → v2 (колёса цвета, 14i) на настоящих файлах схемы 1.
+//! Миграция файла пресетов v1 → v3 (колёса цвета 14i, основа тона 14b) на настоящих файлах схемы 1.
 //!
 //! Фикстуры в `tests/fixtures/` записаны кодом до 14i и заморожены (см. README рядом).
 
@@ -9,9 +9,10 @@ mod common;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use common::{TempDir, contrast, knob, name, with_sky_band};
+use common::{TempDir, contrast, environment, knob, name, with_sky_band};
 use look_contract::{
-    BuiltinPreset, ColorWheel, ColorWheels, EditState, LookSettings, PresetId, UserPresetId, WheelPush,
+    BuiltinPreset, ColorWheel, ColorWheels, EditState, LookRecipe, LookSettings, PresetId, ToneBaseModel, UserPresetId,
+    WheelPush,
 };
 use look_presets::{
     CorruptionReason, LoadOutcome, OpenedPresets, PRE_MIGRATION_BACKUP_MARKER, PRODUCT_MIGRATIONS, PresetFileStore,
@@ -22,8 +23,17 @@ use serde_json::Value;
 const WITH_EDITS: &[u8] = include_bytes!("fixtures/schema_v1_with_edits.json");
 const NO_EDITS: &[u8] = include_bytes!("fixtures/schema_v1_no_edits.json");
 
+/// Рецепт на основе AgX: ею шаг 2 → 3 помечает все пресеты старых файлов.
+fn agx_recipe(settings: LookSettings) -> LookRecipe {
+    LookRecipe {
+        base: ToneBaseModel::Agx,
+        settings,
+    }
+}
+
 fn open(dir: &Path) -> OpenedPresets {
-    PresetFileStore::open(dir, &PresetStoreConfig::default(), PRODUCT_MIGRATIONS).expect("конфиг валиден")
+    PresetFileStore::open(dir, &PresetStoreConfig::default(), &environment(), PRODUCT_MIGRATIONS)
+        .expect("конфиг валиден")
 }
 
 fn presets_file(dir: &Path) -> PathBuf {
@@ -66,14 +76,15 @@ fn v1_file_with_edits_loads_with_neutral_wheels_everywhere() {
             ..contrast(0.3)
         }
     };
-    assert_eq!(snapshot.user_presets[0].settings, evening);
-    assert!(snapshot.user_presets[0].settings.wheels.is_neutral());
+    assert_eq!(snapshot.user_presets[0].recipe.settings, evening);
+    assert!(snapshot.user_presets[0].recipe.settings.wheels.is_neutral());
     // Правки поверх: контраст -0.5, колёса нейтральны.
-    assert_eq!(snapshot.edits, Some(contrast(-0.5)));
+    assert_eq!(snapshot.edits, Some(agx_recipe(contrast(-0.5))));
+    assert_eq!(snapshot.user_presets[0].recipe.base, ToneBaseModel::Agx);
 
     let active = opened.library.active_look();
     assert_eq!(active.edits, EditState::EditedOnTop);
-    assert_eq!(active.settings, contrast(-0.5));
+    assert_eq!(active.recipe.settings, contrast(-0.5));
 }
 
 #[test]
@@ -85,15 +96,15 @@ fn v1_file_without_edits_keeps_clean_active_preset() {
     let snapshot = opened.library.snapshot();
     assert_eq!(snapshot.edits, None);
     assert_eq!(snapshot.user_presets[0].name, name("Punchy"));
-    assert_eq!(snapshot.user_presets[0].settings, contrast(0.6));
+    assert_eq!(snapshot.user_presets[0].recipe.settings, contrast(0.6));
     let active = opened.library.active_look();
     assert_eq!(active.preset, snapshot.active);
     assert_eq!(active.edits, EditState::Clean);
-    assert_eq!(active.settings, contrast(0.6));
+    assert_eq!(active.recipe.settings, contrast(0.6));
 }
 
 #[test]
-fn first_save_backs_up_old_file_byte_exact_then_writes_v2_once() {
+fn first_save_backs_up_old_file_byte_exact_then_writes_v3_once() {
     for (label, fixture) in [("bk-edits", WITH_EDITS), ("bk-none", NO_EDITS)] {
         let dir = dir_with_file(label, fixture);
         let opened = open(dir.path());
@@ -109,11 +120,13 @@ fn first_save_backs_up_old_file_byte_exact_then_writes_v2_once() {
         assert_eq!(fs::read(&backups[0]).unwrap(), fixture, "{label}: копия побайтно");
 
         let written: Value = serde_json::from_slice(&fs::read(presets_file(dir.path())).unwrap()).unwrap();
-        assert_eq!(written["schema_version"], 2, "{label}");
+        assert_eq!(written["schema_version"], 3, "{label}");
+        assert_eq!(written["user_presets"][0]["base"], "agx", "{label}");
         assert!(written["user_presets"][0]["settings"]["wheels"].is_object(), "{label}");
         assert_eq!(written["edits"].is_object(), fixture == WITH_EDITS, "{label}");
         if fixture == WITH_EDITS {
-            assert!(written["edits"]["wheels"].is_object());
+            assert_eq!(written["edits"]["base"], "agx");
+            assert!(written["edits"]["settings"]["wheels"].is_object());
         }
 
         // Второе сохранение копию не плодит.
@@ -124,7 +137,7 @@ fn first_save_backs_up_old_file_byte_exact_then_writes_v2_once() {
             "{label}"
         );
 
-        // Повторное открытие читает уже v2 без миграции и даёт то же состояние.
+        // Повторное открытие читает уже v3 без миграции и даёт то же состояние.
         let reopened = open(dir.path());
         assert_eq!(reopened.outcome, LoadOutcome::Loaded { migrated_from: None }, "{label}");
         assert_eq!(reopened.library.snapshot(), opened.library.snapshot(), "{label}");
@@ -171,8 +184,8 @@ fn non_neutral_wheels_and_knobs_roundtrip_through_a_saved_preset() {
     let second = open(dir.path());
     assert_eq!(second.outcome, LoadOutcome::Loaded { migrated_from: None });
     assert_eq!(second.library.snapshot(), first.library.snapshot());
-    assert_eq!(second.library.snapshot().user_presets[0].settings, look);
-    assert_eq!(second.library.active_look().settings, edited);
+    assert_eq!(second.library.snapshot().user_presets[0].recipe.settings, look);
+    assert_eq!(second.library.active_look().recipe.settings, edited);
 }
 
 /// Файл версии 2 без `wheels`: serde молча не достраивает, файл уходит в карантин как неверная форма.
@@ -201,15 +214,15 @@ fn v2_file_missing_wheels_is_quarantined_with_original_bytes() {
 }
 
 #[test]
-fn schema_three_is_quarantined_as_newer_and_bytes_are_kept() {
-    let dir = TempDir::new("v3");
-    let content = br#"{"schema_version":3,"anything":true}"#;
+fn schema_four_is_quarantined_as_newer_and_bytes_are_kept() {
+    let dir = TempDir::new("v4");
+    let content = br#"{"schema_version":4,"anything":true}"#;
     fs::write(presets_file(dir.path()), content).unwrap();
     let opened = open(dir.path());
     let LoadOutcome::Quarantined { reason, moved_to } = opened.outcome else {
         panic!("ожидали карантин");
     };
-    assert_eq!(reason, CorruptionReason::NewerSchema { found: 3, supported: 2 });
+    assert_eq!(reason, CorruptionReason::NewerSchema { found: 4, supported: 3 });
     assert_eq!(fs::read(moved_to).unwrap(), content);
 }
 

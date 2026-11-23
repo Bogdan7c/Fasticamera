@@ -1,20 +1,57 @@
 //! Сохраняемое состояние библиотеки пресетов — ровно то, что лежит в файле.
 
-use look_contract::{LookSettings, PresetId, PresetName, UserPresetId};
+use look_contract::{LookRecipe, LookSettings, PresetId, PresetName, ToneBaseModel, UserPresetId};
 use serde::{Deserialize, Serialize};
 
 use crate::config::BuiltinCatalog;
 
-/// Свой пресет пользователя.
+/// Свой пресет пользователя: имя и полный рецепт (основа + ручки, решение 195).
+///
+/// В файле схемы 3 основа и ручки лежат рядом с именем (`id`, `name`, `base`, `settings`), а не во вложенном
+/// объекте: так шаг миграции 2 → 3 только ДОБАВЛЯЕТ поле `base` и не двигает остальное.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(from = "UserPresetWire", into = "UserPresetWire")]
 pub struct UserPreset {
     /// Идентификатор (не переиспользуется после удаления).
     pub id: UserPresetId,
     /// Имя.
     pub name: PresetName,
-    /// Значения ручек.
-    pub settings: LookSettings,
+    /// Рецепт: основа тона и значения ручек.
+    pub recipe: LookRecipe,
+}
+
+/// Форма свёрнутого пресета в файле (см. [`UserPreset`]).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UserPresetWire {
+    id: UserPresetId,
+    name: PresetName,
+    base: ToneBaseModel,
+    settings: LookSettings,
+}
+
+impl From<UserPresetWire> for UserPreset {
+    fn from(wire: UserPresetWire) -> Self {
+        Self {
+            id: wire.id,
+            name: wire.name,
+            recipe: LookRecipe {
+                base: wire.base,
+                settings: wire.settings,
+            },
+        }
+    }
+}
+
+impl From<UserPreset> for UserPresetWire {
+    fn from(preset: UserPreset) -> Self {
+        Self {
+            id: preset.id,
+            name: preset.name,
+            base: preset.recipe.base,
+            settings: preset.recipe.settings,
+        }
+    }
 }
 
 /// Что именно сохраняется между запусками. Встроенные пресеты сюда НЕ входят: их значения
@@ -26,7 +63,7 @@ pub struct LibrarySnapshot {
     /// Активный пресет.
     pub active: PresetId,
     /// Правки поверх активного пресета; `None` — значения как у пресета.
-    pub edits: Option<LookSettings>,
+    pub edits: Option<LookRecipe>,
     /// Свои пресеты в порядке создания.
     pub user_presets: Vec<UserPreset>,
 }

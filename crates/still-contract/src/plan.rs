@@ -6,7 +6,7 @@
 
 use camera_contract::flash::FlashShotId;
 use camera_contract::zoom::ZoomFraming;
-use look_contract::LookSettings;
+use look_contract::{LookSettings, ToneBaseModel};
 use serde::Serialize;
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::orientation::DeviceOrientation;
@@ -107,4 +107,10 @@ pub struct StillPlan {
     /// пресет. Правка ручек или пресета после нажатия снимок не меняет. Проявление HEIF/JPEG применяет их,
     /// включая кадр со вспышкой; DNG вид не получает (инвариант 5).
     pub look: LookSettings,
+    /// Модель основы тона НА МОМЕНТ НАЖАТИЯ (решение 195, решение 8: что видишь, то и снимается). Основа — часть
+    /// вида, но не входит в `LookSettings` (нейтраль ручек означает «ручки в нуле на текущей модели»), поэтому
+    /// плану нужно два поля, а не одно. Почему не `LookRecipe` целиком: `look` читают проявление и диагностика
+    /// как готовые значения ручек, а план не должен переезжать на новый тип ради одного поля. Снимок строит свои
+    /// параметры по этой основе, а не по `viewfinder.tone.base` конфига и не по основе видоискателя СЕЙЧАС.
+    pub tone_base: ToneBaseModel,
 }

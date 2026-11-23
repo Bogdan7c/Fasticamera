@@ -7,6 +7,7 @@
 //! * экран → шкала: если значение шкалы разошлось с состоянием и палец её не держит, шкала едет к состоянию.
 
 use camera_contract::control::ExposureBias;
+use ui_kit::ruler::{FingerGate, GatedEvent};
 use ui_kit::scale::ScaleEvent;
 use ui_kit::value::{LinearLimits, QuantizedLinear, ReferenceValue};
 
@@ -16,11 +17,12 @@ use crate::action::ScreenAction;
 use crate::exposure::ExposureLimits;
 
 /// Кто сейчас двигает шкалу: палец (события превращаются в действия) или программа (события гасятся).
+///
+/// Правило «эхо не уходит в действия» живёт в `ui_kit::ruler::FingerGate` (общее с ручками раздела калибровки);
+/// здесь только перевод значения шкалы в `ExposureBias` и счётчик значений, которые им стать не смогли.
 #[derive(Debug, Default)]
 pub(crate) struct FingerDrive {
-    finger_driven: bool,
-    /// Сколько событий значения погашено как эхо программной установки (для диагностики и тестов).
-    suppressed_echo_events: u64,
+    gate: FingerGate,
     /// Сколько значений шкалы не удалось превратить в `ExposureBias` (NaN/∞ от шкалы): действие не выдано, но
     /// ошибка не глотается молча — она видна в диагностике.
     invalid_bias_values: u64,
@@ -29,20 +31,20 @@ pub(crate) struct FingerDrive {
 impl FingerDrive {
     /// Палец взял шкалу (`Began` пана).
     pub(crate) fn finger_took_over(&mut self) {
-        self.finger_driven = true;
+        self.gate.finger_took_over();
     }
 
     /// Программа взяла шкалу: дальнейшие события значения — эхо.
     pub(crate) fn program_took_over(&mut self) {
-        self.finger_driven = false;
+        self.gate.program_took_over();
     }
 
     pub(crate) fn is_finger_driven(&self) -> bool {
-        self.finger_driven
+        self.gate.is_finger_driven()
     }
 
     pub(crate) fn suppressed_echo_events(&self) -> u64 {
-        self.suppressed_echo_events
+        self.gate.suppressed_echo_events()
     }
 
     pub(crate) fn invalid_bias_values(&self) -> u64 {
@@ -51,18 +53,21 @@ impl FingerDrive {
 
     /// События шкалы → действия экрана и хаптика.
     pub(crate) fn translate(&mut self, events: Vec<ScaleEvent<f64>>, ctx: &Ctx<'_>, out: &mut Outputs) {
-        for event in events {
+        let routed = self.gate.route(events);
+        self.apply_routed(routed, ctx, out);
+    }
+
+    /// Уже отфильтрованные затвором события (их отдаёт `RulerControl`) → действия экрана и хаптика.
+    pub(crate) fn apply_routed(&mut self, routed: Vec<GatedEvent<f64>>, ctx: &Ctx<'_>, out: &mut Outputs) {
+        for event in routed {
             match event {
-                ScaleEvent::ValueChanged { value } if self.finger_driven => match ExposureBias::from_ev(value as f32) {
+                GatedEvent::FingerValue(value) => match ExposureBias::from_ev(value as f32) {
                     Ok(requested) => out
                         .actions
                         .push(ScreenAction::ExposureDragged { requested, at: ctx.now }),
                     Err(_rejected) => self.invalid_bias_values += 1,
                 },
-                ScaleEvent::ValueChanged { .. } => self.suppressed_echo_events += 1,
-                ScaleEvent::Haptic { pattern } => out.haptics.push(pattern),
-                ScaleEvent::Settled { .. } => self.finger_driven = false,
-                ScaleEvent::TickCrossed { .. } | ScaleEvent::ReferenceCrossed { .. } => {}
+                GatedEvent::Haptic(pattern) => out.haptics.push(pattern),
             }
         }
     }

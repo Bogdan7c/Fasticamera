@@ -12,8 +12,12 @@
 //! Яркость Y' считается по КОДАМ с коэффициентами BT.709 и для Display P3: прибор меряет сигнал так, как
 //! видеоинструменты (решение 183, выбор агента).
 //!
+//! `x` и `width` здесь — положение на ГОРИЗОНТАЛИ ГЛАЗА (`SamplePosition::from_shown` по `ScopeScan`).
+//!
 //! GLSL (на отсчёт): `uint column = (x * columns) / width; int bin = projection(code);
 //! if (bin < 0 || bin >= levels) return; uint row = uint(levels - 1 - bin);`.
+
+use scope_contract::ScopeScan;
 
 use crate::grid::{GridError, GridShape};
 use crate::projection::{IntegerProjection, PROJECTION_SHIFT, ProjectionError, WeightSum};
@@ -49,6 +53,8 @@ struct LevelAxis {
     levels: u32,
     /// Проверенная форма сетки (колонки × уровни × плоскости).
     shape: GridShape,
+    /// Как глаз читает картинку слева направо: откуда берётся положение отсчёта.
+    scan: ScopeScan,
 }
 
 impl LevelAxis {
@@ -58,7 +64,12 @@ impl LevelAxis {
         }
         // Проверка формы (столбцы и предел ячеек) — той же функцией, что и сетка.
         let shape = GridShape::try_new(columns, levels, planes)?;
-        Ok(Self { columns, levels, shape })
+        Ok(Self {
+            columns,
+            levels,
+            shape,
+            scan: ScopeScan::Upright,
+        })
     }
 
     /// Столбец сетки для столбца картинки.
@@ -108,6 +119,13 @@ impl WaveformRule {
         self.projection
     }
 
+    /// Читает картинку так, как её видит глаз при положении телефона `scan` (по умолчанию — портрет).
+    #[must_use]
+    pub fn with_scan(mut self, scan: ScopeScan) -> Self {
+        self.axis.scan = scan;
+        self
+    }
+
     /// Число столбцов сетки.
     pub fn columns(&self) -> u32 {
         self.axis.columns
@@ -122,6 +140,10 @@ impl WaveformRule {
 impl ScopeRule for WaveformRule {
     fn shape(&self) -> GridShape {
         self.axis.shape
+    }
+
+    fn scan(&self) -> ScopeScan {
+        self.axis.scan
     }
 
     fn hits(&self, position: SamplePosition, code: [u16; 3], report: &mut dyn FnMut(Hit)) {
@@ -168,6 +190,13 @@ impl ParadeRule {
         self.projections
     }
 
+    /// Читает картинку так, как её видит глаз при положении телефона `scan` (по умолчанию — портрет).
+    #[must_use]
+    pub fn with_scan(mut self, scan: ScopeScan) -> Self {
+        self.axis.scan = scan;
+        self
+    }
+
     /// Число столбцов сетки.
     pub fn columns(&self) -> u32 {
         self.axis.columns
@@ -182,6 +211,10 @@ impl ParadeRule {
 impl ScopeRule for ParadeRule {
     fn shape(&self) -> GridShape {
         self.axis.shape
+    }
+
+    fn scan(&self) -> ScopeScan {
+        self.axis.scan
     }
 
     fn hits(&self, position: SamplePosition, code: [u16; 3], report: &mut dyn FnMut(Hit)) {

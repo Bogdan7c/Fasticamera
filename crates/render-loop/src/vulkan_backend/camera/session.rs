@@ -272,7 +272,8 @@ impl CameraSession {
             .with_tone(tone)
             .with_lens_shading(lens_shading)
             .with_look_model(look_model)
-            .with_look(Arc::clone(&settings.look));
+            .with_look(Arc::clone(&settings.look))
+            .with_tone_base_model(settings.tone_base);
         Ok(Self {
             frames,
             importer,
@@ -321,6 +322,7 @@ impl CameraSession {
         // Вид берётся из кэша параметров, а не из копии настроек: так диагностика показывает то, под что реально
         // считаются параметры кадра, и потерянная пересылка вида в кэш не прячется.
         diagnostics.look = Arc::new(self.params.look().clone());
+        diagnostics.tone_base = self.params.tone_base_model();
         diagnostics.auto_exposure = self.exposure.as_ref().map(ExposureRunner::diagnostics);
         diagnostics.continuity.holding = self.continuity.is_holding();
         diagnostics
@@ -338,6 +340,11 @@ impl CameraSession {
         if settings.look != self.settings.look {
             // Смена значений вида: параметры пересчитаются на следующем кадре (ключ кэша содержит вид).
             self.params.set_look(Arc::clone(&settings.look));
+        }
+        if settings.tone_base != self.settings.tone_base {
+            // Смена модели основы: параметры пересчитаются на следующем кадре (основа входит в ключ кэша),
+            // нужный вариант шейдера уже заготовлен — паузы нет.
+            self.params.set_tone_base(settings.tone_base);
         }
         self.settings = settings;
     }

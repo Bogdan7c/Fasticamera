@@ -55,6 +55,12 @@ object ShellBridge {
 
     @JvmStatic external fun nativeCameraPermissionResult(grantResults: IntArray, shouldShowRationale: Boolean)
 
+    /**
+     * Ответ диалога ввода текста ([TextInputDialog]): [id] — номер запроса из `ShellPlatform.requestText`, [outcome] — один
+     * из `TextInputDialog.OUTCOME_*`, [text] — введённая строка только для «введено», иначе `null`. Не блокирует.
+     */
+    @JvmStatic external fun nativeTextInputResult(id: Long, outcome: Int, text: String?)
+
     /** Команда, принятая от Rust, не выполнилась; [command] — один из `ShellPlatform.COMMAND_*`. */
     @JvmStatic external fun nativePlatformCommandFailed(command: Int, reason: String)
 }

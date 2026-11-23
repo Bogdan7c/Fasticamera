@@ -31,6 +31,14 @@ pub enum NoChangeReason {
     NothingToClose,
     /// Фактов о камере нет, показывать нечего (например, точка камеры вне видимого кадра).
     NothingToShow,
+    /// Клавиша громкости в режиме, где она не снимает (раздел калибровки, решение 185).
+    VolumeKeyIgnoredInMode,
+    /// Орган управления уже как в пресете: «↻» тусклая, сбрасывать нечего (решение 196).
+    ControlMatchesPreset,
+    /// Правок поверх пресета нет: отбрасывать или перезаписывать нечего.
+    NoEditsOnTop,
+    /// Ответ ввода текста или номер запроса не относится к ожидаемому запросу (устарел, вытеснен, дубль).
+    StaleTextResult,
 }
 
 /// Причина отказа.
@@ -72,11 +80,28 @@ pub enum Rejection {
     ZoomStopMissing,
     /// Масштаб щипка или запрошенный коэффициент не число / не больше нуля.
     InvalidZoomInput,
+    /// Затвор нажат в режиме без затвора (раздел калибровки, решение 185).
+    ShutterAbsentInMode,
+    /// Действие раздела калибровки вне этого режима (ручки, приборы, «чистяк», пресеты в меню калибровки).
+    NotInCalibrationMode,
+    /// Фактов о виде нет: библиотеки пресетов нет, ручки отключены.
+    LookFactsMissing,
+    /// Текущая основа тона не умеет эту ручку (она показана приглушённой).
+    KnobUnsupportedByBase,
+    /// Полосы оттенка с таким идентификатором в фактах о виде нет.
+    UnknownBand,
+    /// Пресета с таким идентификатором в списке пресетов нет (или это не свой пресет там, где нужен свой).
+    UnknownPreset,
+    /// Активный пресет встроенный: его нельзя перезаписать.
+    BuiltinPresetReadOnly,
+    /// Действие управления камерой (фокус, экспозиция, зум, значки) в режиме без такого управления
+    /// (`ModeBehaviour::camera_controls`).
+    NotAvailableInMode,
 }
 
 impl Rejection {
     /// Число причин (размер таблицы счётчиков). Сверяется с [`Rejection::ALL`] на этапе компиляции.
-    const COUNT: usize = 18;
+    const COUNT: usize = 26;
 
     /// Номер ячейки счётчика. `match` без `_`: новый вариант `Rejection` не скомпилируется, пока ему
     /// не дали номер, — забытая ячейка невозможна. Согласованность номеров с `ALL` проверяет тест.
@@ -100,6 +125,14 @@ impl Rejection {
             Rejection::ZoomStopMissing => 15,
             Rejection::InvalidZoomInput => 16,
             Rejection::SavingQueueFull => 17,
+            Rejection::ShutterAbsentInMode => 18,
+            Rejection::NotInCalibrationMode => 19,
+            Rejection::LookFactsMissing => 20,
+            Rejection::KnobUnsupportedByBase => 21,
+            Rejection::UnknownBand => 22,
+            Rejection::UnknownPreset => 23,
+            Rejection::BuiltinPresetReadOnly => 24,
+            Rejection::NotAvailableInMode => 25,
         }
     }
 
@@ -123,6 +156,14 @@ impl Rejection {
         Rejection::ZoomStopMissing,
         Rejection::InvalidZoomInput,
         Rejection::SavingQueueFull,
+        Rejection::ShutterAbsentInMode,
+        Rejection::NotInCalibrationMode,
+        Rejection::LookFactsMissing,
+        Rejection::KnobUnsupportedByBase,
+        Rejection::UnknownBand,
+        Rejection::UnknownPreset,
+        Rejection::BuiltinPresetReadOnly,
+        Rejection::NotAvailableInMode,
     ];
 }
 

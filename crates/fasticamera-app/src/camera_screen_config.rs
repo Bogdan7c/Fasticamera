@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use ui_core::time::MotionPreference;
 
 use crate::camera_screen_capture::FakeCaptureTiming;
+use crate::look_facts::{BandSwatchStyle, BandSwatchStyleError};
 
 /// Предел задержки фейк-снимка: дольше минуты ждать ответ фейка нет смысла (скорее всего опечатка в единицах).
 const MAX_FAKE_CAPTURE_DELAY_MS: u64 = 60_000;
@@ -106,6 +107,8 @@ pub struct CameraScreenConfig {
     /// [estimate] 50 мс (~20 Гц): сценарий меряет секундами, а клон диагностики на каждом кадре 120 Гц — лишний
     /// мусор. 0 — каждый кадр (тесты).
     pub report_min_interval_ms: u64,
+    /// Вид цветных точек полос в разделе калибровки (цвет считает приложение: экран не видит математику цвета).
+    pub band_swatch: BandSwatchStyle,
 }
 
 impl Default for CameraScreenConfig {
@@ -121,6 +124,7 @@ impl Default for CameraScreenConfig {
             fake_capture_journal_capacity: 64,
             reinstall: ScreenReinstallConfig::default(),
             report_min_interval_ms: 50,
+            band_swatch: BandSwatchStyle::default(),
         }
     }
 }
@@ -146,6 +150,8 @@ pub enum CameraScreenConfigError {
     ReinstallHealthyAfterZero,
     #[error("camera_screen.report_min_interval_ms = {value}: не больше {MAX_REPORT_INTERVAL_MS}")]
     ReportInterval { value: u64 },
+    #[error(transparent)]
+    BandSwatch(#[from] BandSwatchStyleError),
     #[error("camera_screen.screen: {0}")]
     Screen(#[from] ScreenConfigError),
 }
@@ -184,6 +190,7 @@ impl CameraScreenConfig {
                 value: self.report_min_interval_ms,
             });
         }
+        self.band_swatch.validate()?;
         self.screen.validate()?;
         Ok(())
     }

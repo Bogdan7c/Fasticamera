@@ -254,6 +254,7 @@ impl VulkanDisplayBackend {
                 destination: crate::viewfinder::FramingDestination::Configured,
                 headroom: crate::viewfinder::HeadroomBench::Disabled,
                 look: std::sync::Arc::new(look_contract::LookSettings::NEUTRAL),
+                tone_base: config.viewfinder.tone.base.into(),
                 scopes: None,
                 scope_picture_side_limit_px: config.viewfinder.scopes.max_picture_side_px,
             }
@@ -295,6 +296,15 @@ impl VulkanDisplayBackend {
     #[must_use]
     pub fn with_initial_look(mut self, look: std::sync::Arc<look_contract::LookSettings>) -> Self {
         self.viewfinder_settings.look = look;
+        self
+    }
+
+    /// Стартовая модель основы тона видоискателя (решение 195): композиция отдаёт основу активного рецепта библиотеки
+    /// ПРИ СБОРКЕ, поэтому первый кадр рисуется с ней, а не с умолчанием конфига (`viewfinder.tone.base`). Дальше
+    /// основа меняется командой `SetToneBase`. Снимок эту основу не читает: он берёт её из плана снимка.
+    #[must_use]
+    pub fn with_initial_tone_base(mut self, model: look_contract::ToneBaseModel) -> Self {
+        self.viewfinder_settings.tone_base = model;
         self
     }
 

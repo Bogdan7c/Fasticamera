@@ -24,13 +24,25 @@ pub fn panel_glass_group(
     style: &GlassStyle,
     scale: PxPerPt,
 ) -> Result<GlassGroupItem, ViewError> {
+    panel_glass_group_hosted(snapshot, style, scale, Affine2::IDENTITY)
+}
+
+/// То же, но панель живёт внутри повёрнутого хоста (раздел калибровки в альбоме): `host` переводит пиксели
+/// системы рамки снимка в пиксели экрана и целиком определяет поворот. Рамка и радиус по-прежнему берутся из
+/// снимка в системе хоста, а центр панели едет вместе с хостом, поэтому морф идёт в осях хоста, а не экрана.
+pub fn panel_glass_group_hosted(
+    snapshot: &PanelSnapshot,
+    style: &GlassStyle,
+    scale: PxPerPt,
+    host: Affine2,
+) -> Result<GlassGroupItem, ViewError> {
     let center = snapshot.frame.center();
     let placement = NodePlacementPx {
         size: PxSize::new(
             scale.px(snapshot.frame.size.width),
             scale.px(snapshot.frame.size.height),
         ),
-        transform: Affine2::translate(scale.px(center.x), scale.px(center.y)),
+        transform: Affine2::translate(scale.px(center.x), scale.px(center.y)).then(host),
         opacity: 1.0,
     };
     let mut builder = GlassGroupBuilder::new(style, scale);

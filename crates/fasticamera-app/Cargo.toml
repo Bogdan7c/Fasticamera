@@ -38,6 +38,8 @@ look-contract.workspace = true
 look-presets.workspace = true
 # Словарь цветовых приборов: экран шлёт `ScopeIntent`, исполнитель отдаёт его рендеру (14h).
 scope-contract.workspace = true
+# Слепок полос и проверка ручек основы для экрана калибровки (14b): цвет точки полосы и «что основа не умеет».
+isp-model.workspace = true
 # Демо-сцена стекла (сессия 11): сцена, элементы и словарь рисования.
 ui-core.workspace = true
 ui-draw.workspace = true
@@ -62,7 +64,6 @@ gpu-vulkan = { workspace = true, features = ["test-support"] }
 ui-render-vulkan = { workspace = true, features = ["test-support"] }
 # Сквозной тест вида (14a): настоящий бэкенд показа на ПК с подставной камерой (стенд `render-loop/tests/viewfinder_rig`)
 # и эталон `isp-model`; readback изображения видоискателя включает `test-support` render-loop.
-isp-model.workspace = true
 # Сквозной тест приборов (14h): CPU-эталон накопления и картинки сверяется с тем, что насчитал GPU.
 scope-model.workspace = true
 render-loop = { workspace = true, features = ["test-support"] }

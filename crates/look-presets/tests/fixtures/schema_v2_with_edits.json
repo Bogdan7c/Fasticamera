@@ -1,0 +1,102 @@
+{
+  "schema_version": 2,
+  "next_id": 2,
+  "active": {
+    "user": 1
+  },
+  "edits": {
+    "contrast": -0.5,
+    "midtones": 0.0,
+    "shadows": 0.0,
+    "highlights": 0.0,
+    "saturation": 0.0,
+    "vibrance": 0.0,
+    "warmth": 0.0,
+    "tint": 0.0,
+    "bands": [],
+    "wheels": {
+      "lift": {
+        "push": [
+          0.0,
+          0.0
+        ],
+        "ring": 0.0
+      },
+      "gamma": {
+        "push": [
+          0.0,
+          0.0
+        ],
+        "ring": 0.0
+      },
+      "gain": {
+        "push": [
+          0.0,
+          0.0
+        ],
+        "ring": 0.0
+      },
+      "offset": {
+        "push": [
+          -0.1,
+          0.1
+        ],
+        "ring": 0.0
+      }
+    }
+  },
+  "user_presets": [
+    {
+      "id": 1,
+      "name": "Evening",
+      "settings": {
+        "contrast": 0.3,
+        "midtones": 0.0,
+        "shadows": 0.0,
+        "highlights": 0.0,
+        "saturation": 0.0,
+        "vibrance": 0.0,
+        "warmth": -0.25,
+        "tint": 0.0,
+        "bands": [
+          {
+            "band": "sky",
+            "hue": 0.4,
+            "saturation": 0.0,
+            "luminance": 0.0
+          }
+        ],
+        "wheels": {
+          "lift": {
+            "push": [
+              0.3,
+              -0.2
+            ],
+            "ring": 0.0
+          },
+          "gamma": {
+            "push": [
+              0.0,
+              0.0
+            ],
+            "ring": 0.0
+          },
+          "gain": {
+            "push": [
+              0.0,
+              0.0
+            ],
+            "ring": 0.15
+          },
+          "offset": {
+            "push": [
+              0.0,
+              0.0
+            ],
+            "ring": 0.0
+          }
+        }
+      }
+    }
+  ]
+}

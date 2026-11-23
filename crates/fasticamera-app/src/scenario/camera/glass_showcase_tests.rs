@@ -597,7 +597,7 @@ fn inconsistent_configs_are_refused_with_a_reason() {
 #[test]
 fn label_outside_the_baked_charset_fails_the_frame_not_silently() {
     let mut config = GlassShowcaseConfig::default();
-    config.look.labels.mode = "ФОТО".to_owned();
+    config.look.labels.mode = "写真".to_owned();
     let mut showcase = GlassShowcase::new(config, &UiKitTokens::default(), None).unwrap();
     match showcase.produce_frame(&request_at(0)) {
         Err(UiFrameError::SourceFailed { reason }) => assert!(reason.contains("не входит"), "{reason}"),

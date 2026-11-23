@@ -30,7 +30,7 @@ fn begin_command(id: u64) -> StillCommand {
         plan: crate::still_capture_service::plan_from_shot(
             StillId(id),
             &shot(1),
-            look_contract::LookSettings::NEUTRAL,
+            crate::look_test_support::neutral_recipe(),
             FrameSelection::ShownAtPress,
         ),
         events: Arc::new(IdleSink),

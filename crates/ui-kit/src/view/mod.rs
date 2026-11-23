@@ -34,14 +34,14 @@ mod shutter;
 
 pub use arc_scale::{ArcLabel, ArcScaleDrawing, arc_scale_items};
 pub use banner::{banner_items, measure_banner_pt};
-pub use carousel::{CarouselLabels, carousel_items};
+pub use carousel::{CarouselLabels, carousel_items, carousel_items_in_window};
 pub use content::{
     ButtonContent, LabelPainter, button_content_item, centered_icon, centered_text, opacity_of_placement,
 };
 pub use error::ViewError;
 pub use focus::focus_frame_items;
 pub use glass_surface::{GlassGroupBuilder, GlassShape, MemberIndex, member_transform};
-pub use panel::panel_glass_group;
+pub use panel::{panel_glass_group, panel_glass_group_hosted};
 pub use ruler::{MajorTickPeriod, ruler_items};
 pub use scale::PxPerPt;
 pub use scale_ticks::scale_items;

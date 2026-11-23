@@ -23,6 +23,8 @@ use shell_contract::surface::SurfaceSize;
 use super::*;
 use crate::gpu_test_support::RecordingRenderControl;
 
+#[path = "camera_screen_effects_calibration_tests.rs"]
+mod calibration;
 #[path = "camera_screen_effects_haptic_ring_tests.rs"]
 mod haptic_ring;
 #[path = "camera_screen_effects_look_tests.rs"]
@@ -91,9 +93,9 @@ struct StubCapture {
 }
 
 impl CaptureService for StubCapture {
-    fn submit(&self, request: ShotRequest, look: look_contract::LookSettings, _now: MonotonicNanos) -> SubmitOutcome {
+    fn submit(&self, request: ShotRequest, look: look_contract::LookRecipe, _now: MonotonicNanos) -> SubmitOutcome {
         self.requests.lock().expect("замок").push(request);
-        self.looks.lock().expect("замок").push(look);
+        self.looks.lock().expect("замок").push(look.settings);
         self.outcome
     }
 }

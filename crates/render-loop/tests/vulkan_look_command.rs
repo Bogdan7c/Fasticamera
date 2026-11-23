@@ -19,7 +19,7 @@ mod vulkan_support;
 
 use std::sync::Arc;
 
-use look_contract::{LookKnob, LookSettings};
+use look_contract::{LookKnob, LookSettings, ToneBaseModel};
 use render_loop::backend::DisplayBackend;
 use render_loop::config::UiOverlayConfig;
 use render_loop::viewfinder::{ViewfinderCommand, ViewfinderCommandOutcome};
@@ -93,5 +93,50 @@ fn set_look_is_applied_once_and_frames_keep_flowing() {
         ViewfinderCommandOutcome::Applied
     );
     assert!(harness.viewfinder().look.is_neutral());
+    harness.finish();
+}
+
+#[test]
+fn the_initial_tone_base_reaches_the_first_frame_and_set_tone_base_switches_it_once() {
+    // Конфиг по умолчанию — AgX; приложение при сборке называет другую основу (активный рецепт библиотеки).
+    let Some(mut harness) = Harness::start_with_initial_tone_base(UiOverlayConfig::default(), ToneBaseModel::Filmic)
+    else {
+        return;
+    };
+    harness.attach(1, SURFACE);
+    assert_eq!(
+        harness.viewfinder().tone_base,
+        ToneBaseModel::Filmic,
+        "основа задана до первого кадра"
+    );
+    harness.show_new_camera_frame();
+    assert_eq!(
+        harness.viewfinder().tone_base,
+        ToneBaseModel::Filmic,
+        "первый кадр посчитан по стартовой основе (кэш параметров, а не копия настроек)"
+    );
+    assert_eq!(
+        harness
+            .backend
+            .apply_viewfinder_command(ViewfinderCommand::SetToneBase(ToneBaseModel::Filmic)),
+        ViewfinderCommandOutcome::AlreadyInEffect
+    );
+    assert_eq!(
+        harness
+            .backend
+            .apply_viewfinder_command(ViewfinderCommand::SetToneBase(ToneBaseModel::Aces)),
+        ViewfinderCommandOutcome::Applied
+    );
+    let processed = harness.viewfinder().counters.frames_processed;
+    harness.show_new_camera_frame();
+    assert_eq!(
+        harness.viewfinder().tone_base,
+        ToneBaseModel::Aces,
+        "кэш параметров перешёл на новую основу"
+    );
+    assert!(
+        harness.viewfinder().counters.frames_processed > processed,
+        "кадры идут после смены основы"
+    );
     harness.finish();
 }

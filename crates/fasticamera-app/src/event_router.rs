@@ -14,6 +14,7 @@ use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::time::{Duration, Instant};
 
 use shell_contract::commands::CommandOutcome;
+use shell_contract::commands::PlatformCommand;
 use shell_contract::event::{ShellEvent, ShellEventKind};
 use shell_contract::event_queue::{ReceiveError, ShellEventReceiver};
 use shell_contract::motion::GyroRequest;
@@ -37,6 +38,7 @@ use crate::scenario::observing::{
     ShellServices, StageLine,
 };
 use crate::scenario::{ScenarioConfig, ScenarioOutcome, ScenarioReport};
+use crate::text_input_broker::TextInputBroker;
 
 /// Шаг таймера наблюдающих сценариев. Это не порог поведения, а точность их часов:
 /// сценарии меряют секунды, 50 мс точности им достаточно.
@@ -134,6 +136,8 @@ pub struct EventRouter {
     active: Option<Box<dyn ObservingScenario>>,
     /// Повторы строки последнего итога (решение 58): logcat теряет строки во всплеске записи.
     result_echo: ResultEcho,
+    /// Брокер запросов текста (решение 197): получает ответы диалога ввода. `None` — запросов текста нет.
+    text_input: Option<TextInputBroker>,
 }
 
 impl EventRouter {
@@ -162,8 +166,23 @@ impl EventRouter {
             arrivals,
             active: None,
             result_echo,
+            text_input: None,
         };
         (router, ScenarioStarter { sender })
+    }
+
+    /// Подключает брокер запросов текста: ответы диалога (`ShellEvent::TextInput`) и отказы показа идут ему.
+    #[must_use]
+    pub fn with_text_input(mut self, broker: TextInputBroker) -> Self {
+        self.set_text_input(broker);
+        self
+    }
+
+    /// То же, что [`Self::with_text_input`], для уже собранного маршрутизатора (тесты).
+    pub(crate) fn set_text_input(&mut self, broker: TextInputBroker) {
+        // Экран просит имя через тот же брокер, ответы которого принимает маршрутизатор.
+        self.camera_screen.set_text_input(broker.clone());
+        self.text_input = Some(broker);
     }
 
     /// Работает, пока живы отправители событий (на телефоне — весь процесс).
@@ -281,7 +300,22 @@ impl EventRouter {
             ShellEvent::TouchGap { .. } => self.camera_screen.route_touch_gap(),
             ShellEvent::HardwareKey(key) => self.camera_screen.route_hardware_key(key),
             ShellEvent::SystemGestureZones(zones) => self.camera_screen.route_system_gesture_zones(zones),
-            // Разрешению и отказам платформы потребителей в 02 нет: только лог.
+            // Ответ диалога ввода текста отдаём брокеру: он сверит номер запроса и передаст приёмнику.
+            ShellEvent::TextInput(result) => match &self.text_input {
+                Some(broker) => {
+                    broker.deliver_platform_result(result);
+                }
+                None => {
+                    tracing::warn!(target: "fasticamera::router", id = result.id.0, "ответ диалога ввода текста без брокера")
+                }
+            },
+            // Платформа не смогла показать диалог: открытый запрос не должен висеть без ответа.
+            ShellEvent::PlatformCommandFailed(failure) if failure.command == PlatformCommand::RequestTextInput => {
+                if let Some(broker) = &self.text_input {
+                    broker.platform_refused();
+                }
+            }
+            // Разрешению и прочим отказам платформы потребителей в 02 нет: только лог.
             ShellEvent::CameraPermission(_) | ShellEvent::PlatformCommandFailed(_) => {}
         }
         observed
