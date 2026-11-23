@@ -4,12 +4,13 @@
 //! (владелец — библиотека пресетов, решение 178). Здесь только выбор самого экрана: какой прибор показан, какая
 //! полоса выбрана, держится ли «чистяк», открыто ли меню, ждём ли ответ клавиатуры, взведено ли удаление.
 
-use look_contract::{HueBandId, UserPresetId};
+use look_contract::{HueBandId, UserPresetId, WheelZone};
 use scope_contract::{ScopeKind, ScopeRequest, VectorscopeAxes};
 use shell_contract::text_input::TextRequestId;
 
 use super::config::CalibrationConfig;
 use super::layout::{CalibrationLayout, CalibrationLayoutError};
+use super::wheels_frames::WheelsFramesError;
 
 /// Что именем пресета делаем после ввода.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,12 +100,31 @@ impl CalibrationMenuItem {
     pub const ALL: [CalibrationMenuItem; 2] = [CalibrationMenuItem::Presets, CalibrationMenuItem::ScopeAxes];
 }
 
+/// Какой вид органов управления показывает колонка ручек (решение 204): строки-шкалы или цветовые колёса.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ControlViewKind {
+    /// Группы строк-линеек TONE / COLOR / BANDS (прокручиваются).
+    #[default]
+    Scales,
+    /// Одно большое колесо цвета с вкладками LIFT · GAMMA · GAIN · OFFSET (без прокрутки).
+    Wheels,
+}
+
+impl ControlViewKind {
+    /// Виды в порядке показа в переключателе SCALES | WHEELS.
+    pub const ALL: [ControlViewKind; 2] = [ControlViewKind::Scales, ControlViewKind::Wheels];
+}
+
 /// Состояние раздела калибровки. Меняется только редьюсером; снаружи — запросы по смыслу.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CalibrationState {
     scope_kind: ScopeKind,
     vectorscope_axes: VectorscopeAxes,
     selected_band: Option<HueBandId>,
+    /// Вид колонки ручек. Живёт как `selected_band`: переживает поворот и пересборку раздела (решение 204).
+    control_view: ControlViewKind,
+    /// Выбранное колесо цвета в виде колёс (решение 205); тоже переживает пересборку.
+    selected_wheel: WheelZone,
     clean_view: CleanViewState,
     menu: CalibrationMenu,
     text: TextFlow,
@@ -114,6 +134,9 @@ pub struct CalibrationState {
     /// Ошибка последней неудачной сборки раскладки; `None` — сборка удалась или не требовалась. Нужна, чтобы отказ
     /// `InvalidSurface` считался один раз на смену ошибки, а не на каждый тик и каждое действие (ревью 14b).
     layout_fault: Option<CalibrationLayoutError>,
+    /// Почему вид колёс не поместился в колонку (круг меньше допустимого); `None` — поместился или вид шкал. Как
+    /// `layout_fault`, нужен, чтобы отказ считался один раз на смену причины, а не на каждом кадре.
+    wheels_fault: Option<WheelsFramesError>,
     /// Запрос прибора, который уже ушёл рендеру и действует там (чтобы не слать то же самое дважды и
     /// знать, когда слать `Hide`).
     announced_scope: Option<ScopeRequest>,
@@ -126,12 +149,15 @@ impl CalibrationState {
             scope_kind: ScopeKind::Waveform,
             vectorscope_axes: config.vectorscope_axes,
             selected_band: None,
+            control_view: ControlViewKind::default(),
+            selected_wheel: WheelZone::Lift,
             clean_view: CleanViewState::default(),
             menu: CalibrationMenu::default(),
             text: TextFlow::default(),
             delete: DeleteConfirmation::default(),
             layout: None,
             layout_fault: None,
+            wheels_fault: None,
             announced_scope: None,
         }
     }
@@ -149,6 +175,16 @@ impl CalibrationState {
     /// Выбранная полоса оттенка (под рядом точек показаны её шкалы HUE / SAT / LUM).
     pub fn selected_band(&self) -> Option<&HueBandId> {
         self.selected_band.as_ref()
+    }
+
+    /// Вид колонки ручек: шкалы или колёса.
+    pub fn control_view(&self) -> ControlViewKind {
+        self.control_view
+    }
+
+    /// Выбранное колесо цвета (вкладка LIFT / GAMMA / GAIN / OFFSET).
+    pub fn selected_wheel(&self) -> WheelZone {
+        self.selected_wheel
     }
 
     /// Держится ли «чистяк».
@@ -208,6 +244,13 @@ impl CalibrationState {
         is_new
     }
 
+    /// Запоминает, что вид колёс не поместился (`None` — поместился). `true` — это НОВАЯ причина.
+    pub(crate) fn note_wheels_fault(&mut self, fault: Option<WheelsFramesError>) -> bool {
+        let is_new = fault.is_some() && self.wheels_fault != fault;
+        self.wheels_fault = fault;
+        is_new
+    }
+
     pub(crate) fn set_scope_kind(&mut self, kind: ScopeKind) {
         self.scope_kind = kind;
     }
@@ -218,6 +261,14 @@ impl CalibrationState {
 
     pub(crate) fn set_selected_band(&mut self, band: Option<HueBandId>) {
         self.selected_band = band;
+    }
+
+    pub(crate) fn set_control_view(&mut self, view: ControlViewKind) {
+        self.control_view = view;
+    }
+
+    pub(crate) fn set_selected_wheel(&mut self, zone: WheelZone) {
+        self.selected_wheel = zone;
     }
 
     pub(crate) fn set_clean_view(&mut self, clean_view: CleanViewState) {

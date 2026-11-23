@@ -1,6 +1,10 @@
 //! Намерения жестов экрана: тип `I` арены `UiScene<I>`. Каждый распознаватель экрана несёт одно из них,
 //! а фасад по нему передаёт событие нужному виджету.
 
+use look_contract::{WheelPart, WheelZone};
+
+use crate::calibration::ControlViewKind;
+
 /// Кнопка экрана (нажатие = `Press` для подсветки/срабатывания + `Tap` для арбитража, дока `UiScene`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ButtonId {
@@ -21,9 +25,16 @@ pub enum ButtonId {
     ZoomStop(u8),
     /// Кнопка переворота камеры.
     FlipCamera,
-    /// «↻» у органа управления раздела калибровки по номеру строки (0..8 — глобальные ручки, 8..11 — оси полосы,
-    /// 11 — основа тона).
+    /// «↻» у органа управления раздела калибровки по номеру строки: 0–7 — глобальные ручки, 8–10 — оси полосы,
+    /// 11 — основа тона, 12 — кольцо яркости выбранного колеса.
     CalibrationReset(u8),
+    /// Сегмент переключателя вида колонки SCALES | WHEELS (решение 204).
+    CalibrationControlView(ControlViewKind),
+    /// Вкладка колеса LIFT · GAMMA · GAIN · OFFSET (решение 205).
+    CalibrationWheelTab(WheelZone),
+    /// «↻» части выбранного колеса, кроме кольца (кольцо сбрасывает «↻» своей шкалы): `Whole` — у названия колеса,
+    /// `Push` — в углу круга (решение 207).
+    CalibrationWheelReset(WheelPart),
     /// Цветная точка полосы оттенка по номеру в ряду.
     CalibrationBandDot(u8),
     /// «Чистяк»: пока палец на кнопке, на превью и приборе основа без вида.
@@ -79,6 +90,8 @@ pub enum ScreenGesture {
     ZoomWheelPress,
     /// Пан вдоль линейки ручки раздела калибровки (номер строки как у `ButtonId::CalibrationReset`).
     CalibrationRulerPan(u8),
+    /// Пан по кругу толчка выбранного колеса: палец в любом месте круга тянет точку (решение 206).
+    CalibrationWheelPadPan,
     /// Пан по списку ручек (прокрутка в осях «глаза»).
     CalibrationListPan,
     /// Свайп по переключателю основы тона.
@@ -105,6 +118,7 @@ impl ScreenGesture {
     pub fn belongs_to_calibration(self) -> bool {
         match self {
             ScreenGesture::CalibrationRulerPan(_)
+            | ScreenGesture::CalibrationWheelPadPan
             | ScreenGesture::CalibrationListPan
             | ScreenGesture::CalibrationBasePan
             | ScreenGesture::CalibrationScopePan
@@ -116,6 +130,9 @@ impl ScreenGesture {
             ScreenGesture::Press(button) | ScreenGesture::ButtonTapGuard(button) => matches!(
                 button,
                 ButtonId::CalibrationReset(_)
+                    | ButtonId::CalibrationControlView(_)
+                    | ButtonId::CalibrationWheelTab(_)
+                    | ButtonId::CalibrationWheelReset(_)
                     | ButtonId::CalibrationBandDot(_)
                     | ButtonId::CleanView
                     | ButtonId::CalibrationMenu

@@ -302,3 +302,16 @@ fn a_new_problem_rebuilds_the_facts_even_when_the_library_is_quiet() {
     assert_eq!(source.observe(Some(first)), LookFactsChange::Unchanged);
     assert_eq!(source.rebuilds(), 2, "та же проблема — без пересборки");
 }
+
+#[test]
+fn facts_carry_the_wheel_ring_from_the_catalog() {
+    let ring_style = crate::look_wheel_ring::WheelRingStyle {
+        stops: 36,
+        ..Default::default()
+    };
+    let handle = handle_with(StubPersistence::accepting());
+    let source = LookFactsSource::new(handle, catalog().with_wheel_ring_style(&ring_style));
+    let facts = source.current_facts(None);
+    assert_eq!(facts.wheel_ring.stops().len(), 36);
+    assert_eq!(&facts.wheel_ring, source.catalog.wheel_ring());
+}

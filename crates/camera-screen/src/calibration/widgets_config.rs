@@ -38,6 +38,32 @@ pub struct CalibrationWidgetsConfig {
     pub row_height_pt: f64,
     /// Высота верхней линии строки (заголовок, значение, «↻»). `[invented]`.
     pub row_title_height_pt: f64,
+    /// Высота строки переключателя вида SCALES | WHEELS под шапкой (она же зона касания сегментов). `[invented]`.
+    pub view_switcher_height_pt: f64,
+    /// Высота капсулы сегмента переключателя вида и вкладки колеса (строка выше на зазор до зоны касания). `[invented]`.
+    pub segment_height_pt: f64,
+    /// Промежуток между сегментами переключателя вида и между вкладками колёс. `[invented]`.
+    pub segment_gap_pt: f64,
+    /// Высота строки вкладок LIFT · GAMMA · GAIN · OFFSET. `[invented]`.
+    pub wheel_tabs_height_pt: f64,
+    /// Высота строки «название колеса и ↻ колеса целиком». `[invented]`.
+    pub wheel_title_height_pt: f64,
+    /// Высота линейки кольца яркости (под строкой с названием и значением, как у остальных ручек). `[invented]`.
+    pub wheel_ring_ruler_height_pt: f64,
+    /// Вертикальный промежуток между блоками вида колёс (вкладки, название, круг, шкала кольца). `[invented]`.
+    pub wheel_block_gap_pt: f64,
+    /// Наибольший диаметр круга колеса (решение 205: ≈ 170 pt портрет); меньше — по месту. `[estimate]`.
+    pub wheel_circle_max_diameter_pt: f64,
+    /// Наименьший диаметр круга: меньше круг не строится (раздел отказывает сборкой, а не рисует крошку). `[estimate]`.
+    pub wheel_circle_min_diameter_pt: f64,
+    /// Толщина цветного кольца оттенков вокруг круга толчка. `[estimate]`.
+    pub wheel_ring_thickness_pt: f64,
+    /// Прозрачность тёмной подложки круга толчка (чёрная заливка). `[estimate]`.
+    pub wheel_pad_fill_alpha: f32,
+    /// Диаметр метки-кольца «колесо правлено» на вкладке. `[invented]`.
+    pub wheel_tab_marker_diameter_pt: f64,
+    /// Толщина метки-кольца вкладки. `[invented]`.
+    pub wheel_tab_marker_width_pt: f64,
     /// Диаметр кнопки «↻» в строке. `[invented]`.
     pub reset_button_diameter_pt: f64,
     /// Высота ряда цветных точек полос. `[invented]`.
@@ -105,6 +131,19 @@ impl Default for CalibrationWidgetsConfig {
             group_header_height_pt: 30.0,
             row_height_pt: 68.0,
             row_title_height_pt: 28.0,
+            view_switcher_height_pt: 36.0,
+            segment_height_pt: 28.0,
+            segment_gap_pt: 4.0,
+            wheel_tabs_height_pt: 36.0,
+            wheel_title_height_pt: 26.0,
+            wheel_ring_ruler_height_pt: 32.0,
+            wheel_block_gap_pt: 4.0,
+            wheel_circle_max_diameter_pt: 170.0,
+            wheel_circle_min_diameter_pt: 48.0,
+            wheel_ring_thickness_pt: 10.0,
+            wheel_pad_fill_alpha: 0.35,
+            wheel_tab_marker_diameter_pt: 7.0,
+            wheel_tab_marker_width_pt: 1.5,
             reset_button_diameter_pt: 26.0,
             band_dots_height_pt: 44.0,
             band_dot_diameter_pt: 24.0,
@@ -146,6 +185,14 @@ pub enum CalibrationWidgetsConfigError {
     ZeroMajorPeriod,
     #[error("в ряду таблеток от 1 до {MAX_CHIP_POOL}: {value}")]
     ChipPoolOutOfRange { value: usize },
+    #[error(
+        "круг колеса: наименьший диаметр {min_pt} больше наибольшего {max_pt}, либо кольцо {thickness_pt} не уже радиуса"
+    )]
+    WheelCircleRange {
+        min_pt: f64,
+        max_pt: f64,
+        thickness_pt: f64,
+    },
     #[error("строка ({row_height_pt} pt) не вмещает верхнюю линию ({title_height_pt} pt) и линейку")]
     RowTooShort { row_height_pt: f64, title_height_pt: f64 },
 }
@@ -165,6 +212,18 @@ impl CalibrationWidgetsConfig {
             ("row_height_pt", self.row_height_pt),
             ("row_title_height_pt", self.row_title_height_pt),
             ("reset_button_diameter_pt", self.reset_button_diameter_pt),
+            ("view_switcher_height_pt", self.view_switcher_height_pt),
+            ("segment_height_pt", self.segment_height_pt),
+            ("segment_gap_pt", self.segment_gap_pt),
+            ("wheel_tabs_height_pt", self.wheel_tabs_height_pt),
+            ("wheel_title_height_pt", self.wheel_title_height_pt),
+            ("wheel_ring_ruler_height_pt", self.wheel_ring_ruler_height_pt),
+            ("wheel_block_gap_pt", self.wheel_block_gap_pt),
+            ("wheel_circle_max_diameter_pt", self.wheel_circle_max_diameter_pt),
+            ("wheel_circle_min_diameter_pt", self.wheel_circle_min_diameter_pt),
+            ("wheel_ring_thickness_pt", self.wheel_ring_thickness_pt),
+            ("wheel_tab_marker_diameter_pt", self.wheel_tab_marker_diameter_pt),
+            ("wheel_tab_marker_width_pt", self.wheel_tab_marker_width_pt),
             ("band_dots_height_pt", self.band_dots_height_pt),
             ("band_dot_diameter_pt", self.band_dot_diameter_pt),
             ("band_dot_gap_pt", self.band_dot_gap_pt),
@@ -193,6 +252,7 @@ impl CalibrationWidgetsConfig {
             ("disabled_row_opacity", f64::from(self.disabled_row_opacity)),
             ("clean_button_fill_alpha", f64::from(self.clean_button_fill_alpha)),
             ("chip_fill_alpha", f64::from(self.chip_fill_alpha)),
+            ("wheel_pad_fill_alpha", f64::from(self.wheel_pad_fill_alpha)),
             (
                 "clean_button_held_fill_alpha",
                 f64::from(self.clean_button_held_fill_alpha),
@@ -218,6 +278,15 @@ impl CalibrationWidgetsConfig {
             return Err(CalibrationWidgetsConfigError::RowTooShort {
                 row_height_pt: self.row_height_pt,
                 title_height_pt: self.row_title_height_pt,
+            });
+        }
+        if self.wheel_circle_min_diameter_pt > self.wheel_circle_max_diameter_pt
+            || self.wheel_ring_thickness_pt >= self.wheel_circle_min_diameter_pt / 2.0
+        {
+            return Err(CalibrationWidgetsConfigError::WheelCircleRange {
+                min_pt: self.wheel_circle_min_diameter_pt,
+                max_pt: self.wheel_circle_max_diameter_pt,
+                thickness_pt: self.wheel_ring_thickness_pt,
             });
         }
         Ok(())

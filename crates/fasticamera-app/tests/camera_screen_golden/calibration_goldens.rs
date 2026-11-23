@@ -12,10 +12,15 @@ use camera_screen::calibration::CalibrationMenuItem;
 use camera_screen::modes::CaptureMode;
 use camera_screen::tools::ToolId;
 use camera_screen::{PanelState, ScreenAction};
+use fasticamera::look_facts::{BandSwatchStyle, LookFactsCatalog};
+use fasticamera::look_wheel_ring::WheelRingStyle;
+use look_contract::ColorWheels;
 use look_contract::{
     BandFacts, BandSwatch, BuiltinPreset, EditState, HueBandId, LookFacts, LookProblem, LookProblemKind, LookRecipe,
     LookSettings, PresetEntry, PresetError, PresetId, PresetKind, PresetName, ToneBaseModel, UserPresetId,
+    WheelHueRing,
 };
+use render_loop::config::RenderLoopConfig;
 use shell_contract::orientation::DeviceOrientation;
 use ui_core::geometry::Rect;
 use ui_draw::draw_list::DrawList;
@@ -38,10 +43,37 @@ fn preset(id: PresetId, name: &str, kind: PresetKind) -> PresetEntry {
 }
 
 /// Факты о виде: два встроенных и два своих пресета, три полосы; активен `active`, правки — `edits`.
+/// Колёса нейтральны.
 fn look_facts(active: PresetId, edits: EditState, problem: Option<LookProblem>) -> LookFacts {
-    let recipe = LookRecipe {
+    look_facts_with_wheels(active, edits, problem, ColorWheels::NEUTRAL)
+}
+
+/// Настоящий ободок колёс: цвета OKLab из каталога приложения по умолчанию (а не однотонная заглушка), чтобы golden
+/// и пиксельные проверки видели те оттенки, что рисует продукт.
+pub(crate) fn real_wheel_ring() -> WheelHueRing {
+    LookFactsCatalog::from_render_config(&RenderLoopConfig::default(), &BandSwatchStyle::default())
+        .with_wheel_ring_style(&WheelRingStyle::default())
+        .wheel_ring()
+        .clone()
+}
+
+/// Те же факты, но ТЕКУЩИЙ вид несёт колёса `wheels` (пресет остаётся нейтральным: отличие от пресета и даёт яркие «↻»).
+pub(crate) fn look_facts_with_wheels(
+    active: PresetId,
+    edits: EditState,
+    problem: Option<LookProblem>,
+    wheels: ColorWheels,
+) -> LookFacts {
+    let preset_recipe = LookRecipe {
         base: ToneBaseModel::Agx,
         settings: LookSettings::NEUTRAL,
+    };
+    let recipe = LookRecipe {
+        base: ToneBaseModel::Agx,
+        settings: LookSettings {
+            wheels,
+            ..LookSettings::NEUTRAL
+        },
     };
     LookFacts {
         active,
@@ -51,8 +83,8 @@ fn look_facts(active: PresetId, edits: EditState, problem: Option<LookProblem>) 
             preset(PresetId::User(SUNSET), "Sunset", PresetKind::User),
             preset(PresetId::User(UserPresetId(9)), "Night", PresetKind::User),
         ],
-        current: recipe.clone(),
-        preset: recipe,
+        current: recipe,
+        preset: preset_recipe,
         edits,
         bands: ["red", "sky", "green"]
             .into_iter()
@@ -61,17 +93,18 @@ fn look_facts(active: PresetId, edits: EditState, problem: Option<LookProblem>) 
                 swatch: BandSwatch { srgb: [200, 40, 40] },
             })
             .collect(),
+        wheel_ring: real_wheel_ring(),
         unsupported_knobs: Vec::new(),
         problem,
     }
 }
 
-fn as_eye() -> PresetId {
+pub(crate) fn as_eye() -> PresetId {
     PresetId::Builtin(BuiltinPreset::AsEye)
 }
 
 /// Раздел калибровки: факты о виде, положение телефона, режим CALIBRATE.
-fn calibration(orientation: DeviceOrientation) -> ScreenDriver {
+pub(crate) fn calibration(orientation: DeviceOrientation) -> ScreenDriver {
     let mut driver = ScreenDriver::new();
     driver.act(ScreenAction::LookFactsChanged(Box::new(look_facts(
         as_eye(),
@@ -132,11 +165,11 @@ fn problem_banner() -> ScreenDriver {
 }
 
 /// В разделе калибровки видоискатель — весь экран (его рисует рендер), а не кадр 4:3 экрана PHOTO.
-fn render_calibration(rig: &mut RenderRig, driver: &ScreenDriver, scope: ScopeImage) -> Snapshot {
+pub(crate) fn render_calibration(rig: &mut RenderRig, driver: &ScreenDriver, scope: ScopeImage) -> Snapshot {
     render_calibration_list(rig, driver.list(), scope)
 }
 
-fn render_calibration_list(rig: &mut RenderRig, list: &DrawList, scope: ScopeImage) -> Snapshot {
+pub(crate) fn render_calibration_list(rig: &mut RenderRig, list: &DrawList, scope: ScopeImage) -> Snapshot {
     rig.render_with_scope(
         list,
         ViewfinderRectPx {
@@ -150,7 +183,7 @@ fn render_calibration_list(rig: &mut RenderRig, list: &DrawList, scope: ScopeIma
 }
 
 /// Глазной прямоугольник раздела → окно на поверхности, px.
-fn eye_zone_window(driver: &ScreenDriver, eye: Rect) -> Window {
+pub(crate) fn eye_zone_window(driver: &ScreenDriver, eye: Rect) -> Window {
     let layout = driver
         .screen()
         .state()
@@ -172,7 +205,7 @@ const GLASS_HALO_PX: u32 = 24;
 
 /// Сколько пикселей окна заметно (больше `VISIBLE_DIFFERENCE`) отличаются между снимками. Среднее здесь не годится:
 /// маленькая подпись на большом окне почти не двигает среднее, а один лишний значок — уже поломка.
-fn differing_pixels(first: &Snapshot, second: &Snapshot, window: Window) -> usize {
+pub(crate) fn differing_pixels(first: &Snapshot, second: &Snapshot, window: Window) -> usize {
     let (x0, y0, x1, y1) = window;
     let mut count = 0;
     for y in y0..y1 {
@@ -187,17 +220,17 @@ fn differing_pixels(first: &Snapshot, second: &Snapshot, window: Window) -> usiz
 }
 
 /// Разница канала, с которой пиксель считается нарисованным поверх (выше шума 10-битной цели и тонкого хвоста тени стекла у края панели; подпись или значок дают на порядок больше).
-const VISIBLE_DIFFERENCE: f32 = 0.05;
+pub(crate) const VISIBLE_DIFFERENCE: f32 = 0.05;
 
 /// Один видоискатель без интерфейса: пустой список рисования поверх того же «фото» на весь экран.
-fn bare_viewfinder(rig: &mut RenderRig) -> Snapshot {
+pub(crate) fn bare_viewfinder(rig: &mut RenderRig) -> Snapshot {
     let empty = DrawList::new(LightDirection::from_angle_degrees(45.0));
     render_calibration_list(rig, &empty, ScopeImage::Absent)
 }
 
 /// Общие проверки раздела калибровки: чистая зона — живой видоискатель без UI; прибор лежит ровно на своей зоне;
 /// выбранный режим CALIBRATE жёлтый в капсуле.
-fn assert_calibration_zones(rig: &mut RenderRig, driver: &ScreenDriver, snapshot: &Snapshot, context: &str) {
+pub(crate) fn assert_calibration_zones(rig: &mut RenderRig, driver: &ScreenDriver, snapshot: &Snapshot, context: &str) {
     let layout = *driver.screen().state().calibration().layout().expect("раскладка");
     let zones = *layout.zones();
     let clean = eye_zone_window(driver, zones.clean_preview);

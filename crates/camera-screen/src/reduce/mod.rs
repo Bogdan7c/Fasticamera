@@ -27,6 +27,7 @@ mod scopes;
 mod sensors;
 mod shutter;
 mod viewfinder;
+mod wheels;
 mod zoom;
 
 #[cfg(test)]
@@ -80,6 +81,9 @@ mod thumbnail_tests;
 #[cfg(test)]
 #[path = "viewfinder_tests.rs"]
 mod viewfinder_tests;
+#[cfg(test)]
+#[path = "wheels_tests.rs"]
+mod wheels_tests;
 #[cfg(test)]
 #[path = "zoom_gesture_tests.rs"]
 mod zoom_gesture_tests;
@@ -291,6 +295,10 @@ fn dispatch_action(ctx: &mut Ctx<'_>, action: ScreenAction) -> ActionOutcome {
         ScreenAction::BandKnobDragged { band, axis, value } => {
             calibration::on_band_knob_dragged(ctx, band, axis, value)
         }
+        ScreenAction::ControlViewSelected(view) => wheels::on_control_view_selected(ctx, view),
+        ScreenAction::WheelSelected(zone) => wheels::on_wheel_selected(ctx, zone),
+        ScreenAction::WheelPushDragged { zone, push } => wheels::on_wheel_push_dragged(ctx, zone, push),
+        ScreenAction::WheelRingDragged { zone, ring } => wheels::on_wheel_ring_dragged(ctx, zone, ring),
         ScreenAction::ToneBaseSelected(base) => calibration::on_tone_base_selected(ctx, base),
         ScreenAction::ResetControlTapped(control) => calibration::on_reset_control(ctx, control),
         ScreenAction::ScopeKindSelected(kind) => calibration::on_scope_kind_selected(ctx, kind),

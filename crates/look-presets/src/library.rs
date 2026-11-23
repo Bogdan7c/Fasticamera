@@ -8,9 +8,9 @@
 //! - операция с ошибкой не меняет состояние.
 
 use look_contract::{
-    ActiveLook, BandAxis, BuiltinPreset, EditState, GlobalKnob, HueBandId, LookControl, LookIntent, LookKnob,
-    LookRecipe, LookSettings, PresetEntry, PresetError, PresetId, PresetKind, PresetName, StorageFailure,
-    ToneBaseModel, UserPresetId,
+    ActiveLook, BandAxis, BuiltinPreset, ColorWheel, EditState, GlobalKnob, HueBandId, LookControl, LookIntent,
+    LookKnob, LookRecipe, LookSettings, PresetEntry, PresetError, PresetId, PresetKind, PresetName, StorageFailure,
+    ToneBaseModel, UserPresetId, WheelPush, WheelZone,
 };
 
 use crate::config::BuiltinCatalog;
@@ -115,6 +115,8 @@ impl PresetLibrary {
             LookIntent::SetLook(settings) => self.set_look(settings),
             LookIntent::SetKnob { knob, value } => self.set_knob(knob, value),
             LookIntent::SetBandAxis { band, axis, value } => self.set_band_axis(band, axis, value),
+            LookIntent::SetWheelPush { zone, push } => self.set_wheel_push(zone, push),
+            LookIntent::SetWheelRing { zone, ring } => self.set_wheel_ring(zone, ring),
             LookIntent::SetToneBase(base) => self.set_tone_base(base),
             LookIntent::ResetControl(control) => self.reset_control(control),
             LookIntent::SelectPreset(preset) => self.select_preset(preset),
@@ -163,6 +165,37 @@ impl PresetLibrary {
             let mut recipe = library.active_look().recipe;
             let adjustment = recipe.settings.bands.for_band(&band).with_axis(axis, value);
             recipe.settings.bands = recipe.settings.bands.with_adjustment(adjustment);
+            library.set_edited_recipe(recipe);
+            Ok(())
+        })
+    }
+
+    /// «Толчок этого колеса = эта точка» поверх текущего вида: кольцо колеса, другие колёса, ручки, полосы и
+    /// основа не трогаются. Исходы как у `set_knob`: точка та же → `Unchanged` (файл писать не надо); совпало
+    /// с рецептом пресета → `Clean`.
+    pub fn set_wheel_push(&mut self, zone: WheelZone, push: WheelPush) -> Result<LibraryChange, PresetError> {
+        self.transaction(|library| {
+            let mut recipe = library.active_look().recipe;
+            let wheel = ColorWheel {
+                push,
+                ..recipe.settings.wheels.wheel(zone)
+            };
+            recipe.settings.wheels = recipe.settings.wheels.with_wheel(zone, wheel);
+            library.set_edited_recipe(recipe);
+            Ok(())
+        })
+    }
+
+    /// «Кольцо яркости этого колеса = это значение» поверх текущего вида: толчок колеса и всё остальное целы.
+    /// Исходы те же, что у [`PresetLibrary::set_wheel_push`].
+    pub fn set_wheel_ring(&mut self, zone: WheelZone, ring: LookKnob) -> Result<LibraryChange, PresetError> {
+        self.transaction(|library| {
+            let mut recipe = library.active_look().recipe;
+            let wheel = ColorWheel {
+                ring,
+                ..recipe.settings.wheels.wheel(zone)
+            };
+            recipe.settings.wheels = recipe.settings.wheels.with_wheel(zone, wheel);
             library.set_edited_recipe(recipe);
             Ok(())
         })

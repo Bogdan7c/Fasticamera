@@ -12,12 +12,14 @@
 //! * [`ColorTokens`] — цвета фокуса, плашки, текста, затемнения;
 //! * [`ScaleTickTokens`] — размеры рисок и отметки текущего значения шкалы;
 //! * [`ArcScaleTokens`] — вид дуговой шкалы (диск, кольцо рисок, затухание);
+//! * [`DiscPadTokens`] — ведение и вид «точки в круге» (K12);
 //! * [`PanelTokens`], [`BannerTokens`], [`FocusTokens`], [`ShutterTokens`] — размеры и параметры K7–K10;
 //! * [`UiKitTokens`] — все вместе: serde-конфиг с `Default` и `validate()`.
 
 mod arc_scale;
 mod colors;
 mod density;
+mod disc_pad;
 mod elements;
 mod error;
 mod glass;
@@ -33,6 +35,7 @@ pub use crate::haptic_throttle::HapticThrottleTokens;
 pub use arc_scale::ArcScaleTokens;
 pub use colors::ColorTokens;
 pub use density::{DensityTokens, ScaleDensity};
+pub use disc_pad::DiscPadTokens;
 pub use elements::{BannerTokens, FocusTokens, PanelTokens, ShutterTokens};
 pub use error::TokenError;
 pub use glass::{GlassRole, GlassTokens};
@@ -61,6 +64,7 @@ pub struct UiKitTokens {
     pub scale_ticks: ScaleTickTokens,
     pub arc_scale: ArcScaleTokens,
     pub ruler: RulerTokens,
+    pub disc_pad: DiscPadTokens,
 }
 
 impl UiKitTokens {
@@ -78,6 +82,7 @@ impl UiKitTokens {
         self.shutter.validate()?;
         self.scale_ticks.validate()?;
         self.arc_scale.validate()?;
-        self.ruler.validate()
+        self.ruler.validate()?;
+        self.disc_pad.validate()
     }
 }

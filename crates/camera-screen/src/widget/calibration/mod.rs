@@ -25,9 +25,12 @@ mod knob_row;
 mod knobs_column;
 mod menu;
 mod paint;
+mod reset_disc;
 mod scope_panel;
+mod segments;
 pub(crate) mod space;
 mod tone_header;
+mod wheels;
 
 use look_contract::HueBandId;
 use ui_core::geometry::Rect;
@@ -46,13 +49,16 @@ use super::menu_button::{MenuButtonHome, MenuButtonWidget};
 use super::mode_carousel::{CarouselHome, ModeCarouselWidget};
 use super::text_runs::TextRuns;
 use super::{Ctx, Outputs};
-use crate::calibration::CalibrationLayout;
+use crate::calibration::{CalibrationLayout, ControlViewKind};
 
 /// От чего зависит устройство раздела: пока ключ тот же, узлы живут; изменился — раздел пересобирается.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SectionKey {
     layout: CalibrationLayout,
     bands: Vec<HueBandId>,
+    /// Вид колонки ручек: шкалы и колёса — разные наборы узлов, смена вида пересобирает раздел (решение 204).
+    /// Выбранное колесо в ключ НЕ входит: вкладки переключаются на месте.
+    control_view: ControlViewKind,
 }
 
 impl SectionKey {
@@ -64,7 +70,11 @@ impl SectionKey {
             .look_facts()
             .map(|facts| facts.bands.iter().map(|band| band.id.clone()).collect())
             .unwrap_or_default();
-        Some(Self { layout, bands })
+        Some(Self {
+            layout,
+            bands,
+            control_view: ctx.state.calibration().control_view(),
+        })
     }
 }
 
@@ -103,7 +113,7 @@ impl CalibrationSection {
             ctx,
             &space,
             (root, root_frame),
-            (space.scene_rect(zones.knobs), bands),
+            (space.scene_rect(zones.knobs), bands, key.control_view),
         )?;
         let scope = ScopePanel::build(kit, &space, (root, root_frame), space.scene_rect(zones.scope))?;
         // Чистая зона: невидимый узел свайпа режимов в глазных осях (в альбоме жесты видоискателя идут в осях поверхности).

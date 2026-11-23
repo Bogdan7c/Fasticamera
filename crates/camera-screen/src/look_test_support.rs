@@ -59,9 +59,22 @@ pub(crate) fn look_facts() -> LookFacts {
                 swatch: look_contract::BandSwatch { srgb: [200, 40, 40] },
             })
             .collect(),
+        wheel_ring: test_wheel_ring(),
         unsupported_knobs: Vec::new(),
         problem: None,
     }
+}
+
+/// Кольцо оттенков теста: не математика OKLab, а просто разные цвета у соседних стопов, чтобы растр кольца в тестах
+/// был различим по пикселям. Число стопов — 36 (шаг 10°).
+pub(crate) fn test_wheel_ring() -> look_contract::WheelHueRing {
+    const STOP_COUNT: u8 = 36;
+    let stops = (0..STOP_COUNT)
+        .map(|index| look_contract::BandSwatch {
+            srgb: [index * 7, 255 - index * 7, 128],
+        })
+        .collect();
+    look_contract::WheelHueRing::new(stops).expect("в кольце теста достаточно стопов")
 }
 
 /// Факты, в которых активен свой пресет `preset` (правок нет).

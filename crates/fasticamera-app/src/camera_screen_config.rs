@@ -16,6 +16,7 @@ use ui_core::time::MotionPreference;
 
 use crate::camera_screen_capture::FakeCaptureTiming;
 use crate::look_facts::{BandSwatchStyle, BandSwatchStyleError};
+use crate::look_wheel_ring::{WheelRingStyle, WheelRingStyleError};
 
 /// Предел задержки фейк-снимка: дольше минуты ждать ответ фейка нет смысла (скорее всего опечатка в единицах).
 const MAX_FAKE_CAPTURE_DELAY_MS: u64 = 60_000;
@@ -109,6 +110,8 @@ pub struct CameraScreenConfig {
     pub report_min_interval_ms: u64,
     /// Вид цветных точек полос в разделе калибровки (цвет считает приложение: экран не видит математику цвета).
     pub band_swatch: BandSwatchStyle,
+    /// Вид ободка колёс цвета в разделе калибровки (число стопов, светлота, цветность; считает приложение).
+    pub wheel_ring: WheelRingStyle,
 }
 
 impl Default for CameraScreenConfig {
@@ -125,6 +128,7 @@ impl Default for CameraScreenConfig {
             reinstall: ScreenReinstallConfig::default(),
             report_min_interval_ms: 50,
             band_swatch: BandSwatchStyle::default(),
+            wheel_ring: WheelRingStyle::default(),
         }
     }
 }
@@ -152,6 +156,8 @@ pub enum CameraScreenConfigError {
     ReportInterval { value: u64 },
     #[error(transparent)]
     BandSwatch(#[from] BandSwatchStyleError),
+    #[error(transparent)]
+    WheelRing(#[from] WheelRingStyleError),
     #[error("camera_screen.screen: {0}")]
     Screen(#[from] ScreenConfigError),
 }
@@ -191,6 +197,7 @@ impl CameraScreenConfig {
             });
         }
         self.band_swatch.validate()?;
+        self.wheel_ring.validate()?;
         self.screen.validate()?;
         Ok(())
     }

@@ -32,17 +32,22 @@ mod viewfinder_rig;
 #[path = "../../render-loop/tests/vulkan_support/mod.rs"]
 mod vulkan_support;
 
+#[allow(
+    dead_code,
+    reason = "стенд общий: каждый тестовый файл берёт своё подмножество шагов"
+)]
 mod calibration_rig;
 
-use calibration_rig::{AcceptingPersistence, CalibrationRig, FailingPersistence, library_over};
+use calibration_rig::{
+    AcceptingPersistence, CalibrationRig, FailingPersistence, cpu_scope_counters, gpu_scope_counters, library_over,
+    live_scope_request,
+};
 use camera_screen::modes::CaptureMode;
 use camera_screen::{ProblemKind, ScreenAction};
 use look_contract::{GlobalKnob, LookControl, LookKnob, LookProblemKind, LookSettings, PresetId, ToneBaseModel};
 use render_loop::backend::DisplayBackend;
-use render_loop::config::RenderLoopConfig;
 use render_loop::config::ToneBaseChoice;
-use scope_contract::{ScopeIntent, ScopeKind, ScopeRequest};
-use scope_model::{HorizontalOrder, ResolvedScope, ScopeCounters, ScopeRule, ShownCodes, accumulate};
+use scope_contract::{ScopeIntent, ScopeKind};
 use shell_contract::orientation::DeviceOrientation;
 use shell_contract::text_input::{TextInputOutcome, TextInputResult};
 use viewfinder_rig::reddish;
@@ -427,39 +432,6 @@ fn a_fresh_screen_releases_the_clean_view_the_previous_screen_held() {
         "свежий экран: рендер не остался на нейтрали",
     );
     rig.finish();
-}
-
-/// Счётчики, которые насчитал GPU в последнем проходе прибора.
-fn gpu_scope_counters(rig: &CalibrationRig) -> ScopeCounters {
-    rig.bench.backend.context().wait_idle().expect("wait_idle");
-    rig.bench
-        .backend
-        .read_scope_counters()
-        .expect("чтение счётчиков приборов")
-        .expect("набор приборов есть и проход записан")
-}
-
-/// Эталон `scope_model::accumulate` по картинке видоискателя, прочитанной с GPU: то, что показано в ЭТОМ кадре,
-/// с видом, размером и осями ровно из запроса, который отправил экран.
-fn cpu_scope_counters(rig: &CalibrationRig, request: &ScopeRequest) -> ScopeCounters {
-    rig.bench.backend.context().wait_idle().expect("wait_idle");
-    let image = rig
-        .bench
-        .backend
-        .read_viewfinder_image()
-        .expect("чтение изображения видоискателя")
-        .expect("изображение видоискателя есть");
-    let shown = ShownCodes::from_display_rgba(image.width, image.height, &image.pixels, HorizontalOrder::AsStored)
-        .expect("коды");
-    let model = RenderLoopConfig::default().viewfinder.scopes.model;
-    let rule = ResolvedScope::resolve(request, &model, isp_model::image::DisplayGamut::Srgb).expect("правило");
-    accumulate(&shown, model.sample_stride, &rule as &dyn ScopeRule).expect("эталон")
-}
-
-/// Запрос прибора, который рендер держит прямо сейчас (его собственная диагностика), а не запись команд стенда.
-fn live_scope_request(rig: &mut CalibrationRig) -> ScopeRequest {
-    rig.scope_requested_at_the_render()
-        .expect("рендер держит запрос прибора")
 }
 
 /// Сквозной путь приборов в разделе калибровки: действие экрана → экран → исполнитель → команда рендеру → кадр

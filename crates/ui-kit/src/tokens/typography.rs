@@ -95,6 +95,8 @@ pub enum TextRoleKind {
     ZoomLabel,
     /// Мелкая подпись колеса зума под значением (фокусное в мм).
     ZoomFocalLabel,
+    /// Подпись сегмента переключателя и вкладки (SCALES | WHEELS, LIFT · GAMMA · GAIN · OFFSET).
+    SegmentLabel,
 }
 
 /// Одна роль текста.
@@ -179,6 +181,9 @@ pub struct TypographyTokens {
     pub zoom_label: TextRole,
     /// `[measured: R00 t=88.5–100]` заглавные 7,3 pt → кегль 10,4 pt; полужирный.
     pub zoom_focal_label: TextRole,
+    /// `[estimate]` подобрано, чтобы GAMMA влезала в капсулу 46 pt (четыре вкладки в портретной колонке);
+    /// полужирный. Размер совпадает с `zoom_focal_label` случайно: роли независимы.
+    pub segment_label: TextRole,
 }
 
 impl Default for TypographyTokens {
@@ -204,6 +209,7 @@ impl Default for TypographyTokens {
             card_option: role(TextWeight::Semibold, 14.1, DigitStyle::Tabular),
             zoom_label: role(TextWeight::Semibold, 14.2, DigitStyle::Tabular),
             zoom_focal_label: role(TextWeight::Semibold, 10.4, DigitStyle::Proportional),
+            segment_label: role(TextWeight::Semibold, 10.4, DigitStyle::Proportional),
         }
     }
 }
@@ -226,6 +232,7 @@ impl TypographyTokens {
             TextRoleKind::CardOption => &self.card_option,
             TextRoleKind::ZoomLabel => &self.zoom_label,
             TextRoleKind::ZoomFocalLabel => &self.zoom_focal_label,
+            TextRoleKind::SegmentLabel => &self.segment_label,
         }
     }
 
@@ -244,6 +251,7 @@ impl TypographyTokens {
         self.strip_unit.validate("typography.strip_unit")?;
         self.card_option.validate("typography.card_option")?;
         self.zoom_label.validate("typography.zoom_label")?;
-        self.zoom_focal_label.validate("typography.zoom_focal_label")
+        self.zoom_focal_label.validate("typography.zoom_focal_label")?;
+        self.segment_label.validate("typography.segment_label")
     }
 }

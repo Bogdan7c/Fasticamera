@@ -330,6 +330,13 @@ impl CameraScreenSource {
         self.screen.state()
     }
 
+    /// Где круг колеса цвета стоит на поверхности сейчас (`None`, если вид колёс не открыт или круг не помещается).
+    /// Нужен сквозным тестам, которые ведут настоящий палец по кругу; ответ считает сам экран по той же раскладке,
+    /// по которой он рисует круг, поэтому разойтись с нарисованным он не может.
+    pub fn wheel_pad_placement(&self) -> Option<camera_screen::WheelPadPlacement> {
+        self.screen.wheel_pad_placement()
+    }
+
     /// Шаг 1: вход из канала. Забираем всё, что накопилось к этому кадру (очередь ограничена конфигом).
     fn apply_pending_input(&mut self) -> bool {
         let mut any = false;

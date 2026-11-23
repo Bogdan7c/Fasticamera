@@ -667,7 +667,8 @@ impl CameraScreenService {
         let look_facts = self.look.clone().map(|handle| {
             LookFactsSource::new(
                 handle,
-                LookFactsCatalog::from_render_config(&env.gpu.render_config, &self.config.band_swatch),
+                LookFactsCatalog::from_render_config(&env.gpu.render_config, &self.config.band_swatch)
+                    .with_wheel_ring_style(&self.config.wheel_ring),
             )
         });
         let source = CameraScreenSource::new(ScreenSourceParts {

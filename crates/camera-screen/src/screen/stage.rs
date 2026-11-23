@@ -490,6 +490,7 @@ impl Stage {
                 | ScreenGesture::ZoomStripPan
                 | ScreenGesture::ZoomWheelPan
                 | ScreenGesture::CalibrationRulerPan(_)
+                | ScreenGesture::CalibrationWheelPadPan
                 | ScreenGesture::CalibrationListPan
                 | ScreenGesture::CalibrationBasePan
                 | ScreenGesture::CalibrationScopePan

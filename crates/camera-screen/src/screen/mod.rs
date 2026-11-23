@@ -285,6 +285,23 @@ impl CameraScreen {
             .map_or(f64::NAN, |stage| stage.focus().sun_value_ev(self.clock.last))
     }
 
+    /// Где на поверхности стоит круг колеса цвета (pt): центр, сторона и радиус области толчка. `None` — круга
+    /// сейчас нет: не режим калибровки, вид шкал (колёса не выбраны), нет размера поверхности или колонка слишком
+    /// низкая для круга. Нужен сквозным тестам, которые ведут настоящий палец по кругу, и не раскрывает устройство
+    /// виджета: ответ считает та же функция, по которой строится раздел.
+    pub fn wheel_pad_placement(&self) -> Option<crate::calibration::WheelPadPlacement> {
+        let calibration = self.state.calibration();
+        if calibration.control_view() != crate::calibration::ControlViewKind::Wheels {
+            return None;
+        }
+        crate::calibration::wheel_pad_placement(
+            calibration.layout()?,
+            &self.config.calibration.widgets,
+            self.state.pixels_per_point()?,
+        )
+        .ok()
+    }
+
     pub fn state(&self) -> &ScreenState {
         &self.state
     }
@@ -574,6 +591,14 @@ mod screen_calibration_section_tests;
 #[cfg(test)]
 #[path = "screen_calibration_tests.rs"]
 mod screen_calibration_tests;
+
+#[cfg(test)]
+#[path = "screen_calibration_wheels_tests.rs"]
+mod screen_calibration_wheels_tests;
+
+#[cfg(test)]
+#[path = "screen_calibration_wheels_pad_tests.rs"]
+mod screen_calibration_wheels_pad_tests;
 #[cfg(test)]
 #[path = "screen_card_close_tests.rs"]
 mod screen_card_close_tests;

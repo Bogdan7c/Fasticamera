@@ -12,12 +12,12 @@ use camera_contract::control::ExposureBias;
 use camera_contract::zoom::ZoomRatio;
 use look_contract::{
     BandAxis, GlobalKnob, HueBandId, LookControl, LookFacts, LookIntent, LookKnob, PresetId, ToneBaseModel,
-    UserPresetId,
+    UserPresetId, WheelPush, WheelZone,
 };
 use scope_contract::{ScopeIntent, ScopeKind, VectorscopeAxes};
 use shell_contract::text_input::{TextInputResult, TextRequestId};
 
-use crate::calibration::CalibrationMenuItem;
+use crate::calibration::{CalibrationMenuItem, ControlViewKind};
 use crate::facts::CameraFacts;
 use crate::modes::CaptureMode;
 use crate::shutter::{CaptureOutcome, ShotRequestId};
@@ -139,7 +139,8 @@ pub enum ScreenAction {
     /// Новый снимок состояния вида от библиотеки пресетов (список пресетов, текущий рецепт, отличия от пресета,
     /// полосы, неподдержанные ручки, проблема). Эффектов не порождает; проблема с новым серийным номером поднимает плашку.
     LookFactsChanged(Box<LookFacts>),
-    /// Глобальная ручка потянута до значения. Уходит как `SetLook` с текущими настройками, где заменена одна ручка.
+    /// Глобальная ручка потянута до значения. Уходит точечным намерением `SetKnob`: заменяется только эта ручка
+    /// (не `SetLook` с полным набором: два пальца в одном кадре не должны затирать друг друга).
     KnobDragged { knob: GlobalKnob, value: LookKnob },
     /// Ось полосы оттенка потянута до значения.
     BandKnobDragged {
@@ -147,6 +148,14 @@ pub enum ScreenAction {
         axis: BandAxis,
         value: LookKnob,
     },
+    /// Выбран вид колонки ручек: шкалы или колёса (переключатель SCALES | WHEELS, решение 204). Эффектов нет.
+    ControlViewSelected(ControlViewKind),
+    /// Выбрано колесо цвета (вкладка LIFT · GAMMA · GAIN · OFFSET, решение 205). Эффектов нет.
+    WheelSelected(WheelZone),
+    /// Точка толчка колеса потянута пальцем. Уходит точечным намерением `SetWheelPush`.
+    WheelPushDragged { zone: WheelZone, push: WheelPush },
+    /// Кольцо яркости колеса потянуто пальцем. Уходит точечным намерением `SetWheelRing`.
+    WheelRingDragged { zone: WheelZone, ring: LookKnob },
     /// Выбрана модель основы тона (свайп над ручками).
     ToneBaseSelected(ToneBaseModel),
     /// Тап по «↻» у органа управления: вернуть к значению пресета (решение 196). Тусклая «↻» — `NoChange`.

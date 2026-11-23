@@ -1,5 +1,6 @@
-//! Колонка ручек слева (решения 185, 199, 203): стеклянная панель, под ней видоискатель; сверху шапка (основа тона
-//! и «чистяк»), ниже свободно прокручиваемый список органов управления.
+//! Колонка ручек слева (решения 185, 199, 203, 204): стеклянная панель, под ней видоискатель; сверху шапка (основа
+//! тона и «чистяк»), под ней строка переключателя вида SCALES | WHEELS (не прокручивается, видна в обоих видах),
+//! ниже окно вида: прокручиваемый список шкал или колёса цвета без прокрутки.
 //!
 //! Прокрутка списка — `ui_kit::scroll_list::ScrollList`: палец ведёт содержимое, узел содержимого сдвигается по
 //! вертикали на смещение, а хит-тест `ui-core` сам учитывает сдвиг. Узел окна списка ограничивает касания его
@@ -13,23 +14,33 @@ use ui_core::id::NodeId;
 use ui_draw::draw_list::{DrawItem, PressState};
 use ui_kit::pan::PanUpdate;
 use ui_kit::scroll_list::ScrollList;
-use ui_kit::tokens::GlassRole;
+use ui_kit::tokens::{GlassRole, TextRoleKind};
 use ui_kit::view::GlassShape;
 
 use super::control_view::{ControlView, RowsView, VisibleWindow};
+use super::segments::{SegmentRow, SegmentSpec, push_if_activated};
 use super::space::{EyeAxis, SectionSpace};
 use super::tone_header::ToneHeader;
+use super::wheels::WheelsView;
+use crate::action::ScreenAction;
+use crate::calibration::{ColumnFrames, ControlViewKind, WheelsFrames};
 use crate::widget::error::{WidgetError, element};
-use crate::widget::intent::ScreenGesture;
+use crate::widget::intent::{ButtonId, ScreenGesture};
 use crate::widget::kit::SceneKit;
 use crate::widget::layers::{DrawLayers, Layer, VisualIndex};
 use crate::widget::text_runs::TextRuns;
 use crate::widget::{Ctx, Outputs, single_member_group};
 
+/// Сегменты переключателя вида в порядке показа: SCALES | WHEELS (тексты UI английские).
+const VIEW_SEGMENTS: [(ControlViewKind, &str); 2] =
+    [(ControlViewKind::Scales, "SCALES"), (ControlViewKind::Wheels, "WHEELS")];
+
 /// Колонка ручек.
 pub(super) struct KnobsColumn {
     panel: NodeId,
     header: ToneHeader,
+    /// Переключатель вида SCALES | WHEELS: под шапкой, вне окна прокрутки.
+    switcher: SegmentRow<ControlViewKind>,
     content_node: NodeId,
     list: ScrollList,
     view: ControlView,
@@ -44,26 +55,27 @@ impl KnobsColumn {
         ctx: &Ctx<'_>,
         space: &SectionSpace,
         (parent, parent_rect): (NodeId, Rect),
-        (panel_rect, bands): (Rect, &[BandFacts]),
+        (panel_rect, bands, view_kind): (Rect, &[BandFacts], ControlViewKind),
     ) -> Result<Self, WidgetError> {
         let config = &ctx.config.calibration.widgets;
         let panel = kit.add_node(parent, "calib_knobs_panel", panel_rect, parent_rect)?;
-        let padding = config.panel_padding_pt;
-        let inner_width = (panel_rect.size.width - 2.0 * padding).max(0.0);
-        let header_rect = Rect::from_xywh(
-            panel_rect.min_x() + padding,
-            panel_rect.min_y() + padding,
-            inner_width,
-            config.header_height_pt,
-        );
-        let header = ToneHeader::build(kit, ctx, space, (panel, panel_rect), header_rect)?;
-        // Окно списка — вся ширина панели под шапкой; содержимое уже на отступы и едет внутри окна.
-        let window_rect = Rect::from_xywh(
-            panel_rect.min_x(),
-            header_rect.max_y(),
-            panel_rect.size.width,
-            (panel_rect.max_y() - header_rect.max_y()).max(0.0),
-        );
+        // Рамки колонки — общая функция `calibration::ColumnFrames`: те же числа читает запрос геометрии фасада.
+        let frames = ColumnFrames::of(panel_rect, config);
+        let header = ToneHeader::build(kit, ctx, space, (panel, panel_rect), frames.header)?;
+        let switcher = SegmentRow::build(
+            kit,
+            ctx,
+            (panel, panel_rect),
+            frames.switcher,
+            SegmentSpec {
+                entries: &VIEW_SEGMENTS,
+                node_label: "calib_view_segment",
+                id_of: ButtonId::CalibrationControlView,
+                text_role: TextRoleKind::SegmentLabel,
+            },
+        )?;
+        // Окно вида — вся ширина панели под переключателем; содержимое уже на отступы и едет внутри окна.
+        let window_rect = frames.window;
         let list_node = kit.add_node(panel, "calib_knobs_window", window_rect, panel_rect)?;
         kit.add_recognizer(
             list_node,
@@ -73,15 +85,46 @@ impl KnobsColumn {
             }),
             ScreenGesture::CalibrationListPan,
         )?;
-        let content_rect = Rect::from_xywh(
-            panel_rect.min_x() + padding,
-            window_rect.min_y(),
-            inner_width,
-            RowsView::planned_height(config),
+        let (view_rect, view_is_scrollable) = match view_kind {
+            ControlViewKind::Scales => (
+                Rect::from_xywh(
+                    frames.content.min_x(),
+                    window_rect.min_y(),
+                    frames.content.size.width,
+                    RowsView::planned_height(config),
+                ),
+                true,
+            ),
+            ControlViewKind::Wheels => (frames.content, false),
+        };
+        let content_node = kit.add_node(list_node, "calib_knobs_content", view_rect, window_rect)?;
+        let view = match view_kind {
+            ControlViewKind::Scales => {
+                ControlView::Rows(RowsView::build(kit, ctx, space, (content_node, view_rect), bands)?)
+            }
+            ControlViewKind::Wheels => {
+                let pixels_per_point = ctx.state.pixels_per_point().ok_or_else(|| {
+                    WidgetError::Inconsistent("вид колёс строится без размера поверхности".to_owned())
+                })?;
+                // Не поместился круг — не ошибка сборки: колонка живёт без колёс, причину считает редьюсер.
+                match WheelsFrames::of(view_rect, config, pixels_per_point) {
+                    Ok(wheel_frames) => ControlView::Wheels(Box::new(WheelsView::build(
+                        kit,
+                        ctx,
+                        space,
+                        (content_node, view_rect),
+                        wheel_frames,
+                    )?)),
+                    Err(_) => ControlView::Unavailable {
+                        window_height_pt: view_rect.size.height,
+                    },
+                }
+            }
+        };
+        debug_assert!(
+            view_is_scrollable || view.content_height() <= window_rect.size.height + 1e-9,
+            "вид без прокрутки обязан помещаться в окно"
         );
-        let content_node = kit.add_node(list_node, "calib_knobs_content", content_rect, window_rect)?;
-        let rows = RowsView::build(kit, ctx, space, (content_node, content_rect), bands)?;
-        let view = ControlView::Rows(rows);
         let list = ScrollList::new(
             view.content_height(),
             &ctx.environment(window_rect.size.height),
@@ -91,6 +134,7 @@ impl KnobsColumn {
         Ok(Self {
             panel,
             header,
+            switcher,
             content_node,
             list,
             view,
@@ -135,14 +179,24 @@ impl KnobsColumn {
             }
             return Ok(true);
         }
-        Ok(self.header.handle_gesture(kit, space, ctx, event, out)?
-            || self.view.handle_gesture(kit, space, ctx, event, out)?)
+        if self.header.handle_gesture(kit, space, ctx, event, out)? {
+            return Ok(true);
+        }
+        let switch_event = self.switcher.handle_gesture(kit, event)?;
+        if push_if_activated(switch_event, out, ScreenAction::ControlViewSelected) {
+            return Ok(true);
+        }
+        self.view.handle_gesture(kit, space, ctx, event, out)
     }
 
     pub(super) fn sync(&mut self, kit: &mut SceneKit, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
         // Содержимое едет за списком: смещение вверх — узел вниз по системе корня с минусом.
         kit.jump_vertically_to(self.content_node, -self.list.offset(ctx.now))?;
         self.header.sync(kit, ctx)?;
+        // Переключатель вида работает и без фактов: выбор вида — состояние экрана, ему факты не нужны (а без него из
+        // вида колёс, который не нужен без библиотеки пресетов, нельзя было бы выйти). Вкладки же и круг ведут
+        // значения вида и без фактов молчат.
+        self.switcher.set_touchable(kit, true)?;
         self.view.sync(kit, ctx)
     }
 
@@ -173,6 +227,12 @@ impl KnobsColumn {
         )?;
         layers.push(Layer::Glass, DrawItem::Glass(group));
         self.header.draw(ctx, visuals, layers, texts)?;
+        self.switcher.draw(
+            ctx,
+            (visuals, texts),
+            layers,
+            (ctx.state.calibration().control_view(), |_| false, 1.0),
+        )?;
         self.view.draw(
             ctx,
             visuals,

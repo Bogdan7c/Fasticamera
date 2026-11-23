@@ -11,11 +11,11 @@ use std::time::Duration;
 
 use camera_contract::zoom::LensIntentChannel;
 use camera_screen::shutter::ShotRequest;
-use camera_screen::{CameraFacts, CameraPresence, CameraScreen, ScreenAction, ScreenConfig};
+use camera_screen::{CameraFacts, CameraPresence, CameraScreen, ScreenAction, ScreenConfig, ScreenTouch};
 use fasticamera::camera_screen_capture::{CaptureService, SubmitOutcome};
 use fasticamera::camera_screen_effects::{AbsentCameraPort, EffectExecutor, EffectTargets};
 use fasticamera::camera_screen_facts::{CameraFactsSource, FactsDiagnostics};
-use fasticamera::camera_screen_input::{ScreenInputSender, screen_input_channel};
+use fasticamera::camera_screen_input::{InputDelivery, ScreenInputSender, screen_input_channel};
 use fasticamera::camera_screen_service::SilentShutterSound;
 use fasticamera::camera_screen_source::{CameraScreenSource, GravityLink, ScreenBoard, ScreenSourceParts};
 use fasticamera::look_facts::{BandSwatchStyle, LookFactsCatalog, LookFactsSource};
@@ -30,12 +30,14 @@ use render_loop::backend::DisplayBackend;
 use render_loop::config::{DisplayColorConfig, RenderLoopConfig, ToneBaseChoice, ViewfinderToneConfig};
 use render_loop::ui_overlay::{UiOverlayCommand, UiOverlayOutcome};
 use render_loop::viewfinder::{ViewfinderCommand, ViewfinderCommandOutcome};
-use scope_contract::ScopeIntent;
+use scope_contract::{ScopeIntent, ScopeRequest};
+use scope_model::{HorizontalOrder, ResolvedScope, ScopeCounters, ScopeRule, ShownCodes, accumulate};
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::commands::{CommandOutcome, FrameRate, FrameRateOutcome, ScreenWake, ShellCommands};
 use shell_contract::haptics::{HapticOutcome, HapticPattern, HapticsService};
 use shell_contract::surface::SurfaceSize;
 use shell_contract::text_input::{TextInputService, TextRequest};
+use shell_contract::touch::{PointerId, SurfacePoint, TouchPhase, TouchSample};
 use ui_draw::draw_list::DrawList;
 use ui_draw::frame_source::{BackdropContinuity, UiFrameError, UiFrameRequest, UiFrameSource};
 use ui_draw::geometry::PxSize;
@@ -339,6 +341,19 @@ impl CalibrationRig {
         self.sender.send_action(action);
     }
 
+    /// Касание ОДНОГО пальца (номер 0) в пикселях поверхности, с меткой времени СЛЕДУЮЩЕГО кадра: экран разберёт его
+    /// на этом кадре, а время касаний идёт вровень со временем кадров (жест не видит «будущего» и не отстаёт).
+    /// Это настоящий вход экрана — тот же канал и тот же образец, что шлёт оболочка, а не вызов виджета.
+    pub fn touch(&mut self, phase: TouchPhase, x_px: f32, y_px: f32) -> InputDelivery {
+        let time = MonotonicNanos::from_nanos((self.frame_index + 1) * FRAME_STEP_MS * 1_000_000);
+        self.sender.send_touch(ScreenTouch::Sample(TouchSample {
+            pointer: PointerId::new(0),
+            phase,
+            position: SurfacePoint { x_px, y_px },
+            time,
+        }))
+    }
+
     /// Один кадр: источник UI разбирает вход и исполняет эффекты, команды из ящика применяются к бэкенду, затем
     /// бэкенд показывает следующий кадр камеры (его пиксели читает `assert_shows`).
     pub fn frame(&mut self) {
@@ -437,4 +452,37 @@ impl CalibrationRig {
         );
         self.bench.finish();
     }
+}
+
+/// Счётчики, которые насчитал GPU в последнем проходе прибора.
+pub fn gpu_scope_counters(rig: &CalibrationRig) -> ScopeCounters {
+    rig.bench.backend.context().wait_idle().expect("wait_idle");
+    rig.bench
+        .backend
+        .read_scope_counters()
+        .expect("чтение счётчиков приборов")
+        .expect("набор приборов есть и проход записан")
+}
+
+/// Эталон `scope_model::accumulate` по картинке видоискателя, прочитанной с GPU: то, что показано в ЭТОМ кадре,
+/// с видом, размером и осями ровно из запроса, который отправил экран.
+pub fn cpu_scope_counters(rig: &CalibrationRig, request: &ScopeRequest) -> ScopeCounters {
+    rig.bench.backend.context().wait_idle().expect("wait_idle");
+    let image = rig
+        .bench
+        .backend
+        .read_viewfinder_image()
+        .expect("чтение изображения видоискателя")
+        .expect("изображение видоискателя есть");
+    let shown = ShownCodes::from_display_rgba(image.width, image.height, &image.pixels, HorizontalOrder::AsStored)
+        .expect("коды");
+    let model = RenderLoopConfig::default().viewfinder.scopes.model;
+    let rule = ResolvedScope::resolve(request, &model, isp_model::image::DisplayGamut::Srgb).expect("правило");
+    accumulate(&shown, model.sample_stride, &rule as &dyn ScopeRule).expect("эталон")
+}
+
+/// Запрос прибора, который рендер держит прямо сейчас (его собственная диагностика), а не запись команд стенда.
+pub fn live_scope_request(rig: &mut CalibrationRig) -> ScopeRequest {
+    rig.scope_requested_at_the_render()
+        .expect("рендер держит запрос прибора")
 }

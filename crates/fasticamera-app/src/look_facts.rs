@@ -25,11 +25,13 @@ use isp_model::color::oklab_working::OklabWorkspace;
 use isp_model::tone::ToneCurveSettings;
 use isp_model::tone::knobs::{ToneKnob, ToneKnobAmounts};
 use isp_model::transfer::srgb_encode;
-use look_contract::{BandFacts, BandSwatch, GlobalKnob, LookFacts, LookProblem, ToneBaseModel};
+use look_contract::{BandFacts, BandSwatch, GlobalKnob, LookFacts, LookProblem, ToneBaseModel, WheelHueRing};
 use render_loop::config::{RenderLoopConfig, ViewfinderToneConfig};
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 
 use crate::look_service::LookHandle;
+use crate::look_wheel_ring::{WheelRingStyle, wheel_ring_for_style};
 
 const LOG_TARGET: &str = "fasticamera::look";
 
@@ -88,6 +90,11 @@ const PROBE_KNOB_AMOUNT: f32 = 1.0;
 #[derive(Debug, Clone)]
 pub struct LookFactsCatalog {
     bands: Vec<BandFacts>,
+    /// Стиль ободка колёс из конфига экрана; само кольцо считается лениво (см. `wheel_ring_cache`).
+    wheel_ring_style: WheelRingStyle,
+    /// Кольцо по `wheel_ring_style`: строится ОДИН раз при первой выдаче, а не при каждой смене стиля, поэтому
+    /// `from_render_config` + `with_wheel_ring_style` не считают кольцо дважды (и не дублируют лог ошибки матриц).
+    wheel_ring_cache: OnceLock<WheelHueRing>,
     /// Ручки, которых не умеет каждая основа. Проба дорогая (строит основу и гоняет ручки), а ответ зависит только
     /// от конфига, поэтому считается один раз при сборке каталога, а не на каждый кадр.
     unsupported_by_base: Vec<(ToneBaseModel, Vec<GlobalKnob>)>,
@@ -114,8 +121,32 @@ impl LookFactsCatalog {
             .collect();
         Self {
             bands,
+            wheel_ring_style: WheelRingStyle::default(),
+            wheel_ring_cache: OnceLock::new(),
             unsupported_by_base,
         }
+    }
+
+    /// Каталог с ободком колёс по стилю из конфига экрана (`camera_screen.wheel_ring`); без вызова действует
+    /// умолчание [`WheelRingStyle::default`]. Кольцо при этом не считается: оно строится при первой выдаче.
+    pub fn with_wheel_ring_style(mut self, style: &WheelRingStyle) -> Self {
+        self.wheel_ring_style = *style;
+        self.wheel_ring_cache = OnceLock::new();
+        self
+    }
+
+    /// Цвета ободка колёс цвета (по итоговому стилю; считаются один раз и запоминаются).
+    pub fn wheel_ring(&self) -> &WheelHueRing {
+        self.wheel_ring_cache.get_or_init(|| {
+            let workspace = OklabWorkspace::new(&Primaries::SRGB);
+            wheel_ring_for_style(workspace.as_ref().ok(), &self.wheel_ring_style)
+        })
+    }
+
+    /// Построено ли уже кольцо (для теста «не считается дважды»).
+    #[cfg(test)]
+    pub(crate) fn wheel_ring_is_built(&self) -> bool {
+        self.wheel_ring_cache.get().is_some()
     }
 
     /// Полосы модели вида с цветами точек (порядок конфига).
@@ -181,7 +212,11 @@ fn single_knob_amounts(knob: ToneKnob) -> ToneKnobAmounts {
 
 /// Цвет точки полосы: центр оттенка при фиксированных светлоте и цветности → sRGB 8 бит (вне охвата обрезается).
 /// Матрицы OKLab для sRGB не строятся (вырожденные основные цвета) — серая точка и громкая запись в лог.
-fn swatch_for_hue(workspace: Option<&OklabWorkspace>, style: &BandSwatchStyle, hue_degrees: f32) -> BandSwatch {
+pub(crate) fn swatch_for_hue(
+    workspace: Option<&OklabWorkspace>,
+    style: &BandSwatchStyle,
+    hue_degrees: f32,
+) -> BandSwatch {
     const NEUTRAL_SWATCH: BandSwatch = BandSwatch { srgb: [128, 128, 128] };
     let Some(workspace) = workspace else {
         tracing::error!(target: LOG_TARGET, "матрицы OKLab для sRGB не построены: точки полос серые");
@@ -257,6 +292,7 @@ impl LookFactsSource {
             preset: state.active.preset_recipe,
             edits: state.active.edits,
             bands: self.catalog.bands().to_vec(),
+            wheel_ring: self.catalog.wheel_ring().clone(),
             problem,
         }
     }

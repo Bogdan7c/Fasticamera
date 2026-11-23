@@ -89,6 +89,35 @@ impl WheelPush {
         Self::new(a, b)
     }
 
+    /// Строит точку по координатам, ПРИЖИМАЯ её к единичному кругу: точка за кругом не отказ, а точка на краю
+    /// в том же направлении (решение 206: палец вышел за круг — точка остаётся на краю).
+    ///
+    /// Внутри круга и на краю точка берётся как есть (`−0.0` приводится к `0.0`). NaN и бесконечность —
+    /// `NotANumber`: направление у мусора не определено. Огромные значения (`1e30`, у которых квадрат
+    /// переполнил бы `f32`) тоже прижимаются: координаты предварительно нормируются на большую из них, а не возводятся в квадрат.
+    /// Результат всегда проходит проверку [`WheelPush::new`]: если округление деления оставило точку на ULP
+    /// за кругом, её поджимают внутрь тем же приёмом, что и в [`WheelPush::from_hue_degrees`].
+    pub fn clamped_to_circle(a: f32, b: f32) -> Result<Self, WheelPushError> {
+        if !a.is_finite() || !b.is_finite() {
+            return Err(WheelPushError::NotANumber);
+        }
+        if a * a + b * b <= 1.0 {
+            return Self::new(a, b);
+        }
+        // Сначала делим на большую из координат (она ≠ 0, раз квадрат длины > 1): после этого обе координаты
+        // в [−1, 1], и длина не переполняется даже для `f32::MAX` (у `hypot` от двух `MAX` вышла бы бесконечность).
+        let largest = a.abs().max(b.abs());
+        let (unit_a, unit_b) = (a / largest, b / largest);
+        let length = unit_a.hypot(unit_b);
+        let mut edge_a = unit_a / length;
+        let mut edge_b = unit_b / length;
+        while edge_a * edge_a + edge_b * edge_b > 1.0 {
+            edge_a *= 1.0 - f32::EPSILON;
+            edge_b *= 1.0 - f32::EPSILON;
+        }
+        Self::new(edge_a, edge_b)
+    }
+
     /// Координата по оси `a` OKLab, [−1, 1].
     pub fn a(self) -> f32 {
         self.a

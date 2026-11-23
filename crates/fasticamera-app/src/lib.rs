@@ -63,6 +63,7 @@ pub mod look_service;
 pub mod look_startup;
 #[cfg(test)]
 mod look_test_support;
+pub mod look_wheel_ring;
 #[cfg(test)]
 mod operator_prompt_fake;
 #[cfg(test)]

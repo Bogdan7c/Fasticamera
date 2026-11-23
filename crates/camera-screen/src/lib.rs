@@ -55,8 +55,8 @@ pub mod zoom_labels;
 pub use action::{KeyPhase, ScreenAction};
 pub use calibration::{
     CalibrationConfig, CalibrationConfigError, CalibrationLayout, CalibrationLayoutConfig, CalibrationLayoutError,
-    CalibrationMenu, CalibrationMenuItem, CalibrationState, CalibrationZones, CleanViewState, DeleteConfirmation,
-    Naming, PendingText, TextFlow, ZoneFractions,
+    CalibrationMenu, CalibrationMenuItem, CalibrationState, CalibrationZones, CleanViewState, ControlViewKind,
+    DeleteConfirmation, Naming, PendingText, TextFlow, WheelPadPlacement, ZoneFractions,
 };
 pub use config::{ScreenConfig, ScreenConfigError, ToolsConfig};
 pub use effect::{Effect, ScreenCameraIntent};

@@ -15,6 +15,7 @@
 )]
 
 mod calibration_goldens;
+mod calibration_wheels_goldens;
 mod driver;
 mod golden_files;
 mod render_rig;

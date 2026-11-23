@@ -6,20 +6,19 @@
 //! как есть. Эхо запрещено: действие рождает только палец (затвор пальца `ui-kit`); синхронизация с фактами
 //! идёт программно и привязана к ИЗМЕНЕНИЮ фактов, а не к сравнению с линейкой каждый кадр.
 
-use look_contract::{BandAxis, GlobalKnob, HueBandId, LookControl, LookFacts, LookKnob};
+use look_contract::{BandAxis, GlobalKnob, HueBandId, LookControl, LookFacts, LookKnob, WheelPart, WheelZone};
 use std::num::NonZeroU32;
 use ui_core::geometry::Rect;
 use ui_core::gesture::{GestureEvent, PanSpec, RecognizerSpec};
 use ui_core::id::NodeId;
 use ui_draw::draw_list::DrawItem;
-use ui_draw::icons::IconId;
 use ui_kit::pan::PanUpdate;
 use ui_kit::ruler::{GatedEvent, RulerControl, RulerSpec};
 use ui_kit::tokens::{ScaleDensity, TextRoleKind};
 use ui_kit::value::{LinearLimits, QuantizedLinear, ReferenceValue};
-use ui_kit::view::centered_icon;
 
 use super::paint::NodePaint;
+use super::reset_disc::draw_reset_disc;
 use super::space::SectionSpace;
 use crate::action::ScreenAction;
 use crate::calibration::CalibrationWidgetsConfig;
@@ -38,10 +37,40 @@ pub(super) enum RowTarget {
     Knob(GlobalKnob),
     /// Ось ВЫБРАННОЙ полосы оттенка (какая полоса — решает выбор экрана).
     BandAxis(BandAxis),
+    /// Кольцо яркости ВЫБРАННОГО колеса (какое колесо — решает выбор экрана; решение 205).
+    WheelRing,
+}
+
+/// Номер строки кольца яркости колеса среди строк раздела: после восьми ручек, трёх осей полосы и основы тона
+/// (`TONE_BASE_RESET_SLOT` = 11). Отдельное имя, а не очередное «магическое» число слота.
+pub(super) const WHEEL_RING_SLOT: u8 = 12;
+
+/// К чему привязана строка, если её цель зависит от выбора экрана. Привязка снимается на `sync`, а на `Began`
+/// пальца фиксируется отдельно: смена выбора посреди жеста не перенаправляет значение (идиома `dragged_band`).
+#[derive(Debug, Clone, PartialEq)]
+enum RowBinding {
+    /// Цель не зависит от выбора (глобальная ручка).
+    Fixed,
+    /// Ось выбранной полосы; `None` — полос нет.
+    Band(Option<HueBandId>),
+    /// Кольцо выбранного колеса.
+    Wheel(WheelZone),
+}
+
+impl RowBinding {
+    /// Что сейчас выбрано на экране для цели `target`.
+    fn selected_for(target: RowTarget, ctx: &Ctx<'_>) -> Self {
+        match target {
+            RowTarget::Knob(_) => RowBinding::Fixed,
+            RowTarget::BandAxis(_) => RowBinding::Band(ctx.state.calibration().selected_band().cloned()),
+            RowTarget::WheelRing => RowBinding::Wheel(ctx.state.calibration().selected_wheel()),
+        }
+    }
 }
 
 impl RowTarget {
-    /// Номер строки в жестах и кнопках: ручки 0..8, оси полосы 8..11 (12 — основа тона, ею владеет шапка).
+    /// Номер строки в жестах и кнопках: ручки 0..8, оси полосы 8..11 (11 — основа тона, ею владеет шапка),
+    /// кольцо колеса — [`WHEEL_RING_SLOT`].
     pub(super) fn slot(self) -> u8 {
         match self {
             RowTarget::Knob(knob) => GlobalKnob::ALL
@@ -55,6 +84,7 @@ impl RowTarget {
                         .position(|known| *known == axis)
                         .map_or(0, |i| i as u8)
             }
+            RowTarget::WheelRing => WHEEL_RING_SLOT,
         }
     }
 
@@ -72,38 +102,46 @@ impl RowTarget {
             RowTarget::BandAxis(BandAxis::Hue) => "HUE",
             RowTarget::BandAxis(BandAxis::Saturation) => "SAT",
             RowTarget::BandAxis(BandAxis::Luminance) => "LUM",
+            RowTarget::WheelRing => "RING",
         }
     }
 
     /// Адрес органа управления для «↻» и сравнения с пресетом; `None` — у оси полосы нет выбранной полосы.
-    fn control(self, band: Option<&HueBandId>) -> Option<LookControl> {
-        match self {
-            RowTarget::Knob(knob) => Some(LookControl::Knob(knob)),
-            RowTarget::BandAxis(axis) => band.map(|band| LookControl::Band {
+    fn control(self, binding: &RowBinding) -> Option<LookControl> {
+        match (self, binding) {
+            (RowTarget::Knob(knob), _) => Some(LookControl::Knob(knob)),
+            (RowTarget::BandAxis(axis), RowBinding::Band(Some(band))) => Some(LookControl::Band {
                 band: band.clone(),
                 axis,
             }),
+            (RowTarget::WheelRing, RowBinding::Wheel(zone)) => Some(LookControl::Wheel {
+                zone: *zone,
+                part: WheelPart::Ring,
+            }),
+            _ => None,
         }
     }
 
-    /// Значение строки по фактам; нет фактов или полосы — нейтраль.
-    fn value_in(self, facts: Option<&LookFacts>, band: Option<&HueBandId>) -> LookKnob {
+    /// Значение строки по фактам; нет фактов или привязки — нейтраль.
+    fn value_in(self, facts: Option<&LookFacts>, binding: &RowBinding) -> LookKnob {
         let Some(facts) = facts else {
             return LookKnob::NEUTRAL;
         };
-        match self {
-            RowTarget::Knob(knob) => facts.current.settings.knob(knob),
-            RowTarget::BandAxis(axis) => band.map_or(LookKnob::NEUTRAL, |band| {
+        match (self, binding) {
+            (RowTarget::Knob(knob), _) => facts.current.settings.knob(knob),
+            (RowTarget::BandAxis(axis), RowBinding::Band(Some(band))) => {
                 facts.current.settings.bands.for_band(band).axis(axis)
-            }),
+            }
+            (RowTarget::WheelRing, RowBinding::Wheel(zone)) => facts.current.settings.wheels.wheel(*zone).ring,
+            _ => LookKnob::NEUTRAL,
         }
     }
 
-    /// Умеет ли текущая основа эту ручку (ось полосы умеют все основы).
+    /// Умеет ли текущая основа эту ручку (ось полосы и кольцо колеса умеют все основы).
     fn supported_in(self, facts: &LookFacts) -> bool {
         match self {
             RowTarget::Knob(knob) => facts.is_knob_supported(knob),
-            RowTarget::BandAxis(_) => true,
+            RowTarget::BandAxis(_) | RowTarget::WheelRing => true,
         }
     }
 }
@@ -163,10 +201,10 @@ pub(super) struct RulerRow {
     ruler_node: NodeId,
     reset: PressButton,
     ruler: RulerControl,
-    /// Полоса, привязанная к строке (только оси полосы): по ней строка читает и пишет значения.
-    bound_band: Option<HueBandId>,
-    /// Полоса, которую палец взял на `Began`: действие уходит ей, даже если выбор сменился посреди жеста.
-    dragged_band: Option<HueBandId>,
+    /// Привязка строки к выбору экрана (полоса или колесо): по ней строка читает и пишет значения.
+    bound: RowBinding,
+    /// Привязка, которую палец взял на `Began`: действие уходит ей, даже если выбор сменился посреди жеста.
+    dragged: Option<RowBinding>,
     /// Значение фактов, к которому линейка уже поехала (или которое она сама выдала пальцем).
     last_followed: Option<f32>,
     /// Доступна ли строка касаниям (факты есть, основа умеет ручку, полоса выбрана).
@@ -210,8 +248,8 @@ impl RulerRow {
             ctx.geometry.config().card.button_touch_side_pt,
         )?;
         let facts = ctx.state.look_facts();
-        let band = ctx.state.calibration().selected_band().cloned();
-        let initial = f64::from(target.value_in(facts, band.as_ref()).get());
+        let binding = RowBinding::selected_for(target, ctx);
+        let initial = f64::from(target.value_in(facts, &binding).get());
         let ruler = RulerControl::new(
             Self::ruler_spec(config)?,
             initial,
@@ -226,8 +264,8 @@ impl RulerRow {
             ruler_node,
             reset,
             ruler,
-            bound_band: band,
-            dragged_band: None,
+            bound: binding,
+            dragged: None,
             last_followed: None,
             enabled: false,
             invalid_values: 0,
@@ -310,7 +348,7 @@ impl RulerRow {
             return Ok(());
         }
         if matches!(update, PanUpdate::Began { .. }) {
-            self.dragged_band = ctx.state.calibration().selected_band().cloned();
+            self.dragged = Some(RowBinding::selected_for(self.target, ctx));
         }
         self.ruler
             .apply_pan(event.time, space.eye_pan(update))
@@ -325,7 +363,7 @@ impl RulerRow {
         let Some(facts) = ctx.state.look_facts() else {
             return;
         };
-        let Some(control) = self.target.control(self.bound_band.as_ref()) else {
+        let Some(control) = self.target.control(&self.bound) else {
             return;
         };
         if facts.control_differs(&control) {
@@ -336,19 +374,15 @@ impl RulerRow {
     /// Выравнивает строку по состоянию: доступность, привязку к полосе и положение линейки (без эха).
     pub(super) fn sync(&mut self, kit: &mut SceneKit, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
         let facts = ctx.state.look_facts();
-        let selected_band = ctx.state.calibration().selected_band().cloned();
-        if matches!(self.target, RowTarget::BandAxis(_)) && self.bound_band != selected_band {
-            // Выбрана другая полоса: строка теперь показывает её значения. Забываем, к чему ехали.
-            self.bound_band = selected_band;
+        let selected = RowBinding::selected_for(self.target, ctx);
+        if self.bound != selected {
+            // Выбрана другая полоса или другое колесо: строка теперь показывает его значения. Забываем, к чему ехали.
+            self.bound = selected;
             self.last_followed = None;
         }
-        let value = self.target.value_in(facts, self.bound_band.as_ref());
-        self.enabled = match (facts, self.target) {
-            (None, _) => false,
-            (Some(facts), target) => {
-                target.supported_in(facts) && (matches!(target, RowTarget::Knob(_)) || self.bound_band.is_some())
-            }
-        };
+        let value = self.target.value_in(facts, &self.bound);
+        let has_target = self.bound != RowBinding::Band(None);
+        self.enabled = facts.is_some_and(|facts| self.target.supported_in(facts) && has_target);
         kit.set_interactive(self.node, self.enabled)?;
         if self.last_followed != Some(value.get()) && !self.ruler.is_finger_driven() {
             self.last_followed = Some(value.get());
@@ -386,7 +420,8 @@ impl RulerRow {
                 value: knob,
             }),
             RowTarget::BandAxis(axis) => {
-                let Some(band) = self.dragged_band.clone().or_else(|| self.bound_band.clone()) else {
+                let Some(RowBinding::Band(Some(band))) = self.dragged.clone().or_else(|| Some(self.bound.clone()))
+                else {
                     self.invalid_values += 1;
                     return;
                 };
@@ -395,6 +430,13 @@ impl RulerRow {
                     axis,
                     value: knob,
                 });
+            }
+            RowTarget::WheelRing => {
+                let Some(RowBinding::Wheel(zone)) = self.dragged.clone().or_else(|| Some(self.bound.clone())) else {
+                    self.invalid_values += 1;
+                    return;
+                };
+                out.actions.push(ScreenAction::WheelRingDragged { zone, ring: knob });
             }
         }
     }
@@ -418,7 +460,7 @@ impl RulerRow {
         };
         let colors = &ctx.tokens.colors;
         let facts = ctx.state.look_facts();
-        let value = self.target.value_in(facts, self.bound_band.as_ref());
+        let value = self.target.value_in(facts, &self.bound);
         let reset_side = config.reset_button_diameter_pt;
         let half_width = self.frames.row.size.width / 2.0;
         let title_y = config.row_title_height_pt / 2.0 - self.frames.row.size.height / 2.0;
@@ -439,34 +481,11 @@ impl RulerRow {
 
     /// Диск «↻»: яркий, если значение отличается от пресета, иначе приглушён (`widgets.card.reset_dim_opacity`).
     fn draw_reset(&self, ctx: &Ctx<'_>, paint: &NodePaint, layers: &mut DrawLayers, differs: bool) {
-        let card = &ctx.geometry.config().card;
-        let config = &ctx.config.calibration.widgets;
         let center = (
             self.frames.reset.center().x - self.frames.row.center().x,
             self.frames.reset.center().y - self.frames.row.center().y,
         );
-        let dim = if differs { 1.0 } else { card.reset_dim_opacity };
-        let paint = paint.dimmed(dim);
-        let disc_color = ui_draw::color::DisplayColor {
-            a: card.button_disc_alpha,
-            ..ui_draw::color::DisplayColor::BLACK
-        };
-        layers.push(
-            Layer::Content,
-            paint.disc(center.0, center.1, config.reset_button_diameter_pt, disc_color),
-        );
-        let icon_size_pt = card.button_icon_size_pt * config.reset_button_diameter_pt / card.button_diameter_pt;
-        layers.push(
-            Layer::Content,
-            centered_icon(
-                IconId::Reset,
-                icon_size_pt,
-                ctx.px,
-                paint.at(center.0, center.1),
-                ctx.tokens.colors.text_primary,
-                paint.opacity(),
-            ),
-        );
+        draw_reset_disc(ctx, paint, layers, center, differs);
     }
 
     fn draw_ruler(
@@ -496,7 +515,7 @@ impl RulerRow {
 
 /// Отличается ли значение строки от пресета (по фактам и привязанной полосе).
 fn value_is_edited(row: &RulerRow, ctx: &Ctx<'_>) -> bool {
-    let (Some(facts), Some(control)) = (ctx.state.look_facts(), row.target.control(row.bound_band.as_ref())) else {
+    let (Some(facts), Some(control)) = (ctx.state.look_facts(), row.target.control(&row.bound)) else {
         return false;
     };
     facts.control_differs(&control)

@@ -24,7 +24,10 @@ pub use active::{ActiveLook, EditState};
 pub use bands::{BandAdjustment, BandAdjustments, BandAdjustmentsError, HueBandId, HueBandIdError};
 pub use control::{BandAxis, GlobalKnob, LookControl, WheelPart};
 pub use error::{PresetError, StorageFailure};
-pub use facts::{BandFacts, BandSwatch, LookFacts, LookProblem, LookProblemKind};
+pub use facts::{
+    BandFacts, BandSwatch, LookFacts, LookProblem, LookProblemKind, MIN_WHEEL_RING_STOPS, WheelHueRing,
+    WheelHueRingError,
+};
 pub use intent::{CleanView, LookIntent};
 pub use knob::{LookKnob, LookKnobError};
 pub use preset::{

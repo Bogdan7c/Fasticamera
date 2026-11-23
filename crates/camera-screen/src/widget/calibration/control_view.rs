@@ -1,8 +1,8 @@
 //! Вид органов управления колонки ручек — шов «вид можно заменить» (сессия 14b2: цветовые колёса).
 //!
 //! Колонка ручек не знает, КАК показаны ручки: она даёт виду область под шапкой, прокрутку и жесты, а вид строит
-//! свои узлы и рисует. Сегодня вид один — строки-линейки ([`RowsView`]); колёса цвета придут новым вариантом
-//! [`ControlView`] без правок строк и колонки.
+//! свои узлы и рисует. Видов два: строки-линейки ([`RowsView`]) и колёса цвета ([`WheelsView`]); какой из них — решает
+//! состояние раздела (`ControlViewKind`), смена вида пересобирает раздел по `SectionKey`.
 
 use look_contract::{BandAxis, BandFacts, GlobalKnob};
 use ui_core::geometry::Rect;
@@ -14,6 +14,7 @@ use super::band_dots::BandDots;
 use super::knob_row::{RowTarget, RulerRow};
 use super::paint::NodePaint;
 use super::space::SectionSpace;
+use super::wheels::WheelsView;
 use crate::calibration::CalibrationWidgetsConfig;
 use crate::widget::error::WidgetError;
 use crate::widget::intent::ScreenGesture;
@@ -46,6 +47,12 @@ impl VisibleWindow {
 pub(super) enum ControlView {
     /// Группы строк-линеек: TONE, COLOR, BANDS.
     Rows(RowsView),
+    /// Колесо цвета с вкладками (решения 204–207): без прокрутки.
+    /// В коробке: вид колёс (линейка кольца) заметно больше строк, а вариант живёт один на колонку.
+    Wheels(Box<WheelsView>),
+    /// Вид колёс не поместился в колонку (низкая поверхность): зона пуста, без круга и жестов колёс. Шапка и
+    /// переключатель живут, поэтому из этого вида можно выйти обратно в SCALES.
+    Unavailable { window_height_pt: f64 },
 }
 
 impl ControlView {
@@ -53,6 +60,8 @@ impl ControlView {
     pub(super) fn content_height(&self) -> f64 {
         match self {
             ControlView::Rows(rows) => rows.content_height,
+            ControlView::Wheels(wheels) => wheels.content_height(),
+            ControlView::Unavailable { window_height_pt } => *window_height_pt,
         }
     }
 
@@ -66,18 +75,24 @@ impl ControlView {
     ) -> Result<bool, WidgetError> {
         match self {
             ControlView::Rows(rows) => rows.handle_gesture(kit, space, ctx, event, out),
+            ControlView::Wheels(wheels) => wheels.handle_gesture(kit, space, ctx, event, out),
+            ControlView::Unavailable { .. } => Ok(false),
         }
     }
 
     pub(super) fn sync(&mut self, kit: &mut SceneKit, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
         match self {
             ControlView::Rows(rows) => rows.sync(kit, ctx),
+            ControlView::Wheels(wheels) => wheels.sync(kit, ctx),
+            ControlView::Unavailable { .. } => Ok(()),
         }
     }
 
     pub(super) fn advance(&mut self, ctx: &Ctx<'_>, out: &mut Outputs) {
         match self {
             ControlView::Rows(rows) => rows.advance(ctx, out),
+            ControlView::Wheels(wheels) => wheels.advance(ctx, out),
+            ControlView::Unavailable { .. } => {}
         }
     }
 
@@ -91,6 +106,9 @@ impl ControlView {
     ) -> Result<(), WidgetError> {
         match self {
             ControlView::Rows(rows) => rows.draw(ctx, visuals, layers, texts, window),
+            // Вид колёс не прокручивается: окно списка ему не нужно.
+            ControlView::Wheels(wheels) => wheels.draw(ctx, visuals, layers, texts),
+            ControlView::Unavailable { .. } => Ok(()),
         }
     }
 
@@ -98,12 +116,16 @@ impl ControlView {
     pub(super) fn invalid_values(&self) -> u64 {
         match self {
             ControlView::Rows(rows) => rows.rows.iter().map(RulerRow::invalid_values).sum(),
+            ControlView::Wheels(wheels) => wheels.invalid_values(),
+            ControlView::Unavailable { .. } => 0,
         }
     }
 
     pub(super) fn suppressed_echo_events(&self) -> u64 {
         match self {
             ControlView::Rows(rows) => rows.rows.iter().map(RulerRow::suppressed_echo_events).sum(),
+            ControlView::Wheels(wheels) => wheels.suppressed_echo_events(),
+            ControlView::Unavailable { .. } => 0,
         }
     }
 
@@ -116,6 +138,8 @@ impl ControlView {
                 .iter()
                 .find(|row| row.slot() == slot)
                 .map(|row| row.position_steps(now)),
+            ControlView::Wheels(wheels) => wheels.row_position_steps(slot, now),
+            ControlView::Unavailable { .. } => None,
         }
     }
 }

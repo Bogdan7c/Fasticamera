@@ -339,6 +339,12 @@ impl ScreenState {
         &self.calibration
     }
 
+    /// Пикселей на pt текущей поверхности; `None` — размер поверхности ещё не известен. Единственный источник масштаба
+    /// для геометрии, которая должна лечь на целые пиксели (круг колеса): им пользуются и виджеты, и запросы фасада.
+    pub(crate) fn pixels_per_point(&self) -> Option<f64> {
+        self.layout.map(|layout| layout.point_scale().pixels_per_point())
+    }
+
     fn current_descriptor(&self) -> Option<&ModeDescriptor> {
         self.registry.descriptor(self.mode)
     }

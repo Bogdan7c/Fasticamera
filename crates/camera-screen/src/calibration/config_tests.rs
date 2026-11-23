@@ -140,6 +140,39 @@ fn widget_numbers_are_validated_with_the_name_of_the_bad_field() {
 }
 
 #[test]
+fn wheel_view_numbers_are_validated() {
+    use super::CalibrationWidgetsConfigError as Bad;
+    let reject = |edit: &dyn Fn(&mut CalibrationConfig)| {
+        let mut config = CalibrationConfig::default();
+        edit(&mut config);
+        config.validate()
+    };
+    assert!(matches!(
+        reject(&|c| c.widgets.wheel_tabs_height_pt = 0.0),
+        Err(CalibrationConfigError::Widgets(Bad::NonPositive {
+            field: "wheel_tabs_height_pt",
+            ..
+        }))
+    ));
+    assert!(matches!(
+        reject(&|c| c.widgets.wheel_pad_fill_alpha = 1.5),
+        Err(CalibrationConfigError::Widgets(Bad::FractionOutOfRange {
+            field: "wheel_pad_fill_alpha",
+            ..
+        }))
+    ));
+    // Наименьший диаметр больше наибольшего, либо кольцо не уже радиуса наименьшего круга.
+    assert!(matches!(
+        reject(&|c| c.widgets.wheel_circle_min_diameter_pt = c.widgets.wheel_circle_max_diameter_pt + 1.0),
+        Err(CalibrationConfigError::Widgets(Bad::WheelCircleRange { .. }))
+    ));
+    assert!(matches!(
+        reject(&|c| c.widgets.wheel_ring_thickness_pt = c.widgets.wheel_circle_min_diameter_pt),
+        Err(CalibrationConfigError::Widgets(Bad::WheelCircleRange { .. }))
+    ));
+}
+
+#[test]
 fn a_bad_widget_number_makes_the_whole_screen_config_invalid() {
     let mut config = ScreenConfig::default();
     config.calibration.widgets.mode_pill_padding_pt = -1.0;
