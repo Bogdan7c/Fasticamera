@@ -72,7 +72,7 @@ fn every_catalog_name_is_unique_belongs_to_one_group_and_is_not_a_group_name() {
     let unique: std::collections::HashSet<&String> = names.iter().collect();
     assert_eq!(unique.len(), names.len(), "имена не повторяются");
     let grouped: usize = WorkloadGroup::ALL.iter().map(|group| group_entries(*group).len()).sum();
-    assert_eq!(grouped, CATALOG.len(), "каждая работа ровно в одной группе");
+    assert_eq!(grouped, entries().count(), "каждая работа ровно в одной группе");
     for name in &names {
         assert!(
             WorkloadGroup::by_name(name).is_none(),
@@ -160,4 +160,26 @@ fn recompose_variants_differ_only_by_backdrop_rhythm() {
             filter: DrawFilter::All,
         }
     );
+}
+
+#[test]
+fn tuning_group_has_unique_variants_and_does_not_extend_the_default_lists() {
+    let entries = group_entries(WorkloadGroup::IspTuning);
+    assert!(entries.len() > 10, "группа опытов не пуста");
+    let kinds: std::collections::HashSet<_> = entries.iter().map(|entry| format!("{:?}", entry.kind)).collect();
+    assert_eq!(
+        kinds.len(),
+        entries.len(),
+        "две записи группы с одинаковыми настройками"
+    );
+    assert!(
+        baseline_names().iter().all(|name| !name.contains("wg_")),
+        "умолчание списка работ не расширено опытами"
+    );
+    assert!(matches!(
+        find_entry("viewfinder_never_wg_4x32").unwrap().kind,
+        WorkloadKind::Viewfinder {
+            variant: ViewfinderVariant::Tuned(_)
+        }
+    ));
 }

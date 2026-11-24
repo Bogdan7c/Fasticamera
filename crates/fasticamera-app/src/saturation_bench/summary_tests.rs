@@ -255,8 +255,7 @@ fn summary_carries_digests_for_the_baseline_but_moves_them_to_detail_when_the_li
     assert!(summary.get("digests_in_detail_only").is_none());
     assert!(serde_json::to_string(&summary).unwrap().len() <= SUMMARY_BUDGET_WITH_DIGESTS_BYTES);
 
-    let all: Vec<&'static str> = crate::saturation_bench::catalog::CATALOG
-        .iter()
+    let all: Vec<&'static str> = crate::saturation_bench::catalog::entries()
         .map(|entry| entry.name)
         .collect();
     let everything = RunSummary {
