@@ -5,6 +5,7 @@
 
 use ash::vk;
 use ui_draw::draw_list::{DrawItem, DrawList, ImageSource, LiveImage};
+use ui_draw::geometry::PxRect;
 use ui_draw::picture::UiPicture;
 
 use crate::config::UiRenderLimits;
@@ -51,6 +52,9 @@ pub(crate) struct FramePlan {
     /// Разные источники картинок кадра в порядке первого появления: номер в списке = номер сэмплера в шейдере.
     pub sampler_slots: Vec<SamplerSlot>,
     pub batches: Vec<Batch>,
+    /// Область возможного вклада каждой стеклянной группы кадра (логические px), по номеру группы: из неё
+    /// рендер делает scissor отдельного вызова рисования группы.
+    pub glass_scissors: Vec<PxRect>,
     pub shape_count: u32,
     pub glyph_count: u32,
     pub group_count: u32,
@@ -212,6 +216,12 @@ pub(crate) fn build_plan(
                 plan.shape_count += 1;
             }
             DrawItem::Glass(group) => {
+                // Вершины квада и точки средней яркости остаются прежними (`bounds` = прямоугольник адаптации):
+                // интерполяция координат и плёнка тона не меняются ни на бит. Область, где группа может дать
+                // вклад, уже: фрагменты вне неё отсекает scissor (`glass_scissors`), до шейдера они не доходят.
+                if let Some(draw_rect) = group.draw_rect_px() {
+                    plan.glass_scissors.push(draw_rect);
+                }
                 pack_glass_group(
                     index,
                     group,

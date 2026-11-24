@@ -1,7 +1,7 @@
 //! Группа стекла: несколько форм, сливающихся в одно стекло.
 
 use crate::color::Opacity;
-use crate::draw_list::bounds::transformed_bounds;
+use crate::draw_list::bounds::{linear_stretch, transformed_bounds};
 use crate::geometry::{PxPoint, PxRect, PxVector};
 use crate::glass::GlassParamsPx;
 use crate::glass::reference::PressInput;
@@ -50,12 +50,29 @@ impl GlassMember {
         self.transform.apply_point(self.press.touch_point_local)
     }
 
+    /// Экранный охватывающий прямоугольник области, где расстояние поля формы члена меньше `reach_px` (экранных
+    /// px) от границы. Подробности оценки — в [`GlassGroupItem::draw_rect_px`]. `None` — преобразование не
+    /// конечно или вырождено.
+    pub(crate) fn reach_bounds_px(&self, reach_px: f32) -> Option<PxRect> {
+        let stretch_max = linear_stretch(&self.transform);
+        let stretch_min = self.transform.determinant().abs() / stretch_max;
+        if !(stretch_min.is_finite() && stretch_min > 0.0) {
+            return None;
+        }
+        let local = PxRect::from_center(PxPoint::ORIGIN, self.geometry.extent()).expanded(reach_px / stretch_min);
+        transformed_bounds(&self.transform, &local)
+    }
+
     /// Границы формы на экране (без запасов).
     pub fn shape_bounds_px(&self) -> Option<PxRect> {
         let local = PxRect::from_center(PxPoint::ORIGIN, self.geometry.extent());
         transformed_bounds(&self.transform, &local)
     }
 }
+
+/// Запас квада рисования на сглаживание края, px: покрытие слоя ненулевое, пока расстояние меньше 0,5 px
+/// (`coverage_ref`, ширина сглаживания 1 px); берём 1 px, чтобы центр пикселя на границе не выпал из квада.
+pub const DRAW_RECT_EDGE_MARGIN_PX: f32 = 1.0;
 
 /// Группа стекла: одним проходом над одним фоном. Слияние членов — `smooth_union` радиусом
 /// `merge_radius_px` (у Apple — `spacing` контейнера, `glass.md` раздел 2).
@@ -80,11 +97,68 @@ pub struct GroupField {
 }
 
 impl GlassGroupItem {
-    /// Границы области, где стекло рисуется: формы всех членов, раздутые на запас под слияние
-    /// (smooth-min выпячивает форму не более чем на `merge_radius/4`; берём `merge_radius`),
-    /// тень, вынос линзы (смещение выборки наружу) и свечение нажатия. Рендер рисует стекло
-    /// только внутри этих границ. `None` — группа пуста или преобразование не конечно.
+    /// Прямоугольник адаптации яркости: от него шейдер и эталон берут 5 точек «средней яркости фона под
+    /// группой» (центр и четверти сторон, `mean_luma_under`). Это ПРЕЖНИЕ границы группы: формы членов,
+    /// раздутые на запас под слияние, тень, вынос линзы и свечение нажатия. Он НЕ определяет, где группа
+    /// рисуется (для этого [`GlassGroupItem::draw_rect_px`]): менять его нельзя, не меняя плёнку тона.
+    /// `None` — группа пуста или преобразование не конечно.
+    pub fn adaptation_rect_px(&self) -> Option<PxRect> {
+        let bounds = self.members_bounds_px()?;
+        let params = &self.params;
+        let margin = self
+            .merge_radius_px
+            .max(params.shadow.radius_px + params.shadow.offset_px)
+            .max(params.refraction_strength_px * (1.0 + params.press.refraction_boost))
+            .max(params.press.glow_radius_px);
+        Some(bounds.expanded(margin))
+    }
+
+    /// Прежнее общее имя границ элемента ([`crate::draw_list::DrawItem::bounds_px`]): для стекла это
+    /// прямоугольник адаптации яркости, то есть консервативные границы «всё, что может зависеть от группы».
+    /// Квад рисования с тех пор строится отдельно ([`GlassGroupItem::draw_rect_px`]).
     pub fn bounds_px(&self) -> Option<PxRect> {
+        self.adaptation_rect_px()
+    }
+
+    /// Квад рисования: область, вне которой группа точно даёт нулевой вклад в кадр (premultiplied 0).
+    ///
+    /// Состав: слой стекла (покрытие ненулевое, пока расстояние поля меньше 0,5 px) и тень (форма, сдвинутая
+    /// вниз на `offset`, пока расстояние меньше радиуса; только если у тени есть альфа), обе — с запасом
+    /// `merge_radius / 4` на выпуклость плавного слияния и запасом на сглаживание [`DRAW_RECT_EDGE_MARGIN_PX`].
+    /// НЕ входят: свечение нажатия (оно смешивается с белым внутри слоя стекла, снаружи слоя ничего не
+    /// рисует) и вынос линзы (он меняет, ОТКУДА читается фон, а не где рисуется).
+    ///
+    /// Расстояние поля измеряется в экранных px, но считается в локальных координатах члена и делится на
+    /// длину экранного градиента нормали, а она при растяжении преобразования доходит до `1 / σmin`
+    /// (σmin — наименьшее сингулярное число линейной части). Поэтому досягаемость `reach` px экрана в
+    /// локальных координатах — `reach / σmin` (строгая верхняя оценка; при равномерном масштабе — точная).
+    /// `None` — группа пуста, преобразование не конечно или вырождено.
+    pub fn draw_rect_px(&self) -> Option<PxRect> {
+        let merge_bulge = self.merge_radius_px * 0.25;
+        let layer_reach = merge_bulge + DRAW_RECT_EDGE_MARGIN_PX;
+        let shadow = &self.params.shadow;
+        let mut area: Option<PxRect> = None;
+        let mut add = |rect: PxRect| {
+            area = Some(match area {
+                Some(acc) => acc.union(&rect),
+                None => rect,
+            });
+        };
+        for member in &self.members {
+            add(member.reach_bounds_px(layer_reach)?);
+            if shadow.alpha > 0.0 {
+                let shadow_reach = shadow.radius_px + merge_bulge + DRAW_RECT_EDGE_MARGIN_PX;
+                let mut shifted = member.reach_bounds_px(shadow_reach)?;
+                // Тень сдвинута вниз по ЭКРАНУ (шейдер вычитает смещение из экранной y), а не по осям члена.
+                shifted.origin.y += shadow.offset_px;
+                add(shifted);
+            }
+        }
+        area
+    }
+
+    /// Охватывающий прямоугольник форм всех членов (без запасов).
+    fn members_bounds_px(&self) -> Option<PxRect> {
         let mut bounds: Option<PxRect> = None;
         for member in &self.members {
             let member_bounds = member.shape_bounds_px()?;
@@ -93,14 +167,7 @@ impl GlassGroupItem {
                 None => member_bounds,
             });
         }
-        let bounds = bounds?;
-        let params = &self.params;
-        let margin = self
-            .merge_radius_px
-            .max(params.shadow.radius_px + params.shadow.offset_px)
-            .max(params.refraction_strength_px * (1.0 + params.press.refraction_boost))
-            .max(params.press.glow_radius_px);
-        Some(bounds.expanded(margin))
+        bounds
     }
 
     /// Нажатие группы для пикселя: у `shade_glass_pixel` одно нажатие на пиксель, а у членов оно

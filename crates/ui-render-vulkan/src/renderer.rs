@@ -33,7 +33,18 @@ use crate::picture_cache::PictureCache;
 use crate::pipelines::{GLASS_FIRST_PYRAMID_BINDING, IMAGE_FIRST_SAMPLER_BINDING, UiPipelines, UiShaderSet};
 use crate::plan::{Batch, BatchKind, FramePlan, build_plan};
 use crate::pyramid::{Pyramid, PyramidKey, RebuildSource};
+use crate::scissor::{GlassDrawArea, logical_rect_to_scissor};
 use crate::slots::SlotBuffers;
+
+/// Всё, что нужно вызову рисования пакета, кроме самого пакета.
+#[derive(Clone, Copy)]
+struct BatchContext<'a> {
+    slot: usize,
+    quarter_turns: u32,
+    target: &'a ColorAttachment,
+    frame: &'a UiFrame<'a>,
+    plan: &'a FramePlan,
+}
 
 /// Пирамида и то, что известно о её содержимом.
 struct LivePyramid {
@@ -55,6 +66,8 @@ pub struct UiRenderer {
     context: GpuContext,
     config: UiRendererConfig,
     pipelines: UiPipelines,
+    /// Какую часть квада стеклянной группы рисовать (боевой — `Tight`).
+    glass_area: GlassDrawArea,
     /// Атлас SDF: живёт, пока живы наборы дескрипторов, ссылающиеся на него.
     _atlas: SampledTexture,
     slot_buffers: Vec<SlotBuffers>,
@@ -88,6 +101,16 @@ impl UiRenderer {
         context: &GpuContext,
         config: &UiRendererConfig,
         shader_set: UiShaderSet,
+    ) -> Result<Self, UiRenderError> {
+        Self::with_shader_set_and_glass_area(context, config, shader_set, GlassDrawArea::Tight)
+    }
+
+    /// Полный конструктор: набор шейдеров и часть квада стекла (второе нужно только тестам).
+    pub(crate) fn with_shader_set_and_glass_area(
+        context: &GpuContext,
+        config: &UiRendererConfig,
+        shader_set: UiShaderSet,
+        glass_area: GlassDrawArea,
     ) -> Result<Self, UiRenderError> {
         config.validate()?;
         let mut pipelines = UiPipelines::new(context, config, shader_set)?;
@@ -143,6 +166,7 @@ impl UiRenderer {
             context: context.clone(),
             config: *config,
             pipelines,
+            glass_area,
             _atlas: atlas,
             slot_buffers,
             slot_in_flight: vec![false; config.frame_slots],
@@ -394,7 +418,14 @@ impl UiRenderer {
             let mut pass = RasterPass::begin(&self.context, command_buffer, target, AttachmentLoad::Preserve)?;
             let mut calls = 0_u32;
             for batch in &plan.batches {
-                self.draw_batch(&mut pass, slot, batch, quarter_turns, &target, frame)?;
+                let context = BatchContext {
+                    slot,
+                    quarter_turns,
+                    target: &target,
+                    frame,
+                    plan: &plan,
+                };
+                self.draw_batch(&mut pass, batch, &context)?;
                 calls += 1;
             }
             pass.end();
@@ -590,15 +621,63 @@ impl UiRenderer {
         }
     }
 
+    /// Стекло: каждая группа — отдельный вызов рисования со scissor по области её возможного вклада.
+    /// Вершины квада остаются прежними (координаты фона, интерполированные по нему, не меняются), поэтому
+    /// картинка бит-в-бит та же, а фрагменты вне области до шейдера не доходят. Группа, чья область целиком
+    /// вне цели, не рисуется вовсе: вклад ровно нулевой.
+    fn draw_glass_groups_tight(
+        &self,
+        pass: &mut RasterPass<'_>,
+        batch: &Batch,
+        context: &BatchContext<'_>,
+    ) -> Result<(), UiRenderError> {
+        let BatchContext {
+            slot,
+            quarter_turns,
+            target,
+            frame,
+            plan,
+        } = *context;
+        for group_number in batch.first_instance..batch.first_instance + batch.instance_count {
+            let Some(contribution_area) = plan.glass_scissors.get(group_number as usize) else {
+                return Err(UiRenderError::Gpu(GpuError::InvalidState {
+                    what: format!("у стеклянной группы {group_number} нет области вклада: план кадра повреждён"),
+                }));
+            };
+            let Some(scissor) = logical_rect_to_scissor(contribution_area, quarter_turns, target.extent()) else {
+                continue;
+            };
+            let push = self.frame_push(quarter_turns, target, frame, group_number).to_bytes();
+            pass.draw(
+                &self.pipelines.glass,
+                slot,
+                &push,
+                DrawCall {
+                    vertices_per_instance: 6,
+                    instance_count: 1,
+                    scissor: Some(scissor),
+                },
+            )?;
+        }
+        Ok(())
+    }
+
     fn draw_batch(
         &self,
         pass: &mut RasterPass<'_>,
-        slot: usize,
         batch: &Batch,
-        quarter_turns: u32,
-        target: &ColorAttachment,
-        frame: &UiFrame<'_>,
+        context: &BatchContext<'_>,
     ) -> Result<(), UiRenderError> {
+        if batch.kind == BatchKind::Glass && self.glass_area == GlassDrawArea::Tight {
+            return self.draw_glass_groups_tight(pass, batch, context);
+        }
+        let BatchContext {
+            slot,
+            quarter_turns,
+            target,
+            frame,
+            ..
+        } = *context;
         let pipeline = match batch.kind {
             BatchKind::Shape => &self.pipelines.shape,
             BatchKind::Glyph => &self.pipelines.glyph,

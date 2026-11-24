@@ -32,7 +32,7 @@ use ui_draw::geometry::{PxPoint, PxRect, PxSize};
 use ui_draw::shape::signed_distance;
 use ui_render_vulkan::saturation::{DEFAULT_TARGET_EXTENT, DEFAULT_TARGET_FORMAT};
 use ui_render_vulkan::testing::{BackdropPattern, SyntheticBackdrop};
-use ui_render_vulkan::testing_reference::frozen_reference_renderer;
+use ui_render_vulkan::testing_reference::{frozen_reference_renderer, whole_glass_quad_renderer};
 use ui_render_vulkan::{BackdropInput, BackdropPlacement, LiveImages, UiFrame, UiRenderer, UiRendererConfig};
 
 /// Слотов у стенда (как у боевых тестов стенда).
@@ -44,6 +44,8 @@ const ROUNDS: usize = 4;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShaderChoice {
     FrozenReference,
+    /// Боевые шейдеры, но квад стекла целиком (как до G2).
+    ProductWholeQuad,
     Product,
 }
 
@@ -65,6 +67,7 @@ impl UiPassWork {
         let config = UiRendererConfig::new(format.vk_format(), SLOTS);
         let renderer = match choice {
             ShaderChoice::FrozenReference => frozen_reference_renderer(context, &config).unwrap(),
+            ShaderChoice::ProductWholeQuad => whole_glass_quad_renderer(context, &config).unwrap(),
             ShaderChoice::Product => UiRenderer::new(context, &config).unwrap(),
         };
         let targets = (0..SLOTS)
@@ -168,10 +171,10 @@ fn median(values: &mut [f64]) -> f64 {
 }
 
 /// Печатает «эталон против боевого» по сцене; возвращает медианы (эталон, боевой), мс.
-fn print_ab(context: &GpuContext, name: &str, list: &DrawList) -> (f64, f64) {
+fn print_ab(context: &GpuContext, name: &str, list: &DrawList, before_choice: ShaderChoice) -> (f64, f64) {
     let (mut reference, mut product) = (Vec::new(), Vec::new());
     for _ in 0..ROUNDS {
-        reference.push(measure_frame_cost_ms(context, ShaderChoice::FrozenReference, list));
+        reference.push(measure_frame_cost_ms(context, before_choice, list));
         product.push(measure_frame_cost_ms(context, ShaderChoice::Product, list));
     }
     println!("{name}: эталон (до) мс/кадр {reference:.3?}; боевой (после) мс/кадр {product:.3?}");
@@ -188,8 +191,31 @@ fn print_ab(context: &GpuContext, name: &str, list: &DrawList) -> (f64, f64) {
 fn glass_fast_paths_bench_prints() {
     let Some(context) = gpu_context_or_skip() else { return };
     println!("кадр 1080x2412, слотов {SLOTS}, пары A/B повторены {ROUNDS} раз (порядок: эталон, боевой, эталон, ...)");
-    let (typical_before, typical_after) = print_ab(&context, "8 стёкол (типичный кадр)", &typical_draw_list());
-    let (panel_before, panel_after) = print_ab(&context, "панель на пол-экрана", &panel_draw_list());
+    let (typical_before, typical_after) = print_ab(
+        &context,
+        "8 стёкол (типичный кадр), G1+G2 против эталона",
+        &typical_draw_list(),
+        ShaderChoice::FrozenReference,
+    );
+    let (panel_before, panel_after) = print_ab(
+        &context,
+        "панель на пол-экрана, G1+G2 против эталона",
+        &panel_draw_list(),
+        ShaderChoice::FrozenReference,
+    );
+    // Вклад одного G2 (узкая область при тех же боевых шейдерах): квад целиком против scissor.
+    print_ab(
+        &context,
+        "8 стёкол, только G2",
+        &typical_draw_list(),
+        ShaderChoice::ProductWholeQuad,
+    );
+    print_ab(
+        &context,
+        "панель, только G2",
+        &panel_draw_list(),
+        ShaderChoice::ProductWholeQuad,
+    );
     // Цена измерена и конечна; направление (после <= до) на ПК не гарантируем жёстко: RADV — не Adreno, шум возможен.
     for value in [typical_before, typical_after, panel_before, panel_after] {
         assert!(value.is_finite() && value > 0.0, "цена кадра не измерена: {value}");
@@ -204,7 +230,7 @@ fn panel_fast_path_shares_are_high() {
     let group = panel_group();
     let geometry = group.members[0].geometry;
     let params = group.params;
-    let bounds = group.bounds_px().unwrap();
+    let bounds = group.adaptation_rect_px().unwrap();
     let (mut in_quad, mut covered, mut no_refraction, mut opaque, mut no_rim) = (0_u64, 0_u64, 0_u64, 0_u64, 0_u64);
     // Пиксели квада, где шейдер даёт ровно ноль (нет покрытия и тень нулевая), но всё равно считает два поля формы.
     let mut wasted = 0_u64;
@@ -273,4 +299,51 @@ fn panel_fast_path_shares_are_high() {
     );
     assert!(share(opaque, covered) > 95.0, "почти вся панель непрозрачна для тени");
     assert!(share(no_rim, covered) > 90.0, "почти вся панель вне ободка блика");
+}
+
+/// Пересечение прямоугольника с экраном 1080 × 2412, в пикселях.
+fn pixels_on_screen(rect: &PxRect) -> u64 {
+    let width = (rect.max_x().min(DEFAULT_TARGET_EXTENT.width as f32) - rect.origin.x.max(0.0)).max(0.0);
+    let height = (rect.max_y().min(DEFAULT_TARGET_EXTENT.height as f32) - rect.origin.y.max(0.0)).max(0.0);
+    (width.ceil() as u64) * (height.ceil() as u64)
+}
+
+/// Сколько фрагментов отдаёт панели растеризатор до и после узкой области (scissor), и по какой области
+/// фактически берётся «средняя яркость под группой» (это прямоугольник адаптации, он НЕ менялся).
+#[test]
+fn panel_fragment_counts_and_adaptation_area() {
+    let group = panel_group();
+    let quad = group.adaptation_rect_px().unwrap();
+    let draw = group.draw_rect_px().unwrap();
+    let (before, after) = (pixels_on_screen(&quad), pixels_on_screen(&draw));
+    println!(
+        "панель: квад ДО {before} фрагментов (прямоугольник {quad:?}); область вклада ПОСЛЕ {after} ({:.1} % от прежнего); \
+         сама панель {} px",
+        after as f64 / before as f64 * 100.0,
+        (saturation_support::PANEL_SIZE.width * saturation_support::PANEL_SIZE.height) as u64
+    );
+    // Точки средней яркости: центр и четверти прямоугольника адаптации (как в шейдере и в `mean_luma_under`).
+    let (center, quarter) = (
+        quad.center(),
+        PxPoint::new(quad.size.width * 0.25, quad.size.height * 0.25),
+    );
+    println!(
+        "  средняя яркость берётся в точках: центр ({:.0}, {:.0}), четверти ±({:.0}, {:.0}) -> x от {:.0} до {:.0}, y от {:.0} до {:.0}; \
+         экран 1080 x 2412, панель x {:.0}..{:.0}",
+        center.x,
+        center.y,
+        quarter.x,
+        quarter.y,
+        center.x - quarter.x,
+        center.x + quarter.x,
+        center.y - quarter.y,
+        center.y + quarter.y,
+        PANEL_CENTER.x - saturation_support::PANEL_SIZE.width / 2.0,
+        PANEL_CENTER.x + saturation_support::PANEL_SIZE.width / 2.0
+    );
+    assert!(
+        after * 10 < before * 6,
+        "область вклада должна быть заметно уже прежнего квада: {after} из {before}"
+    );
+    assert!(after > 1_000_000, "панель 540 x 1950 сама даёт около миллиона пикселей");
 }

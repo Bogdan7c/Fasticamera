@@ -373,7 +373,7 @@ pub fn full_screen_placement(width: f32, height: f32) -> ui_render_vulkan::Backd
 
 /// Средняя яркость под группой по правилу шейдера: 5 выборок (центр и четверти границ) от яркости фона.
 pub fn mean_luma_under(group: &GlassGroupItem, backdrop: impl Fn(PxPoint) -> DisplayColor) -> f32 {
-    let bounds = group.bounds_px().unwrap();
+    let bounds = group.adaptation_rect_px().unwrap();
     let center = bounds.center();
     let (qx, qy) = (bounds.size.width * 0.25, bounds.size.height * 0.25);
     let taps = [(0.0, 0.0), (qx, qy), (-qx, qy), (qx, -qy), (-qx, -qy)];
