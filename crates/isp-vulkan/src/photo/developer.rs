@@ -46,17 +46,19 @@ use super::developed::{DevelopRequest, DevelopedPhoto, DevelopmentStart, SliceOu
 use super::error::PhotoError;
 use super::finishing;
 use super::pixels::{GpuPixels, seal_or_leak};
-use super::slicing::{DevelopmentPlan, SlicePlan, max_region_rows, plan_development};
+use super::slice_pushes::SlicePushes;
+use super::slicing::{DevelopmentPlan, crop_outside, max_region_rows, plan_development};
 use super::targets::DevelopTargets;
 use super::thumbnail::ThumbnailPlan;
 use super::thumbnail_pass::{ThumbnailJob, ThumbnailPass};
+use super::timing::{PhotoGpuPoint, PhotoGpuTimer, PhotoGpuTimingCollect, SliceStep};
 use crate::frame_style::{FrameStyleBuffers, check_style_fits};
 use crate::lens_shading_map::{LensShadingMapBuffer, check_lens_shading_step};
 use crate::quality::demosaic::{MenonPass, create_pass_pipelines};
 use crate::quality::frame_params::{
     CfaCode, FRAME_PARAMETERS_BYTES, OutputWindowOrigin, SourceAddressing, check_supported, frame_parameter_bytes,
 };
-use crate::quality::pass::{PassPushConstants, QualityPass};
+use crate::quality::pass::QualityPass;
 use crate::quality::planes::{LinearRgbPlanes, QualityPlanes};
 use crate::quality::stages::{OUTPUT_BINDINGS, OutputUniforms, output_binding_writes};
 use crate::shaders::blobs;
@@ -133,6 +135,7 @@ impl PhotoDeveloper {
         Ok(Self {
             parts: Some(Box::new(DeveloperParts {
                 job: None,
+                timer: None,
                 thumbnail_pass,
                 output,
                 menon,
@@ -223,6 +226,30 @@ impl PhotoDeveloper {
         self.parts.as_ref().is_some_and(|parts| parts.job.is_some())
     }
 
+    /// Включает метки времени GPU по проходам (см. [`super::timing`]). Нельзя во время проявки (`Busy`): первый
+    /// шаг уже записан без сброса меток. Повторный вызов ничего не меняет.
+    pub fn enable_gpu_timing(&mut self) -> Result<(), PhotoError> {
+        let parts = self.parts_mut()?;
+        if parts.job.is_some() {
+            return Err(PhotoError::Busy {
+                what: "метки времени включаются между проявками",
+            });
+        }
+        if parts.timer.is_none() {
+            parts.timer = Some(PhotoGpuTimer::new(&parts.context)?);
+        }
+        Ok(())
+    }
+
+    /// Забирает метки последней проявки; не ждёт GPU. Звать после fence её сабмитов и ДО записи следующей проявки
+    /// (она сбросит метки). Прибор выключен — `NothingRecorded`.
+    pub fn collect_gpu_timing(&mut self) -> Result<PhotoGpuTimingCollect, PhotoError> {
+        match self.parts_mut()?.timer.as_mut() {
+            Some(timer) => Ok(timer.collect()?),
+            None => Ok(PhotoGpuTimingCollect::NothingRecorded),
+        }
+    }
+
     /// Плоскости линейного RGB камеры ПОСЛЕДНЕЙ записанной полосы (диагностика и тесты паритета): плотные строки
     /// шириной области проявления, строк столько, сколько в области полосы. Содержимое определено после fence
     /// сабмита этой полосы и до записи следующей. Нет проявителя (уничтожается) — `None`.
@@ -262,6 +289,8 @@ impl Drop for PhotoDeveloper {
 /// наборы дескрипторов) → проходы → плоскости.
 struct DeveloperParts {
     job: Option<Job>,
+    /// Метки времени GPU; `None` — прибор выключен (по умолчанию), метки в буферы не пишутся.
+    timer: Option<PhotoGpuTimer>,
     /// Пайплайн миниатюры; `None` — не создался (проявка идёт без миниатюры).
     thumbnail_pass: Option<ThumbnailPass>,
     output: QualityPass,
@@ -496,6 +525,7 @@ impl DeveloperParts {
                     readback: job.readback.as_ref(),
                     thumbnail: &job.thumbnail,
                     thumbnail_pass: self.thumbnail_pass.as_ref(),
+                    timer: &mut self.timer,
                 },
             )?;
             return self.note_step_recorded();
@@ -504,19 +534,37 @@ impl DeveloperParts {
         self.check_slice(&pushes)?;
 
         // --- Команды (все проверки пройдены) ---
-        let is_first = job.recorded == 0;
-        if is_first {
+        let step = SliceStep::new(job.recorded, job.plan.slices.len());
+        if step.is_first {
             job.image.record_prepare_for_compute_write(command_buffer);
+            if let Some(timer) = self.timer.as_mut() {
+                timer.begin_development(command_buffer)?;
+            }
         }
         // Начало полосы: прошлые полосы (в том числе в прошлых сабмитах) и захват закончили писать плоскости.
         record_compute_pass_dependency(&self.context, command_buffer);
+        if step.is_sample {
+            PhotoGpuTimer::mark_if_enabled(&mut self.timer, command_buffer, PhotoGpuPoint::BeforeSample)?;
+        }
         self.levels.record(command_buffer, SLOT, &pushes.levels)?;
-        for (_, pass) in &self.menon {
+        if step.is_sample {
+            PhotoGpuTimer::mark_if_enabled(&mut self.timer, command_buffer, PhotoGpuPoint::Levels)?;
+        }
+        for (menon_pass, pass) in &self.menon {
             record_compute_pass_dependency(&self.context, command_buffer);
             pass.record(command_buffer, SLOT, &pushes.geometry)?;
+            if step.is_sample {
+                PhotoGpuTimer::mark_if_enabled(&mut self.timer, command_buffer, PhotoGpuPoint::Demosaic(*menon_pass))?;
+            }
         }
         record_compute_pass_dependency(&self.context, command_buffer);
         self.output.record(command_buffer, SLOT, &pushes.output)?;
+        if step.is_sample {
+            PhotoGpuTimer::mark_if_enabled(&mut self.timer, command_buffer, PhotoGpuPoint::Output)?;
+        }
+        if step.is_last {
+            PhotoGpuTimer::mark_if_enabled(&mut self.timer, command_buffer, PhotoGpuPoint::AfterSample)?;
+        }
         self.note_step_recorded()
     }
 
@@ -647,49 +695,5 @@ impl DeveloperParts {
             pass.release_slot_after_fence(SLOT)?;
         }
         Ok(())
-    }
-}
-
-fn crop_outside(crop: PixelRect, edge: u32) -> PhotoError {
-    PhotoError::InvalidInput {
-        what: format!("область снимка {crop:?} левее/выше полезной области (край {edge})"),
-    }
-}
-
-/// Push-константы трёх видов проходов одной полосы (раскладка `PlaneGeometry`; индексы < 2^24 точны в f32).
-struct SlicePushes {
-    levels: PassPushConstants,
-    geometry: PassPushConstants,
-    output: PassPushConstants,
-}
-
-impl SlicePushes {
-    fn new(plan: &DevelopmentPlan, slice: &SlicePlan, cfa: CfaCode, source_width: u32) -> Self {
-        let extent = vk::Extent2D {
-            width: plan.region_width,
-            height: slice.region_rows,
-        };
-        let geometry = PassPushConstants::geometry(extent, cfa);
-        Self {
-            levels: PassPushConstants {
-                pass_parameters: [
-                    plan.region_left as f32,
-                    slice.region_top as f32,
-                    source_width as f32,
-                    0.0,
-                ],
-                ..geometry
-            },
-            output: PassPushConstants {
-                pass_parameters: [
-                    plan.window_left as f32,
-                    slice.first_output_row as f32,
-                    slice.output_rows as f32,
-                    slice.destination_row as f32,
-                ],
-                ..geometry
-            },
-            geometry,
-        }
     }
 }

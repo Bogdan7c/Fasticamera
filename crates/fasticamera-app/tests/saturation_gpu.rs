@@ -176,8 +176,8 @@ fn expected_labels(entry: &CatalogEntry) -> Vec<&'static str> {
         WorkloadKind::Compositor => vec!["compose"],
         WorkloadKind::Display { .. } => vec!["compose", "pyramid", "ui"],
         WorkloadKind::HeadroomV4 | WorkloadKind::HeadroomV4Tuned(_) => v4_pass_labels(entry.kind),
-        // У снимка времён по проходам нет по построению (в `photo` нет timestamp-запросов): каждый кадр «без замера».
-        WorkloadKind::Still => Vec::new(),
+        // Снимок: образцовая полоса по проходам и отрезки «до/после образца» и отделки (`photo::timing`).
+        WorkloadKind::Still | WorkloadKind::StillTuned { .. } => isp_vulkan::photo::PhotoGpuPoint::span_labels(),
     }
 }
 

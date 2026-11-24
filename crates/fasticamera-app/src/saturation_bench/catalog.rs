@@ -8,6 +8,7 @@ use serde::Serialize;
 use super::draw_filter::DrawFilter;
 use super::glass_ablation::{GlassStyleAblation, GlassSubset};
 use super::headroom_tuning::HeadroomExperiment;
+use super::still_variant::StillTuning;
 use super::viewfinder_tuning::{AwbSchedule, ViewfinderTuning};
 
 mod baseline;
@@ -15,6 +16,7 @@ mod glass_ablation;
 mod isp_ablation;
 mod isp_tuning;
 mod scopes_ablation;
+mod still_tuning;
 mod ui_ablation;
 mod v4_tuning;
 
@@ -141,11 +143,13 @@ pub enum WorkloadGroup {
     GlassAblation,
     /// Опыты над цепочкой V4 «запас под видео»: форма группы, пробы вместо Menon, отключённые стадии вывода.
     V4Tuning,
+    /// Опыты над проявлением снимка (пакет P): высота полосы, форма рабочей группы.
+    StillTuning,
 }
 
 impl WorkloadGroup {
     /// Все группы.
-    pub const ALL: [WorkloadGroup; 7] = [
+    pub const ALL: [WorkloadGroup; 8] = [
         Self::Baseline,
         Self::UiAblation,
         Self::IspAblation,
@@ -153,6 +157,7 @@ impl WorkloadGroup {
         Self::IspTuning,
         Self::GlassAblation,
         Self::V4Tuning,
+        Self::StillTuning,
     ];
 
     /// Имя группы в конфиге и флаге.
@@ -165,6 +170,7 @@ impl WorkloadGroup {
             Self::IspTuning => "isp_tuning",
             Self::GlassAblation => "glass_ablation",
             Self::V4Tuning => "v4_tuning",
+            Self::StillTuning => "still_tuning",
         }
     }
 
@@ -199,6 +205,8 @@ pub enum WorkloadKind {
     HeadroomV4Tuned(HeadroomExperiment),
     /// Проявление снимка целиком.
     Still,
+    /// Проявление снимка с опытными настройками (группа `still_tuning`).
+    StillTuned { tuning: StillTuning },
 }
 
 /// Строка каталога.
@@ -257,7 +265,7 @@ const fn without(stage: AblatedStage) -> WorkloadKind {
 /// Все работы стенда в порядке прогона по умолчанию.
 /// Таблицы групп в порядке каталога. Строки каждой группы лежат в своём модуле (`catalog/<группа>.rs`): каталог
 /// растёт с каждым опытом, а один файл на все группы перерос предел размера модуля.
-const GROUP_TABLES: [&[CatalogEntry]; 7] = [
+const GROUP_TABLES: [&[CatalogEntry]; 8] = [
     baseline::ENTRIES,
     ui_ablation::ENTRIES,
     isp_ablation::ENTRIES,
@@ -265,6 +273,7 @@ const GROUP_TABLES: [&[CatalogEntry]; 7] = [
     isp_tuning::ENTRIES,
     glass_ablation::ENTRIES,
     v4_tuning::ENTRIES,
+    still_tuning::ENTRIES,
 ];
 
 /// Все работы каталога в порядке каталога (группа за группой).

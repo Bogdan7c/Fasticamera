@@ -20,10 +20,13 @@
 //! * **Выделения.** `PhotoDeveloper::begin` выделяет картинку снимка, поэтому на `record_frame` его вызывать
 //!   нельзя: проявители заводятся с запасом (`2 × слотов + 1`), а `begin` следующего снимка делается при подтверждении
 //!   предыдущего (в `release_slot_after_fence`, до того как проявитель понадобится снова).
-//! * Времена по проходам не меряются (в `photo` нет timestamp-ов): каждый кадр — `record_unmeasured_frame`;
-//!   честная цифра — только общая пропускная способность стенда.
+//! * Времена по проходам меряются метками `photo::timing` (режим [`StillPassTiming::PerPass`]): образцовая полоса
+//!   разбирается по проходам, остальные идут двумя отрезками (подробности — в `photo/timing.rs`). Метки собираются
+//!   при подтверждении проявки маркером, а не в `release_slot_after_fence`: проявка завершается позже кадра.
+//!   Цена кадра — по-прежнему общая пропускная способность стенда, метки лишь делят её по проходам.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use camera_contract::geometry::{PixelRect, PixelSize};
 use gpu_vulkan::context::GpuContext;
@@ -45,8 +48,22 @@ use super::scene::{SceneContent, check_raw10_size};
 use super::source::RawFrameHolder;
 use super::viewfinder::check_source_size;
 use crate::photo::{
-    DevelopRequest, PhotoConfig, PhotoDeveloper, RawCapture, RawCapturer, RgbaReadback, SliceOutcome, ThumbnailOutcome,
+    DevelopRequest, PhotoConfig, PhotoDeveloper, PhotoGpuPoint, PhotoGpuTimingCollect, RawCapture, RawCapturer,
+    RgbaReadback, SliceOutcome, ThumbnailOutcome,
 };
+
+/// Размер кольца журнала проходов (кадров).
+const PASS_LOG_CAPACITY_FRAMES: usize = 512;
+
+/// Режим замера времени GPU по проходам проявки.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StillPassTiming {
+    /// Метки не пишутся: работа идёт так же, как у продукта.
+    Off,
+    /// Метки на образцовой полосе и между группами полос (14 меток на снимок).
+    #[default]
+    PerPass,
+}
 
 /// Кадр основной камеры для снимка (4:3, 12 Мпикс): та же сторона, что у видоискателя.
 pub const STILL_FRAME_SIZE: PixelSize = PixelSize::new(4096, 3072);
@@ -69,6 +86,8 @@ pub struct StillSaturationConfig {
     pub content: SceneContent,
     /// Паддинг конца строки RAW10, байты.
     pub raw10_row_padding_bytes: u32,
+    /// Замер времени GPU по проходам.
+    pub pass_timing: StillPassTiming,
 }
 
 impl Default for StillSaturationConfig {
@@ -81,6 +100,7 @@ impl Default for StillSaturationConfig {
             frame_slots: 2,
             content: SceneContent::default(),
             raw10_row_padding_bytes: 0,
+            pass_timing: StillPassTiming::default(),
         }
     }
 }
@@ -171,8 +191,12 @@ impl StillSaturation {
         let count = config.developer_count();
         let mut developers = Vec::with_capacity(count);
         for _ in 0..count {
+            let mut developer = PhotoDeveloper::new(context, &config.photo, config.frame_size.width)?;
+            if config.pass_timing == StillPassTiming::PerPass {
+                developer.enable_gpu_timing()?;
+            }
             developers.push(DeveloperEntry {
-                developer: PhotoDeveloper::new(context, &config.photo, config.frame_size.width)?,
+                developer,
                 state: DeveloperState::Idle,
             });
         }
@@ -186,7 +210,7 @@ impl StillSaturation {
             slot_developer: vec![None; config.frame_slots],
             last_image: None,
             last_thumbnail_digest: None,
-            times: PassTimeLog::new(&[], 1),
+            times: PassTimeLog::new(&PhotoGpuPoint::span_labels(), PASS_LOG_CAPACITY_FRAMES),
             counters: StillCounters::default(),
             failure: FirstFailure::default(),
             _holder: holder,
@@ -253,6 +277,28 @@ impl StillSaturation {
         Ok(())
     }
 
+    /// Кладёт в журнал времена проявки по проходам или отметку «без замера» (метки не готовы, выключены).
+    fn log_development_timing(&mut self, timing: &PhotoGpuTimingCollect) {
+        let PhotoGpuTimingCollect::Ready(timings) = timing else {
+            self.times.record_unmeasured_frame();
+            return;
+        };
+        let durations: Option<Vec<Duration>> = PhotoGpuPoint::span_labels()
+            .iter()
+            .map(|label| {
+                timings
+                    .spans
+                    .iter()
+                    .find(|(span_label, _)| span_label == label)
+                    .map(|&(_, nanoseconds)| Duration::from_nanos(nanoseconds))
+            })
+            .collect();
+        match durations {
+            Some(durations) => self.times.record_frame(&durations),
+            None => self.times.record_unmeasured_frame(),
+        }
+    }
+
     /// Подтверждает и завершает все проявки, чей маркер уже выполнен (без ожидания GPU).
     fn reap_confirmed(&mut self) -> Result<(), SaturationWorkError> {
         for index in 0..self.developers.len() {
@@ -270,6 +316,9 @@ impl StillSaturation {
                         self.developers[index].developer.slice_completed(&proof)?;
                     }
                     let mut photo = self.developers[index].developer.finish()?;
+                    // Метки собираем до новой проявки этого проявителя: её первый шаг сбросит их.
+                    let timing = self.developers[index].developer.collect_gpu_timing()?;
+                    self.log_development_timing(&timing);
                     if let ThumbnailOutcome::Ready { size, rgba } = photo.take_thumbnail() {
                         self.counters.thumbnails_ready += 1;
                         // Дайджест миниатюры берём сразу: байты в обычной памяти, GPU не нужен.
@@ -370,7 +419,6 @@ impl StillSaturation {
         entry.developer.note_slice_submitted(&marker)?;
         entry.state = DeveloperState::AwaitingMarker(marker);
         self.counters.frames_released += 1;
-        self.times.record_unmeasured_frame();
         self.reap_confirmed()
     }
 }

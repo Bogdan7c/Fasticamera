@@ -40,7 +40,7 @@ pub use self::scene::{
 pub use self::scopes::{DEFAULT_PICTURE_SIZE_PX, ScopesCounters, ScopesSaturation, ScopesSaturationConfig};
 pub use self::scopes_diagnostic::AccumulateDiagnostic;
 pub use self::source::{RawFrameHolder, synthetic_raw10_holder};
-pub use self::still::{STILL_FRAME_SIZE, StillCounters, StillSaturation, StillSaturationConfig};
+pub use self::still::{STILL_FRAME_SIZE, StillCounters, StillPassTiming, StillSaturation, StillSaturationConfig};
 pub use self::viewfinder::{
     PASS_LOG_CAPACITY_FRAMES, PRODUCT_AWB_STATISTICS_EVERY_N_FRAMES, PRODUCT_FRAME_SIZE, ViewfinderCounters,
     ViewfinderSaturation, ViewfinderSaturationConfig,

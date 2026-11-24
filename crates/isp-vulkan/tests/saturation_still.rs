@@ -18,7 +18,7 @@ mod saturation_support;
 use camera_contract::geometry::{PixelRect, PixelSize};
 use gpu_vulkan::saturation::{CancelToken, SaturationBench, SaturationError};
 use isp_model::image::DisplayGamut;
-use isp_vulkan::photo::{PhotoConfig, RawCapturer, RgbaReadback};
+use isp_vulkan::photo::{PhotoConfig, PhotoGpuPoint, RawCapturer, RgbaReadback};
 use isp_vulkan::saturation::{
     SaturationWorkError, StillSaturation, StillSaturationConfig, synthesize_raw10, synthetic_raw10_holder,
 };
@@ -94,12 +94,23 @@ fn bench_developments_are_finished_with_thumbnails_and_match_the_plain_path() {
     // Каждый записанный кадр — завершённая проявка с миниатюрой (ни одна не потеряна в ожидании маркера).
     assert_eq!(counters.developments_finished, frames);
     assert_eq!(counters.thumbnails_ready, frames);
-    // Времён по проходам у снимка нет: все кадры «без замера», расхождений нет.
+    // Времена по проходам: каждая проявка прошла метки (RADV их поддерживает), расхождений журнала нет, у каждого
+    // прохода образцовой полосы время больше нуля.
     let times = work.pass_times();
-    assert_eq!(
-        (times.measured_frames, times.unmeasured_frames, times.mismatched_frames),
-        (0, frames, 0)
-    );
+    assert_eq!((times.measured_frames, times.mismatched_frames), (frames, 0));
+    assert_eq!(times.unmeasured_frames, 0);
+    let labels: Vec<_> = times.passes.iter().map(|pass| pass.label).collect();
+    assert_eq!(labels, PhotoGpuPoint::span_labels());
+    for pass in &times.passes {
+        let sampled_pass = pass.label != "before_sample" && pass.label != "after_sample";
+        if sampled_pass {
+            assert!(
+                pass.median > std::time::Duration::ZERO,
+                "проход {} без времени",
+                pass.label
+            );
+        }
+    }
     // Результат: картинка снимка == обычный путь бит в бит; не вырождена.
     let via_bench = work.read_last_image_blocking().unwrap();
     let plain = plain_image(&context, work.config());

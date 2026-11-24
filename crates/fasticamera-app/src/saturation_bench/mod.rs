@@ -39,6 +39,7 @@ pub mod report;
 pub mod runner;
 pub mod screen_scene;
 pub mod services;
+pub mod still_variant;
 pub mod summary;
 pub mod viewfinder_tuning;
 pub mod viewfinder_variant;

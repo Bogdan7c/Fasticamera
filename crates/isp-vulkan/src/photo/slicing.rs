@@ -175,6 +175,13 @@ fn ceil_even(value: u32) -> u32 {
     (value + 1) & !1
 }
 
+/// Отказ «область снимка левее или выше полезной области кадра» (`edge` — край полезной области).
+pub(super) fn crop_outside(crop: PixelRect, edge: u32) -> PhotoError {
+    PhotoError::InvalidInput {
+        what: format!("область снимка {crop:?} левее/выше полезной области (край {edge})"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -39,6 +39,7 @@ use super::inputs::{PipelineKind, ProductInputs};
 use super::report::{FailureKind, Measurement, SceneSummary, UiCountersSummary, WorkloadFailure};
 use super::runner::{ExecutedWorkload, WorkloadExecutor};
 use super::screen_scene::{ScreenPlan, ScreenPlanError, SurfaceSizePx, summarize};
+use super::still_variant::StillTuning;
 use super::viewfinder_variant;
 
 /// Зерно «натурной» сцены (один и тот же кадр от прогона к прогону).
@@ -298,7 +299,8 @@ impl GpuWorkloadExecutor {
             }
             WorkloadKind::HeadroomV4 => self.build_headroom(HeadroomExperiment::PRODUCT),
             WorkloadKind::HeadroomV4Tuned(experiment) => self.build_headroom(experiment),
-            WorkloadKind::Still => self.build_still(),
+            WorkloadKind::Still => self.build_still(StillTuning::PRODUCT),
+            WorkloadKind::StillTuned { tuning } => self.build_still(tuning),
         }
     }
 
@@ -379,11 +381,11 @@ impl GpuWorkloadExecutor {
         Ok(Box::new(HeadroomWork(work)))
     }
 
-    fn build_still(&self) -> Result<Box<dyn BenchWork>, BuildError> {
-        let config = StillSaturationConfig {
+    fn build_still(&self, tuning: StillTuning) -> Result<Box<dyn BenchWork>, BuildError> {
+        let config = tuning.configure(StillSaturationConfig {
             frame_slots: self.slots(),
             ..StillSaturationConfig::default()
-        };
+        });
         let params = self.inputs.params(PipelineKind::Quality)?;
         let work = StillSaturation::new_synthetic(&self.context, config, params)?;
         Ok(Box::new(StillWork(work)))

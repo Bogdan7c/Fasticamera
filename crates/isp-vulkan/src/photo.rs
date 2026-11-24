@@ -33,10 +33,12 @@ mod error;
 mod finishing;
 mod pixels;
 pub mod quantize;
+mod slice_pushes;
 pub mod slicing;
 mod targets;
 pub mod thumbnail;
 mod thumbnail_pass;
+pub mod timing;
 
 pub use self::capture::{PendingRawCapture, RawCapture, RawCapturer};
 pub use self::config::PhotoConfig;
@@ -48,3 +50,4 @@ pub use self::slicing::{DEMOSAIC_HALO, DevelopmentPlan, SlicePlan, max_region_ro
 pub use self::targets::DevelopTargets;
 pub use self::thumbnail::{ThumbnailOutcome, ThumbnailPlan, ThumbnailUnavailable, reference_thumbnail, rotated_size};
 pub use self::thumbnail_pass::ThumbnailTargets;
+pub use self::timing::{PhotoGpuPoint, PhotoGpuTimingCollect, PhotoGpuTimings};
