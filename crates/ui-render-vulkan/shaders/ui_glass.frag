@@ -1,5 +1,6 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_control_flow_attributes : require
 // Материал Liquid Glass. Формулы — выражение в выражение из ui-draw::glass::reference (shade_glass_pixel,
 // lens_profile, refraction_offsets, vibrancy, backdrop_dimming, dark_edge, press_glow, specular_intensity).
 //
@@ -149,14 +150,29 @@ void main() {
     //  * green_offset == 0 (глубже зоны линзы, нулевая сила или материализация): g * (1 ∓ d) = ±0 при конечном d
     //    (дисперсия стиля 0..0,5), а v + (±0) = v — все три точки равны v.
     // Ветвь написана здесь, а не в функции: так компилятор строит те же инструкции, что у эталона.
-    vec3 color;
-    if (dispersion == 0.0 || green_offset == vec2(0.0)) {
-        color = blurred_backdrop(v_logical + green_offset, lod);
-    } else {
-        color = vec3(
-            blurred_backdrop(v_logical + green_offset * (1.0 - dispersion), lod).r,
-            blurred_backdrop(v_logical + green_offset, lod).g,
-            blurred_backdrop(v_logical + green_offset * (1.0 + dispersion), lod).b);
+    // Одна точка вызова выборки в цикле (а не три развёрнутых копии `blurred_backdrop`): каждая копия несёт
+    // переключатель по шести сэмплерам пирамиды, три копии раздували шейдер так, что на Adreno 740 падала
+    // занятость и страдал кэш инструкций (пакет G3 сессии 16a; замер — отчёт). Математика выборок прежняя.
+    // Множитель смещения: R — `1 - d`, G (и единственная выборка) — 1, B — `1 + d`. Умножение на 1 точно, а
+    // запись `v + g * k` даёт ту же склейку в fma, что и три развёрнутые выборки эталона (форма выражения меняет
+    // склейку и последний бит — правило из шапки файла).
+    bool single_tap = dispersion == 0.0 || green_offset == vec2(0.0);
+    int tap_count = single_tap ? 1 : 3;
+    vec3 color = vec3(0.0);
+    [[dont_unroll]] for (int tap = 0; tap < tap_count; ++tap) {
+        float tap_scale = 1.0;
+        if (!single_tap && tap == 0) {
+            tap_scale = 1.0 - dispersion;
+        } else if (!single_tap && tap == 2) {
+            tap_scale = 1.0 + dispersion;
+        }
+        vec3 tap_color = blurred_backdrop(v_logical + green_offset * tap_scale, lod);
+        if (single_tap) {
+            color = tap_color;
+        } else {
+            // Из каждой выборки берётся свой канал: R из смещения `1 - d`, G из центрального, B из `1 + d`.
+            color = vec3(tap == 0 ? tap_color.r : color.r, tap == 1 ? tap_color.g : color.g, tap == 2 ? tap_color.b : color.b);
+        }
     }
 
     // (2) Насыщенность, ослабленная до 1 при effect -> 0.
