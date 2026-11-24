@@ -33,13 +33,11 @@ pub(super) struct VisibleWindow {
 }
 
 impl VisibleWindow {
-    /// Прозрачность блока `[top, top + height]` (в системе содержимого): целиком в окне — 1, наполовину — 0,25,
-    /// целиком снаружи — 0. Квадрат доли делает вылезающую за стекло часть почти невидимой. `[invented]`.
-    pub(super) fn fade_of(&self, top_pt: f64, height_pt: f64) -> f32 {
+    /// Виден ли хоть краешек блока `[top, top + height]` (в системе содержимого). Блок у края рисуется целиком и
+    /// режется окном (`DrawLayers::clipped_to`, решение 227); блок целиком снаружи не рисуется вовсе.
+    pub(super) fn shows(&self, top_pt: f64, height_pt: f64) -> bool {
         let rel_top = top_pt - self.offset_pt;
-        let visible = (rel_top + height_pt).min(self.height_pt) - rel_top.max(0.0);
-        let fraction = (visible / height_pt).clamp(0.0, 1.0) as f32;
-        fraction * fraction
+        rel_top < self.height_pt && rel_top + height_pt > 0.0
     }
 }
 
@@ -301,8 +299,10 @@ impl RowsView {
         let content_top = self.content.min_y();
         if let Some(placement) = visuals.placement(self.content_node) {
             for header in &self.headers {
-                let fade = window.fade_of(header.top_pt, config.group_header_height_pt);
-                let Some(paint) = NodePaint::new(ctx, placement, fade)? else {
+                if !window.shows(header.top_pt, config.group_header_height_pt) {
+                    continue;
+                }
+                let Some(paint) = NodePaint::new(ctx, placement, 1.0)? else {
                     continue;
                 };
                 let run = texts.run(ctx, header.title, TextRoleKind::Caption)?;
@@ -310,19 +310,17 @@ impl RowsView {
                 let y_pt = header.top_pt + config.group_header_height_pt / 2.0 - self.content.size.height / 2.0;
                 layers.push(
                     Layer::Content,
-                    paint.text_left(run, -self.content.size.width / 2.0, y_pt, ctx.tokens.colors.text_muted),
+                    paint.text_left(run, -self.content.size.width / 2.0, y_pt, ctx.tokens.colors.panel_label),
                 );
             }
         }
         for row in &self.rows {
-            let fade = window.fade_of(row.frame().min_y() - content_top, config.row_height_pt);
-            if fade > 0.0 {
-                row.draw(ctx, visuals, layers, texts, fade)?;
+            if window.shows(row.frame().min_y() - content_top, config.row_height_pt) {
+                row.draw(ctx, visuals, layers, texts)?;
             }
         }
-        let dots_fade = window.fade_of(self.bands.frame().min_y() - content_top, config.band_dots_height_pt);
-        if dots_fade > 0.0 {
-            self.bands.draw(ctx, visuals, layers, dots_fade)?;
+        if window.shows(self.bands.frame().min_y() - content_top, config.band_dots_height_pt) {
+            self.bands.draw(ctx, visuals, layers)?;
         }
         Ok(())
     }

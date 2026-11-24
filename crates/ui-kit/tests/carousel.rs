@@ -262,6 +262,36 @@ fn tap_on_an_item_rides_to_it_and_selects_it_once() {
 }
 
 #[test]
+fn a_point_finds_the_label_under_it_at_the_current_scroll_and_nothing_between_labels() {
+    let tokens = UiKitTokens::default();
+    let mut carousel = carousel(Item::Photo, &tokens);
+    let centers = |carousel: &SnapCarousel<Item>, at| {
+        carousel
+            .placements(at)
+            .into_iter()
+            .map(|placement| (placement.center_offset_points, placement.width_points))
+            .collect::<Vec<_>>()
+    };
+    let at_rest = centers(&carousel, ms(0));
+    for (index, (center, width)) in at_rest.iter().enumerate() {
+        assert_eq!(carousel.item_index_at(*center, ms(0)), Some(index));
+        assert_eq!(carousel.item_index_at(center + width * 0.49, ms(0)), Some(index));
+        assert_eq!(
+            carousel.item_index_at(center + width * 0.51, ms(0)),
+            None,
+            "промежуток между подписями"
+        );
+    }
+    // Карусель уехала: под той же точкой другая подпись.
+    let first_center = at_rest[0].0;
+    carousel
+        .select(2, ui_kit::drive::ScrollTransition::Immediate, ms(0))
+        .unwrap();
+    assert_ne!(carousel.item_index_at(first_center, ms(0)), Some(0));
+    assert_eq!(carousel.item_index_at(0.0, ms(0)), Some(2));
+}
+
+#[test]
 fn selection_haptic_follows_the_token_table() {
     let mut tokens = UiKitTokens::default();
     tokens.haptics.carousel_selection = HapticSetting::Silent;

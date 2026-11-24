@@ -230,7 +230,7 @@ impl WheelsView {
         self.draw_title(ctx, visuals, layers, texts, dim)?;
         self.pad.draw(ctx, visuals, layers)?;
         self.draw_push_reset(ctx, visuals, layers, dim)?;
-        self.ring_row.draw(ctx, visuals, layers, texts, 1.0)
+        self.ring_row.draw(ctx, visuals, layers, texts)
     }
 
     /// Название выбранного колеса слева и «↻» колеса целиком справа.
@@ -253,7 +253,7 @@ impl WheelsView {
         let half_width = self.frames.title.size.width / 2.0;
         layers.push(
             Layer::Content,
-            paint.text_left(run, -half_width, 0.0, ctx.tokens.colors.text_muted),
+            paint.text_left(run, -half_width, 0.0, ctx.tokens.colors.panel_label),
         );
         let center = (
             self.frames.whole_reset.center().x - self.frames.title.center().x,

@@ -278,6 +278,7 @@ fn dispatch_action(ctx: &mut Ctx<'_>, action: ScreenAction) -> ActionOutcome {
         ScreenAction::GravityChanged(gravity) => sensors::on_gravity(ctx, gravity),
         ScreenAction::Tick(now) => sensors::on_tick(ctx, now),
         ScreenAction::SurfaceResized(size) => sensors::on_surface_resized(ctx, size),
+        ScreenAction::SafeAreaChanged(insets) => sensors::on_safe_area(ctx, insets),
         ScreenAction::ZoomStopTapped { stop, at } => zoom::on_stop_tapped(ctx, stop, at),
         ScreenAction::ZoomStripPressBegan { at } => zoom::on_strip_press_began(ctx, at),
         ScreenAction::ZoomStripPressEnded { at } => zoom::on_strip_press_ended(ctx, at),

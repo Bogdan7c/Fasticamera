@@ -31,6 +31,7 @@ fn maintain_at(harness: &mut Harness, now: Instant) {
         gpu: &harness.router.gpu,
         camera: &harness.router.camera,
         orientation: harness.router.display.orientation(),
+        safe_area: harness.router.display.safe_area(),
     };
     harness.router.camera_screen.maintain(now, &environment);
 }

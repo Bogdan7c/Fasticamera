@@ -29,8 +29,7 @@ fn label_centers_x_pt(list: &DrawList, text: &str) -> Vec<f64> {
 /// стояло в тексте, выбранная подпись одна.
 fn yellow_label_centers_x_pt(list: &DrawList) -> Vec<f64> {
     let yellow = ui_kit::tokens::UiKitTokens::default().colors.zoom_selected;
-    list.items
-        .iter()
+    list.leaf_items()
         .filter_map(|item| match item {
             DrawItem::Text(text) if text.color == yellow && text.opacity.get() > 0.05 => {
                 Some(f64::from(text.transform.tx + text.run.advance_px * 0.5) / f64::from(PX_PER_PT))
@@ -46,8 +45,7 @@ fn selected_circle_x_pt(list: &DrawList) -> Vec<f64> {
 }
 
 fn circles_of_diameter_pt(list: &DrawList, diameter_pt: f32) -> Vec<f64> {
-    list.items
-        .iter()
+    list.leaf_items()
         .filter_map(|item| match item {
             DrawItem::Shape(shape)
                 if matches!(shape.geometry, ShapeGeometry::Circle { diameter } if near(diameter, px(f64::from(diameter_pt)), 1.0)) =>
@@ -61,7 +59,7 @@ fn circles_of_diameter_pt(list: &DrawList, diameter_pt: f32) -> Vec<f64> {
 
 /// Есть ли диск колеса (круг Ø 486 pt).
 fn wheel_disc_visible(list: &DrawList) -> bool {
-    list.items.iter().any(|item| match item {
+    list.leaf_items().any(|item| match item {
         DrawItem::Shape(shape) => {
             matches!(shape.geometry, ShapeGeometry::Circle { diameter } if near(diameter, px(486.0), 1.0))
                 && shape.opacity.get() > 0.05
@@ -255,8 +253,7 @@ fn the_open_wheel_draws_the_measured_yellow_triangle_marker_above_the_disc_centr
     assert!(rig.screen.state().zoom().is_wheel_open());
 
     let markers: Vec<_> = list
-        .items
-        .iter()
+        .leaf_items()
         .filter_map(|item| match item {
             DrawItem::Icon(icon) if icon.icon == IconId::ZoomMarkerTriangle => Some(*icon),
             _ => None,
@@ -272,8 +269,7 @@ fn the_open_wheel_draws_the_measured_yellow_triangle_marker_above_the_disc_centr
     assert!(near(marker.size_px.height, px(8.7), 0.05), "{:?}", marker.size_px);
     // Диск колеса (Ø 486 pt): маркер строго над его центром, на радиусе 230,5 pt.
     let disc = list
-        .items
-        .iter()
+        .leaf_items()
         .find_map(|item| match item {
             DrawItem::Shape(shape)
                 if matches!(shape.geometry, ShapeGeometry::Circle { diameter } if near(diameter, px(486.0), 1.0)) =>

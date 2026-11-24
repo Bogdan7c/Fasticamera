@@ -11,6 +11,7 @@ use crate::commands::PlatformCommandFailure;
 use crate::hardware_key::HardwareKeyEvent;
 use crate::orientation::DeviceOrientation;
 use crate::permission::CameraPermission;
+use crate::safe_area::SafeAreaInsets;
 use crate::surface::{NativeSurface, SurfaceGeneration, SurfaceReleaseRequest, SurfaceSize};
 use crate::system_gesture::SystemGestureZones;
 use crate::text_input::TextInputResult;
@@ -50,6 +51,9 @@ pub enum ShellEvent {
     /// в очереди (касания его не вытесняют); потеря при полной очереди считается, а зоны остаются
     /// прежними до следующего сообщения платформы.
     SystemGestureZones(SystemGestureZones),
+    /// Платформа сообщила (или изменила) безопасную зону: вырез камеры, системные панели и полосы жестов одним
+    /// объединением. Событие-СОСТОЯНИЕ, «критичное» в очереди, как [`ShellEvent::SystemGestureZones`].
+    SafeArea(SafeAreaInsets),
     /// Новое тепловое показание (по смене статуса или по периодическому опросу запаса).
     ThermalStatus(ThermalReading),
     /// Ответ на запрос разрешения камеры.
@@ -75,6 +79,7 @@ pub enum ShellEventKind {
     HardwareKey,
     DeviceOrientation,
     SystemGestureZones,
+    SafeArea,
     ThermalStatus,
     CameraPermission,
     PlatformCommandFailed,
@@ -95,6 +100,7 @@ impl ShellEventKind {
             ShellEventKind::HardwareKey => "hardware_key",
             ShellEventKind::DeviceOrientation => "device_orientation",
             ShellEventKind::SystemGestureZones => "system_gesture_zones",
+            ShellEventKind::SafeArea => "safe_area",
             ShellEventKind::ThermalStatus => "thermal_status",
             ShellEventKind::CameraPermission => "camera_permission",
             ShellEventKind::PlatformCommandFailed => "platform_command_failed",
@@ -116,6 +122,7 @@ impl ShellEvent {
             ShellEvent::HardwareKey(_) => ShellEventKind::HardwareKey,
             ShellEvent::DeviceOrientation(_) => ShellEventKind::DeviceOrientation,
             ShellEvent::SystemGestureZones(_) => ShellEventKind::SystemGestureZones,
+            ShellEvent::SafeArea(_) => ShellEventKind::SafeArea,
             ShellEvent::ThermalStatus(_) => ShellEventKind::ThermalStatus,
             ShellEvent::CameraPermission(_) => ShellEventKind::CameraPermission,
             ShellEvent::PlatformCommandFailed(_) => ShellEventKind::PlatformCommandFailed,
@@ -141,6 +148,7 @@ mod tests {
             ShellEventKind::HardwareKey,
             ShellEventKind::DeviceOrientation,
             ShellEventKind::SystemGestureZones,
+            ShellEventKind::SafeArea,
             ShellEventKind::ThermalStatus,
             ShellEventKind::CameraPermission,
             ShellEventKind::PlatformCommandFailed,

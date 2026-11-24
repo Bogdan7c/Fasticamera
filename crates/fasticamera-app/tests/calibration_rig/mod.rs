@@ -34,8 +34,11 @@ use scope_contract::{ScopeIntent, ScopeRequest};
 use scope_model::{HorizontalOrder, ResolvedScope, ScopeCounters, ScopeRule, ShownCodes, accumulate};
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::commands::{CommandOutcome, FrameRate, FrameRateOutcome, ScreenWake, ShellCommands};
+use shell_contract::edge_insets::RawEdgeInsetsPx;
 use shell_contract::haptics::{HapticOutcome, HapticPattern, HapticsService};
+use shell_contract::safe_area::SafeAreaInsets;
 use shell_contract::surface::SurfaceSize;
+use shell_contract::system_gesture::SystemGestureZones;
 use shell_contract::text_input::{TextInputService, TextRequest};
 use shell_contract::touch::{PointerId, SurfacePoint, TouchPhase, TouchSample};
 use ui_draw::draw_list::DrawList;
@@ -339,6 +342,13 @@ impl CalibrationRig {
     /// Действие экрана (как от маршрутизатора или платформы): ляжет в канал входа и разберётся на ближайшем кадре.
     pub fn send(&mut self, action: ScreenAction) {
         self.sender.send_action(action);
+    }
+
+    /// Края экрана, как их сообщает телефон: полосы системных жестов (фильтр касаний) и безопасная зона (раскладка).
+    pub fn report_screen_edges(&mut self, insets: RawEdgeInsetsPx, safe_area: SafeAreaInsets) {
+        let zones = SystemGestureZones::try_from_insets(insets).expect("зоны");
+        assert_eq!(self.sender.send_system_gesture_zones(zones), InputDelivery::Queued);
+        self.sender.send_action(ScreenAction::SafeAreaChanged(safe_area));
     }
 
     /// Касание ОДНОГО пальца (номер 0) в пикселях поверхности, с меткой времени СЛЕДУЮЩЕГО кадра: экран разберёт его

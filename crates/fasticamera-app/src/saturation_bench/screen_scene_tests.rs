@@ -90,7 +90,7 @@ fn summary_counts_items_by_kind_and_live_images_separately() {
     let total = recount.shapes + recount.glass_groups + recount.texts + recount.icons + recount.images;
     assert_eq!(
         total as usize,
-        scene.draw_list.items.len(),
+        scene.draw_list.leaf_items().count(),
         "каждый элемент списка учтён ровно один раз"
     );
     assert!(recount.live_images <= recount.images);

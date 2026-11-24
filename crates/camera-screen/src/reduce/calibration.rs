@@ -240,6 +240,7 @@ fn refresh_layout(ctx: &mut Ctx<'_>) {
             &ctx.config.widgets.bottom,
             behaviour.layout,
             ctx.state.orientation,
+            ctx.state.safe_area,
         )),
         _ => None,
     };

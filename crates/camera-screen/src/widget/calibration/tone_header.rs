@@ -1,5 +1,5 @@
-//! Шапка колонки ручек: переключатель основы тона (свайп-карусель AGX / ACES / FILMIC / LEGACY) со своей «↻»
-//! и кнопка «чистяк» (удержание показывает основу без вида).
+//! Шапка колонки ручек: переключатель основы тона (карусель AGX / ACES / FILMIC / LEGACY: свайп или тап по видимому
+//! соседу, решение 229; тап по выбранной ничего не делает) со своей «↻» и кнопка «чистяк» (удержание показывает основу без вида).
 //!
 //! «Чистяк» — выдумка владельца-идиомы (решение 189): значка «глаз» в наборе нет, поэтому это капсула с
 //! подписью CLEAN. Нажатие даёт `CleanViewPressed`, отпускание или отмена — `CleanViewReleased`. Залипнуть кнопка
@@ -10,14 +10,15 @@
 //! (сценарий, тест, другой хост действием `CleanViewPressed`), законно и не должно отпускаться само.
 
 use look_contract::{LookControl, ToneBaseModel};
-use ui_core::geometry::Rect;
-use ui_core::gesture::{GestureEvent, GestureState, PanSpec, RecognizerSpec};
+use ui_core::geometry::{Point, Rect};
+use ui_core::gesture::{GestureData, GestureEvent, GestureState, PanSpec, RecognizerSpec, TapSpec};
 use ui_core::id::NodeId;
+use ui_core::time::MonotonicNanos;
 use ui_draw::icons::IconId;
 use ui_kit::carousel::{CarouselEntry, CarouselEvent, CarouselSpec, SelectionCause, SnapCarousel};
 use ui_kit::drive::ScrollTransition;
 use ui_kit::pan::PanUpdate;
-use ui_kit::tokens::TextRoleKind;
+use ui_kit::tokens::{ColorTokens, TextRoleKind};
 use ui_kit::view::{CarouselLabels, LabelPainter, carousel_items_in_window, centered_icon};
 
 use super::paint::NodePaint;
@@ -42,6 +43,15 @@ fn base_title(model: ToneBaseModel) -> &'static str {
         ToneBaseModel::Aces => "ACES",
         ToneBaseModel::Filmic => "FILMIC",
         ToneBaseModel::Legacy => "LEGACY",
+    }
+}
+
+/// Цвета карусели основы: вид карусели (`ui-kit`) рисует соседей приглушённым текстом экрана, а на панели раздела
+/// подписи читаемые (решение 228). Выбранная по-прежнему отличается цветом.
+fn neighbour_label_colors(colors: &ColorTokens) -> ColorTokens {
+    ColorTokens {
+        text_muted: colors.panel_label,
+        ..*colors
     }
 }
 
@@ -111,6 +121,11 @@ impl ToneHeader {
                 ..PanSpec::default()
             }),
             ScreenGesture::CalibrationBasePan,
+        )?;
+        kit.add_recognizer(
+            carousel_node,
+            RecognizerSpec::Tap(TapSpec::default()),
+            ScreenGesture::CalibrationBaseTap,
         )?;
         let painter = LabelPainter::new(&ctx.tokens.typography, ctx.px);
         let titles: Vec<&str> = ToneBaseModel::ALL.iter().map(|model| base_title(*model)).collect();
@@ -190,6 +205,14 @@ impl ToneHeader {
                         .map_err(element("карусель основы"))?;
                 }
             }
+            ScreenGesture::CalibrationBaseTap => {
+                // Отменённый тап (разрыв потока) и тап без фактов ничего не выбирают.
+                if let (GestureState::Ended, GestureData::Tap { position, .. }) = (event.state, event.data)
+                    && self.enabled
+                {
+                    self.select_neighbour_at(kit, position, event.time)?;
+                }
+            }
             ScreenGesture::Press(ButtonId::CalibrationReset(slot)) if slot == TONE_BASE_RESET_SLOT => {
                 let data = kit.gesture_data_in_node(self.reset.node(), event.data);
                 if self.reset.handle(event.state, data, event.time)? == crate::widget::button::ButtonEvent::Activated {
@@ -200,6 +223,38 @@ impl ToneHeader {
             _ => return Ok(false),
         }
         Ok(true)
+    }
+
+    /// Тап в точке экрана `screen_point`: модель, чья подпись под пальцем и видна в окне переключателя, становится
+    /// выбранной; выбранная и пустое место молчат. Действие уйдёт событием карусели (`advance`), как от свайпа.
+    fn select_neighbour_at(
+        &mut self,
+        kit: &SceneKit,
+        screen_point: Point,
+        time: MonotonicNanos,
+    ) -> Result<(), WidgetError> {
+        // Вырожденное преобразование узла: точку перевести нельзя, выбирать нечего.
+        let Some(point) = kit.point_in_node(self.carousel_node, screen_point) else {
+            return Ok(());
+        };
+        let window = self.frames.carousel;
+        let offset_points = point.x - window.center().x;
+        // В узком портретном окне соседа не видно (торчит погасший край подписи): невидимое не выбирается.
+        let is_visible = |index: usize| {
+            self.carousel.placements(time).iter().any(|placement| {
+                placement.index == index && placement.center_offset_points.abs() <= window.size.width / 2.0
+            })
+        };
+        let tapped = self
+            .carousel
+            .item_index_at(offset_points, time)
+            .filter(|index| *index != self.carousel.selected_index() && is_visible(*index));
+        if let Some(index) = tapped {
+            self.carousel
+                .tapped_item(index, time)
+                .map_err(element("карусель основы"))?;
+        }
+        Ok(())
     }
 
     fn reset_if_differs(&self, ctx: &Ctx<'_>, out: &mut Outputs) {
@@ -296,20 +351,21 @@ impl ToneHeader {
         if let Some(placement) = visuals.placement(self.carousel_node)
             && let Some(paint) = NodePaint::new(ctx, placement, enabled_factor)?
         {
-            // Соседние подписи не должны вылезать за переключатель на чистую зону превью: окно — его ширина.
-            layers.extend(
-                Layer::Content,
-                carousel_items_in_window(
-                    paint.at(0.0, 0.0),
-                    paint.opacity(),
-                    &self.carousel,
-                    ctx.now,
-                    &self.labels,
-                    ctx.px,
-                    &ctx.tokens.colors,
-                    self.frames.carousel.size.width / 2.0,
-                )?,
-            );
+            // Соседние подписи не должны вылезать за переключатель на «↻» и чистую зону: гаснут у края его рамки и
+            // режутся по ней.
+            let labels = carousel_items_in_window(
+                paint.at(0.0, 0.0),
+                paint.opacity(),
+                &self.carousel,
+                ctx.now,
+                &self.labels,
+                ctx.px,
+                &neighbour_label_colors(&ctx.tokens.colors),
+                self.frames.carousel.size.width / 2.0,
+            )?;
+            if let Some(window) = placement.screen_rect_px() {
+                layers.push_clipped(Layer::Content, window, labels);
+            }
         }
         self.draw_reset(ctx, visuals, layers, enabled_factor)?;
         self.draw_clean(ctx, visuals, layers, texts, enabled_factor)

@@ -111,12 +111,11 @@ impl BandDots {
         ctx: &Ctx<'_>,
         visuals: &VisualIndex,
         layers: &mut DrawLayers,
-        fade: f32,
     ) -> Result<(), WidgetError> {
         let Some(placement) = visuals.placement(self.node) else {
             return Ok(());
         };
-        let Some(paint) = NodePaint::new(ctx, placement, fade)? else {
+        let Some(paint) = NodePaint::new(ctx, placement, 1.0)? else {
             return Ok(());
         };
         let config = &ctx.config.calibration.widgets;

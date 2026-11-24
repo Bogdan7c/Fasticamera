@@ -639,6 +639,8 @@ fn dummy_request() -> UiFrameRequest {
 // Восстановление экрана после снятия рендером, долг разрыва по тику и прореживание отчёта (ревью P6e).
 #[path = "event_router_camera_screen_recovery_tests.rs"]
 mod recovery;
+#[path = "event_router_camera_screen_safe_area_tests.rs"]
+mod safe_area;
 #[path = "event_router_camera_screen_system_gesture_tests.rs"]
 mod system_gesture;
 

@@ -31,6 +31,7 @@ pub mod performance_hint_codes;
 pub mod permission_answer;
 pub mod platform_call_error;
 pub mod power_pacing;
+pub mod safe_area_decode;
 pub mod still_encode_input;
 pub mod still_orphan_sweep;
 pub mod still_pending_draft;

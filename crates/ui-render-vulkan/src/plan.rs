@@ -4,7 +4,7 @@
 //! отвергнутый кадр не оставляет следов ни в цели, ни в пирамиде.
 
 use ash::vk;
-use ui_draw::draw_list::{DrawItem, DrawList, ImageSource, LiveImage};
+use ui_draw::draw_list::{ClippedLeaf, DrawItem, DrawList, ImageSource, LiveImage, clipped_leaves};
 use ui_draw::geometry::PxRect;
 use ui_draw::picture::UiPicture;
 
@@ -22,10 +22,22 @@ pub(crate) enum BatchKind {
     Image,
 }
 
-/// Подряд идущие элементы одного вида: один вызов рисования, порядок рисования сохраняется.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Прямоугольная обрезка пакета в ЛОГИЧЕСКИХ пикселях (до поворота цели).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum BatchClip {
+    /// Обрезки нет: рисуется вся цель.
+    WholeTarget,
+    /// Целочисленный прямоугольник пикселей, оставленных обрезкой ([`ui_draw::draw_list::clip_pixel_rect`]).
+    /// Он целый ещё до поворота цели, поэтому поворот и scissor не округляют его границы.
+    PixelRect(PxRect),
+}
+
+/// Подряд идущие элементы одного вида и с одной обрезкой: один вызов рисования, порядок рисования сохраняется.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Batch {
     pub kind: BatchKind,
+    /// Обрезка всех элементов пакета; соседи с другой обрезкой в пакет не склеиваются.
+    pub clip: BatchClip,
     /// Номер первого экземпляра в буфере своего вида.
     pub first_instance: u32,
     pub instance_count: u32,
@@ -104,14 +116,15 @@ impl FramePlan {
         })
     }
 
-    fn push_batch(&mut self, kind: BatchKind, first_instance: u32, added: u32) {
+    fn push_batch(&mut self, kind: BatchKind, clip: BatchClip, first_instance: u32, added: u32) {
         if added == 0 {
             return;
         }
         match self.batches.last_mut() {
-            Some(last) if last.kind == kind => last.instance_count += added,
+            Some(last) if last.kind == kind && last.clip == clip => last.instance_count += added,
             _ => self.batches.push(Batch {
                 kind,
+                clip,
                 first_instance,
                 instance_count: added,
             }),
@@ -119,15 +132,49 @@ impl FramePlan {
     }
 }
 
+/// Лист списка, который попадёт в кадр: общее решение «рисовать или пропустить» для подсчёта пределов,
+/// проверки картинок и упаковки (чтобы они не могли разойтись).
+struct PlannedLeaf<'a> {
+    /// Номер элемента верхнего уровня (для сообщений об ошибках упаковки).
+    index: usize,
+    item: &'a DrawItem,
+    /// Границы листа без обрезки: от них зависят вершины квада.
+    bounds: PxRect,
+    clip: BatchClip,
+    /// Квад рисования стекла, уже обрезанный пикселями обрезки: из него рендер делает scissor группы.
+    /// Для листа без обрезки — прежний квад (`None` у вырожденного стекла, как и раньше).
+    glass_scissor: Option<PxRect>,
+}
+
+/// Решает судьбу листа. `None` — лист пропускается целиком: нечего рисовать (нет границ), обрезка
+/// схлопнулась или квад рисования лежит вне пикселей обрезки.
+fn plan_leaf(leaf: ClippedLeaf<'_>) -> Option<PlannedLeaf<'_>> {
+    let bounds = leaf.item.bounds_px()?;
+    // Квад рисования уже границ только у стекла; у остальных это те же границы, второй раз их не считаем.
+    let draw_rect = match leaf.item {
+        DrawItem::Glass(group) => group.draw_rect_px(),
+        _ => Some(bounds),
+    };
+    let (clip, glass_scissor) = match leaf.clip.pixel_rect() {
+        None => (BatchClip::WholeTarget, draw_rect),
+        Some(pixels) => (BatchClip::PixelRect(pixels), Some(draw_rect?.intersection(&pixels)?)),
+    };
+    Some(PlannedLeaf {
+        index: leaf.top_level_index,
+        item: leaf.item,
+        bounds,
+        clip,
+        glass_scissor,
+    })
+}
+
 /// Сколько экземпляров каждого вида даст список (без упаковки).
 /// Элементы с живой картинкой, которой на кадре нет, не считаются: они не будут нарисованы.
+/// Пропущенные обрезкой листья тоже не считаются.
 fn count_instances(list: &DrawList, live: LiveImages<'_>) -> InstanceCounts {
     let mut counts = InstanceCounts::default();
-    for item in &list.items {
-        if item.bounds_px().is_none() {
-            continue;
-        }
-        match item {
+    for planned in clipped_leaves(&list.items).filter_map(plan_leaf) {
+        match planned.item {
             DrawItem::Shape(_) => counts.shapes += 1,
             DrawItem::Glass(_) => counts.groups += 1,
             DrawItem::Text(text) => counts.glyphs += text.run.glyphs.len(),
@@ -137,6 +184,8 @@ fn count_instances(list: &DrawList, live: LiveImages<'_>) -> InstanceCounts {
                     counts.images += 1;
                 }
             }
+            // Группы обрезки обход раскрывает, до этой точки доходят только листья.
+            DrawItem::Clipped(_) => {}
         }
     }
     counts
@@ -158,15 +207,12 @@ struct InstanceCounts {
 
 /// Отвергает картинки с чрезмерной стороной: до первой команды и до выделения памяти.
 fn check_picture_sizes(list: &DrawList, limits: &UiRenderLimits) -> Result<(), UiRenderError> {
-    for item in &list.items {
-        let DrawItem::Image(image) = item else { continue };
+    for planned in clipped_leaves(&list.items).filter_map(plan_leaf) {
+        let DrawItem::Image(image) = planned.item else { continue };
         // Живые картинки не загружаются: их размер ограничен самим владельцем изображения.
         let Some(picture) = image.source.as_picture() else {
             continue;
         };
-        if item.bounds_px().is_none() {
-            continue;
-        }
         let size = picture.size();
         if size.width.max(size.height) > limits.max_image_side_px {
             return Err(UiRenderError::PictureTooLarge {
@@ -207,22 +253,29 @@ pub(crate) fn build_plan(
 
     let mut plan = FramePlan::default();
     let mut member_total = 0_usize;
-    for (index, item) in list.items.iter().enumerate() {
-        let Some(bounds) = item.bounds_px() else { continue };
+    for planned in clipped_leaves(&list.items).filter_map(plan_leaf) {
+        let PlannedLeaf {
+            index,
+            item,
+            bounds,
+            clip,
+            glass_scissor,
+        } = planned;
         match item {
             DrawItem::Shape(shape) => {
                 pack_shape(index, shape, &bounds, &mut plan.shape_bytes)?;
-                plan.push_batch(BatchKind::Shape, plan.shape_count, 1);
+                plan.push_batch(BatchKind::Shape, clip, plan.shape_count, 1);
                 plan.shape_count += 1;
             }
             DrawItem::Glass(group) => {
                 // Вершины квада остаются прежними (`bounds` = консервативные границы группы). Точки средней
                 // яркости берутся по отдельному прямоугольнику адаптации под самой панелью (решение 220).
                 // Область, где группа может дать вклад, уже: фрагменты вне неё отсекает scissor
-                // (`glass_scissors`), до шейдера они не доходят.
+                // (`glass_scissors`), до шейдера они не доходят. Внутри обрезки область ещё и пересекается с ней;
+                // прямоугольник адаптации яркости и вершины квада от обрезки не зависят.
                 let luma_area = group.adaptation_rect_px().unwrap_or(bounds);
-                if let Some(draw_rect) = group.draw_rect_px() {
-                    plan.glass_scissors.push(draw_rect);
+                if let Some(visible_draw_rect) = glass_scissor {
+                    plan.glass_scissors.push(visible_draw_rect);
                 }
                 pack_glass_group(
                     index,
@@ -234,17 +287,17 @@ pub(crate) fn build_plan(
                     &mut plan.member_bytes,
                 )?;
                 member_total += group.members.len();
-                plan.push_batch(BatchKind::Glass, plan.group_count, 1);
+                plan.push_batch(BatchKind::Glass, clip, plan.group_count, 1);
                 plan.group_count += 1;
             }
             DrawItem::Text(text) => {
                 let added = pack_text(text, &mut plan.glyph_bytes) as u32;
-                plan.push_batch(BatchKind::Glyph, plan.glyph_count, added);
+                plan.push_batch(BatchKind::Glyph, clip, plan.glyph_count, added);
                 plan.glyph_count += added;
             }
             DrawItem::Icon(icon) => {
                 pack_icon(icon, &mut plan.glyph_bytes);
-                plan.push_batch(BatchKind::Glyph, plan.glyph_count, 1);
+                plan.push_batch(BatchKind::Glyph, clip, plan.glyph_count, 1);
                 plan.glyph_count += 1;
             }
             DrawItem::Image(image) => {
@@ -266,9 +319,11 @@ pub(crate) fn build_plan(
                     }
                 };
                 pack_image(index, image, &bounds, slot, &mut plan.image_bytes)?;
-                plan.push_batch(BatchKind::Image, plan.image_count, 1);
+                plan.push_batch(BatchKind::Image, clip, plan.image_count, 1);
                 plan.image_count += 1;
             }
+            // Группы обрезки обход раскрывает, до этой точки доходят только листья.
+            DrawItem::Clipped(_) => {}
         }
     }
     Ok(plan)
@@ -348,16 +403,19 @@ mod tests {
             vec![
                 Batch {
                     kind: BatchKind::Image,
+                    clip: BatchClip::WholeTarget,
                     first_instance: 0,
                     instance_count: 2
                 },
                 Batch {
                     kind: BatchKind::Shape,
+                    clip: BatchClip::WholeTarget,
                     first_instance: 0,
                     instance_count: 1
                 },
                 Batch {
                     kind: BatchKind::Image,
+                    clip: BatchClip::WholeTarget,
                     first_instance: 2,
                     instance_count: 1
                 },
@@ -510,6 +568,7 @@ mod tests {
             plan.batches,
             vec![Batch {
                 kind: BatchKind::Shape,
+                clip: BatchClip::WholeTarget,
                 first_instance: 0,
                 instance_count: 2
             }],
@@ -563,3 +622,7 @@ mod tests {
         assert_eq!((float(16), float(17)), (1.0 / 80.0, 1.0 / 20.0));
     }
 }
+
+#[cfg(test)]
+#[path = "plan_clip_tests.rs"]
+mod clip_tests;

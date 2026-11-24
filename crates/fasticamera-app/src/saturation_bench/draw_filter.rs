@@ -10,7 +10,7 @@
 //! выкидывает (проверяют тесты) и не меняет сами элементы, поэтому [`DrawList::validate`] остаётся верным.
 
 use serde::Serialize;
-use ui_draw::draw_list::{DrawItem, DrawList};
+use ui_draw::draw_list::{ClipGroup, DrawItem, DrawList};
 
 use super::glass_ablation::{GlassStyleAblation, GlassSubset, apply_glass_ablation};
 
@@ -38,8 +38,11 @@ pub enum DrawFilter {
 }
 
 impl DrawFilter {
-    /// Остаётся ли элемент в кадре.
+    /// Остаётся ли элемент в кадре. Группа обрезки остаётся, если остаётся хоть один её лист.
     pub fn keeps(self, item: &DrawItem) -> bool {
+        if let DrawItem::Clipped(group) = item {
+            return group.items.iter().any(|child| self.keeps(child));
+        }
         match self {
             Self::All => true,
             Self::GlassOnly | Self::GlassAblated { .. } => matches!(item, DrawItem::Glass(_)),
@@ -56,9 +59,25 @@ impl DrawFilter {
             return apply_glass_ablation(list, subset, style);
         }
         DrawList {
-            items: list.items.iter().filter(|item| self.keeps(item)).cloned().collect(),
+            items: self.filter_items(&list.items),
             light: list.light,
         }
+    }
+
+    /// Оставленные элементы в прежнем порядке; внутри групп обрезки фильтр применяется к детям, а сама
+    /// группа (её прямоугольник) сохраняется, чтобы оставшееся рисовалось с той же обрезкой, что в продукте.
+    fn filter_items(self, items: &[DrawItem]) -> Vec<DrawItem> {
+        items
+            .iter()
+            .filter(|item| self.keeps(item))
+            .map(|item| match item {
+                DrawItem::Clipped(group) => DrawItem::Clipped(ClipGroup {
+                    rect: group.rect,
+                    items: self.filter_items(&group.items),
+                }),
+                other => other.clone(),
+            })
+            .collect()
     }
 }
 

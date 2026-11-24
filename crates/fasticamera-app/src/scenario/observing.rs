@@ -21,6 +21,7 @@ use shell_contract::operator_prompt::OperatorPromptService;
 use shell_contract::orientation::DeviceOrientation;
 use shell_contract::permission::CameraPermission;
 use shell_contract::power::PowerSource;
+use shell_contract::safe_area::SafeAreaInsets;
 use shell_contract::surface::{SurfaceGeneration, SurfaceSize};
 use shell_contract::thermal::ThermalSource;
 use shell_contract::thermal_policy::ThermalPolicy;
@@ -80,6 +81,7 @@ pub struct DisplayState {
     surface_generation: Option<SurfaceGeneration>,
     surface_size: Option<SurfaceSize>,
     orientation: Option<DeviceOrientation>,
+    safe_area: SafeAreaInsets,
 }
 
 impl DisplayState {
@@ -105,6 +107,11 @@ impl DisplayState {
 
     pub fn orientation(&self) -> Option<DeviceOrientation> {
         self.orientation
+    }
+
+    /// Последняя безопасная зона, которую сообщила платформа (до первого сообщения отступов нет).
+    pub fn safe_area(&self) -> SafeAreaInsets {
+        self.safe_area
     }
 
     pub fn surface_size(&self) -> Option<SurfaceSize> {
@@ -143,6 +150,10 @@ impl DisplayState {
 
     pub(crate) fn set_orientation(&mut self, orientation: DeviceOrientation) {
         self.orientation = Some(orientation);
+    }
+
+    pub(crate) fn set_safe_area(&mut self, safe_area: SafeAreaInsets) {
+        self.safe_area = safe_area;
     }
 }
 

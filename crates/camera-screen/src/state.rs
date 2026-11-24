@@ -10,6 +10,7 @@ use camera_contract::viewfinder_crop::{ViewfinderCrop, ZoomFactor};
 use camera_contract::zoom::{FramedCrop, LensGroup, PreviewMirror, ZoomCatalog, ZoomFit, ZoomFraming};
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::orientation::DeviceOrientation;
+use shell_contract::safe_area::SafeAreaInsets;
 use shell_contract::surface::SurfaceSize;
 use thiserror::Error;
 
@@ -101,6 +102,8 @@ pub struct ScreenState {
     pub(crate) zoom: ZoomState,
     pub(crate) facts: CameraFacts,
     pub(crate) orientation: DeviceOrientation,
+    /// Безопасная зона поверхности: где раскладка раздела калибровки ставит управление.
+    pub(crate) safe_area: SafeAreaInsets,
     pub(crate) level: LevelReading,
     pub(crate) shutter: ShutterState,
     pub(crate) thumbnail: ThumbnailState,
@@ -146,6 +149,7 @@ impl ScreenState {
             zoom: ZoomState::new(),
             facts: CameraFacts::STARTING,
             orientation: DeviceOrientation::Portrait,
+            safe_area: SafeAreaInsets::NONE,
             level: LevelReading::Unknown,
             shutter: ShutterState::Idle,
             thumbnail: ThumbnailState::Empty,
@@ -291,6 +295,11 @@ impl ScreenState {
 
     pub fn rejections(&self) -> &RejectionCounters {
         &self.rejections
+    }
+
+    /// Безопасная зона поверхности, которую сообщила платформа (без сообщения — отступов нет).
+    pub fn safe_area(&self) -> SafeAreaInsets {
+        self.safe_area
     }
 
     /// Раскладка кадров; `None`, пока не пришёл размер surface.

@@ -8,6 +8,8 @@
 use ash::vk;
 use ui_draw::geometry::PxRect;
 
+use crate::plan::BatchClip;
+
 /// Какую часть квада стеклянной группы рисовать.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GlassDrawArea {
@@ -57,8 +59,37 @@ pub(crate) fn logical_rect_to_scissor(rect: &PxRect, quarter_turns: u32, target:
     })
 }
 
+/// Что делать с вызовом рисования пакета с точки зрения обрезки.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BatchScissor {
+    /// Обрезки нет: рисуем без scissor.
+    WholeTarget,
+    /// Рисуем со scissor.
+    Rect(vk::Rect2D),
+    /// После обрезки целью не осталось ни одного пикселя: вызов рисования не нужен.
+    NothingVisible,
+}
+
+impl BatchScissor {
+    /// Решение для обрезки пакета при повороте цели на `quarter_turns` четвертей. Прямоугольник обрезки целый
+    /// ещё до поворота (правило центра пикселя), а поворот на четверти переводит целые границы в целые,
+    /// поэтому округление наружу в [`logical_rect_to_scissor`] ничего не меняет: scissor совпадает с
+    /// обрезкой пиксель в пиксель.
+    pub(crate) fn for_clip(clip: &BatchClip, quarter_turns: u32, target: vk::Extent2D) -> BatchScissor {
+        match clip {
+            BatchClip::WholeTarget => BatchScissor::WholeTarget,
+            BatchClip::PixelRect(pixels) => match logical_rect_to_scissor(pixels, quarter_turns, target) {
+                Some(rect) => BatchScissor::Rect(rect),
+                None => BatchScissor::NothingVisible,
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::panic, reason = "тесты")]
+
     use super::*;
     use ui_draw::geometry::{PxPoint, PxSize};
 
@@ -99,5 +130,32 @@ mod tests {
         assert_eq!(scissor(&logical, 2), Some((85, 32, 5, 8)));
         // turns 3: physical = (W - y, x): x 72..80, y 10..15.
         assert_eq!(scissor(&logical, 3), Some((72, 10, 8, 5)));
+    }
+
+    #[test]
+    fn integer_clip_maps_to_exactly_the_same_pixels_for_every_rotation() {
+        let clip = BatchClip::PixelRect(rect(10.0, 20.0, 5.0, 8.0));
+        let rect_of = |turns| match BatchScissor::for_clip(&clip, turns, TARGET) {
+            BatchScissor::Rect(r) => (r.offset.x, r.offset.y, r.extent.width, r.extent.height),
+            other => panic!("ожидали Rect, получили {other:?}"),
+        };
+        // Площадь и целые границы сохраняются: ровно 5 × 8 пикселей (или 8 × 5 при повороте на 90°).
+        assert_eq!(rect_of(0), (10, 20, 5, 8));
+        assert_eq!(rect_of(1), (20, 45, 8, 5));
+        assert_eq!(rect_of(2), (85, 32, 5, 8));
+        assert_eq!(rect_of(3), (72, 10, 8, 5));
+    }
+
+    #[test]
+    fn whole_target_and_vanished_clip_are_distinguished() {
+        assert_eq!(
+            BatchScissor::for_clip(&BatchClip::WholeTarget, 0, TARGET),
+            BatchScissor::WholeTarget
+        );
+        let outside = BatchClip::PixelRect(rect(500.0, 500.0, 5.0, 5.0));
+        assert_eq!(
+            BatchScissor::for_clip(&outside, 0, TARGET),
+            BatchScissor::NothingVisible
+        );
     }
 }

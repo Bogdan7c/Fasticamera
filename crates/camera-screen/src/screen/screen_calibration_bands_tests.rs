@@ -95,8 +95,7 @@ fn a_band_that_differs_from_the_preset_is_marked_under_its_dot() {
     scroll_list_to_end(&mut marked);
     let shapes = |rig: &mut Rig| {
         rig.frame()
-            .items
-            .iter()
+            .leaf_items()
             .filter(|item| matches!(item, DrawItem::Shape(_)))
             .count()
     };

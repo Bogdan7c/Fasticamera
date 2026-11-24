@@ -40,6 +40,7 @@ fn delta() -> ProbeDelta {
                 wheel_open: false,
                 gliding: false,
             },
+            safe_area: shell_contract::safe_area::SafeAreaInsets::NONE,
         },
     }
 }

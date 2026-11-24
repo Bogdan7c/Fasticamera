@@ -58,8 +58,7 @@ fn without_a_front_camera_the_flip_button_has_no_pixels_and_no_hit_area() {
 /// Окно размытия первой группы стекла: границы в px (левый, верхний, правый, нижний).
 fn frost_bounds_px(list: &DrawList) -> (f64, f64, f64, f64) {
     let bounds = list
-        .items
-        .iter()
+        .leaf_items()
         .find_map(|item| match item {
             DrawItem::Glass(group) => group.members.first().and_then(|member| member.shape_bounds_px()),
             _ => None,

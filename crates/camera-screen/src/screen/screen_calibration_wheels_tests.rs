@@ -94,8 +94,7 @@ pub(super) fn expected_strength(length_pt: f64, pad: &WheelPadPlacement) -> f64 
 
 /// Картинки кольца в списке рисования: растр из памяти размером с внешний диаметр кольца.
 pub(super) fn ring_images(list: &DrawList) -> Vec<&ImageItem> {
-    list.items
-        .iter()
+    list.leaf_items()
         .filter_map(|item| match item {
             DrawItem::Image(image) if matches!(image.source, ImageSource::Picture(_)) => Some(image),
             _ => None,
@@ -106,7 +105,7 @@ pub(super) fn ring_images(list: &DrawList) -> Vec<&ImageItem> {
 /// Непрозрачность значка «↻» с центром в `center_pt` (поверхность, pt); `None` — значка там нет.
 pub(super) fn reset_opacity_at(list: &DrawList, center_pt: Point) -> Option<f32> {
     let (x, y) = (px(center_pt.x), px(center_pt.y));
-    list.items.iter().find_map(|item| match item {
+    list.leaf_items().find_map(|item| match item {
         DrawItem::Icon(icon)
             if icon.icon == IconId::Reset
                 && near(icon.transform.tx, x, 1.5)

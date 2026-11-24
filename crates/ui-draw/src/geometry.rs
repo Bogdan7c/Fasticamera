@@ -199,6 +199,24 @@ impl PxRect {
         PxRect::new(PxPoint::new(min_x, min_y), PxSize::new(max_x - min_x, max_y - min_y))
     }
 
+    /// Пересечение двух прямоугольников; `None`, если общей площади нет (прямоугольники только касаются
+    /// или не пересекаются, либо один из них пуст).
+    pub fn intersection(&self, other: &PxRect) -> Option<PxRect> {
+        let min_x = self.origin.x.max(other.origin.x);
+        let min_y = self.origin.y.max(other.origin.y);
+        let max_x = self.max_x().min(other.max_x());
+        let max_y = self.max_y().min(other.max_y());
+        // Сравнение «не больше» ложно для NaN, поэтому нечисловой результат тоже даёт `None`.
+        if max_x > min_x && max_y > min_y {
+            Some(PxRect::new(
+                PxPoint::new(min_x, min_y),
+                PxSize::new(max_x - min_x, max_y - min_y),
+            ))
+        } else {
+            None
+        }
+    }
+
     /// Наименьший прямоугольник, содержащий все точки; `None` для пустого набора.
     pub fn bounding(points: impl IntoIterator<Item = PxPoint>) -> Option<PxRect> {
         let mut iter = points.into_iter();

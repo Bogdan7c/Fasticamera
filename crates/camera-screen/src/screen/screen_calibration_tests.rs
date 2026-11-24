@@ -109,8 +109,7 @@ pub(super) fn zone_px(rig: &Rig, eye_rect: Rect) -> (f32, f32, f32, f32) {
 }
 
 pub(super) fn scope_images(list: &DrawList) -> Vec<&ui_draw::draw_list::ImageItem> {
-    list.items
-        .iter()
+    list.leaf_items()
         .filter_map(|item| match item {
             DrawItem::Image(image) if image.source == ImageSource::Live(LiveImage::ColorScope) => Some(image),
             _ => None,
@@ -382,6 +381,79 @@ fn swiping_the_base_switcher_selects_the_next_tone_base() {
     drag_eye(&mut rig, carousel, Vector::new(-60.0, 0.0));
     let intents = look_intents(&rig.effects()).into_iter().cloned().collect::<Vec<_>>();
     assert_eq!(intents, vec![LookIntent::SetToneBase(ToneBaseModel::Aces)]);
+}
+
+/// Тап по карусели основы на `eye_dx` pt правее (глазами) её центра; что ушло библиотеке.
+fn tap_base_at(rig: &mut Rig, eye_dx: f64) -> Vec<LookIntent> {
+    let carousel = center(rig, "calib_base_carousel", 0);
+    let offset = surface_vector(rig, Vector::new(eye_dx, 0.0));
+    rig.tap(Point::new(carousel.x + offset.dx, carousel.y + offset.dy));
+    rig.run(600);
+    look_intents(&rig.effects()).into_iter().cloned().collect()
+}
+
+/// Сосед стоит на 69 pt от выбранной подписи (решение 229: тап по видимому соседу).
+const NEIGHBOUR_DX: f64 = 69.0;
+
+#[test]
+fn tapping_the_visible_neighbour_selects_it_and_tapping_the_active_base_does_nothing() {
+    for orientation in [DeviceOrientation::LandscapeLeft, DeviceOrientation::LandscapeRight] {
+        let mut rig = calibrating(look_facts(), orientation);
+        assert_eq!(
+            tap_base_at(&mut rig, 0.0),
+            Vec::new(),
+            "{orientation:?}: AGX уже выбран"
+        );
+        assert_eq!(
+            tap_base_at(&mut rig, NEIGHBOUR_DX),
+            vec![LookIntent::SetToneBase(ToneBaseModel::Aces)],
+            "{orientation:?}"
+        );
+        // Библиотека применила выбор и прислала факты; выбранная встала в центр, её сосед слева — снова AGX.
+        let mut facts = look_facts();
+        facts.current.base = ToneBaseModel::Aces;
+        rig.act(ScreenAction::LookFactsChanged(Box::new(facts)));
+        rig.run(600);
+        assert_eq!(
+            tap_base_at(&mut rig, -NEIGHBOUR_DX),
+            vec![LookIntent::SetToneBase(ToneBaseModel::Agx)],
+            "{orientation:?}"
+        );
+        rig.act(ScreenAction::LookFactsChanged(Box::new(look_facts())));
+        rig.run(600);
+        assert_eq!(
+            tap_base_at(&mut rig, -NEIGHBOUR_DX),
+            Vec::new(),
+            "{orientation:?}: левее первой модели ничего нет"
+        );
+    }
+}
+
+#[test]
+fn in_portrait_where_no_neighbour_is_visible_a_tap_selects_nothing() {
+    let mut rig = portrait(look_facts());
+    for eye_dx in [-47.0, -20.0, 0.0, 20.0, 47.0] {
+        assert_eq!(
+            tap_base_at(&mut rig, eye_dx),
+            Vec::new(),
+            "тап на {eye_dx} pt от центра"
+        );
+    }
+    assert_eq!(
+        rig.screen.state().mode(),
+        CaptureMode::Calibrate,
+        "тап по шапке не проваливается на экран под ней"
+    );
+}
+
+#[test]
+fn without_facts_the_base_does_not_react_to_a_tap() {
+    let mut rig = Rig::new();
+    rig.act(ScreenAction::DeviceOrientationChanged(DeviceOrientation::LandscapeLeft));
+    rig.act(ScreenAction::ModeSelected(CaptureMode::Calibrate));
+    rig.run(400);
+    rig.effects();
+    assert_eq!(tap_base_at(&mut rig, NEIGHBOUR_DX), Vec::new());
 }
 
 #[test]

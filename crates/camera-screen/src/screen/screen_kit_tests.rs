@@ -21,7 +21,7 @@ fn near(actual: f32, expected: f32, tolerance: f32) -> bool {
 
 /// Индекс первой группы стекла шторки меню (член — скруглённый прямоугольник).
 fn drawer_glass_index(list: &DrawList) -> Option<usize> {
-    list.items.iter().position(|item| {
+    list.leaf_items().position(|item| {
         matches!(item, DrawItem::Glass(group)
             if group.members.iter().any(|m| matches!(m.geometry, ShapeGeometry::RoundedRect { .. })))
     })
@@ -29,7 +29,7 @@ fn drawer_glass_index(list: &DrawList) -> Option<usize> {
 
 /// Индекс стеклянного члена-круга диаметром около `diameter_px` с центром около (`x_px`, `y_px`).
 fn circle_glass_index(list: &DrawList, x_px: f32, y_px: f32, diameter_px: f32) -> Option<usize> {
-    list.items.iter().position(|item| {
+    list.leaf_items().position(|item| {
         matches!(item, DrawItem::Glass(group)
             if group.members.iter().any(|m| matches!(m.geometry, ShapeGeometry::Circle { diameter }
                 if near(diameter, diameter_px, 12.0)
@@ -40,7 +40,7 @@ fn circle_glass_index(list: &DrawList, x_px: f32, y_px: f32, diameter_px: f32) -
 
 /// Индекс фигуры-круга (белый диск затвора) с центром около (`x_px`, `y_px`).
 fn circle_shape_index(list: &DrawList, x_px: f32, y_px: f32) -> Option<usize> {
-    list.items.iter().position(|item| {
+    list.leaf_items().position(|item| {
         matches!(item, DrawItem::Shape(shape)
             if matches!(shape.geometry, ShapeGeometry::Circle { .. })
                 && near(shape.transform.tx, x_px, 12.0)
@@ -73,8 +73,7 @@ fn dissolving_shutter_is_drawn_entirely_under_the_drawer_glass() {
     );
     // Содержимое кнопки меню (источник морфа) тоже под шторкой, а содержимое пунктов — над её стеклом.
     let menu_icon = list
-        .items
-        .iter()
+        .leaf_items()
         .position(|item| matches!(item, DrawItem::Icon(icon) if icon.icon == IconId::ControlsMenu));
     if let Some(menu_icon) = menu_icon {
         assert!(menu_icon < drawer, "значок кнопки меню под стеклом шторки");
@@ -84,8 +83,7 @@ fn dissolving_shutter_is_drawn_entirely_under_the_drawer_glass() {
     let list = rig.last.clone();
     let drawer = drawer_glass_index(&list).expect("стекло шторки в списке");
     let flash_item = list
-        .items
-        .iter()
+        .leaf_items()
         .position(|item| matches!(item, DrawItem::Icon(icon) if icon.icon == IconId::Timer))
         .expect("пункт Timer рисуется в шторке");
     assert!(flash_item > drawer, "содержимое шторки лежит поверх её стекла");
@@ -93,8 +91,7 @@ fn dissolving_shutter_is_drawn_entirely_under_the_drawer_glass() {
 
 /// Степень нажатия стеклянного круга с центром около (`x_px`, `y_px`).
 fn press_amount_of_circle(list: &DrawList, x_px: f32, y_px: f32) -> f32 {
-    list.items
-        .iter()
+    list.leaf_items()
         .find_map(|item| match item {
             DrawItem::Glass(group) => group.members.iter().find_map(|m| match m.geometry {
                 ShapeGeometry::Circle { .. }
@@ -196,8 +193,7 @@ fn camera_ev_range_change_keeps_the_focus_frame_in_place_and_clamps_the_sun() {
     rig.now_ms += FRAME_MS;
     let first_after = rig.frame().clone();
     let frame_items = |list: &DrawList| {
-        list.items
-            .iter()
+        list.leaf_items()
             .filter_map(|item| match item {
                 DrawItem::Shape(shape) => Some((shape.transform.tx, shape.transform.ty, shape.opacity.get())),
                 _ => None,
@@ -282,8 +278,7 @@ fn selected_mode_label_uses_the_selected_label_color() {
     let capsule_y_px = 2269.0;
     let label = rig
         .frame()
-        .items
-        .iter()
+        .leaf_items()
         .find_map(|item| match item {
             DrawItem::Text(text) if near(text.transform.ty, capsule_y_px, 20.0) => Some(text.clone()),
             _ => None,

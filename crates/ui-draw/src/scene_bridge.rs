@@ -15,7 +15,7 @@
 use ui_core::geometry::Point;
 use ui_core::tree::NodeVisual;
 
-use crate::geometry::{PxPoint, PxSize};
+use crate::geometry::{PxPoint, PxRect, PxSize};
 use crate::transform::Affine2;
 
 /// Элемент сцены, переведённый в пиксели: всё, что нужно строителю списка рисования.
@@ -27,6 +27,30 @@ pub struct NodePlacementPx {
     pub transform: Affine2,
     /// Прозрачность, перемноженная с предками (0..1).
     pub opacity: f32,
+}
+
+impl NodePlacementPx {
+    /// Рамка элемента на экране, вдоль осей (px): прямоугольник обрезки содержимого ([`crate::draw_list::ClipGroup`]).
+    /// Точен, пока элемент повёрнут на кратный 90° угол (так живут все прокручиваемые окна); при ином повороте это
+    /// охватывающий прямоугольник. `None` — преобразование не конечно.
+    pub fn screen_rect_px(&self) -> Option<PxRect> {
+        let (half_width, half_height) = (self.size.width / 2.0, self.size.height / 2.0);
+        let corners = [
+            PxPoint::new(-half_width, -half_height),
+            PxPoint::new(half_width, -half_height),
+            PxPoint::new(half_width, half_height),
+            PxPoint::new(-half_width, half_height),
+        ]
+        .map(|corner| self.transform.apply_point(corner));
+        if corners
+            .iter()
+            .all(|corner| corner.x.is_finite() && corner.y.is_finite())
+        {
+            PxRect::bounding(corners)
+        } else {
+            None
+        }
+    }
 }
 
 /// Перевести элемент сцены в пиксели экрана при масштабе `px_per_pt`
@@ -127,5 +151,35 @@ mod tests {
         let placement = node_placement_px(&skewed_visual(), SCALE);
         assert_eq!(placement.size, PxSize::new(150.0, 50.0));
         assert!((placement.opacity - 0.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_screen_rect_of_a_turned_frame_swaps_its_sides_and_keeps_its_center() {
+        let quarter = std::f32::consts::FRAC_PI_2;
+        for (turns, size) in [
+            (0, (40.0, 10.0)),
+            (1, (10.0, 40.0)),
+            (2, (40.0, 10.0)),
+            (3, (10.0, 40.0)),
+        ] {
+            let placement = NodePlacementPx {
+                size: PxSize::new(40.0, 10.0),
+                transform: Affine2::rotate(quarter * turns as f32).then(Affine2::translate(100.0, 200.0)),
+                opacity: 1.0,
+            };
+            let rect = placement.screen_rect_px().expect("конечное преобразование");
+            let close = |actual: f32, expected: f32| (actual - expected).abs() < 1e-3;
+            assert!(
+                close(rect.size.width, size.0) && close(rect.size.height, size.1),
+                "{turns}: {rect:?}"
+            );
+            assert!(close(rect.origin.x, 100.0 - size.0 / 2.0) && close(rect.origin.y, 200.0 - size.1 / 2.0));
+        }
+        let broken = NodePlacementPx {
+            size: PxSize::new(40.0, 10.0),
+            transform: Affine2::translate(f32::NAN, 0.0),
+            opacity: 1.0,
+        };
+        assert_eq!(broken.screen_rect_px(), None);
     }
 }

@@ -96,6 +96,8 @@ pub enum ScreenGesture {
     CalibrationListPan,
     /// Свайп по переключателю основы тона.
     CalibrationBasePan,
+    /// Тап по переключателю основы тона: выбирает видимую соседнюю модель (решение 229).
+    CalibrationBaseTap,
     /// Свайп по зоне прибора: смена прибора.
     CalibrationScopePan,
     /// Свайп по капсуле режимов внутри раздела калибровки.
@@ -121,6 +123,7 @@ impl ScreenGesture {
             | ScreenGesture::CalibrationWheelPadPan
             | ScreenGesture::CalibrationListPan
             | ScreenGesture::CalibrationBasePan
+            | ScreenGesture::CalibrationBaseTap
             | ScreenGesture::CalibrationScopePan
             | ScreenGesture::CalibrationModesPan
             | ScreenGesture::CalibrationCapsuleTap

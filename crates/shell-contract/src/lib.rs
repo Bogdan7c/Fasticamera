@@ -29,6 +29,7 @@
 pub mod clock;
 pub mod commands;
 pub mod diagnostics;
+pub mod edge_insets;
 pub mod event;
 pub mod event_queue;
 pub mod gravity;
@@ -41,6 +42,7 @@ pub mod orientation;
 pub mod performance_hint;
 pub mod permission;
 pub mod power;
+pub mod safe_area;
 pub mod still_media;
 pub mod surface;
 pub mod sync_fence;

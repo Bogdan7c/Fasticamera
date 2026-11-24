@@ -215,8 +215,7 @@ pub(super) fn raised_shutter(geometry: &crate::widget::geometry::ScreenGeometry)
 
 /// Центры членов стекла (px) и их форма.
 pub(super) fn glass_members(list: &DrawList) -> Vec<(ShapeGeometry, f32, f32)> {
-    list.items
-        .iter()
+    list.leaf_items()
         .filter_map(|item| match item {
             DrawItem::Glass(group) => Some(group),
             _ => None,
@@ -231,16 +230,14 @@ pub(super) fn glass_members(list: &DrawList) -> Vec<(ShapeGeometry, f32, f32)> {
 }
 
 pub(super) fn text_count(list: &DrawList) -> usize {
-    list.items
-        .iter()
+    list.leaf_items()
         .filter(|item| matches!(item, DrawItem::Text(_)))
         .count()
 }
 
 /// Преобразования всех иконок данного вида.
 pub(super) fn icon_transforms(list: &DrawList, icon: ui_draw::icons::IconId) -> Vec<ui_draw::transform::Affine2> {
-    list.items
-        .iter()
+    list.leaf_items()
         .filter_map(|item| match item {
             DrawItem::Icon(i) if i.icon == icon => Some(i.transform),
             _ => None,
@@ -250,8 +247,7 @@ pub(super) fn icon_transforms(list: &DrawList, icon: ui_draw::icons::IconId) -> 
 
 /// Глубина затемнения при снимке: чёрная полупрозрачная фигура (подложка вне кадра — непрозрачная, не в счёт).
 pub(super) fn blink_darkness(list: &DrawList) -> f32 {
-    list.items
-        .iter()
+    list.leaf_items()
         .find_map(|item| match item {
             DrawItem::Shape(shape)
                 if shape.fill == ui_draw::color::DisplayColor::BLACK
@@ -285,8 +281,7 @@ impl Rig {
 /// Диски «солнца» рамки фокуса (круг Ø 9 pt, фигура, а не значок: `ui-kit` рисует «солнце» диском и лучами).
 pub(super) fn sun_discs(list: &DrawList) -> Vec<(f32, f32)> {
     let disc_px = 9.0 * PX_PER_PT;
-    list.items
-        .iter()
+    list.leaf_items()
         .filter_map(|item| match item {
             DrawItem::Shape(shape)
                 if matches!(shape.geometry, ShapeGeometry::Circle { diameter } if (diameter - disc_px).abs() < 1.0) =>
@@ -318,8 +313,7 @@ pub(super) fn run_of(text: &str, role: TextRoleKind) -> TextRun {
 /// Преобразования всех нарисованных экземпляров этого текста этой ролью (с заметной прозрачностью).
 pub(super) fn texts_of(list: &DrawList, text: &str, role: TextRoleKind) -> Vec<ui_draw::draw_list::TextItem> {
     let expected = run_of(text, role);
-    list.items
-        .iter()
+    list.leaf_items()
         .filter_map(|item| match item {
             DrawItem::Text(drawn) if drawn.run == expected && drawn.opacity.get() > 0.05 => Some(drawn.clone()),
             _ => None,
@@ -333,8 +327,7 @@ pub(super) fn text_count_of(list: &DrawList, text: &str, role: TextRoleKind) -> 
 }
 
 pub(super) fn icons_of(list: &DrawList, icon: IconId) -> Vec<ui_draw::draw_list::IconItem> {
-    list.items
-        .iter()
+    list.leaf_items()
         .filter_map(|item| match item {
             // Хвост пружины оставляет у ушедшего содержимого прозрачность ~0,001: «видимым» считаем > 0,05.
             DrawItem::Icon(drawn) if drawn.icon == icon && drawn.opacity.get() > 0.05 => Some(*drawn),
@@ -345,8 +338,7 @@ pub(super) fn icons_of(list: &DrawList, icon: IconId) -> Vec<ui_draw::draw_list:
 
 /// Размер (px) пилюли выбранного режима: единственная капсула-фигура с ободком (капсула-стекло — не фигура).
 pub(super) fn mode_pill_size_px(list: &DrawList) -> (f32, f32) {
-    list.items
-        .iter()
+    list.leaf_items()
         .find_map(|item| match item {
             DrawItem::Shape(shape) if shape.stroke.is_some() => match shape.geometry {
                 ShapeGeometry::Capsule { size } => Some((size.width, size.height)),

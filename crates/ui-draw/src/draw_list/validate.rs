@@ -13,15 +13,28 @@ impl DrawList {
     /// группы стекла не пусты и не больше [`MAX_GLASS_GROUP_MEMBERS`]. Возвращает первую найденную ошибку.
     pub fn validate(&self) -> Result<(), DrawListError> {
         for (index, item) in self.items.iter().enumerate() {
-            match item {
-                DrawItem::Shape(shape) => validate_shape(index, shape)?,
-                DrawItem::Glass(group) => validate_glass_group(index, group)?,
-                DrawItem::Text(text) => validate_text(index, text)?,
-                DrawItem::Icon(icon) => validate_icon(index, icon)?,
-                DrawItem::Image(image) => validate_image(index, image)?,
-            }
+            validate_item(index, item)?;
         }
         Ok(())
+    }
+}
+
+/// Проверка одного элемента; `index` — номер элемента верхнего уровня (у вложенных он тот же).
+fn validate_item(index: usize, item: &DrawItem) -> Result<(), DrawListError> {
+    match item {
+        DrawItem::Shape(shape) => validate_shape(index, shape),
+        DrawItem::Glass(group) => validate_glass_group(index, group),
+        DrawItem::Text(text) => validate_text(index, text),
+        DrawItem::Icon(icon) => validate_icon(index, icon),
+        DrawItem::Image(image) => validate_image(index, image),
+        DrawItem::Clipped(group) => {
+            let rect = group.rect;
+            let edges = [rect.origin.x, rect.origin.y, rect.max_x(), rect.max_y()];
+            if !(rect.size.is_valid() && edges.iter().all(|edge| edge.is_finite())) {
+                return Err(DrawListError::InvalidClipRect { item: index, rect });
+            }
+            group.items.iter().try_for_each(|child| validate_item(index, child))
+        }
     }
 }
 

@@ -30,6 +30,7 @@ use camera_screen::{
 };
 use serde::Serialize;
 use shell_contract::clock::MonotonicNanos;
+use shell_contract::safe_area::SafeAreaInsets;
 use ui_draw::draw_list::DrawList;
 use ui_draw::frame_source::{UiFrameError, UiFrameRequest, UiFrameSource};
 
@@ -124,6 +125,8 @@ pub struct ScreenStateSnapshot {
     pub shutter_activity: ShutterActivity,
     /// Зум, который показывает экран (сессия 13).
     pub zoom: ZoomView,
+    /// Безопасная зона, внутри которой экран раскладывает раздел калибровки (14k): что на самом деле сообщил Android.
+    pub safe_area: SafeAreaInsets,
 }
 
 /// Зум глазами отчёта: коэффициент (в тысячных, чтобы снимок оставался `Eq`), направление, открыто ли колесо.
@@ -177,6 +180,7 @@ impl ScreenStateSnapshot {
                 ShutterVisibility::RaisedAboveCard => ShutterPlacement::RaisedAboveCard,
             },
             zoom: ZoomView::observe(state),
+            safe_area: state.safe_area(),
             shutter_activity: match state.shutter() {
                 ShutterState::Idle => ShutterActivity::Idle,
                 ShutterState::Countdown { .. } => ShutterActivity::Countdown,

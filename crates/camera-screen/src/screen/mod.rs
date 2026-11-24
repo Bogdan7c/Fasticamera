@@ -586,6 +586,8 @@ mod screen_calibration_bands_tests;
 #[path = "screen_calibration_menu_tests.rs"]
 mod screen_calibration_menu_tests;
 #[cfg(test)]
+mod screen_calibration_safe_area_tests;
+#[cfg(test)]
 #[path = "screen_calibration_section_tests.rs"]
 mod screen_calibration_section_tests;
 #[cfg(test)]

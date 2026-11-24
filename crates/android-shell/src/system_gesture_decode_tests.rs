@@ -48,7 +48,7 @@ fn negative_thickness_is_an_error_not_clamped() {
     let error = decode_system_gesture_zones(0, 0, 0, -1).expect_err("отрицательная толщина");
     assert_eq!(
         error,
-        SystemGestureZonesError::NegativeThickness {
+        EdgeInsetsError::NegativeThickness {
             edge: ScreenEdge::Bottom,
             thickness_px: -1
         }

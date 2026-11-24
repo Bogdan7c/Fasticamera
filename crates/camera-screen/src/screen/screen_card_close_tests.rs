@@ -26,7 +26,7 @@ fn open_card_from_menu(rig: &mut Rig, tool: ToolId) {
 /// Прозрачность первого нарисованного текста `text` роли `role`; `None`, если его в списке нет.
 fn text_opacity(list: &DrawList, text: &str, role: TextRoleKind) -> Option<f32> {
     let expected = run_of(text, role);
-    list.items.iter().find_map(|item| match item {
+    list.leaf_items().find_map(|item| match item {
         DrawItem::Text(drawn) if drawn.run == expected => Some(drawn.opacity.get()),
         _ => None,
     })
@@ -35,7 +35,7 @@ fn text_opacity(list: &DrawList, text: &str, role: TextRoleKind) -> Option<f32> 
 /// Вертикальная позиция (px) первого нарисованного текста `text` роли `role`.
 fn text_y(list: &DrawList, text: &str, role: TextRoleKind) -> Option<f32> {
     let expected = run_of(text, role);
-    list.items.iter().find_map(|item| match item {
+    list.leaf_items().find_map(|item| match item {
         DrawItem::Text(drawn) if drawn.run == expected => Some(drawn.transform.ty),
         _ => None,
     })
@@ -43,8 +43,7 @@ fn text_y(list: &DrawList, text: &str, role: TextRoleKind) -> Option<f32> {
 
 /// Центр по y (px) кольца затвора: стеклянный круг Ø > 150 px.
 fn shutter_ring_y(list: &DrawList) -> f32 {
-    list.items
-        .iter()
+    list.leaf_items()
         .find_map(|item| match item {
             DrawItem::Glass(group) => group.members.iter().find_map(|member| match member.geometry {
                 ShapeGeometry::Circle { diameter } if diameter > 150.0 => Some(member.transform.ty),
@@ -117,7 +116,7 @@ fn a_card_opened_from_the_icon_while_a_menu_card_is_closing_appears_in_place_at_
     // С первого же кадра стекло карточки стоит на своём месте и в своём размере (проявление на месте),
     // а не продолжает путь шторка → карточка.
     let card = rig.rect_with(|g| g.card());
-    let on_target = rig.last.items.iter().any(|item| match item {
+    let on_target = rig.last.leaf_items().any(|item| match item {
         DrawItem::Glass(group) => group.members.iter().any(|member| match member.geometry {
             ShapeGeometry::RoundedRect { size, .. } => {
                 near(size.width, px(card.size.width), PX_TOLERANCE)

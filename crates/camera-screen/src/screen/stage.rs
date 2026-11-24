@@ -477,7 +477,10 @@ impl Stage {
         }
         match (event.intent, event.state) {
             (
-                ScreenGesture::ViewfinderTap | ScreenGesture::CapsuleTap | ScreenGesture::CalibrationMenuScrimTap,
+                ScreenGesture::ViewfinderTap
+                | ScreenGesture::CapsuleTap
+                | ScreenGesture::CalibrationBaseTap
+                | ScreenGesture::CalibrationMenuScrimTap,
                 GestureState::Ended,
             ) => counters.taps += 1,
             (ScreenGesture::ViewfinderLongPress, GestureState::Began) => counters.long_presses += 1,

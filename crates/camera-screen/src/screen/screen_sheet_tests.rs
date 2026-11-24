@@ -36,8 +36,7 @@ fn enable_grid_and_return_to_menu(rig: &mut Rig) {
 
 /// Все скруглённые прямоугольники стекла: (размер px, запрошенный радиус px, центр y px).
 fn rounded_glass(list: &DrawList) -> Vec<(ui_draw::geometry::PxSize, f32, f32)> {
-    list.items
-        .iter()
+    list.leaf_items()
         .filter_map(|item| match item {
             DrawItem::Glass(group) => Some(group),
             _ => None,
@@ -52,8 +51,7 @@ fn rounded_glass(list: &DrawList) -> Vec<(ui_draw::geometry::PxSize, f32, f32)> 
 
 /// Фигуры-круги Ø `diameter_pt` с заливкой: (центр x px, центр y px, заливка).
 fn circles(list: &DrawList, diameter_pt: f64) -> Vec<(f32, f32, DisplayColor)> {
-    list.items
-        .iter()
+    list.leaf_items()
         .filter_map(|item| match item {
             DrawItem::Shape(shape) => match shape.geometry {
                 ShapeGeometry::Circle { diameter } if near(diameter, px(diameter_pt), 0.6) => {
@@ -113,8 +111,7 @@ fn open_sheet_sits_at_the_ios27_numbers_with_black_circles_and_a_handle() {
     // «Ручка» 37,6 × 3,7 pt, белая α 0,75, верх на 8,9 pt ниже верха шторки [measured: C t=30.0].
     let handle = rig
         .last
-        .items
-        .iter()
+        .leaf_items()
         .find_map(|item| match item {
             DrawItem::Shape(shape) => match shape.geometry {
                 ShapeGeometry::Capsule { size }
@@ -261,8 +258,7 @@ fn mode_pill_is_a_light_capsule_with_a_thin_border_inside_the_mode_capsule() {
     rig.frame();
     let pill = rig
         .last
-        .items
-        .iter()
+        .leaf_items()
         .find_map(|item| match item {
             DrawItem::Shape(shape) if shape.stroke.is_some() => match shape.geometry {
                 ShapeGeometry::Capsule { size } => Some((size, shape.clone())),
@@ -291,8 +287,7 @@ fn grid_lines_are_one_point_wide_with_the_measured_opacity() {
     assert!((frame.size.height - 586.7).abs() < 0.1, "{frame:?}");
     let lines: Vec<_> = rig
         .last
-        .items
-        .iter()
+        .leaf_items()
         .filter_map(|item| match item {
             DrawItem::Shape(shape) if (shape.fill.a - 0.36).abs() < 1e-6 => match shape.geometry {
                 ShapeGeometry::RoundedRect { size, .. } if size.width.min(size.height) < px(2.0) => Some(size),

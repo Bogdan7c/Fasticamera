@@ -17,8 +17,7 @@ const THUMBNAIL_DIAMETER_PX: f32 = 48.0 * PX_PER_PT;
 const PICTURE_SCALE: f32 = 0.86;
 
 fn images(list: &DrawList) -> Vec<&ImageItem> {
-    list.items
-        .iter()
+    list.leaf_items()
         .filter_map(|item| match item {
             DrawItem::Image(image) => Some(image),
             _ => None,
@@ -210,7 +209,7 @@ fn saved_without_a_picture_draws_the_grey_disc_and_no_image() {
     assert!(images(&list).is_empty());
     let (glass_x, glass_y) = thumbnail_glass_center(&list);
     let disc_diameter = THUMBNAIL_DIAMETER_PX * PICTURE_SCALE;
-    let disc = list.items.iter().any(|item| match item {
+    let disc = list.leaf_items().any(|item| match item {
         DrawItem::Shape(shape) => {
             matches!(shape.geometry, ShapeGeometry::Circle { diameter } if near(diameter, disc_diameter, 1.5))
                 && near(shape.transform.tx, glass_x, 0.5)

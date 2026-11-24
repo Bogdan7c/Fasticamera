@@ -33,7 +33,7 @@ use crate::picture_cache::PictureCache;
 use crate::pipelines::{GLASS_FIRST_PYRAMID_BINDING, IMAGE_FIRST_SAMPLER_BINDING, UiPipelines, UiShaderSet};
 use crate::plan::{Batch, BatchKind, FramePlan, build_plan};
 use crate::pyramid::{Pyramid, PyramidKey, RebuildSource};
-use crate::scissor::{GlassDrawArea, logical_rect_to_scissor};
+use crate::scissor::{BatchScissor, GlassDrawArea, logical_rect_to_scissor};
 use crate::slots::SlotBuffers;
 
 /// Всё, что нужно вызову рисования пакета, кроме самого пакета.
@@ -676,6 +676,11 @@ impl UiRenderer {
             frame,
             ..
         } = *context;
+        let scissor = match BatchScissor::for_clip(&batch.clip, quarter_turns, target.extent()) {
+            BatchScissor::WholeTarget => None,
+            BatchScissor::Rect(rect) => Some(rect),
+            BatchScissor::NothingVisible => return Ok(()),
+        };
         let pipeline = match batch.kind {
             BatchKind::Shape => &self.pipelines.shape,
             BatchKind::Glyph => &self.pipelines.glyph,
@@ -692,7 +697,7 @@ impl UiRenderer {
             DrawCall {
                 vertices_per_instance: 6,
                 instance_count: batch.instance_count,
-                scissor: None,
+                scissor,
             },
         )?;
         Ok(())

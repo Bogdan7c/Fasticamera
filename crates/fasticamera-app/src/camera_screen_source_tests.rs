@@ -76,6 +76,7 @@ fn a_fresh_screen_is_closed_neutral_and_in_photo_mode() {
                 wheel_open: false,
                 gliding: false,
             },
+            safe_area: shell_contract::safe_area::SafeAreaInsets::NONE,
         }
     );
 }

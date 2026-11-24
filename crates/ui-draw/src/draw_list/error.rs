@@ -3,6 +3,7 @@
 use thiserror::Error;
 
 use crate::draw_list::glass_group::MAX_GLASS_GROUP_MEMBERS;
+use crate::geometry::PxRect;
 use crate::shape::ShapeError;
 use crate::transform::AffineError;
 
@@ -38,6 +39,9 @@ pub enum DrawListError {
     /// Группа стекла без единой формы.
     #[error("элемент {item}: группа стекла пуста")]
     EmptyGlassGroup { item: usize },
+    /// Прямоугольник обрезки не конечен или имеет отрицательный размер (нулевой допустим: обрезка пуста).
+    #[error("элемент {item}: прямоугольник обрезки некорректен: {rect:?}")]
+    InvalidClipRect { item: usize, rect: PxRect },
 }
 
 impl DrawListError {

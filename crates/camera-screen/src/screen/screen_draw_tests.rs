@@ -128,7 +128,7 @@ fn every_key_state_yields_a_valid_draw_list_with_its_distinguishing_content() {
     rig.run(900);
     assert_eq!(rig.screen.state().panel(), PanelState::ControlsMenu);
     assert!(
-        rig.last.items.iter().any(|i| matches!(i, DrawItem::Glass(g) if g.members.iter().any(|m| matches!(m.geometry, ShapeGeometry::RoundedRect { .. })))),
+        rig.last.leaf_items().any(|i| matches!(i, DrawItem::Glass(g) if g.members.iter().any(|m| matches!(m.geometry, ShapeGeometry::RoundedRect { .. })))),
         "шторка меню — стекло скруглённого прямоугольника"
     );
 
@@ -312,8 +312,7 @@ fn level_line_direction(rig: &Rig) -> (f32, f32) {
     let (cx, cy) = (center.x as f32 * PX_PER_PT, center.y as f32 * PX_PER_PT);
     let lines: Vec<(f32, f32)> = rig
         .last
-        .items
-        .iter()
+        .leaf_items()
         .filter_map(|item| match item {
             DrawItem::Shape(shape)
                 if near(shape.transform.tx, cx, 0.5)

@@ -232,6 +232,22 @@ impl ScreenDriver {
         self.frame();
     }
 
+    /// Медленная протяжка `from → to` (pt) с задержкой в конце: содержимое останавливается там, где отпущен палец.
+    pub fn drag(&mut self, from: Point, to: Point) {
+        const STEPS: i64 = 24;
+        let start = self.now_ms;
+        self.touch(TouchPhase::Began, from, start);
+        for step in 1..=2 * STEPS {
+            // Вторая половина — задержка на месте: скорость отпускания нулевая.
+            let t = (step.min(STEPS)) as f64 / STEPS as f64;
+            let point = Point::new(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t);
+            self.touch(TouchPhase::Moved, point, start + step * FRAME_STEP_MS);
+        }
+        self.touch(TouchPhase::Ended, to, start + (2 * STEPS + 1) * FRAME_STEP_MS);
+        self.now_ms = start + (2 * STEPS + 2) * FRAME_STEP_MS;
+        self.frame();
+    }
+
     /// Долгий тап: палец неподвижен, жест срабатывает по таймеру на кадре, потом отрыв.
     pub fn long_press(&mut self, point: Point) {
         let start = self.now_ms;
@@ -269,7 +285,7 @@ impl ScreenDriver {
 
     /// Центр последнего члена стекла-круга заданного диаметра в px (затвор Ø197, кнопка меню и миниатюра Ø≈118).
     pub fn glass_circle_center_px(&self, diameter_px: f32) -> Option<(f32, f32)> {
-        self.list().items.iter().find_map(|item| match item {
+        self.list().leaf_items().find_map(|item| match item {
             DrawItem::Glass(group) => group.members.iter().find_map(|member| match member.geometry {
                 ShapeGeometry::Circle { diameter } if (diameter - diameter_px).abs() < 2.0 => {
                     Some((member.transform.tx, member.transform.ty))
@@ -282,7 +298,7 @@ impl ScreenDriver {
 
     /// Рамка стекла панели (первый член-скруглённый прямоугольник) в px: `(x0, y0, x1, y1)`.
     pub fn glass_panel_rect_px(&self) -> Option<(f32, f32, f32, f32)> {
-        self.list().items.iter().find_map(|item| match item {
+        self.list().leaf_items().find_map(|item| match item {
             DrawItem::Glass(group) => group.members.iter().find_map(|member| match member.geometry {
                 ShapeGeometry::RoundedRect { size, .. } => {
                     let (half_width, half_height) = (size.width * 0.5, size.height * 0.5);
@@ -301,7 +317,7 @@ impl ScreenDriver {
 
     /// Центр иконки `icon` в px (первой найденной).
     pub fn icon_center_px(&self, icon: IconId) -> Option<(f32, f32)> {
-        self.list().items.iter().find_map(|item| match item {
+        self.list().leaf_items().find_map(|item| match item {
             DrawItem::Icon(item) if item.icon == icon => Some((item.transform.tx, item.transform.ty)),
             _ => None,
         })

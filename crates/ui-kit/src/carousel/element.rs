@@ -135,6 +135,15 @@ impl<T: Clone + PartialEq + Debug> SnapCarousel<T> {
             .collect()
     }
 
+    /// Чья подпись под точкой `offset_points` (от центра видимой области, pt); `None` — точка мимо подписей.
+    /// Единственное правило попадания тапа по карусели.
+    pub fn item_index_at(&self, offset_points: f64, now: MonotonicNanos) -> Option<usize> {
+        self.placements(now)
+            .into_iter()
+            .find(|placement| (offset_points - placement.center_offset_points).abs() <= placement.width_points * 0.5)
+            .map(|placement| placement.index)
+    }
+
     // ---- намерения жестов ----
 
     /// Палец коснулся карусели: движение останавливается на месте, без скачка.

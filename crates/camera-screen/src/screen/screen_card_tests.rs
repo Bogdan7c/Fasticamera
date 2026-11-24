@@ -19,7 +19,7 @@ const PX_TOLERANCE: f32 = 1.5;
 
 /// Есть ли в списке видимая стеклянная форма с центром около точки `(x_pt; y_pt)` (pt экрана).
 fn visible_glass_at(list: &DrawList, point: Point) -> bool {
-    list.items.iter().any(|item| match item {
+    list.leaf_items().any(|item| match item {
         DrawItem::Glass(group) if group.opacity.get() > 0.01 => group
             .members
             .iter()
@@ -73,8 +73,7 @@ fn card_frame_and_content_sit_at_the_measured_numbers_in_pixels() {
     // Стекло в списке рисования стоит ровно там же, в пикселях.
     let glass = rig
         .last
-        .items
-        .iter()
+        .leaf_items()
         .find_map(|item| match item {
             DrawItem::Glass(group) => group.members.iter().find_map(|member| match member.geometry {
                 ShapeGeometry::RoundedRect { size, .. } if size.width > px(300.0) => Some((member.transform, size)),
@@ -100,7 +99,7 @@ fn card_frame_and_content_sit_at_the_measured_numbers_in_pixels() {
     // Заголовок и значение действительно нарисованы на этих высотах.
     let drawn_y = |text: &str, role| {
         let expected = run_of(text, role);
-        rig.last.items.iter().find_map(|item| match item {
+        rig.last.leaf_items().find_map(|item| match item {
             DrawItem::Text(drawn) if drawn.run == expected => Some(drawn.transform.ty),
             _ => None,
         })
@@ -151,7 +150,7 @@ fn menu_to_timer_card_selection_keeps_the_card_open_and_back_returns_to_the_menu
     let colors = UiKitTokens::default().colors;
     let color_of = |label: &str| {
         let expected = run_of(label, TextRoleKind::StripValue);
-        rig.last.items.iter().find_map(|item| match item {
+        rig.last.leaf_items().find_map(|item| match item {
             DrawItem::Text(drawn) if drawn.run == expected => Some(drawn.color),
             _ => None,
         })
@@ -265,8 +264,7 @@ fn ruler_ticks_are_twenty_points_apart_and_whole_ev_ticks_are_brighter() {
     let centre_x = px(ruler.center().x);
     let mut ticks: Vec<(f32, f32)> = rig
         .last
-        .items
-        .iter()
+        .leaf_items()
         .filter_map(|item| match item {
             DrawItem::Shape(shape) => match shape.geometry {
                 ShapeGeometry::RoundedRect { size, .. }

@@ -14,7 +14,8 @@ use std::collections::HashMap;
 use ui_core::id::NodeId;
 use ui_core::scene::UiScene;
 use ui_core::tree::NodeVisual;
-use ui_draw::draw_list::DrawItem;
+use ui_draw::draw_list::{ClipGroup, DrawItem};
+use ui_draw::geometry::PxRect;
 use ui_draw::scene_bridge::{NodePlacementPx, node_placement_px};
 
 use super::intent::ScreenGesture;
@@ -55,6 +56,47 @@ impl DrawLayers {
 
     pub(crate) fn extend(&mut self, layer: Layer, items: impl IntoIterator<Item = DrawItem>) {
         self.layer_mut(layer).extend(items);
+    }
+
+    /// Элементы `items` слоя видны только внутри прямоугольника экрана `window` (px). Пустой набор не кладётся.
+    pub(crate) fn push_clipped(&mut self, layer: Layer, window: PxRect, items: Vec<DrawItem>) {
+        if !items.is_empty() {
+            self.push(layer, DrawItem::Clipped(ClipGroup { rect: window, items }));
+        }
+    }
+
+    /// Всё, что нарисует `draw`, будет видно только внутри прямоугольника экрана `window` (px): окно прокручиваемого
+    /// содержимого. Слои сохраняются: в каждый непустой слой ложится одна группа обрезки на месте своего содержимого.
+    pub(crate) fn clipped_to<E>(
+        &mut self,
+        window: PxRect,
+        draw: impl FnOnce(&mut DrawLayers) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let mut inner = DrawLayers::default();
+        draw(&mut inner)?;
+        let DrawLayers {
+            backdrop,
+            frame_overlay,
+            plain,
+            glass,
+            content,
+            overlay_glass,
+            overlay_content,
+        } = inner;
+        for (outer, items) in [
+            (&mut self.backdrop, backdrop),
+            (&mut self.frame_overlay, frame_overlay),
+            (&mut self.plain, plain),
+            (&mut self.glass, glass),
+            (&mut self.content, content),
+            (&mut self.overlay_glass, overlay_glass),
+            (&mut self.overlay_content, overlay_content),
+        ] {
+            if !items.is_empty() {
+                outer.push(DrawItem::Clipped(ClipGroup { rect: window, items }));
+            }
+        }
+        Ok(())
     }
 
     fn layer_mut(&mut self, layer: Layer) -> &mut Vec<DrawItem> {

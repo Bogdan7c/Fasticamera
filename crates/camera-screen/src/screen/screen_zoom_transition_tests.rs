@@ -13,8 +13,7 @@ use super::test_rig::{FRAME_MS, PX_PER_PT, Rig, ms, near, px};
 
 /// Размытие кадра: группа стекла с радиусом размытия пресета `frost` (28 pt).
 fn frost_groups(list: &DrawList) -> Vec<&GlassGroupItem> {
-    list.items
-        .iter()
+    list.leaf_items()
         .filter_map(|item| match item {
             DrawItem::Glass(group) if near(group.params.blur_radius_px, 28.0 * PX_PER_PT, 0.5) => Some(group),
             _ => None,
@@ -40,7 +39,7 @@ fn frost_width_pt(list: &DrawList) -> f64 {
 /// Есть ли чёрная подложка на всю площадь кадра (фон «пустоты» вокруг карточки).
 fn black_card_background(rig: &Rig, list: &DrawList) -> bool {
     let frame = rig.rect_with(|geometry| geometry.frame(rig.screen.state().settings().aspect));
-    list.items.iter().any(|item| match item {
+    list.leaf_items().any(|item| match item {
         DrawItem::Shape(shape) => {
             shape.fill == DisplayColor::BLACK
                 && shape.opacity.get() >= 0.99

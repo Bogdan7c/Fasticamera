@@ -242,6 +242,7 @@ impl EventRouter {
             gpu: &self.gpu,
             camera: &self.camera,
             orientation: self.display.orientation(),
+            safe_area: self.display.safe_area(),
         };
         self.camera_screen.install(&environment);
     }
@@ -253,6 +254,7 @@ impl EventRouter {
             gpu: &self.gpu,
             camera: &self.camera,
             orientation: self.display.orientation(),
+            safe_area: self.display.safe_area(),
         };
         self.camera_screen.maintain(now, &environment);
     }
@@ -300,6 +302,10 @@ impl EventRouter {
             ShellEvent::TouchGap { .. } => self.camera_screen.route_touch_gap(),
             ShellEvent::HardwareKey(key) => self.camera_screen.route_hardware_key(key),
             ShellEvent::SystemGestureZones(zones) => self.camera_screen.route_system_gesture_zones(zones),
+            ShellEvent::SafeArea(insets) => {
+                self.display.set_safe_area(insets);
+                self.camera_screen.route_safe_area(insets);
+            }
             // Ответ диалога ввода текста отдаём брокеру: он сверит номер запроса и передаст приёмнику.
             ShellEvent::TextInput(result) => match &self.text_input {
                 Some(broker) => {
@@ -414,6 +420,7 @@ impl EventRouter {
             gpu: &self.gpu,
             camera: &self.camera,
             orientation: self.display.orientation(),
+            safe_area: self.display.safe_area(),
         };
         self.camera_screen.resume_after_scenario(&environment);
         // Подсказка владельцу — состояние на экране, а не импульс: при любом конце сценария (в том числе

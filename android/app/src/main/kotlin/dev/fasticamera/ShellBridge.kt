@@ -53,6 +53,12 @@ object ShellBridge {
      */
     @JvmStatic external fun nativeSystemGestureZones(left: Int, top: Int, right: Int, bottom: Int)
 
+    /**
+     * Безопасная зона: отступы от краёв окна, пиксели, в порядке `android.graphics.Insets` — объединение системных
+     * панелей, выреза камеры и полос обязательных жестов. Где ставить управление, решает Rust.
+     */
+    @JvmStatic external fun nativeSafeArea(left: Int, top: Int, right: Int, bottom: Int)
+
     @JvmStatic external fun nativeCameraPermissionResult(grantResults: IntArray, shouldShowRationale: Boolean)
 
     /**

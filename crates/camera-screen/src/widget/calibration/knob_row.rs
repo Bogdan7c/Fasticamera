@@ -441,21 +441,20 @@ impl RulerRow {
         }
     }
 
-    /// Рисует строку. `fade` — затухание у края списка (0 — строка вне видимой части и не рисуется).
+    /// Рисует строку целиком; что не помещается в окно списка, режет окно (`KnobsColumn::draw`).
     pub(super) fn draw(
         &self,
         ctx: &Ctx<'_>,
         visuals: &VisualIndex,
         layers: &mut DrawLayers,
         texts: &mut TextRuns,
-        fade: f32,
     ) -> Result<(), WidgetError> {
         let config = &ctx.config.calibration.widgets;
         let disabled_factor = if self.enabled { 1.0 } else { config.disabled_row_opacity };
         let Some(row_placement) = visuals.placement(self.node) else {
             return Ok(());
         };
-        let Some(paint) = NodePaint::new(ctx, row_placement, fade * disabled_factor)? else {
+        let Some(paint) = NodePaint::new(ctx, row_placement, disabled_factor)? else {
             return Ok(());
         };
         let colors = &ctx.tokens.colors;
@@ -467,7 +466,7 @@ impl RulerRow {
         let title = texts.run(ctx, self.target.title(), TextRoleKind::CardTitle)?;
         layers.push(
             Layer::Content,
-            paint.text_left(title, -half_width, title_y, colors.text_muted),
+            paint.text_left(title, -half_width, title_y, colors.panel_label),
         );
         let value_run = texts.run(ctx, &format_knob_value(value.get()), TextRoleKind::ScaleValue)?;
         let value_right = half_width - reset_side - config.value_gap_pt;
@@ -476,7 +475,7 @@ impl RulerRow {
             paint.text_right(value_run, value_right, title_y, colors.text_primary),
         );
         self.draw_reset(ctx, &paint, layers, value_is_edited(self, ctx));
-        self.draw_ruler(ctx, visuals, layers, fade * disabled_factor)
+        self.draw_ruler(ctx, visuals, layers, disabled_factor)
     }
 
     /// Диск «↻»: яркий, если значение отличается от пресета, иначе приглушён (`widgets.card.reset_dim_opacity`).

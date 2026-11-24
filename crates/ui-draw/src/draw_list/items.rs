@@ -1,6 +1,7 @@
 //! Элементы списка рисования, кроме стекла.
 
 use crate::color::{DisplayColor, Opacity};
+use crate::draw_list::clip::ClipGroup;
 use crate::draw_list::glass_group::GlassGroupItem;
 use crate::draw_list::image_source::ImageSource;
 use crate::geometry::{PxRect, PxSize};
@@ -94,6 +95,8 @@ pub enum DrawItem {
     Text(TextItem),
     Icon(IconItem),
     Image(ImageItem),
+    /// Группа, видимая только внутри прямоугольника экрана (прокручиваемые списки): см. [`ClipGroup`].
+    Clipped(ClipGroup),
 }
 
 impl DrawItem {
@@ -104,6 +107,7 @@ impl DrawItem {
         match self {
             // Стекло рисуется в своём узком кваде; прямоугольник адаптации яркости (`bounds_px`) шире.
             DrawItem::Glass(item) => item.draw_rect_px(),
+            DrawItem::Clipped(group) => group.draw_rect_px(),
             other => other.bounds_px(),
         }
     }
@@ -117,6 +121,7 @@ impl DrawItem {
             DrawItem::Text(item) => crate::draw_list::bounds::text_bounds(item),
             DrawItem::Icon(item) => crate::draw_list::bounds::icon_bounds(item),
             DrawItem::Image(item) => crate::draw_list::bounds::image_bounds(item),
+            DrawItem::Clipped(group) => group.bounds_px(),
         }
     }
 }

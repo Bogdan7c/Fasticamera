@@ -46,7 +46,7 @@ fn negative_thickness_is_rejected_with_the_offending_edge() {
     .expect_err("отрицательная толщина");
     assert_eq!(
         error,
-        SystemGestureZonesError::NegativeThickness {
+        EdgeInsetsError::NegativeThickness {
             edge: ScreenEdge::Right,
             thickness_px: -5
         }

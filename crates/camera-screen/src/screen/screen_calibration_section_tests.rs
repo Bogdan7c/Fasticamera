@@ -39,7 +39,7 @@ fn nothing_is_drawn_over_the_clean_preview_zone() {
                 && bounds.origin.y < bottom - EDGE_SLACK_PX
                 && bounds.max_y() > top + EDGE_SLACK_PX
         };
-        for item in &list.items {
+        for item in list.leaf_items() {
             // Стекло проверяем по фигуре члена, а не по охватывающему прямоугольнику с запасом на линзу.
             let touches = match item {
                 DrawItem::Glass(group) => group

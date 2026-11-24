@@ -28,7 +28,7 @@ fn ratio_of(rig: &Rig) -> f32 {
 
 /// Круг выбранной кнопки ленты Ø 37 pt нарисован (значит, лента на экране).
 fn strip_visible(list: &DrawList) -> bool {
-    list.items.iter().any(|item| {
+    list.leaf_items().any(|item| {
         matches!(item, DrawItem::Shape(shape)
             if matches!(shape.geometry, ui_draw::shape::ShapeGeometry::Circle { diameter }
                 if near(diameter, 37.0 * super::test_rig::PX_PER_PT, 1.0)))
@@ -265,5 +265,5 @@ fn a_reinstalled_screen_keeps_the_users_lens_and_sends_no_intent_at_creation() {
         "рендер получил кадрирование с усыновлённым зумом"
     );
     // Лента сразу показывает выбранный ширик.
-    assert!(list.items.iter().any(|item| matches!(item, DrawItem::Text(_))));
+    assert!(list.leaf_items().any(|item| matches!(item, DrawItem::Text(_))));
 }

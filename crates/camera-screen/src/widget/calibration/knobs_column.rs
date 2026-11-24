@@ -5,7 +5,7 @@
 //! Прокрутка списка — `ui_kit::scroll_list::ScrollList`: палец ведёт содержимое, узел содержимого сдвигается по
 //! вертикали на смещение, а хит-тест `ui-core` сам учитывает сдвиг. Узел окна списка ограничивает касания его
 //! рамкой (дети за рамкой родителя не ловят), поэтому строки, уехавшие под шапку или за низ панели, нажать нельзя.
-//! Рисование рамками не ограничено, поэтому строки у края гаснут по доле видимой части (`VisibleWindow::fade_of`).
+//! Рисование вида ограничено той же рамкой окна: строка у края режется ровно по нему (`DrawLayers::clipped_to`, решение 227).
 
 use look_contract::BandFacts;
 use ui_core::geometry::Rect;
@@ -41,6 +41,8 @@ pub(super) struct KnobsColumn {
     header: ToneHeader,
     /// Переключатель вида SCALES | WHEELS: под шапкой, вне окна прокрутки.
     switcher: SegmentRow<ControlViewKind>,
+    /// Окно вида: его рамка ограничивает и касания, и рисование содержимого.
+    window: NodeId,
     content_node: NodeId,
     list: ScrollList,
     view: ControlView,
@@ -135,6 +137,7 @@ impl KnobsColumn {
             panel,
             header,
             switcher,
+            window: list_node,
             content_node,
             list,
             view,
@@ -233,15 +236,23 @@ impl KnobsColumn {
             layers,
             (ctx.state.calibration().control_view(), |_| false, 1.0),
         )?;
-        self.view.draw(
-            ctx,
-            visuals,
-            layers,
-            texts,
-            VisibleWindow {
-                offset_pt: self.list.offset(ctx.now),
-                height_pt: self.window_height_pt,
-            },
-        )
+        let Some(window_rect) = visuals
+            .placement(self.window)
+            .and_then(|window| window.screen_rect_px())
+        else {
+            return Ok(());
+        };
+        layers.clipped_to(window_rect, |layers| {
+            self.view.draw(
+                ctx,
+                visuals,
+                layers,
+                texts,
+                VisibleWindow {
+                    offset_pt: self.list.offset(ctx.now),
+                    height_pt: self.window_height_pt,
+                },
+            )
+        })
     }
 }

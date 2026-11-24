@@ -20,6 +20,7 @@ use super::runtime::{AttachedPlatform, CountedGlobal, ShellRuntime, installed_ru
 use crate::command_codes::platform_command_from_code;
 use crate::key_decode::{DecodedKey, KeyConsumption, RawKeyEvent, decode_key_event};
 use crate::permission_answer::{RationaleVisibility, classify_permission_answer};
+use crate::safe_area_decode::decode_safe_area;
 use crate::surface_registry::frame_rate_outcome;
 use crate::system_gesture_decode::decode_system_gesture_zones;
 use crate::text_input_wire::decode_text_input_result;
@@ -67,6 +68,10 @@ const SHELL_NATIVE_METHODS: &[NativeMethod] = &[
     },
     native_method! {
         static fn native_system_gesture_zones(left: jint, top: jint, right: jint, bottom: jint),
+        error_policy = LogAndCountCallbackFailure,
+    },
+    native_method! {
+        static fn native_safe_area(left: jint, top: jint, right: jint, bottom: jint),
         error_policy = LogAndCountCallbackFailure,
     },
     native_method! {
@@ -339,6 +344,28 @@ fn native_system_gesture_zones<'local>(
             runtime.send_event(ShellEvent::SystemGestureZones(zones));
         }
         Err(error) => record_callback_failure(runtime, "system_gesture_zones", &error),
+    }
+    Ok(())
+}
+
+/// Безопасная зона (объединение системных панелей, выреза и полос обязательных жестов), пиксели окна в порядке
+/// `Insets`: left, top, right, bottom. Событие-состояние; невозможные числа — лог и счётчик, прежняя зона остаётся.
+fn native_safe_area<'local>(
+    _env: &mut Env<'local>,
+    _class: JClass<'local>,
+    left: jint,
+    top: jint,
+    right: jint,
+    bottom: jint,
+) -> jni::errors::Result<()> {
+    let Some(runtime) = runtime_or_warn("safe_area") else {
+        return Ok(());
+    };
+    match decode_safe_area(left, top, right, bottom) {
+        Ok(insets) => {
+            runtime.send_event(ShellEvent::SafeArea(insets));
+        }
+        Err(error) => record_callback_failure(runtime, "safe_area", &error),
     }
     Ok(())
 }

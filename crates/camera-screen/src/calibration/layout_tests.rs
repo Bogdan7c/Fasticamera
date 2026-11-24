@@ -2,10 +2,12 @@
 //! прибора равна зоне в пикселях, развёртка и поворот соответствуют положению телефона, перевод глаз ↔ поверхность.
 
 use scope_contract::{MAX_SCOPE_IMAGE_SIDE_PX, ScopeScan};
+use shell_contract::edge_insets::RawEdgeInsetsPx;
 use shell_contract::orientation::DeviceOrientation;
+use shell_contract::safe_area::SafeAreaInsets;
 use ui_core::geometry::{Point, Rect};
 
-use super::{CalibrationConfig, CalibrationLayout};
+use super::{CalibrationConfig, CalibrationLayout, CalibrationLayoutError};
 use crate::layout::{LayoutConfig, ScreenLayout};
 use crate::mode_behaviour::LayoutPolicy;
 use crate::test_support::OUR_SURFACE;
@@ -29,8 +31,23 @@ fn calibration_layout(policy: LayoutPolicy, orientation: DeviceOrientation) -> C
             &WidgetLayoutConfig::default().bottom,
             policy,
             orientation,
+            SafeAreaInsets::NONE,
         )
         .expect("раскладка раздела")
+}
+
+/// Раскладка, следующая за телефоном, с отступами безопасной зоны.
+fn calibration_layout_in(
+    orientation: DeviceOrientation,
+    safe_area: SafeAreaInsets,
+) -> Result<CalibrationLayout, CalibrationLayoutError> {
+    screen().calibration_layout(
+        &CalibrationConfig::default(),
+        &WidgetLayoutConfig::default().bottom,
+        LayoutPolicy::FollowsOrientation,
+        orientation,
+        safe_area,
+    )
 }
 
 fn area(rect: &Rect) -> f64 {
@@ -139,6 +156,7 @@ fn scope_size_is_clamped_to_the_configured_side_limit() {
             &WidgetLayoutConfig::default().bottom,
             LayoutPolicy::FollowsOrientation,
             DeviceOrientation::Portrait,
+            SafeAreaInsets::NONE,
         )
         .expect("раскладка");
 
@@ -287,6 +305,110 @@ fn zone_edges_sit_on_whole_pixels_so_the_scope_image_maps_one_to_one() {
             f64::from(layout.scope_image_size().width()),
             scope.size.width * pixels_per_point,
             "{orientation:?}: ширина картинки в точности ширина зоны"
+        );
+    }
+}
+
+// ----- безопасная зона (14k) -----------------------------------------------------------------------------------------
+
+/// Отступы с разным числом у каждого края: любая путаница краёв видна.
+fn distinct_insets() -> SafeAreaInsets {
+    SafeAreaInsets::try_from_insets(RawEdgeInsetsPx {
+        left: 10,
+        top: 20,
+        right: 30,
+        bottom: 40,
+    })
+    .expect("отступы")
+}
+
+#[test]
+fn surface_insets_turn_into_eye_edges_with_the_same_rotation_as_the_layout() {
+    // Слева, сверху и справа глазами — какой край поверхности это: портрет, левый бок, вверх ногами, правый бок.
+    let expected_px = [
+        (DeviceOrientation::Portrait, (10.0, 20.0, 30.0)),
+        (DeviceOrientation::LandscapeLeft, (20.0, 30.0, 40.0)),
+        (DeviceOrientation::PortraitUpsideDown, (30.0, 40.0, 10.0)),
+        (DeviceOrientation::LandscapeRight, (40.0, 10.0, 20.0)),
+    ];
+    let scale = screen().point_scale().pixels_per_point();
+    for (orientation, (left_px, top_px, right_px)) in expected_px {
+        let plain = calibration_layout(LayoutPolicy::FollowsOrientation, orientation);
+        let layout = calibration_layout_in(orientation, distinct_insets()).expect("раскладка");
+        let (knobs, scope) = (layout.zones().knobs, layout.zones().scope);
+        let close = |actual: f64, expected: f64| (actual - expected).abs() < 1e-6;
+        assert!(close(knobs.min_x() * scale, left_px), "{orientation:?}: {knobs:?}");
+        assert!(close(knobs.min_y() * scale, top_px), "{orientation:?}: {knobs:?}");
+        assert!(
+            close((layout.eye_size().width - scope.max_x()) * scale, right_px),
+            "{orientation:?}: {scope:?}"
+        );
+        // Колонка сдвигается, а не сужается; низ и линия «превью / прибор» на месте; зоны встык.
+        assert!(
+            close(knobs.size.width, plain.zones().knobs.size.width),
+            "{orientation:?}"
+        );
+        assert!(close(knobs.max_y(), plain.zones().knobs.max_y()), "{orientation:?}");
+        assert!(close(scope.min_y(), plain.zones().scope.min_y()), "{orientation:?}");
+        assert!(close(scope.min_x(), knobs.max_x()), "{orientation:?}");
+        // Чистое превью — картинка: до правого и верхнего краёв экрана.
+        let clean = layout.zones().clean_preview;
+        assert!(close(clean.max_x(), layout.eye_size().width) && close(clean.min_y(), 0.0));
+        assert_eq!(
+            (layout.scope_image_size().width(), layout.scope_image_size().height()),
+            (
+                (scope.size.width * scale).round() as u32,
+                (scope.size.height * scale).round() as u32
+            ),
+            "{orientation:?}: картинка прибора ровно с его зону"
+        );
+    }
+}
+
+#[test]
+fn portrait_bottom_row_keeps_the_photo_places_and_the_landscape_menu_button_moves_by_the_inset() {
+    let plain = calibration_layout(LayoutPolicy::FollowsOrientation, DeviceOrientation::Portrait);
+    let safe = calibration_layout_in(DeviceOrientation::Portrait, distinct_insets()).expect("раскладка");
+    assert_eq!(safe.menu_button_center(), plain.menu_button_center());
+    assert_eq!(safe.carousel_center(), plain.carousel_center());
+
+    let scale = screen().point_scale().pixels_per_point();
+    let plain = calibration_layout(LayoutPolicy::FollowsOrientation, DeviceOrientation::LandscapeLeft);
+    let safe = calibration_layout_in(DeviceOrientation::LandscapeLeft, distinct_insets()).expect("раскладка");
+    let moved_px = (plain.menu_button_center().x - safe.menu_button_center().x) * scale;
+    assert!((moved_px - 40.0).abs() < 1e-6, "сдвиг {moved_px}");
+    assert_eq!(safe.carousel_center(), plain.carousel_center());
+}
+
+#[test]
+fn insets_that_leave_no_room_are_an_error_not_an_inverted_zone() {
+    for raw in [
+        RawEdgeInsetsPx {
+            left: 0,
+            top: 3000,
+            right: 0,
+            bottom: 0,
+        },
+        RawEdgeInsetsPx {
+            left: 0,
+            top: 0,
+            right: 700,
+            bottom: 0,
+        },
+        RawEdgeInsetsPx {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 3000,
+        },
+    ] {
+        let insets = SafeAreaInsets::try_from_insets(raw).expect("отступы");
+        assert!(
+            matches!(
+                calibration_layout_in(DeviceOrientation::Portrait, insets),
+                Err(CalibrationLayoutError::NoRoomInSafeArea { .. })
+            ),
+            "{raw:?}"
         );
     }
 }

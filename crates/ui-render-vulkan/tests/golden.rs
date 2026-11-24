@@ -23,8 +23,8 @@ use support::{
     shape_item,
 };
 use ui_draw::color::{DisplayColor, DisplayPrimaries, Opacity};
-use ui_draw::draw_list::{DrawItem, DrawList, GlassGroupItem, IconItem, StrokeStyle, TextItem};
-use ui_draw::geometry::{PxPoint, PxSize};
+use ui_draw::draw_list::{ClipGroup, DrawItem, DrawList, GlassGroupItem, IconItem, StrokeStyle, TextItem};
+use ui_draw::geometry::{PxPoint, PxRect, PxSize};
 use ui_draw::glass::{GlassStyle, ShadowParamsPx};
 use ui_draw::icons::IconId;
 use ui_draw::shape::{CornerSpec, ShapeGeometry};
@@ -337,4 +337,73 @@ fn golden_image() {
     check_golden("image", &pixels);
     drop((rig, list, wide, tall));
     assert_no_validation_errors(&context);
+}
+
+/// Прокручиваемый список в обрезке с дробными границами: строки (карточка, подпись, иконка) выезжают за верх и низ
+/// окна, стеклянная «пилюля» режется нижним краем, а необрезанная точка после группы остаётся целой.
+#[test]
+fn golden_clipped_list() {
+    let mut list = empty_list();
+    // Рамка окна списка: обрезка по правилу центра пикселя даёт пиксели x 40..320, y 40..180.
+    list.items.push(shape(shape_item(
+        ShapeGeometry::RoundedRect {
+            size: PxSize::new(284.0, 144.0),
+            corner: CornerSpec::continuous(14.0),
+        },
+        Affine2::translate(180.0, 112.0),
+        DisplayColor::rgb(0.16, 0.17, 0.24),
+    )));
+    let label_style = TextStyle {
+        face: FontFace::Semibold,
+        size_px: 20.0,
+        tracking_em: 0.0,
+        figures: Figures::Tabular,
+    };
+    let mut rows = Vec::new();
+    for (index, caption) in ["Photo", "Video", "Portrait", "Pano"].into_iter().enumerate() {
+        let center_y = 52.0 + index as f32 * 56.0;
+        rows.push(shape(shape_item(
+            ShapeGeometry::RoundedRect {
+                size: PxSize::new(300.0, 46.0),
+                corner: CornerSpec::continuous(12.0),
+            },
+            Affine2::translate(180.0, center_y),
+            DisplayColor::rgb(0.30 + 0.1 * index as f32, 0.45, 0.80 - 0.12 * index as f32),
+        )));
+        rows.push(DrawItem::Text(TextItem {
+            run: layout_line(caption, &label_style).unwrap(),
+            transform: Affine2::translate(70.0, center_y + 7.0),
+            color: DisplayColor::WHITE,
+            opacity: Opacity::OPAQUE,
+        }));
+        rows.push(DrawItem::Icon(IconItem {
+            icon: if index % 2 == 0 { IconId::Grid } else { IconId::Exposure },
+            transform: Affine2::translate(290.0, center_y),
+            size_px: PxSize::new(30.0, 30.0),
+            color: DisplayColor::WHITE,
+            opacity: Opacity::OPAQUE,
+        }));
+    }
+    let style = GlassStyle::default();
+    let pill = (
+        ShapeGeometry::Capsule {
+            size: PxSize::new(150.0, 50.0),
+        },
+        PxPoint::new(240.0, 170.0),
+    );
+    rows.push(DrawItem::Glass(glass_group(&style, &[pill], 0.0)));
+    list.items.push(DrawItem::Clipped(ClipGroup {
+        rect: PxRect::new(PxPoint::new(40.4, 39.6), PxSize::new(279.7, 140.3)),
+        items: rows,
+    }));
+    list.items.push(shape(shape_item(
+        ShapeGeometry::Circle { diameter: 26.0 },
+        Affine2::translate(330.0, 190.0),
+        DisplayColor::rgb(0.95, 0.75, 0.2),
+    )));
+    render_scene(
+        "clipped_list",
+        &list,
+        Background::Absent(DisplayColor::rgb(0.08, 0.09, 0.12)),
+    );
 }

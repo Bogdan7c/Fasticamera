@@ -216,6 +216,7 @@ fn is_background(action: &ScreenAction) -> bool {
             | ScreenAction::LookFactsChanged(_)
             | ScreenAction::DeviceOrientationChanged(_)
             | ScreenAction::SurfaceResized(_)
+            | ScreenAction::SafeAreaChanged(_)
             | ScreenAction::CaptureSecured { .. }
             | ScreenAction::CaptureFinished { .. }
             | ScreenAction::TextRequestIssued { .. }

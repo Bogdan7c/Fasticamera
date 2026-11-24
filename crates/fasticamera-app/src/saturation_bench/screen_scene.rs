@@ -237,7 +237,8 @@ pub fn summarize(list: &DrawList, surface: SurfaceSizePx) -> SceneSummary {
     let mut summary = SceneSummary::default();
     let mut glass_area = 0.0_f64;
     let mut glass_rects: Vec<(f64, f64, f64, f64)> = Vec::new();
-    for item in &list.items {
+    // Считаем листья: группы обрезки сами по себе ничего не рисуют, а их содержимое — часть сцены.
+    for item in list.leaf_items() {
         match item {
             DrawItem::Shape(_) => summary.shapes += 1,
             DrawItem::Glass(group) => {
@@ -256,6 +257,8 @@ pub fn summarize(list: &DrawList, surface: SurfaceSizePx) -> SceneSummary {
                     summary.live_images += 1;
                 }
             }
+            // `leaf_items` групп обрезки не выдаёт.
+            DrawItem::Clipped(_) => {}
         }
     }
     summary.surface_area_px = u64::from(surface.width) * u64::from(surface.height);

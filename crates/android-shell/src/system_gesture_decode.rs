@@ -5,7 +5,7 @@
 //! закреплён именованными полями ([`RawEdgeInsetsPx`]) и тестами на ПК: перепутанные края дали бы зону
 //! не там, где она есть, — и тихо «съели» бы чужие касания.
 
-use shell_contract::system_gesture::{RawEdgeInsetsPx, SystemGestureZones, SystemGestureZonesError};
+use shell_contract::system_gesture::{EdgeInsetsError, RawEdgeInsetsPx, SystemGestureZones};
 
 /// Разбирает толщины полос от платформы. Отрицательная толщина — ошибка платформы или обвязки
 /// (вызывающий пишет лог и счётчик `native_callback_failures`), а не «обрежем до нуля».
@@ -14,7 +14,7 @@ pub fn decode_system_gesture_zones(
     top: i32,
     right: i32,
     bottom: i32,
-) -> Result<SystemGestureZones, SystemGestureZonesError> {
+) -> Result<SystemGestureZones, EdgeInsetsError> {
     SystemGestureZones::try_from_insets(RawEdgeInsetsPx {
         left,
         top,

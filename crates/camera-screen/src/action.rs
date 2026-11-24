@@ -5,6 +5,7 @@
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::gravity::GravityVector;
 use shell_contract::orientation::DeviceOrientation;
+use shell_contract::safe_area::SafeAreaInsets;
 use shell_contract::surface::SurfaceSize;
 use ui_core::geometry::Point;
 
@@ -104,6 +105,9 @@ pub enum ScreenAction {
     Tick(MonotonicNanos),
     /// Размер surface.
     SurfaceResized(SurfaceSize),
+    /// Безопасная зона поверхности (вырез, системные панели, полосы жестов): от неё зависит раскладка раздела
+    /// калибровки, поэтому это действие, а не фильтр входа, как зоны системных жестов.
+    SafeAreaChanged(SafeAreaInsets),
     /// Тап по кнопке ленты зума: плавный переход к упору (номер — позиция в `LensGroup::stops`).
     ZoomStopTapped { stop: usize, at: MonotonicNanos },
     /// Палец лёг на ленту кнопок зума (решение 124: дольше порога тапа — разбудить тёплую камеру).

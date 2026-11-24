@@ -6,6 +6,7 @@
 //! списке раньше группы.
 //!
 //! * `items`  — типы элементов и их границы [`DrawItem::bounds_px`];
+//! * `clip`   — группа прямоугольной обрезки [`ClipGroup`] и правило центра пикселя;
 //! * `error`  — [`DrawListError`] и [`DrawList::validate`];
 //! * `glass_group`  — группа стекла, поле слитой формы, нажатие группы;
 //! * `pixel_reference` — эталонный цвет пикселя фигуры и группы стекла (для паритета рендера);
@@ -13,6 +14,7 @@
 //! * `image_source` — источник пикселей: картинка из памяти или живая с GPU.
 
 mod bounds;
+mod clip;
 mod error;
 mod glass_group;
 mod image_reference;
@@ -23,6 +25,9 @@ mod validate;
 
 use crate::light::LightDirection;
 
+pub use clip::{
+    ClipGroup, ClippedLeaf, ClippedLeaves, EffectiveClip, clip_keeps_pixel, clip_pixel_rect, clipped_leaves,
+};
 pub use error::DrawListError;
 pub use glass_group::{GlassGroupItem, GlassMember, GroupField, MAX_GLASS_GROUP_MEMBERS, PressState};
 pub use image_reference::{clip_geometry, fit_uv_scale, shade_image_pixel, shade_image_pixel_with_live};
@@ -46,6 +51,12 @@ impl DrawList {
             items: Vec::new(),
             light,
         }
+    }
+
+    /// Листья списка в порядке рисования (в глубину): элементы без групп обрезки. Для диагностики и
+    /// поиска элементов в тестах; рендеру нужна ещё и действующая обрезка — [`clipped_leaves`].
+    pub fn leaf_items(&self) -> impl Iterator<Item = &DrawItem> {
+        clipped_leaves(&self.items).map(|leaf| leaf.item)
     }
 }
 

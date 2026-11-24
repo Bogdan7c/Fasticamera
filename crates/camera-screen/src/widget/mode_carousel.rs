@@ -202,15 +202,10 @@ impl ModeCarouselWidget {
         event: &GestureEvent<ScreenGesture>,
         out: &mut Outputs,
     ) -> Result<(), WidgetError> {
-        let center_x = self.frame.center().x;
         let index = self
             .carousel
-            .placements(event.time)
-            .into_iter()
-            .find(|placement| {
-                (position.x - (center_x + placement.center_offset_points)).abs() <= placement.width_points * 0.5
-            })
-            .map_or_else(|| self.carousel.selected_index(), |placement| placement.index);
+            .item_index_at(position.x - self.frame.center().x, event.time)
+            .unwrap_or_else(|| self.carousel.selected_index());
         let outcome = self
             .carousel
             .tapped_item(index, event.time)
@@ -336,21 +331,22 @@ impl ModeCarouselWidget {
             Layer::Content,
             Self::selected_pill(ctx, host, opacity, self.pill_width_pt(ctx)),
         );
-        // Подписи ставит вид `ui-kit`: выбранная — `selected_label`, остальные — приглушённые.
-        layers.extend(
-            Layer::Content,
-            carousel_items_in_window(
-                host,
-                opacity,
-                &self.carousel,
-                ctx.now,
-                &self.labels,
-                ctx.px,
-                &ctx.tokens.colors,
-                // Окно — сама капсула: соседние подписи гаснут у её края и не вылезают за стекло.
-                self.frame.size.width / 2.0,
-            )?,
-        );
+        // Подписи ставит вид `ui-kit`: выбранная — `selected_label`, остальные — приглушённые. Окно — сама капсула:
+        // соседняя подпись гаснет у её края, а что не поместилось, режется ровно по стеклу (решение 232).
+        let labels = carousel_items_in_window(
+            host,
+            opacity,
+            &self.carousel,
+            ctx.now,
+            &self.labels,
+            ctx.px,
+            &ctx.tokens.colors,
+            self.frame.size.width / 2.0,
+        )?;
+        let Some(capsule_rect) = placement.screen_rect_px() else {
+            return Ok(());
+        };
+        layers.push_clipped(Layer::Content, capsule_rect, labels);
         Ok(())
     }
 }

@@ -76,3 +76,4 @@
 - Точное равенство шейдеров на ПК: `cargo test -p ui-render-vulkan --all-features --test glass_fast_paths_exact --test glass_tight_quad`; `cargo test -p isp-vulkan --all-features --test photo_fast_paths_exact --test photo_thumbnail_exact --test scope_render_exact --test viewfinder_zoom_variants`.
 - Весь прежний набор под пропуском неизменных кадров: `FASTICAMERA_TEST_UNCHANGED_POLICY=skip cargo test -p render-loop --all-features` (падают только тесты, считающие перерисованные повторы).
 - Телефон делят несколько агентов: каждое обращение, запускающее приложение, — под `flock ~/fasticamera-captures/16a/phone.lock <команда>`.
+- Приёмка с владельцем (14k): ставить ОБЕ сборки (`device-deploy.sh --variant release` и `--variant debug`) — у владельца две иконки. Перед `adb shell input swipe` проверять, что нет всплывшего уведомления: `adb shell dumpsys activity service com.android.systemui | grep headsUpPinned=true` → не трогать экран.

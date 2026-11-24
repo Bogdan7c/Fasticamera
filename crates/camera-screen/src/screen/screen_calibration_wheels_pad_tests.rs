@@ -323,8 +323,7 @@ fn only_the_edited_wheel_tab_carries_the_ring_mark() {
     };
     let rig_with = |facts| wheels(facts, DeviceOrientation::Portrait).frame().clone();
     let marked_rings = |list: &DrawList| {
-        list.items
-            .iter()
+        list.leaf_items()
             .filter(|item| {
                 matches!(item, DrawItem::Shape(shape)
                     if matches!(shape.geometry, ui_draw::shape::ShapeGeometry::Circle { diameter }
@@ -498,8 +497,7 @@ fn a_short_tap_on_the_push_reset_arrow_resets_and_leaves_the_point_alone() {
 fn puck_offset_pt(list: &DrawList, placement: &crate::calibration::WheelPadPlacement) -> (f64, f64) {
     let puck_diameter = px(ui_kit::tokens::UiKitTokens::default().disc_pad.puck_diameter_pt);
     let puck = list
-        .items
-        .iter()
+        .leaf_items()
         .find_map(|item| match item {
             DrawItem::Shape(shape)
                 if shape.stroke.is_some()

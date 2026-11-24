@@ -130,7 +130,7 @@ fn draw_area_px(group: &GlassGroupItem) -> f32 {
 /// нет). Среди равных — первая.
 fn extreme_group_index(list: &DrawList, prefer_larger: bool) -> Option<usize> {
     let mut best: Option<(usize, f32)> = None;
-    for (index, item) in list.items.iter().enumerate() {
+    for (index, item) in list.leaf_items().enumerate() {
         if let DrawItem::Glass(group) = item {
             let area = draw_area_px(group);
             let better = |best_area: f32| {
@@ -149,12 +149,13 @@ fn extreme_group_index(list: &DrawList, prefer_larger: bool) -> Option<usize> {
 }
 
 /// Список только из стекла: группы выбраны `subset`, стиль изменён `style`. Порядок групп сохраняется.
+/// Группы стекла берутся по листьям списка (в том числе из групп обрезки), но результат плоский: обрезка при
+/// этой абляции не сохраняется (измеряется цена свойств стекла, а не обрезки).
 pub fn apply_glass_ablation(list: &DrawList, subset: GlassSubset, style: GlassStyleAblation) -> DrawList {
     let largest = extreme_group_index(list, true);
     let smallest = extreme_group_index(list, false);
     let items = list
-        .items
-        .iter()
+        .leaf_items()
         .enumerate()
         .filter_map(|(index, item)| {
             let DrawItem::Glass(group) = item else { return None };

@@ -6,10 +6,10 @@
 
 use crate::color::{DisplayColor, Opacity};
 use crate::draw_list::{
-    DrawItem, DrawList, GlassGroupItem, GlassMember, IconItem, ImageClip, ImageFit, ImageItem, PressState, ShapeItem,
-    StrokeStyle, TextItem,
+    ClipGroup, DrawItem, DrawList, GlassGroupItem, GlassMember, IconItem, ImageClip, ImageFit, ImageItem, PressState,
+    ShapeItem, StrokeStyle, TextItem,
 };
-use crate::geometry::{PxPoint, PxSize};
+use crate::geometry::{PxPoint, PxRect, PxSize};
 use crate::glass::{GlassStyle, ShadowParamsPx};
 use crate::icons::IconId;
 use crate::light::LightDirection;
@@ -479,6 +479,38 @@ fn a_list_with_a_not_a_number_is_never_equal_to_itself_so_it_is_always_redrawn()
         ..shape()
     }));
     assert_ne!(broken, broken.clone());
+}
+
+fn clipped_item(rect_x: f32, child: ShapeItem) -> DrawItem {
+    DrawItem::Clipped(ClipGroup {
+        rect: PxRect::new(PxPoint::new(rect_x, 10.0), PxSize::new(50.0, 60.0)),
+        items: vec![DrawItem::Shape(child)],
+    })
+}
+
+#[test]
+fn clip_group_changes_the_comparison_through_rect_and_children() {
+    let base = clipped_item(5.0, shape());
+    let moved_child = ShapeItem {
+        transform: Affine2::translate(11.0, 20.0),
+        ..shape()
+    };
+    let mut extra_child = clipped_item(5.0, shape());
+    if let DrawItem::Clipped(group) = &mut extra_child {
+        group.items.push(DrawItem::Shape(shape()));
+    }
+    let unclipped = DrawItem::Shape(shape());
+    assert_every_change_is_noticed(
+        base.clone(),
+        vec![
+            ("другая граница обрезки", clipped_item(5.5, shape())),
+            ("другой ребёнок", clipped_item(5.0, moved_child)),
+            ("лишний ребёнок", extra_child),
+            ("без обрезки", unclipped),
+        ],
+    );
+    // Одинаковые по содержимому группы равны.
+    assert_eq!(list_of(base), list_of(clipped_item(5.0, shape())));
 }
 
 /// Замер цены сравнения на экране калибровки (4 группы стекла, 118 фигур, 28 строк, 11 иконок, картинка).

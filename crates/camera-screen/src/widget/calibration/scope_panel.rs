@@ -157,7 +157,7 @@ impl ScopePanel {
         let title_y = -half_height + config.scope_label_inset_pt + f64::from(title.cap_height_px / ctx.px.get()) / 2.0;
         layers.push(
             Layer::Content,
-            paint.text_centered(title, 0.0, title_y, colors.text_muted),
+            paint.text_centered(title, 0.0, title_y, colors.panel_label),
         );
         let count = ScopeKind::ALL.len();
         let pitch = config.scope_page_dot_diameter_pt + config.scope_page_dot_gap_pt;

@@ -17,7 +17,7 @@ import org.json.JSONObject
 
 /**
  * Единственный экран: полноэкранный `SurfaceView` (на нём будет рисовать Rust/Vulkan, сессия 03)
- * и текстовая строка статуса для smoke-сценариев. Логики здесь нет — только маршрутизация
+ * и, только у smoke-сценариев, текстовая строка статуса. Логики здесь нет — только маршрутизация
  * событий Android в Rust (`ShellBridge`) и вызовов Rust в Android (`ShellPlatform`).
  * Портрет зафиксирован в манифесте: как в камере iOS, поворачиваются иконки, а не раскладка.
  */
@@ -27,31 +27,27 @@ class MainActivity : Activity() {
     /** Последние отправленные в Rust зоны системных жестов: повтор тех же чисел не пересылаем. */
     private var lastSystemGestureZones: Insets? = null
 
+    /** Последняя отправленная в Rust безопасная зона: повтор тех же чисел не пересылаем. */
+    private var lastSafeArea: Insets? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val surfaceView = SurfaceView(this)
-        val statusView = TextView(this)
-        statusView.setOnApplyWindowInsetsListener { view, insets ->
-            // Панели скрыты, но вырез камеры остаётся: текст статуса не должен под него уезжать.
-            val safe = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
-            view.setPadding(
-                safe.left + STATUS_PADDING_PX,
-                safe.top + STATUS_PADDING_PX,
-                safe.right + STATUS_PADDING_PX,
-                safe.bottom + STATUS_PADDING_PX,
-            )
-            insets
-        }
+        // Строка статуса — только у smoke-сценариев: при обычном запуске поверх экрана камеры нет ничего (решение
+        // владельца 230), отчёт `initialize` (и ошибка запуска) уходит в logcat.
+        val scenario = intent.getStringExtra(EXTRA_SCENARIO)
+        val scenarioStatusView = scenario?.let { createScenarioStatusView() }
         // Плашка подсказок владельцу (внизу, GONE в покое) поверх видоискателя и строки статуса.
         val promptView = OperatorPromptView(this)
         setContentView(FrameLayout(this).apply {
             addView(surfaceView)
-            addView(statusView)
+            scenarioStatusView?.let { addView(it) }
             addView(promptView)
             // Зоны обязательных системных жестов уходят в Rust: свайп от края, вытягивающий скрытую панель
             // навигации, приходит в окно и обычными касаниями, а экран камеры не должен считать его своим.
             setOnApplyWindowInsetsListener { _, insets ->
                 forwardSystemGestureZones(insets)
+                forwardSafeArea(insets)
                 insets
             }
         })
@@ -69,8 +65,23 @@ class MainActivity : Activity() {
             true
         }
 
-        val scenario = intent.getStringExtra(EXTRA_SCENARIO)
-        statusView.text = if (scenario != null) NativeBridge.runScenario(scenario) else initReport
+        if (scenario != null) {
+            scenarioStatusView?.text = NativeBridge.runScenario(scenario)
+        }
+    }
+
+    /** Текст отчёта сценария с отступом от выреза: панели скрыты, но вырез камеры остаётся. */
+    private fun createScenarioStatusView(): TextView = TextView(this).apply {
+        setOnApplyWindowInsetsListener { view, insets ->
+            val safe = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+            view.setPadding(
+                safe.left + STATUS_PADDING_PX,
+                safe.top + STATUS_PADDING_PX,
+                safe.right + STATUS_PADDING_PX,
+                safe.bottom + STATUS_PADDING_PX,
+            )
+            insets
+        }
     }
 
     /**
@@ -83,6 +94,23 @@ class MainActivity : Activity() {
         if (zones == lastSystemGestureZones) return
         lastSystemGestureZones = zones
         ShellBridge.nativeSystemGestureZones(zones.left, zones.top, zones.right, zones.bottom)
+    }
+
+    /**
+     * Пересылает безопасную зону в Rust при каждом изменении: одно объединение всего, что мешает управлению у края —
+     * системные панели, вырез камеры, полосы обязательных жестов (объединяет сама платформа, по наибольшей толщине).
+     * `getInsetsIgnoringVisibility` — чтобы скрытые панели не обнулили числа и раскладка не прыгала, когда их
+     * вытягивают свайпом.
+     */
+    private fun forwardSafeArea(insets: WindowInsets) {
+        val safeArea = insets.getInsetsIgnoringVisibility(
+            WindowInsets.Type.systemBars() or
+                WindowInsets.Type.displayCutout() or
+                WindowInsets.Type.mandatorySystemGestures(),
+        )
+        if (safeArea == lastSafeArea) return
+        lastSafeArea = safeArea
+        ShellBridge.nativeSafeArea(safeArea.left, safeArea.top, safeArea.right, safeArea.bottom)
     }
 
     /**

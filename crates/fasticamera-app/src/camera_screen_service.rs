@@ -40,6 +40,7 @@ use shell_contract::commands::CommandOutcome;
 use shell_contract::hardware_key::HardwareKeyEvent;
 use shell_contract::motion::{MotionSource, OrientationSubscription};
 use shell_contract::orientation::DeviceOrientation;
+use shell_contract::safe_area::SafeAreaInsets;
 use shell_contract::still_media::ShutterSoundService;
 use shell_contract::system_gesture::SystemGestureZones;
 use shell_contract::touch::TouchSample;
@@ -66,6 +67,9 @@ use crate::still_phase_log::{PhaseBatch, PhaseCursor};
 use crate::text_effects::TextResultToScreen;
 use crate::text_input_broker::TextInputBroker;
 use crate::viewfinder_control::ControlDelivery;
+
+#[path = "camera_screen_service_edges.rs"]
+mod edges;
 
 const LOG_TARGET: &str = "fasticamera::camera_screen";
 
@@ -180,6 +184,8 @@ pub struct ScreenEnvironment<'a> {
     pub camera: &'a CameraServices,
     /// Известная маршрутизатору ориентация телефона: экран узнаёт её сразу при установке.
     pub orientation: Option<DeviceOrientation>,
+    /// Известная безопасная зона: свежий экран сразу строит раскладку внутри неё.
+    pub safe_area: SafeAreaInsets,
 }
 
 /// Установленный экран: писатель канала входа и датчик ориентации на его жизнь.
@@ -433,10 +439,7 @@ impl CameraScreenService {
                 if let Some(orientation) = env.orientation {
                     self.route_orientation(orientation);
                 }
-                // Зоны системных жестов — тоже сразу: свежий экран о них иначе не узнал бы до смены на стороне платформы.
-                if !self.system_gesture_zones.is_none() {
-                    self.send_system_gesture_zones(self.system_gesture_zones);
-                }
+                self.announce_screen_edges(env.safe_area);
                 tracing::info!(target: LOG_TARGET, installs = self.installs, "экран камеры поставлен");
             }
             ControlDelivery::RenderGone => {
@@ -592,26 +595,6 @@ impl CameraScreenService {
 
     pub fn route_orientation(&mut self, orientation: DeviceOrientation) {
         self.send_action(ScreenAction::DeviceOrientationChanged(orientation));
-    }
-
-    /// Зоны обязательных системных жестов: запоминает (для следующей установки экрана) и отдаёт установленному.
-    pub fn route_system_gesture_zones(&mut self, zones: SystemGestureZones) {
-        self.system_gesture_zones = zones;
-        self.send_system_gesture_zones(zones);
-    }
-
-    /// Последние зоны системных жестов, известные сервису (для тестов и диагностики).
-    pub fn system_gesture_zones(&self) -> SystemGestureZones {
-        self.system_gesture_zones
-    }
-
-    fn send_system_gesture_zones(&mut self, zones: SystemGestureZones) {
-        // Экрана нет — зоны не потеряны, они запомнены и уйдут при установке: в «отброшенный вход» не пишем.
-        if let Some(installed) = &self.installed
-            && installed.sender.send_system_gesture_zones(zones) == InputDelivery::ReceiverGone
-        {
-            self.dropped.actions += 1;
-        }
     }
 
     fn send_touch(&mut self, touch: ScreenTouch) {

@@ -21,6 +21,9 @@ pub struct ColorTokens {
     pub text_primary: DisplayColor,
     /// Приглушённый текст (невыбранные подписи). `[estimate]` — белый, альфа 0,6.
     pub text_muted: DisplayColor,
+    /// Подпись на стеклянной панели раздела калибровки (названия ручек, групп, прибора). Отдельно от `text_muted`,
+    /// чтобы экран PHOTO не менялся. Выбор владельца по эскизам (14k, решение 228) — белый, альфа 0,92.
+    pub panel_label: DisplayColor,
     /// Полупрозрачное затемнение (полосы, шторка под меню). `[estimate]` — чёрный, альфа 0,4.
     pub scrim: DisplayColor,
     /// Выбранная подпись карусели режимов (PHOTO). `[estimate]` — подгонка, не Apple: жёлтый, как
@@ -37,6 +40,7 @@ impl Default for ColorTokens {
             plate_text: DisplayColor::rgb(0.08, 0.08, 0.08),
             text_primary: DisplayColor::WHITE,
             text_muted: DisplayColor::WHITE.with_alpha(0.6),
+            panel_label: DisplayColor::WHITE.with_alpha(0.92),
             scrim: DisplayColor::BLACK.with_alpha(0.4),
             selected_label: DisplayColor::rgb(1.0, 0.8, 0.0),
             zoom_selected: DisplayColor::rgb(1.0, 206.0 / 255.0, 0.0),
@@ -52,6 +56,7 @@ impl ColorTokens {
             ("plate_text", self.plate_text),
             ("text_primary", self.text_primary),
             ("text_muted", self.text_muted),
+            ("panel_label", self.panel_label),
             ("scrim", self.scrim),
             ("selected_label", self.selected_label),
             ("zoom_selected", self.zoom_selected),

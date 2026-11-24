@@ -15,9 +15,11 @@
 )]
 
 mod calibration_goldens;
+mod calibration_safe_area_goldens;
 mod calibration_wheels_goldens;
 mod driver;
 mod golden_files;
+mod mode_capsule_goldens;
 mod render_rig;
 mod states;
 mod thumbnail_goldens;

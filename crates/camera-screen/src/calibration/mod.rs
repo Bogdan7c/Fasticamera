@@ -5,6 +5,7 @@
 //! значения ручек живут у библиотеки пресетов и приходят фактами (`look_view`).
 
 mod config;
+mod eye;
 mod layout;
 mod state;
 mod wheels_frames;

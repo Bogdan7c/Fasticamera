@@ -54,16 +54,19 @@ fn all_keeps_the_list_unchanged() {
 fn every_item_belongs_to_exactly_one_single_kind_filter_and_the_counts_add_up() {
     let list = calibrate_list();
     assert!(
-        list.items.len() > 10,
+        list.leaf_items().count() > 10,
         "сцена настоящая, а не пустая: {}",
-        list.items.len()
+        list.leaf_items().count()
     );
-    for item in &list.items {
+    for item in list.leaf_items() {
         let owners = SINGLE_KINDS.iter().filter(|filter| filter.keeps(item)).count();
         assert_eq!(owners, 1, "элемент {item:?} должен принадлежать ровно одному виду");
     }
-    let total: usize = SINGLE_KINDS.iter().map(|filter| filter.apply(&list).items.len()).sum();
-    assert_eq!(total, list.items.len(), "виды вместе дают весь список");
+    let total: usize = SINGLE_KINDS
+        .iter()
+        .map(|filter| filter.apply(&list).leaf_items().count())
+        .sum();
+    assert_eq!(total, list.leaf_items().count(), "виды вместе дают весь список");
 }
 
 #[test]
@@ -92,17 +95,19 @@ fn no_glass_drops_only_glass_and_keeps_the_order_of_the_rest() {
     let list = calibrate_list();
     let without = DrawFilter::NoGlass.apply(&list);
     let expected: Vec<&DrawItem> = list
-        .items
-        .iter()
+        .leaf_items()
         .filter(|item| !matches!(item, DrawItem::Glass(_)))
         .collect();
     assert_eq!(
-        without.items.iter().collect::<Vec<_>>(),
+        without.leaf_items().collect::<Vec<_>>(),
         expected,
         "порядок остальных сохранён"
     );
     assert_eq!(summarize(&without, SurfaceSizePx::ONEPLUS_11).glass_groups, 0);
-    assert!(without.items.len() < list.items.len(), "стекло в списке было");
+    assert!(
+        without.leaf_items().count() < list.leaf_items().count(),
+        "стекло в списке было"
+    );
 }
 
 #[test]
@@ -117,11 +122,55 @@ fn every_filtered_list_stays_valid_and_keeps_the_light() {
     }
 }
 
+/// Фигура и иконка внутри группы обрезки, фигура снаружи: фильтр обязан применяться к листьям внутри группы.
+#[test]
+fn filter_applies_inside_clip_groups_and_keeps_the_group_rect() {
+    use ui_draw::draw_list::{ClipGroup, IconItem};
+    use ui_draw::geometry::{PxPoint, PxRect, PxSize};
+
+    let list = calibrate_list();
+    let shape = list
+        .leaf_items()
+        .find(|item| matches!(item, DrawItem::Shape(_)))
+        .expect("в сцене есть фигура")
+        .clone();
+    let icon = DrawItem::Icon(IconItem {
+        icon: ui_draw::icons::IconId::Grid,
+        transform: ui_draw::transform::Affine2::translate(5.0, 5.0),
+        size_px: PxSize::new(10.0, 10.0),
+        color: ui_draw::color::DisplayColor::WHITE,
+        opacity: ui_draw::color::Opacity::OPAQUE,
+    });
+    let rect = PxRect::new(PxPoint::new(1.0, 2.0), PxSize::new(30.0, 40.0));
+    let mut nested = DrawList::new(list.light);
+    nested.items = vec![
+        shape.clone(),
+        DrawItem::Clipped(ClipGroup {
+            rect,
+            items: vec![shape.clone(), icon.clone()],
+        }),
+    ];
+
+    let shapes_only = DrawFilter::ShapesOnly.apply(&nested);
+    assert_eq!(shapes_only.leaf_items().count(), 2, "обе фигуры, иконка убрана");
+    assert!(shapes_only.leaf_items().all(|item| matches!(item, DrawItem::Shape(_))));
+    assert!(
+        matches!(&shapes_only.items[1], DrawItem::Clipped(group) if group.rect == rect && group.items == vec![shape.clone()])
+    );
+
+    // Вид, которого в группе нет, убирает группу целиком (пустая группа ничего не рисовала бы).
+    let glass_only = DrawFilter::GlassOnly.apply(&nested);
+    assert!(glass_only.items.is_empty());
+    assert_eq!(DrawFilter::All.apply(&nested), nested);
+    // Сводка считает листья внутри групп.
+    let summary = summarize(&nested, SurfaceSizePx::ONEPLUS_11);
+    assert_eq!((summary.shapes, summary.icons), (2, 1));
+}
+
 // ---- Абляции свойств стекла (пакет G3): настоящий список CALIBRATE, результат — параметры групп. ----
 
 fn glass_groups(list: &DrawList) -> Vec<&ui_draw::draw_list::GlassGroupItem> {
-    list.items
-        .iter()
+    list.leaf_items()
         .filter_map(|item| match item {
             DrawItem::Glass(group) => Some(group),
             _ => None,

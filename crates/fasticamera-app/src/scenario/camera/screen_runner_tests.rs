@@ -48,6 +48,7 @@ fn probe() -> ScreenProbe {
                 wheel_open: false,
                 gliding: false,
             },
+            safe_area: shell_contract::safe_area::SafeAreaInsets::NONE,
         },
         frames_produced: 100,
     }

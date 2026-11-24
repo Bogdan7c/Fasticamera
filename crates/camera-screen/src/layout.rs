@@ -17,6 +17,7 @@ use camera_contract::viewfinder_crop::CropAspect;
 use camera_contract::zoom::{ZoomCatalog, ZoomFraming, ZoomRatio};
 use serde::{Deserialize, Serialize};
 use shell_contract::orientation::DeviceOrientation;
+use shell_contract::safe_area::SafeAreaInsets;
 use shell_contract::surface::SurfaceSize;
 use thiserror::Error;
 use ui_core::geometry::{Point, Rect, Size};
@@ -294,7 +295,7 @@ impl ScreenLayout {
         }
     }
 
-    /// Раскладка раздела калибровки для политики режима и положения телефона. Единственное место, где она строится
+    /// Раскладка раздела калибровки для политики режима, положения телефона и безопасной зоны. Единственное место, где она строится
     /// (решение 93: геометрию держит `ScreenLayout`).
     pub fn calibration_layout(
         &self,
@@ -302,8 +303,9 @@ impl ScreenLayout {
         bottom: &BottomLayout,
         policy: LayoutPolicy,
         device_orientation: DeviceOrientation,
+        safe_area: SafeAreaInsets,
     ) -> Result<CalibrationLayout, CalibrationLayoutError> {
-        CalibrationLayout::build(self, config, bottom, policy, device_orientation)
+        CalibrationLayout::build(self, config, bottom, policy, device_orientation, safe_area)
     }
 
     /// Лежит ли точка (pt) внутри кадра выбранного соотношения.

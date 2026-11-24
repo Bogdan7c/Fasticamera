@@ -3,6 +3,7 @@
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::gravity::GravityVector;
 use shell_contract::orientation::DeviceOrientation;
+use shell_contract::safe_area::SafeAreaInsets;
 use shell_contract::surface::SurfaceSize;
 
 use super::{Ctx, shutter, zoom};
@@ -14,6 +15,13 @@ use crate::outcome::{ActionOutcome, Rejection};
 /// Ориентация телефона: меняется только целевой угол значков, раскладка остаётся прежней.
 pub(super) fn on_orientation(ctx: &mut Ctx<'_>, orientation: DeviceOrientation) -> ActionOutcome {
     ctx.state.orientation = orientation;
+    ActionOutcome::Applied
+}
+
+/// Безопасная зона: раскладку раздела калибровки пересчитает сверка после действия (`calibration::sync_after_action`),
+/// PHOTO от зоны не зависит (решения 82, 95).
+pub(super) fn on_safe_area(ctx: &mut Ctx<'_>, insets: SafeAreaInsets) -> ActionOutcome {
+    ctx.state.safe_area = insets;
     ActionOutcome::Applied
 }
 
