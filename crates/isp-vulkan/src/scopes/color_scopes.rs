@@ -163,6 +163,26 @@ impl ColorScopes {
         config: &ColorScopesConfig,
         extra: &[AccumulatorShader],
     ) -> Result<Self, ScopeError> {
+        Self::build(context, config, extra, blobs::SCOPE_RENDER_COMP)
+    }
+
+    /// Приборы с ДРУГИМ шейдером показа (интерфейс — как у `scope_render.comp`): тест «новый показ против
+    /// замороженного эталона бит в бит».
+    #[cfg(feature = "test-support")]
+    pub fn with_render_shader_for_tests(
+        context: &GpuContext,
+        config: &ColorScopesConfig,
+        render_spirv: &'static [u8],
+    ) -> Result<Self, ScopeError> {
+        Self::build(context, config, &[], render_spirv)
+    }
+
+    fn build(
+        context: &GpuContext,
+        config: &ColorScopesConfig,
+        extra: &[AccumulatorShader],
+        render_spirv: &'static [u8],
+    ) -> Result<Self, ScopeError> {
         if config.frame_slots == 0 || config.frame_slots > MAX_FRAME_SLOTS {
             return Err(ScopeError::InvalidConfig {
                 what: format!("frame_slots {} вне 1..={MAX_FRAME_SLOTS}", config.frame_slots),
@@ -183,7 +203,7 @@ impl ColorScopes {
             context,
             &ComputePipelineDesc {
                 label: "scope-render",
-                spirv: blobs::SCOPE_RENDER_COMP,
+                spirv: render_spirv,
                 bindings: &RENDER_BINDINGS,
                 push_constant_bytes: 0,
                 specialization: &local_size_specialization(local_size),

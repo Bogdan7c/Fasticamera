@@ -35,6 +35,8 @@ fn parameter_buffer_array_lengths_in_shaders_equal_the_rust_constants() {
     assert_eq!(array_length(ACCUMULATE_COMMON, "words"), PARAMETER_WORDS);
     assert_eq!(array_length(ACCUMULATE_COMMON, "decode_table"), DECODE_TABLE_LEN);
     assert_eq!(array_length(RENDER, "primitives"), MAX_GRATICULE_PRIMITIVES);
+    // Список отобранных примитивов в shared-памяти вмещает все примитивы сетки.
+    assert_eq!(array_length(RENDER, "kept_primitive_index"), MAX_GRATICULE_PRIMITIVES);
 }
 
 #[test]

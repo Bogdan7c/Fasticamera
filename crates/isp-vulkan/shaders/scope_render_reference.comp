@@ -1,0 +1,106 @@
+#version 450
+// ЗАМОРОЖЕННАЯ КОПИЯ прежнего `scope_render.comp` (до отбора примитивов по плитке, сессия 16a): эталон точного равенства
+// в тесте `tests/scope_render_exact.rs`. НЕ ПРАВИТЬ: тест доказывает, что новый шейдер даёт ту же картинку бит в бит.
+// Правило показа цветовых приборов: счётчики -> картинка прибора RGBA16F, ПРЯМАЯ альфа, цвета экрана.
+// CPU-эталон: `scope_model::render` (функции `render`, `trace_intensity`, `graticule_alpha`, `composite_over`)
+// и `scope_model::graticule` (покрытие примитивов). Целочисленное отображение «пиксель -> ячейка» совпадает
+// с эталоном точно; log2, sqrt и деление дают расхождение в пределах квантования fp16 (см. тесты).
+// Размер группы — specialization-константы 0 и 1 (см. `scope_accumulate_common.glsl`).
+layout(local_size_x_id = 0, local_size_y_id = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D picture;
+
+// Примитив сетки: geometry — отрезок (from, to), кольцо (центр, радиусы) или рамка (центр, половины сторон);
+// style.x — полуширина линии в пикселях, style.y — вид (0 отрезок, 1 кольцо, 2 рамка).
+struct GraticulePrimitive {
+    vec4 geometry;
+    vec4 style;
+};
+
+layout(set = 0, binding = 1, std430) readonly buffer RenderParameters {
+    uvec4 grid;             // столбцы, строки, плоскости, число примитивов
+    vec4 trace;             // x = log2(1 + число насыщения), y = непрозрачность следа, z = непрозрачность сетки
+    vec4 graticule_color;   // rgb
+    vec4 plane_colors[3];   // rgb следа по плоскостям
+    GraticulePrimitive primitives[48];
+} parameters;
+
+layout(set = 0, binding = 2, std430) readonly buffer ScopeCounters {
+    uint counts[];
+} counters;
+
+const float KIND_SEGMENT = 0.0;
+const float KIND_RING = 1.0;
+
+float distance_to_segment(vec2 point, vec2 start, vec2 end) {
+    vec2 along = end - start;
+    vec2 relative = point - start;
+    float length_squared = dot(along, along);
+    float fraction = length_squared > 0.0 ? clamp(dot(relative, along) / length_squared, 0.0, 1.0) : 0.0;
+    return length(relative - along * fraction);
+}
+
+float distance_to_box_outline(vec2 point, vec2 centre, vec2 half_size) {
+    vec2 excess = abs(point - centre) - half_size;
+    float outside = length(max(excess, vec2(0.0)));
+    float inside = min(max(excess.x, excess.y), 0.0);
+    return abs(outside + inside);
+}
+
+// Покрытие пикселя примитивом: clamp(полуширина + 0.5 - расстояние, 0, 1).
+float primitive_coverage(GraticulePrimitive primitive, vec2 point, vec2 picture_px) {
+    vec2 first = primitive.geometry.xy * picture_px;
+    vec2 second = primitive.geometry.zw * picture_px;
+    float half_width = primitive.style.x;
+    float distance_px;
+    if (primitive.style.y == KIND_SEGMENT) {
+        distance_px = distance_to_segment(point, first, second);
+    } else if (primitive.style.y == KIND_RING) {
+        float normalized = length((point - first) / second);
+        distance_px = abs(normalized - 1.0) * min(second.x, second.y);
+    } else {
+        distance_px = distance_to_box_outline(point, first, second);
+    }
+    return clamp(half_width + 0.5 - distance_px, 0.0, 1.0);
+}
+
+void main() {
+    uvec2 pixel = gl_GlobalInvocationID.xy;
+    uvec2 size = uvec2(imageSize(picture));
+    if (pixel.x >= size.x || pixel.y >= size.y) {
+        return;
+    }
+    uint columns = parameters.grid.x;
+    uint rows = parameters.grid.y;
+    uint planes = parameters.grid.z;
+    // Пиксель -> ячейка целочисленно. Стороны <= 4096, плоскостей <= 3: произведения помещаются в uint.
+    uint row = (pixel.y * rows) / size.y;
+    uint plane = (pixel.x * planes) / size.x;
+    uint column = ((pixel.x * planes - plane * size.x) * columns) / size.x;
+    uint count = counters.counts[(plane * rows + row) * columns + column];
+
+    float trace_alpha = 0.0;
+    if (count != 0u) {
+        float intensity = min(log2(1.0 + float(count)) / parameters.trace.x, 1.0);
+        trace_alpha = intensity * parameters.trace.y;
+    }
+
+    vec2 point = vec2(pixel) + vec2(0.5);
+    vec2 picture_px = vec2(size);
+    float coverage = 0.0;
+    for (uint index = 0u; index < parameters.grid.w; ++index) {
+        coverage = max(coverage, primitive_coverage(parameters.primitives[index], point, picture_px));
+    }
+    float grid_alpha = coverage * parameters.trace.z;
+
+    // Сетка рисуется ПОД следом: прямая альфа «over».
+    float alpha = trace_alpha + grid_alpha * (1.0 - trace_alpha);
+    vec4 result = vec4(0.0);
+    if (alpha > 0.0) {
+        vec3 trace_color = parameters.plane_colors[plane].rgb;
+        vec3 grid_color = parameters.graticule_color.rgb;
+        vec3 color = (trace_color * trace_alpha + grid_color * grid_alpha * (1.0 - trace_alpha)) / alpha;
+        result = vec4(color, alpha);
+    }
+    imageStore(picture, ivec2(pixel), result);
+}
