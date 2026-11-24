@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 
 use render_loop::pacing::{HISTOGRAM_BUCKETS, PacingVerdict};
 use render_loop::thread::{RenderState, RenderStatus};
+use render_loop::viewfinder::UnchangedFrameCounters;
 use serde::Serialize;
 use shell_contract::commands::FrameRateOutcome;
 
@@ -93,6 +94,11 @@ struct RenderReport {
     state: String,
     frames_presented: u64,
     acquire_timeouts: u64,
+    /// Тики, пропущенные как «ничего не изменилось» (решение 214): ни записи, ни показа, экран держит прежний кадр.
+    /// На 120 Гц при камере 60 к/с и покое UI ждём примерно половину тиков; на 60 Гц почти ноль.
+    ticks_skipped_unchanged: u64,
+    /// Почему остальные тики нарисованы (`None` — видоискателя нет): по причинам видно, что держит пропуск.
+    unchanged_frames: Option<UnchangedFrameCounters>,
     recreations: u64,
     backend_errors: u64,
     last_backend_error: Option<String>,
@@ -171,6 +177,12 @@ pub fn evaluate(status: &RenderStatus, validation: ValidationState, params: Rend
         state: format!("{:?}", status.state),
         frames_presented: status.frames_presented,
         acquire_timeouts: status.acquire_timeouts,
+        ticks_skipped_unchanged: status.ticks_skipped_unchanged,
+        unchanged_frames: status
+            .backend
+            .viewfinder
+            .as_ref()
+            .map(|viewfinder| viewfinder.counters.unchanged_frames),
         recreations: status.recreations,
         backend_errors: status.backend_errors,
         last_backend_error: status.last_backend_error.clone(),

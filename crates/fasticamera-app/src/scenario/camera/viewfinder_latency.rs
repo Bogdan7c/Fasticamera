@@ -57,7 +57,7 @@ struct ProfileCounters {
     window: WindowBaseline,
     stream: RawStreamCounters,
     adpf: AdpfDiagnostics,
-    /// Повторов кадра на экране (`camera_frame_redraws` рендера) на начало измеряемой части.
+    /// Видимых повторов кадра на экране (`visible_repeats` рендера: нарисованные и пропущенные нарочно) на начало измеряемой части.
     display_redraws: u64,
 }
 
@@ -182,7 +182,7 @@ impl LatencyRun {
                     window: WindowBaseline::capture(now, presentation, stream),
                     stream,
                     adpf: presentation.adpf.clone(),
-                    display_redraws: presentation.diagnostics.camera_frame_redraws,
+                    display_redraws: presentation.diagnostics.visible_repeats(),
                 };
                 let mut sampler =
                     LatencySampler::new(self.config.latency_samples_limit, self.config.latency_plausible_max_ms);
@@ -225,7 +225,7 @@ impl LatencyRun {
                 AdpfWindowDelta::between(&counters.adpf, &presentation.adpf),
                 presentation
                     .diagnostics
-                    .camera_frame_redraws
+                    .visible_repeats()
                     .saturating_sub(counters.display_redraws),
             ),
             None => (

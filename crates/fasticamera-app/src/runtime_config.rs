@@ -461,6 +461,34 @@ mod tests {
         assert!(unknown.to_string().contains("reinhard"), "{unknown}");
     }
 
+    /// Политика пропуска тиков приходит из Kotlin как `render.unchanged_frame.policy` (intent-параметр
+    /// `unchanged_frame`, решение 214): без параметра — `AlwaysRedraw`, `skip`/`always` доходят до конфига рендера,
+    /// неверное значение — отказ initialize с именем поля в ошибке.
+    #[test]
+    fn unchanged_frame_extra_selects_the_policy_and_a_wrong_value_fails_the_start() {
+        use render_loop::config::UnchangedFramePolicy;
+        let json = |policy: &str| {
+            format!(
+                r#"{{"build_type":"release","log_filter":"info","render":{{"unchanged_frame":{{"policy":"{policy}"}}}}}}"#
+            )
+        };
+        let default = RuntimeConfig::from_json(r#"{"build_type":"release","log_filter":"info"}"#).expect("умолчания");
+        assert_eq!(
+            default.render().unchanged_frame.policy,
+            UnchangedFramePolicy::AlwaysRedraw
+        );
+        for (name, expected) in [
+            ("skip", UnchangedFramePolicy::SkipWhenUnchanged),
+            ("always", UnchangedFramePolicy::AlwaysRedraw),
+        ] {
+            let config = RuntimeConfig::from_json(&json(name)).expect("политика");
+            assert_eq!(config.render().unchanged_frame.policy, expected, "{name}");
+        }
+        let wrong = RuntimeConfig::from_json(&json("sometimes")).expect_err("неверная политика");
+        assert!(matches!(wrong, ConfigError::Malformed(_)), "{wrong}");
+        assert!(wrong.to_string().contains("unchanged_frame.policy"), "{wrong}");
+    }
+
     #[test]
     fn render_release_budget_must_stay_below_the_shell_receipt_timeout() {
         // По умолчанию 450 < 500: можно.

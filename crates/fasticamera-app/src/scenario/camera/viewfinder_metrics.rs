@@ -200,7 +200,7 @@ pub fn ratio(numerator: f64, denominator: f64) -> Option<f64> {
 pub struct WindowBaseline {
     at: Instant,
     camera_frames_presented: u64,
-    /// Повторов кадра на экране (`camera_frame_redraws` рендера) на начало окна.
+    /// Видимых повторов кадра на экране (`visible_repeats` рендера: нарисованные и пропущенные нарочно) на начало окна.
     camera_frame_redraws: u64,
     isp: ViewfinderCounters,
     present_target: PresentTargetDiagnostics,
@@ -212,7 +212,7 @@ impl WindowBaseline {
         Self {
             at,
             camera_frames_presented: presentation.diagnostics.camera_frames_presented,
-            camera_frame_redraws: presentation.diagnostics.camera_frame_redraws,
+            camera_frame_redraws: presentation.diagnostics.visible_repeats(),
             isp: presentation
                 .viewfinder
                 .as_ref()
@@ -233,7 +233,7 @@ impl WindowBaseline {
         let window_ms = u64::try_from(now.saturating_duration_since(self.at).as_millis()).unwrap_or(u64::MAX);
         let repeats = presentation
             .diagnostics
-            .camera_frame_redraws
+            .visible_repeats()
             .saturating_sub(self.camera_frame_redraws);
         PacingWindowReport::of_window(&stream_delta(&self.stream, stream), repeats, window_ms)
     }
