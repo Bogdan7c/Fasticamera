@@ -230,4 +230,17 @@ pub(super) const ENTRIES: &[CatalogEntry] = &[
         group: WorkloadGroup::IspTuning,
         summary: "AWB каждый кадр с прежней группой 16x8",
     },
+    // ---- Диагностика «ISP в размере экрана»: цена прохода почти пропорциональна числу пикселей выхода. ----
+    CatalogEntry {
+        name: "viewfinder_zoom_1420_never",
+        kind: tuned(ViewfinderTuning::PRODUCT.schedule(AwbSchedule::Never).crop_zoom(1420)),
+        group: WorkloadGroup::IspTuning,
+        summary: "ДИАГНОСТИКА: выход вдвое меньше по числу пикселей (кроп ×1,42), без AWB",
+    },
+    CatalogEntry {
+        name: "viewfinder_zoom_1420",
+        kind: tuned(ViewfinderTuning::PRODUCT.crop_zoom(1420)),
+        group: WorkloadGroup::IspTuning,
+        summary: "ДИАГНОСТИКА: выход вдвое меньше по числу пикселей (кроп ×1,42), AWB как в продукте",
+    },
 ];

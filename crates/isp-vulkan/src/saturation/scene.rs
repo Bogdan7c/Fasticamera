@@ -9,6 +9,7 @@ use camera_contract::geometry::PixelSize;
 use gpu_vulkan::raw_mosaic_preview::reference::pack_raw10;
 
 use super::error::SaturationWorkError;
+use super::scene_probe::{probe_cell_light, probe_channel_of_sample};
 
 /// Чёрный уровень RAW10 основной камеры (код АЦП): паспорт потока OnePlus 11, `real-main-lamp-*` в `isp-model`.
 pub const SENSOR_BLACK_CODE: u16 = 64;
@@ -31,6 +32,9 @@ pub enum SceneContent {
         /// Зерно шума: один и тот же кадр при одном зерне.
         seed: u32,
     },
+    /// Сцена-пробник: рампа от чёрного до пересвета, круги оттенков (тёмные, средние, яркие), шахматка. Проходит ВЕСЬ
+    /// диапазон входа ISP — для доказательства «разница ≤ 1 разряда» (см. `scene_probe`). Без шума и зерна.
+    Probe,
     /// Один и тот же код во всех отсчётах (серый кадр): худший случай конкуренции `atomicAdd` в приборах.
     UniformGray {
         /// Код RAW10 всех отсчётов, `SENSOR_BLACK_CODE..=SENSOR_WHITE_CODE`.
@@ -87,6 +91,14 @@ fn natural_light(x: u32, y: u32, size: PixelSize, seed: u32) -> f64 {
     (gradient + edge + tilt + noise).clamp(0.0, 1.0)
 }
 
+/// Код RAW10 отсчёта `(x, y)` сцены-пробника: свет ячейки, взятый каналом мозаики RGGB этого отсчёта, в коды сенсора
+/// (свет выше белого обрезается белым кодом, как у настоящего АЦП).
+fn probe_sample_code(x: u32, y: u32, size: PixelSize) -> u16 {
+    let light = probe_cell_light(x / 2, y / 2, size)[probe_channel_of_sample(x, y)];
+    let span = f64::from(SENSOR_WHITE_CODE - SENSOR_BLACK_CODE);
+    (f64::from(SENSOR_BLACK_CODE) + light.clamp(0.0, 1.0) * span).round() as u16
+}
+
 /// Проверяет размер кадра RAW10 (до выделения памяти).
 pub(crate) fn check_raw10_size(size: PixelSize) -> Result<(), SaturationWorkError> {
     if size.width == 0 || size.height == 0 {
@@ -123,6 +135,7 @@ pub fn synthesize_raw10(
         .flat_map(|y| (0..size.width).map(move |x| (x, y)))
         .map(|(x, y)| match content {
             SceneContent::UniformGray { code } => code,
+            SceneContent::Probe => probe_sample_code(x, y, size),
             SceneContent::Natural { seed } => {
                 let light = natural_light(x, y, size, seed);
                 (f64::from(SENSOR_BLACK_CODE) + light * span).round() as u16
@@ -152,6 +165,34 @@ mod tests {
         let other = synthesize_raw10(size, SceneContent::Natural { seed: 6 }, 0).unwrap();
         assert_eq!(first.samples, again.samples);
         assert_ne!(first.samples, other.samples);
+    }
+
+    #[test]
+    fn probe_scene_spans_the_whole_sensor_range_with_clipped_whites() {
+        let frame = synthesize_raw10(PixelSize::new(256, 192), SceneContent::Probe, 0).unwrap();
+        assert_eq!(
+            frame.samples.iter().copied().min(),
+            Some(SENSOR_BLACK_CODE),
+            "есть чёрный"
+        );
+        assert_eq!(
+            frame.samples.iter().copied().max(),
+            Some(SENSOR_WHITE_CODE),
+            "есть пересвет"
+        );
+        let clipped = frame
+            .samples
+            .iter()
+            .filter(|&&sample| sample == SENSOR_WHITE_CODE)
+            .count();
+        let dark = frame
+            .samples
+            .iter()
+            .filter(|&&sample| sample < SENSOR_BLACK_CODE + 8)
+            .count();
+        assert!(clipped > 200 && dark > 200, "пересвет {clipped}, тёмные коды {dark}");
+        let again = synthesize_raw10(PixelSize::new(256, 192), SceneContent::Probe, 0).unwrap();
+        assert_eq!(frame.samples, again.samples, "детерминирован");
     }
 
     #[test]

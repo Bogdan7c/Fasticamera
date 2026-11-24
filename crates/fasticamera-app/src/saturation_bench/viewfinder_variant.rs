@@ -4,6 +4,7 @@
 //! (`awb_statistics_every_n_frames`). Здесь только таблица «вариант каталога → эти два поля»; всё остальное
 //! (размер кадра, слоты, охват) остаётся продуктовым.
 
+use camera_contract::viewfinder_crop::{CropAspect, ViewfinderCrop, ZoomFactor};
 use isp_vulkan::saturation::ViewfinderSaturationConfig;
 use isp_vulkan::viewfinder::{AwbReductionPolicy, IspStage, IspStageSet, WorkgroupSizeConfig};
 
@@ -63,6 +64,10 @@ pub fn configure(variant: ViewfinderVariant, base: ViewfinderSaturationConfig) -
 }
 
 /// Опытные настройки поверх продуктовых: каденция AWB, сведение AWB, размер группы, набор стадий.
+#[expect(
+    clippy::expect_used,
+    reason = "строки каталога статичны: неверное приближение — ошибка кода каталога, молча мерить продукт нельзя"
+)]
 fn apply_tuning(tuning: ViewfinderTuning, base: ViewfinderSaturationConfig) -> ViewfinderSaturationConfig {
     let mut config = base;
     match tuning.awb_schedule {
@@ -79,6 +84,13 @@ fn apply_tuning(tuning: ViewfinderTuning, base: ViewfinderSaturationConfig) -> V
         AwbReductionChoice::SubgroupWhenSupported => {
             config.isp.awb_reduction = AwbReductionPolicy::SubgroupWhenSupported;
         }
+    }
+    if tuning.crop_zoom_permille != 0 {
+        // Диагностический кроп: значение вне допустимого — ошибка настройки каталога (его строки статичны), поэтому
+        // падаем громко, а не молча меряем продукт.
+        let zoom = ZoomFactor::new(tuning.crop_zoom_permille as f32 / 1000.0)
+            .expect("приближение каталога стенда должно быть не меньше 1");
+        config.crop = ViewfinderCrop::centered(CropAspect::SensorNative, zoom);
     }
     if let Some(shape) = tuning.workgroup {
         config.isp.workgroup_size = WorkgroupSizeConfig { x: shape.x, y: shape.y };

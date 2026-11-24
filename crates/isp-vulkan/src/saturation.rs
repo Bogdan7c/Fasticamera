@@ -23,6 +23,7 @@ mod error;
 mod headroom;
 mod params;
 mod scene;
+mod scene_probe;
 mod scopes;
 mod scopes_diagnostic;
 mod source;

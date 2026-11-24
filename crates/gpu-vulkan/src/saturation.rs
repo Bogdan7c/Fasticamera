@@ -29,6 +29,7 @@
 
 mod config;
 mod digest;
+mod image_diff;
 mod pass_times;
 mod raw_frame;
 mod report;
@@ -47,6 +48,7 @@ pub use self::digest::{
     DigestError, DigestPart, Fnv1a64, OutputDigest, WorkloadDigest, digest_color_target, digest_counts,
     digest_device_buffer_prefix, digest_rgba8_bytes, digest_rgba8_image, digest_storage_image, digest_texels,
 };
+pub use self::image_diff::{HISTOGRAM_BINS, ImageDiffError, ImageDiffReport, ImageFormat, compare_image_bytes};
 pub use self::pass_times::{PassTime, PassTimeLog, PassTimeSummary};
 pub use self::raw_frame::{HostRawFrame, RawFrameError};
 pub use self::report::{EndReason, SaturationReport, Throughput, TimelineStep};

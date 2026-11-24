@@ -47,6 +47,9 @@ pub struct ViewfinderTuning {
     pub awb_reduction: AwbReductionChoice,
     /// Только стадии «уровни + демозаик» (пол цены, как работа `viewfinder_minimal`).
     pub minimal_stages: bool,
+    /// Диагностика «ISP в размере экрана»: центральный кроп с приближением, тысячные доли (1420 = ×1,42); 0 — продукт.
+    /// Меняет число пикселей выхода, а не код шейдера: так оценивается выигрыш от меньшего выхода (картинка другая).
+    pub crop_zoom_permille: u32,
 }
 
 impl ViewfinderTuning {
@@ -56,7 +59,16 @@ impl ViewfinderTuning {
         awb_schedule: AwbSchedule::Product,
         awb_reduction: AwbReductionChoice::Default,
         minimal_stages: false,
+        crop_zoom_permille: 0,
     };
+
+    /// Диагностика: центральный кроп с приближением `permille`/1000 (меньше пикселей выхода).
+    pub const fn crop_zoom(self, crop_zoom_permille: u32) -> Self {
+        Self {
+            crop_zoom_permille,
+            ..self
+        }
+    }
 
     /// Изменить каденцию AWB.
     pub const fn schedule(self, awb_schedule: AwbSchedule) -> Self {
