@@ -551,8 +551,8 @@ pub(crate) fn create_pipeline(
         .dynamic_state(&dynamic_state)
         .layout(layout.handle())
         .push_next(&mut rendering_info);
-    // SAFETY: все структуры и модули живут до конца вызова; кэша пайплайнов нет.
-    let pipelines = unsafe { device.create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None) }
+    // SAFETY: все структуры и модули живут до конца вызова; кэш контекста синхронизирован драйвером.
+    let pipelines = unsafe { device.create_graphics_pipelines(context.pipeline_cache(), &[pipeline_info], None) }
         .map_err(|(_, result)| GpuError::Vulkan { step, result })?;
     let handle = pipelines.first().copied().ok_or(GpuError::InvalidState {
         what: "vkCreateGraphicsPipelines не вернул пайплайн".to_owned(),

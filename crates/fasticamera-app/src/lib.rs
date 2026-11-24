@@ -70,6 +70,7 @@ mod operator_prompt_fake;
 mod orientation_sensor_fake;
 pub mod panic_report;
 pub mod photo_config;
+pub mod pipeline_cache_file;
 pub mod power_measurement;
 pub mod raw_stream_scenario_config;
 pub mod raw_stream_services;

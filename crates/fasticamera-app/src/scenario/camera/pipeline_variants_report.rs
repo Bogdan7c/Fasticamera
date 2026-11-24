@@ -47,6 +47,8 @@ pub struct PipelineVariantsReport {
     pub bg_aborted: bool,
     /// ОС не дала поток: заготовка шла на потоке рендера.
     pub bg_no_thread: bool,
+    /// Исход кэша пайплайнов на диске (короткое имя: `empty`, `loaded`, `ignored`, `rejected`, `damaged`, `oversized`).
+    pub pc: &'static str,
 }
 
 fn micros(duration: Duration) -> u64 {
@@ -76,7 +78,22 @@ impl PipelineVariantsReport {
             bg_done_us: after.background_drained_after.map(micros),
             bg_aborted: after.background_aborted,
             bg_no_thread: after.background_unavailable,
+            pc: after.pipeline_cache.short_name(),
         }
+    }
+
+    /// Нарушение вердикта: в окне замера создано в кадре больше `allowed_creations` вариантов (компиляция посреди
+    /// сессии = рывок видоискателя). Зачем счётчик, а не только задержки: с тёплым кэшем пайплайнов компиляция стоит
+    /// ≈ 1 мс, и критерии задержек больше не поймают регрессию класса 2addf39 (вариант шейдера компилируется посреди
+    /// сессии), а счётчик поймает и холодный, и тёплый случай. `None` — всё спокойно.
+    pub fn violation(&self, allowed_creations: u64) -> Option<String> {
+        if self.created_in_frame <= allowed_creations {
+            return None;
+        }
+        Some(format!(
+            "в окне замера создано пайплайнов в кадре: {} (допустимо {allowed_creations}); из них пока фон не успел: {}; кэш на диске: {}",
+            self.created_in_frame, self.frame_while_bg, self.pc
+        ))
     }
 
     /// Заметка для отчёта, если в окне пайплайн создавался в кадре или кэш вытеснял варианты; `None` — всё спокойно.
@@ -139,6 +156,27 @@ mod tests {
         let json = serde_json::to_string(&report).unwrap();
         assert!(json.contains("\"bg_done_us\":1700000"), "{json}");
         assert_eq!(json.matches('{').count(), 1, "отчёт плоский: {json}");
+    }
+
+    #[test]
+    fn creations_in_the_window_are_a_violation_beyond_the_allowance_and_name_the_cache_outcome() {
+        let mut after = stats(5, 0);
+        after.pipeline_cache = gpu_vulkan::pipeline_cache::PipelineCacheOrigin::DamagedFile(
+            gpu_vulkan::pipeline_cache::FileDamage::ChecksumMismatch,
+        );
+        let report = PipelineVariantsReport::between(&stats(2, 0), &after);
+        assert_eq!(report.created_in_frame, 3);
+        assert_eq!(report.pc, "damaged");
+        assert_eq!(report.violation(3), None, "в пределах допустимого");
+        let text = report.violation(2).expect("лишнее создание в кадре — нарушение");
+        assert!(
+            text.contains("создано пайплайнов в кадре: 3") && text.contains("damaged"),
+            "{text}"
+        );
+        assert_eq!(
+            PipelineVariantsReport::between(&stats(2, 0), &stats(2, 0)).violation(0),
+            None
+        );
     }
 
     #[test]

@@ -513,6 +513,7 @@ fn worst_case_failure_line_fits_the_logcat_record() {
         bg_done_us: Some(u64::MAX),
         bg_aborted: true,
         bg_no_thread: true,
+        pc: "oversized",
     };
     let mut violations = evaluate_viewfinder(&ViewfinderSmokeConfig::default(), &observation);
     assert!(violations.len() >= 8, "{violations:?}");
@@ -648,7 +649,7 @@ fn summary_carries_the_awb_report_hidden_and_skipped_frames_and_companion() {
 /// Счётчики кэша вариантов пайплайна доходят до сводки строки результата (по ним на телефоне отличают рывок от
 /// компиляции), а вердикт они не меняют.
 #[test]
-fn pipeline_variant_counters_reach_the_summary_without_changing_the_verdict() {
+fn pipeline_variant_counters_reach_the_summary_and_creation_in_a_frame_is_now_the_only_verdict_change() {
     use crate::scenario::camera::pipeline_variants_report::PipelineVariantsReport;
     let mut observation = healthy();
     observation.window.pipeline_variants = PipelineVariantsReport {
@@ -664,8 +665,22 @@ fn pipeline_variant_counters_reach_the_summary_without_changing_the_verdict() {
     assert_eq!(summary["pipeline_variants"]["in_cache"], 12);
     assert_eq!(summary["pipeline_variants"]["longest_frame_compile_us"], 38_500);
     let config = crate::viewfinder_scenario_config::ViewfinderSmokeConfig::default();
+    // Вытеснение само вердикт не меняет; меняет только создание в кадре (см. тест ниже).
+    observation.window.pipeline_variants.created_in_frame = 0;
     assert_eq!(
         evaluate_viewfinder(&config, &observation),
         evaluate_viewfinder(&config, &healthy())
     );
+}
+
+/// Регрессия класса 2addf39 (вариант шейдера компилируется посреди сессии) при тёплом кэше пайплайнов стоит ≈ 1 мс и
+/// задержки её не покажут: вердикт обязан поймать её по счётчику создания в кадре.
+#[test]
+fn a_pipeline_created_in_a_frame_inside_the_window_fails_even_when_every_latency_is_fine() {
+    let violations = violations_of(|observation| {
+        observation.window.pipeline_variants.created_in_frame = 1;
+        observation.window.pipeline_variants.pc = "loaded";
+    });
+    assert_single(&violations, "создано пайплайнов в кадре: 1");
+    assert!(violations[0].contains("loaded"), "{violations:?}");
 }

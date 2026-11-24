@@ -21,6 +21,7 @@
 //! UI и стекло по тем же правилам, без сырого `ash::Device`.
 
 pub mod backdrop;
+mod checksum;
 pub mod color_target;
 pub mod compositor;
 pub mod compute;
@@ -40,6 +41,7 @@ mod linear_sampler;
 pub mod live_objects;
 pub mod offscreen;
 pub mod one_shot_queue;
+pub mod pipeline_cache;
 pub mod raster;
 pub mod raw_mosaic_preview;
 pub mod rgba8_image;

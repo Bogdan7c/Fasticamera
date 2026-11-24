@@ -45,6 +45,7 @@ use crate::gpu_services::{GpuDiagnostics, GpuServices, ValidationState};
 use crate::jni_boundary::run_guarded;
 use crate::lens_shading_profile::{LensShadingProfileError, embedded_lens_shading};
 use crate::look_startup::{catalog_environment, open_look_service};
+use crate::pipeline_cache_file::PipelineCacheFile;
 use crate::raw_stream_wiring::{RawStreamCreation, create_raw_stream, observe_stream};
 use crate::render_wiring::RenderRuntime;
 use crate::runtime_config::RuntimeConfig;
@@ -53,6 +54,7 @@ use crate::scenario::observing::{ObservingScenario, PlatformFacts, ShellServices
 use crate::still_android_wiring::assemble_still;
 use crate::text_input_broker::TextInputBroker;
 use crate::vulkan_diagnostics::VulkanGpuDiagnostics;
+use render_loop::pipeline_cache_store::SharedPipelineCacheStore;
 
 /// Что остаётся у composition root после сборки: вход для наблюдающих сценариев.
 struct ShellWiring {
@@ -130,6 +132,8 @@ pub fn ensure_installed(
         // Стартовый рецепт — основа и ручки активного пресета из файла (решение 195): основа тоже действует с
         // первого кадра, конфиг `viewfinder.tone.base` лишь умолчание встроенных пресетов библиотеки.
         look.handle.active_recipe(),
+        // Кэш пайплайнов GPU между запусками: файл в той же папке приложения.
+        Arc::new(PipelineCacheFile::in_app_directory(app_directory)),
     );
     // Камера узнаёт, есть ли у нашего AE рендер: без него она получит вендорский AE (с предупреждением).
     links.render_auto_exposure = render_auto_exposure;
@@ -201,8 +205,17 @@ fn start_render(
     raw_stream: &RawFrameStream,
     links: RenderLinks,
     initial_look: LookRecipe,
+    pipeline_cache: SharedPipelineCacheStore,
 ) -> (RenderRuntime, RenderAutoExposure) {
-    match try_start_render(render_config, validation, services, raw_stream, links, initial_look) {
+    match try_start_render(
+        render_config,
+        validation,
+        services,
+        raw_stream,
+        links,
+        initial_look,
+        pipeline_cache,
+    ) {
         Ok(runtime) => (runtime, RenderAutoExposure::Connected),
         Err(reason) => {
             let unavailable = RenderAutoExposure::Unavailable { reason: reason.clone() };
@@ -218,13 +231,15 @@ fn try_start_render(
     raw_stream: &RawFrameStream,
     links: RenderLinks,
     initial_look: LookRecipe,
+    pipeline_cache: SharedPipelineCacheStore,
 ) -> Result<RenderRuntime, String> {
     let RenderLinks {
         white_balance,
         auto_exposure,
     } = links;
     let backend_config = VulkanBackendConfig::from_render_config(render_config, validation.clone())
-        .map_err(|error| format!("настройки бэкенда рендера: {error}"))?;
+        .map_err(|error| format!("настройки бэкенда рендера: {error}"))?
+        .with_pipeline_cache_store(pipeline_cache);
     // Режим показа камеры всегда: видоискатель отдаёт кадры, пока камера не стримит — рисуется чёрное.
     let backend =
         VulkanDisplayBackend::new_android_camera_preview(backend_config, raw_stream.viewfinder(), white_balance)

@@ -49,6 +49,14 @@ pub fn evaluate_zoom(config: &ZoomScenarioConfig, report: &ZoomObservationReport
     {
         violations.push(format!("не выполнены шаги: {}", report.unfinished.join(", ")));
     }
+    // Смена объектива может законно потребовать новый вариант шейдера (другой источник кадра): по одному на смену.
+    // Больше — компиляция посреди сессии; с тёплым кэшем пайплайнов её не поймать по задержкам, поэтому считаем.
+    violations.extend(
+        report
+            .totals
+            .pipeline_variants
+            .violation(report.totals.switches_completed),
+    );
     if report.totals.black_frames_while_picture_expected > 0 {
         let culprits: Vec<&str> = report
             .steps

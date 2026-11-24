@@ -29,6 +29,7 @@ use crate::device::{DeviceProfile, DeviceSelection, select_device};
 use crate::error::{GpuError, GpuInitError, init_step, run_step};
 use crate::instance::{SyncValidationBackend, create_instance, plan_instance, query_instance_support};
 use crate::live_objects::{LiveObjectCounters, LiveObjectSnapshot};
+use crate::pipeline_cache::{DEFAULT_PIPELINE_CACHE_MAX_BYTES, PipelineCacheOrigin, PipelineCacheOwner};
 use crate::validation::{DebugMessenger, ValidationHook, ValidationMode, ValidationReport};
 
 /// Настройки создания контекста.
@@ -43,6 +44,11 @@ pub struct GpuContextConfig {
     /// Сколько ждать завершения разовой работы на GPU (`one_shot`), прежде чем вернуть
     /// `GpuError::Timeout`. Бесконечных ожиданий в crate нет.
     pub submit_wait_timeout: Duration,
+    /// Сохранённые данные кэша пайплайнов с прошлого запуска (пусто — чистый кэш). Чужие или битые данные не ломают
+    /// запуск: драйвер их отвергает, кэш создаётся пустым (см. `pipeline_cache`).
+    pub pipeline_cache_data: Vec<u8>,
+    /// Наибольший файл кэша, который берётся с диска (больше — пустой кэш, исход `OversizedFile`).
+    pub pipeline_cache_max_bytes: usize,
 }
 
 impl GpuContextConfig {
@@ -57,6 +63,8 @@ impl GpuContextConfig {
             validation,
             app_label: "fasticamera".to_owned(),
             submit_wait_timeout: Self::DEFAULT_SUBMIT_WAIT_TIMEOUT,
+            pipeline_cache_data: Vec::new(),
+            pipeline_cache_max_bytes: DEFAULT_PIPELINE_CACHE_MAX_BYTES,
         }
     }
 }
@@ -171,6 +179,9 @@ impl std::fmt::Debug for GpuContext {
 /// Внутренности. Порядок полей = порядок освобождения после `Drop` самих владельцев:
 /// сначала device, затем instance (внутри него entry).
 struct ContextInner {
+    /// Кэш пайплайнов: уничтожается ДО устройства (поле раньше `device`).
+    pipeline_cache: PipelineCacheOwner,
+    pipeline_cache_origin: PipelineCacheOrigin,
     device: DeviceOwner,
     instance: InstanceOwner,
     loaders: ExtensionLoaders,
@@ -251,8 +262,18 @@ impl GpuContext {
             "GpuContext создан"
         );
 
+        let (pipeline_cache, pipeline_cache_origin) = init_step(
+            PipelineCacheOwner::new(
+                device_owner.handle(),
+                &config.pipeline_cache_data,
+                config.pipeline_cache_max_bytes,
+            ),
+            "vkCreatePipelineCache",
+        )?;
         Ok(Self {
             inner: Arc::new(ContextInner {
+                pipeline_cache,
+                pipeline_cache_origin,
                 device: device_owner,
                 instance: instance_owner,
                 loaders,
@@ -400,6 +421,29 @@ impl GpuContext {
     }
 
     // ---- доступ для модулей crate (sync, swapchain, android, offscreen, test_pattern) ----
+
+    /// Кэш пайплайнов контекста (общий для всех создаваемых пайплайнов; синхронизирован драйвером).
+    pub(crate) fn pipeline_cache(&self) -> vk::PipelineCache {
+        self.inner.pipeline_cache.handle()
+    }
+
+    /// С чем создан кэш пайплайнов: пустой, загружен или данные отвергнуты.
+    pub fn pipeline_cache_origin(&self) -> PipelineCacheOrigin {
+        self.inner.pipeline_cache_origin
+    }
+
+    /// Размер ФАЙЛА кэша (с нашим заголовком), каким он был бы сразу после создания: фактическое состояние кэша, а не
+    /// размер предложенного блока. С этим размером сравнивается рост кэша при решении «сохранять ли»: драйвер, молча
+    /// проигнорировавший чужой блок, даёт здесь почти пустой кэш, и первое же созданное пайплайны заменят файл.
+    pub fn pipeline_cache_initial_file_bytes(&self) -> usize {
+        crate::pipeline_cache::FILE_HEADER_BYTES + self.inner.pipeline_cache.initial_payload_bytes()
+    }
+
+    /// Запечатанный файл кэша пайплайнов для сохранения на диск (формат — см. `pipeline_cache`). Хранилище содержимого
+    /// не знает: оно кладёт и отдаёт эти байты как есть.
+    pub fn pipeline_cache_data(&self) -> Result<Vec<u8>, GpuError> {
+        self.inner.pipeline_cache.sealed_file()
+    }
 
     /// Логическое устройство.
     pub(crate) fn device(&self) -> &Device {

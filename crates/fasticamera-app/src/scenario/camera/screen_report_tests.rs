@@ -243,3 +243,10 @@ fn other_viewfinder_checks_still_fail_the_screen_run() {
     let violation = only_violation(&observation);
     assert!(violation.contains("видоискатель: CPU-копий кадров: 1"), "{violation}");
 }
+
+#[test]
+fn a_pipeline_created_in_a_frame_during_the_screen_run_fails_the_run() {
+    let mut observation = healthy_observation();
+    observation.viewfinder.window.pipeline_variants.created_in_frame = 2;
+    assert!(only_violation(&observation).contains("создано пайплайнов в кадре: 2"));
+}

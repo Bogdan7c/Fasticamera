@@ -96,6 +96,7 @@ fn the_worst_failing_summary_fits_the_result_line() {
         bg_done_us: Some(u64::MAX),
         bg_aborted: true,
         bg_no_thread: true,
+        pc: "oversized",
     };
     assert!(
         !report.summary()["notes"].as_array().unwrap().is_empty(),
@@ -204,7 +205,7 @@ fn the_summary_reports_the_swap_count_and_the_screen_ratio_of_the_switch_legs() 
 
 /// Создание варианта пайплайна в кадре после прогрева — заметка в сводке, а вердикт не меняется (это не провал).
 #[test]
-fn pipeline_creation_in_a_frame_is_a_note_and_not_a_violation() {
+fn pipeline_creation_in_a_frame_within_the_switch_allowance_is_a_note_and_not_a_violation() {
     use crate::scenario::camera::pipeline_variants_report::PipelineVariantsReport;
     use crate::scenario::camera::zoom_verdict::evaluate_zoom;
     use crate::zoom_scenario_config::ZoomScenarioConfig;
@@ -217,6 +218,8 @@ fn pipeline_creation_in_a_frame_is_a_note_and_not_a_violation() {
     );
 
     let mut noisy = healthy_report();
+    // По одному созданию на смену объектива — законно (см. вердикт): две смены покрывают два создания.
+    noisy.totals.switches_completed = 2;
     noisy.totals.pipeline_variants = PipelineVariantsReport {
         created_in_frame: 2,
         longest_frame_compile_us: 41_000,

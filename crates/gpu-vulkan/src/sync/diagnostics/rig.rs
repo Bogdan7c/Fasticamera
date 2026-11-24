@@ -192,11 +192,11 @@ impl DiagnosticRig {
         let create_info = vk::ComputePipelineCreateInfo::default()
             .stage(stage)
             .layout(layout.handle());
-        // SAFETY: модуль и layout живы; кэш не используется.
+        // SAFETY: модуль и layout живы; кэш контекста синхронизирован драйвером.
         let pipelines = unsafe {
             context
                 .device()
-                .create_compute_pipelines(vk::PipelineCache::null(), &[create_info], None)
+                .create_compute_pipelines(context.pipeline_cache(), &[create_info], None)
         }
         .map_err(|(created, result)| {
             // Частично созданные пайплайны при ошибке нужно уничтожить самим.

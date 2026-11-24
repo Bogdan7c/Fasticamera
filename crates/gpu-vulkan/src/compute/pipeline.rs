@@ -263,11 +263,11 @@ fn create_pipeline(
     let pipeline_info = vk::ComputePipelineCreateInfo::default()
         .stage(stage)
         .layout(layout.handle());
-    // SAFETY: модуль, layout и данные констант живут до конца вызова; кэша пайплайнов нет.
+    // SAFETY: модуль, layout и данные констант живут до конца вызова; кэш контекста синхронизирован драйвером.
     let pipelines = unsafe {
         context
             .device()
-            .create_compute_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
+            .create_compute_pipelines(context.pipeline_cache(), &[pipeline_info], None)
     }
     .map_err(|(_, result)| GpuError::Vulkan {
         step: "vkCreateComputePipelines",

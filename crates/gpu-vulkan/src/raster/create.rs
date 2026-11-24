@@ -122,8 +122,8 @@ pub(super) fn create_graphics_pipeline(
         .dynamic_state(&dynamic_state)
         .layout(layout.handle())
         .push_next(&mut rendering_info);
-    // SAFETY: модули, константы и все структуры живут до конца вызова; кэша пайплайнов нет.
-    let pipelines = unsafe { device.create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None) }
+    // SAFETY: модули, константы и все структуры живут до конца вызова; кэш контекста синхронизирован драйвером.
+    let pipelines = unsafe { device.create_graphics_pipelines(context.pipeline_cache(), &[pipeline_info], None) }
         .map_err(|(_, result)| GpuError::Vulkan {
             step: "vkCreateGraphicsPipelines(raster)",
             result,

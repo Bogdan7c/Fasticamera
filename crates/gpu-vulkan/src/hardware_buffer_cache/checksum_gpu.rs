@@ -184,11 +184,11 @@ impl GpuChecksumRunner {
             .stage(stage)
             .layout(pipeline_layout.handle());
         // SAFETY: модуль и раскладка живы до конца вызова.
-        let pipelines = unsafe { device.create_compute_pipelines(vk::PipelineCache::null(), &[pipeline_info], None) }
+        let pipelines = unsafe { device.create_compute_pipelines(context.pipeline_cache(), &[pipeline_info], None) }
             .map_err(|(_, result)| GpuError::Vulkan {
-            step: "vkCreateComputePipelines",
-            result,
-        })?;
+                step: "vkCreateComputePipelines",
+                result,
+            })?;
         let pipeline = pipelines.first().copied().ok_or(GpuError::InvalidState {
             what: "vkCreateComputePipelines не вернул пайплайн".to_owned(),
         })?;

@@ -7,6 +7,8 @@
 
 use std::time::Duration;
 
+use gpu_vulkan::pipeline_cache::PipelineCacheOrigin;
+
 /// Счётчики и времена кэша вариантов (накопительные, кроме `in_cache`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct VariantCacheStats {
@@ -54,6 +56,9 @@ pub struct VariantCacheStats {
     /// Наибольшая остановка потока рендера на компиляции за один кадр: создание нужного варианта, ожидание фона и
     /// заготовка на потоке рендера вместе.
     pub longest_render_stall: Duration,
+    /// С чем создан кэш пайплайнов на диске (общий для всего GPU-контекста): пуст, загружен, проигнорирован драйвером,
+    /// отвергнут, повреждён или слишком велик. Задаёт `ViewfinderIsp::variant_stats`.
+    pub pipeline_cache: PipelineCacheOrigin,
 }
 
 impl VariantCacheStats {

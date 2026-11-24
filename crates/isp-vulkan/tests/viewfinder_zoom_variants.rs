@@ -385,6 +385,11 @@ fn real_background_thread_with_zoom_from_the_first_frame_draws_correctly_and_lea
         assert_eq!((last.evicted, last.background_discarded), (0, 0), "{last:?}");
         assert_eq!(last.prewarm_failed + last.create_failed_in_frame, 0);
         assert!(!last.background_aborted && !last.background_unavailable);
+        // Исход кэша пайплайнов на диске доходит до диагностики вариантов (контекст теста создан без файла).
+        assert_eq!(
+            last.pipeline_cache,
+            gpu_vulkan::pipeline_cache::PipelineCacheOrigin::Empty
+        );
         assert_no_validation_errors(&context);
     }
     assert_eq!(context.live_objects(), baseline);

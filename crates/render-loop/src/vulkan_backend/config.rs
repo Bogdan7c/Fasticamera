@@ -12,6 +12,7 @@ use crate::config::look_lut;
 use crate::config::{
     DisplayColorConfig, RenderLoopConfig, StillDevelopConfig, UiOverlayConfig, UnchangedFrameConfig, ViewfinderConfig,
 };
+use crate::pipeline_cache_store::{PipelineCacheConfig, SharedPipelineCacheStore};
 
 /// Параметры [`super::VulkanDisplayBackend`].
 #[derive(Debug, Clone)]
@@ -51,9 +52,18 @@ pub struct VulkanBackendConfig {
     pub unchanged_frame: UnchangedFrameConfig,
     /// Снимок без задержки затвора (из `RenderLoopConfig::still`).
     pub still: StillDevelopConfig,
+    /// Кэш пайплайнов между запусками: хранилище, интервал сохранения, предел размера файла.
+    pub pipeline_cache: PipelineCacheConfig,
 }
 
 impl VulkanBackendConfig {
+    /// Подключает хранилище кэша пайплайнов (приложение: файл в папке приложения).
+    #[must_use]
+    pub fn with_pipeline_cache_store(mut self, store: SharedPipelineCacheStore) -> Self {
+        self.pipeline_cache.store = Some(store);
+        self
+    }
+
     /// Запас таблицы показов по умолчанию: при 120 Гц это ~2 секунды, с избытком больше
     /// интервала опроса диагностики (250 мс).
     pub const DEFAULT_PRESENTATION_HISTORY_CAPACITY: usize = 256;
@@ -93,6 +103,7 @@ impl VulkanBackendConfig {
             ui_overlay: config.ui_overlay,
             unchanged_frame: config.unchanged_frame,
             still,
+            pipeline_cache: PipelineCacheConfig::default(),
         })
     }
 

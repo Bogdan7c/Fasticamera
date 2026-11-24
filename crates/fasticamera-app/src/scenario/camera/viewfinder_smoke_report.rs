@@ -261,6 +261,9 @@ fn evaluate_viewfinder_with(
     {
         violations.push(violation);
     }
+    // Компиляция варианта посреди сессии (регрессия класса 2addf39): с тёплым кэшем она стоит ≈ 1 мс и критерии
+    // задержек её не увидят, поэтому смотрим на счётчик создания в кадре. Этот вердикт общий для `viewfinder` и `screen`.
+    violations.extend(window.pipeline_variants.violation(0));
     violations.extend(isp_counter_violations(window));
     violations.extend(white_balance_violations(
         config,

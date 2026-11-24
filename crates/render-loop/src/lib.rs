@@ -12,6 +12,7 @@ pub mod camera_diagnostics;
 pub mod config;
 pub mod mailbox;
 pub mod pacing;
+pub mod pipeline_cache_store;
 pub mod still;
 pub mod still_diagnostics;
 pub mod surface_state;

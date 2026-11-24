@@ -39,6 +39,7 @@ use crate::backend::{
     PastPresentation, PresentOutcome,
 };
 use crate::camera_diagnostics::CameraStreamDiagnostics;
+use crate::pipeline_cache_store::PipelineCacheSaver;
 use crate::still::{StillCommand, StillCommandOutcome, StillWorkload};
 use crate::ui_overlay::{UiOverlayCommand, UiOverlayOutcome};
 use crate::viewfinder::{
@@ -92,6 +93,8 @@ impl PresentationMode {
 
 /// Бэкенд показа на Vulkan. Все методы вызываются из потока рендера.
 pub struct VulkanDisplayBackend {
+    /// Сохраняет кэш пайплайнов на диск (периодически и при остановке); держит свой клон контекста.
+    pipeline_cache_saver: PipelineCacheSaver,
     context: GpuContext,
     config: VulkanBackendConfig,
     mode: PresentationMode,
@@ -239,7 +242,11 @@ impl VulkanDisplayBackend {
         profile: DeviceProfile,
         mode: PresentationMode,
     ) -> Result<Self, GpuInitError> {
-        let context = GpuContext::new(&GpuContextConfig::new(profile, config.validation.clone()))?;
+        // Контекст GPU с кэшем пайплайнов прошлого запуска и сохранитель этого кэша.
+        let (context, pipeline_cache_saver) = PipelineCacheSaver::create_context(
+            GpuContextConfig::new(profile, config.validation.clone()),
+            &config.pipeline_cache,
+        )?;
         let viewfinder_settings = ViewfinderSettings::from_config(&config.viewfinder).unwrap_or_else(|error| {
             // Конфиг проверяется `RenderLoopConfig::validate` до запуска; сюда попадает только конфиг,
             // собранный в обход проверки. Показ не ломаем: вся полезная область, ошибка — в журнал.
@@ -263,6 +270,7 @@ impl VulkanDisplayBackend {
         let viewfinder_stats = Some(ViewfinderStats::new(config.viewfinder.gpu_time_window_frames));
         let ui_overlay = UiOverlayState::new(config.viewfinder.gpu_time_window_frames);
         Ok(Self {
+            pipeline_cache_saver,
             context,
             config,
             mode,
@@ -524,6 +532,7 @@ impl DisplayBackend for VulkanDisplayBackend {
         // Кадр отправлен: если набор приборов выведен (кадр не ушёл, ошибка GPU) или размер запроса изменился,
         // поднимаем его до следующего кадра, а не внутри него.
         self.prepare_scopes_between_frames();
+        self.pipeline_cache_saver.tick(std::time::Instant::now()); // только решает «пора»; работа — в потоке сохранения
         outcome
     }
 

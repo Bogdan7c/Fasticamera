@@ -315,3 +315,17 @@ fn a_black_no_picture_frame_in_a_step_alone_still_fails_when_totals_missed_it() 
     assert_single(&violations, "удержание не началось");
     assert!(violations[0].contains("02_tap_2"), "{}", violations[0]);
 }
+
+#[test]
+fn creations_in_frames_are_allowed_one_per_completed_lens_switch_and_no_more() {
+    let mut report = healthy_report();
+    report.totals.switches_completed = 2;
+    report.totals.pipeline_variants.created_in_frame = 2;
+    assert_eq!(
+        violations_of(&report),
+        Vec::<String>::new(),
+        "по одному на смену — законно"
+    );
+    report.totals.pipeline_variants.created_in_frame = 3;
+    assert_single(&violations_of(&report), "создано пайплайнов в кадре: 3");
+}

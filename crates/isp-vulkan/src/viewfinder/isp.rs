@@ -325,7 +325,10 @@ impl ViewfinderIsp {
     /// Счётчики и времена кэша вариантов пайплайна с создания ISP: сколько создано в кадре и заготовкой, сколько
     /// вытеснено и сколько отказов, CPU-время создания (см. [`VariantCacheStats`]).
     pub fn variant_stats(&self) -> VariantCacheStats {
-        self.variants.stats()
+        VariantCacheStats {
+            pipeline_cache: self.context.pipeline_cache_origin(),
+            ..self.variants.stats()
+        }
     }
 
     /// Сколько объектов ждут завершения GPU перед уничтожением (изображения и пайплайны).
