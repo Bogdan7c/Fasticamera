@@ -1,0 +1,132 @@
+#version 450
+// ЗАМОРОЖЕННАЯ КОПИЯ прежнего `photo_thumbnail.comp` (до оптимизаций сессии 16a): эталон для теста «быстрый путь
+// равен прежнему бит-в-бит» (`tests/photo_thumbnail_exact.rs`). В продукте не используется, править нельзя.
+// Миниатюра снимка (сессия 14g): уменьшение проявленной картинки RGBA8 до маленькой с поворотом «как покажет
+// галерея». Формулы и правило охвата — у CPU-эталона `photo/thumbnail.rs` (источник правды); здесь они
+// повторены в форме шейдера, паритет держат тесты с явным допуском.
+//
+// Одна рабочая группа = один пиксель миниатюры. Группа усредняет по ПЛОЩАДИ все пиксели повёрнутого снимка, которых касается
+// её коробка `[ox·n/m, (ox+1)·n/m) × [oy·n'/m', (oy+1)·n'/m')`, в ЛИНЕЙНОМ свете (sRGB → линейный → среднее →
+// sRGB). Вес пикселя — площадь пересечения его клетки с коробкой; считается ЦЕЛЫМИ числами в единицах 1/m
+// (клетка [u·m, (u+1)·m), коробка [ox·n, (ox+1)·n)), поэтому веса точны и совпадают с CPU (порядок сумм другой —
+// дерево по нитям группы, — расхождение единицы ULP, допуск тестов 1 градация).
+//
+// Привязки: 0 — проявленный снимок (чтение, раскладка GENERAL: дескриптор STORAGE_IMAGE, как у записи, но
+// шейдер объявляет его `readonly`), 1 — миниатюра (запись).
+// Push-константы (раскладка `PlaneGeometry`): width/height — размер миниатюры в НИТЯХ (миниатюра × размер группы:
+// по ним Rust считает число групп = число пикселей миниатюры; сам шейдер размер берёт из `imageSize`),
+// pass_mode — поворот снимка по часовой стрелке: 0 — нет, 1 — 90°, 2 — 180°, 3 — 270°.
+
+layout(local_size_x_id = 0, local_size_y_id = 1, local_size_z = 1) in;
+
+layout(push_constant) uniform PlaneGeometry {
+    uint width;
+    uint height;
+    uint cfa_code;
+    uint pass_mode;
+    vec4 pass_parameters;
+} geometry;
+
+layout(set = 0, binding = 0, rgba8) uniform readonly image2D source_image;
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D thumbnail_image;
+
+// sRGB → линейный свет (IEC 61966-2-1), как `srgb_to_linear` эталона.
+float srgb_to_linear(float encoded) {
+    return encoded <= 0.04045 ? encoded / 12.92 : pow((encoded + 0.055) / 1.055, 2.4);
+}
+
+// Линейный свет → sRGB, как `linear_to_srgb` эталона.
+float linear_to_srgb(float linear_value) {
+    return linear_value <= 0.0031308 ? linear_value * 12.92 : 1.055 * pow(linear_value, 1.0 / 2.4) - 0.055;
+}
+
+// Длина пересечения клетки [index·m, (index+1)·m) с коробкой [out·n, (out+1)·n) (единицы 1/m).
+uint overlap(uint index, uint out_index, uint source_len, uint out_len) {
+    uint cell_begin = index * out_len;
+    uint cell_end = cell_begin + out_len;
+    uint box_begin = out_index * source_len;
+    uint box_end = box_begin + source_len;
+    uint begin = max(cell_begin, box_begin);
+    uint end = min(cell_end, box_end);
+    return end > begin ? end - begin : 0u;
+}
+
+// Пиксель снимка (до поворота), попадающий в повёрнутый пиксель (u, v); `source` — размер снимка до поворота.
+// Совпадает с `source_texel` эталона: при 90° верхний левый угол уходит в верхний правый.
+ivec2 source_texel(uint rotation, uint u, uint v, uvec2 source) {
+    if (rotation == 1u) {
+        return ivec2(int(v), int(source.y - 1u - u));
+    }
+    if (rotation == 2u) {
+        return ivec2(int(source.x - 1u - u), int(source.y - 1u - v));
+    }
+    if (rotation == 3u) {
+        return ivec2(int(source.x - 1u - v), int(u));
+    }
+    return ivec2(int(u), int(v));
+}
+
+// Частичные суммы нитей группы: вмещают любую допустимую рабочую группу (≤ 1024 нитей, конфиг это проверяет).
+shared vec3 partial_sums[1024];
+
+void main() {
+    // Одна РАБОЧАЯ ГРУППА = один пиксель миниатюры: нити группы читают коробку подряд по строке (соседние нити —
+    // соседние пиксели снимка), поэтому чтение сливается в крупные обращения к памяти. «Нить на пиксель» с её
+    // собственным циклом по коробке читала 16 разных строк кэша на нить и на RADV 780M стоила ≈ 12 мс на кадр
+    // 12 Мп (14g); вместо него — группа на пиксель с редукцией в разделяемой памяти.
+    uvec2 target = gl_WorkGroupID.xy;
+    uvec2 target_size = uvec2(imageSize(thumbnail_image));
+    if (target.x >= target_size.x || target.y >= target_size.y) {
+        return; // вся группа выходит целиком: барьеры ниже остаются согласованными
+    }
+    uvec2 source_size = uvec2(imageSize(source_image));
+    uint rotation = geometry.pass_mode;
+    // Размер повёрнутого снимка: при 90° и 270° стороны меняются местами.
+    uvec2 rotated = (rotation == 1u || rotation == 3u) ? source_size.yx : source_size;
+
+    // Диапазон повёрнутых пикселей, которых касается коробка: [floor(o·n/m), ceil((o+1)·n/m)).
+    uint first_u = (target.x * rotated.x) / target_size.x;
+    uint end_u = min(((target.x + 1u) * rotated.x + target_size.x - 1u) / target_size.x, rotated.x);
+    uint first_v = (target.y * rotated.y) / target_size.y;
+    uint end_v = min(((target.y + 1u) * rotated.y + target_size.y - 1u) / target_size.y, rotated.y);
+    uint box_width = end_u - first_u;
+    uint box_texels = box_width * (end_v - first_v);
+
+    uint lane = gl_LocalInvocationIndex;
+    uint lane_count = gl_WorkGroupSize.x * gl_WorkGroupSize.y;
+    // Нить берёт пиксели коробки через шаг в число нитей: порядок строки сохраняется (слияние обращений).
+    vec3 sum = vec3(0.0);
+    for (uint texel_index = lane; texel_index < box_texels; texel_index += lane_count) {
+        uint u = first_u + texel_index % box_width;
+        uint v = first_v + texel_index / box_width;
+        float weight = float(overlap(u, target.x, rotated.x, target_size.x) * overlap(v, target.y, rotated.y, target_size.y));
+        vec3 texel = imageLoad(source_image, source_texel(rotation, u, v, source_size)).rgb;
+        vec3 linear_rgb = vec3(srgb_to_linear(texel.r), srgb_to_linear(texel.g), srgb_to_linear(texel.b));
+        sum += weight * linear_rgb;
+    }
+    partial_sums[lane] = sum;
+    barrier();
+    // Редукция деревом (число нитей не обязано быть степенью двойки: лишние нити пропускаются условием).
+    uint span = 1u;
+    while (span < lane_count) {
+        span <<= 1u;
+    }
+    for (uint stride = span >> 1u; stride > 0u; stride >>= 1u) {
+        if (lane < stride && lane + stride < lane_count) {
+            partial_sums[lane] += partial_sums[lane + stride];
+        }
+        barrier();
+    }
+    if (lane != 0u) {
+        return;
+    }
+    float norm = float(rotated.x) * float(rotated.y);
+    vec3 total = partial_sums[0];
+    vec3 encoded = vec3(linear_to_srgb(total.x / norm), linear_to_srgb(total.y / norm), linear_to_srgb(total.z / norm));
+    // Квантование как у основного снимка (`photo_output_rgba8.comp`): q = floor(clamp(e)·255 + 0.5), в картинку
+    // (q + 0.25)/255 — устойчиво и к округлению к ближайшему, и к усечению при записи UNORM.
+    precise float red = floor(clamp(encoded.x, 0.0, 1.0) * 255.0 + 0.5);
+    precise float green = floor(clamp(encoded.y, 0.0, 1.0) * 255.0 + 0.5);
+    precise float blue = floor(clamp(encoded.z, 0.0, 1.0) * 255.0 + 0.5);
+    imageStore(thumbnail_image, ivec2(target), vec4((vec3(red, green, blue) + 0.25) / 255.0, 1.0));
+}

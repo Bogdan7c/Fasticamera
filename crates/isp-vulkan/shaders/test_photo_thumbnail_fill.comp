@@ -1,0 +1,26 @@
+#version 450
+// ТЕСТОВЫЙ шейдер (`tests/photo_thumbnail_exact.rs`): заполняет картинку RGBA8 детерминированными кодами 0..255 по
+// каждому каналу, чтобы тест миниатюры видел ВСЕ 256 значений входа (а не то, что случайно дала проявка кадра).
+// Код канала = (x·a + y·b + c) & 255 с нечётными множителями из push-констант: на любой картинке шире 100 пикселей и
+// выше 10 строк перебираются все коды. В картинку пишется (код + 0.25) / 255 — как у снимка (устойчиво к способу
+// округления UNORM).
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(push_constant) uniform FillParameters {
+    uvec4 values; // x — множитель по X, y — множитель по Y, z — сдвиг, w — не используется
+} fill;
+
+layout(set = 0, binding = 0, rgba8) uniform writeonly image2D target_image;
+
+void main() {
+    uvec2 size = uvec2(imageSize(target_image));
+    uvec2 texel = gl_GlobalInvocationID.xy;
+    if (texel.x >= size.x || texel.y >= size.y) {
+        return;
+    }
+    uint red = (texel.x * fill.values.x + texel.y * fill.values.y + fill.values.z) & 255u;
+    uint green = (texel.x * fill.values.y + texel.y * fill.values.x + 3u * fill.values.z) & 255u;
+    uint blue = (texel.x * (fill.values.x + fill.values.y) + texel.y + 7u * fill.values.z) & 255u;
+    imageStore(target_image, ivec2(texel), vec4((vec3(red, green, blue) + 0.25) / 255.0, 1.0));
+}
