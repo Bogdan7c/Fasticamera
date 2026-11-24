@@ -34,8 +34,8 @@ use isp_model::cfa::BayerPattern;
 use isp_model::pipeline::ReferenceRun;
 use isp_model::statistics::{AwbStatistics, TileGrid, cells_size, quantize_sample, tile_of_cell};
 use isp_vulkan::viewfinder::{
-    AwbReduction, AwbReductionPolicy, OutputAllocation, ViewfinderGeometry, ViewfinderIsp, ViewfinderIspConfig,
-    ViewfinderStorageFormat, WorkgroupSizeConfig,
+    AwbGroupLayout, AwbReduction, AwbReductionPolicy, OutputAllocation, ViewfinderGeometry, ViewfinderIsp,
+    ViewfinderIspConfig, ViewfinderStorageFormat, WorkgroupSizeConfig,
 };
 use viewfinder_support::{
     ParamsSpec, RawFrame, RunRequest, assert_no_validation_errors, boundary_cells, cpu_awb_statistics,
@@ -503,6 +503,75 @@ fn single_tile_fast_path_keeps_saturated_and_used_fields_apart() {
             (1024 * cells, 2 * 2048 * cells, 3071 * cells, cells, 0),
             "{reduction:?}"
         );
+    }
+    assert_no_validation_errors(&context);
+}
+
+/// Короткий путь по группам (весь кадр в раскладке «каждая группа в одной плитке») выбирается ровно тогда, когда
+/// он верен, и обе раскладки дают те же суммы, что эталон: без этой проверки равенство в других тестах могло бы
+/// идти целиком через общий путь (или целиком через короткий) и не поймать поломку второго.
+#[test]
+fn group_layout_selects_the_short_path_only_when_every_group_is_in_one_tile_and_sums_stay_exact() {
+    let Some(context) = gpu_context_or_skip() else { return };
+    let spec = ParamsSpec {
+        black: [64.0; 4],
+        white: 1088.0,
+        pattern: BayerPattern::RGGB,
+        ..ParamsSpec::default()
+    };
+    let raw = varied_scene(&spec);
+    let params = spec.build();
+    let workgroup = WorkgroupSizeConfig { x: 8, y: 8 };
+    let cases = [
+        // Плитки 16×12 ячеек, группа 8×8: 12 не делится на 8 → часть групп на стыке плиток по Y.
+        (TileGrid { columns: 2, rows: 2 }, AwbGroupLayout::General),
+        // Плитки 16×24 и 32×48: границ по Y нет, по X — кратны группе → все группы в плитках.
+        (TileGrid { columns: 2, rows: 1 }, AwbGroupLayout::SingleTilePerGroup),
+        (TileGrid { columns: 1, rows: 1 }, AwbGroupLayout::SingleTilePerGroup),
+    ];
+    for orientation in [SensorOrientation::Degrees0, SensorOrientation::Degrees90] {
+        for (grid, expected_layout) in cases {
+            let layout = if orientation == SensorOrientation::Degrees90 && grid.rows == 1 && grid.columns == 2 {
+                // Поворот меняет оси местами: границы плиток 2×1 теперь по Y выхода, а их 24 строки — кратны 8.
+                AwbGroupLayout::SingleTilePerGroup
+            } else {
+                expected_layout
+            };
+            let config = config_with_reduction(
+                &context,
+                config(grid, workgroup),
+                (AwbReductionPolicy::SharedMemoryOnly, AwbReduction::SharedMemoryWindow),
+            );
+            let geometry = whole(&raw, orientation);
+            let request = RunRequest {
+                geometry,
+                ..RunRequest::whole_frame(&raw, &params, spec.display())
+            };
+            let gpu_source = viewfinder_support::GpuSource::new(&context, &raw, request.layout);
+            let source = gpu_source.source();
+            let mut isp = ViewfinderIsp::new(&context, &config).unwrap();
+            assert_eq!(isp.last_awb_group_layout(), None, "до первого кадра раскладки нет");
+            viewfinder_support::record_and_submit(
+                &context,
+                &mut isp,
+                &request,
+                &source,
+                0,
+                gpu_vulkan::backdrop::BackdropFrameNumber(1),
+            );
+            assert_eq!(
+                isp.last_awb_group_layout(),
+                Some(layout),
+                "{grid:?} {orientation:?}: раскладка групп по плиткам"
+            );
+            let run = viewfinder_support::readback(&mut isp, 0);
+            let reference = reference_upright(&raw, geometry.crop, orientation, &params).run;
+            assert_eq!(
+                run.report.awb_statistics.unwrap(),
+                cpu_awb_statistics(&reference, &config.awb_statistics),
+                "{grid:?} {orientation:?} {layout:?}"
+            );
+        }
     }
     assert_no_validation_errors(&context);
 }

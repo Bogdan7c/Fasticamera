@@ -111,8 +111,8 @@ pub struct ViewfinderIspConfig {
     pub workgroup_size: WorkgroupSizeConfig,
     /// Сетка и порог статистики AWB (по умолчанию — `isp-model`: 32×24, порог 0,95).
     pub awb_statistics: AwbStatisticsSettings,
-    /// Как сводить статистику AWB внутри рабочей группы (по умолчанию — subgroup, если устройство умеет;
-    /// на телефоне схема через shared-окно стоила ~3,3 мс GPU на кадр 4:3, сессия 07).
+    /// Как сводить статистику AWB внутри рабочей группы (по умолчанию — shared-память; на Adreno 740 она дешевле
+    /// subgroup на ~5 мс кадра со статистикой, сессия 16a).
     pub awb_reduction: AwbReductionPolicy,
     /// Формат изображения видоискателя.
     pub storage_format: ViewfinderStorageFormat,

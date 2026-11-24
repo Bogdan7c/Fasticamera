@@ -16,10 +16,11 @@ use gpu_vulkan::swapchain::DisplayColorSpace;
 use isp_model::params::IspParams;
 use isp_model::statistics::AwbStatistics;
 
+use super::awb_group_layout::{AwbGroupLayout, DispatchShape};
 use super::awb_reduction::{AwbReduction, SubgroupArithmeticSupport};
 use super::config::{ToneBasePrewarm, ViewfinderIspConfig};
 use super::error::ViewfinderError;
-use super::geometry::{ViewfinderGeometry, check_geometry};
+use super::geometry::{CheckedGeometry, ViewfinderGeometry, check_geometry};
 use super::image::ViewfinderImage;
 use super::retirement::{RecordSerial, RetirementQueue};
 use super::stages::{IspStage, IspStageSet};
@@ -123,6 +124,8 @@ pub struct ViewfinderIsp {
     timestamps: GpuTimestamps,
     slots: Vec<SlotState>,
     next_serial: RecordSerial,
+    /// Раскладка групп по плиткам AWB у последнего записанного кадра со статистикой (диагностика и тесты).
+    last_awb_group_layout: Option<AwbGroupLayout>,
     config: ViewfinderIspConfig,
     local_size: LocalSize,
     context: GpuContext,
@@ -189,6 +192,7 @@ impl ViewfinderIsp {
             timestamps: GpuTimestamps::new(context, config.frame_slots, &TIMESTAMP_POINTS)?,
             slots: vec![SlotState::default(); config.frame_slots],
             next_serial: RecordSerial(0),
+            last_awb_group_layout: None,
             config: *config,
             local_size,
             context: context.clone(),
@@ -249,6 +253,12 @@ impl ViewfinderIsp {
             .is_some_and(|image| backdrop.is_from(image.storage_image()))
     }
 
+    /// Как рабочие группы последнего записанного кадра со статистикой AWB легли на плитки (`None` — таких кадров
+    /// ещё не было): короткий путь шейдера или общий. Только наблюдение — на запись не влияет.
+    pub fn last_awb_group_layout(&self) -> Option<AwbGroupLayout> {
+        self.last_awb_group_layout
+    }
+
     /// Сколько вариантов пайплайна создано и держится в кэше.
     pub fn cached_pipeline_variants(&self) -> usize {
         self.variants.len()
@@ -299,7 +309,11 @@ impl ViewfinderIsp {
             format: image.format(),
             stages,
             tone_base: ToneBaseKind::of(frame.params),
+            awb_group_layout: self.awb_group_layout_for(statistics_enabled, &geometry),
         };
+        if statistics_enabled {
+            self.last_awb_group_layout = Some(key.awb_group_layout);
+        }
         let prepared = self.variants.prepare(&self.context, key, serial)?;
         if let Some(evicted) = prepared.evicted {
             self.retired_pipelines.retire(evicted, serial);
@@ -427,6 +441,23 @@ impl ViewfinderIsp {
             isp_gpu_time,
             awb_statistics,
         })
+    }
+
+    /// Раскладка рабочих групп по плиткам статистики AWB этого кадра (ключ варианта пайплайна). Короткий путь
+    /// шейдера есть только у сведения через shared-память и только при включённой статистике; иначе значение
+    /// ничего не меняет, и вариант не размножается.
+    fn awb_group_layout_for(&self, statistics_enabled: bool, geometry: &CheckedGeometry) -> AwbGroupLayout {
+        if !statistics_enabled || self.variants.awb_reduction() != AwbReduction::SharedMemoryWindow {
+            return AwbGroupLayout::General;
+        }
+        DispatchShape {
+            output: (geometry.output.width, geometry.output.height),
+            cells: (geometry.crop.size.width / 2, geometry.crop.size.height / 2),
+            quarter_turns: geometry.quarter_turns,
+            group: (self.local_size.x.get(), self.local_size.y.get()),
+            grid: self.config.awb_statistics.grid,
+        }
+        .group_layout()
     }
 
     fn check_slot(&self, frame_slot: usize) -> Result<usize, ViewfinderError> {

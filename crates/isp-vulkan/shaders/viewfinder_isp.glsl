@@ -45,6 +45,10 @@ layout(constant_id = 14) const bool STAGE_LOOK_LUT = true;
 // 0 — прежняя кривая и обрезка по 1,0; 1 — AgX в рабочем пространстве Rec. 2020 со своим белым точки (решение 177).
 // Номера моделей — `TONE_MODEL_*` в `tone_base.glsl` (зеркало `ToneBaseKind::model_id` в Rust).
 layout(constant_id = 12) const uint TONE_BASE_MODEL = 0u;
+// Каждая рабочая группа лежит целиком в одной плитке статистики AWB (решает CPU по геометрии кадра: `AwbGroupLayout`).
+// Тогда вместо общего пути с окном плиток и определением плитки по нитям работает короткий путь
+// `accumulate_awb_group_in_one_tile`; код общего пути из варианта вырезается. Только для варианта без subgroup.
+layout(constant_id = 16) const bool AWB_GROUPS_IN_ONE_TILE = false;
 
 // --- Параметры кадра (std140, только 32-битные типы: у Adreno 740 нет 16-битного доступа к uniform) ---
 layout(set = 0, binding = 1, std140) uniform ViewfinderParameters {
@@ -347,6 +351,47 @@ void accumulate_awb_window(bool inside, uvec2 cell, vec4 normalized, vec4 correc
     }
 }
 
+// Плитка, в которой лежит ВСЯ рабочая группа (при `AWB_GROUPS_IN_ONE_TILE`): плитка ячейки первой нити группы.
+// Зависит только от номера группы — однородно по группе, барьеры ниже безопасны.
+uvec2 workgroup_tile(uint cells_width, uint cells_height) {
+    uvec2 first_output = gl_WorkGroupID.xy * gl_WorkGroupSize.xy;
+    uvec2 first_cell = cell_of_output(first_output, parameters.output_geometry.z, cells_width, cells_height);
+    return tile_of_cell(first_cell, cells_width, cells_height);
+}
+
+// Слова плитки, накопленные группой: поле за полем (порядок `AWB_SUM_R` … `AWB_SATURATED_CELLS`).
+shared uint awb_group_sums[AWB_WORDS_PER_TILE];
+
+// Короткий путь статистики: вся группа в плитке `tile`. Нить кладёт вклад ячейки в пять слов shared-памяти
+// (`atomicAdd`, нули пропускаются), после барьера пять нитей группы переносят слова в глобальный буфер —
+// одна запись на поле на группу вместо одной на subgroup. Целые суммы u32 не зависят от порядка сложения:
+// результат совпадает с общим путём и с эталоном бит в бит. Вызывают ВСЕ нити группы (внутри barrier()),
+// `inside` — нить внутри выхода (вне выхода вклад нулевой).
+void accumulate_awb_group_in_one_tile(bool inside, uvec2 tile, vec4 normalized, vec4 corrected) {
+    uvec4 sums_and_used;
+    uint saturated;
+    awb_cell_contribution(inside, normalized, corrected, sums_and_used, saturated);
+    if (gl_LocalInvocationIndex < AWB_WORDS_PER_TILE) {
+        awb_group_sums[gl_LocalInvocationIndex] = 0u;
+    }
+    barrier();
+    for (uint field = AWB_SUM_R; field <= AWB_USED_CELLS; ++field) {
+        if (sums_and_used[field] != 0u) {
+            atomicAdd(awb_group_sums[field], sums_and_used[field]);
+        }
+    }
+    if (saturated != 0u) {
+        atomicAdd(awb_group_sums[AWB_SATURATED_CELLS], saturated);
+    }
+    barrier();
+    if (gl_LocalInvocationIndex < AWB_WORDS_PER_TILE) {
+        uint total = awb_group_sums[gl_LocalInvocationIndex];
+        if (total != 0u) {
+            atomicAdd(awb_tiles.words[awb_global_word(tile, gl_LocalInvocationIndex)], total);
+        }
+    }
+}
+
 // Статистика AWB ячейки нити. Вызывают ВСЕ нити группы, включая нити вне выхода (они дают нули).
 // С арифметикой subgroup группа целиком в одной плитке (типично: плитки по 64×64 ячейки) идёт быстрым
 // путём; группа на стыке плиток (или вариант без subgroup) — через shared-окно.
@@ -359,6 +404,10 @@ void accumulate_awb_statistics(bool inside, uvec2 cell, vec4 normalized, vec4 co
         return;
     }
 #endif
+    if (AWB_GROUPS_IN_ONE_TILE) {
+        accumulate_awb_group_in_one_tile(inside, workgroup_tile(cells_width, cells_height), normalized, corrected);
+        return;
+    }
     accumulate_awb_window(inside, cell, normalized, corrected, cells_width, cells_height);
 }
 

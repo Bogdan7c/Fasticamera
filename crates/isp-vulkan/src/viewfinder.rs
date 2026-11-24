@@ -21,6 +21,7 @@
 //! Каждая стадия выключается specialization-константой ([`IspStageSet`]); A/B-замер «с/без» даёт её
 //! цену в мс GPU (метки [`ViewfinderSlotReport::isp_gpu_time`]).
 
+mod awb_group_layout;
 mod awb_reduction;
 mod config;
 mod error;
@@ -33,6 +34,7 @@ mod statistics;
 mod uniforms;
 mod variants;
 
+pub use self::awb_group_layout::{AwbGroupLayout, DispatchShape};
 pub use self::awb_reduction::{AwbReduction, AwbReductionPolicy, SubgroupArithmeticSupport};
 pub use self::config::{
     DEFAULT_PIPELINE_VARIANT_CAPACITY, LargestMosaicConfig, MAX_FRAME_SLOTS, MAX_WORKGROUP_INVOCATIONS,

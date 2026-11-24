@@ -13,6 +13,7 @@ use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::raw_mosaic_preview::MosaicSource;
 use gpu_vulkan::storage_image::StorageImageFormat;
 
+use super::awb_group_layout::AwbGroupLayout;
 use super::awb_reduction::AwbReduction;
 use super::error::ViewfinderError;
 use super::retirement::RecordSerial;
@@ -46,6 +47,9 @@ pub(crate) struct VariantKey {
     pub stages: IspStageSet,
     /// Основа тона: другая модель — другой вариант (specialization-константа `TONE_BASE_MODEL`).
     pub tone_base: ToneBaseKind,
+    /// Как группы лежат на плитках AWB: короткий путь статистики или общий. Решает CPU по геометрии кадра; у вариантов,
+    /// где он ничего не меняет (статистика выключена, сведение через subgroup), всегда `General`.
+    pub awb_group_layout: AwbGroupLayout,
 }
 
 /// Привязки набора дескрипторов (номер = позиция; зеркало `viewfinder_isp.glsl`).
@@ -59,6 +63,8 @@ pub(crate) const BINDING_LOOK: u32 = 6;
 pub(crate) const BINDING_LOOK_LUT: u32 = 7;
 /// `constant_id` выбора модели основы тона в шейдере (стадии занимают 2…11 и 13…14).
 const TONE_BASE_CONSTANT_ID: u32 = 12;
+/// `constant_id` раскладки групп по плиткам AWB (`AWB_GROUPS_IN_ONE_TILE` в шейдере).
+const AWB_GROUP_LAYOUT_CONSTANT_ID: u32 = 16;
 
 /// SPIR-V варианта под источник, формат выхода и способ сведения AWB (суффикс `_SUBGROUP` — с быстрым
 /// путём `subgroupAdd`; его можно создавать только на устройстве с арифметикой subgroup в compute).
@@ -256,6 +262,10 @@ impl VariantCache {
         specialization.push(SpecializationConstant {
             constant_id: TONE_BASE_CONSTANT_ID,
             value: key.tone_base.model_id(),
+        });
+        specialization.push(SpecializationConstant {
+            constant_id: AWB_GROUP_LAYOUT_CONSTANT_ID,
+            value: key.awb_group_layout.specialization_value(),
         });
         let bindings = [
             source_binding_kind(key.source),

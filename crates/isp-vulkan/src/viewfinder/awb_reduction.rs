@@ -2,11 +2,14 @@
 //!
 //! Контракт сумм один — `isp_model::statistics` (целые u32, порядок сложения не влияет на результат),
 //! меняется только цена:
-//! * [`AwbReduction::SubgroupSingleTile`] — группа целиком в одной плитке (типичный случай: плитки по
-//!   64×64 ячейки против группы 16×8) складывает поля `subgroupAdd` и делает по одному глобальному
-//!   `atomicAdd` на поле на subgroup, без shared-памяти и `barrier()`; группа на стыке плиток — как ниже;
-//! * [`AwbReduction::SharedMemoryWindow`] — всегда shared-окно 4×4 плитки с тремя `barrier()` (запасной
-//!   путь для устройства без арифметики subgroup в compute и для A/B-замеров).
+//! * [`AwbReduction::SharedMemoryWindow`] — по умолчанию. Если ВСЕ группы кадра лежат каждая в одной плитке
+//!   (типичный случай: плитки по 64×64 ячейки против группы 16×8; решает CPU, см. `awb_group_layout`),
+//!   шейдер идёт коротким путём: вклады нитей — `atomicAdd` в пять слов shared-памяти, одна запись в
+//!   глобальный буфер на поле на группу. Иначе — общий путь: shared-окно 4×4 плитки с тремя `barrier()`.
+//!   На Adreno 740 кадр со статистикой стоит на ~5 мс дешевле, чем через subgroup (сессия 16a, пакет I);
+//! * [`AwbReduction::SubgroupSingleTile`] — группа целиком в одной плитке складывает поля `subgroupAdd` и делает
+//!   по одному глобальному `atomicAdd` на поле на subgroup; группа на стыке плиток — как общий путь. Оставлен
+//!   как выбор конфига (RADV и другие устройства, где он может быть выгоднее): на Adreno он дороже.
 //!
 //! Конфиг задаёт предпочтение ([`AwbReductionPolicy`]), устройство — возможность
 //! ([`SubgroupArithmeticSupport`]); итог решается один раз при создании `ViewfinderIsp`.
@@ -18,9 +21,10 @@ use gpu_vulkan::context::GpuCapabilities;
 #[serde(rename_all = "snake_case")]
 pub enum AwbReductionPolicy {
     /// Быстрый путь через subgroup, если устройство умеет арифметику subgroup в compute; иначе shared-окно.
-    #[default]
+    /// Не по умолчанию: на Adreno 740 дороже shared-памяти (замер 16a).
     SubgroupWhenSupported,
-    /// Только shared-окно (A/B-замер цены, паритет запасного варианта в тестах).
+    /// Shared-память: короткий путь для кадров, где группа не пересекает плитки, иначе общее окно плиток.
+    #[default]
     SharedMemoryOnly,
 }
 
@@ -92,8 +96,8 @@ mod tests {
     }
 
     #[test]
-    fn policy_reads_from_snake_case_json_and_defaults_to_subgroup() {
-        assert_eq!(AwbReductionPolicy::default(), AwbReductionPolicy::SubgroupWhenSupported);
+    fn policy_reads_from_snake_case_json_and_defaults_to_shared_memory() {
+        assert_eq!(AwbReductionPolicy::default(), AwbReductionPolicy::SharedMemoryOnly);
         let parsed: AwbReductionPolicy = serde_json::from_str(r#""shared_memory_only""#).unwrap();
         assert_eq!(parsed, AwbReductionPolicy::SharedMemoryOnly);
         assert!(serde_json::from_str::<AwbReductionPolicy>(r#""subgroup""#).is_err());
