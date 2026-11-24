@@ -68,6 +68,17 @@
 - `TYPE_GRAVITY` есть (`dedicated_sensor`), ~50,3 Гц; после снятия подписки датчика нет в `dumpsys sensorservice` → «Active sensors».
 - UI по настоящему swapchain `A2B10G10R10` + Display P3: цвета и ориентация верные; под validation 0 ошибок.
 
+## GPU Adreno 740v2 под нагрузкой (сессия 16a, 24.11.2026; подробности — `results/16a.md`, правила — `mem:saturation_bench`)
+- Возможности: subgroupSize 64 (64…128, subgroupSizeControl), shaderFloat16/Int16/Int8, storageBuffer16BitAccess и 8BitAccess (uniformAndStorage* — нет), shared memory compute 32 КБ, maxTexelBufferElements 134 млн, RTE и сброс денормалей в ноль (сохранения денормалей нет), VK_QCOM_image_processing, VK_QCOM_tile_properties, VK_EXT_shader_atomic_float, VK_KHR_fragment_shading_rate.
+- Без root читаются `/sys/class/kgsl/kgsl-3d0/gpubusy` и зоны `gpuss-0…7`, `shell_front/frame/back`, `skin-msm-therm` (`/sys/class/thermal/thermal_zone*/{type,temp}`), частота GPU закрыта. В темпе vsync оба цену работы НЕ показывают (занятость ≈ 80 % и на голой камере; gpuss греет весь чип). Perfetto без root — только `android.gpu.memory`.
+- Ток «до» (release, 60 Гц, ABBA 60 с): CALIBRATE весь продукт +442 ± 20 мА к камере без обработки (910–934 против 480), рисование UI со стеклом +287 ± 18, прибор waveform ≈ +27 (не различим); PHOTO +370 ± 32, UI +71 ± 11. Ток НЕ складывается из долей. CALIBRATE: light → critical за 12,5 мин (батарея 36 → 44 °C, задняя крышка до 50 °C).
+- Полоса памяти ≈ 37 ГБ/с (копирование плоскостей f32). Компиляция compute-пайплайна видоискателя 145–180 мс, драйвер между запусками не кэширует.
+- Дорого: размер кода фрагментного шейдера (стекло), исполняемые инструкции compute (ISP), `subgroupAdd`, конкуренция `atomicAdd` за одну ячейку, группа поперёк строк чтения (64×4 у повёрнутого видоискателя — ×5). Дёшево: выборки фона, `pow`, `imageStore`, чтение упакованного RAW10, `atomicAdd` без конкуренции. Не помогает: fp16/mediump, принудительный размер subgroup, плитки с ореолом в shared-памяти (медленнее чтения соседей из буфера).
+- Компилятор шейдеров складывает иначе, чем RADV: «бит-в-бит на ПК» не переносится — проверять отпечатком выхода на устройстве.
+- При тепловом статусе moderate–severe экран не поднялся до 120 Гц при запросе 120 и удерживаемом касании (на остывшем не проверено).
+- После сценария приложение остаётся на экране и греет телефон: между замерами `--stop-app-after`.
+- Звуковой сигнал владельцу через adb без смены настроек: `adb shell am start -a android.intent.action.SET_TIMER --ei android.intent.extra.alarm.LENGTH 2 --ez android.intent.extra.alarm.SKIP_UI true` (таймер штатных часов, громкость будильника). Сигналить редко — только когда владелец нужен для оценки результата (решение 216).
+
 ## Оптика, зум, две камеры (сессия 13, 20–21.11.2026)
 - `dumpsys media.camera`: основная (2) 5,59 мм, сенсор 8,192×6,144 мм, `intrinsicCalibration` [2865,7; 2866,0; 2040,3; 1515,4; 0]; ширик (3) 2,59 мм, 6,4×4,8 мм, [1651,2; 1651,4; 1759,3; 1494,8; 0] (ось левее центра на ≈ 241 px из 4000), `poseTranslation` −16,9 мм по X от основной; фронт (1) 3,23 мм, 4,608×3,456 мм, `c_x = c_y = 0` — ЗАГЛУШКА (правдоподобие → «калибровки нет»). Кватернионы: основная [1,0,0,0], фронт [0,0,0,1] — порядок/соглашение вендора не надёжны. `availableMaxDigitalZoom` = 10 у всех, `lens.distortion` = 0, `preCorrectionActiveArraySize` = активной области. Логическая 0: `zoomRatioRange` 0,6–10.
 - Эквивалент (35 мм по диагонали): основная ≈ 23,6 мм, ширик ≈ 14,0 мм → ширик 0,593× (подпись `.6`, решение 111), фронт ≈ 24,3 мм.

@@ -1,20 +1,30 @@
-# Стенд насыщения приложения (16a, P4b)
+# Стенд насыщения и методика оптимизации GPU (сессия 16a)
 
-Сценарий `gpu-saturation-bench`: цена работ GPU = пропускная способность при кадрах подряд (не мс в темпе vsync).
+**Зачем**: на Adreno мс GPU в темпе vsync — не цена работы (DVFS растягивает). Цена = 1 / пропускная способность при кадрах подряд без показа. Итоги сессии и цифры — `user/foundation/results/16a.md`.
 
-- Код: `crates/fasticamera-app/src/saturation_bench/` (catalog — имена работ как данные; runner — порядок/пауза/отмена/тепло без GPU;
-  gpu_executor — настоящий GPU, работы по одной, проверка живых объектов Vulkan после освобождения; inputs — сенсор/вид/тон «как у продукта»;
-  screen_scene — списки рисования PHOTO/CALIBRATE настоящим `camera-screen`; backdrop — фон из ISP; services — шов `SaturationGpu`;
-  summary — строка результата). Сценарий: `scenario/gpu_saturation.rs`. Конфиг: `camera.scenarios.saturation` (`saturation_scenario_config.rs`).
-- Шов GPU: `GpuServices::saturation` (`SaturationServices`), на телефоне = долгоживущий контекст `VulkanGpuDiagnostics` (+ карта теней из `shell_wiring`).
-- Тишина продукта: камера закрывается `claim_camera_for_scenario` + `close`, ждём `Closed`; экран снят (SuspendForScenario); в результате `render.delta`.
-- Тесты: `tests/saturation_gpu.rs` (RADV, все 14 работ), `event_router_saturation_tests.rs` (сценарий на подставном GPU),
-  `scripts/tests/test_smoke_saturation.py`. Команда цифр: `cargo test -p fasticamera-app --release --test saturation_gpu -- --nocapture`.
-- Известное: у `still` нет времён проходов (в `photo` нет timestamp-запросов); батарея (BatterySample) не снимается.
+## Правила работы с шейдерами (выстраданы в 16a, обязательны)
+- **«Бит-в-бит на ПК» на Adreno ничего не гарантирует**: компилятор устройства иначе склеивает fma. Три пойманных случая: размер массива shared через константу специализации (миниатюра), слитый демозаик с `precise`, форма выражения блика стекла. Правило: ветку ставить вокруг дорогого, итоговую формулу оставлять прежней строкой, размеры — литералами. Каждую правку шейдера проверять **отпечатком выхода на телефоне**, чередуя «основа → новое → основа» в одном заходе.
+- **Стенд — прибор цены, не приёмка.** После правки, меняющей набор вариантов шейдера, порядок работ или цикл кадра, — камерные сценарии на телефоне (`viewfinder`, `glass`, `screen`, `zoom`). 16a внесла и поймала так дефект: компиляция варианта шейдера ISP посреди сессии = 0,9 с остановки рендера (в отчёте видно по `latch_to_submit.max_ms` и `pipeline_variants.created_in_frame`).
+- Компиляция compute-пайплайна видоискателя на Adreno 740 — 145–180 мс; драйвер между запусками не кэширует. Вариантов шейдера, возникающих посреди сессии, быть не должно (`isp-vulkan::viewfinder::variant_family`).
+- Отрицательный результат — тоже результат: правка с выигрышем < ~2–5 % своей работы откатывается и записывается с цифрами.
 
-## Доработка стенда (16a, пакет A0)
-- Группы работ для флага/конфига `--saturation-workloads`: `baseline` (14, УМОЛЧАНИЕ, порядок не меняется; `baseline_names()`), `ui_ablation` (7: `display_{calibrate,photo}_{glass_only,no_glass,...}`), `isp_ablation` (14: `viewfinder_awb_never|awb_every_frame|without_<стадия>|minimal`). Группа — поле `CatalogEntry::group`; `expand_name` раскрывает имя группы/работы. Фильтр абляций UI — чистая `saturation_bench::draw_filter::DrawFilter`; вариант видоискателя → стадии/каденция AWB — `viewfinder_variant::configure`. `viewfinder_minimal` = только Levels+Demosaic (4 отсчёта RAW на пиксель).
-- Дайджест выхода (`gpu_vulkan::saturation::digest`: FNV-1a 64, `OutputDigest`, `WorkloadDigest` из частей с метками, `DigestError`): сырые байты блокирующим readback ПОСЛЕ окна и `wait_idle`, до освобождения работы (`GpuWorkloadExecutor::digest_of`), без `test-support` (для этого в gpu-vulkan снята cfg-защита с readback-модулей и `kit_test_support`). Части: viewfinder `image`; scopes `counters`+`picture` (ТОЛЬКО с `test-support`: ColorScopes не открывает их без фичи — на телефоне `unavailable`); display `target`; V4 `output`; still `image`+`thumbnail`. В результате: `report.digests` (`имя|16hex` или `имя|-`, только если влезает в `SUMMARY_BUDGET_WITH_DIGESTS_BYTES`, иначе `digests_in_detail_only`; таблица `table` не менялась), в `FASTICAMERA_DETAIL` у строки работы `digest{state, combined, parts[], frame_note}`; у видоискателя `frame_note` = был ли последний кадр со статистикой AWB.
-- Сравнение прогонов: `python3 scripts/smoke_checks_saturation.py compare A.txt B.txt` (`parse_saturation_rows`/`compare_runs`).
-- Запасной сенсор на телефоне: сценарий брал снимок статуса до первой публикации каталога движком (пустой каталог) → `Phase::AwaitingCatalog` + `saturation_bench::catalog_wait` + конфиг `catalog_wait_ms`; причина запасного набора описывает каталог (`describe_catalog`).
-- Геометрия стекла в `SceneSummary`: сумма и объединение прямоугольников `bounds` групп (`glass_bounds_area_px`, `glass_union_area_px`) и доли экрана; `Measurement::cost` — цена кадра с 3 значащими цифрами, p95/max по шагам шкалы.
+## Код
+- Ядро: `gpu_vulkan::saturation` — `SaturationBench` (слоты по кругу, сабмит подряд), трейт `SaturationWorkload`, `PassTimeLog`, `HostRawFrame` (синтетический RAW10 без тестовых фич), `digest` (FNV-1a 64 байтов выхода), `image_diff` (max |Δ| в кодах 10 бит, число пикселей с Δ ≥ 1 и ≥ 2), `output_pixels`.
+- Работы: `isp_vulkan::saturation` (`ViewfinderSaturation`, `ScopesSaturation`, `HeadroomSaturation`, `StillSaturation`; `SceneContent::{Natural, UniformGray, Probe}` — пробник покрывает диапазон для max Δ), `ui_render_vulkan::saturation::UiFrameSaturation` (`FrameComposition`, `BackdropCadence`).
+- Приложение: `crates/fasticamera-app/src/saturation_bench/` — `catalog.rs` + `catalog/<группа>.rs` (имена работ как данные; обход `catalog::entries()`, таблицы `GROUP_TABLES`), `runner`, `gpu_executor` (работы по одной, сверка живых объектов), `inputs` (сенсор, вид, тон как у продукта; калибровка настоящей камеры — ждёт каталог движка, `catalog_wait`), `screen_scene` (списки рисования PHOTO/CALIBRATE настоящим `camera-screen`), `compare_pairs`/`pair_comparison` (пара «вариант → эталон» → Δ в результате), `draw_filter`, `glass_ablation`, `viewfinder_tuning`, `headroom_tuning`, `still_variant`. Сценарий `scenario/gpu_saturation.rs`, конфиг `camera.scenarios.saturation`.
+- Группы для `--saturation-workloads` (имя группы или работы): `baseline` (14, умолчание, порядок не менять), `ui_ablation`, `glass_ablation`, `isp_ablation`, `isp_tuning`, `scopes_ablation`, `v4_tuning`, `still_tuning`. Новая группа = новый файл `catalog/<группа>.rs` + регистрация в `catalog.rs` (enum, `ALL`, имя, `GROUP_TABLES`).
+- Отпечаток: части с метками (viewfinder `image` + `awb_statistics`; scopes `counters` + `picture` через `ColorScopes::digest_last_output_blocking`; display `target`; V4 `output`; still `image` + `thumbnail`). Сравнивать ЧАСТИ, не общий (`compare` показывает, какие части различаются).
+- Сравнение прогонов: `python3 scripts/smoke_checks_saturation.py compare A.log B.log`.
+- Тишина продукта во время стенда: камера закрыта (`claim_camera_for_scenario` + `close`), экран снят; в результате `render.delta`.
+
+## Запуск на телефоне
+- `scripts/device-smoke.sh --variant release [--no-build] --timeout <с> --saturation-workloads <список> [--saturation-measure-ms MS --saturation-warmup-ms MS] --stop-app-after gpu-saturation-bench` (без `--stop-app-after` приложение остаётся на экране и греет телефон). На зарядке работает (ток в мА — нет).
+- Основа для сравнения — сохранённая сборка (`scripts/` + APK) вне репозитория; `--no-build` ставит APK из дерева, где лежит скрипт.
+- Журнал тепла: `python3 scripts/device_thermal_log.py record --out <файл.jsonl> --period-s 5 --duration-s N`, `summarize <файл>`. Зоны `gpuss-*` и `gpubusy` — справочные (в темпе vsync цену не показывают).
+
+## Ток A/B на настоящем экране
+`viewfinder-stage-budget --surface bare_viewfinder|photo_screen|calibrate_screen --stages color_scopes,ui_overlay,whole_product,display_120hz` (только с батареи; пар не меньше 3). Рычаг в рендере — `ViewfinderCommand::SuppressGpuWork(GpuWorkSuppression)`. **Ток не складывается из долей** (A/B показывает экономию в данной точке нагрузки) — приоритеты брать по мс при насыщении.
+
+## Известное
+- Стенд снимка подтверждает проявку маркерной работой (`2·слотов + 1` проявителей) — граница `photo` ради стенда не менялась.
+- Цепочка V4: 65,9 → 51,7 мс точными приёмами при цели 4,2 — сессия 16b (`user/foundation/16b-video-chain-4k60.md`).
