@@ -11,6 +11,7 @@
 //! * [`digest_report`] — дайджест выхода работы в итоге строки («картинка не изменилась» на телефоне);
 //! * [`catalog_wait`] — ожидание каталога камер движка перед сборкой входов (причина запасного сенсора на телефоне);
 //! * [`draw_filter`] — фильтр списка рисования для абляций прохода UI (чистая функция);
+//! * [`glass_ablation`] — абляции свойств стекла (стиль и состав групп) для группы работ `glass_ablation`;
 //! * [`report`] — типы итога строки и вердикт прогона;
 //! * [`runner`] — порядок прогона: работы по одной, пауза, отмена, тепло, события; НЕ знает GPU
 //!   (за него отвечает [`runner::WorkloadExecutor`], подставной в тестах);
@@ -29,6 +30,7 @@ pub mod catalog;
 pub mod catalog_wait;
 pub mod digest_report;
 pub mod draw_filter;
+pub mod glass_ablation;
 pub mod gpu_executor;
 pub mod inputs;
 pub mod report;
