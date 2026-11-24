@@ -1,5 +1,6 @@
 //! Квад рисования стекла (`GlassGroupItem::draw_rect_px`) против прямоугольника адаптации яркости
-//! (`adaptation_rect_px`): первый узкий и содержит только то, что может дать вклад; второй прежний и не меняется.
+//! (`adaptation_rect_px`): первый узкий и содержит только то, что может дать вклад; второй (с решения 220) — границы форм членов без запасов,
+//! а консервативные границы элемента (`bounds_px`) по-прежнему раздуты запасами.
 
 #![allow(
     clippy::unwrap_used,
@@ -49,10 +50,11 @@ fn shadow(radius_px: f32, alpha: f32, offset_px: f32) -> ShadowParamsPx {
 }
 
 #[test]
-fn glow_and_refraction_do_not_widen_the_draw_rect_but_do_widen_the_adaptation_rect() {
+fn glow_and_refraction_do_not_widen_the_draw_rect_or_the_adaptation_rect_but_do_widen_the_bounds() {
     let mut group = rect_group();
     group.params.shadow = shadow(10.0, 0.5, 4.0);
     let baseline = group.draw_rect_px().unwrap();
+    let adaptation_baseline = group.adaptation_rect_px().unwrap();
     // Свечение и вынос линзы сколь угодно велики: рисовать они всё равно не могут (смешиваются внутри слоя / меняют точку чтения фона).
     group.params.press.glow_radius_px = 5000.0;
     group.params.refraction_strength_px = 3000.0;
@@ -61,15 +63,43 @@ fn glow_and_refraction_do_not_widen_the_draw_rect_but_do_widen_the_adaptation_re
         baseline,
         "квад рисования не зависит от свечения и линзы"
     );
-    let adaptation = group.adaptation_rect_px().unwrap();
+    assert_eq!(
+        group.adaptation_rect_px().unwrap(),
+        adaptation_baseline,
+        "прямоугольник адаптации не зависит от свечения и линзы"
+    );
+    let bounds = DrawItem::Glass(group.clone()).bounds_px().unwrap();
     assert!(
-        adaptation.size.width > 9000.0,
-        "прямоугольник адаптации прежний: раздут свечением"
+        bounds.size.width > 9000.0,
+        "границы элемента по-прежнему раздуты свечением"
     );
     assert_eq!(
-        DrawItem::Glass(group.clone()).bounds_px().unwrap(),
-        adaptation,
-        "общие границы элемента — прежний прямоугольник адаптации"
+        bounds,
+        group.influence_rect_px().unwrap(),
+        "общие границы элемента — консервативные границы группы"
+    );
+}
+
+#[test]
+fn adaptation_rect_is_the_union_of_member_shapes_without_margins() {
+    // Форма 200 x 100 в (300, 300) и круг 60 справа; тень, слияние и свечение заданы большими: на прямоугольник не влияют.
+    let mut group = rect_group();
+    group.members.push(member(
+        ShapeGeometry::Circle { diameter: 60.0 },
+        Affine2::translate(600.0, 320.0),
+    ));
+    group.merge_radius_px = 80.0;
+    group.params.shadow = shadow(40.0, 0.5, 12.0);
+    group.params.press.glow_radius_px = 70.0;
+    // Члены: x 200..400, y 250..350 и x 570..630, y 290..350 -> объединение x 200..630, y 250..350.
+    assert_eq!(
+        group.adaptation_rect_px().unwrap(),
+        PxRect::new(PxPoint::new(200.0, 250.0), PxSize::new(430.0, 100.0))
+    );
+    let bounds = group.bounds_px().unwrap();
+    assert!(
+        bounds.size.width > 430.0 + 100.0 && bounds.size.height > 100.0 + 100.0,
+        "границы элемента раздуты запасом: {bounds:?}"
     );
 }
 
@@ -137,6 +167,7 @@ fn empty_group_has_no_draw_rect() {
     group.members.clear();
     assert_eq!(group.draw_rect_px(), None);
     assert_eq!(group.adaptation_rect_px(), None);
+    assert_eq!(group.bounds_px(), None);
 }
 
 #[test]
@@ -144,4 +175,12 @@ fn degenerate_member_has_no_draw_rect() {
     let mut group = rect_group();
     group.members[0].transform = Affine2::scale(0.0, 1.0);
     assert_eq!(group.draw_rect_px(), None);
+}
+
+#[test]
+fn non_finite_transform_has_no_adaptation_rect_and_no_bounds() {
+    let mut group = rect_group();
+    group.members[0].transform = Affine2::translate(f32::NAN, 0.0);
+    assert_eq!(group.adaptation_rect_px(), None);
+    assert_eq!(group.bounds_px(), None);
 }

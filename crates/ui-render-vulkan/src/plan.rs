@@ -216,9 +216,11 @@ pub(crate) fn build_plan(
                 plan.shape_count += 1;
             }
             DrawItem::Glass(group) => {
-                // Вершины квада и точки средней яркости остаются прежними (`bounds` = прямоугольник адаптации):
-                // интерполяция координат и плёнка тона не меняются ни на бит. Область, где группа может дать
-                // вклад, уже: фрагменты вне неё отсекает scissor (`glass_scissors`), до шейдера они не доходят.
+                // Вершины квада остаются прежними (`bounds` = консервативные границы группы). Точки средней
+                // яркости берутся по отдельному прямоугольнику адаптации под самой панелью (решение 220).
+                // Область, где группа может дать вклад, уже: фрагменты вне неё отсекает scissor
+                // (`glass_scissors`), до шейдера они не доходят.
+                let luma_area = group.adaptation_rect_px().unwrap_or(bounds);
                 if let Some(draw_rect) = group.draw_rect_px() {
                     plan.glass_scissors.push(draw_rect);
                 }
@@ -226,6 +228,7 @@ pub(crate) fn build_plan(
                     index,
                     group,
                     &bounds,
+                    &luma_area,
                     member_total,
                     &mut plan.group_bytes,
                     &mut plan.member_bytes,

@@ -1,7 +1,8 @@
 #version 450
 // Тестовые подложки (только feature test-support): заполняют storage-картинку RGBA16F узором.
 // Режимы: 0 — сетка координат (R = B = (x+0.5)/ширина, G = (y+0.5)/высота: два канала несут X, чтобы дисперсия R/B была видна), 1 — сплошной цвет,
-// 2 — «фото» (градиент + шахматка + цветные полосы, детерминированно).
+// 2 — «фото» (градиент + шахматка + цветные полосы, детерминированно), 3 — яркое окно на тёмном фоне
+// (`color` = левая, верхняя, правая, нижняя границы окна в px; серые 0,95 внутри и 0,02 снаружи — как `WINDOW_*_GRAY` в `testing.rs`).
 layout(local_size_x = 8, local_size_y = 8) in;
 layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D target_image;
 
@@ -46,6 +47,9 @@ void main() {
         rgb = vec3(uv.x, uv.y, uv.x);
     } else if (fill.mode == 1u) {
         rgb = fill.color.rgb;
+    } else if (fill.mode == 3u) {
+        bool inside = pixel.x >= fill.color.x && pixel.x < fill.color.z && pixel.y >= fill.color.y && pixel.y < fill.color.w;
+        rgb = vec3(inside ? 0.95 : 0.02);
     } else {
         rgb = photo(uv, pixel);
     }

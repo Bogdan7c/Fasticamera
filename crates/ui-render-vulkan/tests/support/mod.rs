@@ -373,7 +373,11 @@ pub fn full_screen_placement(width: f32, height: f32) -> ui_render_vulkan::Backd
 
 /// Средняя яркость под группой по правилу шейдера: 5 выборок (центр и четверти границ) от яркости фона.
 pub fn mean_luma_under(group: &GlassGroupItem, backdrop: impl Fn(PxPoint) -> DisplayColor) -> f32 {
-    let bounds = group.adaptation_rect_px().unwrap();
+    mean_luma_over_rect(&group.adaptation_rect_px().unwrap(), backdrop)
+}
+
+/// То же правило 5 точек, но по явному прямоугольнику (тест может задать область замера независимо от кода продукта).
+pub fn mean_luma_over_rect(bounds: &ui_draw::geometry::PxRect, backdrop: impl Fn(PxPoint) -> DisplayColor) -> f32 {
     let center = bounds.center();
     let (qx, qy) = (bounds.size.width * 0.25, bounds.size.height * 0.25);
     let taps = [(0.0, 0.0), (qx, qy), (-qx, qy), (qx, -qy), (-qx, -qy)];

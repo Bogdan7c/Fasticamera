@@ -230,7 +230,7 @@ fn panel_fast_path_shares_are_high() {
     let group = panel_group();
     let geometry = group.members[0].geometry;
     let params = group.params;
-    let bounds = group.adaptation_rect_px().unwrap();
+    let bounds = group.bounds_px().unwrap();
     let (mut in_quad, mut covered, mut no_refraction, mut opaque, mut no_rim) = (0_u64, 0_u64, 0_u64, 0_u64, 0_u64);
     // Пиксели квада, где шейдер даёт ровно ноль (нет покрытия и тень нулевая), но всё равно считает два поля формы.
     let mut wasted = 0_u64;
@@ -309,11 +309,12 @@ fn pixels_on_screen(rect: &PxRect) -> u64 {
 }
 
 /// Сколько фрагментов отдаёт панели растеризатор до и после узкой области (scissor), и по какой области
-/// фактически берётся «средняя яркость под группой» (это прямоугольник адаптации, он НЕ менялся).
+/// фактически берётся «средняя яркость под группой» (прямоугольник адаптации: с решения 220 это границы панели без запаса).
 #[test]
 fn panel_fragment_counts_and_adaptation_area() {
     let group = panel_group();
-    let quad = group.adaptation_rect_px().unwrap();
+    let quad = group.bounds_px().unwrap();
+    let luma_area = group.adaptation_rect_px().unwrap();
     let draw = group.draw_rect_px().unwrap();
     let (before, after) = (pixels_on_screen(&quad), pixels_on_screen(&draw));
     println!(
@@ -322,10 +323,10 @@ fn panel_fragment_counts_and_adaptation_area() {
         after as f64 / before as f64 * 100.0,
         (saturation_support::PANEL_SIZE.width * saturation_support::PANEL_SIZE.height) as u64
     );
-    // Точки средней яркости: центр и четверти прямоугольника адаптации (как в шейдере и в `mean_luma_under`).
+    // Точки средней яркости: центр и четверти прямоугольника адаптации под панелью (как в шейдере и в `mean_luma_under`).
     let (center, quarter) = (
-        quad.center(),
-        PxPoint::new(quad.size.width * 0.25, quad.size.height * 0.25),
+        luma_area.center(),
+        PxPoint::new(luma_area.size.width * 0.25, luma_area.size.height * 0.25),
     );
     println!(
         "  средняя яркость берётся в точках: центр ({:.0}, {:.0}), четверти ±({:.0}, {:.0}) -> x от {:.0} до {:.0}, y от {:.0} до {:.0}; \

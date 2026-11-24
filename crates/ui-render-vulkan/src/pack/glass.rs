@@ -1,5 +1,5 @@
 //! Группа стекла и её члены (`GlassGroup` / `GlassMember` в `ui_glass_data.glsl`).
-//! Группа — 9 × 16 = 144 байта, член — 3 × 16 = 48 байт (std430).
+//! Группа — 10 × 16 = 160 байт, член — 3 × 16 = 48 байт (std430).
 
 use ui_draw::draw_list::{DrawListError, GlassGroupItem};
 use ui_draw::geometry::PxRect;
@@ -10,16 +10,19 @@ use super::{put_affine_rows, put_floats, put_ints, put_rect};
 use crate::error::UiRenderError;
 
 /// Размер группы в SSBO.
-pub(crate) const GLASS_GROUP_BYTES: usize = 144;
+pub(crate) const GLASS_GROUP_BYTES: usize = 160;
 /// Размер члена в SSBO.
 pub(crate) const GLASS_MEMBER_BYTES: usize = 48;
 
 /// Дописывает группу в `groups` и её членов в `members`. `first_member` — номер первого члена группы
-/// в общем массиве членов кадра.
+/// в общем массиве членов кадра. `bounds` — квад вершин (консервативные границы группы), `luma_area` —
+/// прямоугольник адаптации яркости (`GlassGroupItem::adaptation_rect_px`, решение 220): шейдер берёт по нему
+/// 5 точек замера средней яркости фона; это отдельное поле, потому что от квада он теперь отличается.
 pub(crate) fn pack_glass_group(
     item_index: usize,
     group: &GlassGroupItem,
     bounds: &PxRect,
+    luma_area: &PxRect,
     first_member: usize,
     groups: &mut Vec<u8>,
     members: &mut Vec<u8>,
@@ -109,6 +112,8 @@ pub(crate) fn pack_glass_group(
     );
     // Индексы членов — в пределах буфера (limits × 16), `i32` хватает с огромным запасом.
     put_ints(groups, &[first_member as i32, group.members.len() as i32, 0, 0]);
+    // Область замера средней яркости (после ints: порядок полей совпадает со структурой в `ui_glass_data.glsl`).
+    put_rect(groups, luma_area);
     debug_assert_eq!(groups.len() - start, GLASS_GROUP_BYTES);
     Ok(())
 }

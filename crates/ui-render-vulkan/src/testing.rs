@@ -24,7 +24,20 @@ pub enum BackdropPattern {
     Uniform([f32; 3]),
     /// «Фото»: градиент + шахматка + цветные полосы (детерминированно, для golden).
     Photo,
+    /// Яркое «окно» на тёмном фоне: внутри прямоугольника (границы в экранных px) серый
+    /// [`WINDOW_INSIDE_GRAY`], снаружи [`WINDOW_OUTSIDE_GRAY`]. Для проверки, ГДЕ именно стекло меряет яркость фона.
+    BrightWindow {
+        left: f32,
+        top: f32,
+        right: f32,
+        bottom: f32,
+    },
 }
+
+/// Серый внутри окна [`BackdropPattern::BrightWindow`] (то же число в `test_backdrop_fill.comp`).
+pub const WINDOW_INSIDE_GRAY: f32 = 0.95;
+/// Серый снаружи окна [`BackdropPattern::BrightWindow`] (то же число в `test_backdrop_fill.comp`).
+pub const WINDOW_OUTSIDE_GRAY: f32 = 0.02;
 
 /// Подложка-картинка с узором.
 pub struct SyntheticBackdrop {
@@ -67,6 +80,12 @@ impl SyntheticBackdrop {
             BackdropPattern::CoordinateGrid => (0_u32, [0.0, 0.0, 0.0, 1.0]),
             BackdropPattern::Uniform([r, g, b]) => (1, [r, g, b, 1.0]),
             BackdropPattern::Photo => (2, [0.0; 4]),
+            BackdropPattern::BrightWindow {
+                left,
+                top,
+                right,
+                bottom,
+            } => (3, [left, top, right, bottom]),
         };
         let mut push: Vec<u8> = [extent.width, extent.height, mode, 0]
             .iter()

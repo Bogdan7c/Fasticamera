@@ -1,5 +1,5 @@
 #version 450
-// ЗАМОРОЖЕННАЯ КОПИЯ на коммите 896865d (до оптимизаций быстрых путей, сессия 16a). НЕ МЕНЯТЬ.
+// ЗАМОРОЖЕННАЯ КОПИЯ на коммите 896865d (до оптимизаций быстрых путей, сессия 16a). НЕ МЕНЯТЬ (единственная правка: точки средней яркости по `luma_area`, решение 220).
 // Нужна только тесту `glass_fast_paths_exact`: он сравнивает бит-в-бит боевой шейдер с этим эталоном.
 // Боевой рендер эту копию не использует (конвейер собирается только под `test-support`).
 #extension GL_GOOGLE_include_directive : require
@@ -79,8 +79,8 @@ float luma_rec709(vec3 color) {
 // тексели крошечного уровня — выборки попадают в кэш.
 float group_mean_luma(GlassGroup group) {
     int deepest = int(frame.light_misc.z + 0.5);
-    vec2 center = group.bounds.xy + 0.5 * group.bounds.zw;
-    vec2 quarter = 0.25 * group.bounds.zw;
+    vec2 center = group.luma_area.xy + 0.5 * group.luma_area.zw;
+    vec2 quarter = 0.25 * group.luma_area.zw;
     float luma = luma_rec709(pyramid_color(deepest, center));
     luma += luma_rec709(pyramid_color(deepest, center + vec2(quarter.x, quarter.y)));
     luma += luma_rec709(pyramid_color(deepest, center + vec2(-quarter.x, quarter.y)));

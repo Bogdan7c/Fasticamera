@@ -11,6 +11,7 @@ struct GlassGroup {
     vec4 v5;      // свечение: радиус, альфа; радиус слияния; материализация
     vec4 v6;      // прозрачность группы; нажатие группы: сила, касание x, касание y (экранные px)
     ivec4 ints;   // x: первый член в массиве членов; y: число членов
+    vec4 luma_area;  // область замера средней яркости фона (под панелью, без запасов): x, y, ширина, высота
 };
 
 struct GlassMember {
@@ -105,8 +106,8 @@ float luma_rec709(vec3 color) {
 // перестройкой пирамиды (ревью сессии 11). Выражение прежнее, значение бит-в-бит то же (пакет G3 сессии 16a).
 float group_mean_luma(GlassGroup group) {
     int deepest = int(frame.light_misc.z + 0.5);
-    vec2 center = group.bounds.xy + 0.5 * group.bounds.zw;
-    vec2 quarter = 0.25 * group.bounds.zw;
+    vec2 center = group.luma_area.xy + 0.5 * group.luma_area.zw;
+    vec2 quarter = 0.25 * group.luma_area.zw;
     float luma = luma_rec709(pyramid_color(deepest, center));
     luma += luma_rec709(pyramid_color(deepest, center + vec2(quarter.x, quarter.y)));
     luma += luma_rec709(pyramid_color(deepest, center + vec2(-quarter.x, quarter.y)));
