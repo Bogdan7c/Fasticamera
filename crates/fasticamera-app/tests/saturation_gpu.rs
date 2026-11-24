@@ -171,7 +171,7 @@ fn row<'a>(summary: &'a RunSummary, name: &str) -> &'a WorkloadRow {
 fn expected_labels(entry: &CatalogEntry) -> Vec<&'static str> {
     match entry.kind {
         WorkloadKind::Viewfinder { .. } => vec!["isp-end"],
-        WorkloadKind::Scopes { .. } => vec!["accumulate-end", "render-end"],
+        WorkloadKind::Scopes { .. } | WorkloadKind::ScopesAblated { .. } => vec!["accumulate-end", "render-end"],
         WorkloadKind::Compositor => vec!["compose"],
         WorkloadKind::Display { .. } => vec!["compose", "pyramid", "ui"],
         WorkloadKind::HeadroomV4 => isp_vulkan::saturation::HeadroomSaturationConfig::default().pass_labels(),

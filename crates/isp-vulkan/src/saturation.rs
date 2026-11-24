@@ -24,6 +24,7 @@ mod headroom;
 mod params;
 mod scene;
 mod scopes;
+mod scopes_diagnostic;
 mod source;
 mod still;
 mod timing;
@@ -36,6 +37,7 @@ pub use self::scene::{
     DEFAULT_GRAY_CODE, Raw10Frame, SENSOR_BLACK_CODE, SENSOR_WHITE_CODE, SceneContent, synthesize_raw10,
 };
 pub use self::scopes::{DEFAULT_PICTURE_SIZE_PX, ScopesCounters, ScopesSaturation, ScopesSaturationConfig};
+pub use self::scopes_diagnostic::AccumulateDiagnostic;
 pub use self::source::{RawFrameHolder, synthetic_raw10_holder};
 pub use self::still::{STILL_FRAME_SIZE, StillCounters, StillSaturation, StillSaturationConfig};
 pub use self::viewfinder::{

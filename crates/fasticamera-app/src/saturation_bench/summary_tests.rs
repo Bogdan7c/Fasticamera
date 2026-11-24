@@ -263,13 +263,18 @@ fn summary_carries_digests_for_the_baseline_but_moves_them_to_detail_when_the_li
         rows: rows_for(&all),
         cancelled: false,
     };
+    let all_count = all.len();
     let big = build_summary(&header_for(all), &everything, &quiet_silence());
     assert!(
         big.get("digests").is_none(),
-        "35 работ не влезают: дайджестов в строке нет"
+        "весь каталог не влезает: дайджестов в строке нет"
     );
     assert_eq!(big["digests_in_detail_only"], true);
-    assert_eq!(big["table"].as_array().map(Vec::len), Some(35), "таблица на месте");
+    assert_eq!(
+        big["table"].as_array().map(Vec::len),
+        Some(all_count),
+        "таблица на месте"
+    );
 }
 
 #[test]

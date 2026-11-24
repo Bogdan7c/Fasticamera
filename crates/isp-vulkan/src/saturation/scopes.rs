@@ -32,10 +32,11 @@ use scope_model::{ResolvedScope, ScopeModelSettings};
 
 use super::error::{FirstFailure, SaturationWorkError};
 use super::scene::SceneContent;
+use super::scopes_diagnostic::{AccumulateDiagnostic, DiagnosticRule};
 use super::source::RawFrameHolder;
 use super::timing::log_collect;
 use super::viewfinder::{PASS_LOG_CAPACITY_FRAMES, ViewfinderSaturation, ViewfinderSaturationConfig};
-use crate::scopes::{ColorScopes, ColorScopesConfig, ScopeFrame, ScopeInput};
+use crate::scopes::{ColorScopes, ColorScopesConfig, GpuScopeRule, ScopeFrame, ScopeInput};
 use crate::viewfinder::gamut_for_display;
 
 /// Размер картинки прибора по умолчанию `[estimate]`: см. описание модуля.
@@ -63,6 +64,9 @@ pub struct ScopesSaturationConfig {
     pub settings: ScopeModelSettings,
     /// Слотов кадров приборов.
     pub frame_slots: usize,
+    /// Диагностический вариант накопления (только стенд; `None` — продуктовый шейдер). Только для приборов с
+    /// целочисленной проекцией: waveform, parade, вектороскоп Y'CbCr.
+    pub diagnostic: Option<AccumulateDiagnostic>,
 }
 
 impl Default for ScopesSaturationConfig {
@@ -77,6 +81,7 @@ impl Default for ScopesSaturationConfig {
                 .unwrap_or_else(|_| unreachable!("540x360 внутри предела словаря приборов")),
             settings: ScopeModelSettings::default(),
             frame_slots: ColorScopesConfig::default().frame_slots,
+            diagnostic: None,
         }
     }
 }
@@ -88,6 +93,13 @@ impl ScopesSaturationConfig {
         if self.frame_slots == 0 {
             return Err(SaturationWorkError::invalid_config(
                 "frame_slots = 0: нужен хотя бы один слот",
+            ));
+        }
+        if self.diagnostic.is_some()
+            && (self.kind == ScopeKind::Vectorscope && self.vectorscope_axes == VectorscopeAxes::OklabAb)
+        {
+            return Err(SaturationWorkError::invalid_config(
+                "диагностика накопления есть только у целочисленных приборов (не OKLab)",
             ));
         }
         self.settings
@@ -146,12 +158,14 @@ impl ScopesSaturation {
         let rule = ResolvedScope::resolve(&request, &config.settings, gamut)
             .map_err(|error| SaturationWorkError::invalid_config(format!("правило прибора: {error}")))?;
         let input = ViewfinderSaturation::new(context, config.viewfinder_for_scopes(), params, holder)?;
-        let mut scopes = ColorScopes::new(
+        let extra_shaders: Vec<_> = config.diagnostic.iter().map(|diagnostic| diagnostic.shader()).collect();
+        let mut scopes = ColorScopes::with_extra_accumulators(
             context,
             &ColorScopesConfig {
                 frame_slots: config.frame_slots,
                 counter_sizing: config.settings.clone(),
             },
+            &extra_shaders,
         )?;
         // Картинка готовится МЕЖДУ кадрами (как в продукте): `record` её не создаёт.
         scopes.prepare_picture(config.picture_size)?;
@@ -225,11 +239,19 @@ impl ScopesSaturation {
             what: "картинка видоискателя не создана".to_owned(),
         })?;
         let (view, window) = (image.sampled_view(), image.content_window());
+        let diagnostic_rule = self.config.diagnostic.map(|diagnostic| DiagnosticRule {
+            inner: &self.rule,
+            diagnostic,
+        });
+        let rule: &dyn GpuScopeRule = match &diagnostic_rule {
+            Some(diagnostic_rule) => diagnostic_rule,
+            None => &self.rule,
+        };
         self.scopes.record(
             recording.command_buffer(),
             &ScopeFrame {
                 input: ScopeInput { view, window },
-                rule: &self.rule,
+                rule,
                 settings: &self.config.settings,
                 picture_size: self.config.picture_size,
                 frame_slot: slot,

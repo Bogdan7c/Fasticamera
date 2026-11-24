@@ -29,6 +29,25 @@ pub enum ScopeInputKind {
     UniformGray,
 }
 
+/// Какой кусок накопления прибора оставлен в диагностической работе `scopes_*_<вариант>` (зеркало
+/// `isp_vulkan::saturation::AccumulateDiagnostic`: каталог GPU не знает).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopeAblation {
+    /// Пустой шейдер: очистка счётчиков и запуск групп.
+    Empty,
+    /// Только чтение картинки и квантование.
+    ReadOnly,
+    /// Чтение + проекция без записи.
+    SkipWrite,
+    /// Все `atomicAdd` в одну ячейку.
+    WriteCellZero,
+    /// У каждой нити своя ячейка.
+    WriteSpread,
+    /// Слияние одинаковых ячеек в subgroup перед atomicAdd.
+    Aggregated,
+}
+
 /// Экран камеры, список рисования которого гонит работа `display_*`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -95,11 +114,18 @@ pub enum WorkloadGroup {
     UiAblation,
     /// Абляции видоискателя: что стоит каждая стадия и статистика AWB.
     IspAblation,
+    /// Абляции накопления приборов: цена чтения, проекции и записи `atomicAdd`.
+    ScopesAblation,
 }
 
 impl WorkloadGroup {
     /// Все группы.
-    pub const ALL: [WorkloadGroup; 3] = [Self::Baseline, Self::UiAblation, Self::IspAblation];
+    pub const ALL: [WorkloadGroup; 4] = [
+        Self::Baseline,
+        Self::UiAblation,
+        Self::IspAblation,
+        Self::ScopesAblation,
+    ];
 
     /// Имя группы в конфиге и флаге.
     pub const fn name(self) -> &'static str {
@@ -107,6 +133,7 @@ impl WorkloadGroup {
             Self::Baseline => "baseline",
             Self::UiAblation => "ui_ablation",
             Self::IspAblation => "isp_ablation",
+            Self::ScopesAblation => "scopes_ablation",
         }
     }
 
@@ -124,6 +151,8 @@ pub enum WorkloadKind {
     Viewfinder { variant: ViewfinderVariant },
     /// Цветовой прибор.
     Scopes { shape: ScopeShape, input: ScopeInputKind },
+    /// Цветовой прибор с урезанным накоплением (диагностика цены).
+    ScopesAblated { shape: ScopeShape, ablation: ScopeAblation },
     /// Только компоновщик (картинка видоискателя в цель экрана).
     Compositor,
     /// Компоновщик + рендер UI настоящего экрана камеры.
@@ -153,6 +182,10 @@ pub struct CatalogEntry {
 
 const fn scopes(shape: ScopeShape, input: ScopeInputKind) -> WorkloadKind {
     WorkloadKind::Scopes { shape, input }
+}
+
+const fn scopes_ablated(shape: ScopeShape, ablation: ScopeAblation) -> WorkloadKind {
+    WorkloadKind::ScopesAblated { shape, ablation }
 }
 
 const fn display(screen: DisplayScreen, rhythm: BackdropRhythm) -> WorkloadKind {
@@ -393,6 +426,115 @@ pub const CATALOG: &[CatalogEntry] = &[
         kind: viewfinder(ViewfinderVariant::Minimal),
         group: WorkloadGroup::IspAblation,
         summary: "ISP видоискателя, пол цены: только levels + demosaic (4 отсчёта RAW на пиксель, запись картинки)",
+    },
+    // ---- Абляции накопления приборов (группа scopes_ablation). ----
+    CatalogEntry {
+        name: "scopes_waveform_empty",
+        kind: scopes_ablated(ScopeShape::Waveform, ScopeAblation::Empty),
+        group: WorkloadGroup::ScopesAblation,
+        summary: "waveform: пустое накопление (очистка + запуск групп)",
+    },
+    CatalogEntry {
+        name: "scopes_waveform_read_only",
+        kind: scopes_ablated(ScopeShape::Waveform, ScopeAblation::ReadOnly),
+        group: WorkloadGroup::ScopesAblation,
+        summary: "waveform: только чтение и квантование",
+    },
+    CatalogEntry {
+        name: "scopes_waveform_skip_write",
+        kind: scopes_ablated(ScopeShape::Waveform, ScopeAblation::SkipWrite),
+        group: WorkloadGroup::ScopesAblation,
+        summary: "waveform: чтение + проекция, без записи",
+    },
+    CatalogEntry {
+        name: "scopes_waveform_cell_zero",
+        kind: scopes_ablated(ScopeShape::Waveform, ScopeAblation::WriteCellZero),
+        group: WorkloadGroup::ScopesAblation,
+        summary: "waveform: все atomicAdd в одну ячейку",
+    },
+    CatalogEntry {
+        name: "scopes_waveform_spread",
+        kind: scopes_ablated(ScopeShape::Waveform, ScopeAblation::WriteSpread),
+        group: WorkloadGroup::ScopesAblation,
+        summary: "waveform: у каждой нити своя ячейка",
+    },
+    CatalogEntry {
+        name: "scopes_parade_empty",
+        kind: scopes_ablated(ScopeShape::Parade, ScopeAblation::Empty),
+        group: WorkloadGroup::ScopesAblation,
+        summary: "parade: пустое накопление (очистка + запуск групп)",
+    },
+    CatalogEntry {
+        name: "scopes_parade_read_only",
+        kind: scopes_ablated(ScopeShape::Parade, ScopeAblation::ReadOnly),
+        group: WorkloadGroup::ScopesAblation,
+        summary: "parade: только чтение и квантование",
+    },
+    CatalogEntry {
+        name: "scopes_parade_skip_write",
+        kind: scopes_ablated(ScopeShape::Parade, ScopeAblation::SkipWrite),
+        group: WorkloadGroup::ScopesAblation,
+        summary: "parade: чтение + проекция, без записи",
+    },
+    CatalogEntry {
+        name: "scopes_parade_cell_zero",
+        kind: scopes_ablated(ScopeShape::Parade, ScopeAblation::WriteCellZero),
+        group: WorkloadGroup::ScopesAblation,
+        summary: "parade: все atomicAdd в одну ячейку",
+    },
+    CatalogEntry {
+        name: "scopes_parade_spread",
+        kind: scopes_ablated(ScopeShape::Parade, ScopeAblation::WriteSpread),
+        group: WorkloadGroup::ScopesAblation,
+        summary: "parade: у каждой нити своя ячейка",
+    },
+    CatalogEntry {
+        name: "scopes_vectorscope_ycbcr_empty",
+        kind: scopes_ablated(ScopeShape::VectorscopeYcbcr, ScopeAblation::Empty),
+        group: WorkloadGroup::ScopesAblation,
+        summary: "vectorscope_ycbcr: пустое накопление (очистка + запуск групп)",
+    },
+    CatalogEntry {
+        name: "scopes_vectorscope_ycbcr_read_only",
+        kind: scopes_ablated(ScopeShape::VectorscopeYcbcr, ScopeAblation::ReadOnly),
+        group: WorkloadGroup::ScopesAblation,
+        summary: "vectorscope_ycbcr: только чтение и квантование",
+    },
+    CatalogEntry {
+        name: "scopes_vectorscope_ycbcr_skip_write",
+        kind: scopes_ablated(ScopeShape::VectorscopeYcbcr, ScopeAblation::SkipWrite),
+        group: WorkloadGroup::ScopesAblation,
+        summary: "vectorscope_ycbcr: чтение + проекция, без записи",
+    },
+    CatalogEntry {
+        name: "scopes_vectorscope_ycbcr_cell_zero",
+        kind: scopes_ablated(ScopeShape::VectorscopeYcbcr, ScopeAblation::WriteCellZero),
+        group: WorkloadGroup::ScopesAblation,
+        summary: "vectorscope_ycbcr: все atomicAdd в одну ячейку",
+    },
+    CatalogEntry {
+        name: "scopes_vectorscope_ycbcr_spread",
+        kind: scopes_ablated(ScopeShape::VectorscopeYcbcr, ScopeAblation::WriteSpread),
+        group: WorkloadGroup::ScopesAblation,
+        summary: "vectorscope_ycbcr: у каждой нити своя ячейка",
+    },
+    CatalogEntry {
+        name: "scopes_waveform_aggregated",
+        kind: scopes_ablated(ScopeShape::Waveform, ScopeAblation::Aggregated),
+        group: WorkloadGroup::ScopesAblation,
+        summary: "waveform: слияние одинаковых ячеек в subgroup",
+    },
+    CatalogEntry {
+        name: "scopes_parade_aggregated",
+        kind: scopes_ablated(ScopeShape::Parade, ScopeAblation::Aggregated),
+        group: WorkloadGroup::ScopesAblation,
+        summary: "parade: слияние одинаковых ячеек в subgroup",
+    },
+    CatalogEntry {
+        name: "scopes_vectorscope_ycbcr_aggregated",
+        kind: scopes_ablated(ScopeShape::VectorscopeYcbcr, ScopeAblation::Aggregated),
+        group: WorkloadGroup::ScopesAblation,
+        summary: "vectorscope_ycbcr: слияние одинаковых ячеек в subgroup",
     },
 ];
 

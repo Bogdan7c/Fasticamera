@@ -1,0 +1,9 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_samplerless_texture_functions : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_ballot : require
+// ДИАГНОСТИКА стенда насыщения (не продукт): целочисленное накопление со слиянием одинаковых ячеек в subgroup.
+#define SCOPE_MERGE_HITS
+#include "scope_accumulate_common.glsl"
+#include "scope_accumulate_integer_rule.glsl"

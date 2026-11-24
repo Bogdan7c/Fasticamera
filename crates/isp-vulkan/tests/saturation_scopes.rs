@@ -16,7 +16,8 @@ mod saturation_support;
 use camera_contract::geometry::{PixelSize, SensorOrientation};
 use gpu_vulkan::saturation::{CancelToken, SaturationBench, SaturationError};
 use isp_vulkan::saturation::{
-    SaturationWorkError, SceneContent, ScopesSaturation, ScopesSaturationConfig, ViewfinderSaturationConfig,
+    AccumulateDiagnostic, SaturationWorkError, SceneContent, ScopesSaturation, ScopesSaturationConfig,
+    ViewfinderSaturationConfig,
 };
 use isp_vulkan::viewfinder::ViewfinderStorageFormat;
 use saturation_support::viewfinder_support::{
@@ -206,5 +207,45 @@ fn objects_return_to_baseline_after_drop() {
         context.wait_idle().unwrap();
     }
     assert_eq!(context.live_objects(), baseline);
+    assert_no_validation_errors(&context);
+}
+
+/// Диагностические варианты накопления стенда реально исполняются и делают ровно то, что обещают: без записи
+/// счётчики пусты, «одна ячейка» собирает ВСЕ попадания продукта в ячейку 0, «у каждой нити своя» сохраняет сумму.
+#[test]
+fn accumulate_diagnostics_write_what_they_promise() {
+    let _serial = serialize_gpu_timing();
+    let Some(context) = gpu_context_or_skip() else { return };
+    let run = |diagnostic: Option<AccumulateDiagnostic>| {
+        let scopes_config = ScopesSaturationConfig {
+            diagnostic,
+            ..config(ScopeKind::RgbParade, SceneContent::default())
+        };
+        let mut work = ScopesSaturation::new_synthetic(&context, scopes_config, ParamsSpec::default().build()).unwrap();
+        run_quick(&context, &mut work, 2);
+        context.wait_idle().unwrap();
+        assert!(work.take_failure().is_none(), "{diagnostic:?}");
+        work.scopes().read_back_counters_blocking().unwrap()
+    };
+    let product = run(None);
+    let product_total: u64 = product.counts().iter().map(|&count| u64::from(count)).sum();
+    // Слияние ячеек в subgroup: те же счётчики бит в бит.
+    assert_eq!(run(Some(AccumulateDiagnostic::Aggregated)), product);
+    assert!(product_total > 0);
+    for silent in [
+        AccumulateDiagnostic::Empty,
+        AccumulateDiagnostic::ReadOnly,
+        AccumulateDiagnostic::SkipWrite,
+    ] {
+        assert!(run(Some(silent)).counts().iter().all(|&count| count == 0), "{silent:?}");
+    }
+    let single_cell = run(Some(AccumulateDiagnostic::WriteCellZero));
+    assert_eq!(u64::from(single_cell.counts()[0]), product_total);
+    let spread_total: u64 = run(Some(AccumulateDiagnostic::WriteSpread))
+        .counts()
+        .iter()
+        .map(|&count| u64::from(count))
+        .sum();
+    assert_eq!(spread_total, product_total);
     assert_no_validation_errors(&context);
 }

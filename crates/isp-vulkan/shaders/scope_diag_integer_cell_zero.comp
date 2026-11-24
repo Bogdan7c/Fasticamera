@@ -1,0 +1,7 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_samplerless_texture_functions : require
+// ДИАГНОСТИКА стенда насыщения (не продукт): целочисленное накопление, все atomicAdd в одну ячейку.
+#define SCOPE_DIAG_WRITE_CELL_ZERO
+#include "scope_accumulate_common.glsl"
+#include "scope_accumulate_integer_rule.glsl"

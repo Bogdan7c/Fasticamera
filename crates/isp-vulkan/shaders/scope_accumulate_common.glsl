@@ -67,6 +67,26 @@ uint quantize_display_value(float value) {
     return uint(floor(shifted));
 }
 
+#if defined(SCOPE_MERGE_HITS)
+// Слияние одинаковых ячеек внутри subgroup: нити, попавшие в одну ячейку, дают ОДИН `atomicAdd` с числом попаданий.
+// Счётчики целые, сумма не зависит от порядка и разбиения, поэтому итог тот же бит в бит. Цикл идёт по различным
+// ячейкам subgroup (у вектороскопа соседние пиксели почти всегда в одной ячейке — 1-3 витка).
+void add_hit_merged_in_subgroup(uint cell) {
+    bool pending = true;
+    while (pending) {
+        uint leader_cell = subgroupBroadcastFirst(cell);
+        bool same_cell = cell == leader_cell;
+        uvec4 same_cell_lanes = subgroupBallot(same_cell);
+        if (same_cell) {
+            pending = false;
+            if (subgroupElect()) {
+                atomicAdd(counters.counts[cell], subgroupBallotBitCount(same_cell_lanes));
+            }
+        }
+    }
+}
+#endif
+
 // Прибавляет попадание. Ячейка вне сетки не пишется (на CPU это ошибка правила, на GPU выход за буфер
 // недопустим); у правил из `scope-model` такого не бывает, паритет-тесты это проверяют.
 void scope_add_hit(uint plane, uint row, uint column) {
@@ -76,7 +96,28 @@ void scope_add_hit(uint plane, uint row, uint column) {
     if (plane >= planes || row >= rows || column >= columns) {
         return;
     }
-    atomicAdd(counters.counts[(plane * rows + row) * columns + column], 1u);
+    uint cell = (plane * rows + row) * columns + column;
+#if defined(SCOPE_DIAG_SKIP_WRITE)
+    // ДИАГНОСТИКА стенда: ячейка посчитана, запись не делается (ветка не выполняется никогда, но компилятор её не уберёт).
+    if (cell == 0xFFFFFFFFu) {
+        atomicAdd(counters.counts[0], 1u);
+    }
+#elif defined(SCOPE_DIAG_WRITE_CELL_ZERO)
+    // ДИАГНОСТИКА стенда: все записи в одну ячейку (худшая конкуренция), проекция всё равно считается.
+    if (cell != 0xFFFFFFFFu) {
+        atomicAdd(counters.counts[0], 1u);
+    }
+#elif defined(SCOPE_DIAG_WRITE_SPREAD)
+    // ДИАГНОСТИКА стенда: у каждой нити своя ячейка (конкуренции нет), проекция всё равно считается.
+    if (cell != 0xFFFFFFFFu) {
+        uint own = (gl_GlobalInvocationID.y * sampling.samples_x + gl_GlobalInvocationID.x) * 3u + plane;
+        atomicAdd(counters.counts[own % (rows * columns * planes)], 1u);
+    }
+#elif defined(SCOPE_MERGE_HITS)
+    add_hit_merged_in_subgroup(cell);
+#else
+    atomicAdd(counters.counts[cell], 1u);
+#endif
 }
 
 // Правило попадания прибора: определяется в файле прибора.

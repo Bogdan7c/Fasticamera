@@ -15,9 +15,9 @@ use gpu_vulkan::saturation::{
     SaturationWorkload, WorkloadDigest,
 };
 use isp_vulkan::saturation::{
-    DEFAULT_GRAY_CODE, HeadroomSaturation, HeadroomSaturationConfig, SaturationWorkError, SceneContent,
-    ScopesSaturation, ScopesSaturationConfig, StillSaturation, StillSaturationConfig, ViewfinderSaturation,
-    ViewfinderSaturationConfig,
+    AccumulateDiagnostic, DEFAULT_GRAY_CODE, HeadroomSaturation, HeadroomSaturationConfig, SaturationWorkError,
+    SceneContent, ScopesSaturation, ScopesSaturationConfig, StillSaturation, StillSaturationConfig,
+    ViewfinderSaturation, ViewfinderSaturationConfig,
 };
 use scope_contract::{ScopeKind, ScopeRequest, VectorscopeAxes};
 use ui_draw::draw_list::LiveImage;
@@ -28,7 +28,8 @@ use ui_render_vulkan::saturation::{
 
 use super::backdrop::{BackdropFailures, IspBackdrop};
 use super::catalog::{
-    BackdropRhythm, CatalogEntry, DisplayScreen, ScopeInputKind, ScopeShape, ViewfinderVariant, WorkloadKind,
+    BackdropRhythm, CatalogEntry, DisplayScreen, ScopeAblation, ScopeInputKind, ScopeShape, ViewfinderVariant,
+    WorkloadKind,
 };
 use super::digest_report::DigestOutcome;
 use super::draw_filter::DrawFilter;
@@ -280,7 +281,10 @@ impl GpuWorkloadExecutor {
     fn build(&mut self, entry: &CatalogEntry) -> Result<Box<dyn BenchWork>, BuildError> {
         match entry.kind {
             WorkloadKind::Viewfinder { variant } => self.build_viewfinder(variant),
-            WorkloadKind::Scopes { shape, input } => self.build_scopes(shape, input),
+            WorkloadKind::Scopes { shape, input } => self.build_scopes(shape, input, None),
+            WorkloadKind::ScopesAblated { shape, ablation } => {
+                self.build_scopes(shape, ScopeInputKind::Natural, Some(scope_diagnostic(ablation)))
+            }
             WorkloadKind::Compositor => self.build_display(
                 FrameComposition::CompositorOnly,
                 DisplayScreen::Photo,
@@ -308,7 +312,12 @@ impl GpuWorkloadExecutor {
         Ok(Box::new(ViewfinderWork(work)))
     }
 
-    fn build_scopes(&mut self, shape: ScopeShape, input: ScopeInputKind) -> Result<Box<dyn BenchWork>, BuildError> {
+    fn build_scopes(
+        &mut self,
+        shape: ScopeShape,
+        input: ScopeInputKind,
+        diagnostic: Option<AccumulateDiagnostic>,
+    ) -> Result<Box<dyn BenchWork>, BuildError> {
         // Размер картинки и положение глаза — из настоящей раскладки экрана калибровки.
         let layout_request = self.calibrate_scope_request()?;
         let (kind, axes) = match shape {
@@ -322,7 +331,7 @@ impl GpuWorkloadExecutor {
             vectorscope_axes: axes,
             ..layout_request
         };
-        let work = self.scopes_for(&request, scope_content(input))?;
+        let work = self.scopes_for(&request, scope_content(input), diagnostic)?;
         Ok(Box::new(ScopesWork(work)))
     }
 
@@ -337,7 +346,12 @@ impl GpuWorkloadExecutor {
         })
     }
 
-    fn scopes_for(&self, request: &ScopeRequest, content: SceneContent) -> Result<ScopesSaturation, BuildError> {
+    fn scopes_for(
+        &self,
+        request: &ScopeRequest,
+        content: SceneContent,
+        diagnostic: Option<AccumulateDiagnostic>,
+    ) -> Result<ScopesSaturation, BuildError> {
         let config = ScopesSaturationConfig {
             viewfinder: self.viewfinder_config(),
             input_content: content,
@@ -346,6 +360,7 @@ impl GpuWorkloadExecutor {
             scan: request.scan,
             picture_size: request.image_size,
             frame_slots: self.slots(),
+            diagnostic,
             ..ScopesSaturationConfig::default()
         };
         let params = self.inputs.params(PipelineKind::Viewfinder)?;
@@ -392,6 +407,7 @@ impl GpuWorkloadExecutor {
                     SceneContent::Natural {
                         seed: NATURAL_SCENE_SEED,
                     },
+                    None, // diagnostic: продуктовый шейдер накопления
                 )?;
                 self.compute_scope_picture_once(&mut scopes)?;
                 let view = scopes.scopes().output_view().ok_or_else(|| {
@@ -465,6 +481,18 @@ impl GpuWorkloadExecutor {
         let result = bench.run(work.workload(), cancel);
         drop(bench);
         result.map_err(|error| bench_failure(&error, work.take_failure()))
+    }
+}
+
+/// Вариант накопления GPU по записи каталога.
+fn scope_diagnostic(ablation: ScopeAblation) -> AccumulateDiagnostic {
+    match ablation {
+        ScopeAblation::Empty => AccumulateDiagnostic::Empty,
+        ScopeAblation::ReadOnly => AccumulateDiagnostic::ReadOnly,
+        ScopeAblation::SkipWrite => AccumulateDiagnostic::SkipWrite,
+        ScopeAblation::WriteCellZero => AccumulateDiagnostic::WriteCellZero,
+        ScopeAblation::WriteSpread => AccumulateDiagnostic::WriteSpread,
+        ScopeAblation::Aggregated => AccumulateDiagnostic::Aggregated,
     }
 }
 
