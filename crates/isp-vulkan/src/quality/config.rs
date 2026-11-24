@@ -56,6 +56,12 @@ impl Default for WorkgroupSizeConfig {
     }
 }
 
+/// Рабочая группа цепочки V4 по умолчанию: 128×2 нитей. На Adreno 740 (замер пакета V, заход A/B/A, кадр 4096×2304) вся
+/// цепочка при 16×16 стоит 65,6 мс, при 128×2 — 60,6 мс: группа тянется вдоль строки плоскостей f32, и соседние нити читают
+/// подряд идущие адреса. Картинка от формы группы не зависит (тест `workgroup_shape_does_not_change_the_image`).
+/// Только для цепочки V4: проявление снимка (`photo`) берёт `WorkgroupSizeConfig::default()` и остаётся 16×16.
+pub const HEADROOM_WORKGROUP: WorkgroupSizeConfig = WorkgroupSizeConfig { x: 128, y: 2 };
+
 /// Настройки временного шумодава «на пробу» (формулы — `shaders/quality_temporal_denoise.comp`).
 ///
 /// Значения по умолчанию — оценка для стенда, а не калибровка: модель шума сенсора (профиль C7 из 00)
@@ -137,7 +143,7 @@ impl Default for VideoHeadroomConfig {
         Self {
             frame_slots: 2,
             output_format: QualityOutputFormat::default(),
-            workgroup_size: WorkgroupSizeConfig::default(),
+            workgroup_size: HEADROOM_WORKGROUP,
             temporal_denoise: TemporalDenoiseConfig::default(),
             lens_shading_map: LensShadingMapLimits::default(),
             look_lut: LookLutLimits::default(),
@@ -206,6 +212,14 @@ mod tests {
         let partial: VideoHeadroomConfig = serde_json::from_str(r#"{"frame_slots": 3}"#).unwrap();
         assert_eq!(partial.frame_slots, 3);
         assert_eq!(partial.temporal_denoise, TemporalDenoiseConfig::default());
+    }
+
+    #[test]
+    fn headroom_chain_defaults_to_the_measured_best_group_while_the_shared_type_keeps_16x16() {
+        assert_eq!(VideoHeadroomConfig::default().workgroup_size, HEADROOM_WORKGROUP);
+        // Тип `WorkgroupSizeConfig` общий со снимком: его умолчание не менялось.
+        assert_eq!(WorkgroupSizeConfig::default(), WorkgroupSizeConfig { x: 16, y: 16 });
+        assert!(VideoHeadroomConfig::default().local_size().is_ok());
     }
 
     #[test]

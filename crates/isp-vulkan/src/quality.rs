@@ -32,7 +32,9 @@ mod timing;
 pub(crate) mod tuning;
 mod workload;
 
-pub use self::config::{QualityOutputFormat, TemporalDenoiseConfig, VideoHeadroomConfig, WorkgroupSizeConfig};
+pub use self::config::{
+    HEADROOM_WORKGROUP, QualityOutputFormat, TemporalDenoiseConfig, VideoHeadroomConfig, WorkgroupSizeConfig,
+};
 pub use self::demosaic::{MenonPass, QualityDemosaic};
 pub use self::error::QualityError;
 pub use self::frame_params::CfaCode;

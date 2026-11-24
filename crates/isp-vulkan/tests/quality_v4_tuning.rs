@@ -202,3 +202,30 @@ fn stabilizer_mock_resamples_the_frame() {
     assert!(warped.iter().any(|pixel| *pixel != warped[0]));
     assert_no_validation_errors(&context);
 }
+
+#[test]
+fn workgroup_shape_does_not_change_the_image() {
+    let Some(context) = gpu_context_or_skip() else { return };
+    let render = |x, y| {
+        render_frame(
+            &context,
+            &VideoHeadroomConfig {
+                workgroup_size: isp_vulkan::quality::WorkgroupSizeConfig { x, y },
+                ..config_with(HeadroomTuning::PRODUCT)
+            },
+        )
+    };
+    let sixteen_by_sixteen = render(16, 16);
+    assert!(
+        sixteen_by_sixteen.iter().any(|pixel| *pixel != sixteen_by_sixteen[0]),
+        "картинка не вырождена"
+    );
+    // Кадр 512×384 кратен не всем формам (384 / 128 группы по высоте, 512 / 128 по ширине): края покрываются неполными группами.
+    for (x, y) in [(128, 2), (32, 8), (64, 4), (8, 8), (4, 32)] {
+        assert!(
+            render(x, y) == sixteen_by_sixteen,
+            "форма группы {x}x{y} изменила картинку"
+        );
+    }
+    assert_no_validation_errors(&context);
+}
