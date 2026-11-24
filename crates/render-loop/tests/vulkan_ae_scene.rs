@@ -28,6 +28,7 @@ mod ae_rig;
 mod awb_support;
 mod support;
 mod vulkan_support;
+mod white_engine;
 
 use ae_rig::{
     AeRig, BRACKET_TS_BASE, DARK_START_PRODUCT, FRAME_NANOS, RigSetup, SCENE_SCALE, SENSOR_DELAY_FRAMES, SceneLayout,

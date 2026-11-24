@@ -71,6 +71,9 @@ ui-render-vulkan = { workspace = true, features = ["test-support"] }
 # Сквозной тест приборов (14h): CPU-эталон накопления и картинки сверяется с тем, что насчитал GPU.
 scope-model.workspace = true
 render-loop = { workspace = true, features = ["test-support"] }
+# Сквозной тест белой (`tests/white_end_to_end.rs`): фальшивый источник белого реализует `WhiteSource` и встаёт в реестр
+# одной строкой; стенды рендера подключены по пути из `render-loop/tests`.
+scene-estimation.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni.workspace = true

@@ -44,13 +44,12 @@ use crate::still::{StillCommand, StillCommandOutcome, StillWorkload};
 use crate::ui_overlay::{UiOverlayCommand, UiOverlayOutcome};
 use crate::viewfinder::{
     AutoExposureLinks, AwbStatisticsFeed, AwbStatisticsReader, ViewfinderCommand, ViewfinderCommandOutcome,
-    ViewfinderDiagnostics, WhiteBalanceDiagnostics,
+    ViewfinderDiagnostics, WhiteBalanceDiagnostics, WhiteLinks,
 };
 use camera::{
-    AutoExposureParts, GpuMaker, ResidualGainLimits, SceneWhiteMemory, StillDiagnostics, StillEngine, SystemStillClock,
-    UiOverlayState, ViewfinderSettings, ViewfinderStats, VulkanStillGpu, VulkanStillSettings, WhiteBalanceParts,
+    AutoExposureParts, GpuMaker, ResidualGainLimits, StillDiagnostics, StillEngine, SystemStillClock, UiOverlayState,
+    ViewfinderSettings, ViewfinderStats, VulkanStillGpu, VulkanStillSettings, WhiteBalanceParts,
 };
-use camera_contract::three_a::{DirectiveSlot, WhiteBalanceDirective};
 use census::census_by_kind;
 use session::{AttachedDisplay, CameraAttach};
 
@@ -113,11 +112,8 @@ pub struct VulkanDisplayBackend {
     viewfinder_stats: Option<ViewfinderStats>,
     /// Лента статистики AWB (сессия показа публикует, читатель — `awb_statistics()`).
     awb_feed: AwbStatisticsFeed,
-    /// Указания AWB от движка камеры (читающая половина ящика; писатель — у composition root). Пока ничего
-    /// не опубликовано, действует `WhiteBalanceDirective::DEFAULT`.
-    white_balance_directives: DirectiveSlot<WhiteBalanceDirective>,
-    /// Белая сцены переживает пересоздание surface и смену камеры (решение 65).
-    scene_white: SceneWhiteMemory,
+    /// Связка с владельцем белого (указания, ответы, источники). Пока указаний нет, белая временная D65.
+    white_links: WhiteLinks,
     /// Ящики нашего AE (указания от движка, предложения движку). `None` — AE на потоке рендера выключен:
     /// подтяжка ISP равна 1, предложений нет (вендорский AE в композиции).
     auto_exposure: Option<AutoExposureLinks>,
@@ -197,13 +193,13 @@ impl VulkanDisplayBackend {
     /// Боевой конструктор Android с показом кадров камеры: предпросмотр RAW-мозаики вместо тестового
     /// паттерна. Буферы камеры импортируются в Vulkan без копий (`AndroidCameraImporter`).
     ///
-    /// `white_balance_directives` — читающая половина «почтового ящика» указаний AWB: composition root
-    /// создаёт ящик, писатель отдаёт `camera-core`, читатель — сюда (решение 64).
+    /// `white_links` — связка с владельцем белого: composition root создаёт её, писатель указаний и читатель
+    /// ответов — у `camera-core`, реестр источников собирает композиция.
     #[cfg(target_os = "android")]
     pub fn new_android_camera_preview(
         config: VulkanBackendConfig,
         frames: raw_frame_stream::ViewfinderFrames,
-        white_balance_directives: DirectiveSlot<WhiteBalanceDirective>,
+        white_links: WhiteLinks,
     ) -> Result<Self, GpuInitError> {
         let cache_capacity = config.camera_import_cache_capacity;
         let feed = CameraFeed::new(
@@ -212,20 +208,20 @@ impl VulkanDisplayBackend {
         );
         let mut backend = Self::with_profile(config, DeviceProfile::AndroidDisplay, PresentationMode::AndroidWindow)?;
         backend.camera_feed = Some(feed);
-        backend.white_balance_directives = white_balance_directives;
+        backend.white_links = white_links;
         Ok(backend)
     }
 
     /// Конструктор СТЕНДА ПК с показом кадров камеры: импорт буферов — через `make_importer` (на ПК нет
     /// `AHardwareBuffer`, тест подставляет синтетические источники). Остальное — боевой путь:
-    /// опрос видоискателя, сабмит с ожиданием/экспортом fence, учёт лизингов. `white_balance_directives` —
+    /// опрос видоискателя, сабмит с ожиданием/экспортом fence, учёт лизингов. `white_links` —
     /// как у боевого конструктора (тест публикует указания через писателя ящика).
     #[cfg(not(target_os = "android"))]
     pub fn new_headless_camera_preview(
         config: VulkanBackendConfig,
         frames: raw_frame_stream::ViewfinderFrames,
         make_importer: CameraImporterFactory,
-        white_balance_directives: DirectiveSlot<WhiteBalanceDirective>,
+        white_links: WhiteLinks,
     ) -> Result<Self, GpuInitError> {
         let mut backend = Self::with_profile(
             config,
@@ -233,7 +229,7 @@ impl VulkanDisplayBackend {
             PresentationMode::HeadlessBench,
         )?;
         backend.camera_feed = Some(CameraFeed::new(frames, make_importer));
-        backend.white_balance_directives = white_balance_directives;
+        backend.white_links = white_links;
         Ok(backend)
     }
 
@@ -281,8 +277,7 @@ impl VulkanDisplayBackend {
             viewfinder_settings,
             viewfinder_stats,
             awb_feed: AwbStatisticsFeed::new(),
-            white_balance_directives: DirectiveSlot::new(),
-            scene_white: SceneWhiteMemory::default(),
+            white_links: WhiteLinks::default(),
             auto_exposure: None,
             ui_overlay,
             scope_withdrawals: 0,
@@ -489,8 +484,7 @@ impl DisplayBackend for VulkanDisplayBackend {
             awb_feed: &self.awb_feed,
             white_balance: WhiteBalanceParts {
                 config: self.config.viewfinder.white_balance,
-                directives: self.white_balance_directives.clone(),
-                memory: self.scene_white.clone(),
+                links: self.white_links.clone(),
             },
             auto_exposure: self.auto_exposure.as_ref().map(|links| AutoExposureParts {
                 config: self.config.viewfinder.auto_exposure,

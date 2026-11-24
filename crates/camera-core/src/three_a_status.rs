@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use crate::flash_status::FlashStatus;
+use crate::white::WhiteStatus;
 use camera_contract::capture_result::{FrameNumber, SensorTimestamp};
 use camera_contract::control::ManualControl;
 use camera_contract::three_a::{
@@ -62,6 +63,8 @@ pub enum ControlParameter {
     ExposureBias,
     /// Единицы — кельвины (температура ручного баланса).
     WhiteBalanceTemperature,
+    /// Единицы — Duv (оттенок белой: расстояние от локуса Планка).
+    WhiteBalanceTint,
     /// Цель нашего AE, EV **относительно цели**: `requested` всегда 0, `applied` — округлённая
     /// нехватка (< 0 темнее нужного, > 0 светлее). Не ручной параметр пользователя, а честный
     /// итог «пределов камеры не хватило».
@@ -88,6 +91,10 @@ pub enum AdjustmentReason {
     /// сенсора, длительность кадра или кратность периоду мерцания. `applied - requested` —
     /// честная нехватка в EV (< 0 темнее нужного, > 0 светлее).
     TargetNotReached,
+    /// Белая ниже предела из конфига (`three_a.white`: температура или оттенок) — поднята до предела.
+    BelowWhiteLimit,
+    /// Белая выше предела из конфига — опущена до предела.
+    AboveWhiteLimit,
 }
 
 /// Где наш AE на пути к цели (для экрана и smoke); `None` в [`ThreeAStatus::auto_exposure`] —
@@ -173,6 +180,8 @@ pub struct ThreeAStatus {
     pub counters: ThreeACounters,
     /// Вспышка активной камеры, совет для Auto и последовательность снимка со вспышкой (14d).
     pub flash: FlashStatus,
+    /// Белая: действующее значение и происхождение, заявка источнику, память (собирает `CameraEngine::status`).
+    pub white: WhiteStatus,
 }
 
 impl ThreeAStatus {
@@ -189,6 +198,7 @@ impl ThreeAStatus {
             last_result: None,
             counters: ThreeACounters::default(),
             flash: FlashStatus::default(),
+            white: WhiteStatus::initial(),
         }
     }
 }

@@ -79,6 +79,8 @@ impl CameraEngine {
             CameraCommand::SetThreeAProfile { profile } => self.decide_set_three_a_profile(*profile),
             CameraCommand::CaptureBracket { bracket } => self.decide_capture_bracket(id, bracket),
             CameraCommand::CaptureFlashStill { .. } => self.decide_capture_flash_still(),
+            CameraCommand::SetWhite { setting, transition } => self.decide_set_white(*setting, *transition),
+            CameraCommand::TakeWhite { source, transition } => self.decide_take_white(*source, *transition, now),
             CameraCommand::Close => self.decide_close(),
             CameraCommand::EnterBackground => self.decide_enter_background(),
             CameraCommand::EnterForeground => self.decide_enter_foreground(),
@@ -233,6 +235,8 @@ impl CameraEngine {
             | CameraCommand::SetExposureBias { .. }
             | CameraCommand::SetThreeAProfile { .. } => self.reconcile(now),
             CameraCommand::CaptureBracket { .. } => self.submit_pending_bracket(now),
+            // Белая живёт вне желаемого состояния: владелец уже всё сделал при решении, сводить нечего.
+            CameraCommand::SetWhite { .. } | CameraCommand::TakeWhite { .. } => {}
             // Предвспышку запускает `settle_flash_command` сразу после ответа на команду.
             CameraCommand::CaptureFlashStill { .. } => {}
             CameraCommand::Close => self.apply_close(),
@@ -256,6 +260,8 @@ impl CameraEngine {
     /// В фоне камера отпущена, попыток открытия нет; желаемое сохранено.
     fn apply_enter_background(&mut self) {
         self.presence = AppPresence::Background;
+        // Заявку снимаем до закрытия потока: иначе конец потока переиздал бы её, а мы её тут же отменили.
+        self.white_entered_background();
         self.release_platform();
         self.standby.end_demand();
         self.reconfiguring = false;
@@ -269,7 +275,13 @@ impl CameraEngine {
 
     /// Возврат на передний план: счётчик попыток с нуля и довести до желаемого.
     fn apply_enter_foreground(&mut self, now: Instant) {
+        // Белую берём заново только при настоящем возврате из фона (WB22): повторный `EnterForeground` на
+        // переднем плане (повтор восстановления) новой заявки не заводит.
+        let returned_from_background = self.presence == AppPresence::Background;
         self.presence = AppPresence::Foreground;
+        if returned_from_background {
+            self.white_entered_foreground();
+        }
         self.recovery.reset_attempts();
         if self.is_fatal() {
             self.transition(CameraState::Closed {

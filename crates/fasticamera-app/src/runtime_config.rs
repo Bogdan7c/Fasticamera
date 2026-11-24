@@ -302,6 +302,9 @@ mod look_tests;
 #[cfg(test)]
 #[path = "runtime_config_scopes_tests.rs"]
 mod scopes_tests;
+#[cfg(test)]
+#[path = "runtime_config_white_tests.rs"]
+mod white_tests;
 
 #[cfg(test)]
 mod tests {

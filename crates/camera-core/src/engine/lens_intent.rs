@@ -119,7 +119,6 @@ impl CameraEngine {
             // Как после `SwitchTo`: новая камера отменяет ожидание восстановления прежней.
             self.recovery.clear();
             self.reconcile(now);
-            self.three_a.publish_white_balance(&self.desired.three_a);
             self.three_a.publish_exposure_intent(&self.desired.three_a);
         } else {
             // Камера та же, но спрос или коэффициент могли изменить, кого греть.

@@ -399,7 +399,7 @@ pub fn start_rig_with_policy(policy: render_loop::config::UnchangedFramePolicy) 
                 counters: ImportCacheCounters::default(),
             }))
         }),
-        camera_contract::three_a::DirectiveSlot::new(),
+        render_loop::viewfinder::WhiteLinks::default(),
     )?;
     let context = backend.context().clone();
     let awb = backend.awb_statistics();

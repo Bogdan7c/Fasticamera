@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use camera_contract::availability::CameraUnavailableReason;
 use camera_contract::ids::LensRole;
 use camera_contract::stream::FrameRateMechanism;
+use camera_contract::white::WhiteOrigin;
 use camera_core::CameraEvent;
 use camera_core::flash_status::FlashStillReport;
 use camera_core::three_a_status::{BracketReport, FocusOutcome};
@@ -91,6 +92,17 @@ pub enum EventNote {
     FlashStillFinished {
         shot: u64,
         fired: bool,
+    },
+    /// Действующая белая изменилась: значение и происхождение (имя источника или `manual`/`fallback`).
+    WhiteChanged {
+        kelvin: f64,
+        duv: f64,
+        origin: String,
+    },
+    /// Заявка источнику белого закрыта: номер и исход (JSON `WhiteRequestOutcome`).
+    WhiteRequestFinished {
+        request: u64,
+        outcome: serde_json::Value,
     },
     /// Смена объектива завершена: первый кадр новой камеры пришёл (`from == to` — возврат на прежний).
     LensSwitched {
@@ -192,6 +204,19 @@ impl EventNote {
             CameraEvent::FlashStillFinished { report } => EventNote::FlashStillFinished {
                 shot: report.shot().0,
                 fired: matches!(report, FlashStillReport::Fired { .. }),
+            },
+            CameraEvent::WhiteChanged { held } => EventNote::WhiteChanged {
+                kelvin: held.setting.temperature.kelvin(),
+                duv: held.setting.tint.duv(),
+                origin: match held.origin {
+                    WhiteOrigin::Source(source) => source.name().to_owned(),
+                    WhiteOrigin::Manual => "manual".to_owned(),
+                    WhiteOrigin::Fallback => "fallback".to_owned(),
+                },
+            },
+            CameraEvent::WhiteRequestFinished { result } => EventNote::WhiteRequestFinished {
+                request: result.request.0,
+                outcome: serde_json::to_value(result.result).unwrap_or(serde_json::Value::Null),
             },
         }
     }

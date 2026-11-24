@@ -32,6 +32,7 @@ use crate::camera_lifecycle::{CameraLifecyclePolicy, CameraLifecycleState, Polic
 use crate::camera_scenario_config::CameraScenarioConfig;
 use crate::raw_stream_services::RawStreamServices;
 use crate::viewfinder_autostart::{UserLens, ViewfinderAutostart, ViewfinderAutostartOutcome};
+use crate::white_memory::{WhiteMemoryDiagnostics, WhiteMemoryStats};
 
 const LOG_TARGET: &str = "fasticamera::camera::service";
 
@@ -55,6 +56,8 @@ pub struct RunningCamera {
     /// Привязка толчка рендера к движку (наш AE). Объявлена раньше `_runtime`: при падении сначала
     /// отвязывается получатель, потом останавливается поток движка.
     _exposure_binding: Option<EngineBinding>,
+    /// Привязка толчка ответов источников белого: так же отвязывается до остановки потока движка.
+    _white_binding: Option<EngineBinding>,
     /// Только держим поток живым. `Mutex` нужен лишь ради `Sync`: `CameraRuntime` отправляется между
     /// потоками, но не разделяется (внутри приёмник канала), а сервис разделяется маршрутизатором и сценариями.
     _runtime: Mutex<CameraRuntime>,
@@ -66,6 +69,7 @@ impl RunningCamera {
             handle,
             diagnostics,
             _exposure_binding: None,
+            _white_binding: None,
             _runtime: Mutex::new(runtime),
         }
     }
@@ -73,6 +77,12 @@ impl RunningCamera {
     /// Запоминает привязку толчка рендера: она живёт, пока жив движок.
     pub fn with_exposure_binding(mut self, binding: EngineBinding) -> Self {
         self._exposure_binding = Some(binding);
+        self
+    }
+
+    /// Запоминает привязку толчка ответов источников белого.
+    pub fn with_white_binding(mut self, binding: EngineBinding) -> Self {
+        self._white_binding = Some(binding);
         self
     }
 
@@ -199,6 +209,8 @@ pub struct CameraServices {
     lens_intents: LensIntentChannel,
     /// Объектив пользователя на момент заявки сценария: по концу сценария видоискатель открывается им.
     user_lens_before_scenario: Arc<Mutex<UserLens>>,
+    /// Счётчики и последняя ошибка записи памяти белой (пусты, если память не открывалась).
+    white_memory: WhiteMemoryDiagnostics,
 }
 
 impl CameraServices {
@@ -214,7 +226,19 @@ impl CameraServices {
             exposure_controller: ExposureControllerChoice::default(),
             lens_intents: LensIntentChannel::new(),
             user_lens_before_scenario: Arc::new(Mutex::new(UserLens::NoneBeforeScenario)),
+            white_memory: WhiteMemoryDiagnostics::default(),
         }
+    }
+
+    /// Подключает счётчики записи памяти белой (те же, что у потока записи).
+    pub fn with_white_memory(mut self, diagnostics: WhiteMemoryDiagnostics) -> Self {
+        self.white_memory = diagnostics;
+        self
+    }
+
+    /// Счётчики записи памяти белой и последняя ошибка записи: отказ диска виден здесь, а не только в журнале.
+    pub fn white_memory_stats(&self) -> WhiteMemoryStats {
+        self.white_memory.snapshot()
     }
 
     /// Подключает ящик намерений объектива, который читает движок (композиция передаёт тот же клон движку).

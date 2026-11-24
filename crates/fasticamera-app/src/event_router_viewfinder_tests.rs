@@ -22,6 +22,7 @@ use super::*;
 use crate::camera_config::CameraConfig;
 use crate::camera_scenario_config::CameraScenarioConfig;
 use crate::clock_offset::monotonic_now;
+use crate::fake_render_white::{FakeRenderWhite, lamp_light};
 use crate::power_measurement::PowerMeasurementConfig;
 use crate::raw_stream_test_support::{PumpFaults, StreamPump};
 use crate::viewfinder_control::RenderAdjustment;
@@ -235,6 +236,8 @@ impl RenderMirror {
         let render = Arc::clone(&harness.render);
         let control = Arc::clone(&harness.control);
         let shell = Arc::clone(&harness.shell);
+        // Роль рендера белой: ответ источника «телефон» на заявку открытия.
+        let mut white = FakeRenderWhite::new(harness.rig(), lamp_light());
         let join = thread::spawn(move || {
             let mut bench_started_at: Option<u64> = None;
             // Сколько кадров камеры было показано к моменту установки источника UI.
@@ -243,6 +246,7 @@ impl RenderMirror {
             let mut adpf_reports = 0_u64;
             let mut last_presented = 0_u64;
             while !thread_stop.load(Ordering::SeqCst) {
+                white.answer_pending();
                 let now = effective(&control.recorded());
                 let refresh_hz = shell.frame_rates.lock().expect("замок").last().copied().unwrap_or(60.0);
                 render.update(|status| {
@@ -265,7 +269,6 @@ impl RenderMirror {
                     // Как настоящий рендер: статистика AWB считается на каждом N-м обработанном кадре.
                     let period = u64::from(viewfinder.white_balance.statistics_every_n_frames.max(1));
                     viewfinder.counters.statistics_published = processed / period;
-                    viewfinder.white_balance.estimates = processed / period;
                     viewfinder.gpu_time.isp_dispatch =
                         (now.painter == ViewfinderPainter::Isp).then(|| micros(isp_micros(now.stages)));
                     viewfinder.gpu_time.frame_total = Some(match now.painter {
@@ -606,10 +609,10 @@ fn viewfinder_smoke_reports_decimated_awb_statistics_and_the_white_balance_secti
         (processed / 4..=processed.div_ceil(4)).contains(&published),
         "статистика идёт на каждом 4-м кадре: {published} из {processed}: {report}"
     );
-    assert!(
-        report["white_balance"]["estimates"].as_u64().is_some_and(|n| n > 0),
-        "{report}"
-    );
+    // Белая взята у телефона (подставной ответ «лампа 3200 К») и заявка закрыта исходом «принято».
+    assert_eq!(report["white_balance"]["origin"], "phone", "{report}");
+    assert_eq!(report["white_balance"]["request"]["state"], "applied", "{report}");
+    assert_eq!(report["white_balance"]["white"]["kelvin"], 3_200.0, "{report}");
     assert_eq!(report["three_a_companion"]["state"], "active");
     assert!(result.to_string().len() < 4_000, "строка результата в бюджете");
 }

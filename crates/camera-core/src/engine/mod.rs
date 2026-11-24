@@ -16,8 +16,10 @@
 //! * `reconcile` — доведение реального состояния до желаемого;
 //! * `recovery` — ошибки, планы восстановления, попытки, таймер;
 //! * `backend_events` — события бэкенда (поколения, stale, темп);
-//! * `three_a` — автоматика 3A: тап и блокировка, ручные параметры, серии, указание AWB
-//!   (исполнители подключаются через [`crate::ThreeAWiring`]).
+//! * `three_a` — автоматика 3A: тап и блокировка, ручные параметры, серии
+//!   (исполнители подключаются через [`crate::ThreeAWiring`]);
+//! * `white` — владелец белой: единственная действующая белая, заявки источнику, сроки, память
+//!   (живёт вне `Desired`).
 //!
 //! Решения, не заданные заданием:
 //! * `EnterForeground` выводит из `Fatal` только `RecoveryExhausted` (свежая попытка пользователя)
@@ -45,6 +47,7 @@ mod reconcile;
 mod recovery;
 mod standby;
 mod three_a;
+mod white;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -75,6 +78,7 @@ use lens_intent::LensEngineState;
 use recovery::RecoveryTracker;
 use standby::StandbyEngine;
 use three_a::ThreeAEngine;
+use white::WhiteEngine;
 
 pub(crate) const LOG_TARGET: &str = "fasticamera::camera::engine";
 
@@ -220,6 +224,8 @@ pub struct CameraEngine {
     counters: CameraCounters,
     /// Автоматика 3A: исполнители, таймеры, серия (желаемое намерение — в `desired.three_a`).
     three_a: ThreeAEngine,
+    /// Владелец белой: вне `Desired`, команды `Close`/`ApplyControls`/`SwitchTo` его не трогают.
+    white: WhiteEngine,
     /// Снимок со вспышкой: последовательность, счётчики, наблюдатель (14d).
     flash: FlashEngine,
     /// Шкала зума, чтение намерений экрана и учёт смены объектива (13).
@@ -240,7 +246,7 @@ impl CameraEngine {
         Self::with_wiring(config, presence, backend, wiring)
     }
 
-    /// Движок с заданными исполнителями 3A и ящиком баланса белого (корень композиции, 08a, тесты).
+    /// Движок с заданными исполнителями 3A и подключениями белой (корень композиции, 08a, тесты).
     pub fn with_wiring(
         config: CameraEngineConfig,
         presence: AppPresence,
@@ -254,10 +260,19 @@ impl CameraEngine {
             },
         };
         let desired = Desired::default();
-        let flash = FlashEngine::new(wiring.flash_observer.clone());
-        Self {
+        let ThreeAWiring {
+            exposure,
+            focus,
+            white,
+            exposure_directives,
+            flash_observer,
+        } = wiring;
+        let flash = FlashEngine::new(flash_observer);
+        let white = WhiteEngine::new(config.three_a.white, white);
+        let mut engine = Self {
             cadence: CadenceTracker::new(config.cadence),
-            three_a: ThreeAEngine::new(wiring, &desired.three_a),
+            three_a: ThreeAEngine::new(exposure, focus, exposure_directives, &desired.three_a),
+            white,
             flash,
             backend,
             config,
@@ -280,7 +295,10 @@ impl CameraEngine {
             last_unavailable: None,
             events: Vec::new(),
             poisoned: false,
-        }
+        };
+        // Стартовая белая (из памяти или запасная) и её прижим к пределам видны с первого статуса.
+        engine.flush_white_events();
+        engine
     }
 
     /// Движок с подключённым ящиком намерений объектива (корень композиции, `CameraRuntime`, тесты).
@@ -342,14 +360,15 @@ impl CameraEngine {
             name,
             outcome: outcome.clone(),
         });
+        // События белой, вызванные решением команды, идут строго после её итога.
+        self.flush_white_events();
         // Итог снимка со вспышкой идёт строго после ответа на команду.
         self.settle_flash_command(&command, &outcome, now);
         if self.poisoned {
             return;
         }
         self.apply_command_effects(&command, &outcome, now);
-        // Режим AWB мог измениться любой командой (в том числе `Close`, сбросившей намерение).
-        self.three_a.publish_white_balance(&self.desired.three_a);
+        self.flush_white_events();
         self.three_a.publish_exposure_intent(&self.desired.three_a);
     }
 
@@ -359,6 +378,7 @@ impl CameraEngine {
             return;
         }
         self.route_backend_event(event, now);
+        self.flush_white_events();
     }
 
     /// Сработал таймер: пора ли повторять попытку восстановления.
@@ -368,6 +388,8 @@ impl CameraEngine {
         }
         self.fire_retry_timer_if_due(now);
         self.fire_three_a_timers(now);
+        self.fire_white_deadline(now);
+        self.flush_white_events();
         self.fire_standby_release_timer(now);
     }
 
@@ -375,6 +397,7 @@ impl CameraEngine {
     fn three_a_status(&self) -> crate::three_a_status::ThreeAStatus {
         crate::three_a_status::ThreeAStatus {
             flash: self.flash_status(),
+            white: self.white.status(),
             ..self.three_a.status(&self.desired.three_a)
         }
     }
@@ -387,6 +410,7 @@ impl CameraEngine {
         [
             self.pending_retry_deadline(),
             self.three_a.next_deadline(),
+            self.white.next_deadline(),
             self.standby.next_deadline(),
             self.flash.deadline(),
         ]

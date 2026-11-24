@@ -124,9 +124,7 @@ impl AutoExposureLink {
     /// Привязывает запущенный движок к толчку рендера. Пока привязка жива, предложения будят
     /// движок; когда её роняют (движок остановлен), толчки возвращаются в «ещё нет получателя».
     pub(crate) fn bind_engine(&self, receiver: Arc<dyn RefreshSignal>) -> EngineBinding {
-        let signal = self.proposals.refresh_signal().clone();
-        signal.bind(receiver);
-        EngineBinding { signal }
+        EngineBinding::bind(self.proposals.refresh_signal(), receiver)
     }
 }
 
@@ -136,6 +134,15 @@ impl AutoExposureLink {
 /// старого сняла бы получателя нового — тогда владелец связки обязан сопоставлять поколения.
 pub struct EngineBinding {
     signal: LateBoundRefreshSignal,
+}
+
+impl EngineBinding {
+    /// Привязывает получателя к толчку (общий путь AE и белой).
+    pub(crate) fn bind(signal: &LateBoundRefreshSignal, receiver: Arc<dyn RefreshSignal>) -> Self {
+        let signal = signal.clone();
+        signal.bind(receiver);
+        Self { signal }
+    }
 }
 
 impl Drop for EngineBinding {

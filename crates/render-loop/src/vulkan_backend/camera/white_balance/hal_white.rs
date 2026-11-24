@@ -1,13 +1,13 @@
-//! Белая точка по подсказкам HAL — ТОЛЬКО для сравнения с нашей (диагностика).
+//! Белая точка по подсказкам HAL для диагностики: сравнение с применённой белой.
 //!
-//! Решение 62 оживило вендорский AWB пустым вспомогательным потоком, и `COLOR_CORRECTION_GAINS` снова
-//! что-то значат. Но ISP они не питают никогда (критерий выхода 08): здесь они превращаются в белую точку
-//! `white_for_neutral(1/gains)` и сравниваются с нашей белой в `RenderStatus`. Пересчёт — только при
-//! изменении подсказок (итерация DNG не бесплатна).
+//! Математика — одна, в источнике «телефон» (`scene_estimation::white_source::phone::white_of_hints`): здесь её
+//! не дублируем. Пересчёт — только при изменении подсказок (итерация DNG не бесплатна). Мёртвая автоматика
+//! (единичные усиления) честно даёт `None`, а не «зеленоватую белую».
 
 use camera_contract::frame_passport::CaptureColorHints;
-use isp_model::color::dng::{CameraNeutral, DngColorProfile};
-use isp_model::color::white_point::{CctDuv, cct_duv_from_chromaticity};
+use isp_model::color::dng::DngColorProfile;
+use isp_model::color::white_point::CctDuv;
+use scene_estimation::white_source::phone::white_of_hints;
 
 use crate::viewfinder::{WhiteDelta, WhiteReading};
 
@@ -27,30 +27,11 @@ impl HalWhiteTracker {
     /// Учитывает подсказки очередного кадра и возвращает последнюю белую HAL (если вычислима).
     pub fn observe(&mut self, hints: &CaptureColorHints, profile: &DngColorProfile) -> Option<CctDuv> {
         if self.last_hints != Some(*hints) {
-            self.last_white = hal_white(hints, profile);
+            self.last_white = white_of_hints(hints, profile).ok();
             self.last_hints = Some(*hints);
         }
         self.last_white
     }
-}
-
-/// Нейтраль HAL: сначала коэффициенты баланса (`N_c = 1/g_c`, зелёный — среднее двух), затем нейтральная точка.
-fn hal_neutral(hints: &CaptureColorHints) -> Option<CameraNeutral> {
-    let from_gains = hints.color_gains.and_then(|gains| {
-        let [red, green_even, green_odd, blue] = gains.0.map(f64::from);
-        CameraNeutral::new([1.0 / red, 2.0 / (green_even + green_odd), 1.0 / blue]).ok()
-    });
-    from_gains.or_else(|| {
-        let point = hints.neutral_color_point?;
-        let values = [point[0].to_f64()?, point[1].to_f64()?, point[2].to_f64()?];
-        CameraNeutral::new(values).ok()
-    })
-}
-
-fn hal_white(hints: &CaptureColorHints, profile: &DngColorProfile) -> Option<CctDuv> {
-    let neutral = hal_neutral(hints)?;
-    let estimate = profile.white_for_neutral(neutral).ok()?;
-    cct_duv_from_chromaticity(estimate.white).ok()
 }
 
 /// Белая точка в виде показаний диагностики.
@@ -61,7 +42,7 @@ pub fn reading_of(white: CctDuv) -> WhiteReading {
     }
 }
 
-/// Наша белая минус белая HAL.
+/// Применённая белая минус белая HAL.
 pub fn delta_between(ours: CctDuv, hal: CctDuv) -> WhiteDelta {
     WhiteDelta {
         mired: ours.temperature.mired() - hal.temperature.mired(),
@@ -112,7 +93,7 @@ mod tests {
     }
 
     #[test]
-    fn no_hints_means_no_hal_white_and_unit_gains_mean_a_greenish_sensor_white() {
+    fn no_hints_and_dead_automation_mean_no_hal_white() {
         let profile = profile();
         let mut tracker = HalWhiteTracker::default();
         assert_eq!(tracker.observe(&CaptureColorHints::default(), &profile), None);
@@ -120,8 +101,8 @@ mod tests {
             color_gains: Some(ColorCorrectionGains([1.0; 4])),
             ..CaptureColorHints::default()
         };
-        // Единичные коэффициенты (RAW-only сессия без вендорской автоматики) — валидная нейтраль [1,1,1].
-        assert!(tracker.observe(&unit, &profile).is_some());
+        // Единичные коэффициенты — мёртвая автоматика (сессия без вспомогательного потока), а не «зеленоватая белая».
+        assert_eq!(tracker.observe(&unit, &profile), None);
     }
 
     #[test]

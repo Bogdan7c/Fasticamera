@@ -1,69 +1,69 @@
-//! Наш AWB на потоке рендера (сессия 08, решения 62–68): владелец состояния «белая сцены» рядом со
-//! статистикой GPU и параметрами ISP — без пересылок между потоками.
+//! Белая на потоке рендера (white-balance 01; прежний AWB сессии 08 в продукт больше не идёт).
 //!
 //! # Кто чем владеет
 //! * [`WhiteBalanceRunner`] — единственный, кто решает, какая белая идёт в ISP, показывать ли кадр
 //!   (холодный старт) и нужна ли статистика на этом кадре;
-//! * `scene_estimation::controller::WhiteBalanceController` — скалярное решение (режим, сглаживание);
-//! * `scene_estimation::executor::WhiteBalanceEstimator` — тяжёлая часть (плитки → оценка); сегодня CPU-эталон,
-//!   завтра compute-проход: runner знает только трейт (решение 68);
-//! * [`SceneWhiteMemory`] — белая сцены между сессиями показа (владелец — бэкенд);
-//! * `DirectiveSlot<WhiteBalanceDirective>` — режим AWB от `camera-core` (писатель — composition root).
+//! * `applied::AppliedWhite` — применяемая белая: цель владельца, переход по меткам кадров, побитовая цель после него;
+//! * `sources::SourceExecutor` — источники белого из реестра: заявка владельца → ответ в ящик движку;
+//! * `cold_start::ColdStart` — скрытие кадров, пока действует заявка `HideFrames`;
+//! * `scene_estimation::executor::WhiteBalanceEstimator` — старый оценщик (плитки → оценка). Его оценки в
+//!   картинку НЕ идут (`last_estimate` — диагностика), но живы ради предвспышки (`TorchWhiteTracker`) и
+//!   расписания статистики, на котором стоит AE (удалит сессия 03 плана);
+//! * `DirectiveSlot<WhiteDirective>` — указания владельца белого (`camera-core`).
 //!
 //! # Поток данных
-//! `plan_frame` на каждый НОВЫЙ кадр камеры (до параметров ISP): применить свежее указание → шаг контроллера по
-//! метке сенсора → решение холодного старта → белая для `IspParamsCache::prepare` и расписание статистики.
-//! `ingest_statistics` — когда слот с кадром собран после fence: статистика уходит исполнителю, готовые оценки —
-//! контроллеру. Оценка кадра всегда позже самого кадра минимум на `frames_in_flight` показов.
+//! `plan_frame` на каждый НОВЫЙ показываемый кадр камеры (до параметров ISP): свежее указание → привязка к
+//! потоку (источникам `begin_stream`) → сверка заявки и кадр источникам → решение холодного старта → шаг
+//! применяемой белой → расписание статистики. `ingest_statistics` — когда слот с кадром собран после fence:
+//! статистика уходит старому оценщику (для диагностики и предвспышки).
 //!
 //! # Инварианты
-//! 1. В ISP идёт только белая нашего AWB (или временная D65 до первой оценки). Подсказки HAL — лишь диагностика.
-//! 2. Статистика чужого потока (камера сменилась, пока слот был в полёте) оценщику не отдаётся: таблица
-//!    локуса у каждой камеры своя.
+//! 1. В ISP идёт только белая из указания владельца (или временная D65, пока указаний не было вовсе). Подсказки
+//!    HAL, оценки старого оценщика — лишь диагностика. Без нового указания белая не меняется ни на бит.
+//! 2. Статистика чужого потока оценщику не отдаётся: таблица локуса у каждой камеры своя.
 //! 3. Скрытие кадров ограничено (`max_hidden_frames`) — картинка не прячется вечно.
 
+mod applied;
 mod cold_start;
+mod diagnostics;
 mod hal_white;
-mod memory;
 mod schedule;
+mod sources;
 mod torch;
 
 use std::sync::Arc;
 
+use camera_contract::auto_exposure_carry::CameraTag;
 use camera_contract::frame_passport::{RawFramePassport, StreamPassport};
-use camera_contract::three_a::{DirectiveGeneration, DirectiveSlot, WhiteBalanceDirective};
+use camera_contract::three_a::DirectiveGeneration;
+use camera_contract::white::{WhiteDirective, WhiteSourceRequest};
 use isp_model::color::chromaticity::Chromaticity;
 use isp_model::color::dng::DngColorProfile;
 use isp_model::color::white_point::CctDuv;
 use isp_model::statistics::AwbStatistics;
-use scene_estimation::controller::{SceneWhite, WhiteBalanceController, WhiteStep};
 use scene_estimation::estimate::{EstimateOutcome, IlluminantEstimate};
 use scene_estimation::executor::{CpuWhiteBalanceEstimator, EstimationRequest, FrameTag, WhiteBalanceEstimator};
 use scene_estimation::locus_table::CameraLocusTable;
 
+use self::applied::AppliedWhite;
 use self::cold_start::{ColdStart, ColdStartVerdict};
-use self::hal_white::{HalWhiteTracker, delta_between, reading_of};
-pub use self::memory::SceneWhiteMemory;
+use self::hal_white::HalWhiteTracker;
 pub use self::schedule::StatisticsPlan;
 use self::schedule::StatisticsSchedule;
+use self::sources::SourceExecutor;
 use self::torch::TorchWhiteTracker;
 use super::flash_facts::TorchWhite;
 use super::pipelines::IspPresentation;
 use crate::config::WhiteBalanceConfig;
-use crate::viewfinder::{AwbFrameIdentity, ColdStartState, EstimateReading, WhiteBalanceDiagnostics};
+use crate::viewfinder::{AwbFrameIdentity, ColdStartState, WhiteLinks};
 
 const LOG_TARGET: &str = "fasticamera::render::white_balance";
-
-/// Белая, пока своей оценки нет: D65 — калибровочный свет профиля цвета (`ReferenceIlluminant::D65` в
-/// ColorMatrix1 камеры), самый вероятный дневной свет. Кадры с ней либо скрыты (холодный старт), либо показаны
-/// принудительно после лимита и помечены в диагностике.
-pub const PROVISIONAL_WHITE: Chromaticity = Chromaticity::D65;
 
 /// Поколение потока у AWB: растёт с каждым новым потоком камеры.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AwbStream(pub u64);
 
-/// Что AWB даёт ISP и показу для одного нового кадра камеры.
+/// Что белая даёт ISP и показу для одного нового кадра камеры.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FramePlan {
     /// Поток, к которому относится кадр (метка для статистики слота).
@@ -76,18 +76,16 @@ pub struct FramePlan {
     pub statistics: StatisticsPlan,
 }
 
-/// Из чего собирается AWB сессии показа.
+/// Из чего собирается белая сессии показа.
 #[derive(Clone)]
 pub struct WhiteBalanceParts {
     /// Настройки.
     pub config: WhiteBalanceConfig,
-    /// Читающая половина «почтового ящика» указаний (писатель — у composition root → `camera-core`).
-    pub directives: DirectiveSlot<WhiteBalanceDirective>,
-    /// Память белой сцены бэкенда.
-    pub memory: SceneWhiteMemory,
+    /// Связка с владельцем белого: указания, ящик ответов, источники.
+    pub links: WhiteLinks,
 }
 
-/// AWB не удалось собрать (конфиг отвергнут).
+/// Белую не удалось собрать (конфиг отвергнут или фабрика источника отказала).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("настройки AWB: {0}")]
 pub struct WhiteBalanceSetupError(pub String);
@@ -95,9 +93,9 @@ pub struct WhiteBalanceSetupError(pub String);
 /// Зачем статистика кадра отдана оценке света.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StatisticsPurpose {
-    /// Обычный кадр видоискателя: оценка питает контроллер AWB.
+    /// Обычный кадр видоискателя: оценка только для диагностики.
     Viewfinder,
-    /// Кадр с фонариком предвспышки: оценка света светодиода, мимо контроллера.
+    /// Кадр с фонариком предвспышки: оценка света светодиода.
     Torch,
 }
 
@@ -109,7 +107,7 @@ struct BoundStream {
     table: Option<CameraLocusTable>,
 }
 
-/// Счётчики runner (то, что не хранит контроллер).
+/// Счётчики runner.
 #[derive(Default)]
 struct RunnerCounters {
     estimates: u64,
@@ -123,66 +121,60 @@ struct RunnerCounters {
     provisional_frames: u64,
 }
 
-/// AWB одной сессии показа (см. модуль).
+/// Белая одной сессии показа (см. модуль).
 pub struct WhiteBalanceRunner {
     config: WhiteBalanceConfig,
-    directives: DirectiveSlot<WhiteBalanceDirective>,
+    directives: camera_contract::three_a::DirectiveSlot<WhiteDirective>,
     applied_generation: Option<DirectiveGeneration>,
-    memory: SceneWhiteMemory,
-    controller: WhiteBalanceController,
+    /// Заявка источнику действующего указания.
+    request: Option<WhiteSourceRequest>,
+    applied: AppliedWhite,
+    sources: SourceExecutor,
+    cold_start: ColdStart,
     estimator: Box<dyn WhiteBalanceEstimator + Send>,
     bound: Option<BoundStream>,
     next_stream_id: u64,
-    cold_start: ColdStart,
     schedule: StatisticsSchedule,
     hal: HalWhiteTracker,
     hal_white: Option<CctDuv>,
     last_estimate: Option<IlluminantEstimate>,
     last_failure: Option<String>,
     table_failure: Option<String>,
-    scene_white: Option<SceneWhite>,
-    /// Белая светодиода по кадрам с фонариком предвспышки (14d): мимо контроллера видоискателя.
+    /// Белая светодиода по кадрам с фонариком предвспышки (14d).
     torch: TorchWhiteTracker,
     counters: RunnerCounters,
 }
 
 impl WhiteBalanceRunner {
-    /// Собирает AWB; белая сцены восстанавливается из памяти бэкенда (смена камеры / новая surface).
+    /// Собирает белую сессии показа: свежие источники из реестра, старый оценщик для диагностики и предвспышки.
     pub fn new(parts: WhiteBalanceParts) -> Result<Self, WhiteBalanceSetupError> {
-        let WhiteBalanceParts {
-            config,
-            directives,
-            memory,
-        } = parts;
+        let WhiteBalanceParts { config, links } = parts;
         let setup = |error: &dyn std::fmt::Display| WhiteBalanceSetupError(error.to_string());
-        let mut controller = WhiteBalanceController::new(config.scene).map_err(|error| setup(&error))?;
         let estimator = CpuWhiteBalanceEstimator::new(config.scene.estimator).map_err(|error| setup(&error))?;
-        if let Some(remembered) = memory.load() {
-            controller.restore_scene_white(remembered);
-        }
+        let sources = SourceExecutor::new(&links.sources, links.answers.clone())?;
         Ok(Self {
             config,
-            directives,
+            directives: links.directives,
             applied_generation: None,
-            memory,
-            controller,
+            request: None,
+            applied: AppliedWhite::default(),
+            sources,
+            cold_start: ColdStart::new(config.max_hidden_frames),
             estimator: Box::new(estimator),
             bound: None,
             next_stream_id: 0,
-            cold_start: ColdStart::new(config.max_hidden_frames),
             schedule: StatisticsSchedule::new(config.statistics_every_n_frames),
             hal: HalWhiteTracker::default(),
             hal_white: None,
             last_estimate: None,
             last_failure: None,
             table_failure: None,
-            scene_white: None,
             torch: TorchWhiteTracker::default(),
             counters: RunnerCounters::default(),
         })
     }
 
-    /// Поток камеры неактивен: следующий кадр — уже другой поток. Белая сцены остаётся.
+    /// Поток камеры неактивен: следующий кадр — уже другой поток. Применённая белая остаётся.
     pub fn forget_stream(&mut self) {
         self.bound = None;
     }
@@ -191,40 +183,40 @@ impl WhiteBalanceRunner {
     pub fn plan_frame(&mut self, passport: &RawFramePassport) -> FramePlan {
         self.refresh_directive();
         let stream = self.bind_stream(passport);
-        let sensor_timestamp = passport.sensor_timestamp.as_nanos();
-        let mut step = self.step(sensor_timestamp);
+        self.sources.sync_request(self.request);
+        self.sources.observe(passport);
+        self.sources.collect_answers();
         let cold_start_before = self.cold_start.state();
-        let verdict = self.cold_start.decide(self.controller.has_scene_white());
-        if let ColdStartVerdict::ShowForced { .. } = verdict
-            && let Some(estimate) = self.last_estimate
-            && self.controller.adopt_best_effort(&estimate)
-        {
-            // Лимит исчерпан: лучшая доступная белая — слабая оценка; без неё останется временная D65.
-            // Тот же момент времени: шаг контроллера нулевой, меняется только стартовая точка.
-            step = self.step(sensor_timestamp);
-        }
+        let verdict = self
+            .cold_start
+            .decide(self.request.map(|request| request.while_awaiting));
+        let shown = verdict != ColdStartVerdict::Hide;
+        let applied = self.applied.advance(passport.sensor_timestamp.as_nanos(), shown);
         self.note_cold_start(cold_start_before, verdict);
         self.note_hal(passport);
-        self.note_step(&step);
-        let statistics = self.statistics_plan(verdict, stream);
+        if applied.provisional {
+            self.counters.provisional_frames += 1;
+        }
+        let statistics = self.statistics_plan(stream, !shown);
         FramePlan {
             stream,
-            white: step.white.map_or(PROVISIONAL_WHITE, |white| white.chromaticity),
-            presentation: match verdict {
-                ColdStartVerdict::Hide => IspPresentation::HideUntilColorKnown,
-                ColdStartVerdict::Show | ColdStartVerdict::ShowForced { .. } => IspPresentation::Show,
+            white: applied.white,
+            presentation: if shown {
+                IspPresentation::Show
+            } else {
+                IspPresentation::HideUntilColorKnown
             },
             statistics,
         }
     }
 
-    /// Статистика кадра слота (собрана после fence): исполнителю, готовые оценки — контроллеру.
+    /// Статистика кадра слота (собрана после fence): старому оценщику, готовые оценки — в диагностику.
     pub fn ingest_statistics(&mut self, stream: AwbStream, frame: AwbFrameIdentity, statistics: &AwbStatistics) {
         self.submit_statistics(stream, frame, statistics, StatisticsPurpose::Viewfinder);
     }
 
     /// Статистика кадра с фонариком предвспышки: оценка света светодиода, НЕ влияющая на белую видоискателя.
-    /// Отдаётся независимо от расписания AWB: предвспышка — единицы кадров, и пропустить кадр с фонариком по
+    /// Отдаётся независимо от расписания: предвспышка — единицы кадров, и пропустить кадр с фонариком по
     /// прореживанию значило бы остаться без белой светодиода.
     pub fn ingest_torch_statistics(&mut self, stream: AwbStream, frame: AwbFrameIdentity, statistics: &AwbStatistics) {
         self.submit_statistics(stream, frame, statistics, StatisticsPurpose::Torch);
@@ -270,54 +262,22 @@ impl WhiteBalanceRunner {
         self.collect_estimates(stream);
     }
 
-    /// Снимок диагностики.
-    pub fn diagnostics(&self) -> WhiteBalanceDiagnostics {
-        let ours = self.scene_white.map(|white| white.cct_duv);
-        WhiteBalanceDiagnostics {
-            directive: self.controller.directive(),
-            directive_generation: self.applied_generation.map(|generation| generation.0),
-            scene_white: ours.map(reading_of),
-            last_estimate: self.last_estimate.map(|estimate| EstimateReading {
-                white: reading_of(estimate.cct_duv),
-                confidence: estimate.confidence,
-                accepted_tiles: estimate.accepted_tiles,
-                clamped_to_band: estimate.clamped.is_any(),
-            }),
-            manual_limit: self.controller.manual_limit(),
-            hal_white: self.hal_white.map(reading_of),
-            hal_delta: ours.zip(self.hal_white).map(|(ours, hal)| delta_between(ours, hal)),
-            estimates: self.counters.estimates,
-            decisions: self.controller.counters(),
-            estimation_failures: self.counters.estimation_failures,
-            estimator_busy: self.counters.estimator_busy,
-            statistics_every_n_frames: self.config.statistics_every_n_frames,
-            statistics_requested: self.counters.statistics_requested,
-            statistics_skipped_by_decimation: self.counters.statistics_skipped,
-            statistics_stale: self.counters.statistics_stale,
-            cold_start: self.cold_start.state(),
-            hidden_frames_cold_start: self.counters.hidden_frames,
-            cold_start_forced: self.counters.forced,
-            frames_with_provisional_white: self.counters.provisional_frames,
-            table_failure: self.table_failure.clone(),
-            torch_white_estimates: self.torch.estimated,
-            torch_white_failures: self.torch.failed,
-        }
-    }
-
     // ---- внутреннее ----
 
-    /// Свежее указание от владельца 3A (если появилось): применяется один раз на поколение.
+    /// Свежее указание владельца (если появилось): применяется один раз на поколение. Первое указание сессии
+    /// показа — «последнее из ящика», то есть и указание, опубликованное до создания сессии.
     fn refresh_directive(&mut self) {
         let Some((generation, directive)) = self.directives.newer_than(self.applied_generation) else {
             return;
         };
-        self.controller.set_directive(directive);
+        self.applied.accept(&directive);
+        self.request = directive.request;
         self.applied_generation = Some(generation);
         // Раз на смену указания, не на кадр.
-        tracing::info!(target: LOG_TARGET, generation = generation.0, ?directive, "указание AWB применено");
+        tracing::info!(target: LOG_TARGET, generation = generation.0, ?directive, "указание белой применено");
     }
 
-    /// Привязывает к потоку кадра; новый поток строит профиль и таблицу локуса и начинает холодный старт.
+    /// Привязывает к потоку кадра; новый поток строит профиль и таблицу локуса и сообщает источникам.
     fn bind_stream(&mut self, passport: &RawFramePassport) -> AwbStream {
         if let Some(bound) = &self.bound
             && Arc::ptr_eq(&bound.passport, &passport.stream)
@@ -337,26 +297,19 @@ impl WhiteBalanceRunner {
             Err(error) => (None, None, Some(format!("профиль цвета потока: {error}"))),
         };
         if let Some(failure) = &failure {
-            tracing::warn!(target: LOG_TARGET, %failure, "AWB потока не работает: белая будет временной");
+            tracing::warn!(target: LOG_TARGET, %failure, "оценщик потока не работает (белая в картинке не зависит)");
         }
         self.table_failure = failure;
         // Оценки старого потока исполнитель мог ещё не отдать: они чужие.
         while self.estimator.poll().is_some() {}
-        self.controller.begin_stream();
+        self.sources
+            .begin_stream(CameraTag::of(&stream.camera), profile.as_ref());
         self.hal.reset();
         self.hal_white = None;
         self.last_estimate = None;
         self.torch.reset();
-        let scene_white_known = self.controller.has_scene_white();
-        // Без таблицы оценок не будет никогда: ждать нечего, прятать кадры незачем.
-        self.cold_start.begin_stream(scene_white_known || table.is_none());
         self.schedule.restart();
-        tracing::info!(
-            target: LOG_TARGET,
-            stream = id.0,
-            scene_white_known,
-            "новый поток AWB"
-        );
+        tracing::info!(target: LOG_TARGET, stream = id.0, "новый поток белой");
         self.bound = Some(BoundStream {
             passport: Arc::clone(stream),
             id,
@@ -364,34 +317,6 @@ impl WhiteBalanceRunner {
             table,
         });
         id
-    }
-
-    /// Шаг контроллера по метке сенсора кадра.
-    fn step(&mut self, sensor_timestamp_nanos: i64) -> WhiteStep {
-        match self.controller.advance(sensor_timestamp_nanos) {
-            Ok(step) => step,
-            Err(error) => {
-                self.counters.estimation_failures += 1;
-                self.note_failure(format!("белая сцены не переводится в цветность: {error}"));
-                WhiteStep {
-                    white: None,
-                    changed: false,
-                }
-            }
-        }
-    }
-
-    /// Запоминает результат шага: диагностика, память белой между сессиями.
-    fn note_step(&mut self, step: &WhiteStep) {
-        if step.white.is_none() {
-            self.counters.provisional_frames += 1;
-        }
-        self.scene_white = step.white.or(self.scene_white);
-        if step.changed
-            && let Some(state) = self.controller.current_state()
-        {
-            self.memory.store(state);
-        }
     }
 
     /// Счётчики и журнал холодного старта (журнал — только на границах состояния, не на кадр).
@@ -403,12 +328,12 @@ impl WhiteBalanceRunner {
                 tracing::warn!(
                     target: LOG_TARGET,
                     hidden,
-                    "холодный старт AWB: оценки нет, кадры показаны с лучшей доступной белой"
+                    "холодный старт: ответа источника нет, кадры показаны с текущей белой"
                 );
             }
             ColdStartVerdict::Show => {
                 if let ColdStartState::Pending { hidden } = before {
-                    tracing::info!(target: LOG_TARGET, hidden, "холодный старт AWB закончен первой оценкой");
+                    tracing::info!(target: LOG_TARGET, hidden, "холодный старт закончен закрытием заявки");
                 }
             }
         }
@@ -425,8 +350,9 @@ impl WhiteBalanceRunner {
         self.hal_white = self.hal.observe(&details.color, profile);
     }
 
-    /// Расписание статистики с учётом холодного старта и наличия таблицы.
-    fn statistics_plan(&mut self, verdict: ColdStartVerdict, stream: AwbStream) -> StatisticsPlan {
+    /// Расписание статистики: пока кадры спрятаны холодным стартом — на каждом кадре, потом прореживание
+    /// (как было при ожидании первой оценки: на статистике стоит AE).
+    fn statistics_plan(&mut self, stream: AwbStream, hidden_by_cold_start: bool) -> StatisticsPlan {
         let has_table = self
             .bound
             .as_ref()
@@ -434,8 +360,7 @@ impl WhiteBalanceRunner {
         if !has_table {
             return StatisticsPlan::Skip;
         }
-        let waiting = verdict == ColdStartVerdict::Hide;
-        let plan = self.schedule.decide(waiting);
+        let plan = self.schedule.decide(hidden_by_cold_start);
         match plan {
             StatisticsPlan::Compute => self.counters.statistics_requested += 1,
             StatisticsPlan::Skip => self.counters.statistics_skipped += 1,
@@ -443,7 +368,7 @@ impl WhiteBalanceRunner {
         plan
     }
 
-    /// Забирает готовые оценки у исполнителя и отдаёт контроллеру.
+    /// Забирает готовые оценки у исполнителя: кадры с фонариком — вспышке, остальные — в диагностику.
     fn collect_estimates(&mut self, current: AwbStream) {
         while let Some(done) = self.estimator.poll() {
             if done.frame.stream_generation != current.0 {
@@ -452,7 +377,7 @@ impl WhiteBalanceRunner {
             }
             self.counters.estimates += 1;
             if self.torch.claim(done.frame.sensor_timestamp_nanos) {
-                // Кадр с фонариком: оценка света светодиода, контроллер видоискателя её не видит.
+                // Кадр с фонариком: оценка света светодиода.
                 match (&done.outcome, self.bound.as_ref()) {
                     (Ok(EstimateOutcome::Estimated(estimate)), Some(bound)) => {
                         self.torch
@@ -467,7 +392,6 @@ impl WhiteBalanceRunner {
                     if let EstimateOutcome::Estimated(estimate) = &outcome {
                         self.last_estimate = Some(*estimate);
                     }
-                    self.controller.ingest(&outcome);
                 }
                 Err(error) => {
                     self.counters.estimation_failures += 1;
@@ -480,15 +404,23 @@ impl WhiteBalanceRunner {
     /// Ошибку в журнал — один раз на новый текст, не на кадр.
     fn note_failure(&mut self, message: String) {
         if self.last_failure.as_deref() != Some(message.as_str()) {
-            tracing::warn!(target: LOG_TARGET, %message, "AWB: сбой");
+            tracing::warn!(target: LOG_TARGET, %message, "белая: сбой");
             self.last_failure = Some(message);
         }
     }
 }
 
 #[cfg(test)]
+#[path = "applied_tests.rs"]
+mod applied_tests;
+#[cfg(test)]
 #[path = "runner_tests.rs"]
 mod runner_tests;
+#[cfg(test)]
+#[path = "sources_tests.rs"]
+mod sources_tests;
+#[cfg(test)]
+mod test_support;
 #[cfg(test)]
 #[path = "torch_tests.rs"]
 mod torch_tests;

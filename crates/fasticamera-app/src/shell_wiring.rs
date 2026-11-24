@@ -54,6 +54,8 @@ use crate::scenario::observing::{ObservingScenario, PlatformFacts, ShellServices
 use crate::still_android_wiring::assemble_still;
 use crate::text_input_broker::TextInputBroker;
 use crate::vulkan_diagnostics::VulkanGpuDiagnostics;
+use crate::white_memory::{WhiteMemoryHandoff, open_white_memory};
+use crate::white_sources::product_white_sources;
 use render_loop::pipeline_cache_store::SharedPipelineCacheStore;
 
 /// Что остаётся у composition root после сборки: вход для наблюдающих сценариев.
@@ -118,17 +120,23 @@ pub fn ensure_installed(
     let lens_shading_for_saturation = lens_shading.clone();
     // Ящики связи камеры с рендером один набор на процесс: AWB и наш AE. Камера получает свою половину,
     // рендер — свою (клоны делят состояние).
+    // Память белой открывается ДО движка: стартовая белая (запомненная или запасной свет) известна при его сборке.
+    let white_memory = open_white_memory(app_directory, &config.camera().white_memory);
     let mut links = CameraLinks {
+        white_memory: WhiteMemoryHandoff::holding(white_memory),
         // Ёмкость памяти итогов вспышки — та же, что у журнала снимков (конфиг `photo.journal_capacity`).
         flash_relay: Arc::new(FlashStillRelay::new(config.photo().journal_capacity)),
         ..CameraLinks::default()
     };
+    // Реестр источников белого собирается здесь, из конфига рендера: рендеру и движку источники не вшиты.
+    let mut render_links = links.render_side(config.camera().exposure_controller);
+    render_links.white.sources = product_white_sources(config.render());
     let (render, render_auto_exposure) = start_render(
         config.render(),
         validation.clone(),
         &services,
         &raw_stream.stream,
-        links.render_side(config.camera().exposure_controller),
+        render_links,
         // Стартовый рецепт — основа и ручки активного пресета из файла (решение 195): основа тоже действует с
         // первого кадра, конфиг `viewfinder.tone.base` лишь умолчание встроенных пресетов библиотеки.
         look.handle.active_recipe(),
@@ -233,20 +241,16 @@ fn try_start_render(
     initial_look: LookRecipe,
     pipeline_cache: SharedPipelineCacheStore,
 ) -> Result<RenderRuntime, String> {
-    let RenderLinks {
-        white_balance,
-        auto_exposure,
-    } = links;
+    let RenderLinks { white, auto_exposure } = links;
     let backend_config = VulkanBackendConfig::from_render_config(render_config, validation.clone())
         .map_err(|error| format!("настройки бэкенда рендера: {error}"))?
         .with_pipeline_cache_store(pipeline_cache);
     // Режим показа камеры всегда: видоискатель отдаёт кадры, пока камера не стримит — рисуется чёрное.
-    let backend =
-        VulkanDisplayBackend::new_android_camera_preview(backend_config, raw_stream.viewfinder(), white_balance)
-            .map_err(|error| format!("GPU не поднялся: {error}"))?
-            // Стартовый вид — активный пресет из файла: ручки и основа действуют с первого кадра (решения 99, 195).
-            .with_initial_look(Arc::new(initial_look.settings))
-            .with_initial_tone_base(initial_look.base);
+    let backend = VulkanDisplayBackend::new_android_camera_preview(backend_config, raw_stream.viewfinder(), white)
+        .map_err(|error| format!("GPU не поднялся: {error}"))?
+        // Стартовый вид — активный пресет из файла: ручки и основа действуют с первого кадра (решения 99, 195).
+        .with_initial_look(Arc::new(initial_look.settings))
+        .with_initial_tone_base(initial_look.base);
     // Наш AE (08a): рендер меряет сцену и пишет предложения движку, читает его указания. `None` —
     // у камеры вендорский AE (`camera.exposure_controller = "vendor"`, A/B): рендеру мерить нечего,
     // подтяжка ISP остаётся единичной.

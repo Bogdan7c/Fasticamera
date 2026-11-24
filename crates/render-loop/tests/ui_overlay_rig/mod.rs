@@ -12,10 +12,8 @@ use super::camera_rig::{self, EventLog, FakeFrame, ProducerBook, TestImporter, r
 use super::support::{Journal, fake_surface};
 use super::vulkan_support::{
     assert_no_validation_errors, assert_presented_or_skipped, headless_camera_backend_keeping_unchanged_policy_or_skip,
-    headless_camera_backend_with_directives_or_skip,
+    headless_camera_backend_with_white_or_skip, held_white,
 };
-use camera_contract::control::{ColorTemperature, Tint, WhiteBalanceSetting};
-use camera_contract::three_a::{DirectiveSlot, ThreeAProfile, WhiteBalanceDirective, WhiteBalanceMode};
 use gpu_vulkan::hardware_buffer_cache::ImportCacheCounters;
 use gpu_vulkan::sync::GpuWaitFence;
 use raw_frame_stream::{OfferedFrame, RawFrameStream, RawFrameStreamConfig, StreamEpoch};
@@ -218,19 +216,6 @@ pub fn install_command(probe: &Arc<SourceProbe>) -> UiOverlayCommand {
 
 // ---- стенд: бэкенд, поток кадров, ручное управление кадрами показа ----
 
-pub fn manual_white() -> WhiteBalanceDirective {
-    // Ручной режим принимает точку сразу: без скрытия кадров на холодном старте AWB.
-    WhiteBalanceDirective {
-        mode: WhiteBalanceMode::Manual {
-            setting: WhiteBalanceSetting {
-                temperature: ColorTemperature::from_kelvin(4000.0).expect("температура"),
-                tint: Tint::NEUTRAL,
-            },
-        },
-        profile: ThreeAProfile::Photo,
-    }
-}
-
 pub fn timing(frame_index: u64) -> FrameTiming {
     let expected_present = MonotonicNanos::from_nanos(PRESENT_STEP_NANOS * i64::try_from(frame_index).expect("кадр"));
     FrameTiming {
@@ -321,10 +306,9 @@ impl Harness {
         let log = Arc::new(EventLog::default());
         let alive = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let (factory_log, factory_alive) = (Arc::clone(&log), Arc::clone(&alive));
-        let directives = DirectiveSlot::new();
-        directives.publish(manual_white());
+        let white = held_white(4000.0);
         let make_backend = match policy {
-            UnchangedPolicyInRig::EveryTickDrawn => headless_camera_backend_with_directives_or_skip,
+            UnchangedPolicyInRig::EveryTickDrawn => headless_camera_backend_with_white_or_skip,
             UnchangedPolicyInRig::FromConfig => headless_camera_backend_keeping_unchanged_policy_or_skip,
         };
         let backend = make_backend(
@@ -339,7 +323,7 @@ impl Harness {
                     counters: ImportCacheCounters::default(),
                 }))
             }),
-            directives,
+            white,
         )?;
         let backend = match initial_look {
             Some(look) => backend.with_initial_look(look),

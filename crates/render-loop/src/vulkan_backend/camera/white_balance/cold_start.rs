@@ -1,73 +1,87 @@
-//! Холодный старт AWB (решение 65): первые кадры нового потока обрабатываются, но не показываются.
+//! Холодный старт белой (решения 65, 76; white-balance 01): кадры обрабатываются, но не показываются, пока
+//! действует заявка источнику с `HideFrames` и предел `max_hidden_frames` не исчерпан.
 //!
-//! Статистика AWB считается ДО баланса белого и читается только после fence слота, поэтому первая оценка
-//! света готова не раньше чем через `frames_in_flight` показов. Пока белой сцены нет, ISP может выдать лишь
-//! заведомо неверный цвет (зелёный сырой сенсор, решение 55), и показывать его нельзя.
+//! # Что такое «открытие»
+//! Счёт ведётся на ОТКРЫТИЕ — непрерывный период, пока в указании стоит заявка `HideFrames`:
+//! * смена потока (линза, камера) счёт не обнуляет: заявка та же, ждём тот же ответ;
+//! * переизданная заявка `HideFrames` (новый номер) при уже показанных кадрах снова не прячет: картинка,
+//!   однажды показанная в этом открытии, не гаснет;
+//! * новое открытие начинается, когда `HideFrames` появляется после периода без него (заявка закрыта ответом,
+//!   отменена, заменена `KeepShowing`, указания не было). Пауза приложения даёт новую сессию показа (новый
+//!   раннер) либо новую заявку после периода без неё, поэтому прямого признака паузы не нужно.
 //!
-//! Правило ограничено: после `max_hidden_frames` скрытых кадров поток показывается в любом случае с лучшей
-//! доступной белой (слабая оценка, а если и её нет — временная D65), причём принудительный показ считается
-//! отдельно. Пустая, тёмная или пересвеченная сцена не прячет картинку вечно.
+//! Заявка закрылась (ответ принят владельцем) — показ. Предел исчерпан — принудительный показ с текущей
+//! белой (она всегда есть: прежняя, а если не было — дневной свет из конфига); заявка при этом живёт, и
+//! поздний ответ владелец применит плавно.
+
+use camera_contract::white::WhileAwaitingWhite;
 
 use crate::viewfinder::ColdStartState;
 
 /// Что делать с кадром.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColdStartVerdict {
-    /// Показать: белая известна (в том числе только что появилась первая оценка).
+    /// Показать: ждать нечего.
     Show,
-    /// Скрыть: обработать, чтобы получить статистику, но на экран не выводить.
+    /// Скрыть: обработать, чтобы шла статистика, но на экран не выводить.
     Hide,
-    /// Показать принудительно: лимит скрытых кадров исчерпан, а оценки так и нет.
+    /// Показать принудительно: предел скрытых кадров исчерпан, а ответа нет.
     ShowForced {
         /// Сколько кадров было скрыто до принудительного показа.
         hidden: u32,
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Opening {
+    /// Заявки с `HideFrames` нет.
+    None,
+    /// Открытие идёт, кадры скрыты.
+    Hiding { hidden: u32 },
+    /// Открытие идёт, кадры уже показаны (ответ ещё ждём).
+    Revealed,
+}
+
 /// Машина состояний холодного старта.
 #[derive(Debug, Clone, Copy)]
 pub struct ColdStart {
-    state: ColdStartState,
+    opening: Opening,
     max_hidden_frames: u32,
 }
 
 impl ColdStart {
-    /// Создаётся «тёплой»: до первого потока скрывать нечего.
+    /// Создаётся без открытия: пока заявки нет, скрывать нечего.
     pub fn new(max_hidden_frames: u32) -> Self {
         Self {
-            state: ColdStartState::Warm,
+            opening: Opening::None,
             max_hidden_frames,
         }
     }
 
-    /// Начался новый поток: с известной белой сцены — сразу показ, иначе ждём первую оценку.
-    pub fn begin_stream(&mut self, scene_white_known: bool) {
-        self.state = if scene_white_known {
-            ColdStartState::Warm
-        } else {
-            ColdStartState::Pending { hidden: 0 }
-        };
-    }
-
-    /// Состояние (для статистики и диагностики).
+    /// Состояние для диагностики.
     pub fn state(&self) -> ColdStartState {
-        self.state
+        match self.opening {
+            Opening::Hiding { hidden } => ColdStartState::Pending { hidden },
+            Opening::None | Opening::Revealed => ColdStartState::Warm,
+        }
     }
 
-    /// Решение по очередному кадру. `scene_white_known` — после шага контроллера на этом кадре.
-    pub fn decide(&mut self, scene_white_known: bool) -> ColdStartVerdict {
-        let ColdStartState::Pending { hidden } = self.state else {
-            return ColdStartVerdict::Show;
-        };
-        if scene_white_known {
-            self.state = ColdStartState::Warm;
+    /// Решение по очередному кадру. `awaiting` — что требует действующая заявка (`None` — заявки нет).
+    pub fn decide(&mut self, awaiting: Option<WhileAwaitingWhite>) -> ColdStartVerdict {
+        if awaiting != Some(WhileAwaitingWhite::HideFrames) {
+            self.opening = Opening::None;
             return ColdStartVerdict::Show;
         }
+        let hidden = match self.opening {
+            Opening::Revealed => return ColdStartVerdict::Show,
+            Opening::None => 0,
+            Opening::Hiding { hidden } => hidden,
+        };
         if hidden >= self.max_hidden_frames {
-            self.state = ColdStartState::Warm;
+            self.opening = Opening::Revealed;
             return ColdStartVerdict::ShowForced { hidden };
         }
-        self.state = ColdStartState::Pending { hidden: hidden + 1 };
+        self.opening = Opening::Hiding { hidden: hidden + 1 };
         ColdStartVerdict::Hide
     }
 }
@@ -76,35 +90,35 @@ impl ColdStart {
 mod tests {
     use super::*;
 
+    const HIDE: Option<WhileAwaitingWhite> = Some(WhileAwaitingWhite::HideFrames);
+    const KEEP: Option<WhileAwaitingWhite> = Some(WhileAwaitingWhite::KeepShowing);
+
     #[test]
-    fn known_scene_white_shows_immediately() {
+    fn no_request_shows_everything() {
         let mut cold_start = ColdStart::new(10);
-        cold_start.begin_stream(true);
-        assert_eq!(cold_start.decide(true), ColdStartVerdict::Show);
+        assert_eq!(cold_start.decide(None), ColdStartVerdict::Show);
+        assert_eq!(cold_start.decide(KEEP), ColdStartVerdict::Show);
         assert_eq!(cold_start.state(), ColdStartState::Warm);
     }
 
     #[test]
-    fn frames_are_hidden_until_the_first_estimate_then_shown() {
+    fn frames_are_hidden_while_the_request_lives_and_shown_when_it_closes() {
         let mut cold_start = ColdStart::new(10);
-        cold_start.begin_stream(false);
-        assert_eq!(cold_start.decide(false), ColdStartVerdict::Hide);
-        assert_eq!(cold_start.decide(false), ColdStartVerdict::Hide);
+        assert_eq!(cold_start.decide(HIDE), ColdStartVerdict::Hide);
+        assert_eq!(cold_start.decide(HIDE), ColdStartVerdict::Hide);
         assert_eq!(cold_start.state(), ColdStartState::Pending { hidden: 2 });
         assert_eq!(
-            cold_start.decide(true),
+            cold_start.decide(None),
             ColdStartVerdict::Show,
-            "первая оценка закончила скрытие"
+            "заявка закрыта ответом"
         );
         assert_eq!(cold_start.state(), ColdStartState::Warm);
-        assert_eq!(cold_start.decide(false), ColdStartVerdict::Show, "дальше скрытия нет");
     }
 
     #[test]
-    fn hiding_is_bounded_so_a_blank_scene_is_never_hidden_forever() {
+    fn hiding_is_bounded_and_forced_show_keeps_showing_while_the_request_lives() {
         let mut cold_start = ColdStart::new(3);
-        cold_start.begin_stream(false);
-        let verdicts: Vec<_> = (0..6).map(|_| cold_start.decide(false)).collect();
+        let verdicts: Vec<_> = (0..6).map(|_| cold_start.decide(HIDE)).collect();
         assert_eq!(
             verdicts,
             [
@@ -121,17 +135,32 @@ mod tests {
     #[test]
     fn zero_limit_never_hides() {
         let mut cold_start = ColdStart::new(0);
-        cold_start.begin_stream(false);
-        assert_eq!(cold_start.decide(false), ColdStartVerdict::ShowForced { hidden: 0 });
+        assert_eq!(cold_start.decide(HIDE), ColdStartVerdict::ShowForced { hidden: 0 });
     }
 
     #[test]
-    fn new_stream_restarts_the_wait() {
+    fn the_count_belongs_to_the_opening_so_a_reissued_request_does_not_restart_it() {
+        // Переиздание заявки (новый номер, всё ещё HideFrames) выглядит для машины как тот же HIDE подряд.
+        let mut cold_start = ColdStart::new(3);
+        assert_eq!(cold_start.decide(HIDE), ColdStartVerdict::Hide);
+        assert_eq!(cold_start.decide(HIDE), ColdStartVerdict::Hide);
+        assert_eq!(cold_start.decide(HIDE), ColdStartVerdict::Hide);
+        assert_eq!(cold_start.decide(HIDE), ColdStartVerdict::ShowForced { hidden: 3 });
+        // Кадры уже показаны: переизданная заявка снова не прячет.
+        assert_eq!(cold_start.decide(HIDE), ColdStartVerdict::Show);
+    }
+
+    #[test]
+    fn a_hide_request_after_a_pause_without_one_is_a_new_opening() {
         let mut cold_start = ColdStart::new(2);
-        cold_start.begin_stream(false);
-        assert_eq!(cold_start.decide(true), ColdStartVerdict::Show);
-        cold_start.begin_stream(false);
-        assert_eq!(cold_start.state(), ColdStartState::Pending { hidden: 0 });
-        assert_eq!(cold_start.decide(false), ColdStartVerdict::Hide);
+        assert_eq!(cold_start.decide(HIDE), ColdStartVerdict::Hide);
+        assert_eq!(cold_start.decide(None), ColdStartVerdict::Show);
+        assert_eq!(cold_start.decide(KEEP), ColdStartVerdict::Show);
+        assert_eq!(
+            cold_start.decide(HIDE),
+            ColdStartVerdict::Hide,
+            "новое открытие прячет снова"
+        );
+        assert_eq!(cold_start.state(), ColdStartState::Pending { hidden: 1 });
     }
 }

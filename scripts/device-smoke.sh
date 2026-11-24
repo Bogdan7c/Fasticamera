@@ -73,6 +73,8 @@
 # 180000 — короткий замер тока для A/B «наш AE / вендорский»; не короче шага снимков 60 с — проверит Rust).
 # --exposure-controller own|vendor — какая автоэкспозиция на этот запуск (camera.exposure_controller; без флага —
 # умолчание конфига, own); годится для любого сценария, допустимость значения проверяет Rust при initialize.
+# Память белой (camera.white_memory) на прогонах выключена ВСЕГДА (-e white_memory none): прогон не читает белую владельца
+# и не портит её своими командами. device-deploy.sh память не трогает: владелец ставит приложение для жизни.
 # Validation-слой есть только в debug-сборке: в release отчёт пишет validation.mode=disabled.
 # Подробности отчёта — строки FASTICAMERA_DETAIL в выводе.
 # Коды выхода: 0 — сценарий прошёл, 1 — сценарий упал, 2 — устройство не найдено,
@@ -288,7 +290,8 @@ start_activity "$serial" "$package" -e scenario "$scenario" ${stages:+-e stages 
     ${saturation_workloads:+-e saturation_workloads "$saturation_workloads"} \
     ${saturation_measure_ms:+-e saturation_measure_ms "$saturation_measure_ms"} \
     ${saturation_warmup_ms:+-e saturation_warmup_ms "$saturation_warmup_ms"} \
-    ${exposure_controller:+-e exposure_controller "$exposure_controller"} ||
+    ${exposure_controller:+-e exposure_controller "$exposure_controller"} \
+    -e white_memory none ||
     exit "$EXIT_BUILD_OR_INSTALL_FAILED"
 
 # Дополнительные флаги проверки результата (пустой массив — без флагов).

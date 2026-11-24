@@ -509,7 +509,9 @@ impl ZoomRunner {
                 | CameraEvent::FocusSettled { .. }
                 | CameraEvent::ControlsAdjusted { .. }
                 | CameraEvent::BracketCaptured { .. }
-                | CameraEvent::FlashStillFinished { .. } => {}
+                | CameraEvent::FlashStillFinished { .. }
+                | CameraEvent::WhiteChanged { .. }
+                | CameraEvent::WhiteRequestFinished { .. } => {}
             }
         }
         None

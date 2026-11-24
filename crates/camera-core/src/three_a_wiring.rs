@@ -1,11 +1,11 @@
 //! Состав автоматики 3A, который собирает корень композиции и отдаёт движку.
 //!
 //! Движок не создаёт исполнителей сам: он получает их готовыми (вендорские по умолчанию,
-//! в 08a — наш AE) вместе с писателем «почтового ящика» баланса белого. Так замена
+//! в 08a — наш AE) вместе с ящиками и памятью белой. Так замена
 //! исполнителя и подключение потока рендера не требуют правки движка.
 
 use camera_contract::auto_exposure::{ExposureDirective, ExposureProposalChannel};
-use camera_contract::three_a::{DirectiveSlot, MainsFrequency, WhiteBalanceDirective};
+use camera_contract::three_a::{DirectiveSlot, MainsFrequency};
 
 use std::sync::Arc;
 
@@ -14,13 +14,14 @@ use crate::flash_status::FlashStillObserver;
 use crate::three_a_control::{ExposureController, FocusController};
 use crate::three_a_own::RawStatsExposure;
 use crate::three_a_vendor::{VendorExposure, VendorFocus};
+use crate::white::WhiteWiring;
 
-/// Исполнители 3A и ящик указаний баланса белого.
+/// Исполнители 3A и подключения белой.
 pub struct ThreeAWiring {
     pub exposure: Box<dyn ExposureController>,
     pub focus: Box<dyn FocusController>,
-    /// Сюда движок кладёт режим AWB; читает поток рендера (решение 64).
-    pub white_balance: DirectiveSlot<WhiteBalanceDirective>,
+    /// Белая: ящик указаний рендеру, ящик ответов источника, память (план white-balance).
+    pub white: WhiteWiring,
     /// Сюда движок кладёт указание нашему AE (где мерить, блокировка, что стоит в запросе);
     /// читает поток рендера (08a). С вендорским AE ящик просто никто не читает.
     pub exposure_directives: DirectiveSlot<ExposureDirective>,
@@ -29,12 +30,12 @@ pub struct ThreeAWiring {
 }
 
 impl ThreeAWiring {
-    /// Состав сессии 08: вендорский AF, **временный** вендорский AE, пустой ящик AWB.
+    /// Состав сессии 08: вендорский AF, **временный** вендорский AE, белая со своими пустыми ящиками.
     pub fn vendor(config: &ThreeAConfig) -> Self {
         Self {
             exposure: Box::new(VendorExposure),
             focus: Box::new(VendorFocus::new(config.focus_marker_grace_frames)),
-            white_balance: DirectiveSlot::new(),
+            white: WhiteWiring::default(),
             exposure_directives: DirectiveSlot::new(),
             flash_observer: None,
         }
@@ -61,9 +62,9 @@ impl ThreeAWiring {
         self
     }
 
-    /// Тот же состав, но с ящиком, который уже держит читатель (поток рендера).
-    pub fn with_white_balance_slot(mut self, slot: DirectiveSlot<WhiteBalanceDirective>) -> Self {
-        self.white_balance = slot;
+    /// Тот же состав, но с ящиками и памятью белой, которые уже держит читатель (поток рендера).
+    pub fn with_white(mut self, white: WhiteWiring) -> Self {
+        self.white = white;
         self
     }
 

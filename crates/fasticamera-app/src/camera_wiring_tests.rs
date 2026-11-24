@@ -85,15 +85,19 @@ fn invalid_config_gives_unavailable_service_with_the_reason_and_no_thread() {
     assert!(control.calls().is_empty(), "бэкенд не создавался и не вызывался");
 }
 
-/// Ящик указаний AWB, переданный корнем композиции, получает указания движка: сначала умолчание при старте,
-/// затем ручную точку белого после команды. Читатель (поток рендера) держит клон того же ящика.
+/// Ящики белой, переданные корнем композиции, действительно соединены с движком: указание рендеру приходит в
+/// тот же ящик, который держит читатель (поток рендера), а ответ источника, положенный рендером в общий ящик
+/// ответов, доходит до владельца белого (толчок привязан) и закрывает заявку.
 #[test]
-fn white_balance_slot_of_the_composition_root_receives_the_engine_directives() {
-    use camera_contract::control::{ColorTemperature, Control, ManualControl, Tint, WhiteBalanceSetting};
-    use camera_contract::three_a::{DirectiveSlot, WhiteBalanceDirective, WhiteBalanceMode};
+fn white_boxes_of_the_composition_root_are_connected_to_the_engine() {
+    use camera_contract::control::{ColorTemperature, Tint, WhiteBalanceSetting};
+    use camera_contract::white::{
+        SceneIlluminant, WhiteAnswer, WhiteAnswerChannel, WhiteConfidence, WhiteDirective, WhiteSourceOutcome,
+    };
+    use camera_core::white::{WhiteRequestOutcome, WhiteRequestState};
 
-    let slot: DirectiveSlot<WhiteBalanceDirective> = DirectiveSlot::new();
-    let reader = slot.clone();
+    let reader_slot = camera_contract::three_a::DirectiveSlot::<WhiteDirective>::new();
+    let answers = WhiteAnswerChannel::new();
     let mut config = CameraConfig::default();
     config.viewfinder_autostart.enabled = false;
     let control = camera_core::fake::FakeBackendControl::new();
@@ -105,45 +109,129 @@ fn white_balance_slot_of_the_composition_root_receives_the_engine_directives() {
             raw_stream: RawStreamServices::detached(),
         },
         CameraLinks {
-            white_balance: slot,
+            white_directives: reader_slot.clone(),
+            white_answers: answers.clone(),
             ..CameraLinks::default()
         },
     );
-    let wait_for = |wanted: &dyn Fn(&WhiteBalanceDirective) -> bool| {
+    let wait_for = |wanted: &dyn Fn(&WhiteDirective) -> bool| {
         let deadline = std::time::Instant::now() + WAIT;
         loop {
-            if let Some((_, directive)) = reader.latest().filter(|(_, directive)| wanted(directive)) {
+            if let Some((_, directive)) = reader_slot.latest().filter(|(_, directive)| wanted(directive)) {
                 return directive;
             }
             assert!(
                 std::time::Instant::now() < deadline,
                 "указание не пришло: {:?}",
-                reader.latest()
+                reader_slot.latest()
             );
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
     };
 
+    // Указание есть сразу при старте: белая есть всегда (запасной свет из конфига).
     let initial = wait_for(&|_| true);
+    assert_eq!(initial.white.temperature.kelvin(), 5_600.0);
+    assert_eq!(initial.request, None, "заявки до возобновления нет");
+
+    // Возобновление (WB22) заводит заявку источнику «телефон»: она видна читателю в том же ящике.
+    let handle = services.running().expect("запущен").handle().clone();
+    handle.enter_foreground().expect("команда принята очередью");
+    let asked = wait_for(&|directive| directive.request.is_some())
+        .request
+        .expect("заявка");
+
+    // Ответ рендера в общий ящик: движок получает толчок (привязка) и применяет белую 3200 К.
+    let lamp = WhiteBalanceSetting {
+        temperature: ColorTemperature::from_kelvin(3_200.0).expect("температура"),
+        tint: Tint::NEUTRAL,
+    };
+    let (_, delivery) = answers.publish(WhiteAnswer {
+        request: asked.id,
+        camera: camera_contract::auto_exposure::CameraTag::of(&camera_contract::fixtures::camera_id("2")),
+        measured_frame: None,
+        outcome: WhiteSourceOutcome::Ready {
+            illuminant: SceneIlluminant::Uniform(lamp),
+            confidence: WhiteConfidence::FULL,
+        },
+    });
     assert_eq!(
-        initial.mode,
-        WhiteBalanceMode::Auto,
-        "при старте — автоматический режим"
+        delivery,
+        camera_contract::auto_exposure::SignalDelivery::Delivered,
+        "толчок ответов привязан к движку"
+    );
+    wait_for(&|directive| directive.white == lamp);
+    let status = handle
+        .wait_until_status(WAIT, |status| {
+            matches!(
+                status.three_a.white.request,
+                WhiteRequestState::Idle {
+                    last: Some(camera_core::white::WhiteRequestResult {
+                        result: WhiteRequestOutcome::Applied { .. },
+                        ..
+                    })
+                }
+            )
+        })
+        .expect("заявка закрыта исходом Applied");
+    assert_eq!(status.three_a.white.held.setting, lamp);
+}
+
+/// Память белой, открытая корнем композиции, доезжает до движка: ручная белая записывается в настоящий файл, а
+/// счётчики записи видны у сервиса камеры (отказ диска не только в журнале).
+#[test]
+fn white_memory_opened_by_the_composition_root_receives_the_manual_white_and_reports_its_stats() {
+    use camera_contract::control::{ColorTemperature, Tint, WhiteBalanceSetting};
+    use camera_contract::white::WhiteTransition;
+
+    use crate::app_directory::AppDirectory;
+    use crate::white_memory::{WhiteMemoryConfig, WhiteMemoryHandoff, open_white_memory};
+
+    let path = std::env::temp_dir().join(format!("fasticamera-wiring-white-{}", std::process::id()));
+    std::fs::create_dir_all(&path).expect("папка создана");
+    let directory = AppDirectory::new(path.to_string_lossy().into_owned()).expect("папка годится");
+    let mut config = CameraConfig::default();
+    config.viewfinder_autostart.enabled = false;
+    let control = camera_core::fake::FakeBackendControl::new();
+    let services = start_camera_with_links(
+        &config,
+        CameraBackendParts {
+            factory: control.factory(),
+            diagnostics: Arc::new(camera_android::BackendDiagnostics::new(4)),
+            raw_stream: RawStreamServices::detached(),
+        },
+        CameraLinks {
+            white_memory: WhiteMemoryHandoff::holding(open_white_memory(&directory, &WhiteMemoryConfig::default())),
+            ..CameraLinks::default()
+        },
     );
 
-    let setting = WhiteBalanceSetting {
-        temperature: ColorTemperature::from_kelvin(4_000.0).expect("температура"),
+    let manual = WhiteBalanceSetting {
+        temperature: ColorTemperature::from_kelvin(3_900.0).expect("температура"),
         tint: Tint::NEUTRAL,
     };
     let handle = services.running().expect("запущен").handle().clone();
     handle
-        .apply_controls(ManualControl {
-            white_balance: Control::Manual(setting),
-            ..ManualControl::AUTOMATIC
-        })
+        .set_white(manual, WhiteTransition::Immediate)
         .expect("команда принята очередью");
-    let manual = wait_for(&|directive| matches!(directive.mode, WhiteBalanceMode::Manual { .. }));
-    assert_eq!(manual.mode, WhiteBalanceMode::Manual { setting });
+
+    let deadline = std::time::Instant::now() + WAIT;
+    while services.white_memory_stats().saved == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "запись не дошла до диска: {:?}",
+            services.white_memory_stats()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let text = std::fs::read_to_string(path.join("white.json")).expect("файл памяти записан");
+    assert!(
+        text.contains("\"origin\": \"manual\"") && text.contains("3900"),
+        "{text}"
+    );
+    assert_eq!(services.white_memory_stats().failed, 0);
+    drop(services);
+    std::fs::remove_dir_all(path).expect("уборка");
 }
 
 // --- Композиция нашего AE (08a): ящик предложений, толчок и переключатель `exposure_controller` ---

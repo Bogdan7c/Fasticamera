@@ -1,11 +1,12 @@
 //! Команды движку (intent-методы [`crate::CameraHandle`]) и их явные итоги.
 
 use camera_contract::catalog::TargetUnavailable;
-use camera_contract::control::{CaptureIntent, ExposureBias, ManualControl};
+use camera_contract::control::{CaptureIntent, ExposureBias, ManualControl, WhiteBalanceSetting};
 use camera_contract::flash::FlashShotId;
 use camera_contract::ids::{CameraTarget, LensRole};
 use camera_contract::stream::StreamMode;
 use camera_contract::three_a::{ExposureBracket, SensorPoint, ThreeAProfile};
+use camera_contract::white::{WhiteSourceId, WhiteTransition};
 use serde::Serialize;
 
 use crate::backend::UnsupportedStream;
@@ -71,6 +72,19 @@ pub enum CameraCommand {
     CaptureFlashStill {
         shot: FlashShotId,
     },
+    /// Белая рукой (кнопка света, шкала). Рука сильнее источника: ожидающая заявка отменяется. Белая живёт
+    /// вне желаемого состояния: `Close`, `ApplyControls` и `SwitchTo` её не трогают. Прижим к пределам виден
+    /// событием `ControlsAdjusted` и статусом.
+    SetWhite {
+        setting: WhiteBalanceSetting,
+        transition: WhiteTransition,
+    },
+    /// Взять белую у источника (долгое нажатие, кнопка «Телефон»). Нужен идущий поток. Итог заявки — событие
+    /// `WhiteRequestFinished`, белая прежняя до принятия ответа.
+    TakeWhite {
+        source: WhiteSourceId,
+        transition: WhiteTransition,
+    },
     /// Камера не нужна: закрыть и забыть желаемое.
     Close,
     /// Приложение ушло с переднего плана: отпустить камеру, желаемое сохранить.
@@ -95,6 +109,8 @@ impl CameraCommand {
             CameraCommand::SetThreeAProfile { .. } => "set_three_a_profile",
             CameraCommand::CaptureBracket { .. } => "capture_bracket",
             CameraCommand::CaptureFlashStill { .. } => "capture_flash_still",
+            CameraCommand::SetWhite { .. } => "set_white",
+            CameraCommand::TakeWhite { .. } => "take_white",
             CameraCommand::Close => "close",
             CameraCommand::EnterBackground => "enter_background",
             CameraCommand::EnterForeground => "enter_foreground",

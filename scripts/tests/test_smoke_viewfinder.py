@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import json
+import os
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -35,6 +37,25 @@ def passed(scenario: str, report: dict) -> dict:
     return {"scenario": scenario, "status": "passed", "report": report}
 
 
+def white_balance_report(
+    origin: str = "phone",
+    request_state: str = "applied",
+    cold_start_pending: bool = False,
+    hidden_frames: int = 3,
+) -> dict:
+    """Раздел ``white_balance`` сводки: белая 3200 К, её происхождение и исход последней заявки источнику."""
+    return {
+        "white": {"kelvin": 3200.0, "duv": 0.0},
+        "origin": origin,
+        "request": {"state": request_state, "id": 1, "source": "phone"},
+        "cold_start_pending": cold_start_pending,
+        "hidden_frames": hidden_frames,
+        "max_hidden_frames": 20,
+        "statistics_every_n_frames": 4,
+        "hal_delta_mired": 5.0,
+    }
+
+
 def viewfinder_report(**overrides: object) -> dict:
     report: dict = {
         "sensor_fps": 59.95,
@@ -48,9 +69,14 @@ def viewfinder_report(**overrides: object) -> dict:
         "frames_hidden_cold_start": 3,
         "frames_presented": 3597,
         "bracket_frames_skipped": 0,
+        # Белая взята у телефона, заявка открытия закрыта исходом applied (старый оценщик продукт не судит).
         "white_balance": {
-            "estimates": 900,
+            "white": {"kelvin": 3200.0, "duv": 0.0},
+            "origin": "phone",
+            "request": {"state": "applied", "id": 1, "source": "phone"},
             "cold_start_pending": False,
+            "hidden_frames": 3,
+            "max_hidden_frames": 20,
             "statistics_every_n_frames": 4,
             "hal_delta_mired": 5.0,
         },
@@ -132,11 +158,21 @@ class ViewfinderCheckTest(unittest.TestCase):
             "AWB": viewfinder_report(awb_published=0),
             "опубликована 100 раз": viewfinder_report(awb_published=100),
             "раздела white_balance": {k: v for k, v in viewfinder_report().items() if k != "white_balance"},
-            "ни одной оценки": viewfinder_report(
-                white_balance={"estimates": 0, "cold_start_pending": False, "statistics_every_n_frames": 4}
+            "белая не взята у телефона": viewfinder_report(
+                white_balance=white_balance_report(origin="fallback", request_state="unavailable")
             ),
-            "холодный старт AWB не кончился": viewfinder_report(
-                white_balance={"estimates": 5, "cold_start_pending": True, "statistics_every_n_frames": 4}
+            "origin='manual'": viewfinder_report(white_balance=white_balance_report(origin="manual")),
+            "заявка белого не закрыта исходом applied": viewfinder_report(
+                white_balance=white_balance_report(request_state="timed_out")
+            ),
+            "холодный старт скрыл 21 кадров, предел 20": viewfinder_report(
+                white_balance=white_balance_report(hidden_frames=21)
+            ),
+            "нет числа скрытых кадров": viewfinder_report(
+                white_balance={k: v for k, v in white_balance_report().items() if k != "hidden_frames"}
+            ),
+            "холодный старт не кончился": viewfinder_report(
+                white_balance=white_balance_report(cold_start_pending=True)
             ),
             "кадры теряются": viewfinder_report(frames_presented=3000),
             "нет счётчиков учёта": viewfinder_report(frames_hidden_cold_start=None),
@@ -453,6 +489,41 @@ class DeviceSmokeViewfinderTest(unittest.TestCase):
             with self.subTest(value=bad):
                 rejected = self.run_smoke("viewfinder", [], extra_arguments=("--exposure-controller", bad))
                 self.assertEqual(rejected.returncode, 64, rejected.stderr)
+
+    def test_smoke_runs_always_turn_the_owners_white_memory_off(self) -> None:
+        """Прогон не читает белую владельца и не портит её: intent ВСЕГДА несёт ``white_memory none``, с любыми
+        другими флагами и в обоих вариантах приложения."""
+        for extra_arguments in ((), ("--variant", "release"), ("--exposure-controller", "vendor")):
+            with self.subTest(extra_arguments=extra_arguments):
+                self.adb_log.write_text("", encoding="utf-8")
+                completed = self.run_smoke(
+                    "viewfinder-stage-budget", [result_line(self.BUDGET_OK)], extra_arguments=extra_arguments
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                start = next(call for call in self.adb_calls() if "am start" in call)
+                self.assertIn("-e white_memory none", start)
+
+    def test_deploy_for_the_owner_does_not_touch_the_white_memory(self) -> None:
+        """``device-deploy.sh`` ставит приложение для жизни: память белой работает как в продукте, extra не шлётся."""
+        self.logcat_file.write_text("", encoding="utf-8")
+        environment = dict(os.environ)
+        environment.update(
+            PATH=f"{self.fake_bin}{os.pathsep}{environment['PATH']}",
+            ANDROID_SERIAL=device_script.SERIAL,
+            FASTICAMERA_APK_PATH=str(self.apk),
+            FAKE_ADB_LOG=str(self.adb_log),
+            FAKE_LOGCAT_FILE=str(self.logcat_file),
+            FAKE_DUMP_FILE=str(self.dump_file),
+            FAKE_FAILING_PM_COMMAND="",
+        )
+        completed = subprocess.run(
+            ["bash", str(SCRIPTS_DIR / "device-deploy.sh"), "--no-build", "--log-seconds", "1"],
+            capture_output=True, text=True, env=environment, timeout=60,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        starts = [call for call in self.adb_calls() if "am start" in call]
+        self.assertEqual(len(starts), 1, starts)
+        self.assertNotIn("white_memory", starts[0])
 
     def test_without_stages_no_extra_is_sent(self) -> None:
         completed = self.run_smoke("viewfinder-stage-budget", [result_line(self.BUDGET_OK)])

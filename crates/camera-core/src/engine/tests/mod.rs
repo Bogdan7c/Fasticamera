@@ -28,6 +28,10 @@ mod three_a_hal_ae_counter;
 mod three_a_own;
 mod three_a_support;
 mod transitions;
+mod white_answers;
+mod white_manual;
+mod white_open;
+mod white_support;
 
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};

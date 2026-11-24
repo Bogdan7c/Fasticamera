@@ -13,6 +13,7 @@ use serde::Deserialize;
 use crate::auto_exposure_link::ExposureControllerKind;
 use crate::camera_scenario_config::{CameraScenarioConfig, CameraScenarioConfigError};
 use crate::viewfinder_autostart::{ViewfinderAutostartConfig, ViewfinderAutostartConfigError};
+use crate::white_memory::{WhiteMemoryConfig, WhiteMemoryConfigError};
 
 /// Запас таблицы происхождений запросов сверх длины серии с брекетингом. Разовые записи серии
 /// (кадры брекета, триггер фокуса) не должны вытеснять друг друга, пока их результаты не пришли:
@@ -39,6 +40,9 @@ pub struct CameraConfig {
     /// (`"own"` | `"vendor"`, сравнение A/B на телефоне, сессия 08a). Параметры нашего AE —
     /// `engine.three_a.exposure`.
     pub exposure_controller: ExposureControllerKind,
+    /// Память белой: файл в папке приложения или её отсутствие (`{"mode": "file"|"none", ...}`). Приёмка на
+    /// телефоне (`device-smoke.sh`) всегда выключает память, чтобы прогоны не трогали белую владельца.
+    pub white_memory: WhiteMemoryConfig,
 }
 
 /// Какая часть секции `camera` неверна.
@@ -54,6 +58,8 @@ pub enum CameraConfigError {
     Scenarios(#[from] CameraScenarioConfigError),
     #[error("{0}")]
     ViewfinderAutostart(#[from] ViewfinderAutostartConfigError),
+    #[error("{0}")]
+    WhiteMemory(#[from] WhiteMemoryConfigError),
     #[error(
         "camera.android.request_origin_capacity ({capacity}) должно быть не меньше \
          camera.engine.three_a.max_bracket_frames ({bracket_limit}) + {margin}: записи серии вытеснят друг друга"
@@ -73,6 +79,7 @@ impl CameraConfig {
         self.raw_stream.validate()?;
         self.scenarios.validate()?;
         self.viewfinder_autostart.validate()?;
+        self.white_memory.validate()?;
         self.validate_request_origin_capacity()
     }
 

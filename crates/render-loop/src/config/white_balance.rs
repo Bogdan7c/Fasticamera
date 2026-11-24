@@ -4,6 +4,7 @@
 //! поток рендера: сколько кадров нового потока прятать до первой оценки и как часто считать статистику.
 
 use scene_estimation::config::SceneEstimationConfig;
+use scene_estimation::white_source::phone::PhoneWhiteConfig;
 use serde::{Deserialize, Serialize};
 
 /// Настройки AWB потока рендера.
@@ -17,6 +18,8 @@ pub struct WhiteBalanceConfig {
     pub max_hidden_frames: u32,
     /// Статистика AWB на GPU считается на каждом N-м обработанном кадре (1 — на каждом).
     pub statistics_every_n_frames: u32,
+    /// Числа источника белого «телефон» (white-balance 01): когда подсказки автоматики телефона считаются ответом.
+    pub phone: PhoneWhiteConfig,
 }
 
 impl Default for WhiteBalanceConfig {
@@ -35,6 +38,7 @@ impl Default for WhiteBalanceConfig {
             scene: SceneEstimationConfig::default(),
             max_hidden_frames: 20,
             statistics_every_n_frames: 4,
+            phone: PhoneWhiteConfig::default(),
         }
     }
 }
@@ -48,6 +52,9 @@ pub enum WhiteBalanceConfigError {
     /// Статистику нельзя считать «каждый 0-й» кадр.
     #[error("viewfinder.white_balance.statistics_every_n_frames должен быть не меньше 1")]
     StatisticsEveryZero,
+    /// Числа источника «телефон» отвергнуты.
+    #[error("viewfinder.white_balance.phone: {0}")]
+    Phone(String),
 }
 
 impl WhiteBalanceConfig {
@@ -59,7 +66,9 @@ impl WhiteBalanceConfig {
         if self.statistics_every_n_frames == 0 {
             return Err(WhiteBalanceConfigError::StatisticsEveryZero);
         }
-        Ok(())
+        self.phone
+            .validate()
+            .map_err(|error| WhiteBalanceConfigError::Phone(error.to_string()))
     }
 }
 
@@ -91,6 +100,20 @@ mod tests {
             Err(WhiteBalanceConfigError::Scene(_))
         ));
         assert!(serde_json::from_str::<WhiteBalanceConfig>(r#"{"hidden":3}"#).is_err());
+        let mut broken_phone = WhiteBalanceConfig::default();
+        broken_phone.phone.stable_frames = 0;
+        assert!(matches!(
+            broken_phone.validate(),
+            Err(WhiteBalanceConfigError::Phone(_))
+        ));
+        assert!(
+            serde_json::from_str::<WhiteBalanceConfig>(r#"{"phone":{"nope":1}}"#).is_err(),
+            "в секции phone неизвестные поля отвергаются"
+        );
+        let tuned: WhiteBalanceConfig =
+            serde_json::from_str(r#"{"phone":{"stable_frames":3,"settle_by_frame":10}}"#).expect("секция читается");
+        assert_eq!((tuned.phone.stable_frames, tuned.phone.settle_by_frame), (3, 10));
+        assert_eq!(tuned.validate(), Ok(()));
         let parsed: WhiteBalanceConfig = serde_json::from_str(r#"{"max_hidden_frames":0}"#).expect("секция читается");
         assert_eq!(
             parsed.max_hidden_frames, 0,

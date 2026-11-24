@@ -10,11 +10,12 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use camera_contract::catalog::CameraCatalog;
-use camera_contract::control::{CaptureIntent, ExposureBias, ManualControl};
+use camera_contract::control::{CaptureIntent, ExposureBias, ManualControl, WhiteBalanceSetting};
 use camera_contract::flash::FlashShotId;
 use camera_contract::ids::{CameraTarget, LensRole};
 use camera_contract::stream::StreamMode;
 use camera_contract::three_a::{ExposureBracket, SensorPoint, ThreeAProfile};
+use camera_contract::white::{WhiteSourceId, WhiteTransition};
 
 use crate::command::{CameraCommand, CommandId, CommandRejected};
 use crate::event::CameraEvent;
@@ -200,6 +201,20 @@ impl CameraHandle {
     /// Снимок со вспышкой `shot` (14d); итог — событие `FlashStillFinished`.
     pub fn capture_flash_still(&self, shot: FlashShotId) -> Result<CommandId, CommandRejected> {
         self.send(CameraCommand::CaptureFlashStill { shot })
+    }
+
+    /// Белая рукой; прижим к пределам — в событии `ControlsAdjusted` и в `three_a.white.limits`.
+    pub fn set_white(
+        &self,
+        setting: WhiteBalanceSetting,
+        transition: WhiteTransition,
+    ) -> Result<CommandId, CommandRejected> {
+        self.send(CameraCommand::SetWhite { setting, transition })
+    }
+
+    /// Взять белую у источника; итог — событие `WhiteRequestFinished`.
+    pub fn take_white(&self, source: WhiteSourceId, transition: WhiteTransition) -> Result<CommandId, CommandRejected> {
+        self.send(CameraCommand::TakeWhite { source, transition })
     }
 
     /// Камера не нужна: закрыть и забыть желаемое.

@@ -15,17 +15,17 @@ use std::time::{Duration, Instant};
 use super::awb_support::{FRAME_SIZE, FakeFrame, Returned, fixture_tiles, mosaic_from_tiles, stream_passport};
 use super::support::{Journal, fake_surface};
 use super::vulkan_support::{
-    assert_no_validation_errors, assert_presented_or_skipped, headless_camera_backend_with_directives_or_skip,
+    assert_no_validation_errors, assert_presented_or_skipped, headless_camera_backend_with_white_or_skip, held_white,
 };
+use super::white_engine::WhiteTestEngine;
 use camera_contract::auto_exposure::{
     AppliedExposure, ExposureAuthority, ExposureDirective, ExposureProduct, ExposureProposalChannel,
 };
 use camera_contract::capture_result::{CaptureResultMeta, FrameNumber, SensorTimestamp};
-use camera_contract::control::{ColorTemperature, ExposureBias, Tint, WhiteBalanceSetting};
+use camera_contract::control::ExposureBias;
 use camera_contract::frame_passport::{CaptureColorHints, FrameCaptureDetails};
 use camera_contract::three_a::{
     AeAfLock, DirectiveGeneration, DirectiveSlot, PointOfInterest, RequestOrigin, ThreeAProfile, ThreeAResultState,
-    WhiteBalanceDirective, WhiteBalanceMode,
 };
 use gpu_vulkan::hardware_buffer_cache::ImportCacheCounters;
 use gpu_vulkan::raw_mosaic_preview::MosaicSource;
@@ -36,7 +36,7 @@ use isp_model::transfer::srgb_decode;
 use raw_frame_stream::{OfferedFrame, RawFrameLease, RawFrameStream, RawFrameStreamConfig, StreamEpoch};
 use render_loop::backend::{DisplayBackend, FrameTiming, PresentTarget};
 use render_loop::config::{AutoExposureConfig, DisplayColorConfig, RenderLoopConfig, ViewfinderConfig};
-use render_loop::viewfinder::{AutoExposureLinks, ViewfinderDiagnostics};
+use render_loop::viewfinder::{AutoExposureLinks, ViewfinderDiagnostics, WhiteLinks};
 use render_loop::vulkan_backend::{
     CameraFrameImporter, CameraImportError, SubmissionSerial, ViewfinderReadback, VulkanDisplayBackend,
 };
@@ -171,22 +171,16 @@ pub struct AeRig {
     pub history: Vec<Shot>,
     /// Кадр, на котором камера впервые увидела предложение (и опубликовала `applied`).
     pub first_applied_at: Option<i64>,
+    /// «Движок белого» теста (роль владельца белого); `None` — белая задана стендом заранее.
+    pub white_engine: Option<WhiteTestEngine>,
+    /// Подсказки цвета результата по номеру кадра стенда; `None` — подсказок нет.
+    pub hints_by_frame: Option<Box<dyn Fn(i64) -> CaptureColorHints>>,
 }
 
 /// Белая точка лампы 2800 К задана вручную: AWB не прячет тёмные первые кадры и не гуляет вместе с экспозицией,
 /// поэтому в тесте меняется только экспозиция.
-pub fn manual_lamp_white() -> DirectiveSlot<WhiteBalanceDirective> {
-    let directives = DirectiveSlot::new();
-    directives.publish(WhiteBalanceDirective {
-        mode: WhiteBalanceMode::Manual {
-            setting: WhiteBalanceSetting {
-                temperature: ColorTemperature::from_kelvin(2800.0).expect("температура"),
-                tint: Tint::NEUTRAL,
-            },
-        },
-        profile: ThreeAProfile::Photo,
-    });
-    directives
+pub fn manual_lamp_white() -> WhiteLinks {
+    held_white(2800.0)
 }
 
 /// Чем отличаются сценарии стенда.
@@ -194,7 +188,7 @@ pub struct RigSetup {
     /// Настройки AE (`None` — ящики AE не переданы).
     pub auto_exposure: Option<AutoExposureConfig>,
     /// Указания AWB (`None` — AWB автоматический, как в продукте).
-    pub white_balance: Option<DirectiveSlot<WhiteBalanceDirective>>,
+    pub white_balance: Option<WhiteLinks>,
     /// Сцена фикстуры, чья белая плитка заливает кадр.
     pub scene: &'static str,
     /// Экспозиция первых кадров, с·ISO.
@@ -263,7 +257,7 @@ pub fn rig_with(setup: RigSetup) -> Option<(AeRig, Arc<Journal>)> {
     });
     let scenes: SharedScenes = Arc::default();
     let importer_scenes = Arc::clone(&scenes);
-    let backend = headless_camera_backend_with_directives_or_skip(
+    let backend = headless_camera_backend_with_white_or_skip(
         &render_config,
         stream.viewfinder(),
         Box::new(move |context| {
@@ -317,6 +311,8 @@ pub fn rig_with(setup: RigSetup) -> Option<(AeRig, Arc<Journal>)> {
             sequence: 1,
             history: Vec::new(),
             first_applied_at: None,
+            white_engine: None,
+            hints_by_frame: None,
         },
         journal,
     ))
@@ -405,7 +401,10 @@ impl AeRig {
                     ..ThreeAResultState::unreported(origin)
                 },
             },
-            color: CaptureColorHints::default(),
+            color: self
+                .hints_by_frame
+                .as_ref()
+                .map_or_else(CaptureColorHints::default, |hints| hints(self.frame)),
         }
     }
 
@@ -442,6 +441,9 @@ impl AeRig {
 
     /// Движок камеры: замечает новое предложение, ставит его в запрос и публикует указание с `applied`.
     pub fn engine_reacts(&mut self) {
+        if let Some(white) = self.white_engine.as_mut() {
+            white.react();
+        }
         let Some((generation, proposal)) = self.proposals.newer_than(self.seen) else {
             return;
         };

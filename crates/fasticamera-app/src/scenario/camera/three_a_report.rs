@@ -27,7 +27,7 @@ pub struct LiveReport {
     pub ae_state: Option<AeState>,
 }
 
-/// Сравнение нашей белой с белой HAL: справка, не провал.
+/// Сравнение применённой белой с текущей белой HAL: справка, не провал.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AwbVsHal {
@@ -35,14 +35,14 @@ pub enum AwbVsHal {
     Ok,
     /// Разница больше `awb.warn_mired_vs_hal`.
     Warn,
-    /// Белой HAL или нашей нет.
+    /// Белой HAL или применённой нет.
     Unknown,
 }
 
-/// Шаг b: готовность нашего AWB.
+/// Шаг b: белая взята и показана.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AwbReport {
-    /// Первая оценка света есть и холодный старт кончился.
+    /// Заявка белого закрыта исходом «принято» и холодный старт кончился.
     pub ready: bool,
     /// Скрыто кадров с начала сценария (не за сессию показа).
     pub hidden_since_start: u64,
@@ -309,7 +309,8 @@ impl ThreeAObservation {
     }
 }
 
-/// AWB в сводке: без полного отчёта (он в `detail_three_a`), но с белой, HAL-разницей и скрытыми кадрами.
+/// Белая в сводке: без полного отчёта (он в `detail_three_a`), но с белой, происхождением, исходом заявки,
+/// HAL-разницей и скрытыми кадрами.
 fn compact_awb(awb: &AwbReport) -> Value {
     let white = awb.white_balance.as_ref();
     serde_json::json!({
@@ -318,9 +319,10 @@ fn compact_awb(awb: &AwbReport) -> Value {
         "forced": awb.forced_since_start,
         "max_hidden": awb.max_hidden_frames,
         "awb_vs_hal": awb.awb_vs_hal,
-        "our_white": white.and_then(|report| report.our_white),
-        "confidence": white.and_then(|report| report.confidence),
-        "tiles": white.and_then(|report| report.accepted_tiles),
+        "white": white.map(|report| report.white),
+        "origin": white.map(|report| report.origin.as_str()),
+        // Исход последней заявки одним словом (номер и источник — в `detail_three_a`): строка результата тесна.
+        "request": white.map(|report| report.request.state),
         "hal_delta_mired": white.and_then(|report| report.hal_delta_mired),
         "hal_delta_duv": white.and_then(|report| report.hal_delta_duv),
     })

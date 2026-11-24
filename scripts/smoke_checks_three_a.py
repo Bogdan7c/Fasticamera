@@ -4,7 +4,7 @@
 независимая грубая перепроверка сводки строки результата: сценарий прошёл, и в отчёте есть числа, ради которых
 его запускали (решение 62 в продукте: AF/AE живы; ручная выдержка в результате; EV удваивает энергию кадра;
 блокировка держит; брекетинг снимает 4 кадра подряд). Допуски здесь вдвое-втрое грубее Rust. Справка, не провал:
-``awb_vs_hal``, ``region_effect_diopters``, ``ev_unverifiable_at_limit``.
+``awb_vs_hal`` (применённая белая минус текущая белая HAL), ``region_effect_diopters``, ``ev_unverifiable_at_limit``.
 
 Сессия 08a: экспозицию может вести наш AE (``live.ae_source == "own"``) или вендорский (по умолчанию в старых
 отчётах). У нашего AE вендорский автомат выключен: ``AE_STATE`` — справка, маркеры «сошлось»/«заблокировано» —
@@ -79,7 +79,7 @@ def _awb_problems(report: dict) -> list[str]:
     awb = _dict(report.get("awb"))
     problems = []
     if awb.get("ready") is not True:
-        problems.append("AWB не готов: нет оценки света или холодный старт не кончился")
+        problems.append("белая не готова: заявка источнику не закрыта исходом applied или холодный старт не кончился")
     hidden, limit = awb.get("hidden"), awb.get("max_hidden")
     if not _is_number(hidden) or not _is_number(limit):
         problems.append(f"нет числа скрытых кадров AWB (hidden={hidden!r}, max_hidden={limit!r})")
@@ -87,8 +87,13 @@ def _awb_problems(report: dict) -> list[str]:
         problems.append(f"холодный старт скрыл {hidden} кадров, предел {limit}")
     if awb.get("forced") != 0:
         problems.append(f"принудительных показов AWB: {awb.get('forced')!r}, ожидалось 0")
+    # Белая взята у телефона: владелец белого держит значение с этим происхождением, заявка закрыта исходом applied.
+    if awb.get("origin") != "phone":
+        problems.append(f"белая не взята у телефона (origin={awb.get('origin')!r}, request={awb.get('request')!r})")
+    elif awb.get("request") != "applied":
+        problems.append(f"заявка белого не закрыта исходом applied (request={awb.get('request')!r})")
     if awb.get("awb_vs_hal") not in ("ok", "warn", "unknown"):
-        problems.append(f"нет сравнения AWB с HAL (awb_vs_hal={awb.get('awb_vs_hal')!r})")
+        problems.append(f"нет справки «применённая белая против HAL» (awb_vs_hal={awb.get('awb_vs_hal')!r})")
     return problems
 
 

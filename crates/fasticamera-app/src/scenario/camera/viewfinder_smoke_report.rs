@@ -38,7 +38,9 @@ use super::viewfinder_metrics::{GpuTimeMs, WindowDelta, color_space_name, ratio,
 use super::viewfinder_pacing_report::PacingWindowReport;
 use super::viewfinder_session::SessionSummary;
 use super::viewfinder_tuning_report::{AdpfReport, PresentTargetReport};
-use super::white_balance_report::WhiteBalanceReport;
+use super::white_balance_report::{
+    WhiteBalanceReport, hidden_within_limit_violations, white_taken_from_phone_violations,
+};
 use crate::power_measurement::ThermalSnapshot;
 use crate::scenario::render_metrics::ValidationReportPart;
 use crate::viewfinder_scenario_config::ViewfinderSmokeConfig;
@@ -358,14 +360,15 @@ fn companion_violation(companion: CompanionStreamStatus) -> Option<String> {
     }
 }
 
-/// Наш AWB: статистика идёт с прореживанием, оценки света есть, холодный старт кончился, таблица построена.
+/// Белая: статистика идёт с прореживанием (на ней стоит AE), белая взята у телефона, заявка закрыта, холодный
+/// старт кончился.
 fn white_balance_violations(
     config: &ViewfinderSmokeConfig,
     window: &WindowDelta,
     white_balance: Option<&WhiteBalanceReport>,
 ) -> Vec<String> {
     let Some(report) = white_balance else {
-        return vec!["в статусе рендера нет диагностики AWB".to_owned()];
+        return vec!["в статусе рендера нет диагностики белой".to_owned()];
     };
     let mut violations = Vec::new();
     // Ожидание — по окну: сколько кадров прошло через ISP, каждый N-й даёт статистику.
@@ -382,15 +385,8 @@ fn white_balance_violations(
             config.min_awb_publish_fraction
         ));
     }
-    if report.estimates == 0 {
-        violations.push("AWB не получил ни одной оценки света".to_owned());
-    }
-    if report.cold_start_pending {
-        violations.push("холодный старт AWB не кончился: кадры всё ещё скрыты".to_owned());
-    }
-    if let Some(failure) = &report.table_failure {
-        violations.push(format!("таблица локуса AWB не построена: {failure}"));
-    }
+    violations.extend(white_taken_from_phone_violations(report));
+    violations.extend(hidden_within_limit_violations(report));
     violations
 }
 

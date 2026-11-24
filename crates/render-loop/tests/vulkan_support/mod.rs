@@ -17,12 +17,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use camera_contract::three_a::{DirectiveSlot, WhiteBalanceDirective};
+use camera_contract::control::{ColorTemperature, Tint, WhiteBalanceSetting};
+use camera_contract::white::{WhiteDirective, WhiteTransition};
 use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::validation::ValidationMode;
 use raw_frame_stream::ViewfinderFrames;
 use render_loop::config::RenderLoopConfig;
 use render_loop::thread::VsyncFrameClock;
+use render_loop::viewfinder::WhiteLinks;
 use render_loop::vulkan_backend::{CameraImporterFactory, VulkanBackendConfig, VulkanDisplayBackend};
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::surface::SurfaceSize;
@@ -76,25 +78,40 @@ pub fn headless_camera_backend_or_skip(
     frames: ViewfinderFrames,
     make_importer: CameraImporterFactory,
 ) -> Option<VulkanDisplayBackend> {
-    headless_camera_backend_with_directives_or_skip(render_config, frames, make_importer, DirectiveSlot::new())
+    headless_camera_backend_with_white_or_skip(render_config, frames, make_importer, WhiteLinks::default())
 }
 
-/// То же, но с «почтовым ящиком» указаний AWB, которым управляет тест (писатель — у теста).
+/// Связка с «владельцем белого», у которого белая уже названа и держится: указание сразу (без перехода), заявок нет.
+/// Так стенд без движка получает известную белую, а кадры не прячутся.
+pub fn held_white(kelvin: f64) -> WhiteLinks {
+    let links = WhiteLinks::default();
+    links.directives.publish(WhiteDirective {
+        white: WhiteBalanceSetting {
+            temperature: ColorTemperature::from_kelvin(kelvin).expect("температура"),
+            tint: Tint::NEUTRAL,
+        },
+        transition: WhiteTransition::Immediate,
+        request: None,
+    });
+    links
+}
+
+/// То же, но со связкой владельца белого, которой управляет тест (писатель указаний и читатель ответов — у теста).
 ///
 /// Политика пропуска тиков берётся из `render_config` (умолчание — `AlwaysRedraw`, решение 214). Для прогона ВСЕГО
 /// старого набора под пропуском задайте окружение `FASTICAMERA_TEST_UNCHANGED_POLICY=skip`: помощник подменит политику
 /// на `SkipWhenUnchanged` (второй режим стенда; так найдены тесты, которым нужен `Presented` на каждом тике).
-pub fn headless_camera_backend_with_directives_or_skip(
+pub fn headless_camera_backend_with_white_or_skip(
     render_config: &RenderLoopConfig,
     frames: ViewfinderFrames,
     make_importer: CameraImporterFactory,
-    directives: DirectiveSlot<WhiteBalanceDirective>,
+    white: WhiteLinks,
 ) -> Option<VulkanDisplayBackend> {
     let mut config = render_config.clone();
     if std::env::var(UNCHANGED_POLICY_ENV).as_deref() == Ok("skip") {
         config.unchanged_frame.policy = render_loop::config::UnchangedFramePolicy::SkipWhenUnchanged;
     }
-    headless_camera_backend_keeping_unchanged_policy_or_skip(&config, frames, make_importer, directives)
+    headless_camera_backend_keeping_unchanged_policy_or_skip(&config, frames, make_importer, white)
 }
 
 /// Бэкенд камеры ПК-стенда с политикой пропуска тиков РОВНО из `render_config` (по умолчанию пропуск включён).
@@ -102,10 +119,10 @@ pub fn headless_camera_backend_keeping_unchanged_policy_or_skip(
     render_config: &RenderLoopConfig,
     frames: ViewfinderFrames,
     make_importer: CameraImporterFactory,
-    directives: DirectiveSlot<WhiteBalanceDirective>,
+    white: WhiteLinks,
 ) -> Option<VulkanDisplayBackend> {
     let config = stand_backend_config(render_config).expect("конфиг бэкенда из конфига потока");
-    match VulkanDisplayBackend::new_headless_camera_preview(config, frames, make_importer, directives) {
+    match VulkanDisplayBackend::new_headless_camera_preview(config, frames, make_importer, white) {
         Ok(backend) => Some(backend),
         Err(error) => {
             if std::env::var(SKIP_ENV).as_deref() == Ok("1") {

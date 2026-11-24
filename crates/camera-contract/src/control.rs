@@ -151,6 +151,9 @@ impl ExposureBias {
 pub struct ColorTemperature(f64);
 
 impl ColorTemperature {
+    /// Дневной свет 5600 К — запасная белая, когда свет никто не назвал.
+    pub const DAYLIGHT: ColorTemperature = ColorTemperature(5_600.0);
+
     pub fn from_kelvin(kelvin: f64) -> Result<Self, InvalidControlValue> {
         if !kelvin.is_finite() || kelvin <= 0.0 {
             return Err(InvalidControlValue::InvalidColorTemperature { kelvin });
@@ -158,7 +161,7 @@ impl ColorTemperature {
         Ok(Self(kelvin))
     }
 
-    pub fn kelvin(self) -> f64 {
+    pub const fn kelvin(self) -> f64 {
         self.0
     }
 }
@@ -184,8 +187,9 @@ impl Tint {
     }
 }
 
-/// Ручной баланс белого: точка белого сцены как «температура + оттенок».
-/// В нейтраль конкретной камеры её переводит AWB по DNG-профилю своего потока (решение 64).
+/// Белая сцены как «температура + оттенок». Единственный владелец белой — движок камеры (`camera-core`, план
+/// white-balance), поэтому в `ManualControl` её нет. В нейтраль конкретной камеры её переводит рендер по DNG-профилю
+/// своего потока.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct WhiteBalanceSetting {
     pub temperature: ColorTemperature,
@@ -198,7 +202,6 @@ pub struct ManualControl {
     pub iso: Control<Iso>,
     pub shutter: Control<ExposureTime>,
     pub focus: Control<FocusDistance>,
-    pub white_balance: Control<WhiteBalanceSetting>,
     /// Компенсация экспозиции. Действует, пока хотя бы один из `iso`/`shutter` на автомате;
     /// при полностью ручной экспозиции её игнорируют с явной пометкой (как в iOS — сверить с 09).
     pub exposure_bias: ExposureBias,
@@ -210,7 +213,6 @@ impl ManualControl {
         iso: Control::Auto,
         shutter: Control::Auto,
         focus: Control::Auto,
-        white_balance: Control::Auto,
         exposure_bias: ExposureBias::NONE,
     };
 

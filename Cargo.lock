@@ -227,6 +227,7 @@ dependencies = [
  "photo-output",
  "raw-frame-stream",
  "render-loop",
+ "scene-estimation",
  "scope-contract",
  "scope-model",
  "serde",

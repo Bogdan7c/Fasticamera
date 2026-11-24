@@ -17,17 +17,15 @@ use std::time::Instant;
 
 use super::support::{Journal, fake_surface};
 use super::vulkan_support::{
-    assert_no_validation_errors, assert_presented_or_skipped, headless_camera_backend_with_directives_or_skip,
+    assert_no_validation_errors, assert_presented_or_skipped, headless_camera_backend_with_white_or_skip, held_white,
 };
 use camera_contract::capabilities::{LensShading, Rational, RawSupport, SensorLevels, VendorProcessingFlags};
 use camera_contract::capture_result::{CaptureResultMeta, FrameNumber, SensorTimestamp};
-use camera_contract::control::{ColorTemperature, Tint, WhiteBalanceSetting};
 use camera_contract::fixtures::{camera_id, main_wide_camera};
 use camera_contract::frame_passport::{CaptureColorHints, FrameCaptureDetails, StreamPassport};
 use camera_contract::geometry::{PixelRect, PixelSize, SensorOrientation};
 use camera_contract::raw_format::{CfaLayout, MosaicKind, MosaicPattern, RawFormat};
 use camera_contract::stream::{FrameRateMechanism, ReadoutAspect, TargetFrameRate};
-use camera_contract::three_a::{DirectiveSlot, ThreeAProfile, WhiteBalanceDirective, WhiteBalanceMode};
 use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::hardware_buffer_cache::ImportCacheCounters;
 use gpu_vulkan::raw_mosaic_preview::MosaicSource;
@@ -80,17 +78,6 @@ pub fn scene_neutral() -> [f64; 3] {
     profile.neutral_for_white(white).expect("нейтраль").values()
 }
 
-pub fn manual_white_directive() -> WhiteBalanceDirective {
-    WhiteBalanceDirective {
-        mode: WhiteBalanceMode::Manual {
-            setting: WhiteBalanceSetting {
-                temperature: ColorTemperature::from_kelvin(MANUAL_KELVIN).expect("температура"),
-                tint: Tint::NEUTRAL,
-            },
-        },
-        profile: ThreeAProfile::Photo,
-    }
-}
 /// Допуск: 10-битный выход (шаг 1/1023) плюс f32 шейдера против f32 эталона — 3 шага.
 pub const TOLERANCE: f32 = 3.0 / 1023.0;
 /// Сколько кадров показа ждать, пока новый кадр камеры дойдёт до изображения.
@@ -440,9 +427,8 @@ impl ViewfinderBench {
             .enumerate()
             .map(|(index, scene)| (frame_timestamp(index), *scene))
             .collect();
-        let directives = DirectiveSlot::new();
-        directives.publish(manual_white_directive());
-        let mut backend = headless_camera_backend_with_directives_or_skip(
+        let white = held_white(MANUAL_KELVIN);
+        let mut backend = headless_camera_backend_with_white_or_skip(
             render_config,
             stream.viewfinder(),
             Box::new(move |context| {
@@ -453,7 +439,7 @@ impl ViewfinderBench {
                     counters: ImportCacheCounters::default(),
                 }))
             }),
-            directives,
+            white,
         )?;
         let journal = Arc::new(Journal::default());
         backend

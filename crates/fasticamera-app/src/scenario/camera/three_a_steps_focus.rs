@@ -4,6 +4,7 @@ use camera_contract::control::ManualControl;
 use camera_contract::three_a::{AeAfLock, AeState, PointRequestId, SensorPoint};
 use camera_core::CameraEvent;
 use camera_core::three_a_status::FocusProgress;
+use camera_core::white::{WhiteRequestOutcome, WhiteRequestResult, WhiteRequestState};
 use render_loop::viewfinder::ColdStartState;
 use shell_contract::commands::CommandOutcome;
 use shell_contract::operator_prompt::OperatorPrompt;
@@ -88,12 +89,23 @@ impl ThreeAStep for AwbStep {
             .viewfinder
             .as_ref()
             .map(|viewfinder| &viewfinder.white_balance);
-        let ready = diagnostics.is_some_and(|wb| wb.estimates > 0 && matches!(wb.cold_start, ColdStartState::Warm));
+        // Готово: заявка белого закрыта исходом «принято» (белая взята у источника) и холодный старт кончился.
+        let request_applied = matches!(
+            env.status.three_a.white.request,
+            WhiteRequestState::Idle {
+                last: Some(WhiteRequestResult {
+                    result: WhiteRequestOutcome::Applied { .. },
+                    ..
+                })
+            }
+        );
+        let ready = request_applied && diagnostics.is_some_and(|wb| matches!(wb.cold_start, ColdStartState::Warm));
         let expired = self.deadline.is_some_and(|deadline| deadline.is_expired(env.now));
         if !(ready || expired) {
             return StepProgress::Pending;
         }
-        let report = diagnostics.map(WhiteBalanceReport::of);
+        let report = diagnostics
+            .map(|wb| WhiteBalanceReport::of(wb, &env.status.three_a.white, env.baselines.max_hidden_frames));
         let hidden = diagnostics.map_or(0, |wb| wb.hidden_frames_cold_start);
         let forced = diagnostics.map_or(0, |wb| wb.cold_start_forced);
         let awb = AwbReport {

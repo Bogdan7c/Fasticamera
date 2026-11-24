@@ -1,21 +1,16 @@
-//! Ручные параметры, компенсация, явные поправки «ограничено до …», указание баланса белого.
+//! Ручные параметры, компенсация, явные поправки «ограничено до …», (баланс белого теперь у владельца белого, см. `white_*`).
 
 use std::time::Duration;
 
-use camera_contract::control::{
-    ColorTemperature, Control, ExposureBias, ExposureTime, FocusDistance, Iso, ManualControl, Tint, WhiteBalanceSetting,
-};
+use camera_contract::control::{Control, ExposureBias, ExposureTime, FocusDistance, Iso, ManualControl};
 use camera_contract::fixtures::oneplus11_visible_cameras;
-use camera_contract::three_a::{
-    DirectiveGeneration, DirectiveSlot, PointOfInterest, ThreeAProfile, WhiteBalanceDirective, WhiteBalanceMode,
-};
+use camera_contract::three_a::{PointOfInterest, ThreeAProfile};
 
 use super::three_a_support::*;
 use super::*;
 use crate::command::{UnsupportedCommand, UnsupportedThreeA};
 use crate::request_controls::{ExposurePlan, FocusPlan};
 use crate::three_a_status::{AdjustmentReason, ControlAdjustment, ControlParameter};
-use crate::three_a_wiring::ThreeAWiring;
 
 fn iso(value: u32) -> Control<Iso> {
     Control::Manual(Iso::new(value).expect("ISO"))
@@ -359,77 +354,6 @@ fn set_exposure_bias_does_not_touch_focus_point_or_triggers() {
     assert_eq!(status_after.focus, status_before.focus);
     assert_eq!(status_after.lock, status_before.lock);
     assert_eq!(status_after.controls.exposure_bias, bias(1.0));
-}
-
-fn wiring_with_slot(slot: &DirectiveSlot<WhiteBalanceDirective>) -> ThreeAWiring {
-    ThreeAWiring::vendor(&CameraEngineConfig::default().three_a).with_white_balance_slot(slot.clone())
-}
-
-#[test]
-fn white_balance_directive_is_published_at_start_and_only_when_it_changes() {
-    let slot = DirectiveSlot::new();
-    let mut rig = Rig::with_wiring(CameraEngineConfig::default(), wiring_with_slot(&slot));
-    assert_eq!(
-        slot.latest(),
-        Some((
-            DirectiveGeneration(1),
-            WhiteBalanceDirective {
-                mode: WhiteBalanceMode::Auto,
-                profile: ThreeAProfile::Photo
-            }
-        )),
-        "читатель видит режим с самого начала"
-    );
-    rig.start_streaming_on_wide();
-
-    // Ручные ISO/выдержка, тап, блокировка, компенсация — на AWB не влияют.
-    rig.send(CameraCommand::ApplyControls {
-        controls: fully_manual(100, Duration::from_millis(4)),
-    });
-    rig.send(CameraCommand::LockFocusAndExposureAt { point: center() });
-    rig.send(CameraCommand::SetExposureBias { bias: bias(0.5) });
-    assert_eq!(
-        slot.latest().map(|(generation, _)| generation),
-        Some(DirectiveGeneration(1))
-    );
-
-    // Ручной баланс белого → Manual.
-    let setting = WhiteBalanceSetting {
-        temperature: ColorTemperature::from_kelvin(5_200.0).expect("температура"),
-        tint: Tint::NEUTRAL,
-    };
-    rig.send(CameraCommand::ApplyControls {
-        controls: ManualControl {
-            white_balance: Control::Manual(setting),
-            ..fully_manual(100, Duration::from_millis(4))
-        },
-    });
-    let (generation, directive) = slot.latest().expect("опубликовано");
-    assert_eq!(generation, DirectiveGeneration(2));
-    assert_eq!(directive.mode, WhiteBalanceMode::Manual { setting });
-
-    // Тот же режим при смене профиля — новая публикация с профилем Video; затем возврат в авто.
-    rig.send(CameraCommand::SetThreeAProfile {
-        profile: ThreeAProfile::Video,
-    });
-    assert_eq!(
-        slot.latest().map(|(generation, d)| (generation.0, d.profile)),
-        Some((3, ThreeAProfile::Video))
-    );
-    rig.send(CameraCommand::Close);
-    let (generation, directive) = slot.latest().expect("опубликовано");
-    assert_eq!(generation, DirectiveGeneration(4));
-    assert_eq!(
-        directive,
-        WhiteBalanceDirective::DEFAULT,
-        "закрытие сбросило намерение, режим снова авто"
-    );
-    // Повторное закрытие ничего не публикует.
-    rig.send(CameraCommand::Close);
-    assert_eq!(
-        slot.latest().map(|(generation, _)| generation),
-        Some(DirectiveGeneration(4))
-    );
 }
 
 #[test]

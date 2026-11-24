@@ -7,15 +7,15 @@
 //! * чисто объединяет их планы в `RequestControls` ([`planning`]);
 //! * перестраивает повторяющийся запрос, если план изменился, и отправляет разовый триггер;
 //! * передаёт им результаты кадров, ведёт таймер тапа ([`results`]);
-//! * ведёт серии с брекетингом ([`bracket`]);
-//! * публикует режим AWB ([`directive`]).
+//! * ведёт серии с брекетингом ([`bracket`]).
+//!
+//! Белая сюда не входит: её владелец — `engine/white`, и он живёт вне `Desired`.
 //!
 //! Раскладка файлов: `decide` — итоги команд, `planning` — план запроса, `results` — результаты
-//! и таймеры, `bracket` — серии, `directive` — баланс белого.
+//! и таймеры, `bracket` — серии.
 
 mod bracket;
 mod decide;
-mod directive;
 mod exposure_carry;
 mod exposure_directive;
 mod flash_access;
@@ -25,21 +25,20 @@ mod results;
 use std::time::Instant;
 
 use crate::flash_status::FlashStatus;
-use camera_contract::three_a::PointRequestId;
+use camera_contract::auto_exposure::ExposureDirective;
+use camera_contract::three_a::{DirectiveSlot, PointRequestId};
 pub(in crate::engine) use planning::PlannedRequest;
 
 use crate::three_a_control::{ExposureController, FocusController, ThreeAIntent};
 use crate::three_a_status::{AutoExposureProgress, ControlAdjustment, LastThreeAResult, ThreeACounters, ThreeAStatus};
-use crate::three_a_wiring::ThreeAWiring;
+use crate::white::WhiteStatus;
 use bracket::BracketRun;
-use directive::WhiteBalancePublisher;
 use exposure_directive::{ExposurePublisher, refine_progress};
 
 /// Всё состояние 3A, которым владеет движок, кроме самого намерения (оно в `Desired`).
 pub(super) struct ThreeAEngine {
     exposure: Box<dyn ExposureController>,
     focus: Box<dyn FocusController>,
-    white_balance: WhiteBalancePublisher,
     exposure_directive: ExposurePublisher,
     /// Камера, на которой стартовал последний поток: в её произведении записана память исполнителя
     /// экспозиции (см. `exposure_carry`).
@@ -57,16 +56,17 @@ pub(super) struct ThreeAEngine {
 }
 
 impl ThreeAEngine {
-    pub(super) fn new(wiring: ThreeAWiring, initial_intent: &ThreeAIntent) -> Self {
-        let mut white_balance = WhiteBalancePublisher::new(wiring.white_balance);
-        // Читатель (поток рендера) должен увидеть режим с первого кадра, а не «ничего».
-        white_balance.publish_if_changed(initial_intent);
-        let mut exposure_directive = ExposurePublisher::new(wiring.exposure_directives);
+    pub(super) fn new(
+        exposure: Box<dyn ExposureController>,
+        focus: Box<dyn FocusController>,
+        exposure_directives: DirectiveSlot<ExposureDirective>,
+        initial_intent: &ThreeAIntent,
+    ) -> Self {
+        let mut exposure_directive = ExposurePublisher::new(exposure_directives);
         exposure_directive.publish_if_changed(initial_intent, None);
         Self {
-            exposure: wiring.exposure,
-            focus: wiring.focus,
-            white_balance,
+            exposure,
+            focus,
             exposure_directive,
             exposure_camera: None,
             adjustments: Vec::new(),
@@ -96,6 +96,8 @@ impl ThreeAEngine {
             },
             // Вспышку собирает `CameraEngine::status`: статусу нужны возможности камеры и поток.
             flash: FlashStatus::default(),
+            // Белую собирает `CameraEngine::status`: её владелец — не 3A.
+            white: WhiteStatus::initial(),
         }
     }
 
@@ -114,10 +116,6 @@ impl ThreeAEngine {
             intent.lock,
             &self.adjustments,
         )
-    }
-
-    pub(super) fn publish_white_balance(&mut self, intent: &ThreeAIntent) {
-        self.white_balance.publish_if_changed(intent);
     }
 
     /// Намерение могло измениться командой без пересборки запроса — донести его до рендера.

@@ -14,6 +14,8 @@ use crate::flash_status::FlashStillReport;
 use crate::lens_status::{LensSwitchFailure, LensSwitchMethod};
 use crate::state::CameraState;
 use crate::three_a_status::{BracketReport, ControlAdjustment, FocusOutcome};
+use crate::white::WhiteRequestResult;
+use camera_contract::white::HeldWhite;
 
 /// Событие движка. Поток событий ограничен: при переполнении старые вытесняются со счётчиком
 /// ([`crate::CameraCounters::dropped_outward_events`]), а актуальное состояние всегда есть
@@ -76,6 +78,15 @@ pub enum CameraEvent {
     /// смены камеры). Пустого списка в событии не бывает.
     ControlsAdjusted {
         adjustments: Vec<ControlAdjustment>,
+    },
+    /// Действующая белая изменилась (рукой, по ответу источника) или сменила происхождение.
+    WhiteChanged {
+        held: HeldWhite,
+    },
+    /// Заявка источнику белой закрыта: принята, отказана, просрочена или отменена. Белая меняется только при
+    /// `Applied`; отдельное событие `WhiteChanged` в этом случае идёт перед итогом.
+    WhiteRequestFinished {
+        result: WhiteRequestResult,
     },
     /// Итог серии с брекетингом.
     BracketCaptured {

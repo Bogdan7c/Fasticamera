@@ -263,3 +263,41 @@ impl CameraFrameImporter for SceneImporter {
         self.counters
     }
 }
+
+/// Белая на кривой Планка: свет лампы накаливания (нулевой Duv).
+pub fn planckian_white(kelvin: f64) -> isp_model::color::chromaticity::Chromaticity {
+    use isp_model::color::temperature::Kelvin;
+    use isp_model::color::white_point::{CctDuv, Duv, chromaticity_from_cct_duv};
+    chromaticity_from_cct_duv(CctDuv {
+        temperature: Kelvin(kelvin),
+        duv: Duv(0.0),
+    })
+    .expect("белая на кривой Планка")
+}
+
+/// Подсказки штатной автоматики телефона для света `white`: усиления, обратные нейтрали камеры стенда
+/// (по той же калибровке, по которой строилась сцена).
+pub fn phone_hints_for_white(
+    white: isp_model::color::chromaticity::Chromaticity,
+) -> camera_contract::frame_passport::CaptureColorHints {
+    use camera_contract::frame_passport::{CaptureColorHints, ColorCorrectionGains};
+    use isp_model::color::dng::DngColorProfile;
+    let profile = DngColorProfile::from_calibration_sets(&calibration()).expect("профиль цвета стенда");
+    let neutral = profile.neutral_for_white(white).expect("нейтраль").values();
+    let gain = |channel: f64| (1.0 / channel) as f32;
+    CaptureColorHints {
+        color_gains: Some(ColorCorrectionGains([gain(neutral[0]), 1.0, 1.0, gain(neutral[2])])),
+        ..CaptureColorHints::default()
+    }
+}
+
+/// Подсказки открытия: первые `stale_frames` кадров потока несут белую «прошлого сеанса» (неподвижную),
+/// дальше автоматика мерит свет `measured`. Так ведёт себя настоящая автоматика телефона (записи 24.11.2026).
+pub fn phone_hints_at_frame(
+    frame_index: i64,
+    stale_frames: i64,
+    stale: isp_model::color::chromaticity::Chromaticity,
+    measured: isp_model::color::chromaticity::Chromaticity,
+) -> camera_contract::frame_passport::CaptureColorHints {
+    phone_hints_for_white(if frame_index < stale_frames { stale } else { measured })
+}

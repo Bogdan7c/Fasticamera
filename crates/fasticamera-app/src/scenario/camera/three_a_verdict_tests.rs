@@ -11,6 +11,7 @@ use crate::scenario::camera::three_a_report::{
     ThreeAObservation,
 };
 use crate::scenario::camera::viewfinder_session::SessionSummary;
+use crate::scenario::camera::white_balance_report::WhiteBalanceReport;
 
 fn config() -> ThreeAScenarioConfig {
     ThreeAScenarioConfig::default()
@@ -52,7 +53,7 @@ fn healthy() -> ThreeAObservation {
         forced_since_start: 0,
         max_hidden_frames: 10,
         awb_vs_hal: AwbVsHal::Ok,
-        white_balance: None,
+        white_balance: Some(WhiteBalanceReport::taken_from_phone_for_tests()),
     });
     observation.focus = Some(FocusReport {
         taps: vec![tap(TapResult::Focused); 5],
@@ -181,7 +182,7 @@ fn dead_companion_missing_af_and_missing_ae_are_three_separate_violations() {
 fn awb_not_ready_too_many_hidden_frames_and_forced_show_each_fail() {
     assert_single(
         &violations_of(|o| o.awb.iter_mut().for_each(|a| a.ready = false)),
-        "AWB не готов",
+        "белая не готова за срок",
     );
     assert_single(
         &violations_of(|o| o.awb.iter_mut().for_each(|a| a.hidden_since_start = 11)),
@@ -191,6 +192,24 @@ fn awb_not_ready_too_many_hidden_frames_and_forced_show_each_fail() {
         &violations_of(|o| o.awb.iter_mut().for_each(|a| a.forced_since_start = 1)),
         "принудительным показом",
     );
+}
+
+#[test]
+fn white_that_is_not_the_phones_or_whose_request_did_not_end_applied_fails_even_when_ready() {
+    let fallback = violations_of(|o| {
+        if let Some(white) = o.awb.as_mut().and_then(|awb| awb.white_balance.as_mut()) {
+            white.origin = "fallback".to_owned();
+            white.request.state = "unavailable";
+        }
+    });
+    assert_single(&fallback, "белая не взята у телефона: происхождение «fallback»");
+
+    let refused = violations_of(|o| {
+        if let Some(white) = o.awb.as_mut().and_then(|awb| awb.white_balance.as_mut()) {
+            white.request.state = "unknown";
+        }
+    });
+    assert_single(&refused, "заявка белого не закрыта исходом applied: unknown");
 }
 
 #[test]

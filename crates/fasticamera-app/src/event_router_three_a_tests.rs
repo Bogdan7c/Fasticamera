@@ -26,6 +26,7 @@ use crate::camera_config::CameraConfig;
 use crate::camera_scenario_config::CameraScenarioConfig;
 use crate::camera_test_support::WAIT;
 use crate::fake_render_ae::{DEFAULT_SCENE_SECONDS_ISO, FakeRenderAe, TapPointScene};
+use crate::fake_render_white::{FakeRenderWhite, lamp_light};
 use crate::raw_stream_test_support::{PumpFaults, StreamPump};
 use crate::three_a_scenario_config::ThreeAScenarioConfig;
 use crate::three_a_test_hal::{HalFaults, HalStats, SimulatedHal};
@@ -94,8 +95,10 @@ impl ThreeAMirror {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let render = Arc::clone(&harness.render);
+        let mut white = FakeRenderWhite::new(harness.rig(), lamp_light());
         let join = thread::spawn(move || {
             while !thread_stop.load(Ordering::SeqCst) {
+                white.answer_pending();
                 let skipped = hal_stats.burst_frames_emitted.load(Ordering::SeqCst);
                 render.update(|status| {
                     let presented = status
@@ -114,9 +117,8 @@ impl ThreeAMirror {
                     let period = u64::from(viewfinder.white_balance.statistics_every_n_frames.max(1));
                     viewfinder.counters.statistics_published = (presented + hidden) / period;
                     let white_balance = &mut viewfinder.white_balance;
-                    white_balance.estimates = (presented + hidden) / period;
                     white_balance.hidden_frames_cold_start = hidden;
-                    white_balance.scene_white = Some(WhiteReading {
+                    white_balance.applied_white = Some(WhiteReading {
                         temperature_kelvin: 5_200.0,
                         duv: 0.002,
                     });

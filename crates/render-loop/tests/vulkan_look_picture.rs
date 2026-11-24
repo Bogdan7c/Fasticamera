@@ -217,7 +217,7 @@ fn a_warmth_look_warms_the_shown_picture_like_the_reference_and_does_not_touch_w
     assert!(quiet_white.estimates > 0, "AWB мерил кадры: {quiet_white:?}");
     assert_eq!(styled_white.estimates, quiet_white.estimates, "то же число оценок AWB");
     assert_eq!(
-        styled_white.scene_white, quiet_white.scene_white,
+        styled_white.applied_white, quiet_white.applied_white,
         "белая сцены у AWB одна и та же с видом и без него: статистика видит честную базу"
     );
     assert_eq!(

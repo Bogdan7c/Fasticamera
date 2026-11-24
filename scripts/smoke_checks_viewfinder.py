@@ -121,24 +121,34 @@ def check_viewfinder(result: dict) -> list[str]:
 
 
 def _awb_problems(report: dict) -> list[str]:
-    """AWB в сводке ``viewfinder``: статистика идёт с прореживанием (не на каждом кадре), оценки света есть,
-    холодный старт кончился. Прореживание: ожидается ``frames_processed / statistics_every_n_frames`` публикаций."""
+    """Белая в сводке ``viewfinder``: статистика идёт с прореживанием (не на каждом кадре; на ней стоит AE),
+    белая взята у телефона, заявка закрыта исходом applied, холодный старт кончился и скрыл не больше предела. Прореживание: ожидается
+    ``frames_processed / statistics_every_n_frames`` публикаций. Оценки старого оценщика продукт больше не судит."""
     awb = report.get("awb_published")
     if not _is_number(awb) or awb <= 0:
         return [f"статистика AWB не публиковалась (awb_published={awb!r})"]
     white_balance = report.get("white_balance")
     if not isinstance(white_balance, dict):
-        return ["в сводке нет раздела white_balance (наш AWB)"]
+        return ["в сводке нет раздела white_balance (белая)"]
     problems: list[str] = []
     period, processed = white_balance.get("statistics_every_n_frames"), report.get("frames_processed")
     if not _is_number(period) or period < 1 or not _is_number(processed):
         problems.append(f"нет периода статистики или числа кадров (every_n={period!r}, frames_processed={processed!r})")
     elif awb < processed / period * MIN_AWB_PUBLISH_FRACTION:
         problems.append(f"статистика AWB опубликована {awb} раз, при {processed} кадрах и периоде {period} ожидалось больше")
-    if not _is_number(white_balance.get("estimates")) or white_balance["estimates"] <= 0:
-        problems.append("AWB не получил ни одной оценки света")
+    origin = white_balance.get("origin")
+    request = _dict(white_balance.get("request")).get("state")
+    if origin != "phone":
+        problems.append(f"белая не взята у телефона (origin={origin!r}, request={request!r})")
+    elif request != "applied":
+        problems.append(f"заявка белого не закрыта исходом applied (request={request!r})")
     if white_balance.get("cold_start_pending") is not False:
-        problems.append("холодный старт AWB не кончился")
+        problems.append("холодный старт не кончился")
+    hidden, limit = white_balance.get("hidden_frames"), white_balance.get("max_hidden_frames")
+    if not _is_number(hidden) or not _is_number(limit):
+        problems.append(f"нет числа скрытых кадров (hidden_frames={hidden!r}, max_hidden_frames={limit!r})")
+    elif hidden > limit:
+        problems.append(f"холодный старт скрыл {hidden} кадров, предел {limit}")
     return problems
 
 

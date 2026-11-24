@@ -89,6 +89,9 @@ impl CameraEngine {
         if self.poisoned {
             return;
         }
+        // Ответ источника белой приходит тем же толчком, что и предложения AE.
+        self.poll_white_answer();
+        self.flush_white_events();
         // Замеры предвспышки приходят тем же пробуждением, что и предложения AE.
         self.poll_flash_samples(now);
         // Пока идёт снимок со вспышкой, экспозицию держит он: решения AE догонятся при возврате в `Idle`.
@@ -141,6 +144,8 @@ impl CameraEngine {
         self.three_a.exposure.reset_for_new_stream();
         // Запроса больше нет — рендеру не на что подтягивать кадр.
         self.three_a.exposure_directive.withdraw_applied();
+        // Заявка белой, которой служил этот поток, переиздаётся: ответ прежнего потока станет чужим.
+        self.end_white_stream();
     }
 
     /// Срок ожидания результатов серии из конфига.

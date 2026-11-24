@@ -223,6 +223,9 @@ pub struct FakeCameraRig {
     pub auto_exposure: AutoExposureLink,
     /// Наблюдатель итогов вспышки, который держит движок (14d): служба снимков подключает к нему рендер.
     pub flash_relay: Arc<crate::flash_still_relay::FlashStillRelay>,
+    /// Ящики белой, общие с движком: сторона «рендера» тестов (см. `FakeRenderWhite`).
+    pub white_directives: camera_contract::three_a::DirectiveSlot<camera_contract::white::WhiteDirective>,
+    pub white_answers: camera_contract::white::WhiteAnswerChannel,
 }
 
 impl FakeCameraRig {
@@ -269,6 +272,8 @@ impl FakeCameraRig {
         };
         let auto_exposure = links.auto_exposure.clone();
         let flash_relay = Arc::clone(&links.flash_relay);
+        let white_directives = links.white_directives.clone();
+        let white_answers = links.white_answers.clone();
         let services = start_camera_with_links(
             &config,
             CameraBackendParts {
@@ -298,6 +303,8 @@ impl FakeCameraRig {
             close_device_delay_ms,
             auto_exposure,
             flash_relay,
+            white_directives,
+            white_answers,
         }
     }
 

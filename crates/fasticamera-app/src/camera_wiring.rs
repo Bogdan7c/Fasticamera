@@ -12,20 +12,25 @@
 
 use std::sync::Arc;
 
-use camera_contract::three_a::{DirectiveSlot, WhiteBalanceDirective};
+use camera_contract::three_a::DirectiveSlot;
+use camera_contract::white::{WhiteAnswerChannel, WhiteDirective, WhiteSourceId};
 use camera_contract::zoom::LensIntentChannel;
 use camera_core::backend::BackendFactory;
 use camera_core::flash_status::FlashStillObserver;
+use camera_core::white::WhiteWiring;
 use camera_core::{AppPresence, CameraRuntime, LensWiring, ThreeAWiring};
+use render_loop::viewfinder::WhiteLinks;
 
 use crate::auto_exposure_link::{
-    AutoExposureLink, AutoExposureRenderEnd, ExposureControllerChoice, ExposureControllerKind, RenderAutoExposure,
+    AutoExposureLink, AutoExposureRenderEnd, EngineBinding, ExposureControllerChoice, ExposureControllerKind,
+    RenderAutoExposure,
 };
 use crate::camera_config::CameraConfig;
 use crate::camera_service::{BackendDiagnosticsSource, CameraEngineAccess, CameraServices, RunningCamera};
 use crate::flash_still_relay::FlashStillRelay;
 use crate::raw_stream_services::RawStreamServices;
 use crate::viewfinder_autostart::ViewfinderAutostart;
+use crate::white_memory::WhiteMemoryHandoff;
 
 const LOG_TARGET: &str = "fasticamera::camera::wiring";
 
@@ -42,8 +47,13 @@ pub struct CameraBackendParts {
 /// процесс: одна половина уходит движку, такой же клон — конструктору бэкенда рендера.
 #[derive(Debug, Clone, Default)]
 pub struct CameraLinks {
-    /// Указания баланса белого (решение 64): движок пишет, рендер читает.
-    pub white_balance: DirectiveSlot<WhiteBalanceDirective>,
+    /// Указания рендеру, какую белую держать (план white-balance): владелец белого (движок) пишет, рендер читает.
+    pub white_directives: DirectiveSlot<WhiteDirective>,
+    /// Ответы источников белого: рендер пишет и толкает движок, движок читает.
+    pub white_answers: WhiteAnswerChannel,
+    /// Открытая память белой (файл в папке приложения): движок забирает её один раз при сборке. Пустая — без
+    /// сохранения (тесты, стенды, режим `none`).
+    pub white_memory: WhiteMemoryHandoff,
     /// Предложения и указания нашего AE (08a); с вендорским AE не используются.
     pub auto_exposure: AutoExposureLink,
     /// Поднялся ли рендер, который будет мерить сцену для нашего AE (решает, какой AE получит камера).
@@ -59,17 +69,30 @@ pub struct CameraLinks {
 /// Рендерная половина тех же ящиков ([`CameraLinks::render_side`]).
 #[derive(Debug, Clone)]
 pub struct RenderLinks {
-    /// Читатель указаний баланса белого.
-    pub white_balance: DirectiveSlot<WhiteBalanceDirective>,
+    /// Белая рендера: читатель указаний и писатель ответов. Реестр источников пуст: его собирает корень
+    /// композиции из конфига рендера (`white_sources`) и кладёт в `white.sources`.
+    pub white: WhiteLinks,
     /// Сторона рендера нашего AE; `None`, если у камеры вендорский AE.
     pub auto_exposure: Option<AutoExposureRenderEnd>,
 }
 
 impl CameraLinks {
+    /// Привязывает запущенный движок к толчку ответов источников белого; при падении привязки толчок отвязывается.
+    pub(crate) fn white_binding(
+        &self,
+        receiver: Arc<dyn camera_contract::auto_exposure::RefreshSignal>,
+    ) -> EngineBinding {
+        EngineBinding::bind(self.white_answers.refresh_signal(), receiver)
+    }
+
     /// Половина для потока рендера: клоны тех же ящиков, что держит движок.
     pub fn render_side(&self, exposure: ExposureControllerKind) -> RenderLinks {
         RenderLinks {
-            white_balance: self.white_balance.clone(),
+            white: WhiteLinks {
+                directives: self.white_directives.clone(),
+                answers: self.white_answers.clone(),
+                sources: Default::default(),
+            },
             auto_exposure: self.auto_exposure.render_end(exposure),
         }
     }
@@ -107,9 +130,18 @@ fn three_a_wiring(config: &CameraConfig, links: &CameraLinks, effective: Exposur
         .with_exposure_directive_slot(links.auto_exposure.engine_directive_slot()),
         ExposureControllerKind::Vendor => ThreeAWiring::vendor(&config.engine.three_a),
     };
+    // Белая: ящики общие с рендером, память открыта корнем композиции до движка (WB26).
+    let memory = links.white_memory.take();
+    let white = WhiteWiring {
+        directives: links.white_directives.clone(),
+        answers: links.white_answers.clone(),
+        remembered: memory.load,
+        memory: memory.memory,
+        opening_source: WhiteSourceId::PHONE,
+    };
     // Итоги снимков со вспышкой идут и событием движка, и наблюдателю: в проде события никто не разбирает.
     wiring
-        .with_white_balance_slot(links.white_balance.clone())
+        .with_white(white)
         .with_flash_observer(Arc::clone(&links.flash_relay) as Arc<dyn FlashStillObserver>)
 }
 
@@ -134,6 +166,7 @@ fn spawn_engine(config: &CameraConfig, backend: CameraBackendParts, links: Camer
         );
     }
     let wiring = three_a_wiring(config, &links, choice.effective);
+    let white_memory_diagnostics = links.white_memory.diagnostics().clone();
     let lens_intents = links.lens_intents.clone();
     match CameraRuntime::spawn_with_lens_wiring(
         config.engine.clone(),
@@ -149,6 +182,10 @@ fn spawn_engine(config: &CameraConfig, backend: CameraBackendParts, links: Camer
                 "движок камеры запущен, присутствие: фон до события Resumed"
             );
             let mut running = RunningCamera::new(runtime, handle, diagnostics);
+            // Ответы источников белого будят движок тем же толчком, что предложения AE. Привязка не зависит от
+            // выбора исполнителя экспозиции: белая владеет движком всегда.
+            let white_waker = running.handle().three_a_waker();
+            running = running.with_white_binding(links.white_binding(Arc::new(white_waker)));
             if choice.effective == ExposureControllerKind::Own {
                 // Толчок рендера привязываем только после запуска: `ThreeAWaker` есть лишь у живого движка.
                 // Предложение, опубликованное раньше, не потеряно: оно лежит в ящике, движок прочтёт его
@@ -160,6 +197,7 @@ fn spawn_engine(config: &CameraConfig, backend: CameraBackendParts, links: Camer
                 .with_raw_stream(raw_stream)
                 .with_exposure_controller(choice)
                 .with_lens_intents(lens_intents)
+                .with_white_memory(white_memory_diagnostics)
         }
         Err(error) => {
             CameraServices::unavailable(format!("движок камеры не запущен: {error}"), config.scenarios.clone())

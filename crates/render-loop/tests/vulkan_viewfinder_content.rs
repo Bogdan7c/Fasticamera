@@ -23,7 +23,6 @@ mod vulkan_support;
 use std::collections::HashMap;
 use std::sync::{Arc, PoisonError};
 
-use camera_contract::three_a::DirectiveSlot;
 use gpu_vulkan::hardware_buffer_cache::ImportCacheCounters;
 use raw_frame_stream::{RawFrameStream, RawFrameStreamConfig};
 use render_loop::backend::DisplayBackend;
@@ -31,7 +30,7 @@ use render_loop::config::{DisplayColorConfig, RenderLoopConfig, ViewfinderConfig
 use support::{Journal, fake_surface};
 use viewfinder_rig::*;
 use vulkan_support::{
-    assert_no_validation_errors, assert_presented_or_skipped, headless_camera_backend_with_directives_or_skip,
+    assert_no_validation_errors, assert_presented_or_skipped, headless_camera_backend_with_white_or_skip, held_white,
 };
 
 #[test]
@@ -51,9 +50,8 @@ fn isp_output_through_the_real_backend_matches_the_isp_model_reference() {
         ..RawFrameStreamConfig::default()
     });
     let cells = HashMap::from([(GRAY_TS, neutral_gray()), (RED_TS, reddish())]);
-    let directives = DirectiveSlot::new();
-    directives.publish(manual_white_directive());
-    let Some(mut backend) = headless_camera_backend_with_directives_or_skip(
+    let white = held_white(MANUAL_KELVIN);
+    let Some(mut backend) = headless_camera_backend_with_white_or_skip(
         &render_config,
         stream.viewfinder(),
         Box::new(move |context| {
@@ -64,7 +62,7 @@ fn isp_output_through_the_real_backend_matches_the_isp_model_reference() {
                 counters: ImportCacheCounters::default(),
             }))
         }),
-        directives,
+        white,
     ) else {
         return;
     };
@@ -158,9 +156,8 @@ fn tone_knobs_from_the_config_reach_the_shown_viewfinder_image() {
         ..RawFrameStreamConfig::default()
     });
     let cells = HashMap::from([(GRAY_TS, neutral_gray())]);
-    let directives = DirectiveSlot::new();
-    directives.publish(manual_white_directive());
-    let Some(mut backend) = headless_camera_backend_with_directives_or_skip(
+    let white = held_white(MANUAL_KELVIN);
+    let Some(mut backend) = headless_camera_backend_with_white_or_skip(
         &render_config,
         stream.viewfinder(),
         Box::new(move |context| {
@@ -171,7 +168,7 @@ fn tone_knobs_from_the_config_reach_the_shown_viewfinder_image() {
                 counters: ImportCacheCounters::default(),
             }))
         }),
-        directives,
+        white,
     ) else {
         return;
     };

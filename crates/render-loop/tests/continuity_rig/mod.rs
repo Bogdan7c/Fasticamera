@@ -19,17 +19,16 @@ use std::time::Instant;
 
 use super::support::{Journal, fake_surface};
 use super::vulkan_support::{
-    assert_no_validation_errors, assert_presented_or_skipped, headless_camera_backend_with_directives_or_skip,
+    assert_no_validation_errors, assert_presented_or_skipped, headless_camera_backend_with_white_or_skip, held_white,
 };
 use camera_contract::capabilities::{LensShading, Rational, RawSupport, SensorLevels, VendorProcessingFlags};
 use camera_contract::capture_result::{CaptureResultMeta, FrameNumber, SensorTimestamp};
-use camera_contract::control::{ColorTemperature, Tint, WhiteBalanceSetting};
 use camera_contract::fixtures::{camera_id, main_wide_camera};
 use camera_contract::frame_passport::{CaptureColorHints, FrameCaptureDetails, StreamPassport};
 use camera_contract::geometry::{PixelRect, PixelSize, SensorOrientation};
 use camera_contract::raw_format::{CfaLayout, MosaicKind, MosaicPattern, RawFormat};
 use camera_contract::stream::{FrameRateMechanism, ReadoutAspect, TargetFrameRate};
-use camera_contract::three_a::{DirectiveSlot, ThreeAProfile, WhiteBalanceDirective, WhiteBalanceMode};
+use camera_contract::three_a::DirectiveSlot;
 use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::hardware_buffer_cache::ImportCacheCounters;
 use gpu_vulkan::raw_mosaic_preview::MosaicSource;
@@ -136,18 +135,6 @@ pub fn scene_neutral() -> [f64; 3] {
     })
     .expect("точка на кривой Планка");
     profile.neutral_for_white(white).expect("нейтраль").values()
-}
-
-pub fn manual_white_directive() -> WhiteBalanceDirective {
-    WhiteBalanceDirective {
-        mode: WhiteBalanceMode::Manual {
-            setting: WhiteBalanceSetting {
-                temperature: ColorTemperature::from_kelvin(MANUAL_KELVIN).expect("температура"),
-                tint: Tint::NEUTRAL,
-            },
-        },
-        profile: ThreeAProfile::Photo,
-    }
 }
 
 pub fn bggr_sample(cell: CellValues, x: u32, y: u32) -> u16 {
@@ -362,6 +349,8 @@ pub struct Rig {
     pub exposure_directives: DirectiveSlot<camera_contract::auto_exposure::ExposureDirective>,
     /// Несимметричная сцена импортёра (`SceneImporter::asymmetric`).
     pub asymmetric: Arc<AtomicBool>,
+    /// Связка с «владельцем белого» (держит MANUAL_KELVIN): тест может сменить белую своим указанием.
+    pub white: render_loop::viewfinder::WhiteLinks,
     pub _journal: Arc<Journal>,
 }
 
@@ -436,9 +425,9 @@ impl Rig {
         let importer_scene = Arc::clone(&scene);
         let asymmetric = Arc::new(AtomicBool::new(false));
         let importer_asymmetric = Arc::clone(&asymmetric);
-        let directives = DirectiveSlot::new();
-        directives.publish(manual_white_directive());
-        let backend = headless_camera_backend_with_directives_or_skip(
+        let white = held_white(MANUAL_KELVIN);
+        let white_links = white.clone();
+        let backend = headless_camera_backend_with_white_or_skip(
             &render_config,
             stream.viewfinder(),
             Box::new(move |context| {
@@ -450,7 +439,7 @@ impl Rig {
                     asymmetric: Arc::clone(&importer_asymmetric),
                 }))
             }),
-            directives,
+            white,
         )?;
         let backend = if stills.is_some() {
             backend.with_still_capture(stream.snapshot_ring())
@@ -488,6 +477,7 @@ impl Rig {
             with_exposure: with_auto_exposure,
             exposure_directives,
             asymmetric,
+            white: white_links,
             _journal: journal,
         })
     }

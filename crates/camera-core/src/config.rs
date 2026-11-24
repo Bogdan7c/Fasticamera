@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::flash_config::{FlashConfig, FlashConfigError};
 use crate::standby_config::{StandbyConfig, StandbyConfigError};
 use crate::three_a_own::OwnExposureConfig;
+use crate::white::{WhiteConfig, WhiteConfigError};
 use crate::zoom::{ZoomConfig, ZoomConfigError};
 
 /// Восстановление после недоступности (решение 39).
@@ -179,6 +180,8 @@ pub struct ThreeAConfig {
     pub exposure: OwnExposureConfig,
     /// Вспышка (14d): предвспышка, пауза, сроки, порог Auto.
     pub flash: FlashConfig,
+    /// Белая: пределы, запасной свет, сроки ожидания источника (план white-balance).
+    pub white: WhiteConfig,
 }
 
 impl Default for ThreeAConfig {
@@ -192,6 +195,7 @@ impl Default for ThreeAConfig {
             bracket_result_timeout_ms: 10_000,
             exposure: OwnExposureConfig::default(),
             flash: FlashConfig::default(),
+            white: WhiteConfig::default(),
         }
     }
 }
@@ -246,6 +250,8 @@ pub enum CameraEngineConfigError {
     InvalidStandby(#[from] StandbyConfigError),
     #[error("{0}")]
     InvalidFlash(#[from] FlashConfigError),
+    #[error("{0}")]
+    InvalidWhite(#[from] WhiteConfigError),
 }
 
 impl CameraEngineConfig {
@@ -357,6 +363,7 @@ impl CameraEngineConfig {
         }
         three_a.exposure.validate()?;
         three_a.flash.validate()?;
+        three_a.white.validate()?;
         Ok(())
     }
 

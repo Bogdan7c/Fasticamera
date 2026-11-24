@@ -6,8 +6,8 @@
 //! (в 08 — временный вендорский AE, в 08a — наш AE по статистике RAW, решения 63 и 66).
 //! Заменить часть — дать движку другую реализацию, планировщик и соседей не трогать.
 //!
-//! Баланс белого сюда не входит: его исполняет AWB на потоке рендера (решение 64), а движок
-//! только публикует режим через `DirectiveSlot<WhiteBalanceDirective>`.
+//! Баланс белого сюда не входит: его владелец — `engine/white` (план white-balance), а движок
+//! публикует рендеру указание через `DirectiveSlot<WhiteDirective>`.
 
 use camera_contract::auto_exposure::ProductReach;
 use camera_contract::capabilities::{CameraCapabilities, FrameDuration};

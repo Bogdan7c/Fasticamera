@@ -235,7 +235,13 @@ impl SmokeRun {
             thermal_end: ThermalSnapshot::read(context.services.thermal.as_ref()),
             last_isp_failure: viewfinder.and_then(|viewfinder| viewfinder.counters.last_isp_failure.clone()),
             last_params_failure: viewfinder.and_then(|viewfinder| viewfinder.counters.last_params_failure.clone()),
-            white_balance: viewfinder.map(|viewfinder| WhiteBalanceReport::of(&viewfinder.white_balance)),
+            white_balance: viewfinder.map(|viewfinder| {
+                WhiteBalanceReport::of(
+                    &viewfinder.white_balance,
+                    &status.three_a.white,
+                    context.gpu.render_config.viewfinder.white_balance.max_hidden_frames,
+                )
+            }),
             companion: running.diagnostics_snapshot().three_a_companion,
         }
     }

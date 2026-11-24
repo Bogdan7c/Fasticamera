@@ -14,6 +14,7 @@ use super::three_a_report::{
     ThreeAObservation,
 };
 use super::three_a_results::relative_gap;
+use super::white_balance_report::white_taken_from_phone_violations;
 use crate::three_a_scenario_config::ThreeAScenarioConfig;
 
 /// Вердикт: список нарушений (пустой — прошёл).
@@ -94,8 +95,12 @@ fn ae_source_violations(observation: &ThreeAObservation) -> Vec<String> {
 pub fn awb_violations(awb: &AwbReport) -> Vec<String> {
     let mut violations = Vec::new();
     if !awb.ready {
-        violations.push("AWB не готов за срок: нет оценки света или холодный старт не кончился".to_owned());
+        violations.push(
+            "белая не готова за срок: заявка источнику не закрыта исходом applied или холодный старт не кончился"
+                .to_owned(),
+        );
     }
+    violations.extend(awb.white_balance.iter().flat_map(white_taken_from_phone_violations));
     if awb.hidden_since_start > u64::from(awb.max_hidden_frames) {
         violations.push(format!(
             "холодный старт скрыл {} кадров, предел {}",
@@ -104,7 +109,7 @@ pub fn awb_violations(awb: &AwbReport) -> Vec<String> {
     }
     if awb.forced_since_start > 0 {
         violations.push(format!(
-            "холодный старт кончился принудительным показом {} раз: оценки не было в пределах скрытия",
+            "холодный старт кончился принудительным показом {} раз: ответа источника не было в пределах скрытия",
             awb.forced_since_start
         ));
     }

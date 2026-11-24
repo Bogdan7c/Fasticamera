@@ -44,6 +44,8 @@ pub mod device_config;
 pub mod event_router;
 #[cfg(test)]
 mod fake_render_ae;
+#[cfg(test)]
+mod fake_render_white;
 pub mod flash_camera_port;
 pub mod flash_shot_route;
 pub mod flash_still_relay;
@@ -110,6 +112,8 @@ pub mod viewfinder_control;
 pub mod viewfinder_latency_profile;
 pub mod viewfinder_pacing_control;
 pub mod viewfinder_scenario_config;
+pub mod white_memory;
+pub mod white_sources;
 pub mod zoom_scenario_config;
 
 #[cfg(target_os = "android")]

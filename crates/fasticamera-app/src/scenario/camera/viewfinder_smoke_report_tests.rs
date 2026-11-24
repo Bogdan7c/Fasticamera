@@ -127,22 +127,9 @@ pub(in crate::scenario::camera) fn healthy() -> ViewfinderSmokeObservation {
     }
 }
 
-/// Исправный AWB: оценки идут, холодный старт кончился, статистика считается на каждом 4-м кадре.
+/// Исправная белая: взята у телефона, заявка закрыта исходом «принято», холодный старт кончился.
 fn working_awb() -> WhiteBalanceReport {
-    WhiteBalanceReport {
-        estimates: 900,
-        our_white: None,
-        confidence: Some(0.9),
-        accepted_tiles: Some(40),
-        hal_delta_mired: Some(5.0),
-        hal_delta_duv: Some(0.001),
-        cold_start_pending: false,
-        hidden_frames: 3,
-        cold_start_forced: 0,
-        statistics_every_n_frames: 4,
-        estimation_failures: 0,
-        table_failure: None,
-    }
+    WhiteBalanceReport::taken_from_phone_for_tests()
 }
 
 fn adpf_report(mode: AdpfMode, session: &'static str) -> AdpfReport {
@@ -605,15 +592,35 @@ fn dead_companion_stream_fails_the_viewfinder_for_every_non_active_state() {
 }
 
 #[test]
-fn awb_without_estimates_pending_cold_start_or_table_failure_fails() {
-    assert_single(&violations_of(|o| o.white_balance = None), "нет диагностики AWB");
+fn white_not_taken_from_the_phone_pending_request_or_cold_start_fails() {
+    assert_single(&violations_of(|o| o.white_balance = None), "нет диагностики белой");
+    // Белая осталась запасной: источник не ответил или отказал. Старый критерий «estimates > 0» продукт не судит.
     assert_single(
         &violations_of(|o| {
             if let Some(wb) = &mut o.white_balance {
-                wb.estimates = 0;
+                wb.origin = "fallback".to_owned();
+                wb.request.state = "unavailable";
             }
         }),
-        "ни одной оценки света",
+        "белая не взята у телефона: происхождение «fallback», заявка unavailable",
+    );
+    // Рука сильнее: ручная белая в приёмочном прогоне — тоже «не у телефона».
+    assert_single(
+        &violations_of(|o| {
+            if let Some(wb) = &mut o.white_balance {
+                wb.origin = "manual".to_owned();
+            }
+        }),
+        "белая не взята у телефона: происхождение «manual»",
+    );
+    // Белая телефонная, но последняя заявка закончилась отказом: заявка открытия не закрыта исходом applied.
+    assert_single(
+        &violations_of(|o| {
+            if let Some(wb) = &mut o.white_balance {
+                wb.request.state = "timed_out";
+            }
+        }),
+        "заявка белого не закрыта исходом applied: timed_out",
     );
     assert_single(
         &violations_of(|o| {
@@ -621,15 +628,19 @@ fn awb_without_estimates_pending_cold_start_or_table_failure_fails() {
                 wb.cold_start_pending = true;
             }
         }),
-        "холодный старт AWB не кончился",
+        "холодный старт не кончился",
     );
+}
+
+#[test]
+fn a_cold_start_that_hid_more_frames_than_the_limit_fails() {
     assert_single(
         &violations_of(|o| {
             if let Some(wb) = &mut o.white_balance {
-                wb.table_failure = Some("нет DNG".to_owned());
+                wb.hidden_frames = u64::from(wb.max_hidden_frames) + 1;
             }
         }),
-        "таблица локуса AWB не построена: нет DNG",
+        "холодный старт скрыл 21 кадров, предел 20",
     );
 }
 
@@ -641,7 +652,9 @@ fn summary_carries_the_awb_report_hidden_and_skipped_frames_and_companion() {
     let summary = observation.summary();
     assert_eq!(summary["frames_hidden_cold_start"], 3);
     assert_eq!(summary["bracket_frames_skipped"], 4);
-    assert_eq!(summary["white_balance"]["estimates"], 900);
+    assert_eq!(summary["white_balance"]["origin"], "phone");
+    assert_eq!(summary["white_balance"]["request"]["state"], "applied");
+    assert_eq!(summary["white_balance"]["white"]["kelvin"], 3_200.0);
     assert_eq!(summary["white_balance"]["hal_delta_mired"], 5.0);
     assert_eq!(summary["three_a_companion"]["state"], "active");
 }

@@ -1,9 +1,11 @@
-//! Продуктовая связка: AE авто И AWB авто на реалистичном холодном старте (RADV, полная validation).
+//! Продуктовая связка: AE авто И белая от телефона при открытии на реалистичном холодном старте (RADV, полная validation).
 //!
-//! В `vulkan_ae_scene.rs` AWB зафиксирован ручным указанием; в продукте автоматические оба. Здесь камера
+//! В `vulkan_ae_scene.rs` белая задана указанием заранее; в продукте при открытии владелец белого (здесь его роль
+//! играет `WhiteTestEngine`) просит у источника «телефон» свет и прячет кадры, пока ответа нет. Здесь камера
 //! стартует с экспозиции из конфига (4 с·ISO), сцена — дневной свет (D65) либо тёмная комната, сенсор
-//! отвечает через 8 кадров, шаг замера вниз ограничен. Тест печатает числа холодного старта (`--nocapture`)
-//! и падает, если AWB «голодает» дольше лимита скрытия, показывается пересвеченный или цветной кадр.
+//! отвечает через 8 кадров, шаг замера вниз ограничен, автоматика телефона отдаёт «прошлую» белую первые 5 кадров.
+//! Тест печатает числа холодного старта (`--nocapture`) и падает, если источник «голодает» дольше лимита скрытия,
+//! показывается пересвеченный или цветной кадр.
 
 #![cfg(not(target_os = "android"))]
 #![allow(
@@ -16,9 +18,14 @@ mod ae_rig;
 mod awb_support;
 mod support;
 mod vulkan_support;
+mod white_engine;
 
 use ae_rig::{AeRig, RigSetup, SceneLayout, Shot, display_middle_gray, ev_error, rig_with};
+use camera_contract::white::WhiteSourceId;
+use isp_model::color::chromaticity::Chromaticity;
 use render_loop::config::{AutoExposureConfig, WhiteBalanceConfig};
+use render_loop::viewfinder::{WhiteLinks, WhiteSourceRegistry};
+use white_engine::WhiteTestEngine;
 
 /// Стартовая экспозиция камеры из конфига, с·ISO.
 const START_PRODUCT: f64 = 4.0;
@@ -49,16 +56,29 @@ fn spread(pixel: [f32; 3]) -> f32 {
     max - min
 }
 
-fn run_scenario(name: &str, scene: &'static str, scene_scale: f64) -> Option<ColdStart> {
+/// Дневной свет из конфига (запасная белая владельца до ответа источника).
+const FALLBACK_KELVIN: f64 = 5600.0;
+/// Сколько первых кадров потока автоматика телефона несёт белую прошлого сеанса.
+const STALE_FRAMES: i64 = 5;
+
+fn run_scenario(name: &str, scene: &'static str, scene_scale: f64, scene_white: Chromaticity) -> Option<ColdStart> {
+    let links = WhiteLinks {
+        sources: WhiteSourceRegistry::with_phone(WhiteBalanceConfig::default().phone).expect("числа источника верны"),
+        ..WhiteLinks::default()
+    };
     let (mut rig, journal) = rig_with(RigSetup {
         auto_exposure: Some(AutoExposureConfig::default()),
-        white_balance: None,
+        white_balance: Some(links.clone()),
         scene,
         start_product: START_PRODUCT,
         scene_scale,
         allow_clipping: true,
         layout: SceneLayout::Uniform,
     })?;
+    rig.white_engine = Some(WhiteTestEngine::open(&links, FALLBACK_KELVIN, WhiteSourceId::PHONE));
+    rig.hints_by_frame = Some(Box::new(move |frame| {
+        awb_support::phone_hints_at_frame(frame, STALE_FRAMES, awb_support::planckian_white(6500.0), scene_white)
+    }));
     rig.run(FRAMES);
     let numbers = summarize(&mut rig, scene_scale);
     let diagnostics = rig.viewfinder();
@@ -103,7 +123,7 @@ fn assert_cold_start_is_clean(numbers: &ColdStart) {
     let limit = u64::from(WhiteBalanceConfig::default().max_hidden_frames);
     assert!(
         numbers.hidden_by_awb <= limit && numbers.forced_provisional == 0,
-        "AWB голодал: скрыто {} (лимит {limit}), показано с провизорной белой после лимита {}; {numbers:?}",
+        "Источник белой голодал: скрыто {} (лимит {limit}), показано с провизорной белой после лимита {}; {numbers:?}",
         numbers.hidden_by_awb,
         numbers.forced_provisional
     );
@@ -123,7 +143,7 @@ fn assert_cold_start_is_clean(numbers: &ColdStart) {
 #[test]
 fn daylight_with_the_camera_starting_four_stops_over_exposed() {
     // Масштаб подобран так, что нужная экспозиция ≈ 0,25 с·ISO: старт 4 с·ISO — это +4 EV пересвета.
-    let Some(numbers) = run_scenario("daylight", "checker_d65", 0.30) else {
+    let Some(numbers) = run_scenario("daylight", "checker_d65", 0.30, Chromaticity::D65) else {
         return;
     };
     assert_cold_start_is_clean(&numbers);
@@ -132,7 +152,7 @@ fn daylight_with_the_camera_starting_four_stops_over_exposed() {
 #[test]
 fn dark_room_four_stops_under_the_start_exposure() {
     // Нужная экспозиция ≈ 64 с·ISO (на 4 EV больше стартовой).
-    let Some(numbers) = run_scenario("dark_room", "checker_d65", 0.0748 / 64.0) else {
+    let Some(numbers) = run_scenario("dark_room", "checker_d65", 0.0748 / 64.0, Chromaticity::D65) else {
         return;
     };
     assert_cold_start_is_clean(&numbers);
@@ -141,7 +161,12 @@ fn dark_room_four_stops_under_the_start_exposure() {
 #[test]
 fn tungsten_lamp_gets_the_right_white_before_the_first_shown_frame() {
     // Та же связка под лампой 2800 К: провизорная белая D65 тут цветная, поэтому показ допустим только с оценкой.
-    let Some(numbers) = run_scenario("lamp_2800", "checker_bb2800", 0.30) else {
+    let Some(numbers) = run_scenario(
+        "lamp_2800",
+        "checker_bb2800",
+        0.30,
+        awb_support::planckian_white(2800.0),
+    ) else {
         return;
     };
     assert_cold_start_is_clean(&numbers);
@@ -150,7 +175,7 @@ fn tungsten_lamp_gets_the_right_white_before_the_first_shown_frame() {
 #[test]
 fn bright_sun_seven_stops_over_the_start_exposure() {
     // Улица днём: нужная экспозиция ≈ 1/32 с·ISO, то есть старт 4 с·ISO пересвечен на +7 EV.
-    let Some(numbers) = run_scenario("sun", "checker_d65", 2.4) else {
+    let Some(numbers) = run_scenario("sun", "checker_d65", 2.4, Chromaticity::D65) else {
         return;
     };
     assert_cold_start_is_clean(&numbers);

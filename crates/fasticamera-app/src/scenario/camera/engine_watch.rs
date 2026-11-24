@@ -119,7 +119,10 @@ pub fn failure_of_event(event: &CameraEvent) -> Option<RunFailure> {
         | CameraEvent::ControlsAdjusted { .. }
         | CameraEvent::BracketCaptured { .. }
         // Итог снимка со вспышкой судит сценарий `capture` (через наблюдателя итогов), а не общий разбор отказов.
-        | CameraEvent::FlashStillFinished { .. } => None,
+        | CameraEvent::FlashStillFinished { .. }
+        // Белая (смена и итог заявки) — предмет проверок сценариев `viewfinder` и `3a` по статусу, а не отказ движка.
+        | CameraEvent::WhiteChanged { .. }
+        | CameraEvent::WhiteRequestFinished { .. } => None,
     }
 }
 

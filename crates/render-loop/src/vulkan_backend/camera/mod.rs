@@ -77,7 +77,7 @@ pub(super) use self::still::{
 };
 pub(super) use self::ui_state::{UiOverlayFrame, UiOverlayState};
 pub(super) use self::viewfinder_stats::ViewfinderStats;
-pub(super) use self::white_balance::{SceneWhiteMemory, WhiteBalanceParts};
+pub(super) use self::white_balance::WhiteBalanceParts;
 
 #[cfg(target_os = "android")]
 pub use self::android_importer::AndroidCameraImporter;

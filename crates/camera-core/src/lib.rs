@@ -48,6 +48,7 @@ pub mod three_a_own;
 pub mod three_a_status;
 pub mod three_a_vendor;
 pub mod three_a_wiring;
+pub mod white;
 pub mod zoom;
 
 pub use command::{CameraCommand, CommandId, CommandOutcome, CommandRejected};
@@ -62,3 +63,4 @@ pub use runtime::{CameraRuntime, RuntimeSpawnError, ShutdownReport};
 pub use state::{CameraError, CameraState, ClosedReason, RecoveryPlan};
 pub use status::{AppPresence, CameraCounters, CameraStatus, StreamStats};
 pub use three_a_wiring::ThreeAWiring;
+pub use white::{WhiteConfig, WhiteStatus, WhiteWiring};
