@@ -7,6 +7,7 @@ use serde::Serialize;
 
 use super::draw_filter::DrawFilter;
 use super::glass_ablation::{GlassStyleAblation, GlassSubset};
+use super::headroom_tuning::HeadroomExperiment;
 use super::viewfinder_tuning::{AwbSchedule, ViewfinderTuning};
 
 mod baseline;
@@ -15,6 +16,7 @@ mod isp_ablation;
 mod isp_tuning;
 mod scopes_ablation;
 mod ui_ablation;
+mod v4_tuning;
 
 /// Какой прибор считает работа `scopes_*`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -137,17 +139,20 @@ pub enum WorkloadGroup {
     IspTuning,
     /// Абляции свойств стекла (пакет G3): что из цены стекла чем занято.
     GlassAblation,
+    /// Опыты над цепочкой V4 «запас под видео»: форма группы, пробы вместо Menon, отключённые стадии вывода.
+    V4Tuning,
 }
 
 impl WorkloadGroup {
     /// Все группы.
-    pub const ALL: [WorkloadGroup; 6] = [
+    pub const ALL: [WorkloadGroup; 7] = [
         Self::Baseline,
         Self::UiAblation,
         Self::IspAblation,
         Self::ScopesAblation,
         Self::IspTuning,
         Self::GlassAblation,
+        Self::V4Tuning,
     ];
 
     /// Имя группы в конфиге и флаге.
@@ -159,6 +164,7 @@ impl WorkloadGroup {
             Self::ScopesAblation => "scopes_ablation",
             Self::IspTuning => "isp_tuning",
             Self::GlassAblation => "glass_ablation",
+            Self::V4Tuning => "v4_tuning",
         }
     }
 
@@ -189,6 +195,8 @@ pub enum WorkloadKind {
     },
     /// Стенд V4: цепочка запаса под видео на кадре 4096×2304 без шумодава.
     HeadroomV4,
+    /// Стенд V4 с опытными настройками (форма группы, пробы, отключённые стадии): цена, не картинка.
+    HeadroomV4Tuned(HeadroomExperiment),
     /// Проявление снимка целиком.
     Still,
 }
@@ -249,13 +257,14 @@ const fn without(stage: AblatedStage) -> WorkloadKind {
 /// Все работы стенда в порядке прогона по умолчанию.
 /// Таблицы групп в порядке каталога. Строки каждой группы лежат в своём модуле (`catalog/<группа>.rs`): каталог
 /// растёт с каждым опытом, а один файл на все группы перерос предел размера модуля.
-const GROUP_TABLES: [&[CatalogEntry]; 6] = [
+const GROUP_TABLES: [&[CatalogEntry]; 7] = [
     baseline::ENTRIES,
     ui_ablation::ENTRIES,
     isp_ablation::ENTRIES,
     scopes_ablation::ENTRIES,
     isp_tuning::ENTRIES,
     glass_ablation::ENTRIES,
+    v4_tuning::ENTRIES,
 ];
 
 /// Все работы каталога в порядке каталога (группа за группой).

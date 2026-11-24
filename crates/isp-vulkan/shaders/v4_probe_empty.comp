@@ -1,0 +1,8 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Пустая проба стенда V4: проход той же формы (те же группы, push-константы, привязки в раскладке), но шейдер ничего
+// не читает и не пишет. Цена = запуск групп + барьер между проходами.
+#include "quality_common.glsl"
+
+void main() {
+}

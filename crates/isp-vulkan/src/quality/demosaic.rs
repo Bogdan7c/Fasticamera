@@ -16,6 +16,7 @@ use super::error::QualityError;
 use super::frame_params::CfaCode;
 use super::pass::{PassPushConstants, QualityPass};
 use super::planes::{PlaneSlot, QualityPlanes};
+use super::tuning::DemosaicProbe;
 use crate::shaders::blobs;
 
 /// Проход демозаика (в порядке исполнения).
@@ -150,6 +151,18 @@ pub(crate) fn create_pass_pipelines(
     local: LocalSize,
     frame_slots: usize,
 ) -> Result<Vec<(MenonPass, QualityPass)>, GpuError> {
+    create_pass_pipelines_with(context, planes, local, frame_slots, |pass| Ok(pass.spirv()))
+}
+
+/// Как [`create_pass_pipelines`], но шейдер каждого прохода выбирает `spirv_for` (варианты стенда V4: пробы вместо
+/// настоящих проходов). Снимок идёт через [`create_pass_pipelines`] и прежние шейдеры.
+pub(crate) fn create_pass_pipelines_with(
+    context: &GpuContext,
+    planes: &QualityPlanes,
+    local: LocalSize,
+    frame_slots: usize,
+    spirv_for: impl Fn(MenonPass) -> Result<&'static [u8], GpuError>,
+) -> Result<Vec<(MenonPass, QualityPass)>, GpuError> {
     let mut passes = Vec::with_capacity(MenonPass::ORDER.len());
     for pass in MenonPass::ORDER {
         let accesses = pass.plane_accesses();
@@ -160,7 +173,7 @@ pub(crate) fn create_pass_pipelines(
                 PlaneAccess::Write(_) => BindingKind::ReadWriteStorageBuffer,
             })
             .collect();
-        let mut pipeline = QualityPass::new(context, pass.label(), pass.spirv(), &kinds, local, frame_slots)?;
+        let mut pipeline = QualityPass::new(context, pass.label(), spirv_for(pass)?, &kinds, local, frame_slots)?;
         let writes: Vec<BindingWrite> = (0_u32..)
             .zip(accesses)
             .map(|(binding, access)| BindingWrite {
@@ -201,6 +214,27 @@ impl QualityDemosaic {
     ) -> Result<Self, QualityError> {
         let planes = QualityPlanes::new(context, extent)?;
         let passes = create_pass_pipelines(context, &planes, local, frame_slots)?;
+        Ok(Self { passes, planes })
+    }
+
+    /// Как [`Self::new`], но проходы заменены пробами `probe` (замер цены памяти и запуска групп; картинка бессмысленна).
+    pub fn new_with_probe(
+        context: &GpuContext,
+        extent: vk::Extent2D,
+        local: LocalSize,
+        frame_slots: usize,
+        probe: DemosaicProbe,
+    ) -> Result<Self, QualityError> {
+        let planes = QualityPlanes::new(context, extent)?;
+        let passes = create_pass_pipelines_with(context, &planes, local, frame_slots, |pass| {
+            let accesses = pass.plane_accesses();
+            let reads = accesses.iter().filter(|a| matches!(a, PlaneAccess::Read(_))).count();
+            probe
+                .spirv(reads, accesses.len() - reads)
+                .ok_or_else(|| GpuError::InvalidState {
+                    what: format!("для прохода {pass:?} нет пробы {probe:?}"),
+                })
+        })?;
         Ok(Self { passes, planes })
     }
 

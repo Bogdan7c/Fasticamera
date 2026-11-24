@@ -36,6 +36,7 @@ use super::planes::QualityPlanes;
 use super::stages::{LevelsStage, OutputStage, OutputUniforms};
 use super::temporal::{HistoryUse, TemporalDenoise};
 use super::timing::{FRAME_START_POINT, HeadroomPass, HeadroomTimingCollect, point_labels, timings_from_collect};
+use super::tuning::DemosaicVariant;
 use crate::frame_style::FrameStyleBuffers;
 use crate::lens_shading_map::LensShadingMapBuffer;
 
@@ -88,7 +89,10 @@ impl VideoHeadroomWorkload {
         // Размер группы из конфига — против лимитов ЭТОГО устройства (спецификация гарантирует только 128 нитей).
         local.validate_for_device(context)?;
         let slots = config.frame_slots;
-        let demosaic = QualityDemosaic::new(context, extent, local, slots)?;
+        let demosaic = match config.tuning.demosaic {
+            DemosaicVariant::Reference => QualityDemosaic::new(context, extent, local, slots)?,
+            DemosaicVariant::Probe(probe) => QualityDemosaic::new_with_probe(context, extent, local, slots, probe)?,
+        };
         let temporal = if config.temporal_denoise.enabled {
             Some(TemporalDenoise::new(
                 context,
@@ -112,7 +116,7 @@ impl VideoHeadroomWorkload {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             timestamps: GpuTimestamps::new(context, slots, &point_labels())?,
-            output: OutputStage::new(context, local, slots)?,
+            output: OutputStage::new(context, local, slots, config.tuning)?,
             levels: LevelsStage::new(context, local, slots)?,
             temporal,
             demosaic,

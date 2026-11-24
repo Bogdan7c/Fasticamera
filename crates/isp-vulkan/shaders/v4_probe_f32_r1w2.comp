@@ -1,0 +1,7 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Проба полосы памяти стенда V4: читает 1 плоскост., пишет 2 (f32). См. v4_probe_main.glsl.
+#define READ_COUNT 1
+#define WRITE_COUNT 2
+#define PROBE_ELEMENT float
+#include "v4_probe_main.glsl"

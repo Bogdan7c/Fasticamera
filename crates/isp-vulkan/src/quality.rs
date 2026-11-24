@@ -29,6 +29,7 @@ mod temporal;
 #[cfg(test)]
 pub(crate) mod test_params;
 mod timing;
+pub(crate) mod tuning;
 mod workload;
 
 pub use self::config::{QualityOutputFormat, TemporalDenoiseConfig, VideoHeadroomConfig, WorkgroupSizeConfig};
@@ -39,4 +40,7 @@ pub use self::input::{StreamGeneration, VideoFrameInput};
 pub use self::planes::{LinearRgbPlanes, QualityPlanes};
 pub use self::temporal::{HistoryState, HistoryUse, TemporalDenoise};
 pub use self::timing::{HeadroomPass, HeadroomTimingCollect, HeadroomTimings, PassTiming};
+pub use self::tuning::{
+    DemosaicProbe, DemosaicVariant, HeadroomTuning, OutputStageSkips, OutputToneModel, StabilizerMock,
+};
 pub use self::workload::{HeadroomRecordOutcome, VideoHeadroomWorkload};

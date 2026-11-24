@@ -37,6 +37,7 @@ use fasticamera::saturation_bench::catalog::{
 use fasticamera::saturation_bench::digest_report::DigestOutcome;
 use fasticamera::saturation_bench::draw_filter::DrawFilter;
 use fasticamera::saturation_bench::gpu_executor::GpuWorkloadExecutor;
+use fasticamera::saturation_bench::headroom_variant::pass_labels as v4_pass_labels;
 use fasticamera::saturation_bench::inputs::{InputSources, ProductInputs, SensorSource, gather_inputs};
 use fasticamera::saturation_bench::report::{RowOutcome, RunSummary, WorkloadRow};
 use fasticamera::saturation_bench::runner::{BenchRunner, PauseOutcome, RunClock, RunEvent, ThermalProbe};
@@ -174,7 +175,7 @@ fn expected_labels(entry: &CatalogEntry) -> Vec<&'static str> {
         WorkloadKind::Scopes { .. } | WorkloadKind::ScopesAblated { .. } => vec!["accumulate-end", "render-end"],
         WorkloadKind::Compositor => vec!["compose"],
         WorkloadKind::Display { .. } => vec!["compose", "pyramid", "ui"],
-        WorkloadKind::HeadroomV4 => isp_vulkan::saturation::HeadroomSaturationConfig::default().pass_labels(),
+        WorkloadKind::HeadroomV4 | WorkloadKind::HeadroomV4Tuned(_) => v4_pass_labels(entry.kind),
         // У снимка времён по проходам нет по построению (в `photo` нет timestamp-запросов): каждый кадр «без замера».
         WorkloadKind::Still => Vec::new(),
     }

@@ -3,7 +3,7 @@
 //! uniform слота, цель), поэтому пишутся при записи кадра, а не при создании.
 
 use ash::vk;
-use gpu_vulkan::compute::{BindingKind, BindingWrite, DescriptorResource, LocalSize};
+use gpu_vulkan::compute::{BindingKind, BindingWrite, DescriptorResource, LocalSize, SpecializationConstant};
 use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::device_buffer::DeviceBuffer;
 use gpu_vulkan::error::GpuError;
@@ -14,8 +14,16 @@ use gpu_vulkan::storage_image::StorageImageFormat;
 use super::frame_params::CfaCode;
 use super::pass::{PassPushConstants, QualityPass};
 use super::planes::LinearRgbPlanes;
+use super::tuning::{HeadroomTuning, StabilizerMock};
 use crate::frame_style::FrameStyleBindings;
 use crate::shaders::blobs;
+
+/// `constant_id` маски отключённых стадий вывода (`v4_output_main.glsl`; 0 и 1 заняты размером группы).
+const STAGE_SKIP_MASK_ID: u32 = 2;
+/// `constant_id` зафиксированной модели основы тона (`v4_output_main.glsl`).
+const FIXED_TONE_MODEL_ID: u32 = 3;
+/// `constant_id` макета стабилизатора (`v4_output_main.glsl`; 0 — выключен).
+const STABILIZER_MOCK_ID: u32 = 4;
 
 /// Проход 0 для обоих видов кадра (RAW16 — картинка, RAW10 — упакованный буфер).
 pub(crate) struct LevelsStage {
@@ -171,16 +179,49 @@ pub(crate) fn output_binding_writes(
 }
 
 impl OutputStage {
-    pub(crate) fn new(context: &GpuContext, local: LocalSize, frame_slots: usize) -> Result<Self, GpuError> {
-        Ok(Self {
-            ten_bit: QualityPass::new(
+    /// Создаёт выходной проход. Опыты стенда V4 (отключённые стадии, модель основы, зафиксированная в пайплайне) меняют
+    /// только 10-битный вывод; без опытов берётся прежний продуктовый шейдер, поэтому картинка не затронута.
+    pub(crate) fn new(
+        context: &GpuContext,
+        local: LocalSize,
+        frame_slots: usize,
+        tuning: HeadroomTuning,
+    ) -> Result<Self, GpuError> {
+        let ten_bit = if tuning.is_output_experiment() {
+            QualityPass::new_with_extra_specialization(
+                context,
+                "isp-quality-output-rgb10a2-v4-skips",
+                blobs::V4_OUTPUT_RGB10A2_COMP,
+                &OUTPUT_BINDINGS,
+                local,
+                frame_slots,
+                &[
+                    SpecializationConstant {
+                        constant_id: STAGE_SKIP_MASK_ID,
+                        value: tuning.output_skips.mask(),
+                    },
+                    SpecializationConstant {
+                        constant_id: FIXED_TONE_MODEL_ID,
+                        value: tuning.output_tone_model.specialization_value(),
+                    },
+                    SpecializationConstant {
+                        constant_id: STABILIZER_MOCK_ID,
+                        value: u32::from(tuning.stabilizer_mock == StabilizerMock::MergedWithOutput),
+                    },
+                ],
+            )?
+        } else {
+            QualityPass::new(
                 context,
                 "isp-quality-output-rgb10a2",
                 blobs::QUALITY_OUTPUT_RGB10A2_COMP,
                 &OUTPUT_BINDINGS,
                 local,
                 frame_slots,
-            )?,
+            )?
+        };
+        Ok(Self {
+            ten_bit,
             half_float: QualityPass::new(
                 context,
                 "isp-quality-output-rgba16f",

@@ -32,6 +32,8 @@ pub mod digest_report;
 pub mod draw_filter;
 pub mod glass_ablation;
 pub mod gpu_executor;
+pub mod headroom_tuning;
+pub mod headroom_variant;
 pub mod inputs;
 pub mod report;
 pub mod runner;

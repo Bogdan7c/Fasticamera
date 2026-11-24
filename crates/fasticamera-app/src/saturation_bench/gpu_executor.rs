@@ -33,6 +33,8 @@ use super::catalog::{
 };
 use super::digest_report::DigestOutcome;
 use super::draw_filter::DrawFilter;
+use super::headroom_tuning::HeadroomExperiment;
+use super::headroom_variant;
 use super::inputs::{PipelineKind, ProductInputs};
 use super::report::{FailureKind, Measurement, SceneSummary, UiCountersSummary, WorkloadFailure};
 use super::runner::{ExecutedWorkload, WorkloadExecutor};
@@ -294,7 +296,8 @@ impl GpuWorkloadExecutor {
             WorkloadKind::Display { screen, rhythm, filter } => {
                 self.build_display(FrameComposition::CompositorThenUi, screen, rhythm, filter)
             }
-            WorkloadKind::HeadroomV4 => self.build_headroom(),
+            WorkloadKind::HeadroomV4 => self.build_headroom(HeadroomExperiment::PRODUCT),
+            WorkloadKind::HeadroomV4Tuned(experiment) => self.build_headroom(experiment),
             WorkloadKind::Still => self.build_still(),
         }
     }
@@ -367,9 +370,10 @@ impl GpuWorkloadExecutor {
         Ok(ScopesSaturation::new_synthetic(&self.context, config, params)?)
     }
 
-    fn build_headroom(&self) -> Result<Box<dyn BenchWork>, BuildError> {
+    fn build_headroom(&self, experiment: HeadroomExperiment) -> Result<Box<dyn BenchWork>, BuildError> {
         let mut config = HeadroomSaturationConfig::default();
         config.headroom.frame_slots = self.slots();
+        headroom_variant::apply(experiment, &mut config.headroom);
         let params = self.inputs.params(PipelineKind::Quality)?;
         let work = HeadroomSaturation::new_synthetic(&self.context, config, params)?;
         Ok(Box::new(HeadroomWork(work)))

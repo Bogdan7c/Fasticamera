@@ -144,8 +144,11 @@ fn full_resolution_workload_runs_reports_per_pass_times_and_releases_objects() {
         let mut frame_sink = sink(&context, VIDEO_WIDTH, VIDEO_HEIGHT, config.frame_slots);
         assert_eq!(workload.collect(0).unwrap(), HeadroomTimingCollect::NothingRecorded);
 
-        let mut per_pass: Vec<(HeadroomPass, Vec<u64>)> =
-            HeadroomPass::ORDER.iter().map(|pass| (*pass, Vec::new())).collect();
+        let mut per_pass: Vec<(HeadroomPass, Vec<u64>)> = config
+            .active_passes()
+            .into_iter()
+            .map(|pass| (pass, Vec::new()))
+            .collect();
         let mut totals = Vec::new();
         const FRAMES: u64 = 6;
         for sequence in 0..FRAMES {
@@ -175,7 +178,7 @@ fn full_resolution_workload_runs_reports_per_pass_times_and_releases_objects() {
             );
             let timings = collect_ready(&mut workload, frame_slot);
             // Все 11 проходов (шумодав включён) с положительным временем, сумма не больше полного кадра.
-            assert_eq!(timings.passes.len(), HeadroomPass::ORDER.len(), "{timings:?}");
+            assert_eq!(timings.passes.len(), config.active_passes().len(), "{timings:?}");
             let sum: u64 = timings.passes.iter().map(|timing| timing.duration_ns).sum();
             assert!(
                 timings.passes.iter().all(|timing| timing.duration_ns > 0),
@@ -265,7 +268,7 @@ fn disabled_denoise_skips_its_pass_and_invalid_input_records_nothing() {
     let timings = collect_ready(&mut workload, 1);
     let passes: Vec<HeadroomPass> = timings.passes.iter().map(|timing| timing.pass).collect();
     assert!(!passes.contains(&HeadroomPass::TemporalDenoise), "{passes:?}");
-    assert_eq!(passes.len(), HeadroomPass::ORDER.len() - 1);
+    assert_eq!(passes.len(), config.active_passes().len());
     assert_eq!(passes.last(), Some(&HeadroomPass::Output));
 
     // Ошибки — до записи команд: слот 0 остаётся пустым, приёмник кадр не начинал.

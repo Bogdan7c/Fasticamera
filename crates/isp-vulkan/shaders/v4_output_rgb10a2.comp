@@ -1,0 +1,5 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Выходной проход стенда V4 в цель A2B10G10R10_UNORM с маской отключаемых стадий (см. v4_output_main.glsl).
+layout(set = 0, binding = 4, rgb10_a2) uniform writeonly image2D output_image;
+#include "v4_output_main.glsl"

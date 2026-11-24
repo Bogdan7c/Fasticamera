@@ -32,8 +32,8 @@ use super::scene::{SceneContent, check_raw10_size};
 use super::source::RawFrameHolder;
 use super::viewfinder::{PASS_LOG_CAPACITY_FRAMES, check_source_size};
 use crate::quality::{
-    HeadroomPass, HeadroomRecordOutcome, HeadroomTimingCollect, StreamGeneration, TemporalDenoiseConfig,
-    VideoFrameInput, VideoHeadroomConfig, VideoHeadroomWorkload,
+    HeadroomRecordOutcome, HeadroomTimingCollect, StreamGeneration, TemporalDenoiseConfig, VideoFrameInput,
+    VideoHeadroomConfig, VideoHeadroomWorkload,
 };
 
 /// Кадр бенча V4: основная камера 16:9 на 60 к/с.
@@ -88,11 +88,7 @@ impl HeadroomSaturationConfig {
 
     /// Метки проходов в порядке записи: шумодав выключен — проходов 10, включён — 11.
     pub fn pass_labels(&self) -> Vec<&'static str> {
-        HeadroomPass::ORDER
-            .iter()
-            .filter(|pass| self.headroom.temporal_denoise.enabled || **pass != HeadroomPass::TemporalDenoise)
-            .map(|pass| pass.label())
-            .collect()
+        self.headroom.active_passes().iter().map(|pass| pass.label()).collect()
     }
 }
 

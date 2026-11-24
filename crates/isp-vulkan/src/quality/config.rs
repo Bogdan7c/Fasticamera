@@ -5,6 +5,8 @@ use gpu_vulkan::storage_image::StorageFormatPolicy;
 use serde::{Deserialize, Serialize};
 
 use super::error::QualityError;
+use super::timing::HeadroomPass;
+use super::tuning::HeadroomTuning;
 use crate::lens_shading_map::LensShadingMapLimits;
 use crate::look::LookLutLimits;
 
@@ -126,6 +128,8 @@ pub struct VideoHeadroomConfig {
     pub lens_shading_map: LensShadingMapLimits,
     /// Наибольшая таблица вида (LUT; буфер на слот кадра). Таблица больше — ошибка кадра.
     pub look_lut: LookLutLimits,
+    /// Опыты стенда (замена проходов пробами, отключение стадий вывода); продукт — [`HeadroomTuning::PRODUCT`].
+    pub tuning: HeadroomTuning,
 }
 
 impl Default for VideoHeadroomConfig {
@@ -137,6 +141,7 @@ impl Default for VideoHeadroomConfig {
             temporal_denoise: TemporalDenoiseConfig::default(),
             lens_shading_map: LensShadingMapLimits::default(),
             look_lut: LookLutLimits::default(),
+            tuning: HeadroomTuning::PRODUCT,
         }
     }
 }
@@ -153,6 +158,15 @@ impl VideoHeadroomConfig {
         self.lens_shading_map.validate()?;
         self.look_lut.validate()?;
         self.temporal_denoise.validate()
+    }
+
+    /// Проходы, которые цепочка записывает с такими настройками, в порядке исполнения (метки времени): шумодав — только
+    /// если включён.
+    pub fn active_passes(&self) -> Vec<HeadroomPass> {
+        HeadroomPass::ORDER
+            .into_iter()
+            .filter(|pass| self.temporal_denoise.enabled || *pass != HeadroomPass::TemporalDenoise)
+            .collect()
     }
 
     /// Размер рабочей группы как `LocalSize` (ноль и больше 1024 нитей — ошибка конфига).

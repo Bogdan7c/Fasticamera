@@ -73,6 +73,31 @@ impl QualityPass {
         local: LocalSize,
         frame_slots: usize,
     ) -> Result<Self, GpuError> {
+        Self::new_with_extra_specialization(context, label, spirv, bindings, local, frame_slots, &[])
+    }
+
+    /// Как [`Self::new`], но с добавочными specialization-константами шейдера (id ≥ 2: id 0 и 1 заняты
+    /// размером группы). Нужны вариантам стенда V4 (отключение стадий для замера цены, форма прохода).
+    pub(crate) fn new_with_extra_specialization(
+        context: &GpuContext,
+        label: &'static str,
+        spirv: &[u8],
+        bindings: &[BindingKind],
+        local: LocalSize,
+        frame_slots: usize,
+        extra: &[SpecializationConstant],
+    ) -> Result<Self, GpuError> {
+        let mut specialization = vec![
+            SpecializationConstant {
+                constant_id: LOCAL_SIZE_X_ID,
+                value: local.x.get(),
+            },
+            SpecializationConstant {
+                constant_id: LOCAL_SIZE_Y_ID,
+                value: local.y.get(),
+            },
+        ];
+        specialization.extend_from_slice(extra);
         let pipeline = ComputePipeline::new(
             context,
             &ComputePipelineDesc {
@@ -80,16 +105,7 @@ impl QualityPass {
                 spirv,
                 bindings,
                 push_constant_bytes: PUSH_CONSTANT_BYTES,
-                specialization: &[
-                    SpecializationConstant {
-                        constant_id: LOCAL_SIZE_X_ID,
-                        value: local.x.get(),
-                    },
-                    SpecializationConstant {
-                        constant_id: LOCAL_SIZE_Y_ID,
-                        value: local.y.get(),
-                    },
-                ],
+                specialization: &specialization,
                 frame_slots,
             },
         )?;
