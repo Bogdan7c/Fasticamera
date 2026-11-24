@@ -324,6 +324,34 @@ impl TargetState {
         self.acquire_semaphores_tainted = true;
     }
 
+    /// Отказывается от кадра, который был выдан `acquire_frame`, но НЕ рисовался и не будет показан
+    /// (поток рендера держал его про запас и теперь не успеет им воспользоваться: пересоздание, detach).
+    ///
+    /// Показать такую картинку нельзя (содержимое не определено), а вернуть её драйверу без
+    /// `VK_EXT_swapchain_maintenance1` нельзя (в `VK_KHR_swapchain` у `vkAcquireNextImageKHR` нет парной
+    /// операции «отдать обратно»). Спецификация-корректный выход тот же, что у `abort_frame_after_acquire`:
+    /// отказаться от этого swapchain — выданная и не показанная картинка не мешает его уничтожению.
+    /// Поэтому кадр перестаёт считаться «выданным», swapchain помечен устаревшим, а сигнальный семафор
+    /// acquire будет заменён при ближайшем пересоздании. Сабмит не делался, fence слота не сбрасывался:
+    /// слот кольца остаётся свободным и очередь слотов не двигается.
+    pub(super) fn discard_unpresented_frame(&mut self, frame: &mut DisplayFrame) -> Result<(), SwapchainError> {
+        // Кадр считается завершённым в любом случае: дальше ответственность — у состояния цели.
+        frame.finished = true;
+        if frame.swapchain_generation != self.generation || self.outstanding_frame != Some(frame.frame_index) {
+            return Err(GpuError::InvalidState {
+                what: format!(
+                    "кадр {} не принадлежит текущему поколению swapchain или уже завершён",
+                    frame.frame_index
+                ),
+            }
+            .into());
+        }
+        self.outstanding_frame = None;
+        self.needs_recreate = true;
+        self.acquire_semaphores_tainted = true;
+        Ok(())
+    }
+
     /// Завершает кадр: переводит картинку в раскладку показа, отправляет команды (с дополнительной
     /// синхронизацией `sync`) и ставит картинку в очередь показа.
     ///

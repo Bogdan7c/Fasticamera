@@ -186,6 +186,88 @@ fn frame_failing_after_acquire_does_not_wedge_the_target() {
     assert_no_validation_errors(&context);
 }
 
+/// Кадр, выданный и отброшенный без показа (`discard_unpresented_frame`), не ломает цель: ничего на экран не
+/// ушло (новых показов нет), цель просит пересоздание, после него кадры снова идут и validation молчит.
+#[test]
+fn discarded_unpresented_frame_shows_nothing_and_target_recovers_after_recreate() {
+    let Some(context) = context_or_skip() else { return };
+    let baseline = context.live_objects();
+    let mut target = attach(&context);
+    let pattern = TestPattern::new(&context, target.info().unwrap().format).unwrap();
+    present_one_frame(&mut target, &pattern);
+    let AcquireOutcome::Ready(held) = target.acquire_frame().expect("acquire") else {
+        panic!("ожидали Ready");
+    };
+
+    target.discard_unpresented_frame(held).expect("отказ от кадра");
+
+    // Цель не застряла в «кадр выдан» и не сделала показа: просит пересоздание, а не отвечает InvalidState.
+    assert!(matches!(
+        target.acquire_frame().expect("acquire после отказа"),
+        AcquireOutcome::NeedsRecreate
+    ));
+    assert!(
+        target.needs_recreate().unwrap(),
+        "отброшенная картинка требует нового swapchain"
+    );
+    let outcome = target.recreate(None).expect("recreate после отказа");
+    assert!(matches!(outcome, RecreateOutcome::Recreated { .. }), "{outcome:?}");
+    // Семафор слота заменён: кадры идут, номера продолжаются (отброшенный кадр показом не был).
+    for _ in 0..4 {
+        present_one_frame(&mut target, &pattern);
+    }
+    target.detach().map_err(|failure| failure.error).expect("detach");
+    drop(pattern);
+    assert_eq!(context.live_objects(), baseline);
+    assert_no_validation_errors(&context);
+}
+
+/// Отсоединение сразу после отказа от кадра (поток рендера держал кадр про запас и surface ушла) освобождает
+/// всё без утечек и ошибок validation.
+#[test]
+fn detach_right_after_discarding_a_frame_leaves_no_objects() {
+    let Some(context) = context_or_skip() else { return };
+    let baseline = context.live_objects();
+    let mut target = attach(&context);
+    let pattern = TestPattern::new(&context, target.info().unwrap().format).unwrap();
+    present_one_frame(&mut target, &pattern);
+    let AcquireOutcome::Ready(held) = target.acquire_frame().expect("acquire") else {
+        panic!("ожидали Ready");
+    };
+    target.discard_unpresented_frame(held).expect("отказ от кадра");
+    target.detach().map_err(|failure| failure.error).expect("detach");
+    drop(pattern);
+    assert_eq!(context.live_objects(), baseline);
+    assert_no_validation_errors(&context);
+}
+
+/// Кадр чужой цели отвергается ошибкой и не трогает состояние цели, у которой его просили отбросить; сам кадр
+/// завершён (его `Drop` не пишет «потерян»).
+#[test]
+fn discarding_a_foreign_frame_reports_an_error_and_leaves_the_target_untouched() {
+    let Some(context) = context_or_skip() else { return };
+    let mut target = attach(&context);
+    let AcquireOutcome::Ready(held) = target.acquire_frame().expect("acquire") else {
+        panic!("ожидали Ready");
+    };
+    let mut other = attach(&context);
+    let error = other.discard_unpresented_frame(held).expect_err("чужой кадр");
+    assert!(
+        matches!(
+            error,
+            gpu_vulkan::swapchain::SwapchainError::Gpu(gpu_vulkan::error::GpuError::InvalidState { .. })
+        ),
+        "{error:?}"
+    );
+    // Чужой отказ не тронул состояние обеих целей: на `other` кадр не был выдан, `target` держит свой выданный.
+    assert!(
+        !other.needs_recreate().unwrap(),
+        "чужой кадр не помечает цель устаревшей"
+    );
+    drop(other);
+    drop(target);
+}
+
 #[test]
 fn stuck_gpu_makes_detach_fail_returns_the_surface_and_leaks_instead_of_destroying() {
     let Some(context) = context_or_skip() else { return };

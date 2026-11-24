@@ -186,6 +186,23 @@ impl DisplayTarget {
             .outcome
     }
 
+    /// Отказывается от кадра, выданного `acquire_frame`, но не рисованного и не показываемого (поток рендера
+    /// держал его про запас). В отличие от [`Self::abandon_frame`] НИЧЕГО не показывает: на экран не попадёт
+    /// картинка с неопределённым содержимым. Цена — swapchain помечается устаревшим (`needs_recreate`):
+    /// выданную картинку без `VK_EXT_swapchain_maintenance1` вернуть нельзя, поэтому её swapchain отбрасывается
+    /// (см. `TargetState::discard_unpresented_frame`). Вызывать перед пересозданием и отсоединением цели.
+    ///
+    /// Кадр помечается завершённым при любом исходе (в том числе у отсоединённой цели): его `Drop` не ругается.
+    pub fn discard_unpresented_frame(&mut self, mut frame: DisplayFrame) -> Result<(), SwapchainError> {
+        match self.state_mut() {
+            Ok(state) => state.discard_unpresented_frame(&mut frame),
+            Err(error) => {
+                frame.finished = true;
+                Err(error)
+            }
+        }
+    }
+
     /// Пересоздаёт swapchain; `size` — новый размер из `surfaceChanged` (`None` — оставить прежний).
     pub fn recreate(&mut self, size: Option<SurfaceSize>) -> Result<RecreateOutcome, SwapchainError> {
         self.state_mut()?.recreate(size)
