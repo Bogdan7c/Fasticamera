@@ -4,11 +4,13 @@
 
 use std::time::{Duration, Instant};
 
+use isp_vulkan::viewfinder::VariantCacheStats;
 use raw_frame_stream::RawStreamCounters;
 use render_loop::thread::{DurationSummary, PresentTargetDiagnostics, VsyncShiftHistogram};
 use render_loop::viewfinder::{ViewfinderColorSpace, ViewfinderCounters};
 use serde::Serialize;
 
+use super::pipeline_variants_report::PipelineVariantsReport;
 use super::raw_stream_deltas::stream_delta;
 use super::raw_stream_samples::LatencySampler;
 use super::viewfinder_pacing_report::PacingWindowReport;
@@ -203,6 +205,8 @@ pub struct WindowBaseline {
     /// Видимых повторов кадра на экране (`visible_repeats` рендера: нарисованные и пропущенные нарочно) на начало окна.
     camera_frame_redraws: u64,
     isp: ViewfinderCounters,
+    /// Кэш вариантов пайплайна ISP на начало окна.
+    pipeline_variants: VariantCacheStats,
     present_target: PresentTargetDiagnostics,
     stream: RawStreamCounters,
 }
@@ -217,6 +221,11 @@ impl WindowBaseline {
                 .viewfinder
                 .as_ref()
                 .map(|viewfinder| viewfinder.counters.clone())
+                .unwrap_or_default(),
+            pipeline_variants: presentation
+                .viewfinder
+                .as_ref()
+                .map(|viewfinder| viewfinder.pipeline_variants)
                 .unwrap_or_default(),
             present_target: presentation.present_target.clone(),
             stream,
@@ -246,6 +255,8 @@ pub struct WindowDelta {
     /// Новых кадров камеры, поставленных на экран.
     pub camera_frames_presented: u64,
     pub isp: IspCountersDelta,
+    /// Кэш вариантов пайплайна ISP за окно: создания в кадре после прогрева должны быть нулевыми.
+    pub pipeline_variants: PipelineVariantsReport,
     pub present_target: PresentTargetDelta,
     /// CPU-копии кадров в потоке RAW (лизинг) за окно.
     pub stream_cpu_copies: u64,
@@ -270,6 +281,14 @@ impl WindowDelta {
                 .camera_frames_presented
                 .saturating_sub(baseline.camera_frames_presented),
             isp: IspCountersDelta::between(&baseline.isp, &isp_now),
+            pipeline_variants: PipelineVariantsReport::between(
+                &baseline.pipeline_variants,
+                &presentation
+                    .viewfinder
+                    .as_ref()
+                    .map(|viewfinder| viewfinder.pipeline_variants)
+                    .unwrap_or_default(),
+            ),
             present_target: PresentTargetDelta::between(&baseline.present_target, &presentation.present_target),
             stream_cpu_copies: stream.cpu_copies.saturating_sub(baseline.stream.cpu_copies),
         }

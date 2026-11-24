@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use isp_vulkan::viewfinder::IspStageSet;
+use isp_vulkan::viewfinder::{IspStageSet, VariantCacheStats};
 use look_contract::{LookSettings, ToneBaseModel};
 
 use super::auto_exposure::AutoExposureDiagnostics;
@@ -166,4 +166,7 @@ pub struct ViewfinderDiagnostics {
     /// Какие работы GPU сейчас подавлены замером A/B (16a); `NONE` — продукт. По нему сценарий замера сверяет, что
     /// «состояние окна применилось», а не просто команда доставлена.
     pub gpu_work_suppression: GpuWorkSuppression,
+    /// Кэш вариантов пайплайна ISP (пакет I5): сколько вариантов создано в кадре и заготовкой, вытеснено, сколько
+    /// CPU-времени ушло. Рост `created_in_frame` после прогрева = компиляция пайплайна посреди кадра (рывок).
+    pub pipeline_variants: VariantCacheStats,
 }

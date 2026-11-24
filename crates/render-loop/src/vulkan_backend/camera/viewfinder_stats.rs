@@ -10,7 +10,7 @@ use std::time::Duration;
 use gpu_vulkan::gpu_timing::{TimestampCollect, TimestampSpans};
 use gpu_vulkan::storage_image::StorageImageFormat;
 use gpu_vulkan::swapchain::DisplayColorSpace;
-use isp_vulkan::viewfinder::ViewfinderImage;
+use isp_vulkan::viewfinder::{VariantCacheStats, ViewfinderImage};
 
 use super::headroom_stats::{HeadroomBenchStats, HeadroomLiveState};
 use super::isp_params::{HintsSource, ParamsDecision, ParamsOutcome, ParamsUnavailable};
@@ -61,6 +61,10 @@ pub struct ViewfinderStats {
     /// объекты GPU) пересоздаётся, а диагностика обязана это пережить.
     scope_counters: ScopeCounters,
     scope_gpu: RollingDurations,
+    /// Последний снимок кэша вариантов пайплайна ISP. Счётчики накопительные у самого ISP и НАЧИНАЮТСЯ С НУЛЯ при его
+    /// пересоздании (пересоздание поверхности): здесь только последняя копия, поэтому окно отчёта сценария, внутри
+    /// которого ISP пересоздавался, занижает создания (приращение насыщается до нуля).
+    pipeline_variants: VariantCacheStats,
 }
 
 impl ViewfinderStats {
@@ -79,7 +83,13 @@ impl ViewfinderStats {
             continuity: ContinuityStats::default(),
             scope_counters: ScopeCounters::default(),
             scope_gpu: RollingDurations::new(window_frames),
+            pipeline_variants: VariantCacheStats::default(),
         }
+    }
+
+    /// Запоминает снимок кэша вариантов пайплайна ISP (после записи кадра; снимок дешёвый — копия счётчиков).
+    pub fn note_pipeline_variants(&mut self, stats: VariantCacheStats) {
+        self.pipeline_variants = stats;
     }
 
     /// Учитывает приращения приборов, которые отдала цепочка показа (запись кадра или сбор слота).
@@ -213,6 +223,7 @@ impl ViewfinderStats {
                 ..ScopeDiagnostics::default()
             },
             gpu_work_suppression: settings.gpu_work_suppression,
+            pipeline_variants: self.pipeline_variants,
         }
     }
 }
@@ -286,6 +297,44 @@ mod tests {
             times.isp_dispatch.map(|window| window.p50),
             Some(Duration::from_micros(2_500))
         );
+    }
+
+    #[test]
+    fn pipeline_variant_stats_survive_into_the_snapshot_and_the_latest_one_wins() {
+        let mut stats = ViewfinderStats::new(4);
+        let snapshot_of = |stats: &mut ViewfinderStats| {
+            stats
+                .snapshot(
+                    &settings(),
+                    HeadroomLiveState::default(),
+                    WhiteBalanceDiagnostics::idle(4),
+                )
+                .pipeline_variants
+        };
+        assert_eq!(
+            snapshot_of(&mut stats),
+            VariantCacheStats::default(),
+            "до кадров — нули"
+        );
+        stats.note_pipeline_variants(VariantCacheStats {
+            in_cache: 12,
+            created_in_frame: 1,
+            created_by_prewarm: 11,
+            ..VariantCacheStats::default()
+        });
+        stats.note_pipeline_variants(VariantCacheStats {
+            in_cache: 12,
+            created_in_frame: 2,
+            created_by_prewarm: 11,
+            evicted: 1,
+            ..VariantCacheStats::default()
+        });
+        let latest = snapshot_of(&mut stats);
+        assert_eq!(
+            (latest.created_in_frame, latest.created_by_prewarm, latest.evicted),
+            (2, 11, 1)
+        );
+        assert_eq!(latest.in_cache, 12);
     }
 
     #[test]

@@ -494,6 +494,19 @@ fn worst_case_failure_line_fits_the_logcat_record() {
     observation.adpf = Some(worst_adpf);
     observation.last_isp_failure = Some(long_reason("ISP"));
     observation.last_params_failure = Some(long_reason("параметры"));
+    // Счётчики кэша вариантов пайплайна на пределе разрядов: их поля тоже не должны выталкивать сводку из строки.
+    observation.window.pipeline_variants = crate::scenario::camera::pipeline_variants_report::PipelineVariantsReport {
+        in_cache: usize::MAX,
+        created_in_frame: u64::MAX,
+        created_by_prewarm: u64::MAX,
+        prewarm_failed: u64::MAX,
+        create_failed_in_frame: u64::MAX,
+        evicted: u64::MAX,
+        last_frame_compile_us: u64::MAX,
+        longest_frame_compile_us: u64::MAX,
+        last_prewarm_us: u64::MAX,
+        longest_prewarm_us: u64::MAX,
+    };
     let mut violations = evaluate_viewfinder(&ViewfinderSmokeConfig::default(), &observation);
     assert!(violations.len() >= 8, "{violations:?}");
     observation.failure = Some(long_failure());
@@ -623,4 +636,29 @@ fn summary_carries_the_awb_report_hidden_and_skipped_frames_and_companion() {
     assert_eq!(summary["white_balance"]["estimates"], 900);
     assert_eq!(summary["white_balance"]["hal_delta_mired"], 5.0);
     assert_eq!(summary["three_a_companion"]["state"], "active");
+}
+
+/// Счётчики кэша вариантов пайплайна доходят до сводки строки результата (по ним на телефоне отличают рывок от
+/// компиляции), а вердикт они не меняют.
+#[test]
+fn pipeline_variant_counters_reach_the_summary_without_changing_the_verdict() {
+    use crate::scenario::camera::pipeline_variants_report::PipelineVariantsReport;
+    let mut observation = healthy();
+    observation.window.pipeline_variants = PipelineVariantsReport {
+        in_cache: 12,
+        created_in_frame: 3,
+        evicted: 1,
+        longest_frame_compile_us: 38_500,
+        ..PipelineVariantsReport::default()
+    };
+    let summary = observation.summary();
+    assert_eq!(summary["pipeline_variants"]["created_in_frame"], 3);
+    assert_eq!(summary["pipeline_variants"]["evicted"], 1);
+    assert_eq!(summary["pipeline_variants"]["in_cache"], 12);
+    assert_eq!(summary["pipeline_variants"]["longest_frame_compile_us"], 38_500);
+    let config = crate::viewfinder_scenario_config::ViewfinderSmokeConfig::default();
+    assert_eq!(
+        evaluate_viewfinder(&config, &observation),
+        evaluate_viewfinder(&config, &healthy())
+    );
 }

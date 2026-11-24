@@ -71,6 +71,7 @@ fn viewfinder_diagnostics() -> ViewfinderDiagnostics {
         // Приборы закрыты: эти тесты их не касаются.
         scopes: Default::default(),
         gpu_work_suppression: render_loop::viewfinder::GpuWorkSuppression::NONE,
+        pipeline_variants: Default::default(),
         display_color_space: Some(ViewfinderColorSpace::DisplayP3),
         storage: Some(ViewfinderStorage::TenBitUnorm),
         output_extent: Some(ViewfinderExtent {

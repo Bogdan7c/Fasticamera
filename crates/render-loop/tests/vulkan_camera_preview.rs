@@ -129,6 +129,27 @@ fn frames_flow_and_leases_return(policy: UnchangedFramePolicy) {
     assert_eq!(viewfinder.counters.isp_record_failures, 0, "{viewfinder:?}");
     assert_eq!(viewfinder.counters.compose_failures, 0, "{viewfinder:?}");
     assert_eq!(viewfinder.counters.cpu_copies, 0);
+    // Кэш вариантов пайплайна доходит до диагностики: первый кадр создал свой вариант и заготовил остальные,
+    // а дальше (кадры идут, статистика чередуется) в кадрах ничего не создаётся и не вытесняется.
+    let variants = viewfinder.pipeline_variants;
+    assert!(
+        variants.created_in_frame == 1 && variants.created_by_prewarm >= 1,
+        "{variants:?}"
+    );
+    assert!(variants.in_cache >= 2, "{variants:?}");
+    let frames_now = viewfinder.counters.frames_processed;
+    assert!(
+        wait_until(DEADLINE, || rig.viewfinder().counters.frames_processed
+            >= frames_now + 30),
+        "кадры перестали идти: {:?}",
+        rig.viewfinder()
+    );
+    let later = rig.viewfinder().pipeline_variants;
+    assert_eq!(
+        (later.created_in_frame, later.evicted, later.create_failed_in_frame),
+        (variants.created_in_frame, 0, 0),
+        "после прогрева кадры создают или вытесняют пайплайны: было {variants:?}, стало {later:?}"
+    );
     assert!(
         viewfinder.output_extent.is_some() && viewfinder.storage.is_some(),
         "{viewfinder:?}"

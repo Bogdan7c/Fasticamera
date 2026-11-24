@@ -77,6 +77,23 @@ fn the_worst_failing_summary_fits_the_result_line() {
     let mut report = full_plan_report();
     // Худший случай: длинные кириллические причины в сводке и в нарушениях.
     report.run_failure = Some(crate::scenario::camera::result_budget::worst_case::long_reason("zoom"));
+    // Кэш вариантов пайплайна на пределе разрядов и с заметкой в сводке: строка всё равно обязана влезть.
+    report.totals.pipeline_variants = crate::scenario::camera::pipeline_variants_report::PipelineVariantsReport {
+        in_cache: usize::MAX,
+        created_in_frame: u64::MAX,
+        created_by_prewarm: u64::MAX,
+        prewarm_failed: u64::MAX,
+        create_failed_in_frame: u64::MAX,
+        evicted: u64::MAX,
+        last_frame_compile_us: u64::MAX,
+        longest_frame_compile_us: u64::MAX,
+        last_prewarm_us: u64::MAX,
+        longest_prewarm_us: u64::MAX,
+    };
+    assert!(
+        !report.summary()["notes"].as_array().unwrap().is_empty(),
+        "заметка присутствует"
+    );
     let violations: Vec<String> = (0..12)
         .map(|index| crate::scenario::camera::result_budget::worst_case::long_reason(&format!("шаг {index}")))
         .collect();
@@ -176,4 +193,40 @@ fn the_summary_reports_the_swap_count_and_the_screen_ratio_of_the_switch_legs() 
         (back["tgt_milli"].as_u64(), back["sw_milli"].as_u64()),
         (Some(1000), Some(1004))
     );
+}
+
+/// Создание варианта пайплайна в кадре после прогрева — заметка в сводке, а вердикт не меняется (это не провал).
+#[test]
+fn pipeline_creation_in_a_frame_is_a_note_and_not_a_violation() {
+    use crate::scenario::camera::pipeline_variants_report::PipelineVariantsReport;
+    use crate::scenario::camera::zoom_verdict::evaluate_zoom;
+    use crate::zoom_scenario_config::ZoomScenarioConfig;
+
+    let calm = healthy_report();
+    assert_eq!(
+        calm.summary()["notes"],
+        serde_json::json!([]),
+        "тихий прогон без заметок"
+    );
+
+    let mut noisy = healthy_report();
+    noisy.totals.pipeline_variants = PipelineVariantsReport {
+        created_in_frame: 2,
+        longest_frame_compile_us: 41_000,
+        ..PipelineVariantsReport::default()
+    };
+    let summary = noisy.summary();
+    assert_eq!(summary["variants_created_in_frame"], 2);
+    // Полный отчёт кэша — в подробностях (`totals`), а не в строке результата.
+    let details = noisy.detail_items();
+    assert_eq!(
+        details[0]["totals"]["pipeline_variants"]["longest_frame_compile_us"],
+        41_000
+    );
+    let notes = summary["notes"].as_array().expect("заметки — список");
+    assert_eq!(notes.len(), 1);
+    assert!(notes[0].as_str().unwrap().contains("создано в кадре 2"), "{notes:?}");
+    // Вердикт тот же, что у тихого прогона.
+    let config = ZoomScenarioConfig::default();
+    assert_eq!(evaluate_zoom(&config, &noisy), evaluate_zoom(&config, &calm));
 }

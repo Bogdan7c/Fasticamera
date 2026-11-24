@@ -412,6 +412,8 @@ impl ViewfinderSmokeObservation {
             "awb_published": self.window.isp.statistics_published,
             "frames_hidden_cold_start": self.window.isp.frames_hidden_cold_start,
             "bracket_frames_skipped": self.window.isp.bracket_frames_skipped,
+            // Кэш вариантов пайплайна: `created_in_frame` после прогрева должно быть 0 (иначе рывок от компиляции).
+            "pipeline_variants": self.window.pipeline_variants,
             "white_balance": self.white_balance,
             "three_a_companion": self.companion,
             "gpu_time": self.gpu_time,

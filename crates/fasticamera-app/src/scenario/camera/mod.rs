@@ -71,6 +71,7 @@ mod glass;
 mod glass_report;
 pub(crate) mod glass_showcase;
 mod operator_prompt_log;
+mod pipeline_variants_report;
 mod progress;
 mod raw_stream;
 mod raw_stream_deltas;

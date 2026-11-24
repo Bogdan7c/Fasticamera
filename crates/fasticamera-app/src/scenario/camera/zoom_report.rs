@@ -10,6 +10,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::detail::to_value;
+use super::pipeline_variants_report::PipelineVariantsReport;
 use super::zoom_record::ZoomStepRecord;
 use super::zoom_reveal::RevealFaults;
 use crate::camera_screen_source::ZoomView;
@@ -63,6 +64,9 @@ pub struct ZoomTotals {
     pub promotion_fallbacks: u64,
     /// Повышения тёплой за прогон.
     pub standby_promotions: u64,
+    /// Кэш вариантов пайплайна ISP за прогон: создания в кадре (компиляция посреди зума) попадают в заметку отчёта,
+    /// вердикт они не меняют.
+    pub pipeline_variants: PipelineVariantsReport,
 }
 
 impl ZoomTotals {
@@ -109,6 +113,11 @@ impl ZoomObservationReport {
             .iter()
             .filter_map(|step| step.first_live_frame_ms)
             .max_by(f64::total_cmp)
+    }
+
+    /// Заметки отчёта: наблюдения, которые не нарушение, но о которых нельзя молчать.
+    fn notes(&self) -> Vec<String> {
+        self.totals.pipeline_variants.note().into_iter().collect()
     }
 
     /// Компактная строка на каждый бесшовный шаг: смена (метод, удержанные, чёрные, скрытые, разрыв в периодах),
@@ -173,6 +182,9 @@ impl ZoomObservationReport {
             "standby_failures": self.totals.standby_failures,
             "promotion_fallbacks": self.totals.promotion_fallbacks,
             "standby_promotions": self.totals.standby_promotions,
+            // Полный отчёт кэша вариантов — в `totals` подробностей (строка результата ограничена): здесь число и заметка.
+            "variants_created_in_frame": self.totals.pipeline_variants.created_in_frame,
+            "notes": self.notes(),
             "seamless": self.seamless_summary(),
             "tap_hidden": self.tap_hidden_summary(),
             "final": self.final_state.map(|state| json!({

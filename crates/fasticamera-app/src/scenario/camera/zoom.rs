@@ -22,6 +22,7 @@ use std::time::Instant;
 
 use camera_core::standby_status::StandbyCounters;
 use camera_core::{CameraEvent, CameraState};
+use isp_vulkan::viewfinder::VariantCacheStats;
 use raw_frame_stream::RawStreamCounters;
 use render_loop::viewfinder::ContinuityCounters;
 use shell_contract::clock::MonotonicNanos;
@@ -29,6 +30,7 @@ use shell_contract::touch::{SurfacePoint, TouchSample};
 
 use super::detail::emit_details;
 use super::engine_watch::{failure_of_event, fatal_failure};
+use super::pipeline_variants_report::PipelineVariantsReport;
 use super::result_budget::finish_within_budget;
 use super::zoom_plan::planned_steps;
 use super::zoom_report::{FinalState, ZoomObservationReport, ZoomTotals};
@@ -46,6 +48,7 @@ use crate::zoom_scenario_config::ZoomScenarioConfig;
 /// Базовые линии на момент готовности: суммы прогона считаются от них.
 struct Baselines {
     continuity: ContinuityCounters,
+    pipeline_variants: VariantCacheStats,
     raw_stream: RawStreamCounters,
     standby: StandbyCounters,
     switches_completed: u64,
@@ -201,6 +204,7 @@ impl ObservingScenario for ZoomScenario {
                 let runner = ZoomRunner::new(run.config.clone(), steps).anchored_at_back_one_x();
                 let baselines = Baselines {
                     continuity: counters.clone(),
+                    pipeline_variants: viewfinder.pipeline_variants,
                     raw_stream,
                     standby: status.lens.standby.counters,
                     switches_completed: status.lens.counters.switches_completed,
@@ -310,11 +314,12 @@ fn observation_of(run: ZoomRun, context: &ScenarioContext<'_>, run_failure: Opti
     let status = context.camera.running().ok().map(|running| running.handle().status());
     let raw_stream_now = context.camera.raw_stream().counters();
     let report = context.camera_screen.report();
-    let continuity = match context.gpu.observe_camera_presentation() {
-        CameraPresentationObservation::Live(presentation) => {
-            presentation.viewfinder.map(|viewfinder| viewfinder.continuity.counters)
-        }
-        _ => None,
+    let (continuity, pipeline_variants) = match context.gpu.observe_camera_presentation() {
+        CameraPresentationObservation::Live(presentation) => match presentation.viewfinder {
+            Some(viewfinder) => (Some(viewfinder.continuity.counters), Some(viewfinder.pipeline_variants)),
+            None => (None, None),
+        },
+        _ => (None, None),
     };
     let final_state = match (&status, &report) {
         (Some(status), Some(report)) => Some(FinalState::of(
@@ -360,6 +365,10 @@ fn observation_of(run: ZoomRun, context: &ScenarioContext<'_>, run_failure: Opti
                     ..totals
                 }
                 .with_continuity(&baselines.continuity, end);
+                if let Some(variants_end) = pipeline_variants.as_ref() {
+                    totals.pipeline_variants =
+                        PipelineVariantsReport::between(&baselines.pipeline_variants, variants_end);
+                }
             }
             totals.input_refusals = run.input_refusals;
             (runner.records().to_vec(), runner.unfinished_names(), totals)

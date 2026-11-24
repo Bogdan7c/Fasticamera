@@ -264,6 +264,8 @@ impl CameraSession {
                 Composed::Black
             }
         };
+        // Кэш вариантов считает и отказы записи (ошибка создания варианта — это отказ кадра): снимок берём всегда.
+        self.viewfinder.note_pipeline_variants(pipelines.isp().variant_stats());
         if recording.isp.is_ok()
             && let Some(image) = pipelines.isp().image()
         {
