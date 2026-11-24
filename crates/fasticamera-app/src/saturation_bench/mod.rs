@@ -8,6 +8,7 @@
 //!
 //! # Раскладка
 //! * [`catalog`] — имена и виды работ (данные, GPU не нужен);
+//! * [`compare_pairs`], [`pair_comparison`] — пары «эталон и вариант»: отчёт об отличии картинок (max |Δ|, гистограмма);
 //! * [`digest_report`] — дайджест выхода работы в итоге строки («картинка не изменилась» на телефоне);
 //! * [`catalog_wait`] — ожидание каталога камер движка перед сборкой входов (причина запасного сенсора на телефоне);
 //! * [`draw_filter`] — фильтр списка рисования для абляций прохода UI (чистая функция);
@@ -28,6 +29,7 @@
 pub mod backdrop;
 pub mod catalog;
 pub mod catalog_wait;
+pub mod compare_pairs;
 pub mod digest_report;
 pub mod draw_filter;
 pub mod glass_ablation;
@@ -35,6 +37,7 @@ pub mod gpu_executor;
 pub mod headroom_tuning;
 pub mod headroom_variant;
 pub mod inputs;
+pub mod pair_comparison;
 pub mod report;
 pub mod runner;
 pub mod screen_scene;

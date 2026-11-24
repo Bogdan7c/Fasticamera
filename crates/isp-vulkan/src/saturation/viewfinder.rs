@@ -25,8 +25,8 @@ use gpu_vulkan::error::GpuError;
 use gpu_vulkan::hardware_buffer_cache::queue_handoff::ConsumerStage;
 use gpu_vulkan::raw_mosaic_preview::MosaicSource;
 use gpu_vulkan::saturation::{
-    DigestPart, FrameRecording, PassTimeLog, PassTimeSummary, SaturationWorkload, SlotId, WorkloadDigest,
-    digest_counts, digest_storage_image,
+    DigestPart, FrameRecording, OutputPixels, PassTimeLog, PassTimeSummary, SaturationWorkload, SlotId, WorkloadDigest,
+    digest_counts, digest_storage_image, read_storage_image_pixels,
 };
 use gpu_vulkan::swapchain::DisplayColorSpace;
 use isp_model::params::IspParams;
@@ -318,6 +318,19 @@ impl SaturationWorkload for ViewfinderSaturation {
 }
 
 impl ViewfinderSaturation {
+    /// Байты картинки ISP последнего записанного кадра для сравнения «эталон и вариант» (`OutputPixels::diff_against`).
+    /// Звать так же, как [`Self::output_digest`]: после конца прогона и `wait_idle`.
+    pub fn output_pixels(&self) -> Result<OutputPixels, SaturationWorkError> {
+        let image = self.isp.image().ok_or_else(|| SaturationWorkError::EmptyFrame {
+            what: "картинка видоискателя ещё не создана".to_owned(),
+        })?;
+        Ok(read_storage_image_pixels(
+            image.storage_image(),
+            image.current_use(),
+            image.content_extent(),
+        )?)
+    }
+
     /// Дайджест картинки ISP последнего записанного кадра (только содержимое, без хвоста ёмкости).
     ///
     /// Звать ПОСЛЕ конца прогона стенда и `wait_idle` (все fence пройдены): чтение блокирующее и вне окна замера.

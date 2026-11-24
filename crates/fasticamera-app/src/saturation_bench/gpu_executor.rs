@@ -11,7 +11,7 @@
 
 use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::saturation::{
-    CancelToken, PassTimeSummary, SaturationBench, SaturationConfig, SaturationError, SaturationReport,
+    CancelToken, OutputPixels, PassTimeSummary, SaturationBench, SaturationConfig, SaturationError, SaturationReport,
     SaturationWorkload, WorkloadDigest,
 };
 use isp_vulkan::saturation::{
@@ -31,11 +31,13 @@ use super::catalog::{
     BackdropRhythm, CatalogEntry, DisplayScreen, ScopeAblation, ScopeInputKind, ScopeShape, ViewfinderVariant,
     WorkloadKind,
 };
+use super::compare_pairs::needs_pixels;
 use super::digest_report::DigestOutcome;
 use super::draw_filter::DrawFilter;
 use super::headroom_tuning::HeadroomExperiment;
 use super::headroom_variant;
 use super::inputs::{PipelineKind, ProductInputs};
+use super::pair_comparison::PairComparison;
 use super::report::{FailureKind, Measurement, SceneSummary, UiCountersSummary, WorkloadFailure};
 use super::runner::{ExecutedWorkload, WorkloadExecutor};
 use super::screen_scene::{ScreenPlan, ScreenPlanError, SurfaceSizePx, summarize};
@@ -73,6 +75,10 @@ trait BenchWork {
     fn digest_note(&self) -> Option<String> {
         None
     }
+    /// Байты картинки выхода для сравнения «эталон и вариант». `Ok(None)` — работа картинку не отдаёт.
+    fn output_pixels(&mut self) -> Result<Option<OutputPixels>, String> {
+        Ok(None)
+    }
 }
 
 fn failure_text(error: Option<SaturationWorkError>) -> Option<String> {
@@ -96,6 +102,9 @@ impl BenchWork for ViewfinderWork {
     }
     fn output_digest(&mut self) -> Result<WorkloadDigest, String> {
         self.0.output_digest().map_err(|error| error.to_string())
+    }
+    fn output_pixels(&mut self) -> Result<Option<OutputPixels>, String> {
+        self.0.output_pixels().map(Some).map_err(|error| error.to_string())
     }
     fn digest_note(&self) -> Option<String> {
         self.0.counters().last_frame_had_statistics.map(|had| {
@@ -252,6 +261,8 @@ pub struct GpuWorkloadExecutor {
     surface: SurfaceSizePx,
     /// Списки рисования экранов: строятся один раз при первой работе показа (или приборов).
     plan: Option<Result<ScreenPlan, ScreenPlanError>>,
+    /// Картинки эталонов прогона и отчёты вариантов («эталон и вариант», см. `compare_pairs`).
+    comparison: PairComparison,
 }
 
 impl GpuWorkloadExecutor {
@@ -262,6 +273,7 @@ impl GpuWorkloadExecutor {
             bench,
             surface,
             plan: None,
+            comparison: PairComparison::default(),
         }
     }
 
@@ -584,15 +596,41 @@ impl GpuWorkloadExecutor {
             let measurement = Measurement::of(&report, &work.pass_times());
             // Дайджест строго ПОСЛЕ окна замера, `finish()` и `wait_idle`: чтение блокирующее и цену не искажает.
             let digest = self.digest_of(work.as_mut());
-            Ok(ExecutedWorkload {
-                measurement,
-                scene: work.scene(),
-                ui: work.ui_counters(),
-                digest,
-            })
+            let pixels = self.pixels_for_comparison(entry, work.as_mut());
+            Ok((
+                ExecutedWorkload {
+                    measurement,
+                    scene: work.scene(),
+                    ui: work.ui_counters(),
+                    digest,
+                },
+                pixels,
+            ))
         });
         self.release(work);
-        executed
+        // Сравнение «эталон и вариант» — после освобождения работы: картинка уже прочитана в байты.
+        executed.map(|(mut done, pixels)| {
+            if let Some(note) = pixels.and_then(|pixels| self.comparison.note_for(entry.name, pixels)) {
+                done.digest = done.digest.with_extra_note(&note);
+            }
+            done
+        })
+    }
+
+    /// Байты картинки работы, если она входит в пару «эталон и вариант». Отказ чтения — `Err` с причиной (строка не
+    /// срывается). `None` — работа в парах не участвует или картинки не отдаёт.
+    fn pixels_for_comparison(
+        &self,
+        entry: &CatalogEntry,
+        work: &mut dyn BenchWork,
+    ) -> Option<Result<OutputPixels, String>> {
+        if !needs_pixels(entry.name) {
+            return None;
+        }
+        match self.context.wait_idle() {
+            Ok(()) => work.output_pixels().transpose(),
+            Err(error) => Some(Err(format!("ожидание GPU перед чтением картинки: {error}"))),
+        }
     }
 
     /// Дайджест выхода работы после прогона. Отказ не срывает строку: он становится `Unavailable`.

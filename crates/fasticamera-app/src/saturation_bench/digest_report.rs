@@ -59,6 +59,25 @@ impl DigestOutcome {
         }
     }
 
+    /// Дописывает к заметке о кадре ещё одну (отчёт «эталон и вариант»); у `Unavailable` заметки нет — причина остаётся.
+    pub fn with_extra_note(self, extra: &str) -> Self {
+        match self {
+            Self::Computed {
+                combined,
+                parts,
+                frame_note,
+            } => Self::Computed {
+                combined,
+                parts,
+                frame_note: Some(match frame_note {
+                    Some(existing) => format!("{existing}; {extra}"),
+                    None => extra.to_owned(),
+                }),
+            },
+            unavailable @ Self::Unavailable { .. } => unavailable,
+        }
+    }
+
     /// Запись для компактной таблицы: общий отпечаток или `-`.
     pub fn compact(&self) -> &str {
         match self {
