@@ -102,7 +102,7 @@ const uint AWB_SATURATED_CELLS = 4u;
 // Шаг квантования статистики: 12 бит (isp_model::statistics::QUANT_SCALE).
 const float AWB_QUANT_SCALE = 4095.0;
 
-// Окно плиток в shared-памяти рабочей группы: группа (по умолчанию 16×8 нитей) при плитках от ~64 ячеек
+// Окно плиток в shared-памяти рабочей группы: группа (по умолчанию 128 нитей) при плитках от ~64 ячеек
 // задевает 1–4 плитки; окно 4×4 покрывает их с запасом. Плитки вне окна (мелкая сетка на маленьком кадре)
 // идут сразу в глобальный atomicAdd — медленнее, но всегда верно.
 const uint AWB_LOCAL_TILE_SPAN = 4u;
@@ -115,6 +115,9 @@ shared uint awb_window_sums[AWB_LOCAL_WORDS];
 
 // Значение RAW пикселя (x, y) в координатах буфера; тело — в `viewfinder_source_*.glsl`.
 uint read_raw(uint x, uint y);
+// Четыре отсчёта ячейки 2×2 с левым верхним углом `origin` (чётные координаты буфера): [0] — (x, y), [1] — (x+1, y),
+// [2] — (x, y+1), [3] — (x+1, y+1). Источник читает пару соседних отсчётов строки за один заход (см. `viewfinder_source_*`).
+uvec4 read_raw_cell(uvec2 origin);
 
 // ===== Геометрия ===================================================================================
 
@@ -637,11 +640,14 @@ void main() {
         uvec2 origin = parameters.crop.xy + cell * 2u;
         // Без демозаика и без статистики нужна только позиция 0 — читаем один отсчёт вместо четырёх.
         bool needs_whole_cell = STAGE_DEMOSAIC || STAGE_AWB_STATISTICS;
-        normalized[0] = normalize_sample(read_raw(origin.x, origin.y), 0u);
         if (needs_whole_cell) {
-            normalized[1] = normalize_sample(read_raw(origin.x + 1u, origin.y), 1u);
-            normalized[2] = normalize_sample(read_raw(origin.x, origin.y + 1u), 2u);
-            normalized[3] = normalize_sample(read_raw(origin.x + 1u, origin.y + 1u), 3u);
+            uvec4 raw_cell = read_raw_cell(origin);
+            normalized[0] = normalize_sample(raw_cell[0], 0u);
+            normalized[1] = normalize_sample(raw_cell[1], 1u);
+            normalized[2] = normalize_sample(raw_cell[2], 2u);
+            normalized[3] = normalize_sample(raw_cell[3], 3u);
+        } else {
+            normalized[0] = normalize_sample(read_raw(origin.x, origin.y), 0u);
         }
         // Коррекция виньетирования — до баланса белого (порядок эталона); исходные отсчёты остаются для пересвета.
         shading_gains = cell_lens_shading_gains(origin);

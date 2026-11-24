@@ -270,3 +270,59 @@ fn scopes_digest_has_counters_and_picture_parts_and_does_not_depend_on_the_frame
     );
     assert_no_validation_errors(&context);
 }
+
+/// Кадр, на котором группы нитей лежат целиком внутри плиток AWB и есть поворот выхода: ровно то, что делает продукт
+/// на телефоне, только меньше.
+fn product_like_config(every_n: u32) -> ViewfinderSaturationConfig {
+    let mut config = ViewfinderSaturationConfig {
+        frame_size: PixelSize::new(2048, 1536),
+        sensor_orientation: SensorOrientation::Degrees90,
+        ..viewfinder_config(every_n, SceneContent::default())
+    };
+    // Продуктовая сетка плиток (32×24), а не мелкая сетка тестового конфига.
+    config.isp.awb_statistics = isp_model::statistics::AwbStatisticsSettings::default();
+    config
+}
+
+/// Части выхода (картинка и суммы плиток) конфига: пары «метка → отпечаток».
+fn viewfinder_parts(context: &GpuContext, config: ViewfinderSaturationConfig) -> Vec<(&'static str, String)> {
+    let mut work = ViewfinderSaturation::new_synthetic(context, config, ParamsSpec::default().build()).unwrap();
+    run_for(context, &mut work, 60);
+    assert!(work.take_failure().is_none());
+    work.output_digest()
+        .unwrap()
+        .parts()
+        .iter()
+        .map(|part| (part.label, part.digest.to_string()))
+        .collect()
+}
+
+/// Форма рабочей группы и способ сведения AWB меняют только цену: картинка и суммы плиток те же бит в бит
+/// (RAW10, поворот 90°, продуктовая сетка плиток; группы лежат в плитках и стоят на стыках — оба пути шейдера).
+#[test]
+fn workgroup_shape_and_awb_reduction_keep_picture_and_awb_sums_bit_exact() {
+    let _serial = serialize_gpu_timing();
+    let Some(context) = gpu_context_or_skip() else { return };
+    let mut reference_config = product_like_config(1);
+    reference_config.isp.workgroup_size = isp_vulkan::viewfinder::WorkgroupSizeConfig { x: 16, y: 8 };
+    reference_config.isp.awb_reduction = isp_vulkan::viewfinder::AwbReductionPolicy::SubgroupWhenSupported;
+    let reference = viewfinder_parts(&context, reference_config);
+    assert_eq!(reference.len(), 2, "картинка и суммы плиток: {reference:?}");
+    // 48×4 не делит плитку 32×32 ячеек (стык плиток → общий путь), остальные формы лежат в плитках.
+    for (x, y) in [(4_u32, 32_u32), (8, 16), (16, 16), (32, 8), (48, 4)] {
+        for policy in [
+            isp_vulkan::viewfinder::AwbReductionPolicy::SharedMemoryOnly,
+            isp_vulkan::viewfinder::AwbReductionPolicy::SubgroupWhenSupported,
+        ] {
+            let mut config = product_like_config(1);
+            config.isp.workgroup_size = isp_vulkan::viewfinder::WorkgroupSizeConfig { x, y };
+            config.isp.awb_reduction = policy;
+            assert_eq!(
+                viewfinder_parts(&context, config),
+                reference,
+                "группа {x}x{y}, сведение {policy:?}"
+            );
+        }
+    }
+    assert_no_validation_errors(&context);
+}

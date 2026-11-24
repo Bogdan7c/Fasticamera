@@ -60,10 +60,12 @@ pub struct WorkgroupSizeConfig {
 }
 
 impl Default for WorkgroupSizeConfig {
-    /// 16×8 = 128 нитей — минимум `maxComputeWorkGroupInvocations`, который Vulkan гарантирует на любом
-    /// устройстве, и кратно волне Adreno (64) и RADV (64). Лучший размер подбирается замером на телефоне.
+    /// 4×32 = 128 нитей — минимум `maxComputeWorkGroupInvocations`, который Vulkan гарантирует на любом
+    /// устройстве, и кратно волне Adreno (64) и RADV (64). Узкая и высокая: выход повёрнут на 90° относительно сенсора,
+    /// и нити, идущие вдоль Y выхода, читают соседние ячейки одной строки RAW (на Adreno 740 чтение пола
+    /// «уровни + демозаик» 2,7 → 1,6 мс против 16×8, сессия 16a, пакет I).
     fn default() -> Self {
-        Self { x: 16, y: 8 }
+        Self { x: 4, y: 32 }
     }
 }
 
@@ -205,7 +207,7 @@ mod tests {
         // Частичный JSON берёт остальное из значений по умолчанию.
         let partial: ViewfinderIspConfig = serde_json::from_str(r#"{"frame_slots": 3}"#).unwrap();
         assert_eq!(partial.frame_slots, 3);
-        assert_eq!(partial.workgroup_size, WorkgroupSizeConfig { x: 16, y: 8 });
+        assert_eq!(partial.workgroup_size, WorkgroupSizeConfig { x: 4, y: 32 });
     }
 
     #[test]
