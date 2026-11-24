@@ -48,3 +48,6 @@ impl DrawList {
         }
     }
 }
+
+#[cfg(test)]
+mod equality_tests;
