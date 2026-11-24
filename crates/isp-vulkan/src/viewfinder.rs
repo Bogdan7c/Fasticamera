@@ -32,13 +32,15 @@ pub(crate) mod retirement;
 mod stages;
 mod statistics;
 mod uniforms;
+mod variant_family;
+mod variant_stats;
 mod variants;
 
 pub use self::awb_group_layout::{AwbGroupLayout, DispatchShape};
 pub use self::awb_reduction::{AwbReduction, AwbReductionPolicy, SubgroupArithmeticSupport};
 pub use self::config::{
-    DEFAULT_PIPELINE_VARIANT_CAPACITY, LargestMosaicConfig, MAX_FRAME_SLOTS, MAX_WORKGROUP_INVOCATIONS,
-    ToneBasePrewarm, ViewfinderIspConfig, ViewfinderStorageFormat, WorkgroupSizeConfig,
+    DEFAULT_PIPELINE_VARIANT_CAPACITY, LargestMosaicConfig, MAX_FRAME_SLOTS, MAX_WORKGROUP_INVOCATIONS, VariantPrewarm,
+    ViewfinderIspConfig, ViewfinderStorageFormat, WorkgroupSizeConfig,
 };
 pub use self::error::ViewfinderError;
 pub use self::geometry::{OutputAllocation, ViewfinderGeometry};
@@ -46,4 +48,4 @@ pub use self::image::ViewfinderImage;
 pub use self::isp::{RecordedViewfinderFrame, ViewfinderFrame, ViewfinderIsp, ViewfinderSlotReport};
 pub use self::stages::{IspStage, IspStageSet};
 pub use self::uniforms::{VIEWFINDER_UNIFORM_BYTES, gamut_for_display};
-pub use self::variants::PrewarmCounters;
+pub use self::variant_stats::VariantCacheStats;

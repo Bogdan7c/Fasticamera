@@ -1,9 +1,11 @@
-//! Прогрев вариантов пайплайна видоискателя по моделям основы тона (решение 195, сессия 14b).
+//! Заготовка вариантов пайплайна видоискателя по моделям основы тона (решение 195, сессия 14b; семейство вариантов —
+//! пакет I5 сессии 16a).
 //!
-//! Основа переключается на ходу (свайп вида), а модель — specialization-константа шейдера: без прогрева первый кадр
+//! Основа переключается на ходу (свайп вида), а модель — specialization-константа шейдера: без заготовки первый кадр
 //! с новой основой компилировал бы пайплайн посреди сессии. Тесты на RADV с validation доказывают: после первого кадра
 //! варианты всех четырёх моделей уже есть, смена основы не создаёт ни одного нового пайплайна, а кадр после смены
-//! совпадает с эталоном `isp-model` ИМЕННО этой модели.
+//! совпадает с эталоном `isp-model` ИМЕННО этой модели. Кроме моделей, заготавливаются кадр без статистики и обе
+//! раскладки AWB (зум): их проверяет `viewfinder_zoom_variants`.
 
 #![allow(
     clippy::unwrap_used,
@@ -22,7 +24,7 @@ use isp_model::tone::agx_settings::AgxSettings;
 use isp_model::tone::base::ToneBase;
 use isp_model::tone::filmic::FilmicSettings;
 use isp_vulkan::viewfinder::{
-    DEFAULT_PIPELINE_VARIANT_CAPACITY, PrewarmCounters, ToneBasePrewarm, ViewfinderIsp, ViewfinderStorageFormat,
+    DEFAULT_PIPELINE_VARIANT_CAPACITY, VariantPrewarm, ViewfinderIsp, ViewfinderStorageFormat,
 };
 use viewfinder_support::{
     ParamsSpec, RunRequest, assert_no_validation_errors, gpu_context_or_skip, parity_with_pixels, readback,
@@ -52,11 +54,13 @@ fn spec_with(base: ToneBase) -> ParamsSpec {
 fn first_frame_prewarms_every_base_and_switching_creates_no_pipelines() {
     let Some(context) = gpu_context_or_skip() else { return };
     let config = isp_vulkan::viewfinder::ViewfinderIspConfig {
-        tone_base_prewarm: ToneBasePrewarm::AllModels,
+        variant_prewarm: VariantPrewarm::AllRelated,
         ..test_config(ViewfinderStorageFormat::HalfFloatOnly)
     };
     let mut isp = ViewfinderIsp::new(&context, &config).unwrap();
     assert_eq!(isp.cached_pipeline_variants(), 0, "до первого кадра пайплайнов нет");
+    // Кадр со статистикой AWB (все стадии): основа × (без статистики + две раскладки группы по плиткам).
+    let family = every_base().len() * 3;
 
     let legacy_spec = spec_with(ToneBase::Legacy);
     let (_, raw) = synthetic_scenes(&legacy_spec).into_iter().next().unwrap();
@@ -80,24 +84,26 @@ fn first_frame_prewarms_every_base_and_switching_creates_no_pipelines() {
         if frame == 0 {
             assert_eq!(
                 isp.cached_pipeline_variants(),
-                4,
-                "первый кадр заготовил варианты всех четырёх моделей"
+                family,
+                "первый кадр заготовил варианты всех моделей (и классов статистики) своего набора стадий"
             );
+            let stats = isp.variant_stats();
             assert_eq!(
-                isp.tone_base_prewarm_counters(),
-                PrewarmCounters { created: 3, failed: 0 },
-                "прогрето три «чужих» модели, свой вариант не считается прогревом"
+                (stats.created_in_frame, stats.created_by_prewarm, stats.prewarm_failed),
+                (1, family as u64 - 1, 0),
+                "в кадре создан свой вариант, остальное — заготовка"
             );
         }
         assert_eq!(
             isp.cached_pipeline_variants(),
-            4,
+            family,
             "{name}: смена основы создала новый пайплайн"
         );
+        let stats = isp.variant_stats();
         assert_eq!(
-            isp.tone_base_prewarm_counters(),
-            PrewarmCounters { created: 3, failed: 0 },
-            "{name}: после смены основы прогрев не повторяется"
+            (stats.created_in_frame, stats.created_by_prewarm, stats.evicted),
+            (1, family as u64 - 1, 0),
+            "{name}: после смены основы ни создания в кадре, ни повторной заготовки, ни вытеснения"
         );
         let reference = reference_upright_encoded(
             &raw,
@@ -130,8 +136,8 @@ fn without_prewarm_variants_appear_one_per_used_base() {
     let Some(context) = gpu_context_or_skip() else { return };
     let config = test_config(ViewfinderStorageFormat::HalfFloatOnly);
     assert_eq!(
-        config.tone_base_prewarm,
-        ToneBasePrewarm::Off,
+        config.variant_prewarm,
+        VariantPrewarm::Off,
         "стенд по умолчанию без прогрева"
     );
     let mut isp = ViewfinderIsp::new(&context, &config).unwrap();
@@ -154,7 +160,12 @@ fn without_prewarm_variants_appear_one_per_used_base() {
         isp.collect(frame % 2).unwrap();
         assert_eq!(isp.cached_pipeline_variants(), frame + 1);
     }
-    assert_eq!(isp.tone_base_prewarm_counters(), PrewarmCounters::default());
+    let stats = isp.variant_stats();
+    assert_eq!(
+        (stats.created_in_frame, stats.created_by_prewarm, stats.prewarm_failed),
+        (2, 0, 0),
+        "оба варианта созданы по требованию в кадре, заготовки не было"
+    );
     assert_no_validation_errors(&context);
 }
 
@@ -163,7 +174,7 @@ fn without_prewarm_variants_appear_one_per_used_base() {
 fn prewarm_never_evicts_the_variant_in_use_when_the_cache_is_tight() {
     let Some(context) = gpu_context_or_skip() else { return };
     let config = isp_vulkan::viewfinder::ViewfinderIspConfig {
-        tone_base_prewarm: ToneBasePrewarm::AllModels,
+        variant_prewarm: VariantPrewarm::AllRelated,
         pipeline_variant_capacity: 2,
         ..test_config(ViewfinderStorageFormat::HalfFloatOnly)
     };
@@ -178,9 +189,9 @@ fn prewarm_never_evicts_the_variant_in_use_when_the_cache_is_tight() {
     let run = readback(&mut isp, 0);
     assert_eq!(isp.cached_pipeline_variants(), 2, "кэш заполнен, но не переполнен");
     assert_eq!(
-        isp.tone_base_prewarm_counters().created,
+        isp.variant_stats().created_by_prewarm,
         1,
-        "прогрето ровно одно свободное место"
+        "заготовлено ровно одно свободное место"
     );
     assert_eq!(isp.retired_objects(), 0, "прогрев ничего не вытеснил");
     let reference = reference_upright_encoded(
@@ -197,19 +208,25 @@ fn prewarm_never_evicts_the_variant_in_use_when_the_cache_is_tight() {
     assert_no_validation_errors(&context);
 }
 
-/// Ёмкость по умолчанию вмещает продукт целиком: 4 набора стадий (виньетирование × таблица вида) × 4 модели.
+/// Ёмкость по умолчанию вмещает продукт целиком: 4 набора стадий (виньетирование × таблица вида) × 3 класса статистики
+/// (без неё и две раскладки групп по плиткам AWB; статистика идёт каждый 4-й кадр, зум меняет раскладку) × 4 модели.
 #[test]
 fn default_capacity_holds_every_product_stage_set_in_every_base() {
     let stage_sets_in_product = 2 * 2;
+    let statistics_classes = 1 + isp_vulkan::viewfinder::AwbGroupLayout::ALL.len();
     let bases = every_base().len();
-    assert_eq!(DEFAULT_PIPELINE_VARIANT_CAPACITY, stage_sets_in_product * bases);
+    assert_eq!(
+        DEFAULT_PIPELINE_VARIANT_CAPACITY,
+        stage_sets_in_product * statistics_classes * bases
+    );
+    assert_eq!(DEFAULT_PIPELINE_VARIANT_CAPACITY, 48);
     assert_eq!(
         isp_vulkan::viewfinder::ViewfinderIspConfig::default().pipeline_variant_capacity,
         DEFAULT_PIPELINE_VARIANT_CAPACITY
     );
     assert_eq!(
-        isp_vulkan::viewfinder::ViewfinderIspConfig::default().tone_base_prewarm,
-        ToneBasePrewarm::AllModels,
+        isp_vulkan::viewfinder::ViewfinderIspConfig::default().variant_prewarm,
+        VariantPrewarm::AllRelated,
         "прогрев по умолчанию включён"
     );
 }

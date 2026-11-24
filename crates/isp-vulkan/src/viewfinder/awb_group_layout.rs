@@ -27,6 +27,9 @@ pub enum AwbGroupLayout {
 }
 
 impl AwbGroupLayout {
+    /// Все раскладки: по ним заготавливаются варианты (зум переключает раскладку на ходу) и считается ёмкость кэша.
+    pub const ALL: [Self; 2] = [Self::General, Self::SingleTilePerGroup];
+
     /// Значение specialization-константы `AWB_GROUPS_IN_ONE_TILE` (`constant_id = 16`).
     pub const fn specialization_value(self) -> u32 {
         match self {

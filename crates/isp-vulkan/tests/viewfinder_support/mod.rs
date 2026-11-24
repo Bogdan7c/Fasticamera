@@ -292,7 +292,7 @@ pub fn test_config(format: ViewfinderStorageFormat) -> ViewfinderIspConfig {
             height: 192,
         },
         // Тесты точно считают варианты пайплайна: прогрев моделей основы включают сами тесты прогрева.
-        tone_base_prewarm: isp_vulkan::viewfinder::ToneBasePrewarm::Off,
+        variant_prewarm: isp_vulkan::viewfinder::VariantPrewarm::Off,
         ..ViewfinderIspConfig::default()
     }
 }

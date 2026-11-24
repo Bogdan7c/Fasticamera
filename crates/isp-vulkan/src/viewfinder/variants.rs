@@ -1,12 +1,16 @@
 //! Кэш вариантов пайплайна ISP видоискателя.
 //!
 //! Вариант = SPIR-V (источник RAW10/RAW16 × квалификатор формата выхода × способ сведения AWB, один на
-//! весь ISP — [`AwbReduction`]) + specialization-константы
-//! (размер группы и [`IspStageSet`]). Создаётся лениво при первом кадре с таким ключом; кэш ограничен
-//! (`pipeline_variant_capacity`): при переполнении давно не использованный вариант уходит в
-//! отложенное уничтожение ([`super::retirement`]) — его могут ещё читать отправленные кадры.
+//! весь ISP — [`AwbReduction`]) + specialization-константы (размер группы, [`IspStageSet`], модель основы тона,
+//! раскладка групп по плиткам AWB). Создаётся по требованию при первом кадре с таким ключом, а при включённой заготовке
+//! ([`VariantPrewarm`]) вместе с ним создаётся его семейство ([`super::variant_family`]): остальные основы, кадр со
+//! статистикой и без, обе раскладки — чтобы смена любой из этих осей не компилировала пайплайн в кадре.
+//! Кэш ограничен (`pipeline_variant_capacity`): при переполнении самый давно использованный вариант (заготовленные и ни
+//! разу не использованные — первыми) уходит в отложенное уничтожение ([`super::retirement`]) — его могут ещё читать
+//! отправленные кадры. Всё созданное, вытесненное и потраченное на компиляцию считается ([`VariantCacheStats`]).
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use gpu_vulkan::compute::{BindingKind, ComputePipeline, ComputePipelineDesc, LocalSize, SpecializationConstant};
 use gpu_vulkan::context::GpuContext;
@@ -15,9 +19,12 @@ use gpu_vulkan::storage_image::StorageImageFormat;
 
 use super::awb_group_layout::AwbGroupLayout;
 use super::awb_reduction::AwbReduction;
+use super::config::VariantPrewarm;
 use super::error::ViewfinderError;
 use super::retirement::RecordSerial;
-use super::stages::IspStageSet;
+use super::stages::{IspStage, IspStageSet};
+use super::variant_family::{FamilyContext, related_variants};
+use super::variant_stats::{CreationOutcome, VariantCacheStats};
 use crate::shaders::blobs;
 use crate::tone_base::ToneBaseKind;
 
@@ -91,51 +98,64 @@ fn source_binding_kind(source: SourceKind) -> BindingKind {
     }
 }
 
+/// Давность использования варианта (для вытеснения). Заготовленный, но ни разу не использованный вариант НЕ «свежее»
+/// рабочего: он старше любого использованного и вытесняется первым.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Recency {
+    /// Создан заготовкой и ещё ни разу не использовался кадром.
+    NeverUsed,
+    /// Последний раз использован записью с этим номером.
+    UsedAt(RecordSerial),
+}
+
 struct CachedVariant {
     pipeline: ComputePipeline,
-    last_used: RecordSerial,
+    last_used: Recency,
 }
 
-/// Чем кончилась подготовка варианта ключа.
-pub(crate) struct PrepareOutcome {
-    /// Вариант создан сейчас (а не найден в кэше).
-    pub created: bool,
-    /// Вытесненный вариант: вызывающий обязан отдать его в отложенное уничтожение.
-    pub evicted: Option<ComputePipeline>,
-}
+/// Вытесненный из кэша пайплайн: вызывающий обязан отдать его в отложенное уничтожение (его могут ещё читать
+/// отправленные кадры), а не бросить.
+pub(crate) type EvictedPipeline = Option<ComputePipeline>;
 
-/// Счётчики прогрева вариантов других моделей основы (результат одного прогрева и накопленная сумма в ISP).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct PrewarmCounters {
-    /// Создано вариантов.
-    pub created: u64,
-    /// Не создано из-за ошибки создания пайплайна (кадр от этого не страдает, причина — в журнале).
-    pub failed: u64,
+/// Создатель пайплайнов вариантов: всё, что нужно знать о ISP, кроме ключа (одинаково для всех вариантов).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct VariantBuilder {
+    local_size: LocalSize,
+    frame_slots: usize,
+    awb_reduction: AwbReduction,
 }
 
 /// Ограниченный кэш вариантов.
 pub(crate) struct VariantCache {
     entries: HashMap<VariantKey, CachedVariant>,
     capacity: usize,
-    local_size: LocalSize,
-    frame_slots: usize,
-    awb_reduction: AwbReduction,
+    builder: VariantBuilder,
+    /// Этот ISP уже записывал кадры со статистикой AWB: тогда у кадра без неё заготавливаются и варианты со статистикой.
+    statistics_in_use: bool,
+    stats: VariantCacheStats,
 }
+
+/// Как кэш создаёт пайплайн варианта (шов: настоящий — [`VariantBuilder::build`], в тестах — с отказами).
+type BuildVariant<'a> = dyn FnMut(VariantKey) -> Result<ComputePipeline, ViewfinderError> + 'a;
 
 impl VariantCache {
     pub fn new(capacity: usize, local_size: LocalSize, frame_slots: usize, awb_reduction: AwbReduction) -> Self {
         Self {
             entries: HashMap::new(),
             capacity,
-            local_size,
-            frame_slots,
-            awb_reduction,
+            builder: VariantBuilder {
+                local_size,
+                frame_slots,
+                awb_reduction,
+            },
+            statistics_in_use: false,
+            stats: VariantCacheStats::default(),
         }
     }
 
     /// Способ сведения статистики AWB у всех вариантов кэша.
     pub fn awb_reduction(&self) -> AwbReduction {
-        self.awb_reduction
+        self.builder.awb_reduction
     }
 
     /// Сколько вариантов создано и держится.
@@ -143,23 +163,62 @@ impl VariantCache {
         self.entries.len()
     }
 
-    /// Готовит вариант `key` для записи `serial`. Если кэш полон, вытесняет самый давно
-    /// использованный вариант и отдаёт его вызывающему для отложенного уничтожения.
+    /// Счётчики и времена кэша (накопительные) плюс текущее число вариантов.
+    pub fn stats(&self) -> VariantCacheStats {
+        VariantCacheStats {
+            in_cache: self.entries.len(),
+            ..self.stats
+        }
+    }
+
+    /// Готовит вариант `key` для записи `serial`. Если кэш полон, вытесняет самый давно использованный вариант
+    /// (никогда не использованные заготовки — первыми) и отдаёт его вызывающему для отложенного уничтожения.
+    ///
+    /// Если вариант создан сейчас и заготовка разрешена (`prewarm`), следом заготавливается его семейство
+    /// ([`related_variants`]): смена основы, зум и чередование статистики не будут компилировать пайплайн в кадре.
+    /// Заготовка занимает ТОЛЬКО свободные места и не роняет кадр: ошибка создания считается и пишется в журнал.
     pub fn prepare(
         &mut self,
         context: &GpuContext,
         key: VariantKey,
         serial: RecordSerial,
-    ) -> Result<PrepareOutcome, ViewfinderError> {
+        prewarm: VariantPrewarm,
+    ) -> Result<EvictedPipeline, ViewfinderError> {
+        let builder = self.builder;
+        self.prepare_with(key, serial, prewarm, &mut |variant| builder.build(context, variant))
+    }
+
+    /// То же, что [`Self::prepare`], с заданным способом создания пайплайна (шов для тестов отказов).
+    fn prepare_with(
+        &mut self,
+        key: VariantKey,
+        serial: RecordSerial,
+        prewarm: VariantPrewarm,
+        build: &mut BuildVariant<'_>,
+    ) -> Result<EvictedPipeline, ViewfinderError> {
+        // Раньше проверки кэша: даже попадание в кэш говорит, что статистика в работе.
+        if key.stages.contains(IspStage::AwbStatistics) {
+            self.statistics_in_use = true;
+        }
         if let Some(entry) = self.entries.get_mut(&key) {
-            entry.last_used = serial;
-            return Ok(PrepareOutcome {
-                created: false,
-                evicted: None,
-            });
+            // Использование обновляет давность: рабочий вариант не вытесняется раньше заготовленных и забытых.
+            entry.last_used = Recency::UsedAt(serial);
+            return Ok(None);
         }
         // Сначала создаём (ошибка — кэш не тронут), потом вытесняем.
-        let pipeline = self.create(context, key)?;
+        let started = Instant::now();
+        let built = build(key);
+        let elapsed = started.elapsed();
+        let pipeline = match built {
+            Ok(pipeline) => {
+                self.stats.note_frame_creation(CreationOutcome::Created, elapsed);
+                pipeline
+            }
+            Err(error) => {
+                self.stats.note_frame_creation(CreationOutcome::Failed, elapsed);
+                return Err(error);
+            }
+        };
         let evicted = if self.entries.len() >= self.capacity {
             self.evict_least_recently_used()
         } else {
@@ -169,55 +228,58 @@ impl VariantCache {
             key,
             CachedVariant {
                 pipeline,
-                last_used: serial,
+                last_used: Recency::UsedAt(serial),
             },
         );
-        Ok(PrepareOutcome { created: true, evicted })
+        if prewarm == VariantPrewarm::AllRelated {
+            self.prewarm_related(key, build);
+        }
+        Ok(evicted)
     }
 
-    /// Прогрев: создаёт варианты ключа `key` с остальными моделями основы, чтобы смена основы не компилировала
-    /// пайплайн на кадре. Занимает ТОЛЬКО свободные места кэша: прогрев не вытесняет ничего (ни вариант текущего
-    /// кадра, ни недавно использованные), а при нехватке места просто останавливается. Ошибка создания не роняет
-    /// кадр (рисуется вариантом `key`, он уже готов): она считается и пишется в журнал.
-    pub fn prewarm_other_tone_bases(
-        &mut self,
-        context: &GpuContext,
-        key: VariantKey,
-        serial: RecordSerial,
-    ) -> PrewarmCounters {
-        let mut report = PrewarmCounters::default();
-        for tone_base in ToneBaseKind::ALL {
-            let sibling = VariantKey { tone_base, ..key };
+    /// Заготовка семейства ключа `key`: создаёт родственные варианты, которых нет. Занимает ТОЛЬКО свободные места
+    /// кэша: не вытесняет ничего (ни вариант текущего кадра, ни недавно использованные), а при нехватке места
+    /// останавливается. Заготовленный вариант помечается «ни разу не использован». Ошибка создания не роняет кадр
+    /// (рисуется вариантом `key`, он уже готов): она считается и пишется в журнал.
+    fn prewarm_related(&mut self, key: VariantKey, build: &mut BuildVariant<'_>) {
+        let context = FamilyContext {
+            awb_reduction: self.builder.awb_reduction,
+            statistics_in_use: self.statistics_in_use,
+        };
+        let started = Instant::now();
+        let (mut created, mut failed) = (0_u64, 0_u64);
+        for sibling in related_variants(key, context) {
             if self.entries.contains_key(&sibling) {
                 continue;
             }
             if self.entries.len() >= self.capacity {
                 break;
             }
-            match self.create(context, sibling) {
+            match build(sibling) {
                 Ok(pipeline) => {
-                    // `last_used` = серия текущей записи: прогретый вариант не старше только что использованного.
                     self.entries.insert(
                         sibling,
                         CachedVariant {
                             pipeline,
-                            last_used: serial,
+                            last_used: Recency::NeverUsed,
                         },
                     );
-                    report.created += 1;
+                    created += 1;
                 }
                 Err(error) => {
                     tracing::warn!(
                         target: "fasticamera::isp_viewfinder",
                         %error,
                         ?sibling,
-                        "прогрев варианта основы не удался: вариант будет создан на первом кадре с этой основой"
+                        "заготовка родственного варианта не удалась: он будет создан на первом кадре, которому понадобится"
                     );
-                    report.failed += 1;
+                    failed += 1;
                 }
             }
         }
-        report
+        if created + failed > 0 {
+            self.stats.note_prewarm(created, failed, started.elapsed());
+        }
     }
 
     /// Пайплайн подготовленного варианта.
@@ -244,10 +306,14 @@ impl VariantCache {
             .iter()
             .min_by_key(|(_, entry)| entry.last_used)
             .map(|(key, _)| *key)?;
+        self.stats.evicted += 1;
         self.entries.remove(&oldest).map(|entry| entry.pipeline)
     }
+}
 
-    fn create(&self, context: &GpuContext, key: VariantKey) -> Result<ComputePipeline, ViewfinderError> {
+impl VariantBuilder {
+    /// Создаёт (компилирует) пайплайн варианта `key`.
+    pub fn build(&self, context: &GpuContext, key: VariantKey) -> Result<ComputePipeline, ViewfinderError> {
         let mut specialization = vec![
             SpecializationConstant {
                 constant_id: 0,
@@ -290,3 +356,7 @@ impl VariantCache {
         )?)
     }
 }
+
+#[cfg(test)]
+#[path = "variants_tests.rs"]
+mod tests;
