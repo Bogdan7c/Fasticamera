@@ -1,6 +1,7 @@
 //! Быстрые пути проявления снимка БИТ-В-БИТ равны прежнему пути (сессия 16a, решение 213: фото не меняется ни на бит).
 //!
-//! «Прежний путь» — [`frozen_config`]: настройки проявителя ДО оптимизаций (замороженный эталон). «Новый путь» —
+//! «Прежний путь» — [`frozen_config`]: настройки проявителя ДО оптимизаций (замороженный эталон: группа 16×16 и
+//! выходной проход с моделью основы тона из блока на лету — замороженная копия прежнего шейдера). «Новый путь» —
 //! продуктовое умолчание [`PhotoConfig::default`]. Оба проявляют один и тот же RAW, сравниваются ВСЕ байты картинки
 //! снимка и ВСЕ байты миниатюры. Тест растёт вместе с оптимизациями: каждая точная правка добавляет в
 //! `frozen_config` то, чем прежний путь отличался.
@@ -15,17 +16,22 @@
     reason = "в тестах падение и есть способ сообщить о провале"
 )]
 
+mod lens_shading_support;
+mod look_support;
 mod photo_support;
 mod quality_support;
 
 use camera_contract::geometry::PixelRect;
 use gpu_vulkan::context::GpuContext;
 use isp_model::cfa::BayerPattern;
+use isp_model::look::LookControls;
 use isp_model::tone::base::ToneBase;
 use isp_vulkan::photo::{
     DevelopRequest, PhotoConfig, PhotoDeveloper, RawCapture, RawCapturer, RgbaReadback, ThumbnailOutcome,
+    ToneModelSpecialization,
 };
 use isp_vulkan::quality::WorkgroupSizeConfig;
+use look_support::{all_bands, known_lut, saturation_vibrance, with_lut};
 use photo_support::{
     Placement, SourceFrame, SourceKind, capture, crop_in_buffer, develop_with, real_frame, upload, zone_plate_frame,
 };
@@ -37,6 +43,7 @@ fn frozen_config(slice_rows: u32) -> PhotoConfig {
     PhotoConfig {
         slice_rows,
         workgroup_size: WorkgroupSizeConfig { x: 16, y: 16 },
+        tone_model_specialization: ToneModelSpecialization::Runtime,
         thumbnail_long_side_px: 16,
         ..PhotoConfig::default()
     }
@@ -192,6 +199,32 @@ fn real_frames_are_bit_identical_to_the_frozen_path() {
             StillRotation::None,
             32,
         );
+    }
+    assert_no_validation_errors(&context);
+}
+
+#[test]
+fn look_knobs_and_table_are_bit_identical_to_the_frozen_path_for_every_tone_model() {
+    let Some(context) = gpu_context_or_skip() else { return };
+    let mut capturer = RawCapturer::new(&context, &PhotoConfig::default()).unwrap();
+    let looks: Vec<LookControls> = vec![
+        saturation_vibrance(1.0, -0.5),
+        all_bands(0.7, -0.6, 0.5),
+        with_lut(saturation_vibrance(0.5, 0.3), known_lut()),
+    ];
+    for base in tone_models() {
+        for look in &looks {
+            let frame = zone_plate_frame(96, 80, BayerPattern::BGGR).with_tone_base_and_look(base, look.clone());
+            assert_exact(
+                &context,
+                &mut capturer,
+                &frame,
+                SourceKind::Raw10,
+                (0, 0, 96, 80),
+                StillRotation::None,
+                30,
+            );
+        }
     }
     assert_no_validation_errors(&context);
 }

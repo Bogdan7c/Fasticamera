@@ -45,6 +45,7 @@ use super::config::PhotoConfig;
 use super::developed::{DevelopRequest, DevelopedPhoto, DevelopmentStart, SliceOutcome};
 use super::error::PhotoError;
 use super::finishing;
+use super::output_pass::OutputPasses;
 use super::pixels::{GpuPixels, seal_or_leak};
 use super::slice_pushes::SlicePushes;
 use super::slicing::{DevelopmentPlan, crop_outside, max_region_rows, plan_development};
@@ -60,8 +61,9 @@ use crate::quality::frame_params::{
 };
 use crate::quality::pass::QualityPass;
 use crate::quality::planes::{LinearRgbPlanes, QualityPlanes};
-use crate::quality::stages::{OUTPUT_BINDINGS, OutputUniforms, output_binding_writes};
+use crate::quality::stages::{OutputUniforms, output_binding_writes};
 use crate::shaders::blobs;
+use crate::tone_base::ToneBaseKind;
 
 /// Единственный слот наборов дескрипторов: проявление одно за раз.
 const SLOT: usize = 0;
@@ -118,14 +120,7 @@ impl PhotoDeveloper {
             local,
             1,
         )?;
-        let output = QualityPass::new(
-            context,
-            "isp-photo-output-rgba8",
-            blobs::PHOTO_OUTPUT_RGBA8_COMP,
-            &OUTPUT_BINDINGS,
-            local,
-            1,
-        )?;
+        let output = OutputPasses::new(context, local, config.tone_model_specialization)?;
         // Миниатюра необязательна: нет пайплайна — снимки проявляются без неё (причина — в `ThumbnailOutcome`).
         let thumbnail_pass = ThumbnailPass::new(context)
             .inspect_err(|error| {
@@ -293,7 +288,7 @@ struct DeveloperParts {
     timer: Option<PhotoGpuTimer>,
     /// Пайплайн миниатюры; `None` — не создался (проявка идёт без миниатюры).
     thumbnail_pass: Option<ThumbnailPass>,
-    output: QualityPass,
+    output: OutputPasses,
     menon: Vec<(MenonPass, QualityPass)>,
     levels: QualityPass,
     planes: QualityPlanes,
@@ -307,6 +302,8 @@ struct Job {
     plan: DevelopmentPlan,
     raw: RawCapture,
     cfa: CfaCode,
+    /// Модель основы тона проявки: по ней выбран вариант выходного прохода.
+    tone: ToneBaseKind,
     image: Arc<Rgba8StorageImage>,
     readback: Option<HostReadbackBuffer>,
     /// Миниатюра: записывается в последнюю полосу, печатается тем же доказательством.
@@ -430,7 +427,8 @@ impl DeveloperParts {
             readback,
             thumbnail,
         } = targets;
-        if let Err(error) = self.bind_job_resources(request.raw, &parameters, &style, &lens_shading_map, &image) {
+        let tone = ToneBaseKind::of(request.params);
+        if let Err(error) = self.bind_job_resources(request.raw, &parameters, &style, &lens_shading_map, &image, tone) {
             // Ресурсы проявки (картинка, uniform) сейчас уничтожатся, а наборы могли запомнить их хэндлы: сброс
             // запомненного обязателен (см. `DescriptorRing::release_after_fence`). Наборы ни в одном
             // отправленном буфере не использовались, поэтому освободить их можно сразу.
@@ -452,6 +450,7 @@ impl DeveloperParts {
             plan,
             raw: request.raw.clone(),
             cfa,
+            tone,
             image,
             readback,
             thumbnail,
@@ -473,6 +472,7 @@ impl DeveloperParts {
         style: &FrameStyleBuffers,
         lens_shading_map: &LensShadingMapBuffer,
         image: &Rgba8StorageImage,
+        tone: ToneBaseKind,
     ) -> Result<(), PhotoError> {
         self.levels.bind(
             SLOT,
@@ -501,7 +501,7 @@ impl DeveloperParts {
             lens_shading_map: lens_shading_map.binding(),
         };
         let writes = output_binding_writes(self.planes.linear_rgb(), uniforms, image.storage_binding());
-        self.output.bind(SLOT, &writes)?;
+        self.output.bind_for(tone, &writes)?;
         Ok(())
     }
 
@@ -531,7 +531,7 @@ impl DeveloperParts {
             return self.note_step_recorded();
         };
         let pushes = SlicePushes::new(&job.plan, &slice, job.cfa, job.raw.size().width);
-        self.check_slice(&pushes)?;
+        self.check_slice(&pushes, job.tone)?;
 
         // --- Команды (все проверки пройдены) ---
         let step = SliceStep::new(job.recorded, job.plan.slices.len());
@@ -558,7 +558,7 @@ impl DeveloperParts {
             }
         }
         record_compute_pass_dependency(&self.context, command_buffer);
-        self.output.record(command_buffer, SLOT, &pushes.output)?;
+        self.output.record_for(job.tone, command_buffer, &pushes.output)?;
         if step.is_sample {
             PhotoGpuTimer::mark_if_enabled(&mut self.timer, command_buffer, PhotoGpuPoint::Output)?;
         }
@@ -583,12 +583,12 @@ impl DeveloperParts {
     }
 
     /// Проверки dispatch всех проходов полосы без записи команд.
-    fn check_slice(&self, pushes: &SlicePushes) -> Result<(), PhotoError> {
+    fn check_slice(&self, pushes: &SlicePushes, tone: ToneBaseKind) -> Result<(), PhotoError> {
         self.levels.check(SLOT, &pushes.levels)?;
         for (_, pass) in &self.menon {
             pass.check(SLOT, &pushes.geometry)?;
         }
-        self.output.check(SLOT, &pushes.output)?;
+        self.output.check_for(tone, &pushes.output)?;
         Ok(())
     }
 
@@ -687,7 +687,7 @@ impl DeveloperParts {
     /// Fence всех сабмитов проявки подтверждены: наборы уровней и выхода можно привязывать к новым ресурсам.
     fn release_descriptor_slots(&self) -> Result<(), PhotoError> {
         self.levels.release_slot_after_fence(SLOT)?;
-        self.output.release_slot_after_fence(SLOT)?;
+        self.output.release_slot_after_fence()?;
         if let Some(pass) = &self.thumbnail_pass {
             pass.release_slot_after_fence()?;
         }

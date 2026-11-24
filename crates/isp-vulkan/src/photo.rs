@@ -31,6 +31,7 @@ pub mod developed;
 pub mod developer;
 mod error;
 mod finishing;
+mod output_pass;
 mod pixels;
 pub mod quantize;
 mod slice_pushes;
@@ -41,7 +42,7 @@ mod thumbnail_pass;
 pub mod timing;
 
 pub use self::capture::{PendingRawCapture, RawCapture, RawCapturer};
-pub use self::config::PhotoConfig;
+pub use self::config::{PhotoConfig, ToneModelSpecialization};
 pub use self::developed::{DevelopRequest, DevelopedPhoto, DevelopmentStart, RgbaReadback, SliceOutcome};
 pub use self::developer::PhotoDeveloper;
 pub use self::error::PhotoError;

@@ -23,6 +23,10 @@
 
 layout(set = 0, binding = 4, rgba8) uniform writeonly image2D output_image;
 
+// Модель основы тона — константа специализации (вариант пайплайна на модель; сессия 16a): ветки остальных моделей
+// драйвер выбрасывает целиком. Подмена `tone_base_model()` стоит ДО общих включений и не меняет ни одной формулы.
+#include "photo_tone_model.glsl"
+
 #define main stand_output_main
 #include "quality_output_main.glsl"
 #undef main

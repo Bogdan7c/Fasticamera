@@ -1,0 +1,62 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// ЗАМОРОЖЕННАЯ КОПИЯ прежнего `photo_output_rgba8.comp` (модель основы тона — по блоку на лету, до оптимизаций
+// сессии 16a). Это путь `ToneModelSpecialization::Runtime`: эталон тестов «быстрый путь равен прежнему бит-в-бит»
+// и A/B на устройстве. Править нельзя.
+// Проявление снимка, выходной проход для ПОЛОСЫ: линейный RGB камеры → цвет → охват → тон → OETF sRGB →
+// квантование в 8 бит → картинка RGBA8 размером с кадр снимка (crop).
+//
+// Все формулы берутся из `quality_output_main.glsl` как есть (его `main` переименован макросом и не
+// вызывается): здесь только своя `main` — окно вывода и квантование.
+//
+// Push-константы (раскладка `PlaneGeometry`, индексы < 2^24 как f32 — точно):
+//   width/height — размер области полосы в плоскостях (ореол включён);
+//   pass_parameters.x — левый край окна вывода в области (ореол слева),
+//   .y — первая строка окна вывода в области (ореол сверху),
+//   .z — число строк окна вывода,
+//   .w — строка картинки снимка, куда ложится первая строка окна.
+// Ширина окна = ширина картинки снимка. Нити вне окна (ореол) выходят, ничего не записав.
+//
+// Квантование: q = floor(clamp(e, 0, 1) * 255 + 0.5) — округление «половина вверх» от сигнала экрана e
+// (sRGB-кодированного 0..1). В картинку пишется (q + 0.25) / 255: перевод float → UNORM в спецификации Vulkan
+// (раздел «Fixed-Point Data Conversions») — «ближайшее целое» с формулировкой implementations SHOULD round to
+// nearest, а гарантия «ровно целое» есть только когда f·255 само целое. Поправка +0,25 делает результат
+// одинаковым и для округления к ближайшему (q + 0,25 → q), и для усечения (floor(q + 0,25) → q): запас четверть
+// градации в обе стороны от обоих способов. Правило q то же, что у CPU-эталона (`photo::quantize`).
+
+layout(set = 0, binding = 4, rgba8) uniform writeonly image2D output_image;
+
+#define main stand_output_main
+#include "quality_output_main.glsl"
+#undef main
+
+void main() {
+    uint region_x = gl_GlobalInvocationID.x;
+    uint region_y = gl_GlobalInvocationID.y;
+    uint window_left = uint(geometry.pass_parameters.x);
+    uint first_row = uint(geometry.pass_parameters.y);
+    uint row_count = uint(geometry.pass_parameters.z);
+    uint destination_row = uint(geometry.pass_parameters.w);
+    uint crop_width = uint(imageSize(output_image).x);
+    if (region_x >= geometry.width || region_y >= geometry.height) {
+        return;
+    }
+    if (region_x < window_left || region_x - window_left >= crop_width) {
+        return;
+    }
+    if (region_y < first_row || region_y - first_row >= row_count) {
+        return;
+    }
+    uint index = region_y * geometry.width + region_x;
+    // Координаты пикселя в полезной области кадра (для белого точки по карте виньетирования): окно вывода
+    // начинается в позиции `frame.output_origin` (область снимка), строки считаются от первой строки окна.
+    uvec2 valid_pixel = uvec2(
+        frame.output_origin.x + (region_x - window_left),
+        frame.output_origin.y + destination_row + (region_y - first_row));
+    vec3 encoded = encoded_pixel(index, valid_pixel);
+    precise float red = floor(clamp(encoded.x, 0.0, 1.0) * 255.0 + 0.5);
+    precise float green = floor(clamp(encoded.y, 0.0, 1.0) * 255.0 + 0.5);
+    precise float blue = floor(clamp(encoded.z, 0.0, 1.0) * 255.0 + 0.5);
+    ivec2 destination = ivec2(int(region_x - window_left), int(destination_row + region_y - first_row));
+    imageStore(output_image, destination, vec4((vec3(red, green, blue) + 0.25) / 255.0, 1.0));
+}

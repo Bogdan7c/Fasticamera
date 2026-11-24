@@ -30,6 +30,19 @@ const THUMBNAIL_LONG_SIDE_RANGE: std::ops::RangeInclusive<u32> = 16..=1024;
 /// группа идёт вдоль строк плоскостей (128 нитей подряд по X), как у видоискателя.
 const DEFAULT_WORKGROUP_SIZE: WorkgroupSizeConfig = WorkgroupSizeConfig { x: 128, y: 2 };
 
+/// Как выходной проход снимка получает модель основы тона.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToneModelSpecialization {
+    /// Вариант пайплайна на каждую модель: номер — константа специализации, ветки остальных моделей выброшены
+    /// (`[measured]` сессия 16a). Картинка бит-в-бит равна `Runtime`.
+    #[default]
+    PerModel,
+    /// Прежний путь: один пайплайн, модель читается из блока на лету. Замороженный эталон для тестов точного
+    /// равенства и A/B на устройстве.
+    Runtime,
+}
+
 /// Настройки проявления снимка.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -41,6 +54,8 @@ pub struct PhotoConfig {
     /// Размер рабочей группы проходов полосы (уровни, Menon, вывод). Миниатюра от него НЕ зависит: у неё своя
     /// фиксированная группа (`thumbnail_pass`), потому что число нитей задаёт порядок сложения в её редукции.
     pub workgroup_size: WorkgroupSizeConfig,
+    /// Как выходной проход получает модель основы тона (умолчание — вариант пайплайна на модель).
+    pub tone_model_specialization: ToneModelSpecialization,
     /// Длинная сторона миниатюры снимка, пиксели: 16…1024 (решение 155). Миниатюра — маленькая копия для экрана
     /// камеры (кружок в углу), уменьшается на GPU внутри последней полосы проявки и уходит в обычную память.
     pub thumbnail_long_side_px: u32,
@@ -58,6 +73,7 @@ impl Default for PhotoConfig {
         Self {
             slice_rows: 256,
             workgroup_size: DEFAULT_WORKGROUP_SIZE,
+            tone_model_specialization: ToneModelSpecialization::default(),
             thumbnail_long_side_px: DEFAULT_THUMBNAIL_LONG_SIDE_PX,
             lens_shading_map: LensShadingMapLimits::default(),
             look_lut: LookLutLimits::default(),
