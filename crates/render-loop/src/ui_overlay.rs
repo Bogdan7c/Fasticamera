@@ -81,6 +81,9 @@ pub struct UiOverlayDiagnostics {
     /// Сколько элементов-живых картинок пропущено, потому что картинки в кадре не было (прибор закрыт, ещё не
     /// записан): кадр UI при этом нарисован без этих элементов.
     pub live_images_missing: u64,
+    /// Сколько показанных кадров UI не записано в GPU из-за подавления замером (`GpuWorkSuppression`, 16a): источник
+    /// кадр построил (`produce_frame`), но проход UI пропущен. Не входит в `frames_drawn` и `frames_failed`.
+    pub frames_suppressed: u64,
     /// Время UI на GPU: от «компоновка готова» до «UI готов», пирамида размытия включительно.
     /// `None` — замеров ещё нет.
     pub gpu_time: Option<DurationSummary>,

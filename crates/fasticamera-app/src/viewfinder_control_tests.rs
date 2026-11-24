@@ -2,7 +2,9 @@ use std::sync::{Arc, Mutex};
 
 use isp_vulkan::viewfinder::{IspStage, IspStageSet};
 use render_loop::config::{AdpfMode, DepthReductionMode, LateLatchMode, PresentTimelinePolicy, RenderLoopConfig};
-use render_loop::viewfinder::{HeadroomBench, ViewfinderCommand, ViewfinderPainter};
+use render_loop::viewfinder::{
+    GpuWorkSuppression, HeadroomBench, SuppressibleGpuWork, ViewfinderCommand, ViewfinderPainter,
+};
 use shell_contract::commands::{CommandOutcome, FrameRate, FrameRateOutcome, ScreenWake, ShellCommands};
 
 use super::*;
@@ -418,5 +420,105 @@ fn inbox_control_delivers_ui_commands_in_order_and_reports_a_stopped_render_thre
         control.ui_overlay(UiOverlayCommand::Remove),
         ControlDelivery::RenderGone,
         "поток рендера завершён: команда потеряна и это видно"
+    );
+}
+
+#[test]
+fn gpu_work_suppression_reaches_the_control_and_the_end_restores_none_once() {
+    let control = RecordingRenderControl::new();
+    let gpu = gpu_with(control.clone(), RenderLoopConfig::default());
+    let scopes_and_ui = GpuWorkSuppression::NONE
+        .suppressing(SuppressibleGpuWork::ColorScopes)
+        .suppressing(SuppressibleGpuWork::UiOverlayDrawing);
+
+    assert!(gpu.suppress_gpu_work_for_scenario(scopes_and_ui).is_delivered());
+    assert_eq!(
+        control.recorded(),
+        [RenderAdjustment::Viewfinder(ViewfinderCommand::SuppressGpuWork(
+            scopes_and_ui
+        ))],
+        "сценарий послал именно этот набор"
+    );
+    let before_end = control.recorded().len();
+
+    let effects = gpu.render_scenario_ended(&RateRecorder::default());
+
+    assert_eq!(
+        control.recorded()[before_end..],
+        [RenderAdjustment::Viewfinder(ViewfinderCommand::SuppressGpuWork(
+            GpuWorkSuppression::NONE
+        ))],
+        "конец сценария возвращает продукт и больше ничего"
+    );
+    assert_eq!(
+        effects.adjustments.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+        ["gpu_work_suppression"]
+    );
+    // Учёт забран: второй конец ничего не шлёт.
+    assert!(gpu.render_scenario_ended(&RateRecorder::default()).is_empty());
+    assert_eq!(control.recorded().len(), before_end + 1);
+}
+
+#[test]
+fn a_scenario_that_never_suppressed_gpu_work_sends_no_restore() {
+    let control = RecordingRenderControl::new();
+    let gpu = gpu_with(control.clone(), RenderLoopConfig::default());
+    gpu.set_isp_stages_for_scenario(IspStageSet::ALL.without(IspStage::Tone));
+    let before_end = control.recorded().len();
+
+    let effects = gpu.render_scenario_ended(&RateRecorder::default());
+
+    assert_eq!(
+        effects.adjustments.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+        ["isp_stages"]
+    );
+    assert!(
+        control.recorded()[before_end..].iter().all(|adjustment| !matches!(
+            adjustment,
+            RenderAdjustment::Viewfinder(ViewfinderCommand::SuppressGpuWork(_))
+        )),
+        "подавление не трогали — NONE не посылается"
+    );
+}
+
+#[test]
+fn gpu_work_suppression_is_claimed_even_when_not_delivered_and_the_unavailable_reason_is_reported() {
+    let gpu = gpu_with(
+        Arc::new(UnavailableRenderControl::new("GPU не поднялся")),
+        RenderLoopConfig::default(),
+    );
+    let expected = ControlDelivery::RenderUnavailable {
+        reason: "GPU не поднялся".to_owned(),
+    };
+    let suppression = GpuWorkSuppression::NONE.suppressing(SuppressibleGpuWork::UiOverlayDrawing);
+
+    assert_eq!(gpu.suppress_gpu_work_for_scenario(suppression), expected);
+    let effects = gpu.render_scenario_ended(&RateRecorder::default());
+
+    assert_eq!(
+        effects.adjustments,
+        [("gpu_work_suppression", expected)],
+        "недоставленная команда всё равно получила возврат"
+    );
+}
+
+#[test]
+fn suppression_restore_goes_before_the_painter_restore() {
+    let control = RecordingRenderControl::new();
+    let gpu = gpu_with(control.clone(), RenderLoopConfig::default());
+    gpu.set_viewfinder_painter_for_scenario(ViewfinderPainter::DebugMosaic);
+    gpu.suppress_gpu_work_for_scenario(GpuWorkSuppression::NONE.suppressing(SuppressibleGpuWork::ColorScopes));
+    let before_end = control.recorded().len();
+
+    gpu.render_scenario_ended(&RateRecorder::default());
+
+    assert_eq!(
+        control.recorded()[before_end..],
+        [
+            RenderAdjustment::Viewfinder(ViewfinderCommand::SuppressGpuWork(GpuWorkSuppression::NONE)),
+            RenderAdjustment::Viewfinder(ViewfinderCommand::SetPainter(
+                RenderLoopConfig::default().viewfinder.painter
+            )),
+        ]
     );
 }

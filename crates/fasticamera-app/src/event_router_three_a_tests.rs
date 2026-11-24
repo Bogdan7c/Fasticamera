@@ -70,6 +70,7 @@ fn viewfinder_diagnostics() -> ViewfinderDiagnostics {
         tone_base: look_contract::ToneBaseModel::Agx,
         // Приборы закрыты: эти тесты их не касаются.
         scopes: Default::default(),
+        gpu_work_suppression: render_loop::viewfinder::GpuWorkSuppression::NONE,
         display_color_space: Some(ViewfinderColorSpace::DisplayP3),
         storage: Some(ViewfinderStorage::TenBitUnorm),
         output_extent: Some(ViewfinderExtent {

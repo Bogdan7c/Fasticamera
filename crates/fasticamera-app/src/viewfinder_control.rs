@@ -25,7 +25,7 @@ use render_loop::config::{AdpfMode, DepthReductionMode, LateLatchMode, PresentTi
 use render_loop::mailbox::{InboxDelivery, RenderInbox};
 use render_loop::thread::{AdpfCommand, PresentTargetCommand};
 use render_loop::ui_overlay::UiOverlayCommand;
-use render_loop::viewfinder::{HeadroomBench, ViewfinderCommand, ViewfinderPainter};
+use render_loop::viewfinder::{GpuWorkSuppression, HeadroomBench, ViewfinderCommand, ViewfinderPainter};
 use serde::Serialize;
 use shell_contract::commands::{FrameRate, FrameRateOutcome, InvalidFrameRate, ShellCommands};
 use ui_draw::frame_source::UiFrameSource;
@@ -154,6 +154,8 @@ struct TouchedRenderSettings {
     painter: bool,
     isp_stages: bool,
     headroom_bench: bool,
+    /// Сценарий подавлял работу GPU для замера A/B (16a).
+    gpu_work_suppression: bool,
     present_target: bool,
     adpf: bool,
     display_refresh: bool,
@@ -166,6 +168,7 @@ impl TouchedRenderSettings {
         self.painter
             || self.isp_stages
             || self.headroom_bench
+            || self.gpu_work_suppression
             || self.present_target
             || self.adpf
             || self.display_refresh
@@ -231,6 +234,18 @@ impl GpuServices {
         self.scenario_claim.note(|touched| touched.headroom_bench = true);
         self.control
             .adjust(RenderAdjustment::Viewfinder(ViewfinderCommand::SetHeadroomBench(bench)))
+    }
+
+    /// Сценарий замера A/B: не выполнять ровно эти работы GPU (приборы, рисование UI); вернётся к
+    /// `GpuWorkSuppression::NONE`. Это маска рендера, а не команда экрана: запрос приборов и источник UI экрана камеры
+    /// остаются как были, а после снятия маски работа возобновляется сама. Учёт «сценарий подавлял» ведётся с момента
+    /// вызова, а не доставки: даже недоставленная команда не должна остаться без возврата.
+    pub fn suppress_gpu_work_for_scenario(&self, suppression: GpuWorkSuppression) -> ControlDelivery {
+        self.scenario_claim.note(|touched| touched.gpu_work_suppression = true);
+        self.control
+            .adjust(RenderAdjustment::Viewfinder(ViewfinderCommand::SuppressGpuWork(
+                suppression,
+            )))
     }
 
     /// Сценарий: политика линии кадра (вернётся к `render.present_target` из конфига).
@@ -331,6 +346,15 @@ impl GpuServices {
             send(
                 "headroom_bench",
                 RenderAdjustment::Viewfinder(ViewfinderCommand::SetHeadroomBench(HeadroomBench::Disabled)),
+            );
+        }
+        if touched.gpu_work_suppression {
+            // Подавление снимается ДО возврата рисовальщика и стадий (порядок не влияет на корректность: маска не
+            // зависит от них и не меняет их): так продуктовая работа GPU возвращается первой и не остаётся
+            // выключенной, даже если дальнейший возврат не дойдёт.
+            send(
+                "gpu_work_suppression",
+                RenderAdjustment::Viewfinder(ViewfinderCommand::SuppressGpuWork(GpuWorkSuppression::NONE)),
             );
         }
         if touched.painter {

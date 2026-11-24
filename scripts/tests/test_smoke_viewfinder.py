@@ -266,6 +266,7 @@ class LatencyBudgetEnduranceHeadroomCheckTest(unittest.TestCase):
 
     def test_stage_budget_table_has_a_row_per_stage_and_the_baseline(self) -> None:
         good = {
+            "surface": "bare_viewfinder",
             "requested_rows": ["tone", "whole_viewfinder"],
             "table": [
                 "tone | 0.10 / 0.12 | 8.0 ± 2.0 | measured",
@@ -423,6 +424,7 @@ class DeviceSmokeViewfinderTest(unittest.TestCase):
     BUDGET_OK = passed(
         "viewfinder-stage-budget",
         {
+            "surface": "bare_viewfinder",
             "requested_rows": ["levels"],
             "table": ["levels | 0.05 / 0.06 | не различим (разброс 4.0) | indistinguishable"],
         },

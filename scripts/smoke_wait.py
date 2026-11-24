@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import queue
 import re
@@ -36,6 +37,7 @@ import smoke_checks_capture
 import smoke_checks_capture_files
 import smoke_checks_three_a
 import smoke_checks_glass
+import smoke_checks_saturation
 import smoke_checks_screen
 import smoke_checks_standby
 import smoke_checks_zoom
@@ -209,6 +211,7 @@ CHECKS: dict[str, ScenarioCheck] = {
     "zoom": ignoring_observations(smoke_checks_zoom.check_zoom),
     "capture": ignoring_observations(smoke_checks_capture.check_capture),
     "standby": ignoring_observations(smoke_checks_standby.check_standby),
+    "gpu-saturation-bench": ignoring_observations(smoke_checks_saturation.check_gpu_saturation_bench),
 }
 
 NOTES: dict[str, Callable[[dict], list[str]]] = {
@@ -218,6 +221,7 @@ NOTES: dict[str, Callable[[dict], list[str]]] = {
     "zoom": smoke_checks_zoom.zoom_notes,
     "capture": smoke_checks_capture.capture_notes,
     "standby": smoke_checks_standby.standby_notes,
+    "gpu-saturation-bench": smoke_checks_saturation.saturation_notes,
 }
 """Пояснения к вердикту прошедшего сценария (не провал): печатаются после вердикта, как заметки пост-проверок."""
 
@@ -534,6 +538,20 @@ def cleanup_for(scenario: str, serial: str, keep_captures: bool, package: str) -
     return smoke_checks_capture_files.capture_cleanup(serial, keep=keep_captures, package=package)
 
 
+def _finish_driver(driver: StageDriver, verdict: SmokeVerdict) -> SmokeVerdict:
+    """Дожидается фоновых нажатий драйвера. Сбой нажатия не маскирует уже вынесенный вердикт: он дописывается к нему,
+    а успешный вердикт из-за него становится провалом (замер на не удержанном пальце недостоверен)."""
+    try:
+        driver.finish()
+    except DriverError as error:
+        if verdict.exit_code == EXIT_OK:
+            return dataclasses.replace(
+                verdict, exit_code=EXIT_SCENARIO_FAILED, message=f"фоновое нажатие драйвера: {error}\n{verdict.message}"
+            )
+        return dataclasses.replace(verdict, message=f"{verdict.message}\nфоновое нажатие драйвера: {error}")
+    return verdict
+
+
 def main(argv: list[str]) -> int:
     arguments = parse_arguments(argv)
     driver = StageDriver(
@@ -553,6 +571,7 @@ def main(argv: list[str]) -> int:
         post_check,
         cleanup_for(arguments.scenario, arguments.serial, arguments.keep_captures, arguments.package),
     )
+    verdict = _finish_driver(driver, verdict)
     if verdict.exit_code == EXIT_NO_RESULT:
         verdict = SmokeVerdict(verdict.exit_code, f"{verdict.message} за {arguments.timeout:g} с")
     stream = sys.stdout if verdict.exit_code == EXIT_OK else sys.stderr

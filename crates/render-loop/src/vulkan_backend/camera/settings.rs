@@ -13,8 +13,8 @@ use scope_contract::{ScopeIntent, ScopeRequest};
 use super::ui_state::UiSourcePresence;
 use crate::config::{ViewfinderConfig, ViewfinderConfigError, ViewfinderPlacement};
 use crate::viewfinder::{
-    EffectivePlacement, FramingCrop, FramingDestination, HeadroomBench, ViewfinderCommand, ViewfinderCommandOutcome,
-    ViewfinderPainter,
+    EffectivePlacement, FramingCrop, FramingDestination, GpuWorkSuppression, HeadroomBench, SuppressibleGpuWork,
+    ViewfinderCommand, ViewfinderCommandOutcome, ViewfinderPainter,
 };
 
 /// Действующие настройки видоискателя.
@@ -44,6 +44,10 @@ pub struct ViewfinderSettings {
     pub scopes: Option<ScopeRequest>,
     /// Наибольшая сторона картинки прибора, которую принимает команда `Scopes` (из конфига, пикселей).
     pub scope_picture_side_limit_px: u32,
+    /// Какие работы GPU временно не выполняются ради A/B-замера тока (16a). Продукт — `NONE`; меняется только командой
+    /// `SuppressGpuWork`. Маска НЕ трогает запрос приборов (`scopes`), рисовальщик, стадии и установленный источник UI:
+    /// после её снятия работа возобновляется сама.
+    pub gpu_work_suppression: GpuWorkSuppression,
 }
 
 /// Причина отказа `Scopes(Show)` без источника UI.
@@ -73,6 +77,7 @@ impl ViewfinderSettings {
             tone_base: config.tone.base.into(),
             scopes: None,
             scope_picture_side_limit_px: config.scopes.max_picture_side_px,
+            gpu_work_suppression: GpuWorkSuppression::NONE,
         })
     }
 
@@ -101,7 +106,14 @@ impl ViewfinderSettings {
     /// ISP (отладочная мозаика приборов не знает) И установленный источник UI. Это ЕДИНСТВЕННОЕ место решения
     /// «считать ли приборы»: тот же источник UI решает, рисуется ли картинка прибора, поэтому счёт и показ не
     /// расходятся (инвариант «закрытые приборы ничего не стоят», решение 190).
+    ///
+    /// Подавление замером (`ColorScopes`, 16a) тоже решается ЗДЕСЬ: приборы не считаются, но запомненный запрос экрана
+    /// (`self.scopes`) не стирается — после снятия подавления этот же метод вернёт его снова без новой команды экрана.
+    /// Подавленный UI (`UiOverlayDrawing`) на счёт приборов не влияет: источник остаётся установленным.
     pub fn effective_scope_demand(&self, ui_source: UiSourcePresence) -> Option<ScopeRequest> {
+        if self.gpu_work_suppression.suppresses(SuppressibleGpuWork::ColorScopes) {
+            return None;
+        }
         match (self.painter, ui_source) {
             (ViewfinderPainter::Isp, UiSourcePresence::Installed) => self.scopes,
             _ => None,
@@ -156,6 +168,7 @@ impl ViewfinderSettings {
             ViewfinderCommand::SetToneBase(model) => self.tone_base = model,
             ViewfinderCommand::Scopes(ScopeIntent::Show(request)) => self.scopes = Some(request),
             ViewfinderCommand::Scopes(ScopeIntent::Hide) => self.scopes = None,
+            ViewfinderCommand::SuppressGpuWork(suppression) => self.gpu_work_suppression = suppression,
         }
         if *self == before {
             ViewfinderCommandOutcome::AlreadyInEffect
@@ -164,6 +177,9 @@ impl ViewfinderSettings {
         }
     }
 }
+
+#[cfg(test)]
+mod suppression_tests;
 
 #[cfg(test)]
 mod tests {

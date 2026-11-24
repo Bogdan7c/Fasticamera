@@ -26,6 +26,7 @@ mod pipelines;
 mod plan;
 mod pyramid;
 mod renderer;
+pub mod saturation;
 mod slots;
 #[cfg(feature = "test-support")]
 pub mod testing;

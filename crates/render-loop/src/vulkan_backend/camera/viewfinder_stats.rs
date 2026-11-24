@@ -212,6 +212,7 @@ impl ViewfinderStats {
                 gpu_time: self.scope_gpu.summary(),
                 ..ScopeDiagnostics::default()
             },
+            gpu_work_suppression: settings.gpu_work_suppression,
         }
     }
 }

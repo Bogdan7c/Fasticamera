@@ -361,6 +361,12 @@ class RecordingActions:
     def press_volume_up(self) -> None:
         self.calls.append("press_volume_up")
 
+    def hold_point_in_background(self, point: smoke_driver.ScreenFraction, duration: smoke_driver.DurationMs) -> None:
+        self.calls.append(f"hold_point_in_background({point.x:g},{point.y:g},{duration.value})")
+
+    def wait_for_background_gestures(self) -> None:
+        self.calls.append("wait_for_background_gestures")
+
 
 class StageDriverTest(unittest.TestCase):
     def drive(self, scenario: str, *stage_events: dict) -> list[str]:

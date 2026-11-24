@@ -276,6 +276,12 @@ pub trait ObservingScenario: Send {
         CameraScreenPolicy::SuspendForScenario
     }
 
+    /// То же, но с доступом к настройкам: роутер спрашивает политику ДО `start`, а у сценария, чьё место замера
+    /// выбирает конфиг (`viewfinder-stage-budget`, 16a), ответ зависит от него. По умолчанию — статический ответ.
+    fn camera_screen_policy_for(&self, _camera: &CameraServices) -> CameraScreenPolicy {
+        self.camera_screen_policy()
+    }
+
     /// Вызывается один раз, когда маршрутизатор принял сценарий.
     fn start(&mut self, context: &mut ScenarioContext<'_>) -> ScenarioStep;
 

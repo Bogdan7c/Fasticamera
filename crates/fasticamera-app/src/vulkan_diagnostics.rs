@@ -26,6 +26,8 @@ use crate::gpu_services::{
     AhbCheckRequest, AhbCheckResult, AhbCheckSummary, AhbFormat, FenceCheckRequest, FenceCheckResult,
     FenceCheckSummary, GpuDiagnostics, ValidationState,
 };
+use crate::saturation_bench::runner::WorkloadExecutor;
+use crate::saturation_bench::services::{ExecutorSetup, SaturationGpu, executor_over_context};
 
 /// Диагностики поверх `gpu-vulkan`.
 pub struct VulkanGpuDiagnostics {
@@ -162,5 +164,17 @@ impl GpuDiagnostics for VulkanGpuDiagnostics {
                 reason: error.to_string(),
             },
         }
+    }
+}
+
+/// Стенд насыщения (16a, P4b) берёт тот же долгоживущий контекст диагностик: создавать и уничтожать instance на
+/// каждый запуск нельзя (см. описание модуля).
+impl SaturationGpu for VulkanGpuDiagnostics {
+    fn executor(&self, setup: ExecutorSetup) -> Result<Box<dyn WorkloadExecutor>, String> {
+        Ok(executor_over_context(VulkanGpuDiagnostics::open_context(self)?, setup))
+    }
+
+    fn validation(&self) -> ValidationState {
+        ValidationState::of(&self.validation)
     }
 }

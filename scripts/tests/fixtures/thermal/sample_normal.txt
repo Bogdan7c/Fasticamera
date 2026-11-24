@@ -1,0 +1,20 @@
+@@time 1792957000.123456789
+@@zone gpuss-0 37400
+@@zone gpuss-1 38100
+@@zone gpuss-2 36900
+@@zone shell_front 33500
+@@zone battery 35300
+@@zone gpuss-3 cat: /sys/class/thermal/thermal_zone20/temp: Permission denied
+@@gpubusy    3164 1549719
+@@thermal
+Thermal Status: 1
+@@battery
+Current Battery Service state:
+  AC powered: false
+  USB powered: true
+  Wireless powered: false
+  Max charging current: 500000
+  status: 2
+  level: 81
+  temperature: 353
+@@end

@@ -22,6 +22,7 @@ pub mod framing;
 pub mod headroom;
 pub mod scope_diagnostics;
 pub mod white_balance;
+pub mod work_suppression;
 
 pub use auto_exposure::{AutoExposureCounters, AutoExposureDiagnostics, AutoExposureLinks};
 pub use awb_feed::{AwbFrameIdentity, AwbPublication, AwbStatisticsFeed, AwbStatisticsReader, PublishedAwbStatistics};
@@ -42,3 +43,4 @@ pub use framing::{
 pub use headroom::{HeadroomBench, HeadroomBenchDiagnostics, HeadroomPassTime};
 pub use scope_diagnostics::{ScopeCounters, ScopeDiagnostics, ScopeEvents, ScopeResidency, ScopeResources};
 pub use white_balance::{ColdStartState, EstimateReading, WhiteBalanceDiagnostics, WhiteDelta, WhiteReading};
+pub use work_suppression::{GpuWorkSuppression, SuppressibleGpuWork};

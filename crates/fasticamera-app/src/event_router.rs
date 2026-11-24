@@ -336,8 +336,11 @@ impl EventRouter {
             );
         }
         // Экран камеры уступает место сценарию (если тот не просит его оставить); вернётся в `finish`.
-        self.camera_screen
-            .suspend_for_scenario(scenario.name(), scenario.camera_screen_policy(), &self.gpu);
+        self.camera_screen.suspend_for_scenario(
+            scenario.name(),
+            scenario.camera_screen_policy_for(&self.camera),
+            &self.gpu,
+        );
         // Повторы прежнего итога (и только что выданного «вытеснен») больше не нужны: скрипт уже
         // ждёт новый сценарий, и копия чужого итога не должна ему попасться.
         self.result_echo.cancel();

@@ -61,6 +61,8 @@ mod echo;
 mod raw_stream;
 #[path = "event_router_render_tests.rs"]
 mod render;
+#[path = "event_router_saturation_tests.rs"]
+mod saturation;
 #[path = "event_router_text_input_tests.rs"]
 mod text_input;
 #[path = "event_router_three_a_tests.rs"]

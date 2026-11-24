@@ -350,3 +350,106 @@ fn rare_opposite_sign_noise_does_not_reject_the_experiment_at_95_percent_agreeme
     );
     assert_eq!(report.discharge_sign, Some(DischargeSign::NegativeWhenDischarging));
 }
+
+// ---- отказ окна по состоянию, объявленный сценарием (16a) ----
+
+#[test]
+fn scenario_rejection_after_the_last_window_replaces_the_finished_verdict_but_keeps_windows_and_pairs() {
+    // Последнее окно закрывается внутри того же тика, что и `conclude()`: сценарий видит `Finished`, а уже потом
+    // судит состояние последнего окна. Отказ обязан перекрыть готовый вывод, а не потеряться.
+    let mut experiment = AbPowerExperiment::new(&settings(10_000, WARMUP_MS, 3), at_ms(0));
+    let windows = experiment.total_windows();
+    let samples = experiment_samples(windows, stage_current(600, 500, 0));
+    let end = i64::try_from(windows).expect("окна") * WINDOW_MS + 1_000;
+    assert_eq!(experiment.on_tick(at_ms(end), &samples), AbStep::Finished);
+    assert!(matches!(
+        experiment.report().expect("отчёт").contribution,
+        Contribution::Measured { .. }
+    ));
+
+    let reason = AbRejection::StateNotApplied {
+        index: 5,
+        stage: StageSetting::Off,
+    };
+    experiment.reject_window(reason);
+
+    let report = experiment.report().expect("отчёт");
+    assert_eq!(report.contribution, Contribution::Rejected { reason });
+    assert_eq!(report.windows.len(), 6, "окна тока сохранены");
+    assert_eq!(report.pairs.len(), 3, "пары сохранены");
+}
+
+#[test]
+fn scenario_rejection_mid_run_ends_the_experiment_at_the_next_tick() {
+    let mut experiment = AbPowerExperiment::new(&settings(10_000, WARMUP_MS, 3), at_ms(0));
+    assert!(matches!(experiment.on_tick(at_ms(100), &[]), AbStep::Measure { .. }));
+    experiment.reject_window(AbRejection::DisplayRefreshNotReached {
+        index: 0,
+        stage: StageSetting::On,
+    });
+    assert_eq!(experiment.on_tick(at_ms(200), &[]), AbStep::Finished);
+    let report = experiment.report().expect("отчёт");
+    assert!(matches!(
+        report.contribution,
+        Contribution::Rejected {
+            reason: AbRejection::DisplayRefreshNotReached { index: 0, .. }
+        }
+    ));
+}
+
+#[test]
+fn the_first_rejection_stays_and_scenario_rejections_are_told_apart_from_current_rejections() {
+    let mut experiment = AbPowerExperiment::new(&settings(10_000, WARMUP_MS, 3), at_ms(0));
+    // Зарядка — отказ тракта тока: сценарий обязан его отличать и прерывать остальные строки.
+    let _ = experiment.on_tick(at_ms(300), &[charging(0, 500)]);
+    let first = experiment.report().expect("отчёт").contribution;
+    assert!(matches!(
+        first,
+        Contribution::Rejected {
+            reason: AbRejection::Window { .. }
+        }
+    ));
+    experiment.reject_window(AbRejection::StateNotApplied {
+        index: 0,
+        stage: StageSetting::On,
+    });
+    assert_eq!(
+        experiment.report().expect("отчёт").contribution,
+        first,
+        "уже отвергнутый замер повторно не отвергается"
+    );
+    let Contribution::Rejected { reason } = first else {
+        panic!("отказ тока");
+    };
+    assert!(!reason.is_declared_by_scenario());
+    assert!(
+        AbRejection::StateNotApplied {
+            index: 1,
+            stage: StageSetting::Off
+        }
+        .is_declared_by_scenario()
+    );
+    assert!(
+        AbRejection::DisplayRefreshNotReached {
+            index: 1,
+            stage: StageSetting::Off
+        }
+        .is_declared_by_scenario()
+    );
+}
+
+#[test]
+fn scenario_rejection_kinds_serialize_to_the_names_the_table_and_the_checker_print() {
+    let state = serde_json::to_value(AbRejection::StateNotApplied {
+        index: 2,
+        stage: StageSetting::On,
+    })
+    .expect("json");
+    assert_eq!(state["kind"], "state_not_applied");
+    let display = serde_json::to_value(AbRejection::DisplayRefreshNotReached {
+        index: 2,
+        stage: StageSetting::On,
+    })
+    .expect("json");
+    assert_eq!(display["kind"], "display_refresh_not_reached");
+}

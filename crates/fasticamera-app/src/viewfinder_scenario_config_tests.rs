@@ -18,7 +18,7 @@ fn defaults_are_valid_and_cover_every_stage_plus_whole_viewfinder() {
         .iter()
         .filter_map(|row| match row {
             StageBudgetRowSetting::Stage(stage) => Some(stage.to_stage()),
-            StageBudgetRowSetting::WholeViewfinder => None,
+            _ => None,
         })
         .collect();
     assert_eq!(stages, IspStage::ALL, "порядок строк — порядок прохода");

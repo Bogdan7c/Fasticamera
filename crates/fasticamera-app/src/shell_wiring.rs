@@ -41,13 +41,14 @@ use crate::camera_service::CameraServices;
 use crate::camera_wiring::{CameraBackendParts, CameraLinks, RenderLinks, start_camera_with_links};
 use crate::event_router::{EventRouter, LogcatScenarioOutput, RouterParts, ScenarioStarter};
 use crate::flash_still_relay::FlashStillRelay;
-use crate::gpu_services::{GpuServices, ValidationState};
+use crate::gpu_services::{GpuDiagnostics, GpuServices, ValidationState};
 use crate::jni_boundary::run_guarded;
 use crate::lens_shading_profile::{LensShadingProfileError, embedded_lens_shading};
 use crate::look_startup::{catalog_environment, open_look_service};
 use crate::raw_stream_wiring::{RawStreamCreation, create_raw_stream, observe_stream};
 use crate::render_wiring::RenderRuntime;
 use crate::runtime_config::RuntimeConfig;
+use crate::saturation_bench::services::SaturationServices;
 use crate::scenario::observing::{ObservingScenario, PlatformFacts, ShellServices, ThermalListenerReport};
 use crate::still_android_wiring::assemble_still;
 use crate::text_input_broker::TextInputBroker;
@@ -112,6 +113,7 @@ pub fn ensure_installed(
     // Калибровка виньетирования вшита в сборку и сверяется с телефоном (`device.make/model`): битый профиль
     // останавливает запуск явной ошибкой, чужой телефон — пустой набор с записью в лог.
     let lens_shading = embedded_lens_shading(config.device())?;
+    let lens_shading_for_saturation = lens_shading.clone();
     // Ящики связи камеры с рендером один набор на процесс: AWB и наш AE. Камера получает свою половину,
     // рендер — свою (клоны делят состояние).
     let mut links = CameraLinks {
@@ -131,12 +133,15 @@ pub fn ensure_installed(
     );
     // Камера узнаёт, есть ли у нашего AE рендер: без него она получит вендорский AE (с предупреждением).
     links.render_auto_exposure = render_auto_exposure;
+    // Один набор диагностик на процесс: стенд насыщения (16a) берёт его долгоживущий контекст GPU.
+    let diagnostics = Arc::new(VulkanGpuDiagnostics::new(validation));
     let gpu = GpuServices::new(
         render.status,
-        Arc::new(VulkanGpuDiagnostics::new(validation)),
+        Arc::clone(&diagnostics) as Arc<dyn GpuDiagnostics>,
         config.render().clone(),
         render.control,
-    );
+    )
+    .with_saturation(SaturationServices::new(diagnostics, lens_shading_for_saturation));
     let flash_relay = Arc::clone(&links.flash_relay);
     let camera = start_android_camera(config.camera(), lens_shading, &raw_stream, links);
     // Снимок: настоящая служба, если есть рендер, камера и паспорт телефона; иначе явный запасной фейк.

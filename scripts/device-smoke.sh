@@ -2,8 +2,10 @@
 # Smoke-сценарий на телефоне: запуск по intent-параметру и проверка строки результата.
 #
 #   scripts/device-smoke.sh [--variant debug|release] [--no-build] [--timeout SEC] [--artifacts-dir DIR]
-#                           [--stages LIST] [--ab-window-ms MS] [--endurance-ms MS] [--exposure-controller own|vendor]
-#                           [--neutral-card] [--keep-captures] <сценарий>
+#                           [--stages LIST] [--surface PLACE] [--ab-window-ms MS] [--ab-pairs N] [--endurance-ms MS]
+#                           [--exposure-controller own|vendor] [--neutral-card] [--keep-captures] [--stop-app-after]
+#                           [--saturation-workloads LIST] [--saturation-measure-ms MS] [--saturation-warmup-ms MS]
+#                           <сценарий>
 #
 # Сценарии (--timeout в скобках): hello, panic (debug), lifecycle, permission (60), motion, platform,
 # render (120), render-lifecycle (400), ahb-import и gpu-fence (60); камера: camera-catalog (30, сверка с
@@ -15,6 +17,26 @@
 # --stages levels,tone,whole_viewfinder — подмножество; --ab-window-ms 15000 — короткие окна для мс GPU;
 # только на батарее, без кабеля); viewfinder-endurance
 # (720; 10 минут, троттлинг); video-headroom-bench (720; стенд V4 16:9@60, 120 Гц — скрипт касается экрана).
+# Цена работ GPU током 16a — viewfinder-stage-budget на НАСТОЯЩЕМ экране камеры. --surface bare_viewfinder (по умолчанию: экран
+# снят, как раньше) | photo_screen (экран остаётся, режим PHOTO) | calibrate_screen (экран остаётся, драйвер свайпом открывает
+# CALIBRATE: живой видоискатель + цветовой прибор на каждом кадре + стекло UI; в конце свайп обратно в PHOTO). Новые строки
+# --stages (имена через запятую вместе со старыми): color_scopes (только calibrate_screen: приборы вкл/выкл), ui_overlay
+# (photo_screen, calibrate_screen: рисование UI вкл/выкл), whole_product (photo_screen, calibrate_screen: продукт против «камеры
+# без нашей обработки и UI», даёт базу camera_without_product_gpu), display_120hz (все места: 120 Гц с удерживаемым касанием
+# против 60 Гц; драйвер держит палец ФОНОВОЙ командой input на всё окно A, окно проверяет реальную частоту показа). Недопустимое
+# сочетание строки и места — отказ Rust при initialize ДО замера. --ab-pairs N — число пар A/B на строку (по умолчанию 3,
+# ≈ 6 окон по 60 с). Примеры: --surface photo_screen --stages ui_overlay,whole_product --timeout 1500 viewfinder-stage-budget;
+# --surface calibrate_screen --stages color_scopes,ui_overlay,whole_product,display_120hz --timeout 2400 viewfinder-stage-budget.
+# --stop-app-after — после получения результата сделать am force-stop нашего пакета (иначе приложение остаётся на экране и греет
+# телефон между замерами; по умолчанию выключено). Внешнее питание отвергает замер, как и раньше.
+# Стенд насыщения 16a: gpu-saturation-bench (по умолчанию 14 работ × ~16 с + паузы ≈ 5 мин, --timeout 600; камера на время замера
+# закрыта, экран снят, GPU делит только стенд; таблица «работа → к/с → мс/кадр → вердикт» в результате, проходы, шкала по шагам,
+# тепло и состав сцены — строки FASTICAMERA_DETAIL, начало каждой работы — стадия workload_started для совмещения с журналом тепла).
+# --saturation-workloads LIST — имена работ через запятую (viewfinder, scopes_waveform, scopes_parade, scopes_vectorscope_ycbcr,
+# scopes_vectorscope_oklab, scopes_parade_gray, scopes_vectorscope_gray, compositor, display_photo, display_photo_recompose,
+# display_calibrate, display_calibrate_recompose, headroom_v4, still; неизвестное имя — отказ Rust при initialize),
+# --saturation-measure-ms MS и --saturation-warmup-ms MS — окно замера и прогрев каждой работы (умолчание 10000 и 3000).
+# Пример: --variant release --timeout 300 --saturation-workloads viewfinder,compositor --saturation-measure-ms 5000 gpu-saturation-bench.
 # 3A 08: 3a (150; тап в центр и 4 угла, ручная выдержка 1/1000, EV, блокировка AE/AF, брекетинг 4 кадра, AWB;
 # скриншоты на стадии awb_ready, --neutral-card — серая карта; для вопроса о регионах фокуса навести на сцену
 # с ближним и дальним планом). 3A 08c: ae-trace (150; наш AE по ступенькам света: фото 36 с, видео 36 с, статика 20 с;
@@ -59,7 +81,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
 usage() {
-    sed -n '2,54p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,77p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
 }
 
 variant="debug"
@@ -67,9 +89,15 @@ should_build=true
 timeout_seconds=30
 artifacts_dir=""
 stages=""
+surface=""
 ab_window_ms=""
+ab_pairs=""
+stop_app_after=false
 endurance_ms=""
 exposure_controller=""
+saturation_workloads=""
+saturation_measure_ms=""
+saturation_warmup_ms=""
 neutral_card=false
 keep_captures=false
 scenario=""
@@ -81,9 +109,15 @@ while [[ $# -gt 0 ]]; do
         --timeout) timeout_seconds="${2:-}"; shift 2 ;;
         --artifacts-dir) artifacts_dir="${2:-}"; shift 2 ;;
         --stages) stages="${2:-}"; shift 2 ;;
+        --surface) surface="${2:-}"; shift 2 ;;
         --ab-window-ms) ab_window_ms="${2:-}"; shift 2 ;;
+        --ab-pairs) ab_pairs="${2:-}"; shift 2 ;;
+        --stop-app-after) stop_app_after=true; shift ;;
         --endurance-ms) endurance_ms="${2:-}"; shift 2 ;;
         --exposure-controller) exposure_controller="${2:-}"; shift 2 ;;
+        --saturation-workloads) saturation_workloads="${2:-}"; shift 2 ;;
+        --saturation-measure-ms) saturation_measure_ms="${2:-}"; shift 2 ;;
+        --saturation-warmup-ms) saturation_warmup_ms="${2:-}"; shift 2 ;;
         --neutral-card) neutral_card=true; shift ;;
         --keep-captures) keep_captures=true; shift ;;
         -h|--help) usage; exit "$EXIT_OK" ;;
@@ -107,12 +141,30 @@ if ! package="$(package_for_variant "$variant")"; then
     exit "$EXIT_USAGE"
 fi
 # Строки таблицы — только имена через запятую (их проверит Rust при initialize); ничего, что сломает adb shell.
-if [[ -n "$stages" && ! "$stages" =~ ^[a-z_]+(,[a-z_]+)*$ ]]; then
+if [[ -n "$stages" && ! "$stages" =~ ^[a-z0-9_]+(,[a-z0-9_]+)*$ ]]; then
     log_error "--stages ждёт имена строк через запятую (levels,tone,whole_viewfinder), а не '$stages'"
     exit "$EXIT_USAGE"
 fi
 if [[ -n "$stages" && "$scenario" != "viewfinder-stage-budget" ]]; then
     log_error "--stages имеет смысл только для viewfinder-stage-budget"
+    exit "$EXIT_USAGE"
+fi
+# Место замера — одно из трёх имён (их точный набор проверит и Rust при initialize).
+if [[ -n "$surface" && ! "$surface" =~ ^(bare_viewfinder|photo_screen|calibrate_screen)$ ]]; then
+    log_error "--surface ждёт bare_viewfinder, photo_screen или calibrate_screen, а не '$surface'"
+    exit "$EXIT_USAGE"
+fi
+if [[ -n "$surface" && "$scenario" != "viewfinder-stage-budget" ]]; then
+    log_error "--surface имеет смысл только для viewfinder-stage-budget"
+    exit "$EXIT_USAGE"
+fi
+# Число пар A/B — только целое положительное число; границы проверит Rust при initialize.
+if [[ -n "$ab_pairs" && ! "$ab_pairs" =~ ^[1-9][0-9]*$ ]]; then
+    log_error "--ab-pairs ждёт целое число пар, а не '$ab_pairs'"
+    exit "$EXIT_USAGE"
+fi
+if [[ -n "$ab_pairs" && "$scenario" != "viewfinder-stage-budget" ]]; then
+    log_error "--ab-pairs имеет смысл только для viewfinder-stage-budget"
     exit "$EXIT_USAGE"
 fi
 # Длина окна A/B — только целое число мс; границы (длиннее прогрева) проверит Rust при initialize.
@@ -136,6 +188,24 @@ fi
 # Имя автоэкспозиции — own или vendor; точный набор значений и тут, и в Rust (ExposureControllerKind).
 if [[ -n "$exposure_controller" && ! "$exposure_controller" =~ ^(own|vendor)$ ]]; then
     log_error "--exposure-controller ждёт own или vendor, а не '$exposure_controller'"
+    exit "$EXIT_USAGE"
+fi
+# Стенд насыщения: имена работ — только строчные буквы, цифры и «_» через запятую (набор имён проверит Rust при initialize);
+# длины окон — целые миллисекунды (границы проверит Rust).
+if [[ -n "$saturation_workloads" && ! "$saturation_workloads" =~ ^[a-z0-9_]+(,[a-z0-9_]+)*$ ]]; then
+    log_error "--saturation-workloads ждёт имена работ через запятую (viewfinder,compositor), а не '$saturation_workloads'"
+    exit "$EXIT_USAGE"
+fi
+if [[ -n "$saturation_measure_ms" && ! "$saturation_measure_ms" =~ ^[1-9][0-9]*$ ]]; then
+    log_error "--saturation-measure-ms ждёт целое число миллисекунд, а не '$saturation_measure_ms'"
+    exit "$EXIT_USAGE"
+fi
+if [[ -n "$saturation_warmup_ms" && ! "$saturation_warmup_ms" =~ ^[1-9][0-9]*$ ]]; then
+    log_error "--saturation-warmup-ms ждёт целое число миллисекунд, а не '$saturation_warmup_ms'"
+    exit "$EXIT_USAGE"
+fi
+if [[ ( -n "$saturation_workloads" || -n "$saturation_measure_ms" || -n "$saturation_warmup_ms" ) && "$scenario" != "gpu-saturation-bench" ]]; then
+    log_error "--saturation-* имеют смысл только для gpu-saturation-bench"
     exit "$EXIT_USAGE"
 fi
 if [[ "$neutral_card" == true && "$scenario" != "viewfinder" && "$scenario" != "3a" ]]; then
@@ -195,8 +265,13 @@ stop_other_variant "$serial" "$variant" || {
 }
 since_epoch="$(device_epoch_timestamp "$serial")"
 start_activity "$serial" "$package" -e scenario "$scenario" ${stages:+-e stages "$stages"} \
+    ${surface:+-e surface "$surface"} \
     ${ab_window_ms:+-e ab_window_ms "$ab_window_ms"} \
+    ${ab_pairs:+-e ab_pairs "$ab_pairs"} \
     ${endurance_ms:+-e endurance_ms "$endurance_ms"} \
+    ${saturation_workloads:+-e saturation_workloads "$saturation_workloads"} \
+    ${saturation_measure_ms:+-e saturation_measure_ms "$saturation_measure_ms"} \
+    ${saturation_warmup_ms:+-e saturation_warmup_ms "$saturation_warmup_ms"} \
     ${exposure_controller:+-e exposure_controller "$exposure_controller"} ||
     exit "$EXIT_BUILD_OR_INSTALL_FAILED"
 
@@ -221,5 +296,12 @@ if python3 "$FASTICAMERA_ROOT/scripts/smoke_wait.py" \
     smoke_exit_code=0
 else
     smoke_exit_code=$?
+fi
+# После результата (любого исхода) остановить НАШЕ приложение: оно остаётся на экране и греет телефон между замерами.
+# Ошибка остановки печатается, но код выхода сценария не меняет.
+if [[ "$stop_app_after" == true ]]; then
+    log_step "остановка $package после результата"
+    adb -s "$serial" shell am force-stop "$package" ||
+        log_error "не удалось остановить $package: остановите вручную (adb -s $serial shell am force-stop $package)"
 fi
 exit "$smoke_exit_code"

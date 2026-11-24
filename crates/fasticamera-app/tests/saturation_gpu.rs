@@ -1,0 +1,323 @@
+//! Стенд насыщения приложения на настоящем GPU ПК (RADV, полная validation): ВСЕ работы каталога через раннер.
+//!
+//! Что проверяется (результат, а не вызов):
+//! * по каждой работе есть цифра пропускной способности (`Measured`), кадры в окне > 0, метки проходов ожидаемые;
+//! * работы показа рисуют НАСТОЯЩИЙ экран камеры: стеклянные группы, глифы, фигуры; раздел CALIBRATE рисует живую
+//!   картинку прибора (`live_images_drawn > 0`, `live_images_missing == 0`);
+//! * `*_recompose` строят пирамиду размытия один раз, «новый кадр на каждом кадре» — на каждом кадре;
+//! * после раннера живые объекты Vulkan вернулись к исходному числу, validation не нашла ошибок;
+//! * списки рисования PHOTO и CALIBRATE различаются по составу и оба валидны.
+//!
+//! Печатает таблицу цифр: `cargo test -p fasticamera-app --release --test saturation_gpu -- --nocapture`.
+
+#![cfg(not(target_os = "android"))]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "в тестах падение и есть способ сообщить о провале"
+)]
+
+use std::sync::Mutex;
+use std::time::Duration;
+
+use camera_contract::fixtures::{camera_id, front_camera, main_wide_camera, ultra_wide_camera};
+use camera_contract::ids::{LensFacing, LensRole};
+use camera_contract::lens_shading::LensShadingCalibrations;
+use camera_core::role_classifier::classify_catalog;
+use camera_core::zoom::{ZoomConfig, build_zoom_catalog};
+use camera_screen::{ActiveLens, LensFacts, LensSwitch};
+use fasticamera::camera_screen_config::CameraScreenConfig;
+use fasticamera::look_service::LookHandle;
+use fasticamera::look_startup::catalog_environment;
+use fasticamera::power_measurement::ThermalSnapshot;
+use fasticamera::saturation_bench::catalog::{CATALOG, CatalogEntry, DisplayScreen, WorkloadKind, find_entry};
+use fasticamera::saturation_bench::gpu_executor::GpuWorkloadExecutor;
+use fasticamera::saturation_bench::inputs::{InputSources, ProductInputs, SensorSource, gather_inputs};
+use fasticamera::saturation_bench::report::{RowOutcome, RunSummary, WorkloadRow};
+use fasticamera::saturation_bench::runner::{BenchRunner, PauseOutcome, RunClock, RunEvent, ThermalProbe};
+use fasticamera::saturation_bench::screen_scene::{ScreenPlan, SurfaceSizePx};
+use fasticamera::saturation_bench::summary::table_row;
+use gpu_vulkan::context::{GpuContext, GpuContextConfig};
+use gpu_vulkan::device::DeviceProfile;
+use gpu_vulkan::saturation::CancelToken;
+use gpu_vulkan::swapchain::FramesInFlight;
+use gpu_vulkan::validation::ValidationMode;
+use look_presets::PresetStoreConfig;
+use render_loop::config::RenderLoopConfig;
+
+const SKIP_ENV: &str = "FASTICAMERA_SKIP_GPU_TESTS";
+
+/// Замер честен, только когда GPU занят одним тестом.
+static GPU_LOCK: Mutex<()> = Mutex::new(());
+
+fn gpu_context_or_skip() -> Option<GpuContext> {
+    match GpuContext::new(&GpuContextConfig::new(DeviceProfile::Headless, ValidationMode::FULL)) {
+        Ok(context) => Some(context),
+        Err(error) if std::env::var(SKIP_ENV).as_deref() == Ok("1") => {
+            eprintln!("ПРОПУСК GPU-теста: {error} ({SKIP_ENV}=1)");
+            None
+        }
+        Err(error) => panic!("GPU недоступен: {error}. Установите {SKIP_ENV}=1, чтобы пропустить GPU-тесты осознанно"),
+    }
+}
+
+/// Входы продукта на ПК: запасной сенсор, библиотека пресетов в памяти, шкала объективов OnePlus 11 (как у golden).
+fn product_inputs() -> ProductInputs {
+    let render = RenderLoopConfig::default();
+    let look = LookHandle::in_memory(&PresetStoreConfig::default(), &catalog_environment(&render)).expect("библиотека");
+    let screen = CameraScreenConfig::default();
+    let lens_shading = LensShadingCalibrations::none();
+    let mut inputs = gather_inputs(&InputSources {
+        engine_status: None,
+        lens_shading: &lens_shading,
+        render_config: &render,
+        look: Some(&look),
+        screen: &screen,
+    });
+    let classified = classify_catalog(
+        vec![main_wide_camera(), ultra_wide_camera(), front_camera()],
+        &camera_core::config::CameraEngineConfig::default().roles,
+    )
+    .expect("образцы камер без повторов");
+    inputs.camera_facts.lens = LensFacts {
+        catalog: Some(std::sync::Arc::new(build_zoom_catalog(
+            &classified.catalog,
+            &ZoomConfig::default(),
+        ))),
+        active: Some(ActiveLens {
+            camera: camera_id("2"),
+            role: LensRole::Wide,
+            facing: LensFacing::Back,
+        }),
+        switch: LensSwitch::Steady,
+        last_failure: None,
+    };
+    inputs
+}
+
+struct NoPause;
+
+impl RunClock for NoPause {
+    fn elapsed(&self) -> Duration {
+        Duration::ZERO
+    }
+    fn pause(&self, _duration: Duration, _cancel: &CancelToken) -> PauseOutcome {
+        PauseOutcome::Elapsed
+    }
+}
+
+struct NoThermal;
+
+impl ThermalProbe for NoThermal {
+    fn snapshot(&self) -> ThermalSnapshot {
+        ThermalSnapshot {
+            status: None,
+            headroom: None,
+            error: Some("на ПК теплового сервиса нет".to_owned()),
+        }
+    }
+}
+
+fn short_bench() -> gpu_vulkan::saturation::SaturationConfig {
+    gpu_vulkan::saturation::SaturationConfig {
+        frames_in_flight: FramesInFlight::new(2).unwrap(),
+        warmup: Duration::from_millis(100),
+        measure: Duration::from_millis(300),
+        timeline_step: Duration::from_millis(100),
+        fence_timeout: Duration::from_secs(30),
+    }
+}
+
+fn run_entries(context: &GpuContext, entries: &[&'static CatalogEntry]) -> RunSummary {
+    let mut executor = GpuWorkloadExecutor::new(
+        context.clone(),
+        product_inputs(),
+        short_bench(),
+        SurfaceSizePx::ONEPLUS_11,
+    );
+    let mut events: Vec<RunEvent> = Vec::new();
+    let mut observer = |event: RunEvent| events.push(event);
+    let summary = BenchRunner {
+        executor: &mut executor,
+        clock: &NoPause,
+        thermal: &NoThermal,
+        observer: &mut observer,
+        cooldown_between: Duration::ZERO,
+    }
+    .run(entries, &CancelToken::new());
+    drop(executor);
+    assert_eq!(
+        events.len(),
+        entries.len() * 2,
+        "на каждую работу событие начала и конца"
+    );
+    summary
+}
+
+fn row<'a>(summary: &'a RunSummary, name: &str) -> &'a WorkloadRow {
+    summary.rows.iter().find(|row| row.name == name).expect("строка работы")
+}
+
+fn expected_labels(entry: &CatalogEntry) -> Vec<&'static str> {
+    match entry.kind {
+        WorkloadKind::Viewfinder => vec!["isp-end"],
+        WorkloadKind::Scopes { .. } => vec!["accumulate-end", "render-end"],
+        WorkloadKind::Compositor => vec!["compose"],
+        WorkloadKind::Display { .. } => vec!["compose", "pyramid", "ui"],
+        WorkloadKind::HeadroomV4 => isp_vulkan::saturation::HeadroomSaturationConfig::default().pass_labels(),
+        // У снимка времён по проходам нет по построению (в `photo` нет timestamp-запросов): каждый кадр «без замера».
+        WorkloadKind::Still => Vec::new(),
+    }
+}
+
+#[test]
+fn every_workload_of_the_catalog_is_measured_on_a_real_gpu_and_released_one_by_one() {
+    let _serial = GPU_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(context) = gpu_context_or_skip() else { return };
+    let baseline = context.live_objects();
+    let entries: Vec<&'static CatalogEntry> = CATALOG.iter().collect();
+
+    let summary = run_entries(&context, &entries);
+
+    println!(
+        "\nСтенд насыщения приложения, {}, прогрев 100 мс, окно 300 мс, 2 слота (validation FULL: цифры завышены)",
+        context.capabilities().device_name
+    );
+    println!("| работа | к/с | мс/кадр | вердикт | проходы (медиана, мс) |");
+    for row in &summary.rows {
+        let passes = row.measurement().map_or_else(String::new, |measurement| {
+            measurement
+                .passes
+                .iter()
+                .map(|pass| format!("{} {:.3}", pass.label, pass.median_ms))
+                .collect::<Vec<_>>()
+                .join("; ")
+        });
+        println!("| {} | {passes} |", table_row(row).replace('|', " | "));
+    }
+
+    assert!(!summary.cancelled);
+    assert_eq!(summary.rows.len(), 14);
+    for (entry, row) in entries.iter().zip(&summary.rows) {
+        let RowOutcome::Measured { measurement } = &row.outcome else {
+            panic!("{}: нет цифры: {:?}", entry.name, row.outcome);
+        };
+        assert!(measurement.measured_frames > 0, "{}: в окне нет кадров", entry.name);
+        assert!(measurement.frames_per_second.unwrap() > 0.0, "{}", entry.name);
+        let labels: Vec<&str> = measurement.passes.iter().map(|pass| pass.label).collect();
+        let expected = expected_labels(entry);
+        if expected.is_empty() {
+            assert!(labels.is_empty(), "{}: проходов у снимка нет", entry.name);
+            assert!(
+                measurement.unmeasured_pass_frames > 0,
+                "{}: кадры «без замера» посчитаны",
+                entry.name
+            );
+        } else {
+            assert_eq!(labels, expected, "{}: метки проходов", entry.name);
+        }
+        assert!(!measurement.timeline_fps.is_empty(), "{}: шкалы нет", entry.name);
+    }
+
+    // Работы показа рисуют настоящий экран, а не пустой.
+    for name in [
+        "display_photo",
+        "display_photo_recompose",
+        "display_calibrate",
+        "display_calibrate_recompose",
+    ] {
+        let row = row(&summary, name);
+        let scene = row.scene.expect("состав сцены");
+        let ui = row.ui.expect("счётчики UI");
+        assert!(
+            scene.glass_groups > 0 && scene.texts > 0,
+            "{name}: пустая сцена {scene:?}"
+        );
+        assert!(
+            ui.glass_groups > 0 && ui.glyph_instances > 0 && ui.shape_instances > 0,
+            "{name}: UI не нарисован {ui:?}"
+        );
+    }
+    let photo = row(&summary, "display_photo");
+    let calibrate = row(&summary, "display_calibrate");
+    assert_eq!(photo.scene.unwrap().live_images, 0, "в PHOTO прибора нет");
+    assert_eq!(photo.ui.unwrap().live_images_drawn, 0);
+    assert!(
+        calibrate.scene.unwrap().live_images > 0,
+        "в CALIBRATE есть панель прибора"
+    );
+    let calibrate_ui = calibrate.ui.unwrap();
+    assert!(
+        calibrate_ui.live_images_drawn > 0,
+        "живая картинка прибора нарисована: {calibrate_ui:?}"
+    );
+    assert_eq!(
+        calibrate_ui.live_images_missing, 0,
+        "картинка прибора найдена на каждом кадре"
+    );
+    assert_ne!(photo.scene, calibrate.scene, "экраны различаются по составу");
+
+    // Каденция фона: пирамида строится на каждом кадре или один раз.
+    for name in ["display_photo", "display_calibrate"] {
+        let ui = row(&summary, name).ui.unwrap();
+        assert_eq!(
+            ui.pyramid_rebuilds, ui.frames_recorded,
+            "{name}: новый кадр камеры на каждом кадре"
+        );
+    }
+    for name in ["display_photo_recompose", "display_calibrate_recompose"] {
+        let ui = row(&summary, name).ui.unwrap();
+        assert_eq!(
+            ui.pyramid_rebuilds, 1,
+            "{name}: тот же кадр камеры — пирамида строится один раз"
+        );
+        assert!(ui.pyramid_reuses > 0, "{name}");
+    }
+
+    // Работы освобождены одна за другой: к концу живых объектов столько же, сколько до начала.
+    context.wait_idle().unwrap();
+    assert_eq!(context.live_objects().differences_from(&baseline), Vec::new());
+    assert_eq!(
+        context.validation_report().errors,
+        0,
+        "validation: {:?}",
+        context.validation_report()
+    );
+}
+
+#[test]
+fn photo_and_calibrate_draw_lists_are_valid_and_differ_by_what_the_real_screen_draws() {
+    let inputs = product_inputs();
+    let plan = ScreenPlan::build(&inputs, SurfaceSizePx::ONEPLUS_11).expect("экраны строятся");
+    let photo = plan.scene(DisplayScreen::Photo);
+    let calibrate = plan.scene(DisplayScreen::Calibrate);
+    photo.draw_list.validate().expect("список PHOTO валиден");
+    calibrate.draw_list.validate().expect("список CALIBRATE валиден");
+    assert!(photo.summary.glass_groups > 0 && calibrate.summary.glass_groups > 0);
+    // В CALIBRATE есть панель прибора (живая картинка) и колонка ручек (больше значков и подписей).
+    assert_eq!(photo.summary.live_images, 0);
+    assert!(
+        calibrate.summary.live_images > 0,
+        "панель прибора: {:?}",
+        calibrate.summary
+    );
+    assert!(photo.scope_request.is_none());
+    let request = calibrate.scope_request.expect("раздел просит прибор");
+    assert!(request.image_size.width() > 0 && request.image_size.height() > 0);
+    assert_ne!(photo.summary, calibrate.summary);
+    assert_ne!(
+        photo.viewfinder, calibrate.viewfinder,
+        "в CALIBRATE видоискатель на весь экран"
+    );
+    assert_eq!((calibrate.viewfinder.width, calibrate.viewfinder.height), (1080, 2412));
+    assert!(matches!(inputs.sensor_source, SensorSource::Fallback { .. }));
+    // Умолчание каталога не перепутало имя и вид.
+    assert_eq!(
+        find_entry("display_calibrate").unwrap().kind,
+        WorkloadKind::Display {
+            screen: DisplayScreen::Calibrate,
+            rhythm: fasticamera::saturation_bench::catalog::BackdropRhythm::NewFrameEveryFrame,
+        }
+    );
+}

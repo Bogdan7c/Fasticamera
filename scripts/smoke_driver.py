@@ -45,12 +45,15 @@ from pathlib import Path
 from typing import Protocol, TypeVar
 
 import smoke_screen
+from smoke_driver_background import BackgroundGestureError, BackgroundGestures, SpawnProcess, spawn_subprocess
 from smoke_driver_steps import (  # noqa: F401  (реэкспорт: тесты и вызывающие берут типы из smoke_driver)
     _GESTURE_KINDS,
     DurationMs,
     ScreenFraction,
     Step,
     StepKind,
+    _duration,
+    _fraction,
 )
 from smoke_ui import TapPoint, UiDumpParseError, find_deny_button
 
@@ -166,6 +169,13 @@ SCENARIO_STEPS: dict[str, dict[str, tuple[Step, ...]]] = {
     # нажатие, свайп — точки в долях экрана из плана касаний Rust; клавиша громкости). Стадию шага Rust выдаёт ровно
     # один раз и ждёт следствий на экране и в камере, поэтому драйвер не знает ни точек, ни порядка шагов.
     "screen": {"screen_gesture": (Step(StepKind.STAGE_GESTURE),)},
+    # viewfinder-stage-budget (16a): ``budget_gesture`` — свайп входа в CALIBRATE и выхода назад (жест в самой стадии);
+    # ``budget_hold_touch`` — удерживаемый палец окна A строки ``display_120hz``: ФОНОВЫЙ процесс на всё окно, драйвер
+    # продолжает читать logcat. Поле ``needs_new_press`` = false — нажатие предыдущего окна ещё держится (соседние A).
+    "viewfinder-stage-budget": {
+        "budget_gesture": (Step(StepKind.STAGE_GESTURE),),
+        "budget_hold_touch": (Step(StepKind.STAGE_GESTURE_BACKGROUND, only_if_true="needs_new_press"),),
+    },
     # platform (08c): Rust показывает тестовую подсказку владельцу и держит её ``operator_prompt_hold_ms`` (2 с).
     # Скрипт снимает один скриншот, пока она на экране: по нему видно, что плашка дошла до экрана и стоит
     # внизу, а не в центре кадра (центр меряет ``--neutral-card``). Сценарий не ждёт скриншота — хватает запаса 2 с.
@@ -212,6 +222,10 @@ class DeviceActions(Protocol):
     def swipe(self, start: ScreenFraction, end: ScreenFraction, duration: DurationMs) -> None: ...
 
     def press_volume_up(self) -> None: ...
+
+    def hold_point_in_background(self, point: ScreenFraction, duration: DurationMs) -> None: ...
+
+    def wait_for_background_gestures(self) -> None: ...
 
 
 def fraction_to_pixel(point: ScreenFraction, width_px: int, height_px: int) -> TapPoint:
@@ -324,7 +338,9 @@ class AdbDeviceActions:
         clock: Callable[[], float] = time.monotonic,
         run_adb_bytes: AdbBytesRunner = run_adb_subprocess_bytes,
         artifacts_dir: Path | None = None,
+        spawn_adb: SpawnProcess = spawn_subprocess,
     ) -> None:
+        self._background = BackgroundGestures(spawn_adb, clock)
         self._serial = serial
         self._package = package
         self._run_adb = run_adb
@@ -411,16 +427,21 @@ class AdbDeviceActions:
 
     def tap_point(self, point: ScreenFraction) -> None:
         """Касание в точку, заданную долями экрана (``input tap``)."""
+        self.wait_for_background_gestures()
         pixel = fraction_to_pixel(point, *self._read_screen_size())
         self._tap(pixel)
 
     def long_press_point(self, point: ScreenFraction, duration: DurationMs) -> None:
         """Долгое касание: ``input swipe x y x y <мс>`` (стандартный способ удержания без отдельной команды)."""
+        self.wait_for_background_gestures()
         pixel = fraction_to_pixel(point, *self._read_screen_size())
         self._swipe_pixels(pixel, pixel, duration, f"долгое нажатие в ({pixel.x}, {pixel.y})")
 
     def swipe(self, start: ScreenFraction, end: ScreenFraction, duration: DurationMs) -> None:
-        """Свайп из точки в точку за ``duration`` мс: ``input swipe x1 y1 x2 y2 <мс>``."""
+        """Свайп из точки в точку за ``duration`` мс: ``input swipe x1 y1 x2 y2 <мс>``.
+
+        Прежде дожидается фоновых нажатий: два «пальца» от двух процессов ``input`` конфликтуют, и свайп проглатывается."""
+        self.wait_for_background_gestures()
         width_px, height_px = self._read_screen_size()
         start_pixel = fraction_to_pixel(start, width_px, height_px)
         end_pixel = fraction_to_pixel(end, width_px, height_px)
@@ -428,6 +449,27 @@ class AdbDeviceActions:
             start_pixel, end_pixel, duration,
             f"свайп ({start_pixel.x}, {start_pixel.y}) -> ({end_pixel.x}, {end_pixel.y})",
         )
+
+    def hold_point_in_background(self, point: ScreenFraction, duration: DurationMs) -> None:
+        """Удержание пальца в точке ФОНОВЫМ процессом (одна команда ``input swipe x y x y <мс>``): драйвер сразу
+        возвращается к logcat. Конец и сбой нажатия проверяет ``wait_for_background_gestures``. Прежнее нажатие, если оно
+        ещё держится, дожидается до запуска нового: поверх друг друга пальцы не стреляют."""
+        self.wait_for_background_gestures()
+        pixel = fraction_to_pixel(point, *self._read_screen_size())
+        command = self.adb_command(
+            "shell", "input", "swipe", str(pixel.x), str(pixel.y), str(pixel.x), str(pixel.y), str(duration.value)
+        )
+        try:
+            self._background.start(command, f"удержание в ({pixel.x}, {pixel.y})", duration.value / 1000.0)
+        except BackgroundGestureError as error:
+            raise DriverError(str(error)) from error
+
+    def wait_for_background_gestures(self) -> None:
+        """Конец прогона: дожидается фоновых нажатий; упавшее или зависшее — ``DriverError``."""
+        try:
+            self._background.wait_all()
+        except BackgroundGestureError as error:
+            raise DriverError(str(error)) from error
 
     def press_volume_up(self) -> None:
         """Клавиша громкости «+» (``input keyevent KEYCODE_VOLUME_UP``): затвор с клавиши в сценарии ``screen``."""
@@ -608,18 +650,30 @@ class StageDriver:
             )
         elif step.kind is StepKind.STAGE_GESTURE:
             self._run_stage_gesture(stage_event)
+        elif step.kind is StepKind.STAGE_GESTURE_BACKGROUND:
+            self._run_stage_gesture(stage_event, background=True)
         else:  # pragma: no cover - новый StepKind без ветки должен падать громко
             raise DriverError(f"неизвестный шаг {step.kind!r}")
 
-    def _run_stage_gesture(self, stage_event: dict) -> None:
-        """Жест из поля ``gesture`` стадии. Любая неточность описания — ``DriverError`` с именем шага, а не касание наугад."""
-        step_name = stage_event.get("step", "?")
+    def finish(self) -> None:
+        """Конец прогона: дождаться фоновых нажатий (``DriverError``, если одно упало или зависло)."""
+        self._actions.wait_for_background_gestures()
+
+    def _run_stage_gesture(self, stage_event: dict, background: bool = False) -> None:
+        """Жест из поля ``gesture`` стадии. Любая неточность описания — ``DriverError`` с именем шага, а не касание наугад.
+
+        ``background`` — долгое нажатие запускается фоновым процессом; другой жест в таком шаге — ошибка описания."""
+        step_name = stage_event.get("step") or stage_event.get("row") or "?"
         gesture = stage_event.get("gesture")
         if not isinstance(gesture, dict):
             raise DriverError(f"шаг {step_name}: в стадии нет поля gesture (получено {gesture!r})")
         kind = gesture.get("kind")
+        if background and kind != "long_press":
+            raise DriverError(f"шаг {step_name}: в фоне выполняется только long_press, получено {kind!r}")
         try:
-            if kind == "tap":
+            if kind == "long_press" and background:
+                self._actions.hold_point_in_background(_fraction(gesture, "x", "y"), _duration(gesture, "hold_ms"))
+            elif kind == "tap":
                 self._actions.tap_point(_fraction(gesture, "x", "y"))
             elif kind == "long_press":
                 self._actions.long_press_point(_fraction(gesture, "x", "y"), _duration(gesture, "hold_ms"))
@@ -640,24 +694,3 @@ class StageDriver:
         if value is None:
             raise DriverError("у шага-жеста нет обязательной нагрузки")
         return value
-
-
-def _number(gesture: dict, field: str) -> float:
-    """Число поля жеста (``bool`` — не число)."""
-    value = gesture.get(field)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"поле {field} должно быть числом, получено {value!r}")
-    return float(value)
-
-
-def _fraction(gesture: dict, x_field: str, y_field: str) -> ScreenFraction:
-    """Точка жеста в долях экрана; диапазон [0, 1] проверяет ``ScreenFraction``."""
-    return ScreenFraction(_number(gesture, x_field), _number(gesture, y_field))
-
-
-def _duration(gesture: dict, field: str) -> DurationMs:
-    """Длительность жеста в целых мс; положительность проверяет ``DurationMs``."""
-    value = _number(gesture, field)
-    if value != int(value):
-        raise ValueError(f"поле {field} должно быть целым числом мс, получено {value!r}")
-    return DurationMs(int(value))

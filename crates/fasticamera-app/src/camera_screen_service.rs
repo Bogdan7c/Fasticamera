@@ -379,6 +379,17 @@ impl CameraScreenService {
         self.capture.phase_cursor_now()
     }
 
+    /// Конфиг экрана (только чтение): стенд насыщения строит списки рисования теми же настройками, что продукт.
+    pub fn config(&self) -> &CameraScreenConfig {
+        &self.config
+    }
+
+    /// Библиотека пресетов вида (только чтение ручки): стенд берёт активный рецепт продукта. `None` — в сборке
+    /// нет хранилища пресетов.
+    pub fn look_handle(&self) -> Option<&LookHandle> {
+        self.look.as_ref()
+    }
+
     /// Сколько раз экран ставился (свежий `CameraScreen` на каждую установку).
     pub fn installs(&self) -> u64 {
         self.installs

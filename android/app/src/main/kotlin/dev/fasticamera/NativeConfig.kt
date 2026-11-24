@@ -14,6 +14,14 @@ import org.json.JSONObject
  * (intent-параметр `stages`, например `levels,tone,whole_viewfinder`). Неизвестное имя Rust
  * отвергает при initialize — опечатка видна сразу, а не после шести минут замера.
  *
+ * `stageBudgetSurface` — место замера `viewfinder-stage-budget` на один запуск (intent-параметр `surface`, поле
+ * `camera.scenarios.viewfinder.stage_budget.surface`, сессия 16a): `bare_viewfinder` (умолчание), `photo_screen` или
+ * `calibrate_screen`. Kotlin значение не разбирает, а передаёт строкой как есть; неизвестное имя и строку таблицы, которая
+ * на этом месте не мерится, Rust отвергает при initialize.
+ *
+ * `abPairs` — число пар A/B замера тока на строку на один запуск (intent-параметр `ab_pairs`, поле
+ * `camera.scenarios.power.ab.pairs`, 16a). Границы проверяет Rust.
+ *
  * `abWindowMs` — длина одного окна A/B замера тока на один запуск (intent-параметр `ab_window_ms`,
  * секция `camera.scenarios.power.ab.window_ms`). Короткое окно (например 15000) годится, чтобы
  * быстро снять миллисекунды GPU всех стадий; ток в таком окне Rust честно пометит «не различим».
@@ -38,6 +46,11 @@ import org.json.JSONObject
  * есть; неизвестное имя и модель, которой ещё нет на GPU, Rust отвергает при initialize громко (ошибка называет поле
  * `viewfinder.tone`), а не берёт молча умолчание.
  *
+ * `saturationWorkloads` / `saturationMeasureMs` / `saturationWarmupMs` — список работ, окно замера и прогрев сценария
+ * `gpu-saturation-bench` на один запуск (intent-параметры `saturation_workloads`, `saturation_measure_ms`,
+ * `saturation_warmup_ms`, секция `camera.scenarios.saturation`, 16a P4b). Имена работ Kotlin не разбирает, а передаёт
+ * как есть: неизвестное имя и неверные числа Rust отвергает при initialize.
+ *
  * `untrustedOpticalAxisCameras` — ID камер, чьей оптической оси из калибровки HAL верить нельзя (профиль
  * телефона из `fasticamera.zoom.untrustedOpticalAxisCameras`, поле `camera.engine.zoom.untrusted_optical_axis_cameras`).
  * Пустой список в JSON не попадает: Rust берёт пустое умолчание. ID проверяет Rust.
@@ -46,8 +59,13 @@ data class NativeConfig(
     val buildType: String,
     val logFilter: String,
     val stageBudgetRows: List<String>? = null,
+    val stageBudgetSurface: String? = null,
     val abWindowMs: Long? = null,
+    val abPairs: Long? = null,
     val enduranceMs: Long? = null,
+    val saturationWorkloads: List<String>? = null,
+    val saturationMeasureMs: Long? = null,
+    val saturationWarmupMs: Long? = null,
     val exposureController: String? = null,
     val toneContrast: String? = null,
     val toneDisplayMiddleGray: String? = null,
@@ -62,16 +80,32 @@ data class NativeConfig(
             .put("device", JSONObject().put("make", Build.MANUFACTURER).put("model", Build.MODEL))
         // Частичные секции: остальные поля camera.* Rust берёт по умолчанию.
         val scenarios = JSONObject()
-        stageBudgetRows?.let { rows ->
-            val stageBudget = JSONObject().put("rows", JSONArray(rows))
+        // Строки и место замера живут в одной секции `stage_budget`: собираем её целиком, чтобы одно не затёрло другое.
+        val stageBudget = JSONObject()
+        stageBudgetRows?.let { rows -> stageBudget.put("rows", JSONArray(rows)) }
+        stageBudgetSurface?.let { name -> stageBudget.put("surface", name.trim()) }
+        if (stageBudget.length() > 0) {
             scenarios.put("viewfinder", JSONObject().put("stage_budget", stageBudget))
         }
-        // Обе настройки живут в одной секции `power`: собираем её целиком, чтобы одна не затёрла другую.
+        // Настройки живут в одних секциях `power` и `power.ab`: собираем их целиком, чтобы одна не затёрла другую.
         val power = JSONObject()
-        abWindowMs?.let { windowMs -> power.put("ab", JSONObject().put("window_ms", windowMs)) }
+        val ab = JSONObject()
+        abWindowMs?.let { windowMs -> ab.put("window_ms", windowMs) }
+        abPairs?.let { pairs -> ab.put("pairs", pairs) }
+        if (ab.length() > 0) {
+            power.put("ab", ab)
+        }
         enduranceMs?.let { durationMs -> power.put("endurance", JSONObject().put("duration_ms", durationMs)) }
         if (power.length() > 0) {
             scenarios.put("power", power)
+        }
+        // Секция стенда насыщения: список работ и длины окон собираются в один объект.
+        val saturation = JSONObject()
+        saturationWorkloads?.let { names -> saturation.put("workloads", JSONArray(names)) }
+        saturationMeasureMs?.let { measureMs -> saturation.put("measure_ms", measureMs) }
+        saturationWarmupMs?.let { warmupMs -> saturation.put("warmup_ms", warmupMs) }
+        if (saturation.length() > 0) {
+            scenarios.put("saturation", saturation)
         }
         val camera = JSONObject()
         if (scenarios.length() > 0) {
@@ -107,8 +141,23 @@ data class NativeConfig(
         /** Intent-параметр со строками таблицы `viewfinder-stage-budget` через запятую. */
         const val EXTRA_STAGE_BUDGET_ROWS = "stages"
 
+        /** Intent-параметр с местом замера `viewfinder-stage-budget` (`bare_viewfinder`, `photo_screen`, `calibrate_screen`). */
+        const val EXTRA_STAGE_BUDGET_SURFACE = "surface"
+
         /** Intent-параметр с длиной окна A/B замера тока, мс (строка с целым числом). */
         const val EXTRA_AB_WINDOW_MS = "ab_window_ms"
+
+        /** Intent-параметр с числом пар A/B замера тока на строку (строка с целым числом). */
+        const val EXTRA_AB_PAIRS = "ab_pairs"
+
+        /** Intent-параметр со списком работ `gpu-saturation-bench` через запятую (имена каталога). */
+        const val EXTRA_SATURATION_WORKLOADS = "saturation_workloads"
+
+        /** Intent-параметр с окном замера каждой работы `gpu-saturation-bench`, мс (строка с целым числом). */
+        const val EXTRA_SATURATION_MEASURE_MS = "saturation_measure_ms"
+
+        /** Intent-параметр с прогревом каждой работы `gpu-saturation-bench`, мс (строка с целым числом). */
+        const val EXTRA_SATURATION_WARMUP_MS = "saturation_warmup_ms"
 
         /** Intent-параметр с длиной прогона `viewfinder-endurance`, мс (строка с целым числом). */
         const val EXTRA_ENDURANCE_MS = "endurance_ms"
@@ -132,11 +181,23 @@ data class NativeConfig(
                 ?.split(',')
                 ?.map { it.trim() }
                 ?.filter { it.isNotEmpty() },
+            // Нет параметра — null, место замера не попадает в JSON, Rust берёт `bare_viewfinder`.
+            stageBudgetSurface = intent.getStringExtra(EXTRA_STAGE_BUDGET_SURFACE),
             // Не число — параметр не применяется, а initialize идёт с окном по умолчанию: скрипт
             // device-smoke.sh пропускает сюда только цифры, так что это лишь защита от ручного вызова.
             abWindowMs = intent.getStringExtra(EXTRA_AB_WINDOW_MS)?.toLongOrNull(),
             // Так же, как окно A/B: не число — умолчание конфига (скрипт пропускает только цифры).
+            abPairs = intent.getStringExtra(EXTRA_AB_PAIRS)?.toLongOrNull(),
+            // Так же, как окно A/B: не число — умолчание конфига (скрипт пропускает только цифры).
             enduranceMs = intent.getStringExtra(EXTRA_ENDURANCE_MS)?.toLongOrNull(),
+            // Нет параметра — null, поле в JSON не попадает, Rust берёт умолчание (все работы каталога).
+            saturationWorkloads = intent.getStringExtra(EXTRA_SATURATION_WORKLOADS)
+                ?.split(',')
+                ?.map { it.trim() }
+                ?.filter { it.isNotEmpty() },
+            // Так же, как окно A/B: не число — умолчание конфига (скрипт пропускает только цифры).
+            saturationMeasureMs = intent.getStringExtra(EXTRA_SATURATION_MEASURE_MS)?.toLongOrNull(),
+            saturationWarmupMs = intent.getStringExtra(EXTRA_SATURATION_WARMUP_MS)?.toLongOrNull(),
             // Нет параметра — null, поле в JSON не попадает, Rust берёт умолчание (own).
             exposureController = intent.getStringExtra(EXTRA_EXPOSURE_CONTROLLER),
             // Нет параметра — null, секция тона в JSON не попадает, Rust берёт умолчание.

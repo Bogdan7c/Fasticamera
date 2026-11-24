@@ -104,6 +104,22 @@ pub enum AbRejection {
         index: usize,
         evidence: DischargeSignEvidence,
     },
+    /// Сценарий отвергнул окно: заданное состояние работы не подтвердилось диагностикой рендера (16a). Что именно
+    /// не подтвердилось, знает сценарий (оно лежит в его подробностях): здесь только номер окна и положение.
+    StateNotApplied { index: usize, stage: StageSetting },
+    /// Сценарий отвергнул окно: частота показа не достигла целевой (16a, строка `display_120hz`).
+    DisplayRefreshNotReached { index: usize, stage: StageSetting },
+}
+
+impl AbRejection {
+    /// Отказ объявил сценарий по состоянию окна, а не тракт тока: ток при этом исправен, и остальные строки таблицы
+    /// мерить можно.
+    pub fn is_declared_by_scenario(&self) -> bool {
+        matches!(
+            self,
+            Self::StateNotApplied { .. } | Self::DisplayRefreshNotReached { .. }
+        )
+    }
 }
 
 /// Вклад стадии.
@@ -218,6 +234,22 @@ impl AbPowerExperiment {
     /// Отчёт, когда замер окончен.
     pub fn report(&self) -> Option<&AbPowerReport> {
         self.report.as_ref()
+    }
+
+    /// Сценарий отвергает окно по состоянию (16a): вывод замера становится `Rejected` и замер кончается (дальше мерить
+    /// то, что не подтверждено, бессмысленно). Можно вызвать и после последнего окна: готовый вывод заменяется, окна
+    /// и пары сохраняются. Первый отказ остаётся: уже отвергнутый замер повторно не отвергается.
+    pub fn reject_window(&mut self, reason: AbRejection) {
+        if self
+            .report
+            .as_ref()
+            .is_some_and(|report| matches!(report.contribution, Contribution::Rejected { .. }))
+        {
+            return;
+        }
+        self.open = None;
+        let pairs = self.report.take().map(|report| report.pairs).unwrap_or_default();
+        self.report = Some(self.build_report(Contribution::Rejected { reason }, pairs));
     }
 
     /// Тик сценария: свежие показания и текущий момент `CLOCK_MONOTONIC`.

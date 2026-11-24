@@ -16,6 +16,7 @@ use render_loop::config::RenderLoopConfig;
 use render_loop::thread::RenderStatus;
 use serde::Serialize;
 
+use crate::saturation_bench::services::SaturationServices;
 use crate::viewfinder_control::{RenderControl, RenderScenarioClaim};
 
 /// Включён ли validation layer: в release его нет, и «0 ошибок» там ничего не доказывает.
@@ -224,6 +225,9 @@ pub struct GpuServices {
     pub(crate) control: Arc<dyn RenderControl>,
     /// Что из рендера тронул текущий сценарий: это вернёт `render_scenario_ended`.
     pub(crate) scenario_claim: Arc<RenderScenarioClaim>,
+    /// GPU-контекст стенда насыщения и карта теней устройства (16a, P4b). По умолчанию — «недоступно»;
+    /// настоящее подставляет сборка приложения через [`GpuServices::with_saturation`].
+    pub saturation: SaturationServices,
 }
 
 impl GpuServices {
@@ -240,6 +244,14 @@ impl GpuServices {
             render_config,
             control,
             scenario_claim: Arc::default(),
+            saturation: SaturationServices::unavailable("стенд насыщения не подключён к GPU-сервисам"),
         }
+    }
+
+    /// Те же сервисы с настоящими источниками стенда насыщения.
+    #[must_use]
+    pub fn with_saturation(mut self, saturation: SaturationServices) -> Self {
+        self.saturation = saturation;
+        self
     }
 }

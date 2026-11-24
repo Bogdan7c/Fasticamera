@@ -126,6 +126,42 @@ fn pixels_per_point(logical_width_px: u32) -> Result<f32, ui_core::input::PointS
     Ok(scale.pixels_per_point() as f32)
 }
 
+/// Логический размер цели и масштаб pt этого кадра для запроса к источнику UI. Непригодный размер или масштаб — честный
+/// пропуск кадра UI (причина в диагностике), `None`.
+fn frame_geometry(frame: &FrameTarget, ui: &mut UiOverlayFrame<'_>) -> Option<(PxSize, f32)> {
+    let logical = match logical_size(frame) {
+        Ok(logical) => logical,
+        Err(error) => {
+            ui.state.note_frame_skipped(&format!("логический размер цели: {error}"));
+            return None;
+        }
+    };
+    let px_per_pt = match pixels_per_point(logical.width) {
+        Ok(px_per_pt) => px_per_pt,
+        Err(error) => {
+            ui.state.note_frame_skipped(&format!("масштаб pt: {error}"));
+            return None;
+        }
+    };
+    Some((PxSize::new(logical.width as f32, logical.height as f32), px_per_pt))
+}
+
+/// Запрос к источнику UI на этот кадр: одинаков для записи и для подавленного кадра (источник не должен видеть
+/// разницы, контракт «раз на показанный кадр»).
+fn frame_request(
+    ui: &UiOverlayFrame<'_>,
+    logical_px: PxSize,
+    px_per_pt: f32,
+    continuity: BackdropContinuity,
+) -> UiFrameRequest {
+    UiFrameRequest {
+        present_time: ui.present_time,
+        logical_size: logical_px,
+        px_per_pt,
+        backdrop: continuity,
+    }
+}
+
 /// Прямоугольник в логических пикселях -> прямоугольник UI.
 fn px_rect(rect: gpu_vulkan::compositor::LogicalRect) -> PxRect {
     PxRect {
@@ -139,6 +175,30 @@ impl CameraPipelines {
     /// вызывающий этого не делает: продукт без UI объектов рендера UI не держит.
     pub fn prepare_ui_overlay(&mut self) -> Result<(), UiRenderError> {
         self.ui.ensure_renderer().map(|_renderer| ())
+    }
+
+    /// Кадр с подавленным рисованием UI (замер A/B, `SuppressibleGpuWork::UiOverlayDrawing`): источник получает свой
+    /// `produce_frame` ровно как на обычном кадре (контракт «раз на показанный кадр», разбор касаний не ломается), но
+    /// GPU-запись прохода UI не делается: ни создания рендера, ни пирамиды фона, ни загрузки экземпляров, ни меток
+    /// времени. Картинка прибора UI не отдаётся (`note_picture_handed_to_ui` не зовётся): слот приборов
+    /// ничем не занят и освобождается обычным путём. Без источника — ничего.
+    pub fn skip_ui_overlay_drawing(
+        &self,
+        frame: &FrameTarget,
+        ui: &mut UiOverlayFrame<'_>,
+        continuity: BackdropContinuity,
+    ) {
+        if !ui.state.is_active() {
+            return;
+        }
+        let Some((logical_px, px_per_pt)) = frame_geometry(frame, ui) else {
+            return;
+        };
+        let request = frame_request(ui, logical_px, px_per_pt, continuity);
+        // Список рисования выбрасывается: цена источника остаётся в замере, цена GPU — нет.
+        if ui.state.produce_draw_list(&request).is_some() {
+            ui.state.note_frame_suppressed();
+        }
     }
 
     /// Записывает UI этого кадра поверх уже записанной компоновки (или чёрного кадра). Возвращает число
@@ -162,19 +222,8 @@ impl CameraPipelines {
             return 0;
         }
         // Размеры считаем до всего остального: от них зависит запрос к источнику.
-        let logical = match logical_size(frame) {
-            Ok(logical) => logical,
-            Err(error) => {
-                ui.state.note_frame_skipped(&format!("логический размер цели: {error}"));
-                return 0;
-            }
-        };
-        let px_per_pt = match pixels_per_point(logical.width) {
-            Ok(px_per_pt) => px_per_pt,
-            Err(error) => {
-                ui.state.note_frame_skipped(&format!("масштаб pt: {error}"));
-                return 0;
-            }
+        let Some((logical_px, px_per_pt)) = frame_geometry(frame, ui) else {
+            return 0;
         };
         if let Err(error) = self.ui.ensure_renderer() {
             tracing::error!(target: LOG_TARGET, %error, "рендер UI не создан: источник снят");
@@ -189,13 +238,7 @@ impl CameraPipelines {
             );
             return 0;
         }
-        let logical_px = PxSize::new(logical.width as f32, logical.height as f32);
-        let request = UiFrameRequest {
-            present_time: ui.present_time,
-            logical_size: logical_px,
-            px_per_pt,
-            backdrop: continuity,
-        };
+        let request = frame_request(ui, logical_px, px_per_pt, continuity);
         let Some(draw_list) = ui.state.produce_draw_list(&request) else {
             return 0;
         };
@@ -275,3 +318,6 @@ impl CameraPipelines {
         }
     }
 }
+
+#[cfg(test)]
+mod suppression_tests;

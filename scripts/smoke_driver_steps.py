@@ -29,6 +29,9 @@ class StepKind(Enum):
     STAGE_GESTURE = "stage_gesture"
     """Жест описывает сама стадия (поле ``gesture``: tap / long_press / swipe / volume_up с долями экрана).
     Так Rust-сценарий ``screen`` остаётся единственным владельцем точек касаний (план в его конфиге)."""
+    STAGE_GESTURE_BACKGROUND = "stage_gesture_background"
+    """Долгое нажатие из поля ``gesture`` стадии запускается ФОНОВЫМ процессом: драйвер не ждёт его конца и продолжает
+    читать logcat (16a, удерживаемое касание строки ``display_120hz``). Допустим только жест ``long_press``."""
 
 
 @dataclass(frozen=True)
@@ -96,3 +99,24 @@ class Step:
 
 _GESTURE_KINDS = (StepKind.TAP_POINT, StepKind.LONG_PRESS_POINT, StepKind.SWIPE)
 """Шаги-жесты в произвольную точку экрана (нагрузка в ``Step.point`` и далее)."""
+
+
+def _number(gesture: dict, field: str) -> float:
+    """Число поля жеста (``bool`` — не число)."""
+    value = gesture.get(field)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"поле {field} должно быть числом, получено {value!r}")
+    return float(value)
+
+
+def _fraction(gesture: dict, x_field: str, y_field: str) -> ScreenFraction:
+    """Точка жеста в долях экрана; диапазон [0, 1] проверяет ``ScreenFraction``."""
+    return ScreenFraction(_number(gesture, x_field), _number(gesture, y_field))
+
+
+def _duration(gesture: dict, field: str) -> DurationMs:
+    """Длительность жеста в целых мс; положительность проверяет ``DurationMs``."""
+    value = _number(gesture, field)
+    if value != int(value):
+        raise ValueError(f"поле {field} должно быть целым числом мс, получено {value!r}")
+    return DurationMs(int(value))

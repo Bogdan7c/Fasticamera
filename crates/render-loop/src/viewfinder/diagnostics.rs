@@ -16,6 +16,7 @@ use super::framing::EffectivePlacement;
 use super::headroom::HeadroomBenchDiagnostics;
 use super::scope_diagnostics::ScopeDiagnostics;
 use super::white_balance::WhiteBalanceDiagnostics;
+use super::work_suppression::GpuWorkSuppression;
 use crate::thread::DurationSummary;
 use crate::ui_overlay::UiOverlayDiagnostics;
 
@@ -159,4 +160,7 @@ pub struct ViewfinderDiagnostics {
     pub continuity: ContinuityDiagnostics,
     /// Цветовые приборы (14h): запрос, объекты GPU, счётчики, время GPU, отзывы запроса.
     pub scopes: ScopeDiagnostics,
+    /// Какие работы GPU сейчас подавлены замером A/B (16a); `NONE` — продукт. По нему сценарий замера сверяет, что
+    /// «состояние окна применилось», а не просто команда доставлена.
+    pub gpu_work_suppression: GpuWorkSuppression,
 }

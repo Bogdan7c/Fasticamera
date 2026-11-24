@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use super::framing::ViewfinderFraming;
 use super::headroom::HeadroomBench;
+use super::work_suppression::GpuWorkSuppression;
 
 /// Чем видоискатель рисует кадры камеры.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -66,6 +67,13 @@ pub enum ViewfinderCommand {
     /// Поэтому `Show` при неустановленном источнике — `Rejected` (запрос не запоминается). Экран обязан слать `Show`
     /// ПОСЛЕ установки своего источника (`UiOverlayCommand::Install`); `Install` и любой уход источника отзывают запрос.
     Scopes(ScopeIntent),
+    /// Замер A/B «не выполнять работу GPU» (16a): не выполнять РОВНО эти работы; продукт — `GpuWorkSuppression::NONE`.
+    /// Заменяет прежний набор целиком, повтор того же набора — `AlreadyInEffect`. Это отдельная маска рендера, а не
+    /// команда экрана: запрос приборов, установленный источник UI, рисовальщик, стадии ISP, вид и основа тона не
+    /// меняются, а после снятия подавления работа возобновляется сама (приборы — по запомненному запросу экрана,
+    /// без нового `Scopes(Show)`). Подавленные приборы не считаются, подавленный UI не записывается в GPU, но его
+    /// источник по-прежнему вызывается раз на показанный кадр.
+    SuppressGpuWork(GpuWorkSuppression),
 }
 
 /// Чем закончилась команда.

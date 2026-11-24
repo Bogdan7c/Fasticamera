@@ -15,7 +15,7 @@ use super::super::pipelines::{
 use super::slot::effective_stages;
 use super::transition::{TransitionFrame, backdrop_of};
 use super::{CameraSession, Content, LOG_TARGET, Recorded, SubmissionSerial};
-use crate::viewfinder::ViewfinderPainter;
+use crate::viewfinder::{SuppressibleGpuWork, ViewfinderPainter};
 use crate::vulkan_backend::camera::continuity::Composed;
 use crate::vulkan_backend::camera::pipelines::{ShowFrameAs, mirror_of};
 use crate::vulkan_backend::camera::ui_state::UiOverlayFrame;
@@ -219,6 +219,15 @@ impl CameraSession {
         ui: &mut UiOverlayFrame<'_>,
         continuity: BackdropContinuity,
     ) {
+        // Замер A/B (16a): подавленный UI не записывается в GPU, но источник по-прежнему получает свой кадр.
+        if self
+            .settings
+            .gpu_work_suppression
+            .suppresses(SuppressibleGpuWork::UiOverlayDrawing)
+        {
+            pipelines.skip_ui_overlay_drawing(frame, ui, continuity);
+            return;
+        }
         let timing_failures = pipelines.record_ui_overlay(frame, ui, &recording.screen, serial, continuity);
         self.viewfinder.counters_mut().gpu_timing_failures += timing_failures;
     }

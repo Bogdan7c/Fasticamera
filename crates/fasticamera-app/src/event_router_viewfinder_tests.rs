@@ -75,6 +75,8 @@ struct Effective {
     bench: HeadroomBench,
     selection: PresentTargetSelection,
     adpf: AdpfMode,
+    /// Маска подавленной работы GPU (16a): последняя команда `SuppressGpuWork`.
+    suppression: render_loop::viewfinder::GpuWorkSuppression,
 }
 
 fn effective(adjustments: &[RenderAdjustment]) -> Effective {
@@ -86,6 +88,7 @@ fn effective(adjustments: &[RenderAdjustment]) -> Effective {
         // а не догадка: возврат после сценария обязан привести ровно к нему.
         selection: PresentTargetSelection::of_config(&PresentTargetConfig::default()),
         adpf: AdpfMode::Disabled,
+        suppression: render_loop::viewfinder::GpuWorkSuppression::NONE,
     };
     for adjustment in adjustments {
         match adjustment {
@@ -100,6 +103,7 @@ fn effective(adjustments: &[RenderAdjustment]) -> Effective {
                 | ViewfinderCommand::SetToneBase(_)
                 | ViewfinderCommand::Scopes(_),
             ) => {}
+            RenderAdjustment::Viewfinder(ViewfinderCommand::SuppressGpuWork(mask)) => current.suppression = *mask,
             RenderAdjustment::PresentTarget(setting) => {
                 current.selection = PresentTargetSelection {
                     policy: setting.policy,
@@ -139,6 +143,7 @@ fn fresh_viewfinder() -> ViewfinderDiagnostics {
         tone_base: look_contract::ToneBaseModel::Agx,
         // Приборы закрыты: эти тесты их не касаются.
         scopes: Default::default(),
+        gpu_work_suppression: render_loop::viewfinder::GpuWorkSuppression::NONE,
         display_color_space: Some(ViewfinderColorSpace::DisplayP3),
         storage: Some(ViewfinderStorage::TenBitUnorm),
         output_extent: Some(ViewfinderExtent {
@@ -214,6 +219,16 @@ fn mirror_ui_overlay(
 
 impl RenderMirror {
     fn start(harness: &Harness, faults: MirrorFaults) -> Self {
+        Self::start_with_surface(harness, faults, None)
+    }
+
+    /// То же, плюс модель продуктового экрана 16a (подавление работы GPU, приборы, частота от касания); `None` —
+    /// прежнее поведение зеркала.
+    fn start_with_surface(
+        harness: &Harness,
+        faults: MirrorFaults,
+        mut surface: Option<surface_support::SurfaceMirror>,
+    ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let render = Arc::clone(&harness.render);
@@ -297,6 +312,19 @@ impl RenderMirror {
                     if let Some(display) = &mut status.display {
                         display.refresh_cycle = Some(Duration::from_secs_f64(1.0 / f64::from(refresh_hz)));
                     }
+                    if let (Some(surface), Some(viewfinder)) = (surface.as_mut(), status.backend.viewfinder.as_mut()) {
+                        let presented = status
+                            .backend
+                            .camera
+                            .as_ref()
+                            .map_or(0, |camera| camera.camera_frames_presented);
+                        surface.apply(&control, viewfinder, presented);
+                        if let Some(display) = &mut status.display {
+                            display.refresh_cycle = Some(Duration::from_secs_f64(
+                                1.0 / surface.effective_refresh_hz(f64::from(refresh_hz)),
+                            ));
+                        }
+                    }
                 });
                 thread::sleep(Duration::from_millis(1));
             }
@@ -327,15 +355,25 @@ impl BatteryPump {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let control = Arc::clone(&harness.control);
+        let shell = Arc::clone(&harness.shell);
         let join = thread::spawn(move || {
             while !thread_stop.load(Ordering::SeqCst) {
                 let now = effective(&control.recorded());
-                let product = now.painter == ViewfinderPainter::Isp && now.stages == IspStageSet::ALL;
+                // Запрошенные 120 Гц стоят телефону ещё 10 мА (строка `display_120hz`, 16a); без запроса — как раньше.
+                let high_refresh = shell
+                    .frame_rates
+                    .lock()
+                    .expect("замок")
+                    .last()
+                    .is_some_and(|hertz| *hertz >= 120.0);
+                let product = now.painter == ViewfinderPainter::Isp
+                    && now.stages == IspStageSet::ALL
+                    && now.suppression.is_none();
                 let discharge_ma = if product {
                     CURRENT_WITH_STAGE_MA
                 } else {
                     CURRENT_WITHOUT_STAGE_MA
-                };
+                } + if high_refresh { 10 } else { 0 };
                 if let Ok(at) = monotonic_now() {
                     // Опрос ещё не запущен — показание некуда класть, это нормально.
                     let _ = battery.push_sample(BatterySample {
@@ -458,6 +496,8 @@ mod capture_support;
 mod glass;
 #[path = "event_router_viewfinder_latency_tests.rs"]
 mod latency;
+#[path = "event_router_viewfinder_surface_support.rs"]
+mod surface_support;
 #[path = "event_router_zoom_tests.rs"]
 mod zoom;
 
@@ -588,3 +628,5 @@ fn viewfinder_smoke_over_isp_target_passes_with_a_note_in_the_result_line() {
 
 #[path = "event_router_viewfinder_budget_tests.rs"]
 mod budget;
+#[path = "event_router_viewfinder_surface_tests.rs"]
+mod surface;

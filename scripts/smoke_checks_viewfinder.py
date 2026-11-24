@@ -29,6 +29,26 @@ PROFILE_COUNT = 2
 TABLE_COLUMNS = 4
 """Столбцы таблицы решения 45: стадия | мс GPU (медиана / p95) | Δ мА | вывод."""
 
+STAGE_BUDGET_SURFACES = ("bare_viewfinder", "photo_screen", "calibrate_screen")
+"""Места замера `viewfinder-stage-budget` (контракт с `stage_budget_surface_config.rs`, snake_case)."""
+
+STAGE_BUDGET_ROW_SURFACES = {
+    "color_scopes": ("calibrate_screen",),
+    "ui_overlay": ("photo_screen", "calibrate_screen"),
+    "whole_product": ("photo_screen", "calibrate_screen"),
+}
+"""Строки 16a, допустимые не везде (остальные строки — стадии, `whole_viewfinder`, `display_120hz` — на всех местах).
+Rust отвергает недопустимое сочетание ещё при initialize; здесь независимая перепроверка результата."""
+
+STAGE_BUDGET_BASELINES = {
+    "whole_viewfinder": ("camera_without_isp", "«весь видоискатель»", "«камера без ISP»"),
+    "whole_product": ("camera_without_product_gpu", "«вся наша работа»", "«камера без нашей работы GPU»"),
+}
+"""Строка, из B-окон которой берётся абсолютная база: имя строки базы в таблице и слова для сообщения."""
+
+STAGE_BUDGET_REJECTION_REASONS = frozenset({"state_not_applied", "display_refresh_not_reached"})
+"""Причины отказа окна по состоянию (16a): строка с такой причиной в вердикте не `measured`."""
+
 STREAMING_STATE = "streaming"
 
 VIEWFINDER_PACINGS = frozenset({"latest_wins", "jitter_buffer"})
@@ -230,7 +250,8 @@ def _profile_knob_problems(profiles: object) -> list[str]:
 
 
 def check_viewfinder_stage_budget(result: dict) -> list[str]:
-    """``viewfinder-stage-budget``: таблица по строке на каждую запрошенную стадию, по 4 столбца."""
+    """``viewfinder-stage-budget``: таблица по строке на каждую запрошенную строку, по 4 столбца, база для строк
+    «весь видоискатель» и «вся наша работа», место замера и (на экране калибровки) запрос прибора."""
     problems, report = _report_problem(result)
     if problems:
         return problems
@@ -238,16 +259,54 @@ def check_viewfinder_stage_budget(result: dict) -> list[str]:
     requested = report.get("requested_rows")
     if not isinstance(table, list) or not isinstance(requested, list) or not requested:
         return [f"нет таблицы или списка строк (table={table!r}, requested_rows={requested!r})"]
-    measured = [line for line in table if isinstance(line, str) and not line.startswith("camera_without_isp")]
+    baseline_names = tuple(baseline for baseline, _row_words, _baseline_words in STAGE_BUDGET_BASELINES.values())
+    measured = [
+        line for line in table if isinstance(line, str) and not line.startswith(baseline_names)
+    ]
     if len(measured) != len(requested):
         problems.append(f"строк таблицы {len(measured)}, запрошено {len(requested)}")
     for line in table:
         if not isinstance(line, str) or len(line.split(" | ")) != TABLE_COLUMNS:
             problems.append(f"строка таблицы не из {TABLE_COLUMNS} столбцов: {line!r}")
-    if "whole_viewfinder" in requested and not any(
-        isinstance(line, str) and line.startswith("camera_without_isp") for line in table
-    ):
-        problems.append("есть «весь видоискатель», но нет строки «камера без ISP»")
+    for row, (baseline, row_words, baseline_words) in STAGE_BUDGET_BASELINES.items():
+        if row in requested and not any(isinstance(line, str) and line.startswith(baseline) for line in table):
+            problems.append(f"есть {row_words}, но нет строки {baseline_words} ({baseline})")
+    problems.extend(_stage_budget_surface_problems(report, requested))
+    problems.extend(_stage_budget_rejection_problems(table))
+    return problems
+
+
+def _stage_budget_surface_problems(report: dict, requested: list) -> list[str]:
+    """Место замера названо, строки на нём допустимы, а на экране калибровки назван прибор и возможности f32."""
+    surface = report.get("surface")
+    if surface not in STAGE_BUDGET_SURFACES:
+        return [f"место замера surface={surface!r}, ожидалось одно из {list(STAGE_BUDGET_SURFACES)}"]
+    problems = [
+        f"строка {row} не мерится на месте {surface} (допустимо: {', '.join(allowed)})"
+        for row, allowed in STAGE_BUDGET_ROW_SURFACES.items()
+        if row in requested and surface not in allowed
+    ]
+    if surface == "calibrate_screen":
+        scopes = _dict(report.get("scopes"))
+        if not isinstance(scopes.get("request"), dict):
+            problems.append("на экране калибровки в отчёте нет запроса прибора (scopes.request)")
+        if not isinstance(scopes.get("float32_controls"), dict):
+            problems.append("на экране калибровки в отчёте нет возможностей f32 (scopes.float32_controls)")
+    return problems
+
+
+def _stage_budget_rejection_problems(table: list) -> list[str]:
+    """Строка с отказом окна по состоянию — проблема с названной причиной, а не «измерено» и не безымянный отказ."""
+    problems = []
+    for line in table:
+        if not isinstance(line, str):
+            continue
+        parts = line.split(" | ")
+        verdict = parts[-1].strip() if parts else ""
+        if verdict.startswith("rejected: "):
+            reason = verdict[len("rejected: "):]
+            kind = "состояние не подтвердилось" if reason in STAGE_BUDGET_REJECTION_REASONS else "ток не измерен"
+            problems.append(f"строка {parts[0]}: окно отвергнуто ({kind}): {reason}")
     return problems
 
 

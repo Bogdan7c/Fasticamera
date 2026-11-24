@@ -66,6 +66,8 @@ fn gpu(index: usize, isp_p50: Option<f64>, total_p50: f64) -> GpuWindowSample {
         isp_dispatch: isp_p50.map(time),
         frame_total: Some(time(total_p50)),
         setting_in_effect: true,
+        ui_overlay: None,
+        scopes: None,
     }
 }
 
@@ -197,6 +199,8 @@ fn observation(rows: Vec<StageBudgetRow>, requested: Vec<&'static str>) -> Stage
         },
         requested_rows: requested,
         camera_without_isp: CameraWithoutIspRow::from_rows(&rows),
+        camera_without_product_gpu: None,
+        surface: SurfaceReport::plain(crate::stage_budget_surface_config::StageBudgetSurface::BareViewfinder),
         rows,
         gpu_window_frames: 600,
         undelivered: Vec::new(),

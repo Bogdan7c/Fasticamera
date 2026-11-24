@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use shell_contract::thermal::ThermalStatus;
 
 use crate::camera_scenario_config::{LensRoleSetting, ReadoutSetting, ResolvedStep};
+use crate::screen_scenario_config::ScreenPoint;
+use crate::stage_budget_surface_config::{StageBudgetSurface, validate_rows_for_surface};
 use crate::viewfinder_autostart::ViewfinderModeConfig;
 use crate::viewfinder_latency_profile::{
     LatencyProfileConfig, LatencyProfilesError, default_latency_profiles, validate_latency_profiles,
@@ -93,10 +95,12 @@ impl IspStageSetting {
     }
 }
 
-/// Строка таблицы «стадия → мс GPU → мА» (решение 45).
+/// Строка таблицы «работа → мс GPU → мА» (решение 45; с 16a — и работы продуктового экрана).
 ///
-/// В JSON — строка с именем: `"levels"`, …, `"awb_statistics"`, `"whole_viewfinder"` (так её проще
-/// передать intent-параметром `stages` через Kotlin).
+/// В JSON — строка с именем: `"levels"`, …, `"awb_statistics"`, `"whole_viewfinder"`, `"color_scopes"`,
+/// `"ui_overlay"`, `"whole_product"`, `"display_120hz"` (так её проще передать intent-параметром `stages` через
+/// Kotlin). Каждая строка описывает ПАРУ состояний работы A и B; что именно в паре — в
+/// `scenario::camera::stage_budget_states`, где строка допустима — в `stage_budget_surface_config`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub enum StageBudgetRowSetting {
@@ -105,10 +109,20 @@ pub enum StageBudgetRowSetting {
     /// «Весь видоискатель»: A = ISP со всеми стадиями, B = отладочная мозаика 05. Строка «камера без
     /// ISP» (абсолютные числа мозаики) берётся из B-окон этой же строки — отдельного замера не нужно.
     WholeViewfinder,
+    /// Цена цветовых приборов (16a): A = продукт, B = приборы не считаются. Только на экране калибровки.
+    ColorScopes,
+    /// Цена рисования UI поверх видоискателя (16a): A = продукт, B = проход UI не пишется в GPU.
+    UiOverlay,
+    /// Вся наша обработка и UI (16a): A = продукт, B = отладочная мозаика без приборов и без рисования UI. Строка
+    /// «камера без нашей GPU-работы» берётся из B-окон этой же строки.
+    WholeProduct,
+    /// Цена частоты экрана (16a): A = 120 Гц с удерживаемым касанием, B = 60 Гц без касаний.
+    Display120Hz,
 }
 
 impl StageBudgetRowSetting {
-    /// Порядок по умолчанию: все стадии прохода, затем весь видоискатель.
+    /// Порядок по умолчанию: все стадии прохода, затем весь видоискатель. Строки 16a в умолчание НЕ входят: они
+    /// допустимы не на каждом месте замера, а умолчание обязано быть верным для голого видоискателя.
     pub fn default_rows() -> Vec<Self> {
         IspStageSetting::ALL
             .into_iter()
@@ -117,17 +131,33 @@ impl StageBudgetRowSetting {
             .collect()
     }
 
+    /// Все строки, которые умеет сценарий (умолчание + строки 16a): по этому списку имя из конфига ищется.
+    pub fn all_rows() -> Vec<Self> {
+        let mut rows = Self::default_rows();
+        rows.extend([
+            Self::ColorScopes,
+            Self::UiOverlay,
+            Self::WholeProduct,
+            Self::Display120Hz,
+        ]);
+        rows
+    }
+
     /// Имя для отчёта и для intent-параметра `stages`.
     pub fn name(self) -> &'static str {
         match self {
             Self::Stage(stage) => stage.name(),
             Self::WholeViewfinder => "whole_viewfinder",
+            Self::ColorScopes => "color_scopes",
+            Self::UiOverlay => "ui_overlay",
+            Self::WholeProduct => "whole_product",
+            Self::Display120Hz => "display_120hz",
         }
     }
 
     /// Строка по имени из отчёта.
     pub fn from_name(name: &str) -> Result<Self, ViewfinderScenarioConfigError> {
-        Self::default_rows()
+        Self::all_rows()
             .into_iter()
             .find(|row| row.name() == name)
             .ok_or_else(|| ViewfinderScenarioConfigError::UnknownStageRow { name: name.to_owned() })
@@ -267,12 +297,38 @@ pub struct StageBudgetConfig {
     /// Какие строки мерить и в каком порядке. Каждая строка — A/B по `power.ab` (по умолчанию
     /// 3 пары × 2 окна × 60 с ≈ 6 мин). Подмножество на один запуск — intent-параметр `stages`.
     pub rows: Vec<StageBudgetRowSetting>,
+    /// Где мерить (16a): голый видоискатель (экран камеры снят), экран PHOTO или экран CALIBRATE. Intent-параметр
+    /// `surface`.
+    pub surface: StageBudgetSurface,
+    /// Сколько ждать, пока экран выйдет на место замера (виден живой экран, а для CALIBRATE — раздел открыт и приборы
+    /// считают), мс. `[estimate]` 20 000: свайп драйвера (запуск `input`, ~1 с) + создание объектов приборов.
+    pub surface_ready_timeout_ms: u64,
+    /// Куда драйвер кладёт удерживаемый палец в строке `display_120hz`, доли экрана. `[estimate]` левый край на
+    /// уровне шкалы объективов (x = 0,03; y = 0,85): долгое нажатие там не наводит фокус и не жмёт кнопки экрана
+    /// камеры; оркестратор уточняет точку на телефоне.
+    pub display_hold_point: ScreenPoint,
+    /// Допуск частоты показа в строке `display_120hz`: окно принято, если средняя частота ближе к целевой, Гц.
+    /// `[estimate]` 6: LTPO-панель ступенчато меняет частоту (60 / 90 / 120), «примерно 120» — это 114…126.
+    pub display_refresh_tolerance_hz: f64,
+    /// На сколько мс удерживаемое касание короче окон, которые оно покрывает. Нажатие начинается с задержкой драйвера
+    /// (запуск `input` на телефоне, секунда-две), и без запаса оно кончилось бы уже внутри разогрева следующего окна B
+    /// (первые секунды B шли бы на 120 Гц). `[estimate]` 2 000.
+    pub display_hold_margin_ms: u64,
+    /// Запас после конца удержания, мс: раньше этого срока сценарий не выдаёт ни жест выхода, ни другой жест — два
+    /// «пальца» от двух процессов `input` конфликтуют, и жест проглатывается. `[estimate]` 2 500.
+    pub display_hold_guard_ms: u64,
 }
 
 impl Default for StageBudgetConfig {
     fn default() -> Self {
         Self {
             rows: StageBudgetRowSetting::default_rows(),
+            surface: StageBudgetSurface::default(),
+            surface_ready_timeout_ms: 20_000,
+            display_hold_point: ScreenPoint::new(0.03, 0.85),
+            display_refresh_tolerance_hz: 6.0,
+            display_hold_margin_ms: 2_000,
+            display_hold_guard_ms: 2_500,
         }
     }
 }
@@ -405,6 +461,14 @@ pub enum ViewfinderScenarioConfigError {
     UnknownStageRow { name: String },
     #[error("viewfinder.stage_budget: строка {name} повторяется")]
     DuplicateStageRow { name: &'static str },
+    #[error("viewfinder.stage_budget: строка {row} не мерится на месте {surface} (допустимо: {allowed})")]
+    RowNotAllowedOnSurface {
+        row: &'static str,
+        surface: &'static str,
+        allowed: &'static str,
+    },
+    #[error("viewfinder.{field} = ({x}; {y}): доли экрана должны лежать в 0…1")]
+    ScreenPointOutOfRange { field: &'static str, x: f64, y: f64 },
     #[error("{0}")]
     LatencyProfiles(#[from] LatencyProfilesError),
     #[error("частота: {0}")]
@@ -525,8 +589,40 @@ impl ViewfinderScenarioConfig {
             return Err(ViewfinderScenarioConfigError::HeadroomIntervalLongerThanRun);
         }
         validate_rows(&self.stage_budget.rows)?;
+        validate_rows_for_surface(&self.stage_budget.rows, self.stage_budget.surface)?;
+        self.validate_stage_budget_options()?;
         self.product_step()?;
         self.headroom_step()?;
+        Ok(())
+    }
+}
+
+impl ViewfinderScenarioConfig {
+    /// Числа места замера 16a: ожидание не нулевое, допуск частоты — конечное положительное число, точка касания — в
+    /// долях экрана.
+    fn validate_stage_budget_options(&self) -> Result<(), ViewfinderScenarioConfigError> {
+        let options = &self.stage_budget;
+        if options.surface_ready_timeout_ms == 0 {
+            return Err(ViewfinderScenarioConfigError::Zero {
+                field: "stage_budget.surface_ready_timeout_ms",
+            });
+        }
+        let tolerance = options.display_refresh_tolerance_hz;
+        // Через сравнение: NaN не проходит и отвергается.
+        if !(tolerance.is_finite() && tolerance > 0.0) {
+            return Err(ViewfinderScenarioConfigError::NotPositive {
+                field: "stage_budget.display_refresh_tolerance_hz",
+                value: tolerance,
+            });
+        }
+        let point = options.display_hold_point;
+        if !((0.0..=1.0).contains(&point.x) && (0.0..=1.0).contains(&point.y)) {
+            return Err(ViewfinderScenarioConfigError::ScreenPointOutOfRange {
+                field: "stage_budget.display_hold_point",
+                x: point.x,
+                y: point.y,
+            });
+        }
         Ok(())
     }
 }

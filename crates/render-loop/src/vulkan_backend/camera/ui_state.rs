@@ -52,6 +52,7 @@ pub struct UiOverlayState {
     pyramid_reuses: u64,
     live_images_drawn: u64,
     live_images_missing: u64,
+    frames_suppressed: u64,
     gpu_time: RollingDurations,
     last_error: Option<String>,
 }
@@ -72,6 +73,7 @@ impl UiOverlayState {
             pyramid_reuses: 0,
             live_images_drawn: 0,
             live_images_missing: 0,
+            frames_suppressed: 0,
             gpu_time: RollingDurations::new(gpu_time_window_frames),
             last_error: None,
         }
@@ -171,6 +173,12 @@ impl UiOverlayState {
         }
     }
 
+    /// Кадр UI построен источником, но GPU-запись пропущена: подавление замера (`GpuWorkSuppression`, 16a). Это не
+    /// сбой: ни `frames_failed`, ни `last_error` не трогаются.
+    pub fn note_frame_suppressed(&mut self) {
+        self.frames_suppressed += 1;
+    }
+
     /// Рендер UI отказал в записи кадра.
     pub fn note_render_failure(&mut self, error: &UiRenderError) {
         if matches!(error, UiRenderError::LimitExceeded { .. }) {
@@ -218,6 +226,7 @@ impl UiOverlayState {
             pyramid_reuses: self.pyramid_reuses,
             live_images_drawn: self.live_images_drawn,
             live_images_missing: self.live_images_missing,
+            frames_suppressed: self.frames_suppressed,
             gpu_time: self.gpu_time.summary(),
             last_error: self.last_error.clone(),
         }

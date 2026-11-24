@@ -27,6 +27,10 @@ camera-core.workspace = true
 camera-screen.workspace = true
 gpu-vulkan.workspace = true
 isp-vulkan.workspace = true
+# Стенд насыщения (16a, P4b): кадр показа экрана камеры как работа стенда.
+ui-render-vulkan.workspace = true
+# `vk::Extent2D` цели адаптера кадра UI.
+ash.workspace = true
 # Служба записи снимков (сессия 14): допуск, DNG/Exif, MediaStore; приложение только подключает её.
 photo-output.workspace = true
 raw-frame-stream.workspace = true

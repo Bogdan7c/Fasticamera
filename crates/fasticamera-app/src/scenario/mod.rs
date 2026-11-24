@@ -23,6 +23,7 @@ mod background_job;
 pub(crate) mod camera;
 mod config;
 mod gpu_fence;
+mod gpu_saturation;
 mod render;
 mod render_lifecycle;
 pub(crate) mod render_metrics;
@@ -60,6 +61,8 @@ pub enum Scenario {
     AhbImport,
     /// Порядок GPU-работ через `sync_fd`: B не стартует раньше конца A.
     GpuFence,
+    /// Цена работ GPU при насыщении (16a, P4b): кадры подряд без показа, к/с и мс/кадр по работам.
+    GpuSaturationBench,
     Camera(camera::CameraScenario),
 }
 
@@ -90,6 +93,7 @@ impl Scenario {
             Scenario::RenderLifecycle,
             Scenario::AhbImport,
             Scenario::GpuFence,
+            Scenario::GpuSaturationBench,
         ];
         let cameras = camera::CameraScenario::scenarios();
         own.into_iter().chain(cameras).collect()
@@ -108,6 +112,7 @@ impl Scenario {
             Scenario::RenderLifecycle => "render-lifecycle",
             Scenario::AhbImport => "ahb-import",
             Scenario::GpuFence => "gpu-fence",
+            Scenario::GpuSaturationBench => "gpu-saturation-bench",
             Scenario::Camera(kind) => kind.name(),
         }
     }
@@ -125,6 +130,7 @@ impl Scenario {
             | Scenario::RenderLifecycle
             | Scenario::AhbImport
             | Scenario::GpuFence
+            | Scenario::GpuSaturationBench
             | Scenario::Camera(_) => ScenarioMode::Observing,
         }
     }
@@ -143,6 +149,7 @@ impl Scenario {
             Scenario::RenderLifecycle => Some(Box::new(render_lifecycle::RenderLifecycleScenario::new())),
             Scenario::AhbImport => Some(Box::new(ahb_import::AhbImportScenario::new())),
             Scenario::GpuFence => Some(Box::new(gpu_fence::GpuFenceScenario::new())),
+            Scenario::GpuSaturationBench => Some(Box::new(gpu_saturation::GpuSaturationScenario::new())),
             Scenario::Camera(kind) => Some(kind.observing()),
         }
     }
@@ -280,6 +287,7 @@ fn run_named(name: &str, runtime: Option<&RuntimeConfig>) -> Result<serde_json::
         | Scenario::RenderLifecycle
         | Scenario::AhbImport
         | Scenario::GpuFence
+        | Scenario::GpuSaturationBench
         | Scenario::Camera(_) => Err(ScenarioError::NotImmediate { name: scenario.name() }),
     }
 }

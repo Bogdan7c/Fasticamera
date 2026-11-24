@@ -20,6 +20,7 @@ use crate::capture_scenario_config::{CaptureScenarioConfig, CaptureScenarioConfi
 use crate::glass_scenario_config::{GlassScenarioConfig, GlassScenarioConfigError};
 use crate::power_measurement::config::{PowerMeasurementConfig, PowerMeasurementConfigError};
 use crate::raw_stream_scenario_config::{RawStreamScenarioConfig, RawStreamScenarioConfigError};
+use crate::saturation_scenario_config::{SaturationScenarioConfig, SaturationScenarioConfigError};
 use crate::screen_scenario_config::{ScreenScenarioConfig, ScreenScenarioConfigError};
 use crate::three_a_scenario_config::{ThreeAScenarioConfig, ThreeAScenarioConfigError};
 use crate::viewfinder_scenario_config::{ViewfinderScenarioConfig, ViewfinderScenarioConfigError};
@@ -286,6 +287,8 @@ pub struct CameraScenarioConfig {
     pub zoom: ZoomScenarioConfig,
     /// Сценарий `capture` (сессия 14): снимок на настоящем экране камеры, HEIF/DNG, серия быстрых нажатий.
     pub capture: CaptureScenarioConfig,
+    /// Сценарий `gpu-saturation-bench` (16a, P4b): цена работ GPU при насыщении.
+    pub saturation: SaturationScenarioConfig,
 }
 
 fn step(
@@ -345,6 +348,7 @@ impl Default for CameraScenarioConfig {
             screen: ScreenScenarioConfig::default(),
             zoom: ZoomScenarioConfig::default(),
             capture: CaptureScenarioConfig::default(),
+            saturation: SaturationScenarioConfig::default(),
         }
     }
 }
@@ -378,6 +382,8 @@ pub enum CameraScenarioConfigError {
     Zoom(#[from] ZoomScenarioConfigError),
     #[error("{0}")]
     Capture(#[from] CaptureScenarioConfigError),
+    #[error("{0}")]
+    Saturation(#[from] SaturationScenarioConfigError),
     #[error("ID камеры: {0}")]
     InvalidCameraId(#[from] EmptyCameraId),
     #[error(
@@ -434,6 +440,7 @@ impl CameraScenarioConfig {
         self.screen.validate()?;
         self.zoom.validate()?;
         self.capture.validate()?;
+        self.saturation.validate()?;
         Ok(())
     }
 }

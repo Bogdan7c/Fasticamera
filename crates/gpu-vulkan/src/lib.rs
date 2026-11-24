@@ -44,6 +44,7 @@ pub mod raster;
 pub mod raw_mosaic_preview;
 pub mod rgba8_image;
 pub mod sampled_texture;
+pub mod saturation;
 pub mod shaders;
 pub mod source_window;
 pub mod storage_image;

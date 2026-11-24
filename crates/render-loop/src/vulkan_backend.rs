@@ -257,6 +257,7 @@ impl VulkanDisplayBackend {
                 tone_base: config.viewfinder.tone.base.into(),
                 scopes: None,
                 scope_picture_side_limit_px: config.viewfinder.scopes.max_picture_side_px,
+                gpu_work_suppression: crate::viewfinder::GpuWorkSuppression::NONE,
             }
         });
         let viewfinder_stats = Some(ViewfinderStats::new(config.viewfinder.gpu_time_window_frames));
