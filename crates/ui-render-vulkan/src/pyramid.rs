@@ -7,7 +7,8 @@
 //! не зная, как фон был размещён.
 //!
 //! Ступень: пиксель цели = (центр ×4 + четыре диагональные выборки на тексель источника) / 8; каждая выборка —
-//! билинейная по 2×2 исходных текселя. Стадия чтения везде `Fragment`: барьер перезаписи ISP рассчитан на неё.
+//! билинейная по 2×2 исходных текселя. Ступени читают вершинный (средняя яркость группы) и фрагментный шейдеры стекла: барьеры ступеней покрывают обе
+//! стадии (`PYRAMID_READER_STAGES`); исходный фон (картинка ISP) читает только фрагментный шейдер ступени 1.
 //! Проходов «вверх» нет: уровни читаются билинейно и смешиваются по дробной части `lod` (см. `blur_lod` в шейдере);
 //! это дешевле на ступень-другую и на тестовых сценах без заметных полос (решение владельца ждёт 11a — глаза).
 //!
@@ -30,6 +31,10 @@ use ui_draw::geometry::PxRect;
 use crate::config::BackdropPyramidConfig;
 use crate::pack::BlurPush;
 use crate::pipelines::UiPipelines;
+
+/// Кто читает ступени пирамиды: фрагментный шейдер стекла (размытый фон) и вершинный (средняя яркость группы).
+/// Все барьеры пирамиды обязаны покрывать обе стадии, иначе вершинная выборка гонится с перестройкой (RAW/WAR).
+pub(crate) const PYRAMID_READER_STAGES: ConsumerStage = ConsumerStage::VertexAndFragment;
 
 /// Что определяет содержимое ступеней.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,7 +196,7 @@ impl Pyramid {
                 }
             }
             pass.end();
-            target.record_render_to_sampled_read(command_buffer, ConsumerStage::Fragment);
+            target.record_render_to_sampled_read(command_buffer, PYRAMID_READER_STAGES);
         }
         Ok(())
     }

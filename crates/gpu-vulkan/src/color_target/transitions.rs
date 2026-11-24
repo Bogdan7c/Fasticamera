@@ -124,6 +124,24 @@ mod tests {
     }
 
     #[test]
+    fn vertex_and_fragment_reader_covers_both_stages_in_the_read_and_the_following_overwrite_barrier() {
+        let both = vk::PipelineStageFlags2::VERTEX_SHADER | vk::PipelineStageFlags2::FRAGMENT_SHADER;
+        // Чтение после рисования: обе стадии видят записанное.
+        let after_draw = sampled_read_scope(ConsumerStage::VertexAndFragment);
+        assert_eq!(after_draw.stage, both);
+        assert_eq!(after_draw.access, vk::AccessFlags2::SHADER_SAMPLED_READ);
+        // Перезапись после чтения (WAR): ждать надо чтения на ОБЕИХ стадиях, иначе вершинное чтение гонится.
+        let before_overwrite = ColorTargetPreviousUse::SampledRead(ConsumerStage::VertexAndFragment).source_scope();
+        assert_eq!(before_overwrite.stage, both);
+        assert_eq!(before_overwrite.layout, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        // Чтение одной стадией остаётся прежним.
+        assert_eq!(
+            sampled_read_scope(ConsumerStage::Fragment).stage,
+            vk::PipelineStageFlags2::FRAGMENT_SHADER
+        );
+    }
+
+    #[test]
     fn sampled_read_scope_makes_rendered_writes_visible_to_the_reader_stage() {
         let rendered = ColorTargetPreviousUse::Rendered.source_scope();
         let fragment = sampled_read_scope(ConsumerStage::Fragment);

@@ -19,6 +19,8 @@
 
 layout(location = 0) in vec2 v_logical;
 layout(location = 1) flat in uint v_group;
+// Средняя яркость фона под группой, посчитанная ВЕРШИННЫМ шейдером (одинакова для всей группы), см. `group_mean_luma`.
+layout(location = 2) flat in float v_group_mean_luma;
 layout(location = 0) out vec4 out_color;  // premultiplied
 
 const float EDGE_AA_PX = 1.0;
@@ -74,27 +76,6 @@ float rim_weight(float depth, float width) {
         return 0.0;
     }
     return 1.0 - smoothstep_ref(0.0, width, max(depth, 0.0));
-}
-
-float luma_rec709(vec3 color) {
-    return 0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b;
-}
-
-// Средняя яркость фона под группой: одна на всю группу («контейнер выравнивает адаптацию», Apple 284) —
-// 5 выборок самого мелкого уровня пирамиды (центр и четверти границ). Считается во ФРАГМЕНТНОМ шейдере:
-// барьеры пирамиды (`pyramid.rs`) покрывают только стадию Fragment; чтение из вершинного шейдера было
-// бы гонкой RAW/WAR с перестройкой пирамиды (ревью сессии 11). Все фрагменты группы берут одни и те же
-// тексели крошечного уровня — выборки попадают в кэш.
-float group_mean_luma(GlassGroup group) {
-    int deepest = int(frame.light_misc.z + 0.5);
-    vec2 center = group.bounds.xy + 0.5 * group.bounds.zw;
-    vec2 quarter = 0.25 * group.bounds.zw;
-    float luma = luma_rec709(pyramid_color(deepest, center));
-    luma += luma_rec709(pyramid_color(deepest, center + vec2(quarter.x, quarter.y)));
-    luma += luma_rec709(pyramid_color(deepest, center + vec2(-quarter.x, quarter.y)));
-    luma += luma_rec709(pyramid_color(deepest, center + vec2(quarter.x, -quarter.y)));
-    luma += luma_rec709(pyramid_color(deepest, center + vec2(-quarter.x, -quarter.y)));
-    return luma / 5.0;
 }
 
 // Тень под стеклом = ui_draw::glass::reference::shade_glass_shadow / shade_glass_with_shadow (shadow_falloff):
@@ -186,7 +167,7 @@ void main() {
     // Оба условия — свойства группы (одинаковы у всех пикселей группы).
     float tint_alpha = group.v3.y * group.v3.z * effect;
     if (tint_alpha != 0.0 || group.v2.z != 0.0) {
-        float dimming_factor = smoothstep_ref(group.v2.w, group.v3.x, group_mean_luma(group));
+        float dimming_factor = smoothstep_ref(group.v2.w, group.v3.x, v_group_mean_luma);
         float tone_value = 1.0 - dimming_factor;
         color = mix(color, vec3(tone_value), tint_alpha);
         color = mix(color, vec3(0.0), group.v2.z * dimming_factor * effect);

@@ -92,3 +92,25 @@ float blur_lod(float radius_px) {
     float levels = frame.light_misc.z;
     return clamp(log2(max(radius_px, 1.5) / 1.5), 0.0, levels);
 }
+
+float luma_rec709(vec3 color) {
+    return 0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b;
+}
+
+// Средняя яркость фона под группой: одна на всю группу («контейнер выравнивает адаптацию», Apple 284) —
+// 5 выборок самого мелкого уровня пирамиды (центр и четверти границ). Считается в ВЕРШИННОМ шейдере (раз на
+// вершину, а не на пиксель: значение зависит только от группы и кадра) и передаётся фрагментному как `flat`.
+// Это возможно, потому что барьеры пирамиды (`pyramid.rs`, `PYRAMID_READER_STAGES`) покрывают стадии Vertex и
+// Fragment: прежде они покрывали только Fragment, и чтение в вершинном шейдере было бы гонкой RAW/WAR с
+// перестройкой пирамиды (ревью сессии 11). Выражение прежнее, значение бит-в-бит то же (пакет G3 сессии 16a).
+float group_mean_luma(GlassGroup group) {
+    int deepest = int(frame.light_misc.z + 0.5);
+    vec2 center = group.bounds.xy + 0.5 * group.bounds.zw;
+    vec2 quarter = 0.25 * group.bounds.zw;
+    float luma = luma_rec709(pyramid_color(deepest, center));
+    luma += luma_rec709(pyramid_color(deepest, center + vec2(quarter.x, quarter.y)));
+    luma += luma_rec709(pyramid_color(deepest, center + vec2(-quarter.x, quarter.y)));
+    luma += luma_rec709(pyramid_color(deepest, center + vec2(quarter.x, -quarter.y)));
+    luma += luma_rec709(pyramid_color(deepest, center + vec2(-quarter.x, -quarter.y)));
+    return luma / 5.0;
+}

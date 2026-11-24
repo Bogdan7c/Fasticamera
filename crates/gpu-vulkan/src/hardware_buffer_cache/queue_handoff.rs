@@ -52,6 +52,9 @@ pub enum ConsumerStage {
     Compute,
     /// Фрагментный шейдер (предпросмотр кадра камеры на экране).
     Fragment,
+    /// Вершинный И фрагментный шейдеры читают один ресурс (пирамида размытия: вершинный шейдер стекла берёт
+    /// из неё среднюю яркость фона под группой, фрагментный — размытый фон).
+    VertexAndFragment,
 }
 
 impl ConsumerStage {
@@ -60,6 +63,9 @@ impl ConsumerStage {
         match self {
             Self::Compute => vk::PipelineStageFlags2::COMPUTE_SHADER,
             Self::Fragment => vk::PipelineStageFlags2::FRAGMENT_SHADER,
+            Self::VertexAndFragment => {
+                vk::PipelineStageFlags2::VERTEX_SHADER | vk::PipelineStageFlags2::FRAGMENT_SHADER
+            }
         }
     }
 }

@@ -495,9 +495,7 @@ impl UiRenderer {
             return Ok(PyramidOutcome::Reused);
         }
         let previous_use = if live.rendered_once {
-            ColorTargetPreviousUse::SampledRead(
-                gpu_vulkan::hardware_buffer_cache::queue_handoff::ConsumerStage::Fragment,
-            )
+            ColorTargetPreviousUse::SampledRead(crate::pyramid::PYRAMID_READER_STAGES)
         } else {
             ColorTargetPreviousUse::NotUsedYet
         };
