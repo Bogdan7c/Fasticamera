@@ -9,6 +9,7 @@ use gpu_vulkan::saturation::{EndReason, PassTimeSummary, SaturationReport, Throu
 use serde::Serialize;
 use shell_contract::thermal::ThermalStatus;
 
+use super::digest_report::DigestOutcome;
 use crate::power_measurement::ThermalSnapshot;
 
 /// Время проходов одной метки, мс.
@@ -21,7 +22,7 @@ pub struct PassRow {
 }
 
 /// Состав сцены кадра показа по списку рисования (план, до рендера): видно, что это настоящий экран, а не пустой.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize)]
 pub struct SceneSummary {
     pub glass_groups: u64,
     pub glass_members: u64,
@@ -31,6 +32,20 @@ pub struct SceneSummary {
     pub images: u64,
     /// Из `images`: живые картинки (прибор цвета).
     pub live_images: u64,
+    /// Сумма площадей прямоугольников (`bounds`) стеклянных групп, px: ровно та область, где рендер рисует
+    /// стекло. Каждый прямоугольник обрезан по экрану; пересечения групп считаются дважды (цена идёт за
+    /// закрашенный пиксель каждой группы отдельно), поэтому доля может быть больше фактически занятой.
+    pub glass_bounds_area_px: u64,
+    /// Площадь экрана, px (для долей).
+    pub surface_area_px: u64,
+    /// `glass_bounds_area_px / surface_area_px`: чтобы цену стекла отнести к числу закрашенных пикселей. Может быть
+    /// больше 1: границы групп с запасом под тень и линзу перекрываются.
+    pub glass_screen_fraction: f64,
+    /// Площадь ОБЪЕДИНЕНИЯ тех же прямоугольников (перекрытия считаются один раз), px: сколько пикселей экрана
+    /// затрагивает стекло хотя бы одной группы.
+    pub glass_union_area_px: u64,
+    /// `glass_union_area_px / surface_area_px` (от 0 до 1).
+    pub glass_union_screen_fraction: f64,
 }
 
 /// Счётчики рендера UI за прогон работы показа (то, что рендер на самом деле нарисовал).
@@ -84,6 +99,53 @@ pub struct Measurement {
     pub mismatched_pass_frames: u64,
     /// к/с по шагам шкалы (по порядку): виден разгон DVFS и троттлинг.
     pub timeline_fps: Vec<f64>,
+    /// Цена кадра по шагам шкалы: p95 и максимум (по ним видно «хвост», который среднее скрывает). `None` — ни в
+    /// одном шаге не было кадров.
+    pub cost: Option<CostSummary>,
+}
+
+/// Цена кадра, мс, с тремя значащими цифрами: целиком за окно и по шагам шкалы (`1000 / к/с шага`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CostSummary {
+    /// Цена кадра за всё окно (как `frame_cost_ms`, округлена до трёх значащих цифр).
+    pub frame_cost_ms: f64,
+    /// Шагов шкалы, в которых завершился хотя бы один кадр (по ним считаны p95 и максимум).
+    pub steps_with_frames: usize,
+    /// p95 цены кадра по шагам (метод «ближайшего ранга»).
+    pub step_cost_p95_ms: f64,
+    /// Самая дорогая цена кадра среди шагов.
+    pub step_cost_max_ms: f64,
+}
+
+/// Округление до трёх значащих цифр (как в таблице результата).
+pub fn round_to_three_significant(value: f64) -> f64 {
+    if !value.is_finite() || value == 0.0 {
+        return value;
+    }
+    let magnitude = value.abs().log10().floor() as i32;
+    let scale = 10_f64.powi(2 - magnitude);
+    (value * scale).round() / scale
+}
+
+/// Цена кадра по шагам шкалы; шаги без кадров (0 к/с) в цену не входят.
+fn cost_summary(frame_cost_ms: Option<f64>, timeline_fps: &[f64]) -> Option<CostSummary> {
+    let frame_cost_ms = frame_cost_ms?;
+    let mut step_costs: Vec<f64> = timeline_fps
+        .iter()
+        .filter(|fps| **fps > 0.0)
+        .map(|fps| 1_000.0 / fps)
+        .collect();
+    if step_costs.is_empty() {
+        return None;
+    }
+    step_costs.sort_by(f64::total_cmp);
+    let nearest_rank = (step_costs.len() * 95).div_ceil(100).max(1) - 1;
+    Some(CostSummary {
+        frame_cost_ms: round_to_three_significant(frame_cost_ms),
+        steps_with_frames: step_costs.len(),
+        step_cost_p95_ms: round_to_three_significant(step_costs[nearest_rank]),
+        step_cost_max_ms: round_to_three_significant(step_costs[step_costs.len() - 1]),
+    })
 }
 
 impl Measurement {
@@ -96,7 +158,9 @@ impl Measurement {
             } => (Some(frames_per_second), Some(millis(frame_cost))),
             Throughput::NoFramesCompleted => (None, None),
         };
+        let timeline_fps: Vec<f64> = report.timeline.iter().map(|step| step.frames_per_second()).collect();
         Self {
+            cost: cost_summary(frame_cost_ms, &timeline_fps),
             end_reason: EndReasonName::of(report.end_reason),
             warmup_frames: report.warmup_frames,
             measured_frames: report.measured_frames,
@@ -116,7 +180,7 @@ impl Measurement {
                 .collect(),
             unmeasured_pass_frames: passes.unmeasured_frames,
             mismatched_pass_frames: passes.mismatched_frames,
-            timeline_fps: report.timeline.iter().map(|step| step.frames_per_second()).collect(),
+            timeline_fps,
         }
     }
 
@@ -206,6 +270,8 @@ pub struct WorkloadRow {
     pub scene: Option<SceneSummary>,
     /// Счётчики рендера UI (только работы показа).
     pub ui: Option<UiCountersSummary>,
+    /// Дайджест выхода работы (`None` — работа не дошла до дайджеста: провал или не запускалась).
+    pub digest: Option<DigestOutcome>,
     /// Тепло в начале и конце работы (`None` — работа не запускалась).
     pub thermal_start: Option<ThermalSnapshot>,
     pub thermal_end: Option<ThermalSnapshot>,
@@ -223,6 +289,7 @@ impl WorkloadRow {
             outcome: RowOutcome::NotRun { reason },
             scene: None,
             ui: None,
+            digest: None,
             thermal_start: None,
             thermal_end: None,
             started_at_ms: None,

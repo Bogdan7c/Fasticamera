@@ -34,7 +34,10 @@
 # тепло и состав сцены — строки FASTICAMERA_DETAIL, начало каждой работы — стадия workload_started для совмещения с журналом тепла).
 # --saturation-workloads LIST — имена работ через запятую (viewfinder, scopes_waveform, scopes_parade, scopes_vectorscope_ycbcr,
 # scopes_vectorscope_oklab, scopes_parade_gray, scopes_vectorscope_gray, compositor, display_photo, display_photo_recompose,
-# display_calibrate, display_calibrate_recompose, headroom_v4, still; неизвестное имя — отказ Rust при initialize),
+# display_calibrate, display_calibrate_recompose, headroom_v4, still; ИЛИ имя группы: baseline — эти 14 работ (умолчание),
+# ui_ablation — 7 абляций прохода UI (display_{calibrate,photo}_{glass_only,no_glass,...}), isp_ablation — 14 абляций видоискателя
+# (viewfinder_awb_never, viewfinder_awb_every_frame, viewfinder_without_<стадия>, viewfinder_minimal); неизвестное имя — отказ Rust при initialize;
+# дайджест выхода каждой работы — в FASTICAMERA_DETAIL, «база → новое»: python3 scripts/smoke_checks_saturation.py compare A.txt B.txt),
 # --saturation-measure-ms MS и --saturation-warmup-ms MS — окно замера и прогрев каждой работы (умолчание 10000 и 3000).
 # Пример: --variant release --timeout 300 --saturation-workloads viewfinder,compositor --saturation-measure-ms 5000 gpu-saturation-bench.
 # 3A 08: 3a (150; тап в центр и 4 угла, ручная выдержка 1/1000, EV, блокировка AE/AF, брекетинг 4 кадра, AWB;
@@ -81,7 +84,9 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
 usage() {
-    sed -n '2,77p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+    # Справка — вся шапка-комментарий файла (от второй строки до первой строки без «#»). Номера строк не
+    # зашиваем: шапка растёт с каждым новым флагом, и зашитый диапазон молча обрезал её хвост (16a).
+    awk 'NR > 1 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}" >&2
 }
 
 variant="debug"

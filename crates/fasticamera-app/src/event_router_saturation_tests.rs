@@ -19,7 +19,8 @@ use crate::camera_scenario_config::CameraScenarioConfig;
 use crate::camera_test_support::{FakeCameraRig, WAIT};
 use crate::logging::record::LOGCAT_MAX_TEXT_BYTES;
 use crate::result_line::{RESULT_LINE_PREFIX, STAGE_LINE_PREFIX};
-use crate::saturation_bench::catalog::{CatalogEntry, all_names};
+use crate::saturation_bench::catalog::{CatalogEntry, baseline_names as all_names};
+use crate::saturation_bench::digest_report::DigestOutcome;
 use crate::saturation_bench::report::{EndReasonName, FailureKind, Measurement, WorkloadFailure};
 use crate::saturation_bench::runner::{ExecutedWorkload, WorkloadExecutor};
 use crate::saturation_bench::services::{ExecutorSetup, SaturationGpu, SaturationServices};
@@ -85,6 +86,7 @@ fn measurement(fps: Option<f64>, end_reason: EndReasonName) -> Measurement {
         unmeasured_pass_frames: 0,
         mismatched_pass_frames: 0,
         timeline_fps: fps.into_iter().collect(),
+        cost: None,
     }
 }
 
@@ -103,6 +105,9 @@ impl WorkloadExecutor for FakeExecutor {
                 measurement,
                 scene: None,
                 ui: None,
+                digest: DigestOutcome::Unavailable {
+                    reason: "подставной исполнитель".to_owned(),
+                },
             })
         };
         match self.behaviors.get(entry.name).unwrap_or(&self.default).clone() {
@@ -219,6 +224,20 @@ fn scenario_is_registered_observing_and_available() {
     assert_eq!(
         scenario.observing().expect("наблюдающий").name(),
         "gpu-saturation-bench"
+    );
+}
+
+#[test]
+fn the_scenario_waits_for_the_engine_catalog_so_the_sensor_is_the_real_camera_even_right_after_startup() {
+    // Намеренно БЕЗ ожидания каталога в тесте: на телефоне сценарий стартует из намерения запуска сразу после
+    // движка, и снимок статуса мог быть до первой публикации (пустой каталог) — тогда сенсор был запасным.
+    let mut setup = setup(&["viewfinder"], Behavior::Frames(250.0));
+    let result = run(&mut setup);
+    assert_eq!(result["status"], "passed", "{result}");
+    assert_eq!(result["report"]["sensor"]["source"], "engine", "{result}");
+    assert_eq!(
+        result["report"]["sensor"]["camera"], "2",
+        "основная камера, а не запасной набор"
     );
 }
 

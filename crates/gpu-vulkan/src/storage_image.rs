@@ -10,7 +10,6 @@
 //! своих проходов. Переходы — intent-методы `record_*` (см. [`transitions`]).
 
 mod format;
-#[cfg(any(test, feature = "test-support"))]
 pub(crate) mod readback;
 mod transitions;
 

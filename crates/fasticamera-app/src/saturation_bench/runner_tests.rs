@@ -79,6 +79,7 @@ fn measurement(fps: Option<f64>, end_reason: EndReasonName) -> Measurement {
         unmeasured_pass_frames: 0,
         mismatched_pass_frames: 0,
         timeline_fps: Vec::new(),
+        cost: None,
     }
 }
 
@@ -90,6 +91,9 @@ impl WorkloadExecutor for ScriptedExecutor {
                 measurement,
                 scene: None,
                 ui: None,
+                digest: DigestOutcome::Unavailable {
+                    reason: "подставной исполнитель".to_owned(),
+                },
             })
         };
         match self.scripts.get(entry.name) {

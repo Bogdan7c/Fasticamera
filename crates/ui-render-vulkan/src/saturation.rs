@@ -37,11 +37,13 @@ mod scene;
 #[cfg(feature = "test-support")]
 mod synthetic;
 
-use gpu_vulkan::color_target::{ColorTarget, ColorTargetDesc};
+use gpu_vulkan::color_target::{ColorTarget, ColorTargetDesc, ColorTargetPreviousUse};
 use gpu_vulkan::compositor::ImageCompositor;
 use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::error::GpuError;
-use gpu_vulkan::saturation::{FrameRecording, PassTimeSummary, SaturationWorkload, SlotId};
+use gpu_vulkan::saturation::{
+    DigestError, FrameRecording, PassTimeSummary, SaturationWorkload, SlotId, WorkloadDigest, digest_color_target,
+};
 
 pub use self::config::{
     BackdropCadence, DEFAULT_PASS_TIME_WINDOW_FRAMES, DEFAULT_TARGET_EXTENT, DEFAULT_TARGET_FORMAT, FrameComposition,
@@ -156,6 +158,20 @@ impl UiFrameSaturation {
     /// Цель слота. `None` — слота нет. Читать можно только когда GPU закончил кадр (после прогона стенда).
     pub fn target(&self, slot: usize) -> Option<&ColorTarget> {
         self.targets.get(slot)
+    }
+
+    /// Дайджест цели последнего записанного кадра (то, что получил бы экран). Звать после конца прогона стенда и
+    /// `wait_idle`: чтение блокирующее, вне окна замера; работает без `test-support`. Цель после чтения остаётся в
+    /// прежней раскладке. Кадров ещё не было — [`DigestError::NothingToRead`].
+    pub fn output_digest(&self) -> Result<WorkloadDigest, DigestError> {
+        let nothing = || DigestError::NothingToRead {
+            what: "кадр показа ещё не записан".to_owned(),
+        };
+        let slot = self.last_recorded_slot.ok_or_else(nothing)?;
+        let target = self.targets.get(slot).ok_or_else(nothing)?;
+        // Последняя запись в цель — проход рисования (компоновщик или UI): состояние «Rendered».
+        let digest = digest_color_target(target, ColorTargetPreviousUse::Rendered)?;
+        Ok(WorkloadDigest::single("target", digest))
     }
 
     /// Счётчики рендера UI (перестройки и переиспользования пирамиды и т. д.).

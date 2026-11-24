@@ -256,11 +256,10 @@ impl Rgba8StorageImage {
         unsafe { self.context.device().cmd_pipeline_barrier2(command_buffer, &dependency) };
     }
 
-    /// Читает картинку на CPU (плотные строки RGBA) и ждёт завершения. Только тесты и фича `test-support`.
+    /// Читает картинку на CPU (плотные строки RGBA) и ждёт завершения. Блокирующая операция вне кадрового цикла (тесты, дайджест стенда насыщения).
     ///
     /// Контракт: картинка уже записана compute-шейдером в более ранних сабмитах той же очереди и сейчас в
     /// раскладке [`Self::TRANSFER_SOURCE_LAYOUT`] (в ней её и оставляет читатель).
-    #[cfg(any(test, feature = "test-support"))]
     pub fn read_back_blocking(&self) -> Result<Vec<u8>, GpuError> {
         let mut staging = HostReadbackBuffer::new(&self.context, self.packed_size_bytes())?;
         let run = crate::kit_test_support::run_one_shot_blocking_traced(&self.context, |command_buffer| {

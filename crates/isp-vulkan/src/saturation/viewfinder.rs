@@ -24,7 +24,9 @@ use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::error::GpuError;
 use gpu_vulkan::hardware_buffer_cache::queue_handoff::ConsumerStage;
 use gpu_vulkan::raw_mosaic_preview::MosaicSource;
-use gpu_vulkan::saturation::{FrameRecording, PassTimeLog, PassTimeSummary, SaturationWorkload, SlotId};
+use gpu_vulkan::saturation::{
+    FrameRecording, PassTimeLog, PassTimeSummary, SaturationWorkload, SlotId, WorkloadDigest, digest_storage_image,
+};
 use gpu_vulkan::swapchain::DisplayColorSpace;
 use isp_model::params::IspParams;
 
@@ -120,6 +122,10 @@ pub struct ViewfinderCounters {
     pub frames_released: u64,
     /// Кадров, у которых после fence реально забрана статистика AWB (`collect` вернул `Some`).
     pub statistics_collected: u64,
+    /// Был ли ПОСЛЕДНИЙ записанный кадр кадром со статистикой AWB (`None` — кадров ещё нет). Нужен дайджесту:
+    /// картинка последнего кадра — это и есть то, что он читает; равенство дайджестов «со статистикой» и «без»
+    /// на одном компиляторе шейдеров не переносится на другой, поэтому вариант кадра пишется в результат.
+    pub last_frame_had_statistics: Option<bool>,
 }
 
 /// Работа «слитый проход видоискателя» (см. описание модуля).
@@ -267,9 +273,11 @@ impl ViewfinderSaturation {
             frame_index,
         )?;
         self.counters.frames_recorded += 1;
-        if stages.contains(IspStage::AwbStatistics) {
+        let has_statistics = stages.contains(IspStage::AwbStatistics);
+        if has_statistics {
             self.counters.statistics_recorded += 1;
         }
+        self.counters.last_frame_had_statistics = Some(has_statistics);
         Ok(())
     }
 
@@ -294,6 +302,20 @@ impl SaturationWorkload for ViewfinderSaturation {
             // Контракт стенда не принимает ошибку из этого метода: запоминаем для `take_failure`.
             self.failure.note(error);
         }
+    }
+}
+
+impl ViewfinderSaturation {
+    /// Дайджест картинки ISP последнего записанного кадра (только содержимое, без хвоста ёмкости).
+    ///
+    /// Звать ПОСЛЕ конца прогона стенда и `wait_idle` (все fence пройдены): чтение блокирующее и вне окна замера.
+    /// Работает без `test-support`. Раскладка картинки после чтения прежняя.
+    pub fn output_digest(&self) -> Result<WorkloadDigest, SaturationWorkError> {
+        let image = self.isp.image().ok_or_else(|| SaturationWorkError::EmptyFrame {
+            what: "картинка видоискателя ещё не создана".to_owned(),
+        })?;
+        let digest = digest_storage_image(image.storage_image(), image.current_use(), image.content_extent())?;
+        Ok(WorkloadDigest::single("image", digest))
     }
 }
 

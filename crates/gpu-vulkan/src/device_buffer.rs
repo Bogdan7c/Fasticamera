@@ -169,20 +169,18 @@ impl DeviceBuffer {
     }
 
     /// Загружает `bytes` в начало буфера и ждёт завершения (разовая отправка с таймаутом контекста).
-    /// Только тесты и фича `test-support`: на горячем пути ожиданий GPU нет.
+    /// Блокирующая операция (тесты, дайджест стенда насыщения): на горячем пути ожиданий GPU нет.
     ///
     /// Контракт: GPU сейчас не использует буфер. Загрузка идёт `vkCmdUpdateBuffer` кусками по 64 КиБ
     /// (лимит команды), поэтому staging-буфер не нужен; данные копируются в командный буфер.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn upload_blocking(&self, bytes: &[u8]) -> Result<(), GpuError> {
         test_support::upload_blocking(self, bytes)
     }
 
-    /// Читает весь буфер на CPU и ждёт завершения. Только тесты и фича `test-support`.
+    /// Читает весь буфер на CPU и ждёт завершения. Блокирующая операция (тесты, дайджест стенда насыщения).
     ///
     /// Записи compute-шейдеров до этого вызова (в более ранних сабмитах той же очереди) становятся
     /// видимы копированию барьером внутри разовой отправки.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn read_back_blocking(&self) -> Result<Vec<u8>, GpuError> {
         test_support::read_back_blocking(self)
     }
@@ -246,7 +244,6 @@ fn validate_size(size_bytes: u64, max_storage_range: u32) -> Result<(), GpuError
     Ok(())
 }
 
-#[cfg(any(test, feature = "test-support"))]
 mod test_support {
     use ash::vk;
 

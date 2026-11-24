@@ -23,7 +23,11 @@ use camera_contract::geometry::PixelSize;
 use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::error::GpuError;
 use gpu_vulkan::hardware_buffer_cache::queue_handoff::ConsumerStage;
-use gpu_vulkan::saturation::{FrameRecording, PassTimeLog, PassTimeSummary, SaturationWorkload, SlotId};
+#[cfg(feature = "test-support")]
+use gpu_vulkan::saturation::{DigestPart, digest_counts, digest_texels};
+use gpu_vulkan::saturation::{
+    FrameRecording, PassTimeLog, PassTimeSummary, SaturationWorkload, SlotId, WorkloadDigest,
+};
 use isp_model::params::IspParams;
 use scope_contract::{ScopeImageSize, ScopeKind, ScopeRequest, ScopeScan, VectorscopeAxes};
 use scope_model::{ResolvedScope, ScopeModelSettings};
@@ -242,6 +246,42 @@ impl ScopesSaturation {
         self.counters.frames_released += 1;
         log_collect(&mut self.times, &report.gpu_time, &PASS_LABELS);
         Ok(())
+    }
+}
+
+impl ScopesSaturation {
+    /// Дайджест выхода приборов: две части — `counters` (ячейки сетки последней записи) и `picture` (картинка
+    /// прибора). Звать после конца прогона стенда и `wait_idle`.
+    ///
+    /// **Только с `test-support`.** Буфер счётчиков и картинка прибора в `ColorScopes` открыты чтению лишь под этой
+    /// фичей (`scopes/color_scopes.rs`: `last_grid`, `counters_buffer`, `picture_target`; `scopes.rs`: `mod test_support`);
+    /// модуль `scopes` продуктовый, в зоне пакета его править нельзя. Без фичи (release-APK) возвращается
+    /// [`SaturationWorkError::DigestUnavailable`] с этим объяснением. Картинка прибора на телефоне всё равно
+    /// попадает в дайджест `display_calibrate*` (она там живая картинка панели).
+    pub fn output_digest(&self) -> Result<WorkloadDigest, SaturationWorkError> {
+        #[cfg(feature = "test-support")]
+        {
+            let counters = self.scopes.read_back_counters_blocking()?;
+            let picture = self.scopes.read_back_picture_blocking()?;
+            Ok(WorkloadDigest::from_parts(vec![
+                DigestPart {
+                    label: "counters",
+                    digest: digest_counts(counters.counts()),
+                },
+                DigestPart {
+                    label: "picture",
+                    digest: digest_texels(picture.size.width(), picture.size.height(), &picture.texels),
+                },
+            ]))
+        }
+        #[cfg(not(feature = "test-support"))]
+        {
+            Err(SaturationWorkError::DigestUnavailable {
+                what:
+                    "счётчики и картинка приборов читаются только с test-support (ColorScopes не открывает их без фичи)"
+                        .to_owned(),
+            })
+        }
     }
 }
 

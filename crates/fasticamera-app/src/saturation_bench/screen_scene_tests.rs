@@ -9,6 +9,7 @@ use crate::camera_screen_config::CameraScreenConfig;
 use crate::look_service::LookHandle;
 use crate::look_startup::catalog_environment;
 use crate::saturation_bench::inputs::{InputSources, gather_inputs};
+use ui_draw::geometry::PxPoint;
 
 fn inputs(with_look: bool) -> ProductInputs {
     let render = RenderLoopConfig::default();
@@ -84,7 +85,7 @@ fn calibrate_with_the_look_library_draws_more_than_without_it() {
 fn summary_counts_items_by_kind_and_live_images_separately() {
     let plan = ScreenPlan::build(&inputs(true), SurfaceSizePx::ONEPLUS_11).expect("экраны");
     let scene = plan.scene(DisplayScreen::Calibrate);
-    let recount = summarize(&scene.draw_list);
+    let recount = summarize(&scene.draw_list, SurfaceSizePx::ONEPLUS_11);
     assert_eq!(recount, scene.summary);
     let total = recount.shapes + recount.glass_groups + recount.texts + recount.icons + recount.images;
     assert_eq!(
@@ -104,4 +105,85 @@ fn zero_width_surface_is_a_typed_error_not_a_panic() {
         matches!(error, ScreenPlanError::PointScale { width_px: 0, .. }),
         "{error}"
     );
+}
+
+#[test]
+fn glass_geometry_is_the_clamped_sum_of_group_bounds_and_the_screen_fraction() {
+    let surface = SurfaceSizePx::ONEPLUS_11;
+    let plan = ScreenPlan::build(&inputs(true), surface).expect("экраны");
+    let summary = plan.scene(DisplayScreen::Calibrate).summary;
+    assert_eq!(summary.surface_area_px, 1080 * 2412);
+    assert!(
+        summary.glass_bounds_area_px > 0,
+        "стекло закрывает часть экрана: {summary:?}"
+    );
+    let expected_fraction = summary.glass_bounds_area_px as f64 / summary.surface_area_px as f64;
+    assert!(
+        (summary.glass_screen_fraction - expected_fraction).abs() < 1e-6,
+        "{summary:?}"
+    );
+
+    // Независимый пересчёт: сумма площадей bounds групп, обрезанных по экрану.
+    let list = &plan.scene(DisplayScreen::Calibrate).draw_list;
+    let recount: f64 = list
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            DrawItem::Glass(group) => group.bounds_px(),
+            _ => None,
+        })
+        .map(|rect| {
+            let width = f64::from(rect.max_x().min(1080.0) - rect.origin.x.max(0.0)).max(0.0);
+            let height = f64::from(rect.max_y().min(2412.0) - rect.origin.y.max(0.0)).max(0.0);
+            width * height
+        })
+        .sum();
+    assert_eq!(summary.glass_bounds_area_px, recount.round() as u64);
+
+    // Список без стекла — нулевая геометрия стекла.
+    let without = crate::saturation_bench::draw_filter::DrawFilter::NoGlass.apply(list);
+    let flat = summarize(&without, surface);
+    assert_eq!((flat.glass_groups, flat.glass_bounds_area_px), (0, 0));
+    assert_eq!(flat.glass_screen_fraction, 0.0);
+}
+
+#[test]
+fn a_rect_hanging_over_the_screen_edge_counts_only_its_visible_part() {
+    let surface = SurfaceSizePx {
+        width: 100,
+        height: 100,
+    };
+    let rect = PxRect::new(PxPoint::new(-20.0, 90.0), PxSize::new(60.0, 40.0));
+    // Видимая часть: x от 0 до 40, y от 90 до 100.
+    assert_eq!(clamped_rect(&rect, surface), Some((0.0, 90.0, 40.0, 100.0)));
+    let outside = PxRect::new(PxPoint::new(200.0, 200.0), PxSize::new(10.0, 10.0));
+    assert_eq!(clamped_rect(&outside, surface), None);
+}
+
+#[test]
+fn union_area_counts_overlaps_once_and_disjoint_rects_fully() {
+    // Два перекрывающихся квадрата 10×10 со сдвигом 5 по обеим осям: 100 + 100 - 25.
+    assert_eq!(union_area(&[(0.0, 0.0, 10.0, 10.0), (5.0, 5.0, 15.0, 15.0)]), 175.0);
+    // Один внутри другого: площадь большего.
+    assert_eq!(union_area(&[(0.0, 0.0, 10.0, 10.0), (2.0, 2.0, 4.0, 4.0)]), 100.0);
+    // Не пересекаются: сумма. Пустой список — ноль.
+    assert_eq!(union_area(&[(0.0, 0.0, 2.0, 2.0), (5.0, 5.0, 6.0, 7.0)]), 6.0);
+    assert_eq!(union_area(&[]), 0.0);
+}
+
+#[test]
+fn the_real_screens_glass_union_is_not_larger_than_the_sum_nor_than_the_screen() {
+    let plan = ScreenPlan::build(&inputs(true), SurfaceSizePx::ONEPLUS_11).expect("экраны");
+    for screen in [DisplayScreen::Photo, DisplayScreen::Calibrate] {
+        let summary = plan.scene(screen).summary;
+        assert!(summary.glass_union_area_px > 0, "{screen:?}: {summary:?}");
+        assert!(
+            summary.glass_union_area_px <= summary.glass_bounds_area_px,
+            "{screen:?}: {summary:?}"
+        );
+        assert!(
+            summary.glass_union_screen_fraction <= 1.0 + 1e-9,
+            "{screen:?}: {summary:?}"
+        );
+    }
 }

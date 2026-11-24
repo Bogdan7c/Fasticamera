@@ -17,6 +17,7 @@ use std::time::Duration;
 use gpu_vulkan::saturation::CancelToken;
 
 use super::catalog::CatalogEntry;
+use super::digest_report::DigestOutcome;
 use super::report::{
     NotRunReason, RowOutcome, RunSummary, SceneSummary, UiCountersSummary, WorkloadFailure, WorkloadRow,
 };
@@ -30,6 +31,8 @@ pub struct ExecutedWorkload {
     pub measurement: Measurement,
     pub scene: Option<SceneSummary>,
     pub ui: Option<UiCountersSummary>,
+    /// Дайджест выхода работы (прочитан после окна замера).
+    pub digest: DigestOutcome,
 }
 
 /// Исполнитель одной работы: создать → прогнать стенд → освободить полностью.
@@ -147,7 +150,7 @@ impl BenchRunner<'_> {
         });
         let executed = self.executor.execute(entry, cancel);
         let thermal_end = self.thermal.snapshot();
-        let (outcome, scene, ui) = match executed {
+        let (outcome, scene, ui, digest) = match executed {
             Ok(done) => {
                 let outcome = if done.measurement.is_measured() {
                     RowOutcome::Measured {
@@ -158,9 +161,9 @@ impl BenchRunner<'_> {
                         measurement: done.measurement,
                     }
                 };
-                (outcome, done.scene, done.ui)
+                (outcome, done.scene, done.ui, Some(done.digest))
             }
-            Err(failure) => (RowOutcome::Failed { failure }, None, None),
+            Err(failure) => (RowOutcome::Failed { failure }, None, None, None),
         };
         let row = WorkloadRow {
             name: entry.name,
@@ -169,6 +172,7 @@ impl BenchRunner<'_> {
             outcome,
             scene,
             ui,
+            digest,
             thermal_start: Some(thermal_start),
             thermal_end: Some(thermal_end),
             started_at_ms: Some(started_at.as_secs_f64() * 1_000.0),

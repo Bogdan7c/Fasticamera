@@ -43,6 +43,7 @@ use render_loop::config::RenderLoopConfig;
 use serde::Serialize;
 use ui_core::time::MotionPreference;
 
+use super::catalog_wait::describe_catalog;
 use crate::camera_screen_config::CameraScreenConfig;
 use crate::camera_screen_facts::{camera_facts_from_status, facts_for_absent_engine};
 use crate::look_facts::{LookFactsCatalog, LookFactsSource};
@@ -169,7 +170,12 @@ pub fn sensor_from_catalog(
 ) -> Result<(SensorDescription, SensorSource, Option<StreamGeometry>), String> {
     let descriptor = catalog
         .resolve(&CameraTarget::Role(SENSOR_LENS_ROLE))
-        .map_err(|error| format!("камеры основной роли нет в каталоге: {error}"))?;
+        .map_err(|error| {
+            format!(
+                "камеры основной роли нет в каталоге: {error}; {}",
+                describe_catalog(catalog)
+            )
+        })?;
     let RawSupport::Supported(_) = &descriptor.capabilities.raw else {
         return Err("основная камера без RAW".to_owned());
     };

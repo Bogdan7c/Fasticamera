@@ -25,6 +25,7 @@ use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::time::{Duration, Instant};
 
 use camera_core::CameraState;
+use camera_core::status::CameraStatus;
 use gpu_vulkan::saturation::CancelToken;
 use render_loop::thread::RenderStatus;
 use serde_json::Value;
@@ -39,6 +40,7 @@ use crate::camera_screen_service::CameraScreenPolicy;
 use crate::gpu_services::{RenderObservation, ValidationState};
 use crate::power_measurement::ThermalSnapshot;
 use crate::saturation_bench::catalog::CatalogEntry;
+use crate::saturation_bench::catalog_wait::{CatalogPoll, CatalogWait, catalog_published};
 use crate::saturation_bench::inputs::{InputSources, LookSummary, ProductInputs, SensorSource, gather_inputs};
 use crate::saturation_bench::report::{RenderActivity, RenderSilence, RunSummary, violations};
 use crate::saturation_bench::runner::{BenchRunner, PauseOutcome, RunClock, RunEvent, ThermalProbe};
@@ -86,6 +88,8 @@ impl ThermalProbe for ServiceThermal {
 
 /// Что в сценарии выполняется сейчас.
 enum Phase {
+    /// Ждём, пока движок камеры опубликует каталог камер: без него сенсор для стенда был бы запасным.
+    AwaitingCatalog { wait: CatalogWait },
     /// `close` отправлена, ждём `Closed`.
     AwaitingCameraClosed { deadline: Instant },
     /// Камера тиха; даём потокам доиграть хвост и берём снимок рендера «до».
@@ -162,6 +166,36 @@ impl GpuSaturationScenario {
             ),
             Err(_) => true,
         }
+    }
+
+    /// Снимок статуса движка (`None` — движка нет).
+    fn engine_status(context: &ScenarioContext<'_>) -> Option<CameraStatus> {
+        context.camera.running().ok().map(|running| running.handle().status())
+    }
+
+    /// Собирает входы стенда по снимку статуса движка, закрывает камеру и объявляет старт.
+    fn begin(&mut self, context: &mut ScenarioContext<'_>, engine_status: Option<CameraStatus>) -> ScenarioStep {
+        let inputs = gather_inputs(&InputSources {
+            engine_status: engine_status.as_ref(),
+            lens_shading: &context.gpu.saturation.lens_shading,
+            render_config: &context.gpu.render_config,
+            look: context.camera_screen.look_handle(),
+            screen: context.camera_screen.config(),
+        });
+        self.header_sensor = Some(inputs.sensor_source.clone());
+        self.header_look = Some(inputs.look.clone());
+        self.inputs = Some(inputs);
+        if let Err(reason) = self.silence_camera(context) {
+            return ScenarioStep::Finished(failed(reason));
+        }
+        context.emit_stage(
+            "started",
+            stage_fields([
+                ("workloads", self.entries.len().into()),
+                ("camera", serde_json::to_value(self.camera).unwrap_or(Value::Null)),
+            ]),
+        );
+        ScenarioStep::Continue
     }
 
     fn launch(&mut self, context: &mut ScenarioContext<'_>) -> ScenarioStep {
@@ -408,29 +442,19 @@ impl ObservingScenario for GpuSaturationScenario {
             Ok(entries) => entries,
             Err(error) => return ScenarioStep::Finished(failed(format!("конфиг стенда насыщения: {error}"))),
         };
-        // Входы собираются ДО закрытия камеры: каталог и факты экрана берутся у живого движка.
-        let engine_status = context.camera.running().ok().map(|running| running.handle().status());
-        let inputs = gather_inputs(&InputSources {
-            engine_status: engine_status.as_ref(),
-            lens_shading: &context.gpu.saturation.lens_shading,
-            render_config: &context.gpu.render_config,
-            look: context.camera_screen.look_handle(),
-            screen: context.camera_screen.config(),
-        });
-        self.header_sensor = Some(inputs.sensor_source.clone());
-        self.header_look = Some(inputs.look.clone());
-        self.inputs = Some(inputs);
-        if let Err(reason) = self.silence_camera(context) {
-            return ScenarioStep::Finished(failed(reason));
+        // Входы собираются ДО закрытия камеры: каталог и факты экрана берутся у живого движка. Каталог движок
+        // публикует чуть позже старта: пока его нет, ждём (иначе сенсор был бы запасным, а не настоящим).
+        let engine_status = Self::engine_status(context);
+        if let Some(status) = &engine_status
+            && !catalog_published(status)
+        {
+            let limit = Duration::from_millis(self.config.catalog_wait_ms);
+            self.phase = Phase::AwaitingCatalog {
+                wait: CatalogWait::starting_at(context.now, limit),
+            };
+            return ScenarioStep::Continue;
         }
-        context.emit_stage(
-            "started",
-            stage_fields([
-                ("workloads", self.entries.len().into()),
-                ("camera", serde_json::to_value(self.camera).unwrap_or(Value::Null)),
-            ]),
-        );
-        ScenarioStep::Continue
+        self.begin(context, engine_status)
     }
 
     fn on_event(&mut self, event: ObservedEvent, _context: &mut ScenarioContext<'_>) -> ScenarioStep {
@@ -445,7 +469,7 @@ impl ObservingScenario for GpuSaturationScenario {
                 running.paused_by_app = true;
                 ScenarioStep::Continue
             }
-            Phase::AwaitingCameraClosed { .. } | Phase::Settling { .. } => {
+            Phase::AwaitingCatalog { .. } | Phase::AwaitingCameraClosed { .. } | Phase::Settling { .. } => {
                 self.phase = Phase::Done;
                 ScenarioStep::Finished(failed("приложение ушло в фон до начала замера: прогон не начинался"))
             }
@@ -455,6 +479,17 @@ impl ObservingScenario for GpuSaturationScenario {
 
     fn on_tick(&mut self, context: &mut ScenarioContext<'_>) -> ScenarioStep {
         match &mut self.phase {
+            Phase::AwaitingCatalog { wait } => {
+                let wait = *wait;
+                let Some(status) = Self::engine_status(context) else {
+                    // Движок пропал, пока ждали: идём дальше без него (сенсор запасной, причина в результате).
+                    return self.begin(context, None);
+                };
+                match wait.poll(status, context.now) {
+                    CatalogPoll::Waiting => ScenarioStep::Continue,
+                    CatalogPoll::Ready(status) | CatalogPoll::TimedOut(status) => self.begin(context, Some(status)),
+                }
+            }
             Phase::AwaitingCameraClosed { deadline } => {
                 let deadline = *deadline;
                 if Self::camera_is_quiet(context) {

@@ -7,6 +7,7 @@
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use super::digest_report::{DigestOutcome, NO_DIGEST_CELL};
 use super::inputs::{LookSummary, SensorSource};
 use super::report::{RenderSilence, RunSummary, WorkloadRow, thermal_word};
 use crate::gpu_services::ValidationState;
@@ -61,8 +62,36 @@ pub fn table_row(row: &WorkloadRow) -> String {
     format!("{}|{}|{}|{}", row.name, fps, cost, row.verdict_word())
 }
 
+/// Строка дайджестов: `имя|дайджест` (16 hex-цифр общего отпечатка выхода или `-`, если его нет). Части
+/// отпечатка и заметка о кадре — в `FASTICAMERA_DETAIL`. Таблица отдельно от дайджестов: её формат не менялся,
+/// и старые сохранённые результаты читаются теми же разборщиками.
+pub fn digest_row(row: &WorkloadRow) -> String {
+    let digest = row.digest.as_ref().map_or(NO_DIGEST_CELL, DigestOutcome::compact);
+    format!("{}|{}", row.name, digest)
+}
+
+/// Наибольший размер сводки (JSON), при котором в неё ещё кладётся список дайджестов, байт. Строка результата —
+/// одна запись logcat (~4000 байт) вместе с обёрткой сценария; сверх бюджета дайджесты остаются только в деталях
+/// (`digests_in_detail_only: true`).
+pub const SUMMARY_BUDGET_WITH_DIGESTS_BYTES: usize = 3_000;
+
 /// Сводка для строки результата (укладывается в бюджет по построению: строка на работу короткая).
 pub fn build_summary(header: &SummaryHeader, run: &RunSummary, silence: &RenderSilence) -> Value {
+    let mut summary = summary_without_digests(header, run, silence);
+    let digests: Vec<String> = run.rows.iter().map(digest_row).collect();
+    let digests_bytes = serde_json::to_string(&digests).map_or(usize::MAX, |text| text.len());
+    let current_bytes = serde_json::to_string(&summary).map_or(usize::MAX, |text| text.len());
+    if let Value::Object(map) = &mut summary {
+        if current_bytes.saturating_add(digests_bytes) <= SUMMARY_BUDGET_WITH_DIGESTS_BYTES {
+            map.insert("digests".to_owned(), json!(digests));
+        } else {
+            map.insert("digests_in_detail_only".to_owned(), json!(true));
+        }
+    }
+    summary
+}
+
+fn summary_without_digests(header: &SummaryHeader, run: &RunSummary, silence: &RenderSilence) -> Value {
     json!({
         "table": run.rows.iter().map(table_row).collect::<Vec<_>>(),
         "requested": header.requested,

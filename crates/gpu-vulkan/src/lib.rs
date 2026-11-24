@@ -53,9 +53,9 @@ pub mod sync;
 pub mod test_pattern;
 pub mod validation;
 
-/// Блокирующие помощники для тестов других crate (сессия 07): разовая отправка, чтение storage-картинки
-/// и host-буфера. Только `cfg(test)` и фича `test-support`.
-#[cfg(any(test, feature = "test-support"))]
+/// Блокирующие помощники: разовая отправка с ожиданием, чтение storage-картинки и host-буфера. Нужны тестам других
+/// crate (сессия 07) и дайджесту стенда насыщения (16a, `saturation::digest`: он обязан работать в release без
+/// фич). На горячем пути ожиданий GPU здесь нет: вызывать только вне кадровых циклов.
 pub mod kit_test_support;
 
 /// Только Android: импорт AHardwareBuffer и функции NDK для него (решение 32).

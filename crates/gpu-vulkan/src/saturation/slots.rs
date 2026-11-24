@@ -37,6 +37,11 @@ pub(crate) struct SlotRing {
     /// Занятые слоты от самого старого к самому новому. Ёмкость задана заранее: в цикле кадров без аллокаций.
     in_flight: VecDeque<usize>,
     busy: Vec<bool>,
+    /// С какого слота искать свободный: следующий после последнего отправленного (по кругу). Так стенд обходит
+    /// ВСЕ слоты по очереди, даже когда GPU успевает освободить слот до следующего кадра: работа, у которой
+    /// слотов меньше, чем у стенда, получает отказ на первом же круге, а не «когда повезёт» (тест 16a падал
+    /// через раз), и кадры в полёте всегда пишут в разные ресурсы слотов, как в продуктовом кольце кадров.
+    next_preferred: usize,
     context: GpuContext,
 }
 
@@ -82,6 +87,7 @@ impl SlotRing {
             command_pool: Some(command_pool),
             in_flight: VecDeque::with_capacity(slot_count),
             busy: vec![false; slot_count],
+            next_preferred: 0,
             context: context.clone(),
         })
     }
@@ -96,9 +102,14 @@ impl SlotRing {
         self.in_flight.len()
     }
 
-    /// Первый свободный слот (`None`, если все заняты).
+    /// Свободный слот для следующего кадра (`None`, если все заняты). Поиск идёт по кругу от слота, следующего
+    /// за последним отправленным: слоты используются по очереди (см. `next_preferred`).
     pub(crate) fn free_slot(&self) -> Option<SlotId> {
-        self.busy.iter().position(|busy| !busy).map(SlotId)
+        let slot_count = self.busy.len();
+        (0..slot_count)
+            .map(|step| (self.next_preferred + step) % slot_count)
+            .find(|&slot| !self.busy[slot])
+            .map(SlotId)
     }
 
     /// Сбрасывает командный буфер слота и открывает запись. Слот обязан быть свободен.
@@ -142,6 +153,7 @@ impl SlotRing {
         self.context.submit(&[submit], fence)?;
         self.busy[slot.0] = true;
         self.in_flight.push_back(slot.0);
+        self.next_preferred = (slot.0 + 1) % self.busy.len();
         Ok(())
     }
 

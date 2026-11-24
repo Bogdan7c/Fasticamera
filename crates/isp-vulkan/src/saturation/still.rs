@@ -32,7 +32,10 @@ use gpu_vulkan::hardware_buffer_cache::queue_handoff::ConsumerStage;
 use gpu_vulkan::one_shot_queue::{DrainOutcome, OneShotSubmitter, SubmitError, SubmittedWork, WorkStatus};
 use gpu_vulkan::raw_mosaic_preview::{MosaicSource, ValidArea};
 use gpu_vulkan::rgba8_image::Rgba8StorageImage;
-use gpu_vulkan::saturation::{FrameRecording, PassTimeLog, PassTimeSummary, SaturationWorkload, SlotId};
+use gpu_vulkan::saturation::{
+    DigestPart, FrameRecording, OutputDigest, PassTimeLog, PassTimeSummary, SaturationWorkload, SlotId, WorkloadDigest,
+    digest_rgba8_bytes, digest_rgba8_image,
+};
 use isp_model::params::IspParams;
 use still_contract::shot::StillRotation;
 
@@ -145,6 +148,8 @@ pub struct StillSaturation {
     /// Какой проявитель записан в каждом слоте стенда (до `release_slot_after_fence`).
     slot_developer: Vec<Option<usize>>,
     last_image: Option<Arc<Rgba8StorageImage>>,
+    /// Дайджест миниатюры последнего завершённого снимка (`None` — миниатюры не было).
+    last_thumbnail_digest: Option<OutputDigest>,
     times: PassTimeLog,
     counters: StillCounters,
     failure: FirstFailure,
@@ -180,6 +185,7 @@ impl StillSaturation {
             steps_per_still: 0,
             slot_developer: vec![None; config.frame_slots],
             last_image: None,
+            last_thumbnail_digest: None,
             times: PassTimeLog::new(&[], 1),
             counters: StillCounters::default(),
             failure: FirstFailure::default(),
@@ -264,8 +270,16 @@ impl StillSaturation {
                         self.developers[index].developer.slice_completed(&proof)?;
                     }
                     let mut photo = self.developers[index].developer.finish()?;
-                    if let ThumbnailOutcome::Ready { .. } = photo.take_thumbnail() {
+                    if let ThumbnailOutcome::Ready { size, rgba } = photo.take_thumbnail() {
                         self.counters.thumbnails_ready += 1;
+                        // Дайджест миниатюры берём сразу: байты в обычной памяти, GPU не нужен.
+                        self.last_thumbnail_digest = Some(digest_rgba8_bytes(
+                            ash::vk::Extent2D {
+                                width: size.width,
+                                height: size.height,
+                            },
+                            &rgba,
+                        ));
                     }
                     self.last_image = Some(Arc::clone(photo.gpu_image()));
                     self.counters.developments_finished += 1;
@@ -424,6 +438,30 @@ impl StillSaturation {
         let frame = super::scene::synthesize_raw10(config.frame_size, config.content, config.raw10_row_padding_bytes)?;
         let holder = super::source::synthetic_raw10_holder(context, &frame)?;
         Self::new(context, config, params, holder)
+    }
+}
+
+impl StillSaturation {
+    /// Дайджест последнего завершённого снимка: картинка RGBA8 и (если была) миниатюра. Звать после
+    /// [`Self::finish_pending_blocking`] и `wait_idle`; работает без `test-support`.
+    pub fn output_digest(&self) -> Result<WorkloadDigest, SaturationWorkError> {
+        let image = self
+            .last_image
+            .as_ref()
+            .ok_or_else(|| SaturationWorkError::EmptyFrame {
+                what: "ни одна проявка ещё не завершена".to_owned(),
+            })?;
+        let mut parts = vec![DigestPart {
+            label: "image",
+            digest: digest_rgba8_image(image)?,
+        }];
+        if let Some(digest) = self.last_thumbnail_digest {
+            parts.push(DigestPart {
+                label: "thumbnail",
+                digest,
+            });
+        }
+        Ok(WorkloadDigest::from_parts(parts))
     }
 }
 

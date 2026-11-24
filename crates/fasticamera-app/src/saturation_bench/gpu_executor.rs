@@ -12,7 +12,7 @@
 use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::saturation::{
     CancelToken, PassTimeSummary, SaturationBench, SaturationConfig, SaturationError, SaturationReport,
-    SaturationWorkload,
+    SaturationWorkload, WorkloadDigest,
 };
 use isp_vulkan::saturation::{
     DEFAULT_GRAY_CODE, HeadroomSaturation, HeadroomSaturationConfig, SaturationWorkError, SceneContent,
@@ -27,11 +27,16 @@ use ui_render_vulkan::saturation::{
 };
 
 use super::backdrop::{BackdropFailures, IspBackdrop};
-use super::catalog::{BackdropRhythm, CatalogEntry, DisplayScreen, ScopeInputKind, ScopeShape, WorkloadKind};
+use super::catalog::{
+    BackdropRhythm, CatalogEntry, DisplayScreen, ScopeInputKind, ScopeShape, ViewfinderVariant, WorkloadKind,
+};
+use super::digest_report::DigestOutcome;
+use super::draw_filter::DrawFilter;
 use super::inputs::{PipelineKind, ProductInputs};
 use super::report::{FailureKind, Measurement, SceneSummary, UiCountersSummary, WorkloadFailure};
 use super::runner::{ExecutedWorkload, WorkloadExecutor};
-use super::screen_scene::{ScreenPlan, ScreenPlanError, SurfaceSizePx};
+use super::screen_scene::{ScreenPlan, ScreenPlanError, SurfaceSizePx, summarize};
+use super::viewfinder_variant;
 
 /// Зерно «натурной» сцены (один и тот же кадр от прогона к прогону).
 const NATURAL_SCENE_SEED: u32 = 0x5EED_16A0;
@@ -57,6 +62,13 @@ trait BenchWork {
     fn ui_counters(&self) -> Option<UiCountersSummary> {
         None
     }
+    /// Дайджест выхода последнего кадра. Звать ПОСЛЕ прогона, `finish()` и `wait_idle`, до освобождения работы.
+    /// Отказ чтения — текст причины (строка замера из-за него не срывается).
+    fn output_digest(&mut self) -> Result<WorkloadDigest, String>;
+    /// Факт о прочитанном кадре для результата (см. `DigestOutcome::Computed::frame_note`).
+    fn digest_note(&self) -> Option<String> {
+        None
+    }
 }
 
 fn failure_text(error: Option<SaturationWorkError>) -> Option<String> {
@@ -78,6 +90,18 @@ impl BenchWork for ViewfinderWork {
     fn take_failure(&mut self) -> Option<String> {
         failure_text(self.0.take_failure())
     }
+    fn output_digest(&mut self) -> Result<WorkloadDigest, String> {
+        self.0.output_digest().map_err(|error| error.to_string())
+    }
+    fn digest_note(&self) -> Option<String> {
+        self.0.counters().last_frame_had_statistics.map(|had| {
+            if had {
+                "last_frame=awb_statistics".to_owned()
+            } else {
+                "last_frame=no_awb_statistics".to_owned()
+            }
+        })
+    }
 }
 
 struct ScopesWork(ScopesSaturation);
@@ -95,6 +119,9 @@ impl BenchWork for ScopesWork {
     fn take_failure(&mut self) -> Option<String> {
         failure_text(self.0.take_failure())
     }
+    fn output_digest(&mut self) -> Result<WorkloadDigest, String> {
+        self.0.output_digest().map_err(|error| error.to_string())
+    }
 }
 
 struct HeadroomWork(HeadroomSaturation);
@@ -111,6 +138,9 @@ impl BenchWork for HeadroomWork {
     }
     fn take_failure(&mut self) -> Option<String> {
         failure_text(self.0.take_failure())
+    }
+    fn output_digest(&mut self) -> Result<WorkloadDigest, String> {
+        self.0.output_digest().map_err(|error| error.to_string())
     }
 }
 
@@ -131,6 +161,9 @@ impl BenchWork for StillWork {
     }
     fn finish(&mut self) -> Result<(), String> {
         self.0.finish_pending_blocking().map_err(|error| error.to_string())
+    }
+    fn output_digest(&mut self) -> Result<WorkloadDigest, String> {
+        self.0.output_digest().map_err(|error| error.to_string())
     }
 }
 
@@ -163,6 +196,9 @@ impl BenchWork for DisplayWork {
         }
         (self.ui.release_failures() > 0)
             .then(|| format!("освобождение слотов UI: {} ошибок", self.ui.release_failures()))
+    }
+    fn output_digest(&mut self) -> Result<WorkloadDigest, String> {
+        self.ui.output_digest().map_err(|error| error.to_string())
     }
     fn scene(&self) -> Option<SceneSummary> {
         Some(self.scene)
@@ -243,15 +279,16 @@ impl GpuWorkloadExecutor {
 
     fn build(&mut self, entry: &CatalogEntry) -> Result<Box<dyn BenchWork>, BuildError> {
         match entry.kind {
-            WorkloadKind::Viewfinder => self.build_viewfinder(),
+            WorkloadKind::Viewfinder { variant } => self.build_viewfinder(variant),
             WorkloadKind::Scopes { shape, input } => self.build_scopes(shape, input),
             WorkloadKind::Compositor => self.build_display(
                 FrameComposition::CompositorOnly,
                 DisplayScreen::Photo,
                 BackdropRhythm::NewFrameEveryFrame,
+                DrawFilter::All,
             ),
-            WorkloadKind::Display { screen, rhythm } => {
-                self.build_display(FrameComposition::CompositorThenUi, screen, rhythm)
+            WorkloadKind::Display { screen, rhythm, filter } => {
+                self.build_display(FrameComposition::CompositorThenUi, screen, rhythm, filter)
             }
             WorkloadKind::HeadroomV4 => self.build_headroom(),
             WorkloadKind::Still => self.build_still(),
@@ -264,9 +301,10 @@ impl GpuWorkloadExecutor {
         config
     }
 
-    fn build_viewfinder(&self) -> Result<Box<dyn BenchWork>, BuildError> {
+    fn build_viewfinder(&self, variant: ViewfinderVariant) -> Result<Box<dyn BenchWork>, BuildError> {
         let params = self.inputs.params(PipelineKind::Viewfinder)?;
-        let work = ViewfinderSaturation::new_synthetic(&self.context, self.viewfinder_config(), params)?;
+        let config = viewfinder_variant::configure(variant, self.viewfinder_config());
+        let work = ViewfinderSaturation::new_synthetic(&self.context, config, params)?;
         Ok(Box::new(ViewfinderWork(work)))
     }
 
@@ -337,17 +375,15 @@ impl GpuWorkloadExecutor {
         composition: FrameComposition,
         screen: DisplayScreen,
         rhythm: BackdropRhythm,
+        filter: DrawFilter,
     ) -> Result<Box<dyn BenchWork>, BuildError> {
         let slots = self.slots();
-        let (draw_list, viewfinder, scope_request, summary) = {
+        let (draw_list, viewfinder, scope_request) = {
             let scene = self.plan()?.scene(screen);
-            (
-                scene.draw_list.clone(),
-                scene.viewfinder,
-                scene.scope_request,
-                scene.summary,
-            )
+            (filter.apply(&scene.draw_list), scene.viewfinder, scene.scope_request)
         };
+        // Состав сцены в результате — фактический, после фильтра (а не весь экран).
+        let summary = summarize(&draw_list, self.surface);
         // Приборы: настоящая картинка панели считается один раз, дальше только читается кадрами показа.
         let (scopes, live_images) = match (screen, scope_request) {
             (DisplayScreen::Calibrate, Some(request)) => {
@@ -508,14 +544,27 @@ impl GpuWorkloadExecutor {
             if let Some(cause) = reported {
                 return Err(WorkloadFailure::new(FailureKind::WorkloadReportedFailure, cause));
             }
+            let measurement = Measurement::of(&report, &work.pass_times());
+            // Дайджест строго ПОСЛЕ окна замера, `finish()` и `wait_idle`: чтение блокирующее и цену не искажает.
+            let digest = self.digest_of(work.as_mut());
             Ok(ExecutedWorkload {
-                measurement: Measurement::of(&report, &work.pass_times()),
+                measurement,
                 scene: work.scene(),
                 ui: work.ui_counters(),
+                digest,
             })
         });
         self.release(work);
         executed
+    }
+
+    /// Дайджест выхода работы после прогона. Отказ не срывает строку: он становится `Unavailable`.
+    fn digest_of(&self, work: &mut dyn BenchWork) -> DigestOutcome {
+        let result = match self.context.wait_idle() {
+            Ok(()) => work.output_digest(),
+            Err(error) => Err(format!("ожидание GPU перед дайджестом: {error}")),
+        };
+        DigestOutcome::from_result(result, work.digest_note())
     }
 
     /// Освобождение работы: GPU дочитал всё, потом уничтожение.

@@ -20,7 +20,7 @@ use shell_contract::orientation::DeviceOrientation;
 use ui_core::input::{PointScale, PointScaleRule};
 use ui_draw::draw_list::{DrawItem, DrawList, ImageSource};
 use ui_draw::frame_source::{BackdropContinuity, UiFrameRequest};
-use ui_draw::geometry::PxSize;
+use ui_draw::geometry::{PxRect, PxSize};
 use ui_draw::light::LightDirection;
 use ui_kit::tokens::UiKitTokens;
 
@@ -177,7 +177,7 @@ fn build_scene(
     }
     let scope_request = last_scope_request(&driver.screen.drain_effects());
     let viewfinder = viewfinder_rect(&driver, which)?;
-    let summary = summarize(&driver.last_list);
+    let summary = summarize(&driver.last_list, surface);
     Ok(ScreenScene {
         screen: which,
         draw_list: driver.last_list,
@@ -231,15 +231,22 @@ fn viewfinder_rect(driver: &FrameDriver, which: DisplayScreen) -> Result<Logical
     Ok(rect)
 }
 
-/// Состав списка рисования: сколько чего в сцене.
-pub fn summarize(list: &DrawList) -> SceneSummary {
+/// Состав списка рисования: сколько чего в сцене и сколько экрана закрывает стекло (`surface` — размер экрана,
+/// px: по нему обрезаются прямоугольники групп и считается доля).
+pub fn summarize(list: &DrawList, surface: SurfaceSizePx) -> SceneSummary {
     let mut summary = SceneSummary::default();
+    let mut glass_area = 0.0_f64;
+    let mut glass_rects: Vec<(f64, f64, f64, f64)> = Vec::new();
     for item in &list.items {
         match item {
             DrawItem::Shape(_) => summary.shapes += 1,
             DrawItem::Glass(group) => {
                 summary.glass_groups += 1;
                 summary.glass_members += group.members.len() as u64;
+                if let Some(rect) = group.bounds_px().and_then(|bounds| clamped_rect(&bounds, surface)) {
+                    glass_area += (rect.2 - rect.0) * (rect.3 - rect.1);
+                    glass_rects.push(rect);
+                }
             }
             DrawItem::Text(_) => summary.texts += 1,
             DrawItem::Icon(_) => summary.icons += 1,
@@ -251,7 +258,52 @@ pub fn summarize(list: &DrawList) -> SceneSummary {
             }
         }
     }
+    summary.surface_area_px = u64::from(surface.width) * u64::from(surface.height);
+    summary.glass_bounds_area_px = glass_area.round() as u64;
+    let union_area = union_area(&glass_rects);
+    summary.glass_union_area_px = union_area.round() as u64;
+    let surface_area = summary.surface_area_px as f64;
+    summary.glass_screen_fraction = if surface_area == 0.0 {
+        0.0
+    } else {
+        glass_area / surface_area
+    };
+    summary.glass_union_screen_fraction = if surface_area == 0.0 {
+        0.0
+    } else {
+        union_area / surface_area
+    };
     summary
+}
+
+/// Прямоугольник `(левый, верхний, правый, нижний)` внутри экрана, px; `None` — за экраном целиком.
+fn clamped_rect(rect: &PxRect, surface: SurfaceSizePx) -> Option<(f64, f64, f64, f64)> {
+    let left = f64::from(rect.origin.x.max(0.0));
+    let top = f64::from(rect.origin.y.max(0.0));
+    let right = f64::from(rect.max_x().min(surface.width as f32));
+    let bottom = f64::from(rect.max_y().min(surface.height as f32));
+    (right > left && bottom > top).then_some((left, top, right, bottom))
+}
+
+/// Площадь объединения прямоугольников `(левый, верхний, правый, нижний)`: сжатие координат, ячейка сетки
+/// считается, если её накрывает хоть один прямоугольник. Прямоугольников единицы (группы стекла экрана).
+fn union_area(rects: &[(f64, f64, f64, f64)]) -> f64 {
+    let mut xs: Vec<f64> = rects.iter().flat_map(|rect| [rect.0, rect.2]).collect();
+    let mut ys: Vec<f64> = rects.iter().flat_map(|rect| [rect.1, rect.3]).collect();
+    xs.sort_by(f64::total_cmp);
+    ys.sort_by(f64::total_cmp);
+    let mut area = 0.0;
+    for x_pair in xs.windows(2) {
+        for y_pair in ys.windows(2) {
+            let covered = rects
+                .iter()
+                .any(|rect| rect.0 <= x_pair[0] && x_pair[1] <= rect.2 && rect.1 <= y_pair[0] && y_pair[1] <= rect.3);
+            if covered {
+                area += (x_pair[1] - x_pair[0]) * (y_pair[1] - y_pair[0]);
+            }
+        }
+    }
+    area
 }
 
 #[cfg(test)]

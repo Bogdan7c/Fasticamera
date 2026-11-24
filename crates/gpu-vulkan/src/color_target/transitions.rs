@@ -6,7 +6,6 @@
 use ash::vk;
 
 use super::barriers::ImageScope;
-#[cfg(any(test, feature = "test-support"))]
 use crate::error::GpuError;
 use crate::hardware_buffer_cache::queue_handoff::ConsumerStage;
 
@@ -62,7 +61,6 @@ impl ColorTargetPreviousUse {
 
     /// Область, в которую `readback` возвращает картинку после копирования; `None` — она и так в
     /// `TRANSFER_SRC_OPTIMAL`. `NotUsedYet` — `InvalidState`: читать нечего.
-    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn restore_scope_after_copy(self) -> Result<Option<ImageScope>, GpuError> {
         match self {
             Self::NotUsedYet => Err(GpuError::InvalidState {
@@ -101,7 +99,6 @@ pub(crate) fn sampled_read_scope(reader: ConsumerStage) -> ImageScope {
 }
 
 /// Область «после» для копирования в буфер (только readback тестов).
-#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn transfer_read_scope() -> ImageScope {
     ImageScope {
         layout: vk::ImageLayout::TRANSFER_SRC_OPTIMAL,

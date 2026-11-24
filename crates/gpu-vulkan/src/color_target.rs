@@ -13,7 +13,6 @@
 
 mod barriers;
 mod format;
-#[cfg(any(test, feature = "test-support"))]
 pub(crate) mod readback;
 mod transitions;
 
@@ -21,7 +20,6 @@ use ash::vk;
 
 pub(crate) use self::barriers::{ImageScope, record_image_barrier};
 pub use self::format::ColorTargetFormat;
-#[cfg(any(test, feature = "test-support"))]
 pub(crate) use self::transitions::transfer_read_scope;
 pub use self::transitions::{ColorTargetPreviousUse, ContentOnPrepare};
 pub(crate) use self::transitions::{render_scope, sampled_read_scope};
@@ -222,19 +220,16 @@ impl ColorTarget {
     }
 
     /// Сам `VkImage` (для readback внутри crate).
-    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn image_handle(&self) -> vk::Image {
         self.image.handle()
     }
 
     /// Формат цели в виде перечисления (для декодирования readback).
-    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn target_format(&self) -> ColorTargetFormat {
         self.format
     }
 
     /// Контекст-владелец (для readback).
-    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn context(&self) -> &GpuContext {
         &self.context
     }

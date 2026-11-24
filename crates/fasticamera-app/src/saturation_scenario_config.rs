@@ -9,13 +9,14 @@ use gpu_vulkan::saturation::{SaturationConfig, SaturationConfigError};
 use gpu_vulkan::swapchain::FramesInFlight;
 use serde::{Deserialize, Serialize};
 
-use crate::saturation_bench::catalog::{CatalogEntry, UnknownWorkload, all_names, find_entry};
+use crate::saturation_bench::catalog::{CatalogEntry, UnknownWorkload, baseline_names, expand_name};
 
 /// Секция `camera.scenarios.saturation`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct SaturationScenarioConfig {
-    /// Имена работ каталога в порядке прогона. Умолчание — все.
+    /// Имена работ каталога или групп (`baseline`, `ui_ablation`, `isp_ablation`) в порядке прогона; группа
+    /// раскрывается в свои работы по порядку каталога. Умолчание — группа `baseline` (14 работ 16a).
     pub workloads: Vec<String>,
     /// Прогрев каждой работы, мс (кадры не считаются): GPU успевает разогнаться до рабочей частоты.
     pub warmup_ms: u64,
@@ -29,6 +30,10 @@ pub struct SaturationScenarioConfig {
     pub frames_in_flight: usize,
     /// Сколько ждать закрытия камеры перед стартом (видоискатель на время замера молчит), мс.
     pub camera_close_timeout_ms: u64,
+    /// Сколько ждать, пока движок камеры опубликует каталог камер, прежде чем собирать входы стенда, мс. Каталог
+    /// читается в потоке движка после старта, а сценарий стартует из намерения запуска почти сразу: без ожидания
+    /// стенд брал запасную калибровку сенсора (см. `saturation_bench::catalog_wait`).
+    pub catalog_wait_ms: u64,
     /// Пауза после закрытия камеры перед «снимком до» активности рендера, мс: потоки доигрывают хвост.
     pub quiet_settle_ms: u64,
     /// Сколько кадров продуктовой работы GPU поток рендера вправе выполнить за время замера (ISP, перекомпоновка,
@@ -43,13 +48,14 @@ pub struct SaturationScenarioConfig {
 impl Default for SaturationScenarioConfig {
     fn default() -> Self {
         Self {
-            workloads: all_names(),
+            workloads: baseline_names(),
             warmup_ms: 3_000,
             measure_ms: 10_000,
             timeline_step_ms: 1_000,
             cooldown_between_ms: 3_000,
             frames_in_flight: 2,
             camera_close_timeout_ms: 10_000,
+            catalog_wait_ms: 5_000,
             quiet_settle_ms: 500,
             render_gpu_work_tolerance_frames: 5,
             setup_allowance_ms: 30_000,
@@ -83,6 +89,7 @@ impl SaturationScenarioConfig {
             ("measure_ms", self.measure_ms),
             ("timeline_step_ms", self.timeline_step_ms),
             ("camera_close_timeout_ms", self.camera_close_timeout_ms),
+            ("catalog_wait_ms", self.catalog_wait_ms),
             ("setup_allowance_ms", self.setup_allowance_ms),
         ] {
             if value == 0 {
@@ -101,13 +108,14 @@ impl SaturationScenarioConfig {
         }
         let mut entries: Vec<&'static CatalogEntry> = Vec::with_capacity(self.workloads.len());
         for name in &self.workloads {
-            let entry = find_entry(name.trim())?;
-            if entries.iter().any(|known| known.name == entry.name) {
-                return Err(SaturationScenarioConfigError::DuplicateWorkload {
-                    name: entry.name.to_owned(),
-                });
+            for entry in expand_name(name.trim())? {
+                if entries.iter().any(|known| known.name == entry.name) {
+                    return Err(SaturationScenarioConfigError::DuplicateWorkload {
+                        name: entry.name.to_owned(),
+                    });
+                }
+                entries.push(entry);
             }
-            entries.push(entry);
         }
         Ok(entries)
     }

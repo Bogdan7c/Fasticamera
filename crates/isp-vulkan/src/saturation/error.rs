@@ -55,6 +55,15 @@ pub enum SaturationWorkError {
     /// Ошибка GPU.
     #[error("GPU: {0}")]
     Gpu(#[from] GpuError),
+    /// Дайджест выхода не прочитан (блокирующее чтение не удалось).
+    #[error("дайджест выхода: {0}")]
+    Digest(#[from] gpu_vulkan::saturation::DigestError),
+    /// Дайджест этой работы в данной сборке получить нельзя (нужного доступа к выходу нет).
+    #[error("дайджест недоступен: {what}")]
+    DigestUnavailable {
+        /// Что именно недоступно и что нужно, чтобы стало доступно.
+        what: String,
+    },
 }
 
 impl SaturationWorkError {

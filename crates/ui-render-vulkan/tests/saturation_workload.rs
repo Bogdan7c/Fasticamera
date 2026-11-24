@@ -22,7 +22,7 @@ use gpu_vulkan::color_target::ColorTargetPreviousUse;
 use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::kit_test_support::read_color_target_rgba;
 use gpu_vulkan::saturation::{
-    CancelToken, SaturationBench, SaturationConfig, SaturationError, SaturationReport, Throughput,
+    CancelToken, DigestError, SaturationBench, SaturationConfig, SaturationError, SaturationReport, Throughput,
 };
 use gpu_vulkan::swapchain::FramesInFlight;
 use saturation_support::{FREE_VIEWFINDER_PIXEL, pixel_index, render_reference, typical_scene};
@@ -318,6 +318,58 @@ fn objects_created_by_the_adapter_are_released_on_drop() {
 }
 
 /// Печатающий бенч: «состав кадра × каденция фона → к/с → мс/кадр → медианы проходов». Порогов нет.
+#[test]
+fn output_digest_is_the_digest_of_the_last_frame_pixels_and_stable_between_runs() {
+    let _serial = serialize_gpu();
+    let Some(context) = gpu_context_or_skip() else { return };
+    // До первого кадра выхода нет: типизированная ошибка, а не отпечаток мусора.
+    let fresh = UiFrameSaturation::new(
+        &context,
+        adapter_config(FrameComposition::CompositorThenUi, BackdropCadence::NewFrameEveryFrame),
+        typical_scene(&context),
+    )
+    .unwrap();
+    assert!(matches!(fresh.output_digest(), Err(DigestError::NothingToRead { .. })));
+    drop(fresh);
+
+    let (report, adapter) = run_adapter(
+        &context,
+        FrameComposition::CompositorThenUi,
+        BackdropCadence::NewFrameEveryFrame,
+    );
+    context.wait_idle().unwrap();
+    let digest = adapter.output_digest().unwrap();
+    assert_eq!(digest.parts().len(), 1);
+    assert_eq!(digest.parts()[0].label, "target");
+    // Повторное чтение — тот же отпечаток, а пиксели цели не тронуты.
+    let pixels_before = last_frame_pixels(&adapter);
+    assert_eq!(adapter.output_digest().unwrap(), digest);
+    assert_eq!(last_frame_pixels(&adapter), pixels_before, "дайджест не меняет цель");
+    // Тот же кадр, записанный стендом ещё раз (другое число кадров), даёт тот же отпечаток; другой состав — другой.
+    let (other_report, other) = run_adapter(&context, FrameComposition::CompositorThenUi, BackdropCadence::SameFrame);
+    context.wait_idle().unwrap();
+    assert_ne!(report.total_completed_frames(), 0);
+    assert_ne!(other_report.total_completed_frames(), 0);
+    assert_eq!(
+        other.output_digest().unwrap(),
+        digest,
+        "каденция фона и число кадров не меняют картинку"
+    );
+    let (_, compositor_only) = run_adapter(
+        &context,
+        FrameComposition::CompositorOnly,
+        BackdropCadence::NewFrameEveryFrame,
+    );
+    context.wait_idle().unwrap();
+    assert_ne!(
+        compositor_only.output_digest().unwrap(),
+        digest,
+        "без UI картинка другая"
+    );
+    drop((adapter, other, compositor_only));
+    assert_no_validation_errors(&context);
+}
+
 #[test]
 fn saturation_bench_prints() {
     let _lock = serialize_gpu();

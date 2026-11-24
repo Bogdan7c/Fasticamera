@@ -13,6 +13,7 @@ fn measured(fps: f64) -> Measurement {
         unmeasured_pass_frames: 0,
         mismatched_pass_frames: 0,
         timeline_fps: vec![fps],
+        cost: None,
     }
 }
 
@@ -24,6 +25,7 @@ fn row(name: &'static str, outcome: RowOutcome) -> WorkloadRow {
         outcome,
         scene: None,
         ui: None,
+        digest: None,
         thermal_start: None,
         thermal_end: None,
         started_at_ms: None,
@@ -196,4 +198,36 @@ fn row_serializes_with_a_state_tag_for_the_detail_line() {
     assert_eq!(json["outcome"]["state"], "failed");
     assert_eq!(json["outcome"]["failure"]["kind"], "slots_mismatch");
     assert_eq!(json["name"], "scopes_parade");
+}
+
+#[test]
+fn cost_summary_reports_three_significant_digits_p95_and_max_of_step_costs() {
+    // 10 шагов: девять по 200 к/с (5 мс на кадр) и один «просевший» по 100 к/с (10 мс на кадр).
+    let mut fps = vec![200.0; 9];
+    fps.push(100.0);
+    let cost = cost_summary(Some(5.5555), &fps).expect("шаги с кадрами есть");
+    assert_eq!(cost.frame_cost_ms, 5.56, "три значащие цифры");
+    assert_eq!(cost.steps_with_frames, 10);
+    assert_eq!(cost.step_cost_max_ms, 10.0);
+    assert_eq!(
+        cost.step_cost_p95_ms, 10.0,
+        "p95 из 10 шагов — самый дорогой (ближайший ранг)"
+    );
+    // Шаг без кадров не входит в цену кадра и не превращается в «бесконечность».
+    let with_empty_step = cost_summary(Some(5.0), &[200.0, 0.0]).expect("один шаг с кадрами");
+    assert_eq!(
+        (with_empty_step.steps_with_frames, with_empty_step.step_cost_max_ms),
+        (1, 5.0)
+    );
+    assert_eq!(cost_summary(Some(5.0), &[0.0, 0.0]), None, "ни одного шага с кадрами");
+    assert_eq!(cost_summary(None, &[100.0]), None, "цены нет — сводки нет");
+}
+
+#[test]
+fn rounding_keeps_three_significant_digits_at_every_magnitude() {
+    assert_eq!(round_to_three_significant(6.6667), 6.67);
+    assert_eq!(round_to_three_significant(98.04), 98.0);
+    assert_eq!(round_to_three_significant(0.60123), 0.601);
+    assert_eq!(round_to_three_significant(1234.5), 1230.0);
+    assert_eq!(round_to_three_significant(0.0), 0.0);
 }

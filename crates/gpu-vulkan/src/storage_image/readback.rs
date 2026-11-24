@@ -1,4 +1,4 @@
-//! Чтение storage-картинки на CPU в `[f32; 4]` (только тесты и фича `test-support`).
+//! Чтение storage-картинки на CPU: в `[f32; 4]` (тесты) или «сырыми» байтами (дайджест стенда насыщения).
 //!
 //! Блокирующая операция (разовая отправка с таймаутом контекста): для паритетных тестов ISP, не для
 //! горячего пути. Раскладка картинки после чтения возвращается к той, что была (`current_use`), чтобы
@@ -17,6 +17,17 @@ pub(crate) fn read_storage_image_rgba(
     image: &StorageImage,
     current_use: StorageImagePreviousUse,
 ) -> Result<Vec<[f32; 4]>, GpuError> {
+    let bytes = read_storage_image_bytes(image, current_use)?;
+    Ok(decode_texels(image.format(), &bytes))
+}
+
+/// Читает «сырые» байты картинки: плотные строки `extent.width × extent.height` текселей формата картинки
+/// (без раскодирования в `f32`: картинка 4096×3072 в `[f32; 4]` заняла бы 200 МиБ). Контракт — как у
+/// [`read_storage_image_rgba`].
+pub(crate) fn read_storage_image_bytes(
+    image: &StorageImage,
+    current_use: StorageImagePreviousUse,
+) -> Result<Vec<u8>, GpuError> {
     let restore = restore_scope(current_use)?;
     let context = image.context();
     let extent = image.extent();
@@ -92,8 +103,7 @@ pub(crate) fn read_storage_image_rgba(
     let length = usize::try_from(byte_count).map_err(|_| GpuError::InvalidArgument {
         what: "размер readback не помещается в usize".to_owned(),
     })?;
-    let bytes = staging.read_bytes(0, length)?;
-    Ok(decode_texels(image.format(), &bytes))
+    staging.read_bytes(0, length)
 }
 
 /// Куда вернуть картинку после копирования; `None` — оставить в `TRANSFER_SRC_OPTIMAL` (она там и была).

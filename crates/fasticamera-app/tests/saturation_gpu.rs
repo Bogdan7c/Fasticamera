@@ -31,13 +31,17 @@ use fasticamera::camera_screen_config::CameraScreenConfig;
 use fasticamera::look_service::LookHandle;
 use fasticamera::look_startup::catalog_environment;
 use fasticamera::power_measurement::ThermalSnapshot;
-use fasticamera::saturation_bench::catalog::{CATALOG, CatalogEntry, DisplayScreen, WorkloadKind, find_entry};
+use fasticamera::saturation_bench::catalog::{
+    BackdropRhythm, CatalogEntry, DisplayScreen, WorkloadGroup, WorkloadKind, find_entry, group_entries,
+};
+use fasticamera::saturation_bench::digest_report::DigestOutcome;
+use fasticamera::saturation_bench::draw_filter::DrawFilter;
 use fasticamera::saturation_bench::gpu_executor::GpuWorkloadExecutor;
 use fasticamera::saturation_bench::inputs::{InputSources, ProductInputs, SensorSource, gather_inputs};
 use fasticamera::saturation_bench::report::{RowOutcome, RunSummary, WorkloadRow};
 use fasticamera::saturation_bench::runner::{BenchRunner, PauseOutcome, RunClock, RunEvent, ThermalProbe};
 use fasticamera::saturation_bench::screen_scene::{ScreenPlan, SurfaceSizePx};
-use fasticamera::saturation_bench::summary::table_row;
+use fasticamera::saturation_bench::summary::{detail_item, table_row};
 use gpu_vulkan::context::{GpuContext, GpuContextConfig};
 use gpu_vulkan::device::DeviceProfile;
 use gpu_vulkan::saturation::CancelToken;
@@ -119,21 +123,26 @@ impl ThermalProbe for NoThermal {
     }
 }
 
-fn short_bench() -> gpu_vulkan::saturation::SaturationConfig {
+fn bench_with_window(measure_ms: u64) -> gpu_vulkan::saturation::SaturationConfig {
     gpu_vulkan::saturation::SaturationConfig {
         frames_in_flight: FramesInFlight::new(2).unwrap(),
         warmup: Duration::from_millis(100),
-        measure: Duration::from_millis(300),
+        measure: Duration::from_millis(measure_ms),
         timeline_step: Duration::from_millis(100),
         fence_timeout: Duration::from_secs(30),
     }
 }
 
 fn run_entries(context: &GpuContext, entries: &[&'static CatalogEntry]) -> RunSummary {
+    run_entries_with_window(context, entries, 300)
+}
+
+/// Прогон списка работ с окном замера `measure_ms` (от окна зависит, сколько кадров успеет пройти).
+fn run_entries_with_window(context: &GpuContext, entries: &[&'static CatalogEntry], measure_ms: u64) -> RunSummary {
     let mut executor = GpuWorkloadExecutor::new(
         context.clone(),
         product_inputs(),
-        short_bench(),
+        bench_with_window(measure_ms),
         SurfaceSizePx::ONEPLUS_11,
     );
     let mut events: Vec<RunEvent> = Vec::new();
@@ -161,7 +170,7 @@ fn row<'a>(summary: &'a RunSummary, name: &str) -> &'a WorkloadRow {
 
 fn expected_labels(entry: &CatalogEntry) -> Vec<&'static str> {
     match entry.kind {
-        WorkloadKind::Viewfinder => vec!["isp-end"],
+        WorkloadKind::Viewfinder { .. } => vec!["isp-end"],
         WorkloadKind::Scopes { .. } => vec!["accumulate-end", "render-end"],
         WorkloadKind::Compositor => vec!["compose"],
         WorkloadKind::Display { .. } => vec!["compose", "pyramid", "ui"],
@@ -176,7 +185,7 @@ fn every_workload_of_the_catalog_is_measured_on_a_real_gpu_and_released_one_by_o
     let _serial = GPU_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(context) = gpu_context_or_skip() else { return };
     let baseline = context.live_objects();
-    let entries: Vec<&'static CatalogEntry> = CATALOG.iter().collect();
+    let entries: Vec<&'static CatalogEntry> = group_entries(WorkloadGroup::Baseline);
 
     let summary = run_entries(&context, &entries);
 
@@ -317,7 +326,341 @@ fn photo_and_calibrate_draw_lists_are_valid_and_differ_by_what_the_real_screen_d
         find_entry("display_calibrate").unwrap().kind,
         WorkloadKind::Display {
             screen: DisplayScreen::Calibrate,
-            rhythm: fasticamera::saturation_bench::catalog::BackdropRhythm::NewFrameEveryFrame,
+            rhythm: BackdropRhythm::NewFrameEveryFrame,
+            filter: DrawFilter::All,
         }
+    );
+}
+
+/// Для проверки скрипта сравнения на настоящем формате: подробности прогона в виде строк `FASTICAMERA_DETAIL`
+/// (как их печатает `device-smoke.sh`) пишутся в `<каталог из FASTICAMERA_SATURATION_DUMP>/<имя>.txt`.
+fn dump_details_if_asked(summary: &RunSummary, file_stem: &str) {
+    let Ok(directory) = std::env::var("FASTICAMERA_SATURATION_DUMP") else {
+        return;
+    };
+    let items: Vec<serde_json::Value> = summary.rows.iter().map(detail_item).collect();
+    let line = serde_json::json!({
+        "scenario": "gpu-saturation-bench", "stage": "detail_rows", "part": 1, "parts": 1, "items": items
+    });
+    let path = std::path::Path::new(&directory).join(format!("{file_stem}.txt"));
+    std::fs::write(&path, format!("FASTICAMERA_DETAIL {line}\n")).expect("запись выгрузки подробностей");
+}
+
+/// Общий отпечаток выхода строки; паника с причиной, если отпечатка нет.
+fn combined_digest(row: &WorkloadRow) -> String {
+    match row
+        .digest
+        .as_ref()
+        .unwrap_or_else(|| panic!("{}: у строки нет дайджеста", row.name))
+    {
+        DigestOutcome::Computed { combined, .. } => combined.clone(),
+        DigestOutcome::Unavailable { reason } => panic!("{}: дайджест недоступен: {reason}", row.name),
+    }
+}
+
+fn entries_named(names: &[&str]) -> Vec<&'static CatalogEntry> {
+    names
+        .iter()
+        .map(|name| find_entry(name).expect("имя каталога"))
+        .collect()
+}
+
+fn measured_frames(row: &WorkloadRow) -> u64 {
+    let RowOutcome::Measured { measurement } = &row.outcome else {
+        panic!("{}: нет цифры: {:?}", row.name, row.outcome);
+    };
+    measurement.measured_frames
+}
+
+#[test]
+fn ui_ablations_draw_exactly_the_filtered_scene_and_each_kind_gives_a_different_picture() {
+    let _serial = GPU_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(context) = gpu_context_or_skip() else { return };
+    let baseline = context.live_objects();
+    let mut names = vec!["display_calibrate", "display_photo"];
+    names.extend(group_entries(WorkloadGroup::UiAblation).iter().map(|entry| entry.name));
+    let summary = run_entries(&context, &entries_named(&names));
+
+    println!("\nАбляции прохода UI (validation FULL, окно 300 мс):");
+    println!("| работа | мс/кадр | UI, мс | стекло px | доля экрана | дайджест |");
+    for row in &summary.rows {
+        let measurement = row.measurement().expect("измерение");
+        let ui_pass = measurement
+            .passes
+            .iter()
+            .find(|pass| pass.label == "ui")
+            .map_or(0.0, |pass| pass.median_ms);
+        let scene = row.scene.expect("состав сцены");
+        println!(
+            "| {} | {:.3} | {ui_pass:.3} | {} | {:.3} | {} |",
+            row.name,
+            measurement.frame_cost_ms.unwrap_or(0.0),
+            scene.glass_bounds_area_px,
+            scene.glass_screen_fraction,
+            combined_digest(row)
+        );
+        assert!(measured_frames(row) > 0, "{}", row.name);
+    }
+
+    let by = |name: &str| row(&summary, name);
+    let (full, glass, shapes, text, images, no_glass) = (
+        by("display_calibrate"),
+        by("display_calibrate_glass_only"),
+        by("display_calibrate_shapes_only"),
+        by("display_calibrate_text_only"),
+        by("display_calibrate_images_only"),
+        by("display_calibrate_no_glass"),
+    );
+    // Состав сцены в результате — фактический, после фильтра, и рендер нарисовал именно его.
+    let (full_scene, full_ui) = (full.scene.unwrap(), full.ui.unwrap());
+    let (glass_scene, glass_ui) = (glass.scene.unwrap(), glass.ui.unwrap());
+    assert_eq!(glass_scene.glass_groups, full_scene.glass_groups);
+    assert_eq!(
+        (
+            glass_scene.shapes,
+            glass_scene.texts,
+            glass_scene.icons,
+            glass_scene.images
+        ),
+        (0, 0, 0, 0)
+    );
+    assert!(
+        glass_ui.glass_groups > 0 && glass_ui.glyph_instances == 0 && glass_ui.live_images_drawn == 0,
+        "{glass_ui:?}"
+    );
+    assert!(
+        glass_scene.glass_bounds_area_px > 0 && glass_scene.glass_screen_fraction > 0.0,
+        "{glass_scene:?}"
+    );
+    assert_eq!(
+        glass_scene.glass_bounds_area_px, full_scene.glass_bounds_area_px,
+        "геометрия стекла та же"
+    );
+
+    let shapes_ui = shapes.ui.unwrap();
+    assert!(
+        shapes_ui.shape_instances > 0 && shapes_ui.glass_groups == 0 && shapes_ui.glyph_instances == 0,
+        "{shapes_ui:?}"
+    );
+    let text_ui = text.ui.unwrap();
+    assert!(
+        text_ui.glyph_instances > 0 && text_ui.glass_groups == 0 && text_ui.shape_instances == 0,
+        "{text_ui:?}"
+    );
+    let images_ui = images.ui.unwrap();
+    assert!(
+        images_ui.live_images_drawn > 0 && images_ui.live_images_missing == 0 && images_ui.glass_groups == 0,
+        "{images_ui:?}"
+    );
+    let no_glass_ui = no_glass.ui.unwrap();
+    assert_eq!(no_glass.scene.unwrap().glass_groups, 0);
+    assert!(
+        no_glass_ui.glass_groups == 0
+            && no_glass_ui.glyph_instances
+                == full_ui.glyph_instances / full_ui.frames_recorded * no_glass_ui.frames_recorded,
+        "всё остальное нарисовано: {no_glass_ui:?} против {full_ui:?}"
+    );
+
+    // Разные вырезки — разные картинки; полный экран отличается от стекла отдельно.
+    let digests: Vec<String> = [full, glass, shapes, text, images, no_glass]
+        .iter()
+        .map(|row| combined_digest(row))
+        .collect();
+    let distinct: std::collections::HashSet<&String> = digests.iter().collect();
+    assert_eq!(
+        distinct.len(),
+        digests.len(),
+        "каждая вырезка даёт свою картинку: {digests:?}"
+    );
+
+    // PHOTO: стекло отдельно и без стекла тоже различаются, и оба отличаются от всего экрана.
+    let (photo, photo_glass, photo_flat) = (
+        by("display_photo"),
+        by("display_photo_glass_only"),
+        by("display_photo_no_glass"),
+    );
+    let photo_digests = [
+        combined_digest(photo),
+        combined_digest(photo_glass),
+        combined_digest(photo_flat),
+    ];
+    assert_eq!(
+        photo_digests.iter().collect::<std::collections::HashSet<_>>().len(),
+        3,
+        "{photo_digests:?}"
+    );
+
+    context.wait_idle().unwrap();
+    assert_eq!(context.live_objects().differences_from(&baseline), Vec::new());
+    assert_eq!(
+        context.validation_report().errors,
+        0,
+        "{:?}",
+        context.validation_report()
+    );
+}
+
+#[test]
+fn isp_ablations_are_measured_with_pass_times_and_stage_changes_change_the_picture_but_awb_statistics_do_not() {
+    let _serial = GPU_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(context) = gpu_context_or_skip() else { return };
+    let mut names = vec!["viewfinder"];
+    names.extend(group_entries(WorkloadGroup::IspAblation).iter().map(|entry| entry.name));
+    let summary = run_entries(&context, &entries_named(&names));
+
+    println!("\nАбляции видоискателя (validation FULL, окно 300 мс):");
+    println!("| работа | мс/кадр | проход ISP, мс | p95 прохода, мс | дайджест | кадр |");
+    for row in &summary.rows {
+        let measurement = row.measurement().expect("измерение");
+        let pass = &measurement.passes[0];
+        let note = match row.digest.as_ref().expect("дайджест") {
+            DigestOutcome::Computed { frame_note, .. } => frame_note.clone().unwrap_or_default(),
+            DigestOutcome::Unavailable { reason } => reason.clone(),
+        };
+        println!(
+            "| {} | {:.3} | {:.3} | {:.3} | {} | {note} |",
+            row.name,
+            measurement.frame_cost_ms.unwrap_or(0.0),
+            pass.median_ms,
+            pass.p95_ms,
+            combined_digest(row)
+        );
+        // Времена проходов и p95 попадают в детали и у работ с изменённым набором стадий.
+        assert_eq!(measurement.passes.len(), 1, "{}", row.name);
+        assert_eq!(pass.label, "isp-end", "{}", row.name);
+        assert!(
+            pass.p95_ms >= pass.median_ms && pass.max_ms >= pass.p95_ms,
+            "{}",
+            row.name
+        );
+        assert!(measurement.cost.is_some(), "{}: нет p95 и max цены кадра", row.name);
+    }
+    let digest = |name: &str| combined_digest(row(&summary, name));
+    // Статистика AWB — только счёт: картинка не должна зависеть ни от неё, ни от её каденции.
+    assert_eq!(digest("viewfinder"), digest("viewfinder_awb_never"));
+    assert_eq!(digest("viewfinder"), digest("viewfinder_awb_every_frame"));
+    // Стадии, меняющие картинку, меняют дайджест (иначе дайджест ничего не доказывает).
+    for name in [
+        "viewfinder_without_tone",
+        "viewfinder_without_oetf",
+        "viewfinder_without_white_balance",
+        "viewfinder_without_color",
+        "viewfinder_minimal",
+    ] {
+        assert_ne!(
+            digest(name),
+            digest("viewfinder"),
+            "{name}: картинка не изменилась без стадии"
+        );
+    }
+    println!(
+        "Стадии, при отключении которых дайджест совпал с продуктовым (в этом наборе параметров они уже ничего не делают): {:?}",
+        summary
+            .rows
+            .iter()
+            .filter(|row| row.name.starts_with("viewfinder_without_") && combined_digest(row) == digest("viewfinder"))
+            .map(|row| row.name)
+            .collect::<Vec<_>>()
+    );
+    // Заметка о кадре: какой кадр читали (со статистикой AWB или без).
+    let note = |name: &str| match row(&summary, name).digest.as_ref().unwrap() {
+        DigestOutcome::Computed { frame_note, .. } => frame_note.clone(),
+        DigestOutcome::Unavailable { .. } => None,
+    };
+    assert_eq!(
+        note("viewfinder_awb_never").as_deref(),
+        Some("last_frame=no_awb_statistics")
+    );
+    assert_eq!(
+        note("viewfinder_awb_every_frame").as_deref(),
+        Some("last_frame=awb_statistics")
+    );
+}
+
+#[test]
+fn the_digest_of_every_baseline_work_is_the_same_for_two_runs_with_different_windows() {
+    let _serial = GPU_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(context) = gpu_context_or_skip() else { return };
+    let entries = group_entries(WorkloadGroup::Baseline);
+    let short = run_entries_with_window(&context, &entries, 150);
+    let long = run_entries_with_window(&context, &entries, 500);
+    dump_details_if_asked(&short, "short");
+    dump_details_if_asked(&long, "long");
+    // Каждая строка подробностей помещается в строку стадии logcat вместе с дайджестом и ценой.
+    for row in short.rows.iter().chain(&long.rows) {
+        let bytes = detail_item(row).to_string().len();
+        assert!(
+            bytes < 3_400,
+            "{}: строка подробностей {bytes} байт не влезает в бюджет строки",
+            row.name
+        );
+    }
+    println!("\nДайджесты baseline (окно 150 мс и 500 мс):");
+    for (first, second) in short.rows.iter().zip(&long.rows) {
+        assert_eq!(first.name, second.name);
+        let (digest_short, digest_long) = (combined_digest(first), combined_digest(second));
+        println!(
+            "| {} | {digest_short} | {digest_long} | кадров {} и {} |",
+            first.name,
+            measured_frames(first),
+            measured_frames(second)
+        );
+        assert_eq!(
+            digest_short, digest_long,
+            "{}: дайджест зависит от числа кадров прогона",
+            first.name
+        );
+    }
+    let counts: Vec<u64> = short
+        .rows
+        .iter()
+        .map(measured_frames)
+        .zip(long.rows.iter().map(measured_frames))
+        .map(|(a, b)| u64::from(a != b))
+        .collect();
+    assert!(
+        counts.iter().sum::<u64>() > 0,
+        "окна разной длины действительно дали разное число кадров"
+    );
+}
+
+#[test]
+fn the_digest_follows_the_picture_not_the_run_two_different_works_never_share_one() {
+    let _serial = GPU_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(context) = gpu_context_or_skip() else { return };
+    let entries = group_entries(WorkloadGroup::Baseline);
+    let summary = run_entries(&context, &entries);
+    // Приборы дают две части (счётчики и картинка), снимок — картинку и миниатюру, остальные — одну.
+    let parts = |name: &str| match row(&summary, name).digest.as_ref().unwrap() {
+        DigestOutcome::Computed { parts, .. } => parts.iter().map(|part| part.label).collect::<Vec<_>>(),
+        DigestOutcome::Unavailable { reason } => panic!("{name}: {reason}"),
+    };
+    assert_eq!(parts("viewfinder"), ["image"]);
+    assert_eq!(parts("scopes_waveform"), ["counters", "picture"]);
+    assert_eq!(parts("display_calibrate"), ["target"]);
+    assert_eq!(parts("headroom_v4"), ["output"]);
+    assert!(parts("still").starts_with(&["image"]), "{:?}", parts("still"));
+    // Разные выходы — разные отпечатки (серый кадр и сцена, waveform и parade — не одна картинка).
+    let distinct = |names: &[&str]| {
+        let digests: Vec<String> = names.iter().map(|name| combined_digest(row(&summary, name))).collect();
+        assert_eq!(
+            digests.iter().collect::<std::collections::HashSet<_>>().len(),
+            names.len(),
+            "{names:?}: {digests:?}"
+        );
+    };
+    distinct(&[
+        "scopes_waveform",
+        "scopes_parade",
+        "scopes_vectorscope_ycbcr",
+        "scopes_vectorscope_oklab",
+        "scopes_parade_gray",
+    ]);
+    distinct(&["display_photo", "display_calibrate", "compositor"]);
+    // Тот же экран с пирамидой, построенной каждый кадр, и с переиспользованной — картинка та же.
+    assert_eq!(
+        combined_digest(row(&summary, "display_calibrate")),
+        combined_digest(row(&summary, "display_calibrate_recompose")),
+        "каденция пирамиды не меняет картинку"
     );
 }

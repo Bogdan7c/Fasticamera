@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn defaults_are_valid_and_cover_the_whole_catalog() {
+fn defaults_are_valid_and_are_exactly_the_baseline_group() {
     let config = SaturationScenarioConfig::default();
     assert_eq!(config.validate(), Ok(()));
     assert_eq!(config.workloads.len(), 14);
@@ -59,6 +59,13 @@ fn zero_durations_and_bad_slots_are_rejected_with_the_field_name() {
             },
             "timeline_step_ms",
         ),
+        (
+            SaturationScenarioConfig {
+                catalog_wait_ms: 0,
+                ..SaturationScenarioConfig::default()
+            },
+            "catalog_wait_ms",
+        ),
     ] {
         assert_eq!(broken.validate(), Err(SaturationScenarioConfigError::Zero { field }));
     }
@@ -94,4 +101,53 @@ fn json_section_with_unknown_field_is_rejected_and_partial_section_uses_defaults
     assert_eq!(partial.measure_ms, 2_000);
     assert_eq!(partial.warmup_ms, 3_000, "остальное — умолчание");
     assert!(serde_json::from_str::<SaturationScenarioConfig>(r#"{"measure":1}"#).is_err());
+}
+
+#[test]
+fn default_list_is_the_baseline_group_and_groups_expand_in_place() {
+    let config = SaturationScenarioConfig::default();
+    assert_eq!(config.workloads, baseline_names());
+    assert_eq!(config.resolve_workloads().expect("умолчание верно").len(), 14);
+
+    let mixed = SaturationScenarioConfig {
+        workloads: vec![
+            "still".to_owned(),
+            "isp_ablation".to_owned(),
+            " ui_ablation ".to_owned(),
+        ],
+        ..SaturationScenarioConfig::default()
+    };
+    let names: Vec<&str> = mixed
+        .resolve_workloads()
+        .expect("группы раскрываются")
+        .iter()
+        .map(|entry| entry.name)
+        .collect();
+    assert_eq!(names.len(), 1 + 14 + 7);
+    assert_eq!(names[0], "still", "порядок списка сохраняется");
+    assert_eq!(names[1], "viewfinder_awb_never");
+    assert_eq!(names[15], "display_calibrate_glass_only");
+    assert_eq!(mixed.validate(), Ok(()));
+}
+
+#[test]
+fn a_work_listed_again_inside_a_group_and_an_unknown_name_are_config_errors() {
+    let duplicate = SaturationScenarioConfig {
+        workloads: vec!["viewfinder_minimal".to_owned(), "isp_ablation".to_owned()],
+        ..SaturationScenarioConfig::default()
+    };
+    assert_eq!(
+        duplicate.validate(),
+        Err(SaturationScenarioConfigError::DuplicateWorkload {
+            name: "viewfinder_minimal".to_owned()
+        })
+    );
+    let unknown = SaturationScenarioConfig {
+        workloads: vec!["isp_ablatoin".to_owned()],
+        ..SaturationScenarioConfig::default()
+    };
+    assert!(matches!(
+        unknown.validate(),
+        Err(SaturationScenarioConfigError::UnknownWorkload(_))
+    ));
 }

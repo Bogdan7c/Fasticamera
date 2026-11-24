@@ -1,4 +1,4 @@
-//! Чтение цветовой цели на CPU в `[f32; 4]` (только тесты и фича `test-support`).
+//! Чтение цветовой цели на CPU: в `[f32; 4]` (тесты) или «сырыми» байтами (дайджест стенда насыщения).
 //!
 //! Блокирующая разовая отправка. Раскладка цели после чтения возвращается к той, что была
 //! (`current_use`): readback не меняет состояние, которым владеет вызывающий.
@@ -19,6 +19,16 @@ pub(crate) fn read_color_target_rgba(
     target: &ColorTarget,
     current_use: ColorTargetPreviousUse,
 ) -> Result<Vec<[f32; 4]>, GpuError> {
+    let bytes = read_color_target_bytes(target, current_use)?;
+    Ok(decode_color_texels(target.target_format(), &bytes))
+}
+
+/// Читает «сырые» байты цели: плотные строки `extent.width × extent.height` текселей формата цели (без
+/// раскодирования в `f32`). Контракт — как у [`read_color_target_rgba`].
+pub(crate) fn read_color_target_bytes(
+    target: &ColorTarget,
+    current_use: ColorTargetPreviousUse,
+) -> Result<Vec<u8>, GpuError> {
     let restore = current_use.restore_scope_after_copy()?;
     let context = target.context();
     let extent = target.extent();
@@ -86,8 +96,7 @@ pub(crate) fn read_color_target_rgba(
     let length = usize::try_from(byte_count).map_err(|_| GpuError::InvalidArgument {
         what: "размер readback не помещается в usize".to_owned(),
     })?;
-    let bytes = staging.read_bytes(0, length)?;
-    Ok(decode_color_texels(target.target_format(), &bytes))
+    staging.read_bytes(0, length)
 }
 
 /// Раскодирует плотные тексели формата цели в `[r, g, b, a]`.

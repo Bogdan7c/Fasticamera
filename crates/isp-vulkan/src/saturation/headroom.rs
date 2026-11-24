@@ -21,7 +21,9 @@ use gpu_vulkan::error::GpuError;
 use gpu_vulkan::frame_sink::{FrameSink, FrameSinkPublish, OffscreenFrameSink, OffscreenFrameSinkDesc};
 use gpu_vulkan::hardware_buffer_cache::queue_handoff::ConsumerStage;
 use gpu_vulkan::raw_mosaic_preview::{MosaicSource, ValidArea};
-use gpu_vulkan::saturation::{FrameRecording, PassTimeLog, PassTimeSummary, SaturationWorkload, SlotId};
+use gpu_vulkan::saturation::{
+    FrameRecording, PassTimeLog, PassTimeSummary, SaturationWorkload, SlotId, WorkloadDigest, digest_storage_image,
+};
 use isp_model::params::IspParams;
 use std::time::Duration;
 
@@ -290,6 +292,21 @@ impl HeadroomSaturation {
         let frame = super::scene::synthesize_raw10(config.frame_size, config.content, config.raw10_row_padding_bytes)?;
         let holder = super::source::synthetic_raw10_holder(context, &frame)?;
         Self::new(context, config, params, holder)
+    }
+}
+
+impl HeadroomSaturation {
+    /// Дайджест картинки последнего записанного кадра (выход приёмника). Звать после конца прогона стенда и
+    /// `wait_idle`; работает без `test-support`.
+    pub fn output_digest(&self) -> Result<WorkloadDigest, SaturationWorkError> {
+        let missing = || SaturationWorkError::EmptyFrame {
+            what: "ни один кадр ещё не записан".to_owned(),
+        };
+        let slot = self.last_recorded_slot.ok_or_else(missing)?;
+        let image = self.sink.image(slot).ok_or_else(missing)?;
+        let last_use = self.sink.last_use(slot).ok_or_else(missing)?;
+        let digest = digest_storage_image(image, last_use, image.extent())?;
+        Ok(WorkloadDigest::single("output", digest))
     }
 }
 

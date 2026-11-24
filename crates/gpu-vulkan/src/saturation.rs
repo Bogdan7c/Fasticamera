@@ -28,6 +28,7 @@
 //! * В цикле кадров стенд не выделяет память и не пишет в журнал.
 
 mod config;
+mod digest;
 mod pass_times;
 mod raw_frame;
 mod report;
@@ -41,6 +42,10 @@ use std::time::Instant;
 pub use self::config::{
     DEFAULT_FENCE_TIMEOUT, DEFAULT_MEASURE, DEFAULT_TIMELINE_STEP, DEFAULT_WARMUP, MAX_TIMELINE_STEPS,
     SaturationConfig, SaturationConfigError,
+};
+pub use self::digest::{
+    DigestError, DigestPart, Fnv1a64, OutputDigest, WorkloadDigest, digest_color_target, digest_counts,
+    digest_device_buffer_prefix, digest_rgba8_bytes, digest_rgba8_image, digest_storage_image, digest_texels,
 };
 pub use self::pass_times::{PassTime, PassTimeLog, PassTimeSummary};
 pub use self::raw_frame::{HostRawFrame, RawFrameError};
