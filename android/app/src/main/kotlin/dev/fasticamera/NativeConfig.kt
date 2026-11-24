@@ -46,6 +46,11 @@ import org.json.JSONObject
  * есть; неизвестное имя и модель, которой ещё нет на GPU, Rust отвергает при initialize громко (ошибка называет поле
  * `viewfinder.tone`), а не берёт молча умолчание.
  *
+ * `unchangedFrame` — политика пропуска тиков без изменений на один запуск (intent-параметр `unchanged_frame`, поле
+ * `render.unchanged_frame.policy`, решение 214, сессия 16a): `skip` (= `skip_when_unchanged`) или `always` (=
+ * `always_redraw`, умолчание продукта до замера на телефоне). Kotlin значение не разбирает, а передаёт строкой как есть;
+ * неверное значение Rust отвергает при initialize громко, ошибка называет поле `unchanged_frame.policy`.
+ *
  * `saturationWorkloads` / `saturationMeasureMs` / `saturationWarmupMs` — список работ, окно замера и прогрев сценария
  * `gpu-saturation-bench` на один запуск (intent-параметры `saturation_workloads`, `saturation_measure_ms`,
  * `saturation_warmup_ms`, секция `camera.scenarios.saturation`, 16a P4b). Имена работ Kotlin не разбирает, а передаёт
@@ -70,6 +75,7 @@ data class NativeConfig(
     val toneContrast: String? = null,
     val toneDisplayMiddleGray: String? = null,
     val toneBase: String? = null,
+    val unchangedFrame: String? = null,
     val untrustedOpticalAxisCameras: List<String> = emptyList(),
 ) {
     fun toJson(): String {
@@ -124,9 +130,14 @@ data class NativeConfig(
         toneDisplayMiddleGray?.let { value -> tone.put("display_middle_gray", numberOrRaw(value)) }
         // Имя модели — строкой как есть: проверяет Rust (неизвестное имя — отказ initialize).
         toneBase?.let { value -> tone.put("base", value.trim()) }
+        // Частичная секция render: остальные поля Rust берёт по умолчанию; тон и политика пропуска живут в одной секции.
+        val render = JSONObject()
         if (tone.length() > 0) {
-            // Частичная секция: остальные поля render.* Rust берёт по умолчанию.
-            json.put("render", JSONObject().put("viewfinder", JSONObject().put("tone", tone)))
+            render.put("viewfinder", JSONObject().put("tone", tone))
+        }
+        unchangedFrame?.let { value -> render.put("unchanged_frame", JSONObject().put("policy", value.trim())) }
+        if (render.length() > 0) {
+            json.put("render", render)
         }
         return json.toString()
     }
@@ -173,6 +184,8 @@ data class NativeConfig(
 
         /** Intent-параметр с моделью основы тона: `agx`, `aces`, `filmic` или `legacy` (проверяет Rust). */
         const val EXTRA_TONE_BASE = "tone_base"
+        /** Intent-параметр с политикой пропуска тиков без изменений: `skip` или `always` (проверяет Rust). */
+        const val EXTRA_UNCHANGED_FRAME = "unchanged_frame"
 
         fun fromIntent(intent: Intent): NativeConfig = NativeConfig(
             buildType = BuildConfig.BUILD_TYPE,
@@ -204,6 +217,8 @@ data class NativeConfig(
             toneContrast = intent.getStringExtra(EXTRA_TONE_CONTRAST),
             toneDisplayMiddleGray = intent.getStringExtra(EXTRA_TONE_DISPLAY_MIDDLE_GRAY),
             toneBase = intent.getStringExtra(EXTRA_TONE_BASE),
+            // Нет параметра — null, секция в JSON не попадает, Rust берёт умолчание (always_redraw).
+            unchangedFrame = intent.getStringExtra(EXTRA_UNCHANGED_FRAME),
             // Профиль телефона из gradle.properties: пустая строка — список пуст.
             untrustedOpticalAxisCameras = BuildConfig.UNTRUSTED_OPTICAL_AXIS_CAMERAS
                 .split(',')

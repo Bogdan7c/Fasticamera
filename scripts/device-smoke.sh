@@ -3,7 +3,7 @@
 #
 #   scripts/device-smoke.sh [--variant debug|release] [--no-build] [--timeout SEC] [--artifacts-dir DIR]
 #                           [--stages LIST] [--surface PLACE] [--ab-window-ms MS] [--ab-pairs N] [--endurance-ms MS]
-#                           [--exposure-controller own|vendor] [--neutral-card] [--keep-captures] [--stop-app-after]
+#                           [--unchanged-frame skip|always] [--exposure-controller own|vendor] [--neutral-card] [--keep-captures] [--stop-app-after]
 #                           [--saturation-workloads LIST] [--saturation-measure-ms MS] [--saturation-warmup-ms MS]
 #                           <сценарий>
 #
@@ -27,6 +27,9 @@
 # сочетание строки и места — отказ Rust при initialize ДО замера. --ab-pairs N — число пар A/B на строку (по умолчанию 3,
 # ≈ 6 окон по 60 с). Примеры: --surface photo_screen --stages ui_overlay,whole_product --timeout 1500 viewfinder-stage-budget;
 # --surface calibrate_screen --stages color_scopes,ui_overlay,whole_product,display_120hz --timeout 2400 viewfinder-stage-budget.
+# --unchanged-frame skip|always — политика пропуска тиков без изменений (решение 214, сессия 16a): skip — тик без нового кадра
+# камеры и без изменений UI не рисуется и не показывается; always — рисуется каждый тик (умолчание продукта до замера тока A/B).
+# Нет флага — extra не передаётся, Rust берёт умолчание; другое значение — отказ скрипта.
 # --stop-app-after — после получения результата сделать am force-stop нашего пакета (иначе приложение остаётся на экране и греет
 # телефон между замерами; по умолчанию выключено). Внешнее питание отвергает замер, как и раньше.
 # Стенд насыщения 16a: gpu-saturation-bench (по умолчанию 14 работ × ~16 с + паузы ≈ 5 мин, --timeout 600; камера на время замера
@@ -97,6 +100,7 @@ stages=""
 surface=""
 ab_window_ms=""
 ab_pairs=""
+unchanged_frame=""
 stop_app_after=false
 endurance_ms=""
 exposure_controller=""
@@ -117,6 +121,7 @@ while [[ $# -gt 0 ]]; do
         --surface) surface="${2:-}"; shift 2 ;;
         --ab-window-ms) ab_window_ms="${2:-}"; shift 2 ;;
         --ab-pairs) ab_pairs="${2:-}"; shift 2 ;;
+        --unchanged-frame) unchanged_frame="${2:-}"; shift 2 ;;
         --stop-app-after) stop_app_after=true; shift ;;
         --endurance-ms) endurance_ms="${2:-}"; shift 2 ;;
         --exposure-controller) exposure_controller="${2:-}"; shift 2 ;;
@@ -161,6 +166,11 @@ if [[ -n "$surface" && ! "$surface" =~ ^(bare_viewfinder|photo_screen|calibrate_
 fi
 if [[ -n "$surface" && "$scenario" != "viewfinder-stage-budget" ]]; then
     log_error "--surface имеет смысл только для viewfinder-stage-budget"
+    exit "$EXIT_USAGE"
+fi
+# Политика пропуска тиков — только skip или always; имя поля Rust проверит ещё раз при initialize.
+if [[ -n "$unchanged_frame" && "$unchanged_frame" != "skip" && "$unchanged_frame" != "always" ]]; then
+    log_error "--unchanged-frame ждёт skip или always, а не '$unchanged_frame'"
     exit "$EXIT_USAGE"
 fi
 # Число пар A/B — только целое положительное число; границы проверит Rust при initialize.
@@ -273,6 +283,7 @@ start_activity "$serial" "$package" -e scenario "$scenario" ${stages:+-e stages 
     ${surface:+-e surface "$surface"} \
     ${ab_window_ms:+-e ab_window_ms "$ab_window_ms"} \
     ${ab_pairs:+-e ab_pairs "$ab_pairs"} \
+    ${unchanged_frame:+-e unchanged_frame "$unchanged_frame"} \
     ${endurance_ms:+-e endurance_ms "$endurance_ms"} \
     ${saturation_workloads:+-e saturation_workloads "$saturation_workloads"} \
     ${saturation_measure_ms:+-e saturation_measure_ms "$saturation_measure_ms"} \

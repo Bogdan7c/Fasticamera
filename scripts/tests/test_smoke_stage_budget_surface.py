@@ -378,6 +378,23 @@ class DeviceSmokeSurfaceFlagsTest(unittest.TestCase):
                 completed = self.run_smoke(scenario, [], extra_arguments=arguments)
                 self.assertEqual(completed.returncode, 64, completed.stderr)
 
+    def test_unchanged_frame_flag_reaches_the_intent_and_wrong_values_are_usage_errors(self) -> None:
+        for value in ("skip", "always"):
+            with self.subTest(value=value):
+                completed = self.run_smoke(SCENARIO, [result_line(self.OK)], extra_arguments=("--unchanged-frame", value))
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assertTrue(any(f"-e unchanged_frame {value}" in call for call in self.adb_calls()))
+        for value in ("sometimes", "skip;ls"):
+            with self.subTest(wrong=value):
+                completed = self.run_smoke(SCENARIO, [], extra_arguments=("--unchanged-frame", value))
+                self.assertEqual(completed.returncode, 64, completed.stderr)
+
+    def test_without_the_unchanged_frame_flag_no_extra_is_sent(self) -> None:
+        # Без флага extra не уходит: Rust берёт умолчание конфига.
+        completed = self.run_smoke(SCENARIO, [result_line(self.OK)])
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertNotIn("unchanged_frame", self.start_call())
+
     def test_stop_app_after_force_stops_only_our_package_after_the_result(self) -> None:
         completed = self.run_smoke(SCENARIO, [result_line(self.OK)], extra_arguments=("--stop-app-after",))
         self.assertEqual(completed.returncode, 0, completed.stderr)
@@ -401,7 +418,7 @@ class DeviceSmokeSurfaceFlagsTest(unittest.TestCase):
         completed = subprocess.run(
             ["bash", str(SCRIPTS_DIR / "device-smoke.sh"), "--help"], capture_output=True, text=True, timeout=30
         )
-        for flag in ("--surface", "--ab-pairs", "--stop-app-after", "display_120hz", "calibrate_screen"):
+        for flag in ("--surface", "--ab-pairs", "--unchanged-frame", "--stop-app-after", "display_120hz", "calibrate_screen"):
             self.assertIn(flag, completed.stderr)
 
 
