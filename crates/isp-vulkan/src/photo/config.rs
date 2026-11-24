@@ -25,6 +25,11 @@ const DEFAULT_THUMBNAIL_LONG_SIDE_PX: u32 = 256;
 /// памяти» (1024² × 4 Б = 4 МБ, а экрану нужно лишь на кружок).
 const THUMBNAIL_LONG_SIDE_RANGE: std::ops::RangeInclusive<u32> = 16..=1024;
 
+/// Размер рабочей группы проходов снимка по умолчанию (уровни, 8 проходов Menon, вывод): 128×2. `[measured]` на
+/// Adreno 740 (сессия 16a): сумма проходов полосы 7,14 мс против 7,85 мс у 16×16 (−9 %), картинка бит-в-бит;
+/// группа идёт вдоль строк плоскостей (128 нитей подряд по X), как у видоискателя.
+const DEFAULT_WORKGROUP_SIZE: WorkgroupSizeConfig = WorkgroupSizeConfig { x: 128, y: 2 };
+
 /// Настройки проявления снимка.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -33,7 +38,8 @@ pub struct PhotoConfig {
     /// не стоит) и меньше память плоскостей, но тем больше доля ореола, который обсчитывается дважды (12 строк
     /// сверху и снизу при 256 строках полосы — 9 %).
     pub slice_rows: u32,
-    /// Размер рабочей группы всех проходов (как у стенда V4).
+    /// Размер рабочей группы проходов полосы (уровни, Menon, вывод). Миниатюра от него НЕ зависит: у неё своя
+    /// фиксированная группа (`thumbnail_pass`), потому что число нитей задаёт порядок сложения в её редукции.
     pub workgroup_size: WorkgroupSizeConfig,
     /// Длинная сторона миниатюры снимка, пиксели: 16…1024 (решение 155). Миниатюра — маленькая копия для экрана
     /// камеры (кружок в углу), уменьшается на GPU внутри последней полосы проявки и уходит в обычную память.
@@ -51,7 +57,7 @@ impl Default for PhotoConfig {
     fn default() -> Self {
         Self {
             slice_rows: 256,
-            workgroup_size: WorkgroupSizeConfig::default(),
+            workgroup_size: DEFAULT_WORKGROUP_SIZE,
             thumbnail_long_side_px: DEFAULT_THUMBNAIL_LONG_SIDE_PX,
             lens_shading_map: LensShadingMapLimits::default(),
             look_lut: LookLutLimits::default(),
@@ -109,7 +115,7 @@ mod tests {
         assert_eq!(serde_json::from_str::<PhotoConfig>(&json).unwrap(), config);
         let partial: PhotoConfig = serde_json::from_str(r#"{"slice_rows": 64}"#).unwrap();
         assert_eq!(partial.slice_rows, 64);
-        assert_eq!(partial.workgroup_size, WorkgroupSizeConfig::default());
+        assert_eq!(partial.workgroup_size, DEFAULT_WORKGROUP_SIZE);
     }
 
     #[test]

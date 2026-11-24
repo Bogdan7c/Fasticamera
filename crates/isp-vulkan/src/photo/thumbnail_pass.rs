@@ -34,6 +34,11 @@ const SLOT: usize = 0;
 /// записи, отдельного вида «чтение» у `gpu-vulkan` нет), 1 — миниатюра (запись). Раскладка обеих — `GENERAL`.
 const THUMBNAIL_BINDINGS: [BindingKind; 2] = [BindingKind::StorageImageWrite, BindingKind::StorageImageWrite];
 
+/// Размер рабочей группы миниатюры (нитей по X и Y): ФИКСИРОВАН. Группа усредняет один пиксель миниатюры, и число
+/// нитей определяет порядок сложения частичных сумм в редукции (дерево по нитям): другое число — другой последний
+/// бит миниатюры (на телефоне 8×8 дал другой отпечаток). Решение 213: снимок и его миниатюра — бит-в-бит.
+const THUMBNAIL_LOCAL_SIZE: (u32, u32) = (16, 16);
+
 /// Пайплайн уменьшения.
 pub(crate) struct ThumbnailPass {
     pass: QualityPass,
@@ -42,7 +47,9 @@ pub(crate) struct ThumbnailPass {
 }
 
 impl ThumbnailPass {
-    pub(crate) fn new(context: &GpuContext, local: LocalSize) -> Result<Self, GpuError> {
+    pub(crate) fn new(context: &GpuContext) -> Result<Self, GpuError> {
+        let local = LocalSize::new(THUMBNAIL_LOCAL_SIZE.0, THUMBNAIL_LOCAL_SIZE.1)?;
+        local.validate_for_device(context)?;
         Ok(Self {
             pass: QualityPass::new(
                 context,

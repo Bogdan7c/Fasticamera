@@ -127,7 +127,7 @@ impl PhotoDeveloper {
             1,
         )?;
         // Миниатюра необязательна: нет пайплайна — снимки проявляются без неё (причина — в `ThumbnailOutcome`).
-        let thumbnail_pass = ThumbnailPass::new(context, local)
+        let thumbnail_pass = ThumbnailPass::new(context)
             .inspect_err(|error| {
                 tracing::warn!(target: "fasticamera::isp", %error, "пайплайн миниатюры не создан: снимки без миниатюры");
             })
