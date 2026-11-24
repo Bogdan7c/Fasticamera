@@ -652,11 +652,16 @@ impl<G: StillGpu> StillEngine<G> {
                 return GpuReadiness::Busy;
             }
         }
+        // Замер только на пути пересоздания (быстрый путь «GPU уже годный» выше не меряется): он включает разбор
+        // старого GPU и создание нового, всё это идёт на потоке рендера.
+        let creation_started = self.clock.now();
         // GPU простаивает (или его нет): старый разбирается (`retire_gpu`), новый создаётся под этот поток.
         if let Some(old) = self.gpu.take() {
             self.retire_gpu(old);
         }
-        match (self.maker)(stream) {
+        let made = (self.maker)(stream);
+        self.record_step_cpu(StillStep::GpuCreation, creation_started);
+        match made {
             Ok(gpu) => {
                 self.counters.gpu_created += 1;
                 self.gpu = Some(gpu);

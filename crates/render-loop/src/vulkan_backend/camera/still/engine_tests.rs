@@ -318,6 +318,40 @@ fn render_thread_cost_of_each_still_step_is_recorded_with_its_maximum() {
     assert!(rig.engine.diagnostics().develop_step_cpu.max_ms < 20.0, "{timings:?}");
 }
 
+/// Создание GPU снимков (при заготовке после запуска) идёт на потоке рендера и замеряется отдельным шагом: цена
+/// заготовки видна в диагностике, а повторные вызовы с уже годным GPU ничего не добавляют.
+#[test]
+fn gpu_creation_cost_is_measured_once_when_it_really_happens() {
+    let mut stream = StreamRig::with_ring(MAIN);
+    let frames = stream.offer_many(6);
+    let mut rig = engine_rig(StillDevelopConfig::default(), stream);
+    {
+        let mut gpu = rig.gpu.lock().unwrap();
+        gpu.costs.clock = Some(rig.clock.clone());
+        gpu.costs.make = Duration::from_millis(80);
+    }
+    assert_eq!(
+        rig.engine.diagnostics().step_cpu.gpu_creation.count,
+        0,
+        "до заготовки замеров нет"
+    );
+    // Приём ленты заготавливает GPU под поток видоискателя.
+    let feed = rig.stream.feed_for(&frames, 0);
+    rig.engine.ingest_feed(feed);
+    let creation = rig.engine.diagnostics().step_cpu.gpu_creation;
+    assert_eq!(*rig.made_gpus.lock().unwrap(), 1, "GPU создан один раз");
+    assert_eq!(creation.count, 1, "создание замерено один раз: {creation:?}");
+    assert!(
+        (creation.max_ms - 80.0).abs() < 1e-6,
+        "цена создания — 80 мс: {creation:?}"
+    );
+    // GPU уже годный: следующие кадры ленты его не пересоздают и замер не растёт.
+    let feed_again = rig.stream.feed_for(&frames, 0);
+    rig.engine.ingest_feed(feed_again);
+    let after = rig.engine.diagnostics().step_cpu.gpu_creation;
+    assert_eq!((after.count, *rig.made_gpus.lock().unwrap()), (1, 1), "{after:?}");
+}
+
 #[test]
 fn target_unavailable_ends_with_the_contract_failure_and_no_second_event() {
     let (mut rig, _) = proven_rig();

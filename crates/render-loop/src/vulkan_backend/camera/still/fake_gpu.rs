@@ -98,10 +98,12 @@ pub struct CallCosts {
     pub clock: Option<super::test_support::ManualClock>,
     pub develop_start: Duration,
     pub present_start: Duration,
+    /// Создание GPU снимков (вызов создателя движка).
+    pub make: Duration,
 }
 
 impl CallCosts {
-    fn spend(&self, cost: Duration) {
+    pub fn spend(&self, cost: Duration) {
         if let Some(clock) = &self.clock {
             clock.advance(cost);
         }

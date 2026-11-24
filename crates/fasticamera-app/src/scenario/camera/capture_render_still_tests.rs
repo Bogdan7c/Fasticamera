@@ -80,3 +80,15 @@ fn flash_delta_counts_only_this_run_and_sums_every_undecidable_reason() {
     assert_eq!(flash.lit_check_skipped, 2, "обе причины «не решаемо» сложены");
     assert_eq!(flash.white_from_torch_frame, 2);
 }
+
+/// Цена создания GPU снимков доходит до подробностей сценария `capture` вместе с остальными шагами `step_cpu`.
+#[test]
+fn gpu_creation_cost_reaches_the_capture_details() {
+    let before = StillDiagnostics::default();
+    let mut after = before.clone();
+    after.step_cpu.gpu_creation.observe(85.5);
+    let delta = StillDiagnosticsDelta::between(&before, &after);
+    let detail = serde_json::to_value(delta).unwrap();
+    assert_eq!(detail["step_cpu"]["gpu_creation"]["count"], 1);
+    assert_eq!(detail["step_cpu"]["gpu_creation"]["max_ms"], 85.5);
+}

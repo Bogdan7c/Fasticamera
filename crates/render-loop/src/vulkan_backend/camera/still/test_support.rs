@@ -478,6 +478,10 @@ pub fn engine_rig(config: StillDevelopConfig, stream: StreamRig) -> EngineRig {
     let maker_count = Arc::clone(&made);
     let maker: GpuMaker<FakeGpu> = Box::new(move |_stream| {
         *maker_count.lock().unwrap_or_else(PoisonError::into_inner) += 1;
+        {
+            let state = maker_state.lock().unwrap_or_else(PoisonError::into_inner);
+            state.costs.spend(state.costs.make);
+        }
         Ok(FakeGpu {
             state: Arc::clone(&maker_state),
             served: FRAME_SIZE,

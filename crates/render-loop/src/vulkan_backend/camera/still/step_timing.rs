@@ -21,6 +21,8 @@ pub(super) enum StillStep {
     Present,
     DevelopBegin,
     EncoderPresentStart,
+    /// Создание GPU снимков (только когда оно происходит).
+    GpuCreation,
 }
 
 impl StillStep {
@@ -35,6 +37,7 @@ impl StillStep {
             Self::Present => &mut timings.present,
             Self::DevelopBegin => &mut timings.develop_begin,
             Self::EncoderPresentStart => &mut timings.encoder_present_start,
+            Self::GpuCreation => &mut timings.gpu_creation,
         }
     }
 }
