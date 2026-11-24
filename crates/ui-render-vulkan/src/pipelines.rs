@@ -27,6 +27,40 @@ fn primaries_code(primaries: DisplayPrimaries) -> u32 {
     }
 }
 
+/// Какой набор фрагментных шейдеров стекла и фигур собирать в конвейеры.
+///
+/// Боевой рендер всегда берёт [`UiShaderSet::Product`]. Замороженный эталон существует только под
+/// `test-support`: тест `glass_fast_paths_exact` рисует одну и ту же сцену обоими наборами и требует
+/// побитового равенства (это и есть доказательство, что быстрые пути не меняют картинку).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UiShaderSet {
+    /// Боевые шейдеры (с быстрыми путями).
+    Product,
+    /// Замороженные копии шейдеров на коммите 896865d, без быстрых путей.
+    #[cfg(feature = "test-support")]
+    FrozenReference,
+}
+
+impl UiShaderSet {
+    /// Фрагментный шейдер фигур набора (вершинный общий).
+    fn shape_fragment(self) -> &'static [u8] {
+        match self {
+            Self::Product => blobs::UI_SHAPE_FRAG,
+            #[cfg(feature = "test-support")]
+            Self::FrozenReference => blobs::REFERENCE_UI_SHAPE_FRAG,
+        }
+    }
+
+    /// Фрагментный шейдер стекла набора (вершинный общий).
+    fn glass_fragment(self) -> &'static [u8] {
+        match self {
+            Self::Product => blobs::UI_GLASS_FRAG,
+            #[cfg(feature = "test-support")]
+            Self::FrozenReference => blobs::REFERENCE_UI_GLASS_FRAG,
+        }
+    }
+}
+
 /// Все конвейеры рендера.
 pub(crate) struct UiPipelines {
     pub shape: RasterPipeline,
@@ -54,7 +88,11 @@ fn glass_bindings() -> Vec<BindingKind> {
 
 impl UiPipelines {
     /// Создаёт конвейеры под настройки.
-    pub(crate) fn new(context: &GpuContext, config: &UiRendererConfig) -> Result<Self, GpuError> {
+    pub(crate) fn new(
+        context: &GpuContext,
+        config: &UiRendererConfig,
+        shader_set: UiShaderSet,
+    ) -> Result<Self, GpuError> {
         let ui_pipeline =
             |label: &'static str, vertex: &'static [u8], fragment: &'static [u8], bindings: &[BindingKind]| {
                 RasterPipeline::new(
@@ -75,7 +113,7 @@ impl UiPipelines {
         let shape = ui_pipeline(
             "ui-shape",
             blobs::UI_SHAPE_VERT,
-            blobs::UI_SHAPE_FRAG,
+            shader_set.shape_fragment(),
             &[BindingKind::ReadOnlyStorageBuffer],
         )?;
         let glyph = ui_pipeline(
@@ -87,7 +125,7 @@ impl UiPipelines {
         let glass = ui_pipeline(
             "ui-glass",
             blobs::UI_GLASS_VERT,
-            blobs::UI_GLASS_FRAG,
+            shader_set.glass_fragment(),
             &glass_bindings(),
         )?;
 

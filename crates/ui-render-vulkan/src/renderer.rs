@@ -30,7 +30,7 @@ use crate::error::UiRenderError;
 use crate::frame::{BackdropInput, FrameMarker, PyramidOutcome, UiFrame, UiFrameReport};
 use crate::pack::FramePush;
 use crate::picture_cache::PictureCache;
-use crate::pipelines::{GLASS_FIRST_PYRAMID_BINDING, IMAGE_FIRST_SAMPLER_BINDING, UiPipelines};
+use crate::pipelines::{GLASS_FIRST_PYRAMID_BINDING, IMAGE_FIRST_SAMPLER_BINDING, UiPipelines, UiShaderSet};
 use crate::plan::{Batch, BatchKind, FramePlan, build_plan};
 use crate::pyramid::{Pyramid, PyramidKey, RebuildSource};
 use crate::slots::SlotBuffers;
@@ -80,8 +80,17 @@ impl UiRenderer {
     /// Создаёт рендер: проверяет настройки, строит конвейеры, загружает атлас (блокирующая разовая отправка —
     /// путь инициализации, не кадра) и привязывает буферы слотов.
     pub fn new(context: &GpuContext, config: &UiRendererConfig) -> Result<Self, UiRenderError> {
+        Self::with_shader_set(context, config, UiShaderSet::Product)
+    }
+
+    /// То же, что [`UiRenderer::new`], но с выбором набора шейдеров (боевой или замороженный эталон тестов).
+    pub(crate) fn with_shader_set(
+        context: &GpuContext,
+        config: &UiRendererConfig,
+        shader_set: UiShaderSet,
+    ) -> Result<Self, UiRenderError> {
         config.validate()?;
-        let mut pipelines = UiPipelines::new(context, config)?;
+        let mut pipelines = UiPipelines::new(context, config, shader_set)?;
         let atlas_data = sdf_atlas();
         let atlas = SampledTexture::upload(
             context,

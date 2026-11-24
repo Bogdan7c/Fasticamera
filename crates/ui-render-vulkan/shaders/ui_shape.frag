@@ -26,7 +26,10 @@ void main() {
         color = stroke + color * (1.0 - stroke.a);
     }
 
-    if (shape.shadow.y > 0.0) {
+    // Быстрый путь (сессия 16a): при color.a == 1 вес тени (1 - color.a) — точный ноль, а тень конечна,
+    // поэтому color + shadow * 0 = color точно и второе поле формы не нужно. `!= 0.0`-образное сравнение
+    // оставляет NaN на прежнем пути.
+    if (shape.shadow.y > 0.0 && color.a != 1.0) {
         // Тень: та же фигура, сдвинутая вниз, с мягким краем шириной ±radius вокруг границы.
         ScreenField shifted = member_field_at(v_logical - vec2(0.0, shape.shadow.z), shape.inv0, shape.inv1, shape.geom);
         float radius = shape.shadow.x;

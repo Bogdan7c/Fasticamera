@@ -21,16 +21,18 @@ use gpu_vulkan::kit_test_support::{read_color_target_rgba, run_one_shot_blocking
 use gpu_vulkan::raster::{AttachmentLoad, RasterPass, record_between_color_passes};
 use gpu_vulkan::test_pattern::{PatternTarget, SurfaceTransform};
 use ui_draw::color::{DisplayColor, Opacity};
-use ui_draw::draw_list::{DrawItem, DrawList, IconItem, TextItem};
+use ui_draw::draw_list::{DrawItem, DrawList, GlassGroupItem, GlassMember, IconItem, PressState, TextItem};
 use ui_draw::geometry::{PxPoint, PxRect, PxSize};
 use ui_draw::glass::GlassStyle;
 use ui_draw::icons::IconId;
-use ui_draw::shape::ShapeGeometry;
+use ui_draw::shape::{CornerSpec, ShapeGeometry};
 use ui_draw::text::{Figures, FontFace, TextStyle, layout_line};
 use ui_draw::transform::Affine2;
 use ui_render_vulkan::saturation::{DEFAULT_TARGET_EXTENT, DEFAULT_TARGET_FORMAT, FrameComposition, SaturationScene};
 use ui_render_vulkan::testing::{BackdropPattern, SyntheticBackdrop};
 use ui_render_vulkan::{BackdropInput, BackdropPlacement, LiveImages, UiFrame, UiRenderer, UiRendererConfig};
+
+use ui_kit::tokens::{GlassRole, GlassTokens};
 
 use crate::support::{empty_list, glass_group};
 
@@ -198,4 +200,52 @@ pub fn render_reference(context: &GpuContext, composition: FrameComposition) -> 
 /// Индекс пикселя `(x, y)` в плоском массиве readback цели по умолчанию.
 pub fn pixel_index(x: usize, y: usize) -> usize {
     y * DEFAULT_TARGET_EXTENT.width as usize + x
+}
+
+/// Размер панели «ручки калибровки» в px при экране 1080 × 2412: примерно половина экрана по ширине и почти вся высота.
+pub const PANEL_SIZE: PxSize = PxSize {
+    width: 540.0,
+    height: 1950.0,
+};
+/// Центр панели: прижата к правому краю экрана, по высоте почти во весь экран.
+pub const PANEL_CENTER: PxPoint = PxPoint { x: 810.0, y: 1206.0 };
+/// Радиус скругления панели калибровки, pt (`panel_corner_radius_pt` конфигурации экрана).
+const PANEL_CORNER_RADIUS_PT: f32 = 26.0;
+
+/// Одна стеклянная группа «панель на пол-экрана»: стиль продукта `GlassRole::Panel` (токены `ui-kit`), плотность
+/// экрана 1080 px на 440 pt, как у остальных сцен. Это самая дорогая отдельная фигура экрана калибровки.
+pub fn panel_group() -> GlassGroupItem {
+    let tokens = GlassTokens::default();
+    let style = tokens.style_for(GlassRole::Panel);
+    GlassGroupItem {
+        params: style.resolve(PANEL_SIZE, PX_PER_PT),
+        members: vec![GlassMember {
+            geometry: ShapeGeometry::RoundedRect {
+                size: PANEL_SIZE,
+                corner: CornerSpec::continuous(PANEL_CORNER_RADIUS_PT * PX_PER_PT),
+            },
+            transform: Affine2::translate(PANEL_CENTER.x, PANEL_CENTER.y),
+            press: PressState::RELEASED,
+        }],
+        merge_radius_px: 0.0,
+        effect: 1.0,
+        opacity: Opacity::OPAQUE,
+    }
+}
+
+/// Кадр из одной панели (без подписей и кнопок: цена панели отдельно от остального).
+pub fn panel_draw_list() -> DrawList {
+    let mut list = empty_list();
+    list.items.push(DrawItem::Glass(panel_group()));
+    list
+}
+
+/// Сцена «панель на пол-экрана» над синтетическим «фото».
+pub fn panel_scene(context: &GpuContext) -> SaturationScene {
+    SaturationScene {
+        draw_list: panel_draw_list(),
+        live_images: Vec::new(),
+        viewfinder: VIEWFINDER,
+        backdrop: Box::new(SyntheticBackdrop::new(context, BACKDROP_EXTENT, BackdropPattern::Photo).unwrap()),
+    }
 }

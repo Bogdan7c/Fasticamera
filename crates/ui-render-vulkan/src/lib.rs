@@ -32,6 +32,8 @@ mod slots;
 pub mod testing;
 #[cfg(feature = "test-support")]
 pub mod testing_live;
+#[cfg(feature = "test-support")]
+pub mod testing_reference;
 
 pub use config::{
     BackdropPyramidConfig, ConfigError, MAX_IMAGE_BINDINGS, MAX_PYRAMID_LEVELS, PictureCacheConfig, PyramidFormat,

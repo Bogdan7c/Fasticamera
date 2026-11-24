@@ -69,8 +69,17 @@ vec3 blurred_backdrop(vec2 screen_px, float lod) {
     int lower = int(floor_lod);
     int upper = min(lower + 1, levels);
     vec3 lower_color = lower == 0 ? sharp_backdrop(screen_px) : pyramid_color(lower, screen_px);
+    float blend = lod - floor_lod;
+    // Быстрый путь «целый уровень» (сессия 16a): mix(x, y, 0) = x * (1 - 0) + y * 0 = x * 1 + (±0) = x точно
+    // (в f32 x * 1 = x, добавка нуля число не меняет), пока y конечен: тексель пирамиды конечен всегда
+    // (цель fp16/unorm). Поэтому верхний уровень можно не читать. `lod` — свойство группы: ветка одна для всех
+    // пикселей группы (на Adreno такая ветка дешёвая). Условие — строгое равенство: NaN и любая дробь идут
+    // прежним путём. Доказательство — тест `glass_fast_paths_exact`.
+    if (blend == 0.0) {
+        return lower_color;
+    }
     vec3 upper_color = pyramid_color(upper, screen_px);
-    return mix(lower_color, upper_color, lod - floor_lod);
+    return mix(lower_color, upper_color, blend);
 }
 
 // Уровень по радиусу размытия стиля, px: 0 — резко. Приближение dual Kawase: после k ступеней вниз
