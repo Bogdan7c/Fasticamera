@@ -25,10 +25,12 @@ use gpu_vulkan::error::GpuError;
 use gpu_vulkan::hardware_buffer_cache::queue_handoff::ConsumerStage;
 use gpu_vulkan::raw_mosaic_preview::MosaicSource;
 use gpu_vulkan::saturation::{
-    FrameRecording, PassTimeLog, PassTimeSummary, SaturationWorkload, SlotId, WorkloadDigest, digest_storage_image,
+    DigestPart, FrameRecording, PassTimeLog, PassTimeSummary, SaturationWorkload, SlotId, WorkloadDigest,
+    digest_counts, digest_storage_image,
 };
 use gpu_vulkan::swapchain::DisplayColorSpace;
 use isp_model::params::IspParams;
+use isp_model::statistics::AwbStatistics;
 
 use super::blocking::run_blocking;
 use super::error::{FirstFailure, SaturationWorkError};
@@ -45,6 +47,10 @@ pub const PRODUCT_FRAME_SIZE: PixelSize = PixelSize::new(4096, 3072);
 pub const PRODUCT_AWB_STATISTICS_EVERY_N_FRAMES: u32 = 4;
 /// Сколько последних кадров помнит журнал времён проходов (окна замера по ~1 с при ≥ 60 к/с хватает с запасом).
 pub const PASS_LOG_CAPACITY_FRAMES: usize = 4096;
+/// Метка части отпечатка «картинка видоискателя».
+pub const IMAGE_PART_LABEL: &str = "image";
+/// Метка части отпечатка «буфер плиток статистики AWB последнего кадра со статистикой».
+pub const AWB_STATISTICS_PART_LABEL: &str = "awb_statistics";
 /// Метка единственного отрезка ISP (точки `isp-start` → `isp-end` в `ViewfinderIsp`).
 const PASS_LABELS: [&str; 1] = ["isp-end"];
 /// Слот, на котором идут прогревочные кадры конструктора.
@@ -140,6 +146,9 @@ pub struct ViewfinderSaturation {
     context: GpuContext,
     times: PassTimeLog,
     counters: ViewfinderCounters,
+    /// Статистика AWB последнего кадра, у которого её забрали после fence: часть отпечатка выхода (суммы u32
+    /// не зависят от порядка сложения, поэтому любой способ свести их обязан дать те же числа).
+    last_awb_statistics: Option<AwbStatistics>,
     failure: FirstFailure,
 }
 
@@ -171,6 +180,7 @@ impl ViewfinderSaturation {
             context: context.clone(),
             times: PassTimeLog::new(&PASS_LABELS, PASS_LOG_CAPACITY_FRAMES),
             counters: ViewfinderCounters::default(),
+            last_awb_statistics: None,
             failure: FirstFailure::default(),
         };
         work.warm_up()?;
@@ -230,6 +240,7 @@ impl ViewfinderSaturation {
     pub fn reset_statistics(&mut self) {
         self.times.clear();
         self.counters = ViewfinderCounters::default();
+        self.last_awb_statistics = None;
     }
 
     /// Забирает первую ошибку, случившуюся внутри `record_frame`/`release_slot_after_fence`.
@@ -284,8 +295,9 @@ impl ViewfinderSaturation {
     fn release_inner(&mut self, slot: SlotId) -> Result<(), SaturationWorkError> {
         let report = self.isp.collect(slot.index())?;
         self.counters.frames_released += 1;
-        if report.awb_statistics.is_some() {
+        if let Some(statistics) = report.awb_statistics {
             self.counters.statistics_collected += 1;
+            self.last_awb_statistics = Some(statistics);
         }
         log_collect(&mut self.times, &report.isp_gpu_time, &PASS_LABELS);
         Ok(())
@@ -315,8 +327,37 @@ impl ViewfinderSaturation {
             what: "картинка видоискателя ещё не создана".to_owned(),
         })?;
         let digest = digest_storage_image(image.storage_image(), image.current_use(), image.content_extent())?;
-        Ok(WorkloadDigest::single("image", digest))
+        let mut parts = vec![DigestPart {
+            label: IMAGE_PART_LABEL,
+            digest,
+        }];
+        // Статистика AWB — вторая часть выхода: проверяет, что новый способ свести суммы даёт те же числа.
+        if let Some(statistics) = &self.last_awb_statistics {
+            parts.push(DigestPart {
+                label: AWB_STATISTICS_PART_LABEL,
+                digest: digest_counts(&awb_statistics_words(statistics)),
+            });
+        }
+        Ok(WorkloadDigest::from_parts(parts))
     }
+}
+
+/// Плитки статистики по порядку как плоский список слов u32 (порядок полей `AwbTile`: суммы R, G, B, учтённые и
+/// пересвеченные ячейки) — то, что шейдер пишет в буфер.
+fn awb_statistics_words(statistics: &AwbStatistics) -> Vec<u32> {
+    statistics
+        .tiles()
+        .iter()
+        .flat_map(|tile| {
+            [
+                tile.sum_r,
+                tile.sum_g,
+                tile.sum_b,
+                tile.used_cells,
+                tile.saturated_cells,
+            ]
+        })
+        .collect()
 }
 
 /// Размер буфера источника совпал с настройкой (иначе шаг строки и кропы были бы про другой кадр).

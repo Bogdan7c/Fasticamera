@@ -358,6 +358,23 @@ fn combined_digest(row: &WorkloadRow) -> String {
     }
 }
 
+/// Отпечаток одной части выхода строки по метке (`None` — такой части у работы нет); паника, если отпечатка нет.
+/// Нужен там, где у работы несколько частей: у видоискателя картинка (`image`) и статистика AWB
+/// (`awb_statistics`) — общий отпечаток зависит от обеих, а проверять их надо по отдельности.
+fn digest_part(row: &WorkloadRow, label: &str) -> Option<String> {
+    match row
+        .digest
+        .as_ref()
+        .unwrap_or_else(|| panic!("{}: у строки нет дайджеста", row.name))
+    {
+        DigestOutcome::Computed { parts, .. } => parts
+            .iter()
+            .find(|part| part.label == label)
+            .map(|part| part.digest.clone()),
+        DigestOutcome::Unavailable { reason } => panic!("{}: дайджест недоступен: {reason}", row.name),
+    }
+}
+
 fn entries_named(names: &[&str]) -> Vec<&'static CatalogEntry> {
     names
         .iter()
@@ -536,9 +553,24 @@ fn isp_ablations_are_measured_with_pass_times_and_stage_changes_change_the_pictu
         assert!(measurement.cost.is_some(), "{}: нет p95 и max цены кадра", row.name);
     }
     let digest = |name: &str| combined_digest(row(&summary, name));
-    // Статистика AWB — только счёт: картинка не должна зависеть ни от неё, ни от её каденции.
-    assert_eq!(digest("viewfinder"), digest("viewfinder_awb_never"));
-    assert_eq!(digest("viewfinder"), digest("viewfinder_awb_every_frame"));
+    // Статистика AWB — только счёт: КАРТИНКА не должна зависеть ни от неё, ни от её каденции. Сравниваем часть
+    // `image`, а не общий отпечаток: в общий входит ещё и сама статистика, которой у `awb_never` нет вовсе.
+    let image =
+        |name: &str| digest_part(row(&summary, name), "image").unwrap_or_else(|| panic!("{name}: нет части image"));
+    let statistics = |name: &str| digest_part(row(&summary, name), "awb_statistics");
+    assert_eq!(image("viewfinder"), image("viewfinder_awb_never"));
+    assert_eq!(image("viewfinder"), image("viewfinder_awb_every_frame"));
+    // Числа статистики одного и того же кадра не зависят от того, как часто её считают; без статистики части нет.
+    assert!(
+        statistics("viewfinder").is_some(),
+        "продуктовая каденция считает статистику"
+    );
+    assert_eq!(statistics("viewfinder"), statistics("viewfinder_awb_every_frame"));
+    assert_eq!(
+        statistics("viewfinder_awb_never"),
+        None,
+        "без статистики отпечатку статистики неоткуда взяться"
+    );
     // Стадии, меняющие картинку, меняют дайджест (иначе дайджест ничего не доказывает).
     for name in [
         "viewfinder_without_tone",
@@ -630,12 +662,13 @@ fn the_digest_follows_the_picture_not_the_run_two_different_works_never_share_on
     let Some(context) = gpu_context_or_skip() else { return };
     let entries = group_entries(WorkloadGroup::Baseline);
     let summary = run_entries(&context, &entries);
-    // Приборы дают две части (счётчики и картинка), снимок — картинку и миниатюру, остальные — одну.
+    // Приборы дают две части (счётчики и картинка), видоискатель — картинку и статистику AWB, снимок — картинку и
+    // миниатюру, остальные — одну.
     let parts = |name: &str| match row(&summary, name).digest.as_ref().unwrap() {
         DigestOutcome::Computed { parts, .. } => parts.iter().map(|part| part.label).collect::<Vec<_>>(),
         DigestOutcome::Unavailable { reason } => panic!("{name}: {reason}"),
     };
-    assert_eq!(parts("viewfinder"), ["image"]);
+    assert_eq!(parts("viewfinder"), ["image", "awb_statistics"]);
     assert_eq!(parts("scopes_waveform"), ["counters", "picture"]);
     assert_eq!(parts("display_calibrate"), ["target"]);
     assert_eq!(parts("headroom_v4"), ["output"]);

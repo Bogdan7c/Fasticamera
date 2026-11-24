@@ -62,6 +62,19 @@ fn viewfinder_digest(context: &GpuContext, config: ViewfinderSaturationConfig, m
     (work.output_digest().unwrap().combined().to_string(), frames)
 }
 
+/// Отпечаток одной части выхода (`None` — такой части нет).
+fn viewfinder_part_digest(context: &GpuContext, config: ViewfinderSaturationConfig, label: &str) -> Option<String> {
+    let mut work = ViewfinderSaturation::new_synthetic(context, config, ParamsSpec::default().build()).unwrap();
+    run_for(context, &mut work, 60);
+    assert!(work.take_failure().is_none());
+    let digest = work.output_digest().unwrap();
+    digest
+        .parts()
+        .iter()
+        .find(|part| part.label == label)
+        .map(|part| part.digest.to_string())
+}
+
 #[test]
 fn viewfinder_digest_does_not_depend_on_the_frame_count_or_on_the_awb_statistics_cadence() {
     let _serial = serialize_gpu_timing();
@@ -86,10 +99,16 @@ fn viewfinder_digest_does_not_depend_on_the_frame_count_or_on_the_awb_statistics
         stages: IspStageSet::ALL.without(IspStage::AwbStatistics),
         ..viewfinder_config(4, scene)
     };
+    // Без статистики нет её части отпечатка, поэтому общий отпечаток другой, а картинка — та же.
     assert_eq!(
-        viewfinder_digest(&context, without_statistics, 100).0,
-        short,
-        "стадия AWB выключена совсем"
+        viewfinder_part_digest(&context, without_statistics, "image"),
+        viewfinder_part_digest(&context, viewfinder_config(4, scene), "image"),
+        "стадия AWB выключена совсем: картинка та же"
+    );
+    assert_eq!(
+        viewfinder_part_digest(&context, without_statistics, "awb_statistics"),
+        None,
+        "статистики нет — части нет"
     );
     assert_no_validation_errors(&context);
 }
@@ -111,6 +130,16 @@ fn viewfinder_digest_follows_the_picture_and_reading_it_does_not_change_the_pict
     )
     .0;
     assert_ne!(natural, gray, "другой кадр — другой дайджест");
+    let statistics_of = |scene| {
+        viewfinder_part_digest(&context, viewfinder_config(4, scene), "awb_statistics").expect("статистика забрана")
+    };
+    assert_ne!(
+        statistics_of(SceneContent::default()),
+        statistics_of(SceneContent::UniformGray {
+            code: DEFAULT_GRAY_CODE
+        }),
+        "другой кадр — другие суммы плиток"
+    );
     let without_tone = ViewfinderSaturationConfig {
         stages: IspStageSet::ALL.without(IspStage::Tone),
         ..viewfinder_config(4, SceneContent::default())
@@ -137,8 +166,9 @@ fn viewfinder_digest_follows_the_picture_and_reading_it_does_not_change_the_pict
     );
     let (_, after) = work.read_output_blocking().unwrap();
     assert_eq!(before, after, "чтение дайджеста не меняет картинку");
-    assert_eq!(first.parts().len(), 1);
+    assert_eq!(first.parts().len(), 2);
     assert_eq!(first.parts()[0].label, "image");
+    assert_eq!(first.parts()[1].label, "awb_statistics");
     // Какой кадр читали: вариант кадра пишется в счётчики работы, чтобы расхождение на телефоне можно было объяснить.
     assert!(work.counters().last_frame_had_statistics.is_some());
     assert_no_validation_errors(&context);
