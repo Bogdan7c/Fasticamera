@@ -539,6 +539,21 @@ impl ColorScopes {
         PictureChange::Replaced
     }
 
+    /// Форма сетки последней записи (для отпечатка выхода; только внутри `scopes`).
+    pub(super) fn last_recorded_grid(&self) -> Option<GridShape> {
+        self.last_grid
+    }
+
+    /// Буфер счётчиков для блокирующего чтения отпечатка выхода (только внутри `scopes`).
+    pub(super) fn counters_for_readback(&self) -> &DeviceBuffer {
+        &self.counters
+    }
+
+    /// Картинка для блокирующего чтения отпечатка выхода (только внутри `scopes`).
+    pub(super) fn picture_for_readback(&self) -> Option<&PictureTarget> {
+        self.picture.as_ref()
+    }
+
     /// Форма сетки последней записи (чтение счётчиков в тестах).
     #[cfg(feature = "test-support")]
     pub(super) fn last_grid(&self) -> Option<GridShape> {

@@ -202,8 +202,8 @@ fn headroom_digest_is_stable_between_runs_of_different_length() {
     assert_no_validation_errors(&context);
 }
 
-/// Приборы: две части (счётчики и картинка) с test-support; одинаковы у прогонов разной длины и различаются у
-/// разных приборов. Без `test-support` дайджест приборов недоступен (см. `ScopesSaturation::output_digest`).
+/// Приборы: две части (счётчики и картинка) в любой сборке; одинаковы у прогонов разной длины и различаются у
+/// разных приборов (см. `ScopesSaturation::output_digest`).
 #[test]
 fn scopes_digest_has_counters_and_picture_parts_and_does_not_depend_on_the_frame_count() {
     let _serial = serialize_gpu_timing();

@@ -34,6 +34,7 @@ mod accumulators;
 mod color_scopes;
 mod error;
 mod frame;
+mod output_digest;
 mod parameter_blocks;
 mod picture;
 mod resolved_rule;
@@ -47,6 +48,7 @@ pub use self::accumulators::{AccumulatorShader, standard_accumulators};
 pub use self::color_scopes::{ColorScopes, ColorScopesConfig};
 pub use self::error::ScopeError;
 pub use self::frame::{RecordedScope, ScopeFrame, ScopeInput, ScopePassCounters, ScopeSlotReport};
+pub use self::output_digest::ScopeOutputDigest;
 pub use self::picture::PictureChange;
 pub use self::rule::{
     AccumulateParameters, AccumulatorId, DECODE_TABLE_LEN, GpuScopeRule, RULE_WORD_CAPACITY, RuleWords,
