@@ -37,6 +37,41 @@ impl AccumulatorId {
     /// Вектороскоп по осям a/b OKLab.
     pub const OKLAB_VECTORSCOPE: Self = Self("oklab-vectorscope");
 
+    /// То же, что [`Self::INTEGER_PROJECTION`], но одинаковые ячейки сливаются внутри subgroup перед `atomicAdd`
+    /// (прибор с сильной конкуренцией за ячейки: вектороскоп Y'CbCr). Нужен баллот subgroup; без него
+    /// [`ColorScopes`](crate::scopes::ColorScopes) берёт [`Self::fallback`].
+    pub const INTEGER_PROJECTION_MERGED: Self = Self("integer-projection-merged");
+    /// То же, что [`Self::OKLAB_VECTORSCOPE`], со слиянием ячеек в subgroup.
+    pub const OKLAB_VECTORSCOPE_MERGED: Self = Self("oklab-vectorscope-merged");
+
+    /// Запасной шейдер на устройстве, где идентификатор не зарегистрирован (нет баллота subgroup): тот же прибор
+    /// без слияния. У остальных идентификаторов запасного нет.
+    pub const fn fallback(self) -> Option<Self> {
+        if self.is(Self::INTEGER_PROJECTION_MERGED) {
+            Some(Self::INTEGER_PROJECTION)
+        } else if self.is(Self::OKLAB_VECTORSCOPE_MERGED) {
+            Some(Self::OKLAB_VECTORSCOPE)
+        } else {
+            None
+        }
+    }
+
+    /// Сравнение в `const`-контексте (`PartialEq` в `const fn` недоступен).
+    const fn is(self, other: Self) -> bool {
+        let (left, right) = (self.0.as_bytes(), other.0.as_bytes());
+        if left.len() != right.len() {
+            return false;
+        }
+        let mut index = 0;
+        while index < left.len() {
+            if left[index] != right[index] {
+                return false;
+            }
+            index += 1;
+        }
+        true
+    }
+
     /// Новый идентификатор (например, для прибора из теста или будущего прибора).
     pub const fn new(name: &'static str) -> Self {
         Self(name)
@@ -157,6 +192,22 @@ mod tests {
         let mut words = RuleWords::new();
         words.push_projection(&projection);
         assert_eq!(words.as_slice(), &[3, 0xFFFF_FFFC, 5, 6, 16]);
+    }
+
+    #[test]
+    fn merged_accumulators_fall_back_to_their_plain_twins_and_others_have_no_fallback() {
+        assert_eq!(
+            AccumulatorId::INTEGER_PROJECTION_MERGED.fallback(),
+            Some(AccumulatorId::INTEGER_PROJECTION)
+        );
+        assert_eq!(
+            AccumulatorId::OKLAB_VECTORSCOPE_MERGED.fallback(),
+            Some(AccumulatorId::OKLAB_VECTORSCOPE)
+        );
+        assert_eq!(AccumulatorId::INTEGER_PROJECTION.fallback(), None);
+        assert_eq!(AccumulatorId::new("custom").fallback(), None);
+        // Подставной «двойник» с похожим именем запасного не получает: сравнение по полному имени.
+        assert_eq!(AccumulatorId::new("integer-projection-merged-x").fallback(), None);
     }
 
     #[test]

@@ -88,8 +88,11 @@ fn trace_row_base(levels: u32) -> Result<i32, ScopeError> {
 impl GpuScopeRule for ResolvedScope {
     fn accumulator(&self) -> AccumulatorId {
         match self {
-            Self::Waveform(_) | Self::RgbParade(_) | Self::VectorscopeYCbCr(_) => AccumulatorId::INTEGER_PROJECTION,
-            Self::VectorscopeOklab(_) => AccumulatorId::OKLAB_VECTORSCOPE,
+            // У waveform и parade отсчёты разбросаны по разным ячейкам: слияние в subgroup на Adreno 740 дороже
+            // прямой записи (замер сессии 16a). У вектороскопов соседние пиксели падают в одни и те же ячейки.
+            Self::Waveform(_) | Self::RgbParade(_) => AccumulatorId::INTEGER_PROJECTION,
+            Self::VectorscopeYCbCr(_) => AccumulatorId::INTEGER_PROJECTION_MERGED,
+            Self::VectorscopeOklab(_) => AccumulatorId::OKLAB_VECTORSCOPE_MERGED,
         }
     }
 

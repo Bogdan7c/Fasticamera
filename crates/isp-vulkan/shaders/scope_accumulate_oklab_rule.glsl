@@ -1,0 +1,79 @@
+// Правило вектороскопа OKLab: `scope_hits`. Подключается ПОСЛЕ `scope_accumulate_common.glsl`.
+// Слова прибора: 4 — предел сетки size (float); 5 — масштаб «клеток на единицу a/b»; 6 — смещение центра;
+// 7..15 — матрица «свет экрана → LMS» по строкам; 16..18 — строка a матрицы M2; 19..21 — строка b.
+const uint WORD_SIZE_LIMIT = WORD_RULE_FIRST;
+const uint WORD_SCALE = WORD_RULE_FIRST + 1u;
+const uint WORD_CENTRE_OFFSET = WORD_RULE_FIRST + 2u;
+const uint WORD_LMS_MATRIX = WORD_RULE_FIRST + 3u;
+const uint WORD_LAB_A_ROW = WORD_RULE_FIRST + 12u;
+const uint WORD_LAB_B_ROW = WORD_RULE_FIRST + 15u;
+
+// Константы кубического корня заданы БИТАМИ (как f32 на CPU), а не десятичными литералами.
+const uint CBRT_GUESS_MAGIC = 0x54a21000u;
+const uint CBRT_FOUR_THIRDS_BITS = 0x3faaaaabu;  // 1.333_333_4_f32
+const uint CBRT_ONE_THIRD_BITS = 0x3eaaaaabu;    // 0.333_333_34_f32
+
+// `(r0*v0 + r1*v1) + r2*v2` — единственный порядок суммирования (как `dot_in_fixed_order`).
+float dot_in_fixed_order(uint first_word, vec3 vector) {
+    precise float term_r = word_as_float(first_word) * vector.x;
+    precise float term_g = word_as_float(first_word + 1u) * vector.y;
+    precise float head = term_r + term_g;
+    precise float term_b = word_as_float(first_word + 2u) * vector.z;
+    precise float sum = head + term_b;
+    return sum;
+}
+
+// Один шаг Ньютона: r <- r * (4/3 - (1/3) * (((x * r) * r) * r)).
+float newton_step(float magnitude, float inverse_root) {
+    precise float product_one = magnitude * inverse_root;
+    precise float product_two = product_one * inverse_root;
+    precise float cubed = product_two * inverse_root;
+    precise float third = uintBitsToFloat(CBRT_ONE_THIRD_BITS) * cubed;
+    precise float factor = uintBitsToFloat(CBRT_FOUR_THIRDS_BITS) - third;
+    precise float next = inverse_root * factor;
+    return next;
+}
+
+// Кубический корень «в форме шейдера»: см. `scope_model::cube_root::cube_root` (три шага Ньютона).
+float cube_root(float value) {
+    float magnitude = abs(value);
+    if (isnan(value) || magnitude < 1.0e-30) {
+        return 0.0;
+    }
+    precise float inverse_root = uintBitsToFloat(CBRT_GUESS_MAGIC - floatBitsToUint(magnitude) / 3u);
+    inverse_root = newton_step(magnitude, inverse_root);
+    inverse_root = newton_step(magnitude, inverse_root);
+    inverse_root = newton_step(magnitude, inverse_root);
+    precise float root_one = magnitude * inverse_root;
+    precise float root = root_one * inverse_root;
+    return value < 0.0 ? -root : root;
+}
+
+void scope_hits(uint shown_x, uvec3 code) {
+    // Шаг 1: код -> свет экрана по таблице (те же числа, что на CPU).
+    vec3 linear = vec3(
+        parameters.decode_table[code.x],
+        parameters.decode_table[code.y],
+        parameters.decode_table[code.z]);
+    // Шаги 2–3: свет -> LMS -> кубический корень.
+    vec3 lms_prime = vec3(
+        cube_root(dot_in_fixed_order(WORD_LMS_MATRIX, linear)),
+        cube_root(dot_in_fixed_order(WORD_LMS_MATRIX + 3u, linear)),
+        cube_root(dot_in_fixed_order(WORD_LMS_MATRIX + 6u, linear)));
+    // Шаг 4: a и b.
+    float a = dot_in_fixed_order(WORD_LAB_A_ROW, lms_prime);
+    float b = dot_in_fixed_order(WORD_LAB_B_ROW, lms_prime);
+    // Шаг 5: положение в клетках ДО округления.
+    float scale = word_as_float(WORD_SCALE);
+    float centre_offset = word_as_float(WORD_CENTRE_OFFSET);
+    precise float a_scaled = a * scale;
+    precise float column_t = a_scaled + centre_offset;
+    precise float b_scaled = b * scale;
+    precise float row_t = centre_offset - b_scaled;
+    // Шаг 6: обе координаты в [0, size) (сравнение f32; NaN не попадает); дальше floor.
+    float size_limit = word_as_float(WORD_SIZE_LIMIT);
+    if (!(column_t >= 0.0 && column_t < size_limit && row_t >= 0.0 && row_t < size_limit)) {
+        return;
+    }
+    scope_add_hit(0u, uint(floor(row_t)), uint(floor(column_t)));
+}

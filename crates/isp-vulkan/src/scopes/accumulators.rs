@@ -69,6 +69,21 @@ pub fn standard_accumulators() -> [AccumulatorShader; 2] {
     ]
 }
 
+/// Шейдеры со слиянием одинаковых ячеек в subgroup (вектороскопы): регистрируются, только если устройство умеет
+/// баллот subgroup в compute (`GpuCapabilities::subgroup_ballot_in_compute`).
+pub fn merged_accumulators() -> [AccumulatorShader; 2] {
+    [
+        AccumulatorShader {
+            id: AccumulatorId::INTEGER_PROJECTION_MERGED,
+            spirv: blobs::SCOPE_ACCUMULATE_INTEGER_MERGED_COMP,
+        },
+        AccumulatorShader {
+            id: AccumulatorId::OKLAB_VECTORSCOPE_MERGED,
+            spirv: blobs::SCOPE_ACCUMULATE_OKLAB_MERGED_COMP,
+        },
+    ]
+}
+
 /// Пайплайны накопления по идентификаторам.
 pub(super) struct AccumulatorSet {
     entries: Vec<(AccumulatorId, ComputePipeline)>,
@@ -108,7 +123,20 @@ impl AccumulatorSet {
         self.entries.len()
     }
 
+    /// Идентификатор, под которым шейдер прибора реально зарегистрирован: сам `id` или его запасной
+    /// ([`AccumulatorId::fallback`]), если устройство не умеет вариант прибора.
+    pub(super) fn resolve(&self, id: AccumulatorId) -> Result<AccumulatorId, ScopeError> {
+        let registered = |candidate: AccumulatorId| self.entries.iter().any(|(known, _)| *known == candidate);
+        if registered(id) {
+            return Ok(id);
+        }
+        id.fallback()
+            .filter(|fallback| registered(*fallback))
+            .ok_or(ScopeError::UnknownAccumulator { id })
+    }
+
     pub(super) fn get(&self, id: AccumulatorId) -> Result<&ComputePipeline, ScopeError> {
+        let id = self.resolve(id)?;
         self.entries
             .iter()
             .find(|(candidate, _)| *candidate == id)
@@ -117,6 +145,7 @@ impl AccumulatorSet {
     }
 
     pub(super) fn get_mut(&mut self, id: AccumulatorId) -> Result<&mut ComputePipeline, ScopeError> {
+        let id = self.resolve(id)?;
         self.entries
             .iter_mut()
             .find(|(candidate, _)| *candidate == id)

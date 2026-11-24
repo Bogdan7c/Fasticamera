@@ -47,7 +47,7 @@ use scope_model::{GraticulePrimitive, GridShape, MAX_GRATICULE_PRIMITIVES, Scope
 
 use super::accumulators::{
     ACCUMULATE_BINDINGS, AccumulatorSet, AccumulatorShader, SAMPLING_PUSH_BYTES, local_size, local_size_specialization,
-    standard_accumulators,
+    merged_accumulators, standard_accumulators,
 };
 use super::error::ScopeError;
 use super::frame::{RecordedScope, ScopeFrame, ScopeInput, ScopePassCounters, ScopeSlotReport};
@@ -173,6 +173,10 @@ impl ColorScopes {
         // Размер группы — против лимитов ЭТОГО устройства.
         local_size.validate_for_device(context)?;
         let mut shaders = standard_accumulators().to_vec();
+        // Слияние ячеек в subgroup — только где устройство умеет баллот; иначе приборы берут запасные шейдеры.
+        if context.capabilities().subgroup_ballot_in_compute {
+            shaders.extend_from_slice(&merged_accumulators());
+        }
         shaders.extend_from_slice(extra);
         let accumulators = AccumulatorSet::new(context, &shaders, local_size, config.frame_slots)?;
         let render_pipeline = ComputePipeline::new(

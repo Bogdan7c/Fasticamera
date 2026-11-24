@@ -1,0 +1,12 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_samplerless_texture_functions : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_ballot : require
+// Накопление счётчиков с ЦЕЛОЧИСЛЕННОЙ проекцией (вектороскоп Y'CbCr), см. `scope_accumulate_integer.comp`.
+// Вариант со СЛИЯНИЕМ одинаковых ячеек в subgroup (`SCOPE_MERGE_HITS` в `scope_accumulate_common.glsl`): нити,
+// попавшие в одну ячейку, дают один `atomicAdd` с числом попаданий. Счётчики те же бит в бит; нужен баллот subgroup
+// в compute (`GpuCapabilities::subgroup_ballot_in_compute`), иначе Rust берёт вариант без суффикса `_merged`.
+#define SCOPE_MERGE_HITS
+#include "scope_accumulate_common.glsl"
+#include "scope_accumulate_integer_rule.glsl"

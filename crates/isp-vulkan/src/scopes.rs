@@ -27,8 +27,11 @@
 //! читает `gpu-vulkan` (`GpuCapabilities::float32_controls`), а render-loop показывает его в диагностике приборов
 //! (`ScopeDiagnostics::float32_controls`): расхождение паритета на новом устройстве объясняется, а не угадывается.
 //!
-//! Шейдеры: `scope_accumulate_common.glsl` + `scope_accumulate_integer.comp` (waveform, parade, Y'CbCr),
-//! `scope_accumulate_oklab.comp`, `scope_render.comp`.
+//! Шейдеры: `scope_accumulate_common.glsl` + правила `scope_accumulate_integer_rule.glsl` (waveform, parade, Y'CbCr) и
+//! `scope_accumulate_oklab_rule.glsl`; шейдеры накопления `scope_accumulate_integer.comp`, `scope_accumulate_oklab.comp`
+//! и их варианты `*_merged.comp` со слиянием одинаковых ячеек в subgroup (вектороскопы: соседние пиксели падают в одни
+//! ячейки, и `atomicAdd` в них упирается в конкуренцию; без баллота subgroup на устройстве берётся запасной шейдер
+//! без слияния, [`AccumulatorId::fallback`]); `scope_render.comp` (показ с отбором примитивов сетки по плитке).
 
 mod accumulators;
 mod color_scopes;
@@ -44,7 +47,7 @@ mod shader_literals_tests;
 #[cfg(feature = "test-support")]
 mod test_support;
 
-pub use self::accumulators::{AccumulatorShader, standard_accumulators};
+pub use self::accumulators::{AccumulatorShader, merged_accumulators, standard_accumulators};
 pub use self::color_scopes::{ColorScopes, ColorScopesConfig};
 pub use self::error::ScopeError;
 pub use self::frame::{RecordedScope, ScopeFrame, ScopeInput, ScopePassCounters, ScopeSlotReport};

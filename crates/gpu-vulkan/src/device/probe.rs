@@ -26,6 +26,8 @@ pub(crate) struct DeviceDetails {
     pub subgroup_size: u32,
     /// Арифметика subgroup (`subgroupAdd` и др.) доступна в compute-шейдерах.
     pub subgroup_arithmetic_in_compute: bool,
+    /// Голосование и баллот subgroup (`subgroupBallot`, `subgroupBroadcastFirst`) доступны в compute-шейдерах.
+    pub subgroup_ballot_in_compute: bool,
     /// Максимальный размер 2D-картинки.
     pub max_image_dimension_2d: u32,
     /// Максимальный размер push-констант, байт (спецификация гарантирует ≥ 128).
@@ -161,6 +163,14 @@ fn probe_device(instance: &Instance, physical_device: vk::PhysicalDevice) -> Res
         subgroup_arithmetic_in_compute: properties_11
             .subgroup_supported_operations
             .contains(vk::SubgroupFeatureFlags::ARITHMETIC)
+            && properties_11
+                .subgroup_supported_stages
+                .contains(vk::ShaderStageFlags::COMPUTE),
+        // Операции баллота (`subgroupBallot`, `subgroupBroadcastFirst`, `subgroupElect`) требуют бит BALLOT
+        // (подмножество BASIC для `subgroupElect` включено в любое устройство с subgroup) и стадию compute.
+        subgroup_ballot_in_compute: properties_11
+            .subgroup_supported_operations
+            .contains(vk::SubgroupFeatureFlags::BALLOT)
             && properties_11
                 .subgroup_supported_stages
                 .contains(vk::ShaderStageFlags::COMPUTE),

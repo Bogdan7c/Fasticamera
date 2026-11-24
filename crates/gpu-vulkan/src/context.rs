@@ -144,6 +144,10 @@ pub struct GpuCapabilities {
     /// (`subgroupSupportedOperations` ∋ ARITHMETIC и `subgroupSupportedStages` ∋ COMPUTE). Без неё
     /// SPIR-V с такими операциями создавать нельзя — потребитель выбирает запасной вариант шейдера.
     pub subgroup_arithmetic_in_compute: bool,
+    /// Доступны ли баллот и широковещание subgroup (`GL_KHR_shader_subgroup_ballot`) в compute-шейдерах
+    /// (`subgroupSupportedOperations` ∋ BALLOT и `subgroupSupportedStages` ∋ COMPUTE). Без них SPIR-V с такими
+    /// операциями создавать нельзя — потребитель выбирает запасной вариант шейдера.
+    pub subgroup_ballot_in_compute: bool,
     /// Семейство очередей.
     pub queue_family_index: u32,
     /// Режим validation, с которым создан контекст.
@@ -361,6 +365,7 @@ impl GpuContext {
             float32_controls: chosen.details.float32_controls,
             subgroup_size: chosen.details.subgroup_size,
             subgroup_arithmetic_in_compute: chosen.details.subgroup_arithmetic_in_compute,
+            subgroup_ballot_in_compute: chosen.details.subgroup_ballot_in_compute,
             queue_family_index: selection.queue_family_index,
             validation: config.validation.clone(),
             sync_validation,
