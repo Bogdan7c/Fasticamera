@@ -398,7 +398,10 @@ impl GpuWorkloadExecutor {
             frame_slots: self.slots(),
             ..StillSaturationConfig::default()
         });
-        let params = self.inputs.params(PipelineKind::Quality)?;
+        let params = match tuning.tone_model {
+            Some(model) => self.inputs.params_with_tone_model(PipelineKind::Quality, model)?,
+            None => self.inputs.params(PipelineKind::Quality)?,
+        };
         let work = StillSaturation::new_synthetic(&self.context, config, params)?;
         Ok(Box::new(StillWork(work)))
     }

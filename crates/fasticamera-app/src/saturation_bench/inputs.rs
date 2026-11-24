@@ -39,7 +39,7 @@ use isp_model::params::IspParams;
 use isp_model::sensor::SensorDescription;
 use isp_vulkan::saturation::{ProductParamsRecipe, SaturationWorkError};
 use look_contract::{LookFacts, LookSettings, PresetId, ToneBaseModel};
-use render_loop::config::RenderLoopConfig;
+use render_loop::config::{RenderLoopConfig, ViewfinderToneConfig};
 use serde::Serialize;
 use ui_core::time::MotionPreference;
 
@@ -102,6 +102,9 @@ pub struct ProductInputs {
     pub look: LookSummary,
     /// Рецепт видоискателя (основа, ручки тона, вид, режим карты теней продукта).
     recipe: ProductParamsRecipe,
+    /// Секции моделей основы тона из конфига продукта: из них `tone_base_for` строит основу ЛЮБОЙ модели
+    /// (опыты стенда над моделями, которые не выбраны видом).
+    tone_config: ViewfinderToneConfig,
     /// Факты камеры для экрана: объективы, вспышка, геометрия потока (камера «живая»: экран строится как при потоке).
     pub camera_facts: CameraFacts,
     /// Факты вида для экрана калибровки (`None` — библиотеки пресетов в сборке нет).
@@ -113,11 +116,34 @@ pub struct ProductInputs {
 impl ProductInputs {
     /// Параметры ISP для конвейера: тот же рецепт продукта, демозаик по виду конвейера.
     pub fn params(&self, pipeline: PipelineKind) -> Result<IspParams, SaturationWorkError> {
+        self.resolve_recipe(pipeline, self.recipe.clone())
+    }
+
+    /// Параметры ISP для конвейера, но с основой тона ДРУГОЙ модели: секция модели берётся из конфига продукта тем же
+    /// `tone_base_for`, что у видоискателя и снимка; ручки, вид и всё остальное — как у [`Self::params`].
+    pub fn params_with_tone_model(
+        &self,
+        pipeline: PipelineKind,
+        model: ToneBaseModel,
+    ) -> Result<IspParams, SaturationWorkError> {
+        let recipe = ProductParamsRecipe {
+            tone_base: self.tone_config.tone_base_for(model),
+            ..self.recipe.clone()
+        };
+        self.resolve_recipe(pipeline, recipe)
+    }
+
+    /// Рецепт → параметры: демозаик выбирается по виду конвейера.
+    fn resolve_recipe(
+        &self,
+        pipeline: PipelineKind,
+        recipe: ProductParamsRecipe,
+    ) -> Result<IspParams, SaturationWorkError> {
         let recipe = match pipeline {
-            PipelineKind::Viewfinder => self.recipe.clone(),
+            PipelineKind::Viewfinder => recipe,
             PipelineKind::Quality => ProductParamsRecipe {
-                demosaic: ProductParamsRecipe::quality(self.recipe.gamut).demosaic,
-                ..self.recipe.clone()
+                demosaic: ProductParamsRecipe::quality(recipe.gamut).demosaic,
+                ..recipe
             },
         };
         recipe.resolve(&self.sensor, self.neutral)
@@ -149,6 +175,7 @@ pub fn gather_inputs(sources: &InputSources<'_>) -> ProductInputs {
         sensor_source,
         look,
         recipe,
+        tone_config: sources.render_config.viewfinder.tone,
         look_facts,
         screen_config: sources.screen.screen.clone(),
         motion: sources.screen.motion,
