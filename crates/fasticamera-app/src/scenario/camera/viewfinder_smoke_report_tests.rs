@@ -506,6 +506,13 @@ fn worst_case_failure_line_fits_the_logcat_record() {
         longest_frame_compile_us: u64::MAX,
         last_prewarm_us: u64::MAX,
         longest_prewarm_us: u64::MAX,
+        bg_created: u64::MAX,
+        frame_while_bg: u64::MAX,
+        bg_waited: u64::MAX,
+        stall_max_us: u64::MAX,
+        bg_done_us: Some(u64::MAX),
+        bg_aborted: true,
+        bg_no_thread: true,
     };
     let mut violations = evaluate_viewfinder(&ViewfinderSmokeConfig::default(), &observation);
     assert!(violations.len() >= 8, "{violations:?}");

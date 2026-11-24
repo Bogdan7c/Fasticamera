@@ -89,6 +89,13 @@ fn the_worst_failing_summary_fits_the_result_line() {
         longest_frame_compile_us: u64::MAX,
         last_prewarm_us: u64::MAX,
         longest_prewarm_us: u64::MAX,
+        bg_created: u64::MAX,
+        frame_while_bg: u64::MAX,
+        bg_waited: u64::MAX,
+        stall_max_us: u64::MAX,
+        bg_done_us: Some(u64::MAX),
+        bg_aborted: true,
+        bg_no_thread: true,
     };
     assert!(
         !report.summary()["notes"].as_array().unwrap().is_empty(),

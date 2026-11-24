@@ -33,6 +33,20 @@ pub struct PipelineVariantsReport {
     pub last_prewarm_us: u64,
     /// Наибольшее CPU-время одной заготовки, мкс (за жизнь ISP).
     pub longest_prewarm_us: u64,
+    /// Создано ФОНОВЫМ потоком и подобрано потоком рендера (за жизнь ISP: фон кончает до окна замера).
+    pub bg_created: u64,
+    /// Создано в кадре, пока фон ещё не выдал этот вариант (за жизнь ISP).
+    pub frame_while_bg: u64,
+    /// Раз кадр дождался варианта, который фон компилировал прямо тогда (за жизнь ISP).
+    pub bg_waited: u64,
+    /// Наибольшая остановка потока рендера на компиляции за один кадр, мкс (за жизнь ISP).
+    pub stall_max_us: u64,
+    /// Через сколько мкс после создания ISP фон закончил всё семейство (`null` — ещё идёт или фона не было).
+    pub bg_done_us: Option<u64>,
+    /// Рабочий поток фона прервался (паника).
+    pub bg_aborted: bool,
+    /// ОС не дала поток: заготовка шла на потоке рендера.
+    pub bg_no_thread: bool,
 }
 
 fn micros(duration: Duration) -> u64 {
@@ -55,6 +69,13 @@ impl PipelineVariantsReport {
             longest_frame_compile_us: micros(after.longest_frame_compile),
             last_prewarm_us: micros(after.last_prewarm),
             longest_prewarm_us: micros(after.longest_prewarm),
+            bg_created: after.created_in_background,
+            frame_while_bg: after.created_in_frame_while_background_pending,
+            bg_waited: after.waited_for_background,
+            stall_max_us: micros(after.longest_render_stall),
+            bg_done_us: after.background_drained_after.map(micros),
+            bg_aborted: after.background_aborted,
+            bg_no_thread: after.background_unavailable,
         }
     }
 
@@ -99,6 +120,25 @@ mod tests {
             (report.longest_frame_compile_us, report.longest_prewarm_us),
             (35_000, 410_000)
         );
+    }
+
+    #[test]
+    fn background_evidence_is_lifetime_data_not_a_window_increment() {
+        let finished = VariantCacheStats {
+            created_in_background: 11,
+            created_in_frame_while_background_pending: 2,
+            waited_for_background: 1,
+            longest_render_stall: Duration::from_millis(160),
+            background_drained_after: Some(Duration::from_millis(1700)),
+            ..VariantCacheStats::default()
+        };
+        // Окно открылось, когда фон уже закончил: приращение по счётчикам было бы нулём, а отчёт обязан показать итог.
+        let report = PipelineVariantsReport::between(&finished, &finished);
+        assert_eq!((report.bg_created, report.frame_while_bg, report.bg_waited), (11, 2, 1));
+        assert_eq!((report.stall_max_us, report.bg_done_us), (160_000, Some(1_700_000)));
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"bg_done_us\":1700000"), "{json}");
+        assert_eq!(json.matches('{').count(), 1, "отчёт плоский: {json}");
     }
 
     #[test]

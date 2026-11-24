@@ -73,7 +73,7 @@ fn creating_a_key_prewarms_its_whole_family_and_counts_it_apart_from_the_frame()
         &context,
         key(ToneBaseKind::Agx),
         1,
-        VariantPrewarm::AllRelated,
+        VariantPrewarm::OnRenderThread,
     )
     .unwrap();
     assert!(evicted.is_none(), "в пустом кэше вытеснять нечего");
@@ -99,7 +99,7 @@ fn creating_a_key_prewarms_its_whole_family_and_counts_it_apart_from_the_frame()
         &context,
         key(ToneBaseKind::Agx),
         2,
-        VariantPrewarm::AllRelated,
+        VariantPrewarm::OnRenderThread,
     )
     .unwrap();
     prepare(
@@ -107,7 +107,7 @@ fn creating_a_key_prewarms_its_whole_family_and_counts_it_apart_from_the_frame()
         &context,
         key(ToneBaseKind::Filmic),
         3,
-        VariantPrewarm::AllRelated,
+        VariantPrewarm::OnRenderThread,
     )
     .unwrap();
     assert_eq!(cache.stats().created_in_frame, 1);
@@ -145,7 +145,7 @@ fn a_failed_prewarm_neither_breaks_the_frame_nor_blocks_the_other_siblings() {
     let outcome = cache.prepare_with(
         key(ToneBaseKind::Agx),
         RecordSerial(1),
-        VariantPrewarm::AllRelated,
+        VariantPrewarm::OnRenderThread,
         &mut build,
     );
     assert!(outcome.is_ok(), "отказ заготовки не роняет кадр");
@@ -171,7 +171,7 @@ fn a_failed_frame_creation_is_counted_and_leaves_the_cache_untouched() {
     let outcome = cache.prepare_with(
         key(ToneBaseKind::Agx),
         RecordSerial(2),
-        VariantPrewarm::AllRelated,
+        VariantPrewarm::OnRenderThread,
         &mut build,
     );
     assert!(
@@ -199,7 +199,7 @@ fn prewarm_takes_only_free_slots_and_never_evicts() {
         &context,
         key(ToneBaseKind::Agx),
         1,
-        VariantPrewarm::AllRelated,
+        VariantPrewarm::OnRenderThread,
     )
     .unwrap();
     assert!(evicted.is_none());
@@ -213,7 +213,7 @@ fn an_unused_prewarmed_variant_is_evicted_before_a_working_one() {
     let mut cache = cache(3);
     // Рабочий вариант и две заготовки (самые нужные: тот же тон без статистики и другая раскладка).
     let working = key(ToneBaseKind::Agx);
-    prepare(&mut cache, &context, working, 100, VariantPrewarm::AllRelated).unwrap();
+    prepare(&mut cache, &context, working, 100, VariantPrewarm::OnRenderThread).unwrap();
     // Новый ключ вне семейства (другой набор стадий) в полном кэше вытесняет ЗАГОТОВКУ, а не рабочий вариант.
     let other_stage_set = VariantKey {
         stages: working.stages.without(IspStage::LookLut),
@@ -275,7 +275,7 @@ fn a_no_statistics_key_prewarms_statistics_variants_only_after_statistics_were_u
         &context,
         no_statistics(ToneBaseKind::Legacy),
         1,
-        VariantPrewarm::AllRelated,
+        VariantPrewarm::OnRenderThread,
     )
     .unwrap();
     assert_eq!(cache.stats().in_cache, ToneBaseKind::ALL.len());
@@ -286,7 +286,7 @@ fn a_no_statistics_key_prewarms_statistics_variants_only_after_statistics_were_u
         &context,
         key(ToneBaseKind::Legacy),
         2,
-        VariantPrewarm::AllRelated,
+        VariantPrewarm::OnRenderThread,
     )
     .unwrap();
     let other_stage_set = VariantKey {
@@ -296,6 +296,6 @@ fn a_no_statistics_key_prewarms_statistics_variants_only_after_statistics_were_u
         ..no_statistics(ToneBaseKind::Legacy)
     };
     let before = cache.stats().in_cache;
-    prepare(&mut cache, &context, other_stage_set, 3, VariantPrewarm::AllRelated).unwrap();
+    prepare(&mut cache, &context, other_stage_set, 3, VariantPrewarm::OnRenderThread).unwrap();
     assert_eq!(cache.stats().in_cache, before + VARIANTS_PER_STAGE_SET);
 }

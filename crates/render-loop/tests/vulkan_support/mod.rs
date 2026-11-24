@@ -45,10 +45,17 @@ pub const RESIZED: SurfaceSize = SurfaceSize {
 /// Период ~120 Гц, наносекунды.
 const VSYNC_PERIOD: Duration = Duration::from_nanos(8_333_333);
 
+/// Настройки бэкенда ПК-стенда: полная validation и заготовка вариантов ISP на потоке рендера. Фоновая заготовка
+/// (умолчание продукта) делала бы число пайплайнов и живых объектов зависимым от времени, а тесты их считают.
+fn stand_backend_config(render_config: &RenderLoopConfig) -> Result<VulkanBackendConfig, gpu_vulkan::error::GpuError> {
+    let mut config = VulkanBackendConfig::from_render_config(render_config, ValidationMode::FULL)?;
+    config.viewfinder.isp.variant_prewarm = isp_vulkan::viewfinder::VariantPrewarm::OnRenderThread;
+    Ok(config)
+}
+
 /// Бэкенд ПК-стенда с полной validation или `None` при осознанном пропуске.
 pub fn headless_backend_or_skip(render_config: &RenderLoopConfig) -> Option<VulkanDisplayBackend> {
-    let config = VulkanBackendConfig::from_render_config(render_config, ValidationMode::FULL)
-        .expect("конфиг бэкенда из конфига потока");
+    let config = stand_backend_config(render_config).expect("конфиг бэкенда из конфига потока");
     match VulkanDisplayBackend::new_headless_presentation(config) {
         Ok(backend) => Some(backend),
         Err(error) => {
@@ -97,8 +104,7 @@ pub fn headless_camera_backend_keeping_unchanged_policy_or_skip(
     make_importer: CameraImporterFactory,
     directives: DirectiveSlot<WhiteBalanceDirective>,
 ) -> Option<VulkanDisplayBackend> {
-    let config = VulkanBackendConfig::from_render_config(render_config, ValidationMode::FULL)
-        .expect("конфиг бэкенда из конфига потока");
+    let config = stand_backend_config(render_config).expect("конфиг бэкенда из конфига потока");
     match VulkanDisplayBackend::new_headless_camera_preview(config, frames, make_importer, directives) {
         Ok(backend) => Some(backend),
         Err(error) => {

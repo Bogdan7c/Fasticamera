@@ -38,7 +38,8 @@ use super::scene::{SceneContent, check_raw10_size};
 use super::source::RawFrameHolder;
 use super::timing::log_collect;
 use crate::viewfinder::{
-    IspStage, IspStageSet, ViewfinderFrame, ViewfinderGeometry, ViewfinderImage, ViewfinderIsp, ViewfinderIspConfig,
+    IspStage, IspStageSet, VariantPrewarm, ViewfinderFrame, ViewfinderGeometry, ViewfinderImage, ViewfinderIsp,
+    ViewfinderIspConfig,
 };
 
 /// Размер буфера основной камеры OnePlus 11 (4:3): `Camera2` отдаёт RAW10 4096×3072.
@@ -89,7 +90,12 @@ impl Default for ViewfinderSaturationConfig {
             sensor_orientation: SensorOrientation::Degrees90,
             display: DisplayColorSpace::DisplayP3,
             stages: IspStageSet::ALL,
-            isp: ViewfinderIspConfig::default(),
+            // Заготовка на потоке рендера: все варианты готовы ДО прогрева стенда. Фоновая компиляция (умолчание продукта)
+            // шла бы первые 2–3 с и попала бы в окно замера.
+            isp: ViewfinderIspConfig {
+                variant_prewarm: VariantPrewarm::OnRenderThread,
+                ..ViewfinderIspConfig::default()
+            },
             awb_statistics_every_n_frames: PRODUCT_AWB_STATISTICS_EVERY_N_FRAMES,
             content: SceneContent::default(),
             reader: ConsumerStage::Fragment,

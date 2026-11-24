@@ -120,7 +120,12 @@ struct SweepReport {
 /// Проходит весь путь зума (оба поворота) с продуктовой каденцией статистики и сменой основы; на КАЖДОМ шаге
 /// сверяет картинку и суммы статистики с эталоном `isp-model` и отдаёт счётчики кэша вариантов для проверок вызывающего.
 /// `frames_limit` обрезает путь (быстрые проверки без полного прохода).
-fn sweep_zoom_path(context: &GpuContext, isp: &mut ViewfinderIsp, frames_limit: usize) -> SweepReport {
+fn sweep_zoom_path(
+    context: &GpuContext,
+    isp: &mut ViewfinderIsp,
+    frames_limit: usize,
+    after_frame: &mut dyn FnMut(usize, &mut ViewfinderIsp),
+) -> SweepReport {
     let raw = varied_scene(&spec_with(tone_bases()[0]));
     let gpu_source = GpuSource::new(context, &raw, SourceLayout::Raw16);
     let source = gpu_source.source();
@@ -182,6 +187,7 @@ fn sweep_zoom_path(context: &GpuContext, isp: &mut ViewfinderIsp, frames_limit: 
             } else {
                 assert!(run.report.awb_statistics.is_none(), "{step}: статистики быть не должно");
             }
+            after_frame(frame, isp);
             frame += 1;
         }
     }
@@ -193,8 +199,8 @@ fn sweep_zoom_path(context: &GpuContext, isp: &mut ViewfinderIsp, frames_limit: 
 #[test]
 fn zoom_sweep_with_statistics_cadence_and_tone_base_changes_creates_no_pipelines_after_the_first_frame() {
     let Some(context) = gpu_context_or_skip() else { return };
-    let mut isp = ViewfinderIsp::new(&context, &config(VariantPrewarm::AllRelated)).unwrap();
-    let report = sweep_zoom_path(&context, &mut isp, usize::MAX);
+    let mut isp = ViewfinderIsp::new(&context, &config(VariantPrewarm::OnRenderThread)).unwrap();
+    let report = sweep_zoom_path(&context, &mut isp, usize::MAX, &mut |_, _| {});
 
     let after_first = report.stats_after_each_frame[0];
     // Цена заготовки на этом ПК (RADV) — для отчёта: число пайплайнов и время их создания.
@@ -238,7 +244,7 @@ fn zoom_sweep_with_statistics_cadence_and_tone_base_changes_creates_no_pipelines
 fn without_prewarm_the_same_path_creates_variants_in_frames_but_draws_correctly() {
     let Some(context) = gpu_context_or_skip() else { return };
     let mut isp = ViewfinderIsp::new(&context, &config(VariantPrewarm::Off)).unwrap();
-    let report = sweep_zoom_path(&context, &mut isp, usize::MAX);
+    let report = sweep_zoom_path(&context, &mut isp, usize::MAX, &mut |_, _| {});
     let last = *report.stats_after_each_frame.last().unwrap();
     assert_eq!(last.created_by_prewarm, 0, "заготовки не было");
     assert!(
@@ -256,10 +262,10 @@ fn a_cache_with_no_room_for_prewarm_still_draws_every_frame_correctly() {
     let Some(context) = gpu_context_or_skip() else { return };
     let tight = ViewfinderIspConfig {
         pipeline_variant_capacity: 1,
-        ..config(VariantPrewarm::AllRelated)
+        ..config(VariantPrewarm::OnRenderThread)
     };
     let mut isp = ViewfinderIsp::new(&context, &tight).unwrap();
-    let report = sweep_zoom_path(&context, &mut isp, 30);
+    let report = sweep_zoom_path(&context, &mut isp, 30, &mut |_, _| {});
     let last = *report.stats_after_each_frame.last().unwrap();
     assert_eq!(last.created_by_prewarm, 0, "места под заготовку нет");
     assert_eq!(last.in_cache, 1);
@@ -267,5 +273,133 @@ fn a_cache_with_no_room_for_prewarm_still_draws_every_frame_correctly() {
         last.evicted > 0 && last.created_in_frame > 1,
         "кадры создавали по требованию: {last:?}"
     );
+    assert_no_validation_errors(&context);
+}
+
+/// Сколько тест готов ждать фон.
+const BACKGROUND_PATIENCE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Фон по умолчанию, но тест дожидается его конца после первого кадра: дальше поведение кэша то же, что при заготовке
+/// на потоке рендера — ни одного создания, ни одного вытеснения, картинка и статистика равны эталону на каждом шаге.
+#[test]
+fn background_prewarm_once_finished_keeps_the_zoom_path_free_of_pipeline_creation() {
+    let Some(context) = gpu_context_or_skip() else { return };
+    let baseline = context.live_objects();
+    {
+        let mut isp = ViewfinderIsp::new(&context, &config(VariantPrewarm::InBackground)).unwrap();
+        let report = sweep_zoom_path(&context, &mut isp, usize::MAX, &mut |frame, isp| {
+            if frame == 0 {
+                assert!(
+                    isp.wait_for_background_prewarm(BACKGROUND_PATIENCE),
+                    "фон не закончил за {BACKGROUND_PATIENCE:?}"
+                );
+            }
+        });
+        let first = report.stats_after_each_frame[0];
+        assert_eq!(
+            first.in_cache, 1,
+            "на потоке рендера первый кадр создал только свой вариант"
+        );
+        assert_eq!(first.created_by_prewarm, 0, "ничего не подобрано до следующего кадра");
+        for (frame, stats) in report.stats_after_each_frame.iter().enumerate().skip(1) {
+            assert_eq!(
+                (
+                    stats.created_in_frame,
+                    stats.evicted,
+                    stats.in_cache,
+                    stats.background_discarded
+                ),
+                (1, 0, 12, 0),
+                "кадр {frame}: после фона создавать нечего"
+            );
+        }
+        let last = report.stats_after_each_frame.last().unwrap();
+        assert_eq!(last.created_in_background, 11);
+        assert!(last.background_drained_after.is_some());
+        assert!(last.longest_render_stall < std::time::Duration::from_secs(5));
+        assert_no_validation_errors(&context);
+    }
+    assert_eq!(
+        context.live_objects(),
+        baseline,
+        "ISP с фоном не оставил живых объектов"
+    );
+}
+
+/// Зум начинается сразу, пока фон отстаёт (в тесте он делает два задания на кадр): кадры создают недостающее сами,
+/// но каждый вариант создан ровно один раз — без дублей, вытеснений и утечек, картинка верна на каждом шаге.
+#[test]
+fn zoom_that_outruns_the_background_creates_each_missing_variant_exactly_once() {
+    let Some(context) = gpu_context_or_skip() else { return };
+    let baseline = context.live_objects();
+    {
+        let (mut isp, driver) =
+            ViewfinderIsp::new_with_manual_prewarm(&context, &config(VariantPrewarm::InBackground)).unwrap();
+        let report = sweep_zoom_path(&context, &mut isp, usize::MAX, &mut |frame, _| {
+            if frame == 0 {
+                // Результат первого кадра: ровно один вариант на потоке рендера, остальное ждёт фон.
+                assert_eq!(driver.queued(), 11, "семейство поставлено в очередь фона");
+            }
+            driver.run_next();
+            driver.run_next();
+        });
+        let first = report.stats_after_each_frame[0];
+        assert_eq!(
+            (first.in_cache, first.created_in_frame, first.created_by_prewarm),
+            (1, 1, 0)
+        );
+        driver.run_all();
+        isp.adopt_prewarmed_variants();
+        let last = isp.variant_stats();
+        assert_eq!(last.in_cache, 12, "семейство собрано целиком");
+        assert_eq!(
+            last.created_in_frame + last.created_in_background,
+            12,
+            "каждый вариант создан ровно один раз (в кадре или фоном): {last:?}"
+        );
+        assert_eq!((last.evicted, last.background_discarded), (0, 0), "{last:?}");
+        assert_eq!(
+            last.created_in_frame_while_background_pending,
+            last.created_in_frame - 1
+        );
+        assert_no_validation_errors(&context);
+    }
+    assert_eq!(context.live_objects(), baseline, "ничего не утекло");
+}
+
+/// Сквозной тест настоящего потока: зум начинается сразу, фон работает параллельно; картинка верна на каждом шаге,
+/// дублей и утечек нет, после конца фона семейство собрано.
+#[test]
+fn real_background_thread_with_zoom_from_the_first_frame_draws_correctly_and_leaks_nothing() {
+    let Some(context) = gpu_context_or_skip() else { return };
+    let baseline = context.live_objects();
+    {
+        let mut isp = ViewfinderIsp::new(&context, &config(VariantPrewarm::InBackground)).unwrap();
+        let report = sweep_zoom_path(&context, &mut isp, usize::MAX, &mut |_, _| {});
+        assert!(isp.wait_for_background_prewarm(BACKGROUND_PATIENCE));
+        isp.adopt_prewarmed_variants();
+        let last = isp.variant_stats();
+        assert_eq!(report.stats_after_each_frame[0].in_cache, 1);
+        assert_eq!(last.in_cache, 12, "{last:?}");
+        assert_eq!(last.created_in_frame + last.created_in_background, 12, "{last:?}");
+        assert_eq!((last.evicted, last.background_discarded), (0, 0), "{last:?}");
+        assert_eq!(last.prewarm_failed + last.create_failed_in_frame, 0);
+        assert!(!last.background_aborted && !last.background_unavailable);
+        assert_no_validation_errors(&context);
+    }
+    assert_eq!(context.live_objects(), baseline);
+}
+
+/// Уничтожение ISP, пока фон ещё компилирует: поток завершается, живых объектов нет.
+#[test]
+fn dropping_the_isp_while_the_background_is_busy_leaks_nothing_and_does_not_hang() {
+    let Some(context) = gpu_context_or_skip() else { return };
+    let baseline = context.live_objects();
+    {
+        let mut isp = ViewfinderIsp::new(&context, &config(VariantPrewarm::InBackground)).unwrap();
+        // Один кадр ставит семейство в очередь; ISP уничтожается сразу, не дожидаясь фона.
+        let _ = sweep_zoom_path(&context, &mut isp, 1, &mut |_, _| {});
+    }
+    assert_eq!(context.live_objects(), baseline);
     assert_no_validation_errors(&context);
 }

@@ -1,6 +1,8 @@
 //! [`ViewfinderIsp`] — владелец слитого прохода видоискателя: изображение выхода, варианты пайплайна,
 //! uniform-параметры, буферы статистики AWB и метки времени по слотам кадров.
 
+use std::time::Duration;
+
 use ash::vk;
 use gpu_vulkan::backdrop::{BackdropFrameNumber, BackdropSource, SubmissionSerial};
 use gpu_vulkan::compute::{BindingWrite, ComputePipeline, LocalSize, WorkgroupCount};
@@ -18,7 +20,10 @@ use isp_model::statistics::AwbStatistics;
 
 use super::awb_group_layout::{AwbGroupLayout, DispatchShape};
 use super::awb_reduction::{AwbReduction, SubgroupArithmeticSupport};
-use super::config::ViewfinderIspConfig;
+use super::background_prewarm::BackgroundPrewarm;
+#[cfg(feature = "test-support")]
+use super::background_prewarm::ManualPrewarmDriver;
+use super::config::{VariantPrewarm, ViewfinderIspConfig};
 use super::error::ViewfinderError;
 use super::geometry::{CheckedGeometry, ViewfinderGeometry, check_geometry};
 use super::image::ViewfinderImage;
@@ -143,7 +148,62 @@ impl std::fmt::Debug for ViewfinderIsp {
 
 impl ViewfinderIsp {
     /// Создаёт ISP: буферы по слотам и метки времени. Пайплайны и изображение — лениво, на первом кадре.
+    ///
+    /// При `VariantPrewarm::InBackground` запускает рабочий поток заготовки (он спит, пока не придёт первый кадр).
+    /// ОС не дала поток — громкий журнал, счётчик `background_unavailable` и заготовка на потоке рендера: целостность
+    /// «ни одной компиляции посреди сессии» важнее скорости запуска.
     pub fn new(context: &GpuContext, config: &ViewfinderIspConfig) -> Result<Self, ViewfinderError> {
+        let mut isp = Self::assemble(context, config)?;
+        if config.variant_prewarm == VariantPrewarm::InBackground {
+            let job = isp.variants.background_build_job(context);
+            match BackgroundPrewarm::spawn(job) {
+                Ok(background) => isp.variants.attach_background(background, isp.background_wait_limit()),
+                Err(error) => {
+                    tracing::error!(
+                        target: "fasticamera::isp_viewfinder",
+                        %error,
+                        "ОС не дала поток для фоновой заготовки вариантов: заготовка пойдёт на потоке рендера"
+                    );
+                    isp.variants.note_background_unavailable();
+                }
+            }
+        }
+        Ok(isp)
+    }
+
+    /// Как [`Self::new`], но фон без потока: задания двигает возвращённый [`ManualPrewarmDriver`] (детерминированные
+    /// тесты). Только для тестов.
+    #[cfg(feature = "test-support")]
+    pub fn new_with_manual_prewarm(
+        context: &GpuContext,
+        config: &ViewfinderIspConfig,
+    ) -> Result<(Self, ManualPrewarmDriver), ViewfinderError> {
+        let mut isp = Self::assemble(context, config)?;
+        let job = isp.variants.background_build_job(context);
+        let (background, driver) = BackgroundPrewarm::manual(job);
+        isp.variants.attach_background(background, isp.background_wait_limit());
+        Ok((isp, driver))
+    }
+
+    /// Сколько кадр ждёт вариант, который фон компилирует прямо сейчас.
+    fn background_wait_limit(&self) -> Duration {
+        Duration::from_millis(u64::from(self.config.background_wait_limit_ms))
+    }
+
+    /// Подбирает варианты, которые фон уже собрал, и кладёт их в кэш без ожидания. `record` делает это сам в начале
+    /// каждого кадра; отдельный вызов нужен тестам и диагностике. Возвращает, сколько принято.
+    pub fn adopt_prewarmed_variants(&mut self) -> usize {
+        self.variants.adopt_prewarmed()
+    }
+
+    /// Ждёт, пока фон выполнит все задания (или истечёт `timeout`); `true` — фон закончил или его нет. Блокирует
+    /// вызывающего: поток рендера этим не пользуется (только тесты и диагностика запуска).
+    pub fn wait_for_background_prewarm(&self, timeout: Duration) -> bool {
+        self.variants.wait_for_background_idle(timeout)
+    }
+
+    /// Создаёт всё, кроме фона заготовки.
+    fn assemble(context: &GpuContext, config: &ViewfinderIspConfig) -> Result<Self, ViewfinderError> {
         config.validate()?;
         let local_size = config.local_size()?;
         // Размер группы из конфига — против лимитов ЭТОГО устройства (спецификация гарантирует только 128 нитей).

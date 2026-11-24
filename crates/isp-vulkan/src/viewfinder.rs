@@ -23,6 +23,7 @@
 
 mod awb_group_layout;
 mod awb_reduction;
+mod background_prewarm;
 mod config;
 mod error;
 mod geometry;
@@ -38,6 +39,8 @@ mod variants;
 
 pub use self::awb_group_layout::{AwbGroupLayout, DispatchShape};
 pub use self::awb_reduction::{AwbReduction, AwbReductionPolicy, SubgroupArithmeticSupport};
+#[cfg(feature = "test-support")]
+pub use self::background_prewarm::ManualPrewarmDriver;
 pub use self::config::{
     DEFAULT_PIPELINE_VARIANT_CAPACITY, LargestMosaicConfig, MAX_FRAME_SLOTS, MAX_WORKGROUP_INVOCATIONS, VariantPrewarm,
     ViewfinderIspConfig, ViewfinderStorageFormat, WorkgroupSizeConfig,

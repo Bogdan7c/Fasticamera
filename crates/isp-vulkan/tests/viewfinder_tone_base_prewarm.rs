@@ -54,7 +54,7 @@ fn spec_with(base: ToneBase) -> ParamsSpec {
 fn first_frame_prewarms_every_base_and_switching_creates_no_pipelines() {
     let Some(context) = gpu_context_or_skip() else { return };
     let config = isp_vulkan::viewfinder::ViewfinderIspConfig {
-        variant_prewarm: VariantPrewarm::AllRelated,
+        variant_prewarm: VariantPrewarm::OnRenderThread,
         ..test_config(ViewfinderStorageFormat::HalfFloatOnly)
     };
     let mut isp = ViewfinderIsp::new(&context, &config).unwrap();
@@ -174,7 +174,7 @@ fn without_prewarm_variants_appear_one_per_used_base() {
 fn prewarm_never_evicts_the_variant_in_use_when_the_cache_is_tight() {
     let Some(context) = gpu_context_or_skip() else { return };
     let config = isp_vulkan::viewfinder::ViewfinderIspConfig {
-        variant_prewarm: VariantPrewarm::AllRelated,
+        variant_prewarm: VariantPrewarm::OnRenderThread,
         pipeline_variant_capacity: 2,
         ..test_config(ViewfinderStorageFormat::HalfFloatOnly)
     };
@@ -226,7 +226,7 @@ fn default_capacity_holds_every_product_stage_set_in_every_base() {
     );
     assert_eq!(
         isp_vulkan::viewfinder::ViewfinderIspConfig::default().variant_prewarm,
-        VariantPrewarm::AllRelated,
+        VariantPrewarm::InBackground,
         "прогрев по умолчанию включён"
     );
 }

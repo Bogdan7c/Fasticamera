@@ -36,25 +36,31 @@ impl ViewfinderStorageFormat {
     }
 }
 
-/// Заготавливать ли родственные варианты пайплайна вместе с созданным (решение 195 + пакет I5 сессии 16a).
+/// Как заготавливать родственные варианты пайплайна (решение 195 + пакеты I5 и I6 сессии 16a).
 ///
 /// Вариант шейдера зависит от осей, которые переключаются на ходу: модель основы тона (свайп вида), кадр со статистикой
 /// AWB или без (каждый 4-й кадр) и раскладка групп по плиткам статистики (плавный зум). Что именно входит в семейство,
-/// решает один модуль (`variant_family`); здесь только выключатель.
+/// решает один модуль (`variant_family`); здесь только способ. Заготовка занимает только свободные места кэша.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VariantPrewarm {
-    /// При создании варианта для ключа сразу создаются его родственные варианты (другие основы, кадр со статистикой и
-    /// без, обе раскладки AWB): ни свайп основы, ни зум, ни чередование статистики не компилируют пайплайн посреди
-    /// сессии. Стоит CPU-время и память драйвера на первом кадре (цифры — отчёт пакета I5; на телефоне время
-    /// покажут счётчики `last_prewarm` / `longest_prewarm` диагностики вариантов).
+    /// Поток рендера создаёт только вариант первого кадра; остальное семейство компилирует фоновый поток, и оно
+    /// подхватывается между кадрами. Если кадру нужен вариант, который фон ещё не выдал, кадр компилирует его сам или
+    /// ждёт текущую компиляцию фона (см. `background_prewarm`). Если ОС не даст поток — заготовка идёт на потоке
+    /// рендера (с громким журналом). Старые имена конфига (`all_related`, `all_models`) читаются как этот способ.
     #[default]
-    #[serde(alias = "all_models")]
-    AllRelated,
+    #[serde(alias = "all_related", alias = "all_models")]
+    InBackground,
+    /// Всё семейство создаётся на потоке рендера в первом кадре (на Adreno 740 — 1,5–1,8 с остановки при каждом запуске).
+    /// Нужно тестам, где важна детерминированность без ожидания фона.
+    OnRenderThread,
     /// Варианты создаются лениво, по одному, на первом кадре, которому они нужны (A/B-замеры стадий, тесты, где счёт
     /// вариантов важен).
     Off,
 }
+
+/// Предел ожидания кадром фоновой компиляции нужного варианта, мс (с запасом на самую медленную компиляцию).
+pub const DEFAULT_BACKGROUND_WAIT_LIMIT_MS: u32 = 1000;
 
 /// Размер рабочей группы (нитей по X и Y; одна нить — один пиксель выхода).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -143,6 +149,9 @@ pub struct ViewfinderIspConfig {
     /// никогда не вытесняет вариант, которым рисуют.
     #[serde(alias = "tone_base_prewarm")]
     pub variant_prewarm: VariantPrewarm,
+    /// Сколько миллисекунд кадр готов ждать вариант, который фон компилирует прямо сейчас (одна компиляция — 150–200 мс
+    /// на Adreno 740). Не уложился — кадр компилирует сам.
+    pub background_wait_limit_ms: u32,
     /// Наибольшая карта коррекции виньетирования, под которую выделяются буферы слотов. Карта больше —
     /// явная ошибка кадра (`ViewfinderError::LensShadingMap`), а не молчаливый пропуск коррекции.
     pub lens_shading_map: LensShadingMapLimits,
@@ -164,6 +173,7 @@ impl Default for ViewfinderIspConfig {
             storage_format: ViewfinderStorageFormat::default(),
             pipeline_variant_capacity: DEFAULT_PIPELINE_VARIANT_CAPACITY,
             variant_prewarm: VariantPrewarm::default(),
+            background_wait_limit_ms: DEFAULT_BACKGROUND_WAIT_LIMIT_MS,
             lens_shading_map: LensShadingMapLimits::default(),
             look_lut: LookLutLimits::default(),
             largest_mosaic: LargestMosaicConfig::default(),
@@ -224,6 +234,24 @@ mod tests {
         let partial: ViewfinderIspConfig = serde_json::from_str(r#"{"frame_slots": 3}"#).unwrap();
         assert_eq!(partial.frame_slots, 3);
         assert_eq!(partial.workgroup_size, WorkgroupSizeConfig { x: 4, y: 32 });
+    }
+
+    #[test]
+    fn old_prewarm_names_still_read_as_background_prewarm() {
+        for name in ["all_related", "all_models", "in_background"] {
+            let text = format!(r#"{{"variant_prewarm": "{name}"}}"#);
+            let parsed: ViewfinderIspConfig = serde_json::from_str(&text).unwrap();
+            assert_eq!(parsed.variant_prewarm, VariantPrewarm::InBackground, "{name}");
+        }
+        let old_key: ViewfinderIspConfig = serde_json::from_str(r#"{"tone_base_prewarm": "all_models"}"#).unwrap();
+        assert_eq!(old_key.variant_prewarm, VariantPrewarm::InBackground);
+        let on_thread: ViewfinderIspConfig =
+            serde_json::from_str(r#"{"variant_prewarm": "on_render_thread"}"#).unwrap();
+        assert_eq!(on_thread.variant_prewarm, VariantPrewarm::OnRenderThread);
+        assert_eq!(
+            ViewfinderIspConfig::default().variant_prewarm,
+            VariantPrewarm::InBackground
+        );
     }
 
     #[test]

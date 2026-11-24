@@ -10,7 +10,8 @@
 //! отправленные кадры. Всё созданное, вытесненное и потраченное на компиляцию считается ([`VariantCacheStats`]).
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use gpu_vulkan::compute::{BindingKind, ComputePipeline, ComputePipelineDesc, LocalSize, SpecializationConstant};
 use gpu_vulkan::context::GpuContext;
@@ -19,6 +20,7 @@ use gpu_vulkan::storage_image::StorageImageFormat;
 
 use super::awb_group_layout::AwbGroupLayout;
 use super::awb_reduction::AwbReduction;
+use super::background_prewarm::{BackgroundPrewarm, BuildJob, Claim, PrewarmResult};
 use super::config::VariantPrewarm;
 use super::error::ViewfinderError;
 use super::retirement::RecordSerial;
@@ -133,6 +135,31 @@ pub(crate) struct VariantCache {
     /// Этот ISP уже записывал кадры со статистикой AWB: тогда у кадра без неё заготавливаются и варианты со статистикой.
     statistics_in_use: bool,
     stats: VariantCacheStats,
+    /// Фоновая заготовка (есть, пока рабочий поток жив).
+    background: Option<BackgroundPrewarm>,
+    /// Состояние фона: от него зависит, куда пойдёт заготовка при `VariantPrewarm::InBackground`.
+    background_state: BackgroundState,
+    /// Сколько кадр ждёт вариант, который фон компилирует прямо сейчас.
+    background_wait_limit: Duration,
+}
+
+/// Состояние фоновой заготовки кэша.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackgroundState {
+    /// Фон не подключён (не запрашивался или ОС не дала поток): `InBackground` исполняется на потоке рендера.
+    NotAttached,
+    /// Фон работает.
+    Active,
+    /// Фон прервался (паника задания): варианты создаются по требованию, как при `Off`.
+    Aborted,
+}
+
+/// Где исполняется заготовка семейства для этого кадра.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrewarmPlace {
+    Background,
+    RenderThread,
+    Nowhere,
 }
 
 /// Как кэш создаёт пайплайн варианта (шов: настоящий — [`VariantBuilder::build`], в тестах — с отказами).
@@ -150,7 +177,132 @@ impl VariantCache {
             },
             statistics_in_use: false,
             stats: VariantCacheStats::default(),
+            background: None,
+            background_state: BackgroundState::NotAttached,
+            background_wait_limit: Duration::from_secs(1),
         }
+    }
+
+    /// Подключает фоновую заготовку; `wait_limit` — сколько кадр ждёт вариант, который фон компилирует сейчас.
+    pub fn attach_background(&mut self, background: BackgroundPrewarm, wait_limit: Duration) {
+        self.background = Some(background);
+        self.background_state = BackgroundState::Active;
+        self.background_wait_limit = wait_limit;
+    }
+
+    /// Фон запрошен, но запустить его не удалось: заготовка пойдёт на потоке рендера (см. `VariantPrewarm::InBackground`).
+    pub fn note_background_unavailable(&mut self) {
+        self.stats.background_unavailable = true;
+    }
+
+    /// Создатель вариантов для фонового потока: тот же, что у кадра, с клоном контекста (всё общее — потокобезопасно,
+    /// см. описание `background_prewarm`).
+    pub fn background_build_job(&self, context: &GpuContext) -> BuildJob {
+        let builder = self.builder;
+        let context = context.clone();
+        Arc::new(move |key| builder.build(&context, key))
+    }
+
+    /// Ждёт, пока фон выполнит все задания (для тестов и диагностики). `true` — фона нет или он закончил.
+    pub fn wait_for_background_idle(&self, timeout: Duration) -> bool {
+        self.background
+            .as_ref()
+            .is_none_or(|background| background.wait_until_idle(timeout))
+    }
+
+    /// Подбирает готовое от фона БЕЗ ожидания и кладёт в свободные места кэша (вытеснений нет). Лишнее (дубль, нет места)
+    /// уничтожается сразу: такой пайплайн ни разу не записывался в команды, ждать GPU незачем. Возвращает, сколько принято.
+    pub fn adopt_prewarmed(&mut self) -> usize {
+        let Some(background) = self.background.as_ref() else {
+            return 0;
+        };
+        let batch = background.take_ready();
+        self.stats.background_drained_after = background.drained_after();
+        let mut adopted = 0;
+        for result in batch.results {
+            if self.adopt_one(result) {
+                adopted += 1;
+            }
+        }
+        if let Some(reason) = batch.aborted {
+            tracing::error!(
+                target: "fasticamera::isp_viewfinder",
+                %reason,
+                "фоновая заготовка вариантов прервалась: варианты создаются по требованию в кадре"
+            );
+            self.stats.background_aborted = true;
+            self.background_state = BackgroundState::Aborted;
+            // Поток уже вышел: Drop только присоединяет его.
+            self.background = None;
+        }
+        adopted
+    }
+
+    /// Кладёт один фоновый результат в свободное место; `true` — принят.
+    fn adopt_one(&mut self, result: PrewarmResult) -> bool {
+        let PrewarmResult { key, outcome, compile } = result;
+        match outcome {
+            Ok(pipeline) => {
+                if self.entries.contains_key(&key) || self.entries.len() >= self.capacity {
+                    self.stats.background_discarded += 1;
+                    return false;
+                }
+                self.entries.insert(
+                    key,
+                    CachedVariant {
+                        pipeline,
+                        last_used: Recency::NeverUsed,
+                    },
+                );
+                self.stats.note_background_adopted(compile);
+                true
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "fasticamera::isp_viewfinder",
+                    %error,
+                    ?key,
+                    "фоновая заготовка варианта не удалась: он будет создан на первом кадре, которому понадобится"
+                );
+                self.stats.prewarm_failed += 1;
+                false
+            }
+        }
+    }
+
+    /// Где исполнять заготовку при запрошенном способе `requested`.
+    fn prewarm_place(&self, requested: VariantPrewarm) -> PrewarmPlace {
+        match requested {
+            VariantPrewarm::Off => PrewarmPlace::Nowhere,
+            VariantPrewarm::OnRenderThread => PrewarmPlace::RenderThread,
+            VariantPrewarm::InBackground => match self.background_state {
+                BackgroundState::Active => PrewarmPlace::Background,
+                BackgroundState::NotAttached => PrewarmPlace::RenderThread,
+                BackgroundState::Aborted => PrewarmPlace::Nowhere,
+            },
+        }
+    }
+
+    /// Ставит в очередь фона недостающие родственные варианты ключа (в порядке срочности, не больше свободных мест).
+    fn enqueue_family(&mut self, key: VariantKey) {
+        let Some(background) = self.background.as_ref() else {
+            return;
+        };
+        let context = FamilyContext {
+            awb_reduction: self.builder.awb_reduction,
+            statistics_in_use: self.statistics_in_use,
+        };
+        // Одно место займёт сам `key` (его создают сразу после постановки семейства в очередь).
+        let slot_of_the_key = 1;
+        let free = self
+            .capacity
+            .saturating_sub(self.entries.len() + background.reserved_slots() + slot_of_the_key);
+        let wanted: Vec<VariantKey> = related_variants(key, context)
+            .into_iter()
+            .filter(|sibling| !self.entries.contains_key(sibling))
+            .take(free)
+            .collect();
+        background.enqueue(wanted);
     }
 
     /// Способ сведения статистики AWB у всех вариантов кэша.
@@ -196,6 +348,8 @@ impl VariantCache {
         prewarm: VariantPrewarm,
         build: &mut BuildVariant<'_>,
     ) -> Result<EvictedPipeline, ViewfinderError> {
+        // Готовое от фона подбирается в начале каждого кадра, без ожидания.
+        self.adopt_prewarmed();
         // Раньше проверки кэша: даже попадание в кэш говорит, что статистика в работе.
         if key.stages.contains(IspStage::AwbStatistics) {
             self.statistics_in_use = true;
@@ -205,20 +359,14 @@ impl VariantCache {
             entry.last_used = Recency::UsedAt(serial);
             return Ok(None);
         }
+        let stall_started = Instant::now();
+        let place = self.prewarm_place(prewarm);
+        // Семейство ставится в очередь ДО компиляции своего ключа: фон строит ближайший парный вариант параллельно.
+        if place == PrewarmPlace::Background {
+            self.enqueue_family(key);
+        }
         // Сначала создаём (ошибка — кэш не тронут), потом вытесняем.
-        let started = Instant::now();
-        let built = build(key);
-        let elapsed = started.elapsed();
-        let pipeline = match built {
-            Ok(pipeline) => {
-                self.stats.note_frame_creation(CreationOutcome::Created, elapsed);
-                pipeline
-            }
-            Err(error) => {
-                self.stats.note_frame_creation(CreationOutcome::Failed, elapsed);
-                return Err(error);
-            }
-        };
+        let pipeline = self.obtain_missing(key, build)?;
         let evicted = if self.entries.len() >= self.capacity {
             self.evict_least_recently_used()
         } else {
@@ -231,10 +379,68 @@ impl VariantCache {
                 last_used: Recency::UsedAt(serial),
             },
         );
-        if prewarm == VariantPrewarm::AllRelated {
+        if place == PrewarmPlace::RenderThread {
             self.prewarm_related(key, build);
         }
+        self.stats.note_render_stall(stall_started.elapsed());
         Ok(evicted)
+    }
+
+    /// Добывает пайплайн варианта, которого нет в кэше: у фона (готовый или текущая компиляция) либо компилирует сам.
+    /// Не компилирует то, что фон выдал или компилирует, и не отдаёт фону то, что компилирует сам: ключ вынимается
+    /// из очереди.
+    fn obtain_missing(
+        &mut self,
+        key: VariantKey,
+        build: &mut BuildVariant<'_>,
+    ) -> Result<ComputePipeline, ViewfinderError> {
+        let (claim, waited) = match self.background.as_ref() {
+            Some(background) => {
+                let waiting_since = Instant::now();
+                let claim = background.claim(&key, self.background_wait_limit);
+                (claim, waiting_since.elapsed())
+            }
+            None => (Claim::Unknown, Duration::ZERO),
+        };
+        let background_pending = match claim {
+            Claim::Delivered(result) => match result.outcome {
+                Ok(pipeline) => {
+                    // Ожидание короче миллисекунды — это готовый результат, а не остановка кадра.
+                    if waited > Duration::from_millis(1) {
+                        self.stats.note_background_wait(waited);
+                    }
+                    self.stats.note_background_adopted(result.compile);
+                    return Ok(pipeline);
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        target: "fasticamera::isp_viewfinder",
+                        %error,
+                        "фон не смог создать нужный кадру вариант: создаём в кадре"
+                    );
+                    self.stats.prewarm_failed += 1;
+                    false
+                }
+            },
+            Claim::Withdrawn | Claim::TimedOut => true,
+            Claim::Unknown => false,
+        };
+        let started = Instant::now();
+        let built = build(key);
+        let elapsed = started.elapsed();
+        match built {
+            Ok(pipeline) => {
+                self.stats.note_frame_creation(CreationOutcome::Created, elapsed);
+                if background_pending {
+                    self.stats.created_in_frame_while_background_pending += 1;
+                }
+                Ok(pipeline)
+            }
+            Err(error) => {
+                self.stats.note_frame_creation(CreationOutcome::Failed, elapsed);
+                Err(error)
+            }
+        }
     }
 
     /// Заготовка семейства ключа `key`: создаёт родственные варианты, которых нет. Занимает ТОЛЬКО свободные места
