@@ -60,6 +60,7 @@ pub(super) fn create_camera_painter(
             lens_shading: config.viewfinder.lens_shading.control(),
             look_model: Arc::new(config.viewfinder.look_model.clone()),
             continuity: config.viewfinder.continuity,
+            unchanged_frame: config.unchanged_frame,
         },
     )
     .map_err(|failure| {

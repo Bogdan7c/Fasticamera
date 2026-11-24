@@ -58,7 +58,10 @@ pub use frame_target::FrameTarget;
 pub use held::ShowFrameAs;
 pub(in crate::vulkan_backend::camera) use held::mirror_of;
 use scope_pass::ScopePass;
+#[cfg(test)]
+pub use ui_pass::ReadyUi;
 use ui_pass::UiPass;
+pub use ui_pass::UiTick;
 
 const LOG_TARGET: &str = "fasticamera::render::camera";
 

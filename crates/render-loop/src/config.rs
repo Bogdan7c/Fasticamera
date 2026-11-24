@@ -20,6 +20,7 @@ mod scopes;
 mod still;
 mod tone;
 mod ui_overlay;
+mod unchanged_frame;
 mod viewfinder;
 mod white_balance;
 
@@ -34,6 +35,9 @@ pub use scopes::{MAX_SCOPES_EVERY_NTH_FRAME, ScopesConfig, ScopesConfigError};
 pub use still::{StillConfigError, StillDevelopConfig};
 pub use tone::{ToneBaseChoice, ToneConfigError, ViewfinderToneConfig};
 pub use ui_overlay::{UiOverlayConfig, UiOverlayConfigError};
+pub use unchanged_frame::{
+    MAX_CONSECUTIVE_SKIPS_LIMIT, UnchangedFrameConfig, UnchangedFrameConfigError, UnchangedFramePolicy,
+};
 pub use viewfinder::{
     CropAspectConfig, DisplayColorConfig, MAX_VIEWFINDER_GPU_TIME_WINDOW_FRAMES, ViewfinderConfig,
     ViewfinderConfigError, ViewfinderCropConfig, ViewfinderPlacement,
@@ -101,6 +105,9 @@ pub enum ConfigError {
     /// Ошибка в секции UI-прохода поверх видоискателя.
     #[error(transparent)]
     UiOverlay(#[from] UiOverlayConfigError),
+    /// Ошибка в секции пропуска тиков без изменений.
+    #[error(transparent)]
+    UnchangedFrame(#[from] UnchangedFrameConfigError),
     /// Ошибка в секции снимка.
     #[error(transparent)]
     Still(#[from] StillConfigError),
@@ -205,6 +212,9 @@ pub struct RenderLoopConfig {
     /// UI и стекло поверх видоискателя (сессия 11): пределы кадра и пирамида размытия. Сам проход
     /// выключен, пока не установлен источник кадра UI (`RenderInbox::ui_overlay_command`).
     pub ui_overlay: UiOverlayConfig,
+    /// Тики без изменений картинки не рисуются и не показываются (решение 214, сессия 16a). JSON без ключа —
+    /// умолчания секции (пропуск выключен до замера на телефоне, решение 214).
+    pub unchanged_frame: UnchangedFrameConfig,
     /// Снимок без задержки затвора (сессия 14): выбор кадра, очередь, проявление по полосам. JSON без ключа —
     /// умолчания секции.
     pub still: StillDevelopConfig,
@@ -233,6 +243,7 @@ impl Default for RenderLoopConfig {
             viewfinder: ViewfinderConfig::default(),
             adpf: AdpfConfig::default(),
             ui_overlay: UiOverlayConfig::default(),
+            unchanged_frame: UnchangedFrameConfig::default(),
             still: StillDevelopConfig::default(),
         }
     }
@@ -294,6 +305,7 @@ impl RenderLoopConfig {
         self.viewfinder.validate()?;
         self.adpf.validate()?;
         self.ui_overlay.validate()?;
+        self.unchanged_frame.validate()?;
         self.still.validate()?;
         // Предел таблицы вида один на видоискатель, стенд и снимок (модель вида), а не три независимых числа.
         look_lut::validate_single_source(&self.viewfinder, &self.still)?;

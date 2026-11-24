@@ -68,7 +68,9 @@ pub(super) use self::exposure::ResidualGainLimits;
 pub(super) use self::headroom_bench::HeadroomBenchParts;
 pub(super) use self::headroom_stats::HeadroomLiveState;
 pub(super) use self::pipelines::CameraPipelines;
-pub(super) use self::session::{CameraDrawError, CameraSession, CameraSessionFailure, CameraSessionParts};
+pub(super) use self::session::{
+    AcquiredFrame, CameraDrawError, CameraSession, CameraSessionFailure, CameraSessionParts, FrameDisposition,
+};
 pub(super) use self::settings::{ScopeWithdrawal, ViewfinderSettings};
 pub(super) use self::still::{
     GpuMaker, StillDiagnostics, StillEngine, StillFeed, SystemStillClock, VulkanStillGpu, VulkanStillSettings,

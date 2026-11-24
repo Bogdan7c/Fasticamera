@@ -112,6 +112,11 @@ pub struct RenderStatus {
     pub frames_presented: u64,
     /// Сколько раз кадр пропущен из-за таймаута acquire.
     pub acquire_timeouts: u64,
+    /// Сколько тиков пропущено, потому что на экране ничего бы не изменилось (решение 214): ни записи, ни показа,
+    /// экран держит прежний кадр. Не потеря кадра и не ошибка; отдельно от `skipped_ticks_for_depth` (сход на
+    /// ближнюю линию) и `acquire_timeouts`. Причины, по которым остальные тики нарисованы, — в диагностике
+    /// видоискателя (`ViewfinderCounters::unchanged_frames`).
+    pub ticks_skipped_unchanged: u64,
     /// Сколько раз пересоздавалась цепочка показа (смена размера, NeedsRecreate).
     pub recreations: u64,
     /// Сколько surface успешно присоединено за всё время.
@@ -164,6 +169,7 @@ impl RenderStatus {
             generation: None,
             frames_presented: 0,
             acquire_timeouts: 0,
+            ticks_skipped_unchanged: 0,
             recreations: 0,
             surfaces_attached: 0,
             releases_confirmed: 0,

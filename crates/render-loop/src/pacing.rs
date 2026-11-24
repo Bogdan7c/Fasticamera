@@ -26,6 +26,14 @@ use shell_contract::clock::MonotonicNanos;
 
 use crate::config::RenderLoopConfig;
 
+mod skips;
+
+use skips::UnchangedSkipLedger;
+
+/// Сколько показанных кадров ждут записи о реальном показе в книге пропусков. Запись приходит через считанные кадры
+/// (драйвер хранит около десяти записей), а книга хранит по записи на кадр: 1024 — запас на ≈ 8 секунд при 120 Гц.
+const SKIP_LEDGER_CAPACITY: usize = 1024;
+
 /// Число корзин гистограммы. Корзина `k` — интервал, округлённый до `k` периодов;
 /// последняя собирает всё, что длиннее.
 pub const HISTOGRAM_BUCKETS: usize = 8;
@@ -147,6 +155,9 @@ struct PresentMark {
     /// Эпоха непрерывности: меняется на разрыве (пересоздание цепочки).
     epoch: u64,
     actual_nanos: i128,
+    /// Сколько тиков между предыдущим показом и этим пропущено нарочно (решение 214: ничего не изменилось). Каждый
+    /// такой тик задуманно удлиняет интервал на период, поэтому интервал судится за вычетом этих периодов.
+    skipped_before: u32,
 }
 
 /// Накопитель меток показа со скользящим окном.
@@ -163,6 +174,8 @@ pub struct PacingTracker {
     rejected_out_of_order: u64,
     /// Сколько раз смена периода очищала окно.
     period_changes: u64,
+    /// Тики, пропущенные нарочно (решение 214): задуманные паузы между показами.
+    skips: UnchangedSkipLedger,
 }
 
 impl PacingTracker {
@@ -175,6 +188,7 @@ impl PacingTracker {
             epoch: 0,
             rejected_out_of_order: 0,
             period_changes: 0,
+            skips: UnchangedSkipLedger::new(SKIP_LEDGER_CAPACITY),
         }
     }
 
@@ -211,6 +225,8 @@ impl PacingTracker {
     /// не должна давать ни интервала, ни дыры.
     pub fn mark_discontinuity(&mut self) {
         self.epoch += 1;
+        // Пропуски до разрыва к показам новой цепочки не относятся.
+        self.skips.note_discontinuity();
     }
 
     /// Сколько раз смена периода очищала окно.
@@ -230,6 +246,33 @@ impl PacingTracker {
 
     /// Добавляет момент реального показа кадра с номером показа `present_id`.
     pub fn record_present(&mut self, present_id: u32, actual_present: MonotonicNanos) {
+        self.record_present_after_skips(present_id, actual_present, 0);
+    }
+
+    /// Тик пропущен нарочно: бэкенд не рисовал и не показывал кадр, потому что на экране ничего бы не изменилось
+    /// (решение 214). Пауза до следующего показа задумана и пропуском кадра не считается.
+    pub fn note_skipped_tick(&mut self) {
+        self.skips.note_skipped_tick();
+    }
+
+    /// Кадр потока `frame_index` показан: пропуски перед ним привязываются к его показу (запись о реальном показе
+    /// придёт позже и найдёт их через [`Self::record_presentation_of_frame`]).
+    pub fn note_presented_frame(&mut self, frame_index: u64) {
+        self.skips.note_presented_frame(frame_index);
+    }
+
+    /// Момент реального показа кадра потока `frame_index`: поправка на нарочно пропущенные тики берётся из книги
+    /// пропусков ([`Self::note_skipped_tick`], [`Self::note_presented_frame`]).
+    pub fn record_presentation_of_frame(&mut self, present_id: u32, actual_present: MonotonicNanos, frame_index: u64) {
+        let skipped_before = self.skips.skips_before_presentation(frame_index);
+        self.record_present_after_skips(present_id, actual_present, skipped_before);
+    }
+
+    /// То же, что [`Self::record_present`], но перед этим показом `skipped_before` тиков пропущено нарочно (экран держал неизменный кадр, решение
+    /// 214). Интервал от предыдущего показа до этого судится за вычетом `skipped_before` периодов: пауза задумана и
+    /// пропуском кадра не считается. Любая другая задержка (таймаут acquire, провал кадра) вычету не подлежит и
+    /// остаётся пропуском. С `skipped_before == 0` поведение прежнее.
+    pub fn record_present_after_skips(&mut self, present_id: u32, actual_present: MonotonicNanos, skipped_before: u32) {
         let nanos = i128::from(actual_present.as_nanos());
         if self.presents.back().is_some_and(|last| nanos < last.actual_nanos) {
             self.rejected_out_of_order += 1;
@@ -239,6 +282,7 @@ impl PacingTracker {
             present_id,
             epoch: self.epoch,
             actual_nanos: nanos,
+            skipped_before,
         });
         // Вытесняем метки старше окна, но всегда оставляем две последние: иначе интервала нет.
         while self.presents.len() > 2
@@ -260,7 +304,9 @@ impl PacingTracker {
         for (earlier, later) in self.presents.iter().zip(self.presents.iter().skip(1)) {
             match classify_pair(earlier, later) {
                 PairKind::Consecutive => {
-                    let interval = later.actual_nanos - earlier.actual_nanos;
+                    // Нарочно пропущенные тики задуманно удлинили интервал: судим по остатку (не меньше нуля).
+                    let intended_pause = i128::from(later.skipped_before) * self.period_nanos;
+                    let interval = (later.actual_nanos - earlier.actual_nanos - intended_pause).max(0);
                     histogram[self.bucket_of(interval)] += 1;
                     if interval * MISS_THRESHOLD_DENOMINATOR > self.period_nanos * MISS_THRESHOLD_NUMERATOR {
                         misses += 1;

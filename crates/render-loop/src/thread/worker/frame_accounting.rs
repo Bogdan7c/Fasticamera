@@ -48,6 +48,14 @@ impl<B: DisplayBackend, C: FrameClock> RenderWorker<B, C> {
         }
     }
 
+    /// Тик пропущен нарочно (решение 214): кадр не записан и не показан, экран держит прежний. Это не потеря кадра,
+    /// не сбой и не повод для ADPF: считается отдельным счётчиком и книгой пропусков для пейсинга. Предыдущий
+    /// кадр не «упал», поэтому повторы ошибок кадра снова логируются.
+    pub(super) fn account_unchanged_skip(&mut self) {
+        self.status.ticks_skipped_unchanged += 1;
+        self.pacing.note_skipped_tick();
+    }
+
     /// Забирает у бэкенда новые времена показов и кладёт их в статистику пейсинга.
     /// Дёшево: вызывается на каждом кадре и перед событиями, которые уничтожают цепочку.
     pub(super) fn drain_past_presentations(&mut self) {
@@ -57,8 +65,12 @@ impl<B: DisplayBackend, C: FrameClock> RenderWorker<B, C> {
         for presentation in presentations {
             self.status
                 .note_presentation(presentation, self.config.recent_presentations_capacity);
-            self.pacing
-                .record_present(presentation.present_id, presentation.actual_present);
+            // Тики, пропущенные нарочно перед этим показом, — задуманная пауза, а не пропуск кадра.
+            self.pacing.record_presentation_of_frame(
+                presentation.present_id,
+                presentation.actual_present,
+                presentation.frame_index,
+            );
             self.present_target
                 .record_presentation(&presentation, self.pacing.refresh_period());
         }

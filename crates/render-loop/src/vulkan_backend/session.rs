@@ -18,7 +18,7 @@ use std::time::Duration;
 use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::error::GpuError;
 use gpu_vulkan::swapchain::{
-    AcquireOutcome, DetachError, DisplayFrame, DisplayTarget, PresentOutcome as GpuPresentOutcome, PresentRequest,
+    AcquireOutcome, DetachError, DisplayTarget, PresentOutcome as GpuPresentOutcome, PresentRequest,
     PresentationSurface, RecreateOutcome, SwapchainError,
 };
 use gpu_vulkan::test_pattern::TestPattern;
@@ -28,8 +28,8 @@ use shell_contract::surface::{NativeSurface, SurfaceSize};
 use super::ViewfinderReadback;
 use super::camera::StillFeed;
 use super::camera::{
-    AutoExposureParts, CameraDrawError, CameraFeed, CameraPipelines, CameraSession, UiOverlayFrame, UiOverlayState,
-    ViewfinderSettings, ViewfinderStats, WhiteBalanceParts,
+    AcquiredFrame, AutoExposureParts, CameraDrawError, CameraFeed, CameraPipelines, CameraSession, FrameDisposition,
+    UiOverlayFrame, UiOverlayState, ViewfinderSettings, ViewfinderStats, WhiteBalanceParts,
 };
 use super::config::VulkanBackendConfig;
 use super::mapping::{FailureKind, classify_swapchain_error, display_info, gpu_backend_error};
@@ -40,15 +40,17 @@ use crate::backend::{
     LatchWaitResult, PastPresentation, PresentOutcome,
 };
 use crate::camera_diagnostics::CameraStreamDiagnostics;
-use crate::config::LateLatchMode;
-use crate::thread::{MonotonicTimer, SleepUntilOutcome, SystemMonotonicTimer};
 use crate::viewfinder::{AwbStatisticsFeed, ViewfinderDiagnostics};
 
 mod camera_painter;
+mod frame_hold;
 #[cfg(feature = "test-support")]
 mod scope_readback;
+mod timing;
 
 use camera_painter::create_camera_painter;
+use frame_hold::FrameHold;
+use timing::{elapsed_between, read_monotonic_clock};
 
 const LOG_TARGET: &str = "fasticamera::render::vulkan";
 
@@ -191,6 +193,9 @@ pub(super) struct AttachedDisplay {
     measured_refresh_period: Cell<Option<Duration>>,
     /// Замер CPU последнего кадра; поток забирает его сразу после `render_and_present`.
     last_frame_cpu_timing: Option<FrameCpuTiming>,
+    /// Картинка swapchain, выданная на тике, который пропущен как «ничего не изменилось» (решение 214): ждёт
+    /// следующего рисуемого тика вместо нового acquire.
+    frame_hold: FrameHold,
 }
 
 impl AttachedDisplay {
@@ -241,6 +246,7 @@ impl AttachedDisplay {
             present_time: config.present_time_policy(),
             measured_refresh_period: Cell::new(None),
             last_frame_cpu_timing: None,
+            frame_hold: FrameHold::default(),
         })
     }
 
@@ -269,7 +275,13 @@ impl AttachedDisplay {
             return PresentOutcome::Failed(chain_missing("render_and_present"));
         };
         let acquire_started = read_monotonic_clock();
-        let acquired = chain.target.acquire_frame();
+        // Придержанная картинка пропущенного тика заменяет acquire: цель новую не выдаст, пока та не завершена.
+        let held = self.frame_hold.take();
+        let reused_held = held.is_some();
+        let acquired = match held {
+            Some(frame) => Ok(AcquireOutcome::Ready(frame)),
+            None => chain.target.acquire_frame(),
+        };
         let acquire_finished = read_monotonic_clock();
         let acquire_wait = elapsed_between(acquire_started, acquire_finished);
         // Кадр, не дошедший до показа, тоже даёт замер acquire (таймаут — самое интересное в нём).
@@ -281,7 +293,8 @@ impl AttachedDisplay {
             latch_to_submit: None,
         });
         let frame = match acquired {
-            Ok(AcquireOutcome::Ready(frame)) => frame,
+            Ok(AcquireOutcome::Ready(frame)) if reused_held => AcquiredFrame::HeldFromSkippedTick(frame),
+            Ok(AcquireOutcome::Ready(frame)) => AcquiredFrame::Fresh(frame),
             Ok(AcquireOutcome::TimedOut) => return PresentOutcome::TimedOut,
             Ok(AcquireOutcome::NeedsRecreate) => return PresentOutcome::NeedsRecreate,
             Err(error) => return failure_outcome("acquire_frame", &error),
@@ -300,7 +313,12 @@ impl AttachedDisplay {
         if let Some(cpu_timing) = self.last_frame_cpu_timing.as_mut() {
             cpu_timing.latch_wait = elapsed_between(acquire_finished, latch_moment).unwrap_or(Duration::ZERO);
             cpu_timing.latch_result = latch_result;
-            cpu_timing.latch_to_submit = elapsed_between(latch_moment, submitted);
+            // Пропущенный тик не стоил кадра: его дешёвый путь (опрос, сравнение) не должен разбавлять оценку
+            // стоимости настоящего кадра, по которой выбирается линия и момент позднего захвата.
+            cpu_timing.latch_to_submit = match outcome {
+                PresentOutcome::SkippedUnchanged => None,
+                _ => elapsed_between(latch_moment, submitted),
+            };
             if let (Some(cost), Some(latch), Some(submitted)) = (cpu_timing.latch_to_submit, latch_moment, submitted)
                 && cost >= SLOW_FRAME_DEBUG_LOG_THRESHOLD
             {
@@ -316,34 +334,13 @@ impl AttachedDisplay {
         outcome
     }
 
-    /// Ждёт момента позднего захвата перед опросом камеры, если это включено в плане и рисуется
-    /// камера (тестовому паттерну свежесть кадра камеры не нужна). Только ожидание CPU, не GPU.
+    /// Ждёт момента позднего захвата, если он включён и рисуется камера (см. `timing::wait_for_latch`).
     fn wait_for_camera_latch(&self, plan: &FrameLatchPlan) -> LatchWaitResult {
         let draws_camera = matches!(
             self.chain.as_ref().map(|chain| &chain.painter),
             Some(Painter::Camera { .. })
         );
-        if plan.mode != LateLatchMode::BeforeCameraPoll || !draws_camera {
-            return LatchWaitResult::NotRequested;
-        }
-        match plan.wait_until_latch() {
-            SleepUntilOutcome::Reached { .. } | SleepUntilOutcome::AlreadyPassed { .. } => LatchWaitResult::Waited,
-            SleepUntilOutcome::RefusedTooFar { remaining } => {
-                // Не warn на каждый кадр: при `Preferred` с далёкой линией это штатно, отказы
-                // считает диагностика (`latch_waits_refused`).
-                tracing::debug!(
-                    target: LOG_TARGET,
-                    remaining_us = remaining.as_micros(),
-                    max_wait_us = plan.max_wait.as_micros(),
-                    "момент позднего захвата дальше предела ожидания: камера опрошена сразу"
-                );
-                LatchWaitResult::RefusedBeyondBudget
-            }
-            SleepUntilOutcome::ClockFailed(error) => {
-                tracing::warn!(target: LOG_TARGET, %error, "поздний захват без ожидания: часы не прочитались");
-                LatchWaitResult::ClockFailed
-            }
-        }
+        timing::wait_for_latch(plan, draws_camera)
     }
 
     /// Замер CPU последнего кадра (выдаётся один раз).
@@ -362,7 +359,7 @@ impl AttachedDisplay {
     /// Рисует содержимое в полученную картинку swapchain и ставит её на показ.
     fn draw_and_present_acquired(
         &mut self,
-        frame: DisplayFrame,
+        frame: AcquiredFrame,
         timing: FrameTiming,
         ui: &mut UiOverlayState,
     ) -> PresentOutcome {
@@ -383,6 +380,8 @@ impl AttachedDisplay {
         // в области видимости — его можно передать сессии камеры параметром.
         let presented = match &mut chain.painter {
             Painter::TestPattern(pattern) => {
+                // Тестовый паттерн кадры не пропускает: придержанной картинки у него не бывает.
+                let frame = frame.into_display_frame();
                 // Паттерн показывает младшие 32 бита номера кадра: счётчик в метке циклический.
                 let pattern_frame = u32::try_from(timing.frame_index & u64::from(u32::MAX)).unwrap_or(u32::MAX);
                 if let Err(error) = pattern.record(
@@ -413,7 +412,12 @@ impl AttachedDisplay {
                     timing.frame_index,
                     &mut ui_frame,
                 ) {
-                    Ok(outcome) => Ok(outcome),
+                    Ok(FrameDisposition::Presented(outcome)) => Ok(outcome),
+                    Ok(FrameDisposition::SkippedUnchanged(frame)) => {
+                        // Ничего не нарисовано и не показано: картинку придерживаем, экран держит прежний кадр.
+                        self.frame_hold.put(frame, &mut chain.target);
+                        return PresentOutcome::SkippedUnchanged;
+                    }
                     Err(CameraDrawError::Swapchain(error)) => Err(error),
                     Err(CameraDrawError::Record(error)) => {
                         return PresentOutcome::Failed(gpu_backend_error("record_camera_preview", &error));
@@ -440,6 +444,7 @@ impl AttachedDisplay {
     /// Пересоздаёт цепочку под размер; при смене формата заново создаёт пайплайн.
     pub(super) fn resize(&mut self, size: SurfaceSize) -> Result<(), BackendError> {
         let chain = self.chain.as_mut().ok_or_else(|| chain_missing("resize"))?;
+        self.frame_hold.discard(&mut chain.target);
         match chain.target.recreate(Some(size)) {
             Ok(RecreateOutcome::Recreated { format_changed }) => {
                 self.size = size;
@@ -548,6 +553,13 @@ impl AttachedDisplay {
         }
     }
 
+    /// После паузы показанный кадр неизвестен.
+    pub(super) fn forget_shown_frame(&mut self) {
+        if let Some(Painter::Camera { session, .. }) = self.chain.as_mut().map(|c| &mut c.painter) {
+            session.forget_shown_frame();
+        }
+    }
+
     /// Новые настройки видоискателя для живой сессии показа.
     pub(super) fn apply_viewfinder_settings(&mut self, settings: ViewfinderSettings) {
         if let Some(Painter::Camera { session, .. }) = self.chain.as_mut().map(|chain| &mut chain.painter) {
@@ -619,6 +631,9 @@ impl AttachedDisplay {
     /// (если GPU освободился).
     pub(super) fn release(mut self) -> ReleaseReport {
         let held_surface = self.held_surface.take();
+        if let Some(chain) = self.chain.as_mut() {
+            self.frame_hold.discard(&mut chain.target);
+        }
         let Some(chain) = self.chain.take() else {
             return ReleaseReport {
                 surface: held_surface,
@@ -646,6 +661,9 @@ impl Drop for AttachedDisplay {
     /// Показ уничтожен без `release` (например, бэкенд выброшен при паническом выходе): тот же
     /// порядок и то же правило утечки при зависшем GPU. Окно ПК-стенда отпускается вместе с полями.
     fn drop(&mut self) {
+        if let Some(chain) = self.chain.as_mut() {
+            self.frame_hold.discard(&mut chain.target);
+        }
         if let Some(chain) = self.chain.take() {
             let ChainRelease { detach_error, .. } = chain.release();
             if let Some(error) = detach_error {
@@ -679,21 +697,4 @@ fn reclaim_window(returned: PresentationSurface, held_surface: Option<NativeSurf
         PresentationSurface::Android(window) => Some(window),
         PresentationSurface::Headless => held_surface,
     }
-}
-
-/// «Сейчас» по монотонным часам; сбой чтения логируется и даёт `None` (замер пропускается).
-fn read_monotonic_clock() -> Option<shell_contract::clock::MonotonicNanos> {
-    SystemMonotonicTimer
-        .now()
-        .inspect_err(|error| tracing::warn!(target: LOG_TARGET, %error, "замер CPU кадра пропущен"))
-        .ok()
-}
-
-/// Длительность между двумя замерами (ноль при обратном порядке); `None`, если замера нет.
-fn elapsed_between(
-    earlier: Option<shell_contract::clock::MonotonicNanos>,
-    later: Option<shell_contract::clock::MonotonicNanos>,
-) -> Option<Duration> {
-    let difference = later?.as_nanos().saturating_sub(earlier?.as_nanos());
-    Some(Duration::from_nanos(u64::try_from(difference).unwrap_or(0)))
 }

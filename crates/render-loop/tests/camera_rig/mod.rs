@@ -17,7 +17,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use super::support::{FakeCommands, Journal as WindowJournal, fake_surface, wait_until};
-use super::vulkan_support::{headless_camera_backend_or_skip, vsync_clock_at_120_hz};
+use super::vulkan_support::vsync_clock_at_120_hz;
 use camera_contract::capabilities::{
     ColorCalibrationSet, LensShading, Rational, RawSupport, SensorLevels, VendorProcessingFlags,
 };
@@ -358,8 +358,24 @@ pub struct Rig {
 }
 
 pub fn start_rig() -> Option<Rig> {
+    // Второй режим набора (`FASTICAMERA_TEST_UNCHANGED_POLICY=skip`) переводит и этот стенд под пропуск тиков.
+    let policy = if std::env::var("FASTICAMERA_TEST_UNCHANGED_POLICY").as_deref() == Ok("skip") {
+        render_loop::config::UnchangedFramePolicy::SkipWhenUnchanged
+    } else {
+        render_loop::config::UnchangedFramePolicy::AlwaysRedraw
+    };
+    start_rig_with_policy(policy)
+}
+
+/// Стенд с заданной политикой пропуска тиков без изменений (решение 214): тот же поток рендера, бэкенд и камера.
+/// Бэкенд берётся без подмены политики окружением: политика — ровно `policy`.
+pub fn start_rig_with_policy(policy: render_loop::config::UnchangedFramePolicy) -> Option<Rig> {
     let render_config = RenderLoopConfig {
         diagnostics_poll_interval_ms: 20,
+        unchanged_frame: render_loop::config::UnchangedFrameConfig {
+            policy,
+            ..render_loop::config::UnchangedFrameConfig::default()
+        },
         ..RenderLoopConfig::default()
     };
     // Кольцо снимков выключено осознанно: тест про возврат кадров видоискателя, а кольцо (по умолчанию 12 кадров,
@@ -371,7 +387,7 @@ pub fn start_rig() -> Option<Rig> {
     let log = Arc::new(EventLog::default());
     let imports_alive = Arc::new(AtomicUsize::new(0));
     let (factory_log, factory_alive) = (Arc::clone(&log), Arc::clone(&imports_alive));
-    let backend = headless_camera_backend_or_skip(
+    let backend = super::vulkan_support::headless_camera_backend_keeping_unchanged_policy_or_skip(
         &render_config,
         stream.viewfinder(),
         Box::new(move |context| {
@@ -383,6 +399,7 @@ pub fn start_rig() -> Option<Rig> {
                 counters: ImportCacheCounters::default(),
             }))
         }),
+        camera_contract::three_a::DirectiveSlot::new(),
     )?;
     let context = backend.context().clone();
     let awb = backend.awb_statistics();

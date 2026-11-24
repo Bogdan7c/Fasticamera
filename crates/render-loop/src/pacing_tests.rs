@@ -430,3 +430,68 @@ fn snapshot_reports_rejected_out_of_order_marks() {
     assert_eq!(snapshot.rejected_out_of_order, 2);
     assert_eq!(tracker.rejected_out_of_order(), snapshot.rejected_out_of_order);
 }
+
+// ---- тики, пропущенные нарочно (решение 214) ----
+
+/// Показы идут через тик (экран 120 Гц держит неизменную картинку): интервал между соседними показами — два периода.
+/// `skipped_before` — сколько нарочно пропущенных тиков стоит перед каждым показом.
+fn feed_every_second_tick(tracker: &mut PacingTracker, presents: u32, skipped_before: u32) {
+    let mut now = 1_000_000_000i64;
+    tracker.record_present_after_skips(0, MonotonicNanos::from_nanos(now), 0);
+    for index in 0..presents {
+        now += 2 * PERIOD_NANOS;
+        tracker.record_present_after_skips(index + 1, MonotonicNanos::from_nanos(now), skipped_before);
+    }
+}
+
+#[test]
+fn deliberately_skipped_ticks_do_not_turn_a_two_period_interval_into_a_miss() {
+    let mut tracker = PacingTracker::new(params(0.005, 10));
+    feed_every_second_tick(&mut tracker, 650, 1);
+    let snapshot = tracker.snapshot();
+    assert_eq!(snapshot.misses, 0, "пауза задумана: {snapshot:?}");
+    assert!(snapshot.intervals >= 590, "окно набралось: {snapshot:?}");
+    assert_eq!(
+        snapshot.histogram[1], snapshot.intervals,
+        "по остатку интервал — один период (ровный показ)"
+    );
+    assert_eq!(snapshot.verdict, PacingVerdict::Passed);
+}
+
+#[test]
+fn the_same_two_period_intervals_without_the_allowance_are_all_misses() {
+    // Контроль чувствительности: без поправки на нарочно пропущенные тики тот же ряд показов проваливается.
+    let mut tracker = PacingTracker::new(params(0.005, 10));
+    feed_every_second_tick(&mut tracker, 650, 0);
+    let snapshot = tracker.snapshot();
+    assert_eq!(snapshot.misses, snapshot.intervals, "{snapshot:?}");
+    assert!(matches!(snapshot.verdict, PacingVerdict::Failed { .. }), "{snapshot:?}");
+}
+
+#[test]
+fn a_real_stall_next_to_deliberate_skips_is_still_a_miss() {
+    let mut tracker = PacingTracker::new(params(0.5, 1));
+    let mut now = 1_000_000_000i64;
+    tracker.record_present_after_skips(0, MonotonicNanos::from_nanos(now), 0);
+    // Пропущен один тик нарочно (ожидаем 2 периода), но показ пришёл через 4: два лишних периода — настоящая потеря.
+    now += 4 * PERIOD_NANOS;
+    tracker.record_present_after_skips(1, MonotonicNanos::from_nanos(now), 1);
+    let snapshot = tracker.snapshot();
+    assert_eq!(snapshot.intervals, 1);
+    assert_eq!(
+        snapshot.misses, 1,
+        "поправка вычитает только задуманные тики: {snapshot:?}"
+    );
+    assert_eq!(snapshot.histogram[3], 1, "остаток — три периода");
+}
+
+#[test]
+fn an_allowance_larger_than_the_interval_never_makes_it_negative() {
+    let mut tracker = PacingTracker::new(params(0.5, 1));
+    tracker.record_present_after_skips(0, MonotonicNanos::from_nanos(1_000_000_000), 0);
+    tracker.record_present_after_skips(1, MonotonicNanos::from_nanos(1_000_000_000 + PERIOD_NANOS), 5);
+    let snapshot = tracker.snapshot();
+    assert_eq!(snapshot.intervals, 1);
+    assert_eq!(snapshot.histogram[0], 1, "остаток зажат нулём, а не уходит в минус");
+    assert_eq!(snapshot.misses, 0);
+}

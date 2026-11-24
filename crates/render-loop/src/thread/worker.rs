@@ -254,6 +254,8 @@ impl<B: DisplayBackend, C: FrameClock> RenderWorker<B, C> {
             }
             InboxEvent::Resumed => {
                 self.machine.on_resumed();
+                // Что на экране после паузы, неизвестно: бэкенд с пропуском тиков забывает показанный кадр.
+                self.guarded(DisplayBackend::presentation_resumed);
                 Vec::new()
             }
             InboxEvent::Viewfinder(command) => {
@@ -498,12 +500,15 @@ impl<B: DisplayBackend, C: FrameClock> RenderWorker<B, C> {
             PresentOutcome::Presented => {
                 self.status.frames_presented += 1;
                 self.present_target.record_presented(timing.frame_index, &timing.target);
+                self.pacing.note_presented_frame(timing.frame_index);
                 let work =
                     PresentedFrameWork::measure(timing.frame_index, frame_started, frame_finished, cpu_timing.as_ref());
                 if let Some(work) = work {
                     self.adpf.frame_presented(work, self.pacing.refresh_period());
                 }
             }
+            // Решение 214: картинка не изменилась, кадр не записан и не показан; учёт — в `frame_accounting`.
+            PresentOutcome::SkippedUnchanged => self.account_unchanged_skip(),
             PresentOutcome::NeedsRecreate => self.recreate_swapchain(),
             PresentOutcome::SurfaceLost => self.handle_surface_lost(),
             PresentOutcome::TimedOut => self.status.acquire_timeouts += 1,

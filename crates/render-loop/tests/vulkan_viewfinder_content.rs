@@ -26,11 +26,13 @@ use std::sync::{Arc, PoisonError};
 use camera_contract::three_a::DirectiveSlot;
 use gpu_vulkan::hardware_buffer_cache::ImportCacheCounters;
 use raw_frame_stream::{RawFrameStream, RawFrameStreamConfig};
-use render_loop::backend::{DisplayBackend, PresentOutcome};
+use render_loop::backend::DisplayBackend;
 use render_loop::config::{DisplayColorConfig, RenderLoopConfig, ViewfinderConfig, ViewfinderToneConfig};
 use support::{Journal, fake_surface};
 use viewfinder_rig::*;
-use vulkan_support::{assert_no_validation_errors, headless_camera_backend_with_directives_or_skip};
+use vulkan_support::{
+    assert_no_validation_errors, assert_presented_or_skipped, headless_camera_backend_with_directives_or_skip,
+};
 
 #[test]
 fn isp_output_through_the_real_backend_matches_the_isp_model_reference() {
@@ -107,10 +109,7 @@ fn isp_output_through_the_real_backend_matches_the_isp_model_reference() {
 
     // 3. Остановка потока: чёрный кадр, затем отсоединение без утечек.
     stream.producer().end_stream(epoch);
-    assert_eq!(
-        backend.render_and_present(timing(frame_index)),
-        PresentOutcome::Presented
-    );
+    assert_presented_or_skipped(backend.render_and_present(timing(frame_index)));
     let viewfinder = backend.diagnostics().viewfinder.expect("диагностика видоискателя");
     assert_eq!(
         viewfinder.counters.params_resolved, 1,

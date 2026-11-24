@@ -32,7 +32,7 @@ use camera_contract::three_a::{BurstId, DirectiveSlot, RequestOrigin, ThreeAResu
 use gpu_vulkan::hardware_buffer_cache::ImportCacheCounters;
 use gpu_vulkan::sync::GpuWaitFence;
 use raw_frame_stream::{OfferedFrame, RawFrameStream, RawFrameStreamConfig, StreamEpoch};
-use render_loop::backend::{DisplayBackend, FrameTiming, PresentOutcome, PresentTarget};
+use render_loop::backend::{DisplayBackend, FrameTiming, PresentTarget};
 use render_loop::config::{
     DisplayColorConfig, RenderLoopConfig, ToneBaseChoice, ViewfinderConfig, ViewfinderToneConfig, WhiteBalanceConfig,
 };
@@ -40,7 +40,9 @@ use render_loop::vulkan_backend::{ViewfinderReadback, VulkanDisplayBackend};
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::surface::SurfaceSize;
 use support::{Journal, fake_surface};
-use vulkan_support::{assert_no_validation_errors, headless_camera_backend_with_directives_or_skip};
+use vulkan_support::{
+    assert_no_validation_errors, assert_presented_or_skipped, headless_camera_backend_with_directives_or_skip,
+};
 
 const SURFACE_SIZE: SurfaceSize = SurfaceSize {
     width_px: 96,
@@ -198,10 +200,7 @@ impl Rig {
     fn present_new_frame(&mut self, sensor_ts: i64, origin: RequestOrigin) -> Shown {
         self.offer(sensor_ts, origin);
         let presented_before = self.presented();
-        assert_eq!(
-            self.backend.render_and_present(timing(self.next_frame)),
-            PresentOutcome::Presented
-        );
+        assert_presented_or_skipped(self.backend.render_and_present(timing(self.next_frame)));
         self.next_frame += 1;
         let presented_after = self.presented();
         let gray = (presented_after > presented_before).then(|| self.gray_pixel());
@@ -214,10 +213,7 @@ impl Rig {
 
     /// Кадр показа без нового кадра камеры (перекомпоновка).
     fn tick(&mut self) {
-        assert_eq!(
-            self.backend.render_and_present(timing(self.next_frame)),
-            PresentOutcome::Presented
-        );
+        assert_presented_or_skipped(self.backend.render_and_present(timing(self.next_frame)));
         self.next_frame += 1;
     }
 

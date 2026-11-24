@@ -16,7 +16,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use super::support::{Journal, fake_surface};
-use super::vulkan_support::{assert_no_validation_errors, headless_camera_backend_with_directives_or_skip};
+use super::vulkan_support::{
+    assert_no_validation_errors, assert_presented_or_skipped, headless_camera_backend_with_directives_or_skip,
+};
 use camera_contract::capabilities::{LensShading, Rational, RawSupport, SensorLevels, VendorProcessingFlags};
 use camera_contract::capture_result::{CaptureResultMeta, FrameNumber, SensorTimestamp};
 use camera_contract::control::{ColorTemperature, Tint, WhiteBalanceSetting};
@@ -46,7 +48,7 @@ use look_contract::LookSettings;
 use raw_frame_stream::{
     OfferedFrame, ProducerFrame, RawFrameLease, RawFrameStream, RawFrameStreamConfig, ReleaseFences, StreamEpoch,
 };
-use render_loop::backend::{DisplayBackend, FrameTiming, PresentOutcome, PresentTarget};
+use render_loop::backend::{DisplayBackend, FrameTiming, PresentTarget};
 use render_loop::config::{RenderLoopConfig, ViewfinderToneConfig};
 use render_loop::vulkan_backend::{
     CameraFrameImporter, CameraImportError, SubmissionSerial, ViewfinderReadback, VulkanDisplayBackend,
@@ -356,10 +358,7 @@ pub fn offer(stream: &RawFrameStream, epoch: StreamEpoch, sensor_ts: i64, sequen
 /// Рисует кадры, пока ISP не обработает `processed_target` кадров; возвращает следующий номер кадра.
 pub fn present_until_processed(backend: &mut VulkanDisplayBackend, mut frame_index: u64, processed_target: u64) -> u64 {
     for _ in 0..MAX_FRAMES_TO_SETTLE {
-        assert_eq!(
-            backend.render_and_present(timing(frame_index)),
-            PresentOutcome::Presented
-        );
+        assert_presented_or_skipped(backend.render_and_present(timing(frame_index)));
         frame_index += 1;
         let processed = backend
             .diagnostics()
@@ -367,10 +366,7 @@ pub fn present_until_processed(backend: &mut VulkanDisplayBackend, mut frame_ind
             .map_or(0, |viewfinder| viewfinder.counters.frames_processed);
         if processed >= processed_target {
             // Ещё кадр: перекомпоновка (изображение не меняется, экран собирается из него).
-            assert_eq!(
-                backend.render_and_present(timing(frame_index)),
-                PresentOutcome::Presented
-            );
+            assert_presented_or_skipped(backend.render_and_present(timing(frame_index)));
             return frame_index + 1;
         }
     }
@@ -494,10 +490,7 @@ impl ViewfinderBench {
     /// Рисует ровно один кадр показа без нового кадра камеры (перекомпоновка): тесты, которым важно состояние
     /// между соседними кадрами (выведенные объекты ждут освобождения слотов).
     pub fn present_one_recompose_frame(&mut self) {
-        assert_eq!(
-            self.backend.render_and_present(timing(self.frame_index)),
-            PresentOutcome::Presented
-        );
+        assert_presented_or_skipped(self.backend.render_and_present(timing(self.frame_index)));
         self.frame_index += 1;
     }
 

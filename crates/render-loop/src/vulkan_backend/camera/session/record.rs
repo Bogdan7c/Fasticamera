@@ -13,18 +13,19 @@ use super::super::pipelines::{
     AcquiredSourceReader, CameraPipelines, FrameTarget, IspFrameRecording, NewIspFrame, ScreenContent,
 };
 use super::slot::effective_stages;
-use super::transition::{TransitionFrame, backdrop_of};
+use super::transition::TransitionFrame;
 use super::{CameraSession, Content, LOG_TARGET, Recorded, SubmissionSerial};
-use crate::viewfinder::{SuppressibleGpuWork, ViewfinderPainter};
+
 use crate::vulkan_backend::camera::continuity::Composed;
-use crate::vulkan_backend::camera::pipelines::{ShowFrameAs, mirror_of};
+use crate::vulkan_backend::camera::pipelines::{ShowFrameAs, UiTick, mirror_of};
 use crate::vulkan_backend::camera::ui_state::UiOverlayFrame;
-use ui_draw::frame_source::BackdropContinuity;
 
 /// Что записано в кадре: содержимое для счётчиков и то, что реально попало на экран.
 pub(super) struct RecordedFrame {
     pub recorded: Recorded,
     pub composed: Composed,
+    /// UI тика записан полностью (или UI в этом кадре и не требовался): пиксели кадра — компоновка + список UI.
+    pub ui_complete: bool,
 }
 
 /// Решения `prepare` для записи кадра: что рисовать, кто владеет кадрами и что решила непрерывность.
@@ -36,6 +37,8 @@ pub(super) struct FrameDecision<'a> {
     /// Решение непрерывности (`None` у отладочной мозаики): по нему начинается удержание и выбирается, что лечь
     /// на экран.
     pub transition: Option<&'a TransitionFrame>,
+    /// UI тика, уже подготовленный ДО записи (источник спрошен один раз, решение 214): запись только дописывает его.
+    pub ui_tick: &'a UiTick,
 }
 
 impl CameraSession {
@@ -52,6 +55,7 @@ impl CameraSession {
             content,
             ownership: plan,
             transition,
+            ui_tick,
         } = *decision;
         // Удержание начинается ДО записи кадра нового потока: ISP перезаписал бы живую картинку, и последний
         // показанный кадр пропал бы. Отцепление — смена владельца картинки, команд не пишет.
@@ -67,7 +71,6 @@ impl CameraSession {
         // установленный источник UI — то же состояние, что решает рисование UI (`ui.state.is_active()` ниже).
         pipelines.set_scope_demand(self.settings.effective_scope_demand(ui.state.source_presence()));
         let show = transition.map_or(ShowFrameAs::Live, TransitionFrame::show);
-        let continuity = backdrop_of(transition, BackdropContinuity::Live);
         // Возврат прежнего кадра мозаики — в сабмите, который его заменяет или убирает с экрана.
         let release_displayed = match plan.release_displayed {
             ReleaseDisplayed::Yes => self.displayed_source,
@@ -99,25 +102,29 @@ impl CameraSession {
                 Ok(RecordedFrame {
                     recorded: Recorded::Mosaic,
                     composed: Composed::Live,
+                    // Мозаике UI не положен: «полный» кадр — только мозаика.
+                    ui_complete: true,
                 })
             }
             Content::Black => {
-                let continuity = backdrop_of(transition, BackdropContinuity::NoCameraFrame);
-                self.record_black_content(pipelines, frame, release_displayed, serial, ui, continuity)?;
+                let ui_complete =
+                    self.record_black_content(pipelines, frame, release_displayed, serial, ui, ui_tick)?;
                 Ok(RecordedFrame {
                     recorded: Recorded::Black,
                     composed: Composed::Black,
+                    ui_complete,
                 })
             }
             Content::Recompose => {
                 let recording = pipelines.record_recompose_as(&target, release_displayed, placement, show);
-                self.record_ui_overlay(pipelines, &target, &recording, serial, ui, continuity);
+                let ui_complete = self.record_ui_overlay(pipelines, &target, &recording, serial, ui, ui_tick);
                 let composed = self.account_recording(pipelines, &recording);
                 Ok(RecordedFrame {
                     recorded: Recorded::Recompose {
                         shown: composed == Composed::Live,
                     },
                     composed,
+                    ui_complete,
                 })
             }
             Content::IspNew {
@@ -135,14 +142,17 @@ impl CameraSession {
                     // у камеры (барьеров нет), сабмит вернёт его по своему fence — это безопасно.
                     tracing::error!(target: LOG_TARGET, "кадр ISP без параметров: чёрный кадр");
                     self.viewfinder.counters_mut().isp_record_failures += 1;
-                    let continuity = backdrop_of(transition, BackdropContinuity::NoCameraFrame);
-                    self.record_black_content(pipelines, frame, release_displayed, serial, ui, continuity)?;
+                    // UI этого тика подготовлен как для живого кадра (фон `Live`): путь недостижим, поэтому отдельного
+                    // запроса к источнику ради «чёрного» фона не делаем — источник обязан вызываться раз на тик.
+                    let ui_complete =
+                        self.record_black_content(pipelines, frame, release_displayed, serial, ui, ui_tick)?;
                     return Ok(RecordedFrame {
                         recorded: Recorded::IspNew {
                             processed: false,
                             shown: false,
                         },
                         composed: Composed::Black,
+                        ui_complete,
                     });
                 };
                 // Стенд V4 читает тот же кадр между ISP и возвратом камере (итог — после сабмита).
@@ -168,7 +178,7 @@ impl CameraSession {
                     placement,
                 );
                 let processed = recording.isp.is_ok();
-                self.record_ui_overlay(pipelines, &target, &recording, serial, ui, continuity);
+                let ui_complete = self.record_ui_overlay(pipelines, &target, &recording, serial, ui, ui_tick);
                 let composed = self.account_recording(pipelines, &recording);
                 Ok(RecordedFrame {
                     recorded: Recorded::IspNew {
@@ -176,6 +186,7 @@ impl CameraSession {
                         shown: composed == Composed::Live,
                     },
                     composed,
+                    ui_complete,
                 })
             }
         }
@@ -193,23 +204,26 @@ impl CameraSession {
         release_displayed: Option<MosaicSource>,
         serial: SubmissionSerial,
         ui: &mut UiOverlayFrame<'_>,
-        continuity: BackdropContinuity,
-    ) -> Result<(), GpuError> {
+        ui_tick: &UiTick,
+    ) -> Result<bool, GpuError> {
         let target = &FrameTarget::of(frame);
-        let draws_ui = self.settings.painter == ViewfinderPainter::Isp && ui.state.is_active();
+        // `Inactive` — и источника нет, и под отладочной мозаикой UI не положен (решает `prepare_ui_tick`).
+        let draws_ui = !matches!(ui_tick, UiTick::Inactive);
         if !draws_ui {
-            return pipelines
+            pipelines
                 .preview
-                .record_black(frame.command_buffer(), frame.pattern_target(), release_displayed);
+                .record_black(frame.command_buffer(), frame.pattern_target(), release_displayed)?;
+            return Ok(true);
         }
         let recording = pipelines.record_black_frame(target, release_displayed)?;
         self.viewfinder.counters_mut().gpu_timing_failures += recording.timing_failures;
-        self.record_ui_overlay(pipelines, target, &recording, serial, ui, continuity);
-        Ok(())
+        Ok(self.record_ui_overlay(pipelines, target, &recording, serial, ui, ui_tick))
     }
 
-    /// UI поверх только что записанной компоновки (без источника — ничего). Отказы записи меток времени UI
-    /// идут в общий счётчик отказов замера кадра; сам UI считает свои отказы в `UiOverlayState`.
+    /// UI поверх только что записанной компоновки: пишет в GPU список, подготовленный ДО записи кадра (без
+    /// источника — ничего). Отказы записи меток времени UI идут в общий счётчик отказов замера кадра; сам UI
+    /// считает свои отказы в `UiOverlayState`. Возвращает, записан ли UI тика полностью (или его и не требовалось):
+    /// от этого зависит, годится ли кадр как эталон «ничего не изменилось».
     fn record_ui_overlay(
         &mut self,
         pipelines: &mut CameraPipelines,
@@ -217,19 +231,18 @@ impl CameraSession {
         recording: &IspFrameRecording,
         serial: SubmissionSerial,
         ui: &mut UiOverlayFrame<'_>,
-        continuity: BackdropContinuity,
-    ) {
-        // Замер A/B (16a): подавленный UI не записывается в GPU, но источник по-прежнему получает свой кадр.
-        if self
-            .settings
-            .gpu_work_suppression
-            .suppresses(SuppressibleGpuWork::UiOverlayDrawing)
-        {
-            pipelines.skip_ui_overlay_drawing(frame, ui, continuity);
-            return;
+        ui_tick: &UiTick,
+    ) -> bool {
+        match ui_tick {
+            UiTick::Inactive => true,
+            // Подавленный замером A/B UI не записывается (источник свой кадр получил): кадр не эталон.
+            UiTick::Suppressed | UiTick::Unavailable => false,
+            UiTick::Ready(_) => {
+                let outcome = pipelines.record_prepared_ui(frame, ui, ui_tick, &recording.screen, serial);
+                self.viewfinder.counters_mut().gpu_timing_failures += outcome.timing_failures;
+                outcome.drawn
+            }
         }
-        let timing_failures = pipelines.record_ui_overlay(frame, ui, &recording.screen, serial, continuity);
-        self.viewfinder.counters_mut().gpu_timing_failures += timing_failures;
     }
 
     /// Учитывает отказы записи кадра видоискателя; возвращает, что реально попало на экран.

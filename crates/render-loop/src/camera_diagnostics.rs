@@ -35,6 +35,10 @@ pub struct CameraStreamDiagnostics {
     pub camera_frames_presented: u64,
     /// Сколько раз уже показанный кадр нарисован снова (новых кадров не было).
     pub camera_frame_redraws: u64,
+    /// Сколько тиков показа пропущено нарочно, потому что на экране ничего бы не изменилось (решение 214): зритель
+    /// снова видит уже показанный кадр, но кадр не рисовался и не показывался. Вместе с `camera_frame_redraws` даёт
+    /// «видимые повторы» ([`Self::visible_repeats`]): метрика не должна зависеть от того, рисуется ли повтор.
+    pub camera_frame_repeats_held: u64,
     /// Сколько кадров импортировано в GPU (новых лизингов, дошедших до рисования).
     pub camera_frames_imported: u64,
     /// Сколько новых кадров не удалось подготовить (импорт, fence, паспорт): кадр возвращён нетронутым.
@@ -63,6 +67,12 @@ pub struct CameraStreamDiagnostics {
 }
 
 impl CameraStreamDiagnostics {
+    /// Сколько раз зритель видел уже показанный кадр снова: повторы, которые нарисованы, и повторы, которые
+    /// пропущены как «ничего не изменилось». Не зависит от пропуска тиков, поэтому профили подачи сравнимы.
+    pub fn visible_repeats(&self) -> u64 {
+        self.camera_frame_redraws + self.camera_frame_repeats_held
+    }
+
     /// Записывает первый показ нового кадра, держа историю в пределах `history_capacity`.
     pub(crate) fn note_new_frame_presented(&mut self, frame: PresentedCameraFrame, history_capacity: usize) {
         self.camera_frames_presented += 1;
@@ -82,6 +92,7 @@ impl CameraStreamDiagnostics {
     pub(crate) fn absorb_finished_session(&mut self, finished: &Self, history_capacity: usize) {
         self.camera_frames_presented += finished.camera_frames_presented;
         self.camera_frame_redraws += finished.camera_frame_redraws;
+        self.camera_frame_repeats_held += finished.camera_frame_repeats_held;
         self.camera_frames_imported += finished.camera_frames_imported;
         self.camera_frame_failures += finished.camera_frame_failures;
         self.import_cache_hits += finished.import_cache_hits;

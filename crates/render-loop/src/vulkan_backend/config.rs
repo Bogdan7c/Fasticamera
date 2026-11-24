@@ -9,7 +9,9 @@ use gpu_vulkan::validation::ValidationMode;
 
 use super::present_time::PresentTimePolicy;
 use crate::config::look_lut;
-use crate::config::{DisplayColorConfig, RenderLoopConfig, StillDevelopConfig, UiOverlayConfig, ViewfinderConfig};
+use crate::config::{
+    DisplayColorConfig, RenderLoopConfig, StillDevelopConfig, UiOverlayConfig, UnchangedFrameConfig, ViewfinderConfig,
+};
 
 /// Параметры [`super::VulkanDisplayBackend`].
 #[derive(Debug, Clone)]
@@ -45,6 +47,8 @@ pub struct VulkanBackendConfig {
     pub viewfinder: ViewfinderConfig,
     /// UI и стекло поверх видоискателя (из `RenderLoopConfig::ui_overlay`).
     pub ui_overlay: UiOverlayConfig,
+    /// Пропуск тиков без изменений картинки (из `RenderLoopConfig::unchanged_frame`).
+    pub unchanged_frame: UnchangedFrameConfig,
     /// Снимок без задержки затвора (из `RenderLoopConfig::still`).
     pub still: StillDevelopConfig,
 }
@@ -87,6 +91,7 @@ impl VulkanBackendConfig {
             },
             viewfinder,
             ui_overlay: config.ui_overlay,
+            unchanged_frame: config.unchanged_frame,
             still,
         })
     }
@@ -194,6 +199,27 @@ mod tests {
                 .display_color,
             DisplayColorPreference::SrgbOnly,
             "выбор пространства доходит до цели показа"
+        );
+    }
+
+    #[test]
+    fn unchanged_frame_section_is_taken_from_render_loop_config() {
+        let render = RenderLoopConfig {
+            unchanged_frame: UnchangedFrameConfig {
+                policy: crate::config::UnchangedFramePolicy::AlwaysRedraw,
+                max_consecutive_skips: 3,
+            },
+            ..RenderLoopConfig::default()
+        };
+        let config =
+            VulkanBackendConfig::from_render_config(&render, ValidationMode::Disabled).expect("корректный конфиг");
+        assert_eq!(config.unchanged_frame, render.unchanged_frame);
+        let product = VulkanBackendConfig::from_render_config(&RenderLoopConfig::default(), ValidationMode::Disabled)
+            .expect("корректный конфиг");
+        assert_eq!(
+            product.unchanged_frame.policy,
+            crate::config::UnchangedFramePolicy::AlwaysRedraw,
+            "по умолчанию тики рисуются все: пропуск включается явно (решение 214, ждёт замера)"
         );
     }
 

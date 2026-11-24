@@ -25,6 +25,7 @@ pub fn presenting_status() -> RenderStatus {
         generation: Some(SurfaceGeneration::new(1)),
         frames_presented: 1200,
         acquire_timeouts: 0,
+        ticks_skipped_unchanged: 0,
         recreations: 0,
         surfaces_attached: 1,
         releases_confirmed: 0,

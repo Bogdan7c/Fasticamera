@@ -22,6 +22,7 @@
 //! Ошибки разведены: сабмит не принят (GPU кадр не читал — лизинг нового кадра возвращается как
 //! нетронутый) и ошибка показа после принятого сабмита (GPU читал — возврат только по fence).
 
+mod acquired;
 mod collect;
 mod prepare;
 mod record;
@@ -29,14 +30,15 @@ mod shutdown;
 mod slot;
 mod still_feed;
 mod transition;
+mod unchanged;
 
 use camera_contract::flash::FrameLight;
 use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::error::GpuError;
 use gpu_vulkan::raw_mosaic_preview::{MosaicPreviewParams, MosaicSource};
 use gpu_vulkan::swapchain::{
-    DisplayFrame, DisplayTarget, PresentOutcome as GpuPresentOutcome, PresentRequest, PresentSync, SubmitProgress,
-    SwapchainError, SyncedPresent,
+    DisplayTarget, PresentOutcome as GpuPresentOutcome, PresentRequest, PresentSync, SubmitProgress, SwapchainError,
+    SyncedPresent,
 };
 use gpu_vulkan::sync::{ExportableSemaphore, GpuReleaseFence, WaitSemaphore};
 use isp_model::lens_shading::LensShadingControl;
@@ -45,9 +47,11 @@ use isp_vulkan::viewfinder::ViewfinderGeometry;
 use raw_frame_stream::{RawFrameLease, ViewfinderFrames};
 use std::sync::Arc;
 
+pub use self::acquired::{AcquiredFrame, FrameDisposition};
 use self::record::FrameDecision;
 use self::slot::SlotFrame;
 use self::transition::TransitionFrame;
+use self::unchanged::{FrameVerdict, UnchangedFrameGate};
 use super::continuity::{Composed, ContinuityMachine};
 use super::export_recovery::{ExportRecovery, RecoveryStep};
 use super::exposure::ExposureSlotFrame;
@@ -67,7 +71,7 @@ use super::white_balance::{FramePlan, WhiteBalanceParts, WhiteBalanceRunner};
 use super::{CameraFrameImporter, CameraImportError, SharedImporterFactory, SubmissionSerial};
 use crate::backend::FrameGpuTiming;
 use crate::camera_diagnostics::{CameraStreamDiagnostics, PresentedCameraFrame};
-use crate::config::{ContinuityConfig, ViewfinderToneConfig};
+use crate::config::{ContinuityConfig, UnchangedFrameConfig, ViewfinderToneConfig};
 use crate::viewfinder::{AwbFrameIdentity, AwbStatisticsFeed, ViewfinderDiagnostics};
 
 const LOG_TARGET: &str = "fasticamera::render::camera";
@@ -164,6 +168,8 @@ pub struct CameraSessionParts<'a> {
     pub look_model: Arc<LookModelSettings>,
     /// Удержание последнего кадра при смене объектива (`viewfinder.continuity`, уже проверено при старте).
     pub continuity: ContinuityConfig,
+    /// Пропуск тиков без изменений (`unchanged_frame`, уже проверено при старте).
+    pub unchanged_frame: UnchangedFrameConfig,
 }
 
 /// Показ кадров камеры для одной surface.
@@ -206,6 +212,8 @@ pub struct CameraSession {
     continuity_config: ContinuityConfig,
     /// Лента для снимков (сессия 14): что лежало на экране и с какими параметрами обработан каждый кадр.
     still_feed: StillFeedRecorder,
+    /// Решение «рисовать ли тик» и эталон сравнения — последний кадр, принятый очередью показа (решение 214).
+    unchanged: UnchangedFrameGate,
     context: GpuContext,
 }
 
@@ -227,6 +235,7 @@ impl CameraSession {
             lens_shading,
             look_model,
             continuity,
+            unchanged_frame,
         } = parts;
         let importer = match make_importer.make(context) {
             Ok(importer) => importer,
@@ -299,6 +308,7 @@ impl CameraSession {
             continuity: ContinuityMachine::new(continuity),
             continuity_config: continuity,
             still_feed: StillFeedRecorder::default(),
+            unchanged: UnchangedFrameGate::new(unchanged_frame),
             context: context.clone(),
         })
     }
@@ -331,6 +341,8 @@ impl CameraSession {
     /// Новые настройки (после команды). Смена рисовальщика сбрасывает «изображение актуально»:
     /// после мозаики изображение видоискателя устарело, до нового кадра — чёрный.
     pub fn apply_settings(&mut self, settings: ViewfinderSettings) {
+        // Принятая команда могла изменить пиксели экрана: нарисованный до неё кадр эталоном больше не служит.
+        self.unchanged.note_scene_changed();
         if settings.painter != self.settings.painter {
             self.isp_image_shown = false;
         }
@@ -349,31 +361,46 @@ impl CameraSession {
         self.settings = settings;
     }
 
-    /// Рисует и показывает один кадр. `frame` уже выдан целью и будет показан в любом случае
-    /// (при ошибке записи — через сброс неотрисованного кадра). `frame_index` — номер кадра потока
-    /// рендера: с ним позже выдаётся время кадра на GPU. `ui` — UI-проход кадра (источник, счётчики, время
-    /// показа): без установленного источника ничего не меняет.
+    /// Рисует и показывает один кадр или пропускает тик. Выданная картинка будет показана в любом случае (при ошибке
+    /// записи — через сброс неотрисованного кадра), КРОМЕ тика, пропущенного как «ничего не изменилось»
+    /// ([`FrameDisposition::SkippedUnchanged`]): там картинка возвращается владельцу нетронутой. `frame_index` — номер
+    /// кадра потока рендера (по нему позже выдаётся время кадра на GPU). `ui` — UI-проход кадра.
     pub fn draw_and_present(
         &mut self,
         display: &mut DisplayTarget,
         pipelines: &mut CameraPipelines,
-        frame: DisplayFrame,
+        acquired: AcquiredFrame,
         request: PresentRequest,
         frame_index: u64,
         ui: &mut UiOverlayFrame<'_>,
-    ) -> Result<GpuPresentOutcome, CameraDrawError> {
+    ) -> Result<FrameDisposition, CameraDrawError> {
+        let (frame, slot_already_collected) = match acquired {
+            AcquiredFrame::Fresh(frame) => (frame, false),
+            AcquiredFrame::HeldFromSkippedTick(frame) => (frame, true),
+        };
         let slot = frame.ring_slot();
-        // 1. Слот свободен: GPU закончил его прошлый сабмит и все до него.
-        let completed = self.tracker.note_slot_acquired(slot);
-        self.retire_completed_work(completed);
-        self.collect_slot(pipelines, slot, ui.state);
-        // Метки слота собраны: следующий сабмит в слот (если будет) назначит ему новый кадр.
-        self.note_slot_frame_index(slot, None);
+        // 1. Слот свободен: GPU закончил его прошлый сабмит и все до него. Придержанная картинка этот шаг уже прошла
+        // (итоги слота выдаются один раз).
+        if !slot_already_collected {
+            let completed = self.tracker.note_slot_acquired(slot);
+            self.retire_completed_work(completed);
+            self.collect_slot(pipelines, slot, ui.state);
+            // Метки слота собраны: следующий сабмит в слот (если будет) назначит ему новый кадр.
+            self.note_slot_frame_index(slot, None);
+        }
         let serial = self.tracker.next_serial();
         self.viewfinder.note_display_color_space(frame.display_color_space());
 
         // 2. Что показывать.
         let now = ui.present_time;
+        let prepared = self.prepare_content(serial, frame.display_color_space(), now);
+        // 2а. UI тика и решение «рисовать ли»: источник UI спрашивается на КАЖДОМ тике (его контракт), в том числе на
+        // пропускаемом; пропуск возможен, только если ничего не изменилось с последнего принятого показа.
+        let ui_tick = self.prepare_ui_tick(pipelines, &frame, ui, &prepared);
+        if self.judge_tick(&prepared, &ui_tick) == FrameVerdict::Skip {
+            // Нового кадра камеры нет, удержания нет: возвращать и фиксировать нечего (`classify_tick`).
+            return Ok(FrameDisposition::SkippedUnchanged(frame));
+        }
         let Prepared {
             content,
             change,
@@ -381,26 +408,29 @@ impl CameraSession {
             camera_wait,
             stream_inactive,
             transition,
-        } = self.prepare_content(serial, frame.display_color_space(), now);
+        } = prepared;
         if stream_inactive {
             self.release_imports_when_gpu_is_done();
         }
 
         // 3. Запись команд.
         let plan = OwnershipPlan::for_change(change, self.displayed_source.is_some());
-        let (recorded, composed) = match self.record_content(
+        let (recorded, composed, ui_complete) = match self.record_content(
             pipelines,
             &frame,
             &FrameDecision {
                 content: &content,
                 ownership: plan,
                 transition: transition.as_ref(),
+                ui_tick: &ui_tick,
             },
             serial,
             ui,
         ) {
-            Ok(recorded) => (recorded.recorded, recorded.composed),
+            Ok(recorded) => (recorded.recorded, recorded.composed, recorded.ui_complete),
             Err(error) => {
+                // Что на экране после оборванной записи, неизвестно.
+                self.unchanged.invalidate();
                 // Удержание могло начаться до сбоя записи (картинка уже отцеплена): машина узнаёт, что на экране
                 // ничего нет (чёрный не принятого кадра).
                 if let Some(transition) = &transition {
@@ -449,6 +479,7 @@ impl CameraSession {
         // 5. Итог сабмита.
         match submit {
             SubmitProgress::NotSubmitted => {
+                self.unchanged.invalidate();
                 // GPU кадра не читал: новый лизинг возвращается нетронутым, семафор ожидания не нужен.
                 if let Some(lease) = new_lease {
                     lease.release_unused();
@@ -463,7 +494,7 @@ impl CameraSession {
                     .finish_frame(slot, BenchSubmit::NotSubmitted, self.viewfinder.headroom_mut());
                 self.note_slot_frame(slot, None);
                 self.isp_image_shown = false;
-                outcome.map_err(CameraDrawError::Swapchain)
+                FrameDisposition::of_present(outcome)
             }
             SubmitProgress::Submitted => {
                 self.tracker.note_submitted(slot, serial);
@@ -489,7 +520,8 @@ impl CameraSession {
                 if let Some(export_result) = exported {
                     self.finish_release_export(export_result, serial);
                 }
-                outcome.map_err(CameraDrawError::Swapchain)
+                self.note_frame_sent(ui_tick, composed, ui_complete, &outcome);
+                FrameDisposition::of_present(outcome)
             }
         }
     }

@@ -35,6 +35,7 @@ use super::super::ui_state::UiOverlayFrame;
 use super::super::viewfinder_stats::FRAME_POINT_UI_DONE;
 use super::{CameraPipelines, FrameTarget, LOG_TARGET, ScreenContent, logical_size};
 use crate::config::UiOverlayConfig;
+pub use tick::{ReadyUi, UiRecordOutcome, UiTick};
 
 /// Ленивый владелец рендера UI под формат цели.
 pub(super) struct UiPass {
@@ -182,34 +183,93 @@ impl CameraPipelines {
     /// GPU-запись прохода UI не делается: ни создания рендера, ни пирамиды фона, ни загрузки экземпляров, ни меток
     /// времени. Картинка прибора UI не отдаётся (`note_picture_handed_to_ui` не зовётся): слот приборов
     /// ничем не занят и освобождается обычным путём. Без источника — ничего.
+    #[cfg(test)]
     pub fn skip_ui_overlay_drawing(
         &self,
         frame: &FrameTarget,
         ui: &mut UiOverlayFrame<'_>,
         continuity: BackdropContinuity,
     ) {
+        // Итог подготовки здесь не нужен: подавленный UI не записывается, а решение «рисовать ли тик» принимает
+        // сессия показа (она зовёт `prepare_suppressed_ui_tick` сама).
+        let _ = self.prepare_suppressed_ui_tick(frame, ui, continuity);
+    }
+
+    /// Подготовка UI тика при подавленном рисовании UI: то же, что [`Self::skip_ui_overlay_drawing`], но итог
+    /// возвращается сессии показа (`Suppressed`, если источник дал список; список выбрасывается).
+    pub fn prepare_suppressed_ui_tick(
+        &self,
+        frame: &FrameTarget,
+        ui: &mut UiOverlayFrame<'_>,
+        continuity: BackdropContinuity,
+    ) -> UiTick {
         if !ui.state.is_active() {
-            return;
+            return UiTick::Inactive;
         }
         let Some((logical_px, px_per_pt)) = frame_geometry(frame, ui) else {
-            return;
+            return UiTick::Unavailable;
         };
         let request = frame_request(ui, logical_px, px_per_pt, continuity);
         // Список рисования выбрасывается: цена источника остаётся в замере, цена GPU — нет.
         if ui.state.produce_draw_list(&request).is_some() {
             ui.state.note_frame_suppressed();
+            UiTick::Suppressed
+        } else {
+            UiTick::Unavailable
         }
     }
 
-    /// Записывает UI этого кадра поверх уже записанной компоновки (или чёрного кадра). Возвращает число
-    /// отказов записи метки времени. Без установленного источника не делает ничего — ни создания рендера,
-    /// ни команд, ни меток: кадр остаётся таким, каким был до сессии 11.
+    /// Первый шаг UI тика: спрашивает у источника список рисования и проверяет, что рендер UI способен его
+    /// нарисовать на этом кадре. Ничего не пишет в GPU (рендер создаётся лениво, если его ещё нет).
     ///
-    /// `screen` — что компоновка положила на экран: изображение видоискателя даёт живой фон стеклу,
-    /// чёрный кадр (скрытый кадр AWB, отказ ISP или компоновщика) — фон `Absent` чёрного цвета.
-    /// `serial` — номер сабмита этого кадра (для подложки стекла). `continuity` — что под UI: живой кадр,
-    /// удержанный на смене объектива или кадра нет (решает машина непрерывности; UI размывает удержанный
-    /// кадр и проявляет живой).
+    /// Вызывается ровно один раз на тик, дошедший до кадра, ДО записи компоновки: по списку решается, нужен ли
+    /// кадр вообще (решение 214), а запись ([`Self::record_prepared_ui`]) идёт только для нарисованного тика.
+    /// `continuity` — что под UI на этом кадре (решает машина непрерывности).
+    pub fn prepare_ui_tick(
+        &mut self,
+        frame: &FrameTarget,
+        ui: &mut UiOverlayFrame<'_>,
+        continuity: BackdropContinuity,
+    ) -> UiTick {
+        if !ui.state.is_active() {
+            return UiTick::Inactive;
+        }
+        // Размеры считаем до всего остального: от них зависит запрос к источнику.
+        let Some((logical_px, px_per_pt)) = frame_geometry(frame, ui) else {
+            return UiTick::Unavailable;
+        };
+        if let Err(error) = self.ui.ensure_renderer() {
+            tracing::error!(target: LOG_TARGET, %error, "рендер UI не создан: источник снят");
+            ui.state.reject_source_after_setup_failure(&error);
+            return UiTick::Unavailable;
+        }
+        // Рендер зашит под основные цвета дисплея. Пересоздать его посреди кадра нельзя (кадры в полёте ссылаются на
+        // конвейеры), а рисовать картинки в чужом охвате — значит показывать неверные цвета: честный пропуск кадра UI.
+        if !self.ui.matches_display(frame.display_color_space) {
+            ui.state.note_frame_skipped(
+                "цветовое пространство дисплея сменилось: рендер UI пересоздаётся при смене формата цели",
+            );
+            return UiTick::Unavailable;
+        }
+        let request = frame_request(ui, logical_px, px_per_pt, continuity);
+        match ui.state.produce_draw_list(&request) {
+            Some(draw_list) => UiTick::Ready(ReadyUi {
+                draw_list,
+                logical_px,
+                px_per_pt,
+                continuity,
+            }),
+            None => UiTick::Unavailable,
+        }
+    }
+
+    /// Записывает UI этого кадра поверх уже записанной компоновки (или чёрного кадра): подготовка и запись за один
+    /// вызов. Возвращает число отказов записи метки времени. Без установленного источника не делает ничего — ни
+    /// создания рендера, ни команд, ни меток: кадр остаётся таким, каким был до сессии 11.
+    ///
+    /// Боевой путь (сессия показа) вызывает шаги по отдельности — [`Self::prepare_ui_tick`] и
+    /// [`Self::record_prepared_ui`]; этот вход нужен стендам, которым решение «рисовать ли тик» не нужно.
+    #[cfg(test)]
     pub fn record_ui_overlay(
         &mut self,
         frame: &FrameTarget,
@@ -218,30 +278,30 @@ impl CameraPipelines {
         serial: super::super::SubmissionSerial,
         continuity: BackdropContinuity,
     ) -> u64 {
-        if !ui.state.is_active() {
-            return 0;
-        }
-        // Размеры считаем до всего остального: от них зависит запрос к источнику.
-        let Some((logical_px, px_per_pt)) = frame_geometry(frame, ui) else {
-            return 0;
+        let tick = self.prepare_ui_tick(frame, ui, continuity);
+        self.record_prepared_ui(frame, ui, &tick, screen, serial)
+            .timing_failures
+    }
+
+    /// Второй шаг UI тика: записывает подготовленный список в команды кадра.
+    ///
+    /// `screen` — что компоновка положила на экран: изображение видоискателя даёт живой фон стеклу,
+    /// чёрный кадр (скрытый кадр AWB, отказ ISP или компоновщика) — фон `Absent` чёрного цвета.
+    /// `serial` — номер сабмита этого кадра (для подложки стекла). `tick` — итог [`Self::prepare_ui_tick`]:
+    /// `Inactive` и `Unavailable` ничего не записывают.
+    pub fn record_prepared_ui(
+        &mut self,
+        frame: &FrameTarget,
+        ui: &mut UiOverlayFrame<'_>,
+        tick: &UiTick,
+        screen: &ScreenContent,
+        serial: super::super::SubmissionSerial,
+    ) -> UiRecordOutcome {
+        let UiTick::Ready(ready) = tick else {
+            return UiRecordOutcome::NOT_RECORDED;
         };
-        if let Err(error) = self.ui.ensure_renderer() {
-            tracing::error!(target: LOG_TARGET, %error, "рендер UI не создан: источник снят");
-            ui.state.reject_source_after_setup_failure(&error);
-            return 0;
-        }
-        // Рендер зашит под основные цвета дисплея. Пересоздать его посреди кадра нельзя (кадры в полёте ссылаются на
-        // конвейеры), а рисовать картинки в чужом охвате — значит показывать неверные цвета: честный пропуск кадра UI.
-        if !self.ui.matches_display(frame.display_color_space) {
-            ui.state.note_frame_skipped(
-                "цветовое пространство дисплея сменилось: рендер UI пересоздаётся при смене формата цели",
-            );
-            return 0;
-        }
-        let request = frame_request(ui, logical_px, px_per_pt, continuity);
-        let Some(draw_list) = ui.state.produce_draw_list(&request) else {
-            return 0;
-        };
+        let draw_list = &ready.draw_list;
+        let logical_px = ready.logical_px;
 
         // Фон под стеклом. Подложка берётся заново на каждый кадр (контракт `gpu_vulkan::backdrop`).
         // Прямоугольник фона — тот же, что скомпоновал видоискатель (посчитан один раз на кадр).
@@ -292,7 +352,7 @@ impl CameraPipelines {
             None => LiveImages::none(),
         };
         let ui_frame = UiFrame {
-            draw_list: &draw_list,
+            draw_list,
             logical_size: logical_px,
             surface_transform: frame.transform,
             backdrop,
@@ -301,23 +361,30 @@ impl CameraPipelines {
         let target = ColorAttachment::from_display_target(frame.pattern_target, frame.format);
         let recorded = match self.ui.renderer.as_mut() {
             Some(renderer) => renderer.record_frame(frame.command_buffer, frame.ring_slot, target, &ui_frame),
-            None => return 0,
+            None => return UiRecordOutcome::NOT_RECORDED,
         };
         match recorded {
             Ok(report) => {
                 ui.state.note_drawn(&report);
-                self.point(frame, FRAME_POINT_UI_DONE, TimestampStage::AllCommandsDone)
+                UiRecordOutcome {
+                    timing_failures: self.point(frame, FRAME_POINT_UI_DONE, TimestampStage::AllCommandsDone),
+                    drawn: true,
+                }
             }
             Err(error) => {
                 if matches!(error, UiRenderError::Gpu(_)) {
                     tracing::error!(target: LOG_TARGET, %error, "сбой GPU при записи UI: команды кадра могли записаться частично");
                 }
                 ui.state.note_render_failure(&error);
-                0
+                UiRecordOutcome::NOT_RECORDED
             }
         }
     }
 }
 
+mod tick;
+
 #[cfg(test)]
 mod suppression_tests;
+#[cfg(test)]
+mod unchanged_pixels_tests;

@@ -14,7 +14,9 @@ use std::time::{Duration, Instant};
 
 use super::awb_support::{FRAME_SIZE, FakeFrame, Returned, fixture_tiles, mosaic_from_tiles, stream_passport};
 use super::support::{Journal, fake_surface};
-use super::vulkan_support::{assert_no_validation_errors, headless_camera_backend_with_directives_or_skip};
+use super::vulkan_support::{
+    assert_no_validation_errors, assert_presented_or_skipped, headless_camera_backend_with_directives_or_skip,
+};
 use camera_contract::auto_exposure::{
     AppliedExposure, ExposureAuthority, ExposureDirective, ExposureProduct, ExposureProposalChannel,
 };
@@ -32,7 +34,7 @@ use gpu_vulkan::sync::GpuWaitFence;
 use isp_model::tone::{ToneCurve, ToneCurveSettings};
 use isp_model::transfer::srgb_decode;
 use raw_frame_stream::{OfferedFrame, RawFrameLease, RawFrameStream, RawFrameStreamConfig, StreamEpoch};
-use render_loop::backend::{DisplayBackend, FrameTiming, PresentOutcome, PresentTarget};
+use render_loop::backend::{DisplayBackend, FrameTiming, PresentTarget};
 use render_loop::config::{AutoExposureConfig, DisplayColorConfig, RenderLoopConfig, ViewfinderConfig};
 use render_loop::viewfinder::{AutoExposureLinks, ViewfinderDiagnostics};
 use render_loop::vulkan_backend::{
@@ -416,10 +418,7 @@ impl AeRig {
 
     pub fn render(&mut self) -> bool {
         let before = self.presented();
-        assert_eq!(
-            self.backend.render_and_present(timing(self.render_index)),
-            PresentOutcome::Presented
-        );
+        assert_presented_or_skipped(self.backend.render_and_present(timing(self.render_index)));
         self.render_index += 1;
         self.presented() > before
     }
@@ -553,10 +552,7 @@ impl AeRig {
     pub fn finish(mut self, journal: &Arc<Journal>) {
         let _ = journal;
         self.stream.producer().end_stream(self.epoch);
-        assert_eq!(
-            self.backend.render_and_present(timing(self.render_index)),
-            PresentOutcome::Presented
-        );
+        assert_presented_or_skipped(self.backend.render_and_present(timing(self.render_index)));
         assert!(self.backend.detach().is_some(), "окно возвращено");
         let counters = self.stream.counters();
         assert_eq!(counters.leaked_leases, 0, "{counters:?}");

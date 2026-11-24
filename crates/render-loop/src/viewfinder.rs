@@ -11,6 +11,7 @@
 //! * [`headroom`] — стенд «запас под видео» (V4): включение командой и его диагностика;
 //! * [`white_balance`] — диагностика нашего AWB: белая, оценка, сравнение с HAL, холодный старт;
 //! * [`auto_exposure`] — связи нашего AE с движком камеры (ящики) и его диагностика;
+//! * [`unchanged_frames`] — счёт решений «рисовать ли тик» (пропуск тиков без изменений, решение 214);
 //! * [`awb_feed`] — «последняя статистика AWB» с номером кадра и меткой сенсора (latest-wins).
 
 pub mod auto_exposure;
@@ -21,6 +22,7 @@ pub mod diagnostics;
 pub mod framing;
 pub mod headroom;
 pub mod scope_diagnostics;
+pub mod unchanged_frames;
 pub mod white_balance;
 pub mod work_suppression;
 
@@ -42,5 +44,6 @@ pub use framing::{
 };
 pub use headroom::{HeadroomBench, HeadroomBenchDiagnostics, HeadroomPassTime};
 pub use scope_diagnostics::{ScopeCounters, ScopeDiagnostics, ScopeEvents, ScopeResidency, ScopeResources};
+pub use unchanged_frames::{DrawReason, UnchangedFrameCounters};
 pub use white_balance::{ColdStartState, EstimateReading, WhiteBalanceDiagnostics, WhiteDelta, WhiteReading};
 pub use work_suppression::{GpuWorkSuppression, SuppressibleGpuWork};

@@ -29,6 +29,8 @@ use shell_contract::surface::SurfaceSize;
 use shell_contract::vsync::{FrameTimelines, VsyncSlot, VsyncSubscription, VsyncTick, VsyncTimeline};
 
 const SKIP_ENV: &str = "FASTICAMERA_SKIP_GPU_TESTS";
+/// Окружение второго режима стенда: `skip` — весь набор идёт под `SkipWhenUnchanged`.
+const UNCHANGED_POLICY_ENV: &str = "FASTICAMERA_TEST_UNCHANGED_POLICY";
 
 /// Нечётные размеры ловят ошибки округления и перепутанные оси.
 pub const START_SIZE: SurfaceSize = SurfaceSize {
@@ -71,7 +73,25 @@ pub fn headless_camera_backend_or_skip(
 }
 
 /// То же, но с «почтовым ящиком» указаний AWB, которым управляет тест (писатель — у теста).
+///
+/// Политика пропуска тиков берётся из `render_config` (умолчание — `AlwaysRedraw`, решение 214). Для прогона ВСЕГО
+/// старого набора под пропуском задайте окружение `FASTICAMERA_TEST_UNCHANGED_POLICY=skip`: помощник подменит политику
+/// на `SkipWhenUnchanged` (второй режим стенда; так найдены тесты, которым нужен `Presented` на каждом тике).
 pub fn headless_camera_backend_with_directives_or_skip(
+    render_config: &RenderLoopConfig,
+    frames: ViewfinderFrames,
+    make_importer: CameraImporterFactory,
+    directives: DirectiveSlot<WhiteBalanceDirective>,
+) -> Option<VulkanDisplayBackend> {
+    let mut config = render_config.clone();
+    if std::env::var(UNCHANGED_POLICY_ENV).as_deref() == Ok("skip") {
+        config.unchanged_frame.policy = render_loop::config::UnchangedFramePolicy::SkipWhenUnchanged;
+    }
+    headless_camera_backend_keeping_unchanged_policy_or_skip(&config, frames, make_importer, directives)
+}
+
+/// Бэкенд камеры ПК-стенда с политикой пропуска тиков РОВНО из `render_config` (по умолчанию пропуск включён).
+pub fn headless_camera_backend_keeping_unchanged_policy_or_skip(
     render_config: &RenderLoopConfig,
     frames: ViewfinderFrames,
     make_importer: CameraImporterFactory,
@@ -90,6 +110,19 @@ pub fn headless_camera_backend_with_directives_or_skip(
             }
         }
     }
+}
+
+/// Тик показа стенда вернул `Presented` — или `SkippedUnchanged`, когда набор идёт под пропуском тиков без изменений
+/// (`FASTICAMERA_TEST_UNCHANGED_POLICY=skip`). Любой другой исход — провал: стенд ждёт, что тик дошёл до показа либо
+/// осознанно пропущен как «ничего не изменилось», но не ошибку, таймаут или пересоздание.
+pub fn assert_presented_or_skipped(outcome: render_loop::backend::PresentOutcome) {
+    use render_loop::backend::PresentOutcome;
+    let skipping = std::env::var(UNCHANGED_POLICY_ENV).as_deref() == Ok("skip");
+    let allowed = outcome == PresentOutcome::Presented || (skipping && outcome == PresentOutcome::SkippedUnchanged);
+    assert!(
+        allowed,
+        "тик стенда: {outcome:?} (пропуск тиков включён окружением: {skipping})"
+    );
 }
 
 /// Поток-производитель тиков vsync ~120 Гц. Остановка и join — при уничтожении.

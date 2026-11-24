@@ -15,6 +15,7 @@ use super::control::ViewfinderPainter;
 use super::framing::EffectivePlacement;
 use super::headroom::HeadroomBenchDiagnostics;
 use super::scope_diagnostics::ScopeDiagnostics;
+use super::unchanged_frames::UnchangedFrameCounters;
 use super::white_balance::WhiteBalanceDiagnostics;
 use super::work_suppression::GpuWorkSuppression;
 use crate::thread::DurationSummary;
@@ -119,6 +120,8 @@ pub struct ViewfinderCounters {
     pub gpu_timings_overflowed: u64,
     /// Копии кадра на CPU. Всегда 0: RAW попадает в GPU без копий (импорт `AHardwareBuffer`).
     pub cpu_copies: u64,
+    /// Решения «рисовать ли тик» (решение 214, 16a): пропущенные тики и причины, по которым остальные нарисованы.
+    pub unchanged_frames: UnchangedFrameCounters,
 }
 
 /// Состояние видоискателя.

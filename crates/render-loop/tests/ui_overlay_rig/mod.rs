@@ -10,7 +10,10 @@
 
 use super::camera_rig::{self, EventLog, FakeFrame, ProducerBook, TestImporter, result_for, stream_passport};
 use super::support::{Journal, fake_surface};
-use super::vulkan_support::{assert_no_validation_errors, headless_camera_backend_with_directives_or_skip};
+use super::vulkan_support::{
+    assert_no_validation_errors, assert_presented_or_skipped, headless_camera_backend_keeping_unchanged_policy_or_skip,
+    headless_camera_backend_with_directives_or_skip,
+};
 use camera_contract::control::{ColorTemperature, Tint, WhiteBalanceSetting};
 use camera_contract::three_a::{DirectiveSlot, ThreeAProfile, WhiteBalanceDirective, WhiteBalanceMode};
 use gpu_vulkan::hardware_buffer_cache::ImportCacheCounters;
@@ -238,6 +241,15 @@ pub fn timing(frame_index: u64) -> FrameTiming {
     }
 }
 
+/// Как стенд относится к пропуску тиков без изменений (решение 214).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnchangedPolicyInRig {
+    /// Каждый тик рисуется и показывается: стенды, которым важен каждый показ (`present` ждёт `Presented`).
+    EveryTickDrawn,
+    /// Политика ровно из конфига потока рендера (по умолчанию пропуск включён): тесты самого пропуска.
+    FromConfig,
+}
+
 pub struct Harness {
     pub backend: VulkanDisplayBackend,
     pub stream: RawFrameStream,
@@ -254,6 +266,12 @@ impl Harness {
     /// Бэкенд камеры с UI-конфигом `ui_config`, поток кадров начат, surface ещё не присоединена.
     pub fn start(ui_config: UiOverlayConfig) -> Option<Self> {
         Self::start_with_initial_look(ui_config, None)
+    }
+
+    /// Бэкенд камеры, у которого пропуск тиков без изменений работает по конфигу `render_config` (по умолчанию
+    /// включён): тик без нового кадра камеры и без изменений UI возвращает `SkippedUnchanged`.
+    pub fn start_skipping_unchanged(render_config: RenderLoopConfig) -> Option<Self> {
+        Self::start_with_config(render_config, None, None, UnchangedPolicyInRig::FromConfig)
     }
 
     /// То же, что [`Self::start`], но стартовый вид картинки передаётся бэкенду при сборке (как делает приложение).
@@ -281,6 +299,20 @@ impl Harness {
             ui_overlay: ui_config,
             ..RenderLoopConfig::default()
         };
+        Self::start_with_config(
+            render_config,
+            initial_look,
+            initial_tone_base,
+            UnchangedPolicyInRig::EveryTickDrawn,
+        )
+    }
+
+    fn start_with_config(
+        render_config: RenderLoopConfig,
+        initial_look: Option<Arc<look_contract::LookSettings>>,
+        initial_tone_base: Option<look_contract::ToneBaseModel>,
+        policy: UnchangedPolicyInRig,
+    ) -> Option<Self> {
         // Один кадр камеры отдаётся на первый же vsync (политика буфера с запасом ждала бы второй).
         let stream = RawFrameStream::new(RawFrameStreamConfig {
             viewfinder_pacing: raw_frame_stream::ViewfinderPacing::LatestWins,
@@ -291,7 +323,11 @@ impl Harness {
         let (factory_log, factory_alive) = (Arc::clone(&log), Arc::clone(&alive));
         let directives = DirectiveSlot::new();
         directives.publish(manual_white());
-        let backend = headless_camera_backend_with_directives_or_skip(
+        let make_backend = match policy {
+            UnchangedPolicyInRig::EveryTickDrawn => headless_camera_backend_with_directives_or_skip,
+            UnchangedPolicyInRig::FromConfig => headless_camera_backend_keeping_unchanged_policy_or_skip,
+        };
+        let backend = make_backend(
             &render_config,
             stream.viewfinder(),
             Box::new(move |context| {
@@ -361,13 +397,17 @@ impl Harness {
         self.sequence += 1;
     }
 
+    /// Один тик показа с любым исходом (пропуск тоже исход): возвращает исход бэкенда.
+    pub fn tick(&mut self) -> PresentOutcome {
+        let outcome = self.backend.render_and_present(timing(self.frame_index));
+        self.frame_index += 1;
+        outcome
+    }
+
     /// Один кадр показа; возвращает его номер.
     pub fn present(&mut self) -> u64 {
         let index = self.frame_index;
-        assert_eq!(
-            self.backend.render_and_present(timing(index)),
-            PresentOutcome::Presented
-        );
+        assert_presented_or_skipped(self.backend.render_and_present(timing(index)));
         self.frame_index += 1;
         index
     }

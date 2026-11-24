@@ -18,7 +18,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use super::support::{Journal, fake_surface};
-use super::vulkan_support::{assert_no_validation_errors, headless_camera_backend_with_directives_or_skip};
+use super::vulkan_support::{
+    assert_no_validation_errors, assert_presented_or_skipped, headless_camera_backend_with_directives_or_skip,
+};
 use camera_contract::capabilities::{LensShading, Rational, RawSupport, SensorLevels, VendorProcessingFlags};
 use camera_contract::capture_result::{CaptureResultMeta, FrameNumber, SensorTimestamp};
 use camera_contract::control::{ColorTemperature, Tint, WhiteBalanceSetting};
@@ -46,7 +48,7 @@ use isp_model::tone::ToneCurveSettings;
 use raw_frame_stream::{
     OfferedFrame, ProducerFrame, RawFrameLease, RawFrameStream, RawFrameStreamConfig, ReleaseFences, StreamEpoch,
 };
-use render_loop::backend::{DisplayBackend, FrameTiming, PresentOutcome, PresentTarget};
+use render_loop::backend::{DisplayBackend, FrameTiming, PresentTarget};
 use render_loop::config::{
     ContinuityConfig, DisplayColorConfig, RenderLoopConfig, RevealExposureCheck, ScopesConfig, ViewfinderConfig,
 };
@@ -588,10 +590,7 @@ impl Rig {
 
     /// Один кадр показа; возвращает метку/кадрирование последнего принятого кадра и фон под UI.
     pub fn tick(&mut self) -> Tick {
-        assert_eq!(
-            self.backend.render_and_present(timing(self.next_tick)),
-            PresentOutcome::Presented
-        );
+        assert_presented_or_skipped(self.backend.render_and_present(timing(self.next_tick)));
         self.next_tick += 1;
         let viewfinder = self.backend.diagnostics().viewfinder.expect("диагностика видоискателя");
         let record = viewfinder

@@ -42,7 +42,7 @@ use gpu_vulkan::sync::GpuWaitFence;
 use raw_frame_stream::{
     OfferedFrame, ProducerFrame, RawFrameLease, RawFrameStream, RawFrameStreamConfig, ReleaseFences, StreamEpoch,
 };
-use render_loop::backend::{DisplayBackend, FrameTiming, PresentOutcome, PresentTarget};
+use render_loop::backend::{DisplayBackend, FrameTiming, PresentTarget};
 use render_loop::config::{DisplayColorConfig, RenderLoopConfig, ViewfinderConfig, WhiteBalanceConfig};
 use render_loop::viewfinder::{
     HeadroomBench, HeadroomBenchDiagnostics, ViewfinderCommand, ViewfinderCommandOutcome, ViewfinderDiagnostics,
@@ -53,7 +53,7 @@ use shell_contract::clock::MonotonicNanos;
 use shell_contract::hardware_buffer::BorrowedHardwareBuffer;
 use shell_contract::surface::SurfaceSize;
 use support::{Journal, fake_surface};
-use vulkan_support::{assert_no_validation_errors, headless_camera_backend_or_skip};
+use vulkan_support::{assert_no_validation_errors, assert_presented_or_skipped, headless_camera_backend_or_skip};
 
 /// Маленький кадр (полезная область = весь кадр): нагрузка стенда того же размера.
 const FRAME_SIZE: PixelSize = PixelSize::new(64, 48);
@@ -281,7 +281,7 @@ impl Bench {
             skipped_vsyncs: 0,
             target: PresentTarget::latch_immediately(expected, expected),
         };
-        assert_eq!(self.backend.render_and_present(timing), PresentOutcome::Presented);
+        assert_presented_or_skipped(self.backend.render_and_present(timing));
         self.frame_index += 1;
         let outstanding = self.stream.counters().frames_outstanding;
         assert!(

@@ -661,6 +661,12 @@ impl DisplayBackend for VulkanDisplayBackend {
         self.still.as_ref().map_or(StillWorkload::Idle, StillEngine::workload)
     }
 
+    fn presentation_resumed(&mut self) {
+        if let Some(display) = self.attached.as_mut() {
+            display.forget_shown_frame();
+        }
+    }
+
     fn abandon_stills(&mut self) {
         if let Some(still) = self.still.as_mut() {
             still.abandon_all();

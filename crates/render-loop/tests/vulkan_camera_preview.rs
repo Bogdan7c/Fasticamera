@@ -26,6 +26,7 @@ mod support;
 mod vulkan_support;
 use camera_rig::*;
 use isp_vulkan::viewfinder::{IspStage, IspStageSet};
+use render_loop::config::UnchangedFramePolicy;
 use render_loop::thread::RenderState;
 use render_loop::viewfinder::{ViewfinderCommand, ViewfinderCommandOutcome, ViewfinderPainter};
 use std::sync::atomic::Ordering;
@@ -35,7 +36,21 @@ use vulkan_support::assert_no_validation_errors;
 
 #[test]
 fn frames_flow_to_present_and_every_lease_returns_safely() {
-    let Some(rig) = start_rig() else { return };
+    frames_flow_and_leases_return(UnchangedFramePolicy::AlwaysRedraw);
+}
+
+/// Второй режим ключевого стенда: те же проверки (возвраты лизингов безопасны, на руках не больше одного кадра, статистика
+/// AWB от рисовавшегося кадра, ничего не утекло) при включённом пропуске тиков без изменений. Вместо счётчика
+/// перекомпоновок — счётчик пропущенных тиков: между кадрами камеры 60 к/с на экране 120 Гц тики пропускаются.
+#[test]
+fn frames_flow_and_every_lease_returns_safely_while_unchanged_ticks_are_skipped() {
+    frames_flow_and_leases_return(UnchangedFramePolicy::SkipWhenUnchanged);
+}
+
+fn frames_flow_and_leases_return(policy: UnchangedFramePolicy) {
+    let Some(rig) = start_rig_with_policy(policy) else {
+        return;
+    };
     let baseline = rig.context.live_objects();
     let (mut camera, epoch, offered) = Camera::start(&rig.stream, &rig.log, &rig.book);
 
@@ -72,11 +87,25 @@ fn frames_flow_to_present_and_every_lease_returns_safely() {
         rig.handle.status().backend.camera
     );
     // Камера 60 к/с, экран 120 Гц: между кадрами камеры экран собирается из прежнего изображения.
-    assert!(
-        wait_until(DEADLINE, || rig.viewfinder().counters.recomposed >= 10),
-        "перекомпоновки без нового кадра не было: {:?}",
-        rig.viewfinder()
-    );
+    match policy {
+        UnchangedFramePolicy::AlwaysRedraw => assert!(
+            wait_until(DEADLINE, || rig.viewfinder().counters.recomposed >= 10),
+            "перекомпоновки без нового кадра не было: {:?}",
+            rig.viewfinder()
+        ),
+        UnchangedFramePolicy::SkipWhenUnchanged => {
+            assert!(
+                wait_until(DEADLINE, || rig.handle.status().ticks_skipped_unchanged >= 10),
+                "тики без изменений не пропускаются: {:?}",
+                rig.viewfinder().counters.unchanged_frames
+            );
+            assert_eq!(
+                rig.viewfinder().counters.recomposed,
+                0,
+                "перекомпоновка, которой нет, не рисуется"
+            );
+        }
+    }
     assert!(
         wait_until(DEADLINE, || rig
             .viewfinder()
