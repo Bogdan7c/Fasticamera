@@ -37,6 +37,9 @@ impl AccumulatorId {
     /// Вектороскоп по осям a/b OKLab.
     pub const OKLAB_VECTORSCOPE: Self = Self("oklab-vectorscope");
 
+    /// То же, что [`Self::INTEGER_PROJECTION`], но нить обходит несколько отсчётов по y и сливает серии одинаковых
+    /// ячеек в регистре (waveform и parade: много записей `atomicAdd`, мало конкуренции).
+    pub const INTEGER_PROJECTION_RUNS: Self = Self("integer-projection-runs");
     /// То же, что [`Self::INTEGER_PROJECTION`], но одинаковые ячейки сливаются внутри subgroup перед `atomicAdd`
     /// (прибор с сильной конкуренцией за ячейки: вектороскоп Y'CbCr). Нужен баллот subgroup; без него
     /// [`ColorScopes`](crate::scopes::ColorScopes) берёт [`Self::fallback`].

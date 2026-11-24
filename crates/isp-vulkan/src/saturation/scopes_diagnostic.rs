@@ -27,6 +27,12 @@ pub enum AccumulateDiagnostic {
     WriteSpread,
     /// Полное накопление со слиянием одинаковых ячеек внутри subgroup (счётчики должны совпасть с продуктом).
     Aggregated,
+    /// Нить обходит 4 отсчёта по y и сливает серии одинаковых ячеек в регистре.
+    Runs4,
+    /// То же, 8 отсчётов.
+    Runs8,
+    /// То же, 16 отсчётов.
+    Runs16,
 }
 
 impl AccumulateDiagnostic {
@@ -39,6 +45,9 @@ impl AccumulateDiagnostic {
             Self::WriteCellZero => AccumulatorId::new("diag-write-cell-zero"),
             Self::WriteSpread => AccumulatorId::new("diag-write-spread"),
             Self::Aggregated => AccumulatorId::new("diag-aggregated"),
+            Self::Runs4 => AccumulatorId::new("diag-runs4"),
+            Self::Runs8 => AccumulatorId::new("diag-runs8"),
+            Self::Runs16 => AccumulatorId::new("diag-runs16"),
         }
     }
 
@@ -51,8 +60,21 @@ impl AccumulateDiagnostic {
             Self::WriteCellZero => blobs::SCOPE_DIAG_INTEGER_CELL_ZERO_COMP,
             Self::WriteSpread => blobs::SCOPE_DIAG_INTEGER_SPREAD_COMP,
             Self::Aggregated => blobs::SCOPE_DIAG_INTEGER_AGGREGATE_COMP,
+            Self::Runs4 => blobs::SCOPE_DIAG_INTEGER_RUNS4_COMP,
+            Self::Runs8 => blobs::SCOPE_DIAG_INTEGER_RUNS8_COMP,
+            Self::Runs16 => blobs::SCOPE_DIAG_INTEGER_RUNS16_COMP,
         };
-        AccumulatorShader { id: self.id(), spirv }
+        let rows_per_thread = match self {
+            Self::Runs4 => 4,
+            Self::Runs8 => 8,
+            Self::Runs16 => 16,
+            _ => 1,
+        };
+        AccumulatorShader {
+            id: self.id(),
+            spirv,
+            rows_per_thread,
+        }
     }
 }
 

@@ -1,0 +1,11 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_samplerless_texture_functions : require
+// Накопление счётчиков с ЦЕЛОЧИСЛЕННОЙ проекцией для waveform и RGB parade, см. `scope_accumulate_integer.comp`.
+// Нить обходит 8 отсчётов подряд по оси y и сливает подряд идущие попадания в одну ячейку в регистре
+// (`SCOPE_ROWS_PER_THREAD` в `scope_accumulate_common.glsl`): число atomicAdd у гладких кадров падает в разы,
+// а счётчики те же бит в бит. Число 8 обязано совпасть с `INTEGER_RUNS_ROWS_PER_THREAD` в accumulators.rs
+// (тест `shader_literals_tests`).
+#define SCOPE_ROWS_PER_THREAD 8u
+#include "scope_accumulate_common.glsl"
+#include "scope_accumulate_integer_rule.glsl"

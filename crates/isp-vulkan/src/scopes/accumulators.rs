@@ -46,6 +46,10 @@ pub(super) fn local_size_specialization(local: LocalSize) -> [SpecializationCons
     ]
 }
 
+/// Сколько отсчётов по y обходит нить у `scope_accumulate_integer_runs.comp` (`SCOPE_ROWS_PER_THREAD` шейдера;
+/// совпадение сверяет тест `shader_literals_tests`).
+pub(super) const INTEGER_RUNS_ROWS_PER_THREAD: u32 = 8;
+
 /// Шейдер накопления для регистрации.
 #[derive(Debug, Clone, Copy)]
 pub struct AccumulatorShader {
@@ -53,18 +57,28 @@ pub struct AccumulatorShader {
     pub id: AccumulatorId,
     /// SPIR-V (точка входа `main`, интерфейс — `scope_accumulate_common.glsl`).
     pub spirv: &'static [u8],
+    /// Сколько отсчётов подряд по оси y обходит одна нить (`SCOPE_ROWS_PER_THREAD` шейдера; 1 — «одна нить — один
+    /// отсчёт»). Rust делит на это число высоту dispatch, поэтому значение обязано совпасть с шейдером.
+    pub rows_per_thread: u32,
 }
 
-/// Шейдеры приборов `scope-model`: целочисленная проекция и OKLab.
-pub fn standard_accumulators() -> [AccumulatorShader; 2] {
+/// Шейдеры приборов `scope-model`: целочисленная проекция (прямая запись и серии в регистре) и OKLab.
+pub fn standard_accumulators() -> [AccumulatorShader; 3] {
     [
+        AccumulatorShader {
+            id: AccumulatorId::INTEGER_PROJECTION_RUNS,
+            spirv: blobs::SCOPE_ACCUMULATE_INTEGER_RUNS_COMP,
+            rows_per_thread: INTEGER_RUNS_ROWS_PER_THREAD,
+        },
         AccumulatorShader {
             id: AccumulatorId::INTEGER_PROJECTION,
             spirv: blobs::SCOPE_ACCUMULATE_INTEGER_COMP,
+            rows_per_thread: 1,
         },
         AccumulatorShader {
             id: AccumulatorId::OKLAB_VECTORSCOPE,
             spirv: blobs::SCOPE_ACCUMULATE_OKLAB_COMP,
+            rows_per_thread: 1,
         },
     ]
 }
@@ -76,10 +90,12 @@ pub fn merged_accumulators() -> [AccumulatorShader; 2] {
         AccumulatorShader {
             id: AccumulatorId::INTEGER_PROJECTION_MERGED,
             spirv: blobs::SCOPE_ACCUMULATE_INTEGER_MERGED_COMP,
+            rows_per_thread: 1,
         },
         AccumulatorShader {
             id: AccumulatorId::OKLAB_VECTORSCOPE_MERGED,
             spirv: blobs::SCOPE_ACCUMULATE_OKLAB_MERGED_COMP,
+            rows_per_thread: 1,
         },
     ]
 }
@@ -87,6 +103,8 @@ pub fn merged_accumulators() -> [AccumulatorShader; 2] {
 /// Пайплайны накопления по идентификаторам.
 pub(super) struct AccumulatorSet {
     entries: Vec<(AccumulatorId, ComputePipeline)>,
+    /// Отсчётов по y на нить у каждого шейдера (параллельно `entries`).
+    rows_per_thread: Vec<u32>,
 }
 
 impl AccumulatorSet {
@@ -98,7 +116,13 @@ impl AccumulatorSet {
         frame_slots: usize,
     ) -> Result<Self, ScopeError> {
         let mut entries: Vec<(AccumulatorId, ComputePipeline)> = Vec::with_capacity(shaders.len());
+        let mut rows_per_thread = Vec::with_capacity(shaders.len());
         for shader in shaders {
+            if shader.rows_per_thread == 0 {
+                return Err(ScopeError::InvalidConfig {
+                    what: format!("шейдер {}: rows_per_thread = 0", shader.id.name()),
+                });
+            }
             if entries.iter().any(|(id, _)| *id == shader.id) {
                 return Err(ScopeError::DuplicateAccumulator { id: shader.id });
             }
@@ -114,8 +138,12 @@ impl AccumulatorSet {
                 },
             )?;
             entries.push((shader.id, pipeline));
+            rows_per_thread.push(shader.rows_per_thread);
         }
-        Ok(Self { entries })
+        Ok(Self {
+            entries,
+            rows_per_thread,
+        })
     }
 
     /// Сколько пайплайнов накопления создано.
@@ -132,6 +160,16 @@ impl AccumulatorSet {
         }
         id.fallback()
             .filter(|fallback| registered(*fallback))
+            .ok_or(ScopeError::UnknownAccumulator { id })
+    }
+
+    /// Сколько отсчётов по y обходит одна нить шейдера прибора (с учётом запасного шейдера).
+    pub(super) fn rows_per_thread(&self, id: AccumulatorId) -> Result<u32, ScopeError> {
+        let id = self.resolve(id)?;
+        self.entries
+            .iter()
+            .position(|(candidate, _)| *candidate == id)
+            .and_then(|index| self.rows_per_thread.get(index).copied())
             .ok_or(ScopeError::UnknownAccumulator { id })
     }
 

@@ -4,13 +4,14 @@
 
 use scope_model::MAX_GRATICULE_PRIMITIVES;
 
-use super::accumulators::{LOCAL_SIZE_X_ID, LOCAL_SIZE_Y_ID};
+use super::accumulators::{INTEGER_RUNS_ROWS_PER_THREAD, LOCAL_SIZE_X_ID, LOCAL_SIZE_Y_ID};
 use super::parameter_blocks::{
     SCAN_CODE_ROTATED_CLOCKWISE, SCAN_CODE_ROTATED_COUNTER_CLOCKWISE, SCAN_CODE_UPRIGHT, SCAN_CODE_UPSIDE_DOWN,
 };
 use super::rule::{DECODE_TABLE_LEN, HEADER_WORDS, PARAMETER_WORDS};
 
 const ACCUMULATE_COMMON: &str = include_str!("../../shaders/scope_accumulate_common.glsl");
+const INTEGER_RUNS: &str = include_str!("../../shaders/scope_accumulate_integer_runs.comp");
 const RENDER: &str = include_str!("../../shaders/scope_render.comp");
 
 /// Размер массива `name[N]` из исходника шейдера; ищется ровно одно объявление.
@@ -79,4 +80,13 @@ fn scan_codes_and_header_word_in_the_shader_equal_the_rust_constants() {
     // Слово чтения — последнее слово заголовка, прибор начинается сразу за ним.
     assert!(ACCUMULATE_COMMON.contains(&format!("const uint WORD_SCAN = {}u;", HEADER_WORDS - 1)));
     assert!(ACCUMULATE_COMMON.contains(&format!("const uint WORD_RULE_FIRST = {HEADER_WORDS}u;")));
+}
+
+#[test]
+fn rows_per_thread_of_the_runs_shader_equal_the_rust_constant() {
+    let declaration = format!("#define SCOPE_ROWS_PER_THREAD {INTEGER_RUNS_ROWS_PER_THREAD}u");
+    assert!(
+        INTEGER_RUNS.contains(&declaration),
+        "в scope_accumulate_integer_runs.comp нет `{declaration}`: dispatch и шейдер разойдутся"
+    );
 }

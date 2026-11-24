@@ -89,8 +89,9 @@ impl GpuScopeRule for ResolvedScope {
     fn accumulator(&self) -> AccumulatorId {
         match self {
             // У waveform и parade отсчёты разбросаны по разным ячейкам: слияние в subgroup на Adreno 740 дороже
-            // прямой записи (замер сессии 16a). У вектороскопов соседние пиксели падают в одни и те же ячейки.
-            Self::Waveform(_) | Self::RgbParade(_) => AccumulatorId::INTEGER_PROJECTION,
+            // прямой записи, а серии подряд идущих отсчётов одной нити в регистре дешевле (замеры сессии 16a).
+            // У вектороскопов соседние пиксели падают в одни и те же ячейки: им выгодно слияние в subgroup.
+            Self::Waveform(_) | Self::RgbParade(_) => AccumulatorId::INTEGER_PROJECTION_RUNS,
             Self::VectorscopeYCbCr(_) => AccumulatorId::INTEGER_PROJECTION_MERGED,
             Self::VectorscopeOklab(_) => AccumulatorId::OKLAB_VECTORSCOPE_MERGED,
         }

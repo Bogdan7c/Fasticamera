@@ -46,6 +46,12 @@ pub enum ScopeAblation {
     WriteSpread,
     /// Слияние одинаковых ячеек в subgroup перед atomicAdd.
     Aggregated,
+    /// Нить обходит 4 отсчёта по y, серии одинаковых ячеек сливаются в регистре.
+    Runs4,
+    /// То же, 8 отсчётов.
+    Runs8,
+    /// То же, 16 отсчётов.
+    Runs16,
 }
 
 /// Экран камеры, список рисования которого гонит работа `display_*`.
@@ -535,6 +541,42 @@ pub const CATALOG: &[CatalogEntry] = &[
         kind: scopes_ablated(ScopeShape::VectorscopeYcbcr, ScopeAblation::Aggregated),
         group: WorkloadGroup::ScopesAblation,
         summary: "vectorscope_ycbcr: слияние одинаковых ячеек в subgroup",
+    },
+    CatalogEntry {
+        name: "scopes_waveform_runs4",
+        kind: scopes_ablated(ScopeShape::Waveform, ScopeAblation::Runs4),
+        group: WorkloadGroup::ScopesAblation,
+        summary: "waveform: 4 отсчёта на нить, серии в регистре",
+    },
+    CatalogEntry {
+        name: "scopes_waveform_runs8",
+        kind: scopes_ablated(ScopeShape::Waveform, ScopeAblation::Runs8),
+        group: WorkloadGroup::ScopesAblation,
+        summary: "waveform: 8 отсчётов на нить, серии в регистре",
+    },
+    CatalogEntry {
+        name: "scopes_parade_runs4",
+        kind: scopes_ablated(ScopeShape::Parade, ScopeAblation::Runs4),
+        group: WorkloadGroup::ScopesAblation,
+        summary: "parade: 4 отсчёта на нить, серии в регистре",
+    },
+    CatalogEntry {
+        name: "scopes_parade_runs8",
+        kind: scopes_ablated(ScopeShape::Parade, ScopeAblation::Runs8),
+        group: WorkloadGroup::ScopesAblation,
+        summary: "parade: 8 отсчётов на нить, серии в регистре",
+    },
+    CatalogEntry {
+        name: "scopes_waveform_runs16",
+        kind: scopes_ablated(ScopeShape::Waveform, ScopeAblation::Runs16),
+        group: WorkloadGroup::ScopesAblation,
+        summary: "waveform: 16 отсчётов на нить, серии в регистре",
+    },
+    CatalogEntry {
+        name: "scopes_parade_runs16",
+        kind: scopes_ablated(ScopeShape::Parade, ScopeAblation::Runs16),
+        group: WorkloadGroup::ScopesAblation,
+        summary: "parade: 16 отсчётов на нить, серии в регистре",
     },
 ];
 

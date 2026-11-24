@@ -231,6 +231,9 @@ fn accumulate_diagnostics_write_what_they_promise() {
     let product_total: u64 = product.counts().iter().map(|&count| u64::from(count)).sum();
     // Слияние ячеек в subgroup: те же счётчики бит в бит.
     assert_eq!(run(Some(AccumulateDiagnostic::Aggregated)), product);
+    // Серии в регистре (нить обходит несколько отсчётов по y): те же счётчики бит в бит.
+    assert_eq!(run(Some(AccumulateDiagnostic::Runs4)), product);
+    assert_eq!(run(Some(AccumulateDiagnostic::Runs8)), product);
     assert!(product_total > 0);
     for silent in [
         AccumulateDiagnostic::Empty,

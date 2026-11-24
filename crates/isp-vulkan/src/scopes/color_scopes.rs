@@ -384,7 +384,10 @@ impl ColorScopes {
         let stride = frame.settings.sample_stride;
         let samples_x = stride.samples_along(input.content.width);
         let samples_y = stride.samples_along(input.content.height);
-        let accumulate_groups = WorkgroupCount::covering(samples_x, samples_y, self.local_size);
+        // Нить шейдера обходит несколько отсчётов по y: строк нитей меньше во столько же раз (с округлением вверх).
+        let rows_per_thread = self.accumulators.rows_per_thread(plan.accumulator)?;
+        let accumulate_groups =
+            WorkgroupCount::covering(samples_x, samples_y.div_ceil(rows_per_thread), self.local_size);
         let render_groups =
             WorkgroupCount::covering(frame.picture_size.width(), frame.picture_size.height(), self.local_size);
         let push = sampling_push_bytes(&input, stride.get(), stride.offset(), samples_x, samples_y);

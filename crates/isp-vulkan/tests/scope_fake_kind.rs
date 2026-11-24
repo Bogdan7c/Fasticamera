@@ -88,6 +88,7 @@ fn histogram_shader() -> AccumulatorShader {
     AccumulatorShader {
         id: histogram_id(),
         spirv: blobs::TEST_SCOPE_HISTOGRAM_COMP,
+        rows_per_thread: 1,
     }
 }
 
@@ -108,13 +109,14 @@ fn fake_kind_counts_on_gpu_equal_to_the_same_rule_on_cpu_and_coexists_with_produ
     let Some(context) = gpu_context_or_skip() else { return };
     let base_settings = small_settings();
     let mut scopes = scopes_with_histogram(&context, &base_settings);
-    // Два стандартных + подставной; плюс два «со слиянием в subgroup», если устройство умеет баллот.
+    // Три стандартных (прямая запись, серии в регистре, OKLab) + подставной; плюс два «со слиянием в subgroup»,
+    // если устройство умеет баллот.
     let merged = if context.capabilities().subgroup_ballot_in_compute {
         2
     } else {
         0
     };
-    assert_eq!(scopes.accumulator_pipeline_count(), 3 + merged);
+    assert_eq!(scopes.accumulator_pipeline_count(), 4 + merged);
     let live_pipelines = context.live_objects().count(LiveObjectKind::Pipeline);
     let production = rule_cases(&base_settings);
     let mut compared = 0;

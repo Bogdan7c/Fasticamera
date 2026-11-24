@@ -87,6 +87,59 @@ void add_hit_merged_in_subgroup(uint cell) {
 }
 #endif
 
+#if defined(SCOPE_ROWS_PER_THREAD)
+// СЛИЯНИЕ СЕРИЙ В РЕГИСТРЕ. Нить обходит SCOPE_ROWS_PER_THREAD отсчётов подряд по оси y; подряд идущие попадания
+// нити в одну и ту же ячейку одной плоскости копятся в регистре и уходят ОДНИМ `atomicAdd` с числом попаданий,
+// когда серия обрывается (или нить закончила). Счётчики целые, сумма не зависит от разбиения: итог тот же бит в бит.
+// Плоскостей у приборов не больше трёх (`MAX_PLANES` в Rust): серии заведены по одной на плоскость и выбираются
+// ветвлением, без динамической индексации массива регистров.
+uint run_cell_0 = 0u;
+uint run_count_0 = 0u;
+uint run_cell_1 = 0u;
+uint run_count_1 = 0u;
+uint run_cell_2 = 0u;
+uint run_count_2 = 0u;
+
+#define RUN_STEP(run_cell, run_count)                                \
+    if (run_count != 0u && run_cell == cell) {                      \
+        run_count += 1u;                                             \
+    } else {                                                         \
+        if (run_count != 0u) {                                       \
+            atomicAdd(counters.counts[run_cell], run_count);         \
+        }                                                            \
+        run_cell = cell;                                             \
+        run_count = 1u;                                              \
+    }
+
+void add_hit_to_run(uint plane, uint cell) {
+    if (plane == 0u) {
+        RUN_STEP(run_cell_0, run_count_0)
+    } else if (plane == 1u) {
+        RUN_STEP(run_cell_1, run_count_1)
+    } else if (plane == 2u) {
+        RUN_STEP(run_cell_2, run_count_2)
+    } else {
+        atomicAdd(counters.counts[cell], 1u);
+    }
+}
+
+// Нить закончила обход: недописанные серии уходят в счётчики.
+void flush_runs() {
+    if (run_count_0 != 0u) {
+        atomicAdd(counters.counts[run_cell_0], run_count_0);
+    }
+    if (run_count_1 != 0u) {
+        atomicAdd(counters.counts[run_cell_1], run_count_1);
+    }
+    if (run_count_2 != 0u) {
+        atomicAdd(counters.counts[run_cell_2], run_count_2);
+    }
+}
+const uint ROWS_PER_THREAD = SCOPE_ROWS_PER_THREAD;
+#else
+const uint ROWS_PER_THREAD = 1u;
+#endif
+
 // Прибавляет попадание. Ячейка вне сетки не пишется (на CPU это ошибка правила, на GPU выход за буфер
 // недопустим); у правил из `scope-model` такого не бывает, паритет-тесты это проверяют.
 void scope_add_hit(uint plane, uint row, uint column) {
@@ -115,6 +168,8 @@ void scope_add_hit(uint plane, uint row, uint column) {
     }
 #elif defined(SCOPE_MERGE_HITS)
     add_hit_merged_in_subgroup(cell);
+#elif defined(SCOPE_ROWS_PER_THREAD)
+    add_hit_to_run(plane, cell);
 #else
     atomicAdd(counters.counts[cell], 1u);
 #endif
@@ -141,17 +196,28 @@ float word_as_float(uint index) {
 }
 
 void main() {
-    uvec2 sample_index = gl_GlobalInvocationID.xy;
-    if (sample_index.x >= sampling.samples_x || sample_index.y >= sampling.samples_y) {
+    // Нить обходит ROWS_PER_THREAD отсчётов подряд по y (1 — продуктовый обход «одна нить — один отсчёт»).
+    uint first_sample_y = gl_GlobalInvocationID.y * ROWS_PER_THREAD;
+    if (gl_GlobalInvocationID.x >= sampling.samples_x) {
         return;
     }
-    // Координаты отсчёта на ПОКАЗАННОЙ картинке (так же, как `SampleStride::coordinate` на CPU).
-    uint shown_x = sampling.offset + sample_index.x * sampling.stride;
-    uint shown_y = sampling.offset + sample_index.y * sampling.stride;
-    // Зеркальная картинка: показанный столбец x лежит в буфере на content_width - 1 - x.
-    uint texel_x = sampling.mirrored != 0u ? sampling.content_width - 1u - shown_x : shown_x;
-    vec4 texel = texelFetch(shown_image, ivec2(int(texel_x), int(shown_y)), 0);
-    uvec3 code = uvec3(quantize_display_value(texel.r), quantize_display_value(texel.g), quantize_display_value(texel.b));
-    uint eye_x = eye_position(shown_x, shown_y, parameters.words[WORD_SCAN]);
-    scope_hits(eye_x, code);
+    uint scan = parameters.words[WORD_SCAN];
+    for (uint step = 0u; step < ROWS_PER_THREAD; ++step) {
+        uvec2 sample_index = uvec2(gl_GlobalInvocationID.x, first_sample_y + step);
+        if (sample_index.y >= sampling.samples_y) {
+            break;
+        }
+        // Координаты отсчёта на ПОКАЗАННОЙ картинке (так же, как `SampleStride::coordinate` на CPU).
+        uint shown_x = sampling.offset + sample_index.x * sampling.stride;
+        uint shown_y = sampling.offset + sample_index.y * sampling.stride;
+        // Зеркальная картинка: показанный столбец x лежит в буфере на content_width - 1 - x.
+        uint texel_x = sampling.mirrored != 0u ? sampling.content_width - 1u - shown_x : shown_x;
+        vec4 texel = texelFetch(shown_image, ivec2(int(texel_x), int(shown_y)), 0);
+        uvec3 code = uvec3(quantize_display_value(texel.r), quantize_display_value(texel.g), quantize_display_value(texel.b));
+        uint eye_x = eye_position(shown_x, shown_y, scan);
+        scope_hits(eye_x, code);
+    }
+#if defined(SCOPE_ROWS_PER_THREAD)
+    flush_runs();
+#endif
 }

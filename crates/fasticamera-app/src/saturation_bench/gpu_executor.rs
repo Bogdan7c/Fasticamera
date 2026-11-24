@@ -493,6 +493,9 @@ fn scope_diagnostic(ablation: ScopeAblation) -> AccumulateDiagnostic {
         ScopeAblation::WriteCellZero => AccumulateDiagnostic::WriteCellZero,
         ScopeAblation::WriteSpread => AccumulateDiagnostic::WriteSpread,
         ScopeAblation::Aggregated => AccumulateDiagnostic::Aggregated,
+        ScopeAblation::Runs4 => AccumulateDiagnostic::Runs4,
+        ScopeAblation::Runs8 => AccumulateDiagnostic::Runs8,
+        ScopeAblation::Runs16 => AccumulateDiagnostic::Runs16,
     }
 }
 
