@@ -149,3 +149,54 @@ fn a_focus_target_outside_the_frame_or_a_bad_tolerance_is_refused() {
         );
     }
 }
+
+#[test]
+fn the_ev_icon_point_follows_the_strip_layout_formula_for_a_row_of_three() {
+    // Ряд по умолчанию со вспышкой: Flash, Raw, Exposure (таймер выключен). Центр значка = центр ряда +
+    // (индекс − (число − 1)/2) · шаг.
+    let strip = camera_screen::widgets_config::StripLayout::default();
+    let offset_from_middle = 2.0 - 2.0 / 2.0;
+    let ev_x_fraction = (strip.center_x_pt + offset_from_middle * strip.pitch_pt) / 440.0;
+    let plan = ScreenTouchPlan::default();
+    assert!((plan.ev_icon.x - ev_x_fraction).abs() < 5e-4, "{:?}", plan.ev_icon);
+}
+
+#[test]
+fn the_white_button_point_follows_the_layout_offset_from_the_shutter() {
+    let widgets = camera_screen::widgets_config::WidgetLayoutConfig::default();
+    let expected_x = (widgets.bottom.shutter_center_x_pt + widgets.white_button.offset_from_shutter_pt) / 440.0;
+    let plan = ScreenTouchPlan::default();
+    assert!(
+        (plan.white_button.x - expected_x).abs() < 5e-4,
+        "{:?}",
+        plan.white_button
+    );
+    assert_eq!(
+        plan.white_hold.at, plan.white_button,
+        "долгое нажатие целится в ту же кнопку"
+    );
+}
+
+#[test]
+fn a_white_hold_without_duration_is_refused_naming_the_gesture() {
+    let mut config = ScreenScenarioConfig::default();
+    config.touch.white_hold.hold_ms = 0;
+    assert_eq!(
+        config.validate(),
+        Err(ScreenScenarioConfigError::ZeroGestureDuration { gesture: "white_hold" })
+    );
+}
+
+#[test]
+fn white_points_outside_the_screen_are_refused_naming_the_gesture() {
+    let mut config = ScreenScenarioConfig::default();
+    config.touch.white_light = ScreenPoint::new(0.3, 1.5);
+    assert_eq!(
+        config.validate(),
+        Err(ScreenScenarioConfigError::PointOutOfRange {
+            gesture: "white_light",
+            x: 0.3,
+            y: 1.5
+        })
+    );
+}

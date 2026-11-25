@@ -22,14 +22,14 @@ use crate::still_test_support::{
 };
 
 fn finished(request: u64, outcome: CaptureOutcome) -> ScreenInput {
-    ScreenInput::Action(ScreenAction::CaptureFinished {
+    ScreenInput::action(ScreenAction::CaptureFinished {
         request: ShotRequestId(request),
         outcome,
     })
 }
 
 fn secured(request: u64) -> ScreenInput {
-    ScreenInput::Action(ScreenAction::CaptureSecured {
+    ScreenInput::action(ScreenAction::CaptureSecured {
         request: ShotRequestId(request),
     })
 }

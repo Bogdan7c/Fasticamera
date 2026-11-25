@@ -46,6 +46,12 @@ pub mod thumbnail;
 mod time;
 pub mod tools;
 pub mod viewfinder_map;
+pub mod white;
+pub mod white_button_layout;
+pub mod white_config;
+pub mod white_display;
+pub mod white_facts;
+pub mod white_layout;
 mod widget;
 pub mod widgets_config;
 pub mod zoom;
@@ -72,8 +78,18 @@ pub use mode_behaviour::{
 };
 pub use outcome::{ActionOutcome, NoChangeReason, Rejection, RejectionCounters};
 pub use reduce::{ScreenTransition, reduce};
-pub use screen::{CameraScreen, GestureCounters, ScreenBuildError, ScreenDiagnostics, ScreenTouch};
+pub use screen::{
+    CameraScreen, GestureCounters, ScreenBuildError, ScreenDiagnostics, ScreenTouch, WhiteCardTargets,
+    WhiteTouchTargets,
+};
 pub use state::{PanelState, ScreenState, ShutterVisibility, ViewfinderUnavailable};
+pub use white::{WhiteAxis, WhiteScreenState};
+pub use white_button_layout::{WhiteButtonLayout, WhiteButtonLayoutError};
+pub use white_config::{
+    WhiteButtonSide, WhiteConfigError, WhiteLight, WhiteLightIcon, WhiteLightIndex, WhiteScreenConfig,
+};
+pub use white_facts::{WhiteFacts, WhiteRange, WhiteTakeFacts, WhiteTakeState};
+pub use white_layout::{WhiteCardLayout, WhiteLayoutError};
 pub use widgets_config::{WidgetConfigError, WidgetLayoutConfig};
 pub use zoom::{FlipMark, ZoomState};
 pub use zoom_config::{ZoomConfig, ZoomConfigError};
@@ -97,3 +113,9 @@ mod test_support;
 #[cfg(test)]
 #[path = "viewfinder_map_tests.rs"]
 mod viewfinder_map_tests;
+#[cfg(test)]
+#[path = "white_config_tests.rs"]
+mod white_config_tests;
+#[cfg(test)]
+#[path = "white_display_tests.rs"]
+mod white_display_tests;

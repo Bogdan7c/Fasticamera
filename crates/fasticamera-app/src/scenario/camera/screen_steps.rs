@@ -15,10 +15,12 @@
 //! заполняется только если появится шаг без неё).
 
 use camera_contract::three_a::AeAfLock;
+use camera_screen::WhiteScreenConfig;
 
 use super::screen_expect::{Count, Expectation, Metric, StateCheck};
 use super::screen_gesture::Gesture;
 use super::screen_sensor_point::FramePoint;
+use super::screen_white_check::WhiteCheck;
 use crate::camera_screen_source::{ModeKind, PanelKind, Presence, ShutterPlacement};
 use crate::screen_scenario_config::{ScreenPoint, ScreenTouchPlan};
 
@@ -74,10 +76,12 @@ fn button_without_camera_effect() -> Expectation {
         .count(Metric::CameraIntents, Count::Exactly(0))
 }
 
-/// Все шаги сценария по порядку.
-pub fn planned_steps(plan: &ScreenTouchPlan) -> Vec<PlannedStep> {
+/// Все шаги сценария по порядку. `white` — конфиг кнопок света экрана: число, которое обязан держать движок после
+/// нажатия кнопки, берётся из него, а не копируется в план касаний.
+pub fn planned_steps(plan: &ScreenTouchPlan, white: &WhiteScreenConfig) -> Vec<PlannedStep> {
     let mut steps = focus_and_lock_steps(plan);
     steps.extend(menu_steps(plan));
+    steps.extend(white_steps(plan, white));
     steps.extend(exposure_steps(plan));
     steps.extend(mode_and_shutter_steps(plan));
     steps
@@ -184,6 +188,67 @@ fn menu_steps(plan: &ScreenTouchPlan) -> Vec<PlannedStep> {
             purpose: "после закрытия меню свайпом тап по кадру наводит фокус и доходит до HAL",
             gesture: Gesture::tap(plan.probe_tap),
             expect: tap_reaching_the_hal(),
+            inferred: None,
+        },
+    ]
+}
+
+/// Белое (white-balance 02): кнопка у затвора открывает карточку, кнопка света ставит белое рукой, тап по кадру закрывает
+/// карточку, долгое нажатие на значок берёт белое телефона без панели. Конец нейтральный: панель закрыта, затвор на месте.
+fn white_steps(plan: &ScreenTouchPlan, white: &WhiteScreenConfig) -> Vec<PlannedStep> {
+    // Числа кнопки света — из конфига экрана. Нет такой кнопки — шаг без числа, который заведомо провалится
+    // (рука не поставит NaN), а не молчаливо пропущенный: неверный номер виден в отчёте, а в `RuntimeConfig`
+    // такой конфиг отвергается ещё при запуске.
+    let (light_kelvin, light_duv) = white
+        .lights
+        .get(plan.white_light_index)
+        .map_or((f64::NAN, f64::NAN), |light| (light.kelvin, light.duv));
+    vec![
+        PlannedStep {
+            name: "white_button_tap",
+            purpose: "тап по кнопке белого открыл карточку белого: панель-подменю, ряд затвора поднят над карточкой, камере ничего",
+            gesture: Gesture::tap(plan.white_button),
+            expect: button_without_camera_effect()
+                .state(StateCheck::Panel(PanelKind::Submenu))
+                .state(StateCheck::Shutter(ShutterPlacement::RaisedAboveCard)),
+            inferred: None,
+        },
+        PlannedStep {
+            name: "white_light_tap",
+            purpose: "кнопка света ставит белое рукой: движок держит её числа с происхождением Manual, экран показывает то же белое",
+            gesture: Gesture::tap(plan.white_light),
+            expect: Expectation::new()
+                .count(Metric::ButtonPresses, Count::Exactly(1))
+                .count(Metric::CameraIntents, Count::Exactly(1))
+                .state(StateCheck::White(WhiteCheck::SetByHand {
+                    kelvin: light_kelvin,
+                    duv: light_duv,
+                }))
+                .state(StateCheck::White(WhiteCheck::ScreenShowsEngineWhite)),
+            inferred: None,
+        },
+        PlannedStep {
+            name: "white_card_close_tap",
+            purpose: "тап по кадру при открытой карточке белого только закрывает её: панель Closed, затвор на месте, фокус не трогается",
+            gesture: Gesture::tap(plan.probe_tap),
+            expect: tap_that_only_closes_a_panel()
+                .state(StateCheck::Panel(PanelKind::Closed))
+                .state(StateCheck::Shutter(ShutterPlacement::Visible)),
+            inferred: None,
+        },
+        PlannedStep {
+            name: "white_long_press",
+            purpose: "долгое нажатие на кнопку белого берёт белое телефона без панели: команда дошла до движка, исход честный \
+                      (взято с происхождением phone либо отказ без смены белого и с тряской экрана), панель закрыта",
+            gesture: Gesture::long_press(plan.white_hold),
+            // Долгое нажатие по кнопке белого счётчик экрана считает в «долгих нажатиях»; фокусных триггеров нет.
+            expect: Expectation::new()
+                .count(Metric::LongPresses, Count::Exactly(1))
+                .count(Metric::CameraIntents, Count::Exactly(1))
+                .count(Metric::FocusTriggers, Count::Exactly(0))
+                .state(StateCheck::Panel(PanelKind::Closed))
+                .state(StateCheck::White(WhiteCheck::PhoneTakeSettled))
+                .state(StateCheck::White(WhiteCheck::ScreenShowsEngineWhite)),
             inferred: None,
         },
     ]

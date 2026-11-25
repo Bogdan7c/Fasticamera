@@ -7,6 +7,8 @@ use crate::level::LevelConfig;
 use crate::shutter::TimerConfig;
 use crate::state::ScreenState;
 use crate::tools::{ToolId, ToolSetError};
+use crate::white_button_layout::WhiteButtonLayoutError;
+use crate::white_config::WhiteButtonSide;
 
 #[test]
 fn default_config_is_valid_and_builds_a_screen() {
@@ -244,4 +246,121 @@ fn capture_defaults_follow_decision_140_and_primary_format_comes_from_json() {
     assert_eq!(parsed.capture.primary_format, still_contract::plan::PrimaryFormat::Jpeg);
     assert_eq!(parsed.capture.max_saving_shots, 10, "остальное — по умолчанию");
     assert!(serde_json::from_str::<ScreenConfig>(r#"{"capture": {"result_timeout_ms": 1}}"#).is_err());
+}
+
+// ---- кнопка белого у затвора (WB35) ----
+
+#[test]
+fn white_is_neither_a_strip_icon_nor_a_menu_item_and_the_default_strip_is_unchanged() {
+    let with_tools = |essentials: Vec<ToolId>, controls_menu: Vec<ToolId>| ScreenConfig {
+        tools: ToolsConfig {
+            essentials,
+            controls_menu,
+        },
+        ..ScreenConfig::default()
+    };
+    assert_eq!(
+        ToolsConfig::default().essentials,
+        [ToolId::Flash, ToolId::Raw, ToolId::Timer, ToolId::Exposure]
+    );
+    assert_eq!(
+        with_tools(vec![ToolId::White], vec![ToolId::Aspect]).validate(),
+        Err(ScreenConfigError::Tools(ToolSetError::NotAStripIcon(ToolId::White)))
+    );
+    assert_eq!(
+        with_tools(vec![ToolId::Flash], vec![ToolId::Aspect, ToolId::White]).validate(),
+        Err(ScreenConfigError::Tools(ToolSetError::NotAMenuItem(ToolId::White)))
+    );
+}
+
+#[test]
+fn button_side_parses_both_values_and_defaults_to_the_right() {
+    assert_eq!(ScreenConfig::default().white.button_side, WhiteButtonSide::Right);
+    for (word, side) in [("right", WhiteButtonSide::Right), ("left", WhiteButtonSide::Left)] {
+        let parsed: ScreenConfig =
+            serde_json::from_str(&format!(r#"{{"white": {{"button_side": "{word}"}}}}"#)).expect("разбор");
+        assert_eq!(parsed.white.button_side, side, "{word}");
+        assert_eq!(parsed.validate(), Ok(()));
+    }
+}
+
+#[test]
+fn an_unknown_button_side_is_rejected_and_the_error_names_the_field() {
+    for bad in [r#""up""#, r#""Right""#, r#""""#] {
+        let error = serde_json::from_str::<ScreenConfig>(&format!(r#"{{"white": {{"button_side": {bad}}}}}"#))
+            .expect_err(bad)
+            .to_string();
+        assert!(
+            error.contains("camera_screen.screen.white.button_side"),
+            "{bad}: {error}"
+        );
+    }
+    // Не строка вовсе — тоже отказ, а не молчаливое умолчание.
+    assert!(serde_json::from_str::<ScreenConfig>(r#"{"white": {"button_side": 3}}"#).is_err());
+}
+
+#[test]
+fn the_button_offset_must_keep_the_button_clear_of_the_shutter_and_the_menu_button() {
+    let mut config = ScreenConfig::default();
+    let bottom = config.widgets.bottom.clone();
+    let shutter_diameter_pt = 80.1;
+    assert_eq!(
+        config
+            .widgets
+            .white_button
+            .check_clearance(&bottom, shutter_diameter_pt),
+        Ok(())
+    );
+    // Слишком близко к затвору: наезд на затвор (ближайший сосед с обеих сторон).
+    config.widgets.white_button.offset_from_shutter_pt = 50.0;
+    assert!(matches!(
+        config
+            .widgets
+            .white_button
+            .check_clearance(&bottom, shutter_diameter_pt),
+        Err(WhiteButtonLayoutError::TooCloseTo {
+            neighbour: "затвор",
+            ..
+        })
+    ));
+    // Слишком далеко: справа наезжает на кнопку меню (слева она ушла бы за край экрана, но справа проверка раньше).
+    config.widgets.white_button.offset_from_shutter_pt = 140.0;
+    assert!(matches!(
+        config
+            .widgets
+            .white_button
+            .check_clearance(&bottom, shutter_diameter_pt),
+        Err(WhiteButtonLayoutError::TooCloseTo {
+            neighbour: "кнопка меню",
+            side: WhiteButtonSide::Right,
+            ..
+        })
+    ));
+    // Левая сторона сама по себе: огромное смещение уносит кнопку за левый край.
+    config.widgets.white_button.offset_from_shutter_pt = 250.0;
+    assert!(
+        config
+            .widgets
+            .white_button
+            .check_clearance(&bottom, shutter_diameter_pt)
+            .is_err()
+    );
+    // Числа самой раскладки.
+    config.widgets.white_button.offset_from_shutter_pt = -1.0;
+    assert!(matches!(config.validate(), Err(ScreenConfigError::Widgets(_))));
+}
+
+#[test]
+fn a_screen_with_a_button_that_overlaps_the_shutter_is_not_built() {
+    use crate::screen::{CameraScreen, ScreenBuildError};
+    use ui_core::time::MotionPreference;
+    use ui_kit::tokens::UiKitTokens;
+    let mut config = ScreenConfig::default();
+    config.widgets.white_button.offset_from_shutter_pt = 50.0;
+    let built = CameraScreen::new(config, UiKitTokens::default(), MotionPreference::Full);
+    assert!(
+        matches!(built, Err(ScreenBuildError::WhiteButton(_))),
+        "{:?}",
+        built.err()
+    );
 }

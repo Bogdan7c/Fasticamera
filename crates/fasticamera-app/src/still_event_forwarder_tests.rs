@@ -36,14 +36,14 @@ fn forwarder_for(rig: &StillRig, ledger: &Arc<StillScreenLedger>) -> DevelopEven
 }
 
 fn finished_camera(request: u64) -> ScreenInput {
-    ScreenInput::Action(ScreenAction::CaptureFinished {
+    ScreenInput::action(ScreenAction::CaptureFinished {
         request: ShotRequestId(request),
         outcome: CaptureOutcome::Failed(CaptureFailureReason::Camera),
     })
 }
 
 fn finished_failed(request: u64) -> ScreenInput {
-    ScreenInput::Action(ScreenAction::CaptureFinished {
+    ScreenInput::action(ScreenAction::CaptureFinished {
         request: ShotRequestId(request),
         outcome: CaptureOutcome::Failed(CaptureFailureReason::Processing),
     })

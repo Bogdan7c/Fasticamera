@@ -24,6 +24,8 @@ use crate::three_a_status::ControlAdjustment;
 
 pub use camera_contract::white::HeldWhite;
 
+pub use crate::white_take::{WhiteTakeReport, WhiteTakeState};
+
 /// Настройки белого (секция `three_a.white` конфига движка). Все числа — данные, обоснование рядом.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -60,6 +62,18 @@ impl Default for WhiteConfig {
             late_transition_ms: 300,
         }
     }
+}
+
+/// Пределы белой, как их видит экран: по ним строится шкала и прижим числа (WB31). Берутся из [`WhiteConfig`],
+/// а не из умолчаний экрана, поэтому правка конфига двигает шкалу без правки экрана.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct WhiteRange {
+    /// Самая тёплая белая (нижний предел температуры, `min_kelvin`).
+    pub min_temperature: ColorTemperature,
+    /// Самая холодная белая (верхний предел температуры, `max_kelvin`).
+    pub max_temperature: ColorTemperature,
+    /// Предел оттенка по модулю: допустимо `-max_abs_tint..=+max_abs_tint` (`max_abs_duv`).
+    pub max_abs_tint: Tint,
 }
 
 /// Конфиг белого некорректен: поле названо.
@@ -121,6 +135,16 @@ impl WhiteConfig {
 }
 
 impl WhiteConfig {
+    /// Пределы для статуса. Непроверенный конфиг ([`Self::validate`] ловит его при сборке движка) не доходит
+    /// сюда; на всякий случай нечитаемое число заменяется встроенным дневным светом / нулём, а не паникой.
+    pub fn range(&self) -> WhiteRange {
+        WhiteRange {
+            min_temperature: ColorTemperature::from_kelvin(self.min_kelvin).unwrap_or(ColorTemperature::DAYLIGHT),
+            max_temperature: ColorTemperature::from_kelvin(self.max_kelvin).unwrap_or(ColorTemperature::DAYLIGHT),
+            max_abs_tint: Tint::from_duv(self.max_abs_duv).unwrap_or(Tint::NEUTRAL),
+        }
+    }
+
     /// Запасной свет из конфига, а у непроверенного конфига (ошибка журналируется) — встроенный дневной свет.
     ///
     /// Нужен потому, что `ColorTemperature` создаётся только через `Result`, а владельцу белого запасной свет
@@ -177,8 +201,17 @@ pub enum WhiteMemoryLoad {
 /// Запись памяти. Метод **не блокирует**: реализация кладёт запись в свой поток записи, а ошибки записи
 /// остаются видны у реализации (диагностика памяти), не у движка. Движок зовёт его на каждое изменение
 /// белой с происхождением «источник» или «ручное»; запасной свет не сохраняется.
+///
+/// Реализация вправе откладывать запись на диск (правка шкалы под пальцем идёт десятки раз в секунду), но обязана
+/// уложить последнее значение за свой ограниченный срок; [`WhiteMemory::flush`] требует положить его сразу.
 pub trait WhiteMemory: Send {
     fn save(&mut self, record: WhiteMemoryRecord);
+
+    /// «Пиши немедленно»: всё принятое, но ещё не записанное, должно лечь на диск без ожидания очередного
+    /// интервала. Метод **не ждёт диска** на потоке движка: он только снимает отсрочку у потока записи. Без
+    /// принятого и несброшенного — ничего не делает. Движок зовёт его, когда приложение уходит в фон: процесс
+    /// в фоне могут убить без предупреждения.
+    fn flush(&mut self);
 }
 
 /// Память, которой нет (тесты, стенды, сборки без файла).
@@ -187,6 +220,8 @@ pub struct NoWhiteMemory;
 
 impl WhiteMemory for NoWhiteMemory {
     fn save(&mut self, _record: WhiteMemoryRecord) {}
+
+    fn flush(&mut self) {}
 }
 
 /// Всё, что владельцу белого дают при сборке движка.
@@ -317,7 +352,12 @@ pub struct WhiteStatus {
     pub held: HeldWhite,
     /// Поправки к последнему названному значению (прижим к пределам). Пусто — применено как есть.
     pub limits: Vec<ControlAdjustment>,
+    /// Пределы белой из конфига (для шкалы экрана); известны с первого снимка.
+    pub range: WhiteRange,
     pub request: WhiteRequestState,
+    /// Исход последней команды «взять белую» (`None` — таких команд ещё не было). Заявка открытия приложения
+    /// сюда не попадает: она видна в [`Self::request`].
+    pub last_take: Option<WhiteTakeReport>,
     pub memory: WhiteMemoryState,
     /// Сколько ответов отброшено как чужих (номер не действующей заявки): гонки видны в диагностике.
     pub stale_answers: u64,
@@ -332,7 +372,9 @@ impl WhiteStatus {
                 origin: camera_contract::white::WhiteOrigin::Fallback,
             },
             limits: Vec::new(),
+            range: WhiteConfig::default().range(),
             request: WhiteRequestState::Idle { last: None },
+            last_take: None,
             memory: WhiteMemoryState {
                 startup: WhiteMemoryStartup::NothingRemembered,
                 saves_requested: 0,

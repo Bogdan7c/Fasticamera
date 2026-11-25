@@ -17,11 +17,16 @@
 //!   иначе (меню ↔ значок посреди закрытия) собирается новый.
 //! * Варианты ряда гаснут вместе с карточкой: касания снимаются сразу, сами варианты забываются, когда морф
 //!   дошёл до `Closed` (`advance`).
+//! * Белая карточка (WB28) на 24 pt выше: её содержимое и касания ведёт отдельный виджет (`white_card.rs`) со своим
+//!   узлом, а здесь остаётся стекло. Рамка стекла опускается/поднимается на «высоту» узла-метки `extra`, которую
+//!   двигает та же пружина и в тот же кадр, что и подъём затвора, — поэтому при смене «EV ↔ белое» значком
+//!   затвор не наезжает на карточку ни в один момент.
 //! * Рисуется карточка поверх шторки (см. `Stage::draw`): стекло, затем содержимое.
 
+use ui_core::geometry::Rect;
 use ui_core::gesture::{GestureEvent, PanDirection, PanSpec, RecognizerSpec};
 use ui_core::id::NodeId;
-use ui_core::time::MonotonicNanos;
+use ui_core::time::{MonotonicNanos, MotionPreference};
 use ui_draw::color::Opacity;
 use ui_draw::draw_list::DrawItem;
 use ui_draw::icons::IconId;
@@ -44,10 +49,12 @@ use super::tool_card_content::{
 };
 use super::tool_card_options::OptionRow;
 use super::tool_card_styles::{StylesRow, active_preset_name, styles_have_edits};
+use super::white_card::WhiteCardWidget;
 use super::{Ctx, Outputs};
 use crate::action::ScreenAction;
 use crate::settings::CaptureSettings;
 use crate::tools::ToolId;
+use crate::white::WhiteAxis;
 
 /// Пружина морфа шторка → карточка и закрытия: без перелёта, ≈ 0,3 с `[measured: C t=37.8–38.1, 62.93–63.25]`.
 pub(crate) const MENU_MORPH_MOTION: MotionToken = MotionToken::CardMorph;
@@ -82,6 +89,15 @@ struct ValueKey {
     exposure_steps: i32,
 }
 
+/// Что случилось с открытием карточки в этом кадре (для узла-метки высоты стекла).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExtraHeightEvent {
+    /// Ничего нового: смена высоты (если она есть) идёт пружиной.
+    Unchanged,
+    /// Карточка только что открылась: высота встаёт сразу, вместе с проявлением стекла.
+    JustOpened,
+}
+
 /// Показанная сейчас карточка: нужна и во время закрытия, когда состояние уже забыло об инструменте.
 #[derive(Debug, Clone)]
 struct ShownCard {
@@ -109,6 +125,16 @@ pub(crate) struct ToolCardWidget {
     /// К открытию ли едем сейчас.
     open_wanted: bool,
     shown: Option<ShownCard>,
+    /// Содержимое белой карточки (свой узел высотой в белую карточку).
+    white: WhiteCardWidget,
+    /// Ось, выбранная на белой карточке (читается из состояния в `sync`, чтобы жест не ходил за состоянием).
+    white_axis: WhiteAxis,
+    /// Узел-метка: его сдвиг по вертикали = на сколько рамка стекла выше обычной (минус pt). Никаких касаний.
+    extra_node: NodeId,
+    /// Какая «лишняя» высота стекла назначена сейчас, pt (0 — обычная карточка).
+    extra_target_pt: f64,
+    /// Текущий сдвиг метки, pt (≤ 0): рамка стекла поднята на столько. Обновляется в `sync` после анимаций.
+    extra_offset_pt: f64,
 }
 
 impl ToolCardWidget {
@@ -144,6 +170,10 @@ impl ToolCardWidget {
             IconTurn::FollowsPhone,
         )?;
         kit.set_interactive(node, false)?;
+        // Белая карточка и метка высоты — после обычной: выше в хит-тесте.
+        let white = WhiteCardWidget::build(kit, ctx, parent)?;
+        let extra_node = kit.add_node(parent, "card_extra", card_rect, ctx.geometry.screen())?;
+        kit.set_interactive(extra_node, false)?;
         Ok(Self {
             node,
             left,
@@ -155,6 +185,11 @@ impl ToolCardWidget {
             morph_style: None,
             open_wanted: false,
             shown: None,
+            white,
+            white_axis: WhiteAxis::default(),
+            extra_node,
+            extra_target_pt: 0.0,
+            extra_offset_pt: 0.0,
         })
     }
 
@@ -183,7 +218,8 @@ impl ToolCardWidget {
             }
             _ => Ok(self.options.handle_gesture(event, out)?
                 || self.styles.handle_gesture(kit, event, &mut out.actions)?
-                || self.ruler.handle_gesture(event)?),
+                || self.ruler.handle_gesture(event)?
+                || self.white.handle_gesture(event, self.white_axis, out)?),
         }
     }
 
@@ -249,25 +285,35 @@ impl ToolCardWidget {
 
     pub(crate) fn sync(&mut self, kit: &mut SceneKit, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
         self.ruler.sync(ctx)?;
-        let Some(tool) = open_card_tool(ctx.state) else {
+        self.white_axis = ctx.state.white().axis();
+        let open_tool = open_card_tool(ctx.state);
+        // Шкалы белого следуют за фактами всегда; касания включены, только пока открыта именно белая карточка.
+        self.white.sync(kit, ctx, open_tool == Some(ToolId::White))?;
+        let Some(tool) = open_tool else {
             if self.open_wanted {
                 self.open_wanted = false;
                 self.close(ctx)?;
             }
+            self.sync_extra_height(kit, ctx, ExtraHeightEvent::Unchanged)?;
             return self.make_untouchable(kit);
         };
+        let mut height_event = ExtraHeightEvent::Unchanged;
         if !self.open_wanted {
             self.open_wanted = true;
             self.open(ctx)?;
+            height_event = ExtraHeightEvent::JustOpened;
         }
+        self.sync_extra_height(kit, ctx, height_event)?;
         let left_face = if ctx.state.card_returns_to_menu() {
             LeftButtonFace::BackToMenu
         } else {
             LeftButtonFace::Close
         };
         self.refresh_shown(ctx, tool, left_face);
-        kit.set_interactive(self.node, true)?;
-        kit.set_interactive(self.left.button.node(), true)?;
+        // У белой карточки свой узел и своя «×»: узел обычной карточки под ней касаний не ловит.
+        let standard_card = tool != ToolId::White;
+        kit.set_interactive(self.node, standard_card)?;
+        kit.set_interactive(self.left.button.node(), standard_card)?;
         let is_exposure = tool == ToolId::Exposure;
         self.ruler.set_active(kit, is_exposure)?;
         let is_styles = tool == ToolId::Styles;
@@ -282,6 +328,48 @@ impl ToolCardWidget {
             self.styles.stop_touches(kit)?;
         }
         self.sync_options(kit, ctx, tool)
+    }
+
+    /// Выравнивает «лишнюю» высоту стекла по открытой карточке. Закрывающаяся карточка держит последнюю высоту
+    /// (стекло доисчезает тем же, чем было). Смена «обычная ↔ белая» при открытой карточке идёт пружиной подъёма
+    /// затвора в тот же кадр, при Reduce Motion — сразу.
+    fn sync_extra_height(
+        &mut self,
+        kit: &mut SceneKit,
+        ctx: &Ctx<'_>,
+        event: ExtraHeightEvent,
+    ) -> Result<(), WidgetError> {
+        if let Some(tool) = open_card_tool(ctx.state) {
+            let desired_pt = ctx.geometry.card_extra_height_pt(Some(tool));
+            let changed = desired_pt.to_bits() != self.extra_target_pt.to_bits();
+            self.extra_target_pt = desired_pt;
+            if event == ExtraHeightEvent::JustOpened || (changed && ctx.motion == MotionPreference::Reduced) {
+                kit.jump_vertically_to(self.extra_node, -desired_pt)?;
+            } else if changed {
+                kit.slide_vertically_to(self.extra_node, -desired_pt, ctx.spring(MENU_MORPH_MOTION)?, ctx.now)?;
+            }
+        }
+        self.extra_offset_pt = kit.vertical_offset_pt(self.extra_node)?;
+        Ok(())
+    }
+
+    /// Рамка стекла с учётом «лишней» высоты: верх поднят на `lift`, низ на месте.
+    fn lifted_frame(&self, frame: Rect) -> Rect {
+        let lift_pt = (-self.extra_offset_pt).max(0.0);
+        Rect::from_xywh(
+            frame.min_x(),
+            frame.min_y() - lift_pt,
+            frame.size.width,
+            frame.size.height + lift_pt,
+        )
+    }
+
+    /// Доля роста белой карточки, 0..1: содержимое белой карточки проявляется вместе с растущим стеклом.
+    fn white_growth(&self) -> f32 {
+        if self.extra_target_pt <= 0.0 {
+            return 1.0;
+        }
+        ((-self.extra_offset_pt) / self.extra_target_pt).clamp(0.0, 1.0) as f32
     }
 
     /// Обновляет запомненную карточку. Строка значения пересобирается только при смене ключа.
@@ -344,6 +432,7 @@ impl ToolCardWidget {
 
     pub(crate) fn advance(&mut self, ctx: &Ctx<'_>, out: &mut Outputs) {
         self.ruler.advance(ctx, out);
+        self.white.advance(ctx, out);
         if let Some(morph) = &mut self.morph {
             morph.advance(ctx.now);
             let _lifecycle = morph.drain_events();
@@ -369,10 +458,11 @@ impl ToolCardWidget {
         let (Some(morph), Some(shown)) = (&self.morph, &self.shown) else {
             return Ok(());
         };
-        let snapshot = morph.snapshot(ctx.now);
+        let mut snapshot = morph.snapshot(ctx.now);
         if snapshot.phase == PanelPhase::Closed {
             return Ok(());
         }
+        snapshot.frame = self.lifted_frame(snapshot.frame);
         layers.push(
             Layer::Glass,
             DrawItem::Glass(panel_glass_group(
@@ -386,6 +476,11 @@ impl ToolCardWidget {
             return Ok(());
         }
         let slide_px = ctx.px.px(snapshot.content_offset_pt);
+        if shown.tool == ToolId::White {
+            // У белой карточки своё содержимое (заголовка и крупного значения нет): растёт вместе со стеклом.
+            let growth = self.white_growth();
+            return self.white.draw(ctx, visuals, layers, texts, (alpha * growth, slide_px));
+        }
         self.draw_texts(ctx, layers, texts, shown, alpha, slide_px)?;
         if shown.tool == ToolId::Exposure {
             self.ruler.draw(ctx, visuals, layers, alpha, slide_px)?;
@@ -494,6 +589,21 @@ impl ToolCardWidget {
 
     pub(crate) fn invalid_bias_values(&self) -> u64 {
         self.ruler.invalid_bias_values()
+    }
+
+    /// Идёт ли мерцание или тряска на карточке (кадры нужны, пока они не кончились).
+    pub(crate) fn is_animating(&self, now: MonotonicNanos) -> bool {
+        self.white.is_animating(now)
+    }
+
+    /// Сколько значений или пределов шкал белого отвергнуто как невозможные.
+    pub(crate) fn invalid_white_values(&self) -> u64 {
+        self.white.invalid_values()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn white(&self) -> &WhiteCardWidget {
+        &self.white
     }
 
     pub(crate) fn suppressed_echo_events(&self) -> u64 {

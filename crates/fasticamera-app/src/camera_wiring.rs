@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use camera_contract::three_a::DirectiveSlot;
 use camera_contract::white::{WhiteAnswerChannel, WhiteDirective, WhiteSourceId};
+use camera_contract::white_reading::{WhiteReading, WhiteReadingBoard};
 use camera_contract::zoom::LensIntentChannel;
 use camera_core::backend::BackendFactory;
 use camera_core::flash_status::FlashStillObserver;
@@ -51,6 +52,9 @@ pub struct CameraLinks {
     pub white_directives: DirectiveSlot<WhiteDirective>,
     /// Ответы источников белого: рендер пишет и толкает движок, движок читает.
     pub white_answers: WhiteAnswerChannel,
+    /// Показания источников белого (WB33): рендер пишет, экран читает («≈ 3100» на кнопке источника). Владельцу
+    /// белого они не идут: показание — не ответ.
+    pub white_readings: WhiteReadingBoard,
     /// Открытая память белой (файл в папке приложения): движок забирает её один раз при сборке. Пустая — без
     /// сохранения (тесты, стенды, режим `none`).
     pub white_memory: WhiteMemoryHandoff,
@@ -85,12 +89,18 @@ impl CameraLinks {
         EngineBinding::bind(self.white_answers.refresh_signal(), receiver)
     }
 
+    /// Последнее показание источника белого для экрана; `None` — рендер ещё ничего о нём не показывал.
+    pub fn white_reading_of(&self, source: WhiteSourceId) -> Option<WhiteReading> {
+        self.white_readings.latest_of(source)
+    }
+
     /// Половина для потока рендера: клоны тех же ящиков, что держит движок.
     pub fn render_side(&self, exposure: ExposureControllerKind) -> RenderLinks {
         RenderLinks {
             white: WhiteLinks {
                 directives: self.white_directives.clone(),
                 answers: self.white_answers.clone(),
+                readings: self.white_readings.clone(),
                 sources: Default::default(),
             },
             auto_exposure: self.auto_exposure.render_end(exposure),
@@ -167,6 +177,7 @@ fn spawn_engine(config: &CameraConfig, backend: CameraBackendParts, links: Camer
     }
     let wiring = three_a_wiring(config, &links, choice.effective);
     let white_memory_diagnostics = links.white_memory.diagnostics().clone();
+    let white_readings = links.white_readings.clone();
     let lens_intents = links.lens_intents.clone();
     match CameraRuntime::spawn_with_lens_wiring(
         config.engine.clone(),
@@ -198,6 +209,7 @@ fn spawn_engine(config: &CameraConfig, backend: CameraBackendParts, links: Camer
                 .with_exposure_controller(choice)
                 .with_lens_intents(lens_intents)
                 .with_white_memory(white_memory_diagnostics)
+                .with_white_readings(white_readings)
         }
         Err(error) => {
             CameraServices::unavailable(format!("движок камеры не запущен: {error}"), config.scenarios.clone())

@@ -15,7 +15,7 @@ use super::*;
 static NEXT_DIRECTORY: AtomicU32 = AtomicU32::new(0);
 
 /// Новая пустая папка приложения (каждый тест — своя).
-fn app_directory() -> (AppDirectory, PathBuf) {
+pub(super) fn app_directory() -> (AppDirectory, PathBuf) {
     let path = std::env::temp_dir().join(format!(
         "fasticamera-white-memory-{}-{}",
         std::process::id(),
@@ -26,7 +26,7 @@ fn app_directory() -> (AppDirectory, PathBuf) {
     (directory, path)
 }
 
-fn record(kelvin: f64, duv: f64, origin: RememberedOrigin) -> WhiteMemoryRecord {
+pub(super) fn record(kelvin: f64, duv: f64, origin: RememberedOrigin) -> WhiteMemoryRecord {
     WhiteMemoryRecord {
         setting: WhiteBalanceSetting {
             temperature: ColorTemperature::from_kelvin(kelvin).expect("температура"),
@@ -37,7 +37,7 @@ fn record(kelvin: f64, duv: f64, origin: RememberedOrigin) -> WhiteMemoryRecord 
 }
 
 /// Ждёт условия до 5 с (поток записи работает сам, ждать приходится его).
-fn wait_until(what: &str, condition: impl Fn() -> bool) {
+pub(super) fn wait_until(what: &str, condition: impl Fn() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while !condition() {
         assert!(Instant::now() < deadline, "не дождались: {what}");
@@ -165,7 +165,7 @@ fn records_arriving_during_a_slow_write_are_coalesced_and_the_last_one_wins() {
     sink.first_write_started = Some(started_sender);
     sink.gate = Some(gate);
     let diagnostics = WhiteMemoryDiagnostics::default();
-    let mut writer = WhiteMemoryWriter::spawn(sink, diagnostics.clone()).expect("поток");
+    let mut writer = WhiteMemoryWriter::spawn(sink, diagnostics.clone(), Duration::ZERO).expect("поток");
     let first = record(3_000.0, 0.0, RememberedOrigin::Manual);
     let middle = record(4_000.0, 0.0, RememberedOrigin::Manual);
     let last = record(5_000.0, 0.01, RememberedOrigin::Source);
@@ -193,7 +193,7 @@ fn a_failed_write_is_counted_and_reported_and_the_next_successful_write_clears_t
     let mut sink = ScriptedSink::new(Arc::clone(&written));
     sink.failures_left = 1;
     let diagnostics = WhiteMemoryDiagnostics::default();
-    let mut writer = WhiteMemoryWriter::spawn(sink, diagnostics.clone()).expect("поток");
+    let mut writer = WhiteMemoryWriter::spawn(sink, diagnostics.clone(), Duration::ZERO).expect("поток");
 
     writer.save(record(3_000.0, 0.0, RememberedOrigin::Manual));
     wait_until("ошибка записи видна", || {
@@ -224,6 +224,7 @@ fn closing_writes_the_last_accepted_record_and_later_saves_are_rejected_not_lost
     let mut writer = WhiteMemoryWriter::spawn(
         ScriptedSink::new(Arc::clone(&written)),
         WhiteMemoryDiagnostics::default(),
+        Duration::ZERO, // min_write_interval: эти тесты не про частоту записи
     )
     .expect("поток");
     let last = record(3_000.0, 0.0, RememberedOrigin::Manual);
@@ -247,7 +248,7 @@ fn a_panicking_sink_kills_only_the_writer_and_later_saves_are_counted_as_rejecte
     let mut sink = ScriptedSink::new(Arc::default());
     sink.panic_on_write = true;
     let diagnostics = WhiteMemoryDiagnostics::default();
-    let mut writer = WhiteMemoryWriter::spawn(sink, diagnostics.clone()).expect("поток");
+    let mut writer = WhiteMemoryWriter::spawn(sink, diagnostics.clone(), Duration::ZERO).expect("поток");
 
     writer.save(record(3_000.0, 0.0, RememberedOrigin::Manual));
     wait_until("поток записи умер", || {

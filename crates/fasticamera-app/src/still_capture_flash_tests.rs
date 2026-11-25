@@ -137,7 +137,7 @@ fn a_command_the_camera_did_not_accept_fails_the_still_through_the_render_with_o
     );
     assert_eq!(
         rig.wait_screen_inputs(1),
-        vec![ScreenInput::Action(ScreenAction::CaptureFinished {
+        vec![ScreenInput::action(ScreenAction::CaptureFinished {
             request: ShotRequestId(1),
             outcome: CaptureOutcome::Failed(CaptureFailureReason::Camera),
         })]

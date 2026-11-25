@@ -175,7 +175,7 @@ impl ScreenRun {
             timeout: std::time::Duration::from_millis(self.config.step_timeout_ms),
             settle: std::time::Duration::from_millis(self.config.step_settle_ms),
         };
-        let steps = planned_steps(&self.config.touch);
+        let steps = planned_steps(&self.config.touch, &context.camera_screen.config().screen.white);
         let step_count = steps.len();
         let warmup = WarmupReport {
             frames: warmed,
@@ -347,7 +347,12 @@ impl ObservingScenario for ScreenScenario {
             "started",
             stage_fields([
                 ("max_duration_ms", screen_config.max_duration_ms.into()),
-                ("steps", planned_steps(&screen_config.touch).len().into()),
+                (
+                    "steps",
+                    planned_steps(&screen_config.touch, &context.camera_screen.config().screen.white)
+                        .len()
+                        .into(),
+                ),
                 ("ui_gpu_budget_ms", screen_config.ui_gpu_budget_ms(refresh_hz).into()),
             ]),
         );

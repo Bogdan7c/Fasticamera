@@ -22,6 +22,7 @@ use camera_contract::white::{
     SceneIlluminant, WhiteConfidence, WhiteRequestId, WhiteSourceFailure, WhiteSourceId, WhiteSourceOutcome,
     WhiteUnavailableReason, WhiteUnknownReason,
 };
+use camera_contract::white_reading::WhiteReading;
 use isp_model::color::dng::{CameraNeutral, ColorProfileError, DngColorProfile};
 use isp_model::color::white_point::{CctDuv, WhitePointError, cct_duv_from_chromaticity};
 use serde::{Deserialize, Serialize};
@@ -278,26 +279,59 @@ impl PhoneWhiteSource {
     }
 }
 
+/// Белая подсказки кадра в словаре настроек; `None` — подсказка не переводится (одна математика у ответа и показания).
+fn setting_of_hints(hints: &CaptureColorHints, profile: &DngColorProfile) -> Option<WhiteBalanceSetting> {
+    let white = white_of_hints(hints, profile).ok()?;
+    let temperature = ColorTemperature::from_kelvin(white.temperature.0).ok()?;
+    let tint = Tint::from_duv(white.duv.0).ok()?;
+    Some(WhiteBalanceSetting { temperature, tint })
+}
+
 /// Готовый ответ по подсказке кадра или честная поломка.
 fn ready_outcome(
     hints: &CaptureColorHints,
     profile: &DngColorProfile,
     confidence: WhiteConfidence,
 ) -> WhiteSourceOutcome {
-    let broken = WhiteSourceOutcome::Failed {
-        failure: WhiteSourceFailure::HintNotConvertible,
-    };
-    let Ok(white) = white_of_hints(hints, profile) else {
-        return broken;
-    };
-    let temperature = ColorTemperature::from_kelvin(white.temperature.0);
-    let tint = Tint::from_duv(white.duv.0);
-    match (temperature, tint) {
-        (Ok(temperature), Ok(tint)) => WhiteSourceOutcome::Ready {
-            illuminant: SceneIlluminant::Uniform(WhiteBalanceSetting { temperature, tint }),
+    match setting_of_hints(hints, profile) {
+        Some(setting) => WhiteSourceOutcome::Ready {
+            illuminant: SceneIlluminant::Uniform(setting),
             confidence,
         },
-        _ => broken,
+        None => WhiteSourceOutcome::Failed {
+            failure: WhiteSourceFailure::HintNotConvertible,
+        },
+    }
+}
+
+impl PhoneWhiteSource {
+    /// Показание по накопленному на потоке (см. [`WhiteSource::reading`]).
+    fn reading_of(&self, stream: &StreamState) -> WhiteReading {
+        let Some((_, hints)) = stream.last else {
+            // Подсказок нет вовсе: пока срок «устоявшегося» не вышел — «ещё не мерил», после — автоматика молчит.
+            return if stream.frames >= self.config.settle_by_frame {
+                WhiteReading::Unavailable {
+                    reason: WhiteUnavailableReason::AutomationSilent,
+                }
+            } else {
+                WhiteReading::NotMeasuredYet
+            };
+        };
+        if stream.freshness != Freshness::Measured {
+            // Значение не сдвигалось с первого кадра: белая прошлого сеанса, а не свет сцены.
+            return WhiteReading::NotMeasuredYet;
+        }
+        let Some(profile) = &stream.profile else {
+            return WhiteReading::Unavailable {
+                reason: WhiteUnavailableReason::NoColorProfile,
+            };
+        };
+        match setting_of_hints(&hints, profile) {
+            Some(white) => WhiteReading::Measured { white },
+            None => WhiteReading::Failed {
+                failure: WhiteSourceFailure::HintNotConvertible,
+            },
+        }
     }
 }
 
@@ -346,6 +380,13 @@ impl WhiteSource for PhoneWhiteSource {
 
     fn poll(&mut self) -> Option<WhiteReply> {
         self.ready.take()
+    }
+
+    fn reading(&self) -> WhiteReading {
+        // Потока нет — измерять нечем (и прежней белой тут быть не может: поток забывает всё).
+        self.stream
+            .as_ref()
+            .map_or(WhiteReading::NotMeasuredYet, |stream| self.reading_of(stream))
     }
 }
 

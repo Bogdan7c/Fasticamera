@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use ui_draw::color::DisplayColor;
 
+use crate::white_button_layout::WhiteButtonLayout;
+use crate::white_layout::WhiteCardLayout;
+
 /// Ошибка значения раскладки виджетов.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum WidgetConfigError {
@@ -26,6 +29,12 @@ pub enum WidgetConfigError {
     /// В сетке меню нужна хотя бы одна колонка.
     #[error("в сетке меню нужна хотя бы одна колонка")]
     NoMenuColumns,
+    /// Раскладка карточки белого (white-balance 02).
+    #[error("карточка белого: {0}")]
+    WhiteCard(#[from] crate::white_layout::WhiteLayoutError),
+    /// Раскладка кнопки белого у затвора (WB35).
+    #[error("кнопка белого: {0}")]
+    WhiteButton(#[from] crate::white_button_layout::WhiteButtonLayoutError),
 }
 
 /// Ряд значков над кадром.
@@ -393,6 +402,10 @@ pub struct WidgetLayoutConfig {
     pub bottom: BottomLayout,
     pub sheet: SheetLayout,
     pub card: CardLayout,
+    /// Карточка белого: на 24 pt выше обычной, свои ряды (`white_layout.rs`, WB28).
+    pub white_card: WhiteCardLayout,
+    /// Кнопка белого в ряду затвора (`white_button_layout.rs`, WB35).
+    pub white_button: WhiteButtonLayout,
     pub focus: FocusLayout,
     pub overlay: OverlayLayout,
     /// Ёмкость очереди эффектов до опустошения приложением. `[estimate]` 64: за кадр экран выдаёт единицы
@@ -414,6 +427,8 @@ impl Default for WidgetLayoutConfig {
             bottom: BottomLayout::default(),
             sheet: SheetLayout::default(),
             card: CardLayout::default(),
+            white_card: WhiteCardLayout::default(),
+            white_button: WhiteButtonLayout::default(),
             focus: FocusLayout::default(),
             overlay: OverlayLayout::default(),
             effect_queue_capacity: 64,
@@ -582,6 +597,8 @@ impl WidgetLayoutConfig {
         fraction("card.button_disc_alpha", f64::from(card.button_disc_alpha))?;
         fraction("card.reset_dim_opacity", f64::from(card.reset_dim_opacity))?;
         Self::validate_card_placement(card)?;
+        self.white_card.validate(card)?;
+        self.white_button.validate()?;
         positive("stage_rebuild_backoff_ms", self.stage_rebuild_backoff_ms)?;
         if !strip.raw_strike_angle_rad.is_finite() {
             return Err(WidgetConfigError::NotFinite {

@@ -1,7 +1,7 @@
 //! Связка рендера с владельцем белого и реестр источников белого (white-balance 01).
 //!
-//! Композиция собирает [`WhiteLinks`] один раз и отдаёт бэкенду: три части — указания владельца (читаем),
-//! ответы источников (пишем) и реестр источников. Сам источник — не объект связки, а фабрика в реестре: раннер
+//! Композиция собирает [`WhiteLinks`] один раз и отдаёт бэкенду: четыре части — указания владельца (читаем),
+//! ответы источников (пишем), показания источников (пишем; читает экран) и реестр источников. Сам источник — не объект связки, а фабрика в реестре: раннер
 //! создаётся заново на каждую сессию показа (surface), и источнику нужно чистое состояние.
 //!
 //! # Новый источник
@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use camera_contract::three_a::DirectiveSlot;
 use camera_contract::white::{WhiteAnswerChannel, WhiteDirective};
+use camera_contract::white_reading::WhiteReadingBoard;
 use scene_estimation::error::ConfigError;
 use scene_estimation::white_source::WhiteSource;
 use scene_estimation::white_source::phone::{PhoneWhiteConfig, PhoneWhiteSource};
@@ -90,6 +91,8 @@ pub struct WhiteLinks {
     pub directives: DirectiveSlot<WhiteDirective>,
     /// Ответы источников владельцу (пишет рендер, читает и «толкается» движок).
     pub answers: WhiteAnswerChannel,
+    /// Показания источников: что каждый видит сейчас (пишет рендер, читает экран; владельцу не идут, WB33).
+    pub readings: WhiteReadingBoard,
     /// Источники белого.
     pub sources: WhiteSourceRegistry,
 }

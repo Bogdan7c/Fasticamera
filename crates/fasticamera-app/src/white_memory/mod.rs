@@ -63,7 +63,11 @@ pub fn open_white_memory(directory: &AppDirectory, config: &WhiteMemoryConfig) -
     }
     let opened = WhiteMemoryFile::open(directory.path(), config);
     let load = opened.load;
-    let memory: Box<dyn WhiteMemory> = match WhiteMemoryWriter::spawn(opened.file, diagnostics.clone()) {
+    let memory: Box<dyn WhiteMemory> = match WhiteMemoryWriter::spawn(
+        opened.file,
+        diagnostics.clone(),
+        config.min_write_interval(),
+    ) {
         Ok(writer) => Box::new(writer),
         Err(error) => {
             // Поток не поднялся: белая живёт до конца процесса, но не переживёт перезапуск. Это видно в журнале.
@@ -117,3 +121,5 @@ impl fmt::Debug for WhiteMemoryHandoff {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod throttle_tests;

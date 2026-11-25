@@ -22,6 +22,13 @@ const fn is_camera_control(action: &ScreenAction) -> bool {
             | ScreenAction::FocusSunHeld { .. }
             | ScreenAction::ExposureResetRequested
             | ScreenAction::StripToolTapped(_)
+            | ScreenAction::WhiteButtonTapped
+            | ScreenAction::WhiteButtonLongPressed
+            | ScreenAction::WhitePhoneTapped
+            | ScreenAction::WhiteLightSelected(_)
+            | ScreenAction::WhiteAxisSelected(_)
+            | ScreenAction::WhiteTemperatureDragged(_)
+            | ScreenAction::WhiteTintDragged(_)
             | ScreenAction::ZoomStopTapped { .. }
             | ScreenAction::ZoomStripPressBegan { .. }
             | ScreenAction::ZoomWheelTouched { .. }

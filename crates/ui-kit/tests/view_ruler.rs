@@ -101,7 +101,7 @@ fn every_third_tick_is_brighter_and_the_period_comes_from_the_caller() {
     let ticks = &drawn[..drawn.len() - 1];
     // Номера шагов -6..=6; в полную силу виден только диапазон до 4 шагов.
     for (index, tick) in (-6_i32..=6).zip(ticks) {
-        let fade = tokens.ruler.fade_factor(f64::from(index));
+        let fade = tokens.ruler.fade_factor(f64::from(index) * 20.0);
         let base = if index.rem_euclid(3) == 0 {
             tokens.ruler.major_tick_alpha
         } else {
@@ -121,11 +121,11 @@ fn ticks_fade_towards_the_edges_and_vanish_beyond_six_steps() {
     let (drawn, tokens) = ruler_bars(0.0);
     let ticks = &drawn[..drawn.len() - 1];
     // Полная до 4 шагов, 60 % на 5, 10 % на 6 (замер R00 t=159.0).
-    close(tokens.ruler.fade_factor(4.0), 1.0, "4 шага");
-    close(tokens.ruler.fade_factor(5.0), 0.6, "5 шагов");
-    close(tokens.ruler.fade_factor(6.0), 0.1, "6 шагов");
-    close(tokens.ruler.fade_factor(6.01), 0.0, "дальше 6");
-    close(tokens.ruler.fade_factor(-5.0), 0.6, "слева так же");
+    close(tokens.ruler.fade_factor(80.0), 1.0, "4 шага");
+    close(tokens.ruler.fade_factor(100.0), 0.6, "5 шагов");
+    close(tokens.ruler.fade_factor(120.0), 0.1, "6 шагов");
+    close(tokens.ruler.fade_factor(120.2), 0.0, "дальше 6");
+    close(tokens.ruler.fade_factor(-100.0), 0.6, "слева так же");
     // Во вложенной шкале риски на ±5 и ±6 шагов приглушены, на ±6 они последние.
     close(ticks[0].fill.a, 0.8 * 0.1, "шаг -6 (крупная, 10 %)");
     close(ticks[1].fill.a, 0.5 * 0.6, "шаг -5 (мелкая, 60 %)");

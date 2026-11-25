@@ -144,7 +144,7 @@ fn switched(from: LensRole, to: LensRole) -> CameraEvent {
 
 fn only_action(tick: &ZoomTick) -> &ScreenAction {
     match tick.injections.as_slice() {
-        [Injection::Action(action)] => action,
+        [Injection::Action(action)] => action.as_ref(),
         other => panic!("ждали одно действие, получили {other:?}"),
     }
 }

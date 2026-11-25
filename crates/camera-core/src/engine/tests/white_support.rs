@@ -1,5 +1,6 @@
 //! Общие помощники тестов белой: стенд с ящиками и памятью, ответы источника, чтение указаний и событий.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -18,11 +19,16 @@ use crate::white::{WhiteMemory, WhiteMemoryLoad, WhiteMemoryRecord, WhiteRequest
 /// Фальшивая память: складывает записи туда, где их видит тест.
 struct RecordingMemory {
     saved: Arc<Mutex<Vec<WhiteMemoryRecord>>>,
+    flushes: Arc<AtomicUsize>,
 }
 
 impl WhiteMemory for RecordingMemory {
     fn save(&mut self, record: WhiteMemoryRecord) {
         self.saved.lock().unwrap_or_else(PoisonError::into_inner).push(record);
+    }
+
+    fn flush(&mut self) {
+        self.flushes.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -31,9 +37,15 @@ pub(super) struct WhiteOutside {
     pub(super) directives: DirectiveSlot<WhiteDirective>,
     pub(super) answers: WhiteAnswerChannel,
     saved: Arc<Mutex<Vec<WhiteMemoryRecord>>>,
+    flushes: Arc<AtomicUsize>,
 }
 
 impl WhiteOutside {
+    /// Сколько раз движок велел памяти «пиши немедленно».
+    pub(super) fn flushes(&self) -> usize {
+        self.flushes.load(Ordering::Relaxed)
+    }
+
     /// Последнее опубликованное указание и номер его поколения.
     pub(super) fn latest(&self) -> (u64, WhiteDirective) {
         let (generation, directive) = self
@@ -60,10 +72,12 @@ impl WhiteOutside {
 /// Подключения белой: свои ящики, фальшивая память, заданная запомненная запись.
 pub(super) fn white_wiring(remembered: WhiteMemoryLoad) -> (WhiteWiring, WhiteOutside) {
     let saved = Arc::new(Mutex::new(Vec::new()));
+    let flushes = Arc::new(AtomicUsize::new(0));
     let wiring = WhiteWiring {
         remembered,
         memory: Box::new(RecordingMemory {
             saved: Arc::clone(&saved),
+            flushes: Arc::clone(&flushes),
         }),
         ..WhiteWiring::default()
     };
@@ -71,6 +85,7 @@ pub(super) fn white_wiring(remembered: WhiteMemoryLoad) -> (WhiteWiring, WhiteOu
         directives: wiring.directives.clone(),
         answers: wiring.answers.clone(),
         saved,
+        flushes,
     };
     (wiring, outside)
 }

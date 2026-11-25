@@ -25,6 +25,12 @@ pub enum ScaleDensity {
     /// Линейка ручки вида раздела калибровки: одна единица модели — один шаг ручки (по умолчанию 0,1).
     /// Отдельный токен, а не `Ruler`: шаг ручки и шаг 1/3 EV — разные величины, подгонять их порознь.
     KnobRuler,
+    /// Непрерывная линейка Кельвинов ([`crate::value::MiredKelvin`]): одна единица модели — один майред.
+    /// Отдельный токен: подгоняется независимо от шкалы оттенка.
+    MiredRuler,
+    /// Непрерывная линейка с равномерной осью ([`crate::value::ContinuousLinear`], оттенок ±50): одна единица
+    /// модели — одна единица значения.
+    TintRuler,
 }
 
 /// Числа раскладки элементов, pt.
@@ -46,6 +52,12 @@ pub struct DensityTokens {
     /// pt на единицу при [`ScaleDensity::KnobRuler`]: один шаг ручки вида. `[estimate]` 20 — взято по аналогии с
     /// линейкой Exposure (в эталоне Apple нет раздела калибровки, решение 96), подгоняется на телефоне.
     pub knob_ruler_points_per_unit: f64,
+    /// pt на единицу при [`ScaleDensity::MiredRuler`]: один майред. `[estimate]` 2 — риска каждые 5 майред
+    /// (10 pt), решение WB34 плана white-balance; подгоняется на телефоне.
+    pub mired_ruler_points_per_unit: f64,
+    /// pt на единицу при [`ScaleDensity::TintRuler`]: одна единица оттенка. `[estimate]` 2 — риска каждые
+    /// 5 единиц (10 pt), решение WB34; подгоняется на телефоне.
+    pub tint_ruler_points_per_unit: f64,
     /// Радиус «магнита» опорного значения у непрерывной шкалы, pt. `[estimate]` — подгонка, не Apple.
     pub magnet_capture_points: f64,
     /// Радиус магнита у дугового колеса ([`ScaleDensity::Dial`]), pt. `[estimate]` 6 — подгонка, не Apple: при
@@ -69,6 +81,8 @@ impl Default for DensityTokens {
             ruler_points_per_unit: 20.0,
             dial_points_per_unit: 57.0,
             knob_ruler_points_per_unit: 20.0,
+            mired_ruler_points_per_unit: 2.0,
+            tint_ruler_points_per_unit: 2.0,
             magnet_capture_points: 14.0,
             dial_magnet_capture_points: 6.0,
             carousel_item_gap_points: 35.4,
@@ -87,6 +101,8 @@ impl DensityTokens {
             ScaleDensity::Ruler => self.ruler_points_per_unit,
             ScaleDensity::Dial => self.dial_points_per_unit,
             ScaleDensity::KnobRuler => self.knob_ruler_points_per_unit,
+            ScaleDensity::MiredRuler => self.mired_ruler_points_per_unit,
+            ScaleDensity::TintRuler => self.tint_ruler_points_per_unit,
         }
     }
 
@@ -98,7 +114,9 @@ impl DensityTokens {
             | ScaleDensity::Regular
             | ScaleDensity::Sparse
             | ScaleDensity::Ruler
-            | ScaleDensity::KnobRuler => self.magnet_capture_points,
+            | ScaleDensity::KnobRuler
+            | ScaleDensity::MiredRuler
+            | ScaleDensity::TintRuler => self.magnet_capture_points,
         }
     }
 
@@ -111,6 +129,8 @@ impl DensityTokens {
             ("ruler_points_per_unit", self.ruler_points_per_unit),
             ("dial_points_per_unit", self.dial_points_per_unit),
             ("knob_ruler_points_per_unit", self.knob_ruler_points_per_unit),
+            ("mired_ruler_points_per_unit", self.mired_ruler_points_per_unit),
+            ("tint_ruler_points_per_unit", self.tint_ruler_points_per_unit),
             ("magnet_capture_points", self.magnet_capture_points),
             ("dial_magnet_capture_points", self.dial_magnet_capture_points),
             ("carousel_item_gap_points", self.carousel_item_gap_points),

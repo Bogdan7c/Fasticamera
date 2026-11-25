@@ -11,19 +11,49 @@
 
 use camera_contract::geometry::SensorOrientation;
 use camera_contract::three_a::{AeAfLock, PointOfInterest};
+use camera_contract::white::HeldWhite;
 use camera_core::CameraStatus;
-use camera_screen::CameraPresence;
 use camera_screen::shutter::ThumbnailState;
+use camera_screen::{CameraPresence, WhiteTakeFacts};
 
+use super::screen_white_check::WhiteDelta;
 use crate::camera_screen_facts::sensor_orientation_of_active_camera;
 use crate::camera_screen_service::CameraScreenService;
 use crate::camera_screen_source::{ScreenReport, ScreenStateSnapshot};
+use crate::camera_screen_white_facts::white_facts_of;
 
 /// Почему снимок не получился.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeUnavailable {
     /// Экран ещё не нарисовал ни одного кадра: отчёта нет.
     NoScreenReport,
+}
+
+/// Белое в движке на момент снимка: действующее белое и исход последней команды «взять».
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WhiteProbe {
+    pub held: HeldWhite,
+    pub take: Option<WhiteTakeFacts>,
+}
+
+impl WhiteProbe {
+    /// Белое, которое не менялось (для тестов, не про белое).
+    #[cfg(test)]
+    pub(crate) fn quiet() -> Self {
+        Self {
+            held: WhiteDelta::quiet().held_now,
+            take: None,
+        }
+    }
+
+    /// Белое из статуса движка тем же переводом, что у фактов экрана: сценарий сверяет экран с тем, что он получил бы.
+    fn read(status: &CameraStatus) -> Self {
+        let facts = white_facts_of(status, &camera_contract::white_reading::WhiteReadingBoard::new());
+        Self {
+            held: facts.held,
+            take: facts.take,
+        }
+    }
 }
 
 /// Снимок: накопительные счётчики и текущие значения.
@@ -58,6 +88,8 @@ pub struct ScreenProbe {
     pub thumbnail_has_last: bool,
     /// Наблюдаемое состояние экрана (прямое доказательство панели, плашки, шагов EV, режима, затвора).
     pub screen: ScreenStateSnapshot,
+    /// Белое в движке (белое руки, исход «взять»).
+    pub white: WhiteProbe,
     pub frames_produced: u64,
 }
 
@@ -72,6 +104,7 @@ impl ScreenProbe {
     pub fn from_parts(report: &ScreenReport, status: &CameraStatus, capture_requests: u64) -> Self {
         let gestures = report.diagnostics.gestures;
         let camera = report.effects.camera;
+        let white = report.effects.white;
         let three_a = &status.three_a;
         Self {
             taps: gestures.taps,
@@ -79,8 +112,14 @@ impl ScreenProbe {
             pans: gestures.pans,
             button_presses: gestures.button_presses,
             gestures_cancelled: gestures.cancelled,
-            camera_intents_sent: camera.sent,
-            camera_intents_lost: camera.queue_full + camera.engine_stopped + camera.no_engine,
+            // Белые намерения считает свой исполнитель: для сценария это те же намерения камере.
+            camera_intents_sent: camera.sent + white.sent,
+            camera_intents_lost: camera.queue_full
+                + camera.engine_stopped
+                + camera.no_engine
+                + white.queue_full
+                + white.engine_stopped
+                + white.no_engine,
             focus_triggers_sent: three_a.counters.focus_triggers_sent,
             focus_trigger_failures: three_a.counters.focus_trigger_failures,
             results_with_unknown_origin: three_a.counters.results_with_unknown_origin,
@@ -92,6 +131,7 @@ impl ScreenProbe {
             exposure_bias_ev: three_a.controls.exposure_bias.ev(),
             thumbnail_has_last: matches!(report.thumbnail, ThumbnailState::Last { .. }),
             screen: report.state,
+            white: WhiteProbe::read(status),
             frames_produced: report.diagnostics.frames_produced,
         }
     }
@@ -117,6 +157,8 @@ pub struct ProbeDelta {
     pub thumbnail_has_last: bool,
     /// Текущее (не приращение) состояние экрана.
     pub screen: ScreenStateSnapshot,
+    /// Белое за шаг: до и после, исход «взять», белое глазами экрана.
+    pub white: WhiteDelta,
 }
 
 impl ProbeDelta {
@@ -140,6 +182,14 @@ impl ProbeDelta {
             exposure_bias_ev: now.exposure_bias_ev,
             thumbnail_has_last: now.thumbnail_has_last,
             screen: now.screen,
+            white: WhiteDelta {
+                held_before: before.white.held,
+                held_now: now.white.held,
+                take_now: now.white.take,
+                take_serial_before: before.white.take.map(|take| take.serial),
+                view_before: before.screen.white,
+                view_now: now.screen.white,
+            },
         }
     }
 }

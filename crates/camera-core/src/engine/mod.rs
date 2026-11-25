@@ -79,6 +79,7 @@ use recovery::RecoveryTracker;
 use standby::StandbyEngine;
 use three_a::ThreeAEngine;
 use white::WhiteEngine;
+pub(crate) use white::initial_white_status;
 
 pub(crate) const LOG_TARGET: &str = "fasticamera::camera::engine";
 
@@ -360,6 +361,8 @@ impl CameraEngine {
             name,
             outcome: outcome.clone(),
         });
+        // Отклонённая команда «взять белую» оставляет экрану отчёт «не спрашивали» (в том числе в `Fatal`).
+        self.note_white_take_outcome(id, &command, &outcome);
         // События белой, вызванные решением команды, идут строго после её итога.
         self.flush_white_events();
         // Итог снимка со вспышкой идёт строго после ответа на команду.

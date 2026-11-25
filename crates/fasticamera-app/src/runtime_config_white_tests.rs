@@ -31,3 +31,54 @@ fn an_unknown_mode_and_a_bad_file_name_reject_the_whole_config() {
     assert!(matches!(error, ConfigError::Camera(_)), "{error}");
     assert!(error.to_string().contains("camera.white_memory.file_name"), "{error}");
 }
+
+// ---- кнопки света панели белого против пределов движка ----
+
+#[test]
+fn the_default_light_buttons_fit_the_default_engine_limits() {
+    RuntimeConfig::from_json(r#"{"build_type":"debug","log_filter":"info"}"#).expect("умолчания сходятся");
+}
+
+#[test]
+fn a_light_button_above_the_engine_limit_rejects_the_whole_config_and_names_the_button() {
+    let config = r#"{"build_type":"debug","log_filter":"info",
+        "camera_screen":{"screen":{"white":{"lights":[
+            {"label":"Sun","icon":"sun","kelvin":5600.0,"duv":0.0},
+            {"label":"Arctic","icon":"cloud","kelvin":15000.0,"duv":0.0}
+        ]}}}}"#;
+    let error = RuntimeConfig::from_json(config).expect_err("15000 К выше предела движка 12000 К");
+    assert!(matches!(error, ConfigError::WhitePanelOutsideEngineRange(_)), "{error}");
+    assert!(error.to_string().contains("Arctic"), "{error}");
+}
+
+#[test]
+fn the_limits_checked_are_the_engines_so_widening_them_admits_the_same_button() {
+    let config = r#"{"build_type":"debug","log_filter":"info",
+        "camera":{"engine":{"three_a":{"white":{"max_kelvin":16000.0}}}},
+        "camera_screen":{"screen":{"white":{"lights":[
+            {"label":"Arctic","icon":"cloud","kelvin":15000.0,"duv":0.0}
+        ]}}}}"#;
+    RuntimeConfig::from_json(config).expect("предел движка расширен: кнопка допустима");
+}
+
+#[test]
+fn a_light_button_tint_beyond_the_engine_tint_limit_is_rejected_too() {
+    let config = r#"{"build_type":"debug","log_filter":"info",
+        "camera_screen":{"screen":{"white":{"lights":[
+            {"label":"Green","icon":"tree","kelvin":5000.0,"duv":0.2}
+        ]}}}}"#;
+    let error = RuntimeConfig::from_json(config).expect_err("оттенок 0,2 Duv вне ±0,05");
+    assert!(matches!(error, ConfigError::WhitePanelOutsideEngineRange(_)), "{error}");
+    assert!(error.to_string().contains("Green"), "{error}");
+}
+
+#[test]
+fn the_screen_scenario_must_tap_a_light_button_that_exists() {
+    let config = r#"{"build_type":"debug","log_filter":"info",
+        "camera":{"scenarios":{"screen":{"touch":{"white_light_index":9}}}}}"#;
+    let error = RuntimeConfig::from_json(config).expect_err("кнопки с номером 9 нет");
+    assert!(
+        matches!(error, ConfigError::ScreenScenarioWhiteLightMissing { index: 9, .. }),
+        "{error}"
+    );
+}

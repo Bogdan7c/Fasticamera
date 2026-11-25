@@ -15,18 +15,25 @@ use camera_contract::white::{
 };
 use scene_estimation::white_source::{WhiteInputKind, WhiteRequestRefusal};
 
+use std::num::NonZeroU32;
+
+use camera_contract::white::WhiteSourceId;
+use camera_contract::white_reading::{WhiteReading, WhiteReadingBoard};
+
 use super::sources::SourceExecutor;
 use super::test_support::{
-    Call, FAKE_ID, FakeSourceBoard, fake_registry, frame, new_stream, ready_outcome, request_of,
+    Call, FAKE_ID, FakeSourceBoard, fake_registry, frame, new_stream, ready_outcome, request_of, setting_of,
 };
 use super::*;
 
 const HIDE: WhileAwaitingWhite = WhileAwaitingWhite::HideFrames;
+const READING_EVERY: NonZeroU32 = NonZeroU32::MIN;
 
 fn executor_with(input: WhiteInputKind) -> (SourceExecutor, Arc<FakeSourceBoard>, WhiteAnswerChannel) {
     let (registry, board) = fake_registry(input);
     let answers = WhiteAnswerChannel::new();
-    let mut executor = SourceExecutor::new(&registry, answers.clone()).expect("источники собираются");
+    let mut executor = SourceExecutor::new(&registry, answers.clone(), WhiteReadingBoard::new(), READING_EVERY)
+        .expect("источники собираются");
     executor.begin_stream(CameraTag::of(&new_stream().camera), None);
     (executor, board, answers)
 }
@@ -39,7 +46,8 @@ fn answer_count(answers: &WhiteAnswerChannel) -> u64 {
 fn an_unregistered_source_gets_not_registered_at_once_and_once() {
     let (registry, _) = fake_registry(WhiteInputKind::ColorHints);
     let answers = WhiteAnswerChannel::new();
-    let mut executor = SourceExecutor::new(&registry, answers.clone()).unwrap();
+    let mut executor =
+        SourceExecutor::new(&registry, answers.clone(), WhiteReadingBoard::new(), READING_EVERY).unwrap();
     executor.begin_stream(CameraTag::of(&new_stream().camera), None);
     let unknown = camera_contract::white::WhiteSourceId::new("nobody");
     let request = request_of(7, unknown, HIDE);
@@ -189,4 +197,209 @@ fn only_viewfinder_frames_in_ambient_light_with_their_own_result_reach_the_sourc
         "серия, фонарик, вспышка и кадр без результата источнику не нужны"
     );
     assert_eq!(executor.counters().frames_observed, 1);
+}
+
+// ---- показания (WB33) ----
+
+fn reading_stand(
+    input: WhiteInputKind,
+    every: u32,
+) -> (
+    SourceExecutor,
+    Arc<FakeSourceBoard>,
+    WhiteAnswerChannel,
+    WhiteReadingBoard,
+) {
+    let (registry, board) = fake_registry(input);
+    let answers = WhiteAnswerChannel::new();
+    let readings = WhiteReadingBoard::new();
+    let every = NonZeroU32::new(every).expect("интервал не ноль");
+    let mut executor = SourceExecutor::new(&registry, answers.clone(), readings.clone(), every).unwrap();
+    executor.begin_stream(CameraTag::of(&new_stream().camera), None);
+    (executor, board, answers, readings)
+}
+
+fn shown_by_fake(board: &FakeSourceBoard, reading: WhiteReading) {
+    *board.shown_reading.lock().unwrap() = Some(reading);
+}
+
+fn measured(kelvin: f64) -> WhiteReading {
+    WhiteReading::Measured {
+        white: setting_of(kelvin),
+    }
+}
+
+fn on_board(readings: &WhiteReadingBoard) -> Option<WhiteReading> {
+    readings.latest_of(FAKE_ID)
+}
+
+#[test]
+fn a_new_stream_puts_not_measured_yet_on_the_board_replacing_the_old_number() {
+    let (mut executor, board, _, readings) = reading_stand(WhiteInputKind::ColorHints, 1);
+    assert_eq!(
+        on_board(&readings),
+        Some(WhiteReading::NotMeasuredYet),
+        "сразу после begin_stream"
+    );
+    shown_by_fake(&board, measured(3100.0));
+    executor.observe(&frame(&new_stream(), 0));
+    assert_eq!(on_board(&readings), Some(measured(3100.0)));
+    executor.begin_stream(CameraTag::of(&new_stream().camera), None);
+    assert_eq!(
+        on_board(&readings),
+        Some(WhiteReading::NotMeasuredYet),
+        "число прежнего потока на доске не остаётся"
+    );
+}
+
+#[test]
+fn readings_are_refreshed_only_every_n_eligible_frames() {
+    let (mut executor, board, _, readings) = reading_stand(WhiteInputKind::ColorHints, 3);
+    let stream = new_stream();
+    shown_by_fake(&board, measured(3100.0));
+    executor.observe(&frame(&stream, 0));
+    executor.observe(&frame(&stream, 1));
+    assert_eq!(
+        on_board(&readings),
+        Some(WhiteReading::NotMeasuredYet),
+        "двух кадров мало"
+    );
+    executor.observe(&frame(&stream, 2));
+    assert_eq!(on_board(&readings), Some(measured(3100.0)), "на третьем годном кадре");
+    shown_by_fake(&board, measured(4500.0));
+    executor.observe(&frame(&stream, 3));
+    executor.observe(&frame(&stream, 4));
+    assert_eq!(
+        on_board(&readings),
+        Some(measured(3100.0)),
+        "до следующего интервала число то же"
+    );
+    executor.observe(&frame(&stream, 5));
+    assert_eq!(on_board(&readings), Some(measured(4500.0)));
+}
+
+#[test]
+fn frames_that_never_reach_the_source_do_not_count_towards_the_interval() {
+    let (mut executor, board, _, readings) = reading_stand(WhiteInputKind::ColorHints, 2);
+    let stream = new_stream();
+    shown_by_fake(&board, measured(3100.0));
+    let mut burst = frame(&stream, 1);
+    if let FrameCaptureMeta::Paired(details) = &mut burst.capture {
+        details.result.three_a.origin = RequestOrigin::Burst {
+            burst: BurstId(1),
+            index: 0,
+        };
+    }
+    executor.observe(&frame(&stream, 0));
+    executor.observe(&burst);
+    executor.observe(&burst);
+    assert_eq!(
+        on_board(&readings),
+        Some(WhiteReading::NotMeasuredYet),
+        "серия показание не двигает"
+    );
+    executor.observe(&frame(&stream, 2));
+    assert_eq!(on_board(&readings), Some(measured(3100.0)));
+}
+
+#[test]
+fn an_unchanged_reading_is_not_published_again() {
+    let (mut executor, board, _, readings) = reading_stand(WhiteInputKind::ColorHints, 1);
+    let stream = new_stream();
+    shown_by_fake(&board, measured(3100.0));
+    for index in 0..10 {
+        executor.observe(&frame(&stream, index));
+    }
+    assert_eq!(
+        executor.counters().readings_published,
+        3,
+        "NotMeasuredYet при создании и при начале потока, одно измеренное; повторов нет"
+    );
+    shown_by_fake(&board, measured(3200.0));
+    executor.observe(&frame(&stream, 10));
+    assert_eq!(executor.counters().readings_published, 4);
+    assert_eq!(on_board(&readings), Some(measured(3200.0)));
+}
+
+#[test]
+fn a_source_whose_input_is_not_prepared_reads_input_not_provided() {
+    for input in [WhiteInputKind::SceneTiles, WhiteInputKind::LinearThumbnail] {
+        let (mut executor, board, _, readings) = reading_stand(input, 1);
+        shown_by_fake(&board, measured(3100.0));
+        executor.observe(&frame(&new_stream(), 0));
+        assert_eq!(
+            on_board(&readings),
+            Some(WhiteReading::Unavailable {
+                reason: WhiteUnavailableReason::InputNotProvided
+            }),
+            "сам источник мог бы показать число, но вход ему не готовится"
+        );
+    }
+}
+
+#[test]
+fn publishing_readings_neither_answers_nor_touches_the_request() {
+    let (mut executor, board, answers, readings) = reading_stand(WhiteInputKind::ColorHints, 1);
+    let stream = new_stream();
+    executor.sync_request(Some(request_of(8, FAKE_ID, HIDE)));
+    shown_by_fake(&board, measured(3100.0));
+    for index in 0..6 {
+        executor.observe(&frame(&stream, index));
+        executor.collect_answers();
+    }
+    assert_eq!(on_board(&readings), Some(measured(3100.0)));
+    assert_eq!(answer_count(&answers), 0, "показание ответом не становится");
+    assert_eq!(executor.last_answer(), None);
+    assert_eq!(
+        board.requests(),
+        vec![WhiteRequestId(8)],
+        "заявка подана один раз и не тронута"
+    );
+    assert_eq!(board.count(Call::Cancel(WhiteRequestId(8))), 0);
+    // Ответ источника по-прежнему идёт своим путём.
+    board.reply(8, ready_outcome(2800.0));
+    executor.collect_answers();
+    assert_eq!(answer_count(&answers), 1);
+}
+
+#[test]
+fn sources_do_not_mix_on_the_board() {
+    let (mut executor, board, _, readings) = reading_stand(WhiteInputKind::ColorHints, 1);
+    shown_by_fake(&board, measured(3100.0));
+    executor.observe(&frame(&new_stream(), 0));
+    assert_eq!(
+        readings.latest_of(WhiteSourceId::PHONE),
+        None,
+        "чужой источник не появился"
+    );
+}
+
+#[test]
+fn a_new_executor_wipes_the_previous_sessions_number_before_any_frame() {
+    let (registry, _) = fake_registry(WhiteInputKind::ColorHints);
+    let readings = WhiteReadingBoard::new();
+    readings.publish(camera_contract::white_reading::WhiteSourceReading {
+        source: FAKE_ID,
+        reading: measured(3100.0),
+    });
+    let _fresh = SourceExecutor::new(&registry, WhiteAnswerChannel::new(), readings.clone(), READING_EVERY).unwrap();
+    assert_eq!(
+        on_board(&readings),
+        Some(WhiteReading::NotMeasuredYet),
+        "кадров ещё не было"
+    );
+}
+
+#[test]
+fn an_ended_stream_wipes_the_reading_and_the_next_measurement_is_published_again() {
+    let (mut executor, board, _, readings) = reading_stand(WhiteInputKind::ColorHints, 1);
+    shown_by_fake(&board, measured(3100.0));
+    executor.observe(&frame(&new_stream(), 0));
+    assert_eq!(on_board(&readings), Some(measured(3100.0)));
+    // Источник ещё помнит число (begin_stream не было), но поток кончился.
+    executor.forget_stream_readings();
+    assert_eq!(on_board(&readings), Some(WhiteReading::NotMeasuredYet));
+    // То же число на новом кадре обязано вернуться на доску: «только при изменении» сверяется с доской, не с источником.
+    executor.observe(&frame(&new_stream(), 1));
+    assert_eq!(on_board(&readings), Some(measured(3100.0)));
 }

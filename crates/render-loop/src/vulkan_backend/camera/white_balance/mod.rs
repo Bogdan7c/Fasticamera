@@ -31,12 +31,13 @@ mod schedule;
 mod sources;
 mod torch;
 
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use camera_contract::auto_exposure_carry::CameraTag;
 use camera_contract::frame_passport::{RawFramePassport, StreamPassport};
 use camera_contract::three_a::DirectiveGeneration;
-use camera_contract::white::{WhiteDirective, WhiteSourceRequest};
+use camera_contract::white::{WhiteDirective, WhiteSourceRequest, WhiteTransition};
 use isp_model::color::chromaticity::Chromaticity;
 use isp_model::color::dng::DngColorProfile;
 use isp_model::color::white_point::CctDuv;
@@ -151,7 +152,14 @@ impl WhiteBalanceRunner {
         let WhiteBalanceParts { config, links } = parts;
         let setup = |error: &dyn std::fmt::Display| WhiteBalanceSetupError(error.to_string());
         let estimator = CpuWhiteBalanceEstimator::new(config.scene.estimator).map_err(|error| setup(&error))?;
-        let sources = SourceExecutor::new(&links.sources, links.answers.clone())?;
+        let reading_every_frames = NonZeroU32::new(config.reading_every_frames)
+            .ok_or_else(|| setup(&"reading_every_frames должен быть не меньше 1"))?;
+        let sources = SourceExecutor::new(
+            &links.sources,
+            links.answers.clone(),
+            links.readings.clone(),
+            reading_every_frames,
+        )?;
         Ok(Self {
             config,
             directives: links.directives,
@@ -177,6 +185,7 @@ impl WhiteBalanceRunner {
     /// Поток камеры неактивен: следующий кадр — уже другой поток. Применённая белая остаётся.
     pub fn forget_stream(&mut self) {
         self.bound = None;
+        self.sources.forget_stream_readings();
     }
 
     /// План для нового кадра камеры (см. модуль). Вызывается до подготовки параметров ISP.
@@ -270,11 +279,19 @@ impl WhiteBalanceRunner {
         let Some((generation, directive)) = self.directives.newer_than(self.applied_generation) else {
             return;
         };
+        // Журнал уровня info — только на события, а не на каждый шаг ползунка: под шкалой указания идут до 120/с.
+        let notable = self.applied_generation.is_none()
+            || self.request != directive.request
+            || directive.transition != WhiteTransition::Immediate;
         self.applied.accept(&directive);
         self.request = directive.request;
         self.applied_generation = Some(generation);
-        // Раз на смену указания, не на кадр.
-        tracing::info!(target: LOG_TARGET, generation = generation.0, ?directive, "указание белой применено");
+        if notable {
+            tracing::info!(target: LOG_TARGET, generation = generation.0, ?directive, "указание белой применено");
+        } else {
+            // Мгновенная смена значения при той же заявке: рука на шкале.
+            tracing::debug!(target: LOG_TARGET, generation = generation.0, ?directive, "указание белой применено");
+        }
     }
 
     /// Привязывает к потоку кадра; новый поток строит профиль и таблицу локуса и сообщает источникам.

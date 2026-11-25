@@ -123,8 +123,15 @@ pub(super) fn on_strip_tool_tapped(ctx: &mut Ctx<'_>, tool: ToolId) -> ActionOut
         ToolId::Exposure => {
             open_card_from_strip(ctx, PanelState::ExposurePanel);
         }
-        // ToolSet::new не пускает в ряд значков другие инструменты; ветка недостижима, но отказ явный.
-        ToolId::Aspect | ToolId::Grid | ToolId::Level | ToolId::Live | ToolId::Styles | ToolId::Night => {
+        // ToolSet::new не пускает в ряд значков другие инструменты (белое тоже — у него своя кнопка у затвора,
+        // `white::on_button_tapped`); ветка недостижима, но отказ явный.
+        ToolId::White
+        | ToolId::Aspect
+        | ToolId::Grid
+        | ToolId::Level
+        | ToolId::Live
+        | ToolId::Styles
+        | ToolId::Night => {
             return ActionOutcome::Rejected(Rejection::ToolNotInStrip);
         }
     }
@@ -132,7 +139,7 @@ pub(super) fn on_strip_tool_tapped(ctx: &mut Ctx<'_>, tool: ToolId) -> ActionOut
 }
 
 /// Открывает карточку тапом по значку; если она уже открыта — закрывает (переключатель).
-fn open_card_from_strip(ctx: &mut Ctx<'_>, card: PanelState) {
+pub(super) fn open_card_from_strip(ctx: &mut Ctx<'_>, card: PanelState) {
     if ctx.state.panel == card {
         ctx.state.panel = PanelState::Closed;
     } else {

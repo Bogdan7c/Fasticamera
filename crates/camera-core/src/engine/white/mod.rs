@@ -14,15 +14,20 @@ mod hooks;
 mod journal;
 mod limits;
 mod owner;
+#[cfg(test)]
+mod owner_tests;
 
 use std::time::Instant;
 
 use camera_contract::three_a::{DirectiveGeneration, DirectiveSlot};
-use camera_contract::white::{WhiteAnswerChannel, WhiteDirective, WhiteOrigin, WhiteSourceId, WhiteTransition};
+use camera_contract::white::{
+    WhiteAdjustment, WhiteAnswerChannel, WhiteDirective, WhiteOrigin, WhiteSourceId, WhiteTransition,
+};
 
+use crate::command::{CommandId, InvalidStateReason};
 use crate::event::CameraEvent;
 use crate::white::{
-    RememberedOrigin, WhiteConfig, WhiteMemory, WhiteMemoryRecord, WhiteMemoryState, WhiteStatus, WhiteWiring,
+    RememberedOrigin, WhiteConfig, WhiteMemory, WhiteMemoryRecord, WhiteMemoryStartup, WhiteStatus, WhiteWiring,
 };
 use owner::{ManualOutcome, WhiteNotice, WhiteOwner};
 
@@ -37,6 +42,8 @@ pub(super) struct WhiteEngine {
     seen_answer: Option<DirectiveGeneration>,
     memory: Box<dyn WhiteMemory>,
     saves_requested: u64,
+    /// Память приняла записи, которые с прошлого `flush` не сбрасывались: уход в фон должен её подтолкнуть.
+    unflushed_saves: bool,
     /// События, ещё не отданные движку (движок выкладывает их в нужный момент относительно итога команды).
     events: Vec<CameraEvent>,
 }
@@ -60,9 +67,13 @@ impl WhiteEngine {
             seen_answer: None,
             memory: wiring.memory,
             saves_requested: 0,
+            unflushed_saves: false,
             events: Vec::new(),
         };
-        journal::white_changed(&engine.owner.held());
+        if let WhiteMemoryStartup::Unreadable { reason } = engine.owner.memory_startup() {
+            tracing::warn!(target: journal::LOG_TARGET, %reason, "память белой не читается, взят запасной свет");
+        }
+        journal::white_started(&engine.owner.held());
         engine.settle();
         engine
     }
@@ -78,9 +89,27 @@ impl WhiteEngine {
         outcome
     }
 
-    pub(super) fn take_from_source(&mut self, source: WhiteSourceId, transition: WhiteTransition, now: Instant) {
-        self.owner.take_from_source(source, transition, now);
+    /// Рука, одна ось (вторая — у владельца).
+    pub(super) fn adjust_manual(&mut self, adjustment: WhiteAdjustment, transition: WhiteTransition) -> ManualOutcome {
+        let outcome = self.owner.adjust_manual(adjustment, transition);
         self.settle();
+        outcome
+    }
+
+    pub(super) fn take_from_source(
+        &mut self,
+        command: CommandId,
+        source: WhiteSourceId,
+        transition: WhiteTransition,
+        now: Instant,
+    ) {
+        self.owner.take_from_source(command, source, transition, now);
+        self.settle();
+    }
+
+    /// Команда «взять белую» отклонена до заявки.
+    pub(super) fn note_take_not_asked(&mut self, command: CommandId, reason: InvalidStateReason) {
+        self.owner.note_take_not_asked(command, reason);
     }
 
     pub(super) fn on_foreground(&mut self) {
@@ -88,9 +117,15 @@ impl WhiteEngine {
         self.settle();
     }
 
+    /// Уход в фон: заявка снимается, а то, что память приняла, но могла отложить (правка шкалы под пальцем),
+    /// ложится на диск сразу: фоновый процесс могут убить без предупреждения. `flush` диск на потоке движка не
+    /// ждёт. Звать его без новых записей незачем, поэтому движок помнит, было ли несброшенное.
     pub(super) fn on_background(&mut self) {
         self.owner.on_background();
         self.settle();
+        if std::mem::take(&mut self.unflushed_saves) {
+            self.memory.flush();
+        }
     }
 
     pub(super) fn on_stream_frame(&mut self, now: Instant) {
@@ -123,16 +158,7 @@ impl WhiteEngine {
 
     /// Белая и заявка сейчас (для статуса и тестов).
     pub(super) fn status(&self) -> WhiteStatus {
-        WhiteStatus {
-            held: self.owner.held(),
-            limits: self.owner.limits().to_vec(),
-            request: self.owner.request_state(),
-            memory: WhiteMemoryState {
-                startup: self.owner.memory_startup().clone(),
-                saves_requested: self.saves_requested,
-            },
-            stale_answers: self.owner.stale_answers(),
-        }
+        self.owner.status(self.saves_requested)
     }
 
     /// События, накопленные с прошлого вызова.
@@ -173,9 +199,17 @@ impl WhiteEngine {
             WhiteOrigin::Fallback => return,
         };
         self.saves_requested += 1;
+        self.unflushed_saves = true;
         self.memory.save(WhiteMemoryRecord {
             setting: held.setting,
             origin,
         });
     }
+}
+
+/// Снимок белого, каким его видит экран ДО первой публикации движка: запомненная белая (а не запасной свет) и
+/// пределы из конфига. Строится тем же владельцем, что потом поведёт движок, поэтому значения совпадают.
+pub(crate) fn initial_white_status(config: &WhiteConfig, wiring: &WhiteWiring) -> WhiteStatus {
+    // Номер первой заявки в снимок не попадает, а движок выберет свой по ящику ответов.
+    WhiteOwner::new(*config, wiring.opening_source, wiring.remembered.clone(), 1).status(0)
 }

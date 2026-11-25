@@ -1,7 +1,7 @@
 //! Тесты охраны по режиму: действия управления камерой в CALIBRATE отвергаются самим редьюсером (а не только тем,
 //! что сцена не рисует для них виджетов), а в PHOTO работают как раньше.
 
-use camera_contract::control::ExposureBias;
+use camera_contract::control::{ColorTemperature, ExposureBias, Tint};
 
 use crate::action::ScreenAction;
 use crate::look_test_support::look_facts;
@@ -9,6 +9,8 @@ use crate::mode_behaviour::ModeBehaviour;
 use crate::outcome::{ActionOutcome, Rejection};
 use crate::test_support::{Screen, at_ms, ratio};
 use crate::tools::ToolId;
+use crate::white::WhiteAxis;
+use crate::white_config::WhiteLightIndex;
 use ui_core::geometry::Point;
 
 /// По одному действию из каждого семейства управления камерой: фокус, LOCK, экспозиция, значки, зум.
@@ -39,6 +41,16 @@ fn camera_control_actions() -> Vec<(&'static str, ScreenAction)> {
         ("палец на «солнце»", ScreenAction::FocusSunHeld { at }),
         ("сброс экспозиции", ScreenAction::ExposureResetRequested),
         ("значок над кадром", ScreenAction::StripToolTapped(ToolId::Timer)),
+        ("тап по кнопке белого", ScreenAction::WhiteButtonTapped),
+        ("долгое нажатие на кнопку белого", ScreenAction::WhiteButtonLongPressed),
+        ("тап «Телефон»", ScreenAction::WhitePhoneTapped),
+        ("кнопка света", ScreenAction::WhiteLightSelected(WhiteLightIndex(0))),
+        ("выбор шкалы белого", ScreenAction::WhiteAxisSelected(WhiteAxis::Tint)),
+        (
+            "шкала Кельвинов",
+            ScreenAction::WhiteTemperatureDragged(ColorTemperature::DAYLIGHT),
+        ),
+        ("шкала оттенка", ScreenAction::WhiteTintDragged(Tint::NEUTRAL)),
         ("упор зума", ScreenAction::ZoomStopTapped { stop: 0, at }),
         ("нажатие на ленту зума", ScreenAction::ZoomStripPressBegan { at }),
         ("касание колеса зума", ScreenAction::ZoomWheelTouched { at }),

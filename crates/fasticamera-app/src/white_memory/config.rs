@@ -3,6 +3,8 @@
 //! Режим `none` нужен приёмке на телефоне: сценарии `device-smoke.sh` не должны ни читать белую владельца,
 //! ни портить её своими прогонами (в smoke скрипт всегда передаёт `none`; `device-deploy.sh` режим не трогает).
 
+use std::time::Duration;
+
 use serde::Deserialize;
 
 /// Где живёт память белой.
@@ -25,6 +27,9 @@ pub struct WhiteMemoryConfig {
     pub file_name: String,
     /// Суффикс временного файла записи: пишем `<file_name><суффикс>`, потом переименовываем поверх основного.
     pub temp_file_suffix: String,
+    /// Не чаще одной записи на диск за столько мс. Шкала белой под пальцем шлёт правки десятки раз в секунду;
+    /// последнее значение всё равно ложится не позже этого срока, а при уходе в фон и закрытии — сразу.
+    pub min_write_interval_ms: u64,
 }
 
 impl Default for WhiteMemoryConfig {
@@ -33,6 +38,7 @@ impl Default for WhiteMemoryConfig {
             mode: WhiteMemoryMode::File,
             file_name: "white.json".to_owned(),
             temp_file_suffix: ".tmp".to_owned(),
+            min_write_interval_ms: 250,
         }
     }
 }
@@ -49,9 +55,18 @@ pub enum WhiteMemoryConfigError {
     /// Суффикс с разделителем пути увёл бы временный файл из папки приложения.
     #[error("camera.white_memory.temp_file_suffix: суффикс {value:?} не должен содержать разделителей пути")]
     TempSuffixHasSeparator { value: String },
+    /// Ноль выключил бы ограничение частоты записи, слишком большой срок оставил бы белую на диске далеко позади.
+    #[error(
+        "camera.white_memory.min_write_interval_ms: {value} мс вне допустимого (от 1 до {max} мс)",
+        max = WhiteMemoryConfig::MAX_WRITE_INTERVAL_MS
+    )]
+    InvalidWriteInterval { value: u64 },
 }
 
 impl WhiteMemoryConfig {
+    /// Верхний предел интервала записи, мс: дольше значение не должно ждать в ящике (процесс могут убить).
+    pub const MAX_WRITE_INTERVAL_MS: u64 = 10_000;
+
     /// Проверяет имена файлов. В режиме `none` имена не используются, но всё равно проверяются: опечатка в
     /// конфиге не должна дожидаться того дня, когда память включат.
     pub fn validate(&self) -> Result<(), WhiteMemoryConfigError> {
@@ -70,7 +85,17 @@ impl WhiteMemoryConfig {
                 value: self.temp_file_suffix.clone(),
             });
         }
+        if !(1..=Self::MAX_WRITE_INTERVAL_MS).contains(&self.min_write_interval_ms) {
+            return Err(WhiteMemoryConfigError::InvalidWriteInterval {
+                value: self.min_write_interval_ms,
+            });
+        }
         Ok(())
+    }
+
+    /// Минимальный срок между записями на диск.
+    pub fn min_write_interval(&self) -> Duration {
+        Duration::from_millis(self.min_write_interval_ms)
     }
 
     /// Имя временного файла записи.

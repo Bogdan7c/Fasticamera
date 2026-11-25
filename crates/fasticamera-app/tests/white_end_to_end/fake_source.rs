@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use camera_contract::capture_result::SensorTimestamp;
 use camera_contract::white::{WhiteRequestId, WhiteSourceId, WhiteSourceOutcome};
+use camera_contract::white_reading::WhiteReading;
 use render_loop::viewfinder::{WhiteSourceBuildError, WhiteSourceRegistry};
 use scene_estimation::white_source::{
     WhiteFrame, WhiteInputKind, WhiteReply, WhiteRequestRefusal, WhiteSource, WhiteStreamFacts,
@@ -135,6 +136,11 @@ impl WhiteSource for FakeSource {
         if self.pending.is_some_and(|(pending, _)| pending == request) {
             self.pending = None;
         }
+    }
+
+    fn reading(&self) -> WhiteReading {
+        // Сквозной тест про заявки и ответы; показание фальшивый источник не ведёт.
+        WhiteReading::NotMeasuredYet
     }
 
     fn poll(&mut self) -> Option<WhiteReply> {

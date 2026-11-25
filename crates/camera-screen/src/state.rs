@@ -32,6 +32,7 @@ use crate::shutter::{ShotRequestId, ShutterState, ThumbnailState};
 use crate::thumbnail::{PictureTiming, ThumbnailBlend, ThumbnailCounters, ThumbnailTracker};
 use crate::tools::ToolId;
 use crate::viewfinder_map::{MappingError, MirrorMode, StreamGeometry, ViewfinderMapping};
+use crate::white::WhiteScreenState;
 use crate::zoom::ZoomState;
 use look_contract::{LookFacts, PresetEntry};
 use ui_core::geometry::Rect;
@@ -131,6 +132,8 @@ pub struct ScreenState {
     pub(crate) look: LookView,
     /// Выбор экрана в разделе калибровки: прибор, полоса, меню, ввод имени, раскладка (14b).
     pub(crate) calibration: CalibrationState,
+    /// Панель белого: ось шкалы и учёт отказов. Самого белого экран не хранит.
+    pub(crate) white: WhiteScreenState,
 }
 
 impl ScreenState {
@@ -169,6 +172,7 @@ impl ScreenState {
             rejections: RejectionCounters::default(),
             look: LookView::default(),
             calibration: CalibrationState::new(&config.calibration),
+            white: WhiteScreenState::default(),
         })
     }
 
@@ -234,6 +238,11 @@ impl ScreenState {
             .catalog
             .clone()
             .unwrap_or_else(|| Arc::new(ZoomCatalog::default()))
+    }
+
+    /// Состояние панели белого (ось шкалы, номер отказа).
+    pub fn white(&self) -> &WhiteScreenState {
+        &self.white
     }
 
     /// Последние факты камеры, которые учёл экран.
@@ -393,7 +402,8 @@ impl ScreenState {
     pub(crate) fn is_tool_available(&self, tool: ToolId) -> bool {
         match tool {
             ToolId::Flash => self.facts.flash == FlashAvailability::Available,
-            ToolId::Raw
+            ToolId::White
+            | ToolId::Raw
             | ToolId::Timer
             | ToolId::Exposure
             | ToolId::Aspect

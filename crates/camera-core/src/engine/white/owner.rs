@@ -19,15 +19,16 @@ use std::time::{Duration, Instant};
 
 use camera_contract::control::WhiteBalanceSetting;
 use camera_contract::white::{
-    HeldWhite, SceneIlluminant, WhileAwaitingWhite, WhiteAnswer, WhiteDirective, WhiteOrigin, WhiteRequestId,
-    WhiteSourceId, WhiteSourceOutcome, WhiteSourceRequest, WhiteTransition,
+    HeldWhite, SceneIlluminant, WhileAwaitingWhite, WhiteAdjustment, WhiteAnswer, WhiteDirective, WhiteOrigin,
+    WhiteRequestId, WhiteSourceId, WhiteSourceOutcome, WhiteSourceRequest, WhiteTransition,
 };
 
 use super::limits::clamp_white;
+use crate::command::{CommandId, InvalidStateReason};
 use crate::three_a_status::ControlAdjustment;
 use crate::white::{
-    RememberedOrigin, WhiteCancelCause, WhiteConfig, WhiteMemoryLoad, WhiteMemoryStartup, WhiteRequestOutcome,
-    WhiteRequestResult, WhiteRequestState,
+    RememberedOrigin, WhiteCancelCause, WhiteConfig, WhiteMemoryLoad, WhiteMemoryStartup, WhiteMemoryState,
+    WhiteRequestOutcome, WhiteRequestResult, WhiteRequestState, WhiteStatus, WhiteTakeReport,
 };
 
 /// Что владелец просит донести наружу (события и память), в порядке появления.
@@ -58,6 +59,9 @@ struct Pending {
     on_ready: WhiteTransition,
     /// Когда срок выходит; `None` — отсчёт ещё не начат (первого кадра потока не было).
     deadline: Option<Instant>,
+    /// Команда «взять белую», которой принадлежит заявка; `None` — заявку завёл сам владелец (открытие).
+    /// Переживает переиздание заявки при конце потока: отчёт команды остаётся «ждёт».
+    command: Option<CommandId>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -78,6 +82,8 @@ pub(super) struct WhiteOwner {
     request: Request,
     /// Чем кончилась последняя заявка.
     last_result: Option<WhiteRequestResult>,
+    /// Отчёт о последней команде «взять белую». Заявка открытия его не трогает.
+    last_take: Option<WhiteTakeReport>,
     /// Номер, который получит следующая заявка.
     next_request: u64,
     /// Был ли кадр повторяющегося запроса текущего потока.
@@ -106,7 +112,7 @@ impl WhiteOwner {
         let (held, memory_startup) = match remembered {
             WhiteMemoryLoad::NothingRemembered => (fallback, WhiteMemoryStartup::NothingRemembered),
             WhiteMemoryLoad::Unreadable { reason } => {
-                tracing::warn!(target: super::super::LOG_TARGET, %reason, "память белой не читается, взят запасной свет");
+                // Причину в журнал пишет `WhiteEngine::new`: владельца собирают и ради снимка до движка.
                 (fallback, WhiteMemoryStartup::Unreadable { reason })
             }
             WhiteMemoryLoad::Remembered(record) => {
@@ -136,6 +142,7 @@ impl WhiteOwner {
             transition: WhiteTransition::Immediate,
             request: Request::Idle,
             last_result: None,
+            last_take: None,
             next_request: first_request.max(1),
             frame_seen: false,
             stale_answers: 0,
@@ -172,11 +179,39 @@ impl WhiteOwner {
         ManualOutcome::Changed
     }
 
-    /// Команда «взять белую у источника» при видимой картинке (кадры не скрываются).
-    pub(super) fn take_from_source(&mut self, source: WhiteSourceId, transition: WhiteTransition, now: Instant) {
+    /// Рука, одна ось: вторая берётся у ДЕЙСТВУЮЩЕЙ белой владельца в этот момент (а не у экрана, чьи факты
+    /// могли отстать на кадр: например, ответ источника только что сменил белую). Нетронутая ось остаётся
+    /// бит-в-бит; дальше всё как у [`Self::set_manual`].
+    pub(super) fn adjust_manual(&mut self, adjustment: WhiteAdjustment, transition: WhiteTransition) -> ManualOutcome {
+        let requested = adjustment.applied_to(self.held.setting);
+        self.set_manual(requested, transition)
+    }
+
+    /// Команда «взять белую у источника» при видимой картинке (кадры не скрываются). Заменяет и заявку, и
+    /// отчёт прежней команды: прежняя заявка закрывается как замещённая, её отчёт — вместе с ней.
+    pub(super) fn take_from_source(
+        &mut self,
+        command: CommandId,
+        source: WhiteSourceId,
+        transition: WhiteTransition,
+        now: Instant,
+    ) {
         // Срок команды — от нажатия: человек ждёт ответа у экрана, а не первого кадра.
         let deadline = now + self.answer_timeout();
-        self.open_request(source, WhileAwaitingWhite::KeepShowing, transition, Some(deadline));
+        self.open_request(
+            source,
+            WhileAwaitingWhite::KeepShowing,
+            transition,
+            Some(deadline),
+            Some(command),
+        );
+    }
+
+    /// Команда «взять белую» отклонена до заявки (нет потока, движок сломан): источнику ничего не передавали.
+    /// Отчёт заменяется; заявка более ранней команды, если ещё ждёт, остаётся и закроется как обычно (её отчёт
+    /// к тому времени уже не последний и не перезаписывается: см. [`Self::finish_request`]).
+    pub(super) fn note_take_not_asked(&mut self, command: CommandId, reason: InvalidStateReason) {
+        self.last_take = Some(WhiteTakeReport::not_asked(command, reason));
     }
 
     /// Приложение вернулось на передний план (WB22): ручную белую держим, иначе спрашиваем источник открытия,
@@ -186,7 +221,13 @@ impl WhiteOwner {
             return;
         }
         let transition = self.late_transition();
-        self.open_request(self.opening_source, WhileAwaitingWhite::HideFrames, transition, None);
+        self.open_request(
+            self.opening_source,
+            WhileAwaitingWhite::HideFrames,
+            transition,
+            None,
+            None, // заявка открытия: отчёт команды «взять» не трогает
+        );
     }
 
     /// Приложение ушло в фон: ожидание снимается, белая остаётся.
@@ -297,10 +338,6 @@ impl WhiteOwner {
         self.held
     }
 
-    pub(super) fn limits(&self) -> &[ControlAdjustment] {
-        &self.limits
-    }
-
     pub(super) fn request_state(&self) -> WhiteRequestState {
         match self.request {
             Request::Idle => WhiteRequestState::Idle { last: self.last_result },
@@ -311,8 +348,20 @@ impl WhiteOwner {
         }
     }
 
-    pub(super) fn stale_answers(&self) -> u64 {
-        self.stale_answers
+    /// Снимок для экрана. `saves_requested` ведёт движок (он передаёт записи памяти), поэтому приходит параметром.
+    pub(super) fn status(&self, saves_requested: u64) -> WhiteStatus {
+        WhiteStatus {
+            held: self.held,
+            limits: self.limits.clone(),
+            range: self.config.range(),
+            request: self.request_state(),
+            last_take: self.last_take,
+            memory: WhiteMemoryState {
+                startup: self.memory_startup.clone(),
+                saves_requested,
+            },
+            stale_answers: self.stale_answers,
+        }
     }
 
     pub(super) fn memory_startup(&self) -> &WhiteMemoryStartup {
@@ -351,9 +400,13 @@ impl WhiteOwner {
         while_awaiting: WhileAwaitingWhite,
         on_ready: WhiteTransition,
         deadline: Option<Instant>,
+        command: Option<CommandId>,
     ) {
         self.cancel_request(WhiteCancelCause::ReplacedByNewRequest);
         let id = self.issue_id();
+        if let Some(command) = command {
+            self.last_take = Some(WhiteTakeReport::waiting(command));
+        }
         self.request = Request::Waiting(Pending {
             request: WhiteSourceRequest {
                 id,
@@ -362,6 +415,7 @@ impl WhiteOwner {
             },
             on_ready,
             deadline,
+            command,
         });
     }
 
@@ -379,6 +433,13 @@ impl WhiteOwner {
         };
         self.request = Request::Idle;
         self.last_result = Some(finished);
+        // Отчёт закрывается только если он всё ещё принадлежит команде этой заявки: более новая команда (в том
+        // числе отклонённая) свой отчёт уже поставила, и исход старой заявки его не затирает.
+        if let (Some(command), Some(report)) = (pending.command, self.last_take)
+            && report.command == command
+        {
+            self.last_take = Some(report.finished(result));
+        }
         self.notices.push(WhiteNotice::Finished(finished));
     }
 

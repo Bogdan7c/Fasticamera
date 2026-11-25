@@ -21,6 +21,7 @@ use camera_contract::white::{
     SceneIlluminant, WhileAwaitingWhite, WhiteAnswer, WhiteDirective, WhiteRequestId, WhiteSourceId,
     WhiteSourceOutcome, WhiteSourceRequest, WhiteTransition,
 };
+use camera_contract::white_reading::WhiteReading;
 use render_loop::viewfinder::WhiteLinks;
 
 /// Как быстро принимается поздний ответ (WB23).
@@ -232,6 +233,11 @@ impl WhiteSource for ScriptedSource {
         self.pending = Some(request);
         self.answer_if_due();
         Ok(())
+    }
+
+    fn reading(&self) -> WhiteReading {
+        // Сценарные источники ничего не меряют: показание этих тестов не касается.
+        WhiteReading::NotMeasuredYet
     }
 
     fn cancel(&mut self, request: WhiteRequestId) {

@@ -632,7 +632,10 @@ impl CameraScreenService {
         let (camera_port, facts): (Box<dyn CameraIntentPort>, Box<dyn CameraFactsSource>) = match env.camera.running() {
             Ok(running) => (
                 Box::new(HandleCameraPort::new(running.handle().clone())),
-                Box::new(EngineFactsSource::new(running.handle().clone())),
+                Box::new(EngineFactsSource::with_white_readings(
+                    running.handle().clone(),
+                    env.camera.white_readings().clone(),
+                )),
             ),
             Err(_) => (Box::new(AbsentCameraPort), Box::new(AbsentEngineFactsSource)),
         };

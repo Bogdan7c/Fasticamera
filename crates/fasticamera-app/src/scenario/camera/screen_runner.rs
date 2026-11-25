@@ -24,6 +24,7 @@ use serde::Serialize;
 use super::screen_expect::Expectation;
 use super::screen_probe::{ProbeDelta, ScreenProbe};
 use super::screen_steps::PlannedStep;
+use super::screen_white_check::take_verdict_word;
 
 /// Сроки шага.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,7 +233,8 @@ fn expects_trigger(expectation: &Expectation) -> bool {
 /// Приращения одной строкой для отчёта.
 pub fn describe_delta(delta: &ProbeDelta) -> String {
     format!(
-        "тапы {}, долгие {}, свайпы {}, кнопки {}, намерения камере {}, триггеры {}, снимки {}, блокировка {:?}, EV {:+.2}",
+        "тапы {}, долгие {}, свайпы {}, кнопки {}, намерения камере {}, триггеры {}, снимки {}, блокировка {:?}, EV {:+.2}, \
+         белое {:?} {:.0} К, «взять» {}",
         delta.taps,
         delta.long_presses,
         delta.pans,
@@ -242,6 +244,9 @@ pub fn describe_delta(delta: &ProbeDelta) -> String {
         delta.capture_requests,
         delta.lock,
         delta.exposure_bias_ev,
+        delta.white.held_now.origin,
+        delta.white.held_now.setting.temperature.kelvin(),
+        take_verdict_word(&delta.white),
     )
 }
 

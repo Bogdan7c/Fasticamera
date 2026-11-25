@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use camera_android::{BackendDiagnostics, CpuProbeMode, DiagnosticsSnapshot};
+use camera_contract::white_reading::WhiteReadingBoard;
 use camera_contract::zoom::LensIntentChannel;
 use camera_core::{CameraHandle, CameraRuntime, CommandId, CommandRejected};
 use raw_frame_stream::ViewfinderPacingSwitch;
@@ -211,6 +212,8 @@ pub struct CameraServices {
     user_lens_before_scenario: Arc<Mutex<UserLens>>,
     /// Счётчики и последняя ошибка записи памяти белой (пусты, если память не открывалась).
     white_memory: WhiteMemoryDiagnostics,
+    /// Доска показаний источников белого: рендер пишет, экран камеры читает («≈ 3100» на кнопке).
+    white_readings: WhiteReadingBoard,
 }
 
 impl CameraServices {
@@ -227,7 +230,19 @@ impl CameraServices {
             lens_intents: LensIntentChannel::new(),
             user_lens_before_scenario: Arc::new(Mutex::new(UserLens::NoneBeforeScenario)),
             white_memory: WhiteMemoryDiagnostics::default(),
+            white_readings: WhiteReadingBoard::new(),
         }
+    }
+
+    /// Подключает доску показаний источников белого (тот же клон, что получил рендер).
+    pub fn with_white_readings(mut self, white_readings: WhiteReadingBoard) -> Self {
+        self.white_readings = white_readings;
+        self
+    }
+
+    /// Доска показаний источников белого для фактов экрана.
+    pub fn white_readings(&self) -> &WhiteReadingBoard {
+        &self.white_readings
     }
 
     /// Подключает счётчики записи памяти белой (те же, что у потока записи).

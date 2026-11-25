@@ -7,10 +7,10 @@
 use std::time::Instant;
 
 use camera_contract::control::WhiteBalanceSetting;
-use camera_contract::white::{WhiteSourceId, WhiteTransition};
+use camera_contract::white::{WhiteAdjustment, WhiteSourceId, WhiteTransition};
 
 use super::owner::ManualOutcome;
-use crate::command::{CommandOutcome, InvalidStateReason};
+use crate::command::{CameraCommand, CommandId, CommandOutcome, InvalidStateReason};
 use crate::engine::CameraEngine;
 
 impl CameraEngine {
@@ -26,10 +26,24 @@ impl CameraEngine {
         }
     }
 
+    /// Команда `AdjustWhite`: правка одной оси рукой. Вторая ось берётся у владельца в этот момент. Работает и
+    /// без потока.
+    pub(in crate::engine) fn decide_adjust_white(
+        &mut self,
+        adjustment: WhiteAdjustment,
+        transition: WhiteTransition,
+    ) -> CommandOutcome {
+        match self.white.adjust_manual(adjustment, transition) {
+            ManualOutcome::Changed => CommandOutcome::Accepted,
+            ManualOutcome::AlreadyHeld => CommandOutcome::AlreadyInState,
+        }
+    }
+
     /// Команда `TakeWhite`: взять белую у источника. Нужен идущий поток — иначе спрашивать нечем.
     /// Знает ли рендер такой источник, движок не проверяет: рендер ответит `Unavailable(NotRegistered)`.
     pub(in crate::engine) fn decide_take_white(
         &mut self,
+        command: CommandId,
         source: WhiteSourceId,
         transition: WhiteTransition,
         now: Instant,
@@ -37,8 +51,22 @@ impl CameraEngine {
         if !self.is_streaming_now() {
             return CommandOutcome::InvalidState(InvalidStateReason::NotStreaming);
         }
-        self.white.take_from_source(source, transition, now);
+        self.white.take_from_source(command, source, transition, now);
         CommandOutcome::Accepted
+    }
+
+    /// Итог команды решён: если это отклонённая `TakeWhite`, экран получает отчёт «не спрашивали» с причиной.
+    /// Один вход на все отказы (нет потока, `Fatal`, сломанный движок): отдельные ветки решения такой отказ
+    /// не покрыли бы целиком, потому что `Fatal` отсекает команду раньше.
+    pub(in crate::engine) fn note_white_take_outcome(
+        &mut self,
+        id: CommandId,
+        command: &CameraCommand,
+        outcome: &CommandOutcome,
+    ) {
+        if let (CameraCommand::TakeWhite { .. }, CommandOutcome::InvalidState(reason)) = (command, outcome) {
+            self.white.note_take_not_asked(id, *reason);
+        }
     }
 
     /// Приложение вернулось с заднего плана.

@@ -18,6 +18,8 @@ pub struct WhiteBalanceConfig {
     pub max_hidden_frames: u32,
     /// Статистика AWB на GPU считается на каждом N-м обработанном кадре (1 — на каждом).
     pub statistics_every_n_frames: u32,
+    /// Показание источников белого (что источник видит сейчас) обновляется на каждом N-м годном кадре (1 — на каждом).
+    pub reading_every_frames: u32,
     /// Числа источника белого «телефон» (white-balance 01): когда подсказки автоматики телефона считаются ответом.
     pub phone: PhoneWhiteConfig,
 }
@@ -33,11 +35,14 @@ impl Default for WhiteBalanceConfig {
     /// * `statistics_every_n_frames` 4 → 15 Гц при 60 к/с. Стадия статистики стоила ≈ 55 мА из ≈ 119 мА всего ISP
     ///   на телефоне (07a); свет сцены меняется медленнее (сглаживание ≥ 0,25 с), 15 Гц даёт не меньше трёх
     ///   оценок за постоянную времени самого быстрого профиля. Сглаживание при этом идёт на КАЖДЫЙ кадр.
+    /// * `reading_every_frames` 15 → 4 раза в секунду при 60 к/с: число на кнопке источника не должно мельтешить
+    ///   (автоматика телефона дрожит каждый кадр), а человеку хватает чувствовать свет с запаздыванием в четверть секунды.
     fn default() -> Self {
         Self {
             scene: SceneEstimationConfig::default(),
             max_hidden_frames: 20,
             statistics_every_n_frames: 4,
+            reading_every_frames: 15,
             phone: PhoneWhiteConfig::default(),
         }
     }
@@ -52,6 +57,9 @@ pub enum WhiteBalanceConfigError {
     /// Статистику нельзя считать «каждый 0-й» кадр.
     #[error("viewfinder.white_balance.statistics_every_n_frames должен быть не меньше 1")]
     StatisticsEveryZero,
+    /// Показание нельзя обновлять «каждый 0-й» кадр.
+    #[error("viewfinder.white_balance.reading_every_frames должен быть не меньше 1")]
+    ReadingEveryZero,
     /// Числа источника «телефон» отвергнуты.
     #[error("viewfinder.white_balance.phone: {0}")]
     Phone(String),
@@ -65,6 +73,9 @@ impl WhiteBalanceConfig {
             .map_err(|error| WhiteBalanceConfigError::Scene(error.to_string()))?;
         if self.statistics_every_n_frames == 0 {
             return Err(WhiteBalanceConfigError::StatisticsEveryZero);
+        }
+        if self.reading_every_frames == 0 {
+            return Err(WhiteBalanceConfigError::ReadingEveryZero);
         }
         self.phone
             .validate()
@@ -93,6 +104,12 @@ mod tests {
             zero_period.validate(),
             Err(WhiteBalanceConfigError::StatisticsEveryZero)
         );
+        let zero_reading = WhiteBalanceConfig {
+            reading_every_frames: 0,
+            ..WhiteBalanceConfig::default()
+        };
+        assert_eq!(zero_reading.validate(), Err(WhiteBalanceConfigError::ReadingEveryZero));
+        assert_eq!(WhiteBalanceConfig::default().reading_every_frames, 15);
         let mut broken_scene = WhiteBalanceConfig::default();
         broken_scene.scene.estimator.min_level = 0.99;
         assert!(matches!(

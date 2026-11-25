@@ -44,8 +44,16 @@ pub struct TouchInjection {
 /// Что вложить в экран.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Injection {
-    Action(ScreenAction),
+    /// В коробке: действие экрана несёт факты камеры и намного крупнее касания.
+    Action(Box<ScreenAction>),
     Touch(TouchInjection),
+}
+
+impl Injection {
+    /// Вложение-действие: упаковка в коробку спрятана здесь.
+    pub fn action(action: ScreenAction) -> Self {
+        Self::Action(Box::new(action))
+    }
 }
 
 /// Состояние прогона после тика.

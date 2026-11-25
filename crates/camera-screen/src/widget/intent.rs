@@ -4,6 +4,7 @@
 use look_contract::{WheelPart, WheelZone};
 
 use crate::calibration::ControlViewKind;
+use crate::white::WhiteAxis;
 
 /// Кнопка экрана (нажатие = `Press` для подсветки/срабатывания + `Tap` для арбитража, дока `UiScene`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -45,6 +46,17 @@ pub enum ButtonId {
     StyleChip(u8),
     /// Пункт корня меню раздела калибровки по номеру слота.
     CalibrationMenuItem(u8),
+    /// Кнопка белого рядом с затвором: у неё один собственный узел (тап открывает карточку, долгое нажатие берёт
+    /// белое телефона).
+    WhiteButton,
+    /// «×» карточки белого.
+    WhiteClose,
+    /// Число оси на карточке белого (тап отдаёт шкалу этой оси).
+    WhiteAxis(WhiteAxis),
+    /// Кнопка «Phone» на карточке белого.
+    WhitePhone,
+    /// Кнопка света на карточке белого по номеру в конфиге.
+    WhiteLight(u8),
     /// Левая кнопка карточки меню раздела: «‹» назад в корень.
     CalibrationCardLeft,
     /// Правая кнопка карточки меню раздела: «↻» сбросить правки пресета.
@@ -78,6 +90,10 @@ pub enum ScreenGesture {
     DrawerClosePan,
     /// Горизонтальный пан линейки Exposure в карточке.
     ExposureSliderPan,
+    /// Долгое нажатие на кнопку белого (рецепт кнопки с долгим нажатием: `Press` + `Tap` + `LongPress`).
+    WhiteButtonLongPress,
+    /// Горизонтальный пан шкалы на карточке белого (ведёт шкалу выбранной оси).
+    WhiteRulerPan,
     /// Щипок по видоискателю: зум. Побеждает пан и тапы видоискателя вторым пальцем (`ExtraFingers::FailOrCancel`).
     ViewfinderPinch,
     /// Долгий тап по ленте зума: открывает колесо, палец ведёт его.

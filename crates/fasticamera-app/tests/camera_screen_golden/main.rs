@@ -23,6 +23,7 @@ mod mode_capsule_goldens;
 mod render_rig;
 mod states;
 mod thumbnail_goldens;
+mod white_goldens;
 mod zoom_goldens;
 mod zoom_states;
 

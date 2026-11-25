@@ -16,9 +16,10 @@ use super::scale::PxPerPt;
 use crate::drive::{GrowthDirection, ScreenAxis};
 use crate::scale::{SnapScale, TickVisibility};
 use crate::tokens::{ColorTokens, RulerTokens};
-use crate::value::ValueModel;
+use crate::value::RulerAxis;
 
-/// Через сколько шагов шкалы повторяется крупная риска (для EV по 1/3 — каждый 3-й шаг, целый EV).
+/// Через сколько шагов шкалы повторяется крупная риска (для EV по 1/3 — каждый 3-й шаг, целый EV). «Шаг» —
+/// расстояние между соседними рисками ([`RulerAxis::tick_step_units`]): у непрерывной оси это шаг её сетки.
 /// `ui-kit` не знает, что такое EV: период задаёт экран.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MajorTickPeriod(NonZeroU32);
@@ -39,7 +40,7 @@ impl MajorTickPeriod {
 /// линейки: все риски одной длины, крупные (по [`MajorTickPeriod`]) ярче, яркость падает с
 /// расстоянием до отметки ([`RulerTokens::fade_factor`]), риски дальше последнего звена затухания
 /// не создаются. Отметка рисуется последней (поверх).
-pub fn ruler_items<M: ValueModel + Clone>(
+pub fn ruler_items<M: RulerAxis>(
     placement: &NodePlacementPx,
     scale: &SnapScale<M>,
     now: MonotonicNanos,
@@ -62,14 +63,15 @@ pub fn ruler_items<M: ValueModel + Clone>(
         ScreenAxis::Horizontal => placement.size.width,
         ScreenAxis::Vertical => placement.size.height,
     } * 0.5;
-    let points_per_step = scale.points_per_unit();
+    // «Шаг» линейки — расстояние между соседними рисками (у непрерывных осей это не единица положения).
+    let points_per_step = scale.points_per_unit() * scale.model().tick_step_units();
     let current_offset = scale.snapshot(now).offset_points;
 
     let mut items = Vec::new();
     for mark in scale.marks() {
         let along_pt = mark.offset_points - current_offset;
         let along_px = sign * px_per_pt.px(along_pt);
-        let fade = tokens.fade_factor(along_pt / points_per_step);
+        let fade = tokens.fade_factor(along_pt);
         if along_px.abs() > half_extent_px || fade <= 0.0 {
             continue;
         }

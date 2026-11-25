@@ -1,8 +1,9 @@
 //! Намерения экрана наружу. Экран ничего не вызывает — эффекты исполняет приложение
 //! (`fasticamera-app`): камеру, сервис снимка, хаптику, галерею и рендер.
 
-use camera_contract::control::ExposureBias;
+use camera_contract::control::{ExposureBias, WhiteBalanceSetting};
 use camera_contract::three_a::SensorPoint;
+use camera_contract::white::{WhiteAdjustment, WhiteSourceId};
 use camera_contract::zoom::LensIntent;
 use look_contract::{CleanView, LookIntent};
 use scope_contract::ScopeIntent;
@@ -25,6 +26,12 @@ pub enum ScreenCameraIntent {
     ResetPointOfInterest,
     /// `set_exposure_bias`.
     SetExposureBias(ExposureBias),
+    /// `set_white`: белое целиком рукой (кнопка света). Переход всегда мгновенный (`WhiteTransition::Immediate`).
+    SetWhite(WhiteBalanceSetting),
+    /// `adjust_white`: одна ось белого рукой (шкала); вторую ось держит движок.
+    AdjustWhite(WhiteAdjustment),
+    /// `take_white`: взять белое у источника (кнопка «Телефон», долгое нажатие по значку).
+    TakeWhite(WhiteSourceId),
 }
 
 /// Намерение наружу. С сессии 13 не `Copy`: кадрирование несёт общий каталог зума (`Arc`).

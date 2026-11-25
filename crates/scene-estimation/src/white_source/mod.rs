@@ -18,6 +18,7 @@ use camera_contract::capture_result::SensorTimestamp;
 use camera_contract::control::ExposureTime;
 use camera_contract::frame_passport::CaptureColorHints;
 use camera_contract::white::{WhiteRequestId, WhiteSourceId, WhiteSourceOutcome, WhiteUnavailableReason};
+use camera_contract::white_reading::WhiteReading;
 use isp_model::color::dng::DngColorProfile;
 use isp_model::statistics::AwbStatistics;
 
@@ -111,4 +112,13 @@ pub trait WhiteSource: Send {
 
     /// Забирает готовый ответ; `None` — готовых нет.
     fn poll(&mut self) -> Option<WhiteReply>;
+
+    /// Что источник видит прямо сейчас (white-balance 02, WB33): показание для экрана «что я получу, если нажму».
+    ///
+    /// **Не ответ.** Заявки у показания нет, его не ждут и не опознают по номеру, владелец белого его не видит, а
+    /// состояние источника (заявки, накопленное по потоку) вызов не меняет. Ответ — единственное, что может
+    /// стать белой в картинке; показание лишь рассказывает, каким был бы ответ сейчас. Белая прошлого сеанса или
+    /// иное значение, не измеренное на текущем потоке, показанием не бывает: это
+    /// [`WhiteReading::NotMeasuredYet`]. Показание не требует устойчивости, которой ждёт ответ.
+    fn reading(&self) -> WhiteReading;
 }

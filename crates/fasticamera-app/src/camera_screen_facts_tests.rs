@@ -352,7 +352,7 @@ fn watcher_reports_only_real_changes() {
 
     assert_eq!(
         watcher.observe(first.clone()),
-        FactsChange::Changed(first.clone()),
+        FactsChange::Changed(Box::new(first.clone())),
         "первое наблюдение — изменение"
     );
     assert_eq!(watcher.observe(first.clone()), FactsChange::Unchanged, "те же факты");
@@ -360,10 +360,13 @@ fn watcher_reports_only_real_changes() {
     let mut locked_status = status_in(streaming("2", ReadoutAspect::FourByThree));
     locked_status.three_a.lock = AeAfLock::Locked;
     let locked = camera_facts_from_status(&locked_status);
-    assert_eq!(watcher.observe(locked.clone()), FactsChange::Changed(locked.clone()));
+    assert_eq!(
+        watcher.observe(locked.clone()),
+        FactsChange::Changed(Box::new(locked.clone()))
+    );
     assert_eq!(watcher.observe(locked), FactsChange::Unchanged);
     // Возврат к прежним фактам — снова изменение (сравнивается с последними отправленными).
-    assert_eq!(watcher.observe(first.clone()), FactsChange::Changed(first));
+    assert_eq!(watcher.observe(first.clone()), FactsChange::Changed(Box::new(first)));
 }
 
 /// Поток 16:9 в буфере, где полоса 16:9 не помещается (4096×2000 < 4096×9/16 = 2304 строки): паспорт не соберётся.

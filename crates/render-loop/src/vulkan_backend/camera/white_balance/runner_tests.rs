@@ -8,10 +8,11 @@
     reason = "в тестах падение — сигнал провала"
 )]
 
-use camera_contract::frame_passport::{FrameCaptureMeta, MissingCaptureMeta};
+use camera_contract::frame_passport::{CaptureColorHints, FrameCaptureMeta, MissingCaptureMeta};
 use camera_contract::white::{
     WhileAwaitingWhite, WhiteRequestId, WhiteSourceId, WhiteSourceOutcome, WhiteTransition, WhiteUnavailableReason,
 };
+use camera_contract::white_reading::WhiteReading;
 use isp_model::color::temperature::Kelvin;
 use isp_model::color::white_point::{CctDuv, Duv, chromaticity_from_cct_duv};
 use scene_estimation::white_source::WhiteInputKind;
@@ -22,7 +23,7 @@ use super::test_support::{
     runner_with, runner_without_sources, single_colour_scene,
 };
 use super::*;
-use crate::viewfinder::WhiteLinks;
+use crate::viewfinder::{WhiteLinks, WhiteSourceRegistry};
 
 const HIDE: WhileAwaitingWhite = WhileAwaitingWhite::HideFrames;
 
@@ -473,4 +474,104 @@ fn diagnostics_report_applied_target_transition_and_the_phone_comparison() {
     let delta = diagnostics.hal_delta.expect("разница");
     assert!(delta.mired.abs() > 50.0, "{delta:?}");
     assert_eq!(kelvin_of(chromaticity_of(2800.0)).round(), 2800.0);
+}
+
+#[test]
+fn an_immediate_directive_is_applied_by_the_very_next_frame_on_a_running_stream() {
+    // Рука на шкале: ползунок двигает белую по кадру, а не «плавно догоняет».
+    let (mut runner, links) = runner_without_sources();
+    links
+        .directives
+        .publish(directive_of(6500.0, WhiteTransition::Immediate, None));
+    let stream = new_stream();
+    for index in 0..5 {
+        assert_eq!(runner.plan_frame(&frame(&stream, index)).white, chromaticity_of(6500.0));
+    }
+    links
+        .directives
+        .publish(directive_of(3000.0, WhiteTransition::Immediate, None));
+    let next = runner.plan_frame(&frame(&stream, 5));
+    assert_eq!(
+        next.white,
+        chromaticity_of(3000.0),
+        "первый же кадр после публикации, без промежуточных"
+    );
+    assert!(shown(&next));
+}
+
+#[test]
+fn many_directives_between_two_frames_collapse_to_the_last_one() {
+    let (mut runner, links) = runner_without_sources();
+    links
+        .directives
+        .publish(directive_of(6500.0, WhiteTransition::Immediate, None));
+    let stream = new_stream();
+    runner.plan_frame(&frame(&stream, 0));
+    // Шкала отдала 120 указаний/с: между двумя кадрами их набралось много.
+    for step in 0..40 {
+        links.directives.publish(directive_of(
+            2800.0 + 50.0 * f64::from(step),
+            WhiteTransition::Immediate,
+            None,
+        ));
+    }
+    let last_kelvin = 2800.0 + 50.0 * 39.0;
+    let next = runner.plan_frame(&frame(&stream, 1));
+    assert_eq!(
+        next.white,
+        chromaticity_of(last_kelvin),
+        "применяется последнее, не первое и не среднее"
+    );
+    assert_eq!(
+        runner.plan_frame(&frame(&stream, 2)).white,
+        chromaticity_of(last_kelvin)
+    );
+}
+
+#[test]
+fn the_phone_reading_reaches_the_board_without_making_an_answer() {
+    let registry = WhiteSourceRegistry::with_phone(Default::default()).unwrap();
+    let config = WhiteBalanceConfig {
+        reading_every_frames: 1,
+        ..WhiteBalanceConfig::default()
+    };
+    let (mut runner, links) = runner_with(config, registry);
+    let stream = new_stream();
+    // Заявки нет: показание живёт без неё.
+    links
+        .directives
+        .publish(directive_of(5600.0, WhiteTransition::Immediate, None));
+    for index in 0..5 {
+        process(
+            &mut runner,
+            &frame_at(&stream, index, phone_hints(6500.0)),
+            &gray_scene(4000.0),
+        );
+        assert_eq!(
+            links.readings.latest_of(WhiteSourceId::PHONE),
+            Some(WhiteReading::NotMeasuredYet),
+            "белая прошлого сеанса неподвижна: числа нет, кадр {index}"
+        );
+    }
+    process(
+        &mut runner,
+        &frame_at(&stream, 5, phone_hints(2800.0)),
+        &gray_scene(4000.0),
+    );
+    let Some(WhiteReading::Measured { white }) = links.readings.latest_of(WhiteSourceId::PHONE) else {
+        panic!("после сдвига показание измерено");
+    };
+    assert!((white.temperature.kelvin() - 2800.0).abs() < 100.0, "{white:?}");
+    assert_eq!(links.answers.newer_than(None), None, "показание ответом не стало");
+    assert_eq!(runner.diagnostics().answers_published, 0);
+    // Новый поток (другой Arc паспорта): прежнее число забыто сразу, до первого кадра с подсказкой.
+    process(
+        &mut runner,
+        &frame_at(&new_stream(), 6, CaptureColorHints::default()),
+        &gray_scene(4000.0),
+    );
+    assert_eq!(
+        links.readings.latest_of(WhiteSourceId::PHONE),
+        Some(WhiteReading::NotMeasuredYet)
+    );
 }

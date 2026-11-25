@@ -20,6 +20,7 @@ use tracing_subscriber::filter::Targets;
 
 use crate::camera_config::{CameraConfig, CameraConfigError};
 use crate::camera_screen_config::{CameraScreenConfig, CameraScreenConfigError};
+use crate::camera_screen_white_facts::range_facts_of;
 use crate::device_config::{DeviceConfig, DeviceIdentityError};
 use crate::gpu_config::GpuConfig;
 use crate::photo_config::{PhotoConfig, PhotoConfigError};
@@ -148,6 +149,22 @@ impl RuntimeConfig {
         parsed.render.validate()?;
         parsed.camera.validate()?;
         parsed.camera_screen.validate()?;
+        // Кнопки света панели белого против пределов движка: два конфига двух crate-ов. Кнопка вне пределов
+        // отвергает запуск с её именем, а не молча не нажимается на телефоне.
+        parsed
+            .camera_screen
+            .screen
+            .white
+            .check_lights_in_range(&range_facts_of(&parsed.camera.engine.three_a.white.range()))?;
+        // Сценарий `screen` жмёт кнопку света по номеру: такая кнопка обязана быть в списке экрана.
+        let white_lights = parsed.camera_screen.screen.white.lights.len();
+        let tapped_light = parsed.camera.scenarios.screen.touch.white_light_index;
+        if tapped_light >= white_lights {
+            return Err(ConfigError::ScreenScenarioWhiteLightMissing {
+                index: tapped_light,
+                lights: white_lights,
+            });
+        }
         parsed.device.validate()?;
         // Имена и значения встроенных пресетов проверяются здесь, а не при открытии файла: опечатка в конфиге
         // отвергает запуск сразу, а не молча ломает пресеты.
@@ -277,6 +294,12 @@ pub enum ConfigError {
     Camera(#[from] CameraConfigError),
     #[error("неверные настройки экрана камеры: {0}")]
     CameraScreen(#[from] CameraScreenConfigError),
+    #[error("панель белого не сходится с пределами движка (camera.engine.three_a.white): {0}")]
+    WhitePanelOutsideEngineRange(#[from] camera_screen::WhiteConfigError),
+    #[error(
+        "camera.scenarios.screen.touch.white_light_index = {index}, а кнопок света в camera_screen.screen.white.lights всего {lights}"
+    )]
+    ScreenScenarioWhiteLightMissing { index: usize, lights: usize },
     #[error("неверный паспорт телефона: {0}")]
     Device(#[from] DeviceIdentityError),
     #[error("неверные настройки службы снимков: {0}")]

@@ -52,6 +52,7 @@ pub(crate) fn live_facts() -> CameraFacts {
         lens: crate::facts::LensFacts::NONE,
         // Большинство тестов проверяют вспышку как возможность камеры; «вспышки нет» — отдельные тесты.
         flash: crate::facts::FlashAvailability::Available,
+        white: crate::white_facts::WhiteFacts::STARTING,
     }
 }
 

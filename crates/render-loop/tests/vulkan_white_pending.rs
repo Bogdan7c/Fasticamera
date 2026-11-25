@@ -27,6 +27,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use camera_contract::capture_result::SensorTimestamp;
 use camera_contract::frame_passport::CaptureColorHints;
 use camera_contract::white::{WhileAwaitingWhite, WhiteRequestId, WhiteSourceId};
+use camera_contract::white_reading::WhiteReading;
 use render_loop::config::WhiteBalanceConfig;
 use render_loop::viewfinder::{WhiteLinks, WhiteSourceRegistry};
 use scene_estimation::white_source::{
@@ -191,6 +192,10 @@ impl WhiteSource for SlowSource {
         {
             self.ready.push_back(Self::reply(request, self.current_white));
         }
+    }
+
+    fn reading(&self) -> WhiteReading {
+        WhiteReading::NotMeasuredYet
     }
 
     fn request(&mut self, request: WhiteRequestId) -> Result<(), WhiteRequestRefusal> {

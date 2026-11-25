@@ -42,11 +42,16 @@ Display. Оба начертания используют один `opsz` — р
 | `icons/lucide/ratio.svg` | Lucide (ISC), `lucide-icons/lucide`, `icons/ratio.svg`, коммит `742ea78395b4122e13fd46743caba5140f47fb66` — соотношение сторон (у Phosphor аналога нет, `assets.md`); два пересекающихся скруглённых прямоугольника 12×20 и 20×12, `stroke` ширины 2 | `d30cb7b90d5164cfe6b14457cc0e333143a0a1e5ebdc281ba64facaf7eaf3125` |
 | `icons/own/level.svg` | **Своя** (лицензия проекта), нарисована в сессии 12 для пункта меню Level: у Phosphor и Lucide уровня нет (`assets.md`). viewBox 24, `stroke` ширины 2 с круглыми концами: горизонт с разрывом в центре (`M5 12h5`, `M14 12h5`) и два коротких боковых штриха (`M2 9v6`, `M22 9v6`) | `cc07f860b145327898bba2b5f1ca3415de814f9f7c0756b34ffc20fc0bf19eab` |
 | `icons/own/zoom-marker-triangle.svg` | **Своя** (лицензия проекта), нарисована в сессии 13 (правка после c8631a6) для маркера колеса зума: у iOS маркер — жёлтый треугольник 3,3 × 8,7 pt (`docs/ios-camera/layout.md`, `[measured: R00]`, правило 96). viewBox 24, `fill`: треугольник на весь квадрат — основание вдоль верха `M0 0H24`, вершина внизу (12, 24); экран растягивает квадрат до 3,3 × 8,7 pt. Направление вершины (к центру диска) — `[estimate]`, в замере не снято | `e4345338ac58cecd8a09220abd175bc016978730be32360aec8fec0471c274b3` |
+| `icons/phosphor/device-mobile.svg` | там же (`device_mobile` — кнопка «Phone» панели белого (белое телефона), план white-balance) | `db1f74b205590c98d61f61dff7b1f702eddd5a9e15eec7d9681798054ccb757a` |
+| `icons/phosphor/cloud.svg` | там же (`cloud` — «облачно» в кнопках света) | `a72f1f201500924d20a30d7190a3277e411ab526d5b71a6f6a91b0812a09c669` |
+| `icons/phosphor/tree.svg` | там же (`tree` — «тень») | `a4878c574c4ff8fcac43187573f5dfb4cb6788f709314eb47564e2ad6681980f` |
+| `icons/phosphor/lightbulb.svg` | там же (`lightbulb` — «лампа») | `b61e4d9685a1d74e579a7dbbe0d5222bdf8dcdcaf5b67825a17ff45363e4fadd` |
+| `icons/phosphor/house.svg` | там же (`house` — «домашняя» лампа) | `180e9259e99e23da197b59b19394d006d6a5d33e384cc2b9c8381cb0214a5716` |
 | `icons/lucide/LICENSE` | ISC, Copyright 2026 Lucide Icons and Contributors | `b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57` |
 
 Phosphor — иконки-заливки (`kind: fill`, ненулевая обмотка), Lucide — иконка-контур (`kind: stroke`,
 ширина штриха 2 единицы viewBox 24 — доказывает путь «расстояние до средней линии минус полуширина»).
-Набор из 14 иконок: 6 стартовых плюс 6 для экрана камеры v1 (сессия 12: `timer`, `aspect_ratio`, `close`, `reset`, `controls_menu` взяты как есть из закреплённых коммитов; `level` — своя, см. таблицу; 13-я — своя `zoom_marker_triangle`, сессия 13; 14-я — `flash_auto` (`lightning-a`), сессия 14d). `RAW` — подписью, шестерёнка настроек — сессия 16.
+Набор из 20 иконок. Панель белого (план `user/white-balance`, сессия 02) добавила шесть: `device_mobile`, `sun`, `cloud`, `tree`, `lightbulb`, `house` — SVG Phosphor `regular` того же закреплённого коммита. `sun` — второй идентификатор на тот же файл `sun.svg`, что и `exposure`: «Солнце» кнопок света и значок Exposure могут разойтись без правки друг друга; цена — одна лишняя ячейка атласа. Первые 14: 6 стартовых плюс 6 для экрана камеры v1 (сессия 12: `timer`, `aspect_ratio`, `close`, `reset`, `controls_menu` взяты как есть из закреплённых коммитов; `level` — своя, см. таблицу; 13-я — своя `zoom_marker_triangle`, сессия 13; 14-я — `flash_auto` (`lightning-a`), сессия 14d). `RAW` — подписью, шестерёнка настроек — сессия 16.
 
 ## Манифест `bake.json`
 

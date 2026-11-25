@@ -6,7 +6,7 @@
   ],
   "charset": {
     "ranges": [{ "from": 32, "to": 126 }, {"from": 1025, "to": 1025}, {"from": 1040, "to": 1103}, {"from": 1105, "to": 1105}],
-    "extra": "×−–—°…·’“”±•ƒ"
+    "extra": "×−–—°…·’“”±•ƒ≈"
   },
   "disabled_features": ["calt", "liga", "clig"],
   "atlas": {
@@ -30,6 +30,12 @@
     { "id": "reset", "file": "icons/phosphor/arrow-counter-clockwise.svg", "kind": "fill" },
     { "id": "controls_menu", "file": "icons/phosphor/dots-six.svg", "kind": "fill" },
     { "id": "level", "file": "icons/own/level.svg", "kind": "stroke", "stroke_width": 2.0 },
-    { "id": "zoom_marker_triangle", "file": "icons/own/zoom-marker-triangle.svg", "kind": "fill" }
+    { "id": "zoom_marker_triangle", "file": "icons/own/zoom-marker-triangle.svg", "kind": "fill" },
+    { "id": "device_mobile", "file": "icons/phosphor/device-mobile.svg", "kind": "fill" },
+    { "id": "sun", "file": "icons/phosphor/sun.svg", "kind": "fill" },
+    { "id": "cloud", "file": "icons/phosphor/cloud.svg", "kind": "fill" },
+    { "id": "tree", "file": "icons/phosphor/tree.svg", "kind": "fill" },
+    { "id": "lightbulb", "file": "icons/phosphor/lightbulb.svg", "kind": "fill" },
+    { "id": "house", "file": "icons/phosphor/house.svg", "kind": "fill" }
   ]
 }

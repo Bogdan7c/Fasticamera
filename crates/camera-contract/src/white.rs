@@ -22,7 +22,7 @@ use serde::Serialize;
 use crate::auto_exposure::{LateBoundRefreshSignal, SignalDelivery};
 use crate::auto_exposure_carry::CameraTag;
 use crate::capture_result::SensorTimestamp;
-use crate::control::WhiteBalanceSetting;
+use crate::control::{ColorTemperature, Tint, WhiteBalanceSetting};
 use crate::three_a::{DirectiveGeneration, DirectiveSlot};
 
 /// Имя источника белого. Не перечисление: новый источник (нейросеть) встаёт своим файлом, словарь не правится.
@@ -61,6 +61,25 @@ pub enum WhiteOrigin {
 pub struct HeldWhite {
     pub setting: WhiteBalanceSetting,
     pub origin: WhiteOrigin,
+}
+
+/// Правка одной оси белой рукой. Вторая ось остаётся ровно той, что держит владелец: экран, чьи факты отстали на кадр,
+/// не затирает её своим старым числом.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "axis", content = "value")]
+pub enum WhiteAdjustment {
+    Temperature(ColorTemperature),
+    Tint(Tint),
+}
+
+impl WhiteAdjustment {
+    /// Белая `held` с заменённой осью.
+    pub fn applied_to(self, held: WhiteBalanceSetting) -> WhiteBalanceSetting {
+        match self {
+            WhiteAdjustment::Temperature(temperature) => WhiteBalanceSetting { temperature, ..held },
+            WhiteAdjustment::Tint(tint) => WhiteBalanceSetting { tint, ..held },
+        }
+    }
 }
 
 /// Как переехать к новой белой (задел WB17: видео захочет «плавно»).

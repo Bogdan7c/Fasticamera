@@ -192,7 +192,13 @@ impl TopBarWidget {
                     );
                 }
                 // В ряд над кадром другие инструменты не пускает `ToolSet::new`.
-                ToolId::Aspect | ToolId::Grid | ToolId::Level | ToolId::Live | ToolId::Styles | ToolId::Night => {
+                ToolId::White
+                | ToolId::Aspect
+                | ToolId::Grid
+                | ToolId::Level
+                | ToolId::Live
+                | ToolId::Styles
+                | ToolId::Night => {
                     return Err(WidgetError::Inconsistent(format!(
                         "{tool:?} не может быть значком над кадром"
                     )));

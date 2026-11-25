@@ -457,3 +457,25 @@ mod auto_exposure_composition {
         assert!(sensor_product(&control).is_some());
     }
 }
+
+#[test]
+fn the_render_side_writes_readings_where_the_screen_side_reads_them() {
+    use camera_contract::white_reading::{WhiteReading, WhiteSourceReading};
+
+    let links = CameraLinks::default();
+    assert_eq!(
+        links.white_reading_of(WhiteSourceId::PHONE),
+        None,
+        "рендер ещё ничего не показывал"
+    );
+    let render = links.render_side(ExposureControllerKind::Vendor);
+    render.white.readings.publish(WhiteSourceReading {
+        source: WhiteSourceId::PHONE,
+        reading: WhiteReading::NotMeasuredYet,
+    });
+    assert_eq!(
+        links.white_reading_of(WhiteSourceId::PHONE),
+        Some(WhiteReading::NotMeasuredYet),
+        "доска общая у рендера и экрана"
+    );
+}

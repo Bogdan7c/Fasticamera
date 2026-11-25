@@ -45,7 +45,7 @@ fn failed_phase(id: u64, failure: StillFailure) -> StillPhase {
 }
 
 fn finished(request: u64, outcome: CaptureOutcome) -> ScreenInput {
-    ScreenInput::Action(ScreenAction::CaptureFinished {
+    ScreenInput::action(ScreenAction::CaptureFinished {
         request: ShotRequestId(request),
         outcome,
     })
@@ -63,7 +63,7 @@ fn secured_then_saved_reach_the_screen_with_the_screen_request_number() {
     assert_eq!(
         drain(&mut receiver),
         vec![
-            ScreenInput::Action(ScreenAction::CaptureSecured {
+            ScreenInput::action(ScreenAction::CaptureSecured {
                 request: ShotRequestId(3)
             }),
             finished(3, CaptureOutcome::Saved),

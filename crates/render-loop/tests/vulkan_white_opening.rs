@@ -18,8 +18,9 @@ mod white_rig;
 
 use camera_contract::frame_passport::CaptureColorHints;
 use camera_contract::white::{
-    WhiteSourceFailure, WhiteSourceId, WhiteSourceOutcome, WhiteUnavailableReason, WhiteUnknownReason,
+    SceneIlluminant, WhiteSourceFailure, WhiteSourceId, WhiteSourceOutcome, WhiteUnavailableReason, WhiteUnknownReason,
 };
+use camera_contract::white_reading::WhiteReading;
 use render_loop::config::WhiteBalanceConfig;
 use render_loop::viewfinder::{WhiteLinks, WhiteSourceRegistry};
 use scene_estimation::white_source::{WhiteInputKind, WhiteRequestRefusal};
@@ -375,4 +376,81 @@ fn a_late_answer_after_the_limit_is_applied_smoothly_and_ends_bit_exactly_on_the
     assert_same_from(&run.images, &lamp, settled_from, "после плавного перехода");
     assert_eq!(run.engine.answers_accepted, 1);
     assert_eq!(run.diagnostics.cold_start_forced, 1);
+}
+
+/// Прогон с настоящим телефоном и показаниями на каждом кадре: что лежало на доске после каждого кадра.
+fn phone_reading_run(hints: &dyn Fn(i64) -> CaptureColorHints) -> Option<(WhiteTestEngine, Vec<Option<WhiteReading>>)> {
+    let registry = WhiteSourceRegistry::with_phone(WhiteBalanceConfig::default().phone).expect("числа верны");
+    let links = WhiteLinks {
+        sources: registry,
+        ..WhiteLinks::default()
+    };
+    let readings = links.readings.clone();
+    let mut engine = WhiteTestEngine::open(&links, FALLBACK_KELVIN, WhiteSourceId::PHONE);
+    let config = WhiteBalanceConfig {
+        reading_every_frames: 1,
+        ..WhiteBalanceConfig::default()
+    };
+    let (mut rig, journal) = start(links, config)?;
+    let mut on_board = Vec::new();
+    rig.drive(0..FRAMES, hints, &mut |_| {
+        engine.react();
+        on_board.push(readings.latest_of(WhiteSourceId::PHONE));
+    });
+    rig.finish(&journal);
+    Some((engine, on_board))
+}
+
+#[test]
+fn the_phone_reading_on_the_board_is_the_number_its_answer_gives_and_not_a_leftover() {
+    // Кадры 0–4: автоматика телефона несёт «прошлый» свет 6500 К неподвижно; с 5-го мерит лампу 2800 К.
+    let lamp = awb_support::planckian_white(2800.0);
+    let past = awb_support::planckian_white(6500.0);
+    let hints = move |frame: i64| awb_support::phone_hints_at_frame(frame, 5, past, lamp);
+    let Some((engine, on_board)) = phone_reading_run(&hints) else {
+        return;
+    };
+    for (frame, reading) in on_board.iter().take(5).enumerate() {
+        assert_eq!(
+            *reading,
+            Some(WhiteReading::NotMeasuredYet),
+            "кадр {frame}: белая прошлого сеанса показанием не бывает"
+        );
+    }
+    let Some(WhiteReading::Measured { white: first }) = on_board[5] else {
+        panic!("первый сдвинувшийся кадр уже измерен: {:?}", on_board[5]);
+    };
+    assert!((first.temperature.kelvin() - 2800.0).abs() < 120.0, "{first:?}");
+    // Показание не ждёт ровных кадров, а ответ ждёт: когда ответ дан, число то же, что в нём.
+    assert_eq!(engine.answers_accepted, 1, "телефон ответил: {:?}", engine.answers_read);
+    let answer = engine.answers_read[0];
+    let WhiteSourceOutcome::Ready {
+        illuminant: SceneIlluminant::Uniform(answered),
+        ..
+    } = answer.outcome
+    else {
+        panic!("ожидался готовый ответ: {answer:?}");
+    };
+    let answered_at = on_board
+        .iter()
+        .position(|reading| *reading == Some(WhiteReading::Measured { white: answered }))
+        .expect("число ответа когда-то лежало на доске");
+    assert!(answered_at >= 5, "не раньше первого измеренного кадра: {answered_at}");
+}
+
+#[test]
+fn while_the_phone_hints_stand_still_the_board_never_shows_a_number() {
+    let past = awb_support::planckian_white(6500.0);
+    let hints = move |_frame: i64| awb_support::phone_hints_for_white(past);
+    let Some((engine, on_board)) = phone_reading_run(&hints) else {
+        return;
+    };
+    assert_eq!(on_board.len(), FRAMES as usize);
+    assert!(
+        on_board
+            .iter()
+            .all(|reading| *reading == Some(WhiteReading::NotMeasuredYet)),
+        "{on_board:?}"
+    );
+    assert_eq!(engine.answers_accepted, 0, "белой от телефона нет: она и не показана");
 }

@@ -9,7 +9,7 @@ use shell_contract::safe_area::SafeAreaInsets;
 use shell_contract::surface::SurfaceSize;
 use ui_core::geometry::Point;
 
-use camera_contract::control::ExposureBias;
+use camera_contract::control::{ColorTemperature, ExposureBias, Tint};
 use camera_contract::zoom::ZoomRatio;
 use look_contract::{
     BandAxis, GlobalKnob, HueBandId, LookControl, LookFacts, LookIntent, LookKnob, PresetId, ToneBaseModel,
@@ -23,6 +23,8 @@ use crate::facts::CameraFacts;
 use crate::modes::CaptureMode;
 use crate::shutter::{CaptureOutcome, ShotRequestId};
 use crate::tools::{ToolId, ToolOption};
+use crate::white::WhiteAxis;
+use crate::white_config::WhiteLightIndex;
 
 /// Фаза аппаратной клавиши.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,6 +202,23 @@ pub enum ScreenAction {
     },
     /// Меню «шесть точек» раздела: тап по пункту корня.
     CalibrationMenuItemTapped(CalibrationMenuItem),
+    // ----- Панель белого (white-balance 02). Значения белого экран не хранит: уходят намерениями движку. -----
+    /// Тап по кнопке белого рядом с затвором: открыть карточку белого, закрыть её или переключить с другой карточки.
+    WhiteButtonTapped,
+    /// Долгое нажатие на кнопку белого: взять белое телефона, панель не открывается.
+    WhiteButtonLongPressed,
+    /// Тап «Телефон» на карточке белого: взять белое телефона (без вибрации).
+    WhitePhoneTapped,
+    /// Тап кнопки света на карточке: белое = числа этой кнопки из конфига.
+    WhiteLightSelected(WhiteLightIndex),
+    /// Выбрана шкала карточки (Кельвины или оттенок). Эффектов нет.
+    WhiteAxisSelected(WhiteAxis),
+    /// Шкала Кельвинов тянется пальцем: меняется только температура, оттенок остаётся тем, что держит движок.
+    WhiteTemperatureDragged(ColorTemperature),
+    /// Шкала оттенка тянется пальцем: меняется только оттенок.
+    WhiteTintDragged(Tint),
+    /// Исполнитель не доставил команду «взять» (очередь полна, движка нет): для человека это отказ.
+    WhiteTakeNotDelivered,
     /// Рендер потерял спрос на прибор (экран UI переустановлен, 14h): экран шлёт запрос заново.
     ScopeDemandLost,
 }

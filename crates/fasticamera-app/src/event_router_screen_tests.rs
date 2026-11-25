@@ -29,7 +29,7 @@ const PX_PER_PT: f32 = SURFACE_WIDTH_PX as f32 / 440.0;
 /// Период кадра синтетического рендера, мс.
 const FRAME_MS: i64 = 16;
 /// Шагов плана `screen` (счёт из `screen_steps`).
-const STEP_COUNT: usize = 18;
+const STEP_COUNT: usize = 22;
 
 /// Синтетические часы потока рендера: каждый кадр на 16 мс позже прошлого.
 struct UiClock {
@@ -278,6 +278,54 @@ fn the_script_drives_every_step_and_the_screen_proves_each_one_reached_the_camer
         "late_frames — только цифра (решение 91)"
     );
     assert_fits_logcat(&harness, &result);
+}
+
+/// Шаги белого идут по НАСТОЯЩЕЙ карточке белого: точки плана (значок, кнопка света, долгое нажатие) попадают, а
+/// не промахиваются мимо (иначе шаг краснеет «ожидали X, увидели Y»).
+// Точки плана сверены с целями настоящего экрана отдельным тестом (`screen_scenario_touch_targets_tests.rs`).
+#[test]
+fn the_white_steps_hit_the_real_card_and_the_long_press_ends_with_an_honest_outcome() {
+    let (harness, result) = run_healthy();
+    assert_eq!(result["status"], "passed", "{result}");
+    let steps = result["report"]["steps"].as_array().expect("шаги");
+    for name in [
+        "white_button_tap",
+        "white_light_tap",
+        "white_card_close_tap",
+        "white_long_press",
+    ] {
+        let step = steps
+            .iter()
+            .find(|step| step["name"] == name)
+            .unwrap_or_else(|| panic!("нет шага {name}"));
+        assert_eq!(step["ok"], true, "{name}: {step}");
+    }
+    let white = harness.rig().handle().status().three_a.white;
+    // Исход последней команды «взять» закрыт (не завис в ожидании) и различим: взято телефоном либо честный отказ.
+    let take = white.last_take.expect("команда «взять» дошла до движка");
+    assert!(
+        !matches!(take.state, camera_core::white::WhiteTakeState::Waiting),
+        "{take:?}"
+    );
+    match take.state {
+        camera_core::white::WhiteTakeState::Finished(camera_core::white::WhiteRequestOutcome::Applied { .. }) => {
+            assert_eq!(
+                white.held.origin,
+                camera_contract::white::WhiteOrigin::Source(camera_contract::white::WhiteSourceId::PHONE)
+            );
+        }
+        // Отказ: белое осталось от кнопки света (рука).
+        _ => assert_eq!(
+            white.held.origin,
+            camera_contract::white::WhiteOrigin::Manual,
+            "{take:?}"
+        ),
+    }
+    // Экран вернулся в исходное состояние: панели закрыты.
+    assert_eq!(
+        harness.router.camera_screen().report().expect("отчёт").state.panel,
+        crate::camera_screen_source::PanelKind::Closed
+    );
 }
 
 #[test]

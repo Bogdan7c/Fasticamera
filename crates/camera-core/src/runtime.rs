@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use crate::backend::{BackendEventListener, BackendEventSink, BackendFactory, BackendFailure};
 use crate::command::{CameraCommand, CommandId};
 use crate::config::{CameraEngineConfig, CameraEngineConfigError};
-use crate::engine::CameraEngine;
+use crate::engine::{CameraEngine, initial_white_status};
 use crate::handle::{CameraHandle, EngineOutput};
 use crate::inbox::{CameraInbox, InboxItem, LensIntentWaker};
 use crate::lens_wiring::LensWiring;
@@ -106,7 +106,13 @@ impl CameraRuntime {
         config.validate()?;
         let drop_shutdown_timeout = Duration::from_millis(config.runtime.drop_shutdown_timeout_ms);
         let inbox = Arc::new(CameraInbox::new(config.queues));
-        let output = Arc::new(EngineOutput::new(presence, config.queues.outward_event_capacity));
+        // Снимок до первой публикации движка несёт ту белую, с которой движок стартует (память, пределы конфига).
+        let initial_white = initial_white_status(&config.three_a.white, &wiring.white);
+        let output = Arc::new(EngineOutput::new(
+            presence,
+            config.queues.outward_event_capacity,
+            initial_white,
+        ));
         let (finished_signal, finished) = mpsc::channel();
         if let Some(lens) = &lens {
             // Если экран уже публиковал намерения, `bind` досылает один толчок.

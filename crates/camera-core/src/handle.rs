@@ -15,7 +15,7 @@ use camera_contract::flash::FlashShotId;
 use camera_contract::ids::{CameraTarget, LensRole};
 use camera_contract::stream::StreamMode;
 use camera_contract::three_a::{ExposureBracket, SensorPoint, ThreeAProfile};
-use camera_contract::white::{WhiteSourceId, WhiteTransition};
+use camera_contract::white::{WhiteAdjustment, WhiteSourceId, WhiteTransition};
 
 use crate::command::{CameraCommand, CommandId, CommandRejected};
 use crate::event::CameraEvent;
@@ -24,6 +24,7 @@ use crate::lens_status::LensStatus;
 use crate::state::{CameraState, ClosedReason};
 use crate::status::{AppPresence, CameraCounters, CameraStatus, StreamStats};
 use crate::three_a_status::ThreeAStatus;
+use crate::white::WhiteStatus;
 
 struct OutputState {
     status: CameraStatus,
@@ -43,11 +44,15 @@ pub(crate) struct EngineOutput {
 }
 
 impl EngineOutput {
-    pub(crate) fn new(presence: AppPresence, event_capacity: usize) -> Self {
+    /// `white` — белая и пределы, какими их увидит экран ДО первой публикации движка (запомненная, а не запасной
+    /// свет: снимок не должен врать, пока поток камеры поднимается).
+    pub(crate) fn new(presence: AppPresence, event_capacity: usize, white: WhiteStatus) -> Self {
         let reason = match presence {
             AppPresence::Foreground => ClosedReason::NotRequested,
             AppPresence::Background => ClosedReason::AppInBackground,
         };
+        let mut three_a = ThreeAStatus::initial();
+        three_a.white = white;
         Self {
             event_capacity,
             state: Mutex::new(OutputState {
@@ -59,7 +64,7 @@ impl EngineOutput {
                     stream: StreamStats::empty(),
                     last_unavailable: None,
                     counters: CameraCounters::default(),
-                    three_a: ThreeAStatus::initial(),
+                    three_a,
                     lens: LensStatus::initial(),
                 },
                 events: VecDeque::new(),
@@ -212,7 +217,17 @@ impl CameraHandle {
         self.send(CameraCommand::SetWhite { setting, transition })
     }
 
-    /// Взять белую у источника; итог — событие `WhiteRequestFinished`.
+    /// Правка одной оси белой рукой: вторая остаётся ровно той, что держит движок.
+    pub fn adjust_white(
+        &self,
+        adjustment: WhiteAdjustment,
+        transition: WhiteTransition,
+    ) -> Result<CommandId, CommandRejected> {
+        self.send(CameraCommand::AdjustWhite { adjustment, transition })
+    }
+
+    /// Взять белую у источника; итог — событие `WhiteRequestFinished`, а для
+    /// экрана ещё и `three_a.white.last_take` с номером этой команды.
     pub fn take_white(&self, source: WhiteSourceId, transition: WhiteTransition) -> Result<CommandId, CommandRejected> {
         self.send(CameraCommand::TakeWhite { source, transition })
     }

@@ -86,6 +86,7 @@ mod screen_report;
 mod screen_runner;
 mod screen_sensor_point;
 mod screen_steps;
+mod screen_white_check;
 mod stage_budget_apply;
 mod stage_budget_states;
 mod stage_budget_surface;

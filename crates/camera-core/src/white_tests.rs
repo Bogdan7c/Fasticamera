@@ -132,3 +132,19 @@ fn unvalidated_config_still_yields_a_daylight_fallback() {
     assert_eq!(setting.temperature.kelvin(), 5_600.0);
     assert_eq!(setting.tint.duv(), 0.0);
 }
+
+#[test]
+fn range_follows_the_config_and_not_the_built_in_defaults() {
+    let config = WhiteConfig {
+        min_kelvin: 2_500.0,
+        max_kelvin: 9_500.0,
+        max_abs_duv: 0.03,
+        ..WhiteConfig::default()
+    };
+    assert_eq!(config.validate(), Ok(()));
+    let range = config.range();
+    assert_eq!(range.min_temperature.kelvin(), 2_500.0);
+    assert_eq!(range.max_temperature.kelvin(), 9_500.0);
+    assert_eq!(range.max_abs_tint.duv(), 0.03);
+    assert_eq!(WhiteStatus::initial().range, WhiteConfig::default().range());
+}

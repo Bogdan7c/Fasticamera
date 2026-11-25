@@ -33,7 +33,7 @@ fn messages_arrive_in_send_order_and_are_counted() {
         drain(&mut receiver),
         vec![
             ScreenInput::Touch(sample(TouchPhase::Began, 1)),
-            ScreenInput::Action(orientation),
+            ScreenInput::action(orientation),
             ScreenInput::Touch(sample(TouchPhase::Ended, 2)),
         ]
     );
@@ -120,7 +120,7 @@ fn overflowed_actions_are_counted_without_owing_a_gap() {
     assert_eq!(sender.send_action(first.clone()), InputDelivery::Queued);
     assert_eq!(sender.send_action(second.clone()), InputDelivery::Overflowed);
     assert!(!sender.owes_gap(), "потеря действия жесты не ломает");
-    assert_eq!(drain(&mut receiver), vec![ScreenInput::Action(first)]);
+    assert_eq!(drain(&mut receiver), vec![ScreenInput::action(first)]);
     assert_eq!(sender.stats().overflowed_actions, 1);
 }
 
@@ -135,7 +135,7 @@ fn look_intents_overflow_like_any_other_action_and_are_counted() {
     assert_eq!(sender.send_action(first.clone()), InputDelivery::Queued);
     assert_eq!(sender.send_action(second), InputDelivery::Overflowed);
     assert!(!sender.owes_gap(), "потеря намерения жесты не ломает");
-    assert_eq!(drain(&mut receiver), vec![ScreenInput::Action(first)]);
+    assert_eq!(drain(&mut receiver), vec![ScreenInput::action(first)]);
     assert_eq!(sender.stats().overflowed_actions, 1);
 }
 
@@ -145,7 +145,7 @@ fn injector_clone_feeds_the_same_queue_and_counters() {
     let injector = sender.injector();
     let action = ScreenAction::DeviceOrientationChanged(DeviceOrientation::PortraitUpsideDown);
     assert_eq!(injector.inject(action.clone()), InputDelivery::Queued);
-    assert_eq!(drain(&mut receiver), vec![ScreenInput::Action(action)]);
+    assert_eq!(drain(&mut receiver), vec![ScreenInput::action(action)]);
     assert_eq!(sender.stats().queued_actions, 1);
 }
 

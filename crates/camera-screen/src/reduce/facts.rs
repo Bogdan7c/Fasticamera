@@ -24,6 +24,7 @@ pub(super) fn on_facts_changed(ctx: &mut Ctx<'_>, facts: CameraFacts) -> ActionO
         apply_not_live(ctx);
     }
     close_card_of_vanished_tool(ctx);
+    super::white::on_facts(ctx, &facts);
     zoom::on_facts(ctx, &previous);
     // Каталог или значение зума по фактам поменяли кадрирование: рендер получает его сразу (без намерения
     // объектива — значение уже действует в камере).

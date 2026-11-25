@@ -17,10 +17,14 @@
 //!
 //! # Состав
 //! [`QuantizedLinear`] (диапазон, шаг, «ноль»), [`Logarithmic`] (диапазон, опорные точки),
-//! [`ValueSeries`] (список допустимых значений), [`AxisPair`] (две оси: кельвины + оттенок).
+//! [`ValueSeries`] (список допустимых значений), [`AxisPair`] (две оси: кельвины + оттенок);
+//! непрерывные оси без ступеней (значение от пальца не округляется): [`ContinuousLinear`] (оттенок ±50) и
+//! [`MiredKelvin`] (Кельвины снаружи, шкала равномерна по майредам).
 
+mod continuous;
 mod linear;
 mod logarithmic;
+mod mired;
 mod pair;
 mod series;
 
@@ -28,8 +32,10 @@ use std::fmt::Debug;
 
 use thiserror::Error;
 
+pub use continuous::{ContinuousLinear, ExactPosition, RulerAxis};
 pub use linear::{LinearLimits, QuantizedLinear, ReferenceValue};
 pub use logarithmic::{LogLimits, Logarithmic, LogarithmicSpec};
+pub use mired::{MiredKelvin, mired_of_kelvin};
 pub use pair::{AxisPair, PairValue};
 pub use series::{SeriesLimits, ValueSeries};
 

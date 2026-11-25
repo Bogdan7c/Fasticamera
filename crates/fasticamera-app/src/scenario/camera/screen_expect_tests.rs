@@ -41,7 +41,9 @@ fn delta() -> ProbeDelta {
                 gliding: false,
             },
             safe_area: shell_contract::safe_area::SafeAreaInsets::NONE,
+            white: crate::camera_screen_white_view::WhiteView::starting(),
         },
+        white: crate::scenario::camera::screen_white_check::WhiteDelta::quiet(),
     }
 }
 

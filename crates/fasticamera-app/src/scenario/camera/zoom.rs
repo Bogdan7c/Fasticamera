@@ -405,7 +405,7 @@ fn deliver(
     surface: Option<shell_contract::surface::SurfaceSize>,
 ) -> InputDelivery {
     match injection {
-        Injection::Action(action) => injector.inject(action),
+        Injection::Action(action) => injector.inject(*action),
         Injection::Touch(touch) => match surface {
             Some(size) => injector.inject_touch(sample_of(touch, size)),
             // Размера поверхности нет — некуда класть палец: честный отказ, не молчание.

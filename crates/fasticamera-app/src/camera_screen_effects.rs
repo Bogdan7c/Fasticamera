@@ -24,6 +24,7 @@ use std::sync::Arc;
 
 use camera_contract::auto_exposure::SignalDelivery;
 use camera_contract::control::ExposureBias;
+use camera_contract::white::WhiteTransition;
 use camera_contract::zoom::{LensIntent, LensIntentChannel, StandbyDemand, ZoomGesture};
 use camera_core::{CameraHandle, CommandId, CommandRejected};
 use camera_screen::shutter::{CaptureFailureReason, CaptureOutcome, ShotRequest};
@@ -39,6 +40,7 @@ use shell_contract::still_media::ShutterSoundService;
 use shell_contract::text_input::TextPurpose;
 
 use crate::camera_screen_capture::{CaptureService, SubmitOutcome, SubmitRejection};
+use crate::camera_white_effects::{ManualWhiteEdit, PendingWhite, WhiteEffects, WhiteIntentCounters};
 use crate::look_effects::{LookCounters, LookEffects};
 use crate::look_service::LookHandle;
 use crate::scope_effects::{ScopeCounters, ScopeEffects};
@@ -84,6 +86,12 @@ impl CameraIntentPort for HandleCameraPort {
             ScreenCameraIntent::LockFocusAndExposureAt(point) => self.handle.lock_focus_and_exposure_at(point),
             ScreenCameraIntent::ResetPointOfInterest => self.handle.reset_point_of_interest(),
             ScreenCameraIntent::SetExposureBias(bias) => self.handle.set_exposure_bias(bias),
+            // Белое ручками панели всегда мгновенное: шкала должна идти за пальцем без плавного перехода (WB17).
+            ScreenCameraIntent::SetWhite(setting) => self.handle.set_white(setting, WhiteTransition::Immediate),
+            ScreenCameraIntent::AdjustWhite(adjustment) => {
+                self.handle.adjust_white(adjustment, WhiteTransition::Immediate)
+            }
+            ScreenCameraIntent::TakeWhite(source) => self.handle.take_white(source, WhiteTransition::Immediate),
         };
         match sent {
             Ok(command) => CameraIntentOutcome::Sent(command),
@@ -252,6 +260,8 @@ pub struct EffectCounters {
     pub scopes: ScopeCounters,
     /// Просьбы экрана спросить имя пресета (решение 197): исходы по видам.
     pub text: TextRequestCounters,
+    /// Ручное белое и команда «взять» (white-balance 02): принятое, отказы, досылки, недоставленные команды.
+    pub white: WhiteIntentCounters,
 }
 
 /// Сервисы, которым адресованы эффекты (собираются композицией один раз на экран).
@@ -285,6 +295,8 @@ pub struct EffectExecutor {
     frame_time: MonotonicNanos,
     /// Последнее желаемое EV, которое камера ещё не приняла из-за полной очереди. Новое значение заменяет старое.
     pending_exposure_bias: Option<ExposureBias>,
+    /// Ручное белое: отложенные правки и счётчики (см. [`WhiteEffects`]).
+    white: WhiteEffects,
 }
 
 /// Конец жизни исполнителя = конец жизни экрана: источник кадров снимают сценарий, рендер или переустановка, и
@@ -308,6 +320,7 @@ impl EffectExecutor {
             counters: EffectCounters::default(),
             frame_time: MonotonicNanos::from_nanos(0),
             pending_exposure_bias: None,
+            white: WhiteEffects::default(),
         }
     }
 
@@ -374,8 +387,19 @@ impl EffectExecutor {
         }
     }
 
+    /// Отложенные ручные правки белого, которые движок ещё не принял (диагностика и тесты).
+    pub fn pending_white(&self) -> PendingWhite {
+        self.white.pending()
+    }
+
+    /// Досылает ручное белое, не принятое из-за полной очереди. Как и EV, зовётся каждый кадр ДО новых эффектов.
+    pub fn resend_pending_white(&mut self) {
+        self.white.resend_pending(self.targets.camera.as_ref());
+    }
+
     pub fn counters(&self) -> EffectCounters {
         EffectCounters {
+            white: self.white.counters(),
             look: self.look.counters(),
             scopes: self.scopes.counters(),
             text: self.text.counters(),
@@ -388,7 +412,7 @@ impl EffectExecutor {
         let mut feedback = Vec::new();
         for effect in effects {
             match effect {
-                Effect::Camera(intent) => self.deliver_camera_intent(intent),
+                Effect::Camera(intent) => feedback.extend(self.deliver_camera_intent(intent)),
                 Effect::Haptic(pattern) => self.play_haptic(pattern),
                 Effect::OpenSystemGallery => self.open_gallery(),
                 Effect::Viewfinder(intent) => self.place_viewfinder(intent),
@@ -411,14 +435,42 @@ impl EffectExecutor {
         self.text.request(purpose, initial_text)
     }
 
-    fn deliver_camera_intent(&mut self, intent: ScreenCameraIntent) {
+    /// Белые намерения идут в [`WhiteEffects`] (у них своя досылка); остальные — по общему пути. Возвращает
+    /// обратное действие экрану, если намерение не дошло и человеку надо это показать.
+    fn deliver_camera_intent(&mut self, intent: ScreenCameraIntent) -> Option<ScreenAction> {
+        let camera = self.targets.camera.as_ref();
+        match intent {
+            ScreenCameraIntent::SetWhite(setting) => {
+                self.white.run_manual_edit(camera, ManualWhiteEdit::Whole(setting));
+                None
+            }
+            ScreenCameraIntent::AdjustWhite(adjustment) => {
+                self.white.run_manual_edit(camera, ManualWhiteEdit::Axis(adjustment));
+                None
+            }
+            ScreenCameraIntent::TakeWhite(source) => self.white.run_take(camera, source),
+            ScreenCameraIntent::FocusAndExposeAt(_)
+            | ScreenCameraIntent::LockFocusAndExposureAt(_)
+            | ScreenCameraIntent::ResetPointOfInterest
+            | ScreenCameraIntent::SetExposureBias(_) => {
+                self.deliver_point_or_exposure_intent(intent);
+                None
+            }
+        }
+    }
+
+    fn deliver_point_or_exposure_intent(&mut self, intent: ScreenCameraIntent) {
         let counters = &mut self.counters.camera;
         // Только EV досылается: остальные намерения при отказе устаревают (см. доку модуля).
         let exposure_bias = match intent {
             ScreenCameraIntent::SetExposureBias(bias) => Some(bias),
             ScreenCameraIntent::FocusAndExposeAt(_)
             | ScreenCameraIntent::LockFocusAndExposureAt(_)
-            | ScreenCameraIntent::ResetPointOfInterest => None,
+            | ScreenCameraIntent::ResetPointOfInterest
+            // Белые намерения сюда не доходят: их исполняет `WhiteEffects` (см. `deliver_camera_intent`).
+            | ScreenCameraIntent::SetWhite(_)
+            | ScreenCameraIntent::AdjustWhite(_)
+            | ScreenCameraIntent::TakeWhite(_) => None,
         };
         match self.targets.camera.deliver(intent) {
             CameraIntentOutcome::Sent(_) => {

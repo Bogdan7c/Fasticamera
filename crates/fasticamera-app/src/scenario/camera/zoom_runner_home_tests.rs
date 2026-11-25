@@ -27,7 +27,7 @@ fn drain_actions(rig: &mut Rig, max_ticks: usize) -> (Vec<ScreenAction>, RunnerS
         let tick = rig.tick(100, &[]);
         for injection in tick.injections {
             if let Injection::Action(action) = injection {
-                actions.push(action);
+                actions.push(*action);
             }
         }
         state = tick.state;
@@ -63,8 +63,10 @@ fn a_run_that_starts_on_the_front_camera_first_flips_back_and_taps_one_x_without
     for _ in 0..100 {
         let tick = rig.tick(100, &[]);
         for injection in &tick.injections {
-            if let Injection::Action(ScreenAction::ZoomStopTapped { stop, .. }) = injection {
-                taps.push(*stop);
+            if let Injection::Action(action) = injection
+                && let ScreenAction::ZoomStopTapped { stop, .. } = **action
+            {
+                taps.push(stop);
                 if taps.len() == 2 {
                     // Второй тап — шаг плана: движок переходит на ширик.
                     rig.engine = engine(LensRole::UltraWide, "3", LensFacing::Back);
@@ -180,7 +182,7 @@ fn a_failure_in_the_middle_still_returns_the_phone_to_back_one_x_before_reportin
         }
         let tick = rig.tick(100, &std::mem::take(&mut pending_events));
         all_actions.extend(tick.injections.into_iter().filter_map(|injection| match injection {
-            Injection::Action(action) => Some(action),
+            Injection::Action(action) => Some(*action),
             Injection::Touch(_) => None,
         }));
         state = tick.state;

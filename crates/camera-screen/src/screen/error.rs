@@ -13,6 +13,8 @@ pub enum ScreenBuildError {
     Config(#[from] ScreenConfigError),
     #[error("токены ui-kit: {0}")]
     Tokens(#[from] TokenError),
+    #[error("кнопка белого: {0}")]
+    WhiteButton(#[from] crate::white_button_layout::WhiteButtonLayoutError),
 }
 
 /// Кадр построить не удалось. Фасад превращает её в `UiFrameError::SourceFailed`.

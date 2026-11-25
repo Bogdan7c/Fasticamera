@@ -38,6 +38,7 @@ use crate::camera_screen_effects::{EffectCounters, EffectExecutor};
 use crate::camera_screen_facts::{CameraFactsSource, CameraFactsWatcher, FactsChange, FactsDiagnostics};
 use crate::camera_screen_gravity::{GravityFeed, GravityPoll};
 use crate::camera_screen_input::{ScreenInput, ScreenInputReceiver, ScreenInputStats};
+use crate::camera_screen_white_view::WhiteView;
 use crate::look_facts::{LookFactsChange, LookFactsSource};
 
 /// Имя источника в диагностике рендера (`UiOverlayDiagnostics::active_source`).
@@ -127,6 +128,8 @@ pub struct ScreenStateSnapshot {
     pub zoom: ZoomView,
     /// Безопасная зона, внутри которой экран раскладывает раздел калибровки (14k): что на самом деле сообщил Android.
     pub safe_area: SafeAreaInsets,
+    /// Белое глазами экрана (white-balance 02): число, происхождение и счёт отказов.
+    pub white: WhiteView,
 }
 
 /// Зум глазами отчёта: коэффициент (в тысячных, чтобы снимок оставался `Eq`), направление, открыто ли колесо.
@@ -181,6 +184,7 @@ impl ScreenStateSnapshot {
             },
             zoom: ZoomView::observe(state),
             safe_area: state.safe_area(),
+            white: WhiteView::observe(state),
             shutter_activity: match state.shutter() {
                 ShutterState::Idle => ShutterActivity::Idle,
                 ShutterState::Countdown { .. } => ShutterActivity::Countdown,
@@ -341,6 +345,12 @@ impl CameraScreenSource {
         self.screen.wheel_pad_placement()
     }
 
+    /// Цели касаний белого (значок, карточка) по текущему состоянию экрана; `None` — раскладки ещё нет. Сквозные
+    /// тесты берут точки у экрана, а не считают их сами: разойтись с нарисованным они не могут.
+    pub fn white_touch_targets(&self) -> Option<camera_screen::WhiteTouchTargets> {
+        self.screen.white_touch_targets()
+    }
+
     /// Шаг 1: вход из канала. Забираем всё, что накопилось к этому кадру (очередь ограничена конфигом).
     fn apply_pending_input(&mut self) -> bool {
         let mut any = false;
@@ -348,7 +358,7 @@ impl CameraScreenSource {
             any = true;
             match input {
                 ScreenInput::Touch(touch) => self.screen.handle_touch(touch),
-                ScreenInput::Action(action) => self.screen.handle_action(action),
+                ScreenInput::Action(action) => self.screen.handle_action(*action),
                 ScreenInput::SavedWithPicture { request, picture } => {
                     self.screen.handle_saved_with_picture(request, picture);
                 }
@@ -362,7 +372,7 @@ impl CameraScreenSource {
     fn sync_camera_facts(&mut self) -> bool {
         if let FactsChange::Changed(facts) = self.facts_watcher.observe(self.facts.current_facts()) {
             self.facts_sent += 1;
-            self.screen.handle_action(ScreenAction::CameraFactsChanged(facts));
+            self.screen.handle_action(ScreenAction::CameraFactsChanged(*facts));
             return true;
         }
         false
@@ -398,6 +408,7 @@ impl CameraScreenSource {
     fn run_effects(&mut self) -> bool {
         // Не принятое ранее желаемое EV идёт первым: свежее значение этого кадра пойдёт после и победит.
         self.executor.resend_pending_exposure_bias();
+        self.executor.resend_pending_white();
         let effects = self.screen.drain_effects();
         if effects.is_empty() {
             return false;

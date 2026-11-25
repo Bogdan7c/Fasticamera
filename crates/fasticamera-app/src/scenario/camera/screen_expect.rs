@@ -9,6 +9,7 @@ use camera_contract::three_a::AeAfLock;
 
 use super::screen_probe::ProbeDelta;
 use super::screen_sensor_point::{FramePoint, PointCheck, check_point};
+use super::screen_white_check::WhiteCheck;
 use crate::camera_screen_source::{ModeKind, PanelKind, Presence, ShutterPlacement};
 
 /// Сколько раз счётчик должен вырасти за шаг.
@@ -116,6 +117,8 @@ pub enum StateCheck {
     ScreenExposureStepsAreSet,
     /// Текущий режим съёмки.
     Mode(ModeKind),
+    /// Белое: рука поставила число кнопки, экран показывает белое движка, «взять» кончилось честным исходом.
+    White(WhiteCheck),
 }
 
 impl StateCheck {
@@ -132,6 +135,7 @@ impl StateCheck {
             StateCheck::ScreenExposureStepsAreZero => delta.screen.exposure_steps == 0,
             StateCheck::ScreenExposureStepsAreSet => delta.screen.exposure_steps != 0,
             StateCheck::Mode(mode) => delta.screen.mode == mode,
+            StateCheck::White(check) => check.holds(&delta.white),
         }
     }
 
@@ -159,6 +163,9 @@ impl StateCheck {
                 "шаги EV на экране (exposure_steps) не равны 0, увидели 0".to_owned()
             }
             StateCheck::Mode(mode) => format!("режим (mode) {mode:?}, увидели {:?}", delta.screen.mode),
+            StateCheck::White(check) => check
+                .problem(&delta.white)
+                .unwrap_or_else(|| "белое в порядке".to_owned()),
         }
     }
 }

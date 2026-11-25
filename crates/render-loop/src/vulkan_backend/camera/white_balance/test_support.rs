@@ -27,6 +27,7 @@ use camera_contract::white::{
     WhileAwaitingWhite, WhiteDirective, WhiteRequestId, WhiteSourceId, WhiteSourceOutcome, WhiteSourceRequest,
     WhiteTransition,
 };
+use camera_contract::white_reading::WhiteReading;
 use isp_model::color::temperature::Kelvin;
 use isp_model::color::white_point::{CctDuv, Duv, cct_duv_from_chromaticity, chromaticity_from_cct_duv};
 use isp_model::statistics::{AwbTile, TileGrid, quantize_sample};
@@ -295,6 +296,8 @@ pub(super) struct FakeSourceBoard {
     pub(super) calls: Mutex<Vec<Call>>,
     pub(super) replies: Mutex<VecDeque<WhiteReply>>,
     pub(super) refusal: Mutex<Option<WhiteRequestRefusal>>,
+    /// Показание, которое отдаёт источник; `None` — «ещё не мерил». Начало потока его забывает (как у настоящего).
+    pub(super) shown_reading: Mutex<Option<WhiteReading>>,
 }
 
 impl FakeSourceBoard {
@@ -347,6 +350,7 @@ impl WhiteSource for FakeSource {
 
     fn begin_stream(&mut self, _stream: &WhiteStreamFacts<'_>) {
         self.board.calls.lock().unwrap().push(Call::BeginStream);
+        *self.board.shown_reading.lock().unwrap() = None;
     }
 
     fn observe(&mut self, frame: &WhiteFrame<'_>) {
@@ -371,6 +375,10 @@ impl WhiteSource for FakeSource {
 
     fn poll(&mut self) -> Option<WhiteReply> {
         self.board.replies.lock().unwrap().pop_front()
+    }
+
+    fn reading(&self) -> WhiteReading {
+        (*self.board.shown_reading.lock().unwrap()).unwrap_or(WhiteReading::NotMeasuredYet)
     }
 }
 

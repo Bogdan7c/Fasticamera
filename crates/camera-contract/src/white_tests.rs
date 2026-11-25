@@ -71,3 +71,18 @@ fn origin_names_the_source_in_diagnostics() {
     let text = serde_json::to_string(&WhiteOrigin::Manual).unwrap();
     assert_eq!(text, r#"{"kind":"manual"}"#);
 }
+
+#[test]
+fn adjusting_one_axis_keeps_the_other_bit_for_bit() {
+    let held = WhiteBalanceSetting {
+        temperature: ColorTemperature::from_kelvin(3_141.592).unwrap(),
+        tint: Tint::from_duv(0.016_4).unwrap(),
+    };
+    let warmer = WhiteAdjustment::Temperature(ColorTemperature::from_kelvin(5_600.0).unwrap()).applied_to(held);
+    assert_eq!(warmer.temperature.kelvin(), 5_600.0);
+    assert_eq!(warmer.tint, held.tint);
+
+    let greener = WhiteAdjustment::Tint(Tint::from_duv(-0.01).unwrap()).applied_to(held);
+    assert_eq!(greener.tint.duv(), -0.01);
+    assert_eq!(greener.temperature, held.temperature);
+}

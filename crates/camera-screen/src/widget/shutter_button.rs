@@ -3,28 +3,27 @@
 //! над ней: затвор виден и снимает на поднятом месте (решение 103).
 //!
 //! # Подъём
-//! Рамка узла не меняется — меняется визуальный сдвиг `TranslationY` (пружина `Smooth`, без перелёта).
-//! `ui-core` учитывает сдвиг узла в хит-тесте, поэтому зона касания едет вместе с картинкой. Рамка трекера
-//! нажатия (`PressTracker`) хранится в абсолютных pt отдельно от сцены, поэтому на каждом `sync` её надо
-//! переставлять вслед за сдвигом, иначе нажатие на поднятом месте не дойдёт до `Activated`.
+//! Видимость и подъём ведёт [`ShutterRowPose`] (`shutter_row.rs`): ту же позу, тем же кадром и той же пружиной
+//! получает кнопка белого. Рамка трекера нажатия (`PressTracker`) хранится в абсолютных pt отдельно от сцены,
+//! поэтому на каждом `sync` её надо переставлять вслед за сдвигом, иначе нажатие на поднятом месте не дойдёт до
+//! `Activated`.
 
 use ui_core::geometry::Rect;
 use ui_core::gesture::{GestureEvent, PressSpec, RecognizerSpec, TapSpec};
 use ui_core::id::NodeId;
-use ui_core::time::MotionPreference;
 use ui_kit::button::PressOutcome;
 use ui_kit::shutter::{ShutterButton, ShutterLook};
-use ui_kit::tokens::{GlassRole, MotionToken};
+use ui_kit::tokens::GlassRole;
 use ui_kit::view::shutter_items;
 
 use super::error::{WidgetError, element};
 use super::intent::{ButtonId, ScreenGesture};
 use super::kit::SceneKit;
 use super::layers::{DrawLayers, Layer, VisualIndex};
+use super::shutter_row::ShutterRowPose;
 use super::{Ctx, Outputs};
 use crate::action::ScreenAction;
 use crate::shutter::ShutterState;
-use crate::state::ShutterVisibility;
 
 /// Ниже этой прозрачности затвор в список не попадает (полностью ушёл под шторку).
 const INVISIBLE_BELOW: f32 = 0.004;
@@ -32,8 +31,8 @@ const INVISIBLE_BELOW: f32 = 0.004;
 pub(crate) struct ShutterWidget {
     node: NodeId,
     button: ShutterButton,
-    /// К какому положению едем сейчас (`None` — ещё не назначали).
-    placement: Option<ShutterVisibility>,
+    /// Видимость и подъём: общие с кнопкой белого (`shutter_row.rs`).
+    pose: ShutterRowPose,
     /// Рамка раскладки (без сдвига): от неё считается рамка трекера нажатия.
     base_frame: Rect,
 }
@@ -57,7 +56,7 @@ impl ShutterWidget {
         Ok(Self {
             node,
             button,
-            placement: None,
+            pose: ShutterRowPose::default(),
             base_frame: frame,
         })
     }
@@ -94,34 +93,7 @@ impl ShutterWidget {
         self.button
             .set_look(Self::look_for(ctx), ctx.now)
             .map_err(element("затвор"))?;
-        let visibility = ctx.state.shutter_visibility();
-        if self.placement != Some(visibility) {
-            self.placement = Some(visibility);
-            let visible = visibility != ShutterVisibility::HiddenUnderDrawer;
-            // Нажиматься перестаёт сразу, растворяется пружиной.
-            kit.set_interactive(self.node, visible)?;
-            kit.fade_to(
-                self.node,
-                if visible { 1.0 } else { 0.0 },
-                ctx.spring(MotionToken::Snappy)?,
-                ctx.now,
-            )?;
-            let raised = visibility == ShutterVisibility::RaisedAboveCard;
-            let offset_pt = if raised {
-                -ctx.geometry.config().card.raised_shutter_offset_pt
-            } else {
-                0.0
-            };
-            if ctx.motion == MotionPreference::Reduced {
-                // Reduce Motion: без перемещений, затвор сразу на новом месте (прозрачность по-прежнему плавная).
-                kit.jump_vertically_to(self.node, offset_pt)?;
-            } else {
-                // Подъём и возврат затвора: без перелёта, ≈ 0,3 с, как морф карточки `[measured: C t=54.0]`.
-                kit.slide_vertically_to(self.node, offset_pt, ctx.spring(MotionToken::CardMorph)?, ctx.now)?;
-            }
-        }
-        // Зона нажатия следует за картинкой, пока та едет (см. заголовок модуля).
-        let offset_pt = kit.vertical_offset_pt(self.node)?;
+        let offset_pt = self.pose.sync(kit, ctx, self.node)?;
         self.button
             .set_frame(Rect::from_xywh(
                 self.base_frame.min_x(),

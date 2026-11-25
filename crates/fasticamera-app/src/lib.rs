@@ -32,9 +32,12 @@ pub mod camera_screen_input;
 pub mod camera_screen_lens_facts;
 pub mod camera_screen_service;
 pub mod camera_screen_source;
+mod camera_screen_white_facts;
+pub mod camera_screen_white_view;
 pub mod camera_service;
 #[cfg(test)]
 mod camera_test_support;
+pub mod camera_white_effects;
 pub mod camera_wiring;
 pub mod capture_backend;
 pub mod capture_scenario_config;

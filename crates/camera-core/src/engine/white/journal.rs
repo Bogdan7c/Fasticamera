@@ -3,15 +3,15 @@
 //! Пишет движок в момент события: продукт события движка не разбирает, а наблюдать за статусом со стороны значило
 //! бы просыпаться на каждом кадре. Событий мало (открытие, команда, ответ), строка на событие.
 
-use camera_contract::white::HeldWhite;
+use camera_contract::white::{HeldWhite, WhiteOrigin};
 
 use crate::white::WhiteRequestResult;
 
 /// Цель журнала: один фильтр собирает и белую, и её память.
-const LOG_TARGET: &str = "fasticamera::white";
+pub(super) const LOG_TARGET: &str = "fasticamera::white";
 
-/// Действующая белая: стартовая или новая.
-pub(super) fn white_changed(held: &HeldWhite) {
+/// Стартовая белая движка (один раз за запуск).
+pub(super) fn white_started(held: &HeldWhite) {
     tracing::info!(
         target: LOG_TARGET,
         kelvin = held.setting.temperature.kelvin(),
@@ -19,6 +19,23 @@ pub(super) fn white_changed(held: &HeldWhite) {
         origin = ?held.origin,
         "белая"
     );
+}
+
+/// Белая сменилась. Ручные правки идут потоком (шкала под пальцем — до 120 раз в секунду), поэтому строка о них
+/// только в `debug`; значение, на котором правка остановилась, попадает в `info` строкой записи памяти белой
+/// (`fasticamera::white`, «память белой записана»). Смены от источника редки и остаются в `info`.
+pub(super) fn white_changed(held: &HeldWhite) {
+    if held.origin == WhiteOrigin::Manual {
+        tracing::debug!(
+            target: LOG_TARGET,
+            kelvin = held.setting.temperature.kelvin(),
+            duv = held.setting.tint.duv(),
+            origin = ?held.origin,
+            "белая (ручная правка)"
+        );
+    } else {
+        white_started(held);
+    }
 }
 
 /// Заявка источнику закрыта (любым исходом).

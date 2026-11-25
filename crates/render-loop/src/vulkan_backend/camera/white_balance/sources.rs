@@ -11,8 +11,14 @@
 //! * На одну заявку публикуется ровно один ответ. Ответ не на действующую заявку не публикуется.
 //! * Отказы без обращения к источнику: не зарегистрирован — `NotRegistered`; нужен вход кроме подсказок цвета —
 //!   `InputNotProvided` (плитки и уменьшенный кадр рендер не готовит). Отказ `request` — `Busy` / `Unavailable`.
+//! * Показания (WB33): после `begin_stream` — сразу (`NotMeasuredYet`: прежнее число на доске не остаётся), затем раз
+//!   в `reading_every_frames` годных кадров и только если показание изменилось. Показание — не ответ: заявки у него
+//!   нет, владелец его не видит, заявку и ответы оно не трогает. Источнику, чей вход рендер не готовит, показание —
+//!   `InputNotProvided`, как и ответ.
 //! * Кадр годен, если у него есть собственный результат, он освещён не светодиодом и снят повторяющимся
 //!   запросом (кадры серии и снимка со вспышкой сюда не доходят вовсе: их отпускают до `plan_frame`).
+
+use std::num::NonZeroU32;
 
 use camera_contract::auto_exposure::SignalDelivery;
 use camera_contract::auto_exposure_carry::CameraTag;
@@ -22,6 +28,7 @@ use camera_contract::frame_passport::RawFramePassport;
 use camera_contract::white::{
     WhiteAnswer, WhiteAnswerChannel, WhiteRequestId, WhiteSourceOutcome, WhiteSourceRequest, WhiteUnavailableReason,
 };
+use camera_contract::white_reading::{WhiteReading, WhiteReadingBoard, WhiteSourceReading};
 use isp_model::color::dng::DngColorProfile;
 use scene_estimation::white_source::{WhiteFrame, WhiteInputKind, WhiteRequestRefusal, WhiteSource, WhiteStreamFacts};
 
@@ -40,12 +47,31 @@ pub struct SourceCounters {
     pub replies_dropped: u64,
     /// Кадров, отданных источникам.
     pub frames_observed: u64,
+    /// Опубликовано показаний (только изменившиеся и первые после начала потока).
+    pub readings_published: u64,
+}
+
+/// Откуда брать показание при публикации.
+#[derive(Debug, Clone, Copy)]
+enum ReadingBasis {
+    /// Спросить источники.
+    FromSources,
+    /// Потока нет: что бы ни помнил источник, измерено ничего не было.
+    NothingMeasured,
 }
 
 /// Исполнитель источников.
 pub struct SourceExecutor {
     sources: Vec<Box<dyn WhiteSource>>,
     answers: WhiteAnswerChannel,
+    /// Доска показаний: пишем, читает экран.
+    readings: WhiteReadingBoard,
+    /// Раз в сколько годных кадров обновлять показания.
+    reading_every_frames: NonZeroU32,
+    /// Годных кадров с прошлой проверки показаний.
+    frames_since_reading: u32,
+    /// Что последним лежит на доске у каждого источника (по индексу в `sources`); `None` — ещё ничего на этом потоке.
+    published_readings: Vec<Option<WhiteReading>>,
     /// Камера текущего потока; `None` — поток ещё не начинался.
     camera: Option<CameraTag>,
     /// Заявка, которую источники держат прямо сейчас.
@@ -58,19 +84,32 @@ pub struct SourceExecutor {
 
 impl SourceExecutor {
     /// Собирает источники реестра (ошибка фабрики — ошибка сборки сессии).
-    pub fn new(registry: &WhiteSourceRegistry, answers: WhiteAnswerChannel) -> Result<Self, WhiteBalanceSetupError> {
+    pub fn new(
+        registry: &WhiteSourceRegistry,
+        answers: WhiteAnswerChannel,
+        readings: WhiteReadingBoard,
+        reading_every_frames: NonZeroU32,
+    ) -> Result<Self, WhiteBalanceSetupError> {
         let sources = registry
             .instantiate()
             .map_err(|error| WhiteBalanceSetupError(error.to_string()))?;
-        Ok(Self {
+        let mut executor = Self {
+            published_readings: vec![None; sources.len()],
             sources,
             answers,
+            readings,
+            reading_every_frames,
+            frames_since_reading: 0,
             camera: None,
             submitted: None,
             answered: None,
             last_answer: None,
             counters: SourceCounters::default(),
-        })
+        };
+        // Доска могла помнить показание прошлого исполнителя (пересоздан показ): до первого кадра нового потока
+        // экрану нельзя отдавать чужое число. «Опубликовано» у нового исполнителя пусто, значит публикация состоится.
+        executor.publish_readings(ReadingBasis::NothingMeasured);
+        Ok(executor)
     }
 
     /// Новый поток: источники забывают накопленное, действующая заявка подастся заново.
@@ -81,6 +120,10 @@ impl SourceExecutor {
         }
         self.camera = Some(camera);
         self.submitted = None;
+        // Показания прежнего потока забыты вместе с источниками: на доске сразу честное «ещё не мерил».
+        self.published_readings.fill(None);
+        self.frames_since_reading = 0;
+        self.publish_changed_readings();
     }
 
     /// Сверяет действующую заявку указания с тем, что держат источники.
@@ -161,6 +204,48 @@ impl SourceExecutor {
             source.observe(&frame);
         }
         self.counters.frames_observed += 1;
+        self.frames_since_reading += 1;
+        if self.frames_since_reading >= self.reading_every_frames.get() {
+            self.frames_since_reading = 0;
+            self.publish_changed_readings();
+        }
+    }
+
+    /// Поток кончился (линза меняется, показ остановлен), нового ещё нет: источники хранят показание кончившегося
+    /// потока до `begin_stream`, но экрану его отдавать нельзя — на доске «ещё не мерил».
+    pub fn forget_stream_readings(&mut self) {
+        self.frames_since_reading = 0;
+        self.publish_readings(ReadingBasis::NothingMeasured);
+    }
+
+    /// Публикует показания тех источников, чьё показание отличается от лежащего на доске.
+    fn publish_changed_readings(&mut self) {
+        self.publish_readings(ReadingBasis::FromSources);
+    }
+
+    fn publish_readings(&mut self, basis: ReadingBasis) {
+        for (source, published) in self.sources.iter().zip(self.published_readings.iter_mut()) {
+            let reading = if source.required_input() == WhiteInputKind::ColorHints {
+                match basis {
+                    ReadingBasis::FromSources => source.reading(),
+                    ReadingBasis::NothingMeasured => WhiteReading::NotMeasuredYet,
+                }
+            } else {
+                // Рендер не готовит такому источнику вход: показать нечего, и говорим об этом прямо.
+                WhiteReading::Unavailable {
+                    reason: WhiteUnavailableReason::InputNotProvided,
+                }
+            };
+            if *published == Some(reading) {
+                continue;
+            }
+            self.readings.publish(WhiteSourceReading {
+                source: source.id(),
+                reading,
+            });
+            *published = Some(reading);
+            self.counters.readings_published += 1;
+        }
     }
 
     /// Забирает готовые ответы и публикует те, что относятся к действующей заявке.

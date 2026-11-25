@@ -97,11 +97,13 @@ pub enum Rejection {
     /// Действие управления камерой (фокус, экспозиция, зум, значки) в режиме без такого управления
     /// (`ModeBehaviour::camera_controls`).
     NotAvailableInMode,
+    /// Кнопки света с таким номером в конфиге нет (или её число не принимается как белое).
+    UnknownWhiteLight,
 }
 
 impl Rejection {
     /// Число причин (размер таблицы счётчиков). Сверяется с [`Rejection::ALL`] на этапе компиляции.
-    const COUNT: usize = 26;
+    const COUNT: usize = 27;
 
     /// Номер ячейки счётчика. `match` без `_`: новый вариант `Rejection` не скомпилируется, пока ему
     /// не дали номер, — забытая ячейка невозможна. Согласованность номеров с `ALL` проверяет тест.
@@ -133,6 +135,7 @@ impl Rejection {
             Rejection::UnknownPreset => 23,
             Rejection::BuiltinPresetReadOnly => 24,
             Rejection::NotAvailableInMode => 25,
+            Rejection::UnknownWhiteLight => 26,
         }
     }
 
@@ -164,6 +167,7 @@ impl Rejection {
         Rejection::UnknownPreset,
         Rejection::BuiltinPresetReadOnly,
         Rejection::NotAvailableInMode,
+        Rejection::UnknownWhiteLight,
     ];
 }
 

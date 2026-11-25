@@ -14,6 +14,9 @@ use crate::settings::{AspectRatio, FlashMode, GridSetting, LevelSetting, RawCapt
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolId {
+    /// Белое (white-balance 02, WB35): инструмент карточки `Submenu(White)`. Ни значка верхнего ряда, ни пункта меню
+    /// Controls у него нет: карточку открывает отдельная кнопка рядом с затвором.
+    White,
     Flash,
     Raw,
     Timer,
@@ -31,6 +34,12 @@ pub enum ToolId {
 }
 
 impl ToolId {
+    /// Может ли инструмент стоять пунктом меню Controls. Белое — нет: его карточку открывает кнопка у затвора
+    /// (WB35), а шторка Controls не меняется.
+    pub const fn can_be_menu_item(self) -> bool {
+        !matches!(self, ToolId::White)
+    }
+
     /// Реализован ли инструмент в v1. Нереализованные нельзя положить в конфиг.
     pub const fn is_implemented(self) -> bool {
         !matches!(self, ToolId::Live | ToolId::Night)
@@ -83,6 +92,8 @@ pub enum ToolSetError {
     Duplicate(ToolId),
     #[error("инструмент {0:?} нельзя ставить значком над кадром")]
     NotAStripIcon(ToolId),
+    #[error("инструмент {0:?} нельзя ставить пунктом меню Controls")]
+    NotAMenuItem(ToolId),
     #[error("меню Controls пусто")]
     EmptyMenu,
 }
@@ -112,6 +123,9 @@ impl ToolSet {
         check_unique_and_implemented(&menu)?;
         if let Some(tool) = strip.iter().find(|tool| !tool.can_be_strip_icon()) {
             return Err(ToolSetError::NotAStripIcon(*tool));
+        }
+        if let Some(tool) = menu.iter().find(|tool| !tool.can_be_menu_item()) {
+            return Err(ToolSetError::NotAMenuItem(*tool));
         }
         if menu.is_empty() {
             return Err(ToolSetError::EmptyMenu);

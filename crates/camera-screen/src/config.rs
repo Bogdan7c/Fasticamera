@@ -14,6 +14,7 @@ use crate::layout::{LayoutConfig, LayoutError};
 use crate::level::{LevelConfig, LevelConfigError};
 use crate::shutter::{CaptureConfig, CaptureConfigError, TimerConfig, TimerConfigError};
 use crate::tools::{ToolId, ToolSet, ToolSetError};
+use crate::white_config::{WhiteConfigError, WhiteScreenConfig};
 use crate::widgets_config::{WidgetConfigError, WidgetLayoutConfig};
 use crate::zoom_config::{ZoomConfig, ZoomConfigError};
 
@@ -74,6 +75,8 @@ pub struct ScreenConfig {
     pub zoom: ZoomConfig,
     /// Раздел калибровки: флаг режима, доли зон, оси вектороскопа, предел картинки прибора (14b).
     pub calibration: CalibrationConfig,
+    /// Панель белого: кнопки света, шаги шкал, округление показа (white-balance 02).
+    pub white: WhiteScreenConfig,
 }
 
 /// Ошибка конфига экрана.
@@ -99,6 +102,8 @@ pub enum ScreenConfigError {
     Zoom(#[from] ZoomConfigError),
     #[error("раздел калибровки: {0}")]
     Calibration(#[from] CalibrationConfigError),
+    #[error("панель белого: {0}")]
+    White(#[from] WhiteConfigError),
 }
 
 impl ScreenConfig {
@@ -114,6 +119,12 @@ impl ScreenConfig {
         self.widgets.validate()?;
         self.zoom.validate()?;
         self.calibration.validate()?;
+        self.white.validate()?;
+        // Ряд «Phone» + кнопки света: все видны без прокрутки (сверка раскладки белого с её конфигом кнопок).
+        self.widgets
+            .white_card
+            .check_buttons_fit(self.white.max_buttons_without_scroll, &self.widgets.card)
+            .map_err(WidgetConfigError::from)?;
         Ok(())
     }
 }

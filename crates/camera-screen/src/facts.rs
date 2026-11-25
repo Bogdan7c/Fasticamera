@@ -12,6 +12,7 @@ use camera_contract::zoom::ZoomCatalog;
 
 use crate::exposure::ExposureRangeFact;
 use crate::viewfinder_map::StreamGeometry;
+use crate::white_facts::WhiteFacts;
 
 /// Почему камера недоступна (экран покажет текст — виджеты P5b).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,6 +141,8 @@ pub struct CameraFacts {
     pub lens: LensFacts,
     /// Доступна ли вспышка. Не доступна — экран её не показывает и снимает с `FlashMode::Off`.
     pub flash: FlashAvailability,
+    /// Белое: действующее значение, пределы, ожидание и исход команды «взять» (white-balance 02).
+    pub white: WhiteFacts,
 }
 
 impl CameraFacts {
@@ -153,6 +156,7 @@ impl CameraFacts {
         stream: None,
         lens: LensFacts::NONE,
         flash: FlashAvailability::Unavailable,
+        white: WhiteFacts::STARTING,
     };
 }
 

@@ -315,3 +315,138 @@ fn wrong_numbers_are_refused_with_the_field_name() {
     );
     assert_eq!(refuse(|config| config.give_up_frames = 2), "phone.give_up_frames");
 }
+
+// ---- показание (white-balance 02, WB33) ----
+
+fn reading_of(bench: &Bench) -> WhiteReading {
+    bench.source.reading()
+}
+
+fn measured_kelvin(reading: WhiteReading) -> f64 {
+    match reading {
+        WhiteReading::Measured { white } => white.temperature.kelvin(),
+        other => panic!("ждали измеренное показание, пришло {other:?}"),
+    }
+}
+
+#[test]
+fn a_source_without_a_stream_or_frames_has_not_measured_yet() {
+    let never_started = PhoneWhiteSource::new(PhoneWhiteConfig::default()).expect("числа верны");
+    assert_eq!(never_started.reading(), WhiteReading::NotMeasuredYet);
+    assert_eq!(reading_of(&Bench::started()), WhiteReading::NotMeasuredYet);
+}
+
+#[test]
+fn the_white_of_the_previous_session_is_never_a_reading_however_long_it_stays() {
+    let mut bench = Bench::started();
+    // Побитово неподвижное значение: автоматика ещё несёт вчерашний свет (в том числе дольше срока give_up).
+    for _ in 0..PhoneWhiteConfig::default().give_up_frames + 20 {
+        bench.show(hints_for(6500.0));
+        assert_eq!(reading_of(&bench), WhiteReading::NotMeasuredYet);
+    }
+}
+
+#[test]
+fn the_first_moved_value_is_a_reading_equal_to_what_the_answer_would_say() {
+    let mut bench = Bench::started();
+    bench.source.request(WhiteRequestId(1)).expect("заявка принята");
+    bench.show_many(hints_for(6500.0), 5);
+    assert_eq!(reading_of(&bench), WhiteReading::NotMeasuredYet);
+    // Первый сдвиг — уже измерено; ровных кадров для показания ждать не нужно.
+    assert!(bench.show(hints_for(3000.0)).is_none(), "ответ ещё не годен");
+    let early = measured_kelvin(reading_of(&bench));
+    assert!((early - 3000.0).abs() < 25.0, "{early}");
+    // Когда ответ готов, показание — то же число, что в ответе (одна математика).
+    let (_, reply) = bench.show_many(hints_for(3000.0), 30).expect("ответ есть");
+    let WhiteSourceOutcome::Ready {
+        illuminant: SceneIlluminant::Uniform(answered),
+        ..
+    } = reply.outcome
+    else {
+        panic!("ждали готовый ответ, пришло {reply:?}");
+    };
+    assert_eq!(reading_of(&bench), WhiteReading::Measured { white: answered });
+}
+
+#[test]
+fn the_reading_follows_the_latest_frame() {
+    let mut bench = Bench::started();
+    bench.show_many(hints_for(6500.0), 5);
+    bench.show(hints_for(5000.0));
+    let first = measured_kelvin(reading_of(&bench));
+    bench.show(hints_for(3000.0));
+    let second = measured_kelvin(reading_of(&bench));
+    assert!(
+        (first - 5000.0).abs() < 40.0 && (second - 3000.0).abs() < 25.0,
+        "{first} {second}"
+    );
+}
+
+#[test]
+fn silence_is_unavailable_only_after_the_settle_frame() {
+    let settle = PhoneWhiteConfig::default().settle_by_frame;
+    for silent in [hints(1.0, 1.0), CaptureColorHints::default()] {
+        let mut bench = Bench::started();
+        bench.show_many(silent, settle - 1);
+        assert_eq!(reading_of(&bench), WhiteReading::NotMeasuredYet, "срок ещё не вышел");
+        bench.show(silent);
+        assert_eq!(
+            reading_of(&bench),
+            WhiteReading::Unavailable {
+                reason: WhiteUnavailableReason::AutomationSilent
+            }
+        );
+    }
+}
+
+#[test]
+fn a_stream_without_colour_profile_reads_unavailable_once_the_value_is_fresh() {
+    let mut bench = Bench::started_with(None);
+    bench.show_many(hints_for(6500.0), 5);
+    bench.show(hints_for(3000.0));
+    assert_eq!(
+        reading_of(&bench),
+        WhiteReading::Unavailable {
+            reason: WhiteUnavailableReason::NoColorProfile
+        }
+    );
+}
+
+#[test]
+fn a_hint_that_cannot_be_converted_reads_failed() {
+    let mut bench = Bench::started();
+    bench.show(hints(1.0e-6, 1.0e6));
+    bench.show(hints(2.0e-6, 1.0e6));
+    assert_eq!(
+        reading_of(&bench),
+        WhiteReading::Failed {
+            failure: WhiteSourceFailure::HintNotConvertible
+        }
+    );
+}
+
+#[test]
+fn a_new_stream_forgets_the_reading() {
+    let mut bench = Bench::started();
+    bench.show_many(hints_for(6500.0), 5);
+    bench.show(hints_for(3000.0));
+    measured_kelvin(reading_of(&bench));
+    bench.source.begin_stream(&facts(Some(&profile())));
+    assert_eq!(reading_of(&bench), WhiteReading::NotMeasuredYet);
+}
+
+#[test]
+fn asking_for_the_reading_does_not_disturb_a_pending_request() {
+    let mut bench = Bench::started();
+    bench.source.request(WhiteRequestId(4)).expect("заявка принята");
+    bench.show_many(hints_for(6500.0), 5);
+    let reply = (0..30)
+        .find_map(|index| {
+            let _ = reading_of(&bench);
+            bench.show(hints_for(3000.0 + if index % 2 == 0 { 0.5 } else { -0.5 }))
+        })
+        .expect("ответ есть")
+        .1;
+    assert_eq!(reply.request, WhiteRequestId(4));
+    assert_eq!(confidence_of(&reply), 1.0);
+}

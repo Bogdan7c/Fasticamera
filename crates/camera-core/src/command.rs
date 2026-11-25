@@ -6,7 +6,7 @@ use camera_contract::flash::FlashShotId;
 use camera_contract::ids::{CameraTarget, LensRole};
 use camera_contract::stream::StreamMode;
 use camera_contract::three_a::{ExposureBracket, SensorPoint, ThreeAProfile};
-use camera_contract::white::{WhiteSourceId, WhiteTransition};
+use camera_contract::white::{WhiteAdjustment, WhiteSourceId, WhiteTransition};
 use serde::Serialize;
 
 use crate::backend::UnsupportedStream;
@@ -79,6 +79,13 @@ pub enum CameraCommand {
         setting: WhiteBalanceSetting,
         transition: WhiteTransition,
     },
+    /// Правка ОДНОЙ оси белой рукой (шкала под пальцем, WB31). Вторую ось владелец берёт у **своей** действующей
+    /// белой в момент применения, а не у экрана: экран, чьи факты отстали на кадр, не затрёт её старым числом.
+    /// Дальше всё как у `SetWhite`: происхождение «ручное», прижим к пределам, отмена ожидающей заявки.
+    AdjustWhite {
+        adjustment: WhiteAdjustment,
+        transition: WhiteTransition,
+    },
     /// Взять белую у источника (долгое нажатие, кнопка «Телефон»). Нужен идущий поток. Итог заявки — событие
     /// `WhiteRequestFinished`, белая прежняя до принятия ответа.
     TakeWhite {
@@ -110,6 +117,7 @@ impl CameraCommand {
             CameraCommand::CaptureBracket { .. } => "capture_bracket",
             CameraCommand::CaptureFlashStill { .. } => "capture_flash_still",
             CameraCommand::SetWhite { .. } => "set_white",
+            CameraCommand::AdjustWhite { .. } => "adjust_white",
             CameraCommand::TakeWhite { .. } => "take_white",
             CameraCommand::Close => "close",
             CameraCommand::EnterBackground => "enter_background",

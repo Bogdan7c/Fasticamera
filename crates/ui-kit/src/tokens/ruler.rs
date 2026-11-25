@@ -25,12 +25,15 @@ pub struct RulerTokens {
     pub major_tick_alpha: f32,
     /// Альфа мелкой риски. `[derived]` по яркости R00 t=35.50: 0,5.
     pub minor_tick_alpha: f32,
-    /// До какого расстояния от текущей отметки (в шагах) риски видны в полную силу.
-    /// `[measured: R00 t=159.0]`: 4.
-    pub fade_full_until_steps: f64,
-    /// Доля яркости на расстоянии `full + 1` шагов. `[measured: R00 t=159.0]`: 0,6 (5-й шаг).
+    /// До какого расстояния от текущей отметки (в pt) риски видны в полную силу.
+    /// `[measured: R00 t=159.0]`: 4 шага линейки Exposure по 20 pt = 80. Затухание задано в pt, а не в шагах:
+    /// линейка с другой плотностью (10 pt на риску) показывает те же ±120 pt, а не «столько-то рисок».
+    pub fade_full_until_pt: f64,
+    /// Длина одного звена спада яркости, pt. `[measured: R00 t=159.0]`: шаг Exposure, 20.
+    pub fade_link_length_pt: f64,
+    /// Доля яркости на расстоянии `full + 1` звено. `[measured: R00 t=159.0]`: 0,6 (5-й шаг).
     pub fade_first_step_factor: f32,
-    /// Доля яркости на расстоянии `full + 2` шагов; дальше риски не рисуются.
+    /// Доля яркости на расстоянии `full + 2` звена; дальше риски не рисуются.
     /// `[measured: R00 t=159.0]`: 0,1 (6-й шаг).
     pub fade_second_step_factor: f32,
 }
@@ -44,7 +47,8 @@ impl Default for RulerTokens {
             current_mark_length_pt: 26.0,
             major_tick_alpha: 0.8,
             minor_tick_alpha: 0.5,
-            fade_full_until_steps: 4.0,
+            fade_full_until_pt: 80.0,
+            fade_link_length_pt: 20.0,
             fade_first_step_factor: 0.6,
             fade_second_step_factor: 0.1,
         }
@@ -52,10 +56,10 @@ impl Default for RulerTokens {
 }
 
 impl RulerTokens {
-    /// Яркость риски по расстоянию до текущей отметки, шаги: 1 до `full`, затем ломаная
-    /// 1 → 0,6 → 0,1 (по шагу шкалы на звено), дальше 0 — риска не рисуется.
-    pub fn fade_factor(&self, distance_steps: f64) -> f32 {
-        let past_full = distance_steps.abs() - self.fade_full_until_steps;
+    /// Яркость риски по расстоянию до текущей отметки, pt: 1 до `fade_full_until_pt`, затем ломаная
+    /// 1 → 0,6 → 0,1 (звено — `fade_link_length_pt`), дальше 0 — риска не рисуется.
+    pub fn fade_factor(&self, distance_pt: f64) -> f32 {
+        let past_full = (distance_pt.abs() - self.fade_full_until_pt) / self.fade_link_length_pt;
         let knots = [1.0, self.fade_first_step_factor, self.fade_second_step_factor];
         if past_full <= 0.0 {
             return knots[0];
@@ -75,7 +79,8 @@ impl RulerTokens {
         positive("ruler.tick_length_pt", self.tick_length_pt)?;
         positive("ruler.current_mark_thickness_pt", self.current_mark_thickness_pt)?;
         positive("ruler.current_mark_length_pt", self.current_mark_length_pt)?;
-        positive("ruler.fade_full_until_steps", self.fade_full_until_steps)?;
+        positive("ruler.fade_full_until_pt", self.fade_full_until_pt)?;
+        positive("ruler.fade_link_length_pt", self.fade_link_length_pt)?;
         for (name, value) in [
             ("ruler.major_tick_alpha", self.major_tick_alpha),
             ("ruler.minor_tick_alpha", self.minor_tick_alpha),

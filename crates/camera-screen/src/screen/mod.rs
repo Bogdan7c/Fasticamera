@@ -37,6 +37,7 @@ mod effect_queue;
 mod error;
 mod stage;
 mod system_gesture_filter;
+mod white_targets;
 
 use std::sync::Arc;
 
@@ -53,6 +54,7 @@ use ui_kit::view::PxPerPt;
 
 pub use diagnostics::{GestureCounters, ScreenDiagnostics};
 pub use error::ScreenBuildError;
+pub use white_targets::{WhiteCardTargets, WhiteTouchTargets};
 
 use crate::action::ScreenAction;
 use crate::config::ScreenConfig;
@@ -135,6 +137,11 @@ impl CameraScreen {
     /// Экран с проверенными конфигом и токенами. Сцена строится на первом кадре (там известен размер surface).
     pub fn new(config: ScreenConfig, tokens: UiKitTokens, motion: MotionPreference) -> Result<Self, ScreenBuildError> {
         tokens.validate()?;
+        // Диаметр затвора — токен, а не раскладка: сверка кнопки белого с ним возможна только здесь.
+        config
+            .widgets
+            .white_button
+            .check_clearance(&config.widgets.bottom, tokens.shutter.outer_diameter_pt)?;
         let state = ScreenState::new(&config)?;
         let light = LightDirection::from_angle_degrees(tokens.glass.button.specular.rest_angle_deg);
         let veil = TransitionVeil::new(&config.zoom.transition);
@@ -318,6 +325,7 @@ impl CameraScreen {
             snapshot.ignored_sun_pans = stage.focus().ignored_sun_pans();
             snapshot.invalid_exposure_values = stage.invalid_exposure_values();
             snapshot.invalid_knob_values = stage.invalid_knob_values();
+            snapshot.invalid_white_values = stage.invalid_white_values();
             snapshot.preset_chips_overflowed = stage.overflowed_preset_chips();
             snapshot.text_layouts = stage.text_layouts();
             snapshot.text_cache_evictions = stage.text_cache_evictions();
@@ -647,6 +655,21 @@ mod screen_text_cache_tests;
 #[path = "screen_thumbnail_tests.rs"]
 mod screen_thumbnail_tests;
 #[cfg(test)]
+#[path = "screen_white_button_gesture_tests.rs"]
+mod screen_white_button_gesture_tests;
+#[cfg(test)]
+#[path = "screen_white_button_layout_tests.rs"]
+mod screen_white_button_layout_tests;
+#[cfg(test)]
+#[path = "screen_white_button_tests.rs"]
+mod screen_white_button_tests;
+#[cfg(test)]
+#[path = "screen_white_card_tests.rs"]
+mod screen_white_card_tests;
+#[cfg(test)]
+#[path = "screen_white_follow_tests.rs"]
+mod screen_white_follow_tests;
+#[cfg(test)]
 #[path = "screen_zoom_flip_tests.rs"]
 mod screen_zoom_flip_tests;
 #[cfg(test)]
@@ -663,3 +686,5 @@ mod screen_zoom_tests;
 mod screen_zoom_transition_tests;
 #[cfg(test)]
 mod test_rig;
+#[cfg(test)]
+mod white_test_support;

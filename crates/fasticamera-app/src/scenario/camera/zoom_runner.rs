@@ -233,7 +233,7 @@ impl ZoomRunner {
                 target_ratio_milli = Some((f64::from(group.stops[index].ratio.value()) * 1000.0).round() as u32);
                 (
                     expectation_for_tap(kind, current_role),
-                    vec![Injection::Action(ScreenAction::ZoomStopTapped {
+                    vec![Injection::action(ScreenAction::ZoomStopTapped {
                         stop: index,
                         at: observation.render_now,
                     })],
@@ -253,7 +253,7 @@ impl ZoomRunner {
                 };
                 (
                     expectation,
-                    vec![Injection::Action(ScreenAction::FlipCameraRequested {
+                    vec![Injection::action(ScreenAction::FlipCameraRequested {
                         at: observation.render_now,
                     })],
                     None,

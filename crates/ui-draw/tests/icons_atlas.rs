@@ -44,7 +44,7 @@ impl IconTexels {
 
 #[test]
 fn every_icon_has_a_non_empty_region_with_both_inside_and_outside_texels() {
-    assert_eq!(IconId::ALL.len(), 14);
+    assert_eq!(IconId::ALL.len(), 20);
     for id in IconId::ALL {
         let glyph = icon(id);
         assert!(
@@ -233,5 +233,69 @@ fn zoom_marker_triangle_is_wide_at_the_top_and_narrow_at_the_bottom() {
     assert!(
         (0.35..0.65).contains(&fraction),
         "треугольник — около половины квадрата: {fraction:.3}"
+    );
+}
+
+/// Иконки панели белого (план white-balance, сессия 02): все шесть запеклись с реальным покрытием, а `sun` —
+/// отдельная ячейка с теми же текселями, что и `Exposure` (тот же SVG), поэтому иконки могут разойтись позже.
+#[test]
+fn white_panel_icons_have_real_coverage_and_sun_matches_exposure() {
+    for id in [
+        IconId::DeviceMobile,
+        IconId::Sun,
+        IconId::Cloud,
+        IconId::Tree,
+        IconId::Lightbulb,
+        IconId::House,
+    ] {
+        let fraction = inside_fraction(id);
+        assert!(
+            (0.02..0.60).contains(&fraction),
+            "{id:?}: покрытие {fraction:.3} вне разумного диапазона"
+        );
+    }
+    let sun = IconTexels::of(IconId::Sun);
+    let exposure = IconTexels::of(IconId::Exposure);
+    assert_eq!(
+        (sun.width, sun.height),
+        (exposure.width, exposure.height),
+        "один SVG — одинаковый размер ячейки"
+    );
+    for row in 0..sun.height {
+        for column in 0..sun.width {
+            assert_eq!(sun.at(column, row), exposure.at(column, row), "({column}, {row})");
+        }
+    }
+    assert_ne!(
+        icon(IconId::Sun).region,
+        icon(IconId::Exposure).region,
+        "у `sun` своя ячейка атласа, а не ссылка на ячейку Exposure"
+    );
+    // Форма: у телефона вырез экрана — центр иконки внутри корпуса не пустой полностью, лампа и дом различимы.
+    let phone = IconTexels::of(IconId::DeviceMobile);
+    assert!(
+        phone.at(phone.width / 2, phone.height / 2) > 128,
+        "внутри корпуса телефона — полость экрана"
+    );
+    let house = IconTexels::of(IconId::House);
+    let bulb = IconTexels::of(IconId::Lightbulb);
+    let differing = (0..house.height)
+        .flat_map(|row| (0..house.width).map(move |column| (column, row)))
+        .filter(|(column, row)| (house.at(*column, *row) < 128) != (bulb.at(*column, *row) < 128))
+        .count();
+    assert!(differing > 100, "дом и лампа — разные формы: {differing}");
+}
+
+/// Атлас после добавления иконок остаётся в пределах, которые Vulkan гарантирует любому устройству
+/// (`maxImageDimension2D` не меньше 4096): иначе загрузка текстуры на части телефонов провалится.
+#[test]
+fn atlas_stays_within_the_texture_side_every_vulkan_device_guarantees() {
+    const GUARANTEED_MAX_IMAGE_DIMENSION: u32 = 4096;
+    let atlas = sdf_atlas();
+    assert!(
+        atlas.width <= GUARANTEED_MAX_IMAGE_DIMENSION && atlas.height <= GUARANTEED_MAX_IMAGE_DIMENSION,
+        "атлас {}x{} выше гарантированного предела {GUARANTEED_MAX_IMAGE_DIMENSION}",
+        atlas.width,
+        atlas.height
     );
 }

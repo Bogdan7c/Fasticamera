@@ -126,6 +126,13 @@ impl QuantizedLinear {
     }
 }
 
+/// Шаг риски квантованной модели — одна единица положения (одна ступень).
+impl super::RulerAxis for QuantizedLinear {
+    fn tick_step_units(&self) -> f64 {
+        1.0
+    }
+}
+
 impl ValueModel for QuantizedLinear {
     type Value = f64;
     type Limits = LinearLimits;

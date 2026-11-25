@@ -28,6 +28,7 @@ mod sensors;
 mod shutter;
 mod viewfinder;
 mod wheels;
+mod white;
 mod zoom;
 
 #[cfg(test)]
@@ -84,6 +85,9 @@ mod viewfinder_tests;
 #[cfg(test)]
 #[path = "wheels_tests.rs"]
 mod wheels_tests;
+#[cfg(test)]
+#[path = "white_tests.rs"]
+mod white_tests;
 #[cfg(test)]
 #[path = "zoom_gesture_tests.rs"]
 mod zoom_gesture_tests;
@@ -319,5 +323,13 @@ fn dispatch_action(ctx: &mut Ctx<'_>, action: ScreenAction) -> ActionOutcome {
         ScreenAction::ProblemDismissed { number } => look::on_problem_dismissed(ctx, number),
         ScreenAction::CalibrationMenuItemTapped(item) => calibration::on_menu_item_tapped(ctx, item),
         ScreenAction::ScopeDemandLost => calibration::on_scope_demand_lost(ctx),
+        ScreenAction::WhiteButtonTapped => white::on_button_tapped(ctx),
+        ScreenAction::WhiteButtonLongPressed => white::on_button_long_pressed(ctx),
+        ScreenAction::WhitePhoneTapped => white::on_phone_tapped(ctx),
+        ScreenAction::WhiteLightSelected(index) => white::on_light_selected(ctx, index),
+        ScreenAction::WhiteAxisSelected(axis) => white::on_axis_selected(ctx, axis),
+        ScreenAction::WhiteTemperatureDragged(temperature) => white::on_temperature_dragged(ctx, temperature),
+        ScreenAction::WhiteTintDragged(tint) => white::on_tint_dragged(ctx, tint),
+        ScreenAction::WhiteTakeNotDelivered => white::on_take_not_delivered(ctx),
     }
 }

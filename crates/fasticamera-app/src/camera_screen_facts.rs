@@ -26,6 +26,7 @@
 //! Факты считаются на каждом кадре UI; шлются экрану только при реальном изменении ([`CameraFactsWatcher`]).
 
 use crate::camera_screen_lens_facts::{LensFactsBuilder, LensFactsDiagnostics};
+use crate::camera_screen_white_facts::white_facts_of;
 use camera_android::stream_passport::{PassportError, build_stream_passport};
 use camera_contract::availability::CameraUnavailableReason;
 use camera_contract::capabilities::CameraCapabilities;
@@ -34,6 +35,7 @@ use camera_contract::ids::CameraId;
 use camera_contract::lens_shading::LensShadingCalibrations;
 use camera_contract::stream::ConfiguredStream;
 use camera_contract::three_a::ExposureCompensationSupport;
+use camera_contract::white_reading::WhiteReadingBoard;
 use camera_core::state::FatalCause;
 use camera_core::three_a_status::{FocusOutcome, FocusProgress};
 use camera_core::{CameraError, CameraState, CameraStatus};
@@ -71,6 +73,7 @@ pub fn camera_facts_with_cache(status: &CameraStatus, cache: &mut FactsCache) ->
         stream: cache.geometry.geometry_of(status, active),
         lens: cache.lens.facts_of(&status.lens),
         flash: flash_availability_of(status),
+        white: white_facts_of(status, &cache.white_readings),
     }
 }
 
@@ -83,14 +86,24 @@ pub(crate) fn flash_availability_of(status: &CameraStatus) -> FlashAvailability 
     }
 }
 
-/// Всё, что источник фактов помнит между кадрами: кэш геометрии потока и память о неудачах смены объектива.
+/// Всё, что источник фактов помнит между кадрами: кэш геометрии потока, память о неудачах смены объектива и
+/// доска показаний источников белого (её пишет рендер, здесь она только читается).
 #[derive(Debug, Default)]
 pub struct FactsCache {
     geometry: StreamGeometryCache,
     lens: LensFactsBuilder,
+    white_readings: WhiteReadingBoard,
 }
 
 impl FactsCache {
+    /// Кэш, читающий показания источников белого с общей доски композиции. Без доски (`default`) показаний нет.
+    pub fn with_white_readings(white_readings: WhiteReadingBoard) -> Self {
+        Self {
+            white_readings,
+            ..Self::default()
+        }
+    }
+
     pub fn diagnostics(&self) -> FactsDiagnostics {
         FactsDiagnostics {
             lens: self.lens.diagnostics(),
@@ -296,10 +309,16 @@ pub struct EngineFactsSource {
 }
 
 impl EngineFactsSource {
+    /// Источник без доски показаний: показаний источников белого экран не получит (стенды без рендера).
     pub fn new(handle: camera_core::CameraHandle) -> Self {
+        Self::with_white_readings(handle, WhiteReadingBoard::new())
+    }
+
+    /// Источник с доской показаний, общей с рендером (корень композиции берёт её у `CameraServices`).
+    pub fn with_white_readings(handle: camera_core::CameraHandle, white_readings: WhiteReadingBoard) -> Self {
         Self {
             handle,
-            cache: FactsCache::default(),
+            cache: FactsCache::with_white_readings(white_readings),
         }
     }
 }
@@ -331,7 +350,8 @@ impl CameraFactsSource for AbsentEngineFactsSource {
 #[derive(Debug, Clone, PartialEq)]
 pub enum FactsChange {
     /// Факты новые (первое наблюдение или отличаются от прежних): их надо отправить экрану.
-    Changed(CameraFacts),
+    /// В коробке: факты крупные (сотни байт), а соседний вариант пуст — иначе каждое наблюдение платило бы размером.
+    Changed(Box<CameraFacts>),
     /// Факты те же: экрану ничего не шлём.
     Unchanged,
 }
@@ -353,7 +373,7 @@ impl CameraFactsWatcher {
             return FactsChange::Unchanged;
         }
         self.last_sent = Some(facts.clone());
-        FactsChange::Changed(facts)
+        FactsChange::Changed(Box::new(facts))
     }
 }
 

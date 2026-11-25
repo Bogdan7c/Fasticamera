@@ -38,7 +38,7 @@ fn submit_at_zero(service: &FakeCaptureService, request: ShotRequest) -> SubmitO
 }
 
 fn secured(id: u64) -> ScreenInput {
-    ScreenInput::Action(ScreenAction::CaptureSecured {
+    ScreenInput::action(ScreenAction::CaptureSecured {
         request: ShotRequestId(id),
     })
 }
@@ -57,7 +57,7 @@ fn drain(receiver: &mut crate::camera_screen_input::ScreenInputReceiver) -> Vec<
 }
 
 fn saved(id: u64) -> ScreenInput {
-    ScreenInput::Action(ScreenAction::CaptureFinished {
+    ScreenInput::action(ScreenAction::CaptureFinished {
         request: ShotRequestId(id),
         outcome: CaptureOutcome::Saved,
     })

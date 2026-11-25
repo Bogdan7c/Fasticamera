@@ -116,7 +116,7 @@ fn the_sink_puts_the_dialog_answer_into_the_screen_input_and_counts_an_overflow(
     sink.deliver(answer(7));
     assert_eq!(
         receiver.try_next(),
-        Some(ScreenInput::Action(ScreenAction::TextInputFinished(answer(7))))
+        Some(ScreenInput::action(ScreenAction::TextInputFinished(answer(7))))
     );
 
     // Очередь ёмкости 1: второй ответ без чтения не влезает и считается потерянным, а не пропадает молча.

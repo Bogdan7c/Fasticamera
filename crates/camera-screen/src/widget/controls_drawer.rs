@@ -59,7 +59,8 @@ fn tool_is_active(ctx: &Ctx<'_>, tool: ToolId) -> bool {
         ToolId::Aspect => settings.aspect != AspectRatio::FourByThree,
         ToolId::Grid => settings.grid == GridSetting::On,
         ToolId::Level => settings.level == LevelSetting::On,
-        ToolId::Live | ToolId::Styles | ToolId::Night => false,
+        // Белого в шторке Controls нет (значок только верхнего ряда); ветка нужна полноте match.
+        ToolId::White | ToolId::Live | ToolId::Styles | ToolId::Night => false,
     }
 }
 
@@ -276,6 +277,6 @@ fn tool_icon(ctx: &Ctx<'_>, tool: ToolId) -> Option<IconId> {
         ToolId::Level => Some(IconId::Level),
         // RAW у iOS остаётся подписью внутри круга, не значком. Для STYLES подходящего значка в наборе нет
         // (палитра, фильтр): подпись в круге, а не новый рисунок.
-        ToolId::Raw | ToolId::Live | ToolId::Styles | ToolId::Night => None,
+        ToolId::White | ToolId::Raw | ToolId::Live | ToolId::Styles | ToolId::Night => None,
     }
 }

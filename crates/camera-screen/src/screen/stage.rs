@@ -45,6 +45,7 @@ use crate::widget::tool_card::ToolCardWidget;
 use crate::widget::top_bar::TopBarWidget;
 use crate::widget::transition_veil::TransitionVeil;
 use crate::widget::unavailable_notice::UnavailableNoticeWidget;
+use crate::widget::white_button::WhiteButtonWidget;
 use crate::widget::zoom_strip::ZoomStripWidget;
 use crate::widget::zoom_wheel::ZoomWheelWidget;
 use crate::widget::{Ctx, Outputs};
@@ -65,6 +66,8 @@ pub(crate) struct Stage {
     shutter: ShutterWidget,
     thumbnail: ThumbnailWidget,
     menu_button: MenuButtonWidget,
+    /// Кнопка белого в ряду затвора (WB35).
+    white_button: WhiteButtonWidget,
     carousel: ModeCarouselWidget,
     top_bar: TopBarWidget,
     drawer: ControlsDrawerWidget,
@@ -120,6 +123,7 @@ impl Stage {
         let carousel = ModeCarouselWidget::build(&mut kit, ctx, photo_root)?;
         let zoom_strip = ZoomStripWidget::build(&mut kit, ctx, photo_root)?;
         let menu_button = MenuButtonWidget::build(&mut kit, ctx, photo_root)?;
+        let white_button = WhiteButtonWidget::build(&mut kit, ctx, photo_root)?;
         let drawer = ControlsDrawerWidget::build(&mut kit, ctx, photo_root)?;
         // Карточка — над шторкой и в хит-тесте (шторка под ней ждёт «‹» и касаний не ловит).
         let card = ToolCardWidget::build(&mut kit, ctx, photo_root)?;
@@ -138,6 +142,7 @@ impl Stage {
             shutter,
             thumbnail,
             menu_button,
+            white_button,
             carousel,
             top_bar,
             drawer,
@@ -221,6 +226,11 @@ impl Stage {
         &self.focus
     }
 
+    /// Идёт ли мерцание ожидания или тряска отказа на кнопках белого (кнопка у затвора, «Phone» на карточке).
+    pub(crate) fn white_attention_animating(&self, now: shell_contract::clock::MonotonicNanos) -> bool {
+        self.white_button.is_animating(now) || self.card.is_animating(now)
+    }
+
     #[cfg(test)]
     pub(crate) fn card(&self) -> &ToolCardWidget {
         &self.card
@@ -279,6 +289,7 @@ impl Stage {
             _ => {}
         }
         Ok(self.shutter.handle_gesture(event, out)?
+            || self.white_button.handle_gesture(event, out)?
             || self.flip.handle_gesture(event, out)?
             || self.zoom_strip.handle_gesture(event, out)?
             || self.zoom_wheel.handle_gesture(event, out)?
@@ -320,6 +331,7 @@ impl Stage {
     pub(crate) fn sync(&mut self, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
         self.sync_calibration(ctx)?;
         self.shutter.sync(&mut self.kit, ctx)?;
+        self.white_button.sync(&mut self.kit, ctx)?;
         self.thumbnail.sync(&mut self.kit, ctx)?;
         self.flip.sync(&mut self.kit, ctx)?;
         self.zoom_strip.sync(&mut self.kit, ctx)?;
@@ -421,6 +433,7 @@ impl Stage {
         self.flip.draw(ctx, &visuals, &mut layers)?;
         self.menu_button
             .draw(ctx, &visuals, &mut layers, self.drawer.source_opacity(ctx.now))?;
+        self.white_button.draw(ctx, &visuals, &mut layers, &mut self.texts)?;
         self.carousel.draw(ctx, &visuals, &mut layers)?;
         self.top_bar.draw(ctx, &visuals, &mut layers, &mut self.texts)?;
         CountdownWidget::draw(ctx, &mut layers, &mut self.texts)?;
@@ -483,13 +496,16 @@ impl Stage {
                 | ScreenGesture::CalibrationMenuScrimTap,
                 GestureState::Ended,
             ) => counters.taps += 1,
-            (ScreenGesture::ViewfinderLongPress, GestureState::Began) => counters.long_presses += 1,
+            (ScreenGesture::ViewfinderLongPress | ScreenGesture::WhiteButtonLongPress, GestureState::Began) => {
+                counters.long_presses += 1
+            }
             (
                 ScreenGesture::ModesPan
                 | ScreenGesture::MenuOpenPan
                 | ScreenGesture::SunPan
                 | ScreenGesture::DrawerClosePan
                 | ScreenGesture::ExposureSliderPan
+                | ScreenGesture::WhiteRulerPan
                 | ScreenGesture::ZoomStripPan
                 | ScreenGesture::ZoomWheelPan
                 | ScreenGesture::CalibrationRulerPan(_)
@@ -512,6 +528,11 @@ impl Stage {
     /// Значения шкал EV, не ставшие величиной компенсации (диагностика).
     pub(crate) fn invalid_exposure_values(&self) -> u64 {
         self.card.invalid_bias_values() + self.focus.invalid_bias_values()
+    }
+
+    /// Значения шкал белого, не принятые как невозможные (диагностика).
+    pub(crate) fn invalid_white_values(&self) -> u64 {
+        self.card.invalid_white_values()
     }
 
     /// Центры (pt, поверхность) всех видимых узлов с подписью `label`, в порядке сборки (проба для тестов касаний).

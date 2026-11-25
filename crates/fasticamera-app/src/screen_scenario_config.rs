@@ -114,6 +114,23 @@ pub struct ScreenTouchPlan {
     /// скрыт): EV третий, смещение от середины ряда = +1 шаг; центр x = (220,0 + 43,6) / 440 = 0,5991
     /// (`StripLayout`: центр 220,0, шаг 43,6); y = (102,7 + 26,67) / 982,67 = 0,1317.
     pub ev_icon: ScreenPoint,
+    /// Кнопка белого рядом с затвором, в покое (WB35). `[derived]` центр затвора (220,0; 801,9) + смещение раскладки
+    /// 92 pt вправо: x = 312,0 / 440 = 0,7091; y = (801,9 + 26,67) / 982,67 = 0,8432. Тест
+    /// `plan_points_of_the_white_button_and_the_ev_icon_hit_the_real_screen` держит число сверенным с настоящей
+    /// раскладкой. Сторона `screen.white.button_side = left` в сценарий не входит: он идёт по умолчанию (справа).
+    pub white_button: ScreenPoint,
+    /// Долгое нажатие на кнопку белого: взять белое телефона, панель не открывается (WB19). Точка — кнопка белого в
+    /// покое (карточка к этому шагу закрыта); 800 мс — как у блокировки AE/AF (порог долгого тапа экрана 500 мс +
+    /// запас на задержку `input swipe`).
+    pub white_hold: HoldGesture,
+    /// Кнопка света на карточке белого, которую жмёт сценарий. `[derived]` центр первой кнопки света, как его даёт
+    /// `CameraScreen::white_touch_targets()` на экране 1080 × 2412 px: (124,0; 858,37) pt → x = 124,0 / 440 = 0,2818,
+    /// y = 858,37 / 982,67 = 0,8735. Тест `plan_points_of_the_white_button_and_the_ev_icon_hit_the_real_screen` держит
+    /// число сверенным с настоящей раскладкой.
+    pub white_light: ScreenPoint,
+    /// Номер кнопки света в списке конфига экрана (`screen.white.lights`), которую жмёт сценарий: по нему сценарий
+    /// берёт число, которое обязан держать движок. Числа кнопки не копируются в этот конфиг — они одни, в конфиге экрана.
+    pub white_light_index: usize,
     /// Свайп по шкале карточки Exposure. `[derived]` карточка 421 × 183,1 pt (x = 9,5…430,5), верх T = 982,67 − 8,2 −
     /// 183,1 = 791,37 pt; риски шкалы — низ на T + 129, длина 13 → центр рисок T + 122,5 = 913,87 / 982,67 = 0,9300;
     /// от x = 0,65 (286 pt) до x = 0,35 (154 pt): 132 pt — 6,6 шага по 20 pt (1/3 EV), жест целиком внутри карточки.
@@ -157,6 +174,13 @@ impl Default for ScreenTouchPlan {
             menu_open_swipe: swipe((0.5, 0.62), (0.5, 0.40), 300),
             menu_close_swipe: swipe((0.5, 0.6667), (0.5, 0.92), 300),
             ev_icon: ScreenPoint::new(0.5991, 0.1317),
+            white_button: ScreenPoint::new(0.7091, 0.8432),
+            white_hold: HoldGesture {
+                at: ScreenPoint::new(0.7091, 0.8432),
+                hold_ms: 800,
+            },
+            white_light: ScreenPoint::new(0.2818, 0.8735),
+            white_light_index: 0,
             ev_slider_swipe: swipe((0.65, 0.9300), (0.35, 0.9300), 400),
             ev_reset: ScreenPoint::new(0.8886, 0.8501),
             ev_close: ScreenPoint::new(0.1114, 0.8491),
@@ -176,6 +200,9 @@ impl ScreenTouchPlan {
             ("focus_bottom_right", self.focus_bottom_right),
             ("lock_press", self.lock_press.at),
             ("ev_icon", self.ev_icon),
+            ("white_button", self.white_button),
+            ("white_hold", self.white_hold.at),
+            ("white_light", self.white_light),
             ("ev_reset", self.ev_reset),
             ("ev_close", self.ev_close),
             ("probe_tap", self.probe_tap),
@@ -230,7 +257,10 @@ impl ScreenTouchPlan {
             .swipes()
             .map(|(name, swipe)| (name, swipe.duration_ms))
             .into_iter()
-            .chain([("lock_press", self.lock_press.hold_ms)]);
+            .chain([
+                ("lock_press", self.lock_press.hold_ms),
+                ("white_hold", self.white_hold.hold_ms),
+            ]);
         for (name, duration_ms) in durations {
             if duration_ms == 0 {
                 return Err(ScreenScenarioConfigError::ZeroGestureDuration { gesture: name });
@@ -325,3 +355,7 @@ impl ScreenScenarioConfig {
 #[cfg(test)]
 #[path = "screen_scenario_config_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "screen_scenario_touch_targets_tests.rs"]
+mod touch_targets_tests;

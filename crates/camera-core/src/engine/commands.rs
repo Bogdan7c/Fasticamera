@@ -80,7 +80,8 @@ impl CameraEngine {
             CameraCommand::CaptureBracket { bracket } => self.decide_capture_bracket(id, bracket),
             CameraCommand::CaptureFlashStill { .. } => self.decide_capture_flash_still(),
             CameraCommand::SetWhite { setting, transition } => self.decide_set_white(*setting, *transition),
-            CameraCommand::TakeWhite { source, transition } => self.decide_take_white(*source, *transition, now),
+            CameraCommand::AdjustWhite { adjustment, transition } => self.decide_adjust_white(*adjustment, *transition),
+            CameraCommand::TakeWhite { source, transition } => self.decide_take_white(id, *source, *transition, now),
             CameraCommand::Close => self.decide_close(),
             CameraCommand::EnterBackground => self.decide_enter_background(),
             CameraCommand::EnterForeground => self.decide_enter_foreground(),
@@ -236,7 +237,7 @@ impl CameraEngine {
             | CameraCommand::SetThreeAProfile { .. } => self.reconcile(now),
             CameraCommand::CaptureBracket { .. } => self.submit_pending_bracket(now),
             // Белая живёт вне желаемого состояния: владелец уже всё сделал при решении, сводить нечего.
-            CameraCommand::SetWhite { .. } | CameraCommand::TakeWhite { .. } => {}
+            CameraCommand::SetWhite { .. } | CameraCommand::AdjustWhite { .. } | CameraCommand::TakeWhite { .. } => {}
             // Предвспышку запускает `settle_flash_command` сразу после ответа на команду.
             CameraCommand::CaptureFlashStill { .. } => {}
             CameraCommand::Close => self.apply_close(),

@@ -5,12 +5,20 @@
 //! не блокируется на диске. `Drop` закрывает приём, дописывает последнюю принятую запись и ждёт поток: ожидание
 //! ограничено временем ОДНОЙ записи.
 //!
+//! Частота записи: шкала белой под пальцем присылает правки десятки раз в секунду, а каждая запись на диск —
+//! временный файл, переименование и сброс каталога (износ флеш-памяти, лишняя нагрузка). Поэтому поток пишет
+//! **не чаще одного раза за `min_write_interval`** (от начала прошлой записи). Принятое значение не теряется:
+//! оно ложится не позже, чем через интервал после прошлой записи (первая запись и запись после паузы — сразу).
+//! Интервал не действует в двух случаях, когда ждать нельзя: [`WhiteMemory::flush`] (приложение уходит в фон,
+//! процесс могут убить) и закрытие (`Drop`).
+//!
 //! Ошибки записи не молчат: строка в журнал с целью `fasticamera::white` и счётчики + текст последней ошибки
 //! в [`WhiteMemoryDiagnostics`] (читается без остановки потока).
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use camera_core::white::{WhiteMemory, WhiteMemoryRecord};
 
@@ -83,6 +91,9 @@ impl WhiteMemoryDiagnostics {
 struct Mailbox {
     pending: Option<WhiteMemoryRecord>,
     closed: bool,
+    /// Движок велел «пиши немедленно» ([`WhiteMemory::flush`]): принятую запись положить без ожидания интервала.
+    /// Взводится только при наличии записи и сбрасывается, когда её взяли.
+    flush_requested: bool,
 }
 
 struct Shared {
@@ -106,7 +117,13 @@ pub struct WhiteMemoryWriter {
 
 impl WhiteMemoryWriter {
     /// Запускает поток записи. `Err` — ОС не дала поток: вызывающий работает без сохранения и пишет это в журнал.
-    pub fn spawn(sink: impl WhiteRecordSink, diagnostics: WhiteMemoryDiagnostics) -> std::io::Result<Self> {
+    ///
+    /// `min_write_interval` — не чаще одной записи на диск за этот срок (конфиг `camera.white_memory.min_write_interval_ms`).
+    pub fn spawn(
+        sink: impl WhiteRecordSink,
+        diagnostics: WhiteMemoryDiagnostics,
+        min_write_interval: Duration,
+    ) -> std::io::Result<Self> {
         let shared = Arc::new(Shared {
             mailbox: Mutex::new(Mailbox::default()),
             wake: Condvar::new(),
@@ -115,7 +132,7 @@ impl WhiteMemoryWriter {
         let worker_shared = Arc::clone(&shared);
         let worker = thread::Builder::new()
             .name(WRITER_THREAD_NAME.to_owned())
-            .spawn(move || run_writer(&worker_shared, sink))?;
+            .spawn(move || run_writer(&worker_shared, sink, min_write_interval))?;
         Ok(Self {
             shared,
             worker: Some(worker),
@@ -158,6 +175,16 @@ impl WhiteMemory for WhiteMemoryWriter {
             cells.coalesced.fetch_add(1, Ordering::Relaxed);
         }
     }
+
+    /// Не ждёт диска: только снимает отсрочку; запись делает поток записи. Без принятой записи — ничего.
+    fn flush(&mut self) {
+        let mut mailbox = self.shared.lock_mailbox();
+        if mailbox.pending.is_some() && !mailbox.closed {
+            mailbox.flush_requested = true;
+            drop(mailbox);
+            self.shared.wake.notify_one();
+        }
+    }
 }
 
 impl Drop for WhiteMemoryWriter {
@@ -191,31 +218,68 @@ impl Drop for WriterExitGuard<'_> {
     }
 }
 
-/// Тело потока: ждёт запись, пишет, повторяет; после закрытия дописывает последнюю и выходит.
-fn run_writer(shared: &Shared, mut sink: impl WhiteRecordSink) {
+/// Тело потока: ждёт запись и срок, пишет, повторяет; после закрытия дописывает последнюю и выходит.
+fn run_writer(shared: &Shared, mut sink: impl WhiteRecordSink, min_write_interval: Duration) {
     let _exit_guard = WriterExitGuard { shared };
-    loop {
-        let record = {
-            let mut mailbox = shared.lock_mailbox();
-            loop {
-                if let Some(record) = mailbox.pending.take() {
-                    break Some(record);
-                }
-                if mailbox.closed {
-                    break None;
-                }
-                mailbox = shared.wake.wait(mailbox).unwrap_or_else(PoisonError::into_inner);
-            }
-        };
-        let Some(record) = record else { return };
+    let mut last_write_started: Option<Instant> = None;
+    while let Some(record) = wait_for_record(shared, min_write_interval, last_write_started) {
+        last_write_started = Some(Instant::now());
         // Диск пишем БЕЗ блокировки ящика: новые записи за это время склеиваются.
-        report_outcome(&shared.diagnostics, sink.write_record(&record));
+        report_outcome(&shared.diagnostics, &record, sink.write_record(&record));
+    }
+}
+
+/// Сколько ещё нельзя писать: интервал считается от начала прошлой записи; записи не было — ждать нечего.
+fn remaining_wait(last_write_started: Option<Instant>, min_write_interval: Duration, now: Instant) -> Duration {
+    last_write_started.map_or(Duration::ZERO, |started| {
+        min_write_interval.saturating_sub(now.saturating_duration_since(started))
+    })
+}
+
+/// Ждёт, пока появится запись, которую уже можно писать: срок прошёл, либо велено «немедленно», либо ящик закрыт.
+/// `None` — ящик закрыт и записей нет, поток выходит.
+fn wait_for_record(
+    shared: &Shared,
+    min_write_interval: Duration,
+    last_write_started: Option<Instant>,
+) -> Option<WhiteMemoryRecord> {
+    let mut mailbox = shared.lock_mailbox();
+    loop {
+        if mailbox.pending.is_none() {
+            if mailbox.closed {
+                return None;
+            }
+            mailbox = shared.wake.wait(mailbox).unwrap_or_else(PoisonError::into_inner);
+            continue;
+        }
+        let may_write_now = mailbox.closed || mailbox.flush_requested;
+        let wait = if may_write_now {
+            Duration::ZERO
+        } else {
+            remaining_wait(last_write_started, min_write_interval, Instant::now())
+        };
+        if wait.is_zero() {
+            mailbox.flush_requested = false;
+            return mailbox.pending.take();
+        }
+        // Новая запись только заменит ожидающую и разбудит нас раньше срока: тогда считаем остаток заново.
+        mailbox = shared
+            .wake
+            .wait_timeout(mailbox, wait)
+            .map_or_else(|poisoned| poisoned.into_inner().0, |(guard, _)| guard);
     }
 }
 
 /// Итог записи: журнал и счётчики.
-fn report_outcome(diagnostics: &WhiteMemoryDiagnostics, outcome: Result<WriteCommit, WhiteMemoryError>) {
+fn report_outcome(
+    diagnostics: &WhiteMemoryDiagnostics,
+    record: &WhiteMemoryRecord,
+    outcome: Result<WriteCommit, WhiteMemoryError>,
+) {
     let cells = &*diagnostics.shared;
+    if outcome.is_ok() {
+        log_written(record);
+    }
     match outcome {
         Ok(WriteCommit::Durable) => {
             cells.saved.fetch_add(1, Ordering::Relaxed);
@@ -232,4 +296,16 @@ fn report_outcome(diagnostics: &WhiteMemoryDiagnostics, outcome: Result<WriteCom
             diagnostics.set_last_error(Some(error.to_string()));
         }
     }
+}
+
+/// Значение, которое реально легло на диск: `info`, потому что записей мало (не чаще интервала). Именно эта строка
+/// несёт итог серии ручных правок: строки движка о самих правках идут в `debug`.
+pub(super) fn log_written(record: &WhiteMemoryRecord) {
+    tracing::info!(
+        target: LOG_TARGET,
+        kelvin = record.setting.temperature.kelvin(),
+        duv = record.setting.tint.duv(),
+        origin = ?record.origin,
+        "память белой записана"
+    );
 }

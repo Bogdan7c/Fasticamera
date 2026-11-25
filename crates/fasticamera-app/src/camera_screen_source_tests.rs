@@ -77,6 +77,7 @@ fn a_fresh_screen_is_closed_neutral_and_in_photo_mode() {
                 gliding: false,
             },
             safe_area: shell_contract::safe_area::SafeAreaInsets::NONE,
+            white: crate::camera_screen_white_view::WhiteView::starting(),
         }
     );
 }

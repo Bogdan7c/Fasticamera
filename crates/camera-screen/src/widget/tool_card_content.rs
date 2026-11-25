@@ -40,6 +40,7 @@ pub(crate) fn open_card_tool(state: &ScreenState) -> Option<ToolId> {
 /// чтобы подписи не разошлись).
 pub(crate) fn tool_title(tool: ToolId) -> &'static str {
     match tool {
+        ToolId::White => "WHITE",
         ToolId::Timer => "TIMER",
         ToolId::Flash => "FLASH",
         ToolId::Aspect => "ASPECT",
@@ -103,6 +104,11 @@ pub(crate) fn card_value(state: &ScreenState, config: &ScreenConfig, tool: ToolI
         ToolId::Grid => on_off(settings.grid == GridSetting::On).to_owned(),
         ToolId::Level => on_off(settings.level == LevelSetting::On).to_owned(),
         ToolId::Exposure => format_ev(state.exposure().bias(&config.exposure).ev()),
+        // Крупного значения у белой карточки нет: её содержимое рисует `white_card.rs` (оба числа осей в верхней
+        // строке). Ветка нужна полноте `match`; число — из модели показа.
+        ToolId::White => {
+            crate::white_display::kelvin_text(state.camera_facts().white.held.setting.temperature, &config.white)
+        }
         ToolId::Live | ToolId::Styles | ToolId::Night => String::new(),
     }
 }
@@ -126,7 +132,7 @@ fn icon(option: ToolOption, icon: IconId) -> OptionEntry {
 pub(crate) fn has_option_row(tool: ToolId) -> bool {
     match tool {
         ToolId::Timer | ToolId::Flash | ToolId::Aspect | ToolId::Raw | ToolId::Grid | ToolId::Level => true,
-        ToolId::Exposure | ToolId::Live | ToolId::Styles | ToolId::Night => false,
+        ToolId::White | ToolId::Exposure | ToolId::Live | ToolId::Styles | ToolId::Night => false,
     }
 }
 
@@ -167,7 +173,7 @@ pub(crate) fn option_entries(config: &ScreenConfig, tool: ToolId) -> Vec<OptionE
             ToolOption::Level(LevelSetting::Off),
             ToolOption::Level(LevelSetting::On),
         ),
-        ToolId::Exposure | ToolId::Live | ToolId::Styles | ToolId::Night => Vec::new(),
+        ToolId::White | ToolId::Exposure | ToolId::Live | ToolId::Styles | ToolId::Night => Vec::new(),
     }
 }
 
@@ -181,7 +187,7 @@ pub(crate) fn current_option(state: &ScreenState, tool: ToolId) -> Option<ToolOp
         ToolId::Aspect => Some(ToolOption::Aspect(settings.aspect)),
         ToolId::Grid => Some(ToolOption::Grid(settings.grid)),
         ToolId::Level => Some(ToolOption::Level(settings.level)),
-        ToolId::Exposure | ToolId::Live | ToolId::Styles | ToolId::Night => None,
+        ToolId::White | ToolId::Exposure | ToolId::Live | ToolId::Styles | ToolId::Night => None,
     }
 }
 
