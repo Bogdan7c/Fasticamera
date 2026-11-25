@@ -135,6 +135,11 @@ impl WhiteSession {
             .last()
             .and_then(Option::as_ref)
             .expect("последний кадр показан");
+        self.gray_tile_of(image)
+    }
+
+    /// Серая плитка произвольного кадра того же стенда (например, эталонного).
+    pub fn gray_tile_of(&self, image: &[[f32; 4]]) -> [f32; 3] {
         let pixel = image[GRAY_PIXEL.1 * IMAGE_WIDTH + GRAY_PIXEL.0];
         [pixel[0], pixel[1], pixel[2]]
     }

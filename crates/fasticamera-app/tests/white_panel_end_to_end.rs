@@ -46,6 +46,8 @@ mod layout;
 mod lights_and_phone;
 #[path = "white_panel_end_to_end/long_press.rs"]
 mod long_press;
+#[path = "white_panel_end_to_end/look_over_white.rs"]
+mod look_over_white;
 #[path = "white_panel_end_to_end/memory_and_reading.rs"]
 mod memory_and_reading;
 #[path = "white_panel_end_to_end/neutrality.rs"]
