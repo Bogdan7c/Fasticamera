@@ -158,19 +158,34 @@ fn led_white_converts_to_a_contract_setting_and_unknown_json_fields_are_rejected
     .to_setting()
     .expect("годная белая");
     assert_eq!((setting.temperature.kelvin(), setting.tint.duv()), (4_200.0, 0.004));
-    let parsed: FlashConfig =
-        serde_json::from_str(r#"{"led_white":{"ultra_wide":{"kelvin":5200.0}}}"#).expect("частичный конфиг читается");
+    let parsed: FlashConfig = serde_json::from_str(r#"{"led_white":{"ultra_wide":{"kelvin":5200.0,"duv":0.002}}}"#)
+        .expect("полностью заданная белая читается");
     assert_eq!(
         parsed.led_white.ultra_wide,
         LedWhite {
             kelvin: 5_200.0,
-            duv: 0.0
+            duv: 0.002
         }
     );
     assert_eq!(
         parsed.led_white.wide,
         FlashLedWhite::default().wide,
-        "не названное — по умолчанию"
+        "не названная камера — по умолчанию"
     );
     assert!(serde_json::from_str::<FlashConfig>(r#"{"led_white":{"tele":{}}}"#).is_err());
+}
+
+#[test]
+fn a_partly_given_led_white_is_rejected_with_the_missing_field_name() {
+    // Раньше недостающее поле молча добиралось нефизичным 4500 К / Duv 0.
+    for (json, missing) in [
+        (r#"{"led_white":{"wide":{"kelvin":4000.0}}}"#, "duv"),
+        (r#"{"led_white":{"other":{"duv":0.001}}}"#, "kelvin"),
+        (r#"{"led_white":{"ultra_wide":{}}}"#, "kelvin"),
+    ] {
+        let error = serde_json::from_str::<FlashConfig>(json)
+            .expect_err("частичная белая светодиода отвергается")
+            .to_string();
+        assert!(error.contains(&format!("missing field `{missing}`")), "{json}: {error}");
+    }
 }

@@ -18,8 +18,8 @@ use isp_model::color::white_point::{CctDuv, Duv, chromaticity_from_cct_duv};
 use scene_estimation::white_source::WhiteInputKind;
 
 use super::test_support::{
-    FAKE_ID, PROVISIONAL, chromaticity_of, directive_of, fake_registry, frame, frame_at, kelvin_of, new_stream, over,
-    phone_hints, ready_outcome, request_of, runner, runner_with, runner_without_sources,
+    FAKE_ID, WITHOUT_DIRECTIVE, chromaticity_of, directive_of, fake_registry, frame, frame_at, kelvin_of, new_stream,
+    over, phone_hints, ready_outcome, request_of, runner, runner_with, runner_without_sources,
 };
 use super::*;
 use crate::viewfinder::{WhiteLinks, WhiteSourceRegistry};
@@ -32,14 +32,14 @@ fn shown(plan: &FramePlan) -> bool {
 }
 
 #[test]
-fn without_directives_the_white_is_provisional_and_nothing_is_hidden() {
+fn without_directives_the_stand_white_is_taken_and_nothing_is_hidden() {
     let (mut runner, _) = runner_without_sources();
     let stream = new_stream();
     let first = runner.plan_frame(&frame(&stream, 0));
-    assert_eq!(first.white, PROVISIONAL, "стенд без движка: временная D65");
+    assert_eq!(first.white, WITHOUT_DIRECTIVE, "стенд без движка: белая стенда D65");
     assert!(shown(&first), "кадры без движка не прячутся");
     let diagnostics = runner.diagnostics();
-    assert_eq!(diagnostics.frames_with_provisional_white, 1);
+    assert_eq!(diagnostics.frames_without_directive, 1);
     assert_eq!(diagnostics.applied_white, None);
 }
 

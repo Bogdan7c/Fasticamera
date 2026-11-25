@@ -1,7 +1,4 @@
-use super::{
-    CctDuv, Duv, DuvClamp, LocusBand, LocusClamp, TableEdge, TemperatureClamp, WhitePointError,
-    cct_duv_from_chromaticity, chromaticity_from_cct_duv, constrain_to_locus,
-};
+use super::{CctDuv, Duv, TableEdge, WhitePointError, cct_duv_from_chromaticity, chromaticity_from_cct_duv};
 use crate::color::chromaticity::Chromaticity;
 use crate::color::temperature::{ISOTEMPERATURE_LINES, Kelvin, temperature_from_chromaticity, ucs_from_chromaticity};
 
@@ -14,10 +11,6 @@ fn white(kelvin: f64, duv: f64) -> CctDuv {
 
 fn xy_of(kelvin: f64, duv: f64) -> Chromaticity {
     chromaticity_from_cct_duv(white(kelvin, duv)).unwrap()
-}
-
-fn band(min: f64, max: f64, max_duv: f64) -> LocusBand {
-    LocusBand::new(Kelvin(min), Kelvin(max), Duv(max_duv)).unwrap()
 }
 
 // --- chromaticity_from_cct_duv ---
@@ -166,100 +159,5 @@ fn chromaticity_outside_the_table_is_an_error_not_a_clamp() {
     assert_eq!(
         cct_duv_from_chromaticity(Chromaticity { x: 2.0, y: 0.0 }),
         Err(WhitePointError::DegenerateChromaticity)
-    );
-}
-
-// --- LocusBand ---
-
-#[test]
-fn band_rejects_inconsistent_limits() {
-    let invalid = |min: f64, max: f64, duv: f64| {
-        matches!(
-            LocusBand::new(Kelvin(min), Kelvin(max), Duv(duv)),
-            Err(WhitePointError::InvalidBand { .. })
-        )
-    };
-    assert!(invalid(1000.0, 6500.0, 0.01), "ниже таблицы");
-    assert!(invalid(7000.0, 3000.0, 0.01), "min > max");
-    assert!(invalid(3000.0, 7000.0, -0.01), "отрицательное |Duv|");
-    assert_eq!(
-        LocusBand::new(Kelvin(f64::NAN), Kelvin(7000.0), Duv(0.01)),
-        Err(WhitePointError::NonFiniteInput)
-    );
-    let ok = band(2500.0, 7500.0, 0.02);
-    assert_eq!(
-        (ok.min_temperature().0, ok.max_temperature().0, ok.max_abs_duv().0),
-        (2500.0, 7500.0, 0.02)
-    );
-}
-
-// --- constrain_to_locus ---
-
-#[test]
-fn point_inside_the_band_is_returned_unchanged() {
-    let inside = xy_of(4500.0, 0.004);
-    let result = constrain_to_locus(inside, band(2500.0, 7500.0, 0.02)).unwrap();
-    // Бит в бит: без прогона через обратный перевод.
-    assert_eq!(result.white, inside);
-    assert_eq!(
-        result.clamped,
-        LocusClamp {
-            temperature: TemperatureClamp::WithinBand,
-            duv: DuvClamp::WithinBand
-        }
-    );
-    assert!(!result.clamped.is_any());
-    assert!((result.cct_duv.temperature.0 - 4500.0).abs() < 0.5);
-}
-
-#[test]
-fn too_red_and_too_blue_temperatures_are_clamped_and_reported() {
-    let limits = band(3000.0, 7000.0, 0.02);
-    let warm = constrain_to_locus(xy_of(2200.0, 0.0), limits).unwrap();
-    match warm.clamped.temperature {
-        TemperatureClamp::RaisedToMinimum { original } => assert!((original.0 - 2200.0).abs() < 1e-3),
-        other => panic!("ожидался подъём до минимума, получено {other:?}"),
-    }
-    assert_eq!(warm.clamped.duv, DuvClamp::WithinBand);
-    let remeasured = cct_duv_from_chromaticity(warm.white).unwrap();
-    assert!((remeasured.temperature.0 - 3000.0).abs() < 5e-3, "{remeasured:?}");
-
-    let cold = constrain_to_locus(xy_of(12_000.0, 0.0), limits).unwrap();
-    assert!(matches!(
-        cold.clamped.temperature,
-        TemperatureClamp::LoweredToMaximum { original } if (original.0 - 12_000.0).abs() < 1e-2
-    ));
-    assert!((cct_duv_from_chromaticity(cold.white).unwrap().temperature.0 - 7000.0).abs() < 1e-2);
-}
-
-#[test]
-fn duv_is_clamped_on_both_sides_and_reported_with_the_original() {
-    let limits = band(2500.0, 7500.0, 0.01);
-    let green = constrain_to_locus(xy_of(5000.0, 0.03), limits).unwrap();
-    assert!(matches!(green.clamped.duv, DuvClamp::ReducedFromAbove { original } if (original.0 - 0.03).abs() < 1e-6));
-    assert_eq!(green.clamped.temperature, TemperatureClamp::WithinBand);
-    assert!((cct_duv_from_chromaticity(green.white).unwrap().duv.0 - 0.01).abs() < 1e-6);
-
-    let magenta = constrain_to_locus(xy_of(5000.0, -0.03), limits).unwrap();
-    assert!(matches!(magenta.clamped.duv, DuvClamp::RaisedFromBelow { original } if (original.0 + 0.03).abs() < 1e-6));
-    assert!((magenta.cct_duv.duv.0 + 0.01).abs() < 1e-12);
-    assert!((cct_duv_from_chromaticity(magenta.white).unwrap().duv.0 + 0.01).abs() < 1e-6);
-}
-
-#[test]
-fn constrain_reports_both_clamps_and_propagates_table_errors() {
-    let both = constrain_to_locus(xy_of(2000.0, 0.03), band(3000.0, 7000.0, 0.01)).unwrap();
-    assert!(both.clamped.is_any());
-    assert!(matches!(
-        both.clamped.temperature,
-        TemperatureClamp::RaisedToMinimum { .. }
-    ));
-    assert!(matches!(both.clamped.duv, DuvClamp::ReducedFromAbove { .. }));
-
-    assert_eq!(
-        constrain_to_locus(Chromaticity { x: 0.65, y: 0.30 }, band(3000.0, 7000.0, 0.01)),
-        Err(WhitePointError::ChromaticityOutOfTable {
-            edge: TableEdge::RedderThanTable
-        })
     );
 }

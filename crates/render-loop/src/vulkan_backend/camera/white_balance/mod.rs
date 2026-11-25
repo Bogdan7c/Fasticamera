@@ -15,7 +15,7 @@
 //! ведёт владелец белого, а белая кадра со вспышкой — постоянный цвет светодиода из плана движка (WB11).
 //!
 //! # Инварианты
-//! 1. В ISP идёт только белая из указания владельца (или временная D65, пока указаний не было вовсе). Подсказки
+//! 1. В ISP идёт только белая из указания владельца (или белая стенда без движка, пока указаний не было вовсе). Подсказки
 //!    HAL — лишь диагностика. Без нового указания белая не меняется ни на бит.
 //! 2. Скрытие кадров ограничено (`max_hidden_frames`) — картинка не прячется вечно.
 
@@ -87,7 +87,7 @@ struct BoundStream {
 struct RunnerCounters {
     hidden_frames: u64,
     forced: u64,
-    provisional_frames: u64,
+    frames_without_directive: u64,
 }
 
 /// Белая одной сессии показа (см. модуль).
@@ -155,8 +155,8 @@ impl WhiteBalanceRunner {
         let applied = self.applied.advance(passport.sensor_timestamp.as_nanos(), shown);
         self.note_cold_start(cold_start_before, verdict);
         self.note_hal(passport);
-        if applied.provisional {
-            self.counters.provisional_frames += 1;
+        if applied.without_directive {
+            self.counters.frames_without_directive += 1;
         }
         FramePlan {
             stream,

@@ -22,6 +22,7 @@ use camera_contract::fixtures::camera_id;
 use camera_contract::flash::{FlashDirective, FlashFramePlan, FlashShare, FlashShotId, PreflashMetering};
 use camera_contract::frame_passport::StreamPassport;
 use camera_contract::lens_shading::{LensShadingCalibration, LensShadingCalibrationState, LensShadingGainGrid};
+use camera_contract::white::{WhiteDirective, WhiteTransition};
 use continuity_rig::{CellValues, MAIN, Rig, SIZE_A, StillSetup, dark, gray, passport, test_continuity};
 use isp_model::color::temperature::Kelvin;
 use isp_model::color::white_point::{CctDuv, Duv, chromaticity_from_cct_duv};
@@ -29,13 +30,13 @@ use isp_model::sensor::SensorDescription;
 use render_loop::backend::DisplayBackend;
 use render_loop::config::{RevealExposureCheck, StillDevelopConfig};
 use render_loop::still::{StillBegin, StillCommand, StillCommandOutcome, StillEventSink};
-use still_contract::develop::DevelopEvent;
+use still_contract::develop::{DevelopEvent, PrimaryTarget, PrimaryTargetOffer};
 use still_contract::frame_choice::FrameChoice;
-use still_contract::plan::{FrameSelection, StillPlan};
+use still_contract::plan::{FrameSelection, StillId, StillPlan};
 use still_rig::{JPEG, Sink, plan, press_during};
 
 const SHOT: FlashShotId = FlashShotId(5);
-/// Постоянная белая светодиода плана: ≈ 2856 К (видоискатель в этом стенде без указаний держит D65).
+/// Постоянная белая светодиода плана: ≈ 2856 К (видоискатель этого стенда держит 4000 К).
 const LED_KELVIN: f64 = 2_856.0;
 
 fn led_setting(kelvin: f64) -> WhiteBalanceSetting {
@@ -165,7 +166,7 @@ fn a_flash_frame_reaches_secured_through_the_ring_and_the_real_gpu_and_the_viewf
         after.counters.frames_processed, before.counters.frames_processed,
         "видоискатель кадр вспышки не обрабатывал и не показывал"
     );
-    // Белая кадра — постоянный цвет светодиода из плана, а не белая видоискателя (в этом стенде — временная D65):
+    // Белая кадра — постоянный цвет светодиода из плана, а не белая видоискателя (в этом стенде — 4000 К):
     // нейтраль DNG равна той, что даёт профиль камеры для белой плана, и отличается от нейтрали D65.
     assert_neutral_close(facts.neutral.0, neutral_of(&stream, LED_KELVIN));
     assert!(
@@ -273,5 +274,114 @@ fn a_really_lit_frame_passes_the_check_on_the_real_gpu_when_the_vignetting_corre
         (1, 0),
         "{:?}",
         still.flash
+    );
+}
+
+/// Проявленная картинка (RGBA8) снимка со вспышкой: белая видоискателя сессии — `viewfinder_kelvin`, белая
+/// светодиода плана — `led_kelvin`. Кадр и план во всём остальном одни и те же.
+fn flash_picture(viewfinder_kelvin: f64, led_kelvin: f64) -> Option<Vec<u8>> {
+    let mut rig = Rig::with_stills(
+        test_continuity(RevealExposureCheck::Ignore),
+        true,
+        Some(StillSetup {
+            config: StillDevelopConfig::default(),
+            ring_frames: 12,
+        }),
+    )?;
+    // Владелец (движок белого) выбрал белую видоискателя этой сессии: с ближайшего кадра ISP считает с ней.
+    rig.white.directives.publish(WhiteDirective {
+        white: led_setting(viewfinder_kelvin),
+        transition: WhiteTransition::Immediate,
+        request: None,
+    });
+    let stream = Arc::new(passport(MAIN, SIZE_A));
+    let epoch = rig.begin(&stream);
+    let ambient_frame = frame(&mut rig, epoch);
+    for _ in 1..10 {
+        frame(&mut rig, epoch);
+    }
+    rig.exposure_directives.publish(ExposureDirective {
+        flash: FlashDirective {
+            preflash: PreflashMetering::Inactive,
+            planned: Some(FlashFramePlan {
+                shot: SHOT,
+                ambient_frame,
+                mid_gray_product: ExposureProduct::from_seconds_iso(1.0).expect("произведение"),
+                flash_share: FlashShare::new(0.6),
+                led_white: led_setting(led_kelvin),
+            }),
+        },
+        ..ExposureDirective::DEFAULT
+    });
+    for _ in 0..6 {
+        frame(&mut rig, epoch);
+    }
+    let sink = Arc::new(Sink::default());
+    let events: Arc<dyn StillEventSink> = Arc::clone(&sink) as Arc<dyn StillEventSink>;
+    let flash_plan = StillPlan {
+        selection: FrameSelection::FlashFrame { shot: SHOT },
+        ..plan(1, press_during(3), JPEG)
+    };
+    let outcome = rig.backend.apply_still_command(StillCommand::Begin(StillBegin {
+        plan: flash_plan,
+        events,
+    }));
+    assert!(matches!(outcome, StillCommandOutcome::Accepted), "{outcome:?}");
+    rig.offer_flash_still(epoch, gray(), SHOT.0);
+    for _ in 0..30 {
+        if sink.has_secured() {
+            break;
+        }
+        rig.tick();
+        rig.backend.advance_stills();
+    }
+    assert!(sink.has_secured(), "кадр вспышки дошёл до Secured");
+    // Цель «картинка в память»: итог — проявленные пиксели.
+    let target = rig
+        .backend
+        .apply_still_command(StillCommand::Target(PrimaryTargetOffer::Ready {
+            id: StillId(1),
+            target: PrimaryTarget::Readback,
+        }));
+    assert!(matches!(target, StillCommandOutcome::Accepted), "{target:?}");
+    for _ in 0..60 {
+        if sink.finals() == 1 {
+            break;
+        }
+        rig.tick();
+        rig.backend.advance_stills();
+    }
+    assert_eq!(sink.finals(), 1, "итог снимка не пришёл");
+    let picture = match sink.events().last() {
+        Some(DevelopEvent::PrimaryReadback { image, .. }) => image.rgba_bytes().to_vec(),
+        other => panic!("итог должен быть PrimaryReadback: {other:?}"),
+    };
+    // События держат буферы GPU; отпускаем до проверки утечек стенда.
+    sink.events().clear();
+    continuity_rig::finish(&mut rig, &[epoch]);
+    Some(picture)
+}
+
+#[test]
+fn the_flash_picture_pixels_follow_the_plan_led_white_and_never_the_viewfinder_white() {
+    let Some(under_daylight) = flash_picture(6_504.0, LED_KELVIN) else {
+        return;
+    };
+    let Some(under_tungsten) = flash_picture(3_000.0, LED_KELVIN) else {
+        return;
+    };
+    let Some(other_led) = flash_picture(6_504.0, 5_200.0) else {
+        return;
+    };
+    assert!(!under_daylight.is_empty(), "картинка проявлена");
+    // Белая видоискателя сессии разная, кадр и план один — пиксели снимка побитово равны.
+    assert_eq!(
+        under_daylight, under_tungsten,
+        "пиксели снимка со вспышкой не зависят от белой видоискателя"
+    );
+    // А белая плана пиксели двигает: без этого равенство выше ничего не доказывает.
+    assert_ne!(
+        under_daylight, other_led,
+        "белая светодиода плана меняет пиксели снимка"
     );
 }

@@ -1,7 +1,6 @@
 //! Белая точка как «температура + Duv» и привязка цветности к кривой Планка.
 //!
-//! Нужно для ручного баланса белого («температура + оттенок») и для нашего автобаланса,
-//! которому разрешено уходить от кривой Планка лишь в узкой полосе. Между модулями белая сцены
+//! Нужно для баланса белого «температура + оттенок» (ручная белая, источники белого, белая вспышки). Между модулями белая сцены
 //! ходит как [`Chromaticity`] (или [`CctDuv`]); перевод в нейтраль конкретной камеры делает
 //! `DngColorProfile::neutral_for_white` по профилю этой камеры.
 //!
@@ -62,8 +61,6 @@ pub enum WhitePointError {
     ChromaticityOutOfTable { edge: TableEdge },
     #[error("вырожденная цветность: у света знаменатель перевода в UCS не положителен")]
     DegenerateChromaticity,
-    #[error("полоса вокруг кривой задана неверно: {reason}")]
-    InvalidBand { reason: &'static str },
 }
 
 /// Точка кривой Планка и единичная ориентация изотермы при заданных майредах.
@@ -182,159 +179,6 @@ pub fn cct_duv_from_chromaticity(white: Chromaticity) -> Result<CctDuv, WhitePoi
     Ok(CctDuv {
         temperature: Kelvin(1.0e6 / location.mired),
         duv: Duv(signed_duv),
-    })
-}
-
-/// Полоса допустимых белых вокруг кривой Планка: диапазон температур и макс. |Duv|.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct LocusBand {
-    min_temperature: Kelvin,
-    max_temperature: Kelvin,
-    max_abs_duv: Duv,
-}
-
-impl LocusBand {
-    /// Полоса `[min_temperature, max_temperature] × [−max_abs_duv, +max_abs_duv]`.
-    ///
-    /// Требования: температуры конечны, `min` не ниже границы таблицы (≈ 1667 К) и не больше
-    /// `max`; `max_abs_duv` конечен и неотрицателен.
-    pub fn new(min_temperature: Kelvin, max_temperature: Kelvin, max_abs_duv: Duv) -> Result<Self, WhitePointError> {
-        let coldest_supported = 1.0e6 / ISOTEMPERATURE_LINES[LAST_LINE_INDEX].mired;
-        if !min_temperature.0.is_finite() || !max_temperature.0.is_finite() || !max_abs_duv.0.is_finite() {
-            return Err(WhitePointError::NonFiniteInput);
-        }
-        if min_temperature.0 < coldest_supported {
-            return Err(WhitePointError::InvalidBand {
-                reason: "минимальная температура ниже границы таблицы Робертсона",
-            });
-        }
-        if min_temperature.0 > max_temperature.0 {
-            return Err(WhitePointError::InvalidBand {
-                reason: "минимальная температура больше максимальной",
-            });
-        }
-        if max_abs_duv.0 < 0.0 {
-            return Err(WhitePointError::InvalidBand {
-                reason: "максимальное |Duv| отрицательно",
-            });
-        }
-        Ok(Self {
-            min_temperature,
-            max_temperature,
-            max_abs_duv,
-        })
-    }
-
-    pub fn min_temperature(&self) -> Kelvin {
-        self.min_temperature
-    }
-
-    pub fn max_temperature(&self) -> Kelvin {
-        self.max_temperature
-    }
-
-    pub fn max_abs_duv(&self) -> Duv {
-        self.max_abs_duv
-    }
-}
-
-/// Как температура вышла за полосу (и что было до прижима).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TemperatureClamp {
-    /// Температура внутри полосы.
-    WithinBand,
-    /// Была ниже минимума полосы (краснее) — поднята до минимума.
-    RaisedToMinimum { original: Kelvin },
-    /// Была выше максимума полосы (синее) — опущена до максимума.
-    LoweredToMaximum { original: Kelvin },
-}
-
-/// Как Duv вышел за полосу (и что было до прижима).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum DuvClamp {
-    /// Duv внутри полосы.
-    WithinBand,
-    /// Был выше кривой дальше допустимого (слишком зелёный) — уменьшен до `+max`.
-    ReducedFromAbove { original: Duv },
-    /// Был ниже кривой дальше допустимого (слишком пурпурный) — увеличен до `−max`.
-    RaisedFromBelow { original: Duv },
-}
-
-/// Что именно пришлось прижать при привязке к полосе.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct LocusClamp {
-    pub temperature: TemperatureClamp,
-    pub duv: DuvClamp,
-}
-
-impl LocusClamp {
-    /// Прижата ли хотя бы одна из координат.
-    pub fn is_any(&self) -> bool {
-        self.temperature != TemperatureClamp::WithinBand || self.duv != DuvClamp::WithinBand
-    }
-}
-
-/// Результат привязки белой точки к полосе.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct LocusConstrained {
-    /// Итоговая цветность; если ничего не прижато — в точности входная.
-    pub white: Chromaticity,
-    /// Итоговая температура и Duv.
-    pub cct_duv: CctDuv,
-    pub clamped: LocusClamp,
-}
-
-/// Привязывает белую точку к полосе вокруг кривой Планка.
-///
-/// Точка внутри полосы возвращается без изменений (бит в бит, без прогона через обратный
-/// перевод). Иначе прижимаются температура и/или Duv, а в `clamped` записано, что и на сколько
-/// было. Цветность вне таблицы Робертсона — ошибка: направление «к полосе» там не определено.
-pub fn constrain_to_locus(white: Chromaticity, band: LocusBand) -> Result<LocusConstrained, WhitePointError> {
-    let measured = cct_duv_from_chromaticity(white)?;
-
-    let (temperature, temperature_clamp) = if measured.temperature.0 < band.min_temperature.0 {
-        (
-            band.min_temperature,
-            TemperatureClamp::RaisedToMinimum {
-                original: measured.temperature,
-            },
-        )
-    } else if measured.temperature.0 > band.max_temperature.0 {
-        (
-            band.max_temperature,
-            TemperatureClamp::LoweredToMaximum {
-                original: measured.temperature,
-            },
-        )
-    } else {
-        (measured.temperature, TemperatureClamp::WithinBand)
-    };
-
-    let max_duv = band.max_abs_duv.0;
-    let (duv, duv_clamp) = if measured.duv.0 > max_duv {
-        (Duv(max_duv), DuvClamp::ReducedFromAbove { original: measured.duv })
-    } else if measured.duv.0 < -max_duv {
-        (Duv(-max_duv), DuvClamp::RaisedFromBelow { original: measured.duv })
-    } else {
-        (measured.duv, DuvClamp::WithinBand)
-    };
-
-    let clamped = LocusClamp {
-        temperature: temperature_clamp,
-        duv: duv_clamp,
-    };
-    if !clamped.is_any() {
-        return Ok(LocusConstrained {
-            white,
-            cct_duv: measured,
-            clamped,
-        });
-    }
-    let cct_duv = CctDuv { temperature, duv };
-    Ok(LocusConstrained {
-        white: chromaticity_from_cct_duv(cct_duv)?,
-        cct_duv,
-        clamped,
     })
 }
 

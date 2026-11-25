@@ -1,6 +1,6 @@
-# Фикстуры `scene-estimation` (сессия 08)
+# Фикстуры сцен ColorChecker (сессия 08)
 
-Независимые эталоны для оценки света сцены (наш AWB). Формат — тот же, что у `test-assets/isp-model/`:
+Независимые эталоны статистики плиток под разными светами. Фикстура ЖИВАЯ: её читают стенды AE и белой в `render-loop`; собственного оценщика света в продукте больше нет (white-balance 03). Формат — тот же, что у `test-assets/isp-model/`:
 манифест `<имя>.json` (размер, число каналов, тип отсчётов, описание, команда генерации, поле `extra`) +
 отсчёты `<имя>.bin` (little-endian, порядок строк, каналы подряд). Писатель — `tools/isp-reference/asset_io.py`.
 
@@ -25,5 +25,5 @@ colour-science 0.4.7 и colour-hdri 0.2.6 (BSD-3-Clause). Rust-кода в ра�
 ~/.cache/fasticamera/isp-reference-venv/bin/python -I tools/isp-reference/make_awb_scene_fixtures.py
 ```
 
-Тесты: `crates/scene-estimation/tests/scene_reference.rs` (оценщик и контроллер на ПК), `crates/render-loop/tests/vulkan_awb_scene.rs`
-(та же сцена как мозаика RAW 64×48 через боевой путь на RADV: ISP → статистика → AWB → изображение). Размер ≈ 125 КБ.
+Читают: `crates/render-loop/tests/awb_support/mod.rs` (общая загрузка), `crates/render-loop/tests/vulkan_awb_scene.rs`
+(сцена как мозаика RAW 64×48 через боевой путь на RADV: ISP → статистика → белая из указания → изображение) и стенды AE. Размер ≈ 125 КБ.

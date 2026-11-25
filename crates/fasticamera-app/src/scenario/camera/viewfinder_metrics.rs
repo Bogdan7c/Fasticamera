@@ -87,7 +87,7 @@ pub struct IspCountersDelta {
     pub frames_dropped_no_params: u64,
     pub frames_rejected_geometry: u64,
     pub statistics_published: u64,
-    /// Обработано ISP, но скрыто на холодном старте AWB (решение 65).
+    /// Обработано ISP, но скрыто на холодном старте белой (решение 65).
     pub frames_hidden_cold_start: u64,
     /// Кадры брекетинга, возвращённые камере без ISP: в `frames_processed` не входят.
     pub bracket_frames_skipped: u64,

@@ -23,7 +23,7 @@ fn sensor_point_and_region_reject_values_outside_the_frame() {
 
 #[test]
 fn directive_slot_hands_the_reader_only_newer_directives() {
-    let writer: DirectiveSlot<WhiteBalanceDirective> = DirectiveSlot::new();
+    let writer: DirectiveSlot<ThreeAProfile> = DirectiveSlot::new();
     let reader = writer.clone();
     assert_eq!(
         reader.latest(),
@@ -31,22 +31,19 @@ fn directive_slot_hands_the_reader_only_newer_directives() {
         "пока ничего не публиковали — пусто, а не выдумка"
     );
 
-    let first = writer.publish(WhiteBalanceDirective::DEFAULT);
-    let locked = WhiteBalanceDirective {
-        mode: WhiteBalanceMode::Locked,
-        profile: ThreeAProfile::Photo,
-    };
-    let second = writer.publish(locked);
+    let first = writer.publish(ThreeAProfile::Photo);
+    let video = ThreeAProfile::Video;
+    let second = writer.publish(video);
     assert!(second > first);
 
     // Читатель, видевший первое указание, получает только второе — и ровно его значение.
-    assert_eq!(reader.newer_than(Some(first)), Some((second, locked)));
+    assert_eq!(reader.newer_than(Some(first)), Some((second, video)));
     assert_eq!(
         reader.newer_than(Some(second)),
         None,
         "повтор уже применённого не отдаётся"
     );
-    assert_eq!(reader.newer_than(None), Some((second, locked)));
+    assert_eq!(reader.newer_than(None), Some((second, video)));
 }
 
 #[test]

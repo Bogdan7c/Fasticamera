@@ -1,4 +1,7 @@
-"""Фикстуры сцен для оценки света сцены (AWB, сессия 08): статистика плиток 32×24 из ColorChecker.
+"""Фикстуры сцен ColorChecker под разными светами (сессия 08): статистика плиток 32×24.
+
+Фикстура ЖИВАЯ: её читают стенды AE и белой в `crates/render-loop/tests` (`awb_support`, `vulkan_awb_scene.rs`).
+Собственного оценщика света в продукте больше нет (white-balance 03), поэтому Rust-тестов «оценщика» нет.
 
 Источник правды независим от Rust-кода:
 - отражения 24 плиток ColorChecker — спектры `colour.SDS_COLOURCHECKERS['ColorChecker N Ohta']`;
@@ -8,7 +11,7 @@
   для цветности света — `colour_hdri.matrix_XYZ_to_camera_space` (спецификация DNG);
 - ожидаемый свет — цветность, CCT и Duv по Робертсону (`colour.temperature.uv_to_CCT_Robertson1968`).
 
-Затем каждая сцена раскладывается на сетку плиток статистики AWB и квантуется ТАК ЖЕ, как
+Затем каждая сцена раскладывается на сетку плиток статистики и квантуется ТАК ЖЕ, как
 `crates/isp-model/src/statistics.rs`: `q = floor(clamp(v, 0, 1) · 4095 + 0.5)`, суммы G — по двум
 зелёным отсчётам, ячейка пересвечена — только `saturated_cells`.
 
@@ -21,7 +24,7 @@
 - `no_neutrals_<свет>` — только цветные образцы (серых нет);
 - `single_colour_<свет>` — вся сцена одного цвета (зелёный образец).
 
-Rust-сторона: `crates/scene-estimation/tests/scene_reference.rs`.
+Rust-сторона: `crates/render-loop/tests/awb_support/mod.rs` (читает манифест и отсчёты).
 
 Запуск (из корня репозитория):
     ~/.cache/fasticamera/isp-reference-venv/bin/python -I tools/isp-reference/make_awb_scene_fixtures.py
@@ -268,7 +271,7 @@ def write_all(out_dir: Path) -> None:
         out_dir,
         ASSET_NAME,
         tiles,
-        "Статистика плиток 32×24 сцен ColorChecker под разными светами (оценка света сцены, сессия 08); манифест — свет и ожидания",
+        "Статистика плиток 32×24 сцен ColorChecker под разными светами (живая фикстура стендов AE и белой, сессия 08); манифест — свет и ожидания",
         GENERATOR_COMMAND,
         extra,
     )

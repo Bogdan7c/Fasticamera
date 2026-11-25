@@ -39,7 +39,7 @@ pub enum ColdStartState {
 /// Диагностика белой. Счётчики накопительные за сессию показа.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WhiteBalanceDiagnostics {
-    /// Белая, которой сейчас считается ISP. `None` — указаний не было (временная D65).
+    /// Белая, которой сейчас считается ISP. `None` — указаний не было (белая стенда без движка).
     pub applied_white: Option<WhiteReading>,
     /// Цель владельца (последняя принятая белая).
     pub target_white: Option<WhiteReading>,
@@ -69,8 +69,8 @@ pub struct WhiteBalanceDiagnostics {
     pub hidden_frames_cold_start: u64,
     /// Сколько раз скрытие кончилось принудительным показом (предел исчерпан без ответа).
     pub cold_start_forced: u64,
-    /// Сколько кадров обработано с временной белой (указаний не было).
-    pub frames_with_provisional_white: u64,
+    /// Сколько кадров обработано без единого указания (белая стенда без движка; в продукте всегда 0).
+    pub frames_without_directive: u64,
 }
 
 impl WhiteBalanceDiagnostics {
@@ -92,7 +92,7 @@ impl WhiteBalanceDiagnostics {
             cold_start: ColdStartState::Warm,
             hidden_frames_cold_start: 0,
             cold_start_forced: 0,
-            frames_with_provisional_white: 0,
+            frames_without_directive: 0,
         }
     }
 }

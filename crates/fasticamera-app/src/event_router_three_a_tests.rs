@@ -32,7 +32,7 @@ use crate::three_a_scenario_config::ThreeAScenarioConfig;
 use crate::three_a_test_hal::{HalFaults, HalStats, SimulatedHal};
 use crate::viewfinder_scenario_config::ViewfinderScenarioConfig;
 
-/// Сколько кадров рендер прячет на холодном старте AWB (оценка готова на 3-м кадре, решение 65).
+/// Сколько кадров рендер прячет на холодном старте белой (источник белого ответил, решение 65).
 const HIDDEN_AT_START: u64 = 3;
 
 /// Подставной поток рендера: счётчики видоискателя по числу показанных кадров камеры и по кадрам серии,

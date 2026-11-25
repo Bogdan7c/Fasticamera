@@ -155,7 +155,7 @@ pub struct CameraSessionParts<'a> {
     pub viewfinder: ViewfinderStats,
     /// Лента статистики AWB.
     pub awb_feed: AwbStatisticsFeed,
-    /// Наш AWB: настройки, указания 3A, память белой сцены.
+    /// Белая видоискателя: настройки и ящик указаний владельца белого.
     pub white_balance: WhiteBalanceParts,
     /// Наш AE: настройки и ящики движка (`None` — вендорский AE, подтяжки и предложений нет).
     pub auto_exposure: Option<AutoExposureParts>,
@@ -194,7 +194,7 @@ pub struct CameraSession {
     params: IspParamsCache,
     viewfinder: ViewfinderStats,
     awb_feed: AwbStatisticsFeed,
-    /// Наш AWB (сессия 08): какая белая идёт в ISP, показывать ли кадр, нужна ли статистика.
+    /// Белая видоискателя (white-balance 01): какая белая идёт в ISP и показывать ли кадр.
     white: WhiteBalanceRunner,
     /// Наш AE (сессия 08a): остаточная подтяжка ISP, замер по статистике, предложения движку. `None` — выключен.
     exposure: Option<ExposureRunner>,

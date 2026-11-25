@@ -1,9 +1,9 @@
 //! Словарь автоматики 3A (сессия 08): намерения «куда фокусироваться и мерить», состояния
-//! из результатов HAL, режим нашего AWB, возможности 3A камеры и серия с брекетингом (V10).
+//! из результатов HAL, возможности 3A камеры и серия с брекетингом (V10).
 //!
 //! Разделение ответственности (решения 9, 63–66):
 //! - фокус — вендорский AF через HAL; экспозиция — наш AE (08a, в 08 временно вендорский);
-//!   баланс белого — наш AWB на потоке рендера; всё решает один владелец — `camera-core`;
+//!   баланс белого — отдельный владелец белого в `camera-core` (контракт `white`), своего оценщика света нет;
 //! - здесь только нейтральные типы: ни Camera2, ни GPU.
 
 use serde::Serialize;
@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use thiserror::Error;
 
 use crate::capabilities::Rational;
-use crate::control::{ExposureTime, Iso, WhiteBalanceSetting};
+use crate::control::{ExposureTime, Iso};
 use crate::flash::{FlashResult, FlashShotId};
 
 /// Профиль автоматики (V6): скорость адаптации AE/AWB и допустимость скачков.
@@ -172,34 +172,6 @@ pub enum MainsFrequency {
     Hz50,
     #[serde(rename = "60hz")]
     Hz60,
-}
-
-/// Режим нашего AWB, который решает `camera-core` и исполняет AWB на потоке рендера.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case", tag = "mode")]
-pub enum WhiteBalanceMode {
-    /// Оценка по статистике RAW с плавной адаптацией.
-    Auto,
-    /// Держать последнюю точку белого (не переоценивать).
-    Locked,
-    /// Точка белого задана пользователем.
-    Manual { setting: WhiteBalanceSetting },
-}
-
-/// Указание AWB от владельца 3A: режим и профиль. Поколение растёт с каждой публикацией,
-/// чтобы исполнитель отличал новое указание от уже применённого.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
-pub struct WhiteBalanceDirective {
-    pub mode: WhiteBalanceMode,
-    pub profile: ThreeAProfile,
-}
-
-impl WhiteBalanceDirective {
-    /// Указание по умолчанию, пока движок камеры ничего не опубликовал.
-    pub const DEFAULT: WhiteBalanceDirective = WhiteBalanceDirective {
-        mode: WhiteBalanceMode::Auto,
-        profile: ThreeAProfile::Photo,
-    };
 }
 
 /// Номер публикации в [`DirectiveSlot`].

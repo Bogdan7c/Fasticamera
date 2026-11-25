@@ -67,7 +67,7 @@ impl ThreeAStep for LiveStep {
     }
 }
 
-/// Шаг b: первая оценка света и конец холодного старта. На стадии `awb_ready` скрипт может снять скриншот.
+/// Шаг b: первая белая от источника и конец холодного старта. На стадии `awb_ready` скрипт может снять скриншот.
 #[derive(Default)]
 pub struct AwbStep {
     deadline: Option<Deadline>,

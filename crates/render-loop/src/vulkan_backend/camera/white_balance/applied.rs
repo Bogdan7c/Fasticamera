@@ -12,7 +12,8 @@
 //! * Если с момента скрытия кадров ни один кадр не показан (холодный старт прячет), переход мгновенный:
 //!   плавность нужна глазу, а глаз ничего не видит. Первое указание сессии показа — тоже мгновенное.
 //! * Кадр с меткой не новее прежней шага не делает.
-//! * Пока указаний нет вовсе (стенды без движка) — временная [`PROVISIONAL_WHITE`], кадры не прячутся.
+//! * Пока указаний нет вовсе — [`WHITE_WITHOUT_DIRECTIVE`], кадры не прячутся. В продукте это недостижимо (движок публикует
+//!   указание при создании); белая нужна стендам, собранным без движка белого.
 
 use camera_contract::control::WhiteBalanceSetting;
 use camera_contract::white::{WhiteDirective, WhiteTransition};
@@ -20,8 +21,9 @@ use isp_model::color::chromaticity::Chromaticity;
 use isp_model::color::temperature::Kelvin;
 use isp_model::color::white_point::{CctDuv, Duv, WhitePointError, chromaticity_from_cct_duv};
 
-/// Белая, пока владелец ничего не назвал: D65 — калибровочный свет профиля цвета, самый вероятный дневной свет.
-pub const PROVISIONAL_WHITE: Chromaticity = Chromaticity::D65;
+/// Белая стенда БЕЗ движка белого: владелец ничего не назвал, указаний нет. D65 — калибровочный свет профиля цвета.
+/// В продукте недостижима: движок публикует указание сразу при создании, и применяется оно, а не эта константа.
+pub const WHITE_WITHOUT_DIRECTIVE: Chromaticity = Chromaticity::D65;
 
 /// Точка в координатах перехода: майред и Duv.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -89,8 +91,8 @@ struct Target {
 pub struct AppliedFrame {
     /// Цветность для параметров ISP.
     pub white: Chromaticity,
-    /// Указаний ещё не было: белая временная.
-    pub provisional: bool,
+    /// Указаний ещё не было вовсе: взята [`WHITE_WITHOUT_DIRECTIVE`] (стенд без движка белого).
+    pub without_directive: bool,
 }
 
 /// Владелец применяемой белой.
@@ -147,11 +149,11 @@ impl AppliedWhite {
         match self.current {
             Some((_, white)) => AppliedFrame {
                 white,
-                provisional: false,
+                without_directive: false,
             },
             None => AppliedFrame {
-                white: PROVISIONAL_WHITE,
-                provisional: true,
+                white: WHITE_WITHOUT_DIRECTIVE,
+                without_directive: true,
             },
         }
     }

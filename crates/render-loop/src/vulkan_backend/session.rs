@@ -84,7 +84,7 @@ pub(super) struct CameraAttach<'a> {
     pub(super) gpu_time_window_frames: usize,
     /// Лента статистики AWB.
     pub(super) awb_feed: &'a AwbStatisticsFeed,
-    /// Наш AWB: настройки, указания 3A, память белой сцены.
+    /// Белая видоискателя: настройки и ящик указаний владельца белого.
     pub(super) white_balance: WhiteBalanceParts,
     /// Наш AE: настройки и ящики движка (`None` — вендорский AE, подтяжки и предложений нет).
     pub(super) auto_exposure: Option<AutoExposureParts>,

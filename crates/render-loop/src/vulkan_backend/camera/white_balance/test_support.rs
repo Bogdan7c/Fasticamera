@@ -35,7 +35,7 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use super::applied::PROVISIONAL_WHITE;
+use super::applied::WHITE_WITHOUT_DIRECTIVE;
 use super::*;
 use crate::viewfinder::{WhiteLinks, WhiteSourceRegistry};
 
@@ -320,7 +320,7 @@ pub(super) fn fake_registry(input: WhiteInputKind) -> (WhiteSourceRegistry, Arc<
 }
 
 /// Помощник: временная белая (для сравнения в тестах).
-pub(super) const PROVISIONAL: Chromaticity = PROVISIONAL_WHITE;
+pub(super) const WITHOUT_DIRECTIVE: Chromaticity = WHITE_WITHOUT_DIRECTIVE;
 
 /// Готовый ответ «свет такой-то».
 pub(super) fn ready_outcome(kelvin: f64) -> WhiteSourceOutcome {

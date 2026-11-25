@@ -274,7 +274,7 @@ pub fn scene_set(with_bracket: bool) -> HashMap<i64, Arc<Vec<u16>>> {
         .map(|index| (FIRST_TS + index * FRAME_NANOS, Arc::clone(&lamp)))
         .collect();
     if with_bracket {
-        // Кадры серии: насыщенно-синяя сцена, которая испортила бы и картинку, и оценку света.
+        // Кадры серии: насыщенно-синяя сцена, которая испортила бы и картинку, и белую источника.
         let blue = Arc::new(mosaic_from_tiles(&vec![[0.05, 0.1, 0.6]; 768]));
         for index in 0..3 {
             scenes.insert(BRACKET_TS_BASE + index * FRAME_NANOS, Arc::clone(&blue));

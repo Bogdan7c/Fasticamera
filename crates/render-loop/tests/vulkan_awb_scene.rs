@@ -76,7 +76,7 @@ fn every_frame_is_balanced_from_the_first_and_without_ae_no_statistics_are_compu
         "применена белая указания: {applied:?}"
     );
     assert_eq!(wb.directive_generation, Some(1));
-    assert_eq!(wb.frames_with_provisional_white, 0);
+    assert_eq!(wb.frames_without_directive, 0);
     // Потребителей статистики нет (стенд без AE): стадия не считается, публикаций и расписания нет.
     assert_eq!(diagnostics.statistics, None, "{diagnostics:?}");
     assert_eq!(counters.statistics_published, 0, "{counters:?}");
@@ -84,7 +84,7 @@ fn every_frame_is_balanced_from_the_first_and_without_ae_no_statistics_are_compu
 }
 
 #[test]
-fn without_any_directive_the_provisional_white_shows_off_colour_and_nothing_is_hidden() {
+fn without_any_directive_the_stand_white_shows_off_colour_and_nothing_is_hidden() {
     // Контроль чувствительности на боевом пути: стенд без движка — белая временная D65, серая плитка лампы 2800 К
     // заметно цветная. Значит, нейтральность кадров в основном тесте обеспечивает именно указание.
     let Some((mut rig, journal)) = rig_or_skip(
@@ -106,7 +106,7 @@ fn without_any_directive_the_provisional_white_shows_off_colour_and_nothing_is_h
         (diagnostics.hidden_frames_cold_start, diagnostics.cold_start_forced),
         (0, 0)
     );
-    assert_eq!(diagnostics.frames_with_provisional_white, 1);
+    assert_eq!(diagnostics.frames_without_directive, 1);
     assert_eq!(diagnostics.applied_white, None);
     rig.finish(&journal);
 }

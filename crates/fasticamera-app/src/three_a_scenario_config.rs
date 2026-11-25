@@ -24,7 +24,7 @@ pub struct TapPointConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct AwbStepConfig {
-    /// Сколько ждать первой оценки света и конца холодного старта, мс.
+    /// Сколько ждать первой белой от источника и конца холодного старта, мс.
     pub ready_timeout_ms: u64,
     /// Выше этой разницы нашей белой и белой HAL (майреды) в отчёте стоит пометка `awb_vs_hal: warn`. Не провал:
     /// белая HAL — только справка (решение 62). 25 майред ≈ 300 К на 5000 К — заметный сдвиг цвета.

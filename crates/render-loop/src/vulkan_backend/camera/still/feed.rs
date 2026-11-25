@@ -21,7 +21,7 @@ use isp_model::exposure::ExposureGain;
 pub struct FrameStillParams {
     /// Поток кадра: параметры годны только его кадрам (сравнение по `Arc::ptr_eq`, решение 42).
     pub stream: Arc<StreamPassport>,
-    /// Белая точка, с которой обработан кадр (решение нашего AWB, не подсказка HAL).
+    /// Белая точка, с которой обработан кадр (белая из указания владельца белого, не подсказка HAL).
     pub white: Chromaticity,
     /// Остаточная подтяжка нашего AE (`k`); `UNITY` — вендорский AE или подтяжки не было.
     pub gain: ExposureGain,

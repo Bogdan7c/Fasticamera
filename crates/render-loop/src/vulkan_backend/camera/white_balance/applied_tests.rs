@@ -9,7 +9,7 @@
 
 use camera_contract::white::{WhiteDirective, WhiteTransition};
 
-use super::applied::{AppliedWhite, PROVISIONAL_WHITE};
+use super::applied::{AppliedWhite, WHITE_WITHOUT_DIRECTIVE};
 use super::test_support::{FRAME_NANOS, chromaticity_of, over, setting_of};
 
 fn directive(kelvin: f64, transition: WhiteTransition) -> WhiteDirective {
@@ -25,10 +25,10 @@ fn ts(index: i64) -> i64 {
 }
 
 #[test]
-fn without_any_directive_the_white_is_provisional_and_flagged() {
+fn without_any_directive_the_stand_white_is_taken_and_flagged() {
     let mut applied = AppliedWhite::default();
     let frame = applied.advance(ts(0), true);
-    assert_eq!((frame.white, frame.provisional), (PROVISIONAL_WHITE, true));
+    assert_eq!((frame.white, frame.without_directive), (WHITE_WITHOUT_DIRECTIVE, true));
     assert_eq!(applied.target(), None);
 }
 
@@ -39,7 +39,7 @@ fn the_first_directive_of_a_session_applies_at_once_even_when_it_asks_for_a_slow
     applied.accept(&directive(2800.0, over(1000)));
     let frame = applied.advance(ts(1), true);
     assert_eq!(frame.white, chromaticity_of(2800.0), "переезжать не от чего");
-    assert!(!frame.provisional);
+    assert!(!frame.without_directive);
     assert!(!applied.is_transitioning());
 }
 

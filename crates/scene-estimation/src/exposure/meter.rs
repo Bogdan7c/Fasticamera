@@ -1,7 +1,6 @@
 //! Граница исполнителя замера AE (решение 68): «отправить статистику кадра — забрать замер позже».
 //!
-//! Та же форма, что у [`WhiteBalanceEstimator`](crate::executor::WhiteBalanceEstimator):
-//! вызывающий (поток рендера) знает только [`ExposureMeter`]. Сегодня за ним эталон на CPU
+//! Вызывающий (поток рендера) знает только [`ExposureMeter`]. Сегодня за ним эталон на CPU
 //! ([`CpuExposureMeter`]), завтра — compute-проход с чтением после fence слота, и соседи не меняются.
 
 use std::collections::VecDeque;

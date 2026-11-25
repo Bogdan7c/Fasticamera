@@ -5,7 +5,7 @@
   "channels": 3,
   "sample_type": "u16le",
   "data_file": "awb-scenes.bin",
-  "description": "Статистика плиток 32×24 сцен ColorChecker под разными светами (оценка света сцены, сессия 08); манифест — свет и ожидания",
+  "description": "Статистика плиток 32×24 сцен ColorChecker под разными светами (живая фикстура стендов AE и белой, сессия 08); манифест — свет и ожидания",
   "generator": "~/.cache/fasticamera/isp-reference-venv/bin/python -I tools/isp-reference/make_awb_scene_fixtures.py",
   "extra": {
     "references": {

@@ -108,7 +108,7 @@ pub struct ViewfinderCounters {
     /// Сколько кадров, освещённых светодиодом (фонарик предвспышки, частичная или неопознанная вспышка), ПОКАЗАНЫ,
     /// но не отданы AE и AWB видоискателя: иначе экспозиция и белая уехали бы к свету светодиода (14d).
     pub led_lit_frames_withheld_from_smoothing: u64,
-    /// Сколько кадров обработано ISP, но скрыто на холодном старте AWB (решение 65): `frames_processed =
+    /// Сколько кадров обработано ISP, но скрыто на холодном старте белой (решение 65): `frames_processed =
     /// показанные новые кадры + эти`.
     pub frames_hidden_cold_start: u64,
     /// Сколько статистик AWB выброшено: кадр слота не дошёл до GPU (сабмит не принят), и чей
@@ -153,7 +153,7 @@ pub struct ViewfinderDiagnostics {
     pub counters: ViewfinderCounters,
     /// Стенд «запас под видео» (V4): включён ли, сколько кадров записал, время GPU по проходам.
     pub headroom: HeadroomBenchDiagnostics,
-    /// Наш AWB (сессия 08).
+    /// Белая видоискателя (white-balance 01): применённая, ответы источников, холодный старт.
     pub white_balance: WhiteBalanceDiagnostics,
     /// Наш AE (сессия 08a); `None` — ящики AE не переданы (вендорский AE) или сессии показа нет.
     pub auto_exposure: Option<AutoExposureDiagnostics>,

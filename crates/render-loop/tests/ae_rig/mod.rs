@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use super::awb_support::{
     FRAME_SIZE, FakeFrame, Returned, fixture_tiles, mosaic_from_tiles, stream_passport,
-    stream_passport_without_locus_table,
+    stream_passport_without_cold_edge_neutral,
 };
 use super::support::{Journal, fake_surface};
 use super::vulkan_support::{
@@ -209,10 +209,11 @@ pub struct RigSetup {
 /// Поток камеры стенда AE.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RigStream {
-    /// Обычный поток: калибровка цвета даёт и параметры ISP, и таблицу локуса.
+    /// Обычный поток: калибровка цвета даёт нейтраль камеры по всей таблице Робертсона.
     Reference,
-    /// Калибровка даёт параметры ISP, но таблицу локуса построить нельзя (цвет потока «негодный» для оценки света).
-    WithoutLocusTable,
+    /// Калибровка даёт параметры ISP, но нейтрали камеры для холодного края таблицы (12000 К) нет: цвет потока
+    /// «негодный» для источников белого, а расписание статистики и замер AE от цвета не зависят.
+    WithoutColdEdgeNeutral,
 }
 
 /// Распределение яркости сцены по плиткам статистики (сетка 32×24 = кадр стенда).
@@ -302,7 +303,7 @@ pub fn rig_with(setup: RigSetup) -> Option<(AeRig, Arc<Journal>)> {
         .expect("surface присоединяется");
     let passport = match rig_stream {
         RigStream::Reference => stream_passport(),
-        RigStream::WithoutLocusTable => stream_passport_without_locus_table(),
+        RigStream::WithoutColdEdgeNeutral => stream_passport_without_cold_edge_neutral(),
     };
     let epoch = stream.producer().begin_stream(Arc::new(passport)).epoch;
     let tile = fixture_tiles(scene)[WHITE_TILE];

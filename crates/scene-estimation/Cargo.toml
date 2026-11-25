@@ -1,6 +1,6 @@
 [package]
 name = "scene-estimation"
-description = "Оценка света сцены по статистике RAW: таблица локуса камеры, оценщик «в форме шейдера», сглаживание и решение AWB (сессия 08)"
+description = "Автоэкспозиция по статистике RAW и источники белого (AE сессии 08a, white-balance 01)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

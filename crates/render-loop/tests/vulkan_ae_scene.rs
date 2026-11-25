@@ -188,8 +188,8 @@ fn ae_cold_start_gets_statistics_on_consecutive_frames_and_without_ae_none_are_c
 }
 
 #[test]
-fn a_stream_whose_colour_calibration_gives_no_locus_table_still_gets_ae_measurements_in_the_steady_state() {
-    // Расписание статистики от цвета потока не зависит: без таблицы локуса (оценщику света нечем работать) AE
+fn a_stream_whose_colour_calibration_gives_no_cold_edge_neutral_still_gets_ae_measurements_in_the_steady_state() {
+    // Расписание статистики от цвета потока не зависит: без нейтрали камеры у холодного края таблицы AE
     // обязан продолжать получать замеры и вести экспозицию. Раньше расписание жило в старом AWB и без таблицы
     // выдавало «пропустить» на каждом кадре, так что AE слеп оставался после холодного старта.
     let Some((mut rig, journal)) = rig_with(RigSetup {
@@ -200,7 +200,7 @@ fn a_stream_whose_colour_calibration_gives_no_locus_table_still_gets_ae_measurem
         scene_scale: SCENE_SCALE,
         allow_clipping: false,
         layout: SceneLayout::Uniform,
-        stream: RigStream::WithoutLocusTable,
+        stream: RigStream::WithoutColdEdgeNeutral,
     }) else {
         return;
     };

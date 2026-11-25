@@ -38,8 +38,8 @@ const FRAMES: usize = 140;
 #[expect(dead_code, reason = "часть полей только печатается в отчёт сценария")]
 struct ColdStart {
     hidden_by_awb: u64,
-    forced_provisional: u64,
-    frames_with_provisional_white: u64,
+    forced_shows: u64,
+    frames_without_directive: u64,
     shown: usize,
     shown_clipped: usize,
     first_shown: Option<i64>,
@@ -107,8 +107,8 @@ fn summarize(rig: &mut AeRig, scene_scale: f64) -> ColdStart {
     let last = shown.last().expect("кадры показаны");
     ColdStart {
         hidden_by_awb: wb.hidden_frames_cold_start,
-        forced_provisional: wb.cold_start_forced,
-        frames_with_provisional_white: wb.frames_with_provisional_white,
+        forced_shows: wb.cold_start_forced,
+        frames_without_directive: wb.frames_without_directive,
         shown: shown.len(),
         shown_clipped: shown.iter().filter(|shot| clipped(shot)).count(),
         first_shown: shown.first().map(|shot| shot.frame),
@@ -123,10 +123,10 @@ fn summarize(rig: &mut AeRig, scene_scale: f64) -> ColdStart {
 fn assert_cold_start_is_clean(numbers: &ColdStart) {
     let limit = u64::from(WhiteBalanceConfig::default().max_hidden_frames);
     assert!(
-        numbers.hidden_by_awb <= limit && numbers.forced_provisional == 0,
+        numbers.hidden_by_awb <= limit && numbers.forced_shows == 0,
         "Источник белой голодал: скрыто {} (лимит {limit}), показано с провизорной белой после лимита {}; {numbers:?}",
         numbers.hidden_by_awb,
-        numbers.forced_provisional
+        numbers.forced_shows
     );
     assert_eq!(numbers.shown_clipped, 0, "показан пересвеченный кадр: {numbers:?}");
     assert_eq!(

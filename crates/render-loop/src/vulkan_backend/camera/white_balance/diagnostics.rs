@@ -37,7 +37,7 @@ impl WhiteBalanceRunner {
             cold_start: self.cold_start.state(),
             hidden_frames_cold_start: self.counters.hidden_frames,
             cold_start_forced: self.counters.forced,
-            frames_with_provisional_white: self.counters.provisional_frames,
+            frames_without_directive: self.counters.frames_without_directive,
         }
     }
 }

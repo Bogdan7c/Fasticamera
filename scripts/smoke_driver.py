@@ -159,7 +159,7 @@ SCENARIO_STEPS: dict[str, dict[str, tuple[Step, ...]]] = {
     "raw-stream-endurance": {"viewfinder_live": VIEWFINDER_SHOT_STEPS},
     # viewfinder (сессия 07): те же два скриншота установившегося видоискателя с ISP.
     "viewfinder": {"viewfinder_live": VIEWFINDER_SHOT_STEPS},
-    # 3a (сессия 08): скриншоты на стадии ``awb_ready`` — наш AWB отработал холодный старт и дал первую белую;
+    # 3a (сессия 08): скриншоты на стадии ``awb_ready`` — холодный старт белой закончился, первая белая применена;
     # по ним же ``--neutral-card`` судит серую карту в центре кадра.
     "3a": {"awb_ready": VIEWFINDER_SHOT_STEPS},
     # glass (сессия 11): Rust ставит стекло поверх видоискателя и пишет ``glass_live``; на нём те же два скриншота
