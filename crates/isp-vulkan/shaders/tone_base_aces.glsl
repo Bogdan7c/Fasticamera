@@ -309,7 +309,7 @@ float aces_spline_forward_log10(uint first_row, float log_x) {
     return above;
 }
 
-// Форма осей (ручки контраста, теней и света): e → e₁ (ToneScaleParameters::shape).
+// Форма осей (контраст, тени и света из настроек модели): e → e₁ (ToneScaleParameters::shape).
 float aces_shape(float e) {
     vec4 grey = tone_base.rows[ACES_ROW_TONE_GREY];
     vec4 shape_shift = tone_base.rows[ACES_ROW_TONE_SHAPE_SHIFT];
