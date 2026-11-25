@@ -124,7 +124,17 @@ impl WhiteFileDocument {
                 })
             }
             (None, None, None) => None,
-            _ => return Err("белая задана частично: нужны kelvin, duv и origin вместе".to_owned()),
+            (kelvin, duv, origin) => {
+                let missing: Vec<&str> = [
+                    ("kelvin", kelvin.is_none()),
+                    ("duv", duv.is_none()),
+                    ("origin", origin.is_none()),
+                ]
+                .into_iter()
+                .filter_map(|(field, is_missing)| is_missing.then_some(field))
+                .collect();
+                return Err(format!("белая задана частично: нет {}", missing.join(", ")));
+            }
         };
         let rule = self.resume_rule.map(FileResumeRule::into_rule);
         if record.is_none() && rule.is_none() {
