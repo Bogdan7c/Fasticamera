@@ -20,8 +20,8 @@ use crate::runtime::{CameraRuntime, ShutdownReport};
 use crate::status::AppPresence;
 use crate::three_a_wiring::ThreeAWiring;
 use crate::white::{
-    RememberedOrigin, WhiteMemoryLoad, WhiteMemoryRecord, WhiteRequestState, WhiteTakeReport, WhiteTakeState,
-    WhiteWiring,
+    RememberedOrigin, WhiteMemoryLoad, WhiteMemoryRecord, WhiteRequestState, WhiteResumeRule, WhiteTakeReport,
+    WhiteTakeState, WhiteWiring,
 };
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -193,6 +193,57 @@ fn adjust_white_and_a_refused_take_are_visible_in_the_status_published_after_the
                 reason: InvalidStateReason::NotStreaming
             }
         })
+    );
+    assert_eq!(runtime.shutdown(WAIT), ShutdownReport::Stopped);
+}
+
+#[test]
+fn the_resume_rule_chosen_through_the_handle_reaches_the_status_and_the_outcome_is_accepted_then_already_in_state() {
+    let config = CameraEngineConfig::default();
+    let wiring = ThreeAWiring::vendor(&config.three_a).with_white(WhiteWiring::default());
+    let (runtime, handle) = CameraRuntime::spawn_with_wiring(
+        config,
+        AppPresence::Background,
+        FakeBackendControl::new().factory(),
+        wiring,
+    )
+    .expect("поток запускается");
+    assert_eq!(
+        handle.status().three_a.white.resume_rule,
+        WhiteResumeRule::TakeFromSource,
+        "умолчание конфига видно с первого снимка"
+    );
+
+    let first = handle
+        .set_white_resume_rule(WhiteResumeRule::KeepLast)
+        .expect("принята");
+    let status = handle
+        .wait_until_status(WAIT, |status| {
+            status.three_a.white.resume_rule == WhiteResumeRule::KeepLast
+        })
+        .expect("выбор дошёл до снимка");
+    assert_eq!(
+        status.three_a.white.held.origin,
+        WhiteOrigin::Fallback,
+        "белая не тронута"
+    );
+    let second = handle
+        .set_white_resume_rule(WhiteResumeRule::KeepLast)
+        .expect("принята");
+    // Итоги обеих команд приходят событиями; ждём, пока придёт итог второй.
+    let mut events: Vec<crate::event::CameraEvent> = Vec::new();
+    let deadline = std::time::Instant::now() + WAIT;
+    while std::time::Instant::now() < deadline && !events.iter().any(|event| event.command_outcome(second).is_some()) {
+        events.extend(handle.drain_events(100));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        events.iter().find_map(|event| event.command_outcome(first)),
+        Some(&crate::command::CommandOutcome::Accepted)
+    );
+    assert_eq!(
+        events.iter().find_map(|event| event.command_outcome(second)),
+        Some(&crate::command::CommandOutcome::AlreadyInState)
     );
     assert_eq!(runtime.shutdown(WAIT), ShutdownReport::Stopped);
 }

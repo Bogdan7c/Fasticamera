@@ -18,7 +18,7 @@ mod writer;
 use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use camera_core::white::{NoWhiteMemory, WhiteMemory, WhiteMemoryLoad};
+use camera_core::white::{NoWhiteMemory, WhiteMemory, WhiteMemoryLoad, WhiteResumeRule};
 
 use crate::app_directory::AppDirectory;
 
@@ -31,6 +31,8 @@ const LOG_TARGET: &str = file::LOG_TARGET;
 /// То, что движок получает от памяти: что помнилось к старту и куда писать новое.
 pub struct WhiteMemoryParts {
     pub load: WhiteMemoryLoad,
+    /// Правило возобновления, которое человек выбрал раньше (`None` — выбора в памяти нет: действует конфиг).
+    pub resume_rule: Option<WhiteResumeRule>,
     pub memory: Box<dyn WhiteMemory>,
 }
 
@@ -39,6 +41,7 @@ impl Default for WhiteMemoryParts {
     fn default() -> Self {
         Self {
             load: WhiteMemoryLoad::NothingRemembered,
+            resume_rule: None,
             memory: Box::new(NoWhiteMemory),
         }
     }
@@ -63,6 +66,7 @@ pub fn open_white_memory(directory: &AppDirectory, config: &WhiteMemoryConfig) -
     }
     let opened = WhiteMemoryFile::open(directory.path(), config);
     let load = opened.load;
+    let resume_rule = opened.resume_rule;
     let memory: Box<dyn WhiteMemory> = match WhiteMemoryWriter::spawn(
         opened.file,
         diagnostics.clone(),
@@ -76,7 +80,11 @@ pub fn open_white_memory(directory: &AppDirectory, config: &WhiteMemoryConfig) -
         }
     };
     OpenedWhiteMemory {
-        parts: WhiteMemoryParts { load, memory },
+        parts: WhiteMemoryParts {
+            load,
+            resume_rule,
+            memory,
+        },
         diagnostics,
     }
 }
@@ -119,6 +127,8 @@ impl fmt::Debug for WhiteMemoryHandoff {
     }
 }
 
+#[cfg(test)]
+mod rule_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

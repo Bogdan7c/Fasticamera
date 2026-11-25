@@ -14,7 +14,7 @@ use crate::flash_status::FlashStillReport;
 use crate::lens_status::{LensSwitchFailure, LensSwitchMethod};
 use crate::state::CameraState;
 use crate::three_a_status::{BracketReport, ControlAdjustment, FocusOutcome};
-use crate::white::WhiteRequestResult;
+use crate::white::{WhiteRequestResult, WhiteResumeRule};
 use camera_contract::white::HeldWhite;
 
 /// Событие движка. Поток событий ограничен: при переполнении старые вытесняются со счётчиком
@@ -87,6 +87,11 @@ pub enum CameraEvent {
     /// `Applied`; отдельное событие `WhiteChanged` в этом случае идёт перед итогом.
     WhiteRequestFinished {
         result: WhiteRequestResult,
+    },
+    /// Человек выбрал правило возобновления белого (команда `SetWhiteResumeRule`, итог `Accepted`). Белая от этого
+    /// не меняется: правило действует со следующего возобновления.
+    WhiteResumeRuleChanged {
+        rule: WhiteResumeRule,
     },
     /// Итог серии с брекетингом.
     BracketCaptured {

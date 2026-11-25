@@ -14,17 +14,27 @@ use camera_contract::white::{
 
 use super::three_a_support::result_meta;
 use super::*;
-use crate::white::{WhiteMemory, WhiteMemoryLoad, WhiteMemoryRecord, WhiteRequestResult, WhiteStatus, WhiteWiring};
+use crate::white::{
+    WhiteMemory, WhiteMemoryLoad, WhiteMemoryRecord, WhiteRequestResult, WhiteResumeRule, WhiteStatus, WhiteWiring,
+};
 
 /// Фальшивая память: складывает записи туда, где их видит тест.
 struct RecordingMemory {
     saved: Arc<Mutex<Vec<WhiteMemoryRecord>>>,
+    saved_rules: Arc<Mutex<Vec<WhiteResumeRule>>>,
     flushes: Arc<AtomicUsize>,
 }
 
 impl WhiteMemory for RecordingMemory {
     fn save(&mut self, record: WhiteMemoryRecord) {
         self.saved.lock().unwrap_or_else(PoisonError::into_inner).push(record);
+    }
+
+    fn save_resume_rule(&mut self, rule: WhiteResumeRule) {
+        self.saved_rules
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(rule);
     }
 
     fn flush(&mut self) {
@@ -37,6 +47,7 @@ pub(super) struct WhiteOutside {
     pub(super) directives: DirectiveSlot<WhiteDirective>,
     pub(super) answers: WhiteAnswerChannel,
     saved: Arc<Mutex<Vec<WhiteMemoryRecord>>>,
+    saved_rules: Arc<Mutex<Vec<WhiteResumeRule>>>,
     flushes: Arc<AtomicUsize>,
 }
 
@@ -67,16 +78,23 @@ impl WhiteOutside {
     pub(super) fn saved(&self) -> Vec<WhiteMemoryRecord> {
         self.saved.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
+
+    /// Все выборы правила возобновления, которые движок передал памяти, в порядке передачи.
+    pub(super) fn saved_rules(&self) -> Vec<WhiteResumeRule> {
+        self.saved_rules.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
 }
 
 /// Подключения белой: свои ящики, фальшивая память, заданная запомненная запись.
 pub(super) fn white_wiring(remembered: WhiteMemoryLoad) -> (WhiteWiring, WhiteOutside) {
     let saved = Arc::new(Mutex::new(Vec::new()));
+    let saved_rules = Arc::new(Mutex::new(Vec::new()));
     let flushes = Arc::new(AtomicUsize::new(0));
     let wiring = WhiteWiring {
         remembered,
         memory: Box::new(RecordingMemory {
             saved: Arc::clone(&saved),
+            saved_rules: Arc::clone(&saved_rules),
             flushes: Arc::clone(&flushes),
         }),
         ..WhiteWiring::default()
@@ -85,6 +103,7 @@ pub(super) fn white_wiring(remembered: WhiteMemoryLoad) -> (WhiteWiring, WhiteOu
         directives: wiring.directives.clone(),
         answers: wiring.answers.clone(),
         saved,
+        saved_rules,
         flushes,
     };
     (wiring, outside)
@@ -99,6 +118,25 @@ pub(super) fn white_rig_with(
     let (white, outside) = white_wiring(remembered);
     let wiring = ThreeAWiring::vendor(&config.three_a).with_white(white);
     let mut rig = Rig::over_fake_with_wiring(config, presence, FakeBackendControl::new(), wiring);
+    rig.engine.load_catalog(rig.now);
+    rig.pump();
+    rig.fake.take_calls();
+    (rig, outside)
+}
+
+/// Стенд с заданным правилом возобновления: `config_rule` — умолчание конфига, `remembered_rule` — выбор человека,
+/// который память сохранила раньше (`None` — выбора в памяти нет).
+pub(super) fn white_rig_with_rule(
+    config_rule: WhiteResumeRule,
+    remembered: WhiteMemoryLoad,
+    remembered_rule: Option<WhiteResumeRule>,
+) -> (Rig, WhiteOutside) {
+    let mut config = CameraEngineConfig::default();
+    config.three_a.white.resume_rule = config_rule;
+    let (mut white, outside) = white_wiring(remembered);
+    white.remembered_resume_rule = remembered_rule;
+    let wiring = ThreeAWiring::vendor(&config.three_a).with_white(white);
+    let mut rig = Rig::over_fake_with_wiring(config, AppPresence::Background, FakeBackendControl::new(), wiring);
     rig.engine.load_catalog(rig.now);
     rig.pump();
     rig.fake.take_calls();

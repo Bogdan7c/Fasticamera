@@ -27,7 +27,8 @@ use camera_contract::white::{
 use crate::command::{CommandId, InvalidStateReason};
 use crate::event::CameraEvent;
 use crate::white::{
-    RememberedOrigin, WhiteConfig, WhiteMemory, WhiteMemoryRecord, WhiteMemoryStartup, WhiteStatus, WhiteWiring,
+    RememberedOrigin, ResumeRuleChoice, WhiteConfig, WhiteMemory, WhiteMemoryRecord, WhiteMemoryStartup,
+    WhiteResumeRule, WhiteStatus, WhiteWiring,
 };
 use owner::{ManualOutcome, WhiteNotice, WhiteOwner};
 
@@ -60,7 +61,13 @@ impl WhiteEngine {
             .newer_than(None)
             .map_or(1, |(_, answer)| answer.request.0.saturating_add(1));
         let mut engine = Self {
-            owner: WhiteOwner::new(config, wiring.opening_source, wiring.remembered, first_request),
+            owner: WhiteOwner::new(
+                config,
+                wiring.opening_source,
+                wiring.remembered,
+                wiring.remembered_resume_rule,
+                first_request,
+            ),
             directives: wiring.directives,
             last_published: None,
             answers: wiring.answers,
@@ -110,6 +117,13 @@ impl WhiteEngine {
     /// Команда «взять белую» отклонена до заявки.
     pub(super) fn note_take_not_asked(&mut self, command: CommandId, reason: InvalidStateReason) {
         self.owner.note_take_not_asked(command, reason);
+    }
+
+    /// Выбор правила возобновления человеком (команда `SetWhiteResumeRule`).
+    pub(super) fn choose_resume_rule(&mut self, rule: WhiteResumeRule) -> ResumeRuleChoice {
+        let outcome = self.owner.choose_resume_rule(rule);
+        self.settle();
+        outcome
     }
 
     pub(super) fn on_foreground(&mut self) {
@@ -182,6 +196,14 @@ impl WhiteEngine {
                     journal::request_finished(&result);
                     self.events.push(CameraEvent::WhiteRequestFinished { result });
                 }
+                WhiteNotice::ResumeRuleChosen(rule) => {
+                    journal::resume_rule_chosen(rule);
+                    // Выбор правила — такая же запись памяти, как белая: считается, сбрасывается при уходе в фон.
+                    self.saves_requested += 1;
+                    self.unflushed_saves = true;
+                    self.memory.save_resume_rule(rule);
+                    self.events.push(CameraEvent::WhiteResumeRuleChanged { rule });
+                }
             }
         }
         let directive = self.owner.directive();
@@ -211,5 +233,12 @@ impl WhiteEngine {
 /// пределы из конфига. Строится тем же владельцем, что потом поведёт движок, поэтому значения совпадают.
 pub(crate) fn initial_white_status(config: &WhiteConfig, wiring: &WhiteWiring) -> WhiteStatus {
     // Номер первой заявки в снимок не попадает, а движок выберет свой по ящику ответов.
-    WhiteOwner::new(*config, wiring.opening_source, wiring.remembered.clone(), 1).status(0)
+    WhiteOwner::new(
+        *config,
+        wiring.opening_source,
+        wiring.remembered.clone(),
+        wiring.remembered_resume_rule,
+        1,
+    )
+    .status(0)
 }

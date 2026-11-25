@@ -2,7 +2,9 @@
 //!
 //! Схема «ящик на одно письмо» (как у пресетов вида): `save` кладёт последнюю запись и будит поток записи.
 //! Если прежняя запись ещё не взята, она ЗАМЕНЯЕТСЯ (склейка, «последняя побеждает»): очередь не растёт, вызов
-//! не блокируется на диске. `Drop` закрывает приём, дописывает последнюю принятую запись и ждёт поток: ожидание
+//! не блокируется на диске. В ящике два независимых места — белая и правило возобновления: склейка идёт в каждом
+//! отдельно (новая белая не вытесняет выбор правила и наоборот), а частота и «пиши немедленно» у них общие. Если к
+//! пробуждению заняты оба места, на диск уходит ОДНА запись с обоими. `Drop` закрывает приём, дописывает последнюю принятую запись и ждёт поток: ожидание
 //! ограничено временем ОДНОЙ записи.
 //!
 //! Частота записи: шкала белой под пальцем присылает правки десятки раз в секунду, а каждая запись на диск —
@@ -20,7 +22,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use camera_core::white::{WhiteMemory, WhiteMemoryRecord};
+use camera_core::white::{WhiteMemory, WhiteMemoryRecord, WhiteResumeRule};
 
 use super::file::{LOG_TARGET, WhiteMemoryError, WhiteRecordSink, WriteCommit};
 
@@ -86,10 +88,23 @@ impl WhiteMemoryDiagnostics {
     }
 }
 
-/// Ящик на одно письмо.
+/// Что поток записи взял из ящика за одно пробуждение: занятое место или оба.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum WriteJob {
+    Record(WhiteMemoryRecord),
+    ResumeRule(WhiteResumeRule),
+    Both {
+        record: WhiteMemoryRecord,
+        rule: WhiteResumeRule,
+    },
+}
+
+/// Ящик на одно письмо: два независимых места.
 #[derive(Default)]
 struct Mailbox {
     pending: Option<WhiteMemoryRecord>,
+    /// Выбор правила возобновления, ещё не взятый потоком записи.
+    pending_rule: Option<WhiteResumeRule>,
     closed: bool,
     /// Движок велел «пиши немедленно» ([`WhiteMemory::flush`]): принятую запись положить без ожидания интервала.
     /// Взводится только при наличии записи и сбрасывается, когда её взяли.
@@ -100,6 +115,23 @@ struct Shared {
     mailbox: Mutex<Mailbox>,
     wake: Condvar,
     diagnostics: WhiteMemoryDiagnostics,
+}
+
+impl Mailbox {
+    /// Есть ли что писать (хотя бы одно занятое место).
+    fn has_pending(&self) -> bool {
+        self.pending.is_some() || self.pending_rule.is_some()
+    }
+
+    /// Забирает всё занятое одним заданием; `None` — ящик пуст.
+    fn take_job(&mut self) -> Option<WriteJob> {
+        match (self.pending.take(), self.pending_rule.take()) {
+            (Some(record), Some(rule)) => Some(WriteJob::Both { record, rule }),
+            (Some(record), None) => Some(WriteJob::Record(record)),
+            (None, Some(rule)) => Some(WriteJob::ResumeRule(rule)),
+            (None, None) => None,
+        }
+    }
 }
 
 impl Shared {
@@ -155,6 +187,29 @@ impl WhiteMemoryWriter {
 impl WhiteMemory for WhiteMemoryWriter {
     /// Не блокирует на диске: кладёт запись в ящик и будит поток.
     fn save(&mut self, record: WhiteMemoryRecord) {
+        self.deposit(|mailbox| mailbox.pending.replace(record).is_some());
+    }
+
+    /// То же для выбора правила возобновления: своё место в ящике, склейка только с прежним выбором.
+    fn save_resume_rule(&mut self, rule: WhiteResumeRule) {
+        self.deposit(|mailbox| mailbox.pending_rule.replace(rule).is_some());
+    }
+
+    /// Не ждёт диска: только снимает отсрочку; запись делает поток записи. Без принятой записи — ничего.
+    fn flush(&mut self) {
+        let mut mailbox = self.shared.lock_mailbox();
+        if mailbox.has_pending() && !mailbox.closed {
+            mailbox.flush_requested = true;
+            drop(mailbox);
+            self.shared.wake.notify_one();
+        }
+    }
+}
+
+impl WhiteMemoryWriter {
+    /// Общий путь `save*`: учёт запроса, отказ мёртвому или закрытому писателю, кладёт запись в своё место ящика
+    /// (`place` возвращает «вытеснила ли она прежнюю») и будит поток.
+    fn deposit(&self, place: impl FnOnce(&mut Mailbox) -> bool) {
         let cells = &*self.shared.diagnostics.shared;
         cells.requested.fetch_add(1, Ordering::Relaxed);
         // Мёртвый поток проверяем первым: писать некому.
@@ -168,21 +223,11 @@ impl WhiteMemory for WhiteMemoryWriter {
             cells.rejected.fetch_add(1, Ordering::Relaxed);
             return;
         }
-        let replaced = mailbox.pending.replace(record).is_some();
+        let replaced = place(&mut mailbox);
         drop(mailbox);
         self.shared.wake.notify_one();
         if replaced {
             cells.coalesced.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    /// Не ждёт диска: только снимает отсрочку; запись делает поток записи. Без принятой записи — ничего.
-    fn flush(&mut self) {
-        let mut mailbox = self.shared.lock_mailbox();
-        if mailbox.pending.is_some() && !mailbox.closed {
-            mailbox.flush_requested = true;
-            drop(mailbox);
-            self.shared.wake.notify_one();
         }
     }
 }
@@ -213,6 +258,7 @@ impl Drop for WriterExitGuard<'_> {
         let mut mailbox = self.shared.lock_mailbox();
         mailbox.closed = true;
         mailbox.pending = None;
+        mailbox.pending_rule = None;
         drop(mailbox);
         self.shared.wake.notify_all();
     }
@@ -222,10 +268,15 @@ impl Drop for WriterExitGuard<'_> {
 fn run_writer(shared: &Shared, mut sink: impl WhiteRecordSink, min_write_interval: Duration) {
     let _exit_guard = WriterExitGuard { shared };
     let mut last_write_started: Option<Instant> = None;
-    while let Some(record) = wait_for_record(shared, min_write_interval, last_write_started) {
+    while let Some(job) = wait_for_job(shared, min_write_interval, last_write_started) {
         last_write_started = Some(Instant::now());
         // Диск пишем БЕЗ блокировки ящика: новые записи за это время склеиваются.
-        report_outcome(&shared.diagnostics, &record, sink.write_record(&record));
+        let outcome = match &job {
+            WriteJob::Record(record) => sink.write_record(record),
+            WriteJob::ResumeRule(rule) => sink.write_resume_rule(*rule),
+            WriteJob::Both { record, rule } => sink.write_record_and_rule(record, *rule),
+        };
+        report_outcome(&shared.diagnostics, &job, outcome);
     }
 }
 
@@ -236,16 +287,16 @@ fn remaining_wait(last_write_started: Option<Instant>, min_write_interval: Durat
     })
 }
 
-/// Ждёт, пока появится запись, которую уже можно писать: срок прошёл, либо велено «немедленно», либо ящик закрыт.
+/// Ждёт, пока появится задание, которое уже можно писать: срок прошёл, либо велено «немедленно», либо ящик закрыт.
 /// `None` — ящик закрыт и записей нет, поток выходит.
-fn wait_for_record(
+fn wait_for_job(
     shared: &Shared,
     min_write_interval: Duration,
     last_write_started: Option<Instant>,
-) -> Option<WhiteMemoryRecord> {
+) -> Option<WriteJob> {
     let mut mailbox = shared.lock_mailbox();
     loop {
-        if mailbox.pending.is_none() {
+        if !mailbox.has_pending() {
             if mailbox.closed {
                 return None;
             }
@@ -260,7 +311,7 @@ fn wait_for_record(
         };
         if wait.is_zero() {
             mailbox.flush_requested = false;
-            return mailbox.pending.take();
+            return mailbox.take_job();
         }
         // Новая запись только заменит ожидающую и разбудит нас раньше срока: тогда считаем остаток заново.
         mailbox = shared
@@ -273,12 +324,12 @@ fn wait_for_record(
 /// Итог записи: журнал и счётчики.
 fn report_outcome(
     diagnostics: &WhiteMemoryDiagnostics,
-    record: &WhiteMemoryRecord,
+    job: &WriteJob,
     outcome: Result<WriteCommit, WhiteMemoryError>,
 ) {
     let cells = &*diagnostics.shared;
     if outcome.is_ok() {
-        log_written(record);
+        log_job_written(job);
     }
     match outcome {
         Ok(WriteCommit::Durable) => {
@@ -300,6 +351,16 @@ fn report_outcome(
 
 /// Значение, которое реально легло на диск: `info`, потому что записей мало (не чаще интервала). Именно эта строка
 /// несёт итог серии ручных правок: строки движка о самих правках идут в `debug`.
+fn log_job_written(job: &WriteJob) {
+    match job {
+        WriteJob::Record(record) | WriteJob::Both { record, .. } => log_written(record),
+        WriteJob::ResumeRule(_) => {}
+    }
+    if let WriteJob::ResumeRule(rule) | WriteJob::Both { rule, .. } = job {
+        tracing::info!(target: LOG_TARGET, rule = ?rule, "правило возобновления белого записано в память");
+    }
+}
+
 pub(super) fn log_written(record: &WhiteMemoryRecord) {
     tracing::info!(
         target: LOG_TARGET,

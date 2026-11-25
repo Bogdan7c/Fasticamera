@@ -56,6 +56,8 @@ mod neutrality;
 mod panel_view;
 #[path = "white_panel_end_to_end/refusals.rs"]
 mod refusals;
+#[path = "white_panel_end_to_end/resume_rule.rs"]
+mod resume_rule;
 #[path = "white_panel_end_to_end/scales.rs"]
 mod scales;
 #[path = "white_panel_end_to_end/screen_parts.rs"]

@@ -10,7 +10,10 @@
 //! * рука сильнее: ручная белая отменяет ожидающую заявку, и опоздавший ответ становится чужим;
 //! * срок ожидания открытия считается от первого кадра потока (см. [`WhiteOwner::on_stream_frame`]), срок
 //!   команды — от самой команды;
-//! * отказ источника (занят, не знаю, нет источника, сломался, срок, непонятный свет) белую не меняет.
+//! * отказ источника (занят, не знаю, нет источника, сломался, срок, непонятный свет) белую не меняет;
+//! * правило возобновления ([`WhiteResumeRule`]) читает ТОЛЬКО [`WhiteOwner::on_foreground`]: другого места,
+//!   где белая решает «спросить источник или держать», нет. Смена правила белую, переход и ожидающую заявку
+//!   не трогает и действует со следующего возобновления.
 //!
 //! Всё, что надо донести наружу (событие, запись в память), копится в `notices` и забирается
 //! [`WhiteOwner::drain_notices`]: машина сама ничего не публикует.
@@ -27,8 +30,9 @@ use super::limits::clamp_white;
 use crate::command::{CommandId, InvalidStateReason};
 use crate::three_a_status::ControlAdjustment;
 use crate::white::{
-    RememberedOrigin, WhiteCancelCause, WhiteConfig, WhiteMemoryLoad, WhiteMemoryStartup, WhiteMemoryState,
-    WhiteRequestOutcome, WhiteRequestResult, WhiteRequestState, WhiteStatus, WhiteTakeReport,
+    RememberedOrigin, ResumeRuleChoice, WhiteCancelCause, WhiteConfig, WhiteMemoryLoad, WhiteMemoryStartup,
+    WhiteMemoryState, WhiteRequestOutcome, WhiteRequestResult, WhiteRequestState, WhiteResumeRule, WhiteStatus,
+    WhiteTakeReport,
 };
 
 /// Что владелец просит донести наружу (события и память), в порядке появления.
@@ -40,6 +44,8 @@ pub(super) enum WhiteNotice {
     Adjusted(Vec<ControlAdjustment>),
     /// Заявка закрыта.
     Finished(WhiteRequestResult),
+    /// Человек выбрал правило возобновления (запомнить и сообщить).
+    ResumeRuleChosen(WhiteResumeRule),
 }
 
 /// Итог ручной команды для вызывающего.
@@ -74,6 +80,9 @@ enum Request {
 pub(super) struct WhiteOwner {
     config: WhiteConfig,
     opening_source: WhiteSourceId,
+    /// Правило, которое выбрал человек (в этом запуске или раньше — из памяти). `None` — выбора нет, действует
+    /// умолчание конфига: см. [`Self::resume_rule`].
+    chosen_rule: Option<WhiteResumeRule>,
     held: HeldWhite,
     /// Поправки к последнему названному значению.
     limits: Vec<ControlAdjustment>,
@@ -96,11 +105,13 @@ pub(super) struct WhiteOwner {
 impl WhiteOwner {
     /// Владелец со стартовой белой: запомненная (прижатая к пределам) или запасной свет.
     /// `first_request` — наименьший номер, который можно выдать (номера не переиспользуются и между запусками
-    /// движка над одним ящиком ответов).
+    /// движка над одним ящиком ответов). `remembered_rule` — выбор человека, сохранённый памятью: он сильнее
+    /// конфига и новых записей в память не порождает.
     pub(super) fn new(
         config: WhiteConfig,
         opening_source: WhiteSourceId,
         remembered: WhiteMemoryLoad,
+        remembered_rule: Option<WhiteResumeRule>,
         first_request: u64,
     ) -> Self {
         let fallback = HeldWhite {
@@ -137,6 +148,7 @@ impl WhiteOwner {
         Self {
             config,
             opening_source,
+            chosen_rule: remembered_rule,
             held,
             limits,
             transition: WhiteTransition::Immediate,
@@ -214,10 +226,27 @@ impl WhiteOwner {
         self.last_take = Some(WhiteTakeReport::not_asked(command, reason));
     }
 
-    /// Приложение вернулось на передний план (WB22): ручную белую держим, иначе спрашиваем источник открытия,
-    /// пока кадры скрыты.
+    /// Выбор правила возобновления человеком. Белую, переход и ожидающую заявку не трогает: правило действует
+    /// со следующего возобновления. Выбор, совпавший с умолчанием конфига, всё равно выбор: его запоминаем.
+    pub(super) fn choose_resume_rule(&mut self, rule: WhiteResumeRule) -> ResumeRuleChoice {
+        if self.chosen_rule == Some(rule) {
+            return ResumeRuleChoice::AlreadyChosen;
+        }
+        self.chosen_rule = Some(rule);
+        self.notices.push(WhiteNotice::ResumeRuleChosen(rule));
+        ResumeRuleChoice::Chosen
+    }
+
+    /// Действующее правило возобновления: выбор человека, а если его нет — умолчание конфига.
+    pub(super) fn resume_rule(&self) -> WhiteResumeRule {
+        self.chosen_rule.unwrap_or(self.config.resume_rule)
+    }
+
+    /// Приложение вернулось на передний план. Единственное место, где действует правило возобновления
+    /// (WB22, WB36): по нему и происхождению белой решается, спрашивать ли источник открытия, пока кадры
+    /// скрыты. Если не спрашивать — заявка не заводится, кадры не скрываются, белая не меняется ни на бит.
     pub(super) fn on_foreground(&mut self) {
-        if self.held.origin == WhiteOrigin::Manual {
+        if !self.resume_rule().asks_source_on_resume(self.held.origin) {
             return;
         }
         let transition = self.late_transition();
@@ -360,6 +389,7 @@ impl WhiteOwner {
                 startup: self.memory_startup.clone(),
                 saves_requested,
             },
+            resume_rule: self.resume_rule(),
             stale_answers: self.stale_answers,
         }
     }

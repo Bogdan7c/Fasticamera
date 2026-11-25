@@ -33,6 +33,7 @@ mod white_answers;
 mod white_journal;
 mod white_manual;
 mod white_open;
+mod white_resume_rule;
 mod white_support;
 mod white_take_report;
 

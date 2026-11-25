@@ -511,6 +511,7 @@ impl ZoomRunner {
                 | CameraEvent::BracketCaptured { .. }
                 | CameraEvent::FlashStillFinished { .. }
                 | CameraEvent::WhiteChanged { .. }
+                | CameraEvent::WhiteResumeRuleChanged { .. }
                 | CameraEvent::WhiteRequestFinished { .. } => {}
             }
         }

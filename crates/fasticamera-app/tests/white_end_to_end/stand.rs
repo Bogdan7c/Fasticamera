@@ -61,6 +61,11 @@ pub struct Stand {
 impl Stand {
     /// `None` — GPU недоступен и тест осознанно пропущен (`FASTICAMERA_SKIP_GPU_TESTS=1`).
     pub fn start(options: StandOptions) -> Option<Self> {
+        Self::start_with_config(options, CameraConfig::default())
+    }
+
+    /// То же с заданным конфигом камеры (например, выбор правила возобновления белого, как параметр запуска).
+    pub fn start_with_config(options: StandOptions, camera_config: CameraConfig) -> Option<Self> {
         let links = CameraLinks {
             white_memory: options.memory,
             ..CameraLinks::default()
@@ -78,7 +83,7 @@ impl Stand {
 
         let control = FakeBackendControl::new();
         let camera = start_camera_with_links(
-            &CameraConfig::default(),
+            &camera_config,
             CameraBackendParts {
                 factory: control.factory(),
                 diagnostics: Arc::new(BackendDiagnostics::new(4)),

@@ -40,6 +40,12 @@ import org.json.JSONObject
  * `scripts/device-deploy.sh` параметр не шлёт, и память работает как в продукте (файл в папке приложения). Kotlin значение не
  * разбирает, а передаёт как есть; неизвестный режим Rust отвергает при initialize.
  *
+ * `whiteResumeRule` — правило возобновления белого, выбранное человеком на один запуск (intent-параметр
+ * `white_resume_rule`, поле `camera.white_resume_choice`: `take_from_source` или `keep_last`). Приложение шлёт его
+ * движку ДО первого возобновления как выбор человека, и он запоминается в файле белой. Без параметра действует то, что
+ * запомнено, а без памяти — умолчание конфига (`take_from_source`). `scripts/device-smoke.sh` параметр не шлёт.
+ * Kotlin значение не разбирает, а передаёт как есть; неизвестное значение Rust отвергает при initialize.
+ *
  * `toneContrast` / `toneDisplayMiddleGray` — ручки тона видоискателя на один запуск (intent-параметры
  * `tone_contrast` и `tone_display_middle_gray`, секция `render.viewfinder.tone`, сессия 12b): подбор контраста
  * и средних тонов глазами владельца без пересборки. Число уходит в JSON числом, а нечисловая строка — как
@@ -78,6 +84,7 @@ data class NativeConfig(
     val saturationWarmupMs: Long? = null,
     val exposureController: String? = null,
     val whiteMemory: String? = null,
+    val whiteResumeRule: String? = null,
     val toneContrast: String? = null,
     val toneDisplayMiddleGray: String? = null,
     val toneBase: String? = null,
@@ -126,6 +133,8 @@ data class NativeConfig(
         exposureController?.let { name -> camera.put("exposure_controller", name) }
         // Имя режима — строкой как есть: проверяет Rust (неизвестное имя — отказ initialize).
         whiteMemory?.let { mode -> camera.put("white_memory", JSONObject().put("mode", mode.trim())) }
+        // Правило возобновления белого — строкой как есть: проверяет Rust (неизвестное значение — отказ initialize).
+        whiteResumeRule?.let { rule -> camera.put("white_resume_choice", rule.trim()) }
         if (untrustedOpticalAxisCameras.isNotEmpty()) {
             val zoom = JSONObject().put("untrusted_optical_axis_cameras", JSONArray(untrustedOpticalAxisCameras))
             camera.put("engine", JSONObject().put("zoom", zoom))
@@ -187,6 +196,9 @@ data class NativeConfig(
         /** Intent-параметр с режимом памяти белой: `file` или `none` (проверяет Rust). Smoke-прогоны шлют `none`. */
         const val EXTRA_WHITE_MEMORY = "white_memory"
 
+        /** Intent-параметр с правилом возобновления белого: `take_from_source` или `keep_last` (проверяет Rust). */
+        const val EXTRA_WHITE_RESUME_RULE = "white_resume_rule"
+
         /** Intent-параметр с контрастом тона видоискателя (строка с числом, проверяет Rust). */
         const val EXTRA_TONE_CONTRAST = "tone_contrast"
 
@@ -226,6 +238,8 @@ data class NativeConfig(
             exposureController = intent.getStringExtra(EXTRA_EXPOSURE_CONTROLLER),
             // Нет параметра — null, поле в JSON не попадает, Rust берёт умолчание (file).
             whiteMemory = intent.getStringExtra(EXTRA_WHITE_MEMORY),
+            // Нет параметра — null, поле в JSON не попадает: правило решают память и конфиг движка.
+            whiteResumeRule = intent.getStringExtra(EXTRA_WHITE_RESUME_RULE),
             // Нет параметра — null, секция тона в JSON не попадает, Rust берёт умолчание.
             toneContrast = intent.getStringExtra(EXTRA_TONE_CONTRAST),
             toneDisplayMiddleGray = intent.getStringExtra(EXTRA_TONE_DISPLAY_MIDDLE_GRAY),

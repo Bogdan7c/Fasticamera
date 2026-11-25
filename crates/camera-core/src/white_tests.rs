@@ -148,3 +148,46 @@ fn range_follows_the_config_and_not_the_built_in_defaults() {
     assert_eq!(range.max_abs_tint.duv(), 0.03);
     assert_eq!(WhiteStatus::initial().range, WhiteConfig::default().range());
 }
+
+// ---- правило возобновления (WB36) ----
+
+#[test]
+fn the_resume_rule_defaults_to_take_from_source_and_reads_from_a_plain_string() {
+    assert_eq!(WhiteConfig::default().resume_rule, WhiteResumeRule::TakeFromSource);
+    let parsed: WhiteConfig = serde_json::from_str(r#"{"resume_rule":"keep_last"}"#).expect("keep_last разбирается");
+    assert_eq!(parsed.resume_rule, WhiteResumeRule::KeepLast);
+    assert_eq!(parsed.answer_timeout_ms, 3_000, "остальное по умолчанию");
+    let written = serde_json::to_string(&WhiteResumeRule::TakeFromSource).expect("запись");
+    assert_eq!(written, r#""take_from_source""#);
+}
+
+#[test]
+fn a_bad_resume_rule_in_the_config_is_rejected_with_the_field_name() {
+    let error = serde_json::from_str::<WhiteConfig>(r#"{"resume_rule":"keep_everything"}"#).expect_err("значение");
+    let text = error.to_string();
+    assert!(text.contains("three_a.white.resume_rule"), "{text}");
+    assert!(text.contains("keep_everything"), "{text}");
+
+    // Тот же отказ внутри конфига движка целиком.
+    let error = serde_json::from_str::<CameraEngineConfig>(r#"{"three_a":{"white":{"resume_rule":"never"}}}"#)
+        .expect_err("вложенное значение");
+    assert!(error.to_string().contains("three_a.white.resume_rule"), "{error}");
+}
+
+#[test]
+fn resume_decision_table_rule_by_origin() {
+    use camera_contract::white::{WhiteOrigin, WhiteSourceId};
+    let phone = WhiteOrigin::Source(WhiteSourceId::PHONE);
+    // (правило, происхождение белой, спрашивать ли источник при возобновлении)
+    let table = [
+        (WhiteResumeRule::TakeFromSource, phone, true),
+        (WhiteResumeRule::TakeFromSource, WhiteOrigin::Fallback, true),
+        (WhiteResumeRule::TakeFromSource, WhiteOrigin::Manual, false),
+        (WhiteResumeRule::KeepLast, phone, false),
+        (WhiteResumeRule::KeepLast, WhiteOrigin::Fallback, true),
+        (WhiteResumeRule::KeepLast, WhiteOrigin::Manual, false),
+    ];
+    for (rule, origin, expected) in table {
+        assert_eq!(rule.asks_source_on_resume(origin), expected, "{rule:?} при {origin:?}");
+    }
+}

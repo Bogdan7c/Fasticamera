@@ -34,6 +34,8 @@ mod white_rig;
 
 #[path = "white_end_to_end/fake_source.rs"]
 mod fake_source;
+#[path = "white_end_to_end/resume_rule.rs"]
+mod resume_rule;
 #[path = "white_end_to_end/stand.rs"]
 mod stand;
 

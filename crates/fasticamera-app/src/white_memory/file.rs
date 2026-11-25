@@ -2,9 +2,13 @@
 //!
 //! Формат (`schema_version` 1):
 //! ```json
-//! {"schema_version":1,"kelvin":3200.0,"duv":0.004,"origin":"source"}
+//! {"schema_version":1,"kelvin":3200.0,"duv":0.004,"origin":"source","resume_rule":"keep_last"}
 //! ```
-//! Неизвестное поле, неизвестное происхождение, файл новее приложения, пустой или не-JSON файл — «не читается»:
+//! Два независимых места: белая (`kelvin`, `duv`, `origin` — все три вместе или ни одного) и правило возобновления
+//! (`resume_rule`: `take_from_source` или `keep_last`). Хватает любого одного: выбор правила возможен до первой
+//! белой, а файл прежних версий хранит только белую. Частично заданная белая, документ без белой и без правила,
+//! неизвестное поле, неизвестное происхождение или правило, файл новее приложения, пустой или не-JSON файл —
+//! «не читается»:
 //! белая берёт запасной свет, а сам файл не пропадает, а откладывается в `<имя>.corrupt-<unix-мс>`
 //! (образец — `look-presets`), чтобы владелец мог его разобрать. Приложение при этом не падает.
 //!
@@ -17,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use camera_contract::control::{ColorTemperature, Tint, WhiteBalanceSetting};
-use camera_core::white::{RememberedOrigin, WhiteMemoryLoad, WhiteMemoryRecord};
+use camera_core::white::{RememberedOrigin, WhiteMemoryLoad, WhiteMemoryRecord, WhiteResumeRule};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -42,40 +46,91 @@ enum FileOrigin {
     Manual,
 }
 
-/// Документ файла. `deny_unknown_fields`: чужое поле — признак чужой или новой версии файла.
+/// Правило возобновления в файле. Отдельный тип от `WhiteResumeRule` по той же причине, что и `FileOrigin`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FileResumeRule {
+    TakeFromSource,
+    KeepLast,
+}
+
+impl FileResumeRule {
+    fn from_rule(rule: WhiteResumeRule) -> Self {
+        match rule {
+            WhiteResumeRule::TakeFromSource => Self::TakeFromSource,
+            WhiteResumeRule::KeepLast => Self::KeepLast,
+        }
+    }
+
+    fn into_rule(self) -> WhiteResumeRule {
+        match self {
+            Self::TakeFromSource => WhiteResumeRule::TakeFromSource,
+            Self::KeepLast => WhiteResumeRule::KeepLast,
+        }
+    }
+}
+
+/// Всё, что файл помнит: белая и правило возобновления. Оба места независимы и необязательны по отдельности.
+/// Владелец «последнего известного» содержимого — [`WhiteMemoryFile`]: запись одного места не стирает другое.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+struct FileContent {
+    record: Option<WhiteMemoryRecord>,
+    rule: Option<WhiteResumeRule>,
+}
+
+/// Документ файла. `deny_unknown_fields`: чужое поле — признак чужой или новой версии файла. Поля белой
+/// необязательны только все вместе (см. [`Self::into_content`]); пустое место не пишется вовсе.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WhiteFileDocument {
     schema_version: u32,
-    kelvin: f64,
-    duv: f64,
-    origin: FileOrigin,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kelvin: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    duv: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origin: Option<FileOrigin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resume_rule: Option<FileResumeRule>,
 }
 
 impl WhiteFileDocument {
-    fn from_record(record: &WhiteMemoryRecord) -> Self {
+    fn from_content(content: &FileContent) -> Self {
         Self {
             schema_version: CURRENT_SCHEMA_VERSION,
-            kelvin: record.setting.temperature.kelvin(),
-            duv: record.setting.tint.duv(),
-            origin: match record.origin {
+            kelvin: content.record.map(|record| record.setting.temperature.kelvin()),
+            duv: content.record.map(|record| record.setting.tint.duv()),
+            origin: content.record.map(|record| match record.origin {
                 RememberedOrigin::Source => FileOrigin::Source,
                 RememberedOrigin::Manual => FileOrigin::Manual,
-            },
+            }),
+            resume_rule: content.rule.map(FileResumeRule::from_rule),
         }
     }
 
-    /// Значения проверяются типами домена: нечисло и неположительная температура — «не читается».
-    fn into_record(self) -> Result<WhiteMemoryRecord, String> {
-        let temperature = ColorTemperature::from_kelvin(self.kelvin).map_err(|error| error.to_string())?;
-        let tint = Tint::from_duv(self.duv).map_err(|error| error.to_string())?;
-        Ok(WhiteMemoryRecord {
-            setting: WhiteBalanceSetting { temperature, tint },
-            origin: match self.origin {
-                FileOrigin::Source => RememberedOrigin::Source,
-                FileOrigin::Manual => RememberedOrigin::Manual,
-            },
-        })
+    /// Значения проверяются типами домена: нечисло и неположительная температура — «не читается». Белая задана
+    /// целиком или не задана; документ без белой и без правила ничего не помнит и тоже «не читается».
+    fn into_content(self) -> Result<FileContent, String> {
+        let record = match (self.kelvin, self.duv, self.origin) {
+            (Some(kelvin), Some(duv), Some(origin)) => {
+                let temperature = ColorTemperature::from_kelvin(kelvin).map_err(|error| error.to_string())?;
+                let tint = Tint::from_duv(duv).map_err(|error| error.to_string())?;
+                Some(WhiteMemoryRecord {
+                    setting: WhiteBalanceSetting { temperature, tint },
+                    origin: match origin {
+                        FileOrigin::Source => RememberedOrigin::Source,
+                        FileOrigin::Manual => RememberedOrigin::Manual,
+                    },
+                })
+            }
+            (None, None, None) => None,
+            _ => return Err("белая задана частично: нужны kelvin, duv и origin вместе".to_owned()),
+        };
+        let rule = self.resume_rule.map(FileResumeRule::into_rule);
+        if record.is_none() && rule.is_none() {
+            return Err("в файле нет ни белой, ни правила возобновления".to_owned());
+        }
+        Ok(FileContent { record, rule })
     }
 }
 
@@ -107,9 +162,27 @@ pub enum WriteCommit {
     DirectoryUnconfirmed(String),
 }
 
-/// Куда поток записи пишет записи памяти. Файл — [`WhiteMemoryFile`]; тесты подставляют заглушку.
+/// Куда поток записи пишет память. Файл — [`WhiteMemoryFile`]; тесты подставляют заглушку.
+///
+/// Белая и правило возобновления — два независимых места одного хранилища: запись одного не стирает другое.
 pub trait WhiteRecordSink: Send + 'static {
+    /// Записать белую; правило хранилища остаётся прежним.
     fn write_record(&mut self, record: &WhiteMemoryRecord) -> Result<WriteCommit, WhiteMemoryError>;
+
+    /// Записать правило возобновления; белая хранилища остаётся прежней.
+    fn write_resume_rule(&mut self, rule: WhiteResumeRule) -> Result<WriteCommit, WhiteMemoryError>;
+
+    /// Записать оба места за одну запись на диск (поток записи зовёт его, когда к пробуждению заняты оба). Здесь
+    /// умолчание — два вызова подряд, для заглушек; файл переопределяет его одной записью: диску незачем
+    /// получать два временных файла, переименования и сброса каталога там, где хватит одного.
+    fn write_record_and_rule(
+        &mut self,
+        record: &WhiteMemoryRecord,
+        rule: WhiteResumeRule,
+    ) -> Result<WriteCommit, WhiteMemoryError> {
+        self.write_record(record)?;
+        self.write_resume_rule(rule)
+    }
 }
 
 /// Файл памяти белой.
@@ -119,13 +192,19 @@ pub struct WhiteMemoryFile {
     temp_path: PathBuf,
     /// Почему писать нельзя (файл не прочитался и не отложен): `Some` — записи отклоняются.
     saves_refused: Option<String>,
+    /// Последнее известное содержимое: прочитанное при открытии и обновлённое каждой записью. Каждая запись
+    /// переписывает файл целиком из него, поэтому белая не теряет правило, а правило — белую.
+    known: FileContent,
 }
 
 /// Что вернуло открытие файла.
 #[derive(Debug)]
 pub struct OpenedWhiteFile {
     pub file: WhiteMemoryFile,
+    /// Что файл помнит о белой.
     pub load: WhiteMemoryLoad,
+    /// Правило возобновления, которое человек выбрал раньше (`None` — выбора в файле нет или файл не читается).
+    pub resume_rule: Option<WhiteResumeRule>,
 }
 
 impl WhiteMemoryFile {
@@ -136,9 +215,15 @@ impl WhiteMemoryFile {
             path: directory.join(&config.file_name),
             temp_path: directory.join(config.temp_file_name()),
             saves_refused: None,
+            known: FileContent::default(),
         };
         let load = file.read_and_judge();
-        OpenedWhiteFile { file, load }
+        let resume_rule = file.known.rule;
+        OpenedWhiteFile {
+            file,
+            load,
+            resume_rule,
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -150,7 +235,8 @@ impl WhiteMemoryFile {
         self.saves_refused.as_deref()
     }
 
-    /// Читает файл и приводит его к исходу; испорченный откладывает в карантин.
+    /// Читает файл и приводит его к исходу; испорченный откладывает в карантин. Прочитанное содержимое
+    /// становится «последним известным» (`known`).
     fn read_and_judge(&mut self) -> WhiteMemoryLoad {
         let bytes = match fs::read(&self.path) {
             Ok(bytes) => bytes,
@@ -166,10 +252,19 @@ impl WhiteMemoryFile {
                 return WhiteMemoryLoad::Unreadable { reason };
             }
         };
-        match parse_record(&bytes) {
-            Ok(record) => {
-                tracing::info!(target: LOG_TARGET, path = ?self.path, "память белой прочитана");
-                WhiteMemoryLoad::Remembered(record)
+        match parse_content(&bytes) {
+            Ok(content) => {
+                tracing::info!(
+                    target: LOG_TARGET,
+                    path = ?self.path,
+                    has_white = content.record.is_some(),
+                    resume_rule = ?content.rule,
+                    "память белой прочитана"
+                );
+                self.known = content;
+                content
+                    .record
+                    .map_or(WhiteMemoryLoad::NothingRemembered, WhiteMemoryLoad::Remembered)
             }
             Err(problem) => self.quarantine(&problem),
         }
@@ -260,12 +355,14 @@ impl WhiteMemoryFile {
     }
 }
 
-impl WhiteRecordSink for WhiteMemoryFile {
-    fn write_record(&mut self, record: &WhiteMemoryRecord) -> Result<WriteCommit, WhiteMemoryError> {
+impl WhiteMemoryFile {
+    /// Переписывает файл целиком из последнего известного содержимого. `known` обновляют вызывающие ДО записи:
+    /// даже если запись не удалась, следующая попытка (любого места) отдаст на диск самое свежее, что известно.
+    fn persist_known(&mut self) -> Result<WriteCommit, WhiteMemoryError> {
         if let Some(reason) = &self.saves_refused {
             return Err(WhiteMemoryError::SavesRefused(reason.clone()));
         }
-        let bytes = serde_json::to_vec_pretty(&WhiteFileDocument::from_record(record))
+        let bytes = serde_json::to_vec_pretty(&WhiteFileDocument::from_content(&self.known))
             .map_err(|error| WhiteMemoryError::Serialize(error.to_string()))?;
         self.write_temp_file(&bytes)?;
         if let Err(error) = fs::rename(&self.temp_path, &self.path) {
@@ -280,8 +377,32 @@ impl WhiteRecordSink for WhiteMemoryFile {
     }
 }
 
+impl WhiteRecordSink for WhiteMemoryFile {
+    fn write_record(&mut self, record: &WhiteMemoryRecord) -> Result<WriteCommit, WhiteMemoryError> {
+        self.known.record = Some(*record);
+        self.persist_known()
+    }
+
+    fn write_resume_rule(&mut self, rule: WhiteResumeRule) -> Result<WriteCommit, WhiteMemoryError> {
+        self.known.rule = Some(rule);
+        self.persist_known()
+    }
+
+    fn write_record_and_rule(
+        &mut self,
+        record: &WhiteMemoryRecord,
+        rule: WhiteResumeRule,
+    ) -> Result<WriteCommit, WhiteMemoryError> {
+        self.known = FileContent {
+            record: Some(*record),
+            rule: Some(rule),
+        };
+        self.persist_known()
+    }
+}
+
 /// Разбирает байты файла: JSON → версия схемы → поля → значения. `Err` — человекочитаемая причина.
-fn parse_record(bytes: &[u8]) -> Result<WhiteMemoryRecord, String> {
+fn parse_content(bytes: &[u8]) -> Result<FileContent, String> {
     let document: Value = serde_json::from_slice(bytes).map_err(|error| format!("файл не JSON: {error}"))?;
     let found = document
         .get(SCHEMA_VERSION_FIELD)
@@ -301,5 +422,5 @@ fn parse_record(bytes: &[u8]) -> Result<WhiteMemoryRecord, String> {
     }
     serde_json::from_value::<WhiteFileDocument>(document)
         .map_err(|error| format!("поля файла не подходят: {error}"))?
-        .into_record()
+        .into_content()
 }

@@ -82,3 +82,58 @@ fn the_screen_scenario_must_tap_a_light_button_that_exists() {
         "{error}"
     );
 }
+
+// ---- правило возобновления белого (WB36) ----
+
+use camera_core::white::WhiteResumeRule;
+
+#[test]
+fn the_resume_rule_defaults_to_take_from_source_and_nobody_has_chosen_anything() {
+    let config = RuntimeConfig::from_json(r#"{"build_type":"debug","log_filter":"info"}"#).expect("конфиг");
+    assert_eq!(
+        config.camera().engine.three_a.white.resume_rule,
+        WhiteResumeRule::TakeFromSource
+    );
+    assert_eq!(config.camera().white_resume_choice, None);
+}
+
+#[test]
+fn the_json_kotlin_sends_for_the_launch_extra_carries_the_choice() {
+    // Ровно та форма, которую строит `NativeConfig.toJson()` при `-e white_resume_rule keep_last`.
+    let config = RuntimeConfig::from_json(&with_camera(r#"{"white_resume_choice":"keep_last"}"#)).expect("конфиг");
+    assert_eq!(config.camera().white_resume_choice, Some(WhiteResumeRule::KeepLast));
+}
+
+#[test]
+fn the_engine_default_rule_is_read_from_the_config_section() {
+    let config = RuntimeConfig::from_json(&with_camera(
+        r#"{"engine":{"three_a":{"white":{"resume_rule":"keep_last"}}}}"#,
+    ))
+    .expect("конфиг");
+    assert_eq!(
+        config.camera().engine.three_a.white.resume_rule,
+        WhiteResumeRule::KeepLast
+    );
+}
+
+#[test]
+fn a_bad_rule_rejects_the_whole_config_and_the_error_names_the_field() {
+    let engine_default = RuntimeConfig::from_json(&with_camera(
+        r#"{"engine":{"three_a":{"white":{"resume_rule":"sometimes"}}}}"#,
+    ))
+    .expect_err("значение в конфиге движка");
+    assert!(matches!(engine_default, ConfigError::Malformed(_)), "{engine_default}");
+    assert!(
+        engine_default.to_string().contains("three_a.white.resume_rule"),
+        "{engine_default}"
+    );
+
+    let launch_choice = RuntimeConfig::from_json(&with_camera(r#"{"white_resume_choice":"sometimes"}"#))
+        .expect_err("значение параметра запуска");
+    assert!(matches!(launch_choice, ConfigError::Malformed(_)), "{launch_choice}");
+    assert!(
+        launch_choice.to_string().contains("camera.white_resume_choice"),
+        "{launch_choice}"
+    );
+    assert!(launch_choice.to_string().contains("sometimes"), "{launch_choice}");
+}

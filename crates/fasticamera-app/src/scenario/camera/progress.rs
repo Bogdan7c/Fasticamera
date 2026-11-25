@@ -104,6 +104,10 @@ pub enum EventNote {
         request: u64,
         outcome: serde_json::Value,
     },
+    /// Человек выбрал правило возобновления белого (имя правила, как в конфиге: `take_from_source`/`keep_last`).
+    WhiteResumeRuleChanged {
+        rule: serde_json::Value,
+    },
     /// Смена объектива завершена: первый кадр новой камеры пришёл (`from == to` — возврат на прежний).
     LensSwitched {
         from: LensRole,
@@ -213,6 +217,9 @@ impl EventNote {
                     WhiteOrigin::Manual => "manual".to_owned(),
                     WhiteOrigin::Fallback => "fallback".to_owned(),
                 },
+            },
+            CameraEvent::WhiteResumeRuleChanged { rule } => EventNote::WhiteResumeRuleChanged {
+                rule: serde_json::to_value(rule).unwrap_or(serde_json::Value::Null),
             },
             CameraEvent::WhiteRequestFinished { result } => EventNote::WhiteRequestFinished {
                 request: result.request.0,

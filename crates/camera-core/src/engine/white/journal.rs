@@ -5,7 +5,7 @@
 
 use camera_contract::white::{HeldWhite, WhiteOrigin};
 
-use crate::white::WhiteRequestResult;
+use crate::white::{WhiteRequestResult, WhiteResumeRule};
 
 /// Цель журнала: один фильтр собирает и белую, и её память.
 pub(super) const LOG_TARGET: &str = "fasticamera::white";
@@ -47,4 +47,9 @@ pub(super) fn request_finished(finished: &WhiteRequestResult) {
         outcome = ?finished.result,
         "заявка источнику белого закрыта"
     );
+}
+
+/// Человек выбрал правило возобновления белого (редкое событие: настройка, не шкала).
+pub(super) fn resume_rule_chosen(rule: WhiteResumeRule) {
+    tracing::info!(target: LOG_TARGET, rule = ?rule, "правило возобновления белого выбрано");
 }

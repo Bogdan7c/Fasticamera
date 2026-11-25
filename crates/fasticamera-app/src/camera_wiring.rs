@@ -146,6 +146,7 @@ fn three_a_wiring(config: &CameraConfig, links: &CameraLinks, effective: Exposur
         directives: links.white_directives.clone(),
         answers: links.white_answers.clone(),
         remembered: memory.load,
+        remembered_resume_rule: memory.resume_rule,
         memory: memory.memory,
         opening_source: WhiteSourceId::PHONE,
     };
@@ -193,6 +194,7 @@ fn spawn_engine(config: &CameraConfig, backend: CameraBackendParts, links: Camer
                 "движок камеры запущен, присутствие: фон до события Resumed"
             );
             let mut running = RunningCamera::new(runtime, handle, diagnostics);
+            send_white_resume_choice(config, running.handle());
             // Ответы источников белого будят движок тем же толчком, что предложения AE. Привязка не зависит от
             // выбора исполнителя экспозиции: белая владеет движком всегда.
             let white_waker = running.handle().three_a_waker();
@@ -214,6 +216,25 @@ fn spawn_engine(config: &CameraConfig, backend: CameraBackendParts, links: Camer
         Err(error) => {
             CameraServices::unavailable(format!("движок камеры не запущен: {error}"), config.scenarios.clone())
         }
+    }
+}
+
+/// Выбор правила возобновления белого, заданный параметром запуска (`camera.white_resume_choice`): уходит движку
+/// командой ДО первого `EnterForeground` (приложение стартует в фоне, `Resumed` приходит позже), поэтому первое же
+/// возобновление уже идёт по выбранному правилу, а сам выбор ложится в память как выбор человека. Не задан — ничего
+/// не шлём: правило решают память и конфиг движка. Отказ отправки (движок уже остановлен) не роняет запуск, но не
+/// молчит.
+fn send_white_resume_choice(config: &CameraConfig, handle: &camera_core::CameraHandle) {
+    let Some(rule) = config.white_resume_choice else {
+        return;
+    };
+    if let Err(error) = handle.set_white_resume_rule(rule) {
+        tracing::warn!(
+            target: LOG_TARGET,
+            ?rule,
+            %error,
+            "выбор правила возобновления белого не отправлен движку: действует память или конфиг"
+        );
     }
 }
 

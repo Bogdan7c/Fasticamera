@@ -7,6 +7,7 @@
 use camera_android::AndroidCameraConfig;
 use camera_core::CameraEngineConfig;
 use camera_core::config::CameraEngineConfigError;
+use camera_core::white::WhiteResumeRule;
 use raw_frame_stream::{RawFrameStreamConfig, RawFrameStreamConfigError};
 use serde::Deserialize;
 
@@ -43,6 +44,21 @@ pub struct CameraConfig {
     /// Память белой: файл в папке приложения или её отсутствие (`{"mode": "file"|"none", ...}`). Приёмка на
     /// телефоне (`device-smoke.sh`) всегда выключает память, чтобы прогоны не трогали белую владельца.
     pub white_memory: WhiteMemoryConfig,
+    /// Правило возобновления белого, выбранное человеком на один запуск (intent-параметр `white_resume_rule`;
+    /// `"take_from_source"` | `"keep_last"`). `None` — человек не выбирал: действует то, что запомнила память,
+    /// а без неё — умолчание конфига `engine.three_a.white.resume_rule`. Заданное значение приложение шлёт движку
+    /// командой `SetWhiteResumeRule` ДО первого `EnterForeground`, то есть как выбор человека: он ложится в память.
+    /// Сегодня это замена тумблера на экране (его делает сессия 16): тот же выбор пойдёт той же командой.
+    #[serde(deserialize_with = "deserialize_white_resume_choice")]
+    pub white_resume_choice: Option<WhiteResumeRule>,
+}
+
+/// Разбор поля `white_resume_choice` с именем поля в тексте ошибки (сам serde назвал бы только значение).
+fn deserialize_white_resume_choice<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<WhiteResumeRule>, D::Error> {
+    Option::<WhiteResumeRule>::deserialize(deserializer)
+        .map_err(|error| serde::de::Error::custom(format!("camera.white_resume_choice: {error}")))
 }
 
 /// Какая часть секции `camera` неверна.

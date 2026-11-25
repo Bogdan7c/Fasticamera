@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use camera_contract::control::{ColorTemperature, Tint, WhiteBalanceSetting};
-use camera_core::white::{RememberedOrigin, WhiteMemory, WhiteMemoryLoad, WhiteMemoryRecord};
+use camera_core::white::{RememberedOrigin, WhiteMemory, WhiteMemoryLoad, WhiteMemoryRecord, WhiteResumeRule};
 
 use super::*;
 
@@ -154,6 +154,11 @@ impl WhiteRecordSink for ScriptedSink {
         self.written.lock().expect("замок").push(*record);
         Ok(WriteCommit::Durable)
     }
+
+    /// Эти тесты про белую; правило возобновления проверяют `rule_tests` на своём приёмнике.
+    fn write_resume_rule(&mut self, _rule: WhiteResumeRule) -> Result<WriteCommit, WhiteMemoryError> {
+        Ok(WriteCommit::Durable)
+    }
 }
 
 #[test]
@@ -295,7 +300,7 @@ fn a_missing_directory_at_startup_means_nothing_remembered() {
 // --- Настоящий файл: не читается ---
 
 /// Кладёт файл с содержимым, открывает память и проверяет «не читается», карантин и сохранность содержимого.
-fn assert_unreadable_and_quarantined(content: &[u8], expected_reason: &str) {
+pub(super) fn assert_unreadable_and_quarantined(content: &[u8], expected_reason: &str) {
     let (directory, path) = app_directory();
     std::fs::write(path.join("white.json"), content).expect("файл записан");
 

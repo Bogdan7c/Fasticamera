@@ -12,6 +12,7 @@ use camera_contract::white::{WhiteAdjustment, WhiteSourceId, WhiteTransition};
 use super::owner::ManualOutcome;
 use crate::command::{CameraCommand, CommandId, CommandOutcome, InvalidStateReason};
 use crate::engine::CameraEngine;
+use crate::white::{ResumeRuleChoice, WhiteResumeRule};
 
 impl CameraEngine {
     /// Команда `SetWhite`: белая рукой. Работает и без потока: белая держится и ждёт камеру.
@@ -36,6 +37,15 @@ impl CameraEngine {
         match self.white.adjust_manual(adjustment, transition) {
             ManualOutcome::Changed => CommandOutcome::Accepted,
             ManualOutcome::AlreadyHeld => CommandOutcome::AlreadyInState,
+        }
+    }
+
+    /// Команда `SetWhiteResumeRule`: выбор правила возобновления. Работает и без потока, и в фоне; белую,
+    /// переход и ожидающую заявку не трогает.
+    pub(in crate::engine) fn decide_set_white_resume_rule(&mut self, rule: WhiteResumeRule) -> CommandOutcome {
+        match self.white.choose_resume_rule(rule) {
+            ResumeRuleChoice::Chosen => CommandOutcome::Accepted,
+            ResumeRuleChoice::AlreadyChosen => CommandOutcome::AlreadyInState,
         }
     }
 

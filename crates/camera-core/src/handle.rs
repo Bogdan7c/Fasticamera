@@ -24,7 +24,7 @@ use crate::lens_status::LensStatus;
 use crate::state::{CameraState, ClosedReason};
 use crate::status::{AppPresence, CameraCounters, CameraStatus, StreamStats};
 use crate::three_a_status::ThreeAStatus;
-use crate::white::WhiteStatus;
+use crate::white::{WhiteResumeRule, WhiteStatus};
 
 struct OutputState {
     status: CameraStatus,
@@ -230,6 +230,12 @@ impl CameraHandle {
     /// экрана ещё и `three_a.white.last_take` с номером этой команды.
     pub fn take_white(&self, source: WhiteSourceId, transition: WhiteTransition) -> Result<CommandId, CommandRejected> {
         self.send(CameraCommand::TakeWhite { source, transition })
+    }
+
+    /// Выбрать правило возобновления белого; действует со следующего возобновления и запоминается. Итог команды —
+    /// `Accepted` / `AlreadyInState`, событие — `WhiteResumeRuleChanged`.
+    pub fn set_white_resume_rule(&self, rule: WhiteResumeRule) -> Result<CommandId, CommandRejected> {
+        self.send(CameraCommand::SetWhiteResumeRule { rule })
     }
 
     /// Камера не нужна: закрыть и забыть желаемое.

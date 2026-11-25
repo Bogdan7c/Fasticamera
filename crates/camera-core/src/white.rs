@@ -24,6 +24,7 @@ use crate::three_a_status::ControlAdjustment;
 
 pub use camera_contract::white::HeldWhite;
 
+pub use crate::white_resume::{ResumeRuleChoice, WhiteResumeRule};
 pub use crate::white_take::{WhiteTakeReport, WhiteTakeState};
 
 /// Настройки белого (секция `three_a.white` конфига движка). Все числа — данные, обоснование рядом.
@@ -48,6 +49,19 @@ pub struct WhiteConfig {
     /// За сколько мс плавно принять ответ, пришедший после того, как кадры уже показаны (WB23: 0,3 с).
     /// Ноль — принимать сразу.
     pub late_transition_ms: u64,
+    /// Правило возобновления белого по умолчанию (решение владельца WB37: `take_from_source`). Выбор человека
+    /// (команда `SetWhiteResumeRule`, запомненный в памяти) сильнее этого значения.
+    #[serde(deserialize_with = "deserialize_resume_rule_field")]
+    pub resume_rule: WhiteResumeRule,
+}
+
+/// Разбор поля `resume_rule` с именем поля в тексте ошибки. Сам serde на неизвестное значение отвечает только
+/// «unknown variant `x`, expected ...» без пути: по такому тексту опечатку в конфиге не найти.
+fn deserialize_resume_rule_field<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<WhiteResumeRule, D::Error> {
+    WhiteResumeRule::deserialize(deserializer)
+        .map_err(|error| serde::de::Error::custom(format!("three_a.white.resume_rule: {error}")))
 }
 
 impl Default for WhiteConfig {
@@ -60,6 +74,7 @@ impl Default for WhiteConfig {
             fallback_duv: 0.0,
             answer_timeout_ms: 3_000,
             late_transition_ms: 300,
+            resume_rule: WhiteResumeRule::default(),
         }
     }
 }
@@ -207,6 +222,11 @@ pub enum WhiteMemoryLoad {
 pub trait WhiteMemory: Send {
     fn save(&mut self, record: WhiteMemoryRecord);
 
+    /// Запомнить выбор правила возобновления, сделанный человеком. Те же обещания, что у [`Self::save`]: не
+    /// блокирует, запись вправе отложиться, [`Self::flush`] кладёт её сразу. Белую и правило память хранит
+    /// независимо: запись одного не стирает другое.
+    fn save_resume_rule(&mut self, rule: WhiteResumeRule);
+
     /// «Пиши немедленно»: всё принятое, но ещё не записанное, должно лечь на диск без ожидания очередного
     /// интервала. Метод **не ждёт диска** на потоке движка: он только снимает отсрочку у потока записи. Без
     /// принятого и несброшенного — ничего не делает. Движок зовёт его, когда приложение уходит в фон: процесс
@@ -221,6 +241,8 @@ pub struct NoWhiteMemory;
 impl WhiteMemory for NoWhiteMemory {
     fn save(&mut self, _record: WhiteMemoryRecord) {}
 
+    fn save_resume_rule(&mut self, _rule: WhiteResumeRule) {}
+
     fn flush(&mut self) {}
 }
 
@@ -232,6 +254,9 @@ pub struct WhiteWiring {
     pub answers: WhiteAnswerChannel,
     /// Что помнила память к старту (читает корень композиции до создания движка).
     pub remembered: WhiteMemoryLoad,
+    /// Правило возобновления, которое человек выбрал раньше и память сохранила (`None` — выбора в памяти нет,
+    /// действует конфиг). Хранится отдельно от [`Self::remembered`]: выбор правила возможен до первой белой.
+    pub remembered_resume_rule: Option<WhiteResumeRule>,
     /// Запись памяти.
     pub memory: Box<dyn WhiteMemory>,
     /// Источник, которого спрашивают при каждом возобновлении приложения (WB22). Сегодня — «телефон».
@@ -245,6 +270,7 @@ impl Default for WhiteWiring {
             directives: DirectiveSlot::new(),
             answers: WhiteAnswerChannel::new(),
             remembered: WhiteMemoryLoad::NothingRemembered,
+            remembered_resume_rule: None,
             memory: Box::new(NoWhiteMemory),
             opening_source: WhiteSourceId::PHONE,
         }
@@ -256,6 +282,7 @@ impl std::fmt::Debug for WhiteWiring {
         formatter
             .debug_struct("WhiteWiring")
             .field("remembered", &self.remembered)
+            .field("remembered_resume_rule", &self.remembered_resume_rule)
             .field("opening_source", &self.opening_source)
             .finish_non_exhaustive()
     }
@@ -341,7 +368,8 @@ pub enum WhiteMemoryStartup {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct WhiteMemoryState {
     pub startup: WhiteMemoryStartup,
-    /// Сколько записей движок передал памяти за свою жизнь (успех записи видит реализация).
+    /// Сколько записей движок передал памяти за свою жизнь, белой и правила вместе (успех записи видит
+    /// реализация). Выбор правила — тоже запись: он лежит в том же файле.
     pub saves_requested: u64,
 }
 
@@ -359,6 +387,8 @@ pub struct WhiteStatus {
     /// сюда не попадает: она видна в [`Self::request`].
     pub last_take: Option<WhiteTakeReport>,
     pub memory: WhiteMemoryState,
+    /// Действующее правило возобновления: выбор человека, а если его нет — умолчание конфига. Для экрана настроек.
+    pub resume_rule: WhiteResumeRule,
     /// Сколько ответов отброшено как чужих (номер не действующей заявки): гонки видны в диагностике.
     pub stale_answers: u64,
 }
@@ -379,6 +409,7 @@ impl WhiteStatus {
                 startup: WhiteMemoryStartup::NothingRemembered,
                 saves_requested: 0,
             },
+            resume_rule: WhiteConfig::default().resume_rule,
             stale_answers: 0,
         }
     }

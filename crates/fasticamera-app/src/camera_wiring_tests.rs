@@ -234,6 +234,86 @@ fn white_memory_opened_by_the_composition_root_receives_the_manual_white_and_rep
     std::fs::remove_dir_all(path).expect("уборка");
 }
 
+/// Выбор правила, заданный параметром запуска (`camera.white_resume_choice`), уходит движку командой при сборке,
+/// ложится в настоящий файл памяти как выбор человека, и после «перезапуска» правило берётся из файла без параметра.
+#[test]
+fn the_launch_choice_of_the_resume_rule_reaches_the_engine_and_is_remembered_in_the_file() {
+    use camera_core::white::WhiteResumeRule;
+
+    use crate::app_directory::AppDirectory;
+    use crate::white_memory::{WhiteMemoryConfig, WhiteMemoryHandoff, open_white_memory};
+
+    let path = std::env::temp_dir().join(format!("fasticamera-wiring-rule-{}", std::process::id()));
+    std::fs::create_dir_all(&path).expect("папка создана");
+    let directory = AppDirectory::new(path.to_string_lossy().into_owned()).expect("папка годится");
+    let start = |choice: Option<WhiteResumeRule>| {
+        let mut config = CameraConfig::default();
+        config.viewfinder_autostart.enabled = false;
+        config.white_resume_choice = choice;
+        start_camera_with_links(
+            &config,
+            CameraBackendParts {
+                factory: camera_core::fake::FakeBackendControl::new().factory(),
+                diagnostics: Arc::new(camera_android::BackendDiagnostics::new(4)),
+                raw_stream: RawStreamServices::detached(),
+            },
+            CameraLinks {
+                white_memory: WhiteMemoryHandoff::holding(open_white_memory(&directory, &WhiteMemoryConfig::default())),
+                ..CameraLinks::default()
+            },
+        )
+    };
+
+    // Запуск с параметром: правило keep_last действует и уходит в файл.
+    let services = start(Some(WhiteResumeRule::KeepLast));
+    let handle = services.running().expect("запущен").handle().clone();
+    handle
+        .wait_until_status(WAIT, |status| {
+            status.three_a.white.resume_rule == WhiteResumeRule::KeepLast
+        })
+        .expect("выбор параметра запуска дошёл до владельца белого");
+    let deadline = std::time::Instant::now() + WAIT;
+    while services.white_memory_stats().saved == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "выбор не дошёл до диска: {:?}",
+            services.white_memory_stats()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let text = std::fs::read_to_string(path.join("white.json")).expect("файл памяти записан");
+    assert!(text.contains("\"resume_rule\": \"keep_last\""), "{text}");
+    drop(services);
+
+    // Следующий запуск без параметра: правило из файла сильнее умолчания конфига.
+    let services = start(None);
+    let handle = services.running().expect("запущен").handle().clone();
+    assert_eq!(
+        handle.status().three_a.white.resume_rule,
+        WhiteResumeRule::KeepLast,
+        "выбор человека пережил перезапуск процесса"
+    );
+    drop(services);
+
+    // Без параметра и без файла правило — умолчание конфига.
+    std::fs::remove_dir_all(&path).expect("уборка");
+    std::fs::create_dir_all(&path).expect("папка создана");
+    let services = start(None);
+    assert_eq!(
+        services
+            .running()
+            .expect("запущен")
+            .handle()
+            .status()
+            .three_a
+            .white
+            .resume_rule,
+        WhiteResumeRule::TakeFromSource
+    );
+    drop(services);
+    std::fs::remove_dir_all(path).expect("уборка");
+}
+
 // --- Композиция нашего AE (08a): ящик предложений, толчок и переключатель `exposure_controller` ---
 
 mod auto_exposure_composition {

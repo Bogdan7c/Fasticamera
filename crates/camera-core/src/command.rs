@@ -7,9 +7,11 @@ use camera_contract::ids::{CameraTarget, LensRole};
 use camera_contract::stream::StreamMode;
 use camera_contract::three_a::{ExposureBracket, SensorPoint, ThreeAProfile};
 use camera_contract::white::{WhiteAdjustment, WhiteSourceId, WhiteTransition};
+
 use serde::Serialize;
 
 use crate::backend::UnsupportedStream;
+use crate::white::WhiteResumeRule;
 
 /// Номер команды: выдаётся при отправке, по нему итог находится в событиях.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
@@ -92,6 +94,12 @@ pub enum CameraCommand {
         source: WhiteSourceId,
         transition: WhiteTransition,
     },
+    /// Правило возобновления белого (WB36): выбор человека, который сильнее умолчания конфига и запоминается
+    /// между запусками. Работает без потока и в фоне; белую, переход и ожидающую заявку не трогает, действует со
+    /// следующего возобновления. Итог: `Accepted` или `AlreadyInState` (именно это правило человек уже выбирал).
+    SetWhiteResumeRule {
+        rule: WhiteResumeRule,
+    },
     /// Камера не нужна: закрыть и забыть желаемое.
     Close,
     /// Приложение ушло с переднего плана: отпустить камеру, желаемое сохранить.
@@ -119,6 +127,7 @@ impl CameraCommand {
             CameraCommand::SetWhite { .. } => "set_white",
             CameraCommand::AdjustWhite { .. } => "adjust_white",
             CameraCommand::TakeWhite { .. } => "take_white",
+            CameraCommand::SetWhiteResumeRule { .. } => "set_white_resume_rule",
             CameraCommand::Close => "close",
             CameraCommand::EnterBackground => "enter_background",
             CameraCommand::EnterForeground => "enter_foreground",

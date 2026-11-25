@@ -40,7 +40,8 @@ scope-contract = { path = "crates/scope-contract" }
 scope-model = { path = "crates/scope-model" }
 photo-output = { path = "crates/photo-output" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# float_roundtrip: белая из файла памяти должна возвращаться теми же двоичными числами (К и Duv «ни на бит»).
+serde_json = { version = "1", features = ["float_roundtrip"] }
 thiserror = "2"
 tracing = "0.1.44"
 # Только реестр и фильтр по целям: форматтеры fmt и regex-фильтр EnvFilter не нужны.
