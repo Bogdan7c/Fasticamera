@@ -9,42 +9,45 @@
 //! 1. **Теплота, оттенок** → [`white::WhiteShift`]: сдвиг белой точки «для рисования» ДО перевода белой точки в
 //!    нейтраль камеры (делает [`crate::params::IspParams::resolve`]). AE, статистика AWB, `AsShotNeutral` DNG,
 //!    сглаживание AWB и белая вспышки видят НЕсдвинутую точку.
-//! 2. **Контраст, средние тона, тени, света** → [`ToneKnobAmounts`]: через единый шов модели основы
-//!    ([`crate::tone::knobs`]); вторая кривая не добавляется.
+//! 2. **Контраст, средние тона, тени, света** → [`tone_shape::LookTone`]: отдельная стадия сразу после основы,
+//!    одинаковая для всех моделей (решения 236, 244); нейтраль — пропуск флагом (`None`).
 //! 3. **Колёса цвета по зонам, насыщенность, сочность, полосы** → [`color::LookColorParams`]: стадия в OKLab
-//!    рабочего пространства `W` после основы; колёса ([`wheels::LookWheels`]) — её первый шаг; нейтраль — пропуск
+//!    рабочего пространства `W` после тона; колёса ([`wheels::LookWheels`]) — её первый шаг; нейтраль — пропуск
 //!    стадии флагом (`None`), нейтральные колёса — пропуск своего шага (`wheels: None`).
 //! 4. **LUT** → [`lut::LookLut`]: после цвета вида, до перевода в цвета выхода.
 //!
-//! Стадии 3 и 4 и сдвиг белой не знают, какая модель основы выбрана: от неё берётся только рабочее
+//! Стадии 2–4 и сдвиг белой не знают, какая модель основы выбрана: от неё берётся только рабочее
 //! пространство `W` ([`crate::tone::base::ToneBase::working_primaries`]).
 
 pub mod bands;
 pub mod color;
 pub mod lut;
 pub mod model;
+pub mod range;
 pub mod stage;
+pub mod tone_shape;
 pub mod validation;
 pub mod wheels;
 pub mod white;
 
 use std::sync::Arc;
 
-use look_contract::{HueBandId, LookKnob, LookSettings};
+use look_contract::{HueBandId, LookSettings};
 
 use crate::color::chromaticity::Primaries;
-use crate::tone::knobs::{ToneKnobAmounts, ToneKnobUnsupported};
 use color::LookColorParams;
 use lut::LookLut;
 use model::{InvalidLookModel, LookModelSettings};
+use tone_shape::LookTone;
 use white::{WhiteShift, WhiteShiftLimit};
 
 /// Версия набора разрешённых чисел вида (растёт, когда меняется смысл или состав полей [`LookParams`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LookParamsVersion(pub u32);
 
-/// Текущая версия [`LookParams`]: 1 — первая модель (14a), 2 — колёса цвета по зонам в стадии цвета (14i).
-pub const CURRENT_LOOK_PARAMS_VERSION: LookParamsVersion = LookParamsVersion(2);
+/// Текущая версия [`LookParams`]: 1 — первая модель (14a), 2 — колёса цвета по зонам в стадии цвета (14i),
+/// 3 — тон вида отдельной стадией после основы (14l).
+pub const CURRENT_LOOK_PARAMS_VERSION: LookParamsVersion = LookParamsVersion(3);
 
 /// Входы вида в обработку кадра: значения ручек, модель вида и (опционально) таблица.
 ///
@@ -88,9 +91,7 @@ impl Default for LookControls {
 pub struct LookReport {
     /// Правки полос, которых нет в модели (id неизвестен): игнорируются.
     pub unknown_band_ids: Vec<HueBandId>,
-    /// Ненулевые ручки тона, которых выбранная модель основы не поддерживает: не применены.
-    pub unsupported_tone_knobs: Vec<ToneKnobUnsupported>,
-    /// Упёрся ли сдвиг белой в край таблицы Робертсона (заполняет `IspParams::resolve`).
+    /// Сжат ли ход теплоты краем таблицы Робертсона (заполняет `IspParams::resolve`).
     pub white_shift_limit: WhiteShiftLimit,
 }
 
@@ -98,8 +99,8 @@ pub struct LookReport {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LookParams {
     pub version: LookParamsVersion,
-    /// Ручки тона в единицах, не зависящих от модели основы.
-    pub tone: ToneKnobAmounts,
+    /// Стадия тона вида; `None` — все четыре ручки тона в нуле, пропускается целиком.
+    pub tone: Option<LookTone>,
     /// Сдвиг белой точки для рисования; применяется в `IspParams::resolve` до перевода в нейтраль камеры.
     pub white_shift: WhiteShift,
     /// Стадия цвета вида; `None` — нейтрально, пропускается целиком.
@@ -125,13 +126,12 @@ impl LookParams {
         let resolved_color = LookColorParams::resolve(&controls.settings, model, working)?;
         Ok(Self {
             version: CURRENT_LOOK_PARAMS_VERSION,
-            tone: tone_amounts(model, &controls.settings),
+            tone: LookTone::resolve(&controls.settings, &model.tone),
             white_shift: white_shift(model, &controls.settings),
             color: resolved_color.params,
             lut: controls.lut.clone(),
             report: LookReport {
                 unknown_band_ids: resolved_color.unknown_band_ids,
-                unsupported_tone_knobs: Vec::new(),
                 white_shift_limit: WhiteShiftLimit::Unlimited,
             },
         })
@@ -139,14 +139,23 @@ impl LookParams {
 
     /// Ничего не меняет в картинке (кроме, возможно, пустой диагностики): тон, цвет, белая, LUT — нейтральны.
     pub fn is_neutral(&self) -> bool {
-        self.tone.is_neutral() && self.white_shift.is_none() && self.color.is_none() && self.lut.is_none()
+        self.tone.is_none() && self.white_shift.is_none() && self.color.is_none() && self.lut.is_none()
     }
 
-    /// Применяет цвет вида и таблицу к свету `W` одного пикселя (порядок: цвет, затем таблица).
+    /// Картинку после основы ничего не меняет: стадий вида над светом экрана нет (сдвиг белой — раньше основы).
+    pub fn has_no_display_stages(&self) -> bool {
+        self.tone.is_none() && self.color.is_none() && self.lut.is_none()
+    }
+
+    /// Применяет стадии вида к свету `W` одного пикселя (порядок: тон, цвет, таблица).
     pub fn apply_to_pixel(&self, working_rgb: [f32; 3]) -> [f32; 3] {
-        let colored = match &self.color {
-            Some(color) => color.apply(working_rgb),
+        let toned = match &self.tone {
+            Some(tone) => tone.apply(working_rgb),
             None => working_rgb,
+        };
+        let colored = match &self.color {
+            Some(color) => color.apply(toned),
+            None => toned,
         };
         match &self.lut {
             Some(lut) => lut.apply(colored),
@@ -164,31 +173,19 @@ pub enum ResolveLookError {
     Singular(#[from] crate::color::matrix::SingularMatrix),
 }
 
-/// Ручки тона → единицы без привязки к модели основы (диапазоны — модель вида). Нуль ручки — ровно нуль.
-pub fn tone_amounts(model: &LookModelSettings, settings: &LookSettings) -> ToneKnobAmounts {
-    let scaled = |knob: LookKnob, range: f32| if knob.is_neutral() { 0.0 } else { knob.get() * range };
-    ToneKnobAmounts {
-        contrast_log2: scaled(settings.contrast, model.contrast_range_log2),
-        midtones_ev: scaled(settings.midtones, model.midtones_range_ev),
-        shadows: scaled(settings.shadows, model.shadows_range_log2),
-        highlights: scaled(settings.highlights, model.highlights_range_log2),
-    }
-}
-
 /// Теплота и оттенок → сдвиг белой точки. «+ теплота» СНИЖАЕТ майреды предполагаемого света (картинка
 /// теплее), «+ оттенок» поднимает Duv предполагаемого света (картинка пурпурнее): см. [`white`].
 pub fn white_shift(model: &LookModelSettings, settings: &LookSettings) -> WhiteShift {
+    let warmth = model.warmth_mired.amount(settings.warmth);
     WhiteShift {
-        mired: if settings.warmth.is_neutral() {
-            0.0
+        // `0.0 − 0.0`, а не `−0.0`: нейтраль обязана быть ровно нулём ([`WhiteShift::is_none`]).
+        mired: 0.0 - warmth,
+        mired_edge: if warmth < 0.0 {
+            model.warmth_mired.minus
         } else {
-            -settings.warmth.get() * model.warmth_range_mired
+            model.warmth_mired.plus
         },
-        duv: if settings.tint.is_neutral() {
-            0.0
-        } else {
-            settings.tint.get() * model.tint_range_duv
-        },
+        duv: model.tint_duv.amount(settings.tint),
     }
 }
 

@@ -22,13 +22,25 @@ use ui_draw::draw_list::DrawItem;
 use ui_draw::scene_bridge::NodePlacementPx;
 
 use super::finger_gate::{FingerGate, GatedEvent};
-use crate::drive::{GrowthDirection, ScrollTransition};
+use super::pacing::{HapticPacer, HapticPacing};
+use crate::drive::{DragOrigin, GrowthDirection, ScrollTransition};
 use crate::environment::ElementEnvironment;
 use crate::pan::PanUpdate;
 use crate::scale::{ScaleError, ScaleSpec, SnapPolicy, SnapScale, TickVisibility};
 use crate::tokens::{ColorTokens, RulerTokens, ScaleDensity};
 use crate::value::{ExactPosition, Quantization, QuantizedLinear, RulerAxis};
-use crate::view::{MajorTickPeriod, PxPerPt, ViewError, ruler_items};
+use crate::view::{MajorTickPeriod, PxPerPt, RulerMarkerStyle, ViewError, ruler_items, ruler_marker_item};
+
+/// Ощущение линейки под пальцем. По умолчанию — прежнее поведение (Exposure, белое): отсчёт от точки распознавания
+/// пана и щелчок на каждый кадр с пройденной риской. Ручки раздела калибровки включают другое явно.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RulerFeel {
+    /// От какой точки считать смещение пальца: [`DragOrigin::FromTouchDown`] — значение сразу догоняет палец
+    /// (путь до распознавания пана не пропадает).
+    pub drag_origin: DragOrigin,
+    /// Темп щелчков отдачи.
+    pub haptic_pacing: HapticPacing,
+}
 
 /// Описание линейки без чисел экрана: модель, плотность и период крупной риски.
 #[derive(Debug, Clone)]
@@ -40,6 +52,8 @@ pub struct RulerSpec<M = QuantizedLinear> {
     /// Каждый какой шаг рисуется крупной риской. «Шаг» — расстояние между соседними рисками модели
     /// ([`RulerAxis::tick_step_units`]).
     pub major_every_steps: NonZeroU32,
+    /// Ощущение под пальцем (по умолчанию — прежнее).
+    pub feel: RulerFeel,
 }
 
 /// Линейка-ручка. Палец ведёт её горизонтально: палец влево — значение растёт (как линейка Exposure).
@@ -47,6 +61,7 @@ pub struct RulerControl<M: RulerAxis = QuantizedLinear> {
     scale: SnapScale<M>,
     gate: FingerGate,
     major_period: MajorTickPeriod,
+    pacer: HapticPacer,
 }
 
 impl<M: RulerAxis> RulerControl<M> {
@@ -70,12 +85,13 @@ impl<M: RulerAxis> RulerControl<M> {
             snap,
             density: spec.density,
             ticks: TickVisibility::Visible,
-            ..ScaleSpec::default()
+            drag_origin: spec.feel.drag_origin,
         };
         Ok(Self {
             scale: SnapScale::new(spec.model, initial_value, scale_spec, environment, now)?,
             gate: FingerGate::default(),
             major_period: MajorTickPeriod::every_steps(spec.major_every_steps),
+            pacer: HapticPacer::new(spec.feel.haptic_pacing, environment.tokens)?,
         })
     }
 
@@ -87,6 +103,11 @@ impl<M: RulerAxis> RulerControl<M> {
     /// Положение в единицах модели без округления: по нему видно, где линейка стоит между ступенями.
     pub fn position_steps(&self, now: MonotonicNanos) -> f64 {
         self.scale.position_units(now)
+    }
+
+    /// Сколько щелчков отдачи подавил ограничитель частоты (0, если темп не ограничен): для диагностики и тестов.
+    pub fn suppressed_haptics(&self) -> u64 {
+        self.pacer.suppressed_count()
     }
 
     /// Пределы линейки сейчас.
@@ -127,7 +148,8 @@ impl<M: RulerAxis> RulerControl<M> {
     pub fn advance(&mut self, now: MonotonicNanos) -> Vec<GatedEvent<M::Value>> {
         self.scale.advance(now);
         let events = self.scale.drain_events();
-        self.gate.route(events)
+        let routed = self.gate.route(events);
+        self.pacer.filter(routed, now)
     }
 
     /// Риски и жёлтая отметка внутри размещения `placement` узла зоны пана.
@@ -147,6 +169,33 @@ impl<M: RulerAxis> RulerControl<M> {
             ruler_tokens,
             self.major_period,
             colors,
+        )
+    }
+}
+
+impl<M: RulerAxis> RulerControl<M> {
+    /// Программная метка на значении `value` (например, «значение пресета»): точка под рядом рисок. `None` — метка
+    /// сейчас вне видимой части линейки. Метка не даёт действий, не магнитит и не двигает линейку: это рисунок.
+    pub fn marker_item(
+        &self,
+        placement: &NodePlacementPx,
+        now: MonotonicNanos,
+        px_per_pt: PxPerPt,
+        ruler_tokens: &RulerTokens,
+        (value, style): (M::Value, RulerMarkerStyle),
+    ) -> Result<Option<DrawItem>, ViewError> {
+        let position_units = self
+            .scale
+            .model()
+            .position_of(value)
+            .map_err(|_| ViewError::UnrepresentableMarkerValue)?;
+        ruler_marker_item(
+            placement,
+            &self.scale,
+            now,
+            px_per_pt,
+            ruler_tokens,
+            (position_units, style),
         )
     }
 }

@@ -53,10 +53,11 @@ const MIN_ZONE_WIDTH_LIGHTNESS: f32 = 0.1;
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct WheelModelSettings {
-    /// `C_max`: сдвиг цветности OKLab при толчке на краю круга (сила 1). `[estimate]` по замеру 14i:
-    /// 0,05 — заметный, но не кислотный тон зоны.
+    /// `C_max`: сдвиг цветности OKLab при толчке на краю круга (сила 1). 0,20 — выбор владельца по снимкам 14l:
+    /// край — заведомо перебор (решение 246), рабочая зона у центра круга.
     pub push_chroma_range: f32,
-    /// `L_max`: сдвиг светлоты OKLab при кольце на краю (±1). `[estimate]`; ограничен монотонностью (см. модуль).
+    /// `L_max`: сдвиг светлоты OKLab при кольце на краю (±1). 0,135 — почти предел монотонности 0,1384 (см. модуль):
+    /// дальше светлое стало бы темнее тёмного, физически не расширить (решение 246).
     pub ring_lightness_range: f32,
     /// Серый экрана, вокруг которого делятся зоны: линейная яркость `Y_g` в `(0, 1)`. `[estimate]`: 0,20 — серый,
     /// в который основы тона по умолчанию переводят серый сцены (`display_middle_gray`).
@@ -70,8 +71,8 @@ pub struct WheelModelSettings {
 impl Default for WheelModelSettings {
     fn default() -> Self {
         Self {
-            push_chroma_range: 0.05,
-            ring_lightness_range: 0.10,
+            push_chroma_range: 0.20,
+            ring_lightness_range: 0.135,
             zone_pivot_display_gray: 0.20,
         }
     }

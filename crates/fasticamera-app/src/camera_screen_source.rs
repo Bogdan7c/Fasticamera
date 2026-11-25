@@ -351,6 +351,12 @@ impl CameraScreenSource {
         self.screen.white_touch_targets()
     }
 
+    /// Цели касаний раздела калибровки (линейки строк, «↻», точки полос, окно списка); `None` — раздела на экране
+    /// нет. Сквозные тесты ведут настоящий палец по этим точкам: взять их из другого места они не могут.
+    pub fn calibration_touch_targets(&self) -> Option<camera_screen::CalibrationTouchTargets> {
+        self.screen.calibration_touch_targets()
+    }
+
     /// Шаг 1: вход из канала. Забираем всё, что накопилось к этому кадру (очередь ограничена конфигом).
     fn apply_pending_input(&mut self) -> bool {
         let mut any = false;

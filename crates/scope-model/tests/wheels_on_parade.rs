@@ -38,10 +38,16 @@ fn lift_toward_blue() -> LookColorParams {
     lift_toward_hue(BLUE_HUE_DEGREES)
 }
 
-/// Стадия цвета вида с одним колесом Lift на полную силу к оттенку `hue_degrees`.
-fn lift_toward_hue(hue_degrees: f32) -> LookColorParams {
+/// Сила толчка в тестах: четверть хода. С 14l край толчка — 0,20 цветности OKLab (решение 246), четверть — это
+/// прежний край 0,05: заметный тон теней, ещё внутри охвата. На полном крае цвет теней уходит за охват, и мягкое
+/// сжатие охвата выхода поднимает соседние каналы (R′ в тенях растёт), поэтому «R′ и G′ ниже нейтральных» там
+/// не выполняется по построению; это проверяет отдельный тест.
+const PUSH_STRENGTH: f32 = 0.25;
+
+/// Стадия цвета вида с одним колесом Lift силой `strength` к оттенку `hue_degrees`.
+fn lift_with_strength(hue_degrees: f32, strength: f32) -> LookColorParams {
     let lift = ColorWheel {
-        push: WheelPush::from_hue_degrees(hue_degrees, 1.0).unwrap(),
+        push: WheelPush::from_hue_degrees(hue_degrees, strength).unwrap(),
         ..ColorWheel::NEUTRAL
     };
     let settings = LookSettings {
@@ -52,6 +58,11 @@ fn lift_toward_hue(hue_degrees: f32) -> LookColorParams {
         .unwrap()
         .params
         .expect("тронутое колесо включает стадию цвета вида")
+}
+
+/// Колесо Lift к оттенку `hue_degrees` силой [`PUSH_STRENGTH`].
+fn lift_toward_hue(hue_degrees: f32) -> LookColorParams {
+    lift_with_strength(hue_degrees, PUSH_STRENGTH)
 }
 
 /// Коды экрана серой рампы: `look` — стадия цвета вида между основой и выходом (`None` — без вида).
@@ -163,4 +174,23 @@ fn parade_tracks_the_lift_push_direction() {
         blue_over_red < -3.0,
         "жёлтый Lift не опустил B' под R': {blue_over_red}"
     );
+}
+
+/// На полном крае толчка синева теней только сильнее: синий след ещё выше над красным, света по-прежнему не тронуты.
+#[test]
+fn the_full_push_edge_paints_the_shadows_bluer_than_the_quarter() {
+    let rule = ParadeRule::new(COLUMNS, LEVELS).unwrap();
+    let shadows = 0..EDGE_COLUMNS;
+    let highlights = COLUMNS - EDGE_COLUMNS..COLUMNS;
+    let blue_over_red = |strength: f32, columns: &std::ops::Range<u32>| {
+        let wheels = lift_with_strength(BLUE_HUE_DEGREES, strength);
+        let counters = accumulate(&ramp_codes(Some(&wheels)), SampleStride::EVERY_PIXEL, &rule).unwrap();
+        mean_trace_level(&counters, 2, columns.clone()) - mean_trace_level(&counters, 0, columns.clone())
+    };
+    let (quarter, full) = (blue_over_red(PUSH_STRENGTH, &shadows), blue_over_red(1.0, &shadows));
+    assert!(
+        full > quarter + 10.0,
+        "полный край {full} против четверти {quarter} уровней"
+    );
+    assert!(blue_over_red(1.0, &highlights).abs() < 0.25, "света окрасились");
 }

@@ -27,7 +27,7 @@ fn saturation_multiplies_chroma_by_the_formula_and_keeps_hue_at_any_strength() {
         for k in [-0.7_f32, -0.2, 0.3, 1.0] {
             let params = resolve_color(&settings_with(|s| s.saturation = knob(k))).unwrap();
             let (new_lightness, new_chroma, new_hue) = lch(params.apply(source));
-            let expected = chroma * (1.0 + k * model.saturation_range);
+            let expected = chroma * (1.0 + model.saturation.amount(knob(k)));
             assert!(
                 (new_chroma - expected).abs() < 2e-4,
                 "h={hue} k={k}: {new_chroma} против {expected}"
@@ -100,7 +100,7 @@ fn a_band_moves_its_own_colours_and_barely_touches_the_far_ones() {
     // Центр зелёной полосы — 142°: сдвиг оттенка на край ручки.
     let (_, _, hue) = lch(params.apply(colour(142.0, 0.15)));
     assert!(
-        (hue_distance(hue, 142.0) - model.band_hue_range_degrees).abs() < 0.6,
+        (hue_distance(hue, 142.0) - model.band_hue_degrees.plus).abs() < 0.6,
         "зелёный сдвинулся на {}°",
         hue_distance(hue, 142.0)
     );
@@ -117,13 +117,13 @@ fn a_band_moves_its_own_colours_and_barely_touches_the_far_ones() {
     let desaturate = resolve_color(&settings_with(|s| s.bands = band_adjustment("blue", 0.0, -1.0, 0.0))).unwrap();
     let (_, chroma, _) = lch(desaturate.apply(colour(264.0, 0.15)));
     assert!(
-        (chroma - 0.15 * (1.0 - model.band_saturation_range)).abs() < 2e-3,
+        (chroma - 0.15 * (1.0 - model.band_saturation.minus)).abs() < 2e-3,
         "{chroma}"
     );
     let brighten = resolve_color(&settings_with(|s| s.bands = band_adjustment("blue", 0.0, 0.0, 1.0))).unwrap();
     let (lightness, _, _) = lch(brighten.apply(colour(264.0, 0.15)));
     assert!(
-        (lightness - 0.6 * (1.0 + model.band_luminance_range)).abs() < 3e-3,
+        (lightness - 0.6 * (1.0 + model.band_luminance.plus)).abs() < 3e-3,
         "{lightness}"
     );
     let (far_lightness, _, _) = lch(brighten.apply(colour(60.0, 0.15)));

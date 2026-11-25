@@ -41,10 +41,12 @@ use shell_contract::surface::SurfaceSize;
 use shell_contract::system_gesture::SystemGestureZones;
 use shell_contract::text_input::{TextInputService, TextRequest};
 use shell_contract::touch::{PointerId, SurfacePoint, TouchPhase, TouchSample};
-use ui_draw::draw_list::DrawList;
+use ui_draw::draw_list::{DrawItem, DrawList};
 use ui_draw::frame_source::{BackdropContinuity, UiFrameError, UiFrameRequest, UiFrameSource};
 use ui_draw::geometry::PxSize;
 use ui_draw::light::LightDirection;
+use ui_kit::tokens::{TextRoleKind, UiKitTokens};
+use ui_kit::view::{LabelPainter, PxPerPt};
 
 use crate::viewfinder_rig::{CellValues, ViewfinderBench, assert_image_color, reference_color_with_look};
 
@@ -54,7 +56,10 @@ const SURFACE: SurfaceSize = SurfaceSize {
     height_px: 2412,
 };
 /// Сколько кадров камеры готовит стенд: хватает на самый длинный тест, лишние не мешают.
-pub const CAMERA_FRAMES: usize = 48;
+///
+/// Длинные сценарии «палец ведёт линейку» (несколько протяжек по ~40 кадров, листание списка, сброс) берут сотни
+/// кадров; запас дешёвый (кадр камеры 64 × 48, сюжет — одна запись в таблице импортёра).
+pub const CAMERA_FRAMES: usize = 1500;
 /// Шаг времени кадров UI, мс.
 const FRAME_STEP_MS: i64 = 16;
 
@@ -241,6 +246,8 @@ pub struct CalibrationRig {
     pub framing_commands_skipped: u64,
     scene: CellValues,
     frame_index: i64,
+    /// Рисунок экрана, который источник отдал на последнем кадре (подписи значений читает `drawn_text_count`).
+    last_ui: Option<DrawList>,
 }
 
 impl CalibrationRig {
@@ -273,6 +280,7 @@ impl CalibrationRig {
             framing_commands_skipped: 0,
             scene,
             frame_index: 0,
+            last_ui: None,
         };
         rig.sender.send_action(ScreenAction::SurfaceResized(SURFACE));
         Some(rig)
@@ -374,7 +382,7 @@ impl CalibrationRig {
             px_per_pt: 1080.0 / 440.0,
             backdrop: BackdropContinuity::Live,
         };
-        self.source.produce_frame(&request).expect("кадр экрана");
+        self.last_ui = Some(self.source.produce_frame(&request).expect("кадр экрана"));
         self.deliver_inbox_to_the_backend();
         self.bench.show_next_frame();
     }
@@ -403,6 +411,22 @@ impl CalibrationRig {
             }
             self.outcomes.push(self.bench.backend.apply_viewfinder_command(command));
         }
+    }
+
+    /// Сколько раз на последнем кадре экрана нарисована подпись `text` ролью значения шкалы (`+30`, `−7`, `0`).
+    /// Раскладка текста та же, что у экрана: масштаб кадра стенда и токены по умолчанию.
+    pub fn drawn_scale_value_count(&self, text: &str) -> usize {
+        let tokens = UiKitTokens::default();
+        let expected = LabelPainter::new(&tokens.typography, PxPerPt::new(1080.0 / 440.0).expect("масштаб"))
+            .layout(text, TextRoleKind::ScaleValue)
+            .expect("раскладка подписи");
+        self.last_ui.as_ref().map_or(0, |list| {
+            list.leaf_items()
+                .filter(
+                    |item| matches!(item, DrawItem::Text(drawn) if drawn.run == expected && drawn.opacity.get() > 0.05),
+                )
+                .count()
+        })
     }
 
     /// Пиксели показанного видоискателя совпадают с эталоном `isp-model` для вида `look` на основе `base`.

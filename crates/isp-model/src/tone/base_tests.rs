@@ -217,31 +217,6 @@ fn a_blown_highlight_is_pure_white_on_every_working_model() {
 }
 
 #[test]
-fn knobs_reach_the_settings_of_the_selected_model_only() {
-    let legacy = ToneCurveSettings::default();
-    let amounts = ToneKnobAmounts {
-        contrast_log2: 0.5,
-        ..ToneKnobAmounts::default()
-    };
-    let aces = ToneBase::Aces(AcesSettings::default()).with_knobs(&legacy, &amounts);
-    let ToneBase::Aces(knobbed) = aces.base else {
-        panic!("модель сменилась при применении ручек");
-    };
-    assert_eq!(knobbed.contrast, AcesSettings::default().contrast * 0.5_f32.exp2());
-    assert_eq!(aces.legacy_curve, legacy);
-    assert!(aces.unsupported.is_empty());
-    let filmic = ToneBase::Filmic(FilmicSettings::default()).with_knobs(&legacy, &amounts);
-    let ToneBase::Filmic(knobbed) = filmic.base else {
-        panic!("модель сменилась при применении ручек");
-    };
-    assert_eq!(knobbed.slope, FilmicSettings::default().slope * 0.5_f32.exp2());
-    // Нейтральные ручки не меняют настройки ни на бит.
-    for base in all_models() {
-        assert_eq!(base.with_knobs(&legacy, &ToneKnobAmounts::default()).base, base);
-    }
-}
-
-#[test]
 fn invalid_settings_surface_as_the_error_of_their_own_model() {
     let aces = ToneBase::Aces(AcesSettings {
         scene_middle_gray: 2.0,

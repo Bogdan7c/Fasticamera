@@ -110,6 +110,9 @@ fn look_knobs_do_not_change_ae_or_awb_inputs() {
     let styled = params(&controls().with_look(looked(settings_with(|s| {
         s.saturation = knob(1.0);
         s.contrast = knob(1.0);
+        s.midtones = knob(-0.8);
+        s.shadows = knob(0.9);
+        s.highlights = knob(-0.9);
         s.warmth = knob(-0.7);
         s.tint = knob(0.5);
         s.bands = band_adjustment("orange", 1.0, 1.0, 1.0);
@@ -132,7 +135,7 @@ fn look_knobs_do_not_change_ae_or_awb_inputs() {
 }
 
 #[test]
-fn legacy_base_gets_the_colour_stage_clamped_and_reports_unsupported_knobs() {
+fn legacy_base_gets_the_colour_and_tone_stages_and_keeps_pixels_in_range() {
     let raw = raw_frame();
     let legacy_controls = controls().with_legacy_tone();
     let plain = run_reference(&raw, &params(&legacy_controls)).unwrap();
@@ -148,7 +151,6 @@ fn legacy_base_gets_the_colour_stage_clamped_and_reports_unsupported_knobs() {
         s.shadows = knob(0.5);
     });
     let styled_params = params(&legacy_controls.with_look(looked(settings)));
-    assert_eq!(styled_params.look.report.unsupported_tone_knobs.len(), 1);
     let styled = run_reference(&raw, &styled_params).unwrap();
     assert_ne!(styled.display_linear, plain.display_linear);
     assert!(
@@ -160,6 +162,76 @@ fn legacy_base_gets_the_colour_stage_clamped_and_reports_unsupported_knobs() {
             .all(|c| (0.0..=1.0).contains(c))
     );
     assert!(mean_chroma(&styled.display_encoded, 40, 60) > mean_chroma(&plain.display_encoded, 40, 60) * 1.3);
+}
+
+/// Кадр с двумя серыми половинами: левая тёмная (ниже серого экрана), правая светлая (выше него). Уровни — доли
+/// белого сенсора под лампой AWB.
+fn two_tone_frame(dark_level: f64, bright_level: f64) -> RawMosaic {
+    let sensor = sensor();
+    let pattern = sensor.pattern();
+    let mut samples = Vec::new();
+    for y in 0..SIZE.height {
+        for x in 0..SIZE.width {
+            let channel = pattern.channel_at(x, y).index();
+            let level = if x < SIZE.width / 2 { dark_level } else { bright_level };
+            let grey = LAMP_NEUTRAL[channel] as f32 * level as f32;
+            samples.push((BLACK + grey * WHITE_RANGE).round() as u16);
+        }
+    }
+    RawMosaic::new(SIZE, pattern, samples).unwrap()
+}
+
+/// Средний сигнал экрана (канал G) в колонках `from_column..to_column`.
+fn mean_signal(image: &DisplayEncodedImage, from_column: u32, to_column: u32) -> f32 {
+    let mut total = 0.0;
+    let mut count = 0.0;
+    for y in 0..image.size().height {
+        for x in from_column..to_column {
+            total += image.pixel(x, y)[1];
+            count += 1.0;
+        }
+    }
+    total / count
+}
+
+/// Раньше у прежней основы тени и света были недоступны (шов основы их не поддерживал). Теперь все четыре ручки тона
+/// — стадия вида после основы, и прежняя основа получает их сквозным путём до сигнала экрана.
+#[test]
+fn legacy_base_gets_the_shadows_knob_and_it_moves_only_the_dark_part() {
+    let raw = two_tone_frame(0.01, 0.9);
+    let legacy = controls().with_legacy_tone();
+    let plain = run_reference(&raw, &params(&legacy)).unwrap().display_encoded;
+    let lifted = run_reference(
+        &raw,
+        &params(
+            &legacy
+                .clone()
+                .with_look(looked(settings_with(|s| s.shadows = knob(1.0)))),
+        ),
+    )
+    .unwrap()
+    .display_encoded;
+    let dark_before = mean_signal(&plain, 4, 28);
+    let dark_after = mean_signal(&lifted, 4, 28);
+    assert!(
+        dark_after > dark_before + 0.05,
+        "тёмная часть не посветлела: {dark_before} -> {dark_after}"
+    );
+    let bright_before = mean_signal(&plain, 36, 60);
+    let bright_after = mean_signal(&lifted, 36, 60);
+    assert!(
+        (bright_after - bright_before).abs() < 2e-3,
+        "светлая часть сдвинулась от теней: {bright_before} -> {bright_after}"
+    );
+    // Зеркально: света трогают светлую часть и не трогают тёмную.
+    let darker_highlights = run_reference(
+        &raw,
+        &params(&legacy.with_look(looked(settings_with(|s| s.highlights = knob(-1.0))))),
+    )
+    .unwrap()
+    .display_encoded;
+    assert!(mean_signal(&darker_highlights, 36, 60) < bright_before - 0.02);
+    assert!((mean_signal(&darker_highlights, 4, 28) - dark_before).abs() < 2e-3);
 }
 
 #[test]

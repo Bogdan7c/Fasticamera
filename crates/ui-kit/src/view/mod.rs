@@ -46,7 +46,7 @@ pub use focus::focus_frame_items;
 pub use glass_surface::{GlassGroupBuilder, GlassShape, MemberIndex, member_transform};
 pub use panel::{panel_glass_group, panel_glass_group_hosted};
 pub use ring_picture::{RingGeometry, RingPictureError, ring_picture};
-pub use ruler::{MajorTickPeriod, ruler_items};
+pub use ruler::{MajorTickPeriod, RulerMarkerStyle, ruler_items, ruler_marker_item};
 pub use scale::PxPerPt;
 pub use scale_ticks::scale_items;
 pub use shutter::shutter_items;

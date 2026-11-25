@@ -168,26 +168,25 @@ fn a_knob_drag_without_look_facts_is_rejected_and_counted() {
 }
 
 #[test]
-fn a_knob_the_current_base_does_not_support_is_rejected() {
-    let mut facts = look_facts();
-    facts.unsupported_knobs = vec![GlobalKnob::Shadows];
-    let mut screen = Screen::calibrating(facts);
-
-    let unsupported = screen.step(ScreenAction::KnobDragged {
-        knob: GlobalKnob::Shadows,
-        value: knob(0.3),
-    });
-    let supported = screen.step(ScreenAction::KnobDragged {
-        knob: GlobalKnob::Highlights,
-        value: knob(0.3),
-    });
-
-    assert_eq!(
-        unsupported.outcome,
-        ActionOutcome::Rejected(Rejection::KnobUnsupportedByBase)
-    );
-    assert!(unsupported.effects.is_empty());
-    assert_eq!(supported.outcome, ActionOutcome::Applied);
+fn every_knob_is_accepted_on_every_tone_base() {
+    for base in ToneBaseModel::ALL {
+        let mut facts = look_facts();
+        facts.current.base = base;
+        facts.preset = facts.current.clone();
+        let mut screen = Screen::calibrating(facts);
+        for knob_id in GlobalKnob::ALL {
+            let transition = screen.step(ScreenAction::KnobDragged {
+                knob: knob_id,
+                value: knob(0.3),
+            });
+            assert_eq!(transition.outcome, ActionOutcome::Applied, "{base:?} / {knob_id:?}");
+            assert_eq!(
+                transition.effects.len(),
+                1,
+                "{base:?} / {knob_id:?}: ровно один Effect::Look"
+            );
+        }
+    }
 }
 
 #[test]

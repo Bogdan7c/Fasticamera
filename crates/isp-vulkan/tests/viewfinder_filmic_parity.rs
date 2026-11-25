@@ -32,9 +32,10 @@ use isp_vulkan::viewfinder::ViewfinderStorageFormat;
 use lens_shading_support::{asymmetric_map, with_map};
 use look_contract::LookSettings;
 use viewfinder_support::{
-    HEIGHT_OF_SYNTHETIC_SCENES as HEIGHT, ParamsSpec, RawFrame, RunRequest, WIDTH_OF_SYNTHETIC_SCENES as WIDTH,
-    assert_no_validation_errors, assert_viewfinder_parity, gpu_context_or_skip, isp_support, parity_with_pixels,
-    reference_upright_encoded, run_viewfinder, synthetic_scenes, test_config,
+    ErrorAllowance, HEIGHT_OF_SYNTHETIC_SCENES as HEIGHT, ParamsSpec, RawFrame, RunRequest,
+    WIDTH_OF_SYNTHETIC_SCENES as WIDTH, assert_no_validation_errors, assert_viewfinder_parity,
+    assert_viewfinder_parity_allowing, gpu_context_or_skip, isp_support, parity_with_pixels, reference_upright_encoded,
+    run_viewfinder, synthetic_scenes, test_config,
 };
 
 /// Все нормы filmic: каждая — своя ветка шейдера.
@@ -486,13 +487,19 @@ fn tone_knob_corners_with_ae_edges_match_reference() {
                 ..LookSettings::NEUTRAL
             });
             let params = spec.build_with_look_and_exposure(look, ExposureGain::from_ev(exposure_ev).unwrap());
+            let allowance = if look_support::tone_corner_is_ill_conditioned(corner) {
+                ErrorAllowance::SteepToneAtWhite
+            } else {
+                ErrorAllowance::Standard
+            };
             for (name, raw) in &scenes {
-                assert_viewfinder_parity(
+                assert_viewfinder_parity_allowing(
                     &context,
                     &format!("ручки угол {corner:04b} AE {exposure_ev:+} {name}"),
                     raw,
                     &params,
                     &spec,
+                    allowance,
                 );
             }
             if exposure_ev < 0.0 {

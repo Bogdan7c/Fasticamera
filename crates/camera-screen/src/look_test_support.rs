@@ -60,7 +60,6 @@ pub(crate) fn look_facts() -> LookFacts {
             })
             .collect(),
         wheel_ring: test_wheel_ring(),
-        unsupported_knobs: Vec::new(),
         problem: None,
     }
 }

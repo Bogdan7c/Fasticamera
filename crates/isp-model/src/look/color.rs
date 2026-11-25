@@ -9,8 +9,8 @@
 //! (L, a, b) = OKLab(rgb)
 //! (L, a, b) = колёса(L, a, b)            — только если колёса тронуты (super::wheels; иначе шаг пропущен)
 //! c² = a² + b²
-//! M_sat   = 1 + k_sat·range_sat                          — множитель цветности (насыщенность)
-//! M_vib   = 1 + k_vib·range_vib · 1/(1 + c²/c_ref²) · (1 − p·skin)   — сочность
+//! M_sat   = 1 + величина насыщенности                         — множитель цветности (насыщенность)
+//! M_vib   = 1 + величина сочности · 1/(1 + c²/c_ref²) · (1 − p·skin)   — сочность
 //!   skin  = smoothstep((cosΔ − cos w)/(1 − cos w)),  cosΔ = (a·cos h₀ + b·sin h₀)/√(c² + ε²)
 //! g       = c² / (c² + F²)                               — гладкий вес «не серый» (без жёстких порогов)
 //! полосы: θ = atan2(b, a) mod 2π;  (Δh, M_b, M_l) = LookBands::effect_at(θ);
@@ -52,7 +52,7 @@ pub struct LookColorParams {
     pub oklab: OklabWorkspace,
     /// `M_sat`: множитель цветности насыщенности.
     pub saturation_multiplier: f32,
-    /// `k_vib·range_vib`: сила сочности со знаком.
+    /// Сила сочности со знаком.
     pub vibrance_amount: f32,
     /// `c_ref`: цветность, при которой вес сочности падает вдвое.
     pub vibrance_chroma_reference: f32,
@@ -100,8 +100,8 @@ impl LookColorParams {
         let skin_center = model.skin.hue_center_degrees.to_radians();
         let params = Self {
             oklab: OklabWorkspace::new(working)?,
-            saturation_multiplier: 1.0 + settings.saturation.get() * model.saturation_range,
-            vibrance_amount: settings.vibrance.get() * model.vibrance_range,
+            saturation_multiplier: 1.0 + model.saturation.amount(settings.saturation),
+            vibrance_amount: model.vibrance.amount(settings.vibrance),
             vibrance_chroma_reference: model.vibrance_chroma_reference,
             skin_direction: [skin_center.cos(), skin_center.sin()],
             skin_cos_half_width: model.skin.half_width_degrees.to_radians().cos(),

@@ -29,3 +29,20 @@
 3. `no_edits`: `SetLook` (контраст +0,6) → `SaveAsNewPreset("Punchy")` → `save` (`edits: null`).
 
 Файлы не править.
+
+## Схема 3
+
+`schema_v3_with_edits.json` и `schema_v3_no_edits.json` — настоящие файлы схемы 3, записанные кодом `look-presets` на
+коммите `0552fb2` (до новых краёв ручек, сессия 14l). Схема в 14l НЕ поднята: состав файла прежний, изменился смысл
+чисел (что значит край ±1 — модель вида, а не файл), а значения владелец велел не пересчитывать (решение 237). Файлы
+доказывают, что старый сохранённый вид читается без сбоя запуска и без правки чисел (`tests/schema_v3.rs`).
+
+Как получены (временный тест `tests/gen_v3_tmp.rs` в отдельном worktree коммита, удалён):
+
+1. `PresetFileStore::open(<временная папка>, &PresetStoreConfig::default(), &environment(), PRODUCT_MIGRATIONS)`.
+2. `with_edits`: `SetLook` (контраст +1, тени +1, света −0,6, теплота −0,25, полоса `sky` оттенок +0,4, Lift толчок
+   (0,3; −0,2), Gain кольцо +0,15) → `SetToneBase(Aces)` → `SaveAsNewPreset("Evening")` → `SetKnob` контраст −0,5 →
+   `save`.
+3. `no_edits`: `SetLook` (контраст +0,6) → `SaveAsNewPreset("Punchy")` → `save` (`edits: null`).
+
+Файлы не править.

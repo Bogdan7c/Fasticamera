@@ -86,8 +86,6 @@ pub enum Rejection {
     NotInCalibrationMode,
     /// Фактов о виде нет: библиотеки пресетов нет, ручки отключены.
     LookFactsMissing,
-    /// Текущая основа тона не умеет эту ручку (она показана приглушённой).
-    KnobUnsupportedByBase,
     /// Полосы оттенка с таким идентификатором в фактах о виде нет.
     UnknownBand,
     /// Пресета с таким идентификатором в списке пресетов нет (или это не свой пресет там, где нужен свой).
@@ -103,7 +101,7 @@ pub enum Rejection {
 
 impl Rejection {
     /// Число причин (размер таблицы счётчиков). Сверяется с [`Rejection::ALL`] на этапе компиляции.
-    const COUNT: usize = 27;
+    const COUNT: usize = 26;
 
     /// Номер ячейки счётчика. `match` без `_`: новый вариант `Rejection` не скомпилируется, пока ему
     /// не дали номер, — забытая ячейка невозможна. Согласованность номеров с `ALL` проверяет тест.
@@ -130,12 +128,11 @@ impl Rejection {
             Rejection::ShutterAbsentInMode => 18,
             Rejection::NotInCalibrationMode => 19,
             Rejection::LookFactsMissing => 20,
-            Rejection::KnobUnsupportedByBase => 21,
-            Rejection::UnknownBand => 22,
-            Rejection::UnknownPreset => 23,
-            Rejection::BuiltinPresetReadOnly => 24,
-            Rejection::NotAvailableInMode => 25,
-            Rejection::UnknownWhiteLight => 26,
+            Rejection::UnknownBand => 21,
+            Rejection::UnknownPreset => 22,
+            Rejection::BuiltinPresetReadOnly => 23,
+            Rejection::NotAvailableInMode => 24,
+            Rejection::UnknownWhiteLight => 25,
         }
     }
 
@@ -162,7 +159,6 @@ impl Rejection {
         Rejection::ShutterAbsentInMode,
         Rejection::NotInCalibrationMode,
         Rejection::LookFactsMissing,
-        Rejection::KnobUnsupportedByBase,
         Rejection::UnknownBand,
         Rejection::UnknownPreset,
         Rejection::BuiltinPresetReadOnly,

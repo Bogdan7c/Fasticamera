@@ -22,6 +22,7 @@ mod clean_zone;
 mod control_view;
 mod host;
 mod knob_row;
+mod knob_scale;
 mod knobs_column;
 mod menu;
 mod paint;

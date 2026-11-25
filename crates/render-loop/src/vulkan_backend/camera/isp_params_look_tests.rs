@@ -132,13 +132,33 @@ fn the_look_really_reaches_the_frame_params_and_spares_metering() {
         "+насыщенность — множитель цветности больше 1"
     );
 
-    // Контраст — ручка тона: меняет параметры основы, а не стадию цвета.
+    // Контраст — стадия тона вида: включает её и несёт наклон, а основу и стадию цвета не меняет.
     let contrasty = params_with(Arc::new(LookSettings {
         contrast: LookKnob::new(1.0).expect("ручка в диапазоне"),
         ..LookSettings::NEUTRAL
     }));
-    assert_ne!(contrasty.tone_base, neutral.tone_base, "контраст меняет кривую основы");
-    assert!(contrasty.look.color.is_none());
+    assert_eq!(
+        contrasty.tone_base, neutral.tone_base,
+        "контраст — стадия тона вида, основу не меняет"
+    );
+    assert!(neutral.look.tone.is_none(), "нейтральные ручки — стадии тона нет");
+    let tone = contrasty
+        .look
+        .tone
+        .as_ref()
+        .expect("контраст включает стадию тона вида");
+    assert!(tone.contrast_slope > 1.0, "+контраст — наклон на сером больше 1");
+    assert_eq!(
+        (tone.shadow_slope, tone.highlight_slope, tone.midtone_slope),
+        (1.0, 1.0, 1.0),
+        "остальные три ручки тона не тронуты"
+    );
+    assert!(contrasty.look.color.is_none(), "контраст не включает стадию цвета");
+    assert_eq!(
+        contrasty.scene_luminance_weights(),
+        neutral.scene_luminance_weights(),
+        "AE не видит тон вида"
+    );
 }
 
 /// Каждая модель основы даёт свои разрешённые параметры: смена модели пересчитывает их ровно один раз, повтор той же

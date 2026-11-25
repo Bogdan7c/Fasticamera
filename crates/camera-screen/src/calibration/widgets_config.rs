@@ -10,6 +10,13 @@ use thiserror::Error;
 /// Сколько таблеток ряда можно завести: номер таблетки идёт в `ButtonId(u8)`, поэтому больше 255 не бывает.
 pub const MAX_CHIP_POOL: usize = 255;
 
+/// Наибольшее число единиц шкалы ручки на 1,0: больше — число положений линейки выходит за предел модели ui-kit.
+pub const MAX_KNOB_UNITS: u32 = 1000;
+
+/// Самый мелкий допустимый путь пальца на единицу шкалы ручки, pt: меньше — соседние единицы не различить пальцем
+/// (`[estimate]`, решение 251; ниже половины точки шаг теряется в дрожи пальца).
+pub const MIN_KNOB_POINTS_PER_UNIT: f64 = 0.5;
+
 /// Числа вида раздела калибровки (pt, если не сказано иное).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -78,13 +85,36 @@ pub struct CalibrationWidgetsConfig {
     pub band_ring_gap_pt: f64,
     /// Диаметр метки «полоса отличается от пресета» под точкой. `[invented]`.
     pub band_marker_diameter_pt: f64,
-    /// Шаг ручки (доля диапазона [-1, 1]). `[estimate]` 0,1: 21 риска на весь ход.
-    pub knob_step: f64,
-    /// Каждая какая риска крупная. `[estimate]` 5 (то есть 0,5).
+    /// Толщина жёлтого кольца «у полосы есть правки» (её значения не нейтральны), решение 200. `[estimate]`.
+    pub band_edited_ring_width_pt: f64,
+    /// Зазор между точкой и кольцом «есть правки» (кольцо выбора лежит снаружи него). `[estimate]`.
+    pub band_edited_ring_gap_pt: f64,
+    /// Сколько целых единиц шкалы на значение 1,0 ручки (решения 234, 251): на экране числа −N…+N, в словаре и
+    /// файле — прежние −1…+1, шаг линейки 1/N. `[estimate]` 200: −200…+200 (слово владельца 14l: «делений
+    /// больше, а не размер»; решение 250, «4 pt на единицу», отменено).
+    pub knob_units_per_full_scale: u32,
+    /// Полный ход пальца по линейке ручки, от −N до +N, pt. Путь на единицу = ход / (2·N), см.
+    /// [`CalibrationWidgetsConfig::knob_points_per_unit`]. `[estimate]` 400: как был до решения 250 (1 pt на единицу
+    /// при 200 единицах).
+    pub knob_full_travel_pt: f64,
+    /// Через сколько шагов значения стоит риска (и щелчок отдачи) на линейке ручки. `[estimate]` 20: риска через
+    /// 20 единиц, то есть те же 20 pt пальца, что и раньше.
+    pub knob_tick_every_steps: u32,
+    /// Каждая какая единица шагов значения крупная риска (в шагах значения, а не в рисках). `[estimate]` 100.
     pub knob_major_every_steps: u32,
+    /// Порог распознавания пана на линейке ручки, pt (у остальных панов 10). Меньше порог — меньше «пустого» хода
+    /// перед началом движения; путь до распознавания не теряется (значение считается от точки касания).
+    /// `[estimate]` 5: достаточно, чтобы отличить горизонтальную протяжку от вертикальной прокрутки списка.
+    pub knob_pan_hysteresis_pt: f64,
+    /// Диаметр метки значения пресета на линейке (точка под рисками). `[estimate]`.
+    pub preset_marker_diameter_pt: f64,
+    /// Зазор между рисками и меткой значения пресета. `[estimate]`.
+    pub preset_marker_gap_pt: f64,
+    /// Прозрачность метки значения пресета (белая точка). `[estimate]`.
+    pub preset_marker_alpha: f32,
     /// На сколько шагов линейка может разойтись с фактами, не двигаясь к ним. `[estimate]`.
     pub follow_tolerance_steps: f64,
-    /// Прозрачность недоступной ручки (основа её не умеет). `[invented]`.
+    /// Прозрачность недоступной строки: фактов о виде нет или у строки полосы не выбрана полоса. `[invented]`.
     pub disabled_row_opacity: f32,
     /// Диаметр точки-страницы под прибором. `[invented]`.
     pub scope_page_dot_diameter_pt: f64,
@@ -151,8 +181,16 @@ impl Default for CalibrationWidgetsConfig {
             band_ring_width_pt: 2.0,
             band_ring_gap_pt: 3.0,
             band_marker_diameter_pt: 5.0,
-            knob_step: 0.1,
-            knob_major_every_steps: 5,
+            band_edited_ring_width_pt: 1.5,
+            band_edited_ring_gap_pt: 1.5,
+            knob_units_per_full_scale: 200,
+            knob_full_travel_pt: 400.0,
+            knob_tick_every_steps: 20,
+            knob_major_every_steps: 100,
+            knob_pan_hysteresis_pt: 5.0,
+            preset_marker_diameter_pt: 4.0,
+            preset_marker_gap_pt: 2.0,
+            preset_marker_alpha: 0.9,
             follow_tolerance_steps: 0.01,
             disabled_row_opacity: 0.35,
             scope_page_dot_diameter_pt: 6.0,
@@ -179,10 +217,21 @@ pub enum CalibrationWidgetsConfigError {
     NonPositive { field: &'static str, value: f64 },
     #[error("доля {field} должна быть конечной и в 0..=1: {value}")]
     FractionOutOfRange { field: &'static str, value: f64 },
-    #[error("шаг ручки {value} должен быть в (0, 1]")]
-    KnobStepOutOfRange { value: f64 },
+    #[error("единиц шкалы ручки на 1,0 должно быть от 1 до {MAX_KNOB_UNITS}: {value}")]
+    KnobUnitsOutOfRange { value: u32 },
+    #[error(
+        "шаг ручки мельче {MIN_KNOB_POINTS_PER_UNIT} pt: ход {full_travel_pt} pt на {units} единиц даёт \
+         {points_per_unit} pt на единицу"
+    )]
+    KnobScaleTooFine {
+        full_travel_pt: f64,
+        units: u32,
+        points_per_unit: f64,
+    },
     #[error("период крупной риски должен быть не меньше 1")]
     ZeroMajorPeriod,
+    #[error("период риски ручки должен быть не меньше 1")]
+    ZeroTickPeriod,
     #[error("в ряду таблеток от 1 до {MAX_CHIP_POOL}: {value}")]
     ChipPoolOutOfRange { value: usize },
     #[error(
@@ -198,6 +247,12 @@ pub enum CalibrationWidgetsConfigError {
 }
 
 impl CalibrationWidgetsConfig {
+    /// Путь пальца на одну единицу шкалы ручки, pt: полный ход / (2·N) (от −N до +N это 2·N единиц). Осмысленно
+    /// только у проверенного конфига ([`CalibrationWidgetsConfig::validate`]): там ход конечный и > 0, единиц ≥ 1.
+    pub fn knob_points_per_unit(&self) -> f64 {
+        self.knob_full_travel_pt / (2.0 * f64::from(self.knob_units_per_full_scale))
+    }
+
     /// Проверка значений.
     pub fn validate(&self) -> Result<(), CalibrationWidgetsConfigError> {
         let sizes = [
@@ -230,7 +285,13 @@ impl CalibrationWidgetsConfig {
             ("band_ring_width_pt", self.band_ring_width_pt),
             ("band_ring_gap_pt", self.band_ring_gap_pt),
             ("band_marker_diameter_pt", self.band_marker_diameter_pt),
+            ("band_edited_ring_width_pt", self.band_edited_ring_width_pt),
+            ("band_edited_ring_gap_pt", self.band_edited_ring_gap_pt),
             ("follow_tolerance_steps", self.follow_tolerance_steps),
+            ("knob_full_travel_pt", self.knob_full_travel_pt),
+            ("knob_pan_hysteresis_pt", self.knob_pan_hysteresis_pt),
+            ("preset_marker_diameter_pt", self.preset_marker_diameter_pt),
+            ("preset_marker_gap_pt", self.preset_marker_gap_pt),
             ("scope_page_dot_diameter_pt", self.scope_page_dot_diameter_pt),
             ("scope_page_dot_gap_pt", self.scope_page_dot_gap_pt),
             ("scope_label_inset_pt", self.scope_label_inset_pt),
@@ -253,6 +314,7 @@ impl CalibrationWidgetsConfig {
             ("clean_button_fill_alpha", f64::from(self.clean_button_fill_alpha)),
             ("chip_fill_alpha", f64::from(self.chip_fill_alpha)),
             ("wheel_pad_fill_alpha", f64::from(self.wheel_pad_fill_alpha)),
+            ("preset_marker_alpha", f64::from(self.preset_marker_alpha)),
             (
                 "clean_button_held_fill_alpha",
                 f64::from(self.clean_button_held_fill_alpha),
@@ -263,8 +325,21 @@ impl CalibrationWidgetsConfig {
                 return Err(CalibrationWidgetsConfigError::FractionOutOfRange { field, value });
             }
         }
-        if !(self.knob_step.is_finite() && self.knob_step > 0.0 && self.knob_step <= 1.0) {
-            return Err(CalibrationWidgetsConfigError::KnobStepOutOfRange { value: self.knob_step });
+        if !(1..=MAX_KNOB_UNITS).contains(&self.knob_units_per_full_scale) {
+            return Err(CalibrationWidgetsConfigError::KnobUnitsOutOfRange {
+                value: self.knob_units_per_full_scale,
+            });
+        }
+        let points_per_unit = self.knob_points_per_unit();
+        if points_per_unit < MIN_KNOB_POINTS_PER_UNIT {
+            return Err(CalibrationWidgetsConfigError::KnobScaleTooFine {
+                full_travel_pt: self.knob_full_travel_pt,
+                units: self.knob_units_per_full_scale,
+                points_per_unit,
+            });
+        }
+        if self.knob_tick_every_steps == 0 {
+            return Err(CalibrationWidgetsConfigError::ZeroTickPeriod);
         }
         if self.knob_major_every_steps == 0 {
             return Err(CalibrationWidgetsConfigError::ZeroMajorPeriod);

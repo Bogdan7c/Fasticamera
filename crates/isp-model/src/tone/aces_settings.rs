@@ -7,7 +7,6 @@
 
 use crate::exposure::ExposureGain;
 use crate::gamut::GamutCompressionSettings;
-use crate::tone::knobs::{ToneKnob, ToneKnobUnsupported, ToneModelKind, ToneModelSettings};
 use crate::tone::working_io::{InvalidWorkingIo, WorkingInputGamut, WorkingIoSettings};
 
 /// Наибольшая крутизна функции `t²/(t² + w²)` равна `3√3/(8w) ≈ 0,6495/w`: при ней сдвиг формы тени или света
@@ -33,8 +32,6 @@ pub struct AcesSettings {
     pub highlights_ev: f32,
     /// Ширина перехода форм теней и света: ступеней от серого, где сдвиг достигает половины. `[estimate]` 2.
     pub shape_width_ev: f32,
-    /// Сколько ступеней сдвига даёт единица ручки теней и света слоя вида. `[estimate]` 2.
-    pub knob_shape_ev_per_unit: f32,
     /// Колено белой точки: ступеней выше серого (после формы теней и света), где кривая ACES сменяется плавным
     /// подходом к белому точки (`L` → ровно белый экрана). Серый и всё ниже колена от `L` не зависят. `[estimate]` 1,5.
     pub knee_ev: f32,
@@ -73,7 +70,6 @@ impl Default for AcesSettings {
             shadows_ev: 0.0,
             highlights_ev: 0.0,
             shape_width_ev: 2.0,
-            knob_shape_ev_per_unit: 2.0,
             knee_ev: 1.5,
             glow_gain: 0.05,
             red_modifier_scale: 0.82,
@@ -182,7 +178,6 @@ impl AcesSettings {
         finite("shadows_ev", self.shadows_ev)?;
         finite("highlights_ev", self.highlights_ev)?;
         positive("shape_width_ev", self.shape_width_ev)?;
-        positive("knob_shape_ev_per_unit", self.knob_shape_ev_per_unit)?;
         positive("knee_ev", self.knee_ev)?;
         within("glow_gain", self.glow_gain, 0.0, 1.0)?;
         within("red_modifier_scale", self.red_modifier_scale, 0.0, 1.0)?;
@@ -195,37 +190,5 @@ impl AcesSettings {
             return Err(InvalidAces::ShapeNotMonotone { slope_budget, needed });
         }
         Ok(())
-    }
-}
-
-impl ToneModelSettings for AcesSettings {
-    const KIND: ToneModelKind = ToneModelKind::Aces;
-
-    /// ACES: контраст — множитель наклона оси экспозиции вокруг серого (`× 2^amount`, как CDL); средние тона —
-    /// серый экрана (`× 2^amount`, как у AgX: серый сцены попадает ровно в новый серый); тени и света — сдвиг
-    /// глубоких теней и света выше серого в ступенях (`amount × knob_shape_ev_per_unit`). Серый сцены и наклон на
-    /// нём формой теней и света не меняются (C1 в нуле); у контраста и средних тонов серый — опора.
-    /// Неподдержанных ручек у ACES нет.
-    fn with_knob(&self, knob: ToneKnob, amount: f32) -> Result<Self, ToneKnobUnsupported> {
-        let scale = amount.exp2();
-        let shift = amount * self.knob_shape_ev_per_unit;
-        Ok(match knob {
-            ToneKnob::Contrast => Self {
-                contrast: self.contrast * scale,
-                ..*self
-            },
-            ToneKnob::Midtones => Self {
-                display_middle_gray: self.display_middle_gray * scale,
-                ..*self
-            },
-            ToneKnob::Shadows => Self {
-                shadows_ev: self.shadows_ev + shift,
-                ..*self
-            },
-            ToneKnob::Highlights => Self {
-                highlights_ev: self.highlights_ev + shift,
-                ..*self
-            },
-        })
     }
 }

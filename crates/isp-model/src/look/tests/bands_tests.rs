@@ -37,8 +37,8 @@ fn each_band_dominates_its_own_centre_and_is_flat_there() {
         .unwrap();
     let centre = bands.centers_radians[green];
     let at_centre = bands.effect_at(centre);
-    assert!((at_centre.chroma_multiplier - (1.0 + 0.5 * model.band_saturation_range)).abs() < 1e-6);
-    assert!((at_centre.hue_shift_radians - (0.5 * model.band_hue_range_degrees).to_radians()).abs() < 1e-6);
+    assert!((at_centre.chroma_multiplier - (1.0 + 0.5 * model.band_saturation.plus)).abs() < 1e-6);
+    assert!((at_centre.hue_shift_radians - (0.5 * model.band_hue_degrees.plus).to_radians()).abs() < 1e-6);
     // C¹ на центре: сдвиг на 0,01 рад меняет значение на величину второго порядка.
     for offset in [-0.01_f32, 0.01] {
         let moved = bands.effect_at(centre + offset);
@@ -72,15 +72,19 @@ fn effect_is_continuous_across_every_window_boundary_including_360_to_0() {
     )
     .unwrap();
     let bands = resolve_bands(&model, &adjustments).bands.unwrap();
+    // Полный размах между соседними полосами с правками разных знаков: от края «−» до края «+» своей ручки.
+    let hue_swing = (model.band_hue_degrees.minus + model.band_hue_degrees.plus).to_radians();
+    let chroma_swing = model.band_saturation.minus + model.band_saturation.plus;
+    let lightness_swing = model.band_luminance.minus + model.band_luminance.plus;
     let steps = 7200;
     let mut previous = bands.effect_at(0.0);
     let mut worst: f32 = 0.0;
     for step in 1..=steps {
         let current = bands.effect_at((step % steps) as f32 / steps as f32 * TAU);
         worst = worst
-            .max((current.hue_shift_radians - previous.hue_shift_radians).abs() / 0.5)
-            .max((current.chroma_multiplier - previous.chroma_multiplier).abs() / 1.6)
-            .max((current.lightness_multiplier - previous.lightness_multiplier).abs() / 0.7);
+            .max((current.hue_shift_radians - previous.hue_shift_radians).abs() / hue_swing)
+            .max((current.chroma_multiplier - previous.chroma_multiplier).abs() / chroma_swing)
+            .max((current.lightness_multiplier - previous.lightness_multiplier).abs() / lightness_swing);
         previous = current;
     }
     // Шаг 0,05° по кругу; склон приподнятого косинуса между центрами не круче π/2 размаха на длину окна
@@ -116,7 +120,7 @@ fn another_band_set_from_the_config_works_without_code_changes() {
     let bands = resolved.bands.unwrap();
     assert_eq!(bands.count, 3);
     let at = |degrees: f32| bands.effect_at(degrees.to_radians()).chroma_multiplier;
-    assert!((at(230.0) - (1.0 - model.band_saturation_range)).abs() < 1e-6);
+    assert!((at(230.0) - (1.0 - model.band_saturation.minus)).abs() < 1e-6);
     assert_eq!(at(50.0), 1.0);
     assert_eq!(at(330.0), 1.0);
     // Центры в произвольном порядке: результат тот же.

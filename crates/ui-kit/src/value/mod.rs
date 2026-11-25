@@ -33,7 +33,7 @@ use std::fmt::Debug;
 use thiserror::Error;
 
 pub use continuous::{ContinuousLinear, ExactPosition, RulerAxis};
-pub use linear::{LinearLimits, QuantizedLinear, ReferenceValue};
+pub use linear::{LinearLimits, QuantizedLinear, ReferenceValue, TickPitch};
 pub use logarithmic::{LogLimits, Logarithmic, LogarithmicSpec};
 pub use mired::{MiredKelvin, mired_of_kelvin};
 pub use pair::{AxisPair, PairValue};
@@ -68,6 +68,10 @@ pub enum Emphasis {
     Tick,
     /// Опорное значение (крупный упор): «ноль» линейной шкалы, якорь логарифмической.
     Reference,
+    /// Шаг значения БЕЗ риски: шкала на нём останавливается (липнет), но не рисует риску и не щёлкает.
+    /// Нужен там, где шаг значения мельче шага риски (ручки вида: шаг 1 из 100, риска через 10; см.
+    /// [`TickPitch`]). Модели с риской на каждом шаге этот вид выделения не порождают.
+    Step,
 }
 
 /// Риска шкалы: положение в единицах модели и выделение.

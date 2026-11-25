@@ -6,16 +6,22 @@
 //! как есть. Эхо запрещено: действие рождает только палец (затвор пальца `ui-kit`); синхронизация с фактами
 //! идёт программно и привязана к ИЗМЕНЕНИЮ фактов, а не к сравнению с линейкой каждый кадр.
 
-use look_contract::{BandAxis, GlobalKnob, HueBandId, LookControl, LookFacts, LookKnob, WheelPart, WheelZone};
+use look_contract::{
+    BandAxis, GlobalKnob, HueBandId, LookControl, LookFacts, LookKnob, LookSettings, WheelPart, WheelZone,
+};
 use std::num::NonZeroU32;
 use ui_core::geometry::Rect;
 use ui_core::gesture::{GestureEvent, PanSpec, RecognizerSpec};
 use ui_core::id::NodeId;
 use ui_draw::draw_list::DrawItem;
+use ui_kit::drive::DragOrigin;
 use ui_kit::pan::PanUpdate;
-use ui_kit::ruler::{GatedEvent, RulerControl, RulerSpec};
-use ui_kit::tokens::{ScaleDensity, TextRoleKind};
-use ui_kit::value::{LinearLimits, QuantizedLinear, ReferenceValue};
+use ui_kit::ruler::{GatedEvent, HapticPacing, RulerControl, RulerFeel, RulerSpec};
+use ui_kit::tokens::TextRoleKind;
+use ui_kit::value::{LinearLimits, QuantizedLinear, ReferenceValue, TickPitch};
+use ui_kit::view::RulerMarkerStyle;
+
+use super::knob_scale::KnobScale;
 
 use super::paint::NodePaint;
 use super::reset_disc::draw_reset_disc;
@@ -124,42 +130,27 @@ impl RowTarget {
 
     /// Значение строки по фактам; нет фактов или привязки — нейтраль.
     fn value_in(self, facts: Option<&LookFacts>, binding: &RowBinding) -> LookKnob {
-        let Some(facts) = facts else {
-            return LookKnob::NEUTRAL;
-        };
+        facts.map_or(LookKnob::NEUTRAL, |facts| {
+            self.value_in_settings(&facts.current.settings, binding)
+        })
+    }
+
+    /// Значение строки в рецепте АКТИВНОГО ПРЕСЕТА (без правок); нет фактов или привязки — нейтраль.
+    fn preset_value_in(self, facts: Option<&LookFacts>, binding: &RowBinding) -> LookKnob {
+        facts.map_or(LookKnob::NEUTRAL, |facts| {
+            self.value_in_settings(&facts.preset.settings, binding)
+        })
+    }
+
+    /// Значение строки в данных настройках вида (текущих или пресета); нет привязки — нейтраль.
+    fn value_in_settings(self, settings: &LookSettings, binding: &RowBinding) -> LookKnob {
         match (self, binding) {
-            (RowTarget::Knob(knob), _) => facts.current.settings.knob(knob),
-            (RowTarget::BandAxis(axis), RowBinding::Band(Some(band))) => {
-                facts.current.settings.bands.for_band(band).axis(axis)
-            }
-            (RowTarget::WheelRing, RowBinding::Wheel(zone)) => facts.current.settings.wheels.wheel(*zone).ring,
+            (RowTarget::Knob(knob), _) => settings.knob(knob),
+            (RowTarget::BandAxis(axis), RowBinding::Band(Some(band))) => settings.bands.for_band(band).axis(axis),
+            (RowTarget::WheelRing, RowBinding::Wheel(zone)) => settings.wheels.wheel(*zone).ring,
             _ => LookKnob::NEUTRAL,
         }
     }
-
-    /// Умеет ли текущая основа эту ручку (ось полосы и кольцо колеса умеют все основы).
-    fn supported_in(self, facts: &LookFacts) -> bool {
-        match self {
-            RowTarget::Knob(knob) => facts.is_knob_supported(knob),
-            RowTarget::BandAxis(_) | RowTarget::WheelRing => true,
-        }
-    }
-}
-
-/// Подпись значения: `+0.30`, `−0.30` (минус U+2212), `0.00`. Два знака после запятой: шаг ручки 0,1, а
-/// значение из пресета может лежать между ступенями — подпись показывает его как есть.
-pub(super) fn format_knob_value(value: f32) -> String {
-    debug_assert!(
-        value.is_finite(),
-        "значение ручки в подписи должно быть конечным: {value}"
-    );
-    let hundredths = (value * 100.0).round() as i32;
-    let sign = match hundredths {
-        0 => "",
-        positive if positive > 0 => "+",
-        _ => "\u{2212}",
-    };
-    format!("{sign}{}.{:02}", hundredths.abs() / 100, hundredths.abs() % 100)
 }
 
 /// Геометрия строки в системе корня раздела.
@@ -201,6 +192,8 @@ pub(super) struct RulerRow {
     ruler_node: NodeId,
     reset: PressButton,
     ruler: RulerControl,
+    /// Шкала чисел ручки (−N…+N): как число на линейке связано со значением и подписью.
+    scale: KnobScale,
     /// Привязка строки к выбору экрана (полоса или колесо): по ней строка читает и пишет значения.
     bound: RowBinding,
     /// Привязка, которую палец взял на `Began`: действие уходит ей, даже если выбор сменился посреди жеста.
@@ -230,6 +223,10 @@ impl RulerRow {
             ruler_node,
             RecognizerSpec::Pan(PanSpec {
                 direction: space.pan_direction(super::space::EyeAxis::Horizontal),
+                // Меньший порог распознавания, чем у остальных панов: путь пальца до него не теряется (линейка
+                // считает смещение от точки касания, см. `ruler_spec`), а вертикальная прокрутка списка по-прежнему
+                // уходит списку: ось решается в момент превышения порога.
+                hysteresis_pt: config.knob_pan_hysteresis_pt,
                 ..PanSpec::default()
             }),
             ScreenGesture::CalibrationRulerPan(target.slot()),
@@ -250,8 +247,9 @@ impl RulerRow {
         let facts = ctx.state.look_facts();
         let binding = RowBinding::selected_for(target, ctx);
         let initial = f64::from(target.value_in(facts, &binding).get());
+        let scale = KnobScale::from_config(config)?;
         let ruler = RulerControl::new(
-            Self::ruler_spec(config)?,
+            Self::ruler_spec(config, scale)?,
             initial,
             &ctx.environment(frames.ruler.size.width),
             ctx.now,
@@ -264,6 +262,7 @@ impl RulerRow {
             ruler_node,
             reset,
             ruler,
+            scale,
             bound: binding,
             dragged: None,
             last_followed: None,
@@ -272,19 +271,29 @@ impl RulerRow {
         })
     }
 
-    fn ruler_spec(config: &CalibrationWidgetsConfig) -> Result<RulerSpec, WidgetError> {
+    fn ruler_spec(config: &CalibrationWidgetsConfig, scale: KnobScale) -> Result<RulerSpec, WidgetError> {
+        let tick_every_steps = NonZeroU32::new(config.knob_tick_every_steps)
+            .ok_or_else(|| WidgetError::Inconsistent("период риски ручки равен нулю".to_owned()))?;
+        // Шаг значения мелкий (1 из N), риска и щелчок — только через `knob_tick_every_steps` шагов и на нуле.
         let model = QuantizedLinear::new(
-            config.knob_step,
+            scale.step(),
             ReferenceValue::At(0.0),
             LinearLimits { min: -1.0, max: 1.0 },
         )
-        .map_err(element("модель ручки"))?;
+        .map_err(element("модель ручки"))?
+        .with_tick_pitch(TickPitch::EveryNSteps(tick_every_steps));
         let major_every_steps = NonZeroU32::new(config.knob_major_every_steps)
             .ok_or_else(|| WidgetError::Inconsistent("период крупной риски ручки равен нулю".to_owned()))?;
         Ok(RulerSpec {
             model,
-            density: ScaleDensity::KnobRuler,
+            density: scale.density(),
             major_every_steps,
+            feel: RulerFeel {
+                // Значение догоняет палец с точки касания: порог распознавания пана не «съедает» ход.
+                drag_origin: DragOrigin::FromTouchDown,
+                // Мелкий шаг: быстрый взмах не должен сыпать щелчки каждый кадр.
+                haptic_pacing: HapticPacing::Throttled,
+            },
         })
     }
 
@@ -382,7 +391,7 @@ impl RulerRow {
         }
         let value = self.target.value_in(facts, &self.bound);
         let has_target = self.bound != RowBinding::Band(None);
-        self.enabled = facts.is_some_and(|facts| self.target.supported_in(facts) && has_target);
+        self.enabled = facts.is_some() && has_target;
         kit.set_interactive(self.node, self.enabled)?;
         if self.last_followed != Some(value.get()) && !self.ruler.is_finger_driven() {
             self.last_followed = Some(value.get());
@@ -408,7 +417,7 @@ impl RulerRow {
     }
 
     fn emit_dragged(&mut self, value: f64, out: &mut Outputs) {
-        let Ok(knob) = LookKnob::new(value as f32) else {
+        let Ok(knob) = self.scale.knob_at(value) else {
             self.invalid_values += 1;
             return;
         };
@@ -468,7 +477,7 @@ impl RulerRow {
             Layer::Content,
             paint.text_left(title, -half_width, title_y, colors.panel_label),
         );
-        let value_run = texts.run(ctx, &format_knob_value(value.get()), TextRoleKind::ScaleValue)?;
+        let value_run = texts.run(ctx, &self.scale.label(value), TextRoleKind::ScaleValue)?;
         let value_right = half_width - reset_side - config.value_gap_pt;
         layers.push(
             Layer::Content,
@@ -508,7 +517,37 @@ impl RulerRow {
             &ctx.tokens.colors,
         )?;
         layers.extend(Layer::Content, items);
+        if let Some(marker) = self.preset_marker(ctx, &paint)? {
+            layers.push(Layer::Content, marker);
+        }
         Ok(())
+    }
+
+    /// Метка значения пресета на линейке: точка под рисками, пока текущее значение отличается от пресета.
+    /// Метка — только рисунок: ни действий, ни магнита (значение к ней не липнет, ноль остаётся опорой).
+    fn preset_marker(&self, ctx: &Ctx<'_>, paint: &NodePaint) -> Result<Option<DrawItem>, WidgetError> {
+        let Some(control) = self.target.control(&self.bound) else {
+            return Ok(None);
+        };
+        let facts = ctx.state.look_facts();
+        if !facts.is_some_and(|facts| facts.control_differs(&control)) {
+            return Ok(None);
+        }
+        let config = &ctx.config.calibration.widgets;
+        let preset_value = self.target.preset_value_in(facts, &self.bound);
+        let style = RulerMarkerStyle {
+            diameter_pt: config.preset_marker_diameter_pt,
+            gap_pt: config.preset_marker_gap_pt,
+            color: ctx.tokens.colors.text_primary.with_alpha(config.preset_marker_alpha),
+        };
+        let item = self.ruler.marker_item(
+            &paint.placement(),
+            ctx.now,
+            ctx.px,
+            &ctx.tokens.ruler,
+            (f64::from(preset_value.get()), style),
+        )?;
+        Ok(item)
     }
 }
 
@@ -518,24 +557,4 @@ fn value_is_edited(row: &RulerRow, ctx: &Ctx<'_>) -> bool {
         return false;
     };
     facts.control_differs(&control)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::format_knob_value;
-
-    #[test]
-    fn knob_value_text_has_sign_two_decimals_and_a_true_minus() {
-        assert_eq!(format_knob_value(0.3), "+0.30");
-        assert_eq!(format_knob_value(-0.3), "\u{2212}0.30");
-        assert_eq!(format_knob_value(0.0), "0.00");
-        assert_eq!(format_knob_value(-0.0), "0.00");
-        assert_eq!(format_knob_value(0.15), "+0.15");
-        assert_eq!(format_knob_value(1.0), "+1.00");
-        assert_eq!(
-            format_knob_value(-0.004),
-            "0.00",
-            "значение, округлённое до нуля, без знака"
-        );
-    }
 }

@@ -6,7 +6,6 @@
 use crate::color::matrix::SingularMatrix;
 use crate::exposure::ExposureGain;
 use crate::gamut::GamutCompressionSettings;
-use crate::tone::knobs::{ToneKnob, ToneKnobUnsupported, ToneModelKind, ToneModelSettings};
 use crate::tone::working_io::{InvalidWorkingIo, WorkingInputGamut, WorkingIoSettings};
 
 /// Норма пикселя: по какому числу считается кривая, а цвет сохраняется масштабированием RGB (описание идеи
@@ -185,37 +184,5 @@ impl FilmicSettings {
             });
         }
         Ok(())
-    }
-}
-
-impl ToneModelSettings for FilmicSettings {
-    const KIND: ToneModelKind = ToneModelKind::Filmic;
-
-    /// filmic поддерживает все четыре ручки: контраст — наклон латитюды `s`, средние тона — серый экрана,
-    /// тени — степень носка `p0`, света — степень плеча `p1`. Направления проверены замером (тест
-    /// `shadows_and_highlights_knobs_...`): меньшая `p0` — тени светлее (степень делится на `2^amount`),
-    /// большая `p1` — света светлее (умножается). Форма носка/плеча не затрагивает линейный участок: ручки
-    /// теней и светов не меняют ни серый, ни наклон, ни другую сторону кривой. Строимость кривой (`s·Δ_b > y_p`,
-    /// `s·Δ_w > 1 − y_p`) от степеней не зависит, поэтому на краях решаются лишь контраст и средние тона.
-    fn with_knob(&self, knob: ToneKnob, amount: f32) -> Result<Self, ToneKnobUnsupported> {
-        let scale = amount.exp2();
-        Ok(match knob {
-            ToneKnob::Contrast => Self {
-                slope: self.slope * scale,
-                ..*self
-            },
-            ToneKnob::Midtones => Self {
-                display_middle_gray: self.display_middle_gray * scale,
-                ..*self
-            },
-            ToneKnob::Shadows => Self {
-                toe_power: self.toe_power / scale,
-                ..*self
-            },
-            ToneKnob::Highlights => Self {
-                shoulder_power: self.shoulder_power * scale,
-                ..*self
-            },
-        })
     }
 }

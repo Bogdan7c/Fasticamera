@@ -45,9 +45,9 @@ use isp_model::exposure::ExposureGain;
 use isp_model::image::DisplayGamut;
 use isp_model::tone::aces::{AcesSettings, InvalidAces};
 use isp_model::tone::agx_settings::{AgxSettings, InvalidAgx};
+use isp_model::tone::base::ToneModelKind;
 use isp_model::tone::base::{InvalidToneBase, ToneBase};
 use isp_model::tone::filmic::{FilmicSettings, InvalidFilmic};
-use isp_model::tone::knobs::ToneModelKind;
 use isp_model::tone::{InvalidToneCurve, ToneCurve, ToneCurveSettings};
 use look_contract::ToneBaseModel;
 use serde::{Deserialize, Serialize};
@@ -329,7 +329,7 @@ impl ViewfinderToneConfig {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, reason = "тест")]
 
-    use isp_model::tone::knobs::ToneModelKind;
+    use isp_model::tone::base::ToneModelKind;
 
     use super::*;
 

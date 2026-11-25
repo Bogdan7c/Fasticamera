@@ -94,7 +94,6 @@ pub(crate) fn look_facts_with_wheels(
             })
             .collect(),
         wheel_ring: real_wheel_ring(),
-        unsupported_knobs: Vec::new(),
         problem,
     }
 }

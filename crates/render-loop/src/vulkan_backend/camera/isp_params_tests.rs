@@ -549,8 +549,8 @@ fn legacy_choice_in_the_config_resolves_the_legacy_base_for_both_caches() {
 /// белым точки, а цель AE остаётся прежней: смена `base` не меняет экспозицию.
 #[test]
 fn aces_and_filmic_choices_in_the_config_resolve_the_same_model_for_both_caches() {
+    use isp_model::tone::base::ToneModelKind;
     use isp_model::tone::base::{ResolvedToneBase, WhitePolicy};
-    use isp_model::tone::knobs::ToneModelKind;
     let stream = stream(calibration());
     for (choice, kind) in [
         (crate::config::ToneBaseChoice::Aces, ToneModelKind::Aces),

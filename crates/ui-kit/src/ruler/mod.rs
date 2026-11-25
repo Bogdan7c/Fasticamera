@@ -11,6 +11,8 @@
 
 mod control;
 mod finger_gate;
+mod pacing;
 
-pub use control::{RulerControl, RulerSpec};
+pub use control::{RulerControl, RulerFeel, RulerSpec};
 pub use finger_gate::{FingerGate, GatedEvent};
+pub use pacing::HapticPacing;

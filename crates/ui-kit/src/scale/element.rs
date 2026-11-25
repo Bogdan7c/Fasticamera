@@ -432,6 +432,8 @@ impl<M: ValueModel + Clone> SnapScale<M> {
             self.events.push(match emphasis {
                 Emphasis::Tick => ScaleEvent::TickCrossed { direction: *direction },
                 Emphasis::Reference => ScaleEvent::ReferenceCrossed { direction: *direction },
+                // Шаг без риски рубеж не объявляет: ни события, ни щелчка.
+                Emphasis::Step => continue,
             });
         }
         let value = self.model.value_at(position);
@@ -451,13 +453,13 @@ impl<M: ValueModel + Clone> SnapScale<M> {
     /// Паттерн на кадр: сильнейший из пройденных рубежей (опорное значение сильнее тика). Играть ли
     /// его, решает очередь по происхождению движения (программное не вибрирует).
     fn haptic_for(&self, crossings: &[(Emphasis, TravelDirection)]) -> Option<shell_contract::haptics::HapticPattern> {
-        if crossings.is_empty() {
-            return None;
-        }
         let event = if crossings.iter().any(|(emphasis, _)| *emphasis == Emphasis::Reference) {
             HapticEvent::ScaleReference
-        } else {
+        } else if crossings.iter().any(|(emphasis, _)| *emphasis == Emphasis::Tick) {
             HapticEvent::ScaleTick
+        } else {
+            // Ничего не пройдено (или только шаги без риски): щелчка нет.
+            return None;
         };
         self.haptics.pattern_for(event)
     }

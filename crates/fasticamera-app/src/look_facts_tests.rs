@@ -1,9 +1,9 @@
-//! Тесты фактов о виде: каталог полос с цветами точек, проба ручек основы и наблюдатель за изменениями
+//! Тесты фактов о виде: каталог полос с цветами точек и наблюдатель за изменениями
 //! (шлёт только изменившееся, видит правки, смену основы и новую проблему).
 
 use look_contract::{
-    BuiltinPreset, EditState, LookControl, LookIntent, LookKnob, LookProblem, LookProblemKind, LookSettings, PresetId,
-    PresetName,
+    BuiltinPreset, EditState, GlobalKnob, LookControl, LookIntent, LookKnob, LookProblem, LookProblemKind,
+    LookSettings, PresetId, PresetName, ToneBaseModel,
 };
 use render_loop::config::RenderLoopConfig;
 
@@ -84,37 +84,6 @@ fn band_swatches_follow_the_hue_of_the_band_centre() {
 }
 
 #[test]
-fn the_probe_finds_the_knobs_each_base_cannot_do_and_never_blames_colour_knobs() {
-    let catalog = catalog();
-    // Прежняя кривая — одна лог-логистическая форма: тени и света у неё нет (`isp-model::tone::knobs`).
-    assert_eq!(
-        catalog.unsupported_knobs(ToneBaseModel::Legacy),
-        vec![GlobalKnob::Shadows, GlobalKnob::Highlights]
-    );
-    // AgX умеет все четыре ручки тона.
-    assert_eq!(catalog.unsupported_knobs(ToneBaseModel::Agx), Vec::<GlobalKnob>::new());
-    for base in [
-        ToneBaseModel::Legacy,
-        ToneBaseModel::Agx,
-        ToneBaseModel::Aces,
-        ToneBaseModel::Filmic,
-    ] {
-        let unsupported = catalog.unsupported_knobs(base);
-        for knob in [
-            GlobalKnob::Saturation,
-            GlobalKnob::Vibrance,
-            GlobalKnob::Warmth,
-            GlobalKnob::Tint,
-        ] {
-            assert!(
-                !unsupported.contains(&knob),
-                "{base:?}: цветовая ручка {knob:?} от основы не зависит"
-            );
-        }
-    }
-}
-
-#[test]
 fn the_first_observation_is_a_change_and_describes_the_library_as_it_is() {
     let (mut source, handle) = source();
     let facts = changed(source.observe(None));
@@ -161,24 +130,20 @@ fn a_knob_edit_changes_the_facts_and_only_that_control_differs_from_the_preset()
 }
 
 #[test]
-fn switching_the_base_updates_the_unsupported_knobs_from_the_probe() {
+fn switching_the_base_reaches_the_screen_facts_as_a_change() {
     let (mut source, handle) = source();
     handle
         .apply(LookIntent::SetToneBase(ToneBaseModel::Agx))
         .expect("основа принята");
     let on_agx = changed(source.observe(None));
-    assert_eq!(on_agx.unsupported_knobs, Vec::<GlobalKnob>::new());
+    assert_eq!(on_agx.current.base, ToneBaseModel::Agx);
 
     handle
         .apply(LookIntent::SetToneBase(ToneBaseModel::Legacy))
         .expect("основа принята");
     let on_legacy = changed(source.observe(None));
-    assert_eq!(
-        on_legacy.unsupported_knobs,
-        catalog().unsupported_knobs(ToneBaseModel::Legacy)
-    );
-    assert!(!on_legacy.unsupported_knobs.is_empty());
-    assert!(!on_legacy.is_knob_supported(on_legacy.unsupported_knobs[0]));
+    assert_eq!(on_legacy.current.base, ToneBaseModel::Legacy);
+    assert_eq!(source.observe(None), LookFactsChange::Unchanged);
 }
 
 #[test]

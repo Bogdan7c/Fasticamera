@@ -259,7 +259,7 @@ fn a_drag_along_the_eye_horizontal_changes_a_knob_by_the_same_amount_in_every_or
             DeviceOrientation::PortraitUpsideDown => assert!(eye_right.dx < -0.99 && eye_right.dy.abs() < 1e-9),
         }
         let ruler = center(&rig, "calib_ruler", 0);
-        drag_eye(&mut rig, ruler, Vector::new(-70.5, 0.0));
+        drag_eye(&mut rig, ruler, Vector::new(-knob_finger_pt(60.0), 0.0));
         let sent = set_looks(&rig.effects());
         let value = sent
             .last()
@@ -331,12 +331,12 @@ fn turning_the_phone_rebuilds_the_section_and_keeps_every_value_from_the_facts()
     rig.run(600);
     let list = rig.frame().clone();
     assert_eq!(
-        text_count_of(&list, "+0.30", TextRoleKind::ScaleValue),
+        text_count_of(&list, "+60", TextRoleKind::ScaleValue),
         1,
         "значение пережило пересборку"
     );
     let position = rig.screen.calibration_row_position_steps(0).unwrap();
-    assert!((position - 3.0).abs() < 0.02, "линейка стоит на 0,3: {position}");
+    assert!((position - 60.0).abs() < 0.02, "линейка стоит на +60: {position}");
     assert!(
         rig.effects().iter().all(|effect| !matches!(effect, Effect::Look(_))),
         "пересборка не шлёт действий"

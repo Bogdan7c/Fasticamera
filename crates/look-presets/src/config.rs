@@ -71,10 +71,9 @@ impl Default for BuiltinNames {
 /// Значения ручек встроенного «Как глаз» (без полос). Числа, не `LookKnob`: проверка
 /// диапазона идёт в [`PresetStoreConfig::builtin_catalog`] с именем поля в ошибке.
 ///
-/// `[estimate]` Умеренный «живой» вид: контраст +0.2 (чуть плотнее середина, как её видит
-/// глаз при дневном свете), насыщенность +0.15 и сочность +0.15 (цвет заметнее, но без
-/// пластика, решение 97). Остальное в нуле: теплоту, тени и света владелец крутит сам.
-/// Окончательный подбор — в 14b.
+/// `[estimate]` Умеренный «живой» вид: середина чуть плотнее, цвет чуть заметнее, без пластика (решение 97). Числа
+/// подогнаны в 14l под картинку прежних (0,2 / 0,15 / 0,15 на старых, слабых краях ручек): среднее расхождение
+/// ΔE2000 0,08, худшее 0,87 по трём основам (решение 248, `results/14l.md`). Подбор глазами владельца — 14j.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct AsEyeValues {
@@ -99,12 +98,12 @@ pub struct AsEyeValues {
 impl Default for AsEyeValues {
     fn default() -> Self {
         Self {
-            contrast: 0.2,
+            contrast: 0.02,
             midtones: 0.0,
             shadows: 0.0,
             highlights: 0.0,
-            saturation: 0.15,
-            vibrance: 0.15,
+            saturation: 0.08,
+            vibrance: 0.10,
             warmth: 0.0,
             tint: 0.0,
         }
@@ -300,9 +299,9 @@ mod tests {
         assert_eq!(catalog.name_of(BuiltinPreset::AsEye).as_str(), "Natural");
         assert!(catalog.settings_of(BuiltinPreset::Honest).is_neutral());
         let as_eye = catalog.settings_of(BuiltinPreset::AsEye);
-        assert_eq!(as_eye.contrast.get(), 0.2);
-        assert_eq!(as_eye.saturation.get(), 0.15);
-        assert_eq!(as_eye.vibrance.get(), 0.15);
+        assert_eq!(as_eye.contrast.get(), 0.02);
+        assert_eq!(as_eye.saturation.get(), 0.08);
+        assert_eq!(as_eye.vibrance.get(), 0.10);
         assert_eq!(catalog.startup_preset(), BuiltinPreset::AsEye);
     }
 

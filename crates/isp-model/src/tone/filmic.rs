@@ -467,8 +467,8 @@ fn luminance_row() -> Result<[f32; 3], InvalidFilmic> {
 mod tests;
 
 #[cfg(test)]
-#[path = "filmic_knob_tests.rs"]
-mod knob_tests;
+#[path = "filmic_settings_tests.rs"]
+mod settings_tests;
 
 #[cfg(test)]
 #[path = "filmic_color_tests.rs"]

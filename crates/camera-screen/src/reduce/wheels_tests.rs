@@ -61,6 +61,41 @@ fn choosing_the_already_selected_view_or_wheel_is_a_no_change() {
 }
 
 #[test]
+fn the_scales_scroll_position_is_remembered_only_in_the_section_and_changes_nothing_else() {
+    let mut screen = Screen::calibrating(look_facts());
+    assert_eq!(screen.state.calibration().scales_scroll_offset_pt(), 0.0);
+
+    let first = screen.step(ScreenAction::ScalesScrollRemembered { offset_pt: 137.5 });
+    let same = screen.step(ScreenAction::ScalesScrollRemembered { offset_pt: 137.5 });
+
+    assert_eq!(first.outcome, ActionOutcome::Applied);
+    assert!(
+        first.effects.is_empty(),
+        "запоминание позиции — состояние экрана, не намерение"
+    );
+    assert_eq!(same.outcome, ActionOutcome::NoChange(NoChangeReason::ValueUnchanged));
+    assert_eq!(screen.state.calibration().scales_scroll_offset_pt(), 137.5);
+    assert_eq!(
+        screen.state.calibration().control_view(),
+        ControlViewKind::Scales,
+        "вид и выбранное колесо не тронуты"
+    );
+    assert_eq!(screen.state.calibration().selected_wheel(), WheelZone::Lift);
+
+    let mut outside = Screen::with_look(look_facts());
+    let rejected = outside.step(ScreenAction::ScalesScrollRemembered { offset_pt: 50.0 });
+    assert_eq!(
+        rejected.outcome,
+        ActionOutcome::Rejected(Rejection::NotInCalibrationMode)
+    );
+    assert_eq!(
+        outside.state.calibration().scales_scroll_offset_pt(),
+        0.0,
+        "вне раздела не запоминается"
+    );
+}
+
+#[test]
 fn view_and_wheel_choices_are_rejected_outside_the_calibration_section() {
     let mut screen = Screen::with_look(look_facts());
 

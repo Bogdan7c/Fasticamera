@@ -9,6 +9,8 @@
     reason = "помощник тестов: битая фикстура должна ронять тест с понятным текстом"
 )]
 
+pub mod color_chart;
+pub mod knob_strength;
 pub mod real_capture;
 
 use std::path::PathBuf;

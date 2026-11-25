@@ -12,7 +12,7 @@ use ui_draw::geometry::PxSize;
 use ui_draw::scene_bridge::NodePlacementPx;
 use ui_draw::transform::Affine2;
 use ui_kit::pan::PanUpdate;
-use ui_kit::ruler::{GatedEvent, RulerControl, RulerSpec};
+use ui_kit::ruler::{GatedEvent, RulerControl, RulerFeel, RulerSpec};
 use ui_kit::tokens::{ScaleDensity, UiKitTokens};
 use ui_kit::value::{LinearLimits, QuantizedLinear, ReferenceValue};
 use ui_kit::view::PxPerPt;
@@ -20,14 +20,15 @@ use ui_kit::view::PxPerPt;
 mod common;
 use common::{env, ms};
 
-/// Шаг ручки: 0,1 на ступень, диапазон [-1, 1], ноль — опорное значение; плотность — токен ручки (20 pt на шаг).
+/// Шаг ручки: 0,1 на ступень, диапазон [-1, 1], ноль — опорное значение; плотность — токен линейки Exposure (20 pt на шаг).
 fn knob_ruler(tokens: &UiKitTokens, initial: f64) -> RulerControl {
     let model = QuantizedLinear::new(0.1, ReferenceValue::At(0.0), LinearLimits { min: -1.0, max: 1.0 }).unwrap();
     RulerControl::new(
         RulerSpec {
             model,
-            density: ScaleDensity::KnobRuler,
+            density: ScaleDensity::Ruler,
             major_every_steps: NonZeroU32::new(5).unwrap(),
+            feel: RulerFeel::default(),
         },
         initial,
         &env(tokens, MotionPreference::Full),

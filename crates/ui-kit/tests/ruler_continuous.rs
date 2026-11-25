@@ -12,7 +12,7 @@ use ui_draw::geometry::PxSize;
 use ui_draw::scene_bridge::NodePlacementPx;
 use ui_draw::transform::Affine2;
 use ui_kit::pan::PanUpdate;
-use ui_kit::ruler::{GatedEvent, RulerControl, RulerSpec};
+use ui_kit::ruler::{GatedEvent, RulerControl, RulerFeel, RulerSpec};
 use ui_kit::tokens::{ScaleDensity, UiKitTokens};
 use ui_kit::value::{ContinuousLinear, LinearLimits, MiredKelvin, RulerAxis};
 use ui_kit::view::PxPerPt;
@@ -38,6 +38,7 @@ fn mired_ruler(tokens: &UiKitTokens, initial_kelvin: f64) -> RulerControl<MiredK
             model,
             density: ScaleDensity::MiredRuler,
             major_every_steps: NonZeroU32::new(MAJOR_EVERY).unwrap(),
+            feel: RulerFeel::default(),
         },
         initial_kelvin,
         &env(tokens, MotionPreference::Full),
@@ -57,6 +58,7 @@ fn tint_ruler_with_limits(tokens: &UiKitTokens, initial: f64, limits: LinearLimi
             model,
             density: ScaleDensity::TintRuler,
             major_every_steps: NonZeroU32::new(MAJOR_EVERY).unwrap(),
+            feel: RulerFeel::default(),
         },
         initial,
         &env(tokens, MotionPreference::Full),

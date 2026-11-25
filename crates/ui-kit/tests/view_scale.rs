@@ -105,6 +105,7 @@ fn horizontal_ticks_stand_at_their_mark_offsets_in_pixels() {
         let length_pt = match emphasis {
             Emphasis::Tick => tokens.scale_ticks.tick_length_pt,
             Emphasis::Reference => tokens.scale_ticks.reference_length_pt,
+            Emphasis::Step => panic!("у шкалы EV риска на каждом шаге, шага без риски нет"),
         };
         close(tick.size.height, length_pt as f32 * SCALE, "длина");
     }

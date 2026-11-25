@@ -1,6 +1,6 @@
-// Слой вида на GPU (решения 98, 99, 176, 178): цвет вида (насыщенность, сочность, полосы оттенка в
-// OKLab/OKLCh) и таблица вида (LUT). ОДНА реализация для всех путей: слитый проход видоискателя и выходной
-// проход качественного конвейера и снимка. Эталон — isp-model `look/color.rs`, `look/bands.rs`, `look/lut.rs`
+// Слой вида на GPU (решения 98, 99, 176, 178, 236): тон вида (`look_tone.glsl`), цвет вида (насыщенность, сочность,
+// полосы оттенка в OKLab/OKLCh) и таблица вида (LUT). ОДНА реализация для всех путей: слитый проход видоискателя и выходной
+// проход качественного конвейера и снимка. Эталон — isp-model `look/tone_shape.rs`, `look/color.rs`, `look/bands.rs`, `look/lut.rs`
 // (там точные формулы и порядок операций); числа приходят готовыми из `src/look/mod.rs`.
 //
 // Слой работает над светом экрана ПОСЛЕ основы тона (любой модели) в рабочем пространстве W и до перевода в цвета
@@ -11,7 +11,7 @@
 // зеркало `src/look/lut_buffer.rs`.
 //
 // Правила файла:
-//   * Нейтраль — ФЛАГ в uniform (`look.rows[0].x`), а не константа специализации: смена варианта pipeline на
+//   * Нейтраль — ФЛАГ в uniform (цвет — `look.rows[0].x`, тон — `look.rows[36].x`), а не константа специализации: смена варианта pipeline на
 //     первом касании ручки создала бы его посреди жеста.
 //   * Никаких жёстких порогов около серого: влияние полос сходит на нет гладким весом `c²/(c² + F²)`. Единственная
 //     проверка — защита от неопределённого `atan(0, 0)` (в GLSL результат не определён) при ТОЧНО нулевой
@@ -25,7 +25,7 @@
 #include "oklab_working.glsl"
 
 // Число строк блока (зеркало `LOOK_ROWS` в Rust).
-#define LOOK_ROWS 36
+#define LOOK_ROWS 39
 
 layout(set = 0, binding = LOOK_PARAMS_BINDING, std140) uniform LookParameters {
     vec4 rows[LOOK_ROWS];
@@ -46,6 +46,7 @@ const uint LOOK_ROW_BAND_HUE_SHIFT = 19u;
 const uint LOOK_ROW_BAND_CHROMA = 23u;
 const uint LOOK_ROW_BAND_LIGHTNESS = 27u;
 const uint LOOK_ROW_WHEELS = 31u;      // x — колёса включены, y — L_g, z — 1/L_g, w — 1/(1 − L_g); 32–35: lift, gamma, gain, offset (ΔL, Δa, Δb)
+const uint LOOK_ROW_TONE = 36u;        // x — тон включён, y — q, z — 1/q, w — 1/(1 − q); 37 — наклоны; 38: x — доля цвета
 const uint LOOK_MAX_BANDS = 16u;
 
 // Малая добавка в знаменатель направления кожи (для c → 0), не порог.
@@ -54,6 +55,7 @@ const float LOOK_PI = 3.14159265358979323846;
 const float LOOK_TAU = 6.28318530717958647692;
 
 #include "look_wheels.glsl"
+#include "look_tone.glsl"
 
 // ----- Цвет вида -------------------------------------------------------------------------------------------
 
@@ -219,6 +221,13 @@ vec3 look_apply_lut(vec3 working_rgb) {
     vec3 sampled = look_lut_sample_encoded(encoded);
     return vec3(
         color_tail_srgb_decode(sampled.x), color_tail_srgb_decode(sampled.y), color_tail_srgb_decode(sampled.z));
+}
+
+// ----- Весь слой -------------------------------------------------------------------------------------------
+
+// Слой вида целиком над светом W одного пикселя (LookParams::apply_to_pixel): тон, цвет, таблица.
+vec3 look_apply_display(vec3 working_rgb) {
+    return look_apply_lut(look_apply_color(look_apply_tone(working_rgb)));
 }
 
 #endif

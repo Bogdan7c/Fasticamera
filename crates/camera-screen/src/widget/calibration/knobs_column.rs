@@ -12,8 +12,9 @@ use ui_core::geometry::Rect;
 use ui_core::gesture::{GestureEvent, PanSpec, RecognizerSpec};
 use ui_core::id::NodeId;
 use ui_draw::draw_list::{DrawItem, PressState};
+use ui_kit::drive::MotionPhase;
 use ui_kit::pan::PanUpdate;
-use ui_kit::scroll_list::ScrollList;
+use ui_kit::scroll_list::{ScrollAxis, ScrollList};
 use ui_kit::tokens::{GlassRole, TextRoleKind};
 use ui_kit::view::GlassShape;
 
@@ -48,6 +49,10 @@ pub(super) struct KnobsColumn {
     view: ControlView,
     /// Высота окна списка, pt.
     window_height_pt: f64,
+    /// Смещение списка, которое состояние раздела уже знает (`ScalesScrollRemembered`): как только список
+    /// успокоился на другом смещении, оно уходит состоянию, чтобы возврат на SCALES и пересборка раздела не
+    /// сбрасывали список на верх.
+    remembered_offset_pt: f64,
 }
 
 impl KnobsColumn {
@@ -127,8 +132,16 @@ impl KnobsColumn {
             view_is_scrollable || view.content_height() <= window_rect.size.height + 1e-9,
             "вид без прокрутки обязан помещаться в окно"
         );
-        let list = ScrollList::new(
+        // Список шкал начинает с запомненного смещения (его зажмёт в диапазон: окно может быть ниже или выше, чем
+        // было); у вида колёс прокрутки нет — он стоит на нуле.
+        let initial_offset_pt = match view_kind {
+            ControlViewKind::Scales => ctx.state.calibration().scales_scroll_offset_pt(),
+            ControlViewKind::Wheels => 0.0,
+        };
+        let list = ScrollList::along(
+            ScrollAxis::Vertical,
             view.content_height(),
+            initial_offset_pt,
             &ctx.environment(window_rect.size.height),
             ctx.now,
         )
@@ -139,9 +152,10 @@ impl KnobsColumn {
             switcher,
             window: list_node,
             content_node,
-            list,
             view,
             window_height_pt: window_rect.size.height,
+            remembered_offset_pt: list.offset(ctx.now),
+            list,
         })
     }
 
@@ -206,6 +220,22 @@ impl KnobsColumn {
     pub(super) fn advance(&mut self, ctx: &Ctx<'_>, out: &mut Outputs) {
         self.header.advance(ctx, out);
         self.view.advance(ctx, out);
+        self.remember_scroll_when_settled(ctx, out);
+    }
+
+    /// Когда список шкал успокоился на смещении, которого состояние раздела ещё не знает, отдаёт ему это смещение.
+    /// Сравнение смещений, а не «было движение»: за один кадр палец может провести и отпустить список, и фазы
+    /// движения кадр не увидит. Вид колёс не прокручивается и ничего не запоминает (его нулевое смещение затёрло
+    /// бы запомненное у шкал).
+    fn remember_scroll_when_settled(&mut self, ctx: &Ctx<'_>, out: &mut Outputs) {
+        if !matches!(self.view, ControlView::Rows(_)) || self.list.phase(ctx.now) != MotionPhase::Resting {
+            return;
+        }
+        let offset_pt = self.list.offset(ctx.now);
+        if offset_pt != self.remembered_offset_pt {
+            self.remembered_offset_pt = offset_pt;
+            out.actions.push(ScreenAction::ScalesScrollRemembered { offset_pt });
+        }
     }
 
     pub(super) fn draw(

@@ -1,5 +1,7 @@
 //! Квантованная линейная модель: диапазон, шаг, «ноль» (EV ±2 по 1/3).
 
+use std::num::NonZeroU32;
+
 use super::{
     DEFAULT_MAX_MARKS, Emphasis, INDEX_EPSILON, MAX_EXACT_INDEX, Mark, Quantization, ValueError, ValueModel,
     ensure_finite, ensure_mark_budget, nearest_index,
@@ -12,6 +14,29 @@ pub enum ReferenceValue {
     None,
     /// Опорное значение (обычно «ноль»); обязано лежать на сетке шага.
     At(f64),
+}
+
+/// Как часто на шкале стоят риски относительно шагов ЗНАЧЕНИЯ. Шаг значения (на нём шкала липнет и по нему
+/// меняется значение) и шаг риски (что рисуется и щёлкает) — разные вещи: у EV по 1/3 риска стоит на каждом шаге,
+/// у ручек вида шаг значения 1 из 100, а риска — через 10 шагов. Тип назван явно, чтобы на месте вызова не стояло
+/// безымянное число.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TickPitch {
+    /// Риска на каждом шаге значения (поведение по умолчанию, у Exposure и остальных шкал).
+    #[default]
+    EveryStep,
+    /// Риска на каждом `N`-м шаге (счёт от нуля шкалы); остальные шаги — [`Emphasis::Step`].
+    EveryNSteps(NonZeroU32),
+}
+
+impl TickPitch {
+    /// Эта ли риска (по индексу шага) должна быть нарисована и щёлкать.
+    fn has_tick_at(self, step_index: i64) -> bool {
+        match self {
+            TickPitch::EveryStep => true,
+            TickPitch::EveryNSteps(period) => step_index.rem_euclid(i64::from(period.get())) == 0,
+        }
+    }
 }
 
 /// Пределы линейной модели, включительно. Границы, не попадающие на сетку, сужаются к ближайшему
@@ -32,6 +57,8 @@ pub struct QuantizedLinear {
     max_index: i64,
     /// Предел числа рисок (инженерная защита, см. [`DEFAULT_MAX_MARKS`]).
     max_marks: u32,
+    /// Через сколько шагов значения стоит риска (по умолчанию — на каждом).
+    tick_pitch: TickPitch,
 }
 
 impl QuantizedLinear {
@@ -84,7 +111,20 @@ impl QuantizedLinear {
             min_index,
             max_index,
             max_marks,
+            tick_pitch: TickPitch::default(),
         })
+    }
+
+    /// Та же модель с другим шагом риски: шаг значения не меняется (шкала липнет на каждом шаге), риски и щелчки
+    /// остаются только на выбранных шагах и на опорном значении.
+    pub fn with_tick_pitch(mut self, tick_pitch: TickPitch) -> Self {
+        self.tick_pitch = tick_pitch;
+        self
+    }
+
+    /// Шаг риски модели.
+    pub fn tick_pitch(&self) -> TickPitch {
+        self.tick_pitch
     }
 
     /// Шаг модели.
@@ -175,8 +215,10 @@ impl ValueModel for QuantizedLinear {
                 position: index as f64,
                 emphasis: if self.reference_index == Some(index) {
                     Emphasis::Reference
-                } else {
+                } else if self.tick_pitch.has_tick_at(index) {
                     Emphasis::Tick
+                } else {
+                    Emphasis::Step
                 },
             })
             .collect()

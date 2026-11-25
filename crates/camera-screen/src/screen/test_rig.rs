@@ -15,6 +15,7 @@ use ui_kit::view::{LabelPainter, PxPerPt};
 
 use super::{CameraScreen, ScreenTouch};
 use crate::action::ScreenAction;
+use crate::calibration::CalibrationConfig;
 use crate::config::ScreenConfig;
 use crate::effect::Effect;
 use crate::test_support::live_facts;
@@ -25,6 +26,13 @@ pub(super) const HEIGHT_PX: f32 = 2412.0;
 pub(super) const PX_PER_PT: f32 = WIDTH_PX / 440.0;
 /// Период кадра 60 Гц, мс.
 pub(super) const FRAME_MS: i64 = 16;
+
+/// Путь пальца в pt, который линейка ручки (CALIBRATE и кольцо WHEELS) переводит ровно в `units` единиц шкалы.
+/// Берёт плотность из конфига экрана (`knob_full_travel_pt` / (2·`knob_units_per_full_scale`), решение 251), а не
+/// из литерала: смена чисел в конфиге не должна ломать тесты, которым важна лишь «протяжка на N единиц».
+pub(super) fn knob_finger_pt(units: f64) -> f64 {
+    units * CalibrationConfig::default().widgets.knob_points_per_unit()
+}
 
 pub(super) fn ms(value: i64) -> MonotonicNanos {
     MonotonicNanos::from_nanos(value * 1_000_000)

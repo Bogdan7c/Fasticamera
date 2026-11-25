@@ -32,6 +32,7 @@
 //! счётчики. Затемнение при снимке запускается именно здесь по `Effect::Capture`, поэтому его дают и кнопка,
 //! и клавиша громкости, и таймер.
 
+mod calibration_targets;
 mod diagnostics;
 mod effect_queue;
 mod error;
@@ -52,6 +53,7 @@ use ui_draw::light::LightDirection;
 use ui_kit::tokens::UiKitTokens;
 use ui_kit::view::PxPerPt;
 
+pub use calibration_targets::CalibrationTouchTargets;
 pub use diagnostics::{GestureCounters, ScreenDiagnostics};
 pub use error::ScreenBuildError;
 pub use white_targets::{WhiteCardTargets, WhiteTouchTargets};
@@ -590,6 +592,9 @@ mod effect_queue_tests;
 #[cfg(test)]
 #[path = "screen_calibration_bands_tests.rs"]
 mod screen_calibration_bands_tests;
+#[cfg(test)]
+#[path = "screen_calibration_finger_tests.rs"]
+mod screen_calibration_finger_tests;
 #[cfg(test)]
 #[path = "screen_calibration_menu_tests.rs"]
 mod screen_calibration_menu_tests;

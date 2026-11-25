@@ -1,17 +1,15 @@
 //! Выбор основы тона: прежняя кривая (вариант сравнения до 14b) или AgX. Основа — сменная МОДЕЛЬ (решение 182).
 //!
 //! # Как добавить модель основы (ACES, filmic и т. д.)
-//! Слой вида (ручки цвета, LUT, сдвиг белой) работает над светом экрана ПОСЛЕ основы и о модели ничего не
-//! знает; ручки тона идут через один шов. Поэтому новая модель добавляется без правки модуля вида.
+//! Слой вида (ручки тона и цвета, LUT, сдвиг белой) работает над светом экрана ПОСЛЕ основы и о модели ничего не
+//! знает. Поэтому новая модель добавляется без правки модуля вида и сразу получает все ручки (решения 236, 244).
 //!
 //! **CPU (`isp-model`):**
 //! 1. Свой тип настроек (`serde`, `deny_unknown_fields`, `default`, проверка с enum-ошибкой, числа `[estimate]`).
-//! 2. `impl` [`super::knobs::ToneModelSettings`]: как контраст, средние тона, тени, света меняют ЕЁ настройки;
-//!    чего у модели нет — [`super::knobs::ToneKnobUnsupported`] (не паника).
-//! 3. Вариант в [`ToneBase`] и [`ResolvedToneBase`] (разрешённая основа с числами в f32), ветки в
-//!    [`ToneBase::working_primaries`] (рабочее пространство `W` модели), [`ToneBase::with_knobs`] и
+//! 2. Вариант в [`ToneBase`] и [`ResolvedToneBase`] (разрешённая основа с числами в f32), ветки в
+//!    [`ToneBase::working_primaries`] (рабочее пространство `W` модели) и
 //!    [`ResolvedToneBase::white_policy`], в `IspParams::resolve` и в `pipeline::run_reference_*`.
-//! 4. Контракт [`super::working_stage::WorkingToneBase`] для разрешённой основы (формулы пикселя) и ветка в
+//! 3. Контракт [`super::working_stage::WorkingToneBase`] для разрешённой основы (формулы пикселя) и ветка в
 //!    [`ResolvedToneBase::working_stage`]: стадии над изображениями и эталонная цепочка у всех моделей ОДНИ.
 //!    Вход в `W` и выход `W → цвета выхода` модель берёт у общего [`super::working_io::WorkingSpaceIo`], а не пишет сама.
 //!
@@ -24,18 +22,16 @@
 //!
 //! **Тесты, обязательные для модели:** серый сцены → ровно заданный серый экрана; белый точки → ровно 1;
 //! серый остаётся серым на всём диапазоне; путь в белое без ступенек (R, G, B, C, M, Y); цель решения 47 (закат,
-//! кожа, небо — потолки решения 181); цвета за охватом без NaN и выбросов; ручки в нуле — выход бит в бит;
-//! каждая поддержанная ручка меняет свою часть кривой и не трогает остальные; неподдержанная — различимый отказ;
-//! проверка краёв ручек × подтяжка AE (`look::validation`); паритет CPU и GPU.
+//! кожа, небо — потолки решения 181); цвета за охватом без NaN и выбросов; нейтральный вид — выход бит в бит;
+//! кривая строится на краях подтяжки AE (`look::validation`); сила ручек тона на модели не ниже порога
+//! (`tests/look_knob_strength.rs`); паритет CPU и GPU.
 
 use std::sync::Arc;
 
-use super::ToneCurveSettings;
 use super::aces::{AcesBase, AcesSettings, InvalidAces};
 use super::agx::AgxBase;
 use super::agx_settings::{AgxSettings, InvalidAgx};
 use super::filmic::{FilmicBase, FilmicSettings, InvalidFilmic};
-use super::knobs::{ToneKnobAmounts, ToneKnobUnsupported, ToneModelKind, apply_knobs_lenient};
 use super::working_stage::WorkingToneBase;
 use crate::color::chromaticity::Primaries;
 use crate::color::working_space::WORKING_PRIMARIES;
@@ -67,15 +63,17 @@ impl Default for ToneBase {
     }
 }
 
-/// Настройки основы с применёнными ручками тона (результат шва [`ToneBase::with_knobs`]).
-#[derive(Debug, Clone, PartialEq)]
-pub struct KnobbedTone {
-    /// Основа с настройками после ручек.
-    pub base: ToneBase,
-    /// Настройки прежней кривой после ручек (у `Legacy` числа живут в них, а не в варианте).
-    pub legacy_curve: ToneCurveSettings,
-    /// Ненулевые ручки, которых модель не поддерживает (не применены).
-    pub unsupported: Vec<ToneKnobUnsupported>,
+/// Название модели основы (для сообщений, выбора на GPU и отчётов).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ToneModelKind {
+    /// Прежняя лог-логистическая кривая.
+    Legacy,
+    /// Основа AgX.
+    Agx,
+    /// Основа filmic (своя реализация идеи darktable filmic RGB).
+    Filmic,
+    /// Основа ACES (RRT и выходное преобразование SDR 100 нит, Academy).
+    Aces,
 }
 
 impl ToneBase {
@@ -89,9 +87,9 @@ impl ToneBase {
         }
     }
 
-    /// Разрешает основу на кадр: настройки модели (уже с ручками) и остаточная подтяжка AE `gain` (решение 72) —
+    /// Разрешает основу на кадр: настройки модели и остаточная подтяжка AE `gain` (решение 72) —
     /// серый кривой делится на `k`, белый точки остаётся прежним. Единственное место, где настройки модели
-    /// становятся [`ResolvedToneBase`] (кадр и проверка краёв ручек зовут его же). У `Legacy` числа живут не в
+    /// становятся [`ResolvedToneBase`] (кадр и проверка краёв подтяжки зовут его же). У `Legacy` числа живут не в
     /// варианте, а в `ProcessingControls::tone`, поэтому разрешение — пустое.
     pub fn resolve(&self, gain: ExposureGain, output_gamut: DisplayGamut) -> Result<ResolvedToneBase, InvalidToneBase> {
         Ok(match self {
@@ -114,46 +112,6 @@ impl ToneBase {
         match self {
             Self::Legacy => output_gamut.primaries(),
             Self::Agx(_) | Self::Aces(_) | Self::Filmic(_) => WORKING_PRIMARIES,
-        }
-    }
-
-    /// ЕДИНЫЙ шов ручек тона (решение 182): применяет ручки к настройкам ЭТОЙ модели. `legacy` — настройки
-    /// прежней кривой (`ProcessingControls::tone`): у варианта `Legacy` собственных чисел нет. Нейтральные ручки
-    /// настройки не меняют ни на бит; неподдержанные попадают в [`KnobbedTone::unsupported`].
-    pub fn with_knobs(&self, legacy: &ToneCurveSettings, amounts: &ToneKnobAmounts) -> KnobbedTone {
-        match self {
-            Self::Legacy => {
-                let outcome = apply_knobs_lenient(legacy, amounts);
-                KnobbedTone {
-                    base: Self::Legacy,
-                    legacy_curve: outcome.settings,
-                    unsupported: outcome.unsupported,
-                }
-            }
-            Self::Agx(settings) => {
-                let outcome = apply_knobs_lenient(settings, amounts);
-                KnobbedTone {
-                    base: Self::Agx(outcome.settings),
-                    legacy_curve: *legacy,
-                    unsupported: outcome.unsupported,
-                }
-            }
-            Self::Aces(settings) => {
-                let outcome = apply_knobs_lenient(settings, amounts);
-                KnobbedTone {
-                    base: Self::Aces(outcome.settings),
-                    legacy_curve: *legacy,
-                    unsupported: outcome.unsupported,
-                }
-            }
-            Self::Filmic(settings) => {
-                let outcome = apply_knobs_lenient(settings, amounts);
-                KnobbedTone {
-                    base: Self::Filmic(outcome.settings),
-                    legacy_curve: *legacy,
-                    unsupported: outcome.unsupported,
-                }
-            }
         }
     }
 }

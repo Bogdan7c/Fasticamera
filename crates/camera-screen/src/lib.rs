@@ -80,8 +80,8 @@ pub use mode_behaviour::{
 pub use outcome::{ActionOutcome, NoChangeReason, Rejection, RejectionCounters};
 pub use reduce::{ScreenTransition, reduce};
 pub use screen::{
-    CameraScreen, GestureCounters, ScreenBuildError, ScreenDiagnostics, ScreenTouch, WhiteCardTargets,
-    WhiteTouchTargets,
+    CalibrationTouchTargets, CameraScreen, GestureCounters, ScreenBuildError, ScreenDiagnostics, ScreenTouch,
+    WhiteCardTargets, WhiteTouchTargets,
 };
 pub use state::{PanelState, ScreenState, ShutterVisibility, ViewfinderUnavailable};
 pub use white::{WhiteAxis, WhiteScreenState};

@@ -20,7 +20,7 @@ use crate::gamut::{GamutCompression, GamutCompressionSettings, InvalidGamutCompr
 use crate::image::DisplayGamut;
 use crate::lens_shading::{LensShadingControl, LensShadingStep};
 use crate::levels::{InvalidLevels, NormalizationLevels};
-use crate::look::white::{WhiteShift, WhiteShiftLimit, WhiteShiftSkipReason, shift_white};
+use crate::look::white::{RenderingNeutral, WhiteShift, WhiteShiftLimit, WhiteShiftSkipReason, shifted_neutral};
 use crate::look::{LookControls, LookParams, ResolveLookError};
 use crate::output::{OutputProfile, UnsupportedOutputProfile};
 use crate::sensor::SensorDescription;
@@ -234,10 +234,7 @@ impl IspParams {
         let output_gamut = controls.output_profile.gamut();
         let working = controls.tone_base.working_primaries(output_gamut);
         let mut look = LookParams::resolve(&controls.look, &working)?;
-        // Единый шов ручек тона (решение 182): настройки модели после ручек; нуль ручки — настройки бит в бит.
-        let knobbed = controls.tone_base.with_knobs(&controls.tone, &look.tone);
-        look.report.unsupported_tone_knobs = knobbed.unsupported;
-        let tone_base = knobbed.base.resolve(controls.exposure_gain, output_gamut)?;
+        let tone_base = controls.tone_base.resolve(controls.exposure_gain, output_gamut)?;
         // Цвет по честной нейтрали AWB: из него веса AE и белая точка сцены. Рисование (теплота, оттенок) — ниже.
         let scene_gains = WhiteBalanceGains::from_camera_neutral(controls.white_balance);
         let scene_color = resolve_color(sensor, controls.white_balance, output_gamut, &scene_gains)?;
@@ -245,7 +242,13 @@ impl IspParams {
         let (white_balance, color) = if look.white_shift.is_none() {
             (scene_gains, scene_color)
         } else {
-            match render_with_shifted_white(sensor, &scene_color, look.white_shift, output_gamut) {
+            match render_with_shifted_white(
+                sensor,
+                &scene_color,
+                controls.white_balance,
+                look.white_shift,
+                output_gamut,
+            ) {
                 Ok(shifted) => {
                     look.report.white_shift_limit = shifted.limit;
                     (shifted.gains, shifted.color)
@@ -267,7 +270,7 @@ impl IspParams {
             output_profile: controls.output_profile,
             color,
             gamut_compression: GamutCompression::resolve(&controls.gamut_compression)?,
-            tone: ToneCurve::resolve(&knobbed.legacy_curve.with_exposure_gain(controls.exposure_gain))?,
+            tone: ToneCurve::resolve(&controls.tone.with_exposure_gain(controls.exposure_gain))?,
             white_policy: tone_base.white_policy(),
             tone_base,
             look,
@@ -328,14 +331,12 @@ struct ShiftedRendering {
 fn render_with_shifted_white(
     sensor: &SensorDescription,
     scene_color: &ColorTransforms,
+    scene_neutral: CameraNeutral,
     shift: WhiteShift,
     output_gamut: DisplayGamut,
 ) -> Result<ShiftedRendering, WhiteShiftSkipReason> {
-    let rendering = shift_white(scene_color.white.white, shift).map_err(WhiteShiftSkipReason::ShiftOutsideTable)?;
-    let neutral = sensor
-        .color_profile()
-        .neutral_for_white(rendering.white)
-        .map_err(WhiteShiftSkipReason::ShiftedWhiteHasNoNeutral)?;
+    let RenderingNeutral { neutral, limit } =
+        shifted_neutral(sensor.color_profile(), scene_color.white.white, scene_neutral, shift)?;
     let gains = WhiteBalanceGains::from_camera_neutral(neutral);
     let rendered =
         resolve_color(sensor, neutral, output_gamut, &gains).map_err(WhiteShiftSkipReason::ShiftedColorUnresolvable)?;
@@ -346,7 +347,7 @@ fn render_with_shifted_white(
             white: scene_color.white,
             ..rendered
         },
-        limit: rendering.limit,
+        limit,
     })
 }
 

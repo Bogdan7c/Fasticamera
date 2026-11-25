@@ -18,6 +18,29 @@ fn defaults_are_valid_enabled_and_use_the_video_standard_axes() {
 }
 
 #[test]
+fn knob_finger_path_per_unit_is_the_full_travel_over_twice_the_units() {
+    let mut widgets = CalibrationConfig::default().widgets;
+    // Умолчание (решение 251): −200…+200 на 400 pt пальца — 1 pt на единицу, риска через 20 pt.
+    assert_eq!(widgets.knob_points_per_unit(), 1.0);
+    assert_eq!(
+        f64::from(widgets.knob_tick_every_steps) * widgets.knob_points_per_unit(),
+        20.0
+    );
+    widgets.knob_full_travel_pt = 800.0;
+    assert_eq!(
+        widgets.knob_points_per_unit(),
+        2.0,
+        "вдвое длиннее ход — вдвое шире шаг"
+    );
+    widgets.knob_units_per_full_scale = 100;
+    assert_eq!(
+        widgets.knob_points_per_unit(),
+        4.0,
+        "вдвое меньше единиц — вдвое шире шаг"
+    );
+}
+
+#[test]
 fn a_disabled_flag_maps_to_the_disabled_availability() {
     let config = CalibrationConfig {
         enabled: false,
@@ -104,8 +127,48 @@ fn widget_numbers_are_validated_with_the_name_of_the_bad_field() {
         }))
     ));
     assert!(matches!(
-        reject(&|c| c.widgets.knob_step = 1.5),
-        Err(CalibrationConfigError::Widgets(Bad::KnobStepOutOfRange { .. }))
+        reject(&|c| c.widgets.knob_units_per_full_scale = 0),
+        Err(CalibrationConfigError::Widgets(Bad::KnobUnitsOutOfRange { value: 0 }))
+    ));
+    assert!(matches!(
+        reject(&|c| c.widgets.knob_units_per_full_scale = 1_000_000),
+        Err(CalibrationConfigError::Widgets(Bad::KnobUnitsOutOfRange { .. }))
+    ));
+    for bad_travel in [0.0, -400.0, f64::NAN, f64::INFINITY] {
+        assert!(
+            matches!(
+                reject(&|c| c.widgets.knob_full_travel_pt = bad_travel),
+                Err(CalibrationConfigError::Widgets(Bad::NonPositive {
+                    field: "knob_full_travel_pt",
+                    ..
+                }))
+            ),
+            "ход {bad_travel}"
+        );
+    }
+    // 400 pt на 2·1000 единиц — 0,2 pt на единицу: мельче порога различимости, это ошибка конфига.
+    assert!(matches!(
+        reject(&|c| c.widgets.knob_units_per_full_scale = 1000),
+        Err(CalibrationConfigError::Widgets(Bad::KnobScaleTooFine {
+            units: 1000,
+            ..
+        }))
+    ));
+    // Ровно на пороге (0,5 pt на единицу: 400 pt на 2·400 единиц) конфиг допустим.
+    assert!(
+        reject(&|c| c.widgets.knob_units_per_full_scale = 400).is_ok(),
+        "0,5 pt на единицу — граница допустимого"
+    );
+    assert!(matches!(
+        reject(&|c| c.widgets.knob_tick_every_steps = 0),
+        Err(CalibrationConfigError::Widgets(Bad::ZeroTickPeriod))
+    ));
+    assert!(matches!(
+        reject(&|c| c.widgets.knob_pan_hysteresis_pt = 0.0),
+        Err(CalibrationConfigError::Widgets(Bad::NonPositive {
+            field: "knob_pan_hysteresis_pt",
+            ..
+        }))
     ));
     assert!(matches!(
         reject(&|c| c.widgets.knob_major_every_steps = 0),

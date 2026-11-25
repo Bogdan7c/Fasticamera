@@ -367,5 +367,5 @@ mod tests;
 mod color_tests;
 
 #[cfg(test)]
-#[path = "aces_knob_tests.rs"]
-mod knob_tests;
+#[path = "aces_settings_tests.rs"]
+mod settings_tests;

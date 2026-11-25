@@ -1,7 +1,7 @@
-//! Слой вида на GPU (решения 98, 99, 176, 178): стадия цвета вида (насыщенность, сочность, полосы оттенка в
-//! OKLab/OKLCh) и таблица LUT. ОДИН общий GLSL-файл (`shaders/look_stage.glsl`) и ОДИН упаковщик на все пути:
+//! Слой вида на GPU (решения 98, 99, 176, 178, 236): тон вида (контраст, средние тона, тени, света), стадия цвета
+//! (насыщенность, сочность, полосы оттенка в OKLab/OKLCh) и таблица LUT. ОДИН общий GLSL-файл (`shaders/look_stage.glsl`) и ОДИН упаковщик на все пути:
 //! видоискатель, качественный конвейер и проявление снимка берут блок как есть, ничего не пересчитывая. Числа —
-//! ровно те f32, что отдаёт `isp_model::look::color::LookColorParams` (эталон подставляет их же).
+//! ровно те f32, что отдают `isp_model::look::{tone_shape::LookTone, color::LookColorParams}` (эталон берёт их же).
 //!
 //! Слой стоит ПОСЛЕ основы тона (любой модели: см. [`crate::tone_base`]) над светом экрана в рабочем
 //! пространстве `W`, до перевода в цвета выхода. О модели основы он не знает: от неё берётся только `W`, а
@@ -29,8 +29,11 @@
 //! | 27–30 | множитель светлоты полосы (1 — нейтраль) |
 //! | 31 | колёса по зонам: x — включены (1.0) или нейтральны (0.0), y — `L_g` (светлота серого экрана), z — `1/L_g`, w — `1/(1 − L_g)` |
 //! | 32–35 | сдвиги зон колёс `(ΔL, Δa, Δb, 0)`: Lift, Gamma, Gain, Offset (по порядку строк) |
+//! | 36 | тон вида: x — включён (1.0) или нейтрален (0.0), y — `q` (серый экрана, `√Y_g`), z — `1/q`, w — `1/(1 − q)` |
+//! | 37 | наклоны тона: x — тени у чёрного, y — света у белого, z — контраст на сером, w — средние тона у чёрного |
+//! | 38 | x — доля растянутого цвета, y, z, w — 0 |
 //!
-//! Нейтральный вид кладёт нули во все строки: шейдер их не читает. Нейтральные колёса (`wheels: None`) — нули в
+//! Тон и цвет независимы: нейтральный цвет кладёт нули в строки 0–35, нейтральный тон — в 36–38; шейдер их не читает. Нейтральные колёса (`wheels: None`) — нули в
 //! строках 31–35 при любом цвете; флаг цвета (строка 0) остаётся 1, если тронуто что-то ещё или сами колёса.
 //!
 //! # LUT
@@ -43,13 +46,21 @@ pub(crate) mod lut_buffer;
 pub use lut_buffer::{LookLutError, LookLutLimits};
 
 use isp_model::look::bands::MAX_LOOK_BANDS;
+use isp_model::look::color::LookColorParams;
+use isp_model::look::tone_shape::LookTone;
 use isp_model::look::wheels::LookWheels;
 use isp_model::params::IspParams;
 
 use crate::std140::Std140Writer;
 
 /// Число строк блока (зеркало `LOOK_ROWS` в `look_stage.glsl`).
-pub(crate) const LOOK_ROWS: usize = 36;
+pub(crate) const LOOK_ROWS: usize = COLOR_ROWS + TONE_ROWS;
+
+/// Строк цвета вида (0–35): флаги, числа, матрицы OKLab, полосы, колёса.
+const COLOR_ROWS: usize = 36;
+
+/// Строк тона вида (36–38).
+const TONE_ROWS: usize = 3;
 
 /// Размер блока в байтах.
 pub(crate) const LOOK_UNIFORM_BYTES: usize = LOOK_ROWS * 16;
@@ -60,63 +71,78 @@ const BAND_ROWS_PER_ARRAY: usize = MAX_LOOK_BANDS / 4;
 /// Строк колёс: одна с окном зон и по одной на Lift, Gamma, Gain, Offset.
 const WHEEL_ROWS: usize = 5;
 
-/// Собирает байты блока `LookParameters` по разрешённому цвету вида (раскладка — таблица модуля).
+/// Собирает байты блока `LookParameters` по разрешённому виду (раскладка — таблица модуля).
 pub(crate) fn pack_look_uniforms(params: &IspParams) -> [u8; LOOK_UNIFORM_BYTES] {
     let mut writer = Std140Writer::default();
-    match &params.look.color {
-        None => {
-            // Нейтраль: флаг 0 и нули. Шейдер дальше строки 0 не читает.
-            for _ in 0..LOOK_ROWS {
-                writer.vec4([0.0; 4]);
-            }
-        }
-        Some(color) => {
-            let band_count = color.bands.map_or(0, |bands| bands.count);
-            writer.vec4([1.0, band_count as f32, 0.0, 0.0]);
-            writer.vec4([
-                color.saturation_multiplier,
-                color.vibrance_amount,
-                color.vibrance_chroma_reference,
-                color.neutral_chroma_floor,
-            ]);
-            writer.vec4([
-                color.skin_direction[0],
-                color.skin_direction[1],
-                color.skin_cos_half_width,
-                color.skin_protection,
-            ]);
-            writer.matrix3(color.oklab.working_to_lms);
-            writer.matrix3(color.oklab.lms_prime_to_lab);
-            writer.matrix3(color.oklab.lab_to_lms_prime);
-            writer.matrix3(color.oklab.lms_to_working);
-            match &color.bands {
-                Some(bands) => {
-                    write_band_array(&mut writer, &bands.centers_radians);
-                    write_band_array(&mut writer, &bands.hue_shift_radians);
-                    write_band_array(&mut writer, &bands.chroma_multiplier);
-                    write_band_array(&mut writer, &bands.lightness_multiplier);
-                }
-                None => {
-                    // Полос нет (count = 0): шейдер массивы не читает, но блок пишется целиком.
-                    for _ in 0..4 * BAND_ROWS_PER_ARRAY {
-                        writer.vec4([0.0; 4]);
-                    }
-                }
-            }
-            write_wheels(&mut writer, color.wheels.as_ref());
-        }
-    }
+    write_color(&mut writer, params.look.color.as_ref());
+    write_tone(&mut writer, params.look.tone.as_ref());
     writer.finish::<LOOK_UNIFORM_BYTES>()
+}
+
+/// Пишет строки цвета 0–35; нейтральный цвет (`None`) — нули, дальше флага в строке 0 шейдер их не читает.
+fn write_color(writer: &mut Std140Writer, color: Option<&LookColorParams>) {
+    let Some(color) = color else {
+        write_zero_rows(writer, COLOR_ROWS);
+        return;
+    };
+    let band_count = color.bands.map_or(0, |bands| bands.count);
+    writer.vec4([1.0, band_count as f32, 0.0, 0.0]);
+    writer.vec4([
+        color.saturation_multiplier,
+        color.vibrance_amount,
+        color.vibrance_chroma_reference,
+        color.neutral_chroma_floor,
+    ]);
+    writer.vec4([
+        color.skin_direction[0],
+        color.skin_direction[1],
+        color.skin_cos_half_width,
+        color.skin_protection,
+    ]);
+    writer.matrix3(color.oklab.working_to_lms);
+    writer.matrix3(color.oklab.lms_prime_to_lab);
+    writer.matrix3(color.oklab.lab_to_lms_prime);
+    writer.matrix3(color.oklab.lms_to_working);
+    match &color.bands {
+        Some(bands) => {
+            write_band_array(writer, &bands.centers_radians);
+            write_band_array(writer, &bands.hue_shift_radians);
+            write_band_array(writer, &bands.chroma_multiplier);
+            write_band_array(writer, &bands.lightness_multiplier);
+        }
+        // Полос нет (count = 0): шейдер массивы не читает, но блок пишется целиком.
+        None => write_zero_rows(writer, 4 * BAND_ROWS_PER_ARRAY),
+    }
+    write_wheels(writer, color.wheels.as_ref());
+}
+
+/// Пишет строки тона 36–38; нейтральный тон (`None`) — нули, шейдер дальше флага их не читает.
+fn write_tone(writer: &mut Std140Writer, tone: Option<&LookTone>) {
+    let Some(tone) = tone else {
+        write_zero_rows(writer, TONE_ROWS);
+        return;
+    };
+    writer.vec4([1.0, tone.pivot, tone.shadow_scale, tone.highlight_scale]);
+    writer.vec4([
+        tone.shadow_slope,
+        tone.highlight_slope,
+        tone.contrast_slope,
+        tone.midtone_slope,
+    ]);
+    writer.vec4([tone.color_follow, 0.0, 0.0, 0.0]);
+}
+
+/// Пишет `count` нулевых строк.
+fn write_zero_rows(writer: &mut Std140Writer, count: usize) {
+    for _ in 0..count {
+        writer.vec4([0.0; 4]);
+    }
 }
 
 /// Пишет пять строк колёс (31–35); нейтральные колёса (`None`) — нули, шейдер их не читает.
 fn write_wheels(writer: &mut Std140Writer, wheels: Option<&LookWheels>) {
     match wheels {
-        None => {
-            for _ in 0..WHEEL_ROWS {
-                writer.vec4([0.0; 4]);
-            }
-        }
+        None => write_zero_rows(writer, WHEEL_ROWS),
         Some(wheels) => {
             writer.vec4([
                 1.0,

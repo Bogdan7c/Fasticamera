@@ -106,9 +106,9 @@ pub fn resolve_bands(model: &LookModelSettings, adjustments: &BandAdjustments) -
         let adjustment = adjustments.for_band(&definition.id);
         any_touched |= !adjustment.is_neutral();
         bands.centers_radians[slot] = definition.center_degrees.to_radians();
-        bands.hue_shift_radians[slot] = (adjustment.hue.get() * model.band_hue_range_degrees).to_radians();
-        bands.chroma_multiplier[slot] = 1.0 + adjustment.saturation.get() * model.band_saturation_range;
-        bands.lightness_multiplier[slot] = 1.0 + adjustment.luminance.get() * model.band_luminance_range;
+        bands.hue_shift_radians[slot] = model.band_hue_degrees.amount(adjustment.hue).to_radians();
+        bands.chroma_multiplier[slot] = 1.0 + model.band_saturation.amount(adjustment.saturation);
+        bands.lightness_multiplier[slot] = 1.0 + model.band_luminance.amount(adjustment.luminance);
     }
     ResolvedBands {
         bands: any_touched.then_some(bands),

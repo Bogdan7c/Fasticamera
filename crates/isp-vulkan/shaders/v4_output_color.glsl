@@ -73,25 +73,25 @@ vec3 encoded_color(vec3 camera_rgb, uvec2 valid_pixel) {
         vec3 shaped = (STAGE_SKIP_MASK & SKIP_TONE_BASE) != 0u
             ? input_scene
             : agx_apply_base(input_scene, pixel_white_level(valid_pixel));
-        // Вид: цвет, затем таблица — в W после основы; значения вне 0…1 принимает выходное сжатие охвата.
-        vec3 looked = (STAGE_SKIP_MASK & SKIP_LOOK) != 0u ? shaped : look_apply_lut(look_apply_color(shaped));
+        // Вид: тон, цвет, таблица — в W после основы; значения вне 0…1 принимает выходное сжатие охвата.
+        vec3 looked = (STAGE_SKIP_MASK & SKIP_LOOK) != 0u ? shaped : look_apply_display(shaped);
         vec3 output_linear = agx_working_to_output(looked);
         display_linear = agx_clamp_output(
             (STAGE_SKIP_MASK & SKIP_OUTPUT_GAMUT) != 0u ? output_linear : agx_compress_output_gamut(output_linear));
     } else if (output_tone_model() == TONE_MODEL_FILMIC) {
         vec3 working_scene = filmic_apply_matrix(FILMIC_ROW_XYZ_D50_TO_WORKING, xyz_d50);
         vec3 shaped = filmic_apply_base(filmic_apply_input(working_scene), pixel_white_level(valid_pixel));
-        vec3 looked = look_apply_lut(look_apply_color(shaped));
+        vec3 looked = look_apply_display(shaped);
         display_linear = filmic_clamp_output(filmic_compress_output_gamut(filmic_working_to_output(looked)));
     } else if (output_tone_model() == TONE_MODEL_ACES) {
         vec3 working_scene = aces_apply_matrix(ACES_ROW_XYZ_D50_TO_WORKING, xyz_d50);
         vec3 shaped = aces_apply_base(aces_apply_input(working_scene), pixel_white_level(valid_pixel));
-        vec3 looked = look_apply_lut(look_apply_color(shaped));
+        vec3 looked = look_apply_display(shaped);
         display_linear = aces_clamp_output(aces_compress_output_gamut(aces_working_to_output(looked)));
     } else {
         vec3 scene_linear = apply_matrix(frame.xyz_to_scene, xyz_d50);
         // Прежняя основа: W = цвета выхода; вид — над светом экрана после S-кривой (0…1 обрежет OETF).
-        display_linear = look_apply_lut(look_apply_color(apply_tone(compress_gamut(scene_linear))));
+        display_linear = look_apply_display(apply_tone(compress_gamut(scene_linear)));
     }
     return (STAGE_SKIP_MASK & SKIP_OETF) != 0u ? display_linear : color_tail_encode_output(display_linear);
 }

@@ -156,6 +156,9 @@ pub enum ScreenAction {
     },
     /// Выбран вид колонки ручек: шкалы или колёса (переключатель SCALES | WHEELS, решение 204). Эффектов нет.
     ControlViewSelected(ControlViewKind),
+    /// Список шкал успокоился на смещении `offset_pt` (0 — верх): состояние раздела запоминает его, чтобы после
+    /// переключения SCALES ↔ WHEELS (и пересборки раздела) список встал на то же место. Эффектов нет.
+    ScalesScrollRemembered { offset_pt: f64 },
     /// Выбрано колесо цвета (вкладка LIFT · GAMMA · GAIN · OFFSET, решение 205). Эффектов нет.
     WheelSelected(WheelZone),
     /// Точка толчка колеса потянута пальцем. Уходит точечным намерением `SetWheelPush`.

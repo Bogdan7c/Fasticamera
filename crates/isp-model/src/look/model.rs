@@ -1,13 +1,15 @@
 //! Модель вида (конфиг): во что переводятся ручки `[−1, 1]` (диапазоны) и какие полосы оттенка существуют.
 //!
 //! `LookSettings` (словарь, `look-contract`) — то, что крутит человек. [`LookModelSettings`] — «насколько
-//! сильна ручка на краю» и набор полос. Все числа — стартовые оценки `[estimate]`, их подбирает владелец в 14b
-//! на своих сценах. Модель — часть конфига (`deny_unknown_fields`, `default`, [`LookModelSettings::validate`]).
+//! сильна ручка на краю» ([`KnobRange`]) и набор полос. Края выбраны владельцем в 14l по снимкам: край —
+//! заведомо перебор, как в редакторах (решения 242–246); прочие числа — оценки `[estimate]`. Модель — часть конфига (`deny_unknown_fields`, `default`, [`LookModelSettings::validate`]).
 
 use look_contract::HueBandId;
 use serde::{Deserialize, Serialize};
 
 use super::bands::MAX_LOOK_BANDS;
+use super::range::KnobRange;
+use super::tone_shape::ToneShapeSettings;
 use super::wheels::{InvalidWheelModel, WheelModelSettings};
 
 /// Полоса оттенка модели: имя и центр на круге OKLCh.
@@ -46,23 +48,17 @@ impl Default for SkinWindow {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct LookModelSettings {
-    /// Контраст на краю ручки: `log2` множителя наклона кривой (`2^(k·range)`). Ограничен запасом плеча AgX:
-    /// при меньшем наклоне плечо не успевает дойти до белого (см. [`super::validation`]). `[estimate]`.
-    pub contrast_range_log2: f32,
-    /// Средние тона на краю: сдвиг серого экрана в ступенях (`·2^(k·range)`). `[estimate]`.
-    pub midtones_range_ev: f32,
-    /// Тени на краю: `log2` изменения степени носка (`+` светлее). `[estimate]`.
-    pub shadows_range_log2: f32,
-    /// Света на краю: `log2` изменения степени плеча (`+` светлее). `[estimate]`.
-    pub highlights_range_log2: f32,
-    /// Насыщенность на краю: множитель цветности `1 + k·range` (`range ≤ 1`: на минусе серый). `[estimate]`.
-    pub saturation_range: f32,
-    /// Сочность на краю: добавка к множителю цветности для малоцветного, до подавления кожей. `[estimate]`.
-    pub vibrance_range: f32,
-    /// Теплота на краю, майреды (`+` — теплее). `[estimate]`.
-    pub warmth_range_mired: f32,
-    /// Оттенок (зелёный ↔ пурпурный) на краю, Duv (`+` — пурпурнее). `[estimate]`.
-    pub tint_range_duv: f32,
+    /// Контраст, средние тона, тени, света: стадия тона вида после основы ([`super::tone_shape`], решение 236).
+    pub tone: ToneShapeSettings,
+    /// Насыщенность: множитель цветности `1 + величина` (минус физически не дальше 1 — это серый).
+    pub saturation: KnobRange,
+    /// Сочность: добавка к множителю цветности для малоцветного, до подавления кожей.
+    pub vibrance: KnobRange,
+    /// Теплота, майреды (`+` — теплее). На холодном или тёплом свете, где до края таблицы меньше, край ручки — край
+    /// таблицы ([`super::white`]).
+    pub warmth_mired: KnobRange,
+    /// Оттенок (зелёный ↔ пурпурный), Duv (`+` — пурпурнее).
+    pub tint_duv: KnobRange,
     /// Цветность OKLab, при которой вес сочности падает вдвое (уже насыщенное подавляется). `[estimate]`.
     pub vibrance_chroma_reference: f32,
     /// Окно кожи для сочности.
@@ -72,12 +68,13 @@ pub struct LookModelSettings {
     pub neutral_chroma_floor: f32,
     /// Полосы оттенка: число и центры — конфиг, не код. Стартовые 8, как у Lightroom (центры в OKLCh, `[estimate]`).
     pub bands: Vec<HueBandDefinition>,
-    /// Сдвиг оттенка полосы на краю ручки, градусы. `[estimate]`.
-    pub band_hue_range_degrees: f32,
-    /// Насыщенность полосы на краю: множитель `1 + k·range` (`range ≤ 1`). `[estimate]`.
-    pub band_saturation_range: f32,
-    /// Яркость полосы на краю: множитель светлоты `1 + k·range` (`range < 1`). `[estimate]`.
-    pub band_luminance_range: f32,
+    /// Сдвиг оттенка полосы, градусы OKLCh. ±60 — выбор владельца (решение 245): сильнее ≈ ±40 % хода соседние
+    /// цвета на плавном переходе меняются местами («складка»), как это позволяют и редакторы.
+    pub band_hue_degrees: KnobRange,
+    /// Насыщенность полосы: множитель `1 + величина` (минус не дальше 1 — серый).
+    pub band_saturation: KnobRange,
+    /// Яркость полосы: множитель светлоты `1 + величина` (минус строго меньше 1 — не чёрное).
+    pub band_luminance: KnobRange,
     /// Предел размера LUT: узлов на ось (`LookLut::new`). `[estimate]`.
     pub max_lut_size: u32,
     /// Колёса цвета по зонам: сила на краю и граница зон (решение 191).
@@ -87,14 +84,11 @@ pub struct LookModelSettings {
 impl Default for LookModelSettings {
     fn default() -> Self {
         Self {
-            contrast_range_log2: 0.1,
-            midtones_range_ev: 0.3,
-            shadows_range_log2: 0.6,
-            highlights_range_log2: 0.6,
-            saturation_range: 1.0,
-            vibrance_range: 0.8,
-            warmth_range_mired: 50.0,
-            tint_range_duv: 0.012,
+            tone: ToneShapeSettings::default(),
+            saturation: KnobRange { minus: 1.0, plus: 2.0 },
+            vibrance: KnobRange::symmetric(1.0),
+            warmth_mired: KnobRange::symmetric(150.0),
+            tint_duv: KnobRange::symmetric(0.033),
             vibrance_chroma_reference: 0.12,
             skin: SkinWindow::default(),
             neutral_chroma_floor: 0.01,
@@ -117,9 +111,9 @@ impl Default for LookModelSettings {
                     .map(|id| HueBandDefinition { id, center_degrees })
             })
             .collect(),
-            band_hue_range_degrees: 30.0,
-            band_saturation_range: 0.8,
-            band_luminance_range: 0.35,
+            band_hue_degrees: KnobRange::symmetric(60.0),
+            band_saturation: KnobRange { minus: 1.0, plus: 1.5 },
+            band_luminance: KnobRange::symmetric(0.7),
             max_lut_size: 65,
             wheels: WheelModelSettings::default(),
         }
@@ -161,32 +155,66 @@ pub const MIN_BAND_GAP_DEGREES: f32 = 1.0;
 /// Наибольший размер LUT, который допускает конфиг (память буфера GPU: `N³·12` байт).
 pub const MAX_LUT_SIZE_LIMIT: u32 = 129;
 
+/// Наибольший минус множителя `1 + величина`: ровно до нуля.
+const MULTIPLIER_MINUS_LIMIT: f32 = 1.0;
+/// Наибольший плюс множителей цветности: дальше любой цвет уходит за охват экрана.
+const MAX_SATURATION_PLUS: f32 = 4.0;
+
+impl InvalidLookModel {
+    /// Число конечно и лежит в `min…max` (включительно).
+    pub(super) fn check_number(field: &'static str, value: f32, min: f32, max: f32) -> Result<(), Self> {
+        if value.is_finite() && value >= min && value <= max {
+            Ok(())
+        } else {
+            Err(Self::OutOfRange { field, value, min, max })
+        }
+    }
+
+    /// Оба края ручки — модули в `0…max`.
+    pub(super) fn check_knob_range(field: &'static str, range: KnobRange, max: f32) -> Result<(), Self> {
+        Self::check_knob_edges(field, range, max, max)
+    }
+
+    /// Края ручки — модули, у каждой стороны свой предел.
+    pub(super) fn check_knob_edges(
+        field: &'static str,
+        range: KnobRange,
+        max_minus: f32,
+        max_plus: f32,
+    ) -> Result<(), Self> {
+        Self::check_number(field, range.minus, 0.0, max_minus)?;
+        Self::check_number(field, range.plus, 0.0, max_plus)
+    }
+}
+
 impl LookModelSettings {
-    /// Проверка диапазонов и набора полос (кривая на краях — [`super::validation`]).
+    /// Проверка диапазонов и набора полос.
     pub fn validate(&self) -> Result<(), InvalidLookModel> {
-        let check = |field: &'static str, value: f32, min: f32, max: f32| {
-            if value.is_finite() && value >= min && value <= max {
-                Ok(())
-            } else {
-                Err(InvalidLookModel::OutOfRange { field, value, min, max })
-            }
-        };
-        check("contrast_range_log2", self.contrast_range_log2, 0.0, 2.0)?;
-        check("midtones_range_ev", self.midtones_range_ev, 0.0, 2.0)?;
-        check("shadows_range_log2", self.shadows_range_log2, 0.0, 2.0)?;
-        check("highlights_range_log2", self.highlights_range_log2, 0.0, 2.0)?;
-        check("saturation_range", self.saturation_range, 0.0, 1.0)?;
-        check("vibrance_range", self.vibrance_range, 0.0, 1.0)?;
-        check("warmth_range_mired", self.warmth_range_mired, 0.0, 300.0)?;
-        check("tint_range_duv", self.tint_range_duv, 0.0, 0.05)?;
+        self.tone.validate()?;
+        // Минус множителя `1 + величина` не дальше 1 (серый): больше — цветность сменила бы знак.
+        InvalidLookModel::check_knob_edges(
+            "saturation",
+            self.saturation,
+            MULTIPLIER_MINUS_LIMIT,
+            MAX_SATURATION_PLUS,
+        )?;
+        InvalidLookModel::check_knob_edges("vibrance", self.vibrance, MULTIPLIER_MINUS_LIMIT, MAX_SATURATION_PLUS)?;
+        InvalidLookModel::check_knob_range("warmth_mired", self.warmth_mired, 300.0)?;
+        InvalidLookModel::check_knob_range("tint_duv", self.tint_duv, 0.05)?;
+        let check = InvalidLookModel::check_number;
         check("vibrance_chroma_reference", self.vibrance_chroma_reference, 1e-3, 1.0)?;
         check("skin.hue_center_degrees", self.skin.hue_center_degrees, 0.0, 360.0)?;
         check("skin.half_width_degrees", self.skin.half_width_degrees, 1.0, 179.0)?;
         check("skin.protection", self.skin.protection, 0.0, 1.0)?;
         check("neutral_chroma_floor", self.neutral_chroma_floor, 1e-4, 1.0)?;
-        check("band_hue_range_degrees", self.band_hue_range_degrees, 0.0, 90.0)?;
-        check("band_saturation_range", self.band_saturation_range, 0.0, 1.0)?;
-        check("band_luminance_range", self.band_luminance_range, 0.0, 0.95)?;
+        InvalidLookModel::check_knob_range("band_hue_degrees", self.band_hue_degrees, 90.0)?;
+        InvalidLookModel::check_knob_edges(
+            "band_saturation",
+            self.band_saturation,
+            MULTIPLIER_MINUS_LIMIT,
+            MAX_SATURATION_PLUS,
+        )?;
+        InvalidLookModel::check_knob_edges("band_luminance", self.band_luminance, 0.95, 2.0)?;
         if self.max_lut_size < 2 || self.max_lut_size > MAX_LUT_SIZE_LIMIT {
             return Err(InvalidLookModel::LutLimit {
                 value: self.max_lut_size,

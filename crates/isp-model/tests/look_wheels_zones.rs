@@ -29,6 +29,7 @@ use isp_model::image::{DisplayGamut, RawMosaic};
 use isp_model::look::LookControls;
 use isp_model::look::color::LookColorParams;
 use isp_model::look::model::LookModelSettings;
+use isp_model::look::wheels::WheelModelSettings;
 use isp_model::metrics::{DisplayToLab, delta_e_2000};
 use isp_model::params::{FrameInputs, IspParams, ProcessingControls};
 use isp_model::pipeline::run_reference_working;
@@ -346,10 +347,21 @@ const BEND_LIMIT_FACTOR: f32 = 1.5;
 /// Пол изгиба: у серого без колёс цветность ≈ 0 и её изгиб ≈ 0, относительный порог там бессмыслен; 1e-5 — уровень,
 /// ниже которого вторая разность невидима (в сотни раз меньше шага 8 бит, 1/255 ≈ 4e-3).
 /// Запас от краёв охвата выхода (линейный свет): ближе к чёрному и белому выход обрезается. Чёрный край уже: кривая
-/// основы у тёмного края своя, и тонкая тень (сотые доли процента) ещё различима.
-const BLACK_EDGE_MARGIN: f32 = 1e-4;
+/// основы у тёмного края своя. 3e-3 (было 1e-4): толчок на краю вырос с 0,05 до 0,20 (14l), синий толчок уводит цвет
+/// глубоко к границе охвата, и у самого чёрного канала (≈ 0,002) кривизну даёт мягкое сжатие охвата выхода, а не
+/// колесо: изгиб L там до 1·10⁻⁴ на filmic при 1·10⁻⁵ без колёс. Дальше от края изгиб колеса прежний (1,5 × основы).
+const BLACK_EDGE_MARGIN: f32 = 3e-3;
 const WHITE_EDGE_MARGIN: f32 = 1e-3;
 const BEND_FLOOR: f32 = 1e-5;
+/// Наименьшее число учтённых троек рампы с колесом (из 1599): меньше — рампа почти вся у границы охвата и тест
+/// ничего не проверяет. Самое узкое — Offset с синим толчком на filmic (≈ 210): общий сдвиг уводит к границе почти
+/// всё, что темнее света.
+const MIN_COUNTED_TRIPLES: usize = 150;
+/// Пол изгиба цветности на единицу силы толчка колеса: изгиб от колеса растёт ровно с `push_chroma_range`
+/// (сдвиг цветности линеен по силе толчка). Пол 1e-5 был принят при силе 0,05; сила края выросла до 0,20 (14l,
+/// решение 246), и тот же уровень «невидимого» изгиба — `2·10⁻⁴` на единицу силы (при 0,20 это 4·10⁻⁵, всё ещё
+/// на два порядка меньше шага 8 бит). Относительная часть порога (1,5 × изгиб без колёс) не менялась.
+const BEND_FLOOR_PER_PUSH_CHROMA: f32 = 2e-4;
 
 /// Рампа серого сцены: `from..=to` ступеней, шаг `step`.
 fn ev_ramp(from: f64, to: f64, step: f64) -> Vec<f64> {
@@ -447,7 +459,7 @@ fn every_wheel_at_full_strength_keeps_the_grey_ramp_smooth_and_rings_keep_it_mon
             rig.name,
             ramp.len() - 2
         );
-        assert!(counted > 600, "почти вся рампа вне охвата: учтено {counted}");
+        assert!(counted > 450, "почти вся рампа вне охвата: учтено {counted}");
         for zone in WheelZone::ALL {
             for (kind, value) in [("цвет", wheel(BLUE_HUE, 1.0, 0.0)), ("кольцо", wheel(0.0, 0.0, 1.0))] {
                 let (outputs, lightness, chroma_series) = series(Some(&look_with(zone, value)));
@@ -457,7 +469,7 @@ fn every_wheel_at_full_strength_keeps_the_grey_ramp_smooth_and_rings_keep_it_mon
                     "             {zone:?} {kind:7} | учтено {counted}: изгиб L {lightness_bend:.2e}, изгиб C {chroma_bend:.2e}"
                 );
                 assert!(
-                    counted > 400,
+                    counted > MIN_COUNTED_TRIPLES,
                     "{} {zone:?} {kind}: учтено мало точек ({counted})",
                     rig.name
                 );
@@ -467,7 +479,9 @@ fn every_wheel_at_full_strength_keeps_the_grey_ramp_smooth_and_rings_keep_it_mon
                     rig.name
                 );
                 assert!(
-                    chroma_bend <= BEND_LIMIT_FACTOR * neutral_chroma_bend + BEND_FLOOR,
+                    chroma_bend
+                        <= BEND_LIMIT_FACTOR * neutral_chroma_bend
+                            + BEND_FLOOR_PER_PUSH_CHROMA * WheelModelSettings::default().push_chroma_range,
                     "{} {zone:?} {kind}: цветность изогнулась на {chroma_bend}",
                     rig.name
                 );

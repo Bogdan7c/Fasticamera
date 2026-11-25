@@ -16,7 +16,7 @@ use super::scale::PxPerPt;
 use crate::drive::{GrowthDirection, ScreenAxis};
 use crate::scale::{SnapScale, TickVisibility};
 use crate::tokens::{ColorTokens, RulerTokens};
-use crate::value::RulerAxis;
+use crate::value::{Emphasis, RulerAxis};
 
 /// Через сколько шагов шкалы повторяется крупная риска (для EV по 1/3 — каждый 3-й шаг, целый EV). «Шаг» —
 /// расстояние между соседними рисками ([`RulerAxis::tick_step_units`]): у непрерывной оси это шаг её сетки.
@@ -75,6 +75,10 @@ pub fn ruler_items<M: RulerAxis>(
         if along_px.abs() > half_extent_px || fade <= 0.0 {
             continue;
         }
+        // Шаг значения без риски (`Emphasis::Step`) не рисуется: линейка с шагом мельче риски показывает только риски.
+        if mark.emphasis == Emphasis::Step {
+            continue;
+        }
         let step_index = (mark.offset_points / points_per_step).round() as i64;
         let base_alpha = if major_period.is_major(step_index) {
             tokens.major_tick_alpha
@@ -102,6 +106,68 @@ pub fn ruler_items<M: RulerAxis>(
         opacity,
     ));
     Ok(items)
+}
+
+/// Вид программной метки на линейке (например, «значение пресета»): точка под рядом рисок. Размеры и цвет — от
+/// экрана (`ui-kit` не знает, что метка значит); метка ничего не делает и не магнитит — это только рисунок.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RulerMarkerStyle {
+    /// Диаметр точки, pt.
+    pub diameter_pt: f64,
+    /// Зазор между нижним краем риски и точкой, pt.
+    pub gap_pt: f64,
+    /// Цвет точки (вместе с прозрачностью).
+    pub color: DisplayColor,
+}
+
+/// Метка в положении `position_units` (единицы модели): круглая точка под рядом рисок, на расстоянии метки от
+/// текущего значения. `None` — метка вне зоны видимости линейки (за краем узла или в зоне, где риски уже погасли).
+///
+/// Затухание берётся то же, что у рисок: далёкая метка тускнеет вместе с ними, а не торчит одна на пустом месте.
+pub fn ruler_marker_item<M: RulerAxis>(
+    placement: &NodePlacementPx,
+    scale: &SnapScale<M>,
+    now: MonotonicNanos,
+    px_per_pt: PxPerPt,
+    tokens: &RulerTokens,
+    (position_units, style): (f64, RulerMarkerStyle),
+) -> Result<Option<DrawItem>, ViewError> {
+    let spec = scale.spec();
+    if spec.ticks == TickVisibility::Hidden {
+        return Ok(None);
+    }
+    let opacity = opacity_of_placement(placement, "ruler marker")?;
+    let axis = spec.direction.axis();
+    let sign = match spec.direction {
+        GrowthDirection::FingerLeft | GrowthDirection::FingerUp => 1.0,
+        GrowthDirection::FingerRight | GrowthDirection::FingerDown => -1.0,
+    };
+    let half_extent_px = match axis {
+        ScreenAxis::Horizontal => placement.size.width,
+        ScreenAxis::Vertical => placement.size.height,
+    } * 0.5;
+    let along_pt = position_units * scale.points_per_unit() - scale.snapshot(now).offset_points;
+    let along_px = sign * px_per_pt.px(along_pt);
+    let fade = tokens.fade_factor(along_pt);
+    if along_px.abs() > half_extent_px || fade <= 0.0 {
+        return Ok(None);
+    }
+    // Точка стоит под рисками: центр на половине длины риски + зазор + радиус точки.
+    let cross_px = px_per_pt.px(tokens.tick_length_pt / 2.0 + style.gap_pt + style.diameter_pt / 2.0);
+    let shift = match axis {
+        ScreenAxis::Horizontal => Affine2::translate(along_px, cross_px),
+        ScreenAxis::Vertical => Affine2::translate(cross_px, along_px),
+    };
+    Ok(Some(DrawItem::Shape(ShapeItem {
+        geometry: ShapeGeometry::Circle {
+            diameter: px_per_pt.px(style.diameter_pt),
+        },
+        transform: shift.then(placement.transform),
+        fill: style.color.with_alpha(style.color.a * fade),
+        stroke: None,
+        shadow: None,
+        opacity,
+    })))
 }
 
 /// Одна полоска: `(толщина вдоль оси, длина поперёк)` в pt, центр сдвинут на `along_px` от центра узла.

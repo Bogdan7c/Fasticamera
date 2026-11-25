@@ -34,9 +34,10 @@ use look_support::{
     single_wheel_look, wheel, wheels_look, wheels_parity_cases, with_lut,
 };
 use viewfinder_support::{
-    HEIGHT_OF_SYNTHETIC_SCENES as HEIGHT, ParamsSpec, RawFrame, RunRequest, WIDTH_OF_SYNTHETIC_SCENES as WIDTH,
-    assert_no_validation_errors, assert_viewfinder_parity, gpu_context_or_skip, reference_upright_encoded,
-    run_viewfinder, synthetic_scenes, test_config,
+    ErrorAllowance, HEIGHT_OF_SYNTHETIC_SCENES as HEIGHT, ParamsSpec, RawFrame, RunRequest,
+    WIDTH_OF_SYNTHETIC_SCENES as WIDTH, assert_no_validation_errors, assert_viewfinder_parity,
+    assert_viewfinder_parity_allowing, gpu_context_or_skip, reference_upright_encoded, run_viewfinder,
+    synthetic_scenes, test_config,
 };
 
 fn spec(base: ToneBase, gamut: DisplayGamut) -> ParamsSpec {
@@ -82,15 +83,21 @@ fn assert_look_parity(context: &gpu_vulkan::context::GpuContext, name: &str, loo
     let mut worst = 0.0_f32;
     for (base_name, base) in bases() {
         for gamut in [DisplayGamut::DisplayP3, DisplayGamut::Srgb] {
+            let allowance = if base == ToneBase::Legacy && gamut == DisplayGamut::Srgb {
+                ErrorAllowance::LegacySrgbExtremeColour
+            } else {
+                ErrorAllowance::Standard
+            };
             let spec = spec(base, gamut);
             let params = spec.build_with_look(look.clone());
             for (scene, raw) in look_scenes(&spec) {
-                let (half, _) = assert_viewfinder_parity(
+                let (half, _) = assert_viewfinder_parity_allowing(
                     context,
                     &format!("вид {name} / {base_name} / {gamut:?} / {scene}"),
                     &raw,
                     &params,
                     &spec,
+                    allowance,
                 );
                 worst = worst.max(half);
             }

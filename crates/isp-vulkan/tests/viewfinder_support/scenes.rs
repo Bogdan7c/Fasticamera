@@ -4,6 +4,33 @@ use super::*;
 
 /// Допуск ошибки вычислений GPU сверх шага хранения (см. модуль).
 pub const MATH_EXCESS_TOLERANCE: f32 = 1.0e-5;
+/// Сколько ошибки математики допускает случай. Действующий допуск один — [`ErrorAllowance::Standard`]; у двух узких
+/// групп случаев свой, с названной причиной: сама формула там раздувает последний разряд входа, и это видно по
+/// эталону, а не по шейдеру. Все — много меньше половины ступени 10-битного экрана (4,9e-4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorAllowance {
+    /// Допуск 14a.
+    Standard,
+    /// Прежняя основа, выход sRGB, цвет у края ручек 14l: рабочее пространство узкое, цвет уходит глубоко за охват, и
+    /// канал у нуля набирается вычитанием крупных чисел; ≈ 1e-6 линейного света у кода 0,008 (линейный участок OETF,
+    /// наклон 12,92) выходят как 1,0…1,6e-5. На прежних, слабых краях те же случаи давали 7e-7.
+    LegacySrgbExtremeColour,
+    /// Углы тона «контраст −, средние −, света −» разом: наклон кривой у белого ≈ 450, и 1–3 ULP разницы основы на
+    /// CPU и GPU становятся 1e-5…1,3e-4 (`look_support::tone_corner_is_ill_conditioned`).
+    SteepToneAtWhite,
+}
+
+impl ErrorAllowance {
+    /// Допуск ошибки математики сверх шага хранения.
+    pub fn math_excess(self) -> f32 {
+        match self {
+            Self::Standard => MATH_EXCESS_TOLERANCE,
+            Self::LegacySrgbExtremeColour => 2.0e-5,
+            Self::SteepToneAtWhite => 2.0e-4,
+        }
+    }
+}
+
 /// Полшага 10-битного выхода.
 pub const HALF_LSB: f32 = 0.5 / 1023.0;
 
@@ -52,7 +79,73 @@ pub fn synthetic_scenes(spec: &ParamsSpec) -> Vec<(&'static str, RawFrame)> {
     ]
 }
 
-/// Прогоняет кадр в обоих форматах и проверяет допуски; возвращает (fp16, 10 бит) max |Δ|.
+/// Итог сверки одного кадра с эталоном в обоих форматах выхода: числа, без вердикта.
+#[derive(Debug, Clone, Copy)]
+pub struct ParityMeasure {
+    /// fp16-выход.
+    pub half: Parity,
+    /// 10-битный выход (RADV пишет rgb10_a2).
+    pub ten_bit: Parity,
+    /// Формат «10 бит» действительно получен (а не запасной).
+    pub ten_bit_format_is_unorm: bool,
+}
+
+impl ParityMeasure {
+    /// Нарушения допусков паритета (пусто — кадр прошёл): ошибка математики сверх шага хранения не больше
+    /// `allowance`, max |Δ| ≤ полшага 10 бит + то же, ноль пикселей хуже 1 LSB.
+    pub fn violations(&self, allowance: ErrorAllowance) -> Vec<String> {
+        let tolerance = allowance.math_excess();
+        let mut found = Vec::new();
+        for (label, parity) in [("fp16", &self.half), ("10 бит", &self.ten_bit)] {
+            if parity.math_excess > tolerance {
+                found.push(format!(
+                    "{label}: ошибка математики {:.3e} > {tolerance:e}",
+                    parity.math_excess
+                ));
+            }
+            if parity.max_abs > HALF_LSB + tolerance {
+                found.push(format!("{label}: max |Δ| {:.3e} > ½ LSB + допуск", parity.max_abs));
+            }
+        }
+        if self.half.over_one_lsb != 0.0 {
+            found.push(format!("fp16: доля хуже 1 LSB {}", self.half.over_one_lsb));
+        }
+        if !self.ten_bit_format_is_unorm {
+            found.push("10 бит: формат не rgb10_a2".to_owned());
+        }
+        found
+    }
+
+    /// Наибольшая ошибка математики сверх шага хранения по двум форматам.
+    pub fn worst_math_excess(&self) -> f32 {
+        self.half.math_excess.max(self.ten_bit.math_excess)
+    }
+}
+
+/// Прогоняет кадр в обоих форматах и сравнивает с эталоном; допусков не проверяет (см. [`ParityMeasure::violations`]).
+pub fn measure_viewfinder_parity(
+    context: &GpuContext,
+    raw: &RawFrame,
+    params: &IspParams,
+    spec: &ParamsSpec,
+) -> ParityMeasure {
+    let request = RunRequest::whole_frame(raw, params, spec.display());
+    let reference = reference_upright_encoded(raw, raw.full_rect(), SensorOrientation::Degrees0, params);
+    let half = run_viewfinder(context, &test_config(ViewfinderStorageFormat::HalfFloatOnly), &request);
+    assert_eq!(half.format, StorageImageFormat::Rgba16Float);
+    let ten_bit = run_viewfinder(
+        context,
+        &test_config(ViewfinderStorageFormat::PreferTenBitUnorm),
+        &request,
+    );
+    ParityMeasure {
+        half: parity_with_pixels(&half, reference.width, reference.height, &reference.pixels),
+        ten_bit: parity_with_pixels(&ten_bit, reference.width, reference.height, &reference.pixels),
+        ten_bit_format_is_unorm: ten_bit.format == StorageImageFormat::A2B10G10R10Unorm,
+    }
+}
+
+/// Прогоняет кадр в обоих форматах и проверяет действующий допуск; возвращает (fp16, 10 бит) max |Δ|.
 pub fn assert_viewfinder_parity(
     context: &GpuContext,
     name: &str,
@@ -60,56 +153,29 @@ pub fn assert_viewfinder_parity(
     params: &IspParams,
     spec: &ParamsSpec,
 ) -> (f32, f32) {
-    let request = RunRequest::whole_frame(raw, params, spec.display());
-    let reference = reference_upright_encoded(raw, raw.full_rect(), SensorOrientation::Degrees0, params);
+    assert_viewfinder_parity_allowing(context, name, raw, params, spec, ErrorAllowance::Standard)
+}
 
-    let half = run_viewfinder(context, &test_config(ViewfinderStorageFormat::HalfFloatOnly), &request);
-    assert_eq!(half.format, StorageImageFormat::Rgba16Float);
-    let half_parity = parity_with_pixels(&half, reference.width, reference.height, &reference.pixels);
-    eprintln!(
-        "{name} fp16: max |Δ| = {:.3e} ({:.3} LSB), доля > 1 LSB = {:.4}, сверх шага fp16 = {:.2e}",
-        half_parity.max_abs,
-        half_parity.max_abs / ONE_LSB,
-        half_parity.over_one_lsb,
-        half_parity.math_excess
-    );
-    assert!(
-        half_parity.math_excess <= MATH_EXCESS_TOLERANCE,
-        "{name} fp16: {half_parity:?}"
-    );
-    assert!(
-        half_parity.max_abs <= HALF_LSB + MATH_EXCESS_TOLERANCE,
-        "{name} fp16: {half_parity:?}"
-    );
-    assert_eq!(half_parity.over_one_lsb, 0.0, "{name} fp16: {half_parity:?}");
-
-    let ten_bit = run_viewfinder(
-        context,
-        &test_config(ViewfinderStorageFormat::PreferTenBitUnorm),
-        &request,
-    );
-    let ten_bit_parity = parity_with_pixels(&ten_bit, reference.width, reference.height, &reference.pixels);
-    eprintln!(
-        "{name} {:?}: max |Δ| = {:.3e} ({:.3} LSB), доля > 1 LSB = {:.4}, сверх полшага = {:.2e}",
-        ten_bit.format,
-        ten_bit_parity.max_abs,
-        ten_bit_parity.max_abs / ONE_LSB,
-        ten_bit_parity.over_one_lsb,
-        ten_bit_parity.math_excess
-    );
-    // Квантование 10 бит — полшага (0,5 LSB) + математика; больше — ошибка формулы.
-    assert_eq!(
-        ten_bit.format,
-        StorageImageFormat::A2B10G10R10Unorm,
-        "RADV пишет rgb10_a2"
-    );
-    assert!(
-        ten_bit_parity.math_excess <= MATH_EXCESS_TOLERANCE,
-        "{name} 10 бит: {ten_bit_parity:?}"
-    );
-    assert!(
-        ten_bit_parity.max_abs <= HALF_LSB + MATH_EXCESS_TOLERANCE,
-        "{name} 10 бит: {ten_bit_parity:?}"
-    );
-    (half_parity.max_abs, ten_bit_parity.max_abs)
+/// То же с явным допуском случая ([`ErrorAllowance`]).
+pub fn assert_viewfinder_parity_allowing(
+    context: &GpuContext,
+    name: &str,
+    raw: &RawFrame,
+    params: &IspParams,
+    spec: &ParamsSpec,
+    allowance: ErrorAllowance,
+) -> (f32, f32) {
+    let measure = measure_viewfinder_parity(context, raw, params, spec);
+    for (label, parity) in [("fp16", &measure.half), ("10 бит", &measure.ten_bit)] {
+        eprintln!(
+            "{name} {label}: max |Δ| = {:.3e} ({:.3} LSB), доля > 1 LSB = {:.4}, сверх шага хранения = {:.2e}",
+            parity.max_abs,
+            parity.max_abs / ONE_LSB,
+            parity.over_one_lsb,
+            parity.math_excess
+        );
+    }
+    let violations = measure.violations(allowance);
+    assert!(violations.is_empty(), "{name}: {violations:?}");
+    (measure.half.max_abs, measure.ten_bit.max_abs)
 }

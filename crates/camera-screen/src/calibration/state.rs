@@ -125,6 +125,9 @@ pub struct CalibrationState {
     control_view: ControlViewKind,
     /// Выбранное колесо цвета в виде колёс (решение 205); тоже переживает пересборку.
     selected_wheel: WheelZone,
+    /// Смещение прокрутки списка шкал, pt: запоминается, когда список успокоился, чтобы вид SCALES после
+    /// переключения на WHEELS и обратно (и после пересборки раздела) вернулся на то же место, а не на верх.
+    scales_scroll_offset_pt: f64,
     clean_view: CleanViewState,
     menu: CalibrationMenu,
     text: TextFlow,
@@ -151,6 +154,7 @@ impl CalibrationState {
             selected_band: None,
             control_view: ControlViewKind::default(),
             selected_wheel: WheelZone::Lift,
+            scales_scroll_offset_pt: 0.0,
             clean_view: CleanViewState::default(),
             menu: CalibrationMenu::default(),
             text: TextFlow::default(),
@@ -185,6 +189,11 @@ impl CalibrationState {
     /// Выбранное колесо цвета (вкладка LIFT / GAMMA / GAIN / OFFSET).
     pub fn selected_wheel(&self) -> WheelZone {
         self.selected_wheel
+    }
+
+    /// Где остановилась прокрутка списка шкал, pt (0 — верх). Виджет списка при сборке начинает отсюда.
+    pub fn scales_scroll_offset_pt(&self) -> f64 {
+        self.scales_scroll_offset_pt
     }
 
     /// Держится ли «чистяк».
@@ -269,6 +278,10 @@ impl CalibrationState {
 
     pub(crate) fn set_selected_wheel(&mut self, zone: WheelZone) {
         self.selected_wheel = zone;
+    }
+
+    pub(crate) fn set_scales_scroll_offset_pt(&mut self, offset_pt: f64) {
+        self.scales_scroll_offset_pt = offset_pt;
     }
 
     pub(crate) fn set_clean_view(&mut self, clean_view: CleanViewState) {

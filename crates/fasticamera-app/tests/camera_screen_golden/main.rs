@@ -14,6 +14,7 @@
     reason = "в тестах падение и есть способ сообщить о провале"
 )]
 
+mod calibration_edits_goldens;
 mod calibration_goldens;
 mod calibration_safe_area_goldens;
 mod calibration_wheels_goldens;

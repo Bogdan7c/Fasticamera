@@ -392,7 +392,7 @@ fn look_model_validation_surfaces_wheel_errors_and_config_json_parses_the_wheels
         parsed.wheels.ring_lightness_range,
         WheelModelSettings::default().ring_lightness_range
     );
-    assert_eq!(parsed.saturation_range, LookModelSettings::default().saturation_range);
+    assert_eq!(parsed.saturation, LookModelSettings::default().saturation);
     // Опечатка в секции не молчит.
     assert!(serde_json::from_str::<LookModelSettings>(r#"{"wheels": {"push_chroma": 0.08}}"#).is_err());
     // Круг: запись → чтение.

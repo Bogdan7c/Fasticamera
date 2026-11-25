@@ -266,3 +266,48 @@ pub fn wheels_parity_cases() -> Vec<(String, LookControls)> {
     ));
     cases
 }
+
+/// Сколько углов у четырёх ручек тона (каждая в −1 или +1).
+pub const TONE_CORNER_COUNT: u32 = 16;
+
+/// Ручки тона (контраст, средние, тени, света) со значениями `contrast`, `midtones`, `shadows`, `highlights`.
+pub fn tone_settings(contrast: f32, midtones: f32, shadows: f32, highlights: f32) -> LookSettings {
+    LookSettings {
+        contrast: knob(contrast),
+        midtones: knob(midtones),
+        shadows: knob(shadows),
+        highlights: knob(highlights),
+        ..LookSettings::NEUTRAL
+    }
+}
+
+/// Угол ручек тона номер `corner` (`0..16`): бит 0 — контраст, 1 — средние, 2 — тени, 3 — света; бит 1 — край +1.
+pub fn tone_corner_settings(corner: u32) -> LookSettings {
+    let edge = |bit: u32| if corner >> bit & 1 == 1 { 1.0 } else { -1.0 };
+    tone_settings(edge(0), edge(1), edge(2), edge(3))
+}
+
+/// То же угол `corner`, но вид (с моделью по умолчанию), а не значения ручек.
+pub fn tone_corner(corner: u32) -> LookControls {
+    controls(tone_corner_settings(corner))
+}
+
+/// Только тон: четыре ручки вида.
+pub fn tone_look(contrast: f32, midtones: f32, shadows: f32, highlights: f32) -> LookControls {
+    controls(tone_settings(contrast, midtones, shadows, highlights))
+}
+
+/// Угол «контраст −1, средние −1, света −1» (тени — любые): кривая у белого превращается в обрыв.
+///
+/// Света −1 растягивают расстояние до белого в `2^3,5 ≈ 11` раз, контраст −1 уменьшает наклон на сером в `2^2,32 ≈ 5` раз, а
+/// средние −1 дают ещё ×8 у белого: наклон кривой на `W ∈ [0,999; 1)` — 240…450 (кривая за одну тысячную до белого уходит
+/// с 0,67 в 1,0). Разница GPU и эталона в 1–3 ULP входа (основа AgX, filmic считаются на GPU и CPU по-разному в последних
+/// битах) вырастает там в 1e-5…1e-4 выхода, то есть больше действующего допуска паритета 1e-5. Это условность угла, а не
+/// ошибка стадии (все остальные углы держат допуск); у этих углов свой названный допуск
+/// `ErrorAllowance::SteepToneAtWhite` — 2e-4, меньше половины ступени 10-битного экрана.
+pub fn tone_corner_is_ill_conditioned(corner: u32) -> bool {
+    const CONTRAST: u32 = 1 << 0;
+    const MIDTONES: u32 = 1 << 1;
+    const HIGHLIGHTS: u32 = 1 << 3;
+    corner & (CONTRAST | MIDTONES | HIGHLIGHTS) == 0
+}

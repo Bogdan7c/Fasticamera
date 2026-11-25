@@ -1,6 +1,7 @@
 use super::*;
 use crate::look::bands::MAX_LOOK_BANDS;
 use crate::look::model::{HueBandDefinition, InvalidLookModel, LookModelSettings};
+use crate::look::range::KnobRange;
 
 #[test]
 fn default_model_is_valid_and_has_eight_bands() {
@@ -21,8 +22,15 @@ fn serde_roundtrip_keeps_the_model_and_unknown_fields_are_rejected() {
     assert_eq!(serde_json::from_str::<LookModelSettings>(&json).unwrap(), model);
     assert!(serde_json::from_str::<LookModelSettings>(r#"{"contrast_range":1}"#).is_err());
     // Частичный конфиг дополняется умолчанием.
-    let partial: LookModelSettings = serde_json::from_str(r#"{"warmth_range_mired": 80.0}"#).unwrap();
-    assert_eq!(partial.warmth_range_mired, 80.0);
+    let partial: LookModelSettings =
+        serde_json::from_str(r#"{"warmth_mired": {"minus": 80.0, "plus": 120.0}}"#).unwrap();
+    assert_eq!(
+        partial.warmth_mired,
+        KnobRange {
+            minus: 80.0,
+            plus: 120.0
+        }
+    );
     assert_eq!(partial.bands, model.bands);
 }
 
@@ -30,7 +38,7 @@ fn serde_roundtrip_keeps_the_model_and_unknown_fields_are_rejected() {
 fn every_refusal_is_distinct_and_names_its_field() {
     let default = LookModelSettings::default();
     let bad_range = LookModelSettings {
-        saturation_range: 1.5,
+        saturation: KnobRange { minus: 1.5, plus: 2.0 },
         ..default.clone()
     };
     let error = bad_range.validate().unwrap_err();
@@ -38,23 +46,20 @@ fn every_refusal_is_distinct_and_names_its_field() {
         matches!(
             error,
             InvalidLookModel::OutOfRange {
-                field: "saturation_range",
+                field: "saturation",
                 ..
             }
         ),
         "{error}"
     );
-    assert!(error.to_string().contains("saturation_range"));
+    assert!(error.to_string().contains("saturation"));
     let nan = LookModelSettings {
-        tint_range_duv: f32::NAN,
+        tint_duv: KnobRange::symmetric(f32::NAN),
         ..default.clone()
     };
     assert!(matches!(
         nan.validate(),
-        Err(InvalidLookModel::OutOfRange {
-            field: "tint_range_duv",
-            ..
-        })
+        Err(InvalidLookModel::OutOfRange { field: "tint_duv", .. })
     ));
 
     let none = LookModelSettings {

@@ -7,6 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::error::TokenError;
+use super::points_per_unit::PointsPerUnit;
 
 /// Плотность шкалы: сколько pt занимает одна единица модели.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -22,9 +23,10 @@ pub enum ScaleDensity {
     Ruler,
     /// Дуговое колесо (зум): одна единица модели (октава) — длина дуги по кольцу рисок.
     Dial,
-    /// Линейка ручки вида раздела калибровки: одна единица модели — один шаг ручки (по умолчанию 0,1).
-    /// Отдельный токен, а не `Ruler`: шаг ручки и шаг 1/3 EV — разные величины, подгонять их порознь.
-    KnobRuler,
+    /// Плотность задана числом в самом описании шкалы, а не токеном: так шкале, чьё число определяет экран
+    /// (линейка ручек раздела калибровки: ход пальца и число единиц лежат в конфиге экрана, решение 251),
+    /// не нужен глобальный токен на каждую такую линейку.
+    Explicit(PointsPerUnit),
     /// Непрерывная линейка Кельвинов ([`crate::value::MiredKelvin`]): одна единица модели — один майред.
     /// Отдельный токен: подгоняется независимо от шкалы оттенка.
     MiredRuler,
@@ -49,9 +51,6 @@ pub struct DensityTokens {
     /// pt на единицу при [`ScaleDensity::Dial`]: единица модели — октава зума, её длина на кольце рисок.
     /// `[derived: R00 t=88.5–100]`: 14,2° на октаву × радиус кольца ≈ 230 pt ≈ 57 pt.
     pub dial_points_per_unit: f64,
-    /// pt на единицу при [`ScaleDensity::KnobRuler`]: один шаг ручки вида. `[estimate]` 20 — взято по аналогии с
-    /// линейкой Exposure (в эталоне Apple нет раздела калибровки, решение 96), подгоняется на телефоне.
-    pub knob_ruler_points_per_unit: f64,
     /// pt на единицу при [`ScaleDensity::MiredRuler`]: один майред. `[estimate]` 2 — риска каждые 5 майред
     /// (10 pt), решение WB34 плана white-balance; подгоняется на телефоне.
     pub mired_ruler_points_per_unit: f64,
@@ -80,7 +79,6 @@ impl Default for DensityTokens {
             sparse_points_per_unit: 48.0,
             ruler_points_per_unit: 20.0,
             dial_points_per_unit: 57.0,
-            knob_ruler_points_per_unit: 20.0,
             mired_ruler_points_per_unit: 2.0,
             tint_ruler_points_per_unit: 2.0,
             magnet_capture_points: 14.0,
@@ -100,7 +98,7 @@ impl DensityTokens {
             ScaleDensity::Sparse => self.sparse_points_per_unit,
             ScaleDensity::Ruler => self.ruler_points_per_unit,
             ScaleDensity::Dial => self.dial_points_per_unit,
-            ScaleDensity::KnobRuler => self.knob_ruler_points_per_unit,
+            ScaleDensity::Explicit(points_per_unit) => points_per_unit.get(),
             ScaleDensity::MiredRuler => self.mired_ruler_points_per_unit,
             ScaleDensity::TintRuler => self.tint_ruler_points_per_unit,
         }
@@ -114,7 +112,7 @@ impl DensityTokens {
             | ScaleDensity::Regular
             | ScaleDensity::Sparse
             | ScaleDensity::Ruler
-            | ScaleDensity::KnobRuler
+            | ScaleDensity::Explicit(_)
             | ScaleDensity::MiredRuler
             | ScaleDensity::TintRuler => self.magnet_capture_points,
         }
@@ -128,7 +126,6 @@ impl DensityTokens {
             ("sparse_points_per_unit", self.sparse_points_per_unit),
             ("ruler_points_per_unit", self.ruler_points_per_unit),
             ("dial_points_per_unit", self.dial_points_per_unit),
-            ("knob_ruler_points_per_unit", self.knob_ruler_points_per_unit),
             ("mired_ruler_points_per_unit", self.mired_ruler_points_per_unit),
             ("tint_ruler_points_per_unit", self.tint_ruler_points_per_unit),
             ("magnet_capture_points", self.magnet_capture_points),

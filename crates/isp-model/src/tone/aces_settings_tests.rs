@@ -1,24 +1,15 @@
-//! Ручки тона ACES (контраст, средние тона, тени, света) и проверка настроек: каждая ручка меняет свою часть кривой
-//! и не трогает остальные, нейтраль — бит в бит, края диапазонов слоя вида × подтяжка AE.
+//! Настройки ACES: форма теней и света, наклон, серый экрана, края подтяжки AE, ошибки и serde.
+//!
+//! Раньше эти числа крутили ручки тона слоя вида через шов основы; с 14l ручки — отдельная стадия
+//! (`look::tone_shape`), а здесь настройки модели меняются напрямую: то, что умела форма, остаётся проверенным.
 
 use super::AcesBase;
 use super::settings::{AcesSettings, InvalidAces};
 use super::tests::{base_for, default_base, grey_at, grey_pixel, tone_curve};
 use crate::exposure::ExposureGain;
 use crate::image::DisplayGamut;
-use crate::tone::knobs::{ToneKnob, ToneKnobAmounts, ToneModelKind, ToneModelSettings, apply_knobs_lenient};
 
-// ---- Ручки тона ----
-
-fn knobbed(amounts: ToneKnobAmounts) -> AcesSettings {
-    let outcome = apply_knobs_lenient(&AcesSettings::default(), &amounts);
-    assert!(
-        outcome.unsupported.is_empty(),
-        "ACES поддерживает все ручки: {:?}",
-        outcome.unsupported
-    );
-    outcome.settings
-}
+// ---- Форма кривой ----
 
 fn grey_output_at(settings: &AcesSettings, e: f32) -> f32 {
     base_for(settings).map_scene_pixel(grey_pixel(grey_at(settings, e)), 1.0)[0]
@@ -29,52 +20,43 @@ fn slope_at(settings: &AcesSettings, e: f32, step: f32) -> f32 {
     (grey_output_at(settings, e + step) - grey_output_at(settings, e - step)) / (2.0 * step)
 }
 
-#[test]
-fn neutral_knobs_keep_the_settings_and_the_output_bit_for_bit() {
-    let defaults = AcesSettings::default();
-    let neutral = knobbed(ToneKnobAmounts::default());
-    assert_eq!(neutral, defaults);
-    let (plain, same) = (base_for(&defaults), base_for(&neutral));
-    assert_eq!(plain.parameters(), same.parameters());
-    for e in [-6.0_f32, -1.0, 0.0, 1.0, 2.5, 3.7] {
-        let pixel = [
-            grey_at(&defaults, e) * 1.2,
-            grey_at(&defaults, e),
-            grey_at(&defaults, e) * 0.7,
-        ];
-        assert_eq!(plain.map_scene_pixel(pixel, 1.0), same.map_scene_pixel(pixel, 1.0));
+/// Умолчания с одним изменённым полем формы.
+fn with_shape(shadows_ev: f32, highlights_ev: f32) -> AcesSettings {
+    AcesSettings {
+        shadows_ev,
+        highlights_ev,
+        ..AcesSettings::default()
     }
 }
 
 #[test]
-fn contrast_knob_scales_the_slope_around_the_grey_and_keeps_the_grey() {
-    let settings = knobbed(ToneKnobAmounts {
-        contrast_log2: 0.3,
-        ..ToneKnobAmounts::default()
-    });
+fn contrast_setting_scales_the_slope_around_the_grey_and_keeps_the_grey() {
     let defaults = AcesSettings::default();
-    assert!((grey_output_at(&settings, 0.0) - defaults.display_middle_gray).abs() < 3e-6);
-    let ratio = slope_at(&settings, 0.0, 0.02) / slope_at(&defaults, 0.0, 0.02);
+    let steeper = AcesSettings {
+        contrast: defaults.contrast * 0.3_f32.exp2(),
+        ..defaults
+    };
+    assert!((grey_output_at(&steeper, 0.0) - defaults.display_middle_gray).abs() < 3e-6);
+    let ratio = slope_at(&steeper, 0.0, 0.02) / slope_at(&defaults, 0.0, 0.02);
     assert!(
         (ratio - 0.3_f32.exp2()).abs() < 0.02,
         "наклон вырос в {ratio}, ждали {}",
         0.3_f32.exp2()
     );
-    // Контраст вниз — наклон меньше.
-    let flatter = knobbed(ToneKnobAmounts {
-        contrast_log2: -0.3,
-        ..ToneKnobAmounts::default()
-    });
+    let flatter = AcesSettings {
+        contrast: defaults.contrast * (-0.3_f32).exp2(),
+        ..defaults
+    };
     assert!(slope_at(&flatter, 0.0, 0.02) < slope_at(&defaults, 0.0, 0.02));
 }
 
 #[test]
-fn midtones_knob_moves_the_display_grey_exactly() {
+fn display_grey_setting_moves_the_grey_exactly() {
     for amount in [0.3_f32, -0.3] {
-        let settings = knobbed(ToneKnobAmounts {
-            midtones_ev: amount,
-            ..ToneKnobAmounts::default()
-        });
+        let settings = AcesSettings {
+            display_middle_gray: AcesSettings::default().display_middle_gray * amount.exp2(),
+            ..AcesSettings::default()
+        };
         let expected = AcesSettings::default().display_middle_gray * amount.exp2();
         assert!(
             (grey_output_at(&settings, 0.0) - expected).abs() < 3e-6,
@@ -85,16 +67,10 @@ fn midtones_knob_moves_the_display_grey_exactly() {
 }
 
 #[test]
-fn shadows_knob_lifts_only_the_shadows() {
+fn shadows_ev_lifts_only_the_shadows() {
     let defaults = AcesSettings::default();
-    let lifted = knobbed(ToneKnobAmounts {
-        shadows: 0.6,
-        ..ToneKnobAmounts::default()
-    });
-    let darkened = knobbed(ToneKnobAmounts {
-        shadows: -0.6,
-        ..ToneKnobAmounts::default()
-    });
+    let lifted = with_shape(1.2, 0.0);
+    let darkened = with_shape(-1.2, 0.0);
     assert!(
         grey_output_at(&lifted, -5.0) > grey_output_at(&defaults, -5.0) * 1.15,
         "тени не стали светлее"
@@ -114,16 +90,10 @@ fn shadows_knob_lifts_only_the_shadows() {
 }
 
 #[test]
-fn highlights_knob_lifts_only_the_highlights() {
+fn highlights_ev_lifts_only_the_highlights() {
     let defaults = AcesSettings::default();
-    let lifted = knobbed(ToneKnobAmounts {
-        highlights: 0.6,
-        ..ToneKnobAmounts::default()
-    });
-    let darkened = knobbed(ToneKnobAmounts {
-        highlights: -0.6,
-        ..ToneKnobAmounts::default()
-    });
+    let lifted = with_shape(0.0, 1.2);
+    let darkened = with_shape(0.0, -1.2);
     assert!(
         grey_output_at(&lifted, 1.5) > grey_output_at(&defaults, 1.5) + 0.01,
         "света не стали светлее"
@@ -139,61 +109,35 @@ fn highlights_knob_lifts_only_the_highlights() {
 }
 
 #[test]
-fn every_knob_corner_at_the_look_edges_resolves_and_keeps_white_exact_and_curve_monotone() {
-    // Диапазоны слоя вида по умолчанию: контраст ±0,1, средние тона ±0,3, тени и света ±0,6; подтяжка AE ±0,5 ступени.
-    for contrast in [-0.1_f32, 0.0, 0.1] {
-        for midtones in [-0.3_f32, 0.0, 0.3] {
-            for shadows in [-0.6_f32, 0.0, 0.6] {
-                for highlights in [-0.6_f32, 0.0, 0.6] {
-                    for gain in [0.5_f32.exp2().recip(), 1.0, 0.5_f32.exp2()] {
-                        let settings = knobbed(ToneKnobAmounts {
-                            contrast_log2: contrast,
-                            midtones_ev: midtones,
-                            shadows,
-                            highlights,
-                        })
-                        .with_exposure_gain(ExposureGain::new(gain).unwrap());
-                        let label = format!("{contrast}/{midtones}/{shadows}/{highlights} k={gain}");
-                        let base = AcesBase::resolve(&settings, DisplayGamut::Srgb)
-                            .unwrap_or_else(|error| panic!("{label}: {error}"));
-                        for white in [1.0_f32, 4.0] {
-                            let output = base.map_scene_pixel(grey_pixel(white), white);
-                            assert!(
-                                output.iter().all(|c| (c - 1.0).abs() < 3e-6),
-                                "{label}: белый {white}: {output:?}"
-                            );
-                        }
-                        let curve = tone_curve(&base, 1.0);
-                        let mut previous = curve(-9.0);
-                        for step in -89..=90 {
-                            let value = curve(step as f32 / 10.0);
-                            assert!(
-                                value >= previous - 1e-7,
-                                "{label}: кривая убывает на e = {}",
-                                step as f32 / 10.0
-                            );
-                            previous = value;
-                        }
-                    }
-                }
+fn curve_builds_keeps_white_exact_and_grows_at_the_ae_gain_edges() {
+    // Подтяжка AE ±0,5 ступени (решение 72) — единственное, что после 14l двигает серый кривой на кадре; формы
+    // теней и света берём крайние из допустимых настроек, чтобы край подтяжки проверялся на самой тонкой кривой.
+    for shape in [-1.2_f32, 0.0, 1.2] {
+        for gain in [0.5_f32.exp2().recip(), 1.0, 0.5_f32.exp2()] {
+            let settings = with_shape(shape, -shape).with_exposure_gain(ExposureGain::new(gain).unwrap());
+            let label = format!("форма {shape} k={gain}");
+            let base =
+                AcesBase::resolve(&settings, DisplayGamut::Srgb).unwrap_or_else(|error| panic!("{label}: {error}"));
+            for white in [1.0_f32, 4.0] {
+                let output = base.map_scene_pixel(grey_pixel(white), white);
+                assert!(
+                    output.iter().all(|c| (c - 1.0).abs() < 3e-6),
+                    "{label}: белый {white}: {output:?}"
+                );
+            }
+            let curve = tone_curve(&base, 1.0);
+            let mut previous = curve(-9.0);
+            for step in -89..=90 {
+                let value = curve(step as f32 / 10.0);
+                assert!(
+                    value >= previous - 1e-7,
+                    "{label}: кривая убывает на e = {}",
+                    step as f32 / 10.0
+                );
+                previous = value;
             }
         }
     }
-}
-
-#[test]
-fn aces_supports_every_knob_and_names_itself() {
-    let defaults = AcesSettings::default();
-    for knob in [
-        ToneKnob::Contrast,
-        ToneKnob::Midtones,
-        ToneKnob::Shadows,
-        ToneKnob::Highlights,
-    ] {
-        let adjusted = defaults.with_knob(knob, 0.25).unwrap();
-        assert_ne!(adjusted, defaults, "{knob:?} ничего не изменила");
-    }
-    assert_eq!(<AcesSettings as ToneModelSettings>::KIND, ToneModelKind::Aces);
 }
 
 // ---- Проверка настроек ----

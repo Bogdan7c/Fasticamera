@@ -12,7 +12,7 @@ use ui_core::id::NodeId;
 use ui_draw::scene_bridge::NodePlacementPx;
 use ui_draw::transform::Affine2;
 use ui_kit::pan::PanUpdate;
-use ui_kit::ruler::{RulerControl, RulerSpec};
+use ui_kit::ruler::{RulerControl, RulerFeel, RulerSpec};
 use ui_kit::tokens::ScaleDensity;
 
 use super::error::{WidgetError, element};
@@ -56,6 +56,7 @@ impl ExposureRuler {
                 model: exposure_model(ctx)?,
                 density: ScaleDensity::Ruler,
                 major_every_steps: Self::major_tick_period(ctx)?,
+                feel: RulerFeel::default(),
             },
             state_value_ev(ctx),
             &ctx.environment(rect.size.width),

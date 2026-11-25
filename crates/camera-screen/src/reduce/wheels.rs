@@ -27,6 +27,28 @@ pub(super) fn on_control_view_selected(ctx: &mut Ctx<'_>, view: ControlViewKind)
     ActionOutcome::Applied
 }
 
+/// Список шкал успокоился: запомнить его смещение (виджет начнёт с него после пересборки или возврата на SCALES).
+/// Список успокоенным смещением вне `0…∞` не бывает (диапазон прокрутки — от нуля); нечисловое или отрицательное
+/// значение — ошибка отправителя: в отладке падаем, в бою состояние не трогаем (`NoChange`), а не прячем в ноль.
+pub(super) fn on_scales_scroll_remembered(ctx: &mut Ctx<'_>, offset_pt: f64) -> ActionOutcome {
+    if let Err(outcome) = require_calibration(ctx) {
+        return outcome;
+    }
+    let is_valid = offset_pt.is_finite() && offset_pt >= 0.0;
+    debug_assert!(
+        is_valid,
+        "смещение списка шкал должно быть конечным и не отрицательным: {offset_pt}"
+    );
+    if !is_valid {
+        return ActionOutcome::NoChange(NoChangeReason::ValueUnchanged);
+    }
+    if ctx.state.calibration.scales_scroll_offset_pt() == offset_pt {
+        return ActionOutcome::NoChange(NoChangeReason::ValueUnchanged);
+    }
+    ctx.state.calibration.set_scales_scroll_offset_pt(offset_pt);
+    ActionOutcome::Applied
+}
+
 /// Выбрано колесо (вкладка). Повторный выбор того же — `NoChange`.
 pub(super) fn on_wheel_selected(ctx: &mut Ctx<'_>, zone: WheelZone) -> ActionOutcome {
     if let Err(outcome) = require_calibration(ctx) {

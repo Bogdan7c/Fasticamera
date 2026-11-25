@@ -174,3 +174,19 @@ fn ruler_density_is_20_pt_per_unit_and_leaves_the_dense_one_alone() {
     assert_eq!(tokens.density.points_per_unit(ScaleDensity::Ruler), 20.0);
     assert_eq!(tokens.density.points_per_unit(ScaleDensity::Dense), 12.0);
 }
+
+#[test]
+fn explicit_density_returns_its_own_number_and_ignores_the_token_table() {
+    let tokens = UiKitTokens::default();
+    let explicit = ScaleDensity::Explicit(ui_kit::tokens::PointsPerUnit::new(1.0).unwrap());
+    assert_eq!(tokens.density.points_per_unit(explicit), 1.0);
+    // Магнит у явной плотности — общий, как у остальных линеек (она не дуговое колесо).
+    assert_eq!(
+        tokens.density.magnet_capture(explicit),
+        tokens.density.magnet_capture(ScaleDensity::Ruler)
+    );
+    // Остальные плотности бит в бит прежние.
+    assert_eq!(tokens.density.points_per_unit(ScaleDensity::MiredRuler), 2.0);
+    assert_eq!(tokens.density.points_per_unit(ScaleDensity::TintRuler), 2.0);
+    assert_eq!(tokens.density.points_per_unit(ScaleDensity::Dial), 57.0);
+}

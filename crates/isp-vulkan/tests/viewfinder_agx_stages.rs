@@ -133,9 +133,14 @@ fn emulate(raw: &RawFrame, params: &IspParams, stages: IspStageSet) -> (Vec<[f32
             } else {
                 scene
             };
-            let looked = match &params.look.color {
-                Some(color) if on(IspStage::LookColor) => color.apply(shaped),
+            // Тон и цвет вида — одна стадия набора (`LookColor`): сначала тон, потом цвет.
+            let toned = match &params.look.tone {
+                Some(tone) if on(IspStage::LookColor) => tone.apply(shaped),
                 _ => shaped,
+            };
+            let looked = match &params.look.color {
+                Some(color) if on(IspStage::LookColor) => color.apply(toned),
+                _ => toned,
             };
             let looked = match &params.look.lut {
                 Some(lut) if on(IspStage::LookLut) => lut.apply(looked),
@@ -180,8 +185,16 @@ fn each_stage_off_variant_matches_the_cpu_emulation_for_agx() {
         ..ParamsSpec::default()
     };
     // Карта виньетирования: стадия «виньетирование» не пропущена решением кадра, а свой белый точки разный по полю.
-    // Вид с цветом и таблицей: стадиям вида есть что делать.
-    let look = look_support::with_lut(look_support::saturation_vibrance(0.6, 0.3), look_support::known_lut());
+    // Вид с тоном, цветом и таблицей: стадиям вида есть что делать.
+    let look = look_support::with_lut(
+        look_support::controls(look_contract::LookSettings {
+            saturation: look_support::knob(0.6),
+            vibrance: look_support::knob(0.3),
+            ..look_support::tone_settings(0.5, -0.4, 0.6, -0.5)
+        }),
+        look_support::known_lut(),
+    );
+    assert!(look.settings.contrast.get() != 0.0, "в виде есть тон");
     let params =
         lens_shading_support::with_map(&spec.build_with_look(look), &lens_shading_support::asymmetric_map(5, 4));
     // Цветные полосы на серой подложке (свет остаётся внутри охвата W: неотрицателен), яркость растёт вниз до пересвета.

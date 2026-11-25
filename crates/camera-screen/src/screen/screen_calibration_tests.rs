@@ -230,8 +230,8 @@ fn photo_controls_do_not_catch_touches_where_calibrate_has_its_glass() {
 fn dragging_a_knob_ruler_sends_the_exact_value_the_finger_chose() {
     let mut rig = portrait(look_facts());
     let ruler = center(&rig, "calib_ruler", 0);
-    // Три шага по 20 pt, плюс гистерезис пана 10 pt: линейка ровно на 0,3.
-    drag_eye(&mut rig, ruler, Vector::new(-70.5, 0.0));
+    // Путь на 60 единиц шкалы: линейка ровно на +60 (значение 0,30), без потерь на порог пана.
+    drag_eye(&mut rig, ruler, Vector::new(-knob_finger_pt(60.0), 0.0));
     let sent = set_looks(&rig.effects());
     let last = sent.last().expect("палец тянул ручку, SetLook ушёл");
     assert!((last.knob(GlobalKnob::Contrast).get() - 0.3).abs() < 1e-6, "{last:?}");
@@ -239,16 +239,47 @@ fn dragging_a_knob_ruler_sends_the_exact_value_the_finger_chose() {
     assert!(sent.iter().all(|s| s.knob(GlobalKnob::Shadows).get() == 0.0));
 }
 
+/// Листает список ручек пальцем, пока линейка строки `slot` не окажется в видимой части окна (ниже шапки и выше
+/// низа колонки), и возвращает её центр. Строка вне окна пальцем не берётся, поэтому её НЕ пропускаем, а доводим.
+pub(super) fn scroll_row_into_view(rig: &mut Rig, slot: usize) -> Point {
+    for _ in 0..8 {
+        let ruler = center(rig, "calib_ruler", slot);
+        let window = center(rig, "calib_knobs_window", 0);
+        let knobs = rig
+            .screen
+            .state()
+            .calibration()
+            .layout()
+            .expect("раскладка раздела")
+            .zones()
+            .knobs;
+        // Верх окна — под шапкой и переключателем вида (≈ 112 pt от верха колонки).
+        let visible = ruler.y >= knobs.min_y() + 140.0 && ruler.y <= knobs.max_y() - 60.0;
+        if visible {
+            return ruler;
+        }
+        // Палец вверх на расстояние до окна: вертикальная протяжка, начатая на линейке, листает список.
+        let to_window = (ruler.y - window.y).clamp(-300.0, 300.0);
+        let start = Point::new(window.x, window.y);
+        drag_eye(rig, start, Vector::new(0.0, -to_window));
+        rig.effects();
+    }
+    panic!("строка {slot} не доехала до видимой части окна за 8 протяжек");
+}
+
 #[test]
 fn each_row_drives_its_own_knob() {
     let mut rig = portrait(look_facts());
     for (slot, knob_id) in GlobalKnob::ALL.into_iter().enumerate() {
-        let ruler = center(&rig, "calib_ruler", slot);
-        // Нижние строки могут быть вне окна списка: листаем так, чтобы строка была видна, и перечитываем центр.
-        if ruler.y > 700.0 {
-            continue;
-        }
-        drag_eye(&mut rig, ruler, Vector::new(-70.5, 0.0));
+        // Нижние строки лежат ниже окна списка: листаем до строки пальцем, а не пропускаем её.
+        let ruler = scroll_row_into_view(&mut rig, slot);
+        // Путь на +60 единиц (значение 0,30); начинаем на правой стороне линейки, чтобы палец не ушёл за левый край экрана.
+        let finger_dx = knob_finger_pt(60.0);
+        drag_eye(
+            &mut rig,
+            Point::new(ruler.x + 60.0, ruler.y),
+            Vector::new(-finger_dx, 0.0),
+        );
         let sent = set_looks(&rig.effects());
         let last = sent
             .last()
@@ -298,9 +329,9 @@ fn reset_arrow_is_bright_when_the_value_differs_and_dimmed_to_44_percent_when_eq
 
 #[test]
 fn value_between_steps_is_shown_as_is_and_never_echoed_back() {
-    // Сброс к пресету со значением 0,15 при шаге 0,1: линейка стоит между ступенями.
+    // Сброс к пресету со значением 0,153 (между единицами шкалы −200…+200): линейка стоит между ступенями.
     let mut facts = look_facts();
-    facts.current.settings = facts.current.settings.with_knob(GlobalKnob::Contrast, knob(0.15));
+    facts.current.settings = facts.current.settings.with_knob(GlobalKnob::Contrast, knob(0.153));
     facts.preset = facts.current.clone();
     let mut rig = portrait(facts);
     rig.run(1500);
@@ -310,14 +341,14 @@ fn value_between_steps_is_shown_as_is_and_never_echoed_back() {
     );
     let position = rig.screen.calibration_row_position_steps(0).expect("строка Contrast");
     assert!(
-        (position - 1.5).abs() < 0.02,
-        "линейка стоит на 1,5 шага, а не на ступени: {position}"
+        (position - 30.6).abs() < 0.02,
+        "линейка стоит на 30,6 шага, а не на ступени: {position}"
     );
     let list = rig.frame().clone();
     assert_eq!(
-        text_count_of(&list, "+0.15", TextRoleKind::ScaleValue),
+        text_count_of(&list, "+31", TextRoleKind::ScaleValue),
         1,
-        "подпись показывает значение из фактов как есть"
+        "подпись показывает значение из фактов округлённым до целого"
     );
     // Новые факты (например, пресет с другим значением) тоже едут без действий.
     let mut next = look_facts();
@@ -327,34 +358,35 @@ fn value_between_steps_is_shown_as_is_and_never_echoed_back() {
     rig.run(1500);
     assert!(rig.effects().iter().all(|effect| !matches!(effect, Effect::Look(_))));
     let moved = rig.screen.calibration_row_position_steps(0).unwrap();
-    assert!((moved - 5.5).abs() < 0.02, "линейка доехала до 0,55: {moved}");
+    assert!((moved - 110.0).abs() < 0.02, "линейка доехала до +110: {moved}");
     assert_eq!(rig.screen.diagnostics().invalid_knob_values, 0);
 }
 
 #[test]
-fn unsupported_knob_is_dimmed_and_ignores_the_finger_while_neighbours_work() {
+fn on_the_legacy_base_all_eight_knobs_take_the_finger_and_none_is_dimmed() {
     let mut facts = look_facts();
-    facts.unsupported_knobs = vec![GlobalKnob::Contrast];
+    facts.current.base = ToneBaseModel::Legacy;
+    facts.preset = facts.current.clone();
     let mut rig = portrait(facts);
     let list = rig.frame().clone();
-    let dimmed = texts_of(&list, "CONTRAST", TextRoleKind::CardTitle);
-    let normal = texts_of(&list, "MIDTONES", TextRoleKind::CardTitle);
-    assert_eq!((dimmed.len(), normal.len()), (1, 1));
-    assert!(
-        dimmed[0].opacity.get() < 0.5 && near(normal[0].opacity.get(), 1.0, 0.01),
-        "недоступная ручка тусклая ({}), соседняя нет ({})",
-        dimmed[0].opacity.get(),
-        normal[0].opacity.get()
-    );
-    let contrast = center(&rig, "calib_ruler", 0);
-    drag_eye(&mut rig, contrast, Vector::new(-70.5, 0.0));
-    assert!(
-        set_looks(&rig.effects()).is_empty(),
-        "недоступная ручка не двигается пальцем"
-    );
-    let midtones = center(&rig, "calib_ruler", 1);
-    drag_eye(&mut rig, midtones, Vector::new(-70.5, 0.0));
-    assert!(!set_looks(&rig.effects()).is_empty(), "соседняя двигается");
+    // Строки тона, которые на legacy раньше были тусклыми, лежат в окне списка и обязаны быть яркими.
+    for label in ["CONTRAST", "MIDTONES", "SHADOWS", "HIGHLIGHTS"] {
+        for title in texts_of(&list, label, TextRoleKind::CardTitle) {
+            assert!(near(title.opacity.get(), 1.0, 0.01), "{label} тусклая на legacy");
+        }
+    }
+    for (slot, knob_id) in GlobalKnob::ALL.into_iter().enumerate() {
+        let ruler = scroll_row_into_view(&mut rig, slot);
+        drag_eye(&mut rig, Point::new(ruler.x + 60.0, ruler.y), Vector::new(-60.0, 0.0));
+        let sent = set_looks(&rig.effects());
+        let last = sent
+            .last()
+            .unwrap_or_else(|| panic!("legacy, ручка {knob_id:?}: палец ничего не отправил"));
+        assert!(
+            last.knob(knob_id).get() != 0.0,
+            "legacy, ручка {knob_id:?}: значение не сдвинулось: {last:?}"
+        );
+    }
 }
 
 #[test]
@@ -364,7 +396,7 @@ fn without_look_facts_the_knobs_are_dim_and_inert() {
     rig.run(400);
     rig.effects();
     let ruler = center(&rig, "calib_ruler", 0);
-    drag_eye(&mut rig, ruler, Vector::new(-70.5, 0.0));
+    drag_eye(&mut rig, ruler, Vector::new(-60.0, 0.0));
     assert!(
         look_intents(&rig.effects()).is_empty(),
         "без библиотеки пресетов ручки молчат"
@@ -593,3 +625,20 @@ fn a_clean_view_held_by_an_action_stays_held_across_frames() {
 // ----- прокрутка ----------------------------------------------------------------------------------------------------
 
 // ----- приборы ------------------------------------------------------------------------------------------------------
+
+#[test]
+fn calibration_touch_targets_name_the_same_rulers_the_finger_really_catches() {
+    let mut rig = portrait(look_facts());
+    let targets = rig.screen.calibration_touch_targets().expect("раздел на экране");
+    assert_eq!(targets.rulers, rig.screen.node_centers("calib_ruler"));
+    assert_eq!(targets.resets.len(), targets.rulers.len(), "у каждой строки есть «↻»");
+    assert_eq!(targets.band_dots.len(), 3, "точки трёх полос тестовых фактов");
+    // Цель — не пустая бумага: палец на её линейке ведёт ручку.
+    let ruler = targets.rulers[0];
+    drag_eye(&mut rig, Point::new(ruler.x + 60.0, ruler.y), Vector::new(-60.0, 0.0));
+    assert!(!set_looks(&rig.effects()).is_empty());
+    // Вне режима калибровки целей нет.
+    rig.act(ScreenAction::ModeSelected(CaptureMode::Photo));
+    rig.run(400);
+    assert_eq!(rig.screen.calibration_touch_targets(), None);
+}

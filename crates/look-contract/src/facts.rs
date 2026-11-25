@@ -6,7 +6,7 @@
 
 use crate::active::EditState;
 use crate::bands::HueBandId;
-use crate::control::{GlobalKnob, LookControl};
+use crate::control::LookControl;
 use crate::error::{PresetError, StorageFailure};
 use crate::preset::{PresetEntry, PresetId};
 use crate::recipe::LookRecipe;
@@ -119,8 +119,6 @@ pub struct LookFacts {
     pub bands: Vec<BandFacts>,
     /// Цвета ободка колёс цвета (одинаковы у всех четырёх колёс).
     pub wheel_ring: WheelHueRing,
-    /// Ручки, которые текущая основа не умеет (экран показывает их приглушёнными).
-    pub unsupported_knobs: Vec<GlobalKnob>,
     /// Последняя проблема, если была.
     pub problem: Option<LookProblem>,
 }
@@ -130,22 +128,18 @@ impl LookFacts {
     pub fn control_differs(&self, control: &LookControl) -> bool {
         self.current.differs_from(&self.preset, control)
     }
-
-    /// Умеет ли текущая основа эту ручку.
-    pub fn is_knob_supported(&self, knob: GlobalKnob) -> bool {
-        !self.unsupported_knobs.contains(&knob)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::control::GlobalKnob;
     use crate::knob::LookKnob;
     use crate::preset::BuiltinPreset;
     use crate::settings::LookSettings;
     use crate::tone_base::ToneBaseModel;
 
-    fn facts(current: LookRecipe, unsupported_knobs: Vec<GlobalKnob>) -> LookFacts {
+    fn facts(current: LookRecipe) -> LookFacts {
         let preset = LookRecipe {
             base: ToneBaseModel::Agx,
             settings: LookSettings::NEUTRAL,
@@ -162,7 +156,6 @@ mod tests {
             preset,
             bands: Vec::new(),
             wheel_ring: WheelHueRing::solid(BandSwatch { srgb: [128; 3] }),
-            unsupported_knobs,
             problem: None,
         }
     }
@@ -173,23 +166,10 @@ mod tests {
             base: ToneBaseModel::Aces,
             settings: LookSettings::NEUTRAL.with_knob(GlobalKnob::Contrast, LookKnob::new(0.4).unwrap()),
         };
-        let facts = facts(edited, Vec::new());
+        let facts = facts(edited);
         assert!(facts.control_differs(&LookControl::ToneBase));
         assert!(facts.control_differs(&LookControl::Knob(GlobalKnob::Contrast)));
         assert!(!facts.control_differs(&LookControl::Knob(GlobalKnob::Warmth)));
-    }
-
-    #[test]
-    fn knob_support_follows_the_unsupported_list() {
-        let clean = LookRecipe {
-            base: ToneBaseModel::Agx,
-            settings: LookSettings::NEUTRAL,
-        };
-        let facts = facts(clean, vec![GlobalKnob::Midtones]);
-        assert!(!facts.is_knob_supported(GlobalKnob::Midtones));
-        for knob in GlobalKnob::ALL.into_iter().filter(|knob| *knob != GlobalKnob::Midtones) {
-            assert!(facts.is_knob_supported(knob), "{knob:?}");
-        }
     }
 
     #[test]

@@ -82,7 +82,8 @@ fn warmth_equals_rendering_with_a_manually_shifted_white() {
     let shifted = shift_white(
         scene_white,
         WhiteShift {
-            mired: -model.warmth_range_mired,
+            mired: -model.warmth_mired.plus,
+            mired_edge: model.warmth_mired.plus,
             duv: 0.0,
         },
     )
@@ -161,7 +162,7 @@ fn shift_at_the_table_edge_is_reported_and_does_not_fail_the_frame() {
     let params = resolve(&controls);
     assert!(matches!(
         params.look.report.white_shift_limit,
-        WhiteShiftLimit::MiredClamped { .. }
+        WhiteShiftLimit::TravelCompressed { .. }
     ));
     assert_eq!(params.look.report.unknown_band_ids, Vec::new());
 }

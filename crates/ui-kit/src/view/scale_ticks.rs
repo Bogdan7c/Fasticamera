@@ -69,6 +69,8 @@ pub fn scale_items<M: ValueModel + Clone>(
         let (length_pt, color) = match mark.emphasis {
             Emphasis::Tick => (tokens.tick_length_pt, colors.text_muted),
             Emphasis::Reference => (tokens.reference_length_pt, colors.text_primary),
+            // Шаг значения без риски: ничего не рисуется.
+            Emphasis::Step => continue,
         };
         items.push(tick_item(
             placement, axis, along_px, length_pt, color, px_per_pt, tokens, opacity,

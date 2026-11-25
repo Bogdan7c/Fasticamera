@@ -1,17 +1,15 @@
-//! Основа filmic: ручки тона (направления, нейтраль, края × подтяжка AE) и экспорт чисел для шейдера.
-
-use look_contract::{LookKnob, LookSettings};
+//! Настройки filmic: наклон, серый экрана, степени носка и плеча, края подтяжки AE и экспорт чисел для шейдера.
+//!
+//! Раньше наклон, серый, носок и плечо крутили ручки тона слоя вида через шов основы; с 14l ручки — отдельная
+//! стадия (`look::tone_shape`), а здесь настройки модели меняются напрямую: то, что умели степени, проверено.
 
 use super::tests::{ALL_NORMS, base_for_norm, base_with};
 use super::*;
 use crate::color::matrix::PixelMatrix;
 use crate::exposure::ExposureGain;
-use crate::look::model::LookModelSettings;
-use crate::look::tone_amounts;
-use crate::tone::knobs::{ToneKnob, ToneKnobAmounts, ToneModelKind, ToneModelSettings, apply_knobs_strict};
 use crate::tone::working_io::WorkingInputGamut;
 
-// ---- Ручки тона ----
+// ---- Настройки кривой ----
 
 fn y_at(settings: &FilmicSettings, e: f64) -> f32 {
     let base = base_with(*settings);
@@ -19,18 +17,12 @@ fn y_at(settings: &FilmicSettings, e: f64) -> f32 {
 }
 
 #[test]
-fn neutral_knobs_keep_the_settings_and_the_exported_numbers_bit_for_bit() {
+fn slope_setting_changes_the_contrast_and_keeps_grey() {
     let settings = FilmicSettings::default();
-    let strict = apply_knobs_strict(&settings, &ToneKnobAmounts::default()).unwrap();
-    assert_eq!(strict, settings);
-    assert_eq!(base_with(strict).parameters(), base_with(settings).parameters());
-    assert_eq!(FilmicSettings::KIND, ToneModelKind::Filmic);
-}
-
-#[test]
-fn contrast_knob_changes_the_slope_and_keeps_grey() {
-    let settings = FilmicSettings::default();
-    let steeper = settings.with_knob(ToneKnob::Contrast, 0.3).unwrap();
+    let steeper = FilmicSettings {
+        slope: settings.slope * 0.3_f32.exp2(),
+        ..settings
+    };
     assert_eq!(y_at(&steeper, 0.0), y_at(&settings, 0.0), "серый не должен двигаться");
     assert!(
         y_at(&steeper, 0.8) > y_at(&settings, 0.8) + 0.01,
@@ -43,27 +35,40 @@ fn contrast_knob_changes_the_slope_and_keeps_grey() {
 }
 
 #[test]
-fn midtones_knob_moves_the_display_grey_only() {
+fn display_grey_setting_moves_the_display_grey_only() {
     let settings = FilmicSettings::default();
-    let brighter = settings.with_knob(ToneKnob::Midtones, 0.3).unwrap();
+    let expected = settings.display_middle_gray * 0.3_f32.exp2();
+    let brighter = FilmicSettings {
+        display_middle_gray: expected,
+        ..settings
+    };
     let grey = brighter.scene_middle_gray;
     let display = base_with(brighter).map_scene_pixel([grey; 3], 1.0);
-    let expected = settings.display_middle_gray * 0.3_f32.exp2();
     assert!((display[0] - expected).abs() < 1.5e-6, "{display:?} против {expected}");
     assert!(display[0] > settings.display_middle_gray);
 }
 
 #[test]
-fn shadows_and_highlights_knobs_change_only_their_own_part_of_the_curve() {
+fn toe_and_shoulder_powers_change_only_their_own_part_of_the_curve() {
     let settings = FilmicSettings::default();
     let base = base_with(settings);
     let (below, above) = base.linear_extent_ev();
-    let lighter_shadows = settings.with_knob(ToneKnob::Shadows, 0.6).unwrap();
-    let lighter_highlights = settings.with_knob(ToneKnob::Highlights, 0.6).unwrap();
-    // «+» = светлее на своей стороне.
+    let scale = 0.6_f32.exp2();
+    // Меньшая степень носка — тени светлее; большая степень плеча — света светлее (направления проверены замером).
+    let lighter_shadows = FilmicSettings {
+        toe_power: settings.toe_power / scale,
+        ..settings
+    };
+    let lighter_highlights = FilmicSettings {
+        shoulder_power: settings.shoulder_power * scale,
+        ..settings
+    };
     assert!(y_at(&lighter_shadows, -4.0) > y_at(&settings, -4.0) + 1e-3);
     assert!(y_at(&lighter_highlights, 2.7) > y_at(&settings, 2.7) + 1e-3);
-    let darker_shadows = settings.with_knob(ToneKnob::Shadows, -0.6).unwrap();
+    let darker_shadows = FilmicSettings {
+        toe_power: settings.toe_power * scale,
+        ..settings
+    };
     assert!(y_at(&darker_shadows, -4.0) < y_at(&settings, -4.0) - 1e-3);
     // Другая сторона и линейный участок — те же биты.
     for e in [-1.0_f64, 0.0, 1.0, 2.7, 3.0] {
@@ -77,37 +82,27 @@ fn shadows_and_highlights_knobs_change_only_their_own_part_of_the_curve() {
 }
 
 #[test]
-fn tone_knob_edges_times_ae_gain_edges_stay_solvable() {
-    // Все углы {−1, 0, +1}⁴ ручек (диапазоны модели вида по умолчанию) × подтяжка AE {−0,5; 0; +0,5} EV.
-    let model = LookModelSettings::default();
-    let base_settings = FilmicSettings::default();
+fn curve_stays_solvable_at_the_ae_gain_edges_with_the_smallest_shoulder_margin_above_one_percent() {
+    // Подтяжка AE {−0,5; 0; +0,5} EV (решение 72) двигает серый кривой; кривая обязана строиться на всех краях.
     let mut smallest_margin = f64::MAX;
     for gain_ev in [-0.5_f32, 0.0, 0.5] {
         let gain = ExposureGain::from_ev(gain_ev).unwrap();
-        for corner in 0..81_u32 {
-            let value = |index: u32| LookKnob::new(((corner / 3_u32.pow(index)) % 3) as f32 - 1.0).unwrap();
-            let look = LookSettings {
-                contrast: value(0),
-                midtones: value(1),
-                shadows: value(2),
-                highlights: value(3),
-                ..LookSettings::NEUTRAL
-            };
-            let settings = apply_knobs_strict(&base_settings, &tone_amounts(&model, &look))
-                .unwrap()
-                .with_exposure_gain(gain);
-            settings
-                .validate()
-                .unwrap_or_else(|error| panic!("угол {corner}, AE {gain_ev:+}: {error}"));
-            // Запас по более строгому условию плеча: s·Δ_w / (1 − y_p) − 1.
-            let y_p = f64::from(settings.display_middle_gray).powf(1.0 / f64::from(settings.display_gamma));
-            let headroom = (1.0 / f64::from(settings.scene_middle_gray)).log2();
-            smallest_margin = smallest_margin.min(f64::from(settings.slope) * headroom / (1.0 - y_p) - 1.0);
-        }
+        let settings = FilmicSettings::default().with_exposure_gain(gain);
+        settings
+            .validate()
+            .unwrap_or_else(|error| panic!("AE {gain_ev:+}: {error}"));
+        // Кривая действительно строится, а не только проходит проверку чисел.
+        FilmicBase::resolve(&settings, DisplayGamut::Srgb)
+            .unwrap_or_else(|error| panic!("AE {gain_ev:+}: основа не строится: {error}"));
+        // Запас по более строгому условию плеча: s·Δ_w / (1 − y_p) − 1.
+        let y_p = f64::from(settings.display_middle_gray).powf(1.0 / f64::from(settings.display_gamma));
+        let headroom = (1.0 / f64::from(settings.scene_middle_gray)).log2();
+        smallest_margin = smallest_margin.min(f64::from(settings.slope) * headroom / (1.0 - y_p) - 1.0);
     }
-    // Запас на худшем углу (контраст −, средние −, AE −0,5 EV) — 2,4 %: кривая строится, но близко к границе;
-    // уменьшение запаса ниже 1 % — повод пересмотреть умолчания.
-    assert!(smallest_margin > 0.01, "запас плеча на худшем углу {smallest_margin}");
+    assert!(
+        smallest_margin > 0.01,
+        "запас плеча на крае подтяжки AE {smallest_margin}"
+    );
 }
 
 // ---- Экспорт чисел для шейдера ----

@@ -19,14 +19,11 @@ use crate::outcome::{ActionOutcome, NoChangeReason, Rejection};
 
 /// Глобальная ручка потянута: точечное намерение `SetKnob` — только эта ручка и её значение.
 ///
-/// Факты нужны лишь для проверок (ручка поддержана основой, значение отличается). Полный набор значений из фактов
+/// Факты нужны лишь для проверки (значение отличается от текущего). Полный набор значений из фактов
 /// НЕ собирается: два жеста на разных ручках в одном кадре иначе несли бы оба набор из устаревших фактов, и второй
 /// затёр бы первый (найдено ревью 14b). Применяет намерение библиотека к своим текущим значениям.
 pub(super) fn on_knob_dragged(ctx: &mut Ctx<'_>, knob: GlobalKnob, value: LookKnob) -> ActionOutcome {
     emit_look_from_facts(ctx, Availability::CalibrationOnly, |facts| {
-        if !facts.is_knob_supported(knob) {
-            return Err(ActionOutcome::Rejected(Rejection::KnobUnsupportedByBase));
-        }
         if facts.current.settings.knob(knob) == value {
             return Err(ActionOutcome::NoChange(NoChangeReason::ValueUnchanged));
         }

@@ -535,8 +535,8 @@ impl Stage {
         self.card.invalid_white_values()
     }
 
-    /// Центры (pt, поверхность) всех видимых узлов с подписью `label`, в порядке сборки (проба для тестов касаний).
-    #[cfg(test)]
+    /// Центры (pt, поверхность) всех видимых узлов с подписью `label`, в порядке сборки (проба для тестов касаний и
+    /// цели касаний раздела калибровки, см. `calibration_targets`).
     pub(crate) fn node_centers(&self, label: &str) -> Vec<ui_core::geometry::Point> {
         self.kit
             .scene()

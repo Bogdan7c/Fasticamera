@@ -33,7 +33,6 @@ pub mod agx_hue;
 pub mod agx_settings;
 pub mod base;
 pub mod filmic;
-pub mod knobs;
 pub mod working_io;
 pub mod working_stage;
 

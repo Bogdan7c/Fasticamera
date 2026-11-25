@@ -24,9 +24,9 @@ fn fresh_library_starts_on_as_eye_with_config_values() {
     let active = library.active_look();
     assert_eq!(active.preset, AS_EYE);
     assert_eq!(active.edits, EditState::Clean);
-    assert_eq!(active.recipe.settings.contrast.get(), 0.2);
-    assert_eq!(active.recipe.settings.saturation.get(), 0.15);
-    assert_eq!(active.recipe.settings.vibrance.get(), 0.15);
+    assert_eq!(active.recipe.settings.contrast.get(), 0.02);
+    assert_eq!(active.recipe.settings.saturation.get(), 0.08);
+    assert_eq!(active.recipe.settings.vibrance.get(), 0.10);
 }
 
 #[test]
@@ -227,7 +227,7 @@ fn deleting_active_preset_falls_back_to_as_eye_and_drops_edits() {
     assert_eq!(change, LibraryChange::VisibleLookAndStoredState);
     let active = library.active_look();
     assert_eq!((active.preset, active.edits), (AS_EYE, EditState::Clean));
-    assert_eq!(active.recipe.settings.contrast.get(), 0.2);
+    assert_eq!(active.recipe.settings.contrast.get(), 0.02);
     assert_eq!(library.presets().len(), 2);
 }
 
@@ -260,7 +260,7 @@ fn discard_edits_restores_preset_values_and_is_noop_when_clean() {
     assert_eq!(library.discard_edits().unwrap(), LibraryChange::Unchanged);
     library.set_look(contrast(0.9)).unwrap();
     assert!(library.discard_edits().unwrap().look_changed());
-    assert_eq!(library.active_look().recipe.settings.contrast.get(), 0.2);
+    assert_eq!(library.active_look().recipe.settings.contrast.get(), 0.02);
 }
 
 #[test]

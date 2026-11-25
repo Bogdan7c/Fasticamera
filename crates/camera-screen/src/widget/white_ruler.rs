@@ -26,7 +26,7 @@ use ui_core::id::NodeId;
 use ui_draw::scene_bridge::NodePlacementPx;
 use ui_draw::transform::Affine2;
 use ui_kit::pan::PanUpdate;
-use ui_kit::ruler::{GatedEvent, RulerControl, RulerSpec};
+use ui_kit::ruler::{GatedEvent, RulerControl, RulerFeel, RulerSpec};
 use ui_kit::tokens::ScaleDensity;
 use ui_kit::value::{ContinuousLinear, ExactPosition, LinearLimits, MiredKelvin, RulerAxis, ValueModel};
 
@@ -152,6 +152,7 @@ impl WhiteRuler {
                 .map_err(element("модель Кельвинов"))?,
             density: ScaleDensity::MiredRuler,
             major_every_steps: period(white.mired_major_every, "mired_major_every")?,
+            feel: RulerFeel::default(),
         };
         let tint_spec = RulerSpec {
             model: ContinuousLinear::new(
@@ -161,6 +162,7 @@ impl WhiteRuler {
             .map_err(element("модель оттенка"))?,
             density: ScaleDensity::TintRuler,
             major_every_steps: period(white.tint_major_every, "tint_major_every")?,
+            feel: RulerFeel::default(),
         };
         Ok(Self {
             node,

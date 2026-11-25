@@ -301,6 +301,7 @@ fn dispatch_action(ctx: &mut Ctx<'_>, action: ScreenAction) -> ActionOutcome {
             calibration::on_band_knob_dragged(ctx, band, axis, value)
         }
         ScreenAction::ControlViewSelected(view) => wheels::on_control_view_selected(ctx, view),
+        ScreenAction::ScalesScrollRemembered { offset_pt } => wheels::on_scales_scroll_remembered(ctx, offset_pt),
         ScreenAction::WheelSelected(zone) => wheels::on_wheel_selected(ctx, zone),
         ScreenAction::WheelPushDragged { zone, push } => wheels::on_wheel_push_dragged(ctx, zone, push),
         ScreenAction::WheelRingDragged { zone, ring } => wheels::on_wheel_ring_dragged(ctx, zone, ring),

@@ -43,6 +43,12 @@ use quality_support::{
 const LINEAR_TOLERANCE: f32 = 0.0;
 /// Сигнал экрана (fp16-цель): четверть шага 8 бит, как у прежней основы.
 const DISPLAY_TOLERANCE: f32 = 1e-3;
+/// Наименьший размах сигнала эталона (экранный код 0…1): картинка не плоская, паритет не пуст. Не допуск паритета.
+const MIN_REFERENCE_RANGE: f32 = 0.2;
+/// То же для углов ручек тона: стадия тона на краях честно сжимает кадр (все ручки в минус: реальный кроп с пересветом
+/// 0,0008…0,097; тени в плюс при остальных в минус: 0,058…0,097). От вырожденной картинки паритет углов защищён
+/// проверкой «разные углы — разные картинки», а здесь нужен лишь запрет константы.
+const TONED_MIN_REFERENCE_RANGE: f32 = 0.02;
 
 fn aces_params_with(
     sensor: &SensorDescription,
@@ -76,6 +82,17 @@ fn aces_params(sensor: &SensorDescription, neutral: CameraNeutral, gamut: Displa
 }
 
 fn assert_aces_parity(name: &str, run: &WorkingReferenceRun, linear: &[[f32; 3]], display: &[[f32; 3]]) {
+    assert_aces_parity_in_range(name, run, linear, display, MIN_REFERENCE_RANGE);
+}
+
+/// Паритет с наименьшим размахом эталона `min_range` (см. [`TONED_MIN_REFERENCE_RANGE`]).
+fn assert_aces_parity_in_range(
+    name: &str,
+    run: &WorkingReferenceRun,
+    linear: &[[f32; 3]],
+    display: &[[f32; 3]],
+    min_range: f32,
+) {
     let width = run.front_end.camera_rgb.size().width;
     let (linear_difference, linear_at) = max_rgb_difference(linear, run.front_end.camera_rgb.pixels(), width);
     let (display_difference, display_at) = max_rgb_difference(display, run.display_encoded.pixels(), width);
@@ -95,7 +112,7 @@ fn assert_aces_parity(name: &str, run: &WorkingReferenceRun, linear: &[[f32; 3]]
     let brightest = encoded.iter().flatten().copied().fold(0.0_f32, f32::max);
     let darkest = encoded.iter().flatten().copied().fold(1.0_f32, f32::min);
     assert!(
-        brightest - darkest > 0.2,
+        brightest - darkest > min_range,
         "{name}: эталон слишком плоский ({darkest}..{brightest})"
     );
 }
@@ -125,16 +142,28 @@ fn run_both_sources(
     params: &IspParams,
     reference: &WorkingReferenceRun,
 ) -> Vec<[f32; 3]> {
+    run_both_sources_in_range(context, name, raw, params, reference, MIN_REFERENCE_RANGE)
+}
+
+/// То же с наименьшим размахом эталона `min_range`.
+fn run_both_sources_in_range(
+    context: &gpu_vulkan::context::GpuContext,
+    name: &str,
+    raw: &RawMosaic,
+    params: &IspParams,
+    reference: &WorkingReferenceRun,
+    min_range: f32,
+) -> Vec<[f32; 3]> {
     let (frame, frame_width, frame_height) = padded_frame(raw, 1023);
     let raw16 = SyntheticRaw16::new(context, frame_width, frame_height, &frame).unwrap();
     let (linear, display) = run_gpu(context, &raw16.source(), params, area_of(raw));
-    assert_aces_parity(&format!("{name}/raw16"), reference, &linear, &display);
+    assert_aces_parity_in_range(&format!("{name}/raw16"), reference, &linear, &display, min_range);
     let row_stride_bytes = frame_width / 4 * 5 + 6;
     let packed = pack_raw10(&frame, frame_width, row_stride_bytes, 0xA5);
     let raw10 = SyntheticRaw10::new(context, frame_width, frame_height, row_stride_bytes, &packed).unwrap();
     let source: MosaicSource = raw10.source();
     let (linear10, display10) = run_gpu(context, &source, params, area_of(raw));
-    assert_aces_parity(&format!("{name}/raw10"), reference, &linear10, &display10);
+    assert_aces_parity_in_range(&format!("{name}/raw10"), reference, &linear10, &display10, min_range);
     display
 }
 
@@ -280,9 +309,23 @@ fn tone_knob_corners_with_ae_edges_match_reference() {
                 exposure_ev,
             );
             let reference = run_reference_working(&sweep, &params).unwrap();
-            run_both_sources(&context, &format!("{name}/развёртка"), &sweep, &params, &reference);
+            run_both_sources_in_range(
+                &context,
+                &format!("{name}/развёртка"),
+                &sweep,
+                &params,
+                &reference,
+                TONED_MIN_REFERENCE_RANGE,
+            );
             let ramp_reference = run_reference_working(&ramp, &params).unwrap();
-            let ramp_picture = run_both_sources(&context, &format!("{name}/шкала"), &ramp, &params, &ramp_reference);
+            let ramp_picture = run_both_sources_in_range(
+                &context,
+                &format!("{name}/шкала"),
+                &ramp,
+                &params,
+                &ramp_reference,
+                TONED_MIN_REFERENCE_RANGE,
+            );
             if exposure_ev < 0.0 {
                 ramp_pictures.push(ramp_picture);
             }
@@ -295,12 +338,13 @@ fn tone_knob_corners_with_ae_edges_match_reference() {
                 exposure_ev,
             );
             let reference = run_reference_working(&highlight.raw, &params).unwrap();
-            run_both_sources(
+            run_both_sources_in_range(
                 &context,
                 &format!("{name}/пересвет"),
                 &highlight.raw,
                 &params,
                 &reference,
+                TONED_MIN_REFERENCE_RANGE,
             );
         }
     }
