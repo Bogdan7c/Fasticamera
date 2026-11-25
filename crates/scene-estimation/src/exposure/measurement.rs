@@ -123,11 +123,14 @@ pub struct ExposureMeasurement {
     /// `dark_floor`). Не зависит от способа усреднения `scene_average`, поэтому годится для сложения света
     /// (расчёт вспышки, 14d): `линейный замер = произведение кадра × цель / эта яркость`.
     pub mean_luminance: f32,
-    /// Средний уровень ЗЕЛЁНОГО (нормированный отсчёт ПОСЛЕ коррекции виньетирования, до баланса белого) по области
-    /// с теми же весами; пересвеченные (по сырому отсчёту) ячейки считаются белыми (1,0). Принятые ячейки могут дать
-    /// значение выше 1,0: в тёмных углах усиление калибровки поднимает несжатый сырой свет выше белого, суммы
-    /// статистики это сохраняют (запас `sum_headroom`), а замер не обрезает. Шкала совпадает со шкалой сырых отсчётов RAW после
-    /// вычитания чёрного, поэтому по нему сравнивают кадр статистики с самим RAW (проверка света вспышки).
+    /// Средний уровень ЗЕЛЁНОГО (нормированный отсчёт ПОСЛЕ коррекции виньетирования, до баланса белого) по ВСЕЙ сетке,
+    /// РАВНОМЕРНО по ячейкам: веса замера (центр, точка тапа) сюда не входят. Пересвеченные (по сырому отсчёту)
+    /// ячейки считаются белыми (1,0). Принятые ячейки могут дать значение выше 1,0: в тёмных углах усиление калибровки
+    /// поднимает несжатый сырой свет выше белого, суммы статистики это сохраняют (запас `sum_headroom`), а замер не
+    /// обрезает.
+    ///
+    /// Единственный потребитель — проверка «кадр со вспышкой освещён»: она меряет сам RAW равномерно по той же
+    /// области, и взвешенный уровень сцены (тап в яркое окно) сравнивал бы разные места кадра.
     pub mean_green_level: f32,
 }
 
@@ -143,8 +146,10 @@ struct Reductions {
     log2_sum: f32,
     clipped_sum: f32,
     dark_sum: f32,
-    /// Σ w·(средний зелёный плитки, пересвет = 1,0) — для `mean_green_level`.
-    green_sum: f32,
+    /// Σ по ячейкам зелёного (пересвет = 1,0), без весов замера — для `mean_green_level`.
+    green_cells_sum: f32,
+    /// Сколько ячеек вошло в `green_cells_sum`.
+    cells: f32,
 }
 
 /// Фаза замера: от неё зависят ограниченные шаги при пересвете и темноте.
@@ -247,7 +252,8 @@ pub fn measure_exposure_in_phase(
         mean_luminance: ((reductions.measured_luminance_sum + reductions.clipped_luminance_sum)
             / reductions.used_weight)
             .max(config.dark_floor),
-        mean_green_level: reductions.green_sum / reductions.used_weight,
+        // Ячеек больше нуля: иначе выше сработал бы `NoUsableTiles`.
+        mean_green_level: reductions.green_cells_sum / reductions.cells,
     })
 }
 
@@ -270,7 +276,9 @@ fn reduce_tiles(
         totals.used_weight += weight;
         totals.measured_luminance_sum += weight * parts.measured;
         totals.clipped_luminance_sum += weight * parts.clipped;
-        totals.green_sum += weight * tile_green_level(tile, cells);
+        totals.green_cells_sum += tile_green_cells_sum(tile);
+        // Сетка целиком — единицы миллионов ячеек: f32 хранит такое число точно.
+        totals.cells += cells as f32;
         totals.log2_sum += weight * tile_luminance.max(config.dark_floor).log2();
         totals.clipped_sum += weight * (tile.saturated_cells as f32 / cells as f32);
         if tile_luminance < config.dark_tile_luminance {
@@ -280,13 +288,11 @@ fn reduce_tiles(
     totals
 }
 
-/// Средний уровень зелёного плитки: принятые ячейки — по сумме (после виньетирования, может быть > 1 — углы под
-/// усилением), пересвеченные по сырому отсчёту — белые (1,0).
-fn tile_green_level(tile: &AwbTile, cells: u32) -> f32 {
-    let cells = cells as f32;
+/// Сумма зелёного по ячейкам плитки: принятые ячейки — по сумме (после виньетирования, может быть > 1 на ячейку: углы
+/// под усилением), пересвеченные по сырому отсчёту — белые (1,0).
+fn tile_green_cells_sum(tile: &AwbTile) -> f32 {
     // Зелёный даёт два отсчёта на ячейку (см. `tile_luminance`).
-    let used_part = tile.sum_g as f32 / (2.0 * QUANT_SCALE * cells);
-    used_part + tile.saturated_cells as f32 / cells
+    tile.sum_g as f32 / (2.0 * QUANT_SCALE) + tile.saturated_cells as f32
 }
 
 /// Яркость области и сдвиг экспозиции выбранным способом усреднения (решения владельца 133, 134).

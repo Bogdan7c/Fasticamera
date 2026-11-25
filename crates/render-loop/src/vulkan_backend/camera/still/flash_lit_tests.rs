@@ -284,3 +284,12 @@ fn a_cell_with_one_clipped_red_sample_is_white_for_all_its_greens() {
     let level = mean(&samples, full_area(), 1).unwrap();
     assert!((level - 1.0).abs() < 1e-6, "{level}");
 }
+
+#[test]
+fn the_lit_check_reads_the_frame_with_the_same_statistics_settings_the_viewfinder_uses() {
+    // Проверка берёт умолчания статистики; разойдись они с видоискателем — шкалы двух сторон разъедутся молча.
+    assert_eq!(
+        isp_vulkan::viewfinder::ViewfinderIspConfig::default().awb_statistics,
+        AwbStatisticsSettings::default()
+    );
+}

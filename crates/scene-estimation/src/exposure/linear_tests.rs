@@ -7,8 +7,9 @@ use crate::exposure::config::MeteringConfig;
 use crate::exposure::measurement::measure_exposure;
 use crate::exposure::metering_weights::{MeteringArea, MeteringWeights, TilePlacement};
 use crate::exposure::test_support::{
-    GRID, partly_clipped_tile, plain_luminance, product, stats_from_tiles, target, uniform_gray,
+    GRID, partly_clipped_tile, plain_luminance, product, stats_from_tiles, target, tile_of, uniform_gray,
 };
+use camera_contract::three_a::{MeteringRegion, SensorPoint};
 use isp_model::statistics::AwbStatistics;
 
 fn weights() -> MeteringWeights {
@@ -79,4 +80,55 @@ fn clipped_highlights_lower_the_linear_estimate_and_expose_the_green_level_for_t
     assert!(clipped.mean_green_level > 0.5, "пересвеченные ячейки считаются белыми");
     // Линейная яркость учитывает пересвет по нижней оценке (1,0): кадр ярче чистого.
     assert!(clipped.mean_luminance > clean.mean_luminance);
+}
+
+#[test]
+fn the_green_level_ignores_the_metering_weights_and_averages_every_cell_of_the_grid() {
+    // Яркое пятно в центре на тёмном фоне: веса «центр» и «точка тапа» дают яркость выше равномерной.
+    let is_bright = |column: u32, row: u32| column.abs_diff(GRID.columns / 2) <= 1 && row.abs_diff(GRID.rows / 2) <= 1;
+    let scene = stats_from_tiles(|column, row| {
+        // У части плиток фона ячейки ещё и пересвечены: они тоже входят в равномерное среднее.
+        if is_bright(column, row) {
+            tile_of([0.8; 3])
+        } else if row == 0 {
+            partly_clipped_tile(0.05, 0.25)
+        } else {
+            tile_of([0.05; 3])
+        }
+    });
+    let spot = MeteringWeights::build(
+        GRID,
+        TilePlacement::full_frame(4.0 / 3.0).unwrap(),
+        MeteringArea::Spot(MeteringRegion::new(SensorPoint::CENTER, 0.2).unwrap()),
+        &MeteringConfig::default(),
+    )
+    .unwrap();
+    let frame = product(0.01);
+    let by_matrix = measure(&scene, frame);
+    let by_spot = measure_exposure(
+        &scene,
+        &spot,
+        plain_luminance(),
+        frame,
+        target(),
+        &MeteringConfig::default(),
+    )
+    .unwrap();
+    // Эталон: каждая ячейка сетки с одинаковым весом (пересвеченная = 1,0).
+    let bright_tiles = (0..GRID.rows)
+        .flat_map(|row| (0..GRID.columns).map(move |column| (column, row)))
+        .filter(|&(column, row)| is_bright(column, row))
+        .count() as f32;
+    let tiles = (GRID.rows * GRID.columns) as f32;
+    let clipped_row_tiles = GRID.columns as f32;
+    let dark_tiles = tiles - bright_tiles - clipped_row_tiles;
+    let expected = (bright_tiles * 0.8 + clipped_row_tiles * (0.25 + 0.75 * 0.05) + dark_tiles * 0.05) / tiles;
+    // Замер экспозиции действительно видит разное: иначе тест ничего не доказывает.
+    assert!(by_spot.mean_luminance > 2.0 * by_matrix.mean_luminance);
+    assert!(
+        (by_matrix.mean_green_level - expected).abs() < 0.005,
+        "{} вместо {expected}",
+        by_matrix.mean_green_level
+    );
+    assert_eq!(by_spot.mean_green_level, by_matrix.mean_green_level);
 }

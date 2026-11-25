@@ -34,7 +34,7 @@ impl PeriodCounter {
     /// Решение для очередного кадра. `frames_hidden` — кадры спрятаны холодным стартом: статистика нужна на
     /// каждом, а период отсчитывается заново от последнего такого кадра.
     pub(super) fn tick(&mut self, frames_hidden: bool) -> StatisticsPlan {
-        if frames_hidden || self.frames_since_statistics + 1 >= self.every_n_frames.get() {
+        if frames_hidden || self.frames_since_statistics.saturating_add(1) >= self.every_n_frames.get() {
             self.frames_since_statistics = 0;
             StatisticsPlan::Compute
         } else {
