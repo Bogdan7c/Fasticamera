@@ -67,6 +67,7 @@ mod evict;
 mod evict_report;
 // Демо-сцена стекла (сессия 11) и сценарий `glass` на ней. `pub(crate)`: её конфиг — часть
 // `camera.scenarios.glass` (`glass_scenario_config`).
+mod frame_statistics_report;
 mod glass;
 mod glass_report;
 pub(crate) mod glass_showcase;

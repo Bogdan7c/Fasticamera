@@ -8,12 +8,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
 use isp_vulkan::viewfinder::{IspStage, IspStageSet};
-use render_loop::config::{AdpfMode, PresentTargetConfig, WhiteBalanceConfig};
+use render_loop::config::{AdpfMode, AutoExposureConfig, PresentTargetConfig};
 use render_loop::thread::{AdpfSessionState, DurationSummary, PresentTargetSelection};
 use render_loop::viewfinder::{
-    HeadroomBench, HeadroomBenchDiagnostics, HeadroomPassTime, ViewfinderColorSpace, ViewfinderCommand,
-    ViewfinderCounters, ViewfinderDiagnostics, ViewfinderExtent, ViewfinderGpuTimes, ViewfinderPainter,
-    ViewfinderStorage, WhiteBalanceDiagnostics,
+    HeadroomBench, HeadroomBenchDiagnostics, HeadroomPassTime, StatisticsDiagnostics, ViewfinderColorSpace,
+    ViewfinderCommand, ViewfinderCounters, ViewfinderDiagnostics, ViewfinderExtent, ViewfinderGpuTimes,
+    ViewfinderPainter, ViewfinderStorage, WhiteBalanceDiagnostics,
 };
 use shell_contract::power::fake::FakePowerSource;
 use shell_contract::power::{BatteryCurrent, BatterySample, ChargingState, PowerPlug};
@@ -155,8 +155,14 @@ fn fresh_viewfinder() -> ViewfinderDiagnostics {
         gpu_time: ViewfinderGpuTimes::default(),
         counters: ViewfinderCounters::default(),
         headroom: HeadroomBenchDiagnostics::default(),
-        white_balance: WhiteBalanceDiagnostics::idle(WhiteBalanceConfig::default().statistics_every_n_frames),
+        white_balance: WhiteBalanceDiagnostics::idle(),
         auto_exposure: None,
+        // Как настоящий рендер с нашим AE: расписание статистики кадра есть, период — из конфига AE.
+        statistics: Some(StatisticsDiagnostics {
+            every_n_frames: AutoExposureConfig::default().statistics_every_n_frames,
+            requested: 0,
+            skipped_by_period: 0,
+        }),
         ui_overlay: render_loop::ui_overlay::UiOverlayDiagnostics::default(),
         continuity: Default::default(),
     }
@@ -267,7 +273,9 @@ impl RenderMirror {
                     // Как настоящий рендер: параметры разрешаются один раз на поток, а не на кадр.
                     viewfinder.counters.params_resolved = u64::from(processed > 0);
                     // Как настоящий рендер: статистика AWB считается на каждом N-м обработанном кадре.
-                    let period = u64::from(viewfinder.white_balance.statistics_every_n_frames.max(1));
+                    let period = viewfinder
+                        .statistics
+                        .map_or(1, |schedule| u64::from(schedule.every_n_frames.max(1)));
                     viewfinder.counters.statistics_published = processed / period;
                     viewfinder.gpu_time.isp_dispatch =
                         (now.painter == ViewfinderPainter::Isp).then(|| micros(isp_micros(now.stages)));
@@ -544,7 +552,7 @@ fn viewfinder_smoke_passes_on_a_healthy_isp_and_reports_gpu_time_color_space_awb
         "все {} стадий: 1 + N × 0,1 мс",
         IspStage::ALL.len()
     );
-    assert!(report["awb_published"].as_u64().expect("AWB") > 0);
+    assert!(report["statistics_published"].as_u64().expect("статистика кадра") > 0);
     assert_eq!(report["cpu_copies"], 0);
     let p50 = report["latency"]["p50_ms"].as_f64().expect("p50");
     assert!((39.5..=40.5).contains(&p50), "задержка {p50}");
@@ -602,7 +610,7 @@ fn viewfinder_smoke_reports_decimated_awb_statistics_and_the_white_balance_secti
     assert_eq!(result["status"], "passed", "{result}");
     let report = &result["report"];
     let processed = report["frames_processed"].as_u64().expect("кадры");
-    let published = report["awb_published"].as_u64().expect("статистика");
+    let published = report["statistics_published"].as_u64().expect("статистика");
     // Статистика — на каждом 4-м кадре от начала потока, а окно отчёта начинается в произвольной фазе этого
     // счёта: на 18 кадров честно выходит 4 или 5 публикаций (пол или потолок от деления на 4).
     assert!(

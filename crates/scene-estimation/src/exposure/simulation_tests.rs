@@ -20,7 +20,7 @@ use super::measurement::MeasurementPhase;
 use super::meter::{CpuExposureMeter, ExposureMeter, ExposureMeteringRequest};
 use super::metering_weights::{MeteringArea, MeteringWeights, TilePlacement};
 use super::test_support::{GRID, plain_luminance, product, stats_from, target, test_camera};
-use crate::executor::FrameTag;
+use crate::exposure::FrameTag;
 use camera_contract::auto_exposure::{ExposureDirective, ExposureProduct};
 
 /// Кадров между замерами статистики.

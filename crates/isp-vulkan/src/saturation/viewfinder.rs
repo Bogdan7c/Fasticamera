@@ -10,8 +10,8 @@
 //! * кадрирование `ViewfinderCrop::FULL_SENSOR`, ориентация 90° — `ViewfinderCropConfig::default` и паспорт
 //!   основной камеры (`camera_contract::fixtures::main_wide_camera`);
 //! * набор стадий `IspStageSet::ALL`, конфиг ISP `ViewfinderIspConfig::default` (слоты 2, сетка AWB 32×24);
-//! * статистика AWB — каждый 4-й кадр: `WhiteBalanceConfig::statistics_every_n_frames` и расписание
-//!   `StatisticsSchedule` (кадры 0, N, 2N…; на остальных — вариант pipeline без `IspStage::AwbStatistics`,
+//! * статистика кадра — каждый 4-й кадр: `AutoExposureConfig::statistics_every_n_frames` (`viewfinder.auto_exposure`) и
+//!   расписание `StatisticsSchedule` (`render-loop`, кадры 0, N, 2N…; на остальных — вариант pipeline без `IspStage::AwbStatistics`,
 //!   `session/slot.rs::effective_stages`). AE-форсирование холодного старта не повторяется: это не установившийся режим;
 //! * охват экрана Display P3; параметры (`IspParams`: калибровка, основа тона, вид, LUT, карта теней) задаёт вызывающий
 //!   ([`ProductParamsRecipe`](super::ProductParamsRecipe)).
@@ -44,7 +44,8 @@ use crate::viewfinder::{
 
 /// Размер буфера основной камеры OnePlus 11 (4:3): `Camera2` отдаёт RAW10 4096×3072.
 pub const PRODUCT_FRAME_SIZE: PixelSize = PixelSize::new(4096, 3072);
-/// Статистика AWB — каждый N-й кадр: `WhiteBalanceConfig::default().statistics_every_n_frames` в `render-loop`.
+/// Статистика кадра — каждый N-й кадр: `AutoExposureConfig::default().statistics_every_n_frames` в `render-loop`
+/// (статистика нужна нашему AE; согласие числа с конфигом проверяет тест в `fasticamera-app`, `saturation_bench`).
 pub const PRODUCT_AWB_STATISTICS_EVERY_N_FRAMES: u32 = 4;
 /// Сколько последних кадров помнит журнал времён проходов (окна замера по ~1 с при ≥ 60 к/с хватает с запасом).
 pub const PASS_LOG_CAPACITY_FRAMES: usize = 4096;

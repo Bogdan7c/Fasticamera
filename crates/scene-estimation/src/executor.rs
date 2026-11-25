@@ -16,18 +16,8 @@ use crate::config::EstimatorConfig;
 use crate::error::EstimationError;
 use crate::estimate::EstimateOutcome;
 use crate::estimator::{estimate_scene_light, finalize_estimate};
+use crate::exposure::{FrameTag, SubmitError};
 use crate::locus_table::CameraLocusTable;
-
-/// Чей кадр оценивается. Поля — то, что нужно вызывающему, чтобы привязать ответ.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FrameTag {
-    /// Поколение потока камеры у вызывающего (оценка чужого потока отбрасывается им же).
-    pub stream_generation: u64,
-    /// Порядковый номер кадра в потоке.
-    pub sequence: u64,
-    /// Метка сенсора кадра, наносекунды (шкала BOOTTIME).
-    pub sensor_timestamp_nanos: i64,
-}
 
 /// Запрос оценки: статистика кадра и таблица локуса ЕГО потока.
 #[derive(Debug, Clone, Copy)]
@@ -47,15 +37,6 @@ pub struct CompletedEstimate {
     pub frame: FrameTag,
     /// Исход или причина, почему оценки нет.
     pub outcome: Result<EstimateOutcome, EstimationError>,
-}
-
-/// Почему запрос не принят.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum SubmitError {
-    /// Исполнитель занят и не принимает новых запросов (backpressure GPU-реализации): вызывающий
-    /// пропускает кадр статистики — следующий придёт через несколько кадров.
-    #[error("исполнитель оценки занят")]
-    Busy,
 }
 
 /// Исполнитель оценки света сцены.

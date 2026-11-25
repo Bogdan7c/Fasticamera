@@ -1,6 +1,6 @@
 //! Диагностика белой на потоке рендера (white-balance 01): какая белая применена, что просил владелец, чем
-//! ответил источник, как прошёл холодный старт. Старый оценщик (`last_estimate`, `estimates`, статистика) и
-//! белая HAL (`hal_white`) — только диагностика: в картинку они не идут (удалит сессия 03 плана).
+//! ответил источник, как прошёл холодный старт. Белая HAL (`hal_white`) — только диагностика: в картинку она не идёт.
+//! Расписание статистики кадра здесь не живёт: его диагностика — `super::statistics`.
 //!
 //! Приходит в `RenderStatus` внутри [`super::ViewfinderDiagnostics`].
 
@@ -13,19 +13,6 @@ pub struct WhiteReading {
     pub temperature_kelvin: f64,
     /// Расстояние до кривой Планка (CIE 1960 uv), плюс — к зелёному.
     pub duv: f64,
-}
-
-/// Последняя оценка света.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct EstimateReading {
-    /// Оценённая белая (после привязки к полосе вокруг кривой Планка).
-    pub white: WhiteReading,
-    /// Уверенность `[0, 1]`.
-    pub confidence: f32,
-    /// Принятые серые плитки.
-    pub accepted_tiles: u32,
-    /// Оценку пришлось прижать к полосе вокруг кривой Планка.
-    pub clamped_to_band: bool,
 }
 
 /// Применённая белая минус белая HAL.
@@ -72,24 +59,10 @@ pub struct WhiteBalanceDiagnostics {
     pub source_replies_dropped: u64,
     /// Целей, не переведённых в цветность (температура вне таблицы); белая осталась прежней.
     pub unconvertible_targets: u64,
-    /// Последняя оценка света старым оценщиком — ТОЛЬКО диагностика, на картинку не влияет.
-    pub last_estimate: Option<EstimateReading>,
     /// Белая по подсказкам HAL (`white_of_hints`) — для сравнения.
     pub hal_white: Option<WhiteReading>,
     /// Применённая белая минус белая HAL.
     pub hal_delta: Option<WhiteDelta>,
-    /// Сколько оценок света получено от старого оценщика (любого исхода).
-    pub estimates: u64,
-    /// Сколько оценок не удалось (ошибка перевода, отказ исполнителя).
-    pub estimation_failures: u64,
-    /// Сколько раз исполнитель оценки был занят и кадр статистики пропущен.
-    pub estimator_busy: u64,
-    /// Каждый N-й обработанный кадр считает статистику (конфиг).
-    pub statistics_every_n_frames: u32,
-    /// Сколько кадров попросили статистику.
-    pub statistics_requested: u64,
-    /// Сколько кадров пропустили статистику из-за прореживания.
-    pub statistics_skipped_by_decimation: u64,
     /// Сколько статистик пришло от потока, которого уже нет (отброшены).
     pub statistics_stale: u64,
     /// Состояние холодного старта.
@@ -100,7 +73,7 @@ pub struct WhiteBalanceDiagnostics {
     pub cold_start_forced: u64,
     /// Сколько кадров обработано с временной белой (указаний не было).
     pub frames_with_provisional_white: u64,
-    /// Таблицу локуса потока построить не удалось (текст причины): старый оценщик не работает.
+    /// Таблицу локуса потока построить не удалось (текст причины): белая светодиода вспышки не оценивается.
     pub table_failure: Option<String>,
     /// Сколько оценок света светодиода получено по кадрам с фонариком предвспышки (14d).
     pub torch_white_estimates: u64,
@@ -110,7 +83,7 @@ pub struct WhiteBalanceDiagnostics {
 
 impl WhiteBalanceDiagnostics {
     /// Диагностика без сессии показа: ничего ещё не происходило.
-    pub fn idle(statistics_every_n_frames: u32) -> Self {
+    pub fn idle() -> Self {
         Self {
             applied_white: None,
             target_white: None,
@@ -122,15 +95,8 @@ impl WhiteBalanceDiagnostics {
             answers_signal_not_bound: 0,
             source_replies_dropped: 0,
             unconvertible_targets: 0,
-            last_estimate: None,
             hal_white: None,
             hal_delta: None,
-            estimates: 0,
-            estimation_failures: 0,
-            estimator_busy: 0,
-            statistics_every_n_frames,
-            statistics_requested: 0,
-            statistics_skipped_by_decimation: 0,
             statistics_stale: 0,
             cold_start: ColdStartState::Warm,
             hidden_frames_cold_start: 0,

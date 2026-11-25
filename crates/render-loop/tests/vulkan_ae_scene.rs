@@ -31,9 +31,9 @@ mod vulkan_support;
 mod white_engine;
 
 use ae_rig::{
-    AeRig, BRACKET_TS_BASE, DARK_START_PRODUCT, FRAME_NANOS, RigSetup, SCENE_SCALE, SENSOR_DELAY_FRAMES, SceneLayout,
-    Shot, TILE_COUNT, converged_rig, display_middle_gray, ev_error, manual_lamp_white, rig_or_skip, rig_with,
-    tone_display,
+    AeRig, BRACKET_TS_BASE, DARK_START_PRODUCT, FRAME_NANOS, RigSetup, RigStream, SCENE_SCALE, SENSOR_DELAY_FRAMES,
+    SceneLayout, Shot, TILE_COUNT, converged_rig, display_middle_gray, ev_error, manual_lamp_white, rig_or_skip,
+    rig_with, tone_display,
 };
 use camera_contract::auto_exposure::ProposalConvergence;
 use camera_contract::three_a::{AeAfLock, BurstId, RequestOrigin};
@@ -152,7 +152,7 @@ fn residual_gain_keeps_the_picture_closer_to_the_target_while_the_sensor_catches
 // ---- общее расписание статистики ----
 
 #[test]
-fn ae_cold_start_gets_statistics_on_consecutive_frames_while_awb_keeps_its_own_schedule() {
+fn ae_cold_start_gets_statistics_on_consecutive_frames_and_without_ae_none_are_computed() {
     let Some((mut with_ae, with_journal)) = rig_or_skip(Some(AutoExposureConfig::default())) else {
         return;
     };
@@ -163,24 +163,91 @@ fn ae_cold_start_gets_statistics_on_consecutive_frames_while_awb_keeps_its_own_s
     without_ae.run(8);
     let with = with_ae.viewfinder();
     let without = without_ae.viewfinder();
-    // Без AE статистика идёт по расписанию AWB (каждый 4-й кадр); с AE на холодном старте — подряд.
-    assert!(
-        with.counters.statistics_published > without.counters.statistics_published,
-        "AE на холодном старте получил свои кадры: {} против {}",
-        with.counters.statistics_published,
-        without.counters.statistics_published
-    );
-    // AWB не получил лишних кадров: его запросы и оценки те же, что без AE.
+    // Без AE потребителей статистики нет: стадия не считается и не публикуется; с AE на холодном старте — подряд.
     assert_eq!(
-        with.white_balance.statistics_requested,
-        without.white_balance.statistics_requested
+        (without.counters.statistics_published, without.statistics),
+        (0, None),
+        "без AE статистика не нужна"
     );
-    assert_eq!(with.white_balance.estimates, without.white_balance.estimates);
+    assert!(
+        with.counters.statistics_published >= 2,
+        "AE на холодном старте получил свои кадры: {}",
+        with.counters.statistics_published
+    );
+    let schedule = with.statistics.expect("у AE есть расписание статистики");
+    assert_eq!(schedule.every_n_frames, 4);
+    assert_eq!(
+        schedule.requested, with.counters.statistics_published,
+        "каждый запрошенный кадр опубликован ровно один раз"
+    );
     let ae = with.auto_exposure.expect("AE");
     assert!(ae.counters.cold_start_statistics_frames >= 2, "{ae:?}");
     assert!(ae.counters.accepted >= 2, "замеры приняты: {ae:?}");
     with_ae.finish(&with_journal);
     without_ae.finish(&without_journal);
+}
+
+#[test]
+fn a_stream_whose_colour_calibration_gives_no_locus_table_still_gets_ae_measurements_in_the_steady_state() {
+    // Расписание статистики от цвета потока не зависит: без таблицы локуса (оценщику света нечем работать) AE
+    // обязан продолжать получать замеры и вести экспозицию. Раньше расписание жило в старом AWB и без таблицы
+    // выдавало «пропустить» на каждом кадре, так что AE слеп оставался после холодного старта.
+    let Some((mut rig, journal)) = rig_with(RigSetup {
+        auto_exposure: Some(AutoExposureConfig::default()),
+        white_balance: Some(manual_lamp_white()),
+        scene: "checker_bb2800",
+        start_product: DARK_START_PRODUCT,
+        scene_scale: SCENE_SCALE,
+        allow_clipping: false,
+        layout: SceneLayout::Uniform,
+        stream: RigStream::WithoutLocusTable,
+    }) else {
+        return;
+    };
+    rig.run(50);
+    let midway = rig.viewfinder();
+    rig.run(50);
+    let diagnostics = rig.viewfinder();
+    assert!(
+        diagnostics.white_balance.table_failure.is_some(),
+        "предусловие: таблицу локуса потока построить не удалось ({:?})",
+        diagnostics.white_balance
+    );
+    let ae = diagnostics.auto_exposure.clone().expect("AE включён");
+    let ae_midway = midway.auto_exposure.expect("AE включён");
+    // Холодный старт кончился давно (кадры 0..50), дальше расписание идёт по периоду — и замеры продолжают приходить.
+    let schedule = diagnostics.statistics.expect("у AE есть расписание статистики");
+    let schedule_midway = midway.statistics.expect("у AE есть расписание статистики");
+    assert!(
+        schedule.requested >= schedule_midway.requested + 10,
+        "в установившемся режиме статистика считается по периоду: {schedule_midway:?} -> {schedule:?}"
+    );
+    assert!(
+        schedule.skipped_by_period > schedule_midway.skipped_by_period,
+        "это именно период, а не «каждый кадр»: {schedule_midway:?} -> {schedule:?}"
+    );
+    assert!(
+        ae.counters.accepted >= ae_midway.counters.accepted + 10,
+        "замеры AE идут и после холодного старта: {ae_midway:?} -> {ae:?}"
+    );
+    // И экспозиция ведётся: контур вывел её из тёмного старта и держит (цель у этой калибровки другая, чем у
+    // эталонной: веса яркости идут из её матриц, поэтому «серый на экране» здесь не проверяем).
+    assert_eq!(ae.convergence, Some(ProposalConvergence::Settled), "{ae:?}");
+    let start = rig.history[0].sensor_product;
+    let tail: Vec<f64> = rig.history[rig.history.len() - 10..]
+        .iter()
+        .map(|shot| shot.sensor_product)
+        .collect();
+    assert!(
+        (tail[9] / start).log2() > 1.0,
+        "экспозиция ушла от тёмного старта к цели: {start} -> {}",
+        tail[9]
+    );
+    assert!(
+        tail.iter().all(|product| (product / tail[9] - 1.0).abs() < 0.01),
+        "в установившемся режиме экспозиция стоит: {tail:?}"
+    );
+    rig.finish(&journal);
 }
 
 // ---- блокировка ----
@@ -525,6 +592,7 @@ fn a_lamp_lit_table_in_a_dark_room_converges_to_the_average_light_not_to_the_log
         scene_scale: SCENE_SCALE,
         allow_clipping: false,
         layout: SceneLayout::PerTile(reflectance),
+        stream: RigStream::Reference,
     }) else {
         return;
     };

@@ -66,8 +66,6 @@ pub struct WhiteBalanceReport {
     /// результата не пишется: она ограничена 4000 байтами, а здоровый прогон «нет поля» = «ноль».
     #[serde(skip_serializing_if = "is_zero")]
     pub cold_start_forced: u64,
-    /// Каждый N-й кадр считает статистику (конфиг рендера); на ней стоит AE.
-    pub statistics_every_n_frames: u32,
     /// Ответов источника отброшено владельцем как чужих (гонки). Ноль в строку результата не пишется (см. выше).
     #[serde(skip_serializing_if = "is_zero")]
     pub stale_answers: u64,
@@ -89,7 +87,6 @@ impl WhiteBalanceReport {
             hidden_frames: render.hidden_frames_cold_start,
             max_hidden_frames,
             cold_start_forced: render.cold_start_forced,
-            statistics_every_n_frames: render.statistics_every_n_frames,
             stale_answers: owner.stale_answers,
         }
     }
@@ -211,7 +208,6 @@ impl WhiteBalanceReport {
             hidden_frames: 3,
             max_hidden_frames: 20,
             cold_start_forced: 0,
-            statistics_every_n_frames: 4,
             stale_answers: 0,
         }
     }

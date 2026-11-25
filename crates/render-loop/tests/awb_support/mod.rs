@@ -153,6 +153,39 @@ pub fn calibration() -> Vec<ColorCalibrationSet> {
     ]
 }
 
+/// Доля зелёной строки, вычитаемая из красной (подобрана так, что красный остаётся положительным у тёплой лампы
+/// 2800 К и становится отрицательным у холодного края таблицы локуса, 12000 К).
+const GREEN_SHARE_TAKEN_FROM_RED: f64 = 0.6;
+
+/// Матрица, у которой из красной строки вычтена доля зелёной: отклик красного канала `R − k·G`. Свет, где красного
+/// мало (холодный, синий), даёт отрицательный красный, то есть «нейтрали камеры» для него нет.
+fn red_row_minus_green_share(matrix: Matrix3x3) -> Matrix3x3 {
+    let Matrix3x3(mut cells) = matrix;
+    for column in 0..3 {
+        let (red, green) = (cells[column], cells[3 + column]);
+        assert_eq!(red.denominator, green.denominator, "одинаковые знаменатели строк");
+        cells[column].numerator =
+            red.numerator - (f64::from(green.numerator) * GREEN_SHARE_TAKEN_FROM_RED).round() as i32;
+    }
+    Matrix3x3(cells)
+}
+
+/// Поток, чья калибровка цвета годится для ISP при тёплой лампе (нейтраль 2800 К существует), но НЕ даёт таблицу
+/// локуса: для холодного края таблицы (12000 К) нейтраль камеры не определена. Цвет потока «негодный» для оценки
+/// света, а замер экспозиции по тем же плиткам статистики от цвета не зависит.
+pub fn stream_passport_without_locus_table() -> StreamPassport {
+    StreamPassport {
+        color_calibration: calibration()
+            .into_iter()
+            .map(|set| ColorCalibrationSet {
+                color_matrix: red_row_minus_green_share(set.color_matrix),
+                ..set
+            })
+            .collect(),
+        ..stream_passport()
+    }
+}
+
 pub fn stream_passport() -> StreamPassport {
     StreamPassport {
         camera: camera_id("2"),

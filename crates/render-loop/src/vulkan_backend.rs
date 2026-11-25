@@ -432,7 +432,7 @@ impl VulkanDisplayBackend {
         let mut snapshot = stats.snapshot(
             &settings,
             camera::HeadroomLiveState::default(),
-            WhiteBalanceDiagnostics::idle(self.config.viewfinder.white_balance.statistics_every_n_frames),
+            WhiteBalanceDiagnostics::idle(),
         );
         snapshot.ui_overlay = self.ui_overlay.snapshot();
         snapshot.scopes.withdrawals = self.scope_withdrawals;

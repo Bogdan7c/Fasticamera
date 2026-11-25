@@ -13,11 +13,11 @@ use camera_contract::three_a::AeAfLock;
 use camera_core::backend::{BackendFailure, RequestFailure};
 use camera_core::three_a_status::FocusProgress;
 use isp_vulkan::viewfinder::IspStageSet;
-use render_loop::config::WhiteBalanceConfig;
+use render_loop::config::AutoExposureConfig;
 use render_loop::viewfinder::{
-    AutoExposureCounters, AutoExposureDiagnostics, HeadroomBenchDiagnostics, ViewfinderColorSpace, ViewfinderCounters,
-    ViewfinderDiagnostics, ViewfinderExtent, ViewfinderGpuTimes, ViewfinderPainter, ViewfinderStorage,
-    WhiteBalanceDiagnostics, WhiteDelta, WhiteReading,
+    AutoExposureCounters, AutoExposureDiagnostics, HeadroomBenchDiagnostics, StatisticsDiagnostics,
+    ViewfinderColorSpace, ViewfinderCounters, ViewfinderDiagnostics, ViewfinderExtent, ViewfinderGpuTimes,
+    ViewfinderPainter, ViewfinderStorage, WhiteBalanceDiagnostics, WhiteDelta, WhiteReading,
 };
 
 use super::*;
@@ -82,8 +82,14 @@ fn viewfinder_diagnostics() -> ViewfinderDiagnostics {
         gpu_time: ViewfinderGpuTimes::default(),
         counters: ViewfinderCounters::default(),
         headroom: HeadroomBenchDiagnostics::default(),
-        white_balance: WhiteBalanceDiagnostics::idle(WhiteBalanceConfig::default().statistics_every_n_frames),
+        white_balance: WhiteBalanceDiagnostics::idle(),
         auto_exposure: None,
+        // Как настоящий рендер с нашим AE: расписание статистики кадра есть, период — из конфига AE.
+        statistics: Some(StatisticsDiagnostics {
+            every_n_frames: AutoExposureConfig::default().statistics_every_n_frames,
+            requested: 0,
+            skipped_by_period: 0,
+        }),
         ui_overlay: render_loop::ui_overlay::UiOverlayDiagnostics::default(),
         continuity: Default::default(),
     }
@@ -114,7 +120,9 @@ impl ThreeAMirror {
                     viewfinder.counters.frames_processed = presented + hidden;
                     viewfinder.counters.frames_hidden_cold_start = hidden;
                     viewfinder.counters.bracket_frames_skipped = skipped;
-                    let period = u64::from(viewfinder.white_balance.statistics_every_n_frames.max(1));
+                    let period = viewfinder
+                        .statistics
+                        .map_or(1, |schedule| u64::from(schedule.every_n_frames.max(1)));
                     viewfinder.counters.statistics_published = (presented + hidden) / period;
                     let white_balance = &mut viewfinder.white_balance;
                     white_balance.hidden_frames_cold_start = hidden;

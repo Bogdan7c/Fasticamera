@@ -358,18 +358,44 @@ pub struct Rig {
 }
 
 pub fn start_rig() -> Option<Rig> {
-    // Второй режим набора (`FASTICAMERA_TEST_UNCHANGED_POLICY=skip`) переводит и этот стенд под пропуск тиков.
-    let policy = if std::env::var("FASTICAMERA_TEST_UNCHANGED_POLICY").as_deref() == Ok("skip") {
+    start_rig_with_policy(default_unchanged_policy())
+}
+
+/// Политика пропуска тиков стенда по умолчанию: второй режим набора (`FASTICAMERA_TEST_UNCHANGED_POLICY=skip`)
+/// переводит под пропуск тиков и стенды, которые политику сами не выбирают.
+pub fn default_unchanged_policy() -> render_loop::config::UnchangedFramePolicy {
+    if std::env::var("FASTICAMERA_TEST_UNCHANGED_POLICY").as_deref() == Ok("skip") {
         render_loop::config::UnchangedFramePolicy::SkipWhenUnchanged
     } else {
         render_loop::config::UnchangedFramePolicy::AlwaysRedraw
-    };
-    start_rig_with_policy(policy)
+    }
 }
 
 /// Стенд с заданной политикой пропуска тиков без изменений (решение 214): тот же поток рендера, бэкенд и камера.
 /// Бэкенд берётся без подмены политики окружением: политика — ровно `policy`.
 pub fn start_rig_with_policy(policy: render_loop::config::UnchangedFramePolicy) -> Option<Rig> {
+    start_rig_wired(policy, AutoExposureWiring::Off)
+}
+
+/// Стенд с нашим AE на потоке рендера. Статистика кадра нужна только AE (без него стадия не считается, ленты
+/// публикаций пусты), поэтому тесты, которые проверяют публикации статистики, берут этот стенд, а не прежний.
+pub fn start_rig_with_auto_exposure(policy: render_loop::config::UnchangedFramePolicy) -> Option<Rig> {
+    start_rig_wired(policy, AutoExposureWiring::On)
+}
+
+/// Подключён ли к стенду наш AE.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoExposureWiring {
+    /// Вендорский AE: потребителей статистики кадра нет.
+    Off,
+    /// Наш AE.
+    On,
+}
+
+fn start_rig_wired(
+    policy: render_loop::config::UnchangedFramePolicy,
+    auto_exposure: AutoExposureWiring,
+) -> Option<Rig> {
     let render_config = RenderLoopConfig {
         diagnostics_poll_interval_ms: 20,
         unchanged_frame: render_loop::config::UnchangedFrameConfig {
@@ -401,6 +427,13 @@ pub fn start_rig_with_policy(policy: render_loop::config::UnchangedFramePolicy) 
         }),
         render_loop::viewfinder::WhiteLinks::default(),
     )?;
+    let backend = match auto_exposure {
+        AutoExposureWiring::Off => backend,
+        AutoExposureWiring::On => backend.with_auto_exposure(render_loop::viewfinder::AutoExposureLinks {
+            directives: camera_contract::three_a::DirectiveSlot::new(),
+            proposals: camera_contract::auto_exposure::ExposureProposalChannel::new(),
+        }),
+    };
     let context = backend.context().clone();
     let awb = backend.awb_statistics();
     let handle = RenderLoop::spawn(RenderLoopParts {

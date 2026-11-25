@@ -10,11 +10,11 @@ use std::thread::{self, JoinHandle};
 
 use camera_contract::three_a::ThreeAProfile;
 use isp_vulkan::viewfinder::IspStageSet;
-use render_loop::config::WhiteBalanceConfig;
+use render_loop::config::AutoExposureConfig;
 use render_loop::viewfinder::{
-    AutoExposureCounters, AutoExposureDiagnostics, HeadroomBenchDiagnostics, ViewfinderColorSpace, ViewfinderCounters,
-    ViewfinderDiagnostics, ViewfinderExtent, ViewfinderGpuTimes, ViewfinderPainter, ViewfinderStorage,
-    WhiteBalanceDiagnostics,
+    AutoExposureCounters, AutoExposureDiagnostics, HeadroomBenchDiagnostics, StatisticsDiagnostics,
+    ViewfinderColorSpace, ViewfinderCounters, ViewfinderDiagnostics, ViewfinderExtent, ViewfinderGpuTimes,
+    ViewfinderPainter, ViewfinderStorage, WhiteBalanceDiagnostics,
 };
 use shell_contract::commands::CommandOutcome;
 use shell_contract::operator_prompt::OperatorPromptKind;
@@ -77,8 +77,14 @@ fn viewfinder_without_ae() -> ViewfinderDiagnostics {
         gpu_time: ViewfinderGpuTimes::default(),
         counters: ViewfinderCounters::default(),
         headroom: HeadroomBenchDiagnostics::default(),
-        white_balance: WhiteBalanceDiagnostics::idle(WhiteBalanceConfig::default().statistics_every_n_frames),
+        white_balance: WhiteBalanceDiagnostics::idle(),
         auto_exposure: None,
+        // Как настоящий рендер с нашим AE: расписание статистики кадра есть, период — из конфига AE.
+        statistics: Some(StatisticsDiagnostics {
+            every_n_frames: AutoExposureConfig::default().statistics_every_n_frames,
+            requested: 0,
+            skipped_by_period: 0,
+        }),
         ui_overlay: render_loop::ui_overlay::UiOverlayDiagnostics::default(),
         continuity: Default::default(),
     }

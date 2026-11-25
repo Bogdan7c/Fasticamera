@@ -39,19 +39,18 @@ fn applied() -> WhiteRequestOutcome {
 
 #[test]
 fn a_fresh_engine_reports_the_fallback_light_and_no_requests() {
-    let report = WhiteBalanceReport::of(&WhiteBalanceDiagnostics::idle(4), &WhiteStatus::initial(), 20);
+    let report = WhiteBalanceReport::of(&WhiteBalanceDiagnostics::idle(), &WhiteStatus::initial(), 20);
     assert_eq!(report.origin, "fallback");
     assert_eq!(report.white.kelvin, 5_600.0);
     assert_eq!(report.request.state, "none");
     assert_eq!(report.request.id, None);
     assert_eq!(report.applied, None, "рендер указаний ещё не получил");
-    assert_eq!(report.statistics_every_n_frames, 4);
     assert!(!report.cold_start_pending);
 }
 
 #[test]
 fn phone_white_reports_owner_value_origin_request_outcome_render_state_and_hal_reference() {
-    let mut diagnostics = WhiteBalanceDiagnostics::idle(4);
+    let mut diagnostics = WhiteBalanceDiagnostics::idle();
     diagnostics.applied_white = Some(WhiteReading {
         temperature_kelvin: 3_199.6,
         duv: 0.003_456_7,
@@ -122,7 +121,7 @@ fn every_request_outcome_has_a_distinct_name_in_the_report() {
     ]
     .into_iter()
     .map(|outcome| {
-        WhiteBalanceReport::of(&WhiteBalanceDiagnostics::idle(4), &phone_status(outcome), 20)
+        WhiteBalanceReport::of(&WhiteBalanceDiagnostics::idle(), &phone_status(outcome), 20)
             .request
             .state
     })
@@ -149,7 +148,7 @@ fn a_waiting_request_is_reported_as_waiting_and_not_as_applied() {
         request: WhiteRequestId(3),
         source: WhiteSourceId::PHONE,
     };
-    let report = WhiteBalanceReport::of(&WhiteBalanceDiagnostics::idle(4), &owner, 20);
+    let report = WhiteBalanceReport::of(&WhiteBalanceDiagnostics::idle(), &owner, 20);
     assert_eq!(report.request.state, "waiting");
     assert_eq!(report.request.id, Some(3));
     assert!(!report.request_applied());
@@ -157,18 +156,18 @@ fn a_waiting_request_is_reported_as_waiting_and_not_as_applied() {
 
 #[test]
 fn verdict_accepts_phone_white_with_applied_request_and_rejects_everything_else() {
-    let good = WhiteBalanceReport::of(&WhiteBalanceDiagnostics::idle(4), &phone_status(applied()), 20);
+    let good = WhiteBalanceReport::of(&WhiteBalanceDiagnostics::idle(), &phone_status(applied()), 20);
     assert!(white_taken_from_phone_violations(&good).is_empty());
 
     // Запасной свет: телефон не ответил.
-    let fallback = WhiteBalanceReport::of(&WhiteBalanceDiagnostics::idle(4), &WhiteStatus::initial(), 20);
+    let fallback = WhiteBalanceReport::of(&WhiteBalanceDiagnostics::idle(), &WhiteStatus::initial(), 20);
     let violations = white_taken_from_phone_violations(&fallback);
     assert_eq!(violations.len(), 1, "{violations:?}");
     assert!(violations[0].contains("белая не взята у телефона"), "{violations:?}");
 
     // Белая телефонная, но заявка закончилась отказом.
     let refused = WhiteBalanceReport::of(
-        &WhiteBalanceDiagnostics::idle(4),
+        &WhiteBalanceDiagnostics::idle(),
         &phone_status(WhiteRequestOutcome::TimedOut),
         20,
     );
@@ -178,7 +177,7 @@ fn verdict_accepts_phone_white_with_applied_request_and_rejects_everything_else(
     );
 
     // Холодный старт не кончился.
-    let mut hidden = WhiteBalanceDiagnostics::idle(4);
+    let mut hidden = WhiteBalanceDiagnostics::idle();
     hidden.cold_start = ColdStartState::Pending { hidden: 1 };
     let pending = WhiteBalanceReport::of(&hidden, &phone_status(applied()), 20);
     let violations = white_taken_from_phone_violations(&pending);

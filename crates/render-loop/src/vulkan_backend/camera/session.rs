@@ -45,6 +45,7 @@ use isp_model::lens_shading::LensShadingControl;
 use isp_model::look::model::LookModelSettings;
 use isp_vulkan::viewfinder::ViewfinderGeometry;
 use raw_frame_stream::{RawFrameLease, ViewfinderFrames};
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 pub use self::acquired::{AcquiredFrame, FrameDisposition};
@@ -62,7 +63,7 @@ use super::lease::{FrameChange, LeaseLedger};
 use super::ownership::OwnershipPlan;
 use super::pipelines::{CameraPipelines, IspPresentation};
 use super::settings::ViewfinderSettings;
-use super::statistics_schedule::StatisticsDecision;
+use super::statistics_schedule::{StatisticsDecision, StatisticsSchedule};
 use super::still::StillFeedRecorder;
 use super::submissions::SubmissionTracker;
 use super::ui_state::UiOverlayFrame;
@@ -158,6 +159,8 @@ pub struct CameraSessionParts<'a> {
     pub white_balance: WhiteBalanceParts,
     /// Наш AE: настройки и ящики движка (`None` — вендорский AE, подтяжки и предложений нет).
     pub auto_exposure: Option<AutoExposureParts>,
+    /// Установившийся период статистики кадра (`viewfinder.auto_exposure.statistics_every_n_frames`, 1 — на каждом).
+    pub statistics_every_n_frames: u32,
     /// Стенд V4: настройки конвейера, слоты кольца, включён ли.
     pub headroom: HeadroomBenchParts,
     /// Ручки тона видоискателя (`viewfinder.tone`, уже проверены при старте).
@@ -195,6 +198,8 @@ pub struct CameraSession {
     white: WhiteBalanceRunner,
     /// Наш AE (сессия 08a): остаточная подтяжка ISP, замер по статистике, предложения движку. `None` — выключен.
     exposure: Option<ExposureRunner>,
+    /// Расписание статистики кадра на GPU: единственный владелец решения «считать ли её на этом кадре».
+    statistics: StatisticsSchedule,
     /// В изображении видоискателя лежит актуальный кадр, его можно перекомпоновать. Сбрасывается
     /// чёрным кадром, остановкой потока, сменой рисовальщика и неудачей ISP.
     isp_image_shown: bool,
@@ -230,6 +235,7 @@ impl CameraSession {
             awb_feed,
             white_balance,
             auto_exposure,
+            statistics_every_n_frames,
             headroom,
             tone,
             lens_shading,
@@ -267,6 +273,12 @@ impl CameraSession {
                 }));
             }
         };
+        let Some(statistics_period) = NonZeroU32::new(statistics_every_n_frames) else {
+            return Err(Box::new(CameraSessionFailure {
+                error: CameraSessionError::StatisticsPeriod,
+                viewfinder,
+            }));
+        };
         let export = match ExportableSemaphore::new(context) {
             Ok(export) => export,
             Err(error) => {
@@ -300,6 +312,7 @@ impl CameraSession {
             awb_feed,
             white,
             exposure,
+            statistics: StatisticsSchedule::new(statistics_period),
             isp_image_shown: false,
             slot_frames: Vec::new(),
             slot_frame_indices: Vec::new(),
@@ -334,6 +347,8 @@ impl CameraSession {
         diagnostics.look = Arc::new(self.params.look().clone());
         diagnostics.tone_base = self.params.tone_base_model();
         diagnostics.auto_exposure = self.exposure.as_ref().map(ExposureRunner::diagnostics);
+        // Расписание статистики имеет смысл, пока у неё есть потребитель (AE): без него стадия не считается.
+        diagnostics.statistics = self.exposure.is_some().then(|| self.statistics.diagnostics());
         diagnostics.continuity.holding = self.continuity.is_holding();
         diagnostics
     }
@@ -709,4 +724,7 @@ pub enum CameraSessionError {
     /// Настройки AE отвергнуты.
     #[error(transparent)]
     AutoExposure(#[from] AutoExposureSetupError),
+    /// Период статистики кадра нулевой (конфиг должен был отвергнуть это при старте).
+    #[error("viewfinder.auto_exposure.statistics_every_n_frames должен быть не меньше 1")]
+    StatisticsPeriod,
 }

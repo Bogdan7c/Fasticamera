@@ -220,12 +220,11 @@ fn start() -> Option<Bench> {
         display_color: DisplayColorConfig::SrgbOnly,
         // Композиция на 120 Гц (прокси UI до сессии 11): запасной период пейсинга и показа — 120 Гц.
         preferred_frame_rate_hz: 120.0,
-        // Тест про стенд V4, не про AWB: каждый кадр показывается сразу (без скрытия холодного старта) и
-        // считает статистику (один вариант пайплайна ISP — счёт живых объектов не зависит от прореживания).
+        // Тест про стенд V4, не про белую: каждый кадр показывается сразу (без скрытия холодного старта). Стенд без
+        // нашего AE статистику кадра не считает вовсе, так что вариант пайплайна ISP один на все кадры.
         viewfinder: ViewfinderConfig {
             white_balance: WhiteBalanceConfig {
                 max_hidden_frames: 0,
-                statistics_every_n_frames: 1,
                 ..WhiteBalanceConfig::default()
             },
             ..ViewfinderConfig::default()

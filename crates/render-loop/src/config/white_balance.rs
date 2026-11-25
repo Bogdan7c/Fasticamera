@@ -1,7 +1,8 @@
 //! Секция `viewfinder.white_balance`: настройки нашего AWB на потоке рендера (сессия 08).
 //!
 //! Числа оценки света (таблица, оценщик, контроллер) живут в `scene-estimation`; здесь — то, что решает
-//! поток рендера: сколько кадров нового потока прятать до первой оценки и как часто считать статистику.
+//! поток рендера: сколько кадров нового потока прятать до ответа источника белого. Период статистики кадра — в
+//! `viewfinder.auto_exposure` (статистика нужна AE).
 
 use scene_estimation::config::SceneEstimationConfig;
 use scene_estimation::white_source::phone::PhoneWhiteConfig;
@@ -16,8 +17,6 @@ pub struct WhiteBalanceConfig {
     /// Сколько кадров нового потока без прежней белой сцены обрабатываются, но НЕ показываются, пока нет первой
     /// оценки (решение 65). Предел обязателен: пустая или пересвеченная сцена не должна прятать картинку вечно.
     pub max_hidden_frames: u32,
-    /// Статистика AWB на GPU считается на каждом N-м обработанном кадре (1 — на каждом).
-    pub statistics_every_n_frames: u32,
     /// Показание источников белого (что источник видит сейчас) обновляется на каждом N-м годном кадре (1 — на каждом).
     pub reading_every_frames: u32,
     /// Числа источника белого «телефон» (white-balance 01): когда подсказки автоматики телефона считаются ответом.
@@ -32,16 +31,12 @@ impl Default for WhiteBalanceConfig {
     ///   7–8 кадров ≈ 10–12 кадров). 20 кадров — запас, чтобы лимит не срабатывал раньше сходимости AE; ещё
     ///   ≤ 330 мс чёрного заметно меньше, чем цветной кадр с временной белой.
     ///   Оценка до замера на телефоне: реальное число скрытых кадров меряется в `hidden_frames_cold_start`.
-    /// * `statistics_every_n_frames` 4 → 15 Гц при 60 к/с. Стадия статистики стоила ≈ 55 мА из ≈ 119 мА всего ISP
-    ///   на телефоне (07a); свет сцены меняется медленнее (сглаживание ≥ 0,25 с), 15 Гц даёт не меньше трёх
-    ///   оценок за постоянную времени самого быстрого профиля. Сглаживание при этом идёт на КАЖДЫЙ кадр.
     /// * `reading_every_frames` 15 → 4 раза в секунду при 60 к/с: число на кнопке источника не должно мельтешить
     ///   (автоматика телефона дрожит каждый кадр), а человеку хватает чувствовать свет с запаздыванием в четверть секунды.
     fn default() -> Self {
         Self {
             scene: SceneEstimationConfig::default(),
             max_hidden_frames: 20,
-            statistics_every_n_frames: 4,
             reading_every_frames: 15,
             phone: PhoneWhiteConfig::default(),
         }
@@ -54,9 +49,6 @@ pub enum WhiteBalanceConfigError {
     /// Настройки оценки света отвергнуты.
     #[error("viewfinder.white_balance.scene: {0}")]
     Scene(String),
-    /// Статистику нельзя считать «каждый 0-й» кадр.
-    #[error("viewfinder.white_balance.statistics_every_n_frames должен быть не меньше 1")]
-    StatisticsEveryZero,
     /// Показание нельзя обновлять «каждый 0-й» кадр.
     #[error("viewfinder.white_balance.reading_every_frames должен быть не меньше 1")]
     ReadingEveryZero,
@@ -71,9 +63,6 @@ impl WhiteBalanceConfig {
         self.scene
             .validate()
             .map_err(|error| WhiteBalanceConfigError::Scene(error.to_string()))?;
-        if self.statistics_every_n_frames == 0 {
-            return Err(WhiteBalanceConfigError::StatisticsEveryZero);
-        }
         if self.reading_every_frames == 0 {
             return Err(WhiteBalanceConfigError::ReadingEveryZero);
         }
@@ -88,22 +77,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_are_valid_and_decimate_to_15_hz() {
+    fn defaults_are_valid() {
         let config = WhiteBalanceConfig::default();
         assert_eq!(config.validate(), Ok(()));
-        assert_eq!((config.max_hidden_frames, config.statistics_every_n_frames), (20, 4));
+        assert_eq!(config.max_hidden_frames, 20);
+    }
+
+    #[test]
+    fn the_statistics_period_moved_to_auto_exposure_and_the_old_name_is_rejected() {
+        let error = serde_json::from_str::<WhiteBalanceConfig>(r#"{"statistics_every_n_frames":4}"#)
+            .expect_err("поле переехало в viewfinder.auto_exposure");
+        assert!(error.to_string().contains("statistics_every_n_frames"), "{error}");
     }
 
     #[test]
     fn invalid_values_and_unknown_fields_are_rejected() {
-        let zero_period = WhiteBalanceConfig {
-            statistics_every_n_frames: 0,
-            ..WhiteBalanceConfig::default()
-        };
-        assert_eq!(
-            zero_period.validate(),
-            Err(WhiteBalanceConfigError::StatisticsEveryZero)
-        );
         let zero_reading = WhiteBalanceConfig {
             reading_every_frames: 0,
             ..WhiteBalanceConfig::default()

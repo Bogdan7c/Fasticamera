@@ -211,6 +211,8 @@ impl ViewfinderStats {
             white_balance,
             // Диагностику AE знает только сессия показа (у неё исполнитель): она дописывает поле сама.
             auto_exposure: None,
+            // Расписание статистики знает только сессия показа (его владелец): она дописывает поле сама.
+            statistics: None,
             // UI-проход принадлежит бэкенду, а не сессии: поле дописывает бэкенд (`UiOverlayState::snapshot`).
             ui_overlay: UiOverlayDiagnostics::default(),
             // Идёт ли удержание, знает только сессия показа: она дописывает поле `holding` сама.
@@ -279,7 +281,7 @@ mod tests {
         let snapshot = stats.snapshot(
             &settings(),
             HeadroomLiveState::default(),
-            WhiteBalanceDiagnostics::idle(4),
+            WhiteBalanceDiagnostics::idle(),
         );
         let times = snapshot.gpu_time;
         assert_eq!(
@@ -307,7 +309,7 @@ mod tests {
                 .snapshot(
                     &settings(),
                     HeadroomLiveState::default(),
-                    WhiteBalanceDiagnostics::idle(4),
+                    WhiteBalanceDiagnostics::idle(),
                 )
                 .pipeline_variants
         };
@@ -356,7 +358,7 @@ mod tests {
             .snapshot(
                 &settings(),
                 HeadroomLiveState::default(),
-                WhiteBalanceDiagnostics::idle(4),
+                WhiteBalanceDiagnostics::idle(),
             )
             .counters;
         assert_eq!(counters.params_resolved, 1);

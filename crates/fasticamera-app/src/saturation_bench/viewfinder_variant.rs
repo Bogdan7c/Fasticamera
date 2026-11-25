@@ -113,6 +113,21 @@ mod tests {
             .collect()
     }
 
+    /// Бенч мерит продуктовый ритм статистики: число в `isp-vulkan` обязано совпадать с умолчанием конфига рендера
+    /// (`viewfinder.auto_exposure.statistics_every_n_frames`), иначе замер «как в продукте» перестаёт им быть.
+    #[test]
+    fn the_bench_statistics_period_is_the_render_config_default() {
+        assert_eq!(
+            isp_vulkan::saturation::PRODUCT_AWB_STATISTICS_EVERY_N_FRAMES,
+            render_loop::config::AutoExposureConfig::default().statistics_every_n_frames
+        );
+        assert_eq!(
+            base().awb_statistics_every_n_frames,
+            render_loop::config::AutoExposureConfig::default().statistics_every_n_frames,
+            "продуктовая работа бенча стоит на периоде конфига"
+        );
+    }
+
     #[test]
     fn product_variant_is_the_unchanged_base() {
         let config = configure(ViewfinderVariant::Product, base());

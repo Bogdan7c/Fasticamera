@@ -1,10 +1,10 @@
-//! Привязка слота кольца к кадру и стадии ISP кадра с учётом расписания статистики AWB.
+//! Привязка слота кольца к кадру и стадии ISP кадра с учётом расписания статистики кадра.
 
 use isp_vulkan::viewfinder::{IspStage, IspStageSet};
 
 use super::super::exposure::ExposureSlotFrame;
-use super::super::statistics_schedule::StatisticsDecision;
-use super::super::white_balance::{AwbStream, StatisticsPlan};
+use super::super::statistics_schedule::{StatisticsDecision, StatisticsPlan};
+use super::super::white_balance::AwbStream;
 use crate::viewfinder::AwbFrameIdentity;
 
 /// Чей кадр ISP записал в слот: по этой метке статистика слота публикуется и отдаётся AWB своего потока.
@@ -21,7 +21,7 @@ pub(super) struct SlotFrame {
     pub(super) exposure: Option<ExposureSlotFrame>,
 }
 
-/// Стадии ISP кадра: включённые настройками, без статистики, если общее расписание (AWB + AE) её пропускает.
+/// Стадии ISP кадра: включённые настройками, без статистики, если расписание статистики кадра её пропускает.
 /// Пропуск стадии — это другой вариант пайплайна из кэша `isp-vulkan` (обе версии живут в кэше), а не
 /// пересборка.
 pub(super) fn effective_stages(configured: IspStageSet, statistics: StatisticsPlan) -> IspStageSet {

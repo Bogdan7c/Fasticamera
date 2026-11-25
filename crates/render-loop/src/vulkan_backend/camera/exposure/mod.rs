@@ -44,7 +44,7 @@ use isp_model::exposure::{ExposureGain, LuminanceWeights};
 use isp_model::params::IspParams;
 use isp_model::statistics::AwbStatistics;
 use scene_estimation::error::ConfigError;
-use scene_estimation::executor::FrameTag;
+use scene_estimation::exposure::FrameTag;
 use scene_estimation::exposure::{
     AutoExposureController, CpuExposureMeter, ExposureMeter, ExposureMeteringRequest, ExposureTarget, IngestOutcome,
     MeteringArea, MeteringWeights, MeteringWeightsError, SkippedMeasurement,
@@ -555,7 +555,7 @@ impl ExposureRunner {
             self.counters.cold_start_statistics_frames += 1;
             StatisticsDemand::EveryFrame
         } else {
-            StatisticsDemand::WhenScheduled
+            StatisticsDemand::Periodic
         }
     }
 

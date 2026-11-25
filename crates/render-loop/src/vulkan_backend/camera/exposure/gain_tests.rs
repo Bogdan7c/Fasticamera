@@ -24,10 +24,10 @@ fn statistics_are_demanded_every_frame_only_until_the_first_estimate() {
         harness.step(Some(UNIT_EXPOSURE), &scene).statistics,
         StatisticsDemand::EveryFrame
     );
-    // Первый замер принят на предыдущем шаге: дальше AE довольствуется расписанием AWB.
+    // Первый замер принят на предыдущем шаге: дальше AE довольствуется периодом статистики кадра.
     assert_eq!(
         harness.step(Some(UNIT_EXPOSURE), &scene).statistics,
-        StatisticsDemand::WhenScheduled
+        StatisticsDemand::Periodic
     );
     // Новый тап — новая область, оценки по ней нет: снова «каждый кадр».
     harness.directives.publish(point_directive(0.75, 0.5, 1));
@@ -37,7 +37,7 @@ fn statistics_are_demanded_every_frame_only_until_the_first_estimate() {
     );
     assert_eq!(
         harness.step(Some(UNIT_EXPOSURE), &scene).statistics,
-        StatisticsDemand::WhenScheduled
+        StatisticsDemand::Periodic
     );
 }
 
@@ -57,11 +57,7 @@ fn the_cold_start_demand_is_bounded_when_no_estimate_ever_comes() {
             .count(),
         5
     );
-    assert!(
-        demands[5..]
-            .iter()
-            .all(|demand| *demand == StatisticsDemand::WhenScheduled)
-    );
+    assert!(demands[5..].iter().all(|demand| *demand == StatisticsDemand::Periodic));
     assert_eq!(harness.runner.diagnostics().counters.cold_start_statistics_frames, 5);
 }
 
@@ -73,7 +69,7 @@ fn manual_exposure_never_demands_statistics_every_frame() {
         ..ExposureDirective::DEFAULT
     });
     let demand = harness.step(Some(UNIT_EXPOSURE), &uniform_scene(DARK_VALUE)).statistics;
-    assert_eq!(demand, StatisticsDemand::WhenScheduled);
+    assert_eq!(demand, StatisticsDemand::Periodic);
     assert!(harness.proposals.latest().is_none(), "в ручном режиме предложений нет");
 }
 

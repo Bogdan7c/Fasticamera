@@ -33,7 +33,8 @@ use scope_contract::{ScopeIntent, ScopeKind, ScopeRequest, ScopeScan, Vectorscop
 use scope_model::{HorizontalOrder, ResolvedScope, ScopeCounters, ScopeRule, ShownCodes, accumulate};
 use scope_rig::{
     FRAMES_TO_FLUSH_SLOTS, IdleSource, WARM_UP_FRAMES, apply_scopes, config, flush_frames, install, pipeline_objects,
-    request, request_with_scan, scopes_of, settle, small_model, start, start_without_ui, waveform,
+    request, request_with_scan, scopes_of, settle, small_model, start, start_with_auto_exposure, start_without_ui,
+    waveform,
 };
 use ui_draw::color::Opacity;
 use ui_draw::draw_list::{DrawItem, DrawList, ImageClip, ImageFit, ImageItem, ImageSource, LiveImage};
@@ -124,7 +125,10 @@ fn scopes_do_not_change_the_viewfinder_picture_or_the_awb_statistics() {
     let scenes = [neutral_gray(), reddish(), bluish()];
     let mut runs: Vec<Vec<(Vec<[f32; 4]>, String)>> = Vec::new();
     for with_scopes in [false, true] {
-        let Some(mut bench) = start(&scenes) else { return };
+        // Статистику кадра считает только наш AE: без него публиковать нечего и сравнивать нечего.
+        let Some(mut bench) = start_with_auto_exposure(&scenes) else {
+            return;
+        };
         if with_scopes {
             apply_scopes(&mut bench, ScopeIntent::Show(waveform()));
         }

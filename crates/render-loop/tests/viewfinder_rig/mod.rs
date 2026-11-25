@@ -19,6 +19,7 @@ use super::support::{Journal, fake_surface};
 use super::vulkan_support::{
     assert_no_validation_errors, assert_presented_or_skipped, headless_camera_backend_with_white_or_skip, held_white,
 };
+use camera_contract::auto_exposure::ExposureProposalChannel;
 use camera_contract::capabilities::{LensShading, Rational, RawSupport, SensorLevels, VendorProcessingFlags};
 use camera_contract::capture_result::{CaptureResultMeta, FrameNumber, SensorTimestamp};
 use camera_contract::fixtures::{camera_id, main_wide_camera};
@@ -26,6 +27,7 @@ use camera_contract::frame_passport::{CaptureColorHints, FrameCaptureDetails, St
 use camera_contract::geometry::{PixelRect, PixelSize, SensorOrientation};
 use camera_contract::raw_format::{CfaLayout, MosaicKind, MosaicPattern, RawFormat};
 use camera_contract::stream::{FrameRateMechanism, ReadoutAspect, TargetFrameRate};
+use camera_contract::three_a::DirectiveSlot;
 use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::hardware_buffer_cache::ImportCacheCounters;
 use gpu_vulkan::raw_mosaic_preview::MosaicSource;
@@ -48,6 +50,7 @@ use raw_frame_stream::{
 };
 use render_loop::backend::{DisplayBackend, FrameTiming, PresentTarget};
 use render_loop::config::{RenderLoopConfig, ViewfinderToneConfig};
+use render_loop::viewfinder::AutoExposureLinks;
 use render_loop::vulkan_backend::{
     CameraFrameImporter, CameraImportError, SubmissionSerial, ViewfinderReadback, VulkanDisplayBackend,
 };
@@ -328,7 +331,8 @@ pub fn offer(stream: &RawFrameStream, epoch: StreamEpoch, sensor_ts: i64, sequen
             result: CaptureResultMeta {
                 frame_number: FrameNumber(sequence),
                 sensor_timestamp: Some(SensorTimestamp::from_nanos(sensor_ts)),
-                exposure_time: None,
+                // Выдержка с ISO — то, по чему наш AE (если он подключён) измеряет кадр; без AE ни на что не влияет.
+                exposure_time: Some(std::time::Duration::from_millis(10)),
                 sensitivity_iso: Some(100),
                 reported_frame_duration: None,
                 rolling_shutter_skew: None,
@@ -395,6 +399,15 @@ pub fn assert_image_color(backend: &VulkanDisplayBackend, expected: [f32; 3], wh
 /// Шаг меток сенсора между кадрами стенда (60 к/с).
 const FRAME_STEP_NANOS: i64 = 16_666_667;
 
+/// Подключён ли к стенду наш AE.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoExposureWiring {
+    /// Вендорский AE: на потоке рендера потребителей статистики нет.
+    Off,
+    /// Наш AE на потоке рендера.
+    On,
+}
+
 /// Стенд видоискателя: настоящий бэкенд, поток кадров и `frames` одинаковых кадров сюжета `scene`.
 /// Каждый вызов `show_next_frame` предлагает следующий кадр и доводит его до изображения видоискателя.
 pub struct ViewfinderBench {
@@ -416,6 +429,32 @@ impl ViewfinderBench {
     /// То же, но кадр номер `i` показывает сюжет `scenes[i]`: сквозные тесты приборов отличают «прибор измерил
     /// именно этот кадр» от «прибор измерил какой-то из кадров».
     pub fn start_with_scenes(render_config: &RenderLoopConfig, scenes: &[CellValues]) -> Option<Self> {
+        Self::start_wired(render_config, scenes, AutoExposureWiring::Off)
+    }
+
+    /// То же, что `start`, но с нашим AE на потоке рендера: единственный потребитель статистики кадра (без него
+    /// статистика не считается). Кадры стенда несут выдержку и ISO, поэтому AE их измеряет.
+    pub fn start_with_auto_exposure(
+        render_config: &RenderLoopConfig,
+        scene: CellValues,
+        frames: usize,
+    ) -> Option<Self> {
+        Self::start_with_scenes_and_auto_exposure(render_config, &vec![scene; frames])
+    }
+
+    /// `start_with_scenes` с нашим AE на потоке рендера (см. `start_with_auto_exposure`).
+    pub fn start_with_scenes_and_auto_exposure(
+        render_config: &RenderLoopConfig,
+        scenes: &[CellValues],
+    ) -> Option<Self> {
+        Self::start_wired(render_config, scenes, AutoExposureWiring::On)
+    }
+
+    fn start_wired(
+        render_config: &RenderLoopConfig,
+        scenes: &[CellValues],
+        auto_exposure: AutoExposureWiring,
+    ) -> Option<Self> {
         // `LatestWins`: одиночный кадр показывается сразу; кольцо снимков выключено (тесты про видоискатель).
         let stream = RawFrameStream::new(RawFrameStreamConfig {
             viewfinder_pacing: raw_frame_stream::ViewfinderPacing::LatestWins,
@@ -428,7 +467,7 @@ impl ViewfinderBench {
             .map(|(index, scene)| (frame_timestamp(index), *scene))
             .collect();
         let white = held_white(MANUAL_KELVIN);
-        let mut backend = headless_camera_backend_with_white_or_skip(
+        let backend = headless_camera_backend_with_white_or_skip(
             render_config,
             stream.viewfinder(),
             Box::new(move |context| {
@@ -441,6 +480,13 @@ impl ViewfinderBench {
             }),
             white,
         )?;
+        let mut backend = match auto_exposure {
+            AutoExposureWiring::Off => backend,
+            AutoExposureWiring::On => backend.with_auto_exposure(AutoExposureLinks {
+                directives: DirectiveSlot::new(),
+                proposals: ExposureProposalChannel::new(),
+            }),
+        };
         let journal = Arc::new(Journal::default());
         backend
             .attach(fake_surface(&journal, 1), SURFACE_SIZE)

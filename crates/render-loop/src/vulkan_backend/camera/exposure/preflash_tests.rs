@@ -176,7 +176,7 @@ fn active_preflash_demands_statistics_on_every_frame_and_inactive_does_not() {
             &uniform_scene(0.1)
         )
         .statistics,
-        StatisticsDemand::WhenScheduled
+        StatisticsDemand::Periodic
     );
     publish_flash(
         &harness,
@@ -215,7 +215,7 @@ fn active_preflash_demands_statistics_on_every_frame_and_inactive_does_not() {
             &uniform_scene(0.1)
         )
         .statistics,
-        StatisticsDemand::WhenScheduled
+        StatisticsDemand::Periodic
     );
 }
 

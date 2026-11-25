@@ -8,7 +8,7 @@ use camera_contract::control::ExposureBias;
 use camera_contract::three_a::{MeteringRegion, PointOfInterest, PointRequestId, SensorPoint};
 
 use super::*;
-use crate::executor::FrameTag;
+use crate::exposure::FrameTag;
 use crate::exposure::measurement::{ExposureMeasurement, ExposureMeasurementError};
 use crate::exposure::test_support::{product, test_camera};
 

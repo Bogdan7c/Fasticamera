@@ -51,7 +51,6 @@ def white_balance_report(
         "cold_start_pending": cold_start_pending,
         "hidden_frames": hidden_frames,
         "max_hidden_frames": 20,
-        "statistics_every_n_frames": 4,
         "hal_delta_mired": 5.0,
     }
 
@@ -63,8 +62,10 @@ def viewfinder_report(**overrides: object) -> dict:
         "cpu_copies": 0,
         "gpu_time": {"isp_dispatch": {"samples": 600, "p50_ms": 1.8, "p95_ms": 2.3, "max_ms": 3.0}},
         "look": {"painter": "isp", "all_stages": True, "display_color_space": "display_p3"},
-        # Прореживание статистики: 3600 обработанных кадров, каждый 4-й (900); 3 кадра скрыты на холодном старте AWB.
-        "awb_published": 900,
+        # Прореживание статистики: 3600 обработанных кадров, каждый 4-й (900); 3 кадра скрыты на холодном старте.
+        # Потребитель статистики — наш AE: расписание в разделе frame_statistics (``None`` — AE нет, публикаций нет).
+        "statistics_published": 900,
+        "frame_statistics": {"every_n_frames": 4},
         "frames_processed": 3600,
         "frames_hidden_cold_start": 3,
         "frames_presented": 3597,
@@ -77,7 +78,6 @@ def viewfinder_report(**overrides: object) -> dict:
             "cold_start_pending": False,
             "hidden_frames": 3,
             "max_hidden_frames": 20,
-            "statistics_every_n_frames": 4,
             "hal_delta_mired": 5.0,
         },
         "three_a_companion": {"state": "active", "width": 640, "height": 480},
@@ -141,13 +141,25 @@ class ViewfinderCheckTest(unittest.TestCase):
         self.assertEqual(verdict.exit_code, smoke_wait.EXIT_SCENARIO_FAILED)
         self.assertIn("пространство экрана", verdict.message)
 
-    def test_extra_awb_statistics_of_the_ae_cold_start_are_not_a_failure(self) -> None:
-        # Наш AE на холодном старте считает статистику на каждом кадре (до 30 кадров) и публикует её в ленту AWB:
+    def test_extra_statistics_of_the_ae_cold_start_are_not_a_failure(self) -> None:
+        # Наш AE на холодном старте считает статистику на каждом кадре (до 30 кадров) и публикует её в ленту:
         # публикаций больше, чем frames_processed / period. Проверка нижняя, верхней границы нет.
         for published in (900 + 30, 3600):
             with self.subTest(published=published):
-                verdict = verdict_of("viewfinder", viewfinder_report(awb_published=published))
+                verdict = verdict_of("viewfinder", viewfinder_report(statistics_published=published))
                 self.assertEqual(verdict.exit_code, smoke_wait.EXIT_OK, verdict.message)
+
+    def test_without_our_ae_zero_publications_are_not_a_failure(self) -> None:
+        # Вендорский AE (или AE выключен): потребителей статистики нет, рендер её не считает. Проверка не применяется.
+        report = viewfinder_report(statistics_published=0, frame_statistics=None)
+        verdict = verdict_of("viewfinder", report)
+        self.assertEqual(verdict.exit_code, smoke_wait.EXIT_OK, verdict.message)
+
+    def test_the_statistics_section_is_required_even_without_a_consumer(self) -> None:
+        report = {k: v for k, v in viewfinder_report().items() if k != "frame_statistics"}
+        verdict = verdict_of("viewfinder", report)
+        self.assertEqual(verdict.exit_code, smoke_wait.EXIT_SCENARIO_FAILED)
+        self.assertIn("frame_statistics", verdict.message)
 
     def test_each_rule_is_rechecked(self) -> None:
         cases = {
@@ -155,8 +167,8 @@ class ViewfinderCheckTest(unittest.TestCase):
             "cpu_copies": viewfinder_report(cpu_copies=1),
             "прохода ISP": viewfinder_report(gpu_time={}),
             "рисовальщик": viewfinder_report(look={"painter": "debug_mosaic", "display_color_space": "srgb"}),
-            "AWB": viewfinder_report(awb_published=0),
-            "опубликована 100 раз": viewfinder_report(awb_published=100),
+            "статистика кадра не публиковалась": viewfinder_report(statistics_published=0),
+            "опубликована 100 раз": viewfinder_report(statistics_published=100),
             "раздела white_balance": {k: v for k, v in viewfinder_report().items() if k != "white_balance"},
             "белая не взята у телефона": viewfinder_report(
                 white_balance=white_balance_report(origin="fallback", request_state="unavailable")

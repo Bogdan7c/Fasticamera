@@ -1,14 +1,15 @@
 //! Белая из указания владельца на настоящем драйвере (RADV, полная validation): синтетическая сцена ColorChecker
 //! под лампой 2800 К (камерные значения плиток — из независимой фикстуры `test-assets/scene-estimation`) идёт через
-//! боевой путь: импорт → ISP на GPU → параметры ISP из указания → изображение видоискателя. Старый оценщик
-//! по-прежнему считает статистику (на ней стоит AE), но на картинку не влияет.
+//! боевой путь: импорт → ISP на GPU → параметры ISP из указания → изображение видоискателя. Статистика кадра
+//! нужна только AE: стенд без AE её не считает вовсе (ток стадии не тратится), белая от неё не зависит.
 //!
 //! Доказывается:
 //! * держимая белая лампы: **каждый показанный кадр сбалансирован с первого**, ничего не скрыто;
 //! * без указаний белая временная D65: кадры показываются и заметно цветные (контроль чувствительности);
 //! * подсказки HAL (намеренно неверные) на изображение не влияют: два прогона с разными подсказками дают
 //!   одинаковые пиксели и одинаковую белую;
-//! * кадры серии с брекетингом не показываются, оценщик их не использует, камере возвращаются;
+//! * кадры серии с брекетингом не показываются и камере возвращаются;
+//! * без потребителя (AE выключен) статистика кадра не считается и не публикуется;
 //! * «ровно один раз»: обработано = показано.
 
 #![cfg(not(target_os = "android"))]
@@ -59,7 +60,7 @@ fn run_lamp_scene(hints: CaptureColorHints) -> Option<(Vec<[f32; 4]>, render_loo
 }
 
 #[test]
-fn every_frame_is_balanced_from_the_first_and_the_old_estimator_still_listens_for_ae() {
+fn every_frame_is_balanced_from_the_first_and_without_ae_no_statistics_are_computed() {
     let Some((pixels, diagnostics)) = run_lamp_scene(CaptureColorHints::default()) else {
         return;
     };
@@ -76,17 +77,10 @@ fn every_frame_is_balanced_from_the_first_and_the_old_estimator_still_listens_fo
     );
     assert_eq!(wb.directive_generation, Some(1));
     assert_eq!(wb.frames_with_provisional_white, 0);
-    // Старый оценщик жив (на его расписании стоит AE) и слышит ту же лампу, но на картинку не влияет.
-    assert!(wb.estimates >= 1, "{wb:?}");
-    let estimate = wb.last_estimate.expect("оценка");
-    assert!(
-        (estimate.white.temperature_kelvin - FIXTURE_LIGHT_KELVIN).abs() < 80.0,
-        "{estimate:?}"
-    );
     assert_eq!(wb.table_failure, None);
-    // Прореживание: статистика не на каждом кадре, но до первой оценки была на каждом.
-    assert!(wb.statistics_skipped_by_decimation > 10, "{wb:?}");
-    assert!(wb.statistics_requested >= 2, "{wb:?}");
+    // Потребителей статистики нет (стенд без AE): стадия не считается, публикаций и расписания нет.
+    assert_eq!(diagnostics.statistics, None, "{diagnostics:?}");
+    assert_eq!(counters.statistics_published, 0, "{counters:?}");
     assert!(!pixels.is_empty());
 }
 
@@ -146,7 +140,7 @@ fn wild_hal_colour_hints_change_neither_the_picture_nor_the_white() {
 }
 
 #[test]
-fn bracket_frames_are_not_shown_not_used_by_the_estimator_and_returned_to_the_camera() {
+fn bracket_frames_are_not_shown_not_processed_and_returned_to_the_camera() {
     let Some((mut rig, journal)) = rig_or_skip(
         scene_set(true),
         held_white(FIXTURE_LIGHT_KELVIN),
@@ -175,7 +169,7 @@ fn bracket_frames_are_not_shown_not_used_by_the_estimator_and_returned_to_the_ca
         );
         assert_eq!(shown.gray, None);
     }
-    // Ещё несколько кадров без новых: статистика кадров серии (если бы она считалась) успела бы дойти до оценщика.
+    // Ещё несколько кадров без новых: обработка кадров серии (если бы она была) успела бы проявиться.
     for _ in 0..4 {
         rig.tick();
     }
@@ -186,7 +180,6 @@ fn bracket_frames_are_not_shown_not_used_by_the_estimator_and_returned_to_the_ca
         "ISP кадры серии не обрабатывал"
     );
     assert_eq!(after.white_balance.applied_white, settled_white, "белая не сдвинулась");
-    assert_eq!(after.white_balance.estimates, settled.white_balance.estimates);
     assert_eq!(rig.readback().pixels, settled_pixels, "изображение осталось прежним");
     let returned = rig.returned.0.lock().unwrap_or_else(PoisonError::into_inner).clone();
     for index in 0..3 {

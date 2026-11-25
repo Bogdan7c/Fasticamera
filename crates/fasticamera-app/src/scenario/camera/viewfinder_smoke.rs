@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use super::detail::{EVENTS_IN_REPORT_LIMIT, emit_details};
 use super::engine_watch::RunFailure;
+use super::frame_statistics_report::FrameStatisticsReport;
 use super::raw_stream_samples::LatencySampler;
 use super::result_budget::finish_within_budget;
 use super::viewfinder_metrics::{GpuTimeMs, WindowBaseline, WindowDelta, collect_latency, round2};
@@ -242,6 +243,7 @@ impl SmokeRun {
                     context.gpu.render_config.viewfinder.white_balance.max_hidden_frames,
                 )
             }),
+            frame_statistics: viewfinder.and_then(FrameStatisticsReport::of),
             companion: running.diagnostics_snapshot().three_a_companion,
         }
     }

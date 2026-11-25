@@ -4,6 +4,7 @@ use raw_frame_stream::RawStreamCounters;
 
 use super::*;
 use crate::gpu_services::ValidationState;
+use crate::scenario::camera::frame_statistics_report::FrameStatisticsReport;
 use crate::scenario::camera::raw_stream_samples::LATENCY_MEANING;
 use crate::scenario::camera::viewfinder_metrics::IspCountersDelta;
 use crate::viewfinder_control::PresentTargetSetting;
@@ -120,6 +121,7 @@ pub(in crate::scenario::camera) fn healthy() -> ViewfinderSmokeObservation {
         last_isp_failure: None,
         last_params_failure: None,
         white_balance: Some(working_awb()),
+        frame_statistics: Some(FrameStatisticsReport::four_for_tests()),
         companion: CompanionStreamStatus::Active {
             width: 640,
             height: 480,
@@ -349,7 +351,7 @@ fn every_isp_counter_rule_is_checked() {
     }
     assert_single(
         &violations_of(|observation| observation.window.isp.statistics_published = 0),
-        "AWB",
+        "статистика кадра",
     );
 }
 
@@ -446,7 +448,7 @@ fn summary_fits_the_result_line_budget_and_carries_the_key_numbers() {
     assert_eq!(summary["isp_fps"], 60.0);
     assert_eq!(summary["look"]["display_color_space"], "display_p3");
     assert_eq!(summary["gpu_time"]["isp_dispatch"]["p95_ms"], 2.4);
-    assert_eq!(summary["awb_published"], 900);
+    assert_eq!(summary["statistics_published"], 900);
     assert_eq!(summary["latency"]["p50_ms"], 40.0);
 }
 
@@ -522,26 +524,22 @@ fn worst_case_failure_line_fits_the_logcat_record() {
     );
 }
 
+/// Период, доля и верхняя граница публикаций судит `frame_statistics_report` (там и тесты); здесь — вердикт целиком.
 #[test]
-fn decimated_statistics_pass_and_a_stalled_estimator_fails_with_the_expected_count() {
-    // Здоровый замер: 3600 кадров, каждый 4-й → 900 публикаций.
+fn a_stalled_statistics_feed_fails_the_verdict_with_the_expected_count() {
     assert!(violations_of(|_| {}).is_empty());
-    // Половина от ожидаемого — граница доли 0,5 проходит.
-    assert!(violations_of(|o| o.window.isp.statistics_published = 450).is_empty());
-    // Меньше доли — провал с числами.
     let violations = violations_of(|o| o.window.isp.statistics_published = 100);
-    assert_single(&violations, "статистика AWB опубликована 100 раз");
+    assert_single(&violations, "статистика кадра опубликована 100 раз");
 }
 
-/// С нашим AE на холодном старте рендер считает статистику на каждом кадре до первой оценки (до
-/// `cold_start_every_frame_limit` = 30 кадров), и эти кадры тоже публикуются в ленту AWB. Правило судит только
-/// «не меньше доли от кадров/N», верхней границы нет, поэтому лишние публикации холодного старта не провал.
+/// Без нашего AE (вендорский регулятор) потребителей статистики нет: публикаций 0 — норма, вердикт не краснеет.
 #[test]
-fn extra_statistics_of_the_ae_cold_start_are_not_a_failure() {
-    // Штатное окно: 900 по расписанию плюс 30 кадров холодного старта AE.
-    assert!(violations_of(|o| o.window.isp.statistics_published = 900 + 30).is_empty());
-    // Даже вдвое больше расписания (статистика на каждом втором кадре) верхней границы не нарушает.
-    assert!(violations_of(|o| o.window.isp.statistics_published = 1_800).is_empty());
+fn without_our_ae_zero_statistics_publications_are_not_a_failure() {
+    let violations = violations_of(|o| {
+        o.frame_statistics = None;
+        o.window.isp.statistics_published = 0;
+    });
+    assert!(violations.is_empty(), "{violations:?}");
 }
 
 #[test]

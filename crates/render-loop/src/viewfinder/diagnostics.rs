@@ -15,6 +15,7 @@ use super::control::ViewfinderPainter;
 use super::framing::EffectivePlacement;
 use super::headroom::HeadroomBenchDiagnostics;
 use super::scope_diagnostics::ScopeDiagnostics;
+use super::statistics::StatisticsDiagnostics;
 use super::unchanged_frames::UnchangedFrameCounters;
 use super::white_balance::WhiteBalanceDiagnostics;
 use super::work_suppression::GpuWorkSuppression;
@@ -156,6 +157,9 @@ pub struct ViewfinderDiagnostics {
     pub white_balance: WhiteBalanceDiagnostics,
     /// Наш AE (сессия 08a); `None` — ящики AE не переданы (вендорский AE) или сессии показа нет.
     pub auto_exposure: Option<AutoExposureDiagnostics>,
+    /// Расписание статистики кадра на GPU; `None` — потребителей статистики нет (AE выключен): стадия не
+    /// считается, публикаций нет, и ждать их не надо.
+    pub statistics: Option<StatisticsDiagnostics>,
     /// UI и стекло поверх видоискателя (сессия 11): источник, счётчики, время GPU. Пока источник не
     /// установлен, всё пусто (`UiOverlayDiagnostics::default()`).
     pub ui_overlay: UiOverlayDiagnostics,

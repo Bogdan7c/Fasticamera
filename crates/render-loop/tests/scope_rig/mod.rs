@@ -89,6 +89,13 @@ pub fn start(scenes: &[CellValues]) -> Option<ViewfinderBench> {
     Some(bench)
 }
 
+/// То же, что `start`, но с нашим AE: единственным потребителем статистики кадра (без него она не считается).
+pub fn start_with_auto_exposure(scenes: &[CellValues]) -> Option<ViewfinderBench> {
+    let mut bench = ViewfinderBench::start_with_scenes_and_auto_exposure(&config(), scenes)?;
+    install(&mut bench, Box::new(IdleSource));
+    Some(bench)
+}
+
 pub fn apply_scopes(bench: &mut ViewfinderBench, intent: ScopeIntent) -> ViewfinderCommandOutcome {
     bench
         .backend

@@ -2,24 +2,24 @@
 //!
 //! # Кто чем владеет
 //! * [`WhiteBalanceRunner`] — единственный, кто решает, какая белая идёт в ISP, показывать ли кадр
-//!   (холодный старт) и нужна ли статистика на этом кадре;
+//!   (холодный старт); расписание статистики кадра — не здесь (`statistics_schedule`);
 //! * `applied::AppliedWhite` — применяемая белая: цель владельца, переход по меткам кадров, побитовая цель после него;
 //! * `sources::SourceExecutor` — источники белого из реестра: заявка владельца → ответ в ящик движку;
 //! * `cold_start::ColdStart` — скрытие кадров, пока действует заявка `HideFrames`;
 //! * `scene_estimation::executor::WhiteBalanceEstimator` — старый оценщик (плитки → оценка). Его оценки в
-//!   картинку НЕ идут (`last_estimate` — диагностика), но живы ради предвспышки (`TorchWhiteTracker`) и
-//!   расписания статистики, на котором стоит AE (удалит сессия 03 плана);
+//!   картинку НЕ идут, он жив ТОЛЬКО ради белой светодиода на кадрах предвспышки (`TorchWhiteTracker`;
+//!   удалит сессия 03 плана);
 //! * `DirectiveSlot<WhiteDirective>` — указания владельца белого (`camera-core`).
 //!
 //! # Поток данных
 //! `plan_frame` на каждый НОВЫЙ показываемый кадр камеры (до параметров ISP): свежее указание → привязка к
 //! потоку (источникам `begin_stream`) → сверка заявки и кадр источникам → решение холодного старта → шаг
-//! применяемой белой → расписание статистики. `ingest_statistics` — когда слот с кадром собран после fence:
-//! статистика уходит старому оценщику (для диагностики и предвспышки).
+//! применяемой белой. `ingest_torch_statistics` — когда слот с кадром предвспышки собран после fence: статистика
+//! уходит старому оценщику (белая светодиода); обычные кадры оценщику не отдаются.
 //!
 //! # Инварианты
 //! 1. В ISP идёт только белая из указания владельца (или временная D65, пока указаний не было вовсе). Подсказки
-//!    HAL, оценки старого оценщика — лишь диагностика. Без нового указания белая не меняется ни на бит.
+//!    HAL — лишь диагностика, оценки старого оценщика идут только в белую светодиода вспышки. Без нового указания белая не меняется ни на бит.
 //! 2. Статистика чужого потока оценщику не отдаётся: таблица локуса у каждой камеры своя.
 //! 3. Скрытие кадров ограничено (`max_hidden_frames`) — картинка не прячется вечно.
 
@@ -27,7 +27,6 @@ mod applied;
 mod cold_start;
 mod diagnostics;
 mod hal_white;
-mod schedule;
 mod sources;
 mod torch;
 
@@ -42,15 +41,14 @@ use isp_model::color::chromaticity::Chromaticity;
 use isp_model::color::dng::DngColorProfile;
 use isp_model::color::white_point::CctDuv;
 use isp_model::statistics::AwbStatistics;
-use scene_estimation::estimate::{EstimateOutcome, IlluminantEstimate};
-use scene_estimation::executor::{CpuWhiteBalanceEstimator, EstimationRequest, FrameTag, WhiteBalanceEstimator};
+use scene_estimation::estimate::EstimateOutcome;
+use scene_estimation::executor::{CpuWhiteBalanceEstimator, EstimationRequest, WhiteBalanceEstimator};
+use scene_estimation::exposure::FrameTag;
 use scene_estimation::locus_table::CameraLocusTable;
 
 use self::applied::AppliedWhite;
 use self::cold_start::{ColdStart, ColdStartVerdict};
 use self::hal_white::HalWhiteTracker;
-pub use self::schedule::StatisticsPlan;
-use self::schedule::StatisticsSchedule;
 use self::sources::SourceExecutor;
 use self::torch::TorchWhiteTracker;
 use super::flash_facts::TorchWhite;
@@ -73,8 +71,6 @@ pub struct FramePlan {
     pub white: Chromaticity,
     /// Показывать ли обработанный кадр.
     pub presentation: IspPresentation,
-    /// Нужна ли статистика на этом кадре.
-    pub statistics: StatisticsPlan,
 }
 
 /// Из чего собирается белая сессии показа.
@@ -91,15 +87,6 @@ pub struct WhiteBalanceParts {
 #[error("настройки AWB: {0}")]
 pub struct WhiteBalanceSetupError(pub String);
 
-/// Зачем статистика кадра отдана оценке света.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StatisticsPurpose {
-    /// Обычный кадр видоискателя: оценка только для диагностики.
-    Viewfinder,
-    /// Кадр с фонариком предвспышки: оценка света светодиода.
-    Torch,
-}
-
 /// Привязка к потоку: профиль цвета и таблица локуса считаются один раз на поток.
 struct BoundStream {
     passport: Arc<StreamPassport>,
@@ -111,11 +98,6 @@ struct BoundStream {
 /// Счётчики runner.
 #[derive(Default)]
 struct RunnerCounters {
-    estimates: u64,
-    estimation_failures: u64,
-    estimator_busy: u64,
-    statistics_requested: u64,
-    statistics_skipped: u64,
     statistics_stale: u64,
     hidden_frames: u64,
     forced: u64,
@@ -135,10 +117,8 @@ pub struct WhiteBalanceRunner {
     estimator: Box<dyn WhiteBalanceEstimator + Send>,
     bound: Option<BoundStream>,
     next_stream_id: u64,
-    schedule: StatisticsSchedule,
     hal: HalWhiteTracker,
     hal_white: Option<CctDuv>,
-    last_estimate: Option<IlluminantEstimate>,
     last_failure: Option<String>,
     table_failure: Option<String>,
     /// Белая светодиода по кадрам с фонариком предвспышки (14d).
@@ -171,10 +151,8 @@ impl WhiteBalanceRunner {
             estimator: Box::new(estimator),
             bound: None,
             next_stream_id: 0,
-            schedule: StatisticsSchedule::new(config.statistics_every_n_frames),
             hal: HalWhiteTracker::default(),
             hal_white: None,
-            last_estimate: None,
             last_failure: None,
             table_failure: None,
             torch: TorchWhiteTracker::default(),
@@ -206,7 +184,6 @@ impl WhiteBalanceRunner {
         if applied.provisional {
             self.counters.provisional_frames += 1;
         }
-        let statistics = self.statistics_plan(stream, !shown);
         FramePlan {
             stream,
             white: applied.white,
@@ -215,34 +192,14 @@ impl WhiteBalanceRunner {
             } else {
                 IspPresentation::HideUntilColorKnown
             },
-            statistics,
         }
     }
 
-    /// Статистика кадра слота (собрана после fence): старому оценщику, готовые оценки — в диагностику.
-    pub fn ingest_statistics(&mut self, stream: AwbStream, frame: AwbFrameIdentity, statistics: &AwbStatistics) {
-        self.submit_statistics(stream, frame, statistics, StatisticsPurpose::Viewfinder);
-    }
-
-    /// Статистика кадра с фонариком предвспышки: оценка света светодиода, НЕ влияющая на белую видоискателя.
-    /// Отдаётся независимо от расписания: предвспышка — единицы кадров, и пропустить кадр с фонариком по
-    /// прореживанию значило бы остаться без белой светодиода.
+    /// Статистика кадра с фонариком предвспышки (собрана после fence): оценка света светодиода, НЕ влияющая на
+    /// белую видоискателя. Обычные кадры оценщику больше не отдаются: статистику для них считает расписание
+    /// ради AE, а белую видоискателя ведёт владелец белого. Кадр с фонариком приходит, когда статистика на нём
+    /// посчитана (на предвспышке AE просит её на каждом кадре).
     pub fn ingest_torch_statistics(&mut self, stream: AwbStream, frame: AwbFrameIdentity, statistics: &AwbStatistics) {
-        self.submit_statistics(stream, frame, statistics, StatisticsPurpose::Torch);
-    }
-
-    /// Новые белые светодиода для движка снимков (список становится пустым).
-    pub fn drain_torch_whites(&mut self) -> Vec<TorchWhite> {
-        self.torch.drain()
-    }
-
-    fn submit_statistics(
-        &mut self,
-        stream: AwbStream,
-        frame: AwbFrameIdentity,
-        statistics: &AwbStatistics,
-        purpose: StatisticsPurpose,
-    ) {
         let Some(bound) = self.bound.as_ref().filter(|bound| bound.id == stream) else {
             self.counters.statistics_stale += 1;
             return;
@@ -259,16 +216,16 @@ impl WhiteBalanceRunner {
             statistics,
             table,
         };
-        if purpose == StatisticsPurpose::Torch {
-            self.torch.note_submitted(frame.sensor_timestamp_nanos);
-        }
+        self.torch.note_submitted(frame.sensor_timestamp_nanos);
         if self.estimator.submit(request).is_err() {
-            self.counters.estimator_busy += 1;
-            if purpose == StatisticsPurpose::Torch {
-                self.torch.withdraw(frame.sensor_timestamp_nanos);
-            }
+            self.torch.withdraw(frame.sensor_timestamp_nanos);
         }
         self.collect_estimates(stream);
+    }
+
+    /// Новые белые светодиода для движка снимков (список становится пустым).
+    pub fn drain_torch_whites(&mut self) -> Vec<TorchWhite> {
+        self.torch.drain()
     }
 
     // ---- внутреннее ----
@@ -323,9 +280,7 @@ impl WhiteBalanceRunner {
             .begin_stream(CameraTag::of(&stream.camera), profile.as_ref());
         self.hal.reset();
         self.hal_white = None;
-        self.last_estimate = None;
         self.torch.reset();
-        self.schedule.restart();
         tracing::info!(target: LOG_TARGET, stream = id.0, "новый поток белой");
         self.bound = Some(BoundStream {
             passport: Arc::clone(stream),
@@ -367,53 +322,24 @@ impl WhiteBalanceRunner {
         self.hal_white = self.hal.observe(&details.color, profile);
     }
 
-    /// Расписание статистики: пока кадры спрятаны холодным стартом — на каждом кадре, потом прореживание
-    /// (как было при ожидании первой оценки: на статистике стоит AE).
-    fn statistics_plan(&mut self, stream: AwbStream, hidden_by_cold_start: bool) -> StatisticsPlan {
-        let has_table = self
-            .bound
-            .as_ref()
-            .is_some_and(|bound| bound.id == stream && bound.table.is_some());
-        if !has_table {
-            return StatisticsPlan::Skip;
-        }
-        let plan = self.schedule.decide(hidden_by_cold_start);
-        match plan {
-            StatisticsPlan::Compute => self.counters.statistics_requested += 1,
-            StatisticsPlan::Skip => self.counters.statistics_skipped += 1,
-        }
-        plan
-    }
-
-    /// Забирает готовые оценки у исполнителя: кадры с фонариком — вспышке, остальные — в диагностику.
+    /// Забирает готовые оценки у исполнителя: оценка кадра с фонариком — белая светодиода вспышке.
     fn collect_estimates(&mut self, current: AwbStream) {
         while let Some(done) = self.estimator.poll() {
             if done.frame.stream_generation != current.0 {
                 self.counters.statistics_stale += 1;
                 continue;
             }
-            self.counters.estimates += 1;
-            if self.torch.claim(done.frame.sensor_timestamp_nanos) {
-                // Кадр с фонариком: оценка света светодиода.
-                match (&done.outcome, self.bound.as_ref()) {
-                    (Ok(EstimateOutcome::Estimated(estimate)), Some(bound)) => {
-                        self.torch
-                            .record(&bound.passport, done.frame.sensor_timestamp_nanos, estimate.white);
-                    }
-                    _ => self.torch.record_failure(),
-                }
+            if !self.torch.claim(done.frame.sensor_timestamp_nanos) {
+                // Отдаём оценщику только кадры с фонариком, так что чужая оценка — нарушение контракта: не молчим.
+                self.note_failure("оценка света не относится к кадру с фонариком".to_owned());
                 continue;
             }
-            match done.outcome {
-                Ok(outcome) => {
-                    if let EstimateOutcome::Estimated(estimate) = &outcome {
-                        self.last_estimate = Some(*estimate);
-                    }
+            match (&done.outcome, self.bound.as_ref()) {
+                (Ok(EstimateOutcome::Estimated(estimate)), Some(bound)) => {
+                    self.torch
+                        .record(&bound.passport, done.frame.sensor_timestamp_nanos, estimate.white);
                 }
-                Err(error) => {
-                    self.counters.estimation_failures += 1;
-                    self.note_failure(format!("оценка света: {error}"));
-                }
+                _ => self.torch.record_failure(),
             }
         }
     }
@@ -437,7 +363,7 @@ mod runner_tests;
 #[path = "sources_tests.rs"]
 mod sources_tests;
 #[cfg(test)]
-mod test_support;
+pub(in crate::vulkan_backend::camera) mod test_support;
 #[cfg(test)]
 #[path = "torch_tests.rs"]
 mod torch_tests;

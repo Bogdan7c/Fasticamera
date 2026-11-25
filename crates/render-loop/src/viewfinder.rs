@@ -22,6 +22,7 @@ pub mod diagnostics;
 pub mod framing;
 pub mod headroom;
 pub mod scope_diagnostics;
+pub mod statistics;
 pub mod unchanged_frames;
 pub mod white_balance;
 pub mod white_links;
@@ -45,7 +46,8 @@ pub use framing::{
 };
 pub use headroom::{HeadroomBench, HeadroomBenchDiagnostics, HeadroomPassTime};
 pub use scope_diagnostics::{ScopeCounters, ScopeDiagnostics, ScopeEvents, ScopeResidency, ScopeResources};
+pub use statistics::StatisticsDiagnostics;
 pub use unchanged_frames::{DrawReason, UnchangedFrameCounters};
-pub use white_balance::{ColdStartState, EstimateReading, WhiteBalanceDiagnostics, WhiteDelta, WhiteReading};
+pub use white_balance::{ColdStartState, WhiteBalanceDiagnostics, WhiteDelta, WhiteReading};
 pub use white_links::{WhiteLinks, WhiteSourceBuildError, WhiteSourceRegistry};
 pub use work_suppression::{GpuWorkSuppression, SuppressibleGpuWork};

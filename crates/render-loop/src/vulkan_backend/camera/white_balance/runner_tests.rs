@@ -18,9 +18,8 @@ use isp_model::color::white_point::{CctDuv, Duv, chromaticity_from_cct_duv};
 use scene_estimation::white_source::WhiteInputKind;
 
 use super::test_support::{
-    FAKE_ID, PROVISIONAL, chromaticity_of, clipped_scene, dark_scene, directive_of, fake_registry, frame, frame_at,
-    gray_scene, identity_of, kelvin_of, new_stream, over, phone_hints, process, ready_outcome, request_of, runner,
-    runner_with, runner_without_sources, single_colour_scene,
+    FAKE_ID, PROVISIONAL, chromaticity_of, directive_of, fake_registry, frame, frame_at, gray_scene, identity_of,
+    kelvin_of, new_stream, over, phone_hints, ready_outcome, request_of, runner, runner_with, runner_without_sources,
 };
 use super::*;
 use crate::viewfinder::{WhiteLinks, WhiteSourceRegistry};
@@ -39,11 +38,6 @@ fn without_directives_the_white_is_provisional_and_nothing_is_hidden() {
     let first = runner.plan_frame(&frame(&stream, 0));
     assert_eq!(first.white, PROVISIONAL, "стенд без движка: временная D65");
     assert!(shown(&first), "кадры без движка не прячутся");
-    assert_eq!(
-        first.statistics,
-        StatisticsPlan::Compute,
-        "расписание старого оценщика ждёт первую оценку"
-    );
     let diagnostics = runner.diagnostics();
     assert_eq!(diagnostics.frames_with_provisional_white, 1);
     assert_eq!(diagnostics.applied_white, None);
@@ -51,7 +45,7 @@ fn without_directives_the_white_is_provisional_and_nothing_is_hidden() {
 
 #[test]
 fn the_directive_white_goes_to_the_isp_bit_exactly_whatever_the_scene_and_the_hints_say() {
-    // Наш старый оценщик видит другой свет (под лампой), подсказки телефона — третий: картинка = указание.
+    // Подсказки телефона уходят от указания всё дальше: картинка = указание.
     let (mut runner, links) = runner();
     links
         .directives
@@ -59,20 +53,11 @@ fn the_directive_white_goes_to_the_isp_bit_exactly_whatever_the_scene_and_the_hi
     let stream = new_stream();
     let expected = chromaticity_of(6500.0);
     for index in 0..40 {
-        let plan = process(
-            &mut runner,
-            &frame_at(&stream, index, phone_hints(2800.0 + 100.0 * index as f64)),
-            &gray_scene(2800.0),
-        );
+        let plan = runner.plan_frame(&frame_at(&stream, index, phone_hints(2800.0 + 100.0 * index as f64)));
         assert_eq!(plan.white, expected, "кадр {index}");
         assert!(shown(&plan));
     }
     let diagnostics = runner.diagnostics();
-    assert!(diagnostics.estimates >= 1, "оценщик живёт (на нём AE и предвспышка)");
-    assert!(
-        (diagnostics.last_estimate.expect("оценка").white.temperature_kelvin - 2800.0).abs() < 100.0,
-        "оценщик слышит лампу, но на картинку не влияет"
-    );
     assert!(diagnostics.hal_white.is_some(), "белая HAL — диагностика");
     assert!(diagnostics.hal_delta.is_some());
 }
@@ -96,11 +81,7 @@ fn the_phone_source_answers_the_hide_request_the_owner_closes_it_and_the_picture
         } else {
             2800.0 + f64::from((index % 2) as u8)
         };
-        plans.push(process(
-            &mut runner,
-            &frame_at(&stream, index, phone_hints(kelvin)),
-            &gray_scene(4000.0),
-        ));
+        plans.push(runner.plan_frame(&frame_at(&stream, index, phone_hints(kelvin))));
         if let Some((_, published)) = links.answers.newer_than(None) {
             answer = Some(published);
             break;
@@ -327,14 +308,22 @@ fn statistics_of_a_previous_stream_are_dropped_not_fed_to_the_new_cameras_table(
     let new = new_stream();
     let new_plan = runner.plan_frame(&frame(&new, 0));
     assert_ne!(old_plan.stream, new_plan.stream);
-    runner.ingest_statistics(old_plan.stream, identity_of(&frame(&old, 0)), &gray_scene(2800.0));
+    runner.ingest_torch_statistics(old_plan.stream, identity_of(&frame(&old, 0)), &gray_scene(2800.0));
     let diagnostics = runner.diagnostics();
     assert_eq!(diagnostics.statistics_stale, 1);
-    assert_eq!(diagnostics.estimates, 0, "оценщик чужую статистику не видел");
+    assert_eq!(
+        diagnostics.torch_white_estimates, 0,
+        "оценщик чужую статистику не видел"
+    );
+    assert!(
+        runner.drain_torch_whites().is_empty(),
+        "белой светодиода из чужой статистики нет"
+    );
 }
 
 #[test]
-fn statistics_are_every_frame_while_the_cold_start_hides_and_decimated_after_it() {
+fn a_silent_source_hides_exactly_the_limit_of_frames_and_then_the_picture_shows() {
+    let limit = WhiteBalanceConfig::default().max_hidden_frames;
     let (registry, _board) = fake_registry(WhiteInputKind::ColorHints);
     let (mut runner, links) = runner_with(WhiteBalanceConfig::default(), registry);
     links.directives.publish(directive_of(
@@ -343,78 +332,15 @@ fn statistics_are_every_frame_while_the_cold_start_hides_and_decimated_after_it(
         Some(request_of(1, FAKE_ID, HIDE)),
     ));
     let stream = new_stream();
-    let mut plans = Vec::new();
-    for index in 0..6 {
-        plans.push(process(&mut runner, &frame(&stream, index), &gray_scene(4000.0)).statistics);
-    }
-    assert!(
-        plans.iter().all(|plan| *plan == StatisticsPlan::Compute),
-        "пока кадры скрыты — на каждом"
-    );
-    // Владелец закрыл заявку: дальше прореживание, период отсчитывается от последнего кадра со статистикой.
-    links
-        .directives
-        .publish(directive_of(4000.0, WhiteTransition::Immediate, None));
-    plans.clear();
-    for index in 6..19 {
-        plans.push(process(&mut runner, &frame(&stream, index), &gray_scene(4000.0)).statistics);
-    }
-    let computed: Vec<usize> = plans
-        .iter()
-        .enumerate()
-        .filter(|(_, plan)| **plan == StatisticsPlan::Compute)
-        .map(|(index, _)| index)
+    let shown_frames: Vec<bool> = (0..i64::from(2 * limit))
+        .map(|index| shown(&runner.plan_frame(&frame(&stream, index))))
         .collect();
-    assert_eq!(computed, vec![3, 7, 11], "каждый 4-й кадр после последнего скрытого");
-    let diagnostics = runner.diagnostics();
-    assert_eq!(diagnostics.statistics_every_n_frames, 4);
-    assert!(diagnostics.estimates >= 1);
-}
-
-#[test]
-fn statistics_are_decimated_at_once_when_nothing_is_hidden() {
-    let (mut runner, links) = runner();
-    links
-        .directives
-        .publish(directive_of(4000.0, WhiteTransition::Immediate, None));
-    let stream = new_stream();
-    let mut computed = Vec::new();
-    for index in 0..13 {
-        if process(&mut runner, &frame(&stream, index), &gray_scene(4000.0)).statistics == StatisticsPlan::Compute {
-            computed.push(index);
-        }
-    }
-    assert_eq!(computed, vec![0, 4, 8, 12]);
-}
-
-#[test]
-fn a_blank_scene_never_hides_the_picture_nor_keeps_statistics_on_every_frame_forever() {
-    let limit = WhiteBalanceConfig::default().max_hidden_frames;
-    for (name, scene) in [
-        ("тёмная", dark_scene()),
-        ("пересвеченная", clipped_scene()),
-        ("одноцветная", single_colour_scene()),
-    ] {
-        let (registry, _board) = fake_registry(WhiteInputKind::ColorHints);
-        let (mut runner, links) = runner_with(WhiteBalanceConfig::default(), registry);
-        links.directives.publish(directive_of(
-            4000.0,
-            WhiteTransition::Immediate,
-            Some(request_of(1, FAKE_ID, HIDE)),
-        ));
-        let stream = new_stream();
-        let (mut every_frame, mut hidden) = (0, 0);
-        for index in 0..i64::from(2 * limit) {
-            let plan = process(&mut runner, &frame(&stream, index), &scene);
-            hidden += u32::from(!shown(&plan));
-            every_frame += u32::from(plan.statistics == StatisticsPlan::Compute);
-        }
-        assert_eq!(hidden, limit, "{name}: источник молчит, скрыто ровно предел");
-        assert!(
-            every_frame < 2 * limit,
-            "{name}: после предела расписание вернулось к прореживанию"
-        );
-    }
+    let hidden = shown_frames.iter().filter(|shown| !**shown).count();
+    assert_eq!(hidden, limit as usize, "источник молчит, скрыто ровно предел");
+    assert!(
+        shown_frames[limit as usize..].iter().all(|shown| *shown),
+        "после предела кадры показываются"
+    );
 }
 
 #[test]
@@ -435,7 +361,7 @@ fn frames_without_metadata_get_the_directive_white_and_are_shown() {
 }
 
 #[test]
-fn a_stream_without_colour_calibration_still_gets_the_directive_white_and_reports_why_the_estimator_is_off() {
+fn a_stream_without_colour_calibration_still_gets_the_directive_white_and_reports_why_the_torch_estimator_is_off() {
     let (mut runner, links) = runner();
     links
         .directives
@@ -445,11 +371,6 @@ fn a_stream_without_colour_calibration_still_gets_the_directive_white_and_report
     let stream = Arc::new(passport);
     let plan = runner.plan_frame(&frame(&stream, 0));
     assert!(shown(&plan));
-    assert_eq!(
-        plan.statistics,
-        StatisticsPlan::Skip,
-        "статистика без таблицы бесполезна"
-    );
     assert_eq!(plan.white, chromaticity_of(4000.0));
     assert!(runner.diagnostics().table_failure.is_some());
 }
@@ -542,22 +463,14 @@ fn the_phone_reading_reaches_the_board_without_making_an_answer() {
         .directives
         .publish(directive_of(5600.0, WhiteTransition::Immediate, None));
     for index in 0..5 {
-        process(
-            &mut runner,
-            &frame_at(&stream, index, phone_hints(6500.0)),
-            &gray_scene(4000.0),
-        );
+        runner.plan_frame(&frame_at(&stream, index, phone_hints(6500.0)));
         assert_eq!(
             links.readings.latest_of(WhiteSourceId::PHONE),
             Some(WhiteReading::NotMeasuredYet),
             "белая прошлого сеанса неподвижна: числа нет, кадр {index}"
         );
     }
-    process(
-        &mut runner,
-        &frame_at(&stream, 5, phone_hints(2800.0)),
-        &gray_scene(4000.0),
-    );
+    runner.plan_frame(&frame_at(&stream, 5, phone_hints(2800.0)));
     let Some(WhiteReading::Measured { white }) = links.readings.latest_of(WhiteSourceId::PHONE) else {
         panic!("после сдвига показание измерено");
     };
@@ -565,11 +478,7 @@ fn the_phone_reading_reaches_the_board_without_making_an_answer() {
     assert_eq!(links.answers.newer_than(None), None, "показание ответом не стало");
     assert_eq!(runner.diagnostics().answers_published, 0);
     // Новый поток (другой Arc паспорта): прежнее число забыто сразу, до первого кадра с подсказкой.
-    process(
-        &mut runner,
-        &frame_at(&new_stream(), 6, CaptureColorHints::default()),
-        &gray_scene(4000.0),
-    );
+    runner.plan_frame(&frame_at(&new_stream(), 6, CaptureColorHints::default()));
     assert_eq!(
         links.readings.latest_of(WhiteSourceId::PHONE),
         Some(WhiteReading::NotMeasuredYet)

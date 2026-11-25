@@ -16,7 +16,7 @@ use camera_contract::auto_exposure::{AppliedExposure, ProductReach};
 use camera_contract::capture_result::SensorTimestamp;
 use camera_contract::stream::ReadoutAspect;
 use camera_contract::three_a::{MeteringRegion, PointRequestId, SensorPoint};
-use scene_estimation::executor::SubmitError;
+use scene_estimation::exposure::SubmitError;
 use scene_estimation::exposure::{CompletedExposureMeasurement, CpuExposureMeter};
 
 use super::test_support::*;
@@ -267,7 +267,7 @@ fn a_region_outside_the_sixteen_by_nine_band_is_skipped_with_a_counter_and_stops
     assert_eq!((counters.skipped_area_unavailable, counters.accepted), (2, 0));
     assert_eq!(
         second.statistics,
-        StatisticsDemand::WhenScheduled,
+        StatisticsDemand::Periodic,
         "оценки не будет: статистику каждый кадр не просим"
     );
 }

@@ -22,7 +22,8 @@ use scene_estimation::config::{EstimatorConfig, LocusTableConfig, ReductionConfi
 use scene_estimation::controller::{IngestOutcome, WhiteBalanceController};
 use scene_estimation::estimate::{EstimateOutcome, IlluminantEstimate};
 use scene_estimation::estimator::estimate_scene_light;
-use scene_estimation::executor::{CpuWhiteBalanceEstimator, EstimationRequest, FrameTag, WhiteBalanceEstimator};
+use scene_estimation::executor::{CpuWhiteBalanceEstimator, EstimationRequest, WhiteBalanceEstimator};
+use scene_estimation::exposure::FrameTag;
 use scene_estimation::locus_table::CameraLocusTable;
 use support::{Scene, load_scenes};
 

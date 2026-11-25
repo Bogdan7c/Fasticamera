@@ -12,7 +12,10 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use super::awb_support::{FRAME_SIZE, FakeFrame, Returned, fixture_tiles, mosaic_from_tiles, stream_passport};
+use super::awb_support::{
+    FRAME_SIZE, FakeFrame, Returned, fixture_tiles, mosaic_from_tiles, stream_passport,
+    stream_passport_without_locus_table,
+};
 use super::support::{Journal, fake_surface};
 use super::vulkan_support::{
     assert_no_validation_errors, assert_presented_or_skipped, headless_camera_backend_with_white_or_skip, held_white,
@@ -199,6 +202,17 @@ pub struct RigSetup {
     pub allow_clipping: bool,
     /// Как яркость распределена по плиткам кадра.
     pub layout: SceneLayout,
+    /// Какой поток камеры видит стенд.
+    pub stream: RigStream,
+}
+
+/// Поток камеры стенда AE.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RigStream {
+    /// Обычный поток: калибровка цвета даёт и параметры ISP, и таблицу локуса.
+    Reference,
+    /// Калибровка даёт параметры ISP, но таблицу локуса построить нельзя (цвет потока «негодный» для оценки света).
+    WithoutLocusTable,
 }
 
 /// Распределение яркости сцены по плиткам статистики (сетка 32×24 = кадр стенда).
@@ -229,6 +243,7 @@ pub fn rig_or_skip(auto_exposure: Option<AutoExposureConfig>) -> Option<(AeRig, 
         scene_scale: SCENE_SCALE,
         allow_clipping: false,
         layout: SceneLayout::Uniform,
+        stream: RigStream::Reference,
     })
 }
 
@@ -241,6 +256,7 @@ pub fn rig_with(setup: RigSetup) -> Option<(AeRig, Arc<Journal>)> {
         scene_scale,
         allow_clipping,
         layout,
+        stream: rig_stream,
     } = setup;
     let enabled = auto_exposure.is_some();
     let render_config = RenderLoopConfig {
@@ -284,7 +300,11 @@ pub fn rig_with(setup: RigSetup) -> Option<(AeRig, Arc<Journal>)> {
     backend
         .attach(fake_surface(&journal, 1), SURFACE_SIZE)
         .expect("surface присоединяется");
-    let epoch = stream.producer().begin_stream(Arc::new(stream_passport())).epoch;
+    let passport = match rig_stream {
+        RigStream::Reference => stream_passport(),
+        RigStream::WithoutLocusTable => stream_passport_without_locus_table(),
+    };
+    let epoch = stream.producer().begin_stream(Arc::new(passport)).epoch;
     let tile = fixture_tiles(scene)[WHITE_TILE];
     let brightest = tile.into_iter().fold(f64::MIN, f64::max);
     Some((

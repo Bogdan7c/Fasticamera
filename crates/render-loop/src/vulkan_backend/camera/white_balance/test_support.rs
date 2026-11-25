@@ -53,7 +53,7 @@ fn calibration() -> Vec<ColorCalibrationSet> {
 }
 
 /// Новый поток (каждый вызов — новый `Arc`, то есть новая сессия камеры).
-pub(super) fn new_stream() -> Arc<StreamPassport> {
+pub(in crate::vulkan_backend::camera) fn new_stream() -> Arc<StreamPassport> {
     Arc::new(StreamPassport {
         camera: camera_id("2"),
         raw_format: RawFormat::Raw16,
@@ -106,7 +106,7 @@ pub(super) fn frame_at(stream: &Arc<StreamPassport>, index: i64, color: CaptureC
     }
 }
 
-pub(super) fn frame(stream: &Arc<StreamPassport>, index: i64) -> RawFramePassport {
+pub(in crate::vulkan_backend::camera) fn frame(stream: &Arc<StreamPassport>, index: i64) -> RawFramePassport {
     frame_at(stream, index, CaptureColorHints::default())
 }
 
@@ -155,20 +155,6 @@ pub(super) fn gray_scene(kelvin: f64) -> AwbStatistics {
     statistics_of(gray_tile(kelvin))
 }
 
-pub(super) fn dark_scene() -> AwbStatistics {
-    statistics_of(tile_of([0.002, 0.002, 0.002]))
-}
-
-pub(super) fn clipped_scene() -> AwbStatistics {
-    statistics_of(AwbTile {
-        sum_r: 0,
-        sum_g: 0,
-        sum_b: 0,
-        used_cells: 0,
-        saturated_cells: CELLS,
-    })
-}
-
 /// Однотонная зелень: далеко от кривой Планка, серых кандидатов нет.
 pub(super) fn single_colour_scene() -> AwbStatistics {
     statistics_of(tile_of([0.05, 0.4, 0.05]))
@@ -209,19 +195,6 @@ pub(super) fn kelvin_of(white: Chromaticity) -> f64 {
         .expect("в таблице Робертсона")
         .temperature
         .0
-}
-
-/// Один «показ»: план кадра, затем (как делает сессия на следующем такте) статистика этого кадра.
-pub(super) fn process(
-    runner: &mut WhiteBalanceRunner,
-    passport: &RawFramePassport,
-    statistics: &AwbStatistics,
-) -> FramePlan {
-    let plan = runner.plan_frame(passport);
-    if plan.statistics == StatisticsPlan::Compute {
-        runner.ingest_statistics(plan.stream, identity_of(passport), statistics);
-    }
-    plan
 }
 
 /// Белая цель «температура + нулевой Duv».

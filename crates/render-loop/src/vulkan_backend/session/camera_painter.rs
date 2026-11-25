@@ -51,6 +51,7 @@ pub(super) fn create_camera_painter(
             awb_feed: camera.awb_feed.clone(),
             white_balance: camera.white_balance.clone(),
             auto_exposure: camera.auto_exposure.clone(),
+            statistics_every_n_frames: config.viewfinder.auto_exposure.statistics_every_n_frames,
             headroom: HeadroomBenchParts {
                 config: config.viewfinder.headroom_bench,
                 frame_slots: info.frames_in_flight,

@@ -20,7 +20,7 @@ mod support;
 mod vulkan_support;
 mod white_engine;
 
-use ae_rig::{AeRig, RigSetup, SceneLayout, Shot, display_middle_gray, ev_error, rig_with};
+use ae_rig::{AeRig, RigSetup, RigStream, SceneLayout, Shot, display_middle_gray, ev_error, rig_with};
 use camera_contract::white::WhiteSourceId;
 use isp_model::color::chromaticity::Chromaticity;
 use render_loop::config::{AutoExposureConfig, WhiteBalanceConfig};
@@ -74,6 +74,7 @@ fn run_scenario(name: &str, scene: &'static str, scene_scale: f64, scene_white: 
         scene_scale,
         allow_clipping: true,
         layout: SceneLayout::Uniform,
+        stream: RigStream::Reference,
     })?;
     rig.white_engine = Some(WhiteTestEngine::open(&links, FALLBACK_KELVIN, WhiteSourceId::PHONE));
     rig.hints_by_frame = Some(Box::new(move |frame| {

@@ -1,4 +1,4 @@
-//! Белая светодиода по кадрам с фонариком (14d): оценка кадра с фонариком уходит вспышке, а не контроллеру AWB.
+//! Белая светодиода по кадрам с фонариком (14d): оценка кадра с фонариком уходит вспышке, а не белой видоискателя.
 
 #![allow(
     clippy::unwrap_used,
@@ -8,25 +8,23 @@
 )]
 
 use super::test_support::{
-    directive_of, frame, gray_scene, identity_of, kelvin_of, new_stream, process, runner, single_colour_scene,
+    directive_of, frame, gray_scene, identity_of, kelvin_of, new_stream, runner, single_colour_scene,
 };
 use super::*;
 use camera_contract::white::WhiteTransition;
 
 #[test]
-fn a_torch_frame_gives_the_led_white_without_touching_the_viewfinder_white_or_best_estimate() {
+fn a_torch_frame_gives_the_led_white_without_touching_the_viewfinder_white() {
     let (mut runner, links) = runner();
     links
         .directives
         .publish(directive_of(5000.0, WhiteTransition::Immediate, None));
     let stream = new_stream();
-    // Несколько кадров при дневном свете: старый оценщик получил оценку ≈ 5000 К.
+    // Несколько кадров при дневном свете: белая видоискателя стоит.
     for index in 0..6 {
-        process(&mut runner, &frame(&stream, index), &gray_scene(5000.0));
+        runner.plan_frame(&frame(&stream, index));
     }
-    let daylight = runner.diagnostics();
-    let applied_before = daylight.applied_white;
-    let estimate_before = daylight.last_estimate.expect("оценка видоискателя");
+    let applied_before = runner.diagnostics().applied_white;
 
     // Кадр с фонариком: тёплый светодиод (2800 К).
     let torch_frame = frame(&stream, 6);
@@ -49,39 +47,7 @@ fn a_torch_frame_gives_the_led_white_without_touching_the_viewfinder_white_or_be
 
     let after = runner.diagnostics();
     assert_eq!(after.applied_white, applied_before, "применённая белая не сдвинулась");
-    assert_eq!(
-        after.last_estimate,
-        Some(estimate_before),
-        "оценка видоискателя не испорчена светом светодиода"
-    );
     assert_eq!(after.torch_white_estimates, 1);
-    assert_eq!(
-        after.estimates,
-        daylight.estimates + 1,
-        "оценщик кадр с фонариком получил"
-    );
-}
-
-#[test]
-fn torch_statistics_are_estimated_even_when_the_awb_schedule_skips_the_frame() {
-    let (mut runner, _) = runner();
-    let stream = new_stream();
-    for index in 0..4 {
-        process(&mut runner, &frame(&stream, index), &gray_scene(5000.0));
-    }
-    // Расписание прореживает кадры после первой оценки: найдём кадр, на котором статистику AWB не просили.
-    let mut skipped = None;
-    for index in 4..40 {
-        let passport = frame(&stream, index);
-        let plan = runner.plan_frame(&passport);
-        if plan.statistics == StatisticsPlan::Skip {
-            skipped = Some((passport, plan));
-            break;
-        }
-    }
-    let (passport, plan) = skipped.expect("прореживание пропускает кадры");
-    runner.ingest_torch_statistics(plan.stream, identity_of(&passport), &gray_scene(3000.0));
-    assert_eq!(runner.drain_torch_whites().len(), 1);
 }
 
 #[test]

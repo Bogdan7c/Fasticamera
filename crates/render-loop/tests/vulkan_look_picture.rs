@@ -2,8 +2,8 @@
 //! полная validation, подставная камера (стенд `viewfinder_rig`, тот же, что у `vulkan_viewfinder_content.rs`).
 //!
 //! Доказывается: команда `SetLook` меняет то, что нарисовал видоискатель, и новая картинка совпадает с эталоном
-//! `isp-model` с ЭТИМ видом; нейтральный вид возвращает нейтральный эталон; вид не влияет на то, что видят AWB
-//! (инвариант 1); основы тона `aces` и `filmic` из конфига доходят до кадра так же, как `agx`.
+//! `isp-model` с ЭТИМ видом; нейтральный вид возвращает нейтральный эталон; вид не влияет на то, что видит AE
+//! (инвариант 1: замер экспозиции идёт по честной базе, до вида); основы тона `aces` и `filmic` из конфига доходят до кадра так же, как `agx`.
 //! Снимок с видом момента нажатия — в `vulkan_still_look.rs`.
 
 #![cfg(not(target_os = "android"))]
@@ -28,6 +28,9 @@ use render_loop::viewfinder::{ViewfinderCommand, ViewfinderCommandOutcome};
 use viewfinder_rig::{
     CellValues, TOLERANCE, ViewfinderBench, assert_image_color, neutral_gray, reference_color_with_look,
 };
+
+/// Кадров сюжета для прогона с AE: статистика читается после fence слота, замер приходит не с первого кадра.
+const AE_FRAMES: usize = 8;
 
 /// Ручка в диапазоне (тест не проверяет границы, их проверяет `look-contract`).
 fn knob(value: f32) -> LookKnob {
@@ -168,7 +171,7 @@ fn a_set_look_command_changes_the_shown_picture_to_the_reference_with_that_look_
 }
 
 #[test]
-fn a_warmth_look_warms_the_shown_picture_like_the_reference_and_does_not_touch_what_awb_sees() {
+fn a_warmth_look_warms_the_shown_picture_like_the_reference_and_does_not_touch_what_auto_exposure_measures() {
     let config = config_with_base(ToneBaseChoice::Agx);
     let warm = LookSettings {
         warmth: knob(0.7),
@@ -176,24 +179,20 @@ fn a_warmth_look_warms_the_shown_picture_like_the_reference_and_does_not_touch_w
     };
     let tone = config.viewfinder.tone;
 
-    // Прогон без вида: эталон и то, что видит AWB.
-    let Some(mut quiet) = ViewfinderBench::start(&config, neutral_gray(), 4) else {
+    // Прогон без вида: эталон и то, что меряет AE (он единственный потребитель статистики кадра).
+    let Some(mut quiet) = ViewfinderBench::start_with_auto_exposure(&config, neutral_gray(), AE_FRAMES) else {
         return;
     };
     let neutral_reference = reference_color_with_look(&quiet.passport, neutral_gray(), &tone, &LookSettings::NEUTRAL);
-    quiet.show_next_frame();
-    quiet.show_next_frame();
+    for _ in 0..AE_FRAMES {
+        quiet.show_next_frame();
+    }
     assert_image_color(&quiet.backend, neutral_reference, "серый без вида");
-    let quiet_white = quiet
-        .backend
-        .diagnostics()
-        .viewfinder
-        .expect("видоискатель")
-        .white_balance;
+    let quiet_view = quiet.backend.diagnostics().viewfinder.expect("видоискатель");
     quiet.finish();
 
-    // Прогон с видом «теплота»: картинка теплее и совпадает с эталоном, AWB видит ту же честную сцену.
-    let Some(mut styled) = ViewfinderBench::start(&config, neutral_gray(), 4) else {
+    // Прогон с видом «теплота»: картинка теплее и совпадает с эталоном, AE меряет ту же честную сцену.
+    let Some(mut styled) = ViewfinderBench::start_with_auto_exposure(&config, neutral_gray(), AE_FRAMES) else {
         return;
     };
     set_look(&mut styled, &warm);
@@ -203,26 +202,37 @@ fn a_warmth_look_warms_the_shown_picture_like_the_reference_and_does_not_touch_w
         warm_reference[0] > warm_reference[2] + 0.02,
         "эталон «+теплота» теплее нейтрального серого: {warm_reference:?}"
     );
-    styled.show_next_frame();
-    styled.show_next_frame();
+    for _ in 0..AE_FRAMES {
+        styled.show_next_frame();
+    }
     assert_image_color(&styled.backend, warm_reference, "вид: теплота");
-    let styled_white = styled
-        .backend
-        .diagnostics()
-        .viewfinder
-        .expect("видоискатель")
-        .white_balance;
+    let styled_view = styled.backend.diagnostics().viewfinder.expect("видоискатель");
     styled.finish();
 
-    assert!(quiet_white.estimates > 0, "AWB мерил кадры: {quiet_white:?}");
-    assert_eq!(styled_white.estimates, quiet_white.estimates, "то же число оценок AWB");
-    assert_eq!(
-        styled_white.applied_white, quiet_white.applied_white,
-        "белая сцены у AWB одна и та же с видом и без него: статистика видит честную базу"
+    // Решение 98: статистика (а с ней замер AE) снимается ДО вида, поэтому вид, меняющий пиксели, замер не двигает.
+    let quiet_ae = quiet_view.auto_exposure.expect("AE подключён");
+    let styled_ae = styled_view.auto_exposure.expect("AE подключён");
+    assert!(quiet_ae.counters.accepted > 0, "AE мерил кадры: {quiet_ae:?}");
+    assert!(
+        quiet_ae.observed_scene_log2_seconds_iso.is_some(),
+        "замер сцены получен: {quiet_ae:?}"
     );
     assert_eq!(
-        styled_white.last_estimate, quiet_white.last_estimate,
-        "последняя оценка AWB та же"
+        styled_ae.counters.accepted, quiet_ae.counters.accepted,
+        "то же число замеров AE"
+    );
+    assert_eq!(
+        styled_ae.observed_scene_log2_seconds_iso, quiet_ae.observed_scene_log2_seconds_iso,
+        "замер сцены у AE побитово тот же с видом и без него: статистика видит честную базу"
+    );
+    assert_eq!(styled_ae.target_log2_seconds_iso, quiet_ae.target_log2_seconds_iso);
+    assert_eq!(
+        styled_view.statistics, quiet_view.statistics,
+        "то же расписание статистики"
+    );
+    assert_eq!(
+        styled_view.white_balance.applied_white, quiet_view.white_balance.applied_white,
+        "белая сцены одна и та же с видом и без него"
     );
 }
 

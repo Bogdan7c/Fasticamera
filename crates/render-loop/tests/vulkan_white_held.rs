@@ -1,4 +1,4 @@
-//! Держимая белая на настоящем драйвере (RADV, полная validation): указание сильнее нашего оценщика, смена
+//! Держимая белая на настоящем драйвере (RADV, полная validation): указание сильнее света сцены и подсказок, смена
 //! линзы и новая сессия показа белую держат и источник заново не спрашивают, переход `Over` идёт кадрами между
 //! и заканчивается ровно на цели.
 
@@ -41,8 +41,8 @@ fn gray_of(image: &FrameImage) -> [f32; 3] {
 }
 
 #[test]
-fn the_directive_wins_over_what_our_old_estimator_hears_and_the_estimator_keeps_feeding_statistics() {
-    // Сцена — лампа 2800 К, указание — D65-подобные 6500 К: старый оценщик слышит лампу, картинка идёт по указанию.
+fn the_directive_wins_over_the_scene_light_and_over_wild_phone_hints() {
+    // Сцена — лампа 2800 К, указание — D65-подобные 6500 К: картинка идёт по указанию, а не по свету сцены.
     let setting = setting_of(6500.0);
     let Some((mut rig, journal)) = start(held_setting(setting), WhiteBalanceConfig::default()) else {
         return;
@@ -50,32 +50,23 @@ fn the_directive_wins_over_what_our_old_estimator_hears_and_the_estimator_keeps_
     let images = rig.drive(0..30, &quiet, &mut |_| {});
     let diagnostics = rig.viewfinder();
     let wb = &diagnostics.white_balance;
-    assert!(wb.estimates >= 1, "статистика идёт (AE на ней стоит): {wb:?}");
-    let heard = wb.last_estimate.expect("оценка").white.temperature_kelvin;
-    assert!((heard - 2800.0).abs() < 100.0, "оценщик слышит лампу: {heard}");
     assert!((wb.applied_white.expect("белая").temperature_kelvin - 6500.0).abs() < 1.0);
     let gray = gray_of(&images[29]);
     assert!(
         spread(gray) > 0.1,
-        "лампа под белой 6500 К оранжевая, а не «исправлена» оценщиком: {gray:?}"
+        "лампа под белой 6500 К оранжевая, а не «исправлена» по свету сцены: {gray:?}"
     );
     let last = rig.pixels();
     rig.finish(&journal);
 
-    // Тот же прогон с другим расписанием статистики и дикими подсказками: оценщик ведёт себя иначе, картинка прежняя.
-    let config = WhiteBalanceConfig {
-        statistics_every_n_frames: 1,
-        ..WhiteBalanceConfig::default()
-    };
-    let Some((mut other, journal)) = start(held_setting(setting), config) else {
+    // Тот же прогон с дикими подсказками телефона: картинка прежняя до бита.
+    let Some((mut other, journal)) = start(held_setting(setting), WhiteBalanceConfig::default()) else {
         return;
     };
     let wild = |frame: i64| {
         awb_support::phone_hints_for_white(awb_support::planckian_white(2000.0 + 500.0 * (frame % 7) as f64))
     };
     let other_images = other.drive(0..30, &wild, &mut |_| {});
-    let other_diagnostics = other.viewfinder().white_balance;
-    assert!(other_diagnostics.estimates > wb.estimates, "оценщик работал по-другому");
     assert_eq!(other_images[29], images[29], "пиксели побитово те же");
     assert_eq!(other.pixels(), last);
     other.finish(&journal);

@@ -64,8 +64,8 @@ MAX_JITTER_OVERFLOW_PER_MINUTE = 8.0
 MIN_SHOWN_ONCE_RATIO = 0.95
 """Грубая нижняя граница доли кадров, выданных рендеру ровно один раз (``delivered / frames_published``)."""
 
-MIN_AWB_PUBLISH_FRACTION = 0.25
-"""Грубая нижняя граница публикаций статистики AWB от ожидаемого при прореживании (обработанные кадры / N);
+MIN_STATISTICS_PUBLISH_FRACTION = 0.25
+"""Грубая нижняя граница публикаций статистики кадра от ожидаемого при прореживании (обработанные кадры / N);
 Rust судит строже (0,5): исполнитель бывает занят, окно режет период на краях."""
 
 MAX_ACCOUNTING_GAP = 0.10
@@ -103,6 +103,7 @@ def check_viewfinder(result: dict) -> list[str]:
         problems.append(f"рисовальщик {look.get('painter')!r}, ожидался 'isp'")
     if look.get("display_color_space") not in COLOR_SPACES:
         problems.append(f"пространство экрана {look.get('display_color_space')!r}, ожидалось одно из {sorted(COLOR_SPACES)}")
+    problems.extend(_statistics_problems(report))
     problems.extend(_awb_problems(report))
     problems.extend(_accounting_problems(report))
     companion = _dict(report.get("three_a_companion")).get("state")
@@ -120,22 +121,37 @@ def check_viewfinder(result: dict) -> list[str]:
     return problems
 
 
+def _statistics_problems(report: dict) -> list[str]:
+    """Статистика кадра в сводке ``viewfinder``: идёт с прореживанием (не на каждом кадре), если на потоке рендера
+    есть её потребитель (наш AE). Раздел ``frame_statistics`` — это расписание: объект с периодом ``every_n_frames``
+    или ``null`` (потребителей нет, вендорский AE: публикаций 0, и это не поломка). Ожидается не меньше доли
+    ``frames_processed / every_n_frames`` публикаций; верхней границы нет (холодный старт AE считает на каждом кадре)."""
+    if "frame_statistics" not in report:
+        return ["в сводке нет раздела frame_statistics (расписание статистики кадра)"]
+    schedule = report["frame_statistics"]
+    if schedule is None:
+        return []
+    if not isinstance(schedule, dict):
+        return [f"frame_statistics={schedule!r}, ожидался объект или null"]
+    published = report.get("statistics_published")
+    if not _is_number(published) or published <= 0:
+        return [f"статистика кадра не публиковалась при включённом AE (statistics_published={published!r})"]
+    period, processed = schedule.get("every_n_frames"), report.get("frames_processed")
+    if not _is_number(period) or period < 1 or not _is_number(processed):
+        return [f"нет периода статистики или числа кадров (every_n_frames={period!r}, frames_processed={processed!r})"]
+    if published < processed / period * MIN_STATISTICS_PUBLISH_FRACTION:
+        return [f"статистика кадра опубликована {published} раз, при {processed} кадрах и периоде {period} ожидалось больше"]
+    return []
+
+
 def _awb_problems(report: dict) -> list[str]:
-    """Белая в сводке ``viewfinder``: статистика идёт с прореживанием (не на каждом кадре; на ней стоит AE),
-    белая взята у телефона, заявка закрыта исходом applied, холодный старт кончился и скрыл не больше предела. Прореживание: ожидается
-    ``frames_processed / statistics_every_n_frames`` публикаций. Оценки старого оценщика продукт больше не судит."""
-    awb = report.get("awb_published")
-    if not _is_number(awb) or awb <= 0:
-        return [f"статистика AWB не публиковалась (awb_published={awb!r})"]
+    """Белая в сводке ``viewfinder``: белая взята у телефона, заявка закрыта исходом applied, холодный старт кончился
+    и скрыл не больше предела. Оценки старого оценщика продукт больше не судит; статистика кадра — в
+    ``_statistics_problems``."""
     white_balance = report.get("white_balance")
     if not isinstance(white_balance, dict):
         return ["в сводке нет раздела white_balance (белая)"]
     problems: list[str] = []
-    period, processed = white_balance.get("statistics_every_n_frames"), report.get("frames_processed")
-    if not _is_number(period) or period < 1 or not _is_number(processed):
-        problems.append(f"нет периода статистики или числа кадров (every_n={period!r}, frames_processed={processed!r})")
-    elif awb < processed / period * MIN_AWB_PUBLISH_FRACTION:
-        problems.append(f"статистика AWB опубликована {awb} раз, при {processed} кадрах и периоде {period} ожидалось больше")
     origin = white_balance.get("origin")
     request = _dict(white_balance.get("request")).get("state")
     if origin != "phone":

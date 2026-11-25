@@ -11,13 +11,13 @@ use isp_model::exposure::LuminanceWeights;
 use isp_model::statistics::AwbStatistics;
 
 use super::config::MeteringConfig;
+use super::frame_tag::FrameTag;
+use super::frame_tag::SubmitError;
 use super::measurement::{
     ExposureMeasurement, ExposureMeasurementError, ExposureTarget, MeasurementPhase, measure_exposure_in_phase,
 };
 use super::metering_weights::MeteringWeights;
 use crate::error::ConfigError;
-use crate::executor::FrameTag;
-pub use crate::executor::SubmitError;
 
 /// Запрос замера: статистика кадра и всё, что нужно, чтобы превратить её в «сколько света».
 #[derive(Debug, Clone, Copy)]

@@ -22,7 +22,7 @@ use super::super::exposure::{ExposureFrameFacts, ExposureFramePlan, ExposureSlot
 use super::super::frame_role::{ViewfinderFrameRole, frame_light, viewfinder_frame_role};
 use super::super::isp_params::ParamsOutcome;
 use super::super::passport::preview_params;
-use super::super::statistics_schedule::StatisticsDecision;
+use super::super::statistics_schedule::{ColdStartCover, StatisticsNeeds};
 use super::transition::TransitionFrame;
 use super::{CameraSession, Content, LOG_TARGET, NewFrameError, Prepared};
 use crate::viewfinder::{AwbFrameIdentity, FrameCropReport, ViewfinderPainter};
@@ -120,6 +120,15 @@ impl CameraSession {
             .as_mut()
             .map(|exposure| exposure.plan_frame(lease.passport()));
         let exposure_gain = exposure_plan.map_or(ExposureGain::UNITY, |exposure_plan| exposure_plan.gain);
+        // Статистика кадра: потребители (AE) заявляют потребность, расписание решает. Решаем до параметров, как
+        // и остальные планы кадра: период тикает на каждом новом кадре, даже если дальше кадр не дойдёт до ISP.
+        let statistics = self.statistics.decide(
+            lease.passport(),
+            StatisticsNeeds {
+                auto_exposure: exposure_plan.map(|exposure_plan| exposure_plan.statistics),
+                cover: ColdStartCover::of_presentation(plan.presentation),
+            },
+        );
         let decision = self
             .params
             .prepare_with_exposure_gain(lease.passport(), plan.white, exposure_gain, gamut);
@@ -156,10 +165,6 @@ impl CameraSession {
                 self.stats.camera_frames_imported += 1;
                 let identity = frame_identity(&lease);
                 let light = frame_light(lease.passport());
-                let statistics = StatisticsDecision::combine(
-                    plan.statistics,
-                    exposure_plan.map(|exposure_plan| exposure_plan.statistics),
-                );
                 let exposure = self.exposure_slot_frame(exposure_plan, &lease, geometry.crop);
                 // Стенд V4 (если включён) читает тот же кадр в том же сабмите: параметры Menon из тех
                 // же входов, нагрузка — по полезной области.

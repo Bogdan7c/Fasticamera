@@ -224,10 +224,12 @@ pub struct ViewfinderSmokeConfig {
     /// (решение 53). Камера 60,03 Гц против экрана 60,00 Гц даёт один лишний кадр за ~33 с, то есть
     /// ~1,8 в минуту; 4 — запас вдвое на разброс частот и фазу. Больше — потеря кадров, провал.
     pub max_jitter_overflow_per_minute: f64,
-    /// Какую долю ожидаемых публикаций статистики AWB обязан дать замер. Ожидаемое число — обработанные кадры,
-    /// делённые на `statistics_every_n_frames` рендера (прореживание: 60 к/с → 15 Гц). Не 1: исполнитель оценки
-    /// бывает занят (кадр статистики пропускается со счётчиком), а окно замера режет период на краях.
-    pub min_awb_publish_fraction: f64,
+    /// Какую долю ожидаемых публикаций статистики кадра обязан дать замер. Ожидаемое число — обработанные кадры,
+    /// делённые на `viewfinder.auto_exposure.statistics_every_n_frames` рендера (прореживание: 60 к/с → 15 Гц);
+    /// проверка действует, только если на потоке рендера включён наш AE (он единственный потребитель статистики).
+    /// Не 1: исполнитель замера бывает занят (кадр статистики пропускается со счётчиком), а окно замера режет
+    /// период на краях.
+    pub min_statistics_publish_fraction: f64,
 }
 
 impl Default for ViewfinderSmokeConfig {
@@ -238,7 +240,7 @@ impl Default for ViewfinderSmokeConfig {
             min_sensor_fps: 57.0,
             frame_rate_tolerance: 0.03,
             max_jitter_overflow_per_minute: 4.0,
-            min_awb_publish_fraction: 0.5,
+            min_statistics_publish_fraction: 0.5,
         }
     }
 }
@@ -531,7 +533,10 @@ impl ViewfinderScenarioConfig {
         for (field, value) in [
             ("smoke.isp_dispatch_budget_ms", self.smoke.isp_dispatch_budget_ms),
             ("smoke.min_sensor_fps", self.smoke.min_sensor_fps),
-            ("smoke.min_awb_publish_fraction", self.smoke.min_awb_publish_fraction),
+            (
+                "smoke.min_statistics_publish_fraction",
+                self.smoke.min_statistics_publish_fraction,
+            ),
             (
                 "smoke.max_jitter_overflow_per_minute",
                 self.smoke.max_jitter_overflow_per_minute,
@@ -557,11 +562,11 @@ impl ViewfinderScenarioConfig {
                 value: increase,
             });
         }
-        let awb_fraction = self.smoke.min_awb_publish_fraction;
-        if awb_fraction > 1.0 {
+        let publish_fraction = self.smoke.min_statistics_publish_fraction;
+        if publish_fraction > 1.0 {
             return Err(ViewfinderScenarioConfigError::NotPositive {
-                field: "smoke.min_awb_publish_fraction (доля не больше 1)",
-                value: awb_fraction,
+                field: "smoke.min_statistics_publish_fraction (доля не больше 1)",
+                value: publish_fraction,
             });
         }
         let tolerance = self.smoke.frame_rate_tolerance;

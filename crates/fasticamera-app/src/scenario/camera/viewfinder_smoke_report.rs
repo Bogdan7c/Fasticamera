@@ -13,8 +13,10 @@
 //! 5. ноль CPU-копий (ISP и поток RAW), ноль ошибок validation (если слой включён);
 //! 6. параметры ISP разрешались, отказов нет, кадров без параметров и с неверной геометрией нет,
 //!    ошибок записи ISP и компоновки нет;
-//! 7. статистика AWB публиковалась не реже доли `min_awb_publish_fraction` от ожидаемого при прореживании
-//!    (обработанные кадры / `statistics_every_n_frames`), оценки света были, холодный старт кончился;
+//! 7. статистика кадра публиковалась не реже доли `min_statistics_publish_fraction` от ожидаемого при прореживании
+//!    (обработанные кадры / `viewfinder.auto_exposure.statistics_every_n_frames`) — но только если на потоке
+//!    рендера есть потребитель статистики (наш AE; с вендорским AE публикаций нет и проверка не применяется),
+//!    белая взята у телефона, холодный старт кончился;
 //!    вспомогательный поток 3A в сессии (иначе автоматика HAL молча мертва — решение 62);
 //!    Потери кадров видоискателя считаются, а не прячутся: вытеснение (`superseded`) и переполнение
 //!    джиттер-буфера (`jitter_overflow`) — в отчёте раздельно. Переполнений допустимо не больше
@@ -33,6 +35,7 @@ use serde_json::Value;
 
 use super::detail::to_value;
 use super::engine_watch::RunFailure;
+use super::frame_statistics_report::{FrameStatisticsReport, publication_violations};
 use super::raw_stream_samples::LatencyReport;
 use super::viewfinder_metrics::{GpuTimeMs, WindowDelta, color_space_name, ratio, round2};
 use super::viewfinder_pacing_report::PacingWindowReport;
@@ -169,6 +172,9 @@ pub struct ViewfinderSmokeObservation {
     pub last_params_failure: Option<String>,
     /// Наш AWB на конец замера (`None` — снимка видоискателя не было).
     pub white_balance: Option<WhiteBalanceReport>,
+    /// Расписание статистики кадра на конец замера; `None` — потребителей статистики на потоке рендера нет
+    /// (вендорский AE): публикаций ждать не нужно.
+    pub frame_statistics: Option<FrameStatisticsReport>,
     /// Вспомогательный поток 3A последней сессии камеры (решение 62).
     pub companion: CompanionStreamStatus,
 }
@@ -267,11 +273,12 @@ fn evaluate_viewfinder_with(
     // задержек её не увидят, поэтому смотрим на счётчик создания в кадре. Этот вердикт общий для `viewfinder` и `screen`.
     violations.extend(window.pipeline_variants.violation(0));
     violations.extend(isp_counter_violations(window));
-    violations.extend(white_balance_violations(
-        config,
+    violations.extend(publication_violations(
+        observation.frame_statistics.as_ref(),
         window,
-        observation.white_balance.as_ref(),
+        config.min_statistics_publish_fraction,
     ));
+    violations.extend(white_balance_violations(observation.white_balance.as_ref()));
     violations.extend(companion_violation(observation.companion));
     if jitter_overflow == JitterOverflowJudgement::BudgetIsViolation {
         violations.extend(jitter_overflow_violation(config, observation));
@@ -360,31 +367,12 @@ fn companion_violation(companion: CompanionStreamStatus) -> Option<String> {
     }
 }
 
-/// Белая: статистика идёт с прореживанием (на ней стоит AE), белая взята у телефона, заявка закрыта, холодный
-/// старт кончился.
-fn white_balance_violations(
-    config: &ViewfinderSmokeConfig,
-    window: &WindowDelta,
-    white_balance: Option<&WhiteBalanceReport>,
-) -> Vec<String> {
+/// Белая: взята у телефона, заявка закрыта, холодный старт кончился и скрыл не больше предела.
+fn white_balance_violations(white_balance: Option<&WhiteBalanceReport>) -> Vec<String> {
     let Some(report) = white_balance else {
         return vec!["в статусе рендера нет диагностики белой".to_owned()];
     };
     let mut violations = Vec::new();
-    // Ожидание — по окну: сколько кадров прошло через ISP, каждый N-й даёт статистику.
-    let period = f64::from(report.statistics_every_n_frames.max(1));
-    let expected = window.isp.frames_processed as f64 / period;
-    let published = window.isp.statistics_published as f64;
-    if published < expected * config.min_awb_publish_fraction {
-        violations.push(format!(
-            "статистика AWB опубликована {} раз, ожидалось не меньше {:.0} (обработано {} кадров, каждый {}-й, доля {})",
-            window.isp.statistics_published,
-            (expected * config.min_awb_publish_fraction).ceil(),
-            window.isp.frames_processed,
-            report.statistics_every_n_frames,
-            config.min_awb_publish_fraction
-        ));
-    }
     violations.extend(white_taken_from_phone_violations(report));
     violations.extend(hidden_within_limit_violations(report));
     violations
@@ -408,7 +396,8 @@ impl ViewfinderSmokeObservation {
             "pacing": self.pacing,
             "params_resolved": self.window.isp.params_resolved,
             "params_failed": self.window.isp.params_failed,
-            "awb_published": self.window.isp.statistics_published,
+            "statistics_published": self.window.isp.statistics_published,
+            "frame_statistics": self.frame_statistics,
             "frames_hidden_cold_start": self.window.isp.frames_hidden_cold_start,
             "bracket_frames_skipped": self.window.isp.bracket_frames_skipped,
             // Кэш вариантов пайплайна: `created_in_frame` после прогрева должно быть 0 (иначе рывок от компиляции).

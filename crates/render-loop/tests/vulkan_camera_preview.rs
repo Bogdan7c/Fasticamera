@@ -40,7 +40,7 @@ fn frames_flow_to_present_and_every_lease_returns_safely() {
 }
 
 /// Второй режим ключевого стенда: те же проверки (возвраты лизингов безопасны, на руках не больше одного кадра, статистика
-/// AWB от рисовавшегося кадра, ничего не утекло) при включённом пропуске тиков без изменений. Вместо счётчика
+/// AE-статистика от рисовавшегося кадра, ничего не утекло) при включённом пропуске тиков без изменений. Вместо счётчика
 /// перекомпоновок — счётчик пропущенных тиков: между кадрами камеры 60 к/с на экране 120 Гц тики пропускаются.
 #[test]
 fn frames_flow_and_every_lease_returns_safely_while_unchanged_ticks_are_skipped() {
@@ -48,7 +48,7 @@ fn frames_flow_and_every_lease_returns_safely_while_unchanged_ticks_are_skipped(
 }
 
 fn frames_flow_and_leases_return(policy: UnchangedFramePolicy) {
-    let Some(rig) = start_rig_with_policy(policy) else {
+    let Some(rig) = start_rig_with_auto_exposure(policy) else {
         return;
     };
     let baseline = rig.context.live_objects();
@@ -321,7 +321,9 @@ fn destroy_surface_mid_stream(painter: ViewfinderPainter) {
 
 #[test]
 fn viewfinder_commands_switch_painter_and_stages_while_streaming() {
-    let Some(rig) = start_rig() else { return };
+    let Some(rig) = start_rig_with_auto_exposure(default_unchanged_policy()) else {
+        return;
+    };
     let baseline = rig.context.live_objects();
     let (mut camera, epoch, offered) = Camera::start(&rig.stream, &rig.log, &rig.book);
     rig.show_surface(1);
