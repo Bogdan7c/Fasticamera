@@ -4,19 +4,22 @@ use std::time::Instant;
 
 use camera_contract::white::{WhiteRequestId, WhiteSourceId, WhiteTransition};
 
-use super::owner::{WhiteNotice, WhiteOwner};
+use super::owner::{WhiteNotice, WhiteOwner, WhiteRemembered};
 use crate::command::CommandId;
 use crate::white::{
-    ResumeRuleChoice, WhiteCancelCause, WhiteConfig, WhiteMemoryLoad, WhiteRequestOutcome, WhiteRequestState,
-    WhiteResumeRule, WhiteTakeReport, WhiteTakeState,
+    ResumeRuleChoice, WhiteCancelCause, WhiteConfig, WhiteFollowRecord, WhiteMemoryLoad, WhiteRequestOutcome,
+    WhiteRequestState, WhiteResumeRule, WhiteTakeReport, WhiteTakeState,
 };
 
 fn owner() -> WhiteOwner {
     WhiteOwner::new(
         WhiteConfig::default(),
         WhiteSourceId::PHONE,
-        WhiteMemoryLoad::NothingRemembered,
-        None,
+        WhiteRemembered {
+            white: WhiteMemoryLoad::NothingRemembered,
+            resume_rule: None,
+            follow: WhiteFollowRecord::default(),
+        },
         1,
     )
 }

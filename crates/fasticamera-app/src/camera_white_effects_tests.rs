@@ -100,6 +100,10 @@ fn take() -> ScreenCameraIntent {
     ScreenCameraIntent::TakeWhite(WhiteSourceId::PHONE)
 }
 
+fn follow() -> ScreenCameraIntent {
+    ScreenCameraIntent::FollowWhite(WhiteSourceId::PHONE)
+}
+
 /// Исполнитель с порталом на `ScriptedPort`.
 fn executor_with(port: &Arc<ScriptedPort>) -> EffectExecutor {
     EffectExecutor::new(EffectTargets {
@@ -336,6 +340,120 @@ fn a_refused_take_leaves_the_pending_manual_edit_alone() {
     assert_eq!(port.received()[before..], [set(3_200.0, 0.0)]);
 }
 
+// ---- «следить» («Auto», WB44) ----
+
+#[test]
+fn a_follow_that_did_not_reach_the_engine_goes_back_as_its_own_failure_is_counted_and_never_resent() {
+    for (outcome, reason_counter) in [
+        (CameraIntentOutcome::QueueFull, "queue_full"),
+        (CameraIntentOutcome::EngineStopped, "engine_stopped"),
+        (CameraIntentOutcome::NoEngine, "no_engine"),
+    ] {
+        let port = ScriptedPort::answering(outcome);
+        let mut executor = executor_with(&port);
+        let feedback = run(&mut executor, follow());
+        assert_eq!(
+            feedback,
+            vec![ScreenAction::WhiteFollowNotDelivered],
+            "{outcome:?}: не «отказ взять»: «Phone» трястись не должна"
+        );
+        let counters = executor.counters().white;
+        assert_eq!(counters.follows_not_delivered, 1, "{outcome:?}");
+        assert_eq!(counters.takes_not_delivered, 0, "{outcome:?}: чужой счётчик не тронут");
+        assert_eq!(counters.sent, 0, "{outcome:?}");
+        let reason = match reason_counter {
+            "queue_full" => counters.queue_full,
+            "engine_stopped" => counters.engine_stopped,
+            _ => counters.no_engine,
+        };
+        assert_eq!(reason, 1, "{outcome:?}: причина посчитана в «{reason_counter}»");
+
+        port.answer_from_now_on(ACCEPTED);
+        executor.resend_pending_white();
+        assert_eq!(port.received(), vec![follow()], "{outcome:?}: «следить» не повторяется");
+    }
+}
+
+#[test]
+fn an_accepted_follow_returns_no_feedback_and_counts_as_sent() {
+    let port = ScriptedPort::answering(ACCEPTED);
+    let mut executor = executor_with(&port);
+    assert_eq!(run(&mut executor, follow()), Vec::<ScreenAction>::new());
+    assert_eq!(port.received(), vec![follow()]);
+    let counters = executor.counters().white;
+    assert_eq!((counters.sent, counters.follows_not_delivered), (1, 0));
+}
+
+#[test]
+fn a_pending_manual_edit_reaches_the_engine_before_a_follow_pressed_after_it() {
+    let port = ScriptedPort::answering(FULL);
+    let mut executor = executor_with(&port);
+    run(&mut executor, set(3_200.0, 0.0));
+    port.answer_from_now_on(ACCEPTED);
+    let before = port.received().len();
+    executor.resend_pending_white();
+    assert_eq!(run(&mut executor, follow()), Vec::<ScreenAction>::new());
+    assert_eq!(port.received()[before..], [set(3_200.0, 0.0), follow()]);
+}
+
+#[test]
+fn an_accepted_follow_drops_the_older_pending_edit_so_a_stale_hand_does_not_switch_follow_off_again() {
+    // Правка отказана, повтор отказан, досылка перед «следить» отказана, сама «следить» принята.
+    let port = ScriptedPort::scripted(&[FULL, FULL, FULL, ACCEPTED], ACCEPTED);
+    let mut executor = executor_with(&port);
+    run(&mut executor, set(3_200.0, 0.0));
+    executor.resend_pending_white();
+    assert!(!executor.pending_white().is_empty());
+    assert_eq!(run(&mut executor, follow()), Vec::<ScreenAction>::new());
+    assert!(executor.pending_white().is_empty(), "отложенная рука сброшена");
+
+    let before = port.received().len();
+    executor.resend_pending_white();
+    assert_eq!(
+        port.received().len(),
+        before,
+        "старая рука не воскресла и слежение не выключила"
+    );
+}
+
+#[test]
+fn a_follow_refused_by_a_full_queue_leaves_the_pending_manual_edit_alone_and_does_not_resend_itself() {
+    let port = ScriptedPort::answering(FULL);
+    let mut executor = executor_with(&port);
+    run(&mut executor, set(3_200.0, 0.0));
+    let feedback = run(&mut executor, follow());
+    assert_eq!(feedback, vec![ScreenAction::WhiteFollowNotDelivered]);
+    assert_eq!(
+        executor.pending_white().whole(),
+        Some(setting(3_200.0, 0.0)),
+        "рука ждёт своего"
+    );
+
+    port.answer_from_now_on(ACCEPTED);
+    let before = port.received().len();
+    executor.resend_pending_white();
+    assert_eq!(port.received()[before..], [set(3_200.0, 0.0)], "досылается только рука");
+}
+
+#[test]
+fn a_stopped_or_missing_engine_drops_the_pending_edit_when_a_follow_is_pressed() {
+    for outcome in [CameraIntentOutcome::EngineStopped, CameraIntentOutcome::NoEngine] {
+        let port = ScriptedPort::answering(FULL);
+        let mut executor = executor_with(&port);
+        run(&mut executor, set(3_200.0, 0.0));
+        port.answer_from_now_on(outcome);
+        assert_eq!(
+            run(&mut executor, follow()),
+            vec![ScreenAction::WhiteFollowNotDelivered],
+            "{outcome:?}"
+        );
+        assert!(
+            executor.pending_white().is_empty(),
+            "{outcome:?}: движка нет — рука сброшена"
+        );
+    }
+}
+
 // ---- сквозной путь через источник кадров: экран трясёт ----
 
 #[derive(Default)]
@@ -510,6 +628,45 @@ fn a_long_press_the_engine_never_got_shakes_the_screen_and_vibrates_an_error_exa
             "{outcome:?}"
         );
     }
+}
+
+#[test]
+fn an_auto_tap_the_engine_never_got_vibrates_an_error_once_and_does_not_shake_phone() {
+    for outcome in [
+        CameraIntentOutcome::QueueFull,
+        CameraIntentOutcome::EngineStopped,
+        CameraIntentOutcome::NoEngine,
+    ] {
+        let port = ScriptedPort::answering(outcome);
+        let mut stand = Stand::new(&port);
+        stand.frame_with(ScreenAction::WhiteButtonTapped);
+        stand.frame_with(ScreenAction::WhiteAutoTapped);
+        assert_eq!(port.received(), vec![follow()], "{outcome:?}: намерение дошло до порта");
+        assert_eq!(
+            stand.refusal_serial(),
+            0,
+            "{outcome:?}: тряски нет: это не отказ «Phone»"
+        );
+        stand.frame_with(ScreenAction::ScopeDemandLost);
+        assert_eq!(stand.error_vibrations(), 1, "{outcome:?}: вибрация «ошибка» ровно одна");
+        stand.frame_with(ScreenAction::ScopeDemandLost);
+        assert_eq!(
+            (stand.refusal_serial(), stand.error_vibrations()),
+            (0, 1),
+            "{outcome:?}"
+        );
+    }
+}
+
+#[test]
+fn a_delivered_auto_tap_neither_vibrates_nor_shakes() {
+    let port = ScriptedPort::answering(ACCEPTED);
+    let mut stand = Stand::new(&port);
+    stand.frame_with(ScreenAction::WhiteButtonTapped);
+    stand.frame_with(ScreenAction::WhiteAutoTapped);
+    assert_eq!(port.received(), vec![follow()]);
+    stand.frame_with(ScreenAction::ScopeDemandLost);
+    assert_eq!((stand.refusal_serial(), stand.error_vibrations()), (0, 0));
 }
 
 #[test]

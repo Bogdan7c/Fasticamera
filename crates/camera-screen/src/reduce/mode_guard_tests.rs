@@ -43,6 +43,7 @@ fn camera_control_actions() -> Vec<(&'static str, ScreenAction)> {
         ("значок над кадром", ScreenAction::StripToolTapped(ToolId::Timer)),
         ("тап по кнопке белого", ScreenAction::WhiteButtonTapped),
         ("долгое нажатие на кнопку белого", ScreenAction::WhiteButtonLongPressed),
+        ("тап «Auto»", ScreenAction::WhiteAutoTapped),
         ("тап «Телефон»", ScreenAction::WhitePhoneTapped),
         ("кнопка света", ScreenAction::WhiteLightSelected(WhiteLightIndex(0))),
         ("выбор шкалы белого", ScreenAction::WhiteAxisSelected(WhiteAxis::Tint)),

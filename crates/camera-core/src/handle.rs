@@ -24,7 +24,7 @@ use crate::lens_status::LensStatus;
 use crate::state::{CameraState, ClosedReason};
 use crate::status::{AppPresence, CameraCounters, CameraStatus, StreamStats};
 use crate::three_a_status::ThreeAStatus;
-use crate::white::{WhiteResumeRule, WhiteStatus};
+use crate::white::{WhiteFollowSpeed, WhiteResumeRule, WhiteStatus};
 
 struct OutputState {
     status: CameraStatus,
@@ -236,6 +236,16 @@ impl CameraHandle {
     /// `Accepted` / `AlreadyInState`, событие — `WhiteResumeRuleChanged`.
     pub fn set_white_resume_rule(&self, rule: WhiteResumeRule) -> Result<CommandId, CommandRejected> {
         self.send(CameraCommand::SetWhiteResumeRule { rule })
+    }
+
+    /// Следить за белым источника; состояние — `three_a.white.follow`, событие — `WhiteFollowChanged`.
+    pub fn follow_white(&self, source: WhiteSourceId) -> Result<CommandId, CommandRejected> {
+        self.send(CameraCommand::FollowWhite { source })
+    }
+
+    /// Выбрать скорость слежения за белым; запоминается, режим не включает.
+    pub fn set_white_follow_speed(&self, speed: WhiteFollowSpeed) -> Result<CommandId, CommandRejected> {
+        self.send(CameraCommand::SetWhiteFollowSpeed { speed })
     }
 
     /// Камера не нужна: закрыть и забыть желаемое.

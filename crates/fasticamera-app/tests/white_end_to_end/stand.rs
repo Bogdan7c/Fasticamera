@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 use camera_android::BackendDiagnostics;
 use camera_contract::capture_result::SensorTimestamp;
 use camera_contract::frame_passport::CaptureColorHints;
-use camera_contract::three_a::RequestOrigin;
+use camera_contract::three_a::{DirectiveSlot, RequestOrigin};
+use camera_contract::white::WhiteDirective;
 use camera_core::CameraHandle;
 use camera_core::fake::FakeBackendControl;
 use camera_core::status::CameraStatus;
@@ -53,6 +54,8 @@ pub struct Stand {
     pub camera: CameraServices,
     pub control: Arc<FakeBackendControl>,
     pub answers: camera_contract::white::WhiteAnswerChannel,
+    /// Указания движка рендеру (только чтение: когда движок разобрал ответ).
+    directives: DirectiveSlot<WhiteDirective>,
     next_frame: i64,
     /// Поколение последнего ответа источника, которого уже дождались у движка.
     seen_answer: Option<camera_contract::three_a::DirectiveGeneration>,
@@ -74,6 +77,7 @@ impl Stand {
         let mut render_links = links.render_side(ExposureControllerKind::Vendor);
         render_links.white.sources = options.sources;
         let answers = render_links.white.answers.clone();
+        let directives = render_links.white.directives.clone();
         let (rig, journal) = rig_or_skip(
             scene_with_light_change(SCENE_FRAMES, LIGHT_CHANGES_AT),
             render_links.white,
@@ -97,6 +101,7 @@ impl Stand {
             camera,
             control,
             answers,
+            directives,
             next_frame: 0,
             seen_answer: None,
         })
@@ -179,6 +184,12 @@ impl Stand {
                 status.three_a.white.request,
                 WhiteRequestState::Waiting { request, .. } if request == answer.request
             )
+        });
+        // Вопросы слежения в статусе не видны, а в указании рендеру видны: разобранный ответ снимает заявку оттуда.
+        Self::wait_until("указание без разобранной заявки", || {
+            self.directives
+                .latest()
+                .is_none_or(|(_, directive)| directive.request.is_none_or(|request| request.id != answer.request))
         });
     }
 

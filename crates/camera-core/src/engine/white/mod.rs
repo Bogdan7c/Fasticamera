@@ -2,6 +2,7 @@
 //!
 //! Раскладка:
 //! * `owner` — чистая машина состояний (кто держит белую, какая заявка источнику, сроки);
+//! * `follow` — слежение за источником: режим, темп, мёртвая зона, заморозка блокировкой;
 //! * `journal` — строки журнала о белой (редкие события, не на кадр);
 //! * `limits` — прижим значения к пределам конфига;
 //! * этот файл — [`WhiteEngine`]: машина + ящик указаний рендеру + ящик ответов + память; он превращает
@@ -10,6 +11,7 @@
 //!
 //! Белая живёт **вне** `Desired`: `Close`, `ApplyControls`, `SwitchTo` её не трогают (WB25, WB27).
 
+mod follow;
 mod hooks;
 mod journal;
 mod limits;
@@ -19,18 +21,19 @@ mod owner_tests;
 
 use std::time::Instant;
 
-use camera_contract::three_a::{DirectiveGeneration, DirectiveSlot};
+use camera_contract::three_a::{AeAfLock, DirectiveGeneration, DirectiveSlot};
 use camera_contract::white::{
-    WhiteAdjustment, WhiteAnswerChannel, WhiteDirective, WhiteOrigin, WhiteSourceId, WhiteTransition,
+    HeldWhite, WhiteAdjustment, WhiteAnswerChannel, WhiteDirective, WhiteOrigin, WhiteSourceId, WhiteTransition,
 };
 
 use crate::command::{CommandId, InvalidStateReason};
 use crate::event::CameraEvent;
 use crate::white::{
-    RememberedOrigin, ResumeRuleChoice, WhiteConfig, WhiteMemory, WhiteMemoryRecord, WhiteMemoryStartup,
-    WhiteResumeRule, WhiteStatus, WhiteWiring,
+    RememberedOrigin, ResumeRuleChoice, WhiteConfig, WhiteFollowSpeed, WhiteMemory, WhiteMemoryRecord,
+    WhiteMemoryStartup, WhiteResumeRule, WhiteStatus, WhiteWiring,
 };
-use owner::{ManualOutcome, WhiteNotice, WhiteOwner};
+use follow::{FollowChange, FollowTick};
+use owner::{FrameEffect, ManualOutcome, WhiteNotice, WhiteOwner, WhiteRemembered};
 
 /// Владелец белого вместе с его границами.
 pub(super) struct WhiteEngine {
@@ -45,6 +48,10 @@ pub(super) struct WhiteEngine {
     saves_requested: u64,
     /// Память приняла записи, которые с прошлого `flush` не сбрасывались: уход в фон должен её подтолкнуть.
     unflushed_saves: bool,
+    /// Белая, до которой довело слежение, ещё не переданная памяти. Переезды идут несколько раз в секунду, а помнить
+    /// нужен только последний: он передаётся, когда слежение выключили или приложение ушло в фон. Убитый на переднем
+    /// плане процесс ничего не теряет: запомненное слежение само спросит источник.
+    unsaved_followed: Option<HeldWhite>,
     /// События, ещё не отданные движку (движок выкладывает их в нужный момент относительно итога команды).
     events: Vec<CameraEvent>,
 }
@@ -64,8 +71,11 @@ impl WhiteEngine {
             owner: WhiteOwner::new(
                 config,
                 wiring.opening_source,
-                wiring.remembered,
-                wiring.remembered_resume_rule,
+                WhiteRemembered {
+                    white: wiring.remembered,
+                    resume_rule: wiring.remembered_resume_rule,
+                    follow: wiring.remembered_follow,
+                },
                 first_request,
             ),
             directives: wiring.directives,
@@ -75,6 +85,7 @@ impl WhiteEngine {
             memory: wiring.memory,
             saves_requested: 0,
             unflushed_saves: false,
+            unsaved_followed: None,
             events: Vec::new(),
         };
         if let WhiteMemoryStartup::Unreadable { reason } = engine.owner.memory_startup() {
@@ -126,6 +137,27 @@ impl WhiteEngine {
         outcome
     }
 
+    /// Следить за источником (команда `FollowWhite`).
+    pub(super) fn follow_source(&mut self, source: WhiteSourceId) -> FollowChange {
+        let change = self.owner.follow_source(source);
+        self.settle();
+        change
+    }
+
+    /// Выбор скорости слежения (команда `SetWhiteFollowSpeed`).
+    pub(super) fn choose_follow_speed(&mut self, speed: WhiteFollowSpeed) -> FollowChange {
+        let change = self.owner.choose_follow_speed(speed);
+        self.settle();
+        change
+    }
+
+    /// Действующая блокировка AE/AF. Зовётся на каждом кадре, поэтому указание трогает только смена.
+    pub(super) fn note_lock(&mut self, lock: AeAfLock) {
+        if self.owner.note_lock(lock) == FrameEffect::RequestChanged {
+            self.settle();
+        }
+    }
+
     pub(super) fn on_foreground(&mut self) {
         self.owner.on_foreground();
         self.settle();
@@ -137,14 +169,18 @@ impl WhiteEngine {
     pub(super) fn on_background(&mut self) {
         self.owner.on_background();
         self.settle();
+        self.remember_followed();
         if std::mem::take(&mut self.unflushed_saves) {
             self.memory.flush();
         }
     }
 
-    pub(super) fn on_stream_frame(&mut self, now: Instant) {
-        // Кадров много, а срок меняется только на первом: не трогаем указание и события на каждом.
-        self.owner.on_stream_frame(now);
+    /// Кадр потока. Кадров много, а меняются от них только срок (на первом) и вопрос слежения (по темпу): указание
+    /// и события трогаем, только если заявка действительно сменилась.
+    pub(super) fn on_stream_frame(&mut self, now: Instant, tick: FollowTick) {
+        if self.owner.on_stream_frame(now, tick) == FrameEffect::RequestChanged {
+            self.settle();
+        }
     }
 
     pub(super) fn on_stream_ended(&mut self) {
@@ -186,7 +222,14 @@ impl WhiteEngine {
             match notice {
                 WhiteNotice::Changed(held) => {
                     journal::white_changed(&held);
+                    // Новая белая заменяет ту, до которой довело слежение: старую помнить уже незачем.
+                    self.unsaved_followed = None;
                     self.remember(held);
+                    self.events.push(CameraEvent::WhiteChanged { held });
+                }
+                WhiteNotice::Followed(held) => {
+                    journal::white_changed(&held);
+                    self.unsaved_followed = Some(held);
                     self.events.push(CameraEvent::WhiteChanged { held });
                 }
                 WhiteNotice::Adjusted(adjustments) => {
@@ -204,7 +247,17 @@ impl WhiteEngine {
                     self.memory.save_resume_rule(rule);
                     self.events.push(CameraEvent::WhiteResumeRuleChanged { rule });
                 }
+                WhiteNotice::FollowChanged(follow) => {
+                    journal::follow_changed(&follow);
+                    self.saves_requested += 1;
+                    self.unflushed_saves = true;
+                    self.memory.save_follow(follow);
+                    self.events.push(CameraEvent::WhiteFollowChanged { follow });
+                }
             }
+        }
+        if !self.owner.is_following() {
+            self.remember_followed();
         }
         let directive = self.owner.directive();
         if self.last_published != Some(directive) {
@@ -213,8 +266,15 @@ impl WhiteEngine {
         }
     }
 
+    /// Передать памяти белую, до которой довело слежение (если она ещё не передана).
+    fn remember_followed(&mut self) {
+        if let Some(held) = self.unsaved_followed.take() {
+            self.remember(held);
+        }
+    }
+
     /// Передать памяти белую, которую стоит помнить; запасной свет не сохраняется.
-    fn remember(&mut self, held: camera_contract::white::HeldWhite) {
+    fn remember(&mut self, held: HeldWhite) {
         let origin = match held.origin {
             WhiteOrigin::Source(_) => RememberedOrigin::Source,
             WhiteOrigin::Manual => RememberedOrigin::Manual,
@@ -236,8 +296,11 @@ pub(crate) fn initial_white_status(config: &WhiteConfig, wiring: &WhiteWiring) -
     WhiteOwner::new(
         *config,
         wiring.opening_source,
-        wiring.remembered.clone(),
-        wiring.remembered_resume_rule,
+        WhiteRemembered {
+            white: wiring.remembered.clone(),
+            resume_rule: wiring.remembered_resume_rule,
+            follow: wiring.remembered_follow,
+        },
         1,
     )
     .status(0)

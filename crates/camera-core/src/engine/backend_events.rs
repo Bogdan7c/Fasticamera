@@ -80,7 +80,7 @@ impl CameraEngine {
                         self.cadence.record_completed(result);
                         self.note_stable_frame();
                         self.note_lens_frame(now);
-                        self.note_white_stream_frame(now);
+                        self.note_white_stream_frame(result, now);
                     }
                     self.observe_three_a_result(result, now);
                 } else if self.standby_slot_of_session(session).is_some() {

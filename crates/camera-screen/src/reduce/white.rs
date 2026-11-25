@@ -65,6 +65,16 @@ pub(super) fn on_phone_tapped(ctx: &mut Ctx<'_>) -> ActionOutcome {
     ActionOutcome::Applied
 }
 
+/// Тап «Auto» на карточке: включить слежение за белым телефона. Вибрации нет (тап по кнопке карточки, решение
+/// 112), как у «Phone». Повторный тап при включённом слежении безвреден: движок ответит «уже так» (`AlreadyInState`).
+pub(super) fn on_auto_tapped(ctx: &mut Ctx<'_>) -> ActionOutcome {
+    if let Err(rejected) = require_open_card(ctx) {
+        return rejected;
+    }
+    ctx.emit(Effect::Camera(ScreenCameraIntent::FollowWhite(WhiteSourceId::PHONE)));
+    ActionOutcome::Applied
+}
+
 /// Кнопка света: белое целиком по числам кнопки.
 pub(super) fn on_light_selected(ctx: &mut Ctx<'_>, index: WhiteLightIndex) -> ActionOutcome {
     if let Err(rejected) = require_open_card(ctx) {
@@ -115,6 +125,13 @@ fn adjust(ctx: &mut Ctx<'_>, adjustment: WhiteAdjustment) -> ActionOutcome {
 /// Исполнитель не доставил команду «взять»: тряска и вибрация, как при отказе движка.
 pub(super) fn on_take_not_delivered(ctx: &mut Ctx<'_>) -> ActionOutcome {
     ctx.state.white.register_undelivered_take();
+    ctx.emit(Effect::Haptic(HapticPattern::Error));
+    ActionOutcome::Applied
+}
+
+/// Исполнитель не доставил команду «следить»: только вибрация «ошибка». Тряски нет: «Phone» не отказывала,
+/// источника никто не спрашивал.
+pub(super) fn on_follow_not_delivered(ctx: &mut Ctx<'_>) -> ActionOutcome {
     ctx.emit(Effect::Haptic(HapticPattern::Error));
     ActionOutcome::Applied
 }

@@ -15,7 +15,7 @@ use crate::lens_status::{LensSwitchFailure, LensSwitchMethod};
 use crate::point_hold::PointReleaseCause;
 use crate::state::CameraState;
 use crate::three_a_status::{BracketReport, ControlAdjustment, FocusOutcome};
-use crate::white::{WhiteRequestResult, WhiteResumeRule};
+use crate::white::{WhiteFollowRecord, WhiteRequestResult, WhiteResumeRule};
 use camera_contract::white::HeldWhite;
 
 /// Событие движка. Поток событий ограничен: при переполнении старые вытесняются со счётчиком
@@ -99,6 +99,11 @@ pub enum CameraEvent {
     /// не меняется: правило действует со следующего возобновления.
     WhiteResumeRuleChanged {
         rule: WhiteResumeRule,
+    },
+    /// Слежение за белым включено, выключено или сменило скорость. Белая от этого сама не меняется: её двигают
+    /// ответы источника (`WhiteChanged`). Отдельные вопросы слежения событий не рождают.
+    WhiteFollowChanged {
+        follow: WhiteFollowRecord,
     },
     /// Итог серии с брекетингом.
     BracketCaptured {

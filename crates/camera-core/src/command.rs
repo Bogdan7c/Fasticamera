@@ -11,7 +11,7 @@ use camera_contract::white::{WhiteAdjustment, WhiteSourceId, WhiteTransition};
 use serde::Serialize;
 
 use crate::backend::UnsupportedStream;
-use crate::white::WhiteResumeRule;
+use crate::white::{WhiteFollowSpeed, WhiteResumeRule};
 
 /// Номер команды: выдаётся при отправке, по нему итог находится в событиях.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
@@ -100,6 +100,17 @@ pub enum CameraCommand {
     SetWhiteResumeRule {
         rule: WhiteResumeRule,
     },
+    /// Следить за белым источника (кнопка «Auto», WB44). Работает без потока и в фоне: следить начнёт первый кадр.
+    /// Выключают слежение `SetWhite`, `AdjustWhite` и принятая `TakeWhite`. Выбор запоминается. Итог: `Accepted`
+    /// или `AlreadyInState` (за этим источником уже следим).
+    FollowWhite {
+        source: WhiteSourceId,
+    },
+    /// Скорость слежения за белым (WB45, WB56): выбор человека, сильнее конфига и запоминается. Сам режим не
+    /// включает; действует со следующего переезда белой. Итог: `Accepted` или `AlreadyInState`.
+    SetWhiteFollowSpeed {
+        speed: WhiteFollowSpeed,
+    },
     /// Камера не нужна: закрыть и забыть желаемое.
     Close,
     /// Приложение ушло с переднего плана: отпустить камеру, желаемое сохранить.
@@ -128,6 +139,8 @@ impl CameraCommand {
             CameraCommand::AdjustWhite { .. } => "adjust_white",
             CameraCommand::TakeWhite { .. } => "take_white",
             CameraCommand::SetWhiteResumeRule { .. } => "set_white_resume_rule",
+            CameraCommand::FollowWhite { .. } => "follow_white",
+            CameraCommand::SetWhiteFollowSpeed { .. } => "set_white_follow_speed",
             CameraCommand::Close => "close",
             CameraCommand::EnterBackground => "enter_background",
             CameraCommand::EnterForeground => "enter_foreground",

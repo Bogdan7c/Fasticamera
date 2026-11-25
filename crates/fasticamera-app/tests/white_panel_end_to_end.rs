@@ -38,6 +38,8 @@ mod button_side;
 mod engine_stand;
 #[path = "white_end_to_end/fake_source.rs"]
 mod fake_source;
+#[path = "white_panel_end_to_end/follow.rs"]
+mod follow;
 #[path = "white_panel_end_to_end/lagging_facts.rs"]
 mod lagging_facts;
 #[path = "white_panel_end_to_end/layout.rs"]

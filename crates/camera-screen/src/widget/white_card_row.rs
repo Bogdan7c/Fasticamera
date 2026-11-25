@@ -1,12 +1,13 @@
-//! Ряд «Phone» + кнопки света карточки белого (WB28, WB30, WB32, WB33).
+//! Ряд «Auto» + «Phone» + кнопки света карточки белого (WB28, WB30, WB32, WB33, WB44, WB48).
 //!
 //! Все кнопки видны без прокрутки (число проверяет конфиг). Кнопка — значок над подписью; активная — жёлтая.
 //! «Phone» ещё несёт строку оценки «≈ 3100» на постоянном месте под подписью (место зарезервировано, раскладка
 //! не прыгает, пока оценки нет), мерцает при ожидании ответа источника и дёргается при отказе.
 //!
 //! # Подсветка
-//! Подсветка не хранится: на каждом кадре активность считается по ФАКТАМ (`light_is_active`, `phone_is_active`).
-//! Поэтому тап по кнопке света сам ничего не подсвечивает — подсветка появляется, когда движок подтвердил белое.
+//! Подсветка не хранится: на каждом кадре активность считается по ФАКТАМ (`auto_is_active`, `phone_is_active`,
+//! `light_is_active`). Поэтому тап по кнопке сам ничего не подсвечивает — подсветка появляется, когда движок
+//! подтвердил белое или включил слежение. Места кнопок — [`WhiteRowSlot`] (порядок «Auto», «Phone», свет).
 //!
 //! # Поворот
 //! Значки — `rotating_content`: крутятся с устройством вокруг СВОЕГО центра (смещение от центра кнопки
@@ -32,24 +33,18 @@ use super::white_attention::WhiteAttention;
 use super::{Ctx, Outputs};
 use crate::action::ScreenAction;
 use crate::white_config::WhiteLightIndex;
-use crate::white_display::{PHONE_LABEL, light_is_active, phone_estimate_text, phone_is_active};
-
-/// Что делает кнопка ряда.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RowButtonKind {
-    /// «Phone»: взять белое телефона.
-    Phone,
-    /// Кнопка света по номеру в конфиге.
-    Light(usize),
-}
+use crate::white_display::{
+    AUTO_LABEL, PHONE_LABEL, auto_is_active, light_is_active, phone_estimate_text, phone_is_active,
+};
+use crate::white_row::WhiteRowSlot;
 
 struct RowButton {
-    kind: RowButtonKind,
+    slot: WhiteRowSlot,
     button: PressButton,
     content: NodeId,
 }
 
-/// Ряд «Phone» + кнопки света.
+/// Ряд «Auto» + «Phone» + кнопки света.
 pub(crate) struct LightsRow {
     buttons: Vec<RowButton>,
     /// Внимание кнопки «Phone» (мерцание ожидания, тряска отказа).
@@ -57,32 +52,28 @@ pub(crate) struct LightsRow {
 }
 
 impl LightsRow {
-    /// Кнопки создаются спрятанными от касаний; состав — «Phone» и все кнопки света из конфига.
+    /// Кнопки создаются спрятанными от касаний; состав — «Auto», «Phone» и все кнопки света из конфига.
     pub(crate) fn build(
         kit: &mut SceneKit,
         ctx: &Ctx<'_>,
         (card_node, card_rect): (NodeId, Rect),
     ) -> Result<Self, WidgetError> {
-        let count = 1 + ctx.config.white.lights.len();
-        let mut buttons = Vec::with_capacity(count);
-        for index in 0..count {
-            let kind = if index == 0 {
-                RowButtonKind::Phone
-            } else {
-                RowButtonKind::Light(index - 1)
-            };
-            let id = match kind {
-                RowButtonKind::Phone => ButtonId::WhitePhone,
-                RowButtonKind::Light(light) => ButtonId::WhiteLight(u8::try_from(light).map_err(|_| {
+        let light_count = ctx.config.white.lights.len();
+        let mut buttons = Vec::with_capacity(WhiteRowSlot::row_len(light_count));
+        for slot in WhiteRowSlot::row(light_count) {
+            let id = match slot {
+                WhiteRowSlot::Auto => ButtonId::WhiteAuto,
+                WhiteRowSlot::Phone => ButtonId::WhitePhone,
+                WhiteRowSlot::Light(light) => ButtonId::WhiteLight(u8::try_from(light).map_err(|_| {
                     WidgetError::Inconsistent(format!("кнопок света {} больше, чем помещается в номер", light + 1))
                 })?),
             };
-            let rect = ctx.geometry.white_light_slot(index, count);
+            let rect = ctx.geometry.white_row_slot(slot, light_count);
             let node = kit.add_node(card_node, "white_light", rect, card_rect)?;
             let button = PressButton::attach(kit, id, node, rect, ctx)?;
             let content = kit.add_rotating_content(node, "white_light_icon")?;
             kit.set_interactive(node, false)?;
-            buttons.push(RowButton { kind, button, content });
+            buttons.push(RowButton { slot, button, content });
         }
         Ok(Self {
             buttons,
@@ -99,20 +90,22 @@ impl LightsRow {
         let ScreenGesture::Press(id) = event.intent else {
             return Ok(false);
         };
-        let kind = match id {
-            ButtonId::WhitePhone => RowButtonKind::Phone,
-            ButtonId::WhiteLight(index) => RowButtonKind::Light(usize::from(index)),
+        let slot = match id {
+            ButtonId::WhiteAuto => WhiteRowSlot::Auto,
+            ButtonId::WhitePhone => WhiteRowSlot::Phone,
+            ButtonId::WhiteLight(index) => WhiteRowSlot::Light(usize::from(index)),
             _ => return Ok(false),
         };
         let button = self
             .buttons
             .iter_mut()
-            .find(|button| button.kind == kind)
-            .ok_or_else(|| WidgetError::Inconsistent(format!("кнопки белого {kind:?} нет")))?;
+            .find(|button| button.slot == slot)
+            .ok_or_else(|| WidgetError::Inconsistent(format!("кнопки белого {slot:?} нет")))?;
         if button.button.handle(event.state, event.data, event.time)? == ButtonEvent::Activated {
-            out.actions.push(match kind {
-                RowButtonKind::Phone => ScreenAction::WhitePhoneTapped,
-                RowButtonKind::Light(index) => ScreenAction::WhiteLightSelected(WhiteLightIndex(index)),
+            out.actions.push(match slot {
+                WhiteRowSlot::Auto => ScreenAction::WhiteAutoTapped,
+                WhiteRowSlot::Phone => ScreenAction::WhitePhoneTapped,
+                WhiteRowSlot::Light(index) => ScreenAction::WhiteLightSelected(WhiteLightIndex(index)),
             });
         }
         Ok(true)
@@ -153,17 +146,22 @@ impl LightsRow {
             ) else {
                 continue;
             };
-            let is_phone = row_button.kind == RowButtonKind::Phone;
-            let (icon, label, active) = match row_button.kind {
-                RowButtonKind::Phone => (IconId::DeviceMobile, PHONE_LABEL, phone_is_active(facts.held)),
-                RowButtonKind::Light(index) => {
+            let is_phone = row_button.slot == WhiteRowSlot::Phone;
+            let (icon, label, active) = match row_button.slot {
+                WhiteRowSlot::Auto => (IconId::MagicWand, AUTO_LABEL, auto_is_active(facts.follow)),
+                WhiteRowSlot::Phone => (
+                    IconId::DeviceMobile,
+                    PHONE_LABEL,
+                    phone_is_active(facts.held, facts.follow),
+                ),
+                WhiteRowSlot::Light(index) => {
                     let Some(light) = ctx.config.white.lights.get(index) else {
                         return Err(WidgetError::Inconsistent(format!("кнопки света {index} нет в конфиге")));
                     };
                     (
                         light.icon.icon_id(),
                         light.label.as_str(),
-                        light_is_active(light, facts.held.setting, &ctx.config.white),
+                        light_is_active(light, facts.held.setting, facts.follow, &ctx.config.white),
                     )
                 }
             };

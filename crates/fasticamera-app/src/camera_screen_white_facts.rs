@@ -18,10 +18,10 @@
 
 use camera_contract::white::WhiteSourceId;
 use camera_contract::white_reading::{WhiteReading, WhiteReadingBoard};
+use camera_core::white::{WhiteFollowState, WhiteTakeReport, WhiteTakeState as EngineTakeState};
 use camera_core::white::{WhiteRange as EngineWhiteRange, WhiteRequestOutcome};
-use camera_core::white::{WhiteTakeReport, WhiteTakeState as EngineTakeState};
 use camera_core::{CameraState, CameraStatus};
-use camera_screen::{WhiteFacts, WhiteRange, WhiteTakeFacts, WhiteTakeState};
+use camera_screen::{WhiteFacts, WhiteFollowFacts, WhiteRange, WhiteTakeFacts, WhiteTakeState};
 
 /// Источник, чьё показание экран выводит на кнопке «Телефон».
 const PHONE_SOURCE: WhiteSourceId = WhiteSourceId::PHONE;
@@ -34,6 +34,7 @@ pub(crate) fn white_facts_of(status: &CameraStatus, readings: &WhiteReadingBoard
         range: range_facts_of(&white.range),
         take: white.last_take.map(take_facts_of),
         phone_reading: phone_reading_of(status, readings),
+        follow: follow_facts_of(white.follow.state),
     }
 }
 
@@ -44,6 +45,15 @@ pub(crate) fn range_facts_of(range: &EngineWhiteRange) -> WhiteRange {
         min_kelvin: range.min_temperature.kelvin(),
         max_kelvin: range.max_temperature.kelvin(),
         max_abs_duv: range.max_abs_tint.duv(),
+    }
+}
+
+/// Слежение движка → факт экрана. Разобрано без `_`: новое состояние слежения не скомпилируется, пока его не
+/// отнесли к «включено» или «выключено». «Заморожено блокировкой» (WB46) для человека — тот же режим: «Auto» горит.
+fn follow_facts_of(state: WhiteFollowState) -> WhiteFollowFacts {
+    match state {
+        WhiteFollowState::Off => WhiteFollowFacts::Off,
+        WhiteFollowState::Following { .. } | WhiteFollowState::HeldByLock { .. } => WhiteFollowFacts::On,
     }
 }
 

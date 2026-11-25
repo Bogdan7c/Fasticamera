@@ -2,6 +2,8 @@
 //! (`NativeConfig.whiteMemory`, intent-параметр `white_memory`), включает режим `none`; опечатка отвергает запуск.
 
 use super::{ConfigError, RuntimeConfig};
+use camera_core::white::WhiteFollowSpeed;
+
 use crate::white_memory::WhiteMemoryMode;
 
 fn with_camera(section: &str) -> String {
@@ -136,4 +138,45 @@ fn a_bad_rule_rejects_the_whole_config_and_the_error_names_the_field() {
         "{launch_choice}"
     );
     assert!(launch_choice.to_string().contains("sometimes"), "{launch_choice}");
+}
+
+// ---- скорость слежения за белым: параметр запуска `white_follow_ms` ----
+
+#[test]
+fn no_follow_speed_choice_by_default() {
+    let config = RuntimeConfig::from_json(r#"{"build_type":"debug","log_filter":"info"}"#).expect("конфиг");
+    assert_eq!(config.camera().white_follow_speed_choice, None);
+}
+
+#[test]
+fn the_json_kotlin_sends_for_the_follow_extra_carries_the_speed_as_a_number() {
+    // Ровно та форма, которую строит `NativeConfig.toJson()` при `-e white_follow_ms 450`: число, не строка.
+    let config = RuntimeConfig::from_json(&with_camera(r#"{"white_follow_speed_choice":450}"#)).expect("конфиг");
+    assert_eq!(
+        config.camera().white_follow_speed_choice,
+        Some(WhiteFollowSpeed::from_millis(450).expect("скорость"))
+    );
+    let instant = RuntimeConfig::from_json(&with_camera(r#"{"white_follow_speed_choice":0}"#)).expect("конфиг");
+    assert_eq!(
+        instant.camera().white_follow_speed_choice.map(WhiteFollowSpeed::millis),
+        Some(0),
+        "ноль — «сразу», а не «не задано»"
+    );
+}
+
+#[test]
+fn a_bad_follow_speed_rejects_the_whole_config_and_the_error_names_the_field() {
+    // Вне предела; дробь и отрицательное (Kotlin шлёт их строкой как есть); не число вовсе.
+    for bad in ["10001", "-3", r#""1.5""#, r#""-3""#, r#""fast""#] {
+        let error = RuntimeConfig::from_json(&with_camera(&format!(r#"{{"white_follow_speed_choice":{bad}}}"#)))
+            .expect_err("значение параметра запуска");
+        assert!(matches!(error, ConfigError::Malformed(_)), "{bad}: {error}");
+        assert!(
+            error.to_string().contains("camera.white_follow_speed_choice"),
+            "{bad}: {error}"
+        );
+    }
+    let out_of_range =
+        RuntimeConfig::from_json(&with_camera(r#"{"white_follow_speed_choice":10001}"#)).expect_err("вне предела");
+    assert!(out_of_range.to_string().contains("10001"), "{out_of_range}");
 }

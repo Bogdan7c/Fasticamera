@@ -513,6 +513,7 @@ impl ZoomRunner {
                 | CameraEvent::FlashStillFinished { .. }
                 | CameraEvent::WhiteChanged { .. }
                 | CameraEvent::WhiteResumeRuleChanged { .. }
+                | CameraEvent::WhiteFollowChanged { .. }
                 | CameraEvent::WhiteRequestFinished { .. } => {}
             }
         }

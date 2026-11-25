@@ -463,3 +463,32 @@ fn the_phone_reading_reaches_the_board_without_making_an_answer() {
         Some(WhiteReading::NotMeasuredYet)
     );
 }
+
+#[test]
+fn questions_of_the_follow_mode_are_not_worth_an_info_line_but_a_smooth_move_and_hiding_are() {
+    let follow = over(300);
+    let resting = directive_of(4_000.0, follow, None);
+    let asking = directive_of(
+        4_000.0,
+        follow,
+        Some(request_of(7, FAKE_ID, WhileAwaitingWhite::KeepShowing)),
+    );
+    let asking_again = directive_of(
+        4_000.0,
+        follow,
+        Some(request_of(8, FAKE_ID, WhileAwaitingWhite::KeepShowing)),
+    );
+    assert!(directive_is_notable(None, &resting), "первое указание");
+    for (previous, next) in [(&resting, &asking), (&asking, &resting), (&asking, &asking_again)] {
+        assert!(!directive_is_notable(Some(previous), next), "вопрос слежения: {next:?}");
+    }
+
+    let moved = directive_of(5_600.0, follow, None);
+    assert!(directive_is_notable(Some(&asking), &moved), "плавный переезд белой");
+    let dragged = directive_of(5_700.0, WhiteTransition::Immediate, None);
+    assert!(!directive_is_notable(Some(&moved), &dragged), "шаг ползунка");
+
+    let hiding = directive_of(4_000.0, follow, Some(request_of(9, FAKE_ID, HIDE)));
+    assert!(directive_is_notable(Some(&resting), &hiding), "кадры скрыты");
+    assert!(directive_is_notable(Some(&hiding), &resting), "кадры показаны");
+}

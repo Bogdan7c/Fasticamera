@@ -125,6 +125,7 @@ pub fn failure_of_event(event: &CameraEvent) -> Option<RunFailure> {
         // Белая (смена и итог заявки) — предмет проверок сценариев `viewfinder` и `3a` по статусу, а не отказ движка.
         | CameraEvent::WhiteChanged { .. }
         | CameraEvent::WhiteResumeRuleChanged { .. }
+        | CameraEvent::WhiteFollowChanged { .. }
         | CameraEvent::WhiteRequestFinished { .. } => None,
     }
 }

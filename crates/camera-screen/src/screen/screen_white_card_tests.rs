@@ -26,6 +26,7 @@ use crate::state::PanelState;
 use crate::tools::ToolId;
 use crate::white::WhiteAxis;
 use crate::white_facts::{WhiteFacts, WhiteTakeFacts, WhiteTakeState};
+use crate::white_row::WhiteRowSlot;
 
 const WHITE_CARD: PanelState = PanelState::Submenu(ToolId::White);
 
@@ -223,8 +224,9 @@ fn all_three_rows_have_44_pt_touch_zones_and_sit_fully_above_the_system_gesture_
     let zones = owner_zones();
     let axis_temperature = rig.rect_with(|g| g.white_axis_button(WhiteAxis::Temperature));
     let axis_tint = rig.rect_with(|g| g.white_axis_button(WhiteAxis::Tint));
-    let lights: Vec<Rect> = (0..6)
-        .map(|index| rig.rect_with(|g| g.white_light_slot(index, 6)))
+    let light_count = ScreenConfig::default().white.lights.len();
+    let lights: Vec<Rect> = WhiteRowSlot::row(light_count)
+        .map(|slot| rig.rect_with(|g| g.white_row_slot(slot, light_count)))
         .collect();
     let ruler = rig.rect_with(|g| g.white_ruler());
     let mut rows: Vec<(&str, Rect)> = vec![

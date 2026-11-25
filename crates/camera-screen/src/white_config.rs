@@ -11,6 +11,7 @@ use ui_draw::icons::IconId;
 use ui_draw::text::{Figures, FontFace, TextError, TextStyle, layout_line};
 
 use crate::white_facts::WhiteRange;
+use crate::white_row::SOURCE_BUTTON_COUNT;
 
 /// Номер кнопки света в списке конфига (кнопка «Телефон» сюда не входит: она не из списка).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -151,10 +152,10 @@ impl<'de> Deserialize<'de> for WhiteButtonSide {
 pub struct WhiteScreenConfig {
     /// Сторона кнопки белого от затвора (WB35): справа (умолчание) или слева.
     pub button_side: WhiteButtonSide,
-    /// Кнопки света слева направо после кнопки «Телефон».
+    /// Кнопки света слева направо после кнопок «Auto» и «Phone».
     pub lights: Vec<WhiteLight>,
-    /// Сколько кнопок видно без прокрутки вместе с «Телефоном». `[estimate]` 6 = «Телефон» + 5 света: шесть кнопок
-    /// по ~60 pt помещаются в ширину карточки 440 pt.
+    /// Сколько кнопок видно без прокрутки вместе с кнопками-источниками («Auto» и «Phone»). `[owner]` 7 (WB48) =
+    /// «Auto» + «Phone» + 5 света: семь кнопок по 60 pt = 420 pt помещаются в ширину карточки.
     pub max_buttons_without_scroll: usize,
     /// Шаг рисок шкалы Кельвинов в майредах. `[doc]` 5 майред — заметный глазу сдвиг белого, ровно по нему шагает шкала.
     pub mired_step: f64,
@@ -186,7 +187,7 @@ impl Default for WhiteScreenConfig {
                 WhiteLight::named("Lamp", WhiteLightIcon::Lightbulb, 3_200.0, 0.0),
                 WhiteLight::named("Home", WhiteLightIcon::House, 2_700.0, 0.0),
             ],
-            max_buttons_without_scroll: 6,
+            max_buttons_without_scroll: 7,
             mired_step: 5.0,
             mired_major_every: 5,
             tint_step_units: 5.0,
@@ -228,9 +229,9 @@ impl WhiteScreenConfig {
         Ok(())
     }
 
-    /// Максимум кнопок света без прокрутки: одно место занимает «Телефон».
+    /// Максимум кнопок света без прокрутки: [`SOURCE_BUTTON_COUNT`] места занимают «Auto» и «Phone».
     pub fn max_lights_without_scroll(&self) -> usize {
-        self.max_buttons_without_scroll.saturating_sub(1)
+        self.max_buttons_without_scroll.saturating_sub(SOURCE_BUTTON_COUNT)
     }
 
     fn collect_light_list_errors(&self, errors: &mut Vec<WhiteConfigError>) {

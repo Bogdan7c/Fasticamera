@@ -92,6 +92,7 @@ impl CameraIntentPort for HandleCameraPort {
                 self.handle.adjust_white(adjustment, WhiteTransition::Immediate)
             }
             ScreenCameraIntent::TakeWhite(source) => self.handle.take_white(source, WhiteTransition::Immediate),
+            ScreenCameraIntent::FollowWhite(source) => self.handle.follow_white(source),
         };
         match sent {
             Ok(command) => CameraIntentOutcome::Sent(command),
@@ -449,6 +450,7 @@ impl EffectExecutor {
                 None
             }
             ScreenCameraIntent::TakeWhite(source) => self.white.run_take(camera, source),
+            ScreenCameraIntent::FollowWhite(source) => self.white.run_follow(camera, source),
             ScreenCameraIntent::FocusAndExposeAt(_)
             | ScreenCameraIntent::LockFocusAndExposureAt(_)
             | ScreenCameraIntent::ResetPointOfInterest
@@ -470,7 +472,8 @@ impl EffectExecutor {
             // Белые намерения сюда не доходят: их исполняет `WhiteEffects` (см. `deliver_camera_intent`).
             | ScreenCameraIntent::SetWhite(_)
             | ScreenCameraIntent::AdjustWhite(_)
-            | ScreenCameraIntent::TakeWhite(_) => None,
+            | ScreenCameraIntent::TakeWhite(_)
+            | ScreenCameraIntent::FollowWhite(_) => None,
         };
         match self.targets.camera.deliver(intent) {
             CameraIntentOutcome::Sent(_) => {

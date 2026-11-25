@@ -20,11 +20,11 @@ use camera_core::state::ClosedReason;
 use camera_core::status::{AppPresence, CameraCounters, StreamStats};
 use camera_core::three_a_status::ThreeAStatus;
 use camera_core::white::{
-    WhiteCancelCause, WhiteRequestOutcome, WhiteRequestResult, WhiteRequestState, WhiteTakeReport,
+    WhiteCancelCause, WhiteFollowState, WhiteRequestOutcome, WhiteRequestResult, WhiteRequestState, WhiteTakeReport,
     WhiteTakeState as EngineTake,
 };
 use camera_core::{CameraState, CameraStatus};
-use camera_screen::{WhiteTakeFacts, WhiteTakeState};
+use camera_screen::{WhiteFollowFacts, WhiteTakeFacts, WhiteTakeState};
 
 use super::white_facts_of;
 use crate::camera_screen_facts::{CameraFactsWatcher, FactsCache, FactsChange, camera_facts_with_cache};
@@ -277,4 +277,27 @@ fn facts_follow_the_shared_board_and_stay_unchanged_without_a_reason() {
         FactsChange::Changed(facts) => assert_eq!(facts.white.phone_reading, None),
         FactsChange::Unchanged => panic!("остановка потока меняет факты"),
     }
+}
+
+#[test]
+fn the_follow_state_of_the_engine_maps_to_on_for_following_and_for_held_by_lock_and_to_off_otherwise() {
+    let phone = WhiteSourceId::PHONE;
+    let table = [
+        (WhiteFollowState::Off, WhiteFollowFacts::Off),
+        (WhiteFollowState::Following { source: phone }, WhiteFollowFacts::On),
+        // Заморожено блокировкой AE/AF (WB46): для человека режим тот же, «Auto» остаётся горящей.
+        (WhiteFollowState::HeldByLock { source: phone }, WhiteFollowFacts::On),
+    ];
+    for (engine_state, expected) in table {
+        let mut status = status_in(streaming_state());
+        status.three_a.white.follow.state = engine_state;
+        let facts = white_facts_of(&status, &WhiteReadingBoard::new());
+        assert_eq!(facts.follow, expected, "{engine_state:?}");
+    }
+}
+
+#[test]
+fn a_fresh_status_starts_with_follow_off() {
+    let facts = white_facts_of(&status_in(streaming_state()), &WhiteReadingBoard::new());
+    assert_eq!(facts.follow, WhiteFollowFacts::Off);
 }

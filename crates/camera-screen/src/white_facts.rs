@@ -54,6 +54,25 @@ pub struct WhiteTakeFacts {
     pub state: WhiteTakeState,
 }
 
+/// Слежение за белым телефона (WB44) глазами экрана. Включено ли слежение — факт движка: экран режим не
+/// хранит, а рисует то, что сообщил движок.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WhiteFollowFacts {
+    /// Слежения нет: белое держится само.
+    #[default]
+    Off,
+    /// Слежение включено. Сюда же входит «включено, но заморожено блокировкой AE/AF» (WB46): для человека режим
+    /// тот же, «Auto» остаётся горящей.
+    On,
+}
+
+impl WhiteFollowFacts {
+    /// Включено ли слежение.
+    pub const fn is_on(self) -> bool {
+        matches!(self, Self::On)
+    }
+}
+
 /// Факты о белом (поле [`crate::facts::CameraFacts::white`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WhiteFacts {
@@ -65,6 +84,8 @@ pub struct WhiteFacts {
     pub take: Option<WhiteTakeFacts>,
     /// Показание источника «телефон» для кнопки («~ 3100»); `None` — не показано.
     pub phone_reading: Option<WhiteReading>,
+    /// Слежение за белым телефона (кнопка «Auto», число у затвора).
+    pub follow: WhiteFollowFacts,
 }
 
 impl WhiteFacts {
@@ -80,6 +101,7 @@ impl WhiteFacts {
         range: WhiteRange::STARTING,
         take: None,
         phone_reading: None,
+        follow: WhiteFollowFacts::Off,
     };
 }
 

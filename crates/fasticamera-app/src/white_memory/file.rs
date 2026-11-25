@@ -2,13 +2,17 @@
 //!
 //! Формат (`schema_version` 1):
 //! ```json
-//! {"schema_version":1,"kelvin":3200.0,"duv":0.004,"origin":"source","resume_rule":"keep_last"}
+//! {"schema_version":1,"kelvin":3200.0,"duv":0.004,"origin":"source","resume_rule":"keep_last",
+//!  "keeping":"follow_source","follow_transition_ms":500}
 //! ```
-//! Два независимых места: белая (`kelvin`, `duv`, `origin` — все три вместе или ни одного) и правило возобновления
-//! (`resume_rule`: `take_from_source` или `keep_last`). Хватает любого одного: выбор правила возможен до первой
-//! белой, а файл прежних версий хранит только белую. Частично заданная белая, документ без белой и без правила,
-//! неизвестное поле, неизвестное происхождение или правило, файл новее приложения, пустой или не-JSON файл —
-//! «не читается»:
+//! Три независимых места: белая (`kelvin`, `duv`, `origin` — все три вместе или ни одного), правило возобновления
+//! (`resume_rule`: `take_from_source` или `keep_last`) и выбор слежения (`keeping`: `hold` или `follow_source`,
+//! `follow_transition_ms`: скорость, 0..=10000). Хватает любого одного: выбор правила или слежения возможен до
+//! первой белой, а файл прежних версий хранит только белую. Слежение пишется скупо, чтобы файл без «Auto» читался
+//! и прежними сборками (`deny_unknown_fields` отверг бы лишнее поле): `keeping` — только `follow_source`
+//! (`hold` — умолчание, поля нет), `follow_transition_ms` — только если человек выбирал скорость. Частично
+//! заданная белая, документ без белой, без правила и без слежения, неизвестное поле, неизвестное происхождение,
+//! правило или режим, скорость вне предела, файл новее приложения, пустой или не-JSON файл — «не читается»:
 //! белая берёт запасной свет, а сам файл не пропадает, а откладывается в `<имя>.corrupt-<unix-мс>`
 //! (образец — `look-presets`), чтобы владелец мог его разобрать. Приложение при этом не падает.
 //!
@@ -21,7 +25,10 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use camera_contract::control::{ColorTemperature, Tint, WhiteBalanceSetting};
-use camera_core::white::{RememberedOrigin, WhiteMemoryLoad, WhiteMemoryRecord, WhiteResumeRule};
+use camera_core::white::{
+    RememberedOrigin, WhiteFollowRecord, WhiteFollowSpeed, WhiteKeeping, WhiteMemoryLoad, WhiteMemoryRecord,
+    WhiteResumeRule,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -70,12 +77,71 @@ impl FileResumeRule {
     }
 }
 
-/// Всё, что файл помнит: белая и правило возобновления. Оба места независимы и необязательны по отдельности.
-/// Владелец «последнего известного» содержимого — [`WhiteMemoryFile`]: запись одного места не стирает другое.
+/// Режим слежения в файле. Отдельный тип от `WhiteKeeping` по той же причине, что и `FileOrigin`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FileKeeping {
+    Hold,
+    FollowSource,
+}
+
+impl FileKeeping {
+    fn into_keeping(self) -> WhiteKeeping {
+        match self {
+            Self::Hold => WhiteKeeping::Hold,
+            Self::FollowSource => WhiteKeeping::FollowSource,
+        }
+    }
+}
+
+/// Всё, что файл помнит: белая, правило возобновления и выбор слежения. Места независимы и необязательны по
+/// отдельности. Владелец «последнего известного» содержимого — [`WhiteMemoryFile`]: запись одного места не
+/// стирает другое.
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 struct FileContent {
     record: Option<WhiteMemoryRecord>,
     rule: Option<WhiteResumeRule>,
+    /// Выбор слежения; `WhiteFollowRecord::default()` — человек не выбирал (так же читается файл без этих полей).
+    follow: WhiteFollowRecord,
+}
+
+impl FileContent {
+    /// Накладывает на известное содержимое то, что принесла запись: только занятые места, остальные не трогает.
+    fn apply(&mut self, update: &WhiteMemoryUpdate) {
+        if let Some(record) = update.record {
+            self.record = Some(record);
+        }
+        if let Some(rule) = update.rule {
+            self.rule = Some(rule);
+        }
+        if let Some(follow) = update.follow {
+            self.follow = follow;
+        }
+    }
+
+    /// Кроме режима слежения, записывать нечего.
+    fn remembers_nothing_else(&self) -> bool {
+        self.record.is_none() && self.rule.is_none() && self.follow.speed.is_none()
+    }
+}
+
+/// Что поток записи несёт приёмнику за одну запись: любое сочетание независимых мест. Пустое место (`None`) значит
+/// «это место приёмника не трогать», а не «стереть».
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct WhiteMemoryUpdate {
+    /// Белая.
+    pub record: Option<WhiteMemoryRecord>,
+    /// Правило возобновления.
+    pub rule: Option<WhiteResumeRule>,
+    /// Выбор слежения (режим и скорость одним местом).
+    pub follow: Option<WhiteFollowRecord>,
+}
+
+impl WhiteMemoryUpdate {
+    /// Ни одного занятого места: писать нечего.
+    pub fn is_empty(&self) -> bool {
+        self.record.is_none() && self.rule.is_none() && self.follow.is_none()
+    }
 }
 
 /// Документ файла. `deny_unknown_fields`: чужое поле — признак чужой или новой версии файла. Поля белой
@@ -92,6 +158,13 @@ struct WhiteFileDocument {
     origin: Option<FileOrigin>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resume_rule: Option<FileResumeRule>,
+    /// Пишется `follow_source`, а `hold` — только если больше писать нечего: файл без «Auto» остаётся читаемым
+    /// прежними сборками.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    keeping: Option<FileKeeping>,
+    /// Пишется только если человек выбирал скорость.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    follow_transition_ms: Option<u64>,
 }
 
 impl WhiteFileDocument {
@@ -105,6 +178,14 @@ impl WhiteFileDocument {
                 RememberedOrigin::Manual => FileOrigin::Manual,
             }),
             resume_rule: content.rule.map(FileResumeRule::from_rule),
+            keeping: match content.follow.keeping {
+                WhiteKeeping::FollowSource => Some(FileKeeping::FollowSource),
+                // Auto включили и выключили раньше, чем появилось что помнить: без этой строки документ вышел бы
+                // пустым, и следующий запуск отложил бы собственный файл в карантин как испорченный.
+                WhiteKeeping::Hold if content.remembers_nothing_else() => Some(FileKeeping::Hold),
+                WhiteKeeping::Hold => None,
+            },
+            follow_transition_ms: content.follow.speed.map(WhiteFollowSpeed::millis),
         }
     }
 
@@ -137,10 +218,20 @@ impl WhiteFileDocument {
             }
         };
         let rule = self.resume_rule.map(FileResumeRule::into_rule);
-        if record.is_none() && rule.is_none() {
-            return Err("в файле нет ни белой, ни правила возобновления".to_owned());
+        let has_follow_choice = self.keeping.is_some() || self.follow_transition_ms.is_some();
+        let speed = self
+            .follow_transition_ms
+            .map(WhiteFollowSpeed::from_millis)
+            .transpose()
+            .map_err(|error| format!("follow_transition_ms: {error}"))?;
+        let follow = WhiteFollowRecord {
+            keeping: self.keeping.map_or(WhiteKeeping::Hold, FileKeeping::into_keeping),
+            speed,
+        };
+        if record.is_none() && rule.is_none() && !has_follow_choice {
+            return Err("в файле нет ни белой, ни правила возобновления, ни выбора слежения".to_owned());
         }
-        Ok(FileContent { record, rule })
+        Ok(FileContent { record, rule, follow })
     }
 }
 
@@ -174,25 +265,12 @@ pub enum WriteCommit {
 
 /// Куда поток записи пишет память. Файл — [`WhiteMemoryFile`]; тесты подставляют заглушку.
 ///
-/// Белая и правило возобновления — два независимых места одного хранилища: запись одного не стирает другое.
+/// Белая, правило возобновления и выбор слежения — три независимых места одного хранилища: запись одних мест не
+/// стирает остальные. Поток записи зовёт приёмник ОДИН раз на всё занятое к пробуждению: диску незачем получать
+/// несколько временных файлов, переименований и сбросов каталога там, где хватит одного.
 pub trait WhiteRecordSink: Send + 'static {
-    /// Записать белую; правило хранилища остаётся прежним.
-    fn write_record(&mut self, record: &WhiteMemoryRecord) -> Result<WriteCommit, WhiteMemoryError>;
-
-    /// Записать правило возобновления; белая хранилища остаётся прежней.
-    fn write_resume_rule(&mut self, rule: WhiteResumeRule) -> Result<WriteCommit, WhiteMemoryError>;
-
-    /// Записать оба места за одну запись на диск (поток записи зовёт его, когда к пробуждению заняты оба). Здесь
-    /// умолчание — два вызова подряд, для заглушек; файл переопределяет его одной записью: диску незачем
-    /// получать два временных файла, переименования и сброса каталога там, где хватит одного.
-    fn write_record_and_rule(
-        &mut self,
-        record: &WhiteMemoryRecord,
-        rule: WhiteResumeRule,
-    ) -> Result<WriteCommit, WhiteMemoryError> {
-        self.write_record(record)?;
-        self.write_resume_rule(rule)
-    }
+    /// Записать занятые места `update`; незанятые места хранилища остаются прежними. Пустая запись не приходит.
+    fn write(&mut self, update: &WhiteMemoryUpdate) -> Result<WriteCommit, WhiteMemoryError>;
 }
 
 /// Файл памяти белой.
@@ -215,6 +293,8 @@ pub struct OpenedWhiteFile {
     pub load: WhiteMemoryLoad,
     /// Правило возобновления, которое человек выбрал раньше (`None` — выбора в файле нет или файл не читается).
     pub resume_rule: Option<WhiteResumeRule>,
+    /// Выбор слежения, сделанный раньше (`default` — выбора нет или файл не читается).
+    pub follow: WhiteFollowRecord,
 }
 
 impl WhiteMemoryFile {
@@ -229,10 +309,12 @@ impl WhiteMemoryFile {
         };
         let load = file.read_and_judge();
         let resume_rule = file.known.rule;
+        let follow = file.known.follow;
         OpenedWhiteFile {
             file,
             load,
             resume_rule,
+            follow,
         }
     }
 
@@ -269,6 +351,7 @@ impl WhiteMemoryFile {
                     path = ?self.path,
                     has_white = content.record.is_some(),
                     resume_rule = ?content.rule,
+                    follow = ?content.follow,
                     "память белой прочитана"
                 );
                 self.known = content;
@@ -388,25 +471,9 @@ impl WhiteMemoryFile {
 }
 
 impl WhiteRecordSink for WhiteMemoryFile {
-    fn write_record(&mut self, record: &WhiteMemoryRecord) -> Result<WriteCommit, WhiteMemoryError> {
-        self.known.record = Some(*record);
-        self.persist_known()
-    }
-
-    fn write_resume_rule(&mut self, rule: WhiteResumeRule) -> Result<WriteCommit, WhiteMemoryError> {
-        self.known.rule = Some(rule);
-        self.persist_known()
-    }
-
-    fn write_record_and_rule(
-        &mut self,
-        record: &WhiteMemoryRecord,
-        rule: WhiteResumeRule,
-    ) -> Result<WriteCommit, WhiteMemoryError> {
-        self.known = FileContent {
-            record: Some(*record),
-            rule: Some(rule),
-        };
+    fn write(&mut self, update: &WhiteMemoryUpdate) -> Result<WriteCommit, WhiteMemoryError> {
+        // Известное обновляется ДО записи (см. `persist_known`): каждое занятое место попадает в `known`.
+        self.known.apply(update);
         self.persist_known()
     }
 }

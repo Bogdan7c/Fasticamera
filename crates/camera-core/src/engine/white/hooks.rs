@@ -6,13 +6,15 @@
 
 use std::time::Instant;
 
+use camera_contract::capture_result::CaptureResultMeta;
 use camera_contract::control::WhiteBalanceSetting;
 use camera_contract::white::{WhiteAdjustment, WhiteSourceId, WhiteTransition};
 
+use super::follow::{FollowChange, FollowTick};
 use super::owner::ManualOutcome;
 use crate::command::{CameraCommand, CommandId, CommandOutcome, InvalidStateReason};
 use crate::engine::CameraEngine;
-use crate::white::{ResumeRuleChoice, WhiteResumeRule};
+use crate::white::{ResumeRuleChoice, WhiteFollowSpeed, WhiteResumeRule};
 
 impl CameraEngine {
     /// Команда `SetWhite`: белая рукой. Работает и без потока: белая держится и ждёт камеру.
@@ -49,6 +51,16 @@ impl CameraEngine {
         }
     }
 
+    /// Команда `FollowWhite`: следить за источником. Работает и без потока, и в фоне: спросит первый кадр.
+    pub(in crate::engine) fn decide_follow_white(&mut self, source: WhiteSourceId) -> CommandOutcome {
+        outcome_of(self.white.follow_source(source))
+    }
+
+    /// Команда `SetWhiteFollowSpeed`: скорость слежения. Режим не включает и белую не трогает.
+    pub(in crate::engine) fn decide_set_white_follow_speed(&mut self, speed: WhiteFollowSpeed) -> CommandOutcome {
+        outcome_of(self.white.choose_follow_speed(speed))
+    }
+
     /// Команда `TakeWhite`: взять белую у источника. Нужен идущий поток — иначе спрашивать нечем.
     /// Знает ли рендер такой источник, движок не проверяет: рендер ответит `Unavailable(NotRegistered)`.
     pub(in crate::engine) fn decide_take_white(
@@ -79,6 +91,14 @@ impl CameraEngine {
         }
     }
 
+    /// Передать владельцу белого действующую блокировку AE/AF (WB46). Блокировку меняют несколько мест движка
+    /// (тап, сброс точки, смена камеры, закрытие), поэтому владелец не подписывается на каждое, а получает текущее
+    /// значение: сразу после решения команды (ставят блокировку только команды, и ответ, идущий навстречу, уже
+    /// чужой) и на кадре — снять её может и смена линзы по намерению экрана, минуя команды.
+    pub(in crate::engine) fn sync_white_lock(&mut self) {
+        self.white.note_lock(self.desired.three_a.lock);
+    }
+
     /// Приложение вернулось с заднего плана.
     pub(in crate::engine) fn white_entered_foreground(&mut self) {
         self.white.on_foreground();
@@ -89,9 +109,16 @@ impl CameraEngine {
         self.white.on_background();
     }
 
-    /// Пришёл результат повторяющегося запроса.
-    pub(in crate::engine) fn note_white_stream_frame(&mut self, now: Instant) {
-        self.white.on_stream_frame(now);
+    /// Пришёл результат повторяющегося запроса. Про снимок со вспышкой слежение узнаёт отсюда: пока он идёт (и немного
+    /// после) оно источника не спрашивает.
+    pub(in crate::engine) fn note_white_stream_frame(&mut self, result: &CaptureResultMeta, now: Instant) {
+        self.sync_white_lock();
+        let tick = if self.flash.in_progress() {
+            FollowTick::FlashInProgress
+        } else {
+            result.sensor_timestamp.map_or(FollowTick::Unstamped, FollowTick::Frame)
+        };
+        self.white.on_stream_frame(now, tick);
     }
 
     /// Поток закончился.
@@ -113,5 +140,13 @@ impl CameraEngine {
     pub(in crate::engine) fn flush_white_events(&mut self) {
         let events = self.white.take_events();
         self.events.extend(events);
+    }
+}
+
+/// Итог команды слежения.
+fn outcome_of(change: FollowChange) -> CommandOutcome {
+    match change {
+        FollowChange::Changed => CommandOutcome::Accepted,
+        FollowChange::Unchanged => CommandOutcome::AlreadyInState,
     }
 }

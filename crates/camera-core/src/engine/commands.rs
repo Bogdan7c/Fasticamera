@@ -83,6 +83,8 @@ impl CameraEngine {
             CameraCommand::AdjustWhite { adjustment, transition } => self.decide_adjust_white(*adjustment, *transition),
             CameraCommand::TakeWhite { source, transition } => self.decide_take_white(id, *source, *transition, now),
             CameraCommand::SetWhiteResumeRule { rule } => self.decide_set_white_resume_rule(*rule),
+            CameraCommand::FollowWhite { source } => self.decide_follow_white(*source),
+            CameraCommand::SetWhiteFollowSpeed { speed } => self.decide_set_white_follow_speed(*speed),
             CameraCommand::Close => self.decide_close(),
             CameraCommand::EnterBackground => self.decide_enter_background(),
             CameraCommand::EnterForeground => self.decide_enter_foreground(),
@@ -241,7 +243,9 @@ impl CameraEngine {
             CameraCommand::SetWhite { .. }
             | CameraCommand::AdjustWhite { .. }
             | CameraCommand::TakeWhite { .. }
-            | CameraCommand::SetWhiteResumeRule { .. } => {}
+            | CameraCommand::SetWhiteResumeRule { .. }
+            | CameraCommand::FollowWhite { .. }
+            | CameraCommand::SetWhiteFollowSpeed { .. } => {}
             // Предвспышку запускает `settle_flash_command` сразу после ответа на команду.
             CameraCommand::CaptureFlashStill { .. } => {}
             CameraCommand::Close => self.apply_close(),

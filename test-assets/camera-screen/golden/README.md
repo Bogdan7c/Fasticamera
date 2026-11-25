@@ -37,6 +37,7 @@ GPU-crate-ы не видит (guardrail).
 | `calibration_presets_card.pam` | меню раздела: карточка PRESETS на шторке: «‹» и «↻» (яркая, есть правки), ряд действий NEW / RENAME / SAVE / DELETE, ряд имён с жёлтым «Sunset» | свой пресет с правками → `ControlsMenuOpenRequested` → `CalibrationMenuItemTapped(Presets)` |
 | `white_card_phone.pam` | карточка белого (white-balance 02): «телефон», 3140 K / +16, под Phone «≈ 3100» | тап по кнопке белого + факты (`white_goldens.rs`) |
 | `white_card_manual.pam` | та же карточка: выбран Sun, число на кнопке у затвора жёлтое | тап кнопки + факт Manual |
+| `white_card_auto.pam` | та же карточка со слежением (WB44, WB49): «Auto» горит, «Phone» и свет тёмные, у затвора число белое над «AUTO» | факт слежения включён (`white_goldens.rs`) |
 | `white_card_tint.pam` | та же карточка, шкала на оси оттенка | тап по «Tint» |
 | `white_card_landscape_left.pam` | та же карточка в альбоме: значки повёрнуты, подписи нет | поворот |
 | `calibration_wheels_portrait.pam` | раздел калибровки, вид колёс (14b2), портрет: вкладки LIFT · GAMMA · GAIN · OFFSET (кольца-метки на изменённых Lift и Gamma), круг колеса с настоящим ободком оттенков OKLab, шайба толчка смещена вправо-вверх, яркие «↻» колеса и толчка, шкала кольца яркости; Lift тронут только толчком, Gamma — только кольцом | `ControlViewSelected(Wheels)`, `WheelSelected(Lift)` + факты о виде с колёсами (`calibration_wheels_goldens.rs`) |

@@ -198,6 +198,13 @@ impl WhiteSession {
         self.stand.ui_frames(3);
     }
 
+    /// Тап «Auto» в открытой карточке: слежение за белым телефона (WB44).
+    pub fn tap_auto(&mut self) {
+        let target = self.stand.white_targets().card.expect("карточка открыта").auto_button;
+        self.stand.tap(target);
+        self.stand.ui_frames(3);
+    }
+
     pub fn tap_phone(&mut self) {
         let target = self.stand.white_targets().card.expect("карточка открыта").phone_button;
         self.stand.tap(target);

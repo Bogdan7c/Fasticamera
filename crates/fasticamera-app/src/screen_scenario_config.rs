@@ -123,8 +123,9 @@ pub struct ScreenTouchPlan {
     /// покое (карточка к этому шагу закрыта); 800 мс — как у блокировки AE/AF (порог долгого тапа экрана 500 мс +
     /// запас на задержку `input swipe`).
     pub white_hold: HoldGesture,
-    /// Кнопка света на карточке белого, которую жмёт сценарий. `[derived]` центр первой кнопки света, как его даёт
-    /// `CameraScreen::white_touch_targets()` на экране 1080 × 2412 px: (124,0; 858,37) pt → x = 124,0 / 440 = 0,2818,
+    /// Кнопка света на карточке белого, которую жмёт сценарий. `[derived]` центр первой кнопки света (место 2 из 7
+    /// после «Auto» и «Phone», шаг 60 pt, WB48), как его даёт `CameraScreen::white_touch_targets()` на экране
+    /// 1080 × 2412 px: (160,0; 858,37) pt → x = 160,0 / 440 = 0,3636,
     /// y = 858,37 / 982,67 = 0,8735. Тест `plan_points_of_the_white_button_and_the_ev_icon_hit_the_real_screen` держит
     /// число сверенным с настоящей раскладкой.
     pub white_light: ScreenPoint,
@@ -179,7 +180,7 @@ impl Default for ScreenTouchPlan {
                 at: ScreenPoint::new(0.7091, 0.8432),
                 hold_ms: 800,
             },
-            white_light: ScreenPoint::new(0.2818, 0.8735),
+            white_light: ScreenPoint::new(0.3636, 0.8735),
             white_light_index: 0,
             ev_slider_swipe: swipe((0.65, 0.9300), (0.35, 0.9300), 400),
             ev_reset: ScreenPoint::new(0.8886, 0.8501),

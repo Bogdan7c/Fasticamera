@@ -46,6 +46,12 @@ import org.json.JSONObject
  * запомнено, а без памяти — умолчание конфига (`take_from_source`). `scripts/device-smoke.sh` параметр не шлёт.
  * Kotlin значение не разбирает, а передаёт как есть; неизвестное значение Rust отвергает при initialize.
  *
+ * `whiteFollowMs` — скорость слежения за белым телефона на один запуск (intent-параметр `white_follow_ms`, поле
+ * `camera.white_follow_speed_choice`: целое число миллисекунд, 0…10000). Приложение шлёт её движку ДО первого
+ * возобновления как выбор человека, и она запоминается в файле белой. Число уходит в JSON числом, а нечисловая строка —
+ * как есть строкой: Rust отвергает её при initialize громко (ошибка называет поле), а не берёт молча умолчание.
+ * Режим слежения этим параметром не включается: его включает кнопка «Auto».
+ *
  * `toneContrast` / `toneDisplayMiddleGray` — ручки тона видоискателя на один запуск (intent-параметры
  * `tone_contrast` и `tone_display_middle_gray`, секция `render.viewfinder.tone`, сессия 12b): подбор контраста
  * и средних тонов глазами владельца без пересборки. Число уходит в JSON числом, а нечисловая строка — как
@@ -85,6 +91,7 @@ data class NativeConfig(
     val exposureController: String? = null,
     val whiteMemory: String? = null,
     val whiteResumeRule: String? = null,
+    val whiteFollowMs: String? = null,
     val toneContrast: String? = null,
     val toneDisplayMiddleGray: String? = null,
     val toneBase: String? = null,
@@ -135,6 +142,8 @@ data class NativeConfig(
         whiteMemory?.let { mode -> camera.put("white_memory", JSONObject().put("mode", mode.trim())) }
         // Правило возобновления белого — строкой как есть: проверяет Rust (неизвестное значение — отказ initialize).
         whiteResumeRule?.let { rule -> camera.put("white_resume_choice", rule.trim()) }
+        // Скорость слежения — целое число; не число — исходная строка, чтобы Rust отверг её с именем поля.
+        whiteFollowMs?.let { millis -> camera.put("white_follow_speed_choice", integerOrRaw(millis)) }
         if (untrustedOpticalAxisCameras.isNotEmpty()) {
             val zoom = JSONObject().put("untrusted_optical_axis_cameras", JSONArray(untrustedOpticalAxisCameras))
             camera.put("engine", JSONObject().put("zoom", zoom))
@@ -161,6 +170,9 @@ data class NativeConfig(
 
     /** Число — числом; иначе исходная строка, чтобы Rust отверг её с понятной ошибкой. */
     private fun numberOrRaw(value: String): Any = value.trim().toDoubleOrNull() ?: value
+
+    /** Целое — целым числом; иначе исходная строка (в том числе дробь и отрицательное), чтобы Rust отверг её громко. */
+    private fun integerOrRaw(value: String): Any = value.trim().toLongOrNull() ?: value
 
     companion object {
         /** Intent-параметр с фильтром логов, например `info,fasticamera::scenario=trace`. */
@@ -198,6 +210,9 @@ data class NativeConfig(
 
         /** Intent-параметр с правилом возобновления белого: `take_from_source` или `keep_last` (проверяет Rust). */
         const val EXTRA_WHITE_RESUME_RULE = "white_resume_rule"
+
+        /** Intent-параметр со скоростью слежения за белым, мс (строка с целым числом, проверяет Rust). */
+        const val EXTRA_WHITE_FOLLOW_MS = "white_follow_ms"
 
         /** Intent-параметр с контрастом тона видоискателя (строка с числом, проверяет Rust). */
         const val EXTRA_TONE_CONTRAST = "tone_contrast"
@@ -240,6 +255,8 @@ data class NativeConfig(
             whiteMemory = intent.getStringExtra(EXTRA_WHITE_MEMORY),
             // Нет параметра — null, поле в JSON не попадает: правило решают память и конфиг движка.
             whiteResumeRule = intent.getStringExtra(EXTRA_WHITE_RESUME_RULE),
+            // Нет параметра — null, поле в JSON не попадает: скорость решают память и конфиг движка.
+            whiteFollowMs = intent.getStringExtra(EXTRA_WHITE_FOLLOW_MS),
             // Нет параметра — null, секция тона в JSON не попадает, Rust берёт умолчание.
             toneContrast = intent.getStringExtra(EXTRA_TONE_CONTRAST),
             toneDisplayMiddleGray = intent.getStringExtra(EXTRA_TONE_DISPLAY_MIDDLE_GRAY),

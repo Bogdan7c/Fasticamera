@@ -31,7 +31,7 @@ use std::sync::Arc;
 use camera_contract::auto_exposure_carry::CameraTag;
 use camera_contract::frame_passport::{RawFramePassport, StreamPassport};
 use camera_contract::three_a::DirectiveGeneration;
-use camera_contract::white::{WhiteDirective, WhiteSourceRequest, WhiteTransition};
+use camera_contract::white::{WhileAwaitingWhite, WhiteDirective, WhiteSourceRequest, WhiteTransition};
 use isp_model::color::chromaticity::Chromaticity;
 use isp_model::color::dng::DngColorProfile;
 use isp_model::color::white_point::CctDuv;
@@ -94,8 +94,8 @@ struct RunnerCounters {
 pub struct WhiteBalanceRunner {
     directives: camera_contract::three_a::DirectiveSlot<WhiteDirective>,
     applied_generation: Option<DirectiveGeneration>,
-    /// Заявка источнику действующего указания.
-    request: Option<WhiteSourceRequest>,
+    /// Действующее указание: из него берётся заявка источнику.
+    last_directive: Option<WhiteDirective>,
     applied: AppliedWhite,
     sources: SourceExecutor,
     cold_start: ColdStart,
@@ -122,7 +122,7 @@ impl WhiteBalanceRunner {
         Ok(Self {
             directives: links.directives,
             applied_generation: None,
-            request: None,
+            last_directive: None,
             applied: AppliedWhite::default(),
             sources,
             cold_start: ColdStart::new(config.max_hidden_frames),
@@ -143,14 +143,13 @@ impl WhiteBalanceRunner {
     /// План для нового кадра камеры (см. модуль). Вызывается до подготовки параметров ISP.
     pub fn plan_frame(&mut self, passport: &RawFramePassport) -> FramePlan {
         self.refresh_directive();
+        let request = self.request();
         let stream = self.bind_stream(passport);
-        self.sources.sync_request(self.request);
+        self.sources.sync_request(request);
         self.sources.observe(passport);
         self.sources.collect_answers();
         let cold_start_before = self.cold_start.state();
-        let verdict = self
-            .cold_start
-            .decide(self.request.map(|request| request.while_awaiting));
+        let verdict = self.cold_start.decide(request.map(|request| request.while_awaiting));
         let shown = verdict != ColdStartVerdict::Hide;
         let applied = self.applied.advance(passport.sensor_timestamp.as_nanos(), shown);
         self.note_cold_start(cold_start_before, verdict);
@@ -171,23 +170,25 @@ impl WhiteBalanceRunner {
 
     // ---- внутреннее ----
 
+    /// Заявка источнику действующего указания.
+    fn request(&self) -> Option<WhiteSourceRequest> {
+        self.last_directive.and_then(|directive| directive.request)
+    }
+
     /// Свежее указание владельца (если появилось): применяется один раз на поколение. Первое указание сессии
     /// показа — «последнее из ящика», то есть и указание, опубликованное до создания сессии.
     fn refresh_directive(&mut self) {
         let Some((generation, directive)) = self.directives.newer_than(self.applied_generation) else {
             return;
         };
-        // Журнал уровня info — только на события, а не на каждый шаг ползунка: под шкалой указания идут до 120/с.
-        let notable = self.applied_generation.is_none()
-            || self.request != directive.request
-            || directive.transition != WhiteTransition::Immediate;
+        let notable = directive_is_notable(self.last_directive.as_ref(), &directive);
         self.applied.accept(&directive);
-        self.request = directive.request;
+        self.last_directive = Some(directive);
         self.applied_generation = Some(generation);
         if notable {
             tracing::info!(target: LOG_TARGET, generation = generation.0, ?directive, "указание белой применено");
         } else {
-            // Мгновенная смена значения при той же заявке: рука на шкале.
+            // Рука на шкале или вопрос источнику при видимой картинке (слежение спрашивает десять раз в секунду).
             tracing::debug!(target: LOG_TARGET, generation = generation.0, ?directive, "указание белой применено");
         }
     }
@@ -253,6 +254,22 @@ impl WhiteBalanceRunner {
         };
         self.hal_white = self.hal.observe(&details.color, profile);
     }
+}
+
+/// Стоит ли указание строки `info`: первое указание, начало или конец скрытия кадров и плавный переезд белой. Шаги
+/// ползунка (до 120 в секунду) и вопросы источнику при видимой картинке в `info` не идут: итог заявки человека
+/// называет журнал движка.
+fn directive_is_notable(previous: Option<&WhiteDirective>, next: &WhiteDirective) -> bool {
+    let Some(previous) = previous else {
+        return true;
+    };
+    let hides_frames = |directive: &WhiteDirective| {
+        directive
+            .request
+            .is_some_and(|request| request.while_awaiting == WhileAwaitingWhite::HideFrames)
+    };
+    let moves_smoothly = previous.white != next.white && next.transition != WhiteTransition::Immediate;
+    moves_smoothly || hides_frames(previous) != hides_frames(next)
 }
 
 #[cfg(test)]

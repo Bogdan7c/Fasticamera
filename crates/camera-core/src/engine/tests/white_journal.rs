@@ -3,11 +3,13 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
+use camera_contract::three_a::RequestOrigin;
 use camera_contract::white::{WhiteAdjustment, WhiteSourceId, WhiteTransition};
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id, Record};
 use tracing::{Event, Level, Metadata, Subscriber};
 
+use super::three_a_support::result_meta;
 use super::white_support::*;
 use super::*;
 
@@ -106,4 +108,30 @@ fn a_stream_of_manual_adjustments_writes_no_info_lines_and_a_source_change_still
         source_change.contains(&Level::INFO),
         "смена белой от источника видна в info: {source_change:?}"
     );
+}
+
+#[test]
+fn the_questions_of_the_follow_mode_write_nothing_and_a_move_of_the_white_writes_one_info_line() {
+    let (mut rig, outside) = white_rig_streaming();
+    rig.frame_after(Duration::ZERO);
+    rig.deliver_answer(&outside, ready(1, setting(4_000.0, 0.0)));
+    rig.send(CameraCommand::FollowWhite {
+        source: WhiteSourceId::PHONE,
+    });
+    // Круг слежения: кадр через период опроса задаёт вопрос, источник отвечает `kelvin`.
+    let mut frame = 100;
+    let mut round = |rig: &mut Rig, kelvin: f64| {
+        frame += 10;
+        rig.feed_result(result_meta(frame, RequestOrigin::Repeating, None));
+        let request = outside.directive().request.expect("вопрос слежения").id.0;
+        rig.deliver_answer(&outside, ready(request, setting(kelvin, 0.0)));
+    };
+    let resting = white_log_levels(|| {
+        for _ in 0..20 {
+            round(&mut rig, 4_010.0);
+        }
+    });
+    assert!(resting.is_empty(), "внутри мёртвой зоны журнал молчит: {resting:?}");
+    let moving = white_log_levels(|| round(&mut rig, 5_600.0));
+    assert_eq!(moving, vec![Level::INFO], "одна строка на изменение белого");
 }

@@ -142,10 +142,11 @@ fn numbers_must_be_finite_and_positive_and_the_echo_memory_non_empty() {
 #[test]
 fn the_button_row_must_fit_the_card_width_without_scrolling() {
     let layout = WhiteCardLayout::default();
-    assert_eq!(layout.check_buttons_fit(6, &card()), Ok(()));
+    // Семь кнопок по 60 pt («Auto», «Phone», пять света, WB48) помещаются в карточку; восьмая — нет.
+    assert_eq!(layout.check_buttons_fit(7, &card()), Ok(()));
     assert!(matches!(
-        layout.check_buttons_fit(7, &card()),
-        Err(WhiteLayoutError::LightsTooWide { count: 7, .. })
+        layout.check_buttons_fit(8, &card()),
+        Err(WhiteLayoutError::LightsTooWide { count: 8, .. })
     ));
 }
 

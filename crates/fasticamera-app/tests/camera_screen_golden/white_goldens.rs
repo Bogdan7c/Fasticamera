@@ -8,7 +8,7 @@
 use camera_contract::control::{ColorTemperature, Tint, WhiteBalanceSetting};
 use camera_contract::white::{HeldWhite, WhiteOrigin, WhiteSourceId};
 use camera_contract::white_reading::WhiteReading;
-use camera_screen::{CameraFacts, PanelState, ScreenAction, WhiteAxis, WhiteFacts};
+use camera_screen::{CameraFacts, PanelState, ScreenAction, WhiteAxis, WhiteFacts, WhiteFollowFacts};
 use shell_contract::orientation::DeviceOrientation;
 use ui_core::geometry::Point;
 
@@ -136,6 +136,73 @@ fn white_card_phone() {
         )
         .expect("оценка");
         assert!(estimate.starts_with('\u{2248}'));
+    });
+}
+
+/// Факты живой камеры с белым `held`, показанием телефона и слежением `follow`.
+fn facts_following(held: HeldWhite, reading: Option<WhiteReading>, follow: WhiteFollowFacts) -> CameraFacts {
+    CameraFacts {
+        white: WhiteFacts {
+            held,
+            phone_reading: reading,
+            follow,
+            ..WhiteFacts::STARTING
+        },
+        ..live_facts()
+    }
+}
+
+/// Окно вокруг центра кнопки карточки (px); центр приходит в pt экрана.
+fn row_button_window(center_pt: Point) -> Window {
+    let scale = f64::from(PX_PER_PT);
+    window_around(Point::new(center_pt.x * scale, center_pt.y * scale))
+}
+
+#[test]
+fn white_card_auto() {
+    with_rig(|rig| {
+        // Белое взято у телефона (число совпало бы с «Phone»), слежение ВКЛЮЧЕНО: горит одна «Auto».
+        let held = source_held(3_140.0, 0.0164);
+        let driver = driver_with_open_card(facts_following(held, measured(3_100.0), WhiteFollowFacts::On));
+        let snapshot = render(rig, &driver);
+        check_golden("white_card_auto", &snapshot);
+        let off = driver_with_open_card(facts_following(held, measured(3_100.0), WhiteFollowFacts::Off));
+        let off_shot = render(rig, &off);
+
+        let card = driver
+            .screen()
+            .white_touch_targets()
+            .and_then(|targets| targets.card)
+            .expect("карточка открыта");
+        let auto = row_button_window(card.auto_button);
+        let phone = row_button_window(card.phone_button);
+        // «Auto» жёлтая только при слежении, «Phone» — только без него.
+        assert!(
+            snapshot.count_in(auto, focus_yellow) > 40,
+            "«Auto» горит жёлтым при слежении"
+        );
+        assert_eq!(
+            snapshot.count_in(phone, focus_yellow),
+            0,
+            "«Phone» при слежении не горит"
+        );
+        assert_eq!(off_shot.count_in(auto, focus_yellow), 0, "без слежения «Auto» не горит");
+        assert!(
+            off_shot.count_in(phone, focus_yellow) > 40,
+            "без слежения «Phone» горит"
+        );
+        // Число у затвора белое и живое, под ним «AUTO» вместо «K»: светлые пиксели есть, жёлтых нет, а кнопка
+        // отличается от той же кнопки без слежения (там под числом «K»).
+        let button = button_window(&driver);
+        assert_eq!(snapshot.count_in(button, focus_yellow), 0, "число при слежении белое");
+        assert!(
+            snapshot.count_in(button, light_on_dark_glass) > 30,
+            "число на кнопке нарисовано"
+        );
+        assert!(
+            snapshot.mean_difference_in(&off_shot, button) > 0.0,
+            "подпись под числом сменилась («AUTO» вместо «K»)"
+        );
     });
 }
 

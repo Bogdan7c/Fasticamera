@@ -24,6 +24,10 @@ fn take_phone() -> Effect {
     Effect::Camera(ScreenCameraIntent::TakeWhite(WhiteSourceId::PHONE))
 }
 
+fn follow_phone() -> Effect {
+    Effect::Camera(ScreenCameraIntent::FollowWhite(WhiteSourceId::PHONE))
+}
+
 fn error_haptic() -> Effect {
     Effect::Haptic(HapticPattern::Error)
 }
@@ -184,6 +188,24 @@ fn phone_button_takes_the_phone_white_without_a_haptic() {
     let tap = screen.step(ScreenAction::WhitePhoneTapped);
     assert_eq!(tap.effects, [take_phone()]);
     assert_eq!(screen.state.panel(), WHITE_CARD);
+}
+
+#[test]
+fn auto_button_follows_the_phone_white_without_a_haptic_or_a_take() {
+    let mut screen = screen_with_white_card();
+    let tap = screen.step(ScreenAction::WhiteAutoTapped);
+    assert_eq!(tap.outcome, ActionOutcome::Applied);
+    assert_eq!(tap.effects, [follow_phone()], "одно намерение «следить», вибрации нет");
+    assert_eq!(screen.state.panel(), WHITE_CARD);
+}
+
+#[test]
+fn auto_button_with_the_card_closed_is_a_counted_refusal_without_effects() {
+    let mut screen = Screen::ready();
+    let tap = screen.step(ScreenAction::WhiteAutoTapped);
+    assert_eq!(tap.outcome, ActionOutcome::Rejected(Rejection::OptionNotInSubmenu));
+    assert!(tap.effects.is_empty());
+    assert_eq!(screen.state.rejections().get(Rejection::OptionNotInSubmenu), 1);
 }
 
 #[test]
@@ -442,6 +464,19 @@ fn a_command_the_executor_could_not_deliver_shakes_and_vibrates_like_a_refusal()
     assert_eq!(failed.outcome, ActionOutcome::Applied);
     assert_eq!(failed.effects, [error_haptic()]);
     assert_eq!(screen.state.white().refusal_serial(), 1);
+}
+
+#[test]
+fn a_follow_the_executor_could_not_deliver_only_vibrates_and_never_counts_as_a_refusal_of_phone() {
+    let mut screen = Screen::ready();
+    let failed = screen.step(ScreenAction::WhiteFollowNotDelivered);
+    assert_eq!(failed.outcome, ActionOutcome::Applied);
+    assert_eq!(failed.effects, [error_haptic()]);
+    assert_eq!(
+        screen.state.white().refusal_serial(),
+        0,
+        "тряски «Phone» нет: это не её отказ"
+    );
 }
 
 #[test]

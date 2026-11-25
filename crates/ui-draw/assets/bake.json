@@ -36,6 +36,7 @@
     { "id": "cloud", "file": "icons/phosphor/cloud.svg", "kind": "fill" },
     { "id": "tree", "file": "icons/phosphor/tree.svg", "kind": "fill" },
     { "id": "lightbulb", "file": "icons/phosphor/lightbulb.svg", "kind": "fill" },
-    { "id": "house", "file": "icons/phosphor/house.svg", "kind": "fill" }
+    { "id": "house", "file": "icons/phosphor/house.svg", "kind": "fill" },
+    { "id": "magic_wand", "file": "icons/phosphor/magic-wand.svg", "kind": "fill" }
   ]
 }

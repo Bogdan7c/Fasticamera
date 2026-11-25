@@ -50,6 +50,7 @@ pub mod three_a_status;
 pub mod three_a_vendor;
 pub mod three_a_wiring;
 pub mod white;
+mod white_follow;
 mod white_resume;
 mod white_take;
 pub mod zoom;

@@ -47,11 +47,12 @@ Display. Оба начертания используют один `opsz` — р
 | `icons/phosphor/tree.svg` | там же (`tree` — «тень») | `a4878c574c4ff8fcac43187573f5dfb4cb6788f709314eb47564e2ad6681980f` |
 | `icons/phosphor/lightbulb.svg` | там же (`lightbulb` — «лампа») | `b61e4d9685a1d74e579a7dbbe0d5222bdf8dcdcaf5b67825a17ff45363e4fadd` |
 | `icons/phosphor/house.svg` | там же (`house` — «домашняя» лампа) | `180e9259e99e23da197b59b19394d006d6a5d33e384cc2b9c8381cb0214a5716` |
+| `icons/phosphor/magic-wand.svg` | там же (`regular`, тот же коммит `2b75f3ad…`; `magic-wand` — кнопка «Auto» панели белого, слежение за белым телефона, план white-balance 04) | `91081dfdad19006625f8a40a64ea967bb77ecf3d11cebda06c25b217b228dc12` |
 | `icons/lucide/LICENSE` | ISC, Copyright 2026 Lucide Icons and Contributors | `b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57` |
 
 Phosphor — иконки-заливки (`kind: fill`, ненулевая обмотка), Lucide — иконка-контур (`kind: stroke`,
 ширина штриха 2 единицы viewBox 24 — доказывает путь «расстояние до средней линии минус полуширина»).
-Набор из 20 иконок. Панель белого (план `user/white-balance`, сессия 02) добавила шесть: `device_mobile`, `sun`, `cloud`, `tree`, `lightbulb`, `house` — SVG Phosphor `regular` того же закреплённого коммита. `sun` — второй идентификатор на тот же файл `sun.svg`, что и `exposure`: «Солнце» кнопок света и значок Exposure могут разойтись без правки друг друга; цена — одна лишняя ячейка атласа. Первые 14: 6 стартовых плюс 6 для экрана камеры v1 (сессия 12: `timer`, `aspect_ratio`, `close`, `reset`, `controls_menu` взяты как есть из закреплённых коммитов; `level` — своя, см. таблицу; 13-я — своя `zoom_marker_triangle`, сессия 13; 14-я — `flash_auto` (`lightning-a`), сессия 14d). `RAW` — подписью, шестерёнка настроек — сессия 16.
+Набор из 21 иконки (20 + `magic_wand` сессии 04 плана white-balance). Панель белого (план `user/white-balance`, сессия 02) добавила шесть: `device_mobile`, `sun`, `cloud`, `tree`, `lightbulb`, `house` — SVG Phosphor `regular` того же закреплённого коммита. `sun` — второй идентификатор на тот же файл `sun.svg`, что и `exposure`: «Солнце» кнопок света и значок Exposure могут разойтись без правки друг друга; цена — одна лишняя ячейка атласа. Первые 14: 6 стартовых плюс 6 для экрана камеры v1 (сессия 12: `timer`, `aspect_ratio`, `close`, `reset`, `controls_menu` взяты как есть из закреплённых коммитов; `level` — своя, см. таблицу; 13-я — своя `zoom_marker_triangle`, сессия 13; 14-я — `flash_auto` (`lightning-a`), сессия 14d). `RAW` — подписью, шестерёнка настроек — сессия 16.
 
 ## Манифест `bake.json`
 

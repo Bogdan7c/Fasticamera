@@ -129,6 +129,13 @@ fn plan_points_of_the_white_button_and_the_ev_icon_hit_the_real_screen() {
         .copied()
         .expect("номер кнопки света из плана есть в списке");
     assert_same_spot("white_light", plan.white_light, light);
+    // Ряд карточки: «Auto», «Phone», потом свет (WB48) — план жмёт свет, а не источник.
+    assert!(
+        card.auto_button.x < card.phone_button.x && card.phone_button.x < light.x,
+        "порядок слева направо: Auto {:?}, Phone {:?}, свет {light:?}",
+        card.auto_button,
+        card.phone_button
+    );
     // Кнопка белого поднялась вместе с затвором и осталась рабочей: точка плана в покое теперь пуста, цель — выше.
     let raised = driver.screen.white_touch_targets().expect("цели").button;
     assert!(
@@ -162,7 +169,7 @@ fn plan_points_of_the_white_button_and_the_ev_icon_hit_the_real_screen() {
     // Точка-проба «тап по кадру» лежит над карточкой: не попадает ни в одну из её целей.
     let probe = in_pt(plan.probe_tap);
     assert!(
-        probe.y < card.ruler_zone.origin.y && probe.y < card.phone_button.y,
+        probe.y < card.ruler_zone.origin.y && probe.y < card.phone_button.y && probe.y < card.auto_button.y,
         "проба {probe:?} должна лежать выше карточки"
     );
 }

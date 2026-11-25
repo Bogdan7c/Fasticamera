@@ -100,11 +100,11 @@ pub struct WhiteCardLayout {
     /// Прозрачность невыбранной оси (приглушена). `[estimate]` 0,55.
     pub axis_dim_opacity: f64,
 
-    /// Центр ряда «Phone» и кнопок света от верха карточки. `[estimate]` 91.
+    /// Центр ряда «Auto», «Phone» и кнопок света от верха карточки. `[estimate]` 91.
     pub lights_row_center_from_top_pt: f64,
     /// Высота зоны касания кнопки света. `[estimate]` 50.
     pub lights_touch_height_pt: f64,
-    /// Шаг центров кнопок света (они же ширина зоны). `[estimate]` 64: шесть кнопок = 384 из 421 pt.
+    /// Шаг центров кнопок ряда (он же ширина зоны). `[owner]` 60 (WB48): семь кнопок = 420 из 421 pt.
     pub light_pitch_pt: f64,
     /// Сторона значка кнопки света. `[estimate]` 20.
     pub light_icon_size_pt: f64,
@@ -149,7 +149,7 @@ impl Default for WhiteCardLayout {
             axis_dim_opacity: 0.55,
             lights_row_center_from_top_pt: 91.0,
             lights_touch_height_pt: 50.0,
-            light_pitch_pt: 64.0,
+            light_pitch_pt: 60.0,
             light_icon_size_pt: 20.0,
             light_icon_offset_pt: -13.0,
             light_label_offset_pt: 6.0,
@@ -332,7 +332,7 @@ impl WhiteCardLayout {
         Ok(())
     }
 
-    /// Сверка с числом кнопок ряда (Phone + кнопки света): все видны без прокрутки в ширину карточки.
+    /// Сверка с числом кнопок ряда («Auto» + «Phone» + кнопки света): все видны без прокрутки в ширину карточки.
     pub fn check_buttons_fit(&self, button_count: usize, card: &CardLayout) -> Result<(), WhiteLayoutError> {
         if button_count as f64 * self.light_pitch_pt > card.width_pt {
             return Err(WhiteLayoutError::LightsTooWide {

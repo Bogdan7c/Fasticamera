@@ -5,7 +5,7 @@
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use camera_core::white::{RememberedOrigin, WhiteMemory, WhiteMemoryLoad, WhiteMemoryRecord, WhiteResumeRule};
+use camera_core::white::{RememberedOrigin, WhiteMemory, WhiteMemoryLoad, WhiteMemoryRecord};
 
 use super::tests::{app_directory, record, wait_until};
 use super::*;
@@ -19,16 +19,15 @@ struct TimedSink {
 }
 
 impl WhiteRecordSink for TimedSink {
-    fn write_record(&mut self, record: &WhiteMemoryRecord) -> Result<WriteCommit, WhiteMemoryError> {
+    fn write(&mut self, update: &WhiteMemoryUpdate) -> Result<WriteCommit, WhiteMemoryError> {
+        // Эти тесты про частоту записи белой; правило возобновления проверяют `rule_tests`.
+        let Some(record) = &update.record else {
+            return Ok(WriteCommit::Durable);
+        };
         self.writes
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push((Instant::now(), *record));
-        Ok(WriteCommit::Durable)
-    }
-
-    /// Эти тесты про частоту записи белой; правило возобновления проверяют `rule_tests`.
-    fn write_resume_rule(&mut self, _rule: WhiteResumeRule) -> Result<WriteCommit, WhiteMemoryError> {
         Ok(WriteCommit::Durable)
     }
 }

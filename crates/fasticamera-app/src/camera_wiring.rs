@@ -147,6 +147,7 @@ fn three_a_wiring(config: &CameraConfig, links: &CameraLinks, effective: Exposur
         answers: links.white_answers.clone(),
         remembered: memory.load,
         remembered_resume_rule: memory.resume_rule,
+        remembered_follow: memory.follow,
         memory: memory.memory,
         opening_source: WhiteSourceId::PHONE,
     };
@@ -195,6 +196,7 @@ fn spawn_engine(config: &CameraConfig, backend: CameraBackendParts, links: Camer
             );
             let mut running = RunningCamera::new(runtime, handle, diagnostics);
             send_white_resume_choice(config, running.handle());
+            send_white_follow_speed_choice(config, running.handle());
             // Ответы источников белого будят движок тем же толчком, что предложения AE. Привязка не зависит от
             // выбора исполнителя экспозиции: белая владеет движком всегда.
             let white_waker = running.handle().three_a_waker();
@@ -234,6 +236,24 @@ fn send_white_resume_choice(config: &CameraConfig, handle: &camera_core::CameraH
             ?rule,
             %error,
             "выбор правила возобновления белого не отправлен движку: действует память или конфиг"
+        );
+    }
+}
+
+/// Скорость слежения за белым, заданная параметром запуска (`camera.white_follow_speed_choice`): уходит движку
+/// командой ДО первого `EnterForeground`, как и выбор правила возобновления, и ложится в память как выбор человека.
+/// Не задана — ничего не шлём: скорость решают память и конфиг движка. Режим слежения параметр не включает.
+/// Отказ отправки (движок уже остановлен) не роняет запуск, но не молчит.
+fn send_white_follow_speed_choice(config: &CameraConfig, handle: &camera_core::CameraHandle) {
+    let Some(speed) = config.white_follow_speed_choice else {
+        return;
+    };
+    if let Err(error) = handle.set_white_follow_speed(speed) {
+        tracing::warn!(
+            target: LOG_TARGET,
+            ?speed,
+            %error,
+            "скорость слежения за белым не отправлена движку: действует память или конфиг"
         );
     }
 }

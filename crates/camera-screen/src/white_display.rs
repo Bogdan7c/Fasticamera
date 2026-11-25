@@ -8,10 +8,16 @@ use camera_contract::white::{HeldWhite, WhiteOrigin, WhiteSourceId};
 use camera_contract::white_reading::WhiteReading;
 
 use crate::white_config::{WhiteLight, WhiteScreenConfig};
-use crate::white_facts::{WhiteTakeFacts, WhiteTakeState};
+use crate::white_facts::{WhiteFollowFacts, WhiteTakeFacts, WhiteTakeState};
 
 /// Подпись единицы рядом с числом Кельвинов.
 pub const KELVIN_UNIT: &str = "K";
+
+/// Подпись единицы под числом у затвора при слежении (WB49): вместо «K».
+pub const AUTO_UNIT: &str = "AUTO";
+
+/// Подпись кнопки «Auto» на карточке (английская, как все подписи UI).
+pub const AUTO_LABEL: &str = "Auto";
 
 /// Подпись кнопки источника «Телефон» на карточке (английская, как все подписи UI).
 pub const PHONE_LABEL: &str = "Phone";
@@ -68,21 +74,42 @@ pub fn phone_estimate_text(reading: Option<WhiteReading>, config: &WhiteScreenCo
 }
 
 /// Подсвечена ли кнопка света: действующее белое равно её числу с малым допуском (майреды и Duv, константы в
-/// конфиге). Происхождение не важно: рука, поставившая те же числа, тоже «выбрала» эту кнопку.
-pub fn light_is_active(light: &WhiteLight, held: WhiteBalanceSetting, config: &WhiteScreenConfig) -> bool {
+/// конфиге). Происхождение не важно: рука, поставившая те же числа, тоже «выбрала» эту кнопку. Пока слежение
+/// включено, не горит никакая: белое проезжает мимо чисел кнопок, и совпадение на миг было бы мельканием.
+pub fn light_is_active(
+    light: &WhiteLight,
+    held: WhiteBalanceSetting,
+    follow: WhiteFollowFacts,
+    config: &WhiteScreenConfig,
+) -> bool {
+    if follow.is_on() {
+        return false;
+    }
     let mired_gap = (mired_of(light.kelvin) - mired_of(held.temperature.kelvin())).abs();
     let duv_gap = (light.duv - held.tint.duv()).abs();
     mired_gap <= config.light_match_tolerance_mired && duv_gap <= config.light_match_tolerance_duv
 }
 
-/// Подсвечена ли кнопка «Телефон»: белое сейчас взято у телефона.
-pub fn phone_is_active(held: HeldWhite) -> bool {
-    held.origin == WhiteOrigin::Source(WhiteSourceId::PHONE)
+/// Подсвечена ли кнопка «Auto»: слежение включено (в том числе заморожено блокировкой, WB46).
+pub fn auto_is_active(follow: WhiteFollowFacts) -> bool {
+    follow.is_on()
 }
 
-/// Цвет числа на кнопке сверху: «ручное» жёлтое, остальное белое (WB16).
-pub fn number_is_manual(held: HeldWhite) -> bool {
-    held.origin == WhiteOrigin::Manual
+/// Подсвечена ли кнопка «Телефон»: белое сейчас взято у телефона РАЗОВО. При слежении горит «Auto», а не она:
+/// происхождение «телефон» у белого и так, но режим другой.
+pub fn phone_is_active(held: HeldWhite, follow: WhiteFollowFacts) -> bool {
+    !follow.is_on() && held.origin == WhiteOrigin::Source(WhiteSourceId::PHONE)
+}
+
+/// Цвет числа на кнопке сверху: «ручное» жёлтое, остальное белое (WB16). Пока слежение включено, число у затвора
+/// белое и живое, даже если держимое происхождение ещё «ручное» (ответа источника на включение не было).
+pub fn number_is_manual(held: HeldWhite, follow: WhiteFollowFacts) -> bool {
+    !follow.is_on() && held.origin == WhiteOrigin::Manual
+}
+
+/// Подпись единицы под числом у затвора: «K» обычно, «AUTO» при слежении (WB49).
+pub fn white_unit_label(follow: WhiteFollowFacts) -> &'static str {
+    if follow.is_on() { AUTO_UNIT } else { KELVIN_UNIT }
 }
 
 /// Манера кнопки «Телефон» и кнопки белого у затвора.

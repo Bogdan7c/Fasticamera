@@ -314,6 +314,100 @@ fn the_launch_choice_of_the_resume_rule_reaches_the_engine_and_is_remembered_in_
     std::fs::remove_dir_all(path).expect("уборка");
 }
 
+/// Скорость слежения, заданная параметром запуска (`camera.white_follow_speed_choice`), уходит движку командой при
+/// сборке и доезжает до статуса `three_a.white.follow.speed`, ложится в настоящий файл памяти как выбор человека, а
+/// режим слежения не включает. После «перезапуска» без параметра скорость берётся из файла.
+#[test]
+fn the_launch_choice_of_the_follow_speed_reaches_the_engine_and_is_remembered_in_the_file() {
+    use camera_core::white::{WhiteFollowSpeed, WhiteFollowState};
+
+    use crate::app_directory::AppDirectory;
+    use crate::white_memory::{WhiteMemoryConfig, WhiteMemoryHandoff, open_white_memory};
+
+    let path = std::env::temp_dir().join(format!("fasticamera-wiring-follow-{}", std::process::id()));
+    std::fs::create_dir_all(&path).expect("папка создана");
+    let directory = AppDirectory::new(path.to_string_lossy().into_owned()).expect("папка годится");
+    let start = |choice: Option<WhiteFollowSpeed>| {
+        let mut config = CameraConfig::default();
+        config.viewfinder_autostart.enabled = false;
+        config.white_follow_speed_choice = choice;
+        start_camera_with_links(
+            &config,
+            CameraBackendParts {
+                factory: camera_core::fake::FakeBackendControl::new().factory(),
+                diagnostics: Arc::new(camera_android::BackendDiagnostics::new(4)),
+                raw_stream: RawStreamServices::detached(),
+            },
+            CameraLinks {
+                white_memory: WhiteMemoryHandoff::holding(open_white_memory(&directory, &WhiteMemoryConfig::default())),
+                ..CameraLinks::default()
+            },
+        )
+    };
+    let chosen = WhiteFollowSpeed::from_millis(1_700).expect("скорость в пределах");
+
+    // Запуск с параметром: скорость действует, слежение не включено, выбор уходит в файл.
+    let services = start(Some(chosen));
+    let handle = services.running().expect("запущен").handle().clone();
+    let status = handle
+        .wait_until_status(WAIT, |status| status.three_a.white.follow.speed == chosen)
+        .expect("выбор параметра запуска дошёл до владельца белого");
+    assert_eq!(
+        status.three_a.white.follow.state,
+        WhiteFollowState::Off,
+        "параметр слежение не включает"
+    );
+    let deadline = std::time::Instant::now() + WAIT;
+    while services.white_memory_stats().saved == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "выбор не дошёл до диска: {:?}",
+            services.white_memory_stats()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let text = std::fs::read_to_string(path.join("white.json")).expect("файл памяти записан");
+    assert!(text.contains("\"follow_transition_ms\": 1700"), "{text}");
+    assert!(!text.contains("keeping"), "режим не выбирался: {text}");
+    drop(services);
+
+    // Следующий запуск без параметра: скорость из файла сильнее умолчания конфига.
+    let services = start(None);
+    assert_eq!(
+        services
+            .running()
+            .expect("запущен")
+            .handle()
+            .status()
+            .three_a
+            .white
+            .follow
+            .speed,
+        chosen,
+        "выбор человека пережил перезапуск процесса"
+    );
+    drop(services);
+
+    // Без параметра и без файла скорость — умолчание конфига.
+    std::fs::remove_dir_all(&path).expect("уборка");
+    std::fs::create_dir_all(&path).expect("папка создана");
+    let services = start(None);
+    assert_eq!(
+        services
+            .running()
+            .expect("запущен")
+            .handle()
+            .status()
+            .three_a
+            .white
+            .follow
+            .speed,
+        WhiteFollowSpeed::DEFAULT
+    );
+    drop(services);
+    std::fs::remove_dir_all(path).expect("уборка");
+}
+
 // --- Композиция нашего AE (08a): ящик предложений, толчок и переключатель `exposure_controller` ---
 
 mod auto_exposure_composition {

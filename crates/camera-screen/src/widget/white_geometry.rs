@@ -7,6 +7,7 @@ use super::geometry::ScreenGeometry;
 use crate::tools::ToolId;
 use crate::white::WhiteAxis;
 use crate::white_config::WhiteButtonSide;
+use crate::white_row::WhiteRowSlot;
 
 impl ScreenGeometry {
     /// Рамка кнопки белого в ряду затвора (WB35): круг диаметром кнопки меню, центр на высоте центра затвора, по x —
@@ -57,10 +58,12 @@ impl ScreenGeometry {
         Rect::centered_at(center, Size::new(white.axis_touch_width_pt, white.axis_touch_height_pt))
     }
 
-    /// Зона кнопки `index` из `count` в ряду «Phone» + кнопки света: ряд центрирован по карточке, шаг — конфиг.
-    pub(crate) fn white_light_slot(&self, index: usize, count: usize) -> Rect {
+    /// Зона кнопки `slot` в ряду «Auto» + «Phone» + `light_count` кнопок света: ряд центрирован по карточке,
+    /// шаг — конфиг. Место кнопки в ряду называет [`WhiteRowSlot::position`]: арифметики номеров здесь нет.
+    pub(crate) fn white_row_slot(&self, slot: WhiteRowSlot, light_count: usize) -> Rect {
         let white = &self.config().white_card;
-        let offset_from_middle = index as f64 - count.saturating_sub(1) as f64 * 0.5;
+        let row_len = WhiteRowSlot::row_len(light_count);
+        let offset_from_middle = slot.position() as f64 - row_len.saturating_sub(1) as f64 * 0.5;
         let center = self.white_point(
             offset_from_middle * white.light_pitch_pt,
             white.lights_row_center_from_top_pt,

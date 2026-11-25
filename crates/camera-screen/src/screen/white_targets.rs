@@ -1,5 +1,5 @@
 //! Публичный список целей касаний белого для стендов и smoke-проверок: где (в pt экрана) нажимать пальцем, чтобы
-//! попасть в кнопку белого, «×», числа осей, «Phone», кнопки света и шкалу.
+//! попасть в кнопку белого, «×», числа осей, «Auto», «Phone», кнопки света и шкалу.
 //!
 //! Цели считает та же геометрия ([`ScreenGeometry`]), по которой строятся узлы сцены, поэтому формул здесь нет
 //! и список не может разойтись с тем, что реально ловит касание. Цели зависят от состояния: кнопка белого стоит
@@ -14,6 +14,7 @@ use super::CameraScreen;
 use crate::state::{PanelState, ShutterVisibility};
 use crate::tools::ToolId;
 use crate::white::WhiteAxis;
+use crate::white_row::WhiteRowSlot;
 use crate::widget::geometry::ScreenGeometry;
 use crate::widget::tool_card_content::open_card_tool;
 
@@ -35,6 +36,8 @@ pub struct WhiteCardTargets {
     pub temperature_number: Point,
     /// Центр числа оттенка.
     pub tint_number: Point,
+    /// Центр кнопки «Auto» (слежение за белым телефона, WB44).
+    pub auto_button: Point,
     /// Центр кнопки «Phone».
     pub phone_button: Point,
     /// Центры кнопок света в порядке конфига.
@@ -58,14 +61,17 @@ impl CameraScreen {
         };
         let card_open = self.state.panel() == PanelState::Submenu(ToolId::White);
         let card = card_open.then(|| {
-            let buttons = 1 + self.config.white.lights.len();
-            let slot = |index: usize| geometry.white_light_slot(index, buttons).center();
+            let light_count = self.config.white.lights.len();
+            let center_of = |slot: WhiteRowSlot| geometry.white_row_slot(slot, light_count).center();
             WhiteCardTargets {
                 close: geometry.white_close_button().center(),
                 temperature_number: geometry.white_axis_button(WhiteAxis::Temperature).center(),
                 tint_number: geometry.white_axis_button(WhiteAxis::Tint).center(),
-                phone_button: slot(0),
-                light_buttons: (1..buttons).map(slot).collect(),
+                auto_button: center_of(WhiteRowSlot::Auto),
+                phone_button: center_of(WhiteRowSlot::Phone),
+                light_buttons: (0..light_count)
+                    .map(|index| center_of(WhiteRowSlot::Light(index)))
+                    .collect(),
                 ruler_zone: geometry.white_ruler(),
             }
         });

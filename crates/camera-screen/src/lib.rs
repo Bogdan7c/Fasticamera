@@ -52,6 +52,7 @@ pub mod white_config;
 pub mod white_display;
 pub mod white_facts;
 pub mod white_layout;
+pub mod white_row;
 mod widget;
 pub mod widgets_config;
 pub mod zoom;
@@ -88,8 +89,9 @@ pub use white_button_layout::{WhiteButtonLayout, WhiteButtonLayoutError};
 pub use white_config::{
     WhiteButtonSide, WhiteConfigError, WhiteLight, WhiteLightIcon, WhiteLightIndex, WhiteScreenConfig,
 };
-pub use white_facts::{WhiteFacts, WhiteRange, WhiteTakeFacts, WhiteTakeState};
+pub use white_facts::{WhiteFacts, WhiteFollowFacts, WhiteRange, WhiteTakeFacts, WhiteTakeState};
 pub use white_layout::{WhiteCardLayout, WhiteLayoutError};
+pub use white_row::{SOURCE_BUTTON_COUNT, WhiteRowSlot};
 pub use widgets_config::{WidgetConfigError, WidgetLayoutConfig};
 pub use zoom::{FlipMark, ZoomState};
 pub use zoom_config::{ZoomConfig, ZoomConfigError};

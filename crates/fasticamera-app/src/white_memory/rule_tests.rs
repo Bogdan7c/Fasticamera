@@ -254,8 +254,8 @@ enum Call {
     Both(WhiteMemoryRecord, WhiteResumeRule),
 }
 
-/// Приёмник-заглушка: первая запись ждёт «ворота», каждый вызов — в списке. Умолчание `write_record_and_rule`
-/// НЕ используется: приёмник переопределяет его, как файл, чтобы видеть «одну запись на оба места».
+/// Приёмник-заглушка: первая запись ждёт «ворота», каждый вызов — в списке. Заглушка видит ОДНУ запись
+/// на всё занятое к пробуждению, как файл.
 struct CallLog {
     calls: Arc<Mutex<Vec<Call>>>,
     first_write_started: Option<Sender<()>>,
@@ -278,25 +278,15 @@ impl CallLog {
 }
 
 impl WhiteRecordSink for CallLog {
-    fn write_record(&mut self, record: &WhiteMemoryRecord) -> Result<WriteCommit, WhiteMemoryError> {
+    fn write(&mut self, update: &WhiteMemoryUpdate) -> Result<WriteCommit, WhiteMemoryError> {
         self.wait_gate();
-        self.log(Call::Record(*record));
-        Ok(WriteCommit::Durable)
-    }
-
-    fn write_resume_rule(&mut self, rule: WhiteResumeRule) -> Result<WriteCommit, WhiteMemoryError> {
-        self.wait_gate();
-        self.log(Call::Rule(rule));
-        Ok(WriteCommit::Durable)
-    }
-
-    fn write_record_and_rule(
-        &mut self,
-        record: &WhiteMemoryRecord,
-        rule: WhiteResumeRule,
-    ) -> Result<WriteCommit, WhiteMemoryError> {
-        self.wait_gate();
-        self.log(Call::Both(*record, rule));
+        let call = match (update.record, update.rule, update.follow) {
+            (Some(record), None, None) => Call::Record(record),
+            (None, Some(rule), None) => Call::Rule(rule),
+            (Some(record), Some(rule), None) => Call::Both(record, rule),
+            other => panic!("эти тесты не сохраняют слежение и не шлют пустых записей: {other:?}"),
+        };
+        self.log(call);
         Ok(WriteCommit::Durable)
     }
 }

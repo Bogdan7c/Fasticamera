@@ -114,6 +114,10 @@ pub enum EventNote {
     WhiteResumeRuleChanged {
         rule: serde_json::Value,
     },
+    /// Слежение за белым изменилось: режим и скорость (как в статусе `three_a.white.follow`).
+    WhiteFollowChanged {
+        follow: serde_json::Value,
+    },
     /// Смена объектива завершена: первый кадр новой камеры пришёл (`from == to` — возврат на прежний).
     LensSwitched {
         from: LensRole,
@@ -230,6 +234,9 @@ impl EventNote {
             },
             CameraEvent::WhiteResumeRuleChanged { rule } => EventNote::WhiteResumeRuleChanged {
                 rule: serde_json::to_value(rule).unwrap_or(serde_json::Value::Null),
+            },
+            CameraEvent::WhiteFollowChanged { follow } => EventNote::WhiteFollowChanged {
+                follow: serde_json::to_value(follow).unwrap_or(serde_json::Value::Null),
             },
             CameraEvent::WhiteRequestFinished { result } => EventNote::WhiteRequestFinished {
                 request: result.request.0,

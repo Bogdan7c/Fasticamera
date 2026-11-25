@@ -6,10 +6,10 @@ use camera_contract::white_reading::WhiteReading;
 
 use crate::white_config::WhiteScreenConfig;
 use crate::white_display::{
-    WhiteButtonManner, button_manner, kelvin_text, light_is_active, number_is_manual, phone_estimate_text,
-    phone_is_active, tint_text, tint_units,
+    WhiteButtonManner, auto_is_active, button_manner, kelvin_text, light_is_active, number_is_manual,
+    phone_estimate_text, phone_is_active, tint_text, tint_units, white_unit_label,
 };
-use crate::white_facts::{WhiteTakeFacts, WhiteTakeState};
+use crate::white_facts::{WhiteFollowFacts, WhiteTakeFacts, WhiteTakeState};
 
 fn kelvin(value: f64) -> ColorTemperature {
     ColorTemperature::from_kelvin(value).expect("температура")
@@ -68,15 +68,40 @@ fn tint_is_a_signed_whole_number_with_a_real_minus_and_a_bare_zero() {
 fn a_light_button_is_lit_by_equality_of_its_numbers_with_a_small_tolerance() {
     let config = WhiteScreenConfig::default();
     let sun = &config.lights[0];
-    assert!(light_is_active(sun, white(5_600.0, 0.003), &config));
+    assert!(light_is_active(
+        sun,
+        white(5_600.0, 0.003),
+        WhiteFollowFacts::Off,
+        &config
+    ));
     // Крошечная ошибка округления в движке не гасит кнопку.
-    assert!(light_is_active(sun, white(5_601.0, 0.00301), &config));
+    assert!(light_is_active(
+        sun,
+        white(5_601.0, 0.00301),
+        WhiteFollowFacts::Off,
+        &config
+    ));
     // Шаг шкалы (5 майред ≈ 150 К на 5600) — уже другое белое.
-    assert!(!light_is_active(sun, white(5_750.0, 0.003), &config));
+    assert!(!light_is_active(
+        sun,
+        white(5_750.0, 0.003),
+        WhiteFollowFacts::Off,
+        &config
+    ));
     // Тот же свет, другой оттенок — не она.
-    assert!(!light_is_active(sun, white(5_600.0, 0.006), &config));
+    assert!(!light_is_active(
+        sun,
+        white(5_600.0, 0.006),
+        WhiteFollowFacts::Off,
+        &config
+    ));
     // Другая кнопка при тех же числах не горит.
-    assert!(!light_is_active(&config.lights[1], white(5_600.0, 0.003), &config));
+    assert!(!light_is_active(
+        &config.lights[1],
+        white(5_600.0, 0.003),
+        WhiteFollowFacts::Off,
+        &config
+    ));
 }
 
 #[test]
@@ -84,23 +109,89 @@ fn light_tolerance_is_measured_in_mired_so_it_is_tighter_in_kelvin_for_warm_ligh
     let config = WhiteScreenConfig::default();
     let lamp = &config.lights[3];
     // 3200 К: 0,5 майред ≈ 5 К. 8 К — уже мимо; 3 К — ещё она.
-    assert!(light_is_active(lamp, white(3_203.0, 0.0), &config));
-    assert!(!light_is_active(lamp, white(3_208.0, 0.0), &config));
+    assert!(light_is_active(
+        lamp,
+        white(3_203.0, 0.0),
+        WhiteFollowFacts::Off,
+        &config
+    ));
+    assert!(!light_is_active(
+        lamp,
+        white(3_208.0, 0.0),
+        WhiteFollowFacts::Off,
+        &config
+    ));
 }
 
 #[test]
 fn phone_is_lit_only_when_the_white_came_from_the_phone() {
-    assert!(phone_is_active(held(WhiteOrigin::Source(WhiteSourceId::PHONE))));
-    assert!(!phone_is_active(held(WhiteOrigin::Source(WhiteSourceId::new("net")))));
-    assert!(!phone_is_active(held(WhiteOrigin::Manual)));
-    assert!(!phone_is_active(held(WhiteOrigin::Fallback)));
+    assert!(phone_is_active(
+        held(WhiteOrigin::Source(WhiteSourceId::PHONE)),
+        WhiteFollowFacts::Off
+    ));
+    assert!(!phone_is_active(
+        held(WhiteOrigin::Source(WhiteSourceId::new("net"))),
+        WhiteFollowFacts::Off
+    ));
+    assert!(!phone_is_active(held(WhiteOrigin::Manual), WhiteFollowFacts::Off));
+    assert!(!phone_is_active(held(WhiteOrigin::Fallback), WhiteFollowFacts::Off));
 }
 
 #[test]
 fn the_number_is_yellow_only_for_a_manual_white() {
-    assert!(number_is_manual(held(WhiteOrigin::Manual)));
-    assert!(!number_is_manual(held(WhiteOrigin::Fallback)));
-    assert!(!number_is_manual(held(WhiteOrigin::Source(WhiteSourceId::PHONE))));
+    assert!(number_is_manual(held(WhiteOrigin::Manual), WhiteFollowFacts::Off));
+    assert!(!number_is_manual(held(WhiteOrigin::Fallback), WhiteFollowFacts::Off));
+    assert!(!number_is_manual(
+        held(WhiteOrigin::Source(WhiteSourceId::PHONE)),
+        WhiteFollowFacts::Off
+    ));
+}
+
+#[test]
+fn auto_is_lit_exactly_while_follow_is_on() {
+    assert!(auto_is_active(WhiteFollowFacts::On));
+    assert!(!auto_is_active(WhiteFollowFacts::Off));
+}
+
+#[test]
+fn while_follow_is_on_phone_and_every_light_are_dark_even_if_their_numbers_match() {
+    let config = WhiteScreenConfig::default();
+    let sun = &config.lights[0];
+    // Происхождение «телефон» и числа Sun совпали бы, но слежение включено: горит только «Auto».
+    assert!(!phone_is_active(
+        held(WhiteOrigin::Source(WhiteSourceId::PHONE)),
+        WhiteFollowFacts::On
+    ));
+    assert!(!light_is_active(
+        sun,
+        white(5_600.0, 0.003),
+        WhiteFollowFacts::On,
+        &config
+    ));
+    // Без слежения те же факты горят (защита от «тест проходит, потому что функция всегда false»).
+    assert!(light_is_active(
+        sun,
+        white(5_600.0, 0.003),
+        WhiteFollowFacts::Off,
+        &config
+    ));
+    assert!(phone_is_active(
+        held(WhiteOrigin::Source(WhiteSourceId::PHONE)),
+        WhiteFollowFacts::Off
+    ));
+}
+
+#[test]
+fn while_follow_is_on_the_number_is_white_even_before_the_first_answer_of_the_source() {
+    // Держимое происхождение ещё «ручное» (ответа на включение не было), но число уже белое.
+    assert!(!number_is_manual(held(WhiteOrigin::Manual), WhiteFollowFacts::On));
+    assert!(number_is_manual(held(WhiteOrigin::Manual), WhiteFollowFacts::Off));
+}
+
+#[test]
+fn the_unit_under_the_number_is_auto_only_while_follow_is_on() {
+    assert_eq!(white_unit_label(WhiteFollowFacts::Off), "K");
+    assert_eq!(white_unit_label(WhiteFollowFacts::On), "AUTO");
 }
 
 #[test]
@@ -142,7 +233,7 @@ fn the_button_waits_only_for_its_own_take_command() {
 #[test]
 fn every_character_of_the_white_panel_is_in_the_atlas() {
     use crate::white_config::first_character_outside_atlas;
-    use crate::white_display::{APPROX_SIGN, KELVIN_UNIT, PHONE_LABEL, TINT_LABEL_PREFIX};
+    use crate::white_display::{APPROX_SIGN, AUTO_LABEL, AUTO_UNIT, KELVIN_UNIT, PHONE_LABEL, TINT_LABEL_PREFIX};
 
     let config = WhiteScreenConfig::default();
     // Все цифры, знаки числа, единица, «Tint», знак «минус» U+2212 и «≈» из самого показа, а не из копии в тесте.
@@ -152,6 +243,8 @@ fn every_character_of_the_white_panel_is_in_the_atlas() {
         KELVIN_UNIT.to_owned(),
         TINT_LABEL_PREFIX.to_owned(),
         PHONE_LABEL.to_owned(),
+        AUTO_LABEL.to_owned(),
+        AUTO_UNIT.to_owned(),
         APPROX_SIGN.to_owned(),
         tint_text(tint(-0.012), &config),
         tint_text(tint(0.0164), &config),

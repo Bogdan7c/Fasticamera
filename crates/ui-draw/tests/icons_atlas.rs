@@ -44,7 +44,7 @@ impl IconTexels {
 
 #[test]
 fn every_icon_has_a_non_empty_region_with_both_inside_and_outside_texels() {
-    assert_eq!(IconId::ALL.len(), 20);
+    assert_eq!(IconId::ALL.len(), 21);
     for id in IconId::ALL {
         let glyph = icon(id);
         assert!(
@@ -247,6 +247,7 @@ fn white_panel_icons_have_real_coverage_and_sun_matches_exposure() {
         IconId::Tree,
         IconId::Lightbulb,
         IconId::House,
+        IconId::MagicWand,
     ] {
         let fraction = inside_fraction(id);
         assert!(
@@ -284,6 +285,22 @@ fn white_panel_icons_have_real_coverage_and_sun_matches_exposure() {
         .filter(|(column, row)| (house.at(*column, *row) < 128) != (bulb.at(*column, *row) < 128))
         .count();
     assert!(differing > 100, "дом и лампа — разные формы: {differing}");
+    // «Auto» (план white-balance 04): палочка с искрами, а не телефон и не пустая заглушка. Форма отличается
+    // от телефона (того же размера ячейки) по сотням текселей.
+    let wand = IconTexels::of(IconId::MagicWand);
+    assert_eq!(
+        (wand.width, wand.height),
+        (phone.width, phone.height),
+        "тот же размер ячейки, что у телефона"
+    );
+    let wand_differs_from_phone = (0..wand.height)
+        .flat_map(|row| (0..wand.width).map(move |column| (column, row)))
+        .filter(|(column, row)| (wand.at(*column, *row) < 128) != (phone.at(*column, *row) < 128))
+        .count();
+    assert!(
+        wand_differs_from_phone > 100,
+        "палочка и телефон — разные формы: {wand_differs_from_phone}"
+    );
 }
 
 /// Атлас после добавления иконок остаётся в пределах, которые Vulkan гарантирует любому устройству

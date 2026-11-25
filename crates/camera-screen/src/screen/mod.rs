@@ -655,6 +655,9 @@ mod screen_text_cache_tests;
 #[path = "screen_thumbnail_tests.rs"]
 mod screen_thumbnail_tests;
 #[cfg(test)]
+#[path = "screen_white_auto_tests.rs"]
+mod screen_white_auto_tests;
+#[cfg(test)]
 #[path = "screen_white_button_gesture_tests.rs"]
 mod screen_white_button_gesture_tests;
 #[cfg(test)]

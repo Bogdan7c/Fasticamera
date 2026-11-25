@@ -7,7 +7,7 @@
 use camera_android::AndroidCameraConfig;
 use camera_core::CameraEngineConfig;
 use camera_core::config::CameraEngineConfigError;
-use camera_core::white::WhiteResumeRule;
+use camera_core::white::{WhiteFollowSpeed, WhiteResumeRule};
 use raw_frame_stream::{RawFrameStreamConfig, RawFrameStreamConfigError};
 use serde::Deserialize;
 
@@ -51,6 +51,13 @@ pub struct CameraConfig {
     /// Сегодня это замена тумблера на экране (его делает сессия 16): тот же выбор пойдёт той же командой.
     #[serde(deserialize_with = "deserialize_white_resume_choice")]
     pub white_resume_choice: Option<WhiteResumeRule>,
+    /// Скорость слежения за белым телефона, выбранная человеком на один запуск (intent-параметр `white_follow_ms`;
+    /// число миллисекунд, 0…10000). `None` — человек не выбирал: действует запомненное, а без памяти — умолчание
+    /// конфига `engine.three_a.white.follow.transition_ms`. Заданное значение приложение шлёт движку командой
+    /// `SetWhiteFollowSpeed` ДО первого `EnterForeground`, то есть как выбор человека: оно ложится в память. Сам режим
+    /// слежения параметр не включает: его включает кнопка «Auto» (команда `FollowWhite`).
+    #[serde(deserialize_with = "deserialize_white_follow_speed_choice")]
+    pub white_follow_speed_choice: Option<WhiteFollowSpeed>,
 }
 
 /// Разбор поля `white_resume_choice` с именем поля в тексте ошибки (сам serde назвал бы только значение).
@@ -59,6 +66,14 @@ fn deserialize_white_resume_choice<'de, D: serde::Deserializer<'de>>(
 ) -> Result<Option<WhiteResumeRule>, D::Error> {
     Option::<WhiteResumeRule>::deserialize(deserializer)
         .map_err(|error| serde::de::Error::custom(format!("camera.white_resume_choice: {error}")))
+}
+
+/// Разбор поля `white_follow_speed_choice` с именем поля в тексте ошибки (сам serde назвал бы только значение).
+fn deserialize_white_follow_speed_choice<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<WhiteFollowSpeed>, D::Error> {
+    Option::<WhiteFollowSpeed>::deserialize(deserializer)
+        .map_err(|error| serde::de::Error::custom(format!("camera.white_follow_speed_choice: {error}")))
 }
 
 /// Какая часть секции `camera` неверна.

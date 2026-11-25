@@ -26,7 +26,7 @@ impl WhiteBalanceRunner {
             target_white: self.applied.target().map(reading_of_setting),
             transition_active: self.applied.is_transitioning(),
             directive_generation: self.applied_generation.map(|generation| generation.0),
-            request: self.request,
+            request: self.request(),
             last_answer: self.sources.last_answer(),
             answers_published: source_counters.answers_published,
             answers_signal_not_bound: source_counters.answers_signal_not_bound,

@@ -18,12 +18,14 @@ mod writer;
 use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use camera_core::white::{NoWhiteMemory, WhiteMemory, WhiteMemoryLoad, WhiteResumeRule};
+use camera_core::white::{NoWhiteMemory, WhiteFollowRecord, WhiteMemory, WhiteMemoryLoad, WhiteResumeRule};
 
 use crate::app_directory::AppDirectory;
 
 pub use config::{WhiteMemoryConfig, WhiteMemoryConfigError, WhiteMemoryMode};
-pub use file::{QUARANTINE_FILE_MARKER, WhiteMemoryError, WhiteMemoryFile, WhiteRecordSink, WriteCommit};
+pub use file::{
+    QUARANTINE_FILE_MARKER, WhiteMemoryError, WhiteMemoryFile, WhiteMemoryUpdate, WhiteRecordSink, WriteCommit,
+};
 pub use writer::{WhiteMemoryDiagnostics, WhiteMemoryStats, WhiteMemoryWriter};
 
 const LOG_TARGET: &str = file::LOG_TARGET;
@@ -33,6 +35,8 @@ pub struct WhiteMemoryParts {
     pub load: WhiteMemoryLoad,
     /// Правило возобновления, которое человек выбрал раньше (`None` — выбора в памяти нет: действует конфиг).
     pub resume_rule: Option<WhiteResumeRule>,
+    /// Выбор слежения за белым, сделанный раньше (`default` — выбора в памяти нет: слежения нет, скорость из конфига).
+    pub follow: WhiteFollowRecord,
     pub memory: Box<dyn WhiteMemory>,
 }
 
@@ -42,6 +46,7 @@ impl Default for WhiteMemoryParts {
         Self {
             load: WhiteMemoryLoad::NothingRemembered,
             resume_rule: None,
+            follow: WhiteFollowRecord::default(),
             memory: Box::new(NoWhiteMemory),
         }
     }
@@ -67,6 +72,7 @@ pub fn open_white_memory(directory: &AppDirectory, config: &WhiteMemoryConfig) -
     let opened = WhiteMemoryFile::open(directory.path(), config);
     let load = opened.load;
     let resume_rule = opened.resume_rule;
+    let follow = opened.follow;
     let memory: Box<dyn WhiteMemory> = match WhiteMemoryWriter::spawn(
         opened.file,
         diagnostics.clone(),
@@ -83,6 +89,7 @@ pub fn open_white_memory(directory: &AppDirectory, config: &WhiteMemoryConfig) -
         parts: WhiteMemoryParts {
             load,
             resume_rule,
+            follow,
             memory,
         },
         diagnostics,
@@ -127,6 +134,8 @@ impl fmt::Debug for WhiteMemoryHandoff {
     }
 }
 
+#[cfg(test)]
+mod follow_tests;
 #[cfg(test)]
 mod rule_tests;
 #[cfg(test)]

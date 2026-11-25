@@ -325,11 +325,13 @@ fn dispatch_action(ctx: &mut Ctx<'_>, action: ScreenAction) -> ActionOutcome {
         ScreenAction::ScopeDemandLost => calibration::on_scope_demand_lost(ctx),
         ScreenAction::WhiteButtonTapped => white::on_button_tapped(ctx),
         ScreenAction::WhiteButtonLongPressed => white::on_button_long_pressed(ctx),
+        ScreenAction::WhiteAutoTapped => white::on_auto_tapped(ctx),
         ScreenAction::WhitePhoneTapped => white::on_phone_tapped(ctx),
         ScreenAction::WhiteLightSelected(index) => white::on_light_selected(ctx, index),
         ScreenAction::WhiteAxisSelected(axis) => white::on_axis_selected(ctx, axis),
         ScreenAction::WhiteTemperatureDragged(temperature) => white::on_temperature_dragged(ctx, temperature),
         ScreenAction::WhiteTintDragged(tint) => white::on_tint_dragged(ctx, tint),
         ScreenAction::WhiteTakeNotDelivered => white::on_take_not_delivered(ctx),
+        ScreenAction::WhiteFollowNotDelivered => white::on_follow_not_delivered(ctx),
     }
 }

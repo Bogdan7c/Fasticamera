@@ -24,6 +24,7 @@ const fn is_camera_control(action: &ScreenAction) -> bool {
             | ScreenAction::StripToolTapped(_)
             | ScreenAction::WhiteButtonTapped
             | ScreenAction::WhiteButtonLongPressed
+            | ScreenAction::WhiteAutoTapped
             | ScreenAction::WhitePhoneTapped
             | ScreenAction::WhiteLightSelected(_)
             | ScreenAction::WhiteAxisSelected(_)

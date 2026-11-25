@@ -17,6 +17,8 @@
 //! # Вид
 //! * Число — роль `StripValue`, «K» — `StripUnit`; жёлтое при ручном белом, иначе белое (WB16). Оба вращаются с
 //!   устройством (узел `rotating_content`), стекло стоит.
+//! * При слежении (WB49) число белое и живое, а под ним вместо «K» стоит «AUTO»: новой роли и нового цвета нет.
+//!   «AUTO» сжимается под круг тем же правилом, что и число.
 //! * Пять цифр («12000») шире круга: число сжимается равномерно до `number_max_width_pt`, размер цифр у остальных
 //!   значков остаётся единым.
 //! * Ожидание ответа — мерцание всей кнопки; отказ — тряска ВСЕЙ кнопки (стекло и число вместе: число, уехавшее
@@ -43,7 +45,16 @@ use super::text_runs::TextRuns;
 use super::white_attention::WhiteAttention;
 use super::{Ctx, Outputs, rotation_only, single_member_group};
 use crate::action::ScreenAction;
-use crate::white_display::{KELVIN_UNIT, kelvin_text, number_is_manual};
+use crate::white_display::{kelvin_text, number_is_manual, white_unit_label};
+
+/// Во сколько раз сжать строку шириной `advance_px`, чтобы она не вышла за `max_width_px` (1, если и так помещается).
+fn fit_scale(advance_px: f32, max_width_px: f32) -> f32 {
+    if advance_px > max_width_px && advance_px > 0.0 {
+        max_width_px / advance_px
+    } else {
+        1.0
+    }
+}
 
 /// Кнопка белого у затвора.
 pub(crate) struct WhiteButtonWidget {
@@ -175,7 +186,8 @@ impl WhiteButtonWidget {
     ) -> Result<(), WidgetError> {
         let strip = &ctx.geometry.config().strip;
         let held = ctx.state.camera_facts().white.held;
-        let color = if number_is_manual(held) {
+        let follow = ctx.state.camera_facts().white.follow;
+        let color = if number_is_manual(held, follow) {
             ctx.tokens.colors.focus_yellow
         } else {
             ctx.tokens.colors.text_primary
@@ -184,11 +196,7 @@ impl WhiteButtonWidget {
         let value = texts.run(ctx, &number, TextRoleKind::StripValue)?;
         // Сжатие длинного числа: не шире `number_max_width_pt` (не сжимается, если и так помещается).
         let max_width_px = ctx.px.px(ctx.geometry.config().white_button.number_max_width_pt);
-        let fit = if value.advance_px > max_width_px && value.advance_px > 0.0 {
-            max_width_px / value.advance_px
-        } else {
-            1.0
-        };
+        let fit = fit_scale(value.advance_px, max_width_px);
         let line_at = |offset_pt: f64| Affine2::translate(0.0, ctx.px.px(offset_pt)).then(host);
         layers.push(
             Layer::Content,
@@ -199,11 +207,31 @@ impl WhiteButtonWidget {
                 opacity,
             ),
         );
-        let unit = texts.run(ctx, KELVIN_UNIT, TextRoleKind::StripUnit)?;
+        // Строка единицы: «K», при слежении «AUTO» (WB49). Сжимается под круг тем же правилом, что и число.
+        let unit = texts.run(ctx, white_unit_label(follow), TextRoleKind::StripUnit)?;
+        let unit_fit = fit_scale(unit.advance_px, max_width_px);
         layers.push(
             Layer::Content,
-            centered_text(unit, line_at(strip.ev_unit_offset_pt), color, opacity),
+            centered_text(
+                unit,
+                Affine2::uniform_scale(unit_fit).then(line_at(strip.ev_unit_offset_pt)),
+                color,
+                opacity,
+            ),
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fit_scale;
+
+    #[test]
+    fn a_line_wider_than_the_circle_is_squeezed_uniformly_and_a_narrow_one_is_left_alone() {
+        assert_eq!(fit_scale(90.0, 60.0), 60.0 / 90.0, "шире круга — сжать ровно до ширины");
+        assert_eq!(fit_scale(60.0, 60.0), 1.0, "ровно по ширине — без сжатия");
+        assert_eq!(fit_scale(20.0, 60.0), 1.0, "уже круга — без сжатия");
+        assert_eq!(fit_scale(0.0, 60.0), 1.0, "пустая строка не делит на ноль");
     }
 }

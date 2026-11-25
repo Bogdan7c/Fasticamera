@@ -2,9 +2,9 @@
 //!
 //! Схема «ящик на одно письмо» (как у пресетов вида): `save` кладёт последнюю запись и будит поток записи.
 //! Если прежняя запись ещё не взята, она ЗАМЕНЯЕТСЯ (склейка, «последняя побеждает»): очередь не растёт, вызов
-//! не блокируется на диске. В ящике два независимых места — белая и правило возобновления: склейка идёт в каждом
-//! отдельно (новая белая не вытесняет выбор правила и наоборот), а частота и «пиши немедленно» у них общие. Если к
-//! пробуждению заняты оба места, на диск уходит ОДНА запись с обоими. `Drop` закрывает приём, дописывает последнюю принятую запись и ждёт поток: ожидание
+//! не блокируется на диске. В ящике три независимых места — белая, правило возобновления и выбор слежения: склейка
+//! идёт в каждом отдельно (новая белая не вытесняет выбор правила или слежения и наоборот), а частота и «пиши
+//! немедленно» у них общие. Если к пробуждению заняты несколько мест, на диск уходит ОДНА запись со всеми. `Drop` закрывает приём, дописывает последнюю принятую запись и ждёт поток: ожидание
 //! ограничено временем ОДНОЙ записи.
 //!
 //! Частота записи: шкала белой под пальцем присылает правки десятки раз в секунду, а каждая запись на диск —
@@ -22,9 +22,9 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use camera_core::white::{WhiteMemory, WhiteMemoryRecord, WhiteResumeRule};
+use camera_core::white::{WhiteFollowRecord, WhiteMemory, WhiteMemoryRecord, WhiteResumeRule};
 
-use super::file::{LOG_TARGET, WhiteMemoryError, WhiteRecordSink, WriteCommit};
+use super::file::{LOG_TARGET, WhiteMemoryError, WhiteMemoryUpdate, WhiteRecordSink, WriteCommit};
 
 /// Имя потока записи (видно в профилировщиках и логах).
 const WRITER_THREAD_NAME: &str = "fasticamera-white-memory";
@@ -88,23 +88,14 @@ impl WhiteMemoryDiagnostics {
     }
 }
 
-/// Что поток записи взял из ящика за одно пробуждение: занятое место или оба.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum WriteJob {
-    Record(WhiteMemoryRecord),
-    ResumeRule(WhiteResumeRule),
-    Both {
-        record: WhiteMemoryRecord,
-        rule: WhiteResumeRule,
-    },
-}
-
-/// Ящик на одно письмо: два независимых места.
+/// Ящик на одно письмо: три независимых места.
 #[derive(Default)]
 struct Mailbox {
     pending: Option<WhiteMemoryRecord>,
     /// Выбор правила возобновления, ещё не взятый потоком записи.
     pending_rule: Option<WhiteResumeRule>,
+    /// Выбор слежения, ещё не взятый потоком записи.
+    pending_follow: Option<WhiteFollowRecord>,
     closed: bool,
     /// Движок велел «пиши немедленно» ([`WhiteMemory::flush`]): принятую запись положить без ожидания интервала.
     /// Взводится только при наличии записи и сбрасывается, когда её взяли.
@@ -120,17 +111,17 @@ struct Shared {
 impl Mailbox {
     /// Есть ли что писать (хотя бы одно занятое место).
     fn has_pending(&self) -> bool {
-        self.pending.is_some() || self.pending_rule.is_some()
+        self.pending.is_some() || self.pending_rule.is_some() || self.pending_follow.is_some()
     }
 
-    /// Забирает всё занятое одним заданием; `None` — ящик пуст.
-    fn take_job(&mut self) -> Option<WriteJob> {
-        match (self.pending.take(), self.pending_rule.take()) {
-            (Some(record), Some(rule)) => Some(WriteJob::Both { record, rule }),
-            (Some(record), None) => Some(WriteJob::Record(record)),
-            (None, Some(rule)) => Some(WriteJob::ResumeRule(rule)),
-            (None, None) => None,
-        }
+    /// Забирает всё занятое одной записью; `None` — ящик пуст. Взятые места освобождаются.
+    fn take_job(&mut self) -> Option<WhiteMemoryUpdate> {
+        let update = WhiteMemoryUpdate {
+            record: self.pending.take(),
+            rule: self.pending_rule.take(),
+            follow: self.pending_follow.take(),
+        };
+        (!update.is_empty()).then_some(update)
     }
 }
 
@@ -193,6 +184,11 @@ impl WhiteMemory for WhiteMemoryWriter {
     /// То же для выбора правила возобновления: своё место в ящике, склейка только с прежним выбором.
     fn save_resume_rule(&mut self, rule: WhiteResumeRule) {
         self.deposit(|mailbox| mailbox.pending_rule.replace(rule).is_some());
+    }
+
+    /// То же для выбора слежения: своё место в ящике, склейка только с прежним выбором слежения.
+    fn save_follow(&mut self, record: WhiteFollowRecord) {
+        self.deposit(|mailbox| mailbox.pending_follow.replace(record).is_some());
     }
 
     /// Не ждёт диска: только снимает отсрочку; запись делает поток записи. Без принятой записи — ничего.
@@ -259,6 +255,7 @@ impl Drop for WriterExitGuard<'_> {
         mailbox.closed = true;
         mailbox.pending = None;
         mailbox.pending_rule = None;
+        mailbox.pending_follow = None;
         drop(mailbox);
         self.shared.wake.notify_all();
     }
@@ -271,11 +268,7 @@ fn run_writer(shared: &Shared, mut sink: impl WhiteRecordSink, min_write_interva
     while let Some(job) = wait_for_job(shared, min_write_interval, last_write_started) {
         last_write_started = Some(Instant::now());
         // Диск пишем БЕЗ блокировки ящика: новые записи за это время склеиваются.
-        let outcome = match &job {
-            WriteJob::Record(record) => sink.write_record(record),
-            WriteJob::ResumeRule(rule) => sink.write_resume_rule(*rule),
-            WriteJob::Both { record, rule } => sink.write_record_and_rule(record, *rule),
-        };
+        let outcome = sink.write(&job);
         report_outcome(&shared.diagnostics, &job, outcome);
     }
 }
@@ -293,7 +286,7 @@ fn wait_for_job(
     shared: &Shared,
     min_write_interval: Duration,
     last_write_started: Option<Instant>,
-) -> Option<WriteJob> {
+) -> Option<WhiteMemoryUpdate> {
     let mut mailbox = shared.lock_mailbox();
     loop {
         if !mailbox.has_pending() {
@@ -324,7 +317,7 @@ fn wait_for_job(
 /// Итог записи: журнал и счётчики.
 fn report_outcome(
     diagnostics: &WhiteMemoryDiagnostics,
-    job: &WriteJob,
+    job: &WhiteMemoryUpdate,
     outcome: Result<WriteCommit, WhiteMemoryError>,
 ) {
     let cells = &*diagnostics.shared;
@@ -351,13 +344,15 @@ fn report_outcome(
 
 /// Значение, которое реально легло на диск: `info`, потому что записей мало (не чаще интервала). Именно эта строка
 /// несёт итог серии ручных правок: строки движка о самих правках идут в `debug`.
-fn log_job_written(job: &WriteJob) {
-    match job {
-        WriteJob::Record(record) | WriteJob::Both { record, .. } => log_written(record),
-        WriteJob::ResumeRule(_) => {}
+fn log_job_written(job: &WhiteMemoryUpdate) {
+    if let Some(record) = &job.record {
+        log_written(record);
     }
-    if let WriteJob::ResumeRule(rule) | WriteJob::Both { rule, .. } = job {
+    if let Some(rule) = job.rule {
         tracing::info!(target: LOG_TARGET, rule = ?rule, "правило возобновления белого записано в память");
+    }
+    if let Some(follow) = job.follow {
+        tracing::info!(target: LOG_TARGET, follow = ?follow, "выбор слежения за белым записан в память");
     }
 }
 

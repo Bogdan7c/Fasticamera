@@ -5,7 +5,7 @@
 
 use camera_contract::white::{HeldWhite, WhiteOrigin};
 
-use crate::white::{WhiteRequestResult, WhiteResumeRule};
+use crate::white::{WhiteFollowRecord, WhiteRequestResult, WhiteResumeRule};
 
 /// Цель журнала: один фильтр собирает и белую, и её память.
 pub(super) const LOG_TARGET: &str = "fasticamera::white";
@@ -52,4 +52,15 @@ pub(super) fn request_finished(finished: &WhiteRequestResult) {
 /// Человек выбрал правило возобновления белого (редкое событие: настройка, не шкала).
 pub(super) fn resume_rule_chosen(rule: WhiteResumeRule) {
     tracing::info!(target: LOG_TARGET, rule = ?rule, "правило возобновления белого выбрано");
+}
+
+/// Слежение за белым включено, выключено или сменило скорость (действие человека, редкое). Отдельные вопросы и
+/// ответы слежения в журнал не идут: строка появляется, только когда белая действительно сдвинулась.
+pub(super) fn follow_changed(follow: &WhiteFollowRecord) {
+    tracing::info!(
+        target: LOG_TARGET,
+        keeping = ?follow.keeping,
+        chosen_speed_ms = follow.speed.map(crate::white::WhiteFollowSpeed::millis),
+        "слежение за белой"
+    );
 }

@@ -15,13 +15,15 @@ use camera_contract::white::{
 use super::three_a_support::result_meta;
 use super::*;
 use crate::white::{
-    WhiteMemory, WhiteMemoryLoad, WhiteMemoryRecord, WhiteRequestResult, WhiteResumeRule, WhiteStatus, WhiteWiring,
+    WhiteFollowRecord, WhiteMemory, WhiteMemoryLoad, WhiteMemoryRecord, WhiteRequestResult, WhiteResumeRule,
+    WhiteStatus, WhiteWiring,
 };
 
 /// Фальшивая память: складывает записи туда, где их видит тест.
 struct RecordingMemory {
     saved: Arc<Mutex<Vec<WhiteMemoryRecord>>>,
     saved_rules: Arc<Mutex<Vec<WhiteResumeRule>>>,
+    saved_follows: Arc<Mutex<Vec<WhiteFollowRecord>>>,
     flushes: Arc<AtomicUsize>,
 }
 
@@ -37,6 +39,13 @@ impl WhiteMemory for RecordingMemory {
             .push(rule);
     }
 
+    fn save_follow(&mut self, record: WhiteFollowRecord) {
+        self.saved_follows
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(record);
+    }
+
     fn flush(&mut self) {
         self.flushes.fetch_add(1, Ordering::Relaxed);
     }
@@ -48,6 +57,7 @@ pub(super) struct WhiteOutside {
     pub(super) answers: WhiteAnswerChannel,
     saved: Arc<Mutex<Vec<WhiteMemoryRecord>>>,
     saved_rules: Arc<Mutex<Vec<WhiteResumeRule>>>,
+    saved_follows: Arc<Mutex<Vec<WhiteFollowRecord>>>,
     flushes: Arc<AtomicUsize>,
 }
 
@@ -83,18 +93,28 @@ impl WhiteOutside {
     pub(super) fn saved_rules(&self) -> Vec<WhiteResumeRule> {
         self.saved_rules.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
+
+    /// Все записи о слежении, которые движок передал памяти, в порядке передачи.
+    pub(super) fn saved_follows(&self) -> Vec<WhiteFollowRecord> {
+        self.saved_follows
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
 }
 
 /// Подключения белой: свои ящики, фальшивая память, заданная запомненная запись.
 pub(super) fn white_wiring(remembered: WhiteMemoryLoad) -> (WhiteWiring, WhiteOutside) {
     let saved = Arc::new(Mutex::new(Vec::new()));
     let saved_rules = Arc::new(Mutex::new(Vec::new()));
+    let saved_follows = Arc::new(Mutex::new(Vec::new()));
     let flushes = Arc::new(AtomicUsize::new(0));
     let wiring = WhiteWiring {
         remembered,
         memory: Box::new(RecordingMemory {
             saved: Arc::clone(&saved),
             saved_rules: Arc::clone(&saved_rules),
+            saved_follows: Arc::clone(&saved_follows),
             flushes: Arc::clone(&flushes),
         }),
         ..WhiteWiring::default()
@@ -104,6 +124,7 @@ pub(super) fn white_wiring(remembered: WhiteMemoryLoad) -> (WhiteWiring, WhiteOu
         answers: wiring.answers.clone(),
         saved,
         saved_rules,
+        saved_follows,
         flushes,
     };
     (wiring, outside)

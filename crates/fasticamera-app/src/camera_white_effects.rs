@@ -17,6 +17,11 @@
 //!   в обратное действие экрану [`ScreenAction::WhiteTakeNotDelivered`] (тряска и вибрация «ошибка», как у отказа
 //!   источника). Принятая команда «взять» сбрасывает отложенное ручное: оно было раньше нажатия, человек передумал.
 //!   Недоставленная — отложенного не трогает: рука всё ещё хочет своё.
+//! * `FollowWhite` («Auto», WB44) живёт по тем же правилам, что `TakeWhite`: сначала пытаемся доставить отложенную
+//!   ручную правку, сама команда не досылается, принятая команда сбрасывает отложенное (иначе досланная позже
+//!   старая правка выключила бы слежение, которое человек только что включил). Недоставленная возвращается экрану
+//!   действием [`ScreenAction::WhiteFollowNotDelivered`]: только вибрация «ошибка», «Phone» не трясётся —
+//!   это не её отказ.
 
 use camera_contract::control::{ColorTemperature, Tint, WhiteBalanceSetting};
 use camera_contract::white::{WhiteAdjustment, WhiteSourceId};
@@ -123,6 +128,35 @@ pub struct WhiteIntentCounters {
     pub no_engine: u64,
     /// Команды «взять», которые не дошли до движка и вернулись экрану отказом.
     pub takes_not_delivered: u64,
+    /// Команды «следить» («Auto»), которые не дошли до движка и вернулись экрану вибрацией «ошибка».
+    pub follows_not_delivered: u64,
+}
+
+/// Команда белого, которая не досылается (человек мог передумать): «взять» и «следить». Различие нужно для
+/// намерения, обратного действия экрану и счётчика: у каждой свой, остальная логика доставки общая.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnretriedCommand {
+    /// «Взять белое» ([`ScreenCameraIntent::TakeWhite`]).
+    Take,
+    /// «Следить за белым» ([`ScreenCameraIntent::FollowWhite`]).
+    Follow,
+}
+
+impl UnretriedCommand {
+    fn intent(self, source: WhiteSourceId) -> ScreenCameraIntent {
+        match self {
+            UnretriedCommand::Take => ScreenCameraIntent::TakeWhite(source),
+            UnretriedCommand::Follow => ScreenCameraIntent::FollowWhite(source),
+        }
+    }
+
+    /// Что вернуть экрану, если команда не дошла.
+    fn not_delivered_action(self) -> ScreenAction {
+        match self {
+            UnretriedCommand::Take => ScreenAction::WhiteTakeNotDelivered,
+            UnretriedCommand::Follow => ScreenAction::WhiteFollowNotDelivered,
+        }
+    }
 }
 
 /// Откуда идёт досылка: от этого зависит, в какой счётчик записать принятое.
@@ -163,9 +197,25 @@ impl WhiteEffects {
 
     /// Команда «взять белое». Не досылается; не дошла — возвращает экрану отказ.
     pub(crate) fn run_take(&mut self, camera: &dyn CameraIntentPort, source: WhiteSourceId) -> Option<ScreenAction> {
+        self.run_unretried(camera, UnretriedCommand::Take, source)
+    }
+
+    /// Команда «следить за белым» («Auto»). Не досылается; не дошла — возвращает экрану вибрацию «ошибка».
+    pub(crate) fn run_follow(&mut self, camera: &dyn CameraIntentPort, source: WhiteSourceId) -> Option<ScreenAction> {
+        self.run_unretried(camera, UnretriedCommand::Follow, source)
+    }
+
+    /// Общий путь команд, которые не досылаются. `QueueFull` оставляет отложенное ручное как есть (оно досылается
+    /// отдельно), остановленный или отсутствующий движок сбрасывает его.
+    fn run_unretried(
+        &mut self,
+        camera: &dyn CameraIntentPort,
+        command: UnretriedCommand,
+        source: WhiteSourceId,
+    ) -> Option<ScreenAction> {
         // Отложенная ручная правка была раньше нажатия: сначала пытаемся доставить её, чтобы порядок сохранился.
         self.flush(camera, FlushOrigin::NewEdit);
-        match camera.deliver(ScreenCameraIntent::TakeWhite(source)) {
+        match camera.deliver(command.intent(source)) {
             CameraIntentOutcome::Sent(_) => {
                 self.counters.sent += 1;
                 // Команда принята, а старая правка так и не дошла: человек передумал, рука не должна лечь
@@ -175,25 +225,29 @@ impl WhiteEffects {
             }
             CameraIntentOutcome::QueueFull => {
                 self.counters.queue_full += 1;
-                Some(self.take_not_delivered("очередь движка полна"))
+                Some(self.not_delivered(command, "очередь движка полна"))
             }
             CameraIntentOutcome::EngineStopped => {
                 self.counters.engine_stopped += 1;
                 self.pending = PendingWhite::default();
-                Some(self.take_not_delivered("движок остановлен"))
+                Some(self.not_delivered(command, "движок остановлен"))
             }
             CameraIntentOutcome::NoEngine => {
                 self.counters.no_engine += 1;
                 self.pending = PendingWhite::default();
-                Some(self.take_not_delivered("движка нет"))
+                Some(self.not_delivered(command, "движка нет"))
             }
         }
     }
 
-    fn take_not_delivered(&mut self, reason: &'static str) -> ScreenAction {
-        self.counters.takes_not_delivered += 1;
-        tracing::warn!(target: LOG_TARGET, reason, "команда «взять белое» не доставлена: экрану отказ");
-        ScreenAction::WhiteTakeNotDelivered
+    /// Недоставленная команда: счётчик, журнал и обратное действие экрану — свои у каждой команды.
+    fn not_delivered(&mut self, command: UnretriedCommand, reason: &'static str) -> ScreenAction {
+        match command {
+            UnretriedCommand::Take => self.counters.takes_not_delivered += 1,
+            UnretriedCommand::Follow => self.counters.follows_not_delivered += 1,
+        }
+        tracing::warn!(target: LOG_TARGET, ?command, reason, "команда белого не доставлена: экран узнает");
+        command.not_delivered_action()
     }
 
     /// Досылает отложенное по порядку, пока движок принимает. Полная очередь оставляет остаток на следующий

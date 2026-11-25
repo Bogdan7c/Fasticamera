@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use camera_contract::control::{ColorTemperature, Tint, WhiteBalanceSetting};
-use camera_core::white::{RememberedOrigin, WhiteMemory, WhiteMemoryLoad, WhiteMemoryRecord, WhiteResumeRule};
+use camera_core::white::{RememberedOrigin, WhiteMemory, WhiteMemoryLoad, WhiteMemoryRecord};
 
 use super::*;
 
@@ -137,7 +137,11 @@ impl ScriptedSink {
 }
 
 impl WhiteRecordSink for ScriptedSink {
-    fn write_record(&mut self, record: &WhiteMemoryRecord) -> Result<WriteCommit, WhiteMemoryError> {
+    fn write(&mut self, update: &WhiteMemoryUpdate) -> Result<WriteCommit, WhiteMemoryError> {
+        // Эти тесты про белую; правило и слежение проверяют `rule_tests` и `follow_tests` на своих приёмниках.
+        let Some(record) = &update.record else {
+            return Ok(WriteCommit::Durable);
+        };
         if self.panic_on_write {
             panic!("приёмник сломан (проверка стража потока)");
         }
@@ -152,11 +156,6 @@ impl WhiteRecordSink for ScriptedSink {
             return Err(WhiteMemoryError::Write("диск полон".to_owned()));
         }
         self.written.lock().expect("замок").push(*record);
-        Ok(WriteCommit::Durable)
-    }
-
-    /// Эти тесты про белую; правило возобновления проверяют `rule_tests` на своём приёмнике.
-    fn write_resume_rule(&mut self, _rule: WhiteResumeRule) -> Result<WriteCommit, WhiteMemoryError> {
         Ok(WriteCommit::Durable)
     }
 }
