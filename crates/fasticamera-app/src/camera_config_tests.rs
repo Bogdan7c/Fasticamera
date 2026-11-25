@@ -130,6 +130,11 @@ fn three_a_sections_of_every_owner_have_valid_defaults_and_arrive_through_runtim
     assert!(defaults.camera().android.three_a_companion_stream.enabled);
     assert_eq!(defaults.render().viewfinder.auto_exposure.statistics_every_n_frames, 4);
     assert_eq!(
+        defaults.render().viewfinder.auto_exposure.scene_change.confirm_ms,
+        500,
+        "решение 241"
+    );
+    assert_eq!(
         defaults.render().viewfinder.white_balance.max_hidden_frames,
         20,
         "решение 76"
@@ -139,7 +144,8 @@ fn three_a_sections_of_every_owner_have_valid_defaults_and_arrive_through_runtim
         r#"{"build_type":"debug","log_filter":"info",
             "camera":{"engine":{"three_a":{"focus_settle_timeout_ms":2000}},
                       "android":{"mains_frequency":"60hz","three_a_companion_stream":{"width":320}}},
-            "render":{"viewfinder":{"auto_exposure":{"statistics_every_n_frames":2},
+            "render":{"viewfinder":{"auto_exposure":{"statistics_every_n_frames":2,
+                                                              "scene_change":{"confirm_ms":800}},
                                     "white_balance":{"max_hidden_frames":6}}}}"#,
     )
     .expect("секции 3A всех владельцев");
@@ -149,6 +155,10 @@ fn three_a_sections_of_every_owner_have_valid_defaults_and_arrive_through_runtim
     assert_eq!(
         configured.render().viewfinder.auto_exposure.statistics_every_n_frames,
         2
+    );
+    assert_eq!(
+        configured.render().viewfinder.auto_exposure.scene_change.confirm_ms,
+        800
     );
     assert_eq!(configured.render().viewfinder.white_balance.max_hidden_frames, 6);
 }
@@ -171,6 +181,13 @@ fn three_a_typos_and_invalid_values_are_rejected_naming_the_owner() {
             r#"{"viewfinder":{"auto_exposure":{"statistics_every_n_frames":0}}}"#
         ))
         .contains("viewfinder.auto_exposure.statistics_every_n_frames")
+    );
+    assert!(
+        reject(&base(
+            "{}",
+            r#"{"viewfinder":{"auto_exposure":{"scene_change":{"confirm_frames":0}}}}"#
+        ))
+        .contains("viewfinder.auto_exposure.scene_change")
     );
     // Старое место поля отвергается строго: период статистики живёт у AE, а не у белой.
     assert!(

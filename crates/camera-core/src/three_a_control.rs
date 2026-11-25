@@ -135,6 +135,18 @@ pub trait ExposureController: Send {
         None
     }
 
+    /// Наблюдение «точка тапа устарела» новее `seen` (решение 241): ящик нашего AE, куда пишет рендер. У вендорского
+    /// AE ящика нет — наблюдений не бывает (ограничение: точку снимает только возврат из фона).
+    fn point_obsolete_newer_than(
+        &self,
+        _seen: Option<camera_contract::three_a::DirectiveGeneration>,
+    ) -> Option<(
+        camera_contract::three_a::DirectiveGeneration,
+        camera_contract::scene_change::PointObsolete,
+    )> {
+        None
+    }
+
     /// Поток или камера сменились: забыть всё, что относится к прошлому потоку.
     fn reset_for_new_stream(&mut self);
 

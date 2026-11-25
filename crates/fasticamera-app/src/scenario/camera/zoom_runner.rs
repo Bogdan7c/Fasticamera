@@ -507,6 +507,7 @@ impl ZoomRunner {
                 | CameraEvent::StreamConfigured { .. }
                 | CameraEvent::StreamConfigurationFailed { .. }
                 | CameraEvent::FocusSettled { .. }
+                | CameraEvent::PointOfInterestReleased { .. }
                 | CameraEvent::ControlsAdjusted { .. }
                 | CameraEvent::BracketCaptured { .. }
                 | CameraEvent::FlashStillFinished { .. }

@@ -268,3 +268,27 @@ fn engine_config_rejects_invalid_zoom_section_and_accepts_partial_json() {
     assert_eq!(parsed.zoom.back_max_ratio, 8.0);
     assert_eq!(parsed.validate(), Ok(()));
 }
+
+#[test]
+fn point_hold_defaults_to_until_scene_change_and_reads_from_a_plain_string() {
+    use crate::point_hold::PointHold;
+    assert_eq!(
+        CameraEngineConfig::default().three_a.point_hold,
+        PointHold::UntilSceneChange
+    );
+    let parsed: CameraEngineConfig =
+        serde_json::from_str(r#"{"three_a":{"point_hold":"until_replaced"}}"#).expect("until_replaced разбирается");
+    assert_eq!(parsed.three_a.point_hold, PointHold::UntilReplaced);
+    assert_eq!(parsed.three_a.focus_settle_timeout_ms, 1_500, "остальное по умолчанию");
+    let written = serde_json::to_string(&PointHold::UntilSceneChange).expect("запись");
+    assert_eq!(written, r#""until_scene_change""#);
+}
+
+#[test]
+fn a_bad_point_hold_value_is_rejected_with_the_field_name() {
+    let error =
+        serde_json::from_str::<CameraEngineConfig>(r#"{"three_a":{"point_hold":"forever"}}"#).expect_err("значение");
+    let text = error.to_string();
+    assert!(text.contains("three_a.point_hold"), "{text}");
+    assert!(text.contains("forever"), "{text}");
+}

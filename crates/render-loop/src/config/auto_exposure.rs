@@ -4,7 +4,7 @@
 //! `ExposureControllerConfig`); здесь — то, что решает поток рендера: как долго просить статистику
 //! на каждом кадре, пока первой оценки сцены нет.
 
-use scene_estimation::exposure::{ExposureControllerConfig, MeteringConfig};
+use scene_estimation::exposure::{ExposureControllerConfig, MeteringConfig, SceneChangeConfig};
 use serde::{Deserialize, Serialize};
 
 /// Настройки AE потока рендера.
@@ -27,6 +27,8 @@ pub struct AutoExposureConfig {
     /// дрожала бы в четвёртом знаке с каждым замером и параметры пересчитывались бы на каждом кадре. Со шагом
     /// кэш бьёт, пока `k` в пределах шага, а подтяжка меньше половины шага равна ровно 1 (старый путь бит-в-бит).
     pub residual_gain_step_ev: f32,
+    /// Детектор «сцена под точкой тапа сменилась» (решение 241): когда рендер сообщает движку, что точка устарела.
+    pub scene_change: SceneChangeConfig,
 }
 
 impl Default for AutoExposureConfig {
@@ -45,6 +47,7 @@ impl Default for AutoExposureConfig {
             cold_start_every_frame_limit: 30,
             statistics_every_n_frames: 4,
             residual_gain_step_ev: 1.0 / 32.0,
+            scene_change: SceneChangeConfig::default(),
         }
     }
 }
@@ -64,6 +67,9 @@ pub enum AutoExposureConfigError {
     /// Шаг квантования подтяжки не положителен или не конечен.
     #[error("viewfinder.auto_exposure.residual_gain_step_ev должен быть конечным и > 0, а не {0}")]
     ResidualGainStep(String),
+    /// Настройки детектора смены сцены отвергнуты.
+    #[error("viewfinder.auto_exposure.scene_change: {0}")]
+    SceneChange(String),
 }
 
 impl AutoExposureConfig {
@@ -83,6 +89,9 @@ impl AutoExposureConfig {
                 self.residual_gain_step_ev.to_string(),
             ));
         }
+        self.scene_change
+            .validate()
+            .map_err(|error| AutoExposureConfigError::SceneChange(error.to_string()))?;
         Ok(())
     }
 }
@@ -131,6 +140,18 @@ mod tests {
             broken_controller.validate(),
             Err(AutoExposureConfigError::Controller(_))
         ));
+        let mut broken_scene_change = AutoExposureConfig::default();
+        broken_scene_change.scene_change.confirm_frames = 0;
+        let error = broken_scene_change
+            .validate()
+            .expect_err("0 кадров подтверждения — не конфиг");
+        assert!(matches!(error, AutoExposureConfigError::SceneChange(_)));
+        assert!(
+            error
+                .to_string()
+                .contains("viewfinder.auto_exposure.scene_change: поле scene_change.confirm_frames"),
+            "{error}"
+        );
         let zero_step = AutoExposureConfig {
             residual_gain_step_ev: 0.0,
             ..AutoExposureConfig::default()
@@ -144,5 +165,13 @@ mod tests {
             serde_json::from_str(r#"{"cold_start_every_frame_limit":5}"#).expect("секция читается");
         assert_eq!(parsed.cold_start_every_frame_limit, 5);
         assert_eq!(parsed.controller, ExposureControllerConfig::default());
+        // Секция детектора смены сцены читается из конфига, остальное — по умолчанию.
+        let parsed: AutoExposureConfig =
+            serde_json::from_str(r#"{"scene_change":{"confirm_ms":800}}"#).expect("секция читается");
+        assert_eq!(parsed.scene_change.confirm_ms, 800);
+        assert_eq!(
+            parsed.scene_change.changed_share,
+            SceneChangeConfig::default().changed_share
+        );
     }
 }

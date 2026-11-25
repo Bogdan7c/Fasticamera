@@ -66,6 +66,8 @@ pub enum TapResult {
     TriggerNotDelivered,
     /// Событие итога не пришло за срок сценария.
     NoEvent,
+    /// Движок сам отпустил точку тапа до итога (решение 241: сцена под ней сменилась): тап не проверен.
+    ReleasedBySceneChange,
 }
 
 impl TapResult {

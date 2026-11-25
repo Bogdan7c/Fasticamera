@@ -28,7 +28,8 @@ use camera_contract::capture_result::{CaptureResultMeta, FrameNumber, SensorTime
 use camera_contract::control::ExposureBias;
 use camera_contract::frame_passport::{CaptureColorHints, FrameCaptureDetails};
 use camera_contract::three_a::{
-    AeAfLock, DirectiveGeneration, DirectiveSlot, PointOfInterest, RequestOrigin, ThreeAProfile, ThreeAResultState,
+    AeAfLock, DirectiveGeneration, DirectiveSlot, MeteringRegion, PointOfInterest, PointRequestId, RequestOrigin,
+    ThreeAProfile, ThreeAResultState,
 };
 use gpu_vulkan::hardware_buffer_cache::ImportCacheCounters;
 use gpu_vulkan::raw_mosaic_preview::MosaicSource;
@@ -168,6 +169,8 @@ pub struct AeRig {
     pub pending: VecDeque<(i64, f64)>,
     pub seen: Option<DirectiveGeneration>,
     pub lock: AeAfLock,
+    /// Куда указание движка велит мерить: весь кадр или точка тапа.
+    pub metering: PointOfInterest,
     pub frame: i64,
     pub render_index: u64,
     pub sequence: i64,
@@ -249,6 +252,12 @@ pub fn rig_or_skip(auto_exposure: Option<AutoExposureConfig>) -> Option<(AeRig, 
 }
 
 pub fn rig_with(setup: RigSetup) -> Option<(AeRig, Arc<Journal>)> {
+    rig_with_links(setup, None)
+}
+
+/// То же, но ящики AE (указания и предложения) заданы снаружи: владельцем указаний выступает НАСТОЯЩИЙ движок
+/// камеры (сквозные тесты), а не помощник стенда. `None` — стенд заводит свои ящики, как раньше.
+pub fn rig_with_links(setup: RigSetup, shared_links: Option<AutoExposureLinks>) -> Option<(AeRig, Arc<Journal>)> {
     let RigSetup {
         auto_exposure,
         white_balance,
@@ -287,8 +296,10 @@ pub fn rig_with(setup: RigSetup) -> Option<(AeRig, Arc<Journal>)> {
         }),
         white_balance.unwrap_or_default(),
     )?;
-    let directives = DirectiveSlot::new();
-    let proposals = ExposureProposalChannel::new();
+    let (directives, proposals) = match shared_links {
+        Some(links) => (links.directives, links.proposals),
+        None => (DirectiveSlot::new(), ExposureProposalChannel::new()),
+    };
     let mut backend = if enabled {
         backend.with_auto_exposure(AutoExposureLinks {
             directives: directives.clone(),
@@ -327,6 +338,7 @@ pub fn rig_with(setup: RigSetup) -> Option<(AeRig, Arc<Journal>)> {
             pending: VecDeque::new(),
             seen: None,
             lock: AeAfLock::Unlocked,
+            metering: PointOfInterest::WholeFrame,
             frame: 0,
             render_index: 0,
             sequence: 1,
@@ -491,7 +503,7 @@ impl AeRig {
 
     pub fn publish_directive(&self) {
         self.directives.publish(ExposureDirective {
-            metering: PointOfInterest::WholeFrame,
+            metering: self.metering,
             lock: self.lock,
             profile: ThreeAProfile::Photo,
             authority: ExposureAuthority::Automatic,
@@ -506,6 +518,12 @@ impl AeRig {
             stream_start: None,
             flash: camera_contract::flash::FlashDirective::INACTIVE,
         });
+    }
+
+    /// Тап: движок велит мерить и фокусироваться по региону (номер тапа `request`).
+    pub fn tap(&mut self, region: MeteringRegion, request: PointRequestId) {
+        self.metering = PointOfInterest::Point { region, request };
+        self.publish_directive();
     }
 
     pub fn set_lock(&mut self, lock: AeAfLock) {

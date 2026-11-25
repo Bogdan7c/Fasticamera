@@ -116,6 +116,8 @@ pub fn failure_of_event(event: &CameraEvent) -> Option<RunFailure> {
         | CameraEvent::LensSwitchFailed { .. }
         // События 3A (итог тапа, поправки, серия) — предмет проверок сценария `3a`, а не отказ движка.
         | CameraEvent::FocusSettled { .. }
+        // Движок сам отпустил точку тапа (решение 241): это поведение, а не отказ; сценарий `3a` читает его из журнала.
+        | CameraEvent::PointOfInterestReleased { .. }
         | CameraEvent::ControlsAdjusted { .. }
         | CameraEvent::BracketCaptured { .. }
         // Итог снимка со вспышкой судит сценарий `capture` (через наблюдателя итогов), а не общий разбор отказов.

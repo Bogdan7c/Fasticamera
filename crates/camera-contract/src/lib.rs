@@ -48,6 +48,7 @@ pub mod ids;
 pub mod lens_calibration;
 pub mod lens_shading;
 pub mod raw_format;
+pub mod scene_change;
 pub mod stream;
 pub mod three_a;
 pub mod viewfinder_crop;

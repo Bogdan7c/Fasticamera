@@ -35,6 +35,7 @@ pub mod handle;
 pub mod inbox;
 pub mod lens_status;
 pub mod lens_wiring;
+pub mod point_hold;
 pub mod request_controls;
 pub mod role_classifier;
 pub mod runtime;

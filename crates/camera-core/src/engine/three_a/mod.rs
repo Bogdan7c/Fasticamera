@@ -12,7 +12,7 @@
 //! Белая сюда не входит: её владелец — `engine/white`, и он живёт вне `Desired`.
 //!
 //! Раскладка файлов: `decide` — итоги команд, `planning` — план запроса, `results` — результаты
-//! и таймеры, `bracket` — серии.
+//! и таймеры, `bracket` — серии, `point_release` — снятие точки тапа самим движком (решение 241).
 
 mod bracket;
 mod decide;
@@ -20,6 +20,7 @@ mod exposure_carry;
 mod exposure_directive;
 mod flash_access;
 mod planning;
+pub(in crate::engine) mod point_release;
 mod results;
 
 use std::time::Instant;
@@ -53,6 +54,8 @@ pub(super) struct ThreeAEngine {
     focus_settle_deadline: Option<(PointRequestId, Instant)>,
     /// Серия, ожидающая отправки или результатов (одна за раз).
     bracket: Option<BracketRun>,
+    /// Поколение наблюдения «точка устарела», которое движок уже разобрал (см. `point_release`).
+    point_obsolete_seen: Option<camera_contract::three_a::DirectiveGeneration>,
 }
 
 impl ThreeAEngine {
@@ -75,6 +78,7 @@ impl ThreeAEngine {
             counters: ThreeACounters::default(),
             focus_settle_deadline: None,
             bracket: None,
+            point_obsolete_seen: None,
         }
     }
 

@@ -10,7 +10,9 @@
 //! * [`measurement`] — замер: плитки статистики → требуемое произведение и качество (только арифметика и редукции);
 //! * [`meter`] — граница исполнителя [`ExposureMeter`] (submit / poll) и эталон [`CpuExposureMeter`];
 //! * [`controller`] — сглаживание цели, профили, мёртвая зона видео, блокировка, остаточная подтяжка ISP;
-//! * [`publication`] — ограничитель частоты публикаций предложения (внутренний).
+//! * [`publication`] — ограничитель частоты публикаций предложения (внутренний);
+//! * [`scene_change`] — детектор «сцена под точкой тапа сменилась» (решение 241): подпись кадра, эталон, подтверждение;
+//!   его числа — [`scene_change_config`].
 //!
 //! # Последовательность на кадр (поток рендера)
 //! 1. `controller.set_directive(..)` — когда движок опубликовал новое указание;
@@ -29,6 +31,8 @@ pub mod measurement;
 pub mod meter;
 pub mod metering_weights;
 mod publication;
+pub mod scene_change;
+pub mod scene_change_config;
 #[cfg(test)]
 #[path = "simulation_tests.rs"]
 mod simulation_tests;
@@ -45,3 +49,5 @@ pub use measurement::{
 };
 pub use meter::{CompletedExposureMeasurement, CpuExposureMeter, ExposureMeter, ExposureMeteringRequest};
 pub use metering_weights::{MeteringArea, MeteringWeights, MeteringWeightsError, TilePlacement};
+pub use scene_change::{ChangeEvidence, ReferenceReason, SceneChangeDetector, SceneFrame, SceneWatchStep};
+pub use scene_change_config::SceneChangeConfig;

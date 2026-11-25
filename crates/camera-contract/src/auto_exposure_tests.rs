@@ -167,3 +167,33 @@ fn product_reach_clamps_log2_into_its_segment_and_unbounded_leaves_it() {
     assert_eq!(reach.clamp_log2(0.5), 0.5, "внутри отрезка — без изменений");
     assert_eq!(ProductReach::Unbounded.clamp_log2(123.0), 123.0);
 }
+
+#[test]
+fn a_point_obsolete_report_has_its_own_box_nudges_the_engine_and_is_read_once_per_generation() {
+    use crate::scene_change::{PointObsolete, PointObsoleteCause};
+    let channel = ExposureProposalChannel::new();
+    let receiver = Arc::new(CountingReceiver::default());
+    channel.refresh_signal().bind(receiver.clone());
+    assert!(channel.point_obsolete_newer_than(None).is_none(), "пустой ящик");
+
+    let report = PointObsolete {
+        request: crate::three_a::PointRequestId(7),
+        measured_on: CameraTag::of(&crate::fixtures::camera_id("2")),
+        frame: SensorTimestamp::from_nanos(5),
+        cause: PointObsoleteCause::SceneChanged,
+    };
+    channel.publish_point_obsolete(report);
+
+    let (generation, seen) = channel
+        .point_obsolete_newer_than(None)
+        .expect("наблюдение лежит в ящике");
+    assert_eq!(seen, report);
+    assert_eq!(receiver.signals.load(Ordering::Relaxed), 1, "движок разбужен");
+    assert!(
+        channel.point_obsolete_newer_than(Some(generation)).is_none(),
+        "прочитанное второй раз не отдаётся"
+    );
+    // Соседние ящики не тронуты.
+    assert!(channel.latest().is_none());
+    assert!(channel.preflash_newer_than(None).is_none());
+}

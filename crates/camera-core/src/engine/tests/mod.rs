@@ -14,6 +14,7 @@ mod lens_intents;
 mod lens_support;
 mod lens_switching;
 mod lifecycle;
+mod point_release;
 mod recovery;
 mod recovery_limits;
 mod standby_demand;

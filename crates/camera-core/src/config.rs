@@ -4,6 +4,7 @@ use camera_contract::stream::TargetFrameRate;
 use serde::{Deserialize, Serialize};
 
 use crate::flash_config::{FlashConfig, FlashConfigError};
+use crate::point_hold::{PointHold, deserialize_point_hold_field};
 use crate::standby_config::{StandbyConfig, StandbyConfigError};
 use crate::three_a_own::OwnExposureConfig;
 use crate::white::{WhiteConfig, WhiteConfigError};
@@ -167,6 +168,10 @@ pub struct ThreeAConfig {
     /// Сбрасывать точку интереса и блокировку AE/AF при смене камеры. Оценка по iOS
     /// (фокус и замер не переносятся на другую камеру), **сверить со спецификацией 09**.
     pub reset_point_on_camera_switch: bool,
+    /// Когда отпускается незаблокированная точка тапа (решение 241). По умолчанию — со сменой сцены и возвратом
+    /// из фона; `until_replaced` возвращает прежнее поведение («до нового тапа»).
+    #[serde(deserialize_with = "deserialize_point_hold_field")]
+    pub point_hold: PointHold,
     /// Предел длины серии с брекетингом. Кадры серии живут в пуле RAW-кадров рядом с кадрами
     /// видоискателя и ожидающими парами (см. `PoolPlan` в `raw-frame-stream`, пул ≈ 7), поэтому
     /// серия длиннее четырёх вытеснила бы видоискатель. 4 покрывает типичный HDR-брекет (3)
@@ -191,6 +196,7 @@ impl Default for ThreeAConfig {
             focus_settle_timeout_ms: 1_500,
             focus_marker_grace_frames: 8,
             reset_point_on_camera_switch: true,
+            point_hold: PointHold::default(),
             max_bracket_frames: 4,
             bracket_result_timeout_ms: 10_000,
             exposure: OwnExposureConfig::default(),

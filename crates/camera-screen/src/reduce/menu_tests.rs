@@ -7,6 +7,7 @@ use crate::action::ScreenAction;
 use crate::config::{ScreenConfig, ToolsConfig};
 use crate::effect::{Effect, ScreenCameraIntent};
 use crate::focus::FocusIndicator;
+use crate::look_test_support::look_facts;
 use crate::modes::CaptureMode;
 use crate::outcome::{ActionOutcome, NoChangeReason, Rejection};
 use crate::settings::{AspectRatio, FlashMode, GridSetting, LevelSetting, RawCapture, TimerSetting};
@@ -287,6 +288,116 @@ fn changing_the_aspect_with_a_visible_indicator_also_resets_the_cameras_point() 
             Effect::Viewfinder(_)
         ]
     ));
+}
+
+/// Выбрать соотношение 1:1 через меню и вернуть итог (общий шаг тестов про отпускание точки).
+fn select_square_aspect(screen: &mut Screen) -> crate::ScreenTransition {
+    screen.step(ScreenAction::ControlsMenuOpenRequested);
+    screen.step(ScreenAction::ControlsItemSelected(ToolId::Aspect));
+    screen.step(ScreenAction::SubmenuOptionSelected(ToolOption::Aspect(
+        AspectRatio::Square,
+    )))
+}
+
+#[test]
+fn changing_the_aspect_after_the_frame_faded_still_resets_a_point_the_camera_holds() {
+    let mut screen = Screen::ready();
+    screen.tap_center(at_ms(0));
+    screen.step(ScreenAction::CameraFactsChanged(facts_with_point(
+        SensorPoint::CENTER,
+        1,
+    )));
+    // Рамка погасла по времени (3 с), а точка у камеры живёт: она держится до смены сцены.
+    screen.step(ScreenAction::Tick(at_ms(10_000)));
+    assert_eq!(screen.state.focus().indicator(), FocusIndicator::Hidden);
+
+    let changed = select_square_aspect(&mut screen);
+
+    assert!(
+        changed
+            .effects
+            .contains(&Effect::Camera(ScreenCameraIntent::ResetPointOfInterest)),
+        "точка у камеры осталась бы без рамки на экране: {:?}",
+        changed.effects
+    );
+}
+
+#[test]
+fn changing_the_aspect_sends_no_reset_when_the_camera_holds_no_point() {
+    let mut screen = Screen::ready();
+    // Тап был, камера точку подтвердила, а потом сама отпустила (смена сцены): рамка погасла по факту.
+    screen.tap_center(at_ms(0));
+    screen.step(ScreenAction::CameraFactsChanged(facts_with_point(
+        SensorPoint::CENTER,
+        1,
+    )));
+    screen.step(ScreenAction::CameraFactsChanged(crate::test_support::live_facts()));
+    assert_eq!(screen.state.focus().indicator(), FocusIndicator::Hidden);
+
+    let changed = select_square_aspect(&mut screen);
+
+    assert!(
+        !changed
+            .effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Camera(ScreenCameraIntent::ResetPointOfInterest))),
+        "лишнее намерение: {:?}",
+        changed.effects
+    );
+    assert!(matches!(changed.effects.as_slice(), [Effect::Viewfinder(_)]));
+}
+
+#[test]
+fn changing_the_aspect_while_the_tap_still_awaits_confirmation_resets_it() {
+    let mut screen = Screen::ready();
+    screen.tap_center(at_ms(0));
+    // Камера тап ещё не подтвердила (факты прежние): точка уже отправлена, и экран обязан её отпустить.
+    let changed = select_square_aspect(&mut screen);
+
+    assert!(
+        changed
+            .effects
+            .contains(&Effect::Camera(ScreenCameraIntent::ResetPointOfInterest)),
+        "{:?}",
+        changed.effects
+    );
+}
+
+#[test]
+fn switching_the_mode_after_the_frame_faded_resets_the_point_the_camera_holds() {
+    let mut screen = Screen::with_look(look_facts());
+    screen.tap_center(at_ms(0));
+    screen.step(ScreenAction::CameraFactsChanged(facts_with_point(
+        SensorPoint::CENTER,
+        1,
+    )));
+    screen.step(ScreenAction::Tick(at_ms(10_000)));
+
+    let switched = screen.step(ScreenAction::ModeSelected(CaptureMode::Calibrate));
+
+    assert!(
+        switched
+            .effects
+            .contains(&Effect::Camera(ScreenCameraIntent::ResetPointOfInterest)),
+        "{:?}",
+        switched.effects
+    );
+}
+
+#[test]
+fn switching_the_mode_without_any_point_sends_no_reset() {
+    let mut screen = Screen::with_look(look_facts());
+
+    let switched = screen.step(ScreenAction::ModeSelected(CaptureMode::Calibrate));
+
+    assert!(
+        !switched
+            .effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Camera(ScreenCameraIntent::ResetPointOfInterest))),
+        "{:?}",
+        switched.effects
+    );
 }
 
 #[test]

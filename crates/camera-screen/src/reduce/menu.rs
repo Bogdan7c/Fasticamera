@@ -1,5 +1,7 @@
 //! Меню Controls, подменю, значки над кадром, карусель режимов и настройки съёмки.
 
+use camera_contract::three_a::PointOfInterest;
+
 use super::Ctx;
 use crate::effect::{Effect, ScreenCameraIntent};
 use crate::modes::CaptureMode;
@@ -171,8 +173,8 @@ fn apply_option(ctx: &mut Ctx<'_>, option: ToolOption) -> bool {
 
 /// Смена соотношения: рендеру — новое кадрирование и место, индикатор фокуса скрыт.
 ///
-/// Если квадрат был на экране, камере уходит `ResetPointOfInterest`: иначе камера продолжала бы
-/// держать старую точку, а на экране её бы уже не было (экран и камера разошлись бы).
+/// Если точку держит камера, ей уходит `ResetPointOfInterest`: иначе камера продолжала бы держать старую точку,
+/// а на экране её бы уже не было (экран и камера разошлись бы).
 fn change_aspect(ctx: &mut Ctx<'_>, aspect: AspectRatio) {
     if ctx.state.settings.aspect == aspect {
         return;
@@ -184,12 +186,15 @@ fn change_aspect(ctx: &mut Ctx<'_>, aspect: AspectRatio) {
     }
 }
 
-/// Квадрат фокуса принадлежит прежнему месту кадра: его прячут, а если он был на экране, камере уходит
-/// `ResetPointOfInterest` (иначе камера держала бы точку, которой на экране уже нет).
+/// Квадрат фокуса принадлежит прежнему месту кадра: его прячут, а если точку ДЕРЖИТ КАМЕРА (по её фактам) или тап
+/// ещё ждёт подтверждения, камере уходит `ResetPointOfInterest`. Видна ли рамка, не важно: рамка гаснет через
+/// несколько секунд, а точка у камеры живёт дольше (решение 241). Без точки у камеры лишнее намерение не уходит.
 pub(super) fn hide_focus_indicator_and_release_camera_point(ctx: &mut Ctx<'_>) {
-    let indicator_was_shown = ctx.state.focus.indicator() != crate::focus::FocusIndicator::Hidden;
+    // Решение принимаем ДО `hide`: оно сбрасывает ожидание подтверждения тапа.
+    let camera_holds_point = matches!(ctx.state.facts.point_of_interest, PointOfInterest::Point { .. })
+        || ctx.state.focus.is_awaiting_camera_point();
     ctx.state.focus.hide();
-    if indicator_was_shown {
+    if camera_holds_point {
         ctx.emit(Effect::Camera(ScreenCameraIntent::ResetPointOfInterest));
     }
 }

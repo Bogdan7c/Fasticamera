@@ -27,6 +27,7 @@ pub use crate::auto_exposure_carry::{CameraTag, CarriedSceneExposure};
 use crate::capture_result::SensorTimestamp;
 use crate::control::{ExposureBias, ExposureTime, Iso};
 use crate::flash::{FlashDirective, PreflashSamples};
+use crate::scene_change::PointObsolete;
 use crate::three_a::{AeAfLock, DirectiveGeneration, DirectiveSlot, PointOfInterest, PointRequestId, ThreeAProfile};
 
 /// Почему произведение экспозиции отвергнуто.
@@ -355,6 +356,9 @@ pub struct ExposureProposalChannel {
     /// Линейные замеры предвспышки (14d). Отдельный ящик: предложение сглажено и защищает света,
     /// а расчёт вспышки складывает свет — ему нужны линейные замеры конкретных кадров.
     preflash: DirectiveSlot<PreflashSamples>,
+    /// «Точка тапа устарела»: отдельный ящик, потому что предложения выходят редко и только при сдвиге цели, а
+    /// наблюдение должно дойти и при неподвижной экспозиции.
+    point_obsolete: DirectiveSlot<PointObsolete>,
     signal: LateBoundRefreshSignal,
 }
 
@@ -398,6 +402,20 @@ impl ExposureProposalChannel {
         seen: Option<DirectiveGeneration>,
     ) -> Option<(DirectiveGeneration, PreflashSamples)> {
         self.preflash.newer_than(seen)
+    }
+
+    /// Сообщить движку, что точка тапа устарела, и толкнуть его.
+    pub fn publish_point_obsolete(&self, observation: PointObsolete) -> (DirectiveGeneration, SignalDelivery) {
+        let generation = self.point_obsolete.publish(observation);
+        (generation, self.signal.signal())
+    }
+
+    /// Наблюдение «точка устарела» новее `seen`.
+    pub fn point_obsolete_newer_than(
+        &self,
+        seen: Option<DirectiveGeneration>,
+    ) -> Option<(DirectiveGeneration, PointObsolete)> {
+        self.point_obsolete.newer_than(seen)
     }
 
     /// Толчок для привязки получателя композицией.

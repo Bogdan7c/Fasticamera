@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::ConfigError;
 
 /// Поле должно быть конечным и строго положительным.
-fn require_positive(field: &'static str, value: f32) -> Result<(), ConfigError> {
+pub(super) fn require_positive(field: &'static str, value: f32) -> Result<(), ConfigError> {
     if value.is_finite() && value > 0.0 {
         Ok(())
     } else {
@@ -17,7 +17,7 @@ fn require_positive(field: &'static str, value: f32) -> Result<(), ConfigError> 
 }
 
 /// Поле должно быть конечным и неотрицательным.
-fn require_non_negative(field: &'static str, value: f32) -> Result<(), ConfigError> {
+pub(super) fn require_non_negative(field: &'static str, value: f32) -> Result<(), ConfigError> {
     if value.is_finite() && value >= 0.0 {
         Ok(())
     } else {
@@ -26,7 +26,7 @@ fn require_non_negative(field: &'static str, value: f32) -> Result<(), ConfigErr
 }
 
 /// Поле должно лежать в (0, 1].
-fn require_unit(field: &'static str, value: f32) -> Result<(), ConfigError> {
+pub(super) fn require_unit(field: &'static str, value: f32) -> Result<(), ConfigError> {
     if value.is_finite() && value > 0.0 && value <= 1.0 {
         Ok(())
     } else {
@@ -34,7 +34,7 @@ fn require_unit(field: &'static str, value: f32) -> Result<(), ConfigError> {
     }
 }
 
-fn invalid(field: &'static str, reason: &str) -> ConfigError {
+pub(super) fn invalid(field: &'static str, reason: &str) -> ConfigError {
     ConfigError::Invalid {
         field,
         reason: reason.to_owned(),

@@ -28,6 +28,7 @@ mod placement;
 mod preflash;
 mod residual_gain;
 mod reveal_level;
+mod scene_watch;
 
 use std::cell::Cell;
 use std::sync::Arc;
@@ -54,6 +55,7 @@ use self::placement::tile_placement;
 use self::preflash::PreflashMeter;
 pub use self::residual_gain::ResidualGainLimits;
 use self::reveal_level::{DisplayedLevelInputs, displayed_level_error_ev};
+use self::scene_watch::SceneWatch;
 use super::continuity::ExposureReadiness;
 use super::flash_facts::AmbientLevel;
 use super::frame_role::frame_light;
@@ -210,6 +212,8 @@ pub struct ExposureRunner {
     carried: carried::CarriedExpectations,
     /// Замеры предвспышки и факты для движка снимков (14d).
     preflash: PreflashMeter,
+    /// Слежение за сценой под точкой тапа (решение 241): сообщает движку, что точка устарела.
+    scene_watch: SceneWatch,
     counters: RunnerCounters,
 }
 
@@ -226,6 +230,7 @@ impl ExposureRunner {
         let controller = AutoExposureController::new(config.controller).map_err(|error| setup(&error))?;
         let meter = CpuExposureMeter::new(config.metering).map_err(|error| setup(&error))?;
         let target = ExposureTarget::new(scene_middle_gray).map_err(|error| setup(&error))?;
+        let scene_watch = SceneWatch::new(config.scene_change).map_err(|error| setup(&error))?;
         Ok(Self {
             config,
             directives,
@@ -247,6 +252,7 @@ impl ExposureRunner {
             last_proposal: None,
             carried: carried::CarriedExpectations::default(),
             preflash: PreflashMeter::default(),
+            scene_watch,
             counters: RunnerCounters::default(),
         })
     }
@@ -362,7 +368,10 @@ impl ExposureRunner {
             self.counters.statistics_stale += 1;
             return;
         }
+        // Слежение за сценой кормим ДО ранних выходов замера: ему нужны только произведение, кадрирование и свет кадра.
+        self.feed_scene_watch(frame, facts, statistics);
         self.submit_measurement(stream, frame, facts, statistics);
+        self.report_region_outside_frame(stream, frame, facts, statistics);
         // Готовые замеры прошлых кадров забираем на КАЖДОМ пути, в том числе при раннем выходе (нет пары, область
         // недоступна, исполнитель занят): иначе оценка запаздывала бы на серию кадров без пары.
         self.collect_measurements(stream);
@@ -463,6 +472,9 @@ impl ExposureRunner {
                 preflash_samples_published: self.preflash.samples_published,
                 preflash_not_computable: self.preflash.not_computable,
                 measurements_withheld_for_led_light: self.preflash.withheld_from_controller,
+                scene_references_taken: self.scene_watch.counters().references_taken,
+                scene_changes_confirmed: self.scene_watch.counters().changes_confirmed,
+                point_obsolete_published: self.scene_watch.counters().published,
             },
         }
     }
@@ -520,6 +532,7 @@ impl ExposureRunner {
         while self.meter.poll().is_some() {}
         self.controller.begin_stream();
         self.preflash.reset_for_new_stream();
+        self.scene_watch.reset_for_new_stream();
         // Предложение прежнего потока в диагностике нового не показываем.
         self.last_proposal = None;
         self.weights = None;

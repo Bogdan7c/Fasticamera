@@ -33,6 +33,7 @@ use camera_contract::auto_exposure::{
 use camera_contract::capture_result::CaptureResultMeta;
 use camera_contract::flash::PreflashSamples;
 use camera_contract::ids::CameraId;
+use camera_contract::scene_change::PointObsolete;
 use camera_contract::three_a::{DirectiveGeneration, MainsFrequency, RequestOrigin};
 
 use super::config::OwnExposureConfig;
@@ -197,6 +198,13 @@ impl ExposureController for RawStatsExposure {
         seen: Option<DirectiveGeneration>,
     ) -> Option<(DirectiveGeneration, PreflashSamples)> {
         self.proposals.preflash_newer_than(seen)
+    }
+
+    fn point_obsolete_newer_than(
+        &self,
+        seen: Option<DirectiveGeneration>,
+    ) -> Option<(DirectiveGeneration, PointObsolete)> {
+        self.proposals.point_obsolete_newer_than(seen)
     }
 
     fn reset_for_new_stream(&mut self) {

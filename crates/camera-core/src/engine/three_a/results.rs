@@ -101,7 +101,9 @@ impl CameraEngine {
             self.three_a.exposure.refresh()
         };
         let focus = self.three_a.focus.refresh();
-        if exposure == PlanRefresh::Changed || focus == PlanRefresh::Changed {
+        // Рендер мог сообщить, что сцена под точкой тапа сменилась (решение 241).
+        let point_released = self.poll_point_obsolete();
+        if point_released || exposure == PlanRefresh::Changed || focus == PlanRefresh::Changed {
             self.reconcile(now);
         }
     }

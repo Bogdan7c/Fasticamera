@@ -12,6 +12,7 @@ use crate::backend::ConfigureFailure;
 use crate::command::{CommandId, CommandOutcome};
 use crate::flash_status::FlashStillReport;
 use crate::lens_status::{LensSwitchFailure, LensSwitchMethod};
+use crate::point_hold::PointReleaseCause;
 use crate::state::CameraState;
 use crate::three_a_status::{BracketReport, ControlAdjustment, FocusOutcome};
 use crate::white::{WhiteRequestResult, WhiteResumeRule};
@@ -73,6 +74,12 @@ pub enum CameraEvent {
     FocusSettled {
         request: PointRequestId,
         outcome: FocusOutcome,
+    },
+    /// Движок сам отпустил точку тапа `request`: замер и фокус снова по всему кадру (решение 241). Блокировка AE/AF
+    /// точку держит, поэтому для заблокированной точки события не бывает.
+    PointOfInterestReleased {
+        request: PointRequestId,
+        cause: PointReleaseCause,
     },
     /// Ручные параметры применены с поправками на этой камере и потоке (после команды или
     /// смены камеры). Пустого списка в событии не бывает.

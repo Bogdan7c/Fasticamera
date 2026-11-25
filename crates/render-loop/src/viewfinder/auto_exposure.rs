@@ -62,6 +62,12 @@ pub struct AutoExposureCounters {
     pub preflash_not_computable: u64,
     /// Замеров кадров, освещённых светодиодом, которые НЕ попали в контроллер AE видоискателя (14d).
     pub measurements_withheld_for_led_light: u64,
+    /// Эталонов подписи сцены снято (решение 241): по тапу, при устоявшейся экспозиции, по сроку, при зуме.
+    pub scene_references_taken: u64,
+    /// Кадров с подтверждённой сменой сцены под точкой (повторяются, пока условие держится).
+    pub scene_changes_confirmed: u64,
+    /// Наблюдений «точка устарела» опубликовано движку (смена сцены и регион вне кадра).
+    pub point_obsolete_published: u64,
 }
 
 /// Диагностика нашего AE на потоке рендера. `None` в `ViewfinderDiagnostics`, пока AE не включён.

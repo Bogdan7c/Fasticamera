@@ -132,8 +132,12 @@ pub fn focus_violations(focus: &FocusReport) -> Vec<String> {
             TapResult::NoEvent if is_center => {
                 violations.push("тап в центр: событие итога не пришло за срок сценария".to_owned());
             }
+            TapResult::ReleasedBySceneChange if is_center => violations.push(
+                "тап в центр: движок отпустил точку до итога (сцена сменилась) — держите кадр неподвижным и повторите"
+                    .to_owned(),
+            ),
             // Углы, не сошедшиеся к сроку, — справка для владельца.
-            TapResult::TimedOut | TapResult::NoEvent => {}
+            TapResult::TimedOut | TapResult::NoEvent | TapResult::ReleasedBySceneChange => {}
         }
     }
     if focus.results_without_request_context != 0 {

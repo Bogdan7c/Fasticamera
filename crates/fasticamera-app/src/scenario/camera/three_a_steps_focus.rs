@@ -139,6 +139,21 @@ pub fn awb_vs_hal(report: Option<&WhiteBalanceReport>, warn_mired: f64) -> AwbVs
     }
 }
 
+/// Чем кончился тап `request` по событиям тика: итог HAL, а если движок сам отпустил точку до итога (решение 241) —
+/// `ReleasedBySceneChange`. Иначе `None`: тап ещё ждёт.
+fn tap_result_from_events(request: PointRequestId, events: &[CameraEvent]) -> Option<TapResult> {
+    events.iter().find_map(|event| match event {
+        CameraEvent::FocusSettled {
+            request: settled,
+            outcome,
+        } if *settled == request => Some(TapResult::of(*outcome)),
+        CameraEvent::PointOfInterestReleased { request: released, .. } if *released == request => {
+            Some(TapResult::ReleasedBySceneChange)
+        }
+        _ => None,
+    })
+}
+
 /// Тап, ожидающий итога.
 struct ActiveTap {
     point: TapPointConfig,
@@ -182,13 +197,8 @@ impl TapStep {
     }
 
     fn settle_of(active: &ActiveTap, env: &StepEnv<'_>) -> Option<TapResult> {
-        let from_event = env.events.iter().find_map(|event| match event {
-            CameraEvent::FocusSettled { request, outcome } if *request == active.request => {
-                Some(TapResult::of(*outcome))
-            }
-            _ => None,
-        });
-        from_event.or_else(|| active.deadline.is_expired(env.now).then_some(TapResult::NoEvent))
+        tap_result_from_events(active.request, env.events)
+            .or_else(|| active.deadline.is_expired(env.now).then_some(TapResult::NoEvent))
     }
 
     fn finish_tap(&mut self, env: &mut StepEnv<'_>, result: TapResult) {
@@ -624,3 +634,7 @@ fn not_locked_report(ae_source: AeSource) -> LockReport {
         back_to_continuous: false,
     }
 }
+
+#[cfg(test)]
+#[path = "three_a_steps_focus_tests.rs"]
+mod tests;

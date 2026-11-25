@@ -304,3 +304,44 @@ fn stale_whole_frame_fact_does_not_erase_a_fresh_tap_but_a_later_one_does() {
     screen.step(ScreenAction::CameraFactsChanged(live_facts()));
     assert_eq!(screen.state.focus().indicator(), FocusIndicator::Hidden);
 }
+
+#[test]
+fn a_tap_made_while_the_camera_releases_the_old_point_is_not_erased_by_the_release() {
+    let mut screen = Screen::ready();
+    screen.tap_center(at_ms(0));
+    screen.step(ScreenAction::CameraFactsChanged(facts_with_point(
+        center_sensor_point(),
+        1,
+    )));
+    // Движок отпустил старую точку (смена сцены) — но человек успел тапнуть в другое место: тап ещё ждёт камеру.
+    let other_tap = Point::new(screen.current_frame_center().x + 20.0, screen.current_frame_center().y);
+    screen.step(ScreenAction::ViewfinderTapped {
+        point: other_tap,
+        at: at_ms(500),
+    });
+
+    screen.step(ScreenAction::CameraFactsChanged(live_facts()));
+
+    assert!(
+        matches!(screen.state.focus().indicator(), FocusIndicator::Shown { at, .. } if at == other_tap),
+        "свежий тап погашен устаревшим «весь кадр»: {:?}",
+        screen.state.focus().indicator()
+    );
+    assert!(screen.state.focus().is_awaiting_camera_point());
+}
+
+#[test]
+fn the_indicator_hides_when_the_camera_releases_a_confirmed_point() {
+    let mut screen = Screen::ready();
+    screen.tap_center(at_ms(0));
+    screen.step(ScreenAction::CameraFactsChanged(facts_with_point(
+        center_sensor_point(),
+        1,
+    )));
+    assert!(matches!(screen.state.focus().indicator(), FocusIndicator::Shown { .. }));
+
+    // Движок отпустил точку: факт «весь кадр» без нового тапа гасит рамку сразу, не дожидаясь 3 с.
+    screen.step(ScreenAction::CameraFactsChanged(live_facts()));
+
+    assert_eq!(screen.state.focus().indicator(), FocusIndicator::Hidden);
+}

@@ -11,6 +11,7 @@ use camera_contract::stream::FrameRateMechanism;
 use camera_contract::white::WhiteOrigin;
 use camera_core::CameraEvent;
 use camera_core::flash_status::FlashStillReport;
+use camera_core::point_hold::PointReleaseCause;
 use camera_core::three_a_status::{BracketReport, FocusOutcome};
 use serde::Serialize;
 
@@ -78,6 +79,11 @@ pub enum EventNote {
     FocusSettled {
         request: u64,
         outcome: FocusOutcome,
+    },
+    /// Движок сам отпустил точку тапа `request` (решение 241): замер и фокус снова по всему кадру.
+    PointOfInterestReleased {
+        request: u64,
+        cause: PointReleaseCause,
     },
     /// Ручные значения применены с поправками (сколько поправок).
     ControlsAdjusted {
@@ -167,6 +173,10 @@ impl EventNote {
             CameraEvent::FocusSettled { request, outcome } => EventNote::FocusSettled {
                 request: request.0,
                 outcome: *outcome,
+            },
+            CameraEvent::PointOfInterestReleased { request, cause } => EventNote::PointOfInterestReleased {
+                request: request.0,
+                cause: *cause,
             },
             CameraEvent::ControlsAdjusted { adjustments } => EventNote::ControlsAdjusted {
                 adjustments: adjustments.len(),

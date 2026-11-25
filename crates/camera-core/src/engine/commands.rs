@@ -286,6 +286,8 @@ impl CameraEngine {
         self.presence = AppPresence::Foreground;
         if returned_from_background {
             self.white_entered_foreground();
+            // Тап до ухода в фон к тому, что видно сейчас, не относится (решение 241); блокировка точку держит.
+            self.release_point_on_return_to_app();
         }
         self.recovery.reset_attempts();
         if self.is_fatal() {
