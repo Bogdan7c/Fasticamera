@@ -1,6 +1,8 @@
 //! Тесты конфига вспышки: умолчания проходят, каждая граница ловится своим именем поля,
 //! худший срок последовательности — сумма её частей.
 
+use camera_contract::ids::LensRole;
+
 use super::*;
 
 /// Портит одно поле конфига.
@@ -61,4 +63,114 @@ fn worst_case_sequence_grows_by_one_preflash_timeout_per_remeasure() {
     };
     assert_eq!(without_remeasures.worst_case_sequence_ms(), 500 + 100 + 400);
     assert_eq!(three_remeasures.worst_case_sequence_ms(), 500 * 4 + 100 + 400);
+}
+
+#[test]
+fn led_white_defaults_are_the_measured_phone_numbers_and_other_follows_the_main_camera() {
+    let led = FlashConfig::default().led_white;
+    assert_eq!(
+        led.white_for(Some(LensRole::Wide)),
+        LedWhite {
+            kelvin: 3_980.0,
+            duv: 0.0068
+        }
+    );
+    assert_eq!(
+        led.white_for(Some(LensRole::UltraWide)),
+        LedWhite {
+            kelvin: 3_815.0,
+            duv: 0.0035
+        }
+    );
+    for other in [None, Some(LensRole::Tele), Some(LensRole::Front)] {
+        assert_eq!(led.white_for(other), led.wide, "роль {other:?}");
+    }
+}
+
+#[test]
+fn white_for_picks_the_field_of_the_role_and_other_for_the_rest() {
+    let led = FlashLedWhite {
+        wide: LedWhite {
+            kelvin: 3_000.0,
+            duv: 0.0,
+        },
+        ultra_wide: LedWhite {
+            kelvin: 5_000.0,
+            duv: 0.0,
+        },
+        other: LedWhite {
+            kelvin: 7_000.0,
+            duv: 0.0,
+        },
+    };
+    assert_eq!(led.white_for(Some(LensRole::Wide)).kelvin, 3_000.0);
+    assert_eq!(led.white_for(Some(LensRole::UltraWide)).kelvin, 5_000.0);
+    for other in [Some(LensRole::Tele), Some(LensRole::Front), None] {
+        assert_eq!(led.white_for(other).kelvin, 7_000.0, "{other:?}");
+    }
+}
+
+#[test]
+fn every_bad_led_white_field_is_named_with_its_full_path() {
+    let cases: [(&str, Spoil); 6] = [
+        ("led_white.wide.kelvin", |c| c.led_white.wide.kelvin = 1_000.0),
+        ("led_white.wide.duv", |c| c.led_white.wide.duv = 0.06),
+        ("led_white.ultra_wide.kelvin", |c| {
+            c.led_white.ultra_wide.kelvin = 25_000.0
+        }),
+        ("led_white.ultra_wide.duv", |c| c.led_white.ultra_wide.duv = f64::NAN),
+        ("led_white.other.kelvin", |c| c.led_white.other.kelvin = f64::INFINITY),
+        ("led_white.other.duv", |c| c.led_white.other.duv = -0.051),
+    ];
+    for (field, spoil) in cases {
+        let mut config = FlashConfig::default();
+        spoil(&mut config);
+        match config.validate() {
+            Err(error @ FlashConfigError::OutOfRange { field: named, .. }) => {
+                assert_eq!(named, field);
+                assert!(error.to_string().contains(&format!("three_a.flash.{field}")), "{error}");
+            }
+            Ok(()) => panic!("{field}: испорченное значение прошло проверку"),
+        }
+    }
+}
+
+#[test]
+fn led_white_range_edges_are_accepted() {
+    let mut config = FlashConfig::default();
+    config.led_white.wide = LedWhite {
+        kelvin: 1_667.0,
+        duv: -0.05,
+    };
+    config.led_white.other = LedWhite {
+        kelvin: 20_000.0,
+        duv: 0.05,
+    };
+    assert_eq!(config.validate(), Ok(()));
+}
+
+#[test]
+fn led_white_converts_to_a_contract_setting_and_unknown_json_fields_are_rejected() {
+    let setting = LedWhite {
+        kelvin: 4_200.0,
+        duv: 0.004,
+    }
+    .to_setting()
+    .expect("годная белая");
+    assert_eq!((setting.temperature.kelvin(), setting.tint.duv()), (4_200.0, 0.004));
+    let parsed: FlashConfig =
+        serde_json::from_str(r#"{"led_white":{"ultra_wide":{"kelvin":5200.0}}}"#).expect("частичный конфиг читается");
+    assert_eq!(
+        parsed.led_white.ultra_wide,
+        LedWhite {
+            kelvin: 5_200.0,
+            duv: 0.0
+        }
+    );
+    assert_eq!(
+        parsed.led_white.wide,
+        FlashLedWhite::default().wide,
+        "не названное — по умолчанию"
+    );
+    assert!(serde_json::from_str::<FlashConfig>(r#"{"led_white":{"tele":{}}}"#).is_err());
 }

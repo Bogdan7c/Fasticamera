@@ -1,4 +1,4 @@
-//! Что движок снимков знает о свете для кадра со вспышкой: планы движка камеры, белая светодиода, свет сцены.
+//! Что движок снимков знает о свете для кадра со вспышкой: планы движка камеры (с белой светодиода), свет сцены.
 //!
 //! Данные приходят от видоискателя лентой ([`super::feed::StillFeed`]) и нужны не в момент прихода, а когда
 //! кадр со вспышкой дойдёт до кольца (сотни миллисекунд позже): поэтому хранятся здесь, ограниченно.
@@ -11,7 +11,7 @@ use camera_contract::capture_result::SensorTimestamp;
 use camera_contract::flash::{FlashFramePlan, FlashShotId};
 use camera_contract::frame_passport::StreamPassport;
 
-use crate::vulkan_backend::camera::flash_facts::{AmbientLevel, TorchWhite};
+use crate::vulkan_backend::camera::flash_facts::AmbientLevel;
 
 /// Сколько планов кадров со вспышкой помнить: следующая предвспышка заменяет указание раньше, чем прежний
 /// кадр дойдёт до проявления, но одновременно ждут единицы снимков.
@@ -26,31 +26,18 @@ const MAX_REMEMBERED_AMBIENT_LEVELS: usize = 32;
 #[derive(Default)]
 pub struct FlashFactsStore {
     plans: VecDeque<FlashFramePlan>,
-    torch_white: Option<TorchWhite>,
     /// Уровни света сцены без вспышки по кадрам, старые первыми.
     ambient_levels: VecDeque<AmbientLevel>,
 }
 
 impl FlashFactsStore {
     /// Запоминает присланное лентой. План того же снимка заменяет прежний; старейший план вытесняется.
-    pub fn record(
-        &mut self,
-        plans: Vec<FlashFramePlan>,
-        torch_whites: Vec<TorchWhite>,
-        ambient_levels: Vec<AmbientLevel>,
-    ) {
+    pub fn record(&mut self, plans: Vec<FlashFramePlan>, ambient_levels: Vec<AmbientLevel>) {
         for plan in plans {
             self.plans.retain(|known| known.shot != plan.shot);
             self.plans.push_back(plan);
             while self.plans.len() > MAX_REMEMBERED_PLANS {
                 self.plans.pop_front();
-            }
-        }
-        // Нужна белая по САМОМУ СВЕЖЕМУ кадру с фонариком (по метке сенсора, а не порядку прихода).
-        for white in torch_whites {
-            let newer = self.torch_white.as_ref().is_none_or(|known| known.frame <= white.frame);
-            if newer {
-                self.torch_white = Some(white);
             }
         }
         // Уровень привязан к кадру (план называет кадр, свет которого считал): «последний» уровень мог бы
@@ -70,13 +57,6 @@ impl FlashFactsStore {
         self.plans.iter().find(|plan| plan.shot == shot).copied()
     }
 
-    /// Последняя белая светодиода для кадров потока `stream`.
-    pub fn torch_white_for(&self, stream: &Arc<StreamPassport>) -> Option<&TorchWhite> {
-        self.torch_white
-            .as_ref()
-            .filter(|white| Arc::ptr_eq(&white.stream, stream))
-    }
-
     /// Уровень света сцены без вспышки кадра `frame` потока `stream`. `None` — такого кадра не измеряли
     /// или он уже вытеснен: подставлять другой кадр нельзя (см. `FlashFramePlan::ambient_frame`).
     pub fn ambient_level_of(&self, stream: &Arc<StreamPassport>, frame: SensorTimestamp) -> Option<&AmbientLevel> {
@@ -88,7 +68,6 @@ impl FlashFactsStore {
     /// Забыть всё (surface отпущена: поток закончился; планы тоже — следующий снимок получит новые).
     pub fn clear(&mut self) {
         self.plans.clear();
-        self.torch_white = None;
         self.ambient_levels.clear();
     }
 }

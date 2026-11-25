@@ -19,6 +19,7 @@ use serde::Serialize;
 
 use crate::auto_exposure::{CameraTag, ExposureProduct, MeasurementQuality};
 use crate::capture_result::SensorTimestamp;
+use crate::control::WhiteBalanceSetting;
 
 /// Есть ли у камеры вспышка (`android.flash.info.available`). Нет вспышки — экран её не
 /// показывает (инвариант 6 README), движок отказывает в снимке со вспышкой.
@@ -244,6 +245,9 @@ pub struct FlashFramePlan {
     pub mid_gray_product: ExposureProduct,
     /// Доля вспышки в свете кадра (диагностика и будущее смешение белого).
     pub flash_share: FlashShare,
+    /// Белая кадра со вспышкой: постоянный цвет светодиода активной камеры снимка (WB11, WB41). Рендер
+    /// проявляет кадр с ней при ЛЮБОЙ белой видоискателя; оценок сцены и подстановок нет.
+    pub led_white: WhiteBalanceSetting,
 }
 
 /// Часть указания AE про вспышку (движок → рендер).

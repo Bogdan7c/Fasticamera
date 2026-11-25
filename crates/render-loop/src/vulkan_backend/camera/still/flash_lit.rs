@@ -2,21 +2,33 @@
 //! сообщить `FIRED` на кадре, где светодиод не горел). Чистые функции, без GPU и движка.
 //!
 //! # Идея
-//! Свет кадра пропорционален «выдержке × ISO». Среднее зелёного кадра на единицу произведения —
-//! `g = G / P`. У кадра без вспышки (уровень сцены) `g_сцены = G_сц / P_сц`, у кадра со вспышкой
-//! `g_кадра = G / P`. Тогда доля света, которую дала вспышка:
+//! Свет кадра пропорционален «выдержке × ISO». Среднее зелёного на единицу произведения — `g = G / P`. У кадра
+//! без вспышки (уровень сцены) `g_сцены = G_сц / P_сц`, у кадра со вспышкой `g_кадра = G / P`. Тогда доля света,
+//! которую дала вспышка:
 //! ```text
 //! измеренная_доля = 1 − g_сцены / g_кадра            (0…1)
 //! ```
-//! Кадр освещён, если `измеренная_доля ≥ порог × предсказанная_доля`. Зелёный берётся нормированным (чёрный
-//! вычтен, белый = 1, как в статистике ISP: `ExposureMeasurement::mean_green_level`), поэтому обе стороны на одной
-//! шкале и баланс белого не участвует.
+//! Кадр освещён, если `измеренная_доля ≥ порог × предсказанная_доля`.
+//!
+//! # Одна шкала со статистикой (дефект 14f, решение 175)
+//! Уровень сцены `AmbientLevel` приходит из статистики видоискателя (`ExposureMeasurement::mean_green_level`), а она
+//! считается ПОСЛЕ коррекции виньетирования. Поэтому зелёный кадра со вспышкой мерится так же, по правилам
+//! `isp_model::statistics`, для каждой ячейки 2×2 решётки:
+//! 1. отсчёты нормируются (чёрный вычтен, белый = 1) — ДО виньетирования;
+//! 2. ячейка, где хоть один из четырёх нормированных отсчётов `!(v < saturation_threshold)`, считается белой
+//!    (зелёный = 1,0): пересвет определяет сам сенсор, а не наше усиление;
+//! 3. иначе каждый зелёный отсчёт умножается на усиление стадии виньетирования КАДРА (те же `IspParams`, та же
+//!    выборка «одно усиление на ячейку», что у видоискателя) и обрезается сверху запасом `sum_headroom`, не белым;
+//! 4. зелёный ячейки — среднее двух её зелёных; уровень области — среднее по ячейкам решётки.
+//!
+//! Баланс белого не участвует (как в статистике). Без коррекции (стадия пропущена) усиление 1 — прежняя шкала.
 //!
 //! RAW читается РЕДКОЙ решёткой ячеек 2×2 (поток рендера не должен читать ≈ 24 МиБ памяти GPU целиком).
 //! Область — кадрирование снимка (то же место, что мерит статистика), а не весь кадр.
 
 use camera_contract::geometry::PixelRect;
 use isp_model::cfa::{BayerPattern, CfaCell, RgbChannel};
+use isp_model::lens_shading::{LensShadingSampling, LensShadingStep};
 use isp_model::levels::{NormalizationLevels, normalize_sample};
 use still_contract::shot::RawSamples16;
 
@@ -26,13 +38,19 @@ pub struct GreenSampling<'a> {
     pub samples: &'a RawSamples16,
     pub pattern: BayerPattern,
     pub levels: &'a NormalizationLevels,
+    /// Коррекция виньетирования этого кадра (из его разрешённых `IspParams`): нужна, чтобы мерить в шкале статистики.
+    pub shading: &'a LensShadingStep,
     /// Область в координатах ОТСЧЁТОВ (начало — угол полезной области).
     pub area: PixelRect,
     /// Шаг решётки в ячейках 2×2 по обеим осям (≥ 1).
     pub stride_cells: u32,
+    /// Порог пересвета статистики (нормированный свет ДО виньетирования).
+    pub saturation_threshold: f32,
+    /// Потолок скорректированного отсчёта статистики (`sum_headroom`).
+    pub sum_headroom: f32,
 }
 
-/// Средний нормированный зелёный области (0…1). `None` — в решётку не попало ни одного зелёного отсчёта
+/// Средний зелёный области в шкале статистики (см. модуль). `None` — в решётку не попало ни одной ячейки
 /// (область пуста или вне отсчётов).
 pub fn mean_green_level(sampling: GreenSampling<'_>) -> Option<f64> {
     let size = sampling.samples.size();
@@ -47,23 +65,50 @@ pub fn mean_green_level(sampling: GreenSampling<'_>) -> Option<f64> {
     while y + 1 < end_y {
         let mut x = first_x;
         while x + 1 < end_x {
-            for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-                let (px, py) = (x + dx, y + dy);
-                if sampling.pattern.channel_at(px, py) != RgbChannel::Green {
-                    continue;
-                }
-                if let Some(raw) = sampling.samples.sample(px, py) {
-                    let level = normalize_sample(raw, CfaCell::of_pixel(px, py), sampling.levels);
-                    // Как в статистике: выше белого не считаем (пересвет = белое).
-                    sum += f64::from(level.min(1.0));
-                    count += 1;
-                }
+            if let Some(level) = cell_green_level(&sampling, x, y) {
+                sum += level;
+                count += 1;
             }
             x += 2 * stride;
         }
         y += 2 * stride;
     }
     (count > 0).then(|| sum / count as f64)
+}
+
+/// Зелёный одной ячейки 2×2 с началом `(x, y)` (чётным) по правилам статистики; `None` — отсчёты ячейки не читаются.
+fn cell_green_level(sampling: &GreenSampling<'_>, x: u32, y: u32) -> Option<f64> {
+    let valid_area = sampling.samples.size();
+    let mut greens = [0.0_f32; 2];
+    let mut green_count = 0;
+    let mut saturated = false;
+    for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+        let (px, py) = (x + dx, y + dy);
+        let raw = sampling.samples.sample(px, py)?;
+        let level = normalize_sample(raw, CfaCell::of_pixel(px, py), sampling.levels);
+        // Запись `!(v < t)`, как у статистики: NaN тоже исключает ячейку.
+        saturated |= !matches!(
+            level.partial_cmp(&sampling.saturation_threshold),
+            Some(std::cmp::Ordering::Less)
+        );
+        let color = sampling.pattern.channel_at(px, py);
+        if color == RgbChannel::Green && green_count < greens.len() {
+            let gain = sampling.shading.gain_for_sample(
+                (px, py),
+                valid_area,
+                RgbChannel::Green,
+                LensShadingSampling::PerCellCentre,
+            );
+            greens[green_count] = (level * gain).clamp(0.0, sampling.sum_headroom);
+            green_count += 1;
+        }
+    }
+    if saturated {
+        // Пересвеченная по сырому отсчёту ячейка в статистике — белая.
+        return Some(1.0);
+    }
+    // В ячейке 2×2 любого рисунка Bayer ровно два зелёных.
+    (green_count == greens.len()).then(|| f64::from(greens[0] + greens[1]) / 2.0)
 }
 
 /// Пороги проверки (из конфига `still`).

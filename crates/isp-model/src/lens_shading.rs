@@ -430,6 +430,28 @@ impl LensShadingStep {
     }
 }
 
+impl LensShadingStep {
+    /// Усиление стадии для ОДНОГО отсчёта `(x, y)` полезной области `valid_area` цвета `color`: ровно то число, на
+    /// которое [`apply_lens_shading_sampled`] умножает этот отсчёт (`1.0`, если стадия пропущена). Нужно тем, кто
+    /// читает редкую решётку отсчётов и обязан мерить в шкале статистики кадра (проверка света вспышки), а не
+    /// применять стадию ко всей мозаике.
+    pub fn gain_for_sample(
+        &self,
+        position: (u32, u32),
+        valid_area: PixelSize,
+        color: RgbChannel,
+        sampling: LensShadingSampling,
+    ) -> f32 {
+        match self {
+            Self::Skip(_) => 1.0,
+            Self::Apply(map) => {
+                let scales = map.grid_scales(valid_area);
+                map.gain_at(position, valid_area, scales, map_channel(color, position.1), sampling)
+            }
+        }
+    }
+}
+
 /// Что стадия сделала с кадром (для диагностики и паритета).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LensShadingOutcome {

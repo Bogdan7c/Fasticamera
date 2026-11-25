@@ -13,8 +13,8 @@
 //!
 //! # Параметры кадра
 //! Мимо истории видоискателя: подтяжка = план движка / произведение кадра (округление и предел те же, что у
-//! `k` видоискателя), белая = оценка кадра с фонариком (тот же светодиод); нет её — белая видоискателя с
-//! явным счётчиком.
+//! `k` видоискателя), белая = постоянный цвет светодиода из плана движка (WB11): белая видоискателя и оценки
+//! сцены в этот путь не входят.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 use camera_contract::auto_exposure::ExposureProduct;
 use camera_contract::flash::{FlashShotId, FlashStillFailure};
 use camera_contract::frame_passport::RawFramePassport;
+use isp_model::statistics::AwbStatisticsSettings;
 use still_contract::frame_choice::{FrameChoice, NoFrameReason};
 use still_contract::plan::{FrameSelection, StillId};
 use still_contract::shot::StillFrameFacts;
@@ -34,6 +35,7 @@ use super::flash_lit::{GreenSampling, LitThresholds, LitUndecidable, LitVerdict,
 use super::gpu::StillGpu;
 use crate::vulkan_backend::camera::exposure::frame_exposure_product;
 use crate::vulkan_backend::camera::isp_params::IspParamsCache;
+use crate::vulkan_backend::camera::white_balance::applied::chromaticity_of_setting;
 use raw_frame_stream::FlashRingPick;
 
 impl<G: StillGpu> StillEngine<G> {
@@ -170,20 +172,17 @@ impl<G: StillGpu> StillEngine<G> {
         // Сколько света надо добавить проявлением, чтобы средний серый сцены под вспышкой лёг в цель.
         let gain_ev = plan.mid_gray_product.ev_above(frame_product) as f32;
         let gain = self.residual_gain.quantize_ev(gain_ev);
-        let white = match self.flash_facts.torch_white_for(&passport.stream) {
-            Some(torch) => {
-                self.counters.flash.white_from_torch_frame += 1;
-                torch.white
+        // Белая кадра — постоянный цвет светодиода из плана движка (WB11): от белой видоискателя и от сцены она
+        // не зависит. Не переводится в цветность — «кадра нет» со счётчиком, подстановки нет.
+        let white = match chromaticity_of_setting(&plan.led_white) {
+            Ok(white) => {
+                self.counters.flash.white_from_plan += 1;
+                white
             }
-            None => {
-                // Оценки по кадру с фонариком нет: белая видоискателя — худшее из доступного, но не молчаливое.
-                let Some(viewfinder) = self.params_history.latest_of_stream(&passport.stream) else {
-                    self.counters.params.missing += 1;
-                    return Err(NoFrameReason::FrameUnusable);
-                };
-                self.counters.flash.white_fallback_no_torch_estimate += 1;
-                tracing::warn!(target: super::LOG_TARGET, "нет оценки белой по кадру с фонариком: белая видоискателя");
-                viewfinder.white
+            Err(error) => {
+                tracing::warn!(target: super::LOG_TARGET, %error, led_white = ?plan.led_white, "белая светодиода плана не переводится в цветность");
+                self.counters.flash.white_unconvertible += 1;
+                return Err(NoFrameReason::FrameUnusable);
             }
         };
         Ok(FrameStillParams {
@@ -270,12 +269,19 @@ impl<G: StillGpu> StillEngine<G> {
             top: facts.crop.top.saturating_sub(valid.top),
             size: facts.crop.size,
         };
+        // Статистику видоискателя render-loop не переопределяет: её настройки — умолчания `isp-vulkan`.
+        let statistics = AwbStatisticsSettings::default();
         let sampling = GreenSampling {
             samples: &samples,
             pattern: isp.pattern,
             levels: &isp.levels,
+            // Та же коррекция виньетирования, что действует для этого кадра, и те же правила пересвета и запаса,
+            // что у статистики видоискателя: иначе кадр и уровень сцены лежат в разных шкалах (дефект 14f).
+            shading: &isp.lens_shading,
             area,
             stride_cells: self.config.flash_lit_sample_stride_cells,
+            saturation_threshold: statistics.saturation_threshold,
+            sum_headroom: statistics.sum_headroom,
         };
         let Some(green) = mean_green_level(sampling) else {
             return LitVerdict::Undecidable(LitUndecidable::SamplesUnavailable);

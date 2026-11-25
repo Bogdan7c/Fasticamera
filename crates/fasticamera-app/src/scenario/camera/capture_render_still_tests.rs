@@ -70,7 +70,7 @@ fn flash_delta_counts_only_this_run_and_sums_every_undecidable_reason() {
     after.flash.lit_check_passed += 1;
     after.flash.lit_check_skipped_low_predicted_share += 1;
     after.flash.lit_check_skipped_no_ambient_level += 1;
-    after.flash.white_from_torch_frame = 2;
+    after.flash.white_from_plan = 2;
 
     let flash = StillDiagnosticsDelta::between(&before, &after).flash;
     assert_eq!(flash.begins, 2);
@@ -78,7 +78,7 @@ fn flash_delta_counts_only_this_run_and_sums_every_undecidable_reason() {
     assert_eq!(flash.lit_check_passed, 1, "прежние 4 проверки к прогону не относятся");
     assert_eq!(flash.not_lit, 0, "прежний неосвещённый кадр к прогону не относится");
     assert_eq!(flash.lit_check_skipped, 2, "обе причины «не решаемо» сложены");
-    assert_eq!(flash.white_from_torch_frame, 2);
+    assert_eq!(flash.white_from_plan, 2);
 }
 
 /// Цена создания GPU снимков доходит до подробностей сценария `capture` вместе с остальными шагами `step_cpu`.

@@ -54,6 +54,8 @@ mod step_timing;
 pub mod vulkan_gpu;
 
 #[cfg(test)]
+mod engine_flash_lit_tests;
+#[cfg(test)]
 mod engine_flash_tests;
 #[cfg(test)]
 mod engine_lens_shading_tests;

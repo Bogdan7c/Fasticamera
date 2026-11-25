@@ -183,10 +183,11 @@ pub struct FlashStillCounters {
     pub no_plan: u64,
     /// У кадра нет спаренных выдержки и ISO: подтяжку считать не из чего (`FrameUnusable`).
     pub no_exposure_product: u64,
-    /// Белая для проявления взята из оценки кадра с фонариком.
-    pub white_from_torch_frame: u64,
-    /// Оценки по кадру с фонариком нет: взята текущая белая видоискателя (причина — `FlashWhiteFallback`).
-    pub white_fallback_no_torch_estimate: u64,
+    /// Белая для проявления взята из плана движка (постоянный цвет светодиода, WB11).
+    pub white_from_plan: u64,
+    /// Белая плана не переводится в цветность (температура вне таблицы профиля): кадра нет (`FrameUnusable`),
+    /// подстановки белой видоискателя нет.
+    pub white_unconvertible: u64,
     /// Проверка освещённости пройдена: кадр освещён.
     pub lit_check_passed: u64,
     /// Проверка: кадр не освещён (`FlashFrameNotLit`).

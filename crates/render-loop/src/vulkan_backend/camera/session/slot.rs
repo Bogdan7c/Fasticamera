@@ -4,17 +4,14 @@ use isp_vulkan::viewfinder::{IspStage, IspStageSet};
 
 use super::super::exposure::ExposureSlotFrame;
 use super::super::statistics_schedule::{StatisticsDecision, StatisticsPlan};
-use super::super::white_balance::AwbStream;
 use crate::viewfinder::AwbFrameIdentity;
 
-/// Чей кадр ISP записал в слот: по этой метке статистика слота публикуется и отдаётся AWB своего потока.
-/// Без потока статистику чужой камеры можно было бы принять за свою (таблица локуса у камер разная).
+/// Чей кадр ISP записал в слот: по этой метке статистика слота публикуется и отдаётся потребителям.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct SlotFrame {
     pub(super) identity: AwbFrameIdentity,
     /// Чем освещён кадр: кадр со светодиодом статистику AE и AWB видоискателя не питает (14d).
     pub(super) light: camera_contract::flash::FrameLight,
-    pub(super) stream: AwbStream,
     /// Кому из потребителей отдать статистику слота (решение общего расписания кадра).
     pub(super) statistics: StatisticsDecision,
     /// Поток и факты замера AE (`None` — AE выключен).

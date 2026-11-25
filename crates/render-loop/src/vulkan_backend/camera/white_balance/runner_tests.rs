@@ -18,8 +18,8 @@ use isp_model::color::white_point::{CctDuv, Duv, chromaticity_from_cct_duv};
 use scene_estimation::white_source::WhiteInputKind;
 
 use super::test_support::{
-    FAKE_ID, PROVISIONAL, chromaticity_of, directive_of, fake_registry, frame, frame_at, gray_scene, identity_of,
-    kelvin_of, new_stream, over, phone_hints, ready_outcome, request_of, runner, runner_with, runner_without_sources,
+    FAKE_ID, PROVISIONAL, chromaticity_of, directive_of, fake_registry, frame, frame_at, kelvin_of, new_stream, over,
+    phone_hints, ready_outcome, request_of, runner, runner_with, runner_without_sources,
 };
 use super::*;
 use crate::viewfinder::{WhiteLinks, WhiteSourceRegistry};
@@ -300,28 +300,6 @@ fn unregistered_and_wrong_input_sources_are_refused_without_changing_the_picture
 }
 
 #[test]
-fn statistics_of_a_previous_stream_are_dropped_not_fed_to_the_new_cameras_table() {
-    let (mut runner, _) = runner();
-    let old = new_stream();
-    let old_plan = runner.plan_frame(&frame(&old, 0));
-    runner.forget_stream();
-    let new = new_stream();
-    let new_plan = runner.plan_frame(&frame(&new, 0));
-    assert_ne!(old_plan.stream, new_plan.stream);
-    runner.ingest_torch_statistics(old_plan.stream, identity_of(&frame(&old, 0)), &gray_scene(2800.0));
-    let diagnostics = runner.diagnostics();
-    assert_eq!(diagnostics.statistics_stale, 1);
-    assert_eq!(
-        diagnostics.torch_white_estimates, 0,
-        "оценщик чужую статистику не видел"
-    );
-    assert!(
-        runner.drain_torch_whites().is_empty(),
-        "белой светодиода из чужой статистики нет"
-    );
-}
-
-#[test]
 fn a_silent_source_hides_exactly_the_limit_of_frames_and_then_the_picture_shows() {
     let limit = WhiteBalanceConfig::default().max_hidden_frames;
     let (registry, _board) = fake_registry(WhiteInputKind::ColorHints);
@@ -361,7 +339,7 @@ fn frames_without_metadata_get_the_directive_white_and_are_shown() {
 }
 
 #[test]
-fn a_stream_without_colour_calibration_still_gets_the_directive_white_and_reports_why_the_torch_estimator_is_off() {
+fn a_stream_without_colour_calibration_still_gets_the_directive_white_and_has_no_hal_comparison() {
     let (mut runner, links) = runner();
     links
         .directives
@@ -372,7 +350,8 @@ fn a_stream_without_colour_calibration_still_gets_the_directive_white_and_report
     let plan = runner.plan_frame(&frame(&stream, 0));
     assert!(shown(&plan));
     assert_eq!(plan.white, chromaticity_of(4000.0));
-    assert!(runner.diagnostics().table_failure.is_some());
+    // Профиля цвета нет — белую HAL не из чего строить, но белая владельца идёт в картинку как обычно.
+    assert_eq!(runner.diagnostics().hal_white, None);
 }
 
 #[test]

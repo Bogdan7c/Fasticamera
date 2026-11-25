@@ -5,7 +5,6 @@
 
 use std::time::Duration;
 
-use camera_contract::flash::FrameLight;
 use gpu_vulkan::gpu_timing::TimestampCollect;
 
 use super::{CameraPipelines, CameraSession, LOG_TARGET, SlotFrame};
@@ -80,17 +79,12 @@ impl CameraSession {
     /// посчитанный кадр.
     ///
     /// Кадр, освещённый светодиодом (14d), питает видоискатель НЕ ТАК: AE меряет его для расчёта вспышки, но
-    /// внутри runner не отдаёт контроллеру; кадр с фонариком уходит ещё и оценщику белой светодиода (мимо
-    /// белой видоискателя), а кадры с частичной/неопознанной вспышкой оценщик не получает вовсе. Обычные кадры
-    /// оценщик белой не получает: его оценки в картинку не идут.
+    /// внутри runner не отдаёт контроллеру. Белая видоискателя статистикой не питается вовсе (её ведёт владелец
+    /// белого), а белая кадра со вспышкой — постоянный цвет светодиода из плана движка.
     fn route_statistics(&mut self, slot_frame: &SlotFrame, statistics: &isp_model::statistics::AwbStatistics) {
         let light = slot_frame.light;
         if !light.feeds_viewfinder_smoothing() {
             self.viewfinder.counters_mut().led_lit_frames_withheld_from_smoothing += 1;
-            if light == FrameLight::TorchLit {
-                self.white
-                    .ingest_torch_statistics(slot_frame.stream, slot_frame.identity, statistics);
-            }
         }
         if slot_frame.statistics.ae_receives()
             && let (Some(exposure), Some(frame)) = (self.exposure.as_mut(), slot_frame.exposure.as_ref())

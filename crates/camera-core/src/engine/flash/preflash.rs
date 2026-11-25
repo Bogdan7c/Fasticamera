@@ -287,6 +287,15 @@ impl CameraEngine {
             self.fail_flash_keeping_stream(FlashStillFailure::NeedsManualSensor, now);
             return;
         };
+        let led_white = match self.led_white_for_active_camera() {
+            Ok(white) => white,
+            Err(error) => {
+                // Конфиг проверяется при старте, сюда попасть нельзя; но молча снимать с чужой белой не будем.
+                tracing::error!(target: LOG_TARGET, %error, "белая светодиода из конфига негодна: снимок со вспышкой отменён");
+                self.fail_flash_keeping_stream(FlashStillFailure::PreflashNotMeasured, now);
+                return;
+            }
+        };
         let inputs = FlashPlanInputs {
             shot: self.flash.run.as_ref().map_or(FlashShotId(0), |run| run.shot),
             ambient_frame: ambient.frame,
@@ -295,6 +304,7 @@ impl CameraEngine {
             torch_to_flash_ratio: self.config.three_a.flash.torch_to_flash_ratio,
             bias_ev: f64::from(self.desired.three_a.controls.exposure_bias.ev()),
             limits,
+            led_white,
         };
         let Some(planned) = plan_flash_frame(&inputs) else {
             self.fail_flash_keeping_stream(FlashStillFailure::PreflashNotMeasured, now);

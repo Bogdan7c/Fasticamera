@@ -60,6 +60,12 @@ impl WhitePoint {
     }
 }
 
+/// Цветность белой настройки: тот же перевод, которым цель владельца попадает в ISP (`chromaticity_from_cct_duv`).
+/// Единственная точка перевода: путь вспышки берёт отсюда белую плана, а не считает свою.
+pub fn chromaticity_of_setting(setting: &WhiteBalanceSetting) -> Result<Chromaticity, WhitePointError> {
+    WhitePoint::of_setting(setting).chromaticity()
+}
+
 /// Идущий переход.
 #[derive(Debug, Clone, Copy)]
 struct Transition {

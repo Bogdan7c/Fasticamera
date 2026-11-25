@@ -208,11 +208,6 @@ fn a_stream_whose_colour_calibration_gives_no_locus_table_still_gets_ae_measurem
     let midway = rig.viewfinder();
     rig.run(50);
     let diagnostics = rig.viewfinder();
-    assert!(
-        diagnostics.white_balance.table_failure.is_some(),
-        "предусловие: таблицу локуса потока построить не удалось ({:?})",
-        diagnostics.white_balance
-    );
     let ae = diagnostics.auto_exposure.clone().expect("AE включён");
     let ae_midway = midway.auto_exposure.expect("AE включён");
     // Холодный старт кончился давно (кадры 0..50), дальше расписание идёт по периоду — и замеры продолжают приходить.

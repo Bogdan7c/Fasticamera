@@ -112,6 +112,10 @@ pub fn fired_report(shot: FlashShotId) -> FlashStillReport {
             ambient_frame: SensorTimestamp::from_nanos(1),
             mid_gray_product: ExposureProduct::from_seconds_iso(4.8).unwrap(),
             flash_share: FlashShare::new(0.6),
+            led_white: camera_contract::control::WhiteBalanceSetting {
+                temperature: camera_contract::control::ColorTemperature::DAYLIGHT,
+                tint: camera_contract::control::Tint::NEUTRAL,
+            },
         },
         exposure_time: ExposureTime::new(Duration::from_millis(12)).unwrap(),
         iso: Iso::new(400).unwrap(),

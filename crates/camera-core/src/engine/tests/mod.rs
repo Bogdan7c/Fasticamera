@@ -3,6 +3,7 @@
 
 mod commands;
 mod flash_decisions;
+mod flash_led_white;
 mod flash_preflash;
 mod flash_sequence;
 mod flash_support;
@@ -235,10 +236,12 @@ impl Rig {
 
     /// Довести до `Streaming` на основной камере.
     pub(super) fn start_streaming_on_wide(&mut self) {
-        assert_eq!(
-            self.send(CameraCommand::Open { target: wide() }),
-            CommandOutcome::Accepted
-        );
+        self.start_streaming_on(wide());
+    }
+
+    /// Довести до `Streaming` на выбранной камере.
+    pub(super) fn start_streaming_on(&mut self, target: CameraTarget) {
+        assert_eq!(self.send(CameraCommand::Open { target }), CommandOutcome::Accepted);
         assert_eq!(
             self.send(CameraCommand::Configure { mode: mode_raw10_60() }),
             CommandOutcome::Accepted

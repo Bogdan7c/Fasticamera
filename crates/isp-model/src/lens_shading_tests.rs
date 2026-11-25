@@ -499,3 +499,46 @@ fn preview_reference_uses_cell_centres_and_quality_uses_samples() {
         LensShadingSampling::PerSample
     );
 }
+
+#[test]
+fn gain_for_sample_is_exactly_the_factor_the_stage_applies_to_that_sample() {
+    // Карта с разными усилениями по каналам и углам: перепутанный канал, строка или точка выборки видны сразу.
+    let map = Arc::new(
+        LensShadingGainMap::new(
+            2,
+            2,
+            vec![
+                [4.0, 3.5, 3.25, 3.0],
+                [2.5, 2.25, 2.0, 1.75],
+                [2.75, 2.375, 2.125, 1.875],
+                [1.0, 1.125, 1.25, 1.5],
+            ],
+        )
+        .unwrap(),
+    );
+    let step = enabled_step(map);
+    let size = PixelSize::new(8, 6);
+    let mosaic = flat_mosaic(8, 6, 1.0);
+    for sampling in [LensShadingSampling::PerSample, LensShadingSampling::PerCellCentre] {
+        let (corrected, _) = apply_lens_shading_with(&mosaic, &step, sampling);
+        for y in 0..size.height {
+            for x in 0..size.width {
+                let channel = mosaic.pattern().channel_at(x, y);
+                let gain = step.gain_for_sample((x, y), size, channel, sampling);
+                assert_eq!(gain, corrected.sample(x, y), "({x}, {y}) {sampling:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn gain_for_sample_of_a_skipped_stage_is_one() {
+    let step = LensShadingStep::Skip(LensShadingSkipReason::DisabledByControl);
+    let gain = step.gain_for_sample(
+        (3, 2),
+        PixelSize::new(8, 6),
+        RgbChannel::Green,
+        LensShadingSampling::PerCellCentre,
+    );
+    assert_eq!(gain, 1.0);
+}

@@ -558,7 +558,6 @@ impl CameraSession {
                 Content::IspNew {
                     identity,
                     light,
-                    plan,
                     statistics,
                     exposure,
                     ..
@@ -567,7 +566,6 @@ impl CameraSession {
             ) => Some(SlotFrame {
                 identity: *identity,
                 light: *light,
-                stream: plan.stream,
                 statistics: *statistics,
                 exposure: *exposure,
             }),

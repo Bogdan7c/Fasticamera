@@ -37,6 +37,10 @@ fn fired(shot: u64) -> FlashStillReport {
             ambient_frame: camera_contract::capture_result::SensorTimestamp::from_nanos(1_000),
             mid_gray_product: camera_contract::auto_exposure::ExposureProduct::from_seconds_iso(2.0).unwrap(),
             flash_share: camera_contract::flash::FlashShare::new(0.5),
+            led_white: camera_contract::control::WhiteBalanceSetting {
+                temperature: camera_contract::control::ColorTemperature::DAYLIGHT,
+                tint: camera_contract::control::Tint::NEUTRAL,
+            },
         },
         exposure_time: camera_contract::control::ExposureTime::new(std::time::Duration::from_millis(10)).unwrap(),
         iso: camera_contract::control::Iso::new(100).unwrap(),

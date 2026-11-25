@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use camera_contract::auto_exposure::ExposureProduct;
 use camera_contract::capture_result::SensorTimestamp;
-use camera_contract::control::{ExposureTime, Iso};
+use camera_contract::control::{ExposureTime, Iso, WhiteBalanceSetting};
 use camera_contract::flash::{FlashFramePlan, FlashShare, FlashShotId};
 
 use crate::three_a_own::{Anchor, SplitLimits, split};
@@ -40,6 +40,8 @@ pub(super) struct FlashPlanInputs {
     pub(super) bias_ev: f64,
     /// Пределы камеры и потока: тот же делёж, что у нашего AE.
     pub(super) limits: SplitLimits,
+    /// Постоянная белая светодиода активной камеры (уйдёт в план для рендера как есть).
+    pub(super) led_white: WhiteBalanceSetting,
 }
 
 /// Выбранный кадр со вспышкой: план для рендера и значения запроса.
@@ -82,6 +84,7 @@ pub(super) fn plan_flash_frame(inputs: &FlashPlanInputs) -> Option<PlannedShot> 
             ambient_frame: inputs.ambient_frame,
             mid_gray_product: requested,
             flash_share: FlashShare::new(flash_share),
+            led_white: inputs.led_white,
         },
         exposure_time,
         iso,

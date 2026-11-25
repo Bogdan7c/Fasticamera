@@ -1,10 +1,8 @@
 //! Секция `viewfinder.white_balance`: настройки нашего AWB на потоке рендера (сессия 08).
 //!
-//! Числа оценки света (таблица, оценщик, контроллер) живут в `scene-estimation`; здесь — то, что решает
-//! поток рендера: сколько кадров нового потока прятать до ответа источника белого. Период статистики кадра — в
+//! Здесь — то, что решает поток рендера: сколько кадров нового потока прятать до ответа источника белого. Период статистики кадра — в
 //! `viewfinder.auto_exposure` (статистика нужна AE).
 
-use scene_estimation::config::SceneEstimationConfig;
 use scene_estimation::white_source::phone::PhoneWhiteConfig;
 use serde::{Deserialize, Serialize};
 
@@ -12,8 +10,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct WhiteBalanceConfig {
-    /// Оценка света сцены: таблица локуса, оценщик, контроллер.
-    pub scene: SceneEstimationConfig,
     /// Сколько кадров нового потока без прежней белой сцены обрабатываются, но НЕ показываются, пока нет первой
     /// оценки (решение 65). Предел обязателен: пустая или пересвеченная сцена не должна прятать картинку вечно.
     pub max_hidden_frames: u32,
@@ -35,7 +31,6 @@ impl Default for WhiteBalanceConfig {
     ///   (автоматика телефона дрожит каждый кадр), а человеку хватает чувствовать свет с запаздыванием в четверть секунды.
     fn default() -> Self {
         Self {
-            scene: SceneEstimationConfig::default(),
             max_hidden_frames: 20,
             reading_every_frames: 15,
             phone: PhoneWhiteConfig::default(),
@@ -46,9 +41,6 @@ impl Default for WhiteBalanceConfig {
 /// Что не так с секцией.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum WhiteBalanceConfigError {
-    /// Настройки оценки света отвергнуты.
-    #[error("viewfinder.white_balance.scene: {0}")]
-    Scene(String),
     /// Показание нельзя обновлять «каждый 0-й» кадр.
     #[error("viewfinder.white_balance.reading_every_frames должен быть не меньше 1")]
     ReadingEveryZero,
@@ -60,9 +52,6 @@ pub enum WhiteBalanceConfigError {
 impl WhiteBalanceConfig {
     /// Проверяет секцию.
     pub fn validate(&self) -> Result<(), WhiteBalanceConfigError> {
-        self.scene
-            .validate()
-            .map_err(|error| WhiteBalanceConfigError::Scene(error.to_string()))?;
         if self.reading_every_frames == 0 {
             return Err(WhiteBalanceConfigError::ReadingEveryZero);
         }
@@ -98,12 +87,8 @@ mod tests {
         };
         assert_eq!(zero_reading.validate(), Err(WhiteBalanceConfigError::ReadingEveryZero));
         assert_eq!(WhiteBalanceConfig::default().reading_every_frames, 15);
-        let mut broken_scene = WhiteBalanceConfig::default();
-        broken_scene.scene.estimator.min_level = 0.99;
-        assert!(matches!(
-            broken_scene.validate(),
-            Err(WhiteBalanceConfigError::Scene(_))
-        ));
+        // Секция `scene` (оценщик света) ушла вместе со старым оценщиком: старый конфиг с ней отвергается.
+        assert!(serde_json::from_str::<WhiteBalanceConfig>(r#"{"scene":{}}"#).is_err());
         assert!(serde_json::from_str::<WhiteBalanceConfig>(r#"{"hidden":3}"#).is_err());
         let mut broken_phone = WhiteBalanceConfig::default();
         broken_phone.phone.stable_frames = 0;

@@ -11,6 +11,7 @@ use camera_contract::fixtures::{camera_id, oneplus11_visible_cameras};
 use camera_contract::flash::{
     FlashControl, FlashShotId, PreflashLight, PreflashMetering, PreflashSample, PreflashSamples,
 };
+use camera_contract::ids::CameraId;
 use camera_contract::three_a::{DirectiveSlot, MainsFrequency, RequestOrigin};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -72,6 +73,8 @@ pub(super) struct FlashRig {
     pub(super) next_frame: i64,
     /// Последний кадр повторяющегося запроса на момент `capture` (запрос с фонариком выдан после него).
     request_frame: i64,
+    /// Камера, на которой идёт поток: от неё приходят замеры.
+    primary: CameraId,
 }
 
 impl FlashRig {
@@ -84,24 +87,42 @@ impl FlashRig {
 
     /// То же, но AE ещё не принял ни одного замера.
     pub(super) fn unmeasured() -> Self {
-        Self::build(CameraEngineConfig::default(), |_| {}, true)
+        Self::build(CameraEngineConfig::default(), |_| {}, true, (camera_id("2"), wide()))
     }
 
     /// Основная камера, у которой тест что-то поменял в характеристиках.
     pub(super) fn with_edited_wide(edit: impl FnOnce(&mut CameraDescriptor)) -> Self {
-        let mut flash_rig = Self::build(CameraEngineConfig::default(), edit, true);
+        let mut flash_rig = Self::build(CameraEngineConfig::default(), edit, true, (camera_id("2"), wide()));
+        flash_rig.measure(8.0);
+        flash_rig
+    }
+
+    /// Стенд на камере `camera` (её роль — `target`) со своим конфигом движка; `edit` правит её
+    /// характеристики; AE получил цель 8 с·ISO.
+    pub(super) fn on_camera(
+        config: CameraEngineConfig,
+        camera: &str,
+        target: CameraTarget,
+        edit: impl FnOnce(&mut CameraDescriptor),
+    ) -> Self {
+        let mut flash_rig = Self::build(config, edit, true, (camera_id(camera), target));
         flash_rig.measure(8.0);
         flash_rig
     }
 
     /// Стенд без наблюдателя: итог идёт только событием.
     pub(super) fn without_observer(target: f64) -> Self {
-        let mut flash_rig = Self::build(CameraEngineConfig::default(), |_| {}, false);
+        let mut flash_rig = Self::build(CameraEngineConfig::default(), |_| {}, false, (camera_id("2"), wide()));
         flash_rig.measure(target);
         flash_rig
     }
 
-    fn build(config: CameraEngineConfig, edit: impl FnOnce(&mut CameraDescriptor), with_observer: bool) -> Self {
+    fn build(
+        config: CameraEngineConfig,
+        edit: impl FnOnce(&mut CameraDescriptor),
+        with_observer: bool,
+        (primary, target): (CameraId, CameraTarget),
+    ) -> Self {
         let channel = ExposureProposalChannel::new();
         let signal = Arc::new(CountingSignal::default());
         channel
@@ -120,15 +141,15 @@ impl FlashRig {
             wiring = wiring.with_flash_observer(Arc::clone(&observer) as Arc<dyn FlashStillObserver>);
         }
         let mut cameras = oneplus11_visible_cameras();
-        if let Some(wide_camera) = cameras.iter_mut().find(|camera| camera.id.as_str() == "2") {
-            edit(wide_camera);
+        if let Some(primary_camera) = cameras.iter_mut().find(|camera| camera.id == primary) {
+            edit(primary_camera);
         }
         let fake = FakeBackendControl::new();
         fake.set_cameras(cameras);
         let mut rig = Rig::over_fake_with_wiring(config, AppPresence::Foreground, fake, wiring);
         rig.engine.load_catalog(rig.now);
         rig.pump();
-        rig.start_streaming_on_wide();
+        rig.start_streaming_on(target);
         Self {
             rig,
             channel,
@@ -138,6 +159,7 @@ impl FlashRig {
             delivered: 0,
             next_frame: 1,
             request_frame: 0,
+            primary,
         }
     }
 
@@ -155,7 +177,7 @@ impl FlashRig {
         let frame = self.feed_repeating();
         self.channel.publish(ExposureProposal {
             measured_frame: frame_time(frame),
-            measured_on: CameraTag::of(&camera_id("2")),
+            measured_on: CameraTag::of(&self.primary),
             target: product(target),
             metered_area: MeteredArea::WholeFrame,
             convergence: ProposalConvergence::Settled,
@@ -246,11 +268,13 @@ impl FlashRig {
     /// Предвспышка с годными замерами: фон со средним серым `ambient`, фонарик — `torch`.
     /// Замер с фонариком снят на той экспозиции, что стоит в запросе (как у настоящего рендера).
     pub(super) fn publish_good_samples(&mut self, ambient: f64, torch: f64) {
+        let primary = self.primary.clone();
         let frame_product = self.repeating_product();
         let ambient_frame = self.pre_request_frame();
         let torch_frame = self.next_frame + 18;
         self.publish_samples(PreflashSamples {
-            ambient: Some(sample(
+            ambient: Some(sample_on(
+                &primary,
                 PreflashLight::Ambient,
                 ambient_frame,
                 frame_product,
@@ -260,14 +284,16 @@ impl FlashRig {
             torch: None,
         });
         self.publish_samples(PreflashSamples {
-            ambient: Some(sample(
+            ambient: Some(sample_on(
+                &primary,
                 PreflashLight::Ambient,
                 ambient_frame,
                 frame_product,
                 ambient,
                 MeasurementQuality::Measured,
             )),
-            torch: Some(sample(
+            torch: Some(sample_on(
+                &primary,
                 PreflashLight::Torch,
                 torch_frame,
                 frame_product,
@@ -290,9 +316,21 @@ pub(super) fn sample(
     mid_gray: f64,
     quality: MeasurementQuality,
 ) -> PreflashSample {
+    sample_on(&camera_id("2"), light, frame, frame_product, mid_gray, quality)
+}
+
+/// Замер кадра `frame` камеры `camera`.
+pub(super) fn sample_on(
+    camera: &CameraId,
+    light: PreflashLight,
+    frame: i64,
+    frame_product: f64,
+    mid_gray: f64,
+    quality: MeasurementQuality,
+) -> PreflashSample {
     PreflashSample {
         frame: frame_time(frame),
-        measured_on: CameraTag::of(&camera_id("2")),
+        measured_on: CameraTag::of(camera),
         light,
         frame_product: product(frame_product),
         mid_gray_product: product(mid_gray),

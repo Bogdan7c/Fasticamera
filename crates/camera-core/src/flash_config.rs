@@ -2,8 +2,94 @@
 //! `[measured]` — зонд `flash` 14d на OnePlus 11, `[estimate]` — оценка агента, подбирается на
 //! телефоне.
 
+use camera_contract::control::{ColorTemperature, InvalidControlValue, Tint, WhiteBalanceSetting};
+use camera_contract::ids::LensRole;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+/// Белая светодиода вспышки одной камеры: постоянный цвет «температура + Duv» (WB11, WB41).
+///
+/// Светодиод светит одним и тем же цветом в любой сцене, поэтому белая кадра со вспышкой — это ЭТО число,
+/// а не оценка сцены и не смесь с светом сцены по доле вспышки. Расплата (фон под тёплыми лампами выходит
+/// оранжевее) принята владельцем. Число меряется на телефоне отдельно по каждой камере со вспышкой.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct LedWhite {
+    /// Коррелированная цветовая температура светодиода, К.
+    pub kelvin: f64,
+    /// Отклонение от кривой Планка (Duv); плюс — к зелёному.
+    pub duv: f64,
+}
+
+impl Default for LedWhite {
+    /// Нейтральная заглушка для частичного конфига (поле не названо): настоящие числа камер — в
+    /// [`FlashLedWhite::default`], единственном месте, где они меняются.
+    fn default() -> Self {
+        Self {
+            kelvin: 4_500.0,
+            duv: 0.0,
+        }
+    }
+}
+
+impl LedWhite {
+    /// Белая как настройка контракта (то, что движок кладёт в план кадра со вспышкой).
+    pub fn to_setting(self) -> Result<WhiteBalanceSetting, InvalidControlValue> {
+        Ok(WhiteBalanceSetting {
+            temperature: ColorTemperature::from_kelvin(self.kelvin)?,
+            tint: Tint::from_duv(self.duv)?,
+        })
+    }
+}
+
+/// Белые светодиода по камерам. Светодиод один, но цвет в кадр попадает через оптику и сенсор конкретной
+/// камеры, поэтому числа у камер свои (меряются отдельно).
+///
+/// `other` — камеры без собственного замера: телевик (его закрывает фреймворк) и логическая камера.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct FlashLedWhite {
+    /// Основная камера (`LensRole::Wide`).
+    pub wide: LedWhite,
+    /// Сверхширокая камера (`LensRole::UltraWide`).
+    pub ultra_wide: LedWhite,
+    /// Все остальные роли и случай «роль неизвестна».
+    pub other: LedWhite,
+}
+
+impl Default for FlashLedWhite {
+    /// Числа с телефона (OnePlus 11, белый лист в темноте, разовая вспышка: 26 кадров основной и 5 ширика).
+    /// * `wide` 3980 К, Duv +0,0068 `[measured]`; `ultra_wide` 3815 К, Duv +0,0035 `[measured]`.
+    /// * Разброс повторов ≈ 0,5 майреда, холодный и прогретый светодиод совпали. Разница линз ≈ 11 майред —
+    ///   расхождение цветовых профилей камер, светодиод физически один. Остаточный свет комнаты (≈ 1,6 %) не
+    ///   вычитался.
+    /// * `other` — как основная, `[estimate]`: свой замер у телевика и логической камеры невозможен.
+    fn default() -> Self {
+        let main_led = LedWhite {
+            kelvin: 3_980.0,
+            duv: 0.0068,
+        };
+        Self {
+            wide: main_led,
+            ultra_wide: LedWhite {
+                kelvin: 3_815.0,
+                duv: 0.0035,
+            },
+            other: main_led,
+        }
+    }
+}
+
+impl FlashLedWhite {
+    /// Белая светодиода для камеры с ролью `role` (`None` — роль неизвестна: берётся `other`).
+    pub fn white_for(&self, role: Option<LensRole>) -> LedWhite {
+        match role {
+            Some(LensRole::Wide) => self.wide,
+            Some(LensRole::UltraWide) => self.ultra_wide,
+            Some(LensRole::Tele | LensRole::Front) | None => self.other,
+        }
+    }
+}
 
 /// Как движок снимает кадр со вспышкой.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -41,6 +127,8 @@ pub struct FlashConfig {
     /// Срок на результат разового запроса со вспышкой от его отправки, мс. `[estimate]` 400:
     /// `[measured]` результат через 120–142 мс.
     pub result_timeout_ms: u64,
+    /// Постоянная белая светодиода по камерам (WB11, WB41); измеренные числа — в `FlashLedWhite::default`.
+    pub led_white: FlashLedWhite,
 }
 
 impl Default for FlashConfig {
@@ -55,6 +143,7 @@ impl Default for FlashConfig {
             torch_off_to_single_gap_ms: 100,
             ambient_sample_max_age_ms: 1_000,
             result_timeout_ms: 400,
+            led_white: FlashLedWhite::default(),
         }
     }
 }
@@ -111,6 +200,9 @@ impl FlashConfig {
         )?;
         check_ms("ambient_sample_max_age_ms", self.ambient_sample_max_age_ms, 100..=5_000)?;
         check_ms("result_timeout_ms", self.result_timeout_ms, 100..=5_000)?;
+        check_led_white(&LED_WIDE_FIELDS, self.led_white.wide)?;
+        check_led_white(&LED_ULTRA_WIDE_FIELDS, self.led_white.ultra_wide)?;
+        check_led_white(&LED_OTHER_FIELDS, self.led_white.other)?;
         Ok(())
     }
 
@@ -124,6 +216,31 @@ impl FlashConfig {
             .saturating_add(self.torch_off_to_single_gap_ms)
             .saturating_add(self.result_timeout_ms)
     }
+}
+
+/// Полные имена полей белой светодиода одной камеры (для текста ошибки: `three_a.flash.<имя>`).
+struct LedFieldNames {
+    kelvin: &'static str,
+    duv: &'static str,
+}
+
+const LED_WIDE_FIELDS: LedFieldNames = LedFieldNames {
+    kelvin: "led_white.wide.kelvin",
+    duv: "led_white.wide.duv",
+};
+const LED_ULTRA_WIDE_FIELDS: LedFieldNames = LedFieldNames {
+    kelvin: "led_white.ultra_wide.kelvin",
+    duv: "led_white.ultra_wide.duv",
+};
+const LED_OTHER_FIELDS: LedFieldNames = LedFieldNames {
+    kelvin: "led_white.other.kelvin",
+    duv: "led_white.other.duv",
+};
+
+/// Пределы белой светодиода: те же, что у ручной белой (1667…20000 К, |Duv| ≤ 0,05).
+fn check_led_white(names: &LedFieldNames, white: LedWhite) -> Result<(), FlashConfigError> {
+    check(names.kelvin, white.kelvin, 1_667.0..=20_000.0, "1667…20000 К")?;
+    check(names.duv, white.duv, -0.05..=0.05, "−0,05…0,05 (Duv)")
 }
 
 fn check(

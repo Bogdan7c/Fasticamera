@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+use camera_contract::control::{ColorTemperature, Tint};
+
 use super::*;
 
 fn product(seconds_iso: f64) -> ExposureProduct {
@@ -27,6 +29,10 @@ fn inputs(ambient: f64, torch: f64) -> FlashPlanInputs {
         torch_to_flash_ratio: 1.87,
         bias_ev: 0.0,
         limits: limits(),
+        led_white: WhiteBalanceSetting {
+            temperature: ColorTemperature::from_kelvin(4_200.0).expect("температура"),
+            tint: Tint::from_duv(0.004).expect("оттенок"),
+        },
     }
 }
 
@@ -44,6 +50,23 @@ fn torch_doubling_the_light_gives_flash_light_of_ratio_added_to_ambient() {
     assert_eq!(planned.plan.shot, FlashShotId(7));
     // Кадр, по которому посчитан свет сцены, доезжает до плана для рендера.
     assert_eq!(planned.plan.ambient_frame, SensorTimestamp::from_nanos(123));
+}
+
+#[test]
+fn plan_carries_the_given_led_white_untouched_whatever_the_flash_share() {
+    // Белая светодиода — вход плана как есть: ни доля вспышки, ни свет сцены её не смешивают (WB41).
+    let expected = inputs(1.0, 0.5).led_white;
+    for (ambient, torch) in [(1.0, 0.5), (0.8, 0.8), (8.0, 0.5)] {
+        let planned = plan_flash_frame(&inputs(ambient, torch)).expect("план");
+        assert_eq!(planned.plan.led_white, expected, "фон {ambient}, фонарик {torch}");
+    }
+    let mut other_white = inputs(1.0, 0.5);
+    other_white.led_white = WhiteBalanceSetting {
+        temperature: ColorTemperature::from_kelvin(3_300.0).expect("температура"),
+        tint: Tint::NEUTRAL,
+    };
+    let planned = plan_flash_frame(&other_white).expect("план");
+    assert_eq!(planned.plan.led_white, other_white.led_white);
 }
 
 #[test]

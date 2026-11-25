@@ -258,8 +258,7 @@ impl<G: StillGpu> StillEngine<G> {
         for record in feed.presents {
             self.present_log.record_shown(record);
         }
-        self.flash_facts
-            .record(feed.flash_plans, feed.torch_whites, feed.ambient_levels);
+        self.flash_facts.record(feed.flash_plans, feed.ambient_levels);
         let got_params = !feed.params.is_empty();
         for (sensor_timestamp, params) in feed.params {
             self.current_stream = Some(Arc::clone(&params.stream));

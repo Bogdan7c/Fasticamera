@@ -24,6 +24,7 @@
 
 mod advice;
 mod decide;
+mod led_white;
 mod plan;
 mod preflash;
 mod sequence;

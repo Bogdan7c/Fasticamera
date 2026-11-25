@@ -1,7 +1,5 @@
-//! Общие помощники юнит-тестов белой (без GPU): паспорта потоков и кадров, синтетическая статистика, раннер,
-//! фальшивый источник белого с журналом вызовов.
-//!
-//! Статистика строится так же, как её выдал бы ISP (плитки сумм).
+//! Общие помощники юнит-тестов белой (без GPU): паспорта потоков и кадров, раннер, фальшивый источник белого с
+//! журналом вызовов.
 
 #![allow(
     clippy::unwrap_used,
@@ -30,7 +28,6 @@ use camera_contract::white::{
 use camera_contract::white_reading::WhiteReading;
 use isp_model::color::temperature::Kelvin;
 use isp_model::color::white_point::{CctDuv, Duv, cct_duv_from_chromaticity, chromaticity_from_cct_duv};
-use isp_model::statistics::{AwbTile, TileGrid, quantize_sample};
 use scene_estimation::white_source::{
     WhiteFrame, WhiteInputKind, WhiteReply, WhiteRequestRefusal, WhiteSource, WhiteStreamFacts,
 };
@@ -42,7 +39,6 @@ use super::applied::PROVISIONAL_WHITE;
 use super::*;
 use crate::viewfinder::{WhiteLinks, WhiteSourceRegistry};
 
-const CELLS: u32 = 4096;
 pub(super) const FRAME_NANOS: i64 = 16_666_667;
 
 fn calibration() -> Vec<ColorCalibrationSet> {
@@ -108,56 +104,6 @@ pub(super) fn frame_at(stream: &Arc<StreamPassport>, index: i64, color: CaptureC
 
 pub(in crate::vulkan_backend::camera) fn frame(stream: &Arc<StreamPassport>, index: i64) -> RawFramePassport {
     frame_at(stream, index, CaptureColorHints::default())
-}
-
-pub(super) fn identity_of(passport: &RawFramePassport) -> AwbFrameIdentity {
-    AwbFrameIdentity {
-        sequence: passport.sequence.0,
-        sensor_timestamp_nanos: passport.sensor_timestamp.as_nanos(),
-        frame_number: None,
-    }
-}
-
-// ---- синтетическая статистика ----
-
-fn grid() -> TileGrid {
-    TileGrid { columns: 32, rows: 24 }
-}
-
-fn tile_of(rgb: [f32; 3]) -> AwbTile {
-    let q = rgb.map(quantize_sample);
-    AwbTile {
-        sum_r: q[0] * CELLS,
-        sum_g: 2 * q[1] * CELLS,
-        sum_b: q[2] * CELLS,
-        used_cells: CELLS,
-        saturated_cells: 0,
-    }
-}
-
-/// Серая поверхность под светом `kelvin` (нейтраль камеры из того же профиля, что у AWB).
-fn gray_tile(kelvin: f64) -> AwbTile {
-    let profile = DngColorProfile::from_calibration_sets(&calibration()).expect("профиль");
-    let white = chromaticity_from_cct_duv(CctDuv {
-        temperature: Kelvin(kelvin),
-        duv: Duv(0.0),
-    })
-    .expect("белая");
-    let neutral = profile.neutral_for_white(white).expect("нейтраль").values();
-    tile_of([neutral[0] as f32 * 0.4, 0.4, neutral[2] as f32 * 0.4])
-}
-
-fn statistics_of(tile: AwbTile) -> AwbStatistics {
-    AwbStatistics::from_tiles(grid(), vec![tile; 768]).expect("768 плиток")
-}
-
-pub(super) fn gray_scene(kelvin: f64) -> AwbStatistics {
-    statistics_of(gray_tile(kelvin))
-}
-
-/// Однотонная зелень: далеко от кривой Планка, серых кандидатов нет.
-pub(super) fn single_colour_scene() -> AwbStatistics {
-    statistics_of(tile_of([0.05, 0.4, 0.05]))
 }
 
 // ---- стенд ----

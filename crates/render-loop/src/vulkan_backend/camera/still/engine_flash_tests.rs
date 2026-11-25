@@ -1,15 +1,18 @@
 //! Снимок со вспышкой в движке снимков (14d) на настоящем кольце и поддельном GPU: кадр ищется по метке запроса,
-//! параметры берутся из плана и белой светодиода, свет проверяется по пикселям, итог РОВНО один.
+//! параметры берутся из плана (подтяжка и постоянная белая светодиода), свет проверяется по пикселям, итог РОВНО один.
 
 use std::sync::Arc;
 
 use camera_contract::auto_exposure::ExposureProduct;
+use camera_contract::control::{ColorTemperature, Tint, WhiteBalanceSetting};
 use camera_contract::flash::{
     FlashFramePlan, FlashModeEcho, FlashResult, FlashShare, FlashShotId, FlashState, FlashStillFailure,
 };
 use camera_contract::frame_passport::StreamPassport;
 use camera_contract::geometry::{PixelRect, PixelSize};
 use isp_model::color::chromaticity::Chromaticity;
+use isp_model::color::temperature::Kelvin;
+use isp_model::color::white_point::{CctDuv, Duv, chromaticity_from_cct_duv};
 use isp_model::sensor::SensorDescription;
 use raw_frame_stream::RawFrameStreamConfig;
 use still_contract::develop::{DevelopEvent, PrimaryTarget, PrimaryTargetOffer};
@@ -21,42 +24,62 @@ use super::feed::StillFeed;
 use super::test_support::{EngineRig, MAIN, StreamRig, engine_rig, plan, stamp, stream_passport};
 use crate::config::StillDevelopConfig;
 use crate::still::{StillCommand, StillCommandOutcome, StillWorkload};
-use crate::vulkan_backend::camera::flash_facts::{AmbientLevel, TorchWhite};
+use crate::vulkan_backend::camera::flash_facts::AmbientLevel;
 
-const SHOT: FlashShotId = FlashShotId(7);
-/// Белая лампы накаливания ≈ 2856 К (как светодиод): заметно отличается от D65 видоискателя.
-const LED_WHITE: Chromaticity = Chromaticity { x: 0.4476, y: 0.4074 };
+pub(super) const SHOT: FlashShotId = FlashShotId(7);
+/// Белая светодиода плана теста: ≈ 2856 К, заметно отличается от D65 видоискателя.
+const LED_KELVIN: f64 = 2_856.0;
+/// Белая видоискателя теста по умолчанию (D65, как у `StreamRig::params_for`).
+pub(super) const D65: Chromaticity = Chromaticity { x: 0.3127, y: 0.3290 };
 /// Сырой отсчёт, дающий нормированный зелёный ≈ 0,5 (чёрный 64, белый 1023).
 const LIT_RAW: u16 = 543;
 /// Сырой отсчёт ≈ 0,1.
-const DIM_RAW: u16 = 160;
-const FIRED: FlashResult = FlashResult {
+pub(super) const DIM_RAW: u16 = 160;
+pub(super) const FIRED: FlashResult = FlashResult {
     mode: Some(FlashModeEcho::Single),
     state: Some(FlashState::Fired),
 };
 
-fn flash_plan(id: u64) -> StillPlan {
+/// Белая плана движка: температура и Duv как в контракте.
+fn led_setting(kelvin: f64, duv: f64) -> WhiteBalanceSetting {
+    WhiteBalanceSetting {
+        temperature: ColorTemperature::from_kelvin(kelvin).expect("температура"),
+        tint: Tint::from_duv(duv).expect("оттенок"),
+    }
+}
+
+/// Цветность белой плана, посчитанная независимо от кода рендера (напрямую через `isp-model`).
+fn chromaticity_of_led(kelvin: f64, duv: f64) -> Chromaticity {
+    chromaticity_from_cct_duv(CctDuv {
+        temperature: Kelvin(kelvin),
+        duv: Duv(duv),
+    })
+    .expect("белая в таблице")
+}
+
+pub(super) fn flash_plan(id: u64) -> StillPlan {
     StillPlan {
         selection: FrameSelection::FlashFrame { shot: SHOT },
         ..plan(id, 0)
     }
 }
 
-/// Что видоискатель сообщил движку о свете (план, белая светодиода, свет сцены).
-struct Facts {
-    mid_gray_ev_over_frame: f32,
-    flash_share: f64,
-    torch_white: Option<Chromaticity>,
+/// Что видоискатель сообщил движку о свете (план с белой светодиода, свет сцены).
+pub(super) struct Facts {
+    pub(super) mid_gray_ev_over_frame: f32,
+    pub(super) flash_share: f64,
+    /// Белая светодиода, которую движок положил в план.
+    pub(super) led_white: WhiteBalanceSetting,
     /// Средний зелёный сцены на единицу произведения; `None` — уровня сцены нет.
-    ambient_green_per_product: Option<f64>,
+    pub(super) ambient_green_per_product: Option<f64>,
 }
 
 impl Facts {
-    fn good() -> Self {
+    pub(super) fn good() -> Self {
         Self {
             mid_gray_ev_over_frame: 0.25,
             flash_share: 0.6,
-            torch_white: Some(LED_WHITE),
+            led_white: led_setting(LED_KELVIN, 0.0),
             ambient_green_per_product: Some(0.1),
         }
     }
@@ -64,10 +87,28 @@ impl Facts {
 
 /// Движок с кольцом, видоискателем, уже показавшим 3 кадра (есть поток и параметры), и фактами о свете.
 fn flash_rig(facts: Option<Facts>) -> EngineRig {
-    let mut stream = StreamRig::with_ring(MAIN);
+    flash_rig_viewing_white(facts, D65)
+}
+
+/// То же, но видоискатель обработал показанные кадры с белой `viewfinder_white`.
+fn flash_rig_viewing_white(facts: Option<Facts>, viewfinder_white: Chromaticity) -> EngineRig {
+    flash_rig_on_stream(facts, viewfinder_white, StreamRig::with_ring(MAIN))
+}
+
+/// То же на готовом потоке (например, с калибровкой виньетирования).
+pub(super) fn flash_rig_on_stream(
+    facts: Option<Facts>,
+    viewfinder_white: Chromaticity,
+    stream: StreamRig,
+) -> EngineRig {
+    let mut stream = stream;
     let frames = stream.offer_many(3);
     let mut rig = engine_rig(StillDevelopConfig::default(), stream);
-    rig.engine.ingest_feed(rig.stream.feed_for(&frames, 0));
+    let mut feed = rig.stream.feed_for(&frames, 0);
+    for (_, params) in &mut feed.params {
+        params.white = viewfinder_white;
+    }
+    rig.engine.ingest_feed(feed);
     if let Some(facts) = facts {
         tell(&mut rig, facts);
     }
@@ -84,14 +125,8 @@ fn tell(rig: &mut EngineRig, facts: Facts) {
         // Кадр со вспышкой имеет 1 с·ISO: план выше него на `mid_gray_ev_over_frame` EV.
         mid_gray_product: ExposureProduct::from_seconds_iso(f64::from(facts.mid_gray_ev_over_frame).exp2()).unwrap(),
         flash_share: FlashShare::new(facts.flash_share),
+        led_white: facts.led_white,
     });
-    if let Some(white) = facts.torch_white {
-        feed.torch_whites.push(TorchWhite {
-            stream: Arc::clone(&passport),
-            frame: stamp(1),
-            white,
-        });
-    }
     feed.ambient_levels
         .extend(facts.ambient_green_per_product.map(|green_per_product| AmbientLevel {
             stream: passport,
@@ -108,7 +143,7 @@ fn secured(events: &[DevelopEvent]) -> &StillFrameFacts {
     }
 }
 
-fn only_not_secured(events: &[DevelopEvent]) -> NoFrameReason {
+pub(super) fn only_not_secured(events: &[DevelopEvent]) -> NoFrameReason {
     match events {
         [DevelopEvent::NotSecured { reason, .. }] => *reason,
         other => panic!("ожидался один NotSecured, пришло {other:?}"),
@@ -131,7 +166,7 @@ fn assert_neutral(actual: [f64; 3], expected: [f64; 3]) {
 }
 
 #[test]
-fn the_flash_frame_arriving_later_is_secured_with_its_shot_plan_gain_and_the_led_white() {
+fn the_flash_frame_arriving_later_is_secured_with_its_shot_plan_gain_and_the_plan_led_white() {
     let mut rig = flash_rig(Some(Facts::good()));
     let sink = rig.begin(flash_plan(1));
     // Кадра запроса ещё нет; обычные кадры и кадр ЧУЖОГО снимка подставлять нельзя.
@@ -161,13 +196,13 @@ fn the_flash_frame_arriving_later_is_secured_with_its_shot_plan_gain_and_the_led
     );
     // 0,25 EV — ровно 8 шагов по 1/32 EV, в пределе 0,5 EV.
     assert!((facts.digital_gain.0 - 0.25).abs() < 1e-5, "{}", facts.digital_gain.0);
-    assert_neutral(facts.neutral.0, neutral_of(&rig, LED_WHITE));
+    assert_neutral(facts.neutral.0, neutral_of(&rig, chromaticity_of_led(LED_KELVIN, 0.0)));
     let diagnostics = rig.engine.diagnostics();
     assert_eq!(
         (
             diagnostics.flash.begins,
             diagnostics.flash.frames_found,
-            diagnostics.flash.white_from_torch_frame,
+            diagnostics.flash.white_from_plan,
             diagnostics.flash.lit_check_passed
         ),
         (1, 1, 1, 1)
@@ -230,20 +265,79 @@ fn the_residual_gain_is_rounded_and_limited_like_the_viewfinder_gain() {
 }
 
 #[test]
-fn without_a_torch_estimate_the_viewfinder_white_is_used_and_counted_not_silent() {
+fn the_flash_frame_white_is_the_plan_white_whatever_the_viewfinder_white_is_and_the_regular_still_beside_it_keeps_the_viewfinder_white()
+ {
+    // Две сессии с РАЗНЫМИ белыми видоискателя (D65 и холодная ≈ 10000 К): кадр со вспышкой обязан получить одну и ту же
+    // нейтраль — по белой плана; обычный снимок рядом в том же стенде — белую видоискателя.
+    let cold_viewfinder = chromaticity_of_led(10_000.0, 0.0);
+    let expected_led = neutral_of(&flash_rig(None), chromaticity_of_led(LED_KELVIN, 0.0));
+    let mut neutrals = Vec::new();
+    for viewfinder_white in [D65, cold_viewfinder] {
+        let mut rig = flash_rig_viewing_white(Some(Facts::good()), viewfinder_white);
+        // Обычный снимок (показанный кадр видоискателя) в том же стенде: ему светодиод не достаётся.
+        let regular = rig.begin(plan(2, 25));
+        let flash = rig.begin(flash_plan(1));
+        rig.stream.offer_flash_still(SHOT.0, FIRED);
+        rig.run(6);
+        let flash_events = flash.take();
+        let flash_neutral = secured(&flash_events).neutral.0;
+        assert_neutral(flash_neutral, expected_led);
+        neutrals.push(flash_neutral);
+        let regular_events = regular.take();
+        assert_neutral(secured(&regular_events).neutral.0, neutral_of(&rig, viewfinder_white));
+        let diagnostics = rig.engine.diagnostics();
+        assert_eq!(
+            (diagnostics.flash.white_from_plan, diagnostics.flash.white_unconvertible),
+            (1, 0),
+            "белая плана посчитана один раз — для кадра со вспышкой, не для обычного"
+        );
+    }
+    assert_eq!(
+        neutrals[0], neutrals[1],
+        "белая видоискателя на кадр со вспышкой не влияет"
+    );
+}
+
+#[test]
+fn another_plan_white_gives_another_flash_neutral() {
+    // Две белые плана (тёплая и нейтральная) — две разные нейтрали, каждая по профилю.
+    let mut neutrals = Vec::new();
+    for kelvin in [LED_KELVIN, 5_500.0] {
+        let mut rig = flash_rig(Some(Facts {
+            led_white: led_setting(kelvin, 0.0),
+            ..Facts::good()
+        }));
+        let sink = rig.begin(flash_plan(1));
+        rig.stream.offer_flash_still(SHOT.0, FIRED);
+        rig.run(3);
+        let events = sink.take();
+        assert_neutral(
+            secured(&events).neutral.0,
+            neutral_of(&rig, chromaticity_of_led(kelvin, 0.0)),
+        );
+        neutrals.push(secured(&events).neutral.0);
+    }
+    assert_ne!(neutrals[0], neutrals[1], "другая белая плана — другая нейтраль");
+}
+
+#[test]
+fn a_plan_white_that_cannot_be_converted_makes_the_frame_unusable_and_is_counted_not_replaced() {
+    // 1000 К — вне таблицы температур (от ≈ 1667 К): подставлять белую видоискателя нельзя.
     let mut rig = flash_rig(Some(Facts {
-        torch_white: None,
+        led_white: led_setting(1_000.0, 0.0),
         ..Facts::good()
     }));
     let sink = rig.begin(flash_plan(1));
     rig.stream.offer_flash_still(SHOT.0, FIRED);
     rig.run(3);
-    let events = sink.take();
-    let viewfinder_white = rig.stream.params_for().white;
-    assert_neutral(secured(&events).neutral.0, neutral_of(&rig, viewfinder_white));
+    assert_eq!(only_not_secured(&sink.take()), NoFrameReason::FrameUnusable);
     let diagnostics = rig.engine.diagnostics();
-    assert_eq!(diagnostics.flash.white_fallback_no_torch_estimate, 1);
-    assert_eq!(diagnostics.flash.white_from_torch_frame, 0);
+    assert_eq!(
+        (diagnostics.flash.white_unconvertible, diagnostics.flash.white_from_plan),
+        (1, 0)
+    );
+    assert_eq!(diagnostics.captures_started, 0, "кадр без белой не копировался");
+    assert_eq!(diagnostics.outcomes.total(), 1);
 }
 
 #[test]

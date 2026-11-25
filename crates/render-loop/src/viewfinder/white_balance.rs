@@ -63,8 +63,6 @@ pub struct WhiteBalanceDiagnostics {
     pub hal_white: Option<WhiteReading>,
     /// Применённая белая минус белая HAL.
     pub hal_delta: Option<WhiteDelta>,
-    /// Сколько статистик пришло от потока, которого уже нет (отброшены).
-    pub statistics_stale: u64,
     /// Состояние холодного старта.
     pub cold_start: ColdStartState,
     /// Сколько кадров скрыто на холодных стартах за сессию.
@@ -73,12 +71,6 @@ pub struct WhiteBalanceDiagnostics {
     pub cold_start_forced: u64,
     /// Сколько кадров обработано с временной белой (указаний не было).
     pub frames_with_provisional_white: u64,
-    /// Таблицу локуса потока построить не удалось (текст причины): белая светодиода вспышки не оценивается.
-    pub table_failure: Option<String>,
-    /// Сколько оценок света светодиода получено по кадрам с фонариком предвспышки (14d).
-    pub torch_white_estimates: u64,
-    /// Сколько кадров с фонариком оценки не дали (нет серых плиток, ошибка, исполнитель занят).
-    pub torch_white_failures: u64,
 }
 
 impl WhiteBalanceDiagnostics {
@@ -97,14 +89,10 @@ impl WhiteBalanceDiagnostics {
             unconvertible_targets: 0,
             hal_white: None,
             hal_delta: None,
-            statistics_stale: 0,
             cold_start: ColdStartState::Warm,
             hidden_frames_cold_start: 0,
             cold_start_forced: 0,
             frames_with_provisional_white: 0,
-            table_failure: None,
-            torch_white_estimates: 0,
-            torch_white_failures: 0,
         }
     }
 }

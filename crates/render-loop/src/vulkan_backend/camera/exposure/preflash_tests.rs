@@ -227,6 +227,10 @@ fn flash_plans_are_forwarded_to_the_still_engine_once_each() {
         ambient_frame: camera_contract::capture_result::SensorTimestamp::from_nanos(1),
         mid_gray_product: ExposureProduct::from_seconds_iso(0.2).unwrap(),
         flash_share: FlashShare::new(0.6),
+        led_white: camera_contract::control::WhiteBalanceSetting {
+            temperature: camera_contract::control::ColorTemperature::DAYLIGHT,
+            tint: camera_contract::control::Tint::NEUTRAL,
+        },
     };
     let with_plan = FlashDirective {
         preflash: PreflashMetering::Inactive,

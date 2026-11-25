@@ -77,7 +77,6 @@ fn every_frame_is_balanced_from_the_first_and_without_ae_no_statistics_are_compu
     );
     assert_eq!(wb.directive_generation, Some(1));
     assert_eq!(wb.frames_with_provisional_white, 0);
-    assert_eq!(wb.table_failure, None);
     // Потребителей статистики нет (стенд без AE): стадия не считается, публикаций и расписания нет.
     assert_eq!(diagnostics.statistics, None, "{diagnostics:?}");
     assert_eq!(counters.statistics_published, 0, "{counters:?}");

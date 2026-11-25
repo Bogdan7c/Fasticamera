@@ -34,14 +34,10 @@ impl WhiteBalanceRunner {
             unconvertible_targets: self.applied.unconvertible_targets(),
             hal_white: self.hal_white.map(reading_of),
             hal_delta: applied.zip(self.hal_white).map(|(ours, hal)| delta_between(ours, hal)),
-            statistics_stale: self.counters.statistics_stale,
             cold_start: self.cold_start.state(),
             hidden_frames_cold_start: self.counters.hidden_frames,
             cold_start_forced: self.counters.forced,
             frames_with_provisional_white: self.counters.provisional_frames,
-            table_failure: self.table_failure.clone(),
-            torch_white_estimates: self.torch.estimated,
-            torch_white_failures: self.torch.failed,
         }
     }
 }

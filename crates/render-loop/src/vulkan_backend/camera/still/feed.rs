@@ -13,7 +13,7 @@ use camera_contract::flash::FlashFramePlan;
 use camera_contract::frame_passport::StreamPassport;
 use isp_model::color::chromaticity::Chromaticity;
 
-use crate::vulkan_backend::camera::flash_facts::{AmbientLevel, TorchWhite};
+use crate::vulkan_backend::camera::flash_facts::AmbientLevel;
 use isp_model::exposure::ExposureGain;
 
 /// Что видоискатель повторил для кадра: снимок берёт ровно это (решение 72).
@@ -66,8 +66,6 @@ pub struct StillFeed {
     pub params: Vec<(SensorTimestamp, FrameStillParams)>,
     /// Планы кадра со вспышкой из указаний движка камеры (14d), по порядку появления.
     pub flash_plans: Vec<FlashFramePlan>,
-    /// Белые светодиода по кадрам с фонариком предвспышки (14d).
-    pub torch_whites: Vec<TorchWhite>,
     /// Уровни света сцены без вспышки по кадрам (14d), по порядку измерения.
     pub ambient_levels: Vec<AmbientLevel>,
 }
@@ -80,7 +78,6 @@ impl StillFeed {
             && self.presents.is_empty()
             && self.params.is_empty()
             && self.flash_plans.is_empty()
-            && self.torch_whites.is_empty()
             && self.ambient_levels.is_empty()
     }
 }
@@ -102,11 +99,6 @@ impl StillFeedRecorder {
     /// Движок камеры выбрал план кадра со вспышкой (14d).
     pub fn note_flash_plan(&mut self, plan: FlashFramePlan) {
         self.pending.flash_plans.push(plan);
-    }
-
-    /// Белая светодиода по кадру с фонариком (14d).
-    pub fn note_torch_white(&mut self, white: TorchWhite) {
-        self.pending.torch_whites.push(white);
     }
 
     /// Свет сцены без вспышки по кадру (14d): все уровни, а не последний — план ссылается на кадр.
