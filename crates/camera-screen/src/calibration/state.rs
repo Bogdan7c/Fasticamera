@@ -228,7 +228,7 @@ impl CalibrationState {
             kind: self.scope_kind,
             vectorscope_axes: self.vectorscope_axes,
             scan: layout.scope_scan(),
-            image_size: layout.scope_image_size(),
+            image_size: layout.scope_image_size_for(self.scope_kind),
         })
     }
 

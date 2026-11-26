@@ -20,8 +20,12 @@
 //! Просится ровно размером зоны прибора в **глазных** пикселях (решение 202 и 14h: 1:1, иначе края следа темнеют
 //! от фильтрации). Виджет рисует её в глазном прямоугольнике зоны, повёрнутым вместе со всем разделом; поле
 //! развёртки ([`ScopeScan`]) говорит прибору, как читать показанную картинку «слева направо» глазом.
+//!
+//! Размер зависит от вида прибора ([`ScopeKind::picture_shape`]): waveform и parade занимают всю зону, вектороскоп —
+//! квадрат, вписанный в зону (сторона = меньшая сторона зоны) и стоящий по её центру: круг на прямоугольнике стал бы
+//! овалом (решение 14m).
 
-use scope_contract::{ScopeImageSize, ScopeImageSizeError, ScopeScan};
+use scope_contract::{ScopeImageSize, ScopeImageSizeError, ScopeKind, ScopeScan};
 use shell_contract::edge_insets::ScreenEdge;
 use shell_contract::orientation::DeviceOrientation;
 use shell_contract::safe_area::SafeAreaInsets;
@@ -70,6 +74,7 @@ pub struct CalibrationLayout {
     zones: CalibrationZones,
     menu_button_center: Point,
     carousel_center: Point,
+    /// Картинка, занимающая всю зону прибора ([`scope_contract::ScopePictureShape::FillsZone`]).
     scope_image_size: ScopeImageSize,
     scope_scan: ScopeScan,
 }
@@ -151,9 +156,16 @@ impl CalibrationLayout {
         self.eye.orientation()
     }
 
-    /// Размер картинки прибора в пикселях: ровно зона прибора, округлённая и зажатая в `1..=предел`.
+    /// Размер картинки, занимающей всю зону прибора: ровно зона, округлённая и зажатая в `1..=предел`. Так просят
+    /// приборы формы [`scope_contract::ScopePictureShape::FillsZone`]; для конкретного вида — [`Self::scope_image_size_for`].
     pub fn scope_image_size(&self) -> ScopeImageSize {
         self.scope_image_size
+    }
+
+    /// Размер картинки прибора вида `kind`: зона целиком или вписанный в неё квадрат — по форме вида. Источник
+    /// размера для запроса прибора и для рисования его картинки.
+    pub fn scope_image_size_for(&self, kind: ScopeKind) -> ScopeImageSize {
+        kind.picture_shape().fit_in(self.scope_image_size)
     }
 
     /// Как глаз читает показанную картинку слева направо в этом положении (поле запроса прибора).

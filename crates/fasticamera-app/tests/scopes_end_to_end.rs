@@ -33,7 +33,7 @@ mod viewfinder_rig;
 #[path = "../../render-loop/tests/vulkan_support/mod.rs"]
 mod vulkan_support;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use camera_screen::{Effect, ScreenAction, ScreenConfig, ScreenState, reduce};
 use fasticamera::scope_effects::{ScopeCounters as DeliveryCounters, ScopeEffects};
@@ -44,8 +44,8 @@ use render_loop::ui_overlay::{UiOverlayCommand, UiOverlayOutcome};
 use render_loop::viewfinder::{ScopeDiagnostics, ScopeResources, ViewfinderCommandOutcome};
 use scope_contract::{ScopeImageSize, ScopeIntent, ScopeKind, ScopeRequest, VectorscopeAxes};
 use scope_model::{
-    HorizontalOrder, ResolvedScope, SampleStride, ScopeCounters, ScopeModelSettings, ScopeRule, ShownCodes, accumulate,
-    render,
+    HorizontalOrder, ResolvedScope, SampleCount, SampleStride, ScopeCounters, ScopeModelSettings, ScopeRule,
+    ShownCodes, accumulate, render,
 };
 use ui_draw::color::Opacity;
 use ui_draw::draw_list::{DrawItem, DrawList, ImageClip, ImageFit, ImageItem, ImageSource, LiveImage};
@@ -77,8 +77,12 @@ impl RenderControl for RecordingRenderInbox {
     }
 }
 
-/// Источник UI, рисующий картинку прибора по центру (так её будет рисовать раздел калибровки в 14b).
-struct ScopePictureSource;
+/// Источник UI, рисующий картинку прибора по центру (так её будет рисовать раздел калибровки в 14b): элемент
+/// ровно размером картинки, как у экрана (иначе рендер не отдаст картинку: см. `scope_fit` в render-loop).
+struct ScopePictureSource {
+    /// Размер, которым экран рисует элемент прямо сейчас (тест меняет его, как смена прибора меняет размер зоны).
+    picture_size: Arc<Mutex<ScopeImageSize>>,
+}
 
 impl UiFrameSource for ScopePictureSource {
     fn name(&self) -> &'static str {
@@ -86,11 +90,12 @@ impl UiFrameSource for ScopePictureSource {
     }
 
     fn produce_frame(&mut self, request: &UiFrameRequest) -> Result<DrawList, UiFrameError> {
+        let picture_size = *self.picture_size.lock().expect("замок");
         let mut list = DrawList::new(LightDirection::from_angle_degrees(45.0));
         list.items.push(DrawItem::Image(ImageItem {
             source: ImageSource::Live(LiveImage::ColorScope),
             transform: Affine2::translate(request.logical_size.width * 0.5, request.logical_size.height * 0.5),
-            size_px: PxSize::new(request.logical_size.width * 0.5, request.logical_size.height * 0.25),
+            size_px: PxSize::new(picture_size.width() as f32, picture_size.height() as f32),
             fit: ImageFit::Stretch,
             clip: ImageClip::None,
             opacity: Opacity::OPAQUE,
@@ -221,7 +226,7 @@ fn gpu_counters(bench: &ViewfinderBench) -> ScopeCounters {
 }
 
 /// Эталон по картинке видоискателя, прочитанной с GPU (то, что показано на экране ЭТОГО кадра).
-fn reference(bench: &ViewfinderBench, scope: &ScopeRequest) -> (ScopeCounters, ResolvedScope) {
+fn reference(bench: &ViewfinderBench, scope: &ScopeRequest) -> (ScopeCounters, ResolvedScope, SampleCount) {
     settle(bench);
     let image = bench
         .backend
@@ -233,7 +238,8 @@ fn reference(bench: &ViewfinderBench, scope: &ScopeRequest) -> (ScopeCounters, R
     let model = small_model();
     let rule = ResolvedScope::resolve(scope, &model, isp_model::image::DisplayGamut::Srgb).expect("правило");
     let counters = accumulate(&shown, model.sample_stride, &rule as &dyn ScopeRule).expect("эталон");
-    (counters, rule)
+    let samples = SampleCount::for_window(shown.width(), shown.height(), model.sample_stride);
+    (counters, rule, samples)
 }
 
 /// Наибольшее расхождение премультиплицированных RGBA между GPU и эталоном.
@@ -249,13 +255,18 @@ fn worst_premultiplied_difference(gpu: &[[f32; 4]], cpu: &[[f32; 4]]) -> f32 {
         .fold(0.0, f32::max)
 }
 
-fn install_scope_screen(bench: &mut ViewfinderBench) {
+fn install_scope_screen(bench: &mut ViewfinderBench, picture_size: ScopeImageSize) -> Arc<Mutex<ScopeImageSize>> {
+    let shared_size = Arc::new(Mutex::new(picture_size));
+    let source = ScopePictureSource {
+        picture_size: Arc::clone(&shared_size),
+    };
     assert_eq!(
         bench
             .backend
-            .apply_ui_overlay_command(UiOverlayCommand::Install(Box::new(ScopePictureSource))),
+            .apply_ui_overlay_command(UiOverlayCommand::Install(Box::new(source))),
         UiOverlayOutcome::Applied
     );
+    shared_size
 }
 
 #[test]
@@ -270,7 +281,7 @@ fn a_screen_show_waveform_intent_gives_gpu_counters_of_the_shown_frame_and_a_dra
     let mut screen = ScreenToRender::new();
 
     // Порядок решения 14h: источник экрана ставится ПЕРВЫМ (его установка отзывает запросы), затем `Show`.
-    install_scope_screen(&mut bench);
+    install_scope_screen(&mut bench, scope.image_size);
     screen.dispatch(ScopeIntent::Show(scope));
     assert_eq!(screen.deliver_to(&mut bench), vec![ViewfinderCommandOutcome::Applied]);
     assert_eq!(scopes_of(&mut bench).requested, Some(scope));
@@ -284,7 +295,7 @@ fn a_screen_show_waveform_intent_gives_gpu_counters_of_the_shown_frame_and_a_dra
             "один проход на каждый новый кадр"
         );
         let gpu = gpu_counters(&bench);
-        let (cpu, rule) = reference(&bench, &scope);
+        let (cpu, rule, samples) = reference(&bench, &scope);
         assert_eq!(
             gpu, cpu,
             "кадр {shown}: счётчики GPU разошлись с эталоном по показанной картинке"
@@ -301,7 +312,7 @@ fn a_screen_show_waveform_intent_gives_gpu_counters_of_the_shown_frame_and_a_dra
             .read_scope_picture()
             .expect("чтение картинки прибора")
             .expect("картинка есть");
-        let expected = render(&cpu, &rule, &small_model().render, scope.image_size).expect("эталон показа");
+        let expected = render(&cpu, &rule, &small_model().render, scope.image_size, samples).expect("эталон показа");
         let worst = worst_premultiplied_difference(&picture.texels, expected.pixels());
         assert!(
             worst <= PICTURE_TOLERANCE,
@@ -377,15 +388,15 @@ fn a_screen_show_vectorscope_oklab_intent_makes_the_gpu_use_oklab_axes() {
     let ycbcr = request(ScopeKind::Vectorscope, VectorscopeAxes::YCbCrBt709);
     let mut screen = ScreenToRender::new();
 
-    install_scope_screen(&mut bench);
+    install_scope_screen(&mut bench, oklab.image_size);
     screen.dispatch(ScopeIntent::Show(oklab));
     assert_eq!(screen.deliver_to(&mut bench), vec![ViewfinderCommandOutcome::Applied]);
 
     for frame in 1..=scenes.len() {
         bench.show_next_frame();
         let gpu = gpu_counters(&bench);
-        let (expected_oklab, _) = reference(&bench, &oklab);
-        let (expected_ycbcr, _) = reference(&bench, &ycbcr);
+        let (expected_oklab, _, _) = reference(&bench, &oklab);
+        let (expected_ycbcr, _, _) = reference(&bench, &ycbcr);
         assert_eq!(gpu, expected_oklab, "кадр {frame}: GPU считает по осям OKLab");
         assert_ne!(
             expected_oklab, expected_ycbcr,
@@ -394,5 +405,74 @@ fn a_screen_show_vectorscope_oklab_intent_makes_the_gpu_use_oklab_axes() {
         assert_ne!(gpu, expected_ycbcr, "кадр {frame}: это не Cb/Cr");
     }
     assert_eq!(scopes_of(&mut bench).requested, Some(oklab));
+    bench.finish();
+}
+
+/// Смена прибора меняет размер картинки (waveform — вся зона, вектороскоп — квадрат): пока новая картинка не
+/// записана, UI-кадр рисует элемент НОВОГО размера, а у рендера лежит картинка СТАРОГО. Растянутая картинка —
+/// овал вместо круга, поэтому такой кадр элемент не рисует (`live_images_missing`), а когда картинка нового размера
+/// готова — рисует снова.
+#[test]
+fn a_scope_change_to_another_picture_size_never_draws_a_stretched_stale_picture() {
+    let scenes = vec![neutral_gray(); 8];
+    let Some(mut bench) = ViewfinderBench::start_with_scenes(&config(), &scenes) else {
+        return;
+    };
+    let waveform = request(ScopeKind::Waveform, VectorscopeAxes::YCbCrBt709);
+    let square = ScopeRequest {
+        image_size: ScopeImageSize::try_new(96, 96).expect("размер"),
+        ..request(ScopeKind::Vectorscope, VectorscopeAxes::YCbCrBt709)
+    };
+    let mut screen = ScreenToRender::new();
+    let screen_size = install_scope_screen(&mut bench, waveform.image_size);
+    screen.dispatch(ScopeIntent::Show(waveform));
+    assert_eq!(screen.deliver_to(&mut bench), vec![ViewfinderCommandOutcome::Applied]);
+
+    // Прибор показан: каждый кадр UI рисует картинку.
+    bench.show_next_frame();
+    bench.show_next_frame();
+    let steady = ui_report(&mut bench);
+    assert!(steady.live_images_drawn >= 1, "картинка рисуется: {steady:?}");
+    assert_eq!(steady.live_images_missing, 0);
+
+    // Экран уже рисует квадрат, а рендер ещё держит прямоугольник 160×96: кадр картинку не рисует.
+    *screen_size.lock().expect("замок") = square.image_size;
+    bench.show_next_frame();
+    let mismatched = ui_report(&mut bench);
+    assert_eq!(
+        mismatched.live_images_drawn, steady.live_images_drawn,
+        "растянутая картинка не нарисована"
+    );
+    assert!(
+        mismatched.live_images_missing > steady.live_images_missing,
+        "{mismatched:?}"
+    );
+    assert_eq!(
+        (mismatched.frames_failed, mismatched.source_failures),
+        (0, 0),
+        "пропуск — не сбой"
+    );
+
+    // Рендер получает запрос квадрата, готовит картинку нового размера и записывает её: рисуется снова.
+    screen.dispatch(ScopeIntent::Show(square));
+    assert_eq!(screen.deliver_to(&mut bench), vec![ViewfinderCommandOutcome::Applied]);
+    for _ in 0..3 {
+        bench.show_next_frame();
+    }
+    let recovered = ui_report(&mut bench);
+    assert!(
+        recovered.live_images_drawn > mismatched.live_images_drawn,
+        "картинка нового размера нарисована: {recovered:?}"
+    );
+    let picture = bench
+        .backend
+        .read_scope_picture()
+        .expect("чтение картинки прибора")
+        .expect("картинка есть");
+    assert_eq!(
+        (picture.size.width(), picture.size.height()),
+        (96, 96),
+        "рисуется картинка нового, квадратного размера"
+    );
     bench.finish();
 }

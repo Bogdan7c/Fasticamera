@@ -333,8 +333,8 @@ fn calibrate_mode_asks_the_render_for_a_scope_sized_by_the_layout_and_leaving_hi
     };
     assert_eq!(
         request.image_size,
-        layout.scope_image_size(),
-        "размер — из раскладки раздела"
+        layout.scope_image_size_for(request.kind),
+        "размер — из раскладки раздела по виду прибора"
     );
     assert_eq!(request.scan, layout.scope_scan(), "взгляд — по ориентации телефона");
     assert_eq!(rig.scope_intents.len(), 1, "запрос один: повторов нет");
@@ -351,7 +351,10 @@ fn calibrate_mode_asks_the_render_for_a_scope_sized_by_the_layout_and_leaving_hi
         rotated_request.scan, request.scan,
         "взгляд сменился вместе с ориентацией"
     );
-    assert_eq!(rotated_request.image_size, rotated.scope_image_size());
+    assert_eq!(
+        rotated_request.image_size,
+        rotated.scope_image_size_for(rotated_request.kind)
+    );
 
     // Выход из режима скрывает прибор.
     rig.send(ScreenAction::ModeSelected(CaptureMode::Photo));
@@ -494,21 +497,51 @@ fn calibrate_scope_counters_equal_the_cpu_reference_of_the_shown_frame_and_follo
         "ручка сдвинула счётчики: прибор следует за видом"
     );
 
-    // 4. Смена вида прибора на экране: рендер получает новый запрос, счётчики считаются по нему.
+    // 4. Смена вида прибора на экране: рендер получает новый запрос, счётчики считаются по нему. RGB waveform и
+    // parade — одно правило трёх плоскостей, счётчики у них одни (отличается только способ рисования), поэтому
+    // парад сверяется с эталоном, а «считает иначе» проверяется на вектороскопе.
     rig.send(ScreenAction::ScopeKindSelected(ScopeKind::RgbParade));
     rig.frames(4);
     let parade = live_scope_request(&mut rig);
     assert_eq!(parade.kind, ScopeKind::RgbParade, "рендер держит запрос парада");
     assert_ne!(parade, request, "запрос сменился");
+    assert_eq!(
+        parade.image_size, request.image_size,
+        "waveform и parade занимают всю зону: размер картинки тот же"
+    );
     let parade_gpu = gpu_scope_counters(&rig);
     assert_eq!(
         parade_gpu,
         cpu_scope_counters(&rig, &parade),
         "парад: GPU разошёлся с эталоном парада"
     );
-    assert_ne!(
+    assert_eq!(
         parade_gpu, after_drag,
-        "парад считает иначе, чем прежний вид (кадр тот же)"
+        "RGB waveform и parade считают одно и то же правило трёх плоскостей"
+    );
+
+    rig.send(ScreenAction::ScopeKindSelected(ScopeKind::Vectorscope));
+    rig.frames(4);
+    let vectorscope = live_scope_request(&mut rig);
+    assert_eq!(vectorscope.kind, ScopeKind::Vectorscope);
+    assert_eq!(
+        vectorscope.image_size.width(),
+        vectorscope.image_size.height(),
+        "вектороскоп просит квадрат"
+    );
+    assert_ne!(
+        vectorscope.image_size, request.image_size,
+        "квадрат отличается от прямоугольной зоны"
+    );
+    let vectorscope_gpu = gpu_scope_counters(&rig);
+    assert_eq!(
+        vectorscope_gpu,
+        cpu_scope_counters(&rig, &vectorscope),
+        "вектороскоп: GPU разошёлся с эталоном"
+    );
+    assert_ne!(
+        vectorscope_gpu, after_drag,
+        "вектороскоп считает иначе, чем прежний вид (кадр тот же)"
     );
     rig.finish();
 }

@@ -1,7 +1,7 @@
 //! Тесты геометрии раздела калибровки: зоны покрывают экран без щелей и перекрытий в обеих ориентациях, картинка
 //! прибора равна зоне в пикселях, развёртка и поворот соответствуют положению телефона, перевод глаз ↔ поверхность.
 
-use scope_contract::{MAX_SCOPE_IMAGE_SIDE_PX, ScopeScan};
+use scope_contract::{MAX_SCOPE_IMAGE_SIDE_PX, ScopeKind, ScopePictureShape, ScopeScan};
 use shell_contract::edge_insets::RawEdgeInsetsPx;
 use shell_contract::orientation::DeviceOrientation;
 use shell_contract::safe_area::SafeAreaInsets;
@@ -142,6 +142,50 @@ fn scope_image_size_equals_the_scope_zone_in_pixels_for_each_orientation() {
     assert_ne!(sizes[0], sizes[1]);
     assert_eq!(sizes[0], sizes[2]);
     assert_eq!(sizes[1], sizes[3]);
+}
+
+#[test]
+fn each_scope_kind_gets_the_picture_size_of_its_shape_zone_or_inscribed_square() {
+    for orientation in ALL_ORIENTATIONS {
+        let layout = calibration_layout(LayoutPolicy::FollowsOrientation, orientation);
+        let zone = layout.scope_image_size();
+        for kind in ScopeKind::ALL {
+            let size = layout.scope_image_size_for(kind);
+            match kind.picture_shape() {
+                // Waveform и parade занимают всю зону.
+                ScopePictureShape::FillsZone => assert_eq!(size, zone, "{kind:?} {orientation:?}"),
+                // Вектороскоп — квадрат с меньшей стороной зоны: круг не превращается в овал.
+                ScopePictureShape::Square => {
+                    let side = zone.width().min(zone.height());
+                    assert_eq!((size.width(), size.height()), (side, side), "{kind:?} {orientation:?}");
+                    assert_ne!(
+                        (size.width(), size.height()),
+                        (zone.width(), zone.height()),
+                        "зона не квадратная: квадрат отличается от неё"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn square_picture_respects_the_side_limit_of_the_zone_picture() {
+    let config = CalibrationConfig {
+        max_scope_image_side_px: 100,
+        ..CalibrationConfig::default()
+    };
+    let layout = screen()
+        .calibration_layout(
+            &config,
+            &WidgetLayoutConfig::default().bottom,
+            LayoutPolicy::FollowsOrientation,
+            DeviceOrientation::Portrait,
+            SafeAreaInsets::NONE,
+        )
+        .expect("раскладка");
+    let square = layout.scope_image_size_for(ScopeKind::Vectorscope);
+    assert_eq!((square.width(), square.height()), (100, 100));
 }
 
 #[test]

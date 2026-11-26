@@ -342,7 +342,12 @@ impl CameraPipelines {
         // Живые картинки кадра: картинка цветового прибора (14h), если она записана хотя бы раз. Это верно и для кадра
         // перекомпоновки: картинка последнего нового кадра остаётся валидной и в раскладке «чтение фрагментом».
         let scope_entries;
-        let live_images = match self.scopes.picture_for_ui() {
+        // Картинка отдаётся, только если каждый элемент прибора кадра нарисован ровно её размером (см. `scope_fit`).
+        let live_images = match self
+            .scopes
+            .picture_for_ui()
+            .filter(|view| scope_fit::scope_items_fit_picture(draw_list, view))
+        {
             Some(view) => {
                 scope_entries = [(LiveImage::ColorScope, LiveImageInput { view })];
                 // Слот держит набор приборов, пока GPU не закончит этот кадр.
@@ -382,6 +387,7 @@ impl CameraPipelines {
     }
 }
 
+mod scope_fit;
 mod tick;
 
 #[cfg(test)]

@@ -5,6 +5,7 @@
 //! стоит ровно на своей зоне и повёрнут вместе с разделом; PHOTO в режиме CALIBRATE не рисуется и не нажимается.
 
 use look_contract::{EditState, GlobalKnob, LookControl, LookFacts, LookIntent, LookSettings, ToneBaseModel};
+use scope_contract::{ScopeIntent, ScopeKind};
 use shell_contract::orientation::DeviceOrientation;
 use shell_contract::touch::TouchPhase;
 use ui_core::geometry::{Point, Rect, Vector};
@@ -118,6 +119,58 @@ pub(super) fn scope_images(list: &DrawList) -> Vec<&ui_draw::draw_list::ImageIte
 }
 
 // ----- прибор и чистая зона -----------------------------------------------------------------------------------------
+
+#[test]
+fn vectorscope_picture_is_a_square_centred_in_the_zone_and_matches_its_request() {
+    let mut rig = portrait(look_facts());
+    rig.act(ScreenAction::ScopeKindSelected(ScopeKind::Vectorscope));
+    rig.run(400);
+    let requested = rig
+        .effects()
+        .into_iter()
+        .find_map(|effect| match effect {
+            Effect::Scopes(ScopeIntent::Show(request)) => Some(request),
+            _ => None,
+        })
+        .expect("смена прибора просит у рендера новый прибор");
+    let list = rig.frame().clone();
+    let images = scope_images(&list);
+    assert_eq!(images.len(), 1, "ровно одна картинка прибора");
+    let image = images[0];
+    let layout = *rig.screen.state().calibration().layout().unwrap();
+    // Элемент рисования — квадрат со стороной меньшей стороны зоны и ровно размером запроса (1:1, без растяжения).
+    assert_eq!(image.size_px.width, image.size_px.height, "квадрат, а не овал");
+    assert_eq!(
+        (image.size_px.width as u32, image.size_px.height as u32),
+        (requested.image_size.width(), requested.image_size.height())
+    );
+    let zone_px_size = (layout.scope_image_size().width(), layout.scope_image_size().height());
+    assert_eq!(image.size_px.width as u32, zone_px_size.0.min(zone_px_size.1));
+    assert!(
+        image.size_px.width < zone_px_size.1 as f32,
+        "квадрат меньше высоты зоны 540×743"
+    );
+    // Картинка стоит по центру зоны.
+    let zone = layout.zones().scope;
+    assert!(
+        near(image.transform.tx, px(zone.center().x), 0.6) && near(image.transform.ty, px(zone.center().y), 0.6),
+        "центр квадрата на центре зоны: ({}, {})",
+        image.transform.tx,
+        image.transform.ty
+    );
+}
+
+#[test]
+fn the_first_page_title_names_the_rgb_waveform_and_the_old_title_is_gone() {
+    let mut rig = portrait(look_facts());
+    let list = rig.frame().clone();
+    assert_eq!(text_count_of(&list, "RGB WAVEFORM", TextRoleKind::Caption), 1);
+    assert_eq!(
+        text_count_of(&list, "WAVEFORM", TextRoleKind::Caption),
+        0,
+        "прежней подписи нет"
+    );
+}
 
 #[test]
 fn scope_image_lies_exactly_on_the_scope_zone_with_its_requested_size() {

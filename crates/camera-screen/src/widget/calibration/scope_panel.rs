@@ -1,8 +1,8 @@
 //! Зона прибора справа снизу (решение 203): стеклянная панель, поверх неё картинка прибора с GPU, подпись
 //! прибора и точки-страницы. Горизонтальный свайп (в глазных осях) листает приборы.
 //!
-//! Картинку просят ровно размером зоны в пикселях (`CalibrationLayout::scope_image_size`), поэтому она кладётся
-//! 1:1 на рамку зоны без фильтрации: `ImageFit::Stretch`, без обрезки, в системе повёрнутого корня раздела.
+//! Картинку просят размером зоны в пикселях (`CalibrationLayout::scope_image_size_for`: вся зона или вписанный
+//! квадрат вектороскопа), поэтому она кладётся 1:1 по центру зоны без фильтрации: `ImageFit::Stretch`, без обрезки, в системе повёрнутого корня раздела.
 //! Листание не зацикливается: за первым и последним прибором свайп ничего не делает (точки-страницы читаются
 //! как линейный ряд) — `[invented]`.
 
@@ -28,7 +28,7 @@ use crate::widget::{Ctx, Outputs, single_member_group};
 /// Подпись прибора заглавными.
 fn scope_title(kind: ScopeKind) -> &'static str {
     match kind {
-        ScopeKind::Waveform => "WAVEFORM",
+        ScopeKind::Waveform => "RGB WAVEFORM",
         ScopeKind::RgbParade => "RGB PARADE",
         ScopeKind::Vectorscope => "VECTORSCOPE",
     }
@@ -125,7 +125,9 @@ impl ScopePanel {
             return Ok(());
         };
         if let Some(layout) = ctx.state.calibration().layout() {
-            let size = layout.scope_image_size();
+            // Картинка нужного вида (waveform — вся зона, вектороскоп — квадрат) стоит по центру зоны: узел зоны —
+            // её центр, `paint.at(0, 0)`. Размер тот же, что в запросе прибора, поэтому она кладётся 1:1.
+            let size = layout.scope_image_size_for(ctx.state.calibration().scope_kind());
             layers.push(
                 Layer::Content,
                 DrawItem::Image(ImageItem {
