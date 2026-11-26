@@ -144,6 +144,9 @@ pub(crate) const PHOTO_BUTTON_MATERIAL: PanelMaterial = PanelMaterial::Glass(Gla
 /// тёмная полупрозрачная поверхность без стекла, чтобы кадр раздела не строил пирамиду размытия.
 pub(crate) const SECTION_PANEL_MATERIAL: PanelMaterial = PanelMaterial::Surface(SurfaceRole::Panel);
 
+/// Материал подложки под следом прибора раздела: та же поверхность, плотнее панелей (решения 257, 263).
+pub(crate) const SECTION_BACKING_MATERIAL: PanelMaterial = PanelMaterial::Surface(SurfaceRole::Backing);
+
 /// Один член выбранного материала и преобразование его содержимого: стекло или поверхность без стекла (14m).
 ///
 /// Материал задаёт владелец экрана (PHOTO — стекло, раздел калибровки — поверхность), а не сам виджет:

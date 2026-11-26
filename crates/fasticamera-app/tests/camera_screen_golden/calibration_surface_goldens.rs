@@ -4,11 +4,7 @@
 //! * кадры раздела (обе ориентации, SCALES и WHEELS, с листом меню, с карточкой пресетов, с плашкой сбоя) не строят
 //!   пирамиду размытия (`PyramidOutcome::NotNeeded`) и не содержат групп стекла, а возврат в PHOTO их возвращает;
 //! * пиксель панели над однородным фоном равен цвету и плотности из конфига (в допуске квантования цели);
-//! * подложка плотнее панели.
-//!
-//! Панель прибора (`scope_panel.rs`) переводит на подложку пакет P1 прибора; пока её стекло убирается из списка перед
-//! рендером (`without_scope_panel_glass`), чтобы остальной раздел проверялся уже сейчас. Когда панель прибора станет
-//! поверхностью, фильтр ничего не уберёт и проверка станет строгой без правки теста.
+//! * подложка плотнее панели — и на синтетических плашках, и на настоящей панели прибора раздела.
 
 use camera_screen::ScreenAction;
 use camera_screen::modes::CaptureMode;
@@ -38,45 +34,9 @@ const QUANTIZATION_TOLERANCE: f32 = 0.012;
 /// Серый однородного фона под экраном.
 const BACKDROP_GRAY: f32 = 0.5;
 
-/// Список без стекла панели прибора (см. заголовок модуля).
-fn without_scope_panel_glass(driver: &ScreenDriver) -> DrawList {
-    let layout = *driver
-        .screen()
-        .state()
-        .calibration()
-        .layout()
-        .expect("раскладка раздела");
-    let (left, top, right, bottom) = eye_zone_window(driver, layout.zones().scope);
-    let (left, top, right, bottom) = (
-        left as f32 - 3.0,
-        top as f32 - 3.0,
-        right as f32 + 3.0,
-        bottom as f32 + 3.0,
-    );
-    let source = driver.list();
-    let mut filtered = DrawList::new(source.light);
-    filtered.items = source
-        .items
-        .iter()
-        .filter(|item| match item {
-            DrawItem::Glass(group) => !group.members.iter().all(|member| {
-                member.shape_bounds_px().is_some_and(|bounds| {
-                    bounds.origin.x >= left
-                        && bounds.max_x() <= right
-                        && bounds.origin.y >= top
-                        && bounds.max_y() <= bottom
-                })
-            }),
-            _ => true,
-        })
-        .cloned()
-        .collect();
-    filtered
-}
-
 /// Рисует список раздела и проверяет судьбу пирамиды: размытие не нужно, групп стекла нет.
 fn assert_section_needs_no_blur(rig: &mut RenderRig, driver: &ScreenDriver, context: &str) {
-    let list = without_scope_panel_glass(driver);
+    let list = driver.list().clone();
     render_calibration_list(rig, &list, ScopeImage::Absent);
     let report = rig.last_report();
     assert_eq!(
@@ -179,7 +139,7 @@ fn panel_pixel_over_a_uniform_backdrop_is_the_configured_colour_and_density() {
     let driver = calibration(DeviceOrientation::Portrait);
     let empty = DrawList::new(LightDirection::from_angle_degrees(45.0));
     let bare = render_calibration_list(&mut rig, &empty, ScopeImage::Absent);
-    let on_surface = render_calibration_list(&mut rig, &without_scope_panel_glass(&driver), ScopeImage::Absent);
+    let on_surface = render_calibration_list(&mut rig, &driver.list().clone(), ScopeImage::Absent);
 
     // Фон действительно однородный (иначе «известный фон» — пустые слова).
     let corner = bare.at(WIDTH_PX - 8, 8);
@@ -205,6 +165,23 @@ fn panel_pixel_over_a_uniform_backdrop_is_the_configured_colour_and_density() {
     assert!(
         wrong < share * 0.2,
         "плотность панели отличима от плотности подложки: {wrong} против {share}"
+    );
+    // Панель прибора — подложка (решение 257): без картинки прибора видна только заливка плотности подложки.
+    let scope = eye_zone_window(
+        &driver,
+        driver.screen().state().calibration().layout().unwrap().zones().scope,
+    );
+    let scope_inner = (scope.0 + 24, scope.1 + 24, scope.2 - 24, scope.3 - 24);
+    let backing_share = share_matching_surface(&on_surface, &bare, scope_inner, tokens.surface.backing_density);
+    assert!(
+        backing_share > 0.6,
+        "пиксели панели прибора = фон·(1−{d}) + заливка·{d}: совпала доля {backing_share}",
+        d = tokens.surface.backing_density
+    );
+    let as_panel = share_matching_surface(&on_surface, &bare, scope_inner, tokens.surface.panel_density);
+    assert!(
+        as_panel < backing_share * 0.2,
+        "панель прибора плотнее панелей: {as_panel} против {backing_share}"
     );
     drop(rig);
     assert_no_validation_errors(&context);

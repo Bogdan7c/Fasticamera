@@ -12,7 +12,7 @@ use ui_core::gesture::{GestureData, GestureEvent, GestureState, PanSpec, Recogni
 use ui_core::id::NodeId;
 use ui_draw::draw_list::{DrawItem, ImageClip, ImageFit, ImageItem, ImageSource, LiveImage, PressState};
 use ui_draw::geometry::PxSize;
-use ui_kit::tokens::{GlassRole, TextRoleKind};
+use ui_kit::tokens::TextRoleKind;
 use ui_kit::view::GlassShape;
 
 use super::paint::NodePaint;
@@ -23,7 +23,7 @@ use crate::widget::intent::ScreenGesture;
 use crate::widget::kit::SceneKit;
 use crate::widget::layers::{DrawLayers, Layer, VisualIndex};
 use crate::widget::text_runs::TextRuns;
-use crate::widget::{Ctx, Outputs, single_member_group};
+use crate::widget::{Ctx, Outputs, SECTION_BACKING_MATERIAL, single_member_material};
 
 /// Подпись прибора заглавными.
 fn scope_title(kind: ScopeKind) -> &'static str {
@@ -110,9 +110,11 @@ impl ScopePanel {
             return Ok(());
         };
         let config = &ctx.config.calibration.widgets;
-        let (group, _host) = single_member_group(
+        // Подложка под следом — та же поверхность, что у панелей раздела, но плотнее (решения 257, 263):
+        // цвет сцены не подмешивается в цвет следа. Слой — прежний слой панелей: след и подписи поверх.
+        let (backing, _host) = single_member_material(
             ctx,
-            GlassRole::Panel,
+            SECTION_BACKING_MATERIAL,
             GlassShape::RoundedRect {
                 corner_radius_pt: config.panel_corner_radius_pt,
             },
@@ -120,7 +122,7 @@ impl ScopePanel {
             PressState::RELEASED,
             "calib_scope",
         )?;
-        layers.push(Layer::Glass, DrawItem::Glass(group));
+        layers.push(Layer::Glass, backing);
         let Some(paint) = NodePaint::new(ctx, placement, 1.0)? else {
             return Ok(());
         };

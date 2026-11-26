@@ -35,26 +35,11 @@ fn surfaces(list: &DrawList) -> Vec<&ShapeItem> {
         .collect()
 }
 
-/// Группы стекла кадра, кроме панели прибора.
-///
-/// Панель прибора (`scope_panel.rs`) переводит на подложку пакет P1 прибора (в этом пакете файл не правится), поэтому
-/// её стекло пока допускается. Когда она станет поверхностью, исключение даёт пустой набор и проверка становится
-/// строгой «стекла нет вообще» без правки теста.
-fn glass_groups_outside_scope_panel(rig: &Rig, list: &DrawList) -> usize {
-    let layout = *rig.screen.state().calibration().layout().expect("раскладка раздела");
-    let (left, top, right, bottom) = zone_px(rig, layout.zones().scope);
+/// Группы стекла кадра (включая вложенные в обрезку). В кадре раздела их нет ни одной: панель прибора тоже
+/// поверхность (подложка, решения 257, 263).
+fn glass_groups(list: &DrawList) -> usize {
     list.leaf_items()
-        .filter(|item| match item {
-            DrawItem::Glass(group) => !group.members.iter().all(|member| {
-                member.shape_bounds_px().is_some_and(|bounds| {
-                    bounds.origin.x >= left - 3.0
-                        && bounds.max_x() <= right + 3.0
-                        && bounds.origin.y >= top - 3.0
-                        && bounds.max_y() <= bottom + 3.0
-                })
-            }),
-            _ => false,
-        })
+        .filter(|item| matches!(item, DrawItem::Glass(_)))
         .count()
 }
 
@@ -76,7 +61,7 @@ fn no_glass_in_any_section_frame_state_and_orientation() {
             let checked_frames = std::cell::Cell::new(0);
             let check = |rig: &mut Rig, context: &str| {
                 let list = rig.frame().clone();
-                let stray = glass_groups_outside_scope_panel(rig, &list);
+                let stray = glass_groups(&list);
                 assert_eq!(stray, 0, "{orientation:?} {view:?} {context}: в кадре раздела стекло");
                 checked_frames.set(checked_frames.get() + 1);
             };
@@ -125,11 +110,7 @@ fn no_glass_while_the_phone_turns_inside_the_section() {
         for _ in 0..60 {
             rig.run(16);
             let list = rig.last.clone();
-            assert_eq!(
-                glass_groups_outside_scope_panel(&rig, &list),
-                0,
-                "поворот к {target:?}: в кадре раздела стекло"
-            );
+            assert_eq!(glass_groups(&list), 0, "поворот к {target:?}: в кадре раздела стекло");
             frames += 1;
         }
     }
@@ -145,7 +126,7 @@ fn the_held_frame_veil_still_draws_frost_glass_in_the_section() {
     let mut rig = calibrating(look_facts(), DeviceOrientation::Portrait);
     rig.run(100);
     let calm = rig.frame().clone();
-    assert_eq!(glass_groups_outside_scope_panel(&rig, &calm), 0, "в покое стекла нет");
+    assert_eq!(glass_groups(&calm), 0, "в покое стекла нет");
     rig.backdrop = ui_draw::frame_source::BackdropContinuity::HeldLastFrame { since: ms(rig.now_ms) };
     rig.run(32);
     let held = rig.last.clone();
@@ -174,7 +155,7 @@ fn photo_keeps_its_glass_and_the_section_returns_to_surface_without_a_mixed_fram
         rig.run(16);
         let list = rig.last.clone();
         let (glass, surface) = (photo_glass(&list), surfaces(&list).len());
-        let in_photo = glass_groups_outside_scope_panel_or_all(&rig, &list) > 0;
+        let in_photo = glass_groups(&list) > 0;
         assert!(
             !(in_photo && surface > 0),
             "смешанный кадр: стекло PHOTO ({glass}) вместе с поверхностями раздела ({surface})"
@@ -189,30 +170,25 @@ fn photo_keeps_its_glass_and_the_section_returns_to_surface_without_a_mixed_fram
     assert!(surfaces(&list).is_empty(), "в PHOTO поверхностей раздела нет");
 }
 
-/// Для PHOTO раскладки раздела уже нет, поэтому «стекло вне прибора» там считается как «любое стекло».
-fn glass_groups_outside_scope_panel_or_all(rig: &Rig, list: &DrawList) -> usize {
-    if rig.screen.state().calibration().layout().is_some() {
-        glass_groups_outside_scope_panel(rig, list)
-    } else {
-        list.leaf_items()
-            .filter(|item| matches!(item, DrawItem::Glass(_)))
-            .count()
-    }
-}
-
 #[test]
 fn knobs_column_and_capsule_are_surfaces_with_configured_density() {
     let mut rig = calibrating(look_facts(), DeviceOrientation::Portrait);
     let list = rig.frame().clone();
     let tokens = UiKitTokens::default();
     let found = surfaces(&list);
-    // Колонка ручек, капсула режимов и кнопка меню — поверхности плотности панели.
-    assert!(found.len() >= 3, "колонка, капсула и кнопка меню: {}", found.len());
-    for surface in &found {
+    // Колонка ручек, капсула режимов и кнопка меню — поверхности плотности панели; панель прибора — подложка.
+    let (backings, panels): (Vec<&ShapeItem>, Vec<&ShapeItem>) = found
+        .iter()
+        .partition(|surface| surface.fill.a == tokens.surface.backing_density);
+    assert!(panels.len() >= 3, "колонка, капсула и кнопка меню: {}", panels.len());
+    assert_eq!(backings.len(), 1, "подложка под следом прибора — ровно одна");
+    for surface in &panels {
         assert_eq!(
             surface.fill.a, tokens.surface.panel_density,
             "плотность панели из конфига"
         );
+    }
+    for surface in &found {
         assert!(surface.shadow.is_none(), "тени у поверхности нет");
     }
 }
@@ -293,5 +269,5 @@ fn presets_card_is_a_surface_too_and_never_glass() {
     open_presets_card(&mut rig);
     let list = rig.frame().clone();
     assert!(surfaces(&list).len() > before, "карточка добавила свою поверхность");
-    assert_eq!(glass_groups_outside_scope_panel(&rig, &list), 0);
+    assert_eq!(glass_groups(&list), 0);
 }
