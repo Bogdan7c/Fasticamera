@@ -123,6 +123,19 @@ mod tests {
     }
 
     #[test]
+    fn centre_is_neutral_without_touching_the_angle_table_even_if_the_table_is_poisoned() {
+        // Ветка «центр» стоит ДО вычисления угла: на GPU atan(0, 0) не определён и может дать NaN. Отравленная
+        // таблица (NaN во всех записях) доказывает, что центр её не читает; клетка рядом с центром — читает.
+        let poisoned = PositionPaletteEntry {
+            edge_colour: [f32::NAN; 3],
+            edge_radius_cells: f32::NAN,
+        };
+        let palette = PositionPalette::new([poisoned; POSITION_PALETTE_ANGLES], [0.5; 3], 16.5);
+        assert_eq!(palette.colour_at(16, 16), [0.5; 3]);
+        assert!(palette.colour_at(17, 16).iter().any(|channel| channel.is_nan()));
+    }
+
+    #[test]
     fn colour_walks_from_neutral_to_edge_colour_along_the_radius() {
         let palette = ramp_palette();
         // Вправо от центра, угол 0: запись 0 (красный 0, зелёный 1, синий 0); пять клеток из десяти — полпути.
