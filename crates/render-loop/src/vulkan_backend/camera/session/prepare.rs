@@ -74,6 +74,8 @@ impl CameraSession {
                 // Следующий кадр — уже другой поток: подсказки и параметры ISP прежнего потока ему
                 // чужие (решение 42), история шумодава стенда V4 его не смешает.
                 self.params.forget_stream();
+                // Упоры забытого потока чужие: на доске снова «неизвестно».
+                self.look_stops.sync(&self.params);
                 self.white.forget_stream();
                 if let Some(exposure) = self.exposure.as_mut() {
                     exposure.forget_stream();
@@ -133,6 +135,8 @@ impl CameraSession {
             .params
             .prepare_with_exposure_gain(lease.passport(), plan.white, exposure_gain, gamut);
         self.viewfinder.note_params(&decision);
+        // Упоры считаются в кэше при смене входов; на доску уходят, только если изменились.
+        self.look_stops.sync(&self.params);
         if let ParamsOutcome::Unavailable(reason) = &decision.outcome {
             tracing::debug!(target: LOG_TARGET, ?reason, "параметров ISP нет: кадр не показывается");
             lease.release_unused();

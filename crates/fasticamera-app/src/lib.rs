@@ -69,6 +69,7 @@ pub mod look_startup;
 #[cfg(test)]
 mod look_test_support;
 pub mod look_wheel_ring;
+pub mod look_white_stops;
 #[cfg(test)]
 mod operator_prompt_fake;
 #[cfg(test)]

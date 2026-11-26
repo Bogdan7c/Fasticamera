@@ -20,6 +20,7 @@ use camera_core::backend::BackendFactory;
 use camera_core::flash_status::FlashStillObserver;
 use camera_core::white::WhiteWiring;
 use camera_core::{AppPresence, CameraRuntime, LensWiring, ThreeAWiring};
+use look_contract::LookWhiteStopsBoard;
 use render_loop::viewfinder::WhiteLinks;
 
 use crate::auto_exposure_link::{
@@ -55,6 +56,9 @@ pub struct CameraLinks {
     /// Показания источников белого (WB33): рендер пишет, экран читает («≈ 3100» на кнопке источника). Владельцу
     /// белого они не идут: показание — не ответ.
     pub white_readings: WhiteReadingBoard,
+    /// Упоры ручек теплоты и оттенка (решения 288, 293): рендер пишет при смене белой сцены или этих ручек, приложение
+    /// читает для экрана калибровки ([`crate::look_white_stops::LookWhiteStopsReader`]). Движку они не идут.
+    pub look_white_stops: LookWhiteStopsBoard,
     /// Открытая память белой (файл в папке приложения): движок забирает её один раз при сборке. Пустая — без
     /// сохранения (тесты, стенды, режим `none`).
     pub white_memory: WhiteMemoryHandoff,
@@ -101,6 +105,7 @@ impl CameraLinks {
                 directives: self.white_directives.clone(),
                 answers: self.white_answers.clone(),
                 readings: self.white_readings.clone(),
+                look_white_stops: self.look_white_stops.clone(),
                 sources: Default::default(),
             },
             auto_exposure: self.auto_exposure.render_end(exposure),
@@ -180,6 +185,7 @@ fn spawn_engine(config: &CameraConfig, backend: CameraBackendParts, links: Camer
     let wiring = three_a_wiring(config, &links, choice.effective);
     let white_memory_diagnostics = links.white_memory.diagnostics().clone();
     let white_readings = links.white_readings.clone();
+    let look_white_stops = links.look_white_stops.clone();
     let lens_intents = links.lens_intents.clone();
     match CameraRuntime::spawn_with_lens_wiring(
         config.engine.clone(),
@@ -214,6 +220,7 @@ fn spawn_engine(config: &CameraConfig, backend: CameraBackendParts, links: Camer
                 .with_lens_intents(lens_intents)
                 .with_white_memory(white_memory_diagnostics)
                 .with_white_readings(white_readings)
+                .with_look_white_stops(look_white_stops)
         }
         Err(error) => {
             CameraServices::unavailable(format!("движок камеры не запущен: {error}"), config.scenarios.clone())

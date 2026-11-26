@@ -19,6 +19,7 @@ mod recipe;
 mod settings;
 mod tone_base;
 mod wheels;
+mod white_stops;
 
 pub use active::{ActiveLook, EditState};
 pub use bands::{BandAdjustment, BandAdjustments, BandAdjustmentsError, HueBandId, HueBandIdError};
@@ -37,3 +38,6 @@ pub use recipe::LookRecipe;
 pub use settings::LookSettings;
 pub use tone_base::ToneBaseModel;
 pub use wheels::{ColorWheel, ColorWheels, WheelPush, WheelPushError, WheelZone};
+pub use white_stops::{
+    KnobSideStops, KnobStop, KnobTravelStops, LookWhiteStops, LookWhiteStopsBoard, StopFraction, StopFractionError,
+};

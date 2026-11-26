@@ -60,6 +60,7 @@ use super::exposure::{AutoExposureParts, AutoExposureSetupError, ExposureRunner}
 use super::headroom_bench::{BenchSubmit, HeadroomBenchParts, HeadroomBenchRunner, HeadroomFrame};
 use super::isp_params::IspParamsCache;
 use super::lease::{FrameChange, LeaseLedger};
+use super::look_stops_publisher::LookStopsPublisher;
 use super::ownership::OwnershipPlan;
 use super::pipelines::{CameraPipelines, IspPresentation};
 use super::settings::ViewfinderSettings;
@@ -192,6 +193,8 @@ pub struct CameraSession {
     history_capacity: usize,
     settings: ViewfinderSettings,
     params: IspParamsCache,
+    /// Писатель доски упоров ручек теплоты и оттенка (решения 288, 293): после подготовки параметров кадра.
+    look_stops: LookStopsPublisher,
     viewfinder: ViewfinderStats,
     awb_feed: AwbStatisticsFeed,
     /// Белая видоискателя (white-balance 01): какая белая идёт в ISP и показывать ли кадр.
@@ -252,6 +255,8 @@ impl CameraSession {
                 }));
             }
         };
+        // Доска упоров едет в связке белой; клон берём до того, как раннер заберёт связку.
+        let look_stops = LookStopsPublisher::new(white_balance.links.look_white_stops.clone());
         let white = match WhiteBalanceRunner::new(white_balance) {
             Ok(white) => white,
             Err(error) => {
@@ -308,6 +313,7 @@ impl CameraSession {
             history_capacity,
             settings,
             params,
+            look_stops,
             viewfinder,
             awb_feed,
             white,

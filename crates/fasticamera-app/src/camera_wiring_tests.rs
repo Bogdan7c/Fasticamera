@@ -630,6 +630,23 @@ mod auto_exposure_composition {
         assert_eq!(vendor, 0);
         assert!(sensor_product(&control).is_some());
     }
+
+    #[test]
+    fn the_started_services_read_the_look_stops_board_that_the_render_side_writes() {
+        use look_contract::LookWhiteStops;
+
+        let links = CameraLinks::default();
+        let render = links.render_side(ExposureControllerKind::Vendor);
+        let (services, _control) = start(ExposureControllerKind::Vendor, links);
+        assert_eq!(services.look_white_stops().latest(), LookWhiteStops::Unknown);
+
+        render.white.look_white_stops.publish(LookWhiteStops::NotApplicable);
+        assert_eq!(
+            services.look_white_stops().latest(),
+            LookWhiteStops::NotApplicable,
+            "сервисы камеры читают ту же доску, в которую пишет рендер"
+        );
+    }
 }
 
 #[test]

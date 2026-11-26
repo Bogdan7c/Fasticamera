@@ -106,20 +106,8 @@ pub fn shifted_neutral(
     scene: CameraNeutral,
     shift: WhiteShift,
 ) -> Result<RenderingNeutral, WhiteShiftSkipReason> {
-    let usable_ratio = MIN_USABLE_NEUTRAL_RATIO.min(channel_ratio(scene));
-    let attempt = |shift: WhiteShift| -> Result<RenderingNeutral, WhiteShiftSkipReason> {
-        let rendering = shift_white(white, shift).map_err(WhiteShiftSkipReason::ShiftOutsideTable)?;
-        let neutral = profile
-            .neutral_for_white(rendering.white)
-            .map_err(WhiteShiftSkipReason::ShiftedWhiteHasNoNeutral)?;
-        if channel_ratio(neutral) < usable_ratio {
-            return Err(WhiteShiftSkipReason::ShiftedNeutralUnusable);
-        }
-        Ok(RenderingNeutral {
-            neutral,
-            limit: rendering.limit,
-        })
-    };
+    let usability = FullShiftAttempt::new(profile, white, scene);
+    let attempt = |shift: WhiteShift| usability.apply(shift);
     let refusal = match attempt(shift) {
         Ok(full) => return Ok(full),
         Err(refusal) => refusal,
@@ -145,6 +133,45 @@ pub fn shifted_neutral(
     }
 }
 
+/// Попытка применить сдвиг ЦЕЛИКОМ: единственное место, где решается, пригоден ли сдвинутый свет для камеры.
+///
+/// Одним критерием пользуются и [`shifted_neutral`] (урезает до пригодного), и расчёт упоров ручек
+/// ([`crate::look::white_stops`]): пороги не дублируются, упор по построению совпадает с началом урезания.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FullShiftAttempt<'a> {
+    profile: &'a DngColorProfile,
+    white: Chromaticity,
+    /// Наименьшая допустимая доля слабейшего канала: не строже, чем у самой сцены (она пригодна по определению).
+    usable_ratio: f64,
+}
+
+impl<'a> FullShiftAttempt<'a> {
+    /// `white` — белая сцены, `scene` — её нейтраль камеры.
+    pub(crate) fn new(profile: &'a DngColorProfile, white: Chromaticity, scene: CameraNeutral) -> Self {
+        Self {
+            profile,
+            white,
+            usable_ratio: MIN_USABLE_NEUTRAL_RATIO.min(channel_ratio(scene)),
+        }
+    }
+
+    /// Нейтраль рисования для сдвига `shift` целиком или причина, по которой он непригоден.
+    pub(crate) fn apply(&self, shift: WhiteShift) -> Result<RenderingNeutral, WhiteShiftSkipReason> {
+        let rendering = shift_white(self.white, shift).map_err(WhiteShiftSkipReason::ShiftOutsideTable)?;
+        let neutral = self
+            .profile
+            .neutral_for_white(rendering.white)
+            .map_err(WhiteShiftSkipReason::ShiftedWhiteHasNoNeutral)?;
+        if channel_ratio(neutral) < self.usable_ratio {
+            return Err(WhiteShiftSkipReason::ShiftedNeutralUnusable);
+        }
+        Ok(RenderingNeutral {
+            neutral,
+            limit: rendering.limit,
+        })
+    }
+}
+
 /// Доля слабейшего канала нейтрали от сильнейшего.
 fn channel_ratio(neutral: CameraNeutral) -> f64 {
     let channels = neutral.values();
@@ -154,7 +181,7 @@ fn channel_ratio(neutral: CameraNeutral) -> f64 {
 }
 
 /// Наибольшая доля хода, при которой `attempt` удаётся (пригодные доли — отрезок от нуля). `None` — и ноль не годится.
-fn largest_usable<T>(attempt: impl Fn(f64) -> Option<T>) -> Option<(f64, T)> {
+pub(crate) fn largest_usable<T>(attempt: impl Fn(f64) -> Option<T>) -> Option<(f64, T)> {
     let mut best = (0.0, attempt(0.0)?);
     let mut unusable = 1.0;
     for _ in 0..BOUNDARY_SEARCH_STEPS {

@@ -65,6 +65,8 @@ use look_contract::{LookSettings, ToneBaseModel};
 
 use crate::config::ViewfinderToneConfig;
 
+use super::isp_params_stops::{KnobStopsMemo, KnobStopsOutcome};
+
 /// Изменился ли вид картинки после [`IspParamsCache::set_look`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LookChange {
@@ -167,6 +169,8 @@ struct StreamBoundState {
     last_hints: Option<CaptureColorHints>,
     /// Действующие параметры и входы, из которых они посчитаны.
     current: Option<(ResolvedInputs, IspParams)>,
+    /// Упоры ручек теплоты и оттенка для экрана (решения 288, 293): считаются при смене белой или этих двух ручек.
+    knob_stops: KnobStopsMemo,
 }
 
 impl StreamBoundState {
@@ -175,6 +179,7 @@ impl StreamBoundState {
             stream: Arc::clone(stream),
             last_hints: None,
             current: None,
+            knob_stops: KnobStopsMemo::default(),
         }
     }
 }
@@ -351,6 +356,18 @@ impl IspParamsCache {
             .map(|(_, params)| params)
     }
 
+    /// Упоры ручек теплоты и оттенка для текущего потока (решения 288, 293); `None` — потока нет или упоры в нём ещё
+    /// не считались. `Err` — сдвиг белой в этом кадре не применяется вовсе.
+    pub fn white_knob_stops(&self) -> Option<&KnobStopsOutcome> {
+        self.bound.as_ref().and_then(|bound| bound.knob_stops.latest())
+    }
+
+    /// Сколько раз упоры считались в текущем потоке (тесты следят, что неизменные входы не пересчитываются).
+    #[cfg(test)]
+    pub fn knob_stops_computations(&self) -> u32 {
+        self.bound.as_ref().map_or(0, |bound| bound.knob_stops.computations())
+    }
+
     /// Поток неактивен: подсказки и параметры прежнего потока больше ничьи (см. «Привязка к потоку»).
     /// Описание сенсора остаётся — оно зависит только от содержимого паспорта.
     pub fn forget_stream(&mut self) {
@@ -478,6 +495,14 @@ impl StreamBoundState {
         let controls = processing_look(controls, &recipe.look, &recipe.look_model);
         let params =
             IspParams::resolve(sensor, &frame, &controls).map_err(|error| ParamsFailure::Resolve(error.to_string()))?;
+        // Упоры считаем только после успешного пересчёта и только при смене белой или ручек теплоты и оттенка.
+        self.knob_stops.refresh(
+            sensor.color_profile(),
+            white,
+            camera_neutral,
+            &recipe.look_model,
+            &recipe.look,
+        );
         self.current = Some((inputs, params));
         Ok(ParamsOutcome::Resolved)
     }
@@ -528,3 +553,7 @@ mod lens_shading_tests;
 #[cfg(test)]
 #[path = "isp_params_look_tests.rs"]
 mod look_tests;
+
+#[cfg(test)]
+#[path = "isp_params_stops_tests.rs"]
+mod stops_tests;

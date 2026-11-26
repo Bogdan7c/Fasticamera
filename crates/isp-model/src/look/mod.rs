@@ -29,6 +29,7 @@ pub mod tone_shape;
 pub mod validation;
 pub mod wheels;
 pub mod white;
+pub mod white_stops;
 
 use std::sync::Arc;
 

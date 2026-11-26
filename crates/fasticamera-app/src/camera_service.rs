@@ -25,6 +25,7 @@ use camera_android::{BackendDiagnostics, CpuProbeMode, DiagnosticsSnapshot};
 use camera_contract::white_reading::WhiteReadingBoard;
 use camera_contract::zoom::LensIntentChannel;
 use camera_core::{CameraHandle, CameraRuntime, CommandId, CommandRejected};
+use look_contract::LookWhiteStopsBoard;
 use raw_frame_stream::ViewfinderPacingSwitch;
 use serde::Serialize;
 
@@ -214,6 +215,8 @@ pub struct CameraServices {
     white_memory: WhiteMemoryDiagnostics,
     /// Доска показаний источников белого: рендер пишет, экран камеры читает («≈ 3100» на кнопке).
     white_readings: WhiteReadingBoard,
+    /// Доска упоров ручек теплоты и оттенка: рендер пишет, приложение читает для экрана калибровки.
+    look_white_stops: LookWhiteStopsBoard,
 }
 
 impl CameraServices {
@@ -231,6 +234,7 @@ impl CameraServices {
             user_lens_before_scenario: Arc::new(Mutex::new(UserLens::NoneBeforeScenario)),
             white_memory: WhiteMemoryDiagnostics::default(),
             white_readings: WhiteReadingBoard::new(),
+            look_white_stops: LookWhiteStopsBoard::new(),
         }
     }
 
@@ -238,6 +242,17 @@ impl CameraServices {
     pub fn with_white_readings(mut self, white_readings: WhiteReadingBoard) -> Self {
         self.white_readings = white_readings;
         self
+    }
+
+    /// Подключает доску упоров ручек теплоты и оттенка (тот же клон, что получил рендер).
+    pub fn with_look_white_stops(mut self, look_white_stops: LookWhiteStopsBoard) -> Self {
+        self.look_white_stops = look_white_stops;
+        self
+    }
+
+    /// Доска упоров ручек теплоты и оттенка (читающая сторона — [`crate::look_white_stops::LookWhiteStopsReader`]).
+    pub fn look_white_stops(&self) -> &LookWhiteStopsBoard {
+        &self.look_white_stops
     }
 
     /// Доска показаний источников белого для фактов экрана.

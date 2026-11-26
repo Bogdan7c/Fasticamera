@@ -14,6 +14,7 @@ use std::sync::Arc;
 use camera_contract::three_a::DirectiveSlot;
 use camera_contract::white::{WhiteAnswerChannel, WhiteDirective};
 use camera_contract::white_reading::WhiteReadingBoard;
+use look_contract::LookWhiteStopsBoard;
 use scene_estimation::error::ConfigError;
 use scene_estimation::white_source::WhiteSource;
 use scene_estimation::white_source::phone::{PhoneWhiteConfig, PhoneWhiteSource};
@@ -93,6 +94,10 @@ pub struct WhiteLinks {
     pub answers: WhiteAnswerChannel,
     /// Показания источников: что каждый видит сейчас (пишет рендер, читает экран; владельцу не идут, WB33).
     pub readings: WhiteReadingBoard,
+    /// Упоры ручек теплоты и оттенка (решения 288, 293): пишет рендер при смене белой сцены или этих ручек, читает
+    /// приложение для экрана калибровки. Едет в связке белой, потому что упор — свойство сдвига белой, и тем же путём
+    /// доезжает до сессии показа.
+    pub look_white_stops: LookWhiteStopsBoard,
     /// Источники белого.
     pub sources: WhiteSourceRegistry,
 }
