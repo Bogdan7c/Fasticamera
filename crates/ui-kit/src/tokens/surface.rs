@@ -41,9 +41,12 @@ pub enum PanelMaterial {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct SurfaceEdgeTokens {
-    /// Цвет линии вместе с её альфой в покое (появление 1). `[estimate]` решение 297: белый α 0,22 —
-    /// подгонка по эскизам 14p, не Apple.
+    /// Цвет линии (sRGB, закодированный). Альфа здесь не используется — её задаёт [`Self::alpha`], как у заливки
+    /// плотность. `[estimate]` решение 297: белый.
     pub color: DisplayColor,
+    /// Непрозрачность линии в покое (появление 1), 0..1. `[estimate]` решение 297: 0,22 — подгонка по эскизам 14p,
+    /// не Apple.
+    pub alpha: f32,
     /// Толщина линии, pt. `[estimate]` решение 297: 1 pt. Линия лежит ВНУТРИ силуэта: размеры элемента
     /// с ободком и без него одинаковы.
     pub width_pt: f32,
@@ -52,7 +55,8 @@ pub struct SurfaceEdgeTokens {
 impl Default for SurfaceEdgeTokens {
     fn default() -> Self {
         Self {
-            color: DisplayColor::new(1.0, 1.0, 1.0, 0.22),
+            color: DisplayColor::WHITE,
+            alpha: 0.22,
             width_pt: 1.0,
         }
     }
@@ -103,7 +107,7 @@ impl SurfaceTokens {
         match role {
             SurfaceRole::Panel | SurfaceRole::Backing => None,
             SurfaceRole::EdgedPanel => Some(SurfaceEdge {
-                color: self.edge.color.with_alpha(self.edge.color.a * appear.clamp(0.0, 1.0)),
+                color: self.edge.color.with_alpha(self.edge.alpha * appear.clamp(0.0, 1.0)),
                 width_pt: self.edge.width_pt,
             }),
         }
@@ -145,11 +149,17 @@ impl SurfaceTokens {
 }
 
 impl SurfaceEdgeTokens {
-    /// Проверка: цвет (с альфой) в 0..1, толщина конечна, больше нуля и не толще [`MAX_EDGE_WIDTH_PT`].
+    /// Проверка: цвет в 0..1, альфа в (0, 1], толщина конечна, больше нуля и не толще [`MAX_EDGE_WIDTH_PT`].
     pub fn validate(&self) -> Result<(), TokenError> {
         if !self.color.is_valid() {
             return Err(TokenError::InvalidColor {
                 name: "surface.edge.color",
+            });
+        }
+        if !(self.alpha.is_finite() && self.alpha > 0.0 && self.alpha <= 1.0) {
+            return Err(TokenError::OutOfRange {
+                name: "surface.edge.alpha",
+                value: f64::from(self.alpha),
             });
         }
         if !(self.width_pt.is_finite() && self.width_pt > 0.0 && self.width_pt <= MAX_EDGE_WIDTH_PT) {
@@ -288,9 +298,28 @@ mod tests {
                 "толщина ободка {width_pt} отвергается"
             );
         }
+        for alpha in [0.0, 1.2, f32::NAN] {
+            let bad_alpha = SurfaceTokens {
+                edge: SurfaceEdgeTokens {
+                    alpha,
+                    ..SurfaceEdgeTokens::default()
+                },
+                ..SurfaceTokens::default()
+            };
+            assert!(
+                matches!(
+                    bad_alpha.validate(),
+                    Err(TokenError::OutOfRange {
+                        name: "surface.edge.alpha",
+                        ..
+                    })
+                ),
+                "альфа ободка {alpha} отвергается"
+            );
+        }
         let bad_edge_color = SurfaceTokens {
             edge: SurfaceEdgeTokens {
-                color: DisplayColor::new(1.0, 1.0, 1.0, 1.4),
+                color: DisplayColor::rgb(1.4, 1.0, 1.0),
                 ..SurfaceEdgeTokens::default()
             },
             ..SurfaceTokens::default()
@@ -309,9 +338,10 @@ mod tests {
         assert_eq!(parsed.panel_density, 0.5);
         assert_eq!(parsed.backing_density, 0.88);
         assert!(serde_json::from_str::<SurfaceTokens>(r#"{"density":0.5}"#).is_err());
-        let edge: SurfaceTokens = serde_json::from_str(r#"{"edge":{"width_pt":1.5}}"#).expect("частичный ободок");
-        assert_eq!(edge.edge.width_pt, 1.5);
+        let edge: SurfaceTokens =
+            serde_json::from_str(r#"{"edge":{"width_pt":1.5,"alpha":0.3}}"#).expect("частичный ободок");
+        assert_eq!((edge.edge.width_pt, edge.edge.alpha), (1.5, 0.3));
         assert_eq!(edge.edge.color, SurfaceEdgeTokens::default().color);
-        assert!(serde_json::from_str::<SurfaceTokens>(r#"{"edge":{"alpha":0.3}}"#).is_err());
+        assert!(serde_json::from_str::<SurfaceTokens>(r#"{"edge":{"opacity":0.3}}"#).is_err());
     }
 }

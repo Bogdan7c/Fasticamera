@@ -63,6 +63,12 @@ import org.json.JSONObject
  * есть; неизвестное имя и модель, которой ещё нет на GPU, Rust отвергает при initialize громко (ошибка называет поле
  * `viewfinder.tone`), а не берёт молча умолчание.
  *
+ * `surfacePanelDensity` / `surfaceEdgeAlpha` / `surfaceEdgeWidthPt` — поверхность панелей экрана на один запуск
+ * (intent-параметры `surface_panel_density`, `surface_edge_alpha`, `surface_edge_width_pt`, секция
+ * `camera_screen.tokens.surface`, сессия 14p, решения 263, 297, 301): подбор плотности панелей и ободка PHOTO глазами
+ * владельца без пересборки. Плотность панели общая у PHOTO и раздела калибровки. Число уходит в JSON числом, а
+ * нечисловая строка — как есть строкой: Rust отвергает её при initialize громко, а не берёт молча умолчание.
+ *
  * `unchangedFrame` — политика пропуска тиков без изменений на один запуск (intent-параметр `unchanged_frame`, поле
  * `render.unchanged_frame.policy`, решение 214, сессия 16a): `skip` (= `skip_when_unchanged`) или `always` (=
  * `always_redraw`, умолчание продукта до замера на телефоне). Kotlin значение не разбирает, а передаёт строкой как есть;
@@ -96,6 +102,9 @@ data class NativeConfig(
     val toneDisplayMiddleGray: String? = null,
     val toneBase: String? = null,
     val unchangedFrame: String? = null,
+    val surfacePanelDensity: String? = null,
+    val surfaceEdgeAlpha: String? = null,
+    val surfaceEdgeWidthPt: String? = null,
     val untrustedOpticalAxisCameras: List<String> = emptyList(),
 ) {
     fun toJson(): String {
@@ -165,7 +174,26 @@ data class NativeConfig(
         if (render.length() > 0) {
             json.put("render", render)
         }
+        surfaceTokens()?.let { surface ->
+            json.put("camera_screen", JSONObject().put("tokens", JSONObject().put("surface", surface)))
+        }
         return json.toString()
+    }
+
+    /**
+     * Частичная секция `camera_screen.tokens.surface` из параметров запуска; `null` — ни один не задан, и Rust берёт
+     * токены по умолчанию. Плотность и ободок живут в одной секции: собираем её целиком, чтобы одно не затёрло другое.
+     */
+    private fun surfaceTokens(): JSONObject? {
+        val surface = JSONObject()
+        surfacePanelDensity?.let { value -> surface.put("panel_density", numberOrRaw(value)) }
+        val edge = JSONObject()
+        surfaceEdgeAlpha?.let { value -> edge.put("alpha", numberOrRaw(value)) }
+        surfaceEdgeWidthPt?.let { value -> edge.put("width_pt", numberOrRaw(value)) }
+        if (edge.length() > 0) {
+            surface.put("edge", edge)
+        }
+        return surface.takeIf { it.length() > 0 }
     }
 
     /** Число — числом; иначе исходная строка, чтобы Rust отверг её с понятной ошибкой. */
@@ -225,6 +253,15 @@ data class NativeConfig(
         /** Intent-параметр с политикой пропуска тиков без изменений: `skip` или `always` (проверяет Rust). */
         const val EXTRA_UNCHANGED_FRAME = "unchanged_frame"
 
+        /** Intent-параметр с плотностью панелей экрана, 0…1 (строка с числом, проверяет Rust). */
+        const val EXTRA_SURFACE_PANEL_DENSITY = "surface_panel_density"
+
+        /** Intent-параметр с непрозрачностью ободка панелей PHOTO, 0…1 (строка с числом, проверяет Rust). */
+        const val EXTRA_SURFACE_EDGE_ALPHA = "surface_edge_alpha"
+
+        /** Intent-параметр с толщиной ободка панелей PHOTO, pt (строка с числом, проверяет Rust). */
+        const val EXTRA_SURFACE_EDGE_WIDTH_PT = "surface_edge_width_pt"
+
         fun fromIntent(intent: Intent): NativeConfig = NativeConfig(
             buildType = BuildConfig.BUILD_TYPE,
             logFilter = intent.getStringExtra(EXTRA_LOG_FILTER) ?: BuildConfig.LOG_FILTER,
@@ -263,6 +300,10 @@ data class NativeConfig(
             toneBase = intent.getStringExtra(EXTRA_TONE_BASE),
             // Нет параметра — null, секция в JSON не попадает, Rust берёт умолчание (always_redraw).
             unchangedFrame = intent.getStringExtra(EXTRA_UNCHANGED_FRAME),
+            // Нет параметров — null, секция токенов в JSON не попадает, Rust берёт умолчание (решения 263, 297).
+            surfacePanelDensity = intent.getStringExtra(EXTRA_SURFACE_PANEL_DENSITY),
+            surfaceEdgeAlpha = intent.getStringExtra(EXTRA_SURFACE_EDGE_ALPHA),
+            surfaceEdgeWidthPt = intent.getStringExtra(EXTRA_SURFACE_EDGE_WIDTH_PT),
             // Профиль телефона из gradle.properties: пустая строка — список пуст.
             untrustedOpticalAxisCameras = BuildConfig.UNTRUSTED_OPTICAL_AXIS_CAMERAS
                 .split(',')

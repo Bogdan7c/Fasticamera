@@ -84,10 +84,12 @@ fn invalid_values_reject_the_whole_config() {
 #[test]
 fn ui_kit_tokens_come_from_the_section_partially_and_bad_ones_reject_the_config() {
     // Решение 301: плотность и ободок поверхности подбираются конфигом; остальные токены — по умолчанию.
-    let config = parse(r#"{"tokens":{"surface":{"panel_density":0.6,"edge":{"width_pt":1.5}}}}"#).expect("конфиг");
+    // Ровно та форма, что собирает Kotlin `NativeConfig.surfaceTokens` из intent-параметров запуска.
+    let config =
+        parse(r#"{"tokens":{"surface":{"panel_density":0.6,"edge":{"alpha":0.3,"width_pt":1.5}}}}"#).expect("конфиг");
     let tokens = &config.camera_screen().tokens;
     assert_eq!(tokens.surface.panel_density, 0.6);
-    assert_eq!(tokens.surface.edge.width_pt, 1.5);
+    assert_eq!((tokens.surface.edge.alpha, tokens.surface.edge.width_pt), (0.3, 1.5));
     assert_eq!(
         tokens.surface.edge.color,
         ui_kit::tokens::SurfaceEdgeTokens::default().color

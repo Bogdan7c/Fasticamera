@@ -147,7 +147,10 @@ pub fn evaluate_screen(smoke: &ViewfinderSmokeConfig, observation: &ScreenObserv
     violations.extend(counter_violations(&observation.screen));
     violations.extend(overlay_source_violations(&observation.overlay));
     // Экран PHOTO без стекла (решение 297): пирамида размытия в окне замера не обязана строиться.
-    violations.extend(overlay_violations(&observation.overlay, BackdropBlurExpectation::NotRequired));
+    violations.extend(overlay_violations(
+        &observation.overlay,
+        BackdropBlurExpectation::NotRequired,
+    ));
     violations.extend(gpu_time_violations(&observation.overlay, &observation.budget));
     violations.extend(
         // Под касаниями переполнения буфера — только число в отчёте (решение 105).

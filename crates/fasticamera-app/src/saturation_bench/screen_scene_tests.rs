@@ -202,14 +202,14 @@ fn the_real_screens_draw_no_glass_and_photo_draws_edged_surfaces() {
         );
     }
     // Стенд рисует PHOTO с ободком поверхностей: у поверхностей PHOTO есть линия цвета ободка из токенов.
-    let edge = ui_kit::tokens::UiKitTokens::default().surface.edge.color;
+    let edge = ui_kit::tokens::UiKitTokens::default().surface.edge;
     let edged = plan
         .scene(DisplayScreen::Photo)
         .draw_list
         .leaf_items()
         .filter(|item| {
             matches!(item, DrawItem::Shape(shape)
-                if shape.stroke.is_some_and(|stroke| (stroke.color.r, stroke.color.a) == (edge.r, edge.a)))
+                if shape.stroke.is_some_and(|stroke| (stroke.color.r, stroke.color.a) == (edge.color.r, edge.alpha)))
         })
         .count();
     assert!(edged >= 4, "у PHOTO поверхности с ободком: {edged}");

@@ -177,12 +177,12 @@ fn the_sheet_grows_its_density_and_its_edge_together_with_the_old_morph() {
     );
     let (first_fill, first_edge) = samples[0];
     assert!(
-        first_fill < tokens.surface.panel_density * 0.9 && first_edge < tokens.surface.edge.color.a * 0.9,
+        first_fill < tokens.surface.panel_density * 0.9 && first_edge < tokens.surface.edge.alpha * 0.9,
         "шторка появляется с малой плотности: {:?}",
         samples[0]
     );
     // Ободок идёт тем же прогрессом, что заливка: отношение альф постоянно (решение 270).
-    let ratio = tokens.surface.edge.color.a / tokens.surface.panel_density;
+    let ratio = tokens.surface.edge.alpha / tokens.surface.panel_density;
     assert!(
         samples.iter().all(|(fill, edge)| near(*edge, fill * ratio, 1e-4)),
         "ободок нарастает одним прогрессом с заливкой: {samples:?}"
@@ -193,7 +193,7 @@ fn the_sheet_grows_its_density_and_its_edge_together_with_the_old_morph() {
         "плотность доходит до 70 %: {last_fill}"
     );
     assert!(
-        near(last_edge, tokens.surface.edge.color.a, 1e-4),
+        near(last_edge, tokens.surface.edge.alpha, 1e-4),
         "ободок доходит до токена: {last_edge}"
     );
 }
