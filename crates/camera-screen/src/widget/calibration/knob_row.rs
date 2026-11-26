@@ -229,6 +229,8 @@ pub(super) struct RulerRow {
     enabled: bool,
     /// Сколько значений линейки не стали ручкой вида (NaN/вне диапазона): ошибка видна в диагностике.
     invalid_values: u64,
+    /// Сколько раз пришло продолжение пана без начала (страховка: на нормальном пути 0, см. `handle_pan`).
+    orphan_pan_continuations: u64,
 }
 
 impl RulerRow {
@@ -290,6 +292,7 @@ impl RulerRow {
             last_followed: None,
             enabled: false,
             invalid_values: 0,
+            orphan_pan_continuations: 0,
         })
     }
 
@@ -339,6 +342,11 @@ impl RulerRow {
         self.invalid_values
     }
 
+    /// Продолжения пана без начала, пришедшие в эту строку (диагностика, на нормальном пути 0).
+    pub(super) fn orphan_pan_continuations(&self) -> u64 {
+        self.orphan_pan_continuations
+    }
+
     pub(super) fn suppressed_echo_events(&self) -> u64 {
         self.ruler.suppressed_echo_events()
     }
@@ -383,8 +391,13 @@ impl RulerRow {
             return Ok(());
         };
         if !matches!(update, PanUpdate::Began { .. }) && !self.ruler.is_finger_driven() {
-            // Продолжение жеста, начало которого эта строка не видела (раздел пересобрали посреди протяжки, например
-            // поворотом телефона): без `Began` линейке нечего вести, и это не ошибка кадра.
+            // Страховка: продолжение жеста, начало которого эта строка не видела. Пересборка раздела посреди
+            // протяжки сюда больше не ведёт (`Stage` отдаёт `Cancelled` уходящего раздела ему самому), поэтому
+            // событие считается — ненулевой счётчик значит новую дыру в маршрутизации. Выключенная строка событий
+            // не ждёт, но и не жалуется (палец её не берёт).
+            if self.enabled {
+                self.orphan_pan_continuations += 1;
+            }
             return Ok(());
         }
         if !self.enabled && !self.ruler.is_finger_driven() {

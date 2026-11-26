@@ -12,6 +12,18 @@ pub struct GestureCounters {
     pub cancelled: u64,
 }
 
+impl GestureCounters {
+    /// Прибавляет счётчики `other` (жесты, разобранные вне основного цикла кадра).
+    pub fn absorb(&mut self, other: GestureCounters) {
+        self.taps += other.taps;
+        self.long_presses += other.long_presses;
+        self.pans += other.pans;
+        self.button_presses += other.button_presses;
+        self.pinches += other.pinches;
+        self.cancelled += other.cancelled;
+    }
+}
+
 /// Диагностика экрана.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ScreenDiagnostics {
@@ -35,6 +47,11 @@ pub struct ScreenDiagnostics {
     pub gestures: GestureCounters,
     /// События жестов, которых не взял ни один виджет (ошибка сборки, должно быть 0).
     pub unhandled_gestures: u64,
+    /// Продолжения пана без начала в органах раздела калибровки (страховка маршрутизации, должно быть 0): жесты
+    /// уходящего раздела заканчивает он сам, новый раздел чужих событий не получает.
+    pub orphan_pan_continuations: u64,
+    /// Сколько раз палец взял орган раздела без ведомых узлов и «картинка под пальцем» не началась (должно быть 0).
+    pub finger_focus_refusals: u64,
     /// Действия: применённые, ничего не изменившие и отказанные редьюсером.
     pub actions_applied: u64,
     pub actions_no_change: u64,

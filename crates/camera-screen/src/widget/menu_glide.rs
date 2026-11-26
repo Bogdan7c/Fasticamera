@@ -106,7 +106,12 @@ impl MenuButtonGlide {
             self.run = None;
             return Ok(());
         }
-        let start_point = self.run.map_or(from, |run| run.last_drawn);
+        // `last_drawn` годится только пока прежний переезд ещё идёт. Завершённый (но не очищенный — `frame` мог не
+        // вызываться) переезд хранит устаревшее место: кнопка с тех пор могла уехать вместе с поворотом раздела.
+        let start_point = match self.run {
+            Some(run) if run.progress.sample(ctx.now).phase == SpringPhase::Moving => run.last_drawn,
+            _ => from,
+        };
         let spring = ctx.spring(MotionToken::CardMorph)?;
         let progress = SpringAnimation::start(SpringStart {
             spring,

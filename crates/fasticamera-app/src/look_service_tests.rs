@@ -173,7 +173,7 @@ fn only_the_bad_startup_outcomes_have_a_problem_for_the_screen() {
 }
 
 #[test]
-fn the_startup_problem_is_handed_out_once_per_process_through_the_shared_handle() {
+fn the_startup_problem_is_held_until_a_screen_confirms_it_was_shown_through_the_shared_handle() {
     let library = look_presets::PresetLibrary::new(
         PresetStoreConfig::default()
             .builtin_catalog(&default_environment())
@@ -186,12 +186,18 @@ fn the_startup_problem_is_handed_out_once_per_process_through_the_shared_handle(
     ));
     let other_clone = handle.clone();
     assert_eq!(
-        handle.take_startup_problem(),
+        handle.pending_startup_problem(),
         Some(look_contract::LookProblemKind::PresetsReset)
     );
     assert_eq!(
-        other_clone.take_startup_problem(),
+        other_clone.pending_startup_problem(),
+        Some(look_contract::LookProblemKind::PresetsReset),
+        "пока показ не подтверждён, проблема держится (экран мог быть пересоздан до входа в раздел)"
+    );
+    handle.acknowledge_startup_problem();
+    assert_eq!(
+        other_clone.pending_startup_problem(),
         None,
-        "второй клон и повторный вызов — ничего"
+        "после подтверждения показа проблему не получает никто"
     );
 }

@@ -290,6 +290,9 @@ pub struct CameraScreenSource {
     facts_sent: u64,
     /// Сколько раз экрану отправлены изменившиеся факты о виде.
     look_facts_sent: u64,
+    /// Проблему запуска этому экрану уже отправили (новый источник — новый экран — отправит заново, пока сервис
+    /// не получил подтверждение показа).
+    startup_problem_forwarded: bool,
     /// Сколько раз экрану отправлены изменившиеся упоры ручек теплоты и оттенка.
     look_white_stops_sent: u64,
     gravity_samples_sent: u64,
@@ -333,6 +336,7 @@ impl CameraScreenSource {
             board: parts.board,
             facts_sent: 0,
             look_facts_sent: 0,
+            startup_problem_forwarded: false,
             look_white_stops_sent: 0,
             gravity_samples_sent: 0,
             report_min_interval: parts.report_min_interval,
@@ -399,12 +403,19 @@ impl CameraScreenSource {
         let Some(source) = &mut self.look_facts else {
             return false;
         };
-        // Проблема запуска (файл пресетов сброшен / сохранения отключены): отдаётся один раз, плашку при входе в
-        // раздел калибровки поднимает сам экран.
-        let startup_problem = source.take_startup_problem();
-        let startup_problem_sent = startup_problem.is_some();
-        if let Some(kind) = startup_problem {
+        // Проблема запуска (файл пресетов сброшен / сохранения отключены): плашку при входе в раздел калибровки
+        // поднимает сам экран. Сервис держит проблему, пока экран не подтвердит показ: источник, пересозданный до
+        // первого входа в раздел, отдаёт её новому экрану снова; показанная плашка не повторяется.
+        if self.screen.state().look().startup_problems_shown() > 0 {
+            source.acknowledge_startup_problem();
+        }
+        let mut startup_problem_sent = false;
+        if !self.startup_problem_forwarded
+            && let Some(kind) = source.pending_startup_problem()
+        {
             self.screen.handle_action(ScreenAction::LookStartupProblem(kind));
+            self.startup_problem_forwarded = true;
+            startup_problem_sent = true;
         }
         let facts_changed = match source.observe(self.executor.latest_look_problem()) {
             LookFactsChange::Changed(facts) => {

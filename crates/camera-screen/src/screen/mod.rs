@@ -36,6 +36,7 @@ mod calibration_targets;
 mod diagnostics;
 mod effect_queue;
 mod error;
+mod retired_gestures;
 mod stage;
 mod system_gesture_filter;
 #[cfg(test)]
@@ -74,6 +75,7 @@ use crate::widget::transition_veil::TransitionVeil;
 use crate::widget::{Ctx, Outputs};
 use effect_queue::{EffectQueue, PushOutcome};
 use error::FrameBuildError;
+use retired_gestures::RetiredGestureReport;
 use stage::Stage;
 use system_gesture_filter::{SystemGestureFilter, TouchAdmission};
 use ui_draw::picture::UiPicture;
@@ -335,6 +337,8 @@ impl CameraScreen {
             snapshot.ignored_sun_pans = stage.focus().ignored_sun_pans();
             snapshot.invalid_exposure_values = stage.invalid_exposure_values();
             snapshot.invalid_knob_values = stage.invalid_knob_values();
+            snapshot.orphan_pan_continuations = stage.orphan_pan_continuations();
+            snapshot.finger_focus_refusals = stage.finger_focus_refusals();
             snapshot.invalid_white_values = stage.invalid_white_values();
             snapshot.preset_chips_overflowed = stage.overflowed_preset_chips();
             snapshot.text_layouts = stage.text_layouts();
@@ -537,7 +541,7 @@ impl CameraScreen {
         // Часы сцены и таймеры жестов: долгий тап срабатывает и при неподвижном пальце.
         let geometry = stage.geometry();
         stage.kit_mut().scene_mut().begin_frame(now);
-        for event in stage.kit_mut().scene_mut().drain_gesture_events() {
+        for event in stage.drain_gesture_events() {
             let at = self.clock.observe(event.time);
             Stage::count_gesture(&mut self.diagnostics.gestures, &event);
             let mut outputs = Outputs::default();
@@ -550,6 +554,7 @@ impl CameraScreen {
         self.apply(ScreenAction::Tick(now));
         for _pass in 0..MAX_SETTLE_PASSES {
             stage.sync(&self.context(&geometry, px, now))?;
+            self.absorb_retired_gestures(stage);
             let mut outputs = Outputs::default();
             stage.advance(&self.context(&geometry, px, now), &mut outputs)?;
             self.blink.advance(&self.config.widgets.overlay, now);
@@ -560,7 +565,21 @@ impl CameraScreen {
             }
         }
         // Последняя синхронизация: состояние после действий элементов должно попасть в рисование.
-        stage.sync(&self.context(&geometry, px, now))
+        stage.sync(&self.context(&geometry, px, now))?;
+        self.absorb_retired_gestures(stage);
+        Ok(())
+    }
+
+    /// Жесты, которые закончили уходящие разделы калибровки: их выход применяется, счётчики идут в диагностику.
+    fn absorb_retired_gestures(&mut self, stage: &mut Stage) {
+        let RetiredGestureReport {
+            outputs,
+            counters,
+            unhandled,
+        } = stage.take_retired_gestures();
+        self.diagnostics.gestures.absorb(counters);
+        self.diagnostics.unhandled_gestures += unhandled;
+        self.flush(outputs);
     }
 
     /// Кадр: см. порядок и разбор ошибок в документации модуля. Ошибка кадра не роняет показ камеры — рендер
@@ -611,6 +630,9 @@ mod screen_calibration_finger_tests;
 mod screen_calibration_menu_tests;
 #[cfg(test)]
 mod screen_calibration_neighbourhood_tests;
+#[cfg(test)]
+#[path = "screen_calibration_rebuild_tests.rs"]
+mod screen_calibration_rebuild_tests;
 #[cfg(test)]
 mod screen_calibration_safe_area_tests;
 #[cfg(test)]

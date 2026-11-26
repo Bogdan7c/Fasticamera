@@ -192,7 +192,7 @@ impl CalibrationSection {
     }
 
     /// Убирает узлы раздела из сцены (идущие жесты получают `Cancelled`).
-    pub(crate) fn retire(self, kit: &mut SceneKit) -> Result<(), WidgetError> {
+    pub(crate) fn retire(&self, kit: &mut SceneKit) -> Result<(), WidgetError> {
         kit.remove_subtree(self.root)
     }
 
@@ -315,6 +315,16 @@ impl CalibrationSection {
     /// Сколько значений линеек не стали значениями вида (диагностика).
     pub(crate) fn invalid_values(&self) -> u64 {
         self.knobs.invalid_values() + self.cards.invalid_white_values()
+    }
+
+    /// Отказы «картинки под пальцем» из-за пустого списка ведомых узлов (диагностика, на нормальном пути 0).
+    pub(crate) fn finger_focus_refusals(&self) -> u64 {
+        self.knobs.finger_focus_refusals()
+    }
+
+    /// Продолжения пана без начала в органах раздела (диагностика, на нормальном пути 0).
+    pub(crate) fn orphan_pan_continuations(&self) -> u64 {
+        self.knobs.orphan_pan_continuations()
     }
 
     /// Сколько событий значения погашено как эхо (диагностика).

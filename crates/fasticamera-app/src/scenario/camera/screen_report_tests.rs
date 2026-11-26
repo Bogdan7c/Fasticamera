@@ -99,7 +99,7 @@ fn unfinished_steps_are_named_when_there_is_no_other_reason() {
 fn each_screen_counter_fails_with_its_own_number() {
     /// Как испортить счётчик и что должно быть в тексте нарушения.
     type Case = (fn(&mut ScreenCounters), &'static str);
-    let cases: [Case; 7] = [
+    let cases: [Case; 9] = [
         (|screen| screen.frame_failures = 2, "отказов кадра экрана: 2"),
         (
             |screen| screen.effects_overflowed = 1,
@@ -108,6 +108,14 @@ fn each_screen_counter_fails_with_its_own_number() {
         (
             |screen| screen.unhandled_gestures = 1,
             "событий жестов без владельца: 1",
+        ),
+        (
+            |screen| screen.orphan_pan_continuations = 2,
+            "продолжений пана раздела без начала: 2",
+        ),
+        (
+            |screen| screen.finger_focus_refusals = 3,
+            "отказов «картинки под пальцем» без ведомых узлов: 3",
         ),
         (
             |screen| screen.input_overflowed = 4,

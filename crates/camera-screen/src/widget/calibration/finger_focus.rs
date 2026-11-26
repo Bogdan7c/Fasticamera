@@ -45,12 +45,35 @@ pub(super) struct FingerFocus {
     faded: Vec<NodeId>,
     /// Корням уже выключен хит-тест: перед синхронизацией строк его надо вернуть.
     interactivity_disabled: bool,
+    /// Сколько раз палец взял орган, у которого не нашлось ни одного ведомого узла (диагностика, должно быть 0).
+    refused_without_nodes: u64,
+}
+
+/// Итог попытки начать «картинку под пальцем».
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FocusBegin {
+    /// Фокус начат: остальное растворится.
+    Started,
+    /// Ведомых узлов нет (слот органа не найден): фокус НЕ начат. С пустым списком растворилась бы вся панель, включая
+    /// окно списка, и палец остался бы без управления.
+    RefusedWithoutNodes,
 }
 
 impl FingerFocus {
-    /// Палец взял орган `driven`, ведомые узлы — `nodes`.
-    pub(super) fn begin(&mut self, driven: DrivenControl, nodes: Vec<NodeId>) {
+    /// Палец взял орган `driven`, ведомые узлы — `nodes`. Пустой список фокус не начинает (см. [`FocusBegin`]) и
+    /// считается в диагностике, а не глотается молча.
+    pub(super) fn begin(&mut self, driven: DrivenControl, nodes: Vec<NodeId>) -> FocusBegin {
+        if nodes.is_empty() {
+            self.refused_without_nodes += 1;
+            return FocusBegin::RefusedWithoutNodes;
+        }
         self.held = Some((driven, nodes));
+        FocusBegin::Started
+    }
+
+    /// Сколько раз фокус отказан из-за пустого списка ведомых узлов (диагностика, на нормальном пути 0).
+    pub(super) fn refused_without_nodes(&self) -> u64 {
+        self.refused_without_nodes
     }
 
     /// Палец отпустил орган `driven`. Отпускание ДРУГОГО органа (второй палец, сорвавшийся жест) фокус не снимает.
@@ -143,4 +166,62 @@ fn fade_roots(kit: &SceneKit, panel: NodeId, driven_nodes: &[NodeId]) -> Result<
         }
     }
     Ok(roots)
+}
+
+#[cfg(test)]
+mod tests {
+    use ui_core::geometry::Insets;
+    use ui_core::scene::{SceneSettings, SurfaceGeometry, UiScene};
+
+    use super::*;
+    use crate::widget::intent::ScreenGesture;
+
+    fn scene_node() -> NodeId {
+        let surface = SurfaceGeometry {
+            width_px: 100,
+            height_px: 100,
+            safe_area: Insets::ZERO,
+        };
+        let mut scene: UiScene<ScreenGesture> = UiScene::new(surface, SceneSettings::default()).expect("сцена");
+        let root = scene.tree().root();
+        scene.insert_child(root, "ведомый").expect("узел")
+    }
+
+    #[test]
+    fn a_grab_with_nodes_starts_the_focus_and_the_release_of_the_same_organ_ends_it() {
+        let mut focus = FingerFocus::default();
+        let node = scene_node();
+        assert_eq!(focus.begin(DrivenControl::Row(2), vec![node]), FocusBegin::Started);
+        assert_eq!(focus.driven_nodes(), [node]);
+        focus.end(DrivenControl::Row(3));
+        assert_eq!(
+            focus.driven_nodes(),
+            [node],
+            "отпускание другого органа фокус не снимает"
+        );
+        focus.end(DrivenControl::Row(2));
+        assert!(focus.driven_nodes().is_empty());
+        assert_eq!(focus.refused_without_nodes(), 0);
+    }
+
+    #[test]
+    fn a_grab_without_driven_nodes_is_refused_counted_and_keeps_the_previous_focus_untouched() {
+        let mut focus = FingerFocus::default();
+        assert_eq!(
+            focus.begin(DrivenControl::Row(9), Vec::new()),
+            FocusBegin::RefusedWithoutNodes,
+            "слот не найден: растворять нечего без ведомого"
+        );
+        assert!(focus.driven_nodes().is_empty(), "фокус не начат");
+        assert_eq!(focus.refused_without_nodes(), 1, "отказ виден в диагностике");
+        // Второй палец с пустым списком не стирает фокус первого.
+        let node = scene_node();
+        assert_eq!(focus.begin(DrivenControl::Row(1), vec![node]), FocusBegin::Started);
+        assert_eq!(
+            focus.begin(DrivenControl::Row(9), Vec::new()),
+            FocusBegin::RefusedWithoutNodes
+        );
+        assert_eq!(focus.driven_nodes(), [node]);
+        assert_eq!(focus.refused_without_nodes(), 2);
+    }
 }

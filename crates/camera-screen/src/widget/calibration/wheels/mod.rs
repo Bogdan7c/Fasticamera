@@ -208,6 +208,10 @@ impl WheelsView {
         self.pad.invalid_values() + self.ring_row.invalid_values()
     }
 
+    pub(in crate::widget::calibration) fn orphan_pan_continuations(&self) -> u64 {
+        self.pad.orphan_pan_continuations() + self.ring_row.orphan_pan_continuations()
+    }
+
     pub(in crate::widget::calibration) fn suppressed_echo_events(&self) -> u64 {
         self.ring_row.suppressed_echo_events()
     }

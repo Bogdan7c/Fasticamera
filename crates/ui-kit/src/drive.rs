@@ -141,7 +141,23 @@ pub(crate) struct HoldZone {
     pub half_width: f64,
 }
 
+/// Допуск «стоит на центре» как доля половины зоны: смещение контента — результат арифметики с плавающей точкой
+/// (пружина, пересчёт значения в смещение), поэтому ручка, «стоящая на нуле», может отстоять от центра на 1e-12 pt.
+/// Точное `==` приняло бы её за стоящую сбоку и вернуло бы мёртвый ход на старте (решение 247). Доля в тысячную
+/// полуширины (при зоне ±6 pt — 0,006 pt, много меньше шага значения и пикселя) безопасна: палец такого пути не
+/// почувствует.
+const CENTRE_TOLERANCE_OF_HALF_WIDTH: f64 = 1e-3;
+
+/// Тот же допуск, но не меньше погрешности f64 на масштабе смещений: зона нулевой ширины не должна сравнивать точно.
+const CENTRE_TOLERANCE_FLOOR: f64 = 1e-9;
+
 impl HoldZone {
+    /// Стоит ли контент со смещением `offset` на центре зоны (в пределах допуска, см. константы выше).
+    pub(crate) fn is_on_centre(self, offset: f64) -> bool {
+        let tolerance = (self.half_width * CENTRE_TOLERANCE_OF_HALF_WIDTH).max(CENTRE_TOLERANCE_FLOOR);
+        (offset - self.centre_offset).abs() <= tolerance
+    }
+
     /// Смещение контента при желаемом (по пальцу) смещении `finger_offset`, если палец взял контент на
     /// `start_offset`.
     ///
@@ -154,10 +170,10 @@ impl HoldZone {
     ///   ручки был бы «мёртвый» ход на старте от нуля (решение 247). Сторону «отхода» привод запоминает по
     ///   первому сдвигу ([`AxisDrive`]) и подставляет сюда как `start_offset`.
     pub(crate) fn applied_to(self, start_offset: f64, finger_offset: f64) -> f64 {
-        let start_side = start_offset - self.centre_offset;
-        if start_side == 0.0 {
+        if self.is_on_centre(start_offset) {
             return finger_offset;
         }
+        let start_side = start_offset - self.centre_offset;
         // Зеркалим так, чтобы старт был «наверху» (по знаку стороны): тогда одна формула на обе стороны.
         let sign = start_side.signum();
         let from_centre = (finger_offset - self.centre_offset) * sign;
@@ -283,7 +299,7 @@ impl AxisDrive {
     /// Контент взят ровно на центре зоны: сторону «отхода» задаёт первый ненулевой сдвиг пальца. Пока сторона не
     /// выбрана, зона не действует (`applied_to` отдаёт путь пальца как есть) — нет мёртвого хода на старте.
     fn learn_departure_side(&mut self, zone: HoldZone, finger_delta: f64) {
-        let started_on_centre = self.hold_side_reference == zone.centre_offset;
+        let started_on_centre = zone.is_on_centre(self.hold_side_reference);
         if started_on_centre && finger_delta != 0.0 {
             self.hold_side_reference = zone.centre_offset + finger_delta.signum();
         }
@@ -341,3 +357,7 @@ impl AxisDrive {
         self.scroll.set_snap_points(points, now)
     }
 }
+
+#[cfg(test)]
+#[path = "drive_tests.rs"]
+mod tests;

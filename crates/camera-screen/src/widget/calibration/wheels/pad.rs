@@ -58,6 +58,8 @@ pub(super) struct WheelPad {
     enabled: bool,
     /// Сколько точек пальца не стали толчком (не конечные): ошибка видна в диагностике.
     invalid_values: u64,
+    /// Сколько раз пришло продолжение пана без начала (страховка: на нормальном пути 0).
+    orphan_pan_continuations: u64,
 }
 
 impl WheelPad {
@@ -93,6 +95,7 @@ impl WheelPad {
             ring_picture: None,
             enabled: false,
             invalid_values: 0,
+            orphan_pan_continuations: 0,
         })
     }
 
@@ -102,6 +105,11 @@ impl WheelPad {
 
     pub(super) fn invalid_values(&self) -> u64 {
         self.invalid_values
+    }
+
+    /// Продолжения пана без начала, пришедшие в круг (диагностика, на нормальном пути 0).
+    pub(super) fn orphan_pan_continuations(&self) -> u64 {
+        self.orphan_pan_continuations
     }
 
     /// Пан пальца по кругу. Возвращает `true` — событие этого круга.
@@ -120,7 +128,11 @@ impl WheelPad {
             return Ok(true);
         };
         if !matches!(update, PanUpdate::Began { .. }) && !self.pad.is_finger_driven() {
-            // Продолжение жеста, начало которого этот круг не видел (раздел пересобрали посреди протяжки): не ошибка.
+            // Страховка: продолжение жеста, начало которого этот круг не видел. Пересборка раздела посреди протяжки
+            // сюда больше не ведёт (`Stage` отдаёт `Cancelled` уходящего раздела ему самому); событие считается.
+            if self.enabled {
+                self.orphan_pan_continuations += 1;
+            }
             return Ok(true);
         }
         if !self.enabled && !self.pad.is_finger_driven() {

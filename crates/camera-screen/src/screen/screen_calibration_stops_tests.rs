@@ -244,3 +244,19 @@ fn changing_stops_updates_the_picture_at_once() {
     rig.run(300);
     assert!(stop_ticks(&mut rig, ruler).is_empty(), "упоры пропали");
 }
+
+#[test]
+fn a_stop_exactly_on_the_edge_of_the_scale_draws_without_error_and_dims_nothing() {
+    let (mut rig, ruler) = rig_with(look_facts(), TINT_SLOT, tint_stops(at(1.0), at(1.0)));
+    // Упор на самом краю шкалы: дальше него хода нет, затемнять нечего, обычные риски не тускнеют.
+    assert_eq!(
+        rig.screen.diagnostics().frame_failures,
+        0,
+        "кадры с упором 1,0 строятся"
+    );
+    let plus = tick_alpha_at(&mut rig, ruler, 80.0).expect("риска +80");
+    let minus = tick_alpha_at(&mut rig, ruler, -80.0).expect("риска −80");
+    assert_eq!(plus, minus);
+    let normal = tick_alpha_at(&mut rig, ruler, 40.0).expect("риска +40");
+    assert_eq!(plus, normal, "ход до упора на краю не затемнён");
+}

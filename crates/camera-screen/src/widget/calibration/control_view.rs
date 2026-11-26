@@ -129,6 +129,15 @@ impl ControlView {
         }
     }
 
+    /// Продолжения паноров без начала во всех органах вида (диагностика, на нормальном пути 0).
+    pub(super) fn orphan_pan_continuations(&self) -> u64 {
+        match self {
+            ControlView::Rows(rows) => rows.rows.iter().map(RulerRow::orphan_pan_continuations).sum(),
+            ControlView::Wheels(wheels) => wheels.orphan_pan_continuations(),
+            ControlView::Unavailable { .. } => 0,
+        }
+    }
+
     /// Сколько значений ручек не стали значениями вида (диагностика).
     pub(super) fn invalid_values(&self) -> u64 {
         match self {

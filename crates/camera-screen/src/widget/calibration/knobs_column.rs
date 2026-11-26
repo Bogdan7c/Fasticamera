@@ -21,7 +21,7 @@ use ui_kit::tokens::TextRoleKind;
 use ui_kit::view::GlassShape;
 
 use super::control_view::{ControlView, RowsView, VisibleWindow};
-use super::finger_focus::{DrivenControl, FingerFocus};
+use super::finger_focus::{DrivenControl, FingerFocus, FocusBegin};
 use super::knob_row::WHEEL_RING_SLOT;
 use super::segments::{SegmentRow, SegmentSpec, push_if_activated};
 use super::space::{EyeAxis, SectionSpace};
@@ -194,6 +194,15 @@ impl KnobsColumn {
         self.view.invalid_values()
     }
 
+    /// Сколько раз палец взял орган без ведомых узлов и фокус не начался (диагностика, на нормальном пути 0).
+    pub(super) fn finger_focus_refusals(&self) -> u64 {
+        self.focus.refused_without_nodes()
+    }
+
+    pub(super) fn orphan_pan_continuations(&self) -> u64 {
+        self.view.orphan_pan_continuations()
+    }
+
     pub(super) fn suppressed_echo_events(&self) -> u64 {
         self.view.suppressed_echo_events()
     }
@@ -233,7 +242,10 @@ impl KnobsColumn {
             return;
         };
         match event.state {
-            GestureState::Began => self.focus.begin(driven, self.view.focus_nodes(driven)),
+            GestureState::Began => {
+                // Отказ (нет ведомых узлов) уже посчитан самим `FingerFocus`: растворять панель без ведомого нельзя.
+                let _begin: FocusBegin = self.focus.begin(driven, self.view.focus_nodes(driven));
+            }
             GestureState::Ended | GestureState::Cancelled | GestureState::Failed => self.focus.end(driven),
             GestureState::Possible | GestureState::Changed => {}
         }

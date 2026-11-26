@@ -27,6 +27,8 @@ enum PresetsFileOnDisk {
 struct Stand {
     source: CameraScreenSource,
     sender: ScreenInputSender,
+    /// Библиотека пресетов процесса: переживает экран, как в приложении.
+    handle: crate::look_service::LookHandle,
     directory: std::path::PathBuf,
     now_ms: i64,
 }
@@ -46,6 +48,18 @@ impl Stand {
         }
         let app_directory = AppDirectory::new(directory.to_string_lossy().into_owned()).expect("папка годится");
         let opened = open_look_service(&app_directory, &config, &default_environment()).expect("открыто");
+        let (source, sender) = Self::build_source(&opened.handle);
+        Self {
+            source,
+            sender,
+            handle: opened.handle,
+            directory,
+            now_ms: 0,
+        }
+    }
+
+    /// Новый источник кадров (новый экран) поверх общей библиотеки пресетов.
+    fn build_source(handle: &crate::look_service::LookHandle) -> (CameraScreenSource, ScreenInputSender) {
         let catalog = LookFactsCatalog::from_render_config(
             &render_loop::config::RenderLoopConfig::default(),
             &BandSwatchStyle::default(),
@@ -61,7 +75,7 @@ impl Stand {
             .expect("экран"),
             input: receiver,
             facts: Box::new(LiveFacts),
-            look_facts: Some(LookFactsSource::new(opened.handle.clone(), catalog)),
+            look_facts: Some(LookFactsSource::new(handle.clone(), catalog)),
             gravity: GravityLink::Unavailable {
                 reason: "тест".to_owned(),
             },
@@ -76,17 +90,19 @@ impl Stand {
                 capture: Arc::new(NoCapture),
                 shutter_sound: Arc::new(crate::camera_screen_service::SilentShutterSound::default()),
                 lens: camera_contract::zoom::LensIntentChannel::new(),
-                look: Some(opened.handle),
+                look: Some(handle.clone()),
             }),
             board: Arc::new(ScreenBoard::default()),
             report_min_interval: Duration::ZERO,
         });
-        Self {
-            source,
-            sender,
-            directory,
-            now_ms: 0,
-        }
+        (source, sender)
+    }
+
+    /// Экран пересоздан (восстановление после снятия рендером): библиотека та же, экран новый и пустой.
+    fn recreate_screen(&mut self) {
+        let (source, sender) = Self::build_source(&self.handle);
+        self.source = source;
+        self.sender = sender;
     }
 
     fn frames(&mut self, count: usize) {
@@ -174,4 +190,43 @@ fn a_missing_presets_file_is_a_normal_first_launch_and_shows_no_plaque() {
     stand.frames(10);
     stand.select_mode(CaptureMode::Calibrate);
     assert_eq!(stand.banner(), None);
+}
+
+#[test]
+fn the_banner_survives_a_screen_recreated_before_the_first_entry_to_calibrate_and_shows_once() {
+    let mut stand = Stand::start(PresetsFileOnDisk::Corrupt);
+    stand.frames(30);
+    assert_eq!(stand.banner(), None);
+
+    // Экран пересоздали до первого входа в раздел (путь восстановления): проблема не пропала вместе со старым экраном.
+    stand.recreate_screen();
+    stand.frames(30);
+    assert_eq!(stand.banner(), None, "в PHOTO плашки по-прежнему нет");
+    stand.select_mode(CaptureMode::Calibrate);
+    assert_eq!(
+        stand.banner(),
+        Some(LookProblemKind::PresetsReset),
+        "новый экран показал плашку при первом входе"
+    );
+    stand.dismiss_banner();
+
+    // Плашка показана: ещё одно пересоздание её не возвращает.
+    stand.recreate_screen();
+    stand.frames(30);
+    stand.select_mode(CaptureMode::Calibrate);
+    assert_eq!(stand.banner(), None, "после показа новый экран плашку не повторяет");
+}
+
+#[test]
+fn a_screen_recreated_while_the_banner_is_up_does_not_repeat_it() {
+    let mut stand = Stand::start(PresetsFileOnDisk::Corrupt);
+    stand.select_mode(CaptureMode::Calibrate);
+    assert_eq!(stand.banner(), Some(LookProblemKind::PresetsReset));
+    stand.recreate_screen();
+    stand.select_mode(CaptureMode::Calibrate);
+    assert_eq!(
+        stand.banner(),
+        None,
+        "показанную плашку подтвердили сервису, новый экран её не получает"
+    );
 }

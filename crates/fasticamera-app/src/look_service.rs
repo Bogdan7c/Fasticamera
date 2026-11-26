@@ -131,8 +131,9 @@ pub struct LookService {
     library: PresetLibrary,
     persistence: Box<dyn LookPersistence>,
     startup: LookStartup,
-    /// Проблема запуска, о которой экрану ещё не сказали (отдаётся ровно один раз за жизнь процесса: сервис живёт
-    /// дольше любого экрана, поэтому пересборка экрана плашку не повторяет).
+    /// Проблема запуска, которую экран ещё не ПОКАЗАЛ плашкой. Сервис живёт дольше любого экрана и держит проблему,
+    /// пока экран не подтвердит показ (`acknowledge_startup_problem`): пересозданный до входа в раздел экран получит
+    /// её снова, а показанную — уже нет (плашка один раз за жизнь процесса).
     undelivered_startup_problem: Option<LookProblemKind>,
     /// Номер версии библиотеки: растёт на каждое намерение, что-либо изменившее (активный вид, список пресетов,
     /// имена, правки). Владеет им сервис, потому что только он применяет намерения; наблюдатели фактов по нему дёшево
@@ -225,9 +226,14 @@ impl LookService {
         self.startup
     }
 
-    /// Отдаёт проблему запуска, о которой экрану ещё не говорили; повторный вызов — `None`.
-    pub fn take_startup_problem(&mut self) -> Option<LookProblemKind> {
-        self.undelivered_startup_problem.take()
+    /// Проблема запуска, которую экран ещё не показал; не снимается сама, пока нет подтверждения показа.
+    pub fn pending_startup_problem(&self) -> Option<LookProblemKind> {
+        self.undelivered_startup_problem.clone()
+    }
+
+    /// Экран показал плашку проблемы запуска: больше её не отдавать.
+    pub fn acknowledge_startup_problem(&mut self) {
+        self.undelivered_startup_problem = None;
     }
 }
 
@@ -299,9 +305,14 @@ impl LookHandle {
         self.lock().startup()
     }
 
-    /// См. [`LookService::take_startup_problem`].
-    pub fn take_startup_problem(&self) -> Option<LookProblemKind> {
-        self.lock().take_startup_problem()
+    /// См. [`LookService::pending_startup_problem`].
+    pub fn pending_startup_problem(&self) -> Option<LookProblemKind> {
+        self.lock().pending_startup_problem()
+    }
+
+    /// См. [`LookService::acknowledge_startup_problem`].
+    pub fn acknowledge_startup_problem(&self) {
+        self.lock().acknowledge_startup_problem();
     }
 }
 

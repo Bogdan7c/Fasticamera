@@ -265,6 +265,8 @@ fn the_script_drives_every_step_and_the_screen_proves_each_one_reached_the_camer
         "frame_failures",
         "effects_overflowed",
         "unhandled_gestures",
+        "orphan_pan_continuations",
+        "finger_focus_refusals",
         "input_overflowed",
         "executor_refusals",
         "input_dropped_without_screen",

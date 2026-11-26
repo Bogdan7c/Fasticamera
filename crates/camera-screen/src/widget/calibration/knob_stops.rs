@@ -17,6 +17,14 @@ use crate::widget::Ctx;
 /// Пределы значений ручки в словаре: край шкалы с каждой стороны.
 const KNOB_EDGE: f64 = 1.0;
 
+/// Значение ручки на доле упора `fraction` стороны `direction` (±1). Единственное место перевода доли в значение:
+/// доля зажимается в `[0, KNOB_EDGE]`, чтобы упор никогда не вышел за словарь ручки `−1…+1` и линейка не получила
+/// значение, которого не может нарисовать (`ViewError::UnrepresentableOverlayValue`). `StopFraction` уже гарантирует
+/// `(0, 1]`; зажим — защита от будущего ослабления проверки, а не обход ошибки.
+fn stop_value(fraction: look_contract::StopFraction, direction: f64) -> f64 {
+    f64::from(fraction.get()).clamp(0.0, KNOB_EDGE) * direction
+}
+
 /// Упоры одной строки ручки по обе стороны от нуля.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct RowStops {
@@ -54,7 +62,7 @@ impl RowStops {
             .filter_map(|(stop, direction)| {
                 let from = match stop {
                     KnobStop::None => return None,
-                    KnobStop::At(fraction) => f64::from(fraction.get()) * direction,
+                    KnobStop::At(fraction) => stop_value(fraction, direction),
                     KnobStop::DeadFromCentre => 0.0,
                 };
                 let to = KNOB_EDGE * direction;
@@ -88,7 +96,51 @@ impl RowStops {
 /// Значение риски-упора стороны (`direction` — знак стороны).
 fn side_tick_value(stop: KnobStop, direction: f64) -> Option<f64> {
     match stop {
-        KnobStop::At(fraction) => Some(f64::from(fraction.get()) * direction),
+        KnobStop::At(fraction) => Some(stop_value(fraction, direction)),
         KnobStop::None | KnobStop::DeadFromCentre => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use look_contract::StopFraction;
+
+    use super::*;
+
+    fn edge() -> KnobStop {
+        KnobStop::At(StopFraction::new(1.0).expect("доля 1,0 допустима"))
+    }
+
+    #[test]
+    fn a_stop_on_the_scale_edge_maps_to_the_edge_value_with_no_dimmed_travel_and_never_beyond_it() {
+        let stops = RowStops {
+            sides: KnobSideStops {
+                minus: edge(),
+                plus: edge(),
+            },
+        };
+        assert_eq!(
+            stops.tick_values().collect::<Vec<_>>(),
+            [-1.0, 1.0],
+            "риски на краях словаря ручки"
+        );
+        assert!(
+            stops.dimmed_ranges(&KnobStopsLookConfig::default()).is_empty(),
+            "за упором на краю ничего нет: затемнять нечего"
+        );
+        let at_edge = LookKnob::new(1.0).expect("край");
+        assert!(!stops.holds_beyond(at_edge), "на самом упоре ручка не «за упором»");
+    }
+
+    #[test]
+    fn every_valid_fraction_maps_inside_the_knob_dictionary() {
+        for fraction in [f32::MIN_POSITIVE, 0.01, 0.46, 0.999_999_9, 1.0] {
+            let fraction = StopFraction::new(fraction).expect("доля");
+            for direction in [-1.0, 1.0] {
+                let value = stop_value(fraction, direction);
+                assert!(value.abs() <= KNOB_EDGE && value.abs() > 0.0, "{value}");
+                assert_eq!(value.signum(), direction);
+            }
+        }
     }
 }

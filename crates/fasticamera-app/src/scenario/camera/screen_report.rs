@@ -44,6 +44,10 @@ pub struct ScreenCounters {
     pub last_frame_failure: Option<String>,
     pub effects_overflowed: u64,
     pub unhandled_gestures: u64,
+    /// Продолжения пана без начала в разделе калибровки (страховка маршрутизации жестов, должно быть 0).
+    pub orphan_pan_continuations: u64,
+    /// Отказы «картинки под пальцем» из-за пустого списка ведомых узлов (должно быть 0).
+    pub finger_focus_refusals: u64,
     pub gestures_cancelled: u64,
     pub touches_received: u64,
     /// Вход, потерянный каналом: переполнение касаний и действий.
@@ -87,6 +91,8 @@ impl ScreenCounters {
             last_frame_failure: end.last_failure.clone(),
             effects_overflowed: grew(end.effects_overflowed, start.effects_overflowed),
             unhandled_gestures: grew(end.unhandled_gestures, start.unhandled_gestures),
+            orphan_pan_continuations: grew(end.orphan_pan_continuations, start.orphan_pan_continuations),
+            finger_focus_refusals: grew(end.finger_focus_refusals, start.finger_focus_refusals),
             gestures_cancelled: grew(end.gestures.cancelled, start.gestures.cancelled),
             touches_received: grew(end.touches_received, start.touches_received),
             input_overflowed: grew(
@@ -171,6 +177,16 @@ fn counter_violations(screen: &ScreenCounters) -> Vec<String> {
         ("отказов кадра экрана", screen.frame_failures, Some(last_failure)),
         ("переполнений очереди эффектов экрана", screen.effects_overflowed, None),
         ("событий жестов без владельца", screen.unhandled_gestures, None),
+        (
+            "отказов «картинки под пальцем» без ведомых узлов",
+            screen.finger_focus_refusals,
+            None,
+        ),
+        (
+            "продолжений пана раздела без начала",
+            screen.orphan_pan_continuations,
+            None,
+        ),
         ("потерь ввода из-за переполнения канала", screen.input_overflowed, None),
         ("сообщений уничтоженному экрану", screen.input_receiver_gone, None),
         (

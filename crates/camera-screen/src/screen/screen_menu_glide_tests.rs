@@ -226,3 +226,77 @@ fn a_tap_at_the_section_anchor_during_the_glide_does_nothing_but_works_after_it(
         "после переезда кнопка принимает касания"
     );
 }
+
+/// Угол значка кнопки меню на экране (радианы) по матрице значка.
+fn menu_icon_angle(list: &DrawList) -> f32 {
+    let icons = icons_of(list, IconId::ControlsMenu);
+    let icon = icons.first().expect("значок меню в кадре");
+    icon.transform.b.atan2(icon.transform.a)
+}
+
+/// Кадры, пока переезд не кончится (с запасом), чтобы кнопка села.
+fn settle(rig: &mut Rig) {
+    rig.run(800);
+    rig.effects();
+}
+
+#[test]
+fn the_glide_back_starts_at_the_current_place_after_the_phone_was_turned_in_the_section() {
+    let mut rig = photo_rig(DeviceOrientation::Portrait, MotionPreference::Full);
+    trace_switch(&mut rig, CaptureMode::Calibrate, 60);
+    // Поворот телефона внутри раздела: кнопка раздела уезжает на новое место, переезд при этом не идёт.
+    rig.screen
+        .handle_action(ScreenAction::DeviceOrientationChanged(DeviceOrientation::LandscapeLeft));
+    settle(&mut rig);
+    let (_, turned_place) = menu_icon(&rig.frame().clone());
+    let trace = trace_switch(&mut rig, CaptureMode::Photo, 1);
+    assert!(
+        distance(trace.frames[0].1, turned_place) < 30.0,
+        "обратный путь стартует там, где кнопка стоит сейчас, а не там, где её рисовали при прошлом переезде: {:?} против {turned_place:?}",
+        trace.frames[0].1
+    );
+}
+
+#[test]
+fn photo_to_calibrate_and_back_after_settling_starts_each_glide_at_its_own_place() {
+    let mut rig = photo_rig(DeviceOrientation::Portrait, MotionPreference::Full);
+    let (_, photo_place) = menu_icon(&rig.frame().clone());
+    trace_switch(&mut rig, CaptureMode::Calibrate, 60);
+    settle(&mut rig);
+    let anchor = section_anchor_px(&rig);
+    let back = trace_switch(&mut rig, CaptureMode::Photo, 60);
+    assert!(distance(back.frames[0].1, anchor) < 0.25 * distance(anchor, photo_place));
+    settle(&mut rig);
+    let again = trace_switch(&mut rig, CaptureMode::Calibrate, 60);
+    assert!(
+        distance(again.frames[0].1, photo_place) < 0.25 * distance(photo_place, anchor),
+        "повторный переезд стартует у места PHOTO"
+    );
+    assert!(distance(again.frames.last().unwrap().1, anchor) < 1.0);
+}
+
+#[test]
+fn the_glide_holds_in_landscape_right_and_the_icon_turns_to_the_section_angle() {
+    check_glide(DeviceOrientation::LandscapeRight);
+    let mut rig = photo_rig(DeviceOrientation::LandscapeRight, MotionPreference::Full);
+    let photo_angle = menu_icon_angle(&rig.frame().clone());
+    rig.screen
+        .handle_action(ScreenAction::ModeSelected(CaptureMode::Calibrate));
+    let mut mid_angles = Vec::new();
+    for _ in 0..4 {
+        rig.now_ms += FRAME;
+        mid_angles.push(menu_icon_angle(&rig.frame().clone()));
+    }
+    settle(&mut rig);
+    let section_angle = menu_icon_angle(&rig.frame().clone());
+    assert!(
+        section_angle.abs() > 1.0,
+        "в альбомной раскладке значок раздела повёрнут: {section_angle}"
+    );
+    let lo = photo_angle.min(section_angle) - 0.01;
+    let hi = photo_angle.max(section_angle) + 0.01;
+    assert!(
+        mid_angles.iter().all(|angle| (lo..=hi).contains(angle)),
+        "угол значка идёт между концами ({photo_angle} → {section_angle}): {mid_angles:?}"
+    );
+}

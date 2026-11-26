@@ -19,6 +19,7 @@ use ui_draw::draw_list::DrawItem;
 use ui_kit::tokens::MotionToken;
 
 use super::diagnostics::GestureCounters;
+use super::retired_gestures::{RetiredGestureReport, RetiredGestures};
 use crate::action::ScreenAction;
 use crate::widget::PHOTO_BUTTON_MATERIAL;
 use crate::widget::calibration::{CalibrationSection, MenuButtonDrawing, SectionKey};
@@ -69,6 +70,8 @@ pub(crate) struct Stage {
     glide_armed: bool,
     /// Раздел калибровки; `None` вне режима с разделом.
     calibration: Option<CalibrationSection>,
+    /// Жесты, порождённые снятием раздела: их заканчивает уходящий раздел (см. `retired_gestures`).
+    retired_gestures: RetiredGestures,
     shutter: ShutterWidget,
     thumbnail: ThumbnailWidget,
     menu_button: MenuButtonWidget,
@@ -147,6 +150,7 @@ impl Stage {
             menu_glide: MenuButtonGlide::default(),
             glide_armed: false,
             calibration: None,
+            retired_gestures: RetiredGestures::default(),
             shutter,
             thumbnail,
             menu_button,
@@ -390,8 +394,10 @@ impl Stage {
             _ => true,
         };
         if rebuild {
-            if let Some(section) = self.calibration.take() {
+            if let Some(mut section) = self.calibration.take() {
                 section.retire(&mut self.kit)?;
+                // `Cancelled` идущих жестов уходящего раздела заканчивает он сам, а не новый раздел.
+                self.retired_gestures.settle(&mut section, &mut self.kit, ctx)?;
             }
             if let Some(key) = wanted {
                 self.calibration = Some(CalibrationSection::build(&mut self.kit, ctx, self.scene_root, key)?);
@@ -644,6 +650,36 @@ impl Stage {
     }
 
     /// Значения ручек вида, не ставшие значениями (диагностика).
+    /// События жестов к разбору: сначала отложенные при снятии раздела, затем накопленные сценой.
+    pub(crate) fn drain_gesture_events(&mut self) -> Vec<GestureEvent<ScreenGesture>> {
+        let mut events = self.retired_gestures.take_deferred();
+        events.extend(self.kit.scene_mut().drain_gesture_events());
+        events
+    }
+
+    /// Итог жестов, законченных уходящими разделами с прошлого забора (выход виджетов и счётчики).
+    pub(crate) fn take_retired_gestures(&mut self) -> RetiredGestureReport {
+        self.retired_gestures.take_report()
+    }
+
+    /// Продолжения пана без начала: у живого раздела и у уже убранных (диагностика, на нормальном пути 0).
+    pub(crate) fn orphan_pan_continuations(&self) -> u64 {
+        self.retired_gestures.orphan_pan_continuations_of_retired()
+            + self
+                .calibration
+                .as_ref()
+                .map_or(0, CalibrationSection::orphan_pan_continuations)
+    }
+
+    /// Отказы «картинки под пальцем» (пустой список ведомых узлов): у живого раздела и у уже убранных.
+    pub(crate) fn finger_focus_refusals(&self) -> u64 {
+        self.retired_gestures.finger_focus_refusals_of_retired()
+            + self
+                .calibration
+                .as_ref()
+                .map_or(0, CalibrationSection::finger_focus_refusals)
+    }
+
     pub(crate) fn invalid_knob_values(&self) -> u64 {
         self.calibration.as_ref().map_or(0, CalibrationSection::invalid_values)
     }
@@ -671,7 +707,7 @@ impl Stage {
     pub(crate) fn cancel_gestures(&mut self, counters: &mut GestureCounters) -> u64 {
         self.kit.scene_mut().handle_pointer_gap();
         let mut cancelled = 0;
-        for event in self.kit.scene_mut().drain_gesture_events() {
+        for event in self.drain_gesture_events() {
             Self::count_gesture(counters, &event);
             if event.state == GestureState::Cancelled {
                 cancelled += 1;

@@ -204,9 +204,15 @@ impl LookFactsSource {
         }
     }
 
-    /// Проблема запуска хранилища пресетов, о которой экрану ещё не говорили (решение 287); одна на процесс.
-    pub fn take_startup_problem(&self) -> Option<look_contract::LookProblemKind> {
-        self.handle.take_startup_problem()
+    /// Проблема запуска хранилища пресетов, которую экран ещё не показал (решение 287): держится, пока экран не
+    /// подтвердит показ, поэтому пересозданный экран получит её снова.
+    pub fn pending_startup_problem(&self) -> Option<look_contract::LookProblemKind> {
+        self.handle.pending_startup_problem()
+    }
+
+    /// Экран показал плашку проблемы запуска: больше её не отдавать (ни этому, ни следующему экрану).
+    pub fn acknowledge_startup_problem(&self) {
+        self.handle.acknowledge_startup_problem();
     }
 
     /// Сколько раз факты пересобирались с начала жизни источника.
