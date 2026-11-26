@@ -66,6 +66,14 @@ pub struct ScrollSample {
     pub phase: ScrollPhase,
 }
 
+/// Положение и скорость контента в один момент: то, что одна ось отдаёт другой при передаче движения.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScrollMotionState {
+    pub offset: f64,
+    /// Скорость контента, offset/с.
+    pub velocity: f64,
+}
+
 /// Как выполнить программную прокрутку.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScrollTransition {
@@ -313,6 +321,33 @@ impl ScrollAxis {
                 };
             }
         }
+        Ok(())
+    }
+
+    /// Продолжить чужое движение: контент встаёт на `offset` и пружиной едет к `target` (обрезается границами),
+    /// начиная со скорости `velocity` (offset/с). Нужен, когда один движок принимает эстафету от другого (два дома
+    /// одной карусели): положение и скорость совпадают с теми, что только что рисовал предыдущий владелец, поэтому
+    /// скачка нет. `offset` границами НЕ обрезается: передающий мог быть за краем на «резинке».
+    pub fn resume_motion_towards(
+        &mut self,
+        start: ScrollMotionState,
+        target: f64,
+        now: MonotonicNanos,
+    ) -> Result<(), ScrollError> {
+        ensure_finite("offset", start.offset)?;
+        ensure_finite("velocity", start.velocity)?;
+        ensure_finite("target", target)?;
+        let target = self.clamp(target);
+        let animation = self.start_spring(
+            self.settings.snap_spring,
+            (start.offset, target),
+            start.velocity,
+            now,
+        )?;
+        self.motion = Motion::Springing {
+            animation,
+            purpose: SpringPurpose::ScrollToTarget,
+        };
         Ok(())
     }
 

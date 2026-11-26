@@ -11,6 +11,6 @@ mod error;
 mod events;
 
 pub use element::SnapCarousel;
-pub use entry::{CarouselEntry, CarouselSpec, ItemPlacement};
+pub use entry::{CarouselEntry, CarouselMotion, CarouselSpec, ItemPlacement};
 pub use error::CarouselError;
 pub use events::{CarouselEvent, SelectionCause, TapOutcome};

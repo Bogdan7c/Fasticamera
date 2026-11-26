@@ -64,3 +64,16 @@ pub(super) fn snap_offsets<T>(entries: &[CarouselEntry<T>], gap_points: f64) -> 
     let first_center = centers[0];
     Ok(centers.into_iter().map(|center| center - first_center).collect())
 }
+
+/// Движение карусели в один момент: положение и скорость контента вдоль оси капсулы. Это то, что один дом
+/// карусели отдаёт другому при передаче эстафеты ([`SnapCarousel::adopt_motion`]): приёмник продолжает
+/// рисовать ровно с того места и с той скоростью, где остановился передающий.
+///
+/// [`SnapCarousel::adopt_motion`]: super::SnapCarousel::adopt_motion
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CarouselMotion {
+    /// Смещение контента, pt (0 — первый элемент по центру).
+    pub offset_points: f64,
+    /// Скорость контента, pt/с.
+    pub velocity_points_per_second: f64,
+}

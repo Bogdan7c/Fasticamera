@@ -33,6 +33,7 @@
 //! и клавиша громкости, и таймер.
 
 mod calibration_targets;
+mod capsule_handover;
 mod diagnostics;
 mod effect_queue;
 mod error;
@@ -644,6 +645,8 @@ mod screen_calibration_strip_tests;
 #[cfg(test)]
 #[path = "screen_calibration_tests.rs"]
 mod screen_calibration_tests;
+#[cfg(test)]
+mod screen_capsule_handover_tests;
 #[cfg(test)]
 #[path = "screen_menu_glide_tests.rs"]
 mod screen_menu_glide_tests;

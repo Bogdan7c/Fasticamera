@@ -18,6 +18,7 @@ use ui_core::scene::{SceneSettings, SurfaceGeometry, UiScene};
 use ui_draw::draw_list::DrawItem;
 use ui_kit::tokens::MotionToken;
 
+use super::capsule_handover::{ArrivingHome, CapsuleHandover};
 use super::diagnostics::GestureCounters;
 use super::retired_gestures::{RetiredGestureReport, RetiredGestures};
 use crate::action::ScreenAction;
@@ -388,6 +389,8 @@ impl Stage {
             .calibration
             .as_ref()
             .and_then(|section| section.menu_button_glide_endpoint(&self.kit));
+        // Движение капсулы режимов уходящего раздела снимается так же заранее (см. `capsule_handover`).
+        let capsule_before = CapsuleHandover::capture(self.calibration.as_ref(), ctx);
         let rebuild = match (&self.calibration, &wanted) {
             (Some(section), Some(key)) => section.key() != key,
             (None, None) => false,
@@ -410,6 +413,13 @@ impl Stage {
                 self.start_menu_glide(ctx, photo_wanted, section_button_before)?;
             }
             self.photo_shown = photo_wanted;
+            // Видимым становится другой дом капсулы: он продолжает движение прежнего, а не свой покой.
+            let arriving = if photo_wanted {
+                ArrivingHome::Photo
+            } else {
+                ArrivingHome::Section
+            };
+            capsule_before.hand_over(arriving, &mut self.carousel, self.calibration.as_mut(), ctx)?;
             self.kit.set_shown(self.photo_root, photo_wanted)?;
             if photo_wanted {
                 // `set_shown` возвращает обычную политику касаний; узлу-хозяину нужна «прозрачная».
@@ -431,16 +441,23 @@ impl Stage {
         photo_wanted: bool,
         section_button_before: Option<GlideEndpoint>,
     ) -> Result<(), WidgetError> {
-        let (direction, from) = if photo_wanted {
-            (GlideDirection::SectionToPhoto, section_button_before)
+        let (direction, from, expected_to) = if photo_wanted {
+            (
+                GlideDirection::SectionToPhoto,
+                section_button_before,
+                self.menu_button.glide_endpoint(&self.kit),
+            )
         } else {
             (
                 GlideDirection::PhotoToSection,
                 self.menu_button.glide_endpoint(&self.kit),
+                self.calibration
+                    .as_ref()
+                    .and_then(|section| section.menu_button_glide_endpoint(&self.kit)),
             )
         };
         match from {
-            Some(from) => self.menu_glide.start(ctx, direction, from),
+            Some(from) => self.menu_glide.start(ctx, direction, from, expected_to),
             None => Ok(()),
         }
     }

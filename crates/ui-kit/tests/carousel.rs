@@ -564,3 +564,44 @@ fn identical_input_gives_bit_identical_carousel_samples() {
     };
     assert_eq!(run(), run());
 }
+
+/// Эстафета между двумя домами одной карусели: принявший начинает ровно с положения и скорости передавшего
+/// (первый кадр без скачка) и приходит к своему выбранному элементу; выбор и события не трогаются.
+#[test]
+fn adopting_motion_continues_from_the_handed_over_offset_and_velocity_to_the_own_selection() {
+    let tokens = UiKitTokens::default();
+    // Передающий едет от Video к Photo: отпущен посреди пути.
+    let mut outgoing = carousel(Item::Video, &tokens);
+    swipe_left(&mut outgoing, 0, 40.0, 600.0);
+    let handed_at = ms(150);
+    let motion = outgoing.motion_snapshot(handed_at);
+    assert!(
+        motion.offset_points > 1.0 && motion.offset_points < OFFSET_1,
+        "движение посреди пути"
+    );
+    assert!(motion.velocity_points_per_second > 1.0, "едет к Photo");
+
+    // Принимающий стоит в покое на Photo со своим, чужим положением.
+    let mut incoming = carousel(Item::Photo, &tokens);
+    incoming.adopt_motion(motion, handed_at).unwrap();
+
+    assert!(
+        (incoming.offset_points(handed_at) - motion.offset_points).abs() < 1e-9,
+        "первый кадр на месте передавшего"
+    );
+    assert!(
+        (incoming.velocity_points_per_second(handed_at) - motion.velocity_points_per_second).abs() < 1e-9,
+        "скорость унаследована"
+    );
+    assert_eq!(incoming.selected(), &Item::Photo, "выбор принявшего не меняется");
+    assert!(
+        incoming.drain_events().is_empty(),
+        "эстафета не рождает ни выбора, ни хаптики"
+    );
+    let later = ms(3000);
+    assert!(
+        (incoming.offset_points(later) - OFFSET_1).abs() < 0.05,
+        "пришёл к своему элементу"
+    );
+    assert_eq!(incoming.phase(later), MotionPhase::Resting);
+}

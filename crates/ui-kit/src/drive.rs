@@ -22,7 +22,9 @@ use thiserror::Error;
 use ui_core::geometry::Vector;
 use ui_core::gesture::PanTranslation;
 pub use ui_core::scroll::ScrollTransition;
-use ui_core::scroll::{AxisGeometry, ReleaseOutcome, ScrollAxis, ScrollError, ScrollPhase, ScrollSample};
+use ui_core::scroll::{
+    AxisGeometry, ReleaseOutcome, ScrollAxis, ScrollError, ScrollMotionState, ScrollPhase, ScrollSample,
+};
 use ui_core::time::{MonotonicNanos, MotionPreference};
 
 use crate::environment::ElementEnvironment;
@@ -338,6 +340,17 @@ impl AxisDrive {
         now: MonotonicNanos,
     ) -> Result<(), ScrollError> {
         self.scroll.scroll_to(target, transition, now)
+    }
+
+    /// Принять эстафету движения от другого привода: контент встаёт на `start` (положение и скорость) и пружиной
+    /// едет к `target`. Скачка нет: первый же кадр совпадает с последним кадром передающего.
+    pub(crate) fn resume_motion_towards(
+        &mut self,
+        start: ScrollMotionState,
+        target: f64,
+        now: MonotonicNanos,
+    ) -> Result<(), ScrollError> {
+        self.scroll.resume_motion_towards(start, target, now)
     }
 
     /// Сменить отрезок смещений и точки прилипания одной атомарной операцией: при ошибке привод

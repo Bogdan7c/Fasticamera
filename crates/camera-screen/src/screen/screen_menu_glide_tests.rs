@@ -300,3 +300,35 @@ fn the_glide_holds_in_landscape_right_and_the_icon_turns_to_the_section_angle() 
         "угол значка идёт между концами ({photo_angle} → {section_angle}): {mid_angles:?}"
     );
 }
+
+/// Конец переезда не «щёлкает»: последнее изменение места кнопки (там, где переезд передаёт её статической копии в
+/// якоре) меньше 1 px при любой ориентации. Допуск покоя абсолютный, а не доля пути: в альбоме путь длиннее, и доля
+/// оставляла кнопку в ≈ 10 px от якоря.
+#[test]
+fn the_glide_lands_within_one_pixel_of_the_anchor_before_the_static_button_takes_over() {
+    for orientation in [
+        DeviceOrientation::Portrait,
+        DeviceOrientation::LandscapeLeft,
+        DeviceOrientation::LandscapeRight,
+    ] {
+        let mut rig = photo_rig(orientation, MotionPreference::Full);
+        let trace = trace_switch(&mut rig, CaptureMode::Calibrate, 120);
+        let anchor = section_anchor_px(&rig);
+        let places: Vec<(f32, f32)> = trace.frames.iter().map(|(_, centre, _)| *centre).collect();
+        let last_change = places
+            .windows(2)
+            .rev()
+            .map(|pair| distance(pair[0], pair[1]))
+            .find(|step| *step > 0.001)
+            .expect("кнопка ехала");
+        assert!(
+            last_change < 1.0,
+            "{orientation:?}: последний скачок места кнопки {last_change} px (передача статической копии)"
+        );
+        let end = *places.last().expect("кадры");
+        assert!(
+            distance(end, anchor) < 1.0,
+            "{orientation:?}: кнопка в якоре, а не в {end:?}"
+        );
+    }
+}

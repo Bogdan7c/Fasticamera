@@ -18,10 +18,10 @@ use std::fmt::Debug;
 
 use ui_core::geometry::Vector;
 use ui_core::gesture::PanTranslation;
-use ui_core::scroll::{ReleaseOutcome, ScrollError};
+use ui_core::scroll::{ReleaseOutcome, ScrollError, ScrollMotionState};
 use ui_core::time::{MonotonicNanos, MotionPreference};
 
-use super::entry::{CarouselEntry, CarouselSpec, ItemPlacement, snap_offsets};
+use super::entry::{CarouselEntry, CarouselMotion, CarouselSpec, ItemPlacement, snap_offsets};
 use super::error::CarouselError;
 use super::events::{CarouselEvent, SelectionCause, TapOutcome};
 use crate::drive::{AxisDrive, DriveSetup, MotionPhase, OffsetRange, ScrollTransition};
@@ -238,6 +238,33 @@ impl<T: Clone + PartialEq + Debug> SnapCarousel<T> {
         self.swipe_in_progress = false;
         self.drive.scroll_to(target_offset, transition, now)?;
         self.commit_selection(index, SelectionCause::Programmatic);
+        Ok(())
+    }
+
+    /// Снимок движения: что сейчас рисуется (положение и скорость контента). Передаётся другому дому той же
+    /// карусели через [`Self::adopt_motion`].
+    pub fn motion_snapshot(&self, now: MonotonicNanos) -> CarouselMotion {
+        let sample = self.drive.sample(now);
+        CarouselMotion {
+            offset_points: sample.offset,
+            velocity_points_per_second: sample.velocity,
+        }
+    }
+
+    /// Принять эстафету: контент встаёт на положение `motion` с его скоростью и пружиной едет к элементу,
+    /// выбранному в этой карусели. Выбор, события и хаптика не меняются; это не сброс на покой (сброс дал бы
+    /// скачок на глазах), а продолжение движения передающей карусели.
+    pub fn adopt_motion(&mut self, motion: CarouselMotion, now: MonotonicNanos) -> Result<(), CarouselError> {
+        let target_offset = self.offset_for_index(self.selected)?;
+        self.swipe_in_progress = false;
+        self.drive.resume_motion_towards(
+            ScrollMotionState {
+                offset: motion.offset_points,
+                velocity: motion.velocity_points_per_second,
+            },
+            target_offset,
+            now,
+        )?;
         Ok(())
     }
 

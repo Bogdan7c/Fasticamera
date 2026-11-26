@@ -15,8 +15,8 @@ use ui_draw::color::DisplayColor;
 use ui_draw::draw_list::{DrawItem, PressState, ShapeItem, StrokeStyle};
 use ui_draw::geometry::PxSize;
 use ui_draw::shape::ShapeGeometry;
-use ui_kit::carousel::{CarouselEntry, CarouselEvent, CarouselSpec, SnapCarousel, TapOutcome};
-use ui_kit::drive::ScrollTransition;
+use ui_kit::carousel::{CarouselEntry, CarouselEvent, CarouselMotion, CarouselSpec, SnapCarousel, TapOutcome};
+use ui_kit::drive::{MotionPhase, ScrollTransition};
 use ui_kit::pan::PanUpdate;
 use ui_kit::tokens::PanelMaterial;
 use ui_kit::view::{CarouselLabels, GlassShape, LabelPainter, carousel_items_in_window, opacity_of_placement};
@@ -217,7 +217,29 @@ impl ModeCarouselWidget {
         Ok(())
     }
 
-    pub(crate) fn sync(&mut self, kit: &mut SceneKit, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
+    /// Что капсула рисует сейчас (положение и скорость подписей вдоль её оси): то, что она передаёт второму дому.
+    /// `None` — капсула стоит в покое: передавать нечего, принимающий дом покажет свой покой (смена режима действием
+    /// без жеста по капсуле, как и раньше, не рождает в новом доме лишнего движения).
+    pub(crate) fn motion_snapshot(&self, ctx: &Ctx<'_>) -> Option<CarouselMotion> {
+        (self.carousel.phase(ctx.now) != MotionPhase::Resting).then(|| self.carousel.motion_snapshot(ctx.now))
+    }
+
+    /// Принять эстафету от капсулы, которую зритель только что видел в другом доме: подписи продолжают ехать с её
+    /// положения и скорости, а не со СВОЕГО покоя. Зачем: у двух домов отдельные состояния прокрутки, и скрытый дом
+    /// стоит в покое на режиме, который был до жеста. Без передачи после смены режима он стартовал бы анимацию выбора
+    /// от этого устаревшего покоя, и подписи скакали бы назад и ехали второй раз.
+    ///
+    /// Сначала выбор приводится к режиму экрана: передача случается в кадре смены режима, а скрытый дом ещё
+    /// «помнит» прежний выбор. Иначе принятое движение поехало бы к устаревшему режиму и лишь потом развернулось.
+    pub(crate) fn adopt_motion(&mut self, motion: CarouselMotion, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
+        self.select_screen_mode(ctx)?;
+        self.carousel
+            .adopt_motion(motion, ctx.now)
+            .map_err(element("карусель режимов"))
+    }
+
+    /// Приводит выбор капсулы к режиму экрана (программно, без эха действия): подписи едут к нему анимированно.
+    fn select_screen_mode(&mut self, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
         let wanted_index = self
             .carousel
             .entries()
@@ -230,6 +252,11 @@ impl ModeCarouselWidget {
                 .select(index, ScrollTransition::Animated, ctx.now)
                 .map_err(element("карусель режимов"))?;
         }
+        Ok(())
+    }
+
+    pub(crate) fn sync(&mut self, kit: &mut SceneKit, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
+        self.select_screen_mode(ctx)?;
         // Внутри раздела ряд карточка не растворяет: меню раздела лежит поверх него целиком (шторка и карточка
         // перекрывают ряд, а не растворяют его), поэтому растворять ряд некому.
         let shown = match self.home {

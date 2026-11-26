@@ -13,7 +13,7 @@ mod error;
 mod rubber;
 mod snap;
 
-pub use axis::{AxisGeometry, ReleaseOutcome, ScrollAxis, ScrollPhase, ScrollSample, ScrollTransition};
+pub use axis::{AxisGeometry, ReleaseOutcome, ScrollAxis, ScrollMotionState, ScrollPhase, ScrollSample, ScrollTransition};
 pub use config::ScrollConfig;
 pub use deceleration::{DecelerationEnd, DecelerationModel, DecelerationRate, DecelerationSegment};
 pub use error::ScrollError;

@@ -44,6 +44,7 @@ use look_contract::HueBandId;
 use ui_core::geometry::Rect;
 use ui_core::gesture::GestureEvent;
 use ui_core::id::NodeId;
+use ui_kit::carousel::CarouselMotion;
 
 use self::clean_button::CleanButton;
 use self::knobs_column::KnobsColumn;
@@ -251,6 +252,16 @@ impl CalibrationSection {
             }
         }
         self.cards.draw(ctx, visuals, layers, texts)
+    }
+
+    /// Что капсула режимов раздела рисует сейчас (для передачи эстафеты капсуле PHOTO); `None` — капсула в покое.
+    pub(crate) fn capsule_motion(&self, ctx: &Ctx<'_>) -> Option<CarouselMotion> {
+        self.carousel.motion_snapshot(ctx)
+    }
+
+    /// Капсула раздела продолжает движение капсулы PHOTO, а не стоит на своём покое.
+    pub(crate) fn adopt_capsule_motion(&mut self, motion: CarouselMotion, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
+        self.carousel.adopt_motion(motion, ctx)
     }
 
     /// Где кнопка меню раздела стоит на экране (начало и конец переезда PHOTO ↔ CALIBRATE).

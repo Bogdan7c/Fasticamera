@@ -28,14 +28,31 @@ use ui_kit::tokens::MotionToken;
 use super::Ctx;
 use super::error::{WidgetError, element};
 
-/// Критерий покоя прогресса 0..1: переезд кончается, когда кнопка в пределах 0,5 % пути от якоря (≈ 1 pt на пути в
-/// 250 pt) и почти не движется. Хвост пружины глубже незаметен глазу, а кнопка в нём не нажималась бы лишние
-/// десятки миллисекунд; статическая копия садится в якорь на этот долю точки.
-const PROGRESS_REST: RestCriterion = RestCriterion {
-    relative_epsilon: 0.005,
-    absolute_position_floor: 0.005,
-    velocity_tolerance_factor: 1.0,
-};
+/// Допуск покоя переезда, px экрана: переезд кончается, когда кнопка в пределах 0,5 px от якоря и почти не
+/// движется. Допуск АБСОЛЮТНЫЙ, не доля пути: доля (0,5 % пути) на длинном пути в альбоме оставляла кнопку в
+/// ≈ 10 px от якоря, и статическая копия «щёлкала» на эти px. 0,5 px глазу незаметны, а хвост пружины глубже не
+/// нужен (кнопка в нём не нажималась бы лишние десятки миллисекунд).
+const GLIDE_REST_TOLERANCE_PX: f64 = 0.5;
+
+/// Длина пути, pt, на случай, когда конец переезда в момент старта неизвестен (узла-назначения нет в дереве):
+/// допуск покоя переводится в доли пути по этой длине. Заведомо не короче диагонали экрана, поэтому допуск строже.
+const FALLBACK_PATH_PT: f64 = 1000.0;
+
+/// Доля пути, меньше которой остаток переезда уже не мешает нажимать кнопку (0,5 % пути, как раньше было критерием
+/// покоя): касания возвращаются сразу, а рисование доезжает до абсолютного допуска.
+const TOUCH_RESUME_REMAINING_FRACTION: f64 = 0.005;
+
+/// Критерий покоя прогресса 0..1 для пути длиной `path_pt` (pt): допуск положения — `GLIDE_REST_TOLERANCE_PX`,
+/// переведённый в долю пути; относительной составляющей нет.
+fn progress_rest(ctx: &Ctx<'_>, path_pt: f64) -> RestCriterion {
+    let tolerance_pt = GLIDE_REST_TOLERANCE_PX / f64::from(ctx.px.get());
+    RestCriterion {
+        relative_epsilon: 0.0,
+        // Пол обязан быть положительным; для вырожденно короткого пути допуск не больше всего пути.
+        absolute_position_floor: (tolerance_pt / path_pt.max(f64::EPSILON)).min(1.0),
+        velocity_tolerance_factor: 1.0,
+    }
+}
 
 /// Куда идёт переезд.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,13 +111,15 @@ pub(crate) struct MenuButtonGlide {
 }
 
 impl MenuButtonGlide {
-    /// Начать переезд из `from`. Reduce Motion — ничего не начинает (кнопка прыгает). Если прежний переезд ещё идёт,
+    /// Начать переезд из `from`; `expected_to` — где конец-назначение сейчас (длина пути задаёт допуск покоя; сам
+    /// конец каждый кадр берётся заново, см. `frame`). Reduce Motion — ничего не начинает (кнопка прыгает). Если прежний переезд ещё идёт,
     /// новый стартует с места, где кнопку нарисовали последний раз (скачка нет).
     pub(crate) fn start(
         &mut self,
         ctx: &Ctx<'_>,
         direction: GlideDirection,
         from: GlideEndpoint,
+        expected_to: Option<GlideEndpoint>,
     ) -> Result<(), WidgetError> {
         if ctx.motion == MotionPreference::Reduced {
             self.run = None;
@@ -112,6 +131,9 @@ impl MenuButtonGlide {
             Some(run) if run.progress.sample(ctx.now).phase == SpringPhase::Moving => run.last_drawn,
             _ => from,
         };
+        let path_pt = expected_to.map_or(FALLBACK_PATH_PT, |to| {
+            (to.centre_pt.x - start_point.centre_pt.x).hypot(to.centre_pt.y - start_point.centre_pt.y)
+        });
         let spring = ctx.spring(MotionToken::CardMorph)?;
         let progress = SpringAnimation::start(SpringStart {
             spring,
@@ -119,7 +141,7 @@ impl MenuButtonGlide {
             to: 1.0,
             initial_velocity: 0.0,
             start_time: ctx.now,
-            rest: PROGRESS_REST,
+            rest: progress_rest(ctx, path_pt),
         })
         .map_err(element("пружина переезда кнопки меню"))?;
         self.run = Some(GlideRun {
@@ -131,15 +153,21 @@ impl MenuButtonGlide {
         Ok(())
     }
 
-    /// Едет ли кнопка в момент `now`: статические копии при этом не рисуются и не нажимаются.
+    /// Едет ли кнопка в момент `now`: статические копии при этом не нажимаются. Касания возвращаются раньше, чем
+    /// кончается рисование: последние доли пути (< [`TOUCH_RESUME_REMAINING_FRACTION`]) глазом не видны, а держать
+    /// кнопку неотзывчивой из-за них незачем.
     pub(crate) fn is_active(&self, now: MonotonicNanos) -> bool {
-        self.run
-            .is_some_and(|run| run.progress.sample(now).phase == SpringPhase::Moving)
+        self.run.is_some_and(|run| {
+            let sample = run.progress.sample(now);
+            sample.phase == SpringPhase::Moving && (1.0 - sample.value).abs() > TOUCH_RESUME_REMAINING_FRACTION
+        })
     }
 
-    /// Направление идущего переезда (чтобы Stage взял конец-назначение у нужного дома).
+    /// Направление идущего переезда, пока ездящая копия ещё рисуется (чтобы Stage взял конец-назначение у нужного
+    /// дома). Рисование идёт до абсолютного допуска покоя, дольше, чем блокировка касаний ([`Self::is_active`]).
     pub(crate) fn direction(&self, now: MonotonicNanos) -> Option<GlideDirection> {
-        self.is_active(now).then(|| self.run.map(|run| run.direction))?
+        let run = self.run?;
+        (run.progress.sample(now).phase == SpringPhase::Moving).then_some(run.direction)
     }
 
     /// Где рисовать кнопку в момент `now`, если конец-назначение сейчас в `target`. `None` — переезд не идёт
