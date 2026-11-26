@@ -15,6 +15,6 @@ mod scan;
 mod size;
 
 pub use intent::{ScopeIntent, ScopeRequest};
-pub use kind::{ScopeKind, VectorscopeAxes};
+pub use kind::{ScopeKind, ScopePictureShape, VectorscopeAxes};
 pub use scan::ScopeScan;
 pub use size::{MAX_SCOPE_IMAGE_SIDE_PX, ScopeImageSize, ScopeImageSizeError};

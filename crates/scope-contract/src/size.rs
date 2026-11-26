@@ -54,6 +54,17 @@ impl ScopeImageSize {
         Ok(Self { width, height })
     }
 
+    /// Квадрат, вписанный в этот размер: сторона — меньшая сторона. Допустим по построению (не больше исходных
+    /// сторон), поэтому без ошибки.
+    #[must_use]
+    pub fn inscribed_square(self) -> Self {
+        let side = self.width.min(self.height);
+        Self {
+            width: side,
+            height: side,
+        }
+    }
+
     /// Ширина, пикселей.
     pub fn width(self) -> u32 {
         self.width
@@ -100,6 +111,18 @@ mod tests {
         assert_eq!((size.width(), size.height()), (512, 288));
         let largest = ScopeImageSize::try_new(MAX_SCOPE_IMAGE_SIDE_PX, 1).unwrap();
         assert_eq!(largest.width(), MAX_SCOPE_IMAGE_SIDE_PX);
+    }
+
+    #[test]
+    fn inscribed_square_takes_the_shorter_side_and_keeps_a_square_as_is() {
+        let tall = ScopeImageSize::try_new(540, 743).unwrap();
+        assert_eq!(tall.inscribed_square(), ScopeImageSize::try_new(540, 540).unwrap());
+        let wide = ScopeImageSize::try_new(900, 300).unwrap();
+        assert_eq!(wide.inscribed_square(), ScopeImageSize::try_new(300, 300).unwrap());
+        let square = ScopeImageSize::try_new(64, 64).unwrap();
+        assert_eq!(square.inscribed_square(), square);
+        let thin = ScopeImageSize::try_new(1, 4096).unwrap();
+        assert_eq!(thin.inscribed_square(), ScopeImageSize::try_new(1, 1).unwrap());
     }
 
     #[test]
