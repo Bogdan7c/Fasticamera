@@ -111,7 +111,8 @@ fn zero_width_surface_is_a_typed_error_not_a_panic() {
 fn glass_geometry_is_the_clamped_sum_of_group_bounds_and_the_screen_fraction() {
     let surface = SurfaceSizePx::ONEPLUS_11;
     let plan = ScreenPlan::build(&inputs(true), surface).expect("экраны");
-    let summary = plan.scene(DisplayScreen::Calibrate).summary;
+    // После 14m стекло есть только у PHOTO; раздел CALIBRATE стекла не рисует (проверяется ниже).
+    let summary = plan.scene(DisplayScreen::Photo).summary;
     assert_eq!(summary.surface_area_px, 1080 * 2412);
     assert!(
         summary.glass_bounds_area_px > 0,
@@ -124,7 +125,7 @@ fn glass_geometry_is_the_clamped_sum_of_group_bounds_and_the_screen_fraction() {
     );
 
     // Независимый пересчёт: сумма площадей bounds групп, обрезанных по экрану.
-    let list = &plan.scene(DisplayScreen::Calibrate).draw_list;
+    let list = &plan.scene(DisplayScreen::Photo).draw_list;
     let recount: f64 = list
         .items
         .iter()
@@ -174,16 +175,15 @@ fn union_area_counts_overlaps_once_and_disjoint_rects_fully() {
 #[test]
 fn the_real_screens_glass_union_is_not_larger_than_the_sum_nor_than_the_screen() {
     let plan = ScreenPlan::build(&inputs(true), SurfaceSizePx::ONEPLUS_11).expect("экраны");
-    for screen in [DisplayScreen::Photo, DisplayScreen::Calibrate] {
-        let summary = plan.scene(screen).summary;
-        assert!(summary.glass_union_area_px > 0, "{screen:?}: {summary:?}");
-        assert!(
-            summary.glass_union_area_px <= summary.glass_bounds_area_px,
-            "{screen:?}: {summary:?}"
-        );
-        assert!(
-            summary.glass_union_screen_fraction <= 1.0 + 1e-9,
-            "{screen:?}: {summary:?}"
-        );
-    }
+    // CALIBRATE после 14m без стекла: площадь стекла нулевая; у PHOTO — положительная.
+    let calibrate = plan.scene(DisplayScreen::Calibrate).summary;
+    assert_eq!(
+        (calibrate.glass_groups, calibrate.glass_union_area_px),
+        (0, 0),
+        "{calibrate:?}"
+    );
+    let photo = plan.scene(DisplayScreen::Photo).summary;
+    assert!(photo.glass_union_area_px > 0, "{photo:?}");
+    assert!(photo.glass_union_area_px <= photo.glass_bounds_area_px, "{photo:?}");
+    assert!(photo.glass_union_screen_fraction <= 1.0 + 1e-9, "{photo:?}");
 }

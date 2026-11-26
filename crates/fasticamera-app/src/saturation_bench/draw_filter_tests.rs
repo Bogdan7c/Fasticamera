@@ -103,7 +103,8 @@ fn single_kind_filters_keep_only_their_kind_with_the_real_screen_counts() {
 
 #[test]
 fn no_glass_drops_only_glass_and_keeps_the_order_of_the_rest() {
-    let list = calibrate_list();
+    // После 14m стекло есть только у PHOTO (в CALIBRATE его нет), поэтому проверяем на списке PHOTO.
+    let list = photo_list();
     let without = DrawFilter::NoGlass.apply(&list);
     let expected: Vec<&DrawItem> = list
         .leaf_items()
