@@ -7,7 +7,7 @@
 //! осмысленно отличается от продуктового.
 
 use scope_contract::ScopeScan;
-use scope_model::{GraticulePrimitive, GridShape, RenderSettings, ResolvedScope};
+use scope_model::{GraticulePrimitive, GridShape, PositionPalette, RenderSettings, ResolvedScope, TracePaint};
 
 use crate::scopes::{AccumulateParameters, AccumulatorId, AccumulatorShader, GpuScopeRule, ScopeError};
 use crate::shaders::blobs;
@@ -103,6 +103,14 @@ impl GpuScopeRule for DiagnosticRule<'_> {
 
     fn trace_colors(&self, settings: &RenderSettings) -> Vec<[f32; 3]> {
         self.inner.trace_colors(settings)
+    }
+
+    fn trace_paint(&self) -> TracePaint {
+        GpuScopeRule::trace_paint(self.inner)
+    }
+
+    fn position_palette(&self, settings: &RenderSettings) -> Option<PositionPalette> {
+        GpuScopeRule::position_palette(self.inner, settings)
     }
 
     fn graticule(&self, settings: &RenderSettings) -> Vec<GraticulePrimitive> {

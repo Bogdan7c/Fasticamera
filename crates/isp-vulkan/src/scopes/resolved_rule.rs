@@ -21,7 +21,7 @@
 
 use scope_contract::ScopeScan;
 use scope_model::projection::IntegerProjection;
-use scope_model::{GraticulePrimitive, GridShape, RenderSettings, ResolvedScope, ScopeRule};
+use scope_model::{GraticulePrimitive, GridShape, RenderSettings, ResolvedScope, ScopeRule, TracePaint};
 
 use super::error::ScopeError;
 use super::rule::{AccumulateParameters, AccumulatorId, GpuScopeRule, RuleWords};
@@ -154,6 +154,10 @@ impl GpuScopeRule for ResolvedScope {
 
     fn trace_colors(&self, settings: &RenderSettings) -> Vec<[f32; 3]> {
         ResolvedScope::trace_colors(self, settings)
+    }
+
+    fn trace_paint(&self) -> TracePaint {
+        ResolvedScope::trace_paint(self)
     }
 
     fn graticule(&self, settings: &RenderSettings) -> Vec<GraticulePrimitive> {

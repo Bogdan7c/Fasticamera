@@ -17,10 +17,15 @@ struct GraticulePrimitive {
 
 layout(set = 0, binding = 1, std430) readonly buffer RenderParameters {
     uvec4 grid;             // столбцы, строки, плоскости, число примитивов
-    vec4 trace;             // x = log2(1 + число насыщения), y = непрозрачность следа, z = непрозрачность сетки
+    vec4 trace;             // x = log2(1 + число насыщения), y = непрозрачность следа, z = непрозрачность сетки,
+                            // w = способ рисования следа (PAINT_*)
     vec4 graticule_color;   // rgb
-    vec4 plane_colors[3];   // rgb следа по плоскостям
+    vec4 plane_colors[3];   // rgb следа по плоскостям (секции) или основные цвета наложения
     GraticulePrimitive primitives[48];
+    // ХВОСТ «цвет по положению» (способ PAINT_COLOR_BY_POSITION; у остальных способов — нули и не читается).
+    vec4 position_palette[128]; // rgb края и радиус края (клеток) по углам круга
+    vec4 position_neutral;      // rgb центра
+    vec4 position_geometry;     // x = центр (клеток), y = радиус «это центр», z = наименьший радиус края
 } parameters;
 
 layout(set = 0, binding = 2, std430) readonly buffer ScopeCounters {
@@ -29,6 +34,45 @@ layout(set = 0, binding = 2, std430) readonly buffer ScopeCounters {
 
 const float KIND_SEGMENT = 0.0;
 const float KIND_RING = 1.0;
+
+// Способы рисования следа (parameters.trace.w); те же числа, что `PAINT_CODE_*` в `parameter_blocks.rs`.
+const float PAINT_PLANE_SECTIONS = 0.0;
+const float PAINT_PLANES_OVERLAID = 1.0;
+const float PAINT_COLOR_BY_POSITION = 2.0;
+const uint POSITION_PALETTE_ANGLES = 128u;
+const float TAU = 6.28318530717958647692;
+
+// Яркость следа по счётчику: та же лог-шкала, что у секций (`trace_intensity` эталона).
+float trace_intensity(uint count) {
+    return count == 0u ? 0.0 : min(log2(1.0 + float(count)) / parameters.trace.x, 1.0);
+}
+
+// Цвет ячейки `(column, row)` вектороскопа по её положению: эталон — `PositionPalette::colour_at`.
+// Центральная клетка даёт d = (0, 0), а atan(0, 0) в GLSL не определён (на Adreno может быть NaN), поэтому
+// ветка «центр -> нейтраль» стоит ДО вычисления угла.
+vec3 position_color(uint column, uint row) {
+    float centre = parameters.position_geometry.x;
+    vec2 offset = vec2(float(column) + 0.5 - centre, centre - (float(row) + 0.5));
+    float radius = length(offset);
+    vec3 neutral = parameters.position_neutral.rgb;
+    if (!(radius > parameters.position_geometry.y)) {
+        return neutral;
+    }
+    float turns = atan(offset.y, offset.x) / TAU;
+    if (turns < 0.0) {
+        turns += 1.0;
+    }
+    float position = turns * float(POSITION_PALETTE_ANGLES);
+    float base = floor(position);
+    float fraction = position - base;
+    uint first = uint(base) % POSITION_PALETTE_ANGLES;
+    uint second = (first + 1u) % POSITION_PALETTE_ANGLES;
+    vec4 low = parameters.position_palette[first];
+    vec4 high = parameters.position_palette[second];
+    float edge_radius = max(mix(low.w, high.w, fraction), parameters.position_geometry.z);
+    float reach = clamp(radius / edge_radius, 0.0, 1.0);
+    return mix(neutral, mix(low.rgb, high.rgb, fraction), reach);
+}
 
 float distance_to_segment(vec2 point, vec2 start, vec2 end) {
     vec2 along = end - start;
@@ -119,7 +163,31 @@ void main() {
     uint count = counters.counts[(plane * rows + row) * columns + column];
 
     float trace_alpha = 0.0;
-    if (count != 0u) {
+    // Цвет следа для способов «наложение» и «по положению»; у секций цвет берётся ниже по плоскости.
+    vec3 branch_trace_color = vec3(0.0);
+    if (parameters.trace.w == PAINT_PLANES_OVERLAID) {
+        // Все плоскости рисуются в одни пиксели на всю ширину; цвет = смесь цветов плоскостей по их яркостям,
+        // делённая на свой наибольший канал; прозрачность — по самой яркой плоскости.
+        uint overlay_column = (pixel.x * columns) / size.x;
+        vec3 weighted = vec3(0.0);
+        float brightest = 0.0;
+        for (uint overlay_plane = 0u; overlay_plane < planes; ++overlay_plane) {
+            uint overlay_count = counters.counts[(overlay_plane * rows + row) * columns + overlay_column];
+            float intensity = trace_intensity(overlay_count);
+            weighted += intensity * parameters.plane_colors[overlay_plane].rgb;
+            brightest = max(brightest, intensity);
+        }
+        float peak = max(weighted.r, max(weighted.g, weighted.b));
+        if (brightest > 0.0 && peak > 0.0) {
+            branch_trace_color = weighted / peak;
+            trace_alpha = brightest * parameters.trace.y;
+        }
+    } else if (parameters.trace.w == PAINT_COLOR_BY_POSITION) {
+        if (count != 0u) {
+            trace_alpha = trace_intensity(count) * parameters.trace.y;
+            branch_trace_color = position_color(column, row);
+        }
+    } else if (count != 0u) {
         float intensity = min(log2(1.0 + float(count)) / parameters.trace.x, 1.0);
         trace_alpha = intensity * parameters.trace.y;
     }
@@ -135,7 +203,7 @@ void main() {
     float alpha = trace_alpha + grid_alpha * (1.0 - trace_alpha);
     vec4 result = vec4(0.0);
     if (alpha > 0.0) {
-        vec3 trace_color = parameters.plane_colors[plane].rgb;
+        vec3 trace_color = parameters.trace.w == PAINT_PLANE_SECTIONS ? parameters.plane_colors[plane].rgb : branch_trace_color;
         vec3 grid_color = parameters.graticule_color.rgb;
         vec3 color = (trace_color * trace_alpha + grid_color * grid_alpha * (1.0 - trace_alpha)) / alpha;
         result = vec4(color, alpha);

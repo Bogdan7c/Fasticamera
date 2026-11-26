@@ -43,7 +43,7 @@ use scope_contract::ScopeImageSize;
 use scope_model::codes::{MAX_SHOWN_PIXELS, MAX_SHOWN_SIDE};
 use scope_model::grid::{MAX_GRID_CELLS, MAX_GRID_SIDE};
 use scope_model::vectorscope_geometry::MAX_VECTORSCOPE_SIZE;
-use scope_model::{GraticulePrimitive, GridShape, MAX_GRATICULE_PRIMITIVES, ScopeModelSettings};
+use scope_model::{GraticulePrimitive, GridShape, MAX_GRATICULE_PRIMITIVES, ScopeModelSettings, TracePaint};
 
 use super::accumulators::{
     ACCUMULATE_BINDINGS, AccumulatorSet, AccumulatorShader, SAMPLING_PUSH_BYTES, local_size, local_size_specialization,
@@ -52,8 +52,8 @@ use super::accumulators::{
 use super::error::ScopeError;
 use super::frame::{RecordedScope, ScopeFrame, ScopeInput, ScopePassCounters, ScopeSlotReport};
 use super::parameter_blocks::{
-    ACCUMULATE_BLOCK_BYTES, ACCUMULATE_WORDS_BYTES, MAX_PLANES, RENDER_BLOCK_BYTES, accumulate_words_bytes,
-    decode_table_bytes, render_block_bytes,
+    ACCUMULATE_BLOCK_BYTES, ACCUMULATE_WORDS_BYTES, MAX_PLANES, RENDER_BLOCK_BYTES, RenderBlockInputs,
+    accumulate_words_bytes, decode_table_bytes, render_block_bytes,
 };
 use super::picture::{PictureChange, PictureTarget};
 use super::rule::AccumulatorId;
@@ -511,6 +511,24 @@ impl ColorScopes {
                 planes: grid.planes(),
             });
         }
+        let paint = rule.trace_paint();
+        if let Some(required) = paint.required_planes()
+            && required != grid.planes()
+        {
+            return Err(ScopeError::PaintPlaneCountMismatch {
+                paint,
+                required,
+                planes: grid.planes(),
+            });
+        }
+        // Таблица цветов по положению нужна только своему способу; чужому её не отдаём (в блок идут нули).
+        let position_palette = match paint {
+            TracePaint::ColorByPosition => Some(
+                rule.position_palette(&frame.settings.render)
+                    .ok_or(ScopeError::MissingPositionPalette)?,
+            ),
+            TracePaint::PlaneSections | TracePaint::PlanesOverlaid => None,
+        };
         let graticule: Vec<GraticulePrimitive> = rule.graticule(&frame.settings.render);
         if graticule.len() > MAX_GRATICULE_PRIMITIVES {
             return Err(ScopeError::TooManyGraticulePrimitives {
@@ -524,7 +542,14 @@ impl ColorScopes {
             grid,
             words_bytes: accumulate_words_bytes(grid, rule.scan(), &parameters)?,
             decode_table_bytes: parameters.decode_table.map(decode_table_bytes),
-            render_bytes: render_block_bytes(grid, &colors, &graticule, &frame.settings.render),
+            render_bytes: render_block_bytes(&RenderBlockInputs {
+                grid,
+                paint,
+                colors: &colors,
+                position_palette: position_palette.as_ref(),
+                graticule: &graticule,
+                settings: &frame.settings.render,
+            }),
         })
     }
 

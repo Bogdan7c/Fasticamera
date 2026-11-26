@@ -2,11 +2,12 @@
 //! specialization-констант размера группы: тест читает ИСХОДНИКИ шейдеров и сверяет каждое число с константой
 //! Rust, чтобы правка одной стороны без другой ломала сборку тестов, а не читала память за границей буфера.
 
-use scope_model::MAX_GRATICULE_PRIMITIVES;
+use scope_model::{MAX_GRATICULE_PRIMITIVES, POSITION_PALETTE_ANGLES};
 
 use super::accumulators::{INTEGER_RUNS_ROWS_PER_THREAD, LOCAL_SIZE_X_ID, LOCAL_SIZE_Y_ID};
 use super::parameter_blocks::{
-    SCAN_CODE_ROTATED_CLOCKWISE, SCAN_CODE_ROTATED_COUNTER_CLOCKWISE, SCAN_CODE_UPRIGHT, SCAN_CODE_UPSIDE_DOWN,
+    PAINT_CODE_COLOR_BY_POSITION, PAINT_CODE_PLANE_SECTIONS, PAINT_CODE_PLANES_OVERLAID, SCAN_CODE_ROTATED_CLOCKWISE,
+    SCAN_CODE_ROTATED_COUNTER_CLOCKWISE, SCAN_CODE_UPRIGHT, SCAN_CODE_UPSIDE_DOWN,
 };
 use super::rule::{DECODE_TABLE_LEN, HEADER_WORDS, PARAMETER_WORDS};
 
@@ -36,6 +37,7 @@ fn parameter_buffer_array_lengths_in_shaders_equal_the_rust_constants() {
     assert_eq!(array_length(ACCUMULATE_COMMON, "words"), PARAMETER_WORDS);
     assert_eq!(array_length(ACCUMULATE_COMMON, "decode_table"), DECODE_TABLE_LEN);
     assert_eq!(array_length(RENDER, "primitives"), MAX_GRATICULE_PRIMITIVES);
+    assert_eq!(array_length(RENDER, "position_palette"), POSITION_PALETTE_ANGLES);
     // Список отобранных примитивов в shared-памяти вмещает все примитивы сетки.
     assert_eq!(array_length(RENDER, "kept_primitive_index"), MAX_GRATICULE_PRIMITIVES);
 }
@@ -89,4 +91,18 @@ fn rows_per_thread_of_the_runs_shader_equal_the_rust_constant() {
         INTEGER_RUNS.contains(&declaration),
         "в scope_accumulate_integer_runs.comp нет `{declaration}`: dispatch и шейдер разойдутся"
     );
+}
+
+#[test]
+fn paint_codes_and_palette_size_in_the_render_shader_equal_the_rust_constants() {
+    for (name, code) in [
+        ("PAINT_PLANE_SECTIONS", PAINT_CODE_PLANE_SECTIONS),
+        ("PAINT_PLANES_OVERLAID", PAINT_CODE_PLANES_OVERLAID),
+        ("PAINT_COLOR_BY_POSITION", PAINT_CODE_COLOR_BY_POSITION),
+    ] {
+        let declaration = format!("const float {name} = {code:.1};");
+        assert!(RENDER.contains(&declaration), "в scope_render.comp нет `{declaration}`");
+    }
+    let declaration = format!("const uint POSITION_PALETTE_ANGLES = {POSITION_PALETTE_ANGLES}u;");
+    assert!(RENDER.contains(&declaration), "в scope_render.comp нет `{declaration}`");
 }

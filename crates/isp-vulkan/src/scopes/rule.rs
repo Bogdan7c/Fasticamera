@@ -12,7 +12,7 @@ use scope_contract::ScopeScan;
 use scope_model::projection::IntegerProjection;
 
 use super::error::ScopeError;
-use scope_model::{GraticulePrimitive, GridShape, RenderSettings};
+use scope_model::{GraticulePrimitive, GridShape, PositionPalette, RenderSettings, TracePaint};
 
 /// Сколько слов параметров занимают общий заголовок (форма сетки и чтение картинки глазом): с `HEADER_WORDS` начинаются слова прибора.
 pub(super) const HEADER_WORDS: usize = 4;
@@ -172,6 +172,18 @@ pub trait GpuScopeRule {
 
     /// Цвет следа каждой плоскости (цвета экрана); по одному на плоскость сетки.
     fn trace_colors(&self, settings: &RenderSettings) -> Vec<[f32; 3]>;
+
+    /// Способ рисования следа (слово `trace.w` блока показа). По умолчанию — прежний: секции по плоскостям.
+    fn trace_paint(&self) -> TracePaint {
+        TracePaint::PlaneSections
+    }
+
+    /// Таблица цветов по положению для способа [`TracePaint::ColorByPosition`]; у остальных способов `None`.
+    /// Прибор со способом «по положению» обязан её отдать, иначе `ColorScopes::record` откажет типизированной
+    /// ошибкой до первой команды.
+    fn position_palette(&self, _settings: &RenderSettings) -> Option<PositionPalette> {
+        None
+    }
 
     /// Примитивы сетки прибора (не больше [`scope_model::MAX_GRATICULE_PRIMITIVES`]).
     fn graticule(&self, settings: &RenderSettings) -> Vec<GraticulePrimitive>;

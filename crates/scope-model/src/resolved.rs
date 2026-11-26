@@ -13,6 +13,7 @@ use crate::oklab_rule::{OklabVectorscopeError, OklabVectorscopeRule};
 use crate::render_settings::RenderSettings;
 use crate::rule::{Hit, SamplePosition, ScopeRule};
 use crate::settings::{ScopeModelSettings, ScopeSettingsError};
+use crate::trace_paint::TracePaint;
 use crate::trace_rules::{ParadeRule, TraceRuleError, WaveformRule};
 use crate::vectorscope_ycbcr::{YCbCrVectorscopeError, YCbCrVectorscopeRule};
 
@@ -81,6 +82,16 @@ impl ResolvedScope {
             Self::Waveform(_) => ScopeKind::Waveform,
             Self::RgbParade(_) => ScopeKind::RgbParade,
             Self::VectorscopeYCbCr(_) | Self::VectorscopeOklab(_) => ScopeKind::Vectorscope,
+        }
+    }
+
+    /// Способ рисования следа этого прибора. Шаг «ветка без смены картинки» (14m): пока все приборы рисуются
+    /// прежним способом — секциями.
+    pub fn trace_paint(&self) -> TracePaint {
+        match self {
+            Self::Waveform(_) | Self::RgbParade(_) | Self::VectorscopeYCbCr(_) | Self::VectorscopeOklab(_) => {
+                TracePaint::PlaneSections
+            }
         }
     }
 

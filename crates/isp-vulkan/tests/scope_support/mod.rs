@@ -451,3 +451,50 @@ pub fn mirror_name(mirror: HorizontalMirror) -> &'static str {
         HorizontalMirror::Off => "plain",
     }
 }
+
+// ---------------------------------------------------------------------------------------------------------
+// Прибор с принудительно выбранным способом рисования
+// ---------------------------------------------------------------------------------------------------------
+
+/// Настоящий прибор `scope-model`, у которого способ рисования (и таблица цветов по положению) заданы тестом, а
+/// не правилом. Нужен там, где шейдер показа проверяют одним способом независимо от решения правила (сверка с
+/// замороженной копией шейдера идёт только секциями) и где проверяют отказы границы показа.
+pub struct PaintOverride<'a> {
+    pub inner: &'a ResolvedScope,
+    pub paint: scope_model::TracePaint,
+    pub palette: Option<scope_model::PositionPalette>,
+}
+
+impl isp_vulkan::scopes::GpuScopeRule for PaintOverride<'_> {
+    fn accumulator(&self) -> isp_vulkan::scopes::AccumulatorId {
+        isp_vulkan::scopes::GpuScopeRule::accumulator(self.inner)
+    }
+
+    fn grid(&self) -> scope_model::GridShape {
+        isp_vulkan::scopes::GpuScopeRule::grid(self.inner)
+    }
+
+    fn scan(&self) -> scope_contract::ScopeScan {
+        isp_vulkan::scopes::GpuScopeRule::scan(self.inner)
+    }
+
+    fn accumulate_parameters(&self) -> Result<isp_vulkan::scopes::AccumulateParameters<'_>, ScopeError> {
+        isp_vulkan::scopes::GpuScopeRule::accumulate_parameters(self.inner)
+    }
+
+    fn trace_colors(&self, settings: &scope_model::RenderSettings) -> Vec<[f32; 3]> {
+        isp_vulkan::scopes::GpuScopeRule::trace_colors(self.inner, settings)
+    }
+
+    fn trace_paint(&self) -> scope_model::TracePaint {
+        self.paint
+    }
+
+    fn position_palette(&self, _settings: &scope_model::RenderSettings) -> Option<scope_model::PositionPalette> {
+        self.palette.clone()
+    }
+
+    fn graticule(&self, settings: &scope_model::RenderSettings) -> Vec<scope_model::GraticulePrimitive> {
+        isp_vulkan::scopes::GpuScopeRule::graticule(self.inner, settings)
+    }
+}
