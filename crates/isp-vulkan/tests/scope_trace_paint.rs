@@ -20,10 +20,13 @@ use ash::vk;
 use gpu_vulkan::source_window::{HorizontalMirror, SourceWindow};
 use gpu_vulkan::storage_image::StorageFormatPolicy;
 use isp_vulkan::scopes::{ColorScopes, ColorScopesConfig, ScopeFrame, ScopeInput};
-use scope_model::{RgbWaveformPalette, SampleCount, ScopeModelSettings, hits_of_code, render};
+use scope_model::{
+    POSITION_PALETTE_ANGLES, PositionPalette, PositionPaletteEntry, RgbWaveformPalette, SampleCount,
+    ScopeModelSettings, TraceStyle, hits_of_code, render,
+};
 use scope_support::{
-    Scene, Xorshift, assert_no_validation_errors, bars75_scene, gpu_context_or_skip, gradient_scene, picture_size,
-    rule_cases, run_scope_frame, small_settings, upload_scene,
+    PaintOverride, Scene, Xorshift, assert_no_validation_errors, bars75_scene, gpu_context_or_skip, gradient_scene,
+    picture_size, rule_cases, run_scope_frame, small_settings, upload_scene,
 };
 
 /// Допуск сравнения картинки (тот же, что у `scope_picture.rs`).
@@ -271,6 +274,63 @@ fn gray_frame_paints_the_vectorscope_centre_neutral_and_finite_on_the_gpu() {
             );
         }
     }
+    assert_no_validation_errors(&context);
+}
+
+/// Ветка «центр» шейдера стоит ДО вычисления угла: `atan(0, 0)` в GLSL не определён (на Adreno может дать NaN). На
+/// RADV он, вероятно, даёт 0, поэтому обычный серый кадр ветку не проверяет; отравленная таблица (NaN во всех
+/// записях) проверяет: центральная клетка не имеет права читать таблицу вовсе, иначе NaN попадёт в картинку.
+#[test]
+fn the_vectorscope_centre_never_reads_the_angle_table_on_the_gpu() {
+    let Some(context) = gpu_context_or_skip() else { return };
+    let settings = without_graticule(small_settings());
+    let mut scopes = scopes_for(&context, &settings);
+    let input = upload_scene(
+        &context,
+        &gradient_scene(),
+        StorageFormatPolicy::PreferTenBitUnorm,
+        (0, 0),
+    );
+    let cases = rule_cases(&settings);
+    let (_, vectorscope) = cases.iter().find(|(name, _)| *name == "vectorscope-ycbcr").unwrap();
+    let poisoned_entry = PositionPaletteEntry {
+        edge_colour: [f32::NAN; 3],
+        edge_radius_cells: f32::NAN,
+    };
+    let neutral = [0.7, 0.6, 0.5];
+    // Сетка вектороскопа 128×128: центр — клетка 64, координата 64,5.
+    let palette = PositionPalette::new([poisoned_entry; POSITION_PALETTE_ANGLES], neutral, 64.5);
+    let rule = PaintOverride {
+        inner: vectorscope,
+        style: TraceStyle::ColorByPosition {
+            palette: Box::new(palette),
+        },
+    };
+    let frame = ScopeFrame {
+        input: input.input(HorizontalMirror::Off),
+        rule: &rule,
+        settings: &settings,
+        picture_size: picture_size(128, 128),
+        frame_slot: 0,
+    };
+    run_scope_frame(&context, &mut scopes, &frame).unwrap();
+    let readback = scopes.read_back_picture_blocking().unwrap();
+    // Серый градиент попадает только в центральную клетку: она светится нейтралью, остальные пиксели прозрачны.
+    let centre = texel(&readback, 64, 64);
+    assert!(centre[3] > 0.5, "центр светится: {centre:?}");
+    for channel in 0..3 {
+        assert!(
+            (centre[channel] - neutral[channel]).abs() < 2e-3,
+            "центр {centre:?}, нейтраль {neutral:?}"
+        );
+    }
+    assert!(
+        readback
+            .texels
+            .iter()
+            .all(|pixel| pixel.iter().all(|channel| channel.is_finite())),
+        "отравленная таблица не должна просочиться в картинку"
+    );
     assert_no_validation_errors(&context);
 }
 
