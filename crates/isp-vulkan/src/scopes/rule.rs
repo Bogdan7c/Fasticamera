@@ -12,7 +12,7 @@ use scope_contract::ScopeScan;
 use scope_model::projection::IntegerProjection;
 
 use super::error::ScopeError;
-use scope_model::{GraticulePrimitive, GridShape, RenderSettings, TraceStyle};
+use scope_model::{ColumnBasis, GraticulePrimitive, GridShape, RenderSettings, TraceStyle};
 
 /// Сколько слов параметров занимают общий заголовок (форма сетки и чтение картинки глазом): с `HEADER_WORDS` начинаются слова прибора.
 pub(super) const HEADER_WORDS: usize = 4;
@@ -173,6 +173,13 @@ pub trait GpuScopeRule {
     /// Как рисуется след: способ и его данные (цвета плоскостей, основные цвета наложения или таблица цветов по
     /// положению). Один тип отдаёт способ ВМЕСТЕ с данными, поэтому способ без данных не существует.
     fn trace_style(&self, settings: &RenderSettings) -> TraceStyle;
+
+    /// На какой основе считается опорное число яркости столбцов следа (см. [`ColumnBasis`]). Продуктовые приборы —
+    /// по своим отсчётам каждого столбца; иначе отвечает только прибор, который сверяют с замороженной копией
+    /// шейдера показа (она знает одно число на кадр).
+    fn column_basis(&self) -> ColumnBasis {
+        ColumnBasis::OwnSamples
+    }
 
     /// Примитивы сетки прибора (не больше [`scope_model::MAX_GRATICULE_PRIMITIVES`]).
     fn graticule(&self, settings: &RenderSettings) -> Vec<GraticulePrimitive>;

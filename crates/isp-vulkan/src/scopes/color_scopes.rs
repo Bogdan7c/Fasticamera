@@ -44,8 +44,8 @@ use scope_model::codes::{MAX_SHOWN_PIXELS, MAX_SHOWN_SIDE};
 use scope_model::grid::{MAX_GRID_CELLS, MAX_GRID_SIDE};
 use scope_model::vectorscope_geometry::MAX_VECTORSCOPE_SIZE;
 use scope_model::{
-    GraticulePrimitive, GridShape, MAX_GRATICULE_PRIMITIVES, SampleCount, ScopeModelSettings, TraceReference,
-    TraceStyle,
+    ColumnReferences, GraticulePrimitive, GridShape, MAX_GRATICULE_PRIMITIVES, SampleCount, ScopeModelSettings,
+    TraceReference, TraceStyle,
 };
 
 use super::accumulators::{
@@ -548,6 +548,16 @@ impl ColorScopes {
                 // Опорное число яркости считается из числа отсчётов ЭТОГО кадра (окно показанной картинки могло
                 // смениться между кадрами) тем же вызовом, что и у эталона.
                 reference: TraceReference::for_paint(paint, &frame.settings.render, samples, grid.columns()),
+                // Знаменатели по столбцам: своих отсчётов у каждого столбца (положение отсчёта — по чтению
+                // картинки глазом, как у правила накопления), та же функция, что у эталона.
+                columns: &ColumnReferences::new(
+                    paint,
+                    rule.column_basis(),
+                    &frame.settings.render,
+                    samples,
+                    rule.scan(),
+                    grid.columns(),
+                ),
                 graticule: &graticule,
                 settings: &frame.settings.render,
             }),

@@ -1,7 +1,8 @@
 //! Цвет и прозрачность следа одного пикселя картинки прибора — по способу рисования ([`TraceStyle`]).
 //!
 //! Это эталон веток шейдера `scope_render.comp`: каждая ветка здесь соответствует ветке там, формулы те же.
-//! Пиксель → ячейка целочисленно (как у шейдера), яркость — [`TraceReference::intensity`].
+//! Пиксель → ячейка целочисленно (как у шейдера), яркость — [`TraceReference::intensity`] с опорным числом СТОЛБЦА
+//! ([`ColumnReferences`]): знаменатель берётся по столбцу ячейки, а не один на кадр.
 //!
 //! * секции: картинка делится на `planes` равных секций по ширине; секция показывает свою плоскость на весь
 //!   диапазон столбцов, цвет — цвет плоскости;
@@ -12,8 +13,8 @@
 
 use scope_contract::ScopeImageSize;
 
+use crate::column_references::ColumnReferences;
 use crate::grid::{GridShape, ScopeCounters};
-use crate::trace_reference::TraceReference;
 use crate::trace_style::TraceStyle;
 
 /// След пикселя: цвет экрана и ПРЯМАЯ альфа (нулевая альфа — цвет не важен).
@@ -36,7 +37,7 @@ pub(crate) struct TracePainter<'a> {
     counters: &'a ScopeCounters,
     shape: GridShape,
     style: &'a TraceStyle,
-    reference: TraceReference,
+    references: &'a ColumnReferences,
     trace_opacity: f32,
 }
 
@@ -44,14 +45,14 @@ impl<'a> TracePainter<'a> {
     pub(crate) fn new(
         counters: &'a ScopeCounters,
         style: &'a TraceStyle,
-        reference: TraceReference,
+        references: &'a ColumnReferences,
         trace_opacity: f32,
     ) -> Self {
         Self {
             counters,
             shape: counters.shape(),
             style,
-            reference,
+            references,
             trace_opacity,
         }
     }
@@ -74,10 +75,18 @@ impl<'a> TracePainter<'a> {
                 }
                 TracePixel {
                     color: palette.colour_at(column, row),
-                    alpha: self.reference.intensity(count) * self.trace_opacity,
+                    alpha: self.intensity(column, count) * self.trace_opacity,
                 }
             }
         }
+    }
+
+    /// Яркость следа ячейки столбца `column` со счётчиком `count` по опорному числу ЭТОГО столбца. Столбца вне
+    /// сетки нет (и счётчика у него нет), поэтому яркость нулевая.
+    fn intensity(&self, column: u32, count: u32) -> f32 {
+        self.references
+            .of_column(column)
+            .map_or(0.0, |reference| reference.intensity(count))
     }
 
     /// Столбец сетки для пикселя `x` при показе на ВСЮ ширину картинки.
@@ -97,7 +106,7 @@ impl<'a> TracePainter<'a> {
         TracePixel {
             // Цвет плоскости есть у каждой плоскости (длину списка проверяют границы показа); без него — без следа.
             color: colors.get(plane as usize).copied().unwrap_or([0.0; 3]),
-            alpha: self.reference.intensity(count) * self.trace_opacity,
+            alpha: self.intensity(column, count) * self.trace_opacity,
         }
     }
 
@@ -106,9 +115,7 @@ impl<'a> TracePainter<'a> {
         let mut weighted = [0.0_f32; 3];
         let mut brightest = 0.0_f32;
         for (plane, primary) in (0u32..).zip(primaries) {
-            let intensity = self
-                .reference
-                .intensity(self.counters.count(plane, row, column).unwrap_or(0));
+            let intensity = self.intensity(column, self.counters.count(plane, row, column).unwrap_or(0));
             for channel in 0..3 {
                 weighted[channel] += intensity * primary[channel];
             }

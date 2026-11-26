@@ -7,11 +7,15 @@
 
 use crate::sampling::SampleStride;
 
-/// Отсчёты кадра: `across` по горизонтали показанной картинки и `down` по вертикали.
+/// Отсчёты кадра: `across` по горизонтали показанной картинки и `down` по вертикали. Помнит и окно с шагом, из
+/// которых получен: по ним [`crate::column_references`] считает, сколько отсчётов легло в каждый столбец следа.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SampleCount {
     across: u32,
     down: u32,
+    window_width: u32,
+    window_height: u32,
+    stride: SampleStride,
 }
 
 impl SampleCount {
@@ -20,7 +24,20 @@ impl SampleCount {
         Self {
             across: stride.samples_along(width),
             down: stride.samples_along(height),
+            window_width: width,
+            window_height: height,
+            stride,
         }
+    }
+
+    /// Окно показанной картинки (ширина, высота), из которого взяты отсчёты.
+    pub(crate) fn window(self) -> (u32, u32) {
+        (self.window_width, self.window_height)
+    }
+
+    /// Шаг прореживания, которым взяты отсчёты.
+    pub(crate) fn stride(self) -> SampleStride {
+        self.stride
     }
 
     /// Отсчётов по горизонтали (столбцов отсчётов).

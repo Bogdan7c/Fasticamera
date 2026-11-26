@@ -38,6 +38,11 @@ impl TraceReference {
         Self::from_threshold(expected_hits.max(1.0))
     }
 
+    /// Опорное число столбца, в который легло `samples_in_column` отсчётов: `max(1, доля · отсчётов столбца)`.
+    pub(crate) fn for_column(share_of_column: f32, samples_in_column: u64) -> Self {
+        Self::from_threshold((share_of_column * samples_in_column as f32).max(1.0))
+    }
+
     /// Опорное число из готового порога (число попаданий полной яркости; не меньше 1).
     fn from_threshold(full_threshold: f32) -> Self {
         Self {

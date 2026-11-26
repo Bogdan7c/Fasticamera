@@ -307,8 +307,23 @@ fn scan_switch_on_the_fly_changes_only_parameters_and_counters_follow_the_cpu_re
     bench.finish();
 }
 
-/// Источник UI: рисует картинку цветового прибора по центру (как будет делать экран калибровки).
-struct ScopePictureSource;
+/// Источник UI: рисует картинку цветового прибора по центру (как будет делать экран калибровки). Элемент рисования
+/// имеет РОВНО размер запрошенной картинки: экран кладёт картинку 1:1 (решение 203), а рендер не отдаёт рисованию
+/// картинку, чей размер не равен размеру элемента (`scope_fit.rs`; такой кадр считается `live_images_missing`).
+struct ScopePictureSource {
+    /// Размер картинки прибора, которую запрашивает тест (и в котором её рисует элемент).
+    picture_size: PxSize,
+}
+
+impl ScopePictureSource {
+    /// Источник, рисующий картинку в размере запроса `request`.
+    fn drawing_at_size_of(request: &ScopeRequest) -> Self {
+        let size = request.image_size;
+        Self {
+            picture_size: PxSize::new(size.width() as f32, size.height() as f32),
+        }
+    }
+}
 
 impl UiFrameSource for ScopePictureSource {
     fn name(&self) -> &'static str {
@@ -320,7 +335,7 @@ impl UiFrameSource for ScopePictureSource {
         list.items.push(DrawItem::Image(ImageItem {
             source: ImageSource::Live(LiveImage::ColorScope),
             transform: Affine2::translate(request.logical_size.width * 0.5, request.logical_size.height * 0.5),
-            size_px: PxSize::new(request.logical_size.width * 0.5, request.logical_size.height * 0.25),
+            size_px: self.picture_size,
             fit: ImageFit::Stretch,
             clip: ImageClip::None,
             opacity: Opacity::OPAQUE,
@@ -348,7 +363,10 @@ fn scope_picture_reaches_ui_drawing_and_a_hidden_scope_is_skipped_without_failur
     let Some(mut bench) = start_without_ui(&scenes) else {
         return;
     };
-    install(&mut bench, Box::new(ScopePictureSource));
+    install(
+        &mut bench,
+        Box::new(ScopePictureSource::drawing_at_size_of(&waveform())),
+    );
     // Прибор закрыт: элемент пропускается и считается, кадр нарисован.
     bench.show_next_frame();
     let hidden = bench.backend.diagnostics().viewfinder.expect("видоискатель").ui_overlay;
@@ -405,13 +423,19 @@ fn a_source_leaving_withdraws_the_request_and_releases_the_scope_objects() {
     let mut expected_withdrawals = 0;
 
     // Установка нового источника при действующем запросе: свежий экран начинается без приборов прежнего.
-    install(&mut bench, Box::new(ScopePictureSource));
+    install(
+        &mut bench,
+        Box::new(ScopePictureSource::drawing_at_size_of(&waveform())),
+    );
     assert_eq!(
         apply_scopes(&mut bench, ScopeIntent::Show(waveform())),
         ViewfinderCommandOutcome::Applied
     );
     assert_eq!(scopes_of(&mut bench).requested, Some(waveform()));
-    install(&mut bench, Box::new(ScopePictureSource));
+    install(
+        &mut bench,
+        Box::new(ScopePictureSource::drawing_at_size_of(&waveform())),
+    );
     expected_withdrawals += 1;
     let after_install = scopes_of(&mut bench);
     assert_eq!(
@@ -445,10 +469,16 @@ fn a_source_leaving_withdraws_the_request_and_releases_the_scope_objects() {
     );
 
     // Замена источника новым.
-    install(&mut bench, Box::new(ScopePictureSource));
+    install(
+        &mut bench,
+        Box::new(ScopePictureSource::drawing_at_size_of(&waveform())),
+    );
     apply_scopes(&mut bench, ScopeIntent::Show(waveform()));
     flush_frames(&mut bench, 2);
-    install(&mut bench, Box::new(ScopePictureSource));
+    install(
+        &mut bench,
+        Box::new(ScopePictureSource::drawing_at_size_of(&waveform())),
+    );
     expected_withdrawals += 1;
     assert_eq!(
         scopes_of(&mut bench).requested,
@@ -482,7 +512,10 @@ fn hidden_scope_objects_are_retired_first_and_destroyed_only_after_their_slots_a
         return;
     };
     // С источником UI: кадр перекомпоновки показывает картинку прибора, и его слот держит набор без записи прохода.
-    install(&mut bench, Box::new(ScopePictureSource));
+    install(
+        &mut bench,
+        Box::new(ScopePictureSource::drawing_at_size_of(&waveform())),
+    );
     apply_scopes(&mut bench, ScopeIntent::Show(waveform()));
     flush_frames(&mut bench, 3);
     assert_eq!(scopes_of(&mut bench).residency.resources, ScopeResources::Live);

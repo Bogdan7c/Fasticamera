@@ -20,8 +20,9 @@ struct GraticulePrimitive {
 
 layout(set = 0, binding = 1, std430) readonly buffer RenderParameters {
     uvec4 grid;             // столбцы, строки, плоскости, число примитивов
-    vec4 trace;             // x = готовый знаменатель яркости log2(1 + порог): считает scope-model (`TraceReference`)
-                            //     по доле отсчётов столбца или кадра и числу отсчётов окна, шейдер порог не знает;
+    vec4 trace;             // x = готовый знаменатель яркости на ВЕСЬ КАДР log2(1 + порог): считает scope-model
+                            //     (`TraceReference`); читает вектороскоп (и замороженная копия шейдера у секций), шейдер
+                            //     порог не знает; у секций и наложения знаменатель свой у каждого столбца — таблица ниже;
                             // y = непрозрачность следа, z = непрозрачность сетки,
                             // w = способ рисования следа (PAINT_*, код по `parameter_blocks.rs`)
     vec4 graticule_color;   // rgb
@@ -31,6 +32,11 @@ layout(set = 0, binding = 1, std430) readonly buffer RenderParameters {
     vec4 position_palette[128]; // rgb края и радиус края (клеток) по углам круга
     vec4 position_neutral;      // rgb центра
     vec4 position_geometry;     // x = центр (клеток), y = радиус «это центр», z = наименьший радиус края
+    // ТАБЛИЦА ЗНАМЕНАТЕЛЕЙ ЯРКОСТИ ПО СТОЛБЦАМ (секции и наложение): log2(1 + порог столбца), готовые f32 от
+    // scope-model (`ColumnReferences`). Порог столбца — доля ЕГО отсчётов: отсчёты по столбцам делятся неравномерно
+    // (шаг 2 на 768 отсчётов в 512 столбцов: у одних столбцов один отсчёт по горизонтали, у других два), и один
+    // знаменатель на кадр дал бы вертикальные полосы. Читаются первые `grid.x` записей; последняя часть блока.
+    float column_denominators[4096];
 } parameters;
 
 layout(set = 0, binding = 2, std430) readonly buffer ScopeCounters {
@@ -47,10 +53,11 @@ const float PAINT_COLOR_BY_POSITION = 2.0;
 const uint POSITION_PALETTE_ANGLES = 128u;
 const float TAU = 6.28318530717958647692;
 
-// Яркость следа по счётчику: лог-шкала `min(1, log2(1 + count) / trace.x)`, одна для всех трёх способов
-// (эталон — `TraceReference::intensity`). Полная яркость достигается при `count`, равном пороге из `trace.x`.
-float trace_intensity(uint count) {
-    return count == 0u ? 0.0 : min(log2(1.0 + float(count)) / parameters.trace.x, 1.0);
+// Яркость следа по счётчику: лог-шкала `min(1, log2(1 + count) / знаменатель)`, одна для всех трёх способов
+// (эталон — `TraceReference::intensity`). Полная яркость достигается при `count`, равном порогу знаменателя.
+// Знаменатель отдаёт вызывающий: по столбцу (секции, наложение) или на весь кадр (`trace.x`, вектороскоп).
+float trace_intensity(uint count, float denominator) {
+    return count == 0u ? 0.0 : min(log2(1.0 + float(count)) / denominator, 1.0);
 }
 
 // Цвет ячейки `(column, row)` вектороскопа по её положению: эталон — `PositionPalette::colour_at`.
@@ -179,7 +186,7 @@ void main() {
         float brightest = 0.0;
         for (uint overlay_plane = 0u; overlay_plane < planes; ++overlay_plane) {
             uint overlay_count = counters.counts[(overlay_plane * rows + row) * columns + overlay_column];
-            float intensity = trace_intensity(overlay_count);
+            float intensity = trace_intensity(overlay_count, parameters.column_denominators[overlay_column]);
             weighted += intensity * parameters.plane_colors[overlay_plane].rgb;
             brightest = max(brightest, intensity);
         }
@@ -190,11 +197,11 @@ void main() {
         }
     } else if (parameters.trace.w == PAINT_COLOR_BY_POSITION) {
         if (count != 0u) {
-            trace_alpha = trace_intensity(count) * parameters.trace.y;
+            trace_alpha = trace_intensity(count, parameters.trace.x) * parameters.trace.y;
             branch_trace_color = position_color(column, row);
         }
     } else if (count != 0u) {
-        float intensity = min(log2(1.0 + float(count)) / parameters.trace.x, 1.0);
+        float intensity = min(log2(1.0 + float(count)) / parameters.column_denominators[column], 1.0);
         trace_alpha = intensity * parameters.trace.y;
     }
 

@@ -505,6 +505,12 @@ impl isp_vulkan::scopes::GpuScopeRule for PaintOverride<'_> {
         self.style.clone()
     }
 
+    /// Замороженная копия шейдера знает одно число яркости на кадр (`trace.x`): чтобы сравнение с ней шло бит в бит,
+    /// продуктовый шейдер получает ту же константу в каждый столбец таблицы.
+    fn column_basis(&self) -> scope_model::ColumnBasis {
+        scope_model::ColumnBasis::WholeFrameAverage
+    }
+
     fn graticule(&self, settings: &scope_model::RenderSettings) -> Vec<scope_model::GraticulePrimitive> {
         isp_vulkan::scopes::GpuScopeRule::graticule(self.inner, settings)
     }

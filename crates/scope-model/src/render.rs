@@ -6,12 +6,13 @@
 //!
 //! Способ рисования следа решает правило прибора ([`ResolvedScope::trace_style`]): секции по плоскостям, плоскости
 //! наложением или цвет по месту; пиксельные формулы каждого способа — в [`crate::trace_painter`]. Яркость следа —
-//! `min(1, log2(1 + count) / log2(1 + порог))`, порог — доля отсчётов одного столбца (waveform, parade) или всего кадра (вектороскоп), см. [`TraceReference`], поэтому
+//! `min(1, log2(1 + count) / log2(1 + порог))`, порог — доля отсчётов ОДНОГО столбца (waveform, parade; своих у каждого столбца) или всего кадра (вектороскоп), см. [`crate::ColumnReferences`], поэтому
 //! [`render`] получает число отсчётов кадра. Альфа следа `яркость · trace_opacity`. Сетка рисуется ПОД следом:
 //! прямая альфа «over», `a = a_t + a_g (1 − a_t)`.
 
 use scope_contract::ScopeImageSize;
 
+use crate::column_references::{ColumnBasis, ColumnReferences};
 use crate::graticule::GraticulePrimitive;
 use crate::grid::ScopeCounters;
 use crate::render_settings::{RenderSettings, RenderSettingsError};
@@ -19,7 +20,6 @@ use crate::resolved::ResolvedScope;
 use crate::rule::ScopeRule;
 use crate::sample_count::SampleCount;
 use crate::trace_painter::TracePainter;
-use crate::trace_reference::TraceReference;
 
 /// Ошибка показа.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -63,6 +63,7 @@ impl ScopePicture {
 
 /// Картинка прибора из счётчиков. `samples` — число отсчётов кадра, из которого получены счётчики
 /// ([`SampleCount::for_window`] по окну показанной картинки): от него зависит опорное число яркости следа.
+/// Опорное число каждого столбца — по ЕГО отсчётам ([`ColumnBasis::OwnSamples`]).
 pub fn render(
     counters: &ScopeCounters,
     scope: &ResolvedScope,
@@ -70,13 +71,36 @@ pub fn render(
     size: ScopeImageSize,
     samples: SampleCount,
 ) -> Result<ScopePicture, RenderError> {
+    render_with_basis(counters, scope, settings, size, samples, ColumnBasis::OwnSamples)
+}
+
+/// То же, что [`render`], но с явной основой опорных чисел столбцов. Продукт зовёт только [`render`]; явная основа
+/// нужна тестам, которые показывают, чем прежнее «среднее на столбец» ([`ColumnBasis::WholeFrameAverage`]) хуже
+/// (вертикальные полосы), и сверке с замороженной копией шейдера.
+pub fn render_with_basis(
+    counters: &ScopeCounters,
+    scope: &ResolvedScope,
+    settings: &RenderSettings,
+    size: ScopeImageSize,
+    samples: SampleCount,
+    basis: ColumnBasis,
+) -> Result<ScopePicture, RenderError> {
     settings.validate()?;
     if counters.shape() != scope.shape() {
         return Err(RenderError::ShapeMismatch);
     }
     let style = scope.trace_style(settings);
-    let reference = TraceReference::for_paint(style.paint(), settings, samples, counters.shape().columns());
-    let painter = TracePainter::new(counters, &style, reference, settings.trace_opacity);
+    // Опорное число яркости — по отсчётам КАЖДОГО столбца (отсчёты по столбцам делятся неравномерно; см.
+    // `column_references`); так же его считает GPU-сторона для таблицы блока показа.
+    let references = ColumnReferences::new(
+        style.paint(),
+        basis,
+        settings,
+        samples,
+        scope.scan(),
+        counters.shape().columns(),
+    );
+    let painter = TracePainter::new(counters, &style, &references, settings.trace_opacity);
     let graticule = scope.graticule(settings);
     let picture_px = [size.width() as f32, size.height() as f32];
     let mut pixels = Vec::with_capacity(size.width() as usize * size.height() as usize);

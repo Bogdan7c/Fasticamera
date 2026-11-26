@@ -48,6 +48,13 @@ pub enum TraceRuleError {
     Projection(#[from] ProjectionError),
 }
 
+/// Столбец сетки из `columns` столбцов для положения отсчёта на горизонтали глаза: `(x · columns) / width`.
+/// ЕДИНСТВЕННАЯ формула «отсчёт → столбец»: по ней правило кладёт попадания, а [`crate::column_references`] считает,
+/// сколько отсчётов легло в столбец (от этого числа зависит яркость следа), поэтому они не могут разойтись.
+pub(crate) fn column_of_eye_position(position: SamplePosition, columns: u32) -> u32 {
+    (position.x * columns) / position.picture_width
+}
+
 /// Общая ось «столбец × уровень» для waveform и parade.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LevelAxis {
@@ -76,7 +83,7 @@ impl LevelAxis {
 
     /// Столбец сетки для столбца картинки.
     fn column_of(&self, position: SamplePosition) -> u32 {
-        (position.x * self.columns) / position.picture_width
+        column_of_eye_position(position, self.columns)
     }
 
     /// Строка сетки для уровня: `None`, если уровень вне `0..levels` (нет попадания).

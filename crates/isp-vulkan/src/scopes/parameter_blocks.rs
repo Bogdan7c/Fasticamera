@@ -5,15 +5,16 @@
 //!   и `float decode_table[1024]` (`scope_accumulate_common.glsl`);
 //! * блок показа — сетка и число примитивов, непрозрачности, код способа рисования, цвета плоскостей, 48
 //!   примитивов и ХВОСТ «цвет по положению» (таблица углов, нейтраль, геометрия; нули у всех способов, кроме
-//!   `TracePaint::ColorByPosition`) (`scope_render.comp`).
+//!   `TracePaint::ColorByPosition`) и таблица знаменателей яркости по столбцам следа (`scope_render.comp`).
 //!
 //! Чистые функции без GPU: раскладку проверяют обычные тесты.
 
 use scope_contract::ScopeScan;
+use scope_model::grid::MAX_GRID_SIDE;
 use scope_model::position_palette::{MIN_EDGE_RADIUS_CELLS, NEUTRAL_RADIUS_EPSILON_CELLS};
 use scope_model::{
-    GraticulePrimitive, GridShape, MAX_GRATICULE_PRIMITIVES, POSITION_PALETTE_ANGLES, PositionPalette, RenderSettings,
-    TracePaint, TraceReference, TraceStyle,
+    ColumnReferences, GraticulePrimitive, GridShape, MAX_GRATICULE_PRIMITIVES, POSITION_PALETTE_ANGLES,
+    PositionPalette, RenderSettings, TracePaint, TraceReference, TraceStyle,
 };
 
 use super::error::ScopeError;
@@ -34,9 +35,14 @@ const RENDER_HEAD_VECTORS: usize = 6;
 /// Векторов `vec4` в хвосте блока показа: таблица углов, нейтраль, геометрия центра.
 const RENDER_TAIL_VECTORS: usize = POSITION_PALETTE_ANGLES + 2;
 
-/// Размер блока показа, байт: голова + примитивы по два `vec4` + хвост «цвет по положению».
+/// Сколько знаменателей яркости по столбцам вмещает блок показа: столько же, сколько столбцов в самой большой сетке
+/// (`float column_denominators[4096]` в `scope_render.comp`; равенство литерала проверяет `shader_literals_tests`).
+pub(super) const COLUMN_DENOMINATOR_CAPACITY: usize = MAX_GRID_SIDE as usize;
+
+/// Размер блока показа, байт: голова + примитивы по два `vec4` + хвост «цвет по положению» + таблица знаменателей
+/// столбцов (последняя часть: у неё свой размер на кадр, а положение остальных частей от неё не зависит).
 pub(super) const RENDER_BLOCK_BYTES: usize =
-    (RENDER_HEAD_VECTORS + MAX_GRATICULE_PRIMITIVES * 2 + RENDER_TAIL_VECTORS) * 16;
+    (RENDER_HEAD_VECTORS + MAX_GRATICULE_PRIMITIVES * 2 + RENDER_TAIL_VECTORS) * 16 + COLUMN_DENOMINATOR_CAPACITY * 4;
 
 /// Слова способа рисования в `trace.w` (`PAINT_*` в `scope_render.comp`). Сравнение в шейдере — по равенству
 /// float, поэтому коды — малые целые, точно представимые.
@@ -105,8 +111,12 @@ pub(super) struct RenderBlockInputs<'a> {
     /// Способ рисования следа с его данными. Плоскостей не больше `MAX_PLANES`, у секций цветов столько же,
     /// сколько плоскостей (проверено вызывающим).
     pub style: &'a TraceStyle,
-    /// Опорное число яркости (знаменатель лог-шкалы) — из числа отсчётов кадра.
+    /// Опорное число яркости на весь кадр (знаменатель лог-шкалы) — из числа отсчётов кадра; уходит в `trace.x`
+    /// (его читают вектороскоп и замороженная копия шейдера).
     pub reference: TraceReference,
+    /// Опорные числа яркости по столбцам следа (таблица знаменателей для секций и наложения); столбцов не больше
+    /// `COLUMN_DENOMINATOR_CAPACITY` (форма сетки это гарантирует).
+    pub columns: &'a ColumnReferences,
     /// Примитивы сетки: не больше `MAX_GRATICULE_PRIMITIVES` (проверено вызывающим).
     pub graticule: &'a [GraticulePrimitive],
     /// Настройки показа.
@@ -119,6 +129,7 @@ pub(super) fn render_block_bytes(inputs: &RenderBlockInputs<'_>) -> Vec<u8> {
         grid,
         style,
         reference,
+        columns,
         graticule,
         settings,
     } = *inputs;
@@ -147,6 +158,9 @@ pub(super) fn render_block_bytes(inputs: &RenderBlockInputs<'_>) -> Vec<u8> {
         TraceStyle::ColorByPosition { palette } => Some(palette.as_ref()),
         TraceStyle::PlaneSections { .. } | TraceStyle::PlanesOverlaid { .. } => None,
     }));
+    // Таблица знаменателей по столбцам — в самом конце, только занятая часть (остаток буфера шейдер не читает:
+    // номер столбца всегда меньше числа столбцов сетки).
+    floats.extend(columns.log_denominators().map(f32::to_bits));
     floats.iter().flat_map(|word| word.to_ne_bytes()).collect()
 }
 
@@ -213,7 +227,7 @@ fn primitive_words(primitive: &GraticulePrimitive) -> [u32; 8] {
 
 #[cfg(test)]
 mod tests {
-    use scope_model::{SampleCount, SampleStride};
+    use scope_model::{ColumnBasis, SampleCount, SampleStride};
 
     use super::*;
     use crate::scopes::rule::RuleWords;
@@ -295,6 +309,10 @@ mod tests {
     const WORD_POSITION_PALETTE: usize = WORD_PRIMITIVES + MAX_GRATICULE_PRIMITIVES * 8;
     const WORD_POSITION_NEUTRAL: usize = WORD_POSITION_PALETTE + POSITION_PALETTE_ANGLES * 4;
     const WORD_POSITION_GEOMETRY: usize = WORD_POSITION_NEUTRAL + 4;
+    /// Таблица знаменателей по столбцам — последняя часть блока.
+    const WORD_COLUMN_TABLE: usize = WORD_POSITION_GEOMETRY + 4;
+    /// Столбцов в сетке тестового блока ([`block_of`]).
+    const TEST_GRID_COLUMNS: u32 = 4;
 
     /// Опорное число для настроек по умолчанию и кадра 1000×500 при шаге 2 (125 000 отсчётов, 40 столбцов).
     fn reference_for(paint: TracePaint, settings: &RenderSettings) -> TraceReference {
@@ -302,16 +320,34 @@ mod tests {
         TraceReference::for_paint(paint, settings, samples, 40)
     }
 
+    /// Опорные числа столбцов тестового кадра (1000×500 при шаге 2), по своим отсчётам каждого столбца.
+    fn columns_for(paint: TracePaint, settings: &RenderSettings, columns: u32) -> ColumnReferences {
+        let samples = SampleCount::for_window(1000, 500, SampleStride::EVERY_SECOND_PIXEL);
+        ColumnReferences::new(
+            paint,
+            ColumnBasis::OwnSamples,
+            settings,
+            samples,
+            ScopeScan::Upright,
+            columns,
+        )
+    }
+
     fn block_of(style: &TraceStyle, primitives: &[GraticulePrimitive], settings: &RenderSettings) -> Vec<u32> {
-        let grid = GridShape::try_new(4, 3, 2).unwrap();
+        let grid = GridShape::try_new(TEST_GRID_COLUMNS, 3, 2).unwrap();
         let bytes = render_block_bytes(&RenderBlockInputs {
             grid,
             style,
             reference: reference_for(style.paint(), settings),
+            columns: &columns_for(style.paint(), settings, TEST_GRID_COLUMNS),
             graticule: primitives,
             settings,
         });
-        assert_eq!(bytes.len(), RENDER_BLOCK_BYTES);
+        assert_eq!(
+            bytes.len(),
+            RENDER_BLOCK_BYTES - (COLUMN_DENOMINATOR_CAPACITY - TEST_GRID_COLUMNS as usize) * 4,
+            "в блок идёт только занятая часть таблицы"
+        );
         words_of(&bytes)
     }
 
@@ -359,7 +395,11 @@ mod tests {
         assert_eq!(f32::from_bits(words[WORD_PRIMITIVES + 4]), 0.75);
         assert_eq!(f32::from_bits(words[WORD_PRIMITIVES + 5]), 1.0);
         // Остальные примитивы и весь хвост «по положению» пусты (нули): буфер заполнен целиком.
-        assert!(words[WORD_PRIMITIVES + 8..].iter().all(|&word| word == 0));
+        assert!(
+            words[WORD_PRIMITIVES + 8..WORD_COLUMN_TABLE]
+                .iter()
+                .all(|&word| word == 0)
+        );
     }
 
     #[test]
@@ -451,8 +491,8 @@ mod tests {
         assert_eq!(geometry, [128.5, NEUTRAL_RADIUS_EPSILON_CELLS, MIN_EDGE_RADIUS_CELLS]);
         assert_eq!(
             words.len(),
-            WORD_POSITION_GEOMETRY + 4,
-            "геометрия — последний вектор блока"
+            WORD_COLUMN_TABLE + TEST_GRID_COLUMNS as usize,
+            "после геометрии идёт только таблица знаменателей столбцов"
         );
         // У «по положению» плоскостных цветов нет: шейдер их не читает, там нули.
         assert!(words[WORD_PLANE_COLORS..WORD_PRIMITIVES].iter().all(|&word| word == 0));
@@ -462,7 +502,11 @@ mod tests {
     fn position_tail_is_zero_unless_the_style_supplies_a_palette() {
         let settings = RenderSettings::default();
         let words = block_of(&sections(), &[], &settings);
-        assert!(words[WORD_POSITION_PALETTE..].iter().all(|&word| word == 0));
+        assert!(
+            words[WORD_POSITION_PALETTE..WORD_COLUMN_TABLE]
+                .iter()
+                .all(|&word| word == 0)
+        );
         // Таблица меняет только хвост (и слово способа, и знаменатель — они зависят от способа).
         let with_palette = block_of(&position_style(), &[], &settings);
         assert_eq!(
@@ -472,6 +516,66 @@ mod tests {
         assert_eq!(
             &with_palette[WORD_PRIMITIVES..WORD_POSITION_PALETTE],
             &words[WORD_PRIMITIVES..WORD_POSITION_PALETTE]
+        );
+    }
+
+    #[test]
+    fn column_table_closes_the_block_and_carries_each_columns_own_denominator() {
+        let settings = RenderSettings::default();
+        // Окно 1000 при шаге 2 — 500 отсчётов на 4 столбца поровну: знаменатели совпадают, но пришли из таблицы.
+        let words = block_of(&sections(), &[], &settings);
+        let expected: Vec<u32> = columns_for(TracePaint::PlaneSections, &settings, TEST_GRID_COLUMNS)
+            .log_denominators()
+            .map(f32::to_bits)
+            .collect();
+        assert_eq!(expected.len(), TEST_GRID_COLUMNS as usize);
+        assert_eq!(&words[WORD_COLUMN_TABLE..], expected.as_slice());
+        // Окно, в котором отсчёты по столбцам неравны (1537 при шаге 2 → 769 на 512 столбцов): у столбцов с одним и
+        // двумя отсчётами РАЗНЫЕ знаменатели, и блок отдаёт их без усреднения.
+        let samples = SampleCount::for_window(1537, 500, SampleStride::EVERY_SECOND_PIXEL);
+        let uneven = ColumnReferences::new(
+            TracePaint::PlanesOverlaid,
+            ColumnBasis::OwnSamples,
+            &settings,
+            samples,
+            ScopeScan::Upright,
+            512,
+        );
+        let bytes = render_block_bytes(&RenderBlockInputs {
+            grid: GridShape::try_new(512, 16, 3).unwrap(),
+            style: &sections(),
+            reference: reference_for(TracePaint::PlanesOverlaid, &settings),
+            columns: &uneven,
+            graticule: &[],
+            settings: &settings,
+        });
+        let table: Vec<f32> = words_of(&bytes)[WORD_COLUMN_TABLE..]
+            .iter()
+            .map(|&bits| f32::from_bits(bits))
+            .collect();
+        assert_eq!(table, uneven.log_denominators().collect::<Vec<_>>());
+        assert!(
+            table.windows(2).any(|pair| pair[0] != pair[1]),
+            "знаменатели столбцов не одинаковы"
+        );
+    }
+
+    #[test]
+    fn the_biggest_grid_still_fits_the_render_block() {
+        let settings = RenderSettings::default();
+        let columns = columns_for(TracePaint::PlaneSections, &settings, MAX_GRID_SIDE);
+        let bytes = render_block_bytes(&RenderBlockInputs {
+            grid: GridShape::try_new(MAX_GRID_SIDE, 1, 1).unwrap(),
+            style: &sections(),
+            reference: reference_for(TracePaint::PlaneSections, &settings),
+            columns: &columns,
+            graticule: &[],
+            settings: &settings,
+        });
+        assert_eq!(
+            bytes.len(),
+            RENDER_BLOCK_BYTES,
+            "полная таблица занимает весь запас блока, не больше"
         );
     }
 }
