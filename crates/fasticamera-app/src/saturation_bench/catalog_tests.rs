@@ -36,11 +36,9 @@ fn ablation_groups_list_exactly_the_documented_workloads_in_catalog_order() {
     assert_eq!(
         names(WorkloadGroup::UiAblation),
         [
-            "display_calibrate_glass_only",
             "display_calibrate_shapes_only",
             "display_calibrate_text_only",
             "display_calibrate_images_only",
-            "display_calibrate_no_glass",
             "display_photo_glass_only",
             "display_photo_no_glass",
         ]
@@ -88,8 +86,8 @@ fn expanding_a_group_gives_its_workloads_a_work_name_gives_one_and_a_typo_is_an_
         .iter()
         .map(|entry| entry.name)
         .collect();
-    assert_eq!(group.len(), 7);
-    assert_eq!(group[0], "display_calibrate_glass_only");
+    assert_eq!(group.len(), 5);
+    assert_eq!(group[0], "display_calibrate_shapes_only");
     let single = expand_name("viewfinder_minimal").expect("работа");
     assert_eq!(single.len(), 1);
     let error = expand_name("ui_ablations").expect_err("опечатка в имени группы");
@@ -102,9 +100,9 @@ fn expanding_a_group_gives_its_workloads_a_work_name_gives_one_and_a_typo_is_an_
 #[test]
 fn ablation_entries_map_to_the_right_screen_filter_and_isp_variant() {
     assert_eq!(
-        find_entry("display_calibrate_glass_only").unwrap().kind,
+        find_entry("display_photo_glass_only").unwrap().kind,
         WorkloadKind::Display {
-            screen: DisplayScreen::Calibrate,
+            screen: DisplayScreen::Photo,
             rhythm: BackdropRhythm::NewFrameEveryFrame,
             filter: DrawFilter::GlassOnly,
         }

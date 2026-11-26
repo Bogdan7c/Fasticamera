@@ -231,23 +231,27 @@ fn every_workload_of_the_catalog_is_measured_on_a_real_gpu_and_released_one_by_o
     }
 
     // Работы показа рисуют настоящий экран, а не пустой.
-    for name in [
-        "display_photo",
-        "display_photo_recompose",
-        "display_calibrate",
-        "display_calibrate_recompose",
+    // Стекло: у PHOTO есть, у CALIBRATE после 14m нет (раздел рисует поверхность без стекла).
+    for (name, has_glass) in [
+        ("display_photo", true),
+        ("display_photo_recompose", true),
+        ("display_calibrate", false),
+        ("display_calibrate_recompose", false),
     ] {
         let row = row(&summary, name);
         let scene = row.scene.expect("состав сцены");
         let ui = row.ui.expect("счётчики UI");
+        assert!(scene.texts > 0, "{name}: пустая сцена {scene:?}");
         assert!(
-            scene.glass_groups > 0 && scene.texts > 0,
-            "{name}: пустая сцена {scene:?}"
-        );
-        assert!(
-            ui.glass_groups > 0 && ui.glyph_instances > 0 && ui.shape_instances > 0,
+            ui.glyph_instances > 0 && ui.shape_instances > 0,
             "{name}: UI не нарисован {ui:?}"
         );
+        assert_eq!(
+            scene.glass_groups > 0,
+            has_glass,
+            "{name}: стекло в составе сцены {scene:?}"
+        );
+        assert_eq!(ui.glass_groups > 0, has_glass, "{name}: стекло в счётчиках UI {ui:?}");
     }
     let photo = row(&summary, "display_photo");
     let calibrate = row(&summary, "display_calibrate");
@@ -268,21 +272,26 @@ fn every_workload_of_the_catalog_is_measured_on_a_real_gpu_and_released_one_by_o
     );
     assert_ne!(photo.scene, calibrate.scene, "экраны различаются по составу");
 
-    // Каденция фона: пирамида строится на каждом кадре или один раз.
-    for name in ["display_photo", "display_calibrate"] {
+    // Каденция фона: пирамида яркости нужна только стеклу. У PHOTO она строится на каждом кадре или один раз
+    // (тот же кадр камеры); у CALIBRATE после 14m стекла нет, и пирамида не строится вовсе (`NotNeeded`).
+    let photo_new_frame = row(&summary, "display_photo").ui.unwrap();
+    assert_eq!(
+        photo_new_frame.pyramid_rebuilds, photo_new_frame.frames_recorded,
+        "display_photo: новый кадр камеры на каждом кадре"
+    );
+    let photo_recompose = row(&summary, "display_photo_recompose").ui.unwrap();
+    assert_eq!(
+        photo_recompose.pyramid_rebuilds, 1,
+        "display_photo_recompose: тот же кадр камеры — пирамида строится один раз"
+    );
+    assert!(photo_recompose.pyramid_reuses > 0, "display_photo_recompose");
+    for name in ["display_calibrate", "display_calibrate_recompose"] {
         let ui = row(&summary, name).ui.unwrap();
         assert_eq!(
-            ui.pyramid_rebuilds, ui.frames_recorded,
-            "{name}: новый кадр камеры на каждом кадре"
+            (ui.pyramid_rebuilds, ui.pyramid_reuses),
+            (0, 0),
+            "{name}: без стекла пирамида не нужна и не строится"
         );
-    }
-    for name in ["display_photo_recompose", "display_calibrate_recompose"] {
-        let ui = row(&summary, name).ui.unwrap();
-        assert_eq!(
-            ui.pyramid_rebuilds, 1,
-            "{name}: тот же кадр камеры — пирамида строится один раз"
-        );
-        assert!(ui.pyramid_reuses > 0, "{name}");
     }
 
     // Работы освобождены одна за другой: к концу живых объектов столько же, сколько до начала.
@@ -304,7 +313,8 @@ fn photo_and_calibrate_draw_lists_are_valid_and_differ_by_what_the_real_screen_d
     let calibrate = plan.scene(DisplayScreen::Calibrate);
     photo.draw_list.validate().expect("список PHOTO валиден");
     calibrate.draw_list.validate().expect("список CALIBRATE валиден");
-    assert!(photo.summary.glass_groups > 0 && calibrate.summary.glass_groups > 0);
+    assert!(photo.summary.glass_groups > 0, "у PHOTO стекло есть");
+    assert_eq!(calibrate.summary.glass_groups, 0, "у CALIBRATE после 14m стекла нет");
     // В CALIBRATE есть панель прибора (живая картинка) и колонка ручек (больше значков и подписей).
     assert_eq!(photo.summary.live_images, 0);
     assert!(
@@ -421,38 +431,19 @@ fn ui_ablations_draw_exactly_the_filtered_scene_and_each_kind_gives_a_different_
     }
 
     let by = |name: &str| row(&summary, name);
-    let (full, glass, shapes, text, images, no_glass) = (
+    let (full, shapes, text, images) = (
         by("display_calibrate"),
-        by("display_calibrate_glass_only"),
         by("display_calibrate_shapes_only"),
         by("display_calibrate_text_only"),
         by("display_calibrate_images_only"),
-        by("display_calibrate_no_glass"),
     );
     // Состав сцены в результате — фактический, после фильтра, и рендер нарисовал именно его.
+    // Срезов по стеклу CALIBRATE нет: после 14m в разделе стекла нет, и полный экран его не содержит.
     let (full_scene, full_ui) = (full.scene.unwrap(), full.ui.unwrap());
-    let (glass_scene, glass_ui) = (glass.scene.unwrap(), glass.ui.unwrap());
-    assert_eq!(glass_scene.glass_groups, full_scene.glass_groups);
     assert_eq!(
-        (
-            glass_scene.shapes,
-            glass_scene.texts,
-            glass_scene.icons,
-            glass_scene.images
-        ),
-        (0, 0, 0, 0)
-    );
-    assert!(
-        glass_ui.glass_groups > 0 && glass_ui.glyph_instances == 0 && glass_ui.live_images_drawn == 0,
-        "{glass_ui:?}"
-    );
-    assert!(
-        glass_scene.glass_bounds_area_px > 0 && glass_scene.glass_screen_fraction > 0.0,
-        "{glass_scene:?}"
-    );
-    assert_eq!(
-        glass_scene.glass_bounds_area_px, full_scene.glass_bounds_area_px,
-        "геометрия стекла та же"
+        (full_scene.glass_groups, full_ui.glass_groups),
+        (0, 0),
+        "{full_scene:?} {full_ui:?}"
     );
 
     let shapes_ui = shapes.ui.unwrap();
@@ -470,17 +461,9 @@ fn ui_ablations_draw_exactly_the_filtered_scene_and_each_kind_gives_a_different_
         images_ui.live_images_drawn > 0 && images_ui.live_images_missing == 0 && images_ui.glass_groups == 0,
         "{images_ui:?}"
     );
-    let no_glass_ui = no_glass.ui.unwrap();
-    assert_eq!(no_glass.scene.unwrap().glass_groups, 0);
-    assert!(
-        no_glass_ui.glass_groups == 0
-            && no_glass_ui.glyph_instances
-                == full_ui.glyph_instances / full_ui.frames_recorded * no_glass_ui.frames_recorded,
-        "всё остальное нарисовано: {no_glass_ui:?} против {full_ui:?}"
-    );
 
     // Разные вырезки — разные картинки; полный экран отличается от стекла отдельно.
-    let digests: Vec<String> = [full, glass, shapes, text, images, no_glass]
+    let digests: Vec<String> = [full, shapes, text, images]
         .iter()
         .map(|row| combined_digest(row))
         .collect();
@@ -491,12 +474,34 @@ fn ui_ablations_draw_exactly_the_filtered_scene_and_each_kind_gives_a_different_
         "каждая вырезка даёт свою картинку: {digests:?}"
     );
 
-    // PHOTO: стекло отдельно и без стекла тоже различаются, и оба отличаются от всего экрана.
+    // PHOTO: стекло отдельно и без стекла тоже различаются, и оба отличаются от всего экрана; геометрия стекла
+    // при фильтре «только стекло» та же, что у полного экрана, и рендер нарисовал именно стекло.
     let (photo, photo_glass, photo_flat) = (
         by("display_photo"),
         by("display_photo_glass_only"),
         by("display_photo_no_glass"),
     );
+    let (photo_scene, photo_glass_scene) = (photo.scene.unwrap(), photo_glass.scene.unwrap());
+    assert_eq!(photo_glass_scene.glass_groups, photo_scene.glass_groups);
+    assert_eq!(
+        (
+            photo_glass_scene.shapes,
+            photo_glass_scene.texts,
+            photo_glass_scene.icons,
+            photo_glass_scene.images
+        ),
+        (0, 0, 0, 0)
+    );
+    let photo_glass_ui = photo_glass.ui.unwrap();
+    assert!(
+        photo_glass_ui.glass_groups > 0 && photo_glass_ui.glyph_instances == 0,
+        "{photo_glass_ui:?}"
+    );
+    assert_eq!(photo_glass_scene.glass_bounds_area_px, photo_scene.glass_bounds_area_px);
+    assert!(photo_glass_scene.glass_bounds_area_px > 0 && photo_glass_scene.glass_screen_fraction > 0.0);
+    let photo_flat_scene = photo_flat.scene.unwrap();
+    assert_eq!(photo_flat_scene.glass_groups, 0);
+    assert!(photo_flat.ui.unwrap().glass_groups == 0);
     let photo_digests = [
         combined_digest(photo),
         combined_digest(photo_glass),

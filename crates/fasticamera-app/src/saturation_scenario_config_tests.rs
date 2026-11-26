@@ -123,10 +123,10 @@ fn default_list_is_the_baseline_group_and_groups_expand_in_place() {
         .iter()
         .map(|entry| entry.name)
         .collect();
-    assert_eq!(names.len(), 1 + 14 + 7);
+    assert_eq!(names.len(), 1 + 14 + 5);
     assert_eq!(names[0], "still", "порядок списка сохраняется");
     assert_eq!(names[1], "viewfinder_awb_never");
-    assert_eq!(names[15], "display_calibrate_glass_only");
+    assert_eq!(names[15], "display_calibrate_shapes_only");
     assert_eq!(mixed.validate(), Ok(()));
 }
 
