@@ -9,9 +9,7 @@ use crate::graticule::{GraticulePrimitive, MAX_GRATICULE_PRIMITIVES};
 use crate::render_settings::RenderSettings;
 use crate::resolved::ResolvedScope;
 use crate::rule::{Hit, SamplePosition, hits_of_code};
-
-/// Уровни горизонтальных линий waveform и parade, доли диапазона кодов.
-const LEVEL_LINE_FRACTIONS: [f32; 5] = [0.0, 0.25, 0.5, 0.75, 1.0];
+use scope_contract::WAVEFORM_LEVEL_LINES;
 
 /// Цвета целей вектороскопа: R, G, B, C, M, Y (каналы 0/1 умножаются на амплитуду).
 const TARGET_COLORS: [[f32; 3]; 6] = [
@@ -45,10 +43,11 @@ impl ResolvedScope {
             Self::Waveform(rule) | Self::RgbParade(rule) => rule.levels(),
             Self::VectorscopeYCbCr(_) | Self::VectorscopeOklab(_) => return Vec::new(),
         };
-        LEVEL_LINE_FRACTIONS
+        // Уровни — общий список словаря: экран подписывает именно эти линии (решения 188, 274).
+        WAVEFORM_LEVEL_LINES
             .iter()
-            .filter_map(|&fraction| {
-                let code = (fraction * f32::from(MAX_DISPLAY_CODE)).round() as u16;
+            .filter_map(|line| {
+                let code = (line.fraction * f32::from(MAX_DISPLAY_CODE)).round() as u16;
                 let hit = self.first_cell_of(code_gray(code))?;
                 let y = (hit.row as f32 + 0.5) / rows as f32;
                 Some(GraticulePrimitive::Segment {

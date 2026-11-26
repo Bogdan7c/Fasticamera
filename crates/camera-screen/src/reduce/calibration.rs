@@ -1,4 +1,4 @@
-//! Раздел калибровки: ручки, основа тона, приборы, «чистяк», выбор полосы и меню «шесть точек» (решения 185–203).
+//! Раздел калибровки: ручки, основа тона, приборы, «чистяк», выбор полосы и меню «шесть точек» (карточка пресетов) (решения 185–203).
 //!
 //! Инварианты модуля:
 //! * все действия ручек допустимы только в режиме с разделом калибровки (`ModeBehaviour::calibration`);
@@ -13,7 +13,7 @@ use scope_contract::{ScopeIntent, ScopeKind, VectorscopeAxes};
 
 use super::Ctx;
 use super::look::{Availability, emit_look_from_facts, read_facts};
-use crate::calibration::{CalibrationMenu, CalibrationMenuItem, CleanViewState, ControlViewKind};
+use crate::calibration::{CalibrationMenu, CleanViewState, ControlViewKind};
 use crate::effect::Effect;
 use crate::outcome::{ActionOutcome, NoChangeReason, Rejection};
 
@@ -89,7 +89,7 @@ pub(super) fn on_scope_kind_selected(ctx: &mut Ctx<'_>, kind: ScopeKind) -> Acti
     ActionOutcome::Applied
 }
 
-/// Стандарт осей вектороскопа выбран в меню.
+/// Стандарт осей вектороскопа выбран в полоске прибора (решение 258).
 pub(super) fn on_axes_selected(ctx: &mut Ctx<'_>, axes: VectorscopeAxes) -> ActionOutcome {
     if let Err(outcome) = require_calibration(ctx) {
         return outcome;
@@ -171,9 +171,9 @@ pub(super) fn reselect_band_after_facts(ctx: &mut Ctx<'_>) {
 
 // ----- Меню «шесть точек» раздела ---------------------------------------------------------------------------------
 
-/// Кнопка меню в режиме с разделом: открыть корень меню калибровки.
+/// Кнопка меню в режиме с разделом: сразу открыть карточку пресетов (решение 283).
 pub(super) fn open_menu(ctx: &mut Ctx<'_>) -> ActionOutcome {
-    ctx.state.calibration.set_menu(CalibrationMenu::Root);
+    ctx.state.calibration.set_menu(CalibrationMenu::Presets);
     ActionOutcome::Applied
 }
 
@@ -183,32 +183,6 @@ pub(super) fn close_menu(ctx: &mut Ctx<'_>) -> ActionOutcome {
         return ActionOutcome::NoChange(NoChangeReason::NothingToClose);
     }
     ctx.state.calibration.set_menu(CalibrationMenu::Closed);
-    ActionOutcome::Applied
-}
-
-/// Левая кнопка карточки: из подменю — в корень, из корня — закрыть.
-pub(super) fn menu_back(ctx: &mut Ctx<'_>) -> ActionOutcome {
-    let next = match ctx.state.calibration.menu() {
-        CalibrationMenu::Closed => return ActionOutcome::NoChange(NoChangeReason::NothingToClose),
-        CalibrationMenu::Root => CalibrationMenu::Closed,
-        CalibrationMenu::Presets | CalibrationMenu::ScopeAxes => CalibrationMenu::Root,
-    };
-    ctx.state.calibration.set_menu(next);
-    ActionOutcome::Applied
-}
-
-/// Тап по пункту корня меню калибровки.
-pub(super) fn on_menu_item_tapped(ctx: &mut Ctx<'_>, item: CalibrationMenuItem) -> ActionOutcome {
-    if let Err(outcome) = require_calibration(ctx) {
-        return outcome;
-    }
-    if ctx.state.calibration.menu() != CalibrationMenu::Root {
-        return ActionOutcome::Rejected(Rejection::PanelBlocksAction);
-    }
-    ctx.state.calibration.set_menu(match item {
-        CalibrationMenuItem::Presets => CalibrationMenu::Presets,
-        CalibrationMenuItem::ScopeAxes => CalibrationMenu::ScopeAxes,
-    });
     ActionOutcome::Applied
 }
 
@@ -234,7 +208,6 @@ fn refresh_layout(ctx: &mut Ctx<'_>) {
     let built = match ctx.state.layout {
         Some(screen) if behaviour.has_calibration_surface() => Some(screen.calibration_layout(
             &ctx.config.calibration,
-            &ctx.config.widgets.bottom,
             behaviour.layout,
             ctx.state.orientation,
             ctx.state.safe_area,

@@ -372,11 +372,11 @@ fn swiping_to_another_scope_asks_the_renderer_for_exactly_that_scope() {
             VectorscopeAxes::YCbCrBt709
         )))]
     );
-    // Вектороскоп просит КВАДРАТ, вписанный в зону 540×743 px (меньшая сторона), а не всю зону.
+    // Вектороскоп просит КВАДРАТ, вписанный во всю область картинки (меньшая сторона = высота 827 px), а не область.
     let Effect::Scopes(ScopeIntent::Show(request)) = &transition.effects[0] else {
         panic!("ожидалась просьба показать прибор: {:?}", transition.effects);
     };
-    assert_eq!((request.image_size.width(), request.image_size.height()), (540, 540));
+    assert_eq!((request.image_size.width(), request.image_size.height()), (827, 827));
     let same = screen.step(ScreenAction::ScopeKindSelected(ScopeKind::Vectorscope));
     assert_eq!(same.outcome, ActionOutcome::NoChange(NoChangeReason::ValueUnchanged));
 }

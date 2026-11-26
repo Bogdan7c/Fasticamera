@@ -77,7 +77,6 @@ impl WheelsView {
         (content_node, content): (NodeId, Rect),
         frames: WheelsFrames,
     ) -> Result<Self, WidgetError> {
-        let touch_side = ctx.geometry.config().card.button_touch_side_pt;
         let tabs = SegmentRow::build(
             kit,
             ctx,
@@ -100,7 +99,7 @@ impl WheelsView {
             frames.whole_reset,
             ctx,
         )?;
-        kit.ensure_min_touch_side(whole_node, frames.whole_reset, touch_side)?;
+        kit.set_touch_area(whole_node, frames.whole_reset, frames.whole_reset_touch)?;
         let pad = WheelPad::build(kit, ctx, (content_node, content), &frames)?;
         // «↻» толчка — ребёнок узла круга: касание угла достаётся кнопке, остальной круг — пану точки.
         let push_node = kit.add_node(pad.node(), "calib_wheel_reset_push", frames.push_reset, frames.circle)?;
@@ -111,6 +110,7 @@ impl WheelsView {
             frames.push_reset,
             ctx,
         )?;
+        kit.set_touch_area(push_node, frames.push_reset, frames.push_reset_touch)?;
         let ring_row = RulerRow::build(
             kit,
             ctx,

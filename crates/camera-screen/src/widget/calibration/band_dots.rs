@@ -68,8 +68,10 @@ impl BandDots {
             let id = u8::try_from(index)
                 .map_err(|_| WidgetError::Inconsistent(format!("полос слишком много для ряда точек: {index}")))?;
             let button = PressButton::attach(kit, ButtonId::CalibrationBandDot(id), dot_node, frame, ctx)?;
-            // Точка Ø 24 мала для пальца: зона касания — не меньше квадрата кнопок карточки (HIG ≥ 44 pt).
-            kit.ensure_min_touch_side(dot_node, frame, ctx.geometry.config().card.button_touch_side_pt)?;
+            // Точка Ø 24 мала для пальца, а шаг точек меньше 44 pt: квадраты 44 × 44 соседей налезали бы друг на
+            // друга. Зона касания — своя ячейка ряда: шаг в ширину (у крайних — до края ряда), цель касания в высоту.
+            let touch_area = dot_cell(row, center_x, pitch, ctx.geometry.config().card.button_touch_side_pt);
+            kit.set_touch_area(dot_node, frame, touch_area)?;
             dots.push(BandDot {
                 band: band.id.clone(),
                 swatch: band.swatch.srgb,
@@ -181,6 +183,14 @@ impl BandDots {
 }
 
 /// Шаг между центрами точек: обычный (диаметр + промежуток), но не шире ряда — иначе точки сближаются.
+/// Ячейка касания точки с центром `center_x`: шаг ряда в ширину (внутри ряда), `touch_side_pt` в высоту по центру
+/// ряда. Ячейки соседей стыкуются ровно на середине между точками и не пересекаются.
+fn dot_cell(row: Rect, center_x: f64, pitch: f64, touch_side_pt: f64) -> Rect {
+    let left = (center_x - pitch / 2.0).max(row.min_x());
+    let right = (center_x + pitch / 2.0).min(row.max_x());
+    Rect::from_xywh(left, row.center().y - touch_side_pt / 2.0, right - left, touch_side_pt)
+}
+
 fn dot_pitch(row_width_pt: f64, count: usize, diameter_pt: f64, gap_pt: f64) -> f64 {
     let natural = diameter_pt + gap_pt;
     if count < 2 {

@@ -1,23 +1,25 @@
-//! Виджеты раздела калибровки (режим CALIBRATE, решения 185, 196–203).
+//! Виджеты раздела калибровки (режим CALIBRATE, решения 185, 196–203, 255–261, 274–283).
 //!
-//! Раздел — ОДНА сборка под одним повёрнутым корнем (`SectionSpace`): слева колонка ручек на стекле, справа сверху
-//! чистая зона (ничего не рисуется и не ловит касаний — под ней живой видоискатель), справа снизу прибор на
-//! стекле, внизу ряд: капсула режимов и кнопка меню. Раскладка и поворот по ориентации телефона приходят от
-//! `CalibrationLayout`, раздел сам ничего не считает.
+//! Раздел — ОДНА сборка под одним повёрнутым корнем (`SectionSpace`): колонка ручек на тёмной поверхности (сторону
+//! задаёт конфиг), рядом чистая зона (ничего не рисуется и не ловит касаний — под ней живой видоискатель), прибор
+//! (полоска с именем, точками и осями + картинка с числами уровней) и нижний ряд: CLEAN слева, капсула режимов и
+//! кнопка меню справа. Раскладка и поворот по ориентации телефона приходят от `CalibrationLayout`, раздел сам ничего
+//! не считает.
 //!
 //! # Жизненный цикл
 //! Раздел существует, пока у состояния есть раскладка раздела (режим CALIBRATE, известен размер surface), и
 //! пересобирается целиком при смене ключа [`SectionKey`]: раскладки (поворот телефона, размер) или набора полос
 //! (их точки строятся по фактам). Всё, что раздел показывает, берётся из фактов и выбора экрана, поэтому
 //! пересборка ничего не теряет, кроме положения прокрутки списка. Распознаватели удалённых узлов получают
-//! `Cancelled`, а «чистяк», оставшийся без пальца, сам отпускается (`ToneHeader::advance`).
+//! `Cancelled`, а «чистяк», оставшийся без пальца, сам отпускается (`CleanButton::advance`).
 //!
 //! # Что придумано, а не измерено
-//! В эталоне Apple нет раздела калибровки (решение 96): колонка на стекле, строки ручек, «чистяк», точки полос,
+//! В эталоне Apple нет раздела калибровки (решение 96): колонка на поверхности, строки ручек, CLEAN, точки полос и страниц прибора,
 //! листание приборов — идиомы владельца и подгонка. Измерено только то, что взято у карточки Exposure: вид
 //! линейки и кнопки «↻» (яркая / 44 %). Числа вида — `CalibrationWidgetsConfig`.
 
 mod band_dots;
+mod clean_button;
 mod clean_zone;
 mod control_view;
 mod host;
@@ -28,6 +30,7 @@ mod menu;
 mod paint;
 mod reset_disc;
 mod scope_panel;
+mod scope_strip;
 mod segments;
 pub(crate) mod space;
 mod tone_header;
@@ -38,6 +41,7 @@ use ui_core::geometry::Rect;
 use ui_core::gesture::GestureEvent;
 use ui_core::id::NodeId;
 
+use self::clean_button::CleanButton;
 use self::knobs_column::KnobsColumn;
 use self::menu::SectionMenu;
 use self::scope_panel::ScopePanel;
@@ -87,9 +91,11 @@ pub(crate) struct CalibrationSection {
     root: NodeId,
     knobs: KnobsColumn,
     scope: ScopePanel,
+    /// CLEAN внизу слева, зеркально кнопке меню (решение 259).
+    clean: CleanButton,
     carousel: ModeCarouselWidget,
     menu_button: MenuButtonWidget,
-    /// Меню «шесть точек» (шторка и карточки): лежит над всем остальным разделом.
+    /// Меню «шесть точек» (карточка пресетов): лежит над всем остальным разделом.
     menu: SectionMenu,
 }
 
@@ -117,7 +123,7 @@ impl CalibrationSection {
             (root, root_frame),
             (space.scene_rect(zones.knobs), bands, key.control_view),
         )?;
-        let scope = ScopePanel::build(kit, &space, (root, root_frame), space.scene_rect(zones.scope))?;
+        let scope = ScopePanel::build(kit, ctx, &space, (root, root_frame), &key.layout)?;
         // Чистая зона: невидимый узел свайпа режимов в глазных осях (в альбоме жесты видоискателя идут в осях поверхности).
         clean_zone::build_mode_swipe_zone(kit, &space, (root, root_frame), space.scene_rect(zones.clean_preview))?;
         // Капсула раздела — тот же измеренный размер, что на экране PHOTO (221,4 × 48,9 pt): соседняя подпись
@@ -135,6 +141,12 @@ impl CalibrationSection {
                 space,
             },
         )?;
+        let clean = CleanButton::build(
+            kit,
+            ctx,
+            (root, root_frame),
+            space.scene_point(key.layout.clean_button_center()),
+        )?;
         let menu_frame = Rect::centered_at(
             space.scene_point(key.layout.menu_button_center()),
             ctx.geometry.menu_button().size,
@@ -145,7 +157,7 @@ impl CalibrationSection {
             (root, root_frame),
             MenuButtonHome::Section { frame: menu_frame },
         )?;
-        // Меню строится последним: узлы идут в порядке наложения, и скрим с шторкой и карточкой лежат над ручками.
+        // Меню строится последним: узлы идут в порядке наложения, и скрим с карточкой лежат над ручками.
         let menu = SectionMenu::build(kit, ctx, &space, (root, root_frame))?;
         Ok(Self {
             key,
@@ -153,6 +165,7 @@ impl CalibrationSection {
             root,
             knobs,
             scope,
+            clean,
             carousel,
             menu_button,
             menu,
@@ -178,7 +191,8 @@ impl CalibrationSection {
         out: &mut Outputs,
     ) -> Result<bool, WidgetError> {
         Ok(self.knobs.handle_gesture(kit, &self.space, ctx, event, out)?
-            || self.scope.handle_gesture(&self.space, ctx, event, out)
+            || self.scope.handle_gesture(kit, ctx, event, out)?
+            || self.clean.handle_gesture(kit, event, out)?
             || self.carousel.handle_gesture(kit, event, out)?
             || self.menu_button.handle_gesture(kit, event, out)?
             || self.menu.handle_gesture(kit, event, out)?)
@@ -187,6 +201,7 @@ impl CalibrationSection {
     /// Выравнивает виджеты раздела по состоянию (без эха действий).
     pub(crate) fn sync(&mut self, kit: &mut SceneKit, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
         self.knobs.sync(kit, ctx)?;
+        self.scope.sync(kit, ctx)?;
         self.carousel.sync(kit, ctx)?;
         self.menu_button.sync(kit, ctx)?;
         self.menu.sync(kit, ctx)
@@ -195,6 +210,7 @@ impl CalibrationSection {
     /// Кадр: события линеек, каруселей и «чистяка».
     pub(crate) fn advance(&mut self, ctx: &Ctx<'_>, out: &mut Outputs) {
         self.knobs.advance(ctx, out);
+        self.clean.advance(ctx, out);
         self.carousel.advance(out);
         self.menu.advance(ctx);
     }
@@ -208,6 +224,7 @@ impl CalibrationSection {
     ) -> Result<(), WidgetError> {
         self.knobs.draw(ctx, visuals, layers, texts)?;
         self.scope.draw(ctx, visuals, layers, texts)?;
+        self.clean.draw(ctx, visuals, layers, texts)?;
         self.carousel.draw(ctx, visuals, layers, SECTION_PANEL_MATERIAL)?;
         self.menu_button
             .draw(ctx, visuals, layers, 1.0, SECTION_PANEL_MATERIAL)?;
@@ -227,7 +244,7 @@ impl CalibrationSection {
         let root_frame = self.space.root_frame();
         let host = host::RootHost::of(ctx, visuals, self.root, root_frame.center())?;
         let bottom_row = self.space.scene_rect(self.key.layout.zones().bottom_row);
-        // Открытое меню лежит над нижним рядом: плашка встаёт над его верхом, а не поверх шторки или карточки.
+        // Открытое меню лежит над нижним рядом: плашка встаёт над его верхом, а не поверх карточки.
         let anchor_y = self
             .menu
             .open_top(ctx.state.calibration().menu())

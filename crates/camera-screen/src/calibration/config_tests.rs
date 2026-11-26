@@ -4,6 +4,7 @@
 use scope_contract::{MAX_SCOPE_IMAGE_SIDE_PX, VectorscopeAxes};
 
 use super::{CalibrationConfig, CalibrationConfigError};
+use crate::calibration::{CalibrationLayoutConfigError, KnobsSide, ZoneShape};
 use crate::config::{ScreenConfig, ScreenConfigError};
 use crate::mode_behaviour::CalibrationAvailability;
 
@@ -58,10 +59,12 @@ fn fractions_outside_the_open_unit_interval_are_rejected() {
         assert!(
             matches!(
                 config.validate(),
-                Err(CalibrationConfigError::FractionOutOfRange {
-                    field: "landscape.knobs_width_fraction",
-                    ..
-                })
+                Err(CalibrationConfigError::Layout(
+                    CalibrationLayoutConfigError::FractionOutOfRange {
+                        field: "landscape.knobs_width_fraction",
+                        ..
+                    }
+                ))
             ),
             "{bad}"
         );
@@ -71,11 +74,35 @@ fn fractions_outside_the_open_unit_interval_are_rejected() {
 #[test]
 fn bottom_row_heights_and_the_scope_limit_are_validated() {
     let mut config = CalibrationConfig::default();
-    config.layout.portrait_bottom_row_height_pt = 0.0;
+    config.layout.portrait.bottom_row_height_pt = 0.0;
     assert!(matches!(
         config.validate(),
-        Err(CalibrationConfigError::InvalidBottomRowHeight { .. })
+        Err(CalibrationConfigError::Layout(
+            CalibrationLayoutConfigError::NonPositive {
+                field: "portrait.bottom_row_height_pt",
+                ..
+            }
+        ))
     ));
+    for (name, set) in [
+        ("scope_strip_height_pt", 0.0),
+        ("scope_levels_gutter_pt", f64::NAN),
+        ("side_button_inset_pt", -1.0),
+    ] {
+        let mut config = CalibrationConfig::default();
+        match name {
+            "scope_strip_height_pt" => config.layout.scope_strip_height_pt = set,
+            "scope_levels_gutter_pt" => config.layout.scope_levels_gutter_pt = set,
+            _ => config.layout.side_button_inset_pt = set,
+        }
+        assert!(
+            matches!(
+                config.validate(),
+                Err(CalibrationConfigError::Layout(CalibrationLayoutConfigError::NonPositive { field, .. })) if field == name
+            ),
+            "{name}"
+        );
+    }
 
     for bad in [0, MAX_SCOPE_IMAGE_SIDE_PX + 1] {
         let config = CalibrationConfig {
@@ -200,6 +227,11 @@ fn widget_numbers_are_validated_with_the_name_of_the_bad_field() {
         reject(&|c| c.widgets.row_title_height_pt = c.widgets.row_height_pt),
         Err(CalibrationConfigError::Widgets(Bad::RowTooShort { .. }))
     ));
+    // Зона «↻» над строкой не может съесть всю линейку: иначе её у низа строки было бы нечем ловить.
+    assert!(matches!(
+        reject(&|c| c.widgets.row_reset_reach_above_pt = c.widgets.row_height_pt - c.widgets.row_title_height_pt),
+        Err(CalibrationConfigError::Widgets(Bad::ResetReachEatsRuler { .. }))
+    ));
 }
 
 #[test]
@@ -243,4 +275,27 @@ fn a_bad_widget_number_makes_the_whole_screen_config_invalid() {
         config.validate(),
         Err(ScreenConfigError::Calibration(CalibrationConfigError::Widgets(_)))
     ));
+}
+
+#[test]
+fn defaults_put_the_strip_below_in_portrait_the_scope_under_the_preview_in_landscape_and_the_knobs_on_the_left() {
+    let layout = CalibrationConfig::default().layout;
+    assert_eq!(layout.portrait.shape, ZoneShape::ScopeStripBelow);
+    assert_eq!(layout.landscape.shape, ZoneShape::ScopeUnderPreview);
+    assert_eq!(layout.knobs_side, KnobsSide::Left);
+}
+
+#[test]
+fn the_layout_config_round_trips_through_json_with_named_shapes_and_rejects_unknown_fields() {
+    let config = CalibrationConfig::default();
+    let json = serde_json::to_string(&config).expect("сериализация");
+    assert!(
+        json.contains("\"scope_strip_below\""),
+        "форма — именованная, а не флаг: {json}"
+    );
+    assert!(json.contains("\"left\""), "сторона колонки — именованная: {json}");
+    let back: CalibrationConfig = serde_json::from_str(&json).expect("чтение");
+    assert_eq!(back, config);
+    let bad = json.replace("\"side_button_inset_pt\"", "\"unknown_inset\"");
+    assert!(serde_json::from_str::<CalibrationConfig>(&bad).is_err());
 }

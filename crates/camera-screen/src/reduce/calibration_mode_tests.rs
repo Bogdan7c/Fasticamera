@@ -117,14 +117,15 @@ fn entering_calibrate_puts_the_viewfinder_on_the_whole_screen_and_asks_for_the_s
         },
         "соотношение — экрана, режим cover"
     );
-    // Прибор просят размером ровно с его зону: 540 × 743 px на поверхности 1080×2412 (расчёт доль конфига).
+    // Прибор просят размером ровно с его картинку: 1011 × 827 px на поверхности 1080×2412 (область картинки 1080 × 827
+    // под полоской 44 pt, минус поле уровней 28 pt, решения 274 и 291).
     assert_eq!(
         shows(&transition.effects),
         [ScopeRequest {
             kind: ScopeKind::Waveform,
             vectorscope_axes: VectorscopeAxes::YCbCrBt709,
             scan: ScopeScan::Upright,
-            image_size: scope_contract::ScopeImageSize::try_new(540, 743).expect("размер"),
+            image_size: scope_contract::ScopeImageSize::try_new(1011, 827).expect("размер"),
         }]
     );
     assert_eq!(hides(&transition.effects), 0);
@@ -172,7 +173,7 @@ fn rotating_the_phone_in_calibrate_resends_the_scope_with_the_new_size_and_scan(
         .calibration()
         .layout()
         .expect("раскладка")
-        .scope_image_size();
+        .scope_image_size_for(ScopeKind::Waveform);
 
     let transition = screen.rotate_to(DeviceOrientation::LandscapeLeft);
 
@@ -180,7 +181,7 @@ fn rotating_the_phone_in_calibrate_resends_the_scope_with_the_new_size_and_scan(
     let requests = shows(&transition.effects);
     assert_eq!(requests.len(), 1, "{:?}", transition.effects);
     assert_eq!(requests[0].scan, ScopeScan::RotatedClockwise);
-    assert_eq!(requests[0].image_size, layout.scope_image_size());
+    assert_eq!(requests[0].image_size, layout.scope_image_size_for(ScopeKind::Waveform));
     assert_ne!(requests[0].image_size, portrait, "зона прибора в альбоме другая");
     // Видоискатель от поворота не меняется: он по-прежнему на весь портретный экран.
     assert!(viewfinder_intents(&transition.effects).is_empty());
@@ -224,12 +225,13 @@ fn a_new_surface_size_in_calibrate_resends_the_scope_and_the_viewfinder() {
             kind: ScopeKind::Waveform,
             vectorscope_axes: VectorscopeAxes::YCbCrBt709,
             scan: ScopeScan::Upright,
-            image_size: layout.scope_image_size(),
+            image_size: layout.scope_image_size_for(ScopeKind::Waveform),
         }]
     );
+    let size = layout.scope_image_size_for(ScopeKind::Waveform);
     assert_ne!(
-        (layout.scope_image_size().width(), layout.scope_image_size().height()),
-        (540, 743),
+        (size.width(), size.height()),
+        (1011, 827),
         "высота surface другая — зона прибора другая"
     );
     assert_eq!(viewfinder_intents(&transition.effects).len(), 1);
@@ -273,53 +275,30 @@ fn switching_modes_closes_the_controls_menu_and_the_calibration_menu() {
     assert_eq!(screen.state.panel(), PanelState::Closed);
 
     screen.step(ScreenAction::ControlsMenuOpenRequested);
-    assert_eq!(screen.state.calibration().menu(), CalibrationMenu::Root);
+    assert_eq!(screen.state.calibration().menu(), CalibrationMenu::Presets);
     screen.step(ScreenAction::ModeSelected(CaptureMode::Photo));
     assert_eq!(screen.state.calibration().menu(), CalibrationMenu::Closed);
 }
 
 #[test]
-fn the_calibration_menu_button_opens_the_calibration_menu_not_the_controls_drawer() {
+fn the_calibration_menu_button_opens_the_presets_card_directly_and_the_left_button_closes_it() {
     let mut screen = Screen::calibrating(look_facts());
 
     let opened = screen.step(ScreenAction::ControlsMenuOpenRequested);
     assert_eq!(opened.outcome, ActionOutcome::Applied);
-    assert_eq!(screen.state.calibration().menu(), CalibrationMenu::Root);
+    // Решение 283: корня-шторки нет, кнопка меню открывает карточку пресетов сразу.
+    assert_eq!(screen.state.calibration().menu(), CalibrationMenu::Presets);
     assert_eq!(screen.state.panel(), PanelState::Closed, "меню Controls не открылось");
     assert!(screen.state.is_any_panel_open());
 
-    screen.step(ScreenAction::CalibrationMenuItemTapped(
-        crate::calibration::CalibrationMenuItem::Presets,
-    ));
-    assert_eq!(screen.state.calibration().menu(), CalibrationMenu::Presets);
+    // Левая кнопка карточки закрывает меню (вернуться больше некуда).
     screen.step(ScreenAction::SubmenuBackRequested);
-    assert_eq!(screen.state.calibration().menu(), CalibrationMenu::Root);
-    screen.step(ScreenAction::CalibrationMenuItemTapped(
-        crate::calibration::CalibrationMenuItem::ScopeAxes,
-    ));
-    assert_eq!(screen.state.calibration().menu(), CalibrationMenu::ScopeAxes);
+    assert_eq!(screen.state.calibration().menu(), CalibrationMenu::Closed);
+    screen.step(ScreenAction::ControlsMenuOpenRequested);
     screen.step(ScreenAction::ControlsMenuCloseRequested);
     assert_eq!(screen.state.calibration().menu(), CalibrationMenu::Closed);
     let nothing = screen.step(ScreenAction::ControlsMenuCloseRequested);
     assert_eq!(nothing.outcome, ActionOutcome::NoChange(NoChangeReason::NothingToClose));
-}
-
-#[test]
-fn a_menu_item_needs_the_open_root_and_the_calibration_mode() {
-    let mut calibrating = Screen::calibrating(look_facts());
-    let closed = calibrating.step(ScreenAction::CalibrationMenuItemTapped(
-        crate::calibration::CalibrationMenuItem::Presets,
-    ));
-    assert_eq!(closed.outcome, ActionOutcome::Rejected(Rejection::PanelBlocksAction));
-
-    let mut photo = Screen::with_look(look_facts());
-    let wrong_mode = photo.step(ScreenAction::CalibrationMenuItemTapped(
-        crate::calibration::CalibrationMenuItem::Presets,
-    ));
-    assert_eq!(
-        wrong_mode.outcome,
-        ActionOutcome::Rejected(Rejection::NotInCalibrationMode)
-    );
 }
 
 #[test]

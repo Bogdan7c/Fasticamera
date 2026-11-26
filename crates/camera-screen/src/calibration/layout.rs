@@ -13,31 +13,37 @@
 //! Управление раздела (колонка ручек, прибор, кнопка меню в альбоме) стоит внутри безопасной зоны поверхности: вырез
 //! камеры его не закрывает, а касание не уходит системе (решения 95, 226). Зона приходит отступами от краёв
 //! ПОВЕРХНОСТИ и переводится в глазные координаты тем же поворотом, что и вся раскладка: верх поверхности в альбоме —
-//! боковой край для глаз. Чистое превью — живая картинка, оно по-прежнему до краёв экрана. Портретный нижний ряд стоит
-//! на местах PHOTO (решения 82, 199) и зоной не сдвигается. Без отступов раскладка ровно та, что была до 14k.
+//! боковой край для глаз. Чистое превью — живая картинка, оно по-прежнему до краёв экрана. Без отступов зоны ровно
+//! покрывают глазной прямоугольник.
+//!
+//! # Форма зон и нижний ряд (14n)
+//! Как резать глазной прямоугольник, говорит [`ZoneShape`] ориентации из конфига (решения 255, 260), а с какой стороны
+//! колонка ручек — [`KnobsSide`] (решение 275). Нижний ряд — свои якоря раздела: капсула режимов на своей линии
+//! ([`CapsuleLine`]), кнопка меню у правого, CLEAN у левого края безопасной зоны на той же линии (решения 256, 259).
+//! Числа PHOTO раздел больше не читает.
 //!
 //! # Картинка прибора
-//! Просится ровно размером зоны прибора в **глазных** пикселях (решение 202 и 14h: 1:1, иначе края следа темнеют
-//! от фильтрации). Виджет рисует её в глазном прямоугольнике зоны, повёрнутым вместе со всем разделом; поле
-//! развёртки ([`ScopeScan`]) говорит прибору, как читать показанную картинку «слева направо» глазом.
-//!
-//! Размер зависит от вида прибора ([`ScopeKind::picture_shape`]): waveform и parade занимают всю зону, вектороскоп —
-//! квадрат, вписанный в зону (сторона = меньшая сторона зоны) и стоящий по её центру: круг на прямоугольнике стал бы
-//! овалом (решение 14m).
+//! Просится ровно размером своего прямоугольника в **глазных** пикселях (решение 202 и 14h: 1:1, иначе края следа
+//! темнеют от фильтрации). Зона прибора режется на полоску, поле уровней и область картинки, а прямоугольник
+//! картинки каждого вида считает [`ScopeFrames`]: waveform и parade — область без поля уровней, вектороскоп —
+//! квадрат, вписанный во всю область (круг на прямоугольнике стал бы овалом, решение 14m). Поле развёртки
+//! ([`ScopeScan`]) говорит прибору, как читать показанную картинку «слева направо» глазом.
 
 use scope_contract::{ScopeImageSize, ScopeImageSizeError, ScopeKind, ScopeScan};
+
 use shell_contract::edge_insets::ScreenEdge;
 use shell_contract::orientation::DeviceOrientation;
 use shell_contract::safe_area::SafeAreaInsets;
 use thiserror::Error;
 use ui_core::geometry::{Point, Rect, Size};
 
-use super::config::{CalibrationConfig, ZoneFractions};
+use super::config::CalibrationConfig;
 use super::eye::{EyeTransform, is_landscape};
+use super::layout_config::{CapsuleLine, KnobsSide, OrientationLayoutConfig, ZoneShape};
+use super::scope_frames::ScopeFrames;
 use crate::layout::ScreenLayout;
 use crate::mode_behaviour::LayoutPolicy;
 use crate::orientation::icon_rotation_clockwise_degrees;
-use crate::widgets_config::BottomLayout;
 
 /// Ошибка построения раскладки раздела.
 #[derive(Debug, Clone, Copy, PartialEq, Error)]
@@ -50,19 +56,22 @@ pub enum CalibrationLayoutError {
     },
     #[error("в безопасной зоне нет места: колонка ручек {knobs:?}, прибор {scope:?}")]
     NoRoomInSafeArea { knobs: Rect, scope: Rect },
+    #[error("в зоне прибора {scope:?} не остаётся места для картинки под полоской")]
+    NoRoomForScopePicture { scope: Rect },
 }
 
 /// Четыре зоны раздела в глазных координатах, без перекрытий. Без отступов безопасной зоны они ровно покрывают
 /// глазной прямоугольник; с отступами полоса у края остаётся живой картинкой без управления.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CalibrationZones {
-    /// Колонка ручек слева: от верха безопасной зоны до нижнего ряда, под стеклом.
+    /// Колонка ручек (сторону задаёт `KnobsSide`): от верха безопасной зоны до линии «верх / прибор» в портрете
+    /// или до нижнего ряда в альбоме.
     pub knobs: Rect,
-    /// Чистое превью справа сверху: ничего поверх, без стекла (решение 203: кусок большого кадра).
+    /// Чистое превью на другой половине сверху: ничего поверх, без стекла (решение 203: кусок большого кадра).
     pub clean_preview: Rect,
-    /// Прибор справа снизу: под стеклом.
+    /// Прибор: в портрете на всю ширину безопасной зоны под ручками и превью, в альбоме под превью.
     pub scope: Rect,
-    /// Нижний ряд на всю ширину: карусель режимов и кнопка меню «шесть точек».
+    /// Нижний ряд на всю ширину: CLEAN, карусель режимов и кнопка меню «шесть точек».
     pub bottom_row: Rect,
 }
 
@@ -73,21 +82,18 @@ pub struct CalibrationLayout {
     eye: EyeTransform,
     zones: CalibrationZones,
     menu_button_center: Point,
+    clean_button_center: Point,
     carousel_center: Point,
-    /// Картинка, занимающая всю зону прибора ([`scope_contract::ScopePictureShape::FillsZone`]).
-    scope_image_size: ScopeImageSize,
+    /// Полоска, область картинки, поле уровней и картинка каждого вида прибора.
+    scope_frames: ScopeFrames,
     scope_scan: ScopeScan,
 }
 
 impl CalibrationLayout {
     /// Строит раскладку. Вызывается только из `ScreenLayout::calibration_layout`.
-    ///
-    /// `bottom` — числа нижней зоны PHOTO: в портрете кнопка меню и карусель стоят там же, где в PHOTO
-    /// (решение 199), с той же привязкой к низу.
     pub(crate) fn build(
         screen: &ScreenLayout,
         config: &CalibrationConfig,
-        bottom: &BottomLayout,
         policy: LayoutPolicy,
         device_orientation: DeviceOrientation,
         safe_area: SafeAreaInsets,
@@ -99,29 +105,33 @@ impl CalibrationLayout {
         let surface_size = screen.screen_size();
         let eye = EyeTransform::new(eye_orientation, surface_size);
         let eye_size = eye.eye_size();
-        let (fractions, bottom_row_height_pt) = if is_landscape(eye_orientation) {
-            (config.layout.landscape, config.layout.landscape_bottom_row_height_pt)
+        let orientation_config = if is_landscape(eye_orientation) {
+            &config.layout.landscape
         } else {
-            (config.layout.portrait, config.layout.portrait_bottom_row_height_pt)
+            &config.layout.portrait
         };
         let pixels_per_point = screen.point_scale().pixels_per_point();
         let safe_rect = eye.surface_rect_in_eye(safe_surface_rect(surface_size, safe_area, pixels_per_point));
-        let zones = split_zones(eye_size, safe_rect, fractions, bottom_row_height_pt, pixels_per_point)?;
-
-        let (menu_button_center, carousel_center) = if is_landscape(eye_orientation) {
-            landscape_bottom_row_anchors(eye_size, safe_rect, &zones.bottom_row, bottom, surface_size.width)
-        } else {
-            portrait_bottom_row_anchors(screen, bottom)
-        };
-
-        let scope_image_size = scope_size_for_zone(zones.scope, pixels_per_point, config.max_scope_image_side_px)?;
+        let zones = split_zones(
+            eye_size,
+            safe_rect,
+            (orientation_config, config.layout.knobs_side),
+            pixels_per_point,
+        )?;
+        let anchors = BottomRowAnchors::of(
+            orientation_config.capsule_line,
+            (screen.bottom_anchor_shift_pt(), config.layout.side_button_inset_pt),
+            (eye_size, safe_rect, &zones.bottom_row),
+        );
+        let scope_frames = ScopeFrames::build(zones.scope, config, pixels_per_point)?;
 
         Ok(Self {
             eye,
             zones,
-            menu_button_center,
-            carousel_center,
-            scope_image_size,
+            menu_button_center: anchors.menu_button,
+            clean_button_center: anchors.clean_button,
+            carousel_center: anchors.carousel,
+            scope_frames,
             scope_scan: scan_for(eye_orientation),
         })
     }
@@ -141,6 +151,11 @@ impl CalibrationLayout {
         self.menu_button_center
     }
 
+    /// Центр кнопки CLEAN (глазные координаты): на линии капсулы, зеркально кнопке меню (решение 259).
+    pub fn clean_button_center(&self) -> Point {
+        self.clean_button_center
+    }
+
     /// Центр капсулы режимов (глазные координаты).
     pub fn carousel_center(&self) -> Point {
         self.carousel_center
@@ -156,16 +171,30 @@ impl CalibrationLayout {
         self.eye.orientation()
     }
 
-    /// Размер картинки, занимающей всю зону прибора: ровно зона, округлённая и зажатая в `1..=предел`. Так просят
-    /// приборы формы [`scope_contract::ScopePictureShape::FillsZone`]; для конкретного вида — [`Self::scope_image_size_for`].
-    pub fn scope_image_size(&self) -> ScopeImageSize {
-        self.scope_image_size
+    /// Полоска прибора сверху зоны: имя, точки страниц, оси и белое (решения 258, 291).
+    pub fn scope_strip(&self) -> Rect {
+        self.scope_frames.strip()
     }
 
-    /// Размер картинки прибора вида `kind`: зона целиком или вписанный в неё квадрат — по форме вида. Источник
-    /// размера для запроса прибора и для рисования его картинки.
+    /// Область картинки прибора: зона без полоски. Свайп листает приборы именно здесь.
+    pub fn scope_picture_area(&self) -> Rect {
+        self.scope_frames.picture_area()
+    }
+
+    /// Поле уровней слева в области картинки: в нём числа waveform и parade (решение 274).
+    pub fn scope_levels_gutter(&self) -> Rect {
+        self.scope_frames.levels_gutter()
+    }
+
+    /// Прямоугольник картинки прибора вида `kind`: ровно столько, сколько в [`Self::scope_image_size_for`] пикселей.
+    pub fn scope_image_rect_for(&self, kind: ScopeKind) -> Rect {
+        self.scope_frames.image_rect_for(kind)
+    }
+
+    /// Размер картинки прибора вида `kind` в пикселях: равен её прямоугольнику ([`Self::scope_image_rect_for`]).
+    /// Источник размера для запроса прибора и для рисования его картинки.
     pub fn scope_image_size_for(&self, kind: ScopeKind) -> ScopeImageSize {
-        kind.picture_shape().fit_in(self.scope_image_size)
+        self.scope_frames.image_size_for(kind)
     }
 
     /// Как глаз читает показанную картинку слева направо в этом положении (поле запроса прибора).
@@ -213,11 +242,46 @@ fn safe_surface_rect(surface_size: Size, safe_area: SafeAreaInsets, pixels_per_p
     )
 }
 
+/// Горизонтальные промежутки зон по стороне колонки ручек, глазные pt.
+struct ColumnSpans {
+    /// Колонка ручек: от внешнего края безопасной зоны на свою ширину.
+    knobs: (f64, f64),
+    /// Чистое превью: от границы колонки до края ЭКРАНА (картинка идёт под системные отступы).
+    preview: (f64, f64),
+    /// Прибор рядом с колонкой (форма `ScopeUnderPreview`): от границы колонки до другого края безопасной зоны.
+    scope_beside_column: (f64, f64),
+}
+
+impl ColumnSpans {
+    fn of(side: KnobsSide, (safe_left, safe_right): (f64, f64), (eye_width, column_width): (f64, f64)) -> Self {
+        match side {
+            KnobsSide::Left => {
+                let boundary = safe_left + column_width;
+                Self {
+                    knobs: (safe_left, boundary),
+                    preview: (boundary, eye_width),
+                    scope_beside_column: (boundary, safe_right),
+                }
+            }
+            // Справа колонка стоит у ПРОТИВОПОЛОЖНОГО безопасного края, а не зеркалится по x: отступы безопасной зоны
+            // у сторон разные (вырез камеры, полоса жестов).
+            KnobsSide::Right => {
+                let boundary = safe_right - column_width;
+                Self {
+                    knobs: (boundary, safe_right),
+                    preview: (0.0, boundary),
+                    scope_beside_column: (safe_left, boundary),
+                }
+            }
+        }
+    }
+}
+
 /// Режет глазной прямоугольник на четыре зоны. Каждая граница вычисляется один раз и берётся обеими соседними
-/// зонами, поэтому зоны сходятся встык без щелей и перекрытий.
+/// зонами, поэтому зоны сходятся встык без щелей и перекрытий. Как резать, говорит [`ZoneShape`] ориентации.
 ///
 /// Управление (ручки и прибор) стоит внутри безопасной зоны `safe`: колонка сдвигается от края и сохраняет свою ширину
-/// (доля считается от всего экрана), прибор кончается у границы зоны. Линия «превью / прибор» от зоны не зависит:
+/// (доля считается от всего экрана), прибор кончается у границы зоны. Линия «верх / прибор» от зоны не зависит:
 /// картинка сверху идёт до края экрана.
 ///
 /// Границы привязаны к сетке пикселей (`snap_to_pixel`): тогда зона прибора ровно целое число пикселей, и картинка
@@ -225,35 +289,32 @@ fn safe_surface_rect(surface_size: Size, safe_area: SafeAreaInsets, pixels_per_p
 fn split_zones(
     eye_size: Size,
     safe: Rect,
-    fractions: ZoneFractions,
-    bottom_row_height_pt: f64,
+    (orientation, side): (&OrientationLayoutConfig, KnobsSide),
     pixels_per_point: f64,
 ) -> Result<CalibrationZones, CalibrationLayoutError> {
     let snap = |length_pt: f64| snap_to_pixel(length_pt, pixels_per_point);
-    let content_bottom = snap((eye_size.height - bottom_row_height_pt).min(safe.max_y()).max(0.0));
-    let (knobs_left, knobs_top, safe_right) = (snap(safe.min_x()), snap(safe.min_y()), snap(safe.max_x()));
-    let column_boundary_x = knobs_left + snap(eye_size.width * fractions.knobs_width_fraction);
+    let content_bottom = snap(
+        (eye_size.height - orientation.bottom_row_height_pt)
+            .min(safe.max_y())
+            .max(0.0),
+    );
+    let safe_top = snap(safe.min_y());
+    let safe_x = (snap(safe.min_x()), snap(safe.max_x()));
+    let column_width = snap(eye_size.width * orientation.knobs_width_fraction);
+    let spans = ColumnSpans::of(side, safe_x, (eye_size.width, column_width));
     // Отступ сверху толще всего превью (не бывает у телефонов) прибор всё равно не накроет.
-    let preview_boundary_y = snap(content_bottom * fractions.preview_height_fraction).max(knobs_top);
+    let preview_boundary_y = snap(content_bottom * orientation.preview_height_fraction).max(safe_top);
+    let band = |(from, to): (f64, f64), (top, bottom): (f64, f64)| Rect::from_xywh(from, top, to - from, bottom - top);
+    let (knobs_bottom, scope_span) = match orientation.shape {
+        // Прибор лежит под обеими половинами верха на всю ширину безопасной зоны; колонка кончается у линии владельца.
+        ZoneShape::ScopeStripBelow => (preview_boundary_y, safe_x),
+        // Колонка идёт на всю высоту, прибор — под превью.
+        ZoneShape::ScopeUnderPreview => (content_bottom, spans.scope_beside_column),
+    };
     let zones = CalibrationZones {
-        knobs: Rect::from_xywh(
-            knobs_left,
-            knobs_top,
-            column_boundary_x - knobs_left,
-            content_bottom - knobs_top,
-        ),
-        clean_preview: Rect::from_xywh(
-            column_boundary_x,
-            0.0,
-            eye_size.width - column_boundary_x,
-            preview_boundary_y,
-        ),
-        scope: Rect::from_xywh(
-            column_boundary_x,
-            preview_boundary_y,
-            safe_right - column_boundary_x,
-            content_bottom - preview_boundary_y,
-        ),
+        knobs: band(spans.knobs, (safe_top, knobs_bottom)),
+        clean_preview: band(spans.preview, (0.0, preview_boundary_y)),
+        scope: band(scope_span, (preview_boundary_y, content_bottom)),
         bottom_row: Rect::from_xywh(0.0, content_bottom, eye_size.width, eye_size.height - content_bottom),
     };
     let has_room = |zone: &Rect| zone.size.width > 0.0 && zone.size.height > 0.0;
@@ -268,59 +329,36 @@ fn split_zones(
 }
 
 /// Ближайшая граница на сетке пикселей, pt.
-fn snap_to_pixel(length_pt: f64, pixels_per_point: f64) -> f64 {
+pub(super) fn snap_to_pixel(length_pt: f64, pixels_per_point: f64) -> f64 {
     (length_pt * pixels_per_point).round() / pixels_per_point
 }
 
-/// Портрет: кнопка меню и капсула — на тех же местах, что в PHOTO (с привязкой к низу, решение 82).
-fn portrait_bottom_row_anchors(screen: &ScreenLayout, bottom: &BottomLayout) -> (Point, Point) {
-    let shift = screen.bottom_anchor_shift_pt();
-    (
-        Point::new(bottom.menu_button.center_x_pt, bottom.menu_button.center_y_pt + shift),
-        Point::new(bottom.capsule_center_x_pt, bottom.capsule_center_y_pt + shift),
-    )
+/// Центры трёх элементов нижнего ряда, глазные pt.
+struct BottomRowAnchors {
+    menu_button: Point,
+    clean_button: Point,
+    carousel: Point,
 }
 
-/// Альбом: одна линия по середине нижнего ряда; кнопка меню — у правого края безопасной зоны с тем же отступом, что
-/// в PHOTO от края экрана (иначе она оказалась бы в полосе системного жеста и не нажималась), капсула — по центру
-/// ширины.
-fn landscape_bottom_row_anchors(
-    eye_size: Size,
-    safe: Rect,
-    bottom_row: &Rect,
-    bottom: &BottomLayout,
-    reference_width_pt: f64,
-) -> (Point, Point) {
-    let row_center_y = bottom_row.center().y;
-    // Отступ центра кнопки от правого края в PHOTO: ширина эталона − центр по x (440 − 383,6 = 56,4).
-    let menu_inset_from_right = reference_width_pt - bottom.menu_button.center_x_pt;
-    (
-        Point::new(safe.max_x() - menu_inset_from_right, row_center_y),
-        Point::new(eye_size.width / 2.0, row_center_y),
-    )
-}
-
-/// Размер картинки прибора по зоне: pt → px по масштабу, округление, зажим в `1..=предел`.
-fn scope_size_for_zone(
-    zone: Rect,
-    pixels_per_point: f64,
-    max_side_px: u32,
-) -> Result<ScopeImageSize, CalibrationLayoutError> {
-    let width_px = pixels_for(zone.size.width, pixels_per_point, max_side_px);
-    let height_px = pixels_for(zone.size.height, pixels_per_point, max_side_px);
-    ScopeImageSize::try_new(width_px, height_px).map_err(|source| CalibrationLayoutError::ScopeImageSize {
-        width_px,
-        height_px,
-        source,
-    })
-}
-
-fn pixels_for(length_pt: f64, pixels_per_point: f64, max_side_px: u32) -> u32 {
-    let rounded = (length_pt * pixels_per_point).round().max(1.0);
-    // Зажим сверху до приведения к u32: огромное число не переполнит, а даст предел.
-    if rounded >= f64::from(max_side_px) {
-        max_side_px
-    } else {
-        rounded as u32
+impl BottomRowAnchors {
+    /// Капсула стоит по центру ширины на линии `line`; кнопка меню и CLEAN — на той же линии, на `side_inset_pt`
+    /// от правого и левого краёв безопасной зоны: ближе кнопка попала бы в полосу системного жеста и не нажималась
+    /// (решения 226, 256, 259).
+    fn of(
+        line: CapsuleLine,
+        (bottom_anchor_shift_pt, side_inset_pt): (f64, f64),
+        (eye_size, safe, bottom_row): (Size, Rect, &Rect),
+    ) -> Self {
+        let line_y = match line {
+            CapsuleLine::ReferenceAnchoredToBottom { reference_center_y_pt } => {
+                reference_center_y_pt + bottom_anchor_shift_pt
+            }
+            CapsuleLine::BottomRowCentre => bottom_row.center().y,
+        };
+        Self {
+            menu_button: Point::new(safe.max_x() - side_inset_pt, line_y),
+            clean_button: Point::new(safe.min_x() + side_inset_pt, line_y),
+            carousel: Point::new(eye_size.width / 2.0, line_y),
+        }
     }
 }

@@ -157,28 +157,51 @@ impl RowTarget {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct RowFrames {
     pub row: Rect,
+    /// Рамка линейки (по ней она рисуется).
     pub ruler: Rect,
+    /// Где линейка ловит палец: рамка без нижней полосы, которую забирает «↻» строки ниже (решение 279).
+    pub ruler_touch: Rect,
+    /// Рамка кнопки «↻» (по ней она рисуется).
     pub reset: Rect,
+    /// Где «↻» ловит палец: ширина цели касания у правого края строки, высота — полоса заголовка и полоса над
+    /// строкой. Внутри строки по ширине, чтобы окно списка её не резало; со своей линейкой общих точек нет.
+    pub reset_touch: Rect,
 }
 
 impl RowFrames {
-    /// Рамки внутри строки `row`: сверху линия «заголовок · значение · ↻», под ней линейка.
-    pub(super) fn of(row: Rect, config: &CalibrationWidgetsConfig) -> Self {
+    /// Рамки внутри строки `row`: сверху линия «заголовок · значение · ↻», под ней линейка. `touch_side_pt` —
+    /// сторона цели касания маленькой кнопки (HIG 44 pt).
+    pub(super) fn of(row: Rect, config: &CalibrationWidgetsConfig, touch_side_pt: f64) -> Self {
         let reset_side = config.reset_button_diameter_pt;
         let title_height = config.row_title_height_pt;
+        let reach_above = config.row_reset_reach_above_pt;
+        let ruler = Rect::from_xywh(
+            row.min_x(),
+            row.min_y() + title_height,
+            row.size.width,
+            row.size.height - title_height,
+        );
+        let reset_touch_width = touch_side_pt.min(row.size.width);
         Self {
             row,
-            ruler: Rect::from_xywh(
-                row.min_x(),
-                row.min_y() + title_height,
-                row.size.width,
-                row.size.height - title_height,
+            ruler,
+            ruler_touch: Rect::from_xywh(
+                ruler.min_x(),
+                ruler.min_y(),
+                ruler.size.width,
+                ruler.size.height - reach_above,
             ),
             reset: Rect::from_xywh(
                 row.max_x() - reset_side,
                 row.min_y() + (title_height - reset_side) / 2.0,
                 reset_side,
                 reset_side,
+            ),
+            reset_touch: Rect::from_xywh(
+                row.max_x() - reset_touch_width,
+                row.min_y() - reach_above,
+                reset_touch_width,
+                title_height + reach_above,
             ),
         }
     }
@@ -216,9 +239,10 @@ impl RulerRow {
         (target, row_rect): (RowTarget, Rect),
     ) -> Result<Self, WidgetError> {
         let config = &ctx.config.calibration.widgets;
-        let frames = RowFrames::of(row_rect, config);
+        let frames = RowFrames::of(row_rect, config, ctx.geometry.config().card.button_touch_side_pt);
         let node = kit.add_node(parent, "calib_row", frames.row, parent_rect)?;
         let ruler_node = kit.add_node(node, "calib_ruler", frames.ruler, frames.row)?;
+        kit.set_touch_area(ruler_node, frames.ruler, frames.ruler_touch)?;
         kit.add_recognizer(
             ruler_node,
             RecognizerSpec::Pan(PanSpec {
@@ -239,11 +263,7 @@ impl RulerRow {
             frames.reset,
             ctx,
         )?;
-        kit.ensure_min_touch_side(
-            reset_node,
-            frames.reset,
-            ctx.geometry.config().card.button_touch_side_pt,
-        )?;
+        kit.set_touch_area(reset_node, frames.reset, frames.reset_touch)?;
         let facts = ctx.state.look_facts();
         let binding = RowBinding::selected_for(target, ctx);
         let initial = f64::from(target.value_in(facts, &binding).get());

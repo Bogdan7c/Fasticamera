@@ -25,17 +25,17 @@ pub struct CalibrationWidgetsConfig {
     pub panel_corner_radius_pt: f32,
     /// Отступ содержимого колонки от краёв панели. `[invented]`.
     pub panel_padding_pt: f64,
-    /// Высота шапки колонки: переключатель основы и кнопка «чистяк». `[invented]`.
+    /// Высота шапки колонки: переключатель основы и его «↻». `[invented]`.
     pub header_height_pt: f64,
-    /// Высота кнопки «чистяк» (зона касания расширяется до 44 pt отдельно). `[invented]`.
+    /// Высота капсулы CLEAN внизу (зона касания расширяется до 44 pt отдельно). `[invented]`.
     pub clean_button_height_pt: f64,
-    /// Ширина кнопки «чистяк»: капсула с подписью CLEAN (значка «глаз» в наборе нет). `[invented]`.
+    /// Ширина капсулы CLEAN (значка «глаз» в наборе нет, решение 276). `[invented]`.
     pub clean_button_width_pt: f64,
     /// Прозрачность заливки кнопки «чистяк» в покое. `[invented]`.
     pub clean_button_fill_alpha: f32,
     /// Прозрачность заливки кнопки «чистяк», пока её держат. `[invented]`.
     pub clean_button_held_fill_alpha: f32,
-    /// Промежуток между элементами шапки (переключатель основы, «↻», «чистяк») и между значением и «↻». `[invented]`.
+    /// Промежуток между переключателем основы и «↻» шапки (карусель кончается перед зоной касания «↻», если она шире). `[invented]`.
     pub header_gap_pt: f64,
     /// Промежуток между значением и «↻» в строке ручки. `[invented]`.
     pub value_gap_pt: f64,
@@ -73,6 +73,12 @@ pub struct CalibrationWidgetsConfig {
     pub wheel_tab_marker_width_pt: f64,
     /// Диаметр кнопки «↻» в строке. `[invented]`.
     pub reset_button_diameter_pt: f64,
+    /// Сторона зоны касания «↻» колеса: HIG ≥ 44 pt. Зона растёт ВНУТРЬ колонки, а не за её край. `[estimate]`.
+    pub reset_touch_side_pt: f64,
+    /// Сколько зона касания «↻» строки забирает над строкой (решение 279): зона — полоса заголовка плюс эта полоса.
+    /// Ровно столько же линейка строки не ловит у своего низа, поэтому «↻» нижней строки и линейка верхней не
+    /// делят ни одной точки. `[invented]` 8 pt: 28 + 8 = 36 pt высоты зоны «↻» при ширине 44 pt.
+    pub row_reset_reach_above_pt: f64,
     /// Высота ряда цветных точек полос. `[invented]`.
     pub band_dots_height_pt: f64,
     /// Диаметр цветной точки полосы. `[invented]`.
@@ -120,9 +126,24 @@ pub struct CalibrationWidgetsConfig {
     pub scope_page_dot_diameter_pt: f64,
     /// Промежуток между точками-страницами. `[invented]`.
     pub scope_page_dot_gap_pt: f64,
-    /// Отступ подписи прибора и точек от краёв зоны прибора. `[invented]`.
+    /// Отступ содержимого полоски прибора (имя, оси, белое) от её боковых краёв. `[invented]`.
     pub scope_label_inset_pt: f64,
-    /// Минимальный сдвиг пальца по горизонтали, чтобы свайп сменил прибор. `[estimate]`.
+    /// Ширина ячейки точки-страницы в полоске: зона касания точки — вся ячейка высотой с полоску (44 pt), соседние
+    /// ячейки встык и не перекрываются. `[estimate]`.
+    pub scope_page_dot_cell_width_pt: f64,
+    /// Ширина одного сегмента переключателя осей вектороскопа в полоске (Y'CbCr | OKLab). `[estimate]`.
+    pub scope_axes_segment_width_pt: f64,
+    /// Промежуток между частями полоски: имя, точки, оси, место белого. `[estimate]`.
+    pub scope_strip_gap_pt: f64,
+    /// Ширина места под капсулу белого («5600 K», решение 290) справа в полоске на каждой странице. Сама кнопка
+    /// появится отдельным пакетом; место зарезервировано здесь, чтобы оси встали левее неё. `[estimate]`.
+    pub scope_strip_trailing_width_pt: f64,
+    /// Прозрачность волосяной линии между полоской и картинкой прибора (белая). `[estimate]`.
+    pub scope_strip_hairline_alpha: f32,
+    /// Отступ чисел уровней от правого края поля уровней (к картинке). `[estimate]`.
+    pub scope_level_label_inset_pt: f64,
+    /// Порог свайпа по прибору, pt: ОДИН для распознавания и для листания (решение 280). Короче — не свайп; признанный
+    /// свайп листает страницу сразу. Между «признан» и «листает» ничего нет. `[estimate]` 20, подбор на телефоне.
     pub scope_swipe_min_pt: f64,
     /// Запас пилюли режима по бокам подписи в разделе. `[estimate]`.
     pub mode_pill_padding_pt: f64,
@@ -138,8 +159,12 @@ pub struct CalibrationWidgetsConfig {
     /// Сколько таблеток ряд умеет держать (узлы сцены заводятся заранее). Больше имён — лишние не показываются, их
     /// число идёт в счётчик переполнения диагностики, а не теряется молча. `[estimate]`.
     pub chip_pool_size: usize,
-    /// Запас под подписями пунктов корня меню раздела: низ шторки отстоит от низа подписей на столько. `[estimate]`.
-    pub menu_sheet_bottom_padding_pt: f64,
+    /// На сколько pt ряд действий пресета (NEW / RENAME / SAVE / DELETE) опущен против места крупного значения в
+    /// карточке PHOTO: иначе зона касания первой таблетки (44 pt) заходит под кнопку «×» карточки. `[estimate]`.
+    pub menu_card_actions_drop_pt: f64,
+    /// На сколько pt ряд имён пресетов опущен против места ряда вариантов в карточке PHOTO: иначе зоны касания имён и
+    /// действий перекрываются на несколько pt. `[estimate]`.
+    pub menu_card_names_drop_pt: f64,
     /// Сколько секунд висит плашка проблемы, пока её не закроют. `[estimate]`.
     pub problem_banner_seconds: f64,
     /// Зазор между плашкой проблемы и тем, к чему она прижата (плашка AE/AF LOCK, нижний ряд раздела). `[estimate]`.
@@ -175,6 +200,8 @@ impl Default for CalibrationWidgetsConfig {
             wheel_tab_marker_diameter_pt: 7.0,
             wheel_tab_marker_width_pt: 1.5,
             reset_button_diameter_pt: 26.0,
+            reset_touch_side_pt: 44.0,
+            row_reset_reach_above_pt: 8.0,
             band_dots_height_pt: 44.0,
             band_dot_diameter_pt: 24.0,
             band_dot_gap_pt: 10.0,
@@ -195,15 +222,22 @@ impl Default for CalibrationWidgetsConfig {
             disabled_row_opacity: 0.35,
             scope_page_dot_diameter_pt: 6.0,
             scope_page_dot_gap_pt: 8.0,
-            scope_label_inset_pt: 10.0,
-            scope_swipe_min_pt: 40.0,
+            scope_label_inset_pt: 8.0,
+            scope_page_dot_cell_width_pt: 22.0,
+            scope_axes_segment_width_pt: 48.0,
+            scope_strip_gap_pt: 6.0,
+            scope_strip_trailing_width_pt: 68.0,
+            scope_strip_hairline_alpha: 0.18,
+            scope_level_label_inset_pt: 4.0,
+            scope_swipe_min_pt: 20.0,
             mode_pill_padding_pt: 20.0,
             chip_height_pt: 32.0,
             chip_padding_pt: 16.0,
             chip_gap_pt: 8.0,
             chip_fill_alpha: 0.16,
             chip_pool_size: 16,
-            menu_sheet_bottom_padding_pt: 18.0,
+            menu_card_actions_drop_pt: 11.0,
+            menu_card_names_drop_pt: 15.0,
             problem_banner_seconds: 3.0,
             problem_banner_gap_pt: 8.0,
         }
@@ -244,6 +278,8 @@ pub enum CalibrationWidgetsConfigError {
     },
     #[error("строка ({row_height_pt} pt) не вмещает верхнюю линию ({title_height_pt} pt) и линейку")]
     RowTooShort { row_height_pt: f64, title_height_pt: f64 },
+    #[error("зона «↻» над строкой ({reach_pt} pt) съедает всю линейку ({ruler_pt} pt)")]
+    ResetReachEatsRuler { reach_pt: f64, ruler_pt: f64 },
 }
 
 impl CalibrationWidgetsConfig {
@@ -267,6 +303,8 @@ impl CalibrationWidgetsConfig {
             ("row_height_pt", self.row_height_pt),
             ("row_title_height_pt", self.row_title_height_pt),
             ("reset_button_diameter_pt", self.reset_button_diameter_pt),
+            ("reset_touch_side_pt", self.reset_touch_side_pt),
+            ("row_reset_reach_above_pt", self.row_reset_reach_above_pt),
             ("view_switcher_height_pt", self.view_switcher_height_pt),
             ("segment_height_pt", self.segment_height_pt),
             ("segment_gap_pt", self.segment_gap_pt),
@@ -296,11 +334,17 @@ impl CalibrationWidgetsConfig {
             ("scope_page_dot_gap_pt", self.scope_page_dot_gap_pt),
             ("scope_label_inset_pt", self.scope_label_inset_pt),
             ("scope_swipe_min_pt", self.scope_swipe_min_pt),
+            ("scope_page_dot_cell_width_pt", self.scope_page_dot_cell_width_pt),
+            ("scope_axes_segment_width_pt", self.scope_axes_segment_width_pt),
+            ("scope_strip_gap_pt", self.scope_strip_gap_pt),
+            ("scope_strip_trailing_width_pt", self.scope_strip_trailing_width_pt),
+            ("scope_level_label_inset_pt", self.scope_level_label_inset_pt),
             ("mode_pill_padding_pt", self.mode_pill_padding_pt),
             ("chip_height_pt", self.chip_height_pt),
             ("chip_padding_pt", self.chip_padding_pt),
             ("chip_gap_pt", self.chip_gap_pt),
-            ("menu_sheet_bottom_padding_pt", self.menu_sheet_bottom_padding_pt),
+            ("menu_card_actions_drop_pt", self.menu_card_actions_drop_pt),
+            ("menu_card_names_drop_pt", self.menu_card_names_drop_pt),
             ("problem_banner_seconds", self.problem_banner_seconds),
             ("problem_banner_gap_pt", self.problem_banner_gap_pt),
         ];
@@ -315,6 +359,7 @@ impl CalibrationWidgetsConfig {
             ("chip_fill_alpha", f64::from(self.chip_fill_alpha)),
             ("wheel_pad_fill_alpha", f64::from(self.wheel_pad_fill_alpha)),
             ("preset_marker_alpha", f64::from(self.preset_marker_alpha)),
+            ("scope_strip_hairline_alpha", f64::from(self.scope_strip_hairline_alpha)),
             (
                 "clean_button_held_fill_alpha",
                 f64::from(self.clean_button_held_fill_alpha),
@@ -353,6 +398,13 @@ impl CalibrationWidgetsConfig {
             return Err(CalibrationWidgetsConfigError::RowTooShort {
                 row_height_pt: self.row_height_pt,
                 title_height_pt: self.row_title_height_pt,
+            });
+        }
+        let ruler_pt = self.row_height_pt - self.row_title_height_pt;
+        if self.row_reset_reach_above_pt >= ruler_pt {
+            return Err(CalibrationWidgetsConfigError::ResetReachEatsRuler {
+                reach_pt: self.row_reset_reach_above_pt,
+                ruler_pt,
             });
         }
         if self.wheel_circle_min_diameter_pt > self.wheel_circle_max_diameter_pt

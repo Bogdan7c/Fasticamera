@@ -152,20 +152,6 @@ impl ScreenGeometry {
         self.menu_item_in(self.sheet(), slot)
     }
 
-    /// Шторка на `rows` рядов пунктов вместо полной сетки 3 × 3 (меню раздела калибровки: два пункта в один ряд, а
-    /// полная шторка 464 pt в альбомном глазном прямоугольнике 440 pt не помещается). Ширина, радиус и привязка к
-    /// низу — как у обычной шторки; высота — от верха до низа подписей последнего ряда плюс `bottom_padding_pt`.
-    pub(crate) fn sheet_for_rows(&self, rows: usize, bottom_padding_pt: f64) -> Rect {
-        let sheet = &self.config.sheet;
-        let last_row_offset = rows.saturating_sub(1) as f64 * sheet.row_pitch_pt;
-        let height = sheet.first_row_center_from_top_pt
-            + last_row_offset
-            + sheet.item_diameter_pt * 0.5
-            + sheet.caption_center_below_circle_pt
-            + bottom_padding_pt;
-        self.bottom_anchored(sheet.width_pt, height.min(sheet.height_pt), sheet.bottom_inset_pt)
-    }
-
     /// Круг пункта `slot` в шторке `sheet_rect` (сетка центрирована по её ширине).
     pub(crate) fn menu_item_in(&self, sheet_rect: Rect, slot: usize) -> Rect {
         let sheet = &self.config.sheet;
@@ -179,21 +165,6 @@ impl ScreenGeometry {
         Rect::from_xywh(
             left + column as f64 * sheet.column_pitch_pt,
             first_row_top + row as f64 * sheet.row_pitch_pt,
-            sheet.item_diameter_pt,
-            sheet.item_diameter_pt,
-        )
-    }
-
-    /// Круг пункта `slot` из `count` в шторке `sheet_rect`: пункты стоят одним рядом (первый ряд сетки) и вместе
-    /// центрированы по ширине шторки — меню раздела калибровки с двумя пунктами не прижато к левому краю.
-    pub(crate) fn menu_item_centered_in(&self, sheet_rect: Rect, slot: usize, count: usize) -> Rect {
-        let sheet = &self.config.sheet;
-        let row_width = sheet.column_pitch_pt * count.saturating_sub(1) as f64 + sheet.item_diameter_pt;
-        let left = sheet_rect.min_x() + (sheet_rect.size.width - row_width) * 0.5;
-        let top = sheet_rect.min_y() + sheet.first_row_center_from_top_pt - sheet.item_diameter_pt * 0.5;
-        Rect::from_xywh(
-            left + slot as f64 * sheet.column_pitch_pt,
-            top,
             sheet.item_diameter_pt,
             sheet.item_diameter_pt,
         )

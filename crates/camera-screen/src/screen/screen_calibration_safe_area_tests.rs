@@ -147,12 +147,23 @@ fn the_column_the_scope_and_the_menu_button_stay_inside_the_safe_area_in_every_h
         assert_inside(safe, layout.eye_rect_on_surface(layout.zones().knobs), "колонка ручек");
         assert_inside(safe, layout.eye_rect_on_surface(layout.zones().scope), "прибор");
         let diameter = ScreenConfig::default().widgets.bottom.menu_button.diameter_pt;
-        let button = layout.eye_point_on_surface(layout.menu_button_center());
-        assert_inside(
-            safe,
-            Rect::centered_at(button, ui_core::geometry::Size::new(diameter, diameter)),
-            "кнопка меню",
-        );
+        for (what, center) in [
+            ("кнопка меню", layout.menu_button_center()),
+            ("CLEAN", layout.clean_button_center()),
+        ] {
+            let on_surface = layout.eye_point_on_surface(center);
+            // Кнопки стоят на линии капсулы PHOTO (решения 256, 259): в портрете её нижний край заходит в полосу
+            // системы, поэтому весь круг проверяется по ширине, а по высоте — центр (куда попадает палец).
+            let disc = Rect::centered_at(on_surface, ui_core::geometry::Size::new(diameter, diameter));
+            assert!(
+                disc.min_x() >= safe.min_x() - 1e-6 && disc.max_x() <= safe.max_x() + 1e-6,
+                "{orientation:?}: {what} по ширине вылезает за безопасную зону: {disc:?}"
+            );
+            assert!(
+                safe.contains(on_surface),
+                "{orientation:?}: центр {what} вне безопасной зоны: {on_surface:?}"
+            );
+        }
     }
 }
 
@@ -218,7 +229,7 @@ fn the_clean_button_and_the_menu_button_answer_a_finger_in_every_held_position()
         rig.run(700);
         assert_eq!(
             rig.screen.state().calibration().menu(),
-            CalibrationMenu::Root,
+            CalibrationMenu::Presets,
             "{orientation:?}: «шесть точек» открывает меню"
         );
     }
@@ -253,8 +264,9 @@ fn a_late_safe_area_rebuilds_the_section_and_reorders_the_scope_picture() {
             _ => None,
         })
         .collect();
-    assert_eq!(sizes, vec![after.scope_image_size()]);
-    assert!(after.scope_image_size().width() < before.scope_image_size().width());
+    let waveform = |layout: &CalibrationLayout| layout.scope_image_size_for(scope_contract::ScopeKind::Waveform);
+    assert_eq!(sizes, vec![waveform(&after)]);
+    assert!(waveform(&after).width() < waveform(&before).width());
     // Узлы на новых местах: палец по карусели доходит.
     assert_eq!(
         swipe_tone_base(&mut rig),

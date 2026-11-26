@@ -1,20 +1,20 @@
-//! Меню «шесть точек» раздела калибровки (решения 94, 199, 201): шторка корня и две карточки.
+//! Меню «шесть точек» раздела калибровки (решения 94, 199, 201, 283): карточка пресетов, открывается кнопкой меню сразу.
 //!
 //! Всё лежит под повёрнутым корнем раздела (глазное пространство, `SectionSpace`) и строится теми же средствами,
-//! что меню Controls экрана PHOTO: шторка и карточка — `PanelMorph`, пункты и «ручка» — `sheet_view`, боковые
-//! кнопки — `SideButton`, ряды таблеток — `ChipRow`, числа — `widgets.sheet` и `widgets.card`. Геометрия шторки и
-//! карточки берётся у `ScreenGeometry::in_screen` на глазном прямоугольнике: у его низа и середины, а не экрана.
+//! что меню Controls экрана PHOTO: карточка — `PanelMorph`, боковые кнопки — `SideButton`, ряды таблеток —
+//! `ChipRow`, числа — `widgets.card`. Геометрия карточки берётся у `ScreenGeometry::in_screen` на глазном
+//! прямоугольнике: у его низа, а не экрана.
 //!
 //! # Владение и инварианты
-//! * Какое меню открыто, владеет `CalibrationState::menu`; виджеты выравниваются по нему в `sync` (без эха).
-//! * Пока меню открыто, под ним лежат ручки и прибор: «скрим» на весь корень (первый узел меню, интерактивен только
-//!   при открытом меню) ловит тап мимо и закрывает меню (аналог решения 94). Шторка и карточка лежат над ним.
-//! * Закрывает меню также свайп вниз (в глазных осях) по шторке и карточке; закрытие по смещению, а не по скорости,
-//!   чтобы медленный свайп тоже закрывал.
-//! * Рисуется меню поверх всего раздела (`DrawLayers::stack_on_top`): шторка, затем карточка со своим стеклом.
+//! * Открыто ли меню, владеет `CalibrationState::menu`; виджеты выравниваются по нему в `sync` (без эха).
+//! * Пока меню открыто, под ним лежат ручки, прибор, капсула режимов и обе кнопки нижнего ряда: «скрим» на весь корень
+//!   (первый узел меню, интерактивен только при открытом меню) ловит любой тап мимо карточки и ТОЛЬКО закрывает меню
+//!   (решение 281: открытое меню модальное, тап по капсуле не меняет режим). Карточка лежит над скримом.
+//! * Закрывает меню также свайп вниз (в глазных осях) по карточке; закрытие по смещению, а не по скорости, чтобы
+//!   медленный свайп тоже закрывал.
+//! * Рисуется меню поверх всего раздела (`DrawLayers::stack_on_top`).
 
 mod card;
-mod sheet;
 
 use ui_core::geometry::{Point, Rect};
 use ui_core::gesture::{GestureData, GestureEvent, GestureState, RecognizerSpec, TapSpec};
@@ -22,7 +22,6 @@ use ui_core::id::NodeId;
 use ui_kit::pan::PanUpdate;
 
 use self::card::MenuCard;
-use self::sheet::MenuSheet;
 use super::host::RootHost;
 use super::space::SectionSpace;
 use crate::action::ScreenAction;
@@ -39,7 +38,6 @@ pub(super) struct SectionMenu {
     root: NodeId,
     root_center: Point,
     scrim: NodeId,
-    sheet: MenuSheet,
     card: MenuCard,
     /// Последнее смещение пальца по глазной вертикали за идущий свайп, pt (вниз — положительное).
     close_drag_dy: f64,
@@ -61,26 +59,23 @@ impl SectionMenu {
             ScreenGesture::CalibrationMenuScrimTap,
         )?;
         kit.set_interactive(scrim, false)?;
-        let sheet = MenuSheet::build(kit, ctx, (&eye, space), (root, root_frame))?;
-        let card = MenuCard::build(kit, ctx, (&eye, space), (root, root_frame), sheet.rect())?;
+        let card = MenuCard::build(kit, ctx, (&eye, space), (root, root_frame))?;
         Ok(Self {
             space: *space,
             root,
             root_center: root_frame.center(),
             scrim,
-            sheet,
             card,
             close_drag_dy: 0.0,
         })
     }
 
-    /// Верх открытой части меню в системе корня, pt: у корня меню — шторка, у карточек — карточка; `None` — меню
-    /// закрыто. Плашка проблемы встаёт над этой линией, а не поверх меню.
+    /// Верх открытой карточки в системе корня, pt; `None` — меню закрыто. Плашка проблемы встаёт над этой линией, а
+    /// не поверх меню.
     pub(super) fn open_top(&self, menu: CalibrationMenu) -> Option<f64> {
         match menu {
             CalibrationMenu::Closed => None,
-            CalibrationMenu::Root => Some(self.sheet.rect().min_y()),
-            CalibrationMenu::Presets | CalibrationMenu::ScopeAxes => Some(self.card.rect().min_y()),
+            CalibrationMenu::Presets => Some(self.card.rect().min_y()),
         }
     }
 
@@ -107,7 +102,7 @@ impl SectionMenu {
                 self.handle_close_pan(event, out)?;
                 Ok(true)
             }
-            _ => Ok(self.sheet.handle_gesture(kit, event, out)? || self.card.handle_gesture(kit, event, out)?),
+            _ => self.card.handle_gesture(kit, event, out),
         }
     }
 
@@ -134,16 +129,14 @@ impl SectionMenu {
 
     pub(super) fn sync(&mut self, kit: &mut SceneKit, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
         kit.set_interactive(self.scrim, ctx.state.calibration().menu() != CalibrationMenu::Closed)?;
-        self.sheet.sync(kit, ctx)?;
         self.card.sync(kit, ctx)
     }
 
     pub(super) fn advance(&mut self, ctx: &Ctx<'_>) {
-        self.sheet.advance(ctx);
         self.card.advance(ctx);
     }
 
-    /// Рисует меню в два слоя поверх `layers`: шторка, затем карточка.
+    /// Рисует карточку поверх всего раздела.
     pub(super) fn draw(
         &self,
         ctx: &Ctx<'_>,
@@ -154,15 +147,6 @@ impl SectionMenu {
         let Some(host) = RootHost::of(ctx, visuals, self.root, self.root_center) else {
             return Ok(());
         };
-        let mut sheet_layers = DrawLayers::default();
-        self.sheet.draw(
-            ctx,
-            (visuals, &host),
-            &mut sheet_layers,
-            texts,
-            self.card.cover_progress(ctx.now),
-        )?;
-        layers.stack_on_top(sheet_layers);
         let mut card_layers = DrawLayers::default();
         self.card.draw(ctx, (visuals, &host), &mut card_layers, texts)?;
         layers.stack_on_top(card_layers);

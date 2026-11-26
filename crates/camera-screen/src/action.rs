@@ -18,7 +18,7 @@ use look_contract::{
 use scope_contract::{ScopeIntent, ScopeKind, VectorscopeAxes};
 use shell_contract::text_input::{TextInputResult, TextRequestId};
 
-use crate::calibration::{CalibrationMenuItem, ControlViewKind};
+use crate::calibration::ControlViewKind;
 use crate::facts::CameraFacts;
 use crate::modes::CaptureMode;
 use crate::shutter::{CaptureOutcome, ShotRequestId};
@@ -203,8 +203,6 @@ pub enum ScreenAction {
         /// Номер закрытой плашки (`ProblemBanner::number`).
         number: u64,
     },
-    /// Меню «шесть точек» раздела: тап по пункту корня.
-    CalibrationMenuItemTapped(CalibrationMenuItem),
     // ----- Панель белого (white-balance 02). Значения белого экран не хранит: уходят намерениями движку. -----
     /// Тап по кнопке белого рядом с затвором: открыть карточку белого, закрыть её или переключить с другой карточки.
     WhiteButtonTapped,

@@ -125,6 +125,37 @@ fn every_scope_has_a_non_empty_graticule_and_the_overlay_uses_the_same_five_leve
 }
 
 #[test]
+fn contract_level_lines_match_the_graticule_segments_one_to_one_within_a_row() {
+    // Экран подписывает линии по списку словаря (решение 274), сетку кладёт правило попадания: подпись обязана стоять
+    // у своей линии, а не у соседней и не зеркально (у waveform белое вверху).
+    let settings = RenderSettings::default();
+    for kind in [ScopeKind::Waveform, ScopeKind::RgbParade] {
+        let scope = resolve(kind, VectorscopeAxes::YCbCrBt709);
+        let rows = f32::from(u16::try_from(small_settings().trace_levels).unwrap());
+        let segment_ys: Vec<f32> = scope
+            .graticule(&settings)
+            .iter()
+            .map(|primitive| match primitive {
+                GraticulePrimitive::Segment { from, .. } => from[1],
+                other => panic!("в сетке уровней не отрезок: {other:?}"),
+            })
+            .collect();
+        let lines = kind.level_lines();
+        assert_eq!(segment_ys.len(), lines.len(), "{kind:?}: линий и подписей поровну");
+        for (line, segment_y) in lines.iter().zip(&segment_ys) {
+            let distance_rows = (line.nominal_fraction_from_top() - segment_y).abs() * rows;
+            assert!(
+                distance_rows <= 0.5 + 1e-3,
+                "{kind:?}: подпись {} стоит в {} строках от своей линии",
+                line.label,
+                distance_rows
+            );
+        }
+    }
+    assert!(ScopeKind::Vectorscope.level_lines().is_empty());
+}
+
+#[test]
 fn every_scope_names_one_trace_paint_and_its_style_agrees() {
     let settings = RenderSettings::default();
     for (kind, axes, expected) in [

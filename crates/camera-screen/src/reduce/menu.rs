@@ -89,7 +89,8 @@ pub(super) fn on_option_selected(ctx: &mut Ctx<'_>, option: ToolOption) -> Actio
 /// Левая кнопка карточки («‹» из меню, «×» со значка) — для подменю и для панели Exposure.
 pub(super) fn on_submenu_back(ctx: &mut Ctx<'_>) -> ActionOutcome {
     if ctx.state.mode_behaviour().has_calibration_surface() {
-        return super::calibration::menu_back(ctx);
+        // Левая кнопка карточки раздела — «×»: корня-шторки, куда вела «‹», больше нет (решение 283).
+        return super::calibration::close_menu(ctx);
     }
     if ctx.state.is_tool_card_open() {
         ctx.state.panel = panel_after_card_left_button(ctx.state.card_origin);

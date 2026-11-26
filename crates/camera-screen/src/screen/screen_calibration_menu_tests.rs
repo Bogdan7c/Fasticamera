@@ -1,11 +1,10 @@
 //! Меню «шесть точек» раздела калибровки целиком: касание → действие → эффект и рисунок в списке.
 //!
-//! Проверяется то, что видит и делает пользователь: кнопка открывает шторку с двумя пунктами; пункт открывает
-//! карточку; тап по имени выбирает пресет, по NEW / RENAME / SAVE / DELETE шлёт своё намерение (недоступные
-//! кнопки молчат, DELETE требует двух тапов); тап мимо и «‹» закрывают; в альбоме всё это работает в глазных осях.
+//! Проверяется то, что видит и делает пользователь: кнопка открывает карточку пресетов сразу (решение 283); тап по
+//! имени выбирает пресет, по NEW / RENAME / SAVE / DELETE шлёт своё намерение (недоступные кнопки молчат, DELETE
+//! требует двух тапов); тап мимо, «×» и свайп вниз закрывают; в альбоме всё это работает в глазных осях.
 
 use look_contract::{BuiltinPreset, LookIntent, PresetId};
-use scope_contract::{ScopeIntent, VectorscopeAxes};
 use shell_contract::orientation::DeviceOrientation;
 use shell_contract::text_input::TextPurpose;
 use shell_contract::touch::TouchPhase;
@@ -19,29 +18,20 @@ use crate::effect::Effect;
 use crate::look_test_support::{NIGHT, SUNSET, look_facts, look_facts_with_active, look_intents};
 use look_contract::LookFacts;
 
-/// Кнопка меню раздела → корень меню, пока морф шторки не осел.
+/// Кнопка меню раздела → карточка пресетов, пока морф не осел.
 fn open_menu(rig: &mut Rig) {
     let button = center(rig, "menu_button", 0);
     rig.tap(button);
     rig.run(700);
     assert_eq!(
         rig.screen.state().calibration().menu(),
-        CalibrationMenu::Root,
-        "кнопка открыла корень меню"
+        CalibrationMenu::Presets,
+        "кнопка открыла карточку пресетов сразу"
     );
-}
-
-/// Корень меню → карточка PRESETS (пункт 0) или SCOPE AXES (пункт 1).
-fn open_card(rig: &mut Rig, slot: usize) {
-    let item = center(rig, "calib_menu_item", slot);
-    rig.tap(item);
-    rig.run(700);
 }
 
 fn open_presets(rig: &mut Rig) {
     open_menu(rig);
-    open_card(rig, 0);
-    assert_eq!(rig.screen.state().calibration().menu(), CalibrationMenu::Presets);
 }
 
 fn preset_chip(rig: &Rig, index: usize) -> Point {
@@ -67,38 +57,36 @@ fn edited_facts_with_active(active: PresetId) -> LookFacts {
     facts
 }
 
-// ----- корень меню ---------------------------------------------------------------------------------------------------
+// ----- открытие и закрытие -------------------------------------------------------------------------------------------
 
 #[test]
-fn the_menu_button_opens_a_sheet_with_two_labelled_items_and_the_button_hides_under_it() {
+fn the_menu_button_opens_the_presets_card_and_no_root_sheet_is_ever_drawn() {
     let mut rig = portrait(look_facts());
     assert_eq!(
-        drawn_count(&mut rig, "PRESETS", TextRoleKind::ToolCaption),
+        drawn_count(&mut rig, "PRESETS", TextRoleKind::CardTitle),
         0,
         "закрытое меню ничего не рисует"
     );
     open_menu(&mut rig);
     assert_eq!(
-        drawn_count(&mut rig, "PRESETS", TextRoleKind::ToolCaption),
+        drawn_count(&mut rig, "PRESETS", TextRoleKind::CardTitle),
         1,
-        "подпись пункта PRESETS"
+        "заголовок карточки пресетов"
     );
     assert_eq!(
-        drawn_count(&mut rig, "SCOPE AXES", TextRoleKind::ToolCaption),
-        1,
-        "подпись пункта SCOPE AXES"
+        drawn_count(&mut rig, "PRESETS", TextRoleKind::ToolCaption),
+        0,
+        "подписи пункта шторки нет: шторки-корня больше нет"
     );
-    // Кнопка под шторкой не ловит касаний: повторный тап по ней меню не переоткрывает и ничего не ломает.
-    let item_0 = center(&rig, "calib_menu_item", 0);
-    let item_1 = center(&rig, "calib_menu_item", 1);
-    assert!(
-        item_0.x < item_1.x && (item_0.y - item_1.y).abs() < 0.5,
-        "два пункта стоят одним рядом слева направо"
+    assert_eq!(
+        drawn_count(&mut rig, "SCOPE AXES", TextRoleKind::CardTitle)
+            + drawn_count(&mut rig, "SCOPE AXES", TextRoleKind::ToolCaption),
+        0,
+        "оси вектороскопа ушли в полоску прибора"
     );
-    let screen_center_x = rig.frame_center().x;
     assert!(
-        ((item_0.x + item_1.x) / 2.0 - screen_center_x).abs() < 1.0,
-        "пара пунктов по центру шторки"
+        rig.screen.node_centers("calib_menu_item").is_empty(),
+        "узлов пунктов шторки нет"
     );
 }
 
@@ -126,18 +114,18 @@ fn a_tap_outside_the_menu_closes_it_without_touching_the_knobs() {
 fn swiping_down_closes_the_menu_and_swiping_up_does_not() {
     let mut rig = portrait(look_facts());
     open_menu(&mut rig);
-    let sheet_point = center(&rig, "calib_menu_sheet", 0);
-    let up = Point::new(sheet_point.x, sheet_point.y - 40.0);
-    rig.drag(sheet_point, up, 200);
+    let card_point = center(&rig, "calib_menu_card", 0);
+    let up = Point::new(card_point.x, card_point.y - 40.0);
+    rig.drag(card_point, up, 200);
     rig.run(200);
     assert_eq!(
         rig.screen.state().calibration().menu(),
-        CalibrationMenu::Root,
+        CalibrationMenu::Presets,
         "свайп вверх меню не закрывает"
     );
-    let sheet_point = center(&rig, "calib_menu_sheet", 0);
-    let down = Point::new(sheet_point.x, sheet_point.y + 60.0);
-    rig.drag(sheet_point, down, 200);
+    let card_point = center(&rig, "calib_menu_card", 0);
+    let down = Point::new(card_point.x, card_point.y + 60.0);
+    rig.drag(card_point, down, 200);
     rig.run(500);
     assert_eq!(
         rig.screen.state().calibration().menu(),
@@ -323,79 +311,27 @@ fn the_reset_arrow_discards_edits_and_is_dim_and_silent_without_edits() {
 }
 
 #[test]
-fn the_back_arrow_returns_from_the_card_to_the_root_every_time() {
+fn the_close_cross_on_the_card_closes_the_menu_every_time() {
     let mut rig = portrait(look_facts());
     open_presets(&mut rig);
-    let back = center(&rig, "card_button", 0);
-    rig.tap(back);
+    let cross = center(&rig, "card_button", 0);
+    rig.tap(cross);
     rig.run(700);
     assert_eq!(
         rig.screen.state().calibration().menu(),
-        CalibrationMenu::Root,
-        "«‹» вернула в корень"
+        CalibrationMenu::Closed,
+        "«×» закрыла меню: возвращаться некуда"
     );
     assert_eq!(
         drawn_count(&mut rig, "NEW", TextRoleKind::CardOption),
         0,
         "карточка растворилась"
     );
-    // Карточку можно открыть снова и вернуться тем же путём.
-    open_card(&mut rig, 0);
-    assert_eq!(rig.screen.state().calibration().menu(), CalibrationMenu::Presets);
+    // Меню можно открыть снова и закрыть тем же путём.
+    open_presets(&mut rig);
     rig.tap(center(&rig, "card_button", 0));
     rig.run(700);
-    assert_eq!(rig.screen.state().calibration().menu(), CalibrationMenu::Root);
-}
-
-// ----- карточка SCOPE AXES -------------------------------------------------------------------------------------------
-
-#[test]
-fn the_scope_axes_card_switches_the_vectorscope_standard_and_asks_the_scope_for_it() {
-    let mut rig = portrait(look_facts());
-    open_menu(&mut rig);
-    open_card(&mut rig, 1);
-    assert_eq!(rig.screen.state().calibration().menu(), CalibrationMenu::ScopeAxes);
-    assert_eq!(drawn_count(&mut rig, "SCOPE AXES", TextRoleKind::CardTitle), 1);
-    assert_eq!(
-        drawn_count(&mut rig, "OKLAB", TextRoleKind::CardOption),
-        1,
-        "вариант OKLAB в ряду"
-    );
-    assert_eq!(
-        drawn_count(&mut rig, "Y'CbCr 709", TextRoleKind::CardOption),
-        1,
-        "вариант Y'CbCr 709 в ряду"
-    );
-    assert_eq!(
-        drawn_count(&mut rig, "Y'CbCr 709", TextRoleKind::CardValue),
-        1,
-        "крупное значение — текущий стандарт"
-    );
-    rig.effects();
-    rig.tap(center(&rig, "calib_chip", 1));
-    rig.run(200);
-    assert_eq!(
-        rig.screen.state().calibration().vectorscope_axes(),
-        VectorscopeAxes::OklabAb
-    );
-    let effects = rig.effects();
-    assert!(
-        effects.iter().any(|effect| matches!(
-            effect,
-            Effect::Scopes(ScopeIntent::Show(request)) if request.vectorscope_axes == VectorscopeAxes::OklabAb
-        )),
-        "прибору ушёл запрос с новыми осями: {effects:?}"
-    );
-    assert_eq!(
-        drawn_count(&mut rig, "OKLAB", TextRoleKind::CardValue),
-        1,
-        "значение сменилось"
-    );
-    // «↻» в этой карточке нет: нажать её нечем.
-    rig.effects();
-    rig.tap(center(&rig, "card_button", 1));
-    rig.run(100);
-    assert!(rig.effects().is_empty(), "у SCOPE AXES нет «↻»");
+    assert_eq!(rig.screen.state().calibration().menu(), CalibrationMenu::Closed);
 }
 
 // ----- альбом --------------------------------------------------------------------------------------------------------
@@ -405,25 +341,10 @@ fn in_landscape_the_menu_is_touched_in_eye_space_and_drawn_turned_with_the_secti
     for orientation in [DeviceOrientation::LandscapeLeft, DeviceOrientation::LandscapeRight] {
         let mut rig = calibrating(look_facts(), orientation);
         open_menu(&mut rig);
-        let layout = *rig.screen.state().calibration().layout().unwrap();
-        // Пункты стоят на глазной горизонтали: в альбоме это вертикаль поверхности.
-        let item_0 = center(&rig, "calib_menu_item", 0);
-        let item_1 = center(&rig, "calib_menu_item", 1);
-        let eye_0 = layout.surface_point_in_eye(item_0);
-        let eye_1 = layout.surface_point_in_eye(item_1);
-        assert!(
-            eye_0.x < eye_1.x && (eye_0.y - eye_1.y).abs() < 0.5,
-            "{orientation:?}: пункты в глазном ряду: {eye_0:?} {eye_1:?}"
-        );
-        assert!(
-            (item_0.x - item_1.x).abs() < 0.5,
-            "{orientation:?}: на поверхности пункты друг под другом"
-        );
-        open_card(&mut rig, 0);
         assert_eq!(
             rig.screen.state().calibration().menu(),
             CalibrationMenu::Presets,
-            "{orientation:?}: пункт нажался"
+            "{orientation:?}: кнопка меню нажалась в глазных осях"
         );
         rig.effects();
         rig.tap(preset_chip(&rig, 2));

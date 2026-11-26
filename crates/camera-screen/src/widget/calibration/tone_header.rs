@@ -1,13 +1,9 @@
 //! Шапка колонки ручек: переключатель основы тона (карусель AGX / ACES / FILMIC / LEGACY: свайп или тап по видимому
-//! соседу, решение 229; тап по выбранной ничего не делает) со своей «↻» и кнопка «чистяк» (удержание показывает основу без вида).
+//! соседу, решение 229; тап по выбранной ничего не делает) со своей «↻».
 //!
-//! «Чистяк» — выдумка владельца-идиомы (решение 189): значка «глаз» в наборе нет, поэтому это капсула с
-//! подписью CLEAN. Нажатие даёт `CleanViewPressed`, отпускание или отмена — `CleanViewReleased`. Залипнуть кнопка
-//! не может: если шапку собрали заново (поворот, пересборка сцены), пока состояние говорит «держится», палец
-//! прежней кнопки потерян, и первый же `advance` новой шапки один раз отдаёт `CleanViewReleased`.
-//!
-//! Проверка — ровно один раз после сборки, а не на каждом кадре: удержание, начатое не пальцем этой кнопки
-//! (сценарий, тест, другой хост действием `CleanViewPressed`), законно и не должно отпускаться само.
+//! Кнопка CLEAN ушла вниз, к капсуле режимов (решение 259, `clean_button.rs`): освободившаяся ширина — карусели, и в
+//! портрете рядом с выбранной основой видны соседи. Зона касания «↻» шире её рисунка (44 pt), поэтому карусель
+//! кончается там, где начинается эта зона: общих точек у них нет.
 
 use look_contract::{LookControl, ToneBaseModel};
 use ui_core::geometry::{Point, Rect};
@@ -18,19 +14,17 @@ use ui_draw::icons::IconId;
 use ui_kit::carousel::{CarouselEntry, CarouselEvent, CarouselSpec, SelectionCause, SnapCarousel};
 use ui_kit::drive::ScrollTransition;
 use ui_kit::pan::PanUpdate;
-use ui_kit::tokens::{ColorTokens, TextRoleKind};
+use ui_kit::tokens::ColorTokens;
 use ui_kit::view::{CarouselLabels, LabelPainter, carousel_items_in_window, centered_icon};
 
 use super::paint::NodePaint;
 use super::space::{EyeAxis, SectionSpace};
 use crate::action::ScreenAction;
-use crate::calibration::CleanViewState;
 use crate::widget::button::PressButton;
 use crate::widget::error::{WidgetError, element};
 use crate::widget::intent::{ButtonId, ScreenGesture};
 use crate::widget::kit::SceneKit;
 use crate::widget::layers::{DrawLayers, Layer, VisualIndex};
-use crate::widget::text_runs::TextRuns;
 use crate::widget::{Ctx, Outputs};
 
 /// Номер «↻» основы тона среди строк раздела (после восьми ручек и трёх осей полосы).
@@ -60,29 +54,27 @@ fn neighbour_label_colors(colors: &ColorTokens) -> ColorTokens {
 struct HeaderFrames {
     carousel: Rect,
     reset: Rect,
-    clean: Rect,
 }
 
 impl HeaderFrames {
-    /// Слева направо: карусель на всё свободное, «↻», «чистяк» у правого края; всё по центру высоты шапки.
+    /// Слева направо: карусель на всё свободное, «↻» у правого края; всё по центру высоты шапки.
     fn of(header: Rect, ctx: &Ctx<'_>) -> Self {
         let config = &ctx.config.calibration.widgets;
-        let centered = |x: f64, width: f64, height: f64| {
-            Rect::from_xywh(x, header.min_y() + (header.size.height - height) / 2.0, width, height)
-        };
-        let clean_width = config.clean_button_width_pt;
-        let clean = centered(header.max_x() - clean_width, clean_width, config.clean_button_height_pt);
         let reset_side = config.reset_button_diameter_pt;
-        let reset = centered(
-            clean.min_x() - config.header_gap_pt - reset_side,
+        let reset = Rect::from_xywh(
+            header.max_x() - reset_side,
+            header.min_y() + (header.size.height - reset_side) / 2.0,
             reset_side,
             reset_side,
         );
-        let carousel_width = (reset.min_x() - config.header_gap_pt - header.min_x()).max(0.0);
+        // Зона касания «↻» выходит за её рисунок до `button_touch_side_pt`: карусель кончается перед этой зоной, а не
+        // перед самим рисунком, иначе их области касания делили бы полосу.
+        let reset_reach = ((ctx.geometry.config().card.button_touch_side_pt - reset_side) / 2.0).max(0.0);
+        let gap = config.header_gap_pt.max(reset_reach);
+        let carousel_width = (reset.min_x() - gap - header.min_x()).max(0.0);
         Self {
             carousel: Rect::from_xywh(header.min_x(), header.min_y(), carousel_width, header.size.height),
             reset,
-            clean,
         }
     }
 }
@@ -94,11 +86,6 @@ pub(super) struct ToneHeader {
     carousel: SnapCarousel<ToneBaseModel>,
     labels: CarouselLabels,
     reset: PressButton,
-    clean: PressButton,
-    /// Палец сейчас держит «чистяк».
-    clean_held: bool,
-    /// Шапка только что собрана и ещё не сверилась с состоянием: удержание, пережившее пересборку, осиротело.
-    orphan_hold_check_pending: bool,
     /// Основа из фактов, к которой карусель уже поехала (или которую выбрал сам палец).
     last_followed: Option<ToneBaseModel>,
     enabled: bool,
@@ -165,28 +152,18 @@ impl ToneHeader {
             frames.reset,
             ctx.geometry.config().card.button_touch_side_pt,
         )?;
-        let clean_node = kit.add_node(parent, "calib_clean", frames.clean, parent_rect)?;
-        let clean = PressButton::attach(kit, ButtonId::CleanView, clean_node, frames.clean, ctx)?;
-        kit.ensure_min_touch_side(
-            clean_node,
-            frames.clean,
-            ctx.geometry.config().card.button_touch_side_pt,
-        )?;
         Ok(Self {
             frames,
             carousel_node,
             carousel,
             labels,
             reset,
-            clean,
-            clean_held: false,
-            orphan_hold_check_pending: true,
             last_followed: None,
             enabled: false,
         })
     }
 
-    /// Жесты шапки: свайп основы, «↻» основы, «чистяк». `false` — событие чужое.
+    /// Жесты шапки: свайп основы и «↻» основы. `false` — событие чужое.
     pub(super) fn handle_gesture(
         &mut self,
         kit: &SceneKit,
@@ -219,7 +196,6 @@ impl ToneHeader {
                     self.reset_if_differs(ctx, out);
                 }
             }
-            ScreenGesture::Press(ButtonId::CleanView) => self.handle_clean(kit, event, out)?,
             _ => return Ok(false),
         }
         Ok(true)
@@ -269,29 +245,6 @@ impl ToneHeader {
         }
     }
 
-    /// Удержание: палец лёг — показать основу, поднялся или жест отменён — вернуть вид с правками.
-    fn handle_clean(
-        &mut self,
-        kit: &SceneKit,
-        event: &GestureEvent<ScreenGesture>,
-        out: &mut Outputs,
-    ) -> Result<(), WidgetError> {
-        let data = kit.gesture_data_in_node(self.clean.node(), event.data);
-        self.clean.handle(event.state, data, event.time)?;
-        match event.state {
-            GestureState::Began if !self.clean_held => {
-                self.clean_held = true;
-                out.actions.push(ScreenAction::CleanViewPressed);
-            }
-            GestureState::Ended | GestureState::Cancelled => {
-                self.clean_held = false;
-                out.actions.push(ScreenAction::CleanViewReleased);
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
     pub(super) fn sync(&mut self, kit: &mut SceneKit, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
         let facts = ctx.state.look_facts();
         self.enabled = facts.is_some();
@@ -312,7 +265,7 @@ impl ToneHeader {
         Ok(())
     }
 
-    pub(super) fn advance(&mut self, ctx: &Ctx<'_>, out: &mut Outputs) {
+    pub(super) fn advance(&mut self, out: &mut Outputs) {
         for event in self.carousel.drain_events() {
             match event {
                 CarouselEvent::SelectionChanged {
@@ -329,14 +282,6 @@ impl ToneHeader {
                 CarouselEvent::Haptic { pattern } => out.haptics.push(pattern),
             }
         }
-        // Первый кадр после сборки: «чистяк» держится по состоянию, а держал его палец прежней шапки — отпускаем,
-        // чтобы вид не залип. Дальше удержание без пальца (действием) не трогаем.
-        if std::mem::take(&mut self.orphan_hold_check_pending)
-            && !self.clean_held
-            && ctx.state.calibration().clean_view() == CleanViewState::HoldingBase
-        {
-            out.actions.push(ScreenAction::CleanViewReleased);
-        }
     }
 
     pub(super) fn draw(
@@ -344,7 +289,6 @@ impl ToneHeader {
         ctx: &Ctx<'_>,
         visuals: &VisualIndex,
         layers: &mut DrawLayers,
-        texts: &mut TextRuns,
     ) -> Result<(), WidgetError> {
         let config = &ctx.config.calibration.widgets;
         let enabled_factor = if self.enabled { 1.0 } else { config.disabled_row_opacity };
@@ -367,8 +311,7 @@ impl ToneHeader {
                 layers.push_clipped(Layer::Content, window, labels);
             }
         }
-        self.draw_reset(ctx, visuals, layers, enabled_factor)?;
-        self.draw_clean(ctx, visuals, layers, texts, enabled_factor)
+        self.draw_reset(ctx, visuals, layers, enabled_factor)
     }
 
     fn draw_reset(
@@ -414,43 +357,6 @@ impl ToneHeader {
                 ctx.tokens.colors.text_primary,
                 paint.opacity(),
             ),
-        );
-        Ok(())
-    }
-
-    fn draw_clean(
-        &self,
-        ctx: &Ctx<'_>,
-        visuals: &VisualIndex,
-        layers: &mut DrawLayers,
-        texts: &mut TextRuns,
-        enabled_factor: f32,
-    ) -> Result<(), WidgetError> {
-        let Some(placement) = visuals.placement(self.clean.node()) else {
-            return Ok(());
-        };
-        let Some(paint) = NodePaint::new(ctx, placement, enabled_factor)? else {
-            return Ok(());
-        };
-        let config = &ctx.config.calibration.widgets;
-        let holding = ctx.state.calibration().clean_view() == CleanViewState::HoldingBase;
-        let alpha = if holding {
-            config.clean_button_held_fill_alpha
-        } else {
-            config.clean_button_fill_alpha
-        };
-        layers.push(
-            Layer::Content,
-            paint.capsule(
-                (0.0, 0.0),
-                (self.frames.clean.size.width, self.frames.clean.size.height),
-                ctx.tokens.colors.text_primary.with_alpha(alpha),
-            ),
-        );
-        let label = texts.run(ctx, "CLEAN", TextRoleKind::Caption)?;
-        layers.push(
-            Layer::Content,
-            paint.text_centered(label, 0.0, 0.0, ctx.tokens.colors.text_primary),
         );
         Ok(())
     }

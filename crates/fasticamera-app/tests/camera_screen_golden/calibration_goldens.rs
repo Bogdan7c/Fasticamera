@@ -8,7 +8,6 @@
 //! поэтому на зону прибора кладётся ДЕТЕРМИНИРОВАННАЯ ПОДСТАВНАЯ картинка — то же синтетическое «фото» (`ScopeImage::
 //! StandIn`). Она доказывает, что картинка прибора лежит на своей зоне стеклянной панели, а не как выглядит прибор.
 
-use camera_screen::calibration::CalibrationMenuItem;
 use camera_screen::modes::CaptureMode;
 use camera_screen::tools::ToolId;
 use camera_screen::{PanelState, ScreenAction};
@@ -127,8 +126,6 @@ pub(crate) fn presets_card() -> ScreenDriver {
     driver.act(ScreenAction::ModeSelected(CaptureMode::Calibrate));
     driver.run(SETTLE_MS);
     driver.act(ScreenAction::ControlsMenuOpenRequested);
-    driver.run(SETTLE_MS);
-    driver.act(ScreenAction::CalibrationMenuItemTapped(CalibrationMenuItem::Presets));
     driver.run(SETTLE_MS);
     driver
 }

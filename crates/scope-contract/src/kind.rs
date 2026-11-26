@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::level_lines::{LevelLine, WAVEFORM_LEVEL_LINES};
 use crate::size::ScopeImageSize;
 
 /// Тип цветового прибора (решение 183).
@@ -50,6 +51,15 @@ impl ScopeKind {
         match self {
             ScopeKind::Waveform | ScopeKind::RgbParade => ScopePictureShape::FillsZone,
             ScopeKind::Vectorscope => ScopePictureShape::Square,
+        }
+    }
+
+    /// Линии уровней, которые прибор рисует в своей сетке и которые экран подписывает числами слева. У вектороскопа
+    /// их нет (пустой список). `match` без `_`: новый прибор не соберётся, пока не скажет, есть ли у него уровни.
+    pub fn level_lines(self) -> &'static [LevelLine] {
+        match self {
+            ScopeKind::Waveform | ScopeKind::RgbParade => &WAVEFORM_LEVEL_LINES,
+            ScopeKind::Vectorscope => &[],
         }
     }
 }

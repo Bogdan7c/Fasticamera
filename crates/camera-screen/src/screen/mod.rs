@@ -38,6 +38,8 @@ mod effect_queue;
 mod error;
 mod stage;
 mod system_gesture_filter;
+#[cfg(test)]
+mod touch_map_test_support;
 mod white_targets;
 
 use std::sync::Arc;
@@ -253,6 +255,12 @@ impl CameraScreen {
     #[cfg(test)]
     pub(crate) fn focus_frame_phase(&self) -> Option<ui_kit::focus_frame::FocusPhase> {
         self.stage.as_ref().map(|stage| stage.focus().frame_phase())
+    }
+
+    /// Сцена экрана (проба для тестов соседства областей касания); `None` — сцены ещё нет (нет размера поверхности).
+    #[cfg(test)]
+    pub(crate) fn scene_for_tests(&self) -> Option<&ui_core::scene::UiScene<crate::widget::intent::ScreenGesture>> {
+        self.stage.as_ref().map(stage::Stage::scene)
     }
 
     /// Центры видимых узлов сцены с подписью `label` в pt поверхности (проба для тестов касаний раздела).
@@ -599,13 +607,20 @@ mod screen_calibration_finger_tests;
 #[path = "screen_calibration_menu_tests.rs"]
 mod screen_calibration_menu_tests;
 #[cfg(test)]
+mod screen_calibration_neighbourhood_tests;
+#[cfg(test)]
 mod screen_calibration_safe_area_tests;
 #[cfg(test)]
 #[path = "screen_calibration_section_tests.rs"]
 mod screen_calibration_section_tests;
 #[cfg(test)]
+#[path = "screen_calibration_strip_tests.rs"]
+mod screen_calibration_strip_tests;
+#[cfg(test)]
 #[path = "screen_calibration_tests.rs"]
 mod screen_calibration_tests;
+#[cfg(test)]
+mod screen_photo_touch_reach_tests;
 
 #[cfg(test)]
 #[path = "screen_calibration_wheels_tests.rs"]

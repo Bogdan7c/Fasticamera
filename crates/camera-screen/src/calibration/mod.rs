@@ -7,15 +7,22 @@
 mod config;
 mod eye;
 mod layout;
+mod layout_config;
+mod scope_frames;
+mod scope_strip_frames;
 mod state;
 mod wheels_frames;
 mod widgets_config;
 
-pub use config::{CalibrationConfig, CalibrationConfigError, CalibrationLayoutConfig, ZoneFractions};
+pub use config::{CalibrationConfig, CalibrationConfigError};
 pub use layout::{CalibrationLayout, CalibrationLayoutError, CalibrationZones};
+pub use layout_config::{
+    CalibrationLayoutConfig, CalibrationLayoutConfigError, CapsuleLine, KnobsSide, OrientationLayoutConfig, ZoneShape,
+};
+pub use scope_strip_frames::ScopeStripFrames;
 pub use state::{
-    CalibrationMenu, CalibrationMenuItem, CalibrationState, CleanViewState, ControlViewKind, DeleteConfirmation,
-    Naming, PendingText, TextFlow,
+    CalibrationMenu, CalibrationState, CleanViewState, ControlViewKind, DeleteConfirmation, Naming, PendingText,
+    TextFlow,
 };
 pub use wheels_frames::WheelPadPlacement;
 pub(crate) use wheels_frames::{ColumnFrames, WheelsFrames, wheel_pad_placement};
@@ -24,6 +31,12 @@ pub use widgets_config::{CalibrationWidgetsConfig, CalibrationWidgetsConfigError
 #[cfg(test)]
 #[path = "config_tests.rs"]
 mod config_tests;
+#[cfg(test)]
+#[path = "layout_bottom_row_tests.rs"]
+mod layout_bottom_row_tests;
+#[cfg(test)]
+#[path = "layout_scope_tests.rs"]
+mod layout_scope_tests;
 #[cfg(test)]
 #[path = "layout_tests.rs"]
 mod layout_tests;

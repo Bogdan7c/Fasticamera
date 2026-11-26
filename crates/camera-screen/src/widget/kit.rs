@@ -11,7 +11,7 @@ use ui_core::layout::{AnchorRule, AxisPlacement, Placement, ReferenceArea};
 use ui_core::scene::UiScene;
 use ui_core::spring::Spring;
 use ui_core::time::MonotonicNanos;
-use ui_core::tree::{HitTestPolicy, Visibility};
+use ui_core::tree::{HitTestPolicy, TouchReach, Visibility};
 
 use super::error::{WidgetError, element};
 use super::intent::ScreenGesture;
@@ -233,6 +233,9 @@ impl SceneKit {
 
     /// Расширяет зону касания узла с рамкой `frame` до квадрата не меньше `min_side_pt` (HIG: ≥ 44 pt), не
     /// меняя рамку раскладки: круглая кнопка Ø 36 рисуется как есть, а попасть в неё проще.
+    ///
+    /// Расширенная зона работает и за краем родителя (решение 278): иначе полоса расширения за краем
+    /// строки или круга была бы «мёртвой». Обычные предки выше родителя (окно прокрутки) её режут.
     pub(crate) fn ensure_min_touch_side(
         &mut self,
         node: NodeId,
@@ -241,7 +244,7 @@ impl SceneKit {
     ) -> Result<(), WidgetError> {
         let horizontal = ((min_side_pt - frame.size.width) * 0.5).max(0.0);
         let vertical = ((min_side_pt - frame.size.height) * 0.5).max(0.0);
-        self.scene.set_touch_outset(
+        self.set_touch_outset_reaching_beyond_parent(
             node,
             Insets {
                 top: vertical,
@@ -249,7 +252,30 @@ impl SceneKit {
                 bottom: vertical,
                 right: horizontal,
             },
-        )?;
+        )
+    }
+
+    /// Задаёт зону касания узла ровно прямоугольником `touch_area` (в той же системе, что `frame`), не меняя рамку
+    /// раскладки: узел рисуется по рамке, а ловит по зоне. Зона может быть и шире рамки, и уже её с какой-то
+    /// стороны: «↻» строки берёт полосу заголовка и полосу над строкой, а линейка отдаёт эту полосу у своего низа
+    /// (решение 279). Пустая зона — ошибка вызывающего: узел с ней был бы живым и недостижимым.
+    pub(crate) fn set_touch_area(&mut self, node: NodeId, frame: Rect, touch_area: Rect) -> Result<(), WidgetError> {
+        if touch_area.size.width <= 0.0 || touch_area.size.height <= 0.0 {
+            return Err(WidgetError::EmptyTouchArea { frame, touch_area });
+        }
+        let outset = Insets {
+            top: frame.min_y() - touch_area.min_y(),
+            left: frame.min_x() - touch_area.min_x(),
+            bottom: touch_area.max_y() - frame.max_y(),
+            right: touch_area.max_x() - frame.max_x(),
+        };
+        self.set_touch_outset_reaching_beyond_parent(node, outset)
+    }
+
+    /// Общая часть: расширение зоны и разрешение ей работать за краем родителя.
+    fn set_touch_outset_reaching_beyond_parent(&mut self, node: NodeId, outset: Insets) -> Result<(), WidgetError> {
+        self.scene.set_touch_outset(node, outset)?;
+        self.scene.set_touch_reach(node, TouchReach::BeyondParent)?;
         Ok(())
     }
 

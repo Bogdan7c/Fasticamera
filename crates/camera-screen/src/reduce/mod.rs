@@ -322,7 +322,6 @@ fn dispatch_action(ctx: &mut Ctx<'_>, action: ScreenAction) -> ActionOutcome {
         ScreenAction::TextRequestNotSent => presets::on_text_request_not_sent(ctx),
         ScreenAction::TextInputFinished(result) => presets::on_text_input_finished(ctx, result),
         ScreenAction::ProblemDismissed { number } => look::on_problem_dismissed(ctx, number),
-        ScreenAction::CalibrationMenuItemTapped(item) => calibration::on_menu_item_tapped(ctx, item),
         ScreenAction::ScopeDemandLost => calibration::on_scope_demand_lost(ctx),
         ScreenAction::WhiteButtonTapped => white::on_button_tapped(ctx),
         ScreenAction::WhiteButtonLongPressed => white::on_button_long_pressed(ctx),

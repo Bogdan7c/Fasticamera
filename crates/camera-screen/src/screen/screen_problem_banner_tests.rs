@@ -207,9 +207,6 @@ fn with_the_presets_card_open_the_plaque_stands_above_it_in_every_orientation() 
         let mut rig = calibrating(look_facts(), orientation);
         // Проблемы поднимает в основном сама карточка PRESETS (NEW, RENAME, SAVE): плашка не должна лечь на неё.
         rig.screen.handle_action(ScreenAction::ControlsMenuOpenRequested);
-        rig.screen.handle_action(ScreenAction::CalibrationMenuItemTapped(
-            crate::calibration::CalibrationMenuItem::Presets,
-        ));
         rig.run(900);
         rig.screen.handle_action(ScreenAction::CreatePresetTapped);
         rig.screen.handle_action(ScreenAction::TextRequestNotSent);

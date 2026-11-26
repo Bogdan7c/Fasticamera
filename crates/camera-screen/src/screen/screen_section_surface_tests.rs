@@ -12,7 +12,7 @@ use ui_kit::tokens::UiKitTokens;
 use super::screen_calibration_tests::{calibrating, center};
 use super::test_rig::*;
 use crate::action::ScreenAction;
-use crate::calibration::{CalibrationMenuItem, ControlViewKind};
+use crate::calibration::ControlViewKind;
 use crate::look_test_support::look_facts;
 use crate::modes::CaptureMode;
 
@@ -46,9 +46,6 @@ fn glass_groups(list: &DrawList) -> usize {
 fn open_presets_card(rig: &mut Rig) {
     rig.screen.handle_action(ScreenAction::ControlsMenuOpenRequested);
     rig.run(900);
-    rig.screen
-        .handle_action(ScreenAction::CalibrationMenuItemTapped(CalibrationMenuItem::Presets));
-    rig.run(900);
 }
 
 #[test]
@@ -57,7 +54,7 @@ fn no_glass_in_any_section_frame_state_and_orientation() {
         for view in [ControlViewKind::Scales, ControlViewKind::Wheels] {
             let mut rig = calibrating(look_facts(), orientation);
             rig.act(ScreenAction::ControlViewSelected(view));
-            // Покой, затем лист меню (в том числе кадры раскрытия), затем карточка пресетов.
+            // Покой, затем карточка пресетов (в том числе кадры раскрытия).
             let checked_frames = std::cell::Cell::new(0);
             let check = |rig: &mut Rig, context: &str| {
                 let list = rig.frame().clone();
@@ -70,13 +67,11 @@ fn no_glass_in_any_section_frame_state_and_orientation() {
             rig.screen.handle_action(ScreenAction::ControlsMenuOpenRequested);
             for _ in 0..50 {
                 rig.run(16);
-                check(&mut rig, "лист меню раскрывается");
+                check(&mut rig, "карточка пресетов раскрывается");
             }
-            rig.screen
-                .handle_action(ScreenAction::CalibrationMenuItemTapped(CalibrationMenuItem::Presets));
             for _ in 0..50 {
                 rig.run(16);
-                check(&mut rig, "карточка пресетов");
+                check(&mut rig, "карточка пресетов открыта");
             }
             assert!(checked_frames.get() >= 100, "проверены кадры анимации, а не один покой");
             // Закрытое меню и плашка сбоя — тоже без стекла.

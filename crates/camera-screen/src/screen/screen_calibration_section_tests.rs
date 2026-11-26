@@ -188,8 +188,8 @@ fn menu_button_in_the_section_requests_the_calibration_menu() {
     rig.run(200);
     assert_eq!(
         rig.screen.state().calibration().menu(),
-        crate::calibration::CalibrationMenu::Root,
-        "кнопка меню внутри раздела открывает меню раздела"
+        crate::calibration::CalibrationMenu::Presets,
+        "кнопка меню внутри раздела открывает карточку пресетов раздела"
     );
 }
 
@@ -216,14 +216,16 @@ fn in_landscape_the_whole_section_turns_with_the_phone_and_the_scope_follows_its
             "{orientation:?}: сторона поворота {:?}",
             image.transform
         );
-        let zone = layout.eye_rect_on_surface(layout.zones().scope);
+        let picture = layout.eye_rect_on_surface(layout.scope_image_rect_for(ScopeKind::Waveform));
         assert!(
-            near(image.transform.tx, px(zone.center().x), 0.6) && near(image.transform.ty, px(zone.center().y), 0.6),
-            "{orientation:?}: центр картинки на центре повёрнутой зоны"
+            near(image.transform.tx, px(picture.center().x), 0.6)
+                && near(image.transform.ty, px(picture.center().y), 0.6),
+            "{orientation:?}: центр картинки на центре её повёрнутого прямоугольника"
         );
+        let size = layout.scope_image_size_for(ScopeKind::Waveform);
         assert_eq!(
             (image.size_px.width as u32, image.size_px.height as u32),
-            (layout.scope_image_size().width(), layout.scope_image_size().height())
+            (size.width(), size.height())
         );
         // Заголовки строк повёрнуты вместе с разделом.
         let titles = texts_of(&list, "MIDTONES", TextRoleKind::CardTitle);

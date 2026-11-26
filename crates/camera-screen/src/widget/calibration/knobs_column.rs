@@ -218,7 +218,7 @@ impl KnobsColumn {
     }
 
     pub(super) fn advance(&mut self, ctx: &Ctx<'_>, out: &mut Outputs) {
-        self.header.advance(ctx, out);
+        self.header.advance(out);
         self.view.advance(ctx, out);
         self.remember_scroll_when_settled(ctx, out);
     }
@@ -259,7 +259,7 @@ impl KnobsColumn {
             "calib_knobs_panel",
         )?;
         layers.push(Layer::Glass, item);
-        self.header.draw(ctx, visuals, layers, texts)?;
+        self.header.draw(ctx, visuals, layers)?;
         self.switcher.draw(
             ctx,
             (visuals, texts),

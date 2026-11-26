@@ -2,6 +2,7 @@
 //! а фасад по нему передаёт событие нужному виджету.
 
 use look_contract::{WheelPart, WheelZone};
+use scope_contract::{ScopeKind, VectorscopeAxes};
 
 use crate::calibration::ControlViewKind;
 use crate::white::WhiteAxis;
@@ -44,8 +45,10 @@ pub enum ButtonId {
     CalibrationMenu,
     /// Таблетка с именем пресета в карточке Styles экрана PHOTO по номеру в ряду.
     StyleChip(u8),
-    /// Пункт корня меню раздела калибровки по номеру слота.
-    CalibrationMenuItem(u8),
+    /// Точка страницы в полоске прибора: тап выбирает этот прибор (решение 258).
+    ScopePageDot(ScopeKind),
+    /// Сегмент переключателя осей вектороскопа в полоске прибора (Y'CbCr | OKLab, решение 258).
+    ScopeAxes(VectorscopeAxes),
     /// Кнопка белого рядом с затвором: у неё один собственный узел (тап открывает карточку, долгое нажатие берёт
     /// белое телефона).
     WhiteButton,
@@ -59,11 +62,11 @@ pub enum ButtonId {
     WhitePhone,
     /// Кнопка света на карточке белого по номеру в конфиге.
     WhiteLight(u8),
-    /// Левая кнопка карточки меню раздела: «‹» назад в корень.
+    /// Левая кнопка карточки меню раздела: «‹» закрыть меню.
     CalibrationCardLeft,
     /// Правая кнопка карточки меню раздела: «↻» сбросить правки пресета.
     CalibrationCardRight,
-    /// Таблетка верхнего ряда карточки меню раздела (имена пресетов или стандарты осей) по номеру в ряду.
+    /// Таблетка верхнего ряда карточки меню раздела (имена пресетов) по номеру в ряду.
     CalibrationChip(u8),
     /// Таблетка ряда действий карточки пресетов (NEW / RENAME / SAVE / DELETE) по номеру в ряду.
     CalibrationAction(u8),
@@ -157,7 +160,8 @@ impl ScreenGesture {
                     | ButtonId::CalibrationBandDot(_)
                     | ButtonId::CleanView
                     | ButtonId::CalibrationMenu
-                    | ButtonId::CalibrationMenuItem(_)
+                    | ButtonId::ScopePageDot(_)
+                    | ButtonId::ScopeAxes(_)
                     | ButtonId::CalibrationCardLeft
                     | ButtonId::CalibrationCardRight
                     | ButtonId::CalibrationChip(_)

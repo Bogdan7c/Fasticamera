@@ -26,7 +26,6 @@ use ui_core::input::{PointScale, PointScaleError, PointScaleRule};
 use crate::calibration::{CalibrationConfig, CalibrationLayout, CalibrationLayoutError};
 use crate::mode_behaviour::LayoutPolicy;
 use crate::settings::AspectRatio;
-use crate::widgets_config::BottomLayout;
 
 /// Числа раскладки в координатах эталонного iPhone (все в pt, привязка к низу — в [`ScreenLayout`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -300,12 +299,11 @@ impl ScreenLayout {
     pub fn calibration_layout(
         &self,
         config: &CalibrationConfig,
-        bottom: &BottomLayout,
         policy: LayoutPolicy,
         device_orientation: DeviceOrientation,
         safe_area: SafeAreaInsets,
     ) -> Result<CalibrationLayout, CalibrationLayoutError> {
-        CalibrationLayout::build(self, config, bottom, policy, device_orientation, safe_area)
+        CalibrationLayout::build(self, config, policy, device_orientation, safe_area)
     }
 
     /// Лежит ли точка (pt) внутри кадра выбранного соотношения.

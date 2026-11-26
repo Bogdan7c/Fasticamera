@@ -3,6 +3,7 @@
 use std::fmt::Display;
 
 use thiserror::Error;
+use ui_core::geometry::Rect;
 use ui_core::scene::SceneError;
 use ui_kit::view::ViewError;
 
@@ -24,6 +25,9 @@ pub enum WidgetError {
     /// Данные не сошлись (индекс вне списка и т. п.): ошибка сборки, а не пользователя.
     #[error("{0}")]
     Inconsistent(String),
+    /// Пустая зона касания: узел был бы живым и недостижимым.
+    #[error("пустая зона касания {touch_area:?} у рамки {frame:?}")]
+    EmptyTouchArea { frame: Rect, touch_area: Rect },
 }
 
 /// Адаптер `map_err(element("shutter"))`: ошибка элемента → [`WidgetError::Element`].

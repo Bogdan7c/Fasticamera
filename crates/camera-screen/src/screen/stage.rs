@@ -554,6 +554,12 @@ impl Stage {
             .collect()
     }
 
+    /// Сцена целиком (проба для тестов соседства областей касания: хит-тест и рамки узлов).
+    #[cfg(test)]
+    pub(crate) fn scene(&self) -> &ui_core::scene::UiScene<crate::widget::intent::ScreenGesture> {
+        self.kit.scene()
+    }
+
     /// Раздел калибровки (проба для тестов).
     #[cfg(test)]
     pub(crate) fn calibration(&self) -> Option<&CalibrationSection> {

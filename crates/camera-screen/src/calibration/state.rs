@@ -72,32 +72,14 @@ pub enum CleanViewState {
     HoldingBase,
 }
 
-/// Куда ведёт меню «шесть точек» раздела калибровки.
+/// Состояние меню «шесть точек» раздела калибровки: кнопка меню открывает карточку пресетов сразу (решение 283).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CalibrationMenu {
     /// Меню закрыто.
     #[default]
     Closed,
-    /// Корень: пункты «Presets» и «Scope axes».
-    Root,
     /// Карточка пресетов: ряд имён и действия New / Rename / Save / Delete / Reset.
     Presets,
-    /// Карточка стандарта осей вектороскопа.
-    ScopeAxes,
-}
-
-/// Пункт корня меню калибровки.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CalibrationMenuItem {
-    /// Управление пресетами.
-    Presets,
-    /// Стандарт осей вектороскопа.
-    ScopeAxes,
-}
-
-impl CalibrationMenuItem {
-    /// Пункты корня в порядке показа.
-    pub const ALL: [CalibrationMenuItem; 2] = [CalibrationMenuItem::Presets, CalibrationMenuItem::ScopeAxes];
 }
 
 /// Какой вид органов управления показывает колонка ручек (решение 204): строки-шкалы или цветовые колёса.

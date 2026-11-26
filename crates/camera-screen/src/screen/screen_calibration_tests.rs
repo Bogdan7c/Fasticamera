@@ -23,7 +23,16 @@ const FRAME: i64 = 16;
 
 /// Экран в режиме CALIBRATE с фактами `facts`, телефон держат в положении `orientation`.
 pub(super) fn calibrating(facts: LookFacts, orientation: DeviceOrientation) -> Rig {
-    let mut rig = Rig::new();
+    calibrating_with(crate::config::ScreenConfig::default(), facts, orientation)
+}
+
+/// То же по своему конфигу экрана (сторона колонки ручек, числа раскладки).
+pub(super) fn calibrating_with(
+    config: crate::config::ScreenConfig,
+    facts: LookFacts,
+    orientation: DeviceOrientation,
+) -> Rig {
+    let mut rig = Rig::with(config, ui_core::time::MotionPreference::Full);
     rig.screen
         .handle_action(ScreenAction::LookFactsChanged(Box::new(facts)));
     rig.screen
@@ -144,17 +153,14 @@ fn vectorscope_picture_is_a_square_centred_in_the_zone_and_matches_its_request()
         (image.size_px.width as u32, image.size_px.height as u32),
         (requested.image_size.width(), requested.image_size.height())
     );
-    let zone_px_size = (layout.scope_image_size().width(), layout.scope_image_size().height());
-    assert_eq!(image.size_px.width as u32, zone_px_size.0.min(zone_px_size.1));
+    // Квадрат вписан во ВСЮ область картинки (без поля уровней, решение 274): сторона — меньшая сторона области.
+    let area = layout.scope_picture_area();
+    let area_px = (px(area.size.width).round() as u32, px(area.size.height).round() as u32);
+    assert_eq!(image.size_px.width as u32, area_px.0.min(area_px.1));
+    // Картинка стоит по центру области картинки, а не зоны: сверху полоска.
     assert!(
-        image.size_px.width < zone_px_size.1 as f32,
-        "квадрат меньше высоты зоны 540×743"
-    );
-    // Картинка стоит по центру зоны.
-    let zone = layout.zones().scope;
-    assert!(
-        near(image.transform.tx, px(zone.center().x), 0.6) && near(image.transform.ty, px(zone.center().y), 0.6),
-        "центр квадрата на центре зоны: ({}, {})",
+        near(image.transform.tx, px(area.center().x), 0.6) && near(image.transform.ty, px(area.center().y), 0.6),
+        "центр квадрата на центре области картинки: ({}, {})",
         image.transform.tx,
         image.transform.ty
     );
@@ -173,7 +179,7 @@ fn the_first_page_title_names_the_rgb_waveform_and_the_old_title_is_gone() {
 }
 
 #[test]
-fn scope_image_lies_exactly_on_the_scope_zone_with_its_requested_size() {
+fn scope_image_lies_exactly_on_its_rect_below_the_strip_with_its_requested_size() {
     let mut rig = portrait(look_facts());
     let list = rig.frame().clone();
     let images = scope_images(&list);
@@ -184,14 +190,17 @@ fn scope_image_lies_exactly_on_the_scope_zone_with_its_requested_size() {
     assert_eq!(image.clip, ImageClip::None);
     assert_eq!(
         (image.size_px.width as u32, image.size_px.height as u32),
-        (layout.scope_image_size().width(), layout.scope_image_size().height()),
+        (
+            layout.scope_image_size_for(ScopeKind::Waveform).width(),
+            layout.scope_image_size_for(ScopeKind::Waveform).height()
+        ),
         "размер картинки 1:1 с запросом прибора"
     );
-    let zone = layout.zones().scope;
-    let center_px = (px(zone.center().x), px(zone.center().y));
+    let image_rect = layout.scope_image_rect_for(ScopeKind::Waveform);
+    let center_px = (px(image_rect.center().x), px(image_rect.center().y));
     assert!(
         near(image.transform.tx, center_px.0, 0.6) && near(image.transform.ty, center_px.1, 0.6),
-        "центр картинки на центре зоны: ({}, {}) против {center_px:?}",
+        "центр картинки на центре её прямоугольника: ({}, {}) против {center_px:?}",
         image.transform.tx,
         image.transform.ty
     );
@@ -515,9 +524,22 @@ fn tapping_the_visible_neighbour_selects_it_and_tapping_the_active_base_does_not
 }
 
 #[test]
-fn in_portrait_where_no_neighbour_is_visible_a_tap_selects_nothing() {
+fn in_portrait_the_neighbour_base_is_visible_now_that_clean_left_the_header_and_a_tap_on_it_selects_it() {
     let mut rig = portrait(look_facts());
-    for eye_dx in [-47.0, -20.0, 0.0, 20.0, 47.0] {
+    // Решение 259: CLEAN ушёл вниз, карусели досталась вся ширина шапки, и справа от выбранной AGX видна ACES.
+    assert_eq!(
+        tap_base_at(&mut rig, 0.0),
+        Vec::new(),
+        "тап по выбранной основе ничего не меняет"
+    );
+    assert_eq!(
+        tap_base_at(&mut rig, NEIGHBOUR_DX),
+        vec![LookIntent::SetToneBase(ToneBaseModel::Aces)],
+        "тап по видимому соседу в портрете выбирает его"
+    );
+    // Пустое место рядом с центром (между выбранной и соседом) и за левым краем ничего не выбирает.
+    let mut rig = portrait(look_facts());
+    for eye_dx in [-60.0, -20.0, 20.0] {
         assert_eq!(
             tap_base_at(&mut rig, eye_dx),
             Vec::new(),
@@ -559,117 +581,6 @@ fn base_reset_arrow_resets_the_base_only_when_it_differs() {
     assert!(
         look_intents(&equal.effects()).is_empty(),
         "основа равна пресету: «↻» тусклая и молчит"
-    );
-}
-
-#[test]
-fn clean_button_holds_the_base_while_pressed_and_releases_on_lift_or_cancel() {
-    let mut rig = portrait(look_facts());
-    let clean = center(&rig, "calib_clean", 0);
-    let shown = |rig: &mut Rig| -> Vec<look_contract::CleanView> {
-        rig.effects()
-            .into_iter()
-            .filter_map(|effect| match effect {
-                Effect::CleanView(view) => Some(view),
-                _ => None,
-            })
-            .collect()
-    };
-    // Нажатие и удержание.
-    let t = rig.now_ms;
-    rig.touch(TouchPhase::Began, clean, t);
-    rig.run(200);
-    assert_eq!(
-        shown(&mut rig),
-        vec![look_contract::CleanView::ShowBase],
-        "нажали — показана основа"
-    );
-    // Отпускание.
-    let t = rig.now_ms;
-    rig.touch(TouchPhase::Ended, clean, t);
-    rig.run(100);
-    assert_eq!(
-        shown(&mut rig),
-        vec![look_contract::CleanView::ShowEdited],
-        "отпустили — вид вернулся"
-    );
-    // Отмена жеста системой.
-    let t = rig.now_ms;
-    rig.touch(TouchPhase::Began, clean, t);
-    rig.run(100);
-    assert_eq!(shown(&mut rig), vec![look_contract::CleanView::ShowBase]);
-    let t = rig.now_ms;
-    rig.touch(TouchPhase::Cancelled, clean, t);
-    rig.run(100);
-    assert_eq!(
-        shown(&mut rig),
-        vec![look_contract::CleanView::ShowEdited],
-        "отмена тоже отпускает"
-    );
-}
-
-#[test]
-fn clean_view_never_sticks_when_the_touch_stream_breaks_or_the_phone_turns() {
-    let mut rig = portrait(look_facts());
-    let clean = center(&rig, "calib_clean", 0);
-    let t = rig.now_ms;
-    rig.touch(TouchPhase::Began, clean, t);
-    rig.run(100);
-    rig.effects();
-    // Разрыв потока касаний посреди удержания.
-    rig.screen.handle_touch(super::ScreenTouch::Gap);
-    rig.run(200);
-    assert!(
-        rig.effects()
-            .iter()
-            .any(|effect| matches!(effect, Effect::CleanView(look_contract::CleanView::ShowEdited))),
-        "после разрыва потока вид вернулся"
-    );
-    assert_eq!(
-        rig.screen.state().calibration().clean_view(),
-        crate::calibration::CleanViewState::ShowingEdited
-    );
-    // Поворот телефона посреди удержания: раздел пересобирается, кнопка не залипает.
-    let clean = center(&rig, "calib_clean", 0);
-    let t = rig.now_ms;
-    rig.touch(TouchPhase::Began, clean, t);
-    rig.run(100);
-    assert_eq!(
-        rig.screen.state().calibration().clean_view(),
-        crate::calibration::CleanViewState::HoldingBase
-    );
-    rig.act(ScreenAction::DeviceOrientationChanged(DeviceOrientation::LandscapeLeft));
-    rig.run(400);
-    assert_eq!(
-        rig.screen.state().calibration().clean_view(),
-        crate::calibration::CleanViewState::ShowingEdited,
-        "пересборка раздела не оставила «чистяк» нажатым"
-    );
-}
-
-#[test]
-fn a_clean_view_held_by_an_action_stays_held_across_frames() {
-    // Удержание пришло действием, а не пальцем кнопки (сценарий, сквозной тест, другой хост): страховка от залипания
-    // срабатывает только после пересборки шапки и не должна отпускать такое удержание на следующем кадре (дефект,
-    // найденный сквозным тестом `calibration_end_to_end`: «чистяк» отпускался раньше, чем рендер успевал его показать).
-    let mut rig = portrait(look_facts());
-    rig.act(ScreenAction::CleanViewPressed);
-    rig.run(500);
-    assert_eq!(
-        rig.screen.state().calibration().clean_view(),
-        crate::calibration::CleanViewState::HoldingBase,
-        "полсекунды кадров не отпустили удержание без пальца"
-    );
-    assert!(
-        !rig.effects()
-            .iter()
-            .any(|effect| matches!(effect, Effect::CleanView(look_contract::CleanView::ShowEdited))),
-        "экран сам не просил вернуть правки"
-    );
-    rig.act(ScreenAction::CleanViewReleased);
-    assert_eq!(
-        rig.screen.state().calibration().clean_view(),
-        crate::calibration::CleanViewState::ShowingEdited
     );
 }
 

@@ -1,26 +1,23 @@
-//! Карточки меню раздела калибровки: PRESETS и SCOPE AXES (решения 94, 199, 201).
+//! Карточка пресетов меню раздела калибровки (решения 94, 199, 201, 283).
 //!
-//! Та же нижняя карточка, что у Aspect и Timer в PHOTO (`tool_card.rs`): стеклянная рамка вырастает из шторки
+//! Та же нижняя карточка, что у Aspect и Timer в PHOTO (`tool_card.rs`): стеклянная рамка проявляется на месте
 //! (`PanelMorph`), заголовок ЗАГЛАВНЫМИ, боковые кнопки «‹» и «↻» (общий `SideButton`), ряд таблеток (общий
 //! `ChipRow`). Размер, радиус, расстановка и пружины — те же числа `widgets.card` (измерены), потому что карточка
-//! здесь не «похожая», а та же; различие данные:
-//! * PRESETS — вместо крупного значения ряд действий (NEW / RENAME / SAVE / DELETE) на высоте значения, ниже ряд имён
-//!   пресетов; «↻» — вернуть правки к пресету;
-//! * SCOPE AXES — крупное значение (текущий стандарт осей) и ряд из двух стандартов; «↻» нет.
+//! здесь не «похожая», а та же; различие данные: вместо крупного значения ряд действий (NEW / RENAME / SAVE /
+//! DELETE) на высоте значения, ниже ряд имён пресетов; «↻» — вернуть правки к пресету. Кнопка меню открывает её
+//! сразу, шторки-корня больше нет (решение 283); стандарт осей вектороскопа живёт в полоске прибора (решение 258).
 //!
 //! # Инварианты
-//! * Какой карточкой владеет меню, решает `ScreenState` (`calibration().menu()`); виджет только выравнивается по нему.
-//! * Пока карточка закрывается, состояние уже `Closed`: вид карточки запоминается в `shown`, чтобы содержимое
-//!   доисчезало тем же, чем было; касания снимаются сразу.
+//! * Открыта ли карточка, решает `ScreenState` (`calibration().menu()`); виджет только выравнивается по нему.
+//! * Пока карточка закрывается, состояние уже `Closed`: содержимое запоминается в `shown`, чтобы доисчезало тем же,
+//!   чем было; касания снимаются сразу.
 //! * Что значит нажатие, решает карточка и отдаёт действием; ряды ничего не знают о пресетах.
 
 use crate::widget::SECTION_PANEL_MATERIAL;
 use look_contract::{EditState, PresetId, UserPresetId};
-use scope_contract::VectorscopeAxes;
 use ui_core::geometry::{Point, Rect};
 use ui_core::gesture::{GestureEvent, PanSpec, RecognizerSpec};
 use ui_core::id::NodeId;
-use ui_core::time::MonotonicNanos;
 use ui_draw::color::Opacity;
 use ui_draw::icons::IconId;
 use ui_draw::transform::Affine2;
@@ -45,40 +42,8 @@ use crate::widget::tool_card::MENU_MORPH_MOTION;
 use crate::widget::tool_card_styles::{preset_chip_faces, preset_ids, styles_have_edits};
 use crate::widget::{Ctx, Outputs};
 
-/// Стандарты осей вектороскопа в порядке ряда и их подписи (английский UI). `[invented]`.
-const AXES_OPTIONS: [(VectorscopeAxes, &str); 2] = [
-    (VectorscopeAxes::YCbCrBt709, "Y'CbCr 709"),
-    (VectorscopeAxes::OklabAb, "OKLAB"),
-];
-
-/// Заголовок и подпись карточки по её виду. `[invented]`.
-fn title_of(kind: CardKind) -> &'static str {
-    match kind {
-        CardKind::Presets => "PRESETS",
-        CardKind::ScopeAxes => "SCOPE AXES",
-    }
-}
-
-fn axes_label(axes: VectorscopeAxes) -> &'static str {
-    AXES_OPTIONS
-        .iter()
-        .find(|(candidate, _)| *candidate == axes)
-        .map_or("", |(_, label)| label)
-}
-
-/// Какая из двух карточек показана.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CardKind {
-    Presets,
-    ScopeAxes,
-}
-
-/// Что делает таблетка верхнего ряда.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TopTarget {
-    Preset(PresetId),
-    Axes(VectorscopeAxes),
-}
+/// Заголовок карточки. `[invented]`.
+const CARD_TITLE: &str = "PRESETS";
 
 /// Таблетки ряда действий пресета (NEW / RENAME / SAVE / DELETE) и действие каждой; `None` — таблетка недоступна.
 /// Правила: NEW — при любых фактах; RENAME, SAVE, DELETE — только у своего пресета; SAVE ещё и только при правках;
@@ -120,40 +85,22 @@ pub(super) fn preset_actions(state: &ScreenState) -> Vec<(ChipFace, Option<Scree
     ]
 }
 
-fn axes_faces(state: &ScreenState) -> Vec<ChipFace> {
-    let current = state.calibration().vectorscope_axes();
-    AXES_OPTIONS
-        .iter()
-        .map(|(axes, label)| {
-            ChipFace::new(
-                *label,
-                if *axes == current {
-                    ChipTone::Highlighted
-                } else {
-                    ChipTone::Plain
-                },
-            )
-        })
-        .collect()
-}
-
 pub(super) struct MenuCard {
     node: NodeId,
     left: SideButton,
     right: SideButton,
-    /// Верхний ряд: имена пресетов или стандарты осей.
+    /// Верхний ряд: имена пресетов.
     top: ChipRow,
     /// Ряд действий пресета.
     actions: ChipRow,
     eye: ScreenGeometry,
-    sheet_rect: Rect,
     card_rect: Rect,
     morph: Option<PanelMorph>,
     open_wanted: bool,
-    /// Показанная карточка: нужна и во время закрытия, когда состояние уже забыло о ней.
-    shown: Option<CardKind>,
-    /// Что делает таблетка верхнего ряда (по номеру) на момент последней сверки.
-    top_targets: Vec<TopTarget>,
+    /// Карточка показана: нужно и во время закрытия, когда состояние уже забыло о ней.
+    shown: bool,
+    /// Какой пресет выбирает таблетка верхнего ряда (по номеру) на момент последней сверки.
+    top_targets: Vec<PresetId>,
     /// Действия таблеток ряда действий на момент последней сверки.
     action_targets: Vec<Option<ScreenAction>>,
 }
@@ -164,7 +111,6 @@ impl MenuCard {
         ctx: &Ctx<'_>,
         (eye, space): (&ScreenGeometry, &SectionSpace),
         (root, root_frame): (NodeId, Rect),
-        sheet_rect: Rect,
     ) -> Result<Self, WidgetError> {
         let card_rect = eye.card();
         let node = kit.add_node(root, "calib_menu_card", card_rect, root_frame)?;
@@ -176,10 +122,15 @@ impl MenuCard {
             }),
             ScreenGesture::CalibrationMenuClosePan,
         )?;
-        // Ряды стоят там же, где в PHOTO: верхний — на месте ряда вариантов, действия — на высоте крупного значения.
-        let inset = ctx.config.calibration.widgets.chip_padding_pt;
-        let (top_center, row_width) = eye.card_chip_row(inset);
-        let actions_center = Point::new(top_center.x, eye.card_value_center().y);
+        // Ряды стоят там же, где в PHOTO (верхний — на месте ряда вариантов, действия — на высоте крупного значения),
+        // но опущены на числа конфига: зоны касания 44 pt соседних рядов и кнопки «×» иначе заходят друг на друга.
+        let widgets = &ctx.config.calibration.widgets;
+        let (photo_top_center, row_width) = eye.card_chip_row(widgets.chip_padding_pt);
+        let top_center = Point::new(photo_top_center.x, photo_top_center.y + widgets.menu_card_names_drop_pt);
+        let actions_center = Point::new(
+            photo_top_center.x,
+            eye.card_value_center().y + widgets.menu_card_actions_drop_pt,
+        );
         let top = ChipRow::build(
             kit,
             ctx,
@@ -230,11 +181,10 @@ impl MenuCard {
             top,
             actions,
             eye: eye.clone(),
-            sheet_rect,
             card_rect,
             morph: None,
             open_wanted: false,
-            shown: None,
+            shown: false,
             top_targets: Vec::new(),
             action_targets: Vec::new(),
         })
@@ -245,34 +195,23 @@ impl MenuCard {
         self.card_rect
     }
 
-    /// Насколько карточка закрыла шторку, 0..1: шторка гасит стекло и пункты на эту долю.
-    pub(super) fn cover_progress(&self, now: MonotonicNanos) -> f32 {
-        self.morph
-            .as_ref()
-            .map_or(0.0, |morph| (morph.snapshot(now).progress as f32).clamp(0.0, 1.0))
-    }
-
     /// Имена пресетов, не поместившиеся в верхний ряд (диагностика).
     pub(super) fn overflowed_chips(&self) -> usize {
         self.top.overflowed_chips()
     }
 
+    /// Карточка проявляется на месте (источника-шторки больше нет, решение 283): рамка та же, пружина — меню Controls.
     fn new_morph(&self, ctx: &Ctx<'_>) -> Result<PanelMorph, WidgetError> {
         let card_config = &ctx.geometry.config().card;
-        let spec = PanelMorphSpec::new(self.sheet_rect, self.card_rect, card_config.corner_radius_pt)
-            .with_source_corner_radius_pt(ctx.geometry.config().sheet.corner_radius_pt)
-            .with_spring(MENU_MORPH_MOTION);
+        let sheet_config = &ctx.geometry.config().sheet;
+        let spec = PanelMorphSpec::in_place(self.card_rect, card_config.corner_radius_pt, MENU_MORPH_MOTION)
+            .with_content_slide_pt(sheet_config.open_content_slide_pt);
         PanelMorph::new(spec, &ctx.environment(self.card_rect.size.height), ctx.now)
             .map_err(element("карточка меню раздела"))
     }
 
     pub(super) fn sync(&mut self, kit: &mut SceneKit, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
-        let wanted = match ctx.state.calibration().menu() {
-            CalibrationMenu::Presets => Some(CardKind::Presets),
-            CalibrationMenu::ScopeAxes => Some(CardKind::ScopeAxes),
-            CalibrationMenu::Closed | CalibrationMenu::Root => None,
-        };
-        let Some(kind) = wanted else {
+        if ctx.state.calibration().menu() == CalibrationMenu::Closed {
             if self.open_wanted {
                 self.open_wanted = false;
                 if let Some(morph) = &mut self.morph {
@@ -280,7 +219,7 @@ impl MenuCard {
                 }
             }
             return self.make_untouchable(kit);
-        };
+        }
         if !self.open_wanted {
             self.open_wanted = true;
             // Идущий морф переиспользуем (открытие посреди закрытия — разворот с сохранением скорости).
@@ -295,27 +234,16 @@ impl MenuCard {
                 morph.open(ctx.now).map_err(element("карточка меню раздела"))?;
             }
         }
-        self.shown = Some(kind);
+        self.shown = true;
         kit.set_interactive(self.node, true)?;
         kit.set_interactive(self.left.button.node(), true)?;
-        let presets = kind == CardKind::Presets;
-        kit.set_interactive(self.right.button.node(), presets && styles_have_edits(ctx.state))?;
-        match kind {
-            CardKind::Presets => {
-                self.top_targets = preset_ids(ctx.state).into_iter().map(TopTarget::Preset).collect();
-                self.top.set_faces(kit, ctx, preset_chip_faces(ctx.state))?;
-                let (faces, targets): (Vec<ChipFace>, Vec<Option<ScreenAction>>) =
-                    preset_actions(ctx.state).into_iter().unzip();
-                self.action_targets = targets;
-                self.actions.set_faces(kit, ctx, faces)?;
-            }
-            CardKind::ScopeAxes => {
-                self.top_targets = AXES_OPTIONS.iter().map(|(axes, _)| TopTarget::Axes(*axes)).collect();
-                self.top.set_faces(kit, ctx, axes_faces(ctx.state))?;
-                self.action_targets.clear();
-                self.actions.set_faces(kit, ctx, Vec::new())?;
-            }
-        }
+        kit.set_interactive(self.right.button.node(), styles_have_edits(ctx.state))?;
+        self.top_targets = preset_ids(ctx.state);
+        self.top.set_faces(kit, ctx, preset_chip_faces(ctx.state))?;
+        let (faces, targets): (Vec<ChipFace>, Vec<Option<ScreenAction>>) =
+            preset_actions(ctx.state).into_iter().unzip();
+        self.action_targets = targets;
+        self.actions.set_faces(kit, ctx, faces)?;
         self.top.set_touchable(kit, true)?;
         self.actions.set_touchable(kit, true)?;
         self.top.sync(kit, ctx)?;
@@ -338,7 +266,7 @@ impl MenuCard {
             if !self.open_wanted && morph.phase(ctx.now) == PanelPhase::Closed {
                 // Закрылась целиком: морф и запомненное содержимое больше не нужны.
                 self.morph = None;
-                self.shown = None;
+                self.shown = false;
                 self.top.forget();
                 self.actions.forget();
                 self.top_targets.clear();
@@ -377,12 +305,8 @@ impl MenuCard {
                     RowEvent::NotMine => {}
                     RowEvent::Consumed => return Ok(true),
                     RowEvent::Activated(index) => {
-                        match self.top_targets.get(index) {
-                            Some(TopTarget::Preset(preset)) => out.actions.push(ScreenAction::PresetSelected(*preset)),
-                            Some(TopTarget::Axes(axes)) => {
-                                out.actions.push(ScreenAction::VectorscopeAxesSelected(*axes))
-                            }
-                            None => {}
+                        if let Some(preset) = self.top_targets.get(index) {
+                            out.actions.push(ScreenAction::PresetSelected(*preset));
                         }
                         return Ok(true);
                     }
@@ -408,7 +332,7 @@ impl MenuCard {
         layers: &mut DrawLayers,
         texts: &mut TextRuns,
     ) -> Result<(), WidgetError> {
-        let (Some(morph), Some(kind)) = (&self.morph, self.shown) else {
+        let (Some(morph), true) = (&self.morph, self.shown) else {
             return Ok(());
         };
         let snapshot = morph.snapshot(ctx.now);
@@ -424,49 +348,34 @@ impl MenuCard {
             return Ok(());
         }
         let slide_px = ctx.px.px(snapshot.content_offset_pt);
-        self.draw_texts(ctx, host, layers, texts, (kind, alpha, slide_px))?;
+        self.draw_title(ctx, host, layers, texts, (alpha, slide_px))?;
         let paint = RowPaint { alpha, slide_px };
         self.top.draw(ctx, visuals, layers, texts, paint)?;
         self.actions.draw(ctx, visuals, layers, texts, paint)?;
-        self.draw_buttons(ctx, visuals, layers, (kind, alpha, slide_px))
+        self.draw_buttons(ctx, visuals, layers, (alpha, slide_px))
     }
 
-    /// Заголовок и (у SCOPE AXES) крупное значение по центру карточки.
-    fn draw_texts(
+    /// Заголовок по центру карточки.
+    fn draw_title(
         &self,
         ctx: &Ctx<'_>,
         host: &RootHost,
         layers: &mut DrawLayers,
         texts: &mut TextRuns,
-        (kind, alpha, slide_px): (CardKind, f32, f32),
+        (alpha, slide_px): (f32, f32),
     ) -> Result<(), WidgetError> {
         let opacity = Opacity::new(alpha)
             .map_err(|_| WidgetError::Inconsistent("прозрачность карточки меню раздела вне 0..1".to_owned()))?;
-        let colors = &ctx.tokens.colors;
-        let title = texts.run(ctx, title_of(kind), TextRoleKind::CardTitle)?;
+        let title = texts.run(ctx, CARD_TITLE, TextRoleKind::CardTitle)?;
         layers.push(
             Layer::Content,
             centered_text(
                 title,
                 host.point(ctx, self.eye.card_title_center(), slide_px),
-                colors.text_muted,
+                ctx.tokens.colors.text_muted,
                 opacity,
             ),
         );
-        if kind == CardKind::ScopeAxes {
-            // Подписи стандартов — наши константы (ASCII), символов вне атласа в них нет.
-            let label = axes_label(ctx.state.calibration().vectorscope_axes());
-            let value = texts.run(ctx, label, TextRoleKind::CardValue)?;
-            layers.push(
-                Layer::Content,
-                centered_text(
-                    value,
-                    host.point(ctx, self.eye.card_value_center(), slide_px),
-                    colors.text_primary,
-                    opacity,
-                ),
-            );
-        }
         Ok(())
     }
 
@@ -475,40 +384,38 @@ impl MenuCard {
         ctx: &Ctx<'_>,
         visuals: &VisualIndex,
         layers: &mut DrawLayers,
-        (kind, alpha, slide_px): (CardKind, f32, f32),
+        (alpha, slide_px): (f32, f32),
     ) -> Result<(), WidgetError> {
         self.left.draw(
             ctx,
             visuals,
             layers,
             SideButtonLook {
-                icon: IconId::MenuChevron,
-                // «‹» — стрелка вверх, повёрнутая на 90° против часовой (смотрит влево), как в карточке PHOTO.
-                rotation: Affine2::rotate(-std::f32::consts::FRAC_PI_2),
+                // «×»: кнопка закрывает меню (решение 283: шторки-корня, куда вела «‹», больше нет).
+                icon: IconId::Close,
+                rotation: Affine2::IDENTITY,
                 content_alpha: alpha,
                 slide_px,
                 extra_opacity: 1.0,
             },
         )?;
-        if kind == CardKind::Presets {
-            let dim = if styles_have_edits(ctx.state) {
-                1.0
-            } else {
-                ctx.geometry.config().card.reset_dim_opacity
-            };
-            self.right.draw(
-                ctx,
-                visuals,
-                layers,
-                SideButtonLook {
-                    icon: IconId::Reset,
-                    rotation: Affine2::IDENTITY,
-                    content_alpha: alpha,
-                    slide_px,
-                    extra_opacity: dim,
-                },
-            )?;
-        }
-        Ok(())
+        // «↻» тусклая и не нажимается, пока правок у пресета нет.
+        let dim = if styles_have_edits(ctx.state) {
+            1.0
+        } else {
+            ctx.geometry.config().card.reset_dim_opacity
+        };
+        self.right.draw(
+            ctx,
+            visuals,
+            layers,
+            SideButtonLook {
+                icon: IconId::Reset,
+                rotation: Affine2::IDENTITY,
+                content_alpha: alpha,
+                slide_px,
+                extra_opacity: dim,
+            },
+        )
     }
 }

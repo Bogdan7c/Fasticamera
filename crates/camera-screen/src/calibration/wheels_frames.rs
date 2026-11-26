@@ -74,10 +74,16 @@ pub(crate) struct WheelsFrames {
     pub title: Rect,
     /// «↻» колеса целиком: справа в строке названия.
     pub whole_reset: Rect,
+    /// Зона касания «↻» колеса: 44 pt шириной внутрь колонки (не за её край) и строка названия плюс зазоры над
+    /// ней и под ней по высоте — ни одной общей точки со вкладками, кругом и шкалой кольца.
+    pub whole_reset_touch: Rect,
     /// Квадрат круга: сторона = внешний диаметр цветного кольца оттенков.
     pub circle: Rect,
     /// «↻» толчка: правый нижний угол квадрата круга (снаружи самого круга).
     pub push_reset: Rect,
+    /// Зона касания «↻» толчка: квадрат 44 pt, растущий от угла круга внутрь него (вверх и влево): вниз и вправо
+    /// за рамку круга она не выходит и шкалу кольца не задевает.
+    pub push_reset_touch: Rect,
     /// Строка шкалы кольца яркости (название, значение, «↻» кольца и линейка).
     pub ring_row: Rect,
 }
@@ -92,12 +98,15 @@ impl WheelsFrames {
         pixels_per_point: f64,
     ) -> Result<Self, WheelsFramesError> {
         let gap = config.wheel_block_gap_pt;
+        // Над шкалой кольца её «↻» забирает полосу `row_reset_reach_above_pt` (решение 279): круг кончается выше.
+        let ring_gap = gap.max(config.row_reset_reach_above_pt);
         let ring_row_height = config.row_title_height_pt + config.wheel_ring_ruler_height_pt;
         // Четыре блока и три промежутка между ними; снизу — отступ панели, как у списка шкал.
         let fixed_height = config.wheel_tabs_height_pt
             + config.wheel_title_height_pt
             + ring_row_height
-            + 3.0 * gap
+            + 2.0 * gap
+            + ring_gap
             + config.panel_padding_pt;
         let available = content.size.height - fixed_height;
         let fitted = available
@@ -141,9 +150,22 @@ impl WheelsFrames {
             reset_side,
             reset_side,
         );
+        let touch_side = config.reset_touch_side_pt;
+        let whole_reset_touch = Rect::from_xywh(
+            title.max_x() - touch_side,
+            title.min_y() - gap,
+            touch_side,
+            title.size.height + 2.0 * gap,
+        );
+        let push_reset_touch = Rect::from_xywh(
+            push_reset.max_x() - touch_side,
+            push_reset.max_y() - touch_side,
+            touch_side,
+            touch_side,
+        );
         let ring_row = Rect::from_xywh(
             content.min_x(),
-            circle.max_y() + gap,
+            circle.max_y() + ring_gap,
             content.size.width,
             ring_row_height,
         );
@@ -151,8 +173,10 @@ impl WheelsFrames {
             tabs,
             title,
             whole_reset,
+            whole_reset_touch,
             circle,
             push_reset,
+            push_reset_touch,
             ring_row,
         })
     }
