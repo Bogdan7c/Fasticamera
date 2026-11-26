@@ -1,6 +1,10 @@
 //! Показ приборов с отбором примитивов сетки по плитке против ЗАМОРОЖЕННОЙ копии прежнего шейдера
 //! (`scope_render_reference.comp`): картинки совпадают БИТ В БИТ (решение 213: точная правка).
 //!
+//! Замороженный шейдер умеет рисовать только секциями, поэтому оба шейдера получают приборы с ЯВНО выставленным
+//! прежним способом рисования ([`PaintOverride::plane_sections`]), а не тем, что называет правило (наложение и
+//! цвет по положению — новые ветки продуктового шейдера, их сверяет `scope_picture.rs` с эталоном `scope-model`).
+//!
 //! Отбор пропускает только примитивы, покрытие которых во всей плитке группы равно нулю, а `max` покрытий от
 //! нулей не меняется — поэтому равенство точное, а не «в допуске». Размеры картинки выбраны так, чтобы были и
 //! неполные плитки на краях (137×93 не кратно группе 16×8), и размер панели настоящего экрана (540×743).
@@ -19,8 +23,8 @@ use gpu_vulkan::storage_image::StorageFormatPolicy;
 use isp_vulkan::scopes::{ColorScopes, ColorScopesConfig, ScopeFrame};
 use isp_vulkan::shaders::blobs;
 use scope_support::{
-    assert_no_validation_errors, bars75_scene, gpu_context_or_skip, picture_size, random_scene, rule_cases,
-    run_scope_frame, small_settings, upload_scene,
+    PaintOverride, assert_no_validation_errors, bars75_scene, gpu_context_or_skip, picture_size, random_scene,
+    rule_cases, run_scope_frame, small_settings, upload_scene,
 };
 
 #[test]
@@ -39,7 +43,8 @@ fn tile_culled_render_equals_the_frozen_reference_shader_bit_for_bit() {
     for scene in [bars75_scene(), random_scene(0x5EED_1234)] {
         let input = upload_scene(&context, &scene, StorageFormatPolicy::PreferTenBitUnorm, (3, 2));
         for (width, height) in [(160, 96), (137, 93), (540, 743)] {
-            for (rule_name, rule) in rule_cases(&settings) {
+            for (rule_name, resolved) in rule_cases(&settings) {
+                let rule = PaintOverride::plane_sections(&resolved, &settings);
                 let frame = ScopeFrame {
                     input: input.input(HorizontalMirror::Off),
                     rule: &rule,

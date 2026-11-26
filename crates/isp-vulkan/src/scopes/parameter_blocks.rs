@@ -13,7 +13,7 @@ use scope_contract::ScopeScan;
 use scope_model::position_palette::{MIN_EDGE_RADIUS_CELLS, NEUTRAL_RADIUS_EPSILON_CELLS};
 use scope_model::{
     GraticulePrimitive, GridShape, MAX_GRATICULE_PRIMITIVES, POSITION_PALETTE_ANGLES, PositionPalette, RenderSettings,
-    TracePaint,
+    TracePaint, TraceReference, TraceStyle,
 };
 
 use super::error::ScopeError;
@@ -102,12 +102,11 @@ pub(super) fn decode_table_bytes(table: &[f32; DECODE_TABLE_LEN]) -> Vec<u8> {
 pub(super) struct RenderBlockInputs<'a> {
     /// Форма сетки счётчиков.
     pub grid: GridShape,
-    /// Способ рисования следа.
-    pub paint: TracePaint,
-    /// Цвета плоскостей: по одному на плоскость, плоскостей не больше `MAX_PLANES` (проверено вызывающим).
-    pub colors: &'a [[f32; 3]],
-    /// Таблица «цвет по положению»; нужна только способу `ColorByPosition` (проверено вызывающим).
-    pub position_palette: Option<&'a PositionPalette>,
+    /// Способ рисования следа с его данными. Плоскостей не больше `MAX_PLANES`, у секций цветов столько же,
+    /// сколько плоскостей (проверено вызывающим).
+    pub style: &'a TraceStyle,
+    /// Опорное число яркости (знаменатель лог-шкалы) — из числа отсчётов кадра.
+    pub reference: TraceReference,
     /// Примитивы сетки: не больше `MAX_GRATICULE_PRIMITIVES` (проверено вызывающим).
     pub graticule: &'a [GraticulePrimitive],
     /// Настройки показа.
@@ -118,9 +117,8 @@ pub(super) struct RenderBlockInputs<'a> {
 pub(super) fn render_block_bytes(inputs: &RenderBlockInputs<'_>) -> Vec<u8> {
     let RenderBlockInputs {
         grid,
-        paint,
-        colors,
-        position_palette,
+        style,
+        reference,
         graticule,
         settings,
     } = *inputs;
@@ -128,25 +126,38 @@ pub(super) fn render_block_bytes(inputs: &RenderBlockInputs<'_>) -> Vec<u8> {
     // uvec4 grid: столбцы, строки, плоскости, число примитивов (в буфере не больше 48: проверено вызывающим).
     floats.extend([grid.columns(), grid.rows(), grid.planes(), graticule.len() as u32]);
     // vec4 trace: знаменатель лог-шкалы (тот же f32, что на CPU), непрозрачность следа и сетки, код способа.
-    let saturation_denominator = (1.0 + settings.trace_saturation_count as f32).log2();
     floats.extend(
         [
-            saturation_denominator,
+            reference.log_denominator(),
             settings.trace_opacity,
             settings.graticule_opacity,
-            paint_code(paint),
+            paint_code(style.paint()),
         ]
         .map(f32::to_bits),
     );
     floats.extend(rgb_with_padding(settings.graticule_color));
+    let plane_colors = plane_colors_of(style);
     for plane in 0..MAX_PLANES {
-        floats.extend(rgb_with_padding(colors.get(plane).copied().unwrap_or([0.0; 3])));
+        floats.extend(rgb_with_padding(plane_colors.get(plane).copied().unwrap_or([0.0; 3])));
     }
     for index in 0..MAX_GRATICULE_PRIMITIVES {
         floats.extend(graticule.get(index).map_or([0; 8], primitive_words));
     }
-    floats.extend(position_tail_words(position_palette));
+    floats.extend(position_tail_words(match style {
+        TraceStyle::ColorByPosition { palette } => Some(palette.as_ref()),
+        TraceStyle::PlaneSections { .. } | TraceStyle::PlanesOverlaid { .. } => None,
+    }));
     floats.iter().flat_map(|word| word.to_ne_bytes()).collect()
+}
+
+/// Цвета, которые шейдер читает как `plane_colors`: цвета секций или основные цвета наложения; у способа «по
+/// положению» плоскостных цветов нет (шейдер их не читает, в блок идут нули).
+fn plane_colors_of(style: &TraceStyle) -> Vec<[f32; 3]> {
+    match style {
+        TraceStyle::PlaneSections { colors } => colors.clone(),
+        TraceStyle::PlanesOverlaid { primaries } => primaries.to_vec(),
+        TraceStyle::ColorByPosition { .. } => Vec::new(),
+    }
 }
 
 /// Хвост блока: `vec4 position_palette[N]` (rgb края, радиус края), `vec4 position_neutral` (rgb), `vec4
@@ -202,6 +213,8 @@ fn primitive_words(primitive: &GraticulePrimitive) -> [u32; 8] {
 
 #[cfg(test)]
 mod tests {
+    use scope_model::{SampleCount, SampleStride};
+
     use super::*;
     use crate::scopes::rule::RuleWords;
 
@@ -283,18 +296,18 @@ mod tests {
     const WORD_POSITION_NEUTRAL: usize = WORD_POSITION_PALETTE + POSITION_PALETTE_ANGLES * 4;
     const WORD_POSITION_GEOMETRY: usize = WORD_POSITION_NEUTRAL + 4;
 
-    fn block_of(
-        paint: TracePaint,
-        palette: Option<&PositionPalette>,
-        primitives: &[GraticulePrimitive],
-        settings: &RenderSettings,
-    ) -> Vec<u32> {
+    /// Опорное число для настроек по умолчанию и кадра 1000×500 при шаге 2 (125 000 отсчётов, 40 столбцов).
+    fn reference_for(paint: TracePaint, settings: &RenderSettings) -> TraceReference {
+        let samples = SampleCount::for_window(1000, 500, SampleStride::EVERY_SECOND_PIXEL);
+        TraceReference::for_paint(paint, settings, samples, 40)
+    }
+
+    fn block_of(style: &TraceStyle, primitives: &[GraticulePrimitive], settings: &RenderSettings) -> Vec<u32> {
         let grid = GridShape::try_new(4, 3, 2).unwrap();
         let bytes = render_block_bytes(&RenderBlockInputs {
             grid,
-            paint,
-            colors: &[[1.0, 0.5, 0.25], [0.0, 1.0, 0.0]],
-            position_palette: palette,
+            style,
+            reference: reference_for(style.paint(), settings),
             graticule: primitives,
             settings,
         });
@@ -302,12 +315,20 @@ mod tests {
         words_of(&bytes)
     }
 
-    fn test_palette() -> PositionPalette {
+    fn sections() -> TraceStyle {
+        TraceStyle::PlaneSections {
+            colors: vec![[1.0, 0.5, 0.25], [0.0, 1.0, 0.0]],
+        }
+    }
+
+    fn position_style() -> TraceStyle {
         let entries = std::array::from_fn(|index| scope_model::PositionPaletteEntry {
             edge_colour: [index as f32, 0.5, 0.25],
             edge_radius_cells: 100.0 + index as f32,
         });
-        PositionPalette::new(entries, [0.7, 0.6, 0.5], 128.5)
+        TraceStyle::ColorByPosition {
+            palette: Box::new(PositionPalette::new(entries, [0.7, 0.6, 0.5], 128.5)),
+        }
     }
 
     #[test]
@@ -318,11 +339,11 @@ mod tests {
             radius: [0.125, 0.0625],
             half_width_px: 0.75,
         };
-        let words = block_of(TracePaint::PlaneSections, None, &[primitive], &settings);
+        let words = block_of(&sections(), &[primitive], &settings);
         assert_eq!(&words[..4], &[4, 3, 2, 1], "сетка и число примитивов");
         assert_eq!(
             f32::from_bits(words[WORD_TRACE]),
-            (1.0 + settings.trace_saturation_count as f32).log2()
+            reference_for(TracePaint::PlaneSections, &settings).log_denominator()
         );
         assert_eq!(f32::from_bits(words[WORD_TRACE + 1]), settings.trace_opacity);
         assert_eq!(f32::from_bits(words[WORD_TRACE + 2]), settings.graticule_opacity);
@@ -342,31 +363,72 @@ mod tests {
     }
 
     #[test]
+    fn trace_x_is_the_denominator_of_the_paint_that_draws_not_a_fixed_threshold() {
+        let settings = RenderSettings::default();
+        let by_paint = |style: &TraceStyle| f32::from_bits(block_of(style, &[], &settings)[WORD_TRACE]);
+        let overlaid = TraceStyle::PlanesOverlaid {
+            primaries: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        };
+        // Секции и наложение считают долю отсчётов столбца, «по положению» — долю отсчётов кадра.
+        assert_eq!(
+            by_paint(&sections()),
+            reference_for(TracePaint::PlaneSections, &settings).log_denominator()
+        );
+        assert_eq!(
+            by_paint(&overlaid),
+            reference_for(TracePaint::PlanesOverlaid, &settings).log_denominator()
+        );
+        assert_eq!(
+            by_paint(&position_style()),
+            reference_for(TracePaint::ColorByPosition, &settings).log_denominator()
+        );
+        assert_ne!(by_paint(&sections()), by_paint(&position_style()));
+    }
+
+    #[test]
     fn paint_code_goes_to_trace_w_and_is_distinct_for_every_paint() {
         let settings = RenderSettings::default();
+        let overlaid = TraceStyle::PlanesOverlaid {
+            primaries: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        };
         let mut seen = Vec::new();
-        for (paint, expected) in [
-            (TracePaint::PlaneSections, PAINT_CODE_PLANE_SECTIONS),
-            (TracePaint::PlanesOverlaid, PAINT_CODE_PLANES_OVERLAID),
-            (TracePaint::ColorByPosition, PAINT_CODE_COLOR_BY_POSITION),
+        for (style, expected) in [
+            (sections(), PAINT_CODE_PLANE_SECTIONS),
+            (overlaid, PAINT_CODE_PLANES_OVERLAID),
+            (position_style(), PAINT_CODE_COLOR_BY_POSITION),
         ] {
-            let palette = test_palette();
-            let words = block_of(paint, Some(&palette), &[], &settings);
+            let words = block_of(&style, &[], &settings);
             let code = f32::from_bits(words[WORD_TRACE + 3]);
-            assert_eq!(code, expected, "{paint:?}");
-            assert!(!seen.contains(&code.to_bits()), "код {paint:?} повторяет чужой");
+            assert_eq!(code, expected, "{:?}", style.paint());
+            assert!(
+                !seen.contains(&code.to_bits()),
+                "код {:?} повторяет чужой",
+                style.paint()
+            );
             seen.push(code.to_bits());
-            assert_eq!(paint_code(paint), expected);
+            assert_eq!(paint_code(style.paint()), expected);
         }
         // Код прежнего способа — ровно нулевое слово: прежний блок не отличается от нового ни одним битом.
         assert_eq!(PAINT_CODE_PLANE_SECTIONS.to_bits(), 0);
     }
 
     #[test]
+    fn overlaid_primaries_go_to_plane_colors() {
+        let settings = RenderSettings::default();
+        let primaries = [[0.5, 0.25, 0.125], [0.0, 1.0, 0.0], [0.0, 0.0, 0.75]];
+        let words = block_of(&TraceStyle::PlanesOverlaid { primaries }, &[], &settings);
+        for (plane, primary) in primaries.iter().enumerate() {
+            for (channel, value) in primary.iter().enumerate() {
+                let at = WORD_PLANE_COLORS + plane * 4 + channel;
+                assert_eq!(f32::from_bits(words[at]), *value, "плоскость {plane}, канал {channel}");
+            }
+        }
+    }
+
+    #[test]
     fn position_tail_carries_palette_neutral_and_geometry_in_shader_order() {
         let settings = RenderSettings::default();
-        let palette = test_palette();
-        let words = block_of(TracePaint::ColorByPosition, Some(&palette), &[], &settings);
+        let words = block_of(&position_style(), &[], &settings);
         for index in [0, 1, 77, POSITION_PALETTE_ANGLES - 1] {
             let at = WORD_POSITION_PALETTE + index * 4;
             let entry = [
@@ -392,16 +454,24 @@ mod tests {
             WORD_POSITION_GEOMETRY + 4,
             "геометрия — последний вектор блока"
         );
+        // У «по положению» плоскостных цветов нет: шейдер их не читает, там нули.
+        assert!(words[WORD_PLANE_COLORS..WORD_PRIMITIVES].iter().all(|&word| word == 0));
     }
 
     #[test]
-    fn position_tail_is_zero_unless_the_paint_supplies_a_palette() {
+    fn position_tail_is_zero_unless_the_style_supplies_a_palette() {
         let settings = RenderSettings::default();
-        let words = block_of(TracePaint::PlanesOverlaid, None, &[], &settings);
+        let words = block_of(&sections(), &[], &settings);
         assert!(words[WORD_POSITION_PALETTE..].iter().all(|&word| word == 0));
-        // Таблица, выданная чужому способу, всё равно ложится только в хвост: голова блока та же.
-        let palette = test_palette();
-        let with_palette = block_of(TracePaint::PlanesOverlaid, Some(&palette), &[], &settings);
-        assert_eq!(&with_palette[..WORD_POSITION_PALETTE], &words[..WORD_POSITION_PALETTE]);
+        // Таблица меняет только хвост (и слово способа, и знаменатель — они зависят от способа).
+        let with_palette = block_of(&position_style(), &[], &settings);
+        assert_eq!(
+            &with_palette[WORD_TRACE + 1..WORD_TRACE + 3],
+            &words[WORD_TRACE + 1..WORD_TRACE + 3]
+        );
+        assert_eq!(
+            &with_palette[WORD_PRIMITIVES..WORD_POSITION_PALETTE],
+            &words[WORD_PRIMITIVES..WORD_POSITION_PALETTE]
+        );
     }
 }

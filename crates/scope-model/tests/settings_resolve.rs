@@ -26,7 +26,7 @@ fn defaults_are_valid_and_match_documented_estimates() {
     assert_eq!(settings.validate(), Ok(()));
     assert_eq!(
         (settings.trace_columns, settings.trace_levels, settings.vectorscope_size),
-        (256, 256, 256)
+        (512, 256, 256)
     );
     assert_eq!(settings.sample_stride.get(), 2);
     assert_eq!(settings.ycbcr_gain, 1.0);
@@ -91,12 +91,17 @@ fn every_invalid_value_reports_its_own_error() {
         (
             ScopeModelSettings {
                 render: RenderSettings {
-                    trace_saturation_count: 0,
+                    vectorscope_lightness: 1.0,
                     ..RenderSettings::default()
                 },
                 ..defaults.clone()
             },
-            |e| matches!(e, ScopeSettingsError::Render(RenderSettingsError::ZeroSaturationCount)),
+            |e| {
+                matches!(
+                    e,
+                    ScopeSettingsError::Render(RenderSettingsError::LightnessOutOfRange { .. })
+                )
+            },
         ),
     ];
     for (settings, is_expected) in cases {
@@ -122,10 +127,29 @@ fn render_settings_report_distinct_errors() {
     ));
     assert!(matches!(
         check(RenderSettings {
-            waveform_color: [0.0, 2.0, 0.0],
+            parade_colors: [[0.0, 2.0, 0.0]; 3],
             ..valid.clone()
         }),
         RenderSettingsError::ColorOutOfRange { .. }
+    ));
+    for lightness in [0.0, 1.0, -0.5, 1.5] {
+        assert!(
+            matches!(
+                check(RenderSettings {
+                    vectorscope_lightness: lightness,
+                    ..valid.clone()
+                }),
+                RenderSettingsError::LightnessOutOfRange { .. }
+            ),
+            "светлота {lightness}"
+        );
+    }
+    assert!(matches!(
+        check(RenderSettings {
+            vectorscope_lightness: f32::NAN,
+            ..valid.clone()
+        }),
+        RenderSettingsError::NotFinite { .. }
     ));
     assert!(matches!(
         check(RenderSettings {
@@ -176,6 +200,7 @@ fn settings_round_trip_through_json_and_reject_unknown_fields() {
     let partial: ScopeModelSettings = serde_json::from_str(r#"{"trace_columns": 128}"#).unwrap();
     assert_eq!(partial.trace_columns, 128);
     assert_eq!(partial.trace_levels, 256);
+    assert_eq!(partial.render, RenderSettings::default());
     assert!(serde_json::from_str::<ScopeModelSettings>(r#"{"unknown": 1}"#).is_err());
     assert!(serde_json::from_str::<ScopeModelSettings>(r#"{"sample_stride": 0}"#).is_err());
 }
@@ -200,9 +225,10 @@ fn resolve_picks_the_concrete_rule_and_shapes_from_the_request() {
             waveform.shape().rows(),
             waveform.shape().planes()
         ),
-        (256, 256, 1)
+        (512, 256, 3)
     );
-    assert_eq!(parade.shape().planes(), 3);
+    // RGB waveform и parade — одно правило трёх плоскостей: форма сетки у них одна.
+    assert_eq!(waveform.shape(), parade.shape());
     // Смена осей вектороскопа не меняет форму сетки: ресурсы те же.
     assert_eq!(ycbcr.shape(), oklab.shape());
 }

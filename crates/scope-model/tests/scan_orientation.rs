@@ -8,7 +8,7 @@ mod common;
 use common::picture;
 use isp_model::image::DisplayGamut;
 use scope_contract::{ScopeImageSize, ScopeKind, ScopeRequest, ScopeScan, VectorscopeAxes};
-use scope_model::trace_rules::{ParadeRule, WaveformRule};
+use scope_model::trace_rules::ParadeRule;
 use scope_model::{
     HorizontalOrder, ResolvedScope, SamplePosition, SampleStride, ScopeCounters, ScopeModelSettings, ScopeRule,
     ShownCodes, accumulate,
@@ -45,7 +45,8 @@ fn counters_of(
 }
 
 fn waveform(scan: ScopeScan) -> Box<dyn ScopeRule> {
-    Box::new(WaveformRule::new(8, 64).unwrap().with_scan(scan))
+    // RGB waveform — то же правило трёх плоскостей, что parade (решение 265): положение читается одинаково.
+    Box::new(ParadeRule::new(8, 64).unwrap().with_scan(scan))
 }
 
 fn parade(scan: ScopeScan) -> Box<dyn ScopeRule> {

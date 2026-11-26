@@ -343,9 +343,11 @@ impl GpuWorkloadExecutor {
             ScopeShape::VectorscopeYcbcr => (ScopeKind::Vectorscope, VectorscopeAxes::YCbCrBt709),
             ScopeShape::VectorscopeOklab => (ScopeKind::Vectorscope, VectorscopeAxes::OklabAb),
         };
+        // Размер картинки — по форме вида (вектороскоп — квадрат, вписанный в зону), как просит настоящий экран.
         let request = ScopeRequest {
             kind,
             vectorscope_axes: axes,
+            image_size: kind.picture_shape().fit_in(layout_request.image_size),
             ..layout_request
         };
         let work = self.scopes_for(&request, scope_content(input), diagnostic)?;

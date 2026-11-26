@@ -1,16 +1,18 @@
-//! Waveform и RGB parade: «столбец картинки × уровень».
+//! RGB parade и RGB waveform: «столбец картинки × уровень × канал». Правило у них одно ([`ParadeRule`]): три плоскости
+//! R', G', B'; отличаются они только способом показа (секции или наложение, см. [`crate::TracePaint`]).
 //!
 //! Столбец: `column = (x · columns) / width` — целочисленно в `u32`; переполнения нет, потому что
 //! `x < width ≤ MAX_SHOWN_SIDE = 2^14` и `columns ≤ 4096 = 2^12` (`x · columns < 2^26`).
 //!
-//! Уровень: `bin = projection(code)` — целочисленная проекция, равная `floor(Y'код · levels / 1024)`, где
-//! `Y'код` — взвешенный по BT.709 код (waveform) или код канала (parade). Веса суммируются ровно в
+//! Уровень: `bin = projection(code)` — целочисленная проекция, равная `floor(код · levels / 1024)`, где
+//! `код` — код канала R', G' или B'. Веса суммируются ровно в
 //! `levels · 2^16 / 1024`, поэтому белый `1023` попадает в `levels − 1`, чёрный `0` — в 0, а серый `c` —
 //! в `floor(c · levels / 1024)` без ошибки округления. Строка 0 — ВЕРХ прибора: `row = levels − 1 − bin`
 //! (пересвет — в верхней строке).
 //!
-//! Яркость Y' считается по КОДАМ с коэффициентами BT.709 и для Display P3: прибор меряет сигнал так, как
-//! видеоинструменты (решение 183, выбор агента).
+//! Каналы меряются по КОДАМ сигнала (R', G', B'), и для Display P3 тоже: прибор меряет сигнал так, как
+//! видеоинструменты (решение 183, выбор агента). Яркость Y' (BT.709) нужна только вектороскопу Y'CbCr, поэтому
+//! веса [`BT709_LUMA_WEIGHTS`] живут здесь, а не в одном из приборов.
 //!
 //! `x` и `width` здесь — положение на ГОРИЗОНТАЛИ ГЛАЗА (`SamplePosition::from_shown` по `ScopeScan`).
 //!
@@ -90,71 +92,6 @@ impl LevelAxis {
     /// Вес «код → уровень»: `levels / 1024` на единицу кода.
     fn level_per_code(&self) -> f64 {
         f64::from(self.levels) / 1024.0
-    }
-}
-
-/// Waveform: яркость Y' по столбцам кадра, одна плоскость.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WaveformRule {
-    axis: LevelAxis,
-    projection: IntegerProjection,
-}
-
-impl WaveformRule {
-    /// Правило с `columns` столбцами и `levels` уровнями.
-    pub fn new(columns: u32, levels: u32) -> Result<Self, TraceRuleError> {
-        let axis = LevelAxis::new(columns, levels, 1)?;
-        let per_code = axis.level_per_code();
-        let projection = IntegerProjection::from_real(
-            BT709_LUMA_WEIGHTS.map(|weight| weight * per_code),
-            0.0,
-            PROJECTION_SHIFT,
-            WeightSum::Exactly(per_code),
-        )?;
-        Ok(Self { axis, projection })
-    }
-
-    /// Проекция «код → уровень» (целые веса для GPU).
-    pub fn level_projection(&self) -> IntegerProjection {
-        self.projection
-    }
-
-    /// Читает картинку так, как её видит глаз при положении телефона `scan` (по умолчанию — портрет).
-    #[must_use]
-    pub fn with_scan(mut self, scan: ScopeScan) -> Self {
-        self.axis.scan = scan;
-        self
-    }
-
-    /// Число столбцов сетки.
-    pub fn columns(&self) -> u32 {
-        self.axis.columns
-    }
-
-    /// Число уровней.
-    pub fn levels(&self) -> u32 {
-        self.axis.levels
-    }
-}
-
-impl ScopeRule for WaveformRule {
-    fn shape(&self) -> GridShape {
-        self.axis.shape
-    }
-
-    fn scan(&self) -> ScopeScan {
-        self.axis.scan
-    }
-
-    fn hits(&self, position: SamplePosition, code: [u16; 3], report: &mut dyn FnMut(Hit)) {
-        let level = self.projection.apply(code);
-        if let Some(row) = self.axis.row_of(level) {
-            report(Hit {
-                plane: 0,
-                row,
-                column: self.axis.column_of(position),
-            });
-        }
     }
 }
 

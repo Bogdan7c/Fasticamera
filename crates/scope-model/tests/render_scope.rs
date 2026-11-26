@@ -1,4 +1,4 @@
-//! Правило показа: счётчики → картинка RGBA с прямой альфой.
+//! Правило показа: счётчики → картинка RGBA с прямой альфой, по способу рисования прибора.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;
@@ -7,8 +7,9 @@ use common::{flat, picture};
 use isp_model::image::DisplayGamut;
 use scope_contract::{ScopeImageSize, ScopeKind, ScopeRequest, VectorscopeAxes};
 use scope_model::{
-    GraticulePrimitive, MAX_GRATICULE_PRIMITIVES, RenderError, RenderSettings, ResolvedScope, SampleStride,
-    ScopeCounters, ScopeModelSettings, ScopeRule, accumulate, hits_of_code, render, trace_intensity,
+    GraticulePrimitive, MAX_GRATICULE_PRIMITIVES, RenderError, RenderSettings, ResolvedScope, RgbWaveformPalette,
+    SampleCount, SampleStride, ScopeCounters, ScopeModelSettings, ScopeRule, TracePaint, TraceShare, accumulate,
+    hits_of_code, render,
 };
 
 fn request(kind: ScopeKind, axes: VectorscopeAxes) -> ScopeRequest {
@@ -39,6 +40,20 @@ fn without_graticule() -> RenderSettings {
     }
 }
 
+/// Настройки, при которых у сетки из 10 столбцов порог полной яркости равен ровно 8 попаданиям:
+/// `доля 1,0 · отсчётов / столбцов = 80 / 10`; отсчётов 80 даёт [`eighty_samples`].
+fn threshold_eight() -> RenderSettings {
+    RenderSettings {
+        trace_full_share_of_column: TraceShare::try_new(1.0).unwrap(),
+        ..without_graticule()
+    }
+}
+
+/// 80 отсчётов (окно 80×1, каждый пиксель).
+fn eighty_samples() -> SampleCount {
+    SampleCount::for_window(80, 1, SampleStride::EVERY_PIXEL)
+}
+
 fn counters_with(scope: &ResolvedScope, cells: &[(u32, u32, u32, u32)]) -> ScopeCounters {
     let shape = scope.shape();
     let mut counts = vec![0; shape.cell_count()];
@@ -48,14 +63,25 @@ fn counters_with(scope: &ResolvedScope, cells: &[(u32, u32, u32, u32)]) -> Scope
     ScopeCounters::from_counts(shape, counts).unwrap()
 }
 
+fn assert_close(actual: [f32; 3], expected: [f32; 3], tolerance: f32, what: &str) {
+    for channel in 0..3 {
+        assert!(
+            (actual[channel] - expected[channel]).abs() <= tolerance,
+            "{what}: {actual:?} против {expected:?}"
+        );
+    }
+}
+
 #[test]
 fn empty_counters_without_graticule_render_fully_transparent() {
-    let scope = resolve(ScopeKind::Waveform, VectorscopeAxes::YCbCrBt709);
-    let counters = ScopeCounters::zeroed(scope.shape());
-    let size = ScopeImageSize::try_new(20, 32).unwrap();
-    let picture = render(&counters, &scope, &without_graticule(), size).unwrap();
-    assert_eq!(picture.pixels().len(), 20 * 32);
-    assert!(picture.pixels().iter().all(|&pixel| pixel == [0.0; 4]));
+    for kind in ScopeKind::ALL {
+        let scope = resolve(kind, VectorscopeAxes::YCbCrBt709);
+        let counters = ScopeCounters::zeroed(scope.shape());
+        let size = ScopeImageSize::try_new(20, 32).unwrap();
+        let picture = render(&counters, &scope, &without_graticule(), size, eighty_samples()).unwrap();
+        assert_eq!(picture.pixels().len(), 20 * 32);
+        assert!(picture.pixels().iter().all(|&pixel| pixel == [0.0; 4]), "{kind:?}");
+    }
 }
 
 #[test]
@@ -64,7 +90,7 @@ fn graticule_lines_appear_exactly_on_level_rows() {
     let counters = ScopeCounters::zeroed(scope.shape());
     let settings = RenderSettings::default();
     let size = ScopeImageSize::try_new(20, 160).unwrap();
-    let picture = render(&counters, &scope, &settings, size).unwrap();
+    let picture = render(&counters, &scope, &settings, size, eighty_samples()).unwrap();
     // 16 уровней, высота 160: уровень 0 % → строка сетки 15 → линия на y = 155,0 (граница пикселей 154 и 155):
     // расстояние до центра пикселя 0,5, покрытие 0,75 + 0,5 − 0,5 = 0,75.
     let expected_alpha = 0.75 * settings.graticule_opacity;
@@ -82,38 +108,182 @@ fn graticule_lines_appear_exactly_on_level_rows() {
 }
 
 #[test]
-fn saturated_cell_gets_full_trace_alpha_and_partial_cell_a_log_scaled_one() {
+fn every_scope_has_a_non_empty_graticule_and_the_overlay_uses_the_same_five_levels_as_parade() {
+    let settings = RenderSettings::default();
+    for kind in ScopeKind::ALL {
+        for axes in [VectorscopeAxes::YCbCrBt709, VectorscopeAxes::OklabAb] {
+            assert!(
+                !resolve(kind, axes).graticule(&settings).is_empty(),
+                "у {kind:?} {axes:?} нет сетки"
+            );
+        }
+    }
+    let waveform = resolve(ScopeKind::Waveform, VectorscopeAxes::YCbCrBt709).graticule(&settings);
+    let parade = resolve(ScopeKind::RgbParade, VectorscopeAxes::YCbCrBt709).graticule(&settings);
+    assert_eq!(waveform.len(), 5);
+    assert_eq!(waveform, parade);
+}
+
+#[test]
+fn every_scope_names_one_trace_paint_and_its_style_agrees() {
+    let settings = RenderSettings::default();
+    for (kind, axes, expected) in [
+        (
+            ScopeKind::Waveform,
+            VectorscopeAxes::YCbCrBt709,
+            TracePaint::PlanesOverlaid,
+        ),
+        (
+            ScopeKind::RgbParade,
+            VectorscopeAxes::YCbCrBt709,
+            TracePaint::PlaneSections,
+        ),
+        (
+            ScopeKind::Vectorscope,
+            VectorscopeAxes::YCbCrBt709,
+            TracePaint::ColorByPosition,
+        ),
+        (
+            ScopeKind::Vectorscope,
+            VectorscopeAxes::OklabAb,
+            TracePaint::ColorByPosition,
+        ),
+    ] {
+        let scope = resolve(kind, axes);
+        assert_eq!(scope.trace_paint(), expected, "{kind:?} {axes:?}");
+        assert_eq!(scope.trace_style(&settings).paint(), expected, "{kind:?} {axes:?}");
+        // Способ требует столько плоскостей, сколько у прибора (кроме секций: им любое число).
+        if let Some(required) = expected.required_planes() {
+            assert_eq!(scope.shape().planes(), required, "{kind:?} {axes:?}");
+        }
+    }
+}
+
+#[test]
+fn overlaid_trace_mixes_plane_primaries_and_alpha_follows_the_brightest_plane() {
     let scope = resolve(ScopeKind::Waveform, VectorscopeAxes::YCbCrBt709);
-    let settings = without_graticule();
-    let reference = settings.trace_saturation_count;
-    // Ячейка (строка 8, столбец 0) насыщена, (строка 8, столбец 5) — частично.
-    let counters = counters_with(&scope, &[(0, 8, 0, reference * 3), (0, 8, 5, 3)]);
+    let settings = threshold_eight();
+    // Строка 8: в столбце 0 только красная плоскость на пороге (8); в столбце 5 — красная и зелёная по 3.
+    let counters = counters_with(&scope, &[(0, 8, 0, 8), (0, 8, 5, 3), (1, 8, 5, 3)]);
     let size = ScopeImageSize::try_new(10, 16).unwrap();
-    let picture = render(&counters, &scope, &settings, size).unwrap();
+    let picture = render(&counters, &scope, &settings, size, eighty_samples()).unwrap();
+    let primaries = RgbWaveformPalette::Softened.primaries();
+
+    // Одна плоскость на пороге: цвет — её основной цвет, делённый на свой наибольший канал; альфа — полная.
+    let red_only = picture.pixel(0, 8).unwrap();
+    let peak = primaries[0].iter().copied().fold(0.0, f32::max);
+    assert_close(
+        [red_only[0], red_only[1], red_only[2]],
+        primaries[0].map(|channel| channel / peak),
+        1e-6,
+        "красная плоскость",
+    );
+    assert_eq!(red_only[3], settings.trace_opacity);
+
+    // Две плоскости с одним счётчиком: смесь двух основных, альфа — по яркости ОДНОЙ плоскости, а не суммы.
+    let mixed = picture.pixel(5, 8).unwrap();
+    let intensity = 4.0_f32.log2() / 9.0_f32.log2();
+    assert!(
+        (mixed[3] - intensity * settings.trace_opacity).abs() < 1e-6,
+        "альфа {}",
+        mixed[3]
+    );
+    let sum = [0, 1, 2].map(|channel| primaries[0][channel] + primaries[1][channel]);
+    let sum_peak = sum.iter().copied().fold(0.0, f32::max);
+    assert_close(
+        [mixed[0], mixed[1], mixed[2]],
+        sum.map(|channel| channel / sum_peak),
+        1e-6,
+        "красная + зелёная",
+    );
+    // Пустое место рядом — прозрачно.
+    assert_eq!(picture.pixel(4, 8), Some([0.0; 4]));
+}
+
+#[test]
+fn gray_counters_overlay_to_a_white_trace_and_a_pure_palette_gives_pure_primaries() {
+    let scope = resolve(ScopeKind::Waveform, VectorscopeAxes::YCbCrBt709);
+    let gray_cells = [(0, 8, 0, 8), (1, 8, 0, 8), (2, 8, 0, 8)];
+    let counters = counters_with(&scope, &gray_cells);
+    let size = ScopeImageSize::try_new(10, 16).unwrap();
+    let picture = render(&counters, &scope, &threshold_eight(), size, eighty_samples()).unwrap();
+    let gray = picture.pixel(0, 8).unwrap();
+    assert_close([gray[0], gray[1], gray[2]], [1.0; 3], 1e-6, "серый кадр — белый след");
+    assert_eq!(gray[3], threshold_eight().trace_opacity);
+
+    // «Чистая» палитра: одна красная плоскость — чистый красный.
+    let pure = RenderSettings {
+        rgb_waveform_palette: RgbWaveformPalette::Pure,
+        ..threshold_eight()
+    };
+    let red_only = counters_with(&scope, &[(0, 8, 0, 8)]);
+    let picture = render(&red_only, &scope, &pure, size, eighty_samples()).unwrap();
+    let red = picture.pixel(0, 8).unwrap();
+    assert_close([red[0], red[1], red[2]], [1.0, 0.0, 0.0], 1e-6, "чистый красный");
+    // Серый при «чистой» палитре — тоже белый (сумма основных единичная).
+    let picture = render(&counters, &scope, &pure, size, eighty_samples()).unwrap();
+    let gray = picture.pixel(0, 8).unwrap();
+    assert_close([gray[0], gray[1], gray[2]], [1.0; 3], 1e-6, "серый, чистая палитра");
+}
+
+#[test]
+fn overlay_spans_the_whole_width_while_parade_splits_it_into_sections() {
+    let waveform = resolve(ScopeKind::Waveform, VectorscopeAxes::YCbCrBt709);
+    let parade = resolve(ScopeKind::RgbParade, VectorscopeAxes::YCbCrBt709);
+    let cells = [(0, 4, 9, 8)];
+    let size = ScopeImageSize::try_new(30, 16).unwrap();
+    let settings = threshold_eight();
+    // Наложение: столбец 9 из 10 — правая кромка всей картинки (пиксели 27..29), левее ничего нет.
+    let overlay = render(
+        &counters_with(&waveform, &cells),
+        &waveform,
+        &settings,
+        size,
+        eighty_samples(),
+    )
+    .unwrap();
+    assert_eq!(overlay.pixel(10, 4), Some([0.0; 4]));
+    assert!(overlay.pixel(28, 4).unwrap()[3] > 0.0);
+    // Секции: та же ячейка красной плоскости видна только в первой трети (пиксели 9..11), правой кромки там нет.
+    let sections = render(
+        &counters_with(&parade, &cells),
+        &parade,
+        &settings,
+        size,
+        eighty_samples(),
+    )
+    .unwrap();
+    assert_eq!(sections.pixel(28, 4), Some([0.0; 4]));
+    assert!(sections.pixel(9, 4).unwrap()[3] > 0.0);
+}
+
+#[test]
+fn saturated_cell_gets_full_trace_alpha_and_partial_cell_a_log_scaled_one_on_parade_sections() {
+    let scope = resolve(ScopeKind::RgbParade, VectorscopeAxes::YCbCrBt709);
+    let settings = threshold_eight();
+    // Ячейка (плоскость 0, строка 8, столбец 0) насыщена, (строка 8, столбец 5) — частично.
+    let counters = counters_with(&scope, &[(0, 8, 0, 24), (0, 8, 5, 3)]);
+    let size = ScopeImageSize::try_new(30, 16).unwrap();
+    let picture = render(&counters, &scope, &settings, size, eighty_samples()).unwrap();
     let saturated = picture.pixel(0, 8).unwrap();
     assert_eq!(saturated[3], settings.trace_opacity);
-    assert_eq!([saturated[0], saturated[1], saturated[2]], settings.waveform_color);
+    assert_eq!([saturated[0], saturated[1], saturated[2]], settings.parade_colors[0]);
+    // Столбец 5 из 10 в первой секции шириной 10 пикселей — пиксель 5.
     let partial = picture.pixel(5, 8).unwrap();
     let expected = (4.0_f32.log2() / 9.0_f32.log2()) * settings.trace_opacity;
     assert!((partial[3] - expected).abs() < 1e-6, "{} против {expected}", partial[3]);
     assert!(partial[3] < saturated[3]);
     assert_eq!(picture.pixel(4, 8), Some([0.0; 4]));
-    assert_eq!(trace_intensity(reference, reference), 1.0);
-    assert_eq!(trace_intensity(0, reference), 0.0);
 }
 
 #[test]
 fn parade_sections_take_their_plane_colour_and_cover_the_full_column_range() {
     let scope = resolve(ScopeKind::RgbParade, VectorscopeAxes::YCbCrBt709);
-    let settings = without_graticule();
-    let reference = settings.trace_saturation_count;
-    // В каждой плоскости заполнен только столбец 0 строки 4.
-    let counters = counters_with(
-        &scope,
-        &[(0, 4, 0, reference), (1, 4, 0, reference), (2, 4, 0, reference)],
-    );
+    let settings = threshold_eight();
+    // В каждой плоскости заполнен только столбец 0 строки 4, на пороге.
+    let counters = counters_with(&scope, &[(0, 4, 0, 8), (1, 4, 0, 8), (2, 4, 0, 8)]);
     let size = ScopeImageSize::try_new(30, 16).unwrap();
-    let picture = render(&counters, &scope, &settings, size).unwrap();
+    let picture = render(&counters, &scope, &settings, size, eighty_samples()).unwrap();
     for (plane, section_start) in [(0usize, 0u32), (1, 10), (2, 20)] {
         let pixel = picture.pixel(section_start, 4).unwrap();
         assert_eq!(
@@ -128,13 +298,40 @@ fn parade_sections_take_their_plane_colour_and_cover_the_full_column_range() {
 }
 
 #[test]
+fn the_same_counters_get_dimmer_when_the_frame_has_more_samples() {
+    // Решение 266: полная яркость — с ДОЛИ отсчётов. Те же счётчики в кадре вдвое больше — слабее.
+    let scope = resolve(ScopeKind::RgbParade, VectorscopeAxes::YCbCrBt709);
+    let settings = threshold_eight();
+    let counters = counters_with(&scope, &[(0, 8, 0, 8)]);
+    let size = ScopeImageSize::try_new(30, 16).unwrap();
+    let alpha_with = |samples: SampleCount| {
+        render(&counters, &scope, &settings, size, samples)
+            .unwrap()
+            .pixel(0, 8)
+            .unwrap()[3]
+    };
+    let small = alpha_with(eighty_samples());
+    let large = alpha_with(SampleCount::for_window(160, 1, SampleStride::EVERY_PIXEL));
+    assert_eq!(
+        small, settings.trace_opacity,
+        "на пороге (8 при 80 отсчётах) — полная яркость"
+    );
+    assert!(large < small, "{large} против {small}");
+    let expected = (9.0_f32.log2() / 17.0_f32.log2()) * settings.trace_opacity;
+    assert!((large - expected).abs() < 1e-6, "{large} против {expected}");
+}
+
+#[test]
 fn trace_is_composited_over_the_graticule_with_straight_alpha() {
-    let scope = resolve(ScopeKind::Waveform, VectorscopeAxes::YCbCrBt709);
-    let settings = RenderSettings::default();
+    let scope = resolve(ScopeKind::RgbParade, VectorscopeAxes::YCbCrBt709);
+    let settings = RenderSettings {
+        trace_full_share_of_column: TraceShare::try_new(1.0).unwrap(),
+        ..RenderSettings::default()
+    };
     // Верхняя строка (100 %) совпадает с линией сетки и с насыщенным следом.
-    let counters = counters_with(&scope, &[(0, 0, 0, settings.trace_saturation_count)]);
-    let size = ScopeImageSize::try_new(10, 16).unwrap();
-    let picture = render(&counters, &scope, &settings, size).unwrap();
+    let counters = counters_with(&scope, &[(0, 0, 0, 8)]);
+    let size = ScopeImageSize::try_new(30, 16).unwrap();
+    let picture = render(&counters, &scope, &settings, size, eighty_samples()).unwrap();
     let pixel = picture.pixel(0, 0).unwrap();
     // Центр строки сетки 0 — y = 0,5: пиксель 0 покрыт линией не на 100 %, поэтому берём расчётное покрытие.
     let line = GraticulePrimitive::Segment {
@@ -142,59 +339,107 @@ fn trace_is_composited_over_the_graticule_with_straight_alpha() {
         to: [1.0, 0.5 / 16.0],
         half_width_px: settings.graticule_half_width_px,
     };
-    let grid_alpha = line.coverage([0.5, 0.5], [10.0, 16.0]) * settings.graticule_opacity;
+    let grid_alpha = line.coverage([0.5, 0.5], [30.0, 16.0]) * settings.graticule_opacity;
     assert!(grid_alpha > 0.0);
     let expected_alpha = settings.trace_opacity + grid_alpha * (1.0 - settings.trace_opacity);
     assert!((pixel[3] - expected_alpha).abs() < 1e-6);
-    // Цвет — смесь следа и сетки: зелёного в нём больше, чем в сетке, и меньше, чем в следе.
-    assert!(pixel[1] < settings.waveform_color[1] + 1e-6 && pixel[1] > settings.graticule_color[1] - 1e-6);
+    // Цвет — смесь следа и сетки: красного в нём больше, чем в сетке, и меньше, чем в следе.
+    assert!(pixel[0] < settings.parade_colors[0][0] + 1e-6 && pixel[0] > settings.graticule_color[0] - 1e-6);
+    assert!(pixel[1] > settings.parade_colors[0][1], "зелёного от сетки прибавилось");
 }
 
 #[test]
-fn counters_of_another_scope_are_rejected() {
+fn counters_of_another_scope_are_rejected_and_bad_settings_are_reported() {
     let waveform = resolve(ScopeKind::Waveform, VectorscopeAxes::YCbCrBt709);
-    let parade = resolve(ScopeKind::RgbParade, VectorscopeAxes::YCbCrBt709);
-    let counters = ScopeCounters::zeroed(parade.shape());
+    let vectorscope = resolve(ScopeKind::Vectorscope, VectorscopeAxes::YCbCrBt709);
+    let counters = ScopeCounters::zeroed(vectorscope.shape());
     let size = ScopeImageSize::try_new(8, 8).unwrap();
     assert_eq!(
-        render(&counters, &waveform, &RenderSettings::default(), size),
+        render(&counters, &waveform, &RenderSettings::default(), size, eighty_samples()),
         Err(RenderError::ShapeMismatch)
     );
     let bad_settings = RenderSettings {
-        trace_saturation_count: 0,
+        vectorscope_lightness: 2.0,
         ..RenderSettings::default()
     };
     assert!(matches!(
-        render(&counters, &parade, &bad_settings, size),
+        render(&counters, &vectorscope, &bad_settings, size, eighty_samples()),
         Err(RenderError::Settings(_))
     ));
 }
 
 #[test]
-fn white_picture_reaches_the_top_of_the_rendered_waveform() {
+fn white_picture_reaches_the_top_of_the_rendered_waveform_as_a_white_trace() {
     // Сквозной путь: картинка → счётчики → картинка прибора.
     let scope = resolve(ScopeKind::Waveform, VectorscopeAxes::YCbCrBt709);
     let shown = flat(40, 20, [1023; 3]);
     let counters = accumulate(&shown, SampleStride::EVERY_PIXEL, &scope).unwrap();
+    let samples = SampleCount::for_window(40, 20, SampleStride::EVERY_PIXEL);
     let settings = without_graticule();
     let size = ScopeImageSize::try_new(10, 16).unwrap();
-    let picture = render(&counters, &scope, &settings, size).unwrap();
+    let picture = render(&counters, &scope, &settings, size, samples).unwrap();
     for x in 0..10 {
-        assert_eq!(picture.pixel(x, 0).unwrap()[3], settings.trace_opacity, "столбец {x}");
+        let top = picture.pixel(x, 0).unwrap();
+        assert_eq!(top[3], settings.trace_opacity, "столбец {x}");
+        assert_close([top[0], top[1], top[2]], [1.0; 3], 1e-6, "белый кадр — белый след");
         assert_eq!(picture.pixel(x, 8), Some([0.0; 4]));
         assert_eq!(picture.pixel(x, 15), Some([0.0; 4]));
     }
 }
 
 #[test]
-fn vectorscope_gray_picture_draws_one_bright_point_at_the_centre() {
+fn counters_sum_to_samples_times_planes_for_waveform_but_never_exceed_samples_on_a_vectorscope() {
+    // Знаменатель яркости берётся из числа отсчётов, а не из суммы счётчиков, именно потому, что вектороскоп
+    // отбрасывает отсчёты вне сетки: сумма счётчиков там зависит от картинки.
+    let (width, height) = (40, 20);
+    let stride = SampleStride::EVERY_SECOND_PIXEL;
+    let samples = SampleCount::for_window(width, height, stride);
+    let any_picture = picture(width, height, |x, y| {
+        [(x * 25) as u16, (y * 50) as u16, ((x + y) * 17) as u16]
+    });
+    for kind in [ScopeKind::Waveform, ScopeKind::RgbParade] {
+        let scope = resolve(kind, VectorscopeAxes::YCbCrBt709);
+        let counters = accumulate(&any_picture, stride, &scope).unwrap();
+        assert_eq!(
+            counters.total(),
+            samples.total() * 3,
+            "{kind:?}: каждый отсчёт — по попаданию на плоскость"
+        );
+    }
+    // Вектороскоп Y'CbCr: насыщенный красный при усилении 8 вылетает за сетку — сумма строго меньше отсчётов.
+    let red = flat(width, height, [1023, 0, 0]);
+    let amplified = ScopeModelSettings {
+        ycbcr_gain: 8.0,
+        ..small_settings()
+    };
+    let scope = ResolvedScope::resolve(
+        &request(ScopeKind::Vectorscope, VectorscopeAxes::YCbCrBt709),
+        &amplified,
+        DisplayGamut::Srgb,
+    )
+    .unwrap();
+    let counters = accumulate(&red, stride, &scope).unwrap();
+    assert!(
+        counters.total() < samples.total(),
+        "{} против {}",
+        counters.total(),
+        samples.total()
+    );
+    // Серая картинка попадает в сетку целиком: сумма равна отсчётам.
+    let gray = accumulate(&flat(width, height, [500; 3]), stride, &scope).unwrap();
+    assert_eq!(gray.total(), samples.total());
+}
+
+#[test]
+fn vectorscope_gray_picture_draws_one_bright_neutral_point_at_the_centre() {
     for axes in [VectorscopeAxes::YCbCrBt709, VectorscopeAxes::OklabAb] {
         let scope = resolve(ScopeKind::Vectorscope, axes);
         let shown = picture(16, 16, |x, y| [(x * 60 + y) as u16; 3]);
         let counters = accumulate(&shown, SampleStride::EVERY_PIXEL, &scope).unwrap();
+        let samples = SampleCount::for_window(16, 16, SampleStride::EVERY_PIXEL);
         let settings = without_graticule();
         let size = ScopeImageSize::try_new(256, 256).unwrap();
-        let picture = render(&counters, &scope, &settings, size).unwrap();
+        let picture = render(&counters, &scope, &settings, size, samples).unwrap();
         let lit: Vec<usize> = picture
             .pixels()
             .iter()
@@ -203,7 +448,22 @@ fn vectorscope_gray_picture_draws_one_bright_point_at_the_centre() {
             .map(|(index, _)| index)
             .collect();
         assert_eq!(lit, vec![128 * 256 + 128], "{axes:?}");
-        assert_eq!(picture.pixel(128, 128).unwrap()[3], settings.trace_opacity);
+        let centre = picture.pixel(128, 128).unwrap();
+        assert_eq!(centre[3], settings.trace_opacity);
+        // Серое — нейтраль светлоты вектороскопа: конечный цвет без NaN, все три канала равны.
+        assert!(centre.iter().all(|channel| channel.is_finite()), "{axes:?}: {centre:?}");
+        assert!(
+            (centre[0] - centre[1]).abs() < 1e-5 && (centre[1] - centre[2]).abs() < 1e-5,
+            "{axes:?}: {centre:?}"
+        );
+        if axes == VectorscopeAxes::YCbCrBt709 {
+            assert_close(
+                [centre[0], centre[1], centre[2]],
+                [0.70; 3],
+                1e-6,
+                "нейтраль Y'CbCr = светлота",
+            );
+        }
     }
 }
 

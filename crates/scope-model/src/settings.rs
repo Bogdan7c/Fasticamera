@@ -59,8 +59,8 @@ pub enum ScopeSettingsError {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ScopeModelSettings {
-    /// Столбцов сетки waveform и parade. `[estimate]` 256: больше, чем пикселей прибора по ширине четверти
-    /// экрана, не нужно.
+    /// Столбцов сетки waveform и parade. `[estimate]` 512 (решение 268): чем больше столбцов, тем тоньше след
+    /// RGB waveform на всю ширину картинки.
     pub trace_columns: u32,
     /// Уровней сетки waveform и parade. `[estimate]` 256: по уровню на 4 кода.
     pub trace_levels: u32,
@@ -79,7 +79,7 @@ pub struct ScopeModelSettings {
 impl Default for ScopeModelSettings {
     fn default() -> Self {
         Self {
-            trace_columns: 256,
+            trace_columns: 512,
             trace_levels: 256,
             vectorscope_size: 256,
             ycbcr_gain: 1.0,

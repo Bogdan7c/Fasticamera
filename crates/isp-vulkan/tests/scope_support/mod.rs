@@ -456,13 +456,32 @@ pub fn mirror_name(mirror: HorizontalMirror) -> &'static str {
 // Прибор с принудительно выбранным способом рисования
 // ---------------------------------------------------------------------------------------------------------
 
-/// Настоящий прибор `scope-model`, у которого способ рисования (и таблица цветов по положению) заданы тестом, а
-/// не правилом. Нужен там, где шейдер показа проверяют одним способом независимо от решения правила (сверка с
-/// замороженной копией шейдера идёт только секциями) и где проверяют отказы границы показа.
+/// Настоящий прибор `scope-model`, у которого способ рисования следа (с данными) задан тестом, а не правилом.
+/// Нужен там, где шейдер показа проверяют одним способом независимо от решения правила (сверка с замороженной
+/// копией шейдера идёт только секциями) и где проверяют отказы границы показа.
 pub struct PaintOverride<'a> {
     pub inner: &'a ResolvedScope,
-    pub paint: scope_model::TracePaint,
-    pub palette: Option<scope_model::PositionPalette>,
+    pub style: scope_model::TraceStyle,
+}
+
+impl<'a> PaintOverride<'a> {
+    /// Прежний способ рисования — секции по плоскостям с цветами parade из настроек (столько цветов, сколько
+    /// плоскостей у прибора).
+    pub fn plane_sections(inner: &'a ResolvedScope, settings: &ScopeModelSettings) -> Self {
+        let planes = isp_vulkan::scopes::GpuScopeRule::grid(inner).planes() as usize;
+        let colors = settings
+            .render
+            .parade_colors
+            .iter()
+            .copied()
+            .cycle()
+            .take(planes)
+            .collect();
+        Self {
+            inner,
+            style: scope_model::TraceStyle::PlaneSections { colors },
+        }
+    }
 }
 
 impl isp_vulkan::scopes::GpuScopeRule for PaintOverride<'_> {
@@ -482,16 +501,8 @@ impl isp_vulkan::scopes::GpuScopeRule for PaintOverride<'_> {
         isp_vulkan::scopes::GpuScopeRule::accumulate_parameters(self.inner)
     }
 
-    fn trace_colors(&self, settings: &scope_model::RenderSettings) -> Vec<[f32; 3]> {
-        isp_vulkan::scopes::GpuScopeRule::trace_colors(self.inner, settings)
-    }
-
-    fn trace_paint(&self) -> scope_model::TracePaint {
-        self.paint
-    }
-
-    fn position_palette(&self, _settings: &scope_model::RenderSettings) -> Option<scope_model::PositionPalette> {
-        self.palette.clone()
+    fn trace_style(&self, _settings: &scope_model::RenderSettings) -> scope_model::TraceStyle {
+        self.style.clone()
     }
 
     fn graticule(&self, settings: &scope_model::RenderSettings) -> Vec<scope_model::GraticulePrimitive> {

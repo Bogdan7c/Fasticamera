@@ -4,12 +4,11 @@
 //! чтобы стекло и превью просвечивали (решение 185). ТОЛЬКО СЧЁТЧИКИ сверяются с GPU бит в бит; здесь
 //! есть `log2` и деление, поэтому картинка сверяется с допуском.
 //!
-//! Пиксель → ячейка целочисленно: `column = px · columns / width`, `row = py · rows / height`. Если у
-//! прибора несколько плоскостей (parade), картинка делится на столько равных секций по ширине, каждая —
-//! на весь диапазон столбцов своей плоскости.
-//!
-//! Яркость `min(1, log2(1 + count) / log2(1 + reference))`, альфа следа `яркость · trace_opacity`. Сетка
-//! рисуется ПОД следом: прямая альфа «over», `a = a_t + a_g (1 − a_t)`.
+//! Способ рисования следа решает правило прибора ([`ResolvedScope::trace_style`]): секции по плоскостям, плоскости
+//! наложением или цвет по месту; пиксельные формулы каждого способа — в [`crate::trace_painter`]. Яркость следа —
+//! `min(1, log2(1 + count) / log2(1 + порог))`, порог — доля отсчётов кадра ([`TraceReference`]), поэтому
+//! [`render`] получает число отсчётов кадра. Альфа следа `яркость · trace_opacity`. Сетка рисуется ПОД следом:
+//! прямая альфа «over», `a = a_t + a_g (1 − a_t)`.
 
 use scope_contract::ScopeImageSize;
 
@@ -18,6 +17,9 @@ use crate::grid::ScopeCounters;
 use crate::render_settings::{RenderSettings, RenderSettingsError};
 use crate::resolved::ResolvedScope;
 use crate::rule::ScopeRule;
+use crate::sample_count::SampleCount;
+use crate::trace_painter::TracePainter;
+use crate::trace_reference::TraceReference;
 
 /// Ошибка показа.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -59,52 +61,33 @@ impl ScopePicture {
     }
 }
 
-/// Яркость следа по счётчику: `min(1, log2(1 + count) / log2(1 + reference))`.
-pub fn trace_intensity(count: u32, saturation_count: u32) -> f32 {
-    let numerator = (1.0 + count as f32).log2();
-    let denominator = (1.0 + saturation_count as f32).log2();
-    (numerator / denominator).min(1.0)
-}
-
-/// Картинка прибора из счётчиков.
+/// Картинка прибора из счётчиков. `samples` — число отсчётов кадра, из которого получены счётчики
+/// ([`SampleCount::for_window`] по окну показанной картинки): от него зависит опорное число яркости следа.
 pub fn render(
     counters: &ScopeCounters,
     scope: &ResolvedScope,
     settings: &RenderSettings,
     size: ScopeImageSize,
+    samples: SampleCount,
 ) -> Result<ScopePicture, RenderError> {
     settings.validate()?;
     if counters.shape() != scope.shape() {
         return Err(RenderError::ShapeMismatch);
     }
-    let shape = counters.shape();
-    let colors = scope.trace_colors(settings);
+    let style = scope.trace_style(settings);
+    let reference = TraceReference::for_paint(style.paint(), settings, samples, counters.shape().columns());
+    let painter = TracePainter::new(counters, &style, reference, settings.trace_opacity);
     let graticule = scope.graticule(settings);
     let picture_px = [size.width() as f32, size.height() as f32];
-    let width = u64::from(size.width());
-    let planes = u64::from(shape.planes());
     let mut pixels = Vec::with_capacity(size.width() as usize * size.height() as usize);
     for y in 0..size.height() {
-        let row = (u64::from(y) * u64::from(shape.rows()) / u64::from(size.height())) as u32;
         for x in 0..size.width() {
-            // Секция плоскости и столбец внутри неё — целочисленно.
-            let plane = u64::from(x) * planes / width;
-            let column = ((u64::from(x) * planes - plane * width) * u64::from(shape.columns()) / width) as u32;
-            let count = counters.count(plane as u32, row, column).unwrap_or(0);
-            let color = colors
-                .get(plane as usize)
-                .copied()
-                .unwrap_or(settings.vectorscope_color);
-            let trace_alpha = if count == 0 {
-                0.0
-            } else {
-                trace_intensity(count, settings.trace_saturation_count) * settings.trace_opacity
-            };
+            let trace = painter.pixel(x, y, size);
             let center = [x as f32 + 0.5, y as f32 + 0.5];
             let graticule_alpha = graticule_alpha(&graticule, center, picture_px, settings);
             pixels.push(composite_over(
-                color,
-                trace_alpha,
+                trace.color,
+                trace.alpha,
                 settings.graticule_color,
                 graticule_alpha,
             ));

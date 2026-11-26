@@ -37,8 +37,8 @@ use isp_model::params::IspParams;
 use isp_vulkan::viewfinder::{IspStageSet, OutputAllocation, ViewfinderGeometry};
 use scope_contract::{ScopeImageSize, ScopeKind, ScopeRequest, VectorscopeAxes};
 use scope_model::{
-    HorizontalOrder, ResolvedScope, SampleStride, ScopeModelSettings, ScopePicture, ScopeRule, ShownCodes, accumulate,
-    render,
+    HorizontalOrder, ResolvedScope, SampleCount, SampleStride, ScopeModelSettings, ScopePicture, ScopeRule, ShownCodes,
+    accumulate, render,
 };
 use shell_contract::clock::MonotonicNanos;
 use ui_draw::color::Opacity;
@@ -255,7 +255,8 @@ fn cpu_scope_picture(stand: &Stand, config: &ScopesConfig, request: &ScopeReques
         .expect("коды");
     let rule = ResolvedScope::resolve(request, &config.model, DisplayGamut::Srgb).expect("правило");
     let counters = accumulate(&shown, config.model.sample_stride, &rule as &dyn ScopeRule).expect("счётчики");
-    render(&counters, &rule, &config.model.render, request.image_size).expect("картинка прибора")
+    let samples = SampleCount::for_window(shown.width(), shown.height(), config.model.sample_stride);
+    render(&counters, &rule, &config.model.render, request.image_size, samples).expect("картинка прибора")
 }
 
 /// Итоговые пиксели цели: внутри прямоугольника — картинка прибора поверх видоискателя, снаружи — кадр без приборов.

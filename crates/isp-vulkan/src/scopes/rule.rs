@@ -1,7 +1,7 @@
 //! Шов «прибор на GPU»: что нужно проходам накопления и показа от конкретного прибора.
 //!
 //! Прибор = ИДЕНТИФИКАТОР шейдера накопления ([`AccumulatorId`]) + форма сетки + параметры шейдера (слова и,
-//! если нужно, таблица) + цвета следа + список примитивов сетки. Это ДАННЫЕ: [`GpuScopeRule`] только отдаёт их,
+//! если нужно, таблица) + способ рисования следа с данными + список примитивов сетки. Это ДАННЫЕ: [`GpuScopeRule`] только отдаёт их,
 //! а [`crate::scopes::ColorScopes`] не знает, какой это прибор. Новый прибор — новая реализация [`GpuScopeRule`]
 //! и новый шейдер накопления, зарегистрированный при создании; соседние приборы, общая часть шейдера
 //! (`scope_accumulate_common.glsl`) и проход показа не правятся.
@@ -12,7 +12,7 @@ use scope_contract::ScopeScan;
 use scope_model::projection::IntegerProjection;
 
 use super::error::ScopeError;
-use scope_model::{GraticulePrimitive, GridShape, PositionPalette, RenderSettings, TracePaint};
+use scope_model::{GraticulePrimitive, GridShape, RenderSettings, TraceStyle};
 
 /// Сколько слов параметров занимают общий заголовок (форма сетки и чтение картинки глазом): с `HEADER_WORDS` начинаются слова прибора.
 pub(super) const HEADER_WORDS: usize = 4;
@@ -170,20 +170,9 @@ pub trait GpuScopeRule {
     /// ошибкой (а не подставляет число молча): `ColorScopes::record` вернёт её до первой команды.
     fn accumulate_parameters(&self) -> Result<AccumulateParameters<'_>, ScopeError>;
 
-    /// Цвет следа каждой плоскости (цвета экрана); по одному на плоскость сетки.
-    fn trace_colors(&self, settings: &RenderSettings) -> Vec<[f32; 3]>;
-
-    /// Способ рисования следа (слово `trace.w` блока показа). По умолчанию — прежний: секции по плоскостям.
-    fn trace_paint(&self) -> TracePaint {
-        TracePaint::PlaneSections
-    }
-
-    /// Таблица цветов по положению для способа [`TracePaint::ColorByPosition`]; у остальных способов `None`.
-    /// Прибор со способом «по положению» обязан её отдать, иначе `ColorScopes::record` откажет типизированной
-    /// ошибкой до первой команды.
-    fn position_palette(&self, _settings: &RenderSettings) -> Option<PositionPalette> {
-        None
-    }
+    /// Как рисуется след: способ и его данные (цвета плоскостей, основные цвета наложения или таблица цветов по
+    /// положению). Один тип отдаёт способ ВМЕСТЕ с данными, поэтому способ без данных не существует.
+    fn trace_style(&self, settings: &RenderSettings) -> TraceStyle;
 
     /// Примитивы сетки прибора (не больше [`scope_model::MAX_GRATICULE_PRIMITIVES`]).
     fn graticule(&self, settings: &RenderSettings) -> Vec<GraticulePrimitive>;

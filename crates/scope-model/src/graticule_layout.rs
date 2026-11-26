@@ -30,6 +30,7 @@ impl ResolvedScope {
     /// Сетка прибора. Число примитивов не больше [`MAX_GRATICULE_PRIMITIVES`] (проверяется тестом).
     pub fn graticule(&self, settings: &RenderSettings) -> Vec<GraticulePrimitive> {
         let mut primitives = match self {
+            // У наложенного RGB waveform те же пять уровней, что у parade: сетка не зависит от способа рисования.
             Self::Waveform(_) | Self::RgbParade(_) => self.level_lines(settings),
             Self::VectorscopeYCbCr(_) | Self::VectorscopeOklab(_) => self.vectorscope_marks(settings),
         };
@@ -39,10 +40,10 @@ impl ResolvedScope {
 
     /// Горизонтальные линии уровней 0, 25, 50, 75, 100 %.
     fn level_lines(&self, settings: &RenderSettings) -> Vec<GraticulePrimitive> {
+        // `match` без `_`: новый прибор не соберётся, пока не скажет, есть ли у него линии уровней.
         let rows = match self {
-            Self::Waveform(rule) => rule.levels(),
-            Self::RgbParade(rule) => rule.levels(),
-            _ => return Vec::new(),
+            Self::Waveform(rule) | Self::RgbParade(rule) => rule.levels(),
+            Self::VectorscopeYCbCr(_) | Self::VectorscopeOklab(_) => return Vec::new(),
         };
         LEVEL_LINE_FRACTIONS
             .iter()

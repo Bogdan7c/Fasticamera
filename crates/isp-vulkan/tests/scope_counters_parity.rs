@@ -103,7 +103,7 @@ fn counters_match_cpu_bit_exact_on_synthetic_pictures() {
     assert_no_validation_errors(&context);
 }
 
-/// Серая шкала по ВСЕМ 1024 кодам: на waveform — ровная диагональ (по одной ячейке на код), на вектороскопе
+/// Серая шкала по ВСЕМ 1024 кодам: на waveform и parade — ровная диагональ в каждой из трёх плоскостей (по одной ячейке на код), на вектороскопе
 /// Y'CbCr и OKLab — точка в центре. Это проверка ПО ФОРМУЛЕ, а не только «GPU == CPU».
 #[test]
 fn gray_ramp_draws_a_diagonal_on_waveform_and_one_centre_cell_on_vectorscopes() {
@@ -137,15 +137,9 @@ fn gray_ramp_draws_a_diagonal_on_waveform_and_one_centre_cell_on_vectorscopes() 
         let counters = scopes.read_back_counters_blocking().unwrap();
         let shape = counters.shape();
         match *rule_name {
-            "waveform" => {
-                // Столбец x ↔ уровень x: ровно 3 отсчёта (3 строки картинки) в ячейке (строка 1023 − x, столбец x).
-                for code in 0..1024_u32 {
-                    assert_eq!(counters.count(0, 1023 - code, code), Some(3), "код {code}");
-                }
-                assert_eq!(counters.total(), 3 * 1024);
-            }
-            "parade" => {
-                // Три одинаковые плоскости (серый), каждая — та же диагональ.
+            "waveform" | "parade" => {
+                // RGB waveform и parade — одно правило: три одинаковые плоскости (серый), каждая — та же диагональ
+                // (столбец x ↔ уровень x: ровно 3 отсчёта по числу строк картинки в ячейке (1023 − x, x)).
                 for plane in 0..3 {
                     for code in 0..1024_u32 {
                         assert_eq!(
@@ -155,6 +149,11 @@ fn gray_ramp_draws_a_diagonal_on_waveform_and_one_centre_cell_on_vectorscopes() 
                         );
                     }
                 }
+                assert_eq!(
+                    counters.total(),
+                    3 * 3 * 1024,
+                    "{rule_name}: по три плоскости на отсчёт"
+                );
             }
             _ => {
                 let centre = shape.columns() / 2;

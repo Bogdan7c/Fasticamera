@@ -23,7 +23,7 @@ use isp_vulkan::scopes::{
 use isp_vulkan::shaders::blobs;
 use scope_model::{
     GraticulePrimitive, GridShape, Hit, MAX_GRATICULE_PRIMITIVES, RenderSettings, SamplePosition, SampleStride,
-    ScopeModelSettings, ScopeRule,
+    ScopeModelSettings, ScopeRule, TraceStyle,
 };
 use scope_support::{
     all_scenes, assert_no_validation_errors, cpu_counters, gpu_context_or_skip, picture_size, rule_cases,
@@ -75,8 +75,10 @@ impl GpuScopeRule for FakeHistogram {
         })
     }
 
-    fn trace_colors(&self, _settings: &RenderSettings) -> Vec<[f32; 3]> {
-        vec![HISTOGRAM_COLOR]
+    fn trace_style(&self, _settings: &RenderSettings) -> TraceStyle {
+        TraceStyle::PlaneSections {
+            colors: vec![HISTOGRAM_COLOR],
+        }
     }
 
     fn graticule(&self, _settings: &RenderSettings) -> Vec<GraticulePrimitive> {
@@ -300,8 +302,10 @@ fn fake_kind_errors_are_reported_before_any_command() {
                 decode_table: None,
             })
         }
-        fn trace_colors(&self, _settings: &RenderSettings) -> Vec<[f32; 3]> {
-            vec![[1.0; 3]; self.colors]
+        fn trace_style(&self, _settings: &RenderSettings) -> TraceStyle {
+            TraceStyle::PlaneSections {
+                colors: vec![[1.0; 3]; self.colors],
+            }
         }
         fn graticule(&self, _settings: &RenderSettings) -> Vec<GraticulePrimitive> {
             vec![

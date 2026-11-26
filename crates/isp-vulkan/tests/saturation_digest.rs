@@ -263,10 +263,23 @@ fn scopes_digest_has_counters_and_picture_parts_and_does_not_depend_on_the_frame
     assert_eq!(labels, ["counters", "picture"]);
     let parade = digest(ScopeKind::RgbParade, 60);
     assert_ne!(short.combined(), parade.combined(), "другой прибор — другой дайджест");
-    assert_ne!(
+    // RGB waveform и parade — одно правило трёх плоскостей: счётчики те же, различается способ рисования (наложение
+    // против секций), то есть часть «picture».
+    assert_eq!(
         short.parts()[0].digest,
         parade.parts()[0].digest,
-        "счётчики waveform и parade различаются"
+        "счётчики RGB waveform и parade — одно правило, они совпадают"
+    );
+    assert_ne!(
+        short.parts()[1].digest,
+        parade.parts()[1].digest,
+        "картинки наложения и секций различаются"
+    );
+    let vectorscope = digest(ScopeKind::Vectorscope, 60);
+    assert_ne!(
+        short.parts()[0].digest,
+        vectorscope.parts()[0].digest,
+        "счётчики вектороскопа другого вида сетки"
     );
     assert_no_validation_errors(&context);
 }

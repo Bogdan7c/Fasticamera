@@ -11,8 +11,7 @@
 //! | 7…11 | проекция столбца (`w0 w1 w2 offset shift`) |
 //! | 12…26 | три проекции строки по плоскостям |
 //!
-//! * waveform: источник 0, `основа = levels − 1`, знак −1, одна проекция уровня;
-//! * parade: то же, три проекции (R, G, B);
+//! * RGB waveform и parade (одно правило): источник 0, `основа = levels − 1`, знак −1, три проекции уровня (R, G, B);
 //! * вектороскоп Y'CbCr: источник 1, основа 0, знак +1, проекции столбца и строки.
 //!
 //! # Слова шейдера `scope_accumulate_oklab.comp`
@@ -21,7 +20,7 @@
 
 use scope_contract::ScopeScan;
 use scope_model::projection::IntegerProjection;
-use scope_model::{GraticulePrimitive, GridShape, RenderSettings, ResolvedScope, ScopeRule, TracePaint};
+use scope_model::{GraticulePrimitive, GridShape, RenderSettings, ResolvedScope, ScopeRule, TraceStyle};
 
 use super::error::ScopeError;
 use super::rule::{AccumulateParameters, AccumulatorId, GpuScopeRule, RuleWords};
@@ -107,14 +106,8 @@ impl GpuScopeRule for ResolvedScope {
 
     fn accumulate_parameters(&self) -> Result<AccumulateParameters<'_>, ScopeError> {
         Ok(match self {
-            Self::Waveform(rule) => integer_parameters(IntegerLayout {
-                column_source: COLUMN_FROM_POSITION,
-                row_base: trace_row_base(rule.levels())?,
-                row_sign: -1,
-                column_projection: None,
-                row_projections: &[rule.level_projection()],
-            }),
-            Self::RgbParade(rule) => integer_parameters(IntegerLayout {
+            // RGB waveform и parade — одно правило трёх плоскостей: слова шейдера накопления у них одни.
+            Self::Waveform(rule) | Self::RgbParade(rule) => integer_parameters(IntegerLayout {
                 column_source: COLUMN_FROM_POSITION,
                 row_base: trace_row_base(rule.levels())?,
                 row_sign: -1,
@@ -152,12 +145,8 @@ impl GpuScopeRule for ResolvedScope {
         })
     }
 
-    fn trace_colors(&self, settings: &RenderSettings) -> Vec<[f32; 3]> {
-        ResolvedScope::trace_colors(self, settings)
-    }
-
-    fn trace_paint(&self) -> TracePaint {
-        ResolvedScope::trace_paint(self)
+    fn trace_style(&self, settings: &RenderSettings) -> TraceStyle {
+        ResolvedScope::trace_style(self, settings)
     }
 
     fn graticule(&self, settings: &RenderSettings) -> Vec<GraticulePrimitive> {

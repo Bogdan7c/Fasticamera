@@ -229,7 +229,8 @@ fn mirror_swaps_the_shown_columns_on_waveform() {
             Some(0),
             "{mirror:?}: белого нет на чёрной стороне"
         );
-        assert_eq!(counters.total(), 64 * 4, "{mirror:?}: все отсчёты учтены");
+        // Три плоскости (R', G', B') на каждый отсчёт: серая картинка попадает в каждую.
+        assert_eq!(counters.total(), 64 * 4 * 3, "{mirror:?}: все отсчёты учтены");
     }
     assert_no_validation_errors(&context);
 }

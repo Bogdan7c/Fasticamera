@@ -43,7 +43,10 @@ use scope_contract::ScopeImageSize;
 use scope_model::codes::{MAX_SHOWN_PIXELS, MAX_SHOWN_SIDE};
 use scope_model::grid::{MAX_GRID_CELLS, MAX_GRID_SIDE};
 use scope_model::vectorscope_geometry::MAX_VECTORSCOPE_SIZE;
-use scope_model::{GraticulePrimitive, GridShape, MAX_GRATICULE_PRIMITIVES, ScopeModelSettings, TracePaint};
+use scope_model::{
+    GraticulePrimitive, GridShape, MAX_GRATICULE_PRIMITIVES, SampleCount, ScopeModelSettings, TraceReference,
+    TraceStyle,
+};
 
 use super::accumulators::{
     ACCUMULATE_BINDINGS, AccumulatorSet, AccumulatorShader, SAMPLING_PUSH_BYTES, local_size, local_size_specialization,
@@ -370,7 +373,10 @@ impl ColorScopes {
         let slot = self.check_slot(frame.frame_slot)?;
         frame.settings.validate()?;
         let input = check_input(&frame.input)?;
-        let plan = self.plan_rule(frame)?;
+        // Число отсчётов кадра: ОДИН источник и для опорного числа яркости, и для формы dispatch ниже.
+        let stride = frame.settings.sample_stride;
+        let samples = SampleCount::for_window(input.content.width, input.content.height, stride);
+        let plan = self.plan_rule(frame, samples)?;
         // Картинка под размер кадра обязана быть подготовлена заранее: создание объекта GPU внутри записи кадра
         // рвёт vsync, поэтому `record` её не создаёт никогда (контракт «запись не аллоцирует»).
         let picture = self
@@ -381,9 +387,7 @@ impl ColorScopes {
                 requested: frame.picture_size,
                 prepared: self.picture.as_ref().map(PictureTarget::size),
             })?;
-        let stride = frame.settings.sample_stride;
-        let samples_x = stride.samples_along(input.content.width);
-        let samples_y = stride.samples_along(input.content.height);
+        let (samples_x, samples_y) = (samples.across(), samples.down());
         // Нить шейдера обходит несколько отсчётов по y: строк нитей меньше во столько же раз (с округлением вверх).
         let rows_per_thread = self.accumulators.rows_per_thread(plan.accumulator)?;
         let accumulate_groups =
@@ -486,7 +490,7 @@ impl ColorScopes {
     }
 
     /// Проверяет прибор кадра и упаковывает его параметры. Ничего не пишет на GPU.
-    fn plan_rule(&self, frame: &ScopeFrame<'_>) -> Result<RulePlan, ScopeError> {
+    fn plan_rule(&self, frame: &ScopeFrame<'_>, samples: SampleCount) -> Result<RulePlan, ScopeError> {
         let rule = frame.rule;
         let accumulator = rule.accumulator();
         // Незарегистрированный шейдер — отказ ДО всего остального.
@@ -504,14 +508,9 @@ impl ColorScopes {
                 max: MAX_PLANES as u32,
             });
         }
-        let colors = rule.trace_colors(&frame.settings.render);
-        if colors.len() != grid.planes() as usize {
-            return Err(ScopeError::TraceColorCountMismatch {
-                colors: colors.len(),
-                planes: grid.planes(),
-            });
-        }
-        let paint = rule.trace_paint();
+        let style = rule.trace_style(&frame.settings.render);
+        let paint = style.paint();
+        // Способ называет, сколько плоскостей ему нужно (секциям — любое число): несовпадение — отказ до команд.
         if let Some(required) = paint.required_planes()
             && required != grid.planes()
         {
@@ -521,14 +520,15 @@ impl ColorScopes {
                 planes: grid.planes(),
             });
         }
-        // Таблица цветов по положению нужна только своему способу; чужому её не отдаём (в блок идут нули).
-        let position_palette = match paint {
-            TracePaint::ColorByPosition => Some(
-                rule.position_palette(&frame.settings.render)
-                    .ok_or(ScopeError::MissingPositionPalette)?,
-            ),
-            TracePaint::PlaneSections | TracePaint::PlanesOverlaid => None,
-        };
+        // Секции красят каждую плоскость своим цветом: цветов ровно столько, сколько плоскостей.
+        if let TraceStyle::PlaneSections { colors } = &style
+            && colors.len() != grid.planes() as usize
+        {
+            return Err(ScopeError::TraceColorCountMismatch {
+                colors: colors.len(),
+                planes: grid.planes(),
+            });
+        }
         let graticule: Vec<GraticulePrimitive> = rule.graticule(&frame.settings.render);
         if graticule.len() > MAX_GRATICULE_PRIMITIVES {
             return Err(ScopeError::TooManyGraticulePrimitives {
@@ -544,9 +544,10 @@ impl ColorScopes {
             decode_table_bytes: parameters.decode_table.map(decode_table_bytes),
             render_bytes: render_block_bytes(&RenderBlockInputs {
                 grid,
-                paint,
-                colors: &colors,
-                position_palette: position_palette.as_ref(),
+                style: &style,
+                // Опорное число яркости считается из числа отсчётов ЭТОГО кадра (окно показанной картинки могло
+                // смениться между кадрами) тем же вызовом, что и у эталона.
+                reference: TraceReference::for_paint(paint, &frame.settings.render, samples, grid.columns()),
                 graticule: &graticule,
                 settings: &frame.settings.render,
             }),

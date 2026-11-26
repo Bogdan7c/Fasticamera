@@ -88,6 +88,8 @@ pub struct OklabVectorscopeRule {
     gamut: DisplayGamut,
     range: f32,
     decode_table: DisplayDecodeTable,
+    /// Матрицы OKLab экрана целиком: обратный путь «OKLab → свет экрана» нужен цветам вектороскопа по месту.
+    workspace: OklabWorkspace,
     working_to_lms: [[f32; 3]; 3],
     lab_a_row: [f32; 3],
     lab_b_row: [f32; 3],
@@ -110,6 +112,7 @@ impl OklabVectorscopeRule {
             gamut,
             range,
             decode_table: DisplayDecodeTable::srgb(),
+            workspace,
             working_to_lms: workspace.working_to_lms,
             lab_a_row: workspace.lms_prime_to_lab[1],
             lab_b_row: workspace.lms_prime_to_lab[2],
@@ -157,6 +160,12 @@ impl OklabVectorscopeRule {
     /// Смещение центра `size/2 + 0,5` (для GPU).
     pub fn centre_offset(&self) -> f32 {
         self.centre_offset
+    }
+
+    /// Линейный свет экрана для точки OKLab `[L, a, b]` (обратный путь правила: цвет клетки вектороскопа). Значения
+    /// вне охвата экрана выходят за `0..=1`; решает вызывающий.
+    pub fn display_linear_from_lab(&self, lab: [f32; 3]) -> [f32; 3] {
+        self.workspace.to_rgb(lab)
     }
 
     /// OKLab `(a, b)` кода по цепочке правила (шаги 1–4).
