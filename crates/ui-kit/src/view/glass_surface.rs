@@ -83,16 +83,7 @@ impl<'a> GlassGroupBuilder<'a> {
                 max: MAX_GLASS_GROUP_MEMBERS,
             });
         }
-        let geometry = match shape {
-            GlassShape::Capsule => ShapeGeometry::Capsule { size: placement.size },
-            GlassShape::Circle => ShapeGeometry::Circle {
-                diameter: placement.size.width.min(placement.size.height),
-            },
-            GlassShape::RoundedRect { corner_radius_pt } => ShapeGeometry::RoundedRect {
-                size: placement.size,
-                corner: CornerSpec::continuous(corner_radius_pt * self.scale.get()),
-            },
-        };
+        let geometry = member_geometry(shape, placement.size, self.scale);
         self.members.push(PendingMember {
             geometry,
             placement,
@@ -129,6 +120,21 @@ impl<'a> GlassGroupBuilder<'a> {
             effect,
             opacity,
         })
+    }
+}
+
+/// Геометрия члена по форме и размеру размещения. Общая для стекла и поверхности: у обоих одна форма
+/// на одном и том же месте, меняется только материал.
+pub(super) fn member_geometry(shape: GlassShape, size: PxSize, scale: PxPerPt) -> ShapeGeometry {
+    match shape {
+        GlassShape::Capsule => ShapeGeometry::Capsule { size },
+        GlassShape::Circle => ShapeGeometry::Circle {
+            diameter: size.width.min(size.height),
+        },
+        GlassShape::RoundedRect { corner_radius_pt } => ShapeGeometry::RoundedRect {
+            size,
+            corner: CornerSpec::continuous(corner_radius_pt * scale.get()),
+        },
     }
 }
 

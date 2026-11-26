@@ -7,6 +7,7 @@
 //! * [`MotionTokens`] — именованные пружины и сборка конфигов прокрутки по роли;
 //! * [`HapticTable`] — таблица «событие → хаптика»;
 //! * [`GlassTokens`] — пресеты материала стекла «кнопка» и «панель»;
+//! * [`SurfaceTokens`] — тёмная полупрозрачная поверхность без стекла (раздел калибровки, 14m);
 //! * [`DensityTokens`] — pt на единицу шкалы, радиус магнита, промежуток карусели;
 //! * [`TypographyTokens`] — роли текста (начертание, кегль, трекинг, цифры);
 //! * [`ColorTokens`] — цвета фокуса, плашки, текста, затемнения;
@@ -30,6 +31,7 @@ mod motion;
 mod points_per_unit;
 mod ruler;
 mod scale_view;
+mod surface;
 mod typography;
 
 use serde::{Deserialize, Serialize};
@@ -48,6 +50,7 @@ pub use motion::{MotionToken, MotionTokens, SnapRole, SpringToken};
 pub use points_per_unit::PointsPerUnit;
 pub use ruler::RulerTokens;
 pub use scale_view::ScaleTickTokens;
+pub use surface::{PanelMaterial, SurfaceRole, SurfaceTokens};
 pub use typography::{DigitStyle, TextRole, TextRoleKind, TextWeight, Tracking, TypographyTokens};
 
 /// Все токены элементов. Владелец — экран; элементы берут из него копии нужных чисел при создании.
@@ -60,6 +63,8 @@ pub struct UiKitTokens {
     /// Ограничитель частоты вибраций (колесо и щипок зума).
     pub haptic_throttle: HapticThrottleTokens,
     pub glass: GlassTokens,
+    /// Поверхность панелей раздела без стекла (14m, решение 263).
+    pub surface: SurfaceTokens,
     pub typography: TypographyTokens,
     pub colors: ColorTokens,
     pub panel: PanelTokens,
@@ -81,6 +86,7 @@ impl UiKitTokens {
         self.density.validate()?;
         self.haptic_throttle.validate()?;
         self.glass.validate()?;
+        self.surface.validate()?;
         self.typography.validate()?;
         self.colors.validate()?;
         self.panel.validate()?;

@@ -19,11 +19,11 @@ use ui_kit::focus_frame::{FocusFrame, FocusFrameSpec};
 use ui_kit::panel_morph::{PanelMorph, PanelMorphSpec};
 use ui_kit::picker::LabelId;
 use ui_kit::shutter::{ShutterButton, ShutterLook};
-use ui_kit::tokens::{GlassRole, MotionToken, TextRoleKind, UiKitTokens};
+use ui_kit::tokens::{GlassRole, MotionToken, PanelMaterial, SurfaceRole, TextRoleKind, UiKitTokens};
 use ui_kit::view::{
     ButtonContent, GlassGroupBuilder, GlassShape, LabelPainter, PxPerPt, ViewError, banner_items, button_content_item,
     centered_icon, focus_frame_items, measure_banner_pt, member_transform, panel_glass_group, panel_glass_group_hosted,
-    shutter_items,
+    panel_material_hosted, shutter_items,
 };
 
 mod common;
@@ -682,4 +682,54 @@ fn a_whole_camera_screen_built_from_kit_builders_passes_draw_list_validation() {
     list.validate().unwrap();
     // Каждый элемент что-то закрашивает: границы определены.
     assert!(list.items.iter().all(|item| item.bounds_px().is_some()));
+}
+
+#[test]
+fn hosted_panel_material_glass_is_the_old_group_and_surface_follows_the_same_frame() {
+    let tokens = tokens();
+    let spec = PanelMorphSpec::in_place(Rect::from_xywh(40.0, 100.0, 200.0, 80.0), 20.0, MotionToken::CardMorph);
+    let mut panel = PanelMorph::new(spec, &env(&tokens, MotionPreference::Full), ms(0)).unwrap();
+    panel.open(ms(0)).unwrap();
+    let host = Affine2::rotate(std::f32::consts::FRAC_PI_2);
+
+    // Стекло: ровно то, что давал `panel_glass_group_hosted` (PHOTO не меняется).
+    let open = panel.snapshot(ms(3000));
+    let old = panel_glass_group_hosted(&open, tokens.glass.style_for(GlassRole::Panel), scale(), host).unwrap();
+    let glass = panel_material_hosted(&open, &tokens, PanelMaterial::Glass(GlassRole::Panel), scale(), host).unwrap();
+    assert_eq!(glass, DrawItem::Glass(old.clone()));
+
+    // Поверхность открытой панели: рамка и поворот как у стекла, плотность = панельная.
+    let DrawItem::Shape(surface) = panel_material_hosted(
+        &open,
+        &tokens,
+        PanelMaterial::Surface(SurfaceRole::Panel),
+        scale(),
+        host,
+    )
+    .unwrap() else {
+        panic!("поверхность должна быть фигурой");
+    };
+    assert_eq!(surface.geometry, old.members[0].geometry);
+    assert_eq!(surface.transform, old.members[0].transform);
+    assert_eq!(surface.fill.a, tokens.surface.panel_density);
+    assert!(surface.shadow.is_none());
+
+    // Появление: на середине морфа плотность = плотность × effect снимка, у закрытой панели — 0.
+    let mid = panel.snapshot(ms(150));
+    assert!(mid.effect > 0.0 && mid.effect < 1.0, "середина морфа: {}", mid.effect);
+    let DrawItem::Shape(growing) = panel_material_hosted(
+        &mid,
+        &tokens,
+        PanelMaterial::Surface(SurfaceRole::Backing),
+        scale(),
+        host,
+    )
+    .unwrap() else {
+        panic!("поверхность должна быть фигурой");
+    };
+    assert_close(
+        growing.fill.a,
+        tokens.surface.backing_density * mid.effect,
+        "плотность на росте",
+    );
 }
