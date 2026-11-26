@@ -11,11 +11,11 @@ use look_contract::BandFacts;
 use ui_core::geometry::Rect;
 use ui_core::gesture::{GestureEvent, PanSpec, RecognizerSpec};
 use ui_core::id::NodeId;
-use ui_draw::draw_list::{DrawItem, PressState};
+use ui_draw::draw_list::PressState;
 use ui_kit::drive::MotionPhase;
 use ui_kit::pan::PanUpdate;
 use ui_kit::scroll_list::{ScrollAxis, ScrollList};
-use ui_kit::tokens::{GlassRole, TextRoleKind};
+use ui_kit::tokens::TextRoleKind;
 use ui_kit::view::GlassShape;
 
 use super::control_view::{ControlView, RowsView, VisibleWindow};
@@ -30,7 +30,7 @@ use crate::widget::intent::{ButtonId, ScreenGesture};
 use crate::widget::kit::SceneKit;
 use crate::widget::layers::{DrawLayers, Layer, VisualIndex};
 use crate::widget::text_runs::TextRuns;
-use crate::widget::{Ctx, Outputs, single_member_group};
+use crate::widget::{Ctx, Outputs, SECTION_PANEL_MATERIAL, single_member_material};
 
 /// Сегменты переключателя вида в порядке показа: SCALES | WHEELS (тексты UI английские).
 const VIEW_SEGMENTS: [(ControlViewKind, &str); 2] =
@@ -248,9 +248,9 @@ impl KnobsColumn {
         let Some(placement) = visuals.placement(self.panel) else {
             return Ok(());
         };
-        let (group, _host) = single_member_group(
+        let (item, _host) = single_member_material(
             ctx,
-            GlassRole::Panel,
+            SECTION_PANEL_MATERIAL,
             GlassShape::RoundedRect {
                 corner_radius_pt: ctx.config.calibration.widgets.panel_corner_radius_pt,
             },
@@ -258,7 +258,7 @@ impl KnobsColumn {
             PressState::RELEASED,
             "calib_knobs_panel",
         )?;
-        layers.push(Layer::Glass, DrawItem::Glass(group));
+        layers.push(Layer::Glass, item);
         self.header.draw(ctx, visuals, layers, texts)?;
         self.switcher.draw(
             ctx,

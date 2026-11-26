@@ -5,12 +5,12 @@
 //! код: пунктов два, они стоят одним рядом по центру, высота шторки считается по рядам (полная шторка 464 pt в
 //! альбомный глазной прямоугольник 440 pt не помещается), а всё лежит под повёрнутым корнем раздела.
 
+use crate::widget::SECTION_PANEL_MATERIAL;
 use ui_core::geometry::Rect;
 use ui_core::gesture::{GestureEvent, PanSpec, RecognizerSpec};
 use ui_core::id::NodeId;
 use ui_kit::panel_morph::{PanelMorph, PanelMorphSpec, PanelPhase, PanelSnapshot};
-use ui_kit::tokens::GlassRole;
-use ui_kit::view::panel_glass_group_hosted;
+use ui_kit::view::panel_material_hosted;
 
 use crate::action::ScreenAction;
 use crate::calibration::{CalibrationMenu, CalibrationMenuItem};
@@ -168,12 +168,7 @@ impl MenuSheet {
         };
         layers.push(
             Layer::Glass,
-            ui_draw::draw_list::DrawItem::Glass(panel_glass_group_hosted(
-                &glass,
-                ctx.tokens.glass.style_for(GlassRole::Panel),
-                ctx.px,
-                host.transform(),
-            )?),
+            panel_material_hosted(&glass, ctx.tokens, SECTION_PANEL_MATERIAL, ctx.px, host.transform())?,
         );
         let alpha = sheet.content_opacity * uncovered;
         draw_sheet_handle(ctx, layers, self.handle, (host.transform(), alpha));

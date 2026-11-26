@@ -237,6 +237,20 @@ pub(super) fn glass_members(list: &DrawList) -> Vec<(ShapeGeometry, f32, f32)> {
         .collect()
 }
 
+/// Формы и центры (px) панелей любого материала: члены стекла и поверхности без стекла (14m). Поверхность
+/// узнаётся по цвету заливки из токенов: только ею закрашивает панели раздел калибровки.
+pub(super) fn panel_members(list: &DrawList) -> Vec<(ShapeGeometry, f32, f32)> {
+    let surface = UiKitTokens::default().surface.fill_color;
+    let mut members = glass_members(list);
+    members.extend(list.leaf_items().filter_map(|item| match item {
+        DrawItem::Shape(shape) if (shape.fill.r, shape.fill.g, shape.fill.b) == (surface.r, surface.g, surface.b) => {
+            Some((shape.geometry, shape.transform.tx, shape.transform.ty))
+        }
+        _ => None,
+    }));
+    members
+}
+
 pub(super) fn text_count(list: &DrawList) -> usize {
     list.leaf_items()
         .filter(|item| matches!(item, DrawItem::Text(_)))

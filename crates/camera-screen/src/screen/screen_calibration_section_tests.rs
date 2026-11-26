@@ -93,7 +93,7 @@ fn mode_capsule_swipes_and_taps_between_calibrate_and_photo() {
 /// Подписи режимов в списке относительно центра капсулы режимов: (подпись, центр, ширина, прозрачность), px; и
 /// полуширина капсулы-стекла.
 fn mode_label_geometry(list: &ui_draw::draw_list::DrawList) -> (Vec<(&'static str, f32, f32, f32)>, f32) {
-    let capsule = glass_members(list)
+    let capsule = panel_members(list)
         .into_iter()
         .find(|(shape, ..)| {
             matches!(shape, ui_draw::shape::ShapeGeometry::Capsule { size } if size.height > px(40.0) && size.height < px(60.0))

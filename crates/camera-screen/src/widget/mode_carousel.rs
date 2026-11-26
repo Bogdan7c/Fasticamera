@@ -18,7 +18,7 @@ use ui_draw::shape::ShapeGeometry;
 use ui_kit::carousel::{CarouselEntry, CarouselEvent, CarouselSpec, SnapCarousel, TapOutcome};
 use ui_kit::drive::ScrollTransition;
 use ui_kit::pan::PanUpdate;
-use ui_kit::tokens::GlassRole;
+use ui_kit::tokens::PanelMaterial;
 use ui_kit::view::{CarouselLabels, GlassShape, LabelPainter, carousel_items_in_window, opacity_of_placement};
 
 use super::bottom_row::BottomRowFade;
@@ -27,7 +27,7 @@ use super::error::{WidgetError, element};
 use super::intent::ScreenGesture;
 use super::kit::SceneKit;
 use super::layers::{DrawLayers, Layer, VisualIndex};
-use super::{Ctx, Outputs, single_member_group};
+use super::{Ctx, Outputs, single_member_material};
 use crate::action::ScreenAction;
 use crate::modes::CaptureMode;
 
@@ -309,6 +309,7 @@ impl ModeCarouselWidget {
         ctx: &Ctx<'_>,
         visuals: &VisualIndex,
         layers: &mut DrawLayers,
+        material: PanelMaterial,
     ) -> Result<(), WidgetError> {
         let Some(placement) = visuals.placement(self.node) else {
             return Ok(());
@@ -316,15 +317,16 @@ impl ModeCarouselWidget {
         if placement.opacity <= 0.0 {
             return Ok(());
         }
-        let (group, host) = single_member_group(
+        let (item, host) = single_member_material(
             ctx,
-            GlassRole::Button,
+            material,
             GlassShape::Capsule,
             &placement,
             PressState::RELEASED,
             "mode_capsule",
         )?;
-        layers.push(Layer::Glass, DrawItem::Glass(group));
+        // Слой тот же, что у стекла: подписи и пилюля по-прежнему поверх (порядок рисования не меняется).
+        layers.push(Layer::Glass, item);
         let opacity = opacity_of_placement(&placement, "mode_labels")?;
         // Пилюля выбранного режима стоит по центру капсулы: подписи едут под ней, как в камере iOS.
         layers.push(

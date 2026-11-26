@@ -115,8 +115,10 @@ pub(crate) struct Outputs {
 use ui_draw::draw_list::{GlassGroupItem, PressState};
 use ui_draw::scene_bridge::NodePlacementPx;
 use ui_draw::transform::Affine2;
-use ui_kit::tokens::GlassRole;
-use ui_kit::view::{GlassGroupBuilder, GlassShape, member_transform, opacity_of_placement};
+use ui_kit::tokens::{GlassRole, PanelMaterial, SurfaceRole};
+use ui_kit::view::{
+    GlassGroupBuilder, GlassShape, MemberSite, member_transform, opacity_of_placement, single_member_item,
+};
 
 /// Группа стекла из одного члена и преобразование, в котором ставится его содержимое (с масштабом нажатия).
 /// Прозрачность группы — прозрачность узла (перемноженная с предками), поэтому растворение узла растворяет стекло.
@@ -133,6 +135,36 @@ pub(crate) fn single_member_group(
     let group = builder.build(1.0, opacity_of_placement(placement, what)?)?;
     let host = member_transform(&group, member)?;
     Ok((group, host))
+}
+
+/// Материал кнопок и капсулы режимов на экране PHOTO: стеклянная кнопка (решение 262: PHOTO не меняется).
+pub(crate) const PHOTO_BUTTON_MATERIAL: PanelMaterial = PanelMaterial::Glass(GlassRole::Button);
+
+/// Материал панелей раздела калибровки, включая те же капсулу и кнопку меню (14m, решения 263, 269):
+/// тёмная полупрозрачная поверхность без стекла, чтобы кадр раздела не строил пирамиду размытия.
+pub(crate) const SECTION_PANEL_MATERIAL: PanelMaterial = PanelMaterial::Surface(SurfaceRole::Panel);
+
+/// Один член выбранного материала и преобразование его содержимого: стекло или поверхность без стекла (14m).
+///
+/// Материал задаёт владелец экрана (PHOTO — стекло, раздел калибровки — поверхность), а не сам виджет:
+/// один и тот же виджет (капсула режимов, кнопка меню) стоит в обоих местах. Стекло собирается прежним
+/// путём (`GlassGroupBuilder`, материализация 1), поэтому PHOTO остаётся бит в бит прежним.
+/// Прозрачность — прозрачность узла: растворение узла растворяет и стекло, и поверхность.
+pub(crate) fn single_member_material(
+    ctx: &Ctx<'_>,
+    material: PanelMaterial,
+    shape: GlassShape,
+    placement: &NodePlacementPx,
+    press: PressState,
+    what: &'static str,
+) -> Result<(DrawItem, Affine2), WidgetError> {
+    let opacity = opacity_of_placement(placement, what)?;
+    let site = MemberSite {
+        shape,
+        placement,
+        press,
+    };
+    Ok(single_member_item(ctx.tokens, material, site, ctx.px, opacity)?)
 }
 
 /// Хост значка внутри кнопки: поворот узла значка относительно кнопки, затем преобразование члена группы.

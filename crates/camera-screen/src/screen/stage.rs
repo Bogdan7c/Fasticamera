@@ -20,6 +20,7 @@ use ui_kit::tokens::MotionToken;
 
 use super::diagnostics::GestureCounters;
 use crate::action::ScreenAction;
+use crate::widget::PHOTO_BUTTON_MATERIAL;
 use crate::widget::calibration::{CalibrationSection, SectionKey};
 use crate::widget::capture_blink::CaptureBlinkWidget;
 use crate::widget::controls_drawer::ControlsDrawerWidget;
@@ -431,10 +432,15 @@ impl Stage {
         self.shutter.draw(ctx, &visuals, &mut layers)?;
         self.thumbnail.draw(ctx, &visuals, &mut layers)?;
         self.flip.draw(ctx, &visuals, &mut layers)?;
-        self.menu_button
-            .draw(ctx, &visuals, &mut layers, self.drawer.source_opacity(ctx.now))?;
+        self.menu_button.draw(
+            ctx,
+            &visuals,
+            &mut layers,
+            self.drawer.source_opacity(ctx.now),
+            PHOTO_BUTTON_MATERIAL,
+        )?;
         self.white_button.draw(ctx, &visuals, &mut layers, &mut self.texts)?;
-        self.carousel.draw(ctx, &visuals, &mut layers)?;
+        self.carousel.draw(ctx, &visuals, &mut layers, PHOTO_BUTTON_MATERIAL)?;
         self.top_bar.draw(ctx, &visuals, &mut layers, &mut self.texts)?;
         CountdownWidget::draw(ctx, &mut layers, &mut self.texts)?;
         UnavailableNoticeWidget::draw(ctx, &mut layers, &mut self.texts)?;

@@ -42,6 +42,7 @@ use self::knobs_column::KnobsColumn;
 use self::menu::SectionMenu;
 use self::scope_panel::ScopePanel;
 use self::space::SectionSpace;
+use super::SECTION_PANEL_MATERIAL;
 use super::error::WidgetError;
 use super::intent::ScreenGesture;
 use super::kit::SceneKit;
@@ -207,8 +208,9 @@ impl CalibrationSection {
     ) -> Result<(), WidgetError> {
         self.knobs.draw(ctx, visuals, layers, texts)?;
         self.scope.draw(ctx, visuals, layers, texts)?;
-        self.carousel.draw(ctx, visuals, layers)?;
-        self.menu_button.draw(ctx, visuals, layers, 1.0)?;
+        self.carousel.draw(ctx, visuals, layers, SECTION_PANEL_MATERIAL)?;
+        self.menu_button
+            .draw(ctx, visuals, layers, 1.0, SECTION_PANEL_MATERIAL)?;
         self.menu.draw(ctx, visuals, layers, texts)
     }
 

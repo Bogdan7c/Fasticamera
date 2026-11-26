@@ -14,6 +14,7 @@
 //!   доисчезало тем же, чем было; касания снимаются сразу.
 //! * Что значит нажатие, решает карточка и отдаёт действием; ряды ничего не знают о пресетах.
 
+use crate::widget::SECTION_PANEL_MATERIAL;
 use look_contract::{EditState, PresetId, UserPresetId};
 use scope_contract::VectorscopeAxes;
 use ui_core::geometry::{Point, Rect};
@@ -21,12 +22,11 @@ use ui_core::gesture::{GestureEvent, PanSpec, RecognizerSpec};
 use ui_core::id::NodeId;
 use ui_core::time::MonotonicNanos;
 use ui_draw::color::Opacity;
-use ui_draw::draw_list::DrawItem;
 use ui_draw::icons::IconId;
 use ui_draw::transform::Affine2;
 use ui_kit::panel_morph::{PanelMorph, PanelMorphSpec, PanelPhase};
-use ui_kit::tokens::{GlassRole, TextRoleKind};
-use ui_kit::view::{centered_text, panel_glass_group_hosted};
+use ui_kit::tokens::TextRoleKind;
+use ui_kit::view::{centered_text, panel_material_hosted};
 
 use crate::action::ScreenAction;
 use crate::calibration::{CalibrationMenu, DeleteConfirmation};
@@ -417,12 +417,7 @@ impl MenuCard {
         }
         layers.push(
             Layer::Glass,
-            DrawItem::Glass(panel_glass_group_hosted(
-                &snapshot,
-                ctx.tokens.glass.style_for(GlassRole::Panel),
-                ctx.px,
-                host.transform(),
-            )?),
+            panel_material_hosted(&snapshot, ctx.tokens, SECTION_PANEL_MATERIAL, ctx.px, host.transform())?,
         );
         let alpha = snapshot.content_opacity.clamp(0.0, 1.0);
         if alpha <= 0.0 {

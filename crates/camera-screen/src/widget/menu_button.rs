@@ -9,7 +9,7 @@ use ui_core::geometry::Rect;
 use ui_core::gesture::GestureEvent;
 use ui_core::id::NodeId;
 use ui_draw::icons::IconId;
-use ui_kit::tokens::GlassRole;
+use ui_kit::tokens::PanelMaterial;
 use ui_kit::view::{GlassShape, centered_icon, opacity_of_placement};
 
 use super::bottom_row::BottomRowFade;
@@ -18,10 +18,9 @@ use super::error::WidgetError;
 use super::intent::{ButtonId, ScreenGesture};
 use super::kit::SceneKit;
 use super::layers::{DrawLayers, Layer, VisualIndex};
-use super::{Ctx, Outputs, single_member_group};
+use super::{Ctx, Outputs, single_member_material};
 use crate::action::ScreenAction;
 use crate::state::PanelState;
-use ui_draw::draw_list::DrawItem;
 use ui_draw::scene_bridge::NodePlacementPx;
 
 /// Где стоит кнопка меню.
@@ -124,6 +123,7 @@ impl MenuButtonWidget {
         visuals: &VisualIndex,
         layers: &mut DrawLayers,
         source_opacity: f32,
+        material: PanelMaterial,
     ) -> Result<(), WidgetError> {
         let Some(mut placement) = visuals.placement(self.button.node()) else {
             return Ok(());
@@ -132,15 +132,15 @@ impl MenuButtonWidget {
         if placement.opacity <= 0.0 {
             return Ok(());
         }
-        let (group, host) = single_member_group(
+        let (item, host) = single_member_material(
             ctx,
-            GlassRole::Button,
+            material,
             GlassShape::Circle,
             &placement,
             self.button.press_state(ctx.now),
             "menu_button",
         )?;
-        layers.push(Layer::Glass, DrawItem::Glass(group));
+        layers.push(Layer::Glass, item);
         if let Some(icon_placement) = visuals.placement(self.icon_node) {
             let icon_placement = NodePlacementPx {
                 opacity: icon_placement.opacity * source_opacity,
