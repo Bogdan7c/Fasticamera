@@ -268,10 +268,14 @@ fn display_gamut_changes_the_oklab_rule_but_not_ycbcr() {
 
 /// Настройки с заданной светлотой вектороскопа (маленькая сетка: тест не про размер).
 fn settings_with_lightness(lightness: f32) -> ScopeModelSettings {
-    let mut settings = ScopeModelSettings::default();
-    settings.vectorscope_size = 64;
-    settings.render.vectorscope_lightness = lightness;
-    settings
+    ScopeModelSettings {
+        vectorscope_size: 64,
+        render: RenderSettings {
+            vectorscope_lightness: lightness,
+            ..RenderSettings::default()
+        },
+        ..ScopeModelSettings::default()
+    }
 }
 
 /// Таблица цветов, которую решение обязано положить в правило: строится заново из тех же осей и светлоты.
@@ -296,13 +300,10 @@ fn expected_palette(
 }
 
 fn palette_of_style(scope: &ResolvedScope, settings: &RenderSettings) -> scope_model::PositionPalette {
-    match scope.trace_style(settings) {
-        scope_model::TraceStyle::ColorByPosition { palette } => *palette,
-        other => panic!(
-            "у вектороскопа ожидался способ «по месту», получено {:?}",
-            other.paint()
-        ),
-    }
+    let scope_model::TraceStyle::ColorByPosition { palette } = scope.trace_style(settings) else {
+        unreachable!("у вектороскопа способ рисования всегда «по месту»");
+    };
+    *palette
 }
 
 #[test]
