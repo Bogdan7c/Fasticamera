@@ -1,7 +1,10 @@
 #version 450
 // Правило показа цветовых приборов: счётчики -> картинка прибора RGBA16F, ПРЯМАЯ альфа, цвета экрана.
-// CPU-эталон: `scope_model::render` (функции `render`, `trace_intensity`, `graticule_alpha`, `composite_over`)
-// и `scope_model::graticule` (покрытие примитивов). Целочисленное отображение «пиксель -> ячейка» совпадает
+// CPU-эталон: `scope_model::render` (функции `render`, `graticule_alpha`, `composite_over`), `scope_model::trace_painter`
+// (пиксельные формулы трёх способов рисования следа), `scope_model::TraceReference` (яркость следа по счётчику)
+// и `scope_model::graticule` (покрытие примитивов). Три способа следа (`PAINT_*`): секции по плоскостям (RGB parade),
+// плоскости наложением (RGB waveform), цвет по положению (вектороскоп). Способ называет правило прибора, а не вид:
+// в шейдер он приходит словом `trace.w`. Целочисленное отображение «пиксель -> ячейка» совпадает
 // с эталоном точно; log2, sqrt и деление дают расхождение в пределах квантования fp16 (см. тесты).
 // Размер группы — specialization-константы 0 и 1 (см. `scope_accumulate_common.glsl`).
 layout(local_size_x_id = 0, local_size_y_id = 1) in;
@@ -17,8 +20,10 @@ struct GraticulePrimitive {
 
 layout(set = 0, binding = 1, std430) readonly buffer RenderParameters {
     uvec4 grid;             // столбцы, строки, плоскости, число примитивов
-    vec4 trace;             // x = log2(1 + число насыщения), y = непрозрачность следа, z = непрозрачность сетки,
-                            // w = способ рисования следа (PAINT_*)
+    vec4 trace;             // x = готовый знаменатель яркости log2(1 + порог): считает scope-model (`TraceReference`)
+                            //     по доле отсчётов столбца или кадра и числу отсчётов окна, шейдер порог не знает;
+                            // y = непрозрачность следа, z = непрозрачность сетки,
+                            // w = способ рисования следа (PAINT_*, код по `parameter_blocks.rs`)
     vec4 graticule_color;   // rgb
     vec4 plane_colors[3];   // rgb следа по плоскостям (секции) или основные цвета наложения
     GraticulePrimitive primitives[48];
@@ -42,7 +47,8 @@ const float PAINT_COLOR_BY_POSITION = 2.0;
 const uint POSITION_PALETTE_ANGLES = 128u;
 const float TAU = 6.28318530717958647692;
 
-// Яркость следа по счётчику: та же лог-шкала, что у секций (`trace_intensity` эталона).
+// Яркость следа по счётчику: лог-шкала `min(1, log2(1 + count) / trace.x)`, одна для всех трёх способов
+// (эталон — `TraceReference::intensity`). Полная яркость достигается при `count`, равном пороге из `trace.x`.
 float trace_intensity(uint count) {
     return count == 0u ? 0.0 : min(log2(1.0 + float(count)) / parameters.trace.x, 1.0);
 }
