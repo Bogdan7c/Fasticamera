@@ -264,6 +264,41 @@ mod tests {
     }
 
     #[test]
+    fn glass_material_is_bit_identical_to_the_legacy_single_member_group() {
+        // PHOTO (решение 262): стекло через `single_member_item` равно тому, что строил экран прямо через строитель.
+        let tokens = UiKitTokens::default();
+        for (role, shape) in [
+            (GlassRole::Button, GlassShape::Capsule),
+            (GlassRole::Button, GlassShape::Circle),
+            (GlassRole::Panel, GlassShape::RoundedRect { corner_radius_pt: 20.0 }),
+        ] {
+            let press = pressed(0.6);
+            let mut builder = GlassGroupBuilder::new(tokens.glass.style_for(role), scale());
+            let member = builder.add_member(shape, placement(), press).expect("член");
+            let legacy_group = builder.build(1.0, Opacity::OPAQUE).expect("группа");
+            let legacy_host = member_transform(&legacy_group, member).expect("хост");
+            let (item, host) = single_member_item(
+                &tokens,
+                PanelMaterial::Glass(role),
+                MemberSite {
+                    shape,
+                    placement: &placement(),
+                    press,
+                },
+                scale(),
+                Opacity::OPAQUE,
+            )
+            .expect("через материал");
+            assert_eq!(
+                item,
+                DrawItem::Glass(legacy_group),
+                "{role:?}: список рисования стекла прежний"
+            );
+            assert_eq!(host, legacy_host, "{role:?}: хост содержимого прежний");
+        }
+    }
+
+    #[test]
     fn single_member_item_dispatches_material() {
         let tokens = UiKitTokens::default();
         let item_for = |material| {
