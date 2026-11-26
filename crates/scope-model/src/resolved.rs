@@ -10,6 +10,7 @@ use scope_contract::{ScopeKind, ScopeRequest, ScopeScan, VectorscopeAxes};
 
 use crate::grid::GridShape;
 use crate::oklab_rule::{OklabVectorscopeError, OklabVectorscopeRule};
+use crate::position_palette::PositionPalette;
 use crate::render_settings::RenderSettings;
 use crate::rule::{Hit, SamplePosition, ScopeRule};
 use crate::settings::{ScopeModelSettings, ScopeSettingsError};
@@ -44,9 +45,34 @@ pub enum ResolvedScope {
     /// RGB parade.
     RgbParade(ParadeRule),
     /// Вектороскоп, оси Y'CbCr BT.709.
-    VectorscopeYCbCr(YCbCrVectorscopeRule),
+    VectorscopeYCbCr(ColouredByPosition<YCbCrVectorscopeRule>),
     /// Вектороскоп, оси OKLab a/b.
-    VectorscopeOklab(OklabVectorscopeRule),
+    VectorscopeOklab(ColouredByPosition<OklabVectorscopeRule>),
+}
+
+/// Правило вектороскопа вместе с таблицей цветов «по месту».
+///
+/// Таблицу (128 углов, у OKLab — поиск границы охвата, порядка 80 мкс на ПК) строит
+/// [`ResolvedScope::resolve`] ОДИН раз вместе с правилом: она зависит от осей, охвата экрана и светлоты
+/// (`vectorscope_lightness`), но не от кадра. [`ResolvedScope::trace_style`] её только отдаёт.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColouredByPosition<Rule> {
+    /// Правило накопления вектороскопа.
+    rule: Rule,
+    /// Таблица цветов по углам, построенная при решении (в коробке: она заметно больше остальных полей).
+    palette: Box<PositionPalette>,
+}
+
+impl<Rule> ColouredByPosition<Rule> {
+    /// Правило накопления (геометрия, оси, усиление).
+    pub fn rule(&self) -> &Rule {
+        &self.rule
+    }
+
+    /// Таблица цветов, построенная при решении прибора.
+    pub fn palette(&self) -> &PositionPalette {
+        &self.palette
+    }
 }
 
 impl ResolvedScope {
@@ -65,15 +91,18 @@ impl ResolvedScope {
                 Self::RgbParade(ParadeRule::new(settings.trace_columns, settings.trace_levels)?.with_scan(request.scan))
             }
             ScopeKind::Vectorscope => match request.vectorscope_axes {
-                VectorscopeAxes::YCbCrBt709 => Self::VectorscopeYCbCr(YCbCrVectorscopeRule::new(
-                    settings.vectorscope_size,
-                    settings.ycbcr_gain,
-                )?),
-                VectorscopeAxes::OklabAb => Self::VectorscopeOklab(OklabVectorscopeRule::new(
-                    settings.vectorscope_size,
-                    settings.oklab_range,
-                    display_gamut,
-                )?),
+                VectorscopeAxes::YCbCrBt709 => {
+                    let rule = YCbCrVectorscopeRule::new(settings.vectorscope_size, settings.ycbcr_gain)?;
+                    // Светлота — из настроек решения: таблица строится здесь, а не на каждом кадре.
+                    let palette = Box::new(rule.position_palette(settings.render.vectorscope_lightness));
+                    Self::VectorscopeYCbCr(ColouredByPosition { rule, palette })
+                }
+                VectorscopeAxes::OklabAb => {
+                    let rule =
+                        OklabVectorscopeRule::new(settings.vectorscope_size, settings.oklab_range, display_gamut)?;
+                    let palette = Box::new(rule.position_palette(settings.render.vectorscope_lightness));
+                    Self::VectorscopeOklab(ColouredByPosition { rule, palette })
+                }
             },
         })
     }
@@ -90,8 +119,9 @@ impl ResolvedScope {
     /// Как рисуется след этого прибора, вместе с данными способа (цвета, таблица цветов по месту). Единственный
     /// источник способа: эталон ([`crate::render`]) и GPU-часть спрашивают правило, а не угадывают по виду.
     ///
-    /// Таблица цветов вектороскопа строится здесь по осям прибора; она зависит от правила и светлоты, но не от
-    /// кадра.
+    /// Таблица цветов вектороскопа построена при [`Self::resolve`] (со светлотой из настроек решения), здесь она
+    /// только копируется: `settings.vectorscope_lightness` на неё НЕ влияет, цвета секций и палитра наложения
+    /// берутся из `settings` как раньше.
     pub fn trace_style(&self, settings: &RenderSettings) -> TraceStyle {
         match self {
             Self::Waveform(_) => TraceStyle::PlanesOverlaid {
@@ -100,11 +130,11 @@ impl ResolvedScope {
             Self::RgbParade(_) => TraceStyle::PlaneSections {
                 colors: settings.parade_colors.to_vec(),
             },
-            Self::VectorscopeYCbCr(rule) => TraceStyle::ColorByPosition {
-                palette: Box::new(rule.position_palette(settings.vectorscope_lightness)),
+            Self::VectorscopeYCbCr(coloured) => TraceStyle::ColorByPosition {
+                palette: coloured.palette.clone(),
             },
-            Self::VectorscopeOklab(rule) => TraceStyle::ColorByPosition {
-                palette: Box::new(rule.position_palette(settings.vectorscope_lightness)),
+            Self::VectorscopeOklab(coloured) => TraceStyle::ColorByPosition {
+                palette: coloured.palette.clone(),
             },
         }
     }
@@ -124,8 +154,8 @@ impl ScopeRule for ResolvedScope {
         match self {
             Self::Waveform(rule) => rule.shape(),
             Self::RgbParade(rule) => rule.shape(),
-            Self::VectorscopeYCbCr(rule) => rule.shape(),
-            Self::VectorscopeOklab(rule) => rule.shape(),
+            Self::VectorscopeYCbCr(coloured) => coloured.rule.shape(),
+            Self::VectorscopeOklab(coloured) => coloured.rule.shape(),
         }
     }
 
@@ -142,8 +172,8 @@ impl ScopeRule for ResolvedScope {
         match self {
             Self::Waveform(rule) => rule.hits(position, code, report),
             Self::RgbParade(rule) => rule.hits(position, code, report),
-            Self::VectorscopeYCbCr(rule) => rule.hits(position, code, report),
-            Self::VectorscopeOklab(rule) => rule.hits(position, code, report),
+            Self::VectorscopeYCbCr(coloured) => coloured.rule.hits(position, code, report),
+            Self::VectorscopeOklab(coloured) => coloured.rule.hits(position, code, report),
         }
     }
 }

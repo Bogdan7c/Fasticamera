@@ -122,8 +122,8 @@ impl ResolvedScope {
 
     fn vectorscope_geometry(&self) -> Option<crate::vectorscope_geometry::VectorscopeGeometry> {
         match self {
-            Self::VectorscopeYCbCr(rule) => Some(rule.geometry()),
-            Self::VectorscopeOklab(rule) => Some(rule.geometry()),
+            Self::VectorscopeYCbCr(coloured) => Some(coloured.rule().geometry()),
+            Self::VectorscopeOklab(coloured) => Some(coloured.rule().geometry()),
             _ => None,
         }
     }
@@ -131,8 +131,11 @@ impl ResolvedScope {
     /// Радиус полного размаха цвета в клетках (Y'CbCr: ±0,5 с усилением; OKLab: край сетки).
     fn full_range_radius_cells(&self) -> f32 {
         match self {
-            Self::VectorscopeYCbCr(rule) => (rule.geometry().half_extent_cells() * f64::from(rule.gain())) as f32,
-            Self::VectorscopeOklab(rule) => rule.geometry().half_extent_cells() as f32,
+            Self::VectorscopeYCbCr(coloured) => {
+                let rule = coloured.rule();
+                (rule.geometry().half_extent_cells() * f64::from(rule.gain())) as f32
+            }
+            Self::VectorscopeOklab(coloured) => coloured.rule().geometry().half_extent_cells() as f32,
             _ => f32::INFINITY,
         }
     }
@@ -144,7 +147,8 @@ impl ResolvedScope {
                 let angle = settings.skin_line_angle_degrees.to_radians();
                 Some([angle.cos(), -angle.sin()])
             }
-            Self::VectorscopeOklab(rule) => {
+            Self::VectorscopeOklab(coloured) => {
+                let rule = coloured.rule();
                 // Тот же путь OKLab, что у следа: положение кода кожи относительно центра.
                 let skin_code = settings.skin_tone_srgb.map(srgb_8bit_to_display_code);
                 let [column_t, row_t] = rule.grid_position(skin_code);

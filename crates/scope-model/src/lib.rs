@@ -58,7 +58,7 @@ pub use grid::{GridError, GridShape, ScopeCounters};
 pub use position_palette::{POSITION_PALETTE_ANGLES, PositionPalette, PositionPaletteEntry};
 pub use render::{RenderError, ScopePicture, render};
 pub use render_settings::{RenderSettings, RenderSettingsError, TraceShare, TraceShareError};
-pub use resolved::{ResolveError, ResolvedScope};
+pub use resolved::{ColouredByPosition, ResolveError, ResolvedScope};
 pub use rgb_waveform_palette::RgbWaveformPalette;
 pub use rule::{AccumulateError, Hit, SamplePosition, ScopeRule, accumulate, hits_of_code};
 pub use sample_count::SampleCount;

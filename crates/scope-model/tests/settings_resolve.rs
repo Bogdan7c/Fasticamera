@@ -265,3 +265,98 @@ fn display_gamut_changes_the_oklab_rule_but_not_ycbcr() {
         ResolvedScope::resolve(&ycbcr_request, &settings, DisplayGamut::DisplayP3).unwrap()
     );
 }
+
+/// Настройки с заданной светлотой вектороскопа (маленькая сетка: тест не про размер).
+fn settings_with_lightness(lightness: f32) -> ScopeModelSettings {
+    let mut settings = ScopeModelSettings::default();
+    settings.vectorscope_size = 64;
+    settings.render.vectorscope_lightness = lightness;
+    settings
+}
+
+/// Таблица цветов, которую решение обязано положить в правило: строится заново из тех же осей и светлоты.
+fn expected_palette(
+    axes: VectorscopeAxes,
+    settings: &ScopeModelSettings,
+    gamut: DisplayGamut,
+) -> scope_model::PositionPalette {
+    let lightness = settings.render.vectorscope_lightness;
+    match axes {
+        VectorscopeAxes::YCbCrBt709 => {
+            scope_model::vectorscope_ycbcr::YCbCrVectorscopeRule::new(settings.vectorscope_size, settings.ycbcr_gain)
+                .unwrap()
+                .position_palette(lightness)
+        }
+        VectorscopeAxes::OklabAb => {
+            scope_model::oklab_rule::OklabVectorscopeRule::new(settings.vectorscope_size, settings.oklab_range, gamut)
+                .unwrap()
+                .position_palette(lightness)
+        }
+    }
+}
+
+fn palette_of_style(scope: &ResolvedScope, settings: &RenderSettings) -> scope_model::PositionPalette {
+    match scope.trace_style(settings) {
+        scope_model::TraceStyle::ColorByPosition { palette } => *palette,
+        other => panic!(
+            "у вектороскопа ожидался способ «по месту», получено {:?}",
+            other.paint()
+        ),
+    }
+}
+
+#[test]
+fn vectorscope_palette_is_built_at_resolve_time_from_the_resolve_settings() {
+    for axes in [VectorscopeAxes::YCbCrBt709, VectorscopeAxes::OklabAb] {
+        for gamut in [DisplayGamut::Srgb, DisplayGamut::DisplayP3] {
+            let settings = settings_with_lightness(0.6);
+            let scope = ResolvedScope::resolve(&request(ScopeKind::Vectorscope, axes), &settings, gamut).unwrap();
+            assert_eq!(
+                palette_of_style(&scope, &settings.render),
+                expected_palette(axes, &settings, gamut),
+                "{axes:?} {gamut:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn resolve_with_another_lightness_gives_another_palette() {
+    for axes in [VectorscopeAxes::YCbCrBt709, VectorscopeAxes::OklabAb] {
+        let dark = settings_with_lightness(0.4);
+        let light = settings_with_lightness(0.8);
+        let resolve = |settings: &ScopeModelSettings| {
+            ResolvedScope::resolve(&request(ScopeKind::Vectorscope, axes), settings, DisplayGamut::Srgb).unwrap()
+        };
+        let dark_palette = palette_of_style(&resolve(&dark), &dark.render);
+        let light_palette = palette_of_style(&resolve(&light), &light.render);
+        assert_ne!(dark_palette, light_palette, "{axes:?}");
+        assert_ne!(dark_palette.neutral(), light_palette.neutral(), "{axes:?}");
+    }
+}
+
+#[test]
+fn trace_style_hands_out_the_stored_palette_and_does_not_rebuild_it_from_call_settings() {
+    for axes in [VectorscopeAxes::YCbCrBt709, VectorscopeAxes::OklabAb] {
+        let resolve_settings = settings_with_lightness(0.6);
+        let scope = ResolvedScope::resolve(
+            &request(ScopeKind::Vectorscope, axes),
+            &resolve_settings,
+            DisplayGamut::Srgb,
+        )
+        .unwrap();
+        // В вызов приходит другая светлота: перестроение дало бы другую таблицу, хранимая остаётся прежней.
+        let mut other_call_settings = resolve_settings.render.clone();
+        other_call_settings.vectorscope_lightness = 0.9;
+        assert_eq!(
+            palette_of_style(&scope, &other_call_settings),
+            expected_palette(axes, &resolve_settings, DisplayGamut::Srgb),
+            "{axes:?}"
+        );
+        // Повторные вызовы дают ту же таблицу.
+        assert_eq!(
+            palette_of_style(&scope, &resolve_settings.render),
+            palette_of_style(&scope, &resolve_settings.render)
+        );
+    }
+}

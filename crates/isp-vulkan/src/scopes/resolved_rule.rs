@@ -114,14 +114,18 @@ impl GpuScopeRule for ResolvedScope {
                 column_projection: None,
                 row_projections: &rule.level_projections(),
             }),
-            Self::VectorscopeYCbCr(rule) => integer_parameters(IntegerLayout {
-                column_source: COLUMN_FROM_PROJECTION,
-                row_base: 0,
-                row_sign: 1,
-                column_projection: Some(rule.column_projection()),
-                row_projections: &[rule.row_projection()],
-            }),
-            Self::VectorscopeOklab(rule) => {
+            Self::VectorscopeYCbCr(coloured) => {
+                let rule = coloured.rule();
+                integer_parameters(IntegerLayout {
+                    column_source: COLUMN_FROM_PROJECTION,
+                    row_base: 0,
+                    row_sign: 1,
+                    column_projection: Some(rule.column_projection()),
+                    row_projections: &[rule.row_projection()],
+                })
+            }
+            Self::VectorscopeOklab(coloured) => {
+                let rule = coloured.rule();
                 let mut words = RuleWords::new();
                 words
                     .push_f32(rule.geometry().size() as f32)
