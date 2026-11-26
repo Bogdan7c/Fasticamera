@@ -214,7 +214,7 @@ impl ScopeStrip {
             let color = if dot.kind == selected {
                 colors.text_primary
             } else {
-                colors.text_muted.with_alpha(0.5)
+                colors.text_muted.with_alpha(config.scope_page_dot_dim_alpha)
             };
             layers.push(
                 Layer::Content,

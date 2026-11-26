@@ -7,8 +7,7 @@ use shell_contract::safe_area::SafeAreaInsets;
 use ui_core::geometry::Rect;
 
 use super::layout_tests::{
-    ALL_ORIENTATIONS, area, calibration_layout, calibration_layout_in, calibration_layout_with, distinct_insets,
-    overlap_area, screen,
+    ALL_ORIENTATIONS, area, calibration_layout, calibration_layout_with, distinct_insets, overlap_area, screen,
 };
 use super::{CalibrationConfig, CalibrationLayout, CalibrationLayoutError, KnobsSide, ZoneShape};
 use crate::mode_behaviour::LayoutPolicy;
@@ -205,22 +204,20 @@ fn knobs_on_the_right_hug_the_opposite_safe_edge_instead_of_mirroring_the_insets
             close(zones.clean_preview.min_x(), 0.0),
             "{orientation:?}: превью — до края экрана"
         );
-        if layout.scope_picture_area().size.width > 0.0 {
-            // Прибор кончается там же, где колонка начинается (альбом) или тянется на всю безопасную ширину (портрет).
-            let scope_right = eye_width - zones.scope.max_x();
-            let expected = match orientation {
-                DeviceOrientation::Portrait | DeviceOrientation::PortraitUpsideDown => right_px,
-                _ => (zones.knobs.size.width * scale).round() + right_px,
-            };
-            assert!(
-                close(scope_right, expected),
-                "{orientation:?}: правый край прибора {scope_right}"
-            );
-            assert!(
-                close(zones.scope.min_x(), left_px),
-                "{orientation:?}: левый край прибора у безопасного края"
-            );
-        }
+        // Прибор кончается там же, где колонка начинается (альбом) или тянется на всю безопасную ширину (портрет).
+        let scope_right = eye_width - zones.scope.max_x();
+        let expected = match orientation {
+            DeviceOrientation::Portrait | DeviceOrientation::PortraitUpsideDown => right_px,
+            _ => (zones.knobs.size.width * scale).round() + right_px,
+        };
+        assert!(
+            close(scope_right, expected),
+            "{orientation:?}: правый край прибора {scope_right}"
+        );
+        assert!(
+            close(zones.scope.min_x(), left_px),
+            "{orientation:?}: левый край прибора у безопасного края"
+        );
     }
 }
 
@@ -274,6 +271,31 @@ fn each_picture_is_exactly_its_rect_in_pixels_and_lies_on_whole_pixels() {
             let layout = layout_on_side(side, orientation);
             for kind in ScopeKind::ALL {
                 let (rect, size) = (layout.scope_image_rect_for(kind), layout.scope_image_size_for(kind));
+                // Независимая величина: сколько пикселей остаётся картинке от ЗОНЫ прибора (минус полоска и, у видов
+                // с подписями уровней, поле), зажатые в предел стороны, а не её собственный прямоугольник.
+                let config = CalibrationConfig::default();
+                let max_side = f64::from(config.max_scope_image_side_px);
+                let gutter_pt = if kind.level_lines().is_empty() {
+                    0.0
+                } else {
+                    layout.scope_levels_gutter().size.width
+                };
+                let room_px = (
+                    (layout.zones().scope.size.width - gutter_pt) * scale,
+                    (layout.zones().scope.size.height - layout.scope_strip().size.height) * scale,
+                );
+                let expected_px = match kind.picture_shape() {
+                    ScopePictureShape::FillsZone => (room_px.0.min(max_side), room_px.1.min(max_side)),
+                    ScopePictureShape::Square => {
+                        let side = room_px.0.min(room_px.1).min(max_side);
+                        (side, side)
+                    }
+                };
+                assert!(
+                    (f64::from(size.width()) - expected_px.0).abs() < 1e-6
+                        && (f64::from(size.height()) - expected_px.1).abs() < 1e-6,
+                    "{side:?} {orientation:?} {kind:?}: размер картинки {size:?} px против места в зоне {expected_px:?}"
+                );
                 let rect_px = (rect.size.width * scale, rect.size.height * scale);
                 assert!(
                     (f64::from(size.width()) - rect_px.0).abs() < 1e-6
@@ -397,6 +419,23 @@ fn a_strip_taller_than_the_zone_is_an_error_not_a_negative_picture() {
 }
 
 #[test]
+fn a_picture_shorter_than_a_level_label_is_a_layout_error_not_a_label_outside_the_picture() {
+    let mut config = CalibrationConfig::default();
+    config.layout.scope_level_label_height_pt = 5000.0;
+    assert!(matches!(
+        calibration_layout_with(&config, DeviceOrientation::Portrait, SafeAreaInsets::NONE),
+        Err(CalibrationLayoutError::ScopePictureShorterThanLevelLabels { .. })
+    ));
+    // Обычная высота подписи проходит во всех положениях.
+    for orientation in ALL_ORIENTATIONS {
+        assert!(
+            calibration_layout_with(&CalibrationConfig::default(), orientation, SafeAreaInsets::NONE).is_ok(),
+            "{orientation:?}"
+        );
+    }
+}
+
+#[test]
 fn the_shape_comes_from_the_config_not_from_the_phone_position() {
     // Портрет с формой альбома и наоборот: форму выбирает данные конфига, а не «портрет это или нет».
     let mut config = CalibrationConfig::default();
@@ -409,6 +448,7 @@ fn the_shape_comes_from_the_config_not_from_the_phone_position() {
         zones.bottom_row.min_y(),
         "колонка на всю высоту, как в альбоме"
     );
+    assert_zones_tile_the_eye(&swapped, "портрет с формой альбома");
     assert_eq!(
         zones.scope.min_x(),
         zones.knobs.max_x(),
@@ -424,6 +464,26 @@ fn the_shape_comes_from_the_config_not_from_the_phone_position() {
         0.0,
         "прибор на всю ширину и в альбоме, если так сказано в конфиге"
     );
-    // Оба сочетания остаются разбиением экрана без перекрытий.
-    let _ = calibration_layout_in(DeviceOrientation::Portrait, SafeAreaInsets::NONE);
+    assert_zones_tile_the_eye(&swapped, "альбом с формой портрета");
+}
+
+/// Четыре зоны покрывают глазной прямоугольник ровно: сумма площадей равна его площади, зоны не перекрываются.
+fn assert_zones_tile_the_eye(layout: &CalibrationLayout, what: &str) {
+    let zones = layout.zones();
+    let all = [zones.knobs, zones.clean_preview, zones.scope, zones.bottom_row];
+    let eye = Rect::from_xywh(0.0, 0.0, layout.eye_size().width, layout.eye_size().height);
+    let total: f64 = all.iter().map(area).sum();
+    assert!(
+        (total - area(&eye)).abs() < 1e-6,
+        "{what}: площадь зон {total} против {}",
+        area(&eye)
+    );
+    for (index, first) in all.iter().enumerate() {
+        for second in &all[index + 1..] {
+            assert!(
+                overlap_area(first, second) < 1e-9,
+                "{what}: зоны перекрываются: {first:?} / {second:?}"
+            );
+        }
+    }
 }

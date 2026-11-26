@@ -40,6 +40,7 @@ use crate::camera_screen_gravity::{GravityFeed, GravityPoll};
 use crate::camera_screen_input::{ScreenInput, ScreenInputReceiver, ScreenInputStats};
 use crate::camera_screen_white_view::WhiteView;
 use crate::look_facts::{LookFactsChange, LookFactsSource};
+use crate::look_white_stops::LookWhiteStopsWatcher;
 
 /// Имя источника в диагностике рендера (`UiOverlayDiagnostics::active_source`).
 pub const CAMERA_SCREEN_SOURCE_NAME: &str = "camera_screen";
@@ -225,6 +226,8 @@ pub struct ScreenReport {
     pub facts_sent: u64,
     /// Сколько раз экрану отправлены изменившиеся факты о виде.
     pub look_facts_sent: u64,
+    /// Сколько раз экрану отправлены изменившиеся упоры ручек теплоты и оттенка.
+    pub look_white_stops_sent: u64,
     /// Сколько раз факты о виде пересобирались (тихие кадры без правок его не двигают).
     pub look_facts_rebuilds: u64,
     /// Счётчики источника фактов (сборка паспорта потока, потоки без паспорта).
@@ -264,6 +267,8 @@ pub struct ScreenSourceParts {
     /// Источник фактов о виде для экрана калибровки; `None` — в сборке нет библиотеки пресетов (экран фактов не
     /// получает, ручки у него отключены).
     pub look_facts: Option<LookFactsSource>,
+    /// Наблюдатель за упорами ручек теплоты и оттенка (решения 288, 293); `silent()` — упоров не будет.
+    pub look_white_stops: LookWhiteStopsWatcher,
     pub gravity: GravityLink,
     pub executor: EffectExecutor,
     pub board: Arc<ScreenBoard>,
@@ -278,12 +283,15 @@ pub struct CameraScreenSource {
     facts: Box<dyn CameraFactsSource>,
     facts_watcher: CameraFactsWatcher,
     look_facts: Option<LookFactsSource>,
+    look_white_stops: LookWhiteStopsWatcher,
     gravity: GravityLink,
     executor: EffectExecutor,
     board: Arc<ScreenBoard>,
     facts_sent: u64,
     /// Сколько раз экрану отправлены изменившиеся факты о виде.
     look_facts_sent: u64,
+    /// Сколько раз экрану отправлены изменившиеся упоры ручек теплоты и оттенка.
+    look_white_stops_sent: u64,
     gravity_samples_sent: u64,
     report_min_interval: Duration,
     /// Экран ещё не прошёл первый кадр после установки: на нём исполнитель приводит показ вида к рецепту библиотеки
@@ -319,11 +327,13 @@ impl CameraScreenSource {
             facts: parts.facts,
             facts_watcher: CameraFactsWatcher::new(),
             look_facts: parts.look_facts,
+            look_white_stops: parts.look_white_stops,
             gravity: parts.gravity,
             executor: parts.executor,
             board: parts.board,
             facts_sent: 0,
             look_facts_sent: 0,
+            look_white_stops_sent: 0,
             gravity_samples_sent: 0,
             report_min_interval: parts.report_min_interval,
             awaiting_first_frame: true,
@@ -389,14 +399,32 @@ impl CameraScreenSource {
         let Some(source) = &mut self.look_facts else {
             return false;
         };
-        match source.observe(self.executor.latest_look_problem()) {
+        // Проблема запуска (файл пресетов сброшен / сохранения отключены): отдаётся один раз, плашку при входе в
+        // раздел калибровки поднимает сам экран.
+        let startup_problem = source.take_startup_problem();
+        let startup_problem_sent = startup_problem.is_some();
+        if let Some(kind) = startup_problem {
+            self.screen.handle_action(ScreenAction::LookStartupProblem(kind));
+        }
+        let facts_changed = match source.observe(self.executor.latest_look_problem()) {
             LookFactsChange::Changed(facts) => {
                 self.look_facts_sent += 1;
                 self.screen.handle_action(ScreenAction::LookFactsChanged(facts));
                 true
             }
             LookFactsChange::Unchanged => false,
-        }
+        };
+        facts_changed || startup_problem_sent
+    }
+
+    /// Шаг 2в: упоры ручек теплоты и оттенка — только если рендер сообщил новые.
+    fn sync_look_white_stops(&mut self) -> bool {
+        let Some(stops) = self.look_white_stops.changed() else {
+            return false;
+        };
+        self.look_white_stops_sent += 1;
+        self.screen.handle_action(ScreenAction::LookWhiteStopsChanged(stops));
+        true
     }
 
     /// Шаг 3: гравитация с прореживанием.
@@ -474,6 +502,7 @@ impl CameraScreenSource {
             input: self.input.stats(),
             facts_sent: self.facts_sent,
             look_facts_sent: self.look_facts_sent,
+            look_white_stops_sent: self.look_white_stops_sent,
             look_facts_rebuilds: self.look_facts.as_ref().map_or(0, LookFactsSource::rebuilds),
             facts: self.facts.diagnostics(),
             gravity_samples_sent: self.gravity_samples_sent,
@@ -506,6 +535,7 @@ impl UiFrameSource for CameraScreenSource {
         };
         activity.facts_changed = self.sync_camera_facts();
         activity.facts_changed |= self.sync_look_facts();
+        activity.facts_changed |= self.sync_look_white_stops();
         self.feed_gravity();
         let frame = self.screen.produce_frame(request);
         activity.picture_shown = self.log_picture_if_just_shown();

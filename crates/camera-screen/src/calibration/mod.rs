@@ -6,6 +6,7 @@
 
 mod config;
 mod eye;
+mod knob_stops_config;
 mod layout;
 mod layout_config;
 mod scope_frames;
@@ -15,6 +16,7 @@ mod wheels_frames;
 mod widgets_config;
 
 pub use config::{CalibrationConfig, CalibrationConfigError};
+pub use knob_stops_config::KnobStopsLookConfig;
 pub use layout::{CalibrationLayout, CalibrationLayoutError, CalibrationZones};
 pub use layout_config::{
     CalibrationLayoutConfig, CalibrationLayoutConfigError, CapsuleLine, KnobsSide, OrientationLayoutConfig, ZoneShape,

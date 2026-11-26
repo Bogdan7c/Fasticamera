@@ -7,6 +7,8 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use super::knob_stops_config::KnobStopsLookConfig;
+
 /// Сколько таблеток ряда можно завести: номер таблетки идёт в `ButtonId(u8)`, поэтому больше 255 не бывает.
 pub const MAX_CHIP_POOL: usize = 255;
 
@@ -112,6 +114,8 @@ pub struct CalibrationWidgetsConfig {
     /// дойдя до нуля стоит нулём, пока палец проходит `2 ×` это число, и снова идёт за пальцем без скачка
     /// (`ui_kit::scale::ZeroMagnet`). `0` — магнит выключен. `[estimate]` 6 pt: подбор на телефоне.
     pub knob_zero_magnet_pt: f64,
+    /// Вид упоров на шкалах теплоты и оттенка (решения 288, 293).
+    pub knob_stops: KnobStopsLookConfig,
     /// «Картинка под пальцем» (решение 273): прозрачность остального, пока палец ведёт ручку или колесо
     /// (0 — остальное исчезает совсем). Остальное: панель колонки, шапка, переключатель, прочие строки. `[estimate]`.
     pub finger_focus_others_opacity: f32,
@@ -156,6 +160,8 @@ pub struct CalibrationWidgetsConfig {
     pub scope_strip_hairline_alpha: f32,
     /// Отступ чисел уровней от правого края поля уровней (к картинке). `[estimate]`.
     pub scope_level_label_inset_pt: f64,
+    /// Прозрачность точек страниц прибора, кроме выбранной (она яркая). `[estimate]`.
+    pub scope_page_dot_dim_alpha: f32,
     /// Порог свайпа по прибору, pt: ОДИН для распознавания и для листания (решение 280). Короче — не свайп; признанный
     /// свайп листает страницу сразу. Между «признан» и «листает» ничего нет. `[estimate]` 20, подбор на телефоне.
     pub scope_swipe_min_pt: f64,
@@ -229,6 +235,7 @@ impl Default for CalibrationWidgetsConfig {
             knob_tick_every_steps: 20,
             knob_major_every_steps: 100,
             knob_zero_magnet_pt: 6.0,
+            knob_stops: KnobStopsLookConfig::default(),
             finger_focus_others_opacity: 0.0,
             finger_focus_backing_padding_pt: 6.0,
             finger_focus_backing_corner_radius_pt: 16.0,
@@ -248,6 +255,7 @@ impl Default for CalibrationWidgetsConfig {
             scope_white_capsule_padding_pt: 6.0,
             scope_strip_hairline_alpha: 0.18,
             scope_level_label_inset_pt: 4.0,
+            scope_page_dot_dim_alpha: 0.5,
             scope_swipe_min_pt: 20.0,
             mode_pill_padding_pt: 20.0,
             chip_height_pt: 32.0,
@@ -380,6 +388,7 @@ impl CalibrationWidgetsConfig {
                 return Err(CalibrationWidgetsConfigError::NonPositive { field, value });
             }
         }
+        self.knob_stops.validate()?;
         // Размеры, у которых 0 значит «выключено».
         let switchable_sizes = [("knob_zero_magnet_pt", self.knob_zero_magnet_pt)];
         for (field, value) in switchable_sizes {
@@ -398,6 +407,7 @@ impl CalibrationWidgetsConfig {
             ("wheel_pad_fill_alpha", f64::from(self.wheel_pad_fill_alpha)),
             ("preset_marker_alpha", f64::from(self.preset_marker_alpha)),
             ("scope_strip_hairline_alpha", f64::from(self.scope_strip_hairline_alpha)),
+            ("scope_page_dot_dim_alpha", f64::from(self.scope_page_dot_dim_alpha)),
             (
                 "clean_button_held_fill_alpha",
                 f64::from(self.clean_button_held_fill_alpha),

@@ -12,6 +12,7 @@ use ui_draw::transform::Affine2;
 
 use super::content::opacity_of_placement;
 use super::error::ViewError;
+use super::ruler_overlay::{DimmedSpan, OverlaySite, dimmed_factor, overlay_site};
 use super::scale::PxPerPt;
 use crate::drive::{GrowthDirection, ScreenAxis};
 use crate::scale::{SnapScale, TickVisibility};
@@ -49,6 +50,25 @@ pub fn ruler_items<M: RulerAxis>(
     major_period: MajorTickPeriod,
     colors: &ColorTokens,
 ) -> Result<Vec<DrawItem>, ViewError> {
+    ruler_items_with_dimmed(placement, scale, now, px_per_pt, tokens, major_period, colors, &[])
+}
+
+/// То же, что [`ruler_items`], но риски внутри `dimmed` рисуются тусклее (например, ход ручки за упором). Пустой
+/// список даёт тот же результат, что `ruler_items`, до бита. Жёлтая отметка текущего значения не тускнеет.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "те же входы, что у ruler_items, плюс список тусклых промежутков"
+)]
+pub fn ruler_items_with_dimmed<M: RulerAxis>(
+    placement: &NodePlacementPx,
+    scale: &SnapScale<M>,
+    now: MonotonicNanos,
+    px_per_pt: PxPerPt,
+    tokens: &RulerTokens,
+    major_period: MajorTickPeriod,
+    colors: &ColorTokens,
+    dimmed: &[DimmedSpan],
+) -> Result<Vec<DrawItem>, ViewError> {
     let spec = scale.spec();
     if spec.ticks == TickVisibility::Hidden {
         return Ok(Vec::new());
@@ -85,7 +105,8 @@ pub fn ruler_items<M: RulerAxis>(
         } else {
             tokens.minor_tick_alpha
         };
-        let color = colors.text_primary.with_alpha(base_alpha * fade);
+        let dim_factor = dimmed_factor(dimmed, mark.offset_points / scale.points_per_unit());
+        let color = colors.text_primary.with_alpha(base_alpha * fade * dim_factor);
         items.push(bar_item(
             placement,
             axis,
@@ -132,26 +153,23 @@ pub fn ruler_marker_item<M: RulerAxis>(
     tokens: &RulerTokens,
     (position_units, style): (f64, RulerMarkerStyle),
 ) -> Result<Option<DrawItem>, ViewError> {
-    let spec = scale.spec();
-    if spec.ticks == TickVisibility::Hidden {
+    let Some(site) = overlay_site(
+        placement,
+        scale,
+        now,
+        px_per_pt,
+        tokens,
+        (position_units, "ruler marker"),
+    )?
+    else {
         return Ok(None);
-    }
-    let opacity = opacity_of_placement(placement, "ruler marker")?;
-    let axis = spec.direction.axis();
-    let sign = match spec.direction {
-        GrowthDirection::FingerLeft | GrowthDirection::FingerUp => 1.0,
-        GrowthDirection::FingerRight | GrowthDirection::FingerDown => -1.0,
     };
-    let half_extent_px = match axis {
-        ScreenAxis::Horizontal => placement.size.width,
-        ScreenAxis::Vertical => placement.size.height,
-    } * 0.5;
-    let along_pt = position_units * scale.points_per_unit() - scale.snapshot(now).offset_points;
-    let along_px = sign * px_per_pt.px(along_pt);
-    let fade = tokens.fade_factor(along_pt);
-    if along_px.abs() > half_extent_px || fade <= 0.0 {
-        return Ok(None);
-    }
+    let OverlaySite {
+        axis,
+        along_px,
+        fade,
+        opacity,
+    } = site;
     // Точка стоит под рисками: центр на половине длины риски + зазор + радиус точки.
     let cross_px = px_per_pt.px(tokens.tick_length_pt / 2.0 + style.gap_pt + style.diameter_pt / 2.0);
     let shift = match axis {
@@ -171,7 +189,7 @@ pub fn ruler_marker_item<M: RulerAxis>(
 }
 
 /// Одна полоска: `(толщина вдоль оси, длина поперёк)` в pt, центр сдвинут на `along_px` от центра узла.
-fn bar_item(
+pub(super) fn bar_item(
     placement: &NodePlacementPx,
     axis: ScreenAxis,
     along_px: f32,

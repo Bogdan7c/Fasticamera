@@ -204,7 +204,7 @@ impl ScopePanel {
             let run = texts.run(ctx, line.label, TextRoleKind::Caption)?;
             let half_height_pt = f64::from(run.cap_height_px / ctx.px.get()) / 2.0;
             let line_y = image.min_y() + f64::from(line.nominal_fraction_from_top()) * image.size.height;
-            let y = line_y.clamp(image.min_y() + half_height_pt, image.max_y() - half_height_pt) - zone_centre.y;
+            let y = clamp_label_centre(line_y, image.min_y(), image.max_y(), half_height_pt) - zone_centre.y;
             layers.push(
                 Layer::Content,
                 paint.text_right(run, right_edge, y, ctx.tokens.colors.panel_label),
@@ -214,9 +214,36 @@ impl ScopePanel {
     }
 }
 
+/// Центр подписи на высоте `line_y`, прижатый внутрь картинки `[top, bottom]` на половину высоты букв. Картинка ниже
+/// подписи (раскладка такого не пропускает, но виджет не должен падать) — подпись по центру картинки: `f64::clamp`
+/// при `min > max` паникует.
+fn clamp_label_centre(line_y: f64, top: f64, bottom: f64, half_height_pt: f64) -> f64 {
+    let (lowest, highest) = (top + half_height_pt, bottom - half_height_pt);
+    if lowest > highest {
+        return f64::midpoint(top, bottom);
+    }
+    line_y.clamp(lowest, highest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn label_centre_is_pressed_inside_the_picture_and_never_panics_on_a_short_one() {
+        assert_eq!(
+            clamp_label_centre(0.0, 0.0, 100.0, 5.0),
+            5.0,
+            "верхняя линия прижата вниз"
+        );
+        assert_eq!(clamp_label_centre(100.0, 0.0, 100.0, 5.0), 95.0, "нижняя — вверх");
+        assert_eq!(clamp_label_centre(50.0, 0.0, 100.0, 5.0), 50.0, "средняя на месте");
+        assert_eq!(
+            clamp_label_centre(0.0, 10.0, 14.0, 5.0),
+            12.0,
+            "картинка ниже подписи: центр картинки, без паники"
+        );
+    }
 
     #[test]
     fn neighbours_walk_the_linear_row_and_stop_at_the_ends() {

@@ -552,6 +552,7 @@ impl Stand {
         let haptics = Arc::new(RecordingHaptics::default());
         let (sender, receiver) = screen_input_channel(16);
         let mut source = CameraScreenSource::new(ScreenSourceParts {
+            look_white_stops: crate::look_white_stops::LookWhiteStopsWatcher::silent(),
             screen: CameraScreen::new(
                 ScreenConfig::default(),
                 ui_kit::tokens::UiKitTokens::default(),

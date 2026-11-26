@@ -11,6 +11,7 @@ use super::test_rig::*;
 use crate::action::ScreenAction;
 use crate::look_test_support::look_facts;
 use crate::look_view::ProblemKind;
+use crate::modes::CaptureMode;
 use crate::widget::problem_banner::problem_text;
 
 /// Факты с проблемой библиотеки номер `serial`.
@@ -59,6 +60,7 @@ fn every_problem_kind_has_its_own_short_english_text() {
             "SAVE FAILED",
         ),
         (ProblemKind::Look(LookProblemKind::SavesRefused), "SAVES OFF"),
+        (ProblemKind::Look(LookProblemKind::PresetsReset), "PRESETS RESET"),
         (ProblemKind::InvalidPresetName(PresetNameError::Empty), "INVALID NAME"),
         (ProblemKind::KeyboardUnavailable, "KEYBOARD UNAVAILABLE"),
     ];
@@ -243,4 +245,70 @@ fn with_the_presets_card_open_the_plaque_stands_above_it_in_every_orientation() 
             "{orientation:?}: плашка (низ {lowest_eye_y} pt) легла на карточку (верх {card_top} pt)"
         );
     }
+}
+
+// ----- проблема запуска: плашка при первом входе в раздел калибровки (решение 287) ---------------------------------
+
+fn startup_problem(rig: &mut Rig, kind: LookProblemKind) {
+    rig.screen.handle_action(ScreenAction::LookStartupProblem(kind));
+}
+
+fn enter_calibration(rig: &mut Rig) {
+    rig.act(ScreenAction::ModeSelected(CaptureMode::Calibrate));
+    rig.run(300);
+}
+
+fn leave_calibration(rig: &mut Rig) {
+    rig.act(ScreenAction::ModeSelected(CaptureMode::Photo));
+    rig.run(300);
+}
+
+#[test]
+fn a_startup_problem_waits_in_photo_and_shows_once_on_the_first_entry_to_calibrate() {
+    for (kind, text) in [
+        (LookProblemKind::PresetsReset, "PRESETS RESET"),
+        (LookProblemKind::SavesRefused, "SAVES OFF"),
+    ] {
+        let mut rig = Rig::new();
+        push(&mut rig, look_facts());
+        startup_problem(&mut rig, kind);
+        // Минуты в PHOTO: плашки нет, проблема не теряется.
+        rig.run(seconds() * 20);
+        assert!(
+            rig.screen.state().look().banner().is_none(),
+            "{text}: в PHOTO плашки нет"
+        );
+        assert_eq!(shown(&mut rig, text), 0);
+
+        enter_calibration(&mut rig);
+        assert_eq!(shown(&mut rig, text), 1, "{text}: плашка при входе в раздел");
+
+        // Плашка отжила, выход и повторный вход её не повторяют.
+        rig.run(seconds() + 800);
+        assert_eq!(shown(&mut rig, text), 0);
+        leave_calibration(&mut rig);
+        enter_calibration(&mut rig);
+        assert!(
+            rig.screen.state().look().banner().is_none(),
+            "{text}: второй вход плашку не повторяет"
+        );
+        assert_eq!(shown(&mut rig, text), 0);
+    }
+}
+
+#[test]
+fn a_startup_problem_that_arrives_while_calibrate_is_open_shows_at_once() {
+    let mut rig = calibrating(look_facts(), DeviceOrientation::Portrait);
+    assert!(rig.screen.state().look().banner().is_none());
+    startup_problem(&mut rig, LookProblemKind::PresetsReset);
+    rig.run(300);
+    assert_eq!(shown(&mut rig, "PRESETS RESET"), 1);
+}
+
+#[test]
+fn without_a_startup_problem_entering_calibrate_shows_no_plaque() {
+    let mut rig = Rig::new();
+    push(&mut rig, look_facts());
+    enter_calibration(&mut rig);
+    assert!(rig.screen.state().look().banner().is_none());
 }

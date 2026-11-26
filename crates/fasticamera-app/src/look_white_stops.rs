@@ -3,10 +3,11 @@
 //! Считает упоры поток рендера (`render_loop`, кэш параметров ISP: там живёт профиль цвета камеры и реальная белая
 //! сцены); здесь приложение только читает последнее значение доски. Доска и словарь — `look_contract::white_stops`.
 //!
-//! # Следующий шаг (не сделан здесь)
-//! Подключение к экрану: факт `LookWhiteStops` нужно донести до `camera-screen` (источник фактов экрана при смене,
-//! как `CameraFactsWatcher`), а экран нарисует по нему отметку упора на шкалах теплоты и оттенка. Это правка
-//! `camera-screen`, поэтому отдельный шаг; ни `ScreenAction`, ни поле в `LookFacts` здесь не добавляются.
+//! # Дорога к экрану
+//! [`LookWhiteStopsWatcher`] читает доску на каждом кадре UI и отдаёт упоры ТОЛЬКО когда они изменились
+//! ([`ScreenAction::LookWhiteStopsChanged`], как факты камеры у `CameraFactsWatcher`); экран рисует по ним отметки на
+//! шкалах теплоты и оттенка. До первого сообщения экран считает упоры неизвестными, поэтому «неизвестно» сам по
+//! себе не отправляется.
 //!
 //! # Отказ чтения
 //! Счётчика «доска нечитаема» нет: замок доски держится на копирование одного значения, отравленный замок
@@ -30,6 +31,40 @@ impl LookWhiteStopsReader {
     /// [`LookWhiteStops::NotApplicable`], если сдвиг белой не применяется вовсе, иначе посчитанные упоры.
     pub fn latest_stops(&self) -> LookWhiteStops {
         self.board.latest()
+    }
+}
+
+/// Наблюдатель за упорами для экрана: помнит последнее ОТПРАВЛЕННОЕ значение и отдаёт только изменения.
+#[derive(Debug, Clone)]
+pub struct LookWhiteStopsWatcher {
+    reader: LookWhiteStopsReader,
+    /// Что экран уже знает. Начинается с `Unknown`: так экран выглядит до первого сообщения.
+    last_sent: LookWhiteStops,
+}
+
+impl LookWhiteStopsWatcher {
+    /// Наблюдатель за доской, в которую пишет рендер.
+    pub fn new(board: LookWhiteStopsBoard) -> Self {
+        Self {
+            reader: LookWhiteStopsReader::new(board),
+            last_sent: LookWhiteStops::Unknown,
+        }
+    }
+
+    /// Наблюдатель без источника: доска пуста навсегда, экрану ничего не отправляется (сборки без рендера, тесты).
+    pub fn silent() -> Self {
+        Self::new(LookWhiteStopsBoard::new())
+    }
+
+    /// Упоры, если они изменились с прошлого вызова; `None` — экран уже знает текущее значение. Возврат к
+    /// `Unknown` тоже изменение (поток закончился, отметки надо убрать).
+    pub fn changed(&mut self) -> Option<LookWhiteStops> {
+        let latest = self.reader.latest_stops();
+        if latest == self.last_sent {
+            return None;
+        }
+        self.last_sent = latest;
+        Some(latest)
     }
 }
 
@@ -69,6 +104,45 @@ mod tests {
     }
 
     /// Рендерная половина связи пишет в ту же доску, что читает приложение.
+    #[test]
+    fn the_watcher_reports_each_change_once_and_stays_quiet_while_nothing_changes() {
+        let board = LookWhiteStopsBoard::new();
+        let mut watcher = LookWhiteStopsWatcher::new(board.clone());
+        assert_eq!(
+            watcher.changed(),
+            None,
+            "до первой публикации экран и так считает упоры неизвестными"
+        );
+
+        board.publish(tint_stop_at(0.46));
+        assert_eq!(watcher.changed(), Some(tint_stop_at(0.46)));
+        assert_eq!(watcher.changed(), None, "то же значение второй раз не отправляется");
+        board.publish(tint_stop_at(0.46));
+        assert_eq!(
+            watcher.changed(),
+            None,
+            "повторная публикация того же значения — не изменение"
+        );
+
+        board.publish(tint_stop_at(0.5));
+        assert_eq!(watcher.changed(), Some(tint_stop_at(0.5)));
+        board.publish(LookWhiteStops::Unknown);
+        assert_eq!(
+            watcher.changed(),
+            Some(LookWhiteStops::Unknown),
+            "конец потока убирает отметки"
+        );
+        assert_eq!(watcher.changed(), None);
+    }
+
+    #[test]
+    fn a_silent_watcher_never_reports_anything() {
+        let mut watcher = LookWhiteStopsWatcher::silent();
+        for _ in 0..5 {
+            assert_eq!(watcher.changed(), None);
+        }
+    }
+
     #[test]
     fn what_the_render_side_of_the_links_publishes_the_app_side_reads() {
         let links = CameraLinks::default();

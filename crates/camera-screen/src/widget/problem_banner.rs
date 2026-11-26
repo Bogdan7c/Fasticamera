@@ -45,6 +45,7 @@ pub(crate) fn problem_text(kind: &ProblemKind) -> &'static str {
         },
         ProblemKind::Look(LookProblemKind::SaveFailed(_)) => "SAVE FAILED",
         ProblemKind::Look(LookProblemKind::SavesRefused) => "SAVES OFF",
+        ProblemKind::Look(LookProblemKind::PresetsReset) => "PRESETS RESET",
         ProblemKind::InvalidPresetName(_) => "INVALID NAME",
         ProblemKind::KeyboardUnavailable => "KEYBOARD UNAVAILABLE",
     }

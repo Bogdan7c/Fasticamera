@@ -190,32 +190,41 @@ fn the_waveform_and_parade_pages_label_the_levels_and_the_vectorscope_does_not()
 }
 
 #[test]
-fn level_numbers_stand_left_of_the_picture_in_the_gutter_in_top_to_bottom_order_of_levels() {
-    let mut rig = portrait(look_facts());
-    let layout = *rig.screen.state().calibration().layout().expect("раскладка");
-    let list = rig.frame().clone();
-    let picture = layout.scope_image_rect_for(ScopeKind::Waveform);
-    let mut ys = Vec::new();
-    for label in ["100", "75", "50", "25", "0"] {
-        let runs = texts_of(&list, label, TextRoleKind::Caption);
-        assert_eq!(runs.len(), 1, "число {label}");
-        let run = &runs[0];
-        let right_edge =
-            f64::from(run.transform.tx) / f64::from(px(1.0)) + f64::from(run.run.advance_px / px(1.0)) / 2.0;
-        assert!(
-            right_edge <= picture.min_x() + 1e-3,
-            "число {label} не лежит на следе: правый край {right_edge}"
-        );
-        assert!(
-            f64::from(run.transform.ty) / f64::from(px(1.0)) > layout.scope_strip().max_y(),
-            "число под полоской"
-        );
-        ys.push(run.transform.ty);
+fn level_numbers_stand_left_of_the_picture_each_on_the_height_of_its_own_level_line() {
+    for orientation in [DeviceOrientation::Portrait, DeviceOrientation::LandscapeLeft] {
+        let mut rig = calibrating(look_facts(), orientation);
+        let layout = *rig.screen.state().calibration().layout().expect("раскладка");
+        let list = rig.frame().clone();
+        let picture = layout.scope_image_rect_for(ScopeKind::Waveform);
+        for line in ScopeKind::Waveform.level_lines() {
+            let runs = texts_of(&list, line.label, TextRoleKind::Caption);
+            assert_eq!(runs.len(), 1, "{orientation:?}: число {}", line.label);
+            let item = &runs[0];
+            // Базовая линия подписи: поверхность → глаз (в альбоме оси повёрнуты); центр букв выше неё на половину
+            // их высоты.
+            let baseline = layout.surface_point_in_eye(Point::new(
+                f64::from(item.transform.tx) / f64::from(px(1.0)),
+                f64::from(item.transform.ty) / f64::from(px(1.0)),
+            ));
+            // Номинальная высота линии в картинке; крайние подписи прижаты внутрь на половину высоты букв.
+            let half_height = f64::from(item.run.cap_height_px / px(1.0)) / 2.0;
+            let centre_y = baseline.y - half_height;
+            let nominal_y = picture.min_y() + f64::from(line.nominal_fraction_from_top()) * picture.size.height;
+            let expected_y = nominal_y.clamp(picture.min_y() + half_height, picture.max_y() - half_height);
+            assert!(
+                (centre_y - expected_y).abs() < 0.5,
+                "{orientation:?}: число {} на высоте {} вместо {expected_y} (линия {nominal_y})",
+                line.label,
+                centre_y
+            );
+            let right_edge = baseline.x + f64::from(item.run.advance_px / px(1.0)) / 2.0;
+            assert!(
+                right_edge <= picture.min_x() + 1e-3,
+                "{orientation:?}: число {} не лежит в поле слева от картинки: правый край {right_edge}",
+                line.label
+            );
+        }
     }
-    assert!(
-        ys.windows(2).all(|pair| pair[0] < pair[1]),
-        "100 наверху, 0 внизу: {ys:?}"
-    );
 }
 
 // ----- CLEAN внизу ---------------------------------------------------------------------------------------------------------
@@ -625,16 +634,5 @@ fn a_swipe_on_the_capsule_with_the_card_open_does_not_change_the_mode_either() {
         rig.screen.state().mode(),
         CaptureMode::Calibrate,
         "открытое меню модальное"
-    );
-}
-
-#[test]
-fn surface_vector_is_used_to_aim_the_scope_swipe_in_landscape() {
-    // Опора теста свайпа: в альбоме глазное «влево» — это вертикаль поверхности, а не её горизонталь.
-    let rig = calibrating(look_facts(), DeviceOrientation::LandscapeLeft);
-    let vector = surface_vector(&rig, Vector::new(-25.0, 0.0));
-    assert!(
-        vector.dx.abs() < 1e-9 && (vector.dy.abs() - 25.0).abs() < 1e-9,
-        "{vector:?}"
     );
 }

@@ -22,7 +22,7 @@ use ui_kit::ruler::{GatedEvent, HapticPacing, RulerControl, RulerFeel, RulerSpec
 use ui_kit::scale::ZeroMagnet;
 use ui_kit::tokens::{HapticEvent, PointsPerUnit, ScaleDensity, UiKitTokens};
 use ui_kit::value::{Emphasis, LinearLimits, QuantizedLinear, ReferenceValue, TickPitch, ValueModel};
-use ui_kit::view::{PxPerPt, RulerMarkerStyle};
+use ui_kit::view::{DimmedRange, PxPerPt, RulerMarkerStyle, RulerStopTickStyle};
 
 mod common;
 use common::{env, ms};
@@ -568,4 +568,119 @@ fn preset_marker_follows_the_ruler_when_the_finger_moves_it() {
         after_shape.transform.tx
     );
     assert!(before.is_some());
+}
+
+// ----- упор и тусклый ход за ним (решения 288, 293) ---------------------------------------------------------------
+
+/// Прозрачность фигуры-риски.
+fn shape_alpha(item: &DrawItem) -> f32 {
+    let DrawItem::Shape(shape) = item else {
+        panic!("риска — фигура");
+    };
+    shape.fill.a
+}
+
+fn stop_style(tokens: &UiKitTokens) -> RulerStopTickStyle {
+    RulerStopTickStyle {
+        thickness_pt: 3.0,
+        length_pt: 22.0,
+        color: tokens.colors.text_primary,
+    }
+}
+
+#[test]
+fn without_dimmed_ranges_the_ruler_draws_bit_for_bit_the_same_as_before() {
+    let tokens = UiKitTokens::default();
+    let ruler = fine_ruler(&tokens, knob_feel(), 0.0);
+    let px = PxPerPt::new(3.0).unwrap();
+    let plain = ruler
+        .items(&placement(), ms(0), px, &tokens.ruler, &tokens.colors)
+        .unwrap();
+    let with_empty_list = ruler
+        .items_with_dimmed_ranges(&placement(), ms(0), px, (&tokens.ruler, &tokens.colors), &[])
+        .unwrap();
+    assert!(!plain.is_empty());
+    assert_eq!(
+        plain, with_empty_list,
+        "Exposure, белое и зум не должны измениться ни на бит"
+    );
+}
+
+#[test]
+fn only_the_ticks_beyond_the_stop_are_dimmed_and_the_current_mark_never_is() {
+    let tokens = UiKitTokens::default();
+    let ruler = fine_ruler(&tokens, knob_feel(), 0.0);
+    let px = PxPerPt::new(3.0).unwrap();
+    let plain = ruler
+        .items(&placement(), ms(0), px, &tokens.ruler, &tokens.colors)
+        .unwrap();
+    // Упор плюсовой стороны на +92 (0,46): всё правее тускнеет в 0,4 раза.
+    let dimmed = ruler
+        .items_with_dimmed_ranges(
+            &placement(),
+            ms(0),
+            px,
+            (&tokens.ruler, &tokens.colors),
+            &[DimmedRange {
+                from: 0.46,
+                to: 1.0,
+                alpha_factor: 0.4,
+            }],
+        )
+        .unwrap();
+    assert_eq!(plain.len(), dimmed.len(), "риски те же, меняется только яркость");
+    let mut dimmed_count = 0;
+    for (before, after) in plain.iter().zip(&dimmed) {
+        let (DrawItem::Shape(before_shape), DrawItem::Shape(_)) = (before, after) else {
+            panic!("риски — фигуры");
+        };
+        let offset_px = before_shape.transform.tx - 600.0;
+        let steps = f64::from(offset_px) / 3.0;
+        if steps > 92.0 + 1e-3 {
+            dimmed_count += 1;
+            assert!(
+                (shape_alpha(after) - shape_alpha(before) * 0.4).abs() < 1e-6,
+                "риска на {steps:+.0} за упором тускнеет"
+            );
+        } else {
+            assert_eq!(
+                before, after,
+                "риска на {steps:+.0} до упора (и жёлтая отметка) не тронута"
+            );
+        }
+    }
+    assert!(dimmed_count >= 1, "в окне линейки есть риски за упором (+100)");
+}
+
+#[test]
+fn the_stop_tick_stands_at_the_stop_longer_than_a_normal_tick_and_far_stops_are_not_drawn() {
+    let tokens = UiKitTokens::default();
+    let ruler = fine_ruler(&tokens, knob_feel(), 0.0);
+    let px = PxPerPt::new(3.0).unwrap();
+    for (value, expected_steps) in [(0.46, 92.0), (-0.46, -92.0)] {
+        let item = ruler
+            .stop_tick_item(&placement(), ms(0), px, &tokens.ruler, (value, stop_style(&tokens)))
+            .unwrap()
+            .expect("упор в видимой части");
+        let DrawItem::Shape(shape) = item else {
+            panic!("упор — фигура");
+        };
+        assert!(
+            (shape.transform.tx - (600.0 + expected_steps as f32 * 3.0)).abs() < 1e-3,
+            "упор {value}: на {expected_steps:+} единицах, а не {}",
+            shape.transform.tx
+        );
+        let ui_draw::shape::ShapeGeometry::RoundedRect { size, .. } = shape.geometry else {
+            panic!("упор — прямоугольник");
+        };
+        assert!(
+            f64::from(size.height) > tokens.ruler.tick_length_pt * 3.0,
+            "упор длиннее обычной риски: {size:?}"
+        );
+    }
+    let far = ruler
+        .stop_tick_item(&placement(), ms(0), px, &tokens.ruler, (1.0, stop_style(&tokens)))
+        .unwrap();
+    assert!(far.is_none(), "упор за пределами видимых рисок не торчит один");
+    assert!(ruler.position_steps(ms(1000)).abs() < 1e-9, "упор линейку не двигает");
 }

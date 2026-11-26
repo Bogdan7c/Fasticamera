@@ -21,10 +21,11 @@ use fasticamera::camera_screen_source::{CameraScreenSource, GravityLink, ScreenB
 use fasticamera::look_facts::{BandSwatchStyle, LookFactsCatalog, LookFactsSource};
 use fasticamera::look_service::{LookHandle, LookPersistence, LookService, LookStartup};
 use fasticamera::look_startup::catalog_environment;
+use fasticamera::look_white_stops::LookWhiteStopsWatcher;
 use fasticamera::text_effects::TextResultToScreen;
 use fasticamera::text_input_broker::TextInputBroker;
 use fasticamera::viewfinder_control::{ControlDelivery, RenderAdjustment, RenderControl};
-use look_contract::{LookRecipe, LookSettings};
+use look_contract::{LookRecipe, LookSettings, LookWhiteStopsBoard};
 use look_presets::{LibrarySnapshot, PresetLibrary, PresetStoreConfig, SaveOutcome, SaveRequestOutcome};
 use render_loop::backend::DisplayBackend;
 use render_loop::config::{DisplayColorConfig, RenderLoopConfig, ToneBaseChoice, ViewfinderToneConfig};
@@ -236,6 +237,8 @@ pub struct CalibrationRig {
     pub sender: ScreenInputSender,
     pub inbox: Arc<RecordingInbox>,
     pub library: LookHandle,
+    /// Доска упоров ручек теплоты и оттенка, которую читает источник экрана.
+    pub look_white_stops: LookWhiteStopsBoard,
     pub broker: TextInputBroker,
     pub dialogs: Arc<FakeDialogs>,
     /// Намерения по прибору, которые рендер получил, по порядку (стенд записывает их перед применением).
@@ -265,8 +268,11 @@ impl CalibrationRig {
         let dialogs = Arc::new(FakeDialogs::default());
         let broker = TextInputBroker::new(Arc::clone(&dialogs) as Arc<dyn TextInputService>);
         let inbox = Arc::new(RecordingInbox::default());
-        let (source, sender, board) = Self::new_screen(&library, &broker, &inbox);
+        // Доска упоров теплоты и оттенка: в продукте в неё пишет поток рендера, здесь — тест (`look_white_stops`).
+        let look_white_stops = LookWhiteStopsBoard::new();
+        let (source, sender, board) = Self::new_screen(&library, &broker, &inbox, &look_white_stops);
         let rig = Self {
+            look_white_stops,
             bench,
             source,
             board,
@@ -292,6 +298,7 @@ impl CalibrationRig {
         library: &LookHandle,
         broker: &TextInputBroker,
         inbox: &Arc<RecordingInbox>,
+        look_white_stops: &LookWhiteStopsBoard,
     ) -> (CameraScreenSource, ScreenInputSender, Arc<ScreenBoard>) {
         let (sender, receiver) = screen_input_channel(64);
         let board = Arc::new(ScreenBoard::default());
@@ -314,6 +321,7 @@ impl CalibrationRig {
         )
         .expect("экран");
         let source = CameraScreenSource::new(ScreenSourceParts {
+            look_white_stops: LookWhiteStopsWatcher::new(look_white_stops.clone()),
             screen,
             input: receiver,
             facts: Box::new(LiveCamera),
@@ -340,7 +348,8 @@ impl CalibrationRig {
                 .apply_ui_overlay_command(UiOverlayCommand::Install(Box::new(EmptyUiSource))),
             UiOverlayOutcome::Applied
         );
-        let (source, sender, board) = Self::new_screen(&self.library, &self.broker, &self.inbox);
+        let (source, sender, board) =
+            Self::new_screen(&self.library, &self.broker, &self.inbox, &self.look_white_stops);
         self.source = source;
         self.sender = sender;
         self.board = board;
@@ -411,6 +420,45 @@ impl CalibrationRig {
             }
             self.outcomes.push(self.bench.backend.apply_viewfinder_command(command));
         }
+    }
+
+    /// Сколько риск-упоров нарисовано на последнем кадре экрана (решения 288, 293): фигуры-полоски толщиной и длиной
+    /// из конфига вида упоров, у обычных рисок размеры другие.
+    pub fn drawn_stop_tick_count(&self) -> usize {
+        let look = ScreenConfig::default().calibration.widgets.knob_stops;
+        let px_per_pt = 1080.0 / 440.0;
+        let (width, height) = (
+            (look.tick_thickness_pt * px_per_pt) as f32,
+            (look.tick_length_pt * px_per_pt) as f32,
+        );
+        self.last_ui.as_ref().map_or(0, |list| {
+            list.leaf_items()
+                .filter(|item| {
+                    matches!(
+                        item,
+                        DrawItem::Shape(shape) if matches!(
+                            shape.geometry,
+                            ui_draw::shape::ShapeGeometry::RoundedRect { size, .. }
+                                if (size.width - width).abs() < 0.05 && (size.height - height).abs() < 0.05
+                        )
+                    )
+                })
+                .count()
+        })
+    }
+
+    /// Яркость (альфа цвета) подписи значения шкалы `text` на последнем кадре; `None` — такой подписи нет.
+    pub fn drawn_scale_value_alpha(&self, text: &str) -> Option<f32> {
+        let tokens = UiKitTokens::default();
+        let expected = LabelPainter::new(&tokens.typography, PxPerPt::new(1080.0 / 440.0).expect("масштаб"))
+            .layout(text, TextRoleKind::ScaleValue)
+            .expect("раскладка подписи");
+        self.last_ui.as_ref().and_then(|list| {
+            list.leaf_items().find_map(|item| match item {
+                DrawItem::Text(drawn) if drawn.run == expected && drawn.opacity.get() > 0.05 => Some(drawn.color.a),
+                _ => None,
+            })
+        })
     }
 
     /// Сколько раз на последнем кадре экрана нарисована подпись `text` ролью значения шкалы (`+30`, `−7`, `0`).

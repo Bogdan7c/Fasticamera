@@ -46,7 +46,8 @@ use camera_screen::calibration::{CalibrationConfig, ControlViewKind};
 use camera_screen::modes::CaptureMode;
 use fasticamera::camera_screen_input::InputDelivery;
 use look_contract::{
-    BandAxis, GlobalKnob, HueBandId, LookControl, LookKnob, LookSettings, ToneBaseModel, WheelPart, WheelZone,
+    BandAxis, GlobalKnob, HueBandId, KnobSideStops, KnobStop, KnobTravelStops, LookControl, LookKnob, LookSettings,
+    LookWhiteStops, StopFraction, ToneBaseModel, WheelPart, WheelZone,
 };
 use render_loop::config::ToneBaseChoice;
 use shell_contract::touch::TouchPhase;
@@ -499,5 +500,68 @@ fn finger_drives_the_gamma_wheel_ring_to_plus_200_and_the_frame_matches_the_refe
     tap(&mut rig, reset);
     assert_eq!(rig.library.active_settings(), preset, "«↻» вернул пресет");
     rig.assert_shows(ToneBaseChoice::Agx, &preset, "после «↻»: вид пресета");
+    rig.finish();
+}
+
+// ----- упоры теплоты и оттенка (решения 288, 293) --------------------------------------------------------------------
+
+#[test]
+fn finger_drives_tint_past_the_render_stop_and_the_screen_marks_the_stop_and_dims_the_value() {
+    let Some(mut rig) = rig_on(ToneBaseModel::Agx, reddish()) else {
+        return;
+    };
+    let tint_slot = knob_slot(GlobalKnob::Tint);
+    bring_row_into_view(&mut rig, tint_slot);
+    rig.frames(20);
+    assert_eq!(rig.drawn_stop_tick_count(), 0, "рендер упоров не сообщал: отметок нет");
+
+    // Рендер положил упор оттенка 0,46 на доску (в продукте это делает поток рендера при смене входов).
+    let none = KnobSideStops {
+        minus: KnobStop::None,
+        plus: KnobStop::None,
+    };
+    rig.look_white_stops.publish(LookWhiteStops::Known(KnobTravelStops {
+        warmth: none,
+        tint: KnobSideStops {
+            plus: KnobStop::At(StopFraction::new(0.46).expect("доля")),
+            ..none
+        },
+    }));
+    rig.frames(20);
+    assert_eq!(
+        rig.drawn_stop_tick_count(),
+        1,
+        "упор оттенка нарисован риской на линейке TINT"
+    );
+    assert_eq!(
+        rig.board.latest().expect("отчёт").look_white_stops_sent,
+        1,
+        "экрану сообщено один раз"
+    );
+
+    // Палец ведёт оттенок: до упора число обычное, за упором (+92) — тусклое.
+    let normal = rig.drawn_scale_value_alpha("0").expect("число 0 нарисовано");
+    finger_to_units(&mut rig, tint_slot, |settings| settings.tint, 50);
+    assert_eq!(
+        rig.drawn_scale_value_alpha("+50"),
+        Some(normal),
+        "+50 до упора: число обычное"
+    );
+    finger_to_units(&mut rig, tint_slot, |settings| settings.tint, 120);
+    let dimmed = rig.drawn_scale_value_alpha("+120").expect("число +120 нарисовано");
+    assert!(
+        dimmed < normal,
+        "+120 за упором: число тусклее ({dimmed} против {normal})"
+    );
+
+    // Поток закончился: доска вернулась к «неизвестно», отметка и тусклое число пропали.
+    rig.look_white_stops.publish(LookWhiteStops::Unknown);
+    rig.frames(20);
+    assert_eq!(rig.drawn_stop_tick_count(), 0);
+    assert_eq!(
+        rig.drawn_scale_value_alpha("+120"),
+        Some(normal),
+        "без упоров число обычное"
+    );
     rig.finish();
 }

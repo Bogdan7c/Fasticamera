@@ -120,6 +120,7 @@ impl PanelStand {
         )
         .expect("экран собирается из конфига теста");
         let source = CameraScreenSource::new(ScreenSourceParts {
+            look_white_stops: fasticamera::look_white_stops::LookWhiteStopsWatcher::silent(),
             screen,
             input: receiver,
             facts: Box::new(FreezableFacts::new(

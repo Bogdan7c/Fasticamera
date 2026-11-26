@@ -20,9 +20,10 @@ use ui_kit::ruler::{GatedEvent, HapticPacing, RulerControl, RulerFeel, RulerSpec
 use ui_kit::scale::ZeroMagnet;
 use ui_kit::tokens::TextRoleKind;
 use ui_kit::value::{LinearLimits, QuantizedLinear, ReferenceValue, TickPitch};
-use ui_kit::view::RulerMarkerStyle;
+use ui_kit::view::{RulerMarkerStyle, RulerStopTickStyle};
 
 use super::knob_scale::KnobScale;
+use super::knob_stops::RowStops;
 
 use super::paint::NodePaint;
 use super::reset_disc::draw_reset_disc;
@@ -513,9 +514,15 @@ impl RulerRow {
         );
         let value_run = texts.run(ctx, &self.scale.label(value), TextRoleKind::ScaleValue)?;
         let value_right = half_width - reset_side - config.value_gap_pt;
+        // За упором картинка не меняется: число тусклое (решения 288, 293).
+        let value_color = if RowStops::of(self.target, ctx).holds_beyond(value) {
+            colors.text_primary.with_alpha(config.knob_stops.beyond_value_alpha)
+        } else {
+            colors.text_primary
+        };
         layers.push(
             Layer::Content,
-            paint.text_right(value_run, value_right, title_y, colors.text_primary),
+            paint.text_right(value_run, value_right, title_y, value_color),
         );
         self.draw_reset(ctx, &paint, layers, value_is_edited(self, ctx));
         self.draw_ruler(ctx, visuals, layers, disabled_factor)
@@ -543,14 +550,34 @@ impl RulerRow {
         let Some(paint) = NodePaint::new(ctx, placement, extra_opacity)? else {
             return Ok(());
         };
-        let items: Vec<DrawItem> = self.ruler.items(
+        // Упоры теплоты и оттенка: риски за упором тусклее, на самом упоре своя риска. У остальных строк упоров нет,
+        // список промежутков пуст, и линейка рисуется как раньше.
+        let stops = RowStops::of(self.target, ctx);
+        let stops_look = &ctx.config.calibration.widgets.knob_stops;
+        let items: Vec<DrawItem> = self.ruler.items_with_dimmed_ranges(
             &paint.placement(),
             ctx.now,
             ctx.px,
-            &ctx.tokens.ruler,
-            &ctx.tokens.colors,
+            (&ctx.tokens.ruler, &ctx.tokens.colors),
+            &stops.dimmed_ranges(stops_look),
         )?;
         layers.extend(Layer::Content, items);
+        let stop_tick_style = RulerStopTickStyle {
+            thickness_pt: stops_look.tick_thickness_pt,
+            length_pt: stops_look.tick_length_pt,
+            color: ctx.tokens.colors.text_primary.with_alpha(stops_look.tick_alpha),
+        };
+        for value in stops.tick_values() {
+            if let Some(tick) = self.ruler.stop_tick_item(
+                &paint.placement(),
+                ctx.now,
+                ctx.px,
+                &ctx.tokens.ruler,
+                (value, stop_tick_style),
+            )? {
+                layers.push(Layer::Content, tick);
+            }
+        }
         if let Some(marker) = self.preset_marker(ctx, &paint)? {
             layers.push(Layer::Content, marker);
         }

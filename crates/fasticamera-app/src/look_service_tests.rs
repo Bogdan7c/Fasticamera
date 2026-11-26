@@ -148,3 +148,50 @@ fn the_revision_moves_only_when_the_stored_state_changes() {
         "новый пресет (список изменился, вид тот же)"
     );
 }
+
+#[test]
+fn only_the_bad_startup_outcomes_have_a_problem_for_the_screen() {
+    assert_eq!(
+        LookStartup::Quarantined.problem(),
+        Some(look_contract::LookProblemKind::PresetsReset)
+    );
+    for refused in [LookStartup::QuarantineFailed, LookStartup::Unreadable] {
+        assert_eq!(
+            refused.problem(),
+            Some(look_contract::LookProblemKind::SavesRefused),
+            "{refused:?}"
+        );
+    }
+    for normal in [
+        LookStartup::InMemoryOnly,
+        LookStartup::NoFileYet,
+        LookStartup::Loaded,
+        LookStartup::Migrated { from_version: 1 },
+    ] {
+        assert_eq!(normal.problem(), None, "{normal:?}");
+    }
+}
+
+#[test]
+fn the_startup_problem_is_handed_out_once_per_process_through_the_shared_handle() {
+    let library = look_presets::PresetLibrary::new(
+        PresetStoreConfig::default()
+            .builtin_catalog(&default_environment())
+            .expect("каталог"),
+    );
+    let handle = LookHandle::new(LookService::new(
+        library,
+        Box::new(crate::look_service::NoLookPersistence),
+        LookStartup::Quarantined,
+    ));
+    let other_clone = handle.clone();
+    assert_eq!(
+        handle.take_startup_problem(),
+        Some(look_contract::LookProblemKind::PresetsReset)
+    );
+    assert_eq!(
+        other_clone.take_startup_problem(),
+        None,
+        "второй клон и повторный вызов — ничего"
+    );
+}

@@ -58,6 +58,12 @@ pub enum CalibrationLayoutError {
     NoRoomInSafeArea { knobs: Rect, scope: Rect },
     #[error("в зоне прибора {scope:?} не остаётся места для картинки под полоской")]
     NoRoomForScopePicture { scope: Rect },
+    #[error("картинка прибора в зоне {scope:?} ниже подписи уровня ({picture_height_pt} pt < {label_height_pt} pt)")]
+    ScopePictureShorterThanLevelLabels {
+        scope: Rect,
+        picture_height_pt: f64,
+        label_height_pt: f64,
+    },
 }
 
 /// Четыре зоны раздела в глазных координатах, без перекрытий. Без отступов безопасной зоны они ровно покрывают
@@ -176,7 +182,8 @@ impl CalibrationLayout {
         self.scope_frames.strip()
     }
 
-    /// Область картинки прибора: зона без полоски. Свайп листает приборы именно здесь.
+    /// Область картинки прибора: зона без полоски (рамка картинок и поля уровней). Свайп листает приборы по ВСЕЙ зоне
+    /// прибора, включая полоску (`CalibrationZones::scope`), а не только здесь.
     pub fn scope_picture_area(&self) -> Rect {
         self.scope_frames.picture_area()
     }

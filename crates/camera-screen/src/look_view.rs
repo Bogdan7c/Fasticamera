@@ -5,7 +5,7 @@
 //! намерения собираются из `facts.current`. Здесь же живёт «проблема к показу» — плашка, которую рисует виджет:
 //! и проблема библиотеки (по смене серийного номера), и локальная проблема экрана (неверное имя, нет клавиатуры).
 
-use look_contract::{LookFacts, LookProblemKind, PresetNameError};
+use look_contract::{GlobalKnob, KnobSideStops, KnobStop, LookFacts, LookProblemKind, LookWhiteStops, PresetNameError};
 
 /// Какая именно проблема показана плашкой.
 #[derive(Debug, Clone, PartialEq)]
@@ -39,6 +39,12 @@ pub struct LookView {
     banners_raised: u64,
     /// Серийный номер последней проблемы библиотеки, по которой уже поднята плашка.
     last_seen_look_problem: Option<u64>,
+    /// Проблема запуска (решение 287), которая ждёт первого входа в раздел калибровки: плашка поднимается ровно
+    /// один раз при входе, а не при старте, когда раздела на экране нет, и не теряется, если вход случится позже.
+    startup_problem_awaiting_section: Option<LookProblemKind>,
+    /// Упоры ручек теплоты и оттенка по последнему сообщению рендера (решения 288, 293). До первого сообщения —
+    /// `Unknown`: отметок на шкалах нет.
+    white_stops: LookWhiteStops,
 }
 
 impl LookView {
@@ -52,6 +58,29 @@ impl LookView {
         self.banner.as_ref()
     }
 
+    /// Упоры шкалы ручки `knob` для отметок. Упоры бывают только у теплоты и оттенка; у остальных ручек, а также
+    /// пока упоры неизвестны или не применимы (`Unknown`, `NotApplicable`), отметок нет ([`KnobStop::None`]).
+    pub fn knob_stops(&self, knob: GlobalKnob) -> KnobSideStops {
+        const NO_MARKS: KnobSideStops = KnobSideStops {
+            minus: KnobStop::None,
+            plus: KnobStop::None,
+        };
+        match (self.white_stops, knob) {
+            (LookWhiteStops::Known(stops), GlobalKnob::Warmth) => stops.warmth,
+            (LookWhiteStops::Known(stops), GlobalKnob::Tint) => stops.tint,
+            _ => NO_MARKS,
+        }
+    }
+
+    /// Принимает новые упоры от рендера; `false` — они такие же, как были (состояние не менялось).
+    pub(crate) fn store_white_stops(&mut self, stops: LookWhiteStops) -> bool {
+        if self.white_stops == stops {
+            return false;
+        }
+        self.white_stops = stops;
+        true
+    }
+
     /// Принимает новый снимок фактов. Проблема библиотеки с НОВЫМ серийным номером поднимает плашку; тот же
     /// номер повторно (факты пришли снова по другой причине) плашку не воскрешает.
     pub(crate) fn store_facts(&mut self, facts: LookFacts) {
@@ -62,6 +91,27 @@ impl LookView {
             self.raise(ProblemKind::Look(problem.kind.clone()));
         }
         self.facts = Some(facts);
+    }
+
+    /// Запоминает проблему запуска до первого входа в раздел калибровки. Вторая такая же (приложение прислало
+    /// повторно) заменяет первую, а не копится: плашка всё равно одна.
+    pub(crate) fn defer_startup_problem(&mut self, kind: LookProblemKind) {
+        self.startup_problem_awaiting_section = Some(kind);
+    }
+
+    /// Поднимает отложенную проблему запуска, если экран сейчас в разделе калибровки (`section_is_open`). Поднятая
+    /// проблема забывается: повторный вход плашку не повторяет. Возвращает, поднялась ли плашка.
+    pub(crate) fn raise_startup_problem_if_section_is_open(&mut self, section_is_open: bool) -> bool {
+        if !section_is_open {
+            return false;
+        }
+        match self.startup_problem_awaiting_section.take() {
+            Some(kind) => {
+                self.raise(ProblemKind::Look(kind));
+                true
+            }
+            None => false,
+        }
     }
 
     /// Поднимает локальную проблему экрана (неверное имя, нет клавиатуры).

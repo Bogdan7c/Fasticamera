@@ -58,7 +58,7 @@ mod tests {
 
     use super::*;
     use crate::calibration::CalibrationConfig;
-    use crate::calibration::layout_tests::{calibration_layout, screen};
+    use crate::calibration::layout_tests::{ALL_ORIENTATIONS, calibration_layout, screen};
     use crate::mode_behaviour::LayoutPolicy;
     use shell_contract::orientation::DeviceOrientation;
 
@@ -78,9 +78,9 @@ mod tests {
     }
 
     #[test]
-    fn title_dots_axes_and_the_white_slot_never_share_a_point_on_the_tightest_page_in_both_orientations() {
+    fn title_dots_axes_and_the_white_slot_never_share_a_point_on_the_tightest_page_in_every_orientation() {
         let config = CalibrationConfig::default();
-        for orientation in [DeviceOrientation::Portrait, DeviceOrientation::LandscapeLeft] {
+        for orientation in ALL_ORIENTATIONS {
             let layout = calibration_layout(LayoutPolicy::FollowsOrientation, orientation);
             let strip = layout.scope_strip();
             let frames = ScopeStripFrames::of(strip, &config.widgets);

@@ -87,12 +87,14 @@ fn bottom_row_heights_and_the_scope_limit_are_validated() {
     for (name, set) in [
         ("scope_strip_height_pt", 0.0),
         ("scope_levels_gutter_pt", f64::NAN),
+        ("scope_level_label_height_pt", 0.0),
         ("side_button_inset_pt", -1.0),
     ] {
         let mut config = CalibrationConfig::default();
         match name {
             "scope_strip_height_pt" => config.layout.scope_strip_height_pt = set,
             "scope_levels_gutter_pt" => config.layout.scope_levels_gutter_pt = set,
+            "scope_level_label_height_pt" => config.layout.scope_level_label_height_pt = set,
             _ => config.layout.side_button_inset_pt = set,
         }
         assert!(

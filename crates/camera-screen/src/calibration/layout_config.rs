@@ -71,6 +71,9 @@ pub struct CalibrationLayoutConfig {
     pub scope_strip_height_pt: f64,
     /// Ширина поля уровней слева от картинки waveform и parade, pt (решение 274: ≈ 28).
     pub scope_levels_gutter_pt: f64,
+    /// Высота подписи уровня, pt (запас с кеглем `Caption`): картинка ниже неё — ошибка раскладки, а не подпись,
+    /// вылезающая за картинку. Подпись прижимается внутрь картинки на половину этой высоты `[estimate]`.
+    pub scope_level_label_height_pt: f64,
     /// Отступ центров кнопки меню и CLEAN от боковых краёв безопасной зоны, pt: как у кнопки меню PHOTO от края
     /// экрана (440 − 383,6 = 56,4), чтобы кнопка не оказалась в полосе системного жеста.
     pub side_button_inset_pt: f64,
@@ -98,6 +101,7 @@ impl Default for CalibrationLayoutConfig {
             knobs_side: KnobsSide::Left,
             scope_strip_height_pt: 44.0,
             scope_levels_gutter_pt: 28.0,
+            scope_level_label_height_pt: 16.0,
             side_button_inset_pt: 56.4,
         }
     }
@@ -157,6 +161,7 @@ impl CalibrationLayoutConfig {
         for (field, value) in [
             ("scope_strip_height_pt", self.scope_strip_height_pt),
             ("scope_levels_gutter_pt", self.scope_levels_gutter_pt),
+            ("scope_level_label_height_pt", self.scope_level_label_height_pt),
             ("side_button_inset_pt", self.side_button_inset_pt),
         ] {
             if !(value.is_finite() && value > 0.0) {

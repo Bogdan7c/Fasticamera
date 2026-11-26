@@ -79,22 +79,6 @@ impl<'scene> TouchMap<'scene> {
         Self { tree, live }
     }
 
-    /// Снимает карту с текущей вёрстки сцены.
-    #[allow(
-        dead_code,
-        reason = "карта всей сцены — для будущих проверок PHOTO; раздел берёт поддерево"
-    )]
-    pub(crate) fn of(scene: &'scene UiScene<ScreenGesture>) -> Self {
-        let tree = scene.tree();
-        let visuals = visuals_of(tree);
-        let live = scene
-            .nodes_with_recognizers()
-            .into_iter()
-            .filter_map(|node| live_area(tree, &visuals, node))
-            .collect();
-        Self { tree, live }
-    }
-
     /// Живые элементы (в порядке добавления распознавателей).
     pub(crate) fn live(&self) -> &[LiveArea] {
         &self.live

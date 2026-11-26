@@ -26,6 +26,7 @@ mod finger_focus;
 mod host;
 mod knob_row;
 mod knob_scale;
+mod knob_stops;
 mod knobs_column;
 mod menu;
 mod paint;

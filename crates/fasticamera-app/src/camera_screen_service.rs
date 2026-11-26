@@ -62,6 +62,7 @@ use crate::capture_backend::{CaptureBackend, CaptureDiagnostics};
 use crate::gpu_services::{GpuServices, RenderObservation};
 use crate::look_facts::{LookFactsCatalog, LookFactsSource};
 use crate::look_service::LookHandle;
+use crate::look_white_stops::LookWhiteStopsWatcher;
 use crate::scenario::observing::ShellServices;
 use crate::still_phase_log::{PhaseBatch, PhaseCursor};
 use crate::text_effects::TextResultToScreen;
@@ -673,6 +674,7 @@ impl CameraScreenService {
             input: receiver,
             facts,
             look_facts,
+            look_white_stops: LookWhiteStopsWatcher::new(env.camera.look_white_stops().clone()),
             gravity,
             executor,
             board: Arc::clone(&board),

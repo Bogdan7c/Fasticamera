@@ -299,6 +299,8 @@ fn dispatch_action(ctx: &mut Ctx<'_>, action: ScreenAction) -> ActionOutcome {
         ScreenAction::Look(intent) => look::on_look(ctx, intent),
         ScreenAction::Scopes(intent) => scopes::on_scopes(ctx, intent),
         ScreenAction::LookFactsChanged(facts) => look::on_facts_changed(ctx, *facts),
+        ScreenAction::LookStartupProblem(kind) => look::on_startup_problem(ctx, kind),
+        ScreenAction::LookWhiteStopsChanged(stops) => look::on_white_stops_changed(ctx, stops),
         ScreenAction::KnobDragged { knob, value } => calibration::on_knob_dragged(ctx, knob, value),
         ScreenAction::BandKnobDragged { band, axis, value } => {
             calibration::on_band_knob_dragged(ctx, band, axis, value)

@@ -335,7 +335,7 @@ fn a_slow_drag_with_a_stop_leaves_the_value_exactly_under_the_finger() {
     let mut rig = portrait(look_facts());
     let ruler = center(&rig, "calib_ruler", 2);
     // drag_eye ведёт палец плавно и задерживается перед отрывом: скорость отпускания нулевая.
-    let finger_dx = knob_finger_pt_from_zero(99.0);
+    let finger_dx = knob_finger_pt(99.0);
     drag_eye(
         &mut rig,
         Point::new(ruler.x + 60.0, ruler.y),

@@ -12,8 +12,8 @@ use ui_core::geometry::Point;
 use camera_contract::control::{ColorTemperature, ExposureBias, Tint};
 use camera_contract::zoom::ZoomRatio;
 use look_contract::{
-    BandAxis, GlobalKnob, HueBandId, LookControl, LookFacts, LookIntent, LookKnob, PresetId, ToneBaseModel,
-    UserPresetId, WheelPush, WheelZone,
+    BandAxis, GlobalKnob, HueBandId, LookControl, LookFacts, LookIntent, LookKnob, LookProblemKind, LookWhiteStops,
+    PresetId, ToneBaseModel, UserPresetId, WheelPush, WheelZone,
 };
 use scope_contract::{ScopeIntent, ScopeKind, VectorscopeAxes};
 use shell_contract::text_input::{TextInputResult, TextRequestId};
@@ -145,6 +145,13 @@ pub enum ScreenAction {
     /// Новый снимок состояния вида от библиотеки пресетов (список пресетов, текущий рецепт, отличия от пресета,
     /// полосы, неподдержанные ручки, проблема). Эффектов не порождает; проблема с новым серийным номером поднимает плашку.
     LookFactsChanged(Box<LookFacts>),
+    /// Проблема запуска хранилища пресетов (файл сброшен в карантин, сохранения отключены; решение 287). Приходит
+    /// один раз при установке экрана; плашка поднимается не сразу, а при первом входе в раздел калибровки.
+    LookStartupProblem(LookProblemKind),
+    /// Упоры ручек теплоты и оттенка изменились (решения 288, 293): рендер знает, где картинка перестаёт реагировать
+    /// на ручку, экран рисует отметки на шкалах. Приходит только при изменении; экран ничего не считает и намерений
+    /// по нему не шлёт.
+    LookWhiteStopsChanged(LookWhiteStops),
     /// Глобальная ручка потянута до значения. Уходит точечным намерением `SetKnob`: заменяется только эта ручка
     /// (не `SetLook` с полным набором: два пальца в одном кадре не должны затирать друг друга).
     KnobDragged { knob: GlobalKnob, value: LookKnob },

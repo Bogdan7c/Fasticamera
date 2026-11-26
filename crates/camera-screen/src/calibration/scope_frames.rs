@@ -61,6 +61,15 @@ impl ScopeFrames {
         if picture_area.size.height < 1.0 / pixels_per_point || picture_area.size.width <= gutter_width {
             return Err(CalibrationLayoutError::NoRoomForScopePicture { scope: zone });
         }
+        // Подпись уровня прижимается внутрь картинки по вертикали; картинка ниже подписи прижать не даёт.
+        let label_height = config.layout.scope_level_label_height_pt;
+        if picture_area.size.height < label_height {
+            return Err(CalibrationLayoutError::ScopePictureShorterThanLevelLabels {
+                scope: zone,
+                picture_height_pt: picture_area.size.height,
+                label_height_pt: label_height,
+            });
+        }
         let levels_gutter = Rect::from_xywh(
             picture_area.min_x(),
             picture_area.min_y(),

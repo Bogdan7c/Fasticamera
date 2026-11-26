@@ -145,20 +145,18 @@ impl HoldZone {
     /// Смещение контента при желаемом (по пальцу) смещении `finger_offset`, если палец взял контент на
     /// `start_offset`.
     ///
-    /// Зона «съедает» путь только когда палец ПЕРЕСЕКАЕТ центр, поэтому всё считается от стороны старта:
+    /// Зона «съедает» путь только когда значение ПРИХОДИТ к центру (палец пересекает центр или возвращается к
+    /// нему с другой стороны), поэтому всё считается от стороны старта:
     /// * старт по одну сторону от центра: до центра контент идёт 1:1 (на старте нет скачка), у центра встаёт на
     ///   `2 × half_width` пути, дальше идёт за пальцем с отставанием на эту ширину; движение назад к стороне
     ///   старта отставания не имеет (оно возвращается);
-    /// * старт ровно на центре (нейтраль): зона симметрична, по `half_width` в каждую сторону.
+    /// * старт ровно на центре (нейтраль): сторона неизвестна, зоны нет — контент идёт за пальцем 1:1, иначе у
+    ///   ручки был бы «мёртвый» ход на старте от нуля (решение 247). Сторону «отхода» привод запоминает по
+    ///   первому сдвигу ([`AxisDrive`]) и подставляет сюда как `start_offset`.
     pub(crate) fn applied_to(self, start_offset: f64, finger_offset: f64) -> f64 {
         let start_side = start_offset - self.centre_offset;
         if start_side == 0.0 {
-            let from_centre = finger_offset - self.centre_offset;
-            return if from_centre.abs() <= self.half_width {
-                self.centre_offset
-            } else {
-                finger_offset - self.half_width * from_centre.signum()
-            };
+            return finger_offset;
         }
         // Зеркалим так, чтобы старт был «наверху» (по знаку стороны): тогда одна формула на обе стороны.
         let sign = start_side.signum();
@@ -183,8 +181,12 @@ pub(crate) struct AxisDrive {
     drag_origin: DragOrigin,
     /// Зона держания под пальцем (магнит нуля); `None` — палец ведёт контент 1:1.
     hold_zone: Option<HoldZone>,
-    /// Смещение контента в момент, когда палец взял контент: от него считается путь пальца для зоны.
+    /// Смещение контента в момент, когда палец взял контент: от него считается путь пальца.
     drag_start_offset: f64,
+    /// Смещение, от стороны которого зона считает «откуда пришёл палец». Обычно равно `drag_start_offset`; если
+    /// контент взят ровно на центре зоны, сторона определяется первым сдвигом пальца (сдвиг от нуля не держится,
+    /// возврат к нулю с той же стороны — держится).
+    hold_side_reference: f64,
     /// Размер видимой области вдоль оси, pt (из окружения при создании): от него зависит «резинка».
     viewport_extent_points: f64,
 }
@@ -208,6 +210,7 @@ impl AxisDrive {
             drag_origin: setup.drag_origin,
             hold_zone: None,
             drag_start_offset: initial_offset,
+            hold_side_reference: initial_offset,
             viewport_extent_points,
         })
     }
@@ -241,13 +244,13 @@ impl AxisDrive {
     /// Палец коснулся: контент останавливается на текущем положении. Работает и за краем
     /// (обратная «резинка» восстанавливает положение пальца): скачка нет.
     pub(crate) fn catch(&mut self, now: MonotonicNanos) {
-        self.drag_start_offset = self.scroll.sample(now).offset;
+        self.remember_drag_start(now);
         self.scroll.begin_drag(now);
     }
 
     /// Жест перетаскивания распознан.
     pub(crate) fn drag_began(&mut self, now: MonotonicNanos, translation: PanTranslation) -> Result<(), ScrollError> {
-        self.drag_start_offset = self.scroll.sample(now).offset;
+        self.remember_drag_start(now);
         self.scroll.begin_drag(now);
         self.drag_moved(translation)
     }
@@ -261,12 +264,29 @@ impl AxisDrive {
         let finger_delta = self.direction.content_component(finger);
         let content_delta = match self.hold_zone {
             None => finger_delta,
-            // Желаемое положение по пальцу проходит через зону, обратно — смещение от точки захвата.
             Some(zone) => {
-                zone.applied_to(self.drag_start_offset, self.drag_start_offset + finger_delta) - self.drag_start_offset
+                self.learn_departure_side(zone, finger_delta);
+                // Желаемое положение по пальцу проходит через зону, обратно — смещение от точки захвата.
+                zone.applied_to(self.hold_side_reference, self.drag_start_offset + finger_delta)
+                    - self.drag_start_offset
             }
         };
         self.scroll.drag_to(content_delta)
+    }
+
+    /// Запомнить положение контента в момент захвата; сторона зоны пока равна ему.
+    fn remember_drag_start(&mut self, now: MonotonicNanos) {
+        self.drag_start_offset = self.scroll.sample(now).offset;
+        self.hold_side_reference = self.drag_start_offset;
+    }
+
+    /// Контент взят ровно на центре зоны: сторону «отхода» задаёт первый ненулевой сдвиг пальца. Пока сторона не
+    /// выбрана, зона не действует (`applied_to` отдаёт путь пальца как есть) — нет мёртвого хода на старте.
+    fn learn_departure_side(&mut self, zone: HoldZone, finger_delta: f64) {
+        let started_on_centre = self.hold_side_reference == zone.centre_offset;
+        if started_on_centre && finger_delta != 0.0 {
+            self.hold_side_reference = zone.centre_offset + finger_delta.signum();
+        }
     }
 
     /// Включить зону держания под пальцем (магнит нуля); `None` — выключить. Задаётся при сборке элемента.

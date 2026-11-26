@@ -12,7 +12,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use look_contract::{ActiveLook, LookIntent, LookRecipe, LookSettings, PresetEntry, PresetError};
+use look_contract::{ActiveLook, LookIntent, LookProblemKind, LookRecipe, LookSettings, PresetEntry, PresetError};
 use look_presets::{
     CatalogEnvironment, LibraryChange, LibrarySnapshot, LoadOutcome, PresetLibrary, PresetPersistence,
     PresetStoreConfig, SaveOutcome, SaveRequestOutcome,
@@ -92,6 +92,19 @@ impl LookStartup {
     }
 }
 
+impl LookStartup {
+    /// Проблема, о которой владельцу надо сказать плашкой на экране (решение 287): файл сброшен в карантин или
+    /// сохранения отключены. Нормальные исходы (нет файла, прочитан, мигрирован, только память) — `None`: ни
+    /// «файла ещё нет», ни миграция плашки не заслуживают.
+    pub fn problem(self) -> Option<LookProblemKind> {
+        match self {
+            Self::Quarantined => Some(LookProblemKind::PresetsReset),
+            Self::QuarantineFailed | Self::Unreadable => Some(LookProblemKind::SavesRefused),
+            Self::InMemoryOnly | Self::NoFileYet | Self::Loaded | Self::Migrated { .. } => None,
+        }
+    }
+}
+
 /// Что следует из применённого намерения. Исполнитель эффектов по этому решает, что делать дальше.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LookApplied {
@@ -118,6 +131,9 @@ pub struct LookService {
     library: PresetLibrary,
     persistence: Box<dyn LookPersistence>,
     startup: LookStartup,
+    /// Проблема запуска, о которой экрану ещё не сказали (отдаётся ровно один раз за жизнь процесса: сервис живёт
+    /// дольше любого экрана, поэтому пересборка экрана плашку не повторяет).
+    undelivered_startup_problem: Option<LookProblemKind>,
     /// Номер версии библиотеки: растёт на каждое намерение, что-либо изменившее (активный вид, список пресетов,
     /// имена, правки). Владеет им сервис, потому что только он применяет намерения; наблюдатели фактов по нему дёшево
     /// узнают «ничего не менялось» без пересборки снимка (см. `look_facts`).
@@ -131,6 +147,7 @@ impl LookService {
             library,
             persistence,
             startup,
+            undelivered_startup_problem: startup.problem(),
             revision: 0,
         }
     }
@@ -207,6 +224,11 @@ impl LookService {
     pub fn startup(&self) -> LookStartup {
         self.startup
     }
+
+    /// Отдаёт проблему запуска, о которой экрану ещё не говорили; повторный вызов — `None`.
+    pub fn take_startup_problem(&mut self) -> Option<LookProblemKind> {
+        self.undelivered_startup_problem.take()
+    }
 }
 
 /// Общая ручка на [`LookService`] (см. доку модуля: библиотека переживает экран).
@@ -275,6 +297,11 @@ impl LookHandle {
     /// См. [`LookService::startup`].
     pub fn startup(&self) -> LookStartup {
         self.lock().startup()
+    }
+
+    /// См. [`LookService::take_startup_problem`].
+    pub fn take_startup_problem(&self) -> Option<LookProblemKind> {
+        self.lock().take_startup_problem()
     }
 }
 

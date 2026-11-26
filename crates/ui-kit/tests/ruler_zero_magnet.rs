@@ -148,26 +148,52 @@ fn value_holds_zero_inside_the_zone_and_leaves_it_without_a_jump() {
 }
 
 #[test]
-fn starting_exactly_on_zero_gives_a_symmetric_zone_in_both_directions() {
+fn starting_exactly_on_zero_has_no_dead_start_in_either_direction() {
     let tokens = UiKitTokens::default();
     for direction in [1.0_f64, -1.0] {
         let mut ruler = ruler_at(&tokens, feel_with(magnet()), 0.0);
         begin(&mut ruler);
-        let mut positions = Vec::new();
         for frame in 1..=10 {
             move_finger(&mut ruler, frame, direction * frame as f64);
-            positions.push(position_after(&ruler, frame));
+            assert_eq!(
+                position_after(&ruler, frame),
+                -direction * frame as f64,
+                "{direction}, кадр {frame}: от нуля значение идёт за пальцем сразу, без мёртвого хода (решение 247)"
+            );
         }
-        assert!(
-            positions[..6].iter().all(|position| *position == 0.0),
-            "{direction}: {positions:?}"
-        );
-        assert_eq!(
-            positions[6], -direction,
-            "{direction}: после 6 pt нуль отпускает без скачка"
-        );
-        assert_eq!(positions[9], -4.0 * direction);
     }
+}
+
+#[test]
+fn start_from_zero_with_a_three_point_move_already_changes_the_value() {
+    let tokens = UiKitTokens::default();
+    let mut ruler = ruler_at(&tokens, feel_with(magnet()), 0.0);
+    begin(&mut ruler);
+    move_finger(&mut ruler, 1, 3.0);
+    assert_eq!(position_after(&ruler, 1), -3.0);
+}
+
+#[test]
+fn returning_to_zero_after_departing_from_it_holds_on_arrival() {
+    let tokens = UiKitTokens::default();
+    // Старт на нуле, палец вправо на 10 pt (значение −10), затем назад: на приходе к нулю значение держится.
+    let mut ruler = ruler_at(&tokens, feel_with(magnet()), 0.0);
+    begin(&mut ruler);
+    for frame in 1..=10 {
+        move_finger(&mut ruler, frame, frame as f64);
+    }
+    assert_eq!(position_after(&ruler, 10), -10.0);
+    let mut positions = Vec::new();
+    for step in 1..=24 {
+        move_finger(&mut ruler, 10 + step, 10.0 - step as f64);
+        positions.push(position_after(&ruler, 10 + step));
+    }
+    assert_eq!(positions[8], -1.0, "до прихода к нулю идёт 1:1");
+    assert!(
+        positions[9..21].iter().all(|position| *position == 0.0),
+        "{positions:?}"
+    );
+    assert_eq!(positions[22], 1.0, "выход за ноль без скачка");
 }
 
 #[test]

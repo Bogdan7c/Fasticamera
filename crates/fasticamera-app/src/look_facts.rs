@@ -204,6 +204,11 @@ impl LookFactsSource {
         }
     }
 
+    /// Проблема запуска хранилища пресетов, о которой экрану ещё не говорили (решение 287); одна на процесс.
+    pub fn take_startup_problem(&self) -> Option<look_contract::LookProblemKind> {
+        self.handle.take_startup_problem()
+    }
+
     /// Сколько раз факты пересобирались с начала жизни источника.
     pub fn rebuilds(&self) -> u64 {
         self.rebuilds

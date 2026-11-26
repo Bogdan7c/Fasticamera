@@ -29,7 +29,10 @@ use crate::pan::PanUpdate;
 use crate::scale::{ScaleError, ScaleSpec, SnapPolicy, SnapScale, TickVisibility, ZeroMagnet};
 use crate::tokens::{ColorTokens, RulerTokens, ScaleDensity};
 use crate::value::{ExactPosition, Quantization, QuantizedLinear, RulerAxis};
-use crate::view::{MajorTickPeriod, PxPerPt, RulerMarkerStyle, ViewError, ruler_items, ruler_marker_item};
+use crate::view::{
+    DimmedRange, DimmedSpan, MajorTickPeriod, PxPerPt, RulerMarkerStyle, RulerStopTickStyle, ViewError, ruler_items,
+    ruler_items_with_dimmed, ruler_marker_item, ruler_stop_tick_item,
+};
 
 /// Ощущение линейки под пальцем. По умолчанию — прежнее поведение (Exposure, белое): отсчёт от точки распознавания
 /// пана и щелчок на каждый кадр с пройденной риской. Ручки раздела калибровки включают другое явно.
@@ -177,6 +180,71 @@ impl<M: RulerAxis> RulerControl<M> {
 }
 
 impl<M: RulerAxis> RulerControl<M> {
+    /// Риски и жёлтая отметка, где риски внутри `dimmed` тусклее (ход ручки за упором). Пустой список — то же, что
+    /// [`Self::items`], до бита. Это только рисунок: значение и жесты промежутки не меняют.
+    pub fn items_with_dimmed_ranges(
+        &self,
+        placement: &NodePlacementPx,
+        now: MonotonicNanos,
+        px_per_pt: PxPerPt,
+        (ruler_tokens, colors): (&RulerTokens, &ColorTokens),
+        dimmed: &[DimmedRange<M::Value>],
+    ) -> Result<Vec<DrawItem>, ViewError> {
+        let spans = dimmed
+            .iter()
+            .map(|range| self.dimmed_span_of(range))
+            .collect::<Result<Vec<_>, _>>()?;
+        ruler_items_with_dimmed(
+            placement,
+            &self.scale,
+            now,
+            px_per_pt,
+            ruler_tokens,
+            self.major_period,
+            colors,
+            &spans,
+        )
+    }
+
+    /// Риска-упор на значении `value`: толще и длиннее обычной. `None` — упор сейчас вне видимой части линейки.
+    /// Только рисунок: не даёт действий и не магнитит.
+    pub fn stop_tick_item(
+        &self,
+        placement: &NodePlacementPx,
+        now: MonotonicNanos,
+        px_per_pt: PxPerPt,
+        ruler_tokens: &RulerTokens,
+        (value, style): (M::Value, RulerStopTickStyle),
+    ) -> Result<Option<DrawItem>, ViewError> {
+        let position_units = self
+            .scale
+            .model()
+            .position_of(value)
+            .map_err(|_| ViewError::UnrepresentableOverlayValue)?;
+        ruler_stop_tick_item(
+            placement,
+            &self.scale,
+            now,
+            px_per_pt,
+            ruler_tokens,
+            (position_units, style),
+        )
+    }
+
+    fn dimmed_span_of(&self, range: &DimmedRange<M::Value>) -> Result<DimmedSpan, ViewError> {
+        let position_of = |value: M::Value| {
+            self.scale
+                .model()
+                .position_of(value)
+                .map_err(|_| ViewError::UnrepresentableOverlayValue)
+        };
+        Ok(DimmedSpan {
+            from_units: position_of(range.from)?,
+            to_units: position_of(range.to)?,
+            alpha_factor: range.alpha_factor,
+        })
+    }
+
     /// Программная метка на значении `value` (например, «значение пресета»): точка под рядом рисок. `None` — метка
     /// сейчас вне видимой части линейки. Метка не даёт действий, не магнитит и не двигает линейку: это рисунок.
     pub fn marker_item(
