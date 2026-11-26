@@ -14,7 +14,8 @@ use crate::saturation_bench::glass_ablation::{GlassStyleAblation, GlassSubset};
 use crate::saturation_bench::inputs::{InputSources, gather_inputs};
 use crate::saturation_bench::screen_scene::{ScreenPlan, SurfaceSizePx, summarize};
 
-fn calibrate_list() -> DrawList {
+/// Настоящий список экрана `display` на ONEPLUS_11.
+fn screen_list(display: DisplayScreen) -> DrawList {
     let render = RenderLoopConfig::default();
     let screen = CameraScreenConfig::default();
     let none = LensShadingCalibrations::none();
@@ -32,9 +33,19 @@ fn calibrate_list() -> DrawList {
     });
     ScreenPlan::build(&inputs, SurfaceSizePx::ONEPLUS_11)
         .expect("экраны")
-        .scene(DisplayScreen::Calibrate)
+        .scene(display)
         .draw_list
         .clone()
+}
+
+fn calibrate_list() -> DrawList {
+    screen_list(DisplayScreen::Calibrate)
+}
+
+/// Список PHOTO: единственный экран со стеклом (раздел калибровки с 14m рисует поверхности без стекла), поэтому на
+/// нём проверяются абляции стекла.
+fn photo_list() -> DrawList {
+    screen_list(DisplayScreen::Photo)
 }
 
 const SINGLE_KINDS: [DrawFilter; 4] = [
@@ -167,7 +178,7 @@ fn filter_applies_inside_clip_groups_and_keeps_the_group_rect() {
     assert_eq!((summary.shapes, summary.icons), (2, 1));
 }
 
-// ---- Абляции свойств стекла (пакет G3): настоящий список CALIBRATE, результат — параметры групп. ----
+// ---- Абляции свойств стекла (пакет G3): настоящий список PHOTO (в CALIBRATE стекла нет), результат — параметры групп. ----
 
 fn glass_groups(list: &DrawList) -> Vec<&ui_draw::draw_list::GlassGroupItem> {
     list.leaf_items()
@@ -179,12 +190,12 @@ fn glass_groups(list: &DrawList) -> Vec<&ui_draw::draw_list::GlassGroupItem> {
 }
 
 fn ablated(subset: GlassSubset, style: GlassStyleAblation) -> DrawList {
-    DrawFilter::GlassAblated { subset, style }.apply(&calibrate_list())
+    DrawFilter::GlassAblated { subset, style }.apply(&photo_list())
 }
 
 #[test]
 fn glass_ablation_with_product_style_equals_glass_only() {
-    let list = calibrate_list();
+    let list = photo_list();
     assert_eq!(
         DrawFilter::GlassAblated {
             subset: GlassSubset::All,
@@ -197,7 +208,7 @@ fn glass_ablation_with_product_style_equals_glass_only() {
 
 #[test]
 fn glass_subsets_split_the_groups_into_the_largest_panel_and_the_rest() {
-    let list = calibrate_list();
+    let list = photo_list();
     let all = glass_groups(&DrawFilter::GlassOnly.apply(&list)).len();
     assert!(all >= 2, "в CALIBRATE несколько групп стекла: {all}");
     let panel = ablated(GlassSubset::LargestOnly, GlassStyleAblation::Product);
@@ -218,7 +229,7 @@ fn glass_subsets_split_the_groups_into_the_largest_panel_and_the_rest() {
 
 #[test]
 fn glass_style_ablations_change_exactly_their_own_properties() {
-    let product = calibrate_list();
+    let product = photo_list();
     let product_groups = glass_groups(&product);
     let no_tone = ablated(GlassSubset::All, GlassStyleAblation::NoToneAndDimming);
     for (before, after) in product_groups.iter().zip(glass_groups(&no_tone)) {
@@ -257,7 +268,7 @@ fn glass_style_ablations_change_exactly_their_own_properties() {
 
 #[test]
 fn every_glass_ablation_stays_a_valid_list_with_the_same_light() {
-    let list = calibrate_list();
+    let list = photo_list();
     for style in [
         GlassStyleAblation::NoToneAndDimming,
         GlassStyleAblation::NoRefraction,

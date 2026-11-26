@@ -17,7 +17,7 @@ use gpu_vulkan::validation::ValidationMode;
 use ui_draw::draw_list::DrawList;
 use ui_draw::geometry::{PxPoint, PxRect, PxSize};
 use ui_render_vulkan::testing::{BackdropPattern, SyntheticBackdrop};
-use ui_render_vulkan::{BackdropInput, BackdropPlacement, UiFrame, UiRenderer, UiRendererConfig};
+use ui_render_vulkan::{BackdropInput, BackdropPlacement, UiFrame, UiFrameReport, UiRenderer, UiRendererConfig};
 
 use crate::driver::{HEIGHT_PX, WIDTH_PX};
 
@@ -128,10 +128,17 @@ pub struct RenderRig {
     target: ColorTarget,
     backdrop: SyntheticBackdrop,
     slot: usize,
+    /// Отчёт рендера о последнем кадре: судьба пирамиды размытия, число групп стекла и фигур.
+    last_report: Option<UiFrameReport>,
 }
 
 impl RenderRig {
     pub fn new(context: &GpuContext) -> Self {
+        Self::with_backdrop(context, BackdropPattern::Photo)
+    }
+
+    /// Стенд с фоном `pattern` под экраном (однородный фон нужен проверкам «цвет панели над известным фоном»).
+    pub fn with_backdrop(context: &GpuContext, pattern: BackdropPattern) -> Self {
         let extent = vk::Extent2D {
             width: WIDTH_PX,
             height: HEIGHT_PX,
@@ -154,15 +161,20 @@ impl RenderRig {
             width: WIDTH_PX,
             height: BACKDROP_HEIGHT_PX,
         };
-        let backdrop =
-            SyntheticBackdrop::new(context, backdrop_extent, BackdropPattern::Photo).expect("синтетический фон");
+        let backdrop = SyntheticBackdrop::new(context, backdrop_extent, pattern).expect("синтетический фон");
         Self {
             context: context.clone(),
             renderer,
             target,
             backdrop,
             slot: 0,
+            last_report: None,
         }
+    }
+
+    /// Отчёт рендера о последнем кадре (после любого `render*`).
+    pub fn last_report(&self) -> UiFrameReport {
+        self.last_report.expect("кадр ещё не рисовался")
     }
 
     /// Рисует список поверх «фото» в прямоугольнике `viewfinder` и читает цель обратно. Любая ошибка рендера — паника теста.
@@ -233,9 +245,11 @@ impl RenderRig {
             Ok(())
         })
         .expect("отправка кадра");
-        outcome
-            .expect("замыкание выполнено")
-            .expect("рендер UI принял список экрана");
+        self.last_report = Some(
+            outcome
+                .expect("замыкание выполнено")
+                .expect("рендер UI принял список экрана"),
+        );
         compositor.release_slot_after_fence(slot).expect("слот композитора");
         self.renderer.release_slot_after_fence(slot).expect("слот рендера");
         let pixels = read_color_target_rgba(&self.target, ColorTargetPreviousUse::Rendered).expect("readback");

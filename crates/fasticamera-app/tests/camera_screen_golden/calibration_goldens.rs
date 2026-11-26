@@ -44,7 +44,7 @@ fn preset(id: PresetId, name: &str, kind: PresetKind) -> PresetEntry {
 
 /// Факты о виде: два встроенных и два своих пресета, три полосы; активен `active`, правки — `edits`.
 /// Колёса нейтральны.
-fn look_facts(active: PresetId, edits: EditState, problem: Option<LookProblem>) -> LookFacts {
+pub(crate) fn look_facts(active: PresetId, edits: EditState, problem: Option<LookProblem>) -> LookFacts {
     look_facts_with_wheels(active, edits, problem, ColorWheels::NEUTRAL)
 }
 
@@ -117,7 +117,7 @@ pub(crate) fn calibration(orientation: DeviceOrientation) -> ScreenDriver {
 }
 
 /// Карточка PRESETS меню раздела: правки поверх своего пресета «Sunset» (SAVE, RENAME, DELETE и «↻» доступны).
-fn presets_card() -> ScreenDriver {
+pub(crate) fn presets_card() -> ScreenDriver {
     let mut driver = ScreenDriver::new();
     driver.act(ScreenAction::LookFactsChanged(Box::new(look_facts(
         PresetId::User(SUNSET),
@@ -148,7 +148,7 @@ fn styles_card(edits: EditState) -> ScreenDriver {
 }
 
 /// PHOTO с проблемой библиотеки «имя занято»; плашка уже появилась и ещё не погасла.
-fn problem_banner() -> ScreenDriver {
+pub(crate) fn problem_banner() -> ScreenDriver {
     let mut driver = ScreenDriver::new();
     let problem = LookProblem {
         serial: 1,

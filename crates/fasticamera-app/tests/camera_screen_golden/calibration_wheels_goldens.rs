@@ -30,7 +30,7 @@ const PROBE_HALF_PX: i64 = 2;
 const PUCK_WINDOW_HALF_PT: f64 = 8.0;
 
 /// Колёса голдена: Lift — только толчок, Gamma — только кольцо.
-fn golden_wheels() -> ColorWheels {
+pub(crate) fn golden_wheels() -> ColorWheels {
     let lift = ColorWheel {
         push: WheelPush::new(LIFT_PUSH.0, LIFT_PUSH.1).expect("точка в круге"),
         ring: LookKnob::NEUTRAL,
@@ -45,7 +45,7 @@ fn golden_wheels() -> ColorWheels {
 }
 
 /// Раздел калибровки в виде колёс: выбран Lift, колёса — `wheels`.
-fn wheels_view(orientation: DeviceOrientation, wheels: ColorWheels) -> ScreenDriver {
+pub(crate) fn wheels_view(orientation: DeviceOrientation, wheels: ColorWheels) -> ScreenDriver {
     let mut driver = ScreenDriver::new();
     driver.act(ScreenAction::LookFactsChanged(Box::new(look_facts_with_wheels(
         as_eye(),
