@@ -20,7 +20,7 @@
 
 use scope_contract::ScopeScan;
 use scope_model::projection::IntegerProjection;
-use scope_model::{GraticulePrimitive, GridShape, RenderSettings, ResolvedScope, ScopeRule, TraceStyle};
+use scope_model::{ColumnBasis, GraticulePrimitive, GridShape, RenderSettings, ResolvedScope, ScopeRule, TraceStyle};
 
 use super::error::ScopeError;
 use super::rule::{AccumulateParameters, AccumulatorId, GpuScopeRule, RuleWords};
@@ -147,6 +147,16 @@ impl GpuScopeRule for ResolvedScope {
                 }
             }
         })
+    }
+
+    fn column_basis(&self) -> ColumnBasis {
+        match self {
+            // Столбец waveform и parade — положение отсчёта на горизонтали глаза: счётчики столбцов выравниваются
+            // по числу отсчётов в столбце.
+            Self::Waveform(_) | Self::RgbParade(_) => ColumnBasis::OwnSamples,
+            // Вектороскоп столбцов-по-положению не имеет: масштаб 1.0.
+            Self::VectorscopeYCbCr(_) | Self::VectorscopeOklab(_) => ColumnBasis::Uniform,
+        }
     }
 
     fn trace_style(&self, settings: &RenderSettings) -> TraceStyle {

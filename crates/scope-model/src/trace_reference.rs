@@ -38,11 +38,6 @@ impl TraceReference {
         Self::from_threshold(expected_hits.max(1.0))
     }
 
-    /// Опорное число столбца, в который легло `samples_in_column` отсчётов: `max(1, доля · отсчётов столбца)`.
-    pub(crate) fn for_column(share_of_column: f32, samples_in_column: u64) -> Self {
-        Self::from_threshold((share_of_column * samples_in_column as f32).max(1.0))
-    }
-
     /// Опорное число из готового порога (число попаданий полной яркости; не меньше 1).
     fn from_threshold(full_threshold: f32) -> Self {
         Self {
@@ -63,10 +58,17 @@ impl TraceReference {
 
     /// Яркость следа ячейки со счётчиком `count`: 0 при нуле попаданий, 1 при пороге и выше.
     pub fn intensity(self, count: u32) -> f32 {
+        self.intensity_scaled(count, 1.0)
+    }
+
+    /// Яркость ячейки столбца с масштабом счётчика `scale` ([`crate::ColumnCountScales`]). ПОРЯДОК ОПЕРАЦИЙ f32 тот
+    /// же, что в шейдере `scope_render.comp`: `count · scale`, `1 + …`, `log2`, деление на знаменатель, `min` с 1.
+    /// При `scale = 1.0` это прежняя формула бит в бит.
+    pub fn intensity_scaled(self, count: u32, scale: f32) -> f32 {
         if count == 0 {
             return 0.0;
         }
-        ((1.0 + count as f32).log2() / self.log_denominator).min(1.0)
+        ((1.0 + count as f32 * scale).log2() / self.log_denominator).min(1.0)
     }
 }
 

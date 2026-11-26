@@ -505,10 +505,10 @@ impl isp_vulkan::scopes::GpuScopeRule for PaintOverride<'_> {
         self.style.clone()
     }
 
-    /// Замороженная копия шейдера знает одно число яркости на кадр (`trace.x`): чтобы сравнение с ней шло бит в бит,
-    /// продуктовый шейдер получает ту же константу в каждый столбец таблицы.
+    /// Замороженная копия шейдера масштаба счётчика не знает: чтобы сравнение с ней шло бит в бит, продуктовый
+    /// шейдер получает масштаб ровно 1.0 в каждом столбце (`count · 1.0 = count` точно).
     fn column_basis(&self) -> scope_model::ColumnBasis {
-        scope_model::ColumnBasis::WholeFrameAverage
+        scope_model::ColumnBasis::Uniform
     }
 
     fn graticule(&self, settings: &scope_model::RenderSettings) -> Vec<scope_model::GraticulePrimitive> {

@@ -1,12 +1,9 @@
 //! Вертикальные полосы следа RGB waveform и parade: корень и защита.
 //!
 //! Корень: отсчёты по столбцам делятся неравномерно (портрет телефона: ширина глаза 1536, шаг 2 → 768 отсчётов на
-//! 512 столбцов; 256 столбцов получают один отсчёт по горизонтали, 256 — два). Если порог полной яркости один на
-//! все столбцы (среднее), «двойные» столбцы горят заметно ярче «одинарных» — полосы через столбец. Порог по СВОИМ
-//! отсчётам столбца ([`ColumnBasis::OwnSamples`]) это убирает.
-//!
-//! Яркость лог-шкалы `log2(1 + count) / log2(1 + порог)` нелинейна: вдвое больший счётчик при вдвое большем пороге
-//! даёт не ту же яркость, поэтому остаток контраста не нуль (его замеряет тест и держит ниже прежнего).
+//! 512 столбцов; 256 столбцов получают один отсчёт по горизонтали, 256 — два). Один и тот же однородный кадр даёт
+//! «двойным» столбцам вдвое больший счётчик, и они горят заметно ярче «одинарных» — полосы через столбец.
+//! Масштаб счётчика столбца («среднее / свои отсчёты», [`ColumnBasis::OwnSamples`]) приводит их к одной яркости.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;
@@ -60,7 +57,7 @@ fn alpha_per_column(kind: ScopeKind, picture_codes: &scope_model::ShownCodes, ba
     // Продуктовый путь — `render` (по своим отсчётам столбца); прежнее среднее — только через явную основу.
     let rendered = match basis {
         ColumnBasis::OwnSamples => render(&counters, &scope, &settings, size, samples),
-        ColumnBasis::WholeFrameAverage => render_with_basis(&counters, &scope, &settings, size, samples, basis),
+        ColumnBasis::Uniform => render_with_basis(&counters, &scope, &settings, size, samples, basis),
     }
     .unwrap();
     (0..COLUMNS)
@@ -103,22 +100,18 @@ fn vertical_ramp() -> scope_model::ShownCodes {
 }
 
 #[test]
-fn per_column_reference_removes_most_of_the_every_other_column_stripes_of_waveform_and_parade() {
+fn column_scales_remove_the_every_other_column_stripes_of_waveform_and_parade() {
     let codes = vertical_ramp();
     for kind in [ScopeKind::Waveform, ScopeKind::RgbParade] {
-        let before = double_to_single_contrast(&alpha_per_column(kind, &codes, ColumnBasis::WholeFrameAverage));
+        let before = double_to_single_contrast(&alpha_per_column(kind, &codes, ColumnBasis::Uniform));
         let after = double_to_single_contrast(&alpha_per_column(kind, &codes, ColumnBasis::OwnSamples));
         println!("{kind:?}: контраст «двойных» к «одинарным» столбцам: было {before:.3}, стало {after:.3}");
-        // Прежнее среднее: «двойные» столбцы заметно ярче «одинарных» (полосы).
+        // Без масштаба «двойные» столбцы заметно ярче «одинарных» (полосы).
         assert!(
             before > 1.3,
             "{kind:?}: до исправления полосы должны быть заметны: {before}"
         );
-        // Порог по своим отсчётам: полосы остаются лишь как остаток нелинейности лог-шкалы, вдвое слабее.
-        assert!(
-            after < 1.0 + (before - 1.0) * 0.5,
-            "{kind:?}: было {before}, стало {after}"
-        );
-        assert!(after < 1.25, "{kind:?}: остаточный контраст {after}");
+        // С масштабом столбцы одной яркости: расхождение в пределах 3 %.
+        assert!((after - 1.0).abs() < 0.03, "{kind:?}: было {before}, стало {after}");
     }
 }

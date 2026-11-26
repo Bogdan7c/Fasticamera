@@ -49,7 +49,7 @@ pub enum TraceRuleError {
 }
 
 /// Столбец сетки из `columns` столбцов для положения отсчёта на горизонтали глаза: `(x · columns) / width`.
-/// ЕДИНСТВЕННАЯ формула «отсчёт → столбец»: по ней правило кладёт попадания, а [`crate::column_references`] считает,
+/// ЕДИНСТВЕННАЯ формула «отсчёт → столбец»: по ней правило кладёт попадания, а [`crate::column_count_scales`] считает,
 /// сколько отсчётов легло в столбец (от этого числа зависит яркость следа), поэтому они не могут разойтись.
 pub(crate) fn column_of_eye_position(position: SamplePosition, columns: u32) -> u32 {
     (position.x * columns) / position.picture_width

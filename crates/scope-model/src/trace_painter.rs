@@ -1,8 +1,8 @@
 //! Цвет и прозрачность следа одного пикселя картинки прибора — по способу рисования ([`TraceStyle`]).
 //!
 //! Это эталон веток шейдера `scope_render.comp`: каждая ветка здесь соответствует ветке там, формулы те же.
-//! Пиксель → ячейка целочисленно (как у шейдера), яркость — [`TraceReference::intensity`] с опорным числом СТОЛБЦА
-//! ([`ColumnReferences`]): знаменатель берётся по столбцу ячейки, а не один на кадр.
+//! Пиксель → ячейка целочисленно (как у шейдера), яркость — [`TraceReference::intensity_scaled`]: знаменатель один на кадр, а счётчик
+//! приводится масштабом СТОЛБЦА ячейки ([`ColumnCountScales`]).
 //!
 //! * секции: картинка делится на `planes` равных секций по ширине; секция показывает свою плоскость на весь
 //!   диапазон столбцов, цвет — цвет плоскости;
@@ -13,8 +13,9 @@
 
 use scope_contract::ScopeImageSize;
 
-use crate::column_references::ColumnReferences;
+use crate::column_count_scales::ColumnCountScales;
 use crate::grid::{GridShape, ScopeCounters};
+use crate::trace_reference::TraceReference;
 use crate::trace_style::TraceStyle;
 
 /// След пикселя: цвет экрана и ПРЯМАЯ альфа (нулевая альфа — цвет не важен).
@@ -37,7 +38,8 @@ pub(crate) struct TracePainter<'a> {
     counters: &'a ScopeCounters,
     shape: GridShape,
     style: &'a TraceStyle,
-    references: &'a ColumnReferences,
+    reference: TraceReference,
+    scales: &'a ColumnCountScales,
     trace_opacity: f32,
 }
 
@@ -45,14 +47,16 @@ impl<'a> TracePainter<'a> {
     pub(crate) fn new(
         counters: &'a ScopeCounters,
         style: &'a TraceStyle,
-        references: &'a ColumnReferences,
+        reference: TraceReference,
+        scales: &'a ColumnCountScales,
         trace_opacity: f32,
     ) -> Self {
         Self {
             counters,
             shape: counters.shape(),
             style,
-            references,
+            reference,
+            scales,
             trace_opacity,
         }
     }
@@ -81,12 +85,12 @@ impl<'a> TracePainter<'a> {
         }
     }
 
-    /// Яркость следа ячейки столбца `column` со счётчиком `count` по опорному числу ЭТОГО столбца. Столбца вне
+    /// Яркость следа ячейки столбца `column` со счётчиком `count`, приведённым масштабом ЭТОГО столбца. Столбца вне
     /// сетки нет (и счётчика у него нет), поэтому яркость нулевая.
     fn intensity(&self, column: u32, count: u32) -> f32 {
-        self.references
+        self.scales
             .of_column(column)
-            .map_or(0.0, |reference| reference.intensity(count))
+            .map_or(0.0, |scale| self.reference.intensity_scaled(count, scale))
     }
 
     /// Столбец сетки для пикселя `x` при показе на ВСЮ ширину картинки.

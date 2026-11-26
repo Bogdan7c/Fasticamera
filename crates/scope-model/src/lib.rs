@@ -28,7 +28,7 @@
 //! единственное правило [`quantize_display_value`], общее с GPU.
 
 pub mod codes;
-pub mod column_references;
+pub mod column_count_scales;
 pub mod cube_root;
 pub mod graticule;
 mod graticule_layout;
@@ -54,7 +54,7 @@ mod vectorscope_palette;
 pub mod vectorscope_ycbcr;
 
 pub use codes::{HorizontalOrder, MAX_DISPLAY_CODE, ShownCodes, ShownCodesError, quantize_display_value};
-pub use column_references::{ColumnBasis, ColumnReferences, samples_in_columns};
+pub use column_count_scales::{ColumnBasis, ColumnCountScales, samples_in_columns};
 pub use graticule::{GraticulePrimitive, MAX_GRATICULE_PRIMITIVES};
 pub use grid::{GridError, GridShape, ScopeCounters};
 pub use position_palette::{POSITION_PALETTE_ANGLES, PositionPalette, PositionPaletteEntry};

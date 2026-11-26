@@ -8,7 +8,7 @@
 use crate::sampling::SampleStride;
 
 /// Отсчёты кадра: `across` по горизонтали показанной картинки и `down` по вертикали. Помнит и окно с шагом, из
-/// которых получен: по ним [`crate::column_references`] считает, сколько отсчётов легло в каждый столбец следа.
+/// которых получен: по ним [`crate::column_count_scales`] считает, сколько отсчётов легло в каждый столбец следа.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SampleCount {
     across: u32,
