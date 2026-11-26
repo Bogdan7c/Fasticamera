@@ -113,7 +113,7 @@ impl MenuButtonWidget {
             // поверх ряда целиком); кнопку прячет открытое меню раздела.
             MenuButtonHome::Section { .. } => (
                 true,
-                ctx.state.calibration().menu() == crate::calibration::CalibrationMenu::Closed,
+                ctx.state.calibration().card() == crate::calibration::SectionCard::Closed,
             ),
         };
         kit.set_interactive(self.button.node(), row_shown && menu_closed)

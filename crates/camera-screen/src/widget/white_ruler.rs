@@ -21,7 +21,7 @@ use std::num::NonZeroU32;
 
 use camera_contract::control::{ColorTemperature, Tint};
 use ui_core::geometry::Rect;
-use ui_core::gesture::{GestureEvent, PanDirection, PanSpec, RecognizerSpec};
+use ui_core::gesture::{GestureEvent, PanSpec, RecognizerSpec};
 use ui_core::id::NodeId;
 use ui_draw::scene_bridge::NodePlacementPx;
 use ui_draw::transform::Affine2;
@@ -34,11 +34,10 @@ use super::error::{WidgetError, element};
 use super::intent::ScreenGesture;
 use super::kit::SceneKit;
 use super::layers::{DrawLayers, Layer, VisualIndex};
+use super::white_card_site::WhiteCardSite;
 use super::white_follow::{AxisFollower, EchoRules, FollowVerdict};
 use super::{Ctx, Outputs};
 use crate::action::ScreenAction;
-use crate::state::PanelState;
-use crate::tools::ToolId;
 use crate::white::WhiteAxis;
 use crate::white_facts::WhiteRange;
 
@@ -125,6 +124,8 @@ pub(crate) struct WhiteRuler {
     invalid_values: u64,
     /// Идёт ли пан зоны: после снятия ведения (карточку закрыли) хвост жеста шкале не передаётся.
     pan_active: bool,
+    /// Дом шкалы: от него зависят номер пана, оси смещений и ответ «карточка открыта» (PHOTO или раздел).
+    site: WhiteCardSite,
 }
 
 impl WhiteRuler {
@@ -133,16 +134,18 @@ impl WhiteRuler {
         kit: &mut SceneKit,
         ctx: &Ctx<'_>,
         (card_node, card_rect): (NodeId, Rect),
+        site: &WhiteCardSite,
     ) -> Result<Self, WidgetError> {
-        let rect = ctx.geometry.white_ruler();
+        let rect = site.geometry().white_ruler();
         let node = kit.add_node(card_node, "white_ruler", rect, card_rect)?;
+        let (direction, pan_gesture) = site.ruler_pan();
         kit.add_recognizer(
             node,
             RecognizerSpec::Pan(PanSpec {
-                direction: PanDirection::Horizontal,
+                direction,
                 ..PanSpec::default()
             }),
-            ScreenGesture::WhiteRulerPan,
+            pan_gesture,
         )?;
         kit.set_interactive(node, false)?;
         let facts = ctx.state.camera_facts().white;
@@ -182,6 +185,7 @@ impl WhiteRuler {
             )?,
             invalid_values: 0,
             pan_active: false,
+            site: site.clone(),
         })
     }
 
@@ -196,13 +200,15 @@ impl WhiteRuler {
         event: &GestureEvent<ScreenGesture>,
         selected: WhiteAxis,
     ) -> Result<bool, WidgetError> {
-        if event.intent != ScreenGesture::WhiteRulerPan {
+        if event.intent != self.site.ruler_pan().1 {
             return Ok(false);
         }
         let Some(update) = PanUpdate::from_gesture(event.state, event.data).map_err(element("пан белого"))?
         else {
             return Ok(true);
         };
+        // Шкала думает вдоль себя: в разделе пан поворачивается из осей поверхности в глазные.
+        let update = self.site.scale_pan(update);
         match update {
             PanUpdate::Began { .. } => self.pan_active = true,
             PanUpdate::Changed { .. } | PanUpdate::Ended { .. } if !self.pan_active => return Ok(true),
@@ -233,7 +239,7 @@ impl WhiteRuler {
 
     /// Выравнивает обе шкалы по фактам: пределы на лету, точное значение при изменении факта.
     pub(crate) fn sync(&mut self, ctx: &Ctx<'_>) {
-        if !card_is_open(ctx) {
+        if !self.site.is_open(ctx.state) {
             // Карточку закрыли или сменили посреди ведения: ведение снимается, намерений после этого нет.
             self.cancel_drag(ctx);
         }
@@ -276,7 +282,7 @@ impl WhiteRuler {
     /// Кадр шкал: значения пальца → намерения экрана, тики → хаптика.
     pub(crate) fn advance(&mut self, ctx: &Ctx<'_>, out: &mut Outputs) {
         let rules = EchoRules::from_layout(&ctx.config.widgets.white_card);
-        let allowed = card_is_open(ctx);
+        let allowed = self.site.is_open(ctx.state);
         for kelvin in self.temperature.advance(&rules, ctx, out, allowed) {
             match ColorTemperature::from_kelvin(kelvin) {
                 Ok(temperature) => out.actions.push(ScreenAction::WhiteTemperatureDragged(temperature)),
@@ -369,9 +375,4 @@ impl<M: RulerAxis> CancelPan for RulerControl<M> {
     fn cancel(&mut self, now: ui_core::time::MonotonicNanos) -> Result<(), ui_kit::scale::ScaleError> {
         self.apply_pan(now, PanUpdate::Cancelled)
     }
-}
-
-/// Открыта ли карточка белого: только тогда намерения шкал дойдут до движка (иначе редьюсер их отвергнет).
-fn card_is_open(ctx: &Ctx<'_>) -> bool {
-    ctx.state.panel() == PanelState::Submenu(ToolId::White)
 }

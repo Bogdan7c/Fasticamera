@@ -7,7 +7,7 @@ use super::geometry::ScreenGeometry;
 use crate::tools::ToolId;
 use crate::white::WhiteAxis;
 use crate::white_config::WhiteButtonSide;
-use crate::white_row::WhiteRowSlot;
+use crate::white_row::{WhiteRowLayout, WhiteRowSlot};
 
 impl ScreenGeometry {
     /// Рамка кнопки белого в ряду затвора (WB35): круг диаметром кнопки меню, центр на высоте центра затвора, по x —
@@ -61,9 +61,25 @@ impl ScreenGeometry {
     /// Зона кнопки `slot` в ряду «Auto» + «Phone» + `light_count` кнопок света: ряд центрирован по карточке,
     /// шаг — конфиг. Место кнопки в ряду называет [`WhiteRowSlot::position`]: арифметики номеров здесь нет.
     pub(crate) fn white_row_slot(&self, slot: WhiteRowSlot, light_count: usize) -> Rect {
+        self.white_row_cell(slot.position(), WhiteRowSlot::row_len(light_count))
+    }
+
+    /// То же для ряда заданного состава: ряд без «Auto» центрируется по карточке заново. `None` — такой кнопки в
+    /// этом составе нет.
+    pub(crate) fn white_row_slot_in(
+        &self,
+        layout: WhiteRowLayout,
+        slot: WhiteRowSlot,
+        light_count: usize,
+    ) -> Option<Rect> {
+        let position = layout.position_of(slot)?;
+        Some(self.white_row_cell(position, layout.len(light_count)))
+    }
+
+    /// Ячейка с номером `position` в ряду из `row_len` кнопок, центрированном по карточке.
+    fn white_row_cell(&self, position: usize, row_len: usize) -> Rect {
         let white = &self.config().white_card;
-        let row_len = WhiteRowSlot::row_len(light_count);
-        let offset_from_middle = slot.position() as f64 - row_len.saturating_sub(1) as f64 * 0.5;
+        let offset_from_middle = position as f64 - row_len.saturating_sub(1) as f64 * 0.5;
         let center = self.white_point(
             offset_from_middle * white.light_pitch_pt,
             white.lights_row_center_from_top_pt,

@@ -48,7 +48,7 @@ use crate::action::ScreenAction;
 use crate::white_display::{kelvin_text, number_is_manual, white_unit_label};
 
 /// Во сколько раз сжать строку шириной `advance_px`, чтобы она не вышла за `max_width_px` (1, если и так помещается).
-fn fit_scale(advance_px: f32, max_width_px: f32) -> f32 {
+pub(crate) fn fit_scale(advance_px: f32, max_width_px: f32) -> f32 {
     if advance_px > max_width_px && advance_px > 0.0 {
         max_width_px / advance_px
     } else {

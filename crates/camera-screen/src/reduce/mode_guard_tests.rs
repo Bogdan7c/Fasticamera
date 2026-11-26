@@ -1,7 +1,7 @@
 //! Тесты охраны по режиму: действия управления камерой в CALIBRATE отвергаются самим редьюсером (а не только тем,
 //! что сцена не рисует для них виджетов), а в PHOTO работают как раньше.
 
-use camera_contract::control::{ColorTemperature, ExposureBias, Tint};
+use camera_contract::control::ExposureBias;
 
 use crate::action::ScreenAction;
 use crate::look_test_support::look_facts;
@@ -9,8 +9,6 @@ use crate::mode_behaviour::ModeBehaviour;
 use crate::outcome::{ActionOutcome, Rejection};
 use crate::test_support::{Screen, at_ms, ratio};
 use crate::tools::ToolId;
-use crate::white::WhiteAxis;
-use crate::white_config::WhiteLightIndex;
 use ui_core::geometry::Point;
 
 /// По одному действию из каждого семейства управления камерой: фокус, LOCK, экспозиция, значки, зум.
@@ -41,17 +39,6 @@ fn camera_control_actions() -> Vec<(&'static str, ScreenAction)> {
         ("палец на «солнце»", ScreenAction::FocusSunHeld { at }),
         ("сброс экспозиции", ScreenAction::ExposureResetRequested),
         ("значок над кадром", ScreenAction::StripToolTapped(ToolId::Timer)),
-        ("тап по кнопке белого", ScreenAction::WhiteButtonTapped),
-        ("долгое нажатие на кнопку белого", ScreenAction::WhiteButtonLongPressed),
-        ("тап «Auto»", ScreenAction::WhiteAutoTapped),
-        ("тап «Телефон»", ScreenAction::WhitePhoneTapped),
-        ("кнопка света", ScreenAction::WhiteLightSelected(WhiteLightIndex(0))),
-        ("выбор шкалы белого", ScreenAction::WhiteAxisSelected(WhiteAxis::Tint)),
-        (
-            "шкала Кельвинов",
-            ScreenAction::WhiteTemperatureDragged(ColorTemperature::DAYLIGHT),
-        ),
-        ("шкала оттенка", ScreenAction::WhiteTintDragged(Tint::NEUTRAL)),
         ("упор зума", ScreenAction::ZoomStopTapped { stop: 0, at }),
         ("нажатие на ленту зума", ScreenAction::ZoomStripPressBegan { at }),
         ("касание колеса зума", ScreenAction::ZoomWheelTouched { at }),
@@ -91,6 +78,48 @@ fn camera_control_actions_are_rejected_in_calibrate_without_effects_or_state_cha
         after.rejections = before.rejections;
         after.last_time = before.last_time;
         assert_eq!(after, before, "{name}: состояние не тронуто");
+    }
+}
+
+/// Белое, которого у раздела калибровки нет (решение 294): «Auto» и долгое нажатие на кнопку у затвора.
+fn full_white_actions() -> Vec<(&'static str, ScreenAction)> {
+    vec![
+        ("долгое нажатие на кнопку белого", ScreenAction::WhiteButtonLongPressed),
+        ("тап «Auto»", ScreenAction::WhiteAutoTapped),
+    ]
+}
+
+#[test]
+fn auto_and_the_shutter_long_press_are_rejected_in_calibrate_without_effects_or_state_changes() {
+    for (name, action) in full_white_actions() {
+        let mut screen = Screen::calibrating(look_facts());
+        let before = screen.state.clone();
+
+        let transition = screen.step(action);
+
+        assert_eq!(
+            transition.outcome,
+            ActionOutcome::Rejected(Rejection::NotAvailableInMode),
+            "{name}"
+        );
+        assert!(transition.effects.is_empty(), "{name}: {:?}", transition.effects);
+        let mut after = screen.state.clone();
+        after.rejections = before.rejections;
+        after.last_time = before.last_time;
+        assert_eq!(after, before, "{name}: состояние не тронуто");
+    }
+}
+
+#[test]
+fn auto_and_the_shutter_long_press_still_work_in_photo() {
+    for (name, action) in full_white_actions() {
+        let mut screen = Screen::ready();
+        let transition = screen.step(action);
+        assert_ne!(
+            transition.outcome,
+            ActionOutcome::Rejected(Rejection::NotAvailableInMode),
+            "{name}"
+        );
     }
 }
 
@@ -145,4 +174,16 @@ fn gesture_releases_still_pass_in_calibrate_so_a_gesture_begun_in_photo_can_fini
 fn camera_controls_are_data_of_the_mode_not_a_mode_check() {
     assert!(ModeBehaviour::PHOTO.has_camera_controls());
     assert!(!ModeBehaviour::CALIBRATE.has_camera_controls());
+}
+
+#[test]
+fn white_controls_and_tracking_hold_are_data_of_the_mode() {
+    use crate::mode_behaviour::{WhiteControls, WhiteTrackingHold};
+    assert_eq!(ModeBehaviour::PHOTO.white_controls, WhiteControls::Full);
+    assert_eq!(ModeBehaviour::PHOTO.white_tracking, WhiteTrackingHold::Running);
+    assert_eq!(ModeBehaviour::CALIBRATE.white_controls, WhiteControls::ManualOnly);
+    assert_eq!(
+        ModeBehaviour::CALIBRATE.white_tracking,
+        WhiteTrackingHold::PausedForCalibration
+    );
 }

@@ -13,7 +13,7 @@ use ui_kit::tokens::{TextRoleKind, UiKitTokens};
 
 use super::screen_calibration_tests::{calibrating, center, edited, portrait};
 use super::test_rig::*;
-use crate::calibration::{CalibrationMenu, DeleteConfirmation};
+use crate::calibration::{DeleteConfirmation, SectionCard};
 use crate::effect::Effect;
 use crate::look_test_support::{NIGHT, SUNSET, look_facts, look_facts_with_active, look_intents};
 use look_contract::LookFacts;
@@ -24,8 +24,8 @@ fn open_menu(rig: &mut Rig) {
     rig.tap(button);
     rig.run(700);
     assert_eq!(
-        rig.screen.state().calibration().menu(),
-        CalibrationMenu::Presets,
+        rig.screen.state().calibration().card(),
+        SectionCard::Presets,
         "кнопка открыла карточку пресетов сразу"
     );
 }
@@ -99,15 +99,15 @@ fn a_tap_outside_the_menu_closes_it_without_touching_the_knobs() {
     rig.tap(knobs);
     rig.run(500);
     assert_eq!(
-        rig.screen.state().calibration().menu(),
-        CalibrationMenu::Closed,
+        rig.screen.state().calibration().card(),
+        SectionCard::Closed,
         "тап мимо закрыл меню"
     );
     assert!(intents(&mut rig).is_empty(), "тап мимо не дошёл до ручек");
     // Меню закрыто: тап по той же колонке больше не закрывает ничего (скрим выключен).
     rig.tap(knobs);
     rig.run(100);
-    assert_eq!(rig.screen.state().calibration().menu(), CalibrationMenu::Closed);
+    assert_eq!(rig.screen.state().calibration().card(), SectionCard::Closed);
 }
 
 #[test]
@@ -119,8 +119,8 @@ fn swiping_down_closes_the_menu_and_swiping_up_does_not() {
     rig.drag(card_point, up, 200);
     rig.run(200);
     assert_eq!(
-        rig.screen.state().calibration().menu(),
-        CalibrationMenu::Presets,
+        rig.screen.state().calibration().card(),
+        SectionCard::Presets,
         "свайп вверх меню не закрывает"
     );
     let card_point = center(&rig, "calib_menu_card", 0);
@@ -128,8 +128,8 @@ fn swiping_down_closes_the_menu_and_swiping_up_does_not() {
     rig.drag(card_point, down, 200);
     rig.run(500);
     assert_eq!(
-        rig.screen.state().calibration().menu(),
-        CalibrationMenu::Closed,
+        rig.screen.state().calibration().card(),
+        SectionCard::Closed,
         "свайп вниз закрыл меню"
     );
 }
@@ -318,8 +318,8 @@ fn the_close_cross_on_the_card_closes_the_menu_every_time() {
     rig.tap(cross);
     rig.run(700);
     assert_eq!(
-        rig.screen.state().calibration().menu(),
-        CalibrationMenu::Closed,
+        rig.screen.state().calibration().card(),
+        SectionCard::Closed,
         "«×» закрыла меню: возвращаться некуда"
     );
     assert_eq!(
@@ -331,7 +331,7 @@ fn the_close_cross_on_the_card_closes_the_menu_every_time() {
     open_presets(&mut rig);
     rig.tap(center(&rig, "card_button", 0));
     rig.run(700);
-    assert_eq!(rig.screen.state().calibration().menu(), CalibrationMenu::Closed);
+    assert_eq!(rig.screen.state().calibration().card(), SectionCard::Closed);
 }
 
 // ----- альбом --------------------------------------------------------------------------------------------------------
@@ -342,8 +342,8 @@ fn in_landscape_the_menu_is_touched_in_eye_space_and_drawn_turned_with_the_secti
         let mut rig = calibrating(look_facts(), orientation);
         open_menu(&mut rig);
         assert_eq!(
-            rig.screen.state().calibration().menu(),
-            CalibrationMenu::Presets,
+            rig.screen.state().calibration().card(),
+            SectionCard::Presets,
             "{orientation:?}: кнопка меню нажалась в глазных осях"
         );
         rig.effects();

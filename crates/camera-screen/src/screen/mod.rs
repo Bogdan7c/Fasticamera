@@ -710,6 +710,9 @@ mod screen_white_card_tests;
 #[path = "screen_white_follow_tests.rs"]
 mod screen_white_follow_tests;
 #[cfg(test)]
+#[path = "screen_white_section_tests.rs"]
+mod screen_white_section_tests;
+#[cfg(test)]
 #[path = "screen_zoom_flip_tests.rs"]
 mod screen_zoom_flip_tests;
 #[cfg(test)]

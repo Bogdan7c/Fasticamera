@@ -23,6 +23,29 @@ pub enum CameraControls {
     Absent,
 }
 
+/// Что режим делает со слежением за белым («Auto», white-balance 04) — данные, а не `if mode == …` (решение 289).
+///
+/// Это ЖЕЛАНИЕ экрана, не команда: приложение каждый кадр сверяет его с тем, что уже принято движком, и шлёт
+/// разницу, пока она не принята (уровень, а не одноразовое событие: потерянный «Running» не должен оставить белое
+/// замороженным навсегда).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhiteTrackingHold {
+    /// Слежение работает как обычно (если «Auto» включён).
+    Running,
+    /// Слежение на паузе, пока открыт раздел калибровки: белое стоит, а режим «Auto» остаётся включённым и
+    /// запомненным, после выхода слежение продолжается с того же белого (решения 289, 294).
+    PausedForCalibration,
+}
+
+/// Какие органы белого есть у режима.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhiteControls {
+    /// Все: «Auto», «Phone», долгое нажатие на кнопку у затвора, шкалы и свет (PHOTO).
+    Full,
+    /// Только ручное белое и «Phone»: «Auto» и долгое нажатие не живут (раздел калибровки, решение 294).
+    ManualOnly,
+}
+
 /// Что делает аппаратная клавиша громкости в режиме.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VolumeKeyRole {
@@ -74,6 +97,10 @@ pub struct ModeBehaviour {
     pub calibration: CalibrationSurface,
     /// Есть ли управление камерой (фокус, экспозиция, зум, значки над кадром).
     pub camera_controls: CameraControls,
+    /// Что режим хочет от слежения за белым.
+    pub white_tracking: WhiteTrackingHold,
+    /// Какие органы белого есть в режиме.
+    pub white_controls: WhiteControls,
 }
 
 impl ModeBehaviour {
@@ -85,6 +112,8 @@ impl ModeBehaviour {
         viewfinder: ViewfinderPlacement::FramedByAspect,
         calibration: CalibrationSurface::Absent,
         camera_controls: CameraControls::Present,
+        white_tracking: WhiteTrackingHold::Running,
+        white_controls: WhiteControls::Full,
     };
 
     /// CALIBRATE (решения 185, 203): затвора нет, громкость не снимает, обе ориентации, видоискатель на весь экран.
@@ -95,6 +124,8 @@ impl ModeBehaviour {
         viewfinder: ViewfinderPlacement::FullScreenCover,
         calibration: CalibrationSurface::Present,
         camera_controls: CameraControls::Absent,
+        white_tracking: WhiteTrackingHold::PausedForCalibration,
+        white_controls: WhiteControls::ManualOnly,
     };
 
     /// Есть ли у режима раздел калибровки.

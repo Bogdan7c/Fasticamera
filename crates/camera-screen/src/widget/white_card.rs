@@ -16,7 +16,7 @@
 //! чертой-капсулой под числом; другая приглушена. Заголовка «WHITE» нет: в эскизе владельца его нет, а оба числа
 //! и «×» в 421 pt его оставляют без места.
 
-use ui_core::gesture::{GestureEvent, PanDirection, PanSpec, RecognizerSpec};
+use ui_core::gesture::{GestureEvent, PanSpec, RecognizerSpec};
 use ui_core::id::NodeId;
 use ui_core::time::MonotonicNanos;
 use ui_draw::color::Opacity;
@@ -30,12 +30,13 @@ use ui_kit::view::centered_text;
 
 use super::button::{ButtonEvent, PressButton};
 use super::error::WidgetError;
-use super::intent::{ButtonId, ScreenGesture};
+use super::intent::ScreenGesture;
 use super::kit::SceneKit;
 use super::layers::{DrawLayers, Layer, VisualIndex};
-use super::side_button::{IconTurn, SideButton, SideButtonLook};
+use super::side_button::{SideButton, SideButtonLook};
 use super::text_runs::TextRuns;
 use super::white_card_row::LightsRow;
+use super::white_card_site::{WhiteCardButton, WhiteCardSite};
 use super::white_ruler::WhiteRuler;
 use super::{Ctx, Outputs};
 use crate::action::ScreenAction;
@@ -53,6 +54,8 @@ struct AxisButton {
 
 /// Содержимое белой карточки.
 pub(crate) struct WhiteCardWidget {
+    /// Дом карточки (PHOTO или раздел): геометрия, номера кнопок, оси и сдвиги.
+    site: WhiteCardSite,
     node: NodeId,
     close: SideButton,
     axes: Vec<AxisButton>,
@@ -62,23 +65,32 @@ pub(crate) struct WhiteCardWidget {
 
 impl WhiteCardWidget {
     /// Узел белой карточки — ребёнок `parent` (того же, что у обычной карточки), поверх неё в хит-тесте.
-    pub(crate) fn build(kit: &mut SceneKit, ctx: &Ctx<'_>, parent: NodeId) -> Result<Self, WidgetError> {
-        let rect = ctx.geometry.white_card();
-        let node = kit.add_node(parent, "white_card", rect, ctx.geometry.screen())?;
+    /// `site` — дом карточки: геометрия, номера кнопок и оси (PHOTO или раздел калибровки).
+    pub(crate) fn build(
+        kit: &mut SceneKit,
+        ctx: &Ctx<'_>,
+        parent: NodeId,
+        site: WhiteCardSite,
+    ) -> Result<Self, WidgetError> {
+        let geometry = site.geometry();
+        let rect = geometry.white_card();
+        let node = kit.add_node(parent, "white_card", rect, geometry.screen())?;
         // Свайп вниз по карточке закрывает её, как и у обычной (решает редьюсер).
+        let (close_direction, close_gesture) = site.close_pan();
         kit.add_recognizer(
             node,
             RecognizerSpec::Pan(PanSpec {
-                direction: PanDirection::Down,
+                direction: close_direction,
                 ..PanSpec::default()
             }),
-            ScreenGesture::DrawerClosePan,
+            close_gesture,
         )?;
         let mut axes = Vec::with_capacity(AXES.len());
         for axis in AXES {
-            let frame = ctx.geometry.white_axis_button(axis);
+            let frame = geometry.white_axis_button(axis);
             let axis_node = kit.add_node(node, "white_axis", frame, rect)?;
-            let button = PressButton::attach(kit, ButtonId::WhiteAxis(axis), axis_node, frame, ctx)?;
+            let id = site.button_id(WhiteCardButton::Axis(axis))?;
+            let button = PressButton::attach(kit, id, axis_node, frame, ctx)?;
             kit.set_interactive(axis_node, false)?;
             axes.push(AxisButton { axis, button });
         }
@@ -86,13 +98,14 @@ impl WhiteCardWidget {
             kit,
             ctx,
             (node, rect),
-            (ButtonId::WhiteClose, ctx.geometry.white_close_button()),
-            IconTurn::FollowsPhone,
+            (site.button_id(WhiteCardButton::Close)?, geometry.white_close_button()),
+            site.icon_turn(),
         )?;
-        let row = LightsRow::build(kit, ctx, (node, rect))?;
-        let ruler = WhiteRuler::build(kit, ctx, (node, rect))?;
+        let row = LightsRow::build(kit, ctx, (node, rect), &site)?;
+        let ruler = WhiteRuler::build(kit, ctx, (node, rect), &site)?;
         kit.set_interactive(node, false)?;
         Ok(Self {
+            site,
             node,
             close,
             axes,
@@ -103,28 +116,34 @@ impl WhiteCardWidget {
 
     pub(crate) fn handle_gesture(
         &mut self,
+        kit: &SceneKit,
         event: &GestureEvent<ScreenGesture>,
         selected: WhiteAxis,
         out: &mut Outputs,
     ) -> Result<bool, WidgetError> {
-        match event.intent {
-            ScreenGesture::Press(ButtonId::WhiteClose) => {
-                if self.close.button.handle(event.state, event.data, event.time)? == ButtonEvent::Activated {
-                    out.actions.push(ScreenAction::SubmenuBackRequested);
+        if let ScreenGesture::Press(id) = event.intent {
+            match self.site.button_of(id) {
+                Some(WhiteCardButton::Close) => {
+                    let data = self.site.press_data(kit, self.close.button.node(), event.data);
+                    if self.close.button.handle(event.state, data, event.time)? == ButtonEvent::Activated {
+                        out.actions.push(ScreenAction::SubmenuBackRequested);
+                    }
+                    return Ok(true);
                 }
-                Ok(true)
-            }
-            ScreenGesture::Press(ButtonId::WhiteAxis(axis)) => {
-                let Some(button) = self.axes.iter_mut().find(|button| button.axis == axis) else {
-                    return Err(WidgetError::Inconsistent(format!("кнопки оси {axis:?} нет")));
-                };
-                if button.button.handle(event.state, event.data, event.time)? == ButtonEvent::Activated {
-                    out.actions.push(ScreenAction::WhiteAxisSelected(axis));
+                Some(WhiteCardButton::Axis(axis)) => {
+                    let Some(button) = self.axes.iter_mut().find(|button| button.axis == axis) else {
+                        return Err(WidgetError::Inconsistent(format!("кнопки оси {axis:?} нет")));
+                    };
+                    let data = self.site.press_data(kit, button.button.node(), event.data);
+                    if button.button.handle(event.state, data, event.time)? == ButtonEvent::Activated {
+                        out.actions.push(ScreenAction::WhiteAxisSelected(axis));
+                    }
+                    return Ok(true);
                 }
-                Ok(true)
+                Some(WhiteCardButton::Row(_)) | None => {}
             }
-            _ => Ok(self.row.handle_gesture(event, out)? || self.ruler.handle_gesture(event, selected)?),
         }
+        Ok(self.row.handle_gesture(kit, event, out)? || self.ruler.handle_gesture(event, selected)?)
     }
 
     /// Следит за фактами всегда; касания включает, только пока белая карточка открыта.
@@ -221,7 +240,7 @@ impl WhiteCardWidget {
                 ),
             };
             let slide = Affine2::translate(0.0, slide_px);
-            let host = placement.transform.then(slide);
+            let host = self.site.offset_placed(placement.transform, slide);
             let run = texts.run(ctx, &text, TextRoleKind::CardValue)?;
             layers.push(Layer::Content, centered_text(run, host, colors.text_primary, opacity));
             if is_selected {

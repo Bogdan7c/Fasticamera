@@ -86,6 +86,9 @@ mod viewfinder_tests;
 #[path = "wheels_tests.rs"]
 mod wheels_tests;
 #[cfg(test)]
+#[path = "white_section_tests.rs"]
+mod white_section_tests;
+#[cfg(test)]
 #[path = "white_tests.rs"]
 mod white_tests;
 #[cfg(test)]

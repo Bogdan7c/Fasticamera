@@ -6,6 +6,7 @@ use scope_contract::{ScopeKind, VectorscopeAxes};
 
 use crate::calibration::ControlViewKind;
 use crate::white::WhiteAxis;
+use crate::widget::white_card_site::WhiteCardButton;
 
 /// Кнопка экрана (нажатие = `Press` для подсветки/срабатывания + `Tap` для арбитража, дока `UiScene`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -62,6 +63,11 @@ pub enum ButtonId {
     WhitePhone,
     /// Кнопка света на карточке белого по номеру в конфиге.
     WhiteLight(u8),
+    /// Капсула белого в правой части полоски прибора раздела калибровки (решение 290).
+    SectionWhiteCapsule,
+    /// Кнопка карточки белого В РАЗДЕЛЕ калибровки (решение 292). Отдельные номера от PHOTO нужны, потому что карточка
+    /// белого PHOTO живёт всегда, и событие с общим номером ушло бы не в тот виджет.
+    SectionWhite(WhiteCardButton),
     /// Левая кнопка карточки меню раздела: «‹» закрыть меню.
     CalibrationCardLeft,
     /// Правая кнопка карточки меню раздела: «↻» сбросить правки пресета.
@@ -133,6 +139,8 @@ pub enum ScreenGesture {
     CalibrationMenuScrimTap,
     /// Пан по шторке или карточке меню раздела: вниз глазами — закрыть.
     CalibrationMenuClosePan,
+    /// Пан шкалы карточки белого в разделе калибровки (в глазных осях; свой номер, как у кнопок карточки).
+    SectionWhiteRulerPan,
 }
 
 impl ScreenGesture {
@@ -150,7 +158,8 @@ impl ScreenGesture {
             | ScreenGesture::CalibrationCapsuleTap
             | ScreenGesture::CalibrationChipsPan
             | ScreenGesture::CalibrationMenuScrimTap
-            | ScreenGesture::CalibrationMenuClosePan => true,
+            | ScreenGesture::CalibrationMenuClosePan
+            | ScreenGesture::SectionWhiteRulerPan => true,
             ScreenGesture::Press(button) | ScreenGesture::ButtonTapGuard(button) => matches!(
                 button,
                 ButtonId::CalibrationReset(_)
@@ -162,6 +171,8 @@ impl ScreenGesture {
                     | ButtonId::CalibrationMenu
                     | ButtonId::ScopePageDot(_)
                     | ButtonId::ScopeAxes(_)
+                    | ButtonId::SectionWhiteCapsule
+                    | ButtonId::SectionWhite(_)
                     | ButtonId::CalibrationCardLeft
                     | ButtonId::CalibrationCardRight
                     | ButtonId::CalibrationChip(_)

@@ -192,6 +192,11 @@ struct SwitchablePort {
 
 impl CameraIntentPort for SwitchablePort {
     fn deliver(&self, intent: ScreenCameraIntent) -> CameraIntentOutcome {
+        // Пауза слежения идёт отдельным уровнем каждый кадр (`camera_white_hold`) и не относится к проверяемым здесь
+        // намерениям: её не записываем и ответом теста не отказываем (её доставку проверяют тесты паузы).
+        if matches!(intent, ScreenCameraIntent::HoldWhiteTracking(_)) {
+            return CameraIntentOutcome::Sent(CommandId(0));
+        }
         self.received.lock().expect("замок").push(intent);
         *self.outcome.lock().expect("замок")
     }
@@ -560,3 +565,6 @@ fn quiet_frames_do_not_rebuild_look_facts_and_one_edit_rebuilds_once() {
         "правка — одна пересборка, а не две на кадр"
     );
 }
+
+#[path = "camera_screen_source_white_hold_tests.rs"]
+mod white_hold;

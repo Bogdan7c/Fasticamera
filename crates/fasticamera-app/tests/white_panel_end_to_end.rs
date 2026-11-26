@@ -64,6 +64,8 @@ mod resume_rule;
 mod scales;
 #[path = "white_panel_end_to_end/screen_parts.rs"]
 mod screen_parts;
+#[path = "white_panel_end_to_end/section.rs"]
+mod section;
 #[path = "white_panel_end_to_end/session.rs"]
 mod session;
 #[path = "white_panel_end_to_end/stand.rs"]

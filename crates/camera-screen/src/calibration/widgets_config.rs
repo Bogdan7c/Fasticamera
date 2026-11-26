@@ -146,9 +146,12 @@ pub struct CalibrationWidgetsConfig {
     pub scope_axes_segment_width_pt: f64,
     /// Промежуток между частями полоски: имя, точки, оси, место белого. `[estimate]`.
     pub scope_strip_gap_pt: f64,
-    /// Ширина места под капсулу белого («5600 K», решение 290) справа в полоске на каждой странице. Сама кнопка
-    /// появится отдельным пакетом; место зарезервировано здесь, чтобы оси встали левее неё. `[estimate]`.
+    /// Ширина капсулы белого («5600 K», решение 290) справа в полоске на каждой странице: она же зона касания по
+    /// ширине (по высоте — вся полоска, 44 pt), оси вектороскопа стоят левее неё. `[estimate]`.
     pub scope_strip_trailing_width_pt: f64,
+    /// Боковой запас внутри капсулы белого: число длиннее (`12000 K`) сжимается так, чтобы уместиться с этим запасом
+    /// с каждой стороны. Высота нарисованной капсулы — `segment_height_pt`, как у сегментов осей. `[estimate]`.
+    pub scope_white_capsule_padding_pt: f64,
     /// Прозрачность волосяной линии между полоской и картинкой прибора (белая). `[estimate]`.
     pub scope_strip_hairline_alpha: f32,
     /// Отступ чисел уровней от правого края поля уровней (к картинке). `[estimate]`.
@@ -242,6 +245,7 @@ impl Default for CalibrationWidgetsConfig {
             scope_axes_segment_width_pt: 48.0,
             scope_strip_gap_pt: 6.0,
             scope_strip_trailing_width_pt: 68.0,
+            scope_white_capsule_padding_pt: 6.0,
             scope_strip_hairline_alpha: 0.18,
             scope_level_label_inset_pt: 4.0,
             scope_swipe_min_pt: 20.0,
@@ -360,6 +364,7 @@ impl CalibrationWidgetsConfig {
             ("scope_axes_segment_width_pt", self.scope_axes_segment_width_pt),
             ("scope_strip_gap_pt", self.scope_strip_gap_pt),
             ("scope_strip_trailing_width_pt", self.scope_strip_trailing_width_pt),
+            ("scope_white_capsule_padding_pt", self.scope_white_capsule_padding_pt),
             ("scope_level_label_inset_pt", self.scope_level_label_inset_pt),
             ("mode_pill_padding_pt", self.mode_pill_padding_pt),
             ("chip_height_pt", self.chip_height_pt),

@@ -13,7 +13,7 @@ use super::screen_calibration_tests::{calibrating, center, drag_eye, edited, por
 use super::test_rig::*;
 use super::touch_map_test_support::TouchMap;
 use crate::action::ScreenAction;
-use crate::calibration::{CalibrationMenu, CleanViewState};
+use crate::calibration::{CleanViewState, SectionCard};
 use crate::effect::Effect;
 use crate::look_test_support::{knob, look_facts, look_intents};
 use crate::modes::CaptureMode;
@@ -101,7 +101,7 @@ fn the_axes_toggle_switches_the_vectorscope_standard_with_the_menu_closed_and_re
         rig.act(ScreenAction::ScopeKindSelected(ScopeKind::Vectorscope));
         rig.run(300);
         rig.effects();
-        assert_eq!(rig.screen.state().calibration().menu(), CalibrationMenu::Closed);
+        assert_eq!(rig.screen.state().calibration().card(), SectionCard::Closed);
         assert_eq!(
             rig.screen.state().calibration().vectorscope_axes(),
             VectorscopeAxes::YCbCrBt709
@@ -115,8 +115,8 @@ fn the_axes_toggle_switches_the_vectorscope_standard_with_the_menu_closed_and_re
             "{orientation:?}: правый сегмент — OKLab"
         );
         assert_eq!(
-            rig.screen.state().calibration().menu(),
-            CalibrationMenu::Closed,
+            rig.screen.state().calibration().card(),
+            SectionCard::Closed,
             "меню не открывалось"
         );
         let requests = scope_requests(&mut rig);
@@ -591,7 +591,7 @@ fn with_the_card_open_the_capsule_never_changes_the_mode_and_a_tap_outside_the_c
         let layout = *rig.screen.state().calibration().layout().expect("раскладка");
         rig.act(ScreenAction::ControlsMenuOpenRequested);
         rig.run(700);
-        assert_eq!(rig.screen.state().calibration().menu(), CalibrationMenu::Presets);
+        assert_eq!(rig.screen.state().calibration().card(), SectionCard::Presets);
         rig.effects();
         // Карточка лежит над нижним рядом и накрывает капсулу: палец по ней режим не меняет.
         rig.tap(capsule);
@@ -606,8 +606,8 @@ fn with_the_card_open_the_capsule_never_changes_the_mode_and_a_tap_outside_the_c
         rig.tap(above_card);
         rig.run(500);
         assert_eq!(
-            rig.screen.state().calibration().menu(),
-            CalibrationMenu::Closed,
+            rig.screen.state().calibration().card(),
+            SectionCard::Closed,
             "{orientation:?}"
         );
         assert_eq!(rig.screen.state().mode(), CaptureMode::Calibrate, "{orientation:?}");

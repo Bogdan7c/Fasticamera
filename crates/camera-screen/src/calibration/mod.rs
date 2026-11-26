@@ -21,8 +21,7 @@ pub use layout_config::{
 };
 pub use scope_strip_frames::ScopeStripFrames;
 pub use state::{
-    CalibrationMenu, CalibrationState, CleanViewState, ControlViewKind, DeleteConfirmation, Naming, PendingText,
-    TextFlow,
+    CalibrationState, CleanViewState, ControlViewKind, DeleteConfirmation, Naming, PendingText, SectionCard, TextFlow,
 };
 pub use wheels_frames::WheelPadPlacement;
 pub(crate) use wheels_frames::{ColumnFrames, WheelsFrames, wheel_pad_placement};

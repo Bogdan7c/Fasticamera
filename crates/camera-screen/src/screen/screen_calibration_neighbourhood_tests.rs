@@ -10,11 +10,11 @@ use look_contract::LookFacts;
 use scope_contract::ScopeKind;
 use shell_contract::orientation::DeviceOrientation;
 
-use super::screen_calibration_tests::calibrating_with;
+use super::screen_calibration_tests::{calibrating_with, center};
 use super::test_rig::Rig;
 use super::touch_map_test_support::{TouchMap, describe_conflicts};
 use crate::action::ScreenAction;
-use crate::calibration::{ControlViewKind, KnobsSide};
+use crate::calibration::{ControlViewKind, KnobsSide, SectionCard};
 use crate::config::ScreenConfig;
 use crate::look_test_support::look_facts;
 
@@ -93,23 +93,46 @@ const MENU_LAYER: [&str; 6] = [
     "calib_action_chip",
 ];
 
-#[test]
-fn the_open_menu_is_modal_every_section_point_belongs_to_the_menu_layer() {
-    // Решение 281: открытое меню модальное — ни капсула режимов, ни ручки под затемнением касание не получают.
+/// Подписи слоя открытой карточки белого: затемнение, карточка, «×», числа осей, ряд кнопок и шкала.
+const WHITE_LAYER: [&str; 6] = [
+    "calib_menu_scrim",
+    "white_card",
+    "card_button",
+    "white_axis",
+    "white_light",
+    "white_ruler",
+];
+
+/// Открытая нижняя карточка модальна: каждая точка раздела принадлежит её слою (затемнению или самой карточке), а
+/// внутри слоя элементы друг друга не перекрывают.
+fn assert_the_open_card_is_modal(card: SectionCard, layer: &[&str]) {
     for (side, orientation) in SIDES
         .into_iter()
         .flat_map(|side| ORIENTATIONS.map(|orientation| (side, orientation)))
     {
         let mut rig = section_on_side(side, look_facts(), orientation, ControlViewKind::Scales);
-        rig.act(ScreenAction::ControlsMenuOpenRequested);
+        match card {
+            SectionCard::White => {
+                let capsule = center(&rig, "calib_white_capsule", 0);
+                rig.tap(capsule);
+            }
+            _ => {
+                rig.act(ScreenAction::ControlsMenuOpenRequested);
+            }
+        }
         rig.run(600);
+        assert_eq!(
+            rig.screen.state().calibration().card(),
+            card,
+            "{side:?} {orientation:?}"
+        );
         let scene = rig.screen.scene_for_tests().expect("сцена построена");
         let map = TouchMap::of_subtree(scene, SECTION_ROOT);
         let leaks: Vec<String> = map
             .conflicts()
             .into_iter()
-            .filter(|conflict| !MENU_LAYER.contains(&conflict.area))
-            .filter(|conflict| !conflict.caught_by.is_some_and(|label| MENU_LAYER.contains(&label)))
+            .filter(|conflict| !layer.contains(&conflict.area))
+            .filter(|conflict| !conflict.caught_by.is_some_and(|label| layer.contains(&label)))
             .map(|conflict| {
                 format!(
                     "{} в ({:.1}, {:.1}) ловит {:?}",
@@ -120,20 +143,33 @@ fn the_open_menu_is_modal_every_section_point_belongs_to_the_menu_layer() {
             .collect();
         assert!(
             leaks.is_empty(),
-            "{side:?} {orientation:?}: касание проходит мимо меню: {leaks:?}"
+            "{card:?} {side:?} {orientation:?}: касание проходит мимо карточки: {leaks:?}"
         );
-        let menu_conflicts: Vec<_> = map
+        let inner_conflicts: Vec<_> = map
             .conflicts()
             .into_iter()
-            .filter(|conflict| MENU_LAYER.contains(&conflict.area))
+            .filter(|conflict| layer.contains(&conflict.area))
             .filter(|conflict| conflict.area != "calib_menu_scrim")
             .collect();
         assert!(
-            menu_conflicts.is_empty(),
-            "{side:?} {orientation:?}: внутри меню: {}",
-            describe_conflicts(&menu_conflicts)
+            inner_conflicts.is_empty(),
+            "{card:?} {side:?} {orientation:?}: внутри карточки: {}",
+            describe_conflicts(&inner_conflicts)
         );
     }
+}
+
+#[test]
+fn the_open_menu_is_modal_every_section_point_belongs_to_the_menu_layer() {
+    // Решение 281: открытое меню модальное — ни капсула режимов, ни ручки под затемнением касание не получают.
+    assert_the_open_card_is_modal(SectionCard::Presets, &MENU_LAYER);
+}
+
+#[test]
+fn the_open_white_card_is_modal_too_and_its_elements_do_not_overlap_in_every_orientation() {
+    // Решение 292: карточка белого лежит над нижним рядом и низом прибора; капсула в полоске и всё остальное под
+    // завесой касаний не получают, а внутри карточки числа осей, шкала и ряд кнопок друг друга не перекрывают.
+    assert_the_open_card_is_modal(SectionCard::White, &WHITE_LAYER);
 }
 
 #[test]
@@ -149,6 +185,7 @@ fn the_touch_map_sees_every_kind_of_live_section_element() {
         "calib_band_dot",
         "calib_scope",
         "calib_scope_page_dot",
+        "calib_white_capsule",
         "calib_clean",
         "mode_capsule",
     ] {

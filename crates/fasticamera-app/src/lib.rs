@@ -38,6 +38,7 @@ pub mod camera_service;
 #[cfg(test)]
 mod camera_test_support;
 pub mod camera_white_effects;
+pub mod camera_white_hold;
 pub mod camera_wiring;
 pub mod capture_backend;
 pub mod capture_scenario_config;

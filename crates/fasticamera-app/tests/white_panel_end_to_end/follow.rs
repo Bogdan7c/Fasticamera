@@ -16,9 +16,9 @@ use super::white_engine::setting_of;
 const AUTO_UNIT: &str = "AUTO";
 const AUTO_LABEL: &str = "Auto";
 /// Вопрос (до 6 кадров) + доставка + переезд 0,3 с (18 кадров) с запасом.
-const FOLLOW_SETTLE_FRAMES: i64 = 40;
+pub const FOLLOW_SETTLE_FRAMES: i64 = 40;
 
-fn follow_state(session: &WhiteSession) -> WhiteFollowState {
+pub fn follow_state(session: &WhiteSession) -> WhiteFollowState {
     session.stand.status().three_a.white.follow.state
 }
 
@@ -40,7 +40,7 @@ fn row_color(session: &WhiteSession, text: &str) -> Option<DisplayColor> {
 }
 
 /// Карточка открыта, «Auto» нажат, движок подтвердил.
-fn auto_session() -> Option<WhiteSession> {
+pub fn auto_session() -> Option<WhiteSession> {
     let mut session = WhiteSession::open()?;
     session.open_card();
     session.tap_auto();

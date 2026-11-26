@@ -11,6 +11,7 @@ use shell_contract::haptics::HapticPattern;
 use shell_contract::text_input::TextPurpose;
 
 use crate::layout::FramingIntent;
+use crate::mode_behaviour::WhiteTrackingHold;
 use crate::shutter::ShotRequest;
 
 /// Намерение камере. Имена совпадают с методами `CameraHandle` (`camera-core/src/handle.rs`),
@@ -35,6 +36,11 @@ pub enum ScreenCameraIntent {
     /// `follow_white`: следить за белым источника (кнопка «Auto», WB44). Включённость слежения экран берёт из
     /// фактов; любое другое действие человека с белым выключает его на стороне движка.
     FollowWhite(WhiteSourceId),
+    /// `set_white_follow_pause`: пауза слежения за белым на время раздела калибровки (решение 289). Экран эту
+    /// команду НЕ выдаёт эффектом: он отвечает на запрос `ScreenState::white_tracking_hold()`, а приложение каждый
+    /// кадр сверяет желание с принятым движком и строит это намерение само, пока разница не принята (уровень, а не
+    /// событие). Вариант здесь лишь для того, чтобы порт камеры нёс его тем же словарём, что остальные намерения.
+    HoldWhiteTracking(WhiteTrackingHold),
 }
 
 /// Намерение наружу. С сессии 13 не `Copy`: кадрирование несёт общий каталог зума (`Arc`).

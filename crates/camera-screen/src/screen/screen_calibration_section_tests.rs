@@ -187,8 +187,8 @@ fn menu_button_in_the_section_requests_the_calibration_menu() {
     rig.tap(button);
     rig.run(200);
     assert_eq!(
-        rig.screen.state().calibration().menu(),
-        crate::calibration::CalibrationMenu::Presets,
+        rig.screen.state().calibration().card(),
+        crate::calibration::SectionCard::Presets,
         "кнопка меню внутри раздела открывает карточку пресетов раздела"
     );
 }
@@ -425,8 +425,8 @@ fn an_eye_horizontal_swipe_on_the_clean_zone_switches_the_mode_with_the_right_si
             "{orientation:?}: свайп вправо по чистой зоне вернул PHOTO"
         );
         assert_eq!(
-            rig.screen.state().calibration().menu(),
-            crate::calibration::CalibrationMenu::Closed,
+            rig.screen.state().calibration().card(),
+            crate::calibration::SectionCard::Closed,
             "{orientation:?}: меню не открылось"
         );
 
@@ -450,8 +450,8 @@ fn an_eye_vertical_swipe_on_the_clean_zone_neither_opens_the_menu_nor_changes_th
             let zone = clean_zone_center(&rig);
             drag_eye(&mut rig, zone, Vector::new(0.0, eye_dy));
             assert_eq!(
-                rig.screen.state().calibration().menu(),
-                crate::calibration::CalibrationMenu::Closed,
+                rig.screen.state().calibration().card(),
+                crate::calibration::SectionCard::Closed,
                 "{orientation:?}, dy {eye_dy}: меню не должно открываться свайпом по чистой зоне"
             );
             assert_eq!(

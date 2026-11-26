@@ -44,6 +44,8 @@ GPU-crate-ы не видит (guardrail).
 | `white_card_landscape_left.pam` | та же карточка в альбоме: значки повёрнуты, подписи нет | поворот |
 | `calibration_wheels_portrait.pam` | раздел калибровки, вид колёс (14b2), портрет: вкладки LIFT · GAMMA · GAIN · OFFSET (кольца-метки на изменённых Lift и Gamma), круг колеса с настоящим ободком оттенков OKLab, шайба толчка смещена вправо-вверх, яркие «↻» колеса и толчка, шкала кольца яркости; Lift тронут только толчком, Gamma — только кольцом | `ControlViewSelected(Wheels)`, `WheelSelected(Lift)` + факты о виде с колёсами (`calibration_wheels_goldens.rs`) |
 | `calibration_wheels_landscape_left.pam` | то же, телефон боком: весь вид повёрнут вместе с корнем раздела, ободок и шайба — по глазным осям | то же + `DeviceOrientationChanged(LandscapeLeft)` |
+| `calibration_white_card_portrait.pam` | раздел калибровки, карточка белого (14n, решения 290–294), портрет: капсула «4300 K» (жёлтая, ручное белое) справа в полоске прибора, нижняя карточка на поверхности раздела: «×», числа осей «4300 K» / «Tint +4», ряд Phone / Sun / Cloud / Shade / Lamp / Home (без Auto), шкала Кельвинов; нижний ряд под карточкой не рисуется | ручное белое 4300 K → `ModeSelected(Calibrate)` → тап по капсуле (`calibration_white_goldens.rs`) |
+| `calibration_white_card_landscape_left.pam` | то же, телефон боком: карточка и капсула повёрнуты вместе с корнем раздела, шкала идёт вдоль глазной горизонтали | то же + `DeviceOrientationChanged(LandscapeLeft)` |
 | `photo_styles_card.pam` | PHOTO: нижняя карточка STYLES: заголовок, значение — имя активного пресета «Sunset», ряд имён Honest / As Eye / Sunset / Night (активный жёлтый), «‹» и яркая «↻» | меню Controls → пункт STYLES (правки есть) |
 | `problem_banner_photo.pam` | PHOTO с плашкой проблемы «NAME TAKEN» (жёлтая капсула) у верха кадра | факты о виде с проблемой библиотеки `NameTaken`, снимок через 400 мс |
 
@@ -135,3 +137,7 @@ FASTICAMERA_GOLDEN_PREVIEW_DIR=/путь/к/каталогу cargo test -p fasti
   отличался одним пикселем на 1/255 (тот же шум атласа, что в записи сессии 13), поэтому оставлен прежний файл, сверка
   проходит. Добавлено пять эталонов: `calibration_portrait`, `calibration_landscape_left`, `calibration_presets_card`,
   `photo_styles_card`, `problem_banner_photo` (смысловые проверки — `calibration_goldens.rs`).
+* **Сессия 14n, этап 3a (белое в разделе).** Перегенерированы десять `calibration_*` (портрет, альбом, колёса, правки,
+  «owner»-кадры, карточка PRESETS): в полоске прибора справа появилась капсула белого, а под открытой карточкой
+  пресетов нижний ряд больше не просвечивает. Добавлены `calibration_white_card_portrait` и `_landscape_left`.
+  Кадры PHOTO не менялись (шум ±1 при перегенерации откачен).

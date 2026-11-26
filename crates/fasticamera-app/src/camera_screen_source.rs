@@ -415,6 +415,9 @@ impl CameraScreenSource {
         // Не принятое ранее желаемое EV идёт первым: свежее значение этого кадра пойдёт после и победит.
         self.executor.resend_pending_exposure_bias();
         self.executor.resend_pending_white();
+        // Пауза слежения за белым — уровень режима: сверяется каждый кадр, а не только когда есть эффекты.
+        self.executor
+            .drive_white_tracking_hold(self.screen.state().white_tracking_hold());
         let effects = self.screen.drain_effects();
         if effects.is_empty() {
             return false;

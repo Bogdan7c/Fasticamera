@@ -15,9 +15,9 @@ use crate::tools::ToolId;
 use crate::white::{TakeVerdict, WhiteAxis};
 use crate::white_config::WhiteLightIndex;
 
-/// Открыта ли карточка белого.
+/// Открыта ли карточка белого: подменю у затвора в PHOTO или нижняя карточка раздела калибровки (решение 292).
 fn card_is_open(ctx: &Ctx<'_>) -> bool {
-    ctx.state.panel == PanelState::Submenu(ToolId::White)
+    ctx.state.is_white_card_open()
 }
 
 /// Действия карточки при закрытой карточке — отказ, как у соседних подменю.
@@ -33,6 +33,10 @@ fn require_open_card(ctx: &Ctx<'_>) -> Result<(), ActionOutcome> {
 /// переключает на неё с другой карточки (правила значков верхнего ряда, `open_card_from_strip`). Пока открыто меню
 /// Controls — отказ: шторка лежит над кнопкой.
 pub(super) fn on_button_tapped(ctx: &mut Ctx<'_>) -> ActionOutcome {
+    // В разделе калибровки у кнопки другой дом (капсула в полоске прибора) и другая карточка: решает раздел.
+    if ctx.state.mode_behaviour().has_calibration_surface() {
+        return super::calibration::toggle_white_card(ctx);
+    }
     if ctx.state.panel == PanelState::ControlsMenu {
         return ActionOutcome::Rejected(Rejection::PanelBlocksAction);
     }

@@ -19,6 +19,7 @@ mod calibration_goldens;
 mod calibration_safe_area_goldens;
 mod calibration_surface_goldens;
 mod calibration_wheels_goldens;
+mod calibration_white_goldens;
 mod driver;
 mod golden_files;
 mod mode_capsule_goldens;

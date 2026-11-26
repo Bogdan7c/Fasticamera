@@ -11,7 +11,7 @@ use ui_draw::icons::IconId;
 
 use super::test_rig::*;
 use crate::action::ScreenAction;
-use crate::calibration::CalibrationMenu;
+use crate::calibration::SectionCard;
 use crate::config::ScreenConfig;
 use crate::look_test_support::look_facts;
 use crate::modes::CaptureMode;
@@ -212,8 +212,8 @@ fn a_tap_at_the_section_anchor_during_the_glide_does_nothing_but_works_after_it(
     let anchor_pt: Point = layout.eye_point_on_surface(layout.menu_button_center());
     rig.tap(anchor_pt);
     assert_eq!(
-        rig.screen.state().calibration().menu(),
-        CalibrationMenu::Closed,
+        rig.screen.state().calibration().card(),
+        SectionCard::Closed,
         "пока кнопка едет, касание якоря меню не открывает"
     );
     rig.run(800);
@@ -221,8 +221,8 @@ fn a_tap_at_the_section_anchor_during_the_glide_does_nothing_but_works_after_it(
     rig.tap(anchor_pt);
     rig.run(300);
     assert_ne!(
-        rig.screen.state().calibration().menu(),
-        CalibrationMenu::Closed,
+        rig.screen.state().calibration().card(),
+        SectionCard::Closed,
         "после переезда кнопка принимает касания"
     );
 }

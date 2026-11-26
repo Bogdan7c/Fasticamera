@@ -258,11 +258,28 @@ fn pressing_the_menu_button_scales_the_surface_without_a_glow() {
 }
 
 #[test]
-fn presets_card_is_a_surface_too_and_never_glass() {
+fn presets_card_is_a_surface_too_and_never_glass_and_hides_the_bottom_row_under_it() {
     let mut rig = calibrating(look_facts(), DeviceOrientation::Portrait);
-    let before = surfaces(rig.frame()).len();
+    let is_circle = |shape: &ShapeItem| matches!(shape.geometry, ui_draw::shape::ShapeGeometry::Circle { .. });
+    let is_card = |shape: &ShapeItem| matches!(shape.geometry, ui_draw::shape::ShapeGeometry::RoundedRect { .. });
+    let before = rig.frame().clone();
+    assert!(
+        surfaces(&before).into_iter().any(is_circle),
+        "кнопка меню — круг-поверхность"
+    );
+    let panels_at_rest = surfaces(&before).into_iter().filter(|shape| is_card(shape)).count();
     open_presets_card(&mut rig);
     let list = rig.frame().clone();
-    assert!(surfaces(&list).len() > before, "карточка добавила свою поверхность");
+    assert_eq!(
+        surfaces(&list).into_iter().filter(|shape| is_card(shape)).count(),
+        panels_at_rest + 1,
+        "карточка добавила свою поверхность"
+    );
+    // Решение 292: нижний ряд (кнопка меню — круг, CLEAN, капсула режимов) под карточкой не просвечивает.
+    assert_eq!(
+        surfaces(&list).into_iter().filter(|shape| is_circle(shape)).count(),
+        0,
+        "кнопки нижнего ряда не рисуются под карточкой"
+    );
     assert_eq!(glass_groups(&list), 0);
 }

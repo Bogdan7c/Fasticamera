@@ -1,6 +1,6 @@
 //! Полоска над картинкой прибора (решения 258, 290, 291): имя прибора слева, точки страниц по центру (тап выбирает
-//! прибор), на странице вектороскопа справа переключатель осей Y'CbCr | OKLab. Правее него оставлено место под
-//! капсулу белого (`ScopeStripFrames::trailing`): её добавит отдельный пакет, здесь только резерв.
+//! прибор), на странице вектороскопа справа переключатель осей Y'CbCr | OKLab, а на самом правом краю каждой
+//! страницы — капсула белого (`WhiteCapsule`, место `ScopeStripFrames::trailing`).
 //!
 //! Раньше имя и точки лежали поверх следа и закрывали света и тени; теперь у них своя полоска, а картинка прибора
 //! начинается под ней. Все цели — на всю высоту полоски (44 pt, решение 291), соседние по ширине не перекрываются
@@ -18,6 +18,7 @@ use ui_kit::tokens::TextRoleKind;
 
 use super::paint::NodePaint;
 use super::segments::{SegmentRow, SegmentSpec, push_if_activated};
+use super::white_capsule::WhiteCapsule;
 use crate::action::ScreenAction;
 use crate::calibration::ScopeStripFrames;
 use crate::widget::button::{ButtonEvent, PressButton};
@@ -56,6 +57,8 @@ pub(super) struct ScopeStrip {
     frames: ScopeStripFrames,
     dots: Vec<PageDot>,
     axes: SegmentRow<VectorscopeAxes>,
+    /// Капсула белого справа на каждой странице.
+    white: WhiteCapsule,
 }
 
 impl ScopeStrip {
@@ -87,12 +90,14 @@ impl ScopeStrip {
                 text_role: TextRoleKind::SegmentLabel,
             },
         )?;
+        let white = WhiteCapsule::build(kit, ctx, (node, strip), frames.trailing)?;
         let built = Self {
             node,
             frame: strip,
             frames,
             dots,
             axes,
+            white,
         };
         // До первой сверки переключатель осей не ловит касаний (страница по умолчанию — не вектороскоп).
         built.axes.set_touchable(kit, false)?;
@@ -120,6 +125,9 @@ impl ScopeStrip {
             }
             return Ok(true);
         }
+        if self.white.handle_gesture(kit, event, out)? {
+            return Ok(true);
+        }
         let event = self.axes.handle_gesture(kit, event)?;
         Ok(push_if_activated(event, out, ScreenAction::VectorscopeAxesSelected))
     }
@@ -145,6 +153,7 @@ impl ScopeStrip {
             self.axes
                 .draw(ctx, (visuals, texts), layers, (selected, |_| false, 1.0))?;
         }
+        self.white.draw(ctx, visuals, layers, texts)?;
         Ok(())
     }
 

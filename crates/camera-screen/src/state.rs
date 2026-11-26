@@ -434,10 +434,24 @@ impl ScreenState {
         }
     }
 
-    /// Открыта ли какая-нибудь панель: меню Controls, карточка или меню раздела калибровки. Жесты по кадру при
-    /// открытой панели закрывают её, а не наводят фокус.
+    /// Открыта ли какая-нибудь панель: меню Controls, карточка или нижняя карточка раздела калибровки. Жесты по
+    /// кадру при открытой панели закрывают её, а не наводят фокус.
     pub fn is_any_panel_open(&self) -> bool {
-        self.panel != PanelState::Closed || self.calibration.menu() != crate::calibration::CalibrationMenu::Closed
+        self.panel != PanelState::Closed || self.calibration.card() != crate::calibration::SectionCard::Closed
+    }
+
+    /// Открыта ли карточка белого — в PHOTO это подменю у затвора, в разделе калибровки нижняя карточка. Одно место
+    /// ответа для редьюсера белого: он не знает, в каком режиме карточка (решение 292).
+    pub fn is_white_card_open(&self) -> bool {
+        self.panel == PanelState::Submenu(ToolId::White)
+            || self.calibration.card() == crate::calibration::SectionCard::White
+    }
+
+    /// Чего режим хочет от слежения за белым. Приложение спрашивает это каждый кадр и досылает движку разницу, пока
+    /// она не принята (решение 289): экран сам ничего не отправляет, поэтому потерянная команда «снять паузу» не
+    /// замораживает белое навсегда.
+    pub fn white_tracking_hold(&self) -> crate::mode_behaviour::WhiteTrackingHold {
+        self.mode_behaviour().white_tracking
     }
 
     /// Открыта ли карточка инструмента (подменю или Exposure).

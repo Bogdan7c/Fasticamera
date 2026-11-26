@@ -16,7 +16,7 @@ use ui_core::geometry::{Point, Rect, Vector};
 use super::screen_calibration_tests::{calibrating, center, drag_eye};
 use super::test_rig::*;
 use crate::action::ScreenAction;
-use crate::calibration::{CalibrationLayout, CalibrationMenu, ControlViewKind};
+use crate::calibration::{CalibrationLayout, ControlViewKind, SectionCard};
 use crate::config::ScreenConfig;
 use crate::effect::Effect;
 use crate::look_test_support::{look_facts, look_intents};
@@ -135,7 +135,7 @@ fn a_finger_that_starts_in_the_band_stays_with_the_system_and_changes_nothing() 
     assert_eq!(look_intents(&rig.effects()), Vec::<&LookIntent>::new());
     assert_eq!(rig.screen.diagnostics().touches_ignored_in_system_gesture_zone, 1);
     assert_eq!(rig.screen.state().mode(), before.mode());
-    assert_eq!(rig.screen.state().calibration().menu(), CalibrationMenu::Closed);
+    assert_eq!(rig.screen.state().calibration().card(), SectionCard::Closed);
 }
 
 #[test]
@@ -228,8 +228,8 @@ fn the_clean_button_and_the_menu_button_answer_a_finger_in_every_held_position()
         rig.tap(button);
         rig.run(700);
         assert_eq!(
-            rig.screen.state().calibration().menu(),
-            CalibrationMenu::Presets,
+            rig.screen.state().calibration().card(),
+            SectionCard::Presets,
             "{orientation:?}: «шесть точек» открывает меню"
         );
     }
@@ -242,7 +242,7 @@ fn in_landscape_the_menu_button_used_to_sit_in_the_system_band() {
     let button = center(&rig, "menu_button", 0);
     rig.tap(button);
     rig.run(700);
-    assert_eq!(rig.screen.state().calibration().menu(), CalibrationMenu::Closed);
+    assert_eq!(rig.screen.state().calibration().card(), SectionCard::Closed);
     assert_eq!(rig.screen.diagnostics().touches_ignored_in_system_gesture_zone, 1);
 }
 

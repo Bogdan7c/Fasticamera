@@ -37,6 +37,7 @@ mod selection_haptic;
 pub(crate) mod space;
 mod tone_header;
 mod wheels;
+mod white_capsule;
 
 use look_contract::HueBandId;
 use ui_core::geometry::Rect;
@@ -45,7 +46,7 @@ use ui_core::id::NodeId;
 
 use self::clean_button::CleanButton;
 use self::knobs_column::KnobsColumn;
-use self::menu::SectionMenu;
+use self::menu::SectionCards;
 use self::scope_panel::ScopePanel;
 use self::space::SectionSpace;
 use super::SECTION_PANEL_MATERIAL;
@@ -107,8 +108,8 @@ pub(crate) struct CalibrationSection {
     clean: CleanButton,
     carousel: ModeCarouselWidget,
     menu_button: MenuButtonWidget,
-    /// Меню «шесть точек» (карточка пресетов): лежит над всем остальным разделом.
-    menu: SectionMenu,
+    /// Завеса и нижние карточки (пресеты, белое): лежат над всем остальным разделом.
+    cards: SectionCards,
 }
 
 impl CalibrationSection {
@@ -170,7 +171,7 @@ impl CalibrationSection {
             MenuButtonHome::Section { frame: menu_frame },
         )?;
         // Меню строится последним: узлы идут в порядке наложения, и скрим с карточкой лежат над ручками.
-        let menu = SectionMenu::build(kit, ctx, &space, (root, root_frame))?;
+        let cards = SectionCards::build(kit, ctx, &space, (root, root_frame))?;
         Ok(Self {
             key,
             space,
@@ -180,7 +181,7 @@ impl CalibrationSection {
             clean,
             carousel,
             menu_button,
-            menu,
+            cards,
         })
     }
 
@@ -207,7 +208,7 @@ impl CalibrationSection {
             || self.clean.handle_gesture(kit, event, out)?
             || self.carousel.handle_gesture(kit, event, out)?
             || self.menu_button.handle_gesture(kit, event, out)?
-            || self.menu.handle_gesture(kit, event, out)?)
+            || self.cards.handle_gesture(kit, ctx, event, out)?)
     }
 
     /// Выравнивает виджеты раздела по состоянию (без эха действий).
@@ -216,7 +217,7 @@ impl CalibrationSection {
         self.scope.sync(kit, ctx)?;
         self.carousel.sync(kit, ctx)?;
         self.menu_button.sync(kit, ctx)?;
-        self.menu.sync(kit, ctx)
+        self.cards.sync(kit, ctx)
     }
 
     /// Кадр: события линеек, каруселей и «чистяка».
@@ -224,7 +225,7 @@ impl CalibrationSection {
         self.knobs.advance(ctx, out);
         self.clean.advance(ctx, out);
         self.carousel.advance(out);
-        self.menu.advance(ctx);
+        self.cards.advance(ctx, out);
     }
 
     /// Рисует раздел. `menu_button` — рисовать ли статическую кнопку меню: на время переезда PHOTO ↔ CALIBRATE её
@@ -239,13 +240,16 @@ impl CalibrationSection {
     ) -> Result<(), WidgetError> {
         self.knobs.draw(ctx, visuals, layers, texts)?;
         self.scope.draw(ctx, visuals, layers, texts)?;
-        self.clean.draw(ctx, visuals, layers, texts)?;
-        self.carousel.draw(ctx, visuals, layers, SECTION_PANEL_MATERIAL)?;
-        if menu_button == MenuButtonDrawing::Static {
-            self.menu_button
-                .draw(ctx, visuals, layers, 1.0, SECTION_PANEL_MATERIAL)?;
+        // Нижний ряд лежит ПОД открытой карточкой и сквозь её стекло не просвечивает (решение 292).
+        if !self.cards.covers_bottom_row(ctx) {
+            self.clean.draw(ctx, visuals, layers, texts)?;
+            self.carousel.draw(ctx, visuals, layers, SECTION_PANEL_MATERIAL)?;
+            if menu_button == MenuButtonDrawing::Static {
+                self.menu_button
+                    .draw(ctx, visuals, layers, 1.0, SECTION_PANEL_MATERIAL)?;
+            }
         }
-        self.menu.draw(ctx, visuals, layers, texts)
+        self.cards.draw(ctx, visuals, layers, texts)
     }
 
     /// Где кнопка меню раздела стоит на экране (начало и конец переезда PHOTO ↔ CALIBRATE).
@@ -273,8 +277,8 @@ impl CalibrationSection {
         let bottom_row = self.space.scene_rect(self.key.layout.zones().bottom_row);
         // Открытое меню лежит над нижним рядом: плашка встаёт над его верхом, а не поверх карточки.
         let anchor_y = self
-            .menu
-            .open_top(ctx.state.calibration().menu())
+            .cards
+            .open_top(ctx.state.calibration().card())
             .map_or(bottom_row.min_y(), |menu_top| menu_top.min(bottom_row.min_y()));
         let gap = ctx.config.calibration.widgets.problem_banner_gap_pt;
         let center = ui_core::geometry::Point::new(root_frame.center().x, anchor_y - gap - size_pt.height / 2.0);
@@ -287,7 +291,12 @@ impl CalibrationSection {
 
     /// Имена пресетов, не поместившиеся в ряд меню (диагностика).
     pub(crate) fn overflowed_chips(&self) -> usize {
-        self.menu.overflowed_chips()
+        self.cards.overflowed_chips()
+    }
+
+    /// Нужны ли кадры из-за карточки белого (мерцание «Phone», тряска).
+    pub(crate) fn is_animating(&self, now: ui_core::time::MonotonicNanos) -> bool {
+        self.cards.is_animating(now)
     }
 
     /// Смещение прокрутки списка ручек, pt (проба для тестов).
@@ -304,7 +313,7 @@ impl CalibrationSection {
 
     /// Сколько значений линеек не стали значениями вида (диагностика).
     pub(crate) fn invalid_values(&self) -> u64 {
-        self.knobs.invalid_values()
+        self.knobs.invalid_values() + self.cards.invalid_white_values()
     }
 
     /// Сколько событий значения погашено как эхо (диагностика).

@@ -50,6 +50,7 @@ use super::tool_card_content::{
 use super::tool_card_options::OptionRow;
 use super::tool_card_styles::{StylesRow, active_preset_name, styles_have_edits};
 use super::white_card::WhiteCardWidget;
+use super::white_card_site::WhiteCardSite;
 use super::{Ctx, Outputs};
 use crate::action::ScreenAction;
 use crate::settings::CaptureSettings;
@@ -171,7 +172,7 @@ impl ToolCardWidget {
         )?;
         kit.set_interactive(node, false)?;
         // Белая карточка и метка высоты — после обычной: выше в хит-тесте.
-        let white = WhiteCardWidget::build(kit, ctx, parent)?;
+        let white = WhiteCardWidget::build(kit, ctx, parent, WhiteCardSite::photo(ctx.geometry))?;
         let extra_node = kit.add_node(parent, "card_extra", card_rect, ctx.geometry.screen())?;
         kit.set_interactive(extra_node, false)?;
         Ok(Self {
@@ -219,7 +220,7 @@ impl ToolCardWidget {
             _ => Ok(self.options.handle_gesture(event, out)?
                 || self.styles.handle_gesture(kit, event, &mut out.actions)?
                 || self.ruler.handle_gesture(event)?
-                || self.white.handle_gesture(event, self.white_axis, out)?),
+                || self.white.handle_gesture(kit, event, self.white_axis, out)?),
         }
     }
 

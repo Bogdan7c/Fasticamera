@@ -236,7 +236,12 @@ impl Stage {
 
     /// Идёт ли мерцание ожидания или тряска отказа на кнопках белого (кнопка у затвора, «Phone» на карточке).
     pub(crate) fn white_attention_animating(&self, now: shell_contract::clock::MonotonicNanos) -> bool {
-        self.white_button.is_animating(now) || self.card.is_animating(now)
+        self.white_button.is_animating(now)
+            || self.card.is_animating(now)
+            || self
+                .calibration
+                .as_ref()
+                .is_some_and(|section| section.is_animating(now))
     }
 
     #[cfg(test)]
@@ -593,7 +598,8 @@ impl Stage {
                 | ScreenGesture::CalibrationModesPan
                 | ScreenGesture::StyleChipsPan
                 | ScreenGesture::CalibrationChipsPan
-                | ScreenGesture::CalibrationMenuClosePan,
+                | ScreenGesture::CalibrationMenuClosePan
+                | ScreenGesture::SectionWhiteRulerPan,
                 GestureState::Began,
             ) => counters.pans += 1,
             (ScreenGesture::ViewfinderPinch, GestureState::Began) => counters.pinches += 1,

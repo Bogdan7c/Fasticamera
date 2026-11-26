@@ -13,7 +13,7 @@ use scope_contract::{ScopeIntent, ScopeKind, VectorscopeAxes};
 
 use super::Ctx;
 use super::look::{Availability, emit_look_from_facts, read_facts};
-use crate::calibration::{CalibrationMenu, CleanViewState, ControlViewKind};
+use crate::calibration::{CleanViewState, ControlViewKind, SectionCard};
 use crate::effect::Effect;
 use crate::outcome::{ActionOutcome, NoChangeReason, Rejection};
 
@@ -173,16 +173,38 @@ pub(super) fn reselect_band_after_facts(ctx: &mut Ctx<'_>) {
 
 /// Кнопка меню в режиме с разделом: сразу открыть карточку пресетов (решение 283).
 pub(super) fn open_menu(ctx: &mut Ctx<'_>) -> ActionOutcome {
-    ctx.state.calibration.set_menu(CalibrationMenu::Presets);
+    // Карточка белого уже закрывает кнопку меню (нижний ряд скрыт, решение 292): действие не от виджета — отказ.
+    if ctx.state.calibration.card() == SectionCard::White {
+        return ActionOutcome::Rejected(Rejection::PanelBlocksAction);
+    }
+    ctx.state.calibration.set_card(SectionCard::Presets);
     ActionOutcome::Applied
+}
+
+/// Тап по капсуле белого в полоске прибора: открывает карточку белого, повторный тап её закрывает (решения 290, 292).
+/// Открывается карточка всегда с шкалы Кельвинов, как в PHOTO. Пока открыта карточка пресетов — отказ: завеса её
+/// модальная, капсула лежит под ней.
+pub(super) fn toggle_white_card(ctx: &mut Ctx<'_>) -> ActionOutcome {
+    match ctx.state.calibration.card() {
+        SectionCard::Presets => ActionOutcome::Rejected(Rejection::PanelBlocksAction),
+        SectionCard::White => {
+            ctx.state.calibration.set_card(SectionCard::Closed);
+            ActionOutcome::Applied
+        }
+        SectionCard::Closed => {
+            ctx.state.calibration.set_card(SectionCard::White);
+            ctx.state.white.reset_axis();
+            ActionOutcome::Applied
+        }
+    }
 }
 
 /// Закрыть меню (свайп вниз, тап по видоискателю). Закрывать нечего — `NoChange`.
 pub(super) fn close_menu(ctx: &mut Ctx<'_>) -> ActionOutcome {
-    if ctx.state.calibration.menu() == CalibrationMenu::Closed {
+    if ctx.state.calibration.card() == SectionCard::Closed {
         return ActionOutcome::NoChange(NoChangeReason::NothingToClose);
     }
-    ctx.state.calibration.set_menu(CalibrationMenu::Closed);
+    ctx.state.calibration.set_card(SectionCard::Closed);
     ActionOutcome::Applied
 }
 

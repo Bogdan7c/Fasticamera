@@ -8,12 +8,11 @@
 //! сразу, шторки-корня больше нет (решение 283); стандарт осей вектороскопа живёт в полоске прибора (решение 258).
 //!
 //! # Инварианты
-//! * Открыта ли карточка, решает `ScreenState` (`calibration().menu()`); виджет только выравнивается по нему.
+//! * Открыта ли карточка, решает `ScreenState` (`calibration().card()`); виджет только выравнивается по нему.
 //! * Пока карточка закрывается, состояние уже `Closed`: содержимое запоминается в `shown`, чтобы доисчезало тем же,
 //!   чем было; касания снимаются сразу.
 //! * Что значит нажатие, решает карточка и отдаёт действием; ряды ничего не знают о пресетах.
 
-use crate::widget::SECTION_PANEL_MATERIAL;
 use look_contract::{EditState, PresetId, UserPresetId};
 use ui_core::geometry::{Point, Rect};
 use ui_core::gesture::{GestureEvent, PanSpec, RecognizerSpec};
@@ -21,24 +20,23 @@ use ui_core::id::NodeId;
 use ui_draw::color::Opacity;
 use ui_draw::icons::IconId;
 use ui_draw::transform::Affine2;
-use ui_kit::panel_morph::{PanelMorph, PanelMorphSpec, PanelPhase};
 use ui_kit::tokens::TextRoleKind;
-use ui_kit::view::{centered_text, panel_material_hosted};
+use ui_kit::view::centered_text;
 
+use super::card_morph::{CardMorph, ContentLook, FollowEffect};
 use crate::action::ScreenAction;
-use crate::calibration::{CalibrationMenu, DeleteConfirmation};
+use crate::calibration::{DeleteConfirmation, SectionCard};
 use crate::state::ScreenState;
 use crate::widget::calibration::host::RootHost;
 use crate::widget::calibration::space::{EyeAxis, SectionSpace};
 use crate::widget::chip_row::{ChipFace, ChipRow, ChipRowIds, ChipTone, RowEvent, RowPaint};
-use crate::widget::error::{WidgetError, element};
+use crate::widget::error::WidgetError;
 use crate::widget::geometry::ScreenGeometry;
 use crate::widget::intent::{ButtonId, ScreenGesture};
 use crate::widget::kit::SceneKit;
 use crate::widget::layers::{DrawLayers, Layer, VisualIndex};
 use crate::widget::side_button::{IconTurn, SideButton, SideButtonLook};
 use crate::widget::text_runs::TextRuns;
-use crate::widget::tool_card::MENU_MORPH_MOTION;
 use crate::widget::tool_card_styles::{preset_chip_faces, preset_ids, styles_have_edits};
 use crate::widget::{Ctx, Outputs};
 
@@ -94,11 +92,8 @@ pub(super) struct MenuCard {
     /// Ряд действий пресета.
     actions: ChipRow,
     eye: ScreenGeometry,
-    card_rect: Rect,
-    morph: Option<PanelMorph>,
-    open_wanted: bool,
-    /// Карточка показана: нужно и во время закрытия, когда состояние уже забыло о ней.
-    shown: bool,
+    /// Проявление стекла на месте (общее с карточкой белого).
+    morph: CardMorph,
     /// Какой пресет выбирает таблетка верхнего ряда (по номеру) на момент последней сверки.
     top_targets: Vec<PresetId>,
     /// Действия таблеток ряда действий на момент последней сверки.
@@ -181,10 +176,7 @@ impl MenuCard {
             top,
             actions,
             eye: eye.clone(),
-            card_rect,
-            morph: None,
-            open_wanted: false,
-            shown: false,
+            morph: CardMorph::new(card_rect),
             top_targets: Vec::new(),
             action_targets: Vec::new(),
         })
@@ -192,7 +184,12 @@ impl MenuCard {
 
     /// Рамка карточки в системе корня.
     pub(super) fn rect(&self) -> Rect {
-        self.card_rect
+        self.morph.rect()
+    }
+
+    /// Видна ли карточка (открыта, открывается или растворяется).
+    pub(super) fn is_visible(&self, ctx: &Ctx<'_>) -> bool {
+        self.morph.is_visible(ctx)
     }
 
     /// Имена пресетов, не поместившиеся в верхний ряд (диагностика).
@@ -200,41 +197,11 @@ impl MenuCard {
         self.top.overflowed_chips()
     }
 
-    /// Карточка проявляется на месте (источника-шторки больше нет, решение 283): рамка та же, пружина — меню Controls.
-    fn new_morph(&self, ctx: &Ctx<'_>) -> Result<PanelMorph, WidgetError> {
-        let card_config = &ctx.geometry.config().card;
-        let sheet_config = &ctx.geometry.config().sheet;
-        let spec = PanelMorphSpec::in_place(self.card_rect, card_config.corner_radius_pt, MENU_MORPH_MOTION)
-            .with_content_slide_pt(sheet_config.open_content_slide_pt);
-        PanelMorph::new(spec, &ctx.environment(self.card_rect.size.height), ctx.now)
-            .map_err(element("карточка меню раздела"))
-    }
-
     pub(super) fn sync(&mut self, kit: &mut SceneKit, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
-        if ctx.state.calibration().menu() == CalibrationMenu::Closed {
-            if self.open_wanted {
-                self.open_wanted = false;
-                if let Some(morph) = &mut self.morph {
-                    morph.close(ctx.now).map_err(element("карточка меню раздела"))?;
-                }
-            }
+        let wanted = ctx.state.calibration().card() == SectionCard::Presets;
+        if self.morph.follow(ctx, wanted)? == FollowEffect::Closed {
             return self.make_untouchable(kit);
         }
-        if !self.open_wanted {
-            self.open_wanted = true;
-            // Идущий морф переиспользуем (открытие посреди закрытия — разворот с сохранением скорости).
-            let reusable = self
-                .morph
-                .as_ref()
-                .is_some_and(|morph| morph.phase(ctx.now) != PanelPhase::Closed);
-            if !reusable {
-                self.morph = Some(self.new_morph(ctx)?);
-            }
-            if let Some(morph) = &mut self.morph {
-                morph.open(ctx.now).map_err(element("карточка меню раздела"))?;
-            }
-        }
-        self.shown = true;
         kit.set_interactive(self.node, true)?;
         kit.set_interactive(self.left.button.node(), true)?;
         kit.set_interactive(self.right.button.node(), styles_have_edits(ctx.state))?;
@@ -260,18 +227,12 @@ impl MenuCard {
     }
 
     pub(super) fn advance(&mut self, ctx: &Ctx<'_>) {
-        if let Some(morph) = &mut self.morph {
-            morph.advance(ctx.now);
-            let _events = morph.drain_events();
-            if !self.open_wanted && morph.phase(ctx.now) == PanelPhase::Closed {
-                // Закрылась целиком: морф и запомненное содержимое больше не нужны.
-                self.morph = None;
-                self.shown = false;
-                self.top.forget();
-                self.actions.forget();
-                self.top_targets.clear();
-                self.action_targets.clear();
-            }
+        if self.morph.advance(ctx) {
+            // Закрылась целиком: запомненное содержимое больше не нужно.
+            self.top.forget();
+            self.actions.forget();
+            self.top_targets.clear();
+            self.action_targets.clear();
         }
     }
 
@@ -332,22 +293,9 @@ impl MenuCard {
         layers: &mut DrawLayers,
         texts: &mut TextRuns,
     ) -> Result<(), WidgetError> {
-        let (Some(morph), true) = (&self.morph, self.shown) else {
+        let Some(ContentLook { alpha, slide_px }) = self.morph.draw_glass(ctx, host, layers)? else {
             return Ok(());
         };
-        let snapshot = morph.snapshot(ctx.now);
-        if snapshot.phase == PanelPhase::Closed {
-            return Ok(());
-        }
-        layers.push(
-            Layer::Glass,
-            panel_material_hosted(&snapshot, ctx.tokens, SECTION_PANEL_MATERIAL, ctx.px, host.transform())?,
-        );
-        let alpha = snapshot.content_opacity.clamp(0.0, 1.0);
-        if alpha <= 0.0 {
-            return Ok(());
-        }
-        let slide_px = ctx.px.px(snapshot.content_offset_pt);
         self.draw_title(ctx, host, layers, texts, (alpha, slide_px))?;
         let paint = RowPaint { alpha, slide_px };
         self.top.draw(ctx, visuals, layers, texts, paint)?;

@@ -26,9 +26,10 @@ use camera_contract::auto_exposure::SignalDelivery;
 use camera_contract::control::ExposureBias;
 use camera_contract::white::WhiteTransition;
 use camera_contract::zoom::{LensIntent, LensIntentChannel, StandbyDemand, ZoomGesture};
+use camera_core::white::WhiteFollowPause;
 use camera_core::{CameraHandle, CommandId, CommandRejected};
 use camera_screen::shutter::{CaptureFailureReason, CaptureOutcome, ShotRequest};
-use camera_screen::{Effect, FramingIntent, ScreenAction, ScreenCameraIntent};
+use camera_screen::{Effect, FramingIntent, ScreenAction, ScreenCameraIntent, WhiteTrackingHold};
 use look_contract::LookIntent;
 use render_loop::viewfinder::{
     FramingCrop, FramingDestination, NormalizedScreenRect, ViewfinderCommand, ViewfinderFraming,
@@ -41,6 +42,7 @@ use shell_contract::text_input::TextPurpose;
 
 use crate::camera_screen_capture::{CaptureService, SubmitOutcome, SubmitRejection};
 use crate::camera_white_effects::{ManualWhiteEdit, PendingWhite, WhiteEffects, WhiteIntentCounters};
+use crate::camera_white_hold::{WhiteHoldCounters, WhiteHoldLink};
 use crate::look_effects::{LookCounters, LookEffects};
 use crate::look_service::LookHandle;
 use crate::scope_effects::{ScopeCounters, ScopeEffects};
@@ -93,6 +95,10 @@ impl CameraIntentPort for HandleCameraPort {
             }
             ScreenCameraIntent::TakeWhite(source) => self.handle.take_white(source, WhiteTransition::Immediate),
             ScreenCameraIntent::FollowWhite(source) => self.handle.follow_white(source),
+            ScreenCameraIntent::HoldWhiteTracking(hold) => self.handle.set_white_follow_pause(match hold {
+                WhiteTrackingHold::Running => WhiteFollowPause::Running,
+                WhiteTrackingHold::PausedForCalibration => WhiteFollowPause::Paused,
+            }),
         };
         match sent {
             Ok(command) => CameraIntentOutcome::Sent(command),
@@ -263,6 +269,8 @@ pub struct EffectCounters {
     pub text: TextRequestCounters,
     /// Ручное белое и команда «взять» (white-balance 02): принятое, отказы, досылки, недоставленные команды.
     pub white: WhiteIntentCounters,
+    /// Пауза слежения за белым на время раздела калибровки: принятое и отказы (решение 289).
+    pub white_hold: WhiteHoldCounters,
 }
 
 /// Сервисы, которым адресованы эффекты (собираются композицией один раз на экран).
@@ -298,6 +306,8 @@ pub struct EffectExecutor {
     pending_exposure_bias: Option<ExposureBias>,
     /// Ручное белое: отложенные правки и счётчики (см. [`WhiteEffects`]).
     white: WhiteEffects,
+    /// Пауза слежения за белым: желаемое против принятого (см. [`WhiteHoldLink`]).
+    white_hold: WhiteHoldLink,
 }
 
 /// Конец жизни исполнителя = конец жизни экрана: источник кадров снимают сценарий, рендер или переустановка, и
@@ -322,6 +332,7 @@ impl EffectExecutor {
             frame_time: MonotonicNanos::from_nanos(0),
             pending_exposure_bias: None,
             white: WhiteEffects::default(),
+            white_hold: WhiteHoldLink::default(),
         }
     }
 
@@ -398,9 +409,21 @@ impl EffectExecutor {
         self.white.resend_pending(self.targets.camera.as_ref());
     }
 
+    /// Каждый кадр: приводит паузу слежения за белым в движке к желанию экрана (см. [`WhiteHoldLink`]). Зовётся
+    /// даже когда эффектов нет: уровень сверяется независимо от действий человека.
+    pub fn drive_white_tracking_hold(&mut self, desired: WhiteTrackingHold) {
+        self.white_hold.drive(desired, self.targets.camera.as_ref());
+    }
+
+    /// Что движок принял последним по паузе слежения (диагностика и тесты); `None` — ещё ничего.
+    pub fn acknowledged_white_tracking_hold(&self) -> Option<WhiteTrackingHold> {
+        self.white_hold.acknowledged()
+    }
+
     pub fn counters(&self) -> EffectCounters {
         EffectCounters {
             white: self.white.counters(),
+            white_hold: self.white_hold.counters(),
             look: self.look.counters(),
             scopes: self.scopes.counters(),
             text: self.text.counters(),
@@ -451,6 +474,12 @@ impl EffectExecutor {
             }
             ScreenCameraIntent::TakeWhite(source) => self.white.run_take(camera, source),
             ScreenCameraIntent::FollowWhite(source) => self.white.run_follow(camera, source),
+            // Экран эту команду эффектом не шлёт (она — уровень, `drive_white_tracking_hold`), но если пришла, идёт по
+            // тому же пути «желаемое против принятого», а не теряется.
+            ScreenCameraIntent::HoldWhiteTracking(hold) => {
+                self.white_hold.drive(hold, camera);
+                None
+            }
             ScreenCameraIntent::FocusAndExposeAt(_)
             | ScreenCameraIntent::LockFocusAndExposureAt(_)
             | ScreenCameraIntent::ResetPointOfInterest
@@ -473,7 +502,9 @@ impl EffectExecutor {
             | ScreenCameraIntent::SetWhite(_)
             | ScreenCameraIntent::AdjustWhite(_)
             | ScreenCameraIntent::TakeWhite(_)
-            | ScreenCameraIntent::FollowWhite(_) => None,
+            | ScreenCameraIntent::FollowWhite(_)
+            // Паузу слежения ведёт `WhiteHoldLink` по уровню (`drive_white_tracking_hold`), не по эффекту.
+            | ScreenCameraIntent::HoldWhiteTracking(_) => None,
         };
         match self.targets.camera.deliver(intent) {
             CameraIntentOutcome::Sent(_) => {

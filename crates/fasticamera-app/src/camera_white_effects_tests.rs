@@ -63,6 +63,10 @@ impl ScriptedPort {
 
 impl CameraIntentPort for Arc<ScriptedPort> {
     fn deliver(&self, intent: ScreenCameraIntent) -> CameraIntentOutcome {
+        // Пауза слежения — отдельный уровень (`camera_white_hold`): ни записи, ни траты сценария ответов.
+        if matches!(intent, ScreenCameraIntent::HoldWhiteTracking(_)) {
+            return ACCEPTED;
+        }
         self.received.lock().expect("замок").push(intent);
         let scripted = self.script.lock().expect("замок").pop_front();
         scripted.unwrap_or_else(|| *self.fallback.lock().expect("замок"))

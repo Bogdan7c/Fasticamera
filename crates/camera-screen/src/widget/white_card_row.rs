@@ -10,8 +10,13 @@
 //! подтвердил белое или включил слежение. Места кнопок — [`WhiteRowSlot`] (порядок «Auto», «Phone», свет).
 //!
 //! # Поворот
-//! Значки — `rotating_content`: крутятся с устройством вокруг СВОЕГО центра (смещение от центра кнопки
-//! прикладывается после поворота). Подписи не вращаются, как у вариантов других карточек.
+//! Значки в PHOTO — `rotating_content`: крутятся с устройством вокруг СВОЕГО центра (смещение от центра кнопки
+//! прикладывается после поворота). Подписи не вращаются, как у вариантов других карточек. В разделе калибровки
+//! значок стоит (поворачивает корень), а смещения идут в осях узла (`WhiteCardSite::offset_placed`).
+//!
+//! # Состав
+//! Ряд PHOTO — «Auto», «Phone», свет; ряд раздела — без «Auto» (решение 294): состав и места даёт дом карточки
+//! (`WhiteCardSite::row_layout`), а не вырезание кнопки на месте вызова.
 
 use ui_core::geometry::Rect;
 use ui_core::gesture::GestureEvent;
@@ -25,11 +30,12 @@ use ui_kit::view::{centered_icon, centered_text};
 
 use super::button::{ButtonEvent, PressButton};
 use super::error::WidgetError;
-use super::intent::{ButtonId, ScreenGesture};
+use super::intent::ScreenGesture;
 use super::kit::SceneKit;
 use super::layers::{DrawLayers, Layer, VisualIndex};
 use super::text_runs::TextRuns;
 use super::white_attention::WhiteAttention;
+use super::white_card_site::{WhiteCardButton, WhiteCardSite};
 use super::{Ctx, Outputs};
 use crate::action::ScreenAction;
 use crate::white_config::WhiteLightIndex;
@@ -46,36 +52,38 @@ struct RowButton {
 
 /// Ряд «Auto» + «Phone» + кнопки света.
 pub(crate) struct LightsRow {
+    site: WhiteCardSite,
     buttons: Vec<RowButton>,
     /// Внимание кнопки «Phone» (мерцание ожидания, тряска отказа).
     phone_attention: WhiteAttention,
 }
 
 impl LightsRow {
-    /// Кнопки создаются спрятанными от касаний; состав — «Auto», «Phone» и все кнопки света из конфига.
+    /// Кнопки создаются спрятанными от касаний; состав — по дому карточки («Auto» только в PHOTO) и все кнопки света
+    /// из конфига.
     pub(crate) fn build(
         kit: &mut SceneKit,
         ctx: &Ctx<'_>,
         (card_node, card_rect): (NodeId, Rect),
+        site: &WhiteCardSite,
     ) -> Result<Self, WidgetError> {
         let light_count = ctx.config.white.lights.len();
-        let mut buttons = Vec::with_capacity(WhiteRowSlot::row_len(light_count));
-        for slot in WhiteRowSlot::row(light_count) {
-            let id = match slot {
-                WhiteRowSlot::Auto => ButtonId::WhiteAuto,
-                WhiteRowSlot::Phone => ButtonId::WhitePhone,
-                WhiteRowSlot::Light(light) => ButtonId::WhiteLight(u8::try_from(light).map_err(|_| {
-                    WidgetError::Inconsistent(format!("кнопок света {} больше, чем помещается в номер", light + 1))
-                })?),
-            };
-            let rect = ctx.geometry.white_row_slot(slot, light_count);
+        let layout = site.row_layout();
+        let mut buttons = Vec::with_capacity(layout.len(light_count));
+        for slot in layout.slots(light_count) {
+            let id = site.button_id(WhiteCardButton::Row(slot))?;
+            let rect = site
+                .geometry()
+                .white_row_slot_in(layout, slot, light_count)
+                .ok_or_else(|| WidgetError::Inconsistent(format!("кнопки белого {slot:?} нет в составе ряда")))?;
             let node = kit.add_node(card_node, "white_light", rect, card_rect)?;
             let button = PressButton::attach(kit, id, node, rect, ctx)?;
-            let content = kit.add_rotating_content(node, "white_light_icon")?;
+            let content = site.icon_node(kit, node, "white_light_icon")?;
             kit.set_interactive(node, false)?;
             buttons.push(RowButton { slot, button, content });
         }
         Ok(Self {
+            site: site.clone(),
             buttons,
             phone_attention: WhiteAttention::new(ctx),
         })
@@ -84,24 +92,23 @@ impl LightsRow {
     /// Тап по кнопке ряда → действие. `false` — событие чужое.
     pub(crate) fn handle_gesture(
         &mut self,
+        kit: &SceneKit,
         event: &GestureEvent<ScreenGesture>,
         out: &mut Outputs,
     ) -> Result<bool, WidgetError> {
         let ScreenGesture::Press(id) = event.intent else {
             return Ok(false);
         };
-        let slot = match id {
-            ButtonId::WhiteAuto => WhiteRowSlot::Auto,
-            ButtonId::WhitePhone => WhiteRowSlot::Phone,
-            ButtonId::WhiteLight(index) => WhiteRowSlot::Light(usize::from(index)),
-            _ => return Ok(false),
+        let Some(WhiteCardButton::Row(slot)) = self.site.button_of(id) else {
+            return Ok(false);
         };
         let button = self
             .buttons
             .iter_mut()
             .find(|button| button.slot == slot)
             .ok_or_else(|| WidgetError::Inconsistent(format!("кнопки белого {slot:?} нет")))?;
-        if button.button.handle(event.state, event.data, event.time)? == ButtonEvent::Activated {
+        let data = self.site.press_data(kit, button.button.node(), event.data);
+        if button.button.handle(event.state, data, event.time)? == ButtonEvent::Activated {
             out.actions.push(match slot {
                 WhiteRowSlot::Auto => ScreenAction::WhiteAutoTapped,
                 WhiteRowSlot::Phone => ScreenAction::WhitePhoneTapped,
@@ -184,13 +191,14 @@ impl LightsRow {
                 .map_err(|_| WidgetError::Inconsistent("прозрачность кнопки света вне 0..1".to_owned()))?;
             // Смещения: значок и подписи стоят на своих высотах; тряска — вбок, в осях экрана.
             let offset = |dy_pt: f64| Affine2::translate(ctx.px.px(shake_pt), ctx.px.px(dy_pt) + slide_px);
+            let placed = |base: Affine2, dy_pt: f64| self.site.offset_placed(base, offset(dy_pt));
             layers.push(
                 Layer::Content,
                 centered_icon(
                     icon,
                     white.light_icon_size_pt,
                     ctx.px,
-                    content.transform.then(offset(white.light_icon_offset_pt)),
+                    placed(content.transform, white.light_icon_offset_pt),
                     color,
                     opacity,
                 ),
@@ -200,7 +208,7 @@ impl LightsRow {
                 Layer::Content,
                 centered_text(
                     caption,
-                    button.transform.then(offset(white.light_label_offset_pt)),
+                    placed(button.transform, white.light_label_offset_pt),
                     color,
                     opacity,
                 ),
@@ -210,7 +218,7 @@ impl LightsRow {
                     ctx,
                     texts,
                     layers,
-                    button.transform.then(offset(white.light_estimate_offset_pt)),
+                    placed(button.transform, white.light_estimate_offset_pt),
                     opacity,
                 )?;
             }

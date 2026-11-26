@@ -313,8 +313,8 @@ fn calibration_presets_card() {
     with_rig(|rig| {
         let driver = presets_card();
         assert_eq!(
-            driver.screen().state().calibration().menu(),
-            camera_screen::calibration::CalibrationMenu::Presets
+            driver.screen().state().calibration().card(),
+            camera_screen::calibration::SectionCard::Presets
         );
         let snapshot = render_calibration(rig, &driver, ScopeImage::StandIn);
         // Активный пресет «Sunset» — жёлтым в ряду имён; остальные имена белые.

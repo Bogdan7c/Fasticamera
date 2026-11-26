@@ -72,14 +72,21 @@ pub enum CleanViewState {
     HoldingBase,
 }
 
-/// Состояние меню «шесть точек» раздела калибровки: кнопка меню открывает карточку пресетов сразу (решение 283).
+/// Какая нижняя карточка раздела калибровки открыта (решения 283, 292). Единственный владелец ответа «что открыто
+/// снизу»: карточек две, и вместе они не открываются (модальная завеса не даёт нажать вторую, а редьюсер отвергает
+/// такое действие сам).
+///
+/// Пока открыта ЛЮБАЯ карточка, нижний ряд (CLEAN, капсула режимов, кнопка меню) скрыт и не ловит касаний
+/// (решение 292); тап по завесе закрывает карточку; смена режима закрывает её; поворот телефона её не закрывает.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum CalibrationMenu {
-    /// Меню закрыто.
+pub enum SectionCard {
+    /// Нижней карточки нет.
     #[default]
     Closed,
-    /// Карточка пресетов: ряд имён и действия New / Rename / Save / Delete / Reset.
+    /// Карточка пресетов: ряд имён и действия New / Rename / Save / Delete / Reset (кнопка меню, решение 283).
     Presets,
+    /// Карточка белого: оси, шкала, «Phone», свет — без «Auto» (капсула белого в полоске прибора, решения 290–294).
+    White,
 }
 
 /// Какой вид органов управления показывает колонка ручек (решение 204): строки-шкалы или цветовые колёса.
@@ -111,7 +118,7 @@ pub struct CalibrationState {
     /// переключения на WHEELS и обратно (и после пересборки раздела) вернулся на то же место, а не на верх.
     scales_scroll_offset_pt: f64,
     clean_view: CleanViewState,
-    menu: CalibrationMenu,
+    card: SectionCard,
     text: TextFlow,
     delete: DeleteConfirmation,
     /// Раскладка под текущую поверхность и положение; `None` — режим без раздела или поверхности ещё нет.
@@ -138,7 +145,7 @@ impl CalibrationState {
             selected_wheel: WheelZone::Lift,
             scales_scroll_offset_pt: 0.0,
             clean_view: CleanViewState::default(),
-            menu: CalibrationMenu::default(),
+            card: SectionCard::default(),
             text: TextFlow::default(),
             delete: DeleteConfirmation::default(),
             layout: None,
@@ -183,9 +190,9 @@ impl CalibrationState {
         self.clean_view
     }
 
-    /// Состояние меню «шесть точек» раздела.
-    pub fn menu(&self) -> CalibrationMenu {
-        self.menu
+    /// Какая нижняя карточка раздела открыта.
+    pub fn card(&self) -> SectionCard {
+        self.card
     }
 
     /// Ход ввода имени пресета.
@@ -270,8 +277,8 @@ impl CalibrationState {
         self.clean_view = clean_view;
     }
 
-    pub(crate) fn set_menu(&mut self, menu: CalibrationMenu) {
-        self.menu = menu;
+    pub(crate) fn set_card(&mut self, card: SectionCard) {
+        self.card = card;
     }
 
     pub(crate) fn set_text_flow(&mut self, text: TextFlow) {

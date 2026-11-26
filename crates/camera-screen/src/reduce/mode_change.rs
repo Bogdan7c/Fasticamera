@@ -14,9 +14,7 @@ pub(super) fn apply_mode_change(ctx: &mut Ctx<'_>) {
     ctx.state.panel = PanelState::Closed;
     ctx.state.card_origin = CardOrigin::default();
     // То же для меню калибровки и взведённого удаления.
-    ctx.state
-        .calibration
-        .set_menu(crate::calibration::CalibrationMenu::Closed);
+    ctx.state.calibration.set_card(crate::calibration::SectionCard::Closed);
     ctx.state
         .calibration
         .set_delete_confirmation(crate::calibration::DeleteConfirmation::Idle);

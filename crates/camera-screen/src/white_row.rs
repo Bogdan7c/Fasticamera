@@ -5,7 +5,7 @@
 //! ([`WhiteRowSlot::position`]), а число кнопок-источников ([`SOURCE_BUTTON_COUNT`]) выводится из него же.
 
 /// Кнопка ряда белого. Порядок слева направо задаёт [`WhiteRowSlot::position`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WhiteRowSlot {
     /// «Auto»: следить за белым телефона (WB44).
     Auto,
@@ -41,6 +41,38 @@ impl WhiteRowSlot {
         [WhiteRowSlot::Auto, WhiteRowSlot::Phone]
             .into_iter()
             .chain((0..light_count).map(WhiteRowSlot::Light))
+    }
+}
+
+/// Состав ряда карточки белого: полный (PHOTO) или без «Auto» (раздел калибровки, решение 294). Единственный владелец
+/// ответа «где стоит кнопка в этом ряду»: ряд без «Auto» центрируется заново, а не получает дыру слева.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhiteRowLayout {
+    /// «Auto», «Phone», свет (карточка PHOTO).
+    WithAuto,
+    /// «Phone», свет: слежение в разделе не включают.
+    WithoutAuto,
+}
+
+impl WhiteRowLayout {
+    /// Кнопки ряда слева направо при `light_count` кнопках света.
+    pub fn slots(self, light_count: usize) -> impl Iterator<Item = WhiteRowSlot> {
+        WhiteRowSlot::row(light_count).filter(move |slot| self.position_of(*slot).is_some())
+    }
+
+    /// Сколько кнопок в ряду.
+    pub fn len(self, light_count: usize) -> usize {
+        self.slots(light_count).count()
+    }
+
+    /// Номер места кнопки слева направо; `None` — такой кнопки в этом составе нет.
+    pub fn position_of(self, slot: WhiteRowSlot) -> Option<usize> {
+        match (self, slot) {
+            (WhiteRowLayout::WithAuto, slot) => Some(slot.position()),
+            (WhiteRowLayout::WithoutAuto, WhiteRowSlot::Auto) => None,
+            // Без «Auto» все места сдвинуты на одно влево.
+            (WhiteRowLayout::WithoutAuto, slot) => Some(slot.position() - 1),
+        }
     }
 }
 

@@ -1,4 +1,5 @@
-//! Меню «шесть точек» раздела калибровки (решения 94, 199, 201, 283): карточка пресетов, открывается кнопкой меню сразу.
+//! Нижние карточки раздела калибровки (решения 94, 199, 201, 283, 292): карточка пресетов (кнопка меню) и карточка
+//! белого (капсула в полоске прибора) под ОДНОЙ модальной завесой.
 //!
 //! Всё лежит под повёрнутым корнем раздела (глазное пространство, `SectionSpace`) и строится теми же средствами,
 //! что меню Controls экрана PHOTO: карточка — `PanelMorph`, боковые кнопки — `SideButton`, ряды таблеток —
@@ -6,15 +7,20 @@
 //! прямоугольнике: у его низа, а не экрана.
 //!
 //! # Владение и инварианты
-//! * Открыто ли меню, владеет `CalibrationState::menu`; виджеты выравниваются по нему в `sync` (без эха).
-//! * Пока меню открыто, под ним лежат ручки, прибор, капсула режимов и обе кнопки нижнего ряда: «скрим» на весь корень
-//!   (первый узел меню, интерактивен только при открытом меню) ловит любой тап мимо карточки и ТОЛЬКО закрывает меню
-//!   (решение 281: открытое меню модальное, тап по капсуле не меняет режим). Карточка лежит над скримом.
+//! * Какая карточка открыта, владеет `CalibrationState::card`; виджеты выравниваются по нему в `sync` (без эха).
+//! * Пока открыта любая карточка, под ней лежат ручки, прибор, капсула режимов и обе кнопки нижнего ряда: «скрим» на
+//!   весь корень (первый узел, интерактивен только при открытой карточке) ловит любой тап мимо карточки и ТОЛЬКО
+//!   закрывает её (решение 281: открытое меню модальное, тап по капсуле режимов не меняет режим; то же для капсулы
+//!   белого: повторный тап по ней — это тап по скриму). Карточка лежит над скримом.
+//! * Нижний ряд (CLEAN, капсула режимов, кнопка меню) не рисуется, пока карточка видна ([`SectionCards::covers_bottom_row`],
+//!   решение 292), а касания до него не доходят из-за скрима.
 //! * Закрывает меню также свайп вниз (в глазных осях) по карточке; закрытие по смещению, а не по скорости, чтобы
 //!   медленный свайп тоже закрывал.
 //! * Рисуется меню поверх всего раздела (`DrawLayers::stack_on_top`).
 
 mod card;
+mod card_morph;
+mod white_card;
 
 use ui_core::geometry::{Point, Rect};
 use ui_core::gesture::{GestureData, GestureEvent, GestureState, RecognizerSpec, TapSpec};
@@ -22,10 +28,11 @@ use ui_core::id::NodeId;
 use ui_kit::pan::PanUpdate;
 
 use self::card::MenuCard;
+use self::white_card::SectionWhiteCard;
 use super::host::RootHost;
 use super::space::SectionSpace;
 use crate::action::ScreenAction;
-use crate::calibration::CalibrationMenu;
+use crate::calibration::SectionCard;
 use crate::widget::error::{WidgetError, element};
 use crate::widget::intent::ScreenGesture;
 use crate::widget::kit::SceneKit;
@@ -33,17 +40,20 @@ use crate::widget::layers::{DrawLayers, VisualIndex};
 use crate::widget::text_runs::TextRuns;
 use crate::widget::{Ctx, Outputs};
 
-pub(super) struct SectionMenu {
+/// Завеса и обе нижние карточки раздела.
+pub(super) struct SectionCards {
     space: SectionSpace,
     root: NodeId,
     root_center: Point,
     scrim: NodeId,
     card: MenuCard,
+    /// В куче: карточка несёт две шкалы и ряд кнопок, а `Stage` лежит на стеке целиком (тесты со многими экранами).
+    white: Box<SectionWhiteCard>,
     /// Последнее смещение пальца по глазной вертикали за идущий свайп, pt (вниз — положительное).
     close_drag_dy: f64,
 }
 
-impl SectionMenu {
+impl SectionCards {
     pub(super) fn build(
         kit: &mut SceneKit,
         ctx: &Ctx<'_>,
@@ -60,23 +70,41 @@ impl SectionMenu {
         )?;
         kit.set_interactive(scrim, false)?;
         let card = MenuCard::build(kit, ctx, (&eye, space), (root, root_frame))?;
+        let white = Box::new(SectionWhiteCard::build(kit, ctx, (&eye, space), root)?);
         Ok(Self {
             space: *space,
             root,
             root_center: root_frame.center(),
             scrim,
             card,
+            white,
             close_drag_dy: 0.0,
         })
     }
 
-    /// Верх открытой карточки в системе корня, pt; `None` — меню закрыто. Плашка проблемы встаёт над этой линией, а
-    /// не поверх меню.
-    pub(super) fn open_top(&self, menu: CalibrationMenu) -> Option<f64> {
-        match menu {
-            CalibrationMenu::Closed => None,
-            CalibrationMenu::Presets => Some(self.card.rect().min_y()),
+    /// Верх открытой карточки в системе корня, pt; `None` — карточек нет. Плашка проблемы встаёт над этой линией, а
+    /// не поверх карточки.
+    pub(super) fn open_top(&self, card: SectionCard) -> Option<f64> {
+        match card {
+            SectionCard::Closed => None,
+            SectionCard::Presets => Some(self.card.rect().min_y()),
+            SectionCard::White => Some(self.white.rect().min_y()),
         }
+    }
+
+    /// Лежит ли какая-нибудь карточка над нижним рядом (в том числе пока растворяется): ряд не рисуется.
+    pub(super) fn covers_bottom_row(&self, ctx: &Ctx<'_>) -> bool {
+        ctx.state.calibration().card() != SectionCard::Closed || self.card.is_visible(ctx) || self.white.is_visible(ctx)
+    }
+
+    /// Нужны ли кадры из-за карточки белого (мерцание «Phone», тряска).
+    pub(super) fn is_animating(&self, now: ui_core::time::MonotonicNanos) -> bool {
+        self.white.is_animating(now)
+    }
+
+    /// Сколько значений шкал белого не стали белым (диагностика).
+    pub(super) fn invalid_white_values(&self) -> u64 {
+        self.white.invalid_values()
     }
 
     /// Имена пресетов, не поместившиеся в ряд карточки (диагностика).
@@ -87,6 +115,7 @@ impl SectionMenu {
     pub(super) fn handle_gesture(
         &mut self,
         kit: &SceneKit,
+        ctx: &Ctx<'_>,
         event: &GestureEvent<ScreenGesture>,
         out: &mut Outputs,
     ) -> Result<bool, WidgetError> {
@@ -102,7 +131,7 @@ impl SectionMenu {
                 self.handle_close_pan(event, out)?;
                 Ok(true)
             }
-            _ => self.card.handle_gesture(kit, event, out),
+            _ => Ok(self.card.handle_gesture(kit, event, out)? || self.white.handle_gesture(kit, event, ctx, out)?),
         }
     }
 
@@ -128,15 +157,17 @@ impl SectionMenu {
     }
 
     pub(super) fn sync(&mut self, kit: &mut SceneKit, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
-        kit.set_interactive(self.scrim, ctx.state.calibration().menu() != CalibrationMenu::Closed)?;
-        self.card.sync(kit, ctx)
+        kit.set_interactive(self.scrim, ctx.state.calibration().card() != SectionCard::Closed)?;
+        self.card.sync(kit, ctx)?;
+        self.white.sync(kit, ctx)
     }
 
-    pub(super) fn advance(&mut self, ctx: &Ctx<'_>) {
+    pub(super) fn advance(&mut self, ctx: &Ctx<'_>, out: &mut Outputs) {
         self.card.advance(ctx);
+        self.white.advance(ctx, out);
     }
 
-    /// Рисует карточку поверх всего раздела.
+    /// Рисует карточки поверх всего раздела.
     pub(super) fn draw(
         &self,
         ctx: &Ctx<'_>,
@@ -149,6 +180,7 @@ impl SectionMenu {
         };
         let mut card_layers = DrawLayers::default();
         self.card.draw(ctx, (visuals, &host), &mut card_layers, texts)?;
+        self.white.draw(ctx, (visuals, &host), &mut card_layers, texts)?;
         layers.stack_on_top(card_layers);
         Ok(())
     }

@@ -8,7 +8,7 @@ use shell_contract::surface::SurfaceSize;
 use ui_core::geometry::Point;
 
 use crate::action::{KeyPhase, ScreenAction};
-use crate::calibration::CalibrationMenu;
+use crate::calibration::SectionCard;
 use crate::effect::{Effect, ScreenCameraIntent};
 use crate::layout::{FramingIntent, NormalizedScreenRect};
 use crate::look_test_support::look_facts;
@@ -146,7 +146,7 @@ fn leaving_calibrate_hides_the_scope_and_returns_the_photo_framing() {
         [&crate::test_support::plain_framing(layout, AspectRatio::FourByThree)]
     );
     assert!(screen.state.calibration().layout().is_none(), "раскладка раздела снята");
-    assert_eq!(screen.state.calibration().menu(), CalibrationMenu::Closed);
+    assert_eq!(screen.state.calibration().card(), SectionCard::Closed);
 }
 
 #[test]
@@ -275,9 +275,9 @@ fn switching_modes_closes_the_controls_menu_and_the_calibration_menu() {
     assert_eq!(screen.state.panel(), PanelState::Closed);
 
     screen.step(ScreenAction::ControlsMenuOpenRequested);
-    assert_eq!(screen.state.calibration().menu(), CalibrationMenu::Presets);
+    assert_eq!(screen.state.calibration().card(), SectionCard::Presets);
     screen.step(ScreenAction::ModeSelected(CaptureMode::Photo));
-    assert_eq!(screen.state.calibration().menu(), CalibrationMenu::Closed);
+    assert_eq!(screen.state.calibration().card(), SectionCard::Closed);
 }
 
 #[test]
@@ -287,16 +287,16 @@ fn the_calibration_menu_button_opens_the_presets_card_directly_and_the_left_butt
     let opened = screen.step(ScreenAction::ControlsMenuOpenRequested);
     assert_eq!(opened.outcome, ActionOutcome::Applied);
     // Решение 283: корня-шторки нет, кнопка меню открывает карточку пресетов сразу.
-    assert_eq!(screen.state.calibration().menu(), CalibrationMenu::Presets);
+    assert_eq!(screen.state.calibration().card(), SectionCard::Presets);
     assert_eq!(screen.state.panel(), PanelState::Closed, "меню Controls не открылось");
     assert!(screen.state.is_any_panel_open());
 
     // Левая кнопка карточки закрывает меню (вернуться больше некуда).
     screen.step(ScreenAction::SubmenuBackRequested);
-    assert_eq!(screen.state.calibration().menu(), CalibrationMenu::Closed);
+    assert_eq!(screen.state.calibration().card(), SectionCard::Closed);
     screen.step(ScreenAction::ControlsMenuOpenRequested);
     screen.step(ScreenAction::ControlsMenuCloseRequested);
-    assert_eq!(screen.state.calibration().menu(), CalibrationMenu::Closed);
+    assert_eq!(screen.state.calibration().card(), SectionCard::Closed);
     let nothing = screen.step(ScreenAction::ControlsMenuCloseRequested);
     assert_eq!(nothing.outcome, ActionOutcome::NoChange(NoChangeReason::NothingToClose));
 }
@@ -326,7 +326,7 @@ fn the_calibration_menu_is_closed_by_the_scrim_request_not_by_a_viewfinder_tap()
     let close = screen.step(ScreenAction::ControlsMenuCloseRequested);
 
     assert_eq!(close.outcome, ActionOutcome::Applied);
-    assert_eq!(screen.state.calibration().menu(), CalibrationMenu::Closed);
+    assert_eq!(screen.state.calibration().card(), SectionCard::Closed);
 }
 
 #[test]

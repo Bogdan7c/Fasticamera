@@ -316,6 +316,13 @@ impl PanelStand {
         self.source.white_touch_targets().expect("раскладка экрана построена")
     }
 
+    /// Цели касаний раздела калибровки от НАСТОЯЩЕГО экрана (капсула белого, карточка белого в разделе).
+    pub fn calibration_targets(&self) -> camera_screen::CalibrationTouchTargets {
+        self.source
+            .calibration_touch_targets()
+            .expect("раздел калибровки построен")
+    }
+
     /// Действие экрана «в обход пальца» (поворот телефона и т. п.); применится на ближайшем кадре UI.
     pub fn send_action(&self, action: ScreenAction) {
         self.sender.send_action(action);

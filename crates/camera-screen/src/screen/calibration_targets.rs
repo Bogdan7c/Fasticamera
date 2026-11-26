@@ -22,6 +22,16 @@ pub struct CalibrationTouchTargets {
     pub resets: Vec<Point>,
     /// Центры точек полос в порядке полос модели вида.
     pub band_dots: Vec<Point>,
+    /// Центр капсулы белого в полоске прибора (решение 290).
+    pub white_capsule: Option<Point>,
+    /// Центры чисел осей карточки белого: Кельвины, потом оттенок. Карточка закрыта — узлы стоят на месте, но
+    /// касаний не ловят: сначала откройте её тапом по капсуле.
+    pub white_axis_numbers: Vec<Point>,
+    /// Центры кнопок ряда карточки белого слева направо: «Phone», потом кнопки света в порядке конфига («Auto» в
+    /// разделе нет, решение 294).
+    pub white_row: Vec<Point>,
+    /// Центр зоны шкалы карточки белого.
+    pub white_ruler: Option<Point>,
 }
 
 impl CameraScreen {
@@ -37,6 +47,10 @@ impl CameraScreen {
             rulers: stage.node_centers("calib_ruler"),
             resets: stage.node_centers("calib_reset"),
             band_dots: stage.node_centers("calib_band_dot"),
+            white_capsule: stage.node_centers("calib_white_capsule").first().copied(),
+            white_axis_numbers: stage.node_centers("white_axis"),
+            white_row: stage.node_centers("white_light"),
+            white_ruler: stage.node_centers("white_ruler").first().copied(),
         })
     }
 }

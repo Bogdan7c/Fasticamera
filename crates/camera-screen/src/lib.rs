@@ -62,9 +62,9 @@ pub mod zoom_labels;
 pub use action::{KeyPhase, ScreenAction};
 pub use calibration::{
     CalibrationConfig, CalibrationConfigError, CalibrationLayout, CalibrationLayoutConfig,
-    CalibrationLayoutConfigError, CalibrationLayoutError, CalibrationMenu, CalibrationState, CalibrationZones,
-    CapsuleLine, CleanViewState, ControlViewKind, DeleteConfirmation, KnobsSide, Naming, OrientationLayoutConfig,
-    PendingText, TextFlow, WheelPadPlacement, ZoneShape,
+    CalibrationLayoutConfigError, CalibrationLayoutError, CalibrationState, CalibrationZones, CapsuleLine,
+    CleanViewState, ControlViewKind, DeleteConfirmation, KnobsSide, Naming, OrientationLayoutConfig, PendingText,
+    SectionCard, TextFlow, WheelPadPlacement, ZoneShape,
 };
 pub use config::{ScreenConfig, ScreenConfigError, ToolsConfig};
 pub use effect::{Effect, ScreenCameraIntent};
@@ -76,7 +76,7 @@ pub use layout::{FramingIntent, LayoutConfig, LayoutError, NormalizedScreenRect,
 pub use look_view::{LookView, ProblemBanner, ProblemKind};
 pub use mode_behaviour::{
     CalibrationAvailability, CalibrationSurface, LayoutPolicy, ModeBehaviour, ShutterPresence, ViewfinderPlacement,
-    VolumeKeyRole,
+    VolumeKeyRole, WhiteControls, WhiteTrackingHold,
 };
 pub use outcome::{ActionOutcome, NoChangeReason, Rejection, RejectionCounters};
 pub use reduce::{ScreenTransition, reduce};
@@ -92,7 +92,7 @@ pub use white_config::{
 };
 pub use white_facts::{WhiteFacts, WhiteFollowFacts, WhiteRange, WhiteTakeFacts, WhiteTakeState};
 pub use white_layout::{WhiteCardLayout, WhiteLayoutError};
-pub use white_row::{SOURCE_BUTTON_COUNT, WhiteRowSlot};
+pub use white_row::{SOURCE_BUTTON_COUNT, WhiteRowLayout, WhiteRowSlot};
 pub use widgets_config::{WidgetConfigError, WidgetLayoutConfig};
 pub use zoom::{FlipMark, ZoomState};
 pub use zoom_config::{ZoomConfig, ZoomConfigError};
