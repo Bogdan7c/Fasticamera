@@ -33,6 +33,7 @@ pub(crate) mod layers;
 pub(crate) mod level_indicator;
 pub(crate) mod lock_banner;
 pub(crate) mod menu_button;
+pub(crate) mod menu_glide;
 pub(crate) mod mode_carousel;
 pub(crate) mod problem_banner;
 pub(crate) mod sheet_view;

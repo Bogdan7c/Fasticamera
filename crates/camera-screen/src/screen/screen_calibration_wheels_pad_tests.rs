@@ -210,7 +210,7 @@ fn after_switching_the_tab_the_next_push_and_ring_drag_go_to_the_new_wheel() {
     );
 
     let ruler = center(&rig, "calib_ruler", 0);
-    drag_eye(&mut rig, ruler, Vector::new(-knob_finger_pt(60.0), 0.0));
+    drag_eye(&mut rig, ruler, Vector::new(-knob_finger_pt_from_zero(60.0), 0.0));
     let ring: Vec<_> = intents(&rig.effects())
         .into_iter()
         .filter(|intent| matches!(intent, LookIntent::SetWheelRing { .. }))

@@ -18,6 +18,7 @@ use super::detents::{Detent, build_detents, crossed};
 use super::error::ScaleError;
 use super::events::{ScaleEvent, ScaleMark, ScaleSnapshot, SetValueOutcome, TravelDirection};
 use super::spec::{ScaleSpec, SnapPolicy, TickVisibility};
+use super::zero_magnet::ZeroMagnet;
 use crate::drive::{AxisDrive, DriveSetup, MotionPhase, OffsetRange, ScrollTransition};
 use crate::environment::ElementEnvironment;
 use crate::event_queue::{EventOrigin, EventQueue};
@@ -99,6 +100,20 @@ impl<M: ValueModel + Clone> SnapScale<M> {
             origin: EventOrigin::Program,
             events: EventQueue::new(),
         })
+    }
+
+    /// Включить магнит нуля под пальцем ([`ZeroMagnet`]). `Off` ничего не меняет у любой модели; зона у
+    /// плавной модели — ошибка ([`ScaleError::ZeroMagnetRequiresSteppedModel`]), шкала при ошибке теряется.
+    pub fn with_zero_magnet(mut self, magnet: ZeroMagnet) -> Result<Self, ScaleError> {
+        // Ноль положения модели лежит в нулевом смещении контента (`смещение = положение × pt_на_единицу`).
+        let Some(zone) = magnet.hold_zone(0.0) else {
+            return Ok(self);
+        };
+        if self.model.quantization() != Quantization::Stepped {
+            return Err(ScaleError::ZeroMagnetRequiresSteppedModel);
+        }
+        self.drive.set_hold_zone(Some(zone));
+        Ok(self)
     }
 
     // ---- чтение состояния ----

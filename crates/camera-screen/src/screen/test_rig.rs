@@ -34,6 +34,18 @@ pub(super) fn knob_finger_pt(units: f64) -> f64 {
     units * CalibrationConfig::default().widgets.knob_points_per_unit()
 }
 
+/// Магнит нуля ручек (решение 284): половина зоны, pt пути пальца, из конфига экрана.
+pub(super) fn zero_magnet_half_width_pt() -> f64 {
+    CalibrationConfig::default().widgets.knob_zero_magnet_pt
+}
+
+/// Путь пальца в pt, который уводит ручку, стоящую на НУЛЕ, на `units` единиц шкалы: путь на единицы плюс
+/// половина зоны магнита нуля (первые `zero_magnet_half_width_pt` pt пути палец «держит» ноль, решение 284).
+/// Для ручки, стоящей не на нуле и не пересекающей его, магнит пути не меняет — там годится [`knob_finger_pt`].
+pub(super) fn knob_finger_pt_from_zero(units: f64) -> f64 {
+    knob_finger_pt(units) + zero_magnet_half_width_pt()
+}
+
 pub(super) fn ms(value: i64) -> MonotonicNanos {
     MonotonicNanos::from_nanos(value * 1_000_000)
 }

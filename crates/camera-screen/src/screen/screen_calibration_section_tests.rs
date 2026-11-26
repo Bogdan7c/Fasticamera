@@ -261,7 +261,7 @@ fn a_drag_along_the_eye_horizontal_changes_a_knob_by_the_same_amount_in_every_or
             DeviceOrientation::PortraitUpsideDown => assert!(eye_right.dx < -0.99 && eye_right.dy.abs() < 1e-9),
         }
         let ruler = center(&rig, "calib_ruler", 0);
-        drag_eye(&mut rig, ruler, Vector::new(-knob_finger_pt(60.0), 0.0));
+        drag_eye(&mut rig, ruler, Vector::new(-knob_finger_pt_from_zero(60.0), 0.0));
         let sent = set_looks(&rig.effects());
         let value = sent
             .last()

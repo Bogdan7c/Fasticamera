@@ -32,7 +32,7 @@ fn tapping_a_band_dot_selects_that_band_and_its_rulers_drive_that_band() {
     assert_eq!(rig.screen.state().calibration().selected_band(), Some(&band("sky")));
     // Линейка HUE (первая ось полосы) двигает ось выбранной полосы, а не другой.
     let hue = center(&rig, "calib_ruler", 8);
-    drag_eye(&mut rig, hue, Vector::new(-knob_finger_pt(60.0), 0.0));
+    drag_eye(&mut rig, hue, Vector::new(-knob_finger_pt_from_zero(60.0), 0.0));
     let sent = set_looks(&rig.effects());
     let last = sent.last().expect("SetLook с полосой");
     let sky_adjustment = last.bands.for_band(&band("sky"));

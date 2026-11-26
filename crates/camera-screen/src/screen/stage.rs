@@ -21,7 +21,7 @@ use ui_kit::tokens::MotionToken;
 use super::diagnostics::GestureCounters;
 use crate::action::ScreenAction;
 use crate::widget::PHOTO_BUTTON_MATERIAL;
-use crate::widget::calibration::{CalibrationSection, SectionKey};
+use crate::widget::calibration::{CalibrationSection, MenuButtonDrawing, SectionKey};
 use crate::widget::capture_blink::CaptureBlinkWidget;
 use crate::widget::controls_drawer::ControlsDrawerWidget;
 use crate::widget::countdown::CountdownWidget;
@@ -37,6 +37,7 @@ use crate::widget::layers::{DrawLayers, VisualIndex};
 use crate::widget::level_indicator::LevelIndicatorWidget;
 use crate::widget::lock_banner::LockBannerWidget;
 use crate::widget::menu_button::MenuButtonWidget;
+use crate::widget::menu_glide::{GlideDirection, GlideEndpoint, GlideFrame, MenuButtonGlide};
 use crate::widget::mode_carousel::ModeCarouselWidget;
 use crate::widget::problem_banner::ProblemBannerWidget;
 use crate::widget::shutter_button::ShutterWidget;
@@ -62,6 +63,10 @@ pub(crate) struct Stage {
     scene_root: NodeId,
     /// Показан ли сейчас экран PHOTO (отличает «надо переключить» от «уже так»).
     photo_shown: bool,
+    /// Переезд кнопки меню при смене PHOTO ↔ CALIBRATE (решения 282, 295): переходное состояние сцены, не `ScreenState`.
+    menu_glide: MenuButtonGlide,
+    /// Первая синхронизация сцены прошла: до неё смена «режима» — это не переключение, а рождение сцены.
+    glide_armed: bool,
     /// Раздел калибровки; `None` вне режима с разделом.
     calibration: Option<CalibrationSection>,
     shutter: ShutterWidget,
@@ -139,6 +144,8 @@ impl Stage {
             photo_root,
             scene_root: root,
             photo_shown: true,
+            menu_glide: MenuButtonGlide::default(),
+            glide_armed: false,
             calibration: None,
             shutter,
             thumbnail,
@@ -345,6 +352,14 @@ impl Stage {
         self.focus.sync(&mut self.kit, ctx)?;
         self.banner.sync(ctx)?;
         self.problem_banner.sync(ctx)?;
+        // Пока кнопка меню едет между режимами, ни одна из статических копий касаний не ловит.
+        if self.menu_glide.is_active(ctx.now) {
+            self.menu_button.suspend_touches(&mut self.kit)?;
+            if let Some(section) = &self.calibration {
+                section.suspend_menu_button_touches(&mut self.kit)?;
+            }
+        }
+        self.glide_armed = true;
         // Поворот значков по ориентации: пружина `smooth`, рамки раскладки не меняются.
         self.kit.rotate_icons(
             ctx.state.icon_rotation_clockwise_degrees(),
@@ -358,6 +373,12 @@ impl Stage {
     /// состояния появилась его раскладка, и пересобирается при смене ключа (поворот, размер, набор полос).
     fn sync_calibration(&mut self, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
         let wanted = SectionKey::of(ctx);
+        // Где кнопка меню раздела стоит ДО возможной пересборки: уходящий раздел убирается ниже, а переезду в PHOTO
+        // нужно место, откуда кнопка поедет.
+        let section_button_before = self
+            .calibration
+            .as_ref()
+            .and_then(|section| section.menu_button_glide_endpoint(&self.kit));
         let rebuild = match (&self.calibration, &wanted) {
             (Some(section), Some(key)) => section.key() != key,
             (None, None) => false,
@@ -374,6 +395,9 @@ impl Stage {
         }
         let photo_wanted = !ctx.state.mode_behaviour().has_calibration_surface();
         if self.photo_shown != photo_wanted {
+            if self.glide_armed {
+                self.start_menu_glide(ctx, photo_wanted, section_button_before)?;
+            }
             self.photo_shown = photo_wanted;
             self.kit.set_shown(self.photo_root, photo_wanted)?;
             if photo_wanted {
@@ -385,6 +409,40 @@ impl Stage {
             section.sync(&mut self.kit, ctx)?;
         }
         Ok(())
+    }
+
+    /// Смена PHOTO ↔ CALIBRATE: кнопка меню едет от своего места в прежнем режиме к месту в новом. `photo_wanted` —
+    /// куда переключаемся; `section_button_before` — где кнопка раздела стояла до пересборки (раздел уже мог уйти).
+    /// Нет места-источника (узла нет в дереве) — переезда нет, кнопка просто окажется на новом месте.
+    fn start_menu_glide(
+        &mut self,
+        ctx: &Ctx<'_>,
+        photo_wanted: bool,
+        section_button_before: Option<GlideEndpoint>,
+    ) -> Result<(), WidgetError> {
+        let (direction, from) = if photo_wanted {
+            (GlideDirection::SectionToPhoto, section_button_before)
+        } else {
+            (
+                GlideDirection::PhotoToSection,
+                self.menu_button.glide_endpoint(&self.kit),
+            )
+        };
+        match from {
+            Some(from) => self.menu_glide.start(ctx, direction, from),
+            None => Ok(()),
+        }
+    }
+
+    /// Где рисовать ездящую кнопку меню в этот кадр; `None` — переезда нет. Конец-назначение берётся у дома заново
+    /// каждый кадр: корень раздела может ещё поворачиваться, и кнопка садится ровно в якорь раскладки.
+    fn menu_glide_frame(&mut self, ctx: &Ctx<'_>) -> Option<GlideFrame> {
+        let direction = self.menu_glide.direction(ctx.now)?;
+        let target = match direction {
+            GlideDirection::PhotoToSection => self.calibration.as_ref()?.menu_button_glide_endpoint(&self.kit)?,
+            GlideDirection::SectionToPhoto => self.menu_button.glide_endpoint(&self.kit)?,
+        };
+        self.menu_glide.frame(ctx.now, target)
     }
 
     /// Кадр элементов: пружины и события (хаптика, смена значения, выбор режима).
@@ -412,8 +470,9 @@ impl Stage {
     ) -> Result<Vec<DrawItem>, WidgetError> {
         let visuals = VisualIndex::of(self.kit.scene());
         let mut layers = DrawLayers::default();
+        let glide = self.menu_glide_frame(ctx);
         if ctx.state.mode_behaviour().has_calibration_surface() {
-            return self.draw_calibration(ctx, &visuals, layers, blink, veil);
+            return self.draw_calibration(ctx, &visuals, layers, (blink, veil), glide);
         }
         FrameMaskWidget::draw(ctx, &mut layers)?;
         // Завеса перехода между камерами — первой над кадром: сетка и уровень лежат поверх размытия.
@@ -432,13 +491,17 @@ impl Stage {
         self.shutter.draw(ctx, &visuals, &mut layers)?;
         self.thumbnail.draw(ctx, &visuals, &mut layers)?;
         self.flip.draw(ctx, &visuals, &mut layers)?;
-        self.menu_button.draw(
-            ctx,
-            &visuals,
-            &mut layers,
-            self.drawer.source_opacity(ctx.now),
-            PHOTO_BUTTON_MATERIAL,
-        )?;
+        match &glide {
+            // Идёт переезд: кнопку рисует ездящая копия, статическая не рисуется (двойной кнопки нет).
+            Some(frame) => MenuButtonWidget::draw_gliding(ctx, &mut layers, frame)?,
+            None => self.menu_button.draw(
+                ctx,
+                &visuals,
+                &mut layers,
+                self.drawer.source_opacity(ctx.now),
+                PHOTO_BUTTON_MATERIAL,
+            )?,
+        }
         self.white_button.draw(ctx, &visuals, &mut layers, &mut self.texts)?;
         self.carousel.draw(ctx, &visuals, &mut layers, PHOTO_BUTTON_MATERIAL)?;
         self.top_bar.draw(ctx, &visuals, &mut layers, &mut self.texts)?;
@@ -471,14 +534,22 @@ impl Stage {
         ctx: &Ctx<'_>,
         visuals: &VisualIndex,
         mut layers: DrawLayers,
-        blink: &CaptureBlinkWidget,
-        veil: &TransitionVeil,
+        (blink, veil): (&CaptureBlinkWidget, &TransitionVeil),
+        glide: Option<GlideFrame>,
     ) -> Result<Vec<DrawItem>, WidgetError> {
         veil.draw(ctx, &mut layers)?;
         blink.draw(ctx, &mut layers)?;
         UnavailableNoticeWidget::draw(ctx, &mut layers, &mut self.texts)?;
         if let Some(section) = &self.calibration {
-            section.draw(ctx, visuals, &mut layers, &mut self.texts)?;
+            let menu_button = if glide.is_some() {
+                MenuButtonDrawing::Suppressed
+            } else {
+                MenuButtonDrawing::Static
+            };
+            section.draw(ctx, visuals, &mut layers, &mut self.texts, menu_button)?;
+        }
+        if let Some(frame) = &glide {
+            MenuButtonWidget::draw_gliding(ctx, &mut layers, frame)?;
         }
         // Плашка проблемы — в глазном пространстве раздела (у верха нижнего ряда), поверх раздела и его меню.
         let section = self.calibration.as_ref();

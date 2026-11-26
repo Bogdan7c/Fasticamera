@@ -14,8 +14,10 @@ mod element;
 mod error;
 mod events;
 mod spec;
+mod zero_magnet;
 
 pub use element::SnapScale;
 pub use error::ScaleError;
 pub use events::{ScaleEvent, ScaleMark, ScaleSnapshot, SetValueOutcome, TravelDirection};
 pub use spec::{ScaleSpec, SnapPolicy, TickVisibility};
+pub use zero_magnet::ZeroMagnet;

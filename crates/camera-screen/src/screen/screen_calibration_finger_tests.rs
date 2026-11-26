@@ -226,7 +226,11 @@ fn the_wheel_ring_ruler_is_as_exact_as_the_knob_rulers() {
 
 #[test]
 fn the_value_follows_the_finger_from_the_touch_point_with_no_dead_start() {
-    let mut rig = portrait(look_facts());
+    // Ручка стоит на +30 (не на нуле: у нуля палец держит магнит, решение 284) и идёт к +50, не пересекая ноль.
+    let mut start = look_facts();
+    start.current.settings = start.current.settings.with_knob(GlobalKnob::Contrast, exact(30));
+    start.preset = start.current.clone();
+    let mut rig = portrait(start);
     let ruler = center(&rig, "calib_ruler", 0);
     let finger_dx = knob_finger_pt(20.0);
     drag_eye(
@@ -241,13 +245,13 @@ fn the_value_follows_the_finger_from_the_touch_point_with_no_dead_start() {
         .collect();
     assert_eq!(
         values.last().map(|value| value.to_bits()),
-        Some(exact(20).get().to_bits()),
-        "путь на 20 единиц от касания — ровно +20: ни одна единица не потеряна на пороге пана: {values:?}"
+        Some(exact(50).get().to_bits()),
+        "путь на 20 единиц от касания — ровно +50: ни одна единица не потеряна на пороге пана: {values:?}"
     );
     let first = values.first().copied().expect("палец двигал ручку");
     assert!(
-        (0.02..=0.04).contains(&first),
-        "в момент распознавания (порог 5 pt) значение уже догнало палец: {first}"
+        (0.17..=0.19).contains(&first),
+        "в момент распознавания (порог 5 pt) значение уже догнало палец (30 + 4…8 единиц): {first}"
     );
 }
 
@@ -331,7 +335,7 @@ fn a_slow_drag_with_a_stop_leaves_the_value_exactly_under_the_finger() {
     let mut rig = portrait(look_facts());
     let ruler = center(&rig, "calib_ruler", 2);
     // drag_eye ведёт палец плавно и задерживается перед отрывом: скорость отпускания нулевая.
-    let finger_dx = knob_finger_pt(99.0);
+    let finger_dx = knob_finger_pt_from_zero(99.0);
     drag_eye(
         &mut rig,
         Point::new(ruler.x + 60.0, ruler.y),
@@ -619,7 +623,7 @@ fn a_fast_swipe_clicks_at_most_every_30_ms_and_the_slow_drag_clicks_on_ticks_onl
     let start = slow.now_ms;
     slow.touch(TouchPhase::Began, from, start);
     let mut played = 0;
-    for frame in 1..=34_i64 {
+    for frame in 1..=36_i64 {
         let at = start + frame * FRAME;
         slow.touch(
             TouchPhase::Moved,
@@ -634,6 +638,6 @@ fn a_fast_swipe_clicks_at_most_every_30_ms_and_the_slow_drag_clicks_on_ticks_onl
             .filter(|effect| matches!(effect, Effect::Haptic(_)))
             .count();
     }
-    // 102 единицы от касания (34 кадра по 3): риски +20, +40, +60, +80, +100.
+    // 108 pt пути за 36 кадров по 3 = 102 единицы (первые 6 pt держит магнит нуля): риски +20, +40, +60, +80, +100.
     assert_eq!(played, 5, "щелчок на каждой из пяти рисок, а не на 102 единицах");
 }

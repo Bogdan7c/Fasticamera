@@ -17,6 +17,7 @@ use ui_draw::draw_list::DrawItem;
 use ui_kit::drive::DragOrigin;
 use ui_kit::pan::PanUpdate;
 use ui_kit::ruler::{GatedEvent, HapticPacing, RulerControl, RulerFeel, RulerSpec};
+use ui_kit::scale::ZeroMagnet;
 use ui_kit::tokens::TextRoleKind;
 use ui_kit::value::{LinearLimits, QuantizedLinear, ReferenceValue, TickPitch};
 use ui_kit::view::RulerMarkerStyle;
@@ -313,8 +314,16 @@ impl RulerRow {
                 drag_origin: DragOrigin::FromTouchDown,
                 // Мелкий шаг: быстрый взмах не должен сыпать щелчки каждый кадр.
                 haptic_pacing: HapticPacing::Throttled,
+                // Ноль на мгновение держится под пальцем (решение 284); 0 в конфиге — без магнита.
+                zero_magnet: ZeroMagnet::hold_within(config.knob_zero_magnet_pt)
+                    .map_err(element("магнит нуля ручки"))?,
             },
         })
+    }
+
+    /// Узел строки: корень её поддерева (заголовок, значение, «↻», линейка).
+    pub(super) fn node(&self) -> NodeId {
+        self.node
     }
 
     pub(super) fn slot(&self) -> u8 {
@@ -372,6 +381,11 @@ impl RulerRow {
         else {
             return Ok(());
         };
+        if !matches!(update, PanUpdate::Began { .. }) && !self.ruler.is_finger_driven() {
+            // Продолжение жеста, начало которого эта строка не видела (раздел пересобрали посреди протяжки, например
+            // поворотом телефона): без `Began` линейке нечего вести, и это не ошибка кадра.
+            return Ok(());
+        }
         if !self.enabled && !self.ruler.is_finger_driven() {
             // Строка выключена (основа не умеет ручку, полосы нет): палец не берёт линейку.
             return Ok(());

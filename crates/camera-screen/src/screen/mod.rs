@@ -601,6 +601,9 @@ mod effect_queue_tests;
 #[path = "screen_calibration_bands_tests.rs"]
 mod screen_calibration_bands_tests;
 #[cfg(test)]
+#[path = "screen_calibration_finger_focus_tests.rs"]
+mod screen_calibration_finger_focus_tests;
+#[cfg(test)]
 #[path = "screen_calibration_finger_tests.rs"]
 mod screen_calibration_finger_tests;
 #[cfg(test)]
@@ -620,6 +623,9 @@ mod screen_calibration_strip_tests;
 #[path = "screen_calibration_tests.rs"]
 mod screen_calibration_tests;
 #[cfg(test)]
+#[path = "screen_menu_glide_tests.rs"]
+mod screen_menu_glide_tests;
+#[cfg(test)]
 mod screen_photo_touch_reach_tests;
 
 #[cfg(test)]
@@ -627,8 +633,14 @@ mod screen_photo_touch_reach_tests;
 mod screen_calibration_wheels_tests;
 
 #[cfg(test)]
+#[path = "screen_calibration_wheel_feedback_tests.rs"]
+mod screen_calibration_wheel_feedback_tests;
+#[cfg(test)]
 #[path = "screen_calibration_wheels_pad_tests.rs"]
 mod screen_calibration_wheels_pad_tests;
+#[cfg(test)]
+#[path = "screen_calibration_zero_magnet_tests.rs"]
+mod screen_calibration_zero_magnet_tests;
 #[cfg(test)]
 #[path = "screen_card_close_tests.rs"]
 mod screen_card_close_tests;

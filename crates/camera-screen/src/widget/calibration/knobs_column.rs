@@ -9,9 +9,11 @@
 
 use look_contract::BandFacts;
 use ui_core::geometry::Rect;
-use ui_core::gesture::{GestureEvent, PanSpec, RecognizerSpec};
+use ui_core::gesture::{GestureEvent, GestureState, PanSpec, RecognizerSpec};
 use ui_core::id::NodeId;
 use ui_draw::draw_list::PressState;
+use ui_draw::geometry::PxSize;
+use ui_draw::scene_bridge::NodePlacementPx;
 use ui_kit::drive::MotionPhase;
 use ui_kit::pan::PanUpdate;
 use ui_kit::scroll_list::{ScrollAxis, ScrollList};
@@ -19,6 +21,8 @@ use ui_kit::tokens::TextRoleKind;
 use ui_kit::view::GlassShape;
 
 use super::control_view::{ControlView, RowsView, VisibleWindow};
+use super::finger_focus::{DrivenControl, FingerFocus};
+use super::knob_row::WHEEL_RING_SLOT;
 use super::segments::{SegmentRow, SegmentSpec, push_if_activated};
 use super::space::{EyeAxis, SectionSpace};
 use super::tone_header::ToneHeader;
@@ -53,6 +57,20 @@ pub(super) struct KnobsColumn {
     /// успокоился на другом смещении, оно уходит состоянию, чтобы возврат на SCALES и пересборка раздела не
     /// сбрасывали список на верх.
     remembered_offset_pt: f64,
+    /// «Картинка под пальцем» (решение 273): переходное состояние жеста, не часть `ScreenState`.
+    focus: FingerFocus,
+}
+
+/// Какой орган колонки ведёт жест с таким намерением; `None` — жест не из органов, которые прячут остальное.
+/// Шкала кольца яркости — часть блока колеса, а не «строка ручки».
+fn driven_control_of(intent: ScreenGesture) -> Option<DrivenControl> {
+    match intent {
+        ScreenGesture::CalibrationRulerPan(WHEEL_RING_SLOT) | ScreenGesture::CalibrationWheelPadPan => {
+            Some(DrivenControl::Wheels)
+        }
+        ScreenGesture::CalibrationRulerPan(slot) => Some(DrivenControl::Row(slot)),
+        _ => None,
+    }
 }
 
 impl KnobsColumn {
@@ -155,6 +173,7 @@ impl KnobsColumn {
             view,
             window_height_pt: window_rect.size.height,
             remembered_offset_pt: list.offset(ctx.now),
+            focus: FingerFocus::default(),
             list,
         })
     }
@@ -196,6 +215,7 @@ impl KnobsColumn {
             }
             return Ok(true);
         }
+        self.track_finger_focus(event);
         if self.header.handle_gesture(kit, space, ctx, event, out)? {
             return Ok(true);
         }
@@ -206,7 +226,37 @@ impl KnobsColumn {
         self.view.handle_gesture(kit, space, ctx, event, out)
     }
 
+    /// Следит за тем, ведёт ли палец ручку или колесо: на `Began` орган становится ведомым (остальное
+    /// растворится в `sync`), на конце жеста возвращается.
+    fn track_finger_focus(&mut self, event: &GestureEvent<ScreenGesture>) {
+        let Some(driven) = driven_control_of(event.intent) else {
+            return;
+        };
+        match event.state {
+            GestureState::Began => self.focus.begin(driven, self.view.focus_nodes(driven)),
+            GestureState::Ended | GestureState::Cancelled | GestureState::Failed => self.focus.end(driven),
+            GestureState::Possible | GestureState::Changed => {}
+        }
+    }
+
+    /// Во сколько раз «остальное» прозрачнее покоя сейчас: 1 в покое, `finger_focus_others_opacity` под пальцем.
+    /// Меряется по датчику (растворённому корню) относительно панели: прозрачность узлов перемножается с предками.
+    fn others_opacity(&self, visuals: &VisualIndex) -> f32 {
+        let Some(probe) = self.focus.probe() else {
+            return 1.0;
+        };
+        let (Some(probe), Some(panel)) = (visuals.placement(probe), visuals.placement(self.panel)) else {
+            return 1.0;
+        };
+        if panel.opacity <= 0.0 {
+            return 1.0;
+        }
+        (probe.opacity / panel.opacity).clamp(0.0, 1.0)
+    }
+
     pub(super) fn sync(&mut self, kit: &mut SceneKit, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
+        // Растворённым узлам возвращается хит-тест ДО синхронизации строк: они сами выставят своё настоящее состояние.
+        self.focus.restore_interactivity(kit)?;
         // Содержимое едет за списком: смещение вверх — узел вниз по системе корня с минусом.
         kit.jump_vertically_to(self.content_node, -self.list.offset(ctx.now))?;
         self.header.sync(kit, ctx)?;
@@ -214,7 +264,10 @@ impl KnobsColumn {
         // вида колёс, который не нужен без библиотеки пресетов, нельзя было бы выйти). Вкладки же и круг ведут
         // значения вида и без фактов молчат.
         self.switcher.set_touchable(kit, true)?;
-        self.view.sync(kit, ctx)
+        self.view.sync(kit, ctx)?;
+        // После всех синхронизаций: остальное растворяется (или возвращается) и не ловит новых касаний.
+        let others_opacity = f64::from(ctx.config.calibration.widgets.finger_focus_others_opacity);
+        self.focus.reconcile(kit, ctx, self.panel, others_opacity)
     }
 
     pub(super) fn advance(&mut self, ctx: &Ctx<'_>, out: &mut Outputs) {
@@ -248,17 +301,25 @@ impl KnobsColumn {
         let Some(placement) = visuals.placement(self.panel) else {
             return Ok(());
         };
-        let (item, _host) = single_member_material(
-            ctx,
-            SECTION_PANEL_MATERIAL,
-            GlassShape::RoundedRect {
-                corner_radius_pt: ctx.config.calibration.widgets.panel_corner_radius_pt,
-            },
-            &placement,
-            PressState::RELEASED,
-            "calib_knobs_panel",
-        )?;
-        layers.push(Layer::Glass, item);
+        let others_opacity = self.others_opacity(visuals);
+        // Панель — предок ведомого органа, сцена её не растворяет: множитель накладывается здесь.
+        if others_opacity > 0.0 {
+            let (item, _host) = single_member_material(
+                ctx,
+                SECTION_PANEL_MATERIAL,
+                GlassShape::RoundedRect {
+                    corner_radius_pt: ctx.config.calibration.widgets.panel_corner_radius_pt,
+                },
+                &NodePlacementPx {
+                    opacity: placement.opacity * others_opacity,
+                    ..placement
+                },
+                PressState::RELEASED,
+                "calib_knobs_panel",
+            )?;
+            layers.push(Layer::Glass, item);
+        }
+        self.draw_finger_backing(ctx, visuals, layers, others_opacity)?;
         self.header.draw(ctx, visuals, layers)?;
         self.switcher.draw(
             ctx,
@@ -281,8 +342,48 @@ impl KnobsColumn {
                 VisibleWindow {
                     offset_pt: self.list.offset(ctx.now),
                     height_pt: self.window_height_pt,
+                    others_opacity,
                 },
             )
         })
+    }
+
+    /// Подложка под ведомым органом: та же поверхность раздела без стекла, чтобы орган читался прямо над сценой,
+    /// когда панель растворилась. Проявляется настолько, насколько растворилось остальное (в покое её нет).
+    fn draw_finger_backing(
+        &self,
+        ctx: &Ctx<'_>,
+        visuals: &VisualIndex,
+        layers: &mut DrawLayers,
+        others_opacity: f32,
+    ) -> Result<(), WidgetError> {
+        let backing_opacity = 1.0 - others_opacity;
+        if backing_opacity <= 0.0 {
+            return Ok(());
+        }
+        let config = &ctx.config.calibration.widgets;
+        let padding_px = ctx.px.px(config.finger_focus_backing_padding_pt) * 2.0;
+        for node in self.focus.driven_nodes() {
+            let Some(placement) = visuals.placement(*node) else {
+                continue;
+            };
+            let inflated = NodePlacementPx {
+                size: PxSize::new(placement.size.width + padding_px, placement.size.height + padding_px),
+                opacity: placement.opacity * backing_opacity,
+                ..placement
+            };
+            let (item, _host) = single_member_material(
+                ctx,
+                SECTION_PANEL_MATERIAL,
+                GlassShape::RoundedRect {
+                    corner_radius_pt: config.finger_focus_backing_corner_radius_pt,
+                },
+                &inflated,
+                PressState::RELEASED,
+                "calib_finger_backing",
+            )?;
+            layers.push(Layer::Glass, item);
+        }
+        Ok(())
     }
 }

@@ -22,6 +22,7 @@ mod band_dots;
 mod clean_button;
 mod clean_zone;
 mod control_view;
+mod finger_focus;
 mod host;
 mod knob_row;
 mod knob_scale;
@@ -32,6 +33,7 @@ mod reset_disc;
 mod scope_panel;
 mod scope_strip;
 mod segments;
+mod selection_haptic;
 pub(crate) mod space;
 mod tone_header;
 mod wheels;
@@ -52,6 +54,7 @@ use super::intent::ScreenGesture;
 use super::kit::SceneKit;
 use super::layers::{DrawLayers, VisualIndex};
 use super::menu_button::{MenuButtonHome, MenuButtonWidget};
+use super::menu_glide::GlideEndpoint;
 use super::mode_carousel::{CarouselHome, ModeCarouselWidget};
 use super::text_runs::TextRuns;
 use super::{Ctx, Outputs};
@@ -82,6 +85,15 @@ impl SectionKey {
             control_view: ctx.state.calibration().control_view(),
         })
     }
+}
+
+/// Рисовать ли статическую кнопку меню раздела.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MenuButtonDrawing {
+    /// Обычно: кнопка стоит в своём якоре.
+    Static,
+    /// Идёт переезд PHOTO ↔ CALIBRATE: кнопку рисует ездящая копия.
+    Suppressed,
 }
 
 /// Сборка раздела калибровки.
@@ -215,20 +227,35 @@ impl CalibrationSection {
         self.menu.advance(ctx);
     }
 
+    /// Рисует раздел. `menu_button` — рисовать ли статическую кнопку меню: на время переезда PHOTO ↔ CALIBRATE её
+    /// рисует ездящая копия `Stage`, двойной кнопки быть не должно.
     pub(crate) fn draw(
         &self,
         ctx: &Ctx<'_>,
         visuals: &VisualIndex,
         layers: &mut DrawLayers,
         texts: &mut TextRuns,
+        menu_button: MenuButtonDrawing,
     ) -> Result<(), WidgetError> {
         self.knobs.draw(ctx, visuals, layers, texts)?;
         self.scope.draw(ctx, visuals, layers, texts)?;
         self.clean.draw(ctx, visuals, layers, texts)?;
         self.carousel.draw(ctx, visuals, layers, SECTION_PANEL_MATERIAL)?;
-        self.menu_button
-            .draw(ctx, visuals, layers, 1.0, SECTION_PANEL_MATERIAL)?;
+        if menu_button == MenuButtonDrawing::Static {
+            self.menu_button
+                .draw(ctx, visuals, layers, 1.0, SECTION_PANEL_MATERIAL)?;
+        }
         self.menu.draw(ctx, visuals, layers, texts)
+    }
+
+    /// Где кнопка меню раздела стоит на экране (начало и конец переезда PHOTO ↔ CALIBRATE).
+    pub(crate) fn menu_button_glide_endpoint(&self, kit: &SceneKit) -> Option<GlideEndpoint> {
+        self.menu_button.glide_endpoint(kit)
+    }
+
+    /// На время переезда кнопка меню раздела касаний не ловит (после `sync`, который вернул бы обычное состояние).
+    pub(crate) fn suspend_menu_button_touches(&self, kit: &mut SceneKit) -> Result<(), WidgetError> {
+        self.menu_button.suspend_touches(kit)
     }
 
     /// Размещение плашки проблемы размера `size_pt` в глазном пространстве раздела: по центру ширины, прижата к

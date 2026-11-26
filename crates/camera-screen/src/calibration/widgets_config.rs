@@ -108,6 +108,17 @@ pub struct CalibrationWidgetsConfig {
     pub knob_tick_every_steps: u32,
     /// Каждая какая единица шагов значения крупная риска (в шагах значения, а не в рисках). `[estimate]` 100.
     pub knob_major_every_steps: u32,
+    /// Магнит нуля на линейке ручки (решение 284): половина зоны, pt пути пальца. Пока палец ведёт ручку, значение
+    /// дойдя до нуля стоит нулём, пока палец проходит `2 ×` это число, и снова идёт за пальцем без скачка
+    /// (`ui_kit::scale::ZeroMagnet`). `0` — магнит выключен. `[estimate]` 6 pt: подбор на телефоне.
+    pub knob_zero_magnet_pt: f64,
+    /// «Картинка под пальцем» (решение 273): прозрачность остального, пока палец ведёт ручку или колесо
+    /// (0 — остальное исчезает совсем). Остальное: панель колонки, шапка, переключатель, прочие строки. `[estimate]`.
+    pub finger_focus_others_opacity: f32,
+    /// Поля подложки под ведомым органом (вокруг его рамки), pt. `[estimate]`.
+    pub finger_focus_backing_padding_pt: f64,
+    /// Радиус скругления подложки под ведомым органом. `[estimate]`.
+    pub finger_focus_backing_corner_radius_pt: f32,
     /// Порог распознавания пана на линейке ручки, pt (у остальных панов 10). Меньше порог — меньше «пустого» хода
     /// перед началом движения; путь до распознавания не теряется (значение считается от точки касания).
     /// `[estimate]` 5: достаточно, чтобы отличить горизонтальную протяжку от вертикальной прокрутки списка.
@@ -214,6 +225,10 @@ impl Default for CalibrationWidgetsConfig {
             knob_full_travel_pt: 400.0,
             knob_tick_every_steps: 20,
             knob_major_every_steps: 100,
+            knob_zero_magnet_pt: 6.0,
+            finger_focus_others_opacity: 0.0,
+            finger_focus_backing_padding_pt: 6.0,
+            finger_focus_backing_corner_radius_pt: 16.0,
             knob_pan_hysteresis_pt: 5.0,
             preset_marker_diameter_pt: 4.0,
             preset_marker_gap_pt: 2.0,
@@ -249,6 +264,8 @@ impl Default for CalibrationWidgetsConfig {
 pub enum CalibrationWidgetsConfigError {
     #[error("размер {field} должен быть конечным и больше нуля: {value}")]
     NonPositive { field: &'static str, value: f64 },
+    #[error("размер {field} должен быть конечным и не меньше нуля: {value}")]
+    Negative { field: &'static str, value: f64 },
     #[error("доля {field} должна быть конечной и в 0..=1: {value}")]
     FractionOutOfRange { field: &'static str, value: f64 },
     #[error("единиц шкалы ручки на 1,0 должно быть от 1 до {MAX_KNOB_UNITS}: {value}")]
@@ -294,6 +311,11 @@ impl CalibrationWidgetsConfig {
         let sizes = [
             ("panel_corner_radius_pt", f64::from(self.panel_corner_radius_pt)),
             ("panel_padding_pt", self.panel_padding_pt),
+            ("finger_focus_backing_padding_pt", self.finger_focus_backing_padding_pt),
+            (
+                "finger_focus_backing_corner_radius_pt",
+                f64::from(self.finger_focus_backing_corner_radius_pt),
+            ),
             ("header_height_pt", self.header_height_pt),
             ("clean_button_height_pt", self.clean_button_height_pt),
             ("clean_button_width_pt", self.clean_button_width_pt),
@@ -353,8 +375,19 @@ impl CalibrationWidgetsConfig {
                 return Err(CalibrationWidgetsConfigError::NonPositive { field, value });
             }
         }
+        // Размеры, у которых 0 значит «выключено».
+        let switchable_sizes = [("knob_zero_magnet_pt", self.knob_zero_magnet_pt)];
+        for (field, value) in switchable_sizes {
+            if !(value.is_finite() && value >= 0.0) {
+                return Err(CalibrationWidgetsConfigError::Negative { field, value });
+            }
+        }
         let fractions = [
             ("disabled_row_opacity", f64::from(self.disabled_row_opacity)),
+            (
+                "finger_focus_others_opacity",
+                f64::from(self.finger_focus_others_opacity),
+            ),
             ("clean_button_fill_alpha", f64::from(self.clean_button_fill_alpha)),
             ("chip_fill_alpha", f64::from(self.chip_fill_alpha)),
             ("wheel_pad_fill_alpha", f64::from(self.wheel_pad_fill_alpha)),

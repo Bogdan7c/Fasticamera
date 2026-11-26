@@ -19,6 +19,7 @@ use ui_draw::transform::Affine2;
 use ui_kit::drive::DragOrigin;
 use ui_kit::pan::PanUpdate;
 use ui_kit::ruler::{GatedEvent, HapticPacing, RulerControl, RulerFeel, RulerSpec};
+use ui_kit::scale::ZeroMagnet;
 use ui_kit::tokens::{HapticEvent, PointsPerUnit, ScaleDensity, UiKitTokens};
 use ui_kit::value::{Emphasis, LinearLimits, QuantizedLinear, ReferenceValue, TickPitch, ValueModel};
 use ui_kit::view::{PxPerPt, RulerMarkerStyle};
@@ -65,6 +66,7 @@ fn knob_feel() -> RulerFeel {
     RulerFeel {
         drag_origin: DragOrigin::FromTouchDown,
         haptic_pacing: HapticPacing::Throttled,
+        zero_magnet: ZeroMagnet::Off,
     }
 }
 
@@ -327,6 +329,7 @@ fn fast_swipe_does_not_click_every_frame_but_unlimited_does() {
             RulerFeel {
                 drag_origin: DragOrigin::FromTouchDown,
                 haptic_pacing: pacing,
+                zero_magnet: ZeroMagnet::Off,
             },
             -1.0,
         );

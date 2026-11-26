@@ -16,6 +16,7 @@ use ui_core::gesture::GestureEvent;
 use ui_core::id::NodeId;
 
 use super::paint::{NodePaint, srgb8};
+use super::selection_haptic::play_selection_haptic;
 use crate::action::ScreenAction;
 use crate::widget::button::{ButtonEvent, PressButton};
 use crate::widget::error::WidgetError;
@@ -90,6 +91,7 @@ impl BandDots {
     pub(super) fn handle_gesture(
         &mut self,
         kit: &SceneKit,
+        ctx: &Ctx<'_>,
         event: &GestureEvent<ScreenGesture>,
         out: &mut Outputs,
     ) -> Result<bool, WidgetError> {
@@ -101,6 +103,10 @@ impl BandDots {
         };
         let data = kit.gesture_data_in_node(dot.button.node(), event.data);
         if dot.button.handle(event.state, data, event.time)? == ButtonEvent::Activated {
+            // Щелчок выбора — только когда выбранная полоса СМЕНИЛАСЬ (тап по выбранной ничего не меняет).
+            if ctx.state.calibration().selected_band() != Some(&dot.band) {
+                play_selection_haptic(ctx, out);
+            }
             out.actions.push(ScreenAction::BandSelected(dot.band.clone()));
         }
         Ok(true)

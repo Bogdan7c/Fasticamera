@@ -201,6 +201,15 @@ fn widget_numbers_are_validated_with_the_name_of_the_bad_field() {
         reject(&|c| c.widgets.knob_major_every_steps = 0),
         Err(CalibrationConfigError::Widgets(Bad::ZeroMajorPeriod))
     ));
+    for invalid in [-1.0, f64::NAN] {
+        assert!(matches!(
+            reject(&|c| c.widgets.knob_zero_magnet_pt = invalid),
+            Err(CalibrationConfigError::Widgets(Bad::Negative {
+                field: "knob_zero_magnet_pt",
+                ..
+            }))
+        ));
+    }
     assert!(matches!(
         reject(&|c| c.widgets.chip_pool_size = 0),
         Err(CalibrationConfigError::Widgets(Bad::ChipPoolOutOfRange { value: 0 }))
@@ -220,6 +229,20 @@ fn widget_numbers_are_validated_with_the_name_of_the_bad_field() {
         reject(&|c| c.widgets.disabled_row_opacity = 2.0),
         Err(CalibrationConfigError::Widgets(Bad::FractionOutOfRange {
             field: "disabled_row_opacity",
+            ..
+        }))
+    ));
+    assert!(matches!(
+        reject(&|c| c.widgets.finger_focus_others_opacity = -0.1),
+        Err(CalibrationConfigError::Widgets(Bad::FractionOutOfRange {
+            field: "finger_focus_others_opacity",
+            ..
+        }))
+    ));
+    assert!(matches!(
+        reject(&|c| c.widgets.finger_focus_backing_padding_pt = 0.0),
+        Err(CalibrationConfigError::Widgets(Bad::NonPositive {
+            field: "finger_focus_backing_padding_pt",
             ..
         }))
     ));

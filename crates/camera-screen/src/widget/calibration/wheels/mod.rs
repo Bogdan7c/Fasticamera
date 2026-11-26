@@ -10,18 +10,21 @@
 //! отличается от пресета; тусклая «↻» (44 %) не делает ничего.
 
 mod pad;
+mod readout;
 
-use look_contract::{LookControl, WheelPart, WheelZone};
+use look_contract::{LookControl, WheelPart, WheelPush, WheelZone};
 use ui_core::geometry::Rect;
 use ui_core::gesture::{GestureEvent, GestureState};
 use ui_core::id::NodeId;
 use ui_kit::tokens::TextRoleKind;
 
 use self::pad::WheelPad;
+use self::readout::push_readout;
 use super::knob_row::{RowTarget, RulerRow};
 use super::paint::NodePaint;
 use super::reset_disc::draw_reset_disc;
-use super::segments::{SegmentRow, SegmentSpec, push_if_activated};
+use super::segments::{SegmentEvent, SegmentRow, SegmentSpec, push_if_activated};
+use super::selection_haptic::play_selection_haptic;
 use super::space::SectionSpace;
 use crate::action::ScreenAction;
 use crate::calibration::WheelsFrames;
@@ -142,6 +145,12 @@ impl WheelsView {
         out: &mut Outputs,
     ) -> Result<bool, WidgetError> {
         let tab_event = self.tabs.handle_gesture(kit, event)?;
+        // Щелчок выбора — только когда вкладка СМЕНИЛАСЬ: тап по уже выбранной ничего не меняет и молчит.
+        if let SegmentEvent::Activated(zone) = &tab_event
+            && *zone != ctx.state.calibration().selected_wheel()
+        {
+            play_selection_haptic(ctx, out);
+        }
         if push_if_activated(tab_event, out, ScreenAction::WheelSelected) {
             return Ok(true);
         }
@@ -182,6 +191,12 @@ impl WheelsView {
 
     pub(in crate::widget::calibration) fn advance(&mut self, ctx: &Ctx<'_>, out: &mut Outputs) {
         self.ring_row.advance(ctx, out);
+    }
+
+    /// Узлы блока колеса, которые остаются видимыми под пальцем (решение 273): строка названия с числами толчка,
+    /// круг толчка и шкала кольца. Вкладки растворяются.
+    pub(in crate::widget::calibration) fn focus_nodes(&self) -> Vec<NodeId> {
+        vec![self.title_node, self.pad.node(), self.ring_row.node()]
     }
 
     /// Высота содержимого, pt: окно целиком, прокручивать нечего.
@@ -266,6 +281,30 @@ impl WheelsView {
             })
         });
         draw_reset_disc(ctx, &paint, layers, center, differs);
+        self.draw_push_readout(ctx, &paint, layers, texts, zone)
+    }
+
+    /// Угол и сила толчка выбранного колеса, прижатые вправо к «↻» колеса целиком. Читаются из фактов вида: экран
+    /// значений колёс не хранит. Нет фактов — нейтраль (чёрточка).
+    fn draw_push_readout(
+        &self,
+        ctx: &Ctx<'_>,
+        paint: &NodePaint,
+        layers: &mut DrawLayers,
+        texts: &mut TextRuns,
+        zone: WheelZone,
+    ) -> Result<(), WidgetError> {
+        let config = &ctx.config.calibration.widgets;
+        let push = ctx.state.look_facts().map_or(WheelPush::NEUTRAL, |facts| {
+            facts.current.settings.wheels.wheel(zone).push
+        });
+        let run = texts.run(ctx, &push_readout(push), TextRoleKind::ScaleValue)?;
+        // Правый край подписи — левее зоны «↻» на промежуток значения (как у подписи значения строки ручки).
+        let right_pt = self.frames.whole_reset.min_x() - self.frames.title.center().x - config.value_gap_pt;
+        layers.push(
+            Layer::Content,
+            paint.text_right(run, right_pt, 0.0, ctx.tokens.colors.text_primary),
+        );
         Ok(())
     }
 

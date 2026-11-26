@@ -23,6 +23,13 @@ pub enum ScaleError {
     /// между шагами дала бы значение, которого не видно на шкале.
     #[error("ContinuousWithMagnets требует плавной модели значений")]
     MagnetsRequireContinuousModel,
+    /// Ширина магнита нуля — не конечное неотрицательное число.
+    #[error("ширина магнита нуля должна быть конечной и не меньше нуля, получено {half_width_points}")]
+    InvalidZeroMagnetWidth { half_width_points: f64 },
+    /// Магнит нуля держит ступень нуля: у плавной модели нет ступени, а её щелчок опорного значения
+    /// рождается по-другому (см. `zero_magnet`).
+    #[error("магнит нуля требует ступенчатой модели значений")]
+    ZeroMagnetRequiresSteppedModel,
 }
 
 impl From<DriveError> for ScaleError {

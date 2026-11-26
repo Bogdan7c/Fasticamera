@@ -11,6 +11,7 @@ use ui_core::id::NodeId;
 use ui_kit::tokens::TextRoleKind;
 
 use super::band_dots::BandDots;
+use super::finger_focus::DrivenControl;
 use super::knob_row::{RowTarget, RulerRow};
 use super::paint::NodePaint;
 use super::space::SectionSpace;
@@ -30,6 +31,9 @@ pub(super) struct VisibleWindow {
     pub offset_pt: f64,
     /// Высота окна, pt.
     pub height_pt: f64,
+    /// Прозрачность «остального» под пальцем (решение 273): 1 в покое. Заголовки групп рисуются в системе узла
+    /// содержимого — предка ведомой строки, поэтому сцена их не растворяет, и множитель берут они сами.
+    pub others_opacity: f32,
 }
 
 impl VisibleWindow {
@@ -60,6 +64,21 @@ impl ControlView {
             ControlView::Rows(rows) => rows.content_height,
             ControlView::Wheels(wheels) => wheels.content_height(),
             ControlView::Unavailable { window_height_pt } => *window_height_pt,
+        }
+    }
+
+    /// Узлы органа управления `driven`, которые остаются видимыми под пальцем (решение 273); пусто — орган не
+    /// из этого вида.
+    pub(super) fn focus_nodes(&self, driven: DrivenControl) -> Vec<NodeId> {
+        match (self, driven) {
+            (ControlView::Rows(rows), DrivenControl::Row(slot)) => rows
+                .rows
+                .iter()
+                .find(|row| row.slot() == slot)
+                .map(|row| vec![row.node()])
+                .unwrap_or_default(),
+            (ControlView::Wheels(wheels), DrivenControl::Wheels) => wheels.focus_nodes(),
+            _ => Vec::new(),
         }
     }
 
@@ -271,7 +290,7 @@ impl RowsView {
                 return Ok(true);
             }
         }
-        self.bands.handle_gesture(kit, event, out)
+        self.bands.handle_gesture(kit, ctx, event, out)
     }
 
     fn sync(&mut self, kit: &mut SceneKit, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
@@ -302,7 +321,7 @@ impl RowsView {
                 if !window.shows(header.top_pt, config.group_header_height_pt) {
                     continue;
                 }
-                let Some(paint) = NodePaint::new(ctx, placement, 1.0)? else {
+                let Some(paint) = NodePaint::new(ctx, placement, window.others_opacity)? else {
                     continue;
                 };
                 let run = texts.run(ctx, header.title, TextRoleKind::Caption)?;

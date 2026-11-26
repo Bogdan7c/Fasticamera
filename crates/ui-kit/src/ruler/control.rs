@@ -26,20 +26,22 @@ use super::pacing::{HapticPacer, HapticPacing};
 use crate::drive::{DragOrigin, GrowthDirection, ScrollTransition};
 use crate::environment::ElementEnvironment;
 use crate::pan::PanUpdate;
-use crate::scale::{ScaleError, ScaleSpec, SnapPolicy, SnapScale, TickVisibility};
+use crate::scale::{ScaleError, ScaleSpec, SnapPolicy, SnapScale, TickVisibility, ZeroMagnet};
 use crate::tokens::{ColorTokens, RulerTokens, ScaleDensity};
 use crate::value::{ExactPosition, Quantization, QuantizedLinear, RulerAxis};
 use crate::view::{MajorTickPeriod, PxPerPt, RulerMarkerStyle, ViewError, ruler_items, ruler_marker_item};
 
 /// Ощущение линейки под пальцем. По умолчанию — прежнее поведение (Exposure, белое): отсчёт от точки распознавания
 /// пана и щелчок на каждый кадр с пройденной риской. Ручки раздела калибровки включают другое явно.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct RulerFeel {
     /// От какой точки считать смещение пальца: [`DragOrigin::FromTouchDown`] — значение сразу догоняет палец
     /// (путь до распознавания пана не пропадает).
     pub drag_origin: DragOrigin,
     /// Темп щелчков отдачи.
     pub haptic_pacing: HapticPacing,
+    /// Магнит нуля под пальцем (решение 284). По умолчанию выключен: Exposure, белое и зум идут за пальцем 1:1.
+    pub zero_magnet: ZeroMagnet,
 }
 
 /// Описание линейки без чисел экрана: модель, плотность и период крупной риски.
@@ -88,7 +90,8 @@ impl<M: RulerAxis> RulerControl<M> {
             drag_origin: spec.feel.drag_origin,
         };
         Ok(Self {
-            scale: SnapScale::new(spec.model, initial_value, scale_spec, environment, now)?,
+            scale: SnapScale::new(spec.model, initial_value, scale_spec, environment, now)?
+                .with_zero_magnet(spec.feel.zero_magnet)?,
             gate: FingerGate::default(),
             major_period: MajorTickPeriod::every_steps(spec.major_every_steps),
             pacer: HapticPacer::new(spec.feel.haptic_pacing, environment.tokens)?,

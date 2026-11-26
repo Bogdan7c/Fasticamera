@@ -293,7 +293,7 @@ fn dragging_a_knob_ruler_sends_the_exact_value_the_finger_chose() {
     let mut rig = portrait(look_facts());
     let ruler = center(&rig, "calib_ruler", 0);
     // Путь на 60 единиц шкалы: линейка ровно на +60 (значение 0,30), без потерь на порог пана.
-    drag_eye(&mut rig, ruler, Vector::new(-knob_finger_pt(60.0), 0.0));
+    drag_eye(&mut rig, ruler, Vector::new(-knob_finger_pt_from_zero(60.0), 0.0));
     let sent = set_looks(&rig.effects());
     let last = sent.last().expect("палец тянул ручку, SetLook ушёл");
     assert!((last.knob(GlobalKnob::Contrast).get() - 0.3).abs() < 1e-6, "{last:?}");
@@ -336,7 +336,7 @@ fn each_row_drives_its_own_knob() {
         // Нижние строки лежат ниже окна списка: листаем до строки пальцем, а не пропускаем её.
         let ruler = scroll_row_into_view(&mut rig, slot);
         // Путь на +60 единиц (значение 0,30); начинаем на правой стороне линейки, чтобы палец не ушёл за левый край экрана.
-        let finger_dx = knob_finger_pt(60.0);
+        let finger_dx = knob_finger_pt_from_zero(60.0);
         drag_eye(
             &mut rig,
             Point::new(ruler.x + 60.0, ruler.y),

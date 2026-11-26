@@ -18,9 +18,12 @@ use super::error::WidgetError;
 use super::intent::{ButtonId, ScreenGesture};
 use super::kit::SceneKit;
 use super::layers::{DrawLayers, Layer, VisualIndex};
-use super::{Ctx, Outputs, single_member_material};
+use super::menu_glide::{GlideDirection, GlideEndpoint, GlideFrame};
+use super::{Ctx, Outputs, PHOTO_BUTTON_MATERIAL, SECTION_PANEL_MATERIAL, single_member_material};
 use crate::action::ScreenAction;
 use crate::state::PanelState;
+use ui_draw::draw_list::PressState;
+use ui_draw::geometry::PxSize;
 use ui_draw::scene_bridge::NodePlacementPx;
 
 /// Где стоит кнопка меню.
@@ -116,6 +119,32 @@ impl MenuButtonWidget {
         kit.set_interactive(self.button.node(), row_shown && menu_closed)
     }
 
+    /// Узел кнопки: по нему сцена знает, где кнопка стоит на экране.
+    fn node(&self) -> NodeId {
+        self.button.node()
+    }
+
+    /// Где кнопка стоит на экране и как повёрнут её значок — по дереву сцены, а не по списку видимых узлов: так
+    /// работает и для дома, который сейчас скрыт или вот-вот будет убран (начало переезда). `None` — узла нет в
+    /// дереве.
+    pub(crate) fn glide_endpoint(&self, kit: &SceneKit) -> Option<GlideEndpoint> {
+        let tree = kit.scene().tree();
+        let to_screen = tree.to_screen_transform(self.node()).ok()?;
+        let centre_pt = to_screen.apply(tree.frame(self.node()).ok()?.center());
+        let icon = tree.to_screen_transform(self.icon_node).ok()?;
+        Some(GlideEndpoint {
+            centre_pt,
+            icon_angle_rad: icon.b.atan2(icon.a),
+        })
+    }
+
+    /// Пока кнопка едет, ни дом PHOTO, ни дом раздела касаний не ловят: честнее «в движении не нажимается», чем
+    /// отдать касание статическому якорю, где кнопки сейчас не видно. Вызывается после `sync`, который вернул бы
+    /// обычное состояние.
+    pub(crate) fn suspend_touches(&self, kit: &mut SceneKit) -> Result<(), WidgetError> {
+        kit.set_interactive(self.node(), false)
+    }
+
     /// `source_opacity` — прозрачность «источника» из морфа шторки: кнопка растворяется, пока из неё растёт панель.
     pub(crate) fn draw(
         &self,
@@ -132,22 +161,50 @@ impl MenuButtonWidget {
         if placement.opacity <= 0.0 {
             return Ok(());
         }
-        let (item, host) = single_member_material(
+        let icon_placement = visuals.placement(self.icon_node).map(|icon| NodePlacementPx {
+            opacity: icon.opacity * source_opacity,
+            ..icon
+        });
+        Self::paint(
             ctx,
-            material,
-            GlassShape::Circle,
-            &placement,
-            self.button.press_state(ctx.now),
-            "menu_button",
-        )?;
+            layers,
+            (&placement, icon_placement.as_ref()),
+            (self.button.press_state(ctx.now), material),
+        )
+    }
+
+    /// Ездящая копия кнопки на время переезда PHOTO ↔ CALIBRATE: материал режима назначения с первого кадра, значок
+    /// повёрнут по ходу переезда. Статические копии в это время не рисуются.
+    pub(crate) fn draw_gliding(ctx: &Ctx<'_>, layers: &mut DrawLayers, frame: &GlideFrame) -> Result<(), WidgetError> {
+        let size = ctx.geometry.menu_button().size;
+        let button = NodePlacementPx {
+            size: PxSize::new(ctx.px.px(size.width), ctx.px.px(size.height)),
+            transform: frame.button_transform(ctx),
+            opacity: 1.0,
+        };
+        let icon = NodePlacementPx {
+            transform: frame.icon_transform(ctx),
+            ..button
+        };
+        let material = match frame.direction {
+            GlideDirection::PhotoToSection => SECTION_PANEL_MATERIAL,
+            GlideDirection::SectionToPhoto => PHOTO_BUTTON_MATERIAL,
+        };
+        Self::paint(ctx, layers, (&button, Some(&icon)), (PressState::RELEASED, material))
+    }
+
+    /// Круг материала и значок поверх него: общий рисунок статической и ездящей кнопки.
+    fn paint(
+        ctx: &Ctx<'_>,
+        layers: &mut DrawLayers,
+        (placement, icon_placement): (&NodePlacementPx, Option<&NodePlacementPx>),
+        (press, material): (PressState, PanelMaterial),
+    ) -> Result<(), WidgetError> {
+        let (item, host) = single_member_material(ctx, material, GlassShape::Circle, placement, press, "menu_button")?;
         layers.push(Layer::Glass, item);
-        if let Some(icon_placement) = visuals.placement(self.icon_node) {
-            let icon_placement = NodePlacementPx {
-                opacity: icon_placement.opacity * source_opacity,
-                ..icon_placement
-            };
+        if let Some(icon_placement) = icon_placement {
             // Содержимое: хост — члену группы (масштаб нажатия) с поворотом узла значка поверх.
-            let host = rotation_only(&icon_placement, &placement, host);
+            let host = rotation_only(icon_placement, placement, host);
             layers.push(
                 Layer::Content,
                 centered_icon(
@@ -156,7 +213,7 @@ impl MenuButtonWidget {
                     ctx.px,
                     host,
                     ctx.tokens.colors.text_primary,
-                    opacity_of_placement(&icon_placement, "menu_button_icon")?,
+                    opacity_of_placement(icon_placement, "menu_button_icon")?,
                 ),
             );
         }

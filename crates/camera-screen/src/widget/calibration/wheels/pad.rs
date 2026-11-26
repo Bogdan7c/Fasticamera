@@ -119,6 +119,10 @@ impl WheelPad {
         else {
             return Ok(true);
         };
+        if !matches!(update, PanUpdate::Began { .. }) && !self.pad.is_finger_driven() {
+            // Продолжение жеста, начало которого этот круг не видел (раздел пересобрали посреди протяжки): не ошибка.
+            return Ok(true);
+        }
         if !self.enabled && !self.pad.is_finger_driven() {
             // Нет фактов: круг тусклый и пальца не берёт.
             return Ok(true);
