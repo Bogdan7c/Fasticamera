@@ -107,13 +107,20 @@ fn zero_width_surface_is_a_typed_error_not_a_panic() {
     );
 }
 
+/// Список рисования из двух групп стекла в известных местах (`test_glass`).
+fn list_with_two_glass_panels() -> DrawList {
+    let mut list = DrawList::new(LightDirection::from_angle_degrees(45.0));
+    list.items = crate::saturation_bench::test_glass::two_glass_panels();
+    list
+}
+
 #[test]
 fn glass_geometry_is_the_clamped_sum_of_group_bounds_and_the_screen_fraction() {
     let surface = SurfaceSizePx::ONEPLUS_11;
-    let plan = ScreenPlan::build(&inputs(true), surface).expect("экраны");
-    // После 14m стекло есть только у PHOTO; раздел CALIBRATE стекла не рисует (проверяется ниже).
-    let summary = plan.scene(DisplayScreen::Photo).summary;
+    let list = list_with_two_glass_panels();
+    let summary = summarize(&list, surface);
     assert_eq!(summary.surface_area_px, 1080 * 2412);
+    assert_eq!((summary.glass_groups, summary.glass_members), (2, 2));
     assert!(
         summary.glass_bounds_area_px > 0,
         "стекло закрывает часть экрана: {summary:?}"
@@ -125,7 +132,6 @@ fn glass_geometry_is_the_clamped_sum_of_group_bounds_and_the_screen_fraction() {
     );
 
     // Независимый пересчёт: сумма площадей bounds групп, обрезанных по экрану.
-    let list = &plan.scene(DisplayScreen::Photo).draw_list;
     let recount: f64 = list
         .items
         .iter()
@@ -140,9 +146,16 @@ fn glass_geometry_is_the_clamped_sum_of_group_bounds_and_the_screen_fraction() {
         })
         .sum();
     assert_eq!(summary.glass_bounds_area_px, recount.round() as u64);
+    // Границы групп раздуты запасом на тень и свечение и перекрываются: объединение меньше суммы, но не пусто
+    // и не больше экрана.
+    assert!(
+        summary.glass_union_area_px > 0 && summary.glass_union_area_px <= summary.glass_bounds_area_px,
+        "{summary:?}"
+    );
+    assert!(summary.glass_union_screen_fraction <= 1.0 + 1e-9);
 
     // Список без стекла — нулевая геометрия стекла.
-    let without = crate::saturation_bench::draw_filter::DrawFilter::NoGlass.apply(list);
+    let without = crate::saturation_bench::draw_filter::DrawFilter::NoGlass.apply(&list);
     let flat = summarize(&without, surface);
     assert_eq!((flat.glass_groups, flat.glass_bounds_area_px), (0, 0));
     assert_eq!(flat.glass_screen_fraction, 0.0);
@@ -173,17 +186,31 @@ fn union_area_counts_overlaps_once_and_disjoint_rects_fully() {
 }
 
 #[test]
-fn the_real_screens_glass_union_is_not_larger_than_the_sum_nor_than_the_screen() {
+fn the_real_screens_draw_no_glass_and_photo_draws_edged_surfaces() {
     let plan = ScreenPlan::build(&inputs(true), SurfaceSizePx::ONEPLUS_11).expect("экраны");
-    // CALIBRATE после 14m без стекла: площадь стекла нулевая; у PHOTO — положительная.
-    let calibrate = plan.scene(DisplayScreen::Calibrate).summary;
-    assert_eq!(
-        (calibrate.glass_groups, calibrate.glass_union_area_px),
-        (0, 0),
-        "{calibrate:?}"
-    );
-    let photo = plan.scene(DisplayScreen::Photo).summary;
-    assert!(photo.glass_union_area_px > 0, "{photo:?}");
-    assert!(photo.glass_union_area_px <= photo.glass_bounds_area_px, "{photo:?}");
-    assert!(photo.glass_union_screen_fraction <= 1.0 + 1e-9, "{photo:?}");
+    // После 14m у CALIBRATE, после 14p и у PHOTO стекла нет (решения 261, 297): площадь стекла нулевая.
+    for screen in [DisplayScreen::Photo, DisplayScreen::Calibrate] {
+        let summary = plan.scene(screen).summary;
+        assert_eq!(
+            (
+                summary.glass_groups,
+                summary.glass_bounds_area_px,
+                summary.glass_union_area_px
+            ),
+            (0, 0, 0),
+            "{screen:?}: {summary:?}"
+        );
+    }
+    // Стенд рисует PHOTO с ободком поверхностей: у поверхностей PHOTO есть линия цвета ободка из токенов.
+    let edge = ui_kit::tokens::UiKitTokens::default().surface.edge.color;
+    let edged = plan
+        .scene(DisplayScreen::Photo)
+        .draw_list
+        .leaf_items()
+        .filter(|item| {
+            matches!(item, DrawItem::Shape(shape)
+                if shape.stroke.is_some_and(|stroke| (stroke.color.r, stroke.color.a) == (edge.r, edge.a)))
+        })
+        .count();
+    assert!(edged >= 4, "у PHOTO поверхности с ободком: {edged}");
 }

@@ -12,8 +12,6 @@
 use serde::Serialize;
 use ui_draw::draw_list::{ClipGroup, DrawItem, DrawList};
 
-use super::glass_ablation::{GlassStyleAblation, GlassSubset, apply_glass_ablation};
-
 /// Какие элементы списка рисования остаются в кадре работы показа.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -30,11 +28,6 @@ pub enum DrawFilter {
     ImagesOnly,
     /// Всё, кроме стекла.
     NoGlass,
-    /// Только стекло с изменённым стилем и/или выбранными группами (абляции свойств стекла, пакет G3).
-    GlassAblated {
-        subset: GlassSubset,
-        style: GlassStyleAblation,
-    },
 }
 
 impl DrawFilter {
@@ -45,7 +38,7 @@ impl DrawFilter {
         }
         match self {
             Self::All => true,
-            Self::GlassOnly | Self::GlassAblated { .. } => matches!(item, DrawItem::Glass(_)),
+            Self::GlassOnly => matches!(item, DrawItem::Glass(_)),
             Self::ShapesOnly => matches!(item, DrawItem::Shape(_)),
             Self::TextOnly => matches!(item, DrawItem::Text(_) | DrawItem::Icon(_)),
             Self::ImagesOnly => matches!(item, DrawItem::Image(_)),
@@ -55,9 +48,6 @@ impl DrawFilter {
 
     /// Новый список: оставленные элементы в прежнем порядке, направление света то же.
     pub fn apply(self, list: &DrawList) -> DrawList {
-        if let Self::GlassAblated { subset, style } = self {
-            return apply_glass_ablation(list, subset, style);
-        }
         DrawList {
             items: self.filter_items(&list.items),
             light: list.light,

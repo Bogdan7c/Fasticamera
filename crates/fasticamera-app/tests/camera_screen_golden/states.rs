@@ -105,7 +105,7 @@ pub fn timer_countdown() -> ScreenDriver {
     )));
     driver.act(ScreenAction::ControlsMenuCloseRequested);
     driver.run(SETTLE_MS);
-    let (x_px, y_px) = driver.glass_circle_center_px(SHUTTER_DIAMETER_PX).expect("затвор");
+    let (x_px, y_px) = driver.element_circle_center_px(SHUTTER_DIAMETER_PX).expect("затвор");
     let shutter = Point::new(f64::from(x_px / PX_PER_PT), f64::from(y_px / PX_PER_PT));
     driver.tap(shutter);
     driver.run(300);

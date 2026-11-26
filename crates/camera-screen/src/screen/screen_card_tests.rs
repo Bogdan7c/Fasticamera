@@ -17,15 +17,14 @@ use crate::tools::ToolId;
 /// Допуск сравнения координат, px.
 const PX_TOLERANCE: f32 = 1.5;
 
-/// Есть ли в списке видимая стеклянная форма с центром около точки `(x_pt; y_pt)` (pt экрана).
-fn visible_glass_at(list: &DrawList, point: Point) -> bool {
-    list.leaf_items().any(|item| match item {
-        DrawItem::Glass(group) if group.opacity.get() > 0.01 => group
-            .members
-            .iter()
-            .any(|member| near(member.transform.tx, px(point.x), 3.0) && near(member.transform.ty, px(point.y), 3.0)),
-        _ => false,
-    })
+/// Есть ли в списке видимый элемент (панель PHOTO или кольцо затвора) с центром около точки (pt экрана).
+fn visible_element_at(list: &DrawList, point: Point) -> bool {
+    let near_point = |shape: &&ui_draw::draw_list::ShapeItem| {
+        shape.opacity.get() > 0.01
+            && near(shape.transform.tx, px(point.x), 3.0)
+            && near(shape.transform.ty, px(point.y), 3.0)
+    };
+    surface_shapes(list).iter().any(near_point) || shutter_rings(list).iter().any(near_point)
 }
 
 fn open_menu(rig: &mut Rig) {
@@ -70,21 +69,17 @@ fn card_frame_and_content_sit_at_the_measured_numbers_in_pixels() {
     let top = card.min_y();
     assert!((top - (764.7 + (screen_height_pt - 956.0))).abs() < 1e-3, "верх {top}");
 
-    // Стекло в списке рисования стоит ровно там же, в пикселях.
-    let glass = rig
-        .last
-        .leaf_items()
-        .find_map(|item| match item {
-            DrawItem::Glass(group) => group.members.iter().find_map(|member| match member.geometry {
-                ShapeGeometry::RoundedRect { size, .. } if size.width > px(300.0) => Some((member.transform, size)),
-                _ => None,
-            }),
+    // Поверхность карточки в списке рисования стоит ровно там же, в пикселях (силуэт вместе с ободком).
+    let glass = panel_members(&rig.last)
+        .into_iter()
+        .find_map(|(geometry, tx, ty)| match geometry {
+            ShapeGeometry::RoundedRect { size, .. } if size.width > px(300.0) => Some(((tx, ty), size)),
             _ => None,
         })
-        .expect("стекло карточки");
+        .expect("поверхность карточки");
     assert!(near(glass.1.width, px(421.0), PX_TOLERANCE) && near(glass.1.height, px(183.1), PX_TOLERANCE));
-    assert!(near(glass.0.tx, px(220.0), PX_TOLERANCE));
-    assert!(near(glass.0.ty, px(top + 183.1 / 2.0), PX_TOLERANCE));
+    assert!(near(glass.0.0, px(220.0), PX_TOLERANCE));
+    assert!(near(glass.0.1, px(top + 183.1 / 2.0), PX_TOLERANCE));
 
     // Содержимое: центры от верха карточки T [measured: C t=40.0, t=54.0].
     let centre = |rect: Rect| (rect.center().x, rect.center().y - top);
@@ -323,7 +318,7 @@ fn the_raised_shutter_is_drawn_and_shoots_at_the_raised_place_while_a_card_is_op
         // Поднят ровно на 100 pt: центр 801,9 − 100 = 701,9 (+ лишняя высота экрана).
         assert!((base.y - raised.y - 100.0).abs() < 1e-6);
         assert!(
-            visible_glass_at(&rig.last, raised),
+            visible_element_at(&rig.last, raised),
             "кольцо затвора нарисовано на поднятом месте (меню: {from_menu})"
         );
 
@@ -349,7 +344,7 @@ fn the_shutter_returns_to_its_place_after_the_card_closes() {
     rig.tap(close);
     rig.run(900);
     assert_eq!(rig.screen.state().shutter_visibility(), ShutterVisibility::Visible);
-    assert!(visible_glass_at(&rig.last, base), "затвор вернулся на обычное место");
+    assert!(visible_element_at(&rig.last, base), "затвор вернулся на обычное место");
     rig.effects();
     rig.tap(base);
     assert_eq!(shots(&rig.effects()), 1, "на обычном месте снова снимает");
@@ -366,7 +361,7 @@ fn thumbnail_capsule_and_menu_button_leave_while_a_card_is_open_and_return_after
         ("кнопка меню", menu_button),
         ("капсула", capsule),
     ] {
-        assert!(visible_glass_at(&rig.last, point), "{name} видна без карточки");
+        assert!(visible_element_at(&rig.last, point), "{name} видна без карточки");
     }
     open_exposure_card_from_icon(&mut rig);
     for (name, point) in [
@@ -375,7 +370,7 @@ fn thumbnail_capsule_and_menu_button_leave_while_a_card_is_open_and_return_after
         ("капсула", capsule),
     ] {
         assert!(
-            !visible_glass_at(&rig.last, point),
+            !visible_element_at(&rig.last, point),
             "{name} растворилась, пока открыта карточка"
         );
     }
@@ -399,7 +394,7 @@ fn thumbnail_capsule_and_menu_button_leave_while_a_card_is_open_and_return_after
         ("кнопка меню", menu_button),
         ("капсула", capsule),
     ] {
-        assert!(visible_glass_at(&rig.last, point), "{name} вернулась");
+        assert!(visible_element_at(&rig.last, point), "{name} вернулась");
     }
     rig.effects();
     rig.tap(thumbnail);

@@ -404,7 +404,7 @@ fn sun_follows_the_exposure_value_upwards() {
 // ---------- K10: затвор ----------
 
 #[test]
-fn shutter_is_a_glass_ring_under_a_white_disc_of_the_measured_ratio() {
+fn shutter_is_a_ring_under_a_white_disc_of_the_measured_ratio_without_glass() {
     let tokens = tokens();
     let node = placement(Point::new(220.0, 801.9), 80.1, 80.1);
     let mut shutter = ShutterButton::new(
@@ -417,35 +417,37 @@ fn shutter_is_a_glass_ring_under_a_white_disc_of_the_measured_ratio() {
     let items = shutter_items(
         &node,
         &shutter.snapshot(ms(0)),
-        &tokens.glass.button,
+        &tokens.glass.button.press,
         scale(),
         &tokens.shutter,
         &tokens.colors,
     )
     .unwrap();
-    let [
-        DrawItem::Glass(ring),
-        DrawItem::Shape(_ring_fill),
-        DrawItem::Shape(disc),
-    ] = items.as_slice()
-    else {
-        panic!("ожидались стекло и диск: {items:?}");
+    // Решение 300: стекла нет, кольцо — своя заливка с ободком, поверх — диск.
+    assert!(
+        !items.iter().any(|item| matches!(item, DrawItem::Glass(_))),
+        "у затвора нет стекла: {items:?}"
+    );
+    let [DrawItem::Shape(ring), DrawItem::Shape(disc)] = items.as_slice() else {
+        panic!("ожидались кольцо и диск: {items:?}");
     };
-    // Порядок: стекло под диском. Кольцо — круг внешнего диаметра, диск — 67,9 / 80,1 от него.
+    // Кольцо — круг внешнего диаметра (вместе с ободком), диск — 67,9 / 80,1 от него.
     let ShapeGeometry::Circle {
         diameter: ring_diameter,
-    } = ring.members[0].geometry
+    } = ring.geometry
     else {
         panic!()
     };
-    assert_close(ring_diameter, 80.1 * SCALE, "диаметр кольца");
+    let rim = ring.stroke.expect("ободок кольца");
+    assert_close(ring_diameter + rim.width_px, 80.1 * SCALE, "внешний диаметр кольца");
+    assert_eq!(ring.transform.a, 1.0, "в покое кольцо не увеличено");
     let ShapeGeometry::Circle { diameter } = disc.geometry else {
         panic!()
     };
     assert_close(diameter, 80.1 * SCALE * 67.9 / 80.1, "диаметр диска");
     assert_eq!(disc.fill, tokens.colors.text_primary);
     assert_eq!(disc.transform.a, 1.0);
-    // Нажатие сжимает диск и увеличивает стекло.
+    // Нажатие сжимает диск и увеличивает кольцо на прирост кнопок — как раньше росло стеклянное кольцо.
     shutter
         .handle_press(
             ui_core::gesture::GestureState::Began,
@@ -455,21 +457,17 @@ fn shutter_is_a_glass_ring_under_a_white_disc_of_the_measured_ratio() {
             ms(0),
         )
         .unwrap();
+    let snapshot = shutter.snapshot(ms(2000));
     let pressed = shutter_items(
         &node,
-        &shutter.snapshot(ms(2000)),
-        &tokens.glass.button,
+        &snapshot,
+        &tokens.glass.button.press,
         scale(),
         &tokens.shutter,
         &tokens.colors,
     )
     .unwrap();
-    let [
-        DrawItem::Glass(ring),
-        DrawItem::Shape(_ring_fill),
-        DrawItem::Shape(disc),
-    ] = pressed.as_slice()
-    else {
+    let [DrawItem::Shape(ring), DrawItem::Shape(disc)] = pressed.as_slice() else {
         panic!()
     };
     assert_close(
@@ -477,7 +475,12 @@ fn shutter_is_a_glass_ring_under_a_white_disc_of_the_measured_ratio() {
         tokens.shutter.pressed_disc_scale as f32,
         "сжатие диска",
     );
-    assert!(ring.members[0].transform.a > 1.0, "стекло увеличено при нажатии");
+    assert_close(
+        ring.transform.a,
+        1.0 + tokens.glass.button.press.scale_gain * snapshot.press_amount,
+        "кольцо увеличено при нажатии",
+    );
+    assert!(ring.transform.a > 1.0, "кольцо растёт при нажатии");
 }
 
 #[test]
@@ -490,13 +493,13 @@ fn disabled_and_busy_shutter_dim_by_tokens() {
         let items = shutter_items(
             &node,
             &shutter.snapshot(ms(0)),
-            &tokens.glass.button,
+            &tokens.glass.button.press,
             scale(),
             &tokens.shutter,
             &tokens.colors,
         )
         .unwrap();
-        let (DrawItem::Glass(ring), DrawItem::Shape(disc)) = (&items[0], &items[2]) else {
+        let (DrawItem::Shape(ring), DrawItem::Shape(disc)) = (&items[0], &items[1]) else {
             panic!()
         };
         (ring.opacity.get(), disc.opacity.get())
@@ -650,7 +653,7 @@ fn a_whole_camera_screen_built_from_kit_builders_passes_draw_list_validation() {
         shutter_items(
             &placement(Point::new(220.0, 801.9), 80.1, 80.1),
             &shutter.snapshot(ms(0)),
-            style,
+            &style.press,
             scale(),
             &tokens.shutter,
             &tokens.colors,

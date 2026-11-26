@@ -698,6 +698,10 @@ mod screen_problem_banner_tests;
 mod screen_section_surface_tests;
 
 #[cfg(test)]
+#[path = "screen_photo_surface_tests.rs"]
+mod screen_photo_surface_tests;
+
+#[cfg(test)]
 #[path = "screen_sheet_tests.rs"]
 mod screen_sheet_tests;
 

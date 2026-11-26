@@ -173,7 +173,7 @@ pub fn evaluate_glass(smoke: &ViewfinderSmokeConfig, observation: &GlassObservat
     if let Some(failure) = &observation.viewfinder.failure {
         return vec![failure.describe()];
     }
-    let mut violations = overlay_violations(&observation.overlay);
+    let mut violations = overlay_violations(&observation.overlay, BackdropBlurExpectation::MustBeBuilt);
     violations.extend(gpu_time_violations(&observation.overlay, &observation.budget));
     if let SourceRemoval::NotDelivered { reason } = &observation.removal {
         violations.push(format!("источник UI не снят: {reason}"));
@@ -186,8 +186,18 @@ pub fn evaluate_glass(smoke: &ViewfinderSmokeConfig, observation: &GlassObservat
     violations
 }
 
-/// Счётчики слоя UI: источник стоял, кадры рисовались без отказов, пирамида фона строилась.
-pub(super) fn overlay_violations(overlay: &OverlayWindow) -> Vec<String> {
+/// Нужна ли сценарию пирамида размытия фона: она строится только под стекло.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BackdropBlurExpectation {
+    /// Сценарий рисует стекло (витрина `glass`): пирамида обязана строиться, иначе стекло рисовалось без фона.
+    MustBeBuilt,
+    /// Экран камеры: с 14p стекла в покое нет (решение 297), пирамида строится лишь под завесу перехода камер
+    /// (решение 299) — её отсутствие в окне замера не провал.
+    NotRequired,
+}
+
+/// Счётчики слоя UI: источник стоял, кадры рисовались без отказов; пирамида фона строилась, если её ждут.
+pub(super) fn overlay_violations(overlay: &OverlayWindow, blur: BackdropBlurExpectation) -> Vec<String> {
     let mut violations = Vec::new();
     match &overlay.active_source {
         None => violations.push("источник UI не установлен к концу окна (active_source пуст)".to_owned()),
@@ -208,7 +218,7 @@ pub(super) fn overlay_violations(overlay: &OverlayWindow) -> Vec<String> {
             ));
         }
     }
-    if overlay.pyramid_rebuilds == 0 {
+    if blur == BackdropBlurExpectation::MustBeBuilt && overlay.pyramid_rebuilds == 0 {
         violations.push(
             "пирамида размытия фона ни разу не строилась (pyramid_rebuilds = 0): стекло рисовалось без фона".to_owned(),
         );

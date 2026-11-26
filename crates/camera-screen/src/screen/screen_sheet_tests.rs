@@ -34,16 +34,12 @@ fn enable_grid_and_return_to_menu(rig: &mut Rig) {
     assert_eq!(rig.screen.state().settings().grid, GridSetting::On);
 }
 
-/// Все скруглённые прямоугольники стекла: (размер px, запрошенный радиус px, центр y px).
-fn rounded_glass(list: &DrawList) -> Vec<(ui_draw::geometry::PxSize, f32, f32)> {
-    list.leaf_items()
-        .filter_map(|item| match item {
-            DrawItem::Glass(group) => Some(group),
-            _ => None,
-        })
-        .flat_map(|group| group.members.iter())
-        .filter_map(|member| match member.geometry {
-            ShapeGeometry::RoundedRect { size, corner } => Some((size, corner.radius_px, member.transform.ty)),
+/// Все скруглённые прямоугольники панелей (силуэты вместе с ободком): (размер px, запрошенный радиус px, центр y px).
+fn rounded_panels(list: &DrawList) -> Vec<(ui_draw::geometry::PxSize, f32, f32)> {
+    panel_members(list)
+        .into_iter()
+        .filter_map(|(geometry, _, ty)| match geometry {
+            ShapeGeometry::RoundedRect { size, corner } => Some((size, corner.radius_px, ty)),
             _ => None,
         })
         .collect()
@@ -72,10 +68,10 @@ fn open_sheet_sits_at_the_ios27_numbers_with_black_circles_and_a_handle() {
     // [measured: C t=30.0] рамка 430 × 464 pt, радиус 54 pt, низ на 8,6 pt выше низа экрана.
     let screen_height_pt = f64::from(HEIGHT_PX) * 440.0 / f64::from(WIDTH_PX);
     assert!((sheet.max_y() - (screen_height_pt - 8.6)).abs() < 1e-6, "{sheet:?}");
-    let glass = rounded_glass(&rig.last)
+    let glass = rounded_panels(&rig.last)
         .into_iter()
         .find(|(size, ..)| near(size.width, px(430.0), PX_TOLERANCE) && near(size.height, px(464.0), PX_TOLERANCE))
-        .expect("стекло шторки 430 × 464 pt");
+        .expect("поверхность шторки 430 × 464 pt");
     assert!(near(glass.1, px(54.0), PX_TOLERANCE), "радиус шторки {} px", glass.1);
     assert!(near(glass.2, px(sheet.center().y), PX_TOLERANCE));
 
@@ -196,7 +192,7 @@ fn sheet_appears_in_place_without_growing_out_of_the_menu_button() {
     rig.screen.handle_action(ScreenAction::ControlsMenuOpenRequested);
     // Через 32 мс шторка уже имеет конечный размер (растворение на месте), а не размер кнопки меню.
     rig.run(32);
-    let early = rounded_glass(&rig.last)
+    let early = rounded_panels(&rig.last)
         .into_iter()
         .find(|(size, ..)| size.width > px(100.0))
         .expect("шторка уже в списке рисования");
@@ -256,14 +252,21 @@ fn ev_text_is_two_lines_white_at_zero_and_yellow_when_changed() {
 fn mode_pill_is_a_light_capsule_with_a_thin_border_inside_the_mode_capsule() {
     let mut rig = Rig::new();
     rig.frame();
+    // Пилюля — светлая капсула с ободком; капсула режимов PHOTO тоже с ободком, но цвета поверхности (решение 297).
+    let surface = ui_kit::tokens::UiKitTokens::default().surface.fill_color;
     let pill = rig
         .last
         .leaf_items()
         .find_map(|item| match item {
-            DrawItem::Shape(shape) if shape.stroke.is_some() => match shape.geometry {
-                ShapeGeometry::Capsule { size } => Some((size, shape.clone())),
-                _ => None,
-            },
+            DrawItem::Shape(shape)
+                if shape.stroke.is_some()
+                    && (shape.fill.r, shape.fill.g, shape.fill.b) != (surface.r, surface.g, surface.b) =>
+            {
+                match shape.geometry {
+                    ShapeGeometry::Capsule { size } => Some((size, shape.clone())),
+                    _ => None,
+                }
+            }
             _ => None,
         })
         .expect("пилюля режима");
@@ -311,7 +314,7 @@ fn sheet_to_card_morph_starts_from_the_sheet_corner_radius() {
     // Пока морф только начался, ни одна рамка не может быть скруглена как круглая кнопка (≈ 200+ pt):
     // шторка 54 pt и карточка, растущая из неё, 54 → 52 pt [measured: C t=37.8–38.1].
     rig.run(32);
-    let early = rounded_glass(&rig.last);
+    let early = rounded_panels(&rig.last);
     assert!(
         early.len() >= 2,
         "в кадре и шторка, и растущая из неё карточка: {early:?}"
@@ -321,13 +324,13 @@ fn sheet_to_card_morph_starts_from_the_sheet_corner_radius() {
     }
 }
 
-/// Центры y (px) круга затвора (стекло Ø 80 pt) по кадрам до `until_ms` после действия.
+/// Центры y (px) круга затвора (кольцо Ø 80 pt) по кадрам до `until_ms` после действия.
 fn shutter_y_track(rig: &mut Rig, until_ms: i64) -> Vec<f32> {
     let end = rig.now_ms + until_ms;
     let mut track = Vec::new();
     while rig.now_ms < end {
         rig.run(FRAME_MS);
-        if let Some(y) = glass_members(&rig.last).into_iter().find_map(|(geometry, _, y)| {
+        if let Some(y) = element_members(&rig.last).into_iter().find_map(|(geometry, _, y)| {
             matches!(geometry, ShapeGeometry::Circle { diameter } if near(diameter, px(80.0), 3.0)).then_some(y)
         }) {
             track.push(y);

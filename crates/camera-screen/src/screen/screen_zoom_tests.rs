@@ -229,7 +229,7 @@ fn long_press_on_the_strip_opens_the_wheel_and_replaces_only_the_strip() {
     assert_eq!(text_count_of(&list, "PHOTO", TextRoleKind::ModeLabel), 1);
     let shutter = rig.shutter_center();
     assert!(
-        super::test_rig::glass_members(&list)
+        super::test_rig::element_members(&list)
             .iter()
             .any(|(_, x, y)| near(*x, px(shutter.x), 2.0) && near(*y, px(shutter.y), 2.0)),
         "затвор на месте"

@@ -169,7 +169,7 @@ fn the_capsule_keeps_the_measured_size_and_fades_the_neighbour_label_in_photo_an
     let photo_list = rig.run(3000).clone();
     assert_measured_capsule_with_faded_neighbour(&photo_list, ("PHOTO", "CALIBRATE"), "PHOTO");
     // Капсула и выбранная подпись стоят на измеренном x = 220 pt (середина экрана).
-    let capsule_x = glass_members(&photo_list)
+    let capsule_x = element_members(&photo_list)
         .into_iter()
         .find(|(shape, ..)| matches!(shape, ui_draw::shape::ShapeGeometry::Capsule { size } if size.height > px(40.0) && size.height < px(60.0)))
         .map(|(_, x, _)| x)

@@ -24,7 +24,7 @@ use shell_contract::clock::MonotonicNanos;
 use shell_contract::touch::{PointerId, SurfacePoint, TouchPhase, TouchSample};
 use ui_core::geometry::Point;
 use ui_core::time::MotionPreference;
-use ui_draw::draw_list::{DrawItem, DrawList};
+use ui_draw::draw_list::{DrawItem, DrawList, ShapeItem};
 use ui_draw::frame_source::{BackdropContinuity, UiFrameRequest};
 use ui_draw::geometry::PxSize;
 use ui_draw::icons::IconId;
@@ -284,34 +284,36 @@ impl ScreenDriver {
             .center()
     }
 
-    /// Центр последнего члена стекла-круга заданного диаметра в px (затвор Ø197, кнопка меню и миниатюра Ø≈118).
-    pub fn glass_circle_center_px(&self, diameter_px: f32) -> Option<(f32, f32)> {
+    /// Центр первого круга-элемента заданного диаметра (по силуэту) в px: затвор Ø197 (кольцо), кнопка меню и
+    /// миниатюра Ø≈118 (поверхности PHOTO с ободком). С 14p стекла у этих элементов нет (решения 297, 300).
+    pub fn element_circle_center_px(&self, diameter_px: f32) -> Option<(f32, f32)> {
         self.list().leaf_items().find_map(|item| match item {
-            DrawItem::Glass(group) => group.members.iter().find_map(|member| match member.geometry {
+            DrawItem::Shape(shape) if is_element_fill(shape) => match silhouette(shape) {
                 ShapeGeometry::Circle { diameter } if (diameter - diameter_px).abs() < 2.0 => {
-                    Some((member.transform.tx, member.transform.ty))
+                    Some((shape.transform.tx, shape.transform.ty))
                 }
                 _ => None,
-            }),
+            },
             _ => None,
         })
     }
 
-    /// Рамка стекла панели (первый член-скруглённый прямоугольник) в px: `(x0, y0, x1, y1)`.
-    pub fn glass_panel_rect_px(&self) -> Option<(f32, f32, f32, f32)> {
+    /// Рамка первой панели-поверхности PHOTO (скруглённый прямоугольник, силуэт вместе с ободком) в px:
+    /// `(x0, y0, x1, y1)`.
+    pub fn panel_rect_px(&self) -> Option<(f32, f32, f32, f32)> {
         self.list().leaf_items().find_map(|item| match item {
-            DrawItem::Glass(group) => group.members.iter().find_map(|member| match member.geometry {
+            DrawItem::Shape(shape) if is_element_fill(shape) => match silhouette(shape) {
                 ShapeGeometry::RoundedRect { size, .. } => {
                     let (half_width, half_height) = (size.width * 0.5, size.height * 0.5);
                     Some((
-                        member.transform.tx - half_width,
-                        member.transform.ty - half_height,
-                        member.transform.tx + half_width,
-                        member.transform.ty + half_height,
+                        shape.transform.tx - half_width,
+                        shape.transform.ty - half_height,
+                        shape.transform.tx + half_width,
+                        shape.transform.ty + half_height,
                     ))
                 }
                 _ => None,
-            }),
+            },
             _ => None,
         })
     }
@@ -322,5 +324,37 @@ impl ScreenDriver {
             DrawItem::Icon(item) if item.icon == icon => Some((item.transform.tx, item.transform.ty)),
             _ => None,
         })
+    }
+}
+
+/// Элемент интерфейса, а не прочая фигура: поверхность панели (цвет поверхности из токенов) или кольцо затвора.
+fn is_element_fill(shape: &ShapeItem) -> bool {
+    let tokens = UiKitTokens::default();
+    let surface = tokens.surface.fill_color;
+    (shape.fill.r, shape.fill.g, shape.fill.b) == (surface.r, surface.g, surface.b)
+        || shape.fill == tokens.shutter.ring_fill
+}
+
+/// Силуэт фигуры: у поверхности с ободком и у кольца затвора линия лежит внутри силуэта (фигура ужата на её
+/// толщину), поэтому полный размер = форма + толщина линии.
+pub fn silhouette(shape: &ShapeItem) -> ShapeGeometry {
+    let Some(stroke) = shape.stroke else {
+        return shape.geometry;
+    };
+    let grow = stroke.width_px;
+    match shape.geometry {
+        ShapeGeometry::Circle { diameter } => ShapeGeometry::Circle {
+            diameter: diameter + grow,
+        },
+        ShapeGeometry::Capsule { size } => ShapeGeometry::Capsule {
+            size: PxSize::new(size.width + grow, size.height + grow),
+        },
+        ShapeGeometry::RoundedRect { size, corner } => ShapeGeometry::RoundedRect {
+            size: PxSize::new(size.width + grow, size.height + grow),
+            corner: ui_draw::shape::CornerSpec {
+                radius_px: corner.radius_px + 0.5 * grow,
+                ..corner
+            },
+        },
     }
 }

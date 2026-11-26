@@ -22,7 +22,6 @@ use ui_draw::draw_list::{DrawItem, DrawList, ImageSource};
 use ui_draw::frame_source::{BackdropContinuity, UiFrameRequest};
 use ui_draw::geometry::{PxRect, PxSize};
 use ui_draw::light::LightDirection;
-use ui_kit::tokens::UiKitTokens;
 
 use super::catalog::DisplayScreen;
 use super::inputs::ProductInputs;
@@ -154,8 +153,12 @@ fn build_scene(
     which: DisplayScreen,
 ) -> Result<ScreenScene, ScreenPlanError> {
     let px_per_pt = pixels_per_point(surface.width)?;
-    let screen = CameraScreen::new(inputs.screen_config.clone(), UiKitTokens::default(), inputs.motion)
-        .map_err(|error| ScreenPlanError::ScreenBuild(error.to_string()))?;
+    let screen = CameraScreen::new(
+        inputs.screen_config.clone(),
+        inputs.screen_tokens.clone(),
+        inputs.motion,
+    )
+    .map_err(|error| ScreenPlanError::ScreenBuild(error.to_string()))?;
     let mut driver = FrameDriver {
         screen,
         now_ms: 0,

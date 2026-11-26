@@ -29,10 +29,9 @@ use ui_core::gesture::{GestureData, GestureEvent, GestureState, LongPressSpec, R
 use ui_core::id::NodeId;
 use ui_core::time::MonotonicNanos;
 use ui_draw::color::Opacity;
-use ui_draw::draw_list::DrawItem;
 use ui_draw::scene_bridge::NodePlacementPx;
 use ui_draw::transform::Affine2;
-use ui_kit::tokens::{GlassRole, TextRoleKind};
+use ui_kit::tokens::TextRoleKind;
 use ui_kit::view::{GlassShape, centered_text, opacity_of_placement};
 
 use super::button::{ButtonEvent, PressButton};
@@ -43,7 +42,7 @@ use super::layers::{DrawLayers, Layer, VisualIndex};
 use super::shutter_row::ShutterRowPose;
 use super::text_runs::TextRuns;
 use super::white_attention::WhiteAttention;
-use super::{Ctx, Outputs, rotation_only, single_member_group};
+use super::{Ctx, Outputs, PHOTO_SURFACE_MATERIAL, rotation_only, single_member_material};
 use crate::action::ScreenAction;
 use crate::white_display::{kelvin_text, number_is_manual, white_unit_label};
 
@@ -142,24 +141,24 @@ impl WhiteButtonWidget {
         if placement.opacity <= 0.0 {
             return Ok(());
         }
-        // Тряска сдвигает всю кнопку в её осях (вместе с поворотом устройства): стекло и число вместе.
+        // Тряска сдвигает всю кнопку в её осях (вместе с поворотом устройства): круг и число вместе.
         // Поворот содержимого считается от неподвижной рамки, иначе обратное преобразование съело бы тряску.
         let resting_placement = placement;
         let shake = Affine2::translate(ctx.px.px(self.attention.offset_x_pt(ctx.now)), 0.0);
         placement.transform = shake.then(placement.transform);
-        let (group, host) = single_member_group(
+        let (backing, host) = single_member_material(
             ctx,
-            GlassRole::Button,
+            PHOTO_SURFACE_MATERIAL,
             GlassShape::Circle,
             &placement,
             self.button.press_state(ctx.now),
             "white_button",
         )?;
-        layers.push(Layer::Glass, DrawItem::Glass(group));
+        layers.push(Layer::Glass, backing);
         let Some(content_placement) = visuals.placement(self.content) else {
             return Ok(());
         };
-        // Мерцает только число (WB32): стекло неподвижно, кнопка не выглядит исчезающей.
+        // Мерцает только число (WB32): круг неподвижен, кнопка не выглядит исчезающей.
         let content_placement = NodePlacementPx {
             opacity: content_placement.opacity * self.attention.opacity(ctx.now),
             ..content_placement

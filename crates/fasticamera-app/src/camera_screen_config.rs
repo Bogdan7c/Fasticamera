@@ -13,6 +13,7 @@ use std::time::Duration;
 use camera_screen::{ScreenConfig, ScreenConfigError};
 use serde::{Deserialize, Serialize};
 use ui_core::time::MotionPreference;
+use ui_kit::tokens::{TokenError, UiKitTokens};
 
 use crate::camera_screen_capture::FakeCaptureTiming;
 use crate::look_facts::{BandSwatchStyle, BandSwatchStyleError};
@@ -112,6 +113,9 @@ pub struct CameraScreenConfig {
     pub band_swatch: BandSwatchStyle,
     /// Вид ободка колёс цвета в разделе калибровки (число стопов, светлота, цветность; считает приложение).
     pub wheel_ring: WheelRingStyle,
+    /// Токены элементов `ui-kit` (поверхность панелей, ободок, стекло завесы, движение…) — подбор на телефоне без
+    /// пересборки (решения 263, 301). Частичная секция допустима: не названные числа берутся по умолчанию.
+    pub tokens: UiKitTokens,
 }
 
 impl Default for CameraScreenConfig {
@@ -129,6 +133,7 @@ impl Default for CameraScreenConfig {
             report_min_interval_ms: 50,
             band_swatch: BandSwatchStyle::default(),
             wheel_ring: WheelRingStyle::default(),
+            tokens: UiKitTokens::default(),
         }
     }
 }
@@ -160,6 +165,8 @@ pub enum CameraScreenConfigError {
     WheelRing(#[from] WheelRingStyleError),
     #[error("camera_screen.screen: {0}")]
     Screen(#[from] ScreenConfigError),
+    #[error("camera_screen.tokens: {0}")]
+    Tokens(#[from] TokenError),
 }
 
 impl CameraScreenConfig {
@@ -199,6 +206,7 @@ impl CameraScreenConfig {
         self.band_swatch.validate()?;
         self.wheel_ring.validate()?;
         self.screen.validate()?;
+        self.tokens.validate()?;
         Ok(())
     }
 

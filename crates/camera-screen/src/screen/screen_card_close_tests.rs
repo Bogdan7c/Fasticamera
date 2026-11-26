@@ -41,16 +41,11 @@ fn text_y(list: &DrawList, text: &str, role: TextRoleKind) -> Option<f32> {
     })
 }
 
-/// Центр по y (px) кольца затвора: стеклянный круг Ø > 150 px.
+/// Центр по y (px) кольца затвора (своя фигура без стекла, решение 300).
 fn shutter_ring_y(list: &DrawList) -> f32 {
-    list.leaf_items()
-        .find_map(|item| match item {
-            DrawItem::Glass(group) => group.members.iter().find_map(|member| match member.geometry {
-                ShapeGeometry::Circle { diameter } if diameter > 150.0 => Some(member.transform.ty),
-                _ => None,
-            }),
-            _ => None,
-        })
+    shutter_rings(list)
+        .first()
+        .map(|ring| ring.transform.ty)
         .expect("кольцо затвора в списке рисования")
 }
 
@@ -113,21 +108,20 @@ fn a_card_opened_from_the_icon_while_a_menu_card_is_closing_appears_in_place_at_
     assert_eq!(rig.screen.state().panel(), PanelState::ExposurePanel);
     assert!(!rig.screen.state().card_returns_to_menu(), "теперь карточка со значка");
 
-    // С первого же кадра стекло карточки стоит на своём месте и в своём размере (проявление на месте),
+    // С первого же кадра поверхность карточки стоит на своём месте и в своём размере (проявление на месте),
     // а не продолжает путь шторка → карточка.
     let card = rig.rect_with(|g| g.card());
-    let on_target = rig.last.leaf_items().any(|item| match item {
-        DrawItem::Glass(group) => group.members.iter().any(|member| match member.geometry {
+    let on_target = panel_members(&rig.last)
+        .into_iter()
+        .any(|(geometry, _, ty)| match geometry {
             ShapeGeometry::RoundedRect { size, .. } => {
                 near(size.width, px(card.size.width), PX_TOLERANCE)
                     && near(size.height, px(card.size.height), PX_TOLERANCE)
-                    && near(member.transform.ty, px(card.center().y), PX_TOLERANCE)
+                    && near(ty, px(card.center().y), PX_TOLERANCE)
             }
             _ => false,
-        }),
-        _ => false,
-    });
-    assert!(on_target, "стекло карточки не на цели с первого кадра");
+        });
+    assert!(on_target, "поверхность карточки не на цели с первого кадра");
 }
 
 #[test]

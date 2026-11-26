@@ -28,12 +28,11 @@ use ui_core::gesture::{GestureEvent, PanDirection, PanSpec, RecognizerSpec};
 use ui_core::id::NodeId;
 use ui_core::time::{MonotonicNanos, MotionPreference};
 use ui_draw::color::Opacity;
-use ui_draw::draw_list::DrawItem;
 use ui_draw::icons::IconId;
 use ui_draw::transform::Affine2;
 use ui_kit::panel_morph::{PanelMorph, PanelMorphSpec, PanelPhase};
-use ui_kit::tokens::{GlassRole, MotionToken, TextRoleKind};
-use ui_kit::view::{centered_text, panel_glass_group};
+use ui_kit::tokens::{MotionToken, TextRoleKind};
+use ui_kit::view::{centered_text, panel_material_hosted};
 
 use super::button::ButtonEvent;
 use super::chip_row::RowPaint;
@@ -51,7 +50,7 @@ use super::tool_card_options::OptionRow;
 use super::tool_card_styles::{StylesRow, active_preset_name, styles_have_edits};
 use super::white_card::WhiteCardWidget;
 use super::white_card_site::WhiteCardSite;
-use super::{Ctx, Outputs};
+use super::{Ctx, Outputs, PHOTO_SURFACE_MATERIAL};
 use crate::action::ScreenAction;
 use crate::settings::CaptureSettings;
 use crate::tools::ToolId;
@@ -464,13 +463,10 @@ impl ToolCardWidget {
             return Ok(());
         }
         snapshot.frame = self.lifted_frame(snapshot.frame);
+        // Карточка — поверхность PHOTO с ободком (решение 297); появление растит плотность (решение 270).
         layers.push(
             Layer::Glass,
-            DrawItem::Glass(panel_glass_group(
-                &snapshot,
-                ctx.tokens.glass.style_for(GlassRole::Panel),
-                ctx.px,
-            )?),
+            panel_material_hosted(&snapshot, ctx.tokens, PHOTO_SURFACE_MATERIAL, ctx.px, Affine2::IDENTITY)?,
         );
         let alpha = snapshot.content_opacity.clamp(0.0, 1.0);
         if alpha <= 0.0 {

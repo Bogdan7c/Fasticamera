@@ -10,7 +10,6 @@ use crate::camera_screen_config::CameraScreenConfig;
 use crate::look_service::LookHandle;
 use crate::look_startup::catalog_environment;
 use crate::saturation_bench::catalog::DisplayScreen;
-use crate::saturation_bench::glass_ablation::{GlassStyleAblation, GlassSubset};
 use crate::saturation_bench::inputs::{InputSources, gather_inputs};
 use crate::saturation_bench::screen_scene::{ScreenPlan, SurfaceSizePx, summarize};
 
@@ -103,8 +102,13 @@ fn single_kind_filters_keep_only_their_kind_with_the_real_screen_counts() {
 
 #[test]
 fn no_glass_drops_only_glass_and_keeps_the_order_of_the_rest() {
-    // После 14m стекло есть только у PHOTO (в CALIBRATE его нет), поэтому проверяем на списке PHOTO.
-    let list = photo_list();
+    // После 14p стекла нет ни на одном экране в покое: к настоящему списку PHOTO подмешаны две группы стекла
+    // (посередине и в конце), фильтр обязан убрать ровно их.
+    let mut list = photo_list();
+    let mut glass = crate::saturation_bench::test_glass::two_glass_panels().into_iter();
+    let middle = list.items.len() / 2;
+    list.items.insert(middle, glass.next().expect("первая группа"));
+    list.items.extend(glass);
     let without = DrawFilter::NoGlass.apply(&list);
     let expected: Vec<&DrawItem> = list
         .leaf_items()
@@ -177,117 +181,4 @@ fn filter_applies_inside_clip_groups_and_keeps_the_group_rect() {
     // Сводка считает листья внутри групп.
     let summary = summarize(&nested, SurfaceSizePx::ONEPLUS_11);
     assert_eq!((summary.shapes, summary.icons), (2, 1));
-}
-
-// ---- Абляции свойств стекла (пакет G3): настоящий список PHOTO (в CALIBRATE стекла нет), результат — параметры групп. ----
-
-fn glass_groups(list: &DrawList) -> Vec<&ui_draw::draw_list::GlassGroupItem> {
-    list.leaf_items()
-        .filter_map(|item| match item {
-            DrawItem::Glass(group) => Some(group),
-            _ => None,
-        })
-        .collect()
-}
-
-fn ablated(subset: GlassSubset, style: GlassStyleAblation) -> DrawList {
-    DrawFilter::GlassAblated { subset, style }.apply(&photo_list())
-}
-
-#[test]
-fn glass_ablation_with_product_style_equals_glass_only() {
-    let list = photo_list();
-    assert_eq!(
-        DrawFilter::GlassAblated {
-            subset: GlassSubset::All,
-            style: GlassStyleAblation::Product
-        }
-        .apply(&list),
-        DrawFilter::GlassOnly.apply(&list)
-    );
-}
-
-#[test]
-fn glass_subsets_split_the_groups_into_the_largest_panel_and_the_rest() {
-    let list = photo_list();
-    let all = glass_groups(&DrawFilter::GlassOnly.apply(&list)).len();
-    assert!(all >= 2, "в CALIBRATE несколько групп стекла: {all}");
-    let panel = ablated(GlassSubset::LargestOnly, GlassStyleAblation::Product);
-    let rest = ablated(GlassSubset::WithoutLargest, GlassStyleAblation::Product);
-    let panel_groups = glass_groups(&panel);
-    assert_eq!(panel_groups.len(), 1);
-    assert_eq!(glass_groups(&rest).len(), all - 1);
-    let area = |group: &ui_draw::draw_list::GlassGroupItem| {
-        let rect = group.draw_rect_px().expect("область рисования");
-        rect.size.width * rect.size.height
-    };
-    let panel_area = area(panel_groups[0]);
-    assert!(
-        glass_groups(&rest).iter().all(|group| area(group) <= panel_area),
-        "панель — самая большая"
-    );
-}
-
-#[test]
-fn glass_style_ablations_change_exactly_their_own_properties() {
-    let product = photo_list();
-    let product_groups = glass_groups(&product);
-    let no_tone = ablated(GlassSubset::All, GlassStyleAblation::NoToneAndDimming);
-    for (before, after) in product_groups.iter().zip(glass_groups(&no_tone)) {
-        assert_eq!(after.params.dimming.max_alpha, 0.0);
-        assert_eq!(after.params.tint_alpha_at_full, 0.0);
-        assert_eq!(
-            after.params.refraction_strength_px,
-            before.params.refraction_strength_px
-        );
-        assert_eq!(after.members, before.members);
-    }
-    let floor = ablated(GlassSubset::All, GlassStyleAblation::Floor);
-    for (before, after) in product_groups.iter().zip(glass_groups(&floor)) {
-        let params = &after.params;
-        assert_eq!(
-            (
-                params.refraction_strength_px,
-                params.dispersion,
-                params.shadow.alpha,
-                params.saturation
-            ),
-            (0.0, 0.0, 0.0, 1.0)
-        );
-        // Размытие целого уровня: радиус 1,5 · 2^k.
-        let level = (params.blur_radius_px / 1.5).log2();
-        assert!((level - level.round()).abs() < 1e-5, "целый уровень, а не {level}");
-        assert!(before.params.blur_radius_px > 0.0);
-    }
-    let sharp = ablated(GlassSubset::All, GlassStyleAblation::FloorSharp);
-    assert!(
-        glass_groups(&sharp)
-            .iter()
-            .all(|group| group.params.blur_radius_px == 0.0)
-    );
-}
-
-#[test]
-fn every_glass_ablation_stays_a_valid_list_with_the_same_light() {
-    let list = photo_list();
-    for style in [
-        GlassStyleAblation::NoToneAndDimming,
-        GlassStyleAblation::NoRefraction,
-        GlassStyleAblation::WholeBlurLevel,
-        GlassStyleAblation::NoShadow,
-        GlassStyleAblation::NoFinishing,
-        GlassStyleAblation::Floor,
-        GlassStyleAblation::FloorSharp,
-    ] {
-        let filtered = DrawFilter::GlassAblated {
-            subset: GlassSubset::All,
-            style,
-        }
-        .apply(&list);
-        filtered
-            .validate()
-            .unwrap_or_else(|error| panic!("{style:?}: список невалиден: {error}"));
-        assert_eq!(filtered.light, list.light);
-        assert!(filtered.items.iter().all(|item| matches!(item, DrawItem::Glass(_))));
-    }
 }

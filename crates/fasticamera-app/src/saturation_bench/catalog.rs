@@ -6,13 +6,11 @@
 use serde::Serialize;
 
 use super::draw_filter::DrawFilter;
-use super::glass_ablation::{GlassStyleAblation, GlassSubset};
 use super::headroom_tuning::HeadroomExperiment;
 use super::still_variant::StillTuning;
 use super::viewfinder_tuning::{AwbSchedule, ViewfinderTuning};
 
 mod baseline;
-mod glass_ablation;
 mod isp_ablation;
 mod isp_tuning;
 mod scopes_ablation;
@@ -139,8 +137,6 @@ pub enum WorkloadGroup {
     ScopesAblation,
     /// Опыты над слитым проходом видоискателя (группы, чтение RAW, сведение AWB).
     IspTuning,
-    /// Абляции свойств стекла (пакет G3): что из цены стекла чем занято.
-    GlassAblation,
     /// Опыты над цепочкой V4 «запас под видео»: форма группы, пробы вместо Menon, отключённые стадии вывода.
     V4Tuning,
     /// Опыты над проявлением снимка (пакет P): высота полосы, форма рабочей группы.
@@ -149,13 +145,12 @@ pub enum WorkloadGroup {
 
 impl WorkloadGroup {
     /// Все группы.
-    pub const ALL: [WorkloadGroup; 8] = [
+    pub const ALL: [WorkloadGroup; 7] = [
         Self::Baseline,
         Self::UiAblation,
         Self::IspAblation,
         Self::ScopesAblation,
         Self::IspTuning,
-        Self::GlassAblation,
         Self::V4Tuning,
         Self::StillTuning,
     ];
@@ -168,7 +163,6 @@ impl WorkloadGroup {
             Self::IspAblation => "isp_ablation",
             Self::ScopesAblation => "scopes_ablation",
             Self::IspTuning => "isp_tuning",
-            Self::GlassAblation => "glass_ablation",
             Self::V4Tuning => "v4_tuning",
             Self::StillTuning => "still_tuning",
         }
@@ -245,10 +239,6 @@ const fn ablated_display(screen: DisplayScreen, filter: DrawFilter) -> WorkloadK
         filter,
     }
 }
-/// Кадр показа только со стеклом: группы выбраны `subset`, стиль изменён `style` (абляции свойств стекла).
-const fn glass_ablated(screen: DisplayScreen, subset: GlassSubset, style: GlassStyleAblation) -> WorkloadKind {
-    ablated_display(screen, DrawFilter::GlassAblated { subset, style })
-}
 
 const fn viewfinder(variant: ViewfinderVariant) -> WorkloadKind {
     WorkloadKind::Viewfinder { variant }
@@ -265,13 +255,12 @@ const fn without(stage: AblatedStage) -> WorkloadKind {
 /// Все работы стенда в порядке прогона по умолчанию.
 /// Таблицы групп в порядке каталога. Строки каждой группы лежат в своём модуле (`catalog/<группа>.rs`): каталог
 /// растёт с каждым опытом, а один файл на все группы перерос предел размера модуля.
-const GROUP_TABLES: [&[CatalogEntry]; 8] = [
+const GROUP_TABLES: [&[CatalogEntry]; 7] = [
     baseline::ENTRIES,
     ui_ablation::ENTRIES,
     isp_ablation::ENTRIES,
     scopes_ablation::ENTRIES,
     isp_tuning::ENTRIES,
-    glass_ablation::ENTRIES,
     v4_tuning::ENTRIES,
     still_tuning::ENTRIES,
 ];

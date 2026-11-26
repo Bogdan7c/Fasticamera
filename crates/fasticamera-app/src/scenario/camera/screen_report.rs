@@ -22,7 +22,9 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::detail::to_value;
-use super::glass_report::{OverlayWindow, UiGpuBudget, WarmupReport, gpu_time_violations, overlay_violations};
+use super::glass_report::{
+    BackdropBlurExpectation, OverlayWindow, UiGpuBudget, WarmupReport, gpu_time_violations, overlay_violations,
+};
 use super::screen_runner::StepRecord;
 use super::viewfinder_metrics::round2;
 use super::viewfinder_smoke_report::{ViewfinderSmokeObservation, evaluate_viewfinder_under_touch_load};
@@ -144,7 +146,8 @@ pub fn evaluate_screen(smoke: &ViewfinderSmokeConfig, observation: &ScreenObserv
     let mut violations = plan_violations(observation);
     violations.extend(counter_violations(&observation.screen));
     violations.extend(overlay_source_violations(&observation.overlay));
-    violations.extend(overlay_violations(&observation.overlay));
+    // Экран PHOTO без стекла (решение 297): пирамида размытия в окне замера не обязана строиться.
+    violations.extend(overlay_violations(&observation.overlay, BackdropBlurExpectation::NotRequired));
     violations.extend(gpu_time_violations(&observation.overlay, &observation.budget));
     violations.extend(
         // Под касаниями переполнения буфера — только число в отчёте (решение 105).

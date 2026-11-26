@@ -4,7 +4,7 @@ use shell_contract::clock::MonotonicNanos;
 use shell_contract::touch::{PointerId, SurfacePoint, TouchPhase, TouchSample};
 use ui_core::geometry::Point;
 use ui_core::time::MotionPreference;
-use ui_draw::draw_list::{DrawItem, DrawList};
+use ui_draw::draw_list::{DrawItem, DrawList, ShapeItem};
 use ui_draw::frame_source::{BackdropContinuity, UiFrameRequest};
 use ui_draw::geometry::PxSize;
 use ui_draw::icons::IconId;
@@ -226,7 +226,7 @@ pub(super) fn raised_shutter(geometry: &crate::widget::geometry::ScreenGeometry)
     )
 }
 
-/// Центры членов стекла (px) и их форма.
+/// Центры членов стекла (px) и их форма. С 14p стекло в камере — только завеса перехода (решение 299).
 pub(super) fn glass_members(list: &DrawList) -> Vec<(ShapeGeometry, f32, f32)> {
     list.leaf_items()
         .filter_map(|item| match item {
@@ -242,17 +242,99 @@ pub(super) fn glass_members(list: &DrawList) -> Vec<(ShapeGeometry, f32, f32)> {
         .collect()
 }
 
-/// Формы и центры (px) панелей любого материала: члены стекла и поверхности без стекла (14m). Поверхность
-/// узнаётся по цвету заливки из токенов: только ею закрашивает панели раздел калибровки.
-pub(super) fn panel_members(list: &DrawList) -> Vec<(ShapeGeometry, f32, f32)> {
+/// Фигуры-поверхности панелей любого экрана (14m, 14p): заливка цветом поверхности из токенов. Только ею
+/// закрашены панели раздела и PHOTO; у PHOTO к ней добавлен ободок (решение 297).
+pub(super) fn surface_shapes(list: &DrawList) -> Vec<&ShapeItem> {
     let surface = UiKitTokens::default().surface.fill_color;
+    list.leaf_items()
+        .filter_map(|item| match item {
+            DrawItem::Shape(shape)
+                if (shape.fill.r, shape.fill.g, shape.fill.b) == (surface.r, surface.g, surface.b) =>
+            {
+                Some(shape)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Есть ли у поверхности ободок PHOTO (решение 297): линия цвета ободка из токенов.
+pub(super) fn has_photo_edge(shape: &ShapeItem) -> bool {
+    let edge = UiKitTokens::default().surface.edge.color;
+    shape
+        .stroke
+        .is_some_and(|stroke| (stroke.color.r, stroke.color.g, stroke.color.b) == (edge.r, edge.g, edge.b))
+}
+
+/// Силуэт фигуры: форма вместе с линией. Ободок поверхности и кольца затвора лежит внутри силуэта (фигура
+/// ужата на толщину линии), поэтому полный размер элемента = форма + толщина линии; без линии — сама форма.
+pub(super) fn silhouette(shape: &ShapeItem) -> ShapeGeometry {
+    let Some(stroke) = shape.stroke else {
+        return shape.geometry;
+    };
+    let grow = stroke.width_px;
+    match shape.geometry {
+        ShapeGeometry::Circle { diameter } => ShapeGeometry::Circle {
+            diameter: diameter + grow,
+        },
+        ShapeGeometry::Capsule { size } => ShapeGeometry::Capsule {
+            size: PxSize::new(size.width + grow, size.height + grow),
+        },
+        ShapeGeometry::RoundedRect { size, corner } => ShapeGeometry::RoundedRect {
+            size: PxSize::new(size.width + grow, size.height + grow),
+            corner: ui_draw::shape::CornerSpec {
+                radius_px: corner.radius_px + 0.5 * grow,
+                ..corner
+            },
+        },
+    }
+}
+
+/// Формы (силуэты) и центры (px) панелей любого материала: члены стекла и поверхности без стекла (14m, 14p).
+pub(super) fn panel_members(list: &DrawList) -> Vec<(ShapeGeometry, f32, f32)> {
     let mut members = glass_members(list);
-    members.extend(list.leaf_items().filter_map(|item| match item {
-        DrawItem::Shape(shape) if (shape.fill.r, shape.fill.g, shape.fill.b) == (surface.r, surface.g, surface.b) => {
-            Some((shape.geometry, shape.transform.tx, shape.transform.ty))
+    members.extend(
+        surface_shapes(list)
+            .into_iter()
+            .map(|shape| (silhouette(shape), shape.transform.tx, shape.transform.ty)),
+    );
+    members
+}
+
+/// Поверхность PHOTO с ободком, если элемент — она (фигура цвета поверхности с линией ободка).
+pub(super) fn photo_surface_of(item: &DrawItem) -> Option<&ShapeItem> {
+    let surface = UiKitTokens::default().surface.fill_color;
+    match item {
+        DrawItem::Shape(shape)
+            if (shape.fill.r, shape.fill.g, shape.fill.b) == (surface.r, surface.g, surface.b)
+                && has_photo_edge(shape) =>
+        {
+            Some(shape)
         }
         _ => None,
-    }));
+    }
+}
+
+/// Кольцо затвора: фигура с заливкой кольца из токенов (решение 300: стекла под ним нет).
+pub(super) fn shutter_rings(list: &DrawList) -> Vec<&ShapeItem> {
+    let ring_fill = UiKitTokens::default().shutter.ring_fill;
+    list.leaf_items()
+        .filter_map(|item| match item {
+            DrawItem::Shape(shape) if shape.fill == ring_fill => Some(shape),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Силуэты и центры (px) всего, что до 14p было членами стекла: панели любого материала и кольцо затвора.
+/// Позволяет проверять раскладку и движение элементов, не завязываясь на материал.
+pub(super) fn element_members(list: &DrawList) -> Vec<(ShapeGeometry, f32, f32)> {
+    let mut members = panel_members(list);
+    members.extend(
+        shutter_rings(list)
+            .into_iter()
+            .map(|ring| (silhouette(ring), ring.transform.tx, ring.transform.ty)),
+    );
     members
 }
 
@@ -363,14 +445,21 @@ pub(super) fn icons_of(list: &DrawList, icon: IconId) -> Vec<ui_draw::draw_list:
         .collect()
 }
 
-/// Размер (px) пилюли выбранного режима: единственная капсула-фигура с ободком (капсула-стекло — не фигура).
+/// Размер (px) пилюли выбранного режима: единственная светлая капсула-фигура с ободком. Капсула режимов
+/// PHOTO — тоже фигура с ободком (решение 297), но закрашена цветом поверхности, поэтому не в счёт.
 pub(super) fn mode_pill_size_px(list: &DrawList) -> (f32, f32) {
+    let surface = UiKitTokens::default().surface.fill_color;
     list.leaf_items()
         .find_map(|item| match item {
-            DrawItem::Shape(shape) if shape.stroke.is_some() => match shape.geometry {
-                ShapeGeometry::Capsule { size } => Some((size.width, size.height)),
-                _ => None,
-            },
+            DrawItem::Shape(shape)
+                if shape.stroke.is_some()
+                    && (shape.fill.r, shape.fill.g, shape.fill.b) != (surface.r, surface.g, surface.b) =>
+            {
+                match shape.geometry {
+                    ShapeGeometry::Capsule { size } => Some((size.width, size.height)),
+                    _ => None,
+                }
+            }
             _ => None,
         })
         .expect("пилюля режима в списке рисования")

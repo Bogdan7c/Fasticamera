@@ -7,7 +7,7 @@
 //! * [`MotionTokens`] — именованные пружины и сборка конфигов прокрутки по роли;
 //! * [`HapticTable`] — таблица «событие → хаптика»;
 //! * [`GlassTokens`] — пресеты материала стекла «кнопка» и «панель»;
-//! * [`SurfaceTokens`] — тёмная полупрозрачная поверхность без стекла (раздел калибровки, 14m);
+//! * [`SurfaceTokens`] — тёмная полупрозрачная поверхность без стекла (раздел калибровки 14m, PHOTO с ободком 14p);
 //! * [`DensityTokens`] — pt на единицу шкалы, радиус магнита, промежуток карусели;
 //! * [`TypographyTokens`] — роли текста (начертание, кегль, трекинг, цифры);
 //! * [`ColorTokens`] — цвета фокуса, плашки, текста, затемнения;
@@ -50,7 +50,7 @@ pub use motion::{MotionToken, MotionTokens, SnapRole, SpringToken};
 pub use points_per_unit::PointsPerUnit;
 pub use ruler::RulerTokens;
 pub use scale_view::ScaleTickTokens;
-pub use surface::{PanelMaterial, SurfaceRole, SurfaceTokens};
+pub use surface::{PanelMaterial, SurfaceEdge, SurfaceEdgeTokens, SurfaceRole, SurfaceTokens};
 pub use typography::{DigitStyle, TextRole, TextRoleKind, TextWeight, Tracking, TypographyTokens};
 
 /// Все токены элементов. Владелец — экран; элементы берут из него копии нужных чисел при создании.
@@ -63,7 +63,7 @@ pub struct UiKitTokens {
     /// Ограничитель частоты вибраций (колесо и щипок зума).
     pub haptic_throttle: HapticThrottleTokens,
     pub glass: GlassTokens,
-    /// Поверхность панелей раздела без стекла (14m, решение 263).
+    /// Поверхность панелей без стекла (14m, решение 263; PHOTO с ободком — 14p, решение 297).
     pub surface: SurfaceTokens,
     pub typography: TypographyTokens,
     pub colors: ColorTokens,

@@ -22,7 +22,7 @@ use super::capsule_handover::{ArrivingHome, CapsuleHandover};
 use super::diagnostics::GestureCounters;
 use super::retired_gestures::{RetiredGestureReport, RetiredGestures};
 use crate::action::ScreenAction;
-use crate::widget::PHOTO_BUTTON_MATERIAL;
+use crate::widget::PHOTO_SURFACE_MATERIAL;
 use crate::widget::calibration::{CalibrationSection, MenuButtonDrawing, SectionKey};
 use crate::widget::capture_blink::CaptureBlinkWidget;
 use crate::widget::controls_drawer::ControlsDrawerWidget;
@@ -527,19 +527,20 @@ impl Stage {
                 &visuals,
                 &mut layers,
                 self.drawer.source_opacity(ctx.now),
-                PHOTO_BUTTON_MATERIAL,
+                PHOTO_SURFACE_MATERIAL,
             )?,
         }
         self.white_button.draw(ctx, &visuals, &mut layers, &mut self.texts)?;
-        self.carousel.draw(ctx, &visuals, &mut layers, PHOTO_BUTTON_MATERIAL)?;
+        self.carousel.draw(ctx, &visuals, &mut layers, PHOTO_SURFACE_MATERIAL)?;
         self.top_bar.draw(ctx, &visuals, &mut layers, &mut self.texts)?;
         CountdownWidget::draw(ctx, &mut layers, &mut self.texts)?;
         UnavailableNoticeWidget::draw(ctx, &mut layers, &mut self.texts)?;
-        // Общий принцип: любая панель со стеклом (шторка меню, нижняя карточка) лежит над нижней зоной, и
-        // миниатюра, капсула, кнопка меню не рисуются поверх её стекла ни при каких размерах и анимациях.
-        // Каждая панель собирается отдельным набором слоёв и кладётся сверху; карточка — последней, над
-        // шторкой, и её содержимое идёт после её стекла. Затвор рисуется в общем ряду, а не панелью:
-        // над карточкой он стоит выше её рамки (поднят), поэтому стекло карточки его не накрывает.
+        // Общий принцип: любая панель (шторка меню, нижняя карточка) лежит над нижней зоной, и миниатюра,
+        // капсула, кнопка меню не рисуются поверх неё ни при каких размерах и анимациях (под полупрозрачной
+        // поверхностью они к тому же растворяются, `is_bottom_row_hidden`). Каждая панель собирается отдельным
+        // набором слоёв и кладётся сверху; карточка — последней, над шторкой, и её содержимое идёт после её
+        // поверхности. Затвор рисуется в общем ряду, а не панелью: над карточкой он стоит выше её рамки
+        // (поднят), поэтому карточка его не накрывает.
         let mut drawer_layers = DrawLayers::default();
         self.drawer.draw(
             ctx,

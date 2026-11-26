@@ -1,9 +1,10 @@
-//! Поверхность панели без стекла: тёмная полупрозрачная заливка (14m, решения 263 и 270).
+//! Поверхность панели без стекла: тёмная полупрозрачная заливка (14m, решения 263 и 270; 14p, решение 297).
 //!
-//! В разделе калибровки панели не берут фон кадра в размытие и линзу: это дешёвая закраска цветом
-//! с плотностью (непрозрачностью). Пирамида размытия для такого кадра не строится вовсе.
-//! `ui-kit` не знает слова «прибор»: роль [`SurfaceRole::Backing`] — просто «подложка плотнее панели»,
-//! под данными, которые нельзя терять на ярком фоне.
+//! Панели не берут фон кадра в размытие и линзу: это дешёвая закраска цветом с плотностью
+//! (непрозрачностью). Пирамида размытия для такого кадра не строится вовсе.
+//! `ui-kit` не знает слов «прибор» и «чёрная полоса»: роль [`SurfaceRole::Backing`] — просто «подложка
+//! плотнее панели» под данными, роль [`SurfaceRole::EdgedPanel`] — «панель с тонким светлым ободком»,
+//! чей силуэт читается и там, где за ней чёрный фон.
 
 use serde::{Deserialize, Serialize};
 use ui_draw::color::DisplayColor;
@@ -11,27 +12,56 @@ use ui_draw::color::DisplayColor;
 use super::TokenError;
 use super::glass::GlassRole;
 
-/// Роль поверхности: от неё зависит плотность заливки.
+/// Роль поверхности: от неё зависят плотность заливки и наличие ободка.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceRole {
-    /// Панели, листы, карточки и кнопки раздела.
+    /// Панели, листы, карточки и кнопки раздела калибровки: только заливка.
     Panel,
     /// Подложка под данными: плотнее панели, чтобы данные читались на любом фоне.
     Backing,
+    /// Панель с ободком: заливка как у [`SurfaceRole::Panel`] плюс тонкий светлый ободок по краю силуэта
+    /// (решение 297). Нужна, когда панель лежит и на картинке, и на чёрном фоне: тёмная заливка на чёрном
+    /// почти не видна, ободок держит силуэт.
+    EdgedPanel,
 }
 
 /// Материал панели: чем панель закрашена. Его выбирает владелец экрана, а не сам виджет: один и тот
-/// же виджет (капсула режимов, кнопка меню) на экране PHOTO стеклянный, а в разделе калибровки —
-/// поверхность.
+/// же виджет (капсула режимов, кнопка меню) на экране PHOTO — поверхность с ободком, а в разделе
+/// калибровки — поверхность без ободка (решение 297).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelMaterial {
-    /// Стекло: размытие фона, линза, блик (прежнее поведение PHOTO).
+    /// Стекло: размытие фона, линза, блик. С 14p экраны камеры его для панелей не выбирают (решение 297);
+    /// единственное стекло камеры — завеса перехода, она собирает его сама (решение 299).
     Glass(GlassRole),
     /// Тёмная полупрозрачная поверхность без обращения к фону.
     Surface(SurfaceRole),
 }
 
-/// Числа поверхности. Все три — конфиг (решение 263).
+/// Ободок поверхности с ободком (решение 297): светлая линия по внутреннему краю силуэта.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct SurfaceEdgeTokens {
+    /// Цвет линии вместе с её альфой в покое (появление 1). `[estimate]` решение 297: белый α 0,22 —
+    /// подгонка по эскизам 14p, не Apple.
+    pub color: DisplayColor,
+    /// Толщина линии, pt. `[estimate]` решение 297: 1 pt. Линия лежит ВНУТРИ силуэта: размеры элемента
+    /// с ободком и без него одинаковы.
+    pub width_pt: f32,
+}
+
+impl Default for SurfaceEdgeTokens {
+    fn default() -> Self {
+        Self {
+            color: DisplayColor::new(1.0, 1.0, 1.0, 0.22),
+            width_pt: 1.0,
+        }
+    }
+}
+
+/// Предел толщины ободка, pt: толще — это уже не «тонкая линия», а вторая заливка (скорее опечатка в единицах).
+const MAX_EDGE_WIDTH_PT: f32 = 4.0;
+
+/// Числа поверхности. Все — конфиг (решения 263, 297, 301).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct SurfaceTokens {
@@ -42,6 +72,8 @@ pub struct SurfaceTokens {
     pub panel_density: f32,
     /// Плотность подложки под данными (0..1), решение 263 — 0,88. Не меньше плотности панели.
     pub backing_density: f32,
+    /// Ободок роли [`SurfaceRole::EdgedPanel`]; плотность заливки у неё та же, что у панели (решение 298).
+    pub edge: SurfaceEdgeTokens,
 }
 
 impl Default for SurfaceTokens {
@@ -50,6 +82,7 @@ impl Default for SurfaceTokens {
             fill_color: DisplayColor::rgb(0.06, 0.06, 0.07),
             panel_density: 0.70,
             backing_density: 0.88,
+            edge: SurfaceEdgeTokens::default(),
         }
     }
 }
@@ -58,8 +91,21 @@ impl SurfaceTokens {
     /// Плотность заливки роли в покое (появление 1).
     pub fn density_for(&self, role: SurfaceRole) -> f32 {
         match role {
-            SurfaceRole::Panel => self.panel_density,
+            // Панель с ободком закрашена так же плотно, как панель: отличие только в ободке (решение 298).
+            SurfaceRole::Panel | SurfaceRole::EdgedPanel => self.panel_density,
             SurfaceRole::Backing => self.backing_density,
+        }
+    }
+
+    /// Ободок роли при появлении `appear` (0..1): цвет с альфой «альфа ободка × появление» и толщина в pt.
+    /// `None` — у роли ободка нет. Ободок нарастает вместе с плотностью заливки (решение 270).
+    pub fn edge_for(&self, role: SurfaceRole, appear: f32) -> Option<SurfaceEdge> {
+        match role {
+            SurfaceRole::Panel | SurfaceRole::Backing => None,
+            SurfaceRole::EdgedPanel => Some(SurfaceEdge {
+                color: self.edge.color.with_alpha(self.edge.color.a * appear.clamp(0.0, 1.0)),
+                width_pt: self.edge.width_pt,
+            }),
         }
     }
 
@@ -94,8 +140,33 @@ impl SurfaceTokens {
                 value: f64::from(self.backing_density),
             });
         }
+        self.edge.validate()
+    }
+}
+
+impl SurfaceEdgeTokens {
+    /// Проверка: цвет (с альфой) в 0..1, толщина конечна, больше нуля и не толще [`MAX_EDGE_WIDTH_PT`].
+    pub fn validate(&self) -> Result<(), TokenError> {
+        if !self.color.is_valid() {
+            return Err(TokenError::InvalidColor {
+                name: "surface.edge.color",
+            });
+        }
+        if !(self.width_pt.is_finite() && self.width_pt > 0.0 && self.width_pt <= MAX_EDGE_WIDTH_PT) {
+            return Err(TokenError::OutOfRange {
+                name: "surface.edge.width_pt",
+                value: f64::from(self.width_pt),
+            });
+        }
         Ok(())
     }
+}
+
+/// Ободок, готовый к рисованию: цвет с итоговой альфой и толщина линии в pt.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SurfaceEdge {
+    pub color: DisplayColor,
+    pub width_pt: f32,
 }
 
 #[cfg(test)]
@@ -109,6 +180,50 @@ mod tests {
         assert_eq!(tokens.density_for(SurfaceRole::Backing), 0.88);
         assert_eq!(tokens.fill_color, DisplayColor::rgb(0.06, 0.06, 0.07));
         assert_eq!(tokens.validate(), Ok(()));
+    }
+
+    #[test]
+    fn edged_panel_is_as_dense_as_panel_and_only_it_has_an_edge() {
+        let tokens = SurfaceTokens::default();
+        // Решение 298: плотность панели с ободком — та же, что у панели раздела.
+        assert_eq!(
+            tokens.density_for(SurfaceRole::EdgedPanel),
+            tokens.density_for(SurfaceRole::Panel)
+        );
+        assert_eq!(
+            tokens.fill_for(SurfaceRole::EdgedPanel, 1.0),
+            tokens.fill_for(SurfaceRole::Panel, 1.0)
+        );
+        // Решение 297: белый α 0,22, 1 pt; у панели раздела и подложки ободка нет (раздел не меняется).
+        assert_eq!(
+            tokens.edge_for(SurfaceRole::EdgedPanel, 1.0),
+            Some(SurfaceEdge {
+                color: DisplayColor::new(1.0, 1.0, 1.0, 0.22),
+                width_pt: 1.0
+            })
+        );
+        assert_eq!(tokens.edge_for(SurfaceRole::Panel, 1.0), None);
+        assert_eq!(tokens.edge_for(SurfaceRole::Backing, 1.0), None);
+    }
+
+    #[test]
+    fn edge_alpha_grows_with_appear_like_the_fill() {
+        let tokens = SurfaceTokens::default();
+        let half = tokens.edge_for(SurfaceRole::EdgedPanel, 0.5).expect("ободок");
+        assert!(
+            (half.color.a - 0.11).abs() < 1e-6,
+            "альфа ободка × появление: {}",
+            half.color.a
+        );
+        assert_eq!((half.color.r, half.color.g, half.color.b), (1.0, 1.0, 1.0));
+        assert_eq!(
+            tokens.edge_for(SurfaceRole::EdgedPanel, 0.0).expect("ободок").color.a,
+            0.0
+        );
+        // Появление вне 0..1 не делает ободок ярче токена; толщина от появления не зависит.
+        let over = tokens.edge_for(SurfaceRole::EdgedPanel, 3.0).expect("ободок");
+        assert_eq!(over.color.a, 0.22);
+        assert_eq!(over.width_pt, 1.0);
     }
 
     #[test]
@@ -154,6 +269,38 @@ mod tests {
                 name: "surface.fill_color"
             })
         );
+        for width_pt in [0.0, -1.0, f32::NAN, 4.5] {
+            let bad_width = SurfaceTokens {
+                edge: SurfaceEdgeTokens {
+                    width_pt,
+                    ..SurfaceEdgeTokens::default()
+                },
+                ..SurfaceTokens::default()
+            };
+            assert!(
+                matches!(
+                    bad_width.validate(),
+                    Err(TokenError::OutOfRange {
+                        name: "surface.edge.width_pt",
+                        ..
+                    })
+                ),
+                "толщина ободка {width_pt} отвергается"
+            );
+        }
+        let bad_edge_color = SurfaceTokens {
+            edge: SurfaceEdgeTokens {
+                color: DisplayColor::new(1.0, 1.0, 1.0, 1.4),
+                ..SurfaceEdgeTokens::default()
+            },
+            ..SurfaceTokens::default()
+        };
+        assert_eq!(
+            bad_edge_color.validate(),
+            Err(TokenError::InvalidColor {
+                name: "surface.edge.color"
+            })
+        );
     }
 
     #[test]
@@ -162,5 +309,9 @@ mod tests {
         assert_eq!(parsed.panel_density, 0.5);
         assert_eq!(parsed.backing_density, 0.88);
         assert!(serde_json::from_str::<SurfaceTokens>(r#"{"density":0.5}"#).is_err());
+        let edge: SurfaceTokens = serde_json::from_str(r#"{"edge":{"width_pt":1.5}}"#).expect("частичный ободок");
+        assert_eq!(edge.edge.width_pt, 1.5);
+        assert_eq!(edge.edge.color, SurfaceEdgeTokens::default().color);
+        assert!(serde_json::from_str::<SurfaceTokens>(r#"{"edge":{"alpha":0.3}}"#).is_err());
     }
 }

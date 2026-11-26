@@ -19,7 +19,7 @@ use super::intent::{ButtonId, ScreenGesture};
 use super::kit::SceneKit;
 use super::layers::{DrawLayers, Layer, VisualIndex};
 use super::menu_glide::{GlideDirection, GlideEndpoint, GlideFrame};
-use super::{Ctx, Outputs, PHOTO_BUTTON_MATERIAL, SECTION_PANEL_MATERIAL, single_member_material};
+use super::{Ctx, Outputs, PHOTO_SURFACE_MATERIAL, SECTION_PANEL_MATERIAL, single_member_material};
 use crate::action::ScreenAction;
 use crate::state::PanelState;
 use ui_draw::draw_list::PressState;
@@ -188,7 +188,7 @@ impl MenuButtonWidget {
         };
         let material = match frame.direction {
             GlideDirection::PhotoToSection => SECTION_PANEL_MATERIAL,
-            GlideDirection::SectionToPhoto => PHOTO_BUTTON_MATERIAL,
+            GlideDirection::SectionToPhoto => PHOTO_SURFACE_MATERIAL,
         };
         Self::paint(ctx, layers, (&button, Some(&icon)), (PressState::RELEASED, material))
     }

@@ -2,7 +2,8 @@
 //!
 //! Что доказывается на GPU, а не по списку рисования:
 //! * кадры раздела (обе ориентации, SCALES и WHEELS, с листом меню, с карточкой пресетов, с плашкой сбоя) не строят
-//!   пирамиду размытия (`PyramidOutcome::NotNeeded`) и не содержат групп стекла, а возврат в PHOTO их возвращает;
+//!   пирамиду размытия (`PyramidOutcome::NotNeeded`) и не содержат групп стекла; после 14p их нет и при возврате
+//!   в PHOTO (подробно PHOTO проверяет `photo_surface_goldens`);
 //! * пиксель панели над однородным фоном равен цвету и плотности из конфига (в допуске квантования цели);
 //! * подложка плотнее панели — и на синтетических плашках, и на настоящей панели прибора раздела.
 
@@ -30,9 +31,9 @@ use crate::render_rig::{RenderRig, ScopeImage, Snapshot, assert_no_validation_er
 use crate::{Window, with_rig};
 
 /// Допуск на квантование 10-битной цели и округление смешивания, доля канала.
-const QUANTIZATION_TOLERANCE: f32 = 0.012;
+pub(crate) const QUANTIZATION_TOLERANCE: f32 = 0.012;
 /// Серый однородного фона под экраном.
-const BACKDROP_GRAY: f32 = 0.5;
+pub(crate) const BACKDROP_GRAY: f32 = 0.5;
 
 /// Рисует список раздела и проверяет судьбу пирамиды: размытие не нужно, групп стекла нет.
 fn assert_section_needs_no_blur(rig: &mut RenderRig, driver: &ScreenDriver, context: &str) {
@@ -71,7 +72,7 @@ fn section_with_menu(orientation: DeviceOrientation) -> ScreenDriver {
 }
 
 #[test]
-fn section_frames_need_no_pyramid_and_photo_brings_it_back() {
+fn section_frames_need_no_pyramid_and_neither_does_photo_after_the_switch() {
     with_rig(|rig| {
         for orientation in [
             DeviceOrientation::Portrait,
@@ -97,14 +98,19 @@ fn section_frames_need_no_pyramid_and_photo_brings_it_back() {
         }
         assert_section_needs_no_blur(rig, &presets_card(), "карточка пресетов");
 
-        // Возврат в PHOTO: стекло и пирамида снова есть.
+        // Возврат в PHOTO: с 14p стекла и пирамиды нет и там (решение 297), а панели нарисованы фигурами.
         let mut driver = calibration(DeviceOrientation::Portrait);
         driver.act(ScreenAction::ModeSelected(CaptureMode::Photo));
         driver.run(SETTLE_MS);
         crate::render(rig, &driver);
         let report = rig.last_report();
-        assert!(report.glass_groups > 0, "в PHOTO стекло есть: {}", report.glass_groups);
-        assert_ne!(report.pyramid, PyramidOutcome::NotNeeded, "в PHOTO пирамида строится");
+        assert_eq!(report.glass_groups, 0, "в PHOTO стекла нет");
+        assert_eq!(
+            report.pyramid,
+            PyramidOutcome::NotNeeded,
+            "в PHOTO пирамида не строится"
+        );
+        assert!(report.shape_instances > 0, "панели PHOTO нарисованы фигурами");
     });
 }
 
@@ -114,7 +120,7 @@ fn blended(background: f32, fill: f32, density: f32) -> f32 {
 }
 
 /// Доля пикселей окна, в которых панель равна ожидаемой смеси «фон + заливка × плотность» в допуске квантования.
-fn share_matching_surface(on_surface: &Snapshot, bare: &Snapshot, window: Window, density: f32) -> f32 {
+pub(crate) fn share_matching_surface(on_surface: &Snapshot, bare: &Snapshot, window: Window, density: f32) -> f32 {
     let fill = UiKitTokens::default().surface.fill_color;
     let fill = [fill.r, fill.g, fill.b];
     let (x0, y0, x1, y1) = window;

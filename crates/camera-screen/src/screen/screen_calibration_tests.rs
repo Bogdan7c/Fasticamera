@@ -226,7 +226,7 @@ fn photo_widgets_are_absent_in_calibrate_and_the_section_is_absent_in_photo() {
         "и колонки ручек нет"
     );
     assert_eq!(rig.screen.node_centers("calib_ruler").len(), 0);
-    let shutter_in_photo = glass_members(&photo)
+    let shutter_in_photo = element_members(&photo)
         .iter()
         .any(|(shape, ..)| matches!(shape, ui_draw::shape::ShapeGeometry::Circle { diameter } if near(*diameter, 197.0, 2.0)));
     assert!(shutter_in_photo, "в PHOTO затвор Ø197 есть");
@@ -234,7 +234,7 @@ fn photo_widgets_are_absent_in_calibrate_and_the_section_is_absent_in_photo() {
 
     rig.act(ScreenAction::ModeSelected(CaptureMode::Calibrate));
     let calibrate = rig.run(400).clone();
-    let shutter_in_calibrate = glass_members(&calibrate)
+    let shutter_in_calibrate = element_members(&calibrate)
         .iter()
         .any(|(shape, ..)| matches!(shape, ui_draw::shape::ShapeGeometry::Circle { diameter } if near(*diameter, 197.0, 2.0)));
     assert!(!shutter_in_calibrate, "в CALIBRATE затвора нет");
@@ -266,7 +266,7 @@ fn photo_widgets_are_absent_in_calibrate_and_the_section_is_absent_in_photo() {
     );
     assert_eq!(text_count_of(&back, "CONTRAST", TextRoleKind::CardTitle), 0);
     assert!(
-        glass_members(&back)
+        element_members(&back)
             .iter()
             .any(|(shape, ..)| matches!(shape, ui_draw::shape::ShapeGeometry::Circle { diameter } if near(*diameter, 197.0, 2.0))),
         "затвор вернулся"

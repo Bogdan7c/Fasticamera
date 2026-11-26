@@ -9,12 +9,11 @@
 
 use ui_core::gesture::{GestureEvent, GestureState, PanDirection, PanSpec, RecognizerSpec};
 use ui_core::id::NodeId;
-use ui_draw::draw_list::DrawItem;
 use ui_draw::icons::IconId;
 use ui_draw::transform::Affine2;
 use ui_kit::panel_morph::{PanelMorph, PanelMorphSpec, PanelPhase, PanelSnapshot};
-use ui_kit::tokens::{GlassRole, MotionToken};
-use ui_kit::view::panel_glass_group;
+use ui_kit::tokens::MotionToken;
+use ui_kit::view::panel_material_hosted;
 
 use super::button::{ButtonEvent, PressButton};
 use super::error::{WidgetError, element};
@@ -26,7 +25,7 @@ use super::sheet_view::{ItemFace, ItemNodes, ItemView, draw_menu_item, draw_shee
 use super::text_runs::TextRuns;
 use super::tool_card_content::flash_icon;
 use super::tool_card_content::tool_title;
-use super::{Ctx, Outputs};
+use super::{Ctx, Outputs, PHOTO_SURFACE_MATERIAL};
 use crate::action::ScreenAction;
 use crate::settings::{AspectRatio, GridSetting, LevelSetting, RawCapture, TimerSetting};
 use crate::state::PanelState;
@@ -193,18 +192,21 @@ impl ControlsDrawerWidget {
             return Ok(());
         }
         let uncovered = (1.0 - card_cover).clamp(0.0, 1.0);
-        // Стекло не на стекле: пока карточка закрывает шторку, её собственное стекло гаснет.
-        let sheet_glass = PanelSnapshot {
+        // Панель не на панели: пока карточка закрывает шторку, её собственная поверхность гаснет.
+        let sheet_surface = PanelSnapshot {
             effect: sheet.effect * uncovered,
             ..sheet
         };
+        // Шторка — поверхность PHOTO с ободком (решение 297); появление растит плотность (решение 270).
         layers.push(
             Layer::Glass,
-            DrawItem::Glass(panel_glass_group(
-                &sheet_glass,
-                ctx.tokens.glass.style_for(GlassRole::Panel),
+            panel_material_hosted(
+                &sheet_surface,
+                ctx.tokens,
+                PHOTO_SURFACE_MATERIAL,
                 ctx.px,
-            )?),
+                Affine2::IDENTITY,
+            )?,
         );
         let content_alpha = sheet.content_opacity * uncovered;
         draw_sheet_handle(

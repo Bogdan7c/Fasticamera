@@ -332,25 +332,23 @@ fn number_opacity(rig: &Rig) -> f32 {
     drawn[0].opacity.get()
 }
 
-/// Прозрачность стекла под кнопкой белого: группа, чей член накрывает центр кнопки.
+/// Прозрачность круга-поверхности кнопки белого: поверхность с центром в центре кнопки (тряска сдвигает её
+/// лишь на несколько pt, поэтому допуск — радиус кнопки).
 fn button_glass_opacity(rig: &Rig) -> f32 {
     let center = white_button(rig);
     let (center_x, center_y) = (px(center.x), px(center.y));
-    rig.last
-        .leaf_items()
-        .find_map(|item| match item {
-            ui_draw::draw_list::DrawItem::Glass(group) => group
-                .members
-                .iter()
-                .filter_map(|member| member.shape_bounds_px())
-                .any(|bounds| {
-                    (bounds.origin.x..=bounds.max_x()).contains(&center_x)
-                        && (bounds.origin.y..=bounds.max_y()).contains(&center_y)
-                })
-                .then(|| group.opacity.get()),
+    surface_shapes(&rig.last)
+        .into_iter()
+        .find_map(|shape| match shape.geometry {
+            ui_draw::shape::ShapeGeometry::Circle { diameter }
+                if (shape.transform.tx - center_x).abs() < diameter / 2.0
+                    && (shape.transform.ty - center_y).abs() < diameter / 2.0 =>
+            {
+                Some(shape.opacity.get())
+            }
             _ => None,
         })
-        .expect("стекло кнопки белого нарисовано")
+        .expect("круг кнопки белого нарисован")
 }
 
 fn waiting_facts(take: Option<WhiteTakeState>) -> crate::facts::CameraFacts {

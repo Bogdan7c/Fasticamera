@@ -86,7 +86,7 @@ fn tapping_the_shutter_requests_a_capture_and_blinks_the_frame() {
 #[test]
 fn swipe_up_on_the_viewfinder_opens_the_menu_and_the_shutter_leaves_the_list() {
     let mut rig = Rig::new();
-    let shutter_members_before = glass_members(rig.frame())
+    let shutter_members_before = element_members(rig.frame())
         .iter()
         .filter(|(geometry, ..)| matches!(geometry, ui_draw::shape::ShapeGeometry::Circle { diameter } if (*diameter - 80.1 * PX_PER_PT).abs() < 2.0))
         .count();
@@ -100,7 +100,7 @@ fn swipe_up_on_the_viewfinder_opens_the_menu_and_the_shutter_leaves_the_list() {
     );
     // Шторка раскрылась, затвор растворился под ней и из списка ушёл.
     rig.run(1000);
-    let shutter_members_after = glass_members(&rig.last)
+    let shutter_members_after = element_members(&rig.last)
         .iter()
         .filter(|(geometry, ..)| matches!(geometry, ui_draw::shape::ShapeGeometry::Circle { diameter } if (*diameter - 80.1 * PX_PER_PT).abs() < 2.0))
         .count();

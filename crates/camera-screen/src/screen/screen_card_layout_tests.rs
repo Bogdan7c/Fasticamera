@@ -35,24 +35,22 @@ fn open_card_clears_the_raised_shutter_and_stays_on_screen() {
     assert!(card.min_x() >= 0.0 && card.max_x() <= screen.max_x() && card.max_y() <= screen.max_y());
 }
 
-/// Индекс стекла карточки: первой группы с широким скруглённым прямоугольником.
-fn card_glass_index(list: &DrawList) -> Option<usize> {
-    list.items.iter().position(|item| match item {
-        DrawItem::Glass(group) => group
-            .members
-            .iter()
-            .any(|member| matches!(member.geometry, ShapeGeometry::RoundedRect { size, .. } if size.width > 900.0)),
-        _ => false,
+/// Индекс поверхности карточки: первой панели PHOTO с широким скруглённым прямоугольником.
+fn card_panel_index(list: &DrawList) -> Option<usize> {
+    list.items.iter().position(|item| {
+        photo_surface_of(item).is_some_and(
+            |shape| matches!(silhouette(shape), ShapeGeometry::RoundedRect { size, .. } if size.width > 900.0),
+        )
     })
 }
 
 #[test]
-fn the_shutter_is_drawn_before_the_card_glass_at_every_stage() {
+fn the_shutter_is_drawn_before_the_card_panel_at_every_stage() {
     let mut rig = open_exposure_card();
     let mut checked = 0;
     let mut check = |rig: &mut Rig, stage: &str| {
         let list = rig.last.clone();
-        let card = card_glass_index(&list).unwrap_or_else(|| panic!("{stage}: стекла карточки нет в списке"));
+        let card = card_panel_index(&list).unwrap_or_else(|| panic!("{stage}: поверхности карточки нет в списке"));
         // Затвор едет (поднимается/опускается), поэтому ищем его кольцо и диск по всему диапазону движения.
         let mut shutter = Vec::new();
         for item_index in 0..list.items.len() {
@@ -61,7 +59,7 @@ fn the_shutter_is_drawn_before_the_card_glass_at_every_stage() {
         assert!(!shutter.is_empty(), "{stage}: затвор не найден");
         assert!(
             shutter.iter().all(|index| *index < card),
-            "{stage}: затвор поверх стекла карточки"
+            "{stage}: затвор поверх поверхности карточки"
         );
         checked += 1;
     };
@@ -80,14 +78,13 @@ fn shutter_indices_any_height(list: &DrawList, index: usize) -> Option<usize> {
     let is_shutter_circle =
         |geometry: &ShapeGeometry| matches!(geometry, ShapeGeometry::Circle { diameter } if *diameter > 150.0);
     match &list.items[index] {
-        DrawItem::Glass(group) if group.members.iter().any(|member| is_shutter_circle(&member.geometry)) => Some(index),
         DrawItem::Shape(shape) if is_shutter_circle(&shape.geometry) => Some(index),
         _ => None,
     }
 }
 
 #[test]
-fn card_content_is_drawn_after_its_glass_and_the_card_after_the_sheet() {
+fn card_content_is_drawn_after_its_panel_and_the_card_after_the_sheet() {
     let mut rig = Rig::new();
     rig.screen.handle_action(ScreenAction::ControlsMenuOpenRequested);
     rig.run(700);
@@ -96,7 +93,19 @@ fn card_content_is_drawn_after_its_glass_and_the_card_after_the_sheet() {
     // Посередине морфа шторка → карточка и в покое: порядок один и тот же.
     for stage_ms in [120, 900] {
         let list = rig.run(stage_ms).clone();
-        let card = card_glass_index(&list).expect("стекло карточки");
+        // Широкие панели PHOTO по порядку рисования: шторка (пока видна) и карточка — последняя.
+        let wide_panels: Vec<usize> = list
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| {
+                photo_surface_of(item).is_some_and(
+                    |shape| matches!(silhouette(shape), ShapeGeometry::RoundedRect { size, .. } if size.width > 900.0),
+                )
+            })
+            .map(|(index, _)| index)
+            .collect();
+        let card = *wide_panels.last().expect("поверхность карточки");
         let close_or_chevron = list
             .items
             .iter()
@@ -104,16 +113,11 @@ fn card_content_is_drawn_after_its_glass_and_the_card_after_the_sheet() {
             .expect("«‹» карточки");
         assert!(
             close_or_chevron > card,
-            "содержимое карточки после её стекла (+{stage_ms} мс)"
+            "содержимое карточки после её поверхности (+{stage_ms} мс)"
         );
-        let sheet_glass = list.items.iter().position(|item| {
-            matches!(item, DrawItem::Glass(group)
-                if group.members.iter().any(|m| matches!(m.geometry, ShapeGeometry::RoundedRect { size, .. } if size.width > 900.0)))
-        });
-        assert_eq!(
-            sheet_glass,
-            Some(card),
-            "стекло шторки и карточки — первое широкое стекло, шторка не выше"
+        assert!(
+            wide_panels.iter().all(|index| *index <= card),
+            "шторка рисуется до карточки, а не поверх неё (+{stage_ms} мс): {wide_panels:?}"
         );
     }
 }

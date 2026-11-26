@@ -7,10 +7,13 @@
 //!
 //! Нажатие: тот же масштаб, что у стеклянной кнопки (`PressParamsPx::scale_for`), без свечения.
 //! Появление: плотность растёт с нуля тем же прогрессом, что материализация стекла (решение 270).
+//! Ободок (роль `EdgedPanel`, PHOTO, решение 297): светлая обводка по внутреннему краю силуэта, без тени.
 
 use ui_draw::color::Opacity;
-use ui_draw::draw_list::{DrawItem, PressState, ShapeItem};
+use ui_draw::draw_list::{DrawItem, PressState, ShapeItem, StrokeStyle};
+use ui_draw::geometry::PxSize;
 use ui_draw::scene_bridge::NodePlacementPx;
+use ui_draw::shape::ShapeGeometry;
 use ui_draw::transform::Affine2;
 
 use super::error::ViewError;
@@ -29,8 +32,12 @@ pub struct MemberSite<'a> {
 /// Поверхность одного члена: фигура и преобразование, в котором ставится содержимое члена (с масштабом
 /// нажатия — так же, как у [`member_transform`] группы стекла).
 ///
-/// * `appear` — появление 0..1 (у стекла это `effect`): плотность заливки умножается на него;
+/// * `appear` — появление 0..1 (у стекла это `effect`): плотность заливки и альфа ободка умножаются на него;
 /// * `opacity` — прозрачность узла (растворение узла растворяет и поверхность).
+///
+/// У роли с ободком ([`SurfaceRole::EdgedPanel`], решение 297) фигура заливки уже на толщину линии, а линия
+/// идёт по её краю: обводка `ui-draw` центрирована на границе, поэтому внешний край линии ложится ровно на
+/// силуэт члена. Силуэт с ободком и без него один и тот же.
 pub fn surface_member(
     tokens: &UiKitTokens,
     role: SurfaceRole,
@@ -51,15 +58,49 @@ pub fn surface_member(
     } = site;
     let press_scale = tokens.glass.button.press.scale_gain;
     let transform = Affine2::uniform_scale(1.0 + press_scale * press.amount.clamp(0.0, 1.0)).then(placement.transform);
+    let (geometry, stroke) = match tokens.surface.edge_for(role, appear) {
+        None => (member_geometry(shape, placement.size, scale), None),
+        Some(edge) => {
+            let width_px = scale.px(f64::from(edge.width_pt));
+            let stroke = StrokeStyle {
+                width_px,
+                color: edge.color,
+            };
+            (
+                inset_member_geometry(shape, placement.size, scale, width_px),
+                Some(stroke),
+            )
+        }
+    };
     let item = ShapeItem {
-        geometry: member_geometry(shape, placement.size, scale),
+        geometry,
         transform,
         fill: tokens.surface.fill_for(role, appear),
-        stroke: None,
+        stroke,
         shadow: None,
         opacity,
     };
     Ok((item, transform))
+}
+
+/// Геометрия члена, ужатая на `edge_px` по каждой оси (на половину линии с каждой стороны): по её краю
+/// идёт центрированная обводка толщиной `edge_px`, и внешний край обводки совпадает с краем полной формы.
+/// Радиус скругления уменьшается на ту же половину линии, иначе внешний край линии на углах ушёл бы внутрь.
+fn inset_member_geometry(shape: GlassShape, size: PxSize, scale: PxPerPt, edge_px: f32) -> ShapeGeometry {
+    let inset_size = PxSize::new((size.width - edge_px).max(0.0), (size.height - edge_px).max(0.0));
+    match shape {
+        GlassShape::Capsule | GlassShape::Circle => member_geometry(shape, inset_size, scale),
+        GlassShape::RoundedRect { corner_radius_pt } => {
+            let half_edge_pt = 0.5 * edge_px / scale.get();
+            member_geometry(
+                GlassShape::RoundedRect {
+                    corner_radius_pt: (corner_radius_pt - half_edge_pt).max(0.0),
+                },
+                inset_size,
+                scale,
+            )
+        }
+    }
 }
 
 /// Элемент рисования одного члена выбранного материала и преобразование его содержимого.
@@ -97,9 +138,7 @@ pub fn single_member_item(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui_draw::draw_list::DrawItem;
-    use ui_draw::geometry::{PxPoint, PxSize};
-    use ui_draw::shape::ShapeGeometry;
+    use ui_draw::geometry::PxPoint;
 
     use crate::tokens::GlassRole;
 
@@ -243,6 +282,97 @@ mod tests {
         );
     }
 
+    /// Поверхность роли `role` для формы `shape` на тестовом размещении (300 × 90 px в точке (500; 400)).
+    fn surface_of(role: SurfaceRole, shape: GlassShape, appear: f32) -> ShapeItem {
+        surface_member(
+            &UiKitTokens::default(),
+            role,
+            MemberSite {
+                shape,
+                placement: &placement(),
+                press: PressState::RELEASED,
+            },
+            scale(),
+            appear,
+            Opacity::OPAQUE,
+        )
+        .expect("поверхность")
+        .0
+    }
+
+    /// Пиксель эталона `ui-draw` (premultiplied) в точке `(x, y)` экрана, сглаживание 1 px, как в шейдере.
+    fn pixel(item: &ShapeItem, x: f32, y: f32) -> ui_draw::color::PremultipliedColor {
+        ui_draw::draw_list::shade_shape_pixel(item, PxPoint::new(x, y), 1.0).expect("пиксель")
+    }
+
+    #[test]
+    fn edged_panel_draws_a_light_edge_inside_the_same_silhouette() {
+        // Решение 297: светлая линия 1 pt (3 px при масштабе 3) по внутреннему краю, силуэт прежний.
+        for shape in [
+            GlassShape::Capsule,
+            GlassShape::Circle,
+            GlassShape::RoundedRect { corner_radius_pt: 20.0 },
+        ] {
+            let plain = surface_of(SurfaceRole::Panel, shape, 1.0);
+            let edged = surface_of(SurfaceRole::EdgedPanel, shape, 1.0);
+            // Правый край силуэта на горизонтали центра: x = 500 + половина ширины формы.
+            let half_width = match plain.geometry {
+                ShapeGeometry::Circle { diameter } => diameter / 2.0,
+                ShapeGeometry::Capsule { size } | ShapeGeometry::RoundedRect { size, .. } => size.width / 2.0,
+            };
+            let edge_x = 500.0 + half_width;
+            // Внутри линии (1,5 px от края силуэта) ободок светлее, чем заливка без ободка (premultiplied —
+            // это и есть яркость пикселя поверх чёрного фона).
+            let band_plain = pixel(&plain, edge_x - 1.5, 400.0);
+            let band_edged = pixel(&edged, edge_x - 1.5, 400.0);
+            assert!(
+                band_edged.r > band_plain.r + 0.1,
+                "{shape:?}: линия ободка светлее заливки ({} против {})",
+                band_edged.r,
+                band_plain.r
+            );
+            // Центр — та же заливка, что у панели раздела: ободок не меняет плотность.
+            assert_eq!(
+                pixel(&edged, 500.0, 400.0),
+                pixel(&plain, 500.0, 400.0),
+                "{shape:?}: центр"
+            );
+            // Снаружи силуэта (1 px за краем, вне сглаживания) ничего нет — ободок не раздувает элемент.
+            assert_eq!(pixel(&edged, edge_x + 1.0, 400.0).a, 0.0, "{shape:?}: снаружи пусто");
+            assert_eq!(
+                pixel(&plain, edge_x + 1.0, 400.0).a,
+                0.0,
+                "{shape:?}: снаружи пусто без ободка"
+            );
+            // Глубже линии (6 px от края) снова обычная заливка.
+            assert_eq!(
+                pixel(&edged, edge_x - 6.0, 400.0),
+                pixel(&plain, edge_x - 6.0, 400.0),
+                "{shape:?}: под линией"
+            );
+            let stroke = edged.stroke.expect("у панели с ободком есть линия");
+            assert_eq!(stroke.width_px, 3.0, "{shape:?}: толщина 1 pt");
+            assert_eq!(stroke.color.a, 0.22, "{shape:?}: альфа токена");
+            assert!(plain.stroke.is_none(), "{shape:?}: у панели раздела линии нет");
+        }
+    }
+
+    #[test]
+    fn edge_appears_together_with_the_fill() {
+        // Решение 270: появление растит и заливку, и линию с нуля одним прогрессом.
+        let shape = GlassShape::RoundedRect { corner_radius_pt: 20.0 };
+        let half = surface_of(SurfaceRole::EdgedPanel, shape, 0.5);
+        let full = surface_of(SurfaceRole::EdgedPanel, shape, 1.0);
+        let hidden = surface_of(SurfaceRole::EdgedPanel, shape, 0.0);
+        let stroke_alpha = |item: &ShapeItem| item.stroke.expect("линия").color.a;
+        assert!((stroke_alpha(&half) - 0.5 * stroke_alpha(&full)).abs() < 1e-6);
+        assert!((half.fill.a - 0.5 * full.fill.a).abs() < 1e-6);
+        assert_eq!(stroke_alpha(&hidden), 0.0);
+        assert_eq!(hidden.fill.a, 0.0);
+        // Невидимая поверхность не даёт ни одного пикселя, в том числе на линии.
+        assert_eq!(pixel(&hidden, 500.0 + 150.0 - 1.5, 400.0).a, 0.0);
+    }
+
     #[test]
     fn invalid_appear_is_an_error_not_a_clamp() {
         let tokens = UiKitTokens::default();
@@ -265,7 +395,7 @@ mod tests {
 
     #[test]
     fn glass_material_is_bit_identical_to_the_legacy_single_member_group() {
-        // PHOTO (решение 262): стекло через `single_member_item` равно тому, что строил экран прямо через строитель.
+        // Стекло через `single_member_item` равно тому, что строит прямой вызов строителя (ветка стекла кирпича прежняя).
         let tokens = UiKitTokens::default();
         for (role, shape) in [
             (GlassRole::Button, GlassShape::Capsule),

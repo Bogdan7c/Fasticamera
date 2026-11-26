@@ -101,6 +101,8 @@ fn shutter_is_rejected_under_the_menu_and_visibility_follows_the_panel() {
     screen.step(ScreenAction::ControlsMenuOpenRequested);
     assert_eq!(screen.state.shutter_visibility(), ShutterVisibility::HiddenUnderDrawer);
     assert!(!screen.state.is_tool_card_open());
+    // 14p: шторка — полупрозрачная поверхность, поэтому нижний ряд под ней растворяется, а не просвечивает.
+    assert!(screen.state.is_bottom_row_hidden());
     let shot = screen.step(ScreenAction::ShutterTapped { at: at_ms(0) });
     assert_eq!(shot.outcome, ActionOutcome::Rejected(Rejection::ShutterHiddenByMenu));
 

@@ -44,7 +44,6 @@ use shell_contract::safe_area::SafeAreaInsets;
 use shell_contract::still_media::ShutterSoundService;
 use shell_contract::system_gesture::SystemGestureZones;
 use shell_contract::touch::TouchSample;
-use ui_kit::tokens::UiKitTokens;
 
 use crate::camera_screen_config::CameraScreenConfig;
 use crate::camera_screen_effects::{
@@ -627,7 +626,12 @@ impl CameraScreenService {
         &self,
         env: &ScreenEnvironment<'_>,
     ) -> Result<(CameraScreenSource, ScreenInputSender, Arc<ScreenBoard>), ScreenBuildError> {
-        let screen = CameraScreen::new(self.config.screen.clone(), UiKitTokens::default(), self.config.motion)?;
+        // Токены — из конфига (решение 301): поверхность PHOTO и раздела подбирается на телефоне без пересборки.
+        let screen = CameraScreen::new(
+            self.config.screen.clone(),
+            self.config.tokens.clone(),
+            self.config.motion,
+        )?;
         let (sender, receiver) = screen_input_channel(self.config.input_queue_capacity);
         let board = Arc::new(ScreenBoard::default());
         let (camera_port, facts): (Box<dyn CameraIntentPort>, Box<dyn CameraFactsSource>) = match env.camera.running() {

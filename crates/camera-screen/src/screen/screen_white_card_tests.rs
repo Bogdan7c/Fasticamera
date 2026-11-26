@@ -42,26 +42,22 @@ fn owner_zones() -> SystemGestureZones {
 
 // ---- чтение рисунка ----
 
-/// Стекло карточки: (центр y, высота, ширина, радиус) в px.
+/// Поверхность карточки (силуэт с ободком): (центр y, высота, ширина, радиус) в px.
 fn card_glass(list: &DrawList) -> Option<(f32, f32, f32, f32)> {
-    list.leaf_items().find_map(|item| match item {
-        DrawItem::Glass(group) => group.members.iter().find_map(|member| match member.geometry {
+    panel_members(list)
+        .into_iter()
+        .find_map(|(geometry, _, ty)| match geometry {
             ShapeGeometry::RoundedRect { size, corner } if size.width > 900.0 => {
-                Some((member.transform.ty, size.height, size.width, corner.radius_px))
+                Some((ty, size.height, size.width, corner.radius_px))
             }
             _ => None,
-        }),
-        _ => None,
-    })
+        })
 }
 
-/// Кольцо затвора: (центр y, диаметр) в px.
+/// Кольцо затвора (силуэт с ободком, решение 300): (центр y, диаметр) в px.
 fn shutter_ring(list: &DrawList) -> Option<(f32, f32)> {
-    list.leaf_items().find_map(|item| match item {
-        DrawItem::Glass(group) => group.members.iter().find_map(|member| match member.geometry {
-            ShapeGeometry::Circle { diameter } if diameter > 180.0 => Some((member.transform.ty, diameter)),
-            _ => None,
-        }),
+    shutter_rings(list).into_iter().find_map(|ring| match silhouette(ring) {
+        ShapeGeometry::Circle { diameter } if diameter > 180.0 => Some((ring.transform.ty, diameter)),
         _ => None,
     })
 }

@@ -114,47 +114,31 @@ pub(crate) struct Outputs {
     pub haptics: Vec<HapticPattern>,
 }
 
-use ui_draw::draw_list::{GlassGroupItem, PressState};
+use ui_draw::draw_list::PressState;
 use ui_draw::scene_bridge::NodePlacementPx;
 use ui_draw::transform::Affine2;
-use ui_kit::tokens::{GlassRole, PanelMaterial, SurfaceRole};
-use ui_kit::view::{
-    GlassGroupBuilder, GlassShape, MemberSite, member_transform, opacity_of_placement, single_member_item,
-};
+use ui_kit::tokens::{PanelMaterial, SurfaceRole};
+use ui_kit::view::{GlassShape, MemberSite, opacity_of_placement, single_member_item};
 
-/// Группа стекла из одного члена и преобразование, в котором ставится его содержимое (с масштабом нажатия).
-/// Прозрачность группы — прозрачность узла (перемноженная с предками), поэтому растворение узла растворяет стекло.
-pub(crate) fn single_member_group(
-    ctx: &Ctx<'_>,
-    role: GlassRole,
-    shape: GlassShape,
-    placement: &NodePlacementPx,
-    press: PressState,
-    what: &'static str,
-) -> Result<(GlassGroupItem, Affine2), WidgetError> {
-    let mut builder = GlassGroupBuilder::new(ctx.tokens.glass.style_for(role), ctx.px);
-    let member = builder.add_member(shape, *placement, press)?;
-    let group = builder.build(1.0, opacity_of_placement(placement, what)?)?;
-    let host = member_transform(&group, member)?;
-    Ok((group, host))
-}
-
-/// Материал кнопок и капсулы режимов на экране PHOTO: стеклянная кнопка (решение 262: PHOTO не меняется).
-pub(crate) const PHOTO_BUTTON_MATERIAL: PanelMaterial = PanelMaterial::Glass(GlassRole::Button);
+/// Материал всех панелей экрана PHOTO: кнопки, капсула режимов, миниатюра, шторка Controls, нижние карточки
+/// (14p, решения 297–298). Тёмная поверхность раздела плюс тонкий светлый ободок: нижний ряд в 4:3 лежит на
+/// чёрной полосе под кадром, где одна тёмная заливка почти не видна. Стекла и размытия фона в покое нет.
+pub(crate) const PHOTO_SURFACE_MATERIAL: PanelMaterial = PanelMaterial::Surface(SurfaceRole::EdgedPanel);
 
 /// Материал панелей раздела калибровки, включая те же капсулу и кнопку меню (14m, решения 263, 269):
-/// тёмная полупрозрачная поверхность без стекла, чтобы кадр раздела не строил пирамиду размытия.
+/// тёмная полупрозрачная поверхность без ободка, чтобы кадр раздела не строил пирамиду размытия.
+/// При смене PHOTO ↔ CALIBRATE капсула и кнопка меню меняют материал одним кадром: ободок включается
+/// или гаснет (решения 269, 297).
 pub(crate) const SECTION_PANEL_MATERIAL: PanelMaterial = PanelMaterial::Surface(SurfaceRole::Panel);
 
 /// Материал подложки под следом прибора раздела: та же поверхность, плотнее панелей (решения 257, 263).
 pub(crate) const SECTION_BACKING_MATERIAL: PanelMaterial = PanelMaterial::Surface(SurfaceRole::Backing);
 
-/// Один член выбранного материала и преобразование его содержимого: стекло или поверхность без стекла (14m).
+/// Один член выбранного материала и преобразование его содержимого (с масштабом нажатия).
 ///
-/// Материал задаёт владелец экрана (PHOTO — стекло, раздел калибровки — поверхность), а не сам виджет:
-/// один и тот же виджет (капсула режимов, кнопка меню) стоит в обоих местах. Стекло собирается прежним
-/// путём (`GlassGroupBuilder`, материализация 1), поэтому PHOTO остаётся бит в бит прежним.
-/// Прозрачность — прозрачность узла: растворение узла растворяет и стекло, и поверхность.
+/// Материал задаёт владелец экрана (PHOTO — поверхность с ободком, раздел калибровки — без ободка), а не сам
+/// виджет: один и тот же виджет (капсула режимов, кнопка меню) стоит в обоих местах.
+/// Прозрачность — прозрачность узла: растворение узла растворяет и поверхность.
 pub(crate) fn single_member_material(
     ctx: &Ctx<'_>,
     material: PanelMaterial,

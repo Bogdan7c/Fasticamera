@@ -134,35 +134,43 @@ fn the_held_frame_veil_still_draws_frost_glass_in_the_section() {
 }
 
 #[test]
-fn photo_keeps_its_glass_and_the_section_returns_to_surface_without_a_mixed_frame() {
+fn photo_draws_edged_surfaces_and_the_switch_from_the_section_has_no_mixed_frame() {
     let mut rig = calibrating(look_facts(), DeviceOrientation::Portrait);
-    assert!(!surfaces(rig.frame()).is_empty(), "в разделе панели — поверхности");
-    let photo_glass = |list: &DrawList| {
-        list.leaf_items()
-            .filter(|item| matches!(item, DrawItem::Glass(_)))
-            .count()
-    };
+    let section = rig.frame().clone();
+    assert!(!surfaces(&section).is_empty(), "в разделе панели — поверхности");
+    assert!(
+        surfaces(&section).iter().all(|shape| !has_photo_edge(shape)),
+        "у поверхностей раздела ободка нет (раздел не меняется, решение 297)"
+    );
     rig.act(ScreenAction::ModeSelected(CaptureMode::Photo));
-    // Каждый кадр перехода: либо раздел (поверхности, без стекла вне прибора), либо PHOTO (стекло, без поверхностей) —
-    // смешанного кадра нет (решение 269: материал меняется в том же кадре, что и режим).
+    // Каждый кадр перехода: либо раздел (поверхности без ободка), либо PHOTO (поверхности с ободком) — смешанного
+    // кадра нет (решение 269: материал меняется в том же кадре, что и режим). Стекла нет ни в одном кадре.
     let mut photo_frames = 0;
     for _ in 0..120 {
         rig.run(16);
         let list = rig.last.clone();
-        let (glass, surface) = (photo_glass(&list), surfaces(&list).len());
-        let in_photo = glass_groups(&list) > 0;
+        assert_eq!(glass_groups(&list), 0, "в кадре перехода нет стекла");
+        let edged = surfaces(&list).iter().filter(|shape| has_photo_edge(shape)).count();
+        let plain = surfaces(&list).len() - edged;
         assert!(
-            !(in_photo && surface > 0),
-            "смешанный кадр: стекло PHOTO ({glass}) вместе с поверхностями раздела ({surface})"
+            edged == 0 || plain == 0,
+            "смешанный кадр: поверхности PHOTO с ободком ({edged}) вместе с поверхностями раздела ({plain})"
         );
-        if in_photo {
+        if edged > 0 {
             photo_frames += 1;
         }
     }
-    assert!(photo_frames > 0, "после возврата в PHOTO стекло снова рисуется");
+    assert!(photo_frames > 0, "после возврата в PHOTO рисуются поверхности PHOTO");
     let list = rig.last.clone();
-    assert!(photo_glass(&list) >= 4, "в PHOTO стекло затвора, кнопок и капсулы");
-    assert!(surfaces(&list).is_empty(), "в PHOTO поверхностей раздела нет");
+    assert!(
+        surfaces(&list).iter().filter(|shape| has_photo_edge(shape)).count() >= 4,
+        "в PHOTO поверхности миниатюры, кнопки белого, кнопки меню и капсулы — с ободком"
+    );
+    assert!(
+        surfaces(&list).iter().all(|shape| has_photo_edge(shape)),
+        "в PHOTO поверхностей раздела нет"
+    );
+    assert_eq!(glass_groups(&list), 0, "и стекла в PHOTO нет (решение 297)");
 }
 
 #[test]

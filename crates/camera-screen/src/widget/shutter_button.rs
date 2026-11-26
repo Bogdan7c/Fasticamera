@@ -13,7 +13,6 @@ use ui_core::gesture::{GestureEvent, PressSpec, RecognizerSpec, TapSpec};
 use ui_core::id::NodeId;
 use ui_kit::button::PressOutcome;
 use ui_kit::shutter::{ShutterButton, ShutterLook};
-use ui_kit::tokens::GlassRole;
 use ui_kit::view::shutter_items;
 
 use super::error::{WidgetError, element};
@@ -118,19 +117,16 @@ impl ShutterWidget {
             return Ok(());
         }
         let snapshot = self.button.snapshot(ctx.now);
+        // Затвор без подложки (решение 300): кольцо и диск — содержимое, стекла под ними нет. Кольцо при
+        // нажатии растёт на прирост кнопок — как раньше росло стеклянное кольцо.
         let items = shutter_items(
             &placement,
             &snapshot,
-            ctx.tokens.glass.style_for(GlassRole::Button),
+            &ctx.tokens.glass.button.press,
             ctx.px,
             &ctx.tokens.shutter,
             &ctx.tokens.colors,
         )?;
-        // Первый элемент — стеклянное кольцо, остальное (диск) — содержимое поверх.
-        let mut items = items.into_iter();
-        if let Some(ring) = items.next() {
-            layers.push(Layer::Glass, ring);
-        }
         layers.extend(Layer::Content, items);
         Ok(())
     }

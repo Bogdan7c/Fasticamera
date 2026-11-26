@@ -21,9 +21,9 @@ use crate::state::PanelState;
 use crate::test_support::live_facts;
 use crate::tools::{ToolId, ToolOption};
 
-/// Члены стекла указанной формы около (x, y) px.
-fn glass_near(list: &ui_draw::draw_list::DrawList, y_px: f32) -> Vec<ShapeGeometry> {
-    glass_members(list)
+/// Силуэты элементов (панели и кольцо затвора) около высоты `y_px`.
+fn elements_near(list: &ui_draw::draw_list::DrawList, y_px: f32) -> Vec<ShapeGeometry> {
+    element_members(list)
         .into_iter()
         .filter(|(_, _, ty)| near(*ty, y_px, 3.0))
         .map(|(geometry, ..)| geometry)
@@ -36,14 +36,14 @@ fn rest_layout_puts_elements_where_the_layout_doc_says() {
     let list = rig.frame().clone();
     // Наш экран 1080 × 2412 px (1 pt = 2,4545 px), эталонные y сдвинуты вниз на 26,7 pt:
     // затвор y ≈ 2034 px (Ø 197), капсула режимов ≈ 2270 px (543 × 120), значок вспышки ≈ 318 px.
-    let shutter = glass_near(&list, 2034.0);
+    let shutter = elements_near(&list, 2034.0);
     assert!(
         shutter
             .iter()
             .any(|g| matches!(g, ShapeGeometry::Circle { diameter } if near(*diameter, 197.0, 2.0))),
         "затвор Ø197 на y 2034: {shutter:?}"
     );
-    let capsule = glass_near(&list, 2270.0);
+    let capsule = elements_near(&list, 2270.0);
     assert!(
         capsule
             .iter()
@@ -64,14 +64,14 @@ fn rest_layout_puts_elements_where_the_layout_doc_says() {
         flash[0].ty
     );
     // Кнопка меню Ø 44 pt (108 px) и миниатюра Ø 48 pt (118 px) — круги нижней зоны.
-    let circles = glass_near(&list, 2270.0);
+    let circles = elements_near(&list, 2270.0);
     assert!(
         circles
             .iter()
             .any(|g| matches!(g, ShapeGeometry::Circle { diameter } if near(*diameter, 117.8, 2.0))),
         "миниатюра Ø118: {circles:?}"
     );
-    let menu_circle = glass_near(&list, 2034.0);
+    let menu_circle = elements_near(&list, 2034.0);
     assert!(
         menu_circle
             .iter()
@@ -128,8 +128,10 @@ fn every_key_state_yields_a_valid_draw_list_with_its_distinguishing_content() {
     rig.run(900);
     assert_eq!(rig.screen.state().panel(), PanelState::ControlsMenu);
     assert!(
-        rig.last.leaf_items().any(|i| matches!(i, DrawItem::Glass(g) if g.members.iter().any(|m| matches!(m.geometry, ShapeGeometry::RoundedRect { .. })))),
-        "шторка меню — стекло скруглённого прямоугольника"
+        surface_shapes(&rig.last)
+            .into_iter()
+            .any(|shape| has_photo_edge(shape) && matches!(shape.geometry, ShapeGeometry::RoundedRect { .. })),
+        "шторка меню — поверхность PHOTO с ободком, скруглённый прямоугольник"
     );
 
     // Подменю таймера: варианты Off / 3s / 5s / 10s.
@@ -148,7 +150,7 @@ fn every_key_state_yields_a_valid_draw_list_with_its_distinguishing_content() {
     assert_eq!(rig.screen.state().panel(), PanelState::ExposurePanel);
     assert_eq!(icon_transforms(&rig.last, IconId::Close).len(), 1, "кнопка «×» панели");
     assert!(
-        glass_near(&rig.last, 2269.0)
+        elements_near(&rig.last, 2269.0)
             .iter()
             .all(|g| !matches!(g, ShapeGeometry::Capsule { .. })),
         "капсула режимов растворилась"
@@ -199,14 +201,14 @@ fn unavailable_camera_shows_the_notice_and_disables_the_shutter() {
 fn rotating_the_phone_turns_the_icons_but_not_their_frames() {
     let mut rig = Rig::new();
     let before = icon_transforms(rig.frame(), IconId::FlashOff)[0];
-    let glass_before = glass_members(&rig.last);
+    let frames_before = element_members(&rig.last);
     rig.act(ScreenAction::DeviceOrientationChanged(DeviceOrientation::LandscapeLeft));
     rig.run(1000);
     let after = icon_transforms(&rig.last, IconId::FlashOff)[0];
     // Центр значка на месте (раскладка не меняется), линейная часть повернута на 90° по часовой.
     assert!(near(after.tx, before.tx, 0.01) && near(after.ty, before.ty, 0.01));
     assert!(near(after.a, 0.0, 1e-3) && near(after.c, 1.0, 1e-3), "{after:?}");
-    assert_eq!(glass_members(&rig.last), glass_before, "стекло кнопок не повернулось");
+    assert_eq!(element_members(&rig.last), frames_before, "рамки кнопок не повернулись");
 }
 
 #[test]
@@ -270,7 +272,7 @@ fn surface_resize_rebuilds_the_scene_and_taps_still_work_at_the_new_scale() {
     let layout = *rig.screen.state().layout().expect("раскладка");
     let expected_y = ((801.9 + layout.bottom_anchor_shift_pt()) * f64::from(small.0 / 440.0)) as f32;
     assert!(
-        !glass_near(&rig.last, expected_y).is_empty(),
+        !elements_near(&rig.last, expected_y).is_empty(),
         "затвор на y {expected_y}"
     );
 }

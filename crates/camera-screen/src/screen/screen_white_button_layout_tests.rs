@@ -33,7 +33,7 @@ fn config_with_side(side: WhiteButtonSide) -> ScreenConfig {
 
 /// Нарисованный круг кнопки белого: (центр x, центр y) в px. Кнопку меню (тот же диаметр) отличает x.
 fn white_circle(list: &DrawList, center_x_pt: f64) -> Option<(f32, f32)> {
-    glass_members(list)
+    element_members(list)
         .into_iter()
         .find_map(|(geometry, x, y)| match geometry {
             ShapeGeometry::Circle { diameter }
@@ -47,7 +47,7 @@ fn white_circle(list: &DrawList, center_x_pt: f64) -> Option<(f32, f32)> {
 
 /// Кольцо затвора: центр y в px.
 fn shutter_ring_y(list: &DrawList) -> f32 {
-    glass_members(list)
+    element_members(list)
         .into_iter()
         .find_map(|(geometry, _, y)| match geometry {
             ShapeGeometry::Circle { diameter } if diameter > px(60.0) => Some(y),
@@ -59,7 +59,7 @@ fn shutter_ring_y(list: &DrawList) -> f32 {
 // ---- где стоит ----
 
 #[test]
-fn the_right_button_is_a_44_pt_glass_circle_at_the_shutter_height_between_shutter_and_menu_button() {
+fn the_right_button_is_a_44_pt_circle_at_the_shutter_height_between_shutter_and_menu_button() {
     let mut rig = Rig::new();
     rig.run(300);
     let shutter = rig.shutter_center();

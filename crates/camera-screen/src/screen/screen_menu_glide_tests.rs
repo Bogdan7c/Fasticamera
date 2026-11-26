@@ -27,23 +27,29 @@ fn menu_icon(list: &DrawList) -> (usize, (f32, f32)) {
     (icons.len(), centre)
 }
 
-/// Материал круга под значком: `true` — поверхность раздела (без стекла), `false` — стекло PHOTO.
+/// Материал круга под значком: `true` — поверхность раздела (без ободка), `false` — поверхность PHOTO с
+/// ободком (решения 269, 297). Стекла у кнопки нет ни в одном режиме.
 fn button_is_section_surface(list: &DrawList, centre: (f32, f32)) -> bool {
-    let near = |member: &(ui_draw::shape::ShapeGeometry, f32, f32)| {
-        matches!(member.0, ui_draw::shape::ShapeGeometry::Circle { .. })
-            && (member.1 - centre.0).abs() < 1.0
-            && (member.2 - centre.1).abs() < 1.0
-    };
-    let glass = glass_members(list).iter().any(near);
-    // Поверхность — члены `panel_members`, которых нет среди стекла.
-    let surface = panel_members(list).len() > glass_members(list).len()
-        && panel_members(list).iter().filter(|member| near(member)).count()
-            > glass_members(list).iter().filter(|member| near(member)).count();
-    assert!(
-        glass != surface,
-        "круг кнопки нарисован ровно одним материалом (стекло {glass}, поверхность {surface})"
+    let circles: Vec<_> = surface_shapes(list)
+        .into_iter()
+        .filter(|shape| {
+            matches!(shape.geometry, ui_draw::shape::ShapeGeometry::Circle { .. })
+                && (shape.transform.tx - centre.0).abs() < 1.0
+                && (shape.transform.ty - centre.1).abs() < 1.0
+        })
+        .collect();
+    assert_eq!(
+        circles.len(),
+        1,
+        "круг кнопки нарисован ровно одной поверхностью: {circles:?}"
     );
-    surface
+    assert!(
+        glass_members(list)
+            .iter()
+            .all(|(_, x, y)| (x - centre.0).abs() >= 1.0 || (y - centre.1).abs() >= 1.0),
+        "под кнопкой нет стекла"
+    );
+    !has_photo_edge(circles[0])
 }
 
 fn distance(a: (f32, f32), b: (f32, f32)) -> f32 {
@@ -167,7 +173,7 @@ fn the_way_back_glides_to_the_photo_place_and_keeps_one_button_with_the_photo_ma
     );
     assert!(
         !trace.frames[0].2,
-        "с первого кадра обратного пути материал PHOTO (стекло)"
+        "с первого кадра обратного пути материал PHOTO (поверхность с ободком)"
     );
     assert!(
         distance(trace.frames[0].1, section_place) < 0.25 * distance(section_place, photo_place),

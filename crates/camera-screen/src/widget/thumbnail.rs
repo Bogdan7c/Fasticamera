@@ -17,7 +17,6 @@ use ui_draw::picture::UiPicture;
 use ui_draw::scene_bridge::NodePlacementPx;
 use ui_draw::shape::ShapeGeometry;
 use ui_draw::transform::Affine2;
-use ui_kit::tokens::GlassRole;
 use ui_kit::view::{GlassShape, ViewError, opacity_of_placement};
 
 use super::bottom_row::BottomRowFade;
@@ -26,7 +25,7 @@ use super::error::WidgetError;
 use super::intent::{ButtonId, ScreenGesture};
 use super::kit::SceneKit;
 use super::layers::{DrawLayers, Layer, VisualIndex};
-use super::{Ctx, Outputs, rotation_only, single_member_group};
+use super::{Ctx, Outputs, PHOTO_SURFACE_MATERIAL, rotation_only, single_member_material};
 use crate::action::ScreenAction;
 use crate::shutter::ThumbnailState;
 
@@ -83,15 +82,16 @@ impl ThumbnailWidget {
         if placement.opacity <= 0.0 {
             return Ok(());
         }
-        let (group, host) = single_member_group(
+        // Круг миниатюры — поверхность PHOTO с ободком (решение 297): на чёрной полосе 4:3 виден силуэт.
+        let (backing, host) = single_member_material(
             ctx,
-            GlassRole::Button,
+            PHOTO_SURFACE_MATERIAL,
             GlassShape::Circle,
             &placement,
             self.button.press_state(ctx.now),
             "thumbnail",
         )?;
-        layers.push(Layer::Glass, DrawItem::Glass(group));
+        layers.push(Layer::Glass, backing);
         let diameter =
             placement.size.width.min(placement.size.height) * ctx.geometry.config().bottom.thumbnail_dot_scale;
         match ctx.state.thumbnail_ref() {

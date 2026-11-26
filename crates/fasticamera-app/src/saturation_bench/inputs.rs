@@ -42,6 +42,7 @@ use look_contract::{LookFacts, LookSettings, PresetId, ToneBaseModel};
 use render_loop::config::{RenderLoopConfig, ViewfinderToneConfig};
 use serde::Serialize;
 use ui_core::time::MotionPreference;
+use ui_kit::tokens::UiKitTokens;
 
 use super::catalog_wait::describe_catalog;
 use crate::camera_screen_config::CameraScreenConfig;
@@ -110,6 +111,8 @@ pub struct ProductInputs {
     /// Факты вида для экрана калибровки (`None` — библиотеки пресетов в сборке нет).
     pub look_facts: Option<LookFacts>,
     pub screen_config: ScreenConfig,
+    /// Токены элементов из конфига продукта (решение 301): списки рисования стенда — как у экрана на телефоне.
+    pub screen_tokens: UiKitTokens,
     pub motion: MotionPreference,
 }
 
@@ -178,6 +181,7 @@ pub fn gather_inputs(sources: &InputSources<'_>) -> ProductInputs {
         tone_config: sources.render_config.viewfinder.tone,
         look_facts,
         screen_config: sources.screen.screen.clone(),
+        screen_tokens: sources.screen.tokens.clone(),
         motion: sources.screen.motion,
     }
 }

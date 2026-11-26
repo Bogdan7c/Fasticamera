@@ -44,7 +44,8 @@ fn healthy_observation() -> ScreenObservation {
             frames_failed: 0,
             source_failures: 0,
             limit_overflows: 0,
-            pyramid_rebuilds: 1_200,
+            // Экран PHOTO без стекла (14p): пирамида в окне не строится, и это не провал.
+            pyramid_rebuilds: 0,
             pyramid_reuses: 0,
             gpu_time: Some(time(1.5)),
             last_error: None,
@@ -74,6 +75,23 @@ fn only_violation(observation: &ScreenObservation) -> String {
 #[test]
 fn a_healthy_run_passes() {
     assert_eq!(verdict(&healthy_observation()), Vec::<String>::new());
+}
+
+#[test]
+fn a_photo_screen_without_glass_passes_without_a_blur_pyramid_and_the_glass_showcase_still_needs_it() {
+    // Решение 297: здоровый прогон экрана — с нулём перестроек пирамиды (стекла в PHOTO нет).
+    let observation = healthy_observation();
+    assert_eq!(observation.overlay.pyramid_rebuilds, 0);
+    assert!(verdict(&observation).is_empty(), "{:?}", verdict(&observation));
+    // А витрине стекла пирамида по-прежнему обязательна: та же картина счётчиков для неё — провал.
+    let glass = super::super::glass_report::overlay_violations(
+        &observation.overlay,
+        super::super::glass_report::BackdropBlurExpectation::MustBeBuilt,
+    );
+    assert!(
+        glass.iter().any(|violation| violation.contains("pyramid_rebuilds = 0")),
+        "{glass:?}"
+    );
 }
 
 #[test]

@@ -39,8 +39,8 @@ fn ablation_groups_list_exactly_the_documented_workloads_in_catalog_order() {
             "display_calibrate_shapes_only",
             "display_calibrate_text_only",
             "display_calibrate_images_only",
-            "display_photo_glass_only",
-            "display_photo_no_glass",
+            "display_photo_shapes_only",
+            "display_photo_text_only",
         ]
     );
     assert_eq!(
@@ -100,21 +100,23 @@ fn expanding_a_group_gives_its_workloads_a_work_name_gives_one_and_a_typo_is_an_
 #[test]
 fn ablation_entries_map_to_the_right_screen_filter_and_isp_variant() {
     assert_eq!(
-        find_entry("display_photo_glass_only").unwrap().kind,
+        find_entry("display_photo_shapes_only").unwrap().kind,
         WorkloadKind::Display {
             screen: DisplayScreen::Photo,
             rhythm: BackdropRhythm::NewFrameEveryFrame,
-            filter: DrawFilter::GlassOnly,
+            filter: DrawFilter::ShapesOnly,
         }
     );
     assert_eq!(
-        find_entry("display_photo_no_glass").unwrap().kind,
+        find_entry("display_photo_text_only").unwrap().kind,
         WorkloadKind::Display {
             screen: DisplayScreen::Photo,
             rhythm: BackdropRhythm::NewFrameEveryFrame,
-            filter: DrawFilter::NoGlass,
+            filter: DrawFilter::TextOnly,
         }
     );
+    // Группы стекла `glass_ablation` больше нет (14p): после 14m и 14p она мерила бы пустоту.
+    assert!(expand_name("glass_ablation").is_err());
     assert_eq!(
         find_entry("viewfinder_without_oetf").unwrap().kind,
         WorkloadKind::Viewfinder {

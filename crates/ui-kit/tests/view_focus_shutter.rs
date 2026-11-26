@@ -182,14 +182,15 @@ fn shutter_ring_is_a_grey_translucent_fill_with_a_one_point_rim_inside_the_outer
     let items = shutter_items(
         &placement,
         &shutter.snapshot(ms(0)),
-        &tokens.glass.button,
+        &tokens.glass.button.press,
         px(),
         &tokens.shutter,
         &tokens.colors,
     )
     .unwrap();
-    let [DrawItem::Glass(_), DrawItem::Shape(ring), DrawItem::Shape(disc)] = items.as_slice() else {
-        panic!("ожидались стекло, кольцо и диск: {items:?}");
+    // Решение 300: стекла под кольцом нет — только кольцо и диск.
+    let [DrawItem::Shape(ring), DrawItem::Shape(disc)] = items.as_slice() else {
+        panic!("ожидались кольцо и диск без стекла: {items:?}");
     };
     // Заливка — серая полупрозрачная (белый с малой альфой), не белая и не прозрачная.
     assert_eq!(ring.fill, tokens.shutter.ring_fill);

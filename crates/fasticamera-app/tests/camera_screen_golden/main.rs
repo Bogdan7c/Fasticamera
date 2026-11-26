@@ -23,6 +23,7 @@ mod calibration_white_goldens;
 mod driver;
 mod golden_files;
 mod mode_capsule_goldens;
+mod photo_surface_goldens;
 mod render_rig;
 mod states;
 mod thumbnail_goldens;
@@ -66,8 +67,8 @@ fn near_white(pixel: [f32; 3]) -> bool {
     pixel.iter().all(|channel| *channel > 0.9)
 }
 
-/// Светлый текст или значок на тёмном стекле карточки (заголовок — белый α ≈ 0,6, риски шкалы — α 0,5…0,8).
-/// Тёмное стекло карточки имеет яркость ≈ 0,15, поэтому порог 0,35 отделяет рисунок от фона.
+/// Светлый текст или значок на тёмной панели карточки (заголовок — белый α ≈ 0,6, риски шкалы — α 0,5…0,8).
+/// Тёмная панель карточки темнее 0,15 (поверхность PHOTO, решение 297), поэтому порог 0,35 отделяет рисунок от фона.
 fn light_on_dark_glass(pixel: [f32; 3]) -> bool {
     pixel.iter().all(|channel| *channel > 0.35)
 }
@@ -152,7 +153,7 @@ fn frame_rect_px(driver: &ScreenDriver, aspect: AspectRatio) -> (u32, u32, u32, 
 /// Центр затвора в покое, px (целые).
 fn shutter_px(driver: &ScreenDriver) -> (u32, u32) {
     let (x, y) = driver
-        .glass_circle_center_px(SHUTTER_DIAMETER_PX)
+        .element_circle_center_px(SHUTTER_DIAMETER_PX)
         .expect("затвор в списке");
     (x.round() as u32, y.round() as u32)
 }
@@ -271,7 +272,7 @@ fn controls_menu_open() {
         let driver = states::controls_menu();
         let snapshot = render(rig, &driver);
         assert_eq!(driver.screen().state().panel(), PanelState::ControlsMenu);
-        // Затвор ушёл под шторку: там, где был белый диск, теперь тёмная стеклянная панель.
+        // Затвор ушёл под шторку: там, где был белый диск, теперь тёмная панель шторки.
         let (sx, sy) = shutter_px(&states::rest());
         assert!(near_white(rest.at(sx, sy)));
         assert!(
@@ -280,7 +281,7 @@ fn controls_menu_open() {
             snapshot.at(sx, sy)
         );
         assert!(
-            driver.glass_circle_center_px(SHUTTER_DIAMETER_PX).is_none(),
+            driver.element_circle_center_px(SHUTTER_DIAMETER_PX).is_none(),
             "затвор не рисуется"
         );
         assert_sheet_has_handle_and_black_item_circles(&rest, &snapshot);
@@ -288,8 +289,8 @@ fn controls_menu_open() {
     });
 }
 
-/// Новая шторка (iOS 27): «ручка» 37,6 × 3,7 pt белая α 0,75 у верха и чёрные круги пунктов поверх стекла.
-/// Ручка — светлая полоска там, где в покое фото; круг пункта заметно темнее стекла рядом с ним (чёрный α 0,5).
+/// Новая шторка (iOS 27): «ручка» 37,6 × 3,7 pt белая α 0,75 у верха и чёрные круги пунктов поверх панели.
+/// Ручка — светлая полоска там, где в покое фото; круг пункта заметно темнее панели рядом с ним (чёрный α 0,5).
 fn assert_sheet_has_handle_and_black_item_circles(rest: &Snapshot, snapshot: &Snapshot) {
     let scale = f64::from(PX_PER_PT);
     let handle_pixels = snapshot.count_in(SHEET_HANDLE_WINDOW, |pixel| pixel.iter().all(|channel| *channel > 0.7));
@@ -364,7 +365,7 @@ fn timer_submenu() {
 }
 
 /// Ряд затвора поднят на 100 pt, затвор виден (белый диск) и целиком выше верха карточки; на старом месте затвора
-/// теперь стекло карточки, а не белый диск.
+/// теперь панель карточки, а не белый диск.
 fn assert_raised_shutter_is_visible_above_the_card(driver: &ScreenDriver, rest: &Snapshot, snapshot: &Snapshot) {
     let (rest_x, rest_y) = shutter_px(&ScreenDriver::new());
     let (raised_x, raised_y) = shutter_px(driver);
@@ -480,7 +481,7 @@ fn exposure_panel_plus_one_ev() {
 
 /// Карточка Exposure — рамка 421 × 183,1 pt с отступом 8,2 pt от низа экрана и от боков по 9,5 pt (`CardLayout`).
 fn assert_card_reaches_the_bottom_and_the_shutter_rides_above_it(driver: &ScreenDriver) {
-    let (card_x0, card_y0, card_x1, card_y1) = driver.glass_panel_rect_px().expect("стекло карточки в списке");
+    let (card_x0, card_y0, card_x1, card_y1) = driver.panel_rect_px().expect("поверхность карточки в списке");
     let scale = PX_PER_PT;
     assert!(
         (card_y0 - card_top_px()).abs() < 2.0,
@@ -502,7 +503,7 @@ fn assert_card_reaches_the_bottom_and_the_shutter_rides_above_it(driver: &Screen
         "правый отступ карточки {} pt, ждали 9,5",
         (WIDTH_PX as f32 - card_x1) / scale
     );
-    // Затвор едет над карточкой: его кольцо кончается выше верха стекла (не «под кольцом», как в старой панели).
+    // Затвор едет над карточкой: его кольцо кончается выше верха панели (не «под кольцом», как в старой панели).
     let (_, raised_y) = shutter_px(driver);
     let ring_bottom = raised_y as f32 + SHUTTER_DIAMETER_PX / 2.0;
     assert!(

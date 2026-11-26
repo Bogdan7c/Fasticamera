@@ -25,16 +25,16 @@ fn images(list: &DrawList) -> Vec<&ImageItem> {
         .collect()
 }
 
-/// Стеклянный круг миниатюры: центр (px) члена группы.
+/// Круг-поверхность миниатюры (решение 297): центр (px).
 fn thumbnail_glass_center(list: &DrawList) -> (f32, f32) {
-    glass_members(list)
+    panel_members(list)
         .into_iter()
         .find(|(geometry, _, y)| {
             near(*y, 2270.0, 3.0)
                 && matches!(geometry, ShapeGeometry::Circle { diameter } if near(*diameter, THUMBNAIL_DIAMETER_PX, 2.0))
         })
         .map(|(_, x, y)| (x, y))
-        .expect("стеклянный круг миниатюры на месте")
+        .expect("круг миниатюры на месте")
 }
 
 /// Снимок «нажат → захвачен»: затвор снова свободен, итог ждёт сохранения.

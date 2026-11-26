@@ -19,22 +19,22 @@ fn near(actual: f32, expected: f32, tolerance: f32) -> bool {
     (actual - expected).abs() <= tolerance
 }
 
-/// Индекс первой группы стекла шторки меню (член — скруглённый прямоугольник).
-fn drawer_glass_index(list: &DrawList) -> Option<usize> {
+/// Индекс поверхности шторки меню: первой панели PHOTO в форме скруглённого прямоугольника.
+fn drawer_panel_index(list: &DrawList) -> Option<usize> {
     list.leaf_items().position(|item| {
-        matches!(item, DrawItem::Glass(group)
-            if group.members.iter().any(|m| matches!(m.geometry, ShapeGeometry::RoundedRect { .. })))
+        photo_surface_of(item).is_some_and(|shape| matches!(shape.geometry, ShapeGeometry::RoundedRect { .. }))
     })
 }
 
-/// Индекс стеклянного члена-круга диаметром около `diameter_px` с центром около (`x_px`, `y_px`).
-fn circle_glass_index(list: &DrawList, x_px: f32, y_px: f32, diameter_px: f32) -> Option<usize> {
+/// Индекс кольца затвора (своя фигура, решение 300) силуэтом около `diameter_px` с центром около (`x_px`, `y_px`).
+fn shutter_ring_index(list: &DrawList, x_px: f32, y_px: f32, diameter_px: f32) -> Option<usize> {
+    let ring_fill = UiKitTokens::default().shutter.ring_fill;
     list.leaf_items().position(|item| {
-        matches!(item, DrawItem::Glass(group)
-            if group.members.iter().any(|m| matches!(m.geometry, ShapeGeometry::Circle { diameter }
-                if near(diameter, diameter_px, 12.0)
-                    && near(m.transform.tx, x_px, 12.0)
-                    && near(m.transform.ty, y_px, 12.0))))
+        matches!(item, DrawItem::Shape(shape)
+            if shape.fill == ring_fill
+                && matches!(silhouette(shape), ShapeGeometry::Circle { diameter } if near(diameter, diameter_px, 12.0))
+                && near(shape.transform.tx, x_px, 12.0)
+                && near(shape.transform.ty, y_px, 12.0))
     })
 }
 
@@ -49,7 +49,7 @@ fn circle_shape_index(list: &DrawList, x_px: f32, y_px: f32) -> Option<usize> {
 }
 
 #[test]
-fn dissolving_shutter_is_drawn_entirely_under_the_drawer_glass() {
+fn dissolving_shutter_is_drawn_entirely_under_the_drawer_panel() {
     let mut rig = Rig::new();
     rig.act(ScreenAction::ControlsMenuOpenRequested);
     // Кадры растворения: затвор уже не нажимается, но ещё виден (не дошёл до порога невидимости).
@@ -59,51 +59,51 @@ fn dissolving_shutter_is_drawn_entirely_under_the_drawer_glass() {
         ShutterVisibility::HiddenUnderDrawer
     );
     let list = rig.last.clone();
-    let drawer = drawer_glass_index(&list).expect("стекло шторки в списке");
+    let drawer = drawer_panel_index(&list).expect("поверхность шторки в списке");
     // Затвор по центру экрана: x = 540 px, y ≈ 2034 px, кольцо Ø≈197 px.
-    let ring = circle_glass_index(&list, 540.0, 2034.0, 197.0).expect("кольцо затвора ещё рисуется");
+    let ring = shutter_ring_index(&list, 540.0, 2034.0, 197.0).expect("кольцо затвора ещё рисуется");
     let disc = circle_shape_index(&list, 540.0, 2034.0).expect("белый диск затвора ещё рисуется");
     assert!(
         ring < drawer,
-        "кольцо затвора ({ring}) должно лежать под стеклом шторки ({drawer})"
+        "кольцо затвора ({ring}) должно лежать под поверхностью шторки ({drawer})"
     );
     assert!(
         disc < drawer,
-        "диск затвора ({disc}) должен лежать под стеклом шторки ({drawer})"
+        "диск затвора ({disc}) должен лежать под поверхностью шторки ({drawer})"
     );
-    // Содержимое кнопки меню (источник морфа) тоже под шторкой, а содержимое пунктов — над её стеклом.
+    // Содержимое кнопки меню (источник морфа) тоже под шторкой, а содержимое пунктов — над её поверхностью.
     let menu_icon = list
         .leaf_items()
         .position(|item| matches!(item, DrawItem::Icon(icon) if icon.icon == IconId::ControlsMenu));
     if let Some(menu_icon) = menu_icon {
-        assert!(menu_icon < drawer, "значок кнопки меню под стеклом шторки");
+        assert!(menu_icon < drawer, "значок кнопки меню под поверхностью шторки");
     }
-    // Когда шторка раскрылась, содержимое её пунктов лежит над стеклом.
+    // Когда шторка раскрылась, содержимое её пунктов лежит над поверхностью.
     rig.run(900);
     let list = rig.last.clone();
-    let drawer = drawer_glass_index(&list).expect("стекло шторки в списке");
+    let drawer = drawer_panel_index(&list).expect("поверхность шторки в списке");
     let flash_item = list
         .leaf_items()
         .position(|item| matches!(item, DrawItem::Icon(icon) if icon.icon == IconId::Timer))
         .expect("пункт Timer рисуется в шторке");
-    assert!(flash_item > drawer, "содержимое шторки лежит поверх её стекла");
+    assert!(flash_item > drawer, "содержимое шторки лежит поверх её поверхности");
 }
 
-/// Степень нажатия стеклянного круга с центром около (`x_px`, `y_px`).
+/// Степень нажатия круга-поверхности с центром около (`x_px`, `y_px`): поверхность хранит нажатие как масштаб
+/// `1 + прирост · степень` (прирост — у пресета кнопок), поэтому степень восстанавливается из масштаба.
 fn press_amount_of_circle(list: &DrawList, x_px: f32, y_px: f32) -> f32 {
-    list.leaf_items()
-        .find_map(|item| match item {
-            DrawItem::Glass(group) => group.members.iter().find_map(|m| match m.geometry {
-                ShapeGeometry::Circle { .. }
-                    if near(m.transform.tx, x_px, 12.0) && near(m.transform.ty, y_px, 12.0) =>
-                {
-                    Some(m.press.amount)
-                }
-                _ => None,
-            }),
+    let gain = UiKitTokens::default().glass.button.press.scale_gain;
+    surface_shapes(list)
+        .into_iter()
+        .find_map(|shape| match shape.geometry {
+            ShapeGeometry::Circle { .. }
+                if near(shape.transform.tx, x_px, 12.0) && near(shape.transform.ty, y_px, 12.0) =>
+            {
+                Some((shape.transform.a.hypot(shape.transform.c) - 1.0) / gain)
+            }
             _ => None,
         })
-        .expect("стеклянный круг кнопки в списке")
+        .expect("круг-поверхность кнопки в списке")
 }
 
 #[test]

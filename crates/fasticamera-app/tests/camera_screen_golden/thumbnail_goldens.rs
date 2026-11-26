@@ -88,7 +88,7 @@ fn is_blue(pixel: [f32; 3]) -> bool {
 /// Центр стеклянного круга миниатюры, px (целые).
 fn thumbnail_center_px(driver: &ScreenDriver) -> (u32, u32) {
     let (x, y) = driver
-        .glass_circle_center_px(THUMBNAIL_DIAMETER_PX)
+        .element_circle_center_px(THUMBNAIL_DIAMETER_PX)
         .expect("круг миниатюры в списке");
     (x.round() as u32, y.round() as u32)
 }

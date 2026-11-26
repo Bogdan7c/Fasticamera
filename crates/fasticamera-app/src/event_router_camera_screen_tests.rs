@@ -170,6 +170,36 @@ fn ready_screen() -> (Harness, RenderClock) {
 }
 
 #[test]
+fn the_installed_screen_draws_with_the_surface_density_from_the_config() {
+    // Решение 301: токены секции `camera_screen.tokens` доходят до экрана, который ставит приложение, —
+    // поверхности PHOTO в кадре рендера закрашены плотностью из конфига, а не умолчанием.
+    let mut config = instant_capture_config();
+    config.tokens.surface.panel_density = 0.55;
+    let mut harness = screen_harness(config);
+    start_streaming(&mut harness);
+    let mut clock = RenderClock::new();
+    clock.frames(&harness, 2);
+    let list = clock.frame_list(&harness);
+    let fill = ui_kit::tokens::UiKitTokens::default().surface.fill_color;
+    let densities: Vec<f32> = list
+        .leaf_items()
+        .filter_map(|item| match item {
+            ui_draw::draw_list::DrawItem::Shape(shape)
+                if (shape.fill.r, shape.fill.g, shape.fill.b) == (fill.r, fill.g, fill.b) =>
+            {
+                Some(shape.fill.a)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(!densities.is_empty(), "поверхности PHOTO нарисованы");
+    assert!(
+        densities.iter().all(|alpha| (alpha - 0.55).abs() < 1e-6),
+        "плотность из конфига, а не 0,70 по умолчанию: {densities:?}"
+    );
+}
+
+#[test]
 fn a_tap_on_the_viewfinder_reaches_the_camera_engine_with_the_right_sensor_point() {
     let (mut harness, mut clock) = ready_screen();
     assert_eq!(

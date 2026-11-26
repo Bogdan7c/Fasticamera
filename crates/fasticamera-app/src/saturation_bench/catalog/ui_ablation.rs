@@ -1,7 +1,8 @@
 //! Работы группы `ui_ablation`: тот же настоящий список рисования экрана, но один вид элементов.
 //!
-//! Срезов по стеклу CALIBRATE нет: после 14m в разделе стекла нет, «только стекло» было бы пустым списком, а
-//! «всё, кроме стекла» совпало бы с полным `display_calibrate`. Срезы по стеклу — только у PHOTO.
+//! Срезов по стеклу нет: после 14m в разделе, а после 14p и в PHOTO стекла нет (решения 261, 297), «только стекло»
+//! было бы пустым списком, а «всё, кроме стекла» совпало бы с полным экраном. У PHOTO — те же срезы по фигурам
+//! (поверхности с ободком, кольцо затвора) и глифам, что у раздела.
 //!
 //! Таблица — данные: что за работа, решает `WorkloadKind`, а не имя. Порядок строк — порядок прогона.
 
@@ -28,15 +29,15 @@ pub(super) const ENTRIES: &[CatalogEntry] = &[
         summary: "показ CALIBRATE: только картинки (живая картинка прибора)",
     },
     CatalogEntry {
-        name: "display_photo_glass_only",
-        kind: ablated_display(DisplayScreen::Photo, DrawFilter::GlassOnly),
+        name: "display_photo_shapes_only",
+        kind: ablated_display(DisplayScreen::Photo, DrawFilter::ShapesOnly),
         group: WorkloadGroup::UiAblation,
-        summary: "показ PHOTO: только стеклянные группы",
+        summary: "показ PHOTO: только фигуры (поверхности с ободком, кольцо и диск затвора)",
     },
     CatalogEntry {
-        name: "display_photo_no_glass",
-        kind: ablated_display(DisplayScreen::Photo, DrawFilter::NoGlass),
+        name: "display_photo_text_only",
+        kind: ablated_display(DisplayScreen::Photo, DrawFilter::TextOnly),
         group: WorkloadGroup::UiAblation,
-        summary: "показ PHOTO: всё, кроме стекла",
+        summary: "показ PHOTO: только текст и значки (глифы)",
     },
 ];
