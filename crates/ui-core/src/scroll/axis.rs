@@ -338,12 +338,7 @@ impl ScrollAxis {
         ensure_finite("velocity", start.velocity)?;
         ensure_finite("target", target)?;
         let target = self.clamp(target);
-        let animation = self.start_spring(
-            self.settings.snap_spring,
-            (start.offset, target),
-            start.velocity,
-            now,
-        )?;
+        let animation = self.start_spring(self.settings.snap_spring, (start.offset, target), start.velocity, now)?;
         self.motion = Motion::Springing {
             animation,
             purpose: SpringPurpose::ScrollToTarget,
