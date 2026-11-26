@@ -9,7 +9,7 @@ use shell_contract::touch::TouchPhase;
 use ui_draw::draw_list::{DrawItem, DrawList, ShapeItem};
 use ui_kit::tokens::UiKitTokens;
 
-use super::screen_calibration_tests::{calibrating, center, zone_px};
+use super::screen_calibration_tests::{calibrating, center};
 use super::test_rig::*;
 use crate::action::ScreenAction;
 use crate::calibration::{CalibrationMenuItem, ControlViewKind};
