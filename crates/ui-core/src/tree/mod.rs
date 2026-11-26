@@ -30,5 +30,5 @@ pub use draw_order::NodeVisual;
 pub use error::TreeError;
 pub use hit_test::HitTestConfig;
 pub use node_transform::NodeTransform;
-pub use props::{HitTestPolicy, Visibility};
+pub use props::{HitTestPolicy, TouchReach, Visibility};
 pub use transform::ElementScale;

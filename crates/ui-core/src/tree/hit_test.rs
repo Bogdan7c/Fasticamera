@@ -4,8 +4,15 @@
 //! * дети проверяются сверху вниз — в обратном порядке рисования;
 //! * скрытый элемент, элемент с `DisabledWithSubtree` и с прозрачностью ниже порога не ловят
 //!   касание **вместе с поддеревом** (как UIKit: такой view вообще не опрашивает подвиды);
-//! * точка вне области элемента (рамка + расширение области касания) — дети **не проверяются**
-//!   (UIKit по умолчанию не находит детей за границей родителя; расширение родителя учитывается);
+//! * точка вне области элемента (рамка + расширение области касания) — обычные дети **не
+//!   проверяются** (UIKit по умолчанию не находит детей за границей родителя; расширение родителя
+//!   учитывается). Исключение — дети с [`TouchReach::BeyondParent`]: их собственная область
+//!   проверяется и за краем родителя (решение 278). Сам родитель при этом в путь попадает только
+//!   предком пойманного ребёнка, а опрашивается он лишь при точке внутри СВОЕГО родителя — так
+//!   окно прокрутки и обычные предки выше режут и вылезающие области;
+//! * порядок старшинства один для своих и вылезающих областей: дети опрашиваются сверху вниз
+//!   (позже добавленный — выше), поэтому вылезающая область верхнего соседа старше области
+//!   нижнего соседа, на которую она легла;
 //! * масштаб, поворот и сдвиг элемента и всех предков учитываются: точка переводится в локальную
 //!   систему обратным преобразованием по цепочке от корня вниз;
 //! * `PassThrough`: сам элемент касание не ловит, но дети ловят; в путь он попадает только как
@@ -18,7 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use super::arena::UiTree;
 use super::error::TreeError;
-use super::props::{HitTestPolicy, Visibility};
+use super::props::{HitTestPolicy, TouchReach, Visibility};
 use crate::geometry::Point;
 use crate::id::NodeId;
 
@@ -79,18 +86,29 @@ impl UiTree {
             return None;
         }
         let local_point = node.transform().invert(point_in_parent)?;
-        if !node.frame.outset_by(props.touch_outset).contains(local_point) {
-            return None;
-        }
+        let inside_own_area = node.frame.outset_by(props.touch_outset).contains(local_point);
         for &child in node.children.iter().rev() {
+            // Мимо своей области опрашиваются только дети, чья область выходит за родителя.
+            if !inside_own_area && !self.reaches_beyond_parent(child) {
+                continue;
+            }
             if let Some(mut path) = self.hit_node(child, local_point, config) {
                 path.push(id);
                 return Some(path);
             }
         }
+        if !inside_own_area {
+            return None;
+        }
         match props.hit_policy {
             HitTestPolicy::PassThrough => None,
             HitTestPolicy::Normal | HitTestPolicy::DisabledWithSubtree => Some(vec![id]),
         }
+    }
+
+    /// Ловит ли элемент касание и за краем родителя. Несуществующий элемент — нет.
+    fn reaches_beyond_parent(&self, id: NodeId) -> bool {
+        self.node(id)
+            .is_some_and(|child| child.props.touch_reach == TouchReach::BeyondParent)
     }
 }

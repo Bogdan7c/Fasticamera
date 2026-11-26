@@ -66,6 +66,13 @@ impl<I: Clone> UiScene<I> {
         Ok(self.gestures.add_recognizer(node, spec, intent)?)
     }
 
+    /// Элементы сцены, у которых есть распознаватели (см. [`GestureArena::nodes_with_recognizers`]).
+    ///
+    /// [`GestureArena::nodes_with_recognizers`]: crate::gesture::arena::GestureArena::nodes_with_recognizers
+    pub fn nodes_with_recognizers(&self) -> Vec<NodeId> {
+        self.gestures.nodes_with_recognizers()
+    }
+
     /// `waiting` не сработает, пока `must_fail` не провалится.
     pub fn require_to_fail(&mut self, waiting: RecognizerId, must_fail: RecognizerId) -> Result<(), GestureError> {
         self.gestures.require_to_fail(waiting, must_fail)

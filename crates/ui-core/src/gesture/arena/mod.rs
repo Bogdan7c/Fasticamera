@@ -171,6 +171,18 @@ impl<I: Clone> GestureArena<I> {
         Ok(doomed.len())
     }
 
+    /// Элементы, у которых есть хотя бы один распознаватель, без повторов, в порядке первого добавления.
+    /// Опора проверок соседства областей касания: «живой» элемент экрана — тот, что что-то распознаёт.
+    pub fn nodes_with_recognizers(&self) -> Vec<NodeId> {
+        let mut nodes: Vec<NodeId> = Vec::new();
+        for recognizer in &self.recognizers {
+            if !nodes.contains(&recognizer.node) {
+                nodes.push(recognizer.node);
+            }
+        }
+        nodes
+    }
+
     /// `waiting` не сработает, пока `must_fail` не провалится.
     pub fn require_to_fail(&mut self, waiting: RecognizerId, must_fail: RecognizerId) -> Result<(), GestureError> {
         self.ensure_known(waiting)?;

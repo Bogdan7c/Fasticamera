@@ -27,6 +27,22 @@ pub enum HitTestPolicy {
     DisabledWithSubtree,
 }
 
+/// Докуда достаёт область касания элемента относительно его родителя.
+///
+/// По умолчанию — как UIKit: родитель, мимо области которого прошло касание, детей не опрашивает,
+/// и расширенная область маленькой кнопки за краем родителя «мёртвая». `BeyondParent` — аналог
+/// `TouchDelegate` Android: такой ребёнок ловит касание и за краем родителя (решение 278 плана
+/// `user/foundation/`). Граница всё равно есть: сам родитель опрашивается, только если точка внутри
+/// ЕГО родителя, поэтому окно прокрутки и любые обычные предки выше по-прежнему режут касание.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TouchReach {
+    /// Касание за областью родителя до элемента не доходит (UIKit по умолчанию).
+    #[default]
+    WithinParent,
+    /// Область элемента (рамка + расширение) работает и за краем родителя.
+    BeyondParent,
+}
+
 /// Свойства элемента. Поля закрыты: меняются только через сеттеры [`UiTree`] с проверкой.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct NodeProps {
@@ -37,6 +53,7 @@ pub(super) struct NodeProps {
     pub visibility: Visibility,
     pub hit_policy: HitTestPolicy,
     pub touch_outset: Insets,
+    pub touch_reach: TouchReach,
 }
 
 impl Default for NodeProps {
@@ -49,6 +66,7 @@ impl Default for NodeProps {
             visibility: Visibility::Visible,
             hit_policy: HitTestPolicy::Normal,
             touch_outset: Insets::ZERO,
+            touch_reach: TouchReach::WithinParent,
         }
     }
 }
@@ -148,6 +166,17 @@ impl UiTree {
             return Err(TreeError::InvalidTouchOutset(outset));
         }
         self.require_mut(node)?.props.touch_outset = outset;
+        Ok(())
+    }
+
+    /// Докуда достаёт область касания элемента: в пределах родителя или и за его краем.
+    pub fn touch_reach(&self, node: NodeId) -> Result<TouchReach, TreeError> {
+        Ok(self.require(node)?.props.touch_reach)
+    }
+
+    /// Разрешает (или снова запрещает) области касания элемента работать за краем родителя.
+    pub fn set_touch_reach(&mut self, node: NodeId, reach: TouchReach) -> Result<(), TreeError> {
+        self.require_mut(node)?.props.touch_reach = reach;
         Ok(())
     }
 }

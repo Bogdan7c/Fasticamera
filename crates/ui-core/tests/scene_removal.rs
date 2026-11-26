@@ -179,3 +179,26 @@ fn set_property_cancels_animation_of_that_property_only() {
         "поворот продолжает ехать"
     );
 }
+
+/// Список «живых» элементов (с распознавателями) — без повторов и без снятых: на нём стоят проверки соседства
+/// областей касания экрана.
+#[test]
+fn nodes_with_recognizers_lists_each_live_element_once_and_forgets_removed_ones() {
+    let mut scene = empty_scene();
+    let root = scene.tree().root();
+    let panel = add_rect(&mut scene, root, "panel", Rect::from_xywh(0.0, 400.0, 440.0, 300.0));
+    let button = add_rect(&mut scene, panel, "button", Rect::from_xywh(10.0, 10.0, 80.0, 80.0));
+    let _plain = add_rect(&mut scene, root, "plain", Rect::from_xywh(0.0, 0.0, 100.0, 100.0));
+    scene
+        .add_recognizer(panel, RecognizerSpec::Pan(PanSpec::default()), "panel_pan")
+        .unwrap();
+    scene
+        .add_recognizer(button, RecognizerSpec::Tap(TapSpec::default()), "button_tap")
+        .unwrap();
+    scene
+        .add_recognizer(button, RecognizerSpec::Pan(PanSpec::default()), "button_pan")
+        .unwrap();
+    assert_eq!(scene.nodes_with_recognizers(), vec![panel, button]);
+    scene.remove_subtree(button).unwrap();
+    assert_eq!(scene.nodes_with_recognizers(), vec![panel]);
+}

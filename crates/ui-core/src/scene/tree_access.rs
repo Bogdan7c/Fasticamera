@@ -5,7 +5,7 @@ use crate::animator::{AnimatedProperty, AnimationRequest, AnimationStart, Freeze
 use crate::geometry::Insets;
 use crate::id::NodeId;
 use crate::layout::{ContainerLayout, Placement};
-use crate::tree::{HitTestPolicy, Visibility};
+use crate::tree::{HitTestPolicy, TouchReach, Visibility};
 
 /// Что убрала [`UiScene::remove_subtree`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +71,10 @@ impl<I: Clone> UiScene<I> {
 
     pub fn set_touch_outset(&mut self, node: NodeId, outset: Insets) -> Result<(), SceneError> {
         Ok(self.tree.set_touch_outset(node, outset)?)
+    }
+
+    pub fn set_touch_reach(&mut self, node: NodeId, reach: TouchReach) -> Result<(), SceneError> {
+        Ok(self.tree.set_touch_reach(node, reach)?)
     }
 
     /// Пересчитывает рамки. Хит-тест жестов работает по последней вёрстке.

@@ -8,7 +8,7 @@ use std::f64::consts::FRAC_PI_4;
 use ui_core::geometry::{Insets, Point, Rect, Size};
 use ui_core::id::NodeId;
 use ui_core::layout::{AnchorRule, AxisPlacement, Placement, ReferenceArea};
-use ui_core::tree::{ElementScale, HitTestConfig, HitTestPolicy, TreeError, UiTree, Visibility};
+use ui_core::tree::{ElementScale, HitTestConfig, HitTestPolicy, TouchReach, TreeError, UiTree, Visibility};
 
 /// Дерево 400x400 с корнем в (0,0).
 fn tree() -> UiTree {
@@ -206,6 +206,99 @@ fn children_outside_parent_are_not_found_unless_parent_outset_covers() {
     // Расширили область родителя вправо — ребёнок достижим.
     tree.set_touch_outset(parent, Insets::new(0.0, 0.0, 0.0, 40.0)).unwrap();
     assert_eq!(tree.hit_path(outside_parent), vec![child, parent, root]);
+}
+
+/// Строка 100×40 в (100,100), внутри неё кнопка 20×20 у верхнего правого угла с расширением 12 pt:
+/// область кнопки (148..192, 88..132) торчит за верх и за правый край строки.
+fn row_with_small_button(tree: &mut UiTree, parent: NodeId) -> (NodeId, NodeId) {
+    let row = add(tree, parent, "row", Rect::from_xywh(100.0, 100.0, 100.0, 40.0));
+    let button = add(tree, row, "button", Rect::from_xywh(60.0, 0.0, 20.0, 20.0));
+    tree.set_touch_outset(button, Insets::uniform(12.0)).unwrap();
+    (row, button)
+}
+
+#[test]
+fn a_child_that_reaches_beyond_its_parent_catches_in_the_strip_outside_the_parent() {
+    let mut tree = tree();
+    let root = tree.root();
+    let (row, button) = row_with_small_button(&mut tree, root);
+    tree.layout().unwrap();
+    // 6 pt над строкой, но внутри расширенной области кнопки.
+    let above_row = Point::new(170.0, 94.0);
+    assert_eq!(tree.hit_path(above_row), vec![root], "по умолчанию край родителя режет");
+    tree.set_touch_reach(button, TouchReach::BeyondParent).unwrap();
+    assert_eq!(tree.hit_path(above_row), vec![button, row, root]);
+    // Дальше своей области кнопка всё равно не ловит, а строка вне своей области — тем более.
+    assert_eq!(tree.hit_path(Point::new(170.0, 86.0)), vec![root]);
+    assert_eq!(tree.touch_reach(button).unwrap(), TouchReach::BeyondParent);
+    assert_eq!(tree.touch_reach(row).unwrap(), TouchReach::WithinParent);
+}
+
+#[test]
+fn an_ordinary_ancestor_above_the_parent_still_cuts_the_reaching_area() {
+    let mut tree = tree();
+    let root = tree.root();
+    // Окно прокрутки: строка лежит у его верхнего края, кнопка торчит выше окна.
+    let window = add(&mut tree, root, "window", Rect::from_xywh(0.0, 100.0, 400.0, 200.0));
+    let (row, button) = row_with_small_button(&mut tree, window);
+    tree.set_touch_reach(button, TouchReach::BeyondParent).unwrap();
+    tree.layout().unwrap();
+    // Окно и строка стоят в (0,100) и (100,100) своих родителей: строка — абсолютные (100,200).
+    let above_row_inside_window = Point::new(170.0, 194.0);
+    assert_eq!(tree.hit_path(above_row_inside_window), vec![button, row, window, root]);
+    // Та же кнопка у строки на верхнем краю окна: над окном её область мертва.
+    tree.set_placement(
+        row,
+        Placement::Anchored(AnchorRule {
+            area: ReferenceArea::Frame,
+            horizontal: AxisPlacement::Start {
+                inset: 100.0,
+                length: 100.0,
+            },
+            vertical: AxisPlacement::Start {
+                inset: 0.0,
+                length: 40.0,
+            },
+        }),
+    )
+    .unwrap();
+    tree.layout().unwrap();
+    assert_eq!(tree.hit_path(Point::new(170.0, 94.0)), vec![root]);
+}
+
+#[test]
+fn a_hidden_or_disabled_parent_keeps_the_reaching_child_dead() {
+    let mut tree = tree();
+    let root = tree.root();
+    let (row, button) = row_with_small_button(&mut tree, root);
+    tree.set_touch_reach(button, TouchReach::BeyondParent).unwrap();
+    tree.layout().unwrap();
+    let above_row = Point::new(170.0, 94.0);
+    let inside_button = Point::new(170.0, 110.0);
+    tree.set_visibility(row, Visibility::Hidden).unwrap();
+    assert_eq!(tree.hit_path(above_row), vec![root]);
+    assert_eq!(tree.hit_path(inside_button), vec![root]);
+    tree.set_visibility(row, Visibility::Visible).unwrap();
+    tree.set_hit_test_policy(row, HitTestPolicy::DisabledWithSubtree)
+        .unwrap();
+    assert_eq!(tree.hit_path(above_row), vec![root]);
+    tree.set_hit_test_policy(row, HitTestPolicy::Normal).unwrap();
+    assert_eq!(tree.hit_path(above_row), vec![button, row, root]);
+}
+
+#[test]
+fn the_reaching_area_of_the_upper_sibling_wins_over_the_lower_sibling_it_lies_on() {
+    let mut tree = tree();
+    let root = tree.root();
+    // Нижний сосед добавлен первым и лежит над строкой; верхний (позже добавленный) — строка с кнопкой.
+    let lower = add(&mut tree, root, "lower", Rect::from_xywh(100.0, 60.0, 100.0, 40.0));
+    let (row, button) = row_with_small_button(&mut tree, root);
+    tree.set_touch_reach(button, TouchReach::BeyondParent).unwrap();
+    tree.layout().unwrap();
+    // (170, 94) — внутри нижнего соседа (60..100) и внутри вылезающей области кнопки.
+    assert_eq!(tree.hit_path(Point::new(170.0, 94.0)), vec![button, row, root]);
+    // Вне области кнопки нижний сосед ловит как раньше.
+    assert_eq!(tree.hit_path(Point::new(120.0, 94.0)), vec![lower, root]);
 }
 
 #[test]
