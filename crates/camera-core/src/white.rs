@@ -25,8 +25,8 @@ use crate::three_a_status::ControlAdjustment;
 pub use camera_contract::white::HeldWhite;
 
 pub use crate::white_follow::{
-    InvalidWhiteFollowSpeed, WhiteFollowConfig, WhiteFollowRecord, WhiteFollowSpeed, WhiteFollowState,
-    WhiteFollowStatus, WhiteKeeping,
+    InvalidWhiteFollowSpeed, WhiteFollowConfig, WhiteFollowPause, WhiteFollowRecord, WhiteFollowSpeed,
+    WhiteFollowState, WhiteFollowStatus, WhiteKeeping,
 };
 pub use crate::white_resume::{ResumeRuleChoice, WhiteResumeRule};
 pub use crate::white_take::{WhiteTakeReport, WhiteTakeState};
@@ -315,6 +315,8 @@ pub enum WhiteCancelCause {
     Background,
     /// Блокировка AE/AF при слежении: белая заморожена, заявка открытия снята (WB46, WB54).
     AeAfLock,
+    /// Слежение поставлено на паузу (открыта секция CALIBRATE, 14n): белая заморожена, заявка снята.
+    FollowPaused,
     /// Пришла новая заявка (команда «взять белое» или возобновление).
     ReplacedByNewRequest,
 }

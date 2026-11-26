@@ -34,6 +34,7 @@ mod white_adjust;
 mod white_answers;
 mod white_follow;
 mod white_follow_life;
+mod white_follow_pause;
 mod white_follow_support;
 mod white_journal;
 mod white_manual;

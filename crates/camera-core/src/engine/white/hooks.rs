@@ -14,7 +14,7 @@ use super::follow::{FollowChange, FollowTick};
 use super::owner::ManualOutcome;
 use crate::command::{CameraCommand, CommandId, CommandOutcome, InvalidStateReason};
 use crate::engine::CameraEngine;
-use crate::white::{ResumeRuleChoice, WhiteFollowSpeed, WhiteResumeRule};
+use crate::white::{ResumeRuleChoice, WhiteFollowPause, WhiteFollowSpeed, WhiteResumeRule};
 
 impl CameraEngine {
     /// Команда `SetWhite`: белая рукой. Работает и без потока: белая держится и ждёт камеру.
@@ -54,6 +54,12 @@ impl CameraEngine {
     /// Команда `FollowWhite`: следить за источником. Работает и без потока, и в фоне: спросит первый кадр.
     pub(in crate::engine) fn decide_follow_white(&mut self, source: WhiteSourceId) -> CommandOutcome {
         outcome_of(self.white.follow_source(source))
+    }
+
+    /// Команда `SetWhiteFollowPause`: пауза слежения (14n). Работает и без потока, и в фоне; режим «Auto», белую и
+    /// память не трогает.
+    pub(in crate::engine) fn decide_set_white_follow_pause(&mut self, pause: WhiteFollowPause) -> CommandOutcome {
+        outcome_of(self.white.set_follow_pause(pause))
     }
 
     /// Команда `SetWhiteFollowSpeed`: скорость слежения. Режим не включает и белую не трогает.

@@ -29,8 +29,8 @@ use camera_contract::white::{
 use crate::command::{CommandId, InvalidStateReason};
 use crate::event::CameraEvent;
 use crate::white::{
-    RememberedOrigin, ResumeRuleChoice, WhiteConfig, WhiteFollowSpeed, WhiteMemory, WhiteMemoryRecord,
-    WhiteMemoryStartup, WhiteResumeRule, WhiteStatus, WhiteWiring,
+    RememberedOrigin, ResumeRuleChoice, WhiteConfig, WhiteFollowPause, WhiteFollowSpeed, WhiteMemory,
+    WhiteMemoryRecord, WhiteMemoryStartup, WhiteResumeRule, WhiteStatus, WhiteWiring,
 };
 use follow::{FollowChange, FollowTick};
 use owner::{FrameEffect, ManualOutcome, WhiteNotice, WhiteOwner, WhiteRemembered};
@@ -148,6 +148,15 @@ impl WhiteEngine {
     pub(super) fn choose_follow_speed(&mut self, speed: WhiteFollowSpeed) -> FollowChange {
         let change = self.owner.choose_follow_speed(speed);
         self.settle();
+        change
+    }
+
+    /// Пауза слежения от экрана (команда `SetWhiteFollowPause`).
+    pub(super) fn set_follow_pause(&mut self, pause: WhiteFollowPause) -> FollowChange {
+        let (change, effect) = self.owner.set_follow_pause(pause);
+        if effect == FrameEffect::RequestChanged {
+            self.settle();
+        }
         change
     }
 

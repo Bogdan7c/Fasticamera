@@ -7,7 +7,9 @@
 //! * темп считается по меткам кадров сенсора, часов здесь нет;
 //! * во время снимка со вспышкой и ещё `settle_after_flash_ms` после него источника не спрашивают;
 //! * метка раньше прошлой — другой поток: темп начинается заново, а не ждёт, пока часы догонят;
-//! * блокировка действует только на слежение: выключенному слежению она безразлична.
+//! * блокировка действует только на слежение: выключенному слежению она безразлична;
+//! * пауза (экран открыл CALIBRATE) — второй замок, независимый от блокировки: слежение заморожено, пока висит
+//!   хотя бы один; режим «Auto» и память паузой не трогаются, и сама пауза не запоминается.
 
 use std::time::Duration;
 
@@ -16,8 +18,8 @@ use camera_contract::three_a::AeAfLock;
 use camera_contract::white::{HeldWhite, WhiteOrigin, WhiteSourceId};
 
 use crate::white::{
-    WhiteFollowConfig, WhiteFollowRecord, WhiteFollowSpeed, WhiteFollowState, WhiteFollowStatus, WhiteKeeping,
-    WhiteRequestOutcome,
+    WhiteFollowConfig, WhiteFollowPause, WhiteFollowRecord, WhiteFollowSpeed, WhiteFollowState, WhiteFollowStatus,
+    WhiteKeeping, WhiteRequestOutcome,
 };
 
 /// Можно ли этим кадром спрашивать источник ради слежения.
@@ -67,6 +69,8 @@ pub(super) struct WhiteFollow {
     /// Скорость, выбранная человеком.
     chosen_speed: Option<WhiteFollowSpeed>,
     lock: AeAfLock,
+    /// Пауза от экрана (CALIBRATE); не зависит от `lock` и не запоминается.
+    pause: WhiteFollowPause,
     /// Метка кадра, на котором спросили в последний раз на этом потоке.
     last_ask: Option<SensorTimestamp>,
     flash: FlashPause,
@@ -90,6 +94,7 @@ impl WhiteFollow {
             },
             chosen_speed: remembered.speed,
             lock: AeAfLock::Unlocked,
+            pause: WhiteFollowPause::Running,
             last_ask: None,
             flash: FlashPause::None,
             asked: 0,
@@ -134,6 +139,17 @@ impl WhiteFollow {
             self.lock = lock;
             self.forget_pace();
         }
+    }
+
+    /// Пауза слежения от экрана. Снятие паузы спрашивает источник с ближайшего кадра, как и снятие блокировки.
+    /// Пережила смену линзы, поток и фон: её ставит и снимает только экран.
+    pub(super) fn set_pause(&mut self, pause: WhiteFollowPause) -> FollowChange {
+        if self.pause == pause {
+            return FollowChange::Unchanged;
+        }
+        self.pause = pause;
+        self.forget_pace();
+        FollowChange::Changed
     }
 
     /// Поток кончился: метки нового к прежним не относятся, автоматика нового вспышки не видела.
@@ -186,13 +202,28 @@ impl WhiteFollow {
     }
 
     /// Слежение включено и заморожено блокировкой.
-    pub(super) fn is_held_by_lock(&self) -> bool {
+    fn is_held_by_lock(&self) -> bool {
         self.source.is_some() && self.lock == AeAfLock::Locked
+    }
+
+    /// Слежение включено и поставлено на паузу.
+    fn is_paused(&self) -> bool {
+        self.source.is_some() && self.pause == WhiteFollowPause::Paused
+    }
+
+    /// Слежение включено и заморожено хотя бы одним из замков: блокировкой AE/AF или паузой.
+    pub(super) fn is_frozen(&self) -> bool {
+        self.is_held_by_lock() || self.is_paused()
+    }
+
+    /// Слежение включено и стоит именно на паузе (для выбора причины отмены заявки).
+    pub(super) fn is_held_by_pause(&self) -> bool {
+        self.is_paused()
     }
 
     /// За кем спрашивать на кадре `frame`, если пора; `None` — не следим, заморожено или рано.
     pub(super) fn due_source(&self, frame: SensorTimestamp) -> Option<WhiteSourceId> {
-        if self.is_held_by_lock() || self.flash != FlashPause::None {
+        if self.is_frozen() || self.flash != FlashPause::None {
             return None;
         }
         let interval = Duration::from_millis(self.config.ask_interval_ms);
@@ -244,6 +275,8 @@ impl WhiteFollow {
         WhiteFollowStatus {
             state: match self.source {
                 None => WhiteFollowState::Off,
+                // Пауза показывается раньше блокировки: она явнее и снимается только экраном.
+                Some(source) if self.pause == WhiteFollowPause::Paused => WhiteFollowState::Paused { source },
                 Some(source) if self.lock == AeAfLock::Locked => WhiteFollowState::HeldByLock { source },
                 Some(source) => WhiteFollowState::Following { source },
             },

@@ -24,7 +24,7 @@ use crate::lens_status::LensStatus;
 use crate::state::{CameraState, ClosedReason};
 use crate::status::{AppPresence, CameraCounters, CameraStatus, StreamStats};
 use crate::three_a_status::ThreeAStatus;
-use crate::white::{WhiteFollowSpeed, WhiteResumeRule, WhiteStatus};
+use crate::white::{WhiteFollowPause, WhiteFollowSpeed, WhiteResumeRule, WhiteStatus};
 
 struct OutputState {
     status: CameraStatus,
@@ -246,6 +246,12 @@ impl CameraHandle {
     /// Выбрать скорость слежения за белым; запоминается, режим не включает.
     pub fn set_white_follow_speed(&self, speed: WhiteFollowSpeed) -> Result<CommandId, CommandRejected> {
         self.send(CameraCommand::SetWhiteFollowSpeed { speed })
+    }
+
+    /// Поставить слежение за белым на паузу или снять её (секция CALIBRATE открыта/закрыта). Итог команды —
+    /// `Accepted` / `AlreadyInState`; состояние — `three_a.white.follow.state` (`Paused`).
+    pub fn set_white_follow_pause(&self, pause: WhiteFollowPause) -> Result<CommandId, CommandRejected> {
+        self.send(CameraCommand::SetWhiteFollowPause { pause })
     }
 
     /// Камера не нужна: закрыть и забыть желаемое.

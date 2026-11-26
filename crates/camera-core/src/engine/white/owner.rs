@@ -36,9 +36,9 @@ use super::limits::clamp_white;
 use crate::command::{CommandId, InvalidStateReason};
 use crate::three_a_status::ControlAdjustment;
 use crate::white::{
-    RememberedOrigin, ResumeRuleChoice, WhiteCancelCause, WhiteConfig, WhiteFollowRecord, WhiteFollowSpeed,
-    WhiteMemoryLoad, WhiteMemoryStartup, WhiteMemoryState, WhiteRequestOutcome, WhiteRequestResult, WhiteRequestState,
-    WhiteResumeRule, WhiteStatus, WhiteTakeReport,
+    RememberedOrigin, ResumeRuleChoice, WhiteCancelCause, WhiteConfig, WhiteFollowPause, WhiteFollowRecord,
+    WhiteFollowSpeed, WhiteMemoryLoad, WhiteMemoryStartup, WhiteMemoryState, WhiteRequestOutcome, WhiteRequestResult,
+    WhiteRequestState, WhiteResumeRule, WhiteStatus, WhiteTakeReport,
 };
 
 /// Что владелец просит донести наружу (события и память), в порядке появления.
@@ -296,8 +296,26 @@ impl WhiteOwner {
     /// слежения и открытие); уже начатый переезд заканчивает рендер (WB54). Без слежения не делает ничего.
     pub(super) fn note_lock(&mut self, lock: AeAfLock) -> FrameEffect {
         self.follow.note_lock(lock);
-        if self.follow.is_held_by_lock() && matches!(self.request, Request::Waiting(_)) {
-            self.cancel_request(WhiteCancelCause::AeAfLock);
+        self.cancel_waiting_if_frozen(WhiteCancelCause::AeAfLock)
+    }
+
+    /// Пауза слежения от экрана (CALIBRATE, 14n): независима от блокировки AE/AF. Как и блокировка, снимает ждущую
+    /// заявку при включённом слежении; начатый переезд доводит рендер. Режим «Auto» и память не трогает.
+    pub(super) fn set_follow_pause(&mut self, pause: WhiteFollowPause) -> (FollowChange, FrameEffect) {
+        let change = self.follow.set_pause(pause);
+        let effect = match change {
+            FollowChange::Changed if self.follow.is_held_by_pause() => {
+                self.cancel_waiting_if_frozen(WhiteCancelCause::FollowPaused)
+            }
+            FollowChange::Changed | FollowChange::Unchanged => FrameEffect::Nothing,
+        };
+        (change, effect)
+    }
+
+    /// Слежение заморожено: ждущая заявка (вопрос слежения, открытие, «взять») снимается по причине `by`.
+    fn cancel_waiting_if_frozen(&mut self, by: WhiteCancelCause) -> FrameEffect {
+        if self.follow.is_frozen() && matches!(self.request, Request::Waiting(_)) {
+            self.cancel_request(by);
             return FrameEffect::RequestChanged;
         }
         FrameEffect::Nothing
@@ -325,7 +343,7 @@ impl WhiteOwner {
     /// Включённое слежение сильнее правила: спрашивает всегда (WB50), кроме замороженного блокировкой (WB55).
     pub(super) fn on_foreground(&mut self) {
         let source = match self.follow.source() {
-            Some(_) if self.follow.is_held_by_lock() => return,
+            Some(_) if self.follow.is_frozen() => return,
             Some(source) => source,
             None if self.resume_rule().asks_source_on_resume(self.held.origin) => self.opening_source,
             None => return,

@@ -164,3 +164,38 @@ fn releasing_the_lock_does_not_cut_the_flash_pause_but_a_new_stream_does() {
         "новый поток вспышки не видел"
     );
 }
+
+#[test]
+fn the_pause_freezes_due_source_only_while_auto_is_on_and_is_independent_from_the_lock() {
+    let mut follow = follow(WhiteFollowConfig::default());
+    assert_eq!(follow.set_pause(WhiteFollowPause::Paused), FollowChange::Changed);
+    assert_eq!(follow.set_pause(WhiteFollowPause::Paused), FollowChange::Unchanged);
+    assert_eq!(follow.due_source(at_ms(1_000)), None);
+    assert_eq!(follow.status().state, WhiteFollowState::Paused { source: PHONE });
+
+    // Блокировка поверх паузы: снятие паузы оставляет заморозку блокировки.
+    follow.note_lock(AeAfLock::Locked);
+    assert_eq!(follow.set_pause(WhiteFollowPause::Running), FollowChange::Changed);
+    assert_eq!(follow.due_source(at_ms(1_000)), None);
+    assert_eq!(follow.status().state, WhiteFollowState::HeldByLock { source: PHONE });
+    follow.note_lock(AeAfLock::Unlocked);
+    assert_eq!(follow.due_source(at_ms(1_000)), Some(PHONE));
+
+    // Без «Auto» пауза никого не замораживает и состояния не меняет.
+    follow.set_pause(WhiteFollowPause::Paused);
+    follow.stop();
+    assert!(!follow.is_frozen());
+    assert_eq!(follow.status().state, WhiteFollowState::Off);
+}
+
+#[test]
+fn lifting_the_pause_forgets_the_pace_so_the_next_frame_asks() {
+    let mut follow = follow(WhiteFollowConfig {
+        ask_interval_ms: 250,
+        ..WhiteFollowConfig::default()
+    });
+    follow.note_asked(at_ms(1_000));
+    follow.set_pause(WhiteFollowPause::Paused);
+    follow.set_pause(WhiteFollowPause::Running);
+    assert_eq!(follow.due_source(at_ms(1_010)), Some(PHONE), "интервал не ждём");
+}

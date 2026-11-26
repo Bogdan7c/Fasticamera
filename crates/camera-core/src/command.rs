@@ -11,7 +11,7 @@ use camera_contract::white::{WhiteAdjustment, WhiteSourceId, WhiteTransition};
 use serde::Serialize;
 
 use crate::backend::UnsupportedStream;
-use crate::white::{WhiteFollowSpeed, WhiteResumeRule};
+use crate::white::{WhiteFollowPause, WhiteFollowSpeed, WhiteResumeRule};
 
 /// Номер команды: выдаётся при отправке, по нему итог находится в событиях.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
@@ -111,6 +111,14 @@ pub enum CameraCommand {
     SetWhiteFollowSpeed {
         speed: WhiteFollowSpeed,
     },
+    /// Пауза слежения за белым (14n, решение 289): экран ставит её, пока открыта секция CALIBRATE, и снимает при
+    /// закрытии. Уровневая команда: повтор того же значения безвреден. Работает без потока и в фоне; режим «Auto»
+    /// остаётся включённым и запомненным, память не пишется, уже начатый переезд заканчивается. Не зависит от
+    /// блокировки AE/AF. Не запоминается между запусками. Итог: `Accepted` (значение сменилось) или
+    /// `AlreadyInState`.
+    SetWhiteFollowPause {
+        pause: WhiteFollowPause,
+    },
     /// Камера не нужна: закрыть и забыть желаемое.
     Close,
     /// Приложение ушло с переднего плана: отпустить камеру, желаемое сохранить.
@@ -141,6 +149,7 @@ impl CameraCommand {
             CameraCommand::SetWhiteResumeRule { .. } => "set_white_resume_rule",
             CameraCommand::FollowWhite { .. } => "follow_white",
             CameraCommand::SetWhiteFollowSpeed { .. } => "set_white_follow_speed",
+            CameraCommand::SetWhiteFollowPause { .. } => "set_white_follow_pause",
             CameraCommand::Close => "close",
             CameraCommand::EnterBackground => "enter_background",
             CameraCommand::EnterForeground => "enter_foreground",

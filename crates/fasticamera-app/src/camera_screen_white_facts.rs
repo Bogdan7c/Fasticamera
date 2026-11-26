@@ -53,7 +53,10 @@ pub(crate) fn range_facts_of(range: &EngineWhiteRange) -> WhiteRange {
 fn follow_facts_of(state: WhiteFollowState) -> WhiteFollowFacts {
     match state {
         WhiteFollowState::Off => WhiteFollowFacts::Off,
-        WhiteFollowState::Following { .. } | WhiteFollowState::HeldByLock { .. } => WhiteFollowFacts::On,
+        // 14n: пауза (CALIBRATE открыта) и блокировка AE/AF для экрана — «Auto» всё ещё включён.
+        WhiteFollowState::Following { .. } | WhiteFollowState::HeldByLock { .. } | WhiteFollowState::Paused { .. } => {
+            WhiteFollowFacts::On
+        }
     }
 }
 
