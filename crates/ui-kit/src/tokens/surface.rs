@@ -31,13 +31,6 @@ pub enum PanelMaterial {
     Surface(SurfaceRole),
 }
 
-impl PanelMaterial {
-    /// Рисуется ли материал через стекло (то есть нужна ли кадру пирамида размытия).
-    pub fn is_glass(self) -> bool {
-        matches!(self, PanelMaterial::Glass(_))
-    }
-}
-
 /// Числа поверхности. Все три — конфиг (решение 263).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -169,11 +162,5 @@ mod tests {
         assert_eq!(parsed.panel_density, 0.5);
         assert_eq!(parsed.backing_density, 0.88);
         assert!(serde_json::from_str::<SurfaceTokens>(r#"{"density":0.5}"#).is_err());
-    }
-
-    #[test]
-    fn material_reports_glass_only_for_glass() {
-        assert!(PanelMaterial::Glass(GlassRole::Button).is_glass());
-        assert!(!PanelMaterial::Surface(SurfaceRole::Panel).is_glass());
     }
 }

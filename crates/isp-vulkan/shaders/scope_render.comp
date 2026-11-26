@@ -54,8 +54,9 @@ const uint POSITION_PALETTE_ANGLES = 128u;
 const float TAU = 6.28318530717958647692;
 
 // Яркость следа по счётчику: лог-шкала `min(1, log2(1 + count * scale) / trace.x)`, одна для всех трёх способов
-// (эталон — `TraceReference::intensity_scaled`, ТОТ ЖЕ порядок операций f32: `count * scale`, `1 + …`, `log2`,
-// деление, `min`). `scale` — масштаб счётчика столбца (1.0 даёт прежнюю формулу бит в бит). Полная яркость
+// (эталон — `TraceReference::intensity_scaled`, тот же порядок операций f32: `count * scale`, `1 + …`, `log2`,
+// деление, `min`; без `precise` компилятор вправе слить `1 + count * scale` в fma — отличие до 1 ulp, картинка
+// сверяется с эталоном с допуском, а при масштабе 1.0 произведение точное и результат бит в бит прежний). `scale` — масштаб счётчика столбца (1.0 даёт прежнюю формулу бит в бит). Полная яркость
 // достигается при `count * scale`, равном порогу из `trace.x`.
 float trace_intensity(uint count, float scale) {
     return count == 0u ? 0.0 : min(log2(1.0 + float(count) * scale) / parameters.trace.x, 1.0);
