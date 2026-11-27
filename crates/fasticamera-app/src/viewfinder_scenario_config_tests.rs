@@ -221,3 +221,38 @@ fn statistics_publish_fraction_default_is_half_and_values_outside_zero_one_are_r
     config.smoke.min_statistics_publish_fraction = 1.0;
     config.validate().expect("1.0 — граница допустима");
 }
+
+#[test]
+fn scope_page_arrives_like_kotlin_sends_it_and_is_accepted_only_on_the_calibrate_screen() {
+    // Форма NativeConfig.kt при `-e surface calibrate_screen -e scope_page histogram`: оба поля в одной секции.
+    let json = |surface: &str, page: &str| {
+        format!(
+            r#"{{"build_type":"debug","log_filter":"info","camera":{{"scenarios":{{"viewfinder":{{"stage_budget":
+            {{"rows":["whole_viewfinder"],"surface":"{surface}","scope_page":"{page}"}}}}}}}}}}"#
+        )
+    };
+    let runtime = RuntimeConfig::from_json(&json("calibrate_screen", "histogram")).expect("страница принимается");
+    let stage_budget = &runtime.camera().scenarios.viewfinder.stage_budget;
+    assert_eq!(stage_budget.scope_page, Some(scope_contract::ScopeKind::Histogram));
+    assert_eq!(stage_budget.surface, StageBudgetSurface::CalibrateScreen);
+    // Все страницы словаря называются так же, как их пишет скрипт (`--scope-page`).
+    for (name, kind) in [
+        ("waveform", scope_contract::ScopeKind::Waveform),
+        ("luma_waveform", scope_contract::ScopeKind::LumaWaveform),
+        ("rgb_parade", scope_contract::ScopeKind::RgbParade),
+        ("vectorscope", scope_contract::ScopeKind::Vectorscope),
+        ("cie", scope_contract::ScopeKind::Cie),
+    ] {
+        let runtime = RuntimeConfig::from_json(&json("calibrate_screen", name)).expect(name);
+        assert_eq!(
+            runtime.camera().scenarios.viewfinder.stage_budget.scope_page,
+            Some(kind)
+        );
+    }
+    // Опечатка в имени страницы и страница на месте без страниц — ошибки при initialize, а не молчаливое умолчание.
+    assert!(RuntimeConfig::from_json(&json("calibrate_screen", "histogramm")).is_err());
+    assert!(RuntimeConfig::from_json(&json("photo_screen", "histogram")).is_err());
+    assert!(RuntimeConfig::from_json(&json("bare_viewfinder", "waveform")).is_err());
+    // Без параметра страницы нет — меряется та, на которой раздел открылся.
+    assert_eq!(StageBudgetConfig::default().scope_page, None);
+}

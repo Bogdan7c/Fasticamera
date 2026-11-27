@@ -647,6 +647,23 @@ mod auto_exposure_composition {
             "сервисы камеры читают ту же доску, в которую пишет рендер"
         );
     }
+
+    #[test]
+    fn the_started_services_read_the_scope_labels_board_that_the_render_side_writes() {
+        use scope_contract::ScopeLabelsState;
+
+        let links = CameraLinks::default();
+        let render = links.render_side(ExposureControllerKind::Vendor);
+        let (services, _control) = start(ExposureControllerKind::Vendor, links);
+        assert_eq!(services.scope_labels().latest(), ScopeLabelsState::NotPublished);
+
+        render.white.scope_labels.publish(ScopeLabelsState::Withdrawn);
+        assert_eq!(
+            services.scope_labels().latest(),
+            ScopeLabelsState::Withdrawn,
+            "сервисы камеры читают ту же доску подписей, в которую пишет рендер"
+        );
+    }
 }
 
 #[test]

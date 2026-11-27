@@ -43,6 +43,7 @@ impl Stand {
         let board = Arc::new(ScreenBoard::default());
         let source = CameraScreenSource::new(ScreenSourceParts {
             look_white_stops: crate::look_white_stops::LookWhiteStopsWatcher::silent(),
+            scope_labels: crate::scope_labels::ScopeLabelsWatcher::silent(),
             screen: CameraScreen::new(
                 ScreenConfig::default(),
                 ui_kit::tokens::UiKitTokens::default(),

@@ -20,7 +20,7 @@ mod scope_support;
 use gpu_vulkan::source_window::HorizontalMirror;
 use gpu_vulkan::storage_image::{StorageFormatPolicy, StorageImageFormat};
 use isp_vulkan::scopes::{ColorScopes, ColorScopesConfig, ScopeFrame};
-use scope_model::{SampleStride, ScopeModelSettings, ScopeRule, ShownCodes};
+use scope_model::{ResolvedScope, SampleStride, ScopeModelSettings, ScopeRule, ShownCodes};
 use scope_support::{
     all_scenes, assert_no_validation_errors, cpu_counters, gpu_context_or_skip, mirror_name, picture_size, rule_cases,
     run_scope_frame, small_settings, upload_scene,
@@ -66,6 +66,12 @@ fn counters_match_cpu_bit_exact_on_synthetic_pictures() {
                 for stride in [1_u32, 2, 3] {
                     let settings = ScopeModelSettings {
                         sample_stride: SampleStride::try_new(stride).unwrap(),
+                        // Шаг гистограммы — своя настройка: матрица проходит и её шаги.
+                        histogram_sample_stride: SampleStride::try_new(stride).unwrap(),
+                        cie: scope_model::CieSettings {
+                            sample_stride: SampleStride::try_new(stride).unwrap(),
+                            ..base_settings.cie.clone()
+                        },
                         ..base_settings.clone()
                     };
                     for (rule_name, rule) in &rules {
@@ -94,7 +100,12 @@ fn counters_match_cpu_bit_exact_on_synthetic_pictures() {
         }
     }
     // Сравнений много и большинство не пустые (иначе «равны» могло бы значить «оба нули»).
-    assert_eq!(compared, 6 * 2 * 2 * 3 * 6, "размер матрицы");
+    assert_eq!(compared, 6 * 2 * 2 * 3 * rules.len(), "размер матрицы");
+    assert_eq!(
+        rules.len(),
+        13,
+        "waveform, parade, два вектороскопа (три гаммы), Luma, три режима гистограммы и CIE (две шкалы × два охвата)"
+    );
     assert!(
         non_empty * 10 >= compared * 9,
         "непустых сравнений {non_empty} из {compared}"
@@ -115,6 +126,11 @@ fn gray_ramp_draws_a_diagonal_on_waveform_and_one_centre_cell_on_vectorscopes() 
         // Все 1024 кода — и у вектороскопа (его шаг по умолчанию 2, решение 328), и у следов поперёк взгляда (329).
         vectorscope_sample_stride: SampleStride::EVERY_PIXEL,
         trace_across_eye_stride: SampleStride::EVERY_PIXEL,
+        histogram_sample_stride: SampleStride::EVERY_PIXEL,
+        cie: scope_model::CieSettings {
+            sample_stride: SampleStride::EVERY_PIXEL,
+            ..small_settings().cie
+        },
         ..small_settings()
     };
     let rules = rule_cases(&settings);
@@ -165,6 +181,52 @@ fn gray_ramp_draws_a_diagonal_on_waveform_and_one_centre_cell_on_vectorscopes() 
                     assert_eq!(counters.count(0, 1023 - code, code), Some(3), "яркость, код {code}");
                 }
                 assert_eq!(counters.total(), 3 * 1024, "{rule_name}: по одному попаданию на отсчёт");
+            }
+            "histogram-rgb" | "histogram-parade" | "histogram-luma" => {
+                // Гистограмма: 1024 кода по 3 строки на 512 уровней — по 2 кода × 3 строки = 6 отсчётов на уровень каждой
+                // плоскости (столбец — уровень кода, строка одна).
+                let planes = if *rule_name == "histogram-luma" { 1 } else { 3 };
+                assert_eq!((shape.rows(), shape.planes()), (1, planes), "{rule_name}: форма");
+                for plane in 0..planes {
+                    for bin in 0..shape.columns() {
+                        assert_eq!(
+                            counters.count(plane, 0, bin),
+                            Some(6),
+                            "{rule_name}: плоскость {plane}, уровень {bin}"
+                        );
+                    }
+                }
+                assert_eq!(
+                    counters.total(),
+                    u64::from(planes) * 3 * 1024,
+                    "{rule_name}: по попаданию на плоскость"
+                );
+            }
+            name if name.starts_with("cie-") => {
+                // Серая шкала лежит у точки белого: каждый код выше порога яркости даёт 3 попадания (три строки)
+                // в ячейку не дальше двух клеток от ячейки белого; тёмные коды (ниже порога) не дают ничего.
+                let ResolvedScope::Cie(cie) = rule else {
+                    panic!("{name}: не CIE")
+                };
+                let white = cie.cell_of_code([1023; 3]).expect("белый считается");
+                let counted = (0..1024_u16)
+                    .filter(|code| cie.cell_of_code([*code; 3]).is_some())
+                    .count() as u64;
+                assert!(
+                    counted > 900,
+                    "{name}: порог яркости съел слишком много кодов ({counted})"
+                );
+                assert_eq!(counters.total(), 3 * counted, "{name}: по три отсчёта на считаемый код");
+                for row in 0..shape.rows() {
+                    for column in 0..shape.columns() {
+                        if counters.count(0, row, column).unwrap_or(0) > 0 {
+                            assert!(
+                                column.abs_diff(white[0]) <= 2 && row.abs_diff(white[1]) <= 2,
+                                "{name}: серый вне окрестности белого: ({column}, {row}), белый {white:?}"
+                            );
+                        }
+                    }
+                }
             }
             _ => {
                 let centre = shape.columns() / 2;

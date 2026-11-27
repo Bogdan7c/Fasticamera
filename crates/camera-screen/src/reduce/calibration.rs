@@ -9,7 +9,7 @@
 //! * «чистяк» не залипает: выход из режима отпускает его.
 
 use look_contract::{BandAxis, CleanView, GlobalKnob, HueBandId, LookControl, LookIntent, LookKnob, ToneBaseModel};
-use scope_contract::{ScopeIntent, ScopeKind, VectorscopeAxes, VectorscopeZoom};
+use scope_contract::{CieDiagram, HistogramMode, ScopeIntent, ScopeKind, VectorscopeAxes, VectorscopeZoom};
 
 use super::Ctx;
 use super::look::{Availability, emit_look_from_facts, read_facts};
@@ -108,6 +108,31 @@ pub(super) fn on_zoom_selected(ctx: &mut Ctx<'_>, zoom: VectorscopeZoom) -> Acti
         return ActionOutcome::NoChange(NoChangeReason::ValueUnchanged);
     }
     ctx.state.calibration.set_vectorscope_zoom(zoom);
+    ActionOutcome::Applied
+}
+
+/// Режим гистограммы выбран переключателем в полоске (решение 331). Тот же выбор повторно — `NoChange`; запрос
+/// рендеру уходит общей сверкой «желаемый запрос ↔ известный рендеру».
+pub(super) fn on_histogram_mode_selected(ctx: &mut Ctx<'_>, mode: HistogramMode) -> ActionOutcome {
+    if let Err(outcome) = require_calibration(ctx) {
+        return outcome;
+    }
+    if ctx.state.calibration.histogram_mode() == mode {
+        return ActionOutcome::NoChange(NoChangeReason::ValueUnchanged);
+    }
+    ctx.state.calibration.set_histogram_mode(mode);
+    ActionOutcome::Applied
+}
+
+/// Шкала CIE выбрана переключателем в полоске (решение 332); семантика как у режима гистограммы.
+pub(super) fn on_cie_diagram_selected(ctx: &mut Ctx<'_>, diagram: CieDiagram) -> ActionOutcome {
+    if let Err(outcome) = require_calibration(ctx) {
+        return outcome;
+    }
+    if ctx.state.calibration.cie_diagram() == diagram {
+        return ActionOutcome::NoChange(NoChangeReason::ValueUnchanged);
+    }
+    ctx.state.calibration.set_cie_diagram(diagram);
     ActionOutcome::Applied
 }
 

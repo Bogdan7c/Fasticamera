@@ -15,6 +15,8 @@ fn vectorscope(axes: VectorscopeAxes, zoom: VectorscopeZoom) -> ResolvedScope {
         kind: ScopeKind::Vectorscope,
         vectorscope_axes: axes,
         vectorscope_zoom: zoom,
+        cie_diagram: scope_contract::CieDiagram::default(),
+        histogram_mode: scope_contract::HistogramMode::Rgb,
         scan: ScopeScan::Upright,
         image_size: ScopeImageSize::try_new(64, 64).unwrap(),
     };

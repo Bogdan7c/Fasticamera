@@ -1,17 +1,19 @@
 //! Полоска над картинкой прибора (решения 258, 290, 291): имя прибора слева, точки страниц по центру (тап выбирает
-//! прибор), на странице вектороскопа справа переключатель осей Y'CbCr | OKLab, а на самом правом краю каждой
-//! страницы — капсула белого (`WhiteCapsule`, место `ScopeStripFrames::trailing`).
+//! прибор), на странице вектороскопа справа переключатель осей Y'CbCr | OKLab и кнопка «2×», на странице гистограммы
+//! — RGB | PARADE | Y, на странице CIE — xy | u'v' (все стоят на одном месте полоски: на странице живёт одна группа),
+//! а на самом правом краю каждой страницы — капсула белого (`WhiteCapsule`, место `ScopeStripFrames::trailing`).
 //!
 //! Раньше имя и точки лежали поверх следа и закрывали света и тени; теперь у них своя полоска, а картинка прибора
 //! начинается под ней. Все цели — на всю высоту полоски (44 pt, решение 291), соседние по ширине не перекрываются
 //! (границы дают `ScopeStripFrames`, их проверяет тест соседства).
 //!
 //! Владение: какой прибор, какие оси и какое увеличение выбраны, решает `CalibrationState`; полоска только показывает и
-//! шлёт намерения `ScopeKindSelected` / `VectorscopeAxesSelected` / `VectorscopeZoomSelected`. Переключатель осей и
-//! кнопка «2×» (решение 325) живы только на странице вектороскопа (`sync`): на остальных страницах они не рисуются и
-//! не ловят касаний.
+//! шлёт намерения `ScopeKindSelected` / `VectorscopeAxesSelected` / `VectorscopeZoomSelected` /
+//! `HistogramModeSelected` / `CieDiagramSelected`. Каждая группа переключателей (решения 325, 331, 332) жива только
+//! на своей странице (`sync`): на остальных страницах она не рисуется и не ловит касаний. Подпись шкалы CIE — «u'v'»
+//! с ASCII-апострофом: штриха «′» нет в запечённом наборе шрифта.
 
-use scope_contract::{ScopeKind, VectorscopeAxes, VectorscopeZoom};
+use scope_contract::{CieDiagram, HistogramMode, ScopeKind, VectorscopeAxes, VectorscopeZoom};
 use ui_core::geometry::Rect;
 use ui_core::gesture::GestureEvent;
 use ui_core::id::NodeId;
@@ -33,10 +35,12 @@ use crate::widget::{Ctx, Outputs};
 /// Подпись прибора заглавными.
 fn scope_title(kind: ScopeKind) -> &'static str {
     match kind {
+        ScopeKind::Histogram => "HISTOGRAM",
         ScopeKind::Waveform => "RGB WAVEFORM",
         ScopeKind::LumaWaveform => "LUMA WAVEFORM",
         ScopeKind::RgbParade => "RGB PARADE",
         ScopeKind::Vectorscope => "VECTORSCOPE",
+        ScopeKind::Cie => "CIE",
     }
 }
 
@@ -48,6 +52,16 @@ const AXES_SEGMENTS: [(VectorscopeAxes, &str); 2] = [
 
 /// Кнопка «2×»: один сегмент; горит, когда вектороскоп увеличен, тап переключает увеличение туда и обратно.
 const ZOOM_SEGMENTS: [(VectorscopeZoom, &str); 1] = [(VectorscopeZoom::Double, "2×")];
+
+/// Сегменты режима гистограммы (решение 331).
+const HISTOGRAM_SEGMENTS: [(HistogramMode, &str); 3] = [
+    (HistogramMode::Rgb, "RGB"),
+    (HistogramMode::Parade, "PARADE"),
+    (HistogramMode::Luma, "Y"),
+];
+
+/// Сегменты шкалы CIE (решение 332); штриха «′» в атласе шрифта нет, поэтому апостроф.
+const CIE_SEGMENTS: [(CieDiagram, &str); 2] = [(CieDiagram::Xy1931, "xy"), (CieDiagram::UvPrime1976, "u'v'")];
 
 /// Точка страницы: её прибор и кнопка.
 struct PageDot {
@@ -64,6 +78,10 @@ pub(super) struct ScopeStrip {
     axes: SegmentRow<VectorscopeAxes>,
     /// Кнопка «2×» вектороскопа.
     zoom: SegmentRow<VectorscopeZoom>,
+    /// Переключатель режима гистограммы.
+    histogram: SegmentRow<HistogramMode>,
+    /// Переключатель шкалы CIE.
+    cie: SegmentRow<CieDiagram>,
     /// Капсула белого справа на каждой странице.
     white: WhiteCapsule,
 }
@@ -109,6 +127,30 @@ impl ScopeStrip {
                 text_role: TextRoleKind::SegmentLabel,
             },
         )?;
+        let histogram = SegmentRow::build(
+            kit,
+            ctx,
+            (node, strip),
+            frames.histogram_toggle,
+            SegmentSpec {
+                entries: &HISTOGRAM_SEGMENTS,
+                node_label: "calib_scope_histogram_mode",
+                id_of: ButtonId::ScopeHistogramMode,
+                text_role: TextRoleKind::SegmentLabel,
+            },
+        )?;
+        let cie = SegmentRow::build(
+            kit,
+            ctx,
+            (node, strip),
+            frames.cie_toggle,
+            SegmentSpec {
+                entries: &CIE_SEGMENTS,
+                node_label: "calib_scope_cie_diagram",
+                id_of: ButtonId::ScopeCieDiagram,
+                text_role: TextRoleKind::SegmentLabel,
+            },
+        )?;
         let white = WhiteCapsule::build(kit, ctx, (node, strip), frames.trailing)?;
         let built = Self {
             node,
@@ -117,15 +159,19 @@ impl ScopeStrip {
             dots,
             axes,
             zoom,
+            histogram,
+            cie,
             white,
         };
-        // До первой сверки переключатель осей и «2×» не ловят касаний (страница по умолчанию — не вектороскоп).
+        // До первой сверки (`sync`) ни одна группа не ловит касаний: какая страница открыта, строитель не знает.
         built.axes.set_touchable(kit, false)?;
         built.zoom.set_touchable(kit, false)?;
+        built.histogram.set_touchable(kit, false)?;
+        built.cie.set_touchable(kit, false)?;
         Ok(built)
     }
 
-    /// Тап по точке страницы и по сегменту осей. `false` — событие чужое.
+    /// Тап по точке страницы и по сегментам переключателей. `false` — событие чужое.
     pub(super) fn handle_gesture(
         &mut self,
         kit: &SceneKit,
@@ -157,15 +203,26 @@ impl ScopeStrip {
         }) {
             return Ok(true);
         }
+        let histogram_event = self.histogram.handle_gesture(kit, event)?;
+        if push_if_activated(histogram_event, out, ScreenAction::HistogramModeSelected) {
+            return Ok(true);
+        }
+        let cie_event = self.cie.handle_gesture(kit, event)?;
+        if push_if_activated(cie_event, out, ScreenAction::CieDiagramSelected) {
+            return Ok(true);
+        }
         let event = self.axes.handle_gesture(kit, event)?;
         Ok(push_if_activated(event, out, ScreenAction::VectorscopeAxesSelected))
     }
 
-    /// Переключатель осей ловит касания только на странице вектороскопа.
+    /// Каждая группа переключателей ловит касания только на своей странице.
     pub(super) fn sync(&mut self, kit: &mut SceneKit, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
-        let on_vectorscope = ctx.state.calibration().scope_kind() == ScopeKind::Vectorscope;
+        let kind = ctx.state.calibration().scope_kind();
+        let on_vectorscope = kind == ScopeKind::Vectorscope;
         self.zoom.set_touchable(kit, on_vectorscope)?;
-        self.axes.set_touchable(kit, on_vectorscope)
+        self.axes.set_touchable(kit, on_vectorscope)?;
+        self.histogram.set_touchable(kit, kind == ScopeKind::Histogram)?;
+        self.cie.set_touchable(kit, kind == ScopeKind::Cie)
     }
 
     pub(super) fn draw(
@@ -178,6 +235,16 @@ impl ScopeStrip {
         let kind = ctx.state.calibration().scope_kind();
         self.draw_title_and_hairline(ctx, visuals, layers, texts, kind)?;
         self.draw_page_dots(ctx, visuals, layers, kind)?;
+        if kind == ScopeKind::Histogram {
+            let mode = ctx.state.calibration().histogram_mode();
+            self.histogram
+                .draw(ctx, (visuals, texts), layers, (mode, |_| false, 1.0))?;
+        }
+        if kind == ScopeKind::Cie {
+            let diagram = ctx.state.calibration().cie_diagram();
+            self.cie
+                .draw(ctx, (visuals, texts), layers, (diagram, |_| false, 1.0))?;
+        }
         if kind == ScopeKind::Vectorscope {
             let selected = ctx.state.calibration().vectorscope_axes();
             self.axes

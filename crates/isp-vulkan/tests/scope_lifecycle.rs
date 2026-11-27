@@ -249,6 +249,11 @@ fn rejected_frames_record_no_commands_and_change_nothing() {
         trace_max_columns: 16,
         trace_levels: 16,
         vectorscope_size: 32,
+        // Сетка диаграммы CIE тоже входит в расчёт ёмкости буфера счётчиков (сессия 14s).
+        cie: scope_model::CieSettings {
+            size: 32,
+            ..scope_model::CieSettings::default()
+        },
         ..small_settings()
     };
     let mut scopes = scopes_for(&context, &tiny_sizing, 2);

@@ -44,6 +44,11 @@
 - Цифры Adreno 740 (14o): вид +2,7…3,1 мс из 7,8; основы против legacy AgX +1,8, ACES +3,2, filmic +2,6 (повтор до 0,02 мс); приборы 0,76…1,20 мс между прогонами (DVFS — сравнивать только парой подряд).
 - Строки тока вида в `viewfinder-stage-budget --stages`: `look_layer`, `look_wheels`, `look_tone`, `look_tone_base_{agx,aces,filmic}`; в отчёте `look_rows` с отпечатком рецепта «вкл/выкл». Окно A/B обязано быть длиннее разогрева (`power.ab.warmup_ms` 10 000) — `--ab-window-ms 15000` минимум, пар ≥ 3; иначе отказ `initialize` (причина в отчёт пока не доходит — бэклог).
 
-## Известное
+## После 14s
+- Группа `scopes_pages`: `scopes_luma_waveform`, `scopes_histogram_{rgb,parade,luma}`, `scopes_cie_{xy,uv}` (`ScopeShape::{HistogramRgb, HistogramParade, HistogramLuma, CieXy, CieUv}`). ПК (RADV): гистограмма 0,156 + 0,105 мс, CIE 0,175 + 0,140 (накопление + показ); накопители со слиянием в subgroup выбраны по ПК.
+- Ток страницы: `viewfinder-stage-budget --surface calibrate_screen --stages color_scopes --scope-page histogram|waveform|luma_waveform|rgb_parade|vectorscope|cie` (автомат листает страницы свайпами до подтверждения рендером). Без `--scope-page` меряется страница открытия — с 14s HISTOGRAM; `--scope-page waveform` повторяет замеры 14r. `ColorScopes::new` строит 13 пайплайнов.
+- `screen_scene` (CALIBRATE на стенде) теперь на странице Histogram — цифры `display_calibrate` с 14r напрямую не сравнимы.
+
+$1
 - Стенд снимка подтверждает проявку маркерной работой (`2·слотов + 1` проявителей) — граница `photo` ради стенда не менялась.
 - Цепочка V4: 65,9 → 51,7 мс точными приёмами при цели 4,2 — сессия 16b (`user/foundation/16b-video-chain-4k60.md`).

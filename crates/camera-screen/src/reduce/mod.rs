@@ -23,6 +23,7 @@ mod menu;
 mod mode_change;
 mod mode_guard;
 mod presets;
+mod scope_labels;
 mod scopes;
 mod sensors;
 mod shutter;
@@ -64,6 +65,9 @@ mod presets_tests;
 #[cfg(test)]
 #[path = "saving_tests.rs"]
 mod saving_tests;
+#[cfg(test)]
+#[path = "scope_labels_tests.rs"]
+mod scope_labels_tests;
 #[cfg(test)]
 #[path = "scopes_tests.rs"]
 mod scopes_tests;
@@ -301,6 +305,7 @@ fn dispatch_action(ctx: &mut Ctx<'_>, action: ScreenAction) -> ActionOutcome {
         ScreenAction::LookFactsChanged(facts) => look::on_facts_changed(ctx, *facts),
         ScreenAction::LookStartupProblem(kind) => look::on_startup_problem(ctx, kind),
         ScreenAction::LookWhiteStopsChanged(stops) => look::on_white_stops_changed(ctx, stops),
+        ScreenAction::ScopeLabelsChanged(labels) => scope_labels::on_scope_labels_changed(ctx, labels),
         ScreenAction::KnobDragged { knob, value } => calibration::on_knob_dragged(ctx, knob, value),
         ScreenAction::BandKnobDragged { band, axis, value } => {
             calibration::on_band_knob_dragged(ctx, band, axis, value)
@@ -315,6 +320,8 @@ fn dispatch_action(ctx: &mut Ctx<'_>, action: ScreenAction) -> ActionOutcome {
         ScreenAction::ScopeKindSelected(kind) => calibration::on_scope_kind_selected(ctx, kind),
         ScreenAction::VectorscopeAxesSelected(axes) => calibration::on_axes_selected(ctx, axes),
         ScreenAction::VectorscopeZoomSelected(zoom) => calibration::on_zoom_selected(ctx, zoom),
+        ScreenAction::HistogramModeSelected(mode) => calibration::on_histogram_mode_selected(ctx, mode),
+        ScreenAction::CieDiagramSelected(diagram) => calibration::on_cie_diagram_selected(ctx, diagram),
         ScreenAction::CleanViewPressed => calibration::on_clean_view_pressed(ctx),
         ScreenAction::CleanViewReleased => calibration::on_clean_view_released(ctx),
         ScreenAction::BandSelected(band) => calibration::on_band_selected(ctx, band),

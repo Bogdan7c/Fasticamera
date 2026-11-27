@@ -15,7 +15,9 @@ use look_contract::{
     BandAxis, GlobalKnob, HueBandId, LookControl, LookFacts, LookIntent, LookKnob, LookProblemKind, LookWhiteStops,
     PresetId, ToneBaseModel, UserPresetId, WheelPush, WheelZone,
 };
-use scope_contract::{ScopeIntent, ScopeKind, VectorscopeAxes, VectorscopeZoom};
+use scope_contract::{
+    CieDiagram, HistogramMode, ScopeIntent, ScopeKind, ScopeLabelsState, VectorscopeAxes, VectorscopeZoom,
+};
 use shell_contract::text_input::{TextInputResult, TextRequestId};
 
 use crate::calibration::ControlViewKind;
@@ -152,6 +154,9 @@ pub enum ScreenAction {
     /// на ручку, экран рисует отметки на шкалах. Приходит только при изменении; экран ничего не считает и намерений
     /// по нему не шлёт.
     LookWhiteStopsChanged(LookWhiteStops),
+    /// Подписи прибора изменились (решения 326, 327): рендер знает, где на картинке стоят буквы целей вектороскопа.
+    /// Приходит только при изменении; экран положения не считает, а рисует подписи лишь для текущего запроса прибора.
+    ScopeLabelsChanged(ScopeLabelsState),
     /// Глобальная ручка потянута до значения. Уходит точечным намерением `SetKnob`: заменяется только эта ручка
     /// (не `SetLook` с полным набором: два пальца в одном кадре не должны затирать друг друга).
     KnobDragged { knob: GlobalKnob, value: LookKnob },
@@ -182,6 +187,10 @@ pub enum ScreenAction {
     VectorscopeAxesSelected(VectorscopeAxes),
     /// Увеличение вектороскопа выбрано кнопкой «2×» (решение 325).
     VectorscopeZoomSelected(VectorscopeZoom),
+    /// Режим гистограммы выбран переключателем RGB | PARADE | Y в полоске (решение 331).
+    HistogramModeSelected(HistogramMode),
+    /// Шкала диаграммы CIE выбрана переключателем xy | u'v' в полоске (решение 332).
+    CieDiagramSelected(CieDiagram),
     /// Кнопка «чистяк» нажата: показать основу без вида (решение 189).
     CleanViewPressed,
     /// Кнопка «чистяк» отпущена: вернуть вид с правками.

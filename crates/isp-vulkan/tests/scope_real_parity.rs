@@ -26,11 +26,14 @@ use isp_vulkan::viewfinder::{ViewfinderFrame, ViewfinderIsp, ViewfinderStorageFo
 use scope_model::{SampleStride, ScopeModelSettings, ScopeRule};
 use scope_support::{
     assert_no_validation_errors, cpu_counters, gpu_context_or_skip, picture_size, rule_cases, shown_codes_of,
-    small_settings,
+    small_settings, worst_premultiplied_difference,
 };
 use viewfinder_support::{
     GpuSource, ParamsSpec, RawFrame, RunRequest, SourceLayout, isp_support, synthetic_scenes, test_config,
 };
+
+/// Допуск картинки CIE: четыре шага fp16 у единицы.
+const CIE_PICTURE_TOLERANCE: f32 = 2.0e-3;
 
 /// Один кадр: ISP → барьер чтения compute → приборы по всем правилам; сравнивает счётчики с эталоном.
 /// Возвращает число сравнений.
@@ -41,7 +44,7 @@ fn compare_scopes_on_viewfinder_output(
     params: &IspParams,
     spec: &ParamsSpec,
     storage: ViewfinderStorageFormat,
-) -> usize {
+) -> (usize, f32) {
     let request = RunRequest::whole_frame(raw, params, spec.display());
     let gpu_source = GpuSource::new(context, raw, SourceLayout::Raw16);
     let source = gpu_source.source();
@@ -57,10 +60,17 @@ fn compare_scopes_on_viewfinder_output(
     .unwrap();
     let rules = rule_cases(&base_settings);
     let mut comparisons = 0;
+    let mut worst_cie_picture = 0.0_f32;
     for mirror in [HorizontalMirror::Off, HorizontalMirror::On] {
         for stride in [1_u32, 2] {
             let settings = ScopeModelSettings {
                 sample_stride: SampleStride::try_new(stride).unwrap(),
+                // Шаг гистограммы — своя настройка: матрица настоящих кропов проходит и его.
+                histogram_sample_stride: SampleStride::try_new(stride).unwrap(),
+                cie: scope_model::CieSettings {
+                    sample_stride: SampleStride::try_new(stride).unwrap(),
+                    ..base_settings.cie.clone()
+                },
                 ..base_settings.clone()
             };
             for (rule_name, rule) in &rules {
@@ -120,10 +130,23 @@ fn compare_scopes_on_viewfinder_output(
                 // Вход непустой и прибор что-то сосчитал: «оба нули» тут было бы провалом теста.
                 assert!(cpu.total() > 0, "{name} / {rule_name}: пустые счётчики");
                 comparisons += 1;
+                // Диаграмма CIE (сессия 14s): и картинка прибора на реальном входе — в допуске fp16 к эталону.
+                if rule_name.starts_with("cie-") {
+                    let samples = rule.planned_samples(shown.width(), shown.height(), &settings);
+                    let cpu_picture =
+                        scope_model::render(&cpu, rule, &settings.render, picture_size(160, 96), samples).unwrap();
+                    let readback = scopes.read_back_picture_blocking().unwrap();
+                    let worst = worst_premultiplied_difference(&readback.texels, &cpu_picture);
+                    assert!(
+                        worst <= CIE_PICTURE_TOLERANCE,
+                        "{name} / {storage:?} / {rule_name} / {mirror:?}: картинка разошлась на {worst}"
+                    );
+                    worst_cie_picture = worst_cie_picture.max(worst);
+                }
             }
         }
     }
-    comparisons
+    (comparisons, worst_cie_picture)
 }
 
 #[test]
@@ -132,14 +155,18 @@ fn counters_match_cpu_on_viewfinder_output_of_synthetic_scenes() {
     let spec = ParamsSpec::default();
     let params = spec.build();
     let mut comparisons = 0;
+    let mut worst_picture = 0.0_f32;
     for (name, raw) in synthetic_scenes(&spec) {
         for storage in [
             ViewfinderStorageFormat::PreferTenBitUnorm,
             ViewfinderStorageFormat::HalfFloatOnly,
         ] {
-            comparisons += compare_scopes_on_viewfinder_output(&context, name, &raw, &params, &spec, storage);
+            let (count, worst) = compare_scopes_on_viewfinder_output(&context, name, &raw, &params, &spec, storage);
+            comparisons += count;
+            worst_picture = worst_picture.max(worst);
         }
     }
+    eprintln!("CIE, синтетика через ISP: наибольшее расхождение картинки {worst_picture:.2e}");
     assert!(comparisons >= 5 * 2 * 2 * 2, "сравнений {comparisons}");
     assert_no_validation_errors(&context);
 }
@@ -148,6 +175,7 @@ fn counters_match_cpu_on_viewfinder_output_of_synthetic_scenes() {
 fn counters_match_cpu_on_viewfinder_output_of_real_crops() {
     let Some(context) = gpu_context_or_skip() else { return };
     let mut comparisons = 0;
+    let mut worst_picture = 0.0_f32;
     for crop in ["gray-tile", "towel", "jar", "tap-highlight"] {
         let capture =
             isp_support::real_capture::load_real_capture(&isp_support::assets_dir(), &format!("real-main-lamp-{crop}"));
@@ -172,9 +200,13 @@ fn counters_match_cpu_on_viewfinder_output_of_real_crops() {
             ViewfinderStorageFormat::PreferTenBitUnorm,
             ViewfinderStorageFormat::HalfFloatOnly,
         ] {
-            comparisons += compare_scopes_on_viewfinder_output(&context, crop, &raw, &params, &spec, storage);
+            let (count, worst) = compare_scopes_on_viewfinder_output(&context, crop, &raw, &params, &spec, storage);
+            comparisons += count;
+            worst_picture = worst_picture.max(worst);
         }
     }
-    assert_eq!(comparisons, 4 * 2 * 2 * 2 * 6, "матрица реальных кропов");
+    eprintln!("CIE, реальные кропы: наибольшее расхождение картинки {worst_picture:.2e}");
+    // Приборы: waveform, parade, два вектороскопа (три гаммы), Luma, три режима гистограммы и CIE (две шкалы × два охвата).
+    assert_eq!(comparisons, 4 * 2 * 2 * 2 * 13, "матрица реальных кропов");
     assert_no_validation_errors(&context);
 }

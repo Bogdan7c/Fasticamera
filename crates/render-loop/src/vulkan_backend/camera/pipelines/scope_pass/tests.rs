@@ -19,7 +19,7 @@ use gpu_vulkan::source_window::SourceWindow;
 use gpu_vulkan::storage_image::SampledImageView;
 use gpu_vulkan::validation::ValidationMode;
 use isp_model::image::DisplayGamut;
-use scope_contract::{ScopeImageSize, ScopeKind, ScopeRequest, VectorscopeAxes};
+use scope_contract::{ScopeImageSize, ScopeKind, ScopeLabelsBoard, ScopeLabelsState, ScopeRequest, VectorscopeAxes};
 use scope_model::ScopeModelSettings;
 use tracing::span::{Attributes, Id, Record};
 use tracing::{Event, Level, Metadata, Subscriber};
@@ -59,6 +59,8 @@ fn request(width: u32, height: u32) -> ScopeRequest {
         kind: ScopeKind::Waveform,
         vectorscope_axes: VectorscopeAxes::YCbCrBt709,
         vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
+        cie_diagram: scope_contract::CieDiagram::default(),
+        histogram_mode: scope_contract::HistogramMode::Rgb,
         scan: scope_contract::ScopeScan::Upright,
         image_size: ScopeImageSize::try_new(width, height).expect("размер"),
     }
@@ -364,4 +366,105 @@ fn a_changed_request_is_measured_on_the_very_next_frame_whatever_the_cadence_pha
     record_with(&mut pass, view);
     record_with(&mut pass, view);
     assert_eq!(counters_of(&mut pass).counters.frames_skipped_by_cadence, 1);
+}
+
+// --- Подписи прибора (решения 326, 327): доска получает их вместе с решением правила ---
+
+fn oklab_vectorscope_request() -> ScopeRequest {
+    ScopeRequest {
+        kind: ScopeKind::Vectorscope,
+        vectorscope_axes: VectorscopeAxes::OklabAb,
+        ..request(160, 96)
+    }
+}
+
+/// Кадр, который доходит до решения правила (запись потом отвергается проверкой входа, GPU-команд нет) при охвате
+/// экрана `gamut`.
+fn record_with_gamut(pass: &mut ScopePass, gamut: DisplayGamut) {
+    let view = input_view(vk::Format::R8G8B8A8_UNORM);
+    pass.record(&ScopeRecordInput {
+        command_buffer: vk::CommandBuffer::null(),
+        frame_slot: FRAME_SLOT,
+        view,
+        window: SourceWindow::of_content(view.extent),
+        gamut,
+        record_compute_read_barrier: &|_| {},
+    });
+}
+
+fn published_labels(board: &ScopeLabelsBoard) -> scope_contract::ScopeLabels {
+    match board.latest() {
+        ScopeLabelsState::Published(labels) => labels,
+        other => panic!("ждали подписи на доске, получили {other:?}"),
+    }
+}
+
+#[test]
+fn a_real_pass_publishes_labels_on_resolution_republishes_on_gamut_and_withdraws_on_hide() {
+    let Some(context) = context_or_skip() else { return };
+    let board = ScopeLabelsBoard::new();
+    let mut pass = ScopePass::new(&context, FRAME_SLOTS, &every_frame_config());
+    pass.attach_labels_board(board.clone());
+    let asked = oklab_vectorscope_request();
+
+    // Пока кадров не было, правило не решено — подписей нет.
+    pass.prepare_between_frames(Some(asked));
+    assert_eq!(board.latest(), ScopeLabelsState::NotPublished);
+
+    record_with_gamut(&mut pass, DisplayGamut::Srgb);
+    let srgb = published_labels(&board);
+    assert_eq!(srgb.request, asked);
+    assert_eq!(srgb.labels.len(), 6, "{srgb:?}");
+
+    // Тот же запрос и охват: доску не трогают.
+    board.publish(ScopeLabelsState::Withdrawn);
+    record_with_gamut(&mut pass, DisplayGamut::Srgb);
+    assert_eq!(
+        board.latest(),
+        ScopeLabelsState::Withdrawn,
+        "повторный кадр подписей не переписывает"
+    );
+
+    // Охват экрана другой: OKLab-цели стоят в других местах, подписи опубликованы заново.
+    record_with_gamut(&mut pass, DisplayGamut::DisplayP3);
+    let p3 = published_labels(&board);
+    assert_eq!(p3.request, asked);
+    assert_ne!(p3.labels, srgb.labels, "положения букв следуют охвату экрана");
+
+    // Приборы закрыты: подписи сняты.
+    pass.prepare_between_frames(None);
+    assert_eq!(board.latest(), ScopeLabelsState::Withdrawn);
+}
+
+#[test]
+fn a_swipe_to_another_page_republishes_the_labels_with_the_new_request() {
+    let Some(context) = context_or_skip() else { return };
+    let board = ScopeLabelsBoard::new();
+    let mut pass = ScopePass::new(&context, FRAME_SLOTS, &every_frame_config());
+    pass.attach_labels_board(board.clone());
+    let vectorscope = oklab_vectorscope_request();
+    pass.prepare_between_frames(Some(vectorscope));
+    record_with_gamut(&mut pass, DisplayGamut::Srgb);
+    assert_eq!(published_labels(&board).labels.len(), 6);
+
+    // Свайп на waveform: запрос другой, подписей нет, но они помечены новым запросом, а не остались чужими.
+    let waveform = ScopeRequest {
+        kind: ScopeKind::Waveform,
+        ..vectorscope
+    };
+    pass.prepare_between_frames(Some(waveform));
+    record_with_gamut(&mut pass, DisplayGamut::Srgb);
+    let after_swipe = published_labels(&board);
+    assert_eq!(after_swipe.request, waveform);
+    assert!(after_swipe.labels.is_empty());
+}
+
+#[test]
+fn a_pass_without_a_board_resolves_and_records_without_publishing_anywhere() {
+    let Some(context) = context_or_skip() else { return };
+    let mut pass = ScopePass::new(&context, FRAME_SLOTS, &every_frame_config());
+    pass.prepare_between_frames(Some(oklab_vectorscope_request()));
+    record_with_gamut(&mut pass, DisplayGamut::Srgb);
+    // Правило решено и кадр дошёл до проверки записи (она отвергает вход): отказ — признак, что кадр не пропущен.
+    assert_eq!(counters_of(&mut pass).counters.record_failures, 1);
 }

@@ -1,20 +1,31 @@
 use super::*;
 use crate::screen_scenario_config::{ScreenPoint, ScreenTouchPlan};
+use crate::stage_budget_scope_page_config::ScopePageSwipes;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 const WARMUP_FRAMES: u64 = 5;
 
 fn swipes() -> SurfaceSwipes {
     let plan = ScreenTouchPlan::default();
+    let pages = ScopePageSwipes::default();
     SurfaceSwipes {
         enter_calibrate: plan.modes_swipe_left,
         leave_calibrate: plan.modes_swipe_right,
+        scope_page_next: pages.next,
+        scope_page_previous: pages.previous,
     }
 }
 
 fn scopes(requested: bool, live: bool, passes: u64) -> Option<ScopesView> {
+    // Прибор запрошен — страница по умолчанию раздела (RGB WAVEFORM).
+    scopes_on(requested.then_some(ScopeKind::Waveform), live, passes)
+}
+
+/// Приборы, у которых рендер сообщил страницу `kind` (`None` — запроса нет).
+fn scopes_on(kind: Option<ScopeKind>, live: bool, passes: u64) -> Option<ScopesView> {
     Some(ScopesView {
-        requested,
+        requested: kind.is_some(),
+        kind,
         resources_live: live,
         passes_recorded: passes,
     })
@@ -34,9 +45,14 @@ fn view(mode: ModeKind, frames: u64, scopes: Option<ScopesView>) -> SurfaceView 
 }
 
 fn entry(surface: StageBudgetSurface, now: Instant) -> SurfaceEntry {
+    entry_for_page(surface, None, now)
+}
+
+fn entry_for_page(surface: StageBudgetSurface, scope_page: Option<ScopeKind>, now: Instant) -> SurfaceEntry {
     SurfaceEntry::begin(
         surface,
         swipes(),
+        scope_page,
         TIMEOUT,
         WARMUP_FRAMES,
         now,
@@ -288,4 +304,92 @@ fn exit_gesture_is_not_issued_before_the_held_touch_ends_plus_the_guard() {
         exit.tick(release + TIMEOUT - Duration::from_millis(1), &in_calibrate),
         ExitTick::Waiting
     );
+}
+
+/// Раздел открыт, приборы считают, рендер сообщил страницу `kind`: цикл входа дошёл до проверки страницы.
+fn live_calibrate_on(kind: ScopeKind, frames: u64, passes: u64) -> SurfaceView {
+    view(ModeKind::Calibrate, frames, scopes_on(Some(kind), true, passes))
+}
+
+#[test]
+fn without_a_requested_page_the_entry_is_ready_on_whatever_page_the_section_opened_on() {
+    let now = Instant::now();
+    for opened_on in ScopeKind::ALL {
+        let mut entry = entry_for_page(StageBudgetSurface::CalibrateScreen, None, now);
+        let _swipe = entry.tick(now, &view(ModeKind::Photo, 9, scopes_on(None, false, 0)));
+        assert_eq!(
+            entry.tick(now, &live_calibrate_on(opened_on, 12, 3)),
+            EntryTick::Ready,
+            "{opened_on:?}"
+        );
+    }
+}
+
+#[test]
+fn a_requested_page_is_reached_by_swipes_toward_it_one_at_a_time_and_only_then_ready() {
+    let now = Instant::now();
+    let mut entry = entry_for_page(StageBudgetSurface::CalibrateScreen, Some(ScopeKind::RgbParade), now);
+    let _enter = entry.tick(now, &view(ModeKind::Photo, 9, scopes_on(None, false, 0)));
+    // Раздел открылся на RGB WAVEFORM; до PARADE два шага вперёд (через LUMA WAVEFORM).
+    let first = match entry.tick(now, &live_calibrate_on(ScopeKind::Waveform, 12, 3)) {
+        EntryTick::Gesture(gesture) => gesture,
+        other => panic!("ждали жест листания, получили {other:?}"),
+    };
+    assert_eq!(first.step, "scope_page_next");
+    assert_eq!(first.swipe, ScopePageSwipes::default().next);
+    // Пока рендер не сменил страницу, второй жест не выдаётся (первый ещё идёт).
+    assert_eq!(
+        entry.tick(now, &live_calibrate_on(ScopeKind::Waveform, 13, 4)),
+        EntryTick::Waiting
+    );
+    let second = match entry.tick(now, &live_calibrate_on(ScopeKind::LumaWaveform, 14, 5)) {
+        EntryTick::Gesture(gesture) => gesture,
+        other => panic!("ждали второй жест, получили {other:?}"),
+    };
+    assert_eq!(second.step, "scope_page_next");
+    assert_eq!(
+        entry.tick(now, &live_calibrate_on(ScopeKind::RgbParade, 15, 6)),
+        EntryTick::Ready
+    );
+}
+
+#[test]
+fn a_page_before_the_opening_one_is_reached_by_swiping_back() {
+    let now = Instant::now();
+    let mut entry = entry_for_page(StageBudgetSurface::CalibrateScreen, Some(ScopeKind::Histogram), now);
+    let _enter = entry.tick(now, &view(ModeKind::Photo, 9, scopes_on(None, false, 0)));
+    let gesture = match entry.tick(now, &live_calibrate_on(ScopeKind::Waveform, 12, 3)) {
+        EntryTick::Gesture(gesture) => gesture,
+        other => panic!("ждали жест, получили {other:?}"),
+    };
+    assert_eq!(gesture.step, "scope_page_previous");
+    assert_eq!(gesture.swipe, ScopePageSwipes::default().previous);
+    assert_eq!(
+        entry.tick(now, &live_calibrate_on(ScopeKind::Histogram, 13, 4)),
+        EntryTick::Ready
+    );
+}
+
+#[test]
+fn a_page_swipe_that_never_arrives_fails_naming_the_wanted_and_the_shown_page() {
+    let start = Instant::now();
+    let mut entry = entry_for_page(StageBudgetSurface::CalibrateScreen, Some(ScopeKind::Vectorscope), start);
+    let _enter = entry.tick(start, &view(ModeKind::Photo, 9, scopes_on(None, false, 0)));
+    let _swipe = entry.tick(start, &live_calibrate_on(ScopeKind::Waveform, 12, 3));
+    let late = start + TIMEOUT;
+    match entry.tick(late, &live_calibrate_on(ScopeKind::Waveform, 40, 30)) {
+        EntryTick::Failed(reason) => {
+            assert!(reason.contains("Vectorscope"), "{reason}");
+            assert!(reason.contains("Waveform"), "{reason}");
+        }
+        other => panic!("ждали провал, получили {other:?}"),
+    }
+}
+
+#[test]
+fn the_page_option_does_not_touch_the_photo_screen_entry() {
+    // На PHOTO страниц прибора нет (конфиг такой запрос отвергает до замера); автомат входа их не листает.
+    let now = Instant::now();
+    let mut entry = entry_for_page(StageBudgetSurface::PhotoScreen, Some(ScopeKind::Histogram), now);
+    assert_eq!(entry.tick(now, &view(ModeKind::Photo, 9, None)), EntryTick::Ready);
 }

@@ -27,6 +27,7 @@ use camera_contract::zoom::LensIntentChannel;
 use camera_core::{CameraHandle, CameraRuntime, CommandId, CommandRejected};
 use look_contract::LookWhiteStopsBoard;
 use raw_frame_stream::ViewfinderPacingSwitch;
+use scope_contract::ScopeLabelsBoard;
 use serde::Serialize;
 
 use crate::auto_exposure_link::{EngineBinding, ExposureControllerChoice};
@@ -217,6 +218,8 @@ pub struct CameraServices {
     white_readings: WhiteReadingBoard,
     /// Доска упоров ручек теплоты и оттенка: рендер пишет, приложение читает для экрана калибровки.
     look_white_stops: LookWhiteStopsBoard,
+    /// Доска подписей прибора (решения 326, 327): рендер пишет, приложение читает для экрана калибровки.
+    scope_labels: ScopeLabelsBoard,
 }
 
 impl CameraServices {
@@ -235,6 +238,7 @@ impl CameraServices {
             white_memory: WhiteMemoryDiagnostics::default(),
             white_readings: WhiteReadingBoard::new(),
             look_white_stops: LookWhiteStopsBoard::new(),
+            scope_labels: ScopeLabelsBoard::new(),
         }
     }
 
@@ -248,6 +252,17 @@ impl CameraServices {
     pub fn with_look_white_stops(mut self, look_white_stops: LookWhiteStopsBoard) -> Self {
         self.look_white_stops = look_white_stops;
         self
+    }
+
+    /// Подключает доску подписей прибора (тот же клон, что получил рендер).
+    pub fn with_scope_labels(mut self, scope_labels: ScopeLabelsBoard) -> Self {
+        self.scope_labels = scope_labels;
+        self
+    }
+
+    /// Доска подписей прибора (читающая сторона — [`crate::scope_labels::ScopeLabelsReader`]).
+    pub fn scope_labels(&self) -> &ScopeLabelsBoard {
+        &self.scope_labels
     }
 
     /// Доска упоров ручек теплоты и оттенка (читающая сторона — [`crate::look_white_stops::LookWhiteStopsReader`]).

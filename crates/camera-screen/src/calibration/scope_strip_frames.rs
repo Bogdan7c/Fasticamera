@@ -22,6 +22,11 @@ pub struct ScopeStripFrames {
     pub axes_toggle: Rect,
     /// Кнопка «2×» вектороскопа (решение 325), левее переключателя осей; видна только на странице вектороскопа.
     pub zoom_toggle: Rect,
+    /// Переключатель режима гистограммы RGB | PARADE | Y (решение 331); виден только на странице гистограммы. Стоит в
+    /// том же месте полоски, что оси и «2×»: на других страницах их нет.
+    pub histogram_toggle: Rect,
+    /// Переключатель шкалы CIE xy | u'v' (решение 332); виден только на странице CIE, там же, где остальные.
+    pub cie_toggle: Rect,
     /// Место капсулы белого справа (`WhiteCapsule`): на каждой странице, оси стоят левее неё (решение 290).
     pub trailing: Rect,
 }
@@ -41,13 +46,23 @@ impl ScopeStripFrames {
         let zoom_width = config.scope_zoom_segment_width_pt;
         let zoom_toggle = band(axes_toggle.min_x() - gap - zoom_width, zoom_width);
 
+        // Переключатели страниц прижаты к месту белого и делят одно место: на странице живёт одна группа.
+        let histogram_width = 3.0 * config.scope_histogram_segment_width_pt + 2.0 * config.segment_gap_pt;
+        let histogram_toggle = band(trailing.min_x() - gap - histogram_width, histogram_width);
+        let cie_width = 2.0 * config.scope_cie_segment_width_pt + config.segment_gap_pt;
+        let cie_toggle = band(trailing.min_x() - gap - cie_width, cie_width);
+        let widest_controls_left = zoom_toggle
+            .min_x()
+            .min(histogram_toggle.min_x())
+            .min(cie_toggle.min_x());
+
         let cell_width = config.scope_page_dot_cell_width_pt;
         let dots_width = cell_width * ScopeKind::ALL.len() as f64;
-        // Точки — по центру полоски; если там они налезли бы на переключатель осей (четыре страницы на узком экране,
-        // решение 321), ряд сдвигается влево и встаёт вплотную к переключателю через зазор. Положение одно на всех
-        // страницах: место переключателя держится и там, где он скрыт, поэтому точки не прыгают при свайпе.
+        // Точки — по центру полоски; если там они налезли бы на самую широкую группу переключателей страницы (решения
+        // 321, 331, 332), ряд сдвигается влево и встаёт вплотную к ней через зазор. Положение одно на всех страницах:
+        // место группы держится и там, где её нет, поэтому точки не прыгают при свайпе.
         let centred_left = strip.center().x - dots_width / 2.0;
-        let dots_left = centred_left.min(zoom_toggle.min_x() - gap - dots_width);
+        let dots_left = centred_left.min(widest_controls_left - gap - dots_width);
         let page_dots = std::array::from_fn(|index| band(dots_left + cell_width * index as f64, cell_width));
 
         let title_left = strip.min_x() + inset;
@@ -57,6 +72,8 @@ impl ScopeStripFrames {
             page_dots,
             axes_toggle,
             zoom_toggle,
+            histogram_toggle,
+            cie_toggle,
             trailing,
         }
     }
@@ -80,38 +97,87 @@ mod tests {
             && second.min_y() < first.max_y() - 1e-9
     }
 
-    fn parts(frames: &ScopeStripFrames) -> Vec<(&'static str, Rect)> {
+    /// Рамки переключателей, которые живут на странице `kind` (на остальных страницах их нет).
+    fn page_controls(frames: &ScopeStripFrames, kind: ScopeKind) -> Vec<(&'static str, Rect)> {
+        match kind {
+            ScopeKind::Vectorscope => vec![("оси", frames.axes_toggle), ("зум", frames.zoom_toggle)],
+            ScopeKind::Histogram => vec![("режим гистограммы", frames.histogram_toggle)],
+            ScopeKind::Cie => vec![("шкала CIE", frames.cie_toggle)],
+            ScopeKind::Waveform | ScopeKind::LumaWaveform | ScopeKind::RgbParade => Vec::new(),
+        }
+    }
+
+    /// Все части полоски на странице `kind`: имя, точки, её переключатели и место белого.
+    fn parts(frames: &ScopeStripFrames, kind: ScopeKind) -> Vec<(&'static str, Rect)> {
         let mut all = vec![("имя", frames.title)];
         all.extend(frames.page_dots.iter().map(|cell| ("точка", *cell)));
-        all.push(("оси", frames.axes_toggle));
-        all.push(("зум", frames.zoom_toggle));
+        all.extend(page_controls(frames, kind));
         all.push(("белое", frames.trailing));
         all
     }
 
     #[test]
-    fn title_dots_axes_and_the_white_slot_never_share_a_point_on_the_tightest_page_in_every_orientation() {
+    fn title_dots_controls_and_the_white_slot_never_share_a_point_on_any_page_in_every_orientation() {
         let config = CalibrationConfig::default();
         for orientation in ALL_ORIENTATIONS {
             let layout = calibration_layout(LayoutPolicy::FollowsOrientation, orientation);
             let strip = layout.scope_strip();
             let frames = ScopeStripFrames::of(strip, &config.widgets);
-            let all = parts(&frames);
-            for (index, (first_name, first)) in all.iter().enumerate() {
-                assert!(
-                    first.min_x() >= strip.min_x() - 1e-9 && first.max_x() <= strip.max_x() + 1e-9,
-                    "{orientation:?}: {first_name} вылезает из полоски: {first:?}"
-                );
-                assert!(
-                    (first.size.height - strip.size.height).abs() < 1e-9,
-                    "{orientation:?}: {first_name}: цель на всю высоту полоски"
-                );
-                for (second_name, second) in &all[index + 1..] {
+            for kind in ScopeKind::ALL {
+                let all = parts(&frames, kind);
+                for (index, (first_name, first)) in all.iter().enumerate() {
                     assert!(
-                        !overlaps(*first, *second),
-                        "{orientation:?}: {first_name} {first:?} перекрывает {second_name} {second:?}"
+                        first.min_x() >= strip.min_x() - 1e-9 && first.max_x() <= strip.max_x() + 1e-9,
+                        "{orientation:?} {kind:?}: {first_name} вылезает из полоски: {first:?}"
+                    );
+                    assert!(
+                        (first.size.height - strip.size.height).abs() < 1e-9,
+                        "{orientation:?} {kind:?}: {first_name}: цель на всю высоту полоски"
+                    );
+                    for (second_name, second) in &all[index + 1..] {
+                        assert!(
+                            !overlaps(*first, *second),
+                            "{orientation:?} {kind:?}: {first_name} {first:?} перекрывает {second_name} {second:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_page_control_group_sits_between_the_dots_and_the_white_slot_and_the_widest_one_touches_the_dots_gap() {
+        let config = CalibrationConfig::default();
+        let gap = config.widgets.scope_strip_gap_pt;
+        for orientation in ALL_ORIENTATIONS {
+            let layout = calibration_layout(LayoutPolicy::FollowsOrientation, orientation);
+            let frames = ScopeStripFrames::of(layout.scope_strip(), &config.widgets);
+            let dots_right = frames.page_dots[frames.page_dots.len() - 1].max_x();
+            for kind in ScopeKind::ALL {
+                for (name, rect) in page_controls(&frames, kind) {
+                    assert!(
+                        rect.min_x() >= dots_right + gap - 1e-9,
+                        "{orientation:?} {kind:?}: {name} ближе к точкам, чем зазор"
+                    );
+                    assert!(
+                        rect.max_x() <= frames.trailing.min_x() - gap + 1e-9,
+                        "{orientation:?} {kind:?}: {name} ближе к белому, чем зазор"
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn the_page_dot_cell_keeps_a_touch_target_of_at_least_fourteen_points_in_every_orientation() {
+        // Решение 335 и сессия 14s: шесть страниц делят полоску с самой широкой группой переключателей; ячейка
+        // точки не должна сжиматься дальше 14 pt (при этом имя прибора ещё помещается, см. тест ниже).
+        let config = CalibrationConfig::default();
+        for orientation in ALL_ORIENTATIONS {
+            let layout = calibration_layout(LayoutPolicy::FollowsOrientation, orientation);
+            let frames = ScopeStripFrames::of(layout.scope_strip(), &config.widgets);
+            for cell in frames.page_dots {
+                assert!(cell.size.width >= 14.0 - 1e-9, "{orientation:?}: ячейка {cell:?}");
             }
         }
     }
@@ -125,7 +191,14 @@ mod tests {
         let layout = calibration_layout(LayoutPolicy::FollowsOrientation, DeviceOrientation::Portrait);
         let strip = layout.scope_strip();
         let frames = ScopeStripFrames::of(strip, &config.widgets);
-        for title in ["RGB WAVEFORM", "LUMA WAVEFORM", "RGB PARADE", "VECTORSCOPE"] {
+        for title in [
+            "HISTOGRAM",
+            "RGB WAVEFORM",
+            "LUMA WAVEFORM",
+            "RGB PARADE",
+            "VECTORSCOPE",
+            "CIE",
+        ] {
             let run = painter.layout(title, TextRoleKind::Caption).expect("раскладка подписи");
             let width_pt = f64::from(run.advance_px) / ppp;
             assert!(
@@ -139,9 +212,17 @@ mod tests {
         let dots_left = frames.page_dots[0].min_x();
         let dots_right = frames.page_dots[frames.page_dots.len() - 1].max_x();
         let centred = ((dots_left + dots_right) / 2.0 - strip.center().x).abs() < 1e-9;
-        let against_zoom = (frames.zoom_toggle.min_x() - config.widgets.scope_strip_gap_pt - dots_right).abs() < 1e-9;
-        assert!(centred || against_zoom, "точки по центру или вплотную к кнопке «2×»");
-        assert!(dots_right <= frames.zoom_toggle.min_x() - config.widgets.scope_strip_gap_pt + 1e-9);
+        let widest_left = frames
+            .zoom_toggle
+            .min_x()
+            .min(frames.histogram_toggle.min_x())
+            .min(frames.cie_toggle.min_x());
+        let against_controls = (widest_left - config.widgets.scope_strip_gap_pt - dots_right).abs() < 1e-9;
+        assert!(
+            centred || against_controls,
+            "точки по центру или вплотную к самой широкой группе"
+        );
+        assert!(dots_right <= widest_left - config.widgets.scope_strip_gap_pt + 1e-9);
         assert!(
             frames.zoom_toggle.max_x() < frames.axes_toggle.min_x(),
             "«2×» левее осей"

@@ -27,7 +27,7 @@ use gpu_vulkan::saturation::{
     DigestPart, FrameRecording, PassTimeLog, PassTimeSummary, SaturationWorkload, SlotId, WorkloadDigest,
 };
 use isp_model::params::IspParams;
-use scope_contract::{ScopeImageSize, ScopeKind, ScopeRequest, ScopeScan, VectorscopeAxes};
+use scope_contract::{HistogramMode, ScopeImageSize, ScopeKind, ScopeRequest, ScopeScan, VectorscopeAxes};
 use scope_model::{ResolvedScope, ScopeModelSettings};
 
 use super::error::{FirstFailure, SaturationWorkError};
@@ -56,6 +56,10 @@ pub struct ScopesSaturationConfig {
     pub kind: ScopeKind,
     /// Оси вектороскопа (для остальных приборов не важны).
     pub vectorscope_axes: VectorscopeAxes,
+    /// Режим гистограммы (для остальных приборов не важен).
+    pub histogram_mode: HistogramMode,
+    /// Шкала диаграммы CIE (для остальных приборов не важна).
+    pub cie_diagram: scope_contract::CieDiagram,
     /// Как глаз читает картинку (положение телефона).
     pub scan: ScopeScan,
     /// Размер картинки прибора.
@@ -76,6 +80,8 @@ impl Default for ScopesSaturationConfig {
             input_content: SceneContent::default(),
             kind: ScopeKind::Waveform,
             vectorscope_axes: VectorscopeAxes::YCbCrBt709,
+            histogram_mode: HistogramMode::default(),
+            cie_diagram: scope_contract::CieDiagram::default(),
             scan: ScopeScan::Upright,
             picture_size: ScopeImageSize::try_new(DEFAULT_PICTURE_SIZE_PX.0, DEFAULT_PICTURE_SIZE_PX.1)
                 .unwrap_or_else(|_| unreachable!("540x360 внутри предела словаря приборов")),
@@ -96,10 +102,11 @@ impl ScopesSaturationConfig {
             ));
         }
         if self.diagnostic.is_some()
-            && (self.kind == ScopeKind::Vectorscope && self.vectorscope_axes == VectorscopeAxes::OklabAb)
+            && ((self.kind == ScopeKind::Vectorscope && self.vectorscope_axes == VectorscopeAxes::OklabAb)
+                || self.kind == ScopeKind::Cie)
         {
             return Err(SaturationWorkError::invalid_config(
-                "диагностика накопления есть только у целочисленных приборов (не OKLab)",
+                "диагностика накопления есть только у целочисленных приборов (не OKLab и не CIE)",
             ));
         }
         self.settings
@@ -153,6 +160,8 @@ impl ScopesSaturation {
             kind: config.kind,
             vectorscope_axes: config.vectorscope_axes,
             vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
+            cie_diagram: config.cie_diagram,
+            histogram_mode: config.histogram_mode,
             scan: config.scan,
             image_size: config.picture_size,
         };

@@ -15,13 +15,15 @@ use scope_contract::ScopeImageSize;
 
 use crate::graticule::GraticulePrimitive;
 use crate::grid::ScopeCounters;
+use crate::histogram_bars::HistogramBars;
 use crate::render_settings::{RenderSettings, RenderSettingsError};
 use crate::resolved::ResolvedScope;
 use crate::rule::ScopeRule;
 use crate::sample_count::SampleCount;
 use crate::trace_density::PictureDensity;
-use crate::trace_painter::TracePainter;
+use crate::trace_painter::{TracePainter, TracePixel};
 use crate::trace_reference::TraceReference;
+use crate::trace_style::TraceStyle;
 
 /// Ошибка показа.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -82,39 +84,73 @@ pub fn render(
     let paint = style.paint();
     // Порог полной яркости один на кадр — плотность от равномерной; GPU-сторона берёт тот же вызов.
     let reference = TraceReference::for_paint(paint, settings, samples, size, shape.planes());
-    let density = PictureDensity::compute(counters, samples, paint, size, settings.trace_softening_px);
-    let painter = TracePainter::new(&density, shape, size, &style, reference, settings.trace_opacity);
+    // Плотность «строка × столбец» нужна только следам; гистограмма рисует столбики по одному ряду счётчиков.
+    let density = (!paint.draws_bars())
+        .then(|| PictureDensity::compute(counters, samples, paint, size, settings.trace_softening_px));
+    let tracer = match &density {
+        Some(density) => TraceSource::Density(TracePainter::new(
+            density,
+            shape,
+            size,
+            &style,
+            reference,
+            settings.trace_opacity,
+        )),
+        None => TraceSource::Bars(HistogramBars::new(
+            counters,
+            samples,
+            &style,
+            size,
+            settings.histogram_height,
+            settings.histogram_look(),
+            settings.trace_softening_px,
+        )),
+    };
     let graticule = scope.graticule(settings);
     let picture_px = [size.width() as f32, size.height() as f32];
     let mut pixels = Vec::with_capacity(size.width() as usize * size.height() as usize);
     for y in 0..size.height() {
         for x in 0..size.width() {
-            let trace = painter.pixel(x, y);
+            let trace = tracer.pixel(x, y);
             let center = [x as f32 + 0.5, y as f32 + 0.5];
-            let graticule_alpha = graticule_alpha(&graticule, center, picture_px, settings);
-            pixels.push(composite_over(
-                trace.color,
-                trace.alpha,
-                settings.graticule_color,
-                graticule_alpha,
-            ));
+            let graticule_alpha =
+                graticule_alpha(&graticule, center, picture_px, settings.graticule_opacity_for(paint));
+            pixels.push(match &style {
+                // Диаграмма CIE: слои «заливка локуса → сетка → след». Остальные приборы заливки не имеют, их путь прежний.
+                TraceStyle::Cie(cie) => {
+                    let (fill_color, fill_alpha) = cie.fill_at(center, picture_px);
+                    let under = composite_over(settings.graticule_color, graticule_alpha, fill_color, fill_alpha);
+                    composite_over(trace.color, trace.alpha, [under[0], under[1], under[2]], under[3])
+                }
+                _ => composite_over(trace.color, trace.alpha, settings.graticule_color, graticule_alpha),
+            });
         }
     }
     Ok(ScopePicture { size, pixels })
 }
 
-/// Наибольшее покрытие примитивами сетки, умноженное на непрозрачность сетки.
-fn graticule_alpha(
-    primitives: &[GraticulePrimitive],
-    center: [f32; 2],
-    picture_px: [f32; 2],
-    settings: &RenderSettings,
-) -> f32 {
+/// Откуда берётся след пикселя: плотность следов или столбики гистограммы.
+enum TraceSource<'a> {
+    Density(TracePainter<'a>),
+    Bars(HistogramBars<'a>),
+}
+
+impl TraceSource<'_> {
+    fn pixel(&self, x: u32, y: u32) -> TracePixel {
+        match self {
+            Self::Density(painter) => painter.pixel(x, y),
+            Self::Bars(bars) => bars.pixel(x, y),
+        }
+    }
+}
+
+/// Наибольшее покрытие примитивами сетки, умноженное на непрозрачность сетки этого прибора.
+fn graticule_alpha(primitives: &[GraticulePrimitive], center: [f32; 2], picture_px: [f32; 2], opacity: f32) -> f32 {
     let coverage = primitives
         .iter()
         .map(|primitive| primitive.coverage(center, picture_px))
         .fold(0.0_f32, f32::max);
-    coverage * settings.graticule_opacity
+    coverage * opacity
 }
 
 /// След поверх сетки (прямая альфа, «over»). Нулевая итоговая альфа даёт полностью прозрачный чёрный.

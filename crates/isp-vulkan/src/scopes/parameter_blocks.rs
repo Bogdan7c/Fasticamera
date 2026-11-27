@@ -3,11 +3,12 @@
 //! Две раскладки:
 //! * блок накопления — `uint words[64]` (заголовок: столбцы, строки, плоскости, чтение картинки глазом; потом слова прибора)
 //!   и `float decode_table[1024]` (`scope_accumulate_common.glsl`);
-//! * блок показа — сетка и число примитивов, непрозрачности, код способа рисования, цвета плоскостей, 48
-//!   примитивов, ХВОСТ «цвет по положению» (таблица углов, нейтраль, геометрия; нули у всех способов, кроме
+//! * блок показа — сетка и число примитивов, непрозрачности, код способа рисования, цвета плоскостей, 128
+//!   примитивов (`MAX_GRATICULE_PRIMITIVES`), ХВОСТ «цвет по положению» (таблица углов, нейтраль, геометрия; нули у всех способов, кроме
 //!   `TracePaint::ColorByPosition`) и ПЕРЕНОС СЕТКИ В ПИКСЕЛИ (решение 322): размер картинки, слотов на пиксель и ядра
 //!   по осям, посчитанные эталоном (`scope_model::AxisResampling`). Блок читают оба прохода показа:
-//!   `scope_resample.comp` (по горизонтали) и `scope_render.comp` (по вертикали и цвет).
+//!   `scope_resample.comp` (по горизонтали) и `scope_render.comp` (по вертикали и цвет). В хвосте блока — данные
+//!   гистограммы и диаграммы CIE ([`super::cie_block`]).
 //!
 //! Чистые функции без GPU: раскладку проверяют обычные тесты.
 
@@ -16,10 +17,12 @@ use scope_contract::ScopeScan;
 use scope_model::position_palette::{MIN_EDGE_RADIUS_CELLS, NEUTRAL_RADIUS_EPSILON_CELLS};
 use scope_model::{
     AxisResampling, GraticulePrimitive, GridShape, MAX_GRATICULE_PRIMITIVES, POSITION_PALETTE_ANGLES, PositionPalette,
-    RenderSettings, Section, TracePaint, TraceReference, TraceStyle, slots_per_pixel,
+    RenderSettings, SampleCount, Section, TracePaint, TraceReference, TraceStyle, slots_per_pixel,
 };
 
+use super::cie_block::{CIE_VECTORS, cie_words};
 use super::error::ScopeError;
+use super::histogram_block::histogram_words;
 use super::rule::{AccumulateParameters, DECODE_TABLE_LEN, HEADER_WORDS, PARAMETER_WORDS, RULE_WORD_CAPACITY};
 
 /// Размер блока накопления, байт: слова + таблица.
@@ -49,15 +52,28 @@ pub(super) const AXIS_FIRST_SECTION: usize = 2;
 /// Векторов в части «перенос в пиксели»: `uvec4 picture` и ядра по осям.
 const RESAMPLE_VECTORS: usize = 1 + RESAMPLE_AXES;
 
-/// Размер блока показа, байт: голова + примитивы по два `vec4` + хвост «цвет по положению» + перенос в пиксели.
-pub(super) const RENDER_BLOCK_BYTES: usize =
-    (RENDER_HEAD_VECTORS + MAX_GRATICULE_PRIMITIVES * 2 + RENDER_TAIL_VECTORS + RESAMPLE_VECTORS) * 16;
+/// Векторов в хвосте гистограммы: `vec4 histogram` (опора и кривая шкалы высоты, заливка и линия) и `vec4
+/// histogram_style` (затемнение заливки, зазор полос), см. [`super::histogram_block`].
+const HISTOGRAM_VECTORS: usize = 2;
+
+/// Размер блока показа, байт: голова + примитивы по два `vec4` + хвост «цвет по положению» + перенос в пиксели + хвост
+/// гистограммы.
+pub(super) const RENDER_BLOCK_BYTES: usize = (RENDER_HEAD_VECTORS
+    + MAX_GRATICULE_PRIMITIVES * 2
+    + RENDER_TAIL_VECTORS
+    + RESAMPLE_VECTORS
+    + HISTOGRAM_VECTORS
+    + CIE_VECTORS)
+    * 16;
 
 /// Слова способа рисования в `trace.w` (`PAINT_*` в `scope_render.comp`). Сравнение в шейдере — по равенству
 /// float, поэтому коды — малые целые, точно представимые.
 pub(super) const PAINT_CODE_PLANE_SECTIONS: f32 = 0.0;
 pub(super) const PAINT_CODE_PLANES_OVERLAID: f32 = 1.0;
 pub(super) const PAINT_CODE_COLOR_BY_POSITION: f32 = 2.0;
+pub(super) const PAINT_CODE_HISTOGRAM_OVERLAID: f32 = 3.0;
+pub(super) const PAINT_CODE_HISTOGRAM_SECTIONS: f32 = 4.0;
+pub(super) const PAINT_CODE_CIE: f32 = 5.0;
 
 /// Слово шейдера для способа рисования. `match` без `_`: новый способ не соберётся без своего кода.
 pub(super) fn paint_code(paint: TracePaint) -> f32 {
@@ -65,6 +81,9 @@ pub(super) fn paint_code(paint: TracePaint) -> f32 {
         TracePaint::PlaneSections => PAINT_CODE_PLANE_SECTIONS,
         TracePaint::PlanesOverlaid => PAINT_CODE_PLANES_OVERLAID,
         TracePaint::ColorByPosition => PAINT_CODE_COLOR_BY_POSITION,
+        TracePaint::HistogramOverlaid => PAINT_CODE_HISTOGRAM_OVERLAID,
+        TracePaint::HistogramSections => PAINT_CODE_HISTOGRAM_SECTIONS,
+        TracePaint::Cie => PAINT_CODE_CIE,
     }
 }
 
@@ -128,6 +147,8 @@ pub(super) struct RenderBlockInputs<'a> {
     pub graticule: &'a [GraticulePrimitive],
     /// Настройки показа.
     pub settings: &'a RenderSettings,
+    /// Отсчёты кадра: от них зависит опора шкалы высоты гистограммы «среднее» (хвост блока).
+    pub samples: SampleCount,
 }
 
 /// Блок показа.
@@ -139,16 +160,17 @@ pub(super) fn render_block_bytes(inputs: &RenderBlockInputs<'_>) -> Vec<u8> {
         picture,
         graticule,
         settings,
+        samples,
     } = *inputs;
     let mut floats: Vec<u32> = Vec::with_capacity(RENDER_BLOCK_BYTES / 4);
-    // uvec4 grid: столбцы, строки, плоскости, число примитивов (в буфере не больше 48: проверено вызывающим).
+    // uvec4 grid: столбцы, строки, плоскости, число примитивов (в буфере не больше `MAX_GRATICULE_PRIMITIVES` = 128: проверено вызывающим).
     floats.extend([grid.columns(), grid.rows(), grid.planes(), graticule.len() as u32]);
     // vec4 trace: знаменатель лог-шкалы (тот же f32, что на CPU), непрозрачность следа и сетки, код способа.
     floats.extend(
         [
             reference.log_denominator(),
             settings.trace_opacity,
-            settings.graticule_opacity,
+            settings.graticule_opacity_for(style.paint()),
             paint_code(style.paint()),
         ]
         .map(f32::to_bits),
@@ -163,7 +185,11 @@ pub(super) fn render_block_bytes(inputs: &RenderBlockInputs<'_>) -> Vec<u8> {
     }
     floats.extend(position_tail_words(match style {
         TraceStyle::ColorByPosition { palette } => Some(palette.as_ref()),
-        TraceStyle::PlaneSections { .. } | TraceStyle::PlanesOverlaid { .. } => None,
+        TraceStyle::PlaneSections { .. }
+        | TraceStyle::PlanesOverlaid { .. }
+        | TraceStyle::HistogramOverlaid { .. }
+        | TraceStyle::HistogramSections { .. }
+        | TraceStyle::Cie(_) => None,
     }));
     floats.extend(resample_words(
         grid,
@@ -172,6 +198,14 @@ pub(super) fn render_block_bytes(inputs: &RenderBlockInputs<'_>) -> Vec<u8> {
         settings.trace_softening_px,
         reference.pixels_per_hit(),
     ));
+    floats.extend(histogram_words(
+        style.paint(),
+        settings.histogram_height,
+        settings.histogram_look(),
+        samples,
+        grid.columns(),
+    ));
+    floats.extend(cie_words(style));
     floats.iter().flat_map(|word| word.to_ne_bytes()).collect()
 }
 
@@ -221,9 +255,9 @@ fn resample_words(
 /// положению» плоскостных цветов нет (шейдер их не читает, в блок идут нули).
 fn plane_colors_of(style: &TraceStyle) -> Vec<[f32; 3]> {
     match style {
-        TraceStyle::PlaneSections { colors } => colors.clone(),
-        TraceStyle::PlanesOverlaid { primaries } => primaries.to_vec(),
-        TraceStyle::ColorByPosition { .. } => Vec::new(),
+        TraceStyle::PlaneSections { colors } | TraceStyle::HistogramSections { colors } => colors.clone(),
+        TraceStyle::PlanesOverlaid { primaries } | TraceStyle::HistogramOverlaid { primaries } => primaries.to_vec(),
+        TraceStyle::ColorByPosition { .. } | TraceStyle::Cie(_) => Vec::new(),
     }
 }
 
@@ -368,6 +402,11 @@ mod tests {
     /// Столбцов в сетке тестового блока ([`block_of`]).
     const TEST_GRID_COLUMNS: u32 = 4;
 
+    /// Хвост гистограммы — вектор перед хвостом CIE (CIE — последняя часть блока).
+    fn histogram_tail(words: &[u32]) -> &[u32] {
+        &words[words.len() - CIE_VECTORS * 4 - 8..words.len() - CIE_VECTORS * 4]
+    }
+
     /// Картинка тестового блока.
     fn test_picture() -> ScopeImageSize {
         ScopeImageSize::try_new(301, 77).unwrap()
@@ -388,6 +427,7 @@ mod tests {
             picture: test_picture(),
             graticule: primitives,
             settings,
+            samples: SampleCount::for_window(1000, 500, SampleStride::EVERY_SECOND_PIXEL),
         });
         assert_eq!(bytes.len(), RENDER_BLOCK_BYTES, "блок показа заполняется целиком");
         words_of(&bytes)
@@ -438,6 +478,63 @@ mod tests {
         assert_eq!(f32::from_bits(words[WORD_PRIMITIVES + 5]), 1.0);
         // Остальные примитивы и весь хвост «по положению» пусты (нули): буфер заполнен целиком.
         assert!(words[WORD_PRIMITIVES + 8..WORD_PICTURE].iter().all(|&word| word == 0));
+    }
+
+    #[test]
+    fn the_histogram_tail_precedes_the_cie_tail_and_carries_the_height_scale_only_for_bar_paints() {
+        let overlaid = TraceStyle::HistogramOverlaid {
+            primaries: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        };
+        // Среднее: 125 000 отсчётов на 4 уровня — 31 250 на уровень; кратное 2 даёт опору 62 500; кривая — корень.
+        let mean = RenderSettings {
+            histogram_height: scope_model::HistogramHeight::SquareRootToMean { multiple: 2.0 },
+            ..RenderSettings::default()
+        };
+        let words = block_of(&overlaid, &[], &mean);
+        let tail = histogram_tail(&words);
+        let defaults = RenderSettings::default();
+        assert_eq!(
+            tail.iter().map(|&word| f32::from_bits(word)).collect::<Vec<_>>(),
+            [
+                62_500.0,
+                1.0,
+                defaults.histogram_fill_opacity,
+                defaults.histogram_edge_width_px,
+                defaults.histogram_fill_tint,
+                defaults.histogram_strip_gap,
+                0.0,
+                0.0
+            ]
+        );
+        assert_eq!(f32::from_bits(words[WORD_TRACE + 3]), PAINT_CODE_HISTOGRAM_OVERLAID);
+        // Самый высокий столбик: опора помечена отрицательной.
+        let tallest = RenderSettings {
+            histogram_height: scope_model::HistogramHeight::Log2ToPeak,
+            ..RenderSettings::default()
+        };
+        let sections = TraceStyle::HistogramSections {
+            colors: vec![[1.0; 3], [0.5; 3]],
+        };
+        let words = block_of(&sections, &[], &tallest);
+        let tail = histogram_tail(&words);
+        assert_eq!(
+            f32::from_bits(tail[0]),
+            crate::scopes::histogram_block::TALLEST_BAR_REFERENCE
+        );
+        assert_eq!(f32::from_bits(tail[1]), 2.0);
+        assert_eq!(f32::from_bits(words[WORD_TRACE + 3]), PAINT_CODE_HISTOGRAM_SECTIONS);
+        assert_eq!(
+            f32::from_bits(words[WORD_PLANE_COLORS + 4]),
+            0.5,
+            "цвета секций гистограммы — в plane_colors"
+        );
+        // Следы шкалы не несут: хвост нулевой, как бы ни была настроена гистограмма.
+        let words = block_of(&sections_trace(), &[], &mean);
+        assert_eq!(histogram_tail(&words), &[0; 8]);
+    }
+
+    fn sections_trace() -> TraceStyle {
+        sections()
     }
 
     #[test]
@@ -529,8 +626,8 @@ mod tests {
         assert_eq!(geometry, [128.5, NEUTRAL_RADIUS_EPSILON_CELLS, MIN_EDGE_RADIUS_CELLS]);
         assert_eq!(
             words.len(),
-            WORD_RESAMPLE_AXES + RESAMPLE_AXES * 4,
-            "после геометрии идёт только перенос в пиксели"
+            WORD_RESAMPLE_AXES + RESAMPLE_AXES * 4 + 8 + CIE_VECTORS * 4,
+            "после геометрии идут перенос в пиксели, хвост гистограммы (два vec4) и хвост CIE"
         );
         // У «по положению» плоскостных цветов нет: шейдер их не читает, там нули.
         assert!(words[WORD_PLANE_COLORS..WORD_PRIMITIVES].iter().all(|&word| word == 0));

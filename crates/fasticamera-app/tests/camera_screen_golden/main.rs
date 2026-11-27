@@ -17,6 +17,7 @@
 mod calibration_edits_goldens;
 mod calibration_goldens;
 mod calibration_safe_area_goldens;
+mod calibration_scope_toggles_goldens;
 mod calibration_surface_goldens;
 mod calibration_wheels_goldens;
 mod calibration_white_goldens;

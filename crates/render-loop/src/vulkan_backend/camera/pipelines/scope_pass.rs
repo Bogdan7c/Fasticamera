@@ -40,9 +40,10 @@ use gpu_vulkan::storage_image::SampledImageView;
 use gpu_vulkan::swapchain::DisplayColorSpace;
 use isp_model::image::DisplayGamut;
 use isp_vulkan::scopes::{ColorScopes, ColorScopesConfig, PictureChange, ScopeError, ScopeFrame, ScopeInput};
-use scope_contract::ScopeRequest;
+use scope_contract::{ScopeLabelsBoard, ScopeRequest};
 use scope_model::{ResolveError, ResolvedScope};
 
+use super::scope_labels_publisher::ScopeLabelsPublisher;
 use super::{CameraPipelines, FrameTarget, LOG_TARGET, NewIspFrame, ShowFrameAs};
 use crate::config::ScopesConfig;
 use crate::viewfinder::{ScopeEvents, ScopeResidency, ScopeResources};
@@ -147,6 +148,9 @@ pub(super) struct ScopePass {
     /// Сколько новых показанных кадров прошло с открытия приборов или смены запроса: по нему считается «каждый N-й
     /// кадр».
     new_frames_since_open: u64,
+    /// Писатель доски подписей прибора для приложения (решения 326, 327); `None` — доски нет (сборки без приложения,
+    /// тесты), подписи никому не нужны.
+    labels: Option<ScopeLabelsPublisher>,
     events: ScopeEvents,
 }
 
@@ -164,8 +168,15 @@ impl ScopePass {
             blocked: None,
             reported_failure: None,
             new_frames_since_open: 0,
+            labels: None,
             events: ScopeEvents::default(),
         }
+    }
+
+    /// Подключает доску подписей прибора: с этого момента подписи публикуются на смену решённого правила и
+    /// снимаются при закрытии приборов.
+    pub(super) fn attach_labels_board(&mut self, board: ScopeLabelsBoard) {
+        self.labels = Some(ScopeLabelsPublisher::new(board));
     }
 
     /// Что просят приборы сейчас.
@@ -183,6 +194,9 @@ impl ScopePass {
         if demand.is_none() {
             self.retire_live();
             self.resolved = None;
+            if let Some(labels) = self.labels.as_mut() {
+                labels.withdraw();
+            }
         }
         // Открытие приборов ИЛИ смена запроса (страница, оси, зум): счёт «каждый N-й кадр» начинается заново, и
         // ближайший кадр считается всегда. Иначе при N > 1 новый запрос мог попасть в пропускаемую фазу, и под новым
@@ -455,6 +469,10 @@ impl ScopePass {
             .is_some_and(|entry| entry.request == *request && entry.gamut == gamut);
         if !fresh {
             let rule = ResolvedScope::resolve(request, &self.config.model, gamut)?;
+            // Правило решено заново (запрос или охват другие): положения подписей могли измениться.
+            if let Some(labels) = self.labels.as_mut() {
+                labels.publish_for(request, &rule, &self.config.model.render);
+            }
             self.resolved = Some(ResolvedEntry {
                 request: *request,
                 gamut,
@@ -535,6 +553,12 @@ impl CameraPipelines {
     /// нельзя. Зовёт владелец цепочки после команды, подключения, смены формата, ухода источника UI и конца кадра.
     pub fn prepare_scopes_between_frames(&mut self, demand: Option<ScopeRequest>) {
         self.scopes.prepare_between_frames(demand);
+    }
+
+    /// Подключает доску подписей прибора (решения 326, 327): пишет рендер, читает приложение для экрана. Зовёт
+    /// владелец цепочки сразу после создания конвейеров.
+    pub fn attach_scope_labels_board(&mut self, board: ScopeLabelsBoard) {
+        self.scopes.attach_labels_board(board);
     }
 
     /// Факт об устройстве для диагностики приборов: управление округлением и денормалями f32.

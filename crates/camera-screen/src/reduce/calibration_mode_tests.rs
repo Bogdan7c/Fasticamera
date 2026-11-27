@@ -117,16 +117,18 @@ fn entering_calibrate_puts_the_viewfinder_on_the_whole_screen_and_asks_for_the_s
         },
         "соотношение — экрана, режим cover"
     );
-    // Прибор просят размером ровно с его картинку: 1011 × 827 px на поверхности 1080×2412 (область картинки 1080 × 827
-    // под полоской 44 pt, минус поле уровней 28 pt, решения 274 и 291).
+    // Прибор просят размером ровно с его картинку: 1080 × 827 px на поверхности 1080×2412 (область картинки 1080 × 827
+    // под полоской 44 pt, решения 274 и 291; у гистограммы поля чисел уровней слева нет, у waveform оно 28 pt).
     assert_eq!(
         shows(&transition.effects),
         [ScopeRequest {
-            kind: ScopeKind::Waveform,
+            kind: ScopeKind::Histogram,
             vectorscope_axes: VectorscopeAxes::YCbCrBt709,
             vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
+            cie_diagram: scope_contract::CieDiagram::default(),
+            histogram_mode: scope_contract::HistogramMode::Rgb,
             scan: ScopeScan::Upright,
-            image_size: scope_contract::ScopeImageSize::try_new(1011, 827).expect("размер"),
+            image_size: scope_contract::ScopeImageSize::try_new(1080, 827).expect("размер"),
         }]
     );
     assert_eq!(hides(&transition.effects), 0);
@@ -174,7 +176,7 @@ fn rotating_the_phone_in_calibrate_resends_the_scope_with_the_new_size_and_scan(
         .calibration()
         .layout()
         .expect("раскладка")
-        .scope_image_size_for(ScopeKind::Waveform);
+        .scope_image_size_for(ScopeKind::Histogram);
 
     let transition = screen.rotate_to(DeviceOrientation::LandscapeLeft);
 
@@ -182,7 +184,10 @@ fn rotating_the_phone_in_calibrate_resends_the_scope_with_the_new_size_and_scan(
     let requests = shows(&transition.effects);
     assert_eq!(requests.len(), 1, "{:?}", transition.effects);
     assert_eq!(requests[0].scan, ScopeScan::RotatedClockwise);
-    assert_eq!(requests[0].image_size, layout.scope_image_size_for(ScopeKind::Waveform));
+    assert_eq!(
+        requests[0].image_size,
+        layout.scope_image_size_for(ScopeKind::Histogram)
+    );
     assert_ne!(requests[0].image_size, portrait, "зона прибора в альбоме другая");
     // Видоискатель от поворота не меняется: он по-прежнему на весь портретный экран.
     assert!(viewfinder_intents(&transition.effects).is_empty());
@@ -223,17 +228,19 @@ fn a_new_surface_size_in_calibrate_resends_the_scope_and_the_viewfinder() {
     assert_eq!(
         shows(&transition.effects),
         [ScopeRequest {
-            kind: ScopeKind::Waveform,
+            kind: ScopeKind::Histogram,
             vectorscope_axes: VectorscopeAxes::YCbCrBt709,
             vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
+            cie_diagram: scope_contract::CieDiagram::default(),
+            histogram_mode: scope_contract::HistogramMode::Rgb,
             scan: ScopeScan::Upright,
-            image_size: layout.scope_image_size_for(ScopeKind::Waveform),
+            image_size: layout.scope_image_size_for(ScopeKind::Histogram),
         }]
     );
-    let size = layout.scope_image_size_for(ScopeKind::Waveform);
+    let size = layout.scope_image_size_for(ScopeKind::Histogram);
     assert_ne!(
         (size.width(), size.height()),
-        (1011, 827),
+        (1080, 827),
         "высота surface другая — зона прибора другая"
     );
     assert_eq!(viewfinder_intents(&transition.effects).len(), 1);

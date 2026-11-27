@@ -49,6 +49,7 @@ mod frame_target;
 mod held;
 #[cfg(test)]
 mod scope_frame_tests;
+mod scope_labels_publisher;
 mod scope_pass;
 #[cfg(test)]
 mod screen_tests;

@@ -14,6 +14,14 @@
 //! * RGB waveform и parade (одно правило): источник 0, `основа = levels − 1`, знак −1, три проекции уровня (R, G, B);
 //! * вектороскоп Y'CbCr: источник 1, основа 0, знак +1, проекции столбца и строки.
 //!
+//! # Слова шейдера `scope_accumulate_histogram*.comp` (после общего заголовка, слова 4…)
+//! 4…18 — три проекции «код → уровень» по плоскостям (R', G', B' либо Y' в нулевой), по 5 слов; плоскости сверх сетки
+//! шейдер не читает. Столбец сетки — уровень, строка — 0.
+//!
+//! # Слова шейдера `scope_accumulate_cie*.comp`
+//! 4 — предел сетки `size`, 5 — клеток на единицу шкалы, 6 — левая граница окна, 7 — верхняя граница, 8 — порог
+//! яркости Y; 9…11, 12…14, 15…17, 18…20 — строки «числитель столбца», «числитель строки», «знаменатель», «яркость».
+//!
 //! # Слова шейдера `scope_accumulate_oklab.comp`
 //! 4 — предел сетки `size` (f32), 5 — масштаб, 6 — смещение центра, 7…15 — матрица «свет → LMS» по строкам,
 //! 16…18 и 19…21 — строки `a` и `b` матрицы `M2`; таблица декодирования — из правила.
@@ -90,6 +98,9 @@ fn trace_row_base(levels: u32) -> Result<i32, ScopeError> {
 impl GpuScopeRule for ResolvedScope {
     fn accumulator(&self) -> AccumulatorId {
         match self {
+            // Гистограмма: все пиксели кадра падают в те же 512 уровней, конкуренция за ячейки сильная. Слияние в subgroup
+            // (`HISTOGRAM_MERGED`, запасной без слияния — `fallback`); выбор подтверждён стендом (результат сессии 14s).
+            Self::Histogram(_) => AccumulatorId::HISTOGRAM_MERGED,
             // У waveform и parade отсчёты разбросаны по разным ячейкам: слияние в subgroup на Adreno 740 дороже
             // прямой записи, а серии подряд идущих отсчётов одной нити в регистре дешевле (замеры сессии 16a).
             // У вектороскопов соседние пиксели падают в одни и те же ячейки: им выгодно слияние в subgroup.
@@ -97,6 +108,8 @@ impl GpuScopeRule for ResolvedScope {
             Self::Waveform(_) | Self::LumaWaveform(_) | Self::RgbParade(_) => AccumulatorId::INTEGER_PROJECTION_RUNS,
             Self::VectorscopeYCbCr(_) => AccumulatorId::INTEGER_PROJECTION_MERGED,
             Self::VectorscopeOklab(_) => AccumulatorId::OKLAB_VECTORSCOPE_MERGED,
+            // CIE: весь кадр падает в небольшое пятно ячеек, как у вектороскопа; слияние в subgroup и запасной без него.
+            Self::Cie(_) => AccumulatorId::CIE_MERGED,
         }
     }
 
@@ -114,6 +127,17 @@ impl GpuScopeRule for ResolvedScope {
 
     fn accumulate_parameters(&self) -> Result<AccumulateParameters<'_>, ScopeError> {
         Ok(match self {
+            // Гистограмма: проекция уровня на плоскость; незанятые плоскости — нули (шейдер их не читает).
+            Self::Histogram(rule) => {
+                let mut words = RuleWords::new();
+                for plane in 0..MAX_ROW_PROJECTIONS {
+                    push_projection_or_zeros(&mut words, rule.level_projections().get(plane));
+                }
+                AccumulateParameters {
+                    words,
+                    decode_table: None,
+                }
+            }
             // RGB waveform и parade — одно правило трёх плоскостей: слова шейдера накопления у них одни.
             Self::Waveform(rule) | Self::RgbParade(rule) => integer_parameters(IntegerLayout {
                 column_source: COLUMN_FROM_EYE_SAMPLE,
@@ -153,6 +177,30 @@ impl GpuScopeRule for ResolvedScope {
                     }
                 }
                 for row in rule.lab_rows() {
+                    for value in row {
+                        words.push_f32(value);
+                    }
+                }
+                AccumulateParameters {
+                    words,
+                    decode_table: Some(rule.decode_table().values()),
+                }
+            }
+            Self::Cie(rule) => {
+                let rows = rule.rows();
+                let mut words = RuleWords::new();
+                words
+                    .push_f32(rule.size_limit())
+                    .push_f32(rule.cells_per_unit())
+                    .push_f32(rule.window().left)
+                    .push_f32(rule.window_top())
+                    .push_f32(rule.min_luminance());
+                for row in [
+                    rows.column_numerator,
+                    rows.row_numerator,
+                    rows.denominator,
+                    rows.luminance,
+                ] {
                     for value in row {
                         words.push_f32(value);
                     }

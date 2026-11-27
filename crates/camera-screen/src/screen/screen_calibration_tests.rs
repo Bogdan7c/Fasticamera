@@ -167,8 +167,17 @@ fn vectorscope_picture_is_a_square_centred_in_the_zone_and_matches_its_request()
 }
 
 #[test]
-fn the_first_page_title_names_the_rgb_waveform_and_the_old_title_is_gone() {
+fn the_first_page_title_names_the_histogram_and_the_rgb_waveform_is_the_second_page() {
     let mut rig = portrait(look_facts());
+    let list = rig.frame().clone();
+    assert_eq!(text_count_of(&list, "HISTOGRAM", TextRoleKind::Caption), 1);
+    assert_eq!(
+        text_count_of(&list, "RGB WAVEFORM", TextRoleKind::Caption),
+        0,
+        "раздел открывается на гистограмме, не на RGB WAVEFORM (решение 335)"
+    );
+    rig.act(ScreenAction::ScopeKindSelected(ScopeKind::Waveform));
+    rig.run(300);
     let list = rig.frame().clone();
     assert_eq!(text_count_of(&list, "RGB WAVEFORM", TextRoleKind::Caption), 1);
     assert_eq!(
@@ -180,6 +189,7 @@ fn the_first_page_title_names_the_rgb_waveform_and_the_old_title_is_gone() {
 
 #[test]
 fn scope_image_lies_exactly_on_its_rect_below_the_strip_with_its_requested_size() {
+    // Раздел открывается на странице гистограммы (решение 335): картинка принадлежит ей.
     let mut rig = portrait(look_facts());
     let list = rig.frame().clone();
     let images = scope_images(&list);
@@ -191,12 +201,12 @@ fn scope_image_lies_exactly_on_its_rect_below_the_strip_with_its_requested_size(
     assert_eq!(
         (image.size_px.width as u32, image.size_px.height as u32),
         (
-            layout.scope_image_size_for(ScopeKind::Waveform).width(),
-            layout.scope_image_size_for(ScopeKind::Waveform).height()
+            layout.scope_image_size_for(ScopeKind::Histogram).width(),
+            layout.scope_image_size_for(ScopeKind::Histogram).height()
         ),
         "размер картинки 1:1 с запросом прибора"
     );
-    let image_rect = layout.scope_image_rect_for(ScopeKind::Waveform);
+    let image_rect = layout.scope_image_rect_for(ScopeKind::Histogram);
     let center_px = (px(image_rect.center().x), px(image_rect.center().y));
     assert!(
         near(image.transform.tx, center_px.0, 0.6) && near(image.transform.ty, center_px.1, 0.6),

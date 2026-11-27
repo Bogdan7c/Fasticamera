@@ -70,6 +70,8 @@ pub fn request_with_scan(
         kind,
         vectorscope_axes: axes,
         vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
+        cie_diagram: scope_contract::CieDiagram::default(),
+        histogram_mode: scope_contract::HistogramMode::Rgb,
         scan,
         image_size: ScopeImageSize::try_new(width, height).expect("размер"),
     }

@@ -13,6 +13,8 @@ fn request(kind: ScopeKind, axes: VectorscopeAxes) -> ScopeRequest {
         kind,
         vectorscope_axes: axes,
         vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
+        cie_diagram: scope_contract::CieDiagram::default(),
+        histogram_mode: scope_contract::HistogramMode::Rgb,
         scan: scope_contract::ScopeScan::Upright,
         image_size: ScopeImageSize::try_new(256, 128).expect("размер в пределах"),
     }

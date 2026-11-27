@@ -49,12 +49,16 @@ impl TraceReference {
         let total = samples.total() as f32 * pixels_per_hit as f32;
         let picture_pixels = picture.width() as f32 * picture.height() as f32;
         let (density, pixels_per_plane) = match paint {
-            TracePaint::PlanesOverlaid => (settings.column_trace_full_density, picture_pixels),
-            TracePaint::PlaneSections => (
+            // Столбики гистограммы яркость по лог-шкале не красит (их высоту задаёт `HistogramHeight`): опорное число для
+            // них не читается, берётся как у соседа по способу, чтобы блок параметров остался заполнен осмысленно.
+            TracePaint::PlanesOverlaid | TracePaint::HistogramOverlaid => {
+                (settings.column_trace_full_density, picture_pixels)
+            }
+            TracePaint::PlaneSections | TracePaint::HistogramSections => (
                 settings.column_trace_full_density,
                 picture_pixels / planes.max(1) as f32,
             ),
-            TracePaint::ColorByPosition => (settings.position_trace_full_density, picture_pixels),
+            TracePaint::ColorByPosition | TracePaint::Cie => (settings.position_trace_full_density, picture_pixels),
         };
         let uniform_hits_per_pixel = total / pixels_per_plane;
         Self::from_threshold((density.get() * uniform_hits_per_pixel).max(1.0), pixels_per_hit)

@@ -1,14 +1,17 @@
 //! Решённый прибор: запрос экрана + настройки + основные цвета экрана → одно конкретное правило.
 //!
-//! `match` по четырём вариантам здесь — реестр приборов. Оба варианта вектороскопа дают одну и ту же
+//! `match` по вариантам здесь — реестр приборов. Оба варианта вектороскопа дают одну и ту же
 //! форму сетки `size × size`, поэтому смена осей на ходу не требует других ресурсов (решение 185).
 //! Новый прибор = новый вариант [`ResolvedScope`] и ветка в [`ResolvedScope::resolve`] и в трёх `match`
 //! ниже; чужие правила не трогаются.
 
 use isp_model::image::DisplayGamut;
-use scope_contract::{ScopeKind, ScopeRequest, ScopeScan, VectorscopeAxes};
+use scope_contract::{HistogramMode, ScopeKind, ScopeRequest, ScopeScan, VectorscopeAxes};
 
+use crate::cie_rule::{CieRule, CieRuleError};
+use crate::cie_style::CieTraceStyle;
 use crate::grid::GridShape;
+use crate::histogram_rule::{HistogramRule, HistogramRuleError};
 use crate::oklab_rule::{OklabVectorscopeError, OklabVectorscopeRule};
 use crate::position_palette::PositionPalette;
 use crate::render_settings::RenderSettings;
@@ -30,17 +33,25 @@ pub enum ResolveError {
     /// Правило waveform или parade не построено.
     #[error(transparent)]
     Trace(#[from] TraceRuleError),
+    /// Правило гистограммы не построено.
+    #[error(transparent)]
+    Histogram(#[from] HistogramRuleError),
     /// Правило вектороскопа Y'CbCr не построено.
     #[error(transparent)]
     YCbCr(#[from] YCbCrVectorscopeError),
     /// Правило вектороскопа OKLab не построено.
     #[error(transparent)]
     Oklab(#[from] OklabVectorscopeError),
+    /// Правило диаграммы CIE не построено.
+    #[error(transparent)]
+    Cie(#[from] CieRuleError),
 }
 
 /// Конкретное правило прибора.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResolvedScope {
+    /// Гистограмма (сессия 14s): уровни кодов по плоскостям, режим выбирает запрос.
+    Histogram(HistogramRule),
     /// RGB waveform: то же правило трёх плоскостей, что у parade, но плоскости наложены друг на друга
     /// (решение 265), а не стоят секциями.
     Waveform(ParadeRule),
@@ -52,6 +63,8 @@ pub enum ResolvedScope {
     VectorscopeYCbCr(ColouredByPosition<YCbCrVectorscopeRule>),
     /// Вектороскоп, оси OKLab a/b.
     VectorscopeOklab(ColouredByPosition<OklabVectorscopeRule>),
+    /// Диаграмма цветности CIE (сессия 14s): шкалу выбирает запрос, измеряемый охват — охват экрана.
+    Cie(CieRule),
 }
 
 /// Правило вектороскопа вместе с таблицей цветов «по месту».
@@ -89,6 +102,9 @@ impl ResolvedScope {
     ) -> Result<Self, ResolveError> {
         settings.validate()?;
         Ok(match request.kind {
+            ScopeKind::Histogram => {
+                Self::Histogram(HistogramRule::new(request.histogram_mode, settings.histogram_bins)?)
+            }
             ScopeKind::Waveform => Self::Waveform(
                 ParadeRule::new(settings.trace_max_columns, settings.trace_levels)?.with_scan(request.scan),
             ),
@@ -115,6 +131,7 @@ impl ResolvedScope {
                     Self::VectorscopeOklab(ColouredByPosition { rule, palette })
                 }
             },
+            ScopeKind::Cie => Self::Cie(CieRule::new(request.cie_diagram, display_gamut, &settings.cie)?),
         })
     }
 
@@ -132,10 +149,12 @@ impl ResolvedScope {
     /// Тип прибора.
     pub fn kind(&self) -> ScopeKind {
         match self {
+            Self::Histogram(_) => ScopeKind::Histogram,
             Self::Waveform(_) => ScopeKind::Waveform,
             Self::LumaWaveform(_) => ScopeKind::LumaWaveform,
             Self::RgbParade(_) => ScopeKind::RgbParade,
             Self::VectorscopeYCbCr(_) | Self::VectorscopeOklab(_) => ScopeKind::Vectorscope,
+            Self::Cie(_) => ScopeKind::Cie,
         }
     }
 
@@ -147,6 +166,19 @@ impl ResolvedScope {
     /// берутся из `settings` как раньше.
     pub fn trace_style(&self, settings: &RenderSettings) -> TraceStyle {
         match self {
+            // RGB — три столбика наложением теми же основными цветами, что у RGB waveform (где совпали — белый);
+            // PARADE — секциями теми же цветами, что у RGB parade; Y — одна секция цветом яркостного следа.
+            Self::Histogram(rule) => match rule.mode() {
+                HistogramMode::Rgb => TraceStyle::HistogramOverlaid {
+                    primaries: settings.rgb_waveform_palette.primaries(),
+                },
+                HistogramMode::Parade => TraceStyle::HistogramSections {
+                    colors: settings.parade_colors.to_vec(),
+                },
+                HistogramMode::Luma => TraceStyle::HistogramSections {
+                    colors: vec![settings.luma_trace_color],
+                },
+            },
             Self::Waveform(_) => TraceStyle::PlanesOverlaid {
                 primaries: settings.rgb_waveform_palette.primaries(),
             },
@@ -163,15 +195,21 @@ impl ResolvedScope {
             Self::VectorscopeOklab(coloured) => TraceStyle::ColorByPosition {
                 palette: coloured.palette.clone(),
             },
+            Self::Cie(rule) => TraceStyle::Cie(Box::new(CieTraceStyle::new(rule, &settings.cie))),
         }
     }
 
     /// Способ рисования следа (без данных): нужен тем, кто решает по способу, не строя таблицу цветов.
     pub fn trace_paint(&self) -> TracePaint {
         match self {
+            Self::Histogram(rule) => match rule.mode() {
+                HistogramMode::Rgb => TracePaint::HistogramOverlaid,
+                HistogramMode::Parade | HistogramMode::Luma => TracePaint::HistogramSections,
+            },
             Self::Waveform(_) => TracePaint::PlanesOverlaid,
             Self::LumaWaveform(_) | Self::RgbParade(_) => TracePaint::PlaneSections,
             Self::VectorscopeYCbCr(_) | Self::VectorscopeOklab(_) => TracePaint::ColorByPosition,
+            Self::Cie(_) => TracePaint::Cie,
         }
     }
 }
@@ -179,16 +217,20 @@ impl ResolvedScope {
 impl ScopeRule for ResolvedScope {
     fn shape(&self, samples: SampleCount) -> GridShape {
         match self {
+            Self::Histogram(rule) => rule.shape(samples),
             Self::Waveform(rule) => rule.shape(samples),
             Self::LumaWaveform(rule) => rule.shape(samples),
             Self::RgbParade(rule) => rule.shape(samples),
             Self::VectorscopeYCbCr(coloured) => coloured.rule.shape(samples),
             Self::VectorscopeOklab(coloured) => coloured.rule.shape(samples),
+            Self::Cie(rule) => rule.shape(samples),
         }
     }
 
     fn wanted_steps(&self, settings: &ScopeModelSettings) -> SampleSteps {
         match self {
+            // Гистограмма собирает весь кадр в один график: доли отсчётов хватает (настройка своя, как у вектороскопа).
+            Self::Histogram(rule) => rule.wanted_steps(settings),
             // След по столбцам: все отсчёты вдоль взгляда (столбцы сетки), поперёк — реже (решение 329).
             Self::Waveform(_) | Self::LumaWaveform(_) | Self::RgbParade(_) => SampleSteps::for_eye(
                 settings.sample_stride,
@@ -199,26 +241,31 @@ impl ScopeRule for ResolvedScope {
             Self::VectorscopeYCbCr(_) | Self::VectorscopeOklab(_) => {
                 SampleSteps::uniform(settings.vectorscope_sample_stride)
             }
+            // Диаграмма CIE, как вектороскоп, собирает весь кадр в одну плоскость: своя настройка шага.
+            Self::Cie(rule) => rule.wanted_steps(settings),
         }
     }
 
     fn scan(&self) -> ScopeScan {
         match self {
+            Self::Histogram(rule) => rule.scan(),
             Self::Waveform(rule) => rule.scan(),
             Self::LumaWaveform(rule) => rule.scan(),
             Self::RgbParade(rule) => rule.scan(),
             // Вектороскоп положения не меряет: поле запроса на него не влияет.
-            Self::VectorscopeYCbCr(_) | Self::VectorscopeOklab(_) => ScopeScan::Upright,
+            Self::VectorscopeYCbCr(_) | Self::VectorscopeOklab(_) | Self::Cie(_) => ScopeScan::Upright,
         }
     }
 
     fn hits(&self, position: SamplePosition, code: [u16; 3], report: &mut dyn FnMut(Hit)) {
         match self {
+            Self::Histogram(rule) => rule.hits(position, code, report),
             Self::Waveform(rule) => rule.hits(position, code, report),
             Self::LumaWaveform(rule) => rule.hits(position, code, report),
             Self::RgbParade(rule) => rule.hits(position, code, report),
             Self::VectorscopeYCbCr(coloured) => coloured.rule.hits(position, code, report),
             Self::VectorscopeOklab(coloured) => coloured.rule.hits(position, code, report),
+            Self::Cie(rule) => rule.hits(position, code, report),
         }
     }
 }

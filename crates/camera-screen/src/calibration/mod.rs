@@ -10,6 +10,7 @@ mod knob_stops_config;
 mod layout;
 mod layout_config;
 mod scope_frames;
+mod scope_labels_view;
 mod scope_strip_frames;
 mod state;
 mod wheels_frames;

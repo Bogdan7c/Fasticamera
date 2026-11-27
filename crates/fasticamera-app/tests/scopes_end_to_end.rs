@@ -42,7 +42,7 @@ use render_loop::backend::DisplayBackend;
 use render_loop::config::{DisplayColorConfig, RenderLoopConfig, ScopesConfig, ViewfinderConfig};
 use render_loop::ui_overlay::{UiOverlayCommand, UiOverlayOutcome};
 use render_loop::viewfinder::{ScopeDiagnostics, ScopeResources, ViewfinderCommandOutcome};
-use scope_contract::{ScopeImageSize, ScopeIntent, ScopeKind, ScopeRequest, VectorscopeAxes};
+use scope_contract::{HistogramMode, ScopeImageSize, ScopeIntent, ScopeKind, ScopeRequest, VectorscopeAxes};
 use scope_model::{
     HorizontalOrder, ResolvedScope, SampleCount, SampleStride, ScopeCounters, ScopeModelSettings, ScopeRule,
     ShownCodes, accumulate, render,
@@ -136,6 +136,8 @@ fn request(kind: ScopeKind, axes: VectorscopeAxes) -> ScopeRequest {
         kind,
         vectorscope_axes: axes,
         vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
+        cie_diagram: scope_contract::CieDiagram::default(),
+        histogram_mode: scope_contract::HistogramMode::Rgb,
         scan: scope_contract::ScopeScan::Upright,
         image_size: ScopeImageSize::try_new(160, 96).expect("размер"),
     }
@@ -427,6 +429,8 @@ fn a_screen_show_vectorscope_at_double_zoom_makes_the_gpu_magnify_the_centre() {
     let normal = request(ScopeKind::Vectorscope, VectorscopeAxes::YCbCrBt709);
     let double = ScopeRequest {
         vectorscope_zoom: scope_contract::VectorscopeZoom::Double,
+        cie_diagram: scope_contract::CieDiagram::default(),
+        histogram_mode: scope_contract::HistogramMode::Rgb,
         ..normal
     };
     let mut screen = ScreenToRender::new();
@@ -510,6 +514,162 @@ fn a_screen_show_luma_waveform_intent_draws_the_one_plane_luma_trace_of_the_show
         }
     }
     assert_eq!(scopes_of(&mut bench).requested, Some(luma));
+    bench.finish();
+}
+
+/// Страница HISTOGRAM (сессия 14s) тем же путём экрана во всех трёх режимах: GPU считает уровни показанного кадра в
+/// сетке «уровни × одна строка» (три плоскости у RGB и PARADE, одна у Y), счётчики — эталон показанного кадра, картинка
+/// прибора — эталон показа; серый сюжет даёт столбик на ОДНОМ уровне во всех плоскостях.
+#[test]
+fn a_screen_show_histogram_intent_draws_the_bars_of_the_shown_frame_in_every_mode() {
+    let scenes = [neutral_gray(), reddish(), bluish()];
+    let Some(mut bench) = ViewfinderBench::start_with_scenes(&config(), &scenes) else {
+        return;
+    };
+    let mut screen = ScreenToRender::new();
+    let histogram = |mode| ScopeRequest {
+        histogram_mode: mode,
+        ..request(ScopeKind::Histogram, VectorscopeAxes::YCbCrBt709)
+    };
+    install_scope_screen(&mut bench, histogram(HistogramMode::Rgb).image_size);
+    // Каждый режим — свой запрос на ТОМ ЖЕ показанном кадре: рендер сам считает ближайший кадр заново (смена запроса не
+    // ждёт каденции), поэтому тест переключает режим перед каждым кадром сюжета.
+    for (frame, mode) in [HistogramMode::Rgb, HistogramMode::Parade, HistogramMode::Luma]
+        .into_iter()
+        .enumerate()
+    {
+        let scope = histogram(mode);
+        screen.dispatch(ScopeIntent::Show(scope));
+        assert_eq!(screen.deliver_to(&mut bench), vec![ViewfinderCommandOutcome::Applied]);
+        bench.show_next_frame();
+        assert_eq!(
+            scopes_of(&mut bench).requested,
+            Some(scope),
+            "{mode:?}: запрос дошёл до рендера"
+        );
+        let gpu = gpu_counters(&bench);
+        let (expected, rule, samples) = reference(&bench, &scope);
+        assert_eq!(
+            gpu, expected,
+            "{mode:?}: счётчики GPU разошлись с эталоном показанного кадра"
+        );
+        let planes = if mode == HistogramMode::Luma { 1 } else { 3 };
+        assert_eq!(
+            (gpu.shape().columns(), gpu.shape().rows(), gpu.shape().planes()),
+            (small_model().histogram_bins, 1, planes),
+            "{mode:?}: форма сетки гистограммы"
+        );
+        // Каждый отсчёт кадра — одно попадание в каждую плоскость.
+        assert_eq!(gpu.total(), u64::from(planes) * samples.total(), "{mode:?}");
+        if frame == 0 {
+            // Серый сюжет: во всех плоскостях заняты одни и те же уровни (столбец — уровень кода, а не положение).
+            let occupied = |plane: u32| -> Vec<u32> {
+                (0..gpu.shape().columns())
+                    .filter(|&bin| gpu.count(plane, 0, bin).unwrap_or(0) > 0)
+                    .collect()
+            };
+            assert!(!occupied(0).is_empty());
+            assert_eq!(occupied(0), occupied(1), "серый: красная и зелёная плоскости совпали");
+            assert_eq!(occupied(0), occupied(2), "серый: красная и синяя плоскости совпали");
+        }
+        let picture = bench
+            .backend
+            .read_scope_picture()
+            .expect("чтение картинки прибора")
+            .expect("картинка есть");
+        let model = small_model();
+        let reference_picture =
+            render(&expected, &rule, &model.render, scope.image_size, samples).expect("эталон показа");
+        let worst = worst_premultiplied_difference(&picture.texels, reference_picture.pixels());
+        assert!(
+            worst <= PICTURE_TOLERANCE,
+            "{mode:?}: картинка разошлась с эталоном на {worst}"
+        );
+        let lit = picture.texels.iter().filter(|pixel| pixel[3] > 0.5).count();
+        assert!(lit > 50, "{mode:?}: столбики нарисованы ({lit} ярких пикселей)");
+    }
+    bench.finish();
+}
+
+/// Страница CIE (сессия 14s) тем же путём экрана в обеих шкалах: GPU считает цветность показанного кадра в квадратной
+/// сетке, счётчики и картинка — эталон; серый сюжет ложится в ячейку точки белого D65 своей шкалы; шкалы дают разные
+/// счётчики.
+#[test]
+fn a_screen_show_cie_intent_plots_the_shown_frame_chromaticity_in_both_diagrams() {
+    let scenes = [neutral_gray(), reddish(), bluish()];
+    let Some(mut bench) = ViewfinderBench::start_with_scenes(&config(), &scenes) else {
+        return;
+    };
+    let mut screen = ScreenToRender::new();
+    let cie = |diagram| ScopeRequest {
+        cie_diagram: diagram,
+        image_size: ScopeImageSize::try_new(128, 128).expect("размер"),
+        ..request(ScopeKind::Cie, VectorscopeAxes::YCbCrBt709)
+    };
+    install_scope_screen(&mut bench, cie(scope_contract::CieDiagram::Xy1931).image_size);
+    let mut seen = Vec::new();
+    for (frame, diagram) in [
+        scope_contract::CieDiagram::Xy1931,
+        scope_contract::CieDiagram::UvPrime1976,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let scope = cie(diagram);
+        screen.dispatch(ScopeIntent::Show(scope));
+        assert_eq!(screen.deliver_to(&mut bench), vec![ViewfinderCommandOutcome::Applied]);
+        bench.show_next_frame();
+        assert_eq!(
+            scopes_of(&mut bench).requested,
+            Some(scope),
+            "{diagram:?}: запрос дошёл до рендера"
+        );
+        let gpu = gpu_counters(&bench);
+        let (expected, rule, samples) = reference(&bench, &scope);
+        assert_eq!(
+            gpu, expected,
+            "{diagram:?}: счётчики GPU разошлись с эталоном показанного кадра"
+        );
+        assert_eq!(
+            (gpu.shape().columns(), gpu.shape().rows(), gpu.shape().planes()),
+            (512, 512, 1)
+        );
+        assert!(
+            gpu.total() > 0 && gpu.total() <= samples.total(),
+            "{diagram:?}: попадания есть"
+        );
+        if frame == 0 {
+            // Серый сюжет: все попадания — в одну-две соседние ячейки вокруг D65 (код серого по ступеням чуть разный).
+            let window = match diagram {
+                scope_contract::CieDiagram::Xy1931 => scope_model::ChartWindow::XY_DEFAULT,
+                scope_contract::CieDiagram::UvPrime1976 => scope_model::ChartWindow::UV_DEFAULT,
+            };
+            let projection = scope_model::ChartProjection::new(diagram, window);
+            let d65 = projection.picture_point(isp_model::color::chromaticity::Chromaticity::D65);
+            let (column, row) = ((d65[0] * 512.0) as i64, (d65[1] * 512.0) as i64);
+            let near: u64 = (-2..=2)
+                .flat_map(|dy| (-2..=2).map(move |dx| (dx, dy)))
+                .map(|(dx, dy)| u64::from(gpu.count(0, (row + dy) as u32, (column + dx) as u32).unwrap_or(0)))
+                .sum();
+            assert_eq!(near, gpu.total(), "серый кадр целиком лежит у точки белого D65");
+        }
+        let picture = bench
+            .backend
+            .read_scope_picture()
+            .expect("чтение картинки прибора")
+            .expect("картинка есть");
+        let reference_picture =
+            render(&expected, &rule, &small_model().render, scope.image_size, samples).expect("эталон показа");
+        let worst = worst_premultiplied_difference(&picture.texels, reference_picture.pixels());
+        assert!(
+            worst <= PICTURE_TOLERANCE,
+            "{diagram:?}: картинка разошлась с эталоном на {worst}"
+        );
+        let lit = picture.texels.iter().filter(|pixel| pixel[3] > 0.5).count();
+        assert!(lit > 20, "{diagram:?}: след и сетка нарисованы ({lit} ярких пикселей)");
+        seen.push(gpu);
+    }
+    assert_ne!(seen[0], seen[1], "шкалы xy и u′v′ кладут цвет в разные ячейки");
     bench.finish();
 }
 

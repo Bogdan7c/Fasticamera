@@ -111,7 +111,10 @@ fn reference_brightness_follows_the_window_of_each_frame_and_never_goes_stale() 
                 "{rule_name} / окно {width}×{height}: расхождение {worst}"
             );
             // Тест различает число отсчётов: картинка по отсчётам ПРОШЛОГО окна заметно отличалась бы от GPU.
-            if let Some(stale) = previous_samples.filter(|stale| *stale != samples) {
+            // У столбиков гистограммы яркости по лог-шкале нет: опора шкалы по умолчанию — самый высокий столбик, и от
+            // числа отсчётов она не зависит; зависимость опоры «среднее» от окна проверяет `scope_histogram.rs`.
+            let stale_check_applies = !rule.trace_paint().draws_bars();
+            if let Some(stale) = previous_samples.filter(|stale| stale_check_applies && *stale != samples) {
                 match render(&counters, &rule, &settings.render, size, stale) {
                     // У waveform и parade столбцов столько, сколько отсчётов вдоль взгляда (решение 322): счётчики
                     // ЭТОГО кадра с отсчётами прошлого окна не сочетаются вовсе — форма сетки идёт за окном.

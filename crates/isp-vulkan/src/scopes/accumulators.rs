@@ -62,8 +62,9 @@ pub struct AccumulatorShader {
     pub rows_per_thread: u32,
 }
 
-/// Шейдеры приборов `scope-model`: целочисленная проекция (прямая запись и серии в регистре) и OKLab.
-pub fn standard_accumulators() -> [AccumulatorShader; 3] {
+/// Шейдеры приборов `scope-model`: целочисленная проекция (прямая запись и серии в регистре), гистограмма (прямая запись —
+/// запасной шейдер варианта со слиянием) и OKLab.
+pub fn standard_accumulators() -> [AccumulatorShader; 5] {
     [
         AccumulatorShader {
             id: AccumulatorId::INTEGER_PROJECTION_RUNS,
@@ -80,12 +81,40 @@ pub fn standard_accumulators() -> [AccumulatorShader; 3] {
             spirv: blobs::SCOPE_ACCUMULATE_OKLAB_COMP,
             rows_per_thread: 1,
         },
+        AccumulatorShader {
+            id: AccumulatorId::HISTOGRAM,
+            spirv: blobs::SCOPE_ACCUMULATE_HISTOGRAM_COMP,
+            rows_per_thread: 1,
+        },
+        AccumulatorShader {
+            id: AccumulatorId::CIE,
+            spirv: blobs::SCOPE_ACCUMULATE_CIE_COMP,
+            rows_per_thread: 1,
+        },
     ]
 }
 
-/// Шейдеры со слиянием одинаковых ячеек в subgroup (вектороскопы): регистрируются, только если устройство умеет
-/// баллот subgroup в compute (`GpuCapabilities::subgroup_ballot_in_compute`).
-pub fn merged_accumulators() -> [AccumulatorShader; 2] {
+/// ДИАГНОСТИЧЕСКИЕ шейдеры CIE для тестов (регистрируются через `ColorScopes::with_extra_accumulators`): приближение
+/// ячейки сдвинуто на ±0,9 клетки, ответ обязан остаться тем же — доказательство, что его решает поправка по
+/// произведениям, а не точность деления драйвера.
+pub fn cie_guess_skew_diagnostics() -> [AccumulatorShader; 2] {
+    [
+        AccumulatorShader {
+            id: AccumulatorId::new("cie-guess-high"),
+            spirv: blobs::SCOPE_DIAG_CIE_GUESS_HIGH_COMP,
+            rows_per_thread: 1,
+        },
+        AccumulatorShader {
+            id: AccumulatorId::new("cie-guess-low"),
+            spirv: blobs::SCOPE_DIAG_CIE_GUESS_LOW_COMP,
+            rows_per_thread: 1,
+        },
+    ]
+}
+
+/// Шейдеры со слиянием одинаковых ячеек в subgroup (вектороскопы, гистограмма): регистрируются, только если устройство
+/// умеет баллот subgroup в compute (`GpuCapabilities::subgroup_ballot_in_compute`).
+pub fn merged_accumulators() -> [AccumulatorShader; 4] {
     [
         AccumulatorShader {
             id: AccumulatorId::INTEGER_PROJECTION_MERGED,
@@ -95,6 +124,16 @@ pub fn merged_accumulators() -> [AccumulatorShader; 2] {
         AccumulatorShader {
             id: AccumulatorId::OKLAB_VECTORSCOPE_MERGED,
             spirv: blobs::SCOPE_ACCUMULATE_OKLAB_MERGED_COMP,
+            rows_per_thread: 1,
+        },
+        AccumulatorShader {
+            id: AccumulatorId::HISTOGRAM_MERGED,
+            spirv: blobs::SCOPE_ACCUMULATE_HISTOGRAM_MERGED_COMP,
+            rows_per_thread: 1,
+        },
+        AccumulatorShader {
+            id: AccumulatorId::CIE_MERGED,
+            spirv: blobs::SCOPE_ACCUMULATE_CIE_MERGED_COMP,
             rows_per_thread: 1,
         },
     ]

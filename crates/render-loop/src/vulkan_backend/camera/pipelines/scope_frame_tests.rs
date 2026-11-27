@@ -86,6 +86,8 @@ fn waveform_request() -> ScopeRequest {
         kind: ScopeKind::Waveform,
         vectorscope_axes: VectorscopeAxes::YCbCrBt709,
         vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
+        cie_diagram: scope_contract::CieDiagram::default(),
+        histogram_mode: scope_contract::HistogramMode::Rgb,
         scan: scope_contract::ScopeScan::Upright,
         image_size: ScopeImageSize::try_new(SCOPE_RECT.2, SCOPE_RECT.3).expect("размер"),
     }

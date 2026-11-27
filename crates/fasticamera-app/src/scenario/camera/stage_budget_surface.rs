@@ -15,8 +15,10 @@ use std::time::{Duration, Instant};
 
 use camera_screen::CameraPresence;
 use render_loop::viewfinder::ScopeResources;
+use scope_contract::ScopeKind;
 
 use super::screen_gesture::Gesture;
+use super::stage_budget_scope_page::{PageDirection, PageStep, step_towards};
 use crate::camera_presentation::CameraPresentation;
 use crate::camera_screen_source::ModeKind;
 use crate::scenario::observing::ScenarioContext;
@@ -31,6 +33,8 @@ pub const SURFACE_GESTURE_STAGE: &str = "budget_gesture";
 pub struct ScopesView {
     /// Экран запросил прибор.
     pub requested: bool,
+    /// Страница прибора в действующем запросе (`None` — запроса нет).
+    pub kind: Option<ScopeKind>,
     /// Объекты GPU приборов созданы.
     pub resources_live: bool,
     /// Накопительный счётчик записанных проходов.
@@ -72,6 +76,7 @@ impl SurfaceView {
             screen_frames: report.as_ref().map_or(0, |report| report.diagnostics.frames_produced),
             scopes: viewfinder.map(|viewfinder| ScopesView {
                 requested: viewfinder.scopes.requested.is_some(),
+                kind: viewfinder.scopes.requested.as_ref().map(|request| request.kind),
                 resources_live: viewfinder.scopes.residency.resources == ScopeResources::Live,
                 passes_recorded: viewfinder.scopes.counters.passes_recorded,
             }),
@@ -103,6 +108,10 @@ pub struct SurfaceSwipes {
     pub enter_calibrate: SwipeGesture,
     /// Слева направо по «чистой» зоне раздела: Calibrate → Photo.
     pub leave_calibrate: SwipeGesture,
+    /// Сдвиг глазами влево по полю прибора: к следующей странице прибора (сессия 14s).
+    pub scope_page_next: SwipeGesture,
+    /// Сдвиг глазами вправо по полю прибора: к предыдущей странице.
+    pub scope_page_previous: SwipeGesture,
 }
 
 /// Чем кончился тик входа.
@@ -141,6 +150,10 @@ pub struct SurfaceEntry {
     surface: StageBudgetSurface,
     swipes: SurfaceSwipes,
     timeout: Duration,
+    /// Страница прибора, чью цену меряет таблица; `None` — та, на которой раздел открылся.
+    scope_page: Option<ScopeKind>,
+    /// Страница, с которой последний раз листнули: пока рендер её не сменил, второй свайп не выдаётся (жест ещё идёт).
+    last_swiped_from: Option<ScopeKind>,
     /// Сколько кадров UI экран обязан нарисовать, прежде чем замер начнётся (как прогрев сценария `screen`).
     warmup_ui_frames: u64,
     phase: EntryPhase,
@@ -151,6 +164,7 @@ impl SurfaceEntry {
     pub fn begin(
         surface: StageBudgetSurface,
         swipes: SurfaceSwipes,
+        scope_page: Option<ScopeKind>,
         timeout: Duration,
         warmup_ui_frames: u64,
         now: Instant,
@@ -160,6 +174,8 @@ impl SurfaceEntry {
             surface,
             swipes,
             timeout,
+            scope_page,
+            last_swiped_from: None,
             warmup_ui_frames,
             phase: EntryPhase::AwaitingScreen {
                 frames_at_start: initial.screen_frames,
@@ -239,7 +255,7 @@ impl SurfaceEntry {
             scopes.requested && scopes.resources_live && scopes.passes_recorded > passes_at_gesture
         });
         if in_calibrate && scopes_alive {
-            return EntryTick::Ready;
+            return self.tick_scope_page(now, scopes.and_then(|scopes| scopes.kind));
         }
         self.fail_if_late(now, || {
             let mut missing: Vec<String> = Vec::new();
@@ -265,6 +281,36 @@ impl SurfaceEntry {
             }
             format!("раздел калибровки не стал живым: {}", missing.join("; "))
         })
+    }
+
+    /// Раздел живой: если задана страница прибора, листаем к ней (по одному свайпу, пока рендер не подтвердит смену).
+    fn tick_scope_page(&mut self, now: Instant, shown: Option<ScopeKind>) -> EntryTick {
+        let Some(wanted) = self.scope_page else {
+            return EntryTick::Ready;
+        };
+        let not_shown = |entry: &Self| {
+            entry.fail_if_late(now, || {
+                format!(
+                    "страница прибора {wanted:?} не показана: рендер сообщил {shown:?} (свайп листания не дошёл до поля прибора?)"
+                )
+            })
+        };
+        match step_towards(wanted, shown) {
+            PageStep::Reached => EntryTick::Ready,
+            PageStep::WaitForReport => not_shown(self),
+            PageStep::Swipe(_) if self.last_swiped_from == shown => not_shown(self),
+            PageStep::Swipe(direction) => {
+                self.last_swiped_from = shown;
+                EntryTick::Gesture(SurfaceGesture {
+                    step: direction.step_name(),
+                    purpose: direction.purpose(),
+                    swipe: match direction {
+                        PageDirection::Next => self.swipes.scope_page_next,
+                        PageDirection::Previous => self.swipes.scope_page_previous,
+                    },
+                })
+            }
+        }
     }
 
     fn fail_if_late(&self, now: Instant, reason: impl FnOnce() -> String) -> EntryTick {

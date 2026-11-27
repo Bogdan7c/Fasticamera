@@ -5,11 +5,14 @@
 //! полоса выбрана, держится ли «чистяк», открыто ли меню, ждём ли ответ клавиатуры, взведено ли удаление.
 
 use look_contract::{HueBandId, UserPresetId, WheelZone};
-use scope_contract::{ScopeKind, ScopeRequest, VectorscopeAxes, VectorscopeZoom};
+use scope_contract::{
+    CieDiagram, HistogramMode, ScopeKind, ScopeLabel, ScopeLabelsState, ScopeRequest, VectorscopeAxes, VectorscopeZoom,
+};
 use shell_contract::text_input::TextRequestId;
 
 use super::config::CalibrationConfig;
 use super::layout::{CalibrationLayout, CalibrationLayoutError};
+use super::scope_labels_view::ScopeLabelsView;
 use super::wheels_frames::WheelsFramesError;
 
 /// Что именем пресета делаем после ввода.
@@ -111,6 +114,10 @@ pub struct CalibrationState {
     vectorscope_axes: VectorscopeAxes,
     /// Увеличение вектороскопа (кнопка «2×», решение 325); живёт, пока живёт раздел, как выбор осей.
     vectorscope_zoom: VectorscopeZoom,
+    /// Режим гистограммы (переключатель RGB | PARADE | Y, решение 331); хранится при любой странице, свайп его не теряет.
+    histogram_mode: HistogramMode,
+    /// Шкала CIE (переключатель xy | u'v', решение 332); хранится при любой странице, как и режим гистограммы.
+    cie_diagram: CieDiagram,
     selected_band: Option<HueBandId>,
     /// Вид колонки ручек. Живёт как `selected_band`: переживает поворот и пересборку раздела (решение 204).
     control_view: ControlViewKind,
@@ -134,15 +141,20 @@ pub struct CalibrationState {
     /// Запрос прибора, который уже ушёл рендеру и действует там (чтобы не слать то же самое дважды и
     /// знать, когда слать `Hide`).
     announced_scope: Option<ScopeRequest>,
+    /// Подписи прибора от рендера (решения 326, 327): хранятся как пришли, рисуются только для текущего запроса.
+    scope_labels: ScopeLabelsView,
 }
 
 impl CalibrationState {
-    /// Начальное состояние: прибор Waveform, оси из конфига, полоса не выбрана (до первых фактов).
+    /// Начальное состояние: страница прибора, оси, режим гистограммы и шкала CIE — из конфига (решения 331, 332,
+    /// 335), полоса не выбрана (до первых фактов).
     pub(crate) fn new(config: &CalibrationConfig) -> Self {
         Self {
-            scope_kind: ScopeKind::Waveform,
+            scope_kind: config.opening_scope_page,
             vectorscope_axes: config.vectorscope_axes,
             vectorscope_zoom: VectorscopeZoom::Normal,
+            histogram_mode: config.histogram_mode,
+            cie_diagram: config.cie_diagram,
             selected_band: None,
             control_view: ControlViewKind::default(),
             selected_wheel: WheelZone::Lift,
@@ -155,6 +167,7 @@ impl CalibrationState {
             layout_fault: None,
             wheels_fault: None,
             announced_scope: None,
+            scope_labels: ScopeLabelsView::default(),
         }
     }
 
@@ -171,6 +184,16 @@ impl CalibrationState {
     /// Выбранное увеличение вектороскопа.
     pub fn vectorscope_zoom(&self) -> VectorscopeZoom {
         self.vectorscope_zoom
+    }
+
+    /// Выбранный режим гистограммы.
+    pub fn histogram_mode(&self) -> HistogramMode {
+        self.histogram_mode
+    }
+
+    /// Выбранная шкала диаграммы CIE.
+    pub fn cie_diagram(&self) -> CieDiagram {
+        self.cie_diagram
     }
 
     /// Выбранная полоса оттенка (под рядом точек показаны её шкалы HUE / SAT / LUM).
@@ -225,9 +248,25 @@ impl CalibrationState {
             kind: self.scope_kind,
             vectorscope_axes: self.vectorscope_axes,
             vectorscope_zoom: self.vectorscope_zoom,
+            cie_diagram: self.cie_diagram,
+            histogram_mode: self.histogram_mode,
             scan: layout.scope_scan(),
             image_size: layout.scope_image_size_for(self.scope_kind),
         })
+    }
+
+    /// Принимает подписи прибора от рендера; `false` — те же, что были. Остальное состояние раздела не трогает.
+    pub(crate) fn store_scope_labels(&mut self, state: ScopeLabelsState) -> bool {
+        self.scope_labels.store(state)
+    }
+
+    /// Подписи, которые можно рисовать СЕЙЧАС: посчитанные для текущего желаемого запроса прибора. Нет раскладки
+    /// (запрашивать нечего) или подписи чужого запроса — пусто.
+    pub(crate) fn scope_labels_to_draw(&self) -> &[ScopeLabel] {
+        match self.desired_scope_request() {
+            Some(desired) => self.scope_labels.labels_for(&desired),
+            None => &[],
+        }
     }
 
     /// Запрос прибора, о котором уже знает рендер.
@@ -268,6 +307,14 @@ impl CalibrationState {
 
     pub(crate) fn set_vectorscope_zoom(&mut self, zoom: VectorscopeZoom) {
         self.vectorscope_zoom = zoom;
+    }
+
+    pub(crate) fn set_histogram_mode(&mut self, mode: HistogramMode) {
+        self.histogram_mode = mode;
+    }
+
+    pub(crate) fn set_cie_diagram(&mut self, diagram: CieDiagram) {
+        self.cie_diagram = diagram;
     }
 
     pub(crate) fn set_selected_band(&mut self, band: Option<HueBandId>) {

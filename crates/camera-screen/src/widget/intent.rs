@@ -2,7 +2,7 @@
 //! а фасад по нему передаёт событие нужному виджету.
 
 use look_contract::{WheelPart, WheelZone};
-use scope_contract::{ScopeKind, VectorscopeAxes, VectorscopeZoom};
+use scope_contract::{CieDiagram, HistogramMode, ScopeKind, VectorscopeAxes, VectorscopeZoom};
 
 use crate::calibration::ControlViewKind;
 use crate::white::WhiteAxis;
@@ -52,6 +52,10 @@ pub enum ButtonId {
     ScopeAxes(VectorscopeAxes),
     /// Кнопка «2×» в полоске вектороскопа: увеличение центра вдвое (решение 325).
     ScopeZoom(VectorscopeZoom),
+    /// Сегмент режима гистограммы в полоске прибора: RGB | PARADE | Y (решение 331).
+    ScopeHistogramMode(HistogramMode),
+    /// Сегмент шкалы CIE в полоске прибора: xy | u'v' (решение 332).
+    ScopeCieDiagram(CieDiagram),
     /// Кнопка белого рядом с затвором: у неё один собственный узел (тап открывает карточку, долгое нажатие берёт
     /// белое телефона).
     WhiteButton,
@@ -174,6 +178,8 @@ impl ScreenGesture {
                     | ButtonId::ScopePageDot(_)
                     | ButtonId::ScopeAxes(_)
                     | ButtonId::ScopeZoom(_)
+                    | ButtonId::ScopeHistogramMode(_)
+                    | ButtonId::ScopeCieDiagram(_)
                     | ButtonId::SectionWhiteCapsule
                     | ButtonId::SectionWhite(_)
                     | ButtonId::CalibrationCardLeft

@@ -5,34 +5,13 @@
 //   5  основа строки (int);          6  знак строки (int, ±1): row = основа + знак * значение проекции;
 //   7..11  проекция столбца: w0 w1 w2 offset shift;
 //   12..26 три проекции строки (по плоскостям): по 5 слов, как выше.
+#include "scope_accumulate_projection.glsl"
+
 const uint WORD_COLUMN_SOURCE = WORD_RULE_FIRST;
 const uint WORD_ROW_BASE = WORD_RULE_FIRST + 1u;
 const uint WORD_ROW_SIGN = WORD_RULE_FIRST + 2u;
 const uint WORD_COLUMN_PROJECTION = WORD_RULE_FIRST + 3u;
 const uint WORD_ROW_PROJECTIONS = WORD_RULE_FIRST + 8u;
-const uint PROJECTION_WORDS = 5u;
-
-// Проекция `(w0*c0 + w1*c1 + w2*c2 + offset) >> shift`, всё в int; `>>` над знаковым числом арифметический. Веса и
-// смещение — `xyzw`, сдвиг — отдельно.
-struct Projection {
-    ivec4 weights_offset;
-    int shift;
-};
-
-int projection_value(Projection projection, ivec3 code) {
-    ivec4 w = projection.weights_offset;
-    return (w.x * code.x + w.y * code.y + w.z * code.z + w.w) >> projection.shift;
-}
-
-Projection projection_at(uint first_word) {
-    return Projection(
-        ivec4(
-            int(parameters.words[first_word]),
-            int(parameters.words[first_word + 1u]),
-            int(parameters.words[first_word + 2u]),
-            int(parameters.words[first_word + 3u])),
-        int(parameters.words[first_word + 4u]));
-}
 
 // Слова правила читаются ОДИН раз за нить (при первом отсчёте), а не на каждом отсчёте и каждой плоскости (14r,
 // разбор цены). Значения те же, порядок целых операций тот же — счётчики бит в бит прежние.

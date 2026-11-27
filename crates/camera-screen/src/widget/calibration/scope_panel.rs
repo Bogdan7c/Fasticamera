@@ -21,6 +21,7 @@ use ui_kit::tokens::TextRoleKind;
 use ui_kit::view::GlassShape;
 
 use super::paint::NodePaint;
+use super::scope_labels_draw;
 use super::scope_strip::ScopeStrip;
 use super::space::{EyeAxis, SectionSpace};
 use crate::action::ScreenAction;
@@ -156,7 +157,10 @@ impl ScopePanel {
         };
         let kind = ctx.state.calibration().scope_kind();
         self.draw_picture(&paint, layers, kind);
-        self.draw_level_numbers(ctx, &paint, layers, texts, kind)
+        self.draw_level_numbers(ctx, &paint, layers, texts, kind)?;
+        // Подписи целей поверх картинки (решения 326, 327): только для текущего запроса прибора.
+        let image = self.space.scene_rect(self.layout.scope_image_rect_for(kind));
+        scope_labels_draw::draw_scope_labels(ctx, &paint, layers, texts, (image, self.frame.center()))
     }
 
     /// Картинка прибора в своём прямоугольнике: размер тот же, что в запросе прибора, поэтому она кладётся 1:1.
@@ -217,7 +221,7 @@ impl ScopePanel {
 /// Центр подписи на высоте `line_y`, прижатый внутрь картинки `[top, bottom]` на половину высоты букв. Картинка ниже
 /// подписи (раскладка такого не пропускает, но виджет не должен падать) — подпись по центру картинки: `f64::clamp`
 /// при `min > max` паникует.
-fn clamp_label_centre(line_y: f64, top: f64, bottom: f64, half_height_pt: f64) -> f64 {
+pub(super) fn clamp_label_centre(line_y: f64, top: f64, bottom: f64, half_height_pt: f64) -> f64 {
     let (lowest, highest) = (top + half_height_pt, bottom - half_height_pt);
     if lowest > highest {
         return f64::midpoint(top, bottom);
@@ -247,12 +251,16 @@ mod tests {
 
     #[test]
     fn neighbours_walk_the_linear_row_and_stop_at_the_ends() {
+        assert_eq!(neighbour_scope(ScopeKind::Histogram, 1), Some(ScopeKind::Waveform));
+        assert_eq!(neighbour_scope(ScopeKind::Histogram, -1), None);
         assert_eq!(neighbour_scope(ScopeKind::Waveform, 1), Some(ScopeKind::LumaWaveform));
         assert_eq!(neighbour_scope(ScopeKind::LumaWaveform, 1), Some(ScopeKind::RgbParade));
         assert_eq!(neighbour_scope(ScopeKind::LumaWaveform, -1), Some(ScopeKind::Waveform));
         assert_eq!(neighbour_scope(ScopeKind::RgbParade, 1), Some(ScopeKind::Vectorscope));
-        assert_eq!(neighbour_scope(ScopeKind::Vectorscope, 1), None);
-        assert_eq!(neighbour_scope(ScopeKind::Waveform, -1), None);
+        assert_eq!(neighbour_scope(ScopeKind::Vectorscope, 1), Some(ScopeKind::Cie));
+        assert_eq!(neighbour_scope(ScopeKind::Cie, 1), None);
+        assert_eq!(neighbour_scope(ScopeKind::Cie, -1), Some(ScopeKind::Vectorscope));
+        assert_eq!(neighbour_scope(ScopeKind::Waveform, -1), Some(ScopeKind::Histogram));
         assert_eq!(neighbour_scope(ScopeKind::Vectorscope, -1), Some(ScopeKind::RgbParade));
     }
 }

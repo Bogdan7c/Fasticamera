@@ -325,11 +325,22 @@ fn waveform_and_parade_fill_the_area_right_of_the_gutter_and_the_vectorscope_is_
             let rect = layout.scope_image_rect_for(kind);
             match kind.picture_shape() {
                 ScopePictureShape::FillsZone => {
-                    assert!(!kind.level_lines().is_empty(), "у видов с полем есть подписи уровней");
+                    // У гистограммы уровень лежит по горизонтали: горизонтальных подписей нет (её сетка — вертикальные
+                    // линии внутри картинки); остальные виды с полем подписывают уровни слева.
+                    assert!(
+                        kind == ScopeKind::Histogram || !kind.level_lines().is_empty(),
+                        "у видов с полем есть подписи уровней"
+                    );
+                    // Без подписей уровней поля слева нет: картинка гистограммы начинается с левого края области.
+                    let expected_left = if kind.level_lines().is_empty() {
+                        area.min_x()
+                    } else {
+                        gutter.max_x()
+                    };
                     assert_eq!(
                         rect.min_x(),
-                        gutter.max_x(),
-                        "{orientation:?} {kind:?}: картинка начинается за полем"
+                        expected_left,
+                        "{orientation:?} {kind:?}: картинка начинается за полем подписей, а без подписей — с края области"
                     );
                     let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
                     assert!(

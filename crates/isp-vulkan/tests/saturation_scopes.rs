@@ -62,6 +62,8 @@ fn reference_counters(work: &ScopesSaturation) -> scope_model::ScopeCounters {
         kind: config.kind,
         vectorscope_axes: config.vectorscope_axes,
         vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
+        cie_diagram: scope_contract::CieDiagram::default(),
+        histogram_mode: scope_contract::HistogramMode::Rgb,
         scan: config.scan,
         image_size: config.picture_size,
     };

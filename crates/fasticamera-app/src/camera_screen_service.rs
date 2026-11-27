@@ -63,6 +63,7 @@ use crate::look_facts::{LookFactsCatalog, LookFactsSource};
 use crate::look_service::LookHandle;
 use crate::look_white_stops::LookWhiteStopsWatcher;
 use crate::scenario::observing::ShellServices;
+use crate::scope_labels::ScopeLabelsWatcher;
 use crate::still_phase_log::{PhaseBatch, PhaseCursor};
 use crate::text_effects::TextResultToScreen;
 use crate::text_input_broker::TextInputBroker;
@@ -679,6 +680,7 @@ impl CameraScreenService {
             facts,
             look_facts,
             look_white_stops: LookWhiteStopsWatcher::new(env.camera.look_white_stops().clone()),
+            scope_labels: ScopeLabelsWatcher::new(env.camera.scope_labels().clone()),
             gravity,
             executor,
             board: Arc::clone(&board),

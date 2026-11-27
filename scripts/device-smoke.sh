@@ -2,7 +2,7 @@
 # Smoke-сценарий на телефоне: запуск по intent-параметру и проверка строки результата.
 #
 #   scripts/device-smoke.sh [--variant debug|release] [--no-build] [--timeout SEC] [--artifacts-dir DIR]
-#                           [--stages LIST] [--surface PLACE] [--ab-window-ms MS] [--ab-pairs N] [--endurance-ms MS]
+#                           [--stages LIST] [--surface PLACE] [--scope-page PAGE] [--ab-window-ms MS] [--ab-pairs N] [--endurance-ms MS]
 #                           [--unchanged-frame skip|always] [--exposure-controller own|vendor] [--neutral-card] [--keep-captures] [--stop-app-after]
 #                           [--saturation-workloads LIST] [--saturation-measure-ms MS] [--saturation-warmup-ms MS]
 #                           [--tone-base agx|aces|filmic|legacy]
@@ -28,6 +28,10 @@
 # сочетание строки и места — отказ Rust при initialize ДО замера. --ab-pairs N — число пар A/B на строку (по умолчанию 3,
 # ≈ 6 окон по 60 с). Примеры: --surface photo_screen --stages ui_overlay,whole_product --timeout 1500 viewfinder-stage-budget;
 # --surface calibrate_screen --stages color_scopes,ui_overlay,whole_product,display_120hz --timeout 2400 viewfinder-stage-budget.
+# --scope-page histogram|waveform|luma_waveform|rgb_parade|vectorscope|cie — какую страницу цветового прибора меряет строка color_scopes
+# (и весь продукт) на calibrate_screen (сессия 14s): после входа в раздел драйвер листает страницы свайпами по полю прибора, пока
+# рендер не подтвердит запрос нужной; без параметра меряется страница, на которой раздел открылся (с 14s — HISTOGRAM,
+# решение 335; чтобы сравнивать с замерами 14r, где раздел открывался на RGB WAVEFORM, укажите --scope-page waveform).
 # --unchanged-frame skip|always — политика пропуска тиков без изменений (решение 214, сессия 16a): skip — тик без нового кадра
 # камеры и без изменений UI не рисуется и не показывается; always — рисуется каждый тик (умолчание продукта до замера тока A/B).
 # Нет флага — extra не передаётся, Rust берёт умолчание; другое значение — отказ скрипта.
@@ -112,6 +116,7 @@ timeout_seconds=30
 artifacts_dir=""
 stages=""
 surface=""
+scope_page=""
 ab_window_ms=""
 ab_pairs=""
 unchanged_frame=""
@@ -134,6 +139,7 @@ while [[ $# -gt 0 ]]; do
         --artifacts-dir) artifacts_dir="${2:-}"; shift 2 ;;
         --stages) stages="${2:-}"; shift 2 ;;
         --surface) surface="${2:-}"; shift 2 ;;
+        --scope-page) scope_page="${2:-}"; shift 2 ;;
         --ab-window-ms) ab_window_ms="${2:-}"; shift 2 ;;
         --ab-pairs) ab_pairs="${2:-}"; shift 2 ;;
         --unchanged-frame) unchanged_frame="${2:-}"; shift 2 ;;
@@ -182,6 +188,15 @@ if [[ -n "$surface" && ! "$surface" =~ ^(bare_viewfinder|photo_screen|calibrate_
 fi
 if [[ -n "$surface" && "$scenario" != "viewfinder-stage-budget" ]]; then
     log_error "--surface имеет смысл только для viewfinder-stage-budget"
+    exit "$EXIT_USAGE"
+fi
+# Страница прибора — одно из пяти имён словаря (точный набор и сочетание с местом замера проверит Rust при initialize).
+if [[ -n "$scope_page" && ! "$scope_page" =~ ^(histogram|waveform|luma_waveform|rgb_parade|vectorscope|cie)$ ]]; then
+    log_error "--scope-page ждёт histogram, waveform, luma_waveform, rgb_parade, vectorscope или cie, а не '$scope_page'"
+    exit "$EXIT_USAGE"
+fi
+if [[ -n "$scope_page" && "$scenario" != "viewfinder-stage-budget" ]]; then
+    log_error "--scope-page имеет смысл только для viewfinder-stage-budget"
     exit "$EXIT_USAGE"
 fi
 # Политика пропуска тиков — только skip или always; имя поля Rust проверит ещё раз при initialize.
@@ -307,6 +322,7 @@ stop_other_variant "$serial" "$variant" || {
 since_epoch="$(device_epoch_timestamp "$serial")"
 start_activity "$serial" "$package" -e scenario "$scenario" ${stages:+-e stages "$stages"} \
     ${surface:+-e surface "$surface"} \
+    ${scope_page:+-e scope_page "$scope_page"} \
     ${ab_window_ms:+-e ab_window_ms "$ab_window_ms"} \
     ${ab_pairs:+-e ab_pairs "$ab_pairs"} \
     ${unchanged_frame:+-e unchanged_frame "$unchanged_frame"} \

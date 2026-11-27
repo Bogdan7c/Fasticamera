@@ -164,6 +164,7 @@ impl BudgetRun {
                 let entry = SurfaceEntry::begin(
                     self.surface(),
                     self.swipes,
+                    self.config.stage_budget.scope_page,
                     Duration::from_millis(self.config.stage_budget.surface_ready_timeout_ms),
                     self.warmup_ui_frames,
                     context.now,
@@ -590,6 +591,10 @@ impl ObservingScenario for ViewfinderStageBudgetScenario {
                 ("rows", rows.into()),
                 ("surface", surface.name().into()),
                 (
+                    "scope_page",
+                    serde_json::to_value(config.stage_budget.scope_page).unwrap_or(serde_json::Value::Null),
+                ),
+                (
                     "window_ms",
                     u64::try_from(power.ab.window.as_millis()).unwrap_or(u64::MAX).into(),
                 ),
@@ -597,6 +602,7 @@ impl ObservingScenario for ViewfinderStageBudgetScenario {
             ]),
         );
         let touch = &camera.scenarios().screen.touch;
+        let page_swipes = config.stage_budget.scope_page_swipes;
         self.run = Some(BudgetRun {
             config,
             power,
@@ -606,6 +612,8 @@ impl ObservingScenario for ViewfinderStageBudgetScenario {
             swipes: SurfaceSwipes {
                 enter_calibrate: touch.modes_swipe_left,
                 leave_calibrate: touch.modes_swipe_right,
+                scope_page_next: page_swipes.next,
+                scope_page_previous: page_swipes.previous,
             },
             warmup_ui_frames: camera.scenarios().screen.warmup_ui_frames,
             open: None,

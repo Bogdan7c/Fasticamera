@@ -134,7 +134,7 @@ float primitive_coverage(GraticulePrimitive primitive, vec2 point, vec2 picture_
 // плитки равно нулю и примитив не влияет на `max`. NaN в расстоянии даёт «оставить» (сравнение ложно).
 const float CULL_SLACK_PX = 0.01;
 shared uint kept_count;
-shared uint kept_primitive_index[48];
+shared uint kept_primitive_index[128];
 
 void select_primitives_touching_the_tile(vec2 picture_px) {
     uint group_threads = gl_WorkGroupSize.x * gl_WorkGroupSize.y;
@@ -174,6 +174,256 @@ float graticule_coverage(vec2 point, vec2 picture_px) {
     return coverage;
 }
 
+#if defined(SCOPE_RENDER_HISTOGRAM)
+// ГИСТОГРАММА (сессия 14s): столбики вместо плотности «строка × столбец». Эталон — `scope_model::histogram_bars`
+// (`HistogramBars`) и `scope_model::histogram_height` (кривые): тот же порядок операций f32. Строка сетки одна, первый
+// проход (`scope_resample.comp`) уже дал плотность столбцов картинки `resampled.values[x * слотов + слот]`.
+
+// Число нитей группы: литерал, а не `gl_WorkGroupSize` — размер shared-массива через константу специализации на Adreno
+// собирался иначе (правила 16a). Совпадение с размером группы Rust сверяет тест `shader_literals_tests`.
+const uint HISTOGRAM_GROUP_THREADS = 128u;
+const float CURVE_LINEAR = 0.0;
+const float CURVE_SQUARE_ROOT = 1.0;
+shared float group_peak_density[128];
+
+// Самый высокий столбик картинки: наибольшая плотность по всем столбцам и слотам. Каждая группа находит его сама по
+// первым `ширина × слотов` числам слоя (их немного — ≈ 3000): отдельного прохода и сброса буфера не нужно. Вызывается
+// ВСЕМИ нитями группы (барьеры), в том числе у пикселей за краем картинки. Опору «среднее» (x ≥ 0) не ищет.
+float tallest_density_of_picture() {
+    if (parameters.histogram.x >= 0.0) {
+        return 0.0;
+    }
+    uint count = parameters.picture.x * parameters.picture.z;
+    float local_peak = 0.0;
+    for (uint index = gl_LocalInvocationIndex; index < count; index += HISTOGRAM_GROUP_THREADS) {
+        local_peak = max(local_peak, resampled.values[index]);
+    }
+    group_peak_density[gl_LocalInvocationIndex] = local_peak;
+    barrier();
+    for (uint half_count = HISTOGRAM_GROUP_THREADS / 2u; half_count > 0u; half_count >>= 1u) {
+        if (gl_LocalInvocationIndex < half_count) {
+            group_peak_density[gl_LocalInvocationIndex] = max(
+                group_peak_density[gl_LocalInvocationIndex], group_peak_density[gl_LocalInvocationIndex + half_count]);
+        }
+        barrier();
+    }
+    return group_peak_density[0u];
+}
+
+// Доля высоты столбика по счёту `count` и опоре `reference` (отсчётов на уровень) — `HistogramCurve::fraction`.
+float bar_fraction(float count, float reference) {
+    if (!(count > 0.0 && reference > 0.0)) {
+        return 0.0;
+    }
+    float fraction;
+    if (parameters.histogram.y == CURVE_LINEAR) {
+        fraction = count / reference;
+    } else if (parameters.histogram.y == CURVE_SQUARE_ROOT) {
+        fraction = sqrt(count / reference);
+    } else {
+        fraction = log2(1.0 + count) / log2(1.0 + reference);
+    }
+    return min(fraction, 1.0);
+}
+
+// Доля высоты столбика столбца `x` в слоте `slot` — `HistogramBars::height_fraction`. Все плоскости лежат на всю ширину
+// (полосы PARADE друг над другом), поэтому пикселей на уровень одно число — ядро «вся ширина».
+float bar_fraction_at(uint x, uint slot, float tallest_density) {
+    float per_bin = parameters.resample_axes[AXIS_FULL_WIDTH].x;
+    float count = resampled.values[x * parameters.picture.z + slot] * per_bin;
+    float reference = parameters.histogram.x >= 0.0 ? parameters.histogram.x : tallest_density * per_bin;
+    return bar_fraction(count, reference);
+}
+
+// Покрытие заливкой: пиксель на расстоянии `distance_to_baseline` от базовой линии под верхушкой `top_px`; верх мягкий,
+// шириной в один пиксель; пустой столбец не закрашивается — `HistogramBars::fill_coverage`.
+float fill_coverage(float top_px, float distance_to_baseline) {
+    if (top_px <= 0.0) {
+        return 0.0;
+    }
+    return clamp(top_px - distance_to_baseline + 0.5, 0.0, 1.0);
+}
+
+// Расстояние от точки до отрезка — `histogram_paint::distance_to_segment` (тот же порядок операций).
+float histogram_segment_distance(vec2 point, vec2 start, vec2 end) {
+    vec2 along = end - start;
+    vec2 relative = point - start;
+    float length_squared = along.x * along.x + along.y * along.y;
+    float fraction = 0.0;
+    if (length_squared > 0.0) {
+        fraction = clamp((relative.x * along.x + relative.y * along.y) / length_squared, 0.0, 1.0);
+    }
+    vec2 offset = vec2(relative.x - along.x * fraction, relative.y - along.y * fraction);
+    return sqrt(offset.x * offset.x + offset.y * offset.y);
+}
+
+// Покрытие линией верха: расстояние до ломаной по верхушкам столбцов `x − 1`, `x`, `x + 1` (по двум соседним отрезкам;
+// отрезок над пустыми столбцами не рисуется) — `histogram_paint::edge_coverage`. Толщина 0 — линии нет.
+float histogram_edge_coverage(float distance_to_baseline, vec3 heights, float edge_width_px) {
+    if (edge_width_px <= 0.0) {
+        return 0.0;
+    }
+    vec2 point = vec2(0.0, distance_to_baseline);
+    float nearest = 1.0e30;
+    if (max(heights.x, heights.y) > 0.0) {
+        nearest = min(nearest, histogram_segment_distance(point, vec2(-1.0, heights.x), vec2(0.0, heights.y)));
+    }
+    if (max(heights.y, heights.z) > 0.0) {
+        nearest = min(nearest, histogram_segment_distance(point, vec2(0.0, heights.y), vec2(1.0, heights.z)));
+    }
+    return clamp(edge_width_px * 0.5 + 0.5 - nearest, 0.0, 1.0);
+}
+
+// Полоса пикселя с центром по вертикали `centre_y` — `HistogramStrips::locate` (тот же порядок операций f32). Ложь —
+// пиксель в зазоре между полосами (или полосы не помещаются).
+bool locate_histogram_strip(
+    float centre_y, float height_px, uint count, out uint index, out float distance_to_baseline, out float strip_px) {
+    float gap_px = parameters.histogram_style.y * height_px;
+    strip_px = (height_px - float(count - 1u) * gap_px) / float(count);
+    index = 0u;
+    distance_to_baseline = 0.0;
+    if (strip_px <= 0.0) {
+        return false;
+    }
+    float pitch = strip_px + gap_px;
+    index = min(uint(centre_y / pitch), count - 1u);
+    float baseline = float(index) * pitch + strip_px;
+    distance_to_baseline = baseline - centre_y;
+    return distance_to_baseline >= 0.0;
+}
+
+// След пикселя гистограммы (решение 337) — `HistogramBars::pixel` и `HistogramBlend`: наложение (RGB) — все плоскости в
+// одной полосе, полосы (PARADE, Y) — плоскость полосы. Заливки складываются как свет (прозрачность — по самому высокому
+// покрытию), линии верха рисуются поверх своими цветами. Прозрачность следа `trace.y` гистограмма не берёт.
+void histogram_trace(uvec2 pixel, uvec2 size, float tallest_density, out vec3 trace_color, out float trace_alpha) {
+    trace_color = vec3(0.0);
+    trace_alpha = 0.0;
+    uint planes = parameters.grid.z;
+    bool sectioned = parameters.trace.w == PAINT_HISTOGRAM_SECTIONS;
+    uint strip_index;
+    float distance_to_baseline;
+    float strip_px;
+    if (!locate_histogram_strip(float(pixel.y) + 0.5, float(size.y), sectioned ? planes : 1u, strip_index,
+                                distance_to_baseline, strip_px)) {
+        return;
+    }
+    uint first_slot = sectioned ? strip_index : 0u;
+    uint end_slot = sectioned ? strip_index + 1u : planes;
+    uint left = pixel.x > 0u ? pixel.x - 1u : pixel.x;
+    uint right = min(pixel.x + 1u, size.x - 1u);
+    vec3 fill_light = vec3(0.0);
+    vec3 edge_light = vec3(0.0);
+    float fill_max = 0.0;
+    float edge_max = 0.0;
+    for (uint slot = first_slot; slot < end_slot; ++slot) {
+        vec3 heights = vec3(
+            bar_fraction_at(left, slot, tallest_density) * strip_px,
+            bar_fraction_at(pixel.x, slot, tallest_density) * strip_px,
+            bar_fraction_at(right, slot, tallest_density) * strip_px);
+        float fill = fill_coverage(heights.y, distance_to_baseline);
+        float edge = histogram_edge_coverage(distance_to_baseline, heights, parameters.histogram.w);
+        vec3 color = parameters.plane_colors[slot].rgb;
+        fill_light += fill * color;
+        edge_light += edge * color;
+        fill_max = max(fill_max, fill);
+        edge_max = max(edge_max, edge);
+    }
+    float fill_alpha = parameters.histogram.z * fill_max;
+    float alpha = edge_max + fill_alpha * (1.0 - edge_max);
+    if (alpha > 0.0) {
+        vec3 edge_premultiplied = min(edge_light, vec3(1.0));
+        vec3 fill_premultiplied = parameters.histogram.z * parameters.histogram_style.x * fill_light;
+        trace_color = clamp((edge_premultiplied + fill_premultiplied * (1.0 - edge_max)) / alpha, 0.0, 1.0);
+        trace_alpha = alpha;
+    }
+}
+#endif
+
+#if defined(SCOPE_RENDER_CIE)
+// ДИАГРАММА CIE (сессия 14s): цвет следа по цветности точки, бледная заливка локуса и слоистая композиция. Эталон —
+// `scope_model::cie_style` (`chromaticity_colour`, `locus_coverage`, `fill_at`) и `scope_model::render`: тот же порядок
+// операций f32; `pow` и деление дают расхождение в пределах допуска картинки.
+const float CIE_MIN_COLOUR_Y = 1.0e-4;
+const float SRGB_LINEAR_LIMIT = 0.0031308;
+
+// Кодировка sRGB (передача экрана).
+float encode_srgb(float linear) {
+    return linear <= SRGB_LINEAR_LIMIT ? 12.92 * linear : 1.055 * pow(linear, 1.0 / 2.4) - 0.055;
+}
+
+// Цвет цветности точки картинки `uv` (доли картинки, y вниз): XYZ с Y = 1 -> свет измеряемого охвата -> нормировка по
+// наибольшему каналу -> кодировка экрана. Вне охвата (отрицательные каналы) каналы зажимаются в ноль.
+vec3 cie_chromaticity_colour(vec2 uv) {
+    vec2 chart = vec2(
+        parameters.cie_chart.x + uv.x * parameters.cie_chart.z,
+        parameters.cie_chart.y - uv.y * parameters.cie_chart.z);
+    vec2 chromaticity = chart;
+    if (parameters.cie_chart.w > 0.5) {
+        float denominator = 6.0 * chart.x - 16.0 * chart.y + 12.0;
+        if (!(denominator > 0.0)) {
+            return vec3(1.0);
+        }
+        chromaticity = vec2(9.0 * chart.x / denominator, 4.0 * chart.y / denominator);
+    }
+    if (!(chromaticity.y > CIE_MIN_COLOUR_Y)) {
+        return vec3(1.0);
+    }
+    vec3 xyz = vec3(
+        chromaticity.x / chromaticity.y,
+        1.0,
+        (1.0 - chromaticity.x - chromaticity.y) / chromaticity.y);
+    vec3 linear = max(vec3(
+        dot(parameters.cie_xyz_to_display[0].xyz, xyz),
+        dot(parameters.cie_xyz_to_display[1].xyz, xyz),
+        dot(parameters.cie_xyz_to_display[2].xyz, xyz)), vec3(0.0));
+    float peak = max(linear.r, max(linear.g, linear.b));
+    if (!(peak > 0.0)) {
+        return vec3(1.0);
+    }
+    vec3 normalised = linear / peak;
+    return vec3(encode_srgb(normalised.r), encode_srgb(normalised.g), encode_srgb(normalised.b));
+}
+
+// Покрытие пикселя внутренностью локуса: непрерывное, по знаковому расстоянию до ближайшего ребра (внутри > 0).
+float cie_locus_coverage(vec2 point, vec2 picture_px) {
+    float nearest = 3.0e38;
+    uint edge_count = uint(parameters.cie_options.w);
+    for (uint index = 0u; index < edge_count; ++index) {
+        vec4 edge = parameters.cie_locus_edges[index];
+        vec2 from = edge.xy * picture_px;
+        vec2 along = edge.zw * picture_px - from;
+        float length_px = length(along);
+        if (!(length_px > 0.0)) {
+            continue;
+        }
+        float cross_product = along.x * (point.y - from.y) - along.y * (point.x - from.x);
+        nearest = min(nearest, cross_product / length_px);
+    }
+    return nearest < 1.0e38 ? clamp(0.5 + nearest, 0.0, 1.0) : 0.0;
+}
+
+// Заливка пикселя: rgb и ПРЯМАЯ альфа (0 — заливки нет).
+vec4 cie_fill(vec2 point, vec2 picture_px) {
+    if (parameters.cie_options.y < 0.5) {
+        return vec4(0.0);
+    }
+    float coverage = cie_locus_coverage(point, picture_px);
+    if (coverage <= 0.0) {
+        return vec4(0.0);
+    }
+    return vec4(cie_chromaticity_colour(point / picture_px), coverage * parameters.cie_options.z);
+}
+
+// Верхний слой над нижним, прямая альфа: `scope_model::render::composite_over`.
+vec4 composite_over_layers(vec3 top, float top_alpha, vec3 below, float below_alpha) {
+    float alpha = top_alpha + below_alpha * (1.0 - top_alpha);
+    if (alpha <= 0.0) {
+        return vec4(0.0);
+    }
+    return vec4((top * top_alpha + below * below_alpha * (1.0 - top_alpha)) / alpha, alpha);
+}
+#endif
+
 void main() {
     uvec2 pixel = gl_GlobalInvocationID.xy;
     uvec2 size = uvec2(imageSize(picture));
@@ -182,12 +432,21 @@ void main() {
     // Отбор примитивов — на ВСЕХ нитях группы (барьеры), в том числе у пикселей за краем картинки.
     select_primitives_touching_the_tile(picture_px);
 #endif
+#if defined(SCOPE_RENDER_HISTOGRAM)
+    // Опора «самый высокий столбик» — тоже на ВСЕХ нитях группы (барьеры).
+    float tallest_density = tallest_density_of_picture();
+#endif
     if (pixel.x >= size.x || pixel.y >= size.y) {
         return;
     }
     uint columns = parameters.grid.x;
     uint rows = parameters.grid.y;
     uint planes = parameters.grid.z;
+#if defined(SCOPE_RENDER_HISTOGRAM)
+    float trace_alpha = 0.0;
+    vec3 trace_color = vec3(0.0);
+    histogram_trace(pixel, size, tallest_density, trace_color, trace_alpha);
+#else
     vec4 vertical = parameters.resample_axes[AXIS_VERTICAL];
     uvec2 rows_range = axis_cell_range(vertical, pixel.y, rows);
 
@@ -218,15 +477,29 @@ void main() {
                     (float(pixel.x) + 0.5) * float(columns) / float(size.x),
                     (float(pixel.y) + 0.5) * float(rows) / float(size.y));
                 trace_color = position_color(point);
+#if defined(SCOPE_RENDER_CIE)
+            } else if (parameters.trace.w == PAINT_CIE) {
+                // Цвет следа: белый или цветность центра пикселя (доли картинки, y вниз).
+                trace_color = parameters.cie_options.x > 0.5
+                    ? cie_chromaticity_colour((vec2(pixel) + vec2(0.5)) / picture_px)
+                    : vec3(1.0);
+#endif
             } else {
                 trace_color = parameters.plane_colors[section_of_pixel(pixel.x, size.x, planes).x].rgb;
             }
         }
     }
+#endif
 
     vec2 point = vec2(pixel) + vec2(0.5);
     float grid_alpha = graticule_coverage(point, picture_px) * parameters.trace.z;
 
+#if defined(SCOPE_RENDER_CIE)
+    // Слои диаграммы CIE снизу вверх: заливка локуса, сетка, след.
+    vec4 fill = cie_fill(point, picture_px);
+    vec4 under = composite_over_layers(parameters.graticule_color.rgb, grid_alpha, fill.rgb, fill.a);
+    vec4 result = composite_over_layers(trace_color, trace_alpha, under.rgb, under.a);
+#else
     // Сетка рисуется ПОД следом: прямая альфа «over».
     float alpha = trace_alpha + grid_alpha * (1.0 - trace_alpha);
     vec4 result = vec4(0.0);
@@ -235,5 +508,6 @@ void main() {
         vec3 color = (trace_color * trace_alpha + grid_color * grid_alpha * (1.0 - trace_alpha)) / alpha;
         result = vec4(color, alpha);
     }
+#endif
     imageStore(picture, ivec2(pixel), result);
 }

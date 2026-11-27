@@ -637,6 +637,12 @@ mod screen_calibration_rebuild_tests;
 #[cfg(test)]
 mod screen_calibration_safe_area_tests;
 #[cfg(test)]
+#[path = "screen_calibration_scope_labels_tests.rs"]
+mod screen_calibration_scope_labels_tests;
+#[cfg(test)]
+#[path = "screen_calibration_scope_toggles_tests.rs"]
+mod screen_calibration_scope_toggles_tests;
+#[cfg(test)]
 #[path = "screen_calibration_section_tests.rs"]
 mod screen_calibration_section_tests;
 #[cfg(test)]

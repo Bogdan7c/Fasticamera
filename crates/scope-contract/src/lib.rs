@@ -11,12 +11,17 @@
 
 mod intent;
 mod kind;
+mod labels;
 mod level_lines;
 mod scan;
 mod size;
 
 pub use intent::{ScopeIntent, ScopeRequest};
-pub use kind::{ScopeKind, ScopePictureShape, VectorscopeAxes, VectorscopeZoom};
+pub use kind::{CieDiagram, HistogramMode, ScopeKind, ScopePictureShape, VectorscopeAxes, VectorscopeZoom};
+pub use labels::{
+    ChromaticityGamut, LabelPoint, LabelPointError, ScopeLabel, ScopeLabels, ScopeLabelsBoard, ScopeLabelsState,
+    ScopeMark, TargetColor,
+};
 pub use level_lines::{LevelLine, WAVEFORM_LEVEL_LINES};
 pub use scan::ScopeScan;
 pub use size::{MAX_SCOPE_IMAGE_SIDE_PX, ScopeImageSize, ScopeImageSizeError};

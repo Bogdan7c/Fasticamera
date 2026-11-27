@@ -19,7 +19,7 @@ use isp_vulkan::saturation::{
     SceneContent, ScopesSaturation, ScopesSaturationConfig, StillSaturation, StillSaturationConfig,
     ViewfinderSaturation, ViewfinderSaturationConfig,
 };
-use scope_contract::{ScopeKind, ScopeRequest, VectorscopeAxes};
+use scope_contract::{CieDiagram, HistogramMode, ScopeKind, ScopeRequest, VectorscopeAxes};
 use ui_draw::draw_list::LiveImage;
 use ui_render_vulkan::LiveImageInput;
 use ui_render_vulkan::saturation::{
@@ -378,17 +378,74 @@ impl GpuWorkloadExecutor {
     ) -> Result<Box<dyn BenchWork>, BuildError> {
         // Размер картинки и положение глаза — из настоящей раскладки экрана калибровки.
         let layout_request = self.calibrate_scope_request()?;
-        let (kind, axes) = match shape {
-            ScopeShape::Waveform => (ScopeKind::Waveform, VectorscopeAxes::YCbCrBt709),
-            ScopeShape::LumaWaveform => (ScopeKind::LumaWaveform, VectorscopeAxes::YCbCrBt709),
-            ScopeShape::Parade => (ScopeKind::RgbParade, VectorscopeAxes::YCbCrBt709),
-            ScopeShape::VectorscopeYcbcr => (ScopeKind::Vectorscope, VectorscopeAxes::YCbCrBt709),
-            ScopeShape::VectorscopeOklab => (ScopeKind::Vectorscope, VectorscopeAxes::OklabAb),
+        let (kind, axes, histogram_mode, cie_diagram) = match shape {
+            ScopeShape::Waveform => (
+                ScopeKind::Waveform,
+                VectorscopeAxes::YCbCrBt709,
+                HistogramMode::default(),
+                CieDiagram::default(),
+            ),
+            ScopeShape::LumaWaveform => (
+                ScopeKind::LumaWaveform,
+                VectorscopeAxes::YCbCrBt709,
+                HistogramMode::default(),
+                CieDiagram::default(),
+            ),
+            ScopeShape::Parade => (
+                ScopeKind::RgbParade,
+                VectorscopeAxes::YCbCrBt709,
+                HistogramMode::default(),
+                CieDiagram::default(),
+            ),
+            ScopeShape::VectorscopeYcbcr => (
+                ScopeKind::Vectorscope,
+                VectorscopeAxes::YCbCrBt709,
+                HistogramMode::default(),
+                CieDiagram::default(),
+            ),
+            ScopeShape::VectorscopeOklab => (
+                ScopeKind::Vectorscope,
+                VectorscopeAxes::OklabAb,
+                HistogramMode::default(),
+                CieDiagram::default(),
+            ),
+            ScopeShape::HistogramRgb => (
+                ScopeKind::Histogram,
+                VectorscopeAxes::YCbCrBt709,
+                HistogramMode::Rgb,
+                CieDiagram::default(),
+            ),
+            ScopeShape::HistogramParade => (
+                ScopeKind::Histogram,
+                VectorscopeAxes::YCbCrBt709,
+                HistogramMode::Parade,
+                CieDiagram::default(),
+            ),
+            ScopeShape::HistogramLuma => (
+                ScopeKind::Histogram,
+                VectorscopeAxes::YCbCrBt709,
+                HistogramMode::Luma,
+                CieDiagram::default(),
+            ),
+            ScopeShape::CieXy => (
+                ScopeKind::Cie,
+                VectorscopeAxes::YCbCrBt709,
+                HistogramMode::default(),
+                CieDiagram::Xy1931,
+            ),
+            ScopeShape::CieUv => (
+                ScopeKind::Cie,
+                VectorscopeAxes::YCbCrBt709,
+                HistogramMode::default(),
+                CieDiagram::UvPrime1976,
+            ),
         };
         // Размер картинки — по форме вида (вектороскоп — квадрат, вписанный в зону), как просит настоящий экран.
         let request = ScopeRequest {
             kind,
             vectorscope_axes: axes,
+            histogram_mode,
+            cie_diagram,
             image_size: kind.picture_shape().fit_in(layout_request.image_size),
             ..layout_request
         };
@@ -422,6 +479,8 @@ impl GpuWorkloadExecutor {
             input_content: content,
             kind: request.kind,
             vectorscope_axes: request.vectorscope_axes,
+            histogram_mode: request.histogram_mode,
+            cie_diagram: request.cie_diagram,
             scan: request.scan,
             picture_size: request.image_size,
             frame_slots: self.slots(),

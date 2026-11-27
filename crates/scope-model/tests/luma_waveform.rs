@@ -66,6 +66,8 @@ fn the_luma_page_resolves_to_one_white_section_with_the_waveform_level_lines() {
         kind: ScopeKind::LumaWaveform,
         vectorscope_axes: VectorscopeAxes::YCbCrBt709,
         vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
+        cie_diagram: scope_contract::CieDiagram::default(),
+        histogram_mode: scope_contract::HistogramMode::Rgb,
         scan: ScopeScan::RotatedClockwise,
         image_size: ScopeImageSize::try_new(300, 200).unwrap(),
     };
@@ -101,6 +103,8 @@ fn a_bright_flat_frame_paints_a_white_luma_trace_near_the_top_across_the_whole_w
         kind: ScopeKind::LumaWaveform,
         vectorscope_axes: VectorscopeAxes::YCbCrBt709,
         vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
+        cie_diagram: scope_contract::CieDiagram::default(),
+        histogram_mode: scope_contract::HistogramMode::Rgb,
         scan: ScopeScan::Upright,
         image_size: ScopeImageSize::try_new(64, 64).unwrap(),
     };

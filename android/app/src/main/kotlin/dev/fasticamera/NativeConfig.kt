@@ -19,6 +19,12 @@ import org.json.JSONObject
  * `calibrate_screen`. Kotlin значение не разбирает, а передаёт строкой как есть; неизвестное имя и строку таблицы, которая
  * на этом месте не мерится, Rust отвергает при initialize.
  *
+ * `stageBudgetScopePage` — страница цветового прибора, которую `viewfinder-stage-budget` меряет на `calibrate_screen` (intent-параметр
+ * `scope_page`, поле `camera.scenarios.viewfinder.stage_budget.scope_page`, сессия 14s): `histogram`, `waveform`,
+ * `luma_waveform`, `rgb_parade`, `vectorscope` или `cie`. Нет параметра — меряется страница, на которой раздел открылся
+ * (с 14s это HISTOGRAM, решение 335).
+ * Kotlin значение не разбирает; неизвестное имя и место замера, где страниц нет, Rust отвергает при initialize.
+ *
  * `abPairs` — число пар A/B замера тока на строку на один запуск (intent-параметр `ab_pairs`, поле
  * `camera.scenarios.power.ab.pairs`, 16a). Границы проверяет Rust.
  *
@@ -88,6 +94,7 @@ data class NativeConfig(
     val logFilter: String,
     val stageBudgetRows: List<String>? = null,
     val stageBudgetSurface: String? = null,
+    val stageBudgetScopePage: String? = null,
     val abWindowMs: Long? = null,
     val abPairs: Long? = null,
     val enduranceMs: Long? = null,
@@ -119,6 +126,7 @@ data class NativeConfig(
         val stageBudget = JSONObject()
         stageBudgetRows?.let { rows -> stageBudget.put("rows", JSONArray(rows)) }
         stageBudgetSurface?.let { name -> stageBudget.put("surface", name.trim()) }
+        stageBudgetScopePage?.let { name -> stageBudget.put("scope_page", name.trim()) }
         if (stageBudget.length() > 0) {
             scenarios.put("viewfinder", JSONObject().put("stage_budget", stageBudget))
         }
@@ -212,6 +220,9 @@ data class NativeConfig(
         /** Intent-параметр с местом замера `viewfinder-stage-budget` (`bare_viewfinder`, `photo_screen`, `calibrate_screen`). */
         const val EXTRA_STAGE_BUDGET_SURFACE = "surface"
 
+        /** Intent-параметр со страницей прибора, которую меряет `viewfinder-stage-budget` на `calibrate_screen`. */
+        const val EXTRA_STAGE_BUDGET_SCOPE_PAGE = "scope_page"
+
         /** Intent-параметр с длиной окна A/B замера тока, мс (строка с целым числом). */
         const val EXTRA_AB_WINDOW_MS = "ab_window_ms"
 
@@ -271,6 +282,8 @@ data class NativeConfig(
                 ?.filter { it.isNotEmpty() },
             // Нет параметра — null, место замера не попадает в JSON, Rust берёт `bare_viewfinder`.
             stageBudgetSurface = intent.getStringExtra(EXTRA_STAGE_BUDGET_SURFACE),
+            // Нет параметра — null, страница не попадает в JSON, меряется та, на которой раздел открылся.
+            stageBudgetScopePage = intent.getStringExtra(EXTRA_STAGE_BUDGET_SCOPE_PAGE),
             // Не число — параметр не применяется, а initialize идёт с окном по умолчанию: скрипт
             // device-smoke.sh пропускает сюда только цифры, так что это лишь защита от ручного вызова.
             abWindowMs = intent.getStringExtra(EXTRA_AB_WINDOW_MS)?.toLongOrNull(),

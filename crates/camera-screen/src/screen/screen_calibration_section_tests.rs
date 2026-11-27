@@ -216,13 +216,13 @@ fn in_landscape_the_whole_section_turns_with_the_phone_and_the_scope_follows_its
             "{orientation:?}: сторона поворота {:?}",
             image.transform
         );
-        let picture = layout.eye_rect_on_surface(layout.scope_image_rect_for(ScopeKind::Waveform));
+        let picture = layout.eye_rect_on_surface(layout.scope_image_rect_for(ScopeKind::Histogram));
         assert!(
             near(image.transform.tx, px(picture.center().x), 0.6)
                 && near(image.transform.ty, px(picture.center().y), 0.6),
             "{orientation:?}: центр картинки на центре её повёрнутого прямоугольника"
         );
-        let size = layout.scope_image_size_for(ScopeKind::Waveform);
+        let size = layout.scope_image_size_for(ScopeKind::Histogram);
         assert_eq!(
             (image.size_px.width as u32, image.size_px.height as u32),
             (size.width(), size.height())
@@ -286,7 +286,7 @@ fn in_landscape_taps_and_scope_swipes_use_eye_directions_too() {
         drag_eye(&mut rig, scope, Vector::new(-80.0, 0.0));
         assert_eq!(
             rig.screen.state().calibration().scope_kind(),
-            ScopeKind::LumaWaveform,
+            ScopeKind::Waveform,
             "{orientation:?}"
         );
         // Капсула режимов в альбоме листается глазной горизонталью: палец глазами вправо возвращает PHOTO.

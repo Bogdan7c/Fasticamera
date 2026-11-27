@@ -6,10 +6,11 @@
 
 use crate::codes::MAX_DISPLAY_CODE;
 use crate::graticule::{GraticulePrimitive, MAX_GRATICULE_PRIMITIVES};
+use crate::histogram_strips::HistogramStrips;
 use crate::render_settings::RenderSettings;
 use crate::resolved::ResolvedScope;
 use crate::rule::{Hit, SamplePosition, hits_of_code};
-use scope_contract::WAVEFORM_LEVEL_LINES;
+use scope_contract::{HistogramMode, WAVEFORM_LEVEL_LINES};
 
 /// Цвета целей вектороскопа: R, G, B, C, M, Y (каналы 0/1 умножаются на амплитуду).
 const TARGET_COLORS: [[f32; 3]; 6] = [
@@ -21,6 +22,9 @@ const TARGET_COLORS: [[f32; 3]; 6] = [
     [1.0, 1.0, 0.0],
 ];
 
+/// Шагов сетки гистограммы по диапазону кодов: 10 шагов — линии через каждые 10 % (решение 337).
+const HISTOGRAM_GRID_STEPS: u32 = 10;
+
 /// Длина плеча креста центра в полуразмерах рамки цели.
 const CROSS_ARM_IN_TARGET_HALVES: f32 = 2.0;
 
@@ -29,8 +33,10 @@ impl ResolvedScope {
     pub fn graticule(&self, settings: &RenderSettings) -> Vec<GraticulePrimitive> {
         let mut primitives = match self {
             // У наложенного RGB waveform те же пять уровней, что у parade: сетка не зависит от способа рисования.
+            Self::Histogram(_) => self.histogram_level_lines(settings),
             Self::Waveform(_) | Self::LumaWaveform(_) | Self::RgbParade(_) => self.level_lines(settings),
             Self::VectorscopeYCbCr(_) | Self::VectorscopeOklab(_) => self.vectorscope_marks(settings),
+            Self::Cie(rule) => crate::cie_graticule::cie_graticule(rule, settings),
         };
         primitives.truncate(MAX_GRATICULE_PRIMITIVES);
         primitives
@@ -42,7 +48,9 @@ impl ResolvedScope {
         let rows = match self {
             Self::Waveform(rule) | Self::RgbParade(rule) => rule.levels(),
             Self::LumaWaveform(rule) => rule.levels(),
-            Self::VectorscopeYCbCr(_) | Self::VectorscopeOklab(_) => return Vec::new(),
+            Self::Histogram(_) | Self::VectorscopeYCbCr(_) | Self::VectorscopeOklab(_) | Self::Cie(_) => {
+                return Vec::new();
+            }
         };
         // Уровни — общий список словаря: экран подписывает именно эти линии (решения 188, 274).
         WAVEFORM_LEVEL_LINES
@@ -58,6 +66,53 @@ impl ResolvedScope {
                 })
             })
             .collect()
+    }
+
+    /// Сетка гистограммы (решение 337): вертикальные линии через каждые 10 % диапазона кодов (0, 10, …, 100 % — 11 линий;
+    /// 50 % толще прочих) и базовая линия каждой полосы PARADE. x линии — центр столбца, куда правило кладёт серый код
+    /// этого уровня (не номинальные доли ширины), поэтому линия и столбик серого кадра совпадают пиксель в пиксель.
+    /// Полосы лежат друг над другом на всю ширину, поэтому линия каждой полосы идёт только по её высоте (в зазоре между
+    /// полосами сетки нет), а базовые линии отделяют полосы. У RGB и Y полоса одна на всю высоту, базовой линии нет
+    /// (это нижний край картинки).
+    fn histogram_level_lines(&self, settings: &RenderSettings) -> Vec<GraticulePrimitive> {
+        let Self::Histogram(rule) = self else {
+            return Vec::new();
+        };
+        let strip_count = match rule.mode() {
+            HistogramMode::Parade => rule.level_projections().len() as u32,
+            HistogramMode::Rgb | HistogramMode::Luma => 1,
+        };
+        let strips = HistogramStrips::new(strip_count, settings.histogram_strip_gap);
+        let mut lines = Vec::new();
+        for strip in 0..strips.count() {
+            let (top, bottom) = strips.normalized_span(strip);
+            for step in 0..=HISTOGRAM_GRID_STEPS {
+                let fraction = step as f32 / HISTOGRAM_GRID_STEPS as f32;
+                let code = (fraction * f32::from(MAX_DISPLAY_CODE)).round() as u16;
+                let Some(hit) = self.first_cell_of(code_gray(code)) else {
+                    continue;
+                };
+                let x = (hit.column as f32 + 0.5) / rule.bins() as f32;
+                let is_midline = step * 2 == HISTOGRAM_GRID_STEPS;
+                lines.push(GraticulePrimitive::Segment {
+                    from: [x, top],
+                    to: [x, bottom],
+                    half_width_px: if is_midline {
+                        settings.histogram_midline_half_width_px
+                    } else {
+                        settings.graticule_half_width_px
+                    },
+                });
+            }
+            if strips.count() > 1 {
+                lines.push(GraticulePrimitive::Segment {
+                    from: [0.0, bottom],
+                    to: [1.0, bottom],
+                    half_width_px: settings.graticule_half_width_px,
+                });
+            }
+        }
+        lines
     }
 
     /// Крест центра, линия тона кожи, кольцо полного размаха и рамки целей.
@@ -113,12 +168,10 @@ impl ResolvedScope {
             if !drawn {
                 continue;
             }
-            let amplitude_code = (amplitude * f32::from(MAX_DISPLAY_CODE)).round() as u16;
             let half_size = box_half_cells / size;
             for color in TARGET_COLORS {
-                let code = color.map(|channel| if channel > 0.0 { amplitude_code } else { 0 });
                 // Цель вне сетки (большое усиление) просто не рисуется: следа в этом месте тоже быть не может.
-                if let Some(hit) = self.first_cell_of(code) {
+                if let Some(hit) = self.target_cell(color, amplitude) {
                     primitives.push(GraticulePrimitive::BoxOutline {
                         centre: [(hit.column as f32 + 0.5) / size, (hit.row as f32 + 0.5) / size],
                         half_size: [half_size, half_size],
@@ -130,6 +183,14 @@ impl ResolvedScope {
         primitives
     }
 
+    /// Ячейка цели цвета `channels` (0/1 на канал, как в [`TARGET_COLORS`]) при амплитуде `amplitude`: туда правило
+    /// кладёт код такого цвета. `None` — цель вне сетки. Единственный путь и для рамок сетки, и для подписей целей.
+    pub(crate) fn target_cell(&self, channels: [f32; 3], amplitude: f32) -> Option<Hit> {
+        let amplitude_code = (amplitude * f32::from(MAX_DISPLAY_CODE)).round() as u16;
+        let code = channels.map(|channel| if channel > 0.0 { amplitude_code } else { 0 });
+        self.first_cell_of(code)
+    }
+
     /// Первая ячейка, куда правило кладёт код (отсчёт в начале картинки ширины 1).
     fn first_cell_of(&self, code: [u16; 3]) -> Option<Hit> {
         let position = SamplePosition {
@@ -139,7 +200,7 @@ impl ResolvedScope {
         hits_of_code(self, position, code).into_iter().next()
     }
 
-    fn vectorscope_geometry(&self) -> Option<crate::vectorscope_geometry::VectorscopeGeometry> {
+    pub(crate) fn vectorscope_geometry(&self) -> Option<crate::vectorscope_geometry::VectorscopeGeometry> {
         match self {
             Self::VectorscopeYCbCr(coloured) => Some(coloured.rule().geometry()),
             Self::VectorscopeOklab(coloured) => Some(coloured.rule().geometry()),

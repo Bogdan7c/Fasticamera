@@ -32,22 +32,19 @@
 //! * перед `Drop` GPU не исполняет команд с объектами приборов.
 
 use ash::vk;
-use gpu_vulkan::compute::{
-    BindingWrite, ComputePipeline, ComputePipelineDesc, DescriptorResource, LocalSize, WorkgroupCount,
-};
+use gpu_vulkan::compute::{BindingWrite, DescriptorResource, LocalSize, WorkgroupCount};
 use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::device_buffer::{DeviceBuffer, record_compute_pass_dependency};
 use gpu_vulkan::gpu_timing::{GpuTimestamps, TimestampStage};
 use gpu_vulkan::host_buffer::{HostBuffer, HostBufferUsage};
 use scope_contract::ScopeImageSize;
 use scope_model::{
-    GraticulePrimitive, GridShape, MAX_GRATICULE_PRIMITIVES, SampleCount, ScopeModelSettings, TraceReference,
-    TraceStyle,
+    GraticulePrimitive, GridShape, MAX_GRATICULE_PRIMITIVES, SampleCount, ScopeModelSettings, TracePaint,
+    TraceReference, TraceStyle,
 };
 
 use super::accumulators::{
-    AccumulatorSet, AccumulatorShader, SAMPLING_PUSH_BYTES, local_size, local_size_specialization, merged_accumulators,
-    standard_accumulators,
+    AccumulatorSet, AccumulatorShader, SAMPLING_PUSH_BYTES, local_size, merged_accumulators, standard_accumulators,
 };
 use super::error::ScopeError;
 use super::frame::{RecordedScope, ScopeFrame, ScopePassCounters, ScopeSlotReport};
@@ -57,6 +54,7 @@ use super::parameter_blocks::{
     accumulate_words_bytes, decode_table_bytes, render_block_bytes,
 };
 use super::picture::{PictureChange, PictureTarget};
+use super::render_pipelines::RenderPipelines;
 use super::resample_pass::{ResampleBindings, ResamplePass};
 use super::rule::AccumulatorId;
 use crate::shaders::blobs;
@@ -68,13 +66,6 @@ const TIMESTAMP_POINTS: [&str; 3] = ["scopes-start", "accumulate-end", "render-e
 const POINT_START: usize = 0;
 const POINT_ACCUMULATE_END: usize = 1;
 const POINT_RENDER_END: usize = 2;
-
-/// Привязки шейдера показа: картинка прибора, параметры показа, промежуточный слой первого прохода (только чтение).
-const RENDER_BINDINGS: [gpu_vulkan::compute::BindingKind; 3] = [
-    gpu_vulkan::compute::BindingKind::StorageImageWrite,
-    gpu_vulkan::compute::BindingKind::ReadOnlyStorageBuffer,
-    gpu_vulkan::compute::BindingKind::ReadOnlyStorageBuffer,
-];
 
 /// Конфигурация [`ColorScopes`].
 #[derive(Debug, Clone, PartialEq)]
@@ -99,7 +90,7 @@ impl Default for ColorScopesConfig {
 pub struct ColorScopes {
     accumulators: AccumulatorSet,
     resample_pass: ResamplePass,
-    render_pipeline: ComputePipeline,
+    render_pipelines: RenderPipelines,
     counters: DeviceBuffer,
     counter_capacity_cells: usize,
     /// Строк сетки, под которые создаётся промежуточный слой каждой картинки (наибольшая сетка настроек ёмкости).
@@ -134,6 +125,8 @@ impl std::fmt::Debug for ColorScopes {
 /// Проверенный и упакованный прибор кадра: всё, что пишется в буферы и привязки.
 struct RulePlan {
     accumulator: AccumulatorId,
+    /// Способ рисования следа: по нему выбирается пайплайн показа.
+    paint: TracePaint,
     grid: GridShape,
     words_bytes: Vec<u8>,
     decode_table_bytes: Option<Vec<u8>>,
@@ -200,17 +193,7 @@ impl ColorScopes {
         shaders.extend_from_slice(extra);
         let accumulators = AccumulatorSet::new(context, &shaders, local_size, config.frame_slots)?;
         let resample_pass = ResamplePass::new(context, local_size, config.frame_slots)?;
-        let render_pipeline = ComputePipeline::new(
-            context,
-            &ComputePipelineDesc {
-                label: "scope-render",
-                spirv: render_spirv,
-                bindings: &RENDER_BINDINGS,
-                push_constant_bytes: 0,
-                specialization: &local_size_specialization(local_size),
-                frame_slots: config.frame_slots,
-            },
-        )?;
+        let render_pipelines = RenderPipelines::new(context, render_spirv, local_size, config.frame_slots)?;
         let counter_capacity_cells = largest_grid_cells(&config.counter_sizing);
         let counters = DeviceBuffer::new(context, counter_capacity_cells as u64 * 4)?;
         let make_buffers = |bytes: usize| {
@@ -221,7 +204,7 @@ impl ColorScopes {
         Ok(Self {
             accumulators,
             resample_pass,
-            render_pipeline,
+            render_pipelines,
             counters,
             counter_capacity_cells,
             resampled_rows_capacity: largest_grid_rows(&config.counter_sizing),
@@ -340,7 +323,8 @@ impl ColorScopes {
         picture
             .storage()
             .record_prepare_for_compute_write_after_any_reader(command_buffer, picture.current_use());
-        self.render_pipeline
+        self.render_pipelines
+            .for_paint(plan.paint)
             .record_dispatch(command_buffer, slot, &[], render_groups)?;
         self.timestamps.record_point(
             command_buffer,
@@ -425,7 +409,9 @@ impl ColorScopes {
                 .check_dispatch_shape(SAMPLING_PUSH_BYTES as usize, accumulate_groups)?;
         }
         self.resample_pass.check_dispatch_shape(resample_groups)?;
-        self.render_pipeline.check_dispatch_shape(0, render_groups)?;
+        self.render_pipelines
+            .for_paint(plan.paint)
+            .check_dispatch_shape(0, render_groups)?;
 
         self.accumulate_parameters[slot].write_bytes(0, &plan.words_bytes)?;
         if let Some(table) = &plan.decode_table_bytes {
@@ -463,7 +449,7 @@ impl ColorScopes {
                 counters: self.counters.read_only_binding(),
             },
         )?;
-        self.render_pipeline.bind(
+        self.render_pipelines.for_paint_mut(plan.paint).bind(
             slot,
             &[
                 BindingWrite {
@@ -505,7 +491,7 @@ impl ColorScopes {
         }
         self.accumulators.release_slot_after_fence(slot)?;
         self.resample_pass.release_slot_after_fence(slot)?;
-        self.render_pipeline.release_slot_after_fence(slot)?;
+        self.render_pipelines.release_slot_after_fence(slot)?;
         Ok(ScopeSlotReport {
             gpu_time: self.timestamps.try_collect(slot)?,
         })
@@ -572,6 +558,7 @@ impl ColorScopes {
         let parameters = rule.accumulate_parameters()?;
         Ok(RulePlan {
             accumulator,
+            paint,
             grid,
             words_bytes: accumulate_words_bytes(grid, rule.scan(), &parameters)?,
             decode_table_bytes: parameters.decode_table.map(decode_table_bytes),
@@ -590,6 +577,7 @@ impl ColorScopes {
                 picture: frame.picture_size,
                 graticule: &graticule,
                 settings: &frame.settings.render,
+                samples,
             }),
         })
     }

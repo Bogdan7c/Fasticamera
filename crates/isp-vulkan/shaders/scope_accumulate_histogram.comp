@@ -1,0 +1,9 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_samplerless_texture_functions : require
+// Накопление счётчиков гистограммы (сессия 14s): прямая запись `atomicAdd` в ячейку уровня. CPU-эталон —
+// `scope_model::histogram_rule`. Продуктовый вариант — `scope_accumulate_histogram_merged.comp` (слияние в subgroup, на ПК
+// 0,16 мс против 0,52 мс у прямой записи и 0,23 мс у серий в регистре); этот шейдер — запасной на устройстве без баллота
+// subgroup (`AccumulatorId::fallback`). Серии в регистре (8 отсчётов на нить) проиграли слиянию и удалены.
+#include "scope_accumulate_common.glsl"
+#include "scope_accumulate_histogram_rule.glsl"

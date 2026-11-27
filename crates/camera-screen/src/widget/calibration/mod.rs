@@ -31,6 +31,7 @@ mod knobs_column;
 mod menu;
 mod paint;
 mod reset_disc;
+mod scope_labels_draw;
 mod scope_panel;
 mod scope_strip;
 mod segments;

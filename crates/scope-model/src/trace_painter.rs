@@ -28,7 +28,7 @@ pub(crate) struct TracePixel {
 
 impl TracePixel {
     /// Нет следа.
-    const ABSENT: Self = Self {
+    pub(crate) const ABSENT: Self = Self {
         color: [0.0; 3],
         alpha: 0.0,
     };
@@ -79,6 +79,21 @@ impl<'a> TracePainter<'a> {
                 }
             }
             TraceStyle::PlanesOverlaid { primaries } => self.overlaid_pixel(primaries, x, y),
+            // Столбики гистограммы рисует `HistogramBars` (плотности по вертикали у них нет); сюда они не попадают.
+            TraceStyle::HistogramOverlaid { .. } | TraceStyle::HistogramSections { .. } => TracePixel::ABSENT,
+            TraceStyle::Cie(cie) => {
+                let hits = self.density.hits(x, y, 0);
+                if hits <= 0.0 {
+                    return TracePixel::ABSENT;
+                }
+                // Центр пикселя в долях картинки (y вниз): по ним цвет цветности и окно диаграммы.
+                let u = (x as f32 + 0.5) / self.size.width() as f32;
+                let v = (y as f32 + 0.5) / self.size.height() as f32;
+                TracePixel {
+                    color: cie.trace_colour_at(u, v),
+                    alpha: self.reference.intensity(hits) * self.trace_opacity,
+                }
+            }
             TraceStyle::ColorByPosition { palette } => {
                 let hits = self.density.hits(x, y, 0);
                 if hits <= 0.0 {

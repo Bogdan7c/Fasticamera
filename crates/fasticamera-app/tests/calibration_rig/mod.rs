@@ -22,6 +22,7 @@ use fasticamera::look_facts::{BandSwatchStyle, LookFactsCatalog, LookFactsSource
 use fasticamera::look_service::{LookHandle, LookPersistence, LookService, LookStartup};
 use fasticamera::look_startup::catalog_environment;
 use fasticamera::look_white_stops::LookWhiteStopsWatcher;
+use fasticamera::scope_labels::ScopeLabelsWatcher;
 use fasticamera::text_effects::TextResultToScreen;
 use fasticamera::text_input_broker::TextInputBroker;
 use fasticamera::viewfinder_control::{ControlDelivery, RenderAdjustment, RenderControl};
@@ -31,7 +32,7 @@ use render_loop::backend::DisplayBackend;
 use render_loop::config::{DisplayColorConfig, RenderLoopConfig, ToneBaseChoice, ViewfinderToneConfig};
 use render_loop::ui_overlay::{UiOverlayCommand, UiOverlayOutcome};
 use render_loop::viewfinder::{ViewfinderCommand, ViewfinderCommandOutcome};
-use scope_contract::{ScopeIntent, ScopeRequest};
+use scope_contract::{ScopeIntent, ScopeLabelsBoard, ScopeRequest};
 use scope_model::{HorizontalOrder, ResolvedScope, ScopeCounters, ScopeRule, ShownCodes, accumulate};
 use shell_contract::clock::MonotonicNanos;
 use shell_contract::commands::{CommandOutcome, FrameRate, FrameRateOutcome, ScreenWake, ShellCommands};
@@ -270,7 +271,8 @@ impl CalibrationRig {
         let inbox = Arc::new(RecordingInbox::default());
         // Доска упоров теплоты и оттенка: в продукте в неё пишет поток рендера, здесь — тест (`look_white_stops`).
         let look_white_stops = LookWhiteStopsBoard::new();
-        let (source, sender, board) = Self::new_screen(&library, &broker, &inbox, &look_white_stops);
+        let scope_labels = bench.scope_labels.clone();
+        let (source, sender, board) = Self::new_screen(&library, &broker, &inbox, (&look_white_stops, &scope_labels));
         let rig = Self {
             look_white_stops,
             bench,
@@ -298,7 +300,7 @@ impl CalibrationRig {
         library: &LookHandle,
         broker: &TextInputBroker,
         inbox: &Arc<RecordingInbox>,
-        look_white_stops: &LookWhiteStopsBoard,
+        (look_white_stops, scope_labels): (&LookWhiteStopsBoard, &ScopeLabelsBoard),
     ) -> (CameraScreenSource, ScreenInputSender, Arc<ScreenBoard>) {
         let (sender, receiver) = screen_input_channel(64);
         let board = Arc::new(ScreenBoard::default());
@@ -322,6 +324,8 @@ impl CalibrationRig {
         .expect("экран");
         let source = CameraScreenSource::new(ScreenSourceParts {
             look_white_stops: LookWhiteStopsWatcher::new(look_white_stops.clone()),
+            // Подписи прибора читаются с той же доски, в которую пишет рендер стенда (решения 326, 327).
+            scope_labels: ScopeLabelsWatcher::new(scope_labels.clone()),
             screen,
             input: receiver,
             facts: Box::new(LiveCamera),
@@ -348,8 +352,12 @@ impl CalibrationRig {
                 .apply_ui_overlay_command(UiOverlayCommand::Install(Box::new(EmptyUiSource))),
             UiOverlayOutcome::Applied
         );
-        let (source, sender, board) =
-            Self::new_screen(&self.library, &self.broker, &self.inbox, &self.look_white_stops);
+        let (source, sender, board) = Self::new_screen(
+            &self.library,
+            &self.broker,
+            &self.inbox,
+            (&self.look_white_stops, &self.bench.scope_labels),
+        );
         self.source = source;
         self.sender = sender;
         self.board = board;
@@ -444,6 +452,25 @@ impl CalibrationRig {
                     )
                 })
                 .count()
+        })
+    }
+
+    /// Левые концы базовых линий всех нарисованных на последнем кадре экрана подписей `text` ролью Caption (px кадра):
+    /// так стенд видит буквы целей вектороскопа (решения 326, 327).
+    pub fn drawn_caption_origins(&self, text: &str) -> Vec<(f32, f32)> {
+        let tokens = UiKitTokens::default();
+        let expected = LabelPainter::new(&tokens.typography, PxPerPt::new(1080.0 / 440.0).expect("масштаб"))
+            .layout(text, TextRoleKind::Caption)
+            .expect("раскладка подписи");
+        self.last_ui.as_ref().map_or_else(Vec::new, |list| {
+            list.leaf_items()
+                .filter_map(|item| match item {
+                    DrawItem::Text(drawn) if drawn.run == expected && drawn.opacity.get() > 0.05 => {
+                        Some((drawn.transform.tx, drawn.transform.ty))
+                    }
+                    _ => None,
+                })
+                .collect()
         })
     }
 

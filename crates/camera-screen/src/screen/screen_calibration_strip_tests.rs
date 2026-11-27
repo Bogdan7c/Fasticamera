@@ -45,17 +45,19 @@ fn scope_requests(rig: &mut Rig) -> Vec<scope_contract::ScopeRequest> {
 fn tapping_a_page_dot_selects_that_scope_and_asks_the_renderer_for_it_in_every_orientation() {
     for orientation in ORIENTATIONS {
         let mut rig = calibrating(look_facts(), orientation);
-        assert_eq!(scope_kind(&rig), ScopeKind::Waveform);
+        assert_eq!(
+            scope_kind(&rig),
+            ScopeKind::Histogram,
+            "раздел открывается на HISTOGRAM"
+        );
         for (index, expected) in ScopeKind::ALL.into_iter().enumerate().rev() {
             rig.effects();
             rig.tap(center(&rig, "calib_scope_page_dot", index));
             rig.run(200);
             assert_eq!(scope_kind(&rig), expected, "{orientation:?}: точка {index}");
-            if index != 0 || scope_kind(&rig) != ScopeKind::Waveform {
-                let requests = scope_requests(&mut rig);
-                assert_eq!(requests.len(), 1, "{orientation:?}: рендеру ушёл один запрос");
-                assert_eq!(requests[0].kind, expected);
-            }
+            let requests = scope_requests(&mut rig);
+            assert_eq!(requests.len(), 1, "{orientation:?}: рендеру ушёл один запрос");
+            assert_eq!(requests[0].kind, expected);
         }
         // Тап по уже выбранной точке ничего не просит заново.
         rig.effects();
@@ -270,6 +272,8 @@ fn the_waveform_and_parade_pages_label_the_levels_and_the_vectorscope_does_not()
 fn level_numbers_stand_left_of_the_picture_each_on_the_height_of_its_own_level_line() {
     for orientation in [DeviceOrientation::Portrait, DeviceOrientation::LandscapeLeft] {
         let mut rig = calibrating(look_facts(), orientation);
+        rig.act(ScreenAction::ScopeKindSelected(ScopeKind::Waveform));
+        rig.run(300);
         let layout = *rig.screen.state().calibration().layout().expect("раскладка");
         let list = rig.frame().clone();
         let picture = layout.scope_image_rect_for(ScopeKind::Waveform);
@@ -556,29 +560,33 @@ fn a_25_pt_swipe_flips_one_page_in_its_direction_and_a_15_pt_one_does_nothing() 
         drag_eye(&mut rig, start, Vector::new(-15.0, 0.0));
         assert_eq!(
             scope_kind(&rig),
-            ScopeKind::Waveform,
+            ScopeKind::Histogram,
             "{orientation:?}: 15 pt — не свайп"
         );
         drag_eye(&mut rig, start, Vector::new(-25.0, 0.0));
         assert_eq!(
             scope_kind(&rig),
-            ScopeKind::LumaWaveform,
+            ScopeKind::Waveform,
             "{orientation:?}: 25 pt влево — следующая страница"
         );
+        drag_eye(&mut rig, start, Vector::new(-25.0, 0.0));
+        assert_eq!(scope_kind(&rig), ScopeKind::LumaWaveform);
         drag_eye(&mut rig, start, Vector::new(-25.0, 0.0));
         assert_eq!(scope_kind(&rig), ScopeKind::RgbParade);
         drag_eye(&mut rig, start, Vector::new(-25.0, 0.0));
         assert_eq!(scope_kind(&rig), ScopeKind::Vectorscope);
+        drag_eye(&mut rig, start, Vector::new(-25.0, 0.0));
+        assert_eq!(scope_kind(&rig), ScopeKind::Cie);
         drag_eye(&mut rig, start, Vector::new(-60.0, 0.0));
         assert_eq!(
             scope_kind(&rig),
-            ScopeKind::Vectorscope,
+            ScopeKind::Cie,
             "{orientation:?}: за последней страницей листать некуда"
         );
         drag_eye(&mut rig, start, Vector::new(25.0, 0.0));
         assert_eq!(
             scope_kind(&rig),
-            ScopeKind::RgbParade,
+            ScopeKind::Vectorscope,
             "{orientation:?}: вправо — назад"
         );
     }
@@ -592,7 +600,7 @@ fn a_swipe_started_on_the_strip_flips_pages_too() {
     let strip = layout.scope_strip();
     let start = layout.eye_point_on_surface(Point::new(strip.min_x() + 110.0, strip.center().y));
     drag_eye(&mut rig, start, Vector::new(-40.0, 0.0));
-    assert_eq!(scope_kind(&rig), ScopeKind::LumaWaveform);
+    assert_eq!(scope_kind(&rig), ScopeKind::Waveform);
 }
 
 /// Быстрый мазок глазами на `eye` от `from`: палец отпускается на ходу, со скоростью (в отличие от `drag_eye`, который
@@ -656,7 +664,7 @@ fn a_touch_in_the_gap_between_the_scope_and_the_capsule_flips_neither_the_scope_
                 }
                 assert_eq!(
                     scope_kind(&rig),
-                    ScopeKind::Waveform,
+                    ScopeKind::Histogram,
                     "{orientation:?} x={x}: прибор не листнулся"
                 );
                 assert_eq!(

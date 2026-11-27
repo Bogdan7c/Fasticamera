@@ -1,7 +1,7 @@
 //! Конфиг раздела калибровки: флаг режима, раскладка зон (`layout_config`), стандарт вектороскопа по умолчанию, предел
 //! картинки прибора.
 
-use scope_contract::{MAX_SCOPE_IMAGE_SIDE_PX, VectorscopeAxes};
+use scope_contract::{CieDiagram, HistogramMode, MAX_SCOPE_IMAGE_SIDE_PX, ScopeKind, VectorscopeAxes};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -17,6 +17,12 @@ pub struct CalibrationConfig {
     pub enabled: bool,
     /// Стандарт осей вектороскопа при запуске; меняется переключателем в полоске прибора.
     pub vectorscope_axes: VectorscopeAxes,
+    /// Страница прибора, на которой раздел открывается (решение 335); дальше выбирается свайпом и точками страниц.
+    pub opening_scope_page: ScopeKind,
+    /// Режим гистограммы при запуске (решение 331); меняется переключателем RGB | PARADE | Y в полоске прибора.
+    pub histogram_mode: HistogramMode,
+    /// Шкала диаграммы CIE при запуске (решение 332); меняется переключателем xy | u'v' в полоске прибора.
+    pub cie_diagram: CieDiagram,
     /// Предел стороны картинки прибора в пикселях (рычаг бюджета; не больше предела словаря
     /// [`MAX_SCOPE_IMAGE_SIDE_PX`]). Зона больше предела просит картинку по пределу.
     pub max_scope_image_side_px: u32,
@@ -32,6 +38,10 @@ impl Default for CalibrationConfig {
             enabled: true,
             // Y'CbCr BT.709 — стандарт видеомонтажа (решение 185); OKLab — выбор в меню.
             vectorscope_axes: VectorscopeAxes::YCbCrBt709,
+            // Гистограмма первой — привычка фотографа (решения 334, 335).
+            opening_scope_page: ScopeKind::Histogram,
+            histogram_mode: HistogramMode::Rgb,
+            cie_diagram: CieDiagram::Xy1931,
             max_scope_image_side_px: MAX_SCOPE_IMAGE_SIDE_PX,
             layout: CalibrationLayoutConfig::default(),
             widgets: CalibrationWidgetsConfig::default(),

@@ -9,11 +9,13 @@
 use camera_contract::ids::CameraTarget;
 use camera_contract::stream::{InvalidFrameRate, StreamMode, TargetFrameRate};
 use isp_vulkan::viewfinder::IspStage;
+use scope_contract::ScopeKind;
 use serde::{Deserialize, Serialize};
 use shell_contract::thermal::ThermalStatus;
 
 use crate::camera_scenario_config::{LensRoleSetting, ReadoutSetting, ResolvedStep};
 use crate::screen_scenario_config::ScreenPoint;
+use crate::stage_budget_scope_page_config::{ScopePageSwipes, validate_scope_page};
 use crate::stage_budget_surface_config::{StageBudgetSurface, validate_rows_for_surface};
 use crate::viewfinder_autostart::ViewfinderModeConfig;
 use crate::viewfinder_latency_profile::{
@@ -306,6 +308,11 @@ pub struct StageBudgetConfig {
     /// Где мерить (16a): голый видоискатель (экран камеры снят), экран PHOTO или экран CALIBRATE. Intent-параметр
     /// `surface`.
     pub surface: StageBudgetSurface,
+    /// Какую страницу цветового прибора меряет таблица на `calibrate_screen` (14s); `None` — ту, на которой раздел
+    /// открылся. Intent-параметр `scope_page`. Задан на другом месте — ошибка конфига.
+    pub scope_page: Option<ScopeKind>,
+    /// Свайпы листания страниц прибора (нужны, когда задан `scope_page`).
+    pub scope_page_swipes: ScopePageSwipes,
     /// Сколько ждать, пока экран выйдет на место замера (виден живой экран, а для CALIBRATE — раздел открыт и приборы
     /// считают), мс. `[estimate]` 20 000: свайп драйвера (запуск `input`, ~1 с) + создание объектов приборов.
     pub surface_ready_timeout_ms: u64,
@@ -330,6 +337,8 @@ impl Default for StageBudgetConfig {
         Self {
             rows: StageBudgetRowSetting::default_rows(),
             surface: StageBudgetSurface::default(),
+            scope_page: None,
+            scope_page_swipes: ScopePageSwipes::default(),
             surface_ready_timeout_ms: 20_000,
             display_hold_point: ScreenPoint::new(0.03, 0.85),
             display_refresh_tolerance_hz: 6.0,
@@ -473,6 +482,10 @@ pub enum ViewfinderScenarioConfigError {
         surface: &'static str,
         allowed: &'static str,
     },
+    #[error(
+        "viewfinder.stage_budget.scope_page: страницы прибора есть только на месте calibrate_screen, а не на {surface}"
+    )]
+    ScopePageNeedsCalibrateScreen { surface: &'static str },
     #[error("viewfinder.{field} = ({x}; {y}): доли экрана должны лежать в 0…1")]
     ScreenPointOutOfRange { field: &'static str, x: f64, y: f64 },
     #[error("{0}")]
@@ -599,6 +612,11 @@ impl ViewfinderScenarioConfig {
         }
         validate_rows(&self.stage_budget.rows)?;
         validate_rows_for_surface(&self.stage_budget.rows, self.stage_budget.surface)?;
+        validate_scope_page(
+            self.stage_budget.surface,
+            self.stage_budget.scope_page,
+            &self.stage_budget.scope_page_swipes,
+        )?;
         self.validate_stage_budget_options()?;
         self.product_step()?;
         self.headroom_step()?;

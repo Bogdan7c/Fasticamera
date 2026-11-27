@@ -1,4 +1,4 @@
-//! Эталон цветовых приборов Fasticamera на CPU: waveform, RGB parade, vectorscope (решения 183, 188–190).
+//! Эталон цветовых приборов Fasticamera на CPU: гистограмма, waveform, RGB parade, vectorscope (решения 183, 188–190).
 //!
 //! Прибор = форма сетки счётчиков + правило попадания ([`ScopeRule`]) + правило показа ([`render`]).
 //! Новый прибор — новая реализация [`ScopeRule`] и вариант [`ResolvedScope`]; [`accumulate`], счётчики и
@@ -27,11 +27,24 @@
 //! Целые коды 0…1023 показанной картинки ([`ShownCodes`]); округление значений экрана в коды —
 //! единственное правило [`quantize_display_value`], общее с GPU.
 
+mod cie_cell;
+mod cie_chart;
+mod cie_cmf_table;
+mod cie_graticule;
+pub mod cie_locus;
+pub mod cie_rule;
+pub mod cie_settings;
+pub mod cie_style;
 pub mod codes;
 pub mod cube_root;
 pub mod graticule;
 mod graticule_layout;
 pub mod grid;
+mod histogram_bars;
+pub mod histogram_height;
+mod histogram_paint;
+pub mod histogram_rule;
+pub mod histogram_strips;
 pub mod oklab_rule;
 pub mod position_palette;
 pub mod projection;
@@ -42,6 +55,7 @@ pub mod rgb_waveform_palette;
 pub mod rule;
 pub mod sample_count;
 pub mod sampling;
+mod scope_labels;
 pub mod settings;
 pub mod trace_density;
 pub mod trace_paint;
@@ -54,9 +68,19 @@ pub mod vectorscope_geometry;
 mod vectorscope_palette;
 pub mod vectorscope_ycbcr;
 
+pub use cie_chart::{ChartProjection, ChartWindow, chart_point, xy_from_chart};
+pub use cie_graticule::{MIN_LABEL_SEPARATION, gamut_primaries};
+pub use cie_rule::{CieRows, CieRule, CieRuleError};
+pub use cie_settings::{
+    CieLocusFill, CieMark, CieRenderSettings, CieSettings, CieSettingsError, CieTraceColour, MAX_PLANCKIAN_SAMPLES,
+};
+pub use cie_style::{CIE_WHITE, CieTraceStyle, MAX_LOCUS_EDGES};
 pub use codes::{HorizontalOrder, MAX_DISPLAY_CODE, ShownCodes, ShownCodesError, quantize_display_value};
 pub use graticule::{GraticulePrimitive, MAX_GRATICULE_PRIMITIVES};
 pub use grid::{GridError, GridShape, ScopeCounters};
+pub use histogram_height::{HistogramCurve, HistogramHeight, HistogramReference, MAX_MEAN_MULTIPLE};
+pub use histogram_rule::{HistogramRule, HistogramRuleError};
+pub use histogram_strips::{HistogramLook, HistogramStrips, StripPosition};
 pub use position_palette::{POSITION_PALETTE_ANGLES, PositionPalette, PositionPaletteEntry};
 pub use render::{RenderError, ScopePicture, render};
 pub use render_settings::{FullDensity, FullDensityError, RenderSettings, RenderSettingsError, VectorscopeTargets};
@@ -65,7 +89,7 @@ pub use rgb_waveform_palette::RgbWaveformPalette;
 pub use rule::{AccumulateError, Hit, SamplePosition, ScopeRule, accumulate, hits_of_code};
 pub use sample_count::SampleCount;
 pub use sampling::{SampleSteps, SampleStride, SampleStrideError};
-pub use settings::{ScopeModelSettings, ScopeSettingsError};
+pub use settings::{MIN_HISTOGRAM_BINS, ScopeModelSettings, ScopeSettingsError};
 pub use trace_density::{PictureDensity, Section, slots_per_pixel};
 pub use trace_paint::TracePaint;
 pub use trace_reference::TraceReference;

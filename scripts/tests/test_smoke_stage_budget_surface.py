@@ -380,6 +380,25 @@ class DeviceSmokeSurfaceFlagsTest(unittest.TestCase):
                 completed = self.run_smoke(scenario, [], extra_arguments=arguments)
                 self.assertEqual(completed.returncode, 64, completed.stderr)
 
+    def test_every_scope_page_including_cie_reaches_the_intent_and_a_wrong_page_is_a_usage_error(self) -> None:
+        # Страницы словаря приборов; раздел с 14s открывается на histogram, поэтому страница в intent нужна и ей.
+        for page in ("histogram", "waveform", "luma_waveform", "rgb_parade", "vectorscope", "cie"):
+            with self.subTest(page=page):
+                self.run_smoke(
+                    SCENARIO,
+                    [result_line(self.OK)],
+                    extra_arguments=("--surface", "calibrate_screen", "--scope-page", page),
+                )
+                # Журнал вызовов общий на все подтесты: смотрим последний запуск, а не первый.
+                last_start = [call for call in self.adb_calls() if "am start" in call][-1]
+                self.assertIn(f"-e scope_page {page}", last_start)
+        for wrong in ("cie2", "histogram;ls", "CIE"):
+            with self.subTest(wrong=wrong):
+                completed = self.run_smoke(
+                    SCENARIO, [], extra_arguments=("--surface", "calibrate_screen", "--scope-page", wrong)
+                )
+                self.assertEqual(completed.returncode, 64, completed.stderr)
+
     def test_unchanged_frame_flag_reaches_the_intent_and_wrong_values_are_usage_errors(self) -> None:
         for value in ("skip", "always"):
             with self.subTest(value=value):

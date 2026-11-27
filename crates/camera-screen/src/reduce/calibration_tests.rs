@@ -25,6 +25,8 @@ fn scope_request(screen: &Screen, kind: ScopeKind, axes: VectorscopeAxes) -> Sco
         kind,
         vectorscope_axes: axes,
         vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
+        cie_diagram: scope_contract::CieDiagram::default(),
+        histogram_mode: scope_contract::HistogramMode::Rgb,
         scan: layout.scope_scan(),
         image_size: layout.scope_image_size_for(kind),
     }
@@ -409,7 +411,7 @@ fn the_config_sets_the_default_vectorscope_axes() {
     let screen = Screen::unprepared(config);
 
     assert_eq!(screen.state.calibration().vectorscope_axes(), VectorscopeAxes::OklabAb);
-    assert_eq!(screen.state.calibration().scope_kind(), ScopeKind::Waveform);
+    assert_eq!(screen.state.calibration().scope_kind(), ScopeKind::Histogram);
 }
 
 // ---------------------------------------------------------------- «чистяк»

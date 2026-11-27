@@ -22,7 +22,7 @@ pub(super) fn create_camera_painter(
     info: &gpu_vulkan::swapchain::DisplayTargetInfo,
     camera: CameraAttach<'_>,
 ) -> Result<Painter, AttachError> {
-    let pipelines = CameraPipelines::new(
+    let mut pipelines = CameraPipelines::new(
         context,
         info,
         &config.viewfinder.isp,
@@ -35,6 +35,8 @@ pub(super) fn create_camera_painter(
             reason: error.to_string(),
         })
     })?;
+    // Подписи прибора идут на доску в связке белой (решения 326, 327): та же дорога до сессии показа, что у упоров.
+    pipelines.attach_scope_labels_board(camera.white_balance.links.scope_labels.clone());
     let stats = camera
         .stats
         .take()

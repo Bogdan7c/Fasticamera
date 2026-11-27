@@ -91,6 +91,7 @@ mod screen_steps;
 mod screen_white_check;
 mod stage_budget_apply;
 mod stage_budget_look;
+mod stage_budget_scope_page;
 mod stage_budget_states;
 mod stage_budget_surface;
 mod stage_budget_surface_report;

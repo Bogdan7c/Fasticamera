@@ -41,6 +41,7 @@ use crate::camera_screen_input::{ScreenInput, ScreenInputReceiver, ScreenInputSt
 use crate::camera_screen_white_view::WhiteView;
 use crate::look_facts::{LookFactsChange, LookFactsSource};
 use crate::look_white_stops::LookWhiteStopsWatcher;
+use crate::scope_labels::ScopeLabelsWatcher;
 
 /// Имя источника в диагностике рендера (`UiOverlayDiagnostics::active_source`).
 pub const CAMERA_SCREEN_SOURCE_NAME: &str = "camera_screen";
@@ -228,6 +229,8 @@ pub struct ScreenReport {
     pub look_facts_sent: u64,
     /// Сколько раз экрану отправлены изменившиеся упоры ручек теплоты и оттенка.
     pub look_white_stops_sent: u64,
+    /// Сколько раз экрану отправлены изменившиеся подписи прибора (решения 326, 327).
+    pub scope_labels_sent: u64,
     /// Сколько раз факты о виде пересобирались (тихие кадры без правок его не двигают).
     pub look_facts_rebuilds: u64,
     /// Счётчики источника фактов (сборка паспорта потока, потоки без паспорта).
@@ -269,6 +272,8 @@ pub struct ScreenSourceParts {
     pub look_facts: Option<LookFactsSource>,
     /// Наблюдатель за упорами ручек теплоты и оттенка (решения 288, 293); `silent()` — упоров не будет.
     pub look_white_stops: LookWhiteStopsWatcher,
+    /// Наблюдатель за подписями прибора (решения 326, 327); `silent()` — подписей не будет.
+    pub scope_labels: ScopeLabelsWatcher,
     pub gravity: GravityLink,
     pub executor: EffectExecutor,
     pub board: Arc<ScreenBoard>,
@@ -284,6 +289,7 @@ pub struct CameraScreenSource {
     facts_watcher: CameraFactsWatcher,
     look_facts: Option<LookFactsSource>,
     look_white_stops: LookWhiteStopsWatcher,
+    scope_labels: ScopeLabelsWatcher,
     gravity: GravityLink,
     executor: EffectExecutor,
     board: Arc<ScreenBoard>,
@@ -295,6 +301,8 @@ pub struct CameraScreenSource {
     startup_problem_forwarded: bool,
     /// Сколько раз экрану отправлены изменившиеся упоры ручек теплоты и оттенка.
     look_white_stops_sent: u64,
+    /// Сколько раз экрану отправлены изменившиеся подписи прибора.
+    scope_labels_sent: u64,
     gravity_samples_sent: u64,
     report_min_interval: Duration,
     /// Экран ещё не прошёл первый кадр после установки: на нём исполнитель приводит показ вида к рецепту библиотеки
@@ -331,6 +339,7 @@ impl CameraScreenSource {
             facts_watcher: CameraFactsWatcher::new(),
             look_facts: parts.look_facts,
             look_white_stops: parts.look_white_stops,
+            scope_labels: parts.scope_labels,
             gravity: parts.gravity,
             executor: parts.executor,
             board: parts.board,
@@ -338,6 +347,7 @@ impl CameraScreenSource {
             look_facts_sent: 0,
             startup_problem_forwarded: false,
             look_white_stops_sent: 0,
+            scope_labels_sent: 0,
             gravity_samples_sent: 0,
             report_min_interval: parts.report_min_interval,
             awaiting_first_frame: true,
@@ -438,6 +448,16 @@ impl CameraScreenSource {
         true
     }
 
+    /// Шаг 2г: подписи прибора (решения 326, 327) — только если рендер сообщил новые.
+    fn sync_scope_labels(&mut self) -> bool {
+        let Some(labels) = self.scope_labels.changed() else {
+            return false;
+        };
+        self.scope_labels_sent += 1;
+        self.screen.handle_action(ScreenAction::ScopeLabelsChanged(labels));
+        true
+    }
+
     /// Шаг 3: гравитация с прореживанием.
     fn feed_gravity(&mut self) {
         let GravityLink::Active(feed) = &mut self.gravity else {
@@ -514,6 +534,7 @@ impl CameraScreenSource {
             facts_sent: self.facts_sent,
             look_facts_sent: self.look_facts_sent,
             look_white_stops_sent: self.look_white_stops_sent,
+            scope_labels_sent: self.scope_labels_sent,
             look_facts_rebuilds: self.look_facts.as_ref().map_or(0, LookFactsSource::rebuilds),
             facts: self.facts.diagnostics(),
             gravity_samples_sent: self.gravity_samples_sent,
@@ -547,6 +568,7 @@ impl UiFrameSource for CameraScreenSource {
         activity.facts_changed = self.sync_camera_facts();
         activity.facts_changed |= self.sync_look_facts();
         activity.facts_changed |= self.sync_look_white_stops();
+        activity.facts_changed |= self.sync_scope_labels();
         self.feed_gravity();
         let frame = self.screen.produce_frame(request);
         activity.picture_shown = self.log_picture_if_just_shown();

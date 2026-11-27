@@ -2,11 +2,12 @@
 //! specialization-констант размера группы: тест читает ИСХОДНИКИ шейдеров и сверяет каждое число с константой
 //! Rust, чтобы правка одной стороны без другой ломала сборку тестов, а не читала память за границей буфера.
 
-use scope_model::{MAX_GRATICULE_PRIMITIVES, POSITION_PALETTE_ANGLES};
+use scope_model::{MAX_GRATICULE_PRIMITIVES, MAX_LOCUS_EDGES, POSITION_PALETTE_ANGLES};
 
-use super::accumulators::{INTEGER_RUNS_ROWS_PER_THREAD, LOCAL_SIZE_X_ID, LOCAL_SIZE_Y_ID};
+use super::accumulators::{INTEGER_RUNS_ROWS_PER_THREAD, LOCAL_HEIGHT, LOCAL_SIZE_X_ID, LOCAL_SIZE_Y_ID, LOCAL_WIDTH};
 use super::parameter_blocks::{
-    AXIS_FIRST_SECTION, AXIS_FULL_WIDTH, AXIS_VERTICAL, PAINT_CODE_COLOR_BY_POSITION, PAINT_CODE_PLANE_SECTIONS,
+    AXIS_FIRST_SECTION, AXIS_FULL_WIDTH, AXIS_VERTICAL, PAINT_CODE_CIE, PAINT_CODE_COLOR_BY_POSITION,
+    PAINT_CODE_HISTOGRAM_OVERLAID, PAINT_CODE_HISTOGRAM_SECTIONS, PAINT_CODE_PLANE_SECTIONS,
     PAINT_CODE_PLANES_OVERLAID, RESAMPLE_AXES, SCAN_CODE_ROTATED_CLOCKWISE, SCAN_CODE_ROTATED_COUNTER_CLOCKWISE,
     SCAN_CODE_UPRIGHT, SCAN_CODE_UPSIDE_DOWN,
 };
@@ -57,8 +58,23 @@ fn parameter_buffer_array_lengths_in_shaders_equal_the_rust_constants() {
             "в scope_render_parameters.glsl нет `{declaration}`"
         );
     }
+    // Рёбра локуса диаграммы CIE: блок шейдера вмещает столько же рёбер, сколько строит эталон.
+    assert_eq!(array_length(RENDER_PARAMETERS, "cie_locus_edges"), MAX_LOCUS_EDGES);
     // Список отобранных примитивов в shared-памяти вмещает все примитивы сетки.
     assert_eq!(array_length(RENDER, "kept_primitive_index"), MAX_GRATICULE_PRIMITIVES);
+}
+
+#[test]
+fn the_histogram_peak_reduction_covers_exactly_the_threads_of_a_workgroup() {
+    // Редукция самого высокого столбика (shared-массив размера литералом) обязана видеть все нити группы Rust.
+    let threads = (LOCAL_WIDTH * LOCAL_HEIGHT) as usize;
+    assert_eq!(array_length(RENDER, "group_peak_density"), threads);
+    assert!(
+        RENDER.contains(&format!("const uint HISTOGRAM_GROUP_THREADS = {threads}u;")),
+        "в scope_render_body.glsl нет HISTOGRAM_GROUP_THREADS = {threads}u"
+    );
+    // Дерево редукции — степени двойки: число нитей обязано быть ею.
+    assert!(threads.is_power_of_two());
 }
 
 #[test]
@@ -119,6 +135,9 @@ fn paint_codes_and_palette_size_in_the_render_shader_equal_the_rust_constants() 
         ("PAINT_PLANE_SECTIONS", PAINT_CODE_PLANE_SECTIONS),
         ("PAINT_PLANES_OVERLAID", PAINT_CODE_PLANES_OVERLAID),
         ("PAINT_COLOR_BY_POSITION", PAINT_CODE_COLOR_BY_POSITION),
+        ("PAINT_HISTOGRAM_OVERLAID", PAINT_CODE_HISTOGRAM_OVERLAID),
+        ("PAINT_HISTOGRAM_SECTIONS", PAINT_CODE_HISTOGRAM_SECTIONS),
+        ("PAINT_CIE", PAINT_CODE_CIE),
     ] {
         let declaration = format!("const float {name} = {code:.1};");
         assert!(

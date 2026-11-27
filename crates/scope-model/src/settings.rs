@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::cie_settings::{CieSettings, CieSettingsError};
 use crate::grid::GridError;
 use crate::render_settings::{RenderSettings, RenderSettingsError};
 use crate::sampling::SampleStride;
@@ -28,6 +29,9 @@ pub fn ycbcr_gain_for_edge_chroma(edge_chroma: f32) -> f32 {
     0.5 / edge_chroma
 }
 
+/// Наименьшее число уровней гистограммы: меньше двух столбиков гистограммой не назвать.
+pub const MIN_HISTOGRAM_BINS: u32 = 2;
+
 /// Ошибка настроек модели приборов: у каждой причины свой вариант.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum ScopeSettingsError {
@@ -42,6 +46,12 @@ pub enum ScopeSettingsError {
     TraceLevelsOutOfRange {
         /// Недопустимое число.
         levels: u32,
+    },
+    /// Число уровней гистограммы вне `MIN_HISTOGRAM_BINS..=MAX_LEVELS`.
+    #[error("уровней гистограммы {bins} вне {MIN_HISTOGRAM_BINS}..={MAX_LEVELS}")]
+    HistogramBinsOutOfRange {
+        /// Недопустимое число.
+        bins: u32,
     },
     /// Сторона вектороскопа вне допустимых.
     #[error("сторона вектороскопа {size} вне {MIN_VECTORSCOPE_SIZE}..={MAX_VECTORSCOPE_SIZE}")]
@@ -61,6 +71,9 @@ pub enum ScopeSettingsError {
         /// Недопустимое значение.
         range: f32,
     },
+    /// Настройки диаграммы CIE недопустимы.
+    #[error(transparent)]
+    Cie(#[from] CieSettingsError),
     /// Форма сетки превышает бюджет (число ячеек).
     #[error(transparent)]
     GridBudget(#[from] GridError),
@@ -97,9 +110,19 @@ pub struct ScopeModelSettings {
     /// Прореживание входа waveform, parade и Luma ПОПЕРЁК взгляда. 2 — каждая вторая строка (решение 329: цена
     /// прибора в разделе): столбец получает вдвое меньше попаданий, но поровну, яркость следа — от плотности, вид тот же.
     pub trace_across_eye_stride: SampleStride,
+    /// Уровней гистограммы (столбцов сетки счётчиков). `[estimate]` 512: по уровню на 2 кода, как у waveform
+    /// (`trace_levels`); на картинке 1011 px это два пикселя на уровень, ступенек не видно.
+    pub histogram_bins: u32,
+    /// Прореживание входа гистограммы по обеим осям (сессия 14s). 2 — каждый второй пиксель: гистограмме нужна доля,
+    /// а не каждый пиксель (все пиксели кадра ложатся в 512 уровней, столбики — сотни тысяч отсчётов даже при шаге 2),
+    /// а накопление вчетверо дешевле. Как у вектороскопа (`vectorscope_sample_stride`): прибор собирает весь кадр в
+    /// один график.
+    pub histogram_sample_stride: SampleStride,
     /// Прореживание входа вектороскопа. 2 — каждый второй пиксель по обеим осям (решение 328): вектороскоп собирает
     /// весь кадр в один круг, четверти отсчётов ему хватает (так было до 14r), а накопление вчетверо дешевле.
     pub vectorscope_sample_stride: SampleStride,
+    /// Счёт диаграммы CIE (сессия 14s).
+    pub cie: CieSettings,
     /// Правило показа.
     pub render: RenderSettings,
 }
@@ -110,11 +133,14 @@ impl Default for ScopeModelSettings {
             trace_max_columns: 2048,
             trace_levels: 512,
             vectorscope_size: 512,
+            histogram_bins: 512,
+            histogram_sample_stride: SampleStride::EVERY_SECOND_PIXEL,
             ycbcr_edge_chroma: 0.64,
             oklab_range: 0.4,
             sample_stride: SampleStride::EVERY_PIXEL,
             trace_across_eye_stride: SampleStride::EVERY_SECOND_PIXEL,
             vectorscope_sample_stride: SampleStride::EVERY_SECOND_PIXEL,
+            cie: CieSettings::default(),
             render: RenderSettings::default(),
         }
     }
@@ -131,6 +157,11 @@ impl ScopeModelSettings {
         if !(1..=MAX_LEVELS).contains(&self.trace_levels) {
             return Err(ScopeSettingsError::TraceLevelsOutOfRange {
                 levels: self.trace_levels,
+            });
+        }
+        if !(MIN_HISTOGRAM_BINS..=MAX_LEVELS).contains(&self.histogram_bins) {
+            return Err(ScopeSettingsError::HistogramBinsOutOfRange {
+                bins: self.histogram_bins,
             });
         }
         if !(MIN_VECTORSCOPE_SIZE..=MAX_VECTORSCOPE_SIZE).contains(&self.vectorscope_size) {
@@ -151,6 +182,9 @@ impl ScopeModelSettings {
         // Бюджет ячеек: проверяем тем же конструктором формы, что и правила.
         GridShape::try_new(self.trace_max_columns, self.trace_levels, 3)?;
         GridShape::try_new(self.vectorscope_size, self.vectorscope_size, 1)?;
+        GridShape::try_new(self.histogram_bins, 1, 3)?;
+        self.cie.validate()?;
+        GridShape::try_new(self.cie.size, self.cie.size, 1)?;
         self.render.validate()?;
         Ok(())
     }

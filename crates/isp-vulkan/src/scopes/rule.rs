@@ -48,6 +48,18 @@ impl AccumulatorId {
     pub const INTEGER_PROJECTION_MERGED: Self = Self("integer-projection-merged");
     /// То же, что [`Self::OKLAB_VECTORSCOPE`], со слиянием ячеек в subgroup.
     pub const OKLAB_VECTORSCOPE_MERGED: Self = Self("oklab-vectorscope-merged");
+    /// Гистограмма (сессия 14s): уровень кода каждой плоскости — столбец, строка одна; прямая запись `atomicAdd`.
+    pub const HISTOGRAM: Self = Self("histogram");
+    /// То же, что [`Self::HISTOGRAM`], со слиянием одинаковых уровней в subgroup (все пиксели кадра падают в те же 512
+    /// ячеек). Нужен баллот subgroup; без него берётся [`Self::fallback`].
+    pub const HISTOGRAM_MERGED: Self = Self("histogram-merged");
+
+    /// Диаграмма цветности CIE (сессия 14s, обе шкалы одним шейдером): ячейка из цветности кода, деление заменено точной
+    /// проверкой произведений; прямая запись `atomicAdd`.
+    pub const CIE: Self = Self("cie");
+    /// То же, что [`Self::CIE`], со слиянием одинаковых ячеек в subgroup (весь кадр — в пятно из нескольких ячеек, как у
+    /// вектороскопа). Нужен баллот subgroup; без него берётся [`Self::fallback`].
+    pub const CIE_MERGED: Self = Self("cie-merged");
 
     /// Запасной шейдер на устройстве, где идентификатор не зарегистрирован (нет баллота subgroup): тот же прибор
     /// без слияния. У остальных идентификаторов запасного нет.
@@ -56,6 +68,10 @@ impl AccumulatorId {
             Some(Self::INTEGER_PROJECTION)
         } else if self.is(Self::OKLAB_VECTORSCOPE_MERGED) {
             Some(Self::OKLAB_VECTORSCOPE)
+        } else if self.is(Self::HISTOGRAM_MERGED) {
+            Some(Self::HISTOGRAM)
+        } else if self.is(Self::CIE_MERGED) {
+            Some(Self::CIE)
         } else {
             None
         }
@@ -219,6 +235,13 @@ mod tests {
             AccumulatorId::OKLAB_VECTORSCOPE_MERGED.fallback(),
             Some(AccumulatorId::OKLAB_VECTORSCOPE)
         );
+        assert_eq!(
+            AccumulatorId::HISTOGRAM_MERGED.fallback(),
+            Some(AccumulatorId::HISTOGRAM)
+        );
+        assert_eq!(AccumulatorId::CIE_MERGED.fallback(), Some(AccumulatorId::CIE));
+        assert_eq!(AccumulatorId::CIE.fallback(), None);
+        assert_eq!(AccumulatorId::HISTOGRAM.fallback(), None);
         assert_eq!(AccumulatorId::INTEGER_PROJECTION.fallback(), None);
         assert_eq!(AccumulatorId::new("custom").fallback(), None);
         // Подставной «двойник» с похожим именем запасного не получает: сравнение по полному имени.

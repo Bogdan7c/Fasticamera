@@ -18,6 +18,7 @@ use look_contract::LookWhiteStopsBoard;
 use scene_estimation::error::ConfigError;
 use scene_estimation::white_source::WhiteSource;
 use scene_estimation::white_source::phone::{PhoneWhiteConfig, PhoneWhiteSource};
+use scope_contract::ScopeLabelsBoard;
 
 /// Фабрика не смогла собрать источник (текст причины).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -98,6 +99,9 @@ pub struct WhiteLinks {
     /// приложение для экрана калибровки. Едет в связке белой, потому что упор — свойство сдвига белой, и тем же путём
     /// доезжает до сессии показа.
     pub look_white_stops: LookWhiteStopsBoard,
+    /// Подписи прибора (решения 326, 327): пишет рендер при смене решённого прибора, читает приложение для экрана.
+    /// К белой отношения не имеет, едет здесь как готовая дорога «рендер → приложение» до сессии показа.
+    pub scope_labels: ScopeLabelsBoard,
     /// Источники белого.
     pub sources: WhiteSourceRegistry,
 }

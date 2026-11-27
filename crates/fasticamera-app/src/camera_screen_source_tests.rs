@@ -255,6 +255,7 @@ fn an_exposure_bias_refused_by_a_full_camera_queue_is_resent_by_the_source_on_la
     let board = Arc::new(ScreenBoard::default());
     let mut source = CameraScreenSource::new(ScreenSourceParts {
         look_white_stops: crate::look_white_stops::LookWhiteStopsWatcher::silent(),
+        scope_labels: crate::scope_labels::ScopeLabelsWatcher::silent(),
         screen: CameraScreen::new(
             ScreenConfig::default(),
             ui_kit::tokens::UiKitTokens::default(),
@@ -333,6 +334,7 @@ fn a_look_action_travels_from_the_screen_to_the_render_and_into_the_shot_request
     let board = Arc::new(ScreenBoard::default());
     let mut source = CameraScreenSource::new(ScreenSourceParts {
         look_white_stops: crate::look_white_stops::LookWhiteStopsWatcher::silent(),
+        scope_labels: crate::scope_labels::ScopeLabelsWatcher::silent(),
         screen: CameraScreen::new(
             ScreenConfig::default(),
             ui_kit::tokens::UiKitTokens::default(),
@@ -466,6 +468,7 @@ fn dropping_the_source_releases_the_warm_demand_the_screen_left_in_the_lens_slot
     let (_sender, receiver) = screen_input_channel(16);
     let source = CameraScreenSource::new(ScreenSourceParts {
         look_white_stops: crate::look_white_stops::LookWhiteStopsWatcher::silent(),
+        scope_labels: crate::scope_labels::ScopeLabelsWatcher::silent(),
         screen: CameraScreen::new(
             ScreenConfig::default(),
             ui_kit::tokens::UiKitTokens::default(),
@@ -518,6 +521,7 @@ fn quiet_frames_do_not_rebuild_look_facts_and_one_edit_rebuilds_once() {
     let board = Arc::new(ScreenBoard::default());
     let mut source = CameraScreenSource::new(ScreenSourceParts {
         look_white_stops: crate::look_white_stops::LookWhiteStopsWatcher::silent(),
+        scope_labels: crate::scope_labels::ScopeLabelsWatcher::silent(),
         screen: CameraScreen::new(
             ScreenConfig::default(),
             ui_kit::tokens::UiKitTokens::default(),
@@ -578,3 +582,6 @@ mod look_banner;
 
 #[path = "camera_screen_source_look_stops_tests.rs"]
 mod look_stops;
+
+#[path = "camera_screen_source_scope_labels_tests.rs"]
+mod scope_labels;

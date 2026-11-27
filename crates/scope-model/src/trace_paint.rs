@@ -17,19 +17,44 @@ pub enum TracePaint {
     /// Одна плоскость; цвет пикселя — цвет МЕСТА ячейки на картинке (вектороскоп красится по положению),
     /// яркость — по счётчику ячейки.
     ColorByPosition,
+    /// Гистограмма, плоскости НАЛОЖЕНЫ (режим RGB, решение 337): графики трёх плоскостей в одной полосе на всю высоту;
+    /// заливки складываются по цвету (прозрачность — по самой высокой), линии верха рисуются поверх своими цветами (где
+    /// совпали — белый). Высота — по шкале [`crate::HistogramHeight`], а не по лог-яркости счёта.
+    HistogramOverlaid,
+    /// Гистограмма, плоскости ПОЛОСАМИ (режимы PARADE и Y): по полосе на плоскость, одна над другой, каждая на всю
+    /// ширину со своей базовой линией и цветом плоскости; у яркости полоса одна, на всю высоту.
+    HistogramSections,
+    /// Диаграмма CIE: одна плоскость, как у вектороскопа, но цвет точки — её цветность (или белый), под следом бледная
+    /// заливка локуса. Рисует отдельный вариант шейдера показа (`SCOPE_RENDER_CIE`).
+    Cie,
 }
 
 impl TracePaint {
     /// Все способы (для тестов, которые обязаны пройти по каждому).
-    pub const ALL: [TracePaint; 3] = [Self::PlaneSections, Self::PlanesOverlaid, Self::ColorByPosition];
+    pub const ALL: [TracePaint; 6] = [
+        Self::PlaneSections,
+        Self::PlanesOverlaid,
+        Self::ColorByPosition,
+        Self::HistogramOverlaid,
+        Self::HistogramSections,
+        Self::Cie,
+    ];
+
+    /// Рисуется ли след СТОЛБИКАМИ (шкала высоты, один ряд счётчиков) вместо плотности «строка × столбец».
+    pub fn draws_bars(self) -> bool {
+        match self {
+            Self::HistogramOverlaid | Self::HistogramSections => true,
+            Self::PlaneSections | Self::PlanesOverlaid | Self::ColorByPosition | Self::Cie => false,
+        }
+    }
 
     /// Сколько плоскостей счётчиков способ требует от прибора; `None` — любое число (секции делятся на сколько
     /// есть).
     pub fn required_planes(self) -> Option<u32> {
         match self {
-            Self::PlaneSections => None,
-            Self::PlanesOverlaid => Some(3),
-            Self::ColorByPosition => Some(1),
+            Self::PlaneSections | Self::HistogramSections => None,
+            Self::PlanesOverlaid | Self::HistogramOverlaid => Some(3),
+            Self::ColorByPosition | Self::Cie => Some(1),
         }
     }
 }
@@ -43,6 +68,16 @@ mod tests {
         assert_eq!(TracePaint::PlaneSections.required_planes(), None);
         assert_eq!(TracePaint::PlanesOverlaid.required_planes(), Some(3));
         assert_eq!(TracePaint::ColorByPosition.required_planes(), Some(1));
-        assert_eq!(TracePaint::ALL.len(), 3);
+        assert_eq!(TracePaint::HistogramOverlaid.required_planes(), Some(3));
+        assert_eq!(TracePaint::HistogramSections.required_planes(), None);
+        assert_eq!(TracePaint::Cie.required_planes(), Some(1));
+        assert_eq!(TracePaint::ALL.len(), 6);
+    }
+
+    #[test]
+    fn only_the_histogram_paints_draw_bars() {
+        let bars: Vec<TracePaint> = TracePaint::ALL.into_iter().filter(|paint| paint.draws_bars()).collect();
+        assert_eq!(bars, [TracePaint::HistogramOverlaid, TracePaint::HistogramSections]);
+        assert!(!TracePaint::Cie.draws_bars());
     }
 }

@@ -32,6 +32,8 @@ fn resolve(kind: ScopeKind, scan: ScopeScan) -> ResolvedScope {
         kind,
         vectorscope_axes: VectorscopeAxes::YCbCrBt709,
         vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
+        cie_diagram: scope_contract::CieDiagram::default(),
+        histogram_mode: scope_contract::HistogramMode::Rgb,
         scan,
         image_size: ScopeImageSize::try_new(64, 64).unwrap(),
     };

@@ -2,6 +2,7 @@
 //! таблица цветов по месту. Один тип отдаёт и эталон ([`crate::render`]), и GPU-сторона (`GpuScopeRule`), поэтому
 //! способ без своих данных (наложение без трёх цветов, «по месту» без таблицы) не существует по построению.
 
+use crate::cie_style::CieTraceStyle;
 use crate::position_palette::PositionPalette;
 use crate::trace_paint::TracePaint;
 
@@ -18,11 +19,23 @@ pub enum TraceStyle {
         /// Основные цвета трёх плоскостей (цвета экрана).
         primaries: [[f32; 3]; 3],
     },
+    /// Гистограмма наложением: основные цвета трёх плоскостей (те же, что у RGB waveform; сумма даёт белый).
+    HistogramOverlaid {
+        /// Основные цвета трёх плоскостей (цвета экрана).
+        primaries: [[f32; 3]; 3],
+    },
+    /// Гистограмма секциями: цвет графика каждой плоскости (по одному на плоскость сетки).
+    HistogramSections {
+        /// Цвета плоскостей (цвета экрана).
+        colors: Vec<[f32; 3]>,
+    },
     /// Цвет точки — цвет её места на картинке.
     ColorByPosition {
         /// Таблица цветов по углам (в коробке: она заметно больше остальных вариантов).
         palette: Box<PositionPalette>,
     },
+    /// Диаграмма CIE: цвет следа, заливка и опорные данные (в коробке: многоугольник локуса).
+    Cie(Box<CieTraceStyle>),
 }
 
 impl TraceStyle {
@@ -32,6 +45,9 @@ impl TraceStyle {
             Self::PlaneSections { .. } => TracePaint::PlaneSections,
             Self::PlanesOverlaid { .. } => TracePaint::PlanesOverlaid,
             Self::ColorByPosition { .. } => TracePaint::ColorByPosition,
+            Self::HistogramOverlaid { .. } => TracePaint::HistogramOverlaid,
+            Self::HistogramSections { .. } => TracePaint::HistogramSections,
+            Self::Cie(_) => TracePaint::Cie,
         }
     }
 }
@@ -65,6 +81,17 @@ mod tests {
             }
             .paint(),
             TracePaint::ColorByPosition
+        );
+        assert_eq!(
+            TraceStyle::HistogramOverlaid {
+                primaries: [[0.0; 3]; 3]
+            }
+            .paint(),
+            TracePaint::HistogramOverlaid
+        );
+        assert_eq!(
+            TraceStyle::HistogramSections { colors: vec![[1.0; 3]] }.paint(),
+            TracePaint::HistogramSections
         );
     }
 }

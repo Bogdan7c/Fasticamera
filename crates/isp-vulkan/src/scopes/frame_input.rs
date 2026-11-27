@@ -73,16 +73,20 @@ pub(super) fn sampling_push_bytes(input: &CheckedInput, samples: SampleCount) ->
     bytes
 }
 
-/// Ячеек в наибольшей сетке настроек: waveform/parade (`потолок столбцов × уровни × 3`) или вектороскоп (`сторона²`).
+/// Ячеек в наибольшей сетке настроек: waveform/parade (`потолок столбцов × уровни × 3`) вектороскоп (`сторона²`) или диаграмма CIE (`сторона²`).
 pub(super) fn largest_grid_cells(settings: &ScopeModelSettings) -> usize {
     let trace = settings.trace_max_columns as usize * settings.trace_levels as usize * MAX_PLANES;
     let vectorscope = settings.vectorscope_size as usize * settings.vectorscope_size as usize;
-    trace.max(vectorscope)
+    let cie = settings.cie.size as usize * settings.cie.size as usize;
+    trace.max(vectorscope).max(cie)
 }
 
 /// Строк в наибольшей сетке настроек: уровни waveform/parade или сторона вектороскопа.
 pub(super) fn largest_grid_rows(settings: &ScopeModelSettings) -> u32 {
-    settings.trace_levels.max(settings.vectorscope_size)
+    settings
+        .trace_levels
+        .max(settings.vectorscope_size)
+        .max(settings.cie.size)
 }
 
 // Пределы эталона, на которые опирается шейдер, закреплены на этапе компиляции: если эталон их увеличит,

@@ -28,7 +28,7 @@ use isp_vulkan::scopes::{
     ColorScopes, RecordedScope, ScopeError, ScopeFrame, ScopeInput, ScopePassCounters, ScopeSlotReport,
 };
 use isp_vulkan::shaders::blobs;
-use scope_contract::{ScopeImageSize, ScopeKind, ScopeRequest, VectorscopeAxes};
+use scope_contract::{CieDiagram, ScopeImageSize, ScopeKind, ScopeRequest, VectorscopeAxes};
 use scope_model::{
     HorizontalOrder, ResolvedScope, SampleCount, ScopeCounters, ScopeModelSettings, ScopeRule, ShownCodes, accumulate,
 };
@@ -67,11 +67,15 @@ pub fn small_settings() -> ScopeModelSettings {
         trace_max_columns: 1024,
         trace_levels: 128,
         vectorscope_size: 128,
+        cie: scope_model::CieSettings {
+            size: 128,
+            ..scope_model::CieSettings::default()
+        },
         ..ScopeModelSettings::default()
     }
 }
 
-/// Четыре эталонных прибора + оба вектороскопа: (название, запрос, гамма).
+/// Эталонные приборы (waveform, parade, оба вектороскопа, Luma, три режима гистограммы, CIE в двух шкалах на двух охватах): (название, правило).
 pub fn rule_cases(settings: &ScopeModelSettings) -> Vec<(&'static str, ResolvedScope)> {
     rule_cases_for_scan(settings, scope_contract::ScopeScan::Upright)
 }
@@ -86,8 +90,33 @@ pub fn rule_cases_for_scan(
         kind,
         vectorscope_axes,
         vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
+        cie_diagram: scope_contract::CieDiagram::default(),
+        histogram_mode: scope_contract::HistogramMode::Rgb,
         scan,
         image_size: size,
+    };
+    // Гистограмма (сессия 14s) — три режима одной страницы; от положения телефона не зависит.
+    let histogram = |mode| {
+        ResolvedScope::resolve(
+            &ScopeRequest {
+                histogram_mode: mode,
+                ..request(ScopeKind::Histogram, VectorscopeAxes::YCbCrBt709)
+            },
+            settings,
+            DisplayGamut::Srgb,
+        )
+        .unwrap()
+    };
+    let cie = |diagram, gamut| {
+        ResolvedScope::resolve(
+            &ScopeRequest {
+                cie_diagram: diagram,
+                ..request(ScopeKind::Cie, VectorscopeAxes::YCbCrBt709)
+            },
+            settings,
+            gamut,
+        )
+        .unwrap()
     };
     let resolve = |request, gamut| ResolvedScope::resolve(&request, settings, gamut).unwrap();
     vec![
@@ -134,6 +163,14 @@ pub fn rule_cases_for_scan(
                 DisplayGamut::Srgb,
             ),
         ),
+        ("histogram-rgb", histogram(scope_contract::HistogramMode::Rgb)),
+        ("histogram-parade", histogram(scope_contract::HistogramMode::Parade)),
+        ("histogram-luma", histogram(scope_contract::HistogramMode::Luma)),
+        // Диаграмма CIE (сессия 14s): обе шкалы на обоих охватах экрана.
+        ("cie-xy-srgb", cie(CieDiagram::Xy1931, DisplayGamut::Srgb)),
+        ("cie-xy-p3", cie(CieDiagram::Xy1931, DisplayGamut::DisplayP3)),
+        ("cie-uv-srgb", cie(CieDiagram::UvPrime1976, DisplayGamut::Srgb)),
+        ("cie-uv-p3", cie(CieDiagram::UvPrime1976, DisplayGamut::DisplayP3)),
     ]
 }
 
@@ -450,6 +487,20 @@ pub fn planned_samples_for(shown: &ShownCodes, settings: &ScopeModelSettings, ru
 /// Эталонные счётчики CPU для показанной картинки (шаг — по плану отсчётов прибора, как на GPU).
 pub fn cpu_counters(shown: &ShownCodes, settings: &ScopeModelSettings, rule: &dyn ScopeRule) -> ScopeCounters {
     accumulate(shown, planned_samples_for(shown, settings, rule).steps(), rule).unwrap()
+}
+
+/// Наибольшее расхождение ПРЕМУЛЬТИПЛИЦИРОВАННЫХ RGBA между чтением картинки GPU и эталоном (прямой цвет при почти
+/// нулевой альфе — шум деления, поэтому сравниваются `rgb·a` и `a`).
+pub fn worst_premultiplied_difference(gpu: &[[f32; 4]], cpu: &scope_model::ScopePicture) -> f32 {
+    assert_eq!(gpu.len(), cpu.pixels().len());
+    let premultiplied = |pixel: [f32; 4]| [pixel[0] * pixel[3], pixel[1] * pixel[3], pixel[2] * pixel[3], pixel[3]];
+    gpu.iter()
+        .zip(cpu.pixels())
+        .flat_map(|(gpu_pixel, cpu_pixel)| {
+            let (gpu_premultiplied, cpu_premultiplied) = (premultiplied(*gpu_pixel), premultiplied(*cpu_pixel));
+            (0..4).map(move |channel| (gpu_premultiplied[channel] - cpu_premultiplied[channel]).abs())
+        })
+        .fold(0.0, f32::max)
 }
 
 /// Размер картинки прибора для тестов.

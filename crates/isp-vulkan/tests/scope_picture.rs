@@ -20,27 +20,14 @@ mod scope_support;
 use gpu_vulkan::source_window::HorizontalMirror;
 use gpu_vulkan::storage_image::StorageFormatPolicy;
 use isp_vulkan::scopes::{ColorScopes, ColorScopesConfig, ScopeFrame};
-use scope_model::{ScopeCounters, ScopeModelSettings, ScopePicture, ScopeRule, render};
+use scope_model::{ScopeCounters, ScopeModelSettings, ScopeRule, render};
 use scope_support::{
     assert_no_validation_errors, bars75_scene, cpu_counters, gpu_context_or_skip, picture_size, random_scene,
-    rule_cases, run_scope_frame, small_settings, upload_scene,
+    rule_cases, run_scope_frame, small_settings, upload_scene, worst_premultiplied_difference,
 };
 
 /// Допуск сравнения картинки (см. описание файла).
 const PICTURE_TOLERANCE: f32 = 2.0e-3;
-
-/// Наибольшее расхождение премультиплицированных RGBA между GPU и эталоном.
-fn worst_premultiplied_difference(gpu: &[[f32; 4]], cpu: &ScopePicture) -> f32 {
-    assert_eq!(gpu.len(), cpu.pixels().len());
-    let premultiplied = |pixel: [f32; 4]| [pixel[0] * pixel[3], pixel[1] * pixel[3], pixel[2] * pixel[3], pixel[3]];
-    gpu.iter()
-        .zip(cpu.pixels())
-        .flat_map(|(gpu_pixel, cpu_pixel)| {
-            let (gpu_premultiplied, cpu_premultiplied) = (premultiplied(*gpu_pixel), premultiplied(*cpu_pixel));
-            (0..4).map(move |channel| (gpu_premultiplied[channel] - cpu_premultiplied[channel]).abs())
-        })
-        .fold(0.0, f32::max)
-}
 
 #[test]
 fn picture_matches_cpu_render_within_fp16_tolerance_for_every_scope() {
@@ -126,6 +113,11 @@ fn empty_trace_leaves_only_the_graticule_over_a_transparent_background() {
         sample_stride: scope_model::SampleStride::try_new(64).unwrap(),
         // Шаг вектороскопа свой (решение 328): тоже 64, иначе у него отсчёты есть.
         vectorscope_sample_stride: scope_model::SampleStride::try_new(64).unwrap(),
+        histogram_sample_stride: scope_model::SampleStride::try_new(64).unwrap(),
+        cie: scope_model::CieSettings {
+            sample_stride: scope_model::SampleStride::try_new(64).unwrap(),
+            ..small_settings().cie
+        },
         ..small_settings()
     };
     let mut scopes = ColorScopes::new(

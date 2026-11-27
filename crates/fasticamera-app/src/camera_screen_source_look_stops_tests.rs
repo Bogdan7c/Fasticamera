@@ -27,6 +27,7 @@ fn source_over(board: &LookWhiteStopsBoard) -> (CameraScreenSource, Arc<ScreenBo
     let report = Arc::new(ScreenBoard::default());
     let source = CameraScreenSource::new(ScreenSourceParts {
         look_white_stops: LookWhiteStopsWatcher::new(board.clone()),
+        scope_labels: crate::scope_labels::ScopeLabelsWatcher::silent(),
         screen: CameraScreen::new(
             ScreenConfig::default(),
             ui_kit::tokens::UiKitTokens::default(),

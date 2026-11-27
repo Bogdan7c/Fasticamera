@@ -65,8 +65,8 @@ fn section_start(plane: u32, width: u32, planes: u32) -> u32 {
 /// Сколько слотов плоскостей у пикселя при способе `paint` и `planes` плоскостях сетки.
 pub fn slots_per_pixel(paint: TracePaint, planes: u32) -> u32 {
     match paint {
-        TracePaint::PlanesOverlaid => planes,
-        TracePaint::PlaneSections | TracePaint::ColorByPosition => 1,
+        TracePaint::PlanesOverlaid | TracePaint::HistogramOverlaid | TracePaint::HistogramSections => planes,
+        TracePaint::PlaneSections | TracePaint::ColorByPosition | TracePaint::Cie => 1,
     }
 }
 
@@ -161,7 +161,11 @@ fn column_taps(columns: u32, planes: u32, paint: TracePaint, width: u32, softeni
                     let section = Section::of_pixel(x, width, planes);
                     (section.plane, sections[section.plane as usize], x - section.start)
                 }
-                TracePaint::PlanesOverlaid | TracePaint::ColorByPosition => (0, full_width, x),
+                TracePaint::PlanesOverlaid
+                | TracePaint::ColorByPosition
+                | TracePaint::HistogramOverlaid
+                | TracePaint::HistogramSections
+                | TracePaint::Cie => (0, full_width, x),
             };
             let taps = horizontal
                 .cell_range(local_x)
@@ -172,8 +176,14 @@ fn column_taps(columns: u32, planes: u32, paint: TracePaint, width: u32, softeni
         .collect()
 }
 
-/// Первый проход: строки сетки × столбцы картинки × слоты (`[строка][x][слот]`).
-fn resample_columns(counters: &ScopeCounters, paint: TracePaint, size: ScopeImageSize, softening_px: f32) -> Vec<f32> {
+/// Первый проход: строки сетки × столбцы картинки × слоты (`[строка][x][слот]`). У гистограммы строка одна, и этот
+/// проход — ВСЯ плотность: столбики рисуются по ней без переноса по вертикали ([`crate::histogram_bars`]).
+pub(crate) fn resample_columns(
+    counters: &ScopeCounters,
+    paint: TracePaint,
+    size: ScopeImageSize,
+    softening_px: f32,
+) -> Vec<f32> {
     let shape = counters.shape();
     let slots = slots_per_pixel(paint, shape.planes());
     let width = size.width();

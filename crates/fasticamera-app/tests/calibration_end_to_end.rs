@@ -500,13 +500,28 @@ fn calibrate_scope_counters_equal_the_cpu_reference_of_the_shown_frame_and_follo
     // 4. Смена вида прибора на экране: рендер получает новый запрос, счётчики считаются по нему. RGB waveform и
     // parade — одно правило трёх плоскостей, счётчики у них одни (отличается только способ рисования), поэтому
     // парад сверяется с эталоном, а «считает иначе» проверяется на вектороскопе.
+    // Раздел открылся на гистограмме (решение 335), поэтому сначала листаем на RGB WAVEFORM: он — база для парада.
+    rig.send(ScreenAction::ScopeKindSelected(ScopeKind::Waveform));
+    rig.frames(4);
+    let waveform = live_scope_request(&mut rig);
+    assert_eq!(waveform.kind, ScopeKind::Waveform, "рендер держит запрос RGB waveform");
+    let waveform_gpu = gpu_scope_counters(&rig);
+    assert_eq!(
+        waveform_gpu,
+        cpu_scope_counters(&rig, &waveform),
+        "RGB waveform: GPU разошёлся с эталоном"
+    );
+    assert_ne!(
+        waveform_gpu, after_drag,
+        "waveform считает иначе, чем гистограмма (кадр тот же)"
+    );
     rig.send(ScreenAction::ScopeKindSelected(ScopeKind::RgbParade));
     rig.frames(4);
     let parade = live_scope_request(&mut rig);
     assert_eq!(parade.kind, ScopeKind::RgbParade, "рендер держит запрос парада");
-    assert_ne!(parade, request, "запрос сменился");
+    assert_ne!(parade, waveform, "запрос сменился");
     assert_eq!(
-        parade.image_size, request.image_size,
+        parade.image_size, waveform.image_size,
         "waveform и parade занимают всю зону: размер картинки тот же"
     );
     let parade_gpu = gpu_scope_counters(&rig);
@@ -516,7 +531,7 @@ fn calibrate_scope_counters_equal_the_cpu_reference_of_the_shown_frame_and_follo
         "парад: GPU разошёлся с эталоном парада"
     );
     assert_eq!(
-        parade_gpu, after_drag,
+        parade_gpu, waveform_gpu,
         "RGB waveform и parade считают одно и то же правило трёх плоскостей"
     );
 
@@ -530,7 +545,7 @@ fn calibrate_scope_counters_equal_the_cpu_reference_of_the_shown_frame_and_follo
         "вектороскоп просит квадрат"
     );
     assert_ne!(
-        vectorscope.image_size, request.image_size,
+        vectorscope.image_size, waveform.image_size,
         "квадрат отличается от прямоугольной зоны"
     );
     let vectorscope_gpu = gpu_scope_counters(&rig);
@@ -540,7 +555,7 @@ fn calibrate_scope_counters_equal_the_cpu_reference_of_the_shown_frame_and_follo
         "вектороскоп: GPU разошёлся с эталоном"
     );
     assert_ne!(
-        vectorscope_gpu, after_drag,
+        vectorscope_gpu, waveform_gpu,
         "вектороскоп считает иначе, чем прежний вид (кадр тот же)"
     );
     rig.finish();

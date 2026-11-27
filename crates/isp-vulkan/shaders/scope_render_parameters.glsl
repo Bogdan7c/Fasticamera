@@ -19,7 +19,7 @@ layout(set = 0, binding = 1, std430) readonly buffer RenderParameters {
                             // w = способ рисования следа (PAINT_*, код по `parameter_blocks.rs`)
     vec4 graticule_color;   // rgb
     vec4 plane_colors[3];   // rgb следа по плоскостям (секции) или основные цвета наложения
-    GraticulePrimitive primitives[48];
+    GraticulePrimitive primitives[128];
     // ХВОСТ «цвет по положению» (способ PAINT_COLOR_BY_POSITION; у остальных способов — нули и не читается).
     vec4 position_palette[128]; // rgb края и радиус края (клеток) по углам круга
     vec4 position_neutral;      // rgb центра
@@ -29,6 +29,20 @@ layout(set = 0, binding = 1, std430) readonly buffer RenderParameters {
     // Ядра по осям — числа эталона `AxisResampling`: x = пикселей на клетку, y = 1 / (2σ²), z = высота гауссианы,
     // w = радиус ядра в пикселях. [0] — вертикаль, [1] — вся ширина, [2 + k] — секция плоскости k.
     vec4 resample_axes[5];
+    // ГИСТОГРАММА (сессия 14s; у остальных способов — нули и не читается): x = опора шкалы высоты, отсчётов на уровень
+    // (`HistogramHeight::known_reference_count`), либо -1 — «самый высокий столбик картинки», его находит сам шейдер
+    // показа; y = кривая высоты (код `HistogramCurve::shader_code`); z = непрозрачность заливки, w = толщина линии верха,
+    // пикселей (решение 337).
+    vec4 histogram;
+    // Вид гистограммы (решение 337): x = множитель цвета заливки (затемнение), y = зазор между полосами PARADE долей высоты
+    // картинки; z, w — 0.
+    vec4 histogram_style;
+    // ДИАГНОСТИКА ЦВЕТНОСТИ CIE (сессия 14s; у остальных способов — нули и не читается, `cie_block.rs`):
+    vec4 cie_chart;             // x = левая граница окна, y = верхняя, z = сторона окна, w = шкала (0 xy 1931, 1 u'v' 1976)
+    vec4 cie_options;           // x = цвет следа (0 белый, 1 по цветности), y = заливка (0 нет, 1 бледная), z = её
+                                //     непрозрачность, w = число рёбер локуса
+    vec4 cie_xyz_to_display[3]; // строки матрицы «XYZ -> линейный свет измеряемого охвата»
+    vec4 cie_locus_edges[72];   // рёбра многоугольника локуса: (из.x, из.y, в.x, в.y) в долях картинки, y вниз
 } parameters;
 
 const uint AXIS_VERTICAL = 0u;
@@ -39,6 +53,9 @@ const uint AXIS_FIRST_SECTION = 2u;
 const float PAINT_PLANE_SECTIONS = 0.0;
 const float PAINT_PLANES_OVERLAID = 1.0;
 const float PAINT_COLOR_BY_POSITION = 2.0;
+const float PAINT_HISTOGRAM_OVERLAID = 3.0;
+const float PAINT_HISTOGRAM_SECTIONS = 4.0;
+const float PAINT_CIE = 5.0;
 
 // Клетки оси, которые видит пиксель: полуоткрытый диапазон [x, y) в пределах 0..cells — `AxisResampling::cell_range`
 // (центр клетки i — в (i + 0,5) · ppc; клетка нужна, если до центра пикселя не дальше радиуса ядра).

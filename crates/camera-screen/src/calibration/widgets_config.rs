@@ -150,6 +150,11 @@ pub struct CalibrationWidgetsConfig {
     pub scope_axes_segment_width_pt: f64,
     /// Ширина кнопки «2×» вектороскопа в полоске (решение 325). `[estimate]`.
     pub scope_zoom_segment_width_pt: f64,
+    /// Ширина одного сегмента переключателя режима гистограммы в полоске (RGB | PARADE | Y, решение 331): все три
+    /// равны, самая длинная подпись — PARADE. `[estimate]`.
+    pub scope_histogram_segment_width_pt: f64,
+    /// Ширина одного сегмента переключателя шкалы CIE в полоске (xy | u'v', решение 332). `[estimate]`.
+    pub scope_cie_segment_width_pt: f64,
     /// Промежуток между частями полоски: имя, точки, оси, место белого. `[estimate]`.
     pub scope_strip_gap_pt: f64,
     /// Ширина капсулы белого («5600 K», решение 290) справа в полоске на каждой странице: она же зона касания по
@@ -250,8 +255,13 @@ impl Default for CalibrationWidgetsConfig {
             scope_page_dot_diameter_pt: 6.0,
             scope_page_dot_gap_pt: 8.0,
             scope_label_inset_pt: 8.0,
-            scope_page_dot_cell_width_pt: 22.0,
+            // 14 pt: шесть страниц (CIE, сессия 14s) на 84 pt вместо 90 освобождают место под самый широкий переключатель
+            // страницы (три сегмента гистограммы по 46 pt = 146 pt против 140 pt осей с «2×»): место имени прибора
+            // (самое длинное имя обязано в нём помещаться) и положение ряда точек остаются прежними.
+            scope_page_dot_cell_width_pt: 14.0,
             scope_axes_segment_width_pt: 48.0,
+            scope_histogram_segment_width_pt: 46.0,
+            scope_cie_segment_width_pt: 40.0,
             scope_zoom_segment_width_pt: 34.0,
             scope_strip_gap_pt: 6.0,
             scope_strip_trailing_width_pt: 68.0,
@@ -374,6 +384,11 @@ impl CalibrationWidgetsConfig {
             ("scope_page_dot_cell_width_pt", self.scope_page_dot_cell_width_pt),
             ("scope_axes_segment_width_pt", self.scope_axes_segment_width_pt),
             ("scope_zoom_segment_width_pt", self.scope_zoom_segment_width_pt),
+            (
+                "scope_histogram_segment_width_pt",
+                self.scope_histogram_segment_width_pt,
+            ),
+            ("scope_cie_segment_width_pt", self.scope_cie_segment_width_pt),
             ("scope_strip_gap_pt", self.scope_strip_gap_pt),
             ("scope_strip_trailing_width_pt", self.scope_strip_trailing_width_pt),
             ("scope_white_capsule_padding_pt", self.scope_white_capsule_padding_pt),

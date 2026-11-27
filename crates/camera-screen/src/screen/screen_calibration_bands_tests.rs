@@ -201,6 +201,18 @@ fn rows_scrolled_out_of_the_window_are_neither_drawn_nor_touchable() {
 fn swiping_the_scope_zone_switches_the_instrument_in_a_line_without_wrapping() {
     let mut rig = portrait(look_facts());
     let scope = center(&rig, "calib_scope", 0);
+    assert_eq!(
+        rig.screen.state().calibration().scope_kind(),
+        ScopeKind::Histogram,
+        "раздел открывается на HISTOGRAM"
+    );
+    drag_eye(&mut rig, scope, Vector::new(80.0, 0.0));
+    assert_eq!(
+        rig.screen.state().calibration().scope_kind(),
+        ScopeKind::Histogram,
+        "перед первой страницей — стоит"
+    );
+    drag_eye(&mut rig, scope, Vector::new(-80.0, 0.0));
     assert_eq!(rig.screen.state().calibration().scope_kind(), ScopeKind::Waveform);
     drag_eye(&mut rig, scope, Vector::new(-80.0, 0.0));
     // Следом за RGB WAVEFORM — страница LUMA WAVEFORM (решение 321).
@@ -215,28 +227,30 @@ fn swiping_the_scope_zone_switches_the_instrument_in_a_line_without_wrapping() {
         .collect();
     assert_eq!(
         asked,
-        vec![ScopeKind::LumaWaveform],
-        "рендеру ушёл запрос нового прибора"
+        vec![ScopeKind::Waveform, ScopeKind::LumaWaveform],
+        "рендеру ушли запросы новых приборов, по одному на страницу"
     );
     drag_eye(&mut rig, scope, Vector::new(-80.0, 0.0));
     assert_eq!(rig.screen.state().calibration().scope_kind(), ScopeKind::RgbParade);
     drag_eye(&mut rig, scope, Vector::new(-80.0, 0.0));
     assert_eq!(rig.screen.state().calibration().scope_kind(), ScopeKind::Vectorscope);
     drag_eye(&mut rig, scope, Vector::new(-80.0, 0.0));
+    assert_eq!(rig.screen.state().calibration().scope_kind(), ScopeKind::Cie);
+    drag_eye(&mut rig, scope, Vector::new(-80.0, 0.0));
     assert_eq!(
         rig.screen.state().calibration().scope_kind(),
-        ScopeKind::Vectorscope,
+        ScopeKind::Cie,
         "за краем ряда — стоит"
     );
     drag_eye(&mut rig, scope, Vector::new(80.0, 0.0));
     assert_eq!(
         rig.screen.state().calibration().scope_kind(),
-        ScopeKind::RgbParade,
+        ScopeKind::Vectorscope,
         "вправо — назад"
     );
     // Короткий сдвиг прибор не меняет.
     drag_eye(&mut rig, scope, Vector::new(-15.0, 0.0));
-    assert_eq!(rig.screen.state().calibration().scope_kind(), ScopeKind::RgbParade);
+    assert_eq!(rig.screen.state().calibration().scope_kind(), ScopeKind::Vectorscope);
 }
 
 #[test]

@@ -189,7 +189,7 @@ impl OklabVectorscopeRule {
 }
 
 /// `(r0·v0 + r1·v1) + r2·v2` — единственный порядок суммирования, одинаковый на GPU.
-fn dot_in_fixed_order(row: [f32; 3], vector: [f32; 3]) -> f32 {
+pub(crate) fn dot_in_fixed_order(row: [f32; 3], vector: [f32; 3]) -> f32 {
     (row[0] * vector[0] + row[1] * vector[1]) + row[2] * vector[2]
 }
 

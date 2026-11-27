@@ -58,8 +58,8 @@ fn calibrate_asks_for_a_scope_sized_by_the_layout_and_photo_does_not() {
         .scene(DisplayScreen::Calibrate)
         .scope_request
         .expect("раздел просит прибор");
-    // Умолчание раздела — waveform; размер — из раскладки экрана, а не прежняя оценка 540×360.
-    assert_eq!(request.kind, ScopeKind::Waveform);
+    // Умолчание раздела — страница из конфига, с 14s HISTOGRAM (решение 335); размер — из раскладки экрана, а не прежняя оценка 540×360.
+    assert_eq!(request.kind, ScopeKind::Histogram);
     assert_ne!(
         (request.image_size.width(), request.image_size.height()),
         (540, 360),

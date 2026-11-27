@@ -34,13 +34,16 @@
 //! без слияния, [`AccumulatorId::fallback`]); `scope_render.comp` (показ с отбором примитивов сетки по плитке).
 
 mod accumulators;
+mod cie_block;
 mod color_scopes;
 mod error;
 mod frame;
 mod frame_input;
+mod histogram_block;
 mod output_digest;
 mod parameter_blocks;
 mod picture;
+mod render_pipelines;
 mod resample_pass;
 mod resolved_rule;
 mod rule;
@@ -49,7 +52,9 @@ mod shader_literals_tests;
 #[cfg(feature = "test-support")]
 mod test_support;
 
-pub use self::accumulators::{AccumulatorShader, merged_accumulators, standard_accumulators};
+pub use self::accumulators::{
+    AccumulatorShader, cie_guess_skew_diagnostics, merged_accumulators, standard_accumulators,
+};
 pub use self::color_scopes::{ColorScopes, ColorScopesConfig};
 pub use self::error::ScopeError;
 pub use self::frame::{RecordedScope, ScopeFrame, ScopeInput, ScopePassCounters, ScopeSlotReport};

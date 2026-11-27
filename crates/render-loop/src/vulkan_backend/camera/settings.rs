@@ -465,6 +465,8 @@ mod tests {
             kind,
             vectorscope_axes: scope_contract::VectorscopeAxes::YCbCrBt709,
             vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
+            cie_diagram: scope_contract::CieDiagram::default(),
+            histogram_mode: scope_contract::HistogramMode::Rgb,
             scan: scope_contract::ScopeScan::Upright,
             image_size: scope_contract::ScopeImageSize::try_new(width, height).expect("размер"),
         }

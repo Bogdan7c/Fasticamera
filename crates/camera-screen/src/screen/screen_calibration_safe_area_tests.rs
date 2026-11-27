@@ -264,9 +264,10 @@ fn a_late_safe_area_rebuilds_the_section_and_reorders_the_scope_picture() {
             _ => None,
         })
         .collect();
-    let waveform = |layout: &CalibrationLayout| layout.scope_image_size_for(scope_contract::ScopeKind::Waveform);
-    assert_eq!(sizes, vec![waveform(&after)]);
-    assert!(waveform(&after).width() < waveform(&before).width());
+    // Раздел открывается на странице гистограммы (решение 335): её картинка и просится у рендера.
+    let opening_page = |layout: &CalibrationLayout| layout.scope_image_size_for(scope_contract::ScopeKind::Histogram);
+    assert_eq!(sizes, vec![opening_page(&after)]);
+    assert!(opening_page(&after).width() < opening_page(&before).width());
     // Узлы на новых местах: палец по карусели доходит.
     assert_eq!(
         swipe_tone_base(&mut rig),

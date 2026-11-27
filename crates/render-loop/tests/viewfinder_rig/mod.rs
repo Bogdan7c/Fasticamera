@@ -416,6 +416,8 @@ pub struct ViewfinderBench {
     pub passport: Arc<StreamPassport>,
     pub epoch: StreamEpoch,
     pub returned: Arc<Returned>,
+    /// Доска подписей прибора: в продукте её читает приложение для экрана (решения 326, 327).
+    pub scope_labels: scope_contract::ScopeLabelsBoard,
     frame_index: u64,
     shown_frames: u64,
 }
@@ -467,6 +469,7 @@ impl ViewfinderBench {
             .map(|(index, scene)| (frame_timestamp(index), *scene))
             .collect();
         let white = held_white(MANUAL_KELVIN);
+        let scope_labels = white.scope_labels.clone();
         let backend = headless_camera_backend_with_white_or_skip(
             render_config,
             stream.viewfinder(),
@@ -499,6 +502,7 @@ impl ViewfinderBench {
             passport,
             epoch,
             returned: Arc::new(Returned::default()),
+            scope_labels,
             frame_index: 0,
             shown_frames: 0,
         })
