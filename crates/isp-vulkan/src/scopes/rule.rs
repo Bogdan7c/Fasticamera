@@ -12,7 +12,9 @@ use scope_contract::ScopeScan;
 use scope_model::projection::IntegerProjection;
 
 use super::error::ScopeError;
-use scope_model::{ColumnBasis, GraticulePrimitive, GridShape, RenderSettings, TraceStyle};
+use scope_model::{
+    GraticulePrimitive, GridShape, RenderSettings, SampleCount, SampleSteps, ScopeModelSettings, TraceStyle,
+};
 
 /// Сколько слов параметров занимают общий заголовок (форма сетки и чтение картинки глазом): с `HEADER_WORDS` начинаются слова прибора.
 pub(super) const HEADER_WORDS: usize = 4;
@@ -156,8 +158,17 @@ pub trait GpuScopeRule {
     /// Какой зарегистрированный шейдер накопления считает этот прибор.
     fn accumulator(&self) -> AccumulatorId;
 
-    /// Форма сетки счётчиков (столбцы × строки × плоскости).
-    fn grid(&self) -> GridShape;
+    /// Форма сетки счётчиков (столбцы × строки × плоскости) для кадра с отсчётами `samples`: у waveform и parade
+    /// столбцов столько, сколько отсчётов вдоль взгляда (решение 322); у приборов, чья сетка от кадра не зависит,
+    /// отсчёты не участвуют.
+    fn grid(&self, samples: SampleCount) -> GridShape;
+
+    /// Шаги прореживания по осям, которые прибор просит у настроек (до плана под потолок столбцов). По умолчанию —
+    /// общий `sample_stride` по обеим осям; следы по столбцам просят реже поперёк взгляда (решение 329), вектороскопы
+    /// — свой шаг (решение 328).
+    fn wanted_steps(&self, settings: &ScopeModelSettings) -> SampleSteps {
+        SampleSteps::uniform(settings.sample_stride)
+    }
 
     /// Как глаз читает показанную картинку слева направо (положение телефона). Уходит в слово 3 заголовка
     /// блока параметров: смена чтения меняет только параметры, ресурсы не пересоздаются. Приборам, которым
@@ -173,14 +184,6 @@ pub trait GpuScopeRule {
     /// Как рисуется след: способ и его данные (цвета плоскостей, основные цвета наложения или таблица цветов по
     /// положению). Один тип отдаёт способ ВМЕСТЕ с данными, поэтому способ без данных не существует.
     fn trace_style(&self, settings: &RenderSettings) -> TraceStyle;
-
-    /// На какой основе считаются масштабы счётчика столбцов следа (см. [`ColumnBasis`]). Выравнивание по СВОИМ
-    /// отсчётам столбца ([`ColumnBasis::OwnSamples`]) верно только прибору, у которого столбец — положение отсчёта на
-    /// горизонтали глаза (`x · columns / width`: waveform, parade); прибору с другим смыслом столбца (гистограмма
-    /// по кодам) его применять нельзя, поэтому по умолчанию масштаб 1.0 ([`ColumnBasis::Uniform`]).
-    fn column_basis(&self) -> ColumnBasis {
-        ColumnBasis::Uniform
-    }
 
     /// Примитивы сетки прибора (не больше [`scope_model::MAX_GRATICULE_PRIMITIVES`]).
     fn graticule(&self, settings: &RenderSettings) -> Vec<GraticulePrimitive>;

@@ -464,6 +464,7 @@ mod tests {
         ScopeRequest {
             kind,
             vectorscope_axes: scope_contract::VectorscopeAxes::YCbCrBt709,
+            vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
             scan: scope_contract::ScopeScan::Upright,
             image_size: scope_contract::ScopeImageSize::try_new(width, height).expect("размер"),
         }

@@ -152,6 +152,7 @@ impl ScopesSaturation {
         let request = ScopeRequest {
             kind: config.kind,
             vectorscope_axes: config.vectorscope_axes,
+            vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
             scan: config.scan,
             image_size: config.picture_size,
         };

@@ -94,7 +94,7 @@ fn counters_match_cpu_bit_exact_on_synthetic_pictures() {
         }
     }
     // Сравнений много и большинство не пустые (иначе «равны» могло бы значить «оба нули»).
-    assert_eq!(compared, 6 * 2 * 2 * 3 * 5, "размер матрицы");
+    assert_eq!(compared, 6 * 2 * 2 * 3 * 6, "размер матрицы");
     assert!(
         non_empty * 10 >= compared * 9,
         "непустых сравнений {non_empty} из {compared}"
@@ -109,9 +109,12 @@ fn counters_match_cpu_bit_exact_on_synthetic_pictures() {
 fn gray_ramp_draws_a_diagonal_on_waveform_and_one_centre_cell_on_vectorscopes() {
     let Some(context) = gpu_context_or_skip() else { return };
     let settings = ScopeModelSettings {
-        trace_columns: 1024,
+        trace_max_columns: 1024,
         trace_levels: 1024,
         sample_stride: SampleStride::EVERY_PIXEL,
+        // Все 1024 кода — и у вектороскопа (его шаг по умолчанию 2, решение 328), и у следов поперёк взгляда (329).
+        vectorscope_sample_stride: SampleStride::EVERY_PIXEL,
+        trace_across_eye_stride: SampleStride::EVERY_PIXEL,
         ..small_settings()
     };
     let rules = rule_cases(&settings);
@@ -155,6 +158,14 @@ fn gray_ramp_draws_a_diagonal_on_waveform_and_one_centre_cell_on_vectorscopes() 
                     "{rule_name}: по три плоскости на отсчёт"
                 );
             }
+            "luma" => {
+                // Яркость серого — сам код: та же диагональ, но одна плоскость (решение 321).
+                assert_eq!(shape.planes(), 1);
+                for code in 0..1024_u32 {
+                    assert_eq!(counters.count(0, 1023 - code, code), Some(3), "яркость, код {code}");
+                }
+                assert_eq!(counters.total(), 3 * 1024, "{rule_name}: по одному попаданию на отсчёт");
+            }
             _ => {
                 let centre = shape.columns() / 2;
                 assert_eq!(
@@ -164,6 +175,59 @@ fn gray_ramp_draws_a_diagonal_on_waveform_and_one_centre_cell_on_vectorscopes() 
                 );
                 assert_eq!(counters.total(), 3 * 1024, "{rule_name}: вне центра ничего");
             }
+        }
+    }
+    assert_no_validation_errors(&context);
+}
+
+/// Окно шире потолка столбцов: план отсчётов (`SampleCount::planned`) сам берёт бо́льший шаг, и GPU делает то же, что
+/// эталон, — бит в бит. Случайная сцена 97 × 61 при потолке 40 столбцов: шаг 1 дал бы 97, шаг 2 — 49 (оба выше
+/// потолка), шаг 3 — 32 столбца (x = 1, 4, …, 94: смещение шага 1).
+#[test]
+fn a_window_wider_than_the_column_ceiling_raises_the_stride_identically_on_gpu_and_cpu() {
+    let Some(context) = gpu_context_or_skip() else { return };
+    let settings = ScopeModelSettings {
+        trace_max_columns: 40,
+        ..small_settings()
+    };
+    let mut scopes = ColorScopes::new(
+        &context,
+        &ColorScopesConfig {
+            frame_slots: 1,
+            counter_sizing: settings.clone(),
+        },
+    )
+    .unwrap();
+    let scene = scope_support::random_scene(0x7357_0001);
+    assert_eq!(
+        (scene.width, scene.height),
+        (97, 61),
+        "предпосылка теста — размер сцены"
+    );
+    let input = upload_scene(&context, &scene, StorageFormatPolicy::PreferTenBitUnorm, (2, 2));
+    let shown = input.shown_codes(HorizontalMirror::Off);
+    for (rule_name, rule) in rule_cases(&settings) {
+        // Пол шага под потолок — 3 по ОБЕИМ осям (у следа поперёк взгляда просили 2 — пол сильнее, решение 329).
+        let samples = scope_support::planned_samples_for(&shown, &settings, &rule);
+        assert_eq!(
+            (samples.steps().across().get(), samples.steps().down().get()),
+            (3, 3),
+            "{rule_name}"
+        );
+        let frame = ScopeFrame {
+            input: input.input(HorizontalMirror::Off),
+            rule: &rule,
+            settings: &settings,
+            picture_size: picture_size(120, 64),
+            frame_slot: 0,
+        };
+        run_scope_frame(&context, &mut scopes, &frame).unwrap();
+        let gpu = scopes.read_back_counters_blocking().unwrap();
+        let cpu = cpu_counters(&shown, &settings, &rule as &dyn ScopeRule);
+        assert_eq!(gpu, cpu, "{rule_name}: счётчики GPU и CPU разошлись");
+        assert!(cpu.total() > 0, "{rule_name}: счётчики не пусты");
+        if matches!(rule_name, "waveform" | "luma" | "parade") {
+            assert_eq!(gpu.shape().columns(), 32, "{rule_name}: столбец на отсчёт при шаге 3");
         }
     }
     assert_no_validation_errors(&context);

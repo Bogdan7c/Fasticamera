@@ -11,15 +11,29 @@ use crate::vectorscope_geometry::{MAX_VECTORSCOPE_SIZE, MIN_VECTORSCOPE_SIZE};
 use crate::{
     grid::{GridShape, MAX_GRID_SIDE},
     oklab_rule::{MAX_OKLAB_RANGE, MIN_OKLAB_RANGE},
-    vectorscope_ycbcr::MAX_YCBCR_GAIN,
+    vectorscope_ycbcr::{MAX_YCBCR_GAIN, MIN_YCBCR_GAIN},
 };
+
+/// Наименьшая цветность края Y'CbCr: при зуме 2× (решение 325) правилу уходит усиление `0,5 / (край / 2)`, оно не
+/// выше `MAX_YCBCR_GAIN`.
+pub const MIN_YCBCR_EDGE_CHROMA: f32 = 2.0 * 0.5 / MAX_YCBCR_GAIN;
+/// Наибольшая цветность края Y'CbCr: усиление `0,5 / край` не ниже `MIN_YCBCR_GAIN`.
+pub const MAX_YCBCR_EDGE_CHROMA: f32 = 0.5 / MIN_YCBCR_GAIN;
+
+/// Наименьший размах OKLab в настройках: при зуме 2× правилу уходит половина, и она не ниже `MIN_OKLAB_RANGE`.
+pub const MIN_SETTINGS_OKLAB_RANGE: f32 = 2.0 * MIN_OKLAB_RANGE;
+
+/// Усиление правила Y'CbCr для цветности края `edge_chroma` (1 — ±0,5 на краю) — единственный пересчёт настройки.
+pub fn ycbcr_gain_for_edge_chroma(edge_chroma: f32) -> f32 {
+    0.5 / edge_chroma
+}
 
 /// Ошибка настроек модели приборов: у каждой причины свой вариант.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum ScopeSettingsError {
-    /// Число столбцов waveform/parade вне `1..=MAX_GRID_SIDE`.
-    #[error("столбцов waveform/parade {columns} вне 1..={MAX_GRID_SIDE}")]
-    TraceColumnsOutOfRange {
+    /// Потолок столбцов waveform/parade вне `1..=MAX_GRID_SIDE`.
+    #[error("потолок столбцов waveform/parade {columns} вне 1..={MAX_GRID_SIDE}")]
+    TraceMaxColumnsOutOfRange {
         /// Недопустимое число.
         columns: u32,
     },
@@ -36,13 +50,13 @@ pub enum ScopeSettingsError {
         size: u32,
     },
     /// Усиление Y'CbCr вне допустимого.
-    #[error("усиление вектороскопа Y'CbCr {gain} вне 1..={MAX_YCBCR_GAIN}")]
-    YCbCrGainOutOfRange {
+    #[error("цветность края вектороскопа Y'CbCr {chroma} вне {MIN_YCBCR_EDGE_CHROMA}..={MAX_YCBCR_EDGE_CHROMA}")]
+    YCbCrEdgeChromaOutOfRange {
         /// Недопустимое значение.
-        gain: f32,
+        chroma: f32,
     },
     /// Размах OKLab вне допустимого.
-    #[error("размах OKLab {range} вне {MIN_OKLAB_RANGE}..={MAX_OKLAB_RANGE}")]
+    #[error("размах OKLab {range} вне {MIN_SETTINGS_OKLAB_RANGE}..={MAX_OKLAB_RANGE}")]
     OklabRangeOutOfRange {
         /// Недопустимое значение.
         range: f32,
@@ -59,19 +73,33 @@ pub enum ScopeSettingsError {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ScopeModelSettings {
-    /// Столбцов сетки waveform и parade. `[estimate]` 512 (решение 268): чем больше столбцов, тем тоньше след
-    /// RGB waveform на всю ширину картинки.
-    pub trace_columns: u32,
-    /// Уровней сетки waveform и parade. `[estimate]` 256: по уровню на 4 кода.
+    /// Потолок столбцов сетки waveform и parade: ёмкость буфера счётчиков. Столбцов в кадре — столько, сколько
+    /// отсчётов вдоль взгляда (решение 322; заменяет фиксированные 512 из решения 268), окно шире потолка берётся
+    /// с бо́льшим шагом ([`crate::SampleCount::planned`]). `[estimate]` 2048: длинная сторона показанной картинки на
+    /// всех потоках телефона ≤ 2048, шаг 1 остаётся всегда.
+    pub trace_max_columns: u32,
+    /// Уровней сетки waveform и parade. `[estimate]` 512: по уровню на 2 кода (было 256 — ступеньки по 3 px на
+    /// картинке 827 px высотой; на листах 14r 512 и 1024 глазом не различались, 512 вдвое дешевле очистки).
     pub trace_levels: u32,
-    /// Сторона квадратной сетки вектороскопа (одна для обеих систем осей). `[estimate]` 256.
+    /// Сторона квадратной сетки вектороскопа (одна для обеих систем осей). `[estimate]` 512 (было 256 — клетки по
+    /// 3,2 px на картинке 827 px).
     pub vectorscope_size: u32,
-    /// Усиление вектороскопа Y'CbCr (1 — полный размах на край). `[estimate]` 1.
-    pub ycbcr_gain: f32,
+    /// Цветность Y'CbCr (длина вектора Cb/Cr) на краю круга вектороскопа при зуме 1×. `[estimate]` 0,64 (решение 324):
+    /// самая длинная цветность полос 100 % BT.709 — 0,596 у пурпурного и зелёного — встаёт на 0,93 радиуса, все
+    /// цели 100 % внутри круга, как у Resolve и Final Cut. До 14r было 0,5 (цели 100 % выходили за круг).
+    pub ycbcr_edge_chroma: f32,
     /// OKLab-цветность, уходящая на край сетки. `[estimate]` 0,4: цветность sRGB-красного 0,26, P3 — до 0,3.
     pub oklab_range: f32,
-    /// Прореживание входа. `[estimate]` 2: четверть отсчётов, рычаг бюджета (замер в 14b).
+    /// Прореживание входа waveform, parade и Luma ВДОЛЬ взгляда (из этих отсчётов — столбцы сетки). 1 — каждый пиксель
+    /// (решение 322: «песок» шага 2 на листах 14r), рычаг бюджета остаётся. Правило без своего шага берёт его по
+    /// обеим осям.
     pub sample_stride: SampleStride,
+    /// Прореживание входа waveform, parade и Luma ПОПЕРЁК взгляда. 2 — каждая вторая строка (решение 329: цена
+    /// прибора в разделе): столбец получает вдвое меньше попаданий, но поровну, яркость следа — от плотности, вид тот же.
+    pub trace_across_eye_stride: SampleStride,
+    /// Прореживание входа вектороскопа. 2 — каждый второй пиксель по обеим осям (решение 328): вектороскоп собирает
+    /// весь кадр в один круг, четверти отсчётов ему хватает (так было до 14r), а накопление вчетверо дешевле.
+    pub vectorscope_sample_stride: SampleStride,
     /// Правило показа.
     pub render: RenderSettings,
 }
@@ -79,12 +107,14 @@ pub struct ScopeModelSettings {
 impl Default for ScopeModelSettings {
     fn default() -> Self {
         Self {
-            trace_columns: 512,
-            trace_levels: 256,
-            vectorscope_size: 256,
-            ycbcr_gain: 1.0,
+            trace_max_columns: 2048,
+            trace_levels: 512,
+            vectorscope_size: 512,
+            ycbcr_edge_chroma: 0.64,
             oklab_range: 0.4,
-            sample_stride: SampleStride::EVERY_SECOND_PIXEL,
+            sample_stride: SampleStride::EVERY_PIXEL,
+            trace_across_eye_stride: SampleStride::EVERY_SECOND_PIXEL,
+            vectorscope_sample_stride: SampleStride::EVERY_SECOND_PIXEL,
             render: RenderSettings::default(),
         }
     }
@@ -93,9 +123,9 @@ impl Default for ScopeModelSettings {
 impl ScopeModelSettings {
     /// Проверка всех значений, включая бюджет памяти сеток.
     pub fn validate(&self) -> Result<(), ScopeSettingsError> {
-        if !(1..=MAX_GRID_SIDE).contains(&self.trace_columns) {
-            return Err(ScopeSettingsError::TraceColumnsOutOfRange {
-                columns: self.trace_columns,
+        if !(1..=MAX_GRID_SIDE).contains(&self.trace_max_columns) {
+            return Err(ScopeSettingsError::TraceMaxColumnsOutOfRange {
+                columns: self.trace_max_columns,
             });
         }
         if !(1..=MAX_LEVELS).contains(&self.trace_levels) {
@@ -108,16 +138,18 @@ impl ScopeModelSettings {
                 size: self.vectorscope_size,
             });
         }
-        if !(1.0..=MAX_YCBCR_GAIN).contains(&self.ycbcr_gain) {
-            return Err(ScopeSettingsError::YCbCrGainOutOfRange { gain: self.ycbcr_gain });
+        if !(MIN_YCBCR_EDGE_CHROMA..=MAX_YCBCR_EDGE_CHROMA).contains(&self.ycbcr_edge_chroma) {
+            return Err(ScopeSettingsError::YCbCrEdgeChromaOutOfRange {
+                chroma: self.ycbcr_edge_chroma,
+            });
         }
-        if !(MIN_OKLAB_RANGE..=MAX_OKLAB_RANGE).contains(&self.oklab_range) {
+        if !(MIN_SETTINGS_OKLAB_RANGE..=MAX_OKLAB_RANGE).contains(&self.oklab_range) {
             return Err(ScopeSettingsError::OklabRangeOutOfRange {
                 range: self.oklab_range,
             });
         }
         // Бюджет ячеек: проверяем тем же конструктором формы, что и правила.
-        GridShape::try_new(self.trace_columns, self.trace_levels, 3)?;
+        GridShape::try_new(self.trace_max_columns, self.trace_levels, 3)?;
         GridShape::try_new(self.vectorscope_size, self.vectorscope_size, 1)?;
         self.render.validate()?;
         Ok(())

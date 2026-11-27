@@ -107,7 +107,7 @@ impl UiFrameSource for ScopePictureSource {
 /// Модель приборов поменьше (тест не гоняет эталон по 256×256×3), шаг 1: меряется каждый пиксель.
 fn small_model() -> ScopeModelSettings {
     ScopeModelSettings {
-        trace_columns: 48,
+        trace_max_columns: 48,
         trace_levels: 64,
         vectorscope_size: 64,
         sample_stride: SampleStride::try_new(1).expect("шаг"),
@@ -120,6 +120,8 @@ fn config() -> RenderLoopConfig {
         display_color: DisplayColorConfig::SrgbOnly,
         viewfinder: ViewfinderConfig {
             scopes: ScopesConfig {
+                // Каждый кадр: тест сверяет прибор с ПОСЛЕДНИМ показанным кадром (каденция — отдельные тесты).
+                every_nth_frame: 1,
                 model: small_model(),
                 ..ScopesConfig::default()
             },
@@ -133,6 +135,7 @@ fn request(kind: ScopeKind, axes: VectorscopeAxes) -> ScopeRequest {
     ScopeRequest {
         kind,
         vectorscope_axes: axes,
+        vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
         scan: scope_contract::ScopeScan::Upright,
         image_size: ScopeImageSize::try_new(160, 96).expect("размер"),
     }
@@ -237,8 +240,13 @@ fn reference(bench: &ViewfinderBench, scope: &ScopeRequest) -> (ScopeCounters, R
         .expect("коды");
     let model = small_model();
     let rule = ResolvedScope::resolve(scope, &model, isp_model::image::DisplayGamut::Srgb).expect("правило");
-    let counters = accumulate(&shown, model.sample_stride, &rule as &dyn ScopeRule).expect("эталон");
-    let samples = SampleCount::for_window(shown.width(), shown.height(), model.sample_stride);
+    let counters = accumulate(
+        &shown,
+        rule.planned_samples(shown.width(), shown.height(), &model).steps(),
+        &rule as &dyn ScopeRule,
+    )
+    .expect("эталон");
+    let samples = rule.planned_samples(shown.width(), shown.height(), &model);
     (counters, rule, samples)
 }
 
@@ -405,6 +413,103 @@ fn a_screen_show_vectorscope_oklab_intent_makes_the_gpu_use_oklab_axes() {
         assert_ne!(gpu, expected_ycbcr, "кадр {frame}: это не Cb/Cr");
     }
     assert_eq!(scopes_of(&mut bench).requested, Some(oklab));
+    bench.finish();
+}
+
+/// Кнопка «2×» (решение 325) тем же путём экрана: GPU считает вектороскоп с увеличением — счётчики равны эталону
+/// увеличенного запроса и отличаются от обычного масштаба.
+#[test]
+fn a_screen_show_vectorscope_at_double_zoom_makes_the_gpu_magnify_the_centre() {
+    let scenes = [reddish(), bluish()];
+    let Some(mut bench) = ViewfinderBench::start_with_scenes(&config(), &scenes) else {
+        return;
+    };
+    let normal = request(ScopeKind::Vectorscope, VectorscopeAxes::YCbCrBt709);
+    let double = ScopeRequest {
+        vectorscope_zoom: scope_contract::VectorscopeZoom::Double,
+        ..normal
+    };
+    let mut screen = ScreenToRender::new();
+    install_scope_screen(&mut bench, double.image_size);
+    screen.dispatch(ScopeIntent::Show(double));
+    assert_eq!(screen.deliver_to(&mut bench), vec![ViewfinderCommandOutcome::Applied]);
+    for frame in 1..=scenes.len() {
+        bench.show_next_frame();
+        let gpu = gpu_counters(&bench);
+        let (expected_double, _, _) = reference(&bench, &double);
+        let (expected_normal, _, _) = reference(&bench, &normal);
+        assert_eq!(gpu, expected_double, "кадр {frame}: GPU считает с увеличением ×2");
+        assert_ne!(
+            expected_double, expected_normal,
+            "кадр {frame}: увеличение меняет счётчики"
+        );
+        assert_eq!(
+            gpu.shape(),
+            expected_normal.shape(),
+            "кадр {frame}: сетка та же — ресурсы не пересоздаются"
+        );
+    }
+    assert_eq!(scopes_of(&mut bench).requested, Some(double));
+    bench.finish();
+}
+
+/// Страница LUMA WAVEFORM (решение 321) тем же путём экрана: GPU считает одну плоскость яркости, счётчики — эталон
+/// показанного кадра, картинка прибора — эталон показа и белый след; это не RGB waveform (три плоскости).
+#[test]
+fn a_screen_show_luma_waveform_intent_draws_the_one_plane_luma_trace_of_the_shown_frame() {
+    let scenes = [reddish(), bluish()];
+    let Some(mut bench) = ViewfinderBench::start_with_scenes(&config(), &scenes) else {
+        return;
+    };
+    let luma = request(ScopeKind::LumaWaveform, VectorscopeAxes::YCbCrBt709);
+    let rgb = request(ScopeKind::Waveform, VectorscopeAxes::YCbCrBt709);
+    let mut screen = ScreenToRender::new();
+
+    install_scope_screen(&mut bench, luma.image_size);
+    screen.dispatch(ScopeIntent::Show(luma));
+    assert_eq!(screen.deliver_to(&mut bench), vec![ViewfinderCommandOutcome::Applied]);
+
+    for frame in 1..=scenes.len() {
+        bench.show_next_frame();
+        let gpu = gpu_counters(&bench);
+        let (expected, rule, samples) = reference(&bench, &luma);
+        let (expected_rgb, _, _) = reference(&bench, &rgb);
+        assert_eq!(gpu, expected, "кадр {frame}: GPU считает яркость показанного кадра");
+        assert_eq!(gpu.shape().planes(), 1, "кадр {frame}: одна плоскость");
+        assert_ne!(
+            gpu.shape(),
+            expected_rgb.shape(),
+            "кадр {frame}: это не три плоскости RGB"
+        );
+        let picture = bench
+            .backend
+            .read_scope_picture()
+            .expect("чтение картинки прибора")
+            .expect("картинка есть");
+        let model = small_model();
+        let reference_picture =
+            render(&expected, &rule, &model.render, luma.image_size, samples).expect("эталон показа");
+        let worst = worst_premultiplied_difference(&picture.texels, reference_picture.pixels());
+        assert!(
+            worst <= PICTURE_TOLERANCE,
+            "кадр {frame}: картинка разошлась с эталоном на {worst}"
+        );
+        // След белый: у самых ярких пикселей следа цвет — цвет следа яркости из настроек.
+        let brightest = picture
+            .texels
+            .iter()
+            .copied()
+            .max_by(|a, b| a[3].total_cmp(&b[3]))
+            .expect("пиксели есть");
+        assert!(brightest[3] > 0.5, "кадр {frame}: след есть");
+        for channel in 0..3 {
+            assert!(
+                (brightest[channel] - model.render.luma_trace_color[channel]).abs() < 2e-2,
+                "кадр {frame}: след белый, {brightest:?}"
+            );
+        }
+    }
+    assert_eq!(scopes_of(&mut bench).requested, Some(luma));
     bench.finish();
 }
 

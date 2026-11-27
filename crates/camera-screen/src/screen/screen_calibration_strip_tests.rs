@@ -3,7 +3,7 @@
 //! 277–281, 283).
 
 use look_contract::{GlobalKnob, LookControl, LookIntent};
-use scope_contract::{ScopeIntent, ScopeKind, VectorscopeAxes};
+use scope_contract::{ScopeIntent, ScopeKind, VectorscopeAxes, VectorscopeZoom};
 use shell_contract::orientation::DeviceOrientation;
 use shell_contract::touch::TouchPhase;
 use ui_core::geometry::{Point, Vector};
@@ -131,6 +131,83 @@ fn the_axes_toggle_switches_the_vectorscope_standard_with_the_menu_closed_and_re
             VectorscopeAxes::YCbCrBt709
         );
     }
+}
+
+#[test]
+fn the_2x_button_toggles_the_vectorscope_zoom_and_resends_the_request_in_every_orientation() {
+    // Решение 325: тап по «2×» увеличивает вектороскоп, повторный — возвращает обычный масштаб; рендер получает запрос
+    // с новым увеличением, оси не меняются.
+    for orientation in ORIENTATIONS {
+        let mut rig = calibrating(look_facts(), orientation);
+        rig.act(ScreenAction::ScopeKindSelected(ScopeKind::Vectorscope));
+        rig.run(300);
+        rig.effects();
+        assert_eq!(
+            rig.screen.state().calibration().vectorscope_zoom(),
+            VectorscopeZoom::Normal
+        );
+
+        rig.tap(center(&rig, "calib_scope_zoom", 0));
+        rig.run(200);
+        assert_eq!(
+            rig.screen.state().calibration().vectorscope_zoom(),
+            VectorscopeZoom::Double,
+            "{orientation:?}: «2×» включает увеличение"
+        );
+        let requests = scope_requests(&mut rig);
+        assert_eq!(requests.len(), 1, "{orientation:?}");
+        assert_eq!(requests[0].vectorscope_zoom, VectorscopeZoom::Double);
+        assert_eq!(
+            requests[0].vectorscope_axes,
+            VectorscopeAxes::YCbCrBt709,
+            "оси не тронуты"
+        );
+
+        rig.tap(center(&rig, "calib_scope_zoom", 0));
+        rig.run(200);
+        assert_eq!(
+            rig.screen.state().calibration().vectorscope_zoom(),
+            VectorscopeZoom::Normal,
+            "{orientation:?}: повторный тап — обычный масштаб"
+        );
+        assert_eq!(scope_requests(&mut rig)[0].vectorscope_zoom, VectorscopeZoom::Normal);
+    }
+}
+
+#[test]
+fn the_2x_button_is_drawn_and_touchable_only_on_the_vectorscope_page_and_the_zoom_survives_a_swipe() {
+    let mut rig = portrait(look_facts());
+    assert_eq!(
+        text_count_of(&rig.frame().clone(), "2×", TextRoleKind::SegmentLabel),
+        0,
+        "на waveform кнопки нет"
+    );
+    rig.act(ScreenAction::ScopeKindSelected(ScopeKind::Vectorscope));
+    rig.run(300);
+    assert_eq!(text_count_of(&rig.frame().clone(), "2×", TextRoleKind::SegmentLabel), 1);
+    let button = center(&rig, "calib_scope_zoom", 0);
+    rig.tap(button);
+    rig.run(200);
+    assert_eq!(
+        rig.screen.state().calibration().vectorscope_zoom(),
+        VectorscopeZoom::Double
+    );
+    // На другой странице место кнопки мёртвое, а выбор увеличения сохраняется до возврата на вектороскоп.
+    rig.act(ScreenAction::ScopeKindSelected(ScopeKind::RgbParade));
+    rig.run(300);
+    rig.effects();
+    rig.tap(button);
+    rig.run(200);
+    assert_eq!(
+        rig.screen.state().calibration().vectorscope_zoom(),
+        VectorscopeZoom::Double
+    );
+    rig.act(ScreenAction::ScopeKindSelected(ScopeKind::Vectorscope));
+    rig.run(300);
+    assert_eq!(
+        scope_requests(&mut rig).last().map(|request| request.vectorscope_zoom),
+        Some(VectorscopeZoom::Double)
+    );
 }
 
 #[test]
@@ -485,9 +562,11 @@ fn a_25_pt_swipe_flips_one_page_in_its_direction_and_a_15_pt_one_does_nothing() 
         drag_eye(&mut rig, start, Vector::new(-25.0, 0.0));
         assert_eq!(
             scope_kind(&rig),
-            ScopeKind::RgbParade,
+            ScopeKind::LumaWaveform,
             "{orientation:?}: 25 pt влево — следующая страница"
         );
+        drag_eye(&mut rig, start, Vector::new(-25.0, 0.0));
+        assert_eq!(scope_kind(&rig), ScopeKind::RgbParade);
         drag_eye(&mut rig, start, Vector::new(-25.0, 0.0));
         assert_eq!(scope_kind(&rig), ScopeKind::Vectorscope);
         drag_eye(&mut rig, start, Vector::new(-60.0, 0.0));
@@ -513,7 +592,7 @@ fn a_swipe_started_on_the_strip_flips_pages_too() {
     let strip = layout.scope_strip();
     let start = layout.eye_point_on_surface(Point::new(strip.min_x() + 110.0, strip.center().y));
     drag_eye(&mut rig, start, Vector::new(-40.0, 0.0));
-    assert_eq!(scope_kind(&rig), ScopeKind::RgbParade);
+    assert_eq!(scope_kind(&rig), ScopeKind::LumaWaveform);
 }
 
 /// Быстрый мазок глазами на `eye` от `from`: палец отпускается на ходу, со скоростью (в отличие от `drag_eye`, который

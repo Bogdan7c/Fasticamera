@@ -5,20 +5,21 @@
 //! есть `log2` и деление, поэтому картинка сверяется с допуском.
 //!
 //! Способ рисования следа решает правило прибора ([`ResolvedScope::trace_style`]): секции по плоскостям, плоскости
-//! наложением или цвет по месту; пиксельные формулы каждого способа — в [`crate::trace_painter`]. Яркость следа —
-//! `min(1, log2(1 + count · scale) / log2(1 + порог))`, порог — доля отсчётов среднего столбца (waveform, parade) или всего кадра (вектороскоп), см. [`TraceReference`]; `scale` — масштаб столбца ([`ColumnCountScales`], 1 у вектороскопа), поэтому
-//! [`render`] получает число отсчётов кадра. Альфа следа `яркость · trace_opacity`. Сетка рисуется ПОД следом:
-//! прямая альфа «over», `a = a_t + a_g (1 − a_t)`.
+//! наложением или цвет по месту; пиксельные формулы каждого способа — в [`crate::trace_painter`]. Сетка счётчиков
+//! переносится в пиксели плавно ([`PictureDensity`], решение 322): счёт пикселя — попадания на пиксель. Яркость
+//! следа — `min(1, log2(1 + счёт) / log2(1 + порог))`, порог — плотность полной яркости ([`TraceReference`]), поэтому
+//! [`render`] получает число отсчётов кадра (от него же — число столбцов сетки waveform/parade). Альфа следа
+//! `яркость · trace_opacity`. Сетка рисуется ПОД следом: прямая альфа «over», `a = a_t + a_g (1 − a_t)`.
 
 use scope_contract::ScopeImageSize;
 
-use crate::column_count_scales::{ColumnBasis, ColumnCountScales};
 use crate::graticule::GraticulePrimitive;
 use crate::grid::ScopeCounters;
 use crate::render_settings::{RenderSettings, RenderSettingsError};
 use crate::resolved::ResolvedScope;
 use crate::rule::ScopeRule;
 use crate::sample_count::SampleCount;
+use crate::trace_density::PictureDensity;
 use crate::trace_painter::TracePainter;
 use crate::trace_reference::TraceReference;
 
@@ -62,9 +63,9 @@ impl ScopePicture {
     }
 }
 
-/// Картинка прибора из счётчиков. `samples` — число отсчётов кадра, из которого получены счётчики
-/// ([`SampleCount::for_window`] по окну показанной картинки): от него зависит опорное число яркости следа.
-/// Опорное число каждого столбца — по ЕГО отсчётам ([`ColumnBasis::OwnSamples`]).
+/// Картинка прибора из счётчиков. `samples` — отсчёты кадра, из которого получены счётчики (план
+/// [`SampleCount::planned`] по окну показанной картинки): от них зависят форма сетки waveform/parade и опорное число
+/// яркости следа.
 pub fn render(
     counters: &ScopeCounters,
     scope: &ResolvedScope,
@@ -72,37 +73,23 @@ pub fn render(
     size: ScopeImageSize,
     samples: SampleCount,
 ) -> Result<ScopePicture, RenderError> {
-    render_with_basis(counters, scope, settings, size, samples, ColumnBasis::OwnSamples)
-}
-
-/// То же, что [`render`], но с явной основой опорных чисел столбцов. Продукт зовёт только [`render`]; явная основа
-/// нужна тестам, которые показывают, чем прежняя формула без масштаба столбцов ([`ColumnBasis::Uniform`]) хуже
-/// (вертикальные полосы), и сверке с замороженной копией шейдера.
-pub fn render_with_basis(
-    counters: &ScopeCounters,
-    scope: &ResolvedScope,
-    settings: &RenderSettings,
-    size: ScopeImageSize,
-    samples: SampleCount,
-    basis: ColumnBasis,
-) -> Result<ScopePicture, RenderError> {
     settings.validate()?;
-    if counters.shape() != scope.shape() {
+    let shape = counters.shape();
+    if shape != scope.shape(samples) {
         return Err(RenderError::ShapeMismatch);
     }
     let style = scope.trace_style(settings);
-    // Порог полной яркости один на кадр (доля среднего столбца), а счётчик каждого столбца приводится масштабом
-    // «среднее / свои отсчёты»: отсчёты по столбцам делятся неравномерно (см. `column_count_scales`). Так же их
-    // считает GPU-сторона для таблицы блока показа.
-    let reference = TraceReference::for_paint(style.paint(), settings, samples, counters.shape().columns());
-    let scales = ColumnCountScales::new(style.paint(), basis, samples, scope.scan(), counters.shape().columns());
-    let painter = TracePainter::new(counters, &style, reference, &scales, settings.trace_opacity);
+    let paint = style.paint();
+    // Порог полной яркости один на кадр — плотность от равномерной; GPU-сторона берёт тот же вызов.
+    let reference = TraceReference::for_paint(paint, settings, samples, size, shape.planes());
+    let density = PictureDensity::compute(counters, samples, paint, size, settings.trace_softening_px);
+    let painter = TracePainter::new(&density, shape, size, &style, reference, settings.trace_opacity);
     let graticule = scope.graticule(settings);
     let picture_px = [size.width() as f32, size.height() as f32];
     let mut pixels = Vec::with_capacity(size.width() as usize * size.height() as usize);
     for y in 0..size.height() {
         for x in 0..size.width() {
-            let trace = painter.pixel(x, y, size);
+            let trace = painter.pixel(x, y);
             let center = [x as f32 + 0.5, y as f32 + 0.5];
             let graticule_alpha = graticule_alpha(&graticule, center, picture_px, settings);
             pixels.push(composite_over(

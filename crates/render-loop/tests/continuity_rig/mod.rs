@@ -395,7 +395,13 @@ impl Rig {
         with_auto_exposure: bool,
         stills: Option<StillSetup>,
     ) -> Option<Self> {
-        Self::with_stills_and_scopes(continuity, with_auto_exposure, stills, ScopesConfig::default())
+        // Приборы на каждом кадре: стенды непрерывности считают проходы на показанных кадрах поштучно, а каденцию
+        // продукта (каждый второй кадр, решение 329) проверяют свои тесты `vulkan_scopes.rs` и `scope_pass`.
+        let scopes = ScopesConfig {
+            every_nth_frame: 1,
+            ..ScopesConfig::default()
+        };
+        Self::with_stills_and_scopes(continuity, with_auto_exposure, stills, scopes)
     }
 
     /// Стенд со снимками (или без) и настройками цветовых приборов `scopes` (малая модель в тестах приборов).

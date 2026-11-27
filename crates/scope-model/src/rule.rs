@@ -7,7 +7,9 @@ use scope_contract::ScopeScan;
 
 use crate::codes::ShownCodes;
 use crate::grid::{GridShape, ScopeCounters};
-use crate::sampling::SampleStride;
+use crate::sample_count::SampleCount;
+use crate::sampling::SampleSteps;
+use crate::settings::ScopeModelSettings;
 
 /// Одно попадание: ячейка сетки.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,38 +23,52 @@ pub struct Hit {
 }
 
 /// Где стоит отсчёт НА ГОРИЗОНТАЛИ ГЛАЗА: правилам waveform и parade нужна не колонка поверхности, а
-/// положение вдоль оси сцены «слева направо» (см. [`ScopeScan`]).
+/// номер отсчёта вдоль оси сцены «слева направо» (см. [`ScopeScan`]). Столбец сетки следа — ровно этот номер
+/// (решение 322): у каждого измеренного столбца кадра свой столбец счёта, пустых и двойных столбцов нет.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SamplePosition {
-    /// Координата отсчёта вдоль взгляда «слева направо» (с учётом зеркала картинки и поворота телефона).
-    pub x: u32,
-    /// Длина этой оси на показанной картинке (ширина или высота поверхности — по повороту).
-    pub picture_width: u32,
+    /// Номер отсчёта вдоль взгляда «слева направо» (с учётом зеркала картинки и поворота телефона), `0..eye_samples`.
+    pub eye_index: u32,
+    /// Сколько отсчётов вдоль этой оси ([`SampleCount::along_eye`]).
+    pub eye_samples: u32,
 }
 
 impl SamplePosition {
-    /// Положение отсчёта `(x, y)` ПОКАЗАННОЙ картинки `width × height` для того, кто читает её по `scan`.
+    /// Положение отсчёта с номерами `(column_index, row_index)` (по осям ПОКАЗАННОЙ картинки) для того, кто читает
+    /// её по `scan`.
     ///
     /// Показанная картинка уже зеркальна, если зеркален экран; поворот лишь описывает, как глаз её читает,
-    /// и накладывается поверх (зеркало → чтение).
-    pub fn from_shown(x: u32, y: u32, width: u32, height: u32, scan: ScopeScan) -> Self {
-        let (along, extent) = if scan.runs_along_surface_rows() {
-            (y, height)
+    /// и накладывается поверх (зеркало → чтение). Отсчёты вдоль оси стоят через равный шаг, поэтому «читать с
+    /// конца» — это просто номер с конца.
+    pub fn of_sample(column_index: u32, row_index: u32, samples: SampleCount, scan: ScopeScan) -> Self {
+        let along = if scan.runs_along_surface_rows() {
+            row_index
         } else {
-            (x, width)
+            column_index
         };
-        let along = if scan.is_reversed() { extent - 1 - along } else { along };
-        Self {
-            x: along,
-            picture_width: extent,
-        }
+        let eye_samples = samples.along_eye(scan);
+        let eye_index = if scan.is_reversed() {
+            eye_samples - 1 - along
+        } else {
+            along
+        };
+        Self { eye_index, eye_samples }
     }
 }
 
 /// Правило попадания прибора.
 pub trait ScopeRule {
-    /// Форма сетки счётчиков.
-    fn shape(&self) -> GridShape;
+    /// Форма сетки счётчиков для кадра с отсчётами `samples`. Waveform и parade берут из них число столбцов
+    /// (столбец = номер отсчёта вдоль взгляда); приборам, чья сетка от кадра не зависит (вектороскоп), отсчёты
+    /// безразличны.
+    fn shape(&self, samples: SampleCount) -> GridShape;
+
+    /// Шаги прореживания по осям, которые прибор просит у настроек (до плана под потолок столбцов,
+    /// [`SampleCount::planned`]). По умолчанию — общий `sample_stride` по обеим осям; след по столбцам просит все
+    /// отсчёты вдоль взгляда и реже поперёк (решение 329), вектороскоп — свой шаг (решение 328).
+    fn wanted_steps(&self, settings: &ScopeModelSettings) -> SampleSteps {
+        SampleSteps::uniform(settings.sample_stride)
+    }
 
     /// Как глаз читает показанную картинку слева направо. Прибору, которому положение не важно
     /// (вектороскоп), оставляется чтение по умолчанию — результат от него не зависит.
@@ -73,20 +89,23 @@ pub enum AccumulateError {
     HitOutsideGrid(Hit),
 }
 
-/// Накопление счётчиков: проход по отсчётам `stride` строго в порядке строк.
+/// Накопление счётчиков: проход по отсчётам с шагами `steps` (один шаг — на обе оси) строго в порядке строк. Шаги
+/// берутся как есть: продукт заранее выбирает их планом [`SampleCount::planned`] (потолок столбцов сетки следа).
 pub fn accumulate<R: ScopeRule + ?Sized>(
     picture: &ShownCodes,
-    stride: SampleStride,
+    steps: impl Into<SampleSteps>,
     rule: &R,
 ) -> Result<ScopeCounters, AccumulateError> {
-    let mut counters = ScopeCounters::zeroed(rule.shape());
+    let steps = steps.into();
+    let samples = SampleCount::for_window(picture.width(), picture.height(), steps);
+    let mut counters = ScopeCounters::zeroed(rule.shape(samples));
     let mut violation: Option<Hit> = None;
-    for row_index in 0..stride.samples_along(picture.height()) {
-        let y = stride.coordinate(row_index);
-        for column_index in 0..stride.samples_along(picture.width()) {
-            let x = stride.coordinate(column_index);
+    for row_index in 0..samples.down() {
+        let y = steps.down().coordinate(row_index);
+        for column_index in 0..samples.across() {
+            let x = steps.across().coordinate(column_index);
             let Some(code) = picture.pixel(x, y) else { continue };
-            let position = SamplePosition::from_shown(x, y, picture.width(), picture.height(), rule.scan());
+            let position = SamplePosition::of_sample(column_index, row_index, samples, rule.scan());
             rule.hits(position, code, &mut |hit| {
                 if !counters.add_hit(hit.plane, hit.row, hit.column) && violation.is_none() {
                     violation = Some(hit);

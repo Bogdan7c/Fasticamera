@@ -286,7 +286,7 @@ fn in_landscape_taps_and_scope_swipes_use_eye_directions_too() {
         drag_eye(&mut rig, scope, Vector::new(-80.0, 0.0));
         assert_eq!(
             rig.screen.state().calibration().scope_kind(),
-            ScopeKind::RgbParade,
+            ScopeKind::LumaWaveform,
             "{orientation:?}"
         );
         // Капсула режимов в альбоме листается глазной горизонталью: палец глазами вправо возвращает PHOTO.

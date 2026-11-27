@@ -4,13 +4,13 @@
 mod common;
 
 use common::picture;
-use scope_model::{AccumulateError, GridShape, Hit, SamplePosition, SampleStride, ScopeRule, accumulate};
+use scope_model::{AccumulateError, GridShape, Hit, SampleCount, SamplePosition, SampleStride, ScopeRule, accumulate};
 
 /// Гистограмма красного канала: одна строка, 16 корзин по 64 кода.
 struct RedHistogramRule;
 
 impl ScopeRule for RedHistogramRule {
-    fn shape(&self) -> GridShape {
+    fn shape(&self, _samples: SampleCount) -> GridShape {
         GridShape::try_new(16, 1, 1).unwrap()
     }
 
@@ -27,7 +27,7 @@ impl ScopeRule for RedHistogramRule {
 struct BrokenRule;
 
 impl ScopeRule for BrokenRule {
-    fn shape(&self) -> GridShape {
+    fn shape(&self, _samples: SampleCount) -> GridShape {
         GridShape::try_new(2, 2, 1).unwrap()
     }
 

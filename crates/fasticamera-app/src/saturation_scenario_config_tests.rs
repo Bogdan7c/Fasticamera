@@ -170,8 +170,9 @@ fn a_list_whose_report_would_overflow_the_result_line_is_refused_before_the_run(
         }
         other => panic!("ожидался отказ «не влезет в строку результата», а не {other:?}"),
     }
-    // По группе за прогон — каждая принимается.
-    for group in ["baseline", "look_cost", "look_parity"] {
+    // По группе за прогон — КАЖДАЯ группа каталога принимается (14r: работа Luma в `scopes_ablation` переполнила
+    // строку отчёта, и это всплыло только на телефоне отказом `initialize`).
+    for group in crate::saturation_bench::catalog::WorkloadGroup::ALL.map(|group| group.name()) {
         let one = SaturationScenarioConfig {
             workloads: vec![group.to_owned()],
             ..SaturationScenarioConfig::default()

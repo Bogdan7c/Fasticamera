@@ -20,13 +20,16 @@
 
 use scope_contract::ScopeScan;
 use scope_model::projection::IntegerProjection;
-use scope_model::{ColumnBasis, GraticulePrimitive, GridShape, RenderSettings, ResolvedScope, ScopeRule, TraceStyle};
+use scope_model::{
+    GraticulePrimitive, GridShape, RenderSettings, ResolvedScope, SampleCount, SampleSteps, ScopeModelSettings,
+    ScopeRule, TraceStyle,
+};
 
 use super::error::ScopeError;
 use super::rule::{AccumulateParameters, AccumulatorId, GpuScopeRule, RuleWords};
 
-/// Источник столбца: положение отсчёта на картинке.
-const COLUMN_FROM_POSITION: u32 = 0;
+/// Источник столбца: номер отсчёта вдоль взгляда (waveform, parade; решение 322).
+const COLUMN_FROM_EYE_SAMPLE: u32 = 0;
 /// Источник столбца: проекция кода.
 const COLUMN_FROM_PROJECTION: u32 = 1;
 
@@ -90,14 +93,19 @@ impl GpuScopeRule for ResolvedScope {
             // У waveform и parade отсчёты разбросаны по разным ячейкам: слияние в subgroup на Adreno 740 дороже
             // прямой записи, а серии подряд идущих отсчётов одной нити в регистре дешевле (замеры сессии 16a).
             // У вектороскопов соседние пиксели падают в одни и те же ячейки: им выгодно слияние в subgroup.
-            Self::Waveform(_) | Self::RgbParade(_) => AccumulatorId::INTEGER_PROJECTION_RUNS,
+            // Яркостный waveform — та же ось «столбец × уровень», одна плоскость: тот же шейдер серий.
+            Self::Waveform(_) | Self::LumaWaveform(_) | Self::RgbParade(_) => AccumulatorId::INTEGER_PROJECTION_RUNS,
             Self::VectorscopeYCbCr(_) => AccumulatorId::INTEGER_PROJECTION_MERGED,
             Self::VectorscopeOklab(_) => AccumulatorId::OKLAB_VECTORSCOPE_MERGED,
         }
     }
 
-    fn grid(&self) -> GridShape {
-        self.shape()
+    fn grid(&self, samples: SampleCount) -> GridShape {
+        self.shape(samples)
+    }
+
+    fn wanted_steps(&self, settings: &ScopeModelSettings) -> SampleSteps {
+        ScopeRule::wanted_steps(self, settings)
     }
 
     fn scan(&self) -> ScopeScan {
@@ -108,11 +116,19 @@ impl GpuScopeRule for ResolvedScope {
         Ok(match self {
             // RGB waveform и parade — одно правило трёх плоскостей: слова шейдера накопления у них одни.
             Self::Waveform(rule) | Self::RgbParade(rule) => integer_parameters(IntegerLayout {
-                column_source: COLUMN_FROM_POSITION,
+                column_source: COLUMN_FROM_EYE_SAMPLE,
                 row_base: trace_row_base(rule.levels())?,
                 row_sign: -1,
                 column_projection: None,
                 row_projections: &rule.level_projections(),
+            }),
+            // Яркостный waveform: столбец — номер отсчёта, строка — одна проекция Y' (плоскость одна).
+            Self::LumaWaveform(rule) => integer_parameters(IntegerLayout {
+                column_source: COLUMN_FROM_EYE_SAMPLE,
+                row_base: trace_row_base(rule.levels())?,
+                row_sign: -1,
+                column_projection: None,
+                row_projections: &[rule.level_projection()],
             }),
             Self::VectorscopeYCbCr(coloured) => {
                 let rule = coloured.rule();
@@ -147,16 +163,6 @@ impl GpuScopeRule for ResolvedScope {
                 }
             }
         })
-    }
-
-    fn column_basis(&self) -> ColumnBasis {
-        match self {
-            // Столбец waveform и parade — положение отсчёта на горизонтали глаза: счётчики столбцов выравниваются
-            // по числу отсчётов в столбце.
-            Self::Waveform(_) | Self::RgbParade(_) => ColumnBasis::OwnSamples,
-            // Вектороскоп столбцов-по-положению не имеет: масштаб 1.0.
-            Self::VectorscopeYCbCr(_) | Self::VectorscopeOklab(_) => ColumnBasis::Uniform,
-        }
     }
 
     fn trace_style(&self, settings: &RenderSettings) -> TraceStyle {

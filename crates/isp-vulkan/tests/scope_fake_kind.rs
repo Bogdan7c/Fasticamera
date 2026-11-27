@@ -22,8 +22,8 @@ use isp_vulkan::scopes::{
 };
 use isp_vulkan::shaders::blobs;
 use scope_model::{
-    GraticulePrimitive, GridShape, Hit, MAX_GRATICULE_PRIMITIVES, RenderSettings, SamplePosition, SampleStride,
-    ScopeModelSettings, ScopeRule, TraceStyle,
+    GraticulePrimitive, GridShape, Hit, MAX_GRATICULE_PRIMITIVES, RenderSettings, SampleCount, SamplePosition,
+    SampleStride, ScopeModelSettings, ScopeRule, TraceStyle,
 };
 use scope_support::{
     all_scenes, assert_no_validation_errors, cpu_counters, gpu_context_or_skip, picture_size, rule_cases,
@@ -43,7 +43,7 @@ struct FakeHistogram {
 }
 
 impl ScopeRule for FakeHistogram {
-    fn shape(&self) -> GridShape {
+    fn shape(&self, _samples: SampleCount) -> GridShape {
         GridShape::try_new(HISTOGRAM_BINS, 1, 1).unwrap()
     }
 
@@ -62,8 +62,8 @@ impl GpuScopeRule for FakeHistogram {
         histogram_id()
     }
 
-    fn grid(&self) -> GridShape {
-        self.shape()
+    fn grid(&self, samples: SampleCount) -> GridShape {
+        self.shape(samples)
     }
 
     fn accumulate_parameters(&self) -> Result<AccumulateParameters<'_>, ScopeError> {
@@ -203,11 +203,22 @@ fn fake_kind_picture_shows_trace_exactly_where_counters_are_nonzero() {
     let counters = scopes.read_back_counters_blocking().unwrap();
     let picture = scopes.read_back_picture_blocking().unwrap();
     let (mut with_trace, mut without_trace) = (0, 0);
+    // Сетка переносится в пиксели ядром (решение 322): пиксель видит столбцы сетки в радиусе ядра. След обязан быть
+    // в пикселе над непустым столбцом и отсутствовать (прозрачный ноль), если ни один столбец в радиусе ядра не пуст.
+    let horizontal = scope_model::AxisResampling::new(HISTOGRAM_BINS, size.width(), settings.render.trace_softening_px);
     for y in 0..size.height() {
         for x in 0..size.width() {
             let column = x * HISTOGRAM_BINS / size.width();
             let count = counters.count(0, 0, column).unwrap();
+            let reachable: u32 = horizontal
+                .cell_range(x)
+                .map(|reached| counters.count(0, 0, reached).unwrap())
+                .sum();
             let pixel = picture.texels[(y * size.width() + x) as usize];
+            if reachable > 0 && count == 0 {
+                // Хвост ядра от соседнего столбца: след есть, но слабее, — свойство переноса, а не прибора.
+                continue;
+            }
             if count > 0 {
                 with_trace += 1;
                 assert!(pixel[3] > 0.1, "({x},{y}): след есть, альфа {}", pixel[3]);
@@ -289,7 +300,7 @@ fn fake_kind_errors_are_reported_before_any_command() {
         fn accumulator(&self) -> AccumulatorId {
             histogram_id()
         }
-        fn grid(&self) -> GridShape {
+        fn grid(&self, _samples: SampleCount) -> GridShape {
             GridShape::try_new(HISTOGRAM_BINS, 1, 1).unwrap()
         }
         fn accumulate_parameters(&self) -> Result<AccumulateParameters<'_>, ScopeError> {

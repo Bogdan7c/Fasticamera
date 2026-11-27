@@ -29,7 +29,7 @@ pub const WARM_UP_FRAMES: usize = 6;
 /// Модель приборов поменьше (тест не гоняет эталон по 256×256×3), шаг 1: меряется каждый пиксель.
 pub fn small_model() -> ScopeModelSettings {
     ScopeModelSettings {
-        trace_columns: 48,
+        trace_max_columns: 48,
         trace_levels: 64,
         vectorscope_size: 64,
         sample_stride: SampleStride::try_new(1).expect("шаг"),
@@ -43,6 +43,8 @@ pub fn config() -> RenderLoopConfig {
         display_color: DisplayColorConfig::SrgbOnly,
         viewfinder: ViewfinderConfig {
             scopes: ScopesConfig {
+                // Каждый кадр: тест сверяет прибор с ПОСЛЕДНИМ показанным кадром (каденция — отдельные тесты).
+                every_nth_frame: 1,
                 model: small_model(),
                 ..ScopesConfig::default()
             },
@@ -67,6 +69,7 @@ pub fn request_with_scan(
     ScopeRequest {
         kind,
         vectorscope_axes: axes,
+        vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
         scan,
         image_size: ScopeImageSize::try_new(width, height).expect("размер"),
     }

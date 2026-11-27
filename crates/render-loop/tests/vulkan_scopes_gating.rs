@@ -44,6 +44,7 @@ fn waveform() -> ScopeRequest {
     ScopeRequest {
         kind: ScopeKind::Waveform,
         vectorscope_axes: VectorscopeAxes::YCbCrBt709,
+        vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
         scan: scope_contract::ScopeScan::Upright,
         image_size: ScopeImageSize::try_new(160, 96).expect("размер"),
     }
@@ -52,7 +53,7 @@ fn waveform() -> ScopeRequest {
 /// Маленькая модель приборов, шаг 1: меряется каждый пиксель (эталон на CPU недорог).
 fn small_model() -> ScopeModelSettings {
     ScopeModelSettings {
-        trace_columns: 48,
+        trace_max_columns: 48,
         trace_levels: 64,
         vectorscope_size: 64,
         sample_stride: SampleStride::try_new(1).expect("шаг"),
@@ -199,7 +200,12 @@ fn measure(rig: &Rig) -> Measured {
     let rule = ResolvedScope::resolve(&waveform(), &model, isp_model::image::DisplayGamut::Srgb).expect("правило");
     let reference = |order| {
         let shown = ShownCodes::from_display_rgba(image.width, image.height, &image.pixels, order).expect("коды");
-        accumulate(&shown, model.sample_stride, &rule as &dyn ScopeRule).expect("эталон")
+        accumulate(
+            &shown,
+            rule.planned_samples(shown.width(), shown.height(), &model).steps(),
+            &rule as &dyn ScopeRule,
+        )
+        .expect("эталон")
     };
     Measured {
         gpu,
@@ -215,6 +221,8 @@ fn measure(rig: &Rig) -> Measured {
 #[test]
 fn the_scope_follows_the_mirror_of_the_shown_window_on_an_asymmetric_scene() {
     let scopes = ScopesConfig {
+        // Каждый кадр: оба показа сверяются с эталоном своего кадра (каденция — отдельные тесты).
+        every_nth_frame: 1,
         model: small_model(),
         ..ScopesConfig::default()
     };

@@ -124,6 +124,7 @@ fn entering_calibrate_puts_the_viewfinder_on_the_whole_screen_and_asks_for_the_s
         [ScopeRequest {
             kind: ScopeKind::Waveform,
             vectorscope_axes: VectorscopeAxes::YCbCrBt709,
+            vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
             scan: ScopeScan::Upright,
             image_size: scope_contract::ScopeImageSize::try_new(1011, 827).expect("размер"),
         }]
@@ -224,6 +225,7 @@ fn a_new_surface_size_in_calibrate_resends_the_scope_and_the_viewfinder() {
         [ScopeRequest {
             kind: ScopeKind::Waveform,
             vectorscope_axes: VectorscopeAxes::YCbCrBt709,
+            vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
             scan: ScopeScan::Upright,
             image_size: layout.scope_image_size_for(ScopeKind::Waveform),
         }]

@@ -7,7 +7,7 @@
 //! осмысленно отличается от продуктового.
 
 use scope_contract::ScopeScan;
-use scope_model::{ColumnBasis, GraticulePrimitive, GridShape, RenderSettings, ResolvedScope, TraceStyle};
+use scope_model::{GraticulePrimitive, GridShape, RenderSettings, ResolvedScope, SampleCount, TraceStyle};
 
 use crate::scopes::{AccumulateParameters, AccumulatorId, AccumulatorShader, GpuScopeRule, ScopeError};
 use crate::shaders::blobs;
@@ -89,8 +89,12 @@ impl GpuScopeRule for DiagnosticRule<'_> {
         self.diagnostic.id()
     }
 
-    fn grid(&self) -> GridShape {
-        self.inner.grid()
+    fn grid(&self, samples: SampleCount) -> GridShape {
+        self.inner.grid(samples)
+    }
+
+    fn wanted_steps(&self, settings: &scope_model::ScopeModelSettings) -> scope_model::SampleSteps {
+        GpuScopeRule::wanted_steps(self.inner, settings)
     }
 
     fn scan(&self) -> ScopeScan {
@@ -103,12 +107,6 @@ impl GpuScopeRule for DiagnosticRule<'_> {
 
     fn trace_style(&self, settings: &RenderSettings) -> TraceStyle {
         GpuScopeRule::trace_style(self.inner, settings)
-    }
-
-    // Основа масштаба столбцов — тоже от настоящего прибора: иначе диагностика waveform/parade рисовала бы
-    // с умолчанием `Uniform` (масштаб 1) и вернула бы полосы, которых в продукте нет.
-    fn column_basis(&self) -> ColumnBasis {
-        GpuScopeRule::column_basis(self.inner)
     }
 
     fn graticule(&self, settings: &RenderSettings) -> Vec<GraticulePrimitive> {

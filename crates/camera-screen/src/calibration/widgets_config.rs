@@ -148,6 +148,8 @@ pub struct CalibrationWidgetsConfig {
     pub scope_page_dot_cell_width_pt: f64,
     /// Ширина одного сегмента переключателя осей вектороскопа в полоске (Y'CbCr | OKLab). `[estimate]`.
     pub scope_axes_segment_width_pt: f64,
+    /// Ширина кнопки «2×» вектороскопа в полоске (решение 325). `[estimate]`.
+    pub scope_zoom_segment_width_pt: f64,
     /// Промежуток между частями полоски: имя, точки, оси, место белого. `[estimate]`.
     pub scope_strip_gap_pt: f64,
     /// Ширина капсулы белого («5600 K», решение 290) справа в полоске на каждой странице: она же зона касания по
@@ -250,6 +252,7 @@ impl Default for CalibrationWidgetsConfig {
             scope_label_inset_pt: 8.0,
             scope_page_dot_cell_width_pt: 22.0,
             scope_axes_segment_width_pt: 48.0,
+            scope_zoom_segment_width_pt: 34.0,
             scope_strip_gap_pt: 6.0,
             scope_strip_trailing_width_pt: 68.0,
             scope_white_capsule_padding_pt: 6.0,
@@ -370,6 +373,7 @@ impl CalibrationWidgetsConfig {
             ("scope_swipe_min_pt", self.scope_swipe_min_pt),
             ("scope_page_dot_cell_width_pt", self.scope_page_dot_cell_width_pt),
             ("scope_axes_segment_width_pt", self.scope_axes_segment_width_pt),
+            ("scope_zoom_segment_width_pt", self.scope_zoom_segment_width_pt),
             ("scope_strip_gap_pt", self.scope_strip_gap_pt),
             ("scope_strip_trailing_width_pt", self.scope_strip_trailing_width_pt),
             ("scope_white_capsule_padding_pt", self.scope_white_capsule_padding_pt),

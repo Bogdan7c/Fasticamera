@@ -10,8 +10,8 @@ use isp_model::image::DisplayGamut;
 use scope_contract::{ScopeImageSize, ScopeKind, ScopeRequest, ScopeScan, VectorscopeAxes};
 use scope_model::trace_rules::ParadeRule;
 use scope_model::{
-    HorizontalOrder, ResolvedScope, SamplePosition, SampleStride, ScopeCounters, ScopeModelSettings, ScopeRule,
-    ShownCodes, accumulate,
+    HorizontalOrder, ResolvedScope, SampleCount, SamplePosition, SampleStride, ScopeCounters, ScopeModelSettings,
+    ScopeRule, ShownCodes, accumulate,
 };
 
 const EYE_WIDTH: u32 = 24;
@@ -46,11 +46,12 @@ fn counters_of(
 
 fn waveform(scan: ScopeScan) -> Box<dyn ScopeRule> {
     // RGB waveform — то же правило трёх плоскостей, что parade (решение 265): положение читается одинаково.
-    Box::new(ParadeRule::new(8, 64).unwrap().with_scan(scan))
+    // Потолок столбцов не меньше длины взгляда: столбец сетки = номер отсчёта вдоль взгляда (решение 322).
+    Box::new(ParadeRule::new(EYE_WIDTH, 64).unwrap().with_scan(scan))
 }
 
 fn parade(scan: ScopeScan) -> Box<dyn ScopeRule> {
-    Box::new(ParadeRule::new(8, 64).unwrap().with_scan(scan))
+    Box::new(ParadeRule::new(EYE_WIDTH, 64).unwrap().with_scan(scan))
 }
 
 #[test]
@@ -70,9 +71,9 @@ fn upright_waveform_puts_the_ramp_along_x() {
         rows_of(0)
     );
     assert!(
-        rows_of(7).iter().all(|&row| row <= 15),
+        rows_of(EYE_WIDTH - 1).iter().all(|&row| row <= 15),
         "правый столбец светлый: {:?}",
-        rows_of(7)
+        rows_of(EYE_WIDTH - 1)
     );
 }
 
@@ -134,34 +135,65 @@ fn mirror_applies_to_the_stored_picture_and_the_scan_reads_the_mirrored_result()
 }
 
 #[test]
-fn sample_position_maps_corners_of_the_surface_to_the_eye_horizontal() {
+fn sample_position_maps_corner_samples_of_the_surface_to_the_eye_horizontal() {
     // Поверхность 6 × 4. Левый-верх (0,0) и правый-низ (5,3).
-    let at = |x, y, scan| SamplePosition::from_shown(x, y, 6, 4, scan);
-    assert_eq!(at(0, 0, ScopeScan::Upright), SamplePosition { x: 0, picture_width: 6 });
-    assert_eq!(at(5, 3, ScopeScan::Upright), SamplePosition { x: 5, picture_width: 6 });
+    let samples = SampleCount::for_window(6, 4, SampleStride::EVERY_PIXEL);
+    let at = |x, y, scan| SamplePosition::of_sample(x, y, samples, scan);
+    assert_eq!(
+        at(0, 0, ScopeScan::Upright),
+        SamplePosition {
+            eye_index: 0,
+            eye_samples: 6
+        }
+    );
+    assert_eq!(
+        at(5, 3, ScopeScan::Upright),
+        SamplePosition {
+            eye_index: 5,
+            eye_samples: 6
+        }
+    );
     assert_eq!(
         at(0, 0, ScopeScan::RotatedClockwise),
-        SamplePosition { x: 0, picture_width: 4 }
+        SamplePosition {
+            eye_index: 0,
+            eye_samples: 4
+        }
     );
     assert_eq!(
         at(5, 3, ScopeScan::RotatedClockwise),
-        SamplePosition { x: 3, picture_width: 4 }
+        SamplePosition {
+            eye_index: 3,
+            eye_samples: 4
+        }
     );
     assert_eq!(
         at(0, 0, ScopeScan::UpsideDown),
-        SamplePosition { x: 5, picture_width: 6 }
+        SamplePosition {
+            eye_index: 5,
+            eye_samples: 6
+        }
     );
     assert_eq!(
         at(5, 3, ScopeScan::UpsideDown),
-        SamplePosition { x: 0, picture_width: 6 }
+        SamplePosition {
+            eye_index: 0,
+            eye_samples: 6
+        }
     );
     assert_eq!(
         at(0, 0, ScopeScan::RotatedCounterClockwise),
-        SamplePosition { x: 3, picture_width: 4 }
+        SamplePosition {
+            eye_index: 3,
+            eye_samples: 4
+        }
     );
     assert_eq!(
         at(5, 3, ScopeScan::RotatedCounterClockwise),
-        SamplePosition { x: 0, picture_width: 4 }
+        SamplePosition {
+            eye_index: 0,
+            eye_samples: 4
+        }
     );
 }
 
@@ -169,6 +201,7 @@ fn request(kind: ScopeKind, axes: VectorscopeAxes, scan: ScopeScan) -> ScopeRequ
     ScopeRequest {
         kind,
         vectorscope_axes: axes,
+        vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
         scan,
         image_size: ScopeImageSize::try_new(300, 200).unwrap(),
     }

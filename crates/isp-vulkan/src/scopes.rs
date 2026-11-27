@@ -37,9 +37,11 @@ mod accumulators;
 mod color_scopes;
 mod error;
 mod frame;
+mod frame_input;
 mod output_digest;
 mod parameter_blocks;
 mod picture;
+mod resample_pass;
 mod resolved_rule;
 mod rule;
 #[cfg(test)]

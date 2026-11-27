@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::kind::{ScopeKind, VectorscopeAxes};
+use crate::kind::{ScopeKind, VectorscopeAxes, VectorscopeZoom};
 use crate::scan::ScopeScan;
 use crate::size::ScopeImageSize;
 
@@ -19,6 +19,10 @@ pub struct ScopeRequest {
     pub kind: ScopeKind,
     /// Стандарт осей вектороскопа.
     pub vectorscope_axes: VectorscopeAxes,
+    /// Увеличение вектороскопа (решение 325). Хранится, как и оси, при любом типе прибора: свайп не теряет выбор.
+    /// Старые записи без поля читаются как обычный масштаб.
+    #[serde(default)]
+    pub vectorscope_zoom: VectorscopeZoom,
     /// Как глаз читает показанную картинку слева направо (положение телефона): горизонталь waveform и
     /// parade. Вектороскоп от поля не зависит; смена поля — только параметры, ресурсы не пересоздаются.
     pub scan: ScopeScan,

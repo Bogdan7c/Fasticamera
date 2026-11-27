@@ -24,6 +24,7 @@ fn scope_request(screen: &Screen, kind: ScopeKind, axes: VectorscopeAxes) -> Sco
     ScopeRequest {
         kind,
         vectorscope_axes: axes,
+        vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
         scan: layout.scope_scan(),
         image_size: layout.scope_image_size_for(kind),
     }

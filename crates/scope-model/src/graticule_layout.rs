@@ -29,7 +29,7 @@ impl ResolvedScope {
     pub fn graticule(&self, settings: &RenderSettings) -> Vec<GraticulePrimitive> {
         let mut primitives = match self {
             // У наложенного RGB waveform те же пять уровней, что у parade: сетка не зависит от способа рисования.
-            Self::Waveform(_) | Self::RgbParade(_) => self.level_lines(settings),
+            Self::Waveform(_) | Self::LumaWaveform(_) | Self::RgbParade(_) => self.level_lines(settings),
             Self::VectorscopeYCbCr(_) | Self::VectorscopeOklab(_) => self.vectorscope_marks(settings),
         };
         primitives.truncate(MAX_GRATICULE_PRIMITIVES);
@@ -41,6 +41,7 @@ impl ResolvedScope {
         // `match` без `_`: новый прибор не соберётся, пока не скажет, есть ли у него линии уровней.
         let rows = match self {
             Self::Waveform(rule) | Self::RgbParade(rule) => rule.levels(),
+            Self::LumaWaveform(rule) => rule.levels(),
             Self::VectorscopeYCbCr(_) | Self::VectorscopeOklab(_) => return Vec::new(),
         };
         // Уровни — общий список словаря: экран подписывает именно эти линии (решения 188, 274).
@@ -86,7 +87,8 @@ impl ResolvedScope {
             primitives.push(GraticulePrimitive::Segment {
                 from: centre,
                 to: [centre[0] + direction[0] * reach, centre[1] + direction[1] * reach],
-                half_width_px,
+                // Линия кожи — главный ориентир: своя полуширина, толще прочей сетки.
+                half_width_px: settings.skin_line_half_width_px,
             });
         }
         let full_range_radius = self.full_range_radius_cells() / size;
@@ -97,17 +99,32 @@ impl ResolvedScope {
                 half_width_px,
             });
         }
-        let amplitude_code = (settings.target_amplitude * f32::from(MAX_DISPLAY_CODE)).round() as u16;
-        let half_size = settings.target_box_half_cells / size;
-        for color in TARGET_COLORS {
-            let code = color.map(|channel| if channel > 0.0 { amplitude_code } else { 0 });
-            // Цель вне сетки (большое усиление) просто не рисуется: следа в этом месте тоже быть не может.
-            if let Some(hit) = self.first_cell_of(code) {
-                primitives.push(GraticulePrimitive::BoxOutline {
-                    centre: [(hit.column as f32 + 0.5) / size, (hit.row as f32 + 0.5) / size],
-                    half_size: [half_size, half_size],
-                    half_width_px,
-                });
+        // Цели: полосы 75 % (крупные рамки) и полный размах 100 % (мелкие) — какие из них, решают настройки.
+        let targets = settings.vectorscope_targets;
+        let target_sets = [
+            (
+                targets.draws_bars(),
+                settings.target_amplitude,
+                settings.target_box_half_cells,
+            ),
+            (targets.draws_full(), 1.0, settings.full_target_box_half_cells),
+        ];
+        for (drawn, amplitude, box_half_cells) in target_sets {
+            if !drawn {
+                continue;
+            }
+            let amplitude_code = (amplitude * f32::from(MAX_DISPLAY_CODE)).round() as u16;
+            let half_size = box_half_cells / size;
+            for color in TARGET_COLORS {
+                let code = color.map(|channel| if channel > 0.0 { amplitude_code } else { 0 });
+                // Цель вне сетки (большое усиление) просто не рисуется: следа в этом месте тоже быть не может.
+                if let Some(hit) = self.first_cell_of(code) {
+                    primitives.push(GraticulePrimitive::BoxOutline {
+                        centre: [(hit.column as f32 + 0.5) / size, (hit.row as f32 + 0.5) / size],
+                        half_size: [half_size, half_size],
+                        half_width_px,
+                    });
+                }
             }
         }
         primitives
@@ -115,7 +132,10 @@ impl ResolvedScope {
 
     /// Первая ячейка, куда правило кладёт код (отсчёт в начале картинки ширины 1).
     fn first_cell_of(&self, code: [u16; 3]) -> Option<Hit> {
-        let position = SamplePosition { x: 0, picture_width: 1 };
+        let position = SamplePosition {
+            eye_index: 0,
+            eye_samples: 1,
+        };
         hits_of_code(self, position, code).into_iter().next()
     }
 
@@ -127,13 +147,11 @@ impl ResolvedScope {
         }
     }
 
-    /// Радиус полного размаха цвета в клетках (Y'CbCr: ±0,5 с усилением; OKLab: край сетки).
+    /// Радиус кольца в клетках: граница круга картинки на обеих осях (решение 324).
     fn full_range_radius_cells(&self) -> f32 {
         match self {
-            Self::VectorscopeYCbCr(coloured) => {
-                let rule = coloured.rule();
-                (rule.geometry().half_extent_cells() * f64::from(rule.gain())) as f32
-            }
+            // Кольцо — граница круга картинки (решение 324): цели и след масштабируются внутри него.
+            Self::VectorscopeYCbCr(coloured) => coloured.rule().geometry().half_extent_cells() as f32,
             Self::VectorscopeOklab(coloured) => coloured.rule().geometry().half_extent_cells() as f32,
             _ => f32::INFINITY,
         }

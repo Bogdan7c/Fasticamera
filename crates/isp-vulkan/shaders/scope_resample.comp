@@ -1,0 +1,72 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Первый проход показа цветовых приборов (решение 322): сетка счётчиков → промежуточный слой «строка сетки × столбец
+// картинки × слот». Эталон — `scope_model::trace_density` (`resample_columns`): для каждого столбца пикселей — сумма
+// соседних столбцов сетки с весами гауссова ядра `AxisResampling`, по слотам плоскостей пикселя:
+//   наложение (RGB waveform) — слот k читает плоскость k, ядро «вся ширина»;
+//   секции (parade) — слот один: плоскость секции пикселя, ядро её секции, координата внутри секции;
+//   по положению (вектороскоп) — слот один, плоскость 0, ядро «вся ширина».
+// Одна нить — одна пара (столбец картинки, строка сетки). Размер группы — specialization-константы 0 и 1.
+layout(local_size_x_id = 0, local_size_y_id = 1) in;
+
+layout(set = 0, binding = 0, std430) writeonly buffer ResampledColumns {
+    float values[];
+} resampled;
+
+#include "scope_render_parameters.glsl"
+
+layout(set = 0, binding = 2, std430) readonly buffer ScopeCounters {
+    uint counts[];
+} counters;
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint row = gl_GlobalInvocationID.y;
+    uint width = parameters.picture.x;
+    uint rows = parameters.grid.y;
+    if (x >= width || row >= rows) {
+        return;
+    }
+    uint columns = parameters.grid.x;
+    uint planes = parameters.grid.z;
+    uint slots = parameters.picture.z;
+
+    uint first_plane = 0u;
+    uint local_x = x;
+    vec4 axis = parameters.resample_axes[AXIS_FULL_WIDTH];
+    if (parameters.trace.w == PAINT_PLANE_SECTIONS) {
+        // Секция: своя плоскость, своё ядро, координата от начала секции — ядро не перетекает через границу.
+        uvec3 section = section_of_pixel(x, width, planes);
+        first_plane = section.x;
+        local_x = x - section.y;
+        axis = parameters.resample_axes[AXIS_FIRST_SECTION + section.x];
+    }
+    uvec2 range = axis_cell_range(axis, local_x, columns);
+    // Начало строки сетки первой плоскости и шаг между плоскостями — один раз на нить. Вес столбца один для всех
+    // слотов; у каждого слота тот же порядок сложения, что у эталона: столбец за столбцом. Два явных пути вместо
+    // цикла по слотам с выбором по индексу (14r, разбор цены): три слота наложения и один слот остальных способов.
+    uint plane_stride = rows * columns;
+    uint row_start = (first_plane * rows + row) * columns;
+    uint out_index = (row * width + x) * slots;
+    if (slots == 3u) {
+        float sum_0 = 0.0;
+        float sum_1 = 0.0;
+        float sum_2 = 0.0;
+        for (uint column = range.x; column < range.y; ++column) {
+            float weight = axis_weight(axis, column, local_x);
+            uint cell = row_start + column;
+            sum_0 += float(counters.counts[cell]) * weight;
+            sum_1 += float(counters.counts[cell + plane_stride]) * weight;
+            sum_2 += float(counters.counts[cell + 2u * plane_stride]) * weight;
+        }
+        resampled.values[out_index] = sum_0;
+        resampled.values[out_index + 1u] = sum_1;
+        resampled.values[out_index + 2u] = sum_2;
+    } else {
+        float sum = 0.0;
+        for (uint column = range.x; column < range.y; ++column) {
+            sum += float(counters.counts[row_start + column]) * axis_weight(axis, column, local_x);
+        }
+        resampled.values[out_index] = sum;
+    }
+}

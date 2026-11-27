@@ -30,7 +30,7 @@ use isp_vulkan::scopes::{
 use isp_vulkan::shaders::blobs;
 use scope_contract::{ScopeImageSize, ScopeKind, ScopeRequest, VectorscopeAxes};
 use scope_model::{
-    HorizontalOrder, ResolvedScope, ScopeCounters, ScopeModelSettings, ScopeRule, ShownCodes, accumulate,
+    HorizontalOrder, ResolvedScope, SampleCount, ScopeCounters, ScopeModelSettings, ScopeRule, ShownCodes, accumulate,
 };
 
 const SKIP_ENV: &str = "FASTICAMERA_SKIP_GPU_TESTS";
@@ -58,10 +58,13 @@ pub fn assert_no_validation_errors(context: &GpuContext) {
     assert_eq!(report.errors, 0, "validation нашла ошибки: {report:?}");
 }
 
-/// Маленькие сетки: тесты не гоняют CPU-эталон по 256×256×3 на каждый случай, но размеры нарочно не степени двойки.
+/// Маленькие сетки: тесты не гоняют CPU-эталон по большим сеткам на каждый случай, но размеры нарочно не степени
+/// двойки. Потолок столбцов 1024 вмещает самую широкую сцену (рампа 1024 × 3) при шаге 1: план отсчётов с бо́льшим
+/// шагом у этой сцены оставил бы 0 строк (смещение шага больше высоты 3), поэтому путь «окно шире потолка» проверяет
+/// отдельный тест паритета на сцене с запасом по высоте.
 pub fn small_settings() -> ScopeModelSettings {
     ScopeModelSettings {
-        trace_columns: 97,
+        trace_max_columns: 1024,
         trace_levels: 128,
         vectorscope_size: 128,
         ..ScopeModelSettings::default()
@@ -82,6 +85,7 @@ pub fn rule_cases_for_scan(
     let request = |kind, vectorscope_axes| ScopeRequest {
         kind,
         vectorscope_axes,
+        vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
         scan,
         image_size: size,
     };
@@ -120,6 +124,14 @@ pub fn rule_cases_for_scan(
             resolve(
                 request(ScopeKind::Vectorscope, VectorscopeAxes::OklabAb),
                 DisplayGamut::DisplayP3,
+            ),
+        ),
+        // Яркостный waveform (решение 321) — в конце списка: тесты, берущие приборы по номеру, не сдвигаются.
+        (
+            "luma",
+            resolve(
+                request(ScopeKind::LumaWaveform, VectorscopeAxes::YCbCrBt709),
+                DisplayGamut::Srgb,
             ),
         ),
     ]
@@ -425,9 +437,19 @@ pub fn run_scope_frame(
     Ok((recorded, report))
 }
 
-/// Эталонные счётчики CPU для показанной картинки.
+/// План отсчётов показанной картинки для прибора `rule` (шаг прибора, решение 328) — тот же вызов, что у GPU.
+pub fn planned_samples_for(shown: &ShownCodes, settings: &ScopeModelSettings, rule: &dyn ScopeRule) -> SampleCount {
+    SampleCount::planned(
+        shown.width(),
+        shown.height(),
+        rule.wanted_steps(settings),
+        settings.trace_max_columns,
+    )
+}
+
+/// Эталонные счётчики CPU для показанной картинки (шаг — по плану отсчётов прибора, как на GPU).
 pub fn cpu_counters(shown: &ShownCodes, settings: &ScopeModelSettings, rule: &dyn ScopeRule) -> ScopeCounters {
-    accumulate(shown, settings.sample_stride, rule).unwrap()
+    accumulate(shown, planned_samples_for(shown, settings, rule).steps(), rule).unwrap()
 }
 
 /// Размер картинки прибора для тестов.
@@ -468,7 +490,9 @@ impl<'a> PaintOverride<'a> {
     /// Прежний способ рисования — секции по плоскостям с цветами parade из настроек (столько цветов, сколько
     /// плоскостей у прибора).
     pub fn plane_sections(inner: &'a ResolvedScope, settings: &ScopeModelSettings) -> Self {
-        let planes = isp_vulkan::scopes::GpuScopeRule::grid(inner).planes() as usize;
+        // Плоскостей у прибора столько же при любом кадре: берём форму для одного отсчёта.
+        let any_frame = SampleCount::for_window(1, 1, scope_model::SampleStride::EVERY_PIXEL);
+        let planes = isp_vulkan::scopes::GpuScopeRule::grid(inner, any_frame).planes() as usize;
         let colors = settings
             .render
             .parade_colors
@@ -489,8 +513,12 @@ impl isp_vulkan::scopes::GpuScopeRule for PaintOverride<'_> {
         isp_vulkan::scopes::GpuScopeRule::accumulator(self.inner)
     }
 
-    fn grid(&self) -> scope_model::GridShape {
-        isp_vulkan::scopes::GpuScopeRule::grid(self.inner)
+    fn grid(&self, samples: SampleCount) -> scope_model::GridShape {
+        isp_vulkan::scopes::GpuScopeRule::grid(self.inner, samples)
+    }
+
+    fn wanted_steps(&self, settings: &ScopeModelSettings) -> scope_model::SampleSteps {
+        isp_vulkan::scopes::GpuScopeRule::wanted_steps(self.inner, settings)
     }
 
     fn scan(&self) -> scope_contract::ScopeScan {
@@ -503,12 +531,6 @@ impl isp_vulkan::scopes::GpuScopeRule for PaintOverride<'_> {
 
     fn trace_style(&self, _settings: &scope_model::RenderSettings) -> scope_model::TraceStyle {
         self.style.clone()
-    }
-
-    /// Замороженная копия шейдера масштаба счётчика не знает: чтобы сравнение с ней шло бит в бит, продуктовый
-    /// шейдер получает масштаб ровно 1.0 в каждом столбце (`count · 1.0 = count` точно).
-    fn column_basis(&self) -> scope_model::ColumnBasis {
-        scope_model::ColumnBasis::Uniform
     }
 
     fn graticule(&self, settings: &scope_model::RenderSettings) -> Vec<scope_model::GraticulePrimitive> {

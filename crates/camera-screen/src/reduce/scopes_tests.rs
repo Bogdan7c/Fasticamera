@@ -12,6 +12,7 @@ fn request(kind: ScopeKind, axes: VectorscopeAxes) -> ScopeRequest {
     ScopeRequest {
         kind,
         vectorscope_axes: axes,
+        vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
         scan: scope_contract::ScopeScan::Upright,
         image_size: ScopeImageSize::try_new(256, 128).expect("размер в пределах"),
     }

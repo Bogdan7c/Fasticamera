@@ -6,14 +6,17 @@ use scope_model::{MAX_GRATICULE_PRIMITIVES, POSITION_PALETTE_ANGLES};
 
 use super::accumulators::{INTEGER_RUNS_ROWS_PER_THREAD, LOCAL_SIZE_X_ID, LOCAL_SIZE_Y_ID};
 use super::parameter_blocks::{
-    COLUMN_SCALE_CAPACITY, PAINT_CODE_COLOR_BY_POSITION, PAINT_CODE_PLANE_SECTIONS, PAINT_CODE_PLANES_OVERLAID,
-    SCAN_CODE_ROTATED_CLOCKWISE, SCAN_CODE_ROTATED_COUNTER_CLOCKWISE, SCAN_CODE_UPRIGHT, SCAN_CODE_UPSIDE_DOWN,
+    AXIS_FIRST_SECTION, AXIS_FULL_WIDTH, AXIS_VERTICAL, PAINT_CODE_COLOR_BY_POSITION, PAINT_CODE_PLANE_SECTIONS,
+    PAINT_CODE_PLANES_OVERLAID, RESAMPLE_AXES, SCAN_CODE_ROTATED_CLOCKWISE, SCAN_CODE_ROTATED_COUNTER_CLOCKWISE,
+    SCAN_CODE_UPRIGHT, SCAN_CODE_UPSIDE_DOWN,
 };
 use super::rule::{DECODE_TABLE_LEN, HEADER_WORDS, PARAMETER_WORDS};
 
 const ACCUMULATE_COMMON: &str = include_str!("../../shaders/scope_accumulate_common.glsl");
 const INTEGER_RUNS: &str = include_str!("../../shaders/scope_accumulate_integer_runs.comp");
-const RENDER: &str = include_str!("../../shaders/scope_render.comp");
+const RENDER: &str = include_str!("../../shaders/scope_render_body.glsl");
+const RENDER_PARAMETERS: &str = include_str!("../../shaders/scope_render_parameters.glsl");
+const RESAMPLE: &str = include_str!("../../shaders/scope_resample.comp");
 
 /// Размер массива `name[N]` из исходника шейдера; ищется ровно одно объявление.
 fn array_length(source: &str, name: &str) -> usize {
@@ -36,10 +39,24 @@ fn array_length(source: &str, name: &str) -> usize {
 fn parameter_buffer_array_lengths_in_shaders_equal_the_rust_constants() {
     assert_eq!(array_length(ACCUMULATE_COMMON, "words"), PARAMETER_WORDS);
     assert_eq!(array_length(ACCUMULATE_COMMON, "decode_table"), DECODE_TABLE_LEN);
-    assert_eq!(array_length(RENDER, "primitives"), MAX_GRATICULE_PRIMITIVES);
-    assert_eq!(array_length(RENDER, "position_palette"), POSITION_PALETTE_ANGLES);
-    // Таблица масштабов счётчика по столбцам вмещает все столбцы самой большой сетки.
-    assert_eq!(array_length(RENDER, "column_scales"), COLUMN_SCALE_CAPACITY);
+    assert_eq!(array_length(RENDER_PARAMETERS, "primitives"), MAX_GRATICULE_PRIMITIVES);
+    assert_eq!(
+        array_length(RENDER_PARAMETERS, "position_palette"),
+        POSITION_PALETTE_ANGLES
+    );
+    // Ядра переноса сетки в пиксели: вертикаль, вся ширина и по секции на плоскость, номера — те же, что в Rust.
+    assert_eq!(array_length(RENDER_PARAMETERS, "resample_axes"), RESAMPLE_AXES);
+    for (name, index) in [
+        ("AXIS_VERTICAL", AXIS_VERTICAL),
+        ("AXIS_FULL_WIDTH", AXIS_FULL_WIDTH),
+        ("AXIS_FIRST_SECTION", AXIS_FIRST_SECTION),
+    ] {
+        let declaration = format!("const uint {name} = {index}u;");
+        assert!(
+            RENDER_PARAMETERS.contains(&declaration),
+            "в scope_render_parameters.glsl нет `{declaration}`"
+        );
+    }
     // Список отобранных примитивов в shared-памяти вмещает все примитивы сетки.
     assert_eq!(array_length(RENDER, "kept_primitive_index"), MAX_GRATICULE_PRIMITIVES);
 }
@@ -49,7 +66,8 @@ fn workgroup_size_comes_from_specialization_constants_with_the_rust_ids_not_from
     let layout = format!("layout(local_size_x_id = {LOCAL_SIZE_X_ID}, local_size_y_id = {LOCAL_SIZE_Y_ID}) in;");
     for (name, source) in [
         ("scope_accumulate_common.glsl", ACCUMULATE_COMMON),
-        ("scope_render.comp", RENDER),
+        ("scope_render_body.glsl", RENDER),
+        ("scope_resample.comp", RESAMPLE),
     ] {
         assert!(source.contains(&layout), "{name}: ожидалось `{layout}`");
         assert!(
@@ -103,8 +121,14 @@ fn paint_codes_and_palette_size_in_the_render_shader_equal_the_rust_constants() 
         ("PAINT_COLOR_BY_POSITION", PAINT_CODE_COLOR_BY_POSITION),
     ] {
         let declaration = format!("const float {name} = {code:.1};");
-        assert!(RENDER.contains(&declaration), "в scope_render.comp нет `{declaration}`");
+        assert!(
+            RENDER_PARAMETERS.contains(&declaration),
+            "в scope_render_parameters.glsl нет `{declaration}`"
+        );
     }
     let declaration = format!("const uint POSITION_PALETTE_ANGLES = {POSITION_PALETTE_ANGLES}u;");
-    assert!(RENDER.contains(&declaration), "в scope_render.comp нет `{declaration}`");
+    assert!(
+        RENDER.contains(&declaration),
+        "в scope_render_body.glsl нет `{declaration}`"
+    );
 }

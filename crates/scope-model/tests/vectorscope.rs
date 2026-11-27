@@ -13,8 +13,16 @@ use scope_model::{SamplePosition, SampleStride, accumulate, hits_of_code};
 
 const SIZE: u32 = 256;
 
+/// Отсчёты любого кадра: сетка вектороскопа от них не зависит.
+fn any_frame() -> scope_model::SampleCount {
+    scope_model::SampleCount::for_window(64, 48, SampleStride::EVERY_PIXEL)
+}
+
 fn position() -> SamplePosition {
-    SamplePosition { x: 0, picture_width: 1 }
+    SamplePosition {
+        eye_index: 0,
+        eye_samples: 1,
+    }
 }
 
 /// Шесть цветов полос 75 %: код канала = round(0,75 · 1023) там, где канал включён.
@@ -208,8 +216,8 @@ fn both_axes_share_the_same_grid_shape() {
     let ycbcr = YCbCrVectorscopeRule::new(SIZE, 1.0).unwrap();
     let oklab = OklabVectorscopeRule::new(SIZE, 0.4, DisplayGamut::Srgb).unwrap();
     assert_eq!(
-        scope_model::ScopeRule::shape(&ycbcr),
-        scope_model::ScopeRule::shape(&oklab)
+        scope_model::ScopeRule::shape(&ycbcr, any_frame()),
+        scope_model::ScopeRule::shape(&oklab, any_frame())
     );
 }
 

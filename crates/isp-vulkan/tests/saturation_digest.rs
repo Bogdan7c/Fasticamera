@@ -243,7 +243,7 @@ fn scopes_digest_has_counters_and_picture_parts_and_does_not_depend_on_the_frame
             viewfinder: viewfinder_config(1, SceneContent::default()),
             kind,
             settings: ScopeModelSettings {
-                trace_columns: 97,
+                trace_max_columns: 97,
                 trace_levels: 128,
                 vectorscope_size: 128,
                 ..ScopeModelSettings::default()

@@ -12,6 +12,7 @@ fn waveform() -> ScopeRequest {
     ScopeRequest {
         kind: ScopeKind::Waveform,
         vectorscope_axes: VectorscopeAxes::YCbCrBt709,
+        vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
         scan: ScopeScan::Upright,
         image_size: scope_contract::ScopeImageSize::try_new(400, 300).expect("размер"),
     }

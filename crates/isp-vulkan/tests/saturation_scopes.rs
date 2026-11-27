@@ -43,7 +43,7 @@ fn config(kind: ScopeKind, content: SceneContent) -> ScopesSaturationConfig {
         kind,
         // Маленькие сетки, как в тестах приборов: эталон CPU считается быстро.
         settings: ScopeModelSettings {
-            trace_columns: 97,
+            trace_max_columns: 97,
             trace_levels: 128,
             vectorscope_size: 128,
             ..ScopeModelSettings::default()
@@ -61,12 +61,15 @@ fn reference_counters(work: &ScopesSaturation) -> scope_model::ScopeCounters {
     let request = ScopeRequest {
         kind: config.kind,
         vectorscope_axes: config.vectorscope_axes,
+        vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
         scan: config.scan,
         image_size: config.picture_size,
     };
     let gamut = isp_vulkan::viewfinder::gamut_for_display(config.viewfinder.display);
     let rule = ResolvedScope::resolve(&request, &config.settings, gamut).unwrap();
-    accumulate(&shown, config.settings.sample_stride, &rule).unwrap()
+    // Шаг — по плану отсчётов, как у `ColorScopes::record` (окно шире потолка столбцов берётся реже).
+    let samples = rule.planned_samples(shown.width(), shown.height(), &config.settings);
+    accumulate(&shown, samples.steps(), &rule).unwrap()
 }
 
 #[test]

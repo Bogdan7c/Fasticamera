@@ -1,11 +1,11 @@
-//! Яркость следа по столбцам на GPU при НЕРАВНОМЕРНОЙ раздаче отсчётов по столбцам (корень вертикальных полос RGB
-//! waveform и parade): картинка GPU совпадает с эталоном `scope-model`, у которого счётчик каждого столбца приведён
-//! масштабом «среднее / свои отсчёты».
+//! Столбцы следа RGB waveform и parade на GPU (корень тёмных полос 14o, решение 322).
 //!
-//! Телефон в портрете: ширина глаза 1536, шаг 2 → 768 отсчётов на 512 столбцов, то есть 256 столбцов с одним
-//! отсчётом по горизонтали и 256 с двумя. Без масштаба были бы вертикальные полосы через столбец; здесь масштабы
-//! берутся из таблицы блока показа по столбцам. Поворот телефона переносит горизонталь глаза на высоту
-//! поверхности — проверяется отдельно.
+//! В разделе калибровки окно, которое меряет прибор, ≈ 917 px вдоль взгляда; при прежней фиксированной сетке
+//! 512 столбцов и шаге 2 54 столбца не получали ни одного отсчёта — тёмные полосы. Теперь столбец сетки — номер
+//! отсчёта вдоль взгляда. Тест на настоящем GPU: окно ВДВОЕ уже прежней сетки (459 px при шаге 2 — 230 отсчётов),
+//! все четыре положения телефона:
+//! * в КАЖДОМ столбце счётчиков GPU ровно столько попаданий, сколько отсчётов поперёк взгляда (пустых нет);
+//! * картинка прибора GPU совпадает с эталоном `scope-model` в допуске, след нарисован.
 
 #![allow(
     clippy::unwrap_used,
@@ -20,20 +20,21 @@ use gpu_vulkan::source_window::HorizontalMirror;
 use gpu_vulkan::storage_image::StorageFormatPolicy;
 use isp_vulkan::scopes::{ColorScopes, ColorScopesConfig, ScopeFrame};
 use scope_contract::ScopeScan;
-use scope_model::{SampleCount, ScopeModelSettings, render, samples_in_columns};
+use scope_model::{SampleStride, ScopeModelSettings, render};
 use scope_support::{
-    Scene, Xorshift, assert_no_validation_errors, gpu_context_or_skip, picture_size, rule_cases_for_scan,
-    run_scope_frame, upload_scene,
+    Scene, Xorshift, assert_no_validation_errors, gpu_context_or_skip, picture_size, planned_samples_for,
+    rule_cases_for_scan, run_scope_frame, upload_scene,
 };
 
 /// Допуск сравнения картинки (тот же, что у `scope_picture.rs`).
 const PICTURE_TOLERANCE: f32 = 2.0e-3;
 
-/// Столбцов следа: столько, чтобы шаг 2 по ширине 1536 давал чередование «один / два отсчёта».
-const TRACE_COLUMNS: u32 = 512;
+/// Длина окна вдоль взгляда: вдвое меньше, чем прежняя сетка требовала при шаге 2 (512 · 2 = 1024).
+const EYE_LENGTH: u32 = 459;
+/// Поперёк взгляда.
+const ACROSS_EYE: u32 = 200;
 
-/// Случайная картинка `width × height`: коды разбросаны по уровням, поэтому ячейки следа заполнены редко и
-/// яркость лежит на крутой части лог-шкалы (там разница порогов видна).
+/// Случайная картинка `width × height`: коды разбросаны по уровням, ячейки следа заполнены редко.
 fn random_scene(name: &'static str, width: u32, height: u32) -> Scene {
     let mut random = Xorshift(0x0BAD_5EED);
     let codes = (0..width * height)
@@ -49,15 +50,15 @@ fn random_scene(name: &'static str, width: u32, height: u32) -> Scene {
 
 fn settings() -> ScopeModelSettings {
     ScopeModelSettings {
-        trace_columns: TRACE_COLUMNS,
         trace_levels: 128,
         vectorscope_size: 64,
+        sample_stride: SampleStride::EVERY_SECOND_PIXEL,
         ..ScopeModelSettings::default()
     }
 }
 
 #[test]
-fn picture_matches_the_cpu_reference_when_samples_split_unevenly_between_columns_for_every_scan() {
+fn every_column_gets_the_same_samples_and_the_picture_matches_the_reference_on_a_narrow_window_for_every_scan() {
     let Some(context) = gpu_context_or_skip() else { return };
     let settings = settings();
     let mut scopes = ColorScopes::new(
@@ -68,38 +69,41 @@ fn picture_matches_the_cpu_reference_when_samples_split_unevenly_between_columns
         },
     )
     .unwrap();
-    let size = picture_size(1024, 96);
-    // Портрет и «вверх ногами» читают по ширине, поворот на 90° — по высоте: длинная сторона глаза всегда 1536.
+    // Картинка шире окна (увеличение, как 917 → 1011 в разделе).
+    let size = picture_size(506, 96);
     for (scan, scene) in [
-        (ScopeScan::Upright, random_scene("wide-1536x600", 1536, 600)),
-        (ScopeScan::UpsideDown, random_scene("wide-1536x600", 1536, 600)),
-        (ScopeScan::RotatedClockwise, random_scene("tall-600x1536", 600, 1536)),
+        (
+            ScopeScan::Upright,
+            random_scene("narrow-459x200", EYE_LENGTH, ACROSS_EYE),
+        ),
+        (
+            ScopeScan::UpsideDown,
+            random_scene("narrow-459x200", EYE_LENGTH, ACROSS_EYE),
+        ),
+        (
+            ScopeScan::RotatedClockwise,
+            random_scene("tall-200x459", ACROSS_EYE, EYE_LENGTH),
+        ),
         (
             ScopeScan::RotatedCounterClockwise,
-            random_scene("tall-600x1536", 600, 1536),
+            random_scene("tall-200x459", ACROSS_EYE, EYE_LENGTH),
         ),
     ] {
         let input = upload_scene(&context, &scene, StorageFormatPolicy::PreferTenBitUnorm, (4, 2));
         let shown = input.shown_codes(HorizontalMirror::Off);
-        let samples = SampleCount::for_window(shown.width(), shown.height(), settings.sample_stride);
-        // Предпосылка теста: отсчёты по столбцам действительно неравны (иначе тест ничего не различал бы).
-        let per_column = samples_in_columns(samples, scan, TRACE_COLUMNS);
-        let (fewest, most) = (per_column.iter().min().unwrap(), per_column.iter().max().unwrap());
-        assert_eq!(
-            *most,
-            fewest * 2,
-            "{scan:?}: столбцы с одним и двумя отсчётами по глазу"
-        );
-        // Порог кадра выше нижней границы «одно попадание» и счётчики не упираются в потолок яркости: иначе масштаб
-        // столбца ничего не менял бы в картинке и тест его не различал.
-        assert!(
-            settings.render.trace_full_share_of_column.get() * *fewest as f32 > 2.0,
-            "{scan:?}: слишком мало отсчётов в столбце"
-        );
         for (rule_name, rule) in rule_cases_for_scan(&settings, scan)
             .into_iter()
-            .filter(|(name, _)| matches!(*name, "waveform" | "parade"))
+            .filter(|(name, _)| matches!(*name, "waveform" | "luma" | "parade"))
         {
+            // План прибора: шаг вдоль взгляда — из настроек, поперёк — свой у следов (решение 329); при повороте
+            // оси поверхности меняются местами.
+            let samples = planned_samples_for(&shown, &settings, &rule);
+            let (along, across) = (samples.along_eye(scan), samples.across_eye(scan));
+            // Предпосылка: при прежней сетке столбцов было бы больше, чем отсчётов вдоль взгляда (были бы пустые).
+            assert!(
+                along < 512,
+                "{scan:?}: окно должно быть уже прежней сетки, отсчётов {along}"
+            );
             let frame = ScopeFrame {
                 input: input.input(HorizontalMirror::Off),
                 rule: &rule,
@@ -109,6 +113,22 @@ fn picture_matches_the_cpu_reference_when_samples_split_unevenly_between_columns
             };
             run_scope_frame(&context, &mut scopes, &frame).unwrap();
             let counters = scopes.read_back_counters_blocking().unwrap();
+            assert_eq!(
+                counters.shape().columns(),
+                along,
+                "{rule_name} / {scan:?}: столбец на отсчёт"
+            );
+            for plane in 0..counters.shape().planes() {
+                for column in 0..along {
+                    let hits: u32 = (0..counters.shape().rows())
+                        .map(|row| counters.count(plane, row, column).unwrap())
+                        .sum();
+                    assert_eq!(
+                        hits, across,
+                        "{rule_name} / {scan:?}: плоскость {plane}, столбец {column}"
+                    );
+                }
+            }
             let gpu = scopes.read_back_picture_blocking().unwrap();
             let cpu = render(&counters, &rule, &settings.render, size, samples).unwrap();
             assert_eq!(gpu.texels.len(), cpu.pixels().len());
@@ -128,7 +148,6 @@ fn picture_matches_the_cpu_reference_when_samples_split_unevenly_between_columns
                 "{rule_name} / {scan:?} / {}: расхождение {worst}",
                 scene.name
             );
-            // Картинка не пустая: след действительно нарисован.
             assert!(
                 gpu.texels.iter().filter(|pixel| pixel[3] > 0.1).count() > 1000,
                 "{rule_name} / {scan:?}: след не нарисован"

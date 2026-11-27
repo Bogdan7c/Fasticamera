@@ -247,7 +247,9 @@ mod tests {
 
     #[test]
     fn neighbours_walk_the_linear_row_and_stop_at_the_ends() {
-        assert_eq!(neighbour_scope(ScopeKind::Waveform, 1), Some(ScopeKind::RgbParade));
+        assert_eq!(neighbour_scope(ScopeKind::Waveform, 1), Some(ScopeKind::LumaWaveform));
+        assert_eq!(neighbour_scope(ScopeKind::LumaWaveform, 1), Some(ScopeKind::RgbParade));
+        assert_eq!(neighbour_scope(ScopeKind::LumaWaveform, -1), Some(ScopeKind::Waveform));
         assert_eq!(neighbour_scope(ScopeKind::RgbParade, 1), Some(ScopeKind::Vectorscope));
         assert_eq!(neighbour_scope(ScopeKind::Vectorscope, 1), None);
         assert_eq!(neighbour_scope(ScopeKind::Waveform, -1), None);

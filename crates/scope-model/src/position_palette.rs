@@ -68,10 +68,17 @@ impl PositionPalette {
         self.centre_cells
     }
 
-    /// Цвет клетки `(column, row)`: эталон формулы шейдера (`position_color`).
+    /// Цвет ячейки `(column, row)` сетки — цвет её центра ([`Self::colour_at_point`] в `(column + 0,5, row + 0,5)`).
     pub fn colour_at(&self, column: u32, row: u32) -> [f32; 3] {
-        let dx = column as f32 + 0.5 - self.centre_cells;
-        let dy = self.centre_cells - (row as f32 + 0.5);
+        self.colour_at_point(column as f32 + 0.5, row as f32 + 0.5)
+    }
+
+    /// Цвет точки сетки с координатами в клетках от левого верхнего угла (центр клетки `i` — в `i + 0,5`): нужен
+    /// пикселям картинки, которые лежат между центрами клеток (решение 322). Та же формула, что `position_color`
+    /// в `scope_render.comp`.
+    pub fn colour_at_point(&self, column: f32, row: f32) -> [f32; 3] {
+        let dx = column - self.centre_cells;
+        let dy = self.centre_cells - row;
         let radius = (dx * dx + dy * dy).sqrt();
         // Центр: угол у нулевого вектора не определён, поэтому ветка стоит ДО atan2 (см. описание модуля).
         // Сравнение записано так, чтобы NaN тоже попал в нейтраль, а не в угол.

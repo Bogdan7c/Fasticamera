@@ -16,8 +16,10 @@ pub const MAX_SCOPES_EVERY_NTH_FRAME: u32 = 60;
 pub struct ScopesConfig {
     /// Настройки модели: размеры сеток, усиление, прореживание входа, правило показа (`scope-model`).
     pub model: ScopeModelSettings,
-    /// Считать приборы на каждом N-м новом кадре камеры. 1 — на каждом (решение 190: прибор всегда про кадр на
-    /// экране); больше 1 — только рычаг бюджета, менять по замеру 14b.
+    /// Считать приборы на каждом N-м новом кадре камеры. По умолчанию 2 — 30 раз в секунду при камере 60 к/с
+    /// (решение 329: цена прибора в разделе — не больше +150 мА, решение 328; отменяет «на каждом кадре» решения
+    /// 190). Между посчитанными кадрами экран показывает последнюю картинку прибора; смена запроса (страница, оси,
+    /// зум) считается на ближайшем кадре без ожидания фазы.
     pub every_nth_frame: u32,
     /// Наибольшая сторона картинки прибора, которую рендер согласен делать, пикселей. `[estimate]` 2048: часть
     /// экрана телефона (1080×2412) с запасом; больше — команда отвергается, а не молча урезается.
@@ -28,7 +30,7 @@ impl Default for ScopesConfig {
     fn default() -> Self {
         Self {
             model: ScopeModelSettings::default(),
-            every_nth_frame: 1,
+            every_nth_frame: 2,
             max_picture_side_px: 2048,
         }
     }
@@ -67,10 +69,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_are_valid_and_compute_every_frame() {
+    fn defaults_are_valid_and_compute_every_second_frame() {
         let config = ScopesConfig::default();
         assert_eq!(config.validate(), Ok(()));
-        assert_eq!(config.every_nth_frame, 1, "решение 190: по умолчанию каждый кадр");
+        assert_eq!(
+            config.every_nth_frame, 2,
+            "решение 329: по умолчанию каждый второй кадр"
+        );
     }
 
     #[test]
@@ -104,16 +109,16 @@ mod tests {
     fn broken_model_is_reported_as_model_error() {
         let config = ScopesConfig {
             model: ScopeModelSettings {
-                trace_columns: 0,
+                trace_max_columns: 0,
                 ..ScopeModelSettings::default()
             },
             ..ScopesConfig::default()
         };
         assert_eq!(
             config.validate(),
-            Err(ScopesConfigError::Model(ScopeSettingsError::TraceColumnsOutOfRange {
-                columns: 0
-            }))
+            Err(ScopesConfigError::Model(
+                ScopeSettingsError::TraceMaxColumnsOutOfRange { columns: 0 }
+            ))
         );
     }
 

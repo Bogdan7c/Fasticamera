@@ -560,7 +560,9 @@ pub fn cpu_scope_counters(rig: &CalibrationRig, request: &ScopeRequest) -> Scope
         .expect("коды");
     let model = RenderLoopConfig::default().viewfinder.scopes.model;
     let rule = ResolvedScope::resolve(request, &model, isp_model::image::DisplayGamut::Srgb).expect("правило");
-    accumulate(&shown, model.sample_stride, &rule as &dyn ScopeRule).expect("эталон")
+    // Шаги — по плану прибора (у вектороскопа свой, решение 328; у следов реже поперёк взгляда, 329), как у GPU.
+    let steps = rule.planned_samples(shown.width(), shown.height(), &model).steps();
+    accumulate(&shown, steps, &rule as &dyn ScopeRule).expect("эталон")
 }
 
 /// Запрос прибора, который рендер держит прямо сейчас (его собственная диагностика), а не запись команд стенда.

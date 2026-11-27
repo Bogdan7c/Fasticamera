@@ -22,6 +22,7 @@ use crate::codes::{DISPLAY_CODE_COUNT, MAX_DISPLAY_CODE};
 use crate::cube_root::cube_root;
 use crate::grid::GridShape;
 use crate::rule::{Hit, SamplePosition, ScopeRule};
+use crate::sample_count::SampleCount;
 use crate::vectorscope_geometry::{VectorscopeGeometry, VectorscopeGeometryError};
 
 /// Наименьший размах OKLab-цветности на край сетки.
@@ -193,7 +194,8 @@ fn dot_in_fixed_order(row: [f32; 3], vector: [f32; 3]) -> f32 {
 }
 
 impl ScopeRule for OklabVectorscopeRule {
-    fn shape(&self) -> GridShape {
+    fn shape(&self, _samples: SampleCount) -> GridShape {
+        // Сетка вектороскопа от кадра не зависит: оси — цвет, а не положение.
         self.geometry.shape()
     }
 

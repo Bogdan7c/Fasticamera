@@ -20,7 +20,7 @@ mod scope_support;
 use gpu_vulkan::source_window::HorizontalMirror;
 use gpu_vulkan::storage_image::StorageFormatPolicy;
 use isp_vulkan::scopes::{ColorScopes, ColorScopesConfig, ScopeFrame};
-use scope_model::{SampleCount, ScopeCounters, ScopeModelSettings, ScopePicture, ScopeRule, render};
+use scope_model::{ScopeCounters, ScopeModelSettings, ScopePicture, ScopeRule, render};
 use scope_support::{
     assert_no_validation_errors, bars75_scene, cpu_counters, gpu_context_or_skip, picture_size, random_scene,
     rule_cases, run_scope_frame, small_settings, upload_scene,
@@ -77,7 +77,7 @@ fn picture_matches_cpu_render_within_fp16_tolerance_for_every_scope() {
                 counters,
                 "{rule_name}: счётчики"
             );
-            let samples = SampleCount::for_window(shown.width(), shown.height(), settings.sample_stride);
+            let samples = rule.planned_samples(shown.width(), shown.height(), &settings);
             let cpu = render(&counters, &rule, &settings.render, size, samples).unwrap();
             let worst = worst_premultiplied_difference(&readback.texels, &cpu);
             eprintln!(
@@ -94,10 +94,16 @@ fn picture_matches_cpu_render_within_fp16_tolerance_for_every_scope() {
             // Свойства картинки по формуле, а не только «GPU == CPU»: фон прозрачен, след и сетка видны.
             let transparent = readback.texels.iter().filter(|pixel| pixel[3] == 0.0).count();
             let visible = readback.texels.iter().filter(|pixel| pixel[3] > 0.0).count();
-            assert!(
-                transparent > readback.texels.len() / 2,
-                "{rule_name}: фон прозрачен ({transparent})"
-            );
+            // Случайная сцена кладёт отсчёты во все уровни каждого столбца и по всему кругу вектороскопа, и плавный
+            // след (решение 322) честно покрывает почти всю картинку; прозрачный фон проверяется у полос 75 % — там
+            // следа мало у каждого прибора.
+            if scene.name == "bars75" {
+                assert!(
+                    transparent > readback.texels.len() / 2,
+                    "{} / {rule_name}: фон прозрачен ({transparent})",
+                    scene.name
+                );
+            }
             assert!(visible > 100, "{rule_name}: на картинке есть след и сетка ({visible})");
             assert!(
                 readback
@@ -118,6 +124,8 @@ fn empty_trace_leaves_only_the_graticule_over_a_transparent_background() {
     let Some(context) = gpu_context_or_skip() else { return };
     let settings = ScopeModelSettings {
         sample_stride: scope_model::SampleStride::try_new(64).unwrap(),
+        // Шаг вектороскопа свой (решение 328): тоже 64, иначе у него отсчёты есть.
+        vectorscope_sample_stride: scope_model::SampleStride::try_new(64).unwrap(),
         ..small_settings()
     };
     let mut scopes = ColorScopes::new(
@@ -162,7 +170,7 @@ fn empty_trace_leaves_only_the_graticule_over_a_transparent_background() {
         assert_eq!(counters.total(), 0, "{rule_name}: отсчётов нет");
         let readback = scopes.read_back_picture_blocking().unwrap();
         // Окно 20×20 при шаге 64: отсчётов нет, опорное число — наименьшее (одно попадание).
-        let samples = SampleCount::for_window(20, 20, settings.sample_stride);
+        let samples = rule.planned_samples(20, 20, &settings);
         let cpu = render(&counters, &rule, &settings.render, size, samples).unwrap();
         assert!(
             worst_premultiplied_difference(&readback.texels, &cpu) <= PICTURE_TOLERANCE,

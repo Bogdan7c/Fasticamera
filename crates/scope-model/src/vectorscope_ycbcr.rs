@@ -13,17 +13,21 @@
 use crate::grid::GridShape;
 use crate::projection::{IntegerProjection, PROJECTION_SHIFT, ProjectionError, WeightSum};
 use crate::rule::{Hit, SamplePosition, ScopeRule};
+use crate::sample_count::SampleCount;
 use crate::trace_rules::BT709_LUMA_WEIGHTS;
 use crate::vectorscope_geometry::{VectorscopeGeometry, VectorscopeGeometryError};
 
 /// Наибольшее усиление вектороскопа Y'CbCr (иначе проекция переполнит `i32`).
 pub const MAX_YCBCR_GAIN: f32 = 8.0;
 
+/// Наименьшее усиление: цветность ±2 на краю — дальше сетка почти пуста.
+pub const MIN_YCBCR_GAIN: f32 = 0.25;
+
 /// Ошибка построения вектороскопа Y'CbCr.
 #[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
 pub enum YCbCrVectorscopeError {
-    /// Усиление вне `1..=MAX_YCBCR_GAIN` или не число.
-    #[error("усиление вектороскопа {gain} вне 1..={MAX_YCBCR_GAIN}")]
+    /// Усиление вне `MIN_YCBCR_GAIN..=MAX_YCBCR_GAIN` или не число.
+    #[error("усиление вектороскопа {gain} вне {MIN_YCBCR_GAIN}..={MAX_YCBCR_GAIN}")]
     GainOutOfRange {
         /// Недопустимое усиление.
         gain: f32,
@@ -46,9 +50,10 @@ pub struct YCbCrVectorscopeRule {
 }
 
 impl YCbCrVectorscopeRule {
-    /// Правило с сеткой `size × size` и усилением `gain ≥ 1`.
+    /// Правило с сеткой `size × size` и усилением `gain` (1 — цветность ±0,5 на краю сетки; меньше 1 — на краю
+    /// бо́льшая цветность, так все цели 100 % встают внутрь круга, решение 324).
     pub fn new(size: u32, gain: f32) -> Result<Self, YCbCrVectorscopeError> {
-        if !(1.0..=MAX_YCBCR_GAIN).contains(&gain) {
+        if !(MIN_YCBCR_GAIN..=MAX_YCBCR_GAIN).contains(&gain) {
             return Err(YCbCrVectorscopeError::GainOutOfRange { gain });
         }
         let geometry = VectorscopeGeometry::try_new(size)?;
@@ -103,7 +108,8 @@ impl YCbCrVectorscopeRule {
 }
 
 impl ScopeRule for YCbCrVectorscopeRule {
-    fn shape(&self) -> GridShape {
+    fn shape(&self, _samples: SampleCount) -> GridShape {
+        // Сетка вектороскопа от кадра не зависит: оси — цвет, а не положение.
         self.geometry.shape()
     }
 

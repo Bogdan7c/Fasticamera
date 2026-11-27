@@ -4,8 +4,8 @@
 use isp_model::image::DisplayGamut;
 use scope_contract::{ScopeImageSize, ScopeKind, ScopeRequest, VectorscopeAxes};
 use scope_model::{
-    RenderSettings, RenderSettingsError, ResolveError, ResolvedScope, SampleStride, ScopeModelSettings, ScopeRule,
-    ScopeSettingsError,
+    RenderSettings, RenderSettingsError, ResolveError, ResolvedScope, SampleCount, SampleStride, ScopeModelSettings,
+    ScopeRule, ScopeSettingsError,
 };
 
 /// Проверка, что ошибка именно та, что ожидалась для данного значения.
@@ -15,6 +15,7 @@ fn request(kind: ScopeKind, axes: VectorscopeAxes) -> ScopeRequest {
     ScopeRequest {
         kind,
         vectorscope_axes: axes,
+        vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
         scan: scope_contract::ScopeScan::Upright,
         image_size: ScopeImageSize::try_new(300, 200).unwrap(),
     }
@@ -25,11 +26,18 @@ fn defaults_are_valid_and_match_documented_estimates() {
     let settings = ScopeModelSettings::default();
     assert_eq!(settings.validate(), Ok(()));
     assert_eq!(
-        (settings.trace_columns, settings.trace_levels, settings.vectorscope_size),
-        (512, 256, 256)
+        (
+            settings.trace_max_columns,
+            settings.trace_levels,
+            settings.vectorscope_size
+        ),
+        (2048, 512, 512)
     );
-    assert_eq!(settings.sample_stride.get(), 2);
-    assert_eq!(settings.ycbcr_gain, 1.0);
+    assert_eq!(settings.sample_stride.get(), 1, "решение 322: каждый пиксель");
+    assert_eq!(
+        settings.ycbcr_edge_chroma, 0.64,
+        "решение 324: все цели 100 % внутри круга"
+    );
     assert_eq!(settings.oklab_range, 0.4);
 }
 
@@ -39,10 +47,10 @@ fn every_invalid_value_reports_its_own_error() {
     let cases: Vec<(ScopeModelSettings, ErrorCheck)> = vec![
         (
             ScopeModelSettings {
-                trace_columns: 0,
+                trace_max_columns: 0,
                 ..defaults.clone()
             },
-            |e| matches!(e, ScopeSettingsError::TraceColumnsOutOfRange { columns: 0 }),
+            |e| matches!(e, ScopeSettingsError::TraceMaxColumnsOutOfRange { columns: 0 }),
         ),
         (
             ScopeModelSettings {
@@ -60,17 +68,17 @@ fn every_invalid_value_reports_its_own_error() {
         ),
         (
             ScopeModelSettings {
-                ycbcr_gain: 0.5,
+                ycbcr_edge_chroma: 0.01,
                 ..defaults.clone()
             },
-            |e| matches!(e, ScopeSettingsError::YCbCrGainOutOfRange { .. }),
+            |e| matches!(e, ScopeSettingsError::YCbCrEdgeChromaOutOfRange { .. }),
         ),
         (
             ScopeModelSettings {
-                ycbcr_gain: f32::NAN,
+                ycbcr_edge_chroma: f32::NAN,
                 ..defaults.clone()
             },
-            |e| matches!(e, ScopeSettingsError::YCbCrGainOutOfRange { .. }),
+            |e| matches!(e, ScopeSettingsError::YCbCrEdgeChromaOutOfRange { .. }),
         ),
         (
             ScopeModelSettings {
@@ -82,7 +90,7 @@ fn every_invalid_value_reports_its_own_error() {
         // 4096 столбцов × 1024 уровня × 3 плоскости — за бюджет ячеек.
         (
             ScopeModelSettings {
-                trace_columns: 4096,
+                trace_max_columns: 4096,
                 trace_levels: 1024,
                 ..defaults.clone()
             },
@@ -197,9 +205,11 @@ fn settings_round_trip_through_json_and_reject_unknown_fields() {
     let json = serde_json::to_string(&settings).unwrap();
     assert_eq!(serde_json::from_str::<ScopeModelSettings>(&json).unwrap(), settings);
     // Пропущенные поля берутся из значений по умолчанию.
-    let partial: ScopeModelSettings = serde_json::from_str(r#"{"trace_columns": 128}"#).unwrap();
-    assert_eq!(partial.trace_columns, 128);
-    assert_eq!(partial.trace_levels, 256);
+    let partial: ScopeModelSettings = serde_json::from_str(r#"{"trace_max_columns": 128}"#).unwrap();
+    assert_eq!(partial.trace_max_columns, 128);
+    assert_eq!(partial.trace_levels, 512);
+    // Прежнее поле `trace_columns` (фиксированные 512 столбцов) больше не принимается молча.
+    assert!(serde_json::from_str::<ScopeModelSettings>(r#"{"trace_columns": 512}"#).is_err());
     assert_eq!(partial.render, RenderSettings::default());
     assert!(serde_json::from_str::<ScopeModelSettings>(r#"{"unknown": 1}"#).is_err());
     assert!(serde_json::from_str::<ScopeModelSettings>(r#"{"sample_stride": 0}"#).is_err());
@@ -219,18 +229,18 @@ fn resolve_picks_the_concrete_rule_and_shapes_from_the_request() {
     assert!(matches!(oklab, ResolvedScope::VectorscopeOklab(_)));
     assert_eq!(waveform.kind(), ScopeKind::Waveform);
     assert_eq!(oklab.kind(), ScopeKind::Vectorscope);
-    assert_eq!(
-        (
-            waveform.shape().columns(),
-            waveform.shape().rows(),
-            waveform.shape().planes()
-        ),
-        (512, 256, 3)
-    );
+    // Раздел на телефоне: окно 917 × 2048, шаг 1 — столбцов сетки ровно 917 (отсчёты вдоль взгляда, решение 322).
+    let section = SampleCount::for_window(917, 2048, SampleStride::EVERY_PIXEL);
+    let shape = waveform.shape(section);
+    assert_eq!((shape.columns(), shape.rows(), shape.planes()), (917, 512, 3));
+    // Окно шире потолка столбцов прижимается к потолку (план отсчётов не даёт такого кадра, сетка не растёт).
+    let too_wide = SampleCount::for_window(4000, 10, SampleStride::EVERY_PIXEL);
+    assert_eq!(waveform.shape(too_wide).columns(), 2048);
     // RGB waveform и parade — одно правило трёх плоскостей: форма сетки у них одна.
-    assert_eq!(waveform.shape(), parade.shape());
-    // Смена осей вектороскопа не меняет форму сетки: ресурсы те же.
-    assert_eq!(ycbcr.shape(), oklab.shape());
+    assert_eq!(waveform.shape(section), parade.shape(section));
+    // Смена осей вектороскопа не меняет форму сетки, и от кадра она не зависит: ресурсы те же.
+    assert_eq!(ycbcr.shape(section), oklab.shape(too_wide));
+    assert_eq!(ycbcr.shape(section).columns(), 512);
 }
 
 #[test]
@@ -286,11 +296,12 @@ fn expected_palette(
 ) -> scope_model::PositionPalette {
     let lightness = settings.render.vectorscope_lightness;
     match axes {
-        VectorscopeAxes::YCbCrBt709 => {
-            scope_model::vectorscope_ycbcr::YCbCrVectorscopeRule::new(settings.vectorscope_size, settings.ycbcr_gain)
-                .unwrap()
-                .position_palette(lightness)
-        }
+        VectorscopeAxes::YCbCrBt709 => scope_model::vectorscope_ycbcr::YCbCrVectorscopeRule::new(
+            settings.vectorscope_size,
+            scope_model::settings::ycbcr_gain_for_edge_chroma(settings.ycbcr_edge_chroma),
+        )
+        .unwrap()
+        .position_palette(lightness),
         VectorscopeAxes::OklabAb => {
             scope_model::oklab_rule::OklabVectorscopeRule::new(settings.vectorscope_size, settings.oklab_range, gamut)
                 .unwrap()

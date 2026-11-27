@@ -28,7 +28,6 @@
 //! единственное правило [`quantize_display_value`], общее с GPU.
 
 pub mod codes;
-pub mod column_count_scales;
 pub mod cube_root;
 pub mod graticule;
 mod graticule_layout;
@@ -44,9 +43,11 @@ pub mod rule;
 pub mod sample_count;
 pub mod sampling;
 pub mod settings;
+pub mod trace_density;
 pub mod trace_paint;
 mod trace_painter;
 pub mod trace_reference;
+pub mod trace_resample;
 pub mod trace_rules;
 pub mod trace_style;
 pub mod vectorscope_geometry;
@@ -54,18 +55,19 @@ mod vectorscope_palette;
 pub mod vectorscope_ycbcr;
 
 pub use codes::{HorizontalOrder, MAX_DISPLAY_CODE, ShownCodes, ShownCodesError, quantize_display_value};
-pub use column_count_scales::{ColumnBasis, ColumnCountScales, samples_in_columns};
 pub use graticule::{GraticulePrimitive, MAX_GRATICULE_PRIMITIVES};
 pub use grid::{GridError, GridShape, ScopeCounters};
 pub use position_palette::{POSITION_PALETTE_ANGLES, PositionPalette, PositionPaletteEntry};
-pub use render::{RenderError, ScopePicture, render, render_with_basis};
-pub use render_settings::{RenderSettings, RenderSettingsError, TraceShare, TraceShareError};
+pub use render::{RenderError, ScopePicture, render};
+pub use render_settings::{FullDensity, FullDensityError, RenderSettings, RenderSettingsError, VectorscopeTargets};
 pub use resolved::{ColouredByPosition, ResolveError, ResolvedScope};
 pub use rgb_waveform_palette::RgbWaveformPalette;
 pub use rule::{AccumulateError, Hit, SamplePosition, ScopeRule, accumulate, hits_of_code};
 pub use sample_count::SampleCount;
-pub use sampling::{SampleStride, SampleStrideError};
+pub use sampling::{SampleSteps, SampleStride, SampleStrideError};
 pub use settings::{ScopeModelSettings, ScopeSettingsError};
+pub use trace_density::{PictureDensity, Section, slots_per_pixel};
 pub use trace_paint::TracePaint;
 pub use trace_reference::TraceReference;
+pub use trace_resample::{AxisResampling, MAX_TRACE_SOFTENING_PX};
 pub use trace_style::TraceStyle;

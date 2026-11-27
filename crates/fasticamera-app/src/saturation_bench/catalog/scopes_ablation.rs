@@ -1,4 +1,5 @@
-//! Работы группы `scopes_ablation`: разложение цены накопления приборов (чтение, проекция, запись).
+//! Работы группы `scopes_ablation`: разложение цены накопления приборов (чтение, проекция, запись). Опыты слияния
+//! записей (`_aggregated`, `_runs*`) — в группе `scopes_merging`: вместе они не влезали в одну строку отчёта (14r).
 //!
 //! Таблица — данные: что за работа, решает `WorkloadKind`, а не имя. Порядок строк — порядок прогона.
 
@@ -95,59 +96,5 @@ pub(super) const ENTRIES: &[CatalogEntry] = &[
         kind: scopes_ablated(ScopeShape::VectorscopeYcbcr, ScopeAblation::WriteSpread),
         group: WorkloadGroup::ScopesAblation,
         summary: "vectorscope_ycbcr: у каждой нити своя ячейка",
-    },
-    CatalogEntry {
-        name: "scopes_waveform_aggregated",
-        kind: scopes_ablated(ScopeShape::Waveform, ScopeAblation::Aggregated),
-        group: WorkloadGroup::ScopesAblation,
-        summary: "waveform: слияние одинаковых ячеек в subgroup",
-    },
-    CatalogEntry {
-        name: "scopes_parade_aggregated",
-        kind: scopes_ablated(ScopeShape::Parade, ScopeAblation::Aggregated),
-        group: WorkloadGroup::ScopesAblation,
-        summary: "parade: слияние одинаковых ячеек в subgroup",
-    },
-    CatalogEntry {
-        name: "scopes_vectorscope_ycbcr_aggregated",
-        kind: scopes_ablated(ScopeShape::VectorscopeYcbcr, ScopeAblation::Aggregated),
-        group: WorkloadGroup::ScopesAblation,
-        summary: "vectorscope_ycbcr: слияние одинаковых ячеек в subgroup",
-    },
-    CatalogEntry {
-        name: "scopes_waveform_runs4",
-        kind: scopes_ablated(ScopeShape::Waveform, ScopeAblation::Runs4),
-        group: WorkloadGroup::ScopesAblation,
-        summary: "waveform: 4 отсчёта на нить, серии в регистре",
-    },
-    CatalogEntry {
-        name: "scopes_waveform_runs8",
-        kind: scopes_ablated(ScopeShape::Waveform, ScopeAblation::Runs8),
-        group: WorkloadGroup::ScopesAblation,
-        summary: "waveform: 8 отсчётов на нить, серии в регистре",
-    },
-    CatalogEntry {
-        name: "scopes_parade_runs4",
-        kind: scopes_ablated(ScopeShape::Parade, ScopeAblation::Runs4),
-        group: WorkloadGroup::ScopesAblation,
-        summary: "parade: 4 отсчёта на нить, серии в регистре",
-    },
-    CatalogEntry {
-        name: "scopes_parade_runs8",
-        kind: scopes_ablated(ScopeShape::Parade, ScopeAblation::Runs8),
-        group: WorkloadGroup::ScopesAblation,
-        summary: "parade: 8 отсчётов на нить, серии в регистре",
-    },
-    CatalogEntry {
-        name: "scopes_waveform_runs16",
-        kind: scopes_ablated(ScopeShape::Waveform, ScopeAblation::Runs16),
-        group: WorkloadGroup::ScopesAblation,
-        summary: "waveform: 16 отсчётов на нить, серии в регистре",
-    },
-    CatalogEntry {
-        name: "scopes_parade_runs16",
-        kind: scopes_ablated(ScopeShape::Parade, ScopeAblation::Runs16),
-        group: WorkloadGroup::ScopesAblation,
-        summary: "parade: 16 отсчётов на нить, серии в регистре",
     },
 ];

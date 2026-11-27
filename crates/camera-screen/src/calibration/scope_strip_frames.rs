@@ -1,4 +1,5 @@
-//! Рамки частей полоски прибора (решения 258, 290, 291): имя слева, точки страниц по центру, переключатель осей
+//! Рамки частей полоски прибора (решения 258, 290, 291, 321, 325): имя слева, точки страниц по центру (или левее,
+//! если по центру им тесно рядом с кнопкой «2×»), кнопка «2×» и переключатель осей
 //! вектороскопа и капсула белого справа. Чистая функция рамки полоски и чисел виджетов — ей же пользуются виджет
 //! полоски и тесты соседства, поэтому «что где стоит» считается в одном месте (как `ColumnFrames` колонки ручек).
 //!
@@ -19,6 +20,8 @@ pub struct ScopeStripFrames {
     pub page_dots: [Rect; ScopeKind::ALL.len()],
     /// Переключатель осей вектороскопа (виден только на странице вектороскопа), левее места белого.
     pub axes_toggle: Rect,
+    /// Кнопка «2×» вектороскопа (решение 325), левее переключателя осей; видна только на странице вектороскопа.
+    pub zoom_toggle: Rect,
     /// Место капсулы белого справа (`WhiteCapsule`): на каждой странице, оси стоят левее неё (решение 290).
     pub trailing: Rect,
 }
@@ -35,9 +38,16 @@ impl ScopeStripFrames {
 
         let toggle_width = 2.0 * config.scope_axes_segment_width_pt + config.segment_gap_pt;
         let axes_toggle = band(trailing.min_x() - gap - toggle_width, toggle_width);
+        let zoom_width = config.scope_zoom_segment_width_pt;
+        let zoom_toggle = band(axes_toggle.min_x() - gap - zoom_width, zoom_width);
 
         let cell_width = config.scope_page_dot_cell_width_pt;
-        let dots_left = strip.center().x - cell_width * ScopeKind::ALL.len() as f64 / 2.0;
+        let dots_width = cell_width * ScopeKind::ALL.len() as f64;
+        // Точки — по центру полоски; если там они налезли бы на переключатель осей (четыре страницы на узком экране,
+        // решение 321), ряд сдвигается влево и встаёт вплотную к переключателю через зазор. Положение одно на всех
+        // страницах: место переключателя держится и там, где он скрыт, поэтому точки не прыгают при свайпе.
+        let centred_left = strip.center().x - dots_width / 2.0;
+        let dots_left = centred_left.min(zoom_toggle.min_x() - gap - dots_width);
         let page_dots = std::array::from_fn(|index| band(dots_left + cell_width * index as f64, cell_width));
 
         let title_left = strip.min_x() + inset;
@@ -46,6 +56,7 @@ impl ScopeStripFrames {
             title,
             page_dots,
             axes_toggle,
+            zoom_toggle,
             trailing,
         }
     }
@@ -73,6 +84,7 @@ mod tests {
         let mut all = vec![("имя", frames.title)];
         all.extend(frames.page_dots.iter().map(|cell| ("точка", *cell)));
         all.push(("оси", frames.axes_toggle));
+        all.push(("зум", frames.zoom_toggle));
         all.push(("белое", frames.trailing));
         all
     }
@@ -105,7 +117,7 @@ mod tests {
     }
 
     #[test]
-    fn the_title_slot_holds_the_longest_scope_name_and_the_dots_stay_centred() {
+    fn the_title_slot_holds_the_longest_scope_name_and_the_dots_stay_centred_or_beside_the_axes() {
         let tokens = UiKitTokens::default();
         let ppp = screen().point_scale().pixels_per_point();
         let painter = LabelPainter::new(&tokens.typography, PxPerPt::new(ppp as f32).expect("масштаб"));
@@ -113,7 +125,7 @@ mod tests {
         let layout = calibration_layout(LayoutPolicy::FollowsOrientation, DeviceOrientation::Portrait);
         let strip = layout.scope_strip();
         let frames = ScopeStripFrames::of(strip, &config.widgets);
-        for title in ["RGB WAVEFORM", "RGB PARADE", "VECTORSCOPE"] {
+        for title in ["RGB WAVEFORM", "LUMA WAVEFORM", "RGB PARADE", "VECTORSCOPE"] {
             let run = painter.layout(title, TextRoleKind::Caption).expect("раскладка подписи");
             let width_pt = f64::from(run.advance_px) / ppp;
             assert!(
@@ -122,12 +134,19 @@ mod tests {
                 frames.title.size.width
             );
         }
+        // Точки — по центру полоски, если там им хватает места; иначе вплотную к переключателю осей через зазор
+        // (четыре страницы на узком экране, решение 321). В любом случае точки не левее имени и не на осях.
         let dots_left = frames.page_dots[0].min_x();
         let dots_right = frames.page_dots[frames.page_dots.len() - 1].max_x();
+        let centred = ((dots_left + dots_right) / 2.0 - strip.center().x).abs() < 1e-9;
+        let against_zoom = (frames.zoom_toggle.min_x() - config.widgets.scope_strip_gap_pt - dots_right).abs() < 1e-9;
+        assert!(centred || against_zoom, "точки по центру или вплотную к кнопке «2×»");
+        assert!(dots_right <= frames.zoom_toggle.min_x() - config.widgets.scope_strip_gap_pt + 1e-9);
         assert!(
-            ((dots_left + dots_right) / 2.0 - strip.center().x).abs() < 1e-9,
-            "точки по центру полоски"
+            frames.zoom_toggle.max_x() < frames.axes_toggle.min_x(),
+            "«2×» левее осей"
         );
+        assert!(dots_left >= frames.title.max_x());
         // Место белого — справа на каждой странице, оси стоят левее него.
         assert!(frames.axes_toggle.max_x() < frames.trailing.min_x());
         assert!((strip.max_x() - frames.trailing.max_x() - config.widgets.scope_label_inset_pt).abs() < 1e-9);

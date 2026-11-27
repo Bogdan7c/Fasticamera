@@ -61,6 +61,16 @@ impl GridShape {
         Ok(Self { columns, rows, planes })
     }
 
+    /// Та же сетка, но со столбцами `columns`, прижатыми к `1..=self.columns()`. Отказа нет по построению: сетка
+    /// не шире проверенной — меньше ячеек и те же строки и плоскости. Так waveform/parade получают сетку кадра
+    /// (столбцов — по отсчётам) из проверенного потолка.
+    pub fn narrowed_to_columns(self, columns: u32) -> Self {
+        Self {
+            columns: columns.clamp(1, self.columns),
+            ..self
+        }
+    }
+
     /// Столбцы.
     pub fn columns(self) -> u32 {
         self.columns

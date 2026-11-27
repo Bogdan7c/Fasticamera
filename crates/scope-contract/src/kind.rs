@@ -15,6 +15,9 @@ pub enum ScopeKind {
     /// RGB waveform: R', G' и B' по столбцам кадра тремя следами, наложенными друг на друга (серый — белый след,
     /// цветной сдвиг виден цветом): где тени и света, что упёрлось в белое или чёрное, и какого цвета перекос.
     Waveform,
+    /// Яркостный waveform (Luma): один белый след яркости Y' (BT.709 по кодам сигнала) по столбцам кадра — экспозиция
+    /// без цветового шума трёх следов (решение 321: отдельная страница рядом с RGB WAVEFORM).
+    LumaWaveform,
     /// То же для R', G' и B' рядом секциями: сдвиг цвета в тенях или светах (серый — три одинаковые картинки).
     RgbParade,
     /// Цветность по кругу: направление и сила цвета, серый — точка в центре.
@@ -44,12 +47,18 @@ impl ScopePictureShape {
 impl ScopeKind {
     /// Все типы приборов. Ресурсы приборов создаются сразу для всех типов, чтобы смена типа свайпом
     /// не создавала ничего посреди жеста.
-    pub const ALL: [ScopeKind; 3] = [ScopeKind::Waveform, ScopeKind::RgbParade, ScopeKind::Vectorscope];
+    /// Порядок — порядок страниц в разделе калибровки.
+    pub const ALL: [ScopeKind; 4] = [
+        ScopeKind::Waveform,
+        ScopeKind::LumaWaveform,
+        ScopeKind::RgbParade,
+        ScopeKind::Vectorscope,
+    ];
 
     /// Какой формы картинка нужна прибору. `match` без `_`: новый вид не соберётся без своей формы.
     pub fn picture_shape(self) -> ScopePictureShape {
         match self {
-            ScopeKind::Waveform | ScopeKind::RgbParade => ScopePictureShape::FillsZone,
+            ScopeKind::Waveform | ScopeKind::LumaWaveform | ScopeKind::RgbParade => ScopePictureShape::FillsZone,
             ScopeKind::Vectorscope => ScopePictureShape::Square,
         }
     }
@@ -58,7 +67,7 @@ impl ScopeKind {
     /// их нет (пустой список). `match` без `_`: новый прибор не соберётся, пока не скажет, есть ли у него уровни.
     pub fn level_lines(self) -> &'static [LevelLine] {
         match self {
-            ScopeKind::Waveform | ScopeKind::RgbParade => &WAVEFORM_LEVEL_LINES,
+            ScopeKind::Waveform | ScopeKind::LumaWaveform | ScopeKind::RgbParade => &WAVEFORM_LEVEL_LINES,
             ScopeKind::Vectorscope => &[],
         }
     }
@@ -81,6 +90,7 @@ mod tests {
     #[test]
     fn only_the_vectorscope_needs_a_square_picture() {
         assert_eq!(ScopeKind::Waveform.picture_shape(), ScopePictureShape::FillsZone);
+        assert_eq!(ScopeKind::LumaWaveform.picture_shape(), ScopePictureShape::FillsZone);
         assert_eq!(ScopeKind::RgbParade.picture_shape(), ScopePictureShape::FillsZone);
         assert_eq!(ScopeKind::Vectorscope.picture_shape(), ScopePictureShape::Square);
         // Квадратных видов в словаре ровно один: любой другой вид по умолчанию занимает зону.
@@ -89,6 +99,37 @@ mod tests {
             .filter(|kind| kind.picture_shape() == ScopePictureShape::Square)
             .count();
         assert_eq!(squares, 1);
+    }
+}
+
+/// Увеличение вектороскопа (решение 325, кнопка «2×» на полоске вектороскопа; как Show 2X zoom в Resolve): центр
+/// вдвое крупнее — видны слабые перекосы белого и кожи. Это параметр запроса, а не ресурсов: меняются только числа
+/// правила попадания, проходы и картинка те же.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VectorscopeZoom {
+    /// Обычный масштаб: все цели 75 % и 100 % внутри круга (решение 324).
+    #[default]
+    Normal,
+    /// Вдвое крупнее: цветность на краю вдвое меньше, цели за краем не рисуются.
+    Double,
+}
+
+impl VectorscopeZoom {
+    /// Во сколько раз крупнее обычного масштаба.
+    pub const fn magnification(self) -> f32 {
+        match self {
+            VectorscopeZoom::Normal => 1.0,
+            VectorscopeZoom::Double => 2.0,
+        }
+    }
+
+    /// Другое положение кнопки «2×».
+    pub const fn toggled(self) -> Self {
+        match self {
+            VectorscopeZoom::Normal => VectorscopeZoom::Double,
+            VectorscopeZoom::Double => VectorscopeZoom::Normal,
+        }
     }
 }
 

@@ -1,9 +1,10 @@
 // Общая часть проходов накопления счётчиков цветовых приборов (решения 183, 188–190).
 //
 // Контракт «прибор = накопитель + правило попадания»: файл-прибор подключает ЭТОТ файл и определяет ОДНУ функцию
-//     void scope_hits(uint eye_x, uvec3 code)
-// которая сообщает попадания отсчёта через `scope_add_hit`. `eye_x` — положение отсчёта на ГОРИЗОНТАЛИ ГЛАЗА
-// (с учётом зеркала и положения телефона, см. `scan` ниже), а длина этой оси — глобальная `eye_extent`. Всё остальное — обход отсчётов, зеркало, квантование
+//     void scope_hits(uint eye_index, uvec3 code)
+// которая сообщает попадания отсчёта через `scope_add_hit`. `eye_index` — НОМЕР отсчёта вдоль ГОРИЗОНТАЛИ ГЛАЗА
+// (с учётом зеркала и положения телефона, см. `scan` ниже; столбец waveform/parade, решение 322). Всё остальное —
+// обход отсчётов, зеркало, квантование
 // значения экрана в код 0…1023, границы сетки, атомарное сложение — общее и не правится при добавлении прибора.
 //
 // Привязки (одинаковы у всех приборов; Rust-сторона — `isp-vulkan/src/scopes/accumulators.rs`):
@@ -31,12 +32,15 @@ layout(set = 0, binding = 2, std430) buffer ScopeCounters {
     uint counts[];
 } counters;
 
-// Прореживание и окно чтения (совпадает с Rust-структурой `SamplingPush`, 7 слов).
+// Прореживание и окно чтения (совпадает с Rust `sampling_push_bytes` в scopes/frame_input.rs, 9 слов). Шаг и
+// смещение — свои у каждой оси (решение 329: следы по столбцам берут все отсчёты вдоль взгляда и реже поперёк).
 layout(push_constant) uniform Sampling {
     uint content_width;   // ширина показанной картинки (содержимое окна), пикселей
     uint content_height;  // высота показанной картинки
-    uint stride;          // шаг прореживания >= 1
-    uint offset;          // смещение первого отсчёта (stride - 1) / 2
+    uint stride_x;        // шаг прореживания по x >= 1
+    uint stride_y;        // шаг прореживания по y >= 1
+    uint offset_x;        // смещение первого отсчёта по x: (stride_x - 1) / 2
+    uint offset_y;        // смещение первого отсчёта по y: (stride_y - 1) / 2
     uint samples_x;       // число отсчётов по x
     uint samples_y;       // число отсчётов по y
     uint mirrored;        // 1 — картинка на экране зеркальна по горизонтали
@@ -140,16 +144,20 @@ const uint ROWS_PER_THREAD = SCOPE_ROWS_PER_THREAD;
 const uint ROWS_PER_THREAD = 1u;
 #endif
 
+// Форма сетки — читается из параметров ОДИН раз в начале нити (main), а не на каждом попадании: драйвер вправе
+// перечитывать буфер параметров после каждой атомарной записи (буферы могут пересекаться), а форма одна на кадр
+// (14r, разбор цены: ≈ 30 чтений параметров на отсчёт).
+uint grid_columns = 0u;
+uint grid_rows = 0u;
+uint grid_planes = 0u;
+
 // Прибавляет попадание. Ячейка вне сетки не пишется (на CPU это ошибка правила, на GPU выход за буфер
 // недопустим); у правил из `scope-model` такого не бывает, паритет-тесты это проверяют.
 void scope_add_hit(uint plane, uint row, uint column) {
-    uint columns = parameters.words[WORD_GRID_COLUMNS];
-    uint rows = parameters.words[WORD_GRID_ROWS];
-    uint planes = parameters.words[WORD_GRID_PLANES];
-    if (plane >= planes || row >= rows || column >= columns) {
+    if (plane >= grid_planes || row >= grid_rows || column >= grid_columns) {
         return;
     }
-    uint cell = (plane * rows + row) * columns + column;
+    uint cell = (plane * grid_rows + row) * grid_columns + column;
 #if defined(SCOPE_DIAG_SKIP_WRITE)
     // ДИАГНОСТИКА стенда: ячейка посчитана, запись не делается (ветка не выполняется никогда, но компилятор её не уберёт).
     if (cell == 0xFFFFFFFFu) {
@@ -164,7 +172,7 @@ void scope_add_hit(uint plane, uint row, uint column) {
     // ДИАГНОСТИКА стенда: у каждой нити своя ячейка (конкуренции нет), проекция всё равно считается.
     if (cell != 0xFFFFFFFFu) {
         uint own = (gl_GlobalInvocationID.y * sampling.samples_x + gl_GlobalInvocationID.x) * 3u + plane;
-        atomicAdd(counters.counts[own % (rows * columns * planes)], 1u);
+        atomicAdd(counters.counts[own % (grid_rows * grid_columns * grid_planes)], 1u);
     }
 #elif defined(SCOPE_MERGE_HITS)
     add_hit_merged_in_subgroup(cell);
@@ -176,19 +184,17 @@ void scope_add_hit(uint plane, uint row, uint column) {
 }
 
 // Правило попадания прибора: определяется в файле прибора.
-void scope_hits(uint eye_x, uvec3 code);
+void scope_hits(uint eye_index, uvec3 code);
 
-// Длина оси «слева направо» для глаза: ширина или высота показанной картинки (ставится в main до scope_hits).
-uint eye_extent = 1u;
-
-// Положение отсчёта (shown_x, shown_y) показанной картинки на горизонтали глаза — то же, что
-// `SamplePosition::from_shown` в scope-model. Зеркало уже учтено в shown_x, поворот накладывается поверх.
-uint eye_position(uint shown_x, uint shown_y, uint scan) {
+// Номер отсчёта `sample_index` (по осям ПОКАЗАННОЙ картинки) вдоль горизонтали глаза — то же, что
+// `SamplePosition::of_sample` в scope-model. Зеркало уже учтено в показанном столбце, поворот накладывается поверх:
+// ось взгляда — строки или столбцы отсчётов, «читать с конца» — номер с конца.
+uint eye_sample_index(uvec2 sample_index, uint scan) {
     bool along_rows = scan == SCAN_ROTATED_CLOCKWISE || scan == SCAN_ROTATED_COUNTER_CLOCKWISE;
     bool reversed = scan == SCAN_UPSIDE_DOWN || scan == SCAN_ROTATED_COUNTER_CLOCKWISE;
-    eye_extent = along_rows ? sampling.content_height : sampling.content_width;
-    uint along = along_rows ? shown_y : shown_x;
-    return reversed ? eye_extent - 1u - along : along;
+    uint eye_samples = along_rows ? sampling.samples_y : sampling.samples_x;
+    uint along = along_rows ? sample_index.y : sample_index.x;
+    return reversed ? eye_samples - 1u - along : along;
 }
 
 float word_as_float(uint index) {
@@ -202,20 +208,22 @@ void main() {
         return;
     }
     uint scan = parameters.words[WORD_SCAN];
+    grid_columns = parameters.words[WORD_GRID_COLUMNS];
+    grid_rows = parameters.words[WORD_GRID_ROWS];
+    grid_planes = parameters.words[WORD_GRID_PLANES];
     for (uint step = 0u; step < ROWS_PER_THREAD; ++step) {
         uvec2 sample_index = uvec2(gl_GlobalInvocationID.x, first_sample_y + step);
         if (sample_index.y >= sampling.samples_y) {
             break;
         }
         // Координаты отсчёта на ПОКАЗАННОЙ картинке (так же, как `SampleStride::coordinate` на CPU).
-        uint shown_x = sampling.offset + sample_index.x * sampling.stride;
-        uint shown_y = sampling.offset + sample_index.y * sampling.stride;
+        uint shown_x = sampling.offset_x + sample_index.x * sampling.stride_x;
+        uint shown_y = sampling.offset_y + sample_index.y * sampling.stride_y;
         // Зеркальная картинка: показанный столбец x лежит в буфере на content_width - 1 - x.
         uint texel_x = sampling.mirrored != 0u ? sampling.content_width - 1u - shown_x : shown_x;
         vec4 texel = texelFetch(shown_image, ivec2(int(texel_x), int(shown_y)), 0);
         uvec3 code = uvec3(quantize_display_value(texel.r), quantize_display_value(texel.g), quantize_display_value(texel.b));
-        uint eye_x = eye_position(shown_x, shown_y, scan);
-        scope_hits(eye_x, code);
+        scope_hits(eye_sample_index(sample_index, scan), code);
     }
 #if defined(SCOPE_ROWS_PER_THREAD)
     flush_runs();

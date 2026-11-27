@@ -15,7 +15,7 @@ use look_contract::{
     BandAxis, GlobalKnob, HueBandId, LookControl, LookFacts, LookIntent, LookKnob, LookProblemKind, LookWhiteStops,
     PresetId, ToneBaseModel, UserPresetId, WheelPush, WheelZone,
 };
-use scope_contract::{ScopeIntent, ScopeKind, VectorscopeAxes};
+use scope_contract::{ScopeIntent, ScopeKind, VectorscopeAxes, VectorscopeZoom};
 use shell_contract::text_input::{TextInputResult, TextRequestId};
 
 use crate::calibration::ControlViewKind;
@@ -180,6 +180,8 @@ pub enum ScreenAction {
     ScopeKindSelected(ScopeKind),
     /// Стандарт осей вектороскопа выбран в меню.
     VectorscopeAxesSelected(VectorscopeAxes),
+    /// Увеличение вектороскопа выбрано кнопкой «2×» (решение 325).
+    VectorscopeZoomSelected(VectorscopeZoom),
     /// Кнопка «чистяк» нажата: показать основу без вида (решение 189).
     CleanViewPressed,
     /// Кнопка «чистяк» отпущена: вернуть вид с правками.

@@ -380,6 +380,7 @@ impl GpuWorkloadExecutor {
         let layout_request = self.calibrate_scope_request()?;
         let (kind, axes) = match shape {
             ScopeShape::Waveform => (ScopeKind::Waveform, VectorscopeAxes::YCbCrBt709),
+            ScopeShape::LumaWaveform => (ScopeKind::LumaWaveform, VectorscopeAxes::YCbCrBt709),
             ScopeShape::Parade => (ScopeKind::RgbParade, VectorscopeAxes::YCbCrBt709),
             ScopeShape::VectorscopeYcbcr => (ScopeKind::Vectorscope, VectorscopeAxes::YCbCrBt709),
             ScopeShape::VectorscopeOklab => (ScopeKind::Vectorscope, VectorscopeAxes::OklabAb),

@@ -37,8 +37,8 @@ use isp_model::params::IspParams;
 use isp_vulkan::viewfinder::{IspStageSet, OutputAllocation, ViewfinderGeometry};
 use scope_contract::{ScopeImageSize, ScopeKind, ScopeRequest, VectorscopeAxes};
 use scope_model::{
-    HorizontalOrder, ResolvedScope, SampleCount, SampleStride, ScopeModelSettings, ScopePicture, ScopeRule, ShownCodes,
-    accumulate, render,
+    HorizontalOrder, ResolvedScope, SampleStride, ScopeModelSettings, ScopePicture, ScopeRule, ShownCodes, accumulate,
+    render,
 };
 use shell_contract::clock::MonotonicNanos;
 use ui_draw::color::Opacity;
@@ -71,7 +71,7 @@ const SCOPE_RECT: (u32, u32, u32, u32) = (20, 10, 64, 48);
 fn small_scopes_config() -> ScopesConfig {
     ScopesConfig {
         model: ScopeModelSettings {
-            trace_columns: 48,
+            trace_max_columns: 48,
             trace_levels: 64,
             vectorscope_size: 64,
             sample_stride: SampleStride::try_new(1).expect("шаг"),
@@ -85,6 +85,7 @@ fn waveform_request() -> ScopeRequest {
     ScopeRequest {
         kind: ScopeKind::Waveform,
         vectorscope_axes: VectorscopeAxes::YCbCrBt709,
+        vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
         scan: scope_contract::ScopeScan::Upright,
         image_size: ScopeImageSize::try_new(SCOPE_RECT.2, SCOPE_RECT.3).expect("размер"),
     }
@@ -254,8 +255,14 @@ fn cpu_scope_picture(stand: &Stand, config: &ScopesConfig, request: &ScopeReques
     let shown = ShownCodes::from_display_rgba(image.width, image.height, &image.pixels, HorizontalOrder::AsStored)
         .expect("коды");
     let rule = ResolvedScope::resolve(request, &config.model, DisplayGamut::Srgb).expect("правило");
-    let counters = accumulate(&shown, config.model.sample_stride, &rule as &dyn ScopeRule).expect("счётчики");
-    let samples = SampleCount::for_window(shown.width(), shown.height(), config.model.sample_stride);
+    let counters = accumulate(
+        &shown,
+        rule.planned_samples(shown.width(), shown.height(), &config.model)
+            .steps(),
+        &rule as &dyn ScopeRule,
+    )
+    .expect("счётчики");
+    let samples = rule.planned_samples(shown.width(), shown.height(), &config.model);
     render(&counters, &rule, &config.model.render, request.image_size, samples).expect("картинка прибора")
 }
 

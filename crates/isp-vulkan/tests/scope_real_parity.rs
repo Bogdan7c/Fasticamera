@@ -175,6 +175,6 @@ fn counters_match_cpu_on_viewfinder_output_of_real_crops() {
             comparisons += compare_scopes_on_viewfinder_output(&context, crop, &raw, &params, &spec, storage);
         }
     }
-    assert_eq!(comparisons, 4 * 2 * 2 * 2 * 5, "матрица реальных кропов");
+    assert_eq!(comparisons, 4 * 2 * 2 * 2 * 6, "матрица реальных кропов");
     assert_no_validation_errors(&context);
 }

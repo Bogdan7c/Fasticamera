@@ -15,7 +15,10 @@ const SIZE: u32 = 256;
 const LIGHTNESS: f32 = 0.70;
 
 fn position() -> SamplePosition {
-    SamplePosition { x: 0, picture_width: 1 }
+    SamplePosition {
+        eye_index: 0,
+        eye_samples: 1,
+    }
 }
 
 /// Цвета полос 75 %: (название, код, каналы, которые должны быть «включёнными» в оттенке).

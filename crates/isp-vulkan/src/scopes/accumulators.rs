@@ -19,8 +19,8 @@ pub(super) const ACCUMULATE_BINDINGS: [BindingKind; 3] = [
     BindingKind::ReadWriteStorageBuffer,
 ];
 
-/// Размер push-констант прохода накопления: 7 слов `SamplingPush`.
-pub(super) const SAMPLING_PUSH_BYTES: u32 = 28;
+/// Размер push-констант прохода накопления: 9 слов `SamplingPush` (шаг и смещение — свои у каждой оси, решение 329).
+pub(super) const SAMPLING_PUSH_BYTES: u32 = 36;
 
 /// Размер рабочей группы всех проходов приборов (128 нитей — гарантия спецификации Vulkan для любого устройства).
 pub(super) const LOCAL_WIDTH: u32 = 16;

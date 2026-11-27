@@ -5,7 +5,7 @@
 //! полоса выбрана, держится ли «чистяк», открыто ли меню, ждём ли ответ клавиатуры, взведено ли удаление.
 
 use look_contract::{HueBandId, UserPresetId, WheelZone};
-use scope_contract::{ScopeKind, ScopeRequest, VectorscopeAxes};
+use scope_contract::{ScopeKind, ScopeRequest, VectorscopeAxes, VectorscopeZoom};
 use shell_contract::text_input::TextRequestId;
 
 use super::config::CalibrationConfig;
@@ -109,6 +109,8 @@ impl ControlViewKind {
 pub struct CalibrationState {
     scope_kind: ScopeKind,
     vectorscope_axes: VectorscopeAxes,
+    /// Увеличение вектороскопа (кнопка «2×», решение 325); живёт, пока живёт раздел, как выбор осей.
+    vectorscope_zoom: VectorscopeZoom,
     selected_band: Option<HueBandId>,
     /// Вид колонки ручек. Живёт как `selected_band`: переживает поворот и пересборку раздела (решение 204).
     control_view: ControlViewKind,
@@ -140,6 +142,7 @@ impl CalibrationState {
         Self {
             scope_kind: ScopeKind::Waveform,
             vectorscope_axes: config.vectorscope_axes,
+            vectorscope_zoom: VectorscopeZoom::Normal,
             selected_band: None,
             control_view: ControlViewKind::default(),
             selected_wheel: WheelZone::Lift,
@@ -163,6 +166,11 @@ impl CalibrationState {
     /// Выбранный стандарт осей вектороскопа.
     pub fn vectorscope_axes(&self) -> VectorscopeAxes {
         self.vectorscope_axes
+    }
+
+    /// Выбранное увеличение вектороскопа.
+    pub fn vectorscope_zoom(&self) -> VectorscopeZoom {
+        self.vectorscope_zoom
     }
 
     /// Выбранная полоса оттенка (под рядом точек показаны её шкалы HUE / SAT / LUM).
@@ -216,6 +224,7 @@ impl CalibrationState {
         Some(ScopeRequest {
             kind: self.scope_kind,
             vectorscope_axes: self.vectorscope_axes,
+            vectorscope_zoom: self.vectorscope_zoom,
             scan: layout.scope_scan(),
             image_size: layout.scope_image_size_for(self.scope_kind),
         })
@@ -255,6 +264,10 @@ impl CalibrationState {
 
     pub(crate) fn set_vectorscope_axes(&mut self, axes: VectorscopeAxes) {
         self.vectorscope_axes = axes;
+    }
+
+    pub(crate) fn set_vectorscope_zoom(&mut self, zoom: VectorscopeZoom) {
+        self.vectorscope_zoom = zoom;
     }
 
     pub(crate) fn set_selected_band(&mut self, band: Option<HueBandId>) {

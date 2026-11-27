@@ -6,11 +6,12 @@
 //! начинается под ней. Все цели — на всю высоту полоски (44 pt, решение 291), соседние по ширине не перекрываются
 //! (границы дают `ScopeStripFrames`, их проверяет тест соседства).
 //!
-//! Владение: какой прибор и какие оси выбраны, решает `CalibrationState`; полоска только показывает и шлёт
-//! намерения `ScopeKindSelected` / `VectorscopeAxesSelected`. Переключатель осей жив только на странице вектороскопа
-//! (`sync`): на остальных страницах он не рисуется и не ловит касаний.
+//! Владение: какой прибор, какие оси и какое увеличение выбраны, решает `CalibrationState`; полоска только показывает и
+//! шлёт намерения `ScopeKindSelected` / `VectorscopeAxesSelected` / `VectorscopeZoomSelected`. Переключатель осей и
+//! кнопка «2×» (решение 325) живы только на странице вектороскопа (`sync`): на остальных страницах они не рисуются и
+//! не ловят касаний.
 
-use scope_contract::{ScopeKind, VectorscopeAxes};
+use scope_contract::{ScopeKind, VectorscopeAxes, VectorscopeZoom};
 use ui_core::geometry::Rect;
 use ui_core::gesture::GestureEvent;
 use ui_core::id::NodeId;
@@ -33,6 +34,7 @@ use crate::widget::{Ctx, Outputs};
 fn scope_title(kind: ScopeKind) -> &'static str {
     match kind {
         ScopeKind::Waveform => "RGB WAVEFORM",
+        ScopeKind::LumaWaveform => "LUMA WAVEFORM",
         ScopeKind::RgbParade => "RGB PARADE",
         ScopeKind::Vectorscope => "VECTORSCOPE",
     }
@@ -43,6 +45,9 @@ const AXES_SEGMENTS: [(VectorscopeAxes, &str); 2] = [
     (VectorscopeAxes::YCbCrBt709, "Y'CbCr"),
     (VectorscopeAxes::OklabAb, "OKLab"),
 ];
+
+/// Кнопка «2×»: один сегмент; горит, когда вектороскоп увеличен, тап переключает увеличение туда и обратно.
+const ZOOM_SEGMENTS: [(VectorscopeZoom, &str); 1] = [(VectorscopeZoom::Double, "2×")];
 
 /// Точка страницы: её прибор и кнопка.
 struct PageDot {
@@ -57,6 +62,8 @@ pub(super) struct ScopeStrip {
     frames: ScopeStripFrames,
     dots: Vec<PageDot>,
     axes: SegmentRow<VectorscopeAxes>,
+    /// Кнопка «2×» вектороскопа.
+    zoom: SegmentRow<VectorscopeZoom>,
     /// Капсула белого справа на каждой странице.
     white: WhiteCapsule,
 }
@@ -90,6 +97,18 @@ impl ScopeStrip {
                 text_role: TextRoleKind::SegmentLabel,
             },
         )?;
+        let zoom = SegmentRow::build(
+            kit,
+            ctx,
+            (node, strip),
+            frames.zoom_toggle,
+            SegmentSpec {
+                entries: &ZOOM_SEGMENTS,
+                node_label: "calib_scope_zoom",
+                id_of: ButtonId::ScopeZoom,
+                text_role: TextRoleKind::SegmentLabel,
+            },
+        )?;
         let white = WhiteCapsule::build(kit, ctx, (node, strip), frames.trailing)?;
         let built = Self {
             node,
@@ -97,10 +116,12 @@ impl ScopeStrip {
             frames,
             dots,
             axes,
+            zoom,
             white,
         };
-        // До первой сверки переключатель осей не ловит касаний (страница по умолчанию — не вектороскоп).
+        // До первой сверки переключатель осей и «2×» не ловят касаний (страница по умолчанию — не вектороскоп).
         built.axes.set_touchable(kit, false)?;
+        built.zoom.set_touchable(kit, false)?;
         Ok(built)
     }
 
@@ -128,6 +149,14 @@ impl ScopeStrip {
         if self.white.handle_gesture(kit, event, out)? {
             return Ok(true);
         }
+        let zoom_event = self.zoom.handle_gesture(kit, event)?;
+        // Один сегмент «2×»: тап по нему переключает увеличение (включено — выключить, и наоборот).
+        let current = ctx.state.calibration().vectorscope_zoom();
+        if push_if_activated(zoom_event, out, |_| {
+            ScreenAction::VectorscopeZoomSelected(current.toggled())
+        }) {
+            return Ok(true);
+        }
         let event = self.axes.handle_gesture(kit, event)?;
         Ok(push_if_activated(event, out, ScreenAction::VectorscopeAxesSelected))
     }
@@ -135,6 +164,7 @@ impl ScopeStrip {
     /// Переключатель осей ловит касания только на странице вектороскопа.
     pub(super) fn sync(&mut self, kit: &mut SceneKit, ctx: &Ctx<'_>) -> Result<(), WidgetError> {
         let on_vectorscope = ctx.state.calibration().scope_kind() == ScopeKind::Vectorscope;
+        self.zoom.set_touchable(kit, on_vectorscope)?;
         self.axes.set_touchable(kit, on_vectorscope)
     }
 
@@ -152,6 +182,8 @@ impl ScopeStrip {
             let selected = ctx.state.calibration().vectorscope_axes();
             self.axes
                 .draw(ctx, (visuals, texts), layers, (selected, |_| false, 1.0))?;
+            let zoom = ctx.state.calibration().vectorscope_zoom();
+            self.zoom.draw(ctx, (visuals, texts), layers, (zoom, |_| false, 1.0))?;
         }
         self.white.draw(ctx, visuals, layers, texts)?;
         Ok(())

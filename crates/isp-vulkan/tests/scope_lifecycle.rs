@@ -183,7 +183,9 @@ fn scopes_never_modify_the_input_image() {
 fn mirror_swaps_the_shown_columns_on_waveform() {
     let Some(context) = gpu_context_or_skip() else { return };
     let settings = ScopeModelSettings {
+        // Каждый пиксель по обеим осям: тест считает ВСЕ отсчёты (у следов поперёк взгляда по умолчанию 2, решение 329).
         sample_stride: SampleStride::EVERY_PIXEL,
+        trace_across_eye_stride: SampleStride::EVERY_PIXEL,
         ..small_settings()
     };
     let mut scopes = scopes_for(&context, &settings, 1);
@@ -200,9 +202,10 @@ fn mirror_swaps_the_shown_columns_on_waveform() {
     let (_, waveform) = &rules[0];
     let top_row = 0;
     let bottom_row = settings.trace_levels - 1;
-    // Столбец сетки отсчёта x: `x · columns / width` (ширина 64). Крайние показанные столбцы: x = 0 и x = 63.
+    // Столбец сетки — номер отсчёта вдоль взгляда (решение 322): ширина 64 при шаге 1 — столбцы 0..63.
+    assert_eq!(settings.sample_stride.get(), 1);
     let first_column = 0;
-    let last_column = 63 * settings.trace_columns / 64;
+    let last_column = 63;
     for (mirror, white_column, black_column) in [
         (HorizontalMirror::Off, first_column, last_column),
         (HorizontalMirror::On, last_column, first_column),
@@ -243,7 +246,7 @@ fn rejected_frames_record_no_commands_and_change_nothing() {
     let settings = small_settings();
     // Буфер счётчиков рассчитан на маленькие сетки: прибор с большой сеткой не помещается.
     let tiny_sizing = ScopeModelSettings {
-        trace_columns: 16,
+        trace_max_columns: 16,
         trace_levels: 16,
         vectorscope_size: 32,
         ..small_settings()
@@ -284,7 +287,7 @@ fn rejected_frames_record_no_commands_and_change_nothing() {
     );
 
     let invalid_settings = ScopeModelSettings {
-        trace_columns: 0,
+        trace_max_columns: 0,
         ..tiny_sizing.clone()
     };
     let bad_settings = ScopeFrame {
@@ -403,7 +406,9 @@ fn a_slot_must_be_released_after_its_fence_before_binding_another_input() {
 fn window_smaller_than_capacity_ignores_the_poisoned_tail() {
     let Some(context) = gpu_context_or_skip() else { return };
     let settings = ScopeModelSettings {
+        // Каждый пиксель по обеим осям: тест считает ВСЕ отсчёты (у следов поперёк взгляда по умолчанию 2, решение 329).
         sample_stride: SampleStride::EVERY_PIXEL,
+        trace_across_eye_stride: SampleStride::EVERY_PIXEL,
         ..small_settings()
     };
     let mut scopes = scopes_for(&context, &settings, 1);

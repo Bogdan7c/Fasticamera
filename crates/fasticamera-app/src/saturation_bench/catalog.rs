@@ -17,6 +17,8 @@ mod isp_tuning;
 mod look_cost;
 mod look_parity;
 mod scopes_ablation;
+mod scopes_merging;
+mod scopes_pages;
 mod still_tuning;
 mod ui_ablation;
 mod v4_tuning;
@@ -26,6 +28,8 @@ mod v4_tuning;
 #[serde(rename_all = "snake_case")]
 pub enum ScopeShape {
     Waveform,
+    /// Яркостный waveform (решение 321): одна плоскость Y'.
+    LumaWaveform,
     Parade,
     /// Вектороскоп на осях Cb/Cr (BT.709).
     VectorscopeYcbcr,
@@ -138,6 +142,10 @@ pub enum WorkloadGroup {
     IspAblation,
     /// Абляции накопления приборов: цена чтения, проекции и записи `atomicAdd`.
     ScopesAblation,
+    /// Опыты слияния записей накопления приборов (subgroup, серии в регистре).
+    ScopesMerging,
+    /// Страницы приборов сверх `baseline` (14r: LUMA WAVEFORM; 14s: гистограмма, CIE).
+    ScopesPages,
     /// Опыты над слитым проходом видоискателя (группы, чтение RAW, сведение AWB).
     IspTuning,
     /// Опыты над цепочкой V4 «запас под видео»: форма группы, пробы вместо Menon, отключённые стадии вывода.
@@ -152,11 +160,13 @@ pub enum WorkloadGroup {
 
 impl WorkloadGroup {
     /// Все группы.
-    pub const ALL: [WorkloadGroup; 9] = [
+    pub const ALL: [WorkloadGroup; 11] = [
         Self::Baseline,
         Self::UiAblation,
         Self::IspAblation,
         Self::ScopesAblation,
+        Self::ScopesMerging,
+        Self::ScopesPages,
         Self::IspTuning,
         Self::V4Tuning,
         Self::StillTuning,
@@ -171,6 +181,8 @@ impl WorkloadGroup {
             Self::UiAblation => "ui_ablation",
             Self::IspAblation => "isp_ablation",
             Self::ScopesAblation => "scopes_ablation",
+            Self::ScopesMerging => "scopes_merging",
+            Self::ScopesPages => "scopes_pages",
             Self::IspTuning => "isp_tuning",
             Self::V4Tuning => "v4_tuning",
             Self::StillTuning => "still_tuning",
@@ -271,11 +283,13 @@ const fn without(stage: AblatedStage) -> WorkloadKind {
 /// Все работы стенда в порядке прогона по умолчанию.
 /// Таблицы групп в порядке каталога. Строки каждой группы лежат в своём модуле (`catalog/<группа>.rs`): каталог
 /// растёт с каждым опытом, а один файл на все группы перерос предел размера модуля.
-const GROUP_TABLES: [&[CatalogEntry]; 9] = [
+const GROUP_TABLES: [&[CatalogEntry]; 11] = [
     baseline::ENTRIES,
     ui_ablation::ENTRIES,
     isp_ablation::ENTRIES,
     scopes_ablation::ENTRIES,
+    scopes_merging::ENTRIES,
+    scopes_pages::ENTRIES,
     isp_tuning::ENTRIES,
     v4_tuning::ENTRIES,
     still_tuning::ENTRIES,

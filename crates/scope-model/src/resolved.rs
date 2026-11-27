@@ -13,9 +13,11 @@ use crate::oklab_rule::{OklabVectorscopeError, OklabVectorscopeRule};
 use crate::position_palette::PositionPalette;
 use crate::render_settings::RenderSettings;
 use crate::rule::{Hit, SamplePosition, ScopeRule};
+use crate::sample_count::SampleCount;
+use crate::sampling::SampleSteps;
 use crate::settings::{ScopeModelSettings, ScopeSettingsError};
 use crate::trace_paint::TracePaint;
-use crate::trace_rules::{ParadeRule, TraceRuleError};
+use crate::trace_rules::{LumaRule, ParadeRule, TraceRuleError};
 use crate::trace_style::TraceStyle;
 use crate::vectorscope_ycbcr::{YCbCrVectorscopeError, YCbCrVectorscopeRule};
 
@@ -42,6 +44,8 @@ pub enum ResolvedScope {
     /// RGB waveform: то же правило трёх плоскостей, что у parade, но плоскости наложены друг на друга
     /// (решение 265), а не стоят секциями.
     Waveform(ParadeRule),
+    /// Яркостный waveform (решение 321): одна плоскость Y', белый след секцией на всю ширину.
+    LumaWaveform(LumaRule),
     /// RGB parade.
     RgbParade(ParadeRule),
     /// Вектороскоп, оси Y'CbCr BT.709.
@@ -76,7 +80,8 @@ impl<Rule> ColouredByPosition<Rule> {
 }
 
 impl ResolvedScope {
-    /// Решает прибор запроса. Размер картинки в запросе не участвует: сетки от него не зависят.
+    /// Решает прибор запроса. Размер картинки в запросе не участвует: сетки от него не зависят (столбцы waveform/parade
+    /// зависят от отсчётов кадра — см. [`ScopeRule::shape`]).
     pub fn resolve(
         request: &ScopeRequest,
         settings: &ScopeModelSettings,
@@ -84,22 +89,28 @@ impl ResolvedScope {
     ) -> Result<Self, ResolveError> {
         settings.validate()?;
         Ok(match request.kind {
-            ScopeKind::Waveform => {
-                Self::Waveform(ParadeRule::new(settings.trace_columns, settings.trace_levels)?.with_scan(request.scan))
-            }
-            ScopeKind::RgbParade => {
-                Self::RgbParade(ParadeRule::new(settings.trace_columns, settings.trace_levels)?.with_scan(request.scan))
-            }
+            ScopeKind::Waveform => Self::Waveform(
+                ParadeRule::new(settings.trace_max_columns, settings.trace_levels)?.with_scan(request.scan),
+            ),
+            ScopeKind::LumaWaveform => Self::LumaWaveform(
+                LumaRule::new(settings.trace_max_columns, settings.trace_levels)?.with_scan(request.scan),
+            ),
+            ScopeKind::RgbParade => Self::RgbParade(
+                ParadeRule::new(settings.trace_max_columns, settings.trace_levels)?.with_scan(request.scan),
+            ),
             ScopeKind::Vectorscope => match request.vectorscope_axes {
+                // Зум ×2 (решение 325) делит цветность на краю круга: те же проходы, другие числа правила.
                 VectorscopeAxes::YCbCrBt709 => {
-                    let rule = YCbCrVectorscopeRule::new(settings.vectorscope_size, settings.ycbcr_gain)?;
+                    let edge_chroma = settings.ycbcr_edge_chroma / request.vectorscope_zoom.magnification();
+                    let gain = crate::settings::ycbcr_gain_for_edge_chroma(edge_chroma);
+                    let rule = YCbCrVectorscopeRule::new(settings.vectorscope_size, gain)?;
                     // Светлота — из настроек решения: таблица строится здесь, а не на каждом кадре.
                     let palette = Box::new(rule.position_palette(settings.render.vectorscope_lightness));
                     Self::VectorscopeYCbCr(ColouredByPosition { rule, palette })
                 }
                 VectorscopeAxes::OklabAb => {
-                    let rule =
-                        OklabVectorscopeRule::new(settings.vectorscope_size, settings.oklab_range, display_gamut)?;
+                    let range = settings.oklab_range / request.vectorscope_zoom.magnification();
+                    let rule = OklabVectorscopeRule::new(settings.vectorscope_size, range, display_gamut)?;
                     let palette = Box::new(rule.position_palette(settings.render.vectorscope_lightness));
                     Self::VectorscopeOklab(ColouredByPosition { rule, palette })
                 }
@@ -107,10 +118,22 @@ impl ResolvedScope {
         })
     }
 
+    /// План отсчётов кадра для окна `width × height`: шаги прибора (`ScopeRule::wanted_steps`) под потолок столбцов —
+    /// ОДИН вызов для эталона и GPU-стороны.
+    pub fn planned_samples(&self, width: u32, height: u32, settings: &ScopeModelSettings) -> SampleCount {
+        SampleCount::planned(
+            width,
+            height,
+            ScopeRule::wanted_steps(self, settings),
+            settings.trace_max_columns,
+        )
+    }
+
     /// Тип прибора.
     pub fn kind(&self) -> ScopeKind {
         match self {
             Self::Waveform(_) => ScopeKind::Waveform,
+            Self::LumaWaveform(_) => ScopeKind::LumaWaveform,
             Self::RgbParade(_) => ScopeKind::RgbParade,
             Self::VectorscopeYCbCr(_) | Self::VectorscopeOklab(_) => ScopeKind::Vectorscope,
         }
@@ -126,6 +149,10 @@ impl ResolvedScope {
         match self {
             Self::Waveform(_) => TraceStyle::PlanesOverlaid {
                 primaries: settings.rgb_waveform_palette.primaries(),
+            },
+            // Одна плоскость секцией на всю ширину — тем же способом, что parade: новой ветки шейдера нет.
+            Self::LumaWaveform(_) => TraceStyle::PlaneSections {
+                colors: vec![settings.luma_trace_color],
             },
             Self::RgbParade(_) => TraceStyle::PlaneSections {
                 colors: settings.parade_colors.to_vec(),
@@ -143,25 +170,42 @@ impl ResolvedScope {
     pub fn trace_paint(&self) -> TracePaint {
         match self {
             Self::Waveform(_) => TracePaint::PlanesOverlaid,
-            Self::RgbParade(_) => TracePaint::PlaneSections,
+            Self::LumaWaveform(_) | Self::RgbParade(_) => TracePaint::PlaneSections,
             Self::VectorscopeYCbCr(_) | Self::VectorscopeOklab(_) => TracePaint::ColorByPosition,
         }
     }
 }
 
 impl ScopeRule for ResolvedScope {
-    fn shape(&self) -> GridShape {
+    fn shape(&self, samples: SampleCount) -> GridShape {
         match self {
-            Self::Waveform(rule) => rule.shape(),
-            Self::RgbParade(rule) => rule.shape(),
-            Self::VectorscopeYCbCr(coloured) => coloured.rule.shape(),
-            Self::VectorscopeOklab(coloured) => coloured.rule.shape(),
+            Self::Waveform(rule) => rule.shape(samples),
+            Self::LumaWaveform(rule) => rule.shape(samples),
+            Self::RgbParade(rule) => rule.shape(samples),
+            Self::VectorscopeYCbCr(coloured) => coloured.rule.shape(samples),
+            Self::VectorscopeOklab(coloured) => coloured.rule.shape(samples),
+        }
+    }
+
+    fn wanted_steps(&self, settings: &ScopeModelSettings) -> SampleSteps {
+        match self {
+            // След по столбцам: все отсчёты вдоль взгляда (столбцы сетки), поперёк — реже (решение 329).
+            Self::Waveform(_) | Self::LumaWaveform(_) | Self::RgbParade(_) => SampleSteps::for_eye(
+                settings.sample_stride,
+                settings.trace_across_eye_stride,
+                ScopeRule::scan(self),
+            ),
+            // Вектороскоп собирает весь кадр в один круг: четверти отсчётов хватает (решение 328).
+            Self::VectorscopeYCbCr(_) | Self::VectorscopeOklab(_) => {
+                SampleSteps::uniform(settings.vectorscope_sample_stride)
+            }
         }
     }
 
     fn scan(&self) -> ScopeScan {
         match self {
             Self::Waveform(rule) => rule.scan(),
+            Self::LumaWaveform(rule) => rule.scan(),
             Self::RgbParade(rule) => rule.scan(),
             // Вектороскоп положения не меряет: поле запроса на него не влияет.
             Self::VectorscopeYCbCr(_) | Self::VectorscopeOklab(_) => ScopeScan::Upright,
@@ -171,6 +215,7 @@ impl ScopeRule for ResolvedScope {
     fn hits(&self, position: SamplePosition, code: [u16; 3], report: &mut dyn FnMut(Hit)) {
         match self {
             Self::Waveform(rule) => rule.hits(position, code, report),
+            Self::LumaWaveform(rule) => rule.hits(position, code, report),
             Self::RgbParade(rule) => rule.hits(position, code, report),
             Self::VectorscopeYCbCr(coloured) => coloured.rule.hits(position, code, report),
             Self::VectorscopeOklab(coloured) => coloured.rule.hits(position, code, report),

@@ -49,7 +49,7 @@ float cube_root(float value) {
     return value < 0.0 ? -root : root;
 }
 
-void scope_hits(uint shown_x, uvec3 code) {
+void scope_hits(uint eye_index, uvec3 code) {
     // Шаг 1: код -> свет экрана по таблице (те же числа, что на CPU).
     vec3 linear = vec3(
         parameters.decode_table[code.x],

@@ -314,6 +314,7 @@ fn dispatch_action(ctx: &mut Ctx<'_>, action: ScreenAction) -> ActionOutcome {
         ScreenAction::ResetControlTapped(control) => calibration::on_reset_control(ctx, control),
         ScreenAction::ScopeKindSelected(kind) => calibration::on_scope_kind_selected(ctx, kind),
         ScreenAction::VectorscopeAxesSelected(axes) => calibration::on_axes_selected(ctx, axes),
+        ScreenAction::VectorscopeZoomSelected(zoom) => calibration::on_zoom_selected(ctx, zoom),
         ScreenAction::CleanViewPressed => calibration::on_clean_view_pressed(ctx),
         ScreenAction::CleanViewReleased => calibration::on_clean_view_released(ctx),
         ScreenAction::BandSelected(band) => calibration::on_band_selected(ctx, band),

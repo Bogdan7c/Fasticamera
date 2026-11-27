@@ -3,9 +3,9 @@
 #extension GL_EXT_samplerless_texture_functions : require
 // ДИАГНОСТИКА стенда насыщения (не продукт): только чтение показанной картинки и квантование кода.
 #include "scope_accumulate_common.glsl"
-void scope_hits(uint eye_x, uvec3 code) {
+void scope_hits(uint eye_index, uvec3 code) {
     // Только чтение и квантование: запись, которая не выполняется никогда (код <= 1023), удерживает чтение от удаления.
-    if (code.x == 0xFFFFFFFFu && eye_x == 0xFFFFFFFFu) {
+    if (code.x == 0xFFFFFFFFu && eye_index == 0xFFFFFFFFu) {
         atomicAdd(counters.counts[0], 1u);
     }
 }

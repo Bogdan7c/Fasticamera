@@ -1,5 +1,6 @@
 //! Прореживание входа: приборам не нужен каждый пиксель, шаг — рычаг бюджета.
 
+use scope_contract::ScopeScan;
 use serde::{Deserialize, Serialize};
 
 /// Наибольший шаг прореживания: дальше отсчётов слишком мало для устойчивой картины.
@@ -82,9 +83,96 @@ impl From<SampleStride> for u32 {
     }
 }
 
+/// Шаги прореживания по двум осям ПОКАЗАННОЙ картинки: `across` — по горизонтали (x), `down` — по вертикали (y).
+///
+/// Зачем две оси (решение 329): следу по столбцам (waveform, parade, Luma) нужны ВСЕ отсчёты вдоль взгляда — из них
+/// столбцы сетки, пропуск дал бы зерно по горизонтали, — а поперёк взгляда хватает каждого второго: каждый столбец
+/// получает вдвое меньше попаданий, но поровну, и вид следа (яркость — от плотности, а не от числа) тот же.
+/// Какая ось поверхности «вдоль взгляда», зависит от положения телефона — это решает [`Self::for_eye`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SampleSteps {
+    across: SampleStride,
+    down: SampleStride,
+}
+
+impl SampleSteps {
+    /// Один шаг по обеим осям (вектороскоп, прежнее поведение).
+    pub const fn uniform(stride: SampleStride) -> Self {
+        Self {
+            across: stride,
+            down: stride,
+        }
+    }
+
+    /// Шаги по осям поверхности: `across` по x, `down` по y.
+    pub const fn new(across: SampleStride, down: SampleStride) -> Self {
+        Self { across, down }
+    }
+
+    /// Шаги, заданные относительно ВЗГЛЯДА: `along_eye` — вдоль оси «слева направо» сцены, `across_eye` — поперёк.
+    /// При положении `scan`, в котором взгляд идёт вдоль строк поверхности (телефон боком), ось взгляда — вертикаль
+    /// поверхности, иначе — горизонталь (как [`crate::SampleCount::along_eye`]).
+    pub const fn for_eye(along_eye: SampleStride, across_eye: SampleStride, scan: ScopeScan) -> Self {
+        if scan.runs_along_surface_rows() {
+            Self::new(across_eye, along_eye)
+        } else {
+            Self::new(along_eye, across_eye)
+        }
+    }
+
+    /// Шаг по горизонтали показанной картинки (x).
+    pub const fn across(self) -> SampleStride {
+        self.across
+    }
+
+    /// Шаг по вертикали показанной картинки (y).
+    pub const fn down(self) -> SampleStride {
+        self.down
+    }
+
+    /// Каждая ось не реже `floor`: шаг оси — наибольший из своего и `floor` (план под потолок столбцов).
+    pub fn at_least(self, floor: SampleStride) -> Self {
+        let raise = |stride: SampleStride| if stride.get() < floor.get() { floor } else { stride };
+        Self::new(raise(self.across), raise(self.down))
+    }
+}
+
+impl From<SampleStride> for SampleSteps {
+    fn from(stride: SampleStride) -> Self {
+        Self::uniform(stride)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn steps_for_the_eye_follow_the_phone_orientation() {
+        let (along, across) = (SampleStride::EVERY_PIXEL, SampleStride::EVERY_SECOND_PIXEL);
+        // Телефон прямо и вверх ногами: взгляд по горизонтали поверхности — x вдоль, y поперёк.
+        for scan in [ScopeScan::Upright, ScopeScan::UpsideDown] {
+            let steps = SampleSteps::for_eye(along, across, scan);
+            assert_eq!((steps.across(), steps.down()), (along, across), "{scan:?}");
+        }
+        // Боком: взгляд по вертикали поверхности — оси меняются местами.
+        for scan in [ScopeScan::RotatedClockwise, ScopeScan::RotatedCounterClockwise] {
+            let steps = SampleSteps::for_eye(along, across, scan);
+            assert_eq!((steps.across(), steps.down()), (across, along), "{scan:?}");
+        }
+    }
+
+    #[test]
+    fn a_floor_raises_only_the_axes_below_it() {
+        let steps = SampleSteps::new(SampleStride::EVERY_PIXEL, SampleStride::try_new(4).unwrap());
+        let raised = steps.at_least(SampleStride::EVERY_SECOND_PIXEL);
+        assert_eq!((raised.across().get(), raised.down().get()), (2, 4));
+        assert_eq!(
+            steps.at_least(SampleStride::EVERY_PIXEL),
+            steps,
+            "пол 1 ничего не меняет"
+        );
+    }
 
     #[test]
     fn stride_selects_block_centres() {

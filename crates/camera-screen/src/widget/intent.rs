@@ -2,7 +2,7 @@
 //! а фасад по нему передаёт событие нужному виджету.
 
 use look_contract::{WheelPart, WheelZone};
-use scope_contract::{ScopeKind, VectorscopeAxes};
+use scope_contract::{ScopeKind, VectorscopeAxes, VectorscopeZoom};
 
 use crate::calibration::ControlViewKind;
 use crate::white::WhiteAxis;
@@ -50,6 +50,8 @@ pub enum ButtonId {
     ScopePageDot(ScopeKind),
     /// Сегмент переключателя осей вектороскопа в полоске прибора (Y'CbCr | OKLab, решение 258).
     ScopeAxes(VectorscopeAxes),
+    /// Кнопка «2×» в полоске вектороскопа: увеличение центра вдвое (решение 325).
+    ScopeZoom(VectorscopeZoom),
     /// Кнопка белого рядом с затвором: у неё один собственный узел (тап открывает карточку, долгое нажатие берёт
     /// белое телефона).
     WhiteButton,
@@ -171,6 +173,7 @@ impl ScreenGesture {
                     | ButtonId::CalibrationMenu
                     | ButtonId::ScopePageDot(_)
                     | ButtonId::ScopeAxes(_)
+                    | ButtonId::ScopeZoom(_)
                     | ButtonId::SectionWhiteCapsule
                     | ButtonId::SectionWhite(_)
                     | ButtonId::CalibrationCardLeft

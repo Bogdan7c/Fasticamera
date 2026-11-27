@@ -45,20 +45,30 @@ fn context_or_skip() -> Option<GpuContext> {
     }
 }
 
+/// Настройки «прибор на каждом кадре»: тестам судьбы отказов и неготовности каденция мешала бы (её проверяют свои
+/// тесты ниже), а умолчание — каждый второй кадр (решение 329).
+fn every_frame_config() -> ScopesConfig {
+    ScopesConfig {
+        every_nth_frame: 1,
+        ..ScopesConfig::default()
+    }
+}
+
 fn request(width: u32, height: u32) -> ScopeRequest {
     ScopeRequest {
         kind: ScopeKind::Waveform,
         vectorscope_axes: VectorscopeAxes::YCbCrBt709,
+        vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
         scan: scope_contract::ScopeScan::Upright,
         image_size: ScopeImageSize::try_new(width, height).expect("размер"),
     }
 }
 
-/// Настройки, которые создание набора отвергает (нуль столбцов): устойчивый отказ создания.
+/// Настройки, которые создание набора отвергает (нулевой потолок столбцов): устойчивый отказ создания.
 fn unusable_config() -> ScopesConfig {
     ScopesConfig {
         model: ScopeModelSettings {
-            trace_columns: 0,
+            trace_max_columns: 0,
             ..ScopeModelSettings::default()
         },
         ..ScopesConfig::default()
@@ -182,7 +192,7 @@ fn a_persistent_creation_failure_is_reported_once_per_demand_and_shown_as_failed
 #[test]
 fn a_pre_command_rejection_keeps_the_last_picture_and_a_repeated_one_is_reported_once() {
     let Some(context) = context_or_skip() else { return };
-    let config = ScopesConfig::default();
+    let config = every_frame_config();
     let mut pass = ScopePass::new(&context, FRAME_SLOTS, &config);
     pass.set_demand(Some(request(160, 96)));
     pass.prepare_between_frames(pass.demand());
@@ -222,7 +232,7 @@ fn a_pre_command_rejection_keeps_the_last_picture_and_a_repeated_one_is_reported
 #[test]
 fn a_frame_before_the_set_is_prepared_is_skipped_and_counted_without_creating_gpu_objects() {
     let Some(context) = context_or_skip() else { return };
-    let mut pass = ScopePass::new(&context, FRAME_SLOTS, &ScopesConfig::default());
+    let mut pass = ScopePass::new(&context, FRAME_SLOTS, &every_frame_config());
     let before = context.live_objects();
     let view = input_view(vk::Format::R16G16B16A16_SFLOAT);
 
@@ -265,7 +275,7 @@ fn a_frame_before_the_set_is_prepared_is_skipped_and_counted_without_creating_gp
 #[test]
 fn frames_without_input_are_counted_only_while_scopes_are_requested() {
     let Some(context) = context_or_skip() else { return };
-    let mut pass = ScopePass::new(&context, FRAME_SLOTS, &ScopesConfig::default());
+    let mut pass = ScopePass::new(&context, FRAME_SLOTS, &every_frame_config());
     pass.note_frame_without_input();
     assert_eq!(
         counters_of(&mut pass).counters.frames_skipped_no_input,
@@ -313,4 +323,45 @@ fn the_cadence_restarts_after_a_format_rebuild_so_the_first_frame_after_it_is_me
         after.record_failures, 1,
         "он дошёл до прибора (отказ проверки входа — признак)"
     );
+}
+
+/// Смена запроса (свайп страницы, оси, зум) считается на ближайшем кадре, а не ждёт фазы прореживания: иначе при
+/// N > 1 под новым именем страницы стояла бы картинка прежнего прибора (решение 329).
+#[test]
+fn a_changed_request_is_measured_on_the_very_next_frame_whatever_the_cadence_phase() {
+    let Some(context) = context_or_skip() else { return };
+    let config = ScopesConfig {
+        every_nth_frame: 2,
+        ..ScopesConfig::default()
+    };
+    let mut pass = ScopePass::new(&context, FRAME_SLOTS, &config);
+    // Вход отвергается проверкой записи: отказ — признак, что кадр дошёл до прибора, а не пропущен по каденции.
+    let view = input_view(vk::Format::R8G8B8A8_UNORM);
+    pass.prepare_between_frames(Some(request(160, 96)));
+    // Кадр 1 считается; после него фаза «пропуск».
+    record_with(&mut pass, view);
+    let opened = counters_of(&mut pass).counters;
+    assert_eq!((opened.record_failures, opened.frames_skipped_by_cadence), (1, 0));
+
+    // Свайп на parade прямо перед кадром, который в старой фазе был бы пропущен.
+    let parade = ScopeRequest {
+        kind: ScopeKind::RgbParade,
+        ..request(160, 96)
+    };
+    pass.prepare_between_frames(Some(parade));
+    counters_of(&mut pass);
+    record_with(&mut pass, view);
+    let changed = counters_of(&mut pass).counters;
+    assert_eq!(changed.frames_skipped_by_cadence, 0, "новый запрос не ждёт фазы");
+    assert_eq!(changed.record_failures, 1, "кадр дошёл до прибора");
+
+    // Дальше прореживание идёт как обычно: следующий кадр пропущен.
+    record_with(&mut pass, view);
+    assert_eq!(counters_of(&mut pass).counters.frames_skipped_by_cadence, 1);
+
+    // Тот же запрос повторно — не смена: фаза не сбрасывается, кадр после пропуска считается, следующий снова нет.
+    pass.prepare_between_frames(Some(parade));
+    record_with(&mut pass, view);
+    record_with(&mut pass, view);
+    assert_eq!(counters_of(&mut pass).counters.frames_skipped_by_cadence, 1);
 }

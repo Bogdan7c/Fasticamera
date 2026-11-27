@@ -9,7 +9,7 @@
 //! * «чистяк» не залипает: выход из режима отпускает его.
 
 use look_contract::{BandAxis, CleanView, GlobalKnob, HueBandId, LookControl, LookIntent, LookKnob, ToneBaseModel};
-use scope_contract::{ScopeIntent, ScopeKind, VectorscopeAxes};
+use scope_contract::{ScopeIntent, ScopeKind, VectorscopeAxes, VectorscopeZoom};
 
 use super::Ctx;
 use super::look::{Availability, emit_look_from_facts, read_facts};
@@ -95,6 +95,19 @@ pub(super) fn on_axes_selected(ctx: &mut Ctx<'_>, axes: VectorscopeAxes) -> Acti
         return outcome;
     }
     ctx.state.calibration.set_vectorscope_axes(axes);
+    ActionOutcome::Applied
+}
+
+/// Увеличение вектороскопа выбрано кнопкой «2×» (решение 325). Тот же выбор повторно — `NoChange`; запрос рендеру
+/// уходит общей сверкой «желаемый запрос ↔ известный рендеру», как у осей.
+pub(super) fn on_zoom_selected(ctx: &mut Ctx<'_>, zoom: VectorscopeZoom) -> ActionOutcome {
+    if let Err(outcome) = require_calibration(ctx) {
+        return outcome;
+    }
+    if ctx.state.calibration.vectorscope_zoom() == zoom {
+        return ActionOutcome::NoChange(NoChangeReason::ValueUnchanged);
+    }
+    ctx.state.calibration.set_vectorscope_zoom(zoom);
     ActionOutcome::Applied
 }
 

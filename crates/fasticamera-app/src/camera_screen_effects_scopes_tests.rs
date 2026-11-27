@@ -12,6 +12,7 @@ fn waveform() -> ScopeIntent {
     ScopeIntent::Show(ScopeRequest {
         kind: ScopeKind::Waveform,
         vectorscope_axes: VectorscopeAxes::YCbCrBt709,
+        vectorscope_zoom: scope_contract::VectorscopeZoom::Normal,
         scan: scope_contract::ScopeScan::Upright,
         image_size: ScopeImageSize::try_new(64, 32).expect("размер в пределах"),
     })

@@ -15,7 +15,8 @@
 //!    лимиты dispatch, привязки) — ДО первой команды И ДО смены состояния: при ошибке командный буфер не тронут,
 //!    действующая картинка остаётся на месте, счётчики диагностики не растут.
 //! 2. Метки времени → обнуление счётчиков (`vkCmdFillBuffer`, ждёт чтений прошлого кадра) → накопление
-//!    (`atomicAdd`) → барьер compute→compute → барьер картинки «прошлое чтение → запись» → показ →
+//!    (`atomicAdd`) → барьер compute→compute → перенос сетки в столбцы картинки ([`super::resample_pass`]) → барьер
+//!    compute→compute → барьер картинки «прошлое чтение → запись» → показ (перенос по вертикали и цвет) →
 //!    барьер «запись compute → чтение фрагментным шейдером».
 //! 3. Картинка прибора после записи готова к чтению фрагментным шейдером.
 //!
@@ -38,27 +39,25 @@ use gpu_vulkan::context::GpuContext;
 use gpu_vulkan::device_buffer::{DeviceBuffer, record_compute_pass_dependency};
 use gpu_vulkan::gpu_timing::{GpuTimestamps, TimestampStage};
 use gpu_vulkan::host_buffer::{HostBuffer, HostBufferUsage};
-use gpu_vulkan::source_window::HorizontalMirror;
 use scope_contract::ScopeImageSize;
-use scope_model::codes::{MAX_SHOWN_PIXELS, MAX_SHOWN_SIDE};
-use scope_model::grid::{MAX_GRID_CELLS, MAX_GRID_SIDE};
-use scope_model::vectorscope_geometry::MAX_VECTORSCOPE_SIZE;
 use scope_model::{
-    ColumnCountScales, GraticulePrimitive, GridShape, MAX_GRATICULE_PRIMITIVES, SampleCount, ScopeModelSettings,
-    TraceReference, TraceStyle,
+    GraticulePrimitive, GridShape, MAX_GRATICULE_PRIMITIVES, SampleCount, ScopeModelSettings, TraceReference,
+    TraceStyle,
 };
 
 use super::accumulators::{
-    ACCUMULATE_BINDINGS, AccumulatorSet, AccumulatorShader, SAMPLING_PUSH_BYTES, local_size, local_size_specialization,
-    merged_accumulators, standard_accumulators,
+    AccumulatorSet, AccumulatorShader, SAMPLING_PUSH_BYTES, local_size, local_size_specialization, merged_accumulators,
+    standard_accumulators,
 };
 use super::error::ScopeError;
-use super::frame::{RecordedScope, ScopeFrame, ScopeInput, ScopePassCounters, ScopeSlotReport};
+use super::frame::{RecordedScope, ScopeFrame, ScopePassCounters, ScopeSlotReport};
+use super::frame_input::{check_input, largest_grid_cells, largest_grid_rows, sampling_push_bytes};
 use super::parameter_blocks::{
     ACCUMULATE_BLOCK_BYTES, ACCUMULATE_WORDS_BYTES, MAX_PLANES, RENDER_BLOCK_BYTES, RenderBlockInputs,
     accumulate_words_bytes, decode_table_bytes, render_block_bytes,
 };
 use super::picture::{PictureChange, PictureTarget};
+use super::resample_pass::{ResampleBindings, ResamplePass};
 use super::rule::AccumulatorId;
 use crate::shaders::blobs;
 use crate::viewfinder::MAX_FRAME_SLOTS;
@@ -70,7 +69,7 @@ const POINT_START: usize = 0;
 const POINT_ACCUMULATE_END: usize = 1;
 const POINT_RENDER_END: usize = 2;
 
-/// Привязки шейдера показа: картинка прибора, параметры показа, счётчики (только чтение).
+/// Привязки шейдера показа: картинка прибора, параметры показа, промежуточный слой первого прохода (только чтение).
 const RENDER_BINDINGS: [gpu_vulkan::compute::BindingKind; 3] = [
     gpu_vulkan::compute::BindingKind::StorageImageWrite,
     gpu_vulkan::compute::BindingKind::ReadOnlyStorageBuffer,
@@ -99,9 +98,12 @@ impl Default for ColorScopesConfig {
 /// Цветовые приборы на GPU (см. описание модуля).
 pub struct ColorScopes {
     accumulators: AccumulatorSet,
+    resample_pass: ResamplePass,
     render_pipeline: ComputePipeline,
     counters: DeviceBuffer,
     counter_capacity_cells: usize,
+    /// Строк сетки, под которые создаётся промежуточный слой каждой картинки (наибольшая сетка настроек ёмкости).
+    resampled_rows_capacity: u32,
     accumulate_parameters: Vec<HostBuffer>,
     render_parameters: Vec<HostBuffer>,
     picture: Option<PictureTarget>,
@@ -129,12 +131,6 @@ impl std::fmt::Debug for ColorScopes {
     }
 }
 
-/// Проверенный вход: размер содержимого и зеркало.
-struct CheckedInput {
-    content: vk::Extent2D,
-    mirrored: bool,
-}
-
 /// Проверенный и упакованный прибор кадра: всё, что пишется в буферы и привязки.
 struct RulePlan {
     accumulator: AccumulatorId,
@@ -150,6 +146,7 @@ struct CheckedFrame {
     plan: RulePlan,
     push: [u8; SAMPLING_PUSH_BYTES as usize],
     accumulate_groups: WorkgroupCount,
+    resample_groups: WorkgroupCount,
     render_groups: WorkgroupCount,
 }
 
@@ -202,6 +199,7 @@ impl ColorScopes {
         }
         shaders.extend_from_slice(extra);
         let accumulators = AccumulatorSet::new(context, &shaders, local_size, config.frame_slots)?;
+        let resample_pass = ResamplePass::new(context, local_size, config.frame_slots)?;
         let render_pipeline = ComputePipeline::new(
             context,
             &ComputePipelineDesc {
@@ -222,9 +220,11 @@ impl ColorScopes {
         };
         Ok(Self {
             accumulators,
+            resample_pass,
             render_pipeline,
             counters,
             counter_capacity_cells,
+            resampled_rows_capacity: largest_grid_rows(&config.counter_sizing),
             accumulate_parameters: make_buffers(ACCUMULATE_BLOCK_BYTES)?,
             render_parameters: make_buffers(RENDER_BLOCK_BYTES)?,
             picture: None,
@@ -300,6 +300,7 @@ impl ColorScopes {
             plan,
             push,
             accumulate_groups,
+            resample_groups,
             render_groups,
         } = checked;
         let accumulate_enabled = !accumulate_groups.is_empty();
@@ -328,7 +329,12 @@ impl ColorScopes {
             POINT_ACCUMULATE_END,
             TimestampStage::ComputeShaderDone,
         )?;
-        // Записи счётчиков накопления видны показу (и RAW, и WAW закрыты одной глобальной зависимостью).
+        // Записи счётчиков накопления видны переносу (и RAW, и WAW закрыты одной глобальной зависимостью); та же
+        // зависимость ждёт чтений промежуточного слоя прошлым кадром (запись поверх чтения).
+        record_compute_pass_dependency(&self.context, command_buffer);
+        self.resample_pass
+            .record_dispatch(command_buffer, slot, resample_groups)?;
+        // Промежуточный слой виден показу.
         record_compute_pass_dependency(&self.context, command_buffer);
         // Картинку читали фрагментный шейдер UI и, возможно, другие стадии: ждём их все (WAR).
         picture
@@ -373,9 +379,15 @@ impl ColorScopes {
         let slot = self.check_slot(frame.frame_slot)?;
         frame.settings.validate()?;
         let input = check_input(&frame.input)?;
-        // Число отсчётов кадра: ОДИН источник и для опорного числа яркости, и для формы dispatch ниже.
-        let stride = frame.settings.sample_stride;
-        let samples = SampleCount::for_window(input.content.width, input.content.height, stride);
+        // План отсчётов кадра: ОДИН источник и для формы сетки (столбцы waveform/parade), и для опорного числа яркости,
+        // и для формы dispatch ниже; шаг — не меньше настроек и такой, чтобы столбцы уложились в потолок.
+        // Шаги по осям просит прибор (вектороскоп — свой, решение 328; следы — реже поперёк взгляда, решение 329).
+        let samples = SampleCount::planned(
+            input.content.width,
+            input.content.height,
+            frame.rule.wanted_steps(frame.settings),
+            frame.settings.trace_max_columns,
+        );
         let plan = self.plan_rule(frame, samples)?;
         // Картинка под размер кадра обязана быть подготовлена заранее: создание объекта GPU внутри записи кадра
         // рвёт vsync, поэтому `record` её не создаёт никогда (контракт «запись не аллоцирует»).
@@ -392,9 +404,18 @@ impl ColorScopes {
         let rows_per_thread = self.accumulators.rows_per_thread(plan.accumulator)?;
         let accumulate_groups =
             WorkgroupCount::covering(samples_x, samples_y.div_ceil(rows_per_thread), self.local_size);
+        if !picture.holds_grid_rows(plan.grid.rows()) {
+            return Err(ScopeError::GridRowsExceedResampleCapacity {
+                rows: plan.grid.rows(),
+                capacity: self.resampled_rows_capacity,
+            });
+        }
+        let resample_groups = self
+            .resample_pass
+            .groups_for(frame.picture_size.width(), plan.grid.rows());
         let render_groups =
             WorkgroupCount::covering(frame.picture_size.width(), frame.picture_size.height(), self.local_size);
-        let push = sampling_push_bytes(&input, stride.get(), stride.offset(), samples_x, samples_y);
+        let push = sampling_push_bytes(&input, samples);
 
         // Форма dispatch (лимиты устройства) не зависит от привязок: проверяем до любых записей в наборы.
         let accumulate_enabled = !accumulate_groups.is_empty();
@@ -403,6 +424,7 @@ impl ColorScopes {
                 .get(plan.accumulator)?
                 .check_dispatch_shape(SAMPLING_PUSH_BYTES as usize, accumulate_groups)?;
         }
+        self.resample_pass.check_dispatch_shape(resample_groups)?;
         self.render_pipeline.check_dispatch_shape(0, render_groups)?;
 
         self.accumulate_parameters[slot].write_bytes(0, &plan.words_bytes)?;
@@ -432,6 +454,15 @@ impl ColorScopes {
         if accumulate_enabled {
             accumulate_pipeline.check_dispatch(slot, SAMPLING_PUSH_BYTES as usize, accumulate_groups)?;
         }
+        // Перенос и показ ссылаются на НОВУЮ картинку (её слой и её саму): привязываются последними.
+        self.resample_pass.bind(
+            slot,
+            ResampleBindings {
+                resampled_columns: picture.resampled_columns().read_write_binding(),
+                render_parameters: self.render_parameters[slot].binding(),
+                counters: self.counters.read_only_binding(),
+            },
+        )?;
         self.render_pipeline.bind(
             slot,
             &[
@@ -445,7 +476,7 @@ impl ColorScopes {
                 },
                 BindingWrite {
                     binding: 2,
-                    resource: self.counters.read_only_binding(),
+                    resource: picture.resampled_columns().read_only_binding(),
                 },
             ],
         )?;
@@ -456,6 +487,7 @@ impl ColorScopes {
             plan,
             push,
             accumulate_groups,
+            resample_groups,
             render_groups,
         })
     }
@@ -472,6 +504,7 @@ impl ColorScopes {
             }
         }
         self.accumulators.release_slot_after_fence(slot)?;
+        self.resample_pass.release_slot_after_fence(slot)?;
         self.render_pipeline.release_slot_after_fence(slot)?;
         Ok(ScopeSlotReport {
             gpu_time: self.timestamps.try_collect(slot)?,
@@ -495,7 +528,7 @@ impl ColorScopes {
         let accumulator = rule.accumulator();
         // Незарегистрированный шейдер — отказ ДО всего остального.
         self.accumulators.get(accumulator)?;
-        let grid = rule.grid();
+        let grid = rule.grid(samples);
         if grid.cell_count() > self.counter_capacity_cells {
             return Err(ScopeError::GridExceedsCounterCapacity {
                 cells: grid.cell_count(),
@@ -547,16 +580,14 @@ impl ColorScopes {
                 style: &style,
                 // Опорное число яркости считается из числа отсчётов ЭТОГО кадра (окно показанной картинки могло
                 // смениться между кадрами) тем же вызовом, что и у эталона.
-                reference: TraceReference::for_paint(paint, &frame.settings.render, samples, grid.columns()),
-                // Масштабы счётчика по столбцам: «среднее / свои отсчёты» (положение отсчёта — по чтению картинки глазом,
-                // как у правила накопления), та же функция, что у эталона.
-                column_scales: &ColumnCountScales::new(
+                reference: TraceReference::for_paint(
                     paint,
-                    rule.column_basis(),
+                    &frame.settings.render,
                     samples,
-                    rule.scan(),
-                    grid.columns(),
+                    frame.picture_size,
+                    grid.planes(),
                 ),
+                picture: frame.picture_size,
                 graticule: &graticule,
                 settings: &frame.settings.render,
             }),
@@ -570,7 +601,7 @@ impl ColorScopes {
         if self.is_picture_ready_for(size) {
             return Ok(None);
         }
-        PictureTarget::new(&self.context, size).map(Some)
+        PictureTarget::new(&self.context, size, self.resampled_rows_capacity).map(Some)
     }
 
     /// Принимает картинку, созданную [`Self::picture_candidate`]. Единственное место, где меняется картинка и растёт
@@ -634,65 +665,3 @@ impl ColorScopes {
         self.picture.as_ref()
     }
 }
-
-/// Проверяет вход: формат, окно внутри картинки, предел размера показанной картинки.
-fn check_input(input: &ScopeInput) -> Result<CheckedInput, ScopeError> {
-    match input.view.format {
-        vk::Format::A2B10G10R10_UNORM_PACK32 | vk::Format::R16G16B16A16_SFLOAT => {}
-        format => return Err(ScopeError::UnsupportedInputFormat { format }),
-    }
-    input
-        .window
-        .validate_within(input.view.extent)
-        .map_err(ScopeError::InputWindow)?;
-    let content = input.window.content();
-    if content.width > MAX_SHOWN_SIDE
-        || content.height > MAX_SHOWN_SIDE
-        || u64::from(content.width) * u64::from(content.height) > MAX_SHOWN_PIXELS
-    {
-        return Err(ScopeError::InputTooLarge {
-            width: content.width,
-            height: content.height,
-        });
-    }
-    Ok(CheckedInput {
-        content,
-        mirrored: input.window.mirror() == HorizontalMirror::On,
-    })
-}
-
-/// Push-константы прохода накопления (`Sampling` в `scope_accumulate_common.glsl`, 7 слов).
-fn sampling_push_bytes(input: &CheckedInput, stride: u32, offset: u32, samples_x: u32, samples_y: u32) -> [u8; 28] {
-    let words = [
-        input.content.width,
-        input.content.height,
-        stride,
-        offset,
-        samples_x,
-        samples_y,
-        u32::from(input.mirrored),
-    ];
-    let mut bytes = [0_u8; 28];
-    for (chunk, word) in bytes.chunks_exact_mut(4).zip(words) {
-        chunk.copy_from_slice(&word.to_ne_bytes());
-    }
-    bytes
-}
-
-/// Ячеек в наибольшей сетке настроек: waveform/parade (`столбцы × уровни × 3`) или вектороскоп (`сторона²`).
-fn largest_grid_cells(settings: &ScopeModelSettings) -> usize {
-    let trace = settings.trace_columns as usize * settings.trace_levels as usize * MAX_PLANES;
-    let vectorscope = settings.vectorscope_size as usize * settings.vectorscope_size as usize;
-    trace.max(vectorscope)
-}
-
-// Пределы эталона, на которые опирается шейдер, закреплены на этапе компиляции: если эталон их увеличит,
-// сборка остановится, а не переполнит `uint` шейдера молча.
-const _: () = {
-    // x · columns < 2^32 (положение отсчёта в waveform/parade).
-    assert!(MAX_SHOWN_SIDE as u64 * MAX_GRID_SIDE as u64 <= u32::MAX as u64);
-    // Индекс ячейки помещается в uint.
-    assert!(MAX_GRID_CELLS <= u32::MAX as u64);
-    assert!(MAX_VECTORSCOPE_SIZE <= MAX_GRID_SIDE);
-    assert!(ACCUMULATE_BINDINGS.len() == 3);
-};

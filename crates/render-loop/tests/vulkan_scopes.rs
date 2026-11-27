@@ -75,7 +75,12 @@ fn cpu_counters(bench: &ViewfinderBench, scope: &ScopeRequest) -> ScopeCounters 
         .expect("коды");
     let model = small_model();
     let rule = ResolvedScope::resolve(scope, &model, isp_model::image::DisplayGamut::Srgb).expect("правило");
-    accumulate(&shown, model.sample_stride, &rule as &dyn ScopeRule).expect("эталон")
+    accumulate(
+        &shown,
+        rule.planned_samples(shown.width(), shown.height(), &model).steps(),
+        &rule as &dyn ScopeRule,
+    )
+    .expect("эталон")
 }
 
 #[test]

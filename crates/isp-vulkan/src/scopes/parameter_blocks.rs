@@ -4,17 +4,19 @@
 //! * блок накопления — `uint words[64]` (заголовок: столбцы, строки, плоскости, чтение картинки глазом; потом слова прибора)
 //!   и `float decode_table[1024]` (`scope_accumulate_common.glsl`);
 //! * блок показа — сетка и число примитивов, непрозрачности, код способа рисования, цвета плоскостей, 48
-//!   примитивов и ХВОСТ «цвет по положению» (таблица углов, нейтраль, геометрия; нули у всех способов, кроме
-//!   `TracePaint::ColorByPosition`) и таблица масштабов счётчика по столбцам следа (`scope_render.comp`).
+//!   примитивов, ХВОСТ «цвет по положению» (таблица углов, нейтраль, геометрия; нули у всех способов, кроме
+//!   `TracePaint::ColorByPosition`) и ПЕРЕНОС СЕТКИ В ПИКСЕЛИ (решение 322): размер картинки, слотов на пиксель и ядра
+//!   по осям, посчитанные эталоном (`scope_model::AxisResampling`). Блок читают оба прохода показа:
+//!   `scope_resample.comp` (по горизонтали) и `scope_render.comp` (по вертикали и цвет).
 //!
 //! Чистые функции без GPU: раскладку проверяют обычные тесты.
 
+use scope_contract::ScopeImageSize;
 use scope_contract::ScopeScan;
-use scope_model::grid::MAX_GRID_SIDE;
 use scope_model::position_palette::{MIN_EDGE_RADIUS_CELLS, NEUTRAL_RADIUS_EPSILON_CELLS};
 use scope_model::{
-    ColumnCountScales, GraticulePrimitive, GridShape, MAX_GRATICULE_PRIMITIVES, POSITION_PALETTE_ANGLES,
-    PositionPalette, RenderSettings, TracePaint, TraceReference, TraceStyle,
+    AxisResampling, GraticulePrimitive, GridShape, MAX_GRATICULE_PRIMITIVES, POSITION_PALETTE_ANGLES, PositionPalette,
+    RenderSettings, Section, TracePaint, TraceReference, TraceStyle, slots_per_pixel,
 };
 
 use super::error::ScopeError;
@@ -35,14 +37,21 @@ const RENDER_HEAD_VECTORS: usize = 6;
 /// Векторов `vec4` в хвосте блока показа: таблица углов, нейтраль, геометрия центра.
 const RENDER_TAIL_VECTORS: usize = POSITION_PALETTE_ANGLES + 2;
 
-/// Сколько масштабов счётчика по столбцам вмещает блок показа: столько же, сколько столбцов в самой большой сетке
-/// (`float column_scales[4096]` в `scope_render.comp`; равенство литерала проверяет `shader_literals_tests`).
-pub(super) const COLUMN_SCALE_CAPACITY: usize = MAX_GRID_SIDE as usize;
+/// Ядер переноса в блоке показа (`vec4 resample_axes[5]`): вертикаль, вся ширина и по секции на каждую плоскость.
+pub(super) const RESAMPLE_AXES: usize = 2 + MAX_PLANES;
+/// Номер ядра вертикали.
+pub(super) const AXIS_VERTICAL: usize = 0;
+/// Номер ядра «вся ширина» (наложение и вектороскоп).
+pub(super) const AXIS_FULL_WIDTH: usize = 1;
+/// Номер ядра секции плоскости 0 (секция плоскости `k` — `AXIS_FIRST_SECTION + k`).
+pub(super) const AXIS_FIRST_SECTION: usize = 2;
 
-/// Размер блока показа, байт: голова + примитивы по два `vec4` + хвост «цвет по положению» + таблица масштабов
-/// столбцов (последняя часть: у неё свой размер на кадр, а положение остальных частей от неё не зависит).
+/// Векторов в части «перенос в пиксели»: `uvec4 picture` и ядра по осям.
+const RESAMPLE_VECTORS: usize = 1 + RESAMPLE_AXES;
+
+/// Размер блока показа, байт: голова + примитивы по два `vec4` + хвост «цвет по положению» + перенос в пиксели.
 pub(super) const RENDER_BLOCK_BYTES: usize =
-    (RENDER_HEAD_VECTORS + MAX_GRATICULE_PRIMITIVES * 2 + RENDER_TAIL_VECTORS) * 16 + COLUMN_SCALE_CAPACITY * 4;
+    (RENDER_HEAD_VECTORS + MAX_GRATICULE_PRIMITIVES * 2 + RENDER_TAIL_VECTORS + RESAMPLE_VECTORS) * 16;
 
 /// Слова способа рисования в `trace.w` (`PAINT_*` в `scope_render.comp`). Сравнение в шейдере — по равенству
 /// float, поэтому коды — малые целые, точно представимые.
@@ -111,12 +120,10 @@ pub(super) struct RenderBlockInputs<'a> {
     /// Способ рисования следа с его данными. Плоскостей не больше `MAX_PLANES`, у секций цветов столько же,
     /// сколько плоскостей (проверено вызывающим).
     pub style: &'a TraceStyle,
-    /// Опорное число яркости на весь кадр (знаменатель лог-шкалы) — из числа отсчётов кадра; уходит в `trace.x`
-    /// (его читают вектороскоп и замороженная копия шейдера).
+    /// Опорное число яркости на весь кадр (знаменатель лог-шкалы) — из числа отсчётов кадра; уходит в `trace.x`.
     pub reference: TraceReference,
-    /// Масштабы счётчика по столбцам следа (таблица для секций и наложения); столбцов не больше
-    /// `COLUMN_SCALE_CAPACITY` (форма сетки это гарантирует).
-    pub column_scales: &'a ColumnCountScales,
+    /// Размер картинки прибора: по нему и форме сетки считаются ядра переноса в пиксели.
+    pub picture: ScopeImageSize,
     /// Примитивы сетки: не больше `MAX_GRATICULE_PRIMITIVES` (проверено вызывающим).
     pub graticule: &'a [GraticulePrimitive],
     /// Настройки показа.
@@ -129,7 +136,7 @@ pub(super) fn render_block_bytes(inputs: &RenderBlockInputs<'_>) -> Vec<u8> {
         grid,
         style,
         reference,
-        column_scales,
+        picture,
         graticule,
         settings,
     } = *inputs;
@@ -158,10 +165,56 @@ pub(super) fn render_block_bytes(inputs: &RenderBlockInputs<'_>) -> Vec<u8> {
         TraceStyle::ColorByPosition { palette } => Some(palette.as_ref()),
         TraceStyle::PlaneSections { .. } | TraceStyle::PlanesOverlaid { .. } => None,
     }));
-    // Таблица масштабов по столбцам — в самом конце, только занятая часть (остаток буфера шейдер не читает:
-    // номер столбца всегда меньше числа столбцов сетки).
-    floats.extend(column_scales.values().iter().copied().map(f32::to_bits));
+    floats.extend(resample_words(
+        grid,
+        style.paint(),
+        picture,
+        settings.trace_softening_px,
+        reference.pixels_per_hit(),
+    ));
     floats.iter().flat_map(|word| word.to_ne_bytes()).collect()
+}
+
+/// Часть «перенос в пиксели»: `uvec4 picture` (ширина, высота, слотов на пиксель, 0) и `vec4 resample_axes[5]` —
+/// ядра [`AxisResampling`] (пикселей на клетку, `1 / 2σ²`, высота гауссианы, радиус в пикселях): вертикаль, вся
+/// ширина, секции плоскостей 0..3. Числа — те же f32, что у эталона, шейдер только считает расстояния и `exp`.
+/// Ядро вертикали несёт массу попадания `pixels_per_hit` (пикселей кадра за отсчётом, решение 329) — так же, как
+/// `PictureDensity` эталона.
+fn resample_words(
+    grid: GridShape,
+    paint: TracePaint,
+    picture: ScopeImageSize,
+    softening_px: f32,
+    pixels_per_hit: u32,
+) -> Vec<u32> {
+    let mut words = vec![
+        picture.width(),
+        picture.height(),
+        slots_per_pixel(paint, grid.planes()),
+        0,
+    ];
+    let full_width = AxisResampling::new(grid.columns(), picture.width(), softening_px);
+    let mut axes = [full_width; RESAMPLE_AXES];
+    axes[AXIS_VERTICAL] =
+        AxisResampling::new(grid.rows(), picture.height(), softening_px).carrying_pixels_per_hit(pixels_per_hit);
+    axes[AXIS_FULL_WIDTH] = full_width;
+    for plane in 0..MAX_PLANES {
+        // Плоскости, которой у сетки нет, шейдер не читает — в блок идёт ядро той же формулы, блок заполнен целиком.
+        let section_width = Section::of_plane(plane as u32, picture.width(), grid.planes()).width;
+        axes[AXIS_FIRST_SECTION + plane] = AxisResampling::new(grid.columns(), section_width, softening_px);
+    }
+    for axis in axes {
+        words.extend(
+            [
+                axis.pixels_per_cell(),
+                axis.exponent_scale(),
+                axis.peak(),
+                axis.radius_px(),
+            ]
+            .map(f32::to_bits),
+        );
+    }
+    words
 }
 
 /// Цвета, которые шейдер читает как `plane_colors`: цвета секций или основные цвета наложения; у способа «по
@@ -227,7 +280,7 @@ fn primitive_words(primitive: &GraticulePrimitive) -> [u32; 8] {
 
 #[cfg(test)]
 mod tests {
-    use scope_model::{ColumnBasis, SampleCount, SampleStride};
+    use scope_model::{SampleCount, SampleStride};
 
     use super::*;
     use crate::scopes::rule::RuleWords;
@@ -309,21 +362,21 @@ mod tests {
     const WORD_POSITION_PALETTE: usize = WORD_PRIMITIVES + MAX_GRATICULE_PRIMITIVES * 8;
     const WORD_POSITION_NEUTRAL: usize = WORD_POSITION_PALETTE + POSITION_PALETTE_ANGLES * 4;
     const WORD_POSITION_GEOMETRY: usize = WORD_POSITION_NEUTRAL + 4;
-    /// Таблица масштабов по столбцам — последняя часть блока.
-    const WORD_COLUMN_TABLE: usize = WORD_POSITION_GEOMETRY + 4;
+    /// Перенос в пиксели — последняя часть блока: `uvec4 picture`, затем ядра по осям.
+    const WORD_PICTURE: usize = WORD_POSITION_GEOMETRY + 4;
+    const WORD_RESAMPLE_AXES: usize = WORD_PICTURE + 4;
     /// Столбцов в сетке тестового блока ([`block_of`]).
     const TEST_GRID_COLUMNS: u32 = 4;
 
-    /// Опорное число для настроек по умолчанию и кадра 1000×500 при шаге 2 (125 000 отсчётов, 40 столбцов).
-    fn reference_for(paint: TracePaint, settings: &RenderSettings) -> TraceReference {
-        let samples = SampleCount::for_window(1000, 500, SampleStride::EVERY_SECOND_PIXEL);
-        TraceReference::for_paint(paint, settings, samples, 40)
+    /// Картинка тестового блока.
+    fn test_picture() -> ScopeImageSize {
+        ScopeImageSize::try_new(301, 77).unwrap()
     }
 
-    /// Масштабы столбцов тестового кадра (1000×500 при шаге 2), по своим отсчётам каждого столбца.
-    fn columns_for(paint: TracePaint, columns: u32) -> ColumnCountScales {
+    /// Опорное число для настроек по умолчанию и кадра 1000×500 при шаге 2 (125 000 отсчётов).
+    fn reference_for(paint: TracePaint, settings: &RenderSettings) -> TraceReference {
         let samples = SampleCount::for_window(1000, 500, SampleStride::EVERY_SECOND_PIXEL);
-        ColumnCountScales::new(paint, ColumnBasis::OwnSamples, samples, ScopeScan::Upright, columns)
+        TraceReference::for_paint(paint, settings, samples, test_picture(), 2)
     }
 
     fn block_of(style: &TraceStyle, primitives: &[GraticulePrimitive], settings: &RenderSettings) -> Vec<u32> {
@@ -332,15 +385,11 @@ mod tests {
             grid,
             style,
             reference: reference_for(style.paint(), settings),
-            column_scales: &columns_for(style.paint(), TEST_GRID_COLUMNS),
+            picture: test_picture(),
             graticule: primitives,
             settings,
         });
-        assert_eq!(
-            bytes.len(),
-            RENDER_BLOCK_BYTES - (COLUMN_SCALE_CAPACITY - TEST_GRID_COLUMNS as usize) * 4,
-            "в блок идёт только занятая часть таблицы"
-        );
+        assert_eq!(bytes.len(), RENDER_BLOCK_BYTES, "блок показа заполняется целиком");
         words_of(&bytes)
     }
 
@@ -388,11 +437,7 @@ mod tests {
         assert_eq!(f32::from_bits(words[WORD_PRIMITIVES + 4]), 0.75);
         assert_eq!(f32::from_bits(words[WORD_PRIMITIVES + 5]), 1.0);
         // Остальные примитивы и весь хвост «по положению» пусты (нули): буфер заполнен целиком.
-        assert!(
-            words[WORD_PRIMITIVES + 8..WORD_COLUMN_TABLE]
-                .iter()
-                .all(|&word| word == 0)
-        );
+        assert!(words[WORD_PRIMITIVES + 8..WORD_PICTURE].iter().all(|&word| word == 0));
     }
 
     #[test]
@@ -484,8 +529,8 @@ mod tests {
         assert_eq!(geometry, [128.5, NEUTRAL_RADIUS_EPSILON_CELLS, MIN_EDGE_RADIUS_CELLS]);
         assert_eq!(
             words.len(),
-            WORD_COLUMN_TABLE + TEST_GRID_COLUMNS as usize,
-            "после геометрии идёт только таблица знаменателей столбцов"
+            WORD_RESAMPLE_AXES + RESAMPLE_AXES * 4,
+            "после геометрии идёт только перенос в пиксели"
         );
         // У «по положению» плоскостных цветов нет: шейдер их не читает, там нули.
         assert!(words[WORD_PLANE_COLORS..WORD_PRIMITIVES].iter().all(|&word| word == 0));
@@ -495,11 +540,7 @@ mod tests {
     fn position_tail_is_zero_unless_the_style_supplies_a_palette() {
         let settings = RenderSettings::default();
         let words = block_of(&sections(), &[], &settings);
-        assert!(
-            words[WORD_POSITION_PALETTE..WORD_COLUMN_TABLE]
-                .iter()
-                .all(|&word| word == 0)
-        );
+        assert!(words[WORD_POSITION_PALETTE..WORD_PICTURE].iter().all(|&word| word == 0));
         // Таблица меняет только хвост (и слово способа, и знаменатель — они зависят от способа).
         let with_palette = block_of(&position_style(), &[], &settings);
         assert_eq!(
@@ -513,57 +554,52 @@ mod tests {
     }
 
     #[test]
-    fn column_table_closes_the_block_and_carries_each_columns_own_count_scale() {
+    fn resample_part_closes_the_block_with_the_picture_and_the_reference_kernels_of_every_axis() {
         let settings = RenderSettings::default();
-        // Окно 1000 при шаге 2 — 500 отсчётов на 4 столбца поровну: все масштабы 1.0, но пришли из таблицы.
-        let words = block_of(&sections(), &[], &settings);
-        let expected = vec![1.0_f32.to_bits(); TEST_GRID_COLUMNS as usize];
-        assert_eq!(&words[WORD_COLUMN_TABLE..], expected.as_slice());
-        // Окно, в котором отсчёты по столбцам неравны (1537 при шаге 2 → 769 на 512 столбцов): у столбцов с одним и
-        // двумя отсчётами РАЗНЫЕ масштабы, и блок отдаёт их как есть.
-        let samples = SampleCount::for_window(1537, 500, SampleStride::EVERY_SECOND_PIXEL);
-        let uneven = ColumnCountScales::new(
-            TracePaint::PlanesOverlaid,
-            ColumnBasis::OwnSamples,
-            samples,
-            ScopeScan::Upright,
-            512,
-        );
-        let bytes = render_block_bytes(&RenderBlockInputs {
-            grid: GridShape::try_new(512, 16, 3).unwrap(),
-            style: &sections(),
-            reference: reference_for(TracePaint::PlanesOverlaid, &settings),
-            column_scales: &uneven,
-            graticule: &[],
-            settings: &settings,
-        });
-        let table: Vec<f32> = words_of(&bytes)[WORD_COLUMN_TABLE..]
-            .iter()
-            .map(|&bits| f32::from_bits(bits))
-            .collect();
-        assert_eq!(table, uneven.values());
-        assert!(
-            table.windows(2).any(|pair| pair[0] != pair[1]),
-            "масштабы столбцов не одинаковы"
-        );
-    }
-
-    #[test]
-    fn the_biggest_grid_still_fits_the_render_block() {
-        let settings = RenderSettings::default();
-        let columns = columns_for(TracePaint::PlaneSections, MAX_GRID_SIDE);
-        let bytes = render_block_bytes(&RenderBlockInputs {
-            grid: GridShape::try_new(MAX_GRID_SIDE, 1, 1).unwrap(),
-            style: &sections(),
-            reference: reference_for(TracePaint::PlaneSections, &settings),
-            column_scales: &columns,
-            graticule: &[],
-            settings: &settings,
-        });
-        assert_eq!(
-            bytes.len(),
-            RENDER_BLOCK_BYTES,
-            "полная таблица занимает весь запас блока, не больше"
-        );
+        let picture = test_picture();
+        let overlaid = TraceStyle::PlanesOverlaid {
+            primaries: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        };
+        // Сетка тестового блока — 2 плоскости: наложение рисует обе в каждом пикселе, остальные — по одной.
+        for (style, slots) in [(sections(), 1), (overlaid, 2), (position_style(), 1)] {
+            let words = block_of(&style, &[], &settings);
+            assert_eq!(
+                &words[WORD_PICTURE..WORD_PICTURE + 4],
+                &[picture.width(), picture.height(), slots, 0]
+            );
+            let axis_at = |index: usize| -> [f32; 4] {
+                std::array::from_fn(|k| f32::from_bits(words[WORD_RESAMPLE_AXES + index * 4 + k]))
+            };
+            let expected = |axis: AxisResampling| {
+                [
+                    axis.pixels_per_cell(),
+                    axis.exponent_scale(),
+                    axis.peak(),
+                    axis.radius_px(),
+                ]
+            };
+            let soft = settings.trace_softening_px;
+            // Вертикаль несёт массу попадания: опорное число теста — шаг 2 по обеим осям, 4 пикселя кадра на отсчёт
+            // (решение 329), ровно то ядро, что берёт эталон.
+            let reference = reference_for(style.paint(), &settings);
+            assert_eq!(reference.pixels_per_hit(), 4);
+            assert_eq!(
+                axis_at(AXIS_VERTICAL),
+                expected(AxisResampling::new(3, picture.height(), soft).carrying_pixels_per_hit(4))
+            );
+            assert_eq!(
+                axis_at(AXIS_FULL_WIDTH),
+                expected(AxisResampling::new(TEST_GRID_COLUMNS, picture.width(), soft))
+            );
+            // 301 px на 2 секции: 0..151 и 151..301.
+            assert_eq!(
+                axis_at(AXIS_FIRST_SECTION),
+                expected(AxisResampling::new(TEST_GRID_COLUMNS, 151, soft))
+            );
+            assert_eq!(
+                axis_at(AXIS_FIRST_SECTION + 1),
+                expected(AxisResampling::new(TEST_GRID_COLUMNS, 150, soft))
+            );
+        }
     }
 }

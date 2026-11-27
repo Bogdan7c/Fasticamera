@@ -41,12 +41,12 @@ fn horizontal_gradient_makes_a_rising_diagonal_in_every_plane() {
 
 #[test]
 fn white_lands_in_the_top_row_and_black_in_the_bottom_row() {
-    let rule = ParadeRule::new(8, 256).unwrap();
+    let rule = ParadeRule::new(40, 256).unwrap();
     let white = accumulate(&flat(40, 6, [1023; 3]), SampleStride::EVERY_PIXEL, &rule).unwrap();
     let black = accumulate(&flat(40, 6, [0; 3]), SampleStride::EVERY_PIXEL, &rule).unwrap();
     for plane in 0..3 {
-        let top_row_total: u32 = (0..8).map(|column| white.count(plane, 0, column).unwrap()).sum();
-        let bottom_row_total: u32 = (0..8).map(|column| black.count(plane, 255, column).unwrap()).sum();
+        let top_row_total: u32 = (0..40).map(|column| white.count(plane, 0, column).unwrap()).sum();
+        let bottom_row_total: u32 = (0..40).map(|column| black.count(plane, 255, column).unwrap()).sum();
         assert_eq!(top_row_total, 240, "плоскость {plane}");
         assert_eq!(bottom_row_total, 240, "плоскость {plane}");
     }
@@ -55,24 +55,38 @@ fn white_lands_in_the_top_row_and_black_in_the_bottom_row() {
 }
 
 #[test]
-fn picture_columns_map_to_grid_columns_by_integer_proportion() {
-    let rule = ParadeRule::new(4, 4).unwrap();
-    let counters = accumulate(&flat(10, 1, [0; 3]), SampleStride::EVERY_PIXEL, &rule).unwrap();
-    // column = x * 4 / 10: x = 0..9 → 0 0 0 1 1 2 2 2 3 3.
-    for plane in 0..3 {
-        let per_column: Vec<u32> = (0..4).map(|column| counters.count(plane, 3, column).unwrap()).collect();
-        assert_eq!(per_column, vec![3, 2, 3, 2], "плоскость {plane}");
+fn every_sample_column_gets_its_own_grid_column_with_the_same_number_of_samples() {
+    // Решение 322: столбец сетки = номер отсчёта вдоль взгляда. Окно 10 × 3 при шаге 1 — 10 столбцов по 3 отсчёта;
+    // при шаге 2 — 5 столбцов (x = 0, 2, 4, 6, 8) по 2 отсчёта. Ни пустых, ни двойных столбцов.
+    let rule = ParadeRule::new(64, 4).unwrap();
+    for (stride, columns, per_column) in [
+        (SampleStride::EVERY_PIXEL, 10, 3),
+        (SampleStride::EVERY_SECOND_PIXEL, 5, 2),
+    ] {
+        let counters = accumulate(&flat(10, 3, [0; 3]), stride, &rule).unwrap();
+        assert_eq!(counters.shape().columns(), columns);
+        for plane in 0..3 {
+            let counts: Vec<u32> = (0..columns)
+                .map(|column| counters.count(plane, 3, column).unwrap())
+                .collect();
+            assert_eq!(
+                counts,
+                vec![per_column; columns as usize],
+                "плоскость {plane}, шаг {}",
+                stride.get()
+            );
+        }
     }
 }
 
 #[test]
 fn gray_gives_three_identical_parade_planes() {
-    let rule = ParadeRule::new(8, 64).unwrap();
+    let rule = ParadeRule::new(32, 64).unwrap();
     let gradient = picture(32, 3, |x, _| [code_of(f64::from(x) / 31.0); 3]);
     let counters = accumulate(&gradient, SampleStride::EVERY_PIXEL, &rule).unwrap();
     assert_eq!(counters.total(), 32 * 3 * 3);
     for row in 0..64 {
-        for column in 0..8 {
+        for column in 0..32 {
             let red = counters.count(0, row, column);
             assert_eq!(counters.count(1, row, column), red);
             assert_eq!(counters.count(2, row, column), red);
@@ -83,8 +97,8 @@ fn gray_gives_three_identical_parade_planes() {
 #[test]
 fn parade_separates_channels() {
     let rule = ParadeRule::new(1, 256).unwrap();
-    // Красный на максимуме, зелёный посередине, синий в нуле.
-    let counters = accumulate(&flat(2, 2, [1023, 512, 0]), SampleStride::EVERY_PIXEL, &rule).unwrap();
+    // Красный на максимуме, зелёный посередине, синий в нуле. Окно в один столбец: 4 отсчёта в одном столбце сетки.
+    let counters = accumulate(&flat(1, 4, [1023, 512, 0]), SampleStride::EVERY_PIXEL, &rule).unwrap();
     assert_eq!(counters.count(0, 0, 0), Some(4));
     assert_eq!(counters.count(1, 255 - 512 * 256 / 1024, 0), Some(4));
     assert_eq!(counters.count(2, 255, 0), Some(4));
@@ -119,11 +133,12 @@ fn stride_counts_exactly_the_documented_samples() {
     let picture = picture(10, 10, |x, y| if marked(x) && marked(y) { [1023; 3] } else { [0; 3] });
     let counters = accumulate(&picture, stride, &rule).unwrap();
     assert_eq!(counters.total(), 9 * 3);
+    // Отсчёты x = 1, 5, 9 — три столбца сетки (номера отсчётов 0, 1, 2), каждый по 3 белых отсчёта.
+    assert_eq!(counters.shape().columns(), 3);
     for plane in 0..3 {
-        let white_total: u32 = (0..10).map(|column| counters.count(plane, 0, column).unwrap()).sum();
+        let white_total: u32 = (0..3).map(|column| counters.count(plane, 0, column).unwrap()).sum();
         assert_eq!(white_total, 9, "плоскость {plane}");
-        // По одному белому отсчёту на столбец картинки 1, 5, 9 по 3 строки: столбцы сетки 1, 5, 9.
-        for column in [1, 5, 9] {
+        for column in 0..3 {
             assert_eq!(counters.count(plane, 0, column), Some(3));
         }
     }

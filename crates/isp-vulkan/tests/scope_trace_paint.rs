@@ -103,7 +103,7 @@ fn reference_brightness_follows_the_window_of_each_frame_and_never_goes_stale() 
             run_scope_frame(&context, &mut scopes, &frame).unwrap();
             let counters = scopes.read_back_counters_blocking().unwrap();
             let gpu = scopes.read_back_picture_blocking().unwrap();
-            let samples = SampleCount::for_window(width, height, settings.sample_stride);
+            let samples = rule.planned_samples(width, height, &settings);
             let cpu = render(&counters, &rule, &settings.render, size, samples).unwrap();
             let worst = premultiplied_difference(&gpu.texels, cpu.pixels());
             assert!(
@@ -112,12 +112,24 @@ fn reference_brightness_follows_the_window_of_each_frame_and_never_goes_stale() 
             );
             // Тест различает число отсчётов: картинка по отсчётам ПРОШЛОГО окна заметно отличалась бы от GPU.
             if let Some(stale) = previous_samples.filter(|stale| *stale != samples) {
-                let stale_cpu = render(&counters, &rule, &settings.render, size, stale).unwrap();
-                let stale_worst = premultiplied_difference(&gpu.texels, stale_cpu.pixels());
-                assert!(
-                    stale_worst > PICTURE_TOLERANCE * 5.0,
-                    "{rule_name} / окно {width}×{height}: устаревшее число отсчётов не отличимо ({stale_worst})"
-                );
+                match render(&counters, &rule, &settings.render, size, stale) {
+                    // У waveform и parade столбцов столько, сколько отсчётов вдоль взгляда (решение 322): счётчики
+                    // ЭТОГО кадра с отсчётами прошлого окна не сочетаются вовсе — форма сетки идёт за окном.
+                    Err(scope_model::RenderError::ShapeMismatch) => {
+                        assert!(
+                            matches!(rule_name, "waveform" | "luma" | "parade"),
+                            "{rule_name}: сетка не зависит от окна"
+                        );
+                    }
+                    Ok(stale_cpu) => {
+                        let stale_worst = premultiplied_difference(&gpu.texels, stale_cpu.pixels());
+                        assert!(
+                            stale_worst > PICTURE_TOLERANCE * 5.0,
+                            "{rule_name} / окно {width}×{height}: устаревшее число отсчётов не отличимо ({stale_worst})"
+                        );
+                    }
+                    Err(other) => panic!("{rule_name}: {other}"),
+                }
             }
             previous_samples = Some(samples);
         }
@@ -315,8 +327,14 @@ fn the_vectorscope_centre_never_reads_the_angle_table_on_the_gpu() {
     };
     run_scope_frame(&context, &mut scopes, &frame).unwrap();
     let readback = scopes.read_back_picture_blocking().unwrap();
-    // Серый градиент попадает только в центральную клетку: она светится нейтралью, остальные пиксели прозрачны.
+    // Серый градиент попадает только в центральную клетку. Пиксель над её центром лежит РОВНО в центре сетки и обязан
+    // взять нейтраль, не читая таблицу (иначе в нём был бы NaN). Соседние пиксели после переноса ядром (решение 322)
+    // лежат уже не в центре и честно читают таблицу — у отравленной таблицы там NaN, это свойство теста, а не прибора.
     let centre = texel(&readback, 64, 64);
+    assert!(
+        centre.iter().all(|channel| channel.is_finite()),
+        "центр без NaN: {centre:?}"
+    );
     assert!(centre[3] > 0.5, "центр светится: {centre:?}");
     for channel in 0..3 {
         assert!(
@@ -324,13 +342,14 @@ fn the_vectorscope_centre_never_reads_the_angle_table_on_the_gpu() {
             "центр {centre:?}, нейтраль {neutral:?}"
         );
     }
-    assert!(
-        readback
-            .texels
-            .iter()
-            .all(|pixel| pixel.iter().all(|channel| channel.is_finite())),
-        "отравленная таблица не должна просочиться в картинку"
-    );
+    // Дальше радиуса ядра от центральной клетки следа нет: прозрачный ноль.
+    for y in 0..128_u32 {
+        for x in 0..128_u32 {
+            if x.abs_diff(64) > 4 || y.abs_diff(64) > 4 {
+                assert_eq!(texel(&readback, x, y), [0.0; 4], "({x}, {y})");
+            }
+        }
+    }
     assert_no_validation_errors(&context);
 }
 
@@ -366,7 +385,14 @@ fn vectorscope_cell_colour_on_the_gpu_matches_the_code_that_landed_there() {
             ("синий", [0, 0, on], [false, false, true]),
             ("жёлтый", [on, on, 0], [true, true, false]),
         ] {
-            let hit = hits_of_code(&rule, scope_model::SamplePosition { x: 0, picture_width: 1 }, code)[0];
+            let hit = hits_of_code(
+                &rule,
+                scope_model::SamplePosition {
+                    eye_index: 0,
+                    eye_samples: 1,
+                },
+                code,
+            )[0];
             let pixel = texel(&readback, hit.column, hit.row);
             assert!(
                 pixel[3] > 0.5,

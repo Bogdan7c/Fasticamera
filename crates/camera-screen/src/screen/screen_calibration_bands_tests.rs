@@ -203,7 +203,8 @@ fn swiping_the_scope_zone_switches_the_instrument_in_a_line_without_wrapping() {
     let scope = center(&rig, "calib_scope", 0);
     assert_eq!(rig.screen.state().calibration().scope_kind(), ScopeKind::Waveform);
     drag_eye(&mut rig, scope, Vector::new(-80.0, 0.0));
-    assert_eq!(rig.screen.state().calibration().scope_kind(), ScopeKind::RgbParade);
+    // Следом за RGB WAVEFORM — страница LUMA WAVEFORM (решение 321).
+    assert_eq!(rig.screen.state().calibration().scope_kind(), ScopeKind::LumaWaveform);
     let asked: Vec<_> = rig
         .effects()
         .into_iter()
@@ -212,7 +213,13 @@ fn swiping_the_scope_zone_switches_the_instrument_in_a_line_without_wrapping() {
             _ => None,
         })
         .collect();
-    assert_eq!(asked, vec![ScopeKind::RgbParade], "рендеру ушёл запрос нового прибора");
+    assert_eq!(
+        asked,
+        vec![ScopeKind::LumaWaveform],
+        "рендеру ушёл запрос нового прибора"
+    );
+    drag_eye(&mut rig, scope, Vector::new(-80.0, 0.0));
+    assert_eq!(rig.screen.state().calibration().scope_kind(), ScopeKind::RgbParade);
     drag_eye(&mut rig, scope, Vector::new(-80.0, 0.0));
     assert_eq!(rig.screen.state().calibration().scope_kind(), ScopeKind::Vectorscope);
     drag_eye(&mut rig, scope, Vector::new(-80.0, 0.0));
