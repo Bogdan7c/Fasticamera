@@ -303,6 +303,8 @@ pub struct RecordingRenderControl {
     /// Установленный сейчас источник UI (как слот потока рендера): `Install` кладёт, `Remove` убирает.
     /// Тест сам «рисует кадры» этим источником через [`RecordingRenderControl::produce_ui_frame`].
     installed_ui_source: Mutex<Option<Box<dyn ui_draw::frame_source::UiFrameSource>>>,
+    /// Заявка на вид рендера (14o): одна на фейк, как у живого управления рендером.
+    look_claim: crate::look_render_claim::LookRenderClaim,
 }
 
 /// Команда UI-проходу, как её записал [`RecordingRenderControl`].
@@ -374,5 +376,9 @@ impl crate::viewfinder_control::RenderControl for RecordingRenderControl {
         };
         self.ui_overlay_commands.lock().expect("замок").push(recorded);
         crate::viewfinder_control::ControlDelivery::Delivered
+    }
+
+    fn look_claim(&self) -> crate::look_render_claim::LookRenderClaim {
+        self.look_claim.clone()
     }
 }

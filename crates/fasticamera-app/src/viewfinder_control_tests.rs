@@ -13,8 +13,8 @@ use crate::gpu_test_support::{FakeRenderStatus, RecordedUiOverlay, RecordingRend
 
 /// Оболочка, которая только запоминает просьбы о частоте экрана.
 #[derive(Default)]
-struct RateRecorder {
-    rates: Mutex<Vec<f32>>,
+pub(super) struct RateRecorder {
+    pub(super) rates: Mutex<Vec<f32>>,
 }
 
 impl ShellCommands for RateRecorder {

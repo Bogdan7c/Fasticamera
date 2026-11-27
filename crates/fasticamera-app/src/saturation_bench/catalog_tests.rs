@@ -183,3 +183,113 @@ fn tuning_group_has_unique_variants_and_does_not_extend_the_default_lists() {
         }
     ));
 }
+
+#[test]
+fn look_cost_group_lists_the_ten_documented_looks_off_reference_before_its_variant() {
+    use crate::saturation_bench::compare_pairs::{PAIRS, reference_of};
+    let names: Vec<&str> = group_entries(WorkloadGroup::LookCost)
+        .iter()
+        .map(|entry| entry.name)
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "look_neutral",
+            "look_product",
+            "look_tone_base_legacy",
+            "look_tone_base_agx",
+            "look_tone_base_aces",
+            "look_tone_base_filmic",
+            "look_without_wheels",
+            "look_wheels_sample",
+            "look_without_tone",
+            "look_tone_sample",
+        ]
+    );
+    // Каждая пара «вкл против выкл» этой группы: оба конца в группе, эталон стоит РАНЬШЕ варианта.
+    let look_pairs: Vec<_> = PAIRS.iter().filter(|pair| pair.variant.starts_with("look_")).collect();
+    assert_eq!(
+        look_pairs.len(),
+        6,
+        "agx/aces/filmic против legacy, product/neutral, колёса, тон"
+    );
+    for pair in look_pairs {
+        let variant = names
+            .iter()
+            .position(|name| *name == pair.variant)
+            .expect("вариант в группе");
+        let reference = names
+            .iter()
+            .position(|name| *name == pair.reference)
+            .expect("эталон в группе");
+        assert!(
+            reference < variant,
+            "{} должен идти раньше {}",
+            pair.reference,
+            pair.variant
+        );
+        assert_eq!(
+            reference_of(pair.reference),
+            None,
+            "эталон {} сам не вариант",
+            pair.reference
+        );
+    }
+}
+
+#[test]
+fn look_cost_entries_carry_the_measured_look_named_like_the_entry() {
+    for entry in group_entries(WorkloadGroup::LookCost) {
+        let WorkloadKind::ViewfinderLook { look } = entry.kind else {
+            panic!("{}: вид работы {:?}", entry.name, entry.kind);
+        };
+        let expected = format!("look_{}", look.0.name());
+        assert_eq!(entry.name, expected, "имя работы совпадает с именем вида замера");
+    }
+}
+
+#[test]
+fn look_parity_group_is_every_base_times_every_case_in_base_order() {
+    use look_contract::ToneBaseModel;
+    let entries = group_entries(WorkloadGroup::LookParity);
+    assert_eq!(entries.len(), 16);
+    let mut combinations = std::collections::HashSet::new();
+    for entry in &entries {
+        let WorkloadKind::LookParity { look } = entry.kind else {
+            panic!("{}: вид работы {:?}", entry.name, entry.kind);
+        };
+        assert!(
+            combinations.insert((look.base, look.case)),
+            "{}: повтор случая",
+            entry.name
+        );
+    }
+    let bases: Vec<_> = entries
+        .iter()
+        .step_by(4)
+        .map(|entry| match entry.kind {
+            WorkloadKind::LookParity { look } => look.base,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        bases,
+        [
+            ToneBaseModel::Agx,
+            ToneBaseModel::Aces,
+            ToneBaseModel::Filmic,
+            ToneBaseModel::Legacy
+        ]
+    );
+    assert_eq!(entries[0].name, "look_parity_agx_product");
+    assert_eq!(entries[15].name, "look_parity_legacy_tone");
+}
+
+#[test]
+fn look_groups_are_registered_by_name_and_do_not_extend_the_default_list() {
+    assert_eq!(WorkloadGroup::by_name("look_cost"), Some(WorkloadGroup::LookCost));
+    assert_eq!(WorkloadGroup::by_name("look_parity"), Some(WorkloadGroup::LookParity));
+    assert_eq!(expand_name("look_cost").unwrap().len(), 10);
+    assert_eq!(expand_name("look_parity").unwrap().len(), 16);
+    assert!(baseline_names().iter().all(|name| !name.starts_with("look_")));
+}

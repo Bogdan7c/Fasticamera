@@ -10,6 +10,7 @@ use gpu_vulkan::swapchain::FramesInFlight;
 use serde::{Deserialize, Serialize};
 
 use crate::saturation_bench::catalog::{CatalogEntry, UnknownWorkload, baseline_names, expand_name};
+use crate::saturation_bench::summary::{summary_budget_bytes, worst_case_summary_bytes};
 
 /// Секция `camera.scenarios.saturation`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -78,6 +79,16 @@ pub enum SaturationScenarioConfigError {
     FramesInFlight(String),
     #[error("saturation: настройки стенда: {0}")]
     Bench(#[from] SaturationConfigError),
+    /// Отчёт такого списка не влезет в одну строку результата: прогон прошёл бы до конца и потерял числа.
+    #[error(
+        "saturation.workloads: {workloads} работ — сводка до {estimated_bytes} байт не влезет в строку результата \
+         ({budget_bytes} байт); разбейте список на несколько прогонов (например, по группе за прогон)"
+    )]
+    TooManyForOneResultLine {
+        workloads: usize,
+        estimated_bytes: usize,
+        budget_bytes: usize,
+    },
 }
 
 impl SaturationScenarioConfig {
@@ -116,6 +127,16 @@ impl SaturationScenarioConfig {
                 }
                 entries.push(entry);
             }
+        }
+        // Проверка ДО запуска: иначе стенд мерит весь список и отдаёт «отчёт не помещается» вместо чисел.
+        let estimated_bytes = worst_case_summary_bytes(&entries);
+        let budget_bytes = summary_budget_bytes();
+        if estimated_bytes > budget_bytes {
+            return Err(SaturationScenarioConfigError::TooManyForOneResultLine {
+                workloads: entries.len(),
+                estimated_bytes,
+                budget_bytes,
+            });
         }
         Ok(entries)
     }

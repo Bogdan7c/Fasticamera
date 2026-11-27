@@ -12,6 +12,7 @@
 use shell_contract::commands::FrameRateOutcome;
 
 use super::screen_gesture::Gesture;
+use super::stage_budget_look::LookPlan;
 use super::stage_budget_states::{RowStates, WorkState};
 use crate::scenario::observing::{ScenarioContext, stage_fields};
 use crate::screen_scenario_config::{HoldGesture, ScreenPoint};
@@ -27,6 +28,8 @@ pub struct LeverHistory {
     pub suppression: bool,
     /// Хоть раз запрашивалась частота экрана.
     pub display: bool,
+    /// Хоть раз ставилась заявка на вид рендера (14o): следующая строка без вида её снимает.
+    pub look: bool,
 }
 
 impl LeverHistory {
@@ -34,17 +37,20 @@ impl LeverHistory {
     pub fn note_applied(&mut self, states: &RowStates, state: &WorkState) {
         self.suppression |= states.drives_suppression();
         self.display |= state.display.target_hz().is_some();
+        self.look |= states.drives_look();
     }
 }
 
 /// Применяет ПОЛНОЕ состояние `state` строки `states`: рисовальщик, стадии, маску (если строка или прежние строки её
 /// трогали) и частоту (так же; состояние «не трогать» после строки с частотой возвращает частоту продукта из конфига
-/// платформы). Недоставленное дописывается в `undelivered` с пометкой `label`.
+/// платформы). Вид (14o): `look` — заранее собранный план окна; без него состояние вид не трогает и ранее
+/// поставленную заявку снимает. Недоставленное дописывается в `undelivered` с пометкой `label`.
 pub fn apply_work_state(
     context: &ScenarioContext<'_>,
     states: &RowStates,
     history: LeverHistory,
     state: &WorkState,
+    look: Option<&LookPlan>,
     label: &str,
     undelivered: &mut Vec<String>,
 ) {
@@ -65,6 +71,19 @@ pub fn apply_work_state(
             format!("{suppression:?}"),
         );
     }
+    match look {
+        Some(plan) => {
+            let delivery = context.gpu.show_look_for_scenario(plan.scenario_look.clone());
+            record("вид", delivery.is_delivered(), format!("{delivery:?}"));
+        }
+        None if history.look => {
+            // Строка без вида после строки с видом: рендеру возвращается вид продукта.
+            if let Some(delivery) = context.gpu.release_look_for_scenario() {
+                record("возврат вида", delivery.is_delivered(), format!("{delivery:?}"));
+            }
+        }
+        None => {}
+    }
     // Строка без частоты после строки с частотой возвращает частоту продукта (она же — возврат маршрутизатора).
     let requested_hz = state
         .display
@@ -84,7 +103,7 @@ pub fn apply_work_state(
 }
 
 /// Возвращает продуктовые рычаги, не дожидаясь конца сценария (перед жестом выхода с экрана калибровки).
-pub fn restore_product_levers(context: &ScenarioContext<'_>, drove_suppression: bool, undelivered: &mut Vec<String>) {
+pub fn restore_product_levers(context: &ScenarioContext<'_>, history: LeverHistory, undelivered: &mut Vec<String>) {
     let product = WorkState::PRODUCT;
     let painter = context.gpu.set_viewfinder_painter_for_scenario(product.painter);
     if !painter.is_delivered() {
@@ -94,7 +113,13 @@ pub fn restore_product_levers(context: &ScenarioContext<'_>, drove_suppression: 
     if !stages.is_delivered() {
         undelivered.push(format!("возврат стадий ISP: {stages:?}"));
     }
-    if drove_suppression {
+    if history.look
+        && let Some(delivery) = context.gpu.release_look_for_scenario()
+        && !delivery.is_delivered()
+    {
+        undelivered.push(format!("возврат вида продукта: {delivery:?}"));
+    }
+    if history.suppression {
         let suppression = context.gpu.suppress_gpu_work_for_scenario(product.suppression);
         if !suppression.is_delivered() {
             undelivered.push(format!("возврат подавления работы GPU: {suppression:?}"));

@@ -181,7 +181,9 @@ impl GpuSaturationScenario {
             render_config: &context.gpu.render_config,
             look: context.camera_screen.look_handle(),
             screen: context.camera_screen.config(),
-        });
+        })
+        // Образцы вида для работ цены и паритета вида (`look_cost`, `look_parity`): общий конфиг замеров.
+        .with_measurement_look(context.camera.scenarios().measurement_look.clone());
         self.header_sensor = Some(inputs.sensor_source.clone());
         self.header_look = Some(inputs.look.clone());
         self.inputs = Some(inputs);

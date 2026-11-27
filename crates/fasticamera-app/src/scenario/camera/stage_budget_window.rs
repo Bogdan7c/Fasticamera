@@ -18,9 +18,13 @@
 //! Поэтому время подавленной работы в окне НЕ читается вовсе (`None`), а колонка цены считает его нулём
 //! ([`CostMetric::absent_when_off_means_zero`](super::stage_budget_states::CostMetric)).
 
+use std::sync::Arc;
+
+use look_contract::{LookRecipe, LookSettings, ToneBaseModel};
 use render_loop::viewfinder::{SuppressibleGpuWork, ViewfinderDiagnostics};
 use serde::Serialize;
 
+use super::look_report::LookReport;
 use super::stage_budget_states::WorkState;
 use super::viewfinder_metrics::{GpuTimeMs, round2};
 use super::viewfinder_stage_budget_report::GpuWindowSample;
@@ -55,6 +59,8 @@ pub struct StateExpectation {
     pub scopes_passes: Growth,
     pub ui_frames_drawn: Growth,
     pub ui_frames_suppressed: Growth,
+    /// Построения пирамиды размытия фона. В разделе калибровки размытия нет (решение 261): число обязано стоять.
+    pub backdrop_pyramid_rebuilds: Growth,
 }
 
 impl StateExpectation {
@@ -80,10 +86,16 @@ impl StateExpectation {
             (true, false, true) => (Growth::MustStay, Growth::MustGrow),
             (true, false, false) => (Growth::MustGrow, Growth::MustStay),
         };
+        let backdrop_pyramid_rebuilds = if surface.runs_color_scopes() {
+            Growth::MustStay
+        } else {
+            Growth::Unconstrained
+        };
         Self {
             scopes_passes,
             ui_frames_drawn,
             ui_frames_suppressed,
+            backdrop_pyramid_rebuilds,
         }
     }
 }
@@ -94,6 +106,7 @@ struct CounterSlice {
     scopes_passes: u64,
     ui_frames_drawn: u64,
     ui_frames_suppressed: u64,
+    backdrop_pyramid_rebuilds: u64,
 }
 
 impl CounterSlice {
@@ -102,6 +115,7 @@ impl CounterSlice {
             scopes_passes: viewfinder.scopes.counters.passes_recorded,
             ui_frames_drawn: viewfinder.ui_overlay.frames_drawn,
             ui_frames_suppressed: viewfinder.ui_overlay.frames_suppressed,
+            backdrop_pyramid_rebuilds: viewfinder.ui_overlay.pyramid_rebuilds,
         }
     }
 
@@ -111,6 +125,9 @@ impl CounterSlice {
             scopes_passes: self.scopes_passes.saturating_sub(earlier.scopes_passes),
             ui_frames_drawn: self.ui_frames_drawn.saturating_sub(earlier.ui_frames_drawn),
             ui_frames_suppressed: self.ui_frames_suppressed.saturating_sub(earlier.ui_frames_suppressed),
+            backdrop_pyramid_rebuilds: self
+                .backdrop_pyramid_rebuilds
+                .saturating_sub(earlier.backdrop_pyramid_rebuilds),
         }
     }
 }
@@ -121,6 +138,8 @@ pub struct CounterDelta {
     pub scopes_passes: u64,
     pub ui_frames_drawn: u64,
     pub ui_frames_suppressed: u64,
+    /// Сколько раз за окно строилась пирамида размытия фона (в разделе калибровки обязано быть 0).
+    pub backdrop_pyramid_rebuilds: u64,
 }
 
 /// Что именно не подтвердилось (имена — в отчёт).
@@ -145,12 +164,18 @@ pub enum StateMismatch {
     UiSuppressionNotCounted,
     /// UI не подавлен, но рендер считал кадры подавленными.
     UiCountedSuppressed,
+    /// Вид или основа в диагностике рендера не те, что заданы окну (строки вида, 14o). Типичная причина на телефоне
+    /// — вид не дошёл до рендера или его перебил исполнитель вида экрана.
+    LookNotApplied,
+    /// В разделе калибровки строилась пирамида размытия фона: размытия там быть не должно (решение 261).
+    BackdropBlurBuilt,
 }
 
 /// Находит расхождения «ожидали / увидели» (чистая функция: на ней стоят тесты без рендера).
 fn find_mismatches(
     state: &WorkState,
     expectation: &StateExpectation,
+    expected_look: Option<&LookRecipe>,
     latest: Option<&Reading>,
     delta: Option<CounterDelta>,
 ) -> Vec<StateMismatch> {
@@ -163,6 +188,17 @@ fn find_mismatches(
     }
     if latest.suppression != state.suppression {
         mismatches.push(StateMismatch::GpuWorkSuppression);
+    }
+    if let Some(expected) = expected_look
+        && (latest.tone_base != expected.base || *latest.look != expected.settings)
+    {
+        mismatches.push(StateMismatch::LookNotApplied);
+    }
+    if !expectation
+        .backdrop_pyramid_rebuilds
+        .is_met_by(delta.backdrop_pyramid_rebuilds)
+    {
+        mismatches.push(StateMismatch::BackdropBlurBuilt);
     }
     if !expectation.scopes_passes.is_met_by(delta.scopes_passes) {
         mismatches.push(match expectation.scopes_passes {
@@ -191,6 +227,9 @@ struct Reading {
     painter: render_loop::viewfinder::ViewfinderPainter,
     stages: isp_vulkan::viewfinder::IspStageSet,
     suppression: render_loop::viewfinder::GpuWorkSuppression,
+    /// Значения ручек и основа, как их применил рендер (14o).
+    look: Arc<LookSettings>,
+    tone_base: ToneBaseModel,
     isp_dispatch: Option<GpuTimeMs>,
     frame_total: Option<GpuTimeMs>,
     ui_overlay_gpu: Option<GpuTimeMs>,
@@ -203,6 +242,8 @@ impl Reading {
             painter: viewfinder.painter,
             stages: viewfinder.stages,
             suppression: viewfinder.gpu_work_suppression,
+            look: Arc::clone(&viewfinder.look),
+            tone_base: viewfinder.tone_base,
             isp_dispatch: GpuTimeMs::of_optional(viewfinder.gpu_time.isp_dispatch.as_ref()),
             frame_total: GpuTimeMs::of_optional(viewfinder.gpu_time.frame_total.as_ref()),
             ui_overlay_gpu: GpuTimeMs::of_optional(viewfinder.ui_overlay.gpu_time.as_ref()),
@@ -369,6 +410,9 @@ pub struct WindowCondition {
     pub display: Option<RefreshReading>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub counters: Option<CounterDelta>,
+    /// Вид и основа, как их показывал рендер в конце окна (14o); `None` — диагностики видоискателя не было.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub look: Option<LookReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refusal: Option<WindowRefusal>,
 }
@@ -386,6 +430,8 @@ pub struct WindowObserver {
     stage: StageSetting,
     state: WorkState,
     expectation: StateExpectation,
+    /// Рецепт, который окно обязано увидеть на рендере (строки вида); `None` — вид окном не ставился.
+    expected_look: Option<LookRecipe>,
     refresh_tolerance_hz: f64,
     issued: WindowIssued,
     thermal_start: ThermalSnapshot,
@@ -412,6 +458,7 @@ impl WindowObserver {
             stage,
             state,
             expectation: StateExpectation::of(&state, surface),
+            expected_look: None,
             refresh_tolerance_hz,
             issued,
             thermal_start,
@@ -421,6 +468,14 @@ impl WindowObserver {
             observed_any_tick: false,
             refresh: RefreshStats::default(),
         }
+    }
+
+    /// Окно проверяет, что рендер показывает именно этот вид и основу (строки вида, 14o); расхождение отвергает окно
+    /// как `state_not_applied`.
+    #[must_use]
+    pub fn expecting_look(mut self, expected: Option<LookRecipe>) -> Self {
+        self.expected_look = expected;
+        self
     }
 
     pub fn index(&self) -> usize {
@@ -461,7 +516,13 @@ impl WindowObserver {
             (Some(latest), Some(baseline)) => Some(latest.since(baseline)),
             _ => None,
         };
-        let mismatches = find_mismatches(&self.state, &self.expectation, self.latest.as_ref(), delta);
+        let mismatches = find_mismatches(
+            &self.state,
+            &self.expectation,
+            self.expected_look.as_ref(),
+            self.latest.as_ref(),
+            delta,
+        );
         let refusal = if mismatches.is_empty() {
             self.display_refusal()
         } else {
@@ -489,6 +550,7 @@ impl WindowObserver {
             issued: self.issued,
             display: self.refresh.reading(),
             counters: delta,
+            look: latest.map(|reading| LookReport::of_parts(reading.tone_base, &reading.look, self.state.look)),
             refusal,
         };
         Some(ClosedWindow { sample, condition })

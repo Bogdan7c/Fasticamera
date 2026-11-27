@@ -9,6 +9,7 @@ use crate::scenario::camera::raw_stream_samples::LATENCY_MEANING;
 use crate::scenario::camera::viewfinder_metrics::IspCountersDelta;
 use crate::viewfinder_control::PresentTargetSetting;
 use camera_android::companion_stream::{CompanionStreamStatus, CompanionUnavailableReason};
+use look_contract::{LookSettings, ToneBaseModel};
 use render_loop::config::{AdpfMode, DepthReductionMode, LateLatchMode, PresentTimelinePolicy};
 
 fn session() -> SessionSummary {
@@ -94,6 +95,7 @@ pub(in crate::scenario::camera) fn healthy() -> ViewfinderSmokeObservation {
             display_color_space: "display_p3",
             storage: Some("ten_bit_unorm"),
             output_extent: Some([1440, 1080]),
+            picture: LookReport::of_parts(ToneBaseModel::Agx, &LookSettings::NEUTRAL, None),
         }),
         validation: Some(ValidationReportPart {
             mode: ValidationState::Enabled,
@@ -694,4 +696,20 @@ fn a_pipeline_created_in_a_frame_inside_the_window_fails_even_when_every_latency
     });
     assert_single(&violations, "создано пайплайнов в кадре: 1");
     assert!(violations[0].contains("loaded"), "{violations:?}");
+}
+
+#[test]
+fn the_summary_carries_the_picture_look_and_tone_base_the_render_showed() {
+    let summary = healthy().summary();
+    let picture = &summary["look"]["picture"];
+    assert_eq!(picture["tone_base"], "agx", "{summary}");
+    assert_eq!(
+        picture["measurement_look"], "product",
+        "сценарий `viewfinder` вида не ставит"
+    );
+    assert_eq!(picture["layer_neutral"], true);
+    assert!(
+        picture["recipe_fingerprint"].as_str().is_some_and(|fp| fp.len() == 16),
+        "{picture}"
+    );
 }

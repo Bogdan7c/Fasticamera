@@ -31,6 +31,9 @@ use shell_contract::commands::{FrameRate, FrameRateOutcome, InvalidFrameRate, Sh
 use ui_draw::frame_source::UiFrameSource;
 
 use crate::gpu_services::GpuServices;
+use crate::look_recipe_log::{RecipeOrigin, log_recipe};
+use crate::look_render_claim::LookRenderClaim;
+use look_contract::LookRecipe;
 
 const LOG_TARGET: &str = "fasticamera::render::scenario_control";
 
@@ -90,16 +93,28 @@ pub trait RenderControl: Send + Sync {
     /// Поставить или снять источник кадра UI поверх видоискателя. Итог применения поток рендера пишет
     /// в диагностику (`ViewfinderDiagnostics::ui_overlay`); здесь — только доставка.
     fn ui_overlay(&self, command: UiOverlayCommand) -> ControlDelivery;
+
+    /// Заявка на «какой вид сейчас на рендере» (14o): общая у сценария замера и исполнителя вида экрана. Управление
+    /// рендером отдаёт ТОТ ЖЕ объект каждому, кто спросит (клоны делят состояние). Умолчание — новая свободная заявка:
+    /// фейкам без вида она ни к чему, а исполнитель вида на ней просто никогда не увидит заявки.
+    fn look_claim(&self) -> LookRenderClaim {
+        LookRenderClaim::default()
+    }
 }
 
 /// Живой поток рендера: регулировки идут тем же ящиком, что события surface.
 pub struct InboxRenderControl {
     inbox: RenderInbox,
+    /// Заявка сценария на вид рендера: одна на процесс, раздаётся и сценариям, и исполнителю вида.
+    look_claim: LookRenderClaim,
 }
 
 impl InboxRenderControl {
     pub fn new(inbox: RenderInbox) -> Self {
-        Self { inbox }
+        Self {
+            inbox,
+            look_claim: LookRenderClaim::default(),
+        }
     }
 }
 
@@ -119,6 +134,10 @@ impl RenderControl for InboxRenderControl {
 
     fn ui_overlay(&self, command: UiOverlayCommand) -> ControlDelivery {
         ControlDelivery::of_inbox(self.inbox.ui_overlay_command(command))
+    }
+
+    fn look_claim(&self) -> LookRenderClaim {
+        self.look_claim.clone()
     }
 }
 
@@ -148,6 +167,15 @@ impl RenderControl for UnavailableRenderControl {
     }
 }
 
+/// Вид для окна замера: что показать и к чему вернуть рендер.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScenarioLook {
+    /// Рецепт, который окно замера показывает на рендере.
+    pub shown: LookRecipe,
+    /// Рецепт продукта (активный пресет с правками): к нему рендер возвращается при конце сценария.
+    pub restore_to: LookRecipe,
+}
+
 /// Какие настройки рендера тронул текущий сценарий (их и только их вернёт конец сценария).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct TouchedRenderSettings {
@@ -161,6 +189,8 @@ struct TouchedRenderSettings {
     display_refresh: bool,
     /// Сценарий поставил источник кадра UI и ещё не снял его сам.
     ui_overlay: bool,
+    /// Сценарий заявил вид на рендере (14o): конец сценария снимает заявку и возвращает вид продукта.
+    look: bool,
 }
 
 impl TouchedRenderSettings {
@@ -173,6 +203,7 @@ impl TouchedRenderSettings {
             || self.adpf
             || self.display_refresh
             || self.ui_overlay
+            || self.look
     }
 }
 
@@ -246,6 +277,42 @@ impl GpuServices {
             .adjust(RenderAdjustment::Viewfinder(ViewfinderCommand::SuppressGpuWork(
                 suppression,
             )))
+    }
+
+    /// Сценарий замера (14o): показать на рендере вид `look` вместо вида продукта. Это ЗАЯВКА на владение видом на
+    /// рендере ([`LookRenderClaim`]): пока она держится, исполнитель вида экрана рендеру ничего не шлёт. Библиотеки
+    /// пресетов и файла владельца метод не касается. Вернётся рецептом `restore_to` (вид продукта на момент заявки)
+    /// при конце сценария. Учёт «сценарий заявлял» ведётся с момента вызова, а не доставки: недоставленная команда
+    /// не должна остаться без возврата. Доставка — по обеим командам (основа, затем значения): `Delivered` только
+    /// если дошли обе, иначе первая недоставленная.
+    pub fn show_look_for_scenario(&self, look: ScenarioLook) -> ControlDelivery {
+        self.scenario_claim.note(|touched| touched.look = true);
+        self.control.look_claim().hold(look.restore_to);
+        log_recipe(RecipeOrigin::ScenarioClaim, &look.shown);
+        self.send_look(&look.shown)
+    }
+
+    /// Сценарий: отдать вид рендера продукту посреди сценария (следующая строка вида не трогает). Рендеру уходит рецепт
+    /// продукта из заявки; исполнитель вида экрана на следующем кадре досылает свой. `None` — заявка не держалась.
+    pub fn release_look_for_scenario(&self) -> Option<ControlDelivery> {
+        let product = self.control.look_claim().release()?;
+        log_recipe(RecipeOrigin::ScenarioRelease, &product);
+        Some(self.send_look(&product))
+    }
+
+    /// Обе команды вида рендеру: основа, затем значения ручек. Возвращает первую недоставленную или `Delivered`.
+    fn send_look(&self, recipe: &LookRecipe) -> ControlDelivery {
+        let base = self
+            .control
+            .adjust(RenderAdjustment::Viewfinder(ViewfinderCommand::SetToneBase(
+                recipe.base,
+            )));
+        let settings = self
+            .control
+            .adjust(RenderAdjustment::Viewfinder(ViewfinderCommand::SetLook(Arc::new(
+                recipe.settings.clone(),
+            ))));
+        if base.is_delivered() { settings } else { base }
     }
 
     /// Сценарий: политика линии кадра (вернётся к `render.present_target` из конфига).
@@ -334,6 +401,16 @@ impl GpuServices {
             }
             effects.adjustments.push(("ui_overlay", delivery));
         }
+        if touched.look {
+            // Заявку снимаем и возвращаем вид продукта сами (экрана может не быть: голый видоискатель), а исполнитель
+            // вида, заметив снятие, на следующем кадре досылает свой (с учётом чистого вида).
+            if let Some(delivery) = self.release_look_for_scenario() {
+                if !delivery.is_delivered() {
+                    tracing::warn!(target: LOG_TARGET, setting = "look", ?delivery, "возврат вида продукта не доставлен");
+                }
+                effects.adjustments.push(("look", delivery));
+            }
+        }
         let mut send = |name: &'static str, adjustment: RenderAdjustment| {
             let delivery = self.control.adjust(adjustment);
             if !delivery.is_delivered() {
@@ -395,3 +472,7 @@ impl GpuServices {
 #[cfg(test)]
 #[path = "viewfinder_control_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "viewfinder_control_look_tests.rs"]
+mod look_tests;

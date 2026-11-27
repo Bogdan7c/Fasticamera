@@ -10,6 +10,7 @@ use serde::Serialize;
 use shell_contract::thermal::ThermalStatus;
 
 use super::digest_report::DigestOutcome;
+use super::extras::WorkloadExtras;
 use crate::power_measurement::ThermalSnapshot;
 
 /// Время проходов одной метки, мс.
@@ -272,6 +273,8 @@ pub struct WorkloadRow {
     pub ui: Option<UiCountersSummary>,
     /// Дайджест выхода работы (`None` — работа не дошла до дайджеста: провал или не запускалась).
     pub digest: Option<DigestOutcome>,
+    /// Дополнительные факты строки (паритет, размер картинки прибора, счётчик пайплайнов).
+    pub extras: WorkloadExtras,
     /// Тепло в начале и конце работы (`None` — работа не запускалась).
     pub thermal_start: Option<ThermalSnapshot>,
     pub thermal_end: Option<ThermalSnapshot>,
@@ -290,6 +293,7 @@ impl WorkloadRow {
             scene: None,
             ui: None,
             digest: None,
+            extras: WorkloadExtras::default(),
             thermal_start: None,
             thermal_end: None,
             started_at_ms: None,
@@ -312,7 +316,15 @@ impl WorkloadRow {
     /// Нарушение для вердикта: `None`, если у работы есть цифра.
     pub fn violation(&self) -> Option<String> {
         let reason = match &self.outcome {
-            RowOutcome::Measured { measurement } if measurement.end_reason == EndReasonName::Completed => return None,
+            RowOutcome::Measured { measurement } if measurement.end_reason == EndReasonName::Completed => {
+                // Цифра есть; у работ паритета её мало: числа линейки обязаны уложиться в допуск.
+                return self
+                    .extras
+                    .parity
+                    .as_ref()
+                    .and_then(|parity| parity.violation())
+                    .map(|reason| format!("{}: {reason}", self.name));
+            }
             RowOutcome::Measured { .. } => "прогон прерван отменой: окно неполное".to_owned(),
             RowOutcome::NoFramesCompleted { .. } => "в окне не завершился ни один кадр".to_owned(),
             RowOutcome::Failed { failure } => failure.to_string(),

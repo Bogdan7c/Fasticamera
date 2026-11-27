@@ -480,6 +480,12 @@ def parse_arguments(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="viewfinder и 3a: проверить по скриншотам, что серая карта в центре кадра вышла серой",
     )
+    parser.add_argument(
+        "--expect-tone-base",
+        choices=smoke_checks_viewfinder.TONE_BASES,
+        default=None,
+        help="viewfinder и viewfinder-stage-budget: основа, которую запросил --tone-base; отчёт обязан показать именно её",
+    )
     return parser.parse_args(argv)
 
 
@@ -508,6 +514,21 @@ def with_neutral_card(post_check: PostCheck | None, artifacts_dir: Path) -> Post
         base = post_check(result) if post_check is not None else CheckOutcome([])
         card = smoke_neutral_card.neutral_card_post_check(artifacts_dir)
         return CheckOutcome([*base.problems, *card.problems], [*base.notes, *card.notes])
+
+    return check
+
+
+TONE_BASE_SCENARIOS = frozenset({"viewfinder", "viewfinder-stage-budget"})
+"""Сценарии, чей отчёт несёт показанную основу и потому проверяется флагом ``--expect-tone-base``."""
+
+
+def with_expected_tone_base(post_check: PostCheck | None, expected: str) -> PostCheck:
+    """Добавляет к пост-проверке «показанная основа равна запрошенной» (флаг ``--expect-tone-base``)."""
+
+    def check(result: dict) -> CheckOutcome:
+        base = post_check(result) if post_check is not None else CheckOutcome([])
+        problems = smoke_checks_viewfinder.expected_tone_base_problems(result, expected)
+        return CheckOutcome([*base.problems, *problems], base.notes)
 
     return check
 
@@ -563,6 +584,8 @@ def main(argv: list[str]) -> int:
         post_check = capture_post_check_for(arguments.scenario, arguments.serial, arguments.package)
     if arguments.neutral_card and arguments.scenario in NEUTRAL_CARD_SCENARIOS and arguments.artifacts_dir is not None:
         post_check = with_neutral_card(post_check, arguments.artifacts_dir)
+    if arguments.expect_tone_base is not None and arguments.scenario in TONE_BASE_SCENARIOS:
+        post_check = with_expected_tone_base(post_check, arguments.expect_tone_base)
     verdict = evaluate_stream(
         read_logcat_lines(arguments.serial, arguments.since_epoch, arguments.timeout),
         arguments.scenario,

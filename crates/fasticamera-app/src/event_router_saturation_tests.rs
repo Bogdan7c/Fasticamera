@@ -108,6 +108,7 @@ impl WorkloadExecutor for FakeExecutor {
                 digest: DigestOutcome::Unavailable {
                     reason: "подставной исполнитель".to_owned(),
                 },
+                extras: Default::default(),
             })
         };
         match self.behaviors.get(entry.name).unwrap_or(&self.default).clone() {

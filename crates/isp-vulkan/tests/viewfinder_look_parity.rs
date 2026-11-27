@@ -34,10 +34,9 @@ use look_support::{
     single_wheel_look, wheel, wheels_look, wheels_parity_cases, with_lut,
 };
 use viewfinder_support::{
-    ErrorAllowance, HEIGHT_OF_SYNTHETIC_SCENES as HEIGHT, ParamsSpec, RawFrame, RunRequest,
-    WIDTH_OF_SYNTHETIC_SCENES as WIDTH, assert_no_validation_errors, assert_viewfinder_parity,
-    assert_viewfinder_parity_allowing, gpu_context_or_skip, reference_upright_encoded, run_viewfinder,
-    synthetic_scenes, test_config,
+    ErrorAllowance, ParamsSpec, RunRequest, assert_no_validation_errors, assert_viewfinder_parity,
+    assert_viewfinder_parity_allowing, gpu_context_or_skip, hue_sweep, look_scenes, reference_upright_encoded,
+    run_viewfinder, synthetic_scenes, test_config,
 };
 
 fn spec(base: ToneBase, gamut: DisplayGamut) -> ParamsSpec {
@@ -54,28 +53,6 @@ fn bases() -> [(&'static str, ToneBase); 2] {
         ("прежняя", ToneBase::Legacy),
         ("AgX", ToneBase::Agx(AgxSettings::default())),
     ]
-}
-
-/// Развёртка по оттенку (см. `look_support::hue_sweep_light`).
-fn hue_sweep(spec: &ParamsSpec) -> RawFrame {
-    RawFrame::from_linear(WIDTH, HEIGHT, spec.pattern, spec.levels(), |x, y, channel| {
-        look_support::hue_sweep_light(x, y, WIDTH, HEIGHT, channel, spec.neutral)
-    })
-}
-
-/// Кожа и малоцветные цвета рядом (см. `look_support::skin_and_pastels_light`).
-fn skin_and_pastels(spec: &ParamsSpec) -> RawFrame {
-    RawFrame::from_linear(WIDTH, HEIGHT, spec.pattern, spec.levels(), |x, y, channel| {
-        look_support::skin_and_pastels_light(x, y, WIDTH, HEIGHT, channel, spec.neutral)
-    })
-}
-
-/// Сцены паритета вида: четыре синтетические, развёртка по оттенку, кожа и пастели.
-fn look_scenes(spec: &ParamsSpec) -> Vec<(&'static str, RawFrame)> {
-    let mut scenes = synthetic_scenes(spec);
-    scenes.push(("развёртка по оттенку", hue_sweep(spec)));
-    scenes.push(("кожа и пастели", skin_and_pastels(spec)));
-    scenes
 }
 
 /// Паритет вида `look` на всех сценах обеих основ и обеих целей вывода; возвращает худший max |Δ| fp16.

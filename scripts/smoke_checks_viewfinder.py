@@ -32,10 +32,21 @@ TABLE_COLUMNS = 4
 STAGE_BUDGET_SURFACES = ("bare_viewfinder", "photo_screen", "calibrate_screen")
 """Места замера `viewfinder-stage-budget` (контракт с `stage_budget_surface_config.rs`, snake_case)."""
 
+STAGE_BUDGET_LOOK_ROWS = (
+    "look_tone_base_agx",
+    "look_tone_base_aces",
+    "look_tone_base_filmic",
+    "look_layer",
+    "look_wheels",
+    "look_tone",
+)
+"""Строки вида 14o (контракт с `look_row.rs::LookRow::name`): вид считает шейдер видоискателя, строки годятся на всех местах."""
+
 STAGE_BUDGET_ROW_SURFACES = {
     "color_scopes": ("calibrate_screen",),
     "ui_overlay": ("photo_screen", "calibrate_screen"),
     "whole_product": ("photo_screen", "calibrate_screen"),
+    **{row: STAGE_BUDGET_SURFACES for row in STAGE_BUDGET_LOOK_ROWS},
 }
 """Строки 16a, допустимые не везде (остальные строки — стадии, `whole_viewfinder`, `display_120hz` — на всех местах).
 Rust отвергает недопустимое сочетание ещё при initialize; здесь независимая перепроверка результата."""
@@ -45,6 +56,15 @@ STAGE_BUDGET_BASELINES = {
     "whole_product": ("camera_without_product_gpu", "«вся наша работа»", "«камера без нашей работы GPU»"),
 }
 """Строка, из B-окон которой берётся абсолютная база: имя строки базы в таблице и слова для сообщения."""
+
+TONE_BASES = ("agx", "aces", "filmic", "legacy")
+"""Модели основы тона (контракт с `look_contract::ToneBaseModel::name`, snake_case)."""
+
+LOOK_REPORT_FLAGS = ("layer_neutral", "wheels_active", "tone_active")
+"""Булевы признаки слоёв в отчёте о виде (контракт с `scenario/camera/look_report.rs`)."""
+
+FINGERPRINT_LENGTH = 16
+"""Отпечаток рецепта вида — 16 шестнадцатеричных цифр (`LookRecipe::fingerprint_hex`)."""
 
 STAGE_BUDGET_REJECTION_REASONS = frozenset({"state_not_applied", "display_refresh_not_reached"})
 """Причины отказа окна по состоянию (16a): строка с такой причиной в вердикте не `measured`."""
@@ -78,6 +98,59 @@ def _dict(value: object) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def look_report_problems(look: object, where: str) -> list[str]:
+    """Отчёт о виде и основе (14o) на месте ``where``: основа из каталога, отпечаток рецепта, три признака слоёв и имя
+    вида замера. Отчёт без этих полей — не отчёт: по нему нельзя сказать, какую картинку мерили."""
+    if not isinstance(look, dict):
+        return [f"в отчёте нет вида и основы ({where})"]
+    problems: list[str] = []
+    if look.get("tone_base") not in TONE_BASES:
+        problems.append(f"{where}.tone_base={look.get('tone_base')!r}, ожидалось одно из {list(TONE_BASES)}")
+    fingerprint = look.get("recipe_fingerprint")
+    if not (
+        isinstance(fingerprint, str)
+        and len(fingerprint) == FINGERPRINT_LENGTH
+        and all(char in "0123456789abcdef" for char in fingerprint)
+    ):
+        problems.append(f"{where}.recipe_fingerprint={fingerprint!r}, ожидалось {FINGERPRINT_LENGTH} hex-цифр")
+    for flag in LOOK_REPORT_FLAGS:
+        if not isinstance(look.get(flag), bool):
+            problems.append(f"{where}.{flag}={look.get(flag)!r}, ожидалось true или false")
+    if not isinstance(look.get("measurement_look"), str) or not look["measurement_look"]:
+        problems.append(f"{where}.measurement_look не назван")
+    return problems
+
+
+def _compact_look_problems(look: object, where: str) -> list[str]:
+    """Сжатый вид окна строки вида в строке результата: основа, отпечаток, колёса, тон (полный отчёт — в detail)."""
+    if not isinstance(look, dict):
+        return [f"в отчёте нет вида окна ({where})"]
+    full = {"layer_neutral": False, "measurement_look": "-", **look}
+    return look_report_problems(full, where)
+
+
+def expected_tone_base_problems(result: dict, expected: str) -> list[str]:
+    """Основа, запрошенная флагом ``--tone-base``, действительно была показана (14o).
+
+    Конфиг ``render.viewfinder.tone.base`` — лишь УМОЛЧАНИЕ встроенных пресетов: если у владельца активен свой пресет
+    или есть сохранённые правки, у них своя основа и флаг молча ничего не меняет. Поэтому расхождение — провал с
+    причиной, а не «прошло с другой основой». Читает ``viewfinder`` (``look.picture``) и ``viewfinder-stage-budget``
+    (``look`` на входе на место замера); другим сценариям основа в отчёте не нужна — флаг для них отвергает
+    ``device-smoke.sh``."""
+    report = _dict(result.get("report"))
+    if result.get("scenario") == "viewfinder":
+        shown = _dict(_dict(report.get("look")).get("picture")).get("tone_base")
+    else:
+        shown = _dict(report.get("look")).get("tone_base")
+    if shown == expected:
+        return []
+    return [
+        f"основа в отчёте {shown!r}, а запрошена {expected!r} (--tone-base): у активного пресета или сохранённых "
+        "правок своя основа, конфиг viewfinder.tone.base лишь умолчание встроенных пресетов; смените пресет или "
+        "сбросьте правки на телефоне"
+    ]
+
+
 def _streaming_problem(report: dict) -> list[str]:
     state = report.get("state_at_end")
     return [] if state == STREAMING_STATE else [f"к концу прогона состояние камеры {state!r}, ожидалось 'streaming'"]
@@ -99,6 +172,7 @@ def check_viewfinder(result: dict) -> list[str]:
     if not _is_number(isp_dispatch.get("p95_ms")):
         problems.append("нет времени прохода ISP (gpu_time.isp_dispatch.p95_ms)")
     look = _dict(report.get("look"))
+    problems.extend(look_report_problems(look.get("picture"), "look.picture"))
     if look.get("painter") != "isp":
         problems.append(f"рисовальщик {look.get('painter')!r}, ожидался 'isp'")
     if look.get("display_color_space") not in COLOR_SPACES:
@@ -298,6 +372,7 @@ def check_viewfinder_stage_budget(result: dict) -> list[str]:
         if row in requested and not any(isinstance(line, str) and line.startswith(baseline) for line in table):
             problems.append(f"есть {row_words}, но нет строки {baseline_words} ({baseline})")
     problems.extend(_stage_budget_surface_problems(report, requested))
+    problems.extend(_stage_budget_look_problems(report, requested))
     problems.extend(_stage_budget_rejection_problems(table))
     return problems
 
@@ -318,6 +393,35 @@ def _stage_budget_surface_problems(report: dict, requested: list) -> list[str]:
             problems.append("на экране калибровки в отчёте нет запроса прибора (scopes.request)")
         if not isinstance(scopes.get("float32_controls"), dict):
             problems.append("на экране калибровки в отчёте нет возможностей f32 (scopes.float32_controls)")
+    return problems
+
+
+def _stage_budget_look_problems(report: dict, requested: list) -> list[str]:
+    """14o: вид и основа на входе названы; у каждой строки вида окна A и B показали РАЗНЫЕ рецепты (иначе строка мерила
+    бы ноль); на экране калибровки пирамида размытия фона не строилась (решение 261)."""
+    problems = look_report_problems(report.get("look"), "look")
+    rows = {_dict(row).get("row"): _dict(row) for row in report.get("look_rows") or []}
+    for name in requested:
+        if name not in STAGE_BUDGET_LOOK_ROWS:
+            continue
+        row = rows.get(name)
+        if row is None:
+            problems.append(f"у строки вида {name} нет видов окон в отчёте (look_rows)")
+            continue
+        windows = {window: row.get(window) for window in ("on", "off")}
+        for window, look in windows.items():
+            problems.extend(_compact_look_problems(look, f"look_rows[{name}].{window}"))
+        on_fp, off_fp = (_dict(look).get("recipe_fingerprint") for look in windows.values())
+        if on_fp is not None and on_fp == off_fp:
+            problems.append(f"строка {name}: окна A и B показали один и тот же рецепт ({on_fp}), строка мерила бы ноль")
+    if "backdrop_pyramid_rebuilds" not in report:
+        problems.append("в отчёте нет числа построений размытия фона (backdrop_pyramid_rebuilds)")
+    elif report.get("surface") == "calibrate_screen":
+        rebuilds = report["backdrop_pyramid_rebuilds"]
+        if not isinstance(rebuilds, int) or isinstance(rebuilds, bool):
+            problems.append(f"backdrop_pyramid_rebuilds={rebuilds!r} на экране калибровки: окон с диагностикой не было")
+        elif rebuilds != 0:
+            problems.append(f"в разделе калибровки строилась пирамида размытия фона {rebuilds} раз (решение 261: 0)")
     return problems
 
 

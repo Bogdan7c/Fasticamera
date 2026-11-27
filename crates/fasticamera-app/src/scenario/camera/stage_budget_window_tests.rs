@@ -28,6 +28,8 @@ fn product_reading() -> Reading {
         painter: ViewfinderPainter::Isp,
         stages: IspStageSet::ALL,
         suppression: GpuWorkSuppression::NONE,
+        look: std::sync::Arc::new(look_contract::LookSettings::NEUTRAL),
+        tone_base: look_contract::ToneBaseModel::Agx,
         isp_dispatch: Some(gpu_time(2.0)),
         frame_total: Some(gpu_time(3.0)),
         ui_overlay_gpu: Some(gpu_time(1.5)),
@@ -43,6 +45,7 @@ fn tick(reading: Reading, passes: u64, drawn: u64, suppressed: u64, refresh_hz: 
                 scopes_passes: passes,
                 ui_frames_drawn: drawn,
                 ui_frames_suppressed: suppressed,
+                backdrop_pyramid_rebuilds: 0,
             },
         )),
         refresh_hz,
@@ -89,7 +92,8 @@ fn a_product_window_on_calibrate_is_accepted_only_when_scopes_and_ui_actually_ra
         Some(CounterDelta {
             scopes_passes: 300,
             ui_frames_drawn: 300,
-            ui_frames_suppressed: 0
+            ui_frames_suppressed: 0,
+            backdrop_pyramid_rebuilds: 0
         })
     );
     // Время подавляемых работ в окне A читается: они выполнялись.
@@ -417,4 +421,177 @@ fn under_the_debug_mosaic_ui_and_scopes_stay_untouched_and_that_is_not_a_mismatc
     run_window(&mut drawing, reading, (7, 500, 288), (7, 800, 288), None);
     let closed = drawing.finish(quiet_thermal()).expect("окно");
     assert_eq!(mismatches_of(&closed), [StateMismatch::UiStillDrawing]);
+}
+
+// --- 14o: строки вида и размытие фона ---
+
+use look_contract::{LookRecipe, LookSettings, ToneBaseModel};
+
+use crate::look_row::LookRow;
+use crate::measurement_look::{MeasurementLook, MeasurementLookConfig};
+
+/// Рецепт окна строки `look_wheels` в положении `stage` на продукте «нейтраль на AgX».
+fn wheels_recipe(stage: StageSetting) -> LookRecipe {
+    let product = LookRecipe {
+        base: ToneBaseModel::Agx,
+        settings: LookSettings::NEUTRAL,
+    };
+    let look = match stage {
+        StageSetting::On => LookRow::Wheels.on_look(),
+        StageSetting::Off => LookRow::Wheels.off_look(),
+    };
+    look.recipe_from(&product, &MeasurementLookConfig::default())
+}
+
+fn reading_showing(recipe: &LookRecipe) -> Reading {
+    Reading {
+        look: std::sync::Arc::new(recipe.settings.clone()),
+        tone_base: recipe.base,
+        ..product_reading()
+    }
+}
+
+fn look_window(stage: StageSetting, expected: LookRecipe) -> WindowObserver {
+    observer(
+        StageBudgetRowSetting::Look(LookRow::Wheels),
+        stage,
+        StageBudgetSurface::BareViewfinder,
+    )
+    .expecting_look(Some(expected))
+}
+
+#[test]
+fn a_look_window_is_accepted_when_the_render_shows_exactly_the_expected_recipe_and_reports_it() {
+    let recipe = wheels_recipe(StageSetting::On);
+    let mut window = look_window(StageSetting::On, recipe.clone());
+    run_window(&mut window, reading_showing(&recipe), (0, 0, 0), (0, 0, 0), None);
+
+    let closed = window.finish(quiet_thermal()).expect("окно закрыто");
+
+    assert_eq!(closed.condition.refusal, None);
+    let look = closed.condition.look.expect("отчёт о виде окна");
+    assert!(look.wheels_active, "окно A строки колёс показывает колёса");
+    assert_eq!(look.measurement_look, "wheels_sample");
+    assert_eq!(look.recipe_fingerprint, recipe.fingerprint_hex());
+}
+
+#[test]
+fn a_look_window_where_the_render_still_shows_another_look_is_state_not_applied() {
+    let expected = wheels_recipe(StageSetting::On);
+    let product = wheels_recipe(StageSetting::Off);
+    let mut window = look_window(StageSetting::On, expected);
+    run_window(&mut window, reading_showing(&product), (0, 0, 0), (0, 0, 0), None);
+
+    let closed = window.finish(quiet_thermal()).expect("окно закрыто");
+
+    assert_eq!(mismatches_of(&closed), vec![StateMismatch::LookNotApplied]);
+}
+
+#[test]
+fn a_look_window_on_another_tone_base_is_state_not_applied_even_with_equal_values() {
+    let expected = wheels_recipe(StageSetting::On);
+    let other_base = LookRecipe {
+        base: ToneBaseModel::Legacy,
+        ..expected.clone()
+    };
+    let mut window = look_window(StageSetting::On, expected);
+    run_window(&mut window, reading_showing(&other_base), (0, 0, 0), (0, 0, 0), None);
+
+    let closed = window.finish(quiet_thermal()).expect("окно закрыто");
+
+    assert_eq!(mismatches_of(&closed), vec![StateMismatch::LookNotApplied]);
+}
+
+#[test]
+fn a_window_without_a_look_lever_does_not_judge_the_look() {
+    let mut window = observer(
+        StageBudgetRowSetting::WholeViewfinder,
+        StageSetting::On,
+        StageBudgetSurface::BareViewfinder,
+    );
+    run_window(&mut window, product_reading(), (0, 0, 0), (0, 0, 0), None);
+
+    let closed = window.finish(quiet_thermal()).expect("окно закрыто");
+
+    assert_eq!(closed.condition.refusal, None);
+    assert_eq!(
+        closed.condition.look.expect("вид в отчёте всегда").measurement_look,
+        "product"
+    );
+}
+
+#[test]
+fn a_built_backdrop_pyramid_in_the_calibrate_section_rejects_the_window_and_elsewhere_it_does_not() {
+    let growing = |hz| {
+        let mut window = observer(
+            StageBudgetRowSetting::UiOverlay,
+            StageSetting::On,
+            StageBudgetSurface::CalibrateScreen,
+        );
+        let mut start = CounterSlice {
+            scopes_passes: 100,
+            ui_frames_drawn: 500,
+            ui_frames_suppressed: 0,
+            backdrop_pyramid_rebuilds: 0,
+        };
+        window.record(Tick {
+            viewfinder: Some((product_reading(), start)),
+            refresh_hz: hz,
+        });
+        start.scopes_passes += 300;
+        start.ui_frames_drawn += 300;
+        start.backdrop_pyramid_rebuilds += 7;
+        window.record(Tick {
+            viewfinder: Some((product_reading(), start)),
+            refresh_hz: hz,
+        });
+        window.finish(quiet_thermal()).expect("окно закрыто")
+    };
+
+    let calibrate = growing(None);
+    assert_eq!(mismatches_of(&calibrate), vec![StateMismatch::BackdropBlurBuilt]);
+    assert_eq!(
+        calibrate
+            .condition
+            .counters
+            .expect("счётчики")
+            .backdrop_pyramid_rebuilds,
+        7
+    );
+
+    let mut photo = observer(
+        StageBudgetRowSetting::UiOverlay,
+        StageSetting::On,
+        StageBudgetSurface::PhotoScreen,
+    );
+    let mut counters = CounterSlice {
+        scopes_passes: 0,
+        ui_frames_drawn: 10,
+        ui_frames_suppressed: 0,
+        backdrop_pyramid_rebuilds: 0,
+    };
+    photo.record(Tick {
+        viewfinder: Some((product_reading(), counters)),
+        refresh_hz: None,
+    });
+    counters.ui_frames_drawn += 100;
+    counters.backdrop_pyramid_rebuilds += 7;
+    photo.record(Tick {
+        viewfinder: Some((product_reading(), counters)),
+        refresh_hz: None,
+    });
+    assert_eq!(
+        photo.finish(quiet_thermal()).expect("окно").condition.refusal,
+        None,
+        "вне раздела размытие не судится"
+    );
+}
+
+#[test]
+fn the_look_samples_used_by_window_tests_really_differ_from_the_product() {
+    // Страховка самих тестов: образцы колёс непусты, иначе окно A и окно B были бы неразличимы.
+    let on = wheels_recipe(StageSetting::On);
+    let off = wheels_recipe(StageSetting::Off);
+    assert_ne!(on, off);
+    assert_eq!(MeasurementLook::WheelsSample, LookRow::Wheels.on_look());
 }

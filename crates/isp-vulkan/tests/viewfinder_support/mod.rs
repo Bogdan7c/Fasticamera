@@ -17,7 +17,7 @@ pub mod isp_support;
 
 use ash::vk;
 use camera_contract::capabilities::LensShading;
-use camera_contract::geometry::{PixelRect, PixelSize, SensorOrientation};
+use camera_contract::geometry::{PixelRect, SensorOrientation};
 use gpu_vulkan::backdrop::BackdropFrameNumber;
 use gpu_vulkan::context::{GpuContext, GpuContextConfig};
 use gpu_vulkan::device::DeviceProfile;
@@ -36,7 +36,7 @@ use isp_model::demosaic::DemosaicMethod;
 use isp_model::demosaic::demosaic;
 use isp_model::gamut::GamutCompressionSettings;
 use isp_model::gamut::compress_to_display_gamut;
-use isp_model::image::{DisplayGamut, RawMosaic};
+use isp_model::image::DisplayGamut;
 use isp_model::lens_shading::LensShadingControl;
 use isp_model::lens_shading::{CropInValidArea, LensShadingSampling, apply_lens_shading_sampled};
 use isp_model::levels::NormalizationLevels;
@@ -50,7 +50,6 @@ use isp_model::statistics::{
     AwbStatistics, AwbStatisticsInput, AwbStatisticsSettings, TileGrid, cells_size, compute_awb_statistics,
     quantize_sample_with_headroom, tile_of_cell,
 };
-use isp_model::test_patterns::color_bars;
 use isp_model::tone::ToneCurveSettings;
 use isp_model::tone::apply_tone_curve;
 use isp_model::transfer::encode_display;
@@ -62,8 +61,10 @@ use isp_vulkan::viewfinder::{
 
 const SKIP_ENV: &str = "FASTICAMERA_SKIP_GPU_TESTS";
 
-/// Шаг 10-битного выхода — «1 LSB» в отчётах паритета.
-pub const ONE_LSB: f32 = 1.0 / 1023.0;
+// Линейка паритета живёт в библиотеке (`isp_vulkan::saturation::parity`): те же числа меряет приложение на телефоне.
+// Здесь только имена, под которыми её знают тесты.
+#[allow(unused_imports, reason = "каждый тестовый бинарь использует свою часть помощников")]
+pub use isp_vulkan::saturation::parity::{ONE_LSB, Parity, SyntheticRawFrame as RawFrame, storage_step};
 
 /// Нейтраль кадра C7 «лампа» (основная камера, 4532 K).
 pub const LAMP: [f64; 3] = [0.515625, 1.0, 0.4990234375];
@@ -93,68 +94,6 @@ pub fn assert_no_validation_errors(context: &GpuContext) {
     context.wait_idle().expect("wait_idle в конце теста");
     let report = context.validation_report();
     assert_eq!(report.errors, 0, "validation нашла ошибки: {report:?}");
-}
-
-/// Синтетический RAW-кадр (значения u16 в пикселях буфера).
-#[derive(Debug, Clone)]
-pub struct RawFrame {
-    pub width: u32,
-    pub height: u32,
-    pub pattern: BayerPattern,
-    pub samples: Vec<u16>,
-}
-
-impl RawFrame {
-    /// Кадр из функции «значение RAW в пикселе (x, y) с цветом фильтра `channel` (0 R, 1 G, 2 B)».
-    pub fn from_fn(width: u32, height: u32, pattern: BayerPattern, value: impl Fn(u32, u32, usize) -> u16) -> Self {
-        let samples = (0..width * height)
-            .map(|index| {
-                let (x, y) = (index % width, index / width);
-                value(x, y, pattern.channel_at(x, y).index())
-            })
-            .collect();
-        Self {
-            width,
-            height,
-            pattern,
-            samples,
-        }
-    }
-
-    /// Кадр из линейного света сенсора (0 — чёрный, 1 — белый), округление к ближайшему, обрезка до 1023.
-    pub fn from_linear(
-        width: u32,
-        height: u32,
-        pattern: BayerPattern,
-        levels: ([f32; 4], f32),
-        linear: impl Fn(u32, u32, usize) -> f64,
-    ) -> Self {
-        let (black, white) = levels;
-        Self::from_fn(width, height, pattern, |x, y, channel| {
-            let cell_black = f64::from(black[((y % 2) * 2 + (x % 2)) as usize]);
-            let value = cell_black + linear(x, y, channel) * (f64::from(white) - cell_black);
-            value.round().clamp(0.0, 1023.0) as u16
-        })
-    }
-
-    pub fn full_rect(&self) -> PixelRect {
-        PixelRect {
-            left: 0,
-            top: 0,
-            size: PixelSize::new(self.width, self.height),
-        }
-    }
-
-    /// Мозаика эталона для прямоугольника (чётные края: раскладка CFA сохраняется).
-    pub fn mosaic(&self, rect: PixelRect) -> RawMosaic {
-        let mut samples = Vec::with_capacity(rect.size.pixel_count() as usize);
-        for y in rect.top..rect.top + rect.size.height {
-            for x in rect.left..rect.left + rect.size.width {
-                samples.push(self.samples[(y * self.width + x) as usize]);
-            }
-        }
-        RawMosaic::new(rect.size, self.pattern, samples).unwrap()
-    }
 }
 
 /// Какой источник кадра подать.
@@ -449,7 +388,7 @@ pub fn reference_upright(
     orientation: SensorOrientation,
     params: &IspParams,
 ) -> UprightReference {
-    let run = run_reference(&raw.mosaic(crop), params).unwrap();
+    let run = run_reference(&raw.mosaic(crop).unwrap(), params).unwrap();
     upright_from_run(run, orientation)
 }
 
@@ -478,7 +417,7 @@ pub fn reference_upright_in_valid_area_sampled(
     params: &IspParams,
     sampling: LensShadingSampling,
 ) -> UprightReference {
-    let mosaic = raw.mosaic(crop);
+    let mosaic = raw.mosaic(crop).unwrap();
     let normalized = normalize_levels(&mosaic, &params.levels);
     let place = CropInValidArea::at(crop.left - valid_area.left, crop.top - valid_area.top, valid_area.size).unwrap();
     let (shading_corrected, lens_shading) =
@@ -525,7 +464,7 @@ pub fn reference_upright_encoded(
     orientation: SensorOrientation,
     params: &IspParams,
 ) -> UprightPixels {
-    let encoded = run_reference_encoded(&raw.mosaic(crop), params).unwrap();
+    let encoded = run_reference_encoded(&raw.mosaic(crop).unwrap(), params).unwrap();
     upright_pixels(&encoded, orientation)
 }
 
@@ -569,59 +508,20 @@ pub(super) fn upright_pixels(
     UprightPixels { width, height, pixels }
 }
 
-/// Паритет GPU против эталона.
-#[derive(Debug, Clone, Copy)]
-pub struct Parity {
-    /// max |Δ| по всем каналам.
-    pub max_abs: f32,
-    /// Доля пикселей, где хоть один канал отличается больше 1 LSB 10-битного выхода.
-    pub over_one_lsb: f64,
-    /// max(|Δ| − шаг хранения) — то, что НЕ объясняется форматом картинки: ошибка математики GPU.
-    /// Шаг хранения: fp16 — один ULP fp16 у значения эталона (драйвер вправе округлять к нулю при
-    /// записи в картинку), 10 бит UNORM — полшага 1/2046 (округление к ближайшему).
-    pub math_excess: f32,
-}
-
-/// Шаг хранения значения `value` в формате картинки (см. `Parity::math_excess`).
-pub fn storage_step(format: StorageImageFormat, value: f32) -> f32 {
-    match format {
-        StorageImageFormat::Rgba16Float => {
-            let magnitude = value.abs().max(f32::from_bits(0x3880_0000)); // 2^-14: нормальные fp16
-            // ULP fp16 = 2^(экспонента − 10).
-            2.0_f32.powi(magnitude.log2().floor() as i32 - 10)
-        }
-        StorageImageFormat::A2B10G10R10Unorm => 0.5 / 1023.0,
-    }
-}
-
 pub fn parity(gpu: &ViewfinderRun, reference: &UprightReference) -> Parity {
     parity_with_pixels(gpu, reference.width, reference.height, &reference.pixels)
 }
 
 /// Паритет GPU против эталона, заданного пикселями (любая основа тона).
 pub fn parity_with_pixels(gpu: &ViewfinderRun, width: u32, height: u32, reference_pixels: &[[f32; 3]]) -> Parity {
-    assert_eq!((gpu.width, gpu.height), (width, height), "размер выхода");
-    let mut max_abs = 0.0_f32;
-    let mut math_excess = 0.0_f32;
-    let mut over = 0_usize;
-    for (gpu_pixel, reference_pixel) in gpu.pixels.iter().zip(reference_pixels) {
-        let mut worst = 0.0_f32;
-        for channel in 0..3 {
-            let difference = (gpu_pixel[channel] - reference_pixel[channel]).abs();
-            worst = worst.max(difference);
-            let step = storage_step(gpu.format, reference_pixel[channel]);
-            math_excess = math_excess.max(difference - step);
-        }
-        max_abs = max_abs.max(worst);
-        if worst > ONE_LSB {
-            over += 1;
-        }
-    }
-    Parity {
-        max_abs,
-        over_one_lsb: over as f64 / reference_pixels.len() as f64,
-        math_excess: math_excess.max(0.0),
-    }
+    isp_vulkan::saturation::parity::compare_with_reference(
+        &gpu.pixels,
+        (gpu.width, gpu.height),
+        gpu.format,
+        reference_pixels,
+        (width, height),
+    )
+    .expect("размер выхода совпадает с эталоном")
 }
 
 /// Размер выхода как `vk::Extent2D` (для сравнения с `ViewfinderGeometry::output_extent`).

@@ -35,6 +35,9 @@ use look_presets::{SaveOutcome, SaveRequestOutcome};
 use render_loop::config::ToneBaseChoice;
 use render_loop::viewfinder::ViewfinderCommand;
 
+use crate::look_recipe_log::{
+    EditSettleTracker, RecipeOrigin, ScenarioClaimAtPress, ViewfinderAtPress, log_recipe, log_still_press,
+};
 use crate::look_service::{LookApplied, LookHandle, LookStartup};
 use crate::viewfinder_control::{ControlDelivery, RenderAdjustment, RenderControl};
 
@@ -131,6 +134,13 @@ pub struct LookEffects {
     clean_view: CleanView,
     /// Последняя проблема и номер, с которого начнётся следующая.
     latest_problem: Option<LookProblem>,
+    /// Сколько снятий заявки сценария исполнитель уже учёл (`None` — заявку ещё не видел). Рост числа значит, что
+    /// сценарий показывал на рендере свой вид и рендер надо вернуть к тому, что должно быть показано.
+    seen_claim_releases: Option<u64>,
+    /// Покой правок для записи итога жеста в лог (см. [`crate::look_recipe_log`]).
+    edit_settle: EditSettleTracker,
+    /// Отпечаток рецепта, записанного в лог последним: одинаковые подряд не пишем.
+    last_logged_fingerprint: Option<u64>,
 }
 
 /// Вид, который рендеру уже доставлен: значения ручек и модель основы (каждое знает свою доставку отдельно).
@@ -182,6 +192,9 @@ impl LookEffects {
             },
             clean_view: CleanView::default(),
             latest_problem: None,
+            seen_claim_releases: None,
+            edit_settle: EditSettleTracker::default(),
+            last_logged_fingerprint: None,
         }
     }
 
@@ -205,11 +218,62 @@ impl LookEffects {
             .map_or_else(unlibraried_recipe, LookHandle::active_recipe)
     }
 
+    /// Рецепт для запроса снимка в момент нажатия затвора: то же, что [`Self::current_recipe`], плюс две строки лога
+    /// (14o, «снимок = видоискатель по виду»): незаписанная правка ручек фиксируется ДО снимка, затем пишется строка
+    /// нажатия с отпечатком рецепта снимка и отпечатком вида на рендере по доставленным командам. Разбор в `scripts/`
+    /// сверяет их между собой и с последним записанным видом продукта.
+    pub fn recipe_for_still(&mut self, render: &dyn RenderControl) -> LookRecipe {
+        let still = self.current_recipe();
+        if self.edit_settle.take_pending() {
+            self.log_commit(RecipeOrigin::EditBeforeStill, &still);
+        }
+        let viewfinder = match (&self.shown.base, &self.shown.settings) {
+            (RenderShown::Shown(base), RenderShown::Shown(settings)) => ViewfinderAtPress::Confirmed(LookRecipe {
+                base: *base,
+                settings: settings.clone(),
+            }),
+            _ => ViewfinderAtPress::Unknown,
+        };
+        let claim = if render.look_claim().is_held() {
+            ScenarioClaimAtPress::Held
+        } else {
+            ScenarioClaimAtPress::Free
+        };
+        log_still_press(&still, &viewfinder, self.clean_view, claim);
+        still
+    }
+
+    /// Записывает рецепт в лог, если он отличается от записанного последним.
+    fn log_commit(&mut self, origin: RecipeOrigin, recipe: &LookRecipe) {
+        let fingerprint = recipe.fingerprint();
+        if self.last_logged_fingerprint == Some(fingerprint) {
+            return;
+        }
+        self.last_logged_fingerprint = Some(fingerprint);
+        log_recipe(origin, recipe);
+    }
+
     /// Включает или выключает показ чистого вида (решение 189); рендеру уходит только разница. Библиотеки не
     /// касается. Повтор того же режима команд не шлёт.
     pub fn set_clean_view(&mut self, view: CleanView, render: &dyn RenderControl) {
+        let changed = self.clean_view != view;
         self.clean_view = view;
         self.sync_render(render);
+        if changed && let Some(handle) = &self.handle {
+            // Фиксируем то, что рендер должен показать: основа действующая всегда, ручки — нейтраль на `ShowBase`.
+            let active = handle.active_recipe();
+            let (origin, shown) = match view {
+                CleanView::ShowBase => (
+                    RecipeOrigin::CleanViewShowBase,
+                    LookRecipe {
+                        base: active.base,
+                        settings: LookSettings::NEUTRAL,
+                    },
+                ),
+                CleanView::ShowEdited => (RecipeOrigin::CleanViewShowEdited, active),
+            };
+            self.log_commit(origin, &shown);
+        }
     }
 
     /// Экран поставлен (новый исполнитель): режим показа — `ShowEdited`, а рендеру БЕЗУСЛОВНО уходят действующие
@@ -234,10 +298,27 @@ impl LookEffects {
     /// Дёшево на каждом кадре: если рендер не подтвердил доставку (новый исполнитель или отказ на отпускании
     /// чистого вида), повторяет синхронизацию; иначе ничего не делает и библиотеку не трогает. Без него рендер,
     /// не принявший команду, оставался бы нейтральным, пока владелец случайно не пошлёт новое намерение.
+    ///
+    /// Тот же покадровый шаг ловит снятие заявки сценария на вид ([`crate::look_render_claim`]): сценарий показывал
+    /// на рендере свой вид, и после снятия исполнитель дошлёт то, что должно быть показано. Он же считает кадры покоя
+    /// правок и записывает итог жеста в лог.
     pub fn retry_if_render_unsure(&mut self, render: &dyn RenderControl) {
-        if self.shown.base.is_unknown() || self.shown.settings.is_unknown() {
+        // Отсчёт снятий заявки начинается с первого кадра исполнителя: прежние снятия его не касаются.
+        let releases = render.look_claim().status().releases;
+        self.seen_claim_releases.get_or_insert(releases);
+        if self.shown.base.is_unknown() || self.shown.settings.is_unknown() || self.claim_release_unseen(render) {
             self.sync_render(render);
         }
+        if self.edit_settle.tick() {
+            let recipe = self.current_recipe();
+            self.log_commit(RecipeOrigin::EditSettled, &recipe);
+        }
+    }
+
+    /// Заявку сценария сняли после того, как исполнитель смотрел на неё в последний раз (только чтение).
+    fn claim_release_unseen(&self, render: &dyn RenderControl) -> bool {
+        let releases = render.look_claim().status().releases;
+        self.seen_claim_releases.is_some_and(|seen| seen != releases)
     }
 
     /// Применяет намерение экрана и раздаёт последствия: команда рендеру, просьба записи, счётчики.
@@ -247,8 +328,12 @@ impl LookEffects {
             tracing::warn!(target: LOG_TARGET, "библиотеки пресетов в сборке нет: намерение по виду отброшено");
             return;
         };
+        let commit = CommitKind::of(&intent);
         match handle.apply(intent) {
-            Ok(applied) => self.follow_up(applied, render),
+            Ok(applied) => {
+                self.follow_up(applied, render);
+                self.note_commit(commit);
+            }
             Err(error) => self.count_rejection(&error),
         }
     }
@@ -272,6 +357,19 @@ impl LookEffects {
                     self.report_save_failure(error);
                 }
             }
+        }
+    }
+
+    /// Что намерение значит для лога рецепта: смена пресета пишется сразу, правка ручек — когда осядет.
+    fn note_commit(&mut self, commit: CommitKind) {
+        match commit {
+            CommitKind::Preset => {
+                let recipe = self.current_recipe();
+                self.edit_settle = EditSettleTracker::default();
+                self.log_commit(RecipeOrigin::PresetChanged, &recipe);
+            }
+            CommitKind::Edit => self.edit_settle.note_edit(),
+            CommitKind::None => {}
         }
     }
 
@@ -317,6 +415,10 @@ impl LookEffects {
         let Some(handle) = self.handle.clone() else {
             return;
         };
+        if self.claim_holds_render(render) {
+            // Сценарий замера показывает на рендере свой вид: намерения и режим показа ведём дальше, рендеру не шлём.
+            return;
+        }
         let active = handle.active_recipe();
         let wanted_settings = match self.clean_view {
             CleanView::ShowEdited => active.settings,
@@ -340,6 +442,26 @@ impl LookEffects {
                 self.shown.settings = RenderShown::Unknown;
             }
         }
+    }
+
+    /// Держит ли сценарий вид рендера. Заодно замечает снятие заявки: показанное на рендере после неё неизвестно
+    /// (сценарий ставил своё), и ниже оно досылается заново.
+    fn claim_holds_render(&mut self, render: &dyn RenderControl) -> bool {
+        let status = render.look_claim().status();
+        if status.held {
+            // Первое, что исполнитель узнал о заявке, — «держится»: запоминаем число снятий СЕЙЧАС, чтобы снятие
+            // после этого было замечено.
+            self.seen_claim_releases.get_or_insert(status.releases);
+            return true;
+        }
+        if self.seen_claim_releases.is_some_and(|seen| seen != status.releases) {
+            self.shown = ShownOnRender {
+                settings: RenderShown::Unknown,
+                base: RenderShown::Unknown,
+            };
+        }
+        self.seen_claim_releases = Some(status.releases);
+        false
     }
 
     /// Отдаёт команду рендеру и считает исход; `true` — команда лежит в ящике рендера (иначе её повторит следующая
@@ -395,8 +517,39 @@ impl LookEffects {
     }
 }
 
+/// Какой точкой лога рецепта становится применённое намерение.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommitKind {
+    /// Пресет выбран, сохранён, перезаписан, удалён или правки сброшены: рецепт фиксируется сразу.
+    Preset,
+    /// Правка ручки, полосы, колеса или основы: фиксируется итог жеста.
+    Edit,
+    /// Рецепт не меняется (переименование).
+    None,
+}
+
+impl CommitKind {
+    fn of(intent: &LookIntent) -> Self {
+        match intent {
+            LookIntent::SelectPreset(_)
+            | LookIntent::SaveAsNewPreset(_)
+            | LookIntent::OverwritePreset(_)
+            | LookIntent::DeletePreset(_)
+            | LookIntent::DiscardEdits => Self::Preset,
+            LookIntent::SetLook(_)
+            | LookIntent::SetKnob { .. }
+            | LookIntent::SetBandAxis { .. }
+            | LookIntent::SetWheelPush { .. }
+            | LookIntent::SetWheelRing { .. }
+            | LookIntent::SetToneBase(_)
+            | LookIntent::ResetControl(_) => Self::Edit,
+            LookIntent::RenamePreset { .. } => Self::None,
+        }
+    }
+}
+
 /// Рецепт, когда библиотеки в сборке нет: нейтральные ручки на основе конфига по умолчанию (её же берёт рендер).
-fn unlibraried_recipe() -> LookRecipe {
+pub(crate) fn unlibraried_recipe() -> LookRecipe {
     LookRecipe {
         base: ToneBaseChoice::default().into(),
         settings: LookSettings::NEUTRAL,
@@ -410,3 +563,7 @@ mod tests;
 #[cfg(test)]
 #[path = "look_effects_render_sync_tests.rs"]
 mod render_sync_tests;
+
+#[cfg(test)]
+#[path = "look_effects_claim_tests.rs"]
+mod claim_tests;

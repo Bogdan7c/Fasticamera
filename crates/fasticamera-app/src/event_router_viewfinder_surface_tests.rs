@@ -6,6 +6,7 @@ use render_loop::viewfinder::{GpuWorkSuppression, SuppressibleGpuWork};
 
 use super::surface_support::{Driver, SurfaceFaults, run_surface, run_surface_timed};
 use super::*;
+use crate::look_row::LookRow;
 use crate::stage_budget_surface_config::StageBudgetSurface;
 
 fn surface_config(surface: StageBudgetSurface, rows: Vec<StageBudgetRowSetting>) -> CameraConfig {
@@ -217,6 +218,7 @@ fn a_suppression_the_render_does_not_apply_rejects_the_window_instead_of_measuri
     let config = surface_config(StageBudgetSurface::PhotoScreen, vec![StageBudgetRowSetting::UiOverlay]);
     let faults = SurfaceFaults {
         suppression_ignored: true,
+        ..SurfaceFaults::default()
     };
     let (_harness, result) = run_surface(config, faults, Driver::Performs, PowerPlug::Unplugged);
 
@@ -465,4 +467,206 @@ fn window_details_tell_what_was_requested_and_whether_a_hold_was_issued() {
             "удержание только у окон A: {condition}"
         );
     }
+}
+
+/// Команды вида рендеру по порядку: основа и значения.
+fn look_commands(harness: &Harness) -> Vec<ViewfinderCommand> {
+    harness
+        .control
+        .recorded()
+        .into_iter()
+        .filter_map(|adjustment| match adjustment {
+            RenderAdjustment::Viewfinder(
+                command @ (ViewfinderCommand::SetLook(_) | ViewfinderCommand::SetToneBase(_)),
+            ) => Some(command),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_look_row_shows_each_look_on_render_reports_it_and_gives_the_product_look_back() {
+    use look_contract::ToneBaseModel;
+    for surface in [
+        StageBudgetSurface::BareViewfinder,
+        StageBudgetSurface::PhotoScreen,
+        StageBudgetSurface::CalibrateScreen,
+    ] {
+        let config = surface_config(surface, vec![StageBudgetRowSetting::Look(LookRow::ToneBaseAces)]);
+        let (harness, result) = run_surface(config, SurfaceFaults::default(), Driver::Performs, PowerPlug::Unplugged);
+
+        assert_eq!(result["status"], "passed", "{}: {result}", surface.name());
+        // Окна A B B A A B: рендер увидел основу ACES в A и legacy в B, и каждая смена положения слала обе команды.
+        let bases: Vec<ToneBaseModel> = look_commands(&harness)
+            .into_iter()
+            .filter_map(|command| match command {
+                ViewfinderCommand::SetToneBase(base) => Some(base),
+                _ => None,
+            })
+            .collect();
+        let product_base = look_commands(&harness)
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                ViewfinderCommand::SetToneBase(base) => Some(*base),
+                _ => None,
+            })
+            .expect("последняя команда основы");
+        assert_eq!(
+            bases[..4],
+            [
+                ToneBaseModel::Aces,
+                ToneBaseModel::Legacy,
+                ToneBaseModel::Aces,
+                ToneBaseModel::Legacy
+            ],
+            "{}: {bases:?}",
+            surface.name()
+        );
+        assert_ne!(
+            product_base,
+            ToneBaseModel::Legacy,
+            "после сценария вернулся вид продукта"
+        );
+        assert_ne!(product_base, ToneBaseModel::Aces, "{}", surface.name());
+        // Отчёт говорит, какие виды были в окнах.
+        let rows = result["report"]["look_rows"].as_array().expect("look_rows");
+        assert_eq!(rows.len(), 1, "{result}");
+        assert_eq!(rows[0]["row"], "look_tone_base_aces");
+        assert_eq!(rows[0]["on"]["tone_base"], "aces", "{result}");
+        assert_eq!(rows[0]["off"]["tone_base"], "legacy", "{result}");
+        assert_ne!(
+            rows[0]["on"]["recipe_fingerprint"],
+            rows[0]["off"]["recipe_fingerprint"]
+        );
+        assert_eq!(rows[0]["on"]["wheels_active"], false);
+        assert!(
+            result["report"]["look"]["tone_base"].is_string(),
+            "вид на входе: {result}"
+        );
+    }
+}
+
+#[test]
+fn a_look_the_render_does_not_apply_rejects_the_window_as_state_not_applied() {
+    let config = surface_config(
+        StageBudgetSurface::PhotoScreen,
+        vec![StageBudgetRowSetting::Look(LookRow::Wheels)],
+    );
+    let faults = SurfaceFaults {
+        look_ignored: true,
+        ..SurfaceFaults::default()
+    };
+    let (_harness, result) = run_surface(config, faults, Driver::Performs, PowerPlug::Unplugged);
+
+    assert_eq!(result["status"], "failed", "{result}");
+    let table = table_of(&result);
+    assert!(table[0].ends_with("| rejected: state_not_applied"), "{table:?}");
+    assert!(
+        result["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("look_not_applied"),
+        "{result}"
+    );
+}
+
+#[test]
+fn a_look_row_followed_by_a_plain_row_hands_the_look_back_before_measuring_it() {
+    let config = surface_config(
+        StageBudgetSurface::PhotoScreen,
+        vec![
+            StageBudgetRowSetting::Look(LookRow::Layer),
+            StageBudgetRowSetting::UiOverlay,
+        ],
+    );
+    let (harness, result) = run_surface(config, SurfaceFaults::default(), Driver::Performs, PowerPlug::Unplugged);
+
+    assert_eq!(result["status"], "passed", "{result}");
+    let table = table_of(&result);
+    assert_eq!(table.len(), 2, "{table:?}");
+    assert!(
+        harness.router.camera_screen().capture_journal().is_empty(),
+        "вид из сценария не сделал снимков"
+    );
+    // Последняя команда вида — вид продукта (нейтраль без библиотеки), а не нейтраль окна B строки `look_layer`.
+    let last = look_commands(&harness).pop().expect("команды вида были");
+    assert!(matches!(last, ViewfinderCommand::SetLook(_)), "{last:?}");
+}
+
+#[test]
+fn the_calibrate_report_shows_zero_backdrop_blur_and_a_built_pyramid_fails_the_window() {
+    let rows = vec![StageBudgetRowSetting::UiOverlay];
+    let ok = run_surface(
+        surface_config(StageBudgetSurface::CalibrateScreen, rows.clone()),
+        SurfaceFaults::default(),
+        Driver::Performs,
+        PowerPlug::Unplugged,
+    );
+    assert_eq!(ok.1["status"], "passed", "{}", ok.1);
+    assert_eq!(ok.1["report"]["backdrop_pyramid_rebuilds"], 0, "{}", ok.1);
+
+    let faults = SurfaceFaults {
+        backdrop_blur_built: true,
+        ..SurfaceFaults::default()
+    };
+    let (_harness, bad) = run_surface(
+        surface_config(StageBudgetSurface::CalibrateScreen, rows),
+        faults,
+        Driver::Performs,
+        PowerPlug::Unplugged,
+    );
+    assert_eq!(bad["status"], "failed", "{bad}");
+    assert!(
+        bad["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("backdrop_blur_built"),
+        "{bad}"
+    );
+}
+
+#[test]
+fn all_six_look_rows_on_the_calibrate_section_fit_one_logcat_line_and_name_distinct_windows() {
+    let rows: Vec<StageBudgetRowSetting> = LookRow::ALL.into_iter().map(StageBudgetRowSetting::Look).collect();
+    let config = surface_config(StageBudgetSurface::CalibrateScreen, rows);
+    let (harness, result) = run_surface(config, SurfaceFaults::default(), Driver::Performs, PowerPlug::Unplugged);
+
+    assert_eq!(result["status"], "passed", "{result}");
+    let look_rows = result["report"]["look_rows"].as_array().expect("look_rows");
+    assert_eq!(look_rows.len(), 6);
+    for row in look_rows {
+        let (on, off) = (&row["on"]["recipe_fingerprint"], &row["off"]["recipe_fingerprint"]);
+        if row["row"] == "look_layer" {
+            // Без библиотеки вид продукта — нейтраль: «продукт против нейтрали» окна не различает. Сценарий этого не
+            // скрывает, а отдаёт одинаковые отпечатки, и разбор в `scripts/` падает с «строка мерила бы ноль».
+            assert_eq!(on, off, "{row}");
+        } else {
+            assert_ne!(on, off, "{row}");
+        }
+    }
+    // Колёса: окно A их включает, окно B — нет; тон — так же. Строка действительно меняет ветку шейдера.
+    let wheels = look_rows
+        .iter()
+        .find(|row| row["row"] == "look_wheels")
+        .expect("look_wheels");
+    assert_eq!(
+        (
+            wheels["on"]["wheels_active"].as_bool(),
+            wheels["off"]["wheels_active"].as_bool()
+        ),
+        (Some(true), Some(false))
+    );
+    let tone = look_rows
+        .iter()
+        .find(|row| row["row"] == "look_tone")
+        .expect("look_tone");
+    assert_eq!(
+        (
+            tone["on"]["tone_active"].as_bool(),
+            tone["off"]["tone_active"].as_bool()
+        ),
+        (Some(true), Some(false))
+    );
+    assert_fits_logcat(&harness, &result);
 }

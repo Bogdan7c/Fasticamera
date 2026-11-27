@@ -38,6 +38,10 @@ const FRAME_MS: i64 = 16;
 pub struct SurfaceFaults {
     /// Команда подавления доходит, но рендер её не применяет (в статусе маска остаётся `NONE`, кадры UI рисуются).
     pub suppression_ignored: bool,
+    /// Команды вида доходят, но рендер их не применяет (в диагностике остаётся вид продукта).
+    pub look_ignored: bool,
+    /// Рендер строит пирамиду размытия фона на каждом показанном кадре (регресс решения 261).
+    pub backdrop_blur_built: bool,
 }
 
 /// Как ведёт себя скрипт-драйвер.
@@ -60,6 +64,8 @@ pub struct SurfaceMirror {
     ui_frames_drawn: u64,
     ui_frames_suppressed: u64,
     scope_passes: u64,
+    /// Сколько раз «построена» пирамида размытия фона (только при [`SurfaceFaults::backdrop_blur_built`]).
+    pyramid_rebuilds: u64,
 }
 
 impl SurfaceMirror {
@@ -71,6 +77,7 @@ impl SurfaceMirror {
             ui_frames_drawn: 0,
             ui_frames_suppressed: 0,
             scope_passes: 0,
+            pyramid_rebuilds: 0,
         }
     }
 
@@ -89,6 +96,21 @@ impl SurfaceMirror {
             suppression.unwrap_or(GpuWorkSuppression::NONE)
         };
         viewfinder.gpu_work_suppression = applied;
+        // Вид (14o): рендер применяет последние `SetLook` / `SetToneBase`; без команд остаётся вид продукта из заготовки.
+        if !self.faults.look_ignored {
+            let shown = effective(&commands);
+            if let Some(look) = shown.look {
+                viewfinder.look = look;
+            }
+            if let Some(base) = shown.tone_base {
+                viewfinder.tone_base = base;
+            }
+        }
+        // Продуктовые экраны без стекла размытия не строят (решения 261, 297); регресс включается флагом.
+        if self.faults.backdrop_blur_built {
+            self.pyramid_rebuilds += delta;
+        }
+        viewfinder.ui_overlay.pyramid_rebuilds = self.pyramid_rebuilds;
         // Как настоящий рендер (`session/record.rs`): путь кадра отладочной мозаики не доходит до развилки UI и приборов —
         // кадры UI не рисуются и не считаются подавленными, приборы не считаются.
         let mosaic = effective(&commands).painter == ViewfinderPainter::DebugMosaic;

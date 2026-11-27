@@ -47,6 +47,7 @@ mod flash_lit;
 mod frame_params;
 pub mod gpu;
 mod gpu_loss;
+mod look_log;
 pub mod params_history;
 pub mod present_log;
 pub mod rotation;

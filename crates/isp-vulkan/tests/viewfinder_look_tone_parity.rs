@@ -40,9 +40,8 @@ use look_support::{
     tone_corner_settings, tone_look, with_lut,
 };
 use viewfinder_support::{
-    ErrorAllowance, HEIGHT_OF_SYNTHETIC_SCENES as HEIGHT, ParamsSpec, RawFrame, RunRequest,
-    WIDTH_OF_SYNTHETIC_SCENES as WIDTH, assert_no_validation_errors, gpu_context_or_skip, measure_viewfinder_parity,
-    reference_upright_encoded, run_viewfinder, synthetic_scenes, test_config,
+    ErrorAllowance, ParamsSpec, RawFrame, RunRequest, assert_no_validation_errors, gpu_context_or_skip, hue_sweep,
+    measure_viewfinder_parity, reference_upright_encoded, run_viewfinder, synthetic_scenes, test_config, tone_scenes,
 };
 
 /// Подтяжки AE на краях (±0,5 EV — край остаточной подтяжки продукта).
@@ -64,31 +63,6 @@ fn spec(base: ToneBase, gamut: DisplayGamut) -> ParamsSpec {
         tone_base: base,
         ..ParamsSpec::default()
     }
-}
-
-/// Развёртка по оттенку (см. `look_support::hue_sweep_light`).
-fn hue_sweep(spec: &ParamsSpec) -> RawFrame {
-    RawFrame::from_linear(WIDTH, HEIGHT, spec.pattern, spec.levels(), |x, y, channel| {
-        look_support::hue_sweep_light(x, y, WIDTH, HEIGHT, channel, spec.neutral)
-    })
-}
-
-/// Яркие насыщенные цвета: полосы с яркостью от почти чёрного до сильного пересвета.
-fn bright_saturated(spec: &ParamsSpec) -> RawFrame {
-    let bars =
-        isp_model::test_patterns::color_bars(camera_contract::geometry::PixelSize::new(WIDTH, HEIGHT), 1.0).unwrap();
-    RawFrame::from_linear(WIDTH, HEIGHT, spec.pattern, spec.levels(), |x, y, channel| {
-        f64::from(bars.pixel(x, y)[channel]) * (0.02 + 1.5 * f64::from(y) / f64::from(HEIGHT - 1))
-    })
-}
-
-/// Три сцены паритета тона: серая шкала, яркие насыщенные, развёртка по оттенку.
-fn tone_scenes(spec: &ParamsSpec) -> Vec<(&'static str, RawFrame)> {
-    vec![
-        ("серая шкала", synthetic_scenes(spec).remove(0).1),
-        ("яркие насыщенные", bright_saturated(spec)),
-        ("развёртка по оттенку", hue_sweep(spec)),
-    ]
 }
 
 /// Картинка GPU (fp16) кадра — для сравнения картинок между собой.

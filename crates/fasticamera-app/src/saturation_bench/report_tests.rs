@@ -26,6 +26,7 @@ fn row(name: &'static str, outcome: RowOutcome) -> WorkloadRow {
         scene: None,
         ui: None,
         digest: None,
+        extras: crate::saturation_bench::extras::WorkloadExtras::default(),
         thermal_start: None,
         thermal_end: None,
         started_at_ms: None,
@@ -221,6 +222,54 @@ fn cost_summary_reports_three_significant_digits_p95_and_max_of_step_costs() {
     );
     assert_eq!(cost_summary(Some(5.0), &[0.0, 0.0]), None, "ни одного шага с кадрами");
     assert_eq!(cost_summary(None, &[100.0]), None, "цены нет — сводки нет");
+}
+
+/// Строка работы паритета с цифрой цены и заданным исходом паритета.
+fn parity_row(parity: crate::saturation_bench::parity_report::ParityOutcome) -> WorkloadRow {
+    let mut parity_row = row(
+        "look_parity_agx_bands",
+        RowOutcome::Measured {
+            measurement: measured(100.0),
+        },
+    );
+    parity_row.extras.parity = Some(parity);
+    parity_row
+}
+
+fn parity_record(excess: f32) -> crate::saturation_bench::parity_report::ParityRecord {
+    crate::saturation_bench::parity_report::ParityRecord {
+        allowance: "standard",
+        tolerance: 1.0e-5,
+        worst_math_excess: excess,
+        worst_max_abs: 4.0e-4,
+        worst_scene: "hue_sweep",
+        scenes_measured: 7,
+        fp16_math_excess: excess,
+        preferred_math_excess: excess,
+        preferred_format: "rgb10a2",
+        violations: Vec::new(),
+    }
+}
+
+#[test]
+fn parity_inside_the_allowance_is_no_violation_and_outside_it_or_missing_is_one() {
+    use crate::saturation_bench::parity_report::ParityOutcome;
+    let inside = parity_row(ParityOutcome::Measured(parity_record(9.5e-6)));
+    assert_eq!(inside.violation(), None);
+
+    let outside = parity_row(ParityOutcome::Measured(parity_record(2.0e-5)));
+    let reason = outside.violation().expect("ошибка математики выше допуска");
+    assert!(
+        reason.starts_with("look_parity_agx_bands:") && reason.contains("hue_sweep") && reason.contains("2.00e-5"),
+        "{reason}"
+    );
+
+    let missing = parity_row(ParityOutcome::Unavailable {
+        reason: "нет GPU".to_owned(),
+    });
+    assert!(missing.violation().expect("не измерено").contains("нет GPU"));
+    // Цифра цены при этом есть: вердикт строки ok, а нарушение даёт именно паритет.
+    assert_eq!(missing.verdict_word(), "ok");
 }
 
 #[test]

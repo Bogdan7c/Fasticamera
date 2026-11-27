@@ -33,12 +33,14 @@ use isp_model::color::dng::{CameraNeutral, DngCalibration, DngColorProfile};
 use isp_model::color::matrix::Matrix3;
 use isp_model::color::temperature::calibration_illuminant_temperature;
 use isp_model::image::DisplayGamut;
+use isp_model::lens_shading::LensShadingControl;
 use isp_model::levels::NormalizationLevels;
 use isp_model::look::LookControls;
+use isp_model::look::model::LookModelSettings;
 use isp_model::params::IspParams;
 use isp_model::sensor::SensorDescription;
 use isp_vulkan::saturation::{ProductParamsRecipe, SaturationWorkError};
-use look_contract::{LookFacts, LookSettings, PresetId, ToneBaseModel};
+use look_contract::{LookFacts, LookRecipe, LookSettings, PresetId, ToneBaseModel};
 use render_loop::config::{RenderLoopConfig, ViewfinderToneConfig};
 use serde::Serialize;
 use ui_core::time::MotionPreference;
@@ -49,6 +51,7 @@ use crate::camera_screen_config::CameraScreenConfig;
 use crate::camera_screen_facts::{camera_facts_from_status, facts_for_absent_engine};
 use crate::look_facts::{LookFactsCatalog, LookFactsSource};
 use crate::look_service::LookHandle;
+use crate::measurement_look::MeasurementLookConfig;
 
 /// Роль объектива, чьё описание сенсора берёт стенд: основная камера, как у видоискателя продукта.
 const SENSOR_LENS_ROLE: LensRole = LensRole::Wide;
@@ -103,6 +106,11 @@ pub struct ProductInputs {
     pub look: LookSummary,
     /// Рецепт видоискателя (основа, ручки тона, вид, режим карты теней продукта).
     recipe: ProductParamsRecipe,
+    /// Активный рецепт вида продукта (основа тона и ручки): из него строятся виды замеров цены
+    /// ([`crate::measurement_look::MeasurementLook`]).
+    look_recipe: LookRecipe,
+    /// Образцы вида для замеров (колёса, ручки тона): `camera.scenarios.measurement_look`.
+    measurement_look: MeasurementLookConfig,
     /// Секции моделей основы тона из конфига продукта: из них `tone_base_for` строит основу ЛЮБОЙ модели
     /// (опыты стенда над моделями, которые не выбраны видом).
     tone_config: ViewfinderToneConfig,
@@ -134,6 +142,55 @@ impl ProductInputs {
             ..self.recipe.clone()
         };
         self.resolve_recipe(pipeline, recipe)
+    }
+
+    /// Параметры ISP для конвейера с видом `look` вместо активного: основа тона и ручки берутся из `look` тем же
+    /// путём, что у вида продукта (`apply_look_recipe`), остальное — как у [`Self::params`].
+    pub fn params_with_look(
+        &self,
+        pipeline: PipelineKind,
+        look: &LookRecipe,
+    ) -> Result<IspParams, SaturationWorkError> {
+        self.resolve_recipe(pipeline, self.recipe_with_look(look))
+    }
+
+    /// Параметры для линейки паритета: как [`Self::params_with_look`] для видоискателя, но с выключенной коррекцией
+    /// виньетирования. Линейка гоняет кадр 64×48, а карта теней телефона построена под полный сенсор: на нём
+    /// «паритет» мерил бы привязку карты к кадру, а не математику вида и тона (виньетирование проверяют свои тесты).
+    pub fn parity_params_with_look(&self, look: &LookRecipe) -> Result<IspParams, SaturationWorkError> {
+        let recipe = ProductParamsRecipe {
+            lens_shading: LensShadingControl::Disabled,
+            ..self.recipe_with_look(look)
+        };
+        self.resolve_recipe(PipelineKind::Viewfinder, recipe)
+    }
+
+    /// Активный рецепт вида продукта (то, от чего отсчитываются виды замеров).
+    pub fn product_look(&self) -> &LookRecipe {
+        &self.look_recipe
+    }
+
+    /// Модель вида продукта (полосы оттенка и диапазоны ручек).
+    pub fn look_model(&self) -> &LookModelSettings {
+        &self.recipe.look.model
+    }
+
+    /// Образцы вида для замеров.
+    pub fn measurement_look(&self) -> &MeasurementLookConfig {
+        &self.measurement_look
+    }
+
+    /// Те же входы с образцами вида из конфига сценария (по умолчанию — `MeasurementLookConfig::default`).
+    pub fn with_measurement_look(self, measurement_look: MeasurementLookConfig) -> Self {
+        Self {
+            measurement_look,
+            ..self
+        }
+    }
+
+    /// Рецепт продукта с видом `look`: основа тона из конфига продукта и ручки вида (см. [`apply_look_recipe`]).
+    fn recipe_with_look(&self, look: &LookRecipe) -> ProductParamsRecipe {
+        apply_look_recipe(self.recipe.clone(), &self.tone_config, &self.recipe.look.model, look)
     }
 
     /// Рецепт → параметры: демозаик выбирается по виду конвейера.
@@ -170,7 +227,7 @@ pub fn gather_inputs(sources: &InputSources<'_>) -> ProductInputs {
         Err(reason) => (fallback_sensor(), SensorSource::Fallback { reason }, None),
     };
     let neutral = neutral_of(&sensor);
-    let (recipe, look, look_facts) = look_of(sources);
+    let (recipe, look_recipe, look, look_facts) = look_of(sources);
     ProductInputs {
         camera_facts: live_camera_facts(sources.engine_status, stream_geometry),
         sensor,
@@ -178,6 +235,8 @@ pub fn gather_inputs(sources: &InputSources<'_>) -> ProductInputs {
         sensor_source,
         look,
         recipe,
+        look_recipe,
+        measurement_look: MeasurementLookConfig::default(),
         tone_config: sources.render_config.viewfinder.tone,
         look_facts,
         screen_config: sources.screen.screen.clone(),
@@ -314,10 +373,26 @@ fn matrix(values: [f64; 9]) -> Matrix3 {
     ])
 }
 
-/// Рецепт продукта, краткая запись вида и факты вида для экрана.
-fn look_of(sources: &InputSources<'_>) -> (ProductParamsRecipe, LookSummary, Option<LookFacts>) {
+/// Рецепт `recipe` с видом `look`: основа тона — секция модели из конфига продукта (`tone_base_for`), ручки и полосы
+/// вида — настройки `look` поверх модели вида `model`. ЕДИНСТВЕННОЕ место, где вид превращается в параметры ISP: им
+/// пользуются и вид продукта ([`look_of`]), и виды замеров ([`ProductInputs::params_with_look`]).
+fn apply_look_recipe(
+    recipe: ProductParamsRecipe,
+    tone_config: &ViewfinderToneConfig,
+    model: &Arc<LookModelSettings>,
+    look: &LookRecipe,
+) -> ProductParamsRecipe {
+    ProductParamsRecipe {
+        tone_base: tone_config.tone_base_for(look.base),
+        look: LookControls::new(look.settings.clone(), Arc::clone(model)),
+        ..recipe
+    }
+}
+
+/// Рецепт продукта, активный вид, краткая запись вида и факты вида для экрана.
+fn look_of(sources: &InputSources<'_>) -> (ProductParamsRecipe, LookRecipe, LookSummary, Option<LookFacts>) {
     let viewfinder = &sources.render_config.viewfinder;
-    let (settings, base, preset_name, look_facts) = match sources.look {
+    let (look_recipe, preset_name, look_facts) = match sources.look {
         Some(handle) => {
             let state = handle.view_state();
             let name = preset_display_name(&state.active.preset, &state.presets);
@@ -327,35 +402,29 @@ fn look_of(sources: &InputSources<'_>) -> (ProductParamsRecipe, LookSummary, Opt
                     .with_wheel_ring_style(&sources.screen.wheel_ring),
             )
             .current_facts(None);
-            (
-                state.active.recipe.settings,
-                state.active.recipe.base,
-                name,
-                Some(facts),
-            )
+            (state.active.recipe, name, Some(facts))
         }
         None => (
-            LookSettings::NEUTRAL,
-            viewfinder.tone.base.into(),
+            LookRecipe {
+                base: viewfinder.tone.base.into(),
+                settings: LookSettings::NEUTRAL,
+            },
             "none".to_owned(),
             None,
         ),
     };
-    let recipe = ProductParamsRecipe {
+    let base_recipe = ProductParamsRecipe {
         tone: viewfinder.tone.curve_settings(),
-        tone_base: viewfinder.tone.tone_base_for(base),
         lens_shading: viewfinder.lens_shading.control(),
-        look: LookControls::new(settings, Arc::new(viewfinder.look_model.clone())),
         ..ProductParamsRecipe::viewfinder()
     };
-    (
-        recipe,
-        LookSummary {
-            preset: preset_name,
-            tone_base: base,
-        },
-        look_facts,
-    )
+    let model = Arc::new(viewfinder.look_model.clone());
+    let recipe = apply_look_recipe(base_recipe, &viewfinder.tone, &model, &look_recipe);
+    let summary = LookSummary {
+        preset: preset_name,
+        tone_base: look_recipe.base,
+    };
+    (recipe, look_recipe, summary, look_facts)
 }
 
 fn preset_display_name(active: &PresetId, presets: &[look_contract::PresetEntry]) -> String {

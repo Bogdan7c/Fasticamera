@@ -125,6 +125,91 @@ fn active_look_of_the_product_reaches_the_isp_params_and_the_summary() {
 }
 
 #[test]
+fn params_with_look_of_the_product_recipe_equal_the_product_params_and_another_base_changes_them() {
+    let render = RenderLoopConfig::default();
+    let screen = CameraScreenConfig::default();
+    let none = LensShadingCalibrations::none();
+    let look = LookHandle::in_memory(&PresetStoreConfig::default(), &catalog_environment(&render)).expect("библиотека");
+    let inputs = gather_inputs(&sources(&render, &screen, &none, Some(&look)));
+    let product = inputs.product_look().clone();
+    assert_eq!(
+        inputs
+            .params_with_look(PipelineKind::Viewfinder, &product)
+            .expect("вид продукта"),
+        inputs.params(PipelineKind::Viewfinder).expect("продукт"),
+        "рецепт продукта через params_with_look даёт те же параметры, что params"
+    );
+    // Другая основа через вид совпадает с прежним путём «другая модель основы».
+    let other_model = look_contract::ToneBaseModel::ALL
+        .into_iter()
+        .find(|model| *model != product.base)
+        .expect("моделей больше одной");
+    let on_other_base = LookRecipe {
+        base: other_model,
+        settings: product.settings.clone(),
+    };
+    assert_eq!(
+        inputs
+            .params_with_look(PipelineKind::Viewfinder, &on_other_base)
+            .expect("другая основа"),
+        inputs
+            .params_with_tone_model(PipelineKind::Viewfinder, other_model)
+            .expect("другая модель"),
+    );
+}
+
+#[test]
+fn params_with_look_carry_the_look_settings_they_were_given_not_the_product_ones() {
+    let render = RenderLoopConfig::default();
+    let screen = CameraScreenConfig::default();
+    let none = LensShadingCalibrations::none();
+    let inputs = gather_inputs(&sources(&render, &screen, &none, None))
+        .with_measurement_look(crate::measurement_look::MeasurementLookConfig::default());
+    let product = inputs.product_look().clone();
+    let with_wheels = LookRecipe {
+        base: product.base,
+        settings: LookSettings {
+            wheels: inputs.measurement_look().wheels_sample,
+            ..product.settings.clone()
+        },
+    };
+    let plain = inputs
+        .params_with_look(PipelineKind::Viewfinder, &product)
+        .expect("вид продукта");
+    let wheeled = inputs
+        .params_with_look(PipelineKind::Viewfinder, &with_wheels)
+        .expect("вид с колёсами");
+    assert_ne!(plain, wheeled, "колёса образца доходят до параметров ISP");
+}
+
+#[test]
+fn parity_params_switch_lens_shading_off_while_the_look_and_base_stay_as_requested() {
+    let render = RenderLoopConfig::default();
+    let screen = CameraScreenConfig::default();
+    let none = LensShadingCalibrations::none();
+    let mut inputs = gather_inputs(&sources(&render, &screen, &none, None));
+    // Сенсор настоящей основной камеры с картой теней устройства (у запасного набора карты нет).
+    let calibrations = embedded_lens_shading(&oneplus_device()).expect("профиль устройства");
+    let (sensor, _, _) = sensor_from_catalog(&oneplus_catalog(), &calibrations).expect("сенсор из каталога");
+    inputs.sensor = sensor;
+    let product = inputs.product_look().clone();
+    let shaded = inputs
+        .params_with_look(PipelineKind::Viewfinder, &product)
+        .expect("с картой");
+    let unshaded = inputs.parity_params_with_look(&product).expect("без карты");
+    assert!(
+        matches!(shaded.lens_shading, isp_model::lens_shading::LensShadingStep::Apply(_)),
+        "продуктовые параметры применяют карту"
+    );
+    assert!(
+        matches!(unshaded.lens_shading, isp_model::lens_shading::LensShadingStep::Skip(_)),
+        "параметры линейки карту не применяют"
+    );
+    assert_eq!(shaded.tone_base, unshaded.tone_base, "основа та же");
+    assert_eq!(shaded.look, unshaded.look, "вид тот же");
+}
+
+#[test]
 fn camera_facts_are_live_with_a_stream_geometry_even_without_an_engine() {
     let render = RenderLoopConfig::default();
     let screen = CameraScreenConfig::default();

@@ -637,7 +637,7 @@ impl EffectExecutor {
         let request_id = request.request;
         // Вид — значения на момент нажатия, а не ссылка на пресет (инвариант 3): намерения вида, обработанные раньше
         // в этом же кадре, уже учтены, а поздние запрос не меняют.
-        let look = self.look.current_recipe();
+        let look = self.look.recipe_for_still(self.targets.render.as_ref());
         let rejection = match self.targets.capture.submit(request, look, self.frame_time) {
             SubmitOutcome::Accepted => {
                 counters.accepted += 1;

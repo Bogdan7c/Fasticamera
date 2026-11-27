@@ -23,15 +23,19 @@ use shell_contract::power::{BatterySample, PowerSampling};
 
 use super::detail::{EVENTS_IN_REPORT_LIMIT, emit_details};
 use super::engine_watch::RunFailure;
+use super::look_report::LookReport;
 use super::result_budget::finish_within_budget;
 use super::stage_budget_apply::{
     HoldPress, HoldTouch, LeverHistory, apply_work_state, emit_hold_touch, restore_product_levers,
 };
+use super::stage_budget_look::{LookPlan, plan_for};
 use super::stage_budget_states::{RowStates, consecutive_a_windows};
 use super::stage_budget_surface::{
     EntryTick, ExitTick, SURFACE_GESTURE_STAGE, SurfaceEntry, SurfaceExit, SurfaceGesture, SurfaceSwipes, SurfaceView,
 };
-use super::stage_budget_surface_report::{CameraWithoutProductGpuRow, ScopesReport, SurfaceReport};
+use super::stage_budget_surface_report::{
+    CameraWithoutProductGpuRow, ScopesReport, SurfaceReport, backdrop_pyramid_rebuilds_of,
+};
 use super::stage_budget_window::{HoldIssued, WindowCondition, WindowIssued, WindowObserver};
 use super::viewfinder_session::{SessionTick, SessionTiming, ViewfinderSession};
 use super::viewfinder_stage_budget_report::{
@@ -98,6 +102,8 @@ struct BudgetRun {
     power_refusal: Option<String>,
     samples: Vec<BatterySample>,
     scopes: Option<ScopesReport>,
+    /// Вид и основа на входе на место замера (14o).
+    look: Option<LookReport>,
     entry_failure: Option<String>,
     exit_failure: Option<String>,
     levers: RunLevers,
@@ -207,6 +213,10 @@ impl BudgetRun {
             }
             EntryTick::Ready => {
                 self.scopes = presentation.viewfinder.as_ref().map(ScopesReport::of);
+                self.look = presentation
+                    .viewfinder
+                    .as_ref()
+                    .map(|viewfinder| LookReport::of(viewfinder, None));
                 self.phase = Phase::Measuring;
                 let step = self.open_next_row(context);
                 self.leave_when_finished(context, presentation, step)
@@ -259,7 +269,7 @@ impl BudgetRun {
         }
         // Жест выхода должен идти при продуктовом состоянии: при подавленном UI экран остался бы «слепым» для глаза
         // владельца, а при подавленных приборах выход не проверялся бы честно.
-        restore_product_levers(context, self.levers.history.suppression, &mut self.levers.undelivered);
+        restore_product_levers(context, self.levers.history, &mut self.levers.undelivered);
         // Выданное нажатие пальца может ещё держаться (строка оборвана на первом окне): жест выхода — после конца
         // удержания плюс запас, иначе два «пальца» конфликтуют и свайп проглатывается.
         let guard = Duration::from_millis(self.config.stage_budget.display_hold_guard_ms);
@@ -397,6 +407,8 @@ impl BudgetRun {
         let surface = SurfaceReport {
             surface: self.config.stage_budget.surface,
             scopes: self.scopes,
+            look: self.look,
+            backdrop_pyramid_rebuilds: backdrop_pyramid_rebuilds_of(&self.rows),
             entry_failure: self.entry_failure,
             exit_failure: self.exit_failure,
         };
@@ -450,6 +462,9 @@ fn begin_window(
     index: usize,
 ) {
     let state = open.states.state_for(stage);
+    // План вида окна (14o): рецепт считается для КАЖДОГО окна, чтобы наблюдатель знал, что ждать, а команды уходят
+    // только при смене положения.
+    let look_plan = state.look.map(|look| plan_for(context, look));
     if open.applied != Some(stage) {
         open.applied = Some(stage);
         let label = format!("строка {}, окно {index}", open.row.name());
@@ -458,6 +473,7 @@ fn begin_window(
             &open.states,
             levers.history,
             &state,
+            look_plan.as_ref(),
             &label,
             &mut levers.undelivered,
         );
@@ -504,15 +520,18 @@ fn begin_window(
         );
     }
     let thermal_start = ThermalSnapshot::read(context.services.thermal.as_ref());
-    open.observer = Some(WindowObserver::begin(
-        index,
-        stage,
-        state,
-        config.stage_budget.surface,
-        config.stage_budget.display_refresh_tolerance_hz,
-        issued,
-        thermal_start,
-    ));
+    open.observer = Some(
+        WindowObserver::begin(
+            index,
+            stage,
+            state,
+            config.stage_budget.surface,
+            config.stage_budget.display_refresh_tolerance_hz,
+            issued,
+            thermal_start,
+        )
+        .expecting_look(look_plan.as_ref().map(LookPlan::expected_recipe).cloned()),
+    );
 }
 
 /// Выдаёт жест входа или выхода драйверу.
@@ -595,6 +614,7 @@ impl ObservingScenario for ViewfinderStageBudgetScenario {
             power_refusal: None,
             samples: Vec::new(),
             scopes: None,
+            look: None,
             entry_failure: None,
             exit_failure: None,
             levers: RunLevers {

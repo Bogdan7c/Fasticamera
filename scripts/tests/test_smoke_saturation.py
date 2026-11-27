@@ -106,7 +106,33 @@ class SaturationResultCheckTest(unittest.TestCase):
     def test_missing_requested_list_is_a_problem_not_a_pass(self) -> None:
         result = passed(SCENARIO, {k: v for k, v in report().items() if k != "requested"})
         problems = smoke_checks_saturation.check_gpu_saturation_bench(result)
-        self.assertTrue(any("нет списка запрошенных" in text for text in problems), problems)
+        self.assertTrue(any("нет числа запрошенных" in text for text in problems), problems)
+
+    def new_format(self, **overrides: object) -> dict:
+        """Формат 14o: имён в сводке нет, есть число запрошенных и пропавшие."""
+        fields = {k: v for k, v in report().items() if k != "requested"}
+        fields.update(requested_count=len(REQUESTED), requested_missing=[])
+        fields.update(overrides)
+        return passed(SCENARIO, fields)
+
+    def test_new_format_without_names_passes_when_every_requested_work_has_a_row(self) -> None:
+        self.assertEqual(smoke_checks_saturation.check_gpu_saturation_bench(self.new_format()), [])
+
+    def test_new_format_names_a_work_that_got_no_table_row(self) -> None:
+        result = self.new_format(
+            requested_count=4, requested_missing=["headroom_v4"], measured=3
+        )
+        problems = smoke_checks_saturation.check_gpu_saturation_bench(result)
+        self.assertTrue(any("headroom_v4 нет в таблице" in text for text in problems), problems)
+
+    def test_new_format_fails_when_a_row_vanished_without_being_named(self) -> None:
+        result = self.new_format(requested_count=4)
+        problems = smoke_checks_saturation.check_gpu_saturation_bench(result)
+        self.assertTrue(any("строка потерялась" in text for text in problems), problems)
+
+    def test_new_format_with_a_broken_missing_list_is_a_problem(self) -> None:
+        problems = smoke_checks_saturation.check_gpu_saturation_bench(self.new_format(requested_missing="x"))
+        self.assertTrue(any("requested_missing не список" in text for text in problems), problems)
 
     def test_notes_name_the_sensor_source_validation_and_render(self) -> None:
         notes = smoke_checks_saturation.saturation_notes(
@@ -125,6 +151,142 @@ class SaturationResultCheckTest(unittest.TestCase):
         )
         self.assertEqual(broken.exit_code, 1, broken.message)
         self.assertIn("compositor", broken.message)
+
+
+PARITY_REQUESTED = ["look_parity_agx_bands", "look_parity_agx_tone"]
+
+
+def parity_report(**overrides: object) -> dict:
+    """Здоровый отчёт прогона группы паритета: две работы с цифрой цены и две строки паритета (допуск держится)."""
+    base = report(
+        requested=list(PARITY_REQUESTED),
+        table=["look_parity_agx_bands|397|2.52|ok", "look_parity_agx_tone|400|2.50|ok"],
+        workloads=2,
+        measured=2,
+        parity_expected=2,
+        parity=["look_parity_agx_bands|9.50e-6|5.00e-4|1e-5|pass", "look_parity_agx_tone|0.00e0|4.90e-4|1e-5|pass"],
+    )
+    base.update(overrides)
+    return base
+
+
+def check_parity(**overrides: object) -> list[str]:
+    return smoke_checks_saturation.check_gpu_saturation_bench(passed(SCENARIO, parity_report(**overrides)))
+
+
+class SaturationParityResultTest(unittest.TestCase):
+    """14o: паритет GPU с CPU-эталоном на устройстве — провал, если ошибка выше допуска или числа нет."""
+
+    def test_parity_inside_the_allowance_passes(self) -> None:
+        self.assertEqual(check_parity(), [])
+
+    def test_excess_above_the_allowance_fails_naming_the_work(self) -> None:
+        problems = check_parity(
+            parity=["look_parity_agx_bands|1.35e-5|5.02e-4|1e-5|fail", "look_parity_agx_tone|0.00e0|4.90e-4|1e-5|pass"]
+        )
+        self.assertTrue(any("look_parity_agx_bands" in text and "больше допуска" in text for text in problems), problems)
+        # Вердикт «pass» при числе выше допуска — тоже провал: скрипт не верит вердикту на слово.
+        lying = check_parity(
+            parity=["look_parity_agx_bands|1.35e-5|5.02e-4|1e-5|pass", "look_parity_agx_tone|0.00e0|4.90e-4|1e-5|pass"]
+        )
+        self.assertTrue(any("больше допуска" in text for text in lying), lying)
+
+    def test_excess_exactly_at_the_allowance_passes(self) -> None:
+        self.assertEqual(
+            check_parity(
+                parity=["look_parity_agx_bands|1.00e-5|5.00e-4|1e-5|pass", "look_parity_agx_tone|0.00e0|4.90e-4|1e-5|pass"]
+            ),
+            [],
+        )
+
+    def test_a_work_without_a_number_fails(self) -> None:
+        problems = check_parity(
+            parity=["look_parity_agx_bands|-|-|-|unavailable", "look_parity_agx_tone|0.00e0|4.90e-4|1e-5|pass"]
+        )
+        self.assertTrue(any("look_parity_agx_bands" in text and "не измерен" in text for text in problems), problems)
+
+    def test_a_missing_row_fails_because_the_expected_count_comes_from_the_requested_list(self) -> None:
+        problems = check_parity(parity=["look_parity_agx_bands|9.50e-6|5.00e-4|1e-5|pass"])
+        self.assertTrue(any("1 из 2" in text for text in problems), problems)
+
+    def test_missing_parity_fields_fail_when_parity_works_were_requested(self) -> None:
+        stripped = {k: v for k, v in parity_report().items() if k not in ("parity", "parity_expected")}
+        problems = smoke_checks_saturation.check_gpu_saturation_bench(passed(SCENARIO, stripped))
+        self.assertTrue(any("parity_expected" in text for text in problems), problems)
+        no_rows = {k: v for k, v in parity_report().items() if k != "parity"}
+        problems = smoke_checks_saturation.check_gpu_saturation_bench(passed(SCENARIO, no_rows))
+        self.assertTrue(any("report.parity" in text for text in problems), problems)
+
+    def test_foreign_duplicate_and_malformed_rows_fail(self) -> None:
+        problems = check_parity(
+            parity=[
+                "look_parity_agx_bands|9.50e-6|5.00e-4|1e-5|pass",
+                "look_parity_agx_bands|9.50e-6|5.00e-4|1e-5|pass",
+                "look_parity_other|1.00e-6|5.00e-4|1e-5|pass",
+                "мусор",
+            ]
+        )
+        joined = "\n".join(problems)
+        self.assertIn("дважды", joined)
+        self.assertIn("которую не просили", joined)
+        self.assertIn("не в формате", joined)
+
+    def test_runs_without_parity_works_need_no_parity_fields(self) -> None:
+        self.assertEqual(check(), [])
+
+    def test_notes_name_the_worst_parity_excess(self) -> None:
+        notes = smoke_checks_saturation.saturation_notes(passed(SCENARIO, parity_report()))
+        self.assertTrue(any("9.50e-06" in note and "look_parity_agx_bands" in note for note in notes), notes)
+
+
+SCOPES_REQUESTED = ["scopes_waveform", "scopes_vectorscope_ycbcr"]
+
+
+def scopes_report(**overrides: object) -> dict:
+    """Здоровый отчёт с двумя работами приборов и их настоящими размерами картинки."""
+    base = report(
+        requested=list(SCOPES_REQUESTED),
+        table=["scopes_waveform|300|3.33|ok", "scopes_vectorscope_ycbcr|250|4.00|ok"],
+        workloads=2,
+        measured=2,
+        scope_pictures_expected=2,
+        scope_pictures=["scopes_waveform|1011x827", "scopes_vectorscope_ycbcr|827x827"],
+    )
+    base.update(overrides)
+    return base
+
+
+class SaturationScopePictureSizeTest(unittest.TestCase):
+    """14o, пункт 5: отчёт называет размер картинки каждого прибора; без размера прогон не принимается."""
+
+    def check_scopes(self, **overrides: object) -> list[str]:
+        return smoke_checks_saturation.check_gpu_saturation_bench(passed(SCENARIO, scopes_report(**overrides)))
+
+    def test_sizes_for_every_scopes_work_pass(self) -> None:
+        self.assertEqual(self.check_scopes(), [])
+
+    def test_a_work_without_a_size_fails(self) -> None:
+        problems = self.check_scopes(scope_pictures=["scopes_waveform|1011x827", "scopes_vectorscope_ycbcr|-"])
+        self.assertTrue(any("scopes_vectorscope_ycbcr|-" in text for text in problems), problems)
+
+    def test_zero_or_garbled_sizes_fail(self) -> None:
+        for bad in ("scopes_waveform|0x827", "scopes_waveform|1011", "scopes_waveform|axb"):
+            with self.subTest(bad=bad):
+                problems = self.check_scopes(scope_pictures=[bad, "scopes_vectorscope_ycbcr|827x827"])
+                self.assertTrue(any("не в формате" in text for text in problems), problems)
+
+    def test_a_missing_row_fails_by_the_expected_count(self) -> None:
+        problems = self.check_scopes(scope_pictures=["scopes_waveform|1011x827"])
+        self.assertTrue(any("1 из 2" in text for text in problems), problems)
+
+    def test_missing_field_fails_when_scopes_works_were_requested(self) -> None:
+        stripped = {k: v for k, v in scopes_report().items() if k not in ("scope_pictures", "scope_pictures_expected")}
+        problems = smoke_checks_saturation.check_gpu_saturation_bench(passed(SCENARIO, stripped))
+        self.assertTrue(any("scope_pictures_expected" in text for text in problems), problems)
+
+    def test_notes_name_the_picture_sizes(self) -> None:
+        notes = smoke_checks_saturation.saturation_notes(passed(SCENARIO, scopes_report()))
+        self.assertTrue(any("scopes_waveform 1011x827" in note for note in notes), notes)
 
 
 class DeviceSmokeSaturationFlagsTest(unittest.TestCase):

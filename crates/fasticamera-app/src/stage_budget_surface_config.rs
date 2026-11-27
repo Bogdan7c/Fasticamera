@@ -60,6 +60,8 @@ pub fn row_allowed_on(row: StageBudgetRowSetting, surface: StageBudgetSurface) -
         StageBudgetRowSetting::Stage(_) | StageBudgetRowSetting::WholeViewfinder => true,
         // Частота экрана от места не зависит.
         StageBudgetRowSetting::Display120Hz => true,
+        // Вид (14o) считается шейдером видоискателя и годится на всех трёх местах.
+        StageBudgetRowSetting::Look(_) => true,
         // Приборы есть только в разделе калибровки.
         StageBudgetRowSetting::ColorScopes => surface == StageBudgetSurface::CalibrateScreen,
         // Рисование UI есть только там, где стоит экран камеры.

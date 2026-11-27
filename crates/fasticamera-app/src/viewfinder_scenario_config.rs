@@ -118,6 +118,8 @@ pub enum StageBudgetRowSetting {
     WholeProduct,
     /// Цена частоты экрана (16a): A = 120 Гц с удерживаемым касанием, B = 60 Гц без касаний.
     Display120Hz,
+    /// Цена вида (14o): основа, слой вида, колёса, тон; что в окнах A и B — в [`LookRow`](crate::look_row::LookRow).
+    Look(crate::look_row::LookRow),
 }
 
 impl StageBudgetRowSetting {
@@ -140,6 +142,7 @@ impl StageBudgetRowSetting {
             Self::WholeProduct,
             Self::Display120Hz,
         ]);
+        rows.extend(crate::look_row::LookRow::ALL.into_iter().map(Self::Look));
         rows
     }
 
@@ -152,6 +155,7 @@ impl StageBudgetRowSetting {
             Self::UiOverlay => "ui_overlay",
             Self::WholeProduct => "whole_product",
             Self::Display120Hz => "display_120hz",
+            Self::Look(row) => row.name(),
         }
     }
 

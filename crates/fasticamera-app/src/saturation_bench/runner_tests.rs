@@ -94,6 +94,7 @@ impl WorkloadExecutor for ScriptedExecutor {
                 digest: DigestOutcome::Unavailable {
                     reason: "подставной исполнитель".to_owned(),
                 },
+                extras: Default::default(),
             })
         };
         match self.scripts.get(entry.name) {

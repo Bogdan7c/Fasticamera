@@ -151,3 +151,35 @@ fn a_work_listed_again_inside_a_group_and_an_unknown_name_are_config_errors() {
         Err(SaturationScenarioConfigError::UnknownWorkload(_))
     ));
 }
+
+#[test]
+fn a_list_whose_report_would_overflow_the_result_line_is_refused_before_the_run() {
+    // Список прогона 14o на телефоне: три группы разом дали «отчёт 4532 байт не помещается» после десяти минут.
+    let three_groups = SaturationScenarioConfig {
+        workloads: vec!["baseline".to_owned(), "look_cost".to_owned(), "look_parity".to_owned()],
+        ..SaturationScenarioConfig::default()
+    };
+    match three_groups.validate() {
+        Err(SaturationScenarioConfigError::TooManyForOneResultLine {
+            workloads,
+            estimated_bytes,
+            budget_bytes,
+        }) => {
+            assert_eq!(workloads, 40);
+            assert!(estimated_bytes > budget_bytes);
+        }
+        other => panic!("ожидался отказ «не влезет в строку результата», а не {other:?}"),
+    }
+    // По группе за прогон — каждая принимается.
+    for group in ["baseline", "look_cost", "look_parity"] {
+        let one = SaturationScenarioConfig {
+            workloads: vec![group.to_owned()],
+            ..SaturationScenarioConfig::default()
+        };
+        assert_eq!(
+            one.validate(),
+            Ok(()),
+            "группа {group} должна влезать в одну строку результата"
+        );
+    }
+}

@@ -396,6 +396,21 @@ impl StageBudgetObservation {
         if let (Some(map), Some(scopes)) = (summary.as_object_mut(), self.surface.scopes_summary()) {
             map.insert("scopes".to_owned(), scopes);
         }
+        if let Some(map) = summary.as_object_mut() {
+            // 14o: вид и основа на входе, число построений размытия фона и виды окон строк вида.
+            map.insert(
+                "look".to_owned(),
+                serde_json::to_value(&self.surface.look).unwrap_or(Value::Null),
+            );
+            map.insert(
+                "backdrop_pyramid_rebuilds".to_owned(),
+                serde_json::json!(self.surface.backdrop_pyramid_rebuilds),
+            );
+            let look_rows = super::stage_budget_surface_report::look_rows_summary(&self.rows);
+            if !look_rows.is_empty() {
+                map.insert("look_rows".to_owned(), serde_json::json!(look_rows));
+            }
+        }
         let notes = super::stage_budget_surface_report::row_notes(&self.rows);
         if let (Some(map), false) = (summary.as_object_mut(), notes.is_empty()) {
             map.insert("row_notes".to_owned(), serde_json::json!(notes));

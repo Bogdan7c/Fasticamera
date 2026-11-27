@@ -131,6 +131,11 @@ pub fn ensure_installed(
     // Реестр источников белого собирается здесь, из конфига рендера: рендеру и движку источники не вшиты.
     let mut render_links = links.render_side(config.camera().exposure_controller);
     render_links.white.sources = product_white_sources(config.render());
+    // Точка фиксации лога рецепта (14o): рецепт, с которым стартует процесс. Release пишет его в logcat.
+    crate::look_recipe_log::log_recipe(
+        crate::look_recipe_log::RecipeOrigin::Startup,
+        &look.handle.active_recipe(),
+    );
     let (render, render_auto_exposure) = start_render(
         config.render(),
         validation.clone(),

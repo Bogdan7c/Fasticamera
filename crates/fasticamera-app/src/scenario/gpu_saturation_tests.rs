@@ -40,3 +40,13 @@ fn silence_is_observed_only_with_a_before_snapshot_otherwise_it_says_so() {
         RenderSilence::RenderUnavailable { reason } if reason == "нет vsync"
     ));
 }
+
+#[test]
+fn the_summary_budget_leaves_exactly_the_room_the_result_budget_gives_the_error_text() {
+    // Оценка «влезет ли отчёт» (стенд, до запуска) обязана резервировать под текст ошибки столько же, сколько отдаёт
+    // ему укладка результата сценария: иначе провальный прогон снова потеряет числа.
+    assert_eq!(
+        crate::saturation_bench::summary::ERROR_TEXT_RESERVE_BYTES,
+        super::super::camera::result_budget::MAX_ERROR_BYTES
+    );
+}

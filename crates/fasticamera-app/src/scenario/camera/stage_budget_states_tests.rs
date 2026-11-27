@@ -112,3 +112,39 @@ fn abba_order_is_unchanged_for_the_new_rows_a_is_the_first_window_of_even_pairs(
         .collect();
     assert_eq!(applied, [true, false, false, true, true, false]);
 }
+
+// --- 14o: строки вида ---
+
+#[test]
+fn every_look_row_sets_a_look_lever_in_both_windows_and_leaves_the_other_levers_at_the_product() {
+    use crate::look_row::LookRow;
+    for row in LookRow::ALL {
+        let states = RowStates::of(StageBudgetRowSetting::Look(row));
+        assert_eq!(states.on.look, Some(row.on_look()), "{}", row.name());
+        assert_eq!(states.off.look, Some(row.off_look()), "{}", row.name());
+        assert!(states.drives_look());
+        assert_eq!(states.cost, CostMetric::FrameTotal);
+        for state in [states.on, states.off] {
+            assert_eq!(
+                WorkState { look: None, ..state },
+                WorkState::PRODUCT,
+                "{}: строка вида не трогает рисовальщик, стадии, подавление и частоту",
+                row.name()
+            );
+        }
+        assert!(!states.drives_suppression());
+    }
+}
+
+#[test]
+fn rows_that_are_not_look_rows_never_set_a_look_lever() {
+    for row in StageBudgetRowSetting::all_rows()
+        .into_iter()
+        .filter(|row| !matches!(row, StageBudgetRowSetting::Look(_)))
+    {
+        let states = RowStates::of(row);
+        assert!(!states.drives_look(), "{}", row.name());
+        assert_eq!(states.on.look, None);
+        assert_eq!(states.off.look, None);
+    }
+}

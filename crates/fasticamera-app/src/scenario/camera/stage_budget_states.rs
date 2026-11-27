@@ -15,6 +15,7 @@
 use isp_vulkan::viewfinder::IspStageSet;
 use render_loop::viewfinder::{GpuWorkSuppression, SuppressibleGpuWork, ViewfinderPainter};
 
+use crate::measurement_look::MeasurementLook;
 use crate::power_measurement::{AbPowerExperiment, StageSetting};
 use crate::viewfinder_scenario_config::StageBudgetRowSetting;
 
@@ -52,6 +53,9 @@ pub struct WorkState {
     pub stages: IspStageSet,
     pub suppression: GpuWorkSuppression,
     pub display: DisplayDemand,
+    /// Какой вид показать на рендере (14o). `None` — строка вида не трогает: рендер показывает вид продукта и
+    /// заявка сценария на вид не ставится.
+    pub look: Option<MeasurementLook>,
 }
 
 impl WorkState {
@@ -61,7 +65,15 @@ impl WorkState {
         stages: IspStageSet::ALL,
         suppression: GpuWorkSuppression::NONE,
         display: DisplayDemand::Untouched,
+        look: None,
     };
+
+    fn with_look(look: MeasurementLook) -> Self {
+        Self {
+            look: Some(look),
+            ..Self::PRODUCT
+        }
+    }
 
     fn with_stages(stages: IspStageSet) -> Self {
         Self {
@@ -147,6 +159,11 @@ impl RowStates {
                 },
                 cost: CostMetric::FrameTotal,
             },
+            StageBudgetRowSetting::Look(row) => Self {
+                on: WorkState::with_look(row.on_look()),
+                off: WorkState::with_look(row.off_look()),
+                cost: CostMetric::FrameTotal,
+            },
             StageBudgetRowSetting::Display120Hz => Self {
                 on: WorkState {
                     display: DisplayDemand::Hz120WithHeldTouch,
@@ -167,6 +184,11 @@ impl RowStates {
             StageSetting::On => self.on,
             StageSetting::Off => self.off,
         }
+    }
+
+    /// Трогает ли строка рычаг вида (заявка сценария на вид рендера).
+    pub fn drives_look(&self) -> bool {
+        self.on.look.is_some() || self.off.look.is_some()
     }
 
     /// Трогает ли строка рычаг подавления GPU (старые строки — нет, и команда `SuppressGpuWork` для них не уходит).

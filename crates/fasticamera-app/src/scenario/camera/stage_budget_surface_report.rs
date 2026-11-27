@@ -8,6 +8,7 @@ use render_loop::viewfinder::ViewfinderDiagnostics;
 use serde::Serialize;
 use serde_json::Value;
 
+use super::look_report::LookReport;
 use super::stage_budget_window::WindowCondition;
 use super::viewfinder_metrics::{GpuTimeMs, round2};
 use super::viewfinder_stage_budget_report::{StageBudgetRow, WHOLE_PRODUCT_ROW};
@@ -54,6 +55,13 @@ pub struct SurfaceReport {
     /// Прибор при входе на экран калибровки; на других местах `None`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scopes: Option<ScopesReport>,
+    /// Вид и основа, как рендер показывал их при входе на место замера (14o); `None` — диагностики не было.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub look: Option<LookReport>,
+    /// Сколько раз за все окна строилась пирамида размытия фона (14o, решение 261: в разделе калибровки — 0).
+    /// `None` — окон с диагностикой не было.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backdrop_pyramid_rebuilds: Option<u64>,
     /// Не удалось выйти на место замера (экран не появился, раздел не открылся, приборы не заработали).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entry_failure: Option<String>,
@@ -69,6 +77,8 @@ impl SurfaceReport {
         Self {
             surface,
             scopes: None,
+            look: None,
+            backdrop_pyramid_rebuilds: None,
             entry_failure: None,
             exit_failure: None,
         }
@@ -99,6 +109,48 @@ impl SurfaceReport {
         }))
     }
 }
+
+/// Сумма построений пирамиды размытия фона по всем окнам всех строк; `None` — ни одного окна с диагностикой.
+pub fn backdrop_pyramid_rebuilds_of(rows: &[StageBudgetRow]) -> Option<u64> {
+    rows.iter()
+        .flat_map(|row| row.conditions.iter())
+        .filter_map(|condition| condition.counters.map(|delta| delta.backdrop_pyramid_rebuilds))
+        .reduce(|total, rebuilds| total.saturating_add(rebuilds))
+}
+
+/// Сжатая запись видов окон строк вида (`look_*`) для строки результата: у каждой строки вид окна A и окна B
+/// (по первому окну каждого положения). Разбор `scripts/` по ней проверяет, что окна показывали разные виды.
+/// Строка результата — одна запись logcat в 4000 байт, поэтому здесь только четыре поля окна (основа, отпечаток,
+/// колёса, тон); отчёт окна целиком — в `detail_stage_budget` (`condition.look`).
+pub fn look_rows_summary(rows: &[StageBudgetRow]) -> Vec<Value> {
+    let window_look = |row: &StageBudgetRow, stage: StageSetting| {
+        row.conditions
+            .iter()
+            .find(|condition| condition.stage == stage)
+            .and_then(|condition| condition.look.as_ref())
+            .map(|look| {
+                serde_json::json!({
+                    "tone_base": look.tone_base,
+                    "recipe_fingerprint": look.recipe_fingerprint,
+                    "wheels_active": look.wheels_active,
+                    "tone_active": look.tone_active,
+                })
+            })
+    };
+    rows.iter()
+        .filter(|row| row.row.starts_with(LOOK_ROW_PREFIX))
+        .map(|row| {
+            serde_json::json!({
+                "row": row.row,
+                "on": window_look(row, StageSetting::On),
+                "off": window_look(row, StageSetting::Off),
+            })
+        })
+        .collect()
+}
+
+/// Все имена строк вида начинаются с этого префикса (контракт с `crate::look_row::LookRow::name`).
+const LOOK_ROW_PREFIX: &str = "look_";
 
 /// База «камера без нашей работы GPU и UI»: B-окна строки `whole_product` (мозаика, приборы и UI подавлены).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]

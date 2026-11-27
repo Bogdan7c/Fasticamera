@@ -78,6 +78,9 @@ struct Effective {
     adpf: AdpfMode,
     /// Маска подавленной работы GPU (16a): последняя команда `SuppressGpuWork`.
     suppression: render_loop::viewfinder::GpuWorkSuppression,
+    /// Последние значения вида и основа, пришедшие командами (14o); `None` — команд не было, рендер на виде продукта.
+    look: Option<Arc<look_contract::LookSettings>>,
+    tone_base: Option<look_contract::ToneBaseModel>,
 }
 
 fn effective(adjustments: &[RenderAdjustment]) -> Effective {
@@ -90,19 +93,20 @@ fn effective(adjustments: &[RenderAdjustment]) -> Effective {
         selection: PresentTargetSelection::of_config(&PresentTargetConfig::default()),
         adpf: AdpfMode::Disabled,
         suppression: render_loop::viewfinder::GpuWorkSuppression::NONE,
+        look: None,
+        tone_base: None,
     };
     for adjustment in adjustments {
         match adjustment {
             RenderAdjustment::Viewfinder(ViewfinderCommand::SetPainter(painter)) => current.painter = *painter,
             RenderAdjustment::Viewfinder(ViewfinderCommand::SetIspStages(stages)) => current.stages = *stages,
             RenderAdjustment::Viewfinder(ViewfinderCommand::SetHeadroomBench(bench)) => current.bench = *bench,
-            // Место, вид (ручки и основа) и приборы — настройки продукта, сценарий их не трогает и не откатывает.
+            // Вид (ручки и основа): строки вида (14o) ставят его заявкой и возвращают, продукт шлёт свой.
+            RenderAdjustment::Viewfinder(ViewfinderCommand::SetLook(look)) => current.look = Some(Arc::clone(look)),
+            RenderAdjustment::Viewfinder(ViewfinderCommand::SetToneBase(base)) => current.tone_base = Some(*base),
+            // Место и приборы — настройки продукта, сценарий их не трогает и не откатывает.
             RenderAdjustment::Viewfinder(
-                ViewfinderCommand::SetCrop(_)
-                | ViewfinderCommand::SetFraming(_)
-                | ViewfinderCommand::SetLook(_)
-                | ViewfinderCommand::SetToneBase(_)
-                | ViewfinderCommand::Scopes(_),
+                ViewfinderCommand::SetCrop(_) | ViewfinderCommand::SetFraming(_) | ViewfinderCommand::Scopes(_),
             ) => {}
             RenderAdjustment::Viewfinder(ViewfinderCommand::SuppressGpuWork(mask)) => current.suppression = *mask,
             RenderAdjustment::PresentTarget(setting) => {

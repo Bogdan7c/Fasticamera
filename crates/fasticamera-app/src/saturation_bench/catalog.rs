@@ -7,12 +7,15 @@ use serde::Serialize;
 
 use super::draw_filter::DrawFilter;
 use super::headroom_tuning::HeadroomExperiment;
+use super::look_variant::{MeasuredLook, ParityLook};
 use super::still_variant::StillTuning;
 use super::viewfinder_tuning::{AwbSchedule, ViewfinderTuning};
 
 mod baseline;
 mod isp_ablation;
 mod isp_tuning;
+mod look_cost;
+mod look_parity;
 mod scopes_ablation;
 mod still_tuning;
 mod ui_ablation;
@@ -141,11 +144,15 @@ pub enum WorkloadGroup {
     V4Tuning,
     /// Опыты над проявлением снимка (пакет P): высота полосы, форма рабочей группы.
     StillTuning,
+    /// Цена вида картинки (14o): продукт против нейтрали, основы тона, колёса и ручки тона вкл/выкл — мс при насыщении.
+    LookCost,
+    /// Паритет GPU с CPU-эталоном НА ТЕЛЕФОНЕ (14o): худшая ошибка математики против допуска; цена строки не важна.
+    LookParity,
 }
 
 impl WorkloadGroup {
     /// Все группы.
-    pub const ALL: [WorkloadGroup; 7] = [
+    pub const ALL: [WorkloadGroup; 9] = [
         Self::Baseline,
         Self::UiAblation,
         Self::IspAblation,
@@ -153,6 +160,8 @@ impl WorkloadGroup {
         Self::IspTuning,
         Self::V4Tuning,
         Self::StillTuning,
+        Self::LookCost,
+        Self::LookParity,
     ];
 
     /// Имя группы в конфиге и флаге.
@@ -165,6 +174,8 @@ impl WorkloadGroup {
             Self::IspTuning => "isp_tuning",
             Self::V4Tuning => "v4_tuning",
             Self::StillTuning => "still_tuning",
+            Self::LookCost => "look_cost",
+            Self::LookParity => "look_parity",
         }
     }
 
@@ -201,6 +212,11 @@ pub enum WorkloadKind {
     Still,
     /// Проявление снимка с опытными настройками (группа `still_tuning`).
     StillTuned { tuning: StillTuning },
+    /// Слитый проход видоискателя с видом `look`, построенным из рецепта продукта (группа `look_cost`).
+    ViewfinderLook { look: MeasuredLook },
+    /// Работа группы `look_parity`: слитый проход с видом `look` (цена строки не важна) и паритет с CPU-эталоном на
+    /// синтетических сценах с теми же параметрами.
+    LookParity { look: ParityLook },
 }
 
 /// Строка каталога.
@@ -255,7 +271,7 @@ const fn without(stage: AblatedStage) -> WorkloadKind {
 /// Все работы стенда в порядке прогона по умолчанию.
 /// Таблицы групп в порядке каталога. Строки каждой группы лежат в своём модуле (`catalog/<группа>.rs`): каталог
 /// растёт с каждым опытом, а один файл на все группы перерос предел размера модуля.
-const GROUP_TABLES: [&[CatalogEntry]; 7] = [
+const GROUP_TABLES: [&[CatalogEntry]; 9] = [
     baseline::ENTRIES,
     ui_ablation::ENTRIES,
     isp_ablation::ENTRIES,
@@ -263,6 +279,8 @@ const GROUP_TABLES: [&[CatalogEntry]; 7] = [
     isp_tuning::ENTRIES,
     v4_tuning::ENTRIES,
     still_tuning::ENTRIES,
+    look_cost::ENTRIES,
+    look_parity::ENTRIES,
 ];
 
 /// Все работы каталога в порядке каталога (группа за группой).

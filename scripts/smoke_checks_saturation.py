@@ -2,10 +2,16 @@
 
 Вердикт судит Rust (`scenario/gpu_saturation.rs`: работа без цифры или лишняя продуктовая работа потока рендера — провал).
 Здесь независимая грубая перепроверка сводки строки результата, чтобы пустая или усечённая таблица не прошла как успех:
-* каждая ЗАПРОШЕННАЯ работа (`report.requested`) есть в таблице ровно один раз и с вердиктом `ok`;
+* каждая ЗАПРОШЕННАЯ работа есть в таблице ровно один раз и с вердиктом `ok`. С 14o сводка не повторяет имена
+  (они уже в таблице): `requested_count` — сколько просили, `requested_missing` — кому не досталось строки; число строк
+  таблицы плюс пропавшие обязано равняться числу запрошенных. Старый формат (`requested` — список имён) читается как раньше;
 * у каждой строки есть цифра: к/с и мс/кадр положительны и согласованы (`к/с × мс/кадр ≈ 1000`, цифры округлены до
   трёх значащих);
 * `measured` равно числу запрошенных работ, прогон не отменён;
+* паритет на устройстве (14o, `look_parity_*`): строк паритета столько, сколько запрошено работ паритета (число
+  `parity_expected` Rust берёт из каталога по списку запрошенных), у каждой ошибка математики не больше допуска и
+  вердикт `pass`; нет числа (`unavailable`) — провал;
+* размер картинки приборов (14o, пункт 5): у каждой работы `scopes_*` в `scope_pictures` названо `ШxВ` (положительные числа);
 * камера на время замера была закрыта сценарием (или движка нет вовсе), а поток рендера за замер выполнил продуктовой
   работы GPU не больше допуска (`render_tolerance_frames`).
 Строка таблицы — `имя|к/с|мс/кадр|вердикт` (контракт с `saturation_bench/summary.rs`); подробности по работам лежат в
@@ -30,6 +36,9 @@ from pathlib import Path
 
 from smoke_checks import _is_number, _report_problem
 
+SCOPE_SIZE = re.compile(r"^(\d+)x(\d+)$")
+"""Размер картинки прибора в строке `scope_pictures`: `ШxВ`."""
+
 TABLE_COLUMNS = 4
 """Столбцов в строке таблицы: имя, к/с, мс/кадр, вердикт."""
 
@@ -38,6 +47,18 @@ OK_VERDICT = "ok"
 
 COST_CONSISTENCY_TOLERANCE = 0.02
 """Допуск согласованности `к/с × мс/кадр = 1000`: обе цифры округлены до трёх значащих (до ±0,5 % каждая)."""
+
+PARITY_COLUMNS = 5
+"""Столбцов в строке паритета: имя, ошибка математики, max |Δ|, допуск, вердикт (`saturation_bench/parity_report.rs`)."""
+
+PARITY_PASS_VERDICT = "pass"
+"""Вердикт строки паритета, когда допуск держится."""
+
+PARITY_WORK_PREFIX = "look_parity_"
+"""Имя работы паритета в каталоге: подстраховка на случай, когда прогон вообще не прислал поля паритета."""
+
+SCOPE_WORK_PREFIX = "scopes_"
+"""Имя работы цветового прибора в каталоге: подстраховка на случай, когда прогон не прислал размеры картинок."""
 
 ACCEPTED_CAMERA_STATES = frozenset({"closed_by_scenario", "engine_unavailable"})
 """Что сценарий вправе сказать о камере на время замера: закрыта им или движка нет (стримить было нечему)."""
@@ -48,9 +69,10 @@ def check_gpu_saturation_bench(result: dict) -> list[str]:
     problems, report = _report_problem(result)
     if problems:
         return problems
-    requested = report.get("requested")
-    if not isinstance(requested, list) or not requested or not all(isinstance(name, str) for name in requested):
-        return [f"нет списка запрошенных работ (report.requested={requested!r})"]
+    requested, requested_problems = _requested_names(report)
+    if requested is None:
+        return requested_problems
+    problems.extend(requested_problems)
     problems.extend(_table_problems(report, requested))
     if report.get("measured") != len(requested):
         problems.append(f"с цифрой {report.get('measured')!r} работ из {len(requested)} запрошенных")
@@ -60,6 +82,122 @@ def check_gpu_saturation_bench(result: dict) -> list[str]:
         problems.append(f"камера на время замера: {report.get('camera')!r}, ожидалось одно из {sorted(ACCEPTED_CAMERA_STATES)}")
     problems.extend(_render_problems(report))
     problems.extend(_digest_problems(report, requested))
+    problems.extend(_parity_problems(report, requested))
+    problems.extend(_scope_picture_problems(report, requested))
+    return problems
+
+
+def _requested_names(report: dict) -> tuple[list[str] | None, list[str]]:
+    """Имена запрошенных работ и проблемы с ними. Новый формат (14o): имена таблицы по порядку плюс
+    `requested_missing`, а `requested_count` сверяет, что ни одна работа не пропала молча."""
+    legacy = report.get("requested")
+    if legacy is not None:
+        if not isinstance(legacy, list) or not legacy or not all(isinstance(name, str) for name in legacy):
+            return None, [f"нет списка запрошенных работ (report.requested={legacy!r})"]
+        return legacy, []
+    count = report.get("requested_count")
+    missing = report.get("requested_missing")
+    if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+        return None, [f"нет числа запрошенных работ (report.requested_count={count!r})"]
+    if not isinstance(missing, list) or not all(isinstance(name, str) for name in missing):
+        return None, [f"report.requested_missing не список имён: {missing!r}"]
+    table = report.get("table")
+    rows = table if isinstance(table, list) else []
+    names = [parsed[0] for parsed in map(_parse_row, rows) if parsed is not None]
+    problems = [f"запрошенной работы {name} нет в таблице" for name in missing]
+    if len(names) + len(missing) != count:
+        problems.append(
+            f"в таблице {len(names)} работ и {len(missing)} пропавших, а запрошено {count}: строка потерялась"
+        )
+    return names + missing, problems
+
+
+def _expected_count(report: dict, key: str) -> tuple[int | None, list[str]]:
+    """Сколько строк обязано прийти (`parity_expected`, `scope_pictures_expected`): число Rust берёт из каталога по
+    списку ЗАПРОШЕННЫХ работ, а не по пришедшим строкам, поэтому пропавшая строка не сходит за успех."""
+    expected = report.get(key)
+    if expected is None:
+        return None, []
+    if isinstance(expected, bool) or not isinstance(expected, int) or expected <= 0:
+        return None, [f"report.{key} не положительное целое: {expected!r}"]
+    return expected, []
+
+
+def _rows_of(report: dict, key: str) -> tuple[list | None, list[str]]:
+    rows = report.get(key)
+    if not isinstance(rows, list):
+        return None, [f"report.{key} не список или его нет: {rows!r}"]
+    return rows, []
+
+
+def _parity_problems(report: dict, requested: list[str]) -> list[str]:
+    """Паритет GPU с CPU-эталоном на устройстве (`look_parity_*`): строка на КАЖДУЮ запрошенную работу паритета, у
+    каждой ошибка математики ≤ допуска и вердикт `pass`. Нет числа (`unavailable`, строка пропала, не разобралась) — провал."""
+    expected, problems = _expected_count(report, "parity_expected")
+    if expected is None:
+        if not problems and any(name.startswith(PARITY_WORK_PREFIX) for name in requested):
+            problems.append("запрошены работы паритета, а прогон не прислал parity_expected: измерения паритета нет")
+        return problems
+    rows, row_problems = _rows_of(report, "parity")
+    if rows is None:
+        return problems + row_problems
+    if len(rows) != expected:
+        problems.append(f"строк паритета {len(rows)} из {expected} запрошенных работ паритета")
+    seen: set[str] = set()
+    for raw in rows:
+        problems.extend(_parity_row_problems(raw, requested, seen))
+    return problems
+
+
+def _parity_row_problems(raw: object, requested: list[str], seen: set[str]) -> list[str]:
+    parts = raw.split("|") if isinstance(raw, str) else []
+    if len(parts) != PARITY_COLUMNS or not parts[0]:
+        return [f"строка паритета {raw!r} не в формате имя|ошибка|max_abs|допуск|вердикт"]
+    name, excess_text, max_abs_text, tolerance_text, verdict = parts
+    problems: list[str] = []
+    if name not in requested:
+        problems.append(f"паритет работы {name!r}, которую не просили")
+    if name in seen:
+        problems.append(f"паритет работы {name} дважды")
+    seen.add(name)
+    try:
+        excess, max_abs, tolerance = float(excess_text), float(max_abs_text), float(tolerance_text)
+    except ValueError:
+        return problems + [f"{name}: паритет не измерен (вердикт {verdict!r}, числа {excess_text!r}/{tolerance_text!r})"]
+    if not (tolerance > 0 and excess >= 0 and max_abs >= 0 and excess == excess and max_abs == max_abs):
+        return problems + [f"{name}: числа паритета не годятся (ошибка {excess}, max |Δ| {max_abs}, допуск {tolerance})"]
+    if excess > tolerance:
+        problems.append(f"{name}: ошибка математики {excess:.2e} больше допуска {tolerance:.0e}")
+    if verdict != PARITY_PASS_VERDICT:
+        problems.append(f"{name}: вердикт паритета {verdict!r}, ожидался {PARITY_PASS_VERDICT!r}")
+    return problems
+
+
+def _scope_picture_problems(report: dict, requested: list[str]) -> list[str]:
+    """Размер картинки каждой работы `scopes_*` (пункт 5 сессии 14o): отчёт обязан называть настоящий размер раздела.
+    Строка `имя|ШxВ`, оба числа положительные; `имя|-` (размер не назван) — провал."""
+    expected, problems = _expected_count(report, "scope_pictures_expected")
+    if expected is None:
+        if not problems and any(name.startswith(SCOPE_WORK_PREFIX) for name in requested):
+            problems.append("запрошены приборы scopes_*, а прогон не прислал scope_pictures_expected: размер картинки не назван")
+        return problems
+    rows, row_problems = _rows_of(report, "scope_pictures")
+    if rows is None:
+        return problems + row_problems
+    if len(rows) != expected:
+        problems.append(f"размеров картинок приборов {len(rows)} из {expected} запрошенных работ scopes_*")
+    seen: set[str] = set()
+    for raw in rows:
+        name, _, size = str(raw).partition("|")
+        match = SCOPE_SIZE.match(size)
+        if not name or match is None or int(match.group(1)) == 0 or int(match.group(2)) == 0:
+            problems.append(f"размер картинки {raw!r} не в формате имя|ШxВ с положительными числами")
+            continue
+        if name not in requested:
+            problems.append(f"размер картинки работы {name!r}, которую не просили")
+        if name in seen:
+            problems.append(f"размер картинки работы {name} дважды")
+        seen.add(name)
     return problems
 
 
@@ -153,6 +291,27 @@ def _render_problems(report: dict) -> list[str]:
     return []
 
 
+def _parity_notes(report: dict) -> list[str]:
+    """Заметка о паритете: худшая ошибка математики среди измеренных работ и её допуск."""
+    rows = report.get("parity")
+    if not isinstance(rows, list) or not rows:
+        return []
+    worst: tuple[float, str, str] | None = None
+    for raw in rows:
+        parts = str(raw).split("|")
+        if len(parts) != PARITY_COLUMNS:
+            continue
+        try:
+            excess = float(parts[1])
+        except ValueError:
+            continue
+        if worst is None or excess > worst[0]:
+            worst = (excess, parts[0], parts[3])
+    if worst is None:
+        return [f"паритет: {len(rows)} работ без числа"]
+    return [f"паритет на устройстве: худшая ошибка математики {worst[0]:.2e} у {worst[1]} (допуск {worst[2]}), работ {len(rows)}"]
+
+
 def saturation_notes(result: dict) -> list[str]:
     """Пояснения к прошедшему прогону: откуда сенсор, какой вид, validation, что делал рендер."""
     report = result.get("report")
@@ -174,6 +333,10 @@ def saturation_notes(result: dict) -> list[str]:
             notes.append(f"дайджест выхода недоступен у {missing} работ из {len(digests)} (причины — в FASTICAMERA_DETAIL)")
     elif report.get("digests_in_detail_only"):
         notes.append("дайджесты не влезли в строку результата: смотрите FASTICAMERA_DETAIL (detail_rows)")
+    notes.extend(_parity_notes(report))
+    pictures = report.get("scope_pictures")
+    if isinstance(pictures, list) and pictures:
+        notes.append("размер картинки приборов: " + ", ".join(str(item).replace("|", " ") for item in pictures))
     look = report.get("look") if isinstance(report.get("look"), dict) else {}
     notes.append(f"вид: {look.get('preset')!r}, основа тона {look.get('tone_base')!r}")
     if report.get("validation") == "enabled":

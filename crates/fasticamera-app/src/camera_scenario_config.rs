@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::ae_trace_scenario_config::{AeTraceScenarioConfig, AeTraceScenarioConfigError};
 use crate::capture_scenario_config::{CaptureScenarioConfig, CaptureScenarioConfigError};
 use crate::glass_scenario_config::{GlassScenarioConfig, GlassScenarioConfigError};
+use crate::measurement_look::{MeasurementLookConfig, MeasurementLookConfigError};
 use crate::power_measurement::config::{PowerMeasurementConfig, PowerMeasurementConfigError};
 use crate::raw_stream_scenario_config::{RawStreamScenarioConfig, RawStreamScenarioConfigError};
 use crate::saturation_scenario_config::{SaturationScenarioConfig, SaturationScenarioConfigError};
@@ -289,6 +290,8 @@ pub struct CameraScenarioConfig {
     pub capture: CaptureScenarioConfig,
     /// Сценарий `gpu-saturation-bench` (16a, P4b): цена работ GPU при насыщении.
     pub saturation: SaturationScenarioConfig,
+    /// Образцы вида для замеров цены (14o, решения 312–316): общие для строк A/B и стенда насыщения.
+    pub measurement_look: MeasurementLookConfig,
 }
 
 fn step(
@@ -349,6 +352,7 @@ impl Default for CameraScenarioConfig {
             zoom: ZoomScenarioConfig::default(),
             capture: CaptureScenarioConfig::default(),
             saturation: SaturationScenarioConfig::default(),
+            measurement_look: MeasurementLookConfig::default(),
         }
     }
 }
@@ -384,6 +388,8 @@ pub enum CameraScenarioConfigError {
     Capture(#[from] CaptureScenarioConfigError),
     #[error("{0}")]
     Saturation(#[from] SaturationScenarioConfigError),
+    #[error("{0}")]
+    MeasurementLook(#[from] MeasurementLookConfigError),
     #[error("ID камеры: {0}")]
     InvalidCameraId(#[from] EmptyCameraId),
     #[error(
@@ -441,6 +447,7 @@ impl CameraScenarioConfig {
         self.zoom.validate()?;
         self.capture.validate()?;
         self.saturation.validate()?;
+        self.measurement_look.validate()?;
         Ok(())
     }
 }

@@ -55,13 +55,50 @@ def white_balance_report(
     }
 
 
+def look_report(measurement_look: str = "product", tone_base: str = "agx", fingerprint: str = "97b8e8777d5d7e27") -> dict:
+    """Отчёт о виде и основе (14o), как его пишет `look_report.rs`."""
+    return {
+        "tone_base": tone_base,
+        "recipe_fingerprint": fingerprint,
+        "layer_neutral": True,
+        "wheels_active": False,
+        "tone_active": False,
+        "measurement_look": measurement_look,
+    }
+
+
+def compact_look(tone_base: str = "agx", fingerprint: str = "97b8e8777d5d7e27") -> dict:
+    """Сжатый вид окна строки вида в строке результата (`look_rows_summary`)."""
+    return {
+        "tone_base": tone_base,
+        "recipe_fingerprint": fingerprint,
+        "wheels_active": False,
+        "tone_active": False,
+    }
+
+
+def stage_budget_look_fields(look_rows: list[str] | None = None) -> dict:
+    """Поля 14o в отчёте `viewfinder-stage-budget`: вид на входе, число построений размытия и виды окон строк вида."""
+    fields: dict = {"look": look_report(), "backdrop_pyramid_rebuilds": 0}
+    if look_rows:
+        fields["look_rows"] = [
+            {
+                "row": row,
+                "on": compact_look(fingerprint="1111111111111111"),
+                "off": compact_look(fingerprint="2222222222222222"),
+            }
+            for row in look_rows
+        ]
+    return fields
+
+
 def viewfinder_report(**overrides: object) -> dict:
     report: dict = {
         "sensor_fps": 59.95,
         "isp_fps": 59.9,
         "cpu_copies": 0,
         "gpu_time": {"isp_dispatch": {"samples": 600, "p50_ms": 1.8, "p95_ms": 2.3, "max_ms": 3.0}},
-        "look": {"painter": "isp", "all_stages": True, "display_color_space": "display_p3"},
+        "look": {"painter": "isp", "all_stages": True, "display_color_space": "display_p3", "picture": look_report()},
         # Прореживание статистики: 3600 обработанных кадров, каждый 4-й (900); 3 кадра скрыты на холодном старте.
         # Потребитель статистики — наш AE: расписание в разделе frame_statistics (``None`` — AE нет, публикаций нет).
         "statistics_published": 900,
@@ -134,9 +171,9 @@ class ViewfinderCheckTest(unittest.TestCase):
         self.assertEqual(verdict_of("viewfinder", viewfinder_report()).exit_code, smoke_wait.EXIT_OK)
 
     def test_srgb_is_an_honest_answer_but_unknown_space_fails(self) -> None:
-        srgb = viewfinder_report(look={"painter": "isp", "display_color_space": "srgb"})
+        srgb = viewfinder_report(look={"painter": "isp", "display_color_space": "srgb", "picture": look_report()})
         self.assertEqual(verdict_of("viewfinder", srgb).exit_code, smoke_wait.EXIT_OK)
-        unknown = viewfinder_report(look={"painter": "isp", "display_color_space": "unknown"})
+        unknown = viewfinder_report(look={"painter": "isp", "display_color_space": "unknown", "picture": look_report()})
         verdict = verdict_of("viewfinder", unknown)
         self.assertEqual(verdict.exit_code, smoke_wait.EXIT_SCENARIO_FAILED)
         self.assertIn("пространство экрана", verdict.message)
@@ -314,6 +351,7 @@ class LatencyBudgetEnduranceHeadroomCheckTest(unittest.TestCase):
 
     def test_stage_budget_table_has_a_row_per_stage_and_the_baseline(self) -> None:
         good = {
+            **stage_budget_look_fields(),
             "surface": "bare_viewfinder",
             "requested_rows": ["tone", "whole_viewfinder"],
             "table": [
@@ -472,6 +510,7 @@ class DeviceSmokeViewfinderTest(unittest.TestCase):
     BUDGET_OK = passed(
         "viewfinder-stage-budget",
         {
+            **stage_budget_look_fields(),
             "surface": "bare_viewfinder",
             "requested_rows": ["levels"],
             "table": ["levels | 0.05 / 0.06 | не различим (разброс 4.0) | indistinguishable"],

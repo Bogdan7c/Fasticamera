@@ -65,12 +65,16 @@ pub mod lens_shading_profile;
 pub mod logging;
 pub mod look_effects;
 pub mod look_facts;
+pub mod look_recipe_log;
+pub mod look_render_claim;
+pub mod look_row;
 pub mod look_service;
 pub mod look_startup;
 #[cfg(test)]
 mod look_test_support;
 pub mod look_wheel_ring;
 pub mod look_white_stops;
+pub mod measurement_look;
 #[cfg(test)]
 mod operator_prompt_fake;
 #[cfg(test)]

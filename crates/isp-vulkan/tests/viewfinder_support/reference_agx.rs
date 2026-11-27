@@ -25,7 +25,7 @@ pub fn reference_upright_encoded_in_valid_area(
         };
     };
     let sampling = LensShadingSampling::for_demosaic(params.demosaic);
-    let normalized = normalize_levels(&raw.mosaic(crop), &params.levels);
+    let normalized = normalize_levels(&raw.mosaic(crop).unwrap(), &params.levels);
     let place = CropInValidArea::at(crop.left - valid_area.left, crop.top - valid_area.top, valid_area.size).unwrap();
     let (shading_corrected, _) =
         apply_lens_shading_sampled(&normalized, &params.lens_shading, place, sampling).unwrap();

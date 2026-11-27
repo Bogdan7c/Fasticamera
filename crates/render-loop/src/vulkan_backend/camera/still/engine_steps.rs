@@ -316,6 +316,8 @@ impl<G: StillGpu> StillEngine<G> {
             // Вид — значения НА МОМЕНТ НАЖАТИЯ из плана снимка (инвариант 3), а не текущий вид видоискателя; для кадра
             // со вспышкой тоже: параметры вспышки (белая, подтяжка) выше этого не меняют.
             .with_look(Arc::new(entry.plan.look.clone()));
+        // Лог вида снимка (14o): разбор сверяет его со строкой нажатия приложения.
+        super::look_log::log_still_render(entry.plan.tone_base, &entry.plan.look);
         let decision = cache.prepare_with_exposure_gain(passport, params.white, params.gain, DisplayGamut::Srgb);
         let resolved = match decision.outcome {
             ParamsOutcome::Resolved | ParamsOutcome::Unchanged => cache.current(),

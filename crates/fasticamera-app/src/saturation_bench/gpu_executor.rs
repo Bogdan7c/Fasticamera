@@ -34,15 +34,19 @@ use super::catalog::{
 use super::compare_pairs::needs_pixels;
 use super::digest_report::DigestOutcome;
 use super::draw_filter::DrawFilter;
+use super::extras::{PictureSizePx, WorkloadExtras};
 use super::headroom_tuning::HeadroomExperiment;
 use super::headroom_variant;
 use super::inputs::{PipelineKind, ProductInputs};
+use super::look_parity_run::measure_look_parity;
 use super::pair_comparison::PairComparison;
 use super::report::{FailureKind, Measurement, SceneSummary, UiCountersSummary, WorkloadFailure};
 use super::runner::{ExecutedWorkload, WorkloadExecutor};
 use super::screen_scene::{ScreenPlan, ScreenPlanError, SurfaceSizePx, summarize};
 use super::still_variant::StillTuning;
 use super::viewfinder_variant;
+
+mod look_work;
 
 /// Зерно «натурной» сцены (один и тот же кадр от прогона к прогону).
 const NATURAL_SCENE_SEED: u32 = 0x5EED_16A0;
@@ -79,35 +83,53 @@ trait BenchWork {
     fn output_pixels(&mut self) -> Result<Option<OutputPixels>, String> {
         Ok(None)
     }
+    /// Дополнительные факты строки, которые знает сама работа (размер картинки прибора, созданные пайплайны).
+    fn extras(&self) -> WorkloadExtras {
+        WorkloadExtras::default()
+    }
 }
 
 fn failure_text(error: Option<SaturationWorkError>) -> Option<String> {
     error.map(|error| error.to_string())
 }
 
-struct ViewfinderWork(ViewfinderSaturation);
+/// Слитый проход видоискателя и число пайплайнов, созданных до начала прогона (после конструктора).
+struct ViewfinderWork {
+    work: ViewfinderSaturation,
+    pipelines_created_before_run: u64,
+}
+
+impl ViewfinderWork {
+    fn new(work: ViewfinderSaturation) -> Self {
+        let pipelines_created_before_run = work.isp().variant_stats().created_in_frame;
+        Self {
+            work,
+            pipelines_created_before_run,
+        }
+    }
+}
 
 impl BenchWork for ViewfinderWork {
     fn workload(&mut self) -> &mut dyn SaturationWorkload {
-        &mut self.0
+        &mut self.work
     }
     fn slots(&self) -> usize {
-        self.0.slots()
+        self.work.slots()
     }
     fn pass_times(&self) -> PassTimeSummary {
-        self.0.pass_times()
+        self.work.pass_times()
     }
     fn take_failure(&mut self) -> Option<String> {
-        failure_text(self.0.take_failure())
+        failure_text(self.work.take_failure())
     }
     fn output_digest(&mut self) -> Result<WorkloadDigest, String> {
-        self.0.output_digest().map_err(|error| error.to_string())
+        self.work.output_digest().map_err(|error| error.to_string())
     }
     fn output_pixels(&mut self) -> Result<Option<OutputPixels>, String> {
-        self.0.output_pixels().map(Some).map_err(|error| error.to_string())
+        self.work.output_pixels().map(Some).map_err(|error| error.to_string())
     }
     fn digest_note(&self) -> Option<String> {
-        self.0.counters().last_frame_had_statistics.map(|had| {
+        self.work.counters().last_frame_had_statistics.map(|had| {
             if had {
                 "last_frame=awb_statistics".to_owned()
             } else {
@@ -115,25 +137,42 @@ impl BenchWork for ViewfinderWork {
             }
         })
     }
+    fn extras(&self) -> WorkloadExtras {
+        let created_now = self.work.isp().variant_stats().created_in_frame;
+        WorkloadExtras {
+            pipelines_created_during_run: Some(created_now.saturating_sub(self.pipelines_created_before_run)),
+            ..WorkloadExtras::default()
+        }
+    }
 }
 
-struct ScopesWork(ScopesSaturation);
+/// Приборы и размер картинки, на котором они считали (в отчёт идёт настоящий размер, а не умолчание).
+struct ScopesWork {
+    work: ScopesSaturation,
+    picture: PictureSizePx,
+}
 
 impl BenchWork for ScopesWork {
     fn workload(&mut self) -> &mut dyn SaturationWorkload {
-        &mut self.0
+        &mut self.work
     }
     fn slots(&self) -> usize {
-        self.0.slots()
+        self.work.slots()
     }
     fn pass_times(&self) -> PassTimeSummary {
-        self.0.pass_times()
+        self.work.pass_times()
     }
     fn take_failure(&mut self) -> Option<String> {
-        failure_text(self.0.take_failure())
+        failure_text(self.work.take_failure())
     }
     fn output_digest(&mut self) -> Result<WorkloadDigest, String> {
-        self.0.output_digest().map_err(|error| error.to_string())
+        self.work.output_digest().map_err(|error| error.to_string())
+    }
+    fn extras(&self) -> WorkloadExtras {
+        WorkloadExtras {
+            scope_picture: Some(self.picture),
+            ..WorkloadExtras::default()
+        }
     }
 }
 
@@ -313,6 +352,8 @@ impl GpuWorkloadExecutor {
             WorkloadKind::HeadroomV4Tuned(experiment) => self.build_headroom(experiment),
             WorkloadKind::Still => self.build_still(StillTuning::PRODUCT),
             WorkloadKind::StillTuned { tuning } => self.build_still(tuning),
+            WorkloadKind::ViewfinderLook { look } => self.build_viewfinder_look(&look.recipe(&self.inputs)),
+            WorkloadKind::LookParity { look } => self.build_look_parity(look),
         }
     }
 
@@ -326,7 +367,7 @@ impl GpuWorkloadExecutor {
         let params = self.inputs.params(PipelineKind::Viewfinder)?;
         let config = viewfinder_variant::configure(variant, self.viewfinder_config());
         let work = ViewfinderSaturation::new_synthetic(&self.context, config, params)?;
-        Ok(Box::new(ViewfinderWork(work)))
+        Ok(Box::new(ViewfinderWork::new(work)))
     }
 
     fn build_scopes(
@@ -350,8 +391,12 @@ impl GpuWorkloadExecutor {
             image_size: kind.picture_shape().fit_in(layout_request.image_size),
             ..layout_request
         };
+        let picture = PictureSizePx {
+            width: request.image_size.width(),
+            height: request.image_size.height(),
+        };
         let work = self.scopes_for(&request, scope_content(input), diagnostic)?;
-        Ok(Box::new(ScopesWork(work)))
+        Ok(Box::new(ScopesWork { work, picture }))
     }
 
     /// Запрос прибора раздела CALIBRATE: размер картинки и положение глаза из раскладки экрана.
@@ -608,6 +653,7 @@ impl GpuWorkloadExecutor {
                     scene: work.scene(),
                     ui: work.ui_counters(),
                     digest,
+                    extras: work.extras(),
                 },
                 pixels,
             ))
@@ -617,6 +663,10 @@ impl GpuWorkloadExecutor {
         executed.map(|(mut done, pixels)| {
             if let Some(note) = pixels.and_then(|pixels| self.comparison.note_for(entry.name, pixels)) {
                 done.digest = done.digest.with_extra_note(&note);
+            }
+            // Паритет на синтетических сценах — после освобождения работы: его линейка заводит свои ISP.
+            if let WorkloadKind::LookParity { look } = entry.kind {
+                done.extras.parity = Some(measure_look_parity(&self.context, &self.inputs, look));
             }
             done
         })

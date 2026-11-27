@@ -12,6 +12,7 @@ mod bands;
 mod control;
 mod error;
 mod facts;
+mod fingerprint;
 mod intent;
 mod knob;
 mod preset;

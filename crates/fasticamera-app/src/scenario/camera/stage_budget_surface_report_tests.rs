@@ -108,6 +108,7 @@ fn condition(index: usize, refusal: Option<WindowRefusal>, hz: Option<f64>) -> W
             readings: 100,
         }),
         counters: None,
+        look: None,
         refusal,
         issued: Default::default(),
     }

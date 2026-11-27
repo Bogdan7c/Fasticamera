@@ -36,6 +36,7 @@ use serde_json::Value;
 use super::detail::to_value;
 use super::engine_watch::RunFailure;
 use super::frame_statistics_report::{FrameStatisticsReport, publication_violations};
+use super::look_report::LookReport;
 use super::raw_stream_samples::LatencyReport;
 use super::viewfinder_metrics::{GpuTimeMs, WindowDelta, color_space_name, ratio, round2};
 use super::viewfinder_pacing_report::PacingWindowReport;
@@ -79,6 +80,9 @@ pub struct ViewfinderLook {
     pub display_color_space: &'static str,
     pub storage: Option<&'static str>,
     pub output_extent: Option<[u32; 2]>,
+    /// Вид картинки и модель основы, как их показывал рендер в конце замера (14o): без этих полей отчёт сценария не
+    /// говорит, что за картинку мы мерили. Сценарий `viewfinder` вида не ставит, поэтому вид замера здесь `product`.
+    pub picture: LookReport,
 }
 
 impl ViewfinderLook {
@@ -95,6 +99,7 @@ impl ViewfinderLook {
                 ViewfinderStorage::HalfFloat => "half_float",
             }),
             output_extent: viewfinder.output_extent.map(|extent| [extent.width, extent.height]),
+            picture: LookReport::of(viewfinder, None),
         }
     }
 }

@@ -16,7 +16,7 @@ import smoke_wait  # noqa: E402
 import test_smoke_device_script as device_script  # noqa: E402
 from smoke_driver_background import BackgroundGestureError, BackgroundGestures  # noqa: E402
 from test_smoke_driver import ADB, PACKAGE, WM_SIZE, RecordingActions, SizedAdb  # noqa: E402
-from test_smoke_viewfinder import passed, result_line  # noqa: E402
+from test_smoke_viewfinder import passed, result_line, stage_budget_look_fields  # noqa: E402
 
 SCENARIO = "viewfinder-stage-budget"
 
@@ -249,6 +249,7 @@ class FinishDriverTest(unittest.TestCase):
 
 def budget_report(**overrides: object) -> dict:
     report: dict = {
+        **stage_budget_look_fields(),
         "surface": "calibrate_screen",
         "requested_rows": ["color_scopes", "whole_product"],
         "table": [
@@ -336,6 +337,7 @@ class DeviceSmokeSurfaceFlagsTest(unittest.TestCase):
     OK = passed(
         SCENARIO,
         {
+            **stage_budget_look_fields(),
             "surface": "photo_screen",
             "requested_rows": ["ui_overlay"],
             "table": ["ui_overlay | 1.50 / 1.80 | 20.0 ± 1.0 | measured"],

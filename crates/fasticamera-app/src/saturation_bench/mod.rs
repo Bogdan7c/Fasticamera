@@ -9,6 +9,9 @@
 //! # Раскладка
 //! * [`catalog`] — имена и виды работ (данные, GPU не нужен);
 //! * [`compare_pairs`], [`pair_comparison`] — пары «эталон и вариант»: отчёт об отличии картинок (max |Δ|, гистограмма);
+//! * [`look_variant`], [`look_parity_run`], [`parity_report`] — виды картинки для групп `look_cost` и `look_parity` (14o):
+//!   рецепты из рецепта продукта, прогон линейки паритета `isp_vulkan::saturation::parity` на устройстве и её итог в строке;
+//! * [`extras`] — дополнительные факты строки (паритет, размер картинки прибора, созданные пайплайны);
 //! * [`digest_report`] — дайджест выхода работы в итоге строки («картинка не изменилась» на телефоне);
 //! * [`catalog_wait`] — ожидание каталога камер движка перед сборкой входов (причина запасного сенсора на телефоне);
 //! * [`draw_filter`] — фильтр списка рисования для абляций прохода UI (чистая функция);
@@ -31,11 +34,15 @@ pub mod catalog_wait;
 pub mod compare_pairs;
 pub mod digest_report;
 pub mod draw_filter;
+pub mod extras;
 pub mod gpu_executor;
 pub mod headroom_tuning;
 pub mod headroom_variant;
 pub mod inputs;
+pub mod look_parity_run;
+pub mod look_variant;
 pub mod pair_comparison;
+pub mod parity_report;
 pub mod report;
 pub mod runner;
 pub mod screen_scene;

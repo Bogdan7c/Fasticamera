@@ -21,6 +21,32 @@ pub const PAIRS: &[ComparePair] = &[
         variant: "viewfinder_awb_never_twin",
         reference: "viewfinder_awb_never",
     },
+    // Группа `look_cost` (14o): вариант «вкл» против «выкл»-эталона, который идёт в списке раньше. Заметка `diff_vs=`
+    // в итоге варианта показывает, что рычаг действительно меняет картинку (иначе цена рычага — цена пустоты).
+    ComparePair {
+        variant: "look_product",
+        reference: "look_neutral",
+    },
+    ComparePair {
+        variant: "look_tone_base_agx",
+        reference: "look_tone_base_legacy",
+    },
+    ComparePair {
+        variant: "look_tone_base_aces",
+        reference: "look_tone_base_legacy",
+    },
+    ComparePair {
+        variant: "look_tone_base_filmic",
+        reference: "look_tone_base_legacy",
+    },
+    ComparePair {
+        variant: "look_wheels_sample",
+        reference: "look_without_wheels",
+    },
+    ComparePair {
+        variant: "look_tone_sample",
+        reference: "look_without_tone",
+    },
 ];
 
 /// Эталон, с которым сравнивается работа `name` (`None` — работа ни с чем не сравнивается).

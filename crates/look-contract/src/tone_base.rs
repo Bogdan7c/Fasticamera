@@ -32,6 +32,16 @@ impl ToneBaseModel {
         ToneBaseModel::Filmic,
         ToneBaseModel::Legacy,
     ];
+
+    /// Имя модели для логов и отчётов: то же `snake_case`, что в файле пресетов (читает разбор в `scripts/`).
+    pub const fn name(self) -> &'static str {
+        match self {
+            ToneBaseModel::Agx => "agx",
+            ToneBaseModel::Aces => "aces",
+            ToneBaseModel::Filmic => "filmic",
+            ToneBaseModel::Legacy => "legacy",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -44,6 +54,13 @@ mod tests {
         for (model, text) in ToneBaseModel::ALL.into_iter().zip(expected) {
             assert_eq!(serde_json::to_string(&model).unwrap(), text);
             assert_eq!(serde_json::from_str::<ToneBaseModel>(text).unwrap(), model);
+        }
+    }
+
+    #[test]
+    fn name_matches_the_serialized_name_for_every_model() {
+        for model in ToneBaseModel::ALL {
+            assert_eq!(format!("\"{}\"", model.name()), serde_json::to_string(&model).unwrap());
         }
     }
 

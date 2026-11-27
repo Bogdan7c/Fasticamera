@@ -7,10 +7,14 @@
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use super::catalog::{CatalogEntry, WorkloadKind, find_entry};
 use super::digest_report::{DigestOutcome, NO_DIGEST_CELL};
 use super::inputs::{LookSummary, SensorSource};
+use super::parity_report::ParityOutcome;
 use super::report::{RenderSilence, RunSummary, WorkloadRow, thermal_word};
 use crate::gpu_services::ValidationState;
+use crate::logging::record::LOGCAT_MAX_TEXT_BYTES;
+use crate::result_line::RESULT_LINE_PREFIX;
 
 /// Что стало с камерой на время замера.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -29,7 +33,8 @@ pub struct SummaryHeader {
     pub sensor: SensorSource,
     pub look: LookSummary,
     pub camera: CameraSilence,
-    /// Запрошенные работы в порядке списка: скрипт ПК сверяет по ним таблицу (ни одна не пропала).
+    /// Запрошенные работы в порядке списка. В сводку идут не сами имена (они уже есть в таблице, по строке на работу в
+    /// том же порядке), а их число и имена, которым не досталось строки таблицы: скрипт ПК сверяет одно с другим.
     pub requested: Vec<&'static str>,
     pub warmup_ms: u64,
     pub measure_ms: u64,
@@ -91,10 +96,97 @@ pub fn build_summary(header: &SummaryHeader, run: &RunSummary, silence: &RenderS
     summary
 }
 
+/// Ячейка компактной строки, когда числа нет.
+const NO_VALUE_CELL: &str = "-";
+
+/// Работа паритета на устройстве.
+fn is_parity_kind(kind: WorkloadKind) -> bool {
+    matches!(kind, WorkloadKind::LookParity { .. })
+}
+
+/// Работа цветового прибора (любая: настоящая или с урезанным накоплением).
+fn is_scope_kind(kind: WorkloadKind) -> bool {
+    matches!(kind, WorkloadKind::Scopes { .. } | WorkloadKind::ScopesAblated { .. })
+}
+
+/// Сколько из запрошенных работ имеют вид `wanted` (по каталогу).
+fn requested_count(header: &SummaryHeader, wanted: fn(WorkloadKind) -> bool) -> usize {
+    header
+        .requested
+        .iter()
+        .filter(|name| find_entry(name).is_ok_and(|entry| wanted(entry.kind)))
+        .count()
+}
+
+/// Строки паритета для результата: ровно по одной на КАЖДУЮ работу паритета в прогоне (по виду работы в каталоге, а не
+/// по тому, дошла ли она до числа): пропавшее измерение — строка `…|unavailable`, а не отсутствие строки. Формат —
+/// [`ParityOutcome::compact_row`].
+pub fn parity_rows(run: &RunSummary) -> Vec<String> {
+    run.rows
+        .iter()
+        .filter(|row| find_entry(row.name).is_ok_and(|entry| is_parity_kind(entry.kind)))
+        .map(|row| match &row.extras.parity {
+            Some(outcome) => outcome.compact_row(row.name),
+            None => ParityOutcome::Unavailable {
+                reason: "работа не дошла до измерения".to_owned(),
+            }
+            .compact_row(row.name),
+        })
+        .collect()
+}
+
+/// Строки «какой размер картинки прибора» для результата: по одной на каждую работу `scopes_*` прогона, `имя|ШxВ`
+/// (или `имя|-`, если работа не дошла до размера). Отчёт называет настоящий размер раздела, а не умолчание.
+pub fn scope_picture_rows(run: &RunSummary) -> Vec<String> {
+    run.rows
+        .iter()
+        .filter(|row| find_entry(row.name).is_ok_and(|entry| is_scope_kind(entry.kind)))
+        .map(|row| {
+            let size = row
+                .extras
+                .scope_picture
+                .map_or_else(|| NO_VALUE_CELL.to_owned(), |picture| picture.compact());
+            format!("{}|{size}", row.name)
+        })
+        .collect()
+}
+
 fn summary_without_digests(header: &SummaryHeader, run: &RunSummary, silence: &RenderSilence) -> Value {
+    let mut summary = base_summary(header, run, silence);
+    if let Value::Object(map) = &mut summary {
+        // Сколько строк каждого вида ОБЯЗАНО быть по списку запрошенных работ (каталог говорит, какая работа какого
+        // вида): скрипт ПК сверяет с этим числом число пришедших строк, и пропавшее измерение не сходит за успех.
+        let parity_expected = requested_count(header, is_parity_kind);
+        if parity_expected > 0 {
+            map.insert("parity_expected".to_owned(), json!(parity_expected));
+            map.insert("parity".to_owned(), json!(parity_rows(run)));
+        }
+        let pictures_expected = requested_count(header, is_scope_kind);
+        if pictures_expected > 0 {
+            map.insert("scope_pictures_expected".to_owned(), json!(pictures_expected));
+            map.insert("scope_pictures".to_owned(), json!(scope_picture_rows(run)));
+        }
+    }
+    summary
+}
+
+/// Запрошенные работы, которым не досталось строки таблицы (по построению пусто: строка есть у каждой работы, даже не
+/// дошедшей до числа). Непустой список — дефект прогона, и скрипт ПК называет эти работы по именам.
+fn requested_without_table_row(header: &SummaryHeader, run: &RunSummary) -> Vec<&'static str> {
+    header
+        .requested
+        .iter()
+        .copied()
+        .filter(|name| !run.rows.iter().any(|row| row.name == *name))
+        .collect()
+}
+
+fn base_summary(header: &SummaryHeader, run: &RunSummary, silence: &RenderSilence) -> Value {
     json!({
         "table": run.rows.iter().map(table_row).collect::<Vec<_>>(),
-        "requested": header.requested,
+        // Решение 14o: полный список имён дублировал таблицу (≈ 900 байт на 40 работ) и переполнял строку результата.
+        "requested_count": header.requested.len(),
+        "requested_missing": requested_without_table_row(header, run),
         "workloads": run.rows.len(),
         "measured": run.rows.iter().filter(|row| row.is_measured()).count(),
         "cancelled": run.cancelled,
@@ -123,6 +215,54 @@ pub fn detail_item(row: &WorkloadRow) -> Value {
         );
     }
     item
+}
+
+/// Сколько байт строки результата оставлено на текст ошибки провала: столько же, сколько отдаёт ему
+/// `scenario::camera::result_budget::MAX_ERROR_BYTES` (равенство проверяет тест сценария стенда).
+pub const ERROR_TEXT_RESERVE_BYTES: usize = 700;
+/// Обёртка отчёта вокруг сводки: имя сценария, статус, ключи и кавычки, байт (с запасом).
+const REPORT_ENVELOPE_RESERVE_BYTES: usize = 120;
+/// Шапка сводки без строк по работам (сенсор, вид, камера, окна, счётчики рендера), байт. Число — сверху: тест
+/// `worst_case_header_fits_its_reserve` собирает шапку с самыми длинными значениями и проверяет, что она не больше.
+pub const SUMMARY_HEADER_RESERVE_BYTES: usize = 1_050;
+/// Самая длинная ячейка числа в строке таблицы (`к/с` или `мс/кадр`, три значащие цифры: `65800` / `0.123`).
+const WIDEST_NUMBER_CELL_BYTES: usize = 6;
+/// Самое длинное слово вердикта строки таблицы (`slots_mismatch` и подобные — короче).
+const WIDEST_VERDICT_BYTES: usize = 16;
+/// Хвост строки паритета после имени: `|1.35e-5|5.02e-4|1e-5|unavailable` и запас на кавычки и запятую.
+const PARITY_ROW_TAIL_BYTES: usize = 40;
+/// Хвост строки размера прибора после имени: `|2048x2048` и запас на кавычки и запятую.
+const SCOPE_PICTURE_ROW_TAIL_BYTES: usize = 14;
+
+/// Сколько байт может занять сводка (без дайджестов, они кладутся только при запасе) для списка работ `entries`:
+/// оценка СВЕРХУ по самым длинным ячейкам. Нужна до запуска: стенд, чей отчёт не влезет в строку результата, отказывает
+/// при `initialize`, а не через десять минут замера (как было на телефоне в 14o: 40 работ — отчёт 4532 байт).
+pub fn worst_case_summary_bytes(entries: &[&CatalogEntry]) -> usize {
+    let rows: usize = entries
+        .iter()
+        .map(|entry| {
+            let name = entry.name.len();
+            // Строка таблицы: имя|к/с|мс/кадр|вердикт + кавычки и запятая.
+            let table = name + 3 + 2 * WIDEST_NUMBER_CELL_BYTES + WIDEST_VERDICT_BYTES + 3;
+            let parity = if is_parity_kind(entry.kind) {
+                name + PARITY_ROW_TAIL_BYTES
+            } else {
+                0
+            };
+            let picture = if is_scope_kind(entry.kind) {
+                name + SCOPE_PICTURE_ROW_TAIL_BYTES
+            } else {
+                0
+            };
+            table + parity + picture
+        })
+        .sum();
+    SUMMARY_HEADER_RESERVE_BYTES + rows
+}
+
+/// Наибольший размер сводки, при котором отчёт целиком (с текстом ошибки провала) влезает в одну строку logcat.
+pub const fn summary_budget_bytes() -> usize {
+    LOGCAT_MAX_TEXT_BYTES - RESULT_LINE_PREFIX.len() - ERROR_TEXT_RESERVE_BYTES - REPORT_ENVELOPE_RESERVE_BYTES
 }
 
 #[cfg(test)]

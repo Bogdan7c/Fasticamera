@@ -110,48 +110,9 @@ pub fn with_lut(controls: LookControls, lut: Arc<LookLut>) -> LookControls {
     controls.with_lut(lut)
 }
 
-/// RGB (0…1) цвета с оттенком `hue` (доля круга 0…1), насыщенностью `saturation` и значением `value` (HSV).
-pub fn hsv_to_rgb(hue: f64, saturation: f64, value: f64) -> [f64; 3] {
-    let sector = (hue.rem_euclid(1.0) * 6.0).floor();
-    let fraction = hue.rem_euclid(1.0) * 6.0 - sector;
-    let (p, q, t) = (
-        value * (1.0 - saturation),
-        value * (1.0 - saturation * fraction),
-        value * (1.0 - saturation * (1.0 - fraction)),
-    );
-    match sector as u32 {
-        0 => [value, t, p],
-        1 => [q, value, p],
-        2 => [p, value, t],
-        3 => [p, q, value],
-        4 => [t, p, value],
-        _ => [value, p, q],
-    }
-}
-
-/// Линейный свет сенсора в пикселе `(x, y)` канала `channel` для развёртки по оттенку: по горизонтали полный круг
-/// HSV (с стыком 360° → 0°), по вертикали — яркость от тёмной к светлой; свет умножен на нейтраль кадра, поэтому серый
-/// останется серым после баланса белого.
-pub fn hue_sweep_light(x: u32, y: u32, width: u32, height: u32, channel: usize, neutral: [f64; 3]) -> f64 {
-    let brightest = neutral.iter().copied().fold(f64::MIN, f64::max);
-    let hue = f64::from(x) / f64::from(width);
-    let value = 0.12 + 0.55 * f64::from(y) / f64::from(height - 1);
-    hsv_to_rgb(hue, 0.85, value)[channel] * neutral[channel] / brightest
-}
-
-/// Линейный свет сенсора для сцены «кожа и пастели»: четыре столбца — два оттенка кожи (умеренная насыщенность) и
-/// два малоцветных пастельных (зелёный, голубой); по вертикали — яркость.
-pub fn skin_and_pastels_light(x: u32, y: u32, width: u32, height: u32, channel: usize, neutral: [f64; 3]) -> f64 {
-    let brightest = neutral.iter().copied().fold(f64::MIN, f64::max);
-    let level = 0.25 + 0.5 * f64::from(y) / f64::from(height - 1);
-    let rgb = match x * 4 / width {
-        0 => hsv_to_rgb(0.08, 0.45, level),
-        1 => hsv_to_rgb(0.1, 0.3, level),
-        2 => hsv_to_rgb(0.4, 0.12, level),
-        _ => hsv_to_rgb(0.58, 0.08, level),
-    };
-    rgb[channel] * neutral[channel] / brightest
-}
+// Свет сцен «развёртка по оттенку» и «кожа и пастели» живёт в библиотеке линейки паритета (их же гоняет приложение).
+#[allow(unused_imports, reason = "каждый тестовый бинарь использует свою часть помощников")]
+pub use isp_vulkan::saturation::parity::{hsv_to_rgb, hue_sweep_light, skin_and_pastels_light};
 
 /// Мозаика размера `width`×`height` с разверткой по оттенку ([`hue_sweep_light`]) для сенсора `sensor`.
 pub fn hue_sweep_mosaic(

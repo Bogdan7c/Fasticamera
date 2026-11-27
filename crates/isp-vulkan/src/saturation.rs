@@ -22,6 +22,7 @@ mod blocking;
 mod error;
 mod headroom;
 mod params;
+pub mod parity;
 mod scene;
 mod scene_probe;
 mod scopes;

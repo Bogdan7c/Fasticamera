@@ -5,6 +5,7 @@
 #                           [--stages LIST] [--surface PLACE] [--ab-window-ms MS] [--ab-pairs N] [--endurance-ms MS]
 #                           [--unchanged-frame skip|always] [--exposure-controller own|vendor] [--neutral-card] [--keep-captures] [--stop-app-after]
 #                           [--saturation-workloads LIST] [--saturation-measure-ms MS] [--saturation-warmup-ms MS]
+#                           [--tone-base agx|aces|filmic|legacy]
 #                           <сценарий>
 #
 # Сценарии (--timeout в скобках): hello, panic (debug), lifecycle, permission (60), motion, platform,
@@ -30,6 +31,12 @@
 # --unchanged-frame skip|always — политика пропуска тиков без изменений (решение 214, сессия 16a): skip — тик без нового кадра
 # камеры и без изменений UI не рисуется и не показывается; always — рисуется каждый тик (умолчание продукта до замера тока A/B).
 # Нет флага — extra не передаётся, Rust берёт умолчание; другое значение — отказ скрипта.
+# --tone-base agx|aces|filmic|legacy — модель основы тона (14o), только viewfinder и viewfinder-stage-budget: уходит extra'ом
+# tone_base в конфиг `render.viewfinder.tone.base`, а проверка результата требует, чтобы отчёт показал именно её. Конфиг — лишь
+# умолчание встроенных пресетов: у активного пресета владельца или сохранённых правок своя основа, и тогда флаг ничего не меняет;
+# такой прогон падает с причиной, а не проходит на чужой основе. Строки вида 14o для --stages: look_tone_base_agx,
+# look_tone_base_aces, look_tone_base_filmic (основа против legacy), look_layer (вид продукта против нейтрали на той же основе),
+# look_wheels (колёса образца против без колёс), look_tone (ручки тона образца против без них); допустимы на всех трёх местах.
 # --stop-app-after — после получения результата сделать am force-stop нашего пакета (иначе приложение остаётся на экране и греет
 # телефон между замерами; по умолчанию выключено). Внешнее питание отвергает замер, как и раньше.
 # Стенд насыщения 16a: gpu-saturation-bench (по умолчанию 14 работ × ~16 с + паузы ≈ 5 мин, --timeout 600; камера на время замера
@@ -39,7 +46,12 @@
 # scopes_vectorscope_oklab, scopes_parade_gray, scopes_vectorscope_gray, compositor, display_photo, display_photo_recompose,
 # display_calibrate, display_calibrate_recompose, headroom_v4, still; ИЛИ имя группы: baseline — эти 14 работ (умолчание),
 # ui_ablation — 7 абляций прохода UI (display_{calibrate,photo}_{glass_only,no_glass,...}), isp_ablation — 14 абляций видоискателя
-# (viewfinder_awb_never, viewfinder_awb_every_frame, viewfinder_without_<стадия>, viewfinder_minimal); неизвестное имя — отказ Rust при initialize;
+# (viewfinder_awb_never, viewfinder_awb_every_frame, viewfinder_without_<стадия>, viewfinder_minimal);
+# look_cost — 10 работ цены вида (look_neutral, look_product, look_tone_base_{legacy,agx,aces,filmic}, look_without_wheels,
+# look_wheels_sample, look_without_tone, look_tone_sample; пары «вкл против выкл» в итоге — diff_vs=), look_parity — 16 работ паритета GPU
+# с CPU-эталоном на телефоне (look_parity_{agx,aces,filmic,legacy}_{product,bands,wheels,tone}; в сводке parity: имя|ошибка|max_abs|допуск|вердикт,
+# провал, если ошибка математики больше допуска: 1e-5, у рецептов с тронутыми полосами — именованный 3e-5), scopes_* печатают размер картинки прибора (scope_pictures: имя|ШxВ);
+# неизвестное имя — отказ Rust при initialize;
 # дайджест выхода каждой работы — в FASTICAMERA_DETAIL, «база → новое»: python3 scripts/smoke_checks_saturation.py compare A.txt B.txt),
 # --saturation-measure-ms MS и --saturation-warmup-ms MS — окно замера и прогрев каждой работы (умолчание 10000 и 3000).
 # Пример: --variant release --timeout 300 --saturation-workloads viewfinder,compositor --saturation-measure-ms 5000 gpu-saturation-bench.
@@ -109,6 +121,7 @@ exposure_controller=""
 saturation_workloads=""
 saturation_measure_ms=""
 saturation_warmup_ms=""
+tone_base=""
 neutral_card=false
 keep_captures=false
 scenario=""
@@ -130,6 +143,7 @@ while [[ $# -gt 0 ]]; do
         --saturation-workloads) saturation_workloads="${2:-}"; shift 2 ;;
         --saturation-measure-ms) saturation_measure_ms="${2:-}"; shift 2 ;;
         --saturation-warmup-ms) saturation_warmup_ms="${2:-}"; shift 2 ;;
+        --tone-base) tone_base="${2:-}"; shift 2 ;;
         --neutral-card) neutral_card=true; shift ;;
         --keep-captures) keep_captures=true; shift ;;
         -h|--help) usage; exit "$EXIT_OK" ;;
@@ -225,6 +239,16 @@ if [[ ( -n "$saturation_workloads" || -n "$saturation_measure_ms" || -n "$satura
     log_error "--saturation-* имеют смысл только для gpu-saturation-bench"
     exit "$EXIT_USAGE"
 fi
+# Модель основы — одно из четырёх имён (точный набор и тут, и в Rust: `ToneBaseModel`). Проверка «показана именно она» есть
+# только у сценариев, чей отчёт несёт основу; остальным флаг отвергаем, чтобы он не оставался молчаливо непроверенным.
+if [[ -n "$tone_base" && ! "$tone_base" =~ ^(agx|aces|filmic|legacy)$ ]]; then
+    log_error "--tone-base ждёт agx, aces, filmic или legacy, а не '$tone_base'"
+    exit "$EXIT_USAGE"
+fi
+if [[ -n "$tone_base" && "$scenario" != "viewfinder" && "$scenario" != "viewfinder-stage-budget" ]]; then
+    log_error "--tone-base имеет смысл только для viewfinder и viewfinder-stage-budget (их отчёт показывает основу)"
+    exit "$EXIT_USAGE"
+fi
 if [[ "$neutral_card" == true && "$scenario" != "viewfinder" && "$scenario" != "3a" ]]; then
     log_error "--neutral-card имеет смысл только для viewfinder и 3a"
     exit "$EXIT_USAGE"
@@ -291,6 +315,7 @@ start_activity "$serial" "$package" -e scenario "$scenario" ${stages:+-e stages 
     ${saturation_measure_ms:+-e saturation_measure_ms "$saturation_measure_ms"} \
     ${saturation_warmup_ms:+-e saturation_warmup_ms "$saturation_warmup_ms"} \
     ${exposure_controller:+-e exposure_controller "$exposure_controller"} \
+    ${tone_base:+-e tone_base "$tone_base"} \
     -e white_memory none ||
     exit "$EXIT_BUILD_OR_INSTALL_FAILED"
 
@@ -301,6 +326,9 @@ if [[ "$neutral_card" == true ]]; then
 fi
 if [[ "$keep_captures" == true ]]; then
     wait_options+=(--keep-captures)
+fi
+if [[ -n "$tone_base" ]]; then
+    wait_options+=(--expect-tone-base "$tone_base")
 fi
 log_step "ожидание FASTICAMERA_RESULT сценария $scenario (до $timeout_seconds с)"
 # Без exec: после проверки надо отработать ловушку восстановления разрешения.
