@@ -506,6 +506,13 @@ impl ScopePass {
     /// Блокирует приборы до смены запроса или формата цели и сообщает причину (один раз).
     fn block(&mut self, blockage: Blockage, kind: FailureKind, reason: &str) {
         self.blocked = Some(blockage);
+        // Заблокированный прибор новой картинки не даст (а при отказе создания или записи прежней может и не быть):
+        // подписи к ней не относятся, иначе экран рисовал бы буквы над пустым местом. Правило забывается, чтобы после
+        // разблокировки (новый запрос или формат) прибор решился заново и опубликовал подписи снова.
+        self.resolved = None;
+        if let Some(labels) = self.labels.as_mut() {
+            labels.withdraw();
+        }
         self.report_failure(reason, kind);
     }
 

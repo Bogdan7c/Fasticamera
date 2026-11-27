@@ -24,7 +24,7 @@ use scope_model::ScopeModelSettings;
 use tracing::span::{Attributes, Id, Record};
 use tracing::{Event, Level, Metadata, Subscriber};
 
-use super::{LOG_TARGET, ScopePass, ScopeRecordInput};
+use super::{Blockage, FailureKind, LOG_TARGET, ScopePass, ScopeRecordInput};
 use crate::config::ScopesConfig;
 use crate::viewfinder::{ScopeEvents, ScopeResources};
 
@@ -467,4 +467,40 @@ fn a_pass_without_a_board_resolves_and_records_without_publishing_anywhere() {
     record_with_gamut(&mut pass, DisplayGamut::Srgb);
     // Правило решено и кадр дошёл до проверки записи (она отвергает вход): отказ — признак, что кадр не пропущен.
     assert_eq!(counters_of(&mut pass).counters.record_failures, 1);
+}
+
+#[test]
+fn a_blocked_scope_withdraws_its_labels_and_a_new_request_publishes_them_again() {
+    let Some(context) = context_or_skip() else { return };
+    let board = ScopeLabelsBoard::new();
+    let mut pass = ScopePass::new(&context, FRAME_SLOTS, &every_frame_config());
+    pass.attach_labels_board(board.clone());
+    let asked = oklab_vectorscope_request();
+    pass.prepare_between_frames(Some(asked));
+    record_with_gamut(&mut pass, DisplayGamut::Srgb);
+    assert_eq!(
+        published_labels(&board).request,
+        asked,
+        "прибор решён — буквы опубликованы"
+    );
+
+    // Отказ записи или создания блокирует прибор: картинки к буквам больше нет — буквы сняты.
+    pass.block(
+        Blockage::RecordingFailed,
+        FailureKind::Record,
+        "проход приборов не записан: тест",
+    );
+    assert_eq!(board.latest(), ScopeLabelsState::Withdrawn);
+    // Пока блокировка держится, кадры с тем же запросом буквы не возвращают.
+    record_with_gamut(&mut pass, DisplayGamut::Srgb);
+    assert_eq!(board.latest(), ScopeLabelsState::Withdrawn);
+
+    // Новый запрос снимает блокировку: прибор решается заново и публикует подписи своего запроса.
+    let zoomed = ScopeRequest {
+        vectorscope_zoom: scope_contract::VectorscopeZoom::Double,
+        ..asked
+    };
+    pass.prepare_between_frames(Some(zoomed));
+    record_with_gamut(&mut pass, DisplayGamut::Srgb);
+    assert_eq!(published_labels(&board).request, zoomed);
 }
