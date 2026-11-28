@@ -51,7 +51,7 @@ fn open_presets_card(rig: &mut Rig) {
 #[test]
 fn no_glass_in_any_section_frame_state_and_orientation() {
     for orientation in ORIENTATIONS {
-        for view in [ControlViewKind::Scales, ControlViewKind::Wheels] {
+        for view in ControlViewKind::ALL {
             let mut rig = calibrating(look_facts(), orientation);
             rig.act(ScreenAction::ControlViewSelected(view));
             // Покой, затем карточка пресетов (в том числе кадры раскрытия).

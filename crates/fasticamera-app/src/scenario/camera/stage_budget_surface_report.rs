@@ -121,7 +121,8 @@ pub fn backdrop_pyramid_rebuilds_of(rows: &[StageBudgetRow]) -> Option<u64> {
 /// Сжатая запись видов окон строк вида (`look_*`) для строки результата: у каждой строки вид окна A и окна B
 /// (по первому окну каждого положения). Разбор `scripts/` по ней проверяет, что окна показывали разные виды.
 /// Строка результата — одна запись logcat в 4000 байт, поэтому здесь только четыре поля окна (основа, отпечаток,
-/// колёса, тон); отчёт окна целиком — в `detail_stage_budget` (`condition.look`).
+/// колёса, тон). Полоски 14t сюда не вынесены: семь строк вида и так упираются в 4000 байт, различие окон строки
+/// `look_primaries` видно по отпечатку, а флаг `primaries_active` лежит в полном отчёте окна; отчёт окна целиком — в `detail_stage_budget` (`condition.look`).
 pub fn look_rows_summary(rows: &[StageBudgetRow]) -> Vec<Value> {
     let window_look = |row: &StageBudgetRow, stage: StageSetting| {
         row.conditions

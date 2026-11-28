@@ -50,7 +50,7 @@ class ViewfinderLookReportTest(unittest.TestCase):
         self.assertIn("look.picture", verdict.message)
 
     def test_every_field_of_the_look_report_is_required_and_checked(self) -> None:
-        for key in ("tone_base", "recipe_fingerprint", "layer_neutral", "wheels_active", "tone_active", "measurement_look"):
+        for key in ("tone_base", "recipe_fingerprint", "layer_neutral", "wheels_active", "tone_active", "primaries_active", "measurement_look"):
             with self.subTest(missing=key):
                 look = look_report()
                 del look[key]
@@ -73,10 +73,31 @@ class StageBudgetLookReportTest(unittest.TestCase):
                 self.assertTrue(any(key in problem for problem in budget_problems(report)), key)
 
     def test_a_look_row_needs_distinct_recipes_in_both_windows(self) -> None:
-        self.assertEqual(budget_problems(look_row_report(["look_wheels", "look_tone"])), [])
+        self.assertEqual(budget_problems(look_row_report(["look_wheels", "look_tone", "look_primaries"])), [])
         report = look_row_report(["look_wheels"])
         report["look_rows"][0]["off"]["recipe_fingerprint"] = report["look_rows"][0]["on"]["recipe_fingerprint"]
         self.assertTrue(any("мерила бы ноль" in problem for problem in budget_problems(report)))
+
+    def test_the_primaries_row_is_checked_like_the_other_look_rows(self) -> None:
+        self.assertIn("look_primaries", smoke_checks_viewfinder.STAGE_BUDGET_LOOK_ROWS)
+        # Окна с одним отпечатком: строка полосок мерила бы ноль — так же громко, как у колёс и тона.
+        report = look_row_report(["look_primaries"])
+        report["look_rows"][0]["off"]["recipe_fingerprint"] = report["look_rows"][0]["on"]["recipe_fingerprint"]
+        self.assertTrue(any("мерила бы ноль" in problem for problem in budget_problems(report)))
+        # Строка есть в запросе, а видов окон в отчёте нет.
+        missing = look_row_report(["look_primaries"])
+        del missing["look_rows"]
+        self.assertTrue(any("look_primaries нет видов окон" in problem for problem in budget_problems(missing)))
+        # Полоски допустимы на всех трёх местах замера.
+        for surface in ("bare_viewfinder", "photo_screen", "calibrate_screen"):
+            with self.subTest(surface=surface):
+                self.assertIn(surface, smoke_checks_viewfinder.STAGE_BUDGET_ROW_SURFACES["look_primaries"])
+        # Полный отчёт без признака полосок — не отчёт.
+        look = look_report()
+        del look["primaries_active"]
+        self.assertTrue(
+            any("primaries_active" in problem for problem in smoke_checks_viewfinder.look_report_problems(look, "look"))
+        )
 
     def test_a_requested_look_row_missing_from_the_report_is_a_problem(self) -> None:
         report = look_row_report(["look_wheels"])

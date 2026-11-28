@@ -228,7 +228,7 @@ impl<G: StillGpu> StillEngine<G> {
             .position(|entry| entry.plan.id == id && matches!(entry.stage, Stage::AwaitingTarget { .. }));
         let Some(index) = position else {
             self.counters.targets_unexpected += 1;
-            return StillCommandOutcome::Unsupported(StillCommand::Target(offer));
+            return StillCommandOutcome::unsupported(StillCommand::Target(offer));
         };
         let mut entry = self.queue.remove(index);
         match offer {

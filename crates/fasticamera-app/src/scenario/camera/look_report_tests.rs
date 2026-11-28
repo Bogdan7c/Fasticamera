@@ -40,6 +40,24 @@ fn wheels_and_tone_samples_switch_exactly_their_own_flags_on() {
     let tone_report = LookReport::of_parts(tone.base, &tone.settings, Some(MeasurementLook::ToneSample));
     assert!(tone_report.tone_active && !tone_report.wheels_active && !tone_report.layer_neutral);
     assert_eq!(tone_report.measurement_look, "tone_sample");
+
+    let primaries = MeasurementLook::PrimariesSample.recipe_from(&product, &config);
+    let primaries_report = LookReport::of_parts(
+        primaries.base,
+        &primaries.settings,
+        Some(MeasurementLook::PrimariesSample),
+    );
+    assert!(
+        primaries_report.primaries_active
+            && !primaries_report.wheels_active
+            && !primaries_report.tone_active
+            && !primaries_report.layer_neutral
+    );
+    assert_eq!(primaries_report.measurement_look, "primaries_sample");
+    assert!(
+        !wheels_report.primaries_active && !tone_report.primaries_active,
+        "чужие образцы полоски не включают"
+    );
 }
 
 #[test]
@@ -72,6 +90,7 @@ fn the_report_serializes_all_fields_the_python_checker_requires() {
         "layer_neutral",
         "wheels_active",
         "tone_active",
+        "primaries_active",
         "measurement_look",
     ] {
         assert!(json.get(key).is_some(), "в отчёте нет поля {key}: {json}");

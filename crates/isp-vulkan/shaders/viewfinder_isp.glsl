@@ -593,13 +593,13 @@ vec3 apply_aces_output(vec3 display_working) {
 
 // ----- Слой вида (общий для всех основ): тон и цвет, затем таблица -----
 
-// Тон и цвет вида: выключено набором — свет как есть. Нейтраль каждой стадии пропускается своим флагом в uniform
-// (внутри функций), поэтому отдельного варианта шейдера у тона нет.
+// Тон, полоски и цвет вида: выключено набором — свет как есть. Нейтраль каждой стадии пропускается своим флагом в
+// uniform (внутри функций), поэтому отдельного варианта шейдера у них нет.
 vec3 apply_look_color(vec3 display_working) {
     if (!STAGE_LOOK_COLOR) {
         return display_working;
     }
-    return look_apply_color(look_apply_tone(display_working));
+    return look_apply_color(look_apply_primaries(look_apply_tone(display_working)));
 }
 
 // Таблица вида: вариант шейдера без неё вырезает код целиком (константа), с ней — заголовок буфера тоже проверяется.

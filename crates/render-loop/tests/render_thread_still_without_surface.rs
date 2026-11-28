@@ -128,7 +128,7 @@ impl DisplayBackend for StillCapableBackend {
                 StillCommandOutcome::Accepted
             }
             other @ (StillCommand::Target(_) | StillCommand::FlashFailed { .. }) => {
-                StillCommandOutcome::Unsupported(other)
+                StillCommandOutcome::unsupported(other)
             }
         }
     }

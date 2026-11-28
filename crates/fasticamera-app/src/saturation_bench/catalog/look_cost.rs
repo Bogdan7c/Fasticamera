@@ -77,4 +77,16 @@ pub(super) const ENTRIES: &[CatalogEntry] = &[
         group: WorkloadGroup::LookCost,
         summary: "продукт с ручками тона образца из конфига замеров",
     },
+    CatalogEntry {
+        name: "look_without_primaries",
+        kind: look(MeasurementLook::WithoutPrimaries),
+        group: WorkloadGroup::LookCost,
+        summary: "продукт без полосок 14t (эталон пары с look_primaries_sample)",
+    },
+    CatalogEntry {
+        name: "look_primaries_sample",
+        kind: look(MeasurementLook::PrimariesSample),
+        group: WorkloadGroup::LookCost,
+        summary: "продукт с 12 полосками образца из конфига замеров",
+    },
 ];

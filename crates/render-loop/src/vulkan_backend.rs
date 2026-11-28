@@ -646,7 +646,7 @@ impl DisplayBackend for VulkanDisplayBackend {
                 }
                 command => still.apply_command(command),
             },
-            None => StillCommandOutcome::Unsupported(command),
+            None => StillCommandOutcome::unsupported(command),
         }
     }
 

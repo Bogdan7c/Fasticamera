@@ -1,5 +1,6 @@
 //! Работы группы `look_parity`: паритет GPU с CPU-эталоном `isp-model` НА ТЕЛЕФОНЕ (сессия 14o): четыре основы тона на
-//! четырёх видах — ручки продукта, полосы оттенка на краях, образец колёс, образец ручек тона.
+//! четырёх видах — ручки продукта, полосы оттенка на краях, образец колёс, образец ручек тона (группа `look_parity`).
+//! Образец 12 полосок 14t — отдельная группа `look_parity_primaries`: 20 работ разом не влезают в одну запись logcat.
 //!
 //! Работа — тот же слитый проход видоискателя с видом (цена строки в таблице не важна и в выводах не участвует), а
 //! главное — число после неё: худшая ошибка математики сверх шага хранения на худших синтетических сценах
@@ -43,6 +44,12 @@ pub(super) const ENTRIES: &[CatalogEntry] = &[
         summary: "паритет на телефоне: основа agx, образец ручек тона 14l",
     },
     CatalogEntry {
+        name: "look_parity_agx_primaries",
+        kind: parity(ToneBaseModel::Agx, ParityCase::PrimariesSample),
+        group: WorkloadGroup::LookParityPrimaries,
+        summary: "паритет на телефоне: основа agx, образец 12 полосок 14t",
+    },
+    CatalogEntry {
         name: "look_parity_aces_product",
         kind: parity(ToneBaseModel::Aces, ParityCase::ProductLook),
         group: WorkloadGroup::LookParity,
@@ -65,6 +72,12 @@ pub(super) const ENTRIES: &[CatalogEntry] = &[
         kind: parity(ToneBaseModel::Aces, ParityCase::ToneSample),
         group: WorkloadGroup::LookParity,
         summary: "паритет на телефоне: основа aces, образец ручек тона 14l",
+    },
+    CatalogEntry {
+        name: "look_parity_aces_primaries",
+        kind: parity(ToneBaseModel::Aces, ParityCase::PrimariesSample),
+        group: WorkloadGroup::LookParityPrimaries,
+        summary: "паритет на телефоне: основа aces, образец 12 полосок 14t",
     },
     CatalogEntry {
         name: "look_parity_filmic_product",
@@ -91,6 +104,12 @@ pub(super) const ENTRIES: &[CatalogEntry] = &[
         summary: "паритет на телефоне: основа filmic, образец ручек тона 14l",
     },
     CatalogEntry {
+        name: "look_parity_filmic_primaries",
+        kind: parity(ToneBaseModel::Filmic, ParityCase::PrimariesSample),
+        group: WorkloadGroup::LookParityPrimaries,
+        summary: "паритет на телефоне: основа filmic, образец 12 полосок 14t",
+    },
+    CatalogEntry {
         name: "look_parity_legacy_product",
         kind: parity(ToneBaseModel::Legacy, ParityCase::ProductLook),
         group: WorkloadGroup::LookParity,
@@ -113,5 +132,11 @@ pub(super) const ENTRIES: &[CatalogEntry] = &[
         kind: parity(ToneBaseModel::Legacy, ParityCase::ToneSample),
         group: WorkloadGroup::LookParity,
         summary: "паритет на телефоне: основа legacy, образец ручек тона 14l",
+    },
+    CatalogEntry {
+        name: "look_parity_legacy_primaries",
+        kind: parity(ToneBaseModel::Legacy, ParityCase::PrimariesSample),
+        group: WorkloadGroup::LookParityPrimaries,
+        summary: "паритет на телефоне: основа legacy, образец 12 полосок 14t",
     },
 ];

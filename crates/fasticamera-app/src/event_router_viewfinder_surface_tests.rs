@@ -627,14 +627,14 @@ fn the_calibrate_report_shows_zero_backdrop_blur_and_a_built_pyramid_fails_the_w
 }
 
 #[test]
-fn all_six_look_rows_on_the_calibrate_section_fit_one_logcat_line_and_name_distinct_windows() {
+fn all_seven_look_rows_on_the_calibrate_section_fit_one_logcat_line_and_name_distinct_windows() {
     let rows: Vec<StageBudgetRowSetting> = LookRow::ALL.into_iter().map(StageBudgetRowSetting::Look).collect();
     let config = surface_config(StageBudgetSurface::CalibrateScreen, rows);
     let (harness, result) = run_surface(config, SurfaceFaults::default(), Driver::Performs, PowerPlug::Unplugged);
 
     assert_eq!(result["status"], "passed", "{result}");
     let look_rows = result["report"]["look_rows"].as_array().expect("look_rows");
-    assert_eq!(look_rows.len(), 6);
+    assert_eq!(look_rows.len(), 7);
     for row in look_rows {
         let (on, off) = (&row["on"]["recipe_fingerprint"], &row["off"]["recipe_fingerprint"]);
         if row["row"] == "look_layer" {
@@ -645,7 +645,7 @@ fn all_six_look_rows_on_the_calibrate_section_fit_one_logcat_line_and_name_disti
             assert_ne!(on, off, "{row}");
         }
     }
-    // Колёса: окно A их включает, окно B — нет; тон — так же. Строка действительно меняет ветку шейдера.
+    // Колёса: окно A их включает, окно B — нет; тон — так же; полоски различимы по отпечатку (проверено выше). Строка действительно меняет ветку шейдера.
     let wheels = look_rows
         .iter()
         .find(|row| row["row"] == "look_wheels")

@@ -11,18 +11,21 @@
 //!    сглаживание AWB и белая вспышки видят НЕсдвинутую точку.
 //! 2. **Контраст, средние тона, тени, света** → [`tone_shape::LookTone`]: отдельная стадия сразу после основы,
 //!    одинаковая для всех моделей (решения 236, 244); нейтраль — пропуск флагом (`None`).
-//! 3. **Колёса цвета по зонам, насыщенность, сочность, полосы** → [`color::LookColorParams`]: стадия в OKLab
+//! 3. **Полоски Lift / Gamma / Gain / Offset по каналам R, G, B** → [`primaries::LookPrimaries`]: RGB между тоном
+//!    и цветом (решение 341), каналы — основные цвета Display P3 (решение 342); нейтраль — пропуск (`None`).
+//! 4. **Колёса цвета по зонам, насыщенность, сочность, полосы** → [`color::LookColorParams`]: стадия в OKLab
 //!    рабочего пространства `W` после тона; колёса ([`wheels::LookWheels`]) — её первый шаг; нейтраль — пропуск
 //!    стадии флагом (`None`), нейтральные колёса — пропуск своего шага (`wheels: None`).
-//! 4. **LUT** → [`lut::LookLut`]: после цвета вида, до перевода в цвета выхода.
+//! 5. **LUT** → [`lut::LookLut`]: после цвета вида, до перевода в цвета выхода.
 //!
-//! Стадии 2–4 и сдвиг белой не знают, какая модель основы выбрана: от неё берётся только рабочее
+//! Стадии 2–5 и сдвиг белой не знают, какая модель основы выбрана: от неё берётся только рабочее
 //! пространство `W` ([`crate::tone::base::ToneBase::working_primaries`]).
 
 pub mod bands;
 pub mod color;
 pub mod lut;
 pub mod model;
+pub mod primaries;
 pub mod range;
 pub mod stage;
 pub mod tone_shape;
@@ -39,6 +42,7 @@ use crate::color::chromaticity::Primaries;
 use color::LookColorParams;
 use lut::LookLut;
 use model::{InvalidLookModel, LookModelSettings};
+use primaries::LookPrimaries;
 use tone_shape::LookTone;
 use white::{WhiteShift, WhiteShiftLimit};
 
@@ -47,8 +51,9 @@ use white::{WhiteShift, WhiteShiftLimit};
 pub struct LookParamsVersion(pub u32);
 
 /// Текущая версия [`LookParams`]: 1 — первая модель (14a), 2 — колёса цвета по зонам в стадии цвета (14i),
-/// 3 — тон вида отдельной стадией после основы (14l).
-pub const CURRENT_LOOK_PARAMS_VERSION: LookParamsVersion = LookParamsVersion(3);
+/// 3 — тон вида отдельной стадией после основы (14l), 4 — полоски Lift/Gamma/Gain/Offset по R, G, B между тоном и
+/// цветом (14t).
+pub const CURRENT_LOOK_PARAMS_VERSION: LookParamsVersion = LookParamsVersion(4);
 
 /// Входы вида в обработку кадра: значения ручек, модель вида и (опционально) таблица.
 ///
@@ -102,6 +107,8 @@ pub struct LookParams {
     pub version: LookParamsVersion,
     /// Стадия тона вида; `None` — все четыре ручки тона в нуле, пропускается целиком.
     pub tone: Option<LookTone>,
+    /// Полоски по каналам (решение 341: после тона, до колёс); `None` — все 12 ручек в нуле, шаг пропускается.
+    pub primaries: Option<LookPrimaries>,
     /// Сдвиг белой точки для рисования; применяется в `IspParams::resolve` до перевода в нейтраль камеры.
     pub white_shift: WhiteShift,
     /// Стадия цвета вида; `None` — нейтрально, пропускается целиком.
@@ -125,9 +132,11 @@ impl LookParams {
             .into());
         }
         let resolved_color = LookColorParams::resolve(&controls.settings, model, working)?;
+        let primaries = LookPrimaries::resolve(&controls.settings.primaries, &model.primaries, working)?;
         Ok(Self {
             version: CURRENT_LOOK_PARAMS_VERSION,
             tone: LookTone::resolve(&controls.settings, &model.tone),
+            primaries,
             white_shift: white_shift(model, &controls.settings),
             color: resolved_color.params,
             lut: controls.lut.clone(),
@@ -140,23 +149,31 @@ impl LookParams {
 
     /// Ничего не меняет в картинке (кроме, возможно, пустой диагностики): тон, цвет, белая, LUT — нейтральны.
     pub fn is_neutral(&self) -> bool {
-        self.tone.is_none() && self.white_shift.is_none() && self.color.is_none() && self.lut.is_none()
+        self.tone.is_none()
+            && self.primaries.is_none()
+            && self.white_shift.is_none()
+            && self.color.is_none()
+            && self.lut.is_none()
     }
 
     /// Картинку после основы ничего не меняет: стадий вида над светом экрана нет (сдвиг белой — раньше основы).
     pub fn has_no_display_stages(&self) -> bool {
-        self.tone.is_none() && self.color.is_none() && self.lut.is_none()
+        self.tone.is_none() && self.primaries.is_none() && self.color.is_none() && self.lut.is_none()
     }
 
-    /// Применяет стадии вида к свету `W` одного пикселя (порядок: тон, цвет, таблица).
+    /// Применяет стадии вида к свету `W` одного пикселя (порядок: тон, полоски, цвет, таблица).
     pub fn apply_to_pixel(&self, working_rgb: [f32; 3]) -> [f32; 3] {
         let toned = match &self.tone {
             Some(tone) => tone.apply(working_rgb),
             None => working_rgb,
         };
-        let colored = match &self.color {
-            Some(color) => color.apply(toned),
+        let barred = match &self.primaries {
+            Some(primaries) => primaries.apply(toned),
             None => toned,
+        };
+        let colored = match &self.color {
+            Some(color) => color.apply(barred),
+            None => barred,
         };
         match &self.lut {
             Some(lut) => lut.apply(colored),

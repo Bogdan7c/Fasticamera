@@ -1,6 +1,6 @@
 //! Колонка ручек слева (решения 185, 199, 203, 204): стеклянная панель, под ней видоискатель; сверху шапка (основа
-//! тона и «чистяк»), под ней строка переключателя вида SCALES | WHEELS (не прокручивается, видна в обоих видах),
-//! ниже окно вида: прокручиваемый список шкал или колёса цвета без прокрутки.
+//! тона и «чистяк»), под ней строка переключателя вида SCALES | WHEELS | BARS (не прокручивается, видна во всех видах),
+//! ниже окно вида: прокручиваемый список шкал, колёса цвета или полоски каналов без прокрутки.
 //!
 //! Прокрутка списка — `ui_kit::scroll_list::ScrollList`: палец ведёт содержимое, узел содержимого сдвигается по
 //! вертикали на смещение, а хит-тест `ui-core` сам учитывает сдвиг. Узел окна списка ограничивает касания его
@@ -20,6 +20,7 @@ use ui_kit::scroll_list::{ScrollAxis, ScrollList};
 use ui_kit::tokens::TextRoleKind;
 use ui_kit::view::GlassShape;
 
+use super::bars::BarsView;
 use super::control_view::{ControlView, RowsView, VisibleWindow};
 use super::finger_focus::{DrivenControl, FingerFocus, FocusBegin};
 use super::knob_row::WHEEL_RING_SLOT;
@@ -28,7 +29,7 @@ use super::space::{EyeAxis, SectionSpace};
 use super::tone_header::ToneHeader;
 use super::wheels::WheelsView;
 use crate::action::ScreenAction;
-use crate::calibration::{ColumnFrames, ControlViewKind, WheelsFrames};
+use crate::calibration::{BarsFrames, ColumnFrames, ControlViewKind, WheelsFrames};
 use crate::widget::error::{WidgetError, element};
 use crate::widget::intent::{ButtonId, ScreenGesture};
 use crate::widget::kit::SceneKit;
@@ -36,15 +37,19 @@ use crate::widget::layers::{DrawLayers, Layer, VisualIndex};
 use crate::widget::text_runs::TextRuns;
 use crate::widget::{Ctx, Outputs, SECTION_PANEL_MATERIAL, single_member_material};
 
-/// Сегменты переключателя вида в порядке показа: SCALES | WHEELS (тексты UI английские).
-const VIEW_SEGMENTS: [(ControlViewKind, &str); 2] =
-    [(ControlViewKind::Scales, "SCALES"), (ControlViewKind::Wheels, "WHEELS")];
+/// Сегменты переключателя вида в порядке показа: SCALES | WHEELS | BARS (тексты UI английские). Три сегмента с
+/// подписью `SegmentLabel` обязаны помещаться в ширину колонки портрета: это закреплено тестом экрана.
+const VIEW_SEGMENTS: [(ControlViewKind, &str); 3] = [
+    (ControlViewKind::Scales, "SCALES"),
+    (ControlViewKind::Wheels, "WHEELS"),
+    (ControlViewKind::Bars, "BARS"),
+];
 
 /// Колонка ручек.
 pub(super) struct KnobsColumn {
     panel: NodeId,
     header: ToneHeader,
-    /// Переключатель вида SCALES | WHEELS: под шапкой, вне окна прокрутки.
+    /// Переключатель вида SCALES | WHEELS | BARS: под шапкой, вне окна прокрутки.
     switcher: SegmentRow<ControlViewKind>,
     /// Окно вида: его рамка ограничивает и касания, и рисование содержимого.
     window: NodeId,
@@ -120,7 +125,7 @@ impl KnobsColumn {
                 ),
                 true,
             ),
-            ControlViewKind::Wheels => (frames.content, false),
+            ControlViewKind::Wheels | ControlViewKind::Bars => (frames.content, false),
         };
         let content_node = kit.add_node(list_node, "calib_knobs_content", view_rect, window_rect)?;
         let view = match view_kind {
@@ -145,6 +150,19 @@ impl KnobsColumn {
                     },
                 }
             }
+            ControlViewKind::Bars => match BarsFrames::of(view_rect, config) {
+                Ok(bars_frames) => ControlView::Bars(Box::new(BarsView::build(
+                    kit,
+                    ctx,
+                    space,
+                    (content_node, view_rect),
+                    bars_frames,
+                )?)),
+                // Не поместились вкладки и три шкалы — не ошибка сборки: колонка живёт без вида (как у колёс).
+                Err(_) => ControlView::Unavailable {
+                    window_height_pt: view_rect.size.height,
+                },
+            },
         };
         debug_assert!(
             view_is_scrollable || view.content_height() <= window_rect.size.height + 1e-9,
@@ -154,7 +172,7 @@ impl KnobsColumn {
         // было); у вида колёс прокрутки нет — он стоит на нуле.
         let initial_offset_pt = match view_kind {
             ControlViewKind::Scales => ctx.state.calibration().scales_scroll_offset_pt(),
-            ControlViewKind::Wheels => 0.0,
+            ControlViewKind::Wheels | ControlViewKind::Bars => 0.0,
         };
         let list = ScrollList::along(
             ScrollAxis::Vertical,

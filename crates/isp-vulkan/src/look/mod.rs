@@ -32,8 +32,17 @@
 //! | 36 | тон вида: x — включён (1.0) или нейтрален (0.0), y — `q` (серый экрана, `√Y_g`), z — `1/q`, w — `1/(1 − q)` |
 //! | 37 | наклоны тона: x — тени у чёрного, y — света у белого, z — контраст на сером, w — средние тона у чёрного |
 //! | 38 | x — доля растянутого цвета, y, z, w — 0 |
+//! | 39 | полоски R, G, B (решения 339–343): x — включены (1.0) или нейтральны (0.0), y — `c` («носок» кодирования), z — `√c`, w — `n = √(1 + c) − √c` |
+//! | 40 | x — `1/n`, y, z, w — 0 |
+//! | 41–43 | `W → основа каналов` (по строкам, w = 0) |
+//! | 44–46 | `основа каналов → W` (по строкам, w = 0) |
+//! | 47 | Lift: `l` для R, G, B (xyz), w = 0 |
+//! | 48 | Gamma: наклон `s` для R, G, B |
+//! | 49 | Gain: `G` для R, G, B |
+//! | 50 | Offset: `o` для R, G, B |
 //!
-//! Тон и цвет независимы: нейтральный цвет кладёт нули в строки 0–35, нейтральный тон — в 36–38; шейдер их не читает. Нейтральные колёса (`wheels: None`) — нули в
+//! Тон, полоски и цвет независимы: нейтральный цвет кладёт нули в строки 0–35, нейтральный тон — в 36–38, нейтральные
+//! полоски — в 39–50; шейдер их не читает (флаг в строках 0, 36 и 39). Нейтральные колёса (`wheels: None`) — нули в
 //! строках 31–35 при любом цвете; флаг цвета (строка 0) остаётся 1, если тронуто что-то ещё или сами колёса.
 //!
 //! # LUT
@@ -47,6 +56,7 @@ pub use lut_buffer::{LookLutError, LookLutLimits};
 
 use isp_model::look::bands::MAX_LOOK_BANDS;
 use isp_model::look::color::LookColorParams;
+use isp_model::look::primaries::LookPrimaries;
 use isp_model::look::tone_shape::LookTone;
 use isp_model::look::wheels::LookWheels;
 use isp_model::params::IspParams;
@@ -54,13 +64,16 @@ use isp_model::params::IspParams;
 use crate::std140::Std140Writer;
 
 /// Число строк блока (зеркало `LOOK_ROWS` в `look_stage.glsl`).
-pub(crate) const LOOK_ROWS: usize = COLOR_ROWS + TONE_ROWS;
+pub(crate) const LOOK_ROWS: usize = COLOR_ROWS + TONE_ROWS + PRIMARIES_ROWS;
 
 /// Строк цвета вида (0–35): флаги, числа, матрицы OKLab, полосы, колёса.
 const COLOR_ROWS: usize = 36;
 
 /// Строк тона вида (36–38).
 const TONE_ROWS: usize = 3;
+
+/// Строк полосок R, G, B (39–50): константы кодирования (2), две матрицы 3×3 (6), Lift, Gamma, Gain, Offset (4).
+const PRIMARIES_ROWS: usize = 12;
 
 /// Размер блока в байтах.
 pub(crate) const LOOK_UNIFORM_BYTES: usize = LOOK_ROWS * 16;
@@ -76,6 +89,7 @@ pub(crate) fn pack_look_uniforms(params: &IspParams) -> [u8; LOOK_UNIFORM_BYTES]
     let mut writer = Std140Writer::default();
     write_color(&mut writer, params.look.color.as_ref());
     write_tone(&mut writer, params.look.tone.as_ref());
+    write_primaries(&mut writer, params.look.primaries.as_ref());
     writer.finish::<LOOK_UNIFORM_BYTES>()
 }
 
@@ -130,6 +144,23 @@ fn write_tone(writer: &mut Std140Writer, tone: Option<&LookTone>) {
         tone.midtone_slope,
     ]);
     writer.vec4([tone.color_follow, 0.0, 0.0, 0.0]);
+}
+
+/// Пишет строки полосок 39–50; нейтральные полоски (`None`) — нули, шейдер дальше флага их не читает.
+fn write_primaries(writer: &mut Std140Writer, primaries: Option<&LookPrimaries>) {
+    let Some(primaries) = primaries else {
+        write_zero_rows(writer, PRIMARIES_ROWS);
+        return;
+    };
+    let encoding = &primaries.encoding;
+    writer.vec4([1.0, encoding.toe, encoding.toe_root, encoding.scale]);
+    writer.vec4([encoding.inverse_scale, 0.0, 0.0, 0.0]);
+    writer.matrix3(primaries.working_to_basis);
+    writer.matrix3(primaries.basis_to_working);
+    // По строке на зону; в строке — каналы R, G, B (xyz).
+    for [red, green, blue] in [primaries.lift, primaries.gamma_slope, primaries.gain, primaries.offset] {
+        writer.vec4([red, green, blue, 0.0]);
+    }
 }
 
 /// Пишет `count` нулевых строк.

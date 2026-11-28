@@ -588,6 +588,47 @@ fn a_built_backdrop_pyramid_in_the_calibrate_section_rejects_the_window_and_else
 }
 
 #[test]
+fn a_primaries_look_window_reports_the_primaries_stage_and_rejects_a_render_without_them() {
+    let recipe_for = |stage: StageSetting| {
+        let product = LookRecipe {
+            base: ToneBaseModel::Agx,
+            settings: LookSettings::NEUTRAL,
+        };
+        let look = match stage {
+            StageSetting::On => LookRow::Primaries.on_look(),
+            StageSetting::Off => LookRow::Primaries.off_look(),
+        };
+        look.recipe_from(&product, &MeasurementLookConfig::default())
+    };
+    let on = recipe_for(StageSetting::On);
+    let off = recipe_for(StageSetting::Off);
+    let window_on = || {
+        observer(
+            StageBudgetRowSetting::Look(LookRow::Primaries),
+            StageSetting::On,
+            StageBudgetSurface::BareViewfinder,
+        )
+        .expecting_look(Some(on.clone()))
+    };
+
+    // Рендер показал полоски образца: окно принято, отчёт говорит «полоски включены, колёса и тон нет».
+    let mut accepted = window_on();
+    run_window(&mut accepted, reading_showing(&on), (0, 0, 0), (0, 0, 0), None);
+    let closed = accepted.finish(quiet_thermal()).expect("окно закрыто");
+    assert_eq!(closed.condition.refusal, None);
+    let look = closed.condition.look.expect("отчёт о виде окна");
+    assert!(look.primaries_active && !look.wheels_active && !look.tone_active);
+    assert_eq!(look.measurement_look, "primaries_sample");
+    assert_eq!(look.recipe_fingerprint, on.fingerprint_hex());
+
+    // Рендер остался без полосок: окно отвергнуто как «состояние не применено», а не измерило пустоту.
+    let mut rejected = window_on();
+    run_window(&mut rejected, reading_showing(&off), (0, 0, 0), (0, 0, 0), None);
+    let closed = rejected.finish(quiet_thermal()).expect("окно закрыто");
+    assert_eq!(mismatches_of(&closed), vec![StateMismatch::LookNotApplied]);
+}
+
+#[test]
 fn the_look_samples_used_by_window_tests_really_differ_from_the_product() {
     // Страховка самих тестов: образцы колёс непусты, иначе окно A и окно B были бы неразличимы.
     let on = wheels_recipe(StageSetting::On);

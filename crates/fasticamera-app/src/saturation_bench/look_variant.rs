@@ -43,6 +43,8 @@ pub enum ParityCase {
     WheelsSample,
     /// Образец ручек тона из конфига замеров (стадия тона 14l).
     ToneSample,
+    /// Образец 12 полосок из конфига замеров (стадия полосок 14t).
+    PrimariesSample,
 }
 
 /// Вид линейки паритета: основа тона и случай.
@@ -89,6 +91,10 @@ impl ParityLook {
                     ..LookSettings::NEUTRAL
                 }
             }
+            ParityCase::PrimariesSample => LookSettings {
+                primaries: inputs.measurement_look().primaries_sample,
+                ..LookSettings::NEUTRAL
+            },
         };
         Ok(LookRecipe {
             base: self.base,

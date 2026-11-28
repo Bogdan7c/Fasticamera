@@ -4,6 +4,8 @@
 //! Редьюсер — `reduce/calibration.rs` (ручки, приборы, «чистяк») и `reduce/presets.rs` (пресеты и ввод имени);
 //! значения ручек живут у библиотеки пресетов и приходят фактами (`look_view`).
 
+mod bars_config;
+mod bars_frames;
 mod config;
 mod eye;
 mod knob_stops_config;
@@ -13,9 +15,13 @@ mod scope_frames;
 mod scope_labels_view;
 mod scope_strip_frames;
 mod state;
+mod view_fault;
 mod wheels_frames;
 mod widgets_config;
 
+pub use bars_config::{BarsLookConfig, ChannelColors};
+pub(crate) use bars_frames::BarsFrames;
+pub use bars_frames::{BarsFramesError, BarsRulerPlacement, bars_ruler_placements};
 pub use config::{CalibrationConfig, CalibrationConfigError};
 pub use knob_stops_config::KnobStopsLookConfig;
 pub use layout::{CalibrationLayout, CalibrationLayoutError, CalibrationZones};
@@ -26,6 +32,7 @@ pub use scope_strip_frames::ScopeStripFrames;
 pub use state::{
     CalibrationState, CleanViewState, ControlViewKind, DeleteConfirmation, Naming, PendingText, SectionCard, TextFlow,
 };
+pub(crate) use view_fault::control_view_fault;
 pub use wheels_frames::WheelPadPlacement;
 pub(crate) use wheels_frames::{ColumnFrames, WheelsFrames, wheel_pad_placement};
 pub use widgets_config::{CalibrationWidgetsConfig, CalibrationWidgetsConfigError};

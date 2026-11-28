@@ -68,6 +68,19 @@ fn each_branch_case_turns_on_exactly_its_own_branch_over_neutral_settings() {
         (sample.contrast, sample.midtones, sample.shadows, sample.highlights)
     );
     assert_eq!(tone.base, ToneBaseModel::Legacy);
+
+    let primaries = parity(ToneBaseModel::Filmic, ParityCase::PrimariesSample)
+        .recipe(&inputs)
+        .unwrap();
+    assert_eq!(primaries.settings.primaries, inputs.measurement_look().primaries_sample);
+    assert!(!primaries.settings.primaries.is_neutral(), "полоски тронуты");
+    assert!(
+        primaries.settings.bands.is_neutral()
+            && primaries.settings.wheels == neutral.wheels
+            && primaries.settings.contrast == neutral.contrast,
+        "остальные ветки не тронуты"
+    );
+    assert_eq!(primaries.base, ToneBaseModel::Filmic);
     assert_eq!(tone.settings.wheels, neutral.wheels);
 }
 
@@ -97,6 +110,7 @@ fn measured_look_serializes_as_the_stable_measurement_name() {
         (MeasurementLook::NeutralOnProductBase, "neutral"),
         (MeasurementLook::ToneBase(ToneBaseModel::Legacy), "tone_base_legacy"),
         (MeasurementLook::WithoutTone, "without_tone"),
+        (MeasurementLook::WithoutPrimaries, "without_primaries"),
     ];
     for (look, name) in looks {
         assert_eq!(
@@ -145,6 +159,7 @@ fn only_recipes_with_touched_bands_get_the_near_neutral_bands_allowance() {
         for narrow in [
             ParityCase::WheelsSample,
             ParityCase::ToneSample,
+            ParityCase::PrimariesSample,
             ParityCase::ProductLook,
         ] {
             assert_eq!(allowance_of(narrow), ErrorAllowance::Standard, "{base:?}: {narrow:?}");

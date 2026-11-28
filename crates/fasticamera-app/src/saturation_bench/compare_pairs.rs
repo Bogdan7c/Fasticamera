@@ -47,6 +47,10 @@ pub const PAIRS: &[ComparePair] = &[
         variant: "look_tone_sample",
         reference: "look_without_tone",
     },
+    ComparePair {
+        variant: "look_primaries_sample",
+        reference: "look_without_primaries",
+    },
 ];
 
 /// Эталон, с которым сравнивается работа `name` (`None` — работа ни с чем не сравнивается).

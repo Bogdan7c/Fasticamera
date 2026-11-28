@@ -108,7 +108,7 @@ fn v2_file_without_edits_stays_clean() {
 }
 
 #[test]
-fn first_save_backs_up_v2_file_byte_exact_then_writes_v3_once() {
+fn first_save_backs_up_v2_file_byte_exact_then_writes_v4_once() {
     for (label, fixture) in [("bk2-edits", WITH_EDITS), ("bk2-none", NO_EDITS)] {
         let dir = dir_with_file(label, fixture);
         let opened = open(dir.path());
@@ -124,7 +124,11 @@ fn first_save_backs_up_v2_file_byte_exact_then_writes_v3_once() {
         assert_eq!(fs::read(&backups[0]).unwrap(), fixture, "{label}: копия побайтно");
 
         let written: Value = serde_json::from_slice(&fs::read(presets_file(dir.path())).unwrap()).unwrap();
-        assert_eq!(written["schema_version"], 3, "{label}");
+        assert_eq!(written["schema_version"], 4, "{label}");
+        assert!(
+            written["user_presets"][0]["settings"]["primaries"].is_object(),
+            "{label}"
+        );
         assert_eq!(written["user_presets"][0]["base"], "agx", "{label}");
         assert!(written["user_presets"][0]["settings"]["wheels"].is_object(), "{label}");
 

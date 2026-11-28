@@ -1,0 +1,143 @@
+{
+  "schema_version": 4,
+  "next_id": 2,
+  "active": {
+    "user": 1
+  },
+  "edits": {
+    "base": "aces",
+    "settings": {
+      "contrast": -0.5,
+      "midtones": 0.0,
+      "shadows": 1.0,
+      "highlights": -0.6,
+      "saturation": 0.08,
+      "vibrance": 0.1,
+      "warmth": -0.25,
+      "tint": 0.0,
+      "bands": [],
+      "wheels": {
+        "lift": {
+          "push": [
+            0.0,
+            0.0
+          ],
+          "ring": 0.0
+        },
+        "gamma": {
+          "push": [
+            0.0,
+            0.0
+          ],
+          "ring": 0.0
+        },
+        "gain": {
+          "push": [
+            0.0,
+            0.0
+          ],
+          "ring": 0.0
+        },
+        "offset": {
+          "push": [
+            0.0,
+            0.0
+          ],
+          "ring": 0.0
+        }
+      },
+      "primaries": {
+        "lift": {
+          "red": -0.1,
+          "green": 0.0,
+          "blue": 0.0
+        },
+        "gamma": {
+          "red": 0.0,
+          "green": 0.0,
+          "blue": 0.0
+        },
+        "gain": {
+          "red": 0.0,
+          "green": 0.0,
+          "blue": -0.45
+        },
+        "offset": {
+          "red": 0.0,
+          "green": 0.2,
+          "blue": 0.0
+        }
+      }
+    }
+  },
+  "user_presets": [
+    {
+      "id": 1,
+      "name": "Evening",
+      "base": "aces",
+      "settings": {
+        "contrast": 1.0,
+        "midtones": 0.0,
+        "shadows": 1.0,
+        "highlights": -0.6,
+        "saturation": 0.08,
+        "vibrance": 0.1,
+        "warmth": -0.25,
+        "tint": 0.0,
+        "bands": [],
+        "wheels": {
+          "lift": {
+            "push": [
+              0.0,
+              0.0
+            ],
+            "ring": 0.0
+          },
+          "gamma": {
+            "push": [
+              0.0,
+              0.0
+            ],
+            "ring": 0.0
+          },
+          "gain": {
+            "push": [
+              0.0,
+              0.0
+            ],
+            "ring": 0.0
+          },
+          "offset": {
+            "push": [
+              0.0,
+              0.0
+            ],
+            "ring": 0.0
+          }
+        },
+        "primaries": {
+          "lift": {
+            "red": 0.3,
+            "green": 0.0,
+            "blue": 0.0
+          },
+          "gamma": {
+            "red": 0.0,
+            "green": 0.0,
+            "blue": 0.0
+          },
+          "gain": {
+            "red": 0.0,
+            "green": 0.0,
+            "blue": -0.45
+          },
+          "offset": {
+            "red": 0.0,
+            "green": 0.0,
+            "blue": 0.0
+          }
+        }
+      }
+    }
+  ]
+}

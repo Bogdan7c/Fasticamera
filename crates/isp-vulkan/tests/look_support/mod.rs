@@ -21,7 +21,8 @@ use isp_model::look::LookControls;
 use isp_model::look::lut::LookLut;
 use isp_model::look::model::LookModelSettings;
 use look_contract::{
-    BandAdjustment, BandAdjustments, ColorWheel, ColorWheels, LookKnob, LookSettings, WheelPush, WheelZone,
+    BandAdjustment, BandAdjustments, ChannelPrimaries, ColorWheel, ColorWheels, LookKnob, LookSettings, PrimaryChannel,
+    WheelPush, WheelZone,
 };
 
 /// Ручка со значением `value` ∈ [−1, 1].
@@ -224,6 +225,84 @@ pub fn wheels_parity_cases() -> Vec<(String, LookControls)> {
             bands: BandAdjustments::new(vec![band(1, 0.6, -0.4, 0.3)]).unwrap(),
             ..LookSettings::NEUTRAL
         }),
+    ));
+    cases
+}
+
+/// Вид только с полосками `primaries`.
+pub fn bars_look(primaries: ChannelPrimaries) -> LookControls {
+    controls(LookSettings {
+        primaries,
+        ..LookSettings::NEUTRAL
+    })
+}
+
+/// Полоски зоны `zone`: значения R, G, B (остальные зоны нейтральны).
+pub fn zone_bars(zone: WheelZone, red: f32, green: f32, blue: f32) -> ChannelPrimaries {
+    ChannelPrimaries::NEUTRAL
+        .with_value(zone, PrimaryChannel::Red, knob(red))
+        .with_value(zone, PrimaryChannel::Green, knob(green))
+        .with_value(zone, PrimaryChannel::Blue, knob(blue))
+}
+
+/// Все 12 полосок тронуты разными значениями (перестановка зон или каналов даст другую картинку).
+pub fn all_bars() -> ChannelPrimaries {
+    ChannelPrimaries::NEUTRAL
+        .with_value(WheelZone::Lift, PrimaryChannel::Red, knob(0.6))
+        .with_value(WheelZone::Lift, PrimaryChannel::Green, knob(-0.3))
+        .with_value(WheelZone::Lift, PrimaryChannel::Blue, knob(0.9))
+        .with_value(WheelZone::Gamma, PrimaryChannel::Red, knob(-0.5))
+        .with_value(WheelZone::Gamma, PrimaryChannel::Green, knob(0.7))
+        .with_value(WheelZone::Gamma, PrimaryChannel::Blue, knob(0.2))
+        .with_value(WheelZone::Gain, PrimaryChannel::Red, knob(0.8))
+        .with_value(WheelZone::Gain, PrimaryChannel::Green, knob(-0.6))
+        .with_value(WheelZone::Gain, PrimaryChannel::Blue, knob(-0.2))
+        .with_value(WheelZone::Offset, PrimaryChannel::Red, knob(-0.4))
+        .with_value(WheelZone::Offset, PrimaryChannel::Green, knob(0.3))
+        .with_value(WheelZone::Offset, PrimaryChannel::Blue, knob(0.5))
+}
+
+/// Виды паритета полосок (общие для видоискателя, качественного пути и снимка): каждая зона с разными значениями
+/// каналов и с тремя краями «−1», все 12 вместе, и «всё вместе» — тон, полоски, колёса, насыщенность, полоса (и с
+/// таблицей): порядок стадий тон → полоски → цвет → LUT.
+pub fn bars_parity_cases() -> Vec<(String, LookControls)> {
+    let mut cases = Vec::new();
+    for (zone, name) in [
+        (WheelZone::Lift, "Lift"),
+        (WheelZone::Gamma, "Gamma"),
+        (WheelZone::Gain, "Gain"),
+        (WheelZone::Offset, "Offset"),
+    ] {
+        cases.push((
+            format!("полоски {name}: R+1 G−0,6 B+0,3"),
+            bars_look(zone_bars(zone, 1.0, -0.6, 0.3)),
+        ));
+        cases.push((
+            format!("полоски {name}: все −1"),
+            bars_look(zone_bars(zone, -1.0, -1.0, -1.0)),
+        ));
+    }
+    cases.push(("полоски: все 12 вместе".to_owned(), bars_look(all_bars())));
+    let everything = LookSettings {
+        contrast: knob(0.5),
+        midtones: knob(-0.3),
+        primaries: all_bars(),
+        wheels: all_wheels(),
+        // Насыщенность и сочность умеренные: тон + колёса + насыщенность 0,5 + сочность 0,3 уже БЕЗ полосок на
+        // «прежней основе / P3 / развёртке по оттенку» выходят на 1,1·10⁻⁵ над шагом fp16 (допуск 10⁻⁵): это старый
+        // запас кубического корня OKLab на GPU (`pow`), а не полоски (замер 14t, см. отчёт).
+        saturation: knob(0.25),
+        vibrance: knob(0.15),
+        bands: BandAdjustments::new(vec![band(1, 0.6, -0.4, 0.3)]).unwrap(),
+        ..LookSettings::NEUTRAL
+    };
+    cases.push((
+        "полоски: тон + полоски + колёса + насыщенность + полоса".to_owned(),
+        controls(everything.clone()),
+    ));
+    cases.push((
+        "полоски: всё вместе + таблица".to_owned(),
+        with_lut(controls(everything), known_lut()),
     ));
     cases
 }

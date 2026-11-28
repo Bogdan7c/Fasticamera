@@ -26,6 +26,8 @@ pub struct LookReport {
     pub wheels_active: bool,
     /// Хоть одна ручка тона не в нуле (стадия тона 14l исполняется).
     pub tone_active: bool,
+    /// Хоть одна из 12 полосок не в нуле (стадия полосок 14t исполняется).
+    pub primaries_active: bool,
     /// Имя вида замера (`tone_base_agx`, `neutral`, …), если его ставил сценарий; иначе `product`.
     pub measurement_look: &'static str,
 }
@@ -49,6 +51,7 @@ impl LookReport {
             layer_neutral: settings.is_neutral(),
             wheels_active: !settings.wheels.is_neutral(),
             tone_active: tone_knobs_active(settings),
+            primaries_active: !settings.primaries.is_neutral(),
             measurement_look: measurement.map_or(PRODUCT_LOOK_NAME, MeasurementLook::name),
         }
     }

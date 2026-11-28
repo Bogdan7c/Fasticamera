@@ -7,7 +7,8 @@
 //! идёт программно и привязана к ИЗМЕНЕНИЮ фактов, а не к сравнению с линейкой каждый кадр.
 
 use look_contract::{
-    BandAxis, GlobalKnob, HueBandId, LookControl, LookFacts, LookKnob, LookSettings, WheelPart, WheelZone,
+    BandAxis, GlobalKnob, HueBandId, LookControl, LookFacts, LookKnob, LookSettings, PrimaryChannel, WheelPart,
+    WheelZone,
 };
 use std::num::NonZeroU32;
 use ui_core::geometry::Rect;
@@ -24,6 +25,7 @@ use ui_kit::view::{RulerMarkerStyle, RulerStopTickStyle};
 
 use super::knob_scale::KnobScale;
 use super::knob_stops::RowStops;
+use super::primary_row;
 
 use super::paint::NodePaint;
 use super::reset_disc::draw_reset_disc;
@@ -47,6 +49,8 @@ pub(super) enum RowTarget {
     BandAxis(BandAxis),
     /// Кольцо яркости ВЫБРАННОГО колеса (какое колесо — решает выбор экрана; решение 205).
     WheelRing,
+    /// Полоска канала R, G или B ВЫБРАННОЙ зоны (зону решает общая вкладка экрана; решение 343).
+    Primary(PrimaryChannel),
 }
 
 /// Номер строки кольца яркости колеса среди строк раздела: после восьми ручек, трёх осей полосы и основы тона
@@ -63,6 +67,8 @@ enum RowBinding {
     Band(Option<HueBandId>),
     /// Кольцо выбранного колеса.
     Wheel(WheelZone),
+    /// Полоска выбранной зоны (вкладка общая с колёсами).
+    Primary(WheelZone),
 }
 
 impl RowBinding {
@@ -72,6 +78,7 @@ impl RowBinding {
             RowTarget::Knob(_) => RowBinding::Fixed,
             RowTarget::BandAxis(_) => RowBinding::Band(ctx.state.calibration().selected_band().cloned()),
             RowTarget::WheelRing => RowBinding::Wheel(ctx.state.calibration().selected_wheel()),
+            RowTarget::Primary(_) => RowBinding::Primary(ctx.state.calibration().selected_wheel()),
         }
     }
 }
@@ -93,6 +100,7 @@ impl RowTarget {
                         .map_or(0, |i| i as u8)
             }
             RowTarget::WheelRing => WHEEL_RING_SLOT,
+            RowTarget::Primary(channel) => primary_row::slot_of(channel),
         }
     }
 
@@ -111,6 +119,7 @@ impl RowTarget {
             RowTarget::BandAxis(BandAxis::Saturation) => "SAT",
             RowTarget::BandAxis(BandAxis::Luminance) => "LUM",
             RowTarget::WheelRing => "RING",
+            RowTarget::Primary(channel) => primary_row::title_of(channel),
         }
     }
 
@@ -126,6 +135,9 @@ impl RowTarget {
                 zone: *zone,
                 part: WheelPart::Ring,
             }),
+            (RowTarget::Primary(channel), RowBinding::Primary(zone)) => {
+                Some(LookControl::Primary { zone: *zone, channel })
+            }
             _ => None,
         }
     }
@@ -150,6 +162,7 @@ impl RowTarget {
             (RowTarget::Knob(knob), _) => settings.knob(knob),
             (RowTarget::BandAxis(axis), RowBinding::Band(Some(band))) => settings.bands.for_band(band).axis(axis),
             (RowTarget::WheelRing, RowBinding::Wheel(zone)) => settings.wheels.wheel(*zone).ring,
+            (RowTarget::Primary(channel), RowBinding::Primary(zone)) => settings.primaries.value(*zone, channel),
             _ => LookKnob::NEUTRAL,
         }
     }
@@ -495,6 +508,17 @@ impl RulerRow {
                 };
                 out.actions.push(ScreenAction::WheelRingDragged { zone, ring: knob });
             }
+            RowTarget::Primary(channel) => {
+                let Some(RowBinding::Primary(zone)) = self.dragged.clone().or_else(|| Some(self.bound.clone())) else {
+                    self.invalid_values += 1;
+                    return;
+                };
+                out.actions.push(ScreenAction::PrimaryDragged {
+                    zone,
+                    channel,
+                    value: knob,
+                });
+            }
         }
     }
 
@@ -521,9 +545,11 @@ impl RulerRow {
         let half_width = self.frames.row.size.width / 2.0;
         let title_y = config.row_title_height_pt / 2.0 - self.frames.row.size.height / 2.0;
         let title = texts.run(ctx, self.target.title(), TextRoleKind::CardTitle)?;
+        // Подпись полоски канала красится цветом канала (из конфига), остальные — обычным цветом подписей.
+        let title_color = primary_row::accent_of(self.target, ctx).unwrap_or(colors.panel_label);
         layers.push(
             Layer::Content,
-            paint.text_left(title, -half_width, title_y, colors.panel_label),
+            paint.text_left(title, -half_width, title_y, title_color),
         );
         let value_run = texts.run(ctx, &self.scale.label(value), TextRoleKind::ScaleValue)?;
         let value_right = half_width - reset_side - config.value_gap_pt;

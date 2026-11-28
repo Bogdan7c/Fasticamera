@@ -96,7 +96,17 @@ pub enum StillCommandOutcome {
     Accepted,
     /// Бэкенд снимок не умеет (тестовый паттерн, fake, нет камеры): команда возвращается потоку,
     /// и поток сам завершает снимок честным `NotSecured`.
-    Unsupported(StillCommand),
+    ///
+    /// Команда в `Box`: `StillBegin` несёт вид со всеми ручками (с 14t — ещё 12 полосок), и без индирекции перечисление
+    /// из-за редкого `Unsupported` весило бы как самая большая команда на каждый `Accepted`.
+    Unsupported(Box<StillCommand>),
+}
+
+impl StillCommandOutcome {
+    /// «Не поддержано»: команда возвращается потоку рендера целиком.
+    pub fn unsupported(command: StillCommand) -> Self {
+        Self::Unsupported(Box::new(command))
+    }
 }
 
 /// Учёт команд снимка потоком рендера (для статуса и smoke-сценариев).

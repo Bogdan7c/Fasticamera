@@ -94,7 +94,8 @@ fn saved_file_has_documented_shape() {
     opened.library.save_as_new_preset(name("Mine")).unwrap();
     opened.store.save(&opened.library.snapshot()).unwrap();
     let json: Value = serde_json::from_slice(&fs::read(presets_file(dir.path())).unwrap()).unwrap();
-    assert_eq!(json["schema_version"], 3);
+    assert_eq!(json["schema_version"], 4);
+    assert!(json["user_presets"][0]["settings"]["primaries"]["lift"]["red"].is_number());
     assert_eq!(json["user_presets"][0]["base"], "agx");
     assert_eq!(json["next_id"], 2);
     assert_eq!(json["active"], json!({"user": 1}));
@@ -165,9 +166,9 @@ fn missing_or_non_numeric_schema_version_goes_to_quarantine() {
 
 #[test]
 fn newer_schema_goes_to_quarantine_and_bytes_are_kept() {
-    let content = br#"{"schema_version":4,"future":"field"}"#;
+    let content = br#"{"schema_version":5,"future":"field"}"#;
     assert_quarantined("newer", content, |r| {
-        *r == CorruptionReason::NewerSchema { found: 4, supported: 3 }
+        *r == CorruptionReason::NewerSchema { found: 5, supported: 4 }
     });
 }
 
@@ -175,32 +176,44 @@ fn newer_schema_goes_to_quarantine_and_bytes_are_kept() {
 fn wrong_shape_and_bad_values_go_to_quarantine() {
     let base = |extra: &str| {
         format!(
-            r#"{{"schema_version":3,"next_id":1,"active":{{"builtin":"honest"}},"edits":null,"user_presets":[]{extra}}}"#
+            r#"{{"schema_version":4,"next_id":1,"active":{{"builtin":"honest"}},"edits":null,"user_presets":[]{extra}}}"#
         )
     };
     assert_quarantined("extra", base(r#","surprise":1"#).as_bytes(), |r| {
         matches!(r, CorruptionReason::InvalidShape(_))
     });
-    assert_quarantined("noactive", br#"{"schema_version":3,"next_id":1}"#, |r| {
+    assert_quarantined("noactive", br#"{"schema_version":4,"next_id":1}"#, |r| {
         matches!(r, CorruptionReason::InvalidShape(_))
     });
-    let out_of_range = br#"{"schema_version":3,"next_id":2,"active":{"user":1},"edits":null,
+    let out_of_range = br#"{"schema_version":4,"next_id":2,"active":{"user":1},"edits":null,
         "user_presets":[{"id":1,"name":"X","base":"agx","settings":{"contrast":9,"midtones":0,"shadows":0,
         "highlights":0,"saturation":0,"vibrance":0,"warmth":0,"tint":0,
-        "wheels":{"lift":{"push":[0,0],"ring":0},"gamma":{"push":[0,0],"ring":0},"gain":{"push":[0,0],"ring":0},"offset":{"push":[0,0],"ring":0}}}}]}"#;
+        "wheels":{"lift":{"push":[0,0],"ring":0},"gamma":{"push":[0,0],"ring":0},"gain":{"push":[0,0],"ring":0},"offset":{"push":[0,0],"ring":0}},
+        "primaries":{"lift":{"red":0,"green":0,"blue":0},"gamma":{"red":0,"green":0,"blue":0},"gain":{"red":0,"green":0,"blue":0},"offset":{"red":0,"green":0,"blue":0}}}}]}"#;
     assert_quarantined("range", out_of_range, |r| {
         matches!(r, CorruptionReason::InvalidShape(_))
     });
-    let bad_name = br#"{"schema_version":3,"next_id":2,"active":{"user":1},"edits":null,
+    let bad_name = br#"{"schema_version":4,"next_id":2,"active":{"user":1},"edits":null,
         "user_presets":[{"id":1,"name":"  ","base":"agx","settings":{"contrast":0,"midtones":0,"shadows":0,
         "highlights":0,"saturation":0,"vibrance":0,"warmth":0,"tint":0,
-        "wheels":{"lift":{"push":[0,0],"ring":0},"gamma":{"push":[0,0],"ring":0},"gain":{"push":[0,0],"ring":0},"offset":{"push":[0,0],"ring":0}}}}]}"#;
+        "wheels":{"lift":{"push":[0,0],"ring":0},"gamma":{"push":[0,0],"ring":0},"gain":{"push":[0,0],"ring":0},"offset":{"push":[0,0],"ring":0}},
+        "primaries":{"lift":{"red":0,"green":0,"blue":0},"gamma":{"red":0,"green":0,"blue":0},"gain":{"red":0,"green":0,"blue":0},"offset":{"red":0,"green":0,"blue":0}}}}]}"#;
     assert_quarantined("name", bad_name, |r| matches!(r, CorruptionReason::InvalidShape(_)));
+    // Файл схемы 4 без обязательного `primaries`: порча, а не молчаливая нейтраль (решения 339–343).
+    let no_primaries = br#"{"schema_version":4,"next_id":2,"active":{"user":1},"edits":null,
+        "user_presets":[{"id":1,"name":"X","base":"agx","settings":{"contrast":0,"midtones":0,"shadows":0,
+        "highlights":0,"saturation":0,"vibrance":0,"warmth":0,"tint":0,
+        "wheels":{"lift":{"push":[0,0],"ring":0},"gamma":{"push":[0,0],"ring":0},"gain":{"push":[0,0],"ring":0},"offset":{"push":[0,0],"ring":0}}}}]}"#;
+    assert_quarantined(
+        "noprimaries",
+        no_primaries,
+        |r| matches!(r, CorruptionReason::InvalidShape(reason) if reason.contains("primaries")),
+    );
 }
 
 #[test]
 fn invariant_violation_in_valid_json_goes_to_quarantine() {
-    let missing_active = br#"{"schema_version":3,"next_id":1,"active":{"user":5},"edits":null,"user_presets":[]}"#;
+    let missing_active = br#"{"schema_version":4,"next_id":1,"active":{"user":5},"edits":null,"user_presets":[]}"#;
     assert_quarantined("ghost", missing_active, |r| {
         *r == CorruptionReason::InvalidContent(SnapshotError::ActivePresetMissing(PresetId::User(UserPresetId(5))))
     });
@@ -431,8 +444,8 @@ fn normal_save_is_durable() {
 const V0_FILE: &[u8] =
     br#"{"schema_version":0,"next_id":1,"preset":{"builtin":"honest"},"edits":null,"user_presets":[]}"#;
 
-/// Тестовый шаг v0 → v1, дальше настоящие продуктовые v1 → v2 и v2 → v3: цепочка доводит файл до текущей схемы.
-fn v0_table() -> [Migration; 3] {
+/// Тестовый шаг v0 → v1, дальше настоящие продуктовые v1 → v2 и v2 → v3 и v3 → v4: цепочка доводит файл до текущей схемы.
+fn v0_table() -> [Migration; 4] {
     [
         Migration {
             from_version: 0,
@@ -440,6 +453,7 @@ fn v0_table() -> [Migration; 3] {
         },
         PRODUCT_MIGRATIONS[0],
         PRODUCT_MIGRATIONS[1],
+        PRODUCT_MIGRATIONS[2],
     ]
 }
 

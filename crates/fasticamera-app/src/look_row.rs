@@ -25,17 +25,20 @@ pub enum LookRow {
     Wheels,
     /// Стадия тона 14l: образец ручек тона против вида без них.
     Tone,
+    /// Полоски 14t: образец 12 полосок против вида без них.
+    Primaries,
 }
 
 impl LookRow {
     /// Все строки вида в порядке таблицы.
-    pub const ALL: [LookRow; 6] = [
+    pub const ALL: [LookRow; 7] = [
         LookRow::ToneBaseAgx,
         LookRow::ToneBaseAces,
         LookRow::ToneBaseFilmic,
         LookRow::Layer,
         LookRow::Wheels,
         LookRow::Tone,
+        LookRow::Primaries,
     ];
 
     /// Имя строки для отчёта, конфига и intent-параметра `stages`.
@@ -47,6 +50,7 @@ impl LookRow {
             Self::Layer => "look_layer",
             Self::Wheels => "look_wheels",
             Self::Tone => "look_tone",
+            Self::Primaries => "look_primaries",
         }
     }
 
@@ -59,6 +63,7 @@ impl LookRow {
             Self::Layer => MeasurementLook::Product,
             Self::Wheels => MeasurementLook::WheelsSample,
             Self::Tone => MeasurementLook::ToneSample,
+            Self::Primaries => MeasurementLook::PrimariesSample,
         }
     }
 
@@ -71,6 +76,7 @@ impl LookRow {
             Self::Layer => MeasurementLook::NeutralOnProductBase,
             Self::Wheels => MeasurementLook::WithoutWheels,
             Self::Tone => MeasurementLook::WithoutTone,
+            Self::Primaries => MeasurementLook::WithoutPrimaries,
         }
     }
 }

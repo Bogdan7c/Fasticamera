@@ -31,8 +31,8 @@ use isp_model::tone::base::ToneBase;
 use isp_support::real_capture::load_real_capture;
 use look_contract::LookSettings;
 use look_support::{
-    all_bands, controls, gray_ramp_mosaic, hue_sweep_mosaic, identity_lut, knob, known_lut, saturation_vibrance,
-    wheels_parity_cases, with_lut,
+    all_bands, bars_parity_cases, controls, gray_ramp_mosaic, hue_sweep_mosaic, identity_lut, knob, known_lut,
+    saturation_vibrance, wheels_parity_cases, with_lut,
 };
 use quality_support::{
     area_of, assert_no_validation_errors, gpu_context_or_skip, max_rgb_difference, padded_frame, run_gpu,
@@ -143,6 +143,7 @@ fn look_matches_reference_for_both_bases_and_outputs_and_differs_from_neutral() 
         .map(|(name, look)| (name.to_owned(), look))
         .collect();
     looks.extend(wheels_parity_cases());
+    looks.extend(bars_parity_cases());
     for (frame_name, sensor, neutral, raw) in frames() {
         for (base_name, base) in bases() {
             for gamut in [DisplayGamut::Srgb, DisplayGamut::DisplayP3] {
@@ -164,7 +165,9 @@ fn look_matches_reference_for_both_bases_and_outputs_and_differs_from_neutral() 
                     // на одной из сцен: у реальных кропов с малой цветностью сдвиг может быть мал, поэтому порог
                     // проверяется на развёртке по оттенку ниже.
                     // Колёса красят зоны светлоты: их сдвиг проверяется на серой шкале, где есть и тени, и света.
-                    let is_wheels_look = look_name.starts_with("колесо") || look_name.starts_with("четыре колеса");
+                    let is_wheels_look = look_name.starts_with("колесо")
+                        || look_name.starts_with("четыре колеса")
+                        || look_name.starts_with("полоски");
                     let checked_frame = if is_wheels_look {
                         "серая шкала"
                     } else {

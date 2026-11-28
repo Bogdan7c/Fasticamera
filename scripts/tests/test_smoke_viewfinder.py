@@ -63,6 +63,7 @@ def look_report(measurement_look: str = "product", tone_base: str = "agx", finge
         "layer_neutral": True,
         "wheels_active": False,
         "tone_active": False,
+        "primaries_active": False,
         "measurement_look": measurement_look,
     }
 

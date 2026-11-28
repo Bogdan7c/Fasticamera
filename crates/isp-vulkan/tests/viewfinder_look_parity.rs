@@ -30,8 +30,8 @@ use isp_vulkan::look::LookLutLimits;
 use isp_vulkan::viewfinder::{IspStage, IspStageSet, ViewfinderError, ViewfinderIsp, ViewfinderStorageFormat};
 use look_contract::{LookSettings, WheelZone};
 use look_support::{
-    all_bands, all_wheels, band, bands, controls, identity_lut, knob, known_lut, saturation_vibrance,
-    single_wheel_look, wheel, wheels_look, wheels_parity_cases, with_lut,
+    all_bands, all_bars, all_wheels, band, bands, bars_look, bars_parity_cases, controls, identity_lut, knob,
+    known_lut, saturation_vibrance, single_wheel_look, wheel, wheels_look, wheels_parity_cases, with_lut,
 };
 use viewfinder_support::{
     ErrorAllowance, ParamsSpec, RunRequest, assert_no_validation_errors, assert_viewfinder_parity,
@@ -291,6 +291,78 @@ fn neutral_look_is_bit_identical_to_the_base_and_switching_does_not_change_the_p
     assert_no_validation_errors(&context);
 }
 
+/// Последовательность «нейтраль → полоски → цвет → полоски + колёса → цвет → нейтраль» на ОДНОМ ISP: строки полосок
+/// не залипают (кадры «цвет» до и после бит в бит), нейтраль возвращается бит в бит, вариант pipeline один.
+#[test]
+fn primary_bars_do_not_stick_between_frames_and_do_not_create_a_pipeline_variant() {
+    let Some(context) = gpu_context_or_skip() else { return };
+    for (base_name, base) in bases() {
+        let spec = spec(base, DisplayGamut::DisplayP3);
+        let raw = hue_sweep(&spec);
+        let config = test_config(ViewfinderStorageFormat::HalfFloatOnly);
+        let neutral = spec.build();
+        let bars = spec.build_with_look(bars_look(all_bars()));
+        let colour = spec.build_with_look(saturation_vibrance(0.7, 0.5));
+        let bars_and_wheels = spec.build_with_look(controls(LookSettings {
+            primaries: all_bars(),
+            wheels: all_wheels(),
+            ..LookSettings::NEUTRAL
+        }));
+        assert!(neutral.look.primaries.is_none() && bars.look.primaries.is_some());
+        let mut isp = ViewfinderIsp::new(&context, &config).unwrap();
+        let gpu_source = viewfinder_support::GpuSource::new(&context, &raw, viewfinder_support::SourceLayout::Raw16);
+        let source = gpu_source.source();
+        let sequence = [&neutral, &bars, &colour, &bars_and_wheels, &colour, &neutral];
+        let mut runs = Vec::new();
+        for (frame, params) in sequence.into_iter().enumerate() {
+            viewfinder_support::record_and_submit(
+                &context,
+                &mut isp,
+                &RunRequest::whole_frame(&raw, params, spec.display()),
+                &source,
+                frame % 2,
+                gpu_vulkan::backdrop::BackdropFrameNumber(frame as u64 + 1),
+            );
+            runs.push(viewfinder_support::readback(&mut isp, frame % 2));
+        }
+        assert_ne!(
+            runs[0].pixels, runs[1].pixels,
+            "{base_name}: полоски не изменили картинку"
+        );
+        assert_ne!(
+            runs[2].pixels, runs[3].pixels,
+            "{base_name}: полоски + колёса не изменили картинку"
+        );
+        assert_ne!(
+            runs[1].pixels, runs[3].pixels,
+            "{base_name}: колёса поверх полосок не изменили картинку"
+        );
+        assert_eq!(
+            runs[2].pixels, runs[4].pixels,
+            "{base_name}: после полосок вид без полосок не вернулся бит-в-бит (строки полосок залипли)"
+        );
+        let product = run_viewfinder(
+            &context,
+            &config,
+            &RunRequest::whole_frame(&raw, &neutral, spec.display()),
+        );
+        assert_eq!(
+            runs[0].pixels, runs[5].pixels,
+            "{base_name}: возврат к нейтрали не бит-в-бит"
+        );
+        assert_eq!(
+            runs[0].pixels, product.pixels,
+            "{base_name}: разные ISP дали разную нейтраль"
+        );
+        assert_eq!(
+            isp.cached_pipeline_variants(),
+            1,
+            "{base_name}: касание полоски создало новый вариант pipeline"
+        );
+    }
+    assert_no_validation_errors(&context);
+}
+
 #[test]
 fn identity_table_keeps_the_picture_and_known_table_matches_reference() {
     let Some(context) = gpu_context_or_skip() else { return };
@@ -374,6 +446,14 @@ fn look_stage_switches_cut_exactly_their_stage() {
             "{base_name}: без стадии цвета картинка равна нейтральной"
         );
         assert_ne!(run(&colour_only, all).pixels, run(&neutral, all).pixels, "{base_name}");
+        // Полоски попадают в срез стадии вида так же, как тон и цвет: без стадии картинка равна нейтральной.
+        let bars_only = spec.build_with_look(bars_look(all_bars()));
+        assert_eq!(
+            run(&bars_only, all.without(IspStage::LookColor)).pixels,
+            run(&neutral, all).pixels,
+            "{base_name}: без стадии вида полоски не должны действовать"
+        );
+        assert_ne!(run(&bars_only, all).pixels, run(&neutral, all).pixels, "{base_name}");
         assert_eq!(
             run(&lut_only, all.without(IspStage::LookColor)).pixels,
             run(&lut_only, all).pixels,
@@ -463,6 +543,17 @@ fn table_larger_than_the_buffer_is_an_explicit_error_and_the_isp_stays_usable() 
         result.math_excess <= viewfinder_support::MATH_EXCESS_TOLERANCE,
         "{result:?}"
     );
+    assert_no_validation_errors(&context);
+}
+
+#[test]
+fn primary_bars_match_reference_on_every_zone_edge_and_together_with_the_rest_of_the_look() {
+    let Some(context) = gpu_context_or_skip() else { return };
+    for (name, look) in bars_parity_cases() {
+        assert_look_changes_the_picture(&name, &look);
+        let worst = assert_look_parity(&context, &name, &look);
+        eprintln!("{name}: худший max |Δ| fp16 = {worst:.3e}");
+    }
     assert_no_validation_errors(&context);
 }
 

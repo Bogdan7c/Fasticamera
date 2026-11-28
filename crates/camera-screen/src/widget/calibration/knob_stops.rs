@@ -36,7 +36,7 @@ impl RowStops {
     pub(super) fn of(target: RowTarget, ctx: &Ctx<'_>) -> Self {
         let sides = match target {
             RowTarget::Knob(knob) => ctx.state.look().knob_stops(knob),
-            RowTarget::BandAxis(_) | RowTarget::WheelRing => KnobSideStops {
+            RowTarget::BandAxis(_) | RowTarget::WheelRing | RowTarget::Primary(_) => KnobSideStops {
                 minus: KnobStop::None,
                 plus: KnobStop::None,
             },

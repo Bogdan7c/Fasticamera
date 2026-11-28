@@ -1,4 +1,4 @@
-//! Группы стенда насыщения `look_cost` и `look_parity` на настоящем GPU ПК (RADV, полная validation) через раннер.
+//! Группы стенда насыщения `look_cost`, `look_parity` и `look_parity_primaries` на настоящем GPU ПК (RADV, полная validation) через раннер.
 //!
 //! Что проверяется (результат, а не вызов):
 //! * `look_cost`: у КАЖДОЙ пары «вкл против выкл» картинка выхода отличается (рычаг действительно меняет работу GPU, а
@@ -198,7 +198,7 @@ fn every_look_cost_lever_changes_the_picture_and_no_work_compiles_a_pipeline_dur
     }
 
     let look_pairs: Vec<_> = PAIRS.iter().filter(|pair| pair.variant.starts_with("look_")).collect();
-    assert_eq!(look_pairs.len(), 6);
+    assert_eq!(look_pairs.len(), 7);
     for pair in look_pairs {
         assert_ne!(
             image_digest(&summary, pair.variant),
@@ -317,6 +317,45 @@ fn on_the_default_d65_neutral_every_parity_work_passes_under_its_own_named_allow
             "{}: строка без нарушений",
             entry.name
         );
+    }
+}
+
+/// 14t: паритет стадии полосок на ПК. Образец 12 полосок на четырёх основах: на лампе и на D65 ошибка математики
+/// внутри СТАНДАРТНОГО допуска (полоски не получают именованного послабления), измерение настоящее (ошибка больше
+/// нуля: шейдер полосок исполнялся и сравнился с CPU-формулой), все сцены измерены.
+#[test]
+fn primaries_parity_works_measure_the_primaries_shader_and_pass_the_standard_allowance_on_both_neutrals() {
+    let Some(context) = gpu_context_or_skip() else { return };
+    let entries = group_entries(WorkloadGroup::LookParityPrimaries);
+    assert_eq!(entries.len(), 4);
+    for (neutral_name, inputs) in [("лампа", lamp_inputs()), ("D65", product_inputs())] {
+        let summary = run_entries(&context, inputs, &entries);
+        println!("| работа ({neutral_name}) | худшая ошибка | max |Δ| | допуск |");
+        for entry in &entries {
+            let record = parity_record(&summary, entry.name);
+            println!(
+                "| {} | {:.3e} | {:.3e} | {} |",
+                entry.name, record.worst_math_excess, record.worst_max_abs, record.allowance
+            );
+            assert_eq!(
+                record.allowance, "standard",
+                "{}: полоскам именованный допуск не положен",
+                entry.name
+            );
+            assert_eq!(record.scenes_measured, 7, "{}: измерены не все сцены", entry.name);
+            assert!(
+                record.passed() && record.worst_math_excess <= MATH_EXCESS_TOLERANCE,
+                "{} ({neutral_name}): ошибка математики {:.3e} > допуск {MATH_EXCESS_TOLERANCE:e}: {:?}",
+                entry.name,
+                record.worst_math_excess,
+                record.violations
+            );
+            assert!(
+                record.worst_max_abs > 0.0,
+                "{}: max |Δ| = 0 — линейка ничего не мерила",
+                entry.name
+            );
+        }
     }
 }
 

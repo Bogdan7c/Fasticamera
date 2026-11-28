@@ -25,7 +25,7 @@ const ORIENTATIONS: [DeviceOrientation; 3] = [
 ];
 /// Корень раздела калибровки в сцене.
 const SECTION_ROOT: &str = "calibration_root";
-const VIEWS: [ControlViewKind; 2] = [ControlViewKind::Scales, ControlViewKind::Wheels];
+const VIEWS: [ControlViewKind; 3] = ControlViewKind::ALL;
 
 /// Проверяет оба правила на текущем кадре и возвращает текст нарушений (пусто — соседство чистое).
 fn neighbourhood_problems(rig: &Rig) -> String {

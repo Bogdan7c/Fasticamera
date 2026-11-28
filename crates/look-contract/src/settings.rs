@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bands::BandAdjustments;
 use crate::knob::LookKnob;
+use crate::primaries::ChannelPrimaries;
 use crate::wheels::ColorWheels;
 
 /// Значения всех ручек вида. Снимок получает именно эти значения «на момент нажатия»
@@ -39,6 +40,10 @@ pub struct LookSettings {
     /// схемы 1 (до колёс) переводит шаг миграции `look-presets`, а не молчаливое умолчание словаря —
     /// иначе сломанный шаг миграции прошёл бы незамеченным.
     pub wheels: ColorWheels,
+    /// Полоски Lift / Gamma / Gain / Offset по каналам R, G, B (решения 339–343). Без `#[serde(default)]`
+    /// намеренно, по той же причине, что у `wheels`: файл схемы 3 (до полосок) переводит шаг миграции
+    /// `look-presets`, а не молчаливое умолчание словаря.
+    pub primaries: ChannelPrimaries,
 }
 
 impl LookSettings {
@@ -54,9 +59,10 @@ impl LookSettings {
         tint: LookKnob::NEUTRAL,
         bands: BandAdjustments::NONE,
         wheels: ColorWheels::NEUTRAL,
+        primaries: ChannelPrimaries::NEUTRAL,
     };
 
-    /// Слой вида ничего не меняет: каждая ручка, каждая полоса и каждое колесо в нуле.
+    /// Слой вида ничего не меняет: каждая ручка, каждая полоса, колесо и полоска каналов в нуле.
     pub fn is_neutral(&self) -> bool {
         self.contrast.is_neutral()
             && self.midtones.is_neutral()
@@ -68,6 +74,7 @@ impl LookSettings {
             && self.tint.is_neutral()
             && self.bands.is_neutral()
             && self.wheels.is_neutral()
+            && self.primaries.is_neutral()
     }
 }
 
@@ -75,11 +82,14 @@ impl LookSettings {
 mod tests {
     use super::*;
     use crate::bands::{BandAdjustment, HueBandId};
+    use crate::primaries::PrimaryChannel;
     use crate::wheels::{ColorWheel, WheelPush, WheelZone};
 
-    /// Нейтральные колёса в JSON — для строк файла, набранных в тестах руками.
+    /// Нейтральные колёса и полоски в JSON — для строк файла, набранных в тестах руками.
     const NEUTRAL_WHEELS_JSON: &str = r#""wheels":{"lift":{"push":[0,0],"ring":0},"gamma":{"push":[0,0],"ring":0},
-        "gain":{"push":[0,0],"ring":0},"offset":{"push":[0,0],"ring":0}}"#;
+        "gain":{"push":[0,0],"ring":0},"offset":{"push":[0,0],"ring":0}},
+        "primaries":{"lift":{"red":0,"green":0,"blue":0},"gamma":{"red":0,"green":0,"blue":0},
+        "gain":{"red":0,"green":0,"blue":0},"offset":{"red":0,"green":0,"blue":0}}"#;
 
     #[test]
     fn default_equals_neutral_and_is_neutral() {
@@ -163,6 +173,30 @@ mod tests {
                 assert_ne!(settings, LookSettings::NEUTRAL);
             }
         }
+    }
+
+    #[test]
+    fn touched_primary_breaks_neutrality_for_every_zone_and_channel() {
+        for zone in WheelZone::ALL {
+            for channel in PrimaryChannel::ALL {
+                let settings = LookSettings {
+                    primaries: ChannelPrimaries::NEUTRAL.with_value(zone, channel, LookKnob::new(-0.1).unwrap()),
+                    ..LookSettings::NEUTRAL
+                };
+                assert!(!settings.is_neutral(), "{zone:?}/{channel:?}");
+                assert_ne!(settings, LookSettings::NEUTRAL);
+            }
+        }
+    }
+
+    #[test]
+    fn missing_primaries_is_an_error_not_a_silent_default() {
+        // Файл схемы 3: колёса есть, полосок нет — словарь не подставляет нейтраль молча.
+        let json = r#"{"contrast":0,"midtones":0,"shadows":0,"highlights":0,"saturation":0,"vibrance":0,
+            "warmth":0,"tint":0,"wheels":{"lift":{"push":[0,0],"ring":0},"gamma":{"push":[0,0],"ring":0},
+            "gain":{"push":[0,0],"ring":0},"offset":{"push":[0,0],"ring":0}}}"#;
+        let error = serde_json::from_str::<LookSettings>(json).unwrap_err();
+        assert!(error.to_string().contains("primaries"), "{error}");
     }
 
     #[test]

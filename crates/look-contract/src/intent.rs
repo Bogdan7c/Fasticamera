@@ -4,6 +4,7 @@ use crate::bands::HueBandId;
 use crate::control::{BandAxis, GlobalKnob, LookControl};
 use crate::knob::LookKnob;
 use crate::preset::{PresetId, PresetName, UserPresetId};
+use crate::primaries::PrimaryChannel;
 use crate::settings::LookSettings;
 use crate::tone_base::ToneBaseModel;
 use crate::wheels::{WheelPush, WheelZone};
@@ -52,6 +53,17 @@ pub enum LookIntent {
         zone: WheelZone,
         /// Новое значение кольца.
         ring: LookKnob,
+    },
+    /// «Эта полоска (зона × канал) = это значение» поверх текущего вида; остальные 11 полосок, колёса и ручки не
+    /// трогаются. Точечное по той же причине, что [`LookIntent::SetKnob`]: два пальца на разных шкалах в одном
+    /// кадре не должны затирать друг друга устаревшей копией.
+    SetPrimary {
+        /// Какая зона (вкладка).
+        zone: WheelZone,
+        /// Какой канал.
+        channel: PrimaryChannel,
+        /// Новое значение.
+        value: LookKnob,
     },
     /// Сменить модель основы поверх активного пресета (решение 195): такая же правка, как поворот ручки.
     SetToneBase(ToneBaseModel),

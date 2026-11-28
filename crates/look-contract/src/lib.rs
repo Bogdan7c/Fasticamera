@@ -16,6 +16,7 @@ mod fingerprint;
 mod intent;
 mod knob;
 mod preset;
+mod primaries;
 mod recipe;
 mod settings;
 mod tone_base;
@@ -35,6 +36,7 @@ pub use knob::{LookKnob, LookKnobError};
 pub use preset::{
     BuiltinPreset, PRESET_NAME_MAX_CHARS, PresetEntry, PresetId, PresetKind, PresetName, PresetNameError, UserPresetId,
 };
+pub use primaries::{ChannelPrimaries, ChannelTriple, PrimaryChannel};
 pub use recipe::LookRecipe;
 pub use settings::LookSettings;
 pub use tone_base::ToneBaseModel;

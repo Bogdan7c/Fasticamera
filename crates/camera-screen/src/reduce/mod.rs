@@ -15,6 +15,7 @@
 //! * Действие, которое ничего не изменило (не считая метки времени) и не выдало эффектов,
 //!   получает итог `NoChange`: `Tick` без видимых изменений — тоже `NoChange`.
 
+mod bars;
 mod calibration;
 mod exposure;
 mod facts;
@@ -32,6 +33,9 @@ mod wheels;
 mod white;
 mod zoom;
 
+#[cfg(test)]
+#[path = "bars_tests.rs"]
+mod bars_tests;
 #[cfg(test)]
 #[path = "calibration_mode_tests.rs"]
 mod calibration_mode_tests;
@@ -315,6 +319,7 @@ fn dispatch_action(ctx: &mut Ctx<'_>, action: ScreenAction) -> ActionOutcome {
         ScreenAction::WheelSelected(zone) => wheels::on_wheel_selected(ctx, zone),
         ScreenAction::WheelPushDragged { zone, push } => wheels::on_wheel_push_dragged(ctx, zone, push),
         ScreenAction::WheelRingDragged { zone, ring } => wheels::on_wheel_ring_dragged(ctx, zone, ring),
+        ScreenAction::PrimaryDragged { zone, channel, value } => bars::on_primary_dragged(ctx, zone, channel, value),
         ScreenAction::ToneBaseSelected(base) => calibration::on_tone_base_selected(ctx, base),
         ScreenAction::ResetControlTapped(control) => calibration::on_reset_control(ctx, control),
         ScreenAction::ScopeKindSelected(kind) => calibration::on_scope_kind_selected(ctx, kind),

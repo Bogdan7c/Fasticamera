@@ -166,11 +166,14 @@ pub enum WorkloadGroup {
     LookCost,
     /// Паритет GPU с CPU-эталоном НА ТЕЛЕФОНЕ (14o): худшая ошибка математики против допуска; цена строки не важна.
     LookParity,
+    /// Паритет GPU с CPU-эталоном стадии полосок 14t (четыре основы). Отдельная группа: вместе с остальной линейкой
+    /// паритета (20 работ) сводка не помещается в одну запись logcat.
+    LookParityPrimaries,
 }
 
 impl WorkloadGroup {
     /// Все группы.
-    pub const ALL: [WorkloadGroup; 11] = [
+    pub const ALL: [WorkloadGroup; 12] = [
         Self::Baseline,
         Self::UiAblation,
         Self::IspAblation,
@@ -182,6 +185,7 @@ impl WorkloadGroup {
         Self::StillTuning,
         Self::LookCost,
         Self::LookParity,
+        Self::LookParityPrimaries,
     ];
 
     /// Имя группы в конфиге и флаге.
@@ -198,6 +202,7 @@ impl WorkloadGroup {
             Self::StillTuning => "still_tuning",
             Self::LookCost => "look_cost",
             Self::LookParity => "look_parity",
+            Self::LookParityPrimaries => "look_parity_primaries",
         }
     }
 

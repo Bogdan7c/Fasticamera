@@ -7,6 +7,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use super::bars_config::BarsLookConfig;
 use super::knob_stops_config::KnobStopsLookConfig;
 
 /// Сколько таблеток ряда можно завести: номер таблетки идёт в `ButtonId(u8)`, поэтому больше 255 не бывает.
@@ -116,6 +117,8 @@ pub struct CalibrationWidgetsConfig {
     pub knob_zero_magnet_pt: f64,
     /// Вид упоров на шкалах теплоты и оттенка (решения 288, 293).
     pub knob_stops: KnobStopsLookConfig,
+    /// Вид полосок BARS: цвета подписей каналов (решение 343).
+    pub bars: BarsLookConfig,
     /// «Картинка под пальцем» (решение 273): прозрачность остального, пока палец ведёт ручку или колесо
     /// (0 — остальное исчезает совсем). Остальное: панель колонки, шапка, переключатель, прочие строки. `[estimate]`.
     pub finger_focus_others_opacity: f32,
@@ -243,6 +246,7 @@ impl Default for CalibrationWidgetsConfig {
             knob_major_every_steps: 100,
             knob_zero_magnet_pt: 6.0,
             knob_stops: KnobStopsLookConfig::default(),
+            bars: BarsLookConfig::default(),
             finger_focus_others_opacity: 0.0,
             finger_focus_backing_padding_pt: 6.0,
             finger_focus_backing_corner_radius_pt: 16.0,

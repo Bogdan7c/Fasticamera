@@ -6,6 +6,7 @@
 
 use crate::bands::{BandAdjustment, HueBandId};
 use crate::knob::LookKnob;
+use crate::primaries::PrimaryChannel;
 use crate::settings::LookSettings;
 use crate::wheels::WheelZone;
 
@@ -92,6 +93,13 @@ pub enum LookControl {
         zone: WheelZone,
         /// Какая часть колеса.
         part: WheelPart,
+    },
+    /// Одна полоска по каналу в зоне (решения 339–343): 12 адресов.
+    Primary {
+        /// Какая зона (те же вкладки, что у колёс).
+        zone: WheelZone,
+        /// Какой канал.
+        channel: PrimaryChannel,
     },
 }
 

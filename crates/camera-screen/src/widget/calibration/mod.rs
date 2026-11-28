@@ -19,6 +19,7 @@
 //! линейки и кнопки «↻» (яркая / 44 %). Числа вида — `CalibrationWidgetsConfig`.
 
 mod band_dots;
+mod bars;
 mod clean_button;
 mod clean_zone;
 mod control_view;
@@ -30,6 +31,7 @@ mod knob_stops;
 mod knobs_column;
 mod menu;
 mod paint;
+mod primary_row;
 mod reset_disc;
 mod scope_labels_draw;
 mod scope_panel;

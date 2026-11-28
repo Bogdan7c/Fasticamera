@@ -165,7 +165,7 @@ fn a_list_whose_report_would_overflow_the_result_line_is_refused_before_the_run(
             estimated_bytes,
             budget_bytes,
         }) => {
-            assert_eq!(workloads, 40);
+            assert_eq!(workloads, 42);
             assert!(estimated_bytes > budget_bytes);
         }
         other => panic!("ожидался отказ «не влезет в строку результата», а не {other:?}"),

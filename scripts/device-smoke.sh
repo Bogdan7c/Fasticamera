@@ -40,7 +40,8 @@
 # умолчание встроенных пресетов: у активного пресета владельца или сохранённых правок своя основа, и тогда флаг ничего не меняет;
 # такой прогон падает с причиной, а не проходит на чужой основе. Строки вида 14o для --stages: look_tone_base_agx,
 # look_tone_base_aces, look_tone_base_filmic (основа против legacy), look_layer (вид продукта против нейтрали на той же основе),
-# look_wheels (колёса образца против без колёс), look_tone (ручки тона образца против без них); допустимы на всех трёх местах.
+# look_wheels (колёса образца против без колёс), look_tone (ручки тона образца против без них), look_primaries (12 полосок
+# образца 14t против без полосок); допустимы на всех трёх местах.
 # --stop-app-after — после получения результата сделать am force-stop нашего пакета (иначе приложение остаётся на экране и греет
 # телефон между замерами; по умолчанию выключено). Внешнее питание отвергает замер, как и раньше.
 # Стенд насыщения 16a: gpu-saturation-bench (по умолчанию 14 работ × ~16 с + паузы ≈ 5 мин, --timeout 600; камера на время замера
@@ -51,10 +52,12 @@
 # display_calibrate, display_calibrate_recompose, headroom_v4, still; ИЛИ имя группы: baseline — эти 14 работ (умолчание),
 # ui_ablation — 7 абляций прохода UI (display_{calibrate,photo}_{glass_only,no_glass,...}), isp_ablation — 14 абляций видоискателя
 # (viewfinder_awb_never, viewfinder_awb_every_frame, viewfinder_without_<стадия>, viewfinder_minimal);
-# look_cost — 10 работ цены вида (look_neutral, look_product, look_tone_base_{legacy,agx,aces,filmic}, look_without_wheels,
-# look_wheels_sample, look_without_tone, look_tone_sample; пары «вкл против выкл» в итоге — diff_vs=), look_parity — 16 работ паритета GPU
+# look_cost — 12 работ цены вида (look_neutral, look_product, look_tone_base_{legacy,agx,aces,filmic}, look_without_wheels,
+# look_wheels_sample, look_without_tone, look_tone_sample, look_without_primaries, look_primaries_sample; пары «вкл против выкл» в итоге — diff_vs=), look_parity — 16 работ паритета GPU
 # с CPU-эталоном на телефоне (look_parity_{agx,aces,filmic,legacy}_{product,bands,wheels,tone}; в сводке parity: имя|ошибка|max_abs|допуск|вердикт,
-# провал, если ошибка математики больше допуска: 1e-5, у рецептов с тронутыми полосами — именованный 3e-5), scopes_* печатают размер картинки прибора (scope_pictures: имя|ШxВ);
+# провал, если ошибка математики больше допуска: 1e-5, у рецептов с тронутыми полосами — именованный 3e-5),
+# look_parity_primaries — 4 работы паритета стадии полосок 14t (look_parity_{agx,aces,filmic,legacy}_primaries, допуск стандартный 1e-5;
+# отдельная группа, потому что 20 работ паритета разом не влезают в одну запись logcat), scopes_* печатают размер картинки прибора (scope_pictures: имя|ШxВ);
 # неизвестное имя — отказ Rust при initialize;
 # дайджест выхода каждой работы — в FASTICAMERA_DETAIL, «база → новое»: python3 scripts/smoke_checks_saturation.py compare A.txt B.txt),
 # --saturation-measure-ms MS и --saturation-warmup-ms MS — окно замера и прогрев каждой работы (умолчание 10000 и 3000).

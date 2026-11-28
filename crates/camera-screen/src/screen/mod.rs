@@ -322,6 +322,17 @@ impl CameraScreen {
         .ok()
     }
 
+    /// Где на поверхности стоят шкалы R, G, B вида BARS (pt), по порядку R, G, B. `None` — вида сейчас нет: не режим
+    /// калибровки, выбран не BARS, нет размера поверхности или колонка слишком низкая. Нужен сквозным тестам, которые
+    /// ведут настоящий палец по шкале; ответ считает та же функция, по которой строится раздел.
+    pub fn bars_ruler_placements(&self) -> Option<[crate::calibration::BarsRulerPlacement; 3]> {
+        let calibration = self.state.calibration();
+        if calibration.control_view() != crate::calibration::ControlViewKind::Bars {
+            return None;
+        }
+        crate::calibration::bars_ruler_placements(calibration.layout()?, &self.config.calibration.widgets).ok()
+    }
+
     pub fn state(&self) -> &ScreenState {
         &self.state
     }
@@ -620,6 +631,9 @@ mod effect_queue_tests;
 #[cfg(test)]
 #[path = "screen_calibration_bands_tests.rs"]
 mod screen_calibration_bands_tests;
+#[cfg(test)]
+#[path = "screen_calibration_bars_tests.rs"]
+mod screen_calibration_bars_tests;
 #[cfg(test)]
 #[path = "screen_calibration_finger_focus_tests.rs"]
 mod screen_calibration_finger_focus_tests;

@@ -1,6 +1,8 @@
 //! Тесты вида для замеров: каждый вариант меняет ровно одну вещь рецепта продукта, образцы проверяются.
 
-use look_contract::{ColorWheels, LookKnob, LookRecipe, LookSettings, ToneBaseModel};
+use look_contract::{
+    ChannelPrimaries, ColorWheels, LookKnob, LookRecipe, LookSettings, PrimaryChannel, ToneBaseModel, WheelZone,
+};
 
 use super::{MeasurementLook, MeasurementLookConfig, MeasurementLookConfigError, ToneKnobsSample, tone_knobs_active};
 
@@ -29,6 +31,10 @@ fn default_config_is_valid_and_turns_both_shader_branches_on() {
         !config.tone_sample.is_neutral(),
         "образец тона обязан включать стадию тона"
     );
+    assert!(
+        !config.primaries_sample.is_neutral(),
+        "образец полосок обязан включать стадию полосок"
+    );
 }
 
 #[test]
@@ -49,6 +55,38 @@ fn neutral_samples_are_rejected_with_the_field_named() {
         neutral_tone.validate(),
         Err(MeasurementLookConfigError::NeutralToneSample)
     );
+    let neutral_primaries = MeasurementLookConfig {
+        primaries_sample: ChannelPrimaries::NEUTRAL,
+        ..MeasurementLookConfig::default()
+    };
+    assert_eq!(
+        neutral_primaries.validate(),
+        Err(MeasurementLookConfigError::NeutralPrimariesSample)
+    );
+}
+
+#[test]
+fn primaries_on_and_off_differ_only_in_the_twelve_primaries() {
+    let product = product_recipe();
+    let config = MeasurementLookConfig::default();
+    let on = MeasurementLook::PrimariesSample.recipe_from(&product, &config);
+    let off = MeasurementLook::WithoutPrimaries.recipe_from(&product, &config);
+    assert_eq!(on.settings.primaries, config.primaries_sample);
+    assert!(off.settings.primaries.is_neutral());
+    // Всё, кроме полосок, — как у продукта: разница окон = цена полосок.
+    assert_eq!(
+        LookSettings {
+            primaries: ChannelPrimaries::NEUTRAL,
+            ..on.settings.clone()
+        },
+        off.settings
+    );
+    assert_eq!(
+        off.settings, product.settings,
+        "у продукта полосок нет — «без полосок» совпадает с ним"
+    );
+    assert_eq!((on.base, off.base), (product.base, product.base));
+    assert_ne!(on.fingerprint(), off.fingerprint(), "отпечаток рецепта видит полоски");
 }
 
 #[test]
@@ -130,6 +168,8 @@ fn names_are_distinct_and_stable() {
         MeasurementLook::WithoutWheels,
         MeasurementLook::ToneSample,
         MeasurementLook::WithoutTone,
+        MeasurementLook::PrimariesSample,
+        MeasurementLook::WithoutPrimaries,
     ];
     let mut names: Vec<_> = looks.iter().map(|look| look.name()).collect();
     names.sort_unstable();
@@ -140,6 +180,8 @@ fn names_are_distinct_and_stable() {
         "имена читает разбор в scripts/ — они обязаны различаться"
     );
     assert_eq!(MeasurementLook::WheelsSample.name(), "wheels_sample");
+    assert_eq!(MeasurementLook::PrimariesSample.name(), "primaries_sample");
+    assert_eq!(MeasurementLook::WithoutPrimaries.name(), "without_primaries");
 }
 
 #[test]
@@ -175,4 +217,16 @@ fn every_default_sample_literal_survives_its_checks() {
     assert_eq!(pushes, [[0.10, -0.20], [-0.15, 0.10], [0.20, 0.15], [-0.05, -0.10]]);
     let rings = [wheels.lift, wheels.gamma, wheels.gain, wheels.offset].map(|wheel| wheel.ring.get());
     assert_eq!(rings, [0.05, -0.05, 0.05, 0.0]);
+    // Образец полосок: все 12 ручек тронуты, по зонам Lift, Gamma, Gain, Offset и каналам R, G, B.
+    let primaries = config.primaries_sample;
+    let by_zone = WheelZone::ALL.map(|zone| PrimaryChannel::ALL.map(|channel| primaries.value(zone, channel).get()));
+    assert_eq!(
+        by_zone,
+        [
+            [0.10, -0.05, 0.08],
+            [-0.10, 0.08, -0.06],
+            [0.06, -0.08, 0.10],
+            [-0.05, 0.04, -0.06]
+        ]
+    );
 }

@@ -1,7 +1,7 @@
 //! Вид органов управления колонки ручек — шов «вид можно заменить» (сессия 14b2: цветовые колёса).
 //!
 //! Колонка ручек не знает, КАК показаны ручки: она даёт виду область под шапкой, прокрутку и жесты, а вид строит
-//! свои узлы и рисует. Видов два: строки-линейки ([`RowsView`]) и колёса цвета ([`WheelsView`]); какой из них — решает
+//! свои узлы и рисует. Видов три: строки-линейки ([`RowsView`]), колёса цвета ([`WheelsView`]) и полоски каналов ([`BarsView`]); какой из них — решает
 //! состояние раздела (`ControlViewKind`), смена вида пересобирает раздел по `SectionKey`.
 
 use look_contract::{BandAxis, BandFacts, GlobalKnob};
@@ -11,6 +11,7 @@ use ui_core::id::NodeId;
 use ui_kit::tokens::TextRoleKind;
 
 use super::band_dots::BandDots;
+use super::bars::BarsView;
 use super::finger_focus::DrivenControl;
 use super::knob_row::{RowTarget, RulerRow};
 use super::paint::NodePaint;
@@ -52,7 +53,9 @@ pub(super) enum ControlView {
     /// Колесо цвета с вкладками (решения 204–207): без прокрутки.
     /// В коробке: вид колёс (линейка кольца) заметно больше строк, а вариант живёт один на колонку.
     Wheels(Box<WheelsView>),
-    /// Вид колёс не поместился в колонку (низкая поверхность): зона пуста, без круга и жестов колёс. Шапка и
+    /// Три полоски каналов под вкладками зон (решение 343): без прокрутки.
+    Bars(Box<BarsView>),
+    /// Вид колёс или полосок не поместился в колонку (низкая поверхность): зона пуста, без круга и жестов колёс. Шапка и
     /// переключатель живут, поэтому из этого вида можно выйти обратно в SCALES.
     Unavailable { window_height_pt: f64 },
 }
@@ -63,6 +66,7 @@ impl ControlView {
         match self {
             ControlView::Rows(rows) => rows.content_height,
             ControlView::Wheels(wheels) => wheels.content_height(),
+            ControlView::Bars(bars) => bars.content_height(),
             ControlView::Unavailable { window_height_pt } => *window_height_pt,
         }
     }
@@ -78,6 +82,7 @@ impl ControlView {
                 .map(|row| vec![row.node()])
                 .unwrap_or_default(),
             (ControlView::Wheels(wheels), DrivenControl::Wheels) => wheels.focus_nodes(),
+            (ControlView::Bars(bars), DrivenControl::Row(slot)) => bars.row_node(slot).into_iter().collect(),
             _ => Vec::new(),
         }
     }
@@ -93,6 +98,7 @@ impl ControlView {
         match self {
             ControlView::Rows(rows) => rows.handle_gesture(kit, space, ctx, event, out),
             ControlView::Wheels(wheels) => wheels.handle_gesture(kit, space, ctx, event, out),
+            ControlView::Bars(bars) => bars.handle_gesture(kit, space, ctx, event, out),
             ControlView::Unavailable { .. } => Ok(false),
         }
     }
@@ -101,6 +107,7 @@ impl ControlView {
         match self {
             ControlView::Rows(rows) => rows.sync(kit, ctx),
             ControlView::Wheels(wheels) => wheels.sync(kit, ctx),
+            ControlView::Bars(bars) => bars.sync(kit, ctx),
             ControlView::Unavailable { .. } => Ok(()),
         }
     }
@@ -109,6 +116,7 @@ impl ControlView {
         match self {
             ControlView::Rows(rows) => rows.advance(ctx, out),
             ControlView::Wheels(wheels) => wheels.advance(ctx, out),
+            ControlView::Bars(bars) => bars.advance(ctx, out),
             ControlView::Unavailable { .. } => {}
         }
     }
@@ -125,6 +133,7 @@ impl ControlView {
             ControlView::Rows(rows) => rows.draw(ctx, visuals, layers, texts, window),
             // Вид колёс не прокручивается: окно списка ему не нужно.
             ControlView::Wheels(wheels) => wheels.draw(ctx, visuals, layers, texts),
+            ControlView::Bars(bars) => bars.draw(ctx, visuals, layers, texts),
             ControlView::Unavailable { .. } => Ok(()),
         }
     }
@@ -134,6 +143,7 @@ impl ControlView {
         match self {
             ControlView::Rows(rows) => rows.rows.iter().map(RulerRow::orphan_pan_continuations).sum(),
             ControlView::Wheels(wheels) => wheels.orphan_pan_continuations(),
+            ControlView::Bars(bars) => bars.orphan_pan_continuations(),
             ControlView::Unavailable { .. } => 0,
         }
     }
@@ -143,6 +153,7 @@ impl ControlView {
         match self {
             ControlView::Rows(rows) => rows.rows.iter().map(RulerRow::invalid_values).sum(),
             ControlView::Wheels(wheels) => wheels.invalid_values(),
+            ControlView::Bars(bars) => bars.invalid_values(),
             ControlView::Unavailable { .. } => 0,
         }
     }
@@ -151,6 +162,7 @@ impl ControlView {
         match self {
             ControlView::Rows(rows) => rows.rows.iter().map(RulerRow::suppressed_echo_events).sum(),
             ControlView::Wheels(wheels) => wheels.suppressed_echo_events(),
+            ControlView::Bars(bars) => bars.suppressed_echo_events(),
             ControlView::Unavailable { .. } => 0,
         }
     }
@@ -165,6 +177,7 @@ impl ControlView {
                 .find(|row| row.slot() == slot)
                 .map(|row| row.position_steps(now)),
             ControlView::Wheels(wheels) => wheels.row_position_steps(slot, now),
+            ControlView::Bars(bars) => bars.row_position_steps(slot, now),
             ControlView::Unavailable { .. } => None,
         }
     }

@@ -24,7 +24,8 @@ use isp_vulkan::look::{LookLutError, LookLutLimits};
 use isp_vulkan::photo::{DevelopRequest, PhotoConfig, PhotoDeveloper, PhotoError, RawCapturer, RgbaReadback};
 use look_contract::LookSettings;
 use look_support::{
-    all_bands, controls, identity_lut, knob, known_lut, saturation_vibrance, wheels_parity_cases, with_lut,
+    all_bands, bars_parity_cases, controls, identity_lut, knob, known_lut, saturation_vibrance, wheels_parity_cases,
+    with_lut,
 };
 use photo_support::{
     Placement, SourceFrame, SourceKind, capture, compare_rgba, crop_in_buffer, crop_rgba, develop_with, developer_for,
@@ -312,6 +313,40 @@ fn colour_wheels_match_reference_for_both_bases_and_change_the_still() {
             assert_ne!(
                 whole, neutral_rgba,
                 "{base_name}/{look_name}: колёса не изменили снимок"
+            );
+            let sliced = develop_rgba(&context, &captured, &frame, crop, 16);
+            assert_eq!(
+                compare_rgba(&sliced, &whole, size.width).differing_bytes,
+                0,
+                "{base_name}/{look_name}: полосы по 16 строк разошлись с целым кадром"
+            );
+        }
+    }
+    assert_no_validation_errors(&context);
+}
+
+/// Полоски Lift/Gamma/Gain/Offset по R, G, B (решения 339–343) в проявлении снимка: каждый случай паритета (каждая зона, все 12 вместе, всё вместе с тоном,
+/// колёсами, цветом и таблицей) совпадает с эталоном в один проход и полосами по 16 строк, а на зонной пластинке
+/// (тени, середина и света в одном кадре) снимок меняется против нейтрали.
+#[test]
+fn primary_bars_match_reference_for_both_bases_and_change_the_still() {
+    let Some(context) = gpu_context_or_skip() else { return };
+    let mut capturer = RawCapturer::new(&context, &PhotoConfig::default()).unwrap();
+    let source = zone_plate_frame_at_level(96, 80, BayerPattern::RGGB, 1.0);
+    let size = source.raw.size();
+    let gpu_frame = upload(&context, &source.raw, SourceKind::Raw16, Placement::PADDED);
+    let captured = capture(&context, &mut capturer, &gpu_frame);
+    let crop = crop_in_buffer(gpu_frame.valid_area, 0, 0, size.width, size.height);
+    for (base_name, base) in bases() {
+        let neutral_rgba = develop_rgba(&context, &captured, &source.with_tone_base(base), crop, 4096);
+        for (look_name, look) in bars_parity_cases() {
+            let frame = source.with_tone_base_and_look(base, look);
+            let want = reference_rgba_any_base(&frame);
+            let whole = develop_rgba(&context, &captured, &frame, crop, 4096);
+            assert_close_to_reference(&format!("{base_name}/{look_name}"), &whole, &want, size.width);
+            assert_ne!(
+                whole, neutral_rgba,
+                "{base_name}/{look_name}: полоски не изменили снимок"
             );
             let sliced = develop_rgba(&context, &captured, &frame, crop, 16);
             assert_eq!(

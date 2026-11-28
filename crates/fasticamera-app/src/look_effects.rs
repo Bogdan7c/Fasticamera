@@ -541,6 +541,7 @@ impl CommitKind {
             | LookIntent::SetBandAxis { .. }
             | LookIntent::SetWheelPush { .. }
             | LookIntent::SetWheelRing { .. }
+            | LookIntent::SetPrimary { .. }
             | LookIntent::SetToneBase(_)
             | LookIntent::ResetControl(_) => Self::Edit,
             LookIntent::RenamePreset { .. } => Self::None,

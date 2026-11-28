@@ -13,7 +13,7 @@ use camera_contract::control::{ColorTemperature, ExposureBias, Tint};
 use camera_contract::zoom::ZoomRatio;
 use look_contract::{
     BandAxis, GlobalKnob, HueBandId, LookControl, LookFacts, LookIntent, LookKnob, LookProblemKind, LookWhiteStops,
-    PresetId, ToneBaseModel, UserPresetId, WheelPush, WheelZone,
+    PresetId, PrimaryChannel, ToneBaseModel, UserPresetId, WheelPush, WheelZone,
 };
 use scope_contract::{
     CieDiagram, HistogramMode, ScopeIntent, ScopeKind, ScopeLabelsState, VectorscopeAxes, VectorscopeZoom,
@@ -166,7 +166,8 @@ pub enum ScreenAction {
         axis: BandAxis,
         value: LookKnob,
     },
-    /// Выбран вид колонки ручек: шкалы или колёса (переключатель SCALES | WHEELS, решение 204). Эффектов нет.
+    /// Выбран вид колонки ручек: шкалы, колёса или полоски (переключатель SCALES | WHEELS | BARS, решения 204,
+    /// 343). Эффектов нет.
     ControlViewSelected(ControlViewKind),
     /// Список шкал успокоился на смещении `offset_pt` (0 — верх): состояние раздела запоминает его, чтобы после
     /// переключения SCALES ↔ WHEELS (и пересборки раздела) список встал на то же место. Эффектов нет.
@@ -177,6 +178,13 @@ pub enum ScreenAction {
     WheelPushDragged { zone: WheelZone, push: WheelPush },
     /// Кольцо яркости колеса потянуто пальцем. Уходит точечным намерением `SetWheelRing`.
     WheelRingDragged { zone: WheelZone, ring: LookKnob },
+    /// Полоска канала R, G или B зоны потянута пальцем (вид BARS, решение 343). Уходит точечным намерением
+    /// `SetPrimary`: меняется только эта полоска, остальные 11 не упоминаются.
+    PrimaryDragged {
+        zone: WheelZone,
+        channel: PrimaryChannel,
+        value: LookKnob,
+    },
     /// Выбрана модель основы тона (свайп над ручками).
     ToneBaseSelected(ToneBaseModel),
     /// Тап по «↻» у органа управления: вернуть к значению пресета (решение 196). Тусклая «↻» — `NoChange`.

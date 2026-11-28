@@ -13,7 +13,7 @@ use look_contract::{
 use super::*;
 use crate::quality::test_params::quality_params_with_look;
 
-fn knob(value: f32) -> LookKnob {
+pub(super) fn knob(value: f32) -> LookKnob {
     LookKnob::new(value).expect("значение ручки в [-1, 1]")
 }
 
@@ -22,7 +22,7 @@ fn f32_at(bytes: &[u8], row: usize, column: usize) -> f32 {
     f32::from_ne_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
 }
 
-fn row_at(bytes: &[u8], row: usize) -> [f32; 4] {
+pub(super) fn row_at(bytes: &[u8], row: usize) -> [f32; 4] {
     [0, 1, 2, 3].map(|column| f32_at(bytes, row, column))
 }
 
@@ -167,7 +167,7 @@ fn wheel_rows(bytes: &[u8]) -> [[f32; 4]; 5] {
 
 #[test]
 fn block_has_a_row_for_every_wheel_and_the_shader_agrees_on_the_row_count() {
-    assert_eq!(LOOK_ROWS, 39);
+    assert_eq!(LOOK_ROWS, 51);
     let shader = include_str!("../../shaders/look_stage.glsl");
     assert!(
         shader.contains(&format!("#define LOOK_ROWS {LOOK_ROWS}\n")),
@@ -180,6 +180,10 @@ fn block_has_a_row_for_every_wheel_and_the_shader_agrees_on_the_row_count() {
     assert!(
         shader.contains("const uint LOOK_ROW_TONE = 36u;"),
         "строка тона в GLSL не 36"
+    );
+    assert!(
+        shader.contains("const uint LOOK_ROW_PRIMARIES = 39u;"),
+        "строка полосок в GLSL не 39"
     );
 }
 
@@ -416,3 +420,6 @@ fn tone_returned_to_neutral_packs_the_same_block_as_never_touched() {
         "нулевая ручка тона — те же байты, что и нетронутая"
     );
 }
+
+#[path = "primaries_tests.rs"]
+mod primaries_tests;

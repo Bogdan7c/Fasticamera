@@ -8,6 +8,7 @@ use look_contract::HueBandId;
 use serde::{Deserialize, Serialize};
 
 use super::bands::MAX_LOOK_BANDS;
+use super::primaries::{InvalidPrimariesModel, PrimariesModelSettings};
 use super::range::KnobRange;
 use super::tone_shape::ToneShapeSettings;
 use super::wheels::{InvalidWheelModel, WheelModelSettings};
@@ -79,6 +80,8 @@ pub struct LookModelSettings {
     pub max_lut_size: u32,
     /// Колёса цвета по зонам: сила на краю и граница зон (решение 191).
     pub wheels: WheelModelSettings,
+    /// Полоски Lift/Gamma/Gain/Offset по R, G, B: основа каналов и сила на краю (решения 339–342).
+    pub primaries: PrimariesModelSettings,
 }
 
 impl Default for LookModelSettings {
@@ -116,6 +119,7 @@ impl Default for LookModelSettings {
             band_luminance: KnobRange::symmetric(0.7),
             max_lut_size: 65,
             wheels: WheelModelSettings::default(),
+            primaries: PrimariesModelSettings::default(),
         }
     }
 }
@@ -148,6 +152,8 @@ pub enum InvalidLookModel {
     LutLargerThanLimit { size: u32, max: u32 },
     #[error("колёса цвета: {0}")]
     Wheels(#[from] InvalidWheelModel),
+    #[error("полоски: {0}")]
+    Primaries(#[from] InvalidPrimariesModel),
 }
 
 /// Наименьший зазор между центрами полос, градусы (между ближе окна вырождаются).
@@ -223,6 +229,7 @@ impl LookModelSettings {
         }
         self.validate_bands()?;
         self.wheels.validate()?;
+        self.primaries.validate()?;
         Ok(())
     }
 

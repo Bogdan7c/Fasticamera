@@ -9,8 +9,8 @@
 
 use look_contract::{
     ActiveLook, BandAxis, BuiltinPreset, ColorWheel, EditState, GlobalKnob, HueBandId, LookControl, LookIntent,
-    LookKnob, LookRecipe, LookSettings, PresetEntry, PresetError, PresetId, PresetKind, PresetName, StorageFailure,
-    ToneBaseModel, UserPresetId, WheelPush, WheelZone,
+    LookKnob, LookRecipe, LookSettings, PresetEntry, PresetError, PresetId, PresetKind, PresetName, PrimaryChannel,
+    StorageFailure, ToneBaseModel, UserPresetId, WheelPush, WheelZone,
 };
 
 use crate::config::BuiltinCatalog;
@@ -117,6 +117,7 @@ impl PresetLibrary {
             LookIntent::SetBandAxis { band, axis, value } => self.set_band_axis(band, axis, value),
             LookIntent::SetWheelPush { zone, push } => self.set_wheel_push(zone, push),
             LookIntent::SetWheelRing { zone, ring } => self.set_wheel_ring(zone, ring),
+            LookIntent::SetPrimary { zone, channel, value } => self.set_primary(zone, channel, value),
             LookIntent::SetToneBase(base) => self.set_tone_base(base),
             LookIntent::ResetControl(control) => self.reset_control(control),
             LookIntent::SelectPreset(preset) => self.select_preset(preset),
@@ -196,6 +197,23 @@ impl PresetLibrary {
                 ..recipe.settings.wheels.wheel(zone)
             };
             recipe.settings.wheels = recipe.settings.wheels.with_wheel(zone, wheel);
+            library.set_edited_recipe(recipe);
+            Ok(())
+        })
+    }
+
+    /// «Эта полоска (зона × канал) = это значение» поверх текущего вида (решения 339–343): остальные 11 полосок,
+    /// колёса, ручки, полосы и основа не трогаются. Исходы как у `set_knob`: значение то же → `Unchanged` (файл
+    /// писать не надо); совпало с рецептом пресета → `Clean`.
+    pub fn set_primary(
+        &mut self,
+        zone: WheelZone,
+        channel: PrimaryChannel,
+        value: LookKnob,
+    ) -> Result<LibraryChange, PresetError> {
+        self.transaction(|library| {
+            let mut recipe = library.active_look().recipe;
+            recipe.settings.primaries = recipe.settings.primaries.with_value(zone, channel, value);
             library.set_edited_recipe(recipe);
             Ok(())
         })

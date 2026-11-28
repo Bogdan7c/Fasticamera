@@ -204,14 +204,16 @@ fn look_cost_group_lists_the_ten_documented_looks_off_reference_before_its_varia
             "look_wheels_sample",
             "look_without_tone",
             "look_tone_sample",
+            "look_without_primaries",
+            "look_primaries_sample",
         ]
     );
     // Каждая пара «вкл против выкл» этой группы: оба конца в группе, эталон стоит РАНЬШЕ варианта.
     let look_pairs: Vec<_> = PAIRS.iter().filter(|pair| pair.variant.starts_with("look_")).collect();
     assert_eq!(
         look_pairs.len(),
-        6,
-        "agx/aces/filmic против legacy, product/neutral, колёса, тон"
+        7,
+        "agx/aces/filmic против legacy, product/neutral, колёса, тон, полоски"
     );
     for pair in look_pairs {
         let variant = names
@@ -286,10 +288,57 @@ fn look_parity_group_is_every_base_times_every_case_in_base_order() {
 }
 
 #[test]
+fn look_parity_primaries_group_is_the_four_bases_on_the_primaries_sample_with_parity_names() {
+    use crate::saturation_bench::look_variant::ParityCase;
+    use look_contract::ToneBaseModel;
+    let entries = group_entries(WorkloadGroup::LookParityPrimaries);
+    let names: Vec<&str> = entries.iter().map(|entry| entry.name).collect();
+    assert_eq!(
+        names,
+        [
+            "look_parity_agx_primaries",
+            "look_parity_aces_primaries",
+            "look_parity_filmic_primaries",
+            "look_parity_legacy_primaries",
+        ]
+    );
+    let bases: Vec<_> = entries
+        .iter()
+        .map(|entry| match entry.kind {
+            WorkloadKind::LookParity { look } => {
+                assert_eq!(look.case, ParityCase::PrimariesSample, "{}", entry.name);
+                look.base
+            }
+            other => panic!("{}: вид работы {other:?}", entry.name),
+        })
+        .collect();
+    assert_eq!(
+        bases,
+        [
+            ToneBaseModel::Agx,
+            ToneBaseModel::Aces,
+            ToneBaseModel::Filmic,
+            ToneBaseModel::Legacy
+        ]
+    );
+    assert_eq!(
+        WorkloadGroup::by_name("look_parity_primaries"),
+        Some(WorkloadGroup::LookParityPrimaries)
+    );
+    assert_eq!(expand_name("look_parity_primaries").unwrap().len(), 4);
+    assert!(
+        group_entries(WorkloadGroup::LookParity)
+            .iter()
+            .all(|entry| !entry.name.ends_with("_primaries")),
+        "прежняя группа паритета не растёт"
+    );
+}
+
+#[test]
 fn look_groups_are_registered_by_name_and_do_not_extend_the_default_list() {
     assert_eq!(WorkloadGroup::by_name("look_cost"), Some(WorkloadGroup::LookCost));
     assert_eq!(WorkloadGroup::by_name("look_parity"), Some(WorkloadGroup::LookParity));
-    assert_eq!(expand_name("look_cost").unwrap().len(), 10);
+    assert_eq!(expand_name("look_cost").unwrap().len(), 12);
     assert_eq!(expand_name("look_parity").unwrap().len(), 16);
     assert!(baseline_names().iter().all(|name| !name.starts_with("look_")));
 }

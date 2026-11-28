@@ -1,7 +1,10 @@
 //! Тесты отпечатка рецепта: равные рецепты совпадают, любое одиночное изменение меняет отпечаток.
 
 use super::*;
-use crate::{BandAdjustment, BandAdjustments, ColorWheel, GlobalKnob, HueBandId, LookKnob, LookSettings, WheelPush};
+use crate::{
+    BandAdjustment, BandAdjustments, ChannelPrimaries, ColorWheel, GlobalKnob, HueBandId, LookKnob, LookSettings,
+    PrimaryChannel, WheelPush,
+};
 
 fn knob(value: f32) -> LookKnob {
     LookKnob::new(value).unwrap()
@@ -30,6 +33,12 @@ fn rich_recipe() -> LookRecipe {
         };
         settings.wheels = settings.wheels.with_wheel(zone, wheel);
     }
+    for (zone_index, zone) in WheelZone::ALL.into_iter().enumerate() {
+        for (channel_index, channel) in PrimaryChannel::ALL.into_iter().enumerate() {
+            let value = knob(0.03 * (3 * zone_index + channel_index) as f32 - 0.15);
+            settings.primaries = settings.primaries.with_value(zone, channel, value);
+        }
+    }
     LookRecipe {
         base: ToneBaseModel::Aces,
         settings,
@@ -53,7 +62,18 @@ fn fingerprint_is_stable_across_releases() {
         base: ToneBaseModel::Legacy,
         settings: LookSettings::NEUTRAL,
     };
-    assert_eq!(neutral.fingerprint_hex(), "6686605a62c31778");
+    // Значение схемы раскладки 2 (14t: версия 1 → 2 и 12 нулевых полосок в конце). Получено прогоном; до 14t
+    // нейтраль «Legacy» давала "6686605a62c31778" — старые логи с версией раскладки 1 сверять только между собой.
+    assert_eq!(neutral.fingerprint_hex(), "66407fee89cb1a23");
+    // Порядок полосок закреплён отдельным значением: Lift/Red = 0.5, остальные полоски в нуле.
+    let one_bar = LookRecipe {
+        base: ToneBaseModel::Legacy,
+        settings: LookSettings {
+            primaries: ChannelPrimaries::NEUTRAL.with_value(WheelZone::Lift, PrimaryChannel::Red, knob(0.5)),
+            ..LookSettings::NEUTRAL
+        },
+    };
+    assert_eq!(one_bar.fingerprint_hex(), "2d67a0b4b954b75a");
 }
 
 #[test]
@@ -158,6 +178,29 @@ fn changing_any_wheel_part_changes_the_fingerprint() {
                 changed.fingerprint(),
                 recipe.fingerprint(),
                 "колесо {zone:?}: часть не влияет"
+            );
+        }
+    }
+}
+
+#[test]
+fn changing_any_single_primary_bar_changes_the_fingerprint() {
+    let recipe = rich_recipe();
+    let mut seen = std::collections::HashSet::new();
+    seen.insert(recipe.fingerprint());
+    for zone in WheelZone::ALL {
+        for channel in PrimaryChannel::ALL {
+            let own = recipe.settings.primaries.value(zone, channel);
+            let mut settings = recipe.settings.clone();
+            settings.primaries = settings.primaries.with_value(zone, channel, knob(own.get() + 0.01));
+            let changed = LookRecipe {
+                base: recipe.base,
+                settings,
+            };
+            // Новый отпечаток отличается и от исходного, и от всех других одиночных правок (inserted == true).
+            assert!(
+                seen.insert(changed.fingerprint()),
+                "полоска {zone:?}/{channel:?}: не влияет на отпечаток"
             );
         }
     }

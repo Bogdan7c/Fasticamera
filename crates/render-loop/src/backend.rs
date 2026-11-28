@@ -332,7 +332,7 @@ pub trait DisplayBackend: Send + 'static {
     /// Принимает команду снимка (между кадрами). По умолчанию снимков нет — команда возвращается потоку,
     /// и он завершает снимок честным `NotSecured` (тестовый паттерн, fake-бэкенды).
     fn apply_still_command(&mut self, command: StillCommand) -> StillCommandOutcome {
-        StillCommandOutcome::Unsupported(command)
+        StillCommandOutcome::unsupported(command)
     }
 
     /// Продвигает незаконченные снимки: опрос fence-ов, следующая полоса проявления, итоговые события.

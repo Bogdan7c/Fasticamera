@@ -614,7 +614,7 @@ fn when_the_circle_does_not_fit_the_column_lives_without_wheels_counts_once_and_
     assert!(rig.screen.node_centers("calib_wheel_pad").is_empty());
     assert_eq!(
         rig.screen.node_centers("calib_view_segment").len(),
-        2,
+        3,
         "переключатель на месте"
     );
     assert_eq!(

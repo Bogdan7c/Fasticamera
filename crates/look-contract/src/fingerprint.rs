@@ -15,14 +15,16 @@
 //! 4. число полос `u32`, затем по каждой полосе в каноническом порядке набора: длина имени `u32`, байты UTF-8
 //!    имени, оттенок, насыщенность, яркость (`f32::to_bits`);
 //! 5. четыре колеса в порядке Lift, Gamma, Gain, Offset: толчок `a`, толчок `b`, кольцо (`f32::to_bits`).
+//! 6. (с версии 2, решения 339–343) двенадцать полосок по каналам: зоны в порядке `WheelZone::ALL` (Lift, Gamma,
+//!    Gain, Offset), внутри зоны каналы в порядке `PrimaryChannel::ALL` (R, G, B); каждая — `f32::to_bits`.
 //!
 //! `f32` берётся по битам: `-0.0` и `0.0` дают разные отпечатки (значения ручек из одной библиотеки нормализованы,
 //! поэтому на практике это не мешает, а «тот же рецепт» остаётся строгим).
 
-use crate::{LookRecipe, ToneBaseModel, WheelZone};
+use crate::{LookRecipe, PrimaryChannel, ToneBaseModel, WheelZone};
 
 /// Версия раскладки байтов; входит в хеш первым байтом.
-const FINGERPRINT_LAYOUT_VERSION: u8 = 1;
+const FINGERPRINT_LAYOUT_VERSION: u8 = 2;
 
 /// Начальное значение FNV-1a (64 бита).
 const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
@@ -68,7 +70,7 @@ const fn base_tag(base: ToneBaseModel) -> u8 {
 }
 
 impl LookRecipe {
-    /// Стабильный отпечаток рецепта (основа и ВСЕ настройки: ручки, полосы, колёса). Равные рецепты дают равные
+    /// Стабильный отпечаток рецепта (основа и ВСЕ настройки: ручки, полосы, колёса, полоски каналов). Равные рецепты дают равные
     /// отпечатки; изменение любого поля меняет отпечаток (проверено тестами по каждому полю).
     pub fn fingerprint(&self) -> u64 {
         let mut hasher = FnvHasher::new();
@@ -103,6 +105,11 @@ impl LookRecipe {
             hasher.float(wheel.push.a());
             hasher.float(wheel.push.b());
             hasher.float(wheel.ring.get());
+        }
+        for zone in WheelZone::ALL {
+            for channel in PrimaryChannel::ALL {
+                hasher.float(settings.primaries.value(zone, channel).get());
+            }
         }
         hasher.0
     }

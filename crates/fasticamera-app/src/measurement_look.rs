@@ -9,12 +9,15 @@
 //! рецепта продукта; кто и как его показывает (заявка сценария на рендер, параметры работы стенда) — решает
 //! вызывающий. Файл пресетов владельца замер не меняет никогда.
 //!
-//! Почему колёсам и тону нужен «образец» из конфига: «Как глаз» колёс не трогает, а тон у него — только контраст.
-//! Шейдер пропускает нейтральные колёса и нейтральный тон по флагу (`look_stage.glsl`, `look_tone.glsl`), поэтому
-//! строка «колёса вкл/выкл» на виде без колёс мерила бы ноль. Образец задаёт ненулевые колёса и ручки тона;
+//! Почему колёсам, тону и полоскам нужен «образец» из конфига: «Как глаз» колёс не трогает, а тон у него — только контраст.
+//! Шейдер пропускает нейтральные колёса, тон и полоски по флагу (`look_stage.glsl`, `look_tone.glsl`,
+//! `look_primaries.glsl`), поэтому строка «колёса вкл/выкл» на виде без колёс мерила бы ноль. Образец задаёт
+//! ненулевые колёса, ручки тона и 12 полосок;
 //! цена ветки от величины толчка почти не зависит (та же математика на каждом пикселе).
 
-use look_contract::{ColorWheels, LookKnob, LookRecipe, LookSettings, ToneBaseModel};
+use look_contract::{
+    ChannelPrimaries, ColorWheels, LookKnob, LookRecipe, LookSettings, PrimaryChannel, ToneBaseModel, WheelZone,
+};
 use serde::{Deserialize, Serialize};
 
 /// Ручки тона 14l (стадия тона вида): контраст, средние, тени, света.
@@ -75,6 +78,9 @@ pub struct MeasurementLookConfig {
     pub wheels_sample: ColorWheels,
     /// Ручки тона окна «тон вкл». Обязаны быть ненулевыми по той же причине.
     pub tone_sample: ToneKnobsSample,
+    /// Полоски Lift / Gamma / Gain / Offset × R, G, B окна «полоски вкл» (14t). Обязаны быть ненулевыми: иначе строка
+    /// мерила бы ноль. В образце тронуты ВСЕ 12 ручек, чтобы шейдер полосок исполнил все ветки формулы.
+    pub primaries_sample: ChannelPrimaries,
 }
 
 /// Числа образца — не подбор вида (решение 304: вид не подбираем), а «включить ветку шейдера заметной силой».
@@ -89,6 +95,7 @@ impl Default for MeasurementLookConfig {
                 shadows: knob(0.15),
                 highlights: knob(-0.15),
             },
+            primaries_sample: default_primaries_sample(),
         }
     }
 }
@@ -113,6 +120,28 @@ fn default_wheels_sample() -> ColorWheels {
     serde_json::from_value(sample).unwrap_or(ColorWheels::NEUTRAL)
 }
 
+/// Значения образца полосок: по зонам Lift, Gamma, Gain, Offset; в каждой зоне порядок каналов R, G, B.
+/// Знаки чередуются и ни одна из 12 ручек не нулевая: шейдер полосок работает на каждом канале и в обе стороны.
+/// `[measurement]` Умеренные величины, как у остальных образцов: ветка включена, но не упёрта в край диапазона.
+const PRIMARIES_SAMPLE_VALUES: [(WheelZone, [f32; 3]); 4] = [
+    (WheelZone::Lift, [0.10, -0.05, 0.08]),
+    (WheelZone::Gamma, [-0.10, 0.08, -0.06]),
+    (WheelZone::Gain, [0.06, -0.08, 0.10]),
+    (WheelZone::Offset, [-0.05, 0.04, -0.06]),
+];
+
+/// Образец полосок из [`PRIMARIES_SAMPLE_VALUES`]. Как у `knob`: литерал вне диапазона даёт нулевую ручку, а
+/// [`MeasurementLookConfig::validate`] громко откажет, если нулевыми окажутся все 12 (иначе тест значений поймает).
+fn default_primaries_sample() -> ChannelPrimaries {
+    let mut primaries = ChannelPrimaries::NEUTRAL;
+    for (zone, values) in PRIMARIES_SAMPLE_VALUES {
+        for (channel, value) in PrimaryChannel::ALL.into_iter().zip(values) {
+            primaries = primaries.with_value(zone, channel, knob(value));
+        }
+    }
+    primaries
+}
+
 /// Неверный конфиг образцов.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum MeasurementLookConfigError {
@@ -122,6 +151,9 @@ pub enum MeasurementLookConfigError {
     /// Нейтральные ручки тона образца: строка «тон вкл/выкл» мерила бы ноль.
     #[error("measurement_look.tone_sample: все ручки тона в нуле — строка тона мерила бы ноль")]
     NeutralToneSample,
+    /// Все 12 полосок образца в нуле: строка «полоски вкл/выкл» мерила бы ноль.
+    #[error("measurement_look.primaries_sample: все полоски в нуле — строка полосок мерила бы ноль")]
+    NeutralPrimariesSample,
 }
 
 impl MeasurementLookConfig {
@@ -132,6 +164,9 @@ impl MeasurementLookConfig {
         }
         if self.tone_sample.is_neutral() {
             return Err(MeasurementLookConfigError::NeutralToneSample);
+        }
+        if self.primaries_sample.is_neutral() {
+            return Err(MeasurementLookConfigError::NeutralPrimariesSample);
         }
         Ok(())
     }
@@ -155,6 +190,10 @@ pub enum MeasurementLook {
     ToneSample,
     /// Продукт без ручек тона (стадия тона 14l выключена).
     WithoutTone,
+    /// Продукт с полосками образца вместо своих (14t).
+    PrimariesSample,
+    /// Продукт без полосок (стадия полосок выключена флагом шейдера).
+    WithoutPrimaries,
 }
 
 impl MeasurementLook {
@@ -190,6 +229,20 @@ impl MeasurementLook {
                 base: product.base,
                 settings: ToneKnobsSample::NEUTRAL.applied_to(settings),
             },
+            Self::PrimariesSample => LookRecipe {
+                base: product.base,
+                settings: LookSettings {
+                    primaries: config.primaries_sample,
+                    ..settings
+                },
+            },
+            Self::WithoutPrimaries => LookRecipe {
+                base: product.base,
+                settings: LookSettings {
+                    primaries: ChannelPrimaries::NEUTRAL,
+                    ..settings
+                },
+            },
         }
     }
 
@@ -206,6 +259,8 @@ impl MeasurementLook {
             Self::WithoutWheels => "without_wheels",
             Self::ToneSample => "tone_sample",
             Self::WithoutTone => "without_tone",
+            Self::PrimariesSample => "primaries_sample",
+            Self::WithoutPrimaries => "without_primaries",
         }
     }
 }

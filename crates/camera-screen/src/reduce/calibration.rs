@@ -13,7 +13,7 @@ use scope_contract::{CieDiagram, HistogramMode, ScopeIntent, ScopeKind, Vectorsc
 
 use super::Ctx;
 use super::look::{Availability, emit_look_from_facts, read_facts};
-use crate::calibration::{CleanViewState, ControlViewKind, SectionCard};
+use crate::calibration::{CleanViewState, SectionCard};
 use crate::effect::Effect;
 use crate::outcome::{ActionOutcome, NoChangeReason, Rejection};
 
@@ -284,15 +284,18 @@ fn refresh_layout(ctx: &mut Ctx<'_>) {
     if ctx.state.calibration.note_layout_fault(fault) {
         ctx.state.rejections.record(Rejection::InvalidSurface);
     }
-    // Вид колёс может не поместиться в колонку на низкой поверхности: раздел при этом живёт (шапка и переключатель
-    // на месте, зона колёс пуста), а причина считается так же — один раз на смену.
-    let wheels_fault = match (layout, ctx.state.pixels_per_point()) {
-        (Some(layout), Some(pixels_per_point)) if ctx.state.calibration.control_view() == ControlViewKind::Wheels => {
-            crate::calibration::wheel_pad_placement(&layout, &ctx.config.calibration.widgets, pixels_per_point).err()
-        }
+    // Вид колёс или полосок может не поместиться в колонку на низкой поверхности: раздел при этом живёт (шапка и
+    // переключатель на месте, зона вида пуста), а причина считается так же — один раз на смену.
+    let view_fault = match (layout, ctx.state.pixels_per_point()) {
+        (Some(layout), Some(pixels_per_point)) => crate::calibration::control_view_fault(
+            ctx.state.calibration.control_view(),
+            &layout,
+            &ctx.config.calibration.widgets,
+            pixels_per_point,
+        ),
         _ => None,
     };
-    if ctx.state.calibration.note_wheels_fault(wheels_fault) {
+    if ctx.state.calibration.note_view_fault(view_fault) {
         ctx.state.rejections.record(Rejection::InvalidSurface);
     }
 }

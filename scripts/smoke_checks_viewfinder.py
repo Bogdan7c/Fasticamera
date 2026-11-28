@@ -39,6 +39,7 @@ STAGE_BUDGET_LOOK_ROWS = (
     "look_layer",
     "look_wheels",
     "look_tone",
+    "look_primaries",
 )
 """Строки вида 14o (контракт с `look_row.rs::LookRow::name`): вид считает шейдер видоискателя, строки годятся на всех местах."""
 
@@ -60,8 +61,9 @@ STAGE_BUDGET_BASELINES = {
 TONE_BASES = ("agx", "aces", "filmic", "legacy")
 """Модели основы тона (контракт с `look_contract::ToneBaseModel::name`, snake_case)."""
 
-LOOK_REPORT_FLAGS = ("layer_neutral", "wheels_active", "tone_active")
-"""Булевы признаки слоёв в отчёте о виде (контракт с `scenario/camera/look_report.rs`)."""
+LOOK_REPORT_FLAGS = ("layer_neutral", "wheels_active", "tone_active", "primaries_active")
+"""Булевы признаки слоёв в отчёте о виде (контракт с `scenario/camera/look_report.rs`). `primaries_active` (14t) есть в
+полном отчёте окна и на входе; в сжатом виде окна строки (`look_rows`) его нет — см. `_compact_look_problems`."""
 
 FINGERPRINT_LENGTH = 16
 """Отпечаток рецепта вида — 16 шестнадцатеричных цифр (`LookRecipe::fingerprint_hex`)."""
@@ -125,7 +127,7 @@ def _compact_look_problems(look: object, where: str) -> list[str]:
     """Сжатый вид окна строки вида в строке результата: основа, отпечаток, колёса, тон (полный отчёт — в detail)."""
     if not isinstance(look, dict):
         return [f"в отчёте нет вида окна ({where})"]
-    full = {"layer_neutral": False, "measurement_look": "-", **look}
+    full = {"layer_neutral": False, "primaries_active": False, "measurement_look": "-", **look}
     return look_report_problems(full, where)
 
 

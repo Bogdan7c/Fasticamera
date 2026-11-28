@@ -21,7 +21,10 @@ mod vulkan_support;
 use std::sync::Arc;
 
 use continuity_rig::{SIZE_A, finish};
-use look_contract::{ColorWheel, ColorWheels, LookKnob, LookSettings, ToneBaseModel, WheelPush, WheelZone};
+use look_contract::{
+    ChannelPrimaries, ColorWheel, ColorWheels, LookKnob, LookSettings, PrimaryChannel, ToneBaseModel, WheelPush,
+    WheelZone,
+};
 use render_loop::backend::DisplayBackend;
 use render_loop::config::StillDevelopConfig;
 use render_loop::config::{ToneBaseChoice, ViewfinderToneConfig};
@@ -214,6 +217,62 @@ fn a_still_carries_the_color_wheels_of_the_press_not_those_of_the_viewfinder() {
     assert!(
         worst_difference(&picture_two, &reference_rgba(&params_wheels, cell_two, SIZE_A)) > 8,
         "снимок не взял колёса видоискателя"
+    );
+
+    finish(&mut bench.rig, &[bench.epoch]);
+}
+
+/// Вид только с полосками: четыре зоны, разные каналы (Lift B «+», Gamma R «−», Gain R «+», Offset G «+»).
+fn bars_look() -> LookSettings {
+    LookSettings {
+        primaries: ChannelPrimaries::NEUTRAL
+            .with_value(WheelZone::Lift, PrimaryChannel::Blue, knob(1.0))
+            .with_value(WheelZone::Gamma, PrimaryChannel::Red, knob(-1.0))
+            .with_value(WheelZone::Gain, PrimaryChannel::Red, knob(1.0))
+            .with_value(WheelZone::Offset, PrimaryChannel::Green, knob(1.0)),
+        ..LookSettings::NEUTRAL
+    }
+}
+
+#[test]
+fn a_still_carries_the_primary_bars_of_the_press_not_those_of_the_viewfinder() {
+    let Some(mut bench) = setup(StillDevelopConfig::default(), 12) else {
+        return;
+    };
+    bench.frames(10);
+    assert!(bench.inject_timings() >= 6);
+    let bars = bars_look();
+    assert!(!bars.primaries.is_neutral(), "вид теста действительно с полосками");
+
+    // Нажатие с полосками, сразу после него видоискатель получает нейтральный вид (без полосок).
+    let (picture, cell) = take_still(&mut bench, 1, 3, &bars, &LookSettings::NEUTRAL);
+    let (params_bars, _) = expected_params_with_look(&bench.passport, &bars);
+    let (params_neutral, _) = expected_params_with_look(&bench.passport, &LookSettings::NEUTRAL);
+    let reference_bars = reference_rgba(&params_bars, cell, SIZE_A);
+    let reference_neutral = reference_rgba(&params_neutral, cell, SIZE_A);
+    assert!(
+        worst_difference(&reference_bars, &reference_neutral) > 8,
+        "эталон с полосками почти не отличается от нейтрального: тест ничего не докажет"
+    );
+    assert!(
+        worst_difference(&picture, &reference_bars) <= 1,
+        "снимок совпадает с эталоном полосок момента нажатия: {} LSB",
+        worst_difference(&picture, &reference_bars)
+    );
+    assert!(
+        worst_difference(&picture, &reference_neutral) > 8,
+        "снимок не взял нейтральный вид видоискателя"
+    );
+
+    // Обратное: нажатие без полосок, видоискатель после него получает полоски, — снимок остаётся нейтральным.
+    let (picture_two, cell_two) = take_still(&mut bench, 2, 5, &LookSettings::NEUTRAL, &bars);
+    assert!(
+        worst_difference(&picture_two, &reference_rgba(&params_neutral, cell_two, SIZE_A)) <= 1,
+        "снимок без полосок момента нажатия остаётся нейтральным"
+    );
+    assert!(
+        worst_difference(&picture_two, &reference_rgba(&params_bars, cell_two, SIZE_A)) > 8,
+        "снимок не взял полоски видоискателя"
     );
 
     finish(&mut bench.rig, &[bench.epoch]);

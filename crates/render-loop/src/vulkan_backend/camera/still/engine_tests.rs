@@ -382,7 +382,7 @@ fn a_target_for_an_unknown_or_not_waiting_still_is_handed_back_and_counted() {
         }));
     assert!(matches!(
         outcome,
-        StillCommandOutcome::Unsupported(StillCommand::Target(_))
+        StillCommandOutcome::Unsupported(returned) if matches!(*returned, StillCommand::Target(_))
     ));
     // Снимок есть, но ещё не захвачен (Secured не было): цель рано.
     let _sink = rig.begin(plan(1, 25));

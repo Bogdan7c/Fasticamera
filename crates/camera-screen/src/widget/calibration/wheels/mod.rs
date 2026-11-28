@@ -37,7 +37,7 @@ use crate::widget::text_runs::TextRuns;
 use crate::widget::{Ctx, Outputs};
 
 /// Подпись вкладки и названия колеса заглавными.
-fn zone_title(zone: WheelZone) -> &'static str {
+pub(in crate::widget::calibration) fn zone_title(zone: WheelZone) -> &'static str {
     match zone {
         WheelZone::Lift => "LIFT",
         WheelZone::Gamma => "GAMMA",
@@ -47,7 +47,7 @@ fn zone_title(zone: WheelZone) -> &'static str {
 }
 
 /// Вкладки в порядке показа: `(колесо, подпись)`.
-fn tab_entries() -> Vec<(WheelZone, &'static str)> {
+pub(in crate::widget::calibration) fn tab_entries() -> Vec<(WheelZone, &'static str)> {
     WheelZone::ALL.iter().map(|zone| (*zone, zone_title(*zone))).collect()
 }
 

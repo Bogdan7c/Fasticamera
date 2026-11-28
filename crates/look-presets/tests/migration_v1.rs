@@ -1,4 +1,4 @@
-//! Миграция файла пресетов v1 → v3 (колёса цвета 14i, основа тона 14b) на настоящих файлах схемы 1.
+//! Миграция файла пресетов v1 → v4 (колёса цвета 14i, основа тона 14b, полоски 14t) на настоящих файлах схемы 1.
 //!
 //! Фикстуры в `tests/fixtures/` записаны кодом до 14i и заморожены (см. README рядом).
 
@@ -104,7 +104,7 @@ fn v1_file_without_edits_keeps_clean_active_preset() {
 }
 
 #[test]
-fn first_save_backs_up_old_file_byte_exact_then_writes_v3_once() {
+fn first_save_backs_up_old_file_byte_exact_then_writes_v4_once() {
     for (label, fixture) in [("bk-edits", WITH_EDITS), ("bk-none", NO_EDITS)] {
         let dir = dir_with_file(label, fixture);
         let opened = open(dir.path());
@@ -120,9 +120,13 @@ fn first_save_backs_up_old_file_byte_exact_then_writes_v3_once() {
         assert_eq!(fs::read(&backups[0]).unwrap(), fixture, "{label}: копия побайтно");
 
         let written: Value = serde_json::from_slice(&fs::read(presets_file(dir.path())).unwrap()).unwrap();
-        assert_eq!(written["schema_version"], 3, "{label}");
+        assert_eq!(written["schema_version"], 4, "{label}");
         assert_eq!(written["user_presets"][0]["base"], "agx", "{label}");
         assert!(written["user_presets"][0]["settings"]["wheels"].is_object(), "{label}");
+        assert!(
+            written["user_presets"][0]["settings"]["primaries"].is_object(),
+            "{label}"
+        );
         assert_eq!(written["edits"].is_object(), fixture == WITH_EDITS, "{label}");
         if fixture == WITH_EDITS {
             assert_eq!(written["edits"]["base"], "agx");
@@ -137,7 +141,7 @@ fn first_save_backs_up_old_file_byte_exact_then_writes_v3_once() {
             "{label}"
         );
 
-        // Повторное открытие читает уже v3 без миграции и даёт то же состояние.
+        // Повторное открытие читает уже v4 без миграции и даёт то же состояние.
         let reopened = open(dir.path());
         assert_eq!(reopened.outcome, LoadOutcome::Loaded { migrated_from: None }, "{label}");
         assert_eq!(reopened.library.snapshot(), opened.library.snapshot(), "{label}");
@@ -214,15 +218,15 @@ fn v2_file_missing_wheels_is_quarantined_with_original_bytes() {
 }
 
 #[test]
-fn schema_four_is_quarantined_as_newer_and_bytes_are_kept() {
+fn schema_five_is_quarantined_as_newer_and_bytes_are_kept() {
     let dir = TempDir::new("v4");
-    let content = br#"{"schema_version":4,"anything":true}"#;
+    let content = br#"{"schema_version":5,"anything":true}"#;
     fs::write(presets_file(dir.path()), content).unwrap();
     let opened = open(dir.path());
     let LoadOutcome::Quarantined { reason, moved_to } = opened.outcome else {
         panic!("ожидали карантин");
     };
-    assert_eq!(reason, CorruptionReason::NewerSchema { found: 4, supported: 3 });
+    assert_eq!(reason, CorruptionReason::NewerSchema { found: 5, supported: 4 });
     assert_eq!(fs::read(moved_to).unwrap(), content);
 }
 

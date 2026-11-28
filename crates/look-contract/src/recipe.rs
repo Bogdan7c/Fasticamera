@@ -58,6 +58,10 @@ impl LookRecipe {
                 };
                 result.settings.wheels = result.settings.wheels.with_wheel(*zone, wheel);
             }
+            LookControl::Primary { zone, channel } => {
+                let value = source.settings.primaries.value(*zone, *channel);
+                result.settings.primaries = result.settings.primaries.with_value(*zone, *channel, value);
+            }
         }
         result
     }
@@ -69,6 +73,7 @@ mod tests {
     use crate::bands::{BandAdjustment, BandAdjustments, HueBandId};
     use crate::control::{BandAxis, GlobalKnob};
     use crate::knob::LookKnob;
+    use crate::primaries::PrimaryChannel;
     use crate::wheels::{WheelPush, WheelZone};
 
     fn knob(value: f32) -> LookKnob {
@@ -103,6 +108,13 @@ mod tests {
             };
             settings.wheels = settings.wheels.with_wheel(zone, wheel);
         }
+        // Каждая из 12 полосок — своё значение, зависящее от seed: перепутанная зона или канал не пройдёт.
+        for (zone_index, zone) in WheelZone::ALL.into_iter().enumerate() {
+            for (channel_index, channel) in PrimaryChannel::ALL.into_iter().enumerate() {
+                let value = knob(seed + 0.02 * (3 * zone_index + channel_index) as f32);
+                settings.primaries = settings.primaries.with_value(zone, channel, value);
+            }
+        }
         recipe(base, settings)
     }
 
@@ -121,6 +133,9 @@ mod tests {
         for zone in WheelZone::ALL {
             for part in [WheelPart::Push, WheelPart::Ring, WheelPart::Whole] {
                 controls.push(LookControl::Wheel { zone, part });
+            }
+            for channel in PrimaryChannel::ALL {
+                controls.push(LookControl::Primary { zone, channel });
             }
         }
         controls

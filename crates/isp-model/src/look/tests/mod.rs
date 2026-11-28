@@ -4,6 +4,7 @@ mod bands_tests;
 mod color_tests;
 mod end_to_end_tests;
 mod model_tests;
+mod primaries_tests;
 mod tone_tests;
 mod validation_tests;
 mod wheels_tests;

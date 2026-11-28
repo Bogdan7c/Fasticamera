@@ -313,23 +313,25 @@ impl<B: DisplayBackend, C: FrameClock> RenderWorker<B, C> {
                 StillCommandKind::Target => self.status.still_commands.targets_accepted += 1,
                 StillCommandKind::FlashFailed => self.status.still_commands.flash_failures_accepted += 1,
             },
-            Some(StillCommandOutcome::Unsupported(StillCommand::Begin(begin))) => {
-                self.status.still_commands.begins_unsupported += 1;
-                tracing::warn!(target: LOG_TARGET, id = begin.plan.id.0, "снимок не поддержан бэкендом: кадра нет");
-                begin.events.deliver(DevelopEvent::NotSecured {
-                    id: begin.plan.id,
-                    reason: NoFrameReason::NoLiveCameraFrame,
-                });
-            }
-            // Бэкенд снимков не умеет: о неснятой вспышке сообщать некому, итог снимка уже дан потоком (`Begin`).
-            Some(StillCommandOutcome::Unsupported(StillCommand::FlashFailed { id, failure })) => {
-                self.status.still_commands.flash_failures_dropped += 1;
-                tracing::warn!(target: LOG_TARGET, id = id.0, ?failure, "отказ вспышки без снимка: отброшен");
-            }
-            Some(StillCommandOutcome::Unsupported(StillCommand::Target(offer))) => {
-                self.status.still_commands.targets_dropped += 1;
-                tracing::warn!(target: LOG_TARGET, id = offer.id().0, "цель кодера без снимка: отпущена");
-            }
+            Some(StillCommandOutcome::Unsupported(returned)) => match *returned {
+                StillCommand::Begin(begin) => {
+                    self.status.still_commands.begins_unsupported += 1;
+                    tracing::warn!(target: LOG_TARGET, id = begin.plan.id.0, "снимок не поддержан бэкендом: кадра нет");
+                    begin.events.deliver(DevelopEvent::NotSecured {
+                        id: begin.plan.id,
+                        reason: NoFrameReason::NoLiveCameraFrame,
+                    });
+                }
+                // Бэкенд снимков не умеет: о неснятой вспышке сообщать некому, итог снимка уже дан потоком (`Begin`).
+                StillCommand::FlashFailed { id, failure } => {
+                    self.status.still_commands.flash_failures_dropped += 1;
+                    tracing::warn!(target: LOG_TARGET, id = id.0, ?failure, "отказ вспышки без снимка: отброшен");
+                }
+                StillCommand::Target(offer) => {
+                    self.status.still_commands.targets_dropped += 1;
+                    tracing::warn!(target: LOG_TARGET, id = offer.id().0, "цель кодера без снимка: отпущена");
+                }
+            },
             // Бэкенд неисправен (паника внутри guarded): команда потеряна; итог снимка доведёт срок записи.
             None => self.status.still_commands.lost_to_backend_fault += 1,
         }

@@ -46,3 +46,21 @@
 3. `no_edits`: `SetLook` (контраст +0,6) → `SaveAsNewPreset("Punchy")` → `save` (`edits: null`).
 
 Файлы не править.
+
+## Схема 4
+
+`schema_v4_with_edits.json` и `schema_v4_no_edits.json` — настоящие файлы схемы 4 (полоски Lift / Gamma / Gain / Offset
+по каналам R, G, B, сессия 14t), записанные кодом `look-presets` на коммите `7bffc52` + правки 14t (схема 4), а не
+набранные руками. Ненулевые полоски нужны, чтобы тест «пережил перезапуск» ловил потерю или перестановку любой из них
+(`tests/schema_v4.rs`). Когда схема поднимется до 5, эти файлы станут входом миграции 4 → 5 и замораживаются.
+
+Как получены (временный тест `tests/gen_v4_tmp.rs`, удалён сразу после генерации; запуск
+`GEN_OUT=<папка fixtures> cargo test -p look-presets --test gen_v4_tmp`; `PresetFileStore::open` в пустой папке
+с `PresetStoreConfig::default()` и окружением тестов — основа AgX, полосы `sky`, `green`):
+
+1. `with_edits`: `SetKnob` контраст +1, тени +1, света −0,6, теплота −0,25; `SetPrimary` Lift/R +0,3, Gain/B −0,45;
+   `SetToneBase(Aces)` → `SaveAsNewPreset("Evening")` → правки поверх: контраст −0,5, `SetPrimary` Offset/G +0,2,
+   Lift/R −0,1 → `save`.
+2. `no_edits`: `SetKnob` контраст +0,6, `SetPrimary` Gamma/R +0,5 → `SaveAsNewPreset("Punchy")` → `save` (`edits: null`).
+
+Файлы не править.
